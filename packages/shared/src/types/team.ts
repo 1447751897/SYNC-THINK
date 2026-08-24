@@ -80,6 +80,8 @@ export interface Conversation {
    * before any side-effecting execution happens. Independent of executionMode.
    */
   interactionMode: InteractionMode;
+  /** Per-conversation context capacity; undefined inherits the selected model. */
+  contextWindowOverride?: number;
   lastMessageAt?: string;
   /**
    * Task backing this conversation's message thread.

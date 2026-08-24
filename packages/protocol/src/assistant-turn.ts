@@ -34,6 +34,13 @@ export type AssistantTurnSegment =
       argumentsJson?: string;
       output?: string;
       isError?: boolean;
+      /**
+       * Ephemeral live output. Runtime only places these fields on transient
+       * snapshots; durable tool events keep the final output in `output`.
+       */
+      progressLine?: string;
+      progressBytes?: number;
+      progressAt?: string;
       status: 'running' | 'completed' | 'failed';
       startedAt?: string;
       completedAt?: string;

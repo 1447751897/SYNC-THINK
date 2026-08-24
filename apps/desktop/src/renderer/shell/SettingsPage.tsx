@@ -54,7 +54,7 @@ import {
 import { ModelSettings, type ModelSettingsHandle } from './ModelSettings.js';
 import { DesktopUpdatePanel } from './DesktopUpdatePanel.js';
 import { BrandLogoMark } from './BrandLogoMark.js';
-import { resolveKernelBrandLogo } from './brand-icons.js';
+import { resolveKernelBrandLogo, resolveKernelDisplayName } from './brand-icons.js';
 import { decideSettingsPageAction } from './settings-unsaved.js';
 import {
   readDefaultPermission,
@@ -888,9 +888,9 @@ const GATEWAY_DIALECT_LABEL: Record<OpenGatewayUpstreamProtocol, string> = {
 };
 
 const GATEWAY_KERNEL_LABEL: Record<string, string> = {
-  codex: 'Codex',
-  'claude-code': 'Claude Code',
-  native: 'Sync-Think',
+  codex: resolveKernelDisplayName('codex'),
+  'claude-code': resolveKernelDisplayName('claude-code'),
+  native: resolveKernelDisplayName('native'),
   external: '外部 CLI',
 };
 
@@ -981,9 +981,9 @@ function GatewayAuditLogs() {
 
   const kernelOptions = [
     { value: undefined, label: '全部内核' },
-    { value: 'codex', label: 'Codex' },
-    { value: 'claude-code', label: 'Claude Code' },
-    { value: 'native', label: 'Sync-Think' },
+    { value: 'codex', label: resolveKernelDisplayName('codex') },
+    { value: 'claude-code', label: resolveKernelDisplayName('claude-code') },
+    { value: 'native', label: resolveKernelDisplayName('native') },
     { value: 'external', label: '外部 CLI' },
   ] as const;
 

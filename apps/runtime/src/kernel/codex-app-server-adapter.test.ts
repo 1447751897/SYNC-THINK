@@ -81,10 +81,10 @@ describe('CodexAppServerKernelAdapter', () => {
 
     expect(spawns).toHaveLength(1);
     expect(first).toContainEqual({ type: 'session-started', sessionId: 'thread-app-fixture' });
-    // agentMessage IS the user-facing reply — the adapter must declare it
-    // final so the host streams it into the answer area live (§12.17.18 例外).
-    expect(first).toContainEqual({ type: 'delta', text: 'answer 1', final: true });
-    expect(second).toContainEqual({ type: 'delta', text: 'answer 2', final: true });
+    // agentMessage rides buffered semantics (no `final` flag): mid-turn
+    // messages stay in the process panel until a boundary classifies them.
+    expect(first).toContainEqual({ type: 'delta', text: 'answer 1' });
+    expect(second).toContainEqual({ type: 'delta', text: 'answer 2' });
     expect(second).toContainEqual({ type: 'terminal', status: 'completed' });
   });
 
@@ -142,11 +142,93 @@ describe('CodexAppServerKernelAdapter', () => {
     await adapter.stop();
     await consume;
 
-    expect(events).toContainEqual({ type: 'delta', text: 'answer 1', final: true });
+    expect(events).toContainEqual({ type: 'delta', text: 'answer 1' });
     expect(events).toContainEqual({
       type: 'terminal',
       status: 'failed',
       error: 'Codex app-server stopped',
+    });
+  });
+
+  it('forwards attached images with the current app-server image input shape', async () => {
+    const adapter = createFixtureAdapter([]);
+    const events: KernelEvent[] = [];
+    for await (const event of adapter.start(
+      makeRequest({
+        userText: '看图',
+        images: [
+          {
+            name: 'shot.png',
+            mimeType: 'image/png',
+            dataUrl: 'data:image/png;base64,QUJDRA==',
+          },
+        ],
+      }),
+    )) {
+      events.push(event);
+    }
+
+    // The fixture replies only when it sees UserInput.Image: { type: 'image', url }.
+    expect(events).toContainEqual({ type: 'delta', text: 'image forwarded' });
+    expect(events).toContainEqual({ type: 'terminal', status: 'completed' });
+  });
+
+  it('drops images whose data URL is not a data:image payload', async () => {
+    const adapter = createFixtureAdapter([]);
+    const events: KernelEvent[] = [];
+    for await (const event of adapter.start(
+      makeRequest({
+        userText: '看图',
+        images: [{ name: 'x.png', mimeType: 'image/png', dataUrl: 'sync-think-image://media/x' }],
+      }),
+    )) {
+      events.push(event);
+    }
+
+    expect(events).toContainEqual({ type: 'delta', text: 'answer 1' });
+  });
+
+  it('passes full access to both the Codex thread and turn policies', async () => {
+    const adapter = createFixtureAdapter([]);
+    const events: KernelEvent[] = [];
+    for await (const event of adapter.start(
+      makeRequest({ userText: 'permission fixture', permissionMode: 'full-access' }),
+    )) {
+      events.push(event);
+    }
+
+    expect(events).toContainEqual({
+      type: 'delta',
+      text: JSON.stringify({
+        threadApprovalPolicy: 'never',
+        threadSandboxPolicy: { type: 'dangerFullAccess' },
+        turnApprovalPolicy: 'never',
+        turnSandboxPolicy: { type: 'dangerFullAccess' },
+      }),
+    });
+  });
+
+  it('forwards command outputDelta as live tool progress before the result', async () => {
+    const adapter = createFixtureAdapter([]);
+    const events: KernelEvent[] = [];
+    for await (const event of adapter.start(makeRequest({ userText: 'progress fixture' }))) {
+      events.push(event);
+    }
+
+    const startedIndex = events.findIndex(
+      (event) => event.type === 'tool-call' && event.toolId === 'cmd-progress',
+    );
+    const progressIndex = events.findIndex((event) => event.type === 'tool-progress');
+    const resultIndex = events.findIndex(
+      (event) => event.type === 'tool-result' && event.toolId === 'cmd-progress',
+    );
+    expect(startedIndex).toBeGreaterThanOrEqual(0);
+    expect(progressIndex).toBeGreaterThan(startedIndex);
+    expect(resultIndex).toBeGreaterThan(progressIndex);
+    expect(events[progressIndex]).toMatchObject({
+      type: 'tool-progress',
+      toolId: 'cmd-progress',
+      output: 'progress line 1\n',
     });
   });
 });

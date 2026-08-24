@@ -1,10 +1,39 @@
+## 2026-08-22 路线图检查点：首版 RC 基础能力收口
+
+### 已具备的首版主链
+
+- 项目/工作区、对话历史、模型供应商、内核与权限选择。
+- Native、ClaudeCode、GPT/Codex 的统一 ordered timeline；正文、思考、工具、状态与最终结论边界明确，Token、缓存和耗时可追踪。
+- 图片附件按“当前模型视觉直传 -> 指定视觉模型 -> Windows OCR”确定性降级；Skill、MCP、工具审批、诊断导出、后台 Runtime、会话恢复和应用更新控制面。
+- 本机 DeThink `1.0.14.971` 对照确认其发布包只包含 Claude/Codex 两个 adapter；SYNC-THINK 不需要等所有远期内核和商业化入口完成后才进入首版闭测。
+
+### P0：邀请用户前必须关闭
+
+1. [ ] 从当前 dirty 工作树冻结一份干净、可复现的 RC commit/tag；临时诊断脚本和本地证据目录不进入发布物。
+2. [ ] 用最终 packaged build 跑 Native、ClaudeCode、GPT/Codex 的真实 Provider 矩阵：普通回复、连续多轮、中文思考、OCR/图片、工具 running/completed/failed、ask/workspace/full-access、最终正文、缓存/Token、Desktop 重连和 Runtime 重启。Pi 在有真实 adapter 前必须保持不可选或明确隐藏，不能出现“检测已安装但执行失败”。
+3. [ ] 定义并实现 Runtime/系统重启期间的待审批语义。当前 `pendingToolApprovals` 仍是内存 Promise；至少要持久恢复可继续的审批，或在接管时持久终结为明确失败，不能留下看似可批准但已无执行上下文的卡片。
+4. [ ] 收敛首版产品表面：隐藏账号、钱包、组织、快捷键、语音、每日回顾、安全查杀等 `ready: false` 空入口；已展示的 Pi、外部事件配置等入口必须与真实可用范围一致。
+5. [ ] 发布版本从开发占位 `0.0.1` 升为明确 RC/正式版本并锁定 channel。邀请闭测可使用现有 unsigned 内部链；公开发布前完成 Authenticode、RFC 3161、真实 private feed、签名更新与 rollback E2E。
+6. [x] 统一多内核主模型故障转移：ClaudeCode/GPT 外部内核已接入宿主失败分类、可见重试、Provider 优先级与 Agent fallback 链；终态 503 直接续接备用模型，停用 Provider 会被跳过，失败卡可手动选模型重试。最终 packaged 真实 Provider 矩阵仍由第 2 项统一验收。
+
+### P1：首版稳定后优先补齐
+
+1. [ ] 内核维护控制面：ClaudeCode/GPT 显示当前版、可用最新版和兼容性，提供检查/升级/失败回滚；应用自身更新与内核更新保持两个明确入口。
+2. [ ] GitHub 之外的 webhook、文件 watcher、Git/bot 渠道配置 UI；底层 durable envelope 已具备，产品配置仍不完整。
+3. [ ] 增加应用内反馈/诊断提交入口，并把首次 Provider 配置收敛为更短的可验证流程。
+4. [ ] 完成 Pi adapter；在此之前不把 Pi 计入可用内核数量或发布验收矩阵。
+
+### P2：不阻塞本地单用户首版
+
+- 账号、订阅、钱包、组织、通知中心、云同步、公开市场、语音、跨平台和团队协作商业化能力。
+
 ## 2026-08-21 路线图检查点：后台持续会话与执行过程 P1
 
 ### 已完成
 
 - daemon 成为长期控制面，监督 Runtime；Desktop 普通退出只断开 UI。
 - Codex 迁移官方 app-server，原生 threadId 持久化并由有界 Session Host 管理 resident 进程。
-- 执行过程面板 P1：本轮计划、真实顺序、稳定编号、工具类型、批量披露、终态耗时和结构化详情。
+- 执行过程面板 P1：本轮计划、真实顺序、工具类型、逐行披露、终态耗时和结构化详情；2026-08-22 已进一步移除人工编号并建立正文/工具视觉层级。
 - 收尾门禁全绿：根级串行测试、typecheck、lint、build；Electron 完成深浅主题、长参数布局与 Desktop 断开后 Runtime 存活检查。
 
 ### 后续阶段
@@ -15,7 +44,7 @@
 4. [x] Desktop 断连/冷重启后的 pending approval 对账，以及 approve/deny 真实 Electron 验收。
 5. [x] GitHub HTTP webhook endpoint：daemon 托管监听器、HMAC 验签、delivery id 去重、CLI 配置（`pnpm webhook:github`）。默认绑 `127.0.0.1`，公网暴露由用户自备隧道/反代。
 6. [x] Claude Code 迁移官方 Agent SDK，继续保持 `KernelAdapter` 边界，不让厂商 SDK 类型扩散。
-7. 后台任务/事件中心 UI：事件与 Run 列表、失败原因、重试与取消。
+7. [x] 后台任务/事件中心 UI：事件与 Run 列表、失败原因、打开对话与重发；取消继续按具体任务能力补充。
 8. 其余平台的配置 UI 与 bot 凭据绑定（GitHub 以外的 webhook 来源、文件 watcher 配置入口）。
 
 ## 2026-08-02 路线图检查点：本地工程任务收口，外部验收待补

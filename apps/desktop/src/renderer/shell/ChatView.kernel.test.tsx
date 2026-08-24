@@ -42,7 +42,14 @@ const kernels = [
     kernelId: 'native',
     name: '原生内核',
     icon: 'native',
-    capabilities: { permission: 'own' as const, permissionBridge: false, pause: 'executor' as const, compress: 'own' as const, usageReport: true, protocols: [] },
+    capabilities: {
+      permission: 'own' as const,
+      permissionBridge: false,
+      pause: 'executor' as const,
+      compress: 'own' as const,
+      usageReport: true,
+      protocols: [],
+    },
     installed: true,
     version: null,
     executablePath: null,
@@ -52,7 +59,14 @@ const kernels = [
     kernelId: 'claude-code',
     name: 'Claude Code',
     icon: 'claude-code',
-    capabilities: { permission: 'own' as const, permissionBridge: true, pause: 'turn' as const, compress: 'own' as const, usageReport: true, protocols: ['anthropic-messages' as const] },
+    capabilities: {
+      permission: 'own' as const,
+      permissionBridge: true,
+      pause: 'turn' as const,
+      compress: 'own' as const,
+      usageReport: true,
+      protocols: ['anthropic-messages' as const],
+    },
     installed: true,
     version: '2.1.222',
     executablePath: 'C:/claude',
@@ -62,7 +76,14 @@ const kernels = [
     kernelId: 'codex',
     name: 'Codex',
     icon: 'codex',
-    capabilities: { permission: 'own' as const, permissionBridge: false, pause: 'session' as const, compress: 'own' as const, usageReport: true, protocols: ['openai-chat' as const] },
+    capabilities: {
+      permission: 'own' as const,
+      permissionBridge: false,
+      pause: 'session' as const,
+      compress: 'own' as const,
+      usageReport: true,
+      protocols: ['openai-chat' as const],
+    },
     installed: true,
     version: '0.145.0',
     executablePath: 'C:/codex',
@@ -138,6 +159,26 @@ async function sendMessage(text: string) {
 }
 
 describe('ChatView kernel selection', () => {
+  it('repairs a persisted model override that is no longer in the available catalog', async () => {
+    window.localStorage.setItem(
+      'sync-think.conversationModelOverrides',
+      JSON.stringify({ 'conversation-kernel': 'disabled-grok' }),
+    );
+    renderChat();
+
+    await waitFor(() =>
+      expect(
+        JSON.parse(window.localStorage.getItem('sync-think.conversationModelOverrides') ?? '{}'),
+      ).toEqual({ 'conversation-kernel': 'model-a' }),
+    );
+    expect(await screen.findByText('原模型已停用或删除，已切换到 Model A')).toBeTruthy();
+
+    await sendMessage('use repaired model');
+    expect(runtime.appendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ modelId: 'model-a' }),
+    );
+  });
+
   it('sends the persisted per-conversation kernel with appendMessage', async () => {
     window.localStorage.setItem(
       'sync-think.conversationKernelOverrides',
@@ -149,7 +190,9 @@ describe('ChatView kernel selection', () => {
       expect.objectContaining({ kernelId: 'codex' }),
     );
     // Non-native kernel renders a chip.
-    expect(await screen.findByTestId('compose-kernel-chip')).toBeTruthy();
+    expect((await screen.findByTestId('compose-kernel-chip')).getAttribute('aria-label')).toBe(
+      '内核：GPT',
+    );
   });
 
   it('defaults to native when no override exists', async () => {
@@ -169,9 +212,7 @@ describe('ChatView kernel selection', () => {
 
     await waitFor(() =>
       expect(
-        JSON.parse(
-          window.localStorage.getItem('sync-think.conversationKernelOverrides') ?? '{}',
-        ),
+        JSON.parse(window.localStorage.getItem('sync-think.conversationKernelOverrides') ?? '{}'),
       ).toEqual({ 'conversation-kernel': 'claude-code' }),
     );
 

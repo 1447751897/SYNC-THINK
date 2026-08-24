@@ -52,7 +52,21 @@ interface ActiveTurn {
   lastReasoningItemId?: string;
   /** Whether any reasoning text has been emitted for this turn yet. */
   reasoningEmitted: boolean;
+  /**
+   * Zero-output watchdogs for commandExecution items. codex CLI 0.147 on
+   * Windows can hang forever after `item/started` (the spawned command never
+   * produces output nor completes — reproduced with a bare app-server run,
+   * independent of sandbox/approval settings). Without a watchdog the run sits
+   * in "长时间无输出" until recovery expiry (~30 min). Any outputDelta re-arms
+   * the timer, so long-running commands WITH output are unaffected.
+   */
+  commandWatchdogs: Map<string, ReturnType<typeof setTimeout>>;
 }
+
+/** Zero-output command timeout — generous enough for slow-but-alive commands. */
+const COMMAND_SILENCE_TIMEOUT_MS = 120_000;
+/** Keep each transient pipe frame small while preserving the newest output. */
+const MAX_TOOL_PROGRESS_CHARS = 8_192;
 
 export interface CodexAppServerAdapterDeps {
   spawn?: (args: string[], env: Record<string, string>, cwd: string) => KernelProcessHandle;
@@ -69,6 +83,26 @@ function text(value: unknown): string | undefined {
 
 function numberValue(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function commandOutputText(value: unknown): string | undefined {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) {
+    const text = value.map(commandOutputText).filter(Boolean).join('');
+    return text || undefined;
+  }
+  const record = asRecord(value);
+  if (!record) return undefined;
+  for (const candidate of [record.delta, record.output, record.text, record.content]) {
+    const text = commandOutputText(candidate);
+    if (text) return text;
+  }
+  return undefined;
+}
+
+function boundToolProgress(textValue: string): string {
+  if (textValue.length <= MAX_TOOL_PROGRESS_CHARS) return textValue;
+  return textValue.slice(-MAX_TOOL_PROGRESS_CHARS);
 }
 
 /**
@@ -118,6 +152,31 @@ function approvalPolicy(
   return 'on-request';
 }
 
+function codexPolicies(request: KernelRequest): {
+  approvalPolicy: 'never' | 'on-request' | 'untrusted';
+  sandboxPolicy: JsonRecord;
+} {
+  if (request.planningMode) {
+    return {
+      approvalPolicy: 'on-request',
+      sandboxPolicy: { type: 'readOnly' },
+    };
+  }
+  return {
+    approvalPolicy: approvalPolicy(request.permissionMode),
+    sandboxPolicy:
+      request.permissionMode === 'full-access'
+        ? { type: 'dangerFullAccess' }
+        : {
+            type: 'workspaceWrite',
+            writableRoots: [request.workspaceDir],
+            networkAccess: false,
+            excludeTmpdirEnvVar: false,
+            excludeSlashTmp: false,
+          },
+  };
+}
+
 function mcpConfig(broker: PlatformBrokerInfo | undefined): JsonRecord | undefined {
   if (!broker) return undefined;
   return {
@@ -130,6 +189,13 @@ function mcpConfig(broker: PlatformBrokerInfo | undefined): JsonRecord | undefin
         ST_BROKER_TOKEN: broker.token,
         ST_WORKSPACE_DIR: broker.workspaceDir,
       },
+      // Codex treats MCP servers as untrusted by default: every tool call then
+      // needs an approval round-trip that no host UI answers, so calls resolve
+      // to "user rejected MCP tool call" before they ever reach the broker.
+      // The HOST still runs its own approval cards inside the executor — this
+      // only tells codex to stop double-approving at its layer.
+      enabled: true,
+      default_tools_approval_mode: 'auto',
     },
   };
 }
@@ -223,6 +289,8 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
   private pending = new Map<JsonRpcId, PendingRequest>();
   private approvals = new Map<string, PendingApproval>();
   private activeTurn?: ActiveTurn;
+  /** Set when the zero-output command watchdog interrupted the current turn. */
+  private commandWatchdogFired = false;
   private permissionCallback?: (request: KernelPermissionRequest) => void;
   private usageCallback?: (usage: KernelUsage) => void;
   private exitCallback?: (code: number | null, stderrTail: string) => void;
@@ -279,19 +347,32 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
       streamedTextItems: new Set(),
       streamedReasoningItems: new Set(),
       reasoningEmitted: false,
+      commandWatchdogs: new Map(),
     };
     this.activeTurn = turn;
+    this.commandWatchdogFired = false;
     const prompt =
       request.session?.mode === 'resume'
         ? [request.session.catchUp, request.userText].filter(Boolean).join('\n\n')
         : request.userText;
+    // Codex app-server follows the OpenAI Responses input-item grammar; images
+    // ride as current app-server `image` items next to the text item. Only data URLs with an
+    // image media type are forwarded; anything unresolvable is dropped.
+    const input: Array<Record<string, unknown>> = [
+      { type: 'text', text: prompt, text_elements: [] },
+    ];
+    for (const image of request.images ?? []) {
+      if (!/^data:image\/(png|jpeg|gif|webp);base64,.+$/.test(image.dataUrl)) continue;
+      input.push({ type: 'image', url: image.dataUrl });
+    }
     try {
+      const policies = codexPolicies(request);
       const response = asRecord(
         await this.request('turn/start', {
           threadId,
-          input: [{ type: 'text', text: prompt, text_elements: [] }],
+          input,
           cwd: request.workspaceDir,
-          approvalPolicy: approvalPolicy(request.permissionMode),
+          ...policies,
           model: requestedModel(request),
           ...(request.reasoningEffort
             ? { effort: request.reasoningEffort === 'off' ? 'minimal' : request.reasoningEffort }
@@ -397,22 +478,12 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
 
   private async ensureThread(request: KernelRequest): Promise<string> {
     const provider = providerConfig(request);
+    const policies = codexPolicies(request);
     const common = {
       model: requestedModel(request),
       ...(provider.modelProvider ? { modelProvider: provider.modelProvider } : {}),
       cwd: request.workspaceDir,
-      approvalPolicy: request.planningMode ? 'on-request' : approvalPolicy(request.permissionMode),
-      sandboxPolicy: request.planningMode
-        ? { type: 'readOnly' }
-        : request.permissionMode === 'full-access'
-          ? { type: 'dangerFullAccess' }
-          : {
-              type: 'workspaceWrite',
-              writableRoots: [request.workspaceDir],
-              networkAccess: false,
-              excludeTmpdirEnvVar: false,
-              excludeSlashTmp: false,
-            },
+      ...policies,
       config: provider.config,
     };
     const result = asRecord(
@@ -499,6 +570,24 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
   private handleServerRequest(message: JsonRpcMessage): void {
     const method = message.method ?? '';
     const params = message.params ?? {};
+    // MCP tool-call elicitations (codex asks the host whether an MCP tool may
+    // run): without a handler codex auto-declines and surfaces
+    // "user rejected MCP tool call" *before* the call ever reaches our broker.
+    // The HOST already enforces its own approval semantics inside the tool
+    // executors (host approval cards, ask-mode fences), so accept here and let
+    // the host-side gate decide. Same for generic tool requestUserInput.
+    if (/\bMcpServer\/elicitation\/request$|\belicitation\/request$/i.test(method)) {
+      this.write({
+        jsonrpc: '2.0',
+        id: message.id,
+        result: { action: 'accept', content: null },
+      });
+      return;
+    }
+    if (/requestUserInput/i.test(method)) {
+      this.write({ jsonrpc: '2.0', id: message.id, result: { answers: {} } });
+      return;
+    }
     if (
       method === 'item/commandExecution/requestApproval' ||
       method === 'item/fileChange/requestApproval'
@@ -544,11 +633,15 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
       const delta = text(params.delta);
       const itemId = text(params.itemId);
       if (itemId) turn.streamedTextItems.add(itemId);
-      // agentMessage IS the user-facing reply (codex working prose rides the
-      // reasoning channel instead) — declare it final so the host streams it
-      // into the answer area live instead of parking it in the process panel
-      // until the terminal reclassifies it.
-      if (delta) this.pushTurnEvent({ type: 'delta', text: delta, final: true });
+      // Do NOT mark agentMessage deltas final: models emit working prose as
+      // agentMessage between tool calls too (e.g. "收到，我调用视觉模型读取…"),
+      // and a `final` flag would stream it into the answer area only for the
+      // next tool boundary to reclassify it as commentary — the text would
+      // flash in the chat bubble and then retract into the process panel.
+      // Buffered semantics keep every mid-turn message in the process panel;
+      // the terminal flush promotes the true final answer into the chat area,
+      // matching the claude-code adapter and the durable timeline exactly.
+      if (delta) this.pushTurnEvent({ type: 'delta', text: delta });
       return;
     }
     if (method === 'item/reasoning/summaryTextDelta' || method === 'item/reasoning/textDelta') {
@@ -572,8 +665,27 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
       }
       return;
     }
+    if (method === 'item/commandExecution/outputDelta') {
+      // The command is alive and producing output — re-arm its watchdog.
+      const itemId = text(params.itemId) ?? text(asRecord(params.item)?.id);
+      if (itemId && turn.commandWatchdogs.has(itemId)) {
+        clearTimeout(turn.commandWatchdogs.get(itemId)!);
+        this.armCommandWatchdog(turn, itemId);
+      }
+      const output = commandOutputText(
+        params.delta ?? params.output ?? params.text ?? asRecord(params.item)?.output,
+      );
+      if (itemId && output) {
+        this.pushTurnEvent({
+          type: 'tool-progress',
+          toolId: itemId,
+          output: boundToolProgress(output),
+        });
+      }
+      return;
+    }
     if (method === 'item/started') {
-      this.mapItemStarted(asRecord(params.item));
+      this.mapItemStarted(asRecord(params.item), turn);
       return;
     }
     if (method === 'item/completed') {
@@ -612,7 +724,13 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
         status === 'failed'
           ? { type: 'terminal', status: 'failed', error: errorMessage(failure) }
           : status === 'interrupted'
-            ? { type: 'terminal', status: 'failed', error: 'Codex turn interrupted' }
+            ? {
+                type: 'terminal',
+                status: 'failed',
+                error: this.commandWatchdogFired
+                  ? '命令执行无输出超时，已中断（codex CLI 0.147 Windows 已知挂起问题，建议降级 codex 或改用其他内核执行命令）'
+                  : 'Codex turn interrupted',
+              }
             : { type: 'terminal', status: 'completed' },
       );
       this.closeTurn(turn);
@@ -626,7 +744,7 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
     }
   }
 
-  private mapItemStarted(item: JsonRecord | undefined): void {
+  private mapItemStarted(item: JsonRecord | undefined, turn?: ActiveTurn): void {
     if (!item) return;
     const type = text(item.type);
     const id = text(item.id) ?? `codex-${randomUUID()}`;
@@ -638,6 +756,7 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
         argsJson: JSON.stringify({ command: text(item.command) ?? '' }),
         partial: false,
       });
+      if (turn) this.armCommandWatchdog(turn, id);
     } else if (type === 'mcpToolCall') {
       const server = text(item.server) ?? 'mcp';
       const tool = text(item.tool) ?? 'tool';
@@ -657,7 +776,9 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
     const id = text(item.id) ?? `codex-${randomUUID()}`;
     if (type === 'agentMessage' && !turn.streamedTextItems.has(id)) {
       const value = text(item.text);
-      if (value) this.pushTurnEvent({ type: 'delta', text: value, final: true });
+      // Buffered (no `final`) for the same reason as the streaming delta path:
+      // mid-turn agentMessages must never flash in the answer area.
+      if (value) this.pushTurnEvent({ type: 'delta', text: value });
     } else if (type === 'reasoning' && !turn.streamedReasoningItems.has(id)) {
       const value = reasoningText(item);
       if (value) {
@@ -665,10 +786,16 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
         turn.lastReasoningItemId = id;
       }
     } else if (type === 'commandExecution') {
+      const watchdog = turn.commandWatchdogs.get(id);
+      if (watchdog) {
+        clearTimeout(watchdog);
+        turn.commandWatchdogs.delete(id);
+      }
       this.pushTurnEvent({
         type: 'tool-result',
         toolId: id,
-        output: text(item.aggregatedOutput) ?? '',
+        output:
+          commandOutputText(item.aggregatedOutput ?? item.aggregated_output ?? item.output) ?? '',
         isError: (numberValue(item.exitCode) ?? 0) !== 0,
       });
     } else if (type === 'mcpToolCall') {
@@ -707,6 +834,38 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
     this.pushTurnEvent({ type: 'reasoning', text: delta });
   }
 
+  /**
+   * Arm (or re-arm) the zero-output watchdog for one commandExecution item.
+   * On expiry: surface a failed tool-result with a actionable diagnosis and
+   * interrupt the turn — codex 0.147 on Windows never completes the item, so
+   * without this the run hangs in "长时间无输出" until recovery expiry.
+   */
+  private armCommandWatchdog(turn: ActiveTurn, itemId: string): void {
+    const existing = turn.commandWatchdogs.get(itemId);
+    if (existing) clearTimeout(existing);
+    const timer = setTimeout(() => {
+      turn.commandWatchdogs.delete(itemId);
+      if (turn.closed || this.activeTurn !== turn) return;
+      this.commandWatchdogFired = true;
+      this.pushTurnEvent({
+        type: 'tool-result',
+        toolId: itemId,
+        output:
+          `命令执行超过 ${Math.round(COMMAND_SILENCE_TIMEOUT_MS / 1000)} 秒无任何输出，已中断本轮。` +
+          '已知问题：codex CLI 0.147 在 Windows 上执行命令可能永久挂起（与沙箱/审批设置无关）。' +
+          '建议：降级 codex 到 0.145（npm i -g @openai/codex@0.145.0 或官方安装器旧版），或改用 claude-code / 原生内核执行命令。',
+        isError: true,
+      });
+      void this.request('turn/interrupt', {
+        threadId: turn.threadId,
+        ...(turn.turnId ? { turnId: turn.turnId } : {}),
+      }).catch(() => undefined);
+    }, COMMAND_SILENCE_TIMEOUT_MS);
+    // Do not keep the process alive solely for a watchdog.
+    timer.unref?.();
+    turn.commandWatchdogs.set(itemId, timer);
+  }
+
   private pushTurnEvent(event: KernelEvent): void {
     const turn = this.activeTurn;
     if (!turn || turn.closed) return;
@@ -729,6 +888,8 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
 
   private closeTurn(turn: ActiveTurn): void {
     turn.closed = true;
+    for (const timer of turn.commandWatchdogs.values()) clearTimeout(timer);
+    turn.commandWatchdogs.clear();
     if (turn.waiter && turn.queue.length === 0) {
       const resolve = turn.waiter;
       turn.waiter = undefined;

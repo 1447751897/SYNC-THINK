@@ -255,6 +255,7 @@ import type {
   SetConversationArchivedPayload,
   SetConversationExecutionModePayload,
   SetConversationInteractionModePayload,
+  SetConversationContextWindowOverridePayload,
   ConversationPlanSubmitPayload,
   ConversationPlanGetPayload,
   ConversationPlanApprovePayload,
@@ -647,6 +648,11 @@ const api = {
     setConversationInteractionMode: (payload: SetConversationInteractionModePayload) =>
       ipcRenderer.invoke(
         'runtime:conversation-set-interaction-mode',
+        payload,
+      ) as Promise<ConversationResponse>,
+    setConversationContextWindowOverride: (payload: SetConversationContextWindowOverridePayload) =>
+      ipcRenderer.invoke(
+        'runtime:conversation-set-context-window-override',
         payload,
       ) as Promise<ConversationResponse>,
     conversationPlanSubmit: (payload: ConversationPlanSubmitPayload) =>

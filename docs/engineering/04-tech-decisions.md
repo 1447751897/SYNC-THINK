@@ -1271,6 +1271,7 @@ Computer Use built-in plugin
 8. 同一个 `Conversation + Kernel` 的 Run 必须串行，且下一轮在上一轮完成 Session 确认/持久化后才构建请求；不同 Conversation 继续并行。排队取消不得启动 Adapter，活动取消必须终止进程树并释放队列。
 9. Provider reasoning 继续只进入诊断流，用户可见执行说明与最终回答遵循 TD-039；Token usage 按 Provider request ID 投影输入、输出、缓存读取和缓存创建值，不因进程重启伪造缓存命中。
 10. 该方案保留 CLI 的磁盘 Session 与 Provider 管理的 Prompt Cache，但不承诺每轮必然命中缓存。进程内临时状态会随单轮结束释放，连续性来源必须是持久 Session、稳定上下文指纹和 Provider 返回的真实 usage。
+11. Claude Agent SDK 的分块 `assistant.message.usage` 是未完成快照，不作为最终用量。Adapter 按 Provider request 合并原始 `message_start` 输入/缓存字段与 `message_delta` 输出字段并在请求结束时上报；缺少 partial usage 时才使用 `result.modelUsage`（SDK 明确指定的 token/cost 统计真源），再退回 `result.usage` 或 assistant 快照。缓存读取和缓存创建只展示 Provider 实报值，不通过 Session 是否恢复来推断。
 
 ### TD-043：DSH ordered assistant turn、单消息持久化与 RAF 全量提交（2026-08-16）
 
@@ -1303,7 +1304,7 @@ Computer Use built-in plugin
 13. 对话贴底由稳定 flow-tip signature 与内容容器 `ResizeObserver` 驱动；每帧变化的完整 `messages` 数组不再触发布局阶段的 `scrollHeight/scrollTop` 读写，用户上滚意图与历史分页锚点语义保持不变。
 14. timeline 与 metadata payload 必须完全 JSON-serializable；可选字段缺失时省略属性，不写入值为 `undefined` 的 own property。
 15. 本决策覆盖 TD-039 第 4、6、8、10 条中关于 durable 聚合 commentary、普通 UI 隐藏 reasoning、连续工具分组和旧 Renderer transient 展示的部分；TD-039 对 Provider phase、上下文重建、fallback 连续性和不伪造 commentary 的约束继续有效。
-16. 对 legacy Provider 的 phase 未定 text，Desktop 用“累计 `draft.text` 减去 timeline 已分类 text 前缀”得到 provisional suffix，并在流式 assistant turn 尾部显示。tool/terminal 边界写入权威 phase 后 suffix 自动归零，由 timeline 接管；该投影只影响瞬时可见性，不写入新的持久化字段。
+16. 对 legacy Provider 的 phase 未定 text，Desktop 用“累计 `draft.text` 减去 timeline 已分类 text 前缀”保留 provisional suffix，但不把它渲染进执行过程或最终正文。tool 边界写入 commentary 后按原 sequence 进入过程面板；terminal 边界写入 `final_answer` 后在面板外一次显示完整结论。该规则来自对 NewMax `contentBlocks` 渲染的核对：最后一个真实工具之前的 text 归 `processElements`，之后的 text 归 `resultElements`；它只改变瞬时可见性，不新增持久化字段。
 17. 外层过程面板使用 `RunId` 作为 disclosure reset key：执行且 final answer 尚未开始时自动展开，final answer 开始或 terminal 后自动折叠；当前 Run 内任何人工切换都优先于后续自动状态，新 Run 清除人工覆盖。Think 和单工具详情继续拥有各自独立 disclosure 状态。
 18. Codex 的 `model_reasoning_effort` 只控制 reasoning token 预算，并不保证 `exec --json` 暴露可读 reasoning item。Codex Adapter 必须额外传入 `model_reasoning_summary=detailed`，并同时读取 item 顶层 `text`、`content[].reasoning_text.text` 与 `summary[].summary_text.text`。Provider/CLI 没有返回任何非空摘要时不伪造思考内容。
 19. Provider 声明的 phase 不是工具边界之上的绝对事实。timeline 一旦追加 tool segment，所有 sequence 早于最后工具且仍标为 `final_answer` 的 text 必须改投影为 commentary；Provider round transcript 同步应用该规则，保证下一轮上下文、transient UI、终态持久化和历史恢复使用同一语义。Desktop 读取旧 timeline 时执行同一纯投影归一化，不回写或迁移原始消息。
@@ -1350,7 +1351,7 @@ Computer Use built-in plugin
 1. Desktop 是可断开的 UI client。普通 `before-quit` 只断开 pipe subscription，不停止 daemon、Runtime、活动 Run 或 Kernel session；只有明确“停止后台服务”、应用升级和卸载流程可以请求有界停机。
 2. daemon 是长期控制面：负责单实例、调度、durable queue、Runtime 探测/拉起/崩溃恢复与未来外部事件入口。Runtime 继续是 Agent 执行面和持久化真相源；daemon 不复制审批、凭据、Provider、工具或 Kernel 事件归一化逻辑。
 3. 交互对话和需保持会话的后台工作由长期 Runtime 执行；无交互的定时任务仍可使用短期 Worker Runtime。两类执行共享同一持久 Run/Message/Event 模型。
-4. Codex 使用官方 `codex app-server` JSON-RPC 方法 `initialize`、`thread/start|resume`、`turn/start|interrupt`。每个 `Conversation + Kernel` 持久化原生 `threadId`；app-server 只是可回收的执行资源。Runtime 使用有界 Session Host 管理 resident app-server（默认最多 4 个、空闲 15 分钟回收），同一会话在进程仍驻留时复用，进程被 LRU/超时回收或 Runtime 重启后通过 `thread/resume` 恢复。
+4. Codex 使用官方 `codex app-server` JSON-RPC 方法 `initialize`、`thread/start|resume`、`turn/start|interrupt`。每个 `Conversation + Kernel` 持久化原生 `threadId`；app-server 只是可回收的执行资源。Runtime 使用有界 Session Host 管理 resident app-server（默认最多 4 个、空闲 1 小时回收），同一会话在进程仍驻留时复用，进程被 LRU/超时回收或 Runtime 重启后通过 `thread/resume` 恢复。
 5. 有界 Session Host 把会话状态与进程生命周期分离：活跃 turn（包括等待审批）持有租约，不得淘汰；容量满且全部活跃时新会话等待空闲槽位，不得突破上限继续拉进程；容量满且存在空闲实例时淘汰最久未使用者。Runtime 显式停止时统一停止全部 resident app-server，但不删除持久 `threadId`。
 6. app-server 协议以当前 Codex CLI 的 `app-server generate-ts` 输出为事实源。仓库只保存 SYNC-THINK 实际消费的最小类型投影和容错解析，不复制完整生成目录；未知通知忽略并记录，不能中断活动 turn。
 7. Claude Code 后续迁移到官方 Agent SDK，但继续通过同一 `KernelAdapter` seam 投影 `KernelEvent`。厂商 SDK 类型不得扩散到 Runtime、Storage、Protocol 或 Renderer。
@@ -1411,3 +1412,18 @@ Computer Use built-in plugin
 7. `states` / `sources` 过滤值在 Desktop 主进程按词汇表白名单**过滤**（不是透传）后才进 Runtime，避免 renderer 缺陷把任意值送进 SQL 过滤条件。
 8. 重发**不新开一条 run-start 路径**。`activity.retryAnchor` 只回答「该重发什么」（对话 id + 原始提示词），实际发送仍走 ChatView 既有通道——那里独占 `expectedTaskVersion` 栅栏、模型/内核/思考档解析和自动压缩。活动中心只把提示词预填进输入框，由用户按发送。进行中的 Run、无对话归属的 Run、原始消息已不可用时返回 `retryable: false` 并附原因，属正常应答而非错误帧。
 9. 列表刷新由事件驱动，但只认真正推进生命周期的类型（`run.started` / `recovered` / `retrying` / `completed` / `failed` / `cancelled` / `paused`）。按 `category === 'run'` 筛会连带 `plan.approved`、`run.queued`，触发改不动任何一行的重查。事件本身只是「该重新查询」的信号：其 payload 不含 kernel / model / 失败分类，拼不出 UI 行，行始终来自读模型。
+
+### TD-049：会话上下文容量、压缩所有权与流式工具生命周期（2026-08-23）
+
+状态：已采用。
+
+背景：模型元数据、用户期望容量和内核真实上限此前混为一个 `contextWindow`，用户既看不出容量来源，也不能按会话控制；同时宿主自动压缩会与 ClaudeCode/Codex 的内核压缩重叠。Claude SDK 又只在工具参数完整后上报调用，导致命令执行期间没有运行态，批量/并行工具容易出现重复行或延迟显示。
+
+决策：
+
+1. `Conversation` 持久化可选 `contextWindowOverride`，范围固定为 1,024 到 10,000,000 Token；`null` 恢复模型默认。实际容量按“模型默认 -> 会话覆盖 -> 不可覆盖的内核上限”解析，并同时返回 `modelContextWindow`、`contextWindowOverride`、`contextWindowSource` 与生效的 `kernelContextWindowLimit`，UI 不从单个数字反推来源。
+2. ClaudeCode 的原生窗口按不可覆盖的 200k 上限处理；Codex/GPT 的窗口可通过 app-server 配置覆盖，因此其注册表 `nativeLimit` 只作能力说明，不截断用户设置。缺少模型元数据时仍采用 128k 估算，但只在没有会话覆盖时标记为估算。
+3. 上下文状态缓存必须按“会话/线程 + 模型 + 内核”隔离。模型或内核切换、会话容量修改后使对应快照失效，避免把 ClaudeCode 的 200k 上限复用于 GPT，或继续显示旧容量。
+4. 压缩所有权单一化：Native 由宿主在 70% 阈值执行自动压缩；声明 `compress=own` 的外部内核由自身管理，宿主只把 `kernel.context_compacted` 投影成可见通知，不再叠加宿主摘要。宿主压缩必须发布 started、completed、skipped、failed 四类可观察状态；成功状态包含耗时、压缩前后 Token 和折叠消息数，失败不得静默。
+5. 工具生命周期以稳定 `toolId` 为主键。Adapter 在收到工具开始块时立即发出 partial `tool-call`，参数 delta 只更新同一行，结果到达后原位转成 completed/failed；批量声明按真实开始顺序逐项出现，并行结果允许乱序回填但不得丢行或复制行。
+6. 运行中工具可携带有界的最新输出摘要，仅进入 transient snapshot；durable 消息保存终态参数与结果。Renderer 保持同一 DOM 行完成状态切换，显示旋转 loading、实时耗时与最新输出，连续工具按相邻调用分组但每一项独立展开。

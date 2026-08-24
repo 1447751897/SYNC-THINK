@@ -1,5 +1,5 @@
 // Read Desktop-staged chat images for multimodal provider calls.
-import { readFileSync, existsSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, normalize, resolve } from 'node:path';
 
@@ -20,7 +20,9 @@ export function resolveChatImageStagingDir(
 }
 
 function isPathInside(parent: string, child: string): boolean {
-  const root = normalize(resolve(parent)).replace(/[\\/]+$/, '').toLowerCase();
+  const root = normalize(resolve(parent))
+    .replace(/[\\/]+$/, '')
+    .toLowerCase();
   const target = normalize(resolve(child)).toLowerCase();
   if (target === root) return true;
   const prefix = root + (root.includes('\\') ? '\\' : '/');
@@ -29,11 +31,8 @@ function isPathInside(parent: string, child: string): boolean {
   return target.startsWith(prefix) || target.startsWith(altPrefix);
 }
 
-/**
- * Convert a staged absolute path into a data URL for Provider adapters.
- * Rejects paths outside the staging directory.
- */
-export function readStagedImageAsDataUrl(stagingPath: string): string | undefined {
+/** Resolve and validate a Desktop-staged image without reading it into memory. */
+export function resolveStagedImagePath(stagingPath: string): string | undefined {
   if (!stagingPath || typeof stagingPath !== 'string') return undefined;
   const stagingRoot = resolveChatImageStagingDir();
   const absolute = resolve(stagingPath);
@@ -46,8 +45,31 @@ export function readStagedImageAsDataUrl(stagingPath: string): string | undefine
     return undefined;
   }
   try {
+    const realRoot = existsSync(stagingRoot) ? realpathSync(stagingRoot) : resolve(stagingRoot);
+    const realTarget = realpathSync(absolute);
+    if (!isPathInside(realRoot, realTarget)) {
+      console.warn('[runtime] rejected staged image link outside staging dir', absolute);
+      return undefined;
+    }
+    const stat = statSync(realTarget);
+    if (!stat.isFile() || stat.size === 0 || stat.size > 12_000_000) return undefined;
+    if (!/\.(?:png|jpe?g|gif|webp)$/i.test(realTarget)) return undefined;
+    return realTarget;
+  } catch (error) {
+    console.warn('[runtime] failed to validate staged image', error);
+    return undefined;
+  }
+}
+
+/**
+ * Convert a staged absolute path into a data URL for Provider adapters.
+ * Rejects paths outside the staging directory.
+ */
+export function readStagedImageAsDataUrl(stagingPath: string): string | undefined {
+  const absolute = resolveStagedImagePath(stagingPath);
+  if (!absolute) return undefined;
+  try {
     const buf = readFileSync(absolute);
-    if (buf.length === 0 || buf.length > 12_000_000) return undefined;
     const lower = absolute.toLowerCase();
     const mime = lower.endsWith('.png')
       ? 'image/png'
@@ -61,6 +83,14 @@ export function readStagedImageAsDataUrl(stagingPath: string): string | undefine
     console.warn('[runtime] failed to read staged image', error);
     return undefined;
   }
+}
+
+export function resolveAppendMessageImageStagingPath(image: {
+  stagingPath?: string;
+}): string | undefined {
+  return typeof image.stagingPath === 'string'
+    ? resolveStagedImagePath(image.stagingPath)
+    : undefined;
 }
 
 export function resolveAppendMessageImageDataUrl(image: {

@@ -46,7 +46,8 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommand[] = [
     id: 'plan',
     command: '/plan',
     label: '计划模式',
-    description: '只读分析并提交可审批计划；发送后才进入规划模式（可附加需求，如 /plan 完善登录功能）',
+    description:
+      '只读分析并提交可审批计划；发送后才进入规划模式（可附加需求，如 /plan 完善登录功能）',
     kind: 'prefix',
     keywords: ['outline', '规划', '计划', 'plan'],
   },
@@ -93,7 +94,10 @@ export function filterSlashCommands(
   const q = query.trim().toLowerCase();
   if (!q) return [...commands];
   return commands.filter((cmd) => {
-    if (cmd.command.toLowerCase().includes(`/${q}`) || cmd.command.slice(1).toLowerCase().startsWith(q)) {
+    if (
+      cmd.command.toLowerCase().includes(`/${q}`) ||
+      cmd.command.slice(1).toLowerCase().startsWith(q)
+    ) {
       return true;
     }
     if (cmd.label.toLowerCase().includes(q)) return true;
@@ -103,10 +107,7 @@ export function filterSlashCommands(
 }
 
 /** Remove the active `/query` token from the text. */
-export function stripSlashToken(
-  text: string,
-  slash: SlashQuery,
-): { text: string; caret: number } {
+export function stripSlashToken(text: string, slash: SlashQuery): { text: string; caret: number } {
   const next = text.slice(0, slash.slashIndex) + text.slice(slash.caret);
   return { text: next, caret: slash.slashIndex };
 }
@@ -178,9 +179,7 @@ export function resolveSystemMessageTone(
   }
   const trimmed = text.trim();
   if (
-    /^(发送失败|上下文压缩失败|上下文压缩超时|Runtime request timed out|请求失败)/i.test(
-      trimmed,
-    )
+    /^(发送失败|上下文压缩失败|上下文压缩超时|Runtime request timed out|请求失败)/i.test(trimmed)
   ) {
     return 'error';
   }
@@ -203,7 +202,11 @@ export function resolveSendModelId(input: {
   catalogModelIds?: readonly string[];
 }): ModelId | undefined {
   const override = typeof input.modelOverride === 'string' ? input.modelOverride.trim() : '';
-  if (override) return override as ModelId;
+  if (override) {
+    if (input.catalogModelIds === undefined) return override as ModelId;
+    const available = input.catalogModelIds.map((modelId) => modelId.trim()).filter(Boolean);
+    return (available.includes(override) ? override : available[0]) as ModelId | undefined;
+  }
 
   const track = input.track ?? 'model';
   if (track === 'agent' || track === 'team') return undefined;

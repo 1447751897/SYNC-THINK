@@ -130,8 +130,12 @@ export interface DemoRunState {
   skillSnapshots?: Array<{ skillVersionId: string; contentFingerprint: string }>;
   /** Bound MCP server ids for this run (allowlist snapshot). */
   mcpServerIds?: string[];
-  /** Provider model context window used by snapshot estimation and auto compact. */
+  /** Configured context window after applying a conversation override. */
   contextWindow?: number;
+  /** Provider model context window before applying a conversation override. */
+  modelContextWindow?: number;
+  /** Persisted conversation override used for this run. */
+  contextWindowOverride?: number;
   /** True when contextWindow fell back to the 128k default (no model metadata). */
   contextWindowEstimated?: boolean;
   /**
@@ -141,6 +145,7 @@ export interface DemoRunState {
   effectiveContextWindow?: number;
   /** Why the effective window differs from the configured value (observability). */
   contextWindowSource?: 'configured' | 'kernel-capped' | 'estimated';
+  kernelContextWindowLimit?: number;
   /**
    * Pre-resolved kernel session plan for observability (run.started payload):
    * the create/resume decision and how many host turns were missing from the
@@ -166,6 +171,12 @@ export interface DemoRunState {
   planningMode?: boolean;
   /** Multimodal images for this turn only (not persisted as durable event blobs). */
   images?: DemoRunImage[];
+  /**
+   * How attached images reached this run: forwarded to a vision-capable model,
+   * replaced by a vision-model description, replaced by Windows OCR text, or
+   * failed. Surfaces in run.started and the appendMessage response.
+   */
+  imagesMode?: 'forwarded' | 'materialized' | 'described' | 'ocr' | 'failed';
   packetId?: string;
   proofHash?: string;
   nextAdapterEventIndex: number;
@@ -345,11 +356,10 @@ export function appendAssistantTextDelta(
     startedAt: occurredAt,
   };
   const inserted = [...closed.slice(0, at), segment, ...closed.slice(at)];
-  const next = afterSequence !== undefined
-    ? inserted.map((item, index) =>
-        item === segment ? item : { ...item, sequence: index },
-      )
-    : inserted;
+  const next =
+    afterSequence !== undefined
+      ? inserted.map((item, index) => (item === segment ? item : { ...item, sequence: index }))
+      : inserted;
   return {
     ...run,
     assistantTimeline: boundAssistantTimeline(next),
@@ -497,6 +507,8 @@ export interface CreateDemoRunInput {
   skillSnapshots?: Array<{ skillVersionId: string; contentFingerprint: string }>;
   mcpServerIds?: string[];
   contextWindow?: number;
+  modelContextWindow?: number;
+  contextWindowOverride?: number;
   /** True when contextWindow fell back to the 128k default (no model metadata). */
   contextWindowEstimated?: boolean;
   projectContextPromptBlocks?: string[];
@@ -562,6 +574,8 @@ export function createDemoRun(
     mcpServerIds:
       extras.mcpServerIds && extras.mcpServerIds.length > 0 ? [...extras.mcpServerIds] : undefined,
     contextWindow: extras.contextWindow,
+    modelContextWindow: extras.modelContextWindow,
+    contextWindowOverride: extras.contextWindowOverride,
     contextWindowEstimated: extras.contextWindowEstimated === true,
     projectContextPromptBlocks:
       extras.projectContextPromptBlocks && extras.projectContextPromptBlocks.length > 0
@@ -1073,6 +1087,14 @@ function parseDemoRun(value: unknown): DemoRunState {
       typeof run.contextWindow === 'number' && Number.isFinite(run.contextWindow)
         ? run.contextWindow
         : undefined,
+    modelContextWindow:
+      typeof run.modelContextWindow === 'number' && Number.isFinite(run.modelContextWindow)
+        ? run.modelContextWindow
+        : undefined,
+    contextWindowOverride:
+      typeof run.contextWindowOverride === 'number' && Number.isFinite(run.contextWindowOverride)
+        ? run.contextWindowOverride
+        : undefined,
     projectContextPromptBlocks: stringArray(run.projectContextPromptBlocks, 256),
     contextSources,
     compactSummary: typeof run.compactSummary === 'string' ? run.compactSummary : undefined,
@@ -1098,6 +1120,14 @@ function parseDemoRun(value: unknown): DemoRunState {
             ...(typeof img.dataUrl === 'string' ? { dataUrl: img.dataUrl } : {}),
           }))
       : undefined,
+    imagesMode:
+      run.imagesMode === 'forwarded' ||
+      run.imagesMode === 'materialized' ||
+      run.imagesMode === 'described' ||
+      run.imagesMode === 'ocr' ||
+      run.imagesMode === 'failed'
+        ? run.imagesMode
+        : undefined,
     packetId: typeof run.packetId === 'string' ? run.packetId : undefined,
     proofHash: typeof run.proofHash === 'string' ? run.proofHash : undefined,
     nextAdapterEventIndex: run.nextAdapterEventIndex,

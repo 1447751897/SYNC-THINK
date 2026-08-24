@@ -2,7 +2,7 @@
  * @vitest-environment jsdom
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import {
   ContextRing,
   ModelPickerMenu,
@@ -160,6 +160,33 @@ describe('ContextRing', () => {
     expect(screen.getByTestId('context-limit-estimated').textContent).toContain('估算');
     expect(screen.queryByTestId('context-limit-kernel-capped')).toBeNull();
   });
+
+  it('edits a conversation capacity and restores the model default from the tooltip', async () => {
+    const onContextWindowChange = vi.fn().mockResolvedValue(undefined);
+    render(
+      <ContextRing
+        used={20_000}
+        limit={200_000}
+        modelContextWindow={128_000}
+        contextWindowOverride={400_000}
+        contextWindowSource="kernel-limit"
+        compactThreshold={0.7}
+        sections={[]}
+        onContextWindowChange={onContextWindowChange}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('context-ring'));
+    fireEvent.click(screen.getByRole('button', { name: '编辑会话容量' }));
+    const input = screen.getByLabelText('会话上下文容量');
+    fireEvent.change(input, { target: { value: '256000' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存会话容量' }));
+    await waitFor(() => expect(onContextWindowChange).toHaveBeenCalledWith(256_000));
+
+    fireEvent.click(screen.getByRole('button', { name: '恢复模型默认容量' }));
+    await waitFor(() => expect(onContextWindowChange).toHaveBeenLastCalledWith(null));
+    expect(screen.getByTestId('context-model-default').textContent).toContain('128k');
+  });
 });
 
 describe('ModelPickerMenu', () => {
@@ -232,7 +259,14 @@ describe('ModelPickerMenu', () => {
             kernelId: 'native',
             name: 'Sync-Think',
             icon: 'native',
-            capabilities: { permission: 'own', permissionBridge: false, pause: 'executor', compress: 'own', usageReport: true, protocols: [] },
+            capabilities: {
+              permission: 'own',
+              permissionBridge: false,
+              pause: 'executor',
+              compress: 'own',
+              usageReport: true,
+              protocols: [],
+            },
             installed: true,
             version: null,
             executablePath: null,
@@ -242,17 +276,48 @@ describe('ModelPickerMenu', () => {
             kernelId: 'claude-code',
             name: 'Claude Code',
             icon: 'claude-code',
-            capabilities: { permission: 'own', permissionBridge: true, pause: 'turn', compress: 'own', usageReport: true, protocols: ['anthropic-messages'] },
+            capabilities: {
+              permission: 'own',
+              permissionBridge: true,
+              pause: 'turn',
+              compress: 'own',
+              usageReport: true,
+              protocols: ['anthropic-messages'],
+            },
             installed: true,
             version: '2.1.222',
             executablePath: 'C:/claude',
             knownGood: true,
           },
           {
+            kernelId: 'codex',
+            name: 'Codex',
+            icon: 'codex',
+            capabilities: {
+              permission: 'own',
+              permissionBridge: false,
+              pause: 'session',
+              compress: 'own',
+              usageReport: true,
+              protocols: ['openai-chat'],
+            },
+            installed: true,
+            version: '0.147.0',
+            executablePath: 'C:/codex',
+            knownGood: true,
+          },
+          {
             kernelId: 'pi',
             name: 'Pi',
             icon: 'pi',
-            capabilities: { permission: 'none', permissionBridge: false, pause: 'kill', compress: 'own', usageReport: false, protocols: [] },
+            capabilities: {
+              permission: 'none',
+              permissionBridge: false,
+              pause: 'kill',
+              compress: 'own',
+              usageReport: false,
+              protocols: [],
+            },
             installed: false,
             version: null,
             executablePath: null,
@@ -270,16 +335,22 @@ describe('ModelPickerMenu', () => {
     const nativeOption = await screen.findByTestId('kernel-option-native');
     expect(nativeOption.textContent).toContain('Sync-Think');
     const ccOption = await screen.findByTestId('kernel-option-claude-code');
-    expect(ccOption.textContent).toContain('Claude Code');
+    expect(ccOption.textContent).toContain('ClaudeCode');
+    expect(ccOption.textContent).not.toContain('Claude Code');
     expect(ccOption.textContent).toContain('已安装 v2.1.222');
+    const codexOption = await screen.findByTestId('kernel-option-codex');
+    expect(codexOption.textContent).toContain('GPT');
+    expect(codexOption.textContent).not.toContain('Codex');
 
     // Kernel badges render brand logos; native now carries the Sync-Think mark.
     const nativeBadge = await screen.findByTestId('kernel-badge-native');
     expect(nativeBadge.textContent).toBe('');
-    expect(nativeBadge.querySelector('img[alt="Sync-Think"]')).toBeTruthy();
+    expect(nativeBadge.querySelector('[role="img"][aria-label="Sync-Think"]')).toBeTruthy();
     const ccBadge = await screen.findByTestId('kernel-badge-claude-code');
-    expect(ccBadge.querySelector('img,[role="img"]')).toBeTruthy();
+    expect(ccBadge.querySelector('img[alt="ClaudeCode"]')).toBeTruthy();
     expect(ccBadge.textContent).toBe('');
+    const codexBadge = await screen.findByTestId('kernel-badge-codex');
+    expect(codexBadge.querySelector('[role="img"][aria-label="GPT"]')).toBeTruthy();
 
     // Installable kernels remain actionable and route to the bounded install callback.
     const piOption = await screen.findByTestId('kernel-option-pi');

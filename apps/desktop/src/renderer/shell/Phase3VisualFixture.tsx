@@ -17,10 +17,12 @@ import {
   Zap,
 } from 'lucide-react';
 import { AssistantProcessGroup } from './ChatView.js';
+import type { InlineProcessItem } from './ChatView.js';
 import { ContextRing } from './compose-toolbar.js';
 import { ExecutionTimeline } from './ExecutionTimeline.js';
 import { FirstLaunchGuide, FIRST_LAUNCH_GUIDE_KEY } from './FirstLaunchGuide.js';
 import { FileTypeIcon } from './FileTypeIcon.js';
+import { InlineProcessFlow } from './InlineProcessFlow.js';
 import { MarkdownContent } from './MarkdownContent.js';
 import { DataDiagnosticsSection } from './SettingsPage.js';
 import { WorkspaceFileView } from './WorkspaceFileView.js';
@@ -35,6 +37,7 @@ export const PHASE3_VISUAL_CASES = [
   'composer-context',
   'workspace-file',
   'execution-auto-disclosure',
+  'inline-process-hierarchy',
 ] as const;
 
 export type Phase3VisualCase = (typeof PHASE3_VISUAL_CASES)[number];
@@ -121,6 +124,59 @@ const TRACE_COMMENTARY_SEGMENTS: CommentaryTimelineSegment[] = TRACE_COMMENTARY.
     completedAt: ['2026-08-08T10:01:02.000Z', '2026-08-08T10:01:08.000Z'][index]!,
   }),
 );
+
+const INLINE_PROCESS_HIERARCHY_ITEMS: InlineProcessItem[] = [
+  {
+    kind: 'reasoning',
+    id: 'inline-process-reasoning',
+    text: '确认执行边界\n\n先检查消息顺序与工具状态，再进行最小范围修改。',
+    status: 'completed',
+  },
+  {
+    kind: 'commentary',
+    id: 'inline-process-commentary-a',
+    text: '我先核对 **项目配置** 和当前内核状态。',
+    status: 'completed',
+  },
+  {
+    kind: 'tool',
+    id: 'inline-process-tool-read',
+    toolCallId: 'inline-process-tool-read',
+    name: 'read_file',
+    displayName: '读取文件',
+    inputSummary: 'apps/desktop/src/renderer/shell/InlineProcessFlow.tsx',
+    argumentsJson: '{"path":"apps/desktop/src/renderer/shell/InlineProcessFlow.tsx"}',
+    result: '已读取组件结构并确认时间线顺序。',
+    status: 'completed',
+    startedAt: '2026-08-22T10:00:01.000Z',
+    completedAt: '2026-08-22T10:00:01.420Z',
+  },
+  {
+    kind: 'commentary',
+    id: 'inline-process-commentary-b',
+    text: '文件结构已经确认，继续检查样式和回归。',
+    status: 'completed',
+  },
+  {
+    kind: 'tool',
+    id: 'inline-process-tool-test',
+    toolCallId: 'inline-process-tool-test',
+    name: 'exec_command',
+    displayName: '运行命令',
+    inputSummary: 'pnpm --filter @sync-think/desktop test',
+    argumentsJson: '{"command":"pnpm","args":["--filter","@sync-think/desktop","test"]}',
+    result: '33 tests passed',
+    status: 'completed',
+    startedAt: '2026-08-22T10:00:02.000Z',
+    completedAt: '2026-08-22T10:00:05.180Z',
+  },
+  {
+    kind: 'text',
+    id: 'inline-process-text',
+    text: '布局检查完成：正文保持主阅读层级，工具调用作为辅助动作缩进显示。',
+    status: 'completed',
+  },
+];
 
 const HISTORY = Array.from({ length: 18 }, (_, index) => ({
   id: 'fixture-message-' + (index + 1),
@@ -256,6 +312,39 @@ function DiagnosticsFixture() {
     <FixtureFrame label="诊断导出">
       <div className="phase3-visual__diagnostics">
         <DataDiagnosticsSection />
+      </div>
+    </FixtureFrame>
+  );
+}
+
+function InlineProcessHierarchyFixture() {
+  return (
+    <FixtureFrame label="执行过程信息层级">
+      <div className="phase3-visual__conversation">
+        <div className="phase3-visual__conversation-column">
+          <article
+            className="shell-message-window-item phase3-visual__message phase3-visual__trace"
+            data-role="assistant"
+            aria-label="执行过程信息层级示例"
+          >
+            <div className="phase3-visual__avatar" aria-hidden="true">
+              <Bot size={13} />
+            </div>
+            <div className="phase3-visual__trace-content">
+              <strong>SYNC-THINK</strong>
+              <InlineProcessFlow
+                items={INLINE_PROCESS_HIERARCHY_ITEMS}
+                runId="phase3-inline-process-hierarchy"
+                startedAt="2026-08-22T10:00:00.000Z"
+                completedAt="2026-08-22T10:00:06.000Z"
+                defaultOpen
+              />
+              <p data-testid="inline-process-fixture-final">
+                最终结论保留在执行面板之外，作为本轮完整回复呈现。
+              </p>
+            </div>
+          </article>
+        </div>
       </div>
     </FixtureFrame>
   );
@@ -921,5 +1010,6 @@ export function Phase3VisualFixture({ visualCase }: { visualCase: Phase3VisualCa
   if (visualCase === 'composer-context') return <ComposerContextFixture />;
   if (visualCase === 'workspace-file') return <WorkspaceFileFixture />;
   if (visualCase === 'execution-auto-disclosure') return <ExecutionAutoDisclosureFixture />;
+  if (visualCase === 'inline-process-hierarchy') return <InlineProcessHierarchyFixture />;
   return <TraceFixture open={visualCase === 'long-trace-open'} />;
 }

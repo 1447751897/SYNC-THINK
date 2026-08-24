@@ -134,7 +134,9 @@ export function projectConversationUsageMetrics(input: {
     current.tokensOut = Math.max(current.tokensOut, tokensOut);
     if (totalTokens !== undefined) {
       current.totalTokens =
-        current.totalTokens === undefined ? totalTokens : Math.max(current.totalTokens, totalTokens);
+        current.totalTokens === undefined
+          ? totalTokens
+          : Math.max(current.totalTokens, totalTokens);
     }
     usageByRequest.set(requestId, current);
     usageRequestSequence.set(
@@ -143,8 +145,8 @@ export function projectConversationUsageMetrics(input: {
     );
   }
 
-  // Context watermark: tokens consumed by the LAST request in scope (honest
-  // occupancy) vs the billing cumulative summed below.
+  // Context watermark: input tokens sent by the LAST request in scope. Keep
+  // output separate so a shorter response cannot make context appear smaller.
   let contextWatermarkTokens: number | undefined;
   let lastRequestId: string | undefined;
   let lastRequestSequence = -1;
@@ -156,7 +158,7 @@ export function projectConversationUsageMetrics(input: {
   }
   if (lastRequestId !== undefined) {
     const last = usageByRequest.get(lastRequestId);
-    if (last) contextWatermarkTokens = last.tokensIn + last.tokensOut;
+    if (last) contextWatermarkTokens = last.tokensIn;
   }
 
   let tokensIn = 0;

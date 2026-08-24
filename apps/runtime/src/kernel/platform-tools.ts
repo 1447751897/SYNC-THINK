@@ -12,6 +12,12 @@
 import { readFile, readdir, writeFile, stat } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { PlatformMcpToolDefinition } from './mcp-broker.js';
+import { DESCRIBE_IMAGE_INPUT_SCHEMA, DESCRIBE_IMAGE_TOOL_NAME } from '../describe-image-tool.js';
+import {
+  WINDOWS_OCR_INPUT_SCHEMA,
+  WINDOWS_OCR_TOOL_DESCRIPTION,
+  WINDOWS_OCR_TOOL_NAME,
+} from '../windows-ocr.js';
 import {
   CHAT_AGENT_TOOL_SCHEMAS,
   CHAT_BROWSER_TOOL_SCHEMAS,
@@ -135,16 +141,28 @@ export const PLATFORM_MCP_TOOL_DEFINITIONS: readonly PlatformMcpToolDefinition[]
             additionalProperties: false,
             required: ['id', 'question'],
             properties: {
-              id: { type: 'string', description: 'Stable id for this question; echoed in the answer.' },
+              id: {
+                type: 'string',
+                description: 'Stable id for this question; echoed in the answer.',
+              },
               question: { type: 'string', description: 'The specific question to ask the user.' },
-              header: { type: 'string', description: 'Optional short heading, e.g. "Confirm" or "Choose Mode".' },
+              header: {
+                type: 'string',
+                description: 'Optional short heading, e.g. "Confirm" or "Choose Mode".',
+              },
               detail: { type: 'string', description: 'Optional Markdown detail / full plan text.' },
               intent: {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  kind: { type: 'string', description: "'plan-review' renders the plan review card." },
-                  approve: { type: 'string', description: 'plan-review: the approve option label.' },
+                  kind: {
+                    type: 'string',
+                    description: "'plan-review' renders the plan review card.",
+                  },
+                  approve: {
+                    type: 'string',
+                    description: 'plan-review: the approve option label.',
+                  },
                 },
               },
               options: {
@@ -155,11 +173,17 @@ export const PLATFORM_MCP_TOOL_DEFINITIONS: readonly PlatformMcpToolDefinition[]
                   required: ['label'],
                   properties: {
                     label: { type: 'string', description: 'Short user-facing option label.' },
-                    description: { type: 'string', description: 'One sentence explaining the tradeoff or impact.' },
+                    description: {
+                      type: 'string',
+                      description: 'One sentence explaining the tradeoff or impact.',
+                    },
                   },
                 },
               },
-              multi_select: { type: 'boolean', description: 'Whether the user may select more than one option. Defaults to false.' },
+              multi_select: {
+                type: 'boolean',
+                description: 'Whether the user may select more than one option. Defaults to false.',
+              },
             },
           },
         },
@@ -250,7 +274,10 @@ export const PLATFORM_MCP_TOOL_DEFINITIONS: readonly PlatformMcpToolDefinition[]
       properties: {
         action: { type: 'string', enum: ['create', 'list', 'cancel'] },
         name: { type: 'string', description: 'Task name (create).' },
-        instruction: { type: 'string', description: 'Instruction injected to the task conversation when it fires (create).' },
+        instruction: {
+          type: 'string',
+          description: 'Instruction injected to the task conversation when it fires (create).',
+        },
         target: {
           type: 'object',
           additionalProperties: false,
@@ -313,6 +340,25 @@ export function isPlatformFileToolName(name: string): boolean {
 }
 
 /**
+ * Host platform tools that every channel must EXECUTE through the runtime's
+ * unified handler (`handlePlatformMcpToolCall`): the native tool loop routes
+ * these names there, exactly like the external-kernel MCP path
+ * (claude-code / codex / pi). Ask questions, submit plans, manage goals and
+ * scheduled tasks use the same implementation on every kernel.
+ */
+export const CHAT_PLATFORM_HOST_TOOL_NAMES: ReadonlySet<string> = new Set([
+  'platform_context',
+  'ask_user_question',
+  'plan_submit',
+  'task_schedule',
+  'goal_manage',
+  'task_list',
+  'agent_list',
+  DESCRIBE_IMAGE_TOOL_NAME,
+  WINDOWS_OCR_TOOL_NAME,
+]);
+
+/**
  * Tools that are NOT allowed during「规划模式」(planning mode). Planning runs
  * analyse read-only and submit an approvable plan; any write, command, browser
  * interaction or resource mutation is hard-blocked in the host executor — this
@@ -364,11 +410,34 @@ export function isPlanningDeniedTool(name: string): boolean {
  * （file_read 等）——native 有等价的内置文件工具（read_file 等），避免
  * 同一能力双名暴露；task_list/agent_list 等重名由 extraTools 去重吸收。
  */
-export function nativePlatformToolSchemas(options: {
-  planningMode?: boolean;
-} = {}): import('@sync-think/adapters').ProviderToolSchema[] {
+export function nativePlatformToolSchemas(
+  options: {
+    planningMode?: boolean;
+    /** 设置 > 模型 > 图片识别 Fallback 开关：把 describe_image 并入 native 目录。 */
+    visionFallbackEnabled?: boolean;
+  } = {},
+): import('@sync-think/adapters').ProviderToolSchema[] {
   const definitions = buildPlatformMcpToolDefinitions({ planningMode: options.planningMode });
-  return definitions
+  const extra = [
+    {
+      name: WINDOWS_OCR_TOOL_NAME,
+      description: WINDOWS_OCR_TOOL_DESCRIPTION,
+      inputSchema: WINDOWS_OCR_INPUT_SCHEMA,
+    },
+    ...(options.visionFallbackEnabled
+      ? [
+          {
+            name: DESCRIBE_IMAGE_TOOL_NAME,
+            description:
+              '用视觉模型理解工作区中的一张图片（PNG / JPEG / GIF / WebP）。' +
+              '传入工作区内的图片路径；宿主会调用你配置的视觉模型描述图片并返回文字结果。' +
+              '仅当图片识别 Fallback 已启用时可用。',
+            inputSchema: DESCRIBE_IMAGE_INPUT_SCHEMA,
+          },
+        ]
+      : []),
+  ];
+  return [...definitions, ...extra]
     .filter((definition) => !PLATFORM_FILE_TOOL_NAMES.has(definition.name))
     .map((definition) => ({
       name: definition.name,

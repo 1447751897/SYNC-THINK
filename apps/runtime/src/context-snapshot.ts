@@ -13,7 +13,13 @@ export interface ContextSnapshotSection {
 
 export interface ContextSnapshotStatus {
   modelId: string;
+  /** Internal cache discriminator; omitted from the public protocol response. */
+  kernelId?: string;
   contextWindow: number;
+  modelContextWindow: number;
+  contextWindowOverride?: number;
+  contextWindowSource: 'model-default' | 'conversation-override' | 'kernel-limit';
+  kernelContextWindowLimit?: number;
   /** True when the model record has no configured window and 128k was assumed. */
   contextWindowEstimated?: boolean;
   estimatedUsedTokens: number;
@@ -46,7 +52,12 @@ export interface ContextSnapshot {
 
 export interface BuildContextSnapshotInput {
   modelId: string;
+  kernelId?: string;
   contextWindow: number;
+  modelContextWindow?: number;
+  contextWindowOverride?: number;
+  contextWindowSource?: 'model-default' | 'conversation-override' | 'kernel-limit';
+  kernelContextWindowLimit?: number;
   contextWindowEstimated?: boolean;
   systemInstructions: readonly string[];
   agentInstructions: readonly string[];
@@ -122,14 +133,17 @@ function sectionText(title: string, values: readonly string[]): string | undefin
 }
 
 /**
- * System-instruction telling the model to think, comment, and answer in the
- * same language as the user's latest message (中文 ↔ English follow-through).
- * Injected by the chat context snapshot (native kernel) into every request.
+ * Stable language policy shared by native and external kernels. The UI exposes
+ * provider reasoning/commentary directly, so the policy must describe those
+ * sections explicitly instead of relying on the model's language heuristic.
  */
-export const LANGUAGE_FOLLOW_PROMPT =
-  "Always think, comment, and answer in the same language as the user's latest message: " +
-  'if the user writes in Chinese, think and reply in Chinese; if in English, think and reply in English. ' +
-  '始终使用用户最新消息的语言进行思考、说明和回复：用户用中文就用中文，用英文就用英文。';
+export const LANGUAGE_FOLLOW_PROMPT = [
+  '## Language Rules',
+  'This is the Chinese-language SYNC-THINK workspace. Perform reasoning in Simplified Chinese when the provider exposes it, and write all visible thinking/reasoning, progress commentary, and natural-language answers in Simplified Chinese by default.',
+  'Do not switch to English because the user message, tool output, code, technical term, or file content contains English. Keep code, commands, API names, file paths, identifiers, and proper nouns in their original form.',
+  '这是中文工作区：模型暴露出来的思考/推理、过程说明和自然语言回答默认必须使用简体中文。即使用户消息、工具输出或技术内容含有英文，也不得因此切换为英文；代码、命令、API 名、文件路径、标识符和专有名词保留原文。',
+  'If the user explicitly requests an English response, use English for that requested final response, but keep visible reasoning and tool commentary in Simplified Chinese unless the user explicitly asks those sections to be English too.',
+].join('\n');
 
 function sourceIncludedInRequest(
   source: ContextSnapshotSource,
@@ -219,7 +233,19 @@ export class ContextSnapshotBuilder {
       },
       status: {
         modelId: input.modelId,
+        ...(input.kernelId ? { kernelId: input.kernelId } : {}),
         contextWindow,
+        modelContextWindow: Math.max(
+          1,
+          Math.round(input.modelContextWindow ?? input.contextWindow),
+        ),
+        ...(input.contextWindowOverride !== undefined
+          ? { contextWindowOverride: input.contextWindowOverride }
+          : {}),
+        contextWindowSource: input.contextWindowSource ?? 'model-default',
+        ...(input.kernelContextWindowLimit !== undefined
+          ? { kernelContextWindowLimit: input.kernelContextWindowLimit }
+          : {}),
         ...(input.contextWindowEstimated === true ? { contextWindowEstimated: true } : {}),
         estimatedUsedTokens,
         usageRatio: estimatedUsedTokens / contextWindow,

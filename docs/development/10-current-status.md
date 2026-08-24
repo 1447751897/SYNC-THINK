@@ -1,4 +1,27 @@
-﻿## 当前状态：2026-08-24 · Desktop 可用性与 Daemon 自启动修复完成
+﻿## 当前状态：2026-08-24 · NewMax 与 Runtime 增强已合并并冷重启
+
+### 合并结果
+
+- 当前工作分支为 `codex/integrate-local-newmax`，基于远程最新 `origin/feature/inline-process-ui@8073d3c`，已完整合入原本基于 `e8f762b` 的本地功能快照。
+- 远程 NewMax 的主题、工作区标签、右侧/底部工作台、模型设置结构、活动中心和 daemon 自启均保留。
+- 本地的失效模型恢复、外部内核 fallback、图片 Composer、视觉模型 Fallback、Windows OCR、平台 MCP Server、过程时间线、上下文状态与用量统计均保留。
+- 7 个文本冲突已全部解决。视觉和几何采用远程实现，行为能力采用双方并集；Shell token 以 JSON 单一来源重新生成 CSS，不保留手工分叉。
+
+### 当前验证
+
+- Desktop `171 files / 1387 tests`、Runtime `150 files / 1133 tests` 全绿；typecheck `20/20`、lint `11/11`（0 error）、token 检查与空白差异检查通过。
+- 强制全量构建 `11/11`，缓存命中为 0。构建产物 SHA-256：Renderer JS `A527B302...34DBE1`、Shell CSS `89DF43B0...92E8F`、Runtime `465DF2C8...63BE3F`。
+- 旧进程已全部停止，新实例为 Electron PID `31004`、daemon PID `35656 / 18524`、Runtime PID `51012`；启动时间均晚于本次全量构建。
+- Runtime pipe 健康检查为 `ok=true`、protocol v2、`inFlightRuns=0`，并返回 `PIPE_SMOKE_OK`；启动 stderr 为空。
+- 实窗已打开模型设置验证：NewMax 布局与真实 Provider 数据正常，图片识别 Fallback、规划/执行模型、模型配置云同步均可见，主界面和弹窗无明显重叠或横向溢出。
+
+### 运行与交付状态
+
+- 当前最新构建正在运行；日志位于 `.data/local-restart-20260824-201649-integrated-final/`。
+- 两份合并前 stash 仍保留用于回滚；本地 `scripts/tmp-*.mjs` 调试脚本保持未跟踪，不进入集成提交。
+- 集成提交完成后仍只存在本地分支，尚未推送远程。
+
+## 当前状态：2026-08-24 · Desktop 可用性与 Daemon 自启动修复完成
 
 ### NewMax 视觉对齐
 

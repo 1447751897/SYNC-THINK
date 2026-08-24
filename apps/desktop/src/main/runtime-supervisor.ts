@@ -689,6 +689,7 @@ let daemonAutostartDefaultPromise: Promise<{
 let daemonSpawnedAt = 0;
 const DAEMON_SPAWN_DEBOUNCE_MS = 10_000;
 const DAEMON_RESTART_MAX_ATTEMPTS = 3;
+export const DAEMON_COLD_START_TIMEOUT_MS = 120_000;
 
 interface DaemonEnsureResult {
   ready: boolean;
@@ -788,7 +789,10 @@ function clearDaemonPid(installId: string): void {
   }
 }
 
-async function waitForDaemonPipe(installId: string, totalMs = 12_000): Promise<boolean> {
+async function waitForDaemonPipe(
+  installId: string,
+  totalMs = DAEMON_COLD_START_TIMEOUT_MS,
+): Promise<boolean> {
   const started = Date.now();
   while (Date.now() - started < totalMs) {
     if (await probeDaemonPipe(installId, 500)) return true;
@@ -832,11 +836,34 @@ async function waitForPidExit(pid: number, totalMs: number): Promise<boolean> {
 }
 
 /**
+ * Serialize daemon ensure operations per process: the probe → clean → spawn
+ * sequence must not overlap. Without this, two concurrent callers (e.g. two
+ * IPC paths racing on cold start) both see "pipe down", both pass the
+ * `daemonStarting` gate before either sets it, and each spawns its own daemon
+ * — two daemons then fight over the database migration lock and the runtime
+ * repeatedly dies with "migration lock not acquired".
+ */
+let daemonEnsureChain: Promise<unknown> = Promise.resolve();
+
+/**
  * 桌面启动时兜底拉起守护进程（T3）：探测 daemon 管道——不在运行 →
  * spawn daemon 进程（登录自启之外的第二重保证）。已注册自启时也兜底
  * （自启可能在下次登录才生效）。
  */
 async function ensureDaemonProcessInternal(
+  identity: Pick<DesktopRuntimeIdentity, 'installId' | 'pipeSecret' | 'allowNoToken'>,
+  options: { bypassSpawnDebounce?: boolean } = {},
+): Promise<DaemonEnsureResult> {
+  const run = (): Promise<DaemonEnsureResult> => ensureDaemonProcessOnce(identity, options);
+  const next = daemonEnsureChain.then(run, run);
+  daemonEnsureChain = next.then(
+    () => undefined,
+    () => undefined,
+  );
+  return next;
+}
+
+async function ensureDaemonProcessOnce(
   identity: Pick<DesktopRuntimeIdentity, 'installId' | 'pipeSecret' | 'allowNoToken'>,
   options: { bypassSpawnDebounce?: boolean } = {},
 ): Promise<DaemonEnsureResult> {
@@ -854,7 +881,7 @@ async function ensureDaemonProcessInternal(
   const stalePid = readDaemonPid(installId);
   if (stalePid && stalePid !== process.pid && (!daemonChild || daemonChild.pid !== stalePid)) {
     if (isProcessAlive(stalePid)) {
-      const existingReady = await waitForDaemonPipe(installId, 3_000);
+      const existingReady = await waitForDaemonPipe(installId, DAEMON_COLD_START_TIMEOUT_MS);
       if (existingReady) {
         daemonRestartAttempts = 0;
         return { ready: true, spawned: false };
@@ -956,10 +983,20 @@ async function ensureDaemonProcessWithOptions(
 ): Promise<DaemonEnsureResult> {
   if (daemonEnsureLock) return daemonEnsureLock;
   const operation = ensureDaemonProcessInternal(identity, options);
-  daemonEnsureLock = operation.finally(() => {
-    daemonEnsureLock = null;
+  daemonEnsureLock = operation.then((result) => {
+    // Hold the lock until the daemon is actually reachable. If the spawn
+    // timed out (pipe still down), a follow-up call must NOT spawn a second
+    // daemon while the first is still opening its pipe — that race produced
+    // two daemons fighting over the database migration lock. The lock stays
+    // held for one short retry window; callers that come in during it simply
+    // wait for the same operation.
+    return result;
   });
-  return daemonEnsureLock;
+  try {
+    return await daemonEnsureLock;
+  } finally {
+    daemonEnsureLock = null;
+  }
 }
 
 export function ensureDaemonProcess(

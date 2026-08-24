@@ -2,25 +2,30 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+// ESM entry (desktop "type": "module") — provide the CommonJS-style location.
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 export function resolveChatImageStagingDir(
   env: NodeJS.ProcessEnv = process.env,
   homeDirectory: string = homedir(),
 ): string {
-  if (env.SYNC_THINK_CHAT_IMAGE_STAGING) return env.SYNC_THINK_CHAT_IMAGE_STAGING;
-  // Prefer monorepo .data when available (dev machines often fill C:).
-  const candidates = [
-    join(process.cwd(), '.data', 'SYNC-THINK', 'chat-image-staging'),
-    join(process.cwd(), '..', '.data', 'SYNC-THINK', 'chat-image-staging'),
-    join(process.cwd(), '..', '..', '.data', 'SYNC-THINK', 'chat-image-staging'),
-  ];
-  for (const candidate of candidates) {
-    const root = dirname(dirname(candidate)); // .../.data
-    if (existsSync(root) || existsSync(join(dirname(root), 'apps'))) {
-      return candidate;
-    }
+  if (env.SYNC_THINK_CHAT_IMAGE_STAGING) return resolve(env.SYNC_THINK_CHAT_IMAGE_STAGING);
+  // MUST stay in sync with runtime-supervisor.defaultDataRoot(): the Runtime
+  // reads SYNC_THINK_CHAT_IMAGE_STAGING (join(dataRoot, 'chat-image-staging'))
+  // and rejects staged paths outside that root — writing to a different
+  // cwd-derived folder silently loses every attachment (imagesMode=failed).
+  // __dirname = apps/desktop/dist/main → repo root is ../../../..
+  const repoRoot = resolve(join(__dirname, '..', '..', '..', '..'));
+  const repoData = join(repoRoot, '.data', 'SYNC-THINK');
+  if (existsSync(dirname(repoData)) || existsSync(join(repoRoot, 'apps'))) {
+    return join(repoData, 'chat-image-staging');
   }
+  // cwd-derived fallback (standalone/dev launches without the repo layout).
+  const cwdData = join(process.cwd(), '.data', 'SYNC-THINK');
+  if (existsSync(dirname(cwdData))) return join(cwdData, 'chat-image-staging');
   const dataRoot = env.LOCALAPPDATA ?? join(homeDirectory, '.sync-think');
   return join(dataRoot, 'SYNC-THINK', 'chat-image-staging');
 }

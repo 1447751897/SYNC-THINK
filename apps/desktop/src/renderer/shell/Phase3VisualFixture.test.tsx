@@ -2,7 +2,7 @@
  * @vitest-environment jsdom
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import {
   PHASE3_VISUAL_CASES,
   Phase3VisualFixture,
@@ -45,7 +45,21 @@ describe('Phase3VisualFixture routing', () => {
     expect(resolvePhase3VisualCase('?phase3-visual=execution-auto-disclosure')).toBe(
       'execution-auto-disclosure',
     );
-    expect(PHASE3_VISUAL_CASES).toHaveLength(9);
+    expect(resolvePhase3VisualCase('?phase3-visual=inline-process-hierarchy')).toBe(
+      'inline-process-hierarchy',
+    );
+    expect(PHASE3_VISUAL_CASES).toHaveLength(10);
+  });
+
+  it('renders the current unnumbered process hierarchy with the final answer outside', () => {
+    render(<Phase3VisualFixture visualCase="inline-process-hierarchy" />);
+
+    const panel = screen.getByTestId('process-panel');
+    expect(within(panel).getByText(/我先核对/)).toBeTruthy();
+    expect(within(panel).getAllByTestId('inline-process-tool')).toHaveLength(2);
+    expect(within(panel).queryByTestId('process-entry-index')).toBeNull();
+    expect(within(panel).queryByTestId('inline-process-fixture-final')).toBeNull();
+    expect(screen.getByTestId('inline-process-fixture-final')).toBeTruthy();
   });
 });
 

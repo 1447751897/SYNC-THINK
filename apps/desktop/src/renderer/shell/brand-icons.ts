@@ -43,7 +43,7 @@ import zaiLogo from './assets/brands/zai.svg';
 import zhipuLogo from './assets/brands/zhipu-color.svg';
 
 export interface BrandLogo {
-  /** Inlined data URL of the vendored SVG. */
+  /** Inlined data URL of the vendored brand asset. */
   src: string;
   /** true when the asset uses `currentColor` and must be tinted via CSS mask. */
   mono: boolean;
@@ -90,15 +90,25 @@ export const PROVIDER_BRAND_LOGOS: Readonly<Record<string, BrandLogo>> = {
 
 /**
  * Kernel `icon` asset key → the kernel's own brand mark. Each kernel shows its
- * own product logo (Claude Code → Claude Code, Codex → ChatGPT), not the parent
- * company's; `native` has no third-party brand and keeps a lucide glyph.
+ * user-facing product logo. Internal kernel ids remain unchanged.
  */
 export const KERNEL_BRAND_LOGOS: Readonly<Record<string, BrandLogo>> = {
-  native: logo(syncThinkLogo, 'Sync-Think', false),
-  'claude-code': logo(claudeCodeLogo, 'Claude Code', false),
-  codex: logo(chatgptLogo, 'ChatGPT', false),
+  native: logo(syncThinkLogo, 'Sync-Think', true),
+  'claude-code': logo(claudeCodeLogo, 'ClaudeCode', false),
+  codex: logo(chatgptLogo, 'GPT', true),
   pi: logo(piLogo, 'Pi', true),
 };
+
+const KERNEL_DISPLAY_NAMES: Readonly<Record<string, string>> = {
+  native: 'Sync-Think',
+  'claude-code': 'ClaudeCode',
+  codex: 'GPT',
+  pi: 'Pi',
+};
+
+export function resolveKernelDisplayName(kernelId: string, fallback?: string): string {
+  return KERNEL_DISPLAY_NAMES[kernelId] ?? fallback ?? kernelId;
+}
 
 export function resolveProviderBrandLogo(providerId: string): BrandLogo | undefined {
   return PROVIDER_BRAND_LOGOS[providerId];

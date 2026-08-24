@@ -19,6 +19,7 @@ import type {
   SetConversationArchivedPayload,
   SetConversationExecutionModePayload,
   SetConversationInteractionModePayload,
+  SetConversationContextWindowOverridePayload,
   ConversationPlanSubmitPayload,
   ConversationPlanGetPayload,
   ConversationPlanApprovePayload,
@@ -302,15 +303,18 @@ export function parseConversationGetContextStatusPayload(
 ): ConversationGetContextStatusPayload {
   const label = 'Invalid get-conversation-context-status payload';
   if (!isRecord(value)) throw new Error(label);
-  const allowed = new Set(['conversationId', 'modelId']);
+  const allowed = new Set(['conversationId', 'modelId', 'kernelId']);
   if (Object.keys(value).some((key) => !allowed.has(key))) throw new Error(label);
   const conversationId = requiredString(value.conversationId, label);
   if (conversationId.length > 128) throw new Error(label);
   const modelId = value.modelId === undefined ? undefined : requiredString(value.modelId, label);
   if (modelId !== undefined && modelId.length > 256) throw new Error(label);
+  const kernelId = value.kernelId === undefined ? undefined : requiredString(value.kernelId, label);
+  if (kernelId !== undefined && kernelId.length > 64) throw new Error(label);
   return {
     conversationId: conversationId as ConversationGetContextStatusPayload['conversationId'],
     ...(modelId ? { modelId } : {}),
+    ...(kernelId ? { kernelId } : {}),
   };
 }
 
@@ -441,6 +445,30 @@ export function parseSetConversationInteractionModePayload(
       label,
     ) as SetConversationInteractionModePayload['conversationId'],
     interactionMode: mode,
+  };
+}
+
+export function parseSetConversationContextWindowOverridePayload(
+  value: unknown,
+): SetConversationContextWindowOverridePayload {
+  const label = 'Invalid set-conversation-context-window-override payload';
+  if (!isRecord(value)) throw new Error(label);
+  const allowed = new Set(['conversationId', 'contextWindowOverride']);
+  if (Object.keys(value).some((key) => !allowed.has(key))) throw new Error(label);
+  const conversationId = requiredString(value.conversationId, label);
+  if (conversationId.length > 128) throw new Error(label);
+  const contextWindowOverride = value.contextWindowOverride;
+  if (
+    contextWindowOverride !== null &&
+    (!Number.isSafeInteger(contextWindowOverride) ||
+      (contextWindowOverride as number) < 1_024 ||
+      (contextWindowOverride as number) > 10_000_000)
+  ) {
+    throw new Error(label);
+  }
+  return {
+    conversationId: conversationId as SetConversationContextWindowOverridePayload['conversationId'],
+    contextWindowOverride: contextWindowOverride as number | null,
   };
 }
 

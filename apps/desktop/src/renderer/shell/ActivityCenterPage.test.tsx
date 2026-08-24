@@ -72,6 +72,18 @@ describe('ActivityCenterPage', () => {
     expect(screen.getByTestId('activity-filter-all').textContent).toContain('2');
   });
 
+  it('uses user-facing kernel names without changing stored kernel ids', async () => {
+    runtime.activityListRuns.mockResolvedValue({
+      entries: [run({ runId: 'run-gpt', title: 'GPT Run', kernelId: 'codex' })],
+      counts: { ...EMPTY_COUNTS, completed: 1 },
+    });
+
+    render(<ActivityCenterPage />);
+
+    expect(await screen.findByText('GPT')).toBeTruthy();
+    expect(screen.queryByText('codex')).toBeNull();
+  });
+
   it('sends the picked state to the Runtime instead of filtering locally', async () => {
     render(<ActivityCenterPage />);
     await screen.findByText('第一个 Run');

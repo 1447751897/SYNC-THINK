@@ -13,7 +13,9 @@ import {
   Lock,
   LoaderCircle,
   MessageSquare,
+  Pencil,
   Puzzle,
+  RotateCcw,
   Shield,
   Sparkles,
   Users,
@@ -24,7 +26,7 @@ import type { ContextStatusSection, ContextStatusSectionType } from '@sync-think
 import type { KernelDetectionResult } from '@sync-think/shared';
 import { AgentAvatarView } from './AgentAvatarView.js';
 import { BrandLogoMark } from './BrandLogoMark.js';
-import { resolveKernelBrandLogo } from './brand-icons.js';
+import { resolveKernelBrandLogo, resolveKernelDisplayName } from './brand-icons.js';
 import type { ModelOption } from './NewConversationDialog.js';
 
 export type PermissionMode = 'ask' | 'workspace' | 'full-access';
@@ -665,10 +667,8 @@ export type KernelInstallState =
   | { status: 'error'; error: string };
 
 /**
- * Kernel badge in the model picker: real brand logo when the kernel maps to a
- * third-party product, and a lucide glyph for the built-in `native` kernel
- * (which has no upstream brand mark). The visible label is dropped, so the
- * accessible name comes from aria-label / the logo's own label.
+ * Compact transparent kernel mark used by the picker and the compose chip.
+ * The fixed box normalises optical size without adding a tile or border.
  */
 function KernelBadge({ iconKey, name }: { iconKey: string; name: string }) {
   const brandLogo = resolveKernelBrandLogo(iconKey);
@@ -680,7 +680,7 @@ function KernelBadge({ iconKey, name }: { iconKey: string; name: string }) {
       aria-label={brandLogo ? undefined : name}
       role={brandLogo ? undefined : 'img'}
     >
-      {brandLogo ? <BrandLogoMark logo={brandLogo} size={14} /> : <Sparkles size={13} />}
+      {brandLogo ? <BrandLogoMark logo={brandLogo} size={22} /> : <Sparkles size={18} />}
     </span>
   );
 }
@@ -782,6 +782,7 @@ export function ModelPickerMenu(props: {
               <>
                 <div className="shell-menu__group-label">内核</div>
                 {props.kernels.map((kernel) => {
+                  const displayName = resolveKernelDisplayName(kernel.kernelId, kernel.name);
                   const active = kernel.kernelId === props.selectedKernelId;
                   const installState = props.kernelInstallStates?.[kernel.kernelId];
                   const installPending =
@@ -834,10 +835,10 @@ export function ModelPickerMenu(props: {
                           <Check size={14} />
                         ) : null}
                       </span>
-                      <div className="shell-menu__item-text">
-                        <div className="shell-menu__item-title">
-                          <KernelBadge iconKey={kernel.icon} name={kernel.name} />
-                          <span className="shell-menu__kernel-name">{kernel.name}</span>
+                      <div className="shell-menu__item-text shell-menu__kernel-copy">
+                        <div className="shell-menu__item-title shell-menu__kernel-title">
+                          <KernelBadge iconKey={kernel.icon} name={displayName} />
+                          <span className="shell-menu__kernel-name">{displayName}</span>
                         </div>
                         <div
                           className={`shell-menu__item-hint ${
@@ -1031,6 +1032,12 @@ export function ContextRing(props: {
   used: number;
   /** Context window limit for the ring. */
   limit: number;
+  /** Selected model capacity before applying a conversation override or kernel cap. */
+  modelContextWindow?: number;
+  /** Persisted per-conversation capacity, when configured. */
+  contextWindowOverride?: number;
+  /** Saves an override; null restores the selected model's default. */
+  onContextWindowChange?(value: number | null): Promise<void> | void;
   /** True when the runtime fell back to 128k because the model has no window metadata. */
   contextWindowEstimated?: boolean;
   /**
@@ -1062,6 +1069,10 @@ export function ContextRing(props: {
 }) {
   const [open, setOpen] = useState(false);
   const [anchor, setAnchor] = useState<FloatingAnchorRect | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [draftCapacity, setDraftCapacity] = useState('');
+  const [capacitySaving, setCapacitySaving] = useState(false);
+  const [capacityError, setCapacityError] = useState<string | null>(null);
   const btnRef = useRef<HTMLButtonElement>(null);
   const closeTimer = useRef<number | null>(null);
 
@@ -1127,6 +1138,52 @@ export function ContextRing(props: {
     closeTimer.current = window.setTimeout(() => setOpen(false), 120);
   };
   useEffect(() => () => cancelClose(), []);
+  useEffect(() => {
+    if (editing) return;
+    setDraftCapacity(
+      String(props.contextWindowOverride ?? props.modelContextWindow ?? props.limit),
+    );
+  }, [editing, props.contextWindowOverride, props.limit, props.modelContextWindow]);
+
+  const beginCapacityEdit = () => {
+    cancelClose();
+    setDraftCapacity(
+      String(props.contextWindowOverride ?? props.modelContextWindow ?? props.limit),
+    );
+    setCapacityError(null);
+    setEditing(true);
+  };
+  const saveCapacity = async () => {
+    const value = Number(draftCapacity);
+    if (!Number.isSafeInteger(value) || value < 1_024 || value > 10_000_000) {
+      setCapacityError('请输入 1,024 到 10,000,000 之间的整数');
+      return;
+    }
+    if (!props.onContextWindowChange) return;
+    setCapacitySaving(true);
+    setCapacityError(null);
+    try {
+      await props.onContextWindowChange(value);
+      setEditing(false);
+    } catch (error) {
+      setCapacityError(error instanceof Error ? error.message : '保存失败');
+    } finally {
+      setCapacitySaving(false);
+    }
+  };
+  const restoreModelCapacity = async () => {
+    if (!props.onContextWindowChange) return;
+    setCapacitySaving(true);
+    setCapacityError(null);
+    try {
+      await props.onContextWindowChange(null);
+      setEditing(false);
+    } catch (error) {
+      setCapacityError(error instanceof Error ? error.message : '恢复失败');
+    } finally {
+      setCapacitySaving(false);
+    }
+  };
 
   let tipStyle: React.CSSProperties | undefined;
   if (open && anchor && typeof window !== 'undefined') {
@@ -1266,6 +1323,111 @@ export function ContextRing(props: {
                   ) : null}
                 </strong>
               </div>
+              {props.modelContextWindow !== undefined ? (
+                <div className="shell-ctx-tooltip__row">
+                  <span>模型默认</span>
+                  <strong
+                    data-testid="context-model-default"
+                    title={exactTokenTitle(props.modelContextWindow)}
+                  >
+                    {formatTokenCount(props.modelContextWindow)}
+                  </strong>
+                </div>
+              ) : null}
+              {props.contextWindowOverride !== undefined ? (
+                <div className="shell-ctx-tooltip__row">
+                  <span>会话设置</span>
+                  <strong title={exactTokenTitle(props.contextWindowOverride)}>
+                    {formatTokenCount(props.contextWindowOverride)}
+                  </strong>
+                </div>
+              ) : null}
+              {props.onContextWindowChange ? (
+                editing ? (
+                  <form
+                    className="shell-ctx-tooltip__capacity-form"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      void saveCapacity();
+                    }}
+                  >
+                    <label htmlFor="conversation-context-capacity">会话上下文容量</label>
+                    <div className="shell-ctx-tooltip__capacity-controls">
+                      <input
+                        id="conversation-context-capacity"
+                        aria-label="会话上下文容量"
+                        type="number"
+                        min={1_024}
+                        max={10_000_000}
+                        step={1}
+                        value={draftCapacity}
+                        disabled={capacitySaving}
+                        onChange={(event) => setDraftCapacity(event.target.value)}
+                      />
+                      <button
+                        type="submit"
+                        aria-label="保存会话容量"
+                        title="保存"
+                        disabled={capacitySaving}
+                      >
+                        {capacitySaving ? (
+                          <LoaderCircle size={14} className="shell-menu__kernel-spinner" />
+                        ) : (
+                          <Check size={14} />
+                        )}
+                      </button>
+                      <button
+                        type="button"
+                        aria-label="取消编辑会话容量"
+                        title="取消"
+                        disabled={capacitySaving}
+                        onClick={() => {
+                          setEditing(false);
+                          setCapacityError(null);
+                        }}
+                      >
+                        <X size={14} />
+                      </button>
+                    </div>
+                    {capacityError ? (
+                      <div className="shell-ctx-tooltip__capacity-error" role="alert">
+                        {capacityError}
+                      </div>
+                    ) : null}
+                  </form>
+                ) : (
+                  <div className="shell-ctx-tooltip__capacity-actions">
+                    <button
+                      type="button"
+                      aria-label="编辑会话容量"
+                      title="编辑会话容量"
+                      onClick={beginCapacityEdit}
+                    >
+                      <Pencil size={14} />
+                    </button>
+                    {props.contextWindowOverride !== undefined ? (
+                      <button
+                        type="button"
+                        aria-label="恢复模型默认容量"
+                        title="恢复模型默认容量"
+                        disabled={capacitySaving}
+                        onClick={() => void restoreModelCapacity()}
+                      >
+                        {capacitySaving ? (
+                          <LoaderCircle size={14} className="shell-menu__kernel-spinner" />
+                        ) : (
+                          <RotateCcw size={14} />
+                        )}
+                      </button>
+                    ) : null}
+                    {capacityError ? (
+                      <div className="shell-ctx-tooltip__capacity-error" role="alert">
+                        {capacityError}
+                      </div>
+                    ) : null}
+                  </div>
+                )
+              ) : null}
               <div className="shell-ctx-tooltip__row">
                 <span>窗口剩余</span>
                 <strong title={exactTokenTitle(remaining)}>{remainingLabel}</strong>
@@ -1296,7 +1458,8 @@ export function ContextRing(props: {
               </div>
               {props.kernelSelfManaged ? (
                 <div className="shell-ctx-tooltip__hint" data-testid="context-kernel-self-managed">
-                  当前占用来自外部内核（Claude Code / Codex）上报的最后一次请求水位；内核历史由内核自管，宿主不可见明细。
+                  当前占用来自外部内核（Claude Code /
+                  Codex）上报的最后一次请求水位；内核历史由内核自管，宿主不可见明细。
                 </div>
               ) : (
                 <div className="shell-ctx-tooltip__hint">
@@ -1357,7 +1520,8 @@ export function ContextRing(props: {
                 </div>
               ) : null}
               <div className="shell-ctx-tooltip__hint">
-                会话累计 = 全部轮次输入与输出的总和，可大于窗口上限；与「当前窗口占用」是两个独立口径，不参与自动压缩判定。
+                会话累计 =
+                全部轮次输入与输出的总和，可大于窗口上限；与「当前窗口占用」是两个独立口径，不参与自动压缩判定。
               </div>
             </div>,
             document.body,

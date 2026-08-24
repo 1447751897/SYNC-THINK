@@ -273,6 +273,29 @@ class RepeatGuardFailProvider implements ProviderAdapter {
   }
 }
 
+class ForwardedImageFallbackProvider implements ProviderAdapter {
+  readonly protocol = 'openai-chat' as const;
+  readonly requests: ProviderCallRequest[] = [];
+
+  async discoverModels(): Promise<string[]> {
+    return ['gpt-4o-primary', 'deepseek-text', 'gpt-4.1-vision-fallback'];
+  }
+
+  async *call(request: ProviderCallRequest): AsyncIterable<AdapterEvent> {
+    this.requests.push(request);
+    if (request.modelId === 'gpt-4o-primary') {
+      yield {
+        type: 'error',
+        failureClass: 'timeout',
+        message: 'simulated vision-primary timeout',
+      };
+      return;
+    }
+    yield { type: 'text-delta', text: `ok-from:${request.modelId}` };
+    yield { type: 'finished', reason: 'stop' };
+  }
+}
+
 class PartialCommentaryFallbackProvider implements ProviderAdapter {
   readonly protocol = 'openai-chat' as const;
   readonly requests: ProviderCallRequest[] = [];
@@ -827,6 +850,297 @@ describe('runtime fallback walk on model failure (design §5.3)', () => {
       'alpha-model',
       'beta-model',
     ]);
+
+    reader.close();
+    sock.destroy();
+    await session.close();
+  }, 30_000);
+
+  it('keeps forwarded images on vision-capable fallback models and skips text candidates', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sync-think-fb-forwarded-image-'));
+    tempDirs.push(dir);
+    const dbPath = join(dir, 'sync-think.db');
+    const secureKey = join(dir, 'secure', 'key.bin');
+    const installId = `test-fb-forwarded-image-${Date.now()}-${Math.random()
+      .toString(36)
+      .slice(2)}`;
+
+    const adapter = new ForwardedImageFallbackProvider();
+    const session = await openPersistentRuntime({
+      installId,
+      dbPath,
+      secureStoreKeyPath: secureKey,
+      allowNoToken: true,
+      modelRetryBaseDelayMs: 0,
+      demoProvider: adapter,
+    });
+    await session.runtime.start();
+
+    const sock = await connectRuntime(installId);
+    const reader = createFrameReader(sock);
+    await hello(sock, reader, installId);
+
+    const created = await writeAndRead(sock, reader, {
+      id: 'provider-forwarded-image',
+      kind: 'request',
+      type: 'provider.create',
+      payload: {
+        name: 'Forwarded image fallback Gateway',
+        baseUrl: 'https://forwarded-image.example/v1',
+        protocol: 'openai-chat',
+        apiKey: 'sk-forwarded-image-key-not-real',
+        supportsDiscovery: false,
+      },
+    });
+    const providerId = (created.payload as { provider: { providerId: string } }).provider
+      .providerId;
+    const add = await writeAndRead(sock, reader, {
+      id: 'models-forwarded-image',
+      kind: 'request',
+      type: 'provider.addModels',
+      payload: {
+        providerId,
+        protocol: 'openai-chat',
+        models: [
+          {
+            providerModelId: 'gpt-4o-primary',
+            displayName: 'Vision primary',
+            capabilities: ['text', 'vision'],
+          },
+          {
+            providerModelId: 'deepseek-text',
+            displayName: 'Text fallback',
+            capabilities: ['text'],
+          },
+          {
+            providerModelId: 'gpt-4.1-vision-fallback',
+            displayName: 'Vision fallback',
+            capabilities: ['text', 'vision'],
+          },
+        ],
+      },
+    });
+    const models = (add.payload as { models: Array<{ modelId: string; providerModelId: string }> })
+      .models;
+    const primary = models.find((model) => model.providerModelId === 'gpt-4o-primary')!;
+    const textFallback = models.find((model) => model.providerModelId === 'deepseek-text')!;
+    const visionFallback = models.find(
+      (model) => model.providerModelId === 'gpt-4.1-vision-fallback',
+    )!;
+
+    await writeAndRead(sock, reader, {
+      id: 'agent-forwarded-image',
+      kind: 'request',
+      type: 'agent.updateBinding',
+      payload: {
+        defaultModelId: primary.modelId,
+        fallbackModelIds: [textFallback.modelId, visionFallback.modelId],
+        pauseOnFailure: true,
+      },
+    });
+    const workspace = await writeAndRead(sock, reader, {
+      id: 'workspace-forwarded-image',
+      kind: 'request',
+      type: 'workspace.create',
+      payload: { folderPath: join(dir, 'workspace'), name: 'Forwarded image fallback WS' },
+    });
+    const workspaceId = (workspace.payload as { workspaceId: string }).workspaceId;
+    const task = await writeAndRead(sock, reader, {
+      id: 'task-forwarded-image',
+      kind: 'request',
+      type: 'task.create',
+      payload: { workspaceId, title: 'Forwarded image fallback', goal: 'keep image-compatible' },
+    });
+    const taskPayload = task.payload as { threadId: string; taskVersion: number };
+
+    await writeAndRead(sock, reader, {
+      id: 'subscribe-forwarded-image',
+      kind: 'request',
+      type: 'runtime.subscribeEvents',
+      payload: { afterCursor: 0 },
+    });
+    const append = await writeAndRead(sock, reader, {
+      id: 'message-forwarded-image',
+      kind: 'request',
+      type: 'task.appendMessage',
+      payload: {
+        threadId: taskPayload.threadId,
+        expectedTaskVersion: taskPayload.taskVersion,
+        role: 'user',
+        text: 'inspect this image',
+        modelId: primary.modelId,
+        images: [
+          {
+            name: 'fixture.png',
+            mimeType: 'image/png',
+            dataUrl: 'data:image/png;base64,QUJDRA==',
+          },
+        ],
+      },
+    });
+    expect(append.error).toBeUndefined();
+    expect((append.payload as { imagesMode?: string }).imagesMode).toBe('forwarded');
+
+    const fallbackSelected = await reader.waitForEvent(
+      (type) => type === 'run.fallback.selected',
+      6_000,
+    );
+    const completed = await reader.waitForEvent((type) => type === 'run.completed', 8_000);
+
+    expect(eventInner(fallbackSelected!).toProviderModelId).toBe('gpt-4.1-vision-fallback');
+    expect(completed).toBeDefined();
+    expect(adapter.requests.map((request) => request.modelId)).toEqual([
+      'gpt-4o-primary',
+      'gpt-4o-primary',
+      'gpt-4o-primary',
+      'gpt-4o-primary',
+      'gpt-4o-primary',
+      'gpt-4o-primary',
+      'gpt-4.1-vision-fallback',
+    ]);
+    expect(adapter.requests.some((request) => request.modelId === 'deepseek-text')).toBe(false);
+    expect(
+      adapter.requests.every(
+        (request) =>
+          Array.isArray(request.messages[0]?.content) &&
+          request.messages[0].content.some((part) => part.type === 'image'),
+      ),
+    ).toBe(true);
+
+    reader.close();
+    sock.destroy();
+    await session.close();
+  }, 30_000);
+
+  it('pauses a forwarded-image run when only text fallback models remain', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sync-think-fb-forwarded-image-exhausted-'));
+    tempDirs.push(dir);
+    const dbPath = join(dir, 'sync-think.db');
+    const secureKey = join(dir, 'secure', 'key.bin');
+    const installId = `test-fb-forwarded-image-exhausted-${Date.now()}-${Math.random()
+      .toString(36)
+      .slice(2)}`;
+
+    const adapter = new ForwardedImageFallbackProvider();
+    const session = await openPersistentRuntime({
+      installId,
+      dbPath,
+      secureStoreKeyPath: secureKey,
+      allowNoToken: true,
+      modelRetryBaseDelayMs: 0,
+      demoProvider: adapter,
+    });
+    await session.runtime.start();
+
+    const sock = await connectRuntime(installId);
+    const reader = createFrameReader(sock);
+    await hello(sock, reader, installId);
+
+    const created = await writeAndRead(sock, reader, {
+      id: 'provider-forwarded-image-exhausted',
+      kind: 'request',
+      type: 'provider.create',
+      payload: {
+        name: 'Forwarded image exhausted Gateway',
+        baseUrl: 'https://forwarded-image-exhausted.example/v1',
+        protocol: 'openai-chat',
+        apiKey: 'sk-forwarded-image-exhausted-key-not-real',
+        supportsDiscovery: false,
+      },
+    });
+    const providerId = (created.payload as { provider: { providerId: string } }).provider
+      .providerId;
+    const add = await writeAndRead(sock, reader, {
+      id: 'models-forwarded-image-exhausted',
+      kind: 'request',
+      type: 'provider.addModels',
+      payload: {
+        providerId,
+        protocol: 'openai-chat',
+        models: [
+          {
+            providerModelId: 'gpt-4o-primary',
+            displayName: 'Vision primary',
+            capabilities: ['text', 'vision'],
+          },
+          {
+            providerModelId: 'deepseek-text',
+            displayName: 'Text fallback',
+            capabilities: ['text'],
+          },
+        ],
+      },
+    });
+    const models = (add.payload as { models: Array<{ modelId: string; providerModelId: string }> })
+      .models;
+    const primary = models.find((model) => model.providerModelId === 'gpt-4o-primary')!;
+    const textFallback = models.find((model) => model.providerModelId === 'deepseek-text')!;
+
+    await writeAndRead(sock, reader, {
+      id: 'agent-forwarded-image-exhausted',
+      kind: 'request',
+      type: 'agent.updateBinding',
+      payload: {
+        defaultModelId: primary.modelId,
+        fallbackModelIds: [textFallback.modelId],
+        pauseOnFailure: true,
+      },
+    });
+    const workspace = await writeAndRead(sock, reader, {
+      id: 'workspace-forwarded-image-exhausted',
+      kind: 'request',
+      type: 'workspace.create',
+      payload: { folderPath: join(dir, 'workspace'), name: 'Forwarded image exhausted WS' },
+    });
+    const workspaceId = (workspace.payload as { workspaceId: string }).workspaceId;
+    const task = await writeAndRead(sock, reader, {
+      id: 'task-forwarded-image-exhausted',
+      kind: 'request',
+      type: 'task.create',
+      payload: { workspaceId, title: 'Forwarded image exhausted', goal: 'pause safely' },
+    });
+    const taskPayload = task.payload as { threadId: string; taskVersion: number };
+
+    await writeAndRead(sock, reader, {
+      id: 'subscribe-forwarded-image-exhausted',
+      kind: 'request',
+      type: 'runtime.subscribeEvents',
+      payload: { afterCursor: 0 },
+    });
+    const append = await writeAndRead(sock, reader, {
+      id: 'message-forwarded-image-exhausted',
+      kind: 'request',
+      type: 'task.appendMessage',
+      payload: {
+        threadId: taskPayload.threadId,
+        expectedTaskVersion: taskPayload.taskVersion,
+        role: 'user',
+        text: 'inspect this image',
+        modelId: primary.modelId,
+        images: [
+          {
+            name: 'fixture.png',
+            mimeType: 'image/png',
+            dataUrl: 'data:image/png;base64,QUJDRA==',
+          },
+        ],
+      },
+    });
+    expect(append.error).toBeUndefined();
+    expect((append.payload as { imagesMode?: string }).imagesMode).toBe('forwarded');
+
+    const paused = await reader.waitForEvent((type) => type === 'run.paused', 8_000);
+    expect(paused).toBeDefined();
+    expect(eventInner(paused!).reason).toBe('no_fallback_configured');
+    expect(adapter.requests.map((request) => request.modelId)).toEqual([
+      'gpt-4o-primary',
+      'gpt-4o-primary',
+      'gpt-4o-primary',
+      'gpt-4o-primary',
+      'gpt-4o-primary',
+      'gpt-4o-primary',
+    ]);
+    expect(adapter.requests.some((request) => request.modelId === 'deepseek-text')).toBe(false);
 
     reader.close();
     sock.destroy();

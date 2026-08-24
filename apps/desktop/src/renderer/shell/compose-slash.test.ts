@@ -129,12 +129,10 @@ describe('resolveSystemMessageTone', () => {
   it('only marks narrow failure prefixes as error', () => {
     expect(resolveSystemMessageTone(undefined, '发送失败: boom')).toBe('error');
     expect(resolveSystemMessageTone(undefined, '上下文压缩超时：请稍后重试')).toBe('error');
-    expect(
-      resolveSystemMessageTone(undefined, '上一轮工具调用失败后已自动恢复，可继续'),
-    ).toBe('info');
-    expect(resolveSystemMessageTone(undefined, '上下文已压缩：折叠 3 条较早消息')).toBe(
+    expect(resolveSystemMessageTone(undefined, '上一轮工具调用失败后已自动恢复，可继续')).toBe(
       'info',
     );
+    expect(resolveSystemMessageTone(undefined, '上下文已压缩：折叠 3 条较早消息')).toBe('info');
   });
 });
 
@@ -146,6 +144,17 @@ describe('resolveSendModelId', () => {
         track: 'agent',
         targetRef: 'agent-1',
         catalogModelIds: ['gpt-5.6-sol'],
+      }),
+    ).toBe('gpt-5.6-sol');
+  });
+
+  it('replaces a stale override with the first currently available model', () => {
+    expect(
+      resolveSendModelId({
+        modelOverride: 'disabled-grok',
+        track: 'model',
+        targetRef: 'disabled-grok',
+        catalogModelIds: ['gpt-5.6-sol', 'gpt-5.6-terra'],
       }),
     ).toBe('gpt-5.6-sol');
   });

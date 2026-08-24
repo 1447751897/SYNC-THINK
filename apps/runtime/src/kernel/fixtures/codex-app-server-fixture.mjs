@@ -2,6 +2,7 @@ import readline from 'node:readline';
 
 let turnCount = 0;
 let threadId = 'thread-app-fixture';
+let threadPolicy;
 
 function write(message) {
   process.stdout.write(`${JSON.stringify(message)}\n`);
@@ -27,6 +28,7 @@ input.on('line', (line) => {
     return;
   }
   if (request.method === 'thread/start') {
+    threadPolicy = request.params;
     write({
       jsonrpc: '2.0',
       id: request.id,
@@ -36,6 +38,7 @@ input.on('line', (line) => {
   }
   if (request.method === 'thread/resume') {
     threadId = request.params.threadId;
+    threadPolicy = request.params;
     write({
       jsonrpc: '2.0',
       id: request.id,
@@ -109,13 +112,59 @@ input.on('line', (line) => {
       write(delta('s-1', '**验证**'));
       write(delta('s-2', '**新思考**'));
     }
+    const sawImage = request.params?.input?.some?.(
+      (item) => item?.type === 'image' && item?.url === 'data:image/png;base64,QUJDRA==',
+    );
+    const permissionFixture = request.params?.input?.some?.(
+      (item) => item?.text === 'permission fixture',
+    );
+    const progressFixture = request.params?.input?.some?.(
+      (item) => item?.text === 'progress fixture',
+    );
+    if (progressFixture) {
+      write({
+        method: 'item/started',
+        params: {
+          threadId,
+          turnId,
+          item: { id: 'cmd-progress', type: 'commandExecution', command: 'echo progress' },
+        },
+      });
+      write({
+        method: 'item/commandExecution/outputDelta',
+        params: { threadId, turnId, itemId: 'cmd-progress', delta: 'progress line 1\n' },
+      });
+      write({
+        method: 'item/completed',
+        params: {
+          threadId,
+          turnId,
+          item: {
+            id: 'cmd-progress',
+            type: 'commandExecution',
+            command: 'echo progress',
+            aggregatedOutput: 'progress line 1\n',
+            exitCode: 0,
+          },
+        },
+      });
+    }
     write({
       method: 'item/agentMessage/delta',
       params: {
         threadId,
         turnId,
         itemId: `item-${turnCount}`,
-        delta: `answer ${turnCount}`,
+        delta: permissionFixture
+          ? JSON.stringify({
+              threadApprovalPolicy: threadPolicy?.approvalPolicy,
+              threadSandboxPolicy: threadPolicy?.sandboxPolicy,
+              turnApprovalPolicy: request.params?.approvalPolicy,
+              turnSandboxPolicy: request.params?.sandboxPolicy,
+            })
+          : sawImage
+            ? 'image forwarded'
+            : `answer ${turnCount}`,
       },
     });
     if (request.params?.input?.some?.((item) => item?.text === 'hang fixture')) return;

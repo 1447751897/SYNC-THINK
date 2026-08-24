@@ -687,17 +687,18 @@ export function projectRunProcess(runId: RunId, events: readonly Event[]): RunPr
   const cachedTokensHit = sumUsageValues(usageRows, 'cachedTokensHit');
   const cachedTokensCreated = sumUsageValues(usageRows, 'cachedTokensCreated');
 
-  // Context watermark: what the provider's LAST request of this run actually
-  // consumed (totalInput + output). Distinct from the billing cumulative total
-  // above — a tool loop re-sends the growing prefix, so summing every request
-  // inflates "context used". The watermark is the honest occupancy figure.
+  // Context watermark: input tokens sent by the provider's LAST request of this
+  // run. Output is tracked separately; including it here makes the displayed
+  // context appear to shrink when a later response is shorter.
   let contextWatermarkTokens: number | undefined;
-  let lastRequestUsage: {
-    tokensIn?: number;
-    tokensOut?: number;
-    cachedTokensHit?: number;
-    cachedTokensCreated?: number;
-  } | undefined;
+  let lastRequestUsage:
+    | {
+        tokensIn?: number;
+        tokensOut?: number;
+        cachedTokensHit?: number;
+        cachedTokensCreated?: number;
+      }
+    | undefined;
   let lastRequestId: string | undefined;
   let lastRequestSequence = -1;
   for (const [requestId, sequence] of usageRequestSequence) {
@@ -708,8 +709,8 @@ export function projectRunProcess(runId: RunId, events: readonly Event[]): RunPr
   }
   if (lastRequestId !== undefined) {
     const last = providerUsageByRequest.get(lastRequestId);
-    if (last && (last.tokensIn !== undefined || last.tokensOut !== undefined)) {
-      contextWatermarkTokens = (last.tokensIn ?? 0) + (last.tokensOut ?? 0);
+    if (last?.tokensIn !== undefined) {
+      contextWatermarkTokens = last.tokensIn;
     }
     // 单次请求口径的明细（最后一次请求），供 footer 展示真实占用/缓存/输出，
     // 与「计费累计」（求和）区分，避免工具循环重发导致的虚高。
@@ -813,9 +814,10 @@ function extractToolResultError(resultRaw: unknown): string | undefined {
  * Forward the pre-write snapshot carried on tool.completed payloads
  * (captured by the chat write_file executor) into FileChangeItem fields.
  */
-function snapshotFields(
-  payload: Record<string, unknown>,
-): { previousContent?: string; previousTruncated?: boolean } {
+function snapshotFields(payload: Record<string, unknown>): {
+  previousContent?: string;
+  previousTruncated?: boolean;
+} {
   if (typeof payload.previousContent !== 'string' || payload.previousContent.length === 0) {
     return {};
   }

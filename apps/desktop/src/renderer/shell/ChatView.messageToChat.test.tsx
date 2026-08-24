@@ -11,6 +11,7 @@ import type { Message, MessageBlock } from '@sync-think/shared';
 import {
   assistantTimelineProcessTiming,
   messageToChat,
+  projectTransientAssistantDisplay,
   projectTransientAnswerText,
   type InlineProcessItem,
 } from './ChatView.js';
@@ -59,7 +60,7 @@ describe('messageToChat inline process split', () => {
     });
   });
 
-  it('shows the unclassified provider suffix in the process flow while a Native answer is still streaming', () => {
+  it('keeps the unclassified provider suffix provisional instead of putting it in the process flow', () => {
     const timeline: AssistantTurnSegment[] = [
       {
         id: 'think-1',
@@ -78,11 +79,33 @@ describe('messageToChat inline process split', () => {
       },
     ];
 
-    // §12.17.18: unclassified text stays out of the summary panel until a
-    // tool/terminal boundary classifies it into a timeline segment.
+    // NewMax boundary: phase-unknown text is retained for later classification,
+    // but only confirmed thinking/commentary/tools may render in 执行过程.
     expect(projectTransientAnswerText('我先检查资料。正在生成最终回答', timeline)).toEqual({
       answerText: undefined,
       pendingText: '正在生成最终回答',
+    });
+    expect(projectTransientAssistantDisplay('我先检查资料。正在生成最终回答', timeline)).toEqual({
+      answerText: undefined,
+      pendingText: '正在生成最终回答',
+      commentaryText: '我先检查资料。',
+      reasoningText: '先分析。',
+      processItems: [
+        {
+          kind: 'reasoning',
+          id: 'think-1',
+          sequence: 0,
+          text: '先分析。',
+          status: 'streaming',
+        },
+        {
+          kind: 'commentary',
+          id: 'commentary-1',
+          sequence: 1,
+          text: '我先检查资料。',
+          status: 'completed',
+        },
+      ],
     });
     expect(projectTransientAnswerText('我先检查资料。', timeline)).toEqual({
       answerText: undefined,

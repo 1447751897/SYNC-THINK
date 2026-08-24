@@ -11,6 +11,7 @@ import {
   runMigrations,
   SqliteEventCheckpointStore,
   SqliteMemoryStore,
+  SqliteMessageStore,
 } from '@sync-think/storage';
 import type {
   KernelAdapter,
@@ -231,4 +232,88 @@ describe('kernel run terminal publish ordering', () => {
       connection.raw.close();
     }
   });
+
+  it('persists an error-bubbled assistant message when a kernel run fails with no content', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sync-think-kf-msg-'));
+    tempDirs.push(dir);
+    const dbPath = join(dir, 'sync-think.db');
+    await runMigrations(dbPath);
+    const connection = await openDatabaseAsync({ path: dbPath });
+    connection.raw
+      .prepare('INSERT INTO thread (id, task_id, created_at) VALUES (?, ?, ?)')
+      .run('thread-kf-msg-1', 'task-kf-msg-1', '2026-08-22T00:00:00.000Z');
+
+    const installId = `test-kf-msg-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const adapter = new FailingKernelAdapter();
+    const runtime = new Runtime({
+      installId,
+      allowNoToken: true,
+      stateStore: new SqliteEventCheckpointStore(connection.raw),
+      memoryStore: new SqliteMemoryStore(connection.raw),
+      messageStore: new SqliteMessageStore(connection.raw),
+      demoProvider: new StubDemoProvider(),
+      kernelAdapterResolver: () => adapter,
+    });
+    await runtime.start();
+
+    const sock = connect(pipePathPortable(installId));
+    await new Promise<void>((resolve, reject) => {
+      sock.once('connect', resolve);
+      sock.once('error', reject);
+    });
+    const reader = createFrameReader(sock);
+    try {
+      await writeAndRead(sock, reader, {
+        id: 'hello',
+        kind: 'request',
+        type: '__hello',
+        payload: {
+          protocolVersion: 2,
+          appVersion: '0.0.1',
+          installId,
+          nonce: randomBytes(8).toString('hex'),
+          features: ['task.appendMessage'],
+        },
+      });
+      await writeAndRead(sock, reader, {
+        id: 'append',
+        kind: 'request',
+        type: 'task.appendMessage',
+        payload: {
+          threadId: 'thread-kf-msg-1',
+          expectedTaskVersion: 0,
+          role: 'user',
+          text: 'trigger failing kernel run',
+          kernelId: 'fixture-kernel',
+        },
+      });
+
+      // The failing run produced zero content — the error echo must still be
+      // persisted as a durable assistant message so a follow-up message does
+      // not wipe the visible error (regression guard for the transient-only echo).
+      const messageStore = new SqliteMessageStore(connection.raw);
+      const deadline = Date.now() + 3_500;
+      let persisted: ReturnType<SqliteMessageStore['listMessages']>['messages'] = [];
+      while (Date.now() < deadline) {
+        persisted = messageStore.listMessages('thread-kf-msg-1').messages;
+        if (persisted.some((message) => message.role === 'assistant')) break;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      const errorMessage = persisted.filter(
+        (message) => message.role === 'assistant' && message.runId,
+      );
+      expect(errorMessage.length).toBeGreaterThan(0);
+      const message = errorMessage[errorMessage.length - 1]!;
+      const blocks = (message as { blocks?: unknown[] }).blocks ?? [];
+      const errorBlock = blocks.find((block) => (block as { type?: string }).type === 'error');
+      expect(errorBlock).toBeTruthy();
+      const payload = (errorBlock as { payload?: Record<string, unknown> }).payload ?? {};
+      expect(payload.terminalState).toBe('failed');
+      expect(payload.errorMessage).toContain('boom-kernel');
+    } finally {
+      sock.destroy();
+      await runtime.stop();
+      connection.raw.close();
+    }
+  }, 15_000);
 });

@@ -66,6 +66,8 @@ beforeEach(() => {
   runtime.getConversationContextStatus.mockReset().mockResolvedValue({
     modelId: 'model-usage',
     contextWindow: 400_000,
+    modelContextWindow: 400_000,
+    contextWindowSource: 'model-default',
     estimatedUsedTokens: 183_000,
     usageRatio: 0.4575,
     compactThreshold: 0.7,
@@ -321,14 +323,14 @@ describe('ChatView reply usage details', () => {
 
     expect(await screen.findByText('cached reply')).toBeTruthy();
     await waitFor(() => expect(runtime.getConversationRunProcess).toHaveBeenCalled());
-    // 主标签现在是上下文占用（watermark=5000），不是累计求和（14.5k）。
+    // 主标签现在是输入上下文（watermark=5000），不是累计求和（14.5k）。
     fireEvent.focus(await screen.findByText('1s · 5k'));
 
     const tooltip = await screen.findByRole('tooltip');
     expect(within(tooltip).getByText('本次回复累计')).toBeTruthy();
     expect(within(tooltip).getByText('计费累计')).toBeTruthy();
     expect(within(tooltip).getByText('14.5k')).toBeTruthy();
-    expect(within(tooltip).getByText('上下文占用')).toBeTruthy();
+    expect(within(tooltip).getByText('输入上下文')).toBeTruthy();
     expect(within(tooltip).getByText('5k')).toBeTruthy();
     // 普通输入/缓存读取/输出用「最后一次请求」的单次口径（lastRequestUsage）：
     // in=4000、cachedHit=3200、out=488 → 普通输入=800、缓存读取=3.2k、输出=488。
@@ -371,7 +373,7 @@ describe('ChatView reply usage details', () => {
     const tooltip = await screen.findByRole('tooltip');
     // 缓存读取未上报时显示「未上报」，不伪造 0。
     expect(within(tooltip).getAllByText('未上报')).toHaveLength(1);
-    expect(within(tooltip).getByText('上下文占用')).toBeTruthy();
+    expect(within(tooltip).getByText('输入上下文')).toBeTruthy();
   });
 
   it('keeps per-reply usage visible for a completed commentary-only assistant turn', async () => {

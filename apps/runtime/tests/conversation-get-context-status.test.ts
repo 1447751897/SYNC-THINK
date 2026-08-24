@@ -398,6 +398,7 @@ async function getContextStatus(
   harness: RuntimeHarness,
   requestId: string,
   modelId?: string,
+  kernelId?: string,
 ): Promise<ConversationGetContextStatusResponse> {
   const frame = await harness.inbox.send({
     id: requestId,
@@ -406,6 +407,7 @@ async function getContextStatus(
     payload: {
       conversationId: harness.conversationId,
       ...(modelId ? { modelId } : {}),
+      ...(kernelId ? { kernelId } : {}),
     },
   });
   expect(frame.error).toBeUndefined();
@@ -677,6 +679,66 @@ describe('conversation.getContextStatus runtime integration', () => {
     }
   });
 
+  it('applies a conversation capacity override and reports a non-overridable kernel cap', async () => {
+    const harness = await createHarness(128_000, { target: 'model' });
+    try {
+      const changed = await harness.inbox.send({
+        id: 'set-context-window-override',
+        kind: 'request',
+        type: 'conversation.setContextWindowOverride',
+        payload: {
+          conversationId: harness.conversationId,
+          contextWindowOverride: 400_000,
+        },
+      });
+      expect(changed.error).toBeUndefined();
+      expect(
+        (changed.payload as { conversation: { contextWindowOverride?: number } }).conversation
+          .contextWindowOverride,
+      ).toBe(400_000);
+
+      const native = await getContextStatus(harness, 'context-status-override');
+      expect(native).toMatchObject({
+        contextWindow: 400_000,
+        modelContextWindow: 128_000,
+        contextWindowOverride: 400_000,
+        contextWindowSource: 'conversation-override',
+      });
+
+      const claude = await getContextStatus(
+        harness,
+        'context-status-claude-cap',
+        undefined,
+        'claude-code',
+      );
+      expect(claude).toMatchObject({
+        contextWindow: 200_000,
+        modelContextWindow: 128_000,
+        contextWindowOverride: 400_000,
+        contextWindowSource: 'kernel-limit',
+        kernelContextWindowLimit: 200_000,
+      });
+      expect(claude.usageRatio).toBe(claude.estimatedUsedTokens / claude.contextWindow);
+
+      const cleared = await harness.inbox.send({
+        id: 'clear-context-window-override',
+        kind: 'request',
+        type: 'conversation.setContextWindowOverride',
+        payload: { conversationId: harness.conversationId, contextWindowOverride: null },
+      });
+      expect(cleared.error).toBeUndefined();
+      const restored = await getContextStatus(harness, 'context-status-model-default');
+      expect(restored).toMatchObject({
+        contextWindow: 128_000,
+        modelContextWindow: 128_000,
+        contextWindowSource: 'model-default',
+      });
+      expect(restored.contextWindowOverride).toBeUndefined();
+    } finally {
+      await closeHarness(harness);
+    }
+  });
+
   it('previews an explicit compose model for an Agent conversation without changing its default', async () => {
     const harness = await createHarness(128_000, {
       target: 'agent',
@@ -818,6 +880,15 @@ describe('conversation.getContextStatus runtime integration', () => {
       expect(compact.beforeTokens).toBe(status.estimatedUsedTokens);
       expect(compact.afterTokens).toBe(status.estimatedUsedTokens);
       expect(compact.foldedCount).toBe(0);
+      const skipped = harness.stateStore
+        .listEventsByTask(harness.taskId)
+        .find((event) => event.type === 'context.compaction_skipped');
+      expect(skipped?.payload).toMatchObject({
+        operationId: 'compact-forged-high',
+        reason: 'below-threshold',
+        beforeTokens: status.estimatedUsedTokens,
+        foldedCount: 0,
+      });
     } finally {
       await closeHarness(harness);
     }
@@ -858,6 +929,28 @@ describe('conversation.getContextStatus runtime integration', () => {
       expect(compact.beforeTokens).toBe(status.estimatedUsedTokens);
       expect(compact.afterTokens).toBeLessThan(compact.beforeTokens);
       expect(compact.foldedCount).toBeGreaterThan(0);
+      const lifecycle = harness.stateStore
+        .listEventsByTask(harness.taskId)
+        .filter(
+          (event) =>
+            event.type === 'context.compaction_started' || event.type === 'context.compacted',
+        );
+      expect(lifecycle.map((event) => event.type)).toEqual([
+        'context.compaction_started',
+        'context.compacted',
+      ]);
+      expect(lifecycle[0]?.payload).toMatchObject({
+        operationId: 'compact-forged-low',
+        beforeTokens: compact.beforeTokens,
+        foldedCount: compact.foldedCount,
+      });
+      expect(lifecycle[1]?.payload).toMatchObject({
+        operationId: 'compact-forged-low',
+        beforeTokens: compact.beforeTokens,
+        afterTokens: compact.afterTokens,
+        foldedCount: compact.foldedCount,
+      });
+      expect(lifecycle[1]?.payload.durationMs).toEqual(expect.any(Number));
     } finally {
       await closeHarness(harness);
     }

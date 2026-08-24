@@ -4,6 +4,7 @@ import {
   buildDaemonRegistryAutostartCommand,
   buildManagedRuntimeEnvironment,
   buildRuntimeSpawnOptions,
+  DAEMON_COLD_START_TIMEOUT_MS,
   daemonRestartDelayMs,
   managedRuntimeCommandLineMatches,
   resolveDaemonAutostartStartupAction,
@@ -23,6 +24,10 @@ describe('buildRuntimeSpawnOptions', () => {
 });
 
 describe('daemon supervised restart', () => {
+  it('allows enough time for a large database backup and migration on cold start', () => {
+    expect(DAEMON_COLD_START_TIMEOUT_MS).toBeGreaterThanOrEqual(120_000);
+  });
+
   it('uses bounded backoff independent from the cold-start spawn debounce', () => {
     expect(daemonRestartDelayMs(1)).toBe(1_000);
     expect(daemonRestartDelayMs(2)).toBe(2_000);

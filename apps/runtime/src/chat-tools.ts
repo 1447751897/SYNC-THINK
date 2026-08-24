@@ -1555,6 +1555,24 @@ export function chatToolRequiresApproval(
   return normalized === 'ask' && CHAT_MUTATING_TOOL_NAMES.has(toolName);
 }
 
+/**
+ * Host platform infrastructure tools: always allowed on every permission mode.
+ * These are the tools the host itself runs (ask the user, submit a plan,
+ * manage goals/tasks, list platform context) — they are approval:never in the
+ * platform catalog and their executors already carry their own user-facing
+ * cards / fences. Gating them behind isChatToolAllowed would deny ask_user_question
+ * outside full-access (observed: "当前权限不允许执行工具 ask_user_question" in
+ * ask/workspace modes), so the model could never ask the user a question.
+ */
+export const HOST_PLATFORM_ALWAYS_ALLOWED_TOOLS: ReadonlySet<string> = new Set([
+  'platform_context',
+  'ask_user_question',
+  'plan_submit',
+  'goal_manage',
+  'task_list',
+  'agent_list',
+]);
+
 /** Hard block (not used for ask anymore — ask waits for approval). */
 export function isChatToolAllowed(
   mode: string | undefined | null,
@@ -1568,6 +1586,9 @@ export function isChatToolAllowed(
   // All built-in project tools are allowed once the user has approved (ask)
   // or when mode is workspace/full-access.
   void mode;
+  // Host platform infrastructure tools are exempt from the permission gate —
+  // their executors surface their own cards (ask_user_question → ask card).
+  if (HOST_PLATFORM_ALWAYS_ALLOWED_TOOLS.has(toolName)) return true;
   if (CHAT_BUILT_IN_TOOL_SCHEMAS.some((tool) => tool.name === toolName)) return true;
   if (options.networkEnabled && CHAT_NETWORK_TOOL_NAMES.has(toolName)) return true;
   // Agent tools: create_agent is gated by chatToolRequiresApproval (approval card
@@ -1893,6 +1914,65 @@ export function summarizeToolCallForApproval(
       ]
         .filter(Boolean)
         .join(' · '),
+    };
+  }
+  // Kernel native built-ins (claude-code / codex SDK tools): these names are
+  // PascalCase (Bash / Write / Read / Edit / MultiEdit / NotebookEdit / WebFetch)
+  // and carry their own argument shapes. Without this branch an approval card
+  // for `Bash` showed only "需要你的批准" — the user could not tell what command
+  // or file was involved, so approving was blind.
+  const kernelNativePath =
+    typeof args.file_path === 'string'
+      ? args.file_path
+      : typeof args.notebook_path === 'string'
+        ? args.notebook_path
+        : typeof args.path === 'string'
+          ? args.path
+          : typeof args.file === 'string'
+            ? args.file
+            : undefined;
+  const kernelNativeCommand =
+    typeof args.command === 'string' && args.command.trim()
+      ? args.command.trim()
+      : typeof args.args === 'string'
+        ? args.args
+        : undefined;
+  if (toolName === 'Bash' || toolName === 'run_command') {
+    const argList = Array.isArray(args.args) ? args.args.map(String).join(' ') : '';
+    const full = [kernelNativeCommand, argList].filter(Boolean).join(' ').trim();
+    return {
+      title: '执行命令',
+      detail: full || '将在工作区运行命令',
+      command: full || kernelNativeCommand,
+    };
+  }
+  if (
+    toolName === 'Write' ||
+    toolName === 'Edit' ||
+    toolName === 'MultiEdit' ||
+    toolName === 'NotebookEdit'
+  ) {
+    const content = typeof args.content === 'string' ? args.content : '';
+    const lines = content.split(/\r?\n/).length;
+    const isDelete = toolName === 'MultiEdit' && args.old_string === '';
+    return {
+      title: `${isDelete ? '删除' : '写入/修改'}文件 ${kernelNativePath ?? '（未指定路径）'}`,
+      detail: content ? `约 ${lines} 行 · ${content.length} 字符` : '将修改文件内容',
+      path: kernelNativePath,
+    };
+  }
+  if (toolName === 'Read' || toolName === 'Glob' || toolName === 'Grep') {
+    return {
+      title: `${toolName} ${kernelNativePath ?? ''}`.trim() || toolName,
+      detail: '读取文件 / 目录（只读操作）',
+      path: kernelNativePath,
+    };
+  }
+  if (toolName === 'WebFetch' || toolName === 'WebSearch') {
+    const url = typeof args.url === 'string' ? args.url : undefined;
+    return {
+      title: url ? `${toolName} ${url.slice(0, 120)}` : toolName,
+      detail: url ? `抓取 ${url.slice(0, 200)}` : '联网搜索 / 抓取页面',
     };
   }
   return {
@@ -2459,10 +2539,7 @@ async function captureWriteSnapshot(
     const content = await readFile(absolute, 'utf8');
     if (Buffer.byteLength(content, 'utf8') > SNAPSHOT_MAX_BYTES) {
       return {
-        previousContent: content.slice(
-          0,
-          Math.max(0, Math.floor((SNAPSHOT_MAX_BYTES / 4) * 0.9)),
-        ),
+        previousContent: content.slice(0, Math.max(0, Math.floor((SNAPSHOT_MAX_BYTES / 4) * 0.9))),
         previousTruncated: true,
       };
     }

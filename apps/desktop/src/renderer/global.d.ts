@@ -434,6 +434,9 @@ declare global {
         setConversationInteractionMode(
           payload: import('@sync-think/protocol').SetConversationInteractionModePayload,
         ): Promise<import('@sync-think/protocol').ConversationResponse>;
+        setConversationContextWindowOverride(
+          payload: import('@sync-think/protocol').SetConversationContextWindowOverridePayload,
+        ): Promise<import('@sync-think/protocol').ConversationResponse>;
         conversationPlanSubmit(
           payload: import('@sync-think/protocol').ConversationPlanSubmitPayload,
         ): Promise<import('@sync-think/protocol').ConversationPlanResponse>;

@@ -34,6 +34,8 @@ export interface ConversationRecord {
   executionMode: string;
   /** 'plan' | 'execute' — independent of the executionMode permission knob. */
   interactionMode: 'plan' | 'execute';
+  /** Per-conversation capacity override; undefined inherits the selected model. */
+  contextWindowOverride?: number;
   lastMessageAt?: string;
   /** Task backing this conversation's thread; undefined until first message. */
   taskId?: TaskId;
@@ -52,6 +54,7 @@ export interface CreateConversationInput {
   title?: string;
   executionMode?: string;
   interactionMode?: 'plan' | 'execute';
+  contextWindowOverride?: number;
   id?: ConversationId;
   now?: string;
 }
@@ -72,6 +75,7 @@ interface ConversationDbRow {
   archived_at: string | null;
   execution_mode: string;
   interaction_mode: string;
+  context_window_override: number | null;
   last_message_at: string | null;
   task_id: string | null;
   created_at: string;
@@ -89,6 +93,7 @@ function mapRow(row: ConversationDbRow): ConversationRecord {
     archivedAt: row.archived_at ?? undefined,
     executionMode: row.execution_mode,
     interactionMode: row.interaction_mode === 'plan' ? 'plan' : 'execute',
+    contextWindowOverride: row.context_window_override ?? undefined,
     lastMessageAt: row.last_message_at ?? undefined,
     taskId: row.task_id ? (row.task_id as TaskId) : undefined,
     createdAt: row.created_at,
@@ -108,7 +113,16 @@ function targetRefOf(target: ConversationTarget): string {
 }
 
 const SELECT_COLUMNS = `id, track, target_ref, workspace_id, title, pinned_at,
-  archived_at, execution_mode, interaction_mode, last_message_at, task_id, created_at, updated_at`;
+  archived_at, execution_mode, interaction_mode, context_window_override,
+  last_message_at, task_id, created_at, updated_at`;
+
+function normalizeContextWindowOverride(value: number | null | undefined): number | null {
+  if (value === null || value === undefined) return null;
+  if (!Number.isSafeInteger(value) || value < 1_024 || value > 10_000_000) {
+    throw new Error('contextWindowOverride must be an integer between 1024 and 10000000');
+  }
+  return value;
+}
 
 export class SqliteConversationStore {
   constructor(private readonly raw: BetterSQLite3Raw) {}
@@ -120,8 +134,8 @@ export class SqliteConversationStore {
       .prepare(
         `INSERT INTO conversation (
            id, track, target_ref, workspace_id, title, execution_mode, interaction_mode,
-           last_message_at, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+           context_window_override, last_message_at, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
       )
       .run(
         id,
@@ -131,6 +145,7 @@ export class SqliteConversationStore {
         input.title ?? '',
         input.executionMode ?? 'full-access',
         input.interactionMode ?? 'execute',
+        normalizeContextWindowOverride(input.contextWindowOverride),
         now,
         now,
       );
@@ -205,6 +220,19 @@ export class SqliteConversationStore {
     now?: string,
   ): ConversationRecord {
     return this.patch(conversationId, 'interaction_mode = ?', [mode], now);
+  }
+
+  setContextWindowOverride(
+    conversationId: ConversationId,
+    contextWindowOverride: number | null,
+    now?: string,
+  ): ConversationRecord {
+    return this.patch(
+      conversationId,
+      'context_window_override = ?',
+      [normalizeContextWindowOverride(contextWindowOverride)],
+      now,
+    );
   }
 
   touchLastMessage(conversationId: ConversationId, now?: string): ConversationRecord {

@@ -1,7 +1,7 @@
 // Migration runner: writes pending migrations, audit-records, and triggers a backup
 // BEFORE applying any migration (搂20 rule 10). Implemented to run as `pnpm db:migrate`.
 
-import { closeSync, existsSync, openSync, rmSync, writeSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readFileSync, rmSync, writeSync } from 'node:fs';
 import { openDatabaseAsync, type Database } from '../connection.js';
 import * as schema from '../schema/index.js';
 import { backupDatabase } from '../backup.js';
@@ -369,6 +369,10 @@ export const MIGRATIONS: { name: string; sql: string }[] = [
       ON run_index(conversation_id, started_at DESC);
     CREATE INDEX run_index_external_event_idx
       ON run_index(external_event_id);`,
+  },
+  {
+    name: '0050_conversation_context_window_override',
+    sql: `ALTER TABLE conversation ADD COLUMN context_window_override INTEGER;`,
   },
 ];
 
@@ -2913,6 +2917,27 @@ async function listApplied(db: Database): Promise<string[]> {
 const MIGRATION_LOCK_RETRIES = 10;
 const MIGRATION_LOCK_RETRY_DELAY_MS = 500;
 
+function isProcessAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+function reclaimStaleMigrationLock(lockPath: string): boolean {
+  try {
+    const ownerPid = Number(readFileSync(lockPath, 'utf8').trim());
+    if (!Number.isInteger(ownerPid) || ownerPid <= 0 || isProcessAlive(ownerPid)) return false;
+    rmSync(lockPath, { force: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Exclusive migration lock (audit #6): two Runtime instances starting against
  * the same database would otherwise both run the same migrations and race on
@@ -2946,11 +2971,14 @@ async function withMigrationLock<T>(dbPath: string, fn: () => Promise<T>): Promi
         }
       }
       if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+        if (reclaimStaleMigrationLock(lockPath)) continue;
         if (attempt < MIGRATION_LOCK_RETRIES - 1) {
           await new Promise((resolve) => setTimeout(resolve, MIGRATION_LOCK_RETRY_DELAY_MS));
           continue;
         }
-        throw new Error(`migration lock not acquired after ${MIGRATION_LOCK_RETRIES} tries: ${lockPath}`);
+        throw new Error(
+          `migration lock not acquired after ${MIGRATION_LOCK_RETRIES} tries: ${lockPath}`,
+        );
       }
       throw error;
     }

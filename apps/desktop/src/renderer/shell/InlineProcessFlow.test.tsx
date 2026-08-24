@@ -145,21 +145,15 @@ describe('InlineProcessFlow', () => {
     expect(screen.queryByTestId('tool-batch')).toBeNull();
   });
 
-  it('numbers process rows in durable order and identifies the tool kind', () => {
-    render(
-      <InlineProcessFlow items={[reasoningItem, commentaryItem, toolItem]} defaultOpen />,
-    );
+  it('keeps process rows unnumbered in durable order and identifies the tool kind', () => {
+    render(<InlineProcessFlow items={[reasoningItem, commentaryItem, toolItem]} defaultOpen />);
 
     const entries = screen.getAllByTestId('process-entry');
     expect(entries).toHaveLength(3);
-    expect(entries.map((entry) => within(entry).getByTestId('process-entry-index').textContent)).toEqual([
-      '01',
-      '02',
-      '03',
-    ]);
-    expect(
-      within(entries[2]).getByTestId('process-tool-kind').getAttribute('data-kind'),
-    ).toBe('read');
+    expect(screen.queryByTestId('process-entry-index')).toBeNull();
+    expect(within(entries[2]).getByTestId('process-tool-kind').getAttribute('data-kind')).toBe(
+      'read',
+    );
   });
 
   it('shows the turn plan before the timeline and only exposes real agent tasks', () => {
@@ -194,36 +188,32 @@ describe('InlineProcessFlow', () => {
         defaultOpen
       />,
     );
-    expect(screen.getByTestId('process-agent-tasks').textContent).toContain(
-      '审查持久会话实现',
-    );
+    expect(screen.getByTestId('process-agent-tasks').textContent).toContain('审查持久会话实现');
   });
 
-  it('keeps repeated adjacent tool calls as separate rows without count badges', () => {
+  it('groups adjacent tool calls while keeping each child row independently expandable', () => {
     render(<InlineProcessFlow items={[toolItem, secondReadTool]} defaultOpen />);
-    const tools = screen.getAllByTestId('inline-process-tool');
+    const group = screen.getByTestId('tool-group');
+    const tools = within(group).getAllByTestId('inline-process-tool');
 
     expect(tools).toHaveLength(2);
     expect(tools[0].textContent).toContain('a.txt');
     expect(tools[1].textContent).toContain('b.txt');
+    expect(group.textContent).toContain('运行了 2 个命令');
     expect(screen.queryByText(/×2|2 个调用/)).toBeNull();
-    expect(screen.queryByTestId('tool-batch')).toBeNull();
   });
 
-  it('expands and collapses all available row details from the panel toolbar', () => {
-    render(
-      <InlineProcessFlow items={[reasoningItem, toolItem, secondReadTool]} defaultOpen />,
-    );
+  it('omits bulk disclosure controls while preserving row-level expansion', () => {
+    render(<InlineProcessFlow items={[reasoningItem, toolItem, secondReadTool]} defaultOpen />);
 
     expect(screen.queryByTestId('think-row-body')).toBeNull();
     expect(document.querySelectorAll('.shell-inline-process__tool-body')).toHaveLength(0);
 
-    fireEvent.click(screen.getByRole('button', { name: '全部展开' }));
-    expect(screen.getByTestId('think-row-body')).toBeTruthy();
-    expect(document.querySelectorAll('.shell-inline-process__tool-body')).toHaveLength(2);
+    expect(screen.queryByRole('button', { name: '全部展开' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '全部收起' })).toBeNull();
 
-    fireEvent.click(screen.getByRole('button', { name: '全部收起' }));
-    expect(screen.queryByTestId('think-row-body')).toBeNull();
+    fireEvent.click(screen.getByTestId('think-row-toggle'));
+    expect(screen.getByTestId('think-row-body')).toBeTruthy();
     expect(document.querySelectorAll('.shell-inline-process__tool-body')).toHaveLength(0);
   });
 
@@ -250,8 +240,7 @@ describe('InlineProcessFlow', () => {
         items={[
           {
             ...toolItem,
-            argumentsJson:
-              '{"path":"a.txt","line":2,"options":{"encoding":"utf8"}}',
+            argumentsJson: '{"path":"a.txt","line":2,"options":{"encoding":"utf8"}}',
             result: '{"ok":true,"lines":1}',
           },
         ]}
@@ -349,9 +338,15 @@ describe('InlineProcessFlow', () => {
     render(<InlineProcessFlow items={[runningTool, toolItem, failedToolItem]} defaultOpen />);
     const tools = screen.getAllByTestId('inline-process-tool');
 
-    expect(within(tools[0]).getByTestId('inline-process-tool-status').getAttribute('data-status')).toBe('running');
-    expect(within(tools[1]).getByTestId('inline-process-tool-status').getAttribute('data-status')).toBe('completed');
-    expect(within(tools[2]).getByTestId('inline-process-tool-status').getAttribute('data-status')).toBe('failed');
+    expect(
+      within(tools[0]).getByTestId('inline-process-tool-status').getAttribute('data-status'),
+    ).toBe('running');
+    expect(
+      within(tools[1]).getByTestId('inline-process-tool-status').getAttribute('data-status'),
+    ).toBe('completed');
+    expect(
+      within(tools[2]).getByTestId('inline-process-tool-status').getAttribute('data-status'),
+    ).toBe('failed');
     expect(tools[2].getAttribute('data-failed')).toBe('true');
 
     fireEvent.click(within(tools[2]).getByRole('button'));
@@ -359,14 +354,10 @@ describe('InlineProcessFlow', () => {
   });
 
   it('shows the sync-thinking pulse while streaming before the final answer, hides it after', () => {
-    const { rerender } = render(
-      <InlineProcessFlow items={[runningTool]} streaming defaultOpen />,
-    );
+    const { rerender } = render(<InlineProcessFlow items={[runningTool]} streaming defaultOpen />);
     expect(screen.getByTestId('process-thinking').textContent).toContain('sync-thinking');
 
-    rerender(
-      <InlineProcessFlow items={[runningTool]} streaming answerStarted defaultOpen />,
-    );
+    rerender(<InlineProcessFlow items={[runningTool]} streaming answerStarted defaultOpen />);
     expect(screen.queryByTestId('process-thinking')).toBeNull();
 
     rerender(<InlineProcessFlow items={[runningTool]} defaultOpen />);
@@ -611,5 +602,106 @@ describe('InlineProcessFlow', () => {
     expect(follows(commentary, tools[0])).toBe(true);
     expect(follows(tools[0], tools[1])).toBe(true);
     expect(screen.queryByTestId('tool-batch')).toBeNull();
+  });
+
+  it('keeps commentary segments when ordered tool items are already present', () => {
+    render(
+      <InlineProcessFlow
+        items={[toolItem]}
+        commentarySegments={[
+          {
+            id: 'seg-before-tool',
+            text: '我先检查运行环境。',
+            startedAt: '2026-08-22T10:00:00.000Z',
+            afterSequence: 10,
+          },
+        ]}
+        defaultOpen
+      />,
+    );
+
+    const commentary = screen.getByTestId('inline-process-commentary');
+    const tool = screen.getByTestId('inline-process-tool');
+    expect(commentary.textContent).toContain('我先检查运行环境。');
+    expect(follows(commentary, tool)).toBe(true);
+  });
+
+  it('restores missing commentary at its durable tool boundary without dropping repeated text', () => {
+    const firstTool: InlineProcessItem = {
+      ...toolItem,
+      toolCallId: 'tool-read-a',
+    };
+    const secondTool: InlineProcessItem = {
+      ...secondReadTool,
+      toolCallId: 'tool-read-b',
+    };
+    render(
+      <InlineProcessFlow
+        items={[
+          reasoningItem,
+          { kind: 'commentary', id: 'seg-existing', text: '继续检查。' },
+          firstTool,
+          secondTool,
+        ]}
+        steps={[
+          {
+            id: 'tool-read-a',
+            label: 'read_file',
+            verb: 'Read',
+            zh: '读取文件',
+            toolName: 'read_file',
+            kind: 'file',
+            status: 'done',
+            sequence: 11,
+          } as never,
+          {
+            id: 'tool-read-b',
+            label: 'read_file',
+            verb: 'Read',
+            zh: '读取文件',
+            toolName: 'read_file',
+            kind: 'file',
+            status: 'done',
+            sequence: 13,
+          } as never,
+        ]}
+        commentarySegments={[
+          {
+            id: 'seg-existing',
+            text: '继续检查。',
+            startedAt: '2026-08-22T10:00:00.000Z',
+            afterSequence: 9,
+          },
+          {
+            id: 'seg-before',
+            text: '准备读取第一个文件。',
+            startedAt: '2026-08-22T10:00:01.000Z',
+            afterSequence: 10,
+          },
+          {
+            id: 'seg-between',
+            text: '第一个文件已确认。',
+            startedAt: '2026-08-22T10:00:02.000Z',
+            afterSequence: 12,
+          },
+          {
+            id: 'seg-repeated',
+            text: '继续检查。',
+            startedAt: '2026-08-22T10:00:03.000Z',
+            afterSequence: 14,
+          },
+        ]}
+        defaultOpen
+      />,
+    );
+
+    const tools = screen.getAllByTestId('inline-process-tool');
+    const commentary = screen.getAllByTestId('inline-process-commentary');
+    expect(commentary).toHaveLength(4);
+    expect(follows(commentary[1], tools[0])).toBe(true);
+    expect(follows(tools[0], commentary[2])).toBe(true);
+    expect(follows(commentary[2], tools[1])).toBe(true);
+    expect(follows(tools[1], commentary[3])).toBe(true);
+    expect(commentary.filter((entry) => entry.textContent?.includes('继续检查。'))).toHaveLength(2);
   });
 });

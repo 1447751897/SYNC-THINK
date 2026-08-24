@@ -3,9 +3,13 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { COMPUTER_USE_PLUGIN_SETTING_KEY } from '@sync-think/protocol/plugins';
 import { OPEN_GATEWAY_SETTING_KEY } from '@sync-think/protocol/gateway';
 import { SettingsPage } from './SettingsPage.js';
+
+const shellCss = readFileSync(resolve(process.cwd(), 'src/renderer/shell/shell.css'), 'utf8');
 
 vi.mock('./ModelSettings.js', () => ({
   ModelSettings: () => null,
@@ -50,6 +54,15 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+});
+
+describe('SettingsPage layout contract', () => {
+  it('keeps horizontal overflow clipped at every settings and menu scroll boundary', () => {
+    expect(shellCss).toMatch(/\.settings-scroll\s*\{[^}]*overflow-x:\s*hidden;/s);
+    expect(shellCss).toMatch(/\.model-settings-detail\s*\{[^}]*overflow-x:\s*hidden;/s);
+    expect(shellCss).toMatch(/\.model-settings-tabs\s*\{[^}]*overflow-x:\s*hidden;/s);
+    expect(shellCss).toMatch(/\.shell-menu__scroll\s*\{[^}]*overflow-x:\s*hidden;/s);
+  });
 });
 
 async function openPlugins() {

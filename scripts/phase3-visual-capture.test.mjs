@@ -25,6 +25,7 @@ describe('Phase 3 visual matrix', () => {
     assert.deepEqual([...fixtures].sort(), [
       'connection-and-code',
       'diagnostics',
+      'inline-process-hierarchy',
       'long-trace-closed',
       'long-trace-open',
       'streaming-follow',
@@ -43,13 +44,26 @@ describe('Phase 3 visual matrix', () => {
     assert.ok(
       PHASE3_VISUAL_MATRIX.some(
         (item) =>
-          item.fixture === 'workspace-file' && item.theme === 'light' && item.width === 1280,
+          item.fixture === 'inline-process-hierarchy' &&
+          item.theme === 'light' &&
+          item.width === 1280,
       ),
     );
     assert.ok(
       PHASE3_VISUAL_MATRIX.some(
         (item) =>
-          item.fixture === 'workspace-file' && item.theme === 'dark' && item.width === 1280,
+          item.fixture === 'inline-process-hierarchy' && item.theme === 'dark' && item.width <= 760,
+      ),
+    );
+    assert.ok(
+      PHASE3_VISUAL_MATRIX.some(
+        (item) =>
+          item.fixture === 'workspace-file' && item.theme === 'light' && item.width === 1280,
+      ),
+    );
+    assert.ok(
+      PHASE3_VISUAL_MATRIX.some(
+        (item) => item.fixture === 'workspace-file' && item.theme === 'dark' && item.width === 1280,
       ),
     );
     assert.ok(
@@ -61,16 +75,12 @@ describe('Phase 3 visual matrix', () => {
       ),
     );
     assert.ok(
-      PHASE3_VISUAL_MATRIX.some(
-        (item) => item.fixture === 'workspace-file' && item.width <= 760,
-      ),
+      PHASE3_VISUAL_MATRIX.some((item) => item.fixture === 'workspace-file' && item.width <= 760),
     );
     assert.ok(
       PHASE3_VISUAL_MATRIX.some(
         (item) =>
-          item.id === 'workspace-file-reference-tall' &&
-          item.width === 735 &&
-          item.height === 1014,
+          item.id === 'workspace-file-reference-tall' && item.width === 735 && item.height === 1014,
       ),
     );
   });

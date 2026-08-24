@@ -3,12 +3,23 @@
 // welcome empty state · settings modal.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
-import { Bot, MessageSquare, SendHorizonal, Sparkles, Users, Zap, X } from 'lucide-react';
+import {
+  Bot,
+  Compass,
+  ImagePlus,
+  MessageSquare,
+  SendHorizonal,
+  Sparkles,
+  Users,
+  Zap,
+  X,
+} from 'lucide-react';
 import type {
   Conversation,
   ConversationTrack,
   Event,
   GlobalAgent,
+  KernelDetectionResult,
   Team,
   WorkspaceId,
 } from '@sync-think/shared';
@@ -53,14 +64,37 @@ import {
   PermissionMenu,
   PERMISSION_OPTIONS,
   REASONING_LABELS,
+  type KernelInstallState,
   type PermissionMode,
   type ReasoningEffort,
 } from './compose-toolbar.js';
-import { detectMentionQuery, stripMentionToken, type MentionQuery } from './compose-mention.js';
+import {
+  addAttachment,
+  detectMentionQuery,
+  isImageFile,
+  messageImagesFromAttachments,
+  readFileAsDataUrl,
+  removeAttachment,
+  stripMentionToken,
+  type ComposeAttachment,
+  type MentionQuery,
+  type MessageImage,
+} from './compose-mention.js';
+import {
+  detectSlashQuery,
+  filterSlashCommands,
+  parseSlashCommand,
+  stripSlashToken,
+  type SlashCommand,
+  type SlashQuery,
+} from './compose-slash.js';
 import {
   resolveAppendSkillVersionIds,
   resolveConversationSkillOwner,
 } from './compose-skill-selection.js';
+import { compressImageDataUrl } from './image-compress.js';
+import { BrandLogoMark } from './BrandLogoMark.js';
+import { resolveKernelBrandLogo, resolveKernelDisplayName } from './brand-icons.js';
 import { TurnSkillControl } from './TurnSkillControl.js';
 import { canCloseSettings } from './settings-unsaved.js';
 import { NewConversationDialog, type ModelOption } from './NewConversationDialog.js';
@@ -92,6 +126,7 @@ import {
   readDefaultPermission,
   readLastConversationTrack,
   readNewConversationDraft,
+  readNewConversationKernel,
   readNewConversationModel,
   readConversationModelOverrides,
   readOpenConversationTabs,
@@ -108,7 +143,9 @@ import {
   writeConversationGroups,
   writeLastConversationTrack,
   writeNewConversationDraft,
+  writeNewConversationKernel,
   writeNewConversationModel,
+  writeConversationKernelOverride,
   writeConversationModelOverride,
   writeConversationNetworkEnabled,
   writeConversationReasoningEffort,
@@ -196,6 +233,18 @@ interface DraftConversationSession {
   track: ConversationTrack;
   targetRef?: string;
   createdAt: string;
+}
+
+interface DraftFirstMessage {
+  text: string;
+  images: MessageImage[];
+  modelId?: string;
+  kernelId: string;
+  interactionMode: 'plan' | 'execute';
+  permissionMode: PermissionMode;
+  reasoningEffort: ReasoningEffort;
+  networkEnabled: boolean;
+  skillVersionIds: string[];
 }
 
 const EMPTY: ShellData = {
@@ -437,14 +486,7 @@ function ShellAppInner() {
     },
     [],
   );
-  const pendingFirstMessageRef = useRef<{
-    text: string;
-    modelId?: string;
-    permissionMode: PermissionMode;
-    reasoningEffort: ReasoningEffort;
-    networkEnabled: boolean;
-    skillVersionIds: string[];
-  } | null>(null);
+  const pendingFirstMessageRef = useRef<DraftFirstMessage | null>(null);
   const initialConversationSkillSelectionsRef = useRef(new Map<string, string[]>());
   /**
    * conversationId → text waiting to be dropped into that chat's composer
@@ -1554,18 +1596,7 @@ function ShellAppInner() {
   );
 
   const createConversationWithTarget = useCallback(
-    async (
-      track: ConversationTrack,
-      targetRef: string,
-      firstMessage?: {
-        text: string;
-        modelId?: string;
-        permissionMode: PermissionMode;
-        reasoningEffort: ReasoningEffort;
-        networkEnabled: boolean;
-        skillVersionIds: string[];
-      },
-    ) => {
+    async (track: ConversationTrack, targetRef: string, firstMessage?: DraftFirstMessage) => {
       const api = bridge();
       if (!api) return;
       if (!activeWorkspaceId) {
@@ -1583,6 +1614,7 @@ function ShellAppInner() {
       });
       const createdConversationId = String(created.conversation.id);
       const initialModelId = firstMessage?.modelId?.trim();
+      const initialKernelId = firstMessage?.kernelId.trim() || 'native';
       if (initialModelId) {
         writeConversationModelOverride(createdConversationId, initialModelId);
         setModelOverrides((current) => ({
@@ -1591,14 +1623,27 @@ function ShellAppInner() {
         }));
       }
       if (firstMessage) {
+        writeConversationKernelOverride(createdConversationId, initialKernelId);
         writeConversationReasoningEffort(createdConversationId, firstMessage.reasoningEffort);
         writeConversationNetworkEnabled(createdConversationId, firstMessage.networkEnabled);
+        if (firstMessage.interactionMode === 'plan') {
+          await api.setConversationInteractionMode({
+            conversationId: created.conversation.id,
+            interactionMode: 'plan',
+          });
+        }
       }
 
-      if (firstMessage?.text.trim()) {
+      const hasFirstTurn = Boolean(
+        firstMessage && (firstMessage.text.trim() || firstMessage.images.length > 0),
+      );
+      if (firstMessage && hasFirstTurn) {
+        const outboundText = firstMessage.text.trim()
+          ? firstMessage.text
+          : firstMessage.images.map((image) => `[图片] ${image.name || 'image'}`).join('\n');
         const prep = await api.sendConversationMessage({
           conversationId: created.conversation.id,
-          text: firstMessage.text,
+          text: outboundText,
           modelId: firstMessage.modelId as Parameters<
             typeof api.sendConversationMessage
           >[0]['modelId'],
@@ -1608,11 +1653,20 @@ function ShellAppInner() {
           threadId: prep.threadId,
           expectedTaskVersion: prep.taskVersion,
           role: 'user',
-          text: firstMessage.text,
+          text: outboundText,
           modelId: firstMessage.modelId as Parameters<typeof api.appendMessage>[0]['modelId'],
+          kernelId: initialKernelId,
           reasoningEffort: firstMessage.reasoningEffort,
           networkEnabled: firstMessage.networkEnabled || undefined,
           skillVersionIds,
+          images:
+            firstMessage.images.length > 0
+              ? firstMessage.images.map((image) => ({
+                  name: image.name || 'image',
+                  mimeType: image.mimeType || 'image/png',
+                  dataUrl: image.url,
+                }))
+              : undefined,
         });
         initialConversationSkillSelectionsRef.current.set(
           String(created.conversation.id),
@@ -1632,7 +1686,7 @@ function ShellAppInner() {
       await refresh();
       focusConversation(createdConversationId, workspaceId);
       if (activeWorkspaceIdRef.current === workspaceId) {
-        if (firstMessage?.text.trim()) {
+        if (hasFirstTurn) {
           setNewConversationDraft('');
           writeNewConversationDraft('');
         }
@@ -2343,14 +2397,18 @@ function ShellAppInner() {
 
   const handleDraftSend = useCallback(
     async (options: {
+      text: string;
+      images: MessageImage[];
       modelId: string;
+      kernelId: string;
+      interactionMode: 'plan' | 'execute';
       permissionMode: PermissionMode;
       reasoningEffort: ReasoningEffort;
       networkEnabled: boolean;
       skillVersionIds: string[];
     }) => {
-      const text = newConversationDraft.trim();
-      if (!text || newConversationSending) return false;
+      const text = options.text.trim();
+      if ((!text && options.images.length === 0) || newConversationSending) return false;
       if (!activeWorkspaceId) {
         setNewConversationError('请先创建或打开一个工作区');
         return false;
@@ -2367,7 +2425,10 @@ function ShellAppInner() {
       if (!session) return false;
       const requested = {
         text,
+        images: options.images,
         modelId: options.modelId || undefined,
+        kernelId: options.kernelId || 'native',
+        interactionMode: options.interactionMode,
         permissionMode: options.permissionMode,
         reasoningEffort: options.reasoningEffort,
         networkEnabled: options.networkEnabled,
@@ -2419,7 +2480,6 @@ function ShellAppInner() {
       data.models,
       draftSession,
       nav.lastTrack,
-      newConversationDraft,
       newConversationModel,
       newConversationSending,
     ],
@@ -3180,7 +3240,11 @@ export function EmptyTalk(props: {
   onDraftChange(draft: string): void;
   onModelChange(modelId: string): void;
   onSend(options: {
+    text: string;
+    images: MessageImage[];
     modelId: string;
+    kernelId: string;
+    interactionMode: 'plan' | 'execute';
     permissionMode: PermissionMode;
     reasoningEffort: ReasoningEffort;
     networkEnabled: boolean;
@@ -3213,17 +3277,35 @@ export function EmptyTalk(props: {
     readDefaultPermission(),
   );
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>('auto');
+  const [interactionMode, setInteractionMode] = useState<'plan' | 'execute'>('execute');
+  const [kernelOverride, setKernelOverride] = useState(() => readNewConversationKernel());
+  const [kernelRegistry, setKernelRegistry] = useState<KernelDetectionResult[] | null>(null);
+  const [kernelInstallStates, setKernelInstallStates] = useState<
+    Record<string, KernelInstallState | undefined>
+  >({});
+  const [attachments, setAttachments] = useState<ComposeAttachment[]>([]);
+  const [dragOver, setDragOver] = useState(false);
+  const [composeNotice, setComposeNotice] = useState<string | undefined>();
   const [atQuery, setAtQuery] = useState<MentionQuery | null>(null);
+  const [slash, setSlash] = useState<SlashQuery | null>(null);
+  const [slashIndex, setSlashIndex] = useState(0);
+  const [slashSkills, setSlashSkills] = useState<SkillVersionSummary[]>([]);
+  const [slashSkillsLoading, setSlashSkillsLoading] = useState(false);
   const [permissionMenuOpen, setPermissionMenuOpen] = useState(false);
   const [skillMenuOpen, setSkillMenuOpen] = useState(false);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
   const networkSettingRef = useRef<HTMLDivElement>(null);
   const permissionButtonRef = useRef<HTMLButtonElement>(null);
   const modelButtonRef = useRef<HTMLButtonElement>(null);
+  const kernelInstallPromisesRef = useRef(new Map<string, Promise<void>>());
+  const kernelDetectionGenerationRef = useRef(0);
+  const kernelInstallMountedRef = useRef(true);
   const selectedModel =
     props.models.find((model) => model.modelId === props.selectedModelId) ?? props.models[0];
   const draftTrack = props.draftTrack ?? 'model';
+  const activeKernel = kernelRegistry?.find((kernel) => kernel.kernelId === kernelOverride) ?? null;
   const skillOwner = useMemo(
     () =>
       resolveConversationSkillOwner(
@@ -3252,15 +3334,321 @@ export function EmptyTalk(props: {
     updateSelectedSkillVersionIds(defaultSkillVersionIds);
   }, [defaultSkillVersionIds, skillScopeKey, updateSelectedSkillVersionIds]);
 
+  useEffect(() => {
+    kernelInstallMountedRef.current = true;
+    return () => {
+      kernelInstallMountedRef.current = false;
+    };
+  }, []);
+
+  const detectKernels = useCallback(async (): Promise<KernelDetectionResult[] | null> => {
+    const api = bridge();
+    if (!api?.detectKernels) return null;
+    const generation = (kernelDetectionGenerationRef.current += 1);
+    try {
+      const response = await api.detectKernels();
+      if (!Array.isArray(response?.kernels)) return null;
+      if (kernelInstallMountedRef.current && generation === kernelDetectionGenerationRef.current) {
+        setKernelRegistry(response.kernels);
+      }
+      return response.kernels;
+    } catch {
+      if (kernelInstallMountedRef.current && generation === kernelDetectionGenerationRef.current) {
+        setKernelRegistry(null);
+      }
+      return null;
+    }
+  }, []);
+
+  useEffect(() => {
+    void detectKernels();
+  }, [detectKernels]);
+
+  const installKernel = useCallback(
+    (kernelId: string) => {
+      const existing = kernelInstallPromisesRef.current.get(kernelId);
+      if (existing) return existing;
+      const api = bridge();
+      if (!api?.installKernel) {
+        setKernelInstallStates((current) => ({
+          ...current,
+          [kernelId]: { status: 'error', error: '当前桌面版本不支持内核安装' },
+        }));
+        return Promise.resolve();
+      }
+
+      const installPromise = (async () => {
+        setKernelInstallStates((current) => ({
+          ...current,
+          [kernelId]: { status: 'installing' },
+        }));
+        try {
+          const result = await api.installKernel(kernelId);
+          if (!result.ok) throw new Error(result.error || '安装命令执行失败');
+          if (!kernelInstallMountedRef.current) return;
+          setKernelInstallStates((current) => ({
+            ...current,
+            [kernelId]: { status: 'verifying' },
+          }));
+          const detected = await detectKernels();
+          if (!detected?.some((kernel) => kernel.kernelId === kernelId && kernel.installed)) {
+            throw new Error('安装完成，但仍未检测到内核');
+          }
+          if (!kernelInstallMountedRef.current) return;
+          setKernelInstallStates((current) => ({
+            ...current,
+            [kernelId]: { status: 'success' },
+          }));
+        } catch (error) {
+          if (!kernelInstallMountedRef.current) return;
+          setKernelInstallStates((current) => ({
+            ...current,
+            [kernelId]: {
+              status: 'error',
+              error: error instanceof Error ? error.message : String(error),
+            },
+          }));
+        } finally {
+          kernelInstallPromisesRef.current.delete(kernelId);
+        }
+      })();
+      kernelInstallPromisesRef.current.set(kernelId, installPromise);
+      return installPromise;
+    },
+    [detectKernels],
+  );
+
+  const slashCommands = useMemo(() => (slash ? filterSlashCommands(slash.query) : []), [slash]);
+  const filteredSlashSkills = useMemo(() => {
+    if (!slash) return [];
+    const query = slash.query.trim().toLocaleLowerCase();
+    return slashSkills.filter((skill) => {
+      if (!skill.enabled || selectedSkillVersionIds.includes(skill.skillVersionId)) return false;
+      if (!query) return true;
+      return [skill.name, skill.description, skill.skillId, skill.version]
+        .join('\n')
+        .toLocaleLowerCase()
+        .includes(query);
+    });
+  }, [selectedSkillVersionIds, slash, slashSkills]);
+  const slashItemCount = slashCommands.length + filteredSlashSkills.length;
+  const slashOpen = slash !== null;
+
+  useEffect(() => {
+    if (!slashOpen) return;
+    const api = bridge();
+    if (!api?.listSkills) return;
+    let cancelled = false;
+    setSlashSkillsLoading(true);
+    void api
+      .listSkills(props.workspaceId ? { workspaceId: props.workspaceId as WorkspaceId } : undefined)
+      .then((result) => {
+        if (!cancelled) setSlashSkills(result.skills ?? []);
+      })
+      .catch(() => {
+        if (!cancelled) setSlashSkills([]);
+      })
+      .finally(() => {
+        if (!cancelled) setSlashSkillsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [props.workspaceId, slashOpen]);
+
+  const updatePickersFromCaret = useCallback((text: string, caret: number) => {
+    const mention = detectMentionQuery(text, caret);
+    if (mention) {
+      setAtQuery(mention);
+      setSlash(null);
+      setSlashIndex(0);
+      return;
+    }
+    setAtQuery(null);
+    const nextSlash = detectSlashQuery(text, caret);
+    setSlash(nextSlash);
+    if (!nextSlash) setSlashIndex(0);
+  }, []);
+
+  const selectSlashCommand = useCallback(
+    (command: SlashCommand) => {
+      if (!slash) return;
+      const next =
+        props.draft.slice(0, slash.slashIndex) +
+        `${command.command} ` +
+        props.draft.slice(slash.caret);
+      props.onDraftChange(next);
+      setSlash(null);
+      setSlashIndex(0);
+      window.requestAnimationFrame(() => {
+        inputRef.current?.focus();
+        inputRef.current?.setSelectionRange(
+          slash.slashIndex + command.command.length + 1,
+          slash.slashIndex + command.command.length + 1,
+        );
+      });
+    },
+    [props, slash],
+  );
+
+  const selectSlashSkill = useCallback(
+    (skill: SkillVersionSummary) => {
+      if (!slash) return;
+      const stripped = stripSlashToken(props.draft, slash);
+      props.onDraftChange(stripped.text);
+      setSelectedSkillVersionIds((current) =>
+        resolveAppendSkillVersionIds(draftTrack, [...current, skill.skillVersionId]),
+      );
+      setSlash(null);
+      setSlashIndex(0);
+      window.requestAnimationFrame(() => {
+        inputRef.current?.focus();
+        inputRef.current?.setSelectionRange(stripped.caret, stripped.caret);
+      });
+    },
+    [draftTrack, props, slash],
+  );
+
+  const addImageFiles = useCallback(
+    async (files: FileList | File[]) => {
+      const remainingSlots = Math.max(
+        0,
+        8 - attachments.filter((item) => item.kind === 'image').length,
+      );
+      const list = Array.from(files).filter(isImageFile).slice(0, remainingSlots);
+      if (list.length === 0) return;
+      const nextItems: ComposeAttachment[] = [];
+      for (const file of list) {
+        try {
+          const rawUrl = await readFileAsDataUrl(file);
+          const compressed = await compressImageDataUrl(rawUrl, {
+            mimeType: file.type || 'image/png',
+          });
+          nextItems.push({
+            path: `image:${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${file.name}`,
+            name: file.name || 'image',
+            kind: 'image',
+            previewUrl: compressed.dataUrl,
+            mimeType: compressed.mimeType,
+            sizeBytes: Math.floor(
+              (compressed.dataUrl.length - compressed.dataUrl.indexOf(',') - 1) * 0.75,
+            ),
+          });
+        } catch {
+          setComposeNotice(`图片读取失败：${file.name || '未命名图片'}`);
+        }
+      }
+      if (nextItems.length === 0) return;
+      setAttachments((current) => {
+        let next = [...current];
+        for (const item of nextItems) next = addAttachment(next, item);
+        return next.slice(0, 8);
+      });
+      setComposeNotice(undefined);
+    },
+    [attachments],
+  );
+
+  const handleImageInputChange = useCallback(
+    (event: React.ChangeEvent<HTMLInputElement>) => {
+      const files = event.target.files;
+      if (files && files.length > 0) void addImageFiles(files);
+      event.target.value = '';
+    },
+    [addImageFiles],
+  );
+
+  const handlePaste = useCallback(
+    (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+      const files = Array.from(event.clipboardData?.items ?? [])
+        .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+        .map((item) => item.getAsFile())
+        .filter((file): file is File => Boolean(file));
+      if (files.length === 0) return;
+      event.preventDefault();
+      void addImageFiles(files);
+    },
+    [addImageFiles],
+  );
+
+  const handleDragEnter = useCallback((event: React.DragEvent) => {
+    if (![...event.dataTransfer.types].includes('Files')) return;
+    event.preventDefault();
+    setDragOver(true);
+  }, []);
+  const handleDragOver = useCallback((event: React.DragEvent) => {
+    if (![...event.dataTransfer.types].includes('Files')) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+    setDragOver(true);
+  }, []);
+  const handleDragLeave = useCallback((event: React.DragEvent) => {
+    event.preventDefault();
+    if (event.currentTarget === event.target) setDragOver(false);
+  }, []);
+  const handleDrop = useCallback(
+    (event: React.DragEvent) => {
+      event.preventDefault();
+      setDragOver(false);
+      if (event.dataTransfer.files.length > 0) void addImageFiles(event.dataTransfer.files);
+    },
+    [addImageFiles],
+  );
+
   const submit = async () => {
+    const parsed = parseSlashCommand(props.draft);
+    if (parsed.kind === 'plan') {
+      setInteractionMode('plan');
+      props.onDraftChange('');
+      setSlash(null);
+      setComposeNotice(undefined);
+      window.requestAnimationFrame(() => inputRef.current?.focus());
+      return false;
+    }
+    if (parsed.kind === 'execute') {
+      setInteractionMode('execute');
+      props.onDraftChange('');
+      setSlash(null);
+      setComposeNotice(undefined);
+      window.requestAnimationFrame(() => inputRef.current?.focus());
+      return false;
+    }
+    if (parsed.kind === 'compact' || parsed.kind === 'compact-with-trailing') {
+      setComposeNotice('新对话还没有可压缩的上下文');
+      return false;
+    }
+    if (
+      parsed.kind === 'goal' ||
+      parsed.kind === 'goal-with-condition' ||
+      parsed.kind === 'goal-clear'
+    ) {
+      setComposeNotice('先发送第一条消息，再为对话设置目标');
+      return false;
+    }
+    if (parsed.kind === 'unknown') {
+      setComposeNotice(`未知命令：${parsed.command}`);
+      return false;
+    }
+
+    const text = parsed.kind === 'plan-with-request' ? parsed.request : props.draft;
+    const modeForTurn = parsed.kind === 'plan-with-request' ? 'plan' : interactionMode;
     const skillVersionIds = resolveAppendSkillVersionIds(draftTrack, selectedSkillVersionIds);
-    return props.onSend({
+    const sent = await props.onSend({
+      text,
+      images: messageImagesFromAttachments(attachments),
       modelId: selectedModel?.modelId ?? '',
+      kernelId: kernelOverride,
+      interactionMode: modeForTurn,
       permissionMode,
       reasoningEffort,
       networkEnabled,
       skillVersionIds,
     });
+    if (sent) {
+      setAttachments([]);
+      setComposeNotice(undefined);
+    }
+    return sent;
   };
 
   const changeNetworkSetting = (enabled: boolean) => {
@@ -3336,7 +3724,115 @@ export function EmptyTalk(props: {
           data-testid="empty-compose-wrap"
         >
           <div className="shell-chat-content mx-auto">
-            <div className="shell-compose relative" data-testid="empty-compose">
+            <div
+              className={`shell-compose relative ${dragOver ? 'is-dragover' : ''}`}
+              data-testid="empty-compose"
+              onDragEnter={handleDragEnter}
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
+            >
+              {slash ? (
+                <div
+                  className="shell-mention-pop shell-slash-pop shell-empty-slash-pop"
+                  data-testid="empty-compose-slash-pop"
+                  role="listbox"
+                  aria-label="斜杠命令"
+                >
+                  <div className="shell-slash-pop__section">命令</div>
+                  {slashCommands.length === 0 ? (
+                    <div className="shell-mention-pop__empty">无匹配命令</div>
+                  ) : (
+                    slashCommands.map((command, index) => (
+                      <button
+                        key={command.id}
+                        type="button"
+                        role="option"
+                        aria-selected={index === slashIndex}
+                        className={`shell-mention-pop__item shell-slash-pop__item ${
+                          index === slashIndex ? 'is-active' : ''
+                        }`}
+                        onMouseEnter={() => setSlashIndex(index)}
+                        onMouseDown={(event) => {
+                          event.preventDefault();
+                          selectSlashCommand(command);
+                        }}
+                      >
+                        <span className="shell-slash-pop__cmd">{command.command}</span>
+                        <span className="shell-slash-pop__meta">
+                          <span className="shell-slash-pop__label">{command.label}</span>
+                          <span className="shell-slash-pop__desc">{command.description}</span>
+                        </span>
+                      </button>
+                    ))
+                  )}
+                  <div className="shell-slash-pop__section">Skill</div>
+                  {slashSkillsLoading ? (
+                    <div className="shell-mention-pop__empty">正在读取已启用 Skill…</div>
+                  ) : filteredSlashSkills.length === 0 ? (
+                    <div className="shell-mention-pop__empty">没有匹配的已启用 Skill</div>
+                  ) : (
+                    filteredSlashSkills.map((skill, skillIndex) => {
+                      const index = slashCommands.length + skillIndex;
+                      return (
+                        <button
+                          key={skill.skillVersionId}
+                          type="button"
+                          role="option"
+                          aria-selected={index === slashIndex}
+                          className={`shell-mention-pop__item shell-slash-pop__item ${
+                            index === slashIndex ? 'is-active' : ''
+                          }`}
+                          onMouseEnter={() => setSlashIndex(index)}
+                          onMouseDown={(event) => {
+                            event.preventDefault();
+                            selectSlashSkill(skill);
+                          }}
+                        >
+                          <span className="shell-slash-pop__cmd">/{skill.name}</span>
+                          <span className="shell-slash-pop__meta">
+                            <span className="shell-slash-pop__label">{skill.name}</span>
+                            <span className="shell-slash-pop__desc">
+                              {skill.description || `v${skill.version}`}
+                            </span>
+                          </span>
+                          <span className="shell-slash-pop__badge">Skill</span>
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
+              ) : null}
+
+              {attachments.length > 0 ? (
+                <div className="shell-compose__chips" data-testid="empty-compose-attachments">
+                  {attachments.map((image) => (
+                    <div
+                      key={image.path}
+                      className="shell-attach-chip"
+                      data-kind="image"
+                      title={image.name}
+                    >
+                      {image.previewUrl ? (
+                        <span className="shell-attach-chip__thumb" aria-hidden="true">
+                          <img src={image.previewUrl} alt="" />
+                        </span>
+                      ) : null}
+                      <span className="shell-attach-chip__name">{image.name}</span>
+                      <button
+                        type="button"
+                        className="shell-attach-chip__remove"
+                        aria-label={`移除图片 ${image.name}`}
+                        onClick={() =>
+                          setAttachments((current) => removeAttachment(current, image.path))
+                        }
+                      >
+                        <X size={12} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
               <textarea
                 ref={inputRef}
                 data-testid="empty-compose-input"
@@ -3345,14 +3841,39 @@ export function EmptyTalk(props: {
                 value={props.draft}
                 onChange={(event) => {
                   props.onDraftChange(event.target.value);
-                  setAtQuery(
-                    detectMentionQuery(
-                      event.target.value,
-                      event.target.selectionStart ?? event.target.value.length,
-                    ),
+                  setComposeNotice(undefined);
+                  updatePickersFromCaret(
+                    event.target.value,
+                    event.target.selectionStart ?? event.target.value.length,
                   );
                 }}
                 onKeyDown={(event) => {
+                  if (event.key === 'Escape' && slash) {
+                    event.preventDefault();
+                    setSlash(null);
+                    setSlashIndex(0);
+                    return;
+                  }
+                  if (slash && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
+                    event.preventDefault();
+                    setSlashIndex((index) => {
+                      if (slashItemCount === 0) return 0;
+                      return event.key === 'ArrowDown'
+                        ? (index + 1) % slashItemCount
+                        : (index - 1 + slashItemCount) % slashItemCount;
+                    });
+                    return;
+                  }
+                  if (slash && (event.key === 'Enter' || event.key === 'Tab')) {
+                    const selectedCommand = slashCommands[slashIndex];
+                    const selectedSkill = filteredSlashSkills[slashIndex - slashCommands.length];
+                    if (selectedCommand || selectedSkill) {
+                      event.preventDefault();
+                      if (selectedCommand) selectSlashCommand(selectedCommand);
+                      else if (selectedSkill) selectSlashSkill(selectedSkill);
+                      return;
+                    }
+                  }
                   if (event.key === 'Escape' && atQuery) {
                     event.preventDefault();
                     setAtQuery(null);
@@ -3374,8 +3895,31 @@ export function EmptyTalk(props: {
                     void submit();
                   }
                 }}
+                onPaste={handlePaste}
+                onClick={(event) =>
+                  updatePickersFromCaret(
+                    event.currentTarget.value,
+                    event.currentTarget.selectionStart ?? 0,
+                  )
+                }
+                onSelect={(event) =>
+                  updatePickersFromCaret(
+                    event.currentTarget.value,
+                    event.currentTarget.selectionStart ?? 0,
+                  )
+                }
                 rows={1}
                 disabled={props.sending}
+              />
+              <input
+                ref={imageInputRef}
+                type="file"
+                accept="image/*"
+                multiple
+                className="shell-compose__file-input"
+                data-testid="empty-compose-image-input"
+                onChange={handleImageInputChange}
+                tabIndex={-1}
               />
               <ComposeAtSettingsMenu
                 open={Boolean(atQuery)}
@@ -3386,8 +3930,36 @@ export function EmptyTalk(props: {
                 onDismiss={dismissNetworkSetting}
                 onChange={changeNetworkSetting}
               />
+              {interactionMode === 'plan' ? (
+                <div
+                  className="shell-compose__mode-strip"
+                  data-mode="plan"
+                  data-testid="empty-compose-mode"
+                >
+                  <Compass size={13} aria-hidden="true" />
+                  <span className="shell-compose__mode-label">规划模式</span>
+                  <span className="shell-compose__mode-hint">只读分析，提交方案等待审批</span>
+                  <button
+                    type="button"
+                    className="shell-compose__mode-switch"
+                    onClick={() => setInteractionMode('execute')}
+                  >
+                    切到执行模式
+                  </button>
+                </div>
+              ) : null}
               <div className="shell-compose__bar">
                 <div className="shell-compose__bar-left">
+                  <button
+                    type="button"
+                    className="shell-compose__icon-tool"
+                    aria-label="添加图片"
+                    title="添加图片"
+                    onClick={() => imageInputRef.current?.click()}
+                    disabled={props.sending || attachments.length >= 8}
+                  >
+                    <ImagePlus size={15} />
+                  </button>
                   <div className="shell-compose__tool-wrap">
                     <button
                       ref={permissionButtonRef}
@@ -3441,14 +4013,42 @@ export function EmptyTalk(props: {
                       buttonRef={modelButtonRef}
                       onClick={() => setModelMenuOpen((value) => !value)}
                     />
+                    {kernelOverride !== 'native'
+                      ? (() => {
+                          const label = resolveKernelDisplayName(
+                            kernelOverride,
+                            activeKernel?.name,
+                          );
+                          const logo = resolveKernelBrandLogo(
+                            activeKernel ? activeKernel.icon : kernelOverride,
+                          );
+                          return (
+                            <span
+                              className={`shell-kernel-chip${logo ? ' shell-kernel-chip--logo' : ''}`}
+                              data-testid="empty-compose-kernel-chip"
+                              title={`内核：${label}`}
+                            >
+                              {logo ? <BrandLogoMark logo={logo} size={14} /> : label}
+                            </span>
+                          );
+                        })()
+                      : null}
                     <ModelPickerMenu
                       open={modelMenuOpen}
                       models={props.models}
                       selectedModelId={selectedModel?.modelId ?? ''}
                       defaultLabel="选择模型"
                       reasoningEffort={reasoningEffort}
+                      kernels={kernelRegistry ?? undefined}
+                      selectedKernelId={kernelOverride}
+                      kernelInstallStates={kernelInstallStates}
                       anchorEl={modelButtonRef.current}
                       onClose={() => setModelMenuOpen(false)}
+                      onInstallKernel={(kernelId) => void installKernel(kernelId)}
+                      onPickKernel={(kernelId) => {
+                        setKernelOverride(kernelId);
+                        writeNewConversationKernel(kernelId);
+                      }}
                       onPick={props.onModelChange}
                       onReasoningChange={setReasoningEffort}
                     />
@@ -3457,7 +4057,7 @@ export function EmptyTalk(props: {
                     type="button"
                     className="shell-compose__send"
                     onClick={() => void submit()}
-                    disabled={!props.draft.trim() || props.sending}
+                    disabled={(!props.draft.trim() && attachments.length === 0) || props.sending}
                     title="发送 (Enter)"
                     data-testid="empty-compose-send"
                   >
@@ -3465,9 +4065,9 @@ export function EmptyTalk(props: {
                   </button>
                 </div>
               </div>
-              {props.error ? (
+              {props.error || composeNotice ? (
                 <div className="px-3 pb-2 text-[11.5px] text-error" role="alert">
-                  {props.error}
+                  {props.error ?? composeNotice}
                 </div>
               ) : null}
             </div>

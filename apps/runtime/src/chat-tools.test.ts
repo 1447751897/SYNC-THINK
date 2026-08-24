@@ -22,6 +22,7 @@ import {
   parseMcpProviderToolName,
   resolveToolLoopProviderPolicy,
   splitHistoryForCompact,
+  summarizeToolCallForApproval,
   toolsForExecutionMode,
   type ChatBrowserWorkflowService,
   wrapModelCompactSummary,
@@ -321,6 +322,29 @@ describe('chat execution mode tool gating', () => {
     );
     expect(isChatToolAllowed('ask', 'write_file')).toBe(true);
     expect(isChatToolAllowed('workspace', 'write_file')).toBe(true);
+  });
+
+  it('allows host platform infrastructure tools on every mode (ask card must work outside full-access)', () => {
+    for (const mode of ['ask', 'workspace', 'full-access']) {
+      for (const tool of ['platform_context', 'ask_user_question', 'plan_submit', 'goal_manage']) {
+        expect(isChatToolAllowed(mode, tool), `${tool} in ${mode}`).toBe(true);
+      }
+    }
+  });
+
+  it('summarizes kernel native tools (Bash / Write / Read) so approval shows what runs', () => {
+    const bash = summarizeToolCallForApproval('Bash', JSON.stringify({ command: 'git status' }));
+    expect(bash.command).toBe('git status');
+    expect(bash.title).toContain('执行命令');
+    const write = summarizeToolCallForApproval(
+      'Write',
+      JSON.stringify({ file_path: 'src/a.ts', content: 'line1\nline2' }),
+    );
+    expect(write.path).toBe('src/a.ts');
+    expect(write.title).toContain('src/a.ts');
+    expect(write.detail).toContain('2 行');
+    const read = summarizeToolCallForApproval('Read', JSON.stringify({ file_path: 'src/b.ts' }));
+    expect(read.path).toBe('src/b.ts');
   });
 
   it('exposes network tools only when networkEnabled', () => {

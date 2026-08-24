@@ -32,7 +32,7 @@ const provider: ProviderSummary = {
       providerModelId: 'gpt-5',
       displayName: 'gpt-5',
       protocol: 'openai-chat',
-      capabilities: [],
+      capabilities: ['text', 'vision'],
       capabilitiesConfirmed: true,
       priority: 0,
       contextWindow: 372_000,
@@ -393,12 +393,34 @@ describe('ModelSettings NewMax provider detail', () => {
   });
 
   it('opens Vision Fallback as a list-backed detail panel and saves changes immediately', async () => {
+    runtime.listProviders.mockResolvedValueOnce({
+      providers: [
+        {
+          ...provider,
+          models: [
+            ...provider.models,
+            {
+              ...provider.models[0]!,
+              modelId: 'model-text' as ProviderSummary['models'][number]['modelId'],
+              providerModelId: 'deepseek-chat',
+              displayName: 'DeepSeek Chat',
+              capabilities: ['text'],
+              capabilitiesConfirmed: true,
+              priority: 1,
+            },
+          ],
+        },
+      ],
+    });
     await renderSettings();
     fireEvent.click(screen.getByRole('button', { name: '图片识别 Fallback' }));
 
     expect(await screen.findByRole('heading', { name: '图片识别 Fallback' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: '保存' })).toBeNull();
     fireEvent.click(screen.getByRole('switch'));
+    const picker = screen.getByRole('combobox');
+    expect(within(picker).getByRole('option', { name: /gpt-5/ })).toBeTruthy();
+    expect(within(picker).queryByRole('option', { name: /DeepSeek Chat/ })).toBeNull();
 
     await waitFor(() => {
       expect(runtime.setSetting).toHaveBeenCalledWith({

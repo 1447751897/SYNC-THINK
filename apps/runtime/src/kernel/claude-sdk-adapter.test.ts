@@ -50,7 +50,8 @@ function fakeQuery(
 
     const handle: Partial<Query> = {
       next: () => iterator.next(),
-      return: (value?: unknown) => iterator.return?.(value) ?? Promise.resolve({ done: true, value: undefined }),
+      return: (value?: unknown) =>
+        iterator.return?.(value) ?? Promise.resolve({ done: true, value: undefined }),
       throw: (error?: unknown) => iterator.throw?.(error) ?? Promise.reject(error),
       [Symbol.asyncIterator]() {
         return this as AsyncGenerator<SDKMessage, void>;
@@ -117,7 +118,7 @@ const systemInit = (sessionId = 'sdk-session-1'): SDKMessage =>
     uuid: 'uuid-init',
   }) as unknown as SDKMessage;
 
-const resultSuccess = (): SDKMessage =>
+const resultSuccess = (overrides: Record<string, unknown> = {}): SDKMessage =>
   ({
     type: 'result',
     subtype: 'success',
@@ -125,6 +126,49 @@ const resultSuccess = (): SDKMessage =>
     result: 'done',
     uuid: 'uuid-result',
     session_id: 'sdk-session-1',
+    ...overrides,
+  }) as unknown as SDKMessage;
+
+const usageMessageStart = (): SDKMessage =>
+  ({
+    type: 'stream_event',
+    parent_tool_use_id: null,
+    uuid: 'uuid-message-start',
+    session_id: 'sdk-session-1',
+    event: {
+      type: 'message_start',
+      message: {
+        id: 'msg_fixture_1',
+        model: 'claude-sonnet-4-5',
+        usage: {
+          input_tokens: 10,
+          cache_creation_input_tokens: 100,
+          cache_read_input_tokens: 50,
+          output_tokens: 0,
+        },
+      },
+    },
+  }) as unknown as SDKMessage;
+
+const usageMessageDelta = (): SDKMessage =>
+  ({
+    type: 'stream_event',
+    parent_tool_use_id: null,
+    uuid: 'uuid-message-delta',
+    session_id: 'sdk-session-1',
+    event: {
+      type: 'message_delta',
+      usage: { output_tokens: 7 },
+    },
+  }) as unknown as SDKMessage;
+
+const usageMessageStop = (): SDKMessage =>
+  ({
+    type: 'stream_event',
+    parent_tool_use_id: null,
+    uuid: 'uuid-message-stop',
+    session_id: 'sdk-session-1',
+    event: { type: 'message_stop' },
   }) as unknown as SDKMessage;
 
 /** Drive the adapter to completion, auto-approving any permission request. */
@@ -186,6 +230,73 @@ describe('ClaudeSdkKernelAdapter', () => {
       },
     });
     expect(events.at(-1)).toMatchObject({ type: 'terminal', status: 'completed' });
+  });
+
+  it('waits for the completed raw message usage and preserves Claude cache reads', async () => {
+    const adapter = new ClaudeSdkKernelAdapter({
+      query: fakeQuery(async function* () {
+        yield usageMessageStart();
+        yield assistantWithToolUse();
+        yield usageMessageDelta();
+        yield usageMessageStop();
+        yield resultSuccess();
+      }),
+    });
+
+    const { events } = await collect(adapter);
+    const usageEvents = events.filter((event) => event.type === 'usage');
+
+    expect(usageEvents).toEqual([
+      {
+        type: 'usage',
+        usage: {
+          real: 167,
+          window: 200_000,
+          input: 160,
+          output: 7,
+          cached: 50,
+          cachedTokensCreated: 100,
+          requestId: 'msg_fixture_1',
+          providerResponseId: 'msg_fixture_1',
+          modelId: 'claude-sonnet-4-5',
+        },
+      },
+    ]);
+  });
+
+  it('falls back to result modelUsage when raw usage events are unavailable', async () => {
+    const adapter = new ClaudeSdkKernelAdapter({
+      query: fakeQuery(async function* () {
+        yield resultSuccess({
+          modelUsage: {
+            'claude-sonnet-4-5': {
+              inputTokens: 12,
+              outputTokens: 8,
+              cacheReadInputTokens: 70,
+              cacheCreationInputTokens: 5,
+              contextWindow: 200_000,
+            },
+          },
+        });
+      }),
+    });
+
+    const { events } = await collect(adapter);
+    expect(events.find((event) => event.type === 'usage')).toEqual({
+      type: 'usage',
+      usage: {
+        real: 95,
+        window: 200_000,
+        input: 87,
+        output: 8,
+        cached: 70,
+        cachedTokensCreated: 5,
+        requestId: 'uuid-result:claude-sonnet-4-5',
+        providerResponseId: 'uuid-result',
+        modelId: 'claude-sonnet-4-5',
+        kernelWindow: 200_000,
+      },
+    });
   });
 
   it('reports the Claude session from system/init', async () => {
@@ -264,6 +375,122 @@ describe('ClaudeSdkKernelAdapter', () => {
     expect(events).toContainEqual({ type: 'reasoning', text: 'pondering' });
   });
 
+  it('announces a tool at content_block_start and finalizes its streamed arguments', async () => {
+    const adapter = new ClaudeSdkKernelAdapter({
+      query: fakeQuery(async function* () {
+        yield {
+          type: 'stream_event',
+          parent_tool_use_id: null,
+          uuid: 'u-tool-start',
+          session_id: 's',
+          event: {
+            type: 'content_block_start',
+            index: 0,
+            content_block: { type: 'tool_use', id: 'toolu_live', name: 'Bash', input: {} },
+          },
+        } as unknown as SDKMessage;
+        yield {
+          type: 'stream_event',
+          parent_tool_use_id: null,
+          uuid: 'u-tool-args',
+          session_id: 's',
+          event: {
+            type: 'content_block_delta',
+            index: 0,
+            delta: { type: 'input_json_delta', partial_json: '{"command":"sleep 1"}' },
+          },
+        } as unknown as SDKMessage;
+        yield {
+          type: 'stream_event',
+          parent_tool_use_id: null,
+          uuid: 'u-tool-stop',
+          session_id: 's',
+          event: { type: 'content_block_stop', index: 0 },
+        } as unknown as SDKMessage;
+        yield resultSuccess();
+      }),
+    });
+
+    const { events } = await collect(adapter);
+    expect(events.filter((event) => event.type === 'tool-call')).toEqual([
+      {
+        type: 'tool-call',
+        toolId: 'toolu_live',
+        name: 'Bash',
+        argsJson: '{}',
+        partial: true,
+      },
+      {
+        type: 'tool-call',
+        toolId: 'toolu_live',
+        name: 'Bash',
+        argsJson: '{"command":"sleep 1"}',
+        partial: false,
+      },
+    ]);
+  });
+
+  it('keeps the complete assistant arguments when they arrive before content_block_stop', async () => {
+    const adapter = new ClaudeSdkKernelAdapter({
+      query: fakeQuery(async function* () {
+        yield {
+          type: 'stream_event',
+          parent_tool_use_id: null,
+          uuid: 'u-tool-start-truncated',
+          session_id: 's',
+          event: {
+            type: 'content_block_start',
+            index: 1,
+            content_block: {
+              type: 'tool_use',
+              id: 'toolu_1',
+              name: 'fixture_tool',
+              input: {},
+            },
+          },
+        } as unknown as SDKMessage;
+        yield {
+          type: 'stream_event',
+          parent_tool_use_id: null,
+          uuid: 'u-tool-args-truncated',
+          session_id: 's',
+          event: {
+            type: 'content_block_delta',
+            index: 1,
+            delta: { type: 'input_json_delta', partial_json: '{"arg":"' },
+          },
+        } as unknown as SDKMessage;
+        yield assistantWithToolUse();
+        yield {
+          type: 'stream_event',
+          parent_tool_use_id: null,
+          uuid: 'u-tool-stop-truncated',
+          session_id: 's',
+          event: { type: 'content_block_stop', index: 1 },
+        } as unknown as SDKMessage;
+        yield resultSuccess();
+      }),
+    });
+
+    const { events } = await collect(adapter);
+    expect(events.filter((event) => event.type === 'tool-call')).toEqual([
+      {
+        type: 'tool-call',
+        toolId: 'toolu_1',
+        name: 'fixture_tool',
+        argsJson: '{}',
+        partial: true,
+      },
+      {
+        type: 'tool-call',
+        toolId: 'toolu_1',
+        name: 'fixture_tool',
+        argsJson: '{"arg":"value"}',
+        partial: false,
+      },
+    ]);
+  });
+
   it('projects a replayed assistant tool_use block only once', async () => {
     const adapter = new ClaudeSdkKernelAdapter({
       query: fakeQuery(async function* () {
@@ -274,6 +501,7 @@ describe('ClaudeSdkKernelAdapter', () => {
     });
     const { events } = await collect(adapter);
     expect(events.filter((event) => event.type === 'tool-call')).toHaveLength(1);
+    expect(events.filter((event) => event.type === 'usage')).toHaveLength(1);
   });
 
   it('maps tool_result blocks on user messages to tool-result events', async () => {
@@ -310,15 +538,11 @@ describe('ClaudeSdkKernelAdapter', () => {
     let decision: PermissionResult | null = null;
     const adapter = new ClaudeSdkKernelAdapter({
       query: fakeQuery(async function* ({ canUseTool }) {
-        decision = await canUseTool(
-          'Bash',
-          { command: 'ls' },
-          {
-            signal: new AbortController().signal,
-            toolUseID: 'toolu_bash',
-            requestId: 'perm-1',
-          } as Parameters<CanUseTool>[2],
-        );
+        decision = await canUseTool('Bash', { command: 'ls' }, {
+          signal: new AbortController().signal,
+          toolUseID: 'toolu_bash',
+          requestId: 'perm-1',
+        } as Parameters<CanUseTool>[2]);
         yield resultSuccess();
       }),
     });
@@ -338,15 +562,11 @@ describe('ClaudeSdkKernelAdapter', () => {
     let decision: PermissionResult | null = null;
     const adapter = new ClaudeSdkKernelAdapter({
       query: fakeQuery(async function* ({ canUseTool }) {
-        decision = await canUseTool(
-          'Bash',
-          { command: 'rm -rf /' },
-          {
-            signal: new AbortController().signal,
-            toolUseID: 'toolu_bash',
-            requestId: 'perm-edit',
-          } as Parameters<CanUseTool>[2],
-        );
+        decision = await canUseTool('Bash', { command: 'rm -rf /' }, {
+          signal: new AbortController().signal,
+          toolUseID: 'toolu_bash',
+          requestId: 'perm-edit',
+        } as Parameters<CanUseTool>[2]);
         yield resultSuccess();
       }),
     });
@@ -370,15 +590,11 @@ describe('ClaudeSdkKernelAdapter', () => {
     let decision: PermissionResult | null = null;
     const adapter = new ClaudeSdkKernelAdapter({
       query: fakeQuery(async function* ({ canUseTool }) {
-        decision = await canUseTool(
-          'Bash',
-          { command: 'ls' },
-          {
-            signal: new AbortController().signal,
-            toolUseID: 'toolu_bash',
-            requestId: 'perm-deny',
-          } as Parameters<CanUseTool>[2],
-        );
+        decision = await canUseTool('Bash', { command: 'ls' }, {
+          signal: new AbortController().signal,
+          toolUseID: 'toolu_bash',
+          requestId: 'perm-deny',
+        } as Parameters<CanUseTool>[2]);
         yield resultSuccess();
       }),
     });
@@ -492,13 +708,23 @@ describe('ClaudeSdkKernelAdapter', () => {
       }, captures),
     });
 
-    await collect(
-      adapter,
-      makeRequest({
-        credential: { apiKey: 'gateway-ticket', baseUrl: 'http://127.0.0.1:43123/anthropic' },
-        session: { id: '4c793e96-7a25-4c15-94dd-19e4f9b2c7ef', mode: 'create' },
-      }),
-    );
+    const previousForcedTtl = process.env.FORCE_PROMPT_CACHING_5M;
+    process.env.FORCE_PROMPT_CACHING_5M = '1';
+    try {
+      await collect(
+        adapter,
+        makeRequest({
+          credential: {
+            apiKey: 'gateway-ticket',
+            baseUrl: 'http://127.0.0.1:43123/anthropic',
+          },
+          session: { id: '4c793e96-7a25-4c15-94dd-19e4f9b2c7ef', mode: 'create' },
+        }),
+      );
+    } finally {
+      if (previousForcedTtl === undefined) delete process.env.FORCE_PROMPT_CACHING_5M;
+      else process.env.FORCE_PROMPT_CACHING_5M = previousForcedTtl;
+    }
 
     const options = captures[0].options;
     expect(options.sessionId).toBe('4c793e96-7a25-4c15-94dd-19e4f9b2c7ef');
@@ -509,9 +735,13 @@ describe('ClaudeSdkKernelAdapter', () => {
       ANTHROPIC_BASE_URL: 'http://127.0.0.1:43123/anthropic',
       ANTHROPIC_API_KEY: 'gateway-ticket',
       ANTHROPIC_AUTH_TOKEN: 'gateway-ticket',
+      ENABLE_PROMPT_CACHING_1H: '1',
     });
+    expect(options.env).not.toHaveProperty('FORCE_PROMPT_CACHING_5M');
     // env REPLACES the subprocess environment, so PATH must survive.
-    expect((options.env as Record<string, string>).PATH ?? (options.env as Record<string, string>).Path).toBeTruthy();
+    expect(
+      (options.env as Record<string, string>).PATH ?? (options.env as Record<string, string>).Path,
+    ).toBeTruthy();
   });
 
   it('keeps local Claude settings available when reusing the local login', async () => {
@@ -521,9 +751,19 @@ describe('ClaudeSdkKernelAdapter', () => {
         yield resultSuccess();
       }, captures),
     });
-    await collect(adapter);
+    const previousForcedTtl = process.env.FORCE_PROMPT_CACHING_5M;
+    process.env.FORCE_PROMPT_CACHING_5M = '1';
+    try {
+      await collect(adapter);
+    } finally {
+      if (previousForcedTtl === undefined) delete process.env.FORCE_PROMPT_CACHING_5M;
+      else process.env.FORCE_PROMPT_CACHING_5M = previousForcedTtl;
+    }
     expect(captures[0].options.settingSources).toBeUndefined();
-    expect((captures[0].options.env as Record<string, string>).ANTHROPIC_API_KEY).toBeUndefined();
+    const env = captures[0].options.env as Record<string, string>;
+    expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(env.ENABLE_PROMPT_CACHING_1H).toBe('1');
+    expect(env).not.toHaveProperty('FORCE_PROMPT_CACHING_5M');
   });
 
   it('resumes an existing Claude session without pinning a replacement id', async () => {
@@ -818,15 +1058,11 @@ describe('ClaudeSdkKernelAdapter', () => {
     const adapter = new ClaudeSdkKernelAdapter({
       query: fakeQuery(async function* ({ canUseTool, signal }) {
         yield systemInit();
-        decision = await canUseTool(
-          'Bash',
-          { command: 'sleep 100' },
-          {
-            signal,
-            toolUseID: 'toolu_bash',
-            requestId: 'perm-cancel',
-          } as Parameters<CanUseTool>[2],
-        );
+        decision = await canUseTool('Bash', { command: 'sleep 100' }, {
+          signal,
+          toolUseID: 'toolu_bash',
+          requestId: 'perm-cancel',
+        } as Parameters<CanUseTool>[2]);
         yield resultSuccess();
       }),
     });
@@ -842,6 +1078,71 @@ describe('ClaudeSdkKernelAdapter', () => {
     await adapter.cancel();
 
     expect(decision).toEqual({ behavior: 'deny', message: 'run cancelled' });
+  });
+
+  it('forwards attached images as base64 image blocks', async () => {
+    const captures: QueryCapture[] = [];
+    const adapter = new ClaudeSdkKernelAdapter({
+      query: fakeQuery(async function* () {
+        yield resultSuccess();
+      }, captures),
+    });
+
+    await collect(
+      adapter,
+      makeRequest({
+        userText: '看图',
+        images: [
+          {
+            name: 'shot.png',
+            mimeType: 'image/png',
+            dataUrl: 'data:image/png;base64,QUJDRA==',
+          },
+        ],
+      }),
+    );
+
+    const prompt = captures[0].prompt as AsyncIterable<{
+      type: string;
+      message: { role: string; content: unknown[] };
+    }>;
+    const messages: Array<{ type: string; message: { role: string; content: unknown[] } }> = [];
+    for await (const message of prompt) messages.push(message);
+    const user = messages.find((message) => message.type === 'user');
+    expect(user).toBeTruthy();
+    const content = user!.message.content as Array<Record<string, unknown>>;
+    expect(content[0]).toMatchObject({ type: 'text', text: '看图' });
+    expect(content[1]).toMatchObject({
+      type: 'image',
+      source: { type: 'base64', media_type: 'image/png', data: 'QUJDRA==' },
+    });
+  });
+
+  it('drops images with non-image data URLs silently', async () => {
+    const captures: QueryCapture[] = [];
+    const adapter = new ClaudeSdkKernelAdapter({
+      query: fakeQuery(async function* () {
+        yield resultSuccess();
+      }, captures),
+    });
+
+    await collect(
+      adapter,
+      makeRequest({
+        userText: '看图',
+        images: [{ name: 'x.png', mimeType: 'image/png', dataUrl: 'sync-think-image://media/x' }],
+      }),
+    );
+
+    const prompt = captures[0].prompt as AsyncIterable<{
+      type: string;
+      message: { role: string; content: unknown[] };
+    }>;
+    const messages: Array<{ type: string; message: { role: string; content: unknown[] } }> = [];
+    for await (const message of prompt) messages.push(message);
+    const content = messages[0]!.message.content as Array<Record<string, unknown>>;
+    expect(content).toHaveLength(1);
+    expect(content[0]).toMatchObject({ type: 'text', text: '看图' });
   });
 
   it('detectVersion reports the CLI version bundled with the SDK', async () => {

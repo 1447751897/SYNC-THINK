@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { LoaderCircle, RefreshCw, RotateCcw, Webhook, X } from 'lucide-react';
 import type { Event, RunIndexEntry, RunIndexSource, RunIndexState } from '@sync-think/shared';
 import type { ActivityExternalEventSummary } from '@sync-think/protocol';
+import { resolveKernelDisplayName } from './brand-icons.js';
 
 const PAGE_LIMIT = 25;
 
@@ -342,7 +343,9 @@ export function ActivityCenterPage(props: ActivityCenterPageProps): JSX.Element 
                       <div className="activity-row__meta">
                         <span>{formatLocal(entry.startedAt)}</span>
                         <span>耗时 {formatDuration(entry)}</span>
-                        {entry.kernelId ? <span>{entry.kernelId}</span> : null}
+                        {entry.kernelId ? (
+                          <span>{resolveKernelDisplayName(entry.kernelId)}</span>
+                        ) : null}
                         {entry.modelId ? <span>{entry.modelId}</span> : null}
                       </div>
                       {entry.errorMessage ? (

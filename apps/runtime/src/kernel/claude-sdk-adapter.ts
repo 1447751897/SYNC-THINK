@@ -79,6 +79,56 @@ function mapPermissionMode(mode: KernelRequest['permissionMode']): PermissionMod
   }
 }
 
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function toClaudeSdkUsage(value: unknown): ClaudeSdkUsage {
+  if (!value || typeof value !== 'object') return {};
+  const raw = value as Record<string, unknown>;
+  const inputTokens = finiteNumber(raw.input_tokens) ?? finiteNumber(raw.inputTokens);
+  const outputTokens = finiteNumber(raw.output_tokens) ?? finiteNumber(raw.outputTokens);
+  const cacheCreationInputTokens =
+    finiteNumber(raw.cache_creation_input_tokens) ?? finiteNumber(raw.cacheCreationInputTokens);
+  const cacheReadInputTokens =
+    finiteNumber(raw.cache_read_input_tokens) ?? finiteNumber(raw.cacheReadInputTokens);
+  return {
+    ...(inputTokens !== undefined ? { input_tokens: inputTokens } : {}),
+    ...(outputTokens !== undefined ? { output_tokens: outputTokens } : {}),
+    ...(cacheCreationInputTokens !== undefined
+      ? { cache_creation_input_tokens: cacheCreationInputTokens }
+      : {}),
+    ...(cacheReadInputTokens !== undefined
+      ? { cache_read_input_tokens: cacheReadInputTokens }
+      : {}),
+  };
+}
+
+function mergeClaudeUsage(current: ClaudeSdkUsage, incoming: ClaudeSdkUsage): ClaudeSdkUsage {
+  const normalized = toClaudeSdkUsage(incoming);
+  return {
+    ...(current.input_tokens !== undefined ? { input_tokens: current.input_tokens } : {}),
+    ...(current.output_tokens !== undefined ? { output_tokens: current.output_tokens } : {}),
+    ...(current.cache_creation_input_tokens !== undefined
+      ? { cache_creation_input_tokens: current.cache_creation_input_tokens }
+      : {}),
+    ...(current.cache_read_input_tokens !== undefined
+      ? { cache_read_input_tokens: current.cache_read_input_tokens }
+      : {}),
+    ...normalized,
+  };
+}
+
+function hasClaudeUsage(value: ClaudeSdkUsage | undefined): boolean {
+  if (!value) return false;
+  return [
+    value.input_tokens,
+    value.output_tokens,
+    value.cache_creation_input_tokens,
+    value.cache_read_input_tokens,
+  ].some((candidate) => finiteNumber(candidate) !== undefined);
+}
+
 /**
  * Claude built-in tools the host does not support.
  *
@@ -182,6 +232,25 @@ export class ClaudeSdkKernelAdapter implements KernelAdapter {
   private streamedText = false;
   /** Claude may replay a complete assistant message while resuming a tool loop. */
   private readonly seenAssistantToolUses = new Set<string>();
+  /** Tool blocks currently receiving streamed input_json_delta fragments. */
+  private readonly streamedToolUses = new Map<
+    number,
+    { toolId: string; name: string; partialJson: string }
+  >();
+  /** Usage starts at message_start and is completed by message_delta. */
+  private activeStreamUsage?: {
+    id?: string;
+    model?: string;
+    usage: ClaudeSdkUsage;
+  };
+  /** Fallback usage from SDK assistant envelopes when partial stream usage is absent. */
+  private readonly pendingAssistantUsages = new Map<
+    string,
+    { id?: string; model?: string; usage: ClaudeSdkUsage }
+  >();
+  /** Prevents message_stop/result fallbacks from duplicating a completed report. */
+  private readonly emittedUsageKeys = new Set<string>();
+  private usageSequence = 0;
 
   /**
    * The SDK bundles its own CLI binary, so the kernel is always available once
@@ -273,28 +342,39 @@ export class ClaudeSdkKernelAdapter implements KernelAdapter {
     if (request.providerModelId) options.model = request.providerModelId;
 
     if (request.platformBroker) {
-      // The broker address + token ride in the server env. Unlike the CLI path
-      // this never touches disk, so there is no temp file holding a live token
-      // and nothing to clean up on cancel.
-      const broker = request.platformBroker;
-      options.mcpServers = {
-        [PLATFORM_MCP_SERVER_NAME]: {
-          type: 'stdio',
-          command: broker.command,
-          args: [...broker.args],
-          env: {
-            ST_BROKER_HOST: broker.host,
-            ST_BROKER_PORT: String(broker.port),
-            ST_BROKER_TOKEN: broker.token,
-            ST_WORKSPACE_DIR: broker.workspaceDir,
+      // In-process SDK MCP servers (design Phase 1/5): the SDK owns an
+      // in-process MCP transport, so the platform servers arrive as live
+      // `McpSdkServerConfigWithInstance` objects keyed by server name — no
+      // stdio subprocess, no broker token, nothing on disk. The SDK exposes
+      // their tools as `mcp__<server>__<tool>`.
+      if (request.platformBroker.sdkMcpServers) {
+        options.mcpServers = request.platformBroker
+          .sdkMcpServers as unknown as Options['mcpServers'];
+      } else {
+        // Legacy fallback: stdio broker path (kept for codex/pi which cannot
+        // accept in-process SDK servers).
+        const broker = request.platformBroker;
+        options.mcpServers = {
+          [PLATFORM_MCP_SERVER_NAME]: {
+            type: 'stdio',
+            command: broker.command,
+            args: [...broker.args],
+            env: {
+              ST_BROKER_HOST: broker.host,
+              ST_BROKER_PORT: String(broker.port),
+              ST_BROKER_TOKEN: broker.token,
+              ST_WORKSPACE_DIR: broker.workspaceDir,
+            },
           },
-        },
-      };
-      // Keep only this server visible; ignore the user's own MCP config.
+        };
+      }
+      // Keep only these servers visible; ignore the user's own MCP config.
       options.strictMcpConfig = true;
     }
 
     const env: Record<string, string | undefined> = { ...process.env };
+    env.ENABLE_PROMPT_CACHING_1H = '1';
+    delete env.FORCE_PROMPT_CACHING_5M;
     if (request.credential.reuseLocalLogin === true) {
       // Prefer the user's local OAuth login — do not inject a key, and leave
       // their settings sources loaded.
@@ -322,6 +402,11 @@ export class ClaudeSdkKernelAdapter implements KernelAdapter {
     this.cancelled = false;
     this.streamedText = false;
     this.seenAssistantToolUses.clear();
+    this.streamedToolUses.clear();
+    this.activeStreamUsage = undefined;
+    this.pendingAssistantUsages.clear();
+    this.emittedUsageKeys.clear();
+    this.usageSequence = 0;
     this.stderrChunks = [];
     this.pendingPermissionDecisions.clear();
     this.activeContextWindow = request.effectiveContextWindow ?? request.contextWindow ?? 128_000;
@@ -401,7 +486,7 @@ export class ClaudeSdkKernelAdapter implements KernelAdapter {
     let queryHandle: Query;
     try {
       queryHandle = runQuery({
-        prompt: singleUserMessage(request.userText),
+        prompt: singleUserMessage(request.userText, request.images),
         options: this.buildOptions(request, canUseTool, abortController),
       });
     } catch (error) {
@@ -411,9 +496,13 @@ export class ClaudeSdkKernelAdapter implements KernelAdapter {
         type: 'terminal',
         status: 'failed',
         error: redact(
-          formatKernelExitDiagnostic(this.name, null, this.stderrTail(), [
-            request.credential.apiKey,
-          ], error),
+          formatKernelExitDiagnostic(
+            this.name,
+            null,
+            this.stderrTail(),
+            [request.credential.apiKey],
+            error,
+          ),
         ),
       };
       return;
@@ -428,6 +517,7 @@ export class ClaudeSdkKernelAdapter implements KernelAdapter {
           this.processMessage(message, pushEvent);
         }
         if (!terminalSeen && !this.cancelled) {
+          this.flushPendingUsage(pushEvent);
           // The stream ended without a result message — treat as a clean end
           // only if we were not cancelled; otherwise the run loop owns it.
           pushEvent({ type: 'terminal', status: 'completed' });
@@ -525,7 +615,11 @@ export class ClaudeSdkKernelAdapter implements KernelAdapter {
           is_error?: boolean;
           result?: unknown;
           errors?: unknown;
+          uuid?: string;
+          usage?: unknown;
+          modelUsage?: unknown;
         };
+        this.flushPendingUsage(push, result);
         const failed = result.subtype !== 'success' || result.is_error === true;
         if (!failed) {
           push({ type: 'terminal', status: 'completed' });
@@ -581,18 +675,89 @@ export class ClaudeSdkKernelAdapter implements KernelAdapter {
 
   /**
    * Incremental assistant stream. Text/thinking deltas are the streaming source
-   * of truth; tool_use and usage come from the following complete `assistant`
-   * message so tool arguments never come from partial JSON.
+   * of truth. Tool blocks are announced at content_block_start so the UI can
+   * render a running row before Claude finishes producing their arguments.
    */
   private processStreamEvent(
     message: { event?: unknown },
     push: (event: KernelEvent) => void,
   ): void {
     const inner = message.event as
-      | { type?: string; delta?: { type?: string; text?: string; thinking?: string } }
+      | {
+          type?: string;
+          message?: { id?: string; model?: string; usage?: ClaudeSdkUsage };
+          usage?: ClaudeSdkUsage;
+          index?: number;
+          content_block?: { type?: string; id?: string; name?: string; input?: unknown };
+          delta?: {
+            type?: string;
+            text?: string;
+            thinking?: string;
+            partial_json?: string;
+          };
+        }
       | undefined;
-    if (inner?.type !== 'content_block_delta') return;
+    if (!inner) return;
+    if (inner.type === 'message_start') {
+      this.flushActiveStreamUsage(push);
+      this.activeStreamUsage = {
+        ...(inner.message?.id ? { id: inner.message.id } : {}),
+        ...(inner.message?.model ? { model: inner.message.model } : {}),
+        usage: inner.message?.usage ?? {},
+      };
+      return;
+    }
+    if (inner.type === 'message_delta') {
+      if (!this.activeStreamUsage) this.activeStreamUsage = { usage: {} };
+      this.activeStreamUsage.usage = mergeClaudeUsage(
+        this.activeStreamUsage.usage,
+        inner.usage ?? {},
+      );
+      if (hasClaudeUsage(inner.usage)) this.flushActiveStreamUsage(push);
+      return;
+    }
+    if (inner.type === 'message_stop') {
+      this.flushActiveStreamUsage(push);
+      return;
+    }
+    if (inner.type === 'content_block_start' && inner.content_block?.type === 'tool_use') {
+      const index = inner.index;
+      if (!Number.isInteger(index)) return;
+      const toolId = inner.content_block.id?.trim() || `tool-${randomUUID()}`;
+      const name = inner.content_block.name?.trim() || 'unknown';
+      const initialJson = JSON.stringify(inner.content_block.input ?? {});
+      this.streamedToolUses.set(index!, { toolId, name, partialJson: '' });
+      push({ type: 'tool-call', toolId, name, argsJson: initialJson, partial: true });
+      return;
+    }
+    if (inner.type === 'content_block_stop') {
+      const index = inner.index;
+      if (!Number.isInteger(index)) return;
+      const streamed = this.streamedToolUses.get(index!);
+      if (!streamed) return;
+      this.streamedToolUses.delete(index!);
+      // The SDK may publish the complete assistant envelope before this stop
+      // event. In that order the envelope already supplied authoritative input;
+      // do not overwrite it with a truncated partial_json capture.
+      if (this.seenAssistantToolUses.has(streamed.toolId)) return;
+      push({
+        type: 'tool-call',
+        toolId: streamed.toolId,
+        name: streamed.name,
+        argsJson: streamed.partialJson.trim() || '{}',
+        partial: false,
+      });
+      return;
+    }
+    if (inner.type !== 'content_block_delta') return;
     const delta = inner.delta;
+    if (delta?.type === 'input_json_delta') {
+      const index = inner.index;
+      if (!Number.isInteger(index)) return;
+      const streamed = this.streamedToolUses.get(index!);
+      if (streamed && delta.partial_json) streamed.partialJson += delta.partial_json;
+      return;
+    }
     if (delta?.type === 'text_delta' && delta.text) {
       this.streamedText = true;
       push({ type: 'delta', text: delta.text });
@@ -622,8 +787,11 @@ export class ClaudeSdkKernelAdapter implements KernelAdapter {
         if (!this.streamedText) push({ type: 'delta', text: block.text });
       } else if (block.type === 'tool_use') {
         const toolId = block.id ?? `tool-${randomUUID()}`;
-        const replayKey = `${inner.id ?? 'unknown-message'} ${toolId}`;
-        if (this.seenAssistantToolUses.has(replayKey)) continue;
+        const replayKey = `${inner.id ?? 'unknown-message'}\u0000${toolId}`;
+        if (this.seenAssistantToolUses.has(toolId) || this.seenAssistantToolUses.has(replayKey)) {
+          continue;
+        }
+        this.seenAssistantToolUses.add(toolId);
         this.seenAssistantToolUses.add(replayKey);
         push({
           type: 'tool-call',
@@ -634,33 +802,120 @@ export class ClaudeSdkKernelAdapter implements KernelAdapter {
         });
       }
     }
-    // Usage rides on assistant messages (input/output/cache split). Claude sends
-    // one assistant message per tool round; each reports the full growing prefix
-    // (mostly cache reads). Per-message reports keep distinct requestIds: the
-    // host sums them for the billing total (every request is billed) while the
-    // projector's context watermark takes the LAST request's occupancy — a tool
-    // loop must not inflate "context used" with repeated prefixes.
+    // The assistant envelope is a fallback only. Its usage is an initial snapshot
+    // while the authoritative output/cache totals arrive in message_delta.
     const usage = inner.usage;
-    if (usage) {
-      const input =
-        (usage.input_tokens ?? 0) +
-        (usage.cache_creation_input_tokens ?? 0) +
-        (usage.cache_read_input_tokens ?? 0);
-      const output = usage.output_tokens ?? 0;
-      const kernelUsage: KernelUsage = {
-        real: input + output,
-        window: this.activeContextWindow,
-        input,
-        output,
-        cached: usage.cache_read_input_tokens,
-        cachedTokensCreated: usage.cache_creation_input_tokens,
-        requestId: inner.id,
-        providerResponseId: inner.id,
-        modelId: inner.model,
-      };
-      push({ type: 'usage', usage: kernelUsage });
-      this.usageCallbacks.forEach((callback) => callback(kernelUsage));
+    if (!usage || !hasClaudeUsage(usage)) return;
+    const usageKey = inner.id?.trim() ?? `assistant-${++this.usageSequence}`;
+    const previous = this.pendingAssistantUsages.get(usageKey);
+    this.pendingAssistantUsages.set(usageKey, {
+      ...(inner.id ? { id: inner.id } : {}),
+      ...(inner.model ? { model: inner.model } : {}),
+      usage: mergeClaudeUsage(previous?.usage ?? {}, usage),
+    });
+    if (this.activeStreamUsage?.id && this.activeStreamUsage.id === inner.id) {
+      this.activeStreamUsage.usage = mergeClaudeUsage(this.activeStreamUsage.usage, usage);
     }
+  }
+
+  private flushActiveStreamUsage(push: (event: KernelEvent) => void): void {
+    const active = this.activeStreamUsage;
+    if (!active) return;
+    this.emitUsage(active.usage, push, {
+      requestId: active.id,
+      providerResponseId: active.id,
+      modelId: active.model,
+    });
+    this.activeStreamUsage = undefined;
+  }
+
+  private flushPendingUsage(
+    push: (event: KernelEvent) => void,
+    result?: { uuid?: string; usage?: unknown; modelUsage?: unknown },
+  ): void {
+    this.flushActiveStreamUsage(push);
+    if (this.emittedUsageKeys.size === 0 && result) {
+      if (this.emitResultModelUsage(result, push)) {
+        this.pendingAssistantUsages.clear();
+        return;
+      }
+    }
+    for (const [key, pending] of this.pendingAssistantUsages) {
+      this.emitUsage(pending.usage, push, {
+        requestId: pending.id ?? `claude-assistant-${key}`,
+        providerResponseId: pending.id,
+        modelId: pending.model,
+      });
+    }
+    this.pendingAssistantUsages.clear();
+    if (this.emittedUsageKeys.size === 0 && result) {
+      this.emitUsage(toClaudeSdkUsage(result.usage), push, {
+        requestId: result.uuid ? `claude-result-${result.uuid}` : undefined,
+        providerResponseId: result.uuid,
+      });
+    }
+  }
+
+  private emitResultModelUsage(
+    result: { uuid?: string; modelUsage?: unknown },
+    push: (event: KernelEvent) => void,
+  ): boolean {
+    if (!result.modelUsage || typeof result.modelUsage !== 'object') return false;
+    let emitted = false;
+    for (const [model, rawUsage] of Object.entries(result.modelUsage as Record<string, unknown>)) {
+      if (!rawUsage || typeof rawUsage !== 'object') continue;
+      const usage = toClaudeSdkUsage(rawUsage);
+      if (!hasClaudeUsage(usage)) continue;
+      const requestId = `${result.uuid ?? 'claude-result'}:${model}`;
+      emitted =
+        this.emitUsage(usage, push, {
+          requestId,
+          providerResponseId: result.uuid,
+          modelId: model,
+          kernelWindow: finiteNumber((rawUsage as Record<string, unknown>).contextWindow),
+        }) || emitted;
+    }
+    return emitted;
+  }
+
+  private emitUsage(
+    usage: ClaudeSdkUsage,
+    push: (event: KernelEvent) => void,
+    identity: {
+      requestId?: string;
+      providerResponseId?: string;
+      modelId?: string;
+      kernelWindow?: number;
+    },
+  ): boolean {
+    if (!hasClaudeUsage(usage)) return false;
+    const requestId = identity.requestId?.trim() ?? `claude-usage-${++this.usageSequence}`;
+    if (this.emittedUsageKeys.has(requestId)) return false;
+    this.emittedUsageKeys.add(requestId);
+    const input =
+      (usage.input_tokens ?? 0) +
+      (usage.cache_creation_input_tokens ?? 0) +
+      (usage.cache_read_input_tokens ?? 0);
+    const output = usage.output_tokens ?? 0;
+    const kernelUsage: KernelUsage = {
+      real: input + output,
+      window: this.activeContextWindow,
+      input,
+      output,
+      ...(usage.cache_read_input_tokens !== undefined
+        ? { cached: usage.cache_read_input_tokens }
+        : {}),
+      ...(usage.cache_creation_input_tokens !== undefined
+        ? { cachedTokensCreated: usage.cache_creation_input_tokens }
+        : {}),
+      ...(identity.kernelWindow !== undefined ? { kernelWindow: identity.kernelWindow } : {}),
+      ...(requestId ? { requestId } : {}),
+      ...(identity.providerResponseId ? { providerResponseId: identity.providerResponseId } : {}),
+      ...(identity.modelId ? { modelId: identity.modelId } : {}),
+    };
+    push({ type: 'usage', usage: kernelUsage });
+    this.usageCallbacks.forEach((callback) => callback(kernelUsage));
+    return true;
   }
 
   async stop(): Promise<void> {
@@ -728,11 +983,31 @@ function toPermissionResult(decision: KernelPermissionDecision): PermissionResul
  * path depends on. The iterable closes immediately after the single message:
  * the turn still runs to completion, and closing tells the SDK no further user
  * input is coming.
+ *
+ * Attached images are forwarded as Anthropic base64 image blocks when the
+ * host resolved them to data URLs; invalid URLs are dropped silently (the
+ * host already decided these are the images the model should see).
  */
-async function* singleUserMessage(text: string): AsyncIterable<SDKUserMessage> {
+const SUPPORTED_IMAGE_MEDIA_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
+
+async function* singleUserMessage(
+  text: string,
+  images?: Array<{ name: string; mimeType: string; dataUrl: string }>,
+): AsyncIterable<SDKUserMessage> {
+  const content: Array<Record<string, unknown>> = [{ type: 'text', text }];
+  for (const image of images ?? []) {
+    const match = /^data:([^;]+);base64,(.+)$/.exec(image.dataUrl);
+    if (!match) continue;
+    const mimeType = /image\/(png|jpeg|gif|webp)/.test(image.mimeType) ? image.mimeType : match[1];
+    if (!SUPPORTED_IMAGE_MEDIA_TYPES.has(mimeType)) continue;
+    content.push({
+      type: 'image',
+      source: { type: 'base64', media_type: mimeType, data: match[2] },
+    });
+  }
   yield {
     type: 'user',
-    message: { role: 'user', content: [{ type: 'text', text }] },
+    message: { role: 'user', content },
     parent_tool_use_id: null,
-  } as SDKUserMessage;
+  } as unknown as SDKUserMessage;
 }

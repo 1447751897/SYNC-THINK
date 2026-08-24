@@ -16,6 +16,7 @@ import {
   type SetConversationArchivedPayload,
   type SetConversationExecutionModePayload,
   type SetConversationInteractionModePayload,
+  type SetConversationContextWindowOverridePayload,
   type ConversationPlanSubmitPayload,
   type ConversationPlanGetPayload,
   type ConversationPlanApprovePayload,
@@ -30,7 +31,17 @@ import {
   type ConversationCompactPayload,
   type ConversationSubmitBrowserResultPayload,
 } from '@sync-think/protocol';
-import { MESSAGE_ROLES, hasOnlyKeys, isRecord, boundedAgentText, CONVERSATION_TRACKS, CONVERSATION_UPGRADE_TRACKS, TEAM_RUN_STATUSES, TEAM_KEYS, validTeamFields } from './shared.js';
+import {
+  MESSAGE_ROLES,
+  hasOnlyKeys,
+  isRecord,
+  boundedAgentText,
+  CONVERSATION_TRACKS,
+  CONVERSATION_UPGRADE_TRACKS,
+  TEAM_RUN_STATUSES,
+  TEAM_KEYS,
+  validTeamFields,
+} from './shared.js';
 import type { ChatPlanSubmission } from '@sync-think/shared';
 
 export function parseAppendMessagePayload(value: unknown): AppendMessagePayload | undefined {
@@ -111,7 +122,8 @@ export function parseAppendMessagePayload(value: unknown): AppendMessagePayload 
       // Prefer stagingPath for large images; dataUrl is small-image fallback only.
       if (!hasDataUrl && !hasStagingPath) return undefined;
       if (image.dataUrl !== undefined && !hasDataUrl && !hasStagingPath) return undefined;
-      if (image.stagingPath !== undefined && typeof image.stagingPath !== 'string') return undefined;
+      if (image.stagingPath !== undefined && typeof image.stagingPath !== 'string')
+        return undefined;
     }
   }
   let skillVersionIds: string[] | undefined;
@@ -127,7 +139,9 @@ export function parseAppendMessagePayload(value: unknown): AppendMessagePayload 
 }
 
 /** 校验 ask_user_question 工具输入：questions 数组（id/question 必填）。 */
-export function parseAskUserQuestionInput(value: unknown): { questions: AskQuestion[] } | undefined {
+export function parseAskUserQuestionInput(
+  value: unknown,
+): { questions: AskQuestion[] } | undefined {
   if (!isRecord(value) || !Array.isArray(value.questions) || value.questions.length === 0) {
     return undefined;
   }
@@ -137,13 +151,20 @@ export function parseAskUserQuestionInput(value: unknown): { questions: AskQuest
     if (typeof raw.id !== 'string' || raw.id.length === 0 || raw.id.length > 128) {
       return undefined;
     }
-    if (typeof raw.question !== 'string' || raw.question.length === 0 || raw.question.length > 4_000) {
+    if (
+      typeof raw.question !== 'string' ||
+      raw.question.length === 0 ||
+      raw.question.length > 4_000
+    ) {
       return undefined;
     }
     if (raw.header !== undefined && (typeof raw.header !== 'string' || raw.header.length > 200)) {
       return undefined;
     }
-    if (raw.detail !== undefined && (typeof raw.detail !== 'string' || raw.detail.length > 40_000)) {
+    if (
+      raw.detail !== undefined &&
+      (typeof raw.detail !== 'string' || raw.detail.length > 40_000)
+    ) {
       return undefined;
     }
     if (raw.multi_select !== undefined && typeof raw.multi_select !== 'boolean') {
@@ -153,7 +174,8 @@ export function parseAskUserQuestionInput(value: unknown): { questions: AskQuest
     if (raw.intent !== undefined) {
       if (!isRecord(raw.intent)) return undefined;
       if (raw.intent.kind !== undefined && typeof raw.intent.kind !== 'string') return undefined;
-      if (raw.intent.approve !== undefined && typeof raw.intent.approve !== 'string') return undefined;
+      if (raw.intent.approve !== undefined && typeof raw.intent.approve !== 'string')
+        return undefined;
       intent = {
         ...(typeof raw.intent.kind === 'string' ? { kind: raw.intent.kind } : {}),
         ...(typeof raw.intent.approve === 'string' ? { approve: raw.intent.approve } : {}),
@@ -163,7 +185,12 @@ export function parseAskUserQuestionInput(value: unknown): { questions: AskQuest
     if (raw.options !== undefined) {
       if (!Array.isArray(raw.options) || raw.options.length > 12) return undefined;
       for (const option of raw.options) {
-        if (!isRecord(option) || typeof option.label !== 'string' || option.label.length === 0 || option.label.length > 200) {
+        if (
+          !isRecord(option) ||
+          typeof option.label !== 'string' ||
+          option.label.length === 0 ||
+          option.label.length > 200
+        ) {
           return undefined;
         }
         if (
@@ -194,7 +221,12 @@ export function parseAskUserQuestionInput(value: unknown): { questions: AskQuest
 export function parseConversationAskAnswerPayload(
   value: unknown,
 ): ConversationAskAnswerPayload | undefined {
-  if (!isRecord(value) || typeof value.askId !== 'string' || value.askId.length === 0 || value.askId.length > 128) {
+  if (
+    !isRecord(value) ||
+    typeof value.askId !== 'string' ||
+    value.askId.length === 0 ||
+    value.askId.length > 128
+  ) {
     return undefined;
   }
   if (!Array.isArray(value.answers) || value.answers.length === 0 || value.answers.length > 12) {
@@ -202,7 +234,12 @@ export function parseConversationAskAnswerPayload(
   }
   const answers: ConversationAskAnswerPayload['answers'] = [];
   for (const raw of value.answers) {
-    if (!isRecord(raw) || typeof raw.id !== 'string' || raw.id.length === 0 || raw.id.length > 128) {
+    if (
+      !isRecord(raw) ||
+      typeof raw.id !== 'string' ||
+      raw.id.length === 0 ||
+      raw.id.length > 128
+    ) {
       return undefined;
     }
     if (!Array.isArray(raw.selected) || raw.selected.length > 12) return undefined;
@@ -224,7 +261,12 @@ export function parseConversationAskAnswerPayload(
 export function parseConversationAskCancelPayload(
   value: unknown,
 ): ConversationAskCancelPayload | undefined {
-  if (!isRecord(value) || typeof value.askId !== 'string' || value.askId.length === 0 || value.askId.length > 128) {
+  if (
+    !isRecord(value) ||
+    typeof value.askId !== 'string' ||
+    value.askId.length === 0 ||
+    value.askId.length > 128
+  ) {
     return undefined;
   }
   return { askId: value.askId };
@@ -246,11 +288,7 @@ export function parseListTeamsPayload(value: unknown): Record<string, never> | u
 }
 
 export function parseCreateTeamPayload(value: unknown): CreateTeamPayload | undefined {
-  if (
-    !isRecord(value) ||
-    !hasOnlyKeys(value, TEAM_KEYS) ||
-    !validTeamFields(value, { full: true })
-  )
+  if (!isRecord(value) || !hasOnlyKeys(value, TEAM_KEYS) || !validTeamFields(value, { full: true }))
     return undefined;
   return value as unknown as CreateTeamPayload;
 }
@@ -286,9 +324,7 @@ export function parseStartTeamRunPayload(value: unknown): StartTeamRunPayload | 
   };
 }
 
-export function parseSetTeamRunStatusPayload(
-  value: unknown,
-): SetTeamRunStatusPayload | undefined {
+export function parseSetTeamRunStatusPayload(value: unknown): SetTeamRunStatusPayload | undefined {
   if (
     !isRecord(value) ||
     !hasOnlyKeys(value, ['runId', 'status']) ||
@@ -349,11 +385,7 @@ export function parseConversationListMessagesPayload(
 export function parseConversationGetRunProcessPayload(
   value: unknown,
 ): ConversationGetRunProcessPayload | undefined {
-  if (
-    !isRecord(value) ||
-    !hasOnlyKeys(value, ['runId']) ||
-    !boundedAgentText(value.runId, 128)
-  ) {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['runId']) || !boundedAgentText(value.runId, 128)) {
     return undefined;
   }
   return { runId: value.runId as ConversationGetRunProcessPayload['runId'] };
@@ -457,7 +489,34 @@ export function parseSetConversationInteractionModePayload(
     return undefined;
   return {
     conversationId: value.conversationId as SetConversationInteractionModePayload['conversationId'],
-    interactionMode: value.interactionMode as SetConversationInteractionModePayload['interactionMode'],
+    interactionMode:
+      value.interactionMode as SetConversationInteractionModePayload['interactionMode'],
+  };
+}
+
+export function parseSetConversationContextWindowOverridePayload(
+  value: unknown,
+): SetConversationContextWindowOverridePayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['conversationId', 'contextWindowOverride']) ||
+    !boundedAgentText(value.conversationId, 128)
+  ) {
+    return undefined;
+  }
+  if (value.contextWindowOverride !== null) {
+    if (
+      !Number.isSafeInteger(value.contextWindowOverride) ||
+      (value.contextWindowOverride as number) < 1_024 ||
+      (value.contextWindowOverride as number) > 10_000_000
+    ) {
+      return undefined;
+    }
+  }
+  return {
+    conversationId:
+      value.conversationId as SetConversationContextWindowOverridePayload['conversationId'],
+    contextWindowOverride: value.contextWindowOverride as number | null,
   };
 }
 
@@ -490,9 +549,15 @@ function isChatPlanRisk(value: unknown): value is ChatPlanSubmission['risks'][nu
 
 function isChatPlanSubmission(value: unknown): value is ChatPlanSubmission {
   if (!isRecord(value)) return false;
-  if (typeof value.title !== 'string' || value.title.length === 0 || value.title.length > 200) return false;
+  if (typeof value.title !== 'string' || value.title.length === 0 || value.title.length > 200)
+    return false;
   if (typeof value.goal !== 'string' || value.goal.length > 5000) return false;
-  if (!Array.isArray(value.scope) || !Array.isArray(value.assumptions) || !Array.isArray(value.decisions)) return false;
+  if (
+    !Array.isArray(value.scope) ||
+    !Array.isArray(value.assumptions) ||
+    !Array.isArray(value.decisions)
+  )
+    return false;
   if (!Array.isArray(value.steps) || value.steps.length === 0) return false;
   for (const s of value.steps) if (!isChatPlanStep(s)) return false;
   if (!Array.isArray(value.risks)) return false;
@@ -577,7 +642,9 @@ export function parseConversationPlanCancelPayload(
     !boundedAgentText(value.conversationId, 128)
   )
     return undefined;
-  return { conversationId: value.conversationId as ConversationPlanCancelPayload['conversationId'] };
+  return {
+    conversationId: value.conversationId as ConversationPlanCancelPayload['conversationId'],
+  };
 }
 
 export function parseConversationCompactPayload(
@@ -636,10 +703,8 @@ export function parseConversationCompactPayload(
     mode: value.mode as ConversationCompactPayload['mode'],
     contextWindow:
       typeof value.contextWindow === 'number' ? Math.round(value.contextWindow) : undefined,
-    usedTokens:
-      typeof value.usedTokens === 'number' ? Math.round(value.usedTokens) : undefined,
-    keepRecent:
-      typeof value.keepRecent === 'number' ? Math.round(value.keepRecent) : undefined,
+    usedTokens: typeof value.usedTokens === 'number' ? Math.round(value.usedTokens) : undefined,
+    keepRecent: typeof value.keepRecent === 'number' ? Math.round(value.keepRecent) : undefined,
     onlyIfNeeded: value.onlyIfNeeded as boolean | undefined,
   };
 }

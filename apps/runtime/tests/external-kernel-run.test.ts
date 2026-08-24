@@ -66,6 +66,42 @@ class FixtureKernelAdapter implements KernelAdapter {
   onUsage(_callback: (usage: KernelUsage) => void): void {}
 }
 
+class AttemptKernelAdapter implements KernelAdapter {
+  readonly id = 'fixture-kernel';
+  readonly name = 'Attempt Kernel';
+  readonly icon = 'fixture';
+  readonly knownGoodVersions = ['1.0.0'];
+  readonly capabilities = {
+    protocols: ['openai-responses' as const],
+    permission: 'own' as const,
+    permissionBridge: false,
+    pause: 'session' as const,
+    compress: 'own' as const,
+    usageReport: true,
+  };
+  readonly requests: KernelRequest[] = [];
+
+  constructor(private readonly attempts: readonly (readonly KernelEvent[])[]) {}
+
+  async detectVersion(): Promise<string | null> {
+    return '1.0.0';
+  }
+
+  async *start(request: KernelRequest): AsyncIterable<KernelEvent> {
+    this.requests.push(request);
+    yield* this.attempts[this.requests.length - 1] ?? [];
+  }
+
+  async stop(): Promise<void> {}
+  async pause(): Promise<void> {}
+  async resume(): Promise<void> {}
+  async cancel(): Promise<void> {}
+  onExit(_callback: (code: number | null, stderrTail: string) => void): void {}
+  onPermissionRequest(_callback: (request: KernelPermissionRequest) => void): void {}
+  respondPermission(_requestId: string, _decision: KernelPermissionDecision): void {}
+  onUsage(_callback: (usage: KernelUsage) => void): void {}
+}
+
 class ExitDiagnosticKernelAdapter implements KernelAdapter {
   readonly id = 'fixture-kernel';
   readonly name = 'Fixture Kernel';
@@ -389,6 +425,7 @@ async function createFixture(events: readonly KernelEvent[], adapterOverride?: K
     messageStore,
     workspaceId: 'workspace-external-kernel' as WorkspaceId,
     kernelAdapterResolver: () => adapter,
+    modelRetryBaseDelayMs: 0,
   });
   const runId = `run-${Date.now()}-${Math.random().toString(36).slice(2)}` as RunId;
   const run = createDemoRun(runId, threadId, 'fixture prompt', {
@@ -407,6 +444,47 @@ function assistantMessage(messages: Message[]): Message | undefined {
 }
 
 describe('Runtime external kernel finalization', () => {
+  it('retries a 503 and continues the same run on its configured fallback model', async () => {
+    const serviceUnavailable: KernelEvent = {
+      type: 'terminal',
+      status: 'failed',
+      error:
+        'unexpected status 503 Service Unavailable: Service temporarily unavailable, url: https://provider.example/responses',
+    };
+    const adapter = new AttemptKernelAdapter([
+      [serviceUnavailable],
+      [
+        { type: 'delta', text: 'fallback recovered' },
+        { type: 'terminal', status: 'completed' },
+      ],
+    ]);
+    const fixture = await createFixture([], adapter);
+    try {
+      const run = fixture.harness.demoRuns.get(fixture.runId)!;
+      fixture.harness.demoRuns.set(fixture.runId, {
+        ...run,
+        fallbackModelIds: ['fallback-model'],
+      });
+
+      await fixture.harness.executeExternalKernelRun(fixture.runId);
+
+      expect(adapter.requests.map((request) => request.model)).toEqual([
+        'fixture-model',
+        'fallback-model',
+      ]);
+      const events = fixture.stateStore.listEventsByRun(fixture.runId);
+      expect(events.filter((event) => event.type === 'run.retrying')).toHaveLength(0);
+      expect(events.filter((event) => event.type === 'run.fallback.selected')).toHaveLength(1);
+      expect(events.at(-1)?.type).toBe('run.completed');
+      expect(events.at(-1)?.payload).toMatchObject({
+        assistantText: 'fallback recovered',
+        providerModelId: 'fallback-model',
+      });
+    } finally {
+      fixture.connection.raw.close();
+    }
+  });
+
   it('persists the latest streamed text in the terminal event and final message', async () => {
     const fixture = await createFixture([
       { type: 'delta', text: 'hello ' },
@@ -436,6 +514,49 @@ describe('Runtime external kernel finalization', () => {
         ],
       });
       expect(assistant?.blocks[1]).toEqual({ type: 'text', text: 'hello kernel' });
+    } finally {
+      fixture.connection.raw.close();
+    }
+  });
+
+  it('keeps reasoning and commentary when a tool result contains an embedded image', async () => {
+    const fixture = await createFixture([
+      { type: 'reasoning', text: 'inspect resources' },
+      { type: 'delta', text: '我先检查资源。' },
+      {
+        type: 'tool-call',
+        toolId: 'tool-image-source',
+        name: 'command_execution',
+        argsJson: '{"command":"search source"}',
+      },
+      {
+        type: 'tool-result',
+        toolId: 'tool-image-source',
+        output: 'const icon = `data:image/png;base64,' + 'A'.repeat(300_000) + '`;',
+      },
+      { type: 'delta', text: '最终结论。' },
+      { type: 'terminal', status: 'completed' },
+    ]);
+    try {
+      await fixture.harness.executeExternalKernelRun(fixture.runId);
+
+      const assistant = assistantMessage(
+        fixture.messageStore.listMessages(fixture.threadId as never).messages,
+      );
+      const serialized = JSON.stringify(assistant?.blocks ?? []);
+      const metadata = assistant?.blocks.find((block) => block.type === 'commentary') as
+        { payload?: { assistantTimeline?: Array<Record<string, unknown>> } } | undefined;
+
+      expect(serialized).not.toMatch(/data:image\//i);
+      expect(serialized).toContain('embedded image omitted');
+      expect(metadata?.payload?.assistantTimeline).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ kind: 'thinking', text: 'inspect resources' }),
+          expect.objectContaining({ kind: 'text', phase: 'commentary', text: '我先检查资源。' }),
+          expect.objectContaining({ kind: 'tool', toolCallId: 'tool-image-source' }),
+          expect.objectContaining({ kind: 'text', phase: 'final_answer', text: '最终结论。' }),
+        ]),
+      );
     } finally {
       fixture.connection.raw.close();
     }
@@ -658,6 +779,47 @@ describe('Runtime external kernel finalization', () => {
     }
   });
 
+  it('upserts streamed tool arguments without duplicating the assistant timeline row', async () => {
+    const fixture = await createFixture([
+      {
+        type: 'tool-call',
+        toolId: 'tool-streamed',
+        name: 'Bash',
+        argsJson: '{}',
+        partial: true,
+      },
+      {
+        type: 'tool-call',
+        toolId: 'tool-streamed',
+        name: 'Bash',
+        argsJson: '{"command":"sleep 1"}',
+        partial: false,
+      },
+      { type: 'tool-result', toolId: 'tool-streamed', output: 'ok', isError: false },
+      { type: 'terminal', status: 'completed' },
+    ]);
+    try {
+      await fixture.harness.executeExternalKernelRun(fixture.runId);
+      const assistant = assistantMessage(
+        fixture.messageStore.listMessages(fixture.threadId as never).messages,
+      );
+      const commentary = assistant?.blocks.find((block) => block.type === 'commentary') as
+        { payload?: { assistantTimeline?: unknown[] } } | undefined;
+      const toolRows = (commentary?.payload?.assistantTimeline ?? []).filter(
+        (segment) => (segment as { kind?: string }).kind === 'tool',
+      );
+      expect(toolRows).toHaveLength(1);
+      expect(toolRows[0]).toMatchObject({
+        toolCallId: 'tool-streamed',
+        argumentsJson: '{"command":"sleep 1"}',
+        output: 'ok',
+        status: 'completed',
+      });
+    } finally {
+      fixture.connection.raw.close();
+    }
+  });
+
   it('reveals a batch-announced tool sequence one-by-one and converges the full timeline', async () => {
     // claude-code announces the whole batch in one assistant message while it
     // executes tools sequentially. The reveal logic must put the first row into
@@ -791,6 +953,9 @@ describe('Runtime external kernel finalization', () => {
       expect(firstRequest.systemContext).toContain('Project fact');
       expect(firstRequest.systemContext).toContain('remember this context');
       expect(firstRequest.systemContext).toContain('context remembered');
+      expect(firstRequest.systemContext).toContain('Simplified Chinese');
+      expect(firstRequest.systemContext).toContain('thinking/reasoning');
+      expect(firstRequest.systemContext).toContain('Do not switch to English');
       expect(firstRequest.systemContext).not.toContain('### User\nnext turn');
 
       const unestablishedRuntime = new Runtime({
@@ -1094,6 +1259,8 @@ describe('Runtime external kernel finalization', () => {
       await firstRuntime.executeExternalKernelRun(firstRunId);
       expect(firstAdapter.requests[0].session).toEqual({ mode: 'create' });
       expect(firstAdapter.requests[0].systemContext).toContain('Restored conversation context');
+      expect(firstAdapter.requests[0].systemContext).toContain('Simplified Chinese');
+      expect(firstAdapter.requests[0].systemContext).toContain('thinking/reasoning');
       const sessionRecord = appSettingStore
         .list()
         .find((record) => record.key.startsWith('kernel.session.codex.'));

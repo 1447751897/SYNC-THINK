@@ -1,3 +1,19 @@
+## 2026-08-24：合并远程 NewMax 与本地 Runtime 增强
+
+### Changed
+
+- 以远程最新 `origin/feature/inline-process-ui@8073d3c` 为基线，合入原本基于 `e8f762b` 的本地未提交功能，集成分支为 `codex/integrate-local-newmax`。
+- 冲突由远程 NewMax 改版与本地功能开发同时修改相同行触发，集中在 `ChatView.tsx`、`ModelSettings.tsx`、`shell.css`、`tokens.css`、两份开发状态文档和 Shell token 源。最终以远程 NewMax 的布局、几何和视觉令牌为主，保留本地的行为与防溢出约束；生成型 `tokens.css` 由合并后的 token 源重新生成。
+- 保留远程的 NewMax 工作区、模型设置结构、活动中心“重新编辑”、daemon 登录自启和服务商目录；同时保留本地的失效模型自动恢复、外部内核 fallback、图片 Composer、视觉模型 Fallback、Windows OCR、平台 MCP Server、过程时间线、上下文与用量投影。
+- 模型卡片同时呈现 NewMax 状态/套餐徽标与本地模板可用性；模型设置同时保留云同步入口和图片识别 Fallback。活动中心恢复指令只预填 Composer，不自动发送。
+
+### Verification
+
+- Desktop 全量 `171 files / 1387 tests`、Runtime 全量 `150 files / 1133 tests` 通过；根级 typecheck `20/20`、lint `11/11`（0 error）、设计令牌检查和 `git diff --check` 通过。
+- `pnpm exec turbo run build --force` 全量构建 `11/11`，`0 cached`；Renderer、Preload 与 Runtime 均从当前合并源码重新生成。
+- 已冷重启到最终新构建：Electron PID `31004`、managed daemon PID `35656 / 18524`、Runtime PID `51012`。`runtime.healthcheck` 返回 `ok=true`、protocol v2、`inFlightRuns=0`，pipe smoke 返回 `PIPE_SMOKE_OK`，启动 stderr 为空。
+- 真实 Electron 窗口检查主工作区与模型设置：NewMax 六分类轨道、真实 Provider 列表、图片识别 Fallback、规划/执行模型和模型配置云同步同时可见，页面无重叠或横向溢出。重启日志位于 `.data/local-restart-20260824-201649-integrated-final/`。
+
 ## 2026-08-24：Desktop 对齐 NewMax 1.1.14 视觉体系
 
 ### Changed
@@ -41,6 +57,157 @@
 - Desktop 聚焦测试 4 files / 42 tests（含自启动 supervisor 8/8）通过；Desktop/Runtime typecheck 通过，根级 build 11/11。
 - 真实 Electron 验证：关闭 Desktop 后原 daemon/Runtime 继续运行；重开后注册表回退成功，daemon 重启后报告 `autostart: true`。实测关闭/开启均返回成功并依次报告 `false` / `true`。
 - 1424x861 实窗检查智能体网格/列表、设置、Skill 市场、后台活动与 12 标签管理器，无页面横向溢出；活动中心不存在“重发”按钮。
+
+## 2026-08-23：失效模型自动恢复与外部内核故障转移
+
+### Fixed
+
+- 修复会话仍保存已停用模型覆盖时继续请求旧供应商的问题。模型目录加载后会自动切换到首个可用模型并同步本地会话偏好；发送参数和模型菜单使用同一份可用目录，不再透传已删除模型或已停用 Provider。
+- ClaudeCode 与 GPT/Codex 外部内核现已接入宿主备用模型链。终态 503、429、timeout、5xx、网络错误和 401/403 会按失败类别续接可用 fallback；明确终态 503 直接切换，终态前连接中断只快速重试当前模型一次，已停用 Provider 会被跳过。
+- 失败执行卡新增“选择模型并重试”。用户选择可用模型后，应用更新会话覆盖并自动重新发送该轮用户消息，不必返回设置页修改。
+- 发送前的模型可用性检查仅作用于真实 Provider 运行；Fake/offline adapter 的 fixture 模型不再被供应商目录误判为失效。
+
+### Verification
+
+- Runtime 全量 `150 files / 1131 tests`、Desktop 全量 `168 files / 1355 tests` 通过；外部内核、fallback 与最终消息定向复跑 `3 files / 34 tests` 通过。
+- 根级 typecheck `20/20`、lint `11/11`（0 error，保留既有 warning）、生产构建 `11/11` 与设计 token 检查通过。
+- 最新构建已冷重启：Electron PID `55020`、managed daemon PID `56304 / 45704`、Runtime PID `48588`；窗口 Responding，`runtime.healthcheck` 为 `ok=true`、protocol v2、`inFlightRuns=0`，pipe smoke 返回 `PIPE_SMOKE_OK`，启动 stderr 为空。
+- 实窗打开原 503 会话后，当前模型已从停用的 `grok-4.5` 恢复为 `GPT-5.6 Luna`；失败卡可打开“选择模型并重试”，菜单只列可用供应商且不再包含 `KMKAPI-GROK`。日志位于 `.data/local-restart-20260823-202043-model-fallback/`。
+
+## 2026-08-23：新建对话 Composer、设置页溢出与高对比换肤地基
+
+### Added
+
+- 新建对话空态补齐内核选择、图片选择/粘贴/拖放/预览、图片-only 首发、`/` 命令与 Skill 菜单、规划/执行模式；首条消息会真实携带 `kernelId`、`images` 和 `interactionMode`。
+- 新对话内核偏好通过 `sync-think.newConversationKernel` 持久化；Conversation 创建后立即写入内核、思考强度、联网与交互模式，进入正式聊天时不回退默认值。
+- 新增 `control`、`control-hover`、`selection`、`selection-border`、`focus-ring` 语义 token，为后续 `data-skin` 用户换肤保留稳定组件契约。
+
+### Changed
+
+- 常规聊天 Composer 增加明确的“添加图片”图标按钮；空态 Composer 与正式 Composer 使用一致的附件和模式交互语言。
+- 浅色与深色表面改为高对比中性绿灰，提升次级文字、弱文字和边框辨识度；交互控件改为只消费语义 token。
+- 设置 Dialog 改为固定导航、正文纵向滚动、底栏独立；菜单、设置正文和模型配置区补齐收缩与 `overflow-x` 边界，移除无意义的左右滚动条。
+
+### Verification
+
+- Desktop 定向回归 4 files / 88 tests 全部通过；根级 typecheck 20/20、build 11/11、`pnpm lint:tokens` 与 `git diff --check` 通过。
+- Phase 3 Electron 视觉采集生成 18/18 张浅色、深色与紧凑窗口截图，manifest 位于 `.data/phase3-visual/current/manifest.json`。
+- 最新构建已冷重启到 `dev-0001`：Electron PID `58892`、Runtime PID `14876`，窗口响应正常；`runtime.healthcheck` 为 `ok=true`、protocol v2、`inFlightRuns=0`，pipe smoke 返回 `PIPE_SMOKE_OK`，启动 stderr 为空。
+- 实窗确认新建对话图片入口、内核菜单和 `/` 命令菜单可见可用；设置通用页与模型页只有正文纵向滚动，未出现 Dialog 级横向滚动条。日志位于 `.data/local-restart-20260823-185542-ui-theme-composer/`。
+
+## 2026-08-23：会话上下文容量、可见压缩与实时工具运行态
+
+### Added
+
+- 上下文环新增会话级容量编辑：支持保存 1,024 到 10,000,000 Token 的覆盖值或恢复模型默认，并同时展示模型默认、会话设置、实际容量和容量来源。
+- Runtime/Protocol/Storage 新增 `conversation.setContextWindowOverride` 与迁移 `0050_conversation_context_window_override`；上下文查询携带当前内核，状态缓存按模型与内核隔离。
+- 自动压缩新增运行中、跳过、失败与完成状态；成功后展示耗时、压缩前后 Token 和折叠消息数，失败不再静默。
+
+### Changed
+
+- 容量优先级固定为“模型默认 -> 会话覆盖 -> 不可覆盖的内核上限”。ClaudeCode 保持 200k 原生上限；Codex/GPT 接受会话容量配置。
+- Native 继续由宿主管理 70% 自动压缩；ClaudeCode、Codex 等自管压缩的外部内核只展示内核通知，宿主不再执行第二次压缩。
+- Codex resident app-server 的默认空闲回收时间从 15 分钟延长到 1 小时；进程回收后仍通过持久 `threadId` 和 `thread/resume` 恢复。
+- Claude SDK 在 `content_block_start` 到达时立即创建工具运行态，流式 JSON 参数和结果按稳定 `toolId` 原位更新。批量/并行调用逐项出现、乱序完成时不重复行；运行中命令展示旋转状态、计时和最新输出。
+
+### Verification
+
+- Protocol 34/34、Storage 定向 50/50、Runtime 上下文/Claude/外部内核 73/73、Desktop payload 与 ContextRing 45/45 通过；收尾定向回归为 Desktop `3 files / 59 tests`、Runtime `5 files / 84 tests`，全部通过。
+- 最新构建已冷重启到 `dev-0001`：Electron PID `34200`、managed daemon PID `45476 / 25856`、Runtime PID `20928`；`runtime.healthcheck` 为 `ok=true`、protocol v2、`inFlightRuns=0`，pipe smoke 返回 `PIPE_SMOKE_OK`。
+- 实窗验证会话容量保存/恢复、ClaudeCode `200k` 非覆盖内核上限、内核菜单品牌图标与安装状态；日志位于 `.data/local-restart-20260823-160718-context-tools-final/`，stderr 为空。
+
+### Remaining
+
+- Native/ClaudeCode/GPT packaged 多轮真实供应商矩阵和外部内核统一 fallback 仍属于首版 P0；本轮未把定向协议回放结果冒充为完整供应商验收。
+
+## 2026-08-23：视觉能力判定与附件自动降级顺序收口
+
+### Changed
+
+- 聊天附件改为宿主确定性流水线：支持视觉的当前模型直接接收原图；文本模型优先使用已启用且配置有效的视觉 Fallback；未启用、配置无效、调用报错或返回空内容时自动降级到 Windows OCR。
+- Windows OCR 现在在主模型调用前由 Runtime 自动执行并把识别文字注入本轮上下文，不再依赖 Native、ClaudeCode 或 GPT 自行决定是否调用 `ocr_image`；`ocr_image` / `describe_image` 仍保留给模型主动读取工作区已有图片。
+- 文本模型在视觉 Fallback 与 OCR 都失败时不再收到原始图片，改为获得明确的预处理失败说明；新增 `imagesMode=ocr`，聊天区分别提示视觉模型描述、Windows OCR 与双重失败。
+- 视觉能力以已确认的模型 capability 为权威；未确认时使用模型名启发式，未知模型保守进入 Fallback/OCR。视觉 Fallback 仅接受供应商已启用且被判定支持视觉的模型，设置页不再列出已确认的文本模型。
+- 已将附件兼容性接入 Native 主模型故障转移：当本轮原图已经直传视觉主模型时，同 Provider 优先级和 Agent `fallbackModelIds` 都会跳过纯文本候选；没有可用视觉候选时明确暂停，不把原图转发给文本备用模型。
+- Windows OCR 的 WinRT await 改用 `GetAwaiter().GetResult()`，并在入口规范化绝对 Windows 路径；`C:/...` 工具参数不再因 WinRT 路径字符规则失败。
+
+### Verification
+
+- Runtime 视觉/OCR 与 fallback 定向回归 6 files / 45 tests、Desktop 模型设置与消息投影 2 files / 35 tests 通过。
+- 本机现存 PNG 真实调用 Windows OCR 成功，返回 `zh-Hans-CN` 与 556 个识别字符。
+- Runtime/Desktop typecheck、根生产构建 11/11、Runtime/Desktop lint（0 error，Desktop 保留既有 18 条 Hook warning）、Prettier 与 `git diff --check` 通过。
+
+### Remaining
+
+- Native 主模型失败已有“同模型重试 -> 同 Provider 优先级 -> Agent fallbackModelIds”链；ClaudeCode/GPT 外部内核失败仍直接终结，尚未接入同一宿主 fallback 尝试循环。
+
+## 2026-08-23：ClaudeCode 提示缓存 TTL 固定为 1 小时
+
+### Changed
+
+- Claude Agent SDK 的本机登录与配置 API Key 两条启动路径现在都显式设置 `ENABLE_PROMPT_CACHING_1H=1`，请求 1 小时提示缓存。
+- 启动环境会移除父进程继承的 `FORCE_PROMPT_CACHING_5M`，避免 5 分钟强制配置覆盖 1 小时策略。
+- 该设置控制 ClaudeCode/Anthropic 兼容请求的缓存策略；实际命中仍要求提示前缀完全一致，且非 Anthropic 网关可能忽略对应缓存控制。
+
+### Verification
+
+- Claude SDK Adapter 定向回归 39/39 通过；Runtime typecheck 与 build 通过。
+
+## 2026-08-22：执行过程信息层级与时间顺序收口
+
+### Changed
+
+- 执行过程移除 `01 / 02 / 03` 人工序号；普通正文与 commentary 改为主文字色并顶格显示，工具调用和运行状态统一缩进 `20px`、降低一个文字层级，形成“正文主轴、工具辅助动作”的 DeThink 式阅读层级。
+- Think、工具详情仍逐行独立展开；不恢复“全部展开 / 全部收起”。最终完整结论继续位于执行面板之外，面板标题保留过程项数和本轮总耗时。
+- 修复终态兼容数据的正文补回顺序：缺失 commentary 现在按 `afterSequence` 与工具 durable sequence 插回对应边界，并按 id + 出现次数去重；多次出现相同文字时不再被错误吞掉。
+- Phase 3 新增 `inline-process-hierarchy` 视觉夹具和 Electron 截图矩阵，覆盖浅色、深色与 `760px` 窄屏，持续校验无序号、正文顶格、工具缩进以及最终回答位于面板外。
+
+### Verification
+
+- `InlineProcessFlow.test.tsx` 34/34 通过；执行面板与视觉夹具组合回归 42/42 通过，Desktop typecheck 通过。
+- Electron 视觉矩阵 18 张全部生成成功；本次层级的浅色、深色、窄屏截图位于 `.data/phase3-visual/process-hierarchy-20260822/`，未发现横向溢出、文字遮挡或状态控件挤压。
+- 释放异常占用约 27 GB 提交内存的视觉辅助进程后，Desktop 全量单 worker 为 168/168 files、1337/1337 tests；随后根级 `pnpm test` 为 20/20 Turbo tasks。此前 `build-assets` OOM 与 rollback watchdog 退出码 30 均已在定向及全量复跑中通过，确认不是产品代码回归。
+
+### Launch audit
+
+- 本机 DeThink `1.0.14.971` 的发布包使用独立 daemon、Claude/Codex 两个 adapter、统一 MCP server 和 Generic 更新源；其过程视图同样把自然语言正文作为主层、工具动作作为弱化层。SYNC-THINK 当前的 ordered timeline、后台 Runtime、OCR/视觉 fallback、权限审批、用量统计和应用更新控制面已具备首版基础。
+- 首版仍需完成的 P0/P1/P2 边界已写入 `docs/product/06-roadmap.md`；其中 P0 是可复现 RC、多内核真实矩阵、Runtime 重启审批语义、未完成入口收敛以及正式版本/签名/发布源，不以账号、钱包、组织、语音或云同步等商业化功能阻塞本地单用户首版。
+
+## 2026-08-22：执行时间线终态保留与 Codex Windows 完全访问修复
+
+### Fixed
+
+- 修复外部内核工具结果含 `data:image/...;base64` 时，消息块校验失败并把整条助手时间线降级为仅最终正文的问题。持久化前只清理工具参数/结果中的内嵌图片数据并写入占位说明，thinking、commentary、工具顺序与最终回答继续完整保留。
+- 执行面板在已有工具块时仍合并缺失的 commentary segment，过程中的短正文不再因终态重建而消失。
+- Codex Windows 探测优先选择同时包含 sandbox setup、command runner 与 code-mode host 的完整运行时；缺 helper 的 PATH 版本即使版本号更高也不会覆盖完整 bundle。
+- Codex 的审批与沙箱策略统一下发到 `thread/start`、`thread/resume` 和每次 `turn/start`。完全访问稳定映射为 `approvalPolicy=never` 与 `sandboxPolicy=dangerFullAccess`，恢复旧会话后也不会回落到本机默认只读策略。
+
+### Verification
+
+- Runtime 聚焦回归 4 files / 43 tests、Desktop 执行面板 33 tests；最终全仓 `pnpm test` 20/20 Turbo tasks、typecheck 20/20、build 11/11、lint 11/11（0 error）通过。
+- 本机解析到 Codex `0.149.0` 完整运行时；真实三轮持久会话与两次内置 PowerShell 命令执行成功。原始 rollout 的三个 `turn_context` 均记录 `approval_policy=never`、`sandbox_policy=danger-full-access`。
+
+## 2026-08-22：外部内核思考语言稳定为简体中文
+
+### Fixed
+
+- 统一 native、Claude Code 和 Codex 的语言规则：可见的 thinking/reasoning、过程说明和自然语言回答默认使用简体中文；英文代码、命令、API 名、路径、标识符和专有名词保留原文，不再因用户消息或工具输出包含英文而随机切换。
+- 将语言规则追加到外部内核的稳定 `systemContext`。规则变化会参与 Claude/Codex 会话指纹，旧会话自动重建，避免继续复用没有中文规则的历史 system prompt。
+
+### Verification
+
+- Runtime 聚焦回归：4 个测试文件 / 69 个测试通过；Runtime typecheck 与 lint 通过。
+
+## 2026-08-22：NewMax 式完整结论边界与 Claude 缓存用量修复
+
+### Fixed
+
+- Claude Code 等缺少原生 phase metadata 的正文尾部继续逐 delta 进入 reconnect-safe transient draft，但不再作为临时 text item 插入“执行过程”。工具边界确认的正文按原 sequence 进入过程面板；终态确认的 `final_answer` 只在面板外显示一次，消除“先在面板流完、再跳到聊天正文”的位置迁移。
+- Claude Agent SDK 不再把分块 `assistant.message.usage` 当作最终统计。Adapter 合并真实 `message_start + message_delta` 的每请求用量，保留 `cache_read_input_tokens` / `cache_creation_input_tokens`；缺少 partial usage 时使用 `result.modelUsage` 兜底。因此 Claude 的“缓存读取未上报”和流式阶段 `output_tokens=0`/旧值问题得到修复。
+
+### Verification
+
+- Renderer 与 Claude Adapter 定向回归 2 files / 51 tests 通过；真实 Claude 2.1.222 抓包额外断言两轮请求的缓存读取、缓存创建、输入和输出值。
 
 ## 2026-08-21：后台活动中心（TD-048）
 
@@ -165,7 +332,7 @@
 
 - Desktop 正常退出只断开 UI；升级或显式停止后台服务才执行有界停机。daemon 启动时探测、拉起并监督长期 Runtime，异常退出后自动重启。
 - Codex 切换到官方 `codex app-server` JSON-RPC；同一 Conversation + Kernel 持久化原生 `threadId`，进程驻留时复用，回收或 Runtime 重启后以 `thread/resume` 恢复。
-- 新增 `BoundedKernelSessionHost`：Codex 原生 `threadId` 继续由 Runtime 持久化，resident app-server 改为有上限、可回收的执行资源。生产默认最多 4 个 app-server，空闲 15 分钟后停止；容量满时优先 LRU 淘汰空闲实例，全部活跃时新会话等待槽位。
+- 新增 `BoundedKernelSessionHost`：Codex 原生 `threadId` 继续由 Runtime 持久化，resident app-server 改为有上限、可回收的执行资源。生产默认最多 4 个 app-server；2026-08-23 起空闲 1 小时后停止。容量满时优先 LRU 淘汰空闲实例，全部活跃时新会话等待槽位。
 - 活跃 turn（包含等待命令/文件审批）持有租约，不受空闲计时器或 LRU 淘汰影响；Runtime 显式停止时统一停止 resident app-server，但不删除持久会话。
 - daemon dispatch ack 只表示 Runtime 已接收；并发槽位持续到 `task.dispatch.complete`、abort 或崩溃接管。
 - Runtime 级恢复回归：容量 1 下执行 A → B → A，确认进程依次回收后 A 仍以首次持久化 `threadId` 走 `thread/resume`。
@@ -3532,3 +3699,64 @@ Desktop typecheck/build：passed
 - 审批卡 approve/deny 目前只有 Runtime 级测试覆盖，尚未在实窗完成点选证据；重启后历史一致性同样未在本轮实窗验证。
 - Browser/Desktop 工具本轮仍不向外部内核暴露；Pi 只有安装引导，没有内核适配器。
 - 幂等仅覆盖同 Run 内重放，跨进程重启的持久化 operation key 尚未实现。
+
+## 2026-08-21：大数据库冷启动与迁移锁恢复
+
+### Fixed
+
+- Desktop 冷启动等待 daemon 的时间提升到 120 秒，覆盖大数据库备份/迁移耗时；daemon 仍在运行时不再过早触发 Runtime fallback，避免多个进程同时争抢迁移锁。
+- Storage 迁移器检测到锁文件记录的 PID 已退出时自动回收残留锁，正常退出的活跃迁移锁仍保持保护。
+- 新增迁移锁残留恢复回归测试和 Desktop 冷启动等待阈值测试。
+
+### Verification
+
+- Storage migration tests：49/49。
+- Desktop runtime-supervisor tests：7/7。
+- Storage、Runtime、Desktop build 全部通过。
+
+## 2026-08-21：内核用量、权限快照与 Claude 缓存诊断修正
+
+### Fixed
+
+- 上下文指标改为最近一次 Provider 请求的输入 Token，不再把输出 Token 混入上下文水位，避免后续回答较短时界面显示上下文反而下降；输出仍单独展示，累计计费口径保持不变。
+- 外部 Codex/Claude 会话指纹纳入宿主权限与规划模式，并在 `run.started` 记录权限快照；权限切换后会创建带正确宿主权限说明的新会话，避免旧会话继续携带过期的只读/规划语义。
+- Claude SDK 重放相同 assistant envelope 时按消息 ID 去重 usage 事件，避免同一条缓存/用量被重复累计。上游未返回缓存字段时继续显示“未上报”，不虚构缓存命中。
+
+### Verification
+
+- Runtime 定向测试 52/52；Desktop 用量与 ChatView 定向测试 17/17；根目录构建 11/11。
+
+## 2026-08-22：内核选择器品牌图标、名称与无框样式修正
+
+### Fixed
+
+- `codex` 内核在用户界面显示为“GPT”并使用 ChatGPT 彩色图标；`claude-code` 显示为“ClaudeCode”，使用橙底白色放射形 Claude SVG。内部 kernel id、Runtime 注册名和协议保持不变。
+- 移除内核图标占位容器的边框、底色与阴影；ClaudeCode 和 GPT 图标自身保留品牌底块，Pi 与 Sync-Think 直接显示标志。
+- Sync-Think 使用主题文字色蒙版：浅色模式为黑色，深色模式为白色，不再跟随绿色强调色。
+- 内核选择器继续使用紧凑两行信息布局，并保留现有选中、安装和禁用行为。
+
+### Verification
+
+- Desktop 聚焦回归 4 files / 30 tests 通过；Desktop typecheck、lint（0 errors）、设计令牌检查、生产构建和 `git diff --check` 通过。
+- Electron 实窗分别验证浅色与深色主题：Sync-Think 为黑/白主题色，ClaudeCode 与 GPT 品牌图标和名称正确，图标外层无边框、底色或阴影；测试后恢复原浅色主题与“完全访问”权限。
+
+## 2026-08-22：透明内核图标、Windows OCR 与 Codex 图片协议修复
+
+### Added
+
+- 新增始终加载的只读 `ocr_image` 工具，使用 Windows `Windows.Media.Ocr` 从工作区 PNG / JPEG / GIF / WebP 提取文字，不依赖视觉模型或网络；支持系统用户语言和可选 BCP-47 语言标签。
+- OCR 通过统一内核 MCP 注册表暴露给 Native、ClaudeCode、GPT/Codex 与 Pi；文本模型附件会落盘到 `.newmax-attachments/` 并收到真实路径与工具提示，视觉模型仍直接接收原图。
+
+### Fixed
+
+- Codex App Server 图片输入从已失效的 `{ type: "input_image", image_url }` 修正为当前 `UserInput.Image` 的 `{ type: "image", url }`，消除 `unknown variant input_image`。
+- `describe_image` 与 `ocr_image` 都进入 Native 统一宿主执行路由，避免工具已出现在目录中但调用后落入 `unknown tool`。
+- ClaudeCode 图标去除橙色底块，只保留橙色放射标志；GPT 图标去除绿色底块并改为随浅深主题切换的单色 ChatGPT 标志。
+- 移除执行过程的“全部展开 / 全部收起”，保留 Think 与每个工具行的独立展开。
+
+### Verification
+
+- Runtime 全量 150 files / 1112 tests、Desktop 全量 168 files / 1334 tests 通过；根级 typecheck 20/20、生产构建 11/11 通过。
+- Runtime / Desktop lint 均为 0 error（Desktop 保留 18 条既有 Hook warning），设计令牌检查通过。
+- 新 OCR 模块在本机直接识别用户报错截图成功，返回 `zh-Hans-CN` 并提取到 `unknown ... input_image` 关键错误文本；Electron 实窗使用 `deepseek-v4-flash` 文本模型完成 `ocr_image` 调用并显示“Windows OCR 识别完成”。
+- Electron 实窗验证浅色与深色主题：ClaudeCode 为透明橙色标志，GPT 与 Sync-Think 分别随主题显示黑色 / 白色透明标志；执行过程展开态无“全部展开 / 全部收起”。验证后已恢复浅色主题、折叠执行过程并关闭模型选择器。

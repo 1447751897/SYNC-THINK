@@ -33,6 +33,8 @@ export const conversation = sqliteTable(
      * executionMode permission knob.
      */
     interactionMode: text('interaction_mode').notNull().default('execute'),
+    /** Optional per-conversation context capacity; null inherits the model default. */
+    contextWindowOverride: integer('context_window_override'),
     /**
      * Lazily-bound task backing this conversation's message thread. Null until
      * the first message creates a task (P1.1). One task per conversation.

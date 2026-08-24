@@ -100,10 +100,15 @@
       "id": "states",
       "prefix": "--color-",
       "utilities": true,
-      "_note": "NewMax interaction overlays. Dark values are copied from --ds-on-surface and --ds-on-surface-active so hover and selection stay translucent across every surface.",
+      "_note": "NewMax interaction overlays with stable semantic control, selection and focus roles for future data-skin themes.",
       "tokens": {
         "hover": ["#efece3", "rgba(168, 184, 176, 0.08)"],
-        "active": ["#f2eee6", "rgba(168, 184, 176, 0.16)"]
+        "active": ["#f2eee6", "rgba(168, 184, 176, 0.16)"],
+        "control": ["#ffffff", "#252726"],
+        "control-hover": ["#efece3", "#2a2d2b"],
+        "selection": ["#f2eee6", "#2a2d2b"],
+        "selection-border": ["#2f9b5b", "#36d385"],
+        "focus-ring": ["#247648", "#36d385"]
       }
     },
 

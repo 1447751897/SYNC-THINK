@@ -8,8 +8,6 @@ import {
   Brain,
   Check,
   ChevronDown,
-  ChevronsDownUp,
-  ChevronsUpDown,
   Circle,
   CircleAlert,
   FileCode2,
@@ -369,7 +367,7 @@ function ToolRow({
             <span>原始工具</span>
             <code>{item.name}</code>
           </div>
-          {elapsed ?? liveElapsed ? (
+          {(elapsed ?? liveElapsed) ? (
             <div className="shell-inline-process__detail-row">
               <span>耗时</span>
               <code>{elapsed ?? liveElapsed}</code>
@@ -378,10 +376,7 @@ function ToolRow({
           {item.argumentsJson ? (
             <div className="shell-inline-process__detail-block">
               <span>参数</span>
-              <ToolPayload
-                text={item.argumentsJson}
-                testId="inline-process-tool-arguments"
-              />
+              <ToolPayload text={item.argumentsJson} testId="inline-process-tool-arguments" />
             </div>
           ) : null}
           {item.result !== undefined ? (
@@ -455,11 +450,265 @@ function ProcessItemView({
   );
 }
 
+function ProcessEntry({
+  item,
+  index,
+  streaming,
+  now,
+  expandedItemKeys,
+  toggleItem,
+}: {
+  item: InlineProcessItem;
+  index: number;
+  streaming?: boolean;
+  now: number;
+  expandedItemKeys: ReadonlySet<string>;
+  toggleItem(itemKey: string): void;
+}) {
+  // Stable key first (toolCallId / id / sequence) so status updates reuse the
+  // row instead of remounting it.
+  const itemKey = processItemKey(item, index);
+  return (
+    <div className="shell-inline-process__entry" data-testid="process-entry" key={itemKey}>
+      <div className="shell-inline-process__entry-content">
+        <ProcessItemView
+          item={item}
+          streaming={streaming}
+          now={now}
+          open={expandedItemKeys.has(itemKey)}
+          onToggle={() => toggleItem(itemKey)}
+        />
+      </div>
+    </div>
+  );
+}
+
+function ToolGroup({
+  entries,
+  streaming,
+  now,
+  expandedItemKeys,
+  toggleItem,
+}: {
+  entries: readonly { item: Extract<InlineProcessItem, { kind: 'tool' }>; index: number }[];
+  streaming?: boolean;
+  now: number;
+  expandedItemKeys: ReadonlySet<string>;
+  toggleItem(itemKey: string): void;
+}) {
+  const running = entries.some(({ item }) => toolStatusOf(item) === 'running');
+  return (
+    <div
+      className={`shell-inline-process__tool-group${running ? ' is-running' : ''}`}
+      data-testid="tool-group"
+      data-count={entries.length}
+    >
+      <div className="shell-inline-process__tool-group-header">
+        {running ? (
+          <LoaderCircle size={12} className="shell-inline-process__spin" aria-hidden="true" />
+        ) : (
+          <SquareTerminal size={12} aria-hidden="true" />
+        )}
+        <span>运行了 {entries.length} 个命令</span>
+      </div>
+      <div className="shell-inline-process__tool-group-items">
+        {entries.map(({ item, index }) => (
+          <ProcessEntry
+            key={processItemKey(item, index)}
+            item={item}
+            index={index}
+            streaming={streaming}
+            now={now}
+            expandedItemKeys={expandedItemKeys}
+            toggleItem={toggleItem}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function groupAdjacentTools(items: readonly InlineProcessItem[]): Array<
+  | { kind: 'item'; item: InlineProcessItem; index: number }
+  | {
+      kind: 'tool-group';
+      entries: Array<{ item: Extract<InlineProcessItem, { kind: 'tool' }>; index: number }>;
+    }
+> {
+  const result: Array<
+    | { kind: 'item'; item: InlineProcessItem; index: number }
+    | {
+        kind: 'tool-group';
+        entries: Array<{ item: Extract<InlineProcessItem, { kind: 'tool' }>; index: number }>;
+      }
+  > = [];
+  let index = 0;
+  while (index < items.length) {
+    const item = items[index]!;
+    if (item.kind !== 'tool') {
+      result.push({ kind: 'item', item, index });
+      index += 1;
+      continue;
+    }
+    const entries: Array<{
+      item: Extract<InlineProcessItem, { kind: 'tool' }>;
+      index: number;
+    }> = [];
+    while (index < items.length && items[index]?.kind === 'tool') {
+      entries.push({ item: items[index] as Extract<InlineProcessItem, { kind: 'tool' }>, index });
+      index += 1;
+    }
+    if (entries.length > 1) result.push({ kind: 'tool-group', entries });
+    else {
+      const only = entries[0]!;
+      result.push({ kind: 'item', item: only.item, index: only.index });
+    }
+  }
+  return result;
+}
+
 function processItemKey(item: InlineProcessItem, index: number): string {
   if (item.kind === 'tool' && item.toolCallId) return `tool-${item.toolCallId}`;
   if (item.id) return item.id;
   if (item.sequence !== undefined) return `${item.kind}-${item.sequence}`;
   return `${item.kind}-${index}`;
+}
+
+function enrichToolBoundaries(
+  items: readonly InlineProcessItem[],
+  steps: readonly ExecutionProcessStep[] | undefined,
+): InlineProcessItem[] {
+  if (!steps?.length) return [...items];
+  const usedSteps = new Set<number>();
+  let nextStepIndex = 0;
+
+  return items.map((item) => {
+    if (item.kind !== 'tool') return item;
+    let matchedIndex = steps.findIndex(
+      (step, index) =>
+        !usedSteps.has(index) &&
+        ((item.toolCallId && step.id === item.toolCallId) || (item.id && step.id === item.id)),
+    );
+    if (matchedIndex < 0) {
+      matchedIndex = steps.findIndex(
+        (step, index) =>
+          index >= nextStepIndex && !usedSteps.has(index) && step.toolName === item.name,
+      );
+    }
+    if (matchedIndex < 0) {
+      matchedIndex = steps.findIndex((_, index) => index >= nextStepIndex && !usedSteps.has(index));
+    }
+    if (matchedIndex < 0) return item;
+
+    usedSteps.add(matchedIndex);
+    nextStepIndex = Math.max(nextStepIndex, matchedIndex + 1);
+    const step = steps[matchedIndex];
+    if (!step) return item;
+    return {
+      ...item,
+      ...(item.sequence === undefined && step.sequence !== undefined
+        ? { sequence: step.sequence }
+        : {}),
+      ...(!item.startedAt && (step.startedAt ?? step.occurredAt)
+        ? { startedAt: step.startedAt ?? step.occurredAt }
+        : {}),
+      ...(!item.completedAt && step.completedAt ? { completedAt: step.completedAt } : {}),
+    };
+  });
+}
+
+function mergeMissingCommentary(
+  items: readonly InlineProcessItem[],
+  steps: readonly ExecutionProcessStep[] | undefined,
+  commentarySegments: readonly CommentaryTimelineSegment[] | undefined,
+): readonly InlineProcessItem[] {
+  if (!commentarySegments?.length) return items;
+  const ordered = enrichToolBoundaries(items, steps);
+  const existingIds = new Set<string>();
+  const existingTextCounts = new Map<string, number>();
+  for (const item of ordered) {
+    if (item.kind !== 'text' && item.kind !== 'commentary') continue;
+    if (item.id) existingIds.add(item.id);
+    const text = item.text.trim();
+    if (text) existingTextCounts.set(text, (existingTextCounts.get(text) ?? 0) + 1);
+  }
+  const consumeExistingText = (text: string): boolean => {
+    const count = existingTextCounts.get(text) ?? 0;
+    if (count <= 0) return false;
+    if (count === 1) existingTextCounts.delete(text);
+    else existingTextCounts.set(text, count - 1);
+    return true;
+  };
+
+  const missing = commentarySegments.flatMap((segment, originalIndex) => {
+    const text = segment.text.trim();
+    if (!text) return [];
+    if (existingIds.has(segment.id)) {
+      consumeExistingText(text);
+      return [];
+    }
+    if (consumeExistingText(text)) return [];
+    return [{ segment, originalIndex }];
+  });
+  if (missing.length === 0) return ordered;
+  missing.sort((left, right) => {
+    if (left.segment.afterSequence !== undefined && right.segment.afterSequence !== undefined) {
+      return (
+        left.segment.afterSequence - right.segment.afterSequence ||
+        left.originalIndex - right.originalIndex
+      );
+    }
+    const leftTime = Date.parse(left.segment.startedAt);
+    const rightTime = Date.parse(right.segment.startedAt);
+    if (Number.isFinite(leftTime) && Number.isFinite(rightTime) && leftTime !== rightTime) {
+      return leftTime - rightTime;
+    }
+    return left.originalIndex - right.originalIndex;
+  });
+
+  for (const { segment } of missing) {
+    const sequence = segment.afterSequence === undefined ? undefined : segment.afterSequence + 0.5;
+    const item: InlineProcessItem = {
+      kind: 'commentary',
+      id: segment.id,
+      text: segment.text,
+      status: segment.completedAt ? 'completed' : 'streaming',
+      ...(sequence === undefined ? {} : { sequence }),
+    };
+    let insertionIndex = -1;
+    if (sequence !== undefined) {
+      insertionIndex = ordered.findIndex(
+        (candidate) => candidate.sequence !== undefined && candidate.sequence > sequence,
+      );
+      if (insertionIndex < 0) {
+        for (let index = ordered.length - 1; index >= 0; index -= 1) {
+          const candidate = ordered[index];
+          if (candidate?.sequence !== undefined && candidate.sequence <= sequence) {
+            insertionIndex = index + 1;
+            break;
+          }
+        }
+      }
+    }
+    if (insertionIndex < 0) {
+      const segmentTime = Date.parse(segment.startedAt);
+      if (Number.isFinite(segmentTime)) {
+        insertionIndex = ordered.findIndex((candidate) => {
+          if (candidate.kind !== 'tool' || !candidate.startedAt) return false;
+          const candidateTime = Date.parse(candidate.startedAt);
+          return Number.isFinite(candidateTime) && candidateTime > segmentTime;
+        });
+      }
+    }
+    if (insertionIndex < 0) {
+      const firstBoundary = ordered.findIndex(
+        (candidate) => candidate.kind === 'tool' || candidate.kind === 'status',
+      );
+      insertionIndex = firstBoundary < 0 ? ordered.length : firstBoundary;
+    }
+    ordered.splice(insertionIndex, 0, item);
+  }
+  return ordered;
 }
 
 function TurnPlanSection({ plan }: { plan: TaskPlanView }) {
@@ -484,11 +733,7 @@ function TurnPlanSection({ plan }: { plan: TaskPlanView }) {
               {item.status === 'completed' ? (
                 <Check size={12} aria-hidden="true" />
               ) : item.status === 'in_progress' ? (
-                <LoaderCircle
-                  size={12}
-                  className="shell-inline-process__spin"
-                  aria-hidden="true"
-                />
+                <LoaderCircle size={12} className="shell-inline-process__spin" aria-hidden="true" />
               ) : (
                 <Circle size={10} aria-hidden="true" />
               )}
@@ -534,7 +779,9 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
   supplementalContent?: ReactNode;
 }) {
   const orderedItems = useMemo<readonly InlineProcessItem[]>(() => {
-    if (items.some((item) => item.kind === 'tool' || item.kind === 'status')) return items;
+    if (items.some((item) => item.kind === 'tool' || item.kind === 'status')) {
+      return mergeMissingCommentary(items, steps, commentarySegments);
+    }
     if (!steps?.length && !commentarySegments?.length) return items;
     const merged: InlineProcessItem[] = [];
     for (const item of buildExecutionTimeline({ steps, commentarySegments })) {
@@ -574,15 +821,6 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
       return next;
     });
   }, []);
-  const expandableItemKeys = useMemo(
-    () =>
-      orderedItems.flatMap((item, index) =>
-        item.kind === 'reasoning' || item.kind === 'tool'
-          ? [processItemKey(item, index)]
-          : [],
-      ),
-    [orderedItems],
-  );
   const [clockNow, setClockNow] = useState(() => Date.now());
   // 面板层唯一的秒级时钟，驱动总耗时、每行运行耗时和停滞分级。运行中就必须
   // 走（不能再要求 startedAt）——工具行的耗时只依赖各自的 startedAt。
@@ -605,6 +843,7 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
     () => deriveCurrentActivity(orderedItems, { streaming }),
     [orderedItems, streaming],
   );
+  const renderItems = useMemo(() => groupAdjacentTools(orderedItems), [orderedItems]);
 
   // 最后一次可见进展。指纹变化即刷新，用来把「工具在跑」和「什么都没来」
   // 区分开——前者慢是正常的，后者才可疑。
@@ -687,57 +926,30 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
               <div className="shell-process-agent-tasks__body">{agentTaskContent}</div>
             </section>
           ) : null}
-          {expandableItemKeys.length > 0 ? (
-            <div className="shell-process-panel__toolbar" aria-label="过程详情控制">
-              <button
-                type="button"
-                className="shell-process-panel__toolbar-button"
-                onClick={() => setExpandedItemKeys(new Set(expandableItemKeys))}
-              >
-                <ChevronsUpDown size={12} aria-hidden="true" />
-                <span>全部展开</span>
-              </button>
-              <button
-                type="button"
-                className="shell-process-panel__toolbar-button"
-                onClick={() => setExpandedItemKeys(new Set())}
-              >
-                <ChevronsDownUp size={12} aria-hidden="true" />
-                <span>全部收起</span>
-              </button>
-            </div>
-          ) : null}
           {orderedItems.length > 0 ? (
             <div className="shell-inline-process" data-testid="inline-process-flow">
-              {orderedItems.map((item, index) => {
-                // Stable key first (toolCallId / id / sequence) so status
-                // updates reuse the row instead of remounting it.
-                const itemKey = processItemKey(item, index);
-                return (
-                  <div
-                    key={itemKey}
-                    className="shell-inline-process__entry"
-                    data-testid="process-entry"
-                  >
-                    <span
-                      className="shell-inline-process__entry-index"
-                      data-testid="process-entry-index"
-                      aria-hidden="true"
-                    >
-                      {String(index + 1).padStart(2, '0')}
-                    </span>
-                    <div className="shell-inline-process__entry-content">
-                      <ProcessItemView
-                        item={item}
-                        streaming={streaming}
-                        now={clockNow}
-                        open={expandedItemKeys.has(itemKey)}
-                        onToggle={() => toggleItem(itemKey)}
-                      />
-                    </div>
-                  </div>
-                );
-              })}
+              {renderItems.map((entry) =>
+                entry.kind === 'tool-group' ? (
+                  <ToolGroup
+                    key={`tool-group-${entry.entries[0]?.index ?? 0}`}
+                    entries={entry.entries}
+                    streaming={streaming}
+                    now={clockNow}
+                    expandedItemKeys={expandedItemKeys}
+                    toggleItem={toggleItem}
+                  />
+                ) : (
+                  <ProcessEntry
+                    key={processItemKey(entry.item, entry.index)}
+                    item={entry.item}
+                    index={entry.index}
+                    streaming={streaming}
+                    now={clockNow}
+                    expandedItemKeys={expandedItemKeys}
+                    toggleItem={toggleItem}
+                  />
+                ),
+              )}
             </div>
           ) : null}
           {/* §活动指示器：执行过程最下方常驻 sync-thinking 脉冲——思考/工具执行

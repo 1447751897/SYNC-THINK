@@ -157,6 +157,56 @@ describe('ordered assistant timeline persistence', () => {
     expect(JSON.stringify(blocks)).toContain('content truncated');
   });
 
+  it('removes embedded image data from tool details without dropping the process timeline', () => {
+    const timeline: AssistantTurnSegment[] = [
+      {
+        id: 'commentary',
+        sequence: 0,
+        kind: 'text',
+        phase: 'commentary',
+        text: '我先检查应用资源。',
+        status: 'completed',
+      },
+      {
+        id: 'tool',
+        sequence: 1,
+        kind: 'tool',
+        toolCallId: 'call-image-source',
+        name: 'command_execution',
+        argumentsJson: '{"command":"search bundled source"}',
+        output: 'const icon = `data:image/png;base64,' + 'A'.repeat(300_000) + '`;',
+        status: 'completed',
+      },
+      {
+        id: 'answer',
+        sequence: 2,
+        kind: 'text',
+        phase: 'final_answer',
+        text: '检查完成。',
+        status: 'completed',
+      },
+    ];
+
+    const blocks = assistantTimelineToMessageBlocks(timeline);
+    const serialized = JSON.stringify(blocks);
+
+    expect(serialized).not.toMatch(/data:image\//i);
+    expect(serialized).toContain('embedded image omitted');
+    expect(blocks[0]).toMatchObject({
+      type: 'commentary',
+      payload: {
+        assistantTimeline: expect.arrayContaining([
+          expect.objectContaining({ kind: 'text', phase: 'commentary' }),
+          expect.objectContaining({ kind: 'tool', toolCallId: 'call-image-source' }),
+        ]),
+      },
+    });
+    expect(blocks).toContainEqual({ type: 'text', text: '检查完成。' });
+    expect(Buffer.byteLength(serialized, 'utf8')).toBeLessThanOrEqual(
+      MAX_MESSAGE_BLOCKS_JSON_BYTES,
+    );
+  });
+
   it('bounds a text-only fallback without splitting UTF-16 surrogate pairs', () => {
     const blocks = assistantTextFallbackMessageBlocks('回答🙂'.repeat(100_000));
 

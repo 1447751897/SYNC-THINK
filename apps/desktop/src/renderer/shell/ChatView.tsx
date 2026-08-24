@@ -18,10 +18,12 @@ import {
   Check,
   ChevronDown,
   ChevronUp,
+  Compass,
   Copy,
   FileCode2,
   FileWarning,
   FolderOpen,
+  ImagePlus,
   Info,
   Lock,
   LoaderCircle,
@@ -75,7 +77,7 @@ import { parseConversationGetContextStatusResponse } from '@sync-think/protocol/
 import type { ProjectTextLocation } from '../../workspace-tools-contract.js';
 import { AgentAvatarView } from './AgentAvatarView.js';
 import { BrandLogoMark } from './BrandLogoMark.js';
-import { resolveKernelBrandLogo } from './brand-icons.js';
+import { resolveKernelBrandLogo, resolveKernelDisplayName } from './brand-icons.js';
 import { useAutoDisclosure } from './auto-disclosure.js';
 import { BrowserHandoffCard, BrowserHandoffQueryError } from './BrowserHandoffCard.js';
 import { DesktopWaitingCard, DesktopWaitingQueryError } from './DesktopWaitingCard.js';
@@ -550,7 +552,7 @@ export function assistantTimelineProcessTiming(
 export interface ProjectedTransientAnswer {
   /** 明确的 final_answer 段（总结面板只显示这个，§12.17.7/18）。 */
   answerText: string | undefined;
-  /** 尚未被 timeline 分类的流式文本尾部（显示在过程面板当前顺序位置，§12.17.18）。 */
+  /** 尚未被 timeline 分类的流式文本尾部，等待工具/终态边界确认所属阶段。 */
   pendingText: string;
 }
 
@@ -579,6 +581,31 @@ export function projectTransientAnswerText(
       : ''
     : draftText;
   return { answerText: classifiedAnswer || undefined, pendingText };
+}
+
+export interface ProjectedTransientAssistantDisplay extends ProjectedTransientAnswer {
+  /** Only phase-confirmed items belong in the NewMax/DSH execution process. */
+  commentaryText?: string;
+  reasoningText?: string;
+  processItems?: InlineProcessItem[];
+}
+
+/**
+ * Project a live turn without making the unclassified text tail jump through
+ * the execution panel. The tail remains in the transient draft until Runtime
+ * classifies it at a tool or terminal boundary.
+ */
+export function projectTransientAssistantDisplay(
+  draftText: string,
+  timeline: readonly AssistantTurnSegment[] | undefined,
+): ProjectedTransientAssistantDisplay {
+  const timelineFields = assistantTimelineToChatFields(timeline);
+  return {
+    ...projectTransientAnswerText(draftText, timeline),
+    ...(timelineFields.commentaryText ? { commentaryText: timelineFields.commentaryText } : {}),
+    ...(timelineFields.reasoningText ? { reasoningText: timelineFields.reasoningText } : {}),
+    ...(timelineFields.processItems ? { processItems: timelineFields.processItems } : {}),
+  };
 }
 
 export function messageToChat(msg: Message): ChatMessage {
@@ -1084,6 +1111,7 @@ export function ChatView({
   const [modelOverride, setModelOverride] = useState<string>(
     () => readConversationModelOverride(String(conversation.id)) ?? '',
   );
+  const [retryAfterModelPickMessageId, setRetryAfterModelPickMessageId] = useState<string>();
   // plan-act 生效模型提示（规划模式路由）：显示规划模型，手动选择被忽略时附注。
   const planActHint = useMemo(() => {
     const setting = planActSetting;
@@ -1226,30 +1254,25 @@ export function ChatView({
   const renderTransientDraft = useCallback(
     (draft: ConversationStreamDraft | null, fallbackSequence: number) => {
       transientDraftRef.current = draft;
-      const timelineFields = assistantTimelineToChatFields(draft?.assistantTimeline);
       const projected = draft
-        ? projectTransientAnswerText(draft.text, draft.assistantTimeline)
-        : { answerText: undefined as string | undefined, pendingText: '' };
-      // 未分类流式文本尾部显示在过程面板当前顺序位置（§12.17.18），
-      // 不进入总结面板；工具/终态边界分类后由 timeline 段取代。
-      const processItems = projected.pendingText
-        ? [
-            ...(timelineFields.processItems ?? []),
-            { kind: 'text' as const, text: projected.pendingText },
-          ]
-        : timelineFields.processItems;
+        ? projectTransientAssistantDisplay(draft.text, draft.assistantTimeline)
+        : {
+            answerText: undefined as string | undefined,
+            pendingText: '',
+            processItems: undefined,
+          };
       setStreamingMessage(
         draft
           ? {
               id: `streaming-${draft.runId ?? fallbackSequence}`,
               role: 'assistant',
               text: projected.answerText ?? '',
-              commentaryText: timelineFields.commentaryText ?? draft.commentaryText,
+              commentaryText: projected.commentaryText ?? draft.commentaryText,
               commentarySegments: draft.assistantTimeline ? undefined : draft.commentarySegments,
-              reasoningText: timelineFields.reasoningText ?? draft.reasoningText,
+              reasoningText: projected.reasoningText ?? draft.reasoningText,
               assistantTimeline: draft.assistantTimeline,
               answerText: projected.answerText,
-              processItems,
+              processItems: projected.processItems,
               timestamp: draft.timestamp,
               streaming: !draft.terminal,
               runId: draft.runId,
@@ -1499,6 +1522,7 @@ export function ChatView({
     setMenu(null);
     setPermissionMode((conversation.executionMode as PermissionMode) || 'full-access');
     setModelOverride(readConversationModelOverride(String(conversation.id)) ?? '');
+    setRetryAfterModelPickMessageId(undefined);
     setKernelOverride(readConversationKernelOverride(String(conversation.id)) ?? 'native');
     setReasoningEffort(readConversationReasoningEffort(String(conversation.id)) ?? 'auto');
     setNetEnabled(readConversationNetworkEnabled(String(conversation.id)) ?? true);
@@ -1511,6 +1535,30 @@ export function ChatView({
     // effect 被误触发：消息被清空而 loadMessages 不重跑，聊天区永远停在
     // 「加载中…」。权限模式由 setPermission 自行同步，这里只需跟随 id。
   }, [clearCompactDismissTimer, clearRunProcessRetryState, conversation.id]);
+
+  // A provider can be disabled while a conversation still has its old local
+  // override. Repair that hidden stale selection as soon as the available
+  // catalog arrives, so the picker, sidebar and next append all agree.
+  useEffect(() => {
+    const current = modelOverride.trim();
+    if (!current || models.length === 0 || models.some((model) => model.modelId === current)) {
+      return;
+    }
+    const fallback = models[0]!;
+    setModelOverride(fallback.modelId);
+    writeConversationModelOverride(String(conversation.id), fallback.modelId);
+    setLocalErrors((previous) => [
+      ...previous.filter((message) => message.id !== `model-repaired-${conversation.id}`),
+      {
+        id: `model-repaired-${conversation.id}`,
+        role: 'system',
+        tone: 'warning',
+        text: `原模型已停用或删除，已切换到 ${fallback.displayName}`,
+        timestamp: new Date().toISOString(),
+      },
+    ]);
+    onConversationUpdated?.();
+  }, [conversation.id, modelOverride, models, onConversationUpdated, setLocalErrors]);
 
   // Seeded composer text (活动中心“重新编辑”). Declared *after* the conversation
   // reset effect above so the seed survives: effects run in declaration order,
@@ -1747,6 +1795,7 @@ export function ChatView({
         await api.getConversationContextStatus({
           conversationId: conversation.id,
           ...(requestedModelId ? { modelId: requestedModelId } : {}),
+          ...(kernelOverride ? { kernelId: kernelOverride } : {}),
         }),
       );
       if (
@@ -1758,7 +1807,21 @@ export function ChatView({
     } catch {
       // Keep the last validated snapshot on transient IPC/runtime failures.
     }
-  }, [conversation.id, conversation.targetRef, conversation.track, modelOverride]);
+  }, [conversation.id, conversation.targetRef, conversation.track, kernelOverride, modelOverride]);
+
+  const handleContextWindowChange = useCallback(
+    async (contextWindowOverride: number | null): Promise<void> => {
+      const api = bridge();
+      if (!api?.setConversationContextWindowOverride) return;
+      await api.setConversationContextWindowOverride({
+        conversationId: conversation.id,
+        contextWindowOverride,
+      });
+      await refreshContextStatus();
+      onConversationUpdated?.();
+    },
+    [conversation.id, onConversationUpdated, refreshContextStatus],
+  );
 
   const refreshDurableUsageSummary = useCallback(async (): Promise<void> => {
     const api = bridge();
@@ -1907,6 +1970,99 @@ export function ChatView({
     events.sort((a, b) => a.sequence - b.sequence);
     return events;
   }, [eventHistory, threadId]);
+  const latestHostCompactionEvent = useMemo(() => {
+    const conversationId = String(conversation.id);
+    return [...eventHistory]
+      .reverse()
+      .find(
+        (event) =>
+          (event.type === 'context.compaction_started' ||
+            event.type === 'context.compacted' ||
+            event.type === 'context.compaction_failed' ||
+            event.type === 'context.compaction_skipped') &&
+          nonEmptyString(event.payload.operationId) !== undefined &&
+          nonEmptyString(event.payload.conversationId) === conversationId,
+      );
+  }, [conversation.id, eventHistory]);
+  const lastHostCompactionSignatureRef = useRef('');
+  useEffect(() => {
+    const event = latestHostCompactionEvent;
+    if (!event) return;
+    const signature = `${event.id}:${event.type}`;
+    if (lastHostCompactionSignatureRef.current === signature) return;
+    lastHostCompactionSignatureRef.current = signature;
+
+    const mode = event.payload.mode === 'auto' ? 'auto' : 'manual';
+    const eventStartedAt = Date.parse(nonEmptyString(event.payload.startedAt) ?? event.occurredAt);
+    const startedAt = Number.isFinite(eventStartedAt) ? eventStartedAt : Date.now();
+    const numberPayload = (key: string): number | undefined => {
+      const value = event.payload[key];
+      return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+    };
+    if (event.type !== 'context.compaction_started' && Date.now() - startedAt > 15_000) {
+      return;
+    }
+
+    clearCompactDismissTimer();
+    if (event.type === 'context.compaction_started') {
+      compactingRef.current = true;
+      setCompactProgress({
+        status: 'running',
+        mode,
+        startedAt,
+        message: mode === 'auto' ? '正在自动压缩上下文…' : '正在手动压缩上下文…',
+      });
+      return;
+    }
+
+    compactingRef.current = false;
+    const beforeTokens = numberPayload('beforeTokens');
+    const afterTokens = numberPayload('afterTokens');
+    const foldedCount = numberPayload('foldedCount') ?? 0;
+    const durationMs = numberPayload('durationMs');
+    const elapsed =
+      durationMs !== undefined
+        ? formatCompactElapsed(Date.now() - durationMs, Date.now())
+        : formatCompactElapsed(startedAt);
+    if (event.type === 'context.compacted') {
+      const saved =
+        beforeTokens !== undefined && afterTokens !== undefined
+          ? `（${beforeTokens} → ${afterTokens}）`
+          : '';
+      setCompactProgress({
+        status: 'success',
+        mode,
+        startedAt,
+        message: `上下文已${mode === 'auto' ? '自动' : ''}压缩${saved} · 折叠 ${foldedCount} 条 · ${elapsed}`,
+        afterTokens,
+      });
+      scheduleCompactDismiss(2400);
+      void refreshContextStatus();
+      return;
+    }
+    if (event.type === 'context.compaction_failed') {
+      setCompactProgress({
+        status: 'failure',
+        mode,
+        startedAt,
+        message: `上下文${mode === 'auto' ? '自动' : ''}压缩失败 · ${elapsed}`,
+      });
+      scheduleCompactDismiss(2400);
+      return;
+    }
+    setCompactProgress({
+      status: 'noop',
+      mode,
+      startedAt,
+      message: `当前上下文无需压缩 · ${elapsed}`,
+    });
+    scheduleCompactDismiss(1600);
+  }, [
+    clearCompactDismissTimer,
+    latestHostCompactionEvent,
+    refreshContextStatus,
+    scheduleCompactDismiss,
+  ]);
   const conversationAgent = useMemo(
     () =>
       conversation.track === 'agent'
@@ -2856,6 +3012,7 @@ export function ChatView({
       if (
         api.compactConversation &&
         !compactingRef.current &&
+        kernelOverride === 'native' &&
         status &&
         status.usageRatio >= status.compactThreshold
       ) {
@@ -2887,20 +3044,30 @@ export function ChatView({
                 mode: 'auto',
                 startedAt,
                 // NewMax: "Context automatically compacted"
-                message: `上下文已自动压缩${saved} · ${elapsed}`,
+                message: `上下文已自动压缩${saved} · 折叠 ${compactResult.foldedCount} 条 · ${elapsed}`,
                 afterTokens: compactResult.afterTokens,
               });
               scheduleCompactDismiss(2400);
             }
           } else if (isActiveConversation()) {
-            clearCompactDismissTimer();
-            setCompactProgress(null);
+            setCompactProgress({
+              status: 'noop',
+              mode: 'auto',
+              startedAt,
+              message: `当前上下文无需压缩 · ${formatCompactElapsed(startedAt)}`,
+            });
+            scheduleCompactDismiss(1600);
           }
         } catch {
-          // Auto compact failure is silent — do not block the user message.
+          // Auto compact remains non-blocking, but its failure is visible.
           if (isActiveConversation()) {
-            clearCompactDismissTimer();
-            setCompactProgress(null);
+            setCompactProgress({
+              status: 'failure',
+              mode: 'auto',
+              startedAt,
+              message: `上下文自动压缩失败 · ${formatCompactElapsed(startedAt)}`,
+            });
+            scheduleCompactDismiss(2400);
           }
         } finally {
           await refreshContextStatus();
@@ -2986,6 +3153,56 @@ export function ChatView({
                 url: image.url!,
               }))
           : images;
+        // Vision fallback echoes: if the runtime replaced the images with a
+        // description (or failed to), tell the user so the turn is not a
+        // silent "the model cannot see this" surprise.
+        if (images.length > 0 && isActiveConversation()) {
+          if (response.imagesMode === 'materialized') {
+            setLocalErrors((prev) => [
+              ...prev,
+              {
+                id: `vision-mat-${Date.now()}`,
+                role: 'system',
+                tone: 'info',
+                text: '当前模型不支持图片输入，附件已保存到工作区；模型会调用 ocr_image 提取文字，并可在已启用视觉 Fallback 时调用 describe_image。',
+                timestamp: new Date().toISOString(),
+              },
+            ]);
+          } else if (response.imagesMode === 'described') {
+            setLocalErrors((prev) => [
+              ...prev,
+              {
+                id: `vision-desc-${Date.now()}`,
+                role: 'system',
+                tone: 'info',
+                text: '当前模型不支持图片输入，附件已由视觉模型生成文字描述替代。',
+                timestamp: new Date().toISOString(),
+              },
+            ]);
+          } else if (response.imagesMode === 'ocr') {
+            setLocalErrors((prev) => [
+              ...prev,
+              {
+                id: `vision-ocr-${Date.now()}`,
+                role: 'system',
+                tone: 'info',
+                text: '当前模型不支持图片输入，已由 Windows OCR 自动提取附件文字；OCR 不包含画面中无法识别为文字的内容。',
+                timestamp: new Date().toISOString(),
+              },
+            ]);
+          } else if (response.imagesMode === 'failed') {
+            setLocalErrors((prev) => [
+              ...prev,
+              {
+                id: `vision-fail-${Date.now()}`,
+                role: 'system',
+                tone: 'warning',
+                text: '视觉模型 Fallback 与 Windows OCR 均未能处理附件，原图未发送给当前文本模型。',
+                timestamp: new Date().toISOString(),
+              },
+            ]);
+          }
+        }
         if (isActiveConversation()) {
           setSendingRunId(
             typeof response.streamId === 'string' && response.streamId.length > 0
@@ -3341,7 +3558,7 @@ export function ChatView({
   ]);
 
   const handleRegenerate = useCallback(
-    async (assistantMessageId: string) => {
+    async (assistantMessageId: string, nextModelId?: string) => {
       if (sending) return;
       const idx = messages.findIndex((m) => m.id === assistantMessageId);
       if (idx <= 0) return;
@@ -3356,10 +3573,16 @@ export function ChatView({
       if (!userText.trim()) return;
       await sendUserText(userText, [], {
         skillVersionIds: [],
+        ...(nextModelId ? { modelOverride: nextModelId } : {}),
       });
     },
     [messages, sendUserText, sending],
   );
+
+  const handleChooseModelAndRetry = useCallback((assistantMessageId: string) => {
+    setRetryAfterModelPickMessageId(assistantMessageId);
+    setMenu('model');
+  }, []);
 
   const boundWorkspace = conversation.workspaceId
     ? workspaces.find((workspace) => workspace.workspaceId === conversation.workspaceId)
@@ -3611,7 +3834,7 @@ export function ChatView({
           status: 'success',
           mode: 'manual',
           startedAt,
-          message: `上下文已压缩${saved} · ${elapsed}`,
+          message: `上下文已压缩${saved} · 折叠 ${result.foldedCount} 条 · ${elapsed}`,
           afterTokens: result.afterTokens,
         });
         scheduleCompactDismiss(2400);
@@ -3736,6 +3959,9 @@ export function ChatView({
   const handleSend = useCallback(async () => {
     const text = input.trim();
     if ((!text && attachments.length === 0) || compactingRef.current) return;
+
+    // 上一轮的发送失败/错误气泡不跨轮贴底：新消息发送时清掉，避免“报错无法消除”。
+    setLocalErrors((prev) => prev.filter((error) => error.tone !== 'error'));
 
     // NewMax: `/compact` manually compresses context without sending a chat turn.
     const slashCmd = parseSlashCommand(text);
@@ -4606,10 +4832,15 @@ export function ChatView({
   // the ring never shows a budget the kernel itself cannot honor.
   const contextWindowCap = activeKernel?.capabilities?.contextWindow;
   const contextWindowCapped =
-    contextWindowCap !== undefined &&
-    contextWindowCap.overridable === false &&
-    contextLimitRaw > contextWindowCap.nativeLimit;
-  const contextLimit = contextWindowCapped ? contextWindowCap!.nativeLimit : contextLimitRaw;
+    contextStatus?.contextWindowSource === 'kernel-limit' ||
+    (contextWindowCap !== undefined &&
+      contextWindowCap.overridable === false &&
+      contextLimitRaw > contextWindowCap.nativeLimit);
+  const contextLimit = contextStatus
+    ? contextLimitRaw
+    : contextWindowCapped
+      ? contextWindowCap!.nativeLimit
+      : contextLimitRaw;
   const contextWindowSource: 'configured' | 'kernel-capped' | 'estimated' =
     contextStatus?.contextWindowEstimated === true
       ? 'estimated'
@@ -4853,6 +5084,7 @@ export function ChatView({
                     fallbackAgent={conversationAgent}
                     regenerating={sending}
                     onRegenerate={handleRegenerate}
+                    onChooseModelAndRetry={handleChooseModelAndRetry}
                     onOpenChange={onOpenFile}
                     onOpenReview={onOpenReview}
                     projectFolder={projectFolder}
@@ -4897,12 +5129,19 @@ export function ChatView({
                     fallbackAgent={conversationAgent}
                     regenerating={sending}
                     onRegenerate={handleRegenerate}
+                    onChooseModelAndRetry={handleChooseModelAndRetry}
                     onOpenChange={onOpenFile}
                     onOpenReview={onOpenReview}
                     projectFolder={projectFolder}
                     onOpenImage={setLightbox}
                     kernelId={
                       msg.kernelId ?? (msg.runId ? runKernelById.get(String(msg.runId)) : undefined)
+                    }
+                    dismissLocalError={
+                      localErrors.some((error) => error.id === msg.id)
+                        ? (messageId) =>
+                            setLocalErrors((prev) => prev.filter((error) => error.id !== messageId))
+                        : undefined
                     }
                   />
                 </div>
@@ -5326,7 +5565,10 @@ export function ChatView({
               {/* Interaction work mode strip (规划/执行) */}
               {interactionMode === 'plan' && (
                 <div className="shell-compose__mode-strip" data-mode="plan">
-                  <span className="shell-compose__mode-label">🧭 规划模式</span>
+                  <span className="shell-compose__mode-label">
+                    <Compass size={13} aria-hidden="true" />
+                    规划模式
+                  </span>
                   <span className="shell-compose__mode-hint">只读分析，提交方案等待审批</span>
                   <button
                     type="button"
@@ -5352,7 +5594,10 @@ export function ChatView({
                   data-mode={planActHint.role}
                   data-testid="plan-act-hint"
                 >
-                  <span className="shell-compose__mode-label">🧭 本轮由规划模型驱动</span>
+                  <span className="shell-compose__mode-label">
+                    <Compass size={13} aria-hidden="true" />
+                    本轮由规划模型驱动
+                  </span>
                   <span className="shell-compose__mode-hint">
                     {planActHint.label}
                     {planActHint.ignoredLabel ? `（已忽略所选 ${planActHint.ignoredLabel}）` : ''}
@@ -5363,6 +5608,16 @@ export function ChatView({
               {/* Bottom toolbar */}
               <div className="shell-compose__bar">
                 <div className="shell-compose__bar-left">
+                  <button
+                    type="button"
+                    className="shell-compose__icon-tool"
+                    aria-label="添加图片"
+                    title="添加图片"
+                    onClick={() => imageInputRef.current?.click()}
+                    disabled={attachments.filter((item) => item.kind === 'image').length >= 8}
+                  >
+                    <ImagePlus size={15} />
+                  </button>
                   {/* Permission menu */}
                   <div className="shell-compose__tool-wrap">
                     <button
@@ -5452,8 +5707,13 @@ export function ChatView({
                   <ContextRing
                     used={contextUsed}
                     limit={contextLimit}
+                    modelContextWindow={contextStatus?.modelContextWindow}
+                    contextWindowOverride={
+                      contextStatus?.contextWindowOverride ?? conversation.contextWindowOverride
+                    }
                     contextWindowEstimated={contextStatus?.contextWindowEstimated}
                     contextWindowSource={contextWindowSource}
+                    onContextWindowChange={handleContextWindowChange}
                     usageRatio={contextStatus?.usageRatio}
                     compactThreshold={contextStatus?.compactThreshold}
                     compactedAt={contextStatus?.compactedAt}
@@ -5476,11 +5736,17 @@ export function ChatView({
                       reasoningLabel={REASONING_LABELS[reasoningEffort]}
                       open={menu === 'model'}
                       buttonRef={modelBtnRef}
-                      onClick={() => setMenu((m) => (m === 'model' ? null : 'model'))}
+                      onClick={() => {
+                        setRetryAfterModelPickMessageId(undefined);
+                        setMenu((m) => (m === 'model' ? null : 'model'));
+                      }}
                     />
                     {kernelOverride !== 'native'
                       ? (() => {
-                          const chipLabel = activeKernel ? activeKernel.name : kernelOverride;
+                          const chipLabel = resolveKernelDisplayName(
+                            kernelOverride,
+                            activeKernel?.name,
+                          );
                           const chipLogo = resolveKernelBrandLogo(
                             activeKernel ? activeKernel.icon : kernelOverride,
                           );
@@ -5507,7 +5773,10 @@ export function ChatView({
                       selectedKernelId={kernelOverride}
                       kernelInstallStates={kernelInstallStates}
                       anchorEl={modelBtnRef.current}
-                      onClose={() => setMenu(null)}
+                      onClose={() => {
+                        setRetryAfterModelPickMessageId(undefined);
+                        setMenu(null);
+                      }}
                       onInstallKernel={(kernelId) => void installKernel(kernelId)}
                       onPickKernel={(kernelId) => {
                         setKernelOverride(kernelId);
@@ -5525,6 +5794,11 @@ export function ChatView({
                           modelId || undefined,
                         );
                         onConversationUpdated?.();
+                        const retryMessageId = retryAfterModelPickMessageId;
+                        if (retryMessageId) {
+                          setRetryAfterModelPickMessageId(undefined);
+                          void handleRegenerate(retryMessageId, modelId);
+                        }
                       }}
                       onReasoningChange={(value) => {
                         setReasoningEffort(value);
@@ -5690,11 +5964,13 @@ const MessageBubble = memo(function MessageBubble({
   fallbackAgent,
   regenerating,
   onRegenerate,
+  onChooseModelAndRetry,
   onOpenChange,
   onOpenReview,
   projectFolder,
   onOpenImage,
   kernelId,
+  dismissLocalError,
 }: {
   message: ChatMessage;
   processView?: RunProcessView;
@@ -5704,12 +5980,15 @@ const MessageBubble = memo(function MessageBubble({
   fallbackAgent?: GlobalAgent;
   regenerating?: boolean;
   onRegenerate?: (messageId: string) => void;
+  onChooseModelAndRetry?: (messageId: string) => void;
   onOpenChange?: (path: string) => void;
   onOpenReview?: (view: RunProcessView) => void;
   projectFolder?: string;
   onOpenImage?: (image: MessageImage) => void;
   /** Kernel that produced this turn (native/empty → no badge). */
   kernelId?: string;
+  /** Dismiss callback for transient local diagnostics. */
+  dismissLocalError?: (messageId: string) => void;
 }) {
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
@@ -5719,7 +5998,7 @@ const MessageBubble = memo(function MessageBubble({
 
   const metricsLabel = useMemo(() => {
     if (!processView) return undefined;
-    // 主标签显示「上下文占用」（最后一次请求的真实大小），而不是工具循环的
+    // 主标签显示「输入上下文」（最后一次请求的真实输入大小），而不是工具循环的
     // 累计求和——后者（tokensIn+tokensOut 累加）会让人误以为上下文占用了那么大。
     const watermark = processView.contextWatermarkTokens;
     if (typeof watermark === 'number') {
@@ -5759,6 +6038,7 @@ const MessageBubble = memo(function MessageBubble({
     if (!kernelId || kernelId === 'native') return undefined;
     return resolveKernelBrandLogo(kernelId);
   }, [kernelId]);
+  const kernelLabel = kernelId ? resolveKernelDisplayName(kernelId) : undefined;
 
   const metricsDetail = useMemo(() => {
     if (!processView) return undefined;
@@ -5887,13 +6167,28 @@ const MessageBubble = memo(function MessageBubble({
           : systemTone === 'success'
             ? 'shell-system-bubble shell-system-bubble--success'
             : 'shell-system-bubble shell-system-bubble--info';
+    // Transient diagnostics (failed sends, vision hints) are dismissible —
+    // durable system notices stay static. The callback is only wired-in by
+    // the caller when `message.id` belongs to the local diagnostics list.
+    const dismissible = Boolean(dismissLocalError);
     return (
       <div className="shell-msg group relative flex justify-start">
         <div
           className={`${bubbleClass} max-w-[80%] rounded-xl border px-4 py-2.5 text-[12.5px]`}
           data-tone={systemTone}
         >
-          {message.text}
+          <span className="whitespace-pre-wrap">{message.text}</span>
+          {dismissible ? (
+            <button
+              type="button"
+              className="ml-1.5 inline-flex shrink-0 translate-y-[-1px] items-center rounded p-0.5 align-middle text-text-faint transition-colors hover:bg-[color-mix(in_srgb,var(--color-text)_10%,transparent)] hover:text-text"
+              onClick={() => dismissLocalError?.(message.id)}
+              title="关闭这条提示"
+              aria-label="关闭这条提示"
+            >
+              <X size={12} />
+            </button>
+          ) : null}
         </div>
       </div>
     );
@@ -5994,6 +6289,21 @@ const MessageBubble = memo(function MessageBubble({
                           {message.terminalError}
                         </span>
                       ) : null}
+                      {message.terminalState === 'failed' && onChooseModelAndRetry ? (
+                        <button
+                          type="button"
+                          className="shell-terminal-retry"
+                          onClick={() => onChooseModelAndRetry(message.id)}
+                          disabled={regenerating}
+                        >
+                          <RefreshCw
+                            size={12}
+                            className={regenerating ? 'shell-process-spin' : undefined}
+                            aria-hidden="true"
+                          />
+                          <span>选择模型并重试</span>
+                        </button>
+                      ) : null}
                     </span>
                   </div>
                 ) : null}
@@ -6086,7 +6396,7 @@ const MessageBubble = memo(function MessageBubble({
                       ) : null}
                       {typeof metricsDetail.contextWatermarkTokens === 'number' ? (
                         <div className="shell-meta-tip__row">
-                          <span>上下文占用</span>
+                          <span>输入上下文</span>
                           <strong>
                             {formatCompactCount(metricsDetail.contextWatermarkTokens)}
                           </strong>
@@ -6153,8 +6463,8 @@ const MessageBubble = memo(function MessageBubble({
                 <span
                   className="shell-msg-meta__kernel"
                   data-testid={`msg-kernel-${kernelId}`}
-                  title={`内核：${kernelId}`}
-                  aria-label={`内核：${kernelId}`}
+                  title={`内核：${kernelLabel}`}
+                  aria-label={`内核：${kernelLabel}`}
                 >
                   <BrandLogoMark logo={kernelLogo} size={13} />
                 </span>

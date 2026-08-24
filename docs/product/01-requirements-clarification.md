@@ -208,6 +208,16 @@
 11. AI 可通过 `register_remote_mcp` 自动登记远端 MCP 的名称、Endpoint 与公开元数据，但不得在聊天、提示词或模型工具参数中请求或传递 Key。登记完成后，用户在能力中心专用密码框只输入一次 Key；Runtime 将 Key 写入 SecureStore，SQLite 只保存 opaque handle，任何列表、响应、日志和 UI 均不回显 Key 或 handle。
 12. 远端 MCP 使用 Streamable HTTP JSON-RPC，连接序列为 `initialize -> notifications/initialized -> tools/list/tools/call`，并携带服务返回的 Session ID。远端刷新和实际调用继续遵守三重能力交集、超时、输出上限、审计和不可信内容边界。
 
+### 7.4 聊天图片附件识别与降级规则（2026-08-23 用户确认）
+
+1. 当前模型已确认包含 `vision` capability 时直接接收原图；已确认不含 `vision` 时不得直传。未确认模型只在名称明确命中视觉模型规则时直传，未知名称按非视觉处理。
+2. 非视觉模型收到图片附件时，若“图片识别 Fallback”开关开启、已选择模型、所属 Provider 启用且所选模型支持视觉，由 Runtime 在主模型调用前生成图片描述并注入本轮上下文。
+3. 视觉 Fallback 未启用、配置无效、调用失败或未返回有效描述时，由 Runtime 自动调用 Windows OCR 并把识别文字注入本轮上下文；该路径不依赖模型主动选择工具，也不依赖对话绑定工作区。
+4. 视觉 Fallback 与 Windows OCR 都失败时，原图不得发送给已判定为文本模型；本轮上下文和界面必须明确说明图片预处理失败，避免模型猜测图片内容。
+5. `describe_image` 与 `ocr_image` 继续作为工作区已有图片的主动读取工具，不承担聊天附件的自动路由职责。
+6. 附件处理结果至少区分 `forwarded / described / ocr / failed`，并进入 `run.started` 与 append response，供诊断和用户提示使用。
+7. 已向视觉主模型直传原图的 Run 若发生模型故障转移，只允许选择同样支持视觉的备用模型；同 Provider 优先级与 Agent fallback 均须跳过纯文本候选。没有视觉候选时暂停，禁止在 rebind 时把原图带给文本模型。
+
 ## 8. 验收标准
 
 闭测完成必须满足（摘自设计文档 §23.2）：

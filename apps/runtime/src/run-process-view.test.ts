@@ -211,8 +211,8 @@ describe('projectRunProcess', () => {
     expect(view.tokensIn).toBe(14_000);
     expect(view.cachedTokensHit).toBe(12_800);
     expect(view.cachedTokensCreated).toBe(0);
-    // Single request → the context watermark equals that request's occupancy.
-    expect(view.contextWatermarkTokens).toBe(14_488);
+    // Single request → the context watermark is that request's input context.
+    expect(view.contextWatermarkTokens).toBe(14_000);
   });
 
   it('accumulates distinct provider turns while de-duplicating updates for one request', () => {
@@ -264,8 +264,8 @@ describe('projectRunProcess', () => {
     expect(view.cachedTokensHit).toBe(208);
     expect(view.cachedTokensCreated).toBe(0);
     // Billing cumulative sums every request; the context watermark is the LAST
-    // request's occupancy (200 in + 20 out), not the tool-loop inflated total.
-    expect(view.contextWatermarkTokens).toBe(220);
+    // request's input (200), not output or the tool-loop inflated total.
+    expect(view.contextWatermarkTokens).toBe(200);
   });
 
   it('labels a verified desktop application launch with its executable', () => {

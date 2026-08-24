@@ -115,6 +115,7 @@ export type CommandType =
   | 'conversation.list'
   | 'conversation.listMessages'
   | 'conversation.getContextStatus'
+  | 'conversation.setContextWindowOverride'
   | 'conversation.getRunProcess'
   | 'conversation.create'
   | 'conversation.rename'
@@ -506,6 +507,13 @@ export interface AppendMessageResponse {
   streamId?: string;
   /** Desktop-resolved durable image URLs returned after staging. */
   images?: Array<MessageImageReference & { url?: string }>;
+  /**
+   * How attached images reached the run: 'forwarded' (vision-capable model),
+   * 'materialized' (legacy: saved into the workspace), 'described' (replaced
+   * by a configured vision-model description), 'ocr' (replaced by host-side
+   * Windows OCR text), or 'failed' (no usable image-derived text).
+   */
+  imagesMode?: 'forwarded' | 'materialized' | 'described' | 'ocr' | 'failed';
 }
 
 /** kernel.detect response: registry sweep with install state + capabilities. */
@@ -3112,11 +3120,25 @@ export interface ConversationGetContextStatusPayload {
   conversationId: import('@sync-think/shared').ConversationId;
   /** Optional compose-time model override used to calculate the current window capacity. */
   modelId?: string;
+  /** Optional compose-time kernel used to apply a non-overridable native limit. */
+  kernelId?: import('@sync-think/shared').KernelId;
 }
+
+export type ConversationContextWindowSource =
+  'model-default' | 'conversation-override' | 'kernel-limit';
 
 export interface ConversationGetContextStatusResponse {
   modelId: string;
+  /** Effective capacity used by the current model + kernel combination. */
   contextWindow: number;
+  /** Capacity declared by the selected model before conversation/kernel overrides. */
+  modelContextWindow: number;
+  /** Persisted conversation override, when one is active. */
+  contextWindowOverride?: number;
+  /** Why contextWindow has its current value. */
+  contextWindowSource: ConversationContextWindowSource;
+  /** Non-overridable kernel ceiling when it is the effective source. */
+  kernelContextWindowLimit?: number;
   /**
    * True when the model record has no configured contextWindow and the runtime
    * fell back to its 128k default. The UI renders this capacity as an estimate.
@@ -3284,6 +3306,12 @@ export interface SetConversationExecutionModePayload {
 export interface SetConversationInteractionModePayload {
   conversationId: import('@sync-think/shared').ConversationId;
   interactionMode: import('@sync-think/shared').InteractionMode;
+}
+
+export interface SetConversationContextWindowOverridePayload {
+  conversationId: import('@sync-think/shared').ConversationId;
+  /** Integer tokens in [1024, 10000000]; null restores the model default. */
+  contextWindowOverride: number | null;
 }
 
 // --- Conversation-level plan lifecycle (chat planning mode) ---

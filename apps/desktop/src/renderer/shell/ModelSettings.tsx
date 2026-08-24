@@ -775,10 +775,13 @@ export const ModelSettings = forwardRef<
       providers.flatMap((p) =>
         p.models.map((m) => ({
           modelId: m.modelId,
+          providerModelId: m.providerModelId,
           displayName: m.displayName,
           providerName: p.name,
           providerId: p.providerId,
           enabled: p.enabled,
+          capabilities: m.capabilities,
+          capabilitiesConfirmed: m.capabilitiesConfirmed,
         })),
       ),
     [providers],
@@ -1803,7 +1806,7 @@ export const ModelSettings = forwardRef<
             </div>
           ) : null}
 
-          <div className="flex min-h-0 flex-1">
+          <div className="model-settings-workspace flex min-h-0 flex-1">
             <aside className="model-enabled-list">
               <div className="model-enabled-list__header">
                 <div>
@@ -2253,28 +2256,40 @@ function ProviderCatalog({
       </div>
 
       <div className="model-provider-catalog__grid" role="tabpanel">
-        {items.map((item) => (
-          <button
-            key={`${category}-${item.id}`}
-            type="button"
-            className={clsx('model-provider-card', item.variant === 'flat' && 'is-flat')}
-            onClick={() => onSelect(item)}
-          >
-            <ProviderBrandIcon providerId={item.id} providerName={item.name} />
-            <span className="model-provider-card__copy">
-              <strong>
-                {item.name}
-                {item.badge ? (
-                  <span className="model-provider-card__badge">{item.badge}</span>
-                ) : null}
-                {item.status ? (
-                  <span className="model-provider-card__badge is-status">{item.status}</span>
-                ) : null}
-              </strong>
-              <small>{item.description}</small>
-            </span>
-          </button>
-        ))}
+        {items.map((item) => {
+          const templateReady =
+            item.action !== 'form' ||
+            item.endpointMode === 'custom' ||
+            Boolean(item.draft?.baseUrl && item.draft.baseUrl !== 'https://');
+          return (
+            <button
+              key={`${category}-${item.id}`}
+              type="button"
+              className={clsx('model-provider-card', item.variant === 'flat' && 'is-flat')}
+              disabled={!templateReady}
+              title={
+                templateReady ? undefined : '该服务商暂未内置固定连接地址，请使用“自定义供应商”添加'
+              }
+              onClick={() => onSelect(item)}
+            >
+              <ProviderBrandIcon providerId={item.id} providerName={item.name} />
+              <span className="model-provider-card__copy">
+                <strong>
+                  {item.name}
+                  {item.badge ? (
+                    <span className="model-provider-card__badge">{item.badge}</span>
+                  ) : null}
+                  {item.status ? (
+                    <span className="model-provider-card__badge is-status">{item.status}</span>
+                  ) : null}
+                </strong>
+                <small>
+                  {templateReady ? item.description : `${item.description} · 固定连接地址待接入`}
+                </small>
+              </span>
+            </button>
+          );
+        })}
       </div>
     </section>
   );
@@ -3944,15 +3959,20 @@ function VisionFallbackPanel({
 }: {
   allModels: Array<{
     modelId: string;
+    providerModelId: string;
     displayName: string;
     providerName: string;
     enabled: boolean;
+    capabilities: readonly string[];
+    capabilitiesConfirmed: boolean;
   }>;
   value: VisionFallbackSetting;
   busy: boolean;
   onChange(value: VisionFallbackSetting): void;
 }) {
-  const options = enabledModelOptions(allModels);
+  const options = allModels.filter(
+    (model) => model.enabled && modelCanServeAsVisionFallback(model),
+  );
   return (
     <div className="model-strategy-panel">
       <div className="model-strategy-panel__head">
@@ -3965,7 +3985,7 @@ function VisionFallbackPanel({
         </div>
         <Toggle
           checked={value.enabled}
-          disabled={busy}
+          disabled={busy || options.length === 0}
           onChange={(enabled) => onChange({ ...value, enabled })}
         />
       </div>
@@ -3974,7 +3994,7 @@ function VisionFallbackPanel({
           <select
             className="st-field-input"
             value={value.modelId ?? ''}
-            disabled={busy || !value.enabled}
+            disabled={busy || !value.enabled || options.length === 0}
             onChange={(event) => onChange({ ...value, modelId: event.target.value || null })}
           >
             <option value="">选择视觉模型…</option>
@@ -3985,7 +4005,11 @@ function VisionFallbackPanel({
             ))}
           </select>
         </Field>
-        <p className="model-strategy-panel__hint">更改会立即保存。</p>
+        <p className="model-strategy-panel__hint">
+          {options.length > 0
+            ? '仅显示已启用且支持图片输入的模型；更改会立即保存。'
+            : '当前没有已启用且支持图片输入的模型，文本模型会自动使用 Windows OCR。'}
+        </p>
       </div>
     </div>
   );
@@ -4016,6 +4040,19 @@ function ModelCloudSyncPanel({
         </div>
       </section>
     </div>
+  );
+}
+
+function modelCanServeAsVisionFallback(model: {
+  providerModelId: string;
+  capabilities: readonly string[];
+  capabilitiesConfirmed: boolean;
+}): boolean {
+  if (model.capabilitiesConfirmed) return model.capabilities.includes('vision');
+  if (model.capabilities.includes('vision')) return true;
+  const id = model.providerModelId.trim();
+  return /gpt-4o|gpt-4\.1|gpt-5|\bo[34]\b|\bo[45]-|grok|gemini|claude|-vl\b|\/vl\d|vision|pixtral|llava|internvl/i.test(
+    id,
   );
 }
 

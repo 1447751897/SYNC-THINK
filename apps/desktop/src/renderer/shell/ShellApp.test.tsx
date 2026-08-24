@@ -17,6 +17,8 @@ const runtime = {
     conversationTitle: '首条消息',
   }),
   appendMessage: vi.fn().mockResolvedValue({ messageId: 'message-a', taskVersion: 1 }),
+  detectKernels: vi.fn().mockResolvedValue({ kernels: [] }),
+  installKernel: vi.fn().mockResolvedValue({ ok: true }),
   listSkills: vi.fn().mockResolvedValue({ skills: [] }),
   getSkill: vi.fn(),
   renameConversation: vi.fn().mockResolvedValue({ conversation: { id: 'created-conversation' } }),
@@ -27,6 +29,9 @@ const runtime = {
     .fn()
     .mockResolvedValue({ conversation: { id: 'created-conversation' } }),
   setConversationExecutionMode: vi
+    .fn()
+    .mockResolvedValue({ conversation: { id: 'created-conversation' } }),
+  setConversationInteractionMode: vi
     .fn()
     .mockResolvedValue({ conversation: { id: 'created-conversation' } }),
   deleteConversation: vi.fn().mockResolvedValue({}),
@@ -197,6 +202,17 @@ vi.mock('./ModelSettings.js', () => ({
   }),
 }));
 
+vi.mock('./image-compress.js', () => ({
+  compressImageDataUrl: vi.fn(async (dataUrl: string, options?: { mimeType?: string }) => ({
+    dataUrl,
+    mimeType: options?.mimeType ?? 'image/png',
+    width: 1,
+    height: 1,
+    originalBytes: 1,
+    compressedBytes: 1,
+  })),
+}));
+
 import { EmptyTalk, ShellApp } from './ShellApp.js';
 import {
   createWorkspacePaneLayout,
@@ -223,6 +239,8 @@ beforeEach(() => {
     conversationTitle: '首条消息',
   });
   runtime.appendMessage.mockResolvedValue({ messageId: 'message-a', taskVersion: 1 });
+  runtime.detectKernels.mockReset().mockResolvedValue({ kernels: [] });
+  runtime.installKernel.mockReset().mockResolvedValue({ ok: true });
   runtime.listSkills.mockReset().mockResolvedValue({ skills: [] });
   runtime.getSkill.mockReset();
   runtime.renameConversation.mockResolvedValue({ conversation: { id: 'created-conversation' } });
@@ -231,6 +249,9 @@ beforeEach(() => {
     conversation: { id: 'created-conversation' },
   });
   runtime.setConversationExecutionMode.mockResolvedValue({
+    conversation: { id: 'created-conversation' },
+  });
+  runtime.setConversationInteractionMode.mockReset().mockResolvedValue({
     conversation: { id: 'created-conversation' },
   });
   runtime.deleteConversation.mockResolvedValue({});
@@ -1361,6 +1382,150 @@ describe('ShellApp empty conversation compose', () => {
         networkEnabled: true,
         skillVersionIds: [],
       }),
+    );
+  });
+
+  it('keeps the selected kernel when the empty composer materializes its first turn', async () => {
+    installRuntime();
+    runtime.listWorkspaces.mockResolvedValue({
+      workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }],
+    });
+    runtime.listProviders.mockResolvedValue({
+      providers: [
+        {
+          providerId: 'provider-a',
+          name: 'Provider A',
+          enabled: true,
+          models: [{ modelId: 'model-a', displayName: 'Model A' }],
+        },
+      ],
+    });
+    runtime.detectKernels.mockResolvedValue({
+      kernels: [
+        {
+          kernelId: 'native',
+          name: 'Sync-Think',
+          icon: 'native',
+          capabilities: {},
+          installed: true,
+          version: null,
+          executablePath: null,
+          knownGood: true,
+        },
+        {
+          kernelId: 'codex',
+          name: 'Codex',
+          icon: 'codex',
+          capabilities: {},
+          installed: true,
+          version: '0.150.0',
+          executablePath: 'codex.exe',
+          knownGood: true,
+        },
+      ],
+    });
+
+    render(<ShellApp />);
+    await waitFor(() => expect(runtime.detectKernels).toHaveBeenCalled());
+    fireEvent.click(screen.getByTitle('切换模型，思考强度：自动'));
+    fireEvent.click(await screen.findByTestId('kernel-option-codex'));
+    fireEvent.change(screen.getByTestId('empty-compose-input'), {
+      target: { value: '使用 GPT 内核开始' },
+    });
+    fireEvent.click(screen.getByTestId('empty-compose-send'));
+
+    await waitFor(() => expect(runtime.appendMessage).toHaveBeenCalledTimes(1));
+    expect(runtime.appendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ kernelId: 'codex', text: '使用 GPT 内核开始' }),
+    );
+    expect(
+      JSON.parse(window.localStorage.getItem('sync-think.conversationKernelOverrides') ?? '{}'),
+    ).toEqual(expect.objectContaining({ 'created-conversation': 'codex' }));
+    expect(window.localStorage.getItem('sync-think.newConversationKernel')).toBe('codex');
+  });
+
+  it('creates a conversation from an image-only first turn', async () => {
+    installRuntime();
+    runtime.listWorkspaces.mockResolvedValue({
+      workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }],
+    });
+    runtime.listProviders.mockResolvedValue({
+      providers: [
+        {
+          providerId: 'provider-a',
+          name: 'Provider A',
+          enabled: true,
+          models: [{ modelId: 'model-a', displayName: 'Model A' }],
+        },
+      ],
+    });
+
+    render(<ShellApp />);
+    await screen.findByTestId('empty-compose');
+    expect(screen.getByRole('button', { name: '添加图片' })).toBeTruthy();
+    const image = new File(['PNG'], 'diagram.png', { type: 'image/png' });
+    fireEvent.change(screen.getByTestId('empty-compose-image-input'), {
+      target: { files: [image] },
+    });
+    await screen.findByTestId('empty-compose-attachments');
+    fireEvent.click(screen.getByTestId('empty-compose-send'));
+
+    await waitFor(() => expect(runtime.appendMessage).toHaveBeenCalledTimes(1));
+    expect(runtime.sendConversationMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ text: '[图片] diagram.png' }),
+    );
+    expect(runtime.appendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: '[图片] diagram.png',
+        images: [
+          expect.objectContaining({
+            name: 'diagram.png',
+            mimeType: 'image/png',
+            dataUrl: expect.stringContaining('data:image/png;base64,'),
+          }),
+        ],
+      }),
+    );
+  });
+
+  it('opens slash commands and applies plan mode before sending the first request', async () => {
+    installRuntime();
+    runtime.listWorkspaces.mockResolvedValue({
+      workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }],
+    });
+    runtime.listProviders.mockResolvedValue({
+      providers: [
+        {
+          providerId: 'provider-a',
+          name: 'Provider A',
+          enabled: true,
+          models: [{ modelId: 'model-a', displayName: 'Model A' }],
+        },
+      ],
+    });
+
+    render(<ShellApp />);
+    const input = await screen.findByTestId('empty-compose-input');
+    fireEvent.change(input, { target: { value: '/', selectionStart: 1 } });
+    const slashMenu = await screen.findByTestId('empty-compose-slash-pop');
+    fireEvent.mouseDown(within(slashMenu).getByText('/plan'));
+    await waitFor(() => expect((input as HTMLTextAreaElement).value).toBe('/plan '));
+
+    fireEvent.change(input, {
+      target: { value: '/plan 审查当前项目', selectionStart: 12 },
+    });
+    fireEvent.click(screen.getByTestId('empty-compose-send'));
+
+    await waitFor(() => expect(runtime.appendMessage).toHaveBeenCalledTimes(1));
+    expect(runtime.setConversationInteractionMode).toHaveBeenCalledWith({
+      conversationId: 'created-conversation',
+      interactionMode: 'plan',
+    });
+    expect(runtime.appendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ text: '审查当前项目' }),
+    );
+    expect(runtime.setConversationInteractionMode.mock.invocationCallOrder[0]).toBeLessThan(
+      runtime.appendMessage.mock.invocationCallOrder[0]!,
     );
   });
 

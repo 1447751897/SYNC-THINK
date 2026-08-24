@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import {
   extractSemverVersion,
   probeKernel,
   probeVersion,
+  resolveCodexExecutablePath,
   resolveExecutablePath,
 } from './detect.js';
 
@@ -57,6 +58,72 @@ describe('resolveExecutablePath', () => {
     } finally {
       if (originalPath === undefined) delete process.env.PATH;
       else process.env.PATH = originalPath;
+    }
+  });
+});
+
+describe('resolveCodexExecutablePath', () => {
+  it('prefers the newer app-managed runtime with all Windows helper binaries', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sync-think-codex-detect-'));
+    try {
+      const localAppData = join(dir, 'Local');
+      const managed = join(localAppData, 'OpenAI', 'Codex', 'bin', 'runtime-new');
+      const oldPathDir = join(dir, 'Programs', 'OpenAI', 'Codex', 'bin');
+      const oldExecutable = join(oldPathDir, 'codex.exe');
+      const managedExecutable = join(managed, 'codex.exe');
+      mkdirSync(managed, { recursive: true });
+      mkdirSync(oldPathDir, { recursive: true });
+      for (const file of [
+        managedExecutable,
+        join(managed, 'codex-windows-sandbox-setup.exe'),
+        join(managed, 'codex-command-runner.exe'),
+        join(managed, 'codex-code-mode-host.exe'),
+        oldExecutable,
+      ]) {
+        writeFileSync(file, '', { encoding: 'utf8', flag: 'w+' });
+      }
+
+      const resolved = resolveCodexExecutablePath({
+        localAppData,
+        pathExecutable: oldExecutable,
+        versionProbe: (candidate) => (candidate === managedExecutable ? '0.149.0' : '0.147.0'),
+      });
+
+      expect(resolved?.toLowerCase()).toBe(managedExecutable.toLowerCase());
+    } finally {
+      removeDir(dir);
+    }
+  });
+
+  it('prefers a complete app-managed runtime over a newer PATH binary without helpers', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sync-think-codex-detect-'));
+    try {
+      const localAppData = join(dir, 'Local');
+      const managed = join(localAppData, 'OpenAI', 'Codex', 'bin', 'runtime-complete');
+      const pathDir = join(dir, 'Path');
+      const pathExecutable = join(pathDir, 'codex.exe');
+      const managedExecutable = join(managed, 'codex.exe');
+      mkdirSync(managed, { recursive: true });
+      mkdirSync(pathDir, { recursive: true });
+      for (const file of [
+        managedExecutable,
+        join(managed, 'codex-windows-sandbox-setup.exe'),
+        join(managed, 'codex-command-runner.exe'),
+        join(managed, 'codex-code-mode-host.exe'),
+        pathExecutable,
+      ]) {
+        writeFileSync(file, '', { encoding: 'utf8', flag: 'w+' });
+      }
+
+      const resolved = resolveCodexExecutablePath({
+        localAppData,
+        pathExecutable,
+        versionProbe: (candidate) => (candidate === managedExecutable ? '0.149.0' : '0.150.0'),
+      });
+
+      expect(resolved?.toLowerCase()).toBe(managedExecutable.toLowerCase());
+    } finally {
+      removeDir(dir);
     }
   });
 });

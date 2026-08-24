@@ -25,6 +25,8 @@ const validSections: ContextStatusSection[] = [
 const validResponse: ConversationGetContextStatusResponse = {
   modelId: 'provider/model-1',
   contextWindow: 1_000,
+  modelContextWindow: 1_000,
+  contextWindowSource: 'model-default',
   estimatedUsedTokens: 700,
   usageRatio: 0.7,
   compactThreshold: 0.7,
@@ -35,6 +37,7 @@ const validResponse: ConversationGetContextStatusResponse = {
 describe('conversation.getContextStatus protocol', () => {
   it('registers the command and builds its typed request', () => {
     expect(DEFAULT_FEATURES).toContain('conversation.getContextStatus');
+    expect(DEFAULT_FEATURES).toContain('conversation.setContextWindowOverride');
     expect(
       req(
         'conversation.getContextStatus',
@@ -45,6 +48,17 @@ describe('conversation.getContextStatus protocol', () => {
       type: 'conversation.getContextStatus',
       payload: { conversationId: 'conv-1', modelId: 'provider/model-2' },
       requestId: 'request-1',
+    });
+    expect(
+      req(
+        'conversation.setContextWindowOverride',
+        { conversationId: 'conv-1', contextWindowOverride: 256_000 },
+        'request-2',
+      ),
+    ).toEqual({
+      type: 'conversation.setContextWindowOverride',
+      payload: { conversationId: 'conv-1', contextWindowOverride: 256_000 },
+      requestId: 'request-2',
     });
   });
 
@@ -66,10 +80,12 @@ describe('conversation.getContextStatus protocol', () => {
       parseConversationGetContextStatusPayload({
         conversationId: 'conv-1',
         modelId: 'provider/model-2',
+        kernelId: 'claude-code',
       }),
     ).toEqual({
       conversationId: 'conv-1',
       modelId: 'provider/model-2',
+      kernelId: 'claude-code',
     });
     expect(() => parseConversationGetContextStatusPayload({ conversationId: '' })).toThrow();
     expect(() => parseConversationGetContextStatusPayload({ conversationId: '   ' })).toThrow();
@@ -86,6 +102,12 @@ describe('conversation.getContextStatus protocol', () => {
       parseConversationGetContextStatusPayload({
         conversationId: 'conv-1',
         modelId: 'x'.repeat(257),
+      }),
+    ).toThrow();
+    expect(() =>
+      parseConversationGetContextStatusPayload({
+        conversationId: 'conv-1',
+        kernelId: '',
       }),
     ).toThrow();
     expect(() =>
@@ -121,6 +143,10 @@ describe('conversation.getContextStatus protocol', () => {
     { ...validResponse, contextWindow: 0 },
     { ...validResponse, contextWindow: 1.5 },
     { ...validResponse, contextWindow: MAX_CONTEXT_STATUS_TOKENS + 1 },
+    { ...validResponse, modelContextWindow: 0 },
+    { ...validResponse, contextWindowSource: 'configured' },
+    { ...validResponse, contextWindowOverride: 1_023 },
+    { ...validResponse, kernelContextWindowLimit: 0 },
     { ...validResponse, estimatedUsedTokens: -1 },
     { ...validResponse, estimatedUsedTokens: MAX_CONTEXT_STATUS_TOKENS + 1 },
     { ...validResponse, usageRatio: -0.1 },
@@ -139,15 +165,9 @@ describe('conversation.getContextStatus protocol', () => {
 
   it.each([
     validSections.slice(0, -1),
-    validSections.map((section, index) =>
-      index === 0 ? { ...section, type: 'other' } : section,
-    ),
-    validSections.map((section, index) =>
-      index === 0 ? { ...section, tokens: -1 } : section,
-    ),
-    validSections.map((section, index) =>
-      index === 0 ? { ...section, tokens: 1.5 } : section,
-    ),
+    validSections.map((section, index) => (index === 0 ? { ...section, type: 'other' } : section)),
+    validSections.map((section, index) => (index === 0 ? { ...section, tokens: -1 } : section)),
+    validSections.map((section, index) => (index === 0 ? { ...section, tokens: 1.5 } : section)),
     validSections.map((section, index) =>
       index === 0 ? { ...section, tokens: MAX_CONTEXT_STATUS_TOKENS + 1 } : section,
     ),

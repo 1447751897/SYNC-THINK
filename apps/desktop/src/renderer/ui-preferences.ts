@@ -27,6 +27,8 @@ export const UI_PREF_KEYS = {
   newConversationDraft: 'sync-think.newConversationDraft',
   /** Model selected in the empty-state compose. */
   newConversationModel: 'sync-think.newConversationModel',
+  /** Kernel selected in the empty-state compose. */
+  newConversationKernel: 'sync-think.newConversationKernel',
   /** Shell: last used conversation track for 新建对话 (N3). */
   lastConversationTrack: 'sync-think.lastConversationTrack',
   /** Shell sidebar width in px (draggable). */
@@ -273,6 +275,34 @@ export function writeNewConversationModel(
     return;
   }
   safeSet(UI_PREF_KEYS.newConversationModel, modelId);
+}
+
+export function readNewConversationKernel(storage?: Pick<Storage, 'getItem'>): string {
+  try {
+    const value =
+      storage?.getItem(UI_PREF_KEYS.newConversationKernel) ??
+      safeGet(UI_PREF_KEYS.newConversationKernel) ??
+      'native';
+    return value.trim() || 'native';
+  } catch {
+    return 'native';
+  }
+}
+
+export function writeNewConversationKernel(
+  kernelId: string,
+  storage?: Pick<Storage, 'setItem'>,
+): void {
+  const value = kernelId.trim() || 'native';
+  if (storage) {
+    try {
+      storage.setItem(UI_PREF_KEYS.newConversationKernel, value);
+    } catch {
+      /* ignore */
+    }
+    return;
+  }
+  safeSet(UI_PREF_KEYS.newConversationKernel, value);
 }
 
 /** Default: expanded (false). Collapsing does not pause Run — only UI rail. */

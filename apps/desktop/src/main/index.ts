@@ -287,6 +287,7 @@ import {
   parseSetConversationArchivedPayload,
   parseSetConversationExecutionModePayload,
   parseSetConversationInteractionModePayload,
+  parseSetConversationContextWindowOverridePayload,
   parseConversationPlanSubmitPayload,
   parseConversationPlanGetPayload,
   parseConversationPlanApprovePayload,
@@ -1878,6 +1879,17 @@ function setupRuntimeBridge(): void {
       parseSetConversationInteractionModePayload(value),
     );
   });
+  ipcMain.handle(
+    'runtime:conversation-set-context-window-override',
+    async (event, value: unknown) => {
+      assertRuntimeIpcSource(event);
+      await ensureRuntimeConnection();
+      return getRuntimeClient().request(
+        'conversation.setContextWindowOverride',
+        parseSetConversationContextWindowOverridePayload(value),
+      );
+    },
+  );
   ipcMain.handle('runtime:conversation-plan-submit', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
     await ensureRuntimeConnection();

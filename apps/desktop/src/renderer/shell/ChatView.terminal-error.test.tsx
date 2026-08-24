@@ -2,15 +2,27 @@
  * @vitest-environment jsdom
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { Conversation, Message } from '@sync-think/shared';
 import { ChatView } from './ChatView.js';
 
 const runtime = {
+  appendMessage: vi.fn(),
+  detectKernels: vi.fn(),
   getConversationRunProcess: vi.fn(),
   listConversationMessages: vi.fn(),
   openTask: vi.fn(),
+  sendConversationMessage: vi.fn(),
 };
+
+const userMessage = {
+  id: 'user-before-failure',
+  threadId: 'thread-terminal',
+  role: 'user',
+  sequence: 0,
+  createdAt: '2026-08-07T09:29:59.000Z',
+  blocks: [{ type: 'text', text: '请继续处理这个任务' }],
+} as unknown as Message;
 
 const conversation = {
   id: 'conversation-terminal',
@@ -37,7 +49,8 @@ const failedMessage = {
       type: 'error',
       payload: {
         terminalState: 'failed',
-        errorMessage: '请求被网关拒绝（400）：网关不支持参数 enable_thinking、prompt_cache_key（中转网关可能不接受非标准参数）。请调整模型或网关配置，或联系网关管理员。',
+        errorMessage:
+          '请求被网关拒绝（400）：网关不支持参数 enable_thinking、prompt_cache_key（中转网关可能不接受非标准参数）。请调整模型或网关配置，或联系网关管理员。',
       },
     },
   ],
@@ -67,12 +80,21 @@ const outputlessFailure = {
 } as unknown as Message;
 
 beforeEach(() => {
+  window.localStorage.clear();
+  runtime.appendMessage
+    .mockReset()
+    .mockResolvedValue({ messageId: 'retry-message', taskVersion: 2 });
+  runtime.detectKernels.mockReset().mockResolvedValue({ kernels: [] });
   runtime.openTask.mockReset().mockResolvedValue({ task: { threadId: 'thread-terminal' } });
   runtime.listConversationMessages.mockReset().mockResolvedValue({
     messages: [failedMessage],
     hasMore: false,
   });
   runtime.getConversationRunProcess.mockReset().mockResolvedValue({ process: null });
+  runtime.sendConversationMessage.mockReset().mockResolvedValue({
+    threadId: 'thread-terminal',
+    taskVersion: 1,
+  });
   Object.defineProperty(window, 'syncThink', {
     configurable: true,
     value: { runtime },
@@ -85,6 +107,39 @@ afterEach(() => {
 });
 
 describe('ChatView terminal failure reason', () => {
+  it('opens the model picker from a failed turn and retries with the newly selected model', async () => {
+    runtime.listConversationMessages.mockResolvedValue({
+      messages: [userMessage, outputlessFailure],
+      hasMore: false,
+    });
+    render(
+      <ChatView
+        conversation={conversation}
+        modelName="gpt-5.6-luna"
+        models={[
+          { modelId: 'model-terminal', displayName: 'gpt-5.6-luna', providerName: 'Relay' },
+          { modelId: 'model-backup', displayName: 'gpt-5.6-sol', providerName: 'Backup' },
+        ]}
+        eventHistory={[]}
+        onTitleUpdated={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByTestId('process-panel-toggle'));
+    fireEvent.click(await screen.findByRole('button', { name: '选择模型并重试' }));
+    fireEvent.click(await screen.findByTestId('model-provider-Backup'));
+    fireEvent.click(await screen.findByText('gpt-5.6-sol'));
+
+    await waitFor(() =>
+      expect(runtime.appendMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ modelId: 'model-backup' }),
+      ),
+    );
+    expect(runtime.appendMessage.mock.calls.at(-1)?.[0]).toMatchObject({
+      text: '请继续处理这个任务',
+    });
+  });
+
   it('shows the concrete failure reason next to the failure notice', async () => {
     render(
       <ChatView

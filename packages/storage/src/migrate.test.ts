@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -93,6 +93,7 @@ async function createLegacy0013TerminalDatabase(dbPath: string) {
       '0047_daemon_task_queue',
       '0048_daemon_external_event',
       '0049_run_index',
+      '0050_conversation_context_window_override',
     ]);
     await runMigrations(dbPath);
   } finally {
@@ -315,6 +316,7 @@ async function createLegacy0011Database(dbPath: string, withMatchingEvent: boole
       '0047_daemon_task_queue',
       '0048_daemon_external_event',
       '0049_run_index',
+      '0050_conversation_context_window_override',
     ]);
     await runMigrations(dbPath);
   } finally {
@@ -582,9 +584,10 @@ describe('migration planner (pure)', () => {
           '0044_scheduled_task',
           '0045_scheduled_task_scope',
           '0046_scheduled_task_history',
-      '0047_daemon_task_queue',
-      '0048_daemon_external_event',
-      '0049_run_index',
+          '0047_daemon_task_queue',
+          '0048_daemon_external_event',
+          '0049_run_index',
+          '0050_conversation_context_window_override',
         ]);
         const after = await openDatabaseAsync({ path: dbPath });
         try {
@@ -702,6 +705,7 @@ describe('migration planner (pure)', () => {
       '0047_daemon_task_queue',
       '0048_daemon_external_event',
       '0049_run_index',
+      '0050_conversation_context_window_override',
     ]);
   });
 
@@ -746,6 +750,7 @@ describe('migration planner (pure)', () => {
       '0047_daemon_task_queue',
       '0048_daemon_external_event',
       '0049_run_index',
+      '0050_conversation_context_window_override',
     ]);
   });
 
@@ -798,6 +803,7 @@ describe('migration planner (pure)', () => {
       '0047_daemon_task_queue',
       '0048_daemon_external_event',
       '0049_run_index',
+      '0050_conversation_context_window_override',
     ]);
   });
 
@@ -843,6 +849,7 @@ describe('migration planner (pure)', () => {
       '0047_daemon_task_queue',
       '0048_daemon_external_event',
       '0049_run_index',
+      '0050_conversation_context_window_override',
     ]);
   });
 
@@ -887,6 +894,7 @@ describe('migration planner (pure)', () => {
       '0047_daemon_task_queue',
       '0048_daemon_external_event',
       '0049_run_index',
+      '0050_conversation_context_window_override',
     ]);
   });
 
@@ -948,6 +956,7 @@ describe('migration planner (pure)', () => {
       '0047_daemon_task_queue',
       '0048_daemon_external_event',
       '0049_run_index',
+      '0050_conversation_context_window_override',
     ]);
     expect(plan.skipped).toEqual(['0001_baseline_v1']);
   });
@@ -1002,6 +1011,7 @@ describe('migration planner (pure)', () => {
       '0047_daemon_task_queue',
       '0048_daemon_external_event',
       '0049_run_index',
+      '0050_conversation_context_window_override',
     ]);
     expect(plan.skipped).toEqual(['0001_baseline_v1', '0002_fts_messages']);
   });
@@ -1059,6 +1069,7 @@ describe('migration planner (pure)', () => {
       '0047_daemon_task_queue',
       '0048_daemon_external_event',
       '0049_run_index',
+      '0050_conversation_context_window_override',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -1120,6 +1131,7 @@ describe('migration planner (pure)', () => {
       '0047_daemon_task_queue',
       '0048_daemon_external_event',
       '0049_run_index',
+      '0050_conversation_context_window_override',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -1182,6 +1194,7 @@ describe('migration planner (pure)', () => {
       '0047_daemon_task_queue',
       '0048_daemon_external_event',
       '0049_run_index',
+      '0050_conversation_context_window_override',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -1245,6 +1258,7 @@ describe('migration planner (pure)', () => {
       '0047_daemon_task_queue',
       '0048_daemon_external_event',
       '0049_run_index',
+      '0050_conversation_context_window_override',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -1309,6 +1323,7 @@ describe('migration planner (pure)', () => {
       '0047_daemon_task_queue',
       '0048_daemon_external_event',
       '0049_run_index',
+      '0050_conversation_context_window_override',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -1375,6 +1390,7 @@ describe('migration planner (pure)', () => {
       '0047_daemon_task_queue',
       '0048_daemon_external_event',
       '0049_run_index',
+      '0050_conversation_context_window_override',
     ]);
     expect(plan.skipped).toEqual(prior);
   });
@@ -1433,6 +1449,7 @@ describe('migration planner (pure)', () => {
       '0047_daemon_task_queue',
       '0048_daemon_external_event',
       '0049_run_index',
+      '0050_conversation_context_window_override',
     ]);
     expect(plan.skipped).toEqual(prior);
   });
@@ -1488,6 +1505,7 @@ describe('migration planner (pure)', () => {
       '0047_daemon_task_queue',
       '0048_daemon_external_event',
       '0049_run_index',
+      '0050_conversation_context_window_override',
     ]);
     expect(plan.skipped).toEqual(['0002_fts_messages']);
   });
@@ -1527,6 +1545,22 @@ describe('Drizzle schema shape (no native bind required)', () => {
 });
 
 describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
+  it('recovers a migration lock left by a process that no longer exists', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sync-think-storage-stale-migration-lock-'));
+    const dbPath = join(dir, 'sync-think.db');
+    const lockPath = `${dbPath}.migrate.lock`;
+    try {
+      writeFileSync(lockPath, '2147483647', 'utf8');
+
+      const result = await runMigrations(dbPath);
+
+      expect(result.applied).toEqual(MIGRATIONS.map((migration) => migration.name));
+      expect(existsSync(lockPath)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('skips backup creation for a fresh database and a no-op rerun', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'sync-think-storage-noop-backup-'));
     const dbPath = join(dir, 'sync-think.db');
@@ -1745,9 +1779,10 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0044_scheduled_task',
         '0045_scheduled_task_scope',
         '0046_scheduled_task_history',
-      '0047_daemon_task_queue',
-      '0048_daemon_external_event',
-      '0049_run_index',
+        '0047_daemon_task_queue',
+        '0048_daemon_external_event',
+        '0049_run_index',
+        '0050_conversation_context_window_override',
       ]);
       const after = await openDatabaseAsync({ path: dbPath });
       try {
@@ -1858,9 +1893,10 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0044_scheduled_task',
         '0045_scheduled_task_scope',
         '0046_scheduled_task_history',
-      '0047_daemon_task_queue',
-      '0048_daemon_external_event',
-      '0049_run_index',
+        '0047_daemon_task_queue',
+        '0048_daemon_external_event',
+        '0049_run_index',
+        '0050_conversation_context_window_override',
       ]);
       try {
         await runMigrations(dbPath);
@@ -1928,9 +1964,10 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0044_scheduled_task',
         '0045_scheduled_task_scope',
         '0046_scheduled_task_history',
-      '0047_daemon_task_queue',
-      '0048_daemon_external_event',
-      '0049_run_index',
+        '0047_daemon_task_queue',
+        '0048_daemon_external_event',
+        '0049_run_index',
+        '0050_conversation_context_window_override',
       ]);
       const upgraded = await openDatabaseAsync({ path: dbPath });
       try {
@@ -2325,9 +2362,10 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0044_scheduled_task',
         '0045_scheduled_task_scope',
         '0046_scheduled_task_history',
-      '0047_daemon_task_queue',
-      '0048_daemon_external_event',
-      '0049_run_index',
+        '0047_daemon_task_queue',
+        '0048_daemon_external_event',
+        '0049_run_index',
+        '0050_conversation_context_window_override',
       ]);
       await runMigrations(dbPath);
     } finally {
@@ -2408,9 +2446,10 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0044_scheduled_task',
         '0045_scheduled_task_scope',
         '0046_scheduled_task_history',
-      '0047_daemon_task_queue',
-      '0048_daemon_external_event',
-      '0049_run_index',
+        '0047_daemon_task_queue',
+        '0048_daemon_external_event',
+        '0049_run_index',
+        '0050_conversation_context_window_override',
       ]);
       expect((await runMigrations(dbPath)).applied).toEqual([]);
       const after = await openDatabaseAsync({ path: dbPath });
@@ -2466,9 +2505,10 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0044_scheduled_task',
         '0045_scheduled_task_scope',
         '0046_scheduled_task_history',
-      '0047_daemon_task_queue',
-      '0048_daemon_external_event',
-      '0049_run_index',
+        '0047_daemon_task_queue',
+        '0048_daemon_external_event',
+        '0049_run_index',
+        '0050_conversation_context_window_override',
       ]);
       await runMigrations(dbPath);
     } finally {
@@ -2523,9 +2563,10 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0044_scheduled_task',
         '0045_scheduled_task_scope',
         '0046_scheduled_task_history',
-      '0047_daemon_task_queue',
-      '0048_daemon_external_event',
-      '0049_run_index',
+        '0047_daemon_task_queue',
+        '0048_daemon_external_event',
+        '0049_run_index',
+        '0050_conversation_context_window_override',
       ]);
       expect((await runMigrations(dbPath)).applied).toEqual([]);
       const after = await openDatabaseAsync({ path: dbPath });
@@ -2587,9 +2628,10 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0044_scheduled_task',
         '0045_scheduled_task_scope',
         '0046_scheduled_task_history',
-      '0047_daemon_task_queue',
-      '0048_daemon_external_event',
-      '0049_run_index',
+        '0047_daemon_task_queue',
+        '0048_daemon_external_event',
+        '0049_run_index',
+        '0050_conversation_context_window_override',
       ]);
       const { raw } = await openDatabaseAsync({ path: dbPath });
       try {
@@ -2719,9 +2761,10 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0044_scheduled_task',
         '0045_scheduled_task_scope',
         '0046_scheduled_task_history',
-      '0047_daemon_task_queue',
-      '0048_daemon_external_event',
-      '0049_run_index',
+        '0047_daemon_task_queue',
+        '0048_daemon_external_event',
+        '0049_run_index',
+        '0050_conversation_context_window_override',
       ]);
       const { raw } = await openDatabaseAsync({ path: dbPath });
       try {
@@ -2802,9 +2845,10 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0044_scheduled_task',
         '0045_scheduled_task_scope',
         '0046_scheduled_task_history',
-      '0047_daemon_task_queue',
-      '0048_daemon_external_event',
-      '0049_run_index',
+        '0047_daemon_task_queue',
+        '0048_daemon_external_event',
+        '0049_run_index',
+        '0050_conversation_context_window_override',
       ]);
       const { raw } = await openDatabaseAsync({ path: dbPath });
       try {

@@ -46,9 +46,14 @@
   --color-settings-action: #2d4739;
   --color-settings-action-fg: #ffffff;
 
-  /* NewMax interaction overlays. Dark values are copied from --ds-on-surface and --ds-on-surface-active so hover and selection stay translucent across every surface. */
+  /* NewMax interaction overlays with stable semantic control, selection and focus roles for future data-skin themes. */
   --color-hover: #efece3;
   --color-active: #f2eee6;
+  --color-control: #ffffff;
+  --color-control-hover: #efece3;
+  --color-selection: #f2eee6;
+  --color-selection-border: #2f9b5b;
+  --color-focus-ring: #247648;
 
   /*
    * Status colors follow the theme: dark uses higher-luminance variants to
@@ -212,6 +217,11 @@
 
   --color-hover: rgba(168, 184, 176, 0.08);
   --color-active: rgba(168, 184, 176, 0.16);
+  --color-control: #252726;
+  --color-control-hover: #2a2d2b;
+  --color-selection: #2a2d2b;
+  --color-selection-border: #36d385;
+  --color-focus-ring: #36d385;
 
   --color-success: #4ade80;
   --color-error: #e56555;

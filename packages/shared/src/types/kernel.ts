@@ -128,6 +128,11 @@ export interface PlatformToolDefinition {
  * per kernel run; adapters translate this into the kernel's MCP server
  * registration (`--mcp-config` for Claude Code, `mcp_servers.*` config
  * overrides for codex) and embed the address + token in the server's env.
+ *
+ * Since the kernel-tool refactor (in-process SDK MCP servers), the
+ * claude-code channel receives `sdkMcpServers` instead of a stdio broker:
+ * the adapter registers the live in-process servers directly and never
+ * spawns the platform MCP server. codex/pi keep the stdio broker path.
  */
 export interface PlatformBrokerInfo {
   /** Loopback host the MCP server connects to (always 127.0.0.1). */
@@ -142,6 +147,14 @@ export interface PlatformBrokerInfo {
   command: string;
   /** Extra args for the MCP server spawn (entry point args). */
   args: string[];
+  /**
+   * In-process SDK MCP servers (claude-code channel only). When present the
+   * adapter registers these directly and ignores host/port/token/command/args.
+   * Keyed by server name; values are non-serializable live SDK server configs
+   * (`McpSdkServerConfigWithInstance`). The runtime (which depends on the SDK)
+   * produces these; the adapter consumes them as opaque objects.
+   */
+  sdkMcpServers?: Record<string, unknown>;
 }
 
 /** Everything the host hands a kernel before it starts a run. */
@@ -153,6 +166,13 @@ export interface KernelRequest {
   providerModelId: string;
   /** User message that starts this run (one run = one user turn). */
   userText: string;
+  /**
+   * Images attached to the starting user message, as data URLs. Adapters with
+   * multimodal input support forward these to the model; adapters/models
+   * without vision capability consume the host-side text description instead
+   * (the host decides: images present here means they were forwarded).
+   */
+  images?: Array<{ name: string; mimeType: string; dataUrl: string }>;
   /** Host-configured context window capacity (§2.3 ①). */
   contextWindow: number;
   /**
@@ -221,6 +241,8 @@ export type KernelEvent =
       argsJson: string;
       partial: boolean;
     }
+  /** Ephemeral output emitted while a still-running tool is producing data. */
+  | { type: 'tool-progress'; toolId: string; output: string }
   | { type: 'tool-result'; toolId: string; output: string; isError: boolean }
   | {
       type: 'permission-request';

@@ -68,6 +68,7 @@ export type Feature =
   | 'conversation.list'
   | 'conversation.listMessages'
   | 'conversation.getContextStatus'
+  | 'conversation.setContextWindowOverride'
   | 'conversation.getRunProcess'
   | 'conversation.create'
   | 'conversation.rename'
@@ -193,6 +194,7 @@ export const DEFAULT_FEATURES: Feature[] = [
   'conversation.list',
   'conversation.listMessages',
   'conversation.getContextStatus',
+  'conversation.setContextWindowOverride',
   'conversation.getRunProcess',
   'conversation.create',
   'conversation.rename',

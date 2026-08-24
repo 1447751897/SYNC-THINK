@@ -2,6 +2,7 @@
 import {
   parseConversationGetContextStatusPayload,
   parseConversationGetRunProcessPayload,
+  parseSetConversationContextWindowOverridePayload,
 } from './team-payloads.js';
 
 describe('parseConversationGetRunProcessPayload', () => {
@@ -26,9 +27,8 @@ describe('parseConversationGetRunProcessPayload', () => {
   });
 });
 
-
 describe('parseConversationGetContextStatusPayload', () => {
-  it('accepts a bounded conversation id and optional model override', () => {
+  it('accepts a bounded conversation id with optional model and kernel overrides', () => {
     expect(parseConversationGetContextStatusPayload({ conversationId: 'conv-1' })).toEqual({
       conversationId: 'conv-1',
     });
@@ -36,10 +36,12 @@ describe('parseConversationGetContextStatusPayload', () => {
       parseConversationGetContextStatusPayload({
         conversationId: 'conv-1',
         modelId: 'provider/model-luna',
+        kernelId: 'claude-code',
       }),
     ).toEqual({
       conversationId: 'conv-1',
       modelId: 'provider/model-luna',
+      kernelId: 'claude-code',
     });
   });
 
@@ -54,11 +56,44 @@ describe('parseConversationGetContextStatusPayload', () => {
     { conversationId: 'conv-1', modelId: '' },
     { conversationId: 'conv-1', modelId: 1 },
     { conversationId: 'conv-1', modelId: 'x'.repeat(257) },
+    { conversationId: 'conv-1', kernelId: '' },
+    { conversationId: 'conv-1', kernelId: 'x'.repeat(65) },
     { conversationId: 'conv-1', extra: true },
     { conversationId: 'x'.repeat(129) },
   ])('rejects malformed payload %#', (payload) => {
     expect(() => parseConversationGetContextStatusPayload(payload)).toThrow(
       'Invalid get-conversation-context-status payload',
+    );
+  });
+});
+
+describe('parseSetConversationContextWindowOverridePayload', () => {
+  it('accepts a bounded token capacity or null to restore the model default', () => {
+    expect(
+      parseSetConversationContextWindowOverridePayload({
+        conversationId: 'conv-1',
+        contextWindowOverride: 256_000,
+      }),
+    ).toEqual({ conversationId: 'conv-1', contextWindowOverride: 256_000 });
+    expect(
+      parseSetConversationContextWindowOverridePayload({
+        conversationId: 'conv-1',
+        contextWindowOverride: null,
+      }),
+    ).toEqual({ conversationId: 'conv-1', contextWindowOverride: null });
+  });
+
+  it.each([
+    undefined,
+    {},
+    { conversationId: '', contextWindowOverride: 256_000 },
+    { conversationId: 'conv-1', contextWindowOverride: 1_023 },
+    { conversationId: 'conv-1', contextWindowOverride: 10_000_001 },
+    { conversationId: 'conv-1', contextWindowOverride: 128_000.5 },
+    { conversationId: 'conv-1', contextWindowOverride: 128_000, extra: true },
+  ])('rejects malformed payload %#', (payload) => {
+    expect(() => parseSetConversationContextWindowOverridePayload(payload)).toThrow(
+      'Invalid set-conversation-context-window-override payload',
     );
   });
 });

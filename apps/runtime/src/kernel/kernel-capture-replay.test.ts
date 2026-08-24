@@ -96,8 +96,17 @@ describe('kernel adapters against real captured CLI streams', () => {
     const reasoning = events.filter((event) => event.type === 'reasoning');
     expect(reasoning.length).toBeGreaterThan(0);
 
-    // Tool arguments come from the complete assistant message (never partial JSON).
-    const toolCall = events.find((event) => event.type === 'tool-call');
+    // content_block_start announces the running tool immediately; the complete
+    // assistant message then finalizes the same row with parseable arguments.
+    expect(
+      events.find((event) => event.type === 'tool-call' && event.partial === true),
+    ).toMatchObject({
+      type: 'tool-call',
+      toolId: 'toolu_VHGuuy3wlJam7wNSw5zWpu',
+      name: 'Read',
+      partial: true,
+    });
+    const toolCall = events.find((event) => event.type === 'tool-call' && event.partial !== true);
     expect(toolCall).toMatchObject({
       type: 'tool-call',
       toolId: 'toolu_VHGuuy3wlJam7wNSw5zWpu',
@@ -114,6 +123,39 @@ describe('kernel adapters against real captured CLI streams', () => {
       isError: false,
     });
     expect((toolResult as { output: string }).output).toContain('alpha');
+
+    // Each real Anthropic request closes with message_delta. Cache read/create
+    // values from message_start must survive until that completed usage report.
+    expect(events.filter((event) => event.type === 'usage')).toEqual([
+      {
+        type: 'usage',
+        usage: {
+          real: 27_705,
+          window: 200_000,
+          input: 27_600,
+          output: 105,
+          cached: 54,
+          cachedTokensCreated: 27_444,
+          requestId: 'msg_uUtMQIAySKvxiTBkm0fmrpzf',
+          providerResponseId: 'msg_uUtMQIAySKvxiTBkm0fmrpzf',
+          modelId: 'claude-opus-5',
+        },
+      },
+      {
+        type: 'usage',
+        usage: {
+          real: 28_211,
+          window: 200_000,
+          input: 28_210,
+          output: 1,
+          cached: 76,
+          cachedTokensCreated: 28_123,
+          requestId: 'msg_gANvcy8Xn6b8k9OJ843GuBGt',
+          providerResponseId: 'msg_gANvcy8Xn6b8k9OJ843GuBGt',
+          modelId: 'claude-opus-5',
+        },
+      },
+    ]);
 
     expect(events.at(-1)).toMatchObject({ type: 'terminal', status: 'completed' });
   }, 20_000);

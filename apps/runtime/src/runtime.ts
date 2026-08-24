@@ -2,7 +2,8 @@
 // killing the UI must not terminate active Runs (design �?6 / �?).
 
 import { existsSync, readFileSync } from 'node:fs';
-import { relative, sep } from 'node:path';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { join, relative, sep } from 'node:path';
 import {
   pipePathPortable,
   encodeFrame,
@@ -198,6 +199,7 @@ import {
   type GatewayLogsResponse,
   type OpenGatewayStatusResponse,
 } from '@sync-think/protocol';
+import { z } from 'zod';
 import {
   ErrorCode,
   deriveTaskTitleFromPrompt,
@@ -416,7 +418,30 @@ import {
   toolsForExecutionMode,
   wrapModelCompactSummary,
 } from './chat-tools.js';
-import { resolveAppendMessageImageDataUrl } from './chat-image-staging.js';
+import {
+  resolveAppendMessageImageDataUrl,
+  resolveAppendMessageImageStagingPath,
+  resolveChatImageStagingDir,
+} from './chat-image-staging.js';
+import {
+  VISION_FALLBACK_SETTING_KEY,
+  buildDescriptionSuffix,
+  buildImageHandlingFailureSuffix,
+  buildImageDescriptionPrompt,
+  buildWindowsOcrSuffix,
+  catalogEntryVisionCapable,
+  isModelVisionCapable,
+  parseVisionFallbackSetting,
+  resolveVisionDescribeModel,
+  type DescribeImageInput,
+  type WindowsOcrDescription,
+} from './describe-image.js';
+import {
+  DESCRIBE_IMAGE_TOOL_NAME,
+  readImageDataUrl,
+  resolveDescribeImagePath,
+} from './describe-image-tool.js';
+import { recognizeImageTextWithWindowsOcr, WINDOWS_OCR_TOOL_NAME } from './windows-ocr.js';
 import {
   discoverRemoteMcpTools,
   callRemoteMcpTool,
@@ -547,6 +572,7 @@ import {
   parseSetConversationArchivedPayload,
   parseSetConversationExecutionModePayload,
   parseSetConversationInteractionModePayload,
+  parseSetConversationContextWindowOverridePayload,
   parseConversationPlanSubmitPayload,
   parseConversationPlanGetPayload,
   parseConversationPlanApprovePayload,
@@ -626,10 +652,16 @@ import {
   isPlatformFileToolName,
   isPlanningDeniedTool,
   nativePlatformToolSchemas,
+  CHAT_PLATFORM_HOST_TOOL_NAMES,
   PLATFORM_MCP_TOOL_DEFINITIONS,
   type PlatformToolContext,
 } from './kernel/platform-tools.js';
 import { resolvePlatformMcpServerEntry } from './kernel/platform-mcp-entry.js';
+import {
+  buildSdkMcpServers,
+  selectKernelMcpRun,
+  setKernelMcpServerConditions,
+} from './kernel/mcp-servers/registry.js';
 import {
   PLAN_ACT_SETTING_KEY,
   parsePlanActSetting,
@@ -798,6 +830,8 @@ export interface RuntimeOptions {
   discoveryAdapter?: DemoProvider;
   /** 0026: app-level KV settings (vision fallback, plan & act). */
   appSettingStore?: SqliteAppSettingStore;
+  /** Test/embedding seam; production uses Windows.Media.Ocr. */
+  windowsOcrRecognizer?: typeof recognizeImageTextWithWindowsOcr;
   /** 0044: 定时任务表。 */
   scheduledTaskStore?: SqliteScheduledTaskStore;
   /** 0049: 后台活动中心的 Run 读模型投影。缺省时只是不写投影，不影响执行。 */
@@ -875,6 +909,39 @@ function runtimeRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : undefined;
+}
+
+/**
+ * Host platform tools the kernel permission bridge auto-allows (approval: never
+ * on every channel): asking the user a question must not first require the user
+ * to approve "asking a question". File writes and side-effecting tools keep
+ * their approval cards; task_schedule's create/cancel approval stays inside its
+ * own executor.
+ */
+const HOST_AUTO_APPROVED_PLATFORM_TOOLS: ReadonlySet<string> = new Set([
+  'platform_context',
+  'ask_user_question',
+  'plan_submit',
+  'goal_manage',
+  'task_list',
+  'agent_list',
+  'task_schedule',
+  // NewMax-style vision fallback: read-only image understanding — the host
+  // executor never mutates and already returns rich errors to the model.
+  'describe_image',
+  WINDOWS_OCR_TOOL_NAME,
+]);
+
+/**
+ * True for `mcp__<server>__<tool>` calls whose tool is host auto-approved.
+ * Matched by tool base-name regardless of the channel's server name
+ * (claude-code: `mcp__platform__*`; codex/pi broker: `mcp__sync-think-platform__*`;
+ * vision-fallback server: `mcp__vision-fallback__*`).
+ */
+export function isHostAutoApprovedMcpTool(toolName: string): boolean {
+  const match = /^mcp__([a-z0-9-]+)__([a-z0-9_]+)$/.exec(toolName);
+  if (!match) return false;
+  return HOST_AUTO_APPROVED_PLATFORM_TOOLS.has(match[2]!);
 }
 
 interface PersistedKernelConversationSession {
@@ -1073,11 +1140,14 @@ export function externalKernelToolEventsToMessageBlocks(
     entry.kind === 'tool-call'
       ? {
           type: 'tool-call',
-          payload: { name: entry.name ?? 'unknown', argumentsJson: entry.argsJson ?? '' },
+          payload: {
+            name: sanitizeDurableText(entry.name ?? 'unknown'),
+            argumentsJson: sanitizeDurableText(entry.argsJson ?? ''),
+          },
         }
       : {
           type: 'tool-result',
-          text: entry.output ?? '',
+          text: sanitizeDurableText(entry.output ?? ''),
           ...(entry.failed ? { payload: { failed: true } } : {}),
         },
   );
@@ -1151,7 +1221,7 @@ export function assistantTimelineToMessageBlocks(
   timeline: readonly AssistantTurnSegment[],
 ): MessageBlock[] {
   if (timeline.length === 0) return [];
-  const ordered = [...timeline].map((segment) => ({ ...segment })) as AssistantTurnSegment[];
+  const ordered = timeline.map(sanitizeAssistantTimelineSegment);
   ordered.sort((left, right) => left.sequence - right.sequence);
 
   const completeBlocks = buildAssistantTimelineBlocks(ordered);
@@ -1226,6 +1296,37 @@ export function assistantTimelineToMessageBlocks(
 }
 
 const DURABLE_TRUNCATION_MARKER = '\n[... content truncated for durable storage ...]';
+const DURABLE_EMBEDDED_IMAGE_MARKER = '[embedded image omitted from durable process details]';
+
+function sanitizeDurableText(text: string): string {
+  return text
+    .replace(/data:image\/[a-z0-9.+-]+;base64,[a-z0-9+/_=-]+/gi, DURABLE_EMBEDDED_IMAGE_MARKER)
+    .replace(/data:image\//gi, 'data-image/');
+}
+
+function sanitizeAssistantTimelineSegment(segment: AssistantTurnSegment): AssistantTurnSegment {
+  if (segment.kind === 'thinking' || segment.kind === 'text') {
+    return { ...segment, text: sanitizeDurableText(segment.text) };
+  }
+  if (segment.kind === 'tool') {
+    return {
+      ...segment,
+      toolCallId: sanitizeDurableText(segment.toolCallId),
+      name: sanitizeDurableText(segment.name),
+      ...(segment.displayName ? { displayName: sanitizeDurableText(segment.displayName) } : {}),
+      ...(segment.inputSummary ? { inputSummary: sanitizeDurableText(segment.inputSummary) } : {}),
+      ...(segment.argumentsJson !== undefined
+        ? { argumentsJson: sanitizeDurableText(segment.argumentsJson) }
+        : {}),
+      ...(segment.output !== undefined ? { output: sanitizeDurableText(segment.output) } : {}),
+    };
+  }
+  return {
+    ...segment,
+    label: sanitizeDurableText(segment.label),
+    ...(segment.detail ? { detail: sanitizeDurableText(segment.detail) } : {}),
+  };
+}
 
 function truncateDurableText(text: string, maxCharacters: number): string {
   if (text.length <= maxCharacters) return text;
@@ -1370,16 +1471,17 @@ function messagePageJsonBytes(page: { messages: readonly unknown[] }): number {
 }
 
 export function assistantTextFallbackMessageBlocks(text: string): MessageBlock[] {
-  if (!text.trim()) return [];
-  const complete: MessageBlock[] = [{ type: 'text', text }];
+  const durableText = sanitizeDurableText(text);
+  if (!durableText.trim()) return [];
+  const complete: MessageBlock[] = [{ type: 'text', text: durableText }];
   if (messageBlocksJsonBytes(complete) <= MAX_MESSAGE_BLOCKS_JSON_BYTES) return complete;
 
   let low = 0;
-  let high = text.length;
+  let high = durableText.length;
   let best = DURABLE_TRUNCATION_MARKER;
   while (low <= high) {
     const midpoint = Math.floor((low + high) / 2);
-    const candidate = truncateDurableText(text, midpoint);
+    const candidate = truncateDurableText(durableText, midpoint);
     if (
       messageBlocksJsonBytes([{ type: 'text', text: candidate }]) <= MAX_MESSAGE_BLOCKS_JSON_BYTES
     ) {
@@ -1845,6 +1947,11 @@ export class Runtime {
   /** Current transient snapshot per thread; survives replay eviction for active runs. */
   private readonly transientSnapshotByThread = new Map<string, ConversationTransientSnapshot>();
   private readonly transientSequenceByThread = new Map<string, number>();
+  /** External-kernel tool output that is visible only in transient snapshots. */
+  private readonly kernelToolProgressByRun = new Map<
+    string,
+    Map<string, { line: string; bytes: number; at: string }>
+  >();
   private readonly stateStore?: RuntimeStateStore;
   private readonly workspaceStore?: SqliteWorkspaceStore;
   private readonly workspaceId: WorkspaceId;
@@ -1853,6 +1960,7 @@ export class Runtime {
   private readonly modelRetryBaseDelayMs: number;
   private readonly providerStore?: SqliteProviderStore;
   private readonly appSettingStore?: SqliteAppSettingStore;
+  private readonly windowsOcrRecognizer: typeof recognizeImageTextWithWindowsOcr;
   /** 0044: 定时任务表与调度心跳。 */
   private readonly scheduledTaskStore?: SqliteScheduledTaskStore;
   /** 0049: Run 读模型。投影失败绝不影响执行面。 */
@@ -2020,7 +2128,7 @@ export class Runtime {
     this.kernelAdapterResolver = opts.kernelAdapterResolver ?? resolveRegisteredKernelAdapter;
     this.codexSessionHost = new BoundedKernelSessionHost({
       maxEntries: opts.codexSessionMaxEntries ?? 4,
-      idleTimeoutMs: opts.codexSessionIdleTimeoutMs ?? 15 * 60_000,
+      idleTimeoutMs: opts.codexSessionIdleTimeoutMs ?? 60 * 60_000,
       createAdapter: () => this.kernelAdapterResolver('codex'),
     });
     this.stateStore = opts.stateStore;
@@ -2031,6 +2139,7 @@ export class Runtime {
     this.modelRetryBaseDelayMs = Math.max(0, opts.modelRetryBaseDelayMs ?? 500);
     this.providerStore = opts.providerStore;
     this.appSettingStore = opts.appSettingStore;
+    this.windowsOcrRecognizer = opts.windowsOcrRecognizer ?? recognizeImageTextWithWindowsOcr;
     this.scheduledTaskStore = opts.scheduledTaskStore;
     this.runIndexStore = opts.runIndexStore;
     this.externalEventStore = opts.externalEventStore;
@@ -2615,6 +2724,10 @@ export class Runtime {
         }
         if (frame.type === 'conversation.getContextStatus') {
           this.handleGetConversationContextStatus(socket, frame);
+          return;
+        }
+        if (frame.type === 'conversation.setContextWindowOverride') {
+          this.handleSetConversationContextWindowOverride(socket, frame);
           return;
         }
         if (frame.type === 'conversation.getRunProcess') {
@@ -8096,12 +8209,15 @@ export class Runtime {
   private getOrBuildConversationContextSnapshot(input: {
     threadId: string;
     modelId?: string;
+    kernelId?: string;
     track?: 'model' | 'agent' | 'team';
     globalAgentId?: string;
     teamId?: string;
   }): ContextSnapshot {
     const cached = input.modelId
-      ? this.contextSnapshotByThread.get(input.threadId)?.get(input.modelId)
+      ? this.contextSnapshotByThread
+          .get(input.threadId)
+          ?.get(this.contextSnapshotCacheKey(input.modelId, input.kernelId))
       : undefined;
     if (cached) return cached;
 
@@ -8109,6 +8225,7 @@ export class Runtime {
       runId: ulid() as RunId,
       threadId: input.threadId,
       userText: '',
+      kernelId: input.kernelId,
       modelId: input.modelId,
       track: input.track,
       globalAgentId: input.globalAgentId,
@@ -8120,21 +8237,20 @@ export class Runtime {
     const workspaceRoot = this.resolveChatWorkspaceRoot(input.threadId);
     const executionMode = this.resolveChatExecutionMode(input.threadId);
     const networkEnabled = prepared.run.networkEnabled === true;
-    const agentToolsEnabled = Boolean(this.globalAgentStore);
-    const desktopToolsEnabled = this.isComputerUsePluginEnabled();
-    const browserWorkflowToolsEnabled = Boolean(this.browserWorkflowService);
-    const toolsEnabled =
-      Boolean(workspaceRoot) ||
-      networkEnabled ||
-      agentToolsEnabled ||
-      desktopToolsEnabled ||
-      browserWorkflowToolsEnabled;
+    // Host platform tooling is conversation infrastructure — always available
+    // (must mirror openProviderStream so the rebuilt snapshot matches the real
+    // provider request, the cache-miss/append consistency promise).
+    const toolsEnabled = true;
     const snapshot = this.buildDefaultProviderContextSnapshot(prepared.run, {
       messages,
       toolsEnabled,
       workspaceRoot,
       executionMode,
       networkEnabled,
+      platformSchemas: nativePlatformToolSchemas({
+        planningMode: this.isPlanningModeForThread(input.threadId),
+        visionFallbackEnabled: this.isVisionFallbackSettingEnabled(),
+      }),
     });
     this.setConversationContextSnapshot(input.threadId, snapshot);
     return snapshot;
@@ -8146,7 +8262,14 @@ export class Runtime {
       snapshotsByModel = new Map<string, ContextSnapshot>();
       this.contextSnapshotByThread.set(threadId, snapshotsByModel);
     }
-    snapshotsByModel.set(snapshot.status.modelId, snapshot);
+    snapshotsByModel.set(
+      this.contextSnapshotCacheKey(snapshot.status.modelId, snapshot.status.kernelId),
+      snapshot,
+    );
+  }
+
+  private contextSnapshotCacheKey(modelId: string, kernelId?: string): string {
+    return `${modelId}\u0000${kernelId?.trim() || 'native'}`;
   }
 
   private handleGetConversationContextStatus(socket: Socket, frame: Frame): void {
@@ -8178,6 +8301,7 @@ export class Runtime {
       const snapshot = this.getOrBuildConversationContextSnapshot({
         threadId,
         modelId: contextModelId,
+        kernelId: payload.kernelId,
         track: conversation.track,
         globalAgentId: conversation.track === 'agent' ? conversation.targetRef : undefined,
         teamId: conversation.track === 'team' ? conversation.targetRef : undefined,
@@ -8185,6 +8309,14 @@ export class Runtime {
       const response: ConversationGetContextStatusResponse = {
         modelId: snapshot.status.modelId,
         contextWindow: snapshot.status.contextWindow,
+        modelContextWindow: snapshot.status.modelContextWindow,
+        ...(snapshot.status.contextWindowOverride !== undefined
+          ? { contextWindowOverride: snapshot.status.contextWindowOverride }
+          : {}),
+        contextWindowSource: snapshot.status.contextWindowSource,
+        ...(snapshot.status.kernelContextWindowLimit !== undefined
+          ? { kernelContextWindowLimit: snapshot.status.kernelContextWindowLimit }
+          : {}),
         ...(snapshot.status.contextWindowEstimated === true
           ? { contextWindowEstimated: true }
           : {}),
@@ -8199,6 +8331,49 @@ export class Runtime {
           id: frame.id,
           kind: 'response',
           type: 'conversation.getContextStatus',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeTeamModelCommandError(socket, frame, error);
+    }
+  }
+
+  private handleSetConversationContextWindowOverride(socket: Socket, frame: Frame): void {
+    const payload = parseSetConversationContextWindowOverridePayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.conversationStore) {
+      this.writeTeamModelStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const current = this.conversationStore.get(payload.conversationId);
+      if (!current) throw new Error(`Conversation not found: ${payload.conversationId}`);
+      const updated = this.conversationStore.setContextWindowOverride(
+        payload.conversationId,
+        payload.contextWindowOverride,
+      );
+      const task =
+        updated.taskId && this.workspaceStore
+          ? this.workspaceStore.getTask(updated.taskId)
+          : undefined;
+      const scopeIds = new Set([
+        String(updated.id),
+        ...(task?.threadId ? [String(task.threadId)] : []),
+      ]);
+      for (const scopeId of scopeIds) {
+        this.contextSnapshotByThread.delete(scopeId);
+        this.contextRunByThread.delete(scopeId);
+      }
+      const response: ConversationResponse = { conversation: this.toConversationSummary(updated) };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'conversation.setContextWindowOverride',
           payload: response,
         }),
       );
@@ -8881,6 +9056,11 @@ export class Runtime {
     }
 
     const startedAt = Date.now();
+    let lifecycle:
+      | { threadId: string; taskId: TaskId; mode: 'manual' | 'auto'; beforeTokens: number }
+      | undefined;
+    let lifecycleStarted = false;
+    let lifecycleSettled = false;
     try {
       const conversation = this.conversationStore.get(payload.conversationId);
       if (!conversation) {
@@ -8931,8 +9111,30 @@ export class Runtime {
         snapshot.status.sections.find((section) => section.type === 'messages')?.tokens ?? 0;
       const fixedContextTokens = Math.max(0, beforeTokens - messageTokens);
       const mode = payload.mode === 'auto' ? 'auto' : 'manual';
+      lifecycle = { threadId, taskId: task.id, mode, beforeTokens };
       const onlyIfNeeded = payload.onlyIfNeeded === true || mode === 'auto';
       if (onlyIfNeeded && !snapshot.status.shouldAutoCompact) {
+        this.publishEvent(
+          this.appendEvent(
+            'context',
+            'context.compaction_skipped',
+            {
+              operationId: frame.id,
+              threadId,
+              conversationId: payload.conversationId,
+              mode,
+              reason: 'below-threshold',
+              beforeTokens,
+              afterTokens: beforeTokens,
+              foldedCount: 0,
+              durationMs: Date.now() - startedAt,
+            },
+            undefined,
+            undefined,
+            task.id,
+          ),
+        );
+        lifecycleSettled = true;
         socket.write(
           encodeFrame({
             id: frame.id,
@@ -8956,6 +9158,27 @@ export class Runtime {
       const keepRecent = payload.keepRecent ?? COMPACT_KEEP_RECENT_MESSAGES;
       const split = splitHistoryForCompact(history.messages, keepRecent);
       if (split.foldedCount <= 0) {
+        this.publishEvent(
+          this.appendEvent(
+            'context',
+            'context.compaction_skipped',
+            {
+              operationId: frame.id,
+              threadId,
+              conversationId: payload.conversationId,
+              mode,
+              reason: 'insufficient-history',
+              beforeTokens,
+              afterTokens: beforeTokens,
+              foldedCount: 0,
+              durationMs: Date.now() - startedAt,
+            },
+            undefined,
+            undefined,
+            task.id,
+          ),
+        );
+        lifecycleSettled = true;
         socket.write(
           encodeFrame({
             id: frame.id,
@@ -8982,6 +9205,27 @@ export class Runtime {
       let summaryText = '';
       let summarySource: 'model' | 'local' = 'local';
       let afterTokens = beforeTokens;
+
+      this.publishEvent(
+        this.appendEvent(
+          'context',
+          'context.compaction_started',
+          {
+            operationId: frame.id,
+            threadId,
+            conversationId: payload.conversationId,
+            mode,
+            beforeTokens,
+            foldedCount: split.foldedCount,
+            keepRecent,
+            startedAt: new Date(startedAt).toISOString(),
+          },
+          undefined,
+          undefined,
+          task.id,
+        ),
+      );
+      lifecycleStarted = true;
 
       const local = buildLocalCompactSummary({
         messages: history.messages,
@@ -9018,6 +9262,27 @@ export class Runtime {
         split.foldedCount <= 0 ||
         !isMeaningfulCompactReduction(beforeTokens, afterTokens)
       ) {
+        this.publishEvent(
+          this.appendEvent(
+            'context',
+            'context.compaction_skipped',
+            {
+              operationId: frame.id,
+              threadId,
+              conversationId: payload.conversationId,
+              mode,
+              reason: 'no-reduction',
+              beforeTokens,
+              afterTokens: beforeTokens,
+              foldedCount: 0,
+              durationMs: Date.now() - startedAt,
+            },
+            undefined,
+            undefined,
+            task.id,
+          ),
+        );
+        lifecycleSettled = true;
         socket.write(
           encodeFrame({
             id: frame.id,
@@ -9044,6 +9309,7 @@ export class Runtime {
       // Prefer durable task.version �?same source appendMessage uses for OCC.
       const currentVersion = task.version ?? this.threadVersions.get(threadId) ?? 0;
       const nextVersion = currentVersion + 1;
+      const compactDurationMs = Date.now() - startedAt;
 
       // Durable compact boundary: later buildChatMessagesFromEvents starts from here.
       // Keep compact + marker + version bump in one unit of work when available.
@@ -9061,6 +9327,8 @@ export class Runtime {
             afterTokens,
             foldedCount,
             keepRecent,
+            operationId: frame.id,
+            durationMs: compactDurationMs,
             messageId: compactMessageId,
           },
           compactMessageId,
@@ -9110,6 +9378,7 @@ export class Runtime {
       this.contextRunByThread.delete(threadId);
       this.publishEvent(written.compactEvent);
       this.publishEvent(written.markerEvent);
+      lifecycleSettled = true;
 
       socket.write(
         encodeFrame({
@@ -9124,13 +9393,37 @@ export class Runtime {
             beforeTokens,
             afterTokens,
             foldedCount,
-            durationMs: Date.now() - startedAt,
+            durationMs: compactDurationMs,
             summaryText,
             messageId: compactMessageId,
           },
         }),
       );
     } catch (error) {
+      if (lifecycle && lifecycleStarted && !lifecycleSettled) {
+        try {
+          this.publishEvent(
+            this.appendEvent(
+              'context',
+              'context.compaction_failed',
+              {
+                operationId: frame.id,
+                threadId: lifecycle.threadId,
+                conversationId: payload.conversationId,
+                mode: lifecycle.mode,
+                beforeTokens: lifecycle.beforeTokens,
+                durationMs: Date.now() - startedAt,
+                error: error instanceof Error ? error.message.slice(0, 500) : String(error),
+              },
+              undefined,
+              undefined,
+              lifecycle.taskId,
+            ),
+          );
+        } catch {
+          // Preserve the original compact error when lifecycle persistence also fails.
+        }
+      }
       this.writeTeamModelCommandError(socket, frame, error);
     }
   }
@@ -9455,6 +9748,7 @@ export class Runtime {
       archivedAt: record.archivedAt,
       executionMode: record.executionMode,
       interactionMode: record.interactionMode,
+      contextWindowOverride: record.contextWindowOverride,
       lastMessageAt: record.lastMessageAt,
       taskId: record.taskId,
       createdAt: record.createdAt,
@@ -14459,7 +14753,7 @@ export class Runtime {
     }
   }
 
-  private handleAppendMessage(socket: Socket, frame: Frame): void {
+  private async handleAppendMessage(socket: Socket, frame: Frame): Promise<void> {
     const payload = parseAppendMessagePayload(frame.payload);
     if (!payload) {
       this.writeMalformedPayload(socket, frame);
@@ -14680,6 +14974,10 @@ export class Runtime {
         return;
       }
       demoRun = prepared.run;
+      // Vision adaptation: forwarded vs described vs failed. Blocks the append
+      // response (and thus the run start) only while the description itself is
+      // in flight; failures degrade gracefully to forwarding.
+      await this.adaptRunImagesForModel(demoRun);
       projectedRuns.set(demoRunId, demoRun);
       eventDrafts.push({
         id: ulid() as Event['id'],
@@ -14730,6 +15028,11 @@ export class Runtime {
           modelId: demoRun.modelId,
           providerModelId: demoRun.providerModelId,
           kernelId: demoRun.kernelId,
+          permissionMode: normalizeChatExecutionMode(
+            this.resolveChatExecutionMode(demoRun.threadId),
+          ),
+          planningMode:
+            demoRun.planningMode === true || this.isPlanningModeForThread(demoRun.threadId),
           resolutionSource: demoRun.resolutionSource,
           credentialRefId: demoRun.credentialRefId,
           credentialResolutionSource: demoRun.credentialResolutionSource,
@@ -14752,6 +15055,7 @@ export class Runtime {
           ...(demoRun.contextWindowSource
             ? { contextWindowSource: demoRun.contextWindowSource }
             : {}),
+          ...(demoRun.imagesMode ? { imagesMode: demoRun.imagesMode } : {}),
           run: serializeDemoRun(demoRun),
         },
       });
@@ -14850,6 +15154,7 @@ export class Runtime {
           }
         : {}),
       streamId: demoRunId,
+      ...(demoRun?.imagesMode ? { imagesMode: demoRun.imagesMode } : {}),
     };
     socket.write(
       encodeFrame({
@@ -15933,10 +16238,19 @@ export class Runtime {
 
   /** Conversation id for a thread (goal state is conversation-scoped). */
   private resolveConversationIdForThread(threadId: string): string | undefined {
-    const task = this.workspaceStore?.getTaskByThreadId(threadId as ThreadId);
-    const conversation =
-      task && this.conversationStore ? this.conversationStore.getByTaskId(task.id) : undefined;
+    const conversation = this.resolveConversationForThread(threadId);
     return conversation ? String(conversation.id) : undefined;
+  }
+
+  private resolveConversationForThread(
+    threadId: string,
+  ): import('@sync-think/storage').ConversationRecord | undefined {
+    if (!this.conversationStore) return undefined;
+    const task = this.workspaceStore?.getTaskByThreadId(threadId as ThreadId);
+    return (
+      (task ? this.conversationStore.getByTaskId(task.id) : undefined) ??
+      this.conversationStore.get(threadId)
+    );
   }
 
   /** True when the conversation backing this thread is in「规划模式」(plan). */
@@ -17039,17 +17353,14 @@ export class Runtime {
       const workspaceRoot = this.resolveChatWorkspaceRoot(initialRun.threadId);
       const executionMode = this.resolveChatExecutionMode(initialRun.threadId);
       const networkEnabled = initialRun.networkEnabled === true;
-      // Agent-management tools (create_agent / list_agent_resources) do not need
-      // a bound project folder �?only a configured global agent store.
-      const agentToolsEnabled = Boolean(this.globalAgentStore);
-      const desktopToolsEnabled = this.isComputerUsePluginEnabled();
-      const browserWorkflowToolsEnabled = Boolean(this.browserWorkflowService);
-      const toolsEnabled =
-        Boolean(workspaceRoot) ||
-        networkEnabled ||
-        agentToolsEnabled ||
-        desktopToolsEnabled ||
-        browserWorkflowToolsEnabled;
+      // Host platform tooling (ask_user_question / plan_submit / goal_manage /
+      // platform_context / task_list / agent_list) is conversation
+      // infrastructure: it must be available even for a pure chat with no
+      // bound folder and no network — otherwise the model never learns it can
+      // ask the user a question (observed on native: ask_user_question missing).
+      // The per-capability flags (hasProjectTools / networkEnabled / ...) still
+      // gate the workspace/network/agent tools inside openProviderStream.
+      const toolsEnabled = true;
       const pendingToolCalls: import('@sync-think/adapters').ProviderToolCall[] = [];
       let toolLoopRound = 0;
       const MAX_TOOL_ROUNDS = 8;
@@ -17065,6 +17376,19 @@ export class Runtime {
         if (abort.signal.aborted) return;
         const attemptRun = this.demoRuns.get(runId);
         if (!attemptRun) return;
+        const unavailableReason = this.runModelUnavailableReason(attemptRun);
+        if (unavailableReason) {
+          const outcome = this.tryContinueWithFallback(
+            runId,
+            attemptRun,
+            'transient',
+            unavailableReason,
+          );
+          if (outcome === 'continued') continue;
+          if (outcome === 'paused') return;
+          this.persistDemoRunFailure(runId, 'transient', unavailableReason);
+          return;
+        }
         const providerRequestId = `chat-${ulid()}`;
         let activeRoundTranscript: ProviderRoundTranscript | undefined;
         let activeRoundTranscriptCommitted = false;
@@ -17106,12 +17430,14 @@ export class Runtime {
               networkEnabled,
               platformSchemas: nativePlatformToolSchemas({
                 planningMode: initialRun.planningMode === true,
+                visionFallbackEnabled: this.isVisionFallbackSettingEnabled(),
               }),
               signal: abort.signal,
             });
             if (process.env.SYNC_THINK_E2E_DEBUG === '1') {
               const schemas = nativePlatformToolSchemas({
                 planningMode: initialRun.planningMode === true,
+                visionFallbackEnabled: this.isVisionFallbackSettingEnabled(),
               });
               console.log('[e2e-debug] platformSchemas:', schemas.map((s) => s.name).join(','));
             }
@@ -17222,9 +17548,9 @@ export class Runtime {
                     }
                   : {}),
               });
-              // Stream every delta immediately so the UI renders
-              // character-by-character instead of buffering the whole
-              // response and flushing it as one block.
+              // Publish every delta immediately into the reconnect-safe draft.
+              // Renderer only exposes phase-confirmed process/final segments;
+              // this unknown tail remains provisional until tool/terminal.
               this.publishTransientDelta({
                 threadId: currentRun.threadId as ThreadId,
                 runId,
@@ -17940,6 +18266,42 @@ export class Runtime {
                   argumentsJson: toolCall.argumentsJson,
                   signal: abort.signal,
                 });
+              } else if (CHAT_PLATFORM_HOST_TOOL_NAMES.has(toolCall.name)) {
+                // Host platform tools (ask_user_question / plan_submit /
+                // task_schedule / goal_manage / platform_context / task_list /
+                // agent_list): route through the SAME executor the external
+                // kernels (claude-code/codex/pi) use — ask users, submit plans,
+                // manage goals. Without this branch the native loop fell
+                // through to executeChatBuiltInTool and answered every one of
+                // these with an "unknown tool" error, so ask_user_question
+                // never surfaced a question card on the model track.
+                const platformCall: PlatformMcpToolCall = {
+                  id: toolCall.id,
+                  tool: toolCall.name,
+                  input: (() => {
+                    try {
+                      const parsed = JSON.parse(toolCall.argumentsJson || '{}') as unknown;
+                      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+                        ? (parsed as Record<string, unknown>)
+                        : {};
+                    } catch {
+                      return {};
+                    }
+                  })(),
+                  signal: abort.signal,
+                };
+                const platformResult = await this.handlePlatformMcpToolCall(
+                  runId,
+                  currentRun,
+                  workspaceRoot ?? '',
+                  platformCall,
+                );
+                resultText = platformResult.ok
+                  ? (platformResult.content ?? '')
+                  : JSON.stringify({
+                      ok: false,
+                      error: platformResult.error ?? `platform tool failed: ${toolCall.name}`,
+                    });
               } else {
                 resultText = await executeChatBuiltInTool({
                   workspaceRoot,
@@ -18087,20 +18449,28 @@ export class Runtime {
     let reportedSessionId: string | undefined;
     let cancelAdapterPromise: Promise<void> | undefined;
     let abortAdapterListener: (() => void) | undefined;
-    let turnCompleted = false;
+    let attemptTerminated = false;
+    let exitDiagnostic:
+      | {
+          code: number | null;
+          stderrTail: string;
+        }
+      | undefined;
     const kernelUsageReports: KernelUsage[] = [];
-    let usagePersisted = false;
-    const persistAuthoritativeUsage = (run: DemoRunState): void => {
-      if (usagePersisted) return;
+    let usageSequence = 0;
+    let latestUsageRun = initialRun;
+    const persistAttemptUsage = (run: DemoRunState): void => {
+      latestUsageRun = run;
       const gatewayUsage = this.openGateway.consumeRunUsage(runId);
-      usagePersisted = true;
       if (gatewayUsage.length > 0) {
-        gatewayUsage.forEach((usage, index) => {
-          this.persistGatewayUsage(runId, run, usage, index + 1);
+        gatewayUsage.forEach((usage) => {
+          usageSequence += 1;
+          this.persistGatewayUsage(runId, run, usage, usageSequence);
         });
       } else {
-        kernelUsageReports.forEach((usage, index) => {
-          this.persistKernelUsage(runId, run, usage, index + 1);
+        kernelUsageReports.forEach((usage) => {
+          usageSequence += 1;
+          this.persistKernelUsage(runId, run, usage, usageSequence);
         });
       }
       kernelUsageReports.length = 0;
@@ -18114,6 +18484,60 @@ export class Runtime {
           .catch(() => undefined);
       }
       return cancelAdapterPromise;
+    };
+    const closeAttemptBroker = async (): Promise<void> => {
+      const activeBroker = broker;
+      broker = undefined;
+      if (activeBroker) await activeBroker.close().catch(() => undefined);
+    };
+    const hasAttemptOutput = (run: DemoRunState): boolean =>
+      Boolean(
+        run.assistantText ||
+        run.commentaryText ||
+        run.legacyPendingText ||
+        run.reasoningText ||
+        run.assistantTimeline.some(
+          (segment) =>
+            segment.kind === 'thinking' || segment.kind === 'text' || segment.kind === 'tool',
+        ),
+      );
+    const handleAttemptFailure = async (
+      failedRun: DemoRunState,
+      message: string,
+      cancelUnterminatedAttempt: boolean,
+    ): Promise<'continue' | 'stop'> => {
+      if (request) {
+        this.clearFailedKernelConversationSession(failedRun, request, message, reportedSessionId);
+      }
+      persistAttemptUsage(failedRun);
+      if (cancelUnterminatedAttempt) await cancelAdapterOnce();
+      await closeAttemptBroker();
+
+      const failureClass = this.classifyThrownFailure(message);
+      if (
+        cancelUnterminatedAttempt &&
+        (failedRun.retryCount ?? 0) < 1 &&
+        shouldRetrySameModel({
+          failureClass,
+          retryCount: failedRun.retryCount ?? 0,
+          hasOutput: hasAttemptOutput(failedRun),
+        })
+      ) {
+        const retryCount = (failedRun.retryCount ?? 0) + 1;
+        this.publishModelRetryStatus(runId, retryCount, failureClass, 1);
+        await this.sleepForModelRetry(runId, retryCount - 1);
+        return abort.signal.aborted ? 'stop' : 'continue';
+      }
+
+      const hasFallbackPath =
+        Boolean(this.providerStore) || (failedRun.fallbackModelIds?.length ?? 0) > 0;
+      if (failureClass !== 'unknown' || hasFallbackPath) {
+        const outcome = this.tryContinueWithFallback(runId, failedRun, failureClass, message);
+        if (outcome === 'continued') return 'continue';
+        if (outcome === 'paused') return 'stop';
+      }
+      this.finalizeKernelRun(runId, failedRun, 'failed', message, failureClass);
+      return 'stop';
     };
     try {
       const hasSessionTurn = await this.waitForExternalKernelSessionTurn(
@@ -18134,6 +18558,9 @@ export class Runtime {
       if (!adapter) {
         throw new Error(`Kernel adapter not wired: ${kernelId}`);
       }
+      adapter.onExit((code, stderrTail) => {
+        exitDiagnostic = { code, stderrTail };
+      });
       abortAdapterListener = () => {
         void cancelAdapterOnce();
       };
@@ -18142,106 +18569,128 @@ export class Runtime {
         await cancelAdapterOnce();
         return;
       }
-
-      request = await this.buildKernelRequestForRun(initialRun, runId);
-      if (abort.signal.aborted) return;
-      // Slice 5: host platform tools ride the MCP channel. The broker lives for
-      // exactly this run; the kernel's mcp config embeds its address + token.
-      broker = await this.startPlatformMcpBrokerForRun(runId, initialRun, request);
-      if (abort.signal.aborted) return;
       this.wireKernelPermissionBridge(runId, initialRun.threadId, adapter, abort.signal);
 
-      let finalStatus: 'completed' | 'failed' | undefined;
-      let finalError: string | undefined;
-      let exitDiagnostic:
-        | {
-            code: number | null;
-            stderrTail: string;
-          }
-        | undefined;
-      adapter.onExit((code, stderrTail) => {
-        exitDiagnostic = { code, stderrTail };
-      });
-      for await (const event of adapter.start(request)) {
-        if (abort.signal.aborted) break;
-        switch (event.type) {
-          case 'delta':
-            this.publishKernelTextDelta(runId, initialRun.threadId, event.text, event.final);
-            break;
-          case 'reasoning':
-            this.publishKernelReasoningDelta(runId, initialRun.threadId, event.text);
-            break;
-          case 'session-started':
-            reportedSessionId ??= this.saveReportedKernelConversationSession(
-              initialRun,
-              event.sessionId,
-              request.session?.id,
-            );
-            break;
-          case 'tool-call':
-            this.persistKernelToolEvent(runId, initialRun.threadId, 'tool.requested', event);
-            break;
-          case 'tool-result':
-            this.persistKernelToolEvent(runId, initialRun.threadId, 'tool.completed', event);
-            break;
-          case 'usage':
-            kernelUsageReports.push({ ...event.usage });
-            break;
-          case 'compacted':
-            // The kernel compacted its own context; the host records the
-            // boundary and never re-compacts (design §2.3 ②).
-            this.persistKernelCompacted(runId, initialRun.threadId);
-            break;
-          case 'permission-request':
-            // Handled through the approval bridge; no durable event here.
-            break;
-          case 'terminal':
-            turnCompleted = true;
-            finalStatus = event.status;
-            finalError = event.error;
-            break;
-        }
-      }
+      while (this.demoRuns.has(runId)) {
+        if (abort.signal.aborted) return;
+        const attemptRun = this.demoRuns.get(runId);
+        if (!attemptRun) return;
+        latestUsageRun = attemptRun;
+        request = undefined;
+        reportedSessionId = undefined;
+        cancelAdapterPromise = undefined;
+        attemptTerminated = false;
+        exitDiagnostic = undefined;
 
-      if (abort.signal.aborted) return;
-      const finalRun = this.demoRuns.get(runId);
-      if (!finalRun) return;
-      if ((finalStatus ?? 'failed') === 'failed') {
-        this.clearFailedKernelConversationSession(finalRun, request, finalError, reportedSessionId);
-      } else if (
-        finalRun.kernelId === 'claude-code' &&
-        request.session?.mode === 'create' &&
-        request.session.id &&
-        !reportedSessionId
-      ) {
-        // Older/compatible Claude CLIs may complete without system/init carrying
-        // a session_id. A successful terminal proves the requested id is usable.
-        this.saveReportedKernelConversationSession(
-          finalRun,
-          request.session.id,
-          request.session.id,
-        );
-      }
-      persistAuthoritativeUsage(finalRun);
-      this.finalizeKernelRun(
-        runId,
-        finalRun,
-        finalStatus ?? 'failed',
-        finalStatus
-          ? finalError
-          : exitDiagnostic
-            ? formatKernelExitDiagnostic(
-                adapter.name,
-                exitDiagnostic.code,
-                exitDiagnostic.stderrTail,
-              )
-            : 'kernel process ended before a terminal event',
-      );
-      // Advance the session watermark AFTER finalize persists the assistant
-      // reply, so the next same-kernel run resumes without a phantom gap (see
-      // refreshKernelConversationSessionWatermark).
-      if (finalStatus === 'completed') {
-        this.refreshKernelConversationSessionWatermark(finalRun);
+        const unavailableReason = this.runModelUnavailableReason(attemptRun);
+        if (unavailableReason) {
+          const outcome = this.tryContinueWithFallback(
+            runId,
+            attemptRun,
+            'transient',
+            unavailableReason,
+          );
+          if (outcome === 'continued') continue;
+          if (outcome === 'paused') return;
+          this.finalizeKernelRun(runId, attemptRun, 'failed', unavailableReason, 'transient');
+          return;
+        }
+
+        try {
+          request = await this.buildKernelRequestForRun(attemptRun, runId);
+          if (abort.signal.aborted) return;
+          // Host platform tools ride the MCP channel. Each provider attempt gets
+          // a fresh broker/ticket; the durable assistant turn remains the same.
+          broker = await this.startPlatformMcpBrokerForRun(runId, attemptRun, request);
+          if (abort.signal.aborted) return;
+
+          let finalStatus: 'completed' | 'failed' | undefined;
+          let finalError: string | undefined;
+          for await (const event of adapter.start(request)) {
+            if (abort.signal.aborted) break;
+            switch (event.type) {
+              case 'delta':
+                this.publishKernelTextDelta(runId, attemptRun.threadId, event.text, event.final);
+                break;
+              case 'reasoning':
+                this.publishKernelReasoningDelta(runId, attemptRun.threadId, event.text);
+                break;
+              case 'session-started':
+                reportedSessionId ??= this.saveReportedKernelConversationSession(
+                  attemptRun,
+                  event.sessionId,
+                  request.session?.id,
+                );
+                break;
+              case 'tool-call':
+                this.persistKernelToolEvent(runId, attemptRun.threadId, 'tool.requested', event);
+                break;
+              case 'tool-progress':
+                this.publishKernelToolProgress(runId, attemptRun.threadId, event);
+                break;
+              case 'tool-result':
+                this.persistKernelToolEvent(runId, attemptRun.threadId, 'tool.completed', event);
+                break;
+              case 'usage':
+                kernelUsageReports.push({ ...event.usage });
+                break;
+              case 'compacted':
+                this.persistKernelCompacted(runId, attemptRun.threadId);
+                break;
+              case 'permission-request':
+                break;
+              case 'terminal':
+                attemptTerminated = true;
+                finalStatus = event.status;
+                finalError = event.error;
+                break;
+            }
+          }
+
+          if (abort.signal.aborted) return;
+          const finalRun = this.demoRuns.get(runId);
+          if (!finalRun) return;
+          if (finalStatus === 'completed') {
+            if (
+              finalRun.kernelId === 'claude-code' &&
+              request.session?.mode === 'create' &&
+              request.session.id &&
+              !reportedSessionId
+            ) {
+              this.saveReportedKernelConversationSession(
+                finalRun,
+                request.session.id,
+                request.session.id,
+              );
+            }
+            persistAttemptUsage(finalRun);
+            await closeAttemptBroker();
+            this.finalizeKernelRun(runId, finalRun, 'completed');
+            // Finalization persists the assistant reply before the native
+            // session watermark advances, preventing a phantom history gap.
+            this.refreshKernelConversationSessionWatermark(finalRun);
+            return;
+          }
+
+          const diagnostic = exitDiagnostic as
+            { code: number | null; stderrTail: string } | undefined;
+          const message = finalStatus
+            ? (finalError ?? 'kernel failed')
+            : diagnostic
+              ? formatKernelExitDiagnostic(adapter.name, diagnostic.code, diagnostic.stderrTail)
+              : 'kernel process ended before a terminal event';
+          const next = await handleAttemptFailure(finalRun, message, !attemptTerminated);
+          if (next === 'continue') continue;
+          return;
+        } catch (error) {
+          if (abort.signal.aborted) return;
+          const failedRun = this.demoRuns.get(runId);
+          if (!failedRun) return;
+          const message = error instanceof Error ? error.message : 'kernel run failed';
+          const next = await handleAttemptFailure(failedRun, message, true);
+          if (next === 'continue') continue;
+          return;
+        }
       }
     } catch (error) {
       if (abort.signal.aborted) return;
@@ -18251,28 +18700,35 @@ export class Runtime {
       if (request) {
         this.clearFailedKernelConversationSession(finalRun, request, message, reportedSessionId);
       }
-      persistAuthoritativeUsage(finalRun);
-      this.finalizeKernelRun(runId, finalRun, 'failed', message);
+      persistAttemptUsage(finalRun);
+      const failureClass = this.classifyThrownFailure(error);
+      this.finalizeKernelRun(runId, finalRun, 'failed', message, failureClass);
     } finally {
       if (abortAdapterListener) {
         abort.signal.removeEventListener('abort', abortAdapterListener);
       }
-      if (abort.signal.aborted || !turnCompleted) await cancelAdapterOnce();
-      if (broker) await broker.close().catch(() => undefined);
-      if (!usagePersisted) {
-        const finalRun = this.demoRuns.get(runId);
-        if (finalRun) {
-          persistAuthoritativeUsage(finalRun);
-        } else {
-          this.openGateway.consumeRunUsage(runId);
-          usagePersisted = true;
-        }
+      if (abort.signal.aborted || !attemptTerminated) await cancelAdapterOnce();
+      await closeAttemptBroker();
+      if (kernelUsageReports.length > 0) {
+        persistAttemptUsage(this.demoRuns.get(runId) ?? latestUsageRun);
+      } else {
+        const trailingGatewayUsage = this.openGateway.consumeRunUsage(runId);
+        trailingGatewayUsage.forEach((usage) => {
+          usageSequence += 1;
+          this.persistGatewayUsage(
+            runId,
+            this.demoRuns.get(runId) ?? latestUsageRun,
+            usage,
+            usageSequence,
+          );
+        });
       }
       // Revoke the gateway ticket with the run: a leaked ticket id stops working
       // the moment the run it was issued for ends.
       this.openGateway.revokeRun(runId);
       this.platformMcpCatalogByRun.delete(runId);
       this.platformMcpResultsByRun.delete(runId);
+      this.kernelToolProgressByRun.delete(runId);
       adapterLease?.release();
       sessionLease.release();
       this.demoRunAborts.delete(runId);
@@ -18289,9 +18745,11 @@ export class Runtime {
   private effectiveContextWindowForRun(run: DemoRunState): {
     window: number;
     source: 'configured' | 'kernel-capped' | 'estimated';
+    kernelLimit?: number;
   } {
     const configured = run.contextWindow ?? 128_000;
-    const estimated = run.contextWindowEstimated === true && run.contextWindow === undefined;
+    const estimated =
+      run.contextWindowEstimated === true && run.contextWindowOverride === undefined;
     let window = configured;
     let source: 'configured' | 'kernel-capped' | 'estimated' = estimated
       ? 'estimated'
@@ -18308,6 +18766,7 @@ export class Runtime {
       ) {
         window = cap.nativeLimit;
         source = 'kernel-capped';
+        return { window, source, kernelLimit: cap.nativeLimit };
       }
     }
     return { window, source };
@@ -18337,11 +18796,20 @@ export class Runtime {
       responseContinuationScopeId,
     );
     const effective = this.effectiveContextWindowForRun(run);
+    const kernelImages = run.images
+      ?.map((image) => {
+        const dataUrl = resolveAppendMessageImageDataUrl(image);
+        return dataUrl ? { name: image.name, mimeType: image.mimeType, dataUrl } : undefined;
+      })
+      .filter((image): image is { name: string; mimeType: string; dataUrl: string } =>
+        Boolean(image),
+      );
     return {
       kernelId,
       model: run.modelId,
       providerModelId: run.providerModelId,
       userText: run.userText,
+      ...(kernelImages && kernelImages.length > 0 ? { images: kernelImages } : {}),
       contextWindow: run.contextWindow ?? 128_000,
       effectiveContextWindow: effective.window,
       contextWindowSource: effective.source,
@@ -18517,7 +18985,7 @@ export class Runtime {
     return createHash('sha256')
       .update(
         JSON.stringify({
-          version: 1,
+          version: 2,
           kernelId,
           modelId: run.modelId,
           providerId: run.providerId ?? null,
@@ -18525,6 +18993,8 @@ export class Runtime {
           protocol: run.protocol,
           credentialRefId: run.credentialRefId ?? null,
           workspaceRoot: workspaceRoot ?? null,
+          permissionMode: normalizeChatExecutionMode(this.resolveChatExecutionMode(run.threadId)),
+          planningMode: run.planningMode === true || this.isPlanningModeForThread(run.threadId),
           systemContext: baseSystemContext,
         }),
       )
@@ -18882,6 +19352,7 @@ export class Runtime {
   /** Stable Agent, Skill, workspace and project context owned by an external kernel session. */
   private buildKernelSystemContext(run: DemoRunState, workspaceRoot?: string): string {
     const parts: string[] = [];
+    const permissionMode = normalizeChatExecutionMode(this.resolveChatExecutionMode(run.threadId));
     if (workspaceRoot) {
       const facts = collectWorkspaceSharedFacts(workspaceRoot);
       if (facts.block) parts.push(facts.block);
@@ -18904,6 +19375,17 @@ export class Runtime {
         'If the user states a new value for a remembered fact, treat the newest statement as the updated truth.',
       ].join('\n'),
     );
+    parts.push(
+      [
+        '## Host execution permissions',
+        `Host permission mode for this run: ${permissionMode}.`,
+        permissionMode === 'full-access'
+          ? 'The host requested full filesystem and process access for this run. Do not describe the environment as read-only unless a concrete tool result reports a restriction.'
+          : permissionMode === 'workspace'
+            ? 'The host allows changes inside the bound workspace and applies approval rules outside it.'
+            : 'The host requires approval before side effects are executed.',
+      ].join('\n'),
+    );
     if (run.planningMode === true || this.isPlanningModeForThread(run.threadId)) {
       parts.push(
         [
@@ -18914,32 +19396,71 @@ export class Runtime {
         ].join('\n'),
       );
     }
+    // External kernels persist their own system prompt across turns. Keep the
+    // language policy in this stable context so new sessions receive it and
+    // the session fingerprint rebuilds sessions created before this rule.
+    parts.push(LANGUAGE_FOLLOW_PROMPT);
+    parts.push(
+      [
+        '## 图片文字识别（Windows OCR）',
+        '需要读取工作区图片中的截图文字、报错信息或界面文本时，调用 `ocr_image`。ClaudeCode 中工具名为 `mcp__windows-ocr__ocr_image`，GPT / Pi 中为 `mcp__sync-think-platform__ocr_image`。',
+        '该工具使用 Windows 内置 OCR，不依赖当前模型的视觉能力。不要读取图片二进制后猜测内容。',
+      ].join('\n'),
+    );
+    // NewMax-style vision fallback: the running model cannot see images and the
+    // user enabled a fallback — teach the model to call describe_image instead
+    // of guessing from file binaries (which is exactly what a non-vision model
+    // would otherwise do and previously got it into a search rabbit hole).
+    if (!this.isRunModelVisionCapable(run) && this.isVisionFallbackSettingEnabled()) {
+      parts.push(
+        [
+          '## 图像理解（vision fallback）',
+          '你（当前绑定的模型）不支持直接识别图片。',
+          '需要理解工作区中的 PNG / JPEG / GIF / WebP 图片时，直接调用 `describe_image`（外部内核中工具名为 `mcp__vision-fallback__describe_image`）并传入图片路径作为 `path` 参数；宿主会调用你配置的视觉模型返回图片的文字描述。',
+          '不要尝试读取图片二进制后猜测内容（无效且浪费轮次）。',
+        ].join('\n'),
+      );
+    }
     return parts.join('\n\n');
   }
 
   /**
-   * Slice 5: start the platform MCP broker for this kernel run and hand its
-   * address to the adapters via KernelRequest.platformBroker. The broker's
-   * tool-call handler runs the host approval (three-tier) then executes the
-   * platform tool in-process.
+   * Slice 5 (refactored): wire the platform tool channel for this kernel run.
+   *
+   * claude-code uses the in-process SDK MCP servers from the registry
+   * (Phase 1/5: no subprocess, no broker token). codex/pi cannot accept
+   * in-process SDK servers (they are external CLI processes), so they keep
+   * the stdio broker path — the broker itself is now driven by the same
+   * registry selection, so both channels expose the identical tool catalog.
    */
   private async startPlatformMcpBrokerForRun(
     runId: RunId,
     run: DemoRunState,
     request: KernelRequest,
   ): Promise<KernelMcpBroker | undefined> {
-    const entryPath = this.resolvePlatformMcpServerEntry();
-    if (!entryPath) {
-      console.warn(
-        '[kernel:mcp] platform mcp server entry not found — platform tools disabled for this run',
-      );
-      return undefined;
-    }
     const workspaceRoot = request.workspaceDir;
+    const planningMode = request.planningMode === true || run.planningMode === true;
     // Frozen for this run: capability/permission changes must not widen an
     // in-flight kernel. Desktop tools stay host-only this round; Browser tools
     // follow the 联网 switch and are injected for every kernel (the Browser
     // Worker still enforces origin grants / inspection per command).
+    setKernelMcpServerConditions({
+      hasAgentStore: Boolean(this.globalAgentStore),
+      hasTaskStore: Boolean(this.taskPlanStore),
+      hasMcpStore: Boolean(this.mcpStore),
+      hasSkillStore: Boolean(this.skillStore),
+      hasTeamStore: Boolean(this.teamStore && this.globalAgentStore),
+      networkEnabled: run.networkEnabled === true,
+      visionFallbackEnabled: this.isVisionFallbackSettingEnabled(),
+    });
+    const selection = selectKernelMcpRun({
+      executionMode: this.resolveChatExecutionMode(run.threadId),
+      networkEnabled: run.networkEnabled === true,
+      planningMode,
+    });
+    // Back-compat: keep the legacy catalog for tool-call handling so the
+    // existing executor paths keep working unchanged; the registry selection
+    // is the authority for what the kernel sees.
     const tools = buildPlatformMcpToolDefinitions({
       executionMode: this.resolveChatExecutionMode(run.threadId),
       networkEnabled: run.networkEnabled === true,
@@ -18949,12 +19470,46 @@ export class Runtime {
       includeSkillTools: Boolean(this.skillStore),
       includeTeamTools: Boolean(this.teamStore && this.globalAgentStore),
       includeBrowserTools: run.networkEnabled === true,
-      planningMode: request.planningMode === true || run.planningMode === true,
+      planningMode,
     });
     this.platformMcpCatalogByRun.set(runId, tools);
+
+    if (request.kernelId === 'claude-code') {
+      // Channel A — in-process SDK MCP servers. No broker, no stdio spawn.
+      const sdkMcpServers = buildSdkMcpServers(
+        selection.servers,
+        (toolName, input) =>
+          this.executeRegistryMcpTool(runId, run, workspaceRoot, toolName, input),
+        z,
+      );
+      request.platformBroker = {
+        host: '',
+        port: 0,
+        token: '',
+        workspaceDir: workspaceRoot,
+        command: '',
+        args: [],
+        sdkMcpServers,
+      };
+      return undefined;
+    }
+
+    // Channels B (codex / pi) — stdio broker path, registry-driven catalog.
+    const entryPath = this.resolvePlatformMcpServerEntry();
+    if (!entryPath) {
+      console.warn(
+        '[kernel:mcp] platform mcp server entry not found — platform tools disabled for this run',
+      );
+      return undefined;
+    }
     const broker = await startKernelMcpBroker({
       workspaceDir: workspaceRoot,
-      tools,
+      tools: selection.externalTools.map((tool) => ({
+        name: tool.name,
+        description: tool.description,
+        inputSchema: tool.inputSchema,
+        approval: tool.approval,
+      })),
       onToolCall: (call) => this.handlePlatformMcpToolCall(runId, run, workspaceRoot, call),
     });
     request.platformBroker = {
@@ -18968,6 +19523,29 @@ export class Runtime {
       args: [entryPath],
     };
     return broker;
+  }
+
+  /**
+   * Execute one registry tool (in-process SDK channel). The tool name is the
+   * short registry name; runtime handlers mirror the broker path exactly, so
+   * approval semantics and executors stay identical across channels.
+   */
+  private async executeRegistryMcpTool(
+    runId: RunId,
+    run: DemoRunState,
+    workspaceRoot: string,
+    toolName: string,
+    input: Record<string, unknown>,
+  ): Promise<string> {
+    const call: PlatformMcpToolCall = {
+      id: `sdk-${runId}`,
+      tool: toolName,
+      input,
+      signal: new AbortController().signal,
+    };
+    const result = await this.handlePlatformMcpToolCall(runId, run, workspaceRoot, call);
+    if (!result.ok) throw new Error(result.error ?? `platform tool failed: ${toolName}`);
+    return result.content ?? '';
   }
 
   /** Resolve the platform MCP server entry (self-contained .mjs, no build). */
@@ -19014,6 +19592,15 @@ export class Runtime {
     call: PlatformMcpToolCall,
     argumentsJson: string,
   ): Promise<{ ok: boolean; content?: string; error?: string }> {
+    // OCR and describe_image ride the registry, not the legacy catalog. Route
+    // them before catalog lookup so native and external kernels share one
+    // executor path. Both are read-only with approval 'never'.
+    if (call.tool === WINDOWS_OCR_TOOL_NAME) {
+      return this.executeWindowsOcrTool(runId, workspaceRoot, call);
+    }
+    if (call.tool === DESCRIBE_IMAGE_TOOL_NAME) {
+      return this.executeDescribeImageTool(runId, workspaceRoot, call);
+    }
     const catalog = this.platformMcpCatalogByRun.get(runId) ?? PLATFORM_MCP_TOOL_DEFINITIONS;
     const definition = catalog.find((tool) => tool.name === call.tool);
     if (!definition) return { ok: false, error: `unknown platform tool: ${call.tool}` };
@@ -19108,6 +19695,88 @@ export class Runtime {
    * goal_manage executor（目标模式）：模型 complete（自证完成）/ block（受阻）/
    * progress（进度说明）。仅该对话存在 active goal 时可用。
    */
+  /**
+   * NewMax-style vision fallback tool: the (non-vision) model calls
+   * `describe_image <path>`; the host reads the workspace image, describes it
+   * with the user-configured vision model and returns the prose. Read-only —
+   * approval 'never' at the definition layer, and this executor never writes.
+   */
+  private async executeDescribeImageTool(
+    runId: RunId,
+    workspaceRoot: string,
+    call: PlatformMcpToolCall,
+  ): Promise<{ ok: boolean; content?: string; error?: string }> {
+    if (!this.isVisionFallbackSettingEnabled()) {
+      return {
+        ok: false,
+        error: '图片识别 Fallback 未启用（设置 > 模型 > 图片识别 Fallback），无法理解图片',
+      };
+    }
+    const input =
+      call.input && typeof call.input === 'object' ? (call.input as Record<string, unknown>) : {};
+    const rawPath = typeof input.path === 'string' ? input.path : '';
+    const question = typeof input.question === 'string' ? input.question.trim() : '';
+    const resolved = resolveDescribeImagePath(workspaceRoot, rawPath);
+    if (!resolved.ok) return { ok: false, error: `describe_image: ${resolved.error}` };
+    const dataUrl = readImageDataUrl(resolved.absolutePath, resolved.mimeType);
+    if (!dataUrl) return { ok: false, error: `describe_image: 无法读取图片内容` };
+    if (call.signal.aborted || !this.demoRuns.has(runId)) {
+      return { ok: false, error: 'describe_image: 工具调用被取消' };
+    }
+    try {
+      const fileName = rawPath.split(/[\\/]/).filter(Boolean).at(-1) ?? 'image';
+      const descriptions = await this.describeChatImages(
+        [{ name: fileName, mimeType: resolved.mimeType, dataUrl }],
+        call.signal,
+      );
+      const text = descriptions[0]?.text.trim() ?? '';
+      if (!text) return { ok: false, error: 'describe_image: 视觉模型未返回有效描述' };
+      const extra = question ? `\n\n针对问题「${question}」的回答：\n${text}` : '';
+      return {
+        ok: true,
+        content: `图片 ${resolved.absolutePath} 的描述：\n${text}${extra}`,
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        error: `describe_image: 图片描述失败 — ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      };
+    }
+  }
+
+  private async executeWindowsOcrTool(
+    runId: RunId,
+    workspaceRoot: string,
+    call: PlatformMcpToolCall,
+  ): Promise<{ ok: boolean; content?: string; error?: string }> {
+    const input =
+      call.input && typeof call.input === 'object' ? (call.input as Record<string, unknown>) : {};
+    const rawPath = typeof input.path === 'string' ? input.path : '';
+    const language = typeof input.language === 'string' ? input.language.trim() : undefined;
+    const resolved = resolveDescribeImagePath(workspaceRoot, rawPath);
+    if (!resolved.ok) return { ok: false, error: `ocr_image: ${resolved.error}` };
+    if (call.signal.aborted || !this.demoRuns.has(runId)) {
+      return { ok: false, error: 'ocr_image: 工具调用被取消' };
+    }
+    try {
+      const result = await recognizeImageTextWithWindowsOcr(resolved.absolutePath, {
+        language,
+        signal: call.signal,
+      });
+      return {
+        ok: true,
+        content: `Windows OCR（${result.language}）识别结果：\n${result.text}`,
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        error: `ocr_image: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+  }
+
   private executeGoalManageTool(
     run: DemoRunState,
     call: PlatformMcpToolCall,
@@ -19717,6 +20386,16 @@ export class Runtime {
     adapter.onPermissionRequest((permission: KernelPermissionRequest) => {
       const run = this.demoRuns.get(runId);
       if (!run || signal.aborted) return;
+      // Host platform tools (approval: never) bypass the approval card: the
+      // SDK asks canUseTool about every mcp__* call, and asking the user to
+      // approve a question card before it appears is a double-confirmation
+      // that defeats the purpose of ask_user_question. Auto-allow the
+      // platform infrastructure tools; file writes / task_schedule keep their
+      // own fences (approved inside their executors or by the card below).
+      if (isHostAutoApprovedMcpTool(permission.toolName)) {
+        adapter.respondPermission(permission.requestId, { allow: true });
+        return;
+      }
       const approvalId = `kappr-${ulid()}`;
       const toolCall: ProviderToolCall = {
         id: permission.requestId,
@@ -19835,9 +20514,10 @@ export class Runtime {
     }
     // §12.17.18: kernel delta carries no phase metadata — buffer it and let
     // the next tool boundary (commentary) or the terminal (final_answer)
-    // classify it, so process prose never masquerades as the final answer
-    // while streaming. The transient text frame still flows immediately so
-    // the renderer shows the unclassified tail in the process panel.
+    // classify it, so process prose never masquerades as the final answer.
+    // The transient text frame still flows immediately for reconnect-safe
+    // accumulation, but Renderer keeps this unknown tail out of the execution
+    // panel until the phase boundary is authoritative.
     // Record the timeline position where the buffer started so the flush can
     // insert the classified segment in real emission order.
     const alreadyBuffered = Boolean(run.legacyPendingText);
@@ -19850,11 +20530,17 @@ export class Runtime {
           }
         : {}),
     });
+    // Unclassified kernel prose must stream into the PROCESS panel, never the
+    // answer area: the real phase ('commentary' after a tool boundary, or
+    // 'final_answer' at the terminal) is authoritative only later, and the
+    // draft text would otherwise flash in the chat bubble and then retract
+    // (regression: "先显示正文区、流式结束后收回执行面板").
     this.publishTransientDelta({
       threadId: threadId as ThreadId,
       runId,
-      kind: 'text',
+      kind: 'commentary',
       textDelta: text,
+      afterSequence: this.eventSequence,
       occurredAt,
     });
   }
@@ -19886,21 +20572,42 @@ export class Runtime {
           const name = (event as { name: string }).name;
           const argsJson = (event as { argsJson: string }).argsJson;
           const pending = [...(run.pendingKernelToolCalls ?? [])];
-          pending.push({ toolCallId, name, argumentsJson: argsJson, announcedAt: occurredAt });
-          // 当前没有正在执行的工具行时立即揭示（首个宣布的工具 kernel 随即开始执行）。
-          if (!this.hasRunningTimelineTool(run.assistantTimeline)) {
-            const announced = pending.shift()!;
+          const pendingIndex = pending.findIndex((entry) => entry.toolCallId === toolCallId);
+          const alreadyVisible = (run.assistantTimeline ?? []).some(
+            (segment) => segment.kind === 'tool' && segment.toolCallId === toolCallId,
+          );
+          if (alreadyVisible) {
             nextRun = startAssistantTool(run, {
-              toolCallId: announced.toolCallId,
-              name: announced.name,
-              argumentsJson: announced.argumentsJson,
-              occurredAt: announced.announcedAt,
+              toolCallId,
+              name,
+              argumentsJson: argsJson,
+              occurredAt,
             });
             timelineChanged = true;
+          } else if (pendingIndex >= 0) {
+            pending[pendingIndex] = {
+              ...pending[pendingIndex]!,
+              name,
+              argumentsJson: argsJson,
+            };
+          } else {
+            pending.push({ toolCallId, name, argumentsJson: argsJson, announcedAt: occurredAt });
+            // 当前没有正在执行的工具行时立即揭示（首个宣布的工具 kernel 随即开始执行）。
+            if (!this.hasRunningTimelineTool(run.assistantTimeline)) {
+              const announced = pending.shift()!;
+              nextRun = startAssistantTool(run, {
+                toolCallId: announced.toolCallId,
+                name: announced.name,
+                argumentsJson: announced.argumentsJson,
+                occurredAt: announced.announcedAt,
+              });
+              timelineChanged = true;
+            }
           }
           nextRun = { ...nextRun, pendingKernelToolCalls: pending };
         } else {
           const toolCallId = (event as { toolId: string }).toolId;
+          this.kernelToolProgressByRun.get(runId)?.delete(toolCallId);
           const pending = run.pendingKernelToolCalls ?? [];
           const pendingIndex = pending.findIndex((entry) => entry.toolCallId === toolCallId);
           let pendingAfter = pending;
@@ -19939,23 +20646,29 @@ export class Runtime {
           nextRun = { ...nextRun, pendingKernelToolCalls: pendingAfter };
         }
         const history = [...(nextRun.kernelToolEvents ?? [])];
-        history.push(
-          type === 'tool.requested'
-            ? {
-                kind: 'tool-call',
-                sequence: history.length,
-                toolId: (event as { toolId: string }).toolId,
-                name: (event as { name: string }).name,
-                argsJson: (event as { argsJson: string }).argsJson,
-              }
-            : {
-                kind: 'tool-result',
-                sequence: history.length,
-                toolId: (event as { toolId: string }).toolId,
-                output: (event as { output: string }).output,
-                ...((event as { isError?: boolean }).isError ? { failed: true } : {}),
-              },
-        );
+        if (type === 'tool.requested') {
+          const toolId = (event as { toolId: string }).toolId;
+          const existingIndex = history.findIndex(
+            (entry) => entry.kind === 'tool-call' && entry.toolId === toolId,
+          );
+          const toolCall = {
+            kind: 'tool-call' as const,
+            sequence: existingIndex >= 0 ? history[existingIndex]!.sequence : history.length,
+            toolId,
+            name: (event as { name: string }).name,
+            argsJson: (event as { argsJson: string }).argsJson,
+          };
+          if (existingIndex >= 0) history[existingIndex] = toolCall;
+          else history.push(toolCall);
+        } else {
+          history.push({
+            kind: 'tool-result',
+            sequence: history.length,
+            toolId: (event as { toolId: string }).toolId,
+            output: (event as { output: string }).output,
+            ...((event as { isError?: boolean }).isError ? { failed: true } : {}),
+          });
+        }
         nextRun = { ...nextRun, kernelToolEvents: history };
         this.demoRuns.set(runId, nextRun);
         if (timelineChanged) {
@@ -20008,6 +20721,7 @@ export class Runtime {
   private pushKernelTimelineSnapshot(runId: RunId, threadId: string, occurredAt: string): void {
     const run = this.demoRuns.get(runId);
     if (!run) return;
+    const assistantTimeline = this.withKernelToolProgress(runId, run.assistantTimeline);
     this.updateTransientTextSnapshot({
       threadId: threadId as ThreadId,
       runId,
@@ -20017,8 +20731,84 @@ export class Runtime {
       commentarySegments: run.commentarySegments,
       reasoningText: run.reasoningText,
       reasoningSegments: run.reasoningSegments,
-      assistantTimeline: run.assistantTimeline,
+      ...(assistantTimeline?.length ? { assistantTimeline } : {}),
       updatedAt: occurredAt,
+    });
+  }
+
+  /**
+   * Stream command output without creating a durable tool event. The running
+   * tool row is updated in place; the completed tool event remains the durable
+   * source of the full output.
+   */
+  private publishKernelToolProgress(
+    runId: RunId,
+    threadId: string,
+    event: Extract<KernelEvent, { type: 'tool-progress' }>,
+  ): void {
+    const run = this.demoRuns.get(runId);
+    if (!run) return;
+    let byTool = this.kernelToolProgressByRun.get(runId);
+    if (!byTool) {
+      byTool = new Map();
+      this.kernelToolProgressByRun.set(runId, byTool);
+    }
+    const previous = byTool.get(event.toolId);
+    const line =
+      event.output
+        .split(/\r?\n/)
+        .map((value) => value.trim())
+        .filter(Boolean)
+        .at(-1) ??
+      previous?.line ??
+      '';
+    const progress = {
+      line,
+      bytes: (previous?.bytes ?? 0) + Buffer.byteLength(event.output, 'utf8'),
+      at: new Date().toISOString(),
+    };
+    byTool.set(event.toolId, progress);
+    const assistantTimeline = this.withKernelToolProgress(runId, run.assistantTimeline);
+    const transientFrame = this.publishTransientFrame({
+      threadId: threadId as ThreadId,
+      runId,
+      kind: 'process',
+      ...(assistantTimeline?.length ? { assistantTimeline } : {}),
+      occurredAt: progress.at,
+    });
+    this.updateTransientTextSnapshot({
+      threadId: threadId as ThreadId,
+      runId,
+      streamSequence: transientFrame.streamSequence,
+      text: run.assistantText,
+      commentaryText: run.commentaryText,
+      commentarySegments: run.commentarySegments,
+      reasoningText: run.reasoningText,
+      reasoningSegments: run.reasoningSegments,
+      ...(assistantTimeline?.length ? { assistantTimeline } : {}),
+      updatedAt: progress.at,
+    });
+  }
+
+  private withKernelToolProgress(
+    runId: string,
+    timeline: readonly AssistantTurnSegment[] | undefined,
+  ): AssistantTurnSegment[] | undefined {
+    if (!timeline?.length) return undefined;
+    const byTool = this.kernelToolProgressByRun.get(runId);
+    return timeline.map((segment) => {
+      if (segment.kind !== 'tool' || segment.status !== 'running' || !byTool) {
+        return { ...segment };
+      }
+      const progress = byTool.get(segment.toolCallId);
+      return progress
+        ? {
+            ...segment,
+            progressLine: progress.line,
+            progressBytes: progress.bytes,
+            progressAt: progress.at,
+          }
+        : { ...segment };
     });
   }
 
@@ -20179,6 +20969,7 @@ export class Runtime {
     run: DemoRunState,
     status: 'completed' | 'failed',
     error?: string,
+    failureClass: FailureClass = 'unknown',
   ): void {
     const occurredAt = new Date().toISOString();
     // §12.17.18: at the terminal boundary the remaining buffered kernel text
@@ -20195,9 +20986,7 @@ export class Runtime {
     const failed = status === 'failed';
     const payload: Record<string, unknown> = {
       threadId: terminalRun.threadId,
-      ...(failed
-        ? { failureClass: 'unknown', errorMessage: error ?? 'kernel failed' }
-        : { reason: 'stop' }),
+      ...(failed ? { failureClass, errorMessage: error ?? 'kernel failed' } : { reason: 'stop' }),
       assistantText: terminalRun.assistantText,
       adapterEventIndex: terminalRun.nextAdapterEventIndex,
       idempotencyKey: run.runId,
@@ -21023,7 +21812,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       appliedSkills.map((skill) => [skill.sourceId, this.formatSkillPromptBlock(skill)] as const),
     );
 
-    let contextWindow = 128_000;
+    let modelContextWindow = 128_000;
     let contextWindowEstimated = true;
     if (modelRecord?.limitsJson) {
       try {
@@ -21033,13 +21822,17 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
           Number.isFinite(limits.contextWindow) &&
           limits.contextWindow > 0
         ) {
-          contextWindow = Math.round(limits.contextWindow);
+          modelContextWindow = Math.round(limits.contextWindow);
           contextWindowEstimated = false;
         }
       } catch {
         // Keep the stable Runtime fallback when provider metadata is malformed.
       }
     }
+    const contextWindowOverride = this.resolveConversationForThread(
+      input.threadId,
+    )?.contextWindowOverride;
+    const contextWindow = contextWindowOverride ?? modelContextWindow;
 
     const contextSectionForKind = (
       kind: ContextSourceRef['kind'],
@@ -21116,6 +21909,8 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       })),
       mcpServerIds: effectiveMcpIds,
       contextWindow,
+      modelContextWindow,
+      contextWindowOverride,
       contextWindowEstimated,
       projectContextPromptBlocks,
       contextSources,
@@ -21131,6 +21926,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     const effective = this.effectiveContextWindowForRun(run);
     run.effectiveContextWindow = effective.window;
     run.contextWindowSource = effective.source;
+    run.kernelContextWindowLimit = effective.kernelLimit;
     // Pre-resolve the kernel session plan so run.started can report the
     // create/resume decision and the cross-kernel gap before the run executes.
     if (run.kernelId && run.kernelId !== 'native') {
@@ -21257,6 +22053,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     runId: RunId,
     retryCount: number,
     failureClass: FailureClass,
+    maxAttempts: number = MODEL_RETRY_MAX,
   ): void {
     this.updateDemoRun(runId, { retryCount });
     const currentRun = this.demoRuns.get(runId);
@@ -21264,7 +22061,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     const occurredAt = new Date().toISOString();
     const run = appendAssistantStatus(currentRun, {
       statusType: 'retry',
-      label: `正在重试当前模型（${retryCount}/${MODEL_RETRY_MAX}）`,
+      label: `正在重试当前模型（${retryCount}/${maxAttempts}）`,
       detail: failureClass,
       occurredAt,
     });
@@ -21283,7 +22080,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
           payload: {
             threadId: run.threadId,
             attempt: retryCount,
-            maxAttempts: MODEL_RETRY_MAX,
+            maxAttempts,
             modelId: run.modelId,
             providerModelId: run.providerModelId,
             failureClass,
@@ -21325,6 +22122,46 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     });
   }
 
+  private isFallbackModelCompatibleWithRun(run: DemoRunState, model: ModelRecord): boolean {
+    const provider = this.providerStore?.getProvider(model.providerId);
+    if (!provider || provider.enabled === false) return false;
+    if (
+      !isTextFallbackCompatibleModel({
+        providerModelId: model.providerModelId,
+        protocol: model.protocol,
+        capabilities: model.capabilities,
+      })
+    ) {
+      return false;
+    }
+    if (run.imagesMode !== 'forwarded' || !run.images || run.images.length === 0) {
+      return true;
+    }
+    return catalogEntryVisionCapable({
+      modelId: model.id,
+      providerModelId: model.providerModelId,
+      protocol: model.protocol,
+      capabilities: model.capabilities,
+      capabilitiesConfirmed: model.capabilitiesConfirmed,
+    });
+  }
+
+  private runModelUnavailableReason(run: DemoRunState): string | undefined {
+    // Fake/offline adapters deliberately use fixture model ids that are not
+    // registered in the durable provider catalog. Availability checks only
+    // apply to real provider-backed runs.
+    if (!this.providerStore || run.useFakeProvider) return undefined;
+    const model = this.providerStore.getModel(run.modelId as ModelId);
+    if (!model)
+      return `Selected model is no longer available: ${run.providerModelId || run.modelId}`;
+    const provider = this.providerStore.getProvider(model.providerId);
+    if (!provider) return `Selected model provider is no longer available: ${model.providerId}`;
+    if (provider.enabled === false) {
+      return `Selected model provider is disabled: ${provider.name}`;
+    }
+    return undefined;
+  }
+
   private tryContinueWithFallback(
     runId: RunId,
     run: DemoRunState,
@@ -21357,13 +22194,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       if (failedRecord) {
         const ordered = this.providerStore
           .listModels(failedRecord.providerId)
-          .filter((model) =>
-            isTextFallbackCompatibleModel({
-              providerModelId: model.providerModelId,
-              protocol: model.protocol,
-              capabilities: model.capabilities,
-            }),
-          )
+          .filter((model) => this.isFallbackModelCompatibleWithRun(failedRun, model))
           .slice()
           .sort((a, b) => a.priority - b.priority);
         const providerNext = resolveProviderPriorityFallback({
@@ -21395,22 +22226,28 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       run.fallbackModelIds && run.fallbackModelIds.length > 0
         ? {
             ...legacyAgent,
+            // The run snapshot is an explicit fallback contract. A manually
+            // selected model becomes this run's starting point, then the
+            // configured chain walks forward from there.
+            defaultModelId: failedRun.modelId as ModelId,
             fallbackModelIds: run.fallbackModelIds.map((id) => id as ModelId),
           }
         : legacyAgent;
     const textCompatibleAgent = {
       ...agent,
       fallbackModelIds: agent.fallbackModelIds.filter((modelId) => {
-        if (!this.providerStore) return true;
+        if (!this.providerStore) {
+          return (
+            failedRun.imagesMode !== 'forwarded' ||
+            !failedRun.images?.length ||
+            isModelVisionCapable(String(modelId))
+          );
+        }
         const model = this.providerStore.getModel(modelId);
         return Boolean(
           model &&
           (!skipSameProvider || model.providerId !== failedRecord?.providerId) &&
-          isTextFallbackCompatibleModel({
-            providerModelId: model.providerModelId,
-            protocol: model.protocol,
-            capabilities: model.capabilities,
-          }),
+          this.isFallbackModelCompatibleWithRun(failedRun, model),
         );
       }),
     };
@@ -21768,9 +22605,34 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       }
     }
     const message = error instanceof Error ? error.message : String(error ?? '');
-    if (/timed?\s*out/i.test(message)) return 'timeout';
-    if (/rate\s*limit/i.test(message)) return 'rate-limit';
-    if (/auth|unauthorized|401|403/i.test(message)) return 'auth';
+    if (
+      /rate[\s_-]*limit|too many requests|(?:status|http(?:\/\d(?:\.\d)?)?)\s*429|\b429\b/i.test(
+        message,
+      )
+    ) {
+      return 'rate-limit';
+    }
+    if (
+      /timed?\s*out|timeout|ETIMEDOUT|(?:status|http(?:\/\d(?:\.\d)?)?)\s*408|\b408\b|gateway timeout|\b504\b/i.test(
+        message,
+      )
+    ) {
+      return 'timeout';
+    }
+    if (
+      /auth|unauthorized|forbidden|(?:status|http(?:\/\d(?:\.\d)?)?)\s*(?:401|403)|\b401\b|\b403\b/i.test(
+        message,
+      )
+    ) {
+      return 'auth';
+    }
+    if (
+      /(?:status|http(?:\/\d(?:\.\d)?)?)\s*5\d\d|\b5(?:00|01|02|03)\b|service (?:temporarily )?unavailable|bad gateway|ECONNRESET|ECONNREFUSED|EAI_AGAIN|ENOTFOUND|socket hang up|network error|fetch failed/i.test(
+        message,
+      )
+    ) {
+      return 'transient';
+    }
     return 'unknown';
   }
 
@@ -25498,6 +26360,8 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       workspaceRoot?: string;
       executionMode?: string;
       networkEnabled?: boolean;
+      /** Host platform tool schemas (ask_user_question / plan_submit / ...). */
+      platformSchemas?: import('@sync-think/adapters').ProviderToolSchema[];
     },
   ): ContextSnapshot {
     const executionMode = normalizeChatExecutionMode(options.executionMode);
@@ -25533,6 +26397,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     );
     const mcpCatalogToolsEnabled = Boolean(options.toolsEnabled && this.mcpStore);
     const mcpRegistryToolsEnabled = Boolean(options.toolsEnabled && this.mcpStore);
+    const platformToolCount = options.platformSchemas?.length ?? 0;
     const tools =
       options.toolsEnabled &&
       (hasProjectTools ||
@@ -25541,7 +26406,11 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         desktopToolsEnabled ||
         browserWorkflowToolsEnabled ||
         mcpCatalogToolsEnabled ||
-        mcpExtra.tools.length > 0)
+        mcpExtra.tools.length > 0 ||
+        // Host platform tools alone justify a tool list: a pure-chat
+        // conversation still gets ask_user_question / plan_submit /
+        // goal_manage / platform_context / task_list / agent_list.
+        platformToolCount > 0)
         ? toolsForExecutionMode(executionMode, {
             networkEnabled,
             includeProjectTools: hasProjectTools,
@@ -25550,7 +26419,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
             includeBrowserWorkflowTools: browserWorkflowToolsEnabled,
             includeMcpCatalogTools: mcpCatalogToolsEnabled,
             includeMcpRegistryTools: mcpRegistryToolsEnabled,
-            extraTools: mcpExtra.tools,
+            extraTools: [...mcpExtra.tools, ...(options.platformSchemas ?? [])],
           })
         : undefined;
     const networkPrompt = networkEnabled
@@ -25627,12 +26496,20 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
             : '- Permission mode is workspace/full-access: creating a Draft executes directly, while recording and publish review remain separate product gates.',
         ].join('\n')
       : 'Browser Automation Workflow tools are unavailable in this Runtime.';
+    const ocrGuidance =
+      '## 图片文字识别（Windows OCR）\n需要读取工作区图片中的截图文字、报错信息或界面文本时，调用 `ocr_image` 并传入图片路径（path 参数）。该工具使用 Windows 内置 OCR，不依赖当前模型的视觉能力。';
+    const visionGuidance =
+      !this.isRunModelVisionCapable(run) && this.isVisionFallbackSettingEnabled()
+        ? '## 图像理解（vision fallback）\n当前绑定的模型不支持直接识别图片。需要理解工作区中的 PNG / JPEG / GIF / WebP 图片时，直接调用 `describe_image` 并传入图片路径（path 参数），宿主会调用你配置的视觉模型并返回图片的文字描述。不要读取图片二进制后猜测内容（无效且浪费轮次）。'
+        : undefined;
     const productBoundaryPrompt = [
       'Product capability boundaries (SYNC-THINK / this desktop shell):',
       CODEX_STYLE_COMMENTARY_PROMPT,
       agentCreationPrompt,
       planToolPrompt,
       browserWorkflowPrompt,
+      ocrGuidance,
+      ...(visionGuidance ? [visionGuidance] : []),
       '- Prefer built-in tools list_files / search_files / read_file / git_status / git_diff. search_files finds file contents by regex — do not call rg/ripgrep/fd/ag — they are often missing on Windows and will fail with ENOENT.',
       '- If a tool fails as unavailable, do not retry the same command; change approach or answer with what you already know.',
       '- Avoid long pure-exploration loops. After a few targeted looks, give the user a useful answer.',
@@ -25687,8 +26564,19 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     });
     return new ContextSnapshotBuilder().build({
       modelId: run.modelId,
-      contextWindow: run.contextWindow ?? 128_000,
-      contextWindowEstimated: run.contextWindowEstimated,
+      kernelId: run.kernelId,
+      contextWindow: run.effectiveContextWindow ?? run.contextWindow ?? 128_000,
+      modelContextWindow: run.modelContextWindow ?? run.contextWindow ?? 128_000,
+      contextWindowOverride: run.contextWindowOverride,
+      contextWindowSource:
+        run.contextWindowSource === 'kernel-capped'
+          ? 'kernel-limit'
+          : run.contextWindowOverride !== undefined
+            ? 'conversation-override'
+            : 'model-default',
+      kernelContextWindowLimit: run.kernelContextWindowLimit,
+      contextWindowEstimated:
+        run.contextWindowOverride === undefined && run.contextWindowEstimated === true,
       systemInstructions: [
         productBoundaryPrompt,
         networkPrompt,
@@ -25802,6 +26690,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         workspaceRoot: options.workspaceRoot,
         executionMode,
         networkEnabled,
+        platformSchemas: options.platformSchemas,
       });
       run.contextSnapshot = snapshot;
       this.recordProviderContextCapabilityUsage(run, snapshot);
@@ -25863,6 +26752,286 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       throw new Error('Credential secret empty for live provider call');
     }
     return adapter.call(createDemoProviderRequest(run, apiKey, signal, requestExtras));
+  }
+
+  private visionFallbackCatalog() {
+    const records = this.providerStore?.listAllModels() ?? [];
+    return records.map((model) => ({
+      modelId: model.id,
+      providerModelId: model.providerModelId,
+      protocol: model.protocol,
+      capabilities: model.capabilities,
+      capabilitiesConfirmed: model.capabilitiesConfirmed,
+      enabled: this.providerStore?.getProvider(model.providerId)?.enabled ?? false,
+    }));
+  }
+
+  /** True only when the switch and its selected vision model are both usable. */
+  private isVisionFallbackSettingEnabled(): boolean {
+    const raw = this.appSettingStore?.get(VISION_FALLBACK_SETTING_KEY)?.value;
+    const setting = parseVisionFallbackSetting(raw);
+    return Boolean(
+      setting.enabled &&
+      resolveVisionDescribeModel(this.visionFallbackCatalog(), setting.modelId ?? undefined),
+    );
+  }
+
+  /** Whether the model bound to this run accepts image input (catalog tags first, name heuristic fallback). */
+  private isRunModelVisionCapable(run: DemoRunState): boolean {
+    const catalog = this.providerStore?.listAllModels() ?? [];
+    const entry =
+      catalog.find((model) => model.id === run.modelId) ??
+      catalog.find(
+        (model) =>
+          model.providerModelId === run.providerModelId &&
+          (!run.providerId || model.providerId === run.providerId),
+      );
+    if (!entry) return isModelVisionCapable(run.providerModelId);
+    return catalogEntryVisionCapable({
+      modelId: entry.id,
+      providerModelId: entry.providerModelId,
+      protocol: entry.protocol,
+      capabilities: entry.capabilities,
+      capabilitiesConfirmed: entry.capabilitiesConfirmed,
+    });
+  }
+
+  /**
+   * Vision fallback: describe each attached image with the vision model the
+   * user configured in Settings (vision-fallback → modelId). The configured
+   * model is authoritative — no automatic candidate switching. The attachment
+   * pipeline catches failures and continues with Windows OCR.
+   */
+  private async describeChatImages(
+    images: DescribeImageInput[],
+    signal?: AbortSignal,
+  ): Promise<Array<{ name: string; text: string }>> {
+    const rawSetting = this.appSettingStore?.get(VISION_FALLBACK_SETTING_KEY)?.value;
+    const setting = parseVisionFallbackSetting(rawSetting);
+    if (!setting.enabled) {
+      throw new Error('图片识别 Fallback 未启用（设置 > 模型 > 图片识别 Fallback）');
+    }
+    if (!setting.modelId) {
+      throw new Error('图片识别 Fallback 已启用，但未选择视觉模型（设置 > 模型）');
+    }
+    const records = this.providerStore?.listAllModels() ?? [];
+    const catalog = this.visionFallbackCatalog();
+    const describeModel = resolveVisionDescribeModel(catalog, setting.modelId);
+    if (!describeModel) {
+      throw new Error(`设置的视觉模型不存在、未启用或不支持图片输入: ${setting.modelId}`);
+    }
+    return this.describeWithModel(images, describeModel, records, signal);
+  }
+
+  /** One image-description batch against a single candidate model. */
+  private async describeWithModel(
+    images: DescribeImageInput[],
+    describeModel: {
+      modelId: string;
+      providerModelId: string;
+      protocol: string;
+    },
+    records: Array<{
+      id: string;
+      providerId: ProviderId;
+      providerModelId: string;
+      credentialRefId?: string;
+    }>,
+    signal?: AbortSignal,
+  ): Promise<Array<{ name: string; text: string }>> {
+    const record =
+      records.find((model) => model.id === describeModel.modelId) ??
+      records.find((model) => model.providerModelId === describeModel.providerModelId);
+    const provider =
+      record && this.providerStore ? this.providerStore.getProvider(record.providerId) : undefined;
+    let credentialRefId = record?.credentialRefId;
+    if (!credentialRefId && record && this.providerStore) {
+      const entry = this.providerStore
+        .listProviders()
+        .find((item) => item.provider.id === record.providerId);
+      const firstRef = entry?.credentialGroups.flatMap((group) => group.credentials)[0];
+      credentialRefId = firstRef?.id;
+    }
+    if (!credentialRefId || !provider) throw new Error('视觉模型缺少凭据，无法生成图片描述');
+    const storeHandle = this.providerStore!.getCredentialStoreHandle(credentialRefId);
+    let apiKey: string | undefined;
+    if (storeHandle && this.secureStore) {
+      apiKey = await this.secureStore.retrieveSecret(storeHandle);
+    }
+    if (!apiKey) throw new Error('视觉模型凭据为空，无法生成图片描述');
+    const adapter = this.resolveDiscoveryAdapter(provider.protocol) ?? this.demoProvider;
+    if (!adapter) throw new Error('视觉模型无可用适配器');
+    const abort = signal ?? new AbortController().signal;
+    const descriptions: Array<{ name: string; text: string }> = [];
+    let index = 0;
+    for (const image of images) {
+      index += 1;
+      const prompt = buildImageDescriptionPrompt(image, index, images.length);
+      let collected = '';
+      let reasoningChars = 0;
+      let finishedReason = '';
+      let failure: { failureClass: string; message: string } | undefined;
+      for await (const event of adapter.call({
+        protocol: provider.protocol,
+        baseUrl: provider.baseUrl,
+        modelId: describeModel.providerModelId,
+        apiKey,
+        idempotencyKey: `vision-describe-${ulid()}`,
+        signal: abort,
+        systemPrompt: '你是图像描述助手，用中文简洁、准确地描述用户提供的图片。',
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: prompt },
+              { type: 'image', imageUrl: image.dataUrl },
+            ],
+          },
+        ],
+        stream: true,
+        // Reasoning-capable vision models (e.g. deepseek vision-exp) spend their
+        // thinking tokens INSIDE this budget. 1024 was routinely exhausted by the
+        // reasoning channel alone on real screenshots, ending the stream with
+        // reason=length and an empty answer ("未生成有效描述"). Give ample headroom.
+        maxOutputTokens: 8192,
+      })) {
+        if (event.type === 'text-delta') collected += event.text;
+        else if (event.type === 'assistant-message-delta') collected += event.text;
+        else if (event.type === 'reasoning-delta') reasoningChars += event.text.length;
+        else if (event.type === 'finished') finishedReason = event.reason;
+        else if (event.type === 'error') {
+          failure = { failureClass: event.failureClass, message: event.message };
+          break;
+        }
+      }
+      if (failure) {
+        throw new Error(`图片描述生成失败（${failure.failureClass}）: ${failure.message}`);
+      }
+      if (!collected.trim()) {
+        const diagnosis =
+          finishedReason === 'length'
+            ? `视觉模型的思考内容耗尽了输出预算（reasoning ${reasoningChars} 字符后被截断），未输出正文`
+            : `视觉模型返回了空内容（finish=${finishedReason || 'unknown'}，reasoning ${reasoningChars} 字符）`;
+        throw new Error(`图片「${image.name}」未生成有效描述：${diagnosis}`);
+      }
+      descriptions.push({ name: image.name, text: collected });
+    }
+    return descriptions;
+  }
+
+  /**
+   * Deterministic attachment pipeline:
+   *   1) vision-capable model -> forward the original image;
+   *   2) text-only model + valid visual fallback -> inject its description;
+   *   3) no visual fallback or visual call failed -> inject Windows OCR text.
+   * Raw images are never forwarded to a model classified as text-only.
+   * Records `run.imagesMode` for the UI + appendMessage response.
+   */
+  private async adaptRunImagesForModel(run: DemoRunState): Promise<void> {
+    if (!run.images || run.images.length === 0 || run.imagesMode) return;
+    if (this.isRunModelVisionCapable(run)) {
+      run.imagesMode = 'forwarded';
+      return;
+    }
+    const inputs = run.images
+      .map((image) => {
+        const dataUrl = resolveAppendMessageImageDataUrl(image);
+        if (!dataUrl) return undefined;
+        const stagingPath = resolveAppendMessageImageStagingPath(image);
+        return {
+          name: image.name,
+          mimeType: image.mimeType,
+          dataUrl,
+          ...(stagingPath ? { stagingPath } : {}),
+        };
+      })
+      .filter((image): image is DescribeImageInput & { stagingPath?: string } => Boolean(image));
+    if (inputs.length !== run.images.length) {
+      run.userText += buildImageHandlingFailureSuffix();
+      run.images = undefined;
+      run.imagesMode = 'failed';
+      return;
+    }
+
+    if (this.isVisionFallbackSettingEnabled()) {
+      try {
+        const descriptions = await this.describeChatImages(inputs);
+        run.userText += buildDescriptionSuffix(descriptions, true);
+        run.images = undefined;
+        run.imagesMode = 'described';
+        return;
+      } catch (error) {
+        console.warn(
+          '[runtime] vision description failed; falling back to Windows OCR:',
+          error instanceof Error ? error.message : error,
+        );
+      }
+    }
+
+    try {
+      const descriptions = await this.recognizeChatImagesWithWindowsOcr(inputs);
+      run.userText += buildWindowsOcrSuffix(descriptions);
+      run.images = undefined;
+      run.imagesMode = 'ocr';
+    } catch (error) {
+      console.warn(
+        '[runtime] Windows OCR attachment fallback failed:',
+        error instanceof Error ? error.message : error,
+      );
+      run.userText += buildImageHandlingFailureSuffix();
+      run.images = undefined;
+      run.imagesMode = 'failed';
+    }
+  }
+
+  private async recognizeChatImagesWithWindowsOcr(
+    inputs: Array<DescribeImageInput & { stagingPath?: string }>,
+    signal?: AbortSignal,
+  ): Promise<WindowsOcrDescription[]> {
+    const temporaryPaths: string[] = [];
+    const descriptions: WindowsOcrDescription[] = [];
+    try {
+      for (const image of inputs) {
+        const imagePath =
+          image.stagingPath ?? (await this.materializeTemporaryOcrImage(image, temporaryPaths));
+        const result = await this.windowsOcrRecognizer(imagePath, { signal });
+        descriptions.push({ name: image.name, text: result.text, language: result.language });
+      }
+      return descriptions;
+    } finally {
+      await Promise.all(
+        temporaryPaths.map((path) => rm(path, { force: true }).catch(() => undefined)),
+      );
+    }
+  }
+
+  private async materializeTemporaryOcrImage(
+    image: DescribeImageInput,
+    temporaryPaths: string[],
+  ): Promise<string> {
+    const match = /^data:(image\/(?:png|jpe?g|gif|webp));base64,([A-Za-z0-9+/=\r\n]+)$/i.exec(
+      image.dataUrl,
+    );
+    if (!match) throw new Error(`图片「${image.name}」不是可识别的图片数据`);
+    const bytes = Buffer.from(match[2]!, 'base64');
+    if (bytes.length === 0 || bytes.length > 12_000_000) {
+      throw new Error(`图片「${image.name}」大小超出 OCR 限制`);
+    }
+    const mimeType = match[1]!.toLowerCase();
+    const extension =
+      mimeType === 'image/png'
+        ? 'png'
+        : mimeType === 'image/gif'
+          ? 'gif'
+          : mimeType === 'image/webp'
+            ? 'webp'
+            : 'jpg';
+    const stagingRoot = resolveChatImageStagingDir();
+    await mkdir(stagingRoot, { recursive: true });
+    const imagePath = join(stagingRoot, `runtime-ocr-${ulid()}.${extension}`);
+    await writeFile(imagePath, bytes);
+    temporaryPaths.push(imagePath);
+    return imagePath;
   }
 
   private persistDemoRunFailure(
@@ -26159,22 +27328,24 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
             toolBlocks,
             reasoningFirst: terminalRun.kernelId === 'native' || !terminalRun.kernelId,
           });
-    if (contentBlocks.length === 0) return;
+    // Failed runs with no generated content must still persist an error
+    // placeholder: the error echo currently only lives in the transient
+    // stream frame, so a follow-up message would make it disappear forever.
+    // Cancelled runs with no content stay dropped (nothing to answer for).
+    if (contentBlocks.length === 0 && terminalState !== 'failed') return;
+    const errorBlock = {
+      type: 'error',
+      payload: {
+        terminalState,
+        ...(scrubbedMessage ? { errorMessage: scrubbedMessage } : {}),
+      },
+    } as const;
     this.persistFinalChatMessage({
       id: `asst-${runId}` as MessageId,
       threadId: terminalRun.threadId as ThreadId,
       role: 'assistant',
       text: assistantText,
-      blocks: [
-        ...contentBlocks,
-        {
-          type: 'error',
-          payload: {
-            terminalState,
-            ...(scrubbedMessage ? { errorMessage: scrubbedMessage } : {}),
-          },
-        },
-      ],
+      blocks: contentBlocks.length > 0 ? [...contentBlocks, errorBlock] : [errorBlock],
       runId,
       modelId: terminalRun.modelId ? (terminalRun.modelId as ModelId) : undefined,
       credentialRefId: terminalRun.credentialRefId
@@ -26530,9 +27701,10 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     }
 
     this.demoRuns.set(input.runId, nextRun);
-    // The full text was already streamed live delta-by-delta; only the
-    // commentary phase emits a boundary frame (empty delta + afterSequence)
-    // so the UI can close the segment without re-rendering duplicate text.
+    // The full text was already transported delta-by-delta into the transient
+    // draft. Commentary emits only a boundary frame (empty delta + sequence),
+    // while final_answer becomes visible from the authoritative timeline
+    // snapshot; neither path replays duplicate text.
     if (input.phase === 'commentary') {
       this.publishTransientDelta({
         threadId: nextRun.threadId as ThreadId,
@@ -26574,7 +27746,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       textDelta: input.textDelta,
       ...(input.afterSequence !== undefined ? { afterSequence: input.afterSequence } : {}),
       ...(run?.assistantTimeline?.length
-        ? { assistantTimeline: run.assistantTimeline.map((segment) => ({ ...segment })) }
+        ? { assistantTimeline: this.withKernelToolProgress(input.runId, run.assistantTimeline) }
         : {}),
       occurredAt: input.occurredAt,
     });
@@ -26593,6 +27765,9 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     updatedAt: string;
   }): void {
     const current = this.transientSnapshotByThread.get(input.threadId);
+    const assistantTimeline = input.assistantTimeline?.length
+      ? this.withKernelToolProgress(input.runId, input.assistantTimeline)
+      : undefined;
     this.transientSnapshotByThread.set(input.threadId, {
       threadId: input.threadId,
       runId: input.runId,
@@ -26606,9 +27781,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       ...(input.reasoningSegments && input.reasoningSegments.length > 0
         ? { reasoningSegments: input.reasoningSegments.map((segment) => ({ ...segment })) }
         : {}),
-      ...(input.assistantTimeline && input.assistantTimeline.length > 0
-        ? { assistantTimeline: input.assistantTimeline.map((segment) => ({ ...segment })) }
-        : {}),
+      ...(assistantTimeline && assistantTimeline.length > 0 ? { assistantTimeline } : {}),
       ...(current?.runId === input.runId && current.process ? { process: current.process } : {}),
       updatedAt: input.updatedAt,
     });
@@ -26707,14 +27880,15 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     }
 
     const liveRun = this.demoRuns.get(event.runId);
+    const liveAssistantTimeline = liveRun?.assistantTimeline?.length
+      ? this.withKernelToolProgress(event.runId, liveRun.assistantTimeline)
+      : undefined;
     const transientFrame = this.publishTransientFrame({
       threadId,
       runId: event.runId,
       occurredAt: event.occurredAt,
       ...projection,
-      ...(liveRun?.assistantTimeline?.length
-        ? { assistantTimeline: liveRun.assistantTimeline.map((segment) => ({ ...segment })) }
-        : {}),
+      ...(liveAssistantTimeline?.length ? { assistantTimeline: liveAssistantTimeline } : {}),
     });
     if (projection.kind === 'terminal') {
       this.transientSnapshotByThread.delete(threadId);
@@ -26745,8 +27919,8 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
               })),
             }
           : {}),
-        ...(liveRun?.assistantTimeline?.length
-          ? { assistantTimeline: liveRun.assistantTimeline.map((segment) => ({ ...segment })) }
+        ...(liveAssistantTimeline?.length
+          ? { assistantTimeline: liveAssistantTimeline }
           : current?.runId === event.runId && current.assistantTimeline
             ? { assistantTimeline: current.assistantTimeline.map((segment) => ({ ...segment })) }
             : {}),
