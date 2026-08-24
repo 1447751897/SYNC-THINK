@@ -18684,7 +18684,9 @@ export class Runtime {
     kernelId: string,
     session: KernelRequest['session'] | undefined,
   ): string | undefined {
-    if (kernelId !== 'claude-code' || !session?.id) return undefined;
+    if ((kernelId !== 'claude-code' && kernelId !== 'codex') || !session?.id) {
+      return undefined;
+    }
     const existing = this.loadKernelConversationSession(
       this.kernelConversationSessionKey(kernelId, run),
     );
@@ -18803,7 +18805,17 @@ export class Runtime {
     if (!upstream) return undefined;
     const kernelEntry = getKernelRegistry().find((entry) => entry.id === run.kernelId);
     const kernelProtocols = kernelEntry?.capabilities.protocols ?? [];
-    if (!kernelNeedsGateway(kernelProtocols, upstream)) return undefined;
+    // Codex app-server does not expose prompt_cache_key/prompt_cache_options in
+    // turn/start. Once its native session has a stable continuation scope,
+    // keep same-dialect Responses traffic on the gateway so cache routing can
+    // be made explicit. Other same-dialect traffic remains direct.
+    const codexPromptCacheGateway =
+      run.kernelId === 'codex' &&
+      upstream === 'openai-responses' &&
+      Boolean(responseContinuationScopeId);
+    if (!kernelNeedsGateway(kernelProtocols, upstream) && !codexPromptCacheGateway) {
+      return undefined;
+    }
     // The kernel keeps speaking its own dialect; the gateway serves that inbound
     // path and translates on the way out.
     const kernelDialect = kernelProtocols.includes('anthropic-messages')

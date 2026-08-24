@@ -18,20 +18,23 @@
  * and are never echoed into responses or logs; request bodies are capped.
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import {
   AnthropicStreamEmitter,
   ChatStreamToResponsesEmitter,
   OpenAIResponsesStreamEmitter,
   OpenAIStreamEmitter,
+  RESPONSES_DEGRADABLE_PARAMETERS,
   SseLineReader,
   anthropicRequestToOpenAIChat,
   anthropicRequestToOpenAIResponses,
+  degradeRequestBody,
   encodeSseFrame,
   normalizeOpenAICompatibleBaseUrl,
   openAIChatRequestToAnthropic,
   openaiResponsesToChat,
   parseSseJson,
+  pickDegradableParameters,
   type AnthropicMessagesRequest,
   type OpenAIChatRequest,
   type OpenAIResponsesRequest,
@@ -467,6 +470,7 @@ async function handleRequest(
     responseContinuationScope,
     runId,
     requestId,
+    kernelId: ticket?.kernelId,
   };
   try {
     if (matched === route.protocol) {
@@ -587,6 +591,68 @@ function upstreamAbort(response: ServerResponse): {
   };
 }
 
+const CODEX_PROMPT_CACHE_TTL = '30m' as const;
+
+function openAIModelName(model: string): string {
+  return (model.trim().split('/').at(-1) ?? model).toLowerCase();
+}
+
+function supportsCodexPromptCaching(model: string): boolean {
+  return /^gpt-\d+(?:\.\d+)?(?:$|-)/.test(openAIModelName(model));
+}
+
+function usesModernCodexPromptCaching(model: string): boolean {
+  const match = /^gpt-(\d+)(?:\.(\d+))?/.exec(openAIModelName(model));
+  if (!match) return false;
+  const major = Number(match[1]);
+  const minor = Number(match[2] ?? 0);
+  return major > 5 || (major === 5 && minor >= 6);
+}
+
+function supportsExtendedCodexPromptCacheRetention(model: string): boolean {
+  const name = openAIModelName(model);
+  if (/^gpt-(?:5\.5|5\.4|5\.2|5\.1)(?:$|-)/.test(name)) return true;
+  if (/^gpt-5-codex(?:$|-)/.test(name)) return true;
+  if (/^gpt-5(?:$|-(?!mini(?:$|-)|nano(?:$|-)|chat(?:$|-)))/.test(name)) return true;
+  return /^gpt-4\.1(?:$|-)(?!mini(?:$|-)|nano(?:$|-))/.test(name);
+}
+
+/**
+ * Codex app-server does not expose Responses prompt-cache fields in its
+ * turn/start schema. Inject them at the same-dialect gateway boundary instead
+ * so the provider sees one stable key for the whole native session.
+ */
+function codexPromptCacheFields(context: TranslateContext): Record<string, unknown> {
+  if (context.kernelId !== 'codex' || context.route.protocol !== 'openai-responses') return {};
+  const scope = context.responseContinuationScope?.trim();
+  if (!scope?.startsWith('kernel_') || !supportsCodexPromptCaching(context.targetModel)) {
+    return {};
+  }
+  const key = `stx-codex-${createHash('sha256')
+    .update(
+      JSON.stringify({
+        version: 1,
+        provider: context.route.providerId ?? context.route.baseUrl,
+        model: context.targetModel,
+        scope,
+      }),
+    )
+    .digest('hex')
+    .slice(0, 32)}`;
+  if (usesModernCodexPromptCaching(context.targetModel)) {
+    return {
+      prompt_cache_key: key,
+      prompt_cache_options: { mode: 'implicit', ttl: CODEX_PROMPT_CACHE_TTL },
+    };
+  }
+  return {
+    prompt_cache_key: key,
+    ...(supportsExtendedCodexPromptCacheRetention(context.targetModel)
+      ? { prompt_cache_retention: '24h' }
+      : {}),
+  };
+}
+
 /** Same dialect on both sides: only the model + credentials are rewritten. */
 async function proxyDirect(
   response: ServerResponse,
@@ -595,16 +661,41 @@ async function proxyDirect(
 ): Promise<void> {
   const abort = upstreamAbort(response);
   try {
-    const upstreamBody = { ...body, model: context.targetModel };
+    let upstreamBody: Record<string, unknown> = {
+      ...body,
+      model: context.targetModel,
+      ...codexPromptCacheFields(context),
+    };
     context.audit = { upstreamBody };
-    const upstream = await callUpstream(
+    let upstream = await callUpstream(
       context.route,
       upstreamBody,
       context.options,
       abort.signal,
     );
+    let preReadErrorText: string | undefined;
+    if (!upstream.ok && upstream.status === 400) {
+      const errorText = await upstream.text().catch(() => '');
+      preReadErrorText = errorText;
+      const rejectedOptionalParameters = pickDegradableParameters(
+        errorText.slice(0, 240),
+        upstreamBody,
+        RESPONSES_DEGRADABLE_PARAMETERS,
+      );
+      if (rejectedOptionalParameters.length > 0) {
+        upstreamBody = degradeRequestBody(upstreamBody, rejectedOptionalParameters);
+        context.audit = { upstreamBody };
+        upstream = await callUpstream(
+          context.route,
+          upstreamBody,
+          context.options,
+          abort.signal,
+        );
+        preReadErrorText = undefined;
+      }
+    }
     if (!upstream.ok || !upstream.body || !context.streamRequested) {
-      const text = await upstream.text();
+      const text = preReadErrorText ?? (await upstream.text());
       if (upstream.ok) captureDirectJsonUsage(text, context);
       response.writeHead(upstream.status, {
         'Content-Type': upstream.headers.get('content-type') ?? 'application/json',
@@ -643,6 +734,7 @@ interface TranslateContext {
   responseContinuationScope?: string;
   runId?: string;
   requestId: string;
+  kernelId?: string;
   providerResponseId?: string;
   providerModelId?: string;
   /**

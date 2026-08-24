@@ -1094,6 +1094,13 @@ describe('Runtime external kernel finalization', () => {
       await firstRuntime.executeExternalKernelRun(firstRunId);
       expect(firstAdapter.requests[0].session).toEqual({ mode: 'create' });
       expect(firstAdapter.requests[0].systemContext).toContain('Restored conversation context');
+      const sessionRecord = appSettingStore
+        .list()
+        .find((record) => record.key.startsWith('kernel.session.codex.'));
+      expect(
+        (sessionRecord?.value as { responseContinuationScopeId?: string } | undefined)
+          ?.responseContinuationScopeId,
+      ).toMatch(/^kernel_/);
 
       const secondAdapter = new CapturingKernelAdapter('codex', [
         { type: 'terminal', status: 'completed' },

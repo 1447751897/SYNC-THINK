@@ -28,6 +28,9 @@ export const RESPONSES_DEGRADABLE_PARAMETERS: ReadonlySet<string> = new Set([
   'reasoning',
   'max_output_tokens',
   'temperature',
+  'prompt_cache_key',
+  'prompt_cache_options',
+  'prompt_cache_retention',
 ]);
 
 /** Parameters named by the gateway that are present in the body and degradable. */

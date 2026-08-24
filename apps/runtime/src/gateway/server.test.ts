@@ -813,6 +813,82 @@ describe('open gateway server', () => {
     expect(await response.text()).toContain('not supported yet');
   });
 
+  it('injects a stable Codex prompt-cache key for same-dialect Responses traffic', async () => {
+    const upstream = sseFetch(['data: [DONE]\n\n']);
+    const route = { ...responsesRoute, responseContinuationScopeId: 'kernel_codex-cache-test' };
+    const { server } = await startServer({
+      resolveTicket: () => ({ runId: 'run-codex-cache', route, kernelId: 'codex' }),
+      fetchImpl: upstream.impl,
+    });
+
+    const request = {
+      method: 'POST',
+      headers: { authorization: 'Bearer ticket-codex-cache' },
+      body: JSON.stringify({
+        model: 'gpt-5.6-luna',
+        input: [{ role: 'user', content: [{ type: 'input_text', text: 'hello' }] }],
+        stream: true,
+      }),
+    };
+    const firstResponse = await fetch(urlFor(server, '/openai/v1/responses'), request);
+    const secondResponse = await fetch(urlFor(server, '/openai/v1/responses'), request);
+    expect(firstResponse.status).toBe(200);
+    expect(secondResponse.status).toBe(200);
+    await firstResponse.text();
+    await secondResponse.text();
+
+    expect(upstream.calls).toHaveLength(2);
+    const firstBody = upstream.calls[0].body as Record<string, unknown>;
+    const secondBody = upstream.calls[1].body as Record<string, unknown>;
+    expect(firstBody.prompt_cache_key).toMatch(/^stx-codex-[a-f0-9]{32}$/);
+    expect(secondBody.prompt_cache_key).toBe(firstBody.prompt_cache_key);
+    expect(firstBody.prompt_cache_options).toEqual({ mode: 'implicit', ttl: '30m' });
+  });
+
+  it('retries Codex Responses once when the upstream rejects prompt-cache fields', async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const fetchImpl = (async (_url: string | URL | Request, options?: RequestInit) => {
+      const body = JSON.parse(String(options?.body ?? '{}')) as Record<string, unknown>;
+      calls.push(body);
+      if (calls.length === 1) {
+        return new Response(
+          JSON.stringify({
+            error: {
+              message: 'Unsupported parameter(s): `prompt_cache_key`, `prompt_cache_options`',
+            },
+          }),
+          { status: 400, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      return new Response('data: [DONE]\n\n', {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      });
+    }) as unknown as typeof fetch;
+    const route = { ...responsesRoute, responseContinuationScopeId: 'kernel_codex-degrade-test' };
+    const { server } = await startServer({
+      resolveTicket: () => ({ runId: 'run-codex-degrade', route, kernelId: 'codex' }),
+      fetchImpl,
+    });
+
+    const response = await fetch(urlFor(server, '/openai/v1/responses'), {
+      method: 'POST',
+      headers: { authorization: 'Bearer ticket-codex-degrade' },
+      body: JSON.stringify({
+        model: 'gpt-5.6-luna',
+        input: [{ role: 'user', content: [{ type: 'input_text', text: 'hello' }] }],
+        stream: true,
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(calls).toHaveLength(2);
+    expect(calls[0].prompt_cache_key).toBeTruthy();
+    expect(calls[0].prompt_cache_options).toBeTruthy();
+    expect(calls[1].prompt_cache_key).toBeUndefined();
+    expect(calls[1].prompt_cache_options).toBeUndefined();
+  });
+
   it('replays function_call + output pairs in one request (HTTP Responses shape)', async () => {
     const tickets = new GatewayTicketRegistry();
     // Simulate a stateless HTTP Responses relay: it accepts tool results only
