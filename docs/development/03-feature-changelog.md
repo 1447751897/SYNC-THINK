@@ -1,3 +1,24 @@
+## 2026-08-27：Skill 管理与本地目录库严格对齐 NewMax 1.1.14
+
+### Added
+
+- Protocol/Runtime/Electron bridge 新增 `skill.local.inspect`，可检查文件夹、单个 `SKILL.md` 或 ZIP 中的单/多 Skill；导入支持全局与指定工作区、同名冲突预检和显式覆盖。
+- Runtime 按工作区 `.claude/skills`、已启用 Claude 插件缓存、SYNC-THINK 全局库、用户 `.claude/skills` 的 NewMax 来源顺序扫描并 watch，自动把有效本地 Skill 登记进“我的 Skill”；工作区与项目级插件来源同步激活。
+- 本地导入复制完整 Skill 文件夹，保留 scripts、assets、references 与其他附属文件；同一 Skill 可一次安装到全局和多个工作区，并按目标位置逐项汇总成功、失败与覆盖冲突。
+- ZIP 目录解析与 NewMax 一致：根级 `SKILL.md` 使用 ZIP 文件名作为安装目录，单一顶层包装目录使用包装目录名，`skills/<name>/SKILL.md` 包按 Skill 名分别安装；覆盖前删除同名目标目录。
+
+### Changed
+
+- Skill 页面改为 NewMax 独立信息架构：仅保留“Skill 市场 / 我的 Skill”，移除旧顶层 Skill/MCP 分段和第三个“本地”页签；恢复五区统计、工作区范围、来源/状态筛选和七列高密度表格。
+- “创建 Skill”菜单严格收敛为“导入 / 创建 Skill”。导入弹窗按 NewMax 的 480px 结构实现文件夹/ZIP 选择与拖放、Emoji/本地图标、名称、描述、多安装位置及取消/导入 footer；本地图标按 NewMax 处理为 `128 × 128` JPEG，并连接真实检查、逐位置导入和覆盖确认流程。
+- “我的 Skill”行操作严格改为使用、编辑展示元数据、共享三项；编辑使用 NewMax 400px 弹窗，只保存名称、描述与图标，不读取、覆盖或重写实体 `SKILL.md`。
+
+### Verification
+
+- Runtime 本地 Skill 定向测试 9/9、Desktop 能力中心测试 32/32 通过；根级单并发全仓测试 `20/20`、`0 cached`，其中 Desktop 全量 `172 files / 1396 tests`、Runtime 全量 `151 files / 1144 tests`。根级 typecheck `20/20`、lint `11/11`（0 error）、设计令牌与 `git diff --check` 通过。
+- `pnpm exec turbo run build --force` 强制全量构建 `11/11`、`0 cached`。最新源码实例为 Electron PID `5132`、Runtime PID `62240`，启动时间晚于构建，启动日志只有 DevTools 监听信息。
+- 真实 Electron 导入闭环验证了文件夹/ZIP、两个安装位置、冲突确认、覆盖、完整附属文件复制、原始 `SKILL.md` 字节保持、展示元数据与清理；本机扫描识别 38 个候选并登记 41 个 Skill，watch 正常，页面无控制台错误、横向溢出或表格重叠。
+
 ## 2026-08-24：设置数据与连接页严格对齐 NewMax 1.1.14
 
 ### Added

@@ -3,7 +3,7 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
-import { join, relative, sep } from 'node:path';
+import { join } from 'node:path';
 import {
   pipePathPortable,
   encodeFrame,
@@ -156,6 +156,8 @@ import {
   type ActivityRetryAnchorResponse,
   type SkillLocalScanPayload,
   type SkillLocalScanResponse,
+  type SkillLocalInspectPayload,
+  type SkillLocalInspectResponse,
   type SkillLocalImportPayload,
   type SkillLocalImportResponse,
   type LocalSkillCandidate,
@@ -677,9 +679,16 @@ import {
 } from './plan-act.js';
 import { computeNextRunAt, initialNextRunAt } from './task-scheduler.js';
 import {
+  enabledClaudePluginSkillSources,
+  installLocalSkillFolders,
   localSkillsDirectory,
-  scanLocalSkills,
+  resolveLocalSkillPackage,
+  scanLocalSkillSources,
+  summarizeLocalSkillSource,
+  userClaudeSkillsDirectory,
   watchLocalSkills,
+  workspaceSkillsDirectory,
+  type LocalSkillSourceInput,
 } from './local-skill-discovery.js';
 import type {
   KernelAdapter,
@@ -2966,12 +2975,16 @@ export class Runtime {
           this.trackBackgroundTask(this.handleImportRemoteSkill(socket, frame));
           return;
         }
+        if (frame.type === 'skill.local.inspect') {
+          this.trackBackgroundTask(this.handleSkillLocalInspect(socket, frame));
+          return;
+        }
         if (frame.type === 'skill.local.scan') {
           this.handleSkillLocalScan(socket, frame);
           return;
         }
         if (frame.type === 'skill.local.import') {
-          this.handleSkillLocalImport(socket, frame);
+          this.trackBackgroundTask(this.handleSkillLocalImport(socket, frame));
           return;
         }
         if (frame.type === 'skill.list') {
@@ -11371,10 +11384,50 @@ export class Runtime {
     }
   }
 
-  // ── 本地 Skill 发现（约定目录 ~/.sync-think/skills） ───────────────────────
+  // ── 本地 Skill library（NewMax-compatible source discovery/import） ──────
 
   private localSkillWatchCleanup?: () => void;
+  private readonly localSkillWatchedDirectories = new Set<string>();
   private localSkillCache: LocalSkillCandidate[] = [];
+
+  private localSkillSources(): LocalSkillSourceInput[] {
+    const workspaces = (this.workspaceStore?.listWorkspaces() ?? [])
+      .filter((workspace) => Boolean(workspace.folderPath))
+      .sort((left, right) => {
+        if (left.id === this.workspaceId) return -1;
+        if (right.id === this.workspaceId) return 1;
+        return left.name.localeCompare(right.name, 'zh-CN');
+      });
+    const workspaceSources = workspaces.map((workspace) => ({
+      directory: workspaceSkillsDirectory(workspace.folderPath!),
+      type: 'workspace' as const,
+      label: workspace.name,
+      workspaceId: workspace.id,
+    }));
+    const pluginSources =
+      workspaces.length > 0
+        ? workspaces.flatMap((workspace) =>
+            enabledClaudePluginSkillSources({
+              workspaceFolder: workspace.folderPath!,
+              workspaceId: workspace.id,
+            }),
+          )
+        : enabledClaudePluginSkillSources();
+    return [
+      ...workspaceSources,
+      ...pluginSources,
+      {
+        directory: localSkillsDirectory(),
+        type: 'global' as const,
+        label: '~/.sync-think/skills',
+      },
+      {
+        directory: userClaudeSkillsDirectory(),
+        type: 'user' as const,
+        label: '~/.claude/skills',
+      },
+    ];
+  }
 
   private handleSkillLocalScan(socket: Socket, frame: Frame): void {
     const payload = (frame.payload ?? {}) as SkillLocalScanPayload;
@@ -11386,6 +11439,12 @@ export class Runtime {
       candidates: this.localSkillCache,
       exists: existsSync(localSkillsDirectory()),
       watching: Boolean(this.localSkillWatchCleanup),
+      sources: this.localSkillSources().map((source) =>
+        summarizeLocalSkillSource(
+          source,
+          this.localSkillWatchedDirectories.has(source.directory.toLocaleLowerCase()),
+        ),
+      ),
     };
     socket.write(
       encodeFrame({
@@ -11397,9 +11456,39 @@ export class Runtime {
     );
   }
 
-  private handleSkillLocalImport(socket: Socket, frame: Frame): void {
+  private async handleSkillLocalInspect(socket: Socket, frame: Frame): Promise<void> {
+    const payload = frame.payload as SkillLocalInspectPayload | undefined;
+    if (!payload || typeof payload.path !== 'string' || payload.path.trim().length === 0) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    try {
+      const resolvedPackage = await resolveLocalSkillPackage(payload.path);
+      try {
+        const response: SkillLocalInspectResponse = {
+          sourcePath: resolvedPackage.sourcePath,
+          sourceType: resolvedPackage.sourceType,
+          skills: resolvedPackage.skills,
+        };
+        socket.write(
+          encodeFrame({
+            id: frame.id,
+            kind: 'response',
+            type: 'skill.local.inspect',
+            payload: response,
+          }),
+        );
+      } finally {
+        resolvedPackage.cleanup();
+      }
+    } catch (error) {
+      this.writeTeamModelCommandError(socket, frame, error);
+    }
+  }
+
+  private async handleSkillLocalImport(socket: Socket, frame: Frame): Promise<void> {
     const payload = frame.payload as SkillLocalImportPayload | undefined;
-    if (!payload || typeof payload.path !== 'string' || payload.path.length === 0) {
+    if (!payload || typeof payload.path !== 'string' || payload.path.trim().length === 0) {
       this.writeMalformedPayload(socket, frame);
       return;
     }
@@ -11407,39 +11496,104 @@ export class Runtime {
       this.writeSkillStoreUnavailable(socket, frame);
       return;
     }
-    const root = localSkillsDirectory();
-    const relativePath = relative(root, payload.path);
-    if (
-      relativePath.startsWith('..') ||
-      relativePath.startsWith('.' + sep) ||
-      relativePath === '..'
-    ) {
-      this.writeMalformedPayload(socket, frame);
-      return;
-    }
+    const scope = payload.scope ?? ({ type: 'global' } as const);
     try {
-      const skillMd = readFileSync(payload.path, 'utf8');
-      const parsed = parseSkillMd(skillMd);
-      const imported = this.finishSkillImport(skillMd, parsed, {
-        originType: 'local',
-        originRef: payload.path,
-      });
-      this.refreshLocalSkillCache();
-      this.publishEvent(
-        this.appendEvent('system', 'skill.local_changed', {
-          action: 'import',
-          path: payload.path,
-        }),
-      );
-      const response: SkillLocalImportResponse = { ...imported, path: payload.path };
-      socket.write(
-        encodeFrame({
-          id: frame.id,
-          kind: 'response',
-          type: 'skill.local.import',
-          payload: response,
-        }),
-      );
+      let destinationRoot = localSkillsDirectory();
+      if (scope.type === 'workspace') {
+        const workspace = this.workspaceStore?.getWorkspace(
+          scope.workspaceId as import('@sync-think/shared').WorkspaceId,
+        );
+        if (!workspace?.folderPath) throw new Error('所选工作区尚未绑定本地文件夹');
+        destinationRoot = workspaceSkillsDirectory(workspace.folderPath);
+      }
+
+      const resolvedPackage = await resolveLocalSkillPackage(payload.path);
+      try {
+        const installation = installLocalSkillFolders(
+          resolvedPackage.skills,
+          destinationRoot,
+          payload.overwrite === true,
+        );
+        if (installation.conflictNames.length > 0) {
+          const response: SkillLocalImportResponse = {
+            path: payload.path,
+            sourcePath: resolvedPackage.sourcePath,
+            installedPaths: [],
+            skillNames: resolvedPackage.skills.map((skill) => skill.name),
+            imports: [],
+            conflictNames: installation.conflictNames,
+            scope,
+          };
+          socket.write(
+            encodeFrame({
+              id: frame.id,
+              kind: 'response',
+              type: 'skill.local.import',
+              payload: response,
+            }),
+          );
+          return;
+        }
+
+        const imports: ImportSkillResponse[] = [];
+        for (const installed of installation.installed) {
+          const skillMd = readFileSync(installed.installedSkillMdPath, 'utf8');
+          const parsed = parseSkillMd(skillMd);
+          const imported = this.finishSkillImport(skillMd, parsed, {
+            originType: 'local',
+            originRef: installed.installedSkillMdPath,
+          });
+          imports.push(imported);
+          if (scope.type === 'workspace') {
+            this.capabilityStore?.setWorkspaceActivation({
+              capabilityType: 'skill',
+              capabilityId: imported.skill.skillVersionId,
+              workspaceId: scope.workspaceId,
+              active: true,
+            });
+          }
+        }
+
+        this.refreshLocalSkillCache();
+        this.restartLocalSkillWatch();
+        this.publishEvent(
+          this.appendEvent('system', 'skill.local_changed', {
+            action: 'import',
+            path: payload.path,
+            scope: scope.type,
+            workspaceId: scope.type === 'workspace' ? scope.workspaceId : undefined,
+            skillNames: imports.map((entry) => entry.skill.name),
+          }),
+        );
+        const first = imports[0];
+        const response: SkillLocalImportResponse = {
+          ...(first
+            ? {
+                skill: first.skill,
+                deduped: first.deduped,
+                permissionDiff: first.permissionDiff,
+                reapprovalRequest: first.reapprovalRequest,
+              }
+            : {}),
+          path: installation.installed[0]?.installedSkillMdPath ?? payload.path,
+          sourcePath: resolvedPackage.sourcePath,
+          installedPaths: installation.installed.map((entry) => entry.installedDirectory),
+          skillNames: imports.map((entry) => entry.skill.name),
+          imports,
+          conflictNames: [],
+          scope,
+        };
+        socket.write(
+          encodeFrame({
+            id: frame.id,
+            kind: 'response',
+            type: 'skill.local.import',
+            payload: response,
+          }),
+        );
+      } finally {
+        resolvedPackage.cleanup();
+      }
     } catch (error) {
       this.writeTeamModelCommandError(socket, frame, error);
     }
@@ -11447,9 +11601,43 @@ export class Runtime {
 
   private refreshLocalSkillCache(): void {
     if (!this.skillStore) return;
-    const candidates = scanLocalSkills(localSkillsDirectory());
+    const candidates = scanLocalSkillSources(this.localSkillSources());
     for (const candidate of candidates) {
-      const existing = this.skillStore.findLatestByName(candidate.name ?? candidate.folderName);
+      let existing: SkillVersionRecord | undefined;
+      try {
+        const skillMd = readFileSync(candidate.path, 'utf8');
+        const parsed = parseSkillMd(skillMd);
+        const fingerprint = skillContentFingerprint({
+          name: parsed.name,
+          version: parsed.version,
+          body: parsed.body,
+          allowedTools: parsed.allowedTools,
+        });
+        existing = this.skillStore.findByFingerprint(fingerprint);
+        if (!existing) {
+          const imported = this.finishSkillImport(skillMd, parsed, {
+            originType: 'local',
+            originRef: candidate.path,
+          });
+          existing = this.skillStore.getVersion(imported.skill.skillVersionId);
+        }
+        if (existing) {
+          const workspaceIds = new Set([
+            ...(candidate.workspaceIds ?? []),
+            ...(candidate.workspaceId ? [candidate.workspaceId] : []),
+          ]);
+          for (const workspaceId of workspaceIds) {
+            this.capabilityStore?.setWorkspaceActivation({
+              capabilityType: 'skill',
+              capabilityId: existing.id,
+              workspaceId,
+              active: true,
+            });
+          }
+        }
+      } catch {
+        // Keep malformed local folders visible as candidates without registering them.
+      }
       candidate.imported = Boolean(existing);
       candidate.skillId = existing?.skillId;
     }
@@ -11458,17 +11646,36 @@ export class Runtime {
 
   private startLocalSkillWatch(): void {
     if (this.localSkillWatchCleanup || !this.skillStore) return;
-    const root = localSkillsDirectory();
-    if (!existsSync(root)) return;
-    this.localSkillWatchCleanup = watchLocalSkills(root, () => {
-      this.refreshLocalSkillCache();
-      this.publishEvent(
-        this.appendEvent('system', 'skill.local_changed', {
-          action: 'scan',
-          directory: root,
+    const cleanups: Array<() => void> = [];
+    this.localSkillWatchedDirectories.clear();
+    for (const source of this.localSkillSources()) {
+      if (!existsSync(source.directory)) continue;
+      const watchKey = source.directory.toLocaleLowerCase();
+      if (this.localSkillWatchedDirectories.has(watchKey)) continue;
+      cleanups.push(
+        watchLocalSkills(source.directory, () => {
+          this.refreshLocalSkillCache();
+          this.publishEvent(
+            this.appendEvent('system', 'skill.local_changed', {
+              action: 'scan',
+              directory: source.directory,
+            }),
+          );
         }),
       );
-    });
+      this.localSkillWatchedDirectories.add(watchKey);
+    }
+    if (cleanups.length === 0) return;
+    this.localSkillWatchCleanup = () => {
+      for (const cleanup of cleanups) cleanup();
+      this.localSkillWatchedDirectories.clear();
+    };
+  }
+
+  private restartLocalSkillWatch(): void {
+    this.localSkillWatchCleanup?.();
+    this.localSkillWatchCleanup = undefined;
+    this.startLocalSkillWatch();
   }
 
   /** Fingerprint + persist + permission diff + events for a parsed SKILL.md. */

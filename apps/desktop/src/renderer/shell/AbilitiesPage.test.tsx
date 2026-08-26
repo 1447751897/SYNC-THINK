@@ -32,6 +32,12 @@ const runtime = {
   listSkills: vi.fn(),
   importSkill: vi.fn(),
   importRemoteSkill: vi.fn(),
+  skillLocalScan: vi.fn(),
+  skillLocalInspect: vi.fn(),
+  skillLocalImport: vi.fn(),
+  pickFolder: vi.fn(),
+  pickSkillZip: vi.fn(),
+  pathForFile: vi.fn(),
   deleteSkill: vi.fn(),
   setSkillEnabled: vi.fn(),
   getSkill: vi.fn(),
@@ -50,9 +56,16 @@ const runtime = {
 };
 
 beforeEach(() => {
+  window.localStorage.clear();
   runtime.listSkills.mockReset().mockResolvedValue({ skills: [] });
   runtime.importSkill.mockReset();
   runtime.importRemoteSkill.mockReset();
+  runtime.skillLocalScan.mockReset().mockRejectedValue(new Error('local scan not configured'));
+  runtime.skillLocalInspect.mockReset();
+  runtime.skillLocalImport.mockReset();
+  runtime.pickFolder.mockReset();
+  runtime.pickSkillZip.mockReset();
+  runtime.pathForFile.mockReset();
   runtime.deleteSkill.mockReset().mockResolvedValue({ deleted: true, skillVersionId: 'sv-1' });
   runtime.setSkillEnabled.mockReset();
   runtime.getSkill.mockReset();
@@ -107,52 +120,86 @@ afterEach(() => {
 });
 
 describe('AbilitiesPage', () => {
-  it('imports pasted SKILL.md and refreshes the catalog', async () => {
-    const source = '---\nname: review\nversion: 0.1.0\n---\n\nReview carefully.';
-    runtime.importSkill.mockResolvedValue({
-      skill: {
-        skillVersionId: 'sv-1',
-        skillId: 'skill-review',
-        name: 'review',
-        description: 'Review carefully',
-        version: '0.1.0',
-        allowedTools: [],
-        contentFingerprint: 'abc12345',
-        hasScripts: false,
-        warnings: [],
-        createdAt: '2026-07-26T00:00:00.000Z',
-      },
-      deduped: false,
-    });
-    runtime.listSkills.mockResolvedValueOnce({ skills: [] }).mockResolvedValueOnce({
+  it('imports a complete local Skill folder and refreshes the catalog', async () => {
+    const skill = {
+      skillVersionId: 'sv-1',
+      skillId: 'skill-review',
+      name: 'review',
+      description: 'Review carefully',
+      version: '0.1.0',
+      originType: 'local' as const,
+      originRef: 'C:\\skills\\review\\SKILL.md',
+      allowedTools: [],
+      contentFingerprint: 'abc12345',
+      hasScripts: true,
+      warnings: [],
+      createdAt: '2026-07-26T00:00:00.000Z',
+    };
+    runtime.pickFolder.mockResolvedValue({ canceled: false, path: 'C:\\skills\\review' });
+    runtime.skillLocalInspect.mockResolvedValue({
+      sourcePath: 'C:\\skills\\review',
+      sourceType: 'folder',
       skills: [
         {
-          skillVersionId: 'sv-1',
-          skillId: 'skill-review',
+          folderName: 'review',
           name: 'review',
           description: 'Review carefully',
-          version: '0.1.0',
-          allowedTools: [],
-          contentFingerprint: 'abc12345',
-          hasScripts: false,
-          warnings: [],
-          createdAt: '2026-07-26T00:00:00.000Z',
+          skillDirectory: 'C:\\skills\\review',
+          skillMdPath: 'C:\\skills\\review\\SKILL.md',
+          hasScripts: true,
         },
       ],
+    });
+    runtime.skillLocalImport.mockResolvedValue({
+      skill,
+      deduped: false,
+      path: skill.originRef,
+      sourcePath: 'C:\\skills\\review',
+      installedPaths: ['C:\\Users\\test\\.sync-think\\skills\\review'],
+      skillNames: ['review'],
+      imports: [{ skill, deduped: false }],
+      conflictNames: [],
+      scope: { type: 'global' },
+    });
+    runtime.skillLocalScan
+      .mockRejectedValueOnce(new Error('initial scan skipped'))
+      .mockResolvedValue({
+        directory: 'C:\\Users\\test\\.sync-think\\skills',
+        candidates: [],
+        exists: true,
+        watching: true,
+        sources: [],
+      });
+    runtime.listSkills.mockResolvedValueOnce({ skills: [] }).mockResolvedValueOnce({
+      skills: [skill],
     });
     const changed = vi.fn();
 
     render(<AbilitiesPage onGoToAgents={vi.fn()} onCatalogChanged={changed} />);
     await waitFor(() => expect(runtime.listSkills).toHaveBeenCalledWith({ limit: 500 }));
     fireEvent.click(screen.getByTestId('skill-tab-mine'));
-    await waitFor(() => expect(screen.getByText('能力库还是空的')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('还没有 Skill')).toBeTruthy());
     fireEvent.click(screen.getByTestId('open-skill-import'));
-    fireEvent.click(screen.getByRole('button', { name: /本地创建/ }));
-    fireEvent.change(screen.getByTestId('skill-md-input'), { target: { value: source } });
-    fireEvent.click(screen.getByTestId('import-skill-submit'));
+    fireEvent.click(screen.getByRole('menuitem', { name: '导入' }));
+    fireEvent.click(screen.getByRole('button', { name: '选择文件夹' }));
+    await screen.findByTitle('C:\\skills\\review');
+    fireEvent.change(screen.getByPlaceholderText('为你的 Skill 起个名字'), {
+      target: { value: '代码审查工作流' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('简要描述这个 Skill 的功能和用途'), {
+      target: { value: '显示层描述，不改写 SKILL.md' },
+    });
+    fireEvent.click(screen.getByTestId('skill-local-import-submit'));
 
-    await waitFor(() => expect(runtime.importSkill).toHaveBeenCalledWith({ skillMd: source }));
-    await waitFor(() => expect(screen.getAllByText('review').length).toBeGreaterThan(0));
+    await waitFor(() =>
+      expect(runtime.skillLocalImport).toHaveBeenCalledWith({
+        path: 'C:\\skills\\review',
+        scope: { type: 'global' },
+      }),
+    );
+    await waitFor(() => expect(screen.getByText('代码审查工作流')).toBeTruthy());
+    expect(screen.getByText('显示层描述，不改写 SKILL.md')).toBeTruthy();
+    expect(window.localStorage.getItem('sync-think.skill-metadata.v1')).toContain('代码审查工作流');
     expect(changed).toHaveBeenCalledTimes(1);
   });
 
@@ -164,69 +211,229 @@ describe('AbilitiesPage', () => {
     expect(screen.getByText('pipe unavailable')).toBeTruthy();
   });
 
-  it('imports a remote Skill URL and moves the user to the installed version', async () => {
+  it('imports a Skill ZIP into the selected workspace', async () => {
     const skill = {
-      skillVersionId: 'sv-remote',
-      skillId: 'skill-remote',
-      name: 'remote-review',
-      description: 'Review a remote change.',
+      skillVersionId: 'sv-zip',
+      skillId: 'skill-zip',
+      name: 'zip-review',
+      description: 'Review from a ZIP.',
       version: '1.2.0',
-      originType: 'market' as const,
-      originRef: 'https://example.test/SKILL.md',
+      originType: 'local' as const,
+      originRef: 'D:\\workspace\\.claude\\skills\\zip-review\\SKILL.md',
       allowedTools: [],
-      contentFingerprint: 'remote-fingerprint',
+      contentFingerprint: 'zip-fingerprint',
       hasScripts: false,
       warnings: [],
       createdAt: '2026-08-10T00:00:00.000Z',
       enabled: true,
     };
-    runtime.importRemoteSkill.mockResolvedValue({ skill, deduped: false });
+    runtime.pickSkillZip.mockResolvedValue({
+      canceled: false,
+      path: 'D:\\downloads\\zip-review.zip',
+    });
+    runtime.skillLocalInspect.mockResolvedValue({
+      sourcePath: 'D:\\downloads\\zip-review.zip',
+      sourceType: 'zip',
+      skills: [
+        {
+          folderName: 'zip-review',
+          name: skill.name,
+          description: skill.description,
+          skillDirectory: 'D:\\temp\\zip-review',
+          skillMdPath: 'D:\\temp\\zip-review\\SKILL.md',
+          hasScripts: false,
+        },
+      ],
+    });
+    runtime.skillLocalImport.mockResolvedValue({
+      skill,
+      deduped: false,
+      path: skill.originRef,
+      sourcePath: 'D:\\downloads\\zip-review.zip',
+      installedPaths: ['D:\\workspace\\.claude\\skills\\zip-review'],
+      skillNames: [skill.name],
+      imports: [{ skill, deduped: false }],
+      conflictNames: [],
+      scope: { type: 'workspace', workspaceId: 'workspace-1' },
+    });
+    runtime.skillLocalScan
+      .mockRejectedValueOnce(new Error('initial scan skipped'))
+      .mockResolvedValue({
+        directory: 'C:\\Users\\test\\.sync-think\\skills',
+        candidates: [],
+        exists: true,
+        watching: true,
+        sources: [],
+      });
     runtime.listSkills.mockResolvedValueOnce({ skills: [] }).mockResolvedValue({ skills: [skill] });
 
-    render(<AbilitiesPage onGoToAgents={vi.fn()} />);
+    render(
+      <AbilitiesPage
+        activeWorkspaceId="workspace-1"
+        workspaces={[
+          {
+            workspaceId: 'workspace-1' as import('@sync-think/shared').WorkspaceId,
+            name: 'SYNC-THINK',
+            folderPath: 'D:\\workspace',
+            createdAt: '2026-08-26T00:00:00.000Z',
+            updatedAt: '2026-08-26T00:00:00.000Z',
+          },
+        ]}
+        onGoToAgents={vi.fn()}
+      />,
+    );
     await waitFor(() => expect(runtime.listSkills).toHaveBeenCalled());
     fireEvent.click(screen.getByTestId('open-skill-import'));
-    fireEvent.click(screen.getByRole('button', { name: /远端导入/ }));
-    fireEvent.change(screen.getByTestId('skill-remote-url-input'), {
-      target: { value: skill.originRef },
+    fireEvent.click(screen.getByRole('menuitem', { name: '导入' }));
+    fireEvent.click(screen.getByRole('button', { name: '选择 ZIP 文件' }));
+    await screen.findByTitle('D:\\downloads\\zip-review.zip');
+    fireEvent.change(screen.getByPlaceholderText('为你的 Skill 起个名字'), {
+      target: { value: skill.name },
     });
-    fireEvent.click(screen.getByTestId('skill-remote-import-submit'));
+    fireEvent.change(screen.getByPlaceholderText('简要描述这个 Skill 的功能和用途'), {
+      target: { value: skill.description },
+    });
+    fireEvent.click(screen.getByTestId('skill-local-import-submit'));
 
     await waitFor(() =>
-      expect(runtime.importRemoteSkill).toHaveBeenCalledWith({ url: skill.originRef }),
+      expect(runtime.skillLocalImport).toHaveBeenCalledWith({
+        path: 'D:\\downloads\\zip-review.zip',
+        scope: { type: 'workspace', workspaceId: 'workspace-1' },
+      }),
     );
-    expect(await screen.findByText(/已导入远端 Skill/)).toBeTruthy();
-    expect(await screen.findByRole('heading', { name: skill.name })).toBeTruthy();
+    expect(await screen.findByText(/已导入 Skill/)).toBeTruthy();
+    expect(await screen.findByText(skill.name)).toBeTruthy();
   });
 
-  it('keeps the remote Skill dialog open and shows a contextual download error', async () => {
-    runtime.importRemoteSkill.mockRejectedValue(
+  it('installs one Skill into multiple NewMax-style locations and persists its icon', async () => {
+    const skill = {
+      skillVersionId: 'sv-multi-location',
+      skillId: 'skill-multi-location',
+      name: 'multi-location',
+      description: 'Install in two locations.',
+      version: '1.0.0',
+      originType: 'local' as const,
+      originRef: 'D:\\workspace\\.claude\\skills\\multi-location\\SKILL.md',
+      allowedTools: [],
+      contentFingerprint: 'multi-location-fingerprint',
+      hasScripts: false,
+      warnings: [],
+      createdAt: '2026-08-26T00:00:00.000Z',
+      enabled: true,
+    };
+    runtime.pickFolder.mockResolvedValue({
+      canceled: false,
+      path: 'D:\\downloads\\multi-location',
+    });
+    runtime.skillLocalInspect.mockResolvedValue({
+      sourcePath: 'D:\\downloads\\multi-location',
+      sourceType: 'folder',
+      skills: [
+        {
+          folderName: 'multi-location',
+          name: skill.name,
+          description: skill.description,
+          skillDirectory: 'D:\\downloads\\multi-location',
+          skillMdPath: 'D:\\downloads\\multi-location\\SKILL.md',
+          hasScripts: false,
+        },
+      ],
+    });
+    runtime.skillLocalImport.mockImplementation(
+      async (payload: {
+        path: string;
+        scope: { type: 'global' } | { type: 'workspace'; workspaceId: string };
+      }) => ({
+        skill,
+        deduped: false,
+        path: skill.originRef,
+        sourcePath: payload.path,
+        installedPaths: [skill.originRef],
+        skillNames: [skill.name],
+        imports: [{ skill, deduped: false }],
+        conflictNames: [],
+        scope: payload.scope,
+      }),
+    );
+    runtime.skillLocalScan.mockResolvedValue({
+      directory: 'C:\\Users\\test\\.sync-think\\skills',
+      candidates: [],
+      exists: true,
+      watching: true,
+      sources: [],
+    });
+    runtime.listSkills.mockResolvedValue({ skills: [skill] });
+
+    render(
+      <AbilitiesPage
+        activeWorkspaceId="workspace-1"
+        workspaces={[
+          {
+            workspaceId: 'workspace-1' as import('@sync-think/shared').WorkspaceId,
+            name: 'SYNC-THINK',
+            folderPath: 'D:\\workspace',
+            createdAt: '2026-08-26T00:00:00.000Z',
+            updatedAt: '2026-08-26T00:00:00.000Z',
+          },
+        ]}
+        onGoToAgents={vi.fn()}
+      />,
+    );
+    await waitFor(() => expect(runtime.listSkills).toHaveBeenCalled());
+    fireEvent.click(screen.getByTestId('open-skill-import'));
+    fireEvent.click(screen.getByRole('menuitem', { name: '导入' }));
+    fireEvent.click(screen.getByRole('button', { name: '选择文件夹' }));
+    await screen.findByTitle('D:\\downloads\\multi-location');
+    fireEvent.change(screen.getByPlaceholderText('为你的 Skill 起个名字'), {
+      target: { value: skill.name },
+    });
+    fireEvent.change(screen.getByPlaceholderText('简要描述这个 Skill 的功能和用途'), {
+      target: { value: skill.description },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '选择 Emoji 图标' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '使用 ✨ 图标' }));
+    fireEvent.click(screen.getByRole('button', { name: /^SYNC-THINK$/ }));
+    fireEvent.click(screen.getByRole('menuitemcheckbox', { name: /全局/ }));
+    fireEvent.click(screen.getByTestId('skill-local-import-submit'));
+
+    await waitFor(() => expect(runtime.skillLocalImport).toHaveBeenCalledTimes(2));
+    expect(runtime.skillLocalImport).toHaveBeenNthCalledWith(1, {
+      path: 'D:\\downloads\\multi-location',
+      scope: { type: 'workspace', workspaceId: 'workspace-1' },
+    });
+    expect(runtime.skillLocalImport).toHaveBeenNthCalledWith(2, {
+      path: 'D:\\downloads\\multi-location',
+      scope: { type: 'global' },
+    });
+    expect(window.localStorage.getItem('sync-think.skill-metadata.v1')).toContain('✨');
+  });
+
+  it('keeps the local import dialog open and shows a contextual package error', async () => {
+    runtime.pickSkillZip.mockResolvedValue({ canceled: false, path: 'D:\\downloads\\broken.zip' });
+    runtime.skillLocalInspect.mockRejectedValue(
       new Error(
-        "Error invoking remote method 'runtime:skill-import-remote': RuntimeResponseError: 远端内容返回 404",
+        "Error invoking remote method 'runtime:skill-local-inspect': RuntimeResponseError: ZIP 解压失败：文件损坏",
       ),
     );
 
     render(<AbilitiesPage onGoToAgents={vi.fn()} />);
     await waitFor(() => expect(runtime.listSkills).toHaveBeenCalled());
     fireEvent.click(screen.getByTestId('open-skill-import'));
-    fireEvent.click(screen.getByRole('button', { name: /远端导入/ }));
-    fireEvent.change(screen.getByTestId('skill-remote-url-input'), {
-      target: { value: 'https://example.test/missing/SKILL.md' },
-    });
-    fireEvent.click(screen.getByTestId('skill-remote-import-submit'));
+    fireEvent.click(screen.getByRole('menuitem', { name: '导入' }));
+    fireEvent.click(screen.getByRole('button', { name: '选择 ZIP 文件' }));
 
     const error = await screen.findByRole('alert');
-    expect(error.textContent).toContain('远端内容返回 404');
+    expect(error.textContent).toContain('ZIP 解压失败：文件损坏');
     expect(error.textContent).not.toContain('Error invoking remote method');
     expect(error.textContent).not.toContain('RuntimeResponseError');
-    expect(screen.getByTestId('skill-remote-url-input')).toBeTruthy();
+    expect(screen.getByRole('dialog', { name: '导入 Skill' })).toBeTruthy();
   });
 
   it('keeps the Skill save action visible without relying on hover', async () => {
     render(<AbilitiesPage onGoToAgents={vi.fn()} />);
     await waitFor(() => expect(runtime.listSkills).toHaveBeenCalled());
     fireEvent.click(screen.getByTestId('open-skill-import'));
-    fireEvent.click(screen.getByRole('button', { name: /本地创建/ }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '创建 Skill' }));
 
     const save = screen.getByTestId('import-skill-submit') as HTMLButtonElement;
     expect(save.textContent).toContain('保存');
@@ -238,7 +445,7 @@ describe('AbilitiesPage', () => {
     render(<AbilitiesPage onGoToAgents={vi.fn()} />);
     await waitFor(() => expect(runtime.listSkills).toHaveBeenCalled());
     fireEvent.click(screen.getByTestId('open-skill-import'));
-    fireEvent.click(screen.getByRole('button', { name: /本地创建/ }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '创建 Skill' }));
     const text = vi.fn();
     fireEvent.change(screen.getByTestId('skill-file-input'), {
       target: { files: [{ name: 'oversized.md', size: 512_001, text }] },
@@ -272,6 +479,50 @@ describe('AbilitiesPage', () => {
     const description = await screen.findByText('按严重程度发现缺陷，并给出可执行的修改建议');
     expect(description.tagName).toBe('SMALL');
     expect(description.parentElement?.classList.contains('ability-installed-row__copy')).toBe(true);
+  });
+
+  it('uses NewMax row actions and edits display metadata without rewriting Skill source', async () => {
+    const skill = {
+      skillVersionId: 'sv-metadata-edit',
+      skillId: 'skill-metadata-edit',
+      name: 'metadata-edit',
+      description: 'Original SKILL.md description',
+      version: '1.0.0',
+      allowedTools: [],
+      contentFingerprint: 'metadata-edit-fingerprint',
+      hasScripts: false,
+      warnings: [],
+      enabled: true,
+      originType: 'local' as const,
+      originRef: 'C:\\skills\\metadata-edit\\SKILL.md',
+      createdAt: '2026-08-26T00:00:00.000Z',
+    };
+    runtime.listSkills.mockResolvedValue({ skills: [skill] });
+    const onGoToAgents = vi.fn();
+
+    render(<AbilitiesPage onGoToAgents={onGoToAgents} />);
+    fireEvent.click(screen.getByTestId('skill-tab-mine'));
+    await screen.findByText(skill.name);
+
+    fireEvent.click(screen.getByRole('button', { name: `使用 ${skill.name}` }));
+    expect(onGoToAgents).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole('button', { name: `编辑 ${skill.name}` }));
+    expect(screen.getByRole('dialog', { name: '编辑 Skill' })).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Skill 名称'), {
+      target: { value: '自定义显示名称' },
+    });
+    fireEvent.change(screen.getByLabelText('Skill 描述'), {
+      target: { value: '仅保存在显示元数据中' },
+    });
+    fireEvent.change(screen.getByLabelText('Skill 图标'), { target: { value: '🚀' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存' }));
+
+    expect(await screen.findByText('自定义显示名称')).toBeTruthy();
+    expect(screen.getByText('仅保存在显示元数据中')).toBeTruthy();
+    expect(window.localStorage.getItem('sync-think.skill-metadata.v1')).toContain('🚀');
+    expect(runtime.importSkill).not.toHaveBeenCalled();
+    expect(runtime.getSkill).not.toHaveBeenCalled();
   });
 
   it('registers an MCP server from the shared management surface', async () => {
@@ -463,7 +714,7 @@ describe('AbilitiesPage', () => {
     render(<AbilitiesPage onGoToAgents={vi.fn()} />);
     await waitFor(() => expect(runtime.listSkills).toHaveBeenCalled());
     fireEvent.click(screen.getByTestId('open-skill-import'));
-    fireEvent.click(screen.getByRole('button', { name: /本地创建/ }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '创建 Skill' }));
     fireEvent.click(screen.getByTestId('import-skill-submit'));
 
     expect(await screen.findByText('保存中')).toBeTruthy();
@@ -716,7 +967,7 @@ describe('AbilitiesPage', () => {
 
     render(<AbilitiesPage onGoToAgents={vi.fn()} />);
     fireEvent.click(screen.getByTestId('skill-tab-mine'));
-    fireEvent.click(await screen.findByRole('button', { name: /market-skill/ }));
+    fireEvent.click((await screen.findByText('market-skill')).closest('button')!);
 
     // 详情抽屉：市场 skill 无「编辑」按钮，也无危险删除按钮（只读安装）
     expect(screen.queryByRole('button', { name: '编辑' })).toBeNull();
@@ -745,11 +996,11 @@ describe('AbilitiesPage', () => {
 
     render(<AbilitiesPage onGoToAgents={vi.fn()} />);
     fireEvent.click(screen.getByTestId('skill-tab-mine'));
-    fireEvent.click(await screen.findByRole('button', { name: /local-skill/ }));
+    fireEvent.click((await screen.findByText('local-skill')).closest('button')!);
 
     // 用户自己的 skill：编辑与删除按钮都保留
     expect(screen.getByRole('button', { name: '编辑' })).toBeTruthy();
-    expect(document.querySelector('.capability-row-actions__danger')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '删除 Skill' })).toBeTruthy();
   });
 
   it('keeps the Skill effect-path explanation concise in the detail drawer', async () => {
@@ -770,7 +1021,7 @@ describe('AbilitiesPage', () => {
 
     render(<AbilitiesPage onGoToAgents={vi.fn()} />);
     fireEvent.click(screen.getByTestId('skill-tab-mine'));
-    fireEvent.click(await screen.findByRole('button', { name: /path-skill/ }));
+    fireEvent.click((await screen.findByText('path-skill')).closest('button')!);
 
     expect(
       screen.getByText(
@@ -1015,9 +1266,8 @@ Publish this workflow.`;
 
     render(<AbilitiesPage onGoToAgents={vi.fn()} />);
     fireEvent.click(screen.getByTestId('skill-tab-mine'));
-    await screen.findByText('publishable-skill');
-    fireEvent.click(screen.getByTestId('open-skill-import'));
-    fireEvent.click(screen.getByRole('button', { name: /发布到市场/ }));
+    fireEvent.click((await screen.findByText('publishable-skill')).closest('button')!);
+    fireEvent.click(screen.getByRole('button', { name: '发布' }));
 
     await screen.findByRole('button', { name: '保存草稿' });
     fireEvent.click(screen.getByRole('button', { name: '保存草稿' }));
@@ -1039,7 +1289,7 @@ Publish this workflow.`;
     expect(await screen.findByText(/市场审核渠道暂未接入/)).toBeTruthy();
   });
 
-  it('deletes a Skill from the governance list row', async () => {
+  it('deletes a Skill from its NewMax-style management drawer', async () => {
     runtime.listSkills.mockResolvedValue({
       skills: [
         {
@@ -1093,6 +1343,7 @@ Publish this workflow.`;
     await waitFor(() => expect(runtime.listSkills).toHaveBeenCalled());
     fireEvent.click(screen.getByTestId('skill-tab-mine'));
     await waitFor(() => expect(screen.getByText('review')).toBeTruthy());
+    fireEvent.click(screen.getByText('review').closest('button')!);
 
     const deleteButton = screen.getByTitle('删除 Skill');
     expect(deleteButton).toBeTruthy();

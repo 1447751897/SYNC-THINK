@@ -1,6 +1,6 @@
 // Preload runs in the renderer with contextIsolation: true. Bridge exposes a
 // narrow window.api so the renderer never touches Node directly (搂19).
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type {
   ExportDesktopDiagnosticsPayload,
   ExportDesktopDiagnosticsResponse,
@@ -302,6 +302,8 @@ import type {
   GoalResumePayload,
   GoalResumeResponse,
   GoalStatus,
+  SkillLocalInspectPayload,
+  SkillLocalInspectResponse,
   SkillLocalScanPayload,
   SkillLocalScanResponse,
   SkillLocalImportPayload,
@@ -795,6 +797,11 @@ const api = {
         'runtime:skill-local-scan',
         payload ?? {},
       ) as Promise<SkillLocalScanResponse>,
+    skillLocalInspect: (payload: SkillLocalInspectPayload) =>
+      ipcRenderer.invoke(
+        'runtime:skill-local-inspect',
+        payload,
+      ) as Promise<SkillLocalInspectResponse>,
     skillLocalImport: (payload: SkillLocalImportPayload) =>
       ipcRenderer.invoke(
         'runtime:skill-local-import',
@@ -1118,6 +1125,12 @@ const api = {
         canceled: boolean;
         path: string | null;
       }>,
+    pickSkillZip: () =>
+      ipcRenderer.invoke('desktop:pick-skill-zip') as Promise<{
+        canceled: boolean;
+        path: string | null;
+      }>,
+    pathForFile: (file: File) => webUtils.getPathForFile(file),
     /** Push the renderer theme preference onto the native frame/title bar. */
     setTheme: (theme: 'light' | 'dark' | 'system') =>
       ipcRenderer.invoke('desktop:set-theme', theme) as Promise<{ dark: boolean }>,

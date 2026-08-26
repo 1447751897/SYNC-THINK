@@ -322,6 +322,7 @@ import {
   parseActivityListRunsPayload,
   parseActivityListExternalEventsPayload,
   parseActivityRetryAnchorPayload,
+  parseSkillLocalInspectPayload,
   parseSkillLocalScanPayload,
   parseSkillLocalImportPayload,
   parseSetConversationPinnedPayload,
@@ -2225,6 +2226,11 @@ function setupRuntimeBridge(): void {
     await ensureRuntimeConnection();
     return getRuntimeClient().request('skill.local.scan', parseSkillLocalScanPayload(value));
   });
+  ipcMain.handle('runtime:skill-local-inspect', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('skill.local.inspect', parseSkillLocalInspectPayload(value));
+  });
   ipcMain.handle('runtime:skill-local-import', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
     await ensureRuntimeConnection();
@@ -3065,6 +3071,26 @@ function setupRuntimeBridge(): void {
     if (typeof requestedTitle === 'string' && requestedTitle.trim().length > 0) {
       options.title = requestedTitle.trim().slice(0, 80);
     }
+    const result = win
+      ? await dialog.showOpenDialog(win, options)
+      : await dialog.showOpenDialog(options);
+    if (result.canceled || result.filePaths.length === 0) {
+      return { canceled: true as const, path: null };
+    }
+    return { canceled: false as const, path: result.filePaths[0]! };
+  });
+
+  ipcMain.handle('desktop:pick-skill-zip', async (event) => {
+    assertRuntimeIpcSource(event);
+    const win = BrowserWindow.fromWebContents(event.sender);
+    const options = {
+      title: '选择 Skill ZIP 文件',
+      properties: ['openFile'] as Array<'openFile'>,
+      filters: [
+        { name: 'Skill ZIP', extensions: ['zip'] },
+        { name: '所有文件', extensions: ['*'] },
+      ],
+    };
     const result = win
       ? await dialog.showOpenDialog(win, options)
       : await dialog.showOpenDialog(options);

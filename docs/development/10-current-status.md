@@ -1,4 +1,22 @@
-﻿## 当前状态：2026-08-24 · 设置数据与连接页 NewMax 对齐完成
+﻿## 当前状态：2026-08-27 · Skill 管理 NewMax 对齐完成并运行最新构建
+
+### 实现结果
+
+- 已从本机 NewMax 1.1.14 的 ASAR、preload API、Renderer 组件和真实窗口核对 Skill 实现，不再沿用旧能力中心推测结构。
+- Skill 页面现使用 NewMax 的独立双页签结构、市场三列卡片、“我的 Skill”五区统计/工作区/筛选/七列表格，以及只有“导入 / 创建 Skill”的创建菜单。
+- 导入弹窗支持文件夹、ZIP 和拖放，按 NewMax 提供 Emoji/本地图标、名称、描述和多安装位置；Runtime 逐位置复制完整 Skill 目录，处理根级 ZIP、单包装目录、多 Skill 包、部分失败与覆盖冲突。
+- Runtime 自动识别工作区 `.claude/skills`、设置中明确启用且已缓存的 Claude 插件 Skill、全局 `.sync-think/skills` 和用户 `.claude/skills`，登记到“我的 Skill”并 watch 变化；工作区和项目级插件来源自动激活。
+- 同名本地 Skill 内容发生变化时会创建新的不可变 SkillVersion；同一真实目录被多个工作区或插件来源引用时合并来源并保留全部工作区激活关系。
+- 列表行操作已与 NewMax 对齐为使用、编辑、共享。400px 编辑弹窗只保存展示名称、描述与图标；导入和编辑都不会改写实体 `SKILL.md`。
+
+### 当前验证
+
+- Runtime 本地目录测试 9/9、Desktop 能力中心测试 32/32；根级单并发全仓测试 `20/20`、`0 cached`，其中 Desktop 全量 `172 files / 1396 tests`、Runtime 全量 `151 files / 1144 tests`。根级 typecheck `20/20`、lint `11/11`（0 error）、设计令牌和 `git diff --check` 通过。
+- 强制全量构建 `11/11`、`0 cached`。真实 Electron 扫描到 38 个本地候选并登记 41 个 Skill，recursive watch 正常；导入实测覆盖文件夹/ZIP、全局+工作区双位置、冲突覆盖、完整附属文件复制、原文逐字节保持与展示元数据。
+- 页面实测无控制台错误、横向溢出或表格重叠；导入弹窗宽 480px，元数据编辑弹窗宽 400px。截图与机器可读结果位于 `C:\Users\ZHUZHE~1\AppData\Local\Temp\sync-think-skill-newmax-qa\`。
+- 当前最新源码实例正在运行：Electron PID `5132`、Runtime PID `62240`，启动日志位于 `.data/skill-newmax-final-20260827-003608.*.log`。
+
+## 当前状态：2026-08-24 · 设置数据与连接页 NewMax 对齐完成
 
 ### 实现结果
 

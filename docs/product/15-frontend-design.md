@@ -471,9 +471,9 @@ hover/focus/active：focus 必须可见；hover 可有 1–2px 层级变化，�
 9. 选择服务商模板后进入可编辑配置页，并预填已确认的名称、Base URL、协议和本地模型标识；“返回服务商目录”保留当前分类，“取消添加模型”恢复进入流程前选中的 Provider。
 10. CC Switch 导入必须先读取本机数据库并展示可导入项、Base URL、模型数量、模型标识、密钥状态与 warning；支持全选和逐项选择。导入成功后刷新 Provider 列表并定位到首个成功项，部分失败通过结果摘要明确呈现。
 
-### 12.12 Skill / MCP 能力中心规则（2026-08-09 用户确认）
+### 12.12 Skill 管理与 MCP 能力规则（2026-08-26 NewMax 1.1.14 实机对齐）
 
-1. Skill 与 MCP 共用一个“能力中心”信息架构：顶层切换能力类型，次级切换“市场 / 我的”，搜索、统计、工作区、来源和状态筛选保持位置稳定；桌面端使用高密度表格，窄屏降为可扫描列表，不使用卡片套卡片。
+1. Skill 管理使用独立的 NewMax 信息架构，不再显示“Skill / MCP”顶层分段开关，也不再显示第三个“本地”页签。页面固定为 52px 标题栏（返回、`Skill 管理`、`Skill 激活码`、`创建 Skill`）和“Skill 市场 / 我的 Skill”两项次级页签；MCP 保留独立管理面并通过产品导航进入。
 2. 列表名称必须来自持久化记录中的正式显示名称，不从目录 slug、ID 或安装路径反推。Skill 正文与源码使用清晰的等宽字体、正常字重和不小于 13px 的字号；标签、筛选项和 MCP 元数据不得使用低对比度或缩放产生的模糊文字。
 3. 每行同时呈现健康/连接状态、来源或 Transport、激活工作区、最近 45 天调用次数、最后调用时间和全局启用开关。成功、失败、取消均计入调用次数；失败额外计入“有问题”。
 4. 能力实际生效集合固定为“全局启用 ∩ 当前工作区激活 ∩ Agent 绑定”。全局停用只暂时阻断调用，不删除工作区激活关系或 Agent 绑定；重新启用后原关系自动恢复。
@@ -481,16 +481,17 @@ hover/focus/active：focus 必须可见；hover 可有 1–2px 层级变化，�
 6. MCP 工具目录和实际 dispatch 使用与 Skill 相同的三重交集，不允许只凭已安装或 Agent 绑定绕过工作区激活。MCP 列表需要明确显示连接状态、Transport/Endpoint、工具数量和最近调用情况。
 7. 上下文占用按实际注入 Token 统计：Skill 只计算进入 Context Packet 的 `SKILL.md`；MCP 只计算注入 Provider 的工具名称、描述和 Input Schema；未读取的 references/scripts/assets 不计入。仅汇总当前工作区激活能力，70% 显示提醒，90% 显示高风险。
 8. 历史已安装 Skill/MCP 迁移后默认全局启用；新建、导入或注册的本地能力也默认启用，但仍需工作区激活和 Agent 绑定才可实际调用。
-9. 市场 Skill 编辑时创建本地派生版本并保留来源关系，不覆盖市场原版。本地 Skill 创建必须生成真实可用的 SkillVersion；编辑使用轻量弹窗，创建/发布使用完整表单。
-10. “发布到市场”当前只保存本地草稿，可编辑和继续保存；提交时明确显示“市场发布渠道暂未开放”，不得伪造审核中或已提交状态。
+9. “创建 Skill”下拉菜单严格只有“导入 / 创建 Skill”两项。市场 Skill 编辑时创建本地派生版本并保留来源关系，不覆盖市场原版；本地 Skill 创建必须生成真实可用的 SkillVersion。
+10. “发布到市场”从 Skill 详情管理面进入，当前只保存本地草稿，可编辑和继续保存；提交时明确显示“市场发布渠道暂未开放”，不得伪造审核中或已提交状态。
 11. “一键整理”只生成可检查报告，列出未使用、未激活、有问题和高上下文占用能力，不自动删除、停用或改变绑定。
 12. 保留“Skill 激活码”入口。当前点击后以现有主题样式显示“筹备中”，不创建虚假兑换、授权或联网流程。
 13. hover、focus、selected、disabled 与开关状态必须使用项目现有 surface/border/accent/error tokens；参考界面只锁定结构与交互，不照搬纯黑背景或荧光绿色。
 14. 能力中心页面、Radix Portal 弹窗、详情抽屉和遮罩必须共享 Shell 的 `page/surface/elevated/border/text/accent` 语义变量；浅色和深色主题均不得继续使用独立的浅绿色能力页色阶。Portal 内容必须显式继承同一能力变量作用域。
 15. Skill/MCP 详情抽屉使用稳定的 header、独立滚动正文和常驻 footer。标题、说明、状态、连接信息、工具清单与操作区分层清晰；按钮在常态、hover、disabled 和窄窗口换行时保持完整可见。
 16. Skill 编辑弹窗使用整数像素居中且入场结束后 `transform: none`，避免 Windows/Electron 中文落入长期合成层。名称、版本、描述、`SKILL.md` 与文件导入均有图标和完整字段样式；保存按钮常驻 footer，不依赖 hover 才出现。
-17. 远端 Skill 导入从“创建 Skill”菜单进入独立弹窗，覆盖 URL 输入、加载、成功、下载错误、内容错误和取消状态。成功后关闭弹窗、切换“我的 Skill”并打开已导入版本；失败时保留 URL 和弹窗上下文。
+17. “导入”使用 NewMax 480px 居中弹窗：顺序固定为文件/文件夹选择、Skill 图标、Skill 名称、Skill 描述和安装位置，footer 固定为取消/导入。支持文件夹、ZIP 和拖放；名称与描述由用户填写，不根据 `SKILL.md` 自动回填。图标支持 Emoji 或本地图片，本地图片裁切压缩为 `128 × 128` JPEG。安装位置为带勾选状态的多选弹层，可同时选择全局与多个工作区；默认选择当前工作区，没有当前工作区时选择全局。名称、描述和图标是独立展示元数据，导入与后续编辑均不得重写实体 `SKILL.md`。
 18. AI 自动登记的远端 MCP 在详情抽屉显示“鉴权未配置”与“配置 Key”。配置弹窗预填并锁定名称、Transport 和 Endpoint；已保存 Key 在配置弹窗中通过 uncontrolled input 回填，默认以密码形式显示并支持眼睛按钮切换明文。为满足回显要求，Key 以 App Setting 明文保存并随 MCP 摘要进入 Renderer；能力列表不直接绘制 Key，事件、日志与诊断导出必须继续排除 Key。
+19. “我的 Skill”严格按 NewMax 顺序呈现：五区统计、工作区范围、来源/状态筛选与整理/排序、高密度表格。表格列固定为 `SKILL / 安装位置 / 已激活工作区 / 45 天触发 / 最后触发 / 操作 / 启用`；名称行内显示扫描状态、版本和描述，操作固定为使用、编辑展示元数据、共享三个图标。编辑使用 400px 居中弹窗，不进入实体源码编辑流程。
 
 ### 12.13 多 Pane、标签拖拽与文件工作台规则（2026-08-11）
 
@@ -617,12 +618,12 @@ hover/focus/active：focus 必须可见；hover 可有 1–2px 层级变化，�
 5. **命令**：`goal.pause` / `goal.resume`（恢复即续轮）；事件随 goal 状态变化。
 6. **目标卡 UI**（GoalCapsule 升级）：常驻胶囊 + hover 卡——状态徽标（进行中转圈 / 暂停 ⏸ / 受阻警告 / 达成 ✓）、objective、轮次进度 `第 N/上限 轮`、按钮（暂停/恢复、编辑=唤起 /goal 输入、清除）、最近评估/受阻原因。
 
-**本地 Skill 发现**（能力中心「本地」tab）：
+**本地 Skill 发现与导入**（对齐 NewMax 目录库）：
 
-7. **约定目录**：`<home>/.sync-think/skills`（递归扫描 `SKILL.md`/`skill.md`，深度 ≤4、文件 ≤500、忽略 node_modules/.git/dist 等）。frontmatter 解析 name/description + 指令首行摘要。
-8. **watch**：runtime 启动时监听约定目录（recursive，变更 debounce 300ms）→ 自动重扫并发 `skill.local_changed` 事件；UI 30s 轮询 + 手动刷新兜底。
-9. **命令**：`skill.local.scan`（返回候选列表 + 已导入标记 + 目录/watch 状态）、`skill.local.import {path}`（路径须在约定目录内；读文件 → 复用 parseSkillMd + finishSkillImport，originType=local、originRef=文件路径）。
-10. **UI（能力中心 skills 第三 tab「本地」）**：目录横幅（路径 + 自动监听/目录不存在提示）、候选卡片（名称、描述、指令摘要、路径 + 大小、已导入徽标）、搜索过滤（名称/描述/指令/路径全字段）、导入按钮（导入后自动刷新候选与「我的 Skill」）。
+7. **来源顺序**：当前/其他已绑定工作区的 `<workspace>/.claude/skills` → Claude 设置中明确启用且存在本地缓存的插件 `<home>/.claude/plugins/cache/<marketplace>/<plugin>/<version>/skills` → SYNC-THINK 全局库 `<home>/.sync-think/skills` → 用户级 `<home>/.claude/skills`。插件 ID 使用 `plugin@marketplace`，用户、项目和本地设置按作用域合并，后者的显式 `false` 可覆盖前者的 `true`。每个直接或嵌套 Skill 以包含 `SKILL.md` 的目录为单位识别，忽略 `_disabled`、node_modules、`.git`、dist 等；junction/重叠来源按真实文件路径去重。
+8. **自动登记与 watch**：runtime 启动和 `skill.local.scan` 时把有效本地 Skill 登记为不可变 SkillVersion；工作区来源以及项目/本地作用域启用的插件来源同步建立对应工作区激活关系。相同名称但内容发生变化时创建新版本；同一真实目录被多个工作区引用时合并来源并保留全部工作区 ID。所有存在的来源目录使用 recursive watch（debounce 300ms），UI 30s 重扫兜底并刷新“我的 Skill”。
+9. **命令**：`skill.local.inspect {path}` 检查文件夹、`SKILL.md` 或 ZIP 并返回一个或多个 Skill 元数据；`skill.local.scan` 返回候选、来源、已导入与 watch 状态；`skill.local.import {path, scope, overwrite?}` 安装到全局库或目标工作区。导入弹窗的名称、描述和图标属于独立显示元数据，不改写原始 `SKILL.md`。
+10. **完整目录安装**：导入必须复制 Skill 根目录的全部内容，保留 `scripts/`、`assets/`、`references/` 与模板文件，不能只把 `SKILL.md` 文本写入数据库。根级 `SKILL.md` 的 ZIP 使用 ZIP 文件名作为安装目录；只有一个顶层包装目录时使用该目录名；`skills/<name>/SKILL.md` 包按 `<name>` 分别安装。多 Skill 包逐目录安装；同一请求可选择全局和多个工作区，Renderer 按目标位置逐项调用并汇总结果。同名目录先返回冲突清单，用户确认后对全部已选位置以 overwrite 重试；部分失败时保留弹窗和输入。安装成功后登记 SkillVersion，工作区安装立即激活，并刷新“我的 Skill”。
 
 ### 12.22 执行活动可见性与停滞分级（2026-08-17 用户确认）
 

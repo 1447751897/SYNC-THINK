@@ -165,6 +165,7 @@ export type CommandType =
   | 'desktop.command.cancel'
   | 'skill.import'
   | 'skill.importRemote'
+  | 'skill.local.inspect'
   | 'skill.local.scan'
   | 'skill.local.import'
   | 'skill.list'
@@ -1996,11 +1997,25 @@ export interface ImportRemoteSkillResponse extends ImportSkillResponse {
   fetchedBytes: number;
 }
 
-// --- 本地 Skill 发现（约定目录 ~/.sync-think/skills 扫描 + watch） ---
+// --- 本地 Skill 发现与目录安装（对齐 NewMax 的 Skill library 语义） ---
+
+export type LocalSkillSourceType = 'global' | 'workspace' | 'plugin' | 'user';
+
+export interface LocalSkillSourceSummary {
+  /** Skill 根目录绝对路径。 */
+  directory: string;
+  type: LocalSkillSourceType;
+  label: string;
+  workspaceId?: string;
+  exists: boolean;
+  watching: boolean;
+}
 
 export interface LocalSkillCandidate {
   /** 文件绝对路径。 */
   path: string;
+  /** 包含 SKILL.md 及 scripts/assets 的完整 Skill 文件夹。 */
+  skillDirectory: string;
   /** SKILL.md 所在目录名（skill 名候选）。 */
   folderName: string;
   /** frontmatter 解析的 name（若有）。 */
@@ -2014,6 +2029,11 @@ export interface LocalSkillCandidate {
   skillId?: string;
   sizeBytes: number;
   modifiedAt: string;
+  sourceType?: LocalSkillSourceType;
+  sourceLabel?: string;
+  workspaceId?: string;
+  /** 同一物理 Skill 由多个工作区插件配置启用时的全部工作区。 */
+  workspaceIds?: string[];
 }
 
 export interface SkillLocalScanPayload {
@@ -2022,22 +2042,59 @@ export interface SkillLocalScanPayload {
 }
 
 export interface SkillLocalScanResponse {
-  /** 约定目录路径。 */
+  /** SYNC-THINK 全局 Skill 库路径（兼容旧客户端）。 */
   directory: string;
   candidates: LocalSkillCandidate[];
-  /** 目录是否存在。 */
+  /** 全局 Skill 库是否存在（兼容旧客户端）。 */
   exists: boolean;
-  /** watch 是否生效。 */
+  /** 任一来源 watch 是否生效（兼容旧客户端）。 */
   watching: boolean;
+  sources: LocalSkillSourceSummary[];
 }
+
+export interface SkillLocalInspectPayload {
+  /** 用户选择的 Skill 文件夹、SKILL.md 或 ZIP 文件。 */
+  path: string;
+}
+
+export interface SkillLocalInspectItem {
+  folderName: string;
+  name: string;
+  description: string;
+  skillDirectory: string;
+  skillMdPath: string;
+  hasScripts: boolean;
+}
+
+export interface SkillLocalInspectResponse {
+  sourcePath: string;
+  sourceType: 'folder' | 'file' | 'zip';
+  skills: SkillLocalInspectItem[];
+}
+
+export type SkillLocalInstallScope =
+  { type: 'global' } | { type: 'workspace'; workspaceId: string };
 
 export interface SkillLocalImportPayload {
-  /** 候选文件绝对路径（须位于约定目录内）。 */
+  /** 用户选择的 Skill 文件夹、SKILL.md 或 ZIP 文件。 */
   path: string;
+  scope?: SkillLocalInstallScope;
+  overwrite?: boolean;
 }
 
-export interface SkillLocalImportResponse extends ImportSkillResponse {
+export interface SkillLocalImportResponse {
+  /** 第一个导入结果，保留旧调用方读取方式。 */
+  skill?: SkillVersionSummary;
+  deduped?: boolean;
+  permissionDiff?: SkillPermissionDiffSummary;
+  reapprovalRequest?: ApprovalRequestSummary;
   path: string;
+  sourcePath: string;
+  installedPaths: string[];
+  skillNames: string[];
+  imports: ImportSkillResponse[];
+  conflictNames: string[];
+  scope: SkillLocalInstallScope;
 }
 
 export interface ListSkillsPayload {

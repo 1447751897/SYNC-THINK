@@ -37,6 +37,7 @@ import type {
   UpdateScheduledTaskPayload,
   DeleteScheduledTaskPayload,
   TriggerScheduledTaskPayload,
+  SkillLocalInspectPayload,
   SkillLocalScanPayload,
   SkillLocalImportPayload,
   SetConversationPinnedPayload,
@@ -813,10 +814,33 @@ export function parseSkillLocalScanPayload(value: unknown): SkillLocalScanPayloa
   };
 }
 
+export function parseSkillLocalInspectPayload(value: unknown): SkillLocalInspectPayload {
+  const label = 'Invalid skill-local-inspect payload';
+  if (!isRecord(value)) throw new Error(label);
+  return { path: requiredString(value.path, label) };
+}
+
 export function parseSkillLocalImportPayload(value: unknown): SkillLocalImportPayload {
   const label = 'Invalid skill-local-import payload';
   if (!isRecord(value)) throw new Error(label);
-  return { path: requiredString(value.path, label) };
+  let scope: SkillLocalImportPayload['scope'];
+  if (isRecord(value.scope)) {
+    if (value.scope.type === 'global') {
+      scope = { type: 'global' };
+    } else if (value.scope.type === 'workspace') {
+      scope = {
+        type: 'workspace',
+        workspaceId: requiredString(value.scope.workspaceId, label),
+      };
+    } else {
+      throw new Error(label);
+    }
+  }
+  return {
+    path: requiredString(value.path, label),
+    ...(scope ? { scope } : {}),
+    ...(typeof value.overwrite === 'boolean' ? { overwrite: value.overwrite } : {}),
+  };
 }
 
 export function parseConversationDecideToolApprovalPayload(

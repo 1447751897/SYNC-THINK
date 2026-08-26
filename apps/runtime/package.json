@@ -22,6 +22,7 @@
     "@sync-think/storage": "workspace:*",
     "@sync-think/workers": "workspace:*",
     "croner": "^10.0.1",
+    "extract-zip": "^2.0.1",
     "zod": "^3.25.76"
   },
   "devDependencies": {

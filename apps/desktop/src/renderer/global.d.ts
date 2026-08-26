@@ -531,6 +531,9 @@ declare global {
         skillLocalScan(
           payload?: import('@sync-think/protocol').SkillLocalScanPayload,
         ): Promise<import('@sync-think/protocol').SkillLocalScanResponse>;
+        skillLocalInspect(
+          payload: import('@sync-think/protocol').SkillLocalInspectPayload,
+        ): Promise<import('@sync-think/protocol').SkillLocalInspectResponse>;
         skillLocalImport(
           payload: import('@sync-think/protocol').SkillLocalImportPayload,
         ): Promise<import('@sync-think/protocol').SkillLocalImportResponse>;
@@ -697,6 +700,8 @@ declare global {
         pickFolder(payload?: {
           title?: string;
         }): Promise<{ canceled: boolean; path: string | null }>;
+        pickSkillZip(): Promise<{ canceled: boolean; path: string | null }>;
+        pathForFile(file: File): string;
         /** Push the renderer theme preference onto the native frame/title bar. */
         setTheme(theme: 'light' | 'dark' | 'system'): Promise<{ dark: boolean }>;
         listProjectFiles(payload: { root: string; query?: string; maxEntries?: number }): Promise<{

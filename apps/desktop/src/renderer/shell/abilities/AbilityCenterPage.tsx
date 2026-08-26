@@ -1,6 +1,7 @@
 import * as Dialog from '@radix-ui/react-dialog';
 import {
   AlertTriangle,
+  ArrowLeft,
   ArrowRight,
   BadgeCheck,
   BookOpen,
@@ -21,6 +22,7 @@ import {
   Link2,
   Loader2,
   PackageOpen,
+  Play,
   Plug,
   Plus,
   RefreshCw,
@@ -37,7 +39,16 @@ import {
   EyeOff,
   X,
 } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type DragEvent,
+  type ReactNode,
+} from 'react';
 import { useDialog } from '../Dialog.js';
 import type {
   CapabilityGovernanceListResponse,
@@ -47,6 +58,9 @@ import type {
   GovernedSkillSummary,
   ImportSkillResponse,
   McpServerSummary,
+  SkillLocalImportPayload,
+  SkillLocalInspectItem,
+  SkillLocalInstallScope,
   SkillPublishDraftSummary,
   SkillVersionSummary,
   WorkspaceSummary,
@@ -87,7 +101,31 @@ type SkillEditorState = {
   source: string;
 };
 
+type SkillMetadataEditorState = {
+  skillName: string;
+  displayName: string;
+  description: string;
+  icon: string;
+};
+
 type McpRegistrationPreset = McpMarketItem | McpServerSummary;
+
+type LocalSkillInstallRequest = {
+  path: string;
+  scopes: SkillLocalInstallScope[];
+  name: string;
+  description: string;
+  icon?: string;
+};
+
+type LocalSkillDisplayMetadata = {
+  displayName?: string;
+  description?: string;
+  icon?: string;
+};
+
+const LOCAL_SKILL_METADATA_KEY = 'sync-think.skill-metadata.v1';
+const SKILL_ICON_EMOJIS = ['✨', '🧰', '🧠', '📝', '🔎', '⚙️', '📊', '🎨', '🚀', '🛡️'];
 
 function runtimeBridge() {
   return window.syncThink?.runtime;
@@ -106,6 +144,80 @@ function capabilityErrorMessage(cause: unknown, fallback: string): string {
     .replace(/^RuntimeResponseError:\s*/i, '')
     .trim();
   return cleaned || fallback;
+}
+
+function localSkillScopeKey(scope: SkillLocalInstallScope): string {
+  return scope.type === 'global' ? 'global' : `workspace:${scope.workspaceId}`;
+}
+
+function portableBasename(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
+}
+
+function readLocalSkillMetadata(): Record<string, LocalSkillDisplayMetadata> {
+  try {
+    const stored = window.localStorage.getItem(LOCAL_SKILL_METADATA_KEY);
+    if (!stored) return {};
+    const parsed: unknown = JSON.parse(stored);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, LocalSkillDisplayMetadata>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function persistLocalSkillMetadata(
+  skillNames: readonly string[],
+  metadata: LocalSkillDisplayMetadata,
+): Record<string, LocalSkillDisplayMetadata> {
+  const current = readLocalSkillMetadata();
+  if (skillNames.length !== 1) return current;
+  try {
+    current[skillNames[0]!] = metadata;
+    window.localStorage.setItem(LOCAL_SKILL_METADATA_KEY, JSON.stringify(current));
+  } catch {
+    // Metadata is optional; a blocked localStorage must not roll back the Skill install.
+  }
+  return current;
+}
+
+function resizeSkillIcon(file: File, size = 128, maxChars = 10_000): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('图标文件读取失败'));
+    reader.onload = () => {
+      if (typeof reader.result !== 'string') {
+        reject(new Error('图标文件读取失败'));
+        return;
+      }
+      const image = new Image();
+      image.onerror = () => reject(new Error('图标图片格式无效'));
+      image.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = size;
+        canvas.height = size;
+        const context = canvas.getContext('2d');
+        if (!context) {
+          reject(new Error('图标处理不可用'));
+          return;
+        }
+        const scale = Math.max(size / image.width, size / image.height);
+        const width = image.width * scale;
+        const height = image.height * scale;
+        context.drawImage(image, (size - width) / 2, (size - height) / 2, width, height);
+        let quality = 0.8;
+        let dataUrl = canvas.toDataURL('image/jpeg', quality);
+        while (dataUrl.length > maxChars && quality > 0.1) {
+          quality -= 0.1;
+          dataUrl = canvas.toDataURL('image/jpeg', quality);
+        }
+        resolve(dataUrl);
+      };
+      image.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
 }
 
 function defaultUsage(
@@ -147,18 +259,20 @@ export function AbilitiesPage(props: {
   onCatalogChanged?(): void;
 }): JSX.Element {
   const dialog = useDialog();
-  const workspaces = props.workspaces ?? [];
+  const workspaces = useMemo(() => props.workspaces ?? [], [props.workspaces]);
+  const onCatalogChanged = props.onCatalogChanged;
   const fallbackWorkspaceId =
     props.activeWorkspaceId ?? workspaces[0]?.workspaceId ?? 'default-workspace';
   const [section, setSection] = useState<AbilitySection>('skills');
   const [tab, setTab] = useState<CatalogTab>('market');
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState(fallbackWorkspaceId);
+  const [selectedSkillScope, setSelectedSkillScope] = useState('global');
   const [skills, setSkills] = useState<SkillVersionSummary[]>([]);
   const [servers, setServers] = useState<McpServerSummary[]>([]);
-  const [localCandidates, setLocalCandidates] = useState<import('@sync-think/protocol').LocalSkillCandidate[]>([]);
-  const [localDirectory, setLocalDirectory] = useState('');
-  const [localWatching, setLocalWatching] = useState(false);
-  const [localExists, setLocalExists] = useState(true);
+  const [localCandidates, setLocalCandidates] = useState<
+    import('@sync-think/protocol').LocalSkillCandidate[]
+  >([]);
+  const [localSkillMetadata, setLocalSkillMetadata] = useState(readLocalSkillMetadata);
   const [governance, setGovernance] = useState<CapabilityGovernanceListResponse>();
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string>();
@@ -174,6 +288,8 @@ export function AbilitiesPage(props: {
   const [detailMarketSkillId, setDetailMarketSkillId] = useState<string>();
   const [detailMarketMcpId, setDetailMarketMcpId] = useState<string>();
   const [skillEditor, setSkillEditor] = useState<SkillEditorState>();
+  const [skillMetadataEditor, setSkillMetadataEditor] = useState<SkillMetadataEditorState>();
+  const [localSkillImportOpen, setLocalSkillImportOpen] = useState(false);
   const [remoteSkillImportOpen, setRemoteSkillImportOpen] = useState(false);
   const [registerMcpItem, setRegisterMcpItem] = useState<McpRegistrationPreset | null>();
   const [sourceSkill, setSourceSkill] = useState<SkillVersionSummary>();
@@ -227,13 +343,11 @@ export function AbilitiesPage(props: {
     try {
       const res = await api.skillLocalScan({ refresh: true });
       setLocalCandidates(res.candidates);
-      setLocalDirectory(res.directory);
-      setLocalWatching(res.watching);
-      setLocalExists(res.exists);
+      await loadCatalog();
     } catch {
       // 扫描失败保持现状。
     }
-  }, []);
+  }, [loadCatalog]);
 
   useEffect(() => {
     void loadLocalSkills();
@@ -242,19 +356,125 @@ export function AbilitiesPage(props: {
   }, [loadLocalSkills]);
 
   const importLocalSkill = useCallback(
-    async (path: string) => {
+    async (request: LocalSkillInstallRequest): Promise<boolean> => {
       const api = runtimeBridge();
-      if (!api?.skillLocalImport) return;
+      if (!api?.skillLocalImport || busyId) return false;
+      setBusyId('skill-local-import');
+      setError(undefined);
       try {
-        await api.skillLocalImport({ path });
+        const scopeLabel = (scope: SkillLocalInstallScope): string =>
+          scope.type === 'global'
+            ? '全局'
+            : (workspaces.find((workspace) => workspace.workspaceId === scope.workspaceId)?.name ??
+              scope.workspaceId);
+        const runInstall = async (overwrite: boolean) => {
+          const successes: Awaited<ReturnType<typeof api.skillLocalImport>>[] = [];
+          const failures: Array<{ label: string; message: string }> = [];
+          const conflicts = new Set<string>();
+          for (const scope of request.scopes) {
+            const payload: SkillLocalImportPayload = {
+              path: request.path,
+              scope,
+              ...(overwrite ? { overwrite: true } : {}),
+            };
+            try {
+              const result = await api.skillLocalImport(payload);
+              if (result.conflictNames.length > 0) {
+                for (const name of result.conflictNames) conflicts.add(name);
+              } else if (result.imports.length > 0) {
+                successes.push(result);
+              } else {
+                failures.push({ label: scopeLabel(scope), message: '没有生成可用的 Skill' });
+              }
+            } catch (cause) {
+              failures.push({
+                label: scopeLabel(scope),
+                message: capabilityErrorMessage(cause, '导入失败'),
+              });
+            }
+          }
+          return { successes, failures, conflicts: [...conflicts] };
+        };
+
+        let outcome = await runInstall(false);
+        if (outcome.conflicts.length > 0) {
+          const confirmed = await dialog.confirm({
+            title: '覆盖已有 Skill',
+            message: `以下 Skill 已存在：${outcome.conflicts.join('、')}。是否覆盖对应文件夹？`,
+            confirmText: '覆盖并导入',
+            danger: true,
+          });
+          if (!confirmed) return false;
+          outcome = await runInstall(true);
+        }
+        if (outcome.successes.length === 0) {
+          const detail = outcome.failures
+            .map((failure) => `${failure.label}：${failure.message}`)
+            .join('；');
+          throw new Error(detail || '导入完成，但没有生成可用的 Skill');
+        }
+
+        const skillNames = [...new Set(outcome.successes.flatMap((result) => result.skillNames))];
+        setLocalSkillMetadata(
+          persistLocalSkillMetadata(skillNames, {
+            displayName: request.name.trim(),
+            ...(request.description.trim() ? { description: request.description.trim() } : {}),
+            ...(request.icon ? { icon: request.icon } : {}),
+          }),
+        );
         await loadLocalSkills();
-        await loadCatalog();
+        onCatalogChanged?.();
+        const locationSuffix =
+          outcome.successes.length > 1 ? `，共 ${outcome.successes.length} 个位置` : '';
+        setMessage(
+          skillNames.length === 1
+            ? `已导入 Skill：${skillNames[0]}${locationSuffix}`
+            : `已导入 ${skillNames.length} 个 Skill${locationSuffix}`,
+        );
+        setTab('mine');
+        if (outcome.failures.length > 0) {
+          setError(
+            `部分位置导入失败：${outcome.failures
+              .map((failure) => `${failure.label}：${failure.message}`)
+              .join('；')}`,
+          );
+          return false;
+        }
+        setLocalSkillImportOpen(false);
+        return true;
       } catch (cause) {
-        setError(cause instanceof Error ? cause.message : String(cause));
+        setError(capabilityErrorMessage(cause, '导入 Skill 失败'));
+        return false;
+      } finally {
+        setBusyId(undefined);
       }
     },
-    [loadCatalog, loadLocalSkills],
+    [busyId, dialog, loadLocalSkills, onCatalogChanged, workspaces],
   );
+
+  const editLocalSkillMetadata = useCallback(
+    (skill: SkillVersionSummary) => {
+      const metadata = localSkillMetadata[skill.name];
+      setSkillMetadataEditor({
+        skillName: skill.name,
+        displayName: metadata?.displayName?.trim() || skill.name,
+        description: metadata?.description?.trim() || skill.description,
+        icon: metadata?.icon ?? '',
+      });
+    },
+    [localSkillMetadata],
+  );
+
+  const saveLocalSkillMetadata = useCallback((state: SkillMetadataEditorState) => {
+    setLocalSkillMetadata(
+      persistLocalSkillMetadata([state.skillName], {
+        ...(state.displayName.trim() ? { displayName: state.displayName.trim() } : {}),
+        ...(state.description.trim() ? { description: state.description.trim() } : {}),
+        ...(state.icon ? { icon: state.icon } : {}),
+      }),
+    );
+    setSkillMetadataEditor(undefined);
+  }, []);
 
   const families = useMemo(() => groupSkillVersions(skills), [skills]);
   const skillGovernanceRows = governance?.skills ?? fallbackSkillRows(skills);
@@ -646,20 +866,168 @@ export function AbilitiesPage(props: {
     setError(undefined);
   };
 
+  if (section === 'skills') {
+    return (
+      <main className="ability-hub" data-testid="abilities-page">
+        <NewMaxSkillHub
+          tab={tab === 'market' ? 'market' : 'mine'}
+          query={query}
+          category={skillCategory}
+          statusFilter={statusFilter}
+          sourceFilter={sourceFilter}
+          families={families}
+          governanceMap={skillGovernanceMap}
+          localCandidates={localCandidates}
+          localMetadata={localSkillMetadata}
+          loading={loading}
+          loadError={loadError}
+          message={message}
+          error={error}
+          workspaces={workspaces}
+          selectedScope={selectedSkillScope}
+          workspaceName={workspaceName}
+          busyId={busyId}
+          createMenuOpen={createMenuOpen}
+          onBack={props.onGoToAgents}
+          onOpenMcp={() => setSection('mcp')}
+          onTabChange={setTab}
+          onQueryChange={setQuery}
+          onCategoryChange={setSkillCategory}
+          onStatusFilterChange={setStatusFilter}
+          onSourceFilterChange={setSourceFilter}
+          onScopeChange={(scope) => {
+            setSelectedSkillScope(scope);
+            if (scope !== 'global') setSelectedWorkspaceId(scope);
+          }}
+          onToggleCreateMenu={() => setCreateMenuOpen((open) => !open)}
+          onActivationCode={() => {
+            setMessage('Skill 激活码渠道筹备中');
+            setError(undefined);
+          }}
+          onImport={() => {
+            setCreateMenuOpen(false);
+            setError(undefined);
+            setLocalSkillImportOpen(true);
+          }}
+          onCreate={() => void openSkillEditor()}
+          onReload={() => void loadCatalog()}
+          onCloseNotice={closeNotices}
+          onOpenMarket={setDetailMarketSkillId}
+          onOpenSkill={setDetailSkillVersionId}
+          onUseSkill={() => props.onGoToAgents()}
+          onEditMetadata={editLocalSkillMetadata}
+          onPublishSkill={(skill) => setPublishSkillVersionId(skill.skillVersionId)}
+          onInstallMarket={(item) => void installMarketSkill(item)}
+          onGlobalEnabled={(skill, enabled) => void setSkillGlobalEnabled(skill, enabled)}
+          onWorkspaceActive={(skill, active) =>
+            void setWorkspaceActive('skill', skill.skillVersionId, active)
+          }
+          onOrganize={() => void previewOrganize()}
+        />
+
+        <SkillDetailDrawer
+          skill={selectedSkill}
+          displayMetadata={selectedSkill ? localSkillMetadata[selectedSkill.name] : undefined}
+          marketItem={selectedMarketSkill}
+          governance={
+            selectedSkill ? skillGovernanceMap.get(selectedSkill.skillVersionId) : undefined
+          }
+          workspaceName={workspaceName}
+          open={Boolean(selectedSkill || selectedMarketSkill)}
+          busy={Boolean(busyId)}
+          onOpenChange={(open) => {
+            if (!open) {
+              setDetailSkillVersionId(undefined);
+              setDetailMarketSkillId(undefined);
+            }
+          }}
+          onInstall={(item) => void installMarketSkill(item)}
+          onEdit={(skill) => void openSkillEditor(skill)}
+          onViewSource={setSourceSkill}
+          onPublish={(skill) => setPublishSkillVersionId(skill.skillVersionId)}
+          onDelete={(skill) => void deleteSkill(skill)}
+          onGoToAgents={props.onGoToAgents}
+        />
+
+        <SkillEditorDialog
+          state={skillEditor}
+          saving={busyId === 'skill-editor'}
+          error={skillEditor ? error : undefined}
+          onOpenChange={(open) => {
+            if (!open) setSkillEditor(undefined);
+          }}
+          onSubmit={(source) => void saveSkillEditor(source)}
+        />
+
+        <NewMaxSkillImportDialog
+          open={localSkillImportOpen}
+          loading={busyId === 'skill-local-import'}
+          error={localSkillImportOpen ? error : undefined}
+          workspaces={workspaces}
+          selectedWorkspaceId={selectedWorkspaceId}
+          onOpenChange={(open) => {
+            if (!open && busyId !== 'skill-local-import') {
+              setLocalSkillImportOpen(false);
+              setError(undefined);
+            }
+          }}
+          onSubmit={importLocalSkill}
+        />
+
+        <NewMaxSkillMetadataDialog
+          state={skillMetadataEditor}
+          onOpenChange={(open) => {
+            if (!open) setSkillMetadataEditor(undefined);
+          }}
+          onSave={saveLocalSkillMetadata}
+        />
+
+        <SkillSourceDialog
+          skill={sourceSkill}
+          onOpenChange={(open) => {
+            if (!open) setSourceSkill(undefined);
+          }}
+        />
+
+        <SkillPublishDialog
+          open={publishSkillVersionId !== undefined}
+          skillVersionId={publishSkillVersionId}
+          families={families}
+          onSkillVersionChange={setPublishSkillVersionId}
+          onOpenChange={(open) => {
+            if (!open) setPublishSkillVersionId(undefined);
+          }}
+          onMessage={(value) => {
+            setMessage(value);
+            setError(undefined);
+          }}
+          onError={(value) => {
+            setError(value);
+            setMessage(undefined);
+          }}
+        />
+
+        <OrganizeReportDialog
+          report={organizeReport}
+          capabilityNames={new Map(skills.map((skill) => [skill.skillVersionId, skill.name]))}
+          onOpenChange={(open) => {
+            if (!open) setOrganizeReport(undefined);
+          }}
+        />
+      </main>
+    );
+  }
+
   return (
     <main className="capability-center" data-testid="abilities-page">
       <header className="capability-center__header">
         <div className="capability-center__heading">
           <span className="capability-center__heading-icon">
-            {section === 'skills' ? <Sparkles size={16} /> : <Plug size={16} />}
+            <Plug size={16} />
           </span>
           <div>
-            <h1>{section === 'skills' ? 'Skill 管理' : 'MCP 管理'}</h1>
-            <p>
-              {section === 'skills'
-                ? '管理可复用指令、工作区激活和智能体装备'
-                : '管理全局外部工具服务，注册后启用即生效'}
-            </p>
+            <h1>MCP 管理</h1>
+            <p>管理全局外部工具服务，注册后启用即生效</p>
           </div>
         </div>
 
@@ -667,8 +1035,7 @@ export function AbilitiesPage(props: {
           <button
             type="button"
             role="tab"
-            aria-selected={section === 'skills'}
-            className={section === 'skills' ? 'is-active' : undefined}
+            aria-selected={false}
             onClick={() => setSection('skills')}
           >
             <Sparkles size={13} />
@@ -678,8 +1045,8 @@ export function AbilitiesPage(props: {
             type="button"
             role="tab"
             data-testid="abilities-section-mcp"
-            aria-selected={section === 'mcp'}
-            className={section === 'mcp' ? 'is-active' : undefined}
+            aria-selected
+            className="is-active"
             onClick={() => setSection('mcp')}
           >
             <Plug size={13} />
@@ -688,7 +1055,7 @@ export function AbilitiesPage(props: {
         </div>
 
         <HeaderActions
-          section={section}
+          section="mcp"
           createMenuOpen={createMenuOpen}
           hasSkills={families.length > 0}
           onActivationCode={() => {
@@ -718,41 +1085,28 @@ export function AbilitiesPage(props: {
             className={tab === 'market' ? 'is-active' : undefined}
             onClick={() => setTab('market')}
           >
-            {section === 'skills' ? 'Skill 市场' : 'MCP 市场'}
-            <span>{section === 'skills' ? SKILL_MARKET.length : MCP_MARKET.length}</span>
+            MCP 市场
+            <span>{MCP_MARKET.length}</span>
           </button>
           <button
             type="button"
             role="tab"
-            data-testid={section === 'skills' ? 'skill-tab-mine' : 'mcp-tab-mine'}
+            data-testid="mcp-tab-mine"
             aria-selected={tab === 'mine'}
             className={tab === 'mine' ? 'is-active' : undefined}
             onClick={() => setTab('mine')}
           >
-            {section === 'skills' ? '我的 Skill' : '我的 MCP'}
-            <span>{section === 'skills' ? families.length : servers.length}</span>
+            我的 MCP
+            <span>{servers.length}</span>
           </button>
-          {section === 'skills' ? (
-            <button
-              type="button"
-              role="tab"
-              data-testid="skill-tab-local"
-              aria-selected={tab === 'local'}
-              className={tab === 'local' ? 'is-active' : undefined}
-              onClick={() => setTab('local')}
-            >
-              本地
-              <span>{localCandidates.length}</span>
-            </button>
-          ) : null}
         </div>
         <label className="capability-center__search">
           <Search size={14} />
           <input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder={`搜索 ${section === 'skills' ? 'Skill' : 'MCP'}...`}
-            aria-label={`搜索 ${section === 'skills' ? 'Skill' : 'MCP'}`}
+            placeholder="搜索 MCP..."
+            aria-label="搜索 MCP"
           />
           {query ? (
             <button type="button" aria-label="清除搜索" onClick={() => setQuery('')}>
@@ -774,64 +1128,28 @@ export function AbilitiesPage(props: {
         <StatusBanner kind="error" title={error} onClose={closeNotices} />
       ) : null}
 
-      {section === 'skills' ? (
-        <SkillSurface
-          tab={tab}
-          query={query}
-          category={skillCategory}
-          statusFilter={statusFilter}
-          sourceFilter={sourceFilter}
-          families={families}
-          governanceMap={skillGovernanceMap}
-          loading={loading}
-          workspaces={workspaces}
-          selectedWorkspaceId={selectedWorkspaceId}
-          workspaceName={workspaceName}
-          busyId={busyId}
-          onCategoryChange={setSkillCategory}
-          onStatusFilterChange={setStatusFilter}
-          onSourceFilterChange={setSourceFilter}
-          onWorkspaceChange={setSelectedWorkspaceId}
-          onOpenMarket={setDetailMarketSkillId}
-          onOpenSkill={setDetailSkillVersionId}
-          onInstallMarket={(item) => void installMarketSkill(item)}
-          onCreate={() => void openSkillEditor()}
-          onGlobalEnabled={(skill, enabled) => void setSkillGlobalEnabled(skill, enabled)}
-          onWorkspaceActive={(skill, active) =>
-            void setWorkspaceActive('skill', skill.skillVersionId, active)
-          }
-          onDelete={(skill) => void deleteSkill(skill)}
-          onOrganize={() => void previewOrganize()}
-          localCandidates={localCandidates}
-          localDirectory={localDirectory}
-          localWatching={localWatching}
-          localExists={localExists}
-          onLocalImport={(path) => void importLocalSkill(path)}
-        />
-      ) : (
-        <McpSurface
-          tab={tab}
-          query={query}
-          category={mcpCategory}
-          statusFilter={statusFilter}
-          servers={servers}
-          governanceMap={mcpGovernanceMap}
-          loading={loading}
-          workspaces={workspaces}
-          selectedWorkspaceId={selectedWorkspaceId}
-          workspaceName={workspaceName}
-          busyId={busyId}
-          onCategoryChange={setMcpCategory}
-          onStatusFilterChange={setStatusFilter}
-          onWorkspaceChange={setSelectedWorkspaceId}
-          onOpenMarket={setDetailMarketMcpId}
-          onOpenServer={setDetailMcpServerId}
-          onRegister={setRegisterMcpItem}
-          onGlobalEnabled={(server, enabled) => void setMcpGlobalEnabled(server, enabled)}
-          onRefresh={(server) => void refreshMcpTools(server)}
-          onOrganize={() => void previewOrganize()}
-        />
-      )}
+      <McpSurface
+        tab={tab}
+        query={query}
+        category={mcpCategory}
+        statusFilter={statusFilter}
+        servers={servers}
+        governanceMap={mcpGovernanceMap}
+        loading={loading}
+        workspaces={workspaces}
+        selectedWorkspaceId={selectedWorkspaceId}
+        workspaceName={workspaceName}
+        busyId={busyId}
+        onCategoryChange={setMcpCategory}
+        onStatusFilterChange={setStatusFilter}
+        onWorkspaceChange={setSelectedWorkspaceId}
+        onOpenMarket={setDetailMarketMcpId}
+        onOpenServer={setDetailMcpServerId}
+        onRegister={setRegisterMcpItem}
+        onGlobalEnabled={(server, enabled) => void setMcpGlobalEnabled(server, enabled)}
+        onRefresh={(server) => void refreshMcpTools(server)}
+        onOrganize={() => void previewOrganize()}
+      />
 
       <SkillDetailDrawer
         skill={selectedSkill}
@@ -954,6 +1272,653 @@ export function AbilitiesPage(props: {
   );
 }
 
+function NewMaxSkillHub(props: {
+  tab: 'market' | 'mine';
+  query: string;
+  category: (typeof SKILL_CATEGORIES)[number];
+  statusFilter: StatusFilter;
+  sourceFilter: SourceFilter;
+  families: SkillFamily[];
+  governanceMap: Map<string, GovernedSkillSummary>;
+  localCandidates: import('@sync-think/protocol').LocalSkillCandidate[];
+  localMetadata: Record<string, LocalSkillDisplayMetadata>;
+  loading: boolean;
+  loadError?: string;
+  message?: string;
+  error?: string;
+  workspaces: WorkspaceSummary[];
+  selectedScope: string;
+  workspaceName: string;
+  busyId?: string;
+  createMenuOpen: boolean;
+  onBack(): void;
+  onOpenMcp(): void;
+  onTabChange(tab: CatalogTab): void;
+  onQueryChange(value: string): void;
+  onCategoryChange(value: (typeof SKILL_CATEGORIES)[number]): void;
+  onStatusFilterChange(value: StatusFilter): void;
+  onSourceFilterChange(value: SourceFilter): void;
+  onScopeChange(value: string): void;
+  onToggleCreateMenu(): void;
+  onActivationCode(): void;
+  onImport(): void;
+  onCreate(): void;
+  onReload(): void;
+  onCloseNotice(): void;
+  onOpenMarket(id: string): void;
+  onOpenSkill(id: string): void;
+  onUseSkill(skill: SkillVersionSummary): void;
+  onEditMetadata(skill: SkillVersionSummary): void;
+  onPublishSkill(skill: SkillVersionSummary): void;
+  onInstallMarket(item: SkillMarketItem): void;
+  onGlobalEnabled(skill: SkillVersionSummary, enabled: boolean): void;
+  onWorkspaceActive(skill: SkillVersionSummary, active: boolean): void;
+  onOrganize(): void;
+}): JSX.Element {
+  const [sortMode, setSortMode] = useState<'triggers' | 'updated' | 'name'>('triggers');
+  const [sortMenuOpen, setSortMenuOpen] = useState(false);
+  const needle = props.query.trim().toLocaleLowerCase();
+  const marketItems = SKILL_MARKET.filter((item) => {
+    const categoryMatches = props.category === '全部' || item.category === props.category;
+    const searchMatches =
+      !needle ||
+      [item.name, item.slug, item.category, item.description]
+        .join('\n')
+        .toLocaleLowerCase()
+        .includes(needle);
+    return categoryMatches && searchMatches;
+  });
+  const rows = props.families.map((family) => {
+    const skill = family.latest;
+    const governance = props.governanceMap.get(skill.skillVersionId);
+    const metadata = props.localMetadata[skill.name];
+    return {
+      family,
+      skill,
+      display: {
+        name: metadata?.displayName?.trim() || skill.name,
+        description: metadata?.description?.trim() || skill.description,
+      },
+      usage: governance?.usage ?? defaultUsage('skill', skill.skillVersionId),
+      workspaceActive: governance?.workspaceActive ?? false,
+    };
+  });
+  const filteredRows = rows.filter(({ skill, display, usage, workspaceActive }) => {
+    const enabled = skill.enabled !== false;
+    const origin = skill.originType ?? 'local';
+    const searchMatches =
+      !needle ||
+      [
+        display.name,
+        display.description,
+        skill.name,
+        skill.skillId,
+        skill.version,
+        skill.originRef ?? '',
+      ]
+        .join('\n')
+        .toLocaleLowerCase()
+        .includes(needle);
+    const sourceMatches = props.sourceFilter === 'all' || origin === props.sourceFilter;
+    const statusMatches =
+      props.statusFilter === 'all' ||
+      (props.statusFilter === 'active' && usage.callCount > 0 && workspaceActive) ||
+      (props.statusFilter === 'enabled' && enabled) ||
+      (props.statusFilter === 'inactive' && !enabled) ||
+      (props.statusFilter === 'unused' && usage.callCount === 0) ||
+      (props.statusFilter === 'problem' &&
+        (usage.problemCount > 0 || skill.hasScripts || skill.warnings.length > 0));
+    return searchMatches && sourceMatches && statusMatches;
+  });
+  const visibleRows = [...filteredRows].sort((left, right) => {
+    if (sortMode === 'name') return left.display.name.localeCompare(right.display.name, 'zh-CN');
+    if (sortMode === 'updated') {
+      return Date.parse(right.skill.createdAt) - Date.parse(left.skill.createdAt);
+    }
+    return (
+      right.usage.callCount - left.usage.callCount ||
+      Date.parse(right.skill.createdAt) - Date.parse(left.skill.createdAt)
+    );
+  });
+  const recentCount = rows.filter((row) => row.usage.callCount > 0).length;
+  const unusedCount = rows.filter((row) => row.usage.callCount === 0).length;
+  const problemCount = rows.filter(
+    (row) => row.usage.problemCount > 0 || row.skill.hasScripts || row.skill.warnings.length > 0,
+  ).length;
+  const contextTokens = rows.reduce((sum, row) => sum + row.usage.contextTokens, 0);
+  const sourceCounts: Record<SourceFilter, number> = {
+    all: rows.length,
+    market: rows.filter((row) => row.skill.originType === 'market').length,
+    local: rows.filter((row) => (row.skill.originType ?? 'local') === 'local').length,
+    derived: rows.filter((row) => row.skill.originType === 'derived').length,
+  };
+  const statusCounts: Record<Exclude<StatusFilter, 'problem'>, number> = {
+    all: rows.length,
+    active: rows.filter((row) => row.usage.callCount > 0 && row.workspaceActive).length,
+    enabled: rows.filter((row) => row.skill.enabled !== false).length,
+    inactive: rows.filter((row) => row.skill.enabled === false).length,
+    unused: unusedCount,
+  };
+
+  const locationOf = (skill: SkillVersionSummary): string => {
+    if (skill.originType === 'market') return '市场安装';
+    if (skill.originType === 'derived') return '共享';
+    const path = skill.originRef?.toLocaleLowerCase();
+    const candidate = props.localCandidates.find(
+      (entry) =>
+        entry.path.toLocaleLowerCase() === path || (entry.name ?? entry.folderName) === skill.name,
+    );
+    return candidate?.sourceLabel ?? '~/.sync-think/skills';
+  };
+
+  return (
+    <>
+      <header className="ability-hub__topbar">
+        <div className="ability-hub__title-block">
+          <button
+            type="button"
+            className="ability-hub__back"
+            aria-label="返回"
+            title="返回"
+            onClick={props.onBack}
+          >
+            <ArrowLeft size={17} />
+          </button>
+          <h1>Skill 管理</h1>
+          <button
+            type="button"
+            data-testid="abilities-section-mcp"
+            className="ability-hub__mcp-shortcut"
+            aria-label="MCP 管理"
+            title="MCP 管理"
+            onClick={props.onOpenMcp}
+          >
+            <Plug size={14} />
+          </button>
+        </div>
+        <div className="ability-hub__actions">
+          <button
+            type="button"
+            className="ability-hub__activation-action"
+            onClick={props.onActivationCode}
+          >
+            <KeyRound size={14} />
+            Skill 激活码
+          </button>
+          <div className="newmax-skill-create">
+            <button
+              type="button"
+              data-testid="open-skill-import"
+              className="ability-hub__create-action"
+              aria-expanded={props.createMenuOpen}
+              onClick={props.onToggleCreateMenu}
+            >
+              <Plus size={14} />
+              创建 Skill
+              <ChevronDown size={13} />
+            </button>
+            {props.createMenuOpen ? (
+              <div className="newmax-skill-create__menu" role="menu">
+                <button type="button" role="menuitem" onClick={props.onImport}>
+                  <Upload size={15} />
+                  导入
+                </button>
+                <button type="button" role="menuitem" onClick={props.onCreate}>
+                  <WandSparkles size={15} />
+                  创建 Skill
+                </button>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      </header>
+
+      <div className="ability-hub__body">
+        <section className="ability-hub__controls">
+          <div className="ability-hub__catalog-tabs" role="tablist" aria-label="Skill 目录">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={props.tab === 'market'}
+              className={props.tab === 'market' ? 'is-active' : undefined}
+              onClick={() => props.onTabChange('market')}
+            >
+              Skill 市场 <span>{SKILL_MARKET.length}</span>
+            </button>
+            <button
+              type="button"
+              role="tab"
+              data-testid="skill-tab-mine"
+              aria-selected={props.tab === 'mine'}
+              className={props.tab === 'mine' ? 'is-active' : undefined}
+              onClick={() => props.onTabChange('mine')}
+            >
+              我的 Skill <span>{props.families.length}</span>
+            </button>
+          </div>
+          <label className="ability-hub__search">
+            <Search size={14} />
+            <input
+              value={props.query}
+              onChange={(event) => props.onQueryChange(event.target.value)}
+              placeholder="搜索 Skill"
+              aria-label="搜索 Skill"
+            />
+            {props.query ? (
+              <button type="button" aria-label="清除搜索" onClick={() => props.onQueryChange('')}>
+                <X size={12} />
+              </button>
+            ) : null}
+          </label>
+        </section>
+
+        {props.loadError ? (
+          <div className="ability-status is-error" role="alert">
+            <AlertTriangle size={14} />
+            <div>
+              <strong>能力库加载失败</strong>
+              <span>{props.loadError}</span>
+            </div>
+            <button type="button" onClick={props.onReload}>
+              重新加载
+            </button>
+          </div>
+        ) : props.message ? (
+          <div className="ability-status is-success" role="status">
+            <CheckCircle2 size={14} />
+            <div>
+              <strong>{props.message}</strong>
+            </div>
+            <button type="button" aria-label="关闭提示" onClick={props.onCloseNotice}>
+              <X size={12} />
+            </button>
+          </div>
+        ) : props.error ? (
+          <div className="ability-status is-error" role="alert">
+            <AlertTriangle size={14} />
+            <div>
+              <strong>{props.error}</strong>
+            </div>
+            <button type="button" aria-label="关闭错误" onClick={props.onCloseNotice}>
+              <X size={12} />
+            </button>
+          </div>
+        ) : null}
+
+        {props.tab === 'market' ? (
+          <>
+            <div className="ability-hub__category-row">
+              {SKILL_CATEGORIES.map((category) => (
+                <button
+                  key={category}
+                  type="button"
+                  className={props.category === category ? 'is-active' : undefined}
+                  onClick={() => props.onCategoryChange(category)}
+                >
+                  {category}
+                </button>
+              ))}
+            </div>
+            <div className="ability-hub__scroll">
+              <div className="ability-hub__market-grid">
+                {marketItems.map((item) => {
+                  const installed = marketSkillInstalled(item, props.families);
+                  const busy = props.busyId === `market-skill:${item.id}`;
+                  return (
+                    <article key={item.id} className="ability-market-card">
+                      <button
+                        type="button"
+                        className="ability-market-card__main"
+                        onClick={() =>
+                          installed
+                            ? props.onOpenSkill(installed.skillVersionId)
+                            : props.onOpenMarket(item.id)
+                        }
+                      >
+                        <span className="ability-market-card__icon">
+                          <PackageOpen size={23} />
+                        </span>
+                        <span className="ability-market-card__copy">
+                          <span className="ability-market-card__title">
+                            <strong>{item.name}</strong>
+                            {installed ? <em>已安装</em> : null}
+                          </span>
+                          <span className="ability-market-card__description">
+                            {item.description}
+                          </span>
+                        </span>
+                      </button>
+                      <footer className="ability-market-card__footer">
+                        <span>官方 · {item.category}</span>
+                        <div>
+                          {installed ? (
+                            <button
+                              type="button"
+                              className="is-link"
+                              onClick={() => props.onOpenSkill(installed.skillVersionId)}
+                            >
+                              管理 <ArrowRight size={11} />
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              className="is-use"
+                              disabled={Boolean(props.busyId)}
+                              onClick={() => props.onInstallMarket(item)}
+                            >
+                              {busy ? (
+                                <Loader2 className="animate-spin" size={11} />
+                              ) : (
+                                <Plus size={11} />
+                              )}
+                              {busy ? '安装中' : '安装'}
+                            </button>
+                          )}
+                        </div>
+                      </footer>
+                    </article>
+                  );
+                })}
+              </div>
+              {marketItems.length === 0 ? <EmptyState title="没有匹配的 Skill" compact /> : null}
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="ability-hub__stats">
+              <NewMaxStat value={rows.length} label="全部 skills" note="库 + 插件 + 项目级" />
+              <NewMaxStat value={recentCount} label="近期活跃" note="近期有触发记录" />
+              <NewMaxStat value={unusedCount} label="在吃灰" note="近期未触发" />
+              <NewMaxStat
+                value={problemCount}
+                label="有问题"
+                note="截断 / 缺描述 / 残留"
+                warning={problemCount > 0}
+              />
+              <div
+                className={`ability-stat ability-stat--context${contextTokens > CONTEXT_BUDGET_TOKENS ? ' is-warning' : ''}`}
+              >
+                <div>
+                  <span>常驻上下文占用</span>
+                  <strong>
+                    {contextTokens > CONTEXT_BUDGET_TOKENS
+                      ? `≈ 超限 ${(contextTokens / CONTEXT_BUDGET_TOKENS).toFixed(1)}×`
+                      : '正常'}
+                  </strong>
+                </div>
+                <span className="ability-stat__meter">
+                  <i
+                    style={{
+                      width: `${Math.min(100, (contextTokens / CONTEXT_BUDGET_TOKENS) * 100)}%`,
+                    }}
+                  />
+                </span>
+                <p>
+                  {formatTokens(contextTokens)} 字符 / 建议上限约{' '}
+                  {formatTokens(CONTEXT_BUDGET_TOKENS)}（估算）
+                </p>
+              </div>
+            </div>
+            <div className="ability-hub__workspace-row" aria-label="工作区范围">
+              <button
+                type="button"
+                className={`ability-hub__scope-pill${props.selectedScope === 'global' ? ' is-active' : ''}`}
+                onClick={() => props.onScopeChange('global')}
+              >
+                <Folder size={11} />
+                全局
+              </button>
+              {props.workspaces.slice(0, 4).map((workspace) => (
+                <button
+                  key={workspace.workspaceId}
+                  type="button"
+                  className={`ability-hub__scope-pill${
+                    workspace.workspaceId === props.selectedScope ? ' is-active' : ''
+                  }`}
+                  onClick={() => props.onScopeChange(workspace.workspaceId)}
+                >
+                  <Folder size={11} />
+                  {workspace.name}
+                </button>
+              ))}
+              {props.workspaces.length > 4 ? (
+                <span className="ability-hub__scope-more">+{props.workspaces.length - 4}</span>
+              ) : null}
+            </div>
+            <div className="ability-hub__filter-row">
+              <div className="ability-hub__security-filter" aria-label="来源筛选">
+                {(
+                  [
+                    ['all', '全部来源'],
+                    ['market', '市场安装'],
+                    ['local', '本地安装'],
+                    ['derived', '共享'],
+                  ] as const
+                ).map(([value, label]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    className={props.sourceFilter === value ? 'is-active' : undefined}
+                    onClick={() => props.onSourceFilterChange(value)}
+                  >
+                    {label}
+                    {sourceCounts[value] > 0 ? <small>{sourceCounts[value]}</small> : null}
+                  </button>
+                ))}
+              </div>
+              <div className="ability-hub__security-filter" aria-label="状态筛选">
+                {(
+                  [
+                    ['all', '全部状态'],
+                    ['active', '活跃'],
+                    ['enabled', '已启用'],
+                    ['inactive', '未启用'],
+                    ['unused', '未触发'],
+                  ] as const
+                ).map(([value, label]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    className={props.statusFilter === value ? 'is-active' : undefined}
+                    onClick={() => props.onStatusFilterChange(value)}
+                  >
+                    {label}
+                    {statusCounts[value] > 0 ? <small>{statusCounts[value]}</small> : null}
+                  </button>
+                ))}
+              </div>
+              <button
+                type="button"
+                className="ability-hub__organize"
+                disabled={Boolean(props.busyId)}
+                onClick={props.onOrganize}
+              >
+                {props.busyId === 'organize' ? (
+                  <Loader2 className="animate-spin" size={13} />
+                ) : (
+                  <WandSparkles size={13} />
+                )}
+                一键整理
+              </button>
+              <div className="ability-hub__sort-wrap">
+                <button
+                  type="button"
+                  className="ability-hub__sort"
+                  aria-haspopup="menu"
+                  aria-expanded={sortMenuOpen}
+                  onClick={() => setSortMenuOpen((open) => !open)}
+                >
+                  {sortMode === 'triggers'
+                    ? '按触发次数'
+                    : sortMode === 'updated'
+                      ? '最近更新'
+                      : '按名称'}{' '}
+                  <ChevronDown size={12} />
+                </button>
+                {sortMenuOpen ? (
+                  <div className="ability-hub__sort-menu" role="menu">
+                    {(
+                      [
+                        ['triggers', '按触发次数'],
+                        ['updated', '最近更新'],
+                        ['name', '按名称'],
+                      ] as const
+                    ).map(([value, label]) => (
+                      <button
+                        key={value}
+                        type="button"
+                        role="menuitemradio"
+                        aria-checked={sortMode === value}
+                        onClick={() => {
+                          setSortMode(value);
+                          setSortMenuOpen(false);
+                        }}
+                      >
+                        {label}
+                        {sortMode === value ? <Check size={11} /> : null}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            </div>
+            <div className="ability-hub__scroll ability-hub__scroll--installed">
+              {props.loading ? (
+                <LoadingState label="正在读取 Skill..." />
+              ) : rows.length === 0 ? (
+                <div className="ability-hub__empty-library">
+                  <span>
+                    <Sparkles size={20} />
+                  </span>
+                  <h2>还没有 Skill</h2>
+                  <p>从 Skill 市场安装，或导入本地 Skill 文件夹与 ZIP。</p>
+                  <button type="button" onClick={props.onImport}>
+                    <Upload size={13} />
+                    导入 Skill
+                  </button>
+                </div>
+              ) : visibleRows.length === 0 ? (
+                <EmptyState title="没有匹配的已安装 Skill" compact />
+              ) : (
+                <div className="ability-installed-list" role="table" aria-label="Skill 列表">
+                  <div className="ability-installed-list__header" role="row">
+                    <span>SKILL</span>
+                    <span>安装位置</span>
+                    <span>已激活工作区</span>
+                    <span>45 天触发</span>
+                    <span>最后触发</span>
+                    <span>操作</span>
+                    <span>启用</span>
+                  </div>
+                  {visibleRows.map(({ family, skill, display, usage, workspaceActive }) => {
+                    const issue =
+                      usage.problemCount > 0 || skill.hasScripts || skill.warnings.length > 0;
+                    return (
+                      <article key={family.skillId} className="ability-installed-row" role="row">
+                        <button
+                          type="button"
+                          className="ability-installed-row__identity"
+                          onClick={() => props.onOpenSkill(skill.skillVersionId)}
+                        >
+                          <span className="ability-installed-row__copy">
+                            <span className="ability-installed-row__name">
+                              <strong>{display.name}</strong>
+                              <em className={issue ? 'is-warning' : 'is-healthy'}>
+                                {issue
+                                  ? `${usage.problemCount || skill.warnings.length} 个问题`
+                                  : '已扫描'}
+                              </em>
+                              <small>v{skill.version}</small>
+                            </span>
+                            <small>{display.description || '未提供说明'}</small>
+                          </span>
+                        </button>
+                        <span className="ability-installed-row__location">{locationOf(skill)}</span>
+                        <button
+                          type="button"
+                          data-testid={`skill-workspace-activation-${skill.skillVersionId}`}
+                          className={`ability-installed-row__workspace${workspaceActive ? ' is-active' : ''}`}
+                          disabled={Boolean(props.busyId) || skill.enabled === false}
+                          onClick={() => props.onWorkspaceActive(skill, !workspaceActive)}
+                        >
+                          {workspaceActive ? props.workspaceName : '未激活'}
+                        </button>
+                        <strong className="ability-installed-row__metric">
+                          {usage.callCount.toLocaleString('zh-CN')}
+                        </strong>
+                        <span className="ability-installed-row__date">
+                          {formatRelativeDate(usage.lastUsedAt)}
+                        </span>
+                        <div className="ability-installed-row__actions">
+                          <button
+                            type="button"
+                            title="使用"
+                            aria-label={`使用 ${display.name}`}
+                            onClick={() => props.onUseSkill(skill)}
+                          >
+                            <Play size={13} />
+                          </button>
+                          <button
+                            type="button"
+                            title="编辑"
+                            aria-label={`编辑 ${display.name}`}
+                            onClick={() => props.onEditMetadata(skill)}
+                          >
+                            <Edit3 size={13} />
+                          </button>
+                          {skill.originType !== 'market' ? (
+                            <button
+                              type="button"
+                              title="共享"
+                              aria-label={`共享 ${display.name}`}
+                              onClick={() => props.onPublishSkill(skill)}
+                            >
+                              <Upload size={13} />
+                            </button>
+                          ) : null}
+                        </div>
+                        <button
+                          type="button"
+                          className="ability-enable-switch"
+                          role="switch"
+                          aria-checked={skill.enabled !== false}
+                          aria-label={`${skill.enabled === false ? '启用' : '停用'} ${display.name}`}
+                          data-enabled={skill.enabled !== false ? '1' : '0'}
+                          disabled={Boolean(props.busyId)}
+                          onClick={() => props.onGlobalEnabled(skill, skill.enabled === false)}
+                        >
+                          <span />
+                        </button>
+                      </article>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </>
+        )}
+      </div>
+    </>
+  );
+}
+
+function NewMaxStat(props: {
+  value: number | string;
+  label: string;
+  note: string;
+  warning?: boolean;
+}): JSX.Element {
+  return (
+    <div className={`ability-stat${props.warning ? ' is-warning' : ''}`}>
+      <div>
+        <strong>{props.value}</strong>
+        <span>{props.label}</span>
+      </div>
+      <p>{props.note}</p>
+    </div>
+  );
+}
+
 function HeaderActions(props: {
   section: AbilitySection;
   createMenuOpen: boolean;
@@ -1033,7 +1998,7 @@ function HeaderActions(props: {
   );
 }
 
-function SkillSurface(props: {
+export function SkillSurface(props: {
   tab: CatalogTab;
   query: string;
   category: (typeof SKILL_CATEGORIES)[number];
@@ -1068,7 +2033,12 @@ function SkillSurface(props: {
   if (props.tab === 'local') {
     const visible = props.localCandidates.filter((candidate) => {
       if (!needle) return true;
-      return [candidate.name ?? candidate.folderName, candidate.description ?? '', candidate.summary ?? '', candidate.path]
+      return [
+        candidate.name ?? candidate.folderName,
+        candidate.description ?? '',
+        candidate.summary ?? '',
+        candidate.path,
+      ]
         .join('\n')
         .toLocaleLowerCase()
         .includes(needle);
@@ -1078,7 +2048,11 @@ function SkillSurface(props: {
         <div className="capability-local__banner">
           <span className="capability-local__banner-dot" aria-hidden="true" />
           本地 Skill 目录：<code>{props.localDirectory}</code>
-          {props.localWatching ? '（自动监听中）' : props.localExists ? '（未监听）' : '（目录不存在，创建后自动发现）'}
+          {props.localWatching
+            ? '（自动监听中）'
+            : props.localExists
+              ? '（未监听）'
+              : '（目录不存在，创建后自动发现）'}
         </div>
         {visible.length === 0 ? (
           <div className="capability-center__empty">
@@ -1089,7 +2063,11 @@ function SkillSurface(props: {
         ) : (
           <div className="capability-local__list">
             {visible.map((candidate) => (
-              <div key={candidate.path} className="capability-local__card" data-imported={candidate.imported ? '1' : '0'}>
+              <div
+                key={candidate.path}
+                className="capability-local__card"
+                data-imported={candidate.imported ? '1' : '0'}
+              >
                 <div className="capability-local__card-main">
                   <div className="capability-local__card-title">
                     <span>{candidate.name ?? candidate.folderName}</span>
@@ -1972,6 +2950,7 @@ function EmptyState(props: {
 
 function SkillDetailDrawer(props: {
   skill?: SkillVersionSummary;
+  displayMetadata?: LocalSkillDisplayMetadata;
   marketItem?: SkillMarketItem;
   governance?: GovernedSkillSummary;
   workspaceName: string;
@@ -1987,8 +2966,13 @@ function SkillDetailDrawer(props: {
 }): JSX.Element {
   const skill = props.skill;
   const marketItem = props.marketItem;
-  const name = skill?.name ?? marketItem?.name ?? '';
-  const description = skill?.description ?? marketItem?.description ?? '';
+  const name = props.displayMetadata?.displayName?.trim() || skill?.name || marketItem?.name || '';
+  const description =
+    props.displayMetadata?.description?.trim() ||
+    skill?.description ||
+    marketItem?.description ||
+    '';
+  const icon = props.displayMetadata?.icon;
   const usage = props.governance?.usage;
   const issue = Boolean(
     skill && ((usage?.problemCount ?? 0) > 0 || skill.hasScripts || skill.warnings.length > 0),
@@ -2002,7 +2986,13 @@ function SkillDetailDrawer(props: {
           <header className="capability-drawer__header">
             <div className="capability-drawer__identity">
               <span className="capability-drawer__icon">
-                <PackageOpen size={20} />
+                {icon?.startsWith('data:') ? (
+                  <img src={icon} alt="" />
+                ) : icon ? (
+                  icon
+                ) : (
+                  <PackageOpen size={20} />
+                )}
               </span>
               <div>
                 <Dialog.Title>{name}</Dialog.Title>
@@ -2212,6 +3202,8 @@ function SkillDetailDrawer(props: {
                   <button
                     type="button"
                     className="capability-button is-danger"
+                    aria-label="删除 Skill"
+                    title="删除 Skill"
                     disabled={props.busy}
                     onClick={() => props.onDelete(skill)}
                   >
@@ -2503,6 +3495,585 @@ function DetailMetric(props: {
       <span>{props.label}</span>
       <strong>{props.value}</strong>
     </div>
+  );
+}
+
+function NewMaxSkillMetadataDialog(props: {
+  state?: SkillMetadataEditorState;
+  onOpenChange(open: boolean): void;
+  onSave(state: SkillMetadataEditorState): void;
+}): JSX.Element {
+  const [displayName, setDisplayName] = useState('');
+  const [description, setDescription] = useState('');
+  const [icon, setIcon] = useState('');
+  const [error, setError] = useState<string>();
+  const iconInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!props.state) return;
+    setDisplayName(props.state.displayName);
+    setDescription(props.state.description);
+    setIcon(props.state.icon);
+    setError(undefined);
+  }, [props.state]);
+
+  const handleIconFile = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      setIcon(await resizeSkillIcon(file));
+      setError(undefined);
+    } catch (cause) {
+      setError(capabilityErrorMessage(cause, '图标加载失败'));
+    } finally {
+      event.target.value = '';
+    }
+  };
+
+  const save = () => {
+    if (!props.state) return;
+    if (!displayName.trim()) {
+      setError('请填写 Skill 名称');
+      return;
+    }
+    props.onSave({
+      skillName: props.state.skillName,
+      displayName: displayName.trim(),
+      description: description.trim(),
+      icon,
+    });
+  };
+
+  return (
+    <Dialog.Root open={Boolean(props.state)} onOpenChange={props.onOpenChange}>
+      <Dialog.Portal>
+        <Dialog.Overlay className="newmax-import-overlay" />
+        <Dialog.Content className="newmax-metadata-dialog">
+          <header className="newmax-metadata-dialog__header">
+            <Dialog.Title>编辑 Skill</Dialog.Title>
+            <Dialog.Description className="sr-only">
+              编辑 Skill 的显示名称、描述与图标
+            </Dialog.Description>
+            <Dialog.Close asChild>
+              <button type="button" aria-label="关闭 Skill 信息编辑">
+                <X size={17} />
+              </button>
+            </Dialog.Close>
+          </header>
+          <div className="newmax-metadata-dialog__body">
+            <div className="newmax-metadata-dialog__icon-row">
+              <button
+                type="button"
+                className="newmax-metadata-dialog__icon"
+                aria-label="上传 Skill 图标"
+                onClick={() => iconInputRef.current?.click()}
+              >
+                {icon.startsWith('data:') ? (
+                  <img src={icon} alt="" />
+                ) : icon ? (
+                  icon
+                ) : (
+                  <Plus size={20} />
+                )}
+              </button>
+              <input
+                aria-label="Skill 图标"
+                value={icon.startsWith('data:') ? '' : icon}
+                placeholder="输入 emoji 或图标"
+                onChange={(event) => setIcon(event.target.value.slice(0, 16))}
+              />
+              <input
+                ref={iconInputRef}
+                type="file"
+                accept="image/*"
+                tabIndex={-1}
+                onChange={(event) => void handleIconFile(event)}
+              />
+            </div>
+            <input
+              aria-label="Skill 名称"
+              value={displayName}
+              placeholder="为你的 Skill 起个名字"
+              maxLength={160}
+              onChange={(event) => {
+                setDisplayName(event.target.value);
+                setError(undefined);
+              }}
+            />
+            <textarea
+              aria-label="Skill 描述"
+              value={description}
+              placeholder="简要描述这个 Skill 的功能和用途"
+              rows={3}
+              maxLength={200}
+              onChange={(event) => setDescription(event.target.value)}
+            />
+            {error ? (
+              <div className="newmax-import-error" role="alert">
+                <AlertTriangle size={14} />
+                {error}
+              </div>
+            ) : null}
+          </div>
+          <footer className="newmax-metadata-dialog__footer">
+            <Dialog.Close asChild>
+              <button type="button" className="is-cancel">
+                取消
+              </button>
+            </Dialog.Close>
+            <button type="button" className="is-primary" onClick={save}>
+              保存
+            </button>
+          </footer>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
+
+function NewMaxSkillImportDialog(props: {
+  open: boolean;
+  loading: boolean;
+  error?: string;
+  workspaces: WorkspaceSummary[];
+  selectedWorkspaceId: string;
+  onOpenChange(open: boolean): void;
+  onSubmit(payload: LocalSkillInstallRequest): Promise<boolean>;
+}): JSX.Element {
+  const availableWorkspaces = props.workspaces.filter((workspace) => Boolean(workspace.folderPath));
+  const defaultScopeKey = availableWorkspaces.some(
+    (workspace) => workspace.workspaceId === props.selectedWorkspaceId,
+  )
+    ? `workspace:${props.selectedWorkspaceId}`
+    : 'global';
+  const [sourcePath, setSourcePath] = useState('');
+  const [sourceType, setSourceType] = useState<'folder' | 'file' | 'zip'>();
+  const [skills, setSkills] = useState<SkillLocalInspectItem[]>([]);
+  const [name, setName] = useState('');
+  const [description, setDescription] = useState('');
+  const [icon, setIcon] = useState('');
+  const [scopes, setScopes] = useState<SkillLocalInstallScope[]>([]);
+  const [scopeOpen, setScopeOpen] = useState(false);
+  const [emojiOpen, setEmojiOpen] = useState(false);
+  const [dragActive, setDragActive] = useState(false);
+  const [inspecting, setInspecting] = useState(false);
+  const [localError, setLocalError] = useState<string>();
+  const imageInputRef = useRef<HTMLInputElement>(null);
+  const scopeFieldRef = useRef<HTMLDivElement>(null);
+  const emojiFieldRef = useRef<HTMLDivElement>(null);
+  const dragDepthRef = useRef(0);
+
+  useEffect(() => {
+    if (!props.open) return;
+    setSourcePath('');
+    setSourceType(undefined);
+    setSkills([]);
+    setName('');
+    setDescription('');
+    setIcon('');
+    setScopes(
+      defaultScopeKey === 'global'
+        ? [{ type: 'global' }]
+        : [
+            {
+              type: 'workspace',
+              workspaceId: defaultScopeKey.slice('workspace:'.length),
+            },
+          ],
+    );
+    setScopeOpen(false);
+    setEmojiOpen(false);
+    setDragActive(false);
+    setInspecting(false);
+    setLocalError(undefined);
+  }, [defaultScopeKey, props.open]);
+
+  useEffect(() => {
+    if (!scopeOpen && !emojiOpen) return;
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (scopeOpen && !scopeFieldRef.current?.contains(target)) setScopeOpen(false);
+      if (emojiOpen && !emojiFieldRef.current?.contains(target)) setEmojiOpen(false);
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    return () => document.removeEventListener('pointerdown', onPointerDown);
+  }, [emojiOpen, scopeOpen]);
+
+  const inspectPath = async (path: string) => {
+    const api = runtimeBridge();
+    if (!api?.skillLocalInspect) {
+      setLocalError('Runtime bridge 不支持本地 Skill 检查');
+      return;
+    }
+    setInspecting(true);
+    setLocalError(undefined);
+    try {
+      const result = await api.skillLocalInspect({ path });
+      setSourcePath(result.sourcePath);
+      setSourceType(result.sourceType);
+      setSkills(result.skills);
+    } catch (cause) {
+      setSourcePath('');
+      setSourceType(undefined);
+      setSkills([]);
+      setLocalError(capabilityErrorMessage(cause, '读取 Skill 失败'));
+    } finally {
+      setInspecting(false);
+    }
+  };
+
+  const pickFolder = async () => {
+    const result = await runtimeBridge()?.pickFolder({ title: '选择 Skill 文件夹' });
+    if (!result || result.canceled || !result.path) return;
+    await inspectPath(result.path);
+  };
+
+  const pickZip = async () => {
+    const result = await runtimeBridge()?.pickSkillZip();
+    if (!result || result.canceled || !result.path) return;
+    await inspectPath(result.path);
+  };
+
+  const handleDrop = (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    dragDepthRef.current = 0;
+    setDragActive(false);
+    const file = event.dataTransfer.files[0];
+    if (!file) return;
+    const path = runtimeBridge()?.pathForFile?.(file) ?? '';
+    if (!path) {
+      setLocalError('未能读取拖入项目的本地路径，请使用选择按钮');
+      return;
+    }
+    void inspectPath(path);
+  };
+
+  const handleIconChange = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      setIcon(await resizeSkillIcon(file));
+      setEmojiOpen(false);
+      setLocalError(undefined);
+    } catch (cause) {
+      setLocalError(capabilityErrorMessage(cause, '图标加载失败'));
+    } finally {
+      event.target.value = '';
+    }
+  };
+
+  const toggleScope = (next: SkillLocalInstallScope) => {
+    const key = localSkillScopeKey(next);
+    setScopes((current) =>
+      current.some((scope) => localSkillScopeKey(scope) === key)
+        ? current.filter((scope) => localSkillScopeKey(scope) !== key)
+        : [...current, next],
+    );
+    setLocalError(undefined);
+  };
+
+  const scopeLabel = (scope: SkillLocalInstallScope): string =>
+    scope.type === 'global'
+      ? '全局'
+      : (availableWorkspaces.find((workspace) => workspace.workspaceId === scope.workspaceId)
+          ?.name ?? scope.workspaceId);
+  const selectedName = sourcePath ? portableBasename(sourcePath) : '';
+
+  const submit = async () => {
+    if (!sourcePath || skills.length === 0) {
+      setLocalError('请先选择包含 SKILL.md 的文件夹或 ZIP 文件');
+      return;
+    }
+    if (!name.trim()) {
+      setLocalError('请填写 Skill 名称');
+      return;
+    }
+    if (scopes.length === 0) {
+      setLocalError('请选择安装位置');
+      return;
+    }
+    await props.onSubmit({
+      path: sourcePath,
+      scopes,
+      name: name.trim(),
+      description: description.trim(),
+      ...(icon ? { icon } : {}),
+    });
+  };
+
+  return (
+    <Dialog.Root open={props.open} onOpenChange={props.onOpenChange}>
+      <Dialog.Portal>
+        <Dialog.Overlay className="newmax-import-overlay" />
+        <Dialog.Content className="newmax-import-dialog">
+          <header className="newmax-import-dialog__header">
+            <Dialog.Title>导入 Skill</Dialog.Title>
+            <Dialog.Description className="sr-only">
+              从本地文件夹或 ZIP 文件导入完整 Skill 目录
+            </Dialog.Description>
+            <Dialog.Close asChild>
+              <button type="button" aria-label="关闭导入 Skill" disabled={props.loading}>
+                <X size={18} />
+              </button>
+            </Dialog.Close>
+          </header>
+
+          <div
+            className={`newmax-import-dialog__body${sourcePath ? ' has-source' : ''}${dragActive ? ' is-dragging' : ''}`}
+            onDragEnter={(event) => {
+              if (!Array.from(event.dataTransfer.types).includes('Files')) return;
+              event.preventDefault();
+              dragDepthRef.current += 1;
+              setDragActive(true);
+            }}
+            onDragOver={(event) => {
+              event.preventDefault();
+              event.dataTransfer.dropEffect = 'copy';
+            }}
+            onDragLeave={(event) => {
+              event.preventDefault();
+              dragDepthRef.current -= 1;
+              if (dragDepthRef.current <= 0) {
+                dragDepthRef.current = 0;
+                setDragActive(false);
+              }
+            }}
+            onDrop={handleDrop}
+          >
+            <section className="newmax-import-picker">
+              <div className="newmax-import-picker__label">
+                <strong>选择文件或文件夹</strong>
+                <span>可直接拖入文件夹或 ZIP · cmd+shift+. 显示隐藏的 .claude</span>
+              </div>
+              <div className="newmax-import-picker__buttons">
+                <button
+                  type="button"
+                  className={sourcePath && sourceType !== 'zip' ? 'is-selected' : undefined}
+                  title={sourcePath && sourceType !== 'zip' ? sourcePath : undefined}
+                  disabled={inspecting || props.loading}
+                  onClick={() => void pickFolder()}
+                >
+                  <Folder size={15} />
+                  <span>{sourcePath && sourceType !== 'zip' ? selectedName : '选择文件夹'}</span>
+                </button>
+                <button
+                  type="button"
+                  className={sourcePath && sourceType === 'zip' ? 'is-selected' : undefined}
+                  title={sourcePath && sourceType === 'zip' ? sourcePath : undefined}
+                  disabled={inspecting || props.loading}
+                  onClick={() => void pickZip()}
+                >
+                  <Upload size={15} />
+                  <span>{sourcePath && sourceType === 'zip' ? selectedName : '选择 ZIP 文件'}</span>
+                </button>
+              </div>
+              {inspecting ? (
+                <div className="newmax-import-picker__path">
+                  <Loader2 className="animate-spin" size={13} /> 正在检查 Skill...
+                </div>
+              ) : null}
+            </section>
+
+            <section className="newmax-import-icon-field">
+              <strong>Skill 图标</strong>
+              <div className="newmax-import-icon-field__control" ref={emojiFieldRef}>
+                <button
+                  type="button"
+                  className="newmax-import-icon-field__preview"
+                  aria-label="选择 Emoji 图标"
+                  aria-expanded={emojiOpen}
+                  onClick={() => setEmojiOpen((open) => !open)}
+                >
+                  {!icon ? (
+                    <Plus size={19} />
+                  ) : icon.startsWith('data:') ? (
+                    <img src={icon} alt="" />
+                  ) : (
+                    icon
+                  )}
+                </button>
+                {emojiOpen ? (
+                  <div className="newmax-import-emoji-menu" role="menu" aria-label="Emoji 图标">
+                    {SKILL_ICON_EMOJIS.map((emoji) => (
+                      <button
+                        key={emoji}
+                        type="button"
+                        role="menuitem"
+                        aria-label={`使用 ${emoji} 图标`}
+                        onClick={() => {
+                          setIcon(emoji);
+                          setEmojiOpen(false);
+                        }}
+                      >
+                        {emoji}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+                <span>
+                  选择 emoji 或{' '}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      imageInputRef.current?.click();
+                    }}
+                  >
+                    上传图片
+                  </button>{' '}
+                  <small>(128×128)</small>
+                </span>
+                {icon ? (
+                  <button
+                    type="button"
+                    className="newmax-import-icon-field__clear"
+                    aria-label="清除图标"
+                    title="清除图标"
+                    onClick={() => setIcon('')}
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                ) : null}
+                <input
+                  ref={imageInputRef}
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp,image/gif"
+                  tabIndex={-1}
+                  onChange={(event) => void handleIconChange(event)}
+                />
+              </div>
+            </section>
+
+            <label className="newmax-import-field">
+              <span>Skill 名称</span>
+              <input
+                value={name}
+                disabled={props.loading}
+                placeholder="为你的 Skill 起个名字"
+                maxLength={160}
+                onChange={(event) => {
+                  setName(event.target.value);
+                  setLocalError(undefined);
+                }}
+              />
+            </label>
+
+            <label className="newmax-import-field">
+              <span>Skill 描述</span>
+              <div className="newmax-import-field__textarea">
+                <textarea
+                  value={description}
+                  disabled={props.loading}
+                  placeholder="简要描述这个 Skill 的功能和用途"
+                  maxLength={200}
+                  rows={3}
+                  onChange={(event) => setDescription(event.target.value)}
+                />
+                <em>{description.length}/200</em>
+              </div>
+            </label>
+
+            <section className="newmax-import-field newmax-import-scope" ref={scopeFieldRef}>
+              <strong>安装位置</strong>
+              <button
+                type="button"
+                className="newmax-import-scope__trigger"
+                aria-haspopup="menu"
+                aria-expanded={scopeOpen}
+                disabled={props.loading}
+                onClick={() => setScopeOpen((open) => !open)}
+              >
+                <span>
+                  {scopes.length > 0
+                    ? scopes.map((scope) => scopeLabel(scope)).join('、')
+                    : '选择安装位置'}
+                </span>
+                <ChevronDown size={14} />
+              </button>
+              {scopeOpen ? (
+                <div className="newmax-import-scope__menu" role="menu" aria-label="安装位置">
+                  <button
+                    type="button"
+                    role="menuitemcheckbox"
+                    aria-checked={scopes.some((scope) => scope.type === 'global')}
+                    onClick={() => toggleScope({ type: 'global' })}
+                  >
+                    <span className="newmax-import-scope__check">
+                      {scopes.some((scope) => scope.type === 'global') ? <Check size={12} /> : null}
+                    </span>
+                    <span>
+                      <strong>全局</strong>
+                      <small>~/.sync-think/skills</small>
+                    </span>
+                  </button>
+                  {availableWorkspaces.map((workspace) => {
+                    const next: SkillLocalInstallScope = {
+                      type: 'workspace',
+                      workspaceId: workspace.workspaceId,
+                    };
+                    const checked = scopes.some(
+                      (scope) => localSkillScopeKey(scope) === localSkillScopeKey(next),
+                    );
+                    const root = workspace.folderPath?.replace(/[\\/]+$/, '') ?? '';
+                    return (
+                      <button
+                        key={workspace.workspaceId}
+                        type="button"
+                        role="menuitemcheckbox"
+                        aria-checked={checked}
+                        onClick={() => toggleScope(next)}
+                      >
+                        <span className="newmax-import-scope__check">
+                          {checked ? <Check size={12} /> : null}
+                        </span>
+                        <span>
+                          <strong>{workspace.name}</strong>
+                          <small>{root}\.claude\skills</small>
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : null}
+            </section>
+
+            {localError || props.error ? (
+              <div className="newmax-import-error" role="alert">
+                <AlertTriangle size={14} />
+                {localError ?? props.error}
+              </div>
+            ) : null}
+          </div>
+
+          <footer className="newmax-import-dialog__footer">
+            <Dialog.Close asChild>
+              <button type="button" className="is-cancel" disabled={props.loading}>
+                取消
+              </button>
+            </Dialog.Close>
+            <button
+              type="button"
+              data-testid="skill-local-import-submit"
+              className="is-primary"
+              disabled={props.loading || inspecting || scopes.length === 0}
+              onClick={() => void submit()}
+            >
+              {props.loading ? (
+                <Loader2 className="animate-spin" size={13} />
+              ) : (
+                <Upload size={13} />
+              )}
+              {props.loading ? '导入中' : '导入'}
+            </button>
+          </footer>
+          {dragActive ? (
+            <div className="newmax-import-drop-overlay" aria-hidden="true">
+              <Upload size={18} />
+              拖放到这里导入
+            </div>
+          ) : null}
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
   );
 }
 
