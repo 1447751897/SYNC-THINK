@@ -3,6 +3,7 @@ import {
   buildAttachmentGuidance,
   buildDescriptionSuffix,
   buildImageHandlingFailureSuffix,
+  buildImageToolGuidance,
   buildImageDescriptionPrompt,
   buildWindowsOcrSuffix,
   catalogEntryVisionCapable,
@@ -174,6 +175,26 @@ describe('parseVisionFallbackSetting', () => {
 });
 
 describe('prompt & suffix assembly', () => {
+  it('does not instruct a vision-capable model to use OCR or a fallback', () => {
+    expect(
+      buildImageToolGuidance({
+        visionCapable: true,
+        visionFallbackEnabled: true,
+        externalKernel: true,
+      }),
+    ).toEqual([]);
+  });
+
+  it('keeps image tools available only for text-only model workspace images', () => {
+    const guidance = buildImageToolGuidance({
+      visionCapable: false,
+      visionFallbackEnabled: true,
+      externalKernel: true,
+    }).join('\n');
+    expect(guidance).toContain('ocr_image');
+    expect(guidance).toContain('describe_image');
+  });
+
   it('builds an index-aware description prompt', () => {
     const prompt = buildImageDescriptionPrompt(
       { name: 'shot.png', mimeType: 'image/png', dataUrl: 'data:image/png;base64,xx' },

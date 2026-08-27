@@ -63,14 +63,14 @@ describe('WindowsDpapiBackend', () => {
   it.runIf(process.platform === 'win32')(
     'round-trips through Windows CurrentUser DPAPI without putting plaintext on argv',
     async () => {
-      const bridge = createPowerShellDpapiBridge({ timeoutMs: 10_000 });
+      const bridge = createPowerShellDpapiBridge({ timeoutMs: 30_000 });
       const plaintext = Buffer.from('sync-think-real-dpapi-probe', 'utf8');
       const ciphertext = await bridge.protect(plaintext);
 
       expect(ciphertext).not.toContain(plaintext.toString('base64'));
       await expect(bridge.unprotect(ciphertext)).resolves.toEqual(plaintext);
     },
-    20_000,
+    45_000,
   );
 });
 

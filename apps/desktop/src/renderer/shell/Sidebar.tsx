@@ -1,7 +1,7 @@
 // NewMax-style sidebar (shell constitution):
 // top actions · three tracks with real groups · bottom settings + account.
 // Collapsed = fully hidden (parent omits this component). Width is resizable.
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useDialog } from './Dialog.js';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import {
@@ -34,10 +34,7 @@ import {
 import clsx from 'clsx';
 import syncThinkLogo from './assets/sync-think-logo.png';
 import type { Conversation, ConversationTrack, GlobalAgent, Team } from '@sync-think/shared';
-import type {
-  ConversationGroupPreference,
-  ConversationGroupsByTrack,
-} from '../ui-preferences.js';
+import type { ConversationGroupPreference, ConversationGroupsByTrack } from '../ui-preferences.js';
 import {
   TRACK_LABELS,
   buildTrackTree,
@@ -104,6 +101,12 @@ export function Sidebar(props: SidebarProps) {
   const [searchFocused, setSearchFocused] = useState(false);
   const dialog = useDialog();
 
+  useEffect(() => {
+    const openSearch = () => setSearchFocused(true);
+    window.addEventListener('shell-open-conversation-search', openSearch);
+    return () => window.removeEventListener('shell-open-conversation-search', openSearch);
+  }, []);
+
   const resolveName = useMemo(
     () => (c: Conversation) =>
       targetName(c, props.agents, props.teams, props.modelNames, props.modelOverrides),
@@ -120,16 +123,19 @@ export function Sidebar(props: SidebarProps) {
     return { active: a, archived: ar };
   }, [props.conversations]);
 
-  const filterQ = useCallback((list: readonly Conversation[]) => {
-    const q = query.trim().toLowerCase();
-    if (!q) return [...list];
-    return list.filter((c) => {
-      const title = (c.title || '').toLowerCase();
-      const name = resolveName(c).toLowerCase();
-      const ref = (c.targetRef || '').toLowerCase();
-      return title.includes(q) || name.includes(q) || ref.includes(q);
-    });
-  }, [query, resolveName]);
+  const filterQ = useCallback(
+    (list: readonly Conversation[]) => {
+      const q = query.trim().toLowerCase();
+      if (!q) return [...list];
+      return list.filter((c) => {
+        const title = (c.title || '').toLowerCase();
+        const name = resolveName(c).toLowerCase();
+        const ref = (c.targetRef || '').toLowerCase();
+        return title.includes(q) || name.includes(q) || ref.includes(q);
+      });
+    },
+    [query, resolveName],
+  );
 
   const filteredActive = useMemo(() => filterQ(active), [active, filterQ]);
   const filteredArchived = useMemo(() => filterQ(archived), [archived, filterQ]);
@@ -170,467 +176,478 @@ export function Sidebar(props: SidebarProps) {
         {/* Panel 1 — brand + primary nav. Rendered directly on the sidebar board
             (no card, no hover frame). */}
         <div className="shrink-0 px-2 py-1.5">
-      {/* Header */}
-      <div className="flex h-10 shrink-0 items-center gap-2 px-1">
-        <img
-          src={syncThinkLogo}
-          alt="Sync-Think"
-          draggable={false}
-          className="sync-think-logo h-5 w-5 shrink-0 rounded-md object-contain"
-        />
-        <span className="flex-1 truncate text-[13px] font-semibold tracking-tight text-text">
-          Sync-Think
-        </span>
-        <button
-          data-testid="sidebar-toggle"
-          className="st-icon-motion flex h-7 w-7 items-center justify-center rounded-(--radius-row) text-text-faint hover:bg-hover hover:text-text"
-          title="收起侧栏 (Ctrl+B)"
-          onClick={props.onToggleSidebar}
-        >
-          <PanelLeftClose size={15} />
-        </button>
-      </div>
+          {/* Header */}
+          <div className="flex h-10 shrink-0 items-center gap-2 px-1">
+            <img
+              src={syncThinkLogo}
+              alt="Sync-Think"
+              draggable={false}
+              className="sync-think-logo h-5 w-5 shrink-0 rounded-md object-contain"
+            />
+            <span className="flex-1 truncate text-[13px] font-semibold tracking-tight text-text">
+              Sync-Think
+            </span>
+            <button
+              data-testid="sidebar-toggle"
+              className="st-icon-motion flex h-7 w-7 items-center justify-center rounded-(--radius-row) text-text-faint hover:bg-hover hover:text-text"
+              title="收起侧栏"
+              onClick={props.onToggleSidebar}
+            >
+              <PanelLeftClose size={15} />
+            </button>
+          </div>
 
-      {/* Top actions */}
-      <div className="flex shrink-0 flex-col gap-0.5">
-        <ActionRow
-          icon={<MessageSquarePlus size={15} />}
-          label="新建对话"
-          testId="nav-new-chat"
-          onClick={() => props.onNewConversation()}
-        />
-        <ActionRow
-          icon={<Search size={15} />}
-          label="搜索"
-          testId="nav-search"
-          placeholder
-          onClick={() => setSearchFocused(true)}
-        />
-        <ActionRow
-          icon={<CalendarClock size={15} />}
-          label="定时任务"
-          testId="nav-scheduled"
-          active={props.nav.stage === 'tasks'}
-          onClick={() => props.onSelectStage('tasks')}
-        />
-        <ActionRow
-          icon={<Activity size={15} />}
-          label="后台活动"
-          testId="nav-activity"
-          active={props.nav.stage === 'activity'}
-          onClick={() => props.onSelectStage('activity')}
-        />
-        <ActionRow
-          icon={<Globe size={15} />}
-          label="浏览器"
-          testId="nav-browser"
-          active={props.nav.stage === 'browser'}
-          onClick={() => props.onSelectStage('browser')}
-        />
-        <ActionRow
-          icon={<Bot size={15} />}
-          label="智能体"
-          testId="nav-agents"
-          active={props.nav.stage === 'agents'}
-          onClick={() => props.onSelectStage('agents')}
-        />
-        <ActionRow
-          icon={<Users size={15} />}
-          label="小队"
-          testId="nav-teams"
-          active={props.nav.stage === 'teams'}
-          onClick={() => props.onSelectStage('teams')}
-        />
-        <ActionRow
-          icon={<Wrench size={15} />}
-          label="能力"
-          testId="nav-abilities"
-          active={props.nav.stage === 'abilities'}
-          onClick={() => props.onSelectStage('abilities')}
-        />
-      </div>
-      </div>
-
-      {/* Panel 2 — conversation list (bright inner box on the dark board).
-          Height follows its content: expanding/collapsing a track or archive
-          grows/shrinks the box instead of it always filling the board. */}
-      <div className="flex min-h-0 flex-col rounded-(--radius-card) border border-border bg-recent px-2 pb-2 pt-1.5">
-
-      {/* Search field (shown when search action focused or query non-empty) */}
-      {(searchFocused || query) && (
-        <div className="relative shrink-0 py-1.5">
-          <Search
-            size={12}
-            className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-text-faint"
-          />
-          <input
-            data-testid="sidebar-search"
-            type="search"
-            autoFocus={searchFocused}
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onBlur={() => {
-              if (!query) setSearchFocused(false);
-            }}
-            placeholder="搜索对话…"
-            className="h-7 w-full rounded-(--radius-row) border border-border bg-page pl-7 pr-2 text-[12px] text-text placeholder:text-text-faint outline-none focus:border-accent/40"
-          />
-        </div>
-      )}
-
-      {/* Multi-select bulk bar */}
-      {props.multiSelect ? (
-        <div
-          data-testid="sidebar-multiselect-bar"
-          className="mb-1 flex shrink-0 flex-wrap items-center gap-1 rounded-(--radius-row) border border-border bg-surface px-2 py-1.5"
-        >
-          <span className="mr-1 text-[11px] text-text-secondary">
-            已选 {props.selectedIds.size}
-          </span>
-          <button
-            type="button"
-            className="st-row-motion h-6 rounded px-1.5 text-[11px] text-text-secondary hover:bg-hover"
-            onClick={props.onBulkArchive}
-            disabled={props.selectedIds.size === 0}
-          >
-            归档
-          </button>
-          <DropdownMenu.Root>
-            <DropdownMenu.Trigger asChild>
-              <button
-                type="button"
-                data-testid="sidebar-bulk-move"
-                className="st-row-motion h-6 rounded px-1.5 text-[11px] text-text-secondary hover:bg-hover"
-                disabled={props.selectedIds.size === 0}
-              >
-                移动到分组
-              </button>
-            </DropdownMenu.Trigger>
-            <DropdownMenu.Portal>
-              <DropdownMenu.Content
-                className="st-popover-in z-[300] min-w-[160px] rounded-(--radius-row) border border-border bg-overlay p-1 shadow-xl"
-                sideOffset={4}
-              >
-                {(Object.keys(props.groups) as ConversationTrack[]).map((track) => {
-                  const selectedInTrack = props.conversations.some(
-                    (conversation) =>
-                      conversation.track === track && props.selectedIds.has(conversation.id),
-                  );
-                  if (!selectedInTrack) return null;
-                  return (
-                    <div key={track}>
-                      <DropdownMenu.Item
-                        className="st-row-motion cursor-pointer rounded px-2 py-1.5 text-[12px] text-text-secondary outline-none hover:bg-hover focus:bg-hover"
-                        onSelect={() => props.onBulkMoveToGroup(track, null)}
-                      >
-                        {TRACK_LABELS[track]} · 移出分组
-                      </DropdownMenu.Item>
-                      {props.groups[track].map((group) => (
-                        <DropdownMenu.Item
-                          key={`${track}:${group.id}`}
-                          className="st-row-motion cursor-pointer rounded px-2 py-1.5 text-[12px] text-text-secondary outline-none hover:bg-hover focus:bg-hover"
-                          onSelect={() => props.onBulkMoveToGroup(track, group.id)}
-                        >
-                          {TRACK_LABELS[track]} · {group.name}
-                        </DropdownMenu.Item>
-                      ))}
-                    </div>
-                  );
-                })}
-              </DropdownMenu.Content>
-            </DropdownMenu.Portal>
-          </DropdownMenu.Root>
-          <button
-            type="button"
-            className="st-row-motion h-6 rounded px-1.5 text-[11px] text-error hover:bg-error/10"
-            onClick={props.onBulkDelete}
-            disabled={props.selectedIds.size === 0}
-          >
-            删除
-          </button>
-          <button
-            type="button"
-            className="st-row-motion ml-auto h-6 rounded px-1.5 text-[11px] text-text-faint hover:bg-hover"
-            onClick={props.onToggleMultiSelect}
-          >
-            取消
-          </button>
-        </div>
-      ) : null}
-
-      {/* Tracks */}
-      <div className="shell-scrollbar min-h-0 flex-1 overflow-y-auto">
-        <button
-          type="button"
-          data-testid="recent-section-toggle"
-          className="st-press-motion st-row-motion flex h-7 w-full cursor-pointer items-center gap-1 rounded-(--radius-row) px-1.5 text-left hover:bg-hover"
-          onClick={() => setRecentOpen((v) => !v)}
-        >
-          <ChevronRight size={13} className="st-chevron text-text-faint" data-open={recentOpen} />
-          <span className="flex-1 text-[13px] font-semibold tracking-wide text-text-faint">
-            最近对话
-          </span>
-        </button>
-
-        <div className={clsx('shell-collapse', recentOpen && 'shell-collapse--open')}>
-          <div className="shell-collapse__inner">
-        <div className="shell-tree-branch">
-          {(Object.keys(TRACK_LABELS) as ConversationTrack[]).map((track) => {
-          const TrackIcon = TRACK_ICONS[track];
-          const expanded = props.nav.expandedTracks[track];
-          const items = byTrack[track];
-          const tree = buildTrackTree(items, props.groups[track] ?? []);
-          return (
-            <div key={track} className="mb-0.5">
-              <div
-                className="st-press-motion st-row-motion group flex h-7 cursor-pointer items-center gap-1 rounded-(--radius-row) px-1.5 hover:bg-hover"
-                data-testid={`track-header-${track}`}
-                onClick={() => props.onToggleTrack(track)}
-              >
-                <ChevronRight
-                  size={13}
-                  className="st-chevron text-text-faint"
-                  data-open={expanded}
-                />
-                <TrackIcon size={13} className="text-text-secondary" />
-                <span className="flex-1 text-[12px] text-text-secondary">
-                  {TRACK_LABELS[track]}
-                </span>
-                <button
-                  data-testid={`track-new-group-${track}`}
-                  className="st-icon-motion invisible flex h-5 w-5 items-center justify-center rounded text-text-faint hover:bg-active hover:text-text group-hover:visible"
-                  title="新建分组"
-                  onClick={async (e) => {
-                    e.stopPropagation();
-                    const name = await dialog.prompt({
-                      title: '新建分组',
-                      message: '为这个轨道新建一个对话分组',
-                      placeholder: '分组名称',
-                      confirmText: '新建',
-                    });
-                    if (!name?.trim()) return;
-                    props.onCreateGroup(track, name.trim());
-                  }}
-                >
-                  <FolderPlus size={12} />
-                </button>
-                <button
-                  data-testid={`track-new-${track}`}
-                  className="st-icon-motion invisible flex h-5 w-5 items-center justify-center rounded text-text-faint hover:bg-active hover:text-text group-hover:visible"
-                  title={`新建${TRACK_LABELS[track]}`}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    props.onNewConversation(track);
-                  }}
-                >
-                  <Plus size={13} />
-                </button>
-              </div>
-
-              <div className={clsx('shell-collapse', expanded && 'shell-collapse--open')}>
-                <div className="shell-collapse__inner">
-                <div className="shell-tree-branch">
-                  {tree.groups.map(({ group, conversations: groupItems }) => (
-                    <GroupBlock
-                      key={group.id}
-                      track={track}
-                      group={group}
-                      conversations={groupItems}
-                      allGroups={props.groups[track] ?? []}
-                      selectedConversationId={props.nav.selectedConversationId}
-                      multiSelect={props.multiSelect}
-                      selectedIds={props.selectedIds}
-                      resolveName={resolveName}
-                      onToggleCollapsed={() => props.onToggleGroupCollapsed(track, group.id)}
-                      onRenameGroup={async () => {
-                        const name = await dialog.prompt({
-                          title: '重命名分组',
-                          message: '为这个分组设置一个新名称',
-                          defaultValue: group.name,
-                          placeholder: '分组名称',
-                          confirmText: '保存',
-                        });
-                        if (!name?.trim() || name.trim() === group.name) return;
-                        props.onRenameGroup(track, group.id, name.trim());
-                      }}
-                      onDeleteGroup={async () => {
-                        if (
-                          !(await dialog.confirm({
-                            title: '删除分组',
-                            message: `删除分组「${group.name}」？组内对话会回到未分组，不会被删除。`,
-                            confirmText: '删除',
-                            danger: true,
-                          }))
-                        ) {
-                          return;
-                        }
-                        props.onDeleteGroup(track, group.id);
-                      }}
-                      onOpenConversation={props.onOpenConversation}
-                      onTogglePin={props.onTogglePin}
-                      onRename={props.onRename}
-                      onArchive={props.onArchive}
-                      onDelete={props.onDelete}
-                      onDuplicate={props.onDuplicate}
-                      onCopyLink={props.onCopyLink}
-                      onMoveToGroup={props.onMoveToGroup}
-                      onToggleSelected={props.onToggleSelected}
-                      onToggleMultiSelect={props.onToggleMultiSelect}
-                      conversationActivity={props.conversationActivity}
-                    />
-                  ))}
-
-                  {tree.ungrouped.length === 0 && tree.groups.length === 0 ? (
-                    <div className="flex flex-col items-center gap-1 px-2 py-2.5 text-center">
-                      <MessageSquare size={14} className="text-text-faint opacity-50" aria-hidden="true" />
-                      <div className="text-[11px] text-text-faint">
-                        {props.bootState === 'loading'
-                          ? '加载中…'
-                          : props.bootState === 'error'
-                            ? props.bootError || '连接失败'
-                            : query.trim()
-                              ? '无匹配'
-                              : '暂无对话'}
-                      </div>
-                    </div>
-                  ) : (
-                    tree.ungrouped.map((c) => (
-                      <ConversationRow
-                        key={c.id}
-                        conversation={c}
-                        name={resolveName(c)}
-                        active={props.nav.selectedConversationId === c.id}
-                        multiSelect={props.multiSelect}
-                        selected={props.selectedIds.has(c.id)}
-                        groups={props.groups[track] ?? []}
-                        track={track}
-                        onOpen={() => props.onOpenConversation(c.id)}
-                        onTogglePin={() => props.onTogglePin(c.id, !c.pinnedAt)}
-                        onRename={() => props.onRename(c.id, c.title || resolveName(c))}
-                        onArchive={() => props.onArchive(c.id)}
-                        onDelete={() => props.onDelete(c.id)}
-                        onDuplicate={() => props.onDuplicate?.(c.id)}
-                        onCopyLink={() => props.onCopyLink?.(c.id)}
-                        onMoveToGroup={(groupId) => props.onMoveToGroup(track, c.id, groupId)}
-                        onToggleSelected={() => props.onToggleSelected(c.id)}
-                        onStartMultiSelect={props.onToggleMultiSelect}
-                        activity={props.conversationActivity?.get(String(c.id))}
-                      />
-                    ))
-                  )}
-                </div>
-                </div>
-                </div>
-            </div>
-          );
-          })}
-        </div>
+          {/* Top actions */}
+          <div className="flex shrink-0 flex-col gap-0.5">
+            <ActionRow
+              icon={<MessageSquarePlus size={15} />}
+              label="新建对话"
+              testId="nav-new-chat"
+              onClick={() => props.onNewConversation()}
+            />
+            <ActionRow
+              icon={<Search size={15} />}
+              label="搜索"
+              testId="nav-search"
+              placeholder
+              onClick={() => setSearchFocused(true)}
+            />
+            <ActionRow
+              icon={<CalendarClock size={15} />}
+              label="定时任务"
+              testId="nav-scheduled"
+              active={props.nav.stage === 'tasks'}
+              onClick={() => props.onSelectStage('tasks')}
+            />
+            <ActionRow
+              icon={<Activity size={15} />}
+              label="后台活动"
+              testId="nav-activity"
+              active={props.nav.stage === 'activity'}
+              onClick={() => props.onSelectStage('activity')}
+            />
+            <ActionRow
+              icon={<Globe size={15} />}
+              label="浏览器"
+              testId="nav-browser"
+              active={props.nav.stage === 'browser'}
+              onClick={() => props.onSelectStage('browser')}
+            />
+            <ActionRow
+              icon={<Bot size={15} />}
+              label="智能体"
+              testId="nav-agents"
+              active={props.nav.stage === 'agents'}
+              onClick={() => props.onSelectStage('agents')}
+            />
+            <ActionRow
+              icon={<Users size={15} />}
+              label="小队"
+              testId="nav-teams"
+              active={props.nav.stage === 'teams'}
+              onClick={() => props.onSelectStage('teams')}
+            />
+            <ActionRow
+              icon={<Wrench size={15} />}
+              label="能力"
+              testId="nav-abilities"
+              active={props.nav.stage === 'abilities'}
+              onClick={() => props.onSelectStage('abilities')}
+            />
           </div>
         </div>
 
-        {(filteredArchived.length > 0 || archived.length > 0) && (
-          <div className="mt-2 border-t border-border pt-1.5">
+        {/* Panel 2 — conversation list (bright inner box on the dark board).
+          Height follows its content: expanding/collapsing a track or archive
+          grows/shrinks the box instead of it always filling the board. */}
+        <div className="shell-sidebar-recent flex min-h-0 flex-col rounded-(--radius-card) border border-border bg-recent px-2 pb-2 pt-1.5">
+          {/* Search field (shown when search action focused or query non-empty) */}
+          {(searchFocused || query) && (
+            <div className="relative shrink-0 py-1.5">
+              <Search
+                size={12}
+                className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-text-faint"
+              />
+              <input
+                data-testid="sidebar-search"
+                type="search"
+                autoFocus={searchFocused}
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                onBlur={() => {
+                  if (!query) setSearchFocused(false);
+                }}
+                placeholder="搜索对话…"
+                className="h-7 w-full rounded-(--radius-row) border border-border bg-page pl-7 pr-2 text-[12px] text-text placeholder:text-text-faint outline-none focus:border-accent/40"
+              />
+            </div>
+          )}
+
+          {/* Multi-select bulk bar */}
+          {props.multiSelect ? (
+            <div
+              data-testid="sidebar-multiselect-bar"
+              className="mb-1 flex shrink-0 flex-wrap items-center gap-1 rounded-(--radius-row) border border-border bg-surface px-2 py-1.5"
+            >
+              <span className="mr-1 text-[11px] text-text-secondary">
+                已选 {props.selectedIds.size}
+              </span>
+              <button
+                type="button"
+                className="st-row-motion h-6 rounded px-1.5 text-[11px] text-text-secondary hover:bg-hover"
+                onClick={props.onBulkArchive}
+                disabled={props.selectedIds.size === 0}
+              >
+                归档
+              </button>
+              <DropdownMenu.Root>
+                <DropdownMenu.Trigger asChild>
+                  <button
+                    type="button"
+                    data-testid="sidebar-bulk-move"
+                    className="st-row-motion h-6 rounded px-1.5 text-[11px] text-text-secondary hover:bg-hover"
+                    disabled={props.selectedIds.size === 0}
+                  >
+                    移动到分组
+                  </button>
+                </DropdownMenu.Trigger>
+                <DropdownMenu.Portal>
+                  <DropdownMenu.Content
+                    className="st-popover-in z-[300] min-w-[160px] rounded-(--radius-row) border border-border bg-overlay p-1 shadow-xl"
+                    sideOffset={4}
+                  >
+                    {(Object.keys(props.groups) as ConversationTrack[]).map((track) => {
+                      const selectedInTrack = props.conversations.some(
+                        (conversation) =>
+                          conversation.track === track && props.selectedIds.has(conversation.id),
+                      );
+                      if (!selectedInTrack) return null;
+                      return (
+                        <div key={track}>
+                          <DropdownMenu.Item
+                            className="st-row-motion cursor-pointer rounded px-2 py-1.5 text-[12px] text-text-secondary outline-none hover:bg-hover focus:bg-hover"
+                            onSelect={() => props.onBulkMoveToGroup(track, null)}
+                          >
+                            {TRACK_LABELS[track]} · 移出分组
+                          </DropdownMenu.Item>
+                          {props.groups[track].map((group) => (
+                            <DropdownMenu.Item
+                              key={`${track}:${group.id}`}
+                              className="st-row-motion cursor-pointer rounded px-2 py-1.5 text-[12px] text-text-secondary outline-none hover:bg-hover focus:bg-hover"
+                              onSelect={() => props.onBulkMoveToGroup(track, group.id)}
+                            >
+                              {TRACK_LABELS[track]} · {group.name}
+                            </DropdownMenu.Item>
+                          ))}
+                        </div>
+                      );
+                    })}
+                  </DropdownMenu.Content>
+                </DropdownMenu.Portal>
+              </DropdownMenu.Root>
+              <button
+                type="button"
+                className="st-row-motion h-6 rounded px-1.5 text-[11px] text-error hover:bg-error/10"
+                onClick={props.onBulkDelete}
+                disabled={props.selectedIds.size === 0}
+              >
+                删除
+              </button>
+              <button
+                type="button"
+                className="st-row-motion ml-auto h-6 rounded px-1.5 text-[11px] text-text-faint hover:bg-hover"
+                onClick={props.onToggleMultiSelect}
+              >
+                取消
+              </button>
+            </div>
+          ) : null}
+
+          {/* Tracks */}
+          <div className="shell-scrollbar min-h-0 flex-1 overflow-y-auto">
             <button
               type="button"
-              data-testid="archive-section-toggle"
-              className="st-press-motion st-row-motion group flex h-7 w-full cursor-pointer items-center gap-1 rounded-(--radius-row) px-1.5 text-left hover:bg-hover"
-              onClick={() => setArchiveOpen((v) => !v)}
+              data-testid="recent-section-toggle"
+              className="st-press-motion st-row-motion flex h-7 w-full cursor-pointer items-center gap-1 rounded-(--radius-row) px-1.5 text-left hover:bg-hover"
+              onClick={() => setRecentOpen((v) => !v)}
             >
               <ChevronRight
                 size={13}
                 className="st-chevron text-text-faint"
-                data-open={archiveOpen}
+                data-open={recentOpen}
               />
-              <Archive size={13} className="text-text-secondary" />
-              <span className="flex-1 text-[12px] text-text-secondary">归档</span>
-              <span className="text-[10.5px] text-text-faint">{filteredArchived.length}</span>
+              <span className="flex-1 text-[13px] font-semibold tracking-wide text-text-faint">
+                最近对话
+              </span>
             </button>
-            <div className={clsx('shell-collapse', archiveOpen && 'shell-collapse--open')}>
+
+            <div className={clsx('shell-collapse', recentOpen && 'shell-collapse--open')}>
               <div className="shell-collapse__inner">
-              <div className="ml-1">
-                {filteredArchived.length === 0 ? (
-                  <div className="px-2 py-1 text-[11px] text-text-faint">
-                    {query.trim() ? '无匹配' : '暂无归档'}
-                  </div>
-                ) : (
-                  filteredArchived.map((c) => (
-                    <ConversationRow
-                      key={c.id}
-                      conversation={c}
-                      name={resolveName(c)}
-                      active={props.nav.selectedConversationId === c.id}
-                      archived
-                      multiSelect={props.multiSelect}
-                      selected={props.selectedIds.has(c.id)}
-                      groups={props.groups[c.track] ?? []}
-                      track={c.track}
-                      onOpen={() => props.onOpenConversation(c.id)}
-                      onTogglePin={() => props.onTogglePin(c.id, !c.pinnedAt)}
-                      onRename={() => props.onRename(c.id, c.title || resolveName(c))}
-                      onArchive={() => props.onUnarchive?.(c.id)}
-                      onDelete={() => props.onDelete(c.id)}
-                      onDuplicate={() => props.onDuplicate?.(c.id)}
-                      onCopyLink={() => props.onCopyLink?.(c.id)}
-                      onMoveToGroup={(groupId) => props.onMoveToGroup(c.track, c.id, groupId)}
-                      onToggleSelected={() => props.onToggleSelected(c.id)}
-                      onStartMultiSelect={props.onToggleMultiSelect}
-                    />
-                  ))
-                )}
-              </div>
+                <div className="shell-tree-branch">
+                  {(Object.keys(TRACK_LABELS) as ConversationTrack[]).map((track) => {
+                    const TrackIcon = TRACK_ICONS[track];
+                    const expanded = props.nav.expandedTracks[track];
+                    const items = byTrack[track];
+                    const tree = buildTrackTree(items, props.groups[track] ?? []);
+                    return (
+                      <div key={track} className="mb-0.5">
+                        <div
+                          className="st-press-motion st-row-motion group flex h-7 cursor-pointer items-center gap-1 rounded-(--radius-row) px-1.5 hover:bg-hover"
+                          data-testid={`track-header-${track}`}
+                          onClick={() => props.onToggleTrack(track)}
+                        >
+                          <ChevronRight
+                            size={13}
+                            className="st-chevron text-text-faint"
+                            data-open={expanded}
+                          />
+                          <TrackIcon size={13} className="text-text-secondary" />
+                          <span className="flex-1 text-[12px] text-text-secondary">
+                            {TRACK_LABELS[track]}
+                          </span>
+                          <button
+                            data-testid={`track-new-group-${track}`}
+                            className="st-icon-motion invisible flex h-5 w-5 items-center justify-center rounded text-text-faint hover:bg-active hover:text-text group-hover:visible"
+                            title="新建分组"
+                            onClick={async (e) => {
+                              e.stopPropagation();
+                              const name = await dialog.prompt({
+                                title: '新建分组',
+                                message: '为这个轨道新建一个对话分组',
+                                placeholder: '分组名称',
+                                confirmText: '新建',
+                              });
+                              if (!name?.trim()) return;
+                              props.onCreateGroup(track, name.trim());
+                            }}
+                          >
+                            <FolderPlus size={12} />
+                          </button>
+                          <button
+                            data-testid={`track-new-${track}`}
+                            className="st-icon-motion invisible flex h-5 w-5 items-center justify-center rounded text-text-faint hover:bg-active hover:text-text group-hover:visible"
+                            title={`新建${TRACK_LABELS[track]}`}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              props.onNewConversation(track);
+                            }}
+                          >
+                            <Plus size={13} />
+                          </button>
+                        </div>
+
+                        <div className={clsx('shell-collapse', expanded && 'shell-collapse--open')}>
+                          <div className="shell-collapse__inner">
+                            <div className="shell-tree-branch">
+                              {tree.groups.map(({ group, conversations: groupItems }) => (
+                                <GroupBlock
+                                  key={group.id}
+                                  track={track}
+                                  group={group}
+                                  conversations={groupItems}
+                                  allGroups={props.groups[track] ?? []}
+                                  selectedConversationId={props.nav.selectedConversationId}
+                                  multiSelect={props.multiSelect}
+                                  selectedIds={props.selectedIds}
+                                  resolveName={resolveName}
+                                  onToggleCollapsed={() =>
+                                    props.onToggleGroupCollapsed(track, group.id)
+                                  }
+                                  onRenameGroup={async () => {
+                                    const name = await dialog.prompt({
+                                      title: '重命名分组',
+                                      message: '为这个分组设置一个新名称',
+                                      defaultValue: group.name,
+                                      placeholder: '分组名称',
+                                      confirmText: '保存',
+                                    });
+                                    if (!name?.trim() || name.trim() === group.name) return;
+                                    props.onRenameGroup(track, group.id, name.trim());
+                                  }}
+                                  onDeleteGroup={async () => {
+                                    if (
+                                      !(await dialog.confirm({
+                                        title: '删除分组',
+                                        message: `删除分组「${group.name}」？组内对话会回到未分组，不会被删除。`,
+                                        confirmText: '删除',
+                                        danger: true,
+                                      }))
+                                    ) {
+                                      return;
+                                    }
+                                    props.onDeleteGroup(track, group.id);
+                                  }}
+                                  onOpenConversation={props.onOpenConversation}
+                                  onTogglePin={props.onTogglePin}
+                                  onRename={props.onRename}
+                                  onArchive={props.onArchive}
+                                  onDelete={props.onDelete}
+                                  onDuplicate={props.onDuplicate}
+                                  onCopyLink={props.onCopyLink}
+                                  onMoveToGroup={props.onMoveToGroup}
+                                  onToggleSelected={props.onToggleSelected}
+                                  onToggleMultiSelect={props.onToggleMultiSelect}
+                                  conversationActivity={props.conversationActivity}
+                                />
+                              ))}
+
+                              {tree.ungrouped.length === 0 && tree.groups.length === 0 ? (
+                                <div className="flex flex-col items-center gap-1 px-2 py-2.5 text-center">
+                                  <MessageSquare
+                                    size={14}
+                                    className="text-text-faint opacity-50"
+                                    aria-hidden="true"
+                                  />
+                                  <div className="text-[11px] text-text-faint">
+                                    {props.bootState === 'loading'
+                                      ? '加载中…'
+                                      : props.bootState === 'error'
+                                        ? props.bootError || '连接失败'
+                                        : query.trim()
+                                          ? '无匹配'
+                                          : '暂无对话'}
+                                  </div>
+                                </div>
+                              ) : (
+                                tree.ungrouped.map((c) => (
+                                  <ConversationRow
+                                    key={c.id}
+                                    conversation={c}
+                                    name={resolveName(c)}
+                                    active={props.nav.selectedConversationId === c.id}
+                                    multiSelect={props.multiSelect}
+                                    selected={props.selectedIds.has(c.id)}
+                                    groups={props.groups[track] ?? []}
+                                    track={track}
+                                    onOpen={() => props.onOpenConversation(c.id)}
+                                    onTogglePin={() => props.onTogglePin(c.id, !c.pinnedAt)}
+                                    onRename={() => props.onRename(c.id, c.title || resolveName(c))}
+                                    onArchive={() => props.onArchive(c.id)}
+                                    onDelete={() => props.onDelete(c.id)}
+                                    onDuplicate={() => props.onDuplicate?.(c.id)}
+                                    onCopyLink={() => props.onCopyLink?.(c.id)}
+                                    onMoveToGroup={(groupId) =>
+                                      props.onMoveToGroup(track, c.id, groupId)
+                                    }
+                                    onToggleSelected={() => props.onToggleSelected(c.id)}
+                                    onStartMultiSelect={props.onToggleMultiSelect}
+                                    activity={props.conversationActivity?.get(String(c.id))}
+                                  />
+                                ))
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             </div>
-          </div>
-        )}
-      </div>
-      </div>
 
-      {/* Panel 3 — account row. Renders directly on the board and only floats
-          as a bright box on hover; clicking the box (or the gear) opens settings. */}
-      <div
-        className={clsx(
-          'mt-auto shrink-0 cursor-pointer rounded-(--radius-card) border px-2 py-1 transition-colors duration-150',
-          props.settingsOpen
-            ? 'border-border bg-recent'
-            : 'border-transparent hover:border-border hover:bg-recent',
-        )}
-        role="button"
-        tabIndex={0}
-        title="设置"
-        data-testid="sidebar-settings-box"
-        onClick={() => props.onSelectStage('settings')}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault();
-            props.onSelectStage('settings');
-          }
-        }}
-      >
-        <div className="flex h-9 items-center gap-2 rounded-(--radius-row) px-1 text-text-secondary">
-          <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-active text-[11px] font-medium text-text">
-            U
-          </div>
-          <span className="min-w-0 flex-1 truncate text-[12px]">本地用户</span>
-          <button
-            type="button"
-            data-testid="nav-settings"
-            className={clsx(
-              'st-press-motion st-icon-motion flex h-7 w-7 shrink-0 items-center justify-center rounded-(--radius-row)',
-              props.settingsOpen
-                ? 'shell-row-active text-text'
-                : 'text-text-secondary hover:bg-hover hover:text-text',
+            {(filteredArchived.length > 0 || archived.length > 0) && (
+              <div className="mt-2 border-t border-border pt-1.5">
+                <button
+                  type="button"
+                  data-testid="archive-section-toggle"
+                  className="st-press-motion st-row-motion group flex h-7 w-full cursor-pointer items-center gap-1 rounded-(--radius-row) px-1.5 text-left hover:bg-hover"
+                  onClick={() => setArchiveOpen((v) => !v)}
+                >
+                  <ChevronRight
+                    size={13}
+                    className="st-chevron text-text-faint"
+                    data-open={archiveOpen}
+                  />
+                  <Archive size={13} className="text-text-secondary" />
+                  <span className="flex-1 text-[12px] text-text-secondary">归档</span>
+                  <span className="text-[10.5px] text-text-faint">{filteredArchived.length}</span>
+                </button>
+                <div className={clsx('shell-collapse', archiveOpen && 'shell-collapse--open')}>
+                  <div className="shell-collapse__inner">
+                    <div className="ml-1">
+                      {filteredArchived.length === 0 ? (
+                        <div className="px-2 py-1 text-[11px] text-text-faint">
+                          {query.trim() ? '无匹配' : '暂无归档'}
+                        </div>
+                      ) : (
+                        filteredArchived.map((c) => (
+                          <ConversationRow
+                            key={c.id}
+                            conversation={c}
+                            name={resolveName(c)}
+                            active={props.nav.selectedConversationId === c.id}
+                            archived
+                            multiSelect={props.multiSelect}
+                            selected={props.selectedIds.has(c.id)}
+                            groups={props.groups[c.track] ?? []}
+                            track={c.track}
+                            onOpen={() => props.onOpenConversation(c.id)}
+                            onTogglePin={() => props.onTogglePin(c.id, !c.pinnedAt)}
+                            onRename={() => props.onRename(c.id, c.title || resolveName(c))}
+                            onArchive={() => props.onUnarchive?.(c.id)}
+                            onDelete={() => props.onDelete(c.id)}
+                            onDuplicate={() => props.onDuplicate?.(c.id)}
+                            onCopyLink={() => props.onCopyLink?.(c.id)}
+                            onMoveToGroup={(groupId) => props.onMoveToGroup(c.track, c.id, groupId)}
+                            onToggleSelected={() => props.onToggleSelected(c.id)}
+                            onStartMultiSelect={props.onToggleMultiSelect}
+                          />
+                        ))
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
             )}
-            title="设置"
-            aria-label="设置"
-            onClick={(e) => {
-              e.stopPropagation();
-              props.onSelectStage('settings');
-            }}
-          >
-            <Settings size={15} className="st-nav-icon transition-colors duration-150" />
-          </button>
+          </div>
         </div>
-      </div>
+
+        {/* Panel 3 — account row. Renders directly on the board and only floats
+          as a bright box on hover; clicking the box (or the gear) opens settings. */}
+        <div
+          className={clsx(
+            'mt-auto shrink-0 cursor-pointer rounded-(--radius-card) border px-2 py-1 transition-colors duration-150',
+            props.settingsOpen
+              ? 'border-border bg-recent'
+              : 'border-transparent hover:border-border hover:bg-recent',
+          )}
+          role="button"
+          tabIndex={0}
+          title="设置"
+          data-testid="sidebar-settings-box"
+          onClick={() => props.onSelectStage('settings')}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              props.onSelectStage('settings');
+            }
+          }}
+        >
+          <div className="flex h-9 items-center gap-2 rounded-(--radius-row) px-1 text-text-secondary">
+            <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-active text-[11px] font-medium text-text">
+              U
+            </div>
+            <span className="min-w-0 flex-1 truncate text-[12px]">本地用户</span>
+            <button
+              type="button"
+              data-testid="nav-settings"
+              className={clsx(
+                'st-press-motion st-icon-motion flex h-7 w-7 shrink-0 items-center justify-center rounded-(--radius-row)',
+                props.settingsOpen
+                  ? 'shell-row-active text-text'
+                  : 'text-text-secondary hover:bg-hover hover:text-text',
+              )}
+              title="设置"
+              aria-label="设置"
+              onClick={(e) => {
+                e.stopPropagation();
+                props.onSelectStage('settings');
+              }}
+            >
+              <Settings size={15} className="st-nav-icon transition-colors duration-150" />
+            </button>
+          </div>
+        </div>
       </div>
 
       {/* Resize handle — must stay outside the min-width body or it becomes a
@@ -686,7 +703,14 @@ function ActionRow(props: {
       }}
       title={props.placeholder ? `${props.label}（即将推出）` : props.label}
     >
-      <span className={clsx('st-nav-icon transition-colors duration-150', props.accent ? 'text-accent' : '')}>{props.icon}</span>
+      <span
+        className={clsx(
+          'st-nav-icon transition-colors duration-150',
+          props.accent ? 'text-accent' : '',
+        )}
+      >
+        {props.icon}
+      </span>
       <span className="flex-1 text-left">{props.label}</span>
     </button>
   );
@@ -725,11 +749,7 @@ function GroupBlock(props: {
           className="flex flex-1 items-center gap-1 text-left"
           onClick={props.onToggleCollapsed}
         >
-          <ChevronRight
-            size={12}
-            className="st-chevron text-text-faint"
-            data-open={!collapsed}
-          />
+          <ChevronRight size={12} className="st-chevron text-text-faint" data-open={!collapsed} />
           <span className="flex-1 truncate text-[11.5px] font-medium text-text-secondary">
             {props.group.name}
           </span>
@@ -751,7 +771,11 @@ function GroupBlock(props: {
               sideOffset={4}
               className="st-popover-in z-50 min-w-[132px] rounded-(--radius-card) border border-border bg-overlay p-1 shadow-lg"
             >
-              <MenuItem icon={<Pencil size={13} />} label="重命名分组" onSelect={props.onRenameGroup} />
+              <MenuItem
+                icon={<Pencil size={13} />}
+                label="重命名分组"
+                onSelect={props.onRenameGroup}
+              />
               <MenuItem
                 icon={<Trash2 size={13} />}
                 label="删除分组"
@@ -764,32 +788,32 @@ function GroupBlock(props: {
       </div>
       <div className={clsx('shell-collapse', !collapsed && 'shell-collapse--open')}>
         <div className="shell-collapse__inner">
-        <div className="shell-tree-branch">
-          {props.conversations.map((c) => (
-            <ConversationRow
-              key={c.id}
-              conversation={c}
-              name={props.resolveName(c)}
-              active={props.selectedConversationId === c.id}
-              multiSelect={props.multiSelect}
-              selected={props.selectedIds.has(c.id)}
-              groups={props.allGroups}
-              track={props.track}
-              inGroupId={props.group.id}
-              onOpen={() => props.onOpenConversation(c.id)}
-              onTogglePin={() => props.onTogglePin(c.id, !c.pinnedAt)}
-              onRename={() => props.onRename(c.id, c.title || props.resolveName(c))}
-              onArchive={() => props.onArchive(c.id)}
-              onDelete={() => props.onDelete(c.id)}
-              onDuplicate={() => props.onDuplicate?.(c.id)}
-              onCopyLink={() => props.onCopyLink?.(c.id)}
-              onMoveToGroup={(groupId) => props.onMoveToGroup(props.track, c.id, groupId)}
-              onToggleSelected={() => props.onToggleSelected(c.id)}
-              onStartMultiSelect={props.onToggleMultiSelect}
-              activity={props.conversationActivity?.get(String(c.id))}
-            />
-          ))}
-        </div>
+          <div className="shell-tree-branch">
+            {props.conversations.map((c) => (
+              <ConversationRow
+                key={c.id}
+                conversation={c}
+                name={props.resolveName(c)}
+                active={props.selectedConversationId === c.id}
+                multiSelect={props.multiSelect}
+                selected={props.selectedIds.has(c.id)}
+                groups={props.allGroups}
+                track={props.track}
+                inGroupId={props.group.id}
+                onOpen={() => props.onOpenConversation(c.id)}
+                onTogglePin={() => props.onTogglePin(c.id, !c.pinnedAt)}
+                onRename={() => props.onRename(c.id, c.title || props.resolveName(c))}
+                onArchive={() => props.onArchive(c.id)}
+                onDelete={() => props.onDelete(c.id)}
+                onDuplicate={() => props.onDuplicate?.(c.id)}
+                onCopyLink={() => props.onCopyLink?.(c.id)}
+                onMoveToGroup={(groupId) => props.onMoveToGroup(props.track, c.id, groupId)}
+                onToggleSelected={() => props.onToggleSelected(c.id)}
+                onStartMultiSelect={props.onToggleMultiSelect}
+                activity={props.conversationActivity?.get(String(c.id))}
+              />
+            ))}
+          </div>
         </div>
       </div>
     </div>
@@ -828,9 +852,10 @@ function ConversationRow(props: {
         ? { icon: Users, kind: '小队', name: props.name }
         : { icon: MessageSquare, kind: '模型', name: props.name };
   const IdentityIcon = identity.icon;
-  const identityName = identity.name && identity.name !== title && identity.name !== identity.kind
-    ? identity.name
-    : '';
+  const identityName =
+    identity.name && identity.name !== title && identity.name !== identity.kind
+      ? identity.name
+      : '';
 
   return (
     <div
@@ -882,7 +907,10 @@ function ConversationRow(props: {
           />
         ) : null}
         {c.pinnedAt && !props.archived && (
-          <span className="flex h-4 w-4 shrink-0 items-center justify-center text-accent" title="已置顶">
+          <span
+            className="flex h-4 w-4 shrink-0 items-center justify-center text-accent"
+            title="已置顶"
+          >
             <Pin size={11} className="fill-current" />
           </span>
         )}
@@ -906,7 +934,11 @@ function ConversationRow(props: {
                 className="st-popover-in z-50 min-w-[160px] rounded-(--radius-card) border border-border bg-overlay p-1 shadow-lg"
                 onClick={(e) => e.stopPropagation()}
               >
-                <MenuItem icon={<Pencil size={13} />} label="重命名对话" onSelect={props.onRename} />
+                <MenuItem
+                  icon={<Pencil size={13} />}
+                  label="重命名对话"
+                  onSelect={props.onRename}
+                />
                 <MenuItem
                   icon={<Copy size={13} />}
                   label="复制对话"
@@ -937,7 +969,13 @@ function ConversationRow(props: {
                       {props.groups.map((g) => (
                         <MenuItem
                           key={g.id}
-                          icon={props.inGroupId === g.id ? <Check size={13} /> : <span className="w-[13px]" />}
+                          icon={
+                            props.inGroupId === g.id ? (
+                              <Check size={13} />
+                            ) : (
+                              <span className="w-[13px]" />
+                            )
+                          }
                           label={g.name}
                           onSelect={() => props.onMoveToGroup(g.id)}
                         />
@@ -966,29 +1004,36 @@ function ConversationRow(props: {
                   onSelect={props.onStartMultiSelect}
                 />
                 <DropdownMenu.Separator className="mx-1 my-1 h-px bg-border" />
-                <MenuItem icon={<Trash2 size={13} />} label="删除对话" danger onSelect={props.onDelete} />
+                <MenuItem
+                  icon={<Trash2 size={13} />}
+                  label="删除对话"
+                  danger
+                  onSelect={props.onDelete}
+                />
               </DropdownMenu.Content>
             </DropdownMenu.Portal>
           </DropdownMenu.Root>
         )}
       </div>
       {props.track !== 'model' ? (
-      <div className="mt-0.5 flex min-w-0 items-center gap-1 pl-0.5 text-[11px] text-text-faint">
-        <IdentityIcon size={10.5} className="shrink-0" aria-hidden="true" />
-        <span className="shrink-0">{identity.kind}</span>
-        {identityName ? (
-          <>
-            <span aria-hidden="true">·</span>
-            <span className="truncate" title={identity.name}>{identity.name}</span>
-          </>
-        ) : null}
-        {props.archived ? (
-          <>
-            <span aria-hidden="true">·</span>
-            <span className="shrink-0">已归档</span>
-          </>
-        ) : null}
-      </div>
+        <div className="mt-0.5 flex min-w-0 items-center gap-1 pl-0.5 text-[11px] text-text-faint">
+          <IdentityIcon size={10.5} className="shrink-0" aria-hidden="true" />
+          <span className="shrink-0">{identity.kind}</span>
+          {identityName ? (
+            <>
+              <span aria-hidden="true">·</span>
+              <span className="truncate" title={identity.name}>
+                {identity.name}
+              </span>
+            </>
+          ) : null}
+          {props.archived ? (
+            <>
+              <span aria-hidden="true">·</span>
+              <span className="shrink-0">已归档</span>
+            </>
+          ) : null}
+        </div>
       ) : null}
     </div>
   );

@@ -24,10 +24,23 @@ describe('MarkdownContent', () => {
   });
 
   it('keeps short table tokens intact while wide tables remain scrollable', () => {
-    expect(shellCss).toMatch(/\.shell-md-table-wrap\s*\{[^}]*overflow:\s*auto;/s);
+    expect(shellCss).toMatch(/\.shell-md-table-scroll\s*\{[^}]*overflow-x:\s*auto;/s);
     expect(shellCss).toMatch(
       /\.shell-md th,\s*\.shell-md td\s*\{[^}]*overflow-wrap:\s*break-word;[^}]*word-break:\s*normal;/s,
     );
+  });
+
+  it('renders NewMax-style unframed tables with a copy action', () => {
+    const html = renderToStaticMarkup(
+      createElement(MarkdownContent, {
+        text: '| Run | 内核 |\n| --- | --- |\n| Q2N5RF | codex |',
+      }),
+    );
+    expect(html).toContain('shell-md-table-wrap');
+    expect(html).toContain('shell-md-table-toolbar');
+    expect(html).toContain('aria-label="复制表格"');
+    expect(html).toContain('shell-md-table-cell--atomic');
+    expect(shellCss).toMatch(/\.shell-md-table-wrap\s*\{[^}]*border:\s*0;/s);
   });
 
   it('keeps level-two markers inside fenced code as code instead of sections', () => {

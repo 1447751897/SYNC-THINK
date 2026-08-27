@@ -22,8 +22,6 @@ import {
   Keyboard,
   Link2,
   Mic2,
-  Monitor,
-  Moon,
   Network,
   Palette,
   Plug,
@@ -35,7 +33,6 @@ import {
   Settings,
   ShieldCheck,
   Sparkles,
-  Sun,
   TerminalSquare,
   Trash2,
   Upload,
@@ -48,7 +45,6 @@ import type {
   McpServerSummary,
   WorkspaceSummary,
 } from '@sync-think/protocol';
-import syncThinkLogo from './assets/sync-think-logo.png';
 import { NEWMAX_CONNECTOR_CATALOG, type ManagedConnectorCatalogItem } from './connector-catalog.js';
 import {
   COMPUTER_USE_PLUGIN_SETTING_KEY,
@@ -67,19 +63,16 @@ import {
 } from '@sync-think/protocol/gateway';
 import { ModelSettings, type ModelSettingsHandle } from './ModelSettings.js';
 import { DesktopUpdatePanel } from './DesktopUpdatePanel.js';
+import { PreferencesSettings } from './PreferencesSettings.js';
 import { BrandLogoMark } from './BrandLogoMark.js';
 import { resolveKernelBrandLogo, resolveKernelDisplayName } from './brand-icons.js';
 import { decideSettingsPageAction } from './settings-unsaved.js';
 import {
   readDefaultPermission,
-  readUserName,
   writeDefaultPermission,
-  writeUserName,
-  USER_NAME_MAX_LENGTH,
   type DefaultPermissionPreference,
 } from '../ui-preferences.js';
 
-type ThemeMode = 'system' | 'light' | 'dark';
 type SettingsSection =
   | 'account'
   | 'wallet'
@@ -96,24 +89,6 @@ type SettingsSection =
   | 'about';
 type PermissionDefault = DefaultPermissionPreference;
 
-const THEME_KEY = 'sync-think-shell-theme';
-
-function readStoredTheme(): ThemeMode {
-  return (localStorage.getItem(THEME_KEY) as ThemeMode) || 'system';
-}
-
-export function applyShellTheme(mode: ThemeMode): void {
-  const dark =
-    mode === 'dark' ||
-    (mode === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
-  document.documentElement.classList.toggle('dark', dark);
-  localStorage.setItem(THEME_KEY, mode);
-  // Mirror onto the native frame. Without this the OS title bar keeps whatever
-  // the system resolved and light mode shows a dark strip above the window.
-  void window.syncThink?.runtime?.setTheme?.(mode);
-  window.dispatchEvent(new CustomEvent('shell-theme-applied', { detail: { mode, dark } }));
-}
-
 const SECTIONS: Array<{
   id: SettingsSection;
   label: string;
@@ -124,8 +99,14 @@ const SECTIONS: Array<{
 }> = [
   { id: 'account', label: '账号', icon: CircleUserRound, ready: false },
   { id: 'wallet', label: '钱包', icon: WalletCards, ready: false },
-  { id: 'general', label: '通用', icon: Settings, ready: true, keywords: '动画 权限 个性化' },
-  { id: 'theme', label: '偏好', icon: WandSparkles, ready: true, keywords: '主题 浅色 深色 外观' },
+  { id: 'general', label: '通用', icon: Settings, ready: true, keywords: '动画 权限' },
+  {
+    id: 'theme',
+    label: '偏好',
+    icon: WandSparkles,
+    ready: true,
+    keywords: '主题 浅色 深色 外观 图片 配色 字体 快捷键 个性化 提示词',
+  },
   { id: 'shortcuts', label: '快捷键', icon: Keyboard, ready: false, visible: false },
   {
     id: 'models',
@@ -269,7 +250,7 @@ export function SettingsPage({ onDone, onCatalogChanged, onDirtyChange }: Settin
         </div>
         <div className="settings-content__viewport">
           {section === 'general' && <GeneralSection />}
-          {section === 'theme' && <ThemeSection />}
+          {section === 'theme' && <PreferencesSettings />}
           {section === 'models' && (
             <ModelSettings
               ref={modelSettingsRef}
@@ -300,65 +281,6 @@ export function SettingsPage({ onDone, onCatalogChanged, onDirtyChange }: Settin
   );
 }
 
-const THEME_OPTIONS: Array<{ mode: ThemeMode; label: string; icon: typeof Sun }> = [
-  { mode: 'light', label: '浅色', icon: Sun },
-  { mode: 'dark', label: '深色', icon: Moon },
-  { mode: 'system', label: '跟随系统', icon: Monitor },
-];
-
-function ThemeSection() {
-  const [theme, setTheme] = useState<ThemeMode>(readStoredTheme);
-
-  const handleSelect = (mode: ThemeMode) => {
-    setTheme(mode);
-    applyShellTheme(mode);
-  };
-
-  return (
-    <div className="settings-scroll settings-standard-pane">
-      <section className="settings-block">
-        <h2>外观</h2>
-        <div className="settings-theme-grid" role="radiogroup" aria-label="外观主题">
-          {THEME_OPTIONS.map(({ mode, label, icon: Icon }) => {
-            const active = theme === mode;
-            return (
-              <button
-                key={mode}
-                type="button"
-                role="radio"
-                aria-checked={active}
-                onClick={() => handleSelect(mode)}
-                className={clsx('settings-theme-option', active && 'is-active')}
-              >
-                <ThemePreview mode={mode} />
-                <span className="settings-theme-option__label">
-                  <Icon size={14} aria-hidden="true" />
-                  {label}
-                </span>
-                {active ? <Check size={14} className="settings-theme-check" /> : null}
-              </button>
-            );
-          })}
-        </div>
-      </section>
-      <p className="settings-note">主题切换会立即生效，并在下次启动时保留。</p>
-    </div>
-  );
-}
-
-function ThemePreview({ mode }: { mode: ThemeMode }) {
-  const isDark =
-    mode === 'dark' ||
-    (mode === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
-  return (
-    <div className={clsx('settings-theme-preview', isDark && 'is-dark')} aria-hidden="true">
-      <span className="settings-theme-preview__sidebar" />
-      <span className="settings-theme-preview__line is-long" />
-      <span className="settings-theme-preview__line" />
-    </div>
-  );
-}
-
 const PERMISSION_OPTIONS: Array<{
   value: PermissionDefault;
   label: string;
@@ -370,7 +292,6 @@ const PERMISSION_OPTIONS: Array<{
 ];
 
 function GeneralSection() {
-  const [tab, setTab] = useState<'general' | 'personal'>('general');
   const [permission, setPermission] = useState<PermissionDefault>(() => readDefaultPermission());
   const [animationEnabled, setAnimationEnabled] = useState<boolean>(() => {
     const stored = localStorage.getItem('sync-think-animation');
@@ -390,115 +311,47 @@ function GeneralSection() {
 
   return (
     <div className="settings-scroll settings-standard-pane">
-      <div className="settings-segmented" role="tablist" aria-label="通用设置分类">
-        <button
-          type="button"
-          role="tab"
-          aria-selected={tab === 'general'}
-          className={tab === 'general' ? 'is-active' : undefined}
-          onClick={() => setTab('general')}
-        >
-          通用
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={tab === 'personal'}
-          className={tab === 'personal' ? 'is-active' : undefined}
-          onClick={() => setTab('personal')}
-        >
-          个性化
-        </button>
+      <div className="settings-rows">
+        <SettingRow
+          title="界面动画"
+          description="开启界面过渡动画"
+          control={
+            <Toggle checked={animationEnabled} label="界面动画" onChange={handleAnimation} />
+          }
+        />
+        <SettingRow
+          title="命令白名单"
+          description="允许自动运行的命令"
+          control={
+            <Toggle checked={false} label="命令白名单" disabled onChange={() => undefined} />
+          }
+        />
       </div>
 
-      {tab === 'general' ? (
-        <>
-          <div className="settings-rows">
-            <SettingRow
-              title="界面动画"
-              description="开启界面过渡动画"
-              control={
-                <Toggle checked={animationEnabled} label="界面动画" onChange={handleAnimation} />
-              }
-            />
-            <SettingRow
-              title="命令白名单"
-              description="允许自动运行的命令"
-              control={
-                <Toggle checked={false} label="命令白名单" disabled onChange={() => undefined} />
-              }
-            />
-          </div>
+      <section className="settings-permission-section">
+        <h2>权限模式</h2>
+        <div className="settings-permission-grid" role="radiogroup" aria-label="默认权限模式">
+          {PERMISSION_OPTIONS.map(({ value, label, desc }) => {
+            const active = permission === value;
+            return (
+              <button
+                key={value}
+                type="button"
+                role="radio"
+                aria-checked={active}
+                className={clsx('settings-permission-option', active && 'is-active')}
+                onClick={() => handlePermission(value)}
+              >
+                <span>{label}</span>
+                <small>{desc}</small>
+                {active ? <Check size={14} aria-hidden="true" /> : null}
+              </button>
+            );
+          })}
+        </div>
+      </section>
 
-          <section className="settings-permission-section">
-            <h2>权限模式</h2>
-            <div className="settings-permission-grid" role="radiogroup" aria-label="默认权限模式">
-              {PERMISSION_OPTIONS.map(({ value, label, desc }) => {
-                const active = permission === value;
-                return (
-                  <button
-                    key={value}
-                    type="button"
-                    role="radio"
-                    aria-checked={active}
-                    className={clsx('settings-permission-option', active && 'is-active')}
-                    onClick={() => handlePermission(value)}
-                  >
-                    <span>{label}</span>
-                    <small>{desc}</small>
-                    {active ? <Check size={14} aria-hidden="true" /> : null}
-                  </button>
-                );
-              })}
-            </div>
-          </section>
-
-          <DaemonCard />
-        </>
-      ) : (
-        <PersonalizationPanel />
-      )}
-    </div>
-  );
-}
-
-function PersonalizationPanel() {
-  const [name, setName] = useState(() => readUserName());
-  const [saved, setSaved] = useState(false);
-
-  const commit = (value: string) => {
-    const next = value.trim().slice(0, USER_NAME_MAX_LENGTH);
-    writeUserName(next);
-    // Let an already-mounted welcome screen pick the new name up immediately.
-    window.dispatchEvent(new CustomEvent('shell-user-name-changed'));
-    setSaved(true);
-  };
-
-  return (
-    <div className="settings-rows">
-      <SettingRow
-        title="你的名字"
-        description="用于新对话页的问候语，例如「晚上好，Kevin」"
-        control={
-          <input
-            data-testid="settings-user-name"
-            className="st-field-input"
-            style={{ width: 180 }}
-            value={name}
-            maxLength={USER_NAME_MAX_LENGTH}
-            placeholder="留空则不显示名字"
-            onChange={(e) => {
-              setName(e.target.value);
-              setSaved(false);
-            }}
-            onBlur={(e) => commit(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') commit(e.currentTarget.value);
-            }}
-          />
-        }
-      />
-      <p className="settings-note">{saved ? '已保存。' : '失焦或按回车保存，仅存在本机。'}</p>
+      <DaemonCard />
     </div>
   );
 }
@@ -2432,26 +2285,8 @@ export function DataDiagnosticsSection() {
 
 function AboutSection() {
   return (
-    <div className="settings-scroll settings-standard-pane">
-      <div className="settings-about-head">
-        <img
-          src={syncThinkLogo}
-          alt="Sync-Think"
-          draggable={false}
-          className="sync-think-logo settings-app-mark object-contain"
-        />
-        <div>
-          <h2>Sync-Think</h2>
-          <p>AI 工作助手 · 多智能体编排工作台</p>
-          <span>桌面端发布与更新控制面</span>
-        </div>
-      </div>
+    <div className="settings-scroll settings-about-page">
       <DesktopUpdatePanel />
-      <div className="settings-rows">
-        <SettingRow title="运行环境" description="Electron + Node.js" />
-        <SettingRow title="界面框架" description="React + Tailwind v4" />
-        <SettingRow title="数据库" description="SQLite (better-sqlite3)" />
-      </div>
     </div>
   );
 }

@@ -5,7 +5,10 @@ import { join } from 'node:path';
 import type { SecureStoreBackend } from '../types.js';
 
 const STORE_HANDLE_PATTERN = /^[0-9A-HJKMNP-TV-Z]{26}$/;
-const DEFAULT_TIMEOUT_MS = 10_000;
+// PowerShell startup plus CurrentUser DPAPI regularly crosses 10 seconds on a
+// busy Windows desktop. Keep a bounded timeout, but leave enough headroom for
+// concurrent build/test and background Runtime load.
+const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_INPUT_BYTES = 1024 * 1024;
 const DEFAULT_MAX_OUTPUT_BYTES = 2 * 1024 * 1024;
 

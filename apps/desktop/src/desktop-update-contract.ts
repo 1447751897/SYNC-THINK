@@ -27,3 +27,12 @@ export interface DesktopUpdateActionResult {
   state: DesktopUpdateSnapshot;
   errorCode: string | null;
 }
+
+export interface DesktopUpdateAutoCheckPreference {
+  enabled: boolean;
+}
+
+export interface DesktopUpdateOpenResult {
+  opened: boolean;
+  error: string | null;
+}

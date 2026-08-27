@@ -8,13 +8,78 @@
 - Runtime 自动识别工作区 `.claude/skills`、设置中明确启用且已缓存的 Claude 插件 Skill、全局 `.sync-think/skills` 和用户 `.claude/skills`，登记到“我的 Skill”并 watch 变化；工作区和项目级插件来源自动激活。
 - 同名本地 Skill 内容发生变化时会创建新的不可变 SkillVersion；同一真实目录被多个工作区或插件来源引用时合并来源并保留全部工作区激活关系。
 - 列表行操作已与 NewMax 对齐为使用、编辑、共享。400px 编辑弹窗只保存展示名称、描述与图标；导入和编辑都不会改写实体 `SKILL.md`。
+- Skill 市场已从 Renderer 静态展示数据切换为 Runtime 作者目录；当前 6 个作者能力均可通过统一安装命令复制完整包到 `<home>/.sync-think/skills/<slug>`，附属 `references/` 文件会随包保留并登记。
+- 市场安装和全局启停会直接使用 Runtime 返回值更新当前页面；全局开关具备即时反馈和失败回滚，不再要求用户手动刷新。
+- Skill 管理字体和密度已按 NewMax 实窗值复核：Inter/Noto 13px 基准、五张等宽 84px 统计卡、60px 表格行、28 × 16px 无框开关，中文与英文说明不再通过缩放或低对比度呈现。
+- “已激活工作区”现为 NewMax 同参数的 320px 锚定菜单，可逐工作区或通过“全局”批量切换；列表独立滚动，更新即时生效且失败回滚，不刷新整页。
+- “全局”批量切换不再被执行中的半完成服务端快照覆盖；本地 Skill 的 30 秒扫描使用静默目录更新，页面不会切换回 loading，当前弹层、筛选和列表滚动位置保持不变。
+- 全局停用 Skill 会弱化整行并在名称/工作区两处显示“已停用”，同时保留右侧重新启用入口。Compose `/` 通过 Runtime 的当前工作区查询，只展示全局启用且在该工作区激活的 Skill。
 
 ### 当前验证
 
 - Runtime 本地目录测试 9/9、Desktop 能力中心测试 32/32；根级单并发全仓测试 `20/20`、`0 cached`，其中 Desktop 全量 `172 files / 1396 tests`、Runtime 全量 `151 files / 1144 tests`。根级 typecheck `20/20`、lint `11/11`（0 error）、设计令牌和 `git diff --check` 通过。
 - 强制全量构建 `11/11`、`0 cached`。真实 Electron 扫描到 38 个本地候选并登记 41 个 Skill，recursive watch 正常；导入实测覆盖文件夹/ZIP、全局+工作区双位置、冲突覆盖、完整附属文件复制、原文逐字节保持与展示元数据。
 - 页面实测无控制台错误、横向溢出或表格重叠；导入弹窗宽 480px，元数据编辑弹窗宽 400px。截图与机器可读结果位于 `C:\Users\ZHUZHE~1\AppData\Local\Temp\sync-think-skill-newmax-qa\`。
-- 当前最新源码实例正在运行：Electron PID `5132`、Runtime PID `62240`，启动日志位于 `.data/skill-newmax-final-20260827-003608.*.log`。
+- 当前最终构建实例正在运行：Electron PID `40404` 已重载最终 Renderer，managed daemon PID `37092` 监督的 Runtime PID 为 `11016`；Runtime healthcheck 为 `ok` 且 `inFlightRuns=0`。
+- 本轮聚焦验证：作者市场包测试 2/2、Desktop 能力中心测试 32/32；最终全仓串行测试 `20/20`（Runtime `153 files / 1152 tests`）、强制 typecheck `20/20`、lint `11/11`（0 error）、设计令牌和强制 build `11/11` 均通过。Electron 实窗通过 Runtime bridge 返回 6 个市场包和 126 个 SkillVersion 记录，“我的 Skill”按当前版本口径显示 118 行；CDP 截图与计算样式检查无告警、重叠或横向溢出。
+  ﻿## 当前状态：2026-08-26 · 原生图片输入与 Codex 思考流已修复
+
+### 实现结果
+
+- 已绑定工作区的对话图片会写入 `<workspace>/.sync-think/conversations/<conversationId>/images/`；未绑定工作区时使用应用全局暂存目录。消息历史另存一份不含绝对路径的预览副本，持久层只保存 opaque `storageRef`。
+- Codex 内核通过 app-server `localImage` 读取可信本地文件；Claude SDK 继续使用原生 base64 image block。视觉模型直接看原图，文本模型才获得 OCR/图片描述 fallback。
+- Codex reasoning summary 的 item/summary/part 边界已映射为稳定段落，执行面板不再把思考标题与正文拼接。
+- Workspace Files 与本机 NewMax 的真实范围一致：默认“所有文件”，可切到“对话文件”；文件预览、编辑和审阅由 Workbench 资源标签承载。
+
+### 当前验证
+
+- 真实 Codex app-server 图片回路已通过：直接读取用户 PNG，未调用 OCR 或其他工具，并正确识别人物。
+- 全仓测试、typecheck、lint、token 检查和正式 build 全绿；最终 Desktop 构建已在 Electron 实窗复核，daemon/Runtime 心跳正常。
+
+## 当前状态：2026-08-25 · 图片背景、阅读层与模型菜单 NewMax 对齐完成
+
+### 实现结果
+
+- 图片壁纸下的 conversation minimap 轨道保持透明，去掉半透明胶囊、模糊和描边；导航短横线独立提供浅色/深色背景下的对比度、悬停和活动态。
+- 壁纸只进入主 Pane；侧栏、工作区标签轨道、会话标签轨道和页面 gutter 使用从图片提取的四级实体表面。顶部使用 `320px` smootherstep 过渡，正文中心使用渐进模糊与阅读高光，不再使用整壳铺图和半透明 chrome。
+- Compose 左下角 `+` 插入 `@` 并打开上下文面板，Skill 图标插入 `/` 并打开命令/Skill 面板；`@` 面板保留工作区文件选择并提供图片上传入口。
+- 模型选择器改为内容自适应宽度和稳定边框；ChatView 使用真实按钮作为 Radix trigger，独立组件使用 body 坐标虚拟锚点，背景切换后菜单、Provider 子菜单和模型键盘导航保持可用。
+- 助手 Markdown 保持无卡片正文；表格改为透明无外框、轻行分隔、横向滚动和悬浮复制，短代码与标识符不被拆行。
+
+### 当前验证
+
+- Desktop 全量 `177 files / 1422 tests`；根级串行 Turbo `20/20 tasks`；typecheck `20/20`、lint `11/11`（0 error）、build `11/11`、token 检查、Prettier 和 `git diff --check` 通过。
+- 可见态 Electron `1920 × 1057` 实测：主题卡为 `265 × 112px / 18px` 且四个配色点会真实改变 chrome 色阶；模型菜单正常展开并列出 `5` 个 Provider；`4` 张 Markdown 表格均为透明、零边框、`12px / 500` 表头和 `1px` 分隔线。
+- 当前 Desktop PID `67708` 正常响应，最终构建已载入；验收结束后恢复用户原有“浓郁”图片配色，模型菜单收起。
+
+## 当前状态：2026-08-25 · 偏好设置 NewMax 对齐完成
+
+### 实现结果
+
+- “设置 → 偏好”已按本机 NewMax `1.1.14` 重做为主题、快捷键、个性化三页；标签、外观按钮、图片操作、三列卡片和个性化字段的相对坐标与参考实窗一致。
+- 六张图片主题、四档图片配色、上传/压缩/取色/取景、六套颜色主题、自定义纯度/对比度和对话字体均为真实可持久化行为。深色图片主题会先归一暗色表面，不再出现浅底浅字。
+- 快捷键接入现有工作区与对话行为；语音输入使用 Electron Web Speech 服务。姓名、工作描述和全局提示词由 Runtime 持久化并加入每轮 Agent system context，不只停留在 Renderer。
+- Shell 全局字体切换为 NewMax 同款 Inter Variable、Noto Sans SC Variable 与 Noto Serif SC Variable；209 个字体分片随构建复制，按页面实际字符按需加载。
+
+### 当前验证
+
+- 偏好页聚焦回归 `3 files / 14 tests` 通过；全仓串行测试 `20/20 tasks`、typecheck `20/20 tasks`、lint `11/11 tasks`（0 error）、build `11/11 tasks`、设计令牌与 `git diff --check` 通过。
+- 实窗确认三套字体均加载，图片卡 `265.33 × 112px` 且首行相对弹窗 `y=254px`；深色表面为 `#1d1e1e / #222323 / #252626 / #1b1c1c`。`1424 × 861` 和 `900 × 650` 均无 document/body 溢出。
+- 语音快捷键模拟按下/松开后得到 `started=1 / stopped=1`，当前对话输入框写入“语音测试”。最新 Desktop PID `15852`，daemon `51152 / 64612` 与 Runtime `15544` 保持独立运行。
+
+## 当前状态：2026-08-25 · 关于页 NewMax 对齐完成
+
+### 实现结果
+
+- “设置 → 关于”已按本机 NewMax `1.1.14` 的信息层级、尺寸和相对坐标重做；旧的大型 updater 控制台与技术信息行已移除。
+- 品牌区使用透明 SYNC-THINK 标志和字标，外层绿色底、边框和圆角均已取消。版本、自动检查、检查/下载/安装主动作、更新日志、日志目录和版权形成单列布局。
+- 自动检查更新偏好由 Main 持久化，启动检查受“偏好开启 + 更新通道已配置 + updater 空闲”三重条件约束；更新日志 URL 固定在 Main，日志目录复用既有受控打开能力。
+
+### 当前验证
+
+- 聚焦测试 `3 files / 32 tests`、Desktop typecheck/build、设计令牌和空白差异检查均通过。
+- NewMax 与 SYNC-THINK 实测的版本、自动检查、主按钮、辅助动作和版权相对坐标误差不超过 `1px`。`1424 × 861` 亮暗主题及 `900 × 650` 紧凑视口均无溢出，证据位于 `.data/about-newmax-qa/`。
+- Desktop 重启后成功复用原 daemon/Runtime；当前最新源码窗口保持运行并停留在关于页。
 
 ## 当前状态：2026-08-24 · 设置数据与连接页 NewMax 对齐完成
 
@@ -1339,3 +1404,18 @@
 - 本机 Codex 0.145.0 已完成 `initialize`、`thread/start`、连续 `turn/start`、新进程 `thread/resume`、MCP 工具、reasoning、usage 与终态投影。
 - 修正了官方 schema 对齐项：`turn/start.sandboxPolicy`、空 providerModelId 回退、`error.willRetry=true` 非终态；`codex-default` 宿主哨兵不再作为真实模型 ID 下发。
 - `pnpm selftest:codex-persistent` 在 62 秒内以两个 app-server PID 完成三轮，三轮 native thread ID 一致，第二、三轮均召回首轮随机令牌。先前 503/404 结论已由本次成功实测取代。
+
+## 当前状态：2026-08-25 · 图片上传、资源链接与 Compose 对齐完成
+
+### 实现结果
+
+- 偏好主题图片导入已切换为 CSP-safe `FileReader` 数据 URL；上传、压缩、取色和持久化链路完整，聊天图片附件继续复用同一数据 URL 预览路径。
+- 助手 Markdown 中的工作区文件、图片、目录和网页链接现在是可交互资源：文件带 `FileCode2/FileImage/FolderOpen` 图标并进入文件/审阅标签，`path:line[:column]` 会传递到编辑器定位；网页带 `ExternalLink` 图标并走受控外部 URL IPC。
+- 图片壁纸下的消息 minimap 保持透明轨道，不再叠加半透明胶囊、模糊或描边；普通、悬停和活动短横线独立提供对比度和聚焦反馈。
+- Compose 已对齐 NewMax 的主几何：`744 × 112px` 外壳、20px 圆角、内容自适应模型按钮、全宽 `/` 面板、32px 横向命令行、120ms 入场动效；左下角 `+`/Skill 分别插入 `@`/`/`，语音按钮提供开始/停止/错误状态。
+
+### 当前验证
+
+- Desktop focused tests `5 files / 47 tests` 全绿；Desktop typecheck、正式 build、Prettier 和 `git diff --check` 通过。
+- 真实 Electron `1424 × 861` 实测：主题图片上传无“图片内容无法读取”错误；亮色和深色图片壁纸的 minimap 均清晰；Compose 为 `744 × 112px`，`/` 面板约为 `744 × 165px`，模型按钮为 `148 × 30px`，模型菜单与 Provider 子菜单均在视口内。
+- 当前窗口已恢复到亮色 `preset-lakewood` 主题；daemon 与 Runtime 未被本轮 Renderer/Main 验收操作停止。

@@ -25,6 +25,10 @@
     "./gateway": {
       "types": "./dist/gateway.d.ts",
       "default": "./dist/gateway.js"
+    },
+    "./preferences": {
+      "types": "./dist/preferences.d.ts",
+      "default": "./dist/preferences.js"
     }
   },
   "scripts": {

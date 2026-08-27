@@ -40,6 +40,7 @@ import type {
   SkillLocalInspectPayload,
   SkillLocalScanPayload,
   SkillLocalImportPayload,
+  InstallSkillMarketPayload,
   SetConversationPinnedPayload,
   SetTeamRunStatusPayload,
   StartTeamRunPayload,
@@ -841,6 +842,12 @@ export function parseSkillLocalImportPayload(value: unknown): SkillLocalImportPa
     ...(scope ? { scope } : {}),
     ...(typeof value.overwrite === 'boolean' ? { overwrite: value.overwrite } : {}),
   };
+}
+
+export function parseInstallSkillMarketPayload(value: unknown): InstallSkillMarketPayload {
+  const label = 'Invalid skill-market-install payload';
+  if (!isRecord(value)) throw new Error(label);
+  return { marketSkillId: requiredString(value.marketSkillId, label) };
 }
 
 export function parseConversationDecideToolApprovalPayload(

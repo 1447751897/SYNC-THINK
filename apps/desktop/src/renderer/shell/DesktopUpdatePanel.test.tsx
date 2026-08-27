@@ -31,6 +31,10 @@ const updates = {
   checkForUpdates: vi.fn(),
   downloadUpdate: vi.fn(),
   installUpdate: vi.fn(),
+  getAutoCheck: vi.fn(),
+  setAutoCheck: vi.fn(),
+  openReleaseNotes: vi.fn(),
+  openLogDirectory: vi.fn(),
   subscribeState: vi.fn(),
 };
 
@@ -41,6 +45,13 @@ beforeEach(() => {
     actionResult({ ...baseSnapshot, phase: 'downloading', progressPercent: 0 }),
   );
   updates.installUpdate.mockResolvedValue(actionResult({ ...baseSnapshot, phase: 'installing' }));
+  updates.getAutoCheck.mockResolvedValue({ enabled: true });
+  updates.setAutoCheck.mockImplementation(async (payload: { enabled: boolean }) => payload);
+  updates.openReleaseNotes.mockResolvedValue({ opened: true, error: null });
+  updates.openLogDirectory.mockResolvedValue({
+    opened: true,
+    path: 'C:\\Users\\fixture\\sync-think',
+  });
   updates.subscribeState.mockReturnValue(() => undefined);
   Object.defineProperty(window, 'syncThink', {
     configurable: true,
@@ -54,18 +65,15 @@ afterEach(() => {
 });
 
 describe('DesktopUpdatePanel', () => {
-  it('loads the release console and starts a manual update check', async () => {
+  it('loads the compact about controls and starts a manual update check', async () => {
     render(<DesktopUpdatePanel />);
 
-    expect(await screen.findByText('桌面发布通道')).toBeTruthy();
-    expect(screen.getByText('当前版本')).toBeTruthy();
-    expect(screen.getByText('0.0.1')).toBeTruthy();
-    expect(screen.getByText('发布通道')).toBeTruthy();
-    expect(screen.getByText('latest')).toBeTruthy();
-    expect(screen.getByText('SHA-512 完整性校验')).toBeTruthy();
-    expect(screen.getByText('检查')).toBeTruthy();
-    expect(screen.getByText('下载')).toBeTruthy();
-    expect(screen.getByText('安装')).toBeTruthy();
+    expect(await screen.findByText('SYNC-THINK')).toBeTruthy();
+    expect(screen.getByText('版本 v0.0.1')).toBeTruthy();
+    expect(screen.getByText('启动时自动检查新版本')).toBeTruthy();
+    expect(screen.getByRole('switch', { name: '自动检查更新' }).getAttribute('aria-checked')).toBe(
+      'true',
+    );
 
     fireEvent.click(screen.getByRole('button', { name: '检查更新' }));
 
@@ -73,14 +81,14 @@ describe('DesktopUpdatePanel', () => {
     expect(screen.getByText('正在检查更新…')).toBeTruthy();
   });
 
-  it('projects an available version and makes download the only primary action', async () => {
+  it('projects an available version into the single primary action', async () => {
     let listener: ((snapshot: DesktopUpdateSnapshot) => void) | undefined;
     updates.subscribeState.mockImplementation((next) => {
       listener = next;
       return () => undefined;
     });
     render(<DesktopUpdatePanel />);
-    await screen.findByText('0.0.1');
+    await screen.findByText('版本 v0.0.1');
 
     listener?.({
       ...baseSnapshot,
@@ -90,13 +98,10 @@ describe('DesktopUpdatePanel', () => {
     });
 
     expect(await screen.findByText('发现新版本 0.0.2')).toBeTruthy();
-    expect(screen.getByText('0.0.2')).toBeTruthy();
     const downloadButton = screen.getByRole('button', { name: '下载更新' });
     expect((downloadButton as HTMLButtonElement).disabled).toBe(false);
-    expect(downloadButton.classList.contains('is-primary')).toBe(true);
-    expect(
-      screen.getByRole('button', { name: '重启并安装' }).classList.contains('is-primary'),
-    ).toBe(false);
+    expect(screen.queryByRole('button', { name: '检查更新' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '重启并安装' })).toBeNull();
 
     fireEvent.click(downloadButton);
     await waitFor(() => expect(updates.downloadUpdate).toHaveBeenCalledTimes(1));
@@ -112,8 +117,6 @@ describe('DesktopUpdatePanel', () => {
     render(<DesktopUpdatePanel />);
 
     expect(await screen.findByText('正在下载安装包 42.5%')).toBeTruthy();
-    expect(screen.getByText('正在接收安装包')).toBeTruthy();
-    expect(screen.getByText('42.5%')).toBeTruthy();
     const progress = screen.getByRole('progressbar', { name: '更新下载进度' });
     expect(progress.getAttribute('aria-valuenow')).toBe('42.5');
     expect((screen.getByRole('button', { name: '下载中…' }) as HTMLButtonElement).disabled).toBe(
@@ -134,7 +137,6 @@ describe('DesktopUpdatePanel', () => {
     expect(await screen.findByText('安装包已就绪')).toBeTruthy();
     const installButton = screen.getByRole('button', { name: '重启并安装' });
     expect((installButton as HTMLButtonElement).disabled).toBe(false);
-    expect(installButton.classList.contains('is-primary')).toBe(true);
 
     fireEvent.click(installButton);
     await waitFor(() => expect(updates.installUpdate).toHaveBeenCalledTimes(1));
@@ -148,14 +150,11 @@ describe('DesktopUpdatePanel', () => {
     });
     render(<DesktopUpdatePanel />);
 
-    expect(
-      await screen.findByText('当前构建未配置私有更新通道。配置完成前，应用不会访问更新网络。'),
-    ).toBeTruthy();
-    for (const label of ['检查更新', '下载更新', '重启并安装']) {
-      expect((screen.getByRole('button', { name: label }) as HTMLButtonElement).disabled).toBe(
-        true,
-      );
-    }
+    const checkButton = await screen.findByRole('button', { name: '检查更新' });
+    expect((checkButton as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByRole('button', { name: '下载更新' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '重启并安装' })).toBeNull();
     expect(document.body.textContent).not.toContain('http');
     expect(document.body.textContent).not.toContain('token');
     expect(document.body.textContent).not.toContain('Bearer');
@@ -171,9 +170,31 @@ describe('DesktopUpdatePanel', () => {
     render(<DesktopUpdatePanel />);
 
     expect(await screen.findByRole('alert')).toBeTruthy();
-    expect(screen.getByText('本次更新已停止')).toBeTruthy();
     expect(screen.getByText('安装包校验失败，已丢弃本次下载。')).toBeTruthy();
     expect(document.body.textContent).not.toContain('provider');
     expect(document.body.textContent).not.toContain('stack');
+  });
+
+  it('persists the automatic startup check preference', async () => {
+    updates.getAutoCheck.mockResolvedValue({ enabled: false });
+    render(<DesktopUpdatePanel />);
+
+    const toggle = await screen.findByRole('switch', { name: '自动检查更新' });
+    await waitFor(() => expect(toggle.getAttribute('aria-checked')).toBe('false'));
+    fireEvent.click(toggle);
+
+    await waitFor(() => expect(updates.setAutoCheck).toHaveBeenCalledWith({ enabled: true }));
+    expect(toggle.getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('opens release notes and the local log directory through preload', async () => {
+    render(<DesktopUpdatePanel />);
+    await screen.findByText('版本 v0.0.1');
+
+    fireEvent.click(screen.getByRole('button', { name: '查看更新日志' }));
+    fireEvent.click(screen.getByRole('button', { name: '打开日志目录' }));
+
+    await waitFor(() => expect(updates.openReleaseNotes).toHaveBeenCalledTimes(1));
+    expect(updates.openLogDirectory).toHaveBeenCalledTimes(1);
   });
 });

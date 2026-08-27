@@ -1,4 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { isAbsolute } from 'node:path';
 import type {
   KernelAdapter,
   KernelEvent,
@@ -52,6 +54,10 @@ interface ActiveTurn {
   lastReasoningItemId?: string;
   /** Whether any reasoning text has been emitted for this turn yet. */
   reasoningEmitted: boolean;
+  /** Last app-server summary section observed for each reasoning item. */
+  reasoningSummaryIndexes: Map<string, number>;
+  /** Prevent duplicate breaks when both summaryIndex and summaryPartAdded fire. */
+  reasoningAtBoundary: boolean;
   /**
    * Zero-output watchdogs for commandExecution items. codex CLI 0.147 on
    * Windows can hang forever after `item/started` (the spawned command never
@@ -222,6 +228,15 @@ function providerConfig(request: KernelRequest): {
     model_auto_compact_token_limit:
       request.effectiveContextWindow ?? request.contextWindow ?? 128_000,
     model_reasoning_summary: 'detailed',
+    // Codex gates the raw reasoning chain behind `show_raw_agent_reasoning`
+    // (default false): without it, `item/reasoning/textDelta` (the full
+    // thinking text) never fires and the host only ever sees the condensed
+    // `summaryTextDelta` headline, so the Think row collapses to one line.
+    // Turning it on streams the full chain alongside the summary, matching
+    // DeThink's expanded reasoning blocks. Tracked upstream in
+    // codex-rs/core/src/config/mod.rs (`show_raw_agent_reasoning`) and
+    // codex-rs/core/src/session/session.rs (`as_legacy_events`).
+    show_raw_agent_reasoning: true,
   };
   const mcpServers = mcpConfig(request.platformBroker);
   if (mcpServers) config.mcp_servers = mcpServers;
@@ -347,6 +362,8 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
       streamedTextItems: new Set(),
       streamedReasoningItems: new Set(),
       reasoningEmitted: false,
+      reasoningSummaryIndexes: new Map(),
+      reasoningAtBoundary: false,
       commandWatchdogs: new Map(),
     };
     this.activeTurn = turn;
@@ -355,13 +372,17 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
       request.session?.mode === 'resume'
         ? [request.session.catchUp, request.userText].filter(Boolean).join('\n\n')
         : request.userText;
-    // Codex app-server follows the OpenAI Responses input-item grammar; images
-    // ride as current app-server `image` items next to the text item. Only data URLs with an
-    // image media type are forwarded; anything unresolvable is dropped.
+    // Prefer app-server's native localImage input for the host-validated staged
+    // file. Inline image URLs remain useful for callers that have no local path.
     const input: Array<Record<string, unknown>> = [
       { type: 'text', text: prompt, text_elements: [] },
     ];
     for (const image of request.images ?? []) {
+      const filePath = image.filePath?.trim();
+      if (filePath && isAbsolute(filePath) && existsSync(filePath)) {
+        input.push({ type: 'localImage', path: filePath });
+        continue;
+      }
       if (!/^data:image\/(png|jpeg|gif|webp);base64,.+$/.test(image.dataUrl)) continue;
       input.push({ type: 'image', url: image.dataUrl });
     }
@@ -647,10 +668,17 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
     if (method === 'item/reasoning/summaryTextDelta' || method === 'item/reasoning/textDelta') {
       const delta = text(params.delta);
       const itemId = text(params.itemId);
+      const summaryIndex = numberValue(params.summaryIndex);
+      if (method === 'item/reasoning/summaryTextDelta' && itemId && summaryIndex !== undefined) {
+        const previousIndex = turn.reasoningSummaryIndexes.get(itemId);
+        if (previousIndex !== undefined && previousIndex !== summaryIndex) {
+          this.pushReasoningBoundary(turn);
+        }
+        turn.reasoningSummaryIndexes.set(itemId, summaryIndex);
+      }
       if (delta) this.pushReasoningText(turn, delta, itemId);
       if (itemId) {
         turn.streamedReasoningItems.add(itemId);
-        turn.lastReasoningItemId = itemId;
       }
       return;
     }
@@ -659,10 +687,7 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
       // paragraph break so its `**heading**` doesn't fuse with the previous
       // section's tail (`**A****B**`). Skip when nothing streamed yet — the
       // first part may announce itself before any delta.
-      const itemId = text(params.itemId);
-      if (turn.reasoningEmitted && (!itemId || turn.streamedReasoningItems.has(itemId))) {
-        this.pushTurnEvent({ type: 'reasoning', text: '\n\n' });
-      }
+      this.pushReasoningBoundary(turn);
       return;
     }
     if (method === 'item/commandExecution/outputDelta') {
@@ -828,10 +853,18 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
       turn.lastReasoningItemId &&
       itemId !== turn.lastReasoningItemId
     ) {
-      this.pushTurnEvent({ type: 'reasoning', text: '\n\n' });
+      this.pushReasoningBoundary(turn);
     }
     turn.reasoningEmitted = true;
+    turn.reasoningAtBoundary = false;
+    if (itemId) turn.lastReasoningItemId = itemId;
     this.pushTurnEvent({ type: 'reasoning', text: delta });
+  }
+
+  private pushReasoningBoundary(turn: ActiveTurn): void {
+    if (!turn.reasoningEmitted || turn.reasoningAtBoundary) return;
+    this.pushTurnEvent({ type: 'reasoning', text: '\n\n' });
+    turn.reasoningAtBoundary = true;
   }
 
   /**

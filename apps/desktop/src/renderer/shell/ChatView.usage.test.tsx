@@ -6,6 +6,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import type { Conversation, Message } from '@sync-think/shared';
 import type { RunProcessView } from '@sync-think/protocol';
 import { ChatView } from './ChatView.js';
+import { resetProviderUsageSummaryCacheForTests } from './provider-usage-summary.js';
 
 const runtime = {
   getConversationRunProcess: vi.fn(),
@@ -62,6 +63,7 @@ const processView = {
 
 beforeEach(() => {
   window.localStorage.clear();
+  resetProviderUsageSummaryCacheForTests();
   runtime.openTask.mockReset().mockResolvedValue({ task: { threadId: 'thread-usage' } });
   runtime.getConversationContextStatus.mockReset().mockResolvedValue({
     modelId: 'model-usage',
@@ -310,7 +312,7 @@ describe('ChatView reply usage details', () => {
     expect(within(tooltip).getByTestId('context-compact-distance').textContent).toBe('97k');
   });
 
-  it('shows context occupancy, billing total, and single-request input/cache/output in the hover panel', async () => {
+  it('shows the NewMax reply summary and cumulative input/cache/output in the hover panel', async () => {
     render(
       <ChatView
         conversation={conversation}
@@ -323,26 +325,18 @@ describe('ChatView reply usage details', () => {
 
     expect(await screen.findByText('cached reply')).toBeTruthy();
     await waitFor(() => expect(runtime.getConversationRunProcess).toHaveBeenCalled());
-    // 主标签现在是输入上下文（watermark=5000），不是累计求和（14.5k）。
-    fireEvent.focus(await screen.findByText('1s · 5k'));
+    fireEvent.focus(await screen.findByText('1s · 14.5k'));
 
-    const tooltip = await screen.findByRole('tooltip');
-    expect(within(tooltip).getByText('本次回复累计')).toBeTruthy();
-    expect(within(tooltip).getByText('计费累计')).toBeTruthy();
-    expect(within(tooltip).getByText('14.5k')).toBeTruthy();
-    expect(within(tooltip).getByText('输入上下文')).toBeTruthy();
-    expect(within(tooltip).getByText('5k')).toBeTruthy();
-    // 普通输入/缓存读取/输出用「最后一次请求」的单次口径（lastRequestUsage）：
-    // in=4000、cachedHit=3200、out=488 → 普通输入=800、缓存读取=3.2k、输出=488。
-    expect(within(tooltip).getByText('普通输入')).toBeTruthy();
-    expect(within(tooltip).getByText('800')).toBeTruthy();
-    expect(within(tooltip).getByText('缓存读取')).toBeTruthy();
-    expect(within(tooltip).getByText('3.2k')).toBeTruthy();
-    expect(within(tooltip).getByText('输出')).toBeTruthy();
-    expect(within(tooltip).getByText('488')).toBeTruthy();
+    const tooltip = await screen.findByTestId('reply-usage-tooltip');
+    expect(within(tooltip).getByText('1s')).toBeTruthy();
+    expect(
+      within(tooltip).getByText('↑ 1.2k · ↓ 488 · 缓存读 12.8k'),
+    ).toBeTruthy();
+    expect(within(tooltip).queryByText('本次回复累计')).toBeNull();
+    expect(within(tooltip).queryByText('输入上下文')).toBeNull();
   });
 
-  it('shows unreported cache accounting instead of fabricating zeroes', async () => {
+  it('omits cache accounting when the provider did not report it', async () => {
     runtime.getConversationRunProcess.mockResolvedValueOnce({
       process: {
         ...processView,
@@ -368,12 +362,112 @@ describe('ChatView reply usage details', () => {
 
     expect(await screen.findByText('cached reply')).toBeTruthy();
     await waitFor(() => expect(runtime.getConversationRunProcess).toHaveBeenCalled());
-    fireEvent.focus(await screen.findByText('1s · 5k'));
+    fireEvent.focus(await screen.findByText('1s · 14.5k'));
 
-    const tooltip = await screen.findByRole('tooltip');
-    // 缓存读取未上报时显示「未上报」，不伪造 0。
-    expect(within(tooltip).getAllByText('未上报')).toHaveLength(1);
-    expect(within(tooltip).getByText('输入上下文')).toBeTruthy();
+    const tooltip = await screen.findByTestId('reply-usage-tooltip');
+    expect(tooltip.textContent).not.toContain('缓存读');
+    expect(tooltip.textContent).not.toContain('缓存写');
+    expect(tooltip.textContent).toContain('↑ 14k · ↓ 488');
+  });
+
+  it('shows provider-scoped today and 30-day usage below the reply detail', async () => {
+    const now = Date.now();
+    runtime.getUsageSummary.mockImplementation(
+      async (request: { taskId?: string; sinceDays?: number }) => {
+        if (request.sinceDays !== 30) {
+          return {
+            rows: [],
+            requests: [],
+            tools: [],
+            toolModels: [],
+            toolFailures: [],
+            pricing: [],
+            totalRequests: 0,
+            totalTokensIn: 0,
+            totalTokensOut: 0,
+            totalCostByCurrency: {},
+            totalReasoningTokens: 0,
+            totalTokens: 0,
+          };
+        }
+        return {
+          rows: [],
+          requests: [
+            {
+              requestId: 'today-request',
+              occurredAt: new Date(now).toISOString(),
+              providerId: 'provider-usage',
+              modelId: 'model-usage',
+              tokensIn: 9_000,
+              tokensOut: 1_000,
+              totalTokens: 10_000,
+              status: 'success',
+              currency: 'USD',
+              estimatedCost: 0.12,
+            },
+            {
+              requestId: 'older-request',
+              occurredAt: new Date(now - 10 * 24 * 60 * 60_000).toISOString(),
+              providerId: 'provider-usage',
+              modelId: 'model-usage',
+              tokensIn: 180_000,
+              tokensOut: 20_000,
+              totalTokens: 200_000,
+              status: 'success',
+              currency: 'USD',
+              estimatedCost: 0.3,
+            },
+            {
+              requestId: 'other-provider',
+              occurredAt: new Date(now).toISOString(),
+              providerId: 'provider-other',
+              modelId: 'model-other',
+              tokensIn: 999_000,
+              tokensOut: 1_000,
+              totalTokens: 1_000_000,
+              status: 'success',
+              currency: 'USD',
+              estimatedCost: 9,
+            },
+          ],
+          tools: [],
+          toolModels: [],
+          toolFailures: [],
+          pricing: [],
+          totalRequests: 3,
+          totalTokensIn: 1_188_000,
+          totalTokensOut: 22_000,
+          totalCostByCurrency: { USD: 9.42 },
+          totalReasoningTokens: 0,
+          totalTokens: 1_210_000,
+        };
+      },
+    );
+
+    render(
+      <ChatView
+        conversation={conversation}
+        modelName="GPT-5"
+        models={[
+          {
+            modelId: 'model-usage',
+            displayName: 'GPT-5',
+            providerId: 'provider-usage',
+            providerName: 'Provider',
+          },
+        ]}
+        eventHistory={[]}
+        onTitleUpdated={vi.fn()}
+      />,
+    );
+
+    fireEvent.focus(await screen.findByText('1s · 14.5k'));
+    const usage = await screen.findByTestId('provider-usage-windows');
+    expect(within(usage).getByText('今日')).toBeTruthy();
+    expect(within(usage).getByText('$0.12 · 10.0k')).toBeTruthy();
+    expect(within(usage).getByText('近30天')).toBeTruthy();
+    expect(within(usage).getByText('$0.42 · 210.0k')).toBeTruthy();
+    expect(usage.textContent).not.toContain('$9.00');
   });
 
   it('keeps per-reply usage visible for a completed commentary-only assistant turn', async () => {
@@ -397,15 +491,11 @@ describe('ChatView reply usage details', () => {
       />,
     );
 
-    // Completed process-only turns stay compact until the user opens the panel;
-    // per-reply usage remains visible in the message footer.
-    const processToggle = await screen.findByTestId('process-panel-toggle');
-    expect(processToggle.getAttribute('aria-expanded')).toBe('false');
-    fireEvent.click(processToggle);
     expect((await screen.findAllByText('已完成检查，没有额外正文。')).length).toBeGreaterThan(0);
     expect(screen.getByTestId('inline-process-commentary')).toBeTruthy();
+    expect(screen.getByTestId('process-panel-toggle').getAttribute('aria-expanded')).toBe('true');
     await waitFor(() => expect(runtime.getConversationRunProcess).toHaveBeenCalled());
-    expect(await screen.findByText(/1s · 5k/)).toBeTruthy();
+    expect(await screen.findByText(/1s · 14.5k/)).toBeTruthy();
     expect(screen.queryByRole('button', { name: '复制' })).toBeNull();
     expect(screen.queryByRole('button', { name: '分享' })).toBeNull();
   });

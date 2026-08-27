@@ -1,6 +1,6 @@
 # Project Structure
 
-更新时间：2026-08-21
+更新时间：2026-08-26
 
 本文档提供当前仓库的模块地图与文件放置规则。产品边界以已批准设计文档为准，技术取舍以 `04-tech-decisions.md` 为准。
 
@@ -29,27 +29,29 @@ SYNC-THINK/
 
 ## 2. Desktop 边界
 
-| 层                | 关键入口                                                                                                               | 职责                                                                                                                  |
-| ----------------- | ---------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| Main              | `apps/desktop/src/main/index.ts`                                                                                       | BrowserWindow、Runtime supervisor、IPC 校验、sender 生命周期和本机文件/进程能力编排                                   |
-| Main services     | `project-content-search.ts`、`project-file-editor.ts`、`project-terminal.ts`、`project-terminal-registry.ts`           | 搜索、文件读写/监听、命令解析/cwd 校验、终端会话唯一性                                                                |
-| Updater/recovery  | `desktop-updater.ts`、`electron-updater-driver.ts`、`desktop-update-recovery-store.ts`、`desktop-update-rollback-*.ts` | Main-only feed 控制、bounded failure evidence、healthy installer 登记、rollback intent/health/outcome 与独立 watchdog |
-| Preload           | `apps/desktop/src/preload/index.ts`                                                                                    | 在 sandbox/contextIsolation 下暴露最小 typed bridge，转发 terminal 事件并返回 disposer                                |
-| IPC contract      | `apps/desktop/src/workspace-tools-contract.ts`、`browser-workflow-payloads.ts`、`renderer/global.d.ts`                 | Renderer 可见 payload/result/event 类型；Browser Workflow 变更需额外严格校验，不得暴露 Node 或 secret                 |
-| Renderer shell    | `apps/desktop/src/renderer/shell/ShellApp.tsx`                                                                         | 顶层目录、Workspace/会话状态、Pane/Workbench 快照提交和各页面装配                                                     |
-| Pane model        | `pane-layout.ts`、`WorkspacePaneHost.tsx`、`ConversationTabs.tsx`                                                      | 递归布局、焦点、Tab 资源、恢复/迁移和最多两路 ChatView 挂载                                                           |
-| Workbench model   | `workspace-workbench.ts`、`WorkspaceWorkbench.tsx`                                                                     | 每 Workspace 的右侧/底部标签、开关、尺寸与文件树宽度；只保存 UI 布局，不保存文件正文或终端输出                        |
-| Resource views    | `ChatView.tsx`、`FilePane.tsx`、`TerminalPane.tsx`                                                                     | 对话、文件编辑、终端三类 Pane 内容；临时状态留在 Renderer                                                             |
-| Compose Skill     | `TurnSkillControl.tsx`、`compose-skill-selection.ts`、`compose-toolbar.tsx`                                            | 解析 Agent/Team 有效 owner、懒取 metadata、维护当前会话临时选择和稳定菜单表达                                         |
-| Settings/models   | `SettingsPage.tsx`、`ModelSettings.tsx`、`shell.css`                                                                   | 设置分类、Provider/凭据/模型优先级、服务商目录、使用统计及 NewMax 设置窗口视觉契约                                    |
-| Terminal renderer | `terminal-session-store.ts`、`xterm-vendor-loader.ts`、`xterm-vendor.ts`                                               | 会话事件归并、命令竞态处理和 xterm 按需加载/主题同步                                                                  |
-| File/review views | `WorkspaceFileView.tsx`、`RightDock.tsx`                                                                               | 文件树、文件预览/编辑、搜索、对话变更树与行级审阅；可作为 Workbench 独立资源                                          |
+| 层                | 关键入口                                                                                                                                                | 职责                                                                                                                                |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| Main              | `apps/desktop/src/main/index.ts`                                                                                                                        | BrowserWindow、Runtime supervisor、IPC 校验、sender 生命周期和本机文件/进程能力编排                                                 |
+| Main services     | `project-content-search.ts`、`project-file-editor.ts`、`project-terminal.ts`、`project-terminal-registry.ts`、`image-staging.ts`                        | 搜索、文件读写/监听、命令解析/cwd 校验、终端会话唯一性；把对话图片物化到当前工作区的会话级可信目录                                  |
+| Updater/recovery  | `desktop-updater.ts`、`desktop-update-preferences.ts`、`electron-updater-driver.ts`、`desktop-update-recovery-store.ts`、`desktop-update-rollback-*.ts` | Main-only feed 控制、自动检查偏好、bounded failure evidence、healthy installer 登记、rollback intent/health/outcome 与独立 watchdog |
+| Preload           | `apps/desktop/src/preload/index.ts`                                                                                                                     | 在 sandbox/contextIsolation 下暴露最小 typed bridge，转发 terminal 事件并返回 disposer                                              |
+| IPC contract      | `apps/desktop/src/workspace-tools-contract.ts`、`browser-workflow-payloads.ts`、`external-link-contract.ts`、`renderer/global.d.ts`                     | Renderer 可见 payload/result/event 类型；外链只接受受控 `http/https`；Browser Workflow 变更需额外严格校验，不得暴露 Node 或 secret  |
+| Renderer shell    | `apps/desktop/src/renderer/shell/ShellApp.tsx`                                                                                                          | 顶层目录、Workspace/会话状态、Pane/Workbench 快照提交和各页面装配                                                                   |
+| Pane model        | `pane-layout.ts`、`WorkspacePaneHost.tsx`、`ConversationTabs.tsx`                                                                                       | 递归布局、焦点、Tab 资源、恢复/迁移和最多两路 ChatView 挂载                                                                         |
+| Workbench model   | `workspace-workbench.ts`、`WorkspaceWorkbench.tsx`                                                                                                      | 每 Workspace 的右侧/底部标签、开关、尺寸与文件树宽度；只保存 UI 布局，不保存文件正文或终端输出                                      |
+| Resource views    | `ChatView.tsx`、`MarkdownContent.tsx`、`FilePane.tsx`、`TerminalPane.tsx`                                                                               | 对话、可点击文件/图片/网页资源、文件编辑、终端四类内容；临时状态留在 Renderer，文件定位沿现有 Workbench 回调传递                    |
+| Compose Skill     | `TurnSkillControl.tsx`、`compose-skill-selection.ts`、`compose-toolbar.tsx`、`compose-slash.ts`                                                         | 解析 Agent/Team 有效 owner、懒取 metadata、维护当前会话临时选择、NewMax 紧凑命令面板和语音输入状态                                  |
+| Settings/models   | `SettingsPage.tsx`、`ModelSettings.tsx`、`PreferencesSettings.tsx`、`preferences-store.ts`、`shell.css`                                                 | 设置分类、Provider/凭据/模型优先级、主题/快捷键/个性化、服务商目录、使用统计及 NewMax 设置窗口视觉契约                              |
+| Terminal renderer | `terminal-session-store.ts`、`xterm-vendor-loader.ts`、`xterm-vendor.ts`                                                                                | 会话事件归并、命令竞态处理和 xterm 按需加载/主题同步                                                                                |
+| File/review views | `WorkspaceFileView.tsx`、`RightDock.tsx`                                                                                                                | 文件树、文件预览/编辑、搜索、对话变更树与行级审阅；可作为 Workbench 独立资源                                                        |
 
 Main 或 Preload 发生变化后必须完整重启 Electron；只刷新 Renderer 不会注册新的 IPC handler，也不会替换旧 preload。
 
 ## 3. Runtime 与共享包
 
 - `apps/runtime` 是独立生命周期的真 Agent Runtime：命名管道、持久事件/检查点、Provider 调用、计划/DAG、审批、恢复和工具循环都在这里。
+- `apps/runtime/src/chat-image-staging.ts` 只接受全局暂存目录或当前 `<workspace>/.sync-think/conversations/<conversationId>/images/` 内的普通文件，并在解析后再次校验 realpath，避免跨会话路径或符号链接逃逸。
+- 外部 Codex 通过 app-server `localImage` 接收可信绝对路径；Claude SDK 使用原生 image block。`describe_image`/OCR 只作为不支持视觉模型的 fallback，不参与正常多模态路径。
 - `packages/storage` 是 SQLite 真源访问层；durable 消息、事件、Agent/Skill/Policy/Artifact 等进入对应 store，不从 Renderer localStorage 反推。
 - `packages/protocol` 只放跨进程稳定合同与校验；仅 Renderer 使用的 Electron IPC 类型放在 Desktop contract，避免把 Electron 能力扩散到 Runtime 协议。
 - `packages/protocol/src/skill-selection.ts` 规范化每轮 SkillVersion ID；`packages/core/src/run-skill-selection.ts` 负责 allowlist 子集、归档和审批规则，保持无 I/O、可单测。
@@ -58,7 +60,7 @@ Main 或 Preload 发生变化后必须完整重启 Electron；只刷新 Renderer
 - `packages/workers/src/browser/browser-host.ts` 负责系统浏览器发现/启动、CDP、Profile Session、Page lease、同 Page 队列、Profile 站点数据查询/清除与具体 Playwright 动作；浏览器候选顺序为显式 executable、Chrome、Edge；registrable domain 由 `tldts` Public Suffix List 解析，Storage 操作固定走 Page target CDP，不读取 `storageState()`；`browser-worker.ts` 只把 capability token、路径与事件合同接到共享 Host。
 - `apps/runtime/src/browser/runtime-browser-controller.ts` 把聊天 `browser_*` 参数映射为 Worker action，使用 `SqliteBrowserStore` 持久化 origin grant、command 与人工 handoff，并保证 Runtime 的脱敏意图先于 Worker 副作用；Page lease 与浏览器进程仍由 `BrowserHost` 管理。
 - `packages/core` 保持无 I/O 的领域规则；`packages/adapters` 隔离 Provider 差异；`packages/ui-kit` 自 2026-08-18 起只剩旧渲染层遗留组件，Desktop 侧仅有 type-only 引用，不再提供样式或主题控制器。
-- 颜色/字体/圆角 token 的唯一真源是 `docs/product/16-shell-design-tokens.json`；`pnpm tokens:css`（`scripts/generate-shell-tokens.mjs`）生成 `apps/desktop/src/renderer/shell/tokens.css`，由 `shell.css` `@import`。生成物禁止手改；`scripts/check-design-tokens.mjs` 拦裸 hex。
+- 颜色/字体/圆角 token 的唯一真源是 `docs/product/16-shell-design-tokens.json`；`pnpm tokens:css`（`scripts/generate-shell-tokens.mjs`）生成 `apps/desktop/src/renderer/shell/tokens.css`，由 `shell.css` `@import`。生成物禁止手改；`scripts/check-design-tokens.mjs` 拦裸 hex。NewMax 同款可变字体位于 `apps/desktop/src/renderer/shell/assets/fonts`，`build-shell.mjs` 只把运行时 woff2 分片复制到 Renderer 产物。
 - 模型设置的数据行为集中在 `ModelSettings.tsx`，`SettingsPage.tsx` 只负责设置分类和完成/脏状态协调。NewMax 对齐的尺寸、颜色与动效只落在 `shell.css` 和设计 token 中；不要把服务商密钥、模型优先级或使用记录复制成 Renderer 假数据。
 
 ## 4. Workspace 工具调用链
@@ -183,6 +185,7 @@ BrowserWorkflowPanel / BrowserStage Draft recording context
 ```text
 Settings/About updater action
   -> trusted Renderer IPC
+  -> desktop-update-preferences startup/manual check gate
   -> DesktopUpdateController action/phase fence
   -> electron-updater Main-only HTTPS/Bearer driver
   -> beforeInstall: DesktopUpdateRollbackCoordinator.prepareInstall
@@ -215,6 +218,7 @@ NSIS `apps/desktop/build/installer.nsh` 负责把每个已安装版本的 instal
 | Browser Automation Task/Draft/Review/WorkflowVersion      | SQLite durable store；Draft 可返工，Review 追加记录，已发布 WorkflowVersion 由 trigger 保证不可更新/删除                          |
 | 生成图片正文                                              | Runtime 受控 GeneratedImageStore；SQLite/Renderer 只保存 contentRef/hash 和 opaque preview 投影                                   |
 | Updater failure evidence                                  | `<userData>/diagnostics/desktop-updater-recovery.json`，最多 20 条脱敏记录                                                        |
+| 自动检查更新偏好                                          | `<userData>/desktop-update-preferences.json`；仅 Main 读写，Renderer 经严格 IPC 传递 boolean                                      |
 | Automatic rollback                                        | `%LOCALAPPDATA%\sync-think-updater\recovery` 下的 installer、healthy release、intent、health、attempt 与 outcome；不进入 Renderer |
 
 布局偏好不得存储文件正文、terminal 输出、流式帧、错误态、会话级临时 Skill 选择或旧进程“仍在运行”的声明。Run event/checkpoint 也不得复制完整 `SKILL.md` 正文。
@@ -238,6 +242,7 @@ NSIS `apps/desktop/build/installer.nsh` 负责把每个已安装版本的 instal
 - `apps/runtime/src/daemon/github-webhook{,-server,-sync,-config}.ts` 是 TD-047 的 HTTP 入口分层：`github-webhook.ts` 是纯函数层（配置解析、HMAC 校验、响应码判定、push payload 有界投影），`-server.ts` 是 `node:http` 监听器，`-sync.ts` 是 rescan 驱动的启停/就地路由刷新循环（single-flight 且**所有**路径都必须走同一个 `finally` 释放，否则 guard 会永久 wedge），`-config.ts` 是 `pnpm webhook:github` CLI。密钥只经 stdin 或自动生成进 SecureStore，配置只存 handle。
 - `packages/storage/src/external-event-store.ts` 是 `0048_daemon_external_event` 的持久状态机；`packages/shared/src/types/external-event.ts` 是跨层 envelope SSOT。
 - `apps/runtime/src/runtime.ts` 是执行面和 SQLite durable 真相源：对话、Run、工具授权、事件投影、Kernel adapter/session 都归 Runtime 所有。
+- `apps/runtime/src/personalization-context.ts` 规范化 `preferences.personalization` 并生成每轮 Agent system context；姓名、工作描述和全局提示词由 Runtime setting store 持久化，Renderer localStorage 只承担断线时的 UI 缓存。
 - `conversation.listPendingToolApprovals` 是 Desktop 重连时的当前状态对账接口：Runtime 只返回请求时保存的脱敏 `approvalSummary`；Desktop 将其与 durable event replay 合并，不把原始工具参数扩散到 Renderer。
 - `apps/runtime/src/kernel/codex-app-server-adapter.ts` 只消费官方 Codex app-server JSON-RPC；`registry.ts` 是唯一注册入口。
 - `apps/runtime/src/kernel/codex-e2e-verify.ts` 是使用本机登录态的非密封真实验收入口；`pnpm selftest:codex-persistent` 验证同进程连续 turn 与新进程 `thread/resume`，不进入普通离线测试套件。

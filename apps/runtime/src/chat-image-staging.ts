@@ -19,6 +19,11 @@ export function resolveChatImageStagingDir(
   return resolve(join(dataRoot, 'SYNC-THINK', 'chat-image-staging'));
 }
 
+export interface AppendMessageImageTrustContext {
+  workspaceRoot?: string;
+  conversationId?: string;
+}
+
 function isPathInside(parent: string, child: string): boolean {
   const root = normalize(resolve(parent))
     .replace(/[\\/]+$/, '')
@@ -31,13 +36,37 @@ function isPathInside(parent: string, child: string): boolean {
   return target.startsWith(prefix) || target.startsWith(altPrefix);
 }
 
-/** Resolve and validate a Desktop-staged image without reading it into memory. */
-export function resolveStagedImagePath(stagingPath: string): string | undefined {
+function workspaceConversationImageDir(
+  trust?: AppendMessageImageTrustContext,
+): string | undefined {
+  const conversationId = trust?.conversationId?.trim();
+  if (
+    !trust?.workspaceRoot ||
+    !conversationId ||
+    conversationId === '.' ||
+    conversationId === '..' ||
+    !/^[A-Za-z0-9._-]+$/.test(conversationId)
+  ) {
+    return undefined;
+  }
+  return resolve(
+    join(trust.workspaceRoot, '.sync-think', 'conversations', conversationId, 'images'),
+  );
+}
+
+/** Resolve and validate a Desktop-owned image without reading it into memory. */
+export function resolveStagedImagePath(
+  stagingPath: string,
+  trust?: AppendMessageImageTrustContext,
+): string | undefined {
   if (!stagingPath || typeof stagingPath !== 'string') return undefined;
   const stagingRoot = resolveChatImageStagingDir();
+  const workspaceImageRoot = workspaceConversationImageDir(trust);
+  const trustedRoots = [stagingRoot, ...(workspaceImageRoot ? [workspaceImageRoot] : [])];
   const absolute = resolve(stagingPath);
-  if (!isPathInside(stagingRoot, absolute)) {
-    console.warn('[runtime] rejected image path outside staging dir', absolute);
+  const trustedRoot = trustedRoots.find((root) => isPathInside(root, absolute));
+  if (!trustedRoot) {
+    console.warn('[runtime] rejected image path outside app-managed image directories', absolute);
     return undefined;
   }
   if (!existsSync(absolute)) {
@@ -45,10 +74,10 @@ export function resolveStagedImagePath(stagingPath: string): string | undefined 
     return undefined;
   }
   try {
-    const realRoot = existsSync(stagingRoot) ? realpathSync(stagingRoot) : resolve(stagingRoot);
+    const realRoot = existsSync(trustedRoot) ? realpathSync(trustedRoot) : resolve(trustedRoot);
     const realTarget = realpathSync(absolute);
     if (!isPathInside(realRoot, realTarget)) {
-      console.warn('[runtime] rejected staged image link outside staging dir', absolute);
+      console.warn('[runtime] rejected image link outside app-managed image directory', absolute);
       return undefined;
     }
     const stat = statSync(realTarget);
@@ -65,8 +94,11 @@ export function resolveStagedImagePath(stagingPath: string): string | undefined 
  * Convert a staged absolute path into a data URL for Provider adapters.
  * Rejects paths outside the staging directory.
  */
-export function readStagedImageAsDataUrl(stagingPath: string): string | undefined {
-  const absolute = resolveStagedImagePath(stagingPath);
+export function readStagedImageAsDataUrl(
+  stagingPath: string,
+  trust?: AppendMessageImageTrustContext,
+): string | undefined {
+  const absolute = resolveStagedImagePath(stagingPath, trust);
   if (!absolute) return undefined;
   try {
     const buf = readFileSync(absolute);
@@ -87,9 +119,9 @@ export function readStagedImageAsDataUrl(stagingPath: string): string | undefine
 
 export function resolveAppendMessageImageStagingPath(image: {
   stagingPath?: string;
-}): string | undefined {
+}, trust?: AppendMessageImageTrustContext): string | undefined {
   return typeof image.stagingPath === 'string'
-    ? resolveStagedImagePath(image.stagingPath)
+    ? resolveStagedImagePath(image.stagingPath, trust)
     : undefined;
 }
 
@@ -97,12 +129,12 @@ export function resolveAppendMessageImageDataUrl(image: {
   dataUrl?: string;
   stagingPath?: string;
   mimeType?: string;
-}): string | undefined {
+}, trust?: AppendMessageImageTrustContext): string | undefined {
   if (typeof image.dataUrl === 'string' && image.dataUrl.startsWith('data:image/')) {
     return image.dataUrl;
   }
   if (typeof image.stagingPath === 'string' && image.stagingPath.length > 0) {
-    return readStagedImageAsDataUrl(image.stagingPath);
+    return readStagedImageAsDataUrl(image.stagingPath, trust);
   }
   return undefined;
 }

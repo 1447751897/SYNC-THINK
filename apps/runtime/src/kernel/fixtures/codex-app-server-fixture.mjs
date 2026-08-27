@@ -94,26 +94,23 @@ input.on('line', (line) => {
         },
       });
     }
-    // Streamed reasoning: summary sections stream via summaryTextDelta and a
-    // summaryPartAdded announces each new section (including before the first).
+    // Streamed reasoning from current app-server builds can advance
+    // summaryIndex without a summaryPartAdded notification.
     if (request.params?.input?.some?.((item) => item?.text === 'streamed reasoning fixture')) {
-      const part = (itemId) => ({
-        method: 'item/reasoning/summaryPartAdded',
-        params: { threadId, turnId, itemId },
-      });
-      const delta = (itemId, text) => ({
+      const delta = (itemId, summaryIndex, text) => ({
         method: 'item/reasoning/summaryTextDelta',
-        params: { threadId, turnId, itemId, delta: text },
+        params: { threadId, turnId, itemId, summaryIndex, delta: text },
       });
-      write(part('s-1'));
-      write(delta('s-1', '**分析**'));
-      write(delta('s-1', '正文A'));
-      write(part('s-1'));
-      write(delta('s-1', '**验证**'));
-      write(delta('s-2', '**新思考**'));
+      write(delta('s-1', 0, '**分析**'));
+      write(delta('s-1', 0, '正文A'));
+      write(delta('s-1', 1, '**验证**'));
+      write(delta('s-2', 0, '**新思考**'));
     }
-    const sawImage = request.params?.input?.some?.(
+    const sawInlineImage = request.params?.input?.some?.(
       (item) => item?.type === 'image' && item?.url === 'data:image/png;base64,QUJDRA==',
+    );
+    const sawLocalImage = request.params?.input?.some?.(
+      (item) => item?.type === 'localImage' && typeof item?.path === 'string',
     );
     const permissionFixture = request.params?.input?.some?.(
       (item) => item?.text === 'permission fixture',
@@ -162,8 +159,10 @@ input.on('line', (line) => {
               turnApprovalPolicy: request.params?.approvalPolicy,
               turnSandboxPolicy: request.params?.sandboxPolicy,
             })
-          : sawImage
-            ? 'image forwarded'
+          : sawLocalImage
+            ? 'local image forwarded'
+            : sawInlineImage
+              ? 'inline image forwarded'
             : `answer ${turnCount}`,
       },
     });

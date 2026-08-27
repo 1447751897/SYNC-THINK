@@ -10,6 +10,7 @@ import {
   BrowserWindow,
   clipboard,
   dialog,
+  globalShortcut,
   ipcMain,
   nativeTheme,
   protocol,
@@ -325,6 +326,7 @@ import {
   parseSkillLocalInspectPayload,
   parseSkillLocalScanPayload,
   parseSkillLocalImportPayload,
+  parseInstallSkillMarketPayload,
   parseSetConversationPinnedPayload,
   parseSetTeamRunStatusPayload,
   parseStartTeamRunPayload,
@@ -344,6 +346,7 @@ import {
   parseLoopbackDevServerUrl,
   trustedFileLocation,
 } from './renderer-security.js';
+import { normalizeExternalUrl } from '../external-link-contract.js';
 import type { TrustedRendererLocation } from './renderer-security.js';
 import {
   DesktopUpdateController,
@@ -351,6 +354,11 @@ import {
   type DesktopUpdateConfiguration,
 } from './desktop-updater.js';
 import { createElectronUpdaterDriver } from './electron-updater-driver.js';
+import {
+  readDesktopUpdatePreferences,
+  shouldAutoCheckDesktopUpdates,
+  writeDesktopUpdatePreferences,
+} from './desktop-update-preferences.js';
 import {
   DesktopUpdateRollbackCoordinator,
   resolveDesktopUpdateRecoveryRoot,
@@ -383,7 +391,7 @@ import {
   resolveDesktopRuntimeIdentity,
   type DesktopRuntimeIdentity,
 } from './packaged-install-identity.js';
-import { stageChatImageDataUrl } from './image-staging.js';
+import { materializeChatImageDataUrl, stageChatImageDataUrl } from './image-staging.js';
 import { messageImageUrl, persistMessageImages, readMessageImage } from './message-images.js';
 import {
   CAPABILITY_RUNTIME_IPC_CHANNELS,
@@ -451,6 +459,7 @@ const desktopCrashJournal = new DesktopCrashJournal({
 });
 
 let mainWindow: BrowserWindow | null = null;
+let registeredQuickWindowShortcut: string | null = null;
 let trustedRendererLocation: TrustedRendererLocation | null = null;
 let runtimeClient: RuntimePipeClient | null = null;
 let desktopRuntimeIdentity: DesktopRuntimeIdentity | null = null;
@@ -462,6 +471,7 @@ let desktopUpdateController: DesktopUpdateController | null = null;
 let desktopUpdateRollbackCoordinator: DesktopUpdateRollbackCoordinator | null = null;
 let desktopUpdateRollbackHealthPromise: Promise<void> | null = null;
 let desktopShutdownPromise: Promise<void> | null = null;
+const DESKTOP_RELEASE_NOTES_URL = 'https://github.com/1447751897/SYNC-THINK/releases';
 type KernelInstallResult = { ok: true } | { ok: false; error: string };
 let piKernelInstallPromise: Promise<KernelInstallResult> | null = null;
 const transientCleanupRegisteredSenders = new Set<number>();
@@ -657,6 +667,18 @@ async function maybeRunDesktopUpdateInstallProbe(): Promise<void> {
 function getDesktopUpdateController(): DesktopUpdateController {
   if (!desktopUpdateController) throw new Error('desktop.update.not-initialized');
   return desktopUpdateController;
+}
+
+function desktopUpdatePreferencesRoot(): string {
+  return app.getPath('userData');
+}
+
+async function maybeCheckForDesktopUpdatesAtStartup(): Promise<void> {
+  if (desktopUpdateInstallProbeConfiguration) return;
+  const preferences = readDesktopUpdatePreferences(desktopUpdatePreferencesRoot());
+  const controller = getDesktopUpdateController();
+  if (!shouldAutoCheckDesktopUpdates(preferences, controller.getSnapshot())) return;
+  await controller.checkForUpdates();
 }
 
 function createWindow(): void {
@@ -1103,19 +1125,44 @@ interface StagedAppendMessagePayload {
   images: Array<{ name: string; mimeType: string; stagingPath: string }>;
 }
 
+function appendAttachmentContext(
+  value: unknown,
+): { conversationId: string; workspacePath: string } | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const context = (value as { attachmentContext?: unknown }).attachmentContext;
+  if (!context || typeof context !== 'object' || Array.isArray(context)) return undefined;
+  const record = context as { conversationId?: unknown; workspacePath?: unknown };
+  if (
+    typeof record.conversationId !== 'string' ||
+    record.conversationId.length === 0 ||
+    record.conversationId.length > 256 ||
+    typeof record.workspacePath !== 'string' ||
+    record.workspacePath.length === 0 ||
+    record.workspacePath.length > 2048 ||
+    !path.isAbsolute(record.workspacePath)
+  ) {
+    return undefined;
+  }
+  return { conversationId: record.conversationId, workspacePath: record.workspacePath };
+}
+
 function stageAppendMessageImages(value: unknown): StagedAppendMessagePayload {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return { payload: value, images: [] };
   }
-  const payload = value as { images?: unknown };
+  const attachmentContext = appendAttachmentContext(value);
+  const runtimePayload = { ...(value as Record<string, unknown>) };
+  Reflect.deleteProperty(runtimePayload, 'attachmentContext');
+  const payload = runtimePayload as { images?: unknown };
   if (!Array.isArray(payload.images) || payload.images.length === 0) {
-    return { payload: value, images: [] };
+    return { payload: runtimePayload, images: [] };
   }
   const durableImages: Array<{ name: string; mimeType: string; stagingPath: string }> = [];
   const images = payload.images.map((raw) => {
     if (!raw || typeof raw !== 'object') return raw;
     const image = raw as {
       name?: string;
+      id?: string;
       mimeType?: string;
       dataUrl?: string;
       stagingPath?: string;
@@ -1130,12 +1177,19 @@ function stageAppendMessageImages(value: unknown): StagedAppendMessagePayload {
       return next;
     }
     if (typeof image.dataUrl === 'string' && image.dataUrl.startsWith('data:image/')) {
-      // Always stage: even "small" screenshots often exceed the 1 MiB frame after JSON.
-      const staged = stageChatImageDataUrl({
+      const input = {
         name: image.name || 'image',
         mimeType: image.mimeType,
         dataUrl: image.dataUrl,
-      });
+      };
+      // With a bound workspace, materialize before dispatch exactly as NewMax
+      // does. Unbound conversations retain the application staging fallback.
+      const staged = attachmentContext
+        ? materializeChatImageDataUrl(input, {
+            ...attachmentContext,
+            attachmentId: image.id || randomUUID(),
+          })
+        : stageChatImageDataUrl(input);
       console.log('[desktop] staged chat image', {
         name: staged.name,
         mimeType: staged.mimeType,
@@ -1152,7 +1206,7 @@ function stageAppendMessageImages(value: unknown): StagedAppendMessagePayload {
     }
     return raw;
   });
-  return { payload: { ...(value as object), images }, images: durableImages };
+  return { payload: { ...runtimePayload, images }, images: durableImages };
 }
 
 function parseAppendMessagePayload(value: unknown): AppendMessagePayload {
@@ -1299,6 +1353,44 @@ function setupRuntimeBridge(): void {
   ipcMain.handle('desktop:update-install', async (event) => {
     assertRuntimeIpcSource(event);
     return getDesktopUpdateController().installUpdate();
+  });
+  ipcMain.handle('desktop:update-get-auto-check', (event) => {
+    assertRuntimeIpcSource(event);
+    return { enabled: readDesktopUpdatePreferences(desktopUpdatePreferencesRoot()).autoCheck };
+  });
+  ipcMain.handle('desktop:update-set-auto-check', (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    if (
+      !value ||
+      typeof value !== 'object' ||
+      typeof (value as { enabled?: unknown }).enabled !== 'boolean'
+    ) {
+      throw new Error('desktop.update.auto-check-invalid');
+    }
+    const enabled = (value as { enabled: boolean }).enabled;
+    writeDesktopUpdatePreferences(desktopUpdatePreferencesRoot(), { autoCheck: enabled });
+    return { enabled };
+  });
+  ipcMain.handle('desktop:update-open-release-notes', async (event) => {
+    assertRuntimeIpcSource(event);
+    try {
+      await shell.openExternal(DESKTOP_RELEASE_NOTES_URL);
+      return { opened: true, error: null };
+    } catch {
+      return { opened: false, error: 'desktop.update.release-notes-open-failed' };
+    }
+  });
+
+  ipcMain.handle('desktop:open-external-url', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    const url = normalizeExternalUrl(value);
+    if (!url) return { opened: false, error: 'desktop.external-url-invalid' };
+    try {
+      await shell.openExternal(url);
+      return { opened: true, error: null };
+    } catch {
+      return { opened: false, error: 'desktop.external-url-open-failed' };
+    }
   });
 
   // Open a rendered HTML block (from the chat sandbox) in the system browser.
@@ -2236,6 +2328,19 @@ function setupRuntimeBridge(): void {
     await ensureRuntimeConnection();
     return getRuntimeClient().request('skill.local.import', parseSkillLocalImportPayload(value));
   });
+  ipcMain.handle('runtime:skill-market-list', async (event) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('skill.market.list', {});
+  });
+  ipcMain.handle('runtime:skill-market-install', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'skill.market.install',
+      parseInstallSkillMarketPayload(value),
+    );
+  });
   ipcMain.handle('runtime:conversation-decide-tool-approval', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
     await ensureRuntimeConnection();
@@ -3055,6 +3160,43 @@ function setupRuntimeBridge(): void {
     return { dark: nativeTheme.shouldUseDarkColors };
   });
 
+  ipcMain.handle('desktop:set-global-shortcut', (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error('desktop.global-shortcut-invalid');
+    }
+    const record = value as { accelerator?: unknown; enabled?: unknown };
+    const accelerator =
+      typeof record.accelerator === 'string' ? record.accelerator.trim().slice(0, 80) : '';
+    if (!accelerator || typeof record.enabled !== 'boolean') {
+      throw new Error('desktop.global-shortcut-invalid');
+    }
+
+    if (registeredQuickWindowShortcut) {
+      globalShortcut.unregister(registeredQuickWindowShortcut);
+      registeredQuickWindowShortcut = null;
+    }
+    if (!record.enabled) return { registered: false, error: null };
+
+    const registered = globalShortcut.register(accelerator, () => {
+      if (!mainWindow || mainWindow.isDestroyed()) createWindow();
+      const window = mainWindow;
+      if (!window || window.isDestroyed()) return;
+      if (window.isVisible() && window.isFocused()) {
+        window.hide();
+        return;
+      }
+      if (window.isMinimized()) window.restore();
+      window.show();
+      window.focus();
+    });
+    if (registered) registeredQuickWindowShortcut = accelerator;
+    return {
+      registered,
+      error: registered ? null : '快捷键已被其他应用占用',
+    };
+  });
+
   ipcMain.handle('desktop:pick-folder', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
     const win = BrowserWindow.fromWebContents(event.sender);
@@ -3733,6 +3875,7 @@ void app
     app.setAsDefaultProtocolClient('syncthink');
     setupRuntimeBridge();
     createWindow();
+    void maybeCheckForDesktopUpdatesAtStartup().catch(() => undefined);
     void maybeRunDesktopUpdateInstallProbe().catch((error: unknown) => {
       console.error(
         '[desktop] update install probe failed',
@@ -3814,6 +3957,10 @@ function shutdownDesktopServices(reason: DesktopShutdownReason = 'desktop-exit')
 }
 
 app.on('before-quit', (event) => {
+  if (registeredQuickWindowShortcut) {
+    globalShortcut.unregister(registeredQuickWindowShortcut);
+    registeredQuickWindowShortcut = null;
+  }
   if (runtimeShutdownComplete) return;
   event.preventDefault();
   if (shutdownStarted) return;

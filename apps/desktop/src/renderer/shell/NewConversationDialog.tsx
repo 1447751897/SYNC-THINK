@@ -13,6 +13,7 @@ export interface ModelOption {
   modelId: string;
   displayName: string;
   providerName: string;
+  providerId?: string;
   /** Configured context window in tokens; undefined falls back to a heuristic. */
   contextWindow?: number;
 }

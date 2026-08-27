@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import type { ProjectTextLocation } from '../../workspace-tools-contract.js';
 import { FileContentPreview, isRenderedMarkdownPath } from './FileContentPreview.js';
+import { matchesShortcut, readShortcutPreferences } from './preferences-store.js';
 
 export interface FileRevealTarget extends ProjectTextLocation {
   nonce: number;
@@ -361,7 +362,8 @@ export function FilePane({
   );
 
   const handleEditorKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
+    const shortcut = readShortcutPreferences().saveFile;
+    if (shortcut.enabled && matchesShortcut(event.nativeEvent, shortcut.accelerator)) {
       event.preventDefault();
       if (dirty && !saving) void saveFile(false);
     }

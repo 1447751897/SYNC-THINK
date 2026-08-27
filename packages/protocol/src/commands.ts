@@ -165,6 +165,8 @@ export type CommandType =
   | 'desktop.command.cancel'
   | 'skill.import'
   | 'skill.importRemote'
+  | 'skill.market.list'
+  | 'skill.market.install'
   | 'skill.local.inspect'
   | 'skill.local.scan'
   | 'skill.local.import'
@@ -444,12 +446,20 @@ export interface SetParticipationModeResponse {
  * `dataUrl` remains as a small-image fallback.
  */
 export interface AppendMessageImage {
+  /** Stable compose attachment id; used as the workspace filename when available. */
+  id?: string;
   name: string;
   mimeType: string;
   /** Absolute path written by Desktop under the shared staging directory. */
   stagingPath?: string;
   /** data:image/...;base64,... — only for small images that fit the pipe frame. */
   dataUrl?: string;
+}
+
+/** Desktop-only context used to materialize pasted images before Runtime dispatch. */
+export interface AppendMessageAttachmentContext {
+  conversationId: string;
+  workspacePath?: string;
 }
 
 /** Durable lightweight image reference embedded in `message.appended`. */
@@ -500,6 +510,8 @@ export interface AppendMessagePayload {
   skillVersionIds?: string[];
   /** Optional vision inputs for this user turn (live run only). */
   images?: AppendMessageImage[];
+  /** Removed by Desktop after images are materialized; never enters model context. */
+  attachmentContext?: AppendMessageAttachmentContext;
   /** Set when assistant message originates from a Run step. */
   runId?: RunId;
   stepId?: string;
@@ -1995,6 +2007,36 @@ export interface ImportRemoteSkillPayload {
 export interface ImportRemoteSkillResponse extends ImportSkillResponse {
   sourceUrl: string;
   fetchedBytes: number;
+}
+
+// --- 作者 Skill 市场（Runtime 持有目录和完整安装语义） ---
+
+export interface SkillMarketItemSummary {
+  /** Stable publisher-scoped package id. */
+  id: string;
+  /** Filesystem-safe package slug. */
+  slug: string;
+  name: string;
+  category: string;
+  description: string;
+  author: string;
+  version: string;
+  icon?: string;
+  installCount?: number;
+}
+
+export interface ListSkillMarketResponse {
+  items: SkillMarketItemSummary[];
+}
+
+export interface InstallSkillMarketPayload {
+  marketSkillId: string;
+}
+
+export interface InstallSkillMarketResponse extends ImportSkillResponse {
+  item: SkillMarketItemSummary;
+  /** Complete package directories copied into the managed Skill library. */
+  installedPaths: string[];
 }
 
 // --- 本地 Skill 发现与目录安装（对齐 NewMax 的 Skill library 语义） ---

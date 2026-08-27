@@ -190,6 +190,50 @@ describe('ContextRing', () => {
 });
 
 describe('ModelPickerMenu', () => {
+  it('keeps the virtual Radix anchor in body coordinates', async () => {
+    const anchor = document.createElement('button');
+    document.body.appendChild(anchor);
+
+    render(
+      <ModelPickerMenu
+        open
+        models={[{ modelId: 'model-a', displayName: 'Model A', providerName: 'Provider A' }]}
+        selectedModelId="model-a"
+        defaultLabel="选择模型"
+        anchorEl={anchor}
+        onClose={vi.fn()}
+        onPick={vi.fn()}
+      />,
+    );
+
+    const virtualAnchor = await screen.findByTestId('model-picker-anchor');
+    expect(virtualAnchor.parentElement).toBe(document.body);
+  });
+
+  it('opens a provider flyout after the root menu uses the body anchor', async () => {
+    const anchor = document.createElement('button');
+    document.body.appendChild(anchor);
+
+    render(
+      <ModelPickerMenu
+        open
+        models={[
+          { modelId: 'model-a', displayName: 'Model A', providerName: 'Provider A' },
+          { modelId: 'model-b', displayName: 'Model B', providerName: 'Provider A' },
+        ]}
+        selectedModelId="model-a"
+        defaultLabel="选择模型"
+        anchorEl={anchor}
+        onClose={vi.fn()}
+        onPick={vi.fn()}
+      />,
+    );
+
+    const provider = await screen.findByTestId('model-provider-Provider A');
+    fireEvent.click(provider);
+    expect(await screen.findByText('Model B')).toBeTruthy();
+  });
+
   it('keeps thinking effort at the bottom and opens its nested menu on click', async () => {
     const anchor = document.createElement('button');
     document.body.appendChild(anchor);

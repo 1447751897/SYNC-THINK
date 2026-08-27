@@ -39,6 +39,7 @@ import { Sidebar } from './Sidebar.js';
 import { TopBar } from './TopBar.js';
 import { ConversationTabs } from './ConversationTabs.js';
 import { WorkspacePaneHost } from './WorkspacePaneHost.js';
+import { WallpaperReadingLayers } from './WallpaperReadingLayers.js';
 import { WorkspaceWorkbench, type WorkbenchNewResource } from './WorkspaceWorkbench.js';
 import { ChatView, type RuntimeConnectionNotice } from './ChatView.js';
 import { clearFilePaneSession, isFilePaneSessionDirty, type FileRevealTarget } from './FilePane.js';
@@ -100,6 +101,7 @@ import { canCloseSettings } from './settings-unsaved.js';
 import { NewConversationDialog, type ModelOption } from './NewConversationDialog.js';
 import { useDialog, DialogProvider } from './Dialog.js';
 import { startRuntimeConnection } from '../runtime-connection.js';
+import { matchesShortcut, readShortcutPreferences } from './preferences-store.js';
 import {
   createConversationGroup,
   deleteConversationGroup,
@@ -1306,6 +1308,7 @@ function ShellAppInner() {
           modelId: model.modelId,
           displayName: model.displayName,
           providerName: provider.name,
+          providerId: String(provider.providerId),
           contextWindow: model.contextWindow,
         });
       }
@@ -1510,18 +1513,6 @@ function ShellAppInner() {
       openConversationById(pendingOpenRef.current);
     }
   }, [data.conversations, openConversationById]);
-
-  // Ctrl+B toggles sidebar (R3).
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && (e.key === 'b' || e.key === 'B')) {
-        e.preventDefault();
-        setNav((n) => toggleSidebar(n));
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, []);
 
   // Sidebar drag resize.
   useEffect(() => {
@@ -2263,6 +2254,151 @@ function ShellAppInner() {
         : undefined,
     [activeWorkspaceId, workbenchLayouts],
   );
+
+  useEffect(() => {
+    let voiceConversationId: string | undefined;
+    const handleShortcut = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || settingsOpen) return;
+      const shortcuts = readShortcutPreferences();
+      const target = event.target;
+      const editing =
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        (target instanceof HTMLElement && target.isContentEditable);
+
+      if (shortcuts.newChat.enabled && matchesShortcut(event, shortcuts.newChat.accelerator)) {
+        event.preventDefault();
+        handleNewConversation();
+        return;
+      }
+      if (
+        shortcuts.conversationSearch.enabled &&
+        matchesShortcut(event, shortcuts.conversationSearch.accelerator)
+      ) {
+        event.preventDefault();
+        setNav((current) => setSidebarCollapsed(current, false));
+        window.dispatchEvent(new CustomEvent('shell-open-conversation-search'));
+        return;
+      }
+      if (
+        !event.repeat &&
+        shortcuts.voiceInput.enabled &&
+        matchesShortcut(event, shortcuts.voiceInput.accelerator)
+      ) {
+        const pane = activePaneLayout?.focusedPaneId
+          ? activePaneLayout.panes[activePaneLayout.focusedPaneId]
+          : undefined;
+        const tab = pane?.tabs.find((item) => item.id === pane.activeTabId);
+        if (tab?.type !== 'conversation') return;
+        event.preventDefault();
+        voiceConversationId = tab.conversationId;
+        window.dispatchEvent(
+          new CustomEvent('shell-voice-input-start', {
+            detail: { conversationId: voiceConversationId },
+          }),
+        );
+        return;
+      }
+      if (shortcuts.workspaceSwitch.enabled && /^[1-9]$/.test(event.key)) {
+        const candidate = shortcuts.workspaceSwitch.accelerator.replace(/\+1$/, `+${event.key}`);
+        if (matchesShortcut(event, candidate)) {
+          const workspace = data.workspaces[Number(event.key) - 1];
+          if (workspace) {
+            event.preventDefault();
+            selectWorkspace(workspace.workspaceId);
+          }
+          return;
+        }
+      }
+      if (
+        !editing &&
+        shortcuts.sidebarLeft.enabled &&
+        matchesShortcut(event, shortcuts.sidebarLeft.accelerator)
+      ) {
+        event.preventDefault();
+        setNav((current) => toggleSidebar(current));
+        return;
+      }
+      if (
+        !editing &&
+        shortcuts.sidebarRight.enabled &&
+        matchesShortcut(event, shortcuts.sidebarRight.accelerator)
+      ) {
+        event.preventDefault();
+        handleToggleWorkspaceFilesPane(activePaneLayout?.focusedPaneId);
+        return;
+      }
+      if (shortcuts.planMode.enabled && matchesShortcut(event, shortcuts.planMode.accelerator)) {
+        const pane = activePaneLayout?.focusedPaneId
+          ? activePaneLayout.panes[activePaneLayout.focusedPaneId]
+          : undefined;
+        const tab = pane?.tabs.find((item) => item.id === pane.activeTabId);
+        if (tab?.type !== 'conversation') return;
+        event.preventDefault();
+        window.dispatchEvent(
+          new CustomEvent('shell-toggle-plan-mode', {
+            detail: { conversationId: tab.conversationId },
+          }),
+        );
+        return;
+      }
+      if (shortcuts.goalMode.enabled && matchesShortcut(event, shortcuts.goalMode.accelerator)) {
+        const pane = activePaneLayout?.focusedPaneId
+          ? activePaneLayout.panes[activePaneLayout.focusedPaneId]
+          : undefined;
+        const tab = pane?.tabs.find((item) => item.id === pane.activeTabId);
+        if (tab?.type !== 'conversation') return;
+        event.preventDefault();
+        window.dispatchEvent(
+          new CustomEvent('shell-toggle-goal-mode', {
+            detail: { conversationId: tab.conversationId },
+          }),
+        );
+        return;
+      }
+      if (shortcuts.closeTab.enabled && matchesShortcut(event, shortcuts.closeTab.accelerator)) {
+        const paneId = activePaneLayout?.focusedPaneId;
+        const pane = paneId ? activePaneLayout?.panes[paneId] : undefined;
+        const tab = pane?.tabs.find((item) => item.id === pane.activeTabId);
+        if (!paneId || !tab) return;
+        event.preventDefault();
+        if (tab.type === 'conversation') handleCloseConversationTab(paneId, tab.conversationId);
+        else if (tab.type === 'file') void handleCloseFileTab(paneId, tab.path);
+        else if (tab.type === 'terminal') void handleCloseTerminalTab(paneId, tab.terminalId);
+        else if (tab.type === 'browser') handleCloseBrowserTab(paneId, tab.browserId);
+        else if (tab.type === 'review') handleCloseReviewTab(paneId, tab.runId);
+        else if (tab.type === 'workspace-files') handleCloseWorkspaceFilesTab(paneId);
+      }
+    };
+    const handleShortcutRelease = () => {
+      if (!voiceConversationId) return;
+      window.dispatchEvent(
+        new CustomEvent('shell-voice-input-stop', {
+          detail: { conversationId: voiceConversationId },
+        }),
+      );
+      voiceConversationId = undefined;
+    };
+    window.addEventListener('keydown', handleShortcut);
+    window.addEventListener('keyup', handleShortcutRelease);
+    return () => {
+      window.removeEventListener('keydown', handleShortcut);
+      window.removeEventListener('keyup', handleShortcutRelease);
+    };
+  }, [
+    activePaneLayout,
+    data.workspaces,
+    handleCloseBrowserTab,
+    handleCloseConversationTab,
+    handleCloseFileTab,
+    handleCloseReviewTab,
+    handleCloseTerminalTab,
+    handleCloseWorkspaceFilesTab,
+    handleNewConversation,
+    handleToggleWorkspaceFilesPane,
+    selectWorkspace,
+    settingsOpen,
+  ]);
   const activeProjectFolder = useMemo(
     () =>
       data.workspaces
@@ -2629,7 +2765,7 @@ function ShellAppInner() {
   };
 
   return (
-    <div className="flex h-full flex-col bg-page">
+    <div className="shell-app-root flex h-full flex-col bg-page">
       <div className="shell-boards flex min-h-0 flex-1 bg-page">
         {/* Keep sidebar mounted so width can animate on collapse/expand. */}
         <Sidebar
@@ -2755,6 +2891,7 @@ function ShellAppInner() {
                   className="shell-workspace-primary-content"
                   data-workspace-primary-content="true"
                 >
+                  <WallpaperReadingLayers />
                   {activePaneLayout && hasOpenPaneTabs ? (
                     <WorkspacePaneHost
                       layout={activePaneLayout}
@@ -3837,7 +3974,7 @@ export function EmptyTalk(props: {
                 ref={inputRef}
                 data-testid="empty-compose-input"
                 className="shell-compose__input"
-                placeholder="有什么我能帮你的吗？"
+                placeholder="输入消息…（输入 / 打开快捷面板）"
                 value={props.draft}
                 onChange={(event) => {
                   props.onDraftChange(event.target.value);

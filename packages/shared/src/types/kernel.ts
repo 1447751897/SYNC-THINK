@@ -167,12 +167,12 @@ export interface KernelRequest {
   /** User message that starts this run (one run = one user turn). */
   userText: string;
   /**
-   * Images attached to the starting user message, as data URLs. Adapters with
-   * multimodal input support forward these to the model; adapters/models
-   * without vision capability consume the host-side text description instead
-   * (the host decides: images present here means they were forwarded).
+   * Images attached to the starting user message. The data URL is the portable
+   * payload used by SDK kernels; `filePath`, when present, is a host-validated
+   * local image that app-server kernels can forward as a native localImage.
+   * The host decides capability routing before images reach an adapter.
    */
-  images?: Array<{ name: string; mimeType: string; dataUrl: string }>;
+  images?: Array<{ name: string; mimeType: string; dataUrl: string; filePath?: string }>;
   /** Host-configured context window capacity (§2.3 ①). */
   contextWindow: number;
   /**

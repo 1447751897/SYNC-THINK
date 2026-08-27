@@ -9,9 +9,11 @@
  */
 
 @theme {
-  /* One sans stack for the whole shell, CJK fallbacks included. Components must consume the token rather than re-declaring a family: a local stack that omitted PingFang/YaHei is what made Chinese text in the reasoning block render in a different face from everything around it. */
+  /* NewMax's bundled variable fonts are the primary shell faces. Components must consume these tokens rather than re-declaring a family so Latin and Chinese metrics stay consistent across the settings window and the rest of the desktop shell. */
   --font-sans:
-    'Segoe UI Variable', 'Segoe UI', 'PingFang SC', 'Microsoft YaHei UI', system-ui, sans-serif;
+    'Inter Variable', Inter, 'Noto Sans SC Variable', 'Noto Sans SC', ui-sans-serif, system-ui, sans-serif;
+  --font-serif:
+    'Noto Serif SC Variable', 'Noto Serif SC', Georgia, 'Songti SC', serif;
   --font-mono:
     'Cascadia Code', 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
@@ -37,6 +39,7 @@
   --color-text: #181b19;
   --color-text-secondary: #666763;
   --color-text-faint: #8c8c87;
+  --color-text-inverse: #ffffff;
 
   --color-accent: #2f9b5b;
   --color-accent-soft: #e6f5ec;
@@ -178,6 +181,44 @@
   --shell-tab-outline: rgba(0, 0, 0, 0.04);
   --shell-tab-highlight: rgba(255, 255, 255, 0.85);
   --shell-tab-shadow: drop-shadow(0.5px 0.5px 0.5px rgba(0, 0, 0, 0.08));
+
+  /* NewMax-aligned preference previews and runtime palette inputs. These colors are theme-agnostic source swatches; the preference engine derives active light/dark surfaces from them. */
+  --preference-color-image-lakewood-accent: #042a18;
+  --preference-color-image-lakewood-background: #eaebeb;
+  --preference-color-image-palm-shore-accent: #6bbbda;
+  --preference-color-image-palm-shore-background: #91d1e8;
+  --preference-color-image-ember-rock-accent: #d89568;
+  --preference-color-image-ember-rock-background: #cc704d;
+  --preference-color-image-atoll-blue-accent: #cfaa92;
+  --preference-color-image-atoll-blue-background: #ced3d4;
+  --preference-color-image-leaf-shadow-accent: #6dcbff;
+  --preference-color-image-leaf-shadow-background: #c8cdd1;
+  --preference-color-image-alpenglow-accent: #00b3ad;
+  --preference-color-image-alpenglow-background: #6bb3ae;
+  --preference-color-random-light-background: #f5f7f6;
+  --preference-color-random-light-accent: #4a7c6b;
+  --preference-color-random-dark-background: #141716;
+  --preference-color-random-dark-accent: #7ab89e;
+  --preference-color-default-light-background: #faf8f3;
+  --preference-color-default-light-accent: #2d4739;
+  --preference-color-default-dark-background: #1e1f1f;
+  --preference-color-default-dark-accent: #36d385;
+  --preference-color-azure-light-background: #fbfbfb;
+  --preference-color-azure-light-accent: #0a64d6;
+  --preference-color-azure-dark-background: #232427;
+  --preference-color-azure-dark-accent: #0a84ff;
+  --preference-color-professional-light-background: #f4f7f6;
+  --preference-color-professional-light-accent: #0056b3;
+  --preference-color-professional-dark-background: #0a1628;
+  --preference-color-professional-dark-accent: #7aadcc;
+  --preference-color-claude-light-background: #faf9f5;
+  --preference-color-claude-light-accent: #d97757;
+  --preference-color-claude-dark-background: #262624;
+  --preference-color-claude-dark-accent: #d97757;
+  --preference-color-luxury-light-background: #f5f5f5;
+  --preference-color-luxury-light-accent: #b8993a;
+  --preference-color-luxury-dark-background: #1e1e1e;
+  --preference-color-luxury-dark-accent: #c9b56a;
 }
 
 .dark {
@@ -206,6 +247,7 @@
   --color-text: rgba(255, 255, 255, 0.9);
   --color-text-secondary: rgba(255, 255, 255, 0.5);
   --color-text-faint: rgba(255, 255, 255, 0.38);
+  --color-text-inverse: #ffffff;
 
   --color-accent: #36d385;
   --color-accent-soft: rgba(54, 211, 133, 0.08);

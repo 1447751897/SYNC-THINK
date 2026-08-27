@@ -133,23 +133,7 @@ describe('WorkspaceFilesPanel', () => {
     expect(document.querySelector('.shell-code-preview__ln')).toBeNull();
   });
 
-  it('uses NewMax file views and keeps Git/review inside the more menu', () => {
-    render(<WorkspaceFilesPanel projectFolder="C:/workspace" />);
-
-    expect(screen.getByRole('tab', { name: '所有文件' }).getAttribute('aria-selected')).toBe(
-      'true',
-    );
-    expect(screen.getByRole('tab', { name: '对话文件 0' }).getAttribute('aria-selected')).toBe(
-      'false',
-    );
-
-    fireEvent.click(screen.getByRole('button', { name: '工作区文件更多操作' }));
-    fireEvent.click(screen.getByRole('menuitem', { name: /审阅变动/ }));
-    expect(screen.getByTestId('review-panel')).toBeTruthy();
-    expect(screen.getByText('暂无本轮变更')).toBeTruthy();
-  });
-
-  it('opens review as a standalone workbench resource when the host provides the action', () => {
+  it('uses NewMax all/changes scopes without invented Git or review views', () => {
     const view = {
       runId: 'run-files',
       steps: [],
@@ -158,20 +142,21 @@ describe('WorkspaceFilesPanel', () => {
       doneCount: 1,
       errorCount: 0,
     } as unknown as RunProcessView;
-    const onOpenReview = vi.fn();
-    render(
-      <WorkspaceFilesPanel
-        projectFolder="C:/workspace"
-        reviewView={view}
-        onOpenReview={onOpenReview}
-      />,
+    render(<WorkspaceFilesPanel projectFolder="C:/workspace" reviewView={view} />);
+
+    expect(screen.getByRole('tab', { name: '所有文件' }).getAttribute('aria-selected')).toBe(
+      'true',
     );
-
-    fireEvent.click(screen.getByRole('button', { name: '工作区文件更多操作' }));
-    fireEvent.click(screen.getByRole('menuitem', { name: /审阅变动/ }));
-
-    expect(onOpenReview).toHaveBeenCalledWith(view);
-    expect(screen.queryByTestId('review-panel')).toBeNull();
+    expect(screen.getByRole('tab', { name: '对话文件 1' }).getAttribute('aria-selected')).toBe(
+      'false',
+    );
+    expect(screen.queryByRole('button', { name: '工作区文件更多操作' })).toBeNull();
+    expect(screen.queryByText('Git 状态')).toBeNull();
+    fireEvent.click(screen.getByRole('tab', { name: '对话文件 1' }));
+    expect(screen.getByRole('tab', { name: '对话文件 1' }).getAttribute('aria-selected')).toBe(
+      'true',
+    );
+    expect(screen.getByText('app.ts')).toBeTruthy();
   });
 });
 

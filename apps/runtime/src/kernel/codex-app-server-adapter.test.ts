@@ -108,7 +108,7 @@ describe('CodexAppServerKernelAdapter', () => {
     ]);
   });
 
-  it('separates streamed reasoning sections and items with paragraph breaks', async () => {
+  it('separates streamed reasoning summary indexes and items with paragraph breaks', async () => {
     const adapter = createFixtureAdapter([]);
     const events: KernelEvent[] = [];
     for await (const event of adapter.start(
@@ -122,8 +122,9 @@ describe('CodexAppServerKernelAdapter', () => {
         return event.type === 'reasoning';
       })
       .map((event) => event.text);
-    // summaryPartAdded 在首个 delta 之前宣布时不插分隔；同 item 的后续
-    // section 与跨 item 切换都必须产生段落分隔（图二：段落分明的思考流）。
+    // Current app-server builds can advance summaryIndex without emitting a
+    // summaryPartAdded notification. Both that boundary and a new reasoning
+    // item must remain visible in the host's single thinking flow.
     expect(reasoning.join('')).toBe('**分析**正文A\n\n**验证**\n\n**新思考**');
   });
 
@@ -150,12 +151,35 @@ describe('CodexAppServerKernelAdapter', () => {
     });
   });
 
-  it('forwards attached images with the current app-server image input shape', async () => {
+  it('forwards staged attachments as official app-server localImage inputs', async () => {
     const adapter = createFixtureAdapter([]);
     const events: KernelEvent[] = [];
     for await (const event of adapter.start(
       makeRequest({
         userText: '看图',
+        images: [
+          {
+            name: 'shot.png',
+            mimeType: 'image/png',
+            dataUrl: 'data:image/png;base64,QUJDRA==',
+            filePath: fixturePath,
+          },
+        ] as unknown as KernelRequest['images'],
+      }),
+    )) {
+      events.push(event);
+    }
+
+    expect(events).toContainEqual({ type: 'delta', text: 'local image forwarded' });
+    expect(events).toContainEqual({ type: 'terminal', status: 'completed' });
+  });
+
+  it('keeps inline image input as a fallback when no local path is available', async () => {
+    const adapter = createFixtureAdapter([]);
+    const events: KernelEvent[] = [];
+    for await (const event of adapter.start(
+      makeRequest({
+        userText: 'inline image',
         images: [
           {
             name: 'shot.png',
@@ -168,9 +192,7 @@ describe('CodexAppServerKernelAdapter', () => {
       events.push(event);
     }
 
-    // The fixture replies only when it sees UserInput.Image: { type: 'image', url }.
-    expect(events).toContainEqual({ type: 'delta', text: 'image forwarded' });
-    expect(events).toContainEqual({ type: 'terminal', status: 'completed' });
+    expect(events).toContainEqual({ type: 'delta', text: 'inline image forwarded' });
   });
 
   it('drops images whose data URL is not a data:image payload', async () => {

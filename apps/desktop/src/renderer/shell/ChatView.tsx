@@ -27,7 +27,10 @@ import {
   Info,
   Lock,
   LoaderCircle,
+  Mic,
+  MicOff,
   MessageSquare,
+  Plus,
   PenLine,
   RefreshCw,
   SendHorizonal,
@@ -185,12 +188,21 @@ import {
 } from './chat-transient-stream.js';
 import { projectConversationUsageMetrics } from './chat-usage.js';
 import {
+  fetchProviderUsageSummary,
+  formatProviderUsageWindow,
+  summarizeProviderUsageWindows,
+  type ProviderUsageIdentity,
+  type ProviderUsageWindows,
+} from './provider-usage-summary.js';
+import {
   inferNativeScrollIntent,
   resolveBottomPinState,
   shouldRestorePrependAnchor,
 } from './message-window.js';
 import {
+  collectRunProcessIds,
   projectRunTerminalEvents,
+  reconcileStreamingMessageProcessTerminal,
   reconcileRunProcessTerminal,
   updateRunProcessMap,
 } from './run-process-state.js';
@@ -208,6 +220,30 @@ import type { RunActivityAuthority } from '../run-activity-authority.js';
 
 /** Local error bubble FIFO cap: diagnostics are transient, keep them bounded. */
 const MAX_LOCAL_ERRORS = 50;
+
+interface BrowserSpeechRecognitionResult {
+  isFinal: boolean;
+  readonly length: number;
+  readonly [index: number]: { transcript: string };
+}
+
+interface BrowserSpeechRecognitionEvent {
+  readonly results: ArrayLike<BrowserSpeechRecognitionResult>;
+}
+
+interface BrowserSpeechRecognition {
+  lang: string;
+  continuous: boolean;
+  interimResults: boolean;
+  onresult: ((event: BrowserSpeechRecognitionEvent) => void) | null;
+  onerror: ((event: { error: string }) => void) | null;
+  onend: (() => void) | null;
+  start(): void;
+  stop(): void;
+  abort(): void;
+}
+
+type BrowserSpeechRecognitionConstructor = new () => BrowserSpeechRecognition;
 
 /**
  * One ordered item of the assistant's execution process (DSH-style inline
@@ -937,6 +973,7 @@ export function ChatView({
   )}\0${conversation.track}\0${String(conversation.targetRef)}`;
   const skillSelectionScopeKeyRef = useRef(skillSelectionScopeKey);
   const [input, setInput] = useState('');
+  const [voiceInputActive, setVoiceInputActive] = useState(false);
   const [sending, setSending] = useState(false);
   const [sendingRunId, setSendingRunId] = useState<string | undefined>();
   const [stopping, setStopping] = useState(false);
@@ -1422,6 +1459,9 @@ export function ChatView({
   const bottomPinIntentRef = useRef<'toward-bottom' | 'away-from-bottom' | null>(null);
   const lastTouchClientYRef = useRef<number | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const inputValueRef = useRef(input);
+  inputValueRef.current = input;
+  const speechRecognitionRef = useRef<BrowserSpeechRecognition | null>(null);
   const suppressPickerRefreshRef = useRef(false);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const composeRef = useRef<HTMLDivElement>(null);
@@ -2088,7 +2128,12 @@ export function ChatView({
         (!identity.id && identity.name && agent.name === identity.name),
     );
   }, [agents, conversationAgent, projected.activeRunId, runAgentIdentityById]);
-  const runIsActive = reconciledSending || projected.streaming || Boolean(projected.activeRunId);
+  const projectedProcessSettled = Boolean(
+    projected.activeRunId && displayRunProcessById.get(String(projected.activeRunId))?.completedAt,
+  );
+  const runIsActive =
+    !projectedProcessSettled &&
+    (reconciledSending || projected.streaming || Boolean(projected.activeRunId));
 
   const pausedRunNotice = useMemo(
     () =>
@@ -2117,29 +2162,42 @@ export function ChatView({
   );
 
   const visibleStreamingMessage = useMemo<ChatMessage | null>(() => {
-    const attachRuntimeNotice = Boolean(
-      runtimeConnectionNotice && (streamingMessage || projected.streaming || runConnectionStatus),
+    const settledStreamingMessage = reconcileStreamingMessageProcessTerminal(
+      streamingMessage,
+      streamingMessage?.runId
+        ? displayRunProcessById.get(String(streamingMessage.runId))
+        : undefined,
     );
-    const statusText = attachRuntimeNotice
-      ? runtimeConnectionNotice?.text
-      : runConnectionStatus?.text;
-    if (!statusText) return streamingMessage;
+    const processSettled = Boolean(streamingMessage?.streaming && !settledStreamingMessage?.streaming);
+    const attachRuntimeNotice = Boolean(
+      !processSettled &&
+        runtimeConnectionNotice &&
+        (settledStreamingMessage || projected.streaming || runConnectionStatus),
+    );
+    const statusText = processSettled
+      ? undefined
+      : attachRuntimeNotice
+        ? runtimeConnectionNotice?.text
+        : runConnectionStatus?.text;
+    if (!statusText) return settledStreamingMessage;
     const statusRunId =
-      runConnectionStatus?.runId ?? projected.activeRunId ?? streamingMessage?.runId;
+      runConnectionStatus?.runId ?? projected.activeRunId ?? settledStreamingMessage?.runId;
     if (
-      streamingMessage &&
-      (!statusRunId || !streamingMessage.runId || streamingMessage.runId === statusRunId)
+      settledStreamingMessage &&
+      (!statusRunId ||
+        !settledStreamingMessage.runId ||
+        settledStreamingMessage.runId === statusRunId)
     ) {
       return {
-        ...streamingMessage,
-        runId: streamingMessage.runId ?? statusRunId,
+        ...settledStreamingMessage,
+        runId: settledStreamingMessage.runId ?? statusRunId,
         processStatus: statusText,
         ...(attachRuntimeNotice && runtimeConnectionNotice
           ? { processStatusState: runtimeConnectionNotice.state }
           : {}),
       };
     }
-    if (!runConnectionStatus && !attachRuntimeNotice) return streamingMessage;
+    if (!runConnectionStatus && !attachRuntimeNotice) return settledStreamingMessage;
     return {
       id:
         runConnectionStatus?.id ??
@@ -2157,6 +2215,7 @@ export function ChatView({
   }, [
     projected.activeRunId,
     projected.streaming,
+    displayRunProcessById,
     runConnectionStatus,
     runtimeConnectionNotice,
     streamingMessage,
@@ -2890,13 +2949,15 @@ export function ChatView({
     const api = bridge();
     if (!api?.getConversationRunProcess) return;
     const generation = processLoadGenerationRef.current;
-    const runIds = new Set(
-      visibleDurableMessages
+    const runIds = collectRunProcessIds({
+      durableRunIds: visibleDurableMessages
         .filter((message) => message.role === 'assistant' && Boolean(message.runId))
-        .map((message) => message.runId as RunId),
-    );
+        .map((message) => message.runId as string),
+      transientRunId: streamingMessage?.runId,
+      projectedActiveRunId: projected.activeRunId ? String(projected.activeRunId) : undefined,
+    });
     for (const [runId, timer] of runProcessRetryTimersRef.current) {
-      if (runIds.has(runId as RunId)) continue;
+      if (runIds.has(runId)) continue;
       window.clearTimeout(timer);
       runProcessRetryTimersRef.current.delete(runId);
       runProcessRetryAttemptsRef.current.delete(runId);
@@ -2904,8 +2965,9 @@ export function ChatView({
     for (const runId of runIds) {
       if (runProcessById.has(runId) || inFlightRunProcessesRef.current.has(runId)) continue;
       inFlightRunProcessesRef.current.add(runId);
+      const typedRunId = runId as RunId;
       void api
-        .getConversationRunProcess({ runId })
+        .getConversationRunProcess({ runId: typedRunId })
         .then((response: ConversationGetRunProcessResponse) => {
           if (
             activeConversationIdRef.current !== conversationId ||
@@ -2948,6 +3010,8 @@ export function ChatView({
     conversation.id,
     runProcessById,
     runProcessRetryEpoch,
+    projected.activeRunId,
+    streamingMessage?.runId,
     updateRunProcess,
     visibleDurableMessages,
   ]);
@@ -3127,9 +3191,21 @@ export function ChatView({
           networkEnabled: selectedNetworkEnabled || undefined,
           planExecuting: options?.planExecuting === true ? true : undefined,
           skillVersionIds,
+          attachmentContext:
+            images.length > 0
+              ? {
+                  conversationId,
+                  workspacePath: conversation.workspaceId
+                    ? workspaces
+                        .find((workspace) => workspace.workspaceId === conversation.workspaceId)
+                        ?.folderPath?.trim() || undefined
+                    : undefined,
+                }
+              : undefined,
           images:
             images.length > 0
               ? images.map((img) => ({
+                  id: img.id,
                   name: img.name || 'image',
                   mimeType: img.mimeType || 'image/png',
                   dataUrl: img.url,
@@ -3247,6 +3323,7 @@ export function ChatView({
     [
       clearCompactDismissTimer,
       conversation.id,
+      conversation.workspaceId,
       conversation.targetRef,
       conversation.title,
       conversation.track,
@@ -3259,6 +3336,7 @@ export function ChatView({
       refreshContextStatus,
       scheduleCompactDismiss,
       selectedSkillVersionIds,
+      workspaces,
     ],
   );
 
@@ -3322,6 +3400,126 @@ export function ChatView({
     },
     [conversation.id],
   );
+  useEffect(() => {
+    const matchesConversation = (event: globalThis.Event) =>
+      String((event as CustomEvent<{ conversationId?: string }>).detail?.conversationId ?? '') ===
+      String(conversation.id);
+    const togglePlan = (event: globalThis.Event) => {
+      if (!matchesConversation(event)) return;
+      void handlePlanSwitchMode(interactionMode === 'plan' ? 'execute' : 'plan');
+    };
+    const openGoal = (event: globalThis.Event) => {
+      if (!matchesConversation(event)) return;
+      setInput('/goal ');
+      window.requestAnimationFrame(() => inputRef.current?.focus());
+    };
+    window.addEventListener('shell-toggle-plan-mode', togglePlan);
+    window.addEventListener('shell-toggle-goal-mode', openGoal);
+    return () => {
+      window.removeEventListener('shell-toggle-plan-mode', togglePlan);
+      window.removeEventListener('shell-toggle-goal-mode', openGoal);
+    };
+  }, [conversation.id, handlePlanSwitchMode, interactionMode]);
+
+  useEffect(() => {
+    const matchesConversation = (event: globalThis.Event) =>
+      String((event as CustomEvent<{ conversationId?: string }>).detail?.conversationId ?? '') ===
+      String(conversation.id);
+    const stopVoiceInput = (event: globalThis.Event) => {
+      if (!matchesConversation(event)) return;
+      speechRecognitionRef.current?.stop();
+    };
+    const startVoiceInput = (event: globalThis.Event) => {
+      if (!matchesConversation(event)) return;
+      speechRecognitionRef.current?.abort();
+      const Recognition =
+        (
+          window as typeof window & {
+            webkitSpeechRecognition?: BrowserSpeechRecognitionConstructor;
+            SpeechRecognition?: BrowserSpeechRecognitionConstructor;
+          }
+        ).SpeechRecognition ??
+        (
+          window as typeof window & {
+            webkitSpeechRecognition?: BrowserSpeechRecognitionConstructor;
+          }
+        ).webkitSpeechRecognition;
+      if (!Recognition) {
+        setVoiceInputActive(false);
+        setLocalErrors((current) => [
+          ...current,
+          {
+            id: `voice-unavailable-${Date.now()}`,
+            role: 'system',
+            tone: 'warning',
+            text: '当前系统未提供语音识别服务。',
+            timestamp: new Date().toISOString(),
+          },
+        ]);
+        return;
+      }
+
+      const recognition = new Recognition();
+      const prefix = inputValueRef.current.trimEnd();
+      recognition.lang = navigator.language || 'zh-CN';
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.onresult = (resultEvent) => {
+        let transcript = '';
+        for (let index = 0; index < resultEvent.results.length; index += 1) {
+          transcript += resultEvent.results[index]?.[0]?.transcript ?? '';
+        }
+        setInput(`${prefix}${prefix && transcript ? ' ' : ''}${transcript}`);
+        window.requestAnimationFrame(() => inputRef.current?.focus());
+      };
+      recognition.onerror = ({ error }) => {
+        if (error === 'aborted' || error === 'no-speech') return;
+        setLocalErrors((current) => [
+          ...current,
+          {
+            id: `voice-error-${Date.now()}`,
+            role: 'system',
+            tone: 'warning',
+            text: `语音输入失败: ${error}`,
+            timestamp: new Date().toISOString(),
+          },
+        ]);
+      };
+      recognition.onend = () => {
+        setVoiceInputActive(false);
+        if (speechRecognitionRef.current === recognition) speechRecognitionRef.current = null;
+      };
+      speechRecognitionRef.current = recognition;
+      try {
+        recognition.start();
+        setVoiceInputActive(true);
+        inputRef.current?.focus();
+      } catch (error) {
+        setVoiceInputActive(false);
+        speechRecognitionRef.current = null;
+        setLocalErrors((current) => [
+          ...current,
+          {
+            id: `voice-start-${Date.now()}`,
+            role: 'system',
+            tone: 'warning',
+            text: `语音输入启动失败: ${error instanceof Error ? error.message : String(error)}`,
+            timestamp: new Date().toISOString(),
+          },
+        ]);
+      }
+    };
+
+    window.addEventListener('shell-voice-input-start', startVoiceInput);
+    window.addEventListener('shell-voice-input-stop', stopVoiceInput);
+    return () => {
+      window.removeEventListener('shell-voice-input-start', startVoiceInput);
+      window.removeEventListener('shell-voice-input-stop', stopVoiceInput);
+      speechRecognitionRef.current?.abort();
+      speechRecognitionRef.current = null;
+      setVoiceInputActive(false);
+    };
+  }, [conversation.id, setLocalErrors]);
   const handlePlanNotify = useCallback((tone: 'info' | 'error', text: string) => {
     setLocalErrors((prev) => [
       ...prev,
@@ -3698,7 +3896,7 @@ export function ChatView({
     if (!slash) return [];
     const query = slash.query.trim().toLocaleLowerCase();
     return slashSkills.filter((skill) => {
-      if (!skill.enabled || selectedSkillVersionIds.includes(skill.skillVersionId)) return false;
+      if (skill.enabled === false) return false;
       if (!query) return true;
       return [skill.name, skill.description, skill.skillId, skill.version]
         .join('\n')
@@ -3721,7 +3919,12 @@ export function ChatView({
           : { limit: 500 },
       )
       .then((response) => {
-        if (!cancelled) setSlashSkills(response.skills.filter((skill) => skill.enabled));
+        if (!cancelled) {
+          // Older Runtime payloads omit `enabled`; treat omission as enabled
+          // so the slash palette remains backward-compatible with the Skill
+          // picker and with persisted catalog snapshots.
+          setSlashSkills(response.skills.filter((skill) => skill.enabled !== false));
+        }
       })
       .catch(() => {
         if (!cancelled) setSlashSkills([]);
@@ -3752,10 +3955,13 @@ export function ChatView({
       const el = composeRef.current;
       if (!el) return;
       const r = el.getBoundingClientRect();
-      const width = Math.min(r.width, 420);
+      // NewMax keeps the command sheet aligned to the complete composer edge.
+      // Clamp only when the viewport is narrower than the composer so the
+      // portal remains usable on compact windows.
+      const width = Math.min(r.width, window.innerWidth - 16);
       const left = Math.max(8, Math.min(r.left, window.innerWidth - width - 8));
       const gap = 8;
-      const maxH = Math.min(280, Math.max(120, r.top - gap - 8));
+      const maxH = Math.min(224, Math.max(120, r.top - gap - 8));
       setSlashPopStyle({
         position: 'fixed',
         left,
@@ -3940,9 +4146,12 @@ export function ChatView({
       if (!slash) return;
       const stripped = stripSlashToken(input, slash);
       setInput(stripped.text);
-      setSelectedSkillVersionIds((current) =>
-        resolveAppendSkillVersionIds(conversation.track, [...current, skill.skillVersionId]),
-      );
+      setSelectedSkillVersionIds((current) => {
+        const normalized = resolveAppendSkillVersionIds(conversation.track, current);
+        return normalized.includes(skill.skillVersionId)
+          ? normalized.filter((id) => id !== skill.skillVersionId)
+          : resolveAppendSkillVersionIds(conversation.track, [...normalized, skill.skillVersionId]);
+      });
       closeComposePickers();
       window.requestAnimationFrame(() => {
         resizeComposeInput();
@@ -4408,6 +4617,31 @@ export function ChatView({
     setSlash(nextSlash);
     if (!nextSlash) setSlashIndex(0);
   }, []);
+
+  const insertComposeToken = useCallback(
+    (token: '@' | '/') => {
+      const el = inputRef.current;
+      const start = el?.selectionStart ?? input.length;
+      const end = el?.selectionEnd ?? start;
+      const before = input.slice(0, start);
+      const after = input.slice(end);
+      const separator = before.length > 0 && !/\s$/.test(before) ? ' ' : '';
+      const prefix = `${before}${separator}`;
+      const next = `${prefix}${token}${after}`;
+      const caret = prefix.length + token.length;
+      setMenu(null);
+      setInput(next);
+      updatePickersFromCaret(next, caret);
+      window.requestAnimationFrame(() => {
+        resizeComposeInput();
+        const inputElement = inputRef.current;
+        if (!inputElement) return;
+        inputElement.focus();
+        inputElement.setSelectionRange(caret, caret);
+      });
+    },
+    [input, resizeComposeInput, updatePickersFromCaret],
+  );
 
   const handleInputChange = useCallback(
     (e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -5332,8 +5566,8 @@ export function ChatView({
                           onMouseEnter={() => setSlashIndex(index)}
                           onMouseDown={(e) => {
                             e.preventDefault();
-                            selectSlashCommand(cmd);
                           }}
+                          onClick={() => selectSlashCommand(cmd)}
                         >
                           <span className="shell-slash-pop__cmd">{cmd.command}</span>
                           <span className="shell-slash-pop__meta">
@@ -5346,40 +5580,47 @@ export function ChatView({
                         </button>
                       ))
                     )}
-                    <div className="shell-slash-pop__section">Skill</div>
-                    {slashSkillsLoading ? (
-                      <div className="shell-mention-pop__empty">正在读取已启用 Skill…</div>
-                    ) : filteredSlashSkills.length === 0 ? (
-                      <div className="shell-mention-pop__empty">没有匹配的已启用 Skill</div>
-                    ) : (
-                      filteredSlashSkills.map((skill, skillIndex) => {
-                        const index = slashCommands.length + skillIndex;
-                        return (
-                          <button
-                            key={skill.skillVersionId}
-                            type="button"
-                            role="option"
-                            aria-selected={index === slashIndex}
-                            className={`shell-mention-pop__item shell-slash-pop__item ${
-                              index === slashIndex ? 'is-active' : ''
-                            }`}
-                            onMouseEnter={() => setSlashIndex(index)}
-                            onMouseDown={(event) => {
-                              event.preventDefault();
-                              selectSlashSkill(skill);
-                            }}
-                          >
-                            <span className="shell-slash-pop__cmd">/{skill.name}</span>
-                            <span className="shell-slash-pop__meta">
-                              <span className="shell-slash-pop__label">{skill.name}</span>
-                              <span className="shell-slash-pop__desc">
-                                {skill.description || `v${skill.version}`}
-                              </span>
-                            </span>
-                            <span className="shell-slash-pop__badge">Skill</span>
-                          </button>
-                        );
-                      })
+                    {(slashSkillsLoading || filteredSlashSkills.length > 0) && (
+                      <>
+                        <div className="shell-slash-pop__section">Skill</div>
+                        {slashSkillsLoading ? (
+                          <div className="shell-mention-pop__empty">正在读取已启用 Skill…</div>
+                        ) : (
+                          filteredSlashSkills.map((skill, skillIndex) => {
+                            const index = slashCommands.length + skillIndex;
+                            return (
+                              <button
+                                key={skill.skillVersionId}
+                                type="button"
+                                role="option"
+                                aria-selected={index === slashIndex}
+                                className={`shell-mention-pop__item shell-slash-pop__item ${
+                                  index === slashIndex ? 'is-active' : ''
+                                }`}
+                                onMouseEnter={() => setSlashIndex(index)}
+                                onMouseDown={(event) => {
+                                  event.preventDefault();
+                                }}
+                                onClick={() => selectSlashSkill(skill)}
+                                data-testid={`turn-skill-option-${skill.skillVersionId}`}
+                              >
+                                <span className="shell-slash-pop__cmd">/{skill.name}</span>
+                                <span className="shell-slash-pop__meta">
+                                  <span className="shell-slash-pop__label">{skill.name}</span>
+                                  <span className="shell-slash-pop__desc">
+                                    {skill.description || `v${skill.version}`}
+                                  </span>
+                                </span>
+                                <span className="shell-slash-pop__badge">
+                                  {selectedSkillVersionIds.includes(skill.skillVersionId)
+                                    ? '已选'
+                                    : 'Skill'}
+                                </span>
+                              </button>
+                            );
+                          })
+                        )}
+                      </>
                     )}
                   </div>,
                   document.body,
@@ -5406,6 +5647,19 @@ export function ChatView({
                         onChange={handleNetworkSettingChange}
                       />
                     </div>
+                    <button
+                      type="button"
+                      className="shell-mention-pop__upload"
+                      onMouseDown={(event) => {
+                        event.preventDefault();
+                        closeComposePickers();
+                        imageInputRef.current?.click();
+                      }}
+                    >
+                      <ImagePlus size={13} aria-hidden="true" />
+                      <span>上传图片</span>
+                      <span className="shell-mention-pop__upload-hint">PNG / JPG</span>
+                    </button>
                     <div className="shell-mention-pop__divider" aria-hidden="true" />
                     <div className="shell-mention-pop__section-label">工作区文件</div>
                     <div
@@ -5527,8 +5781,8 @@ export function ChatView({
                     data-testid="compose-input"
                     placeholder={
                       hasProjectFolder
-                        ? '有什么我能帮你的吗？输入 @ 引用文件，/ 打开命令'
-                        : '有什么我能帮你的吗？输入 / 打开命令'
+                        ? '输入消息…（输入 @ 引用文件，/ 打开快捷面板）'
+                        : '输入消息…（输入 / 打开快捷面板）'
                     }
                     value={input}
                     onChange={handleInputChange}
@@ -5610,13 +5864,14 @@ export function ChatView({
                 <div className="shell-compose__bar-left">
                   <button
                     type="button"
-                    className="shell-compose__icon-tool"
-                    aria-label="添加图片"
-                    title="添加图片"
-                    onClick={() => imageInputRef.current?.click()}
-                    disabled={attachments.filter((item) => item.kind === 'image').length >= 8}
+                    className="shell-compose__icon-tool shell-compose__shortcut-plus"
+                    aria-label="添加上下文"
+                    title="添加上下文（@）"
+                    data-testid="compose-mention-trigger"
+                    data-active={mention ? '1' : '0'}
+                    onClick={() => insertComposeToken('@')}
                   >
-                    <ImagePlus size={15} />
+                    <Plus size={17} />
                   </button>
                   {/* Permission menu */}
                   <div className="shell-compose__tool-wrap">
@@ -5650,6 +5905,8 @@ export function ChatView({
                     workspaceId={conversation.workspaceId}
                     open={menu === 'skill'}
                     selectedSkillVersionIds={selectedSkillVersionIds}
+                    onShortcut={() => insertComposeToken('/')}
+                    shortcutActive={Boolean(slash)}
                     onOpenChange={(open) => setMenu(open ? 'skill' : null)}
                     onChange={setSelectedSkillVersionIds}
                   />
@@ -5729,40 +5986,28 @@ export function ChatView({
                     }
                   />
 
+                  <button
+                    type="button"
+                    className={`shell-compose__voice${voiceInputActive ? ' is-active' : ''}`}
+                    aria-label={voiceInputActive ? '停止语音输入' : '开始语音输入'}
+                    title={voiceInputActive ? '停止语音输入' : '开始语音输入'}
+                    data-testid="compose-voice"
+                    onClick={() => {
+                      const eventName = voiceInputActive
+                        ? 'shell-voice-input-stop'
+                        : 'shell-voice-input-start';
+                      window.dispatchEvent(
+                        new CustomEvent(eventName, {
+                          detail: { conversationId: conversation.id },
+                        }),
+                      );
+                    }}
+                  >
+                    {voiceInputActive ? <MicOff size={15} /> : <Mic size={15} />}
+                  </button>
+
                   {/* Two-level model picker */}
                   <div className="shell-compose__tool-wrap">
-                    <ModelTrigger
-                      label={activeModel}
-                      reasoningLabel={REASONING_LABELS[reasoningEffort]}
-                      open={menu === 'model'}
-                      buttonRef={modelBtnRef}
-                      onClick={() => {
-                        setRetryAfterModelPickMessageId(undefined);
-                        setMenu((m) => (m === 'model' ? null : 'model'));
-                      }}
-                    />
-                    {kernelOverride !== 'native'
-                      ? (() => {
-                          const chipLabel = resolveKernelDisplayName(
-                            kernelOverride,
-                            activeKernel?.name,
-                          );
-                          const chipLogo = resolveKernelBrandLogo(
-                            activeKernel ? activeKernel.icon : kernelOverride,
-                          );
-                          return (
-                            <span
-                              className={`shell-kernel-chip${chipLogo ? ' shell-kernel-chip--logo' : ''}`}
-                              data-testid="compose-kernel-chip"
-                              title={`内核：${chipLabel}`}
-                              aria-label={chipLogo ? `内核：${chipLabel}` : undefined}
-                              role={chipLogo ? 'img' : undefined}
-                            >
-                              {chipLogo ? <BrandLogoMark logo={chipLogo} size={14} /> : chipLabel}
-                            </span>
-                          );
-                        })()
-                      : null}
                     <ModelPickerMenu
                       open={menu === 'model'}
                       models={models}
@@ -5773,6 +6018,18 @@ export function ChatView({
                       selectedKernelId={kernelOverride}
                       kernelInstallStates={kernelInstallStates}
                       anchorEl={modelBtnRef.current}
+                      trigger={
+                        <ModelTrigger
+                          label={activeModel}
+                          reasoningLabel={REASONING_LABELS[reasoningEffort]}
+                          open={menu === 'model'}
+                          buttonRef={modelBtnRef}
+                          onClick={() => {
+                            setRetryAfterModelPickMessageId(undefined);
+                            setMenu((m) => (m === 'model' ? null : 'model'));
+                          }}
+                        />
+                      }
                       onClose={() => {
                         setRetryAfterModelPickMessageId(undefined);
                         setMenu(null);
@@ -5805,6 +6062,28 @@ export function ChatView({
                         writeConversationReasoningEffort(String(conversation.id), value);
                       }}
                     />
+                    {kernelOverride !== 'native'
+                      ? (() => {
+                          const chipLabel = resolveKernelDisplayName(
+                            kernelOverride,
+                            activeKernel?.name,
+                          );
+                          const chipLogo = resolveKernelBrandLogo(
+                            activeKernel ? activeKernel.icon : kernelOverride,
+                          );
+                          return (
+                            <span
+                              className={`shell-kernel-chip${chipLogo ? ' shell-kernel-chip--logo' : ''}`}
+                              data-testid="compose-kernel-chip"
+                              title={`内核：${chipLabel}`}
+                              aria-label={chipLogo ? `内核：${chipLabel}` : undefined}
+                              role={chipLogo ? 'img' : undefined}
+                            >
+                              {chipLogo ? <BrandLogoMark logo={chipLogo} size={14} /> : chipLabel}
+                            </span>
+                          );
+                        })()
+                      : null}
                   </div>
 
                   {/* Dynamic single button: while a run is active with an empty
@@ -5955,6 +6234,85 @@ const ReasoningContent = memo(function ReasoningContent({
   );
 });
 
+function HarnessTerminalNotice({
+  state,
+  error,
+}: {
+  state: 'failed' | 'cancelled';
+  error?: string;
+}) {
+  const errorSummary = error?.split('\n').find((line) => line.trim())?.trim();
+  if (state === 'cancelled') {
+    return (
+      <div
+        className="shell-harness-terminal is-cancelled"
+        data-testid="assistant-terminal-cancelled"
+      >
+        <span className="shell-harness-terminal__dot" aria-hidden="true" />
+        <span className="shell-harness-terminal__title">已停止生成</span>
+        <span className="shell-harness-terminal__summary">以上内容已保留</span>
+      </div>
+    );
+  }
+  return (
+    <details className="shell-harness-terminal is-failed" data-testid="assistant-terminal-failed">
+      <summary>
+        <span className="shell-harness-terminal__dot" aria-hidden="true" />
+        <span className="shell-harness-terminal__title">运行失败</span>
+        {errorSummary ? (
+          <span
+            className="shell-harness-terminal__summary"
+            data-testid="assistant-terminal-error"
+            title={error}
+          >
+            {errorSummary}
+          </span>
+        ) : null}
+        <ChevronDown size={13} className="shell-harness-terminal__chevron" aria-hidden="true" />
+      </summary>
+      {error ? <pre className="shell-harness-terminal__detail">{error}</pre> : null}
+    </details>
+  );
+}
+
+function ProviderAccountUsageSection({ identity }: { identity: ProviderUsageIdentity }) {
+  const [windows, setWindows] = useState<ProviderUsageWindows | null>(null);
+
+  useEffect(() => {
+    const api = bridge();
+    if (!api?.getUsageSummary) return;
+    let alive = true;
+    void fetchProviderUsageSummary(() => api.getUsageSummary({ sinceDays: 30 }))
+      .then((summary) => {
+        if (alive) setWindows(summarizeProviderUsageWindows(summary, identity));
+      })
+      .catch(() => {
+        if (alive) setWindows(null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [identity]);
+
+  if (!windows?.today && !windows?.last30d) return null;
+  return (
+    <div className="shell-usage-tip__account" data-testid="provider-usage-windows">
+      {windows.today ? (
+        <div className="shell-usage-tip__account-row">
+          <span>今日</span>
+          <strong>{formatProviderUsageWindow(windows.today)}</strong>
+        </div>
+      ) : null}
+      {windows.last30d ? (
+        <div className="shell-usage-tip__account-row">
+          <span>近30天</span>
+          <strong>{formatProviderUsageWindow(windows.last30d)}</strong>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 const MessageBubble = memo(function MessageBubble({
   message,
   processView,
@@ -5964,7 +6322,6 @@ const MessageBubble = memo(function MessageBubble({
   fallbackAgent,
   regenerating,
   onRegenerate,
-  onChooseModelAndRetry,
   onOpenChange,
   onOpenReview,
   projectFolder,
@@ -5981,7 +6338,7 @@ const MessageBubble = memo(function MessageBubble({
   regenerating?: boolean;
   onRegenerate?: (messageId: string) => void;
   onChooseModelAndRetry?: (messageId: string) => void;
-  onOpenChange?: (path: string) => void;
+  onOpenChange?: (path: string, location?: ProjectTextLocation) => void;
   onOpenReview?: (view: RunProcessView) => void;
   projectFolder?: string;
   onOpenImage?: (image: MessageImage) => void;
@@ -5998,16 +6355,6 @@ const MessageBubble = memo(function MessageBubble({
 
   const metricsLabel = useMemo(() => {
     if (!processView) return undefined;
-    // 主标签显示「输入上下文」（最后一次请求的真实输入大小），而不是工具循环的
-    // 累计求和——后者（tokensIn+tokensOut 累加）会让人误以为上下文占用了那么大。
-    const watermark = processView.contextWatermarkTokens;
-    if (typeof watermark === 'number') {
-      return formatCompactRunMetrics({
-        durationMs: processView.durationMs,
-        tokensIn: watermark,
-        tokensOut: 0,
-      });
-    }
     return formatCompactRunMetrics({
       durationMs: processView.durationMs,
       tokensIn: processView.tokensIn,
@@ -6015,20 +6362,34 @@ const MessageBubble = memo(function MessageBubble({
     });
   }, [processView]);
 
-  const modelLabel = useMemo(() => {
+  const runModelOption = useMemo(() => {
     if (!processView) return undefined;
-    const catalogName = models?.find(
+    return models?.find(
       (model) =>
         model.modelId === processView.modelId ||
         model.displayName === processView.providerModelId ||
         model.displayName.toLowerCase() === (processView.providerModelId ?? '').toLowerCase(),
-    )?.displayName;
+    );
+  }, [models, processView]);
+
+  const modelLabel = useMemo(() => {
+    if (!processView) return undefined;
     return formatRunModelLabel({
       providerModelId: processView.providerModelId,
       modelId: processView.modelId,
-      catalogName,
+      catalogName: runModelOption?.displayName,
     });
-  }, [models, processView]);
+  }, [processView, runModelOption?.displayName]);
+
+  const providerUsageIdentity = useMemo<ProviderUsageIdentity | undefined>(() => {
+    if (!processView) return undefined;
+    return {
+      providerId: runModelOption?.providerId,
+      providerName: runModelOption?.providerName,
+      modelId: processView.modelId,
+      providerModelId: processView.providerModelId,
+    };
+  }, [processView, runModelOption?.providerId, runModelOption?.providerName]);
 
   const clockLabel = formatMessageClock(message.timestamp);
   const absoluteTime = formatMessageAbsoluteTime(message.timestamp);
@@ -6049,32 +6410,19 @@ const MessageBubble = memo(function MessageBubble({
         : undefined;
     const tokens =
       processView.tokensIn !== undefined || processView.tokensOut !== undefined
-        ? splitProviderUsageTokens({
-            tokensIn: processView.tokensIn ?? 0,
-            tokensOut: processView.tokensOut ?? 0,
-            cachedTokensHit: processView.cachedTokensHit,
-            cachedTokensCreated: processView.cachedTokensCreated,
-          })
-        : undefined;
-    // 单次请求口径（最后一次请求）：普通输入/缓存读取/输出 用这个值，避免
-    // 工具循环重发导致的累计虚高。
-    const last = processView.lastRequestUsage;
-    const lastTokens =
-      last && (last.tokensIn !== undefined || last.tokensOut !== undefined)
-        ? splitProviderUsageTokens({
-            tokensIn: last.tokensIn ?? 0,
-            tokensOut: last.tokensOut ?? 0,
-            cachedTokensHit: last.cachedTokensHit,
-            cachedTokensCreated: last.cachedTokensCreated,
-          })
+        ? {
+            ...splitProviderUsageTokens({
+              tokensIn: processView.tokensIn ?? 0,
+              tokensOut: processView.tokensOut ?? 0,
+              cachedTokensHit: processView.cachedTokensHit,
+              cachedTokensCreated: processView.cachedTokensCreated,
+            }),
+          }
         : undefined;
     return {
       duration,
       durationExact,
       tokens,
-      lastTokens,
-      lastCacheReadReported: typeof processView.lastRequestUsage?.cachedTokensHit === 'number',
-      contextWatermarkTokens: processView.contextWatermarkTokens,
       model: modelLabel,
       absoluteTime,
     };
@@ -6241,6 +6589,7 @@ const MessageBubble = memo(function MessageBubble({
           completedAt={processView?.completedAt ?? timelineTiming.completedAt}
           durationMs={processView?.durationMs}
           turnPlan={processView?.taskPlan}
+          onOpenChange={onOpenChange}
           supplementalContent={
             message.processStatus ||
             message.terminalState ||
@@ -6262,50 +6611,10 @@ const MessageBubble = memo(function MessageBubble({
                   </div>
                 ) : null}
                 {message.terminalState ? (
-                  <div
-                    className="mt-2 flex items-start gap-1.5 text-[11.5px] text-text-faint"
-                    data-testid={`assistant-terminal-${message.terminalState}`}
-                  >
-                    {message.terminalState === 'failed' ? (
-                      <AlertCircle
-                        size={12}
-                        className="mt-0.5 shrink-0 text-[var(--color-error)]"
-                      />
-                    ) : (
-                      <Square size={11} className="mt-0.5 shrink-0" />
-                    )}
-                    <span className="min-w-0">
-                      <span>
-                        {message.terminalState === 'failed'
-                          ? '回复失败，已保留中断前内容'
-                          : '已停止生成，以上内容已保留'}
-                      </span>
-                      {message.terminalState === 'failed' && message.terminalError ? (
-                        <span
-                          className="shell-terminal-error"
-                          data-testid="assistant-terminal-error"
-                          title={message.terminalError}
-                        >
-                          {message.terminalError}
-                        </span>
-                      ) : null}
-                      {message.terminalState === 'failed' && onChooseModelAndRetry ? (
-                        <button
-                          type="button"
-                          className="shell-terminal-retry"
-                          onClick={() => onChooseModelAndRetry(message.id)}
-                          disabled={regenerating}
-                        >
-                          <RefreshCw
-                            size={12}
-                            className={regenerating ? 'shell-process-spin' : undefined}
-                            aria-hidden="true"
-                          />
-                          <span>选择模型并重试</span>
-                        </button>
-                      ) : null}
-                    </span>
-                  </div>
+                  <HarnessTerminalNotice
+                    state={message.terminalState}
+                    error={message.terminalError}
+                  />
                 ) : null}
                 {!message.streaming && processView && processView.fileChanges.length > 0 ? (
                   <FileChangesCard
@@ -6324,6 +6633,8 @@ const MessageBubble = memo(function MessageBubble({
           <MarkdownContent
             text={message.answerText ?? message.text}
             streaming={Boolean(message.streaming)}
+            projectFolder={projectFolder}
+            onOpenFile={onOpenChange}
           />
         ) : message.streaming &&
           !message.commentaryText?.trim() &&
@@ -6371,74 +6682,37 @@ const MessageBubble = memo(function MessageBubble({
                 <MetaHover
                   className="shell-msg-meta__metrics"
                   label={metricsLabel}
+                  width={330}
                   panel={
-                    <div className="shell-meta-tip">
-                      <div className="shell-meta-tip__title">本次回复累计</div>
-                      {metricsDetail.duration ? (
-                        <div className="shell-meta-tip__row">
-                          <span>耗时</span>
-                          <strong>
-                            {metricsDetail.duration}
-                            {metricsDetail.durationExact ? (
-                              <span className="shell-meta-tip__muted">
-                                {' '}
-                                · {metricsDetail.durationExact}
-                              </span>
-                            ) : null}
-                          </strong>
-                        </div>
-                      ) : null}
-                      {metricsDetail.tokens ? (
-                        <div className="shell-meta-tip__row">
-                          <span>计费累计</span>
-                          <strong>{formatCompactCount(metricsDetail.tokens.totalTokens)}</strong>
-                        </div>
-                      ) : null}
-                      {typeof metricsDetail.contextWatermarkTokens === 'number' ? (
-                        <div className="shell-meta-tip__row">
-                          <span>输入上下文</span>
-                          <strong>
-                            {formatCompactCount(metricsDetail.contextWatermarkTokens)}
-                          </strong>
-                        </div>
-                      ) : null}
-                      {metricsDetail.lastTokens ? (
-                        <div className="shell-meta-tip__row">
-                          <span>普通输入</span>
-                          <strong>
-                            {formatCompactCount(metricsDetail.lastTokens.inputTokens)}
-                          </strong>
-                        </div>
-                      ) : null}
-                      {metricsDetail.lastTokens ? (
-                        <div className="shell-meta-tip__row">
-                          <span>缓存读取</span>
-                          <strong>
-                            {metricsDetail.lastCacheReadReported
-                              ? formatCompactCount(metricsDetail.lastTokens.cacheReadTokens)
-                              : '未上报'}
-                          </strong>
-                        </div>
-                      ) : null}
-                      {metricsDetail.lastTokens ? (
-                        <div className="shell-meta-tip__row">
-                          <span>输出</span>
-                          <strong>
-                            {formatCompactCount(metricsDetail.lastTokens.outputTokens)}
-                          </strong>
-                        </div>
-                      ) : null}
-                      {metricsDetail.model ? (
-                        <div className="shell-meta-tip__row">
-                          <span>模型</span>
-                          <strong>{metricsDetail.model}</strong>
-                        </div>
-                      ) : null}
-                      {metricsDetail.absoluteTime ? (
-                        <div className="shell-meta-tip__row">
-                          <span>时间</span>
-                          <strong>{metricsDetail.absoluteTime}</strong>
-                        </div>
+                    <div
+                      className="shell-meta-tip shell-usage-tip"
+                      data-testid="reply-usage-tooltip"
+                    >
+                      <div className="shell-usage-tip__summary">
+                        <span>{metricsDetail.duration}</span>
+                        {metricsDetail.tokens ? (
+                          <span className="shell-usage-tip__token-detail">
+                            {[
+                              metricsDetail.tokens.inputTokens > 0
+                                ? `↑ ${formatCompactCount(metricsDetail.tokens.inputTokens)}`
+                                : undefined,
+                              metricsDetail.tokens.outputTokens > 0
+                                ? `↓ ${formatCompactCount(metricsDetail.tokens.outputTokens)}`
+                                : undefined,
+                              metricsDetail.tokens.cacheReadTokens > 0
+                                ? `缓存读 ${formatCompactCount(metricsDetail.tokens.cacheReadTokens)}`
+                                : undefined,
+                              metricsDetail.tokens.cacheWriteTokens > 0
+                                ? `缓存写 ${formatCompactCount(metricsDetail.tokens.cacheWriteTokens)}`
+                                : undefined,
+                            ]
+                              .filter(Boolean)
+                              .join(' · ')}
+                          </span>
+                        ) : null}
+                      </div>
+                      {providerUsageIdentity ? (
+                        <ProviderAccountUsageSection identity={providerUsageIdentity} />
                       ) : null}
                     </div>
                   }
@@ -6498,10 +6772,12 @@ function MetaHover({
   label,
   panel,
   className,
+  width = 220,
 }: {
   label: ReactNode;
   panel: ReactNode;
   className?: string;
+  width?: number;
 }) {
   const [open, setOpen] = useState(false);
   const [style, setStyle] = useState<React.CSSProperties | null>(null);
@@ -6520,7 +6796,6 @@ function MetaHover({
     const el = triggerRef.current;
     if (!el || typeof window === 'undefined') return;
     const rect = el.getBoundingClientRect();
-    const width = 220;
     const left = Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8));
     setStyle({
       position: 'fixed',

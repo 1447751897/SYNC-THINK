@@ -3,6 +3,7 @@
 ### Added
 
 - Protocol/Runtime/Electron bridge 新增 `skill.local.inspect`，可检查文件夹、单个 `SKILL.md` 或 ZIP 中的单/多 Skill；导入支持全局与指定工作区、同名冲突预检和显式覆盖。
+- Protocol/Runtime/Electron bridge 新增 `skill.market.list` 与 `skill.market.install`。市场目录现由 Runtime 提供作者、版本、分类和图标元数据；安装复用本地包解析器，把完整作者包写入全局 Skill 库并登记为市场来源版本。
 - Runtime 按工作区 `.claude/skills`、已启用 Claude 插件缓存、SYNC-THINK 全局库、用户 `.claude/skills` 的 NewMax 来源顺序扫描并 watch，自动把有效本地 Skill 登记进“我的 Skill”；工作区与项目级插件来源同步激活。
 - 本地导入复制完整 Skill 文件夹，保留 scripts、assets、references 与其他附属文件；同一 Skill 可一次安装到全局和多个工作区，并按目标位置逐项汇总成功、失败与覆盖冲突。
 - ZIP 目录解析与 NewMax 一致：根级 `SKILL.md` 使用 ZIP 文件名作为安装目录，单一顶层包装目录使用包装目录名，`skills/<name>/SKILL.md` 包按 Skill 名分别安装；覆盖前删除同名目标目录。
@@ -12,12 +13,124 @@
 - Skill 页面改为 NewMax 独立信息架构：仅保留“Skill 市场 / 我的 Skill”，移除旧顶层 Skill/MCP 分段和第三个“本地”页签；恢复五区统计、工作区范围、来源/状态筛选和七列高密度表格。
 - “创建 Skill”菜单严格收敛为“导入 / 创建 Skill”。导入弹窗按 NewMax 的 480px 结构实现文件夹/ZIP 选择与拖放、Emoji/本地图标、名称、描述、多安装位置及取消/导入 footer；本地图标按 NewMax 处理为 `128 × 128` JPEG，并连接真实检查、逐位置导入和覆盖确认流程。
 - “我的 Skill”行操作严格改为使用、编辑展示元数据、共享三项；编辑使用 NewMax 400px 弹窗，只保存名称、描述与图标，不读取、覆盖或重写实体 `SKILL.md`。
+- 市场安装和全局启停均改为使用 Runtime 返回的最新 Skill 就地更新；启停失败会回滚原状态，不再通过重载整份 Skill 列表刷新页面。
+- Skill 管理字体、统计卡、表格行和开关按 NewMax 实窗 computed style 收口：Inter/Noto 字体栈、13px 页面基准、五张 84px 等宽统计卡、60px 表格行与 28 × 16px 无框开关。
+- “已激活工作区”从居中 Dialog 改为与 NewMax 相同的单元格锚定菜单：320px 宽、18px 圆角、32px 行、“全局”批量开关、320px 独立滚动区和底部“完成”。工作区切换即时更新当前行，失败回滚，不重新加载 Skill 目录。
+- 修复“全局”批量切换期间当前工作区先完成写入后触发二次读取、用半完成服务端快照覆盖乐观状态的问题；批量进行中所有工作区保持同一目标状态，失败时只回滚失败项。30 秒本地目录扫描改为静默更新，已有 Skill 列表不再切换到 loading，弹层与滚动位置持续保留。
+- 全局停用的 Skill 行按 NewMax 使用 0.55 透明度，并在名称与工作区列同时显示“已停用”；工作区与使用入口停用，最右侧重新启用开关保留。
+- Compose `/` 继续把当前 Conversation 的 `workspaceId` 交给 Runtime；只有全局启用且在该工作区激活的 Skill 才进入快捷菜单。
 
 ### Verification
 
-- Runtime 本地 Skill 定向测试 9/9、Desktop 能力中心测试 32/32 通过；根级单并发全仓测试 `20/20`、`0 cached`，其中 Desktop 全量 `172 files / 1396 tests`、Runtime 全量 `151 files / 1144 tests`。根级 typecheck `20/20`、lint `11/11`（0 error）、设计令牌与 `git diff --check` 通过。
-- `pnpm exec turbo run build --force` 强制全量构建 `11/11`、`0 cached`。最新源码实例为 Electron PID `5132`、Runtime PID `62240`，启动时间晚于构建，启动日志只有 DevTools 监听信息。
+- 当前功能回归为 Desktop 能力中心 `35/35`、Compose Skill `10/10`、Runtime 工作区治理集成 `1/1`；Desktop 全量 `179 files / 1437 tests`、Runtime 全量与 Storage `42 files / 441 tests` 均通过。根级 typecheck `20/20`、lint `11/11`（0 error）、设计令牌、Prettier 与 `git diff --check` 通过。
+- `pnpm exec turbo run build --force --concurrency=1` 强制全量构建 `11/11`、`0 cached`。当前 Electron 主窗口 PID `36732` 已载入最终 Renderer，daemon 管理的 Runtime 继续使用 PID `14116`，健康检查返回 `ok` 且无运行中任务。
 - 真实 Electron 导入闭环验证了文件夹/ZIP、两个安装位置、冲突确认、覆盖、完整附属文件复制、原始 `SKILL.md` 字节保持、展示元数据与清理；本机扫描识别 38 个候选并登记 41 个 Skill，watch 正常，页面无控制台错误、横向溢出或表格重叠。
+- 最新 Electron 实窗返回 6 个作者包和 126 个 SkillVersion 记录，“我的 Skill”按当前版本口径显示 118 行；五张统计卡、表格、停用行与工作区弹层尺寸均由 CDP 读取并与 NewMax 实测值一致。
+- 最新 Electron 进一步验证 7 个工作区由“全局”一次全部关闭并一次全部恢复；跨越完整 32 秒后台扫描周期后滚动位置保持 `2400`，列表未出现 loading，滚动容器与 118 行列表节点均未替换。
+
+## 2026-08-26：原生多模态图片、工作区文件与 Codex 思考流修复
+
+### Fixed
+
+- 对话图片在发送前会落盘到当前工作区的 `.sync-think/conversations/<conversationId>/images/`，Runtime 只接受全局暂存目录或当前会话目录中的可信绝对路径；Codex app-server 通过官方 `localImage` 输入读取原图，不再把本地图片伪装为 data URL 网络图片。
+- 支持视觉的模型直接接收原图；OCR/`describe_image` 只保留给明确不支持视觉的模型或显式 fallback，不再向多模态模型注入“先调用 OCR”的引导。
+- Codex app-server 的 reasoning summary 按 item、summary index 和 part 边界分段，修复 `Think · 标题正文` 粘连以及重复空行。
+- 工作区文件区按本机 NewMax `1.1.14` 的真实实现恢复为“所有文件 / 对话文件”两种范围；文件打开与审阅继续进入既有 Workbench 资源标签，不在紧凑文件浏览器中添加额外 Git 子菜单。
+
+### Verification
+
+- 使用真实 `codex app-server` 和用户提供的 PNG 进行无 OCR、无工具调用验证，模型从原始像素正确回答图中人物为“野原新之助”。
+- 全仓测试 `20/20 tasks`、typecheck `20/20 tasks`、lint `11/11 tasks`（0 error）、token 检查和 build `11/11 tasks` 通过；Desktop 实窗重启后页面正常渲染，daemon 与 Runtime 保持独立运行。
+
+## 2026-08-25：图片壁纸与阅读层严格对齐 NewMax
+
+### Changed
+
+- 依据本机 NewMax `1.1.14` 的 `app.asar` 和实窗 computed style 修正壁纸归属：图片只进入主 Pane，侧栏、工作区轨道、会话轨道和页面 gutter 使用从图片提取的四级实体表面，不再把壁纸铺到整个 boards，也不再依赖半透明侧栏制造层级。
+- 主 Pane 使用 NewMax 同参数的 `320px` smootherstep 顶部过渡、中心阅读高光与四层 `2 / 4 / 8 / 12px` 渐进模糊；覆盖色模式使用 40% 表面遮罩、64% 中央阅读面，Composer 使用 86% 白色表面与 `20px` backdrop blur。
+- 图片主题的四个配色点现在真实重算侧栏、标签轨道、页面 gutter 和强调色；自定义卡保持 `265 × 112px`、`18px` 圆角、四色托盘、编辑/删除和取景焦点。
+- 助手 Markdown 恢复无卡片阅读流；表格移除外框、圆角和表头底色，只保留 `1px` 行分隔、行 hover、横向滚动和悬浮复制操作，短代码/标识符保持单行。
+
+### Verification
+
+- 全仓测试 `20/20 tasks` 通过，其中 Desktop 为 `177 files / 1422 tests`；lint `11/11`（0 error）、typecheck `20/20`、build `11/11`、Prettier、设计令牌与 `git diff --check` 全部通过。
+- 最终构建在 `1920 × 1057` Electron 实窗复核：主题卡 `7` 张且仅 `1` 张激活，激活卡有 `4` 个可切换配色点；模型菜单在壁纸状态下正常展开并列出 `5` 个真实 Provider；对话中的 `4` 张表格均为透明、零边框、`12px / 500` 表头和 `1px` 分隔线。截图位于 `.data/current-newmax-*.png`。
+
+## 2026-08-25：图片背景下 Compose 菜单与快捷入口修复
+
+### Added
+
+- Compose 左下角 `+` 入口现在插入 `@` 并打开上下文面板；Skill 图标插入 `/` 并打开命令/Skill 面板。`@` 面板保留工作区文件选择，并新增图片上传入口。
+- 模型菜单增加真实 Compose trigger、body 坐标锚点和 Provider 子菜单键盘回归；背景切换后仍可点击打开并完成模型切换。
+
+### Changed
+
+- 图片壁纸下的消息 minimap 去掉半透明胶囊背景、模糊和描边，只保留带对比阴影的导航短横线，避免左侧出现第二条滚动条。
+- 模型选择器由固定宽度改为内容自适应（当前实窗 `148 × 30px`），增加稳定边框、打开态 accent 边框和 NewMax 风格交互反馈。
+- Slash 面板兼容旧 Runtime 中省略 `enabled` 的 Skill 条目；已选 Skill 可以从同一面板再次点击取消，鼠标和键盘触发保持一致。
+
+### Verification
+
+- Desktop 全量测试 `177 files / 1419 tests`、Desktop typecheck、正式 build、lint 和格式检查通过。
+- 真实 Electron 图片主题 active 状态实测：模型菜单与 Provider 子菜单均在视口内；Compose `+`/Skill 分别产生 `@`/`/` 面板；minimap 无背景层。
+
+## 2026-08-25：图片主题、资源链接与 Compose 体验修复
+
+### Added
+
+- 主题图片导入改为 CSP-safe 的 `FileReader -> data:image/*` 路径；继续执行压缩、尺寸校验和自动取色，避免 Electron Renderer 对 `blob:` 图片的读取失败。
+- Markdown 输出新增工作区文件、图片、目录和网页资源识别。工作区文件显示对应文件图标并携带 `line/column`，网页链接通过受控 Main IPC 打开，只允许 `http/https`。
+- Compose 工具栏新增语音输入按钮；使用浏览器 Web Speech 能力把连续识别结果写回当前输入框，启动、停止和错误状态均有可见反馈。
+
+### Changed
+
+- 图片壁纸启用时，消息导航 minimap 曾增加独立对比度表面、模糊和描边；后续修正为透明轨道，仅保留短横线自身的对比处理。
+- Compose 外壳固定为 NewMax 的 `744 × 112px` / `20px` 圆角比例；模型胶囊先按 `263px` 校准，后续改为内容自适应；`/` 快捷面板改为完整输入框宽度、紧凑 `32px` 横向行、`18px` 圆角和短入场动效。
+- 文件资源打开回调继续进入现有工作区文件/审阅标签流，并保留行级定位；外链不再直接交给 Renderer 的新窗口行为。
+
+### Verification
+
+- Desktop focused tests `5 files / 47 tests`、Desktop typecheck、正式 build 和 `git diff --check` 通过。
+- 真实 Electron 实测主题图片上传生成并选中“我的图片”卡片；亮/暗图片壁纸下 minimap 均可读；Compose 外壳为 `744 × 112px`，快捷面板为 `744 × 165px`，模型胶囊为 `263 × 30px`。
+
+## 2026-08-25：偏好设置严格对齐 NewMax 1.1.14
+
+### Added
+
+- 新增独立 `PreferencesSettings` 与版本化偏好存储，覆盖主题、图片背景、图片配色变体、自定义图片取景、颜色主题、对话字体、快捷键和个性化三类设置。
+- Desktop Main/Preload 新增全局快捷键注册桥；应用快捷键接入新建/搜索对话、规划/目标模式、工作区切换、关闭标签、保存文件和左右面板。语音快捷键使用 Electron 提供的 Web Speech 服务，按下开始识别、松开结束并把结果写入当前对话输入框。
+- Protocol 新增个性化设置合同；Runtime 将姓名、工作描述和全局提示词规范化后加入每轮 Agent system context。新增 Inter、Noto Sans SC 与 Noto Serif SC 可变字体及 OFL 许可证，构建按 Unicode 分片携带字体资源。
+
+### Changed
+
+- “设置 → 偏好”改为 NewMax 同序的“主题 / 快捷键 / 个性化”连续分段页；弹窗、标签、外观按钮、图片效果、上传按钮、三列图片卡和个性化输入区均依据本机 NewMax 实窗坐标校准。
+- 主题页使用 NewMax 六张本地图片与六套颜色主题，支持图片上传压缩、自动取色、四档强调色、预设移除/恢复、自定义图片重命名与取景、随机/自定义颜色、纯度/对比度和衬线字体预览。
+- 深色图片主题不再直接沿用图片的浅色平均背景；现在保留图片色相并归一暗色表面明度，避免出现浅底浅字。图片主题在深色下生成稳定的 page/surface/panel/chat 层级。
+
+### Verification
+
+- 偏好页聚焦回归 `3 files / 14 tests` 通过；全仓串行测试 `20/20 tasks`、typecheck `20/20 tasks`、lint `11/11 tasks`（0 error）、build `11/11 tasks`、设计令牌和空白差异检查通过。
+- 真实 Electron 中 Inter、Noto Sans SC、Noto Serif SC 均已加载；主题标签为 `48 / 60 / 60px`，外观按钮为 `74 / 74 / 100px`，图片操作为 `48 / 60 / 90px`，图片卡为 `265.33 × 112px`，与 NewMax 实测一致。
+- 深色图片主题实测为 `#1d1e1e / #222323 / #252626 / #1b1c1c` 表面层级；`1424 × 861` 与 `900 × 650` 均无 document/body 溢出。语音快捷键端到端验证为一次启动、一次停止，输入框得到识别文本；最终主题截图为 `.data/preferences-newmax-qa/56-sync-final.png`。
+
+## 2026-08-25：关于页严格对齐 NewMax 1.1.14
+
+### Added
+
+- Desktop Main 新增自动检查更新偏好存储与 IPC；偏好写入 userData 下的独立 JSON，启动时仅在更新通道已配置且 updater 空闲时触发检查。
+- 关于页补齐“查看更新日志”和“打开日志目录”动作，分别通过 Main 打开固定 GitHub Releases 地址和现有 Runtime 数据目录，不把外部 URL 或本机路径控制权交给 Renderer。
+
+### Changed
+
+- “设置 → 关于”移除旧版品牌介绍、Runtime/框架/数据库信息块和大型更新控制台，改为 NewMax 的居中品牌、版本、自动检查开关、单一更新动作、更新日志、日志目录和版权结构。
+- 依据本机 NewMax `1.1.14` 实窗坐标对齐纵向基线：版本、自动检查、主按钮、两条辅助动作和版权相对弹窗位置误差均不超过 `1px`；文字规格同步为 `14px / 13px / 12px`。
+- SYNC-THINK 标志直接使用透明 PNG，不再套用绿色方形背景、边框或圆角。更新下载、安装、校验错误与无更新通道状态继续使用既有真实 updater 状态机。
+
+### Verification
+
+- 关于页与设置聚焦回归 `3 files / 32 tests` 通过；Desktop typecheck、正式 build、设计令牌检查和 `git diff --check` 通过。
+- 真实 Electron 在 `1424 × 861` 亮暗主题和 `900 × 650` 紧凑视口完成检查，无 document/page 溢出；标志 computed style 为透明背景、零边框、零圆角。视觉证据位于 `.data/about-newmax-qa/`。
+- Desktop 外壳重启期间既有 daemon 与 Runtime 保持存活，新窗口成功复用后台服务，验证本次 Main/Preload 更新未破坏独立后台生命周期。
 
 ## 2026-08-24：设置数据与连接页严格对齐 NewMax 1.1.14
 

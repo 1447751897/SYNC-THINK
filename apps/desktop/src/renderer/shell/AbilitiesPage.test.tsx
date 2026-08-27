@@ -1,9 +1,40 @@
 /**
  * @vitest-environment jsdom
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { AbilitiesPage } from './AbilitiesPage.js';
+
+class PointerEventPolyfill extends MouseEvent {
+  readonly pointerId: number;
+  readonly pointerType: string;
+  readonly isPrimary: boolean;
+
+  constructor(type: string, init: PointerEventInit = {}) {
+    super(type, init);
+    this.pointerId = init.pointerId ?? 0;
+    this.pointerType = init.pointerType ?? 'mouse';
+    this.isPrimary = init.isPrimary ?? true;
+  }
+}
+
+const nativePointerEvent = window.PointerEvent;
+
+beforeAll(() => {
+  Object.defineProperty(window, 'PointerEvent', {
+    configurable: true,
+    writable: true,
+    value: PointerEventPolyfill,
+  });
+});
+
+afterAll(() => {
+  Object.defineProperty(window, 'PointerEvent', {
+    configurable: true,
+    writable: true,
+    value: nativePointerEvent,
+  });
+});
 
 // AbilitiesPage uses the app dialog for the Skill delete confirmation; the
 // dialog provider lives above it in the real tree, so tests stub it here.
@@ -14,22 +45,33 @@ vi.mock('./Dialog.js', () => ({
   }),
 }));
 
-// Give the project-bootstrap market entry a remote sourceUrl so the
-// remote-install branch can be exercised without network access.
-vi.mock('./abilities/capability-market.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('./abilities/capability-market.js')>();
-  return {
-    ...actual,
-    SKILL_MARKET: actual.SKILL_MARKET.map((item) =>
-      item.slug === 'project-bootstrap'
-        ? { ...item, sourceUrl: 'https://example.test/skills/project-bootstrap/SKILL.md' }
-        : item,
-    ),
-  };
-});
+const marketSkills = [
+  {
+    id: 'project-bootstrap',
+    slug: 'project-bootstrap',
+    name: '项目初始化',
+    category: '开发工具',
+    description: '从需求拆解到目录、规范、测试入口和里程碑。',
+    author: 'SYNC-THINK',
+    version: '1.0.0',
+    installCount: 128,
+  },
+  {
+    id: 'automation-workflow',
+    slug: 'automation-workflow',
+    name: '自动化工作流',
+    category: '自动化',
+    description: '编排 CI/CD、脚本生成、定时任务与 Git Hooks。',
+    author: 'SYNC-THINK',
+    version: '1.0.0',
+    installCount: 96,
+  },
+];
 
 const runtime = {
   listSkills: vi.fn(),
+  listSkillMarket: vi.fn(),
+  installSkillMarket: vi.fn(),
   importSkill: vi.fn(),
   importRemoteSkill: vi.fn(),
   skillLocalScan: vi.fn(),
@@ -49,15 +91,28 @@ const runtime = {
   setMcpServerEnabled: vi.fn(),
   deleteMcpServer: vi.fn(),
   listCapabilityGovernance: vi.fn(),
+  listCapabilityWorkspaceActivations: vi.fn(),
   setCapabilityWorkspaceActive: vi.fn(),
   saveSkillPublishDraft: vi.fn(),
   submitSkillPublishDraft: vi.fn(),
   previewCapabilityOrganize: vi.fn(),
 };
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 beforeEach(() => {
   window.localStorage.clear();
   runtime.listSkills.mockReset().mockResolvedValue({ skills: [] });
+  runtime.listSkillMarket.mockReset().mockResolvedValue({ items: marketSkills });
+  runtime.installSkillMarket.mockReset();
   runtime.importSkill.mockReset();
   runtime.importRemoteSkill.mockReset();
   runtime.skillLocalScan.mockReset().mockRejectedValue(new Error('local scan not configured'));
@@ -83,6 +138,7 @@ beforeEach(() => {
     mcpServers: [],
   });
   runtime.setCapabilityWorkspaceActive.mockReset().mockResolvedValue({});
+  runtime.listCapabilityWorkspaceActivations.mockReset().mockResolvedValue({ activations: [] });
   runtime.saveSkillPublishDraft.mockReset();
   runtime.submitSkillPublishDraft.mockReset();
   runtime.previewCapabilityOrganize.mockReset().mockResolvedValue({
@@ -930,20 +986,24 @@ describe('AbilitiesPage', () => {
       createdAt: '2026-08-09T00:00:00.000Z',
       enabled: true,
     };
-    runtime.importSkill.mockResolvedValue({ skill: installed, deduped: false });
-    runtime.listSkills.mockResolvedValue({ skills: [installed] });
+    runtime.installSkillMarket.mockResolvedValue({
+      item: marketSkills[1],
+      skill: installed,
+      deduped: false,
+      installedPaths: ['C:\\Users\\test\\.sync-think\\skills\\automation-workflow'],
+    });
+    runtime.listSkills.mockResolvedValue({ skills: [] });
 
     render(<AbilitiesPage onGoToAgents={vi.fn()} />);
-    // 自动化工作流（无 sourceUrl）走内置模板安装分支。
-    fireEvent.click(screen.getAllByRole('button', { name: '安装' })[1]!);
+    const automationCard = await screen.findByRole('button', { name: /自动化工作流/ });
+    fireEvent.click(
+      automationCard.closest('article')!.querySelector<HTMLButtonElement>('.is-use')!,
+    );
 
     await waitFor(() =>
-      expect(runtime.importSkill).toHaveBeenCalledWith(
-        expect.objectContaining({
-          originType: 'market',
-          originRef: 'market://skills/automation-workflow',
-        }),
-      ),
+      expect(runtime.installSkillMarket).toHaveBeenCalledWith({
+        marketSkillId: 'automation-workflow',
+      }),
     );
   });
 
@@ -1031,7 +1091,7 @@ describe('AbilitiesPage', () => {
     expect(screen.queryByText(/所在工作区是否激活不影响默认注入/)).toBeNull();
   });
 
-  it('installs a market Skill from its remote sourceUrl when present', async () => {
+  it('installs a complete author package through the Runtime market contract', async () => {
     const remoteSkill = {
       skillVersionId: 'sv-remote-market',
       skillId: 'skill-remote-market',
@@ -1047,7 +1107,12 @@ describe('AbilitiesPage', () => {
       createdAt: '2026-08-09T00:00:00.000Z',
       enabled: true,
     };
-    runtime.importRemoteSkill.mockResolvedValue({ skill: remoteSkill, deduped: false });
+    runtime.installSkillMarket.mockResolvedValue({
+      item: marketSkills[0],
+      skill: remoteSkill,
+      deduped: false,
+      installedPaths: ['C:\\Users\\test\\.sync-think\\skills\\project-bootstrap'],
+    });
 
     render(<AbilitiesPage onGoToAgents={vi.fn()} />);
     // 市场 tab → 打开带 sourceUrl 的条目 → 安装
@@ -1057,14 +1122,13 @@ describe('AbilitiesPage', () => {
     fireEvent.click(screen.getByRole('button', { name: /安装 Skill/ }));
 
     await waitFor(() =>
-      expect(runtime.importRemoteSkill).toHaveBeenCalledWith({
-        url: 'https://example.test/skills/project-bootstrap/SKILL.md',
-        originRef: 'market://skills/project-bootstrap',
+      expect(runtime.installSkillMarket).toHaveBeenCalledWith({
+        marketSkillId: 'project-bootstrap',
       }),
     );
   });
 
-  it('updates global enablement and workspace activation independently', async () => {
+  it('uses a NewMax-style workspace menu and updates activation without reloading the catalog', async () => {
     const skill = {
       skillVersionId: 'sv-governed',
       skillId: 'skill-governed',
@@ -1079,30 +1143,351 @@ describe('AbilitiesPage', () => {
       enabled: true,
     };
     runtime.listSkills.mockResolvedValue({ skills: [skill] });
-    runtime.setSkillEnabled.mockResolvedValue({});
+    runtime.listCapabilityGovernance.mockResolvedValue({
+      workspaceId: 'default-workspace',
+      windowDays: 45,
+      skills: [
+        {
+          skill,
+          workspaceActive: true,
+          usage: {
+            capabilityType: 'skill',
+            capabilityId: skill.skillVersionId,
+            callCount: 8,
+            successCount: 8,
+            failedCount: 0,
+            cancelledCount: 0,
+            problemCount: 0,
+            contextTokens: 100,
+          },
+        },
+      ],
+      mcpServers: [],
+    });
+    runtime.listCapabilityWorkspaceActivations.mockImplementation(
+      ({ workspaceId }: { workspaceId: string }) =>
+        Promise.resolve({
+          activations: [
+            {
+              workspaceId,
+              capabilityType: 'skill',
+              capabilityId: skill.skillVersionId,
+              active: workspaceId === 'default-workspace',
+            },
+          ],
+        }),
+    );
     runtime.setCapabilityWorkspaceActive.mockResolvedValue({});
 
-    render(<AbilitiesPage onGoToAgents={vi.fn()} />);
-    fireEvent.click(screen.getByTestId('skill-tab-mine'));
-    const globalToggle = await screen.findByRole('switch', {
-      name: '停用 governed-skill',
-    });
-    fireEvent.click(globalToggle);
-
-    await waitFor(() =>
-      expect(runtime.setSkillEnabled).toHaveBeenCalledWith({
-        skillVersionId: 'sv-governed',
-        enabled: false,
-      }),
+    render(
+      <AbilitiesPage
+        activeWorkspaceId="default-workspace"
+        workspaces={[
+          {
+            workspaceId: 'default-workspace' as import('@sync-think/shared').WorkspaceId,
+            name: 'SYNC-THINK',
+            folderPath: 'D:\\workspace',
+            createdAt: '2026-08-09T00:00:00.000Z',
+            updatedAt: '2026-08-09T00:00:00.000Z',
+          },
+          {
+            workspaceId: 'data-workspace' as import('@sync-think/shared').WorkspaceId,
+            name: 'data-sync-root',
+            folderPath: 'D:\\data-sync-root',
+            createdAt: '2026-08-09T00:00:00.000Z',
+            updatedAt: '2026-08-09T00:00:00.000Z',
+          },
+        ]}
+        onGoToAgents={vi.fn()}
+      />,
     );
-    fireEvent.click(screen.getByTestId('skill-workspace-activation-sv-governed'));
+    fireEvent.click(screen.getByTestId('skill-tab-mine'));
+    const trigger = await screen.findByTestId('skill-workspace-activation-sv-governed');
+    expect(trigger.textContent).toContain('SYNC-THINK');
+    fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false });
+
+    expect(await screen.findByText('激活到工作区')).toBeTruthy();
+    const allWorkspaces = screen.getByRole('switch', {
+      name: '激活全部工作区',
+    });
+    const currentWorkspace = screen.getByRole('switch', { name: 'SYNC-THINK 工作区' });
+    const dataWorkspace = screen.getByRole('switch', { name: 'data-sync-root 工作区' });
+    expect(allWorkspaces.getAttribute('aria-checked')).toBe('false');
+    expect(currentWorkspace.getAttribute('aria-checked')).toBe('true');
+    expect(dataWorkspace.getAttribute('aria-checked')).toBe('false');
+
+    fireEvent.click(allWorkspaces);
 
     await waitFor(() =>
       expect(runtime.setCapabilityWorkspaceActive).toHaveBeenCalledWith({
-        workspaceId: 'default-workspace',
+        workspaceId: 'data-workspace',
         capabilityType: 'skill',
         capabilityId: 'sv-governed',
         active: true,
+      }),
+    );
+    expect(allWorkspaces.getAttribute('aria-checked')).toBe('true');
+    expect(dataWorkspace.getAttribute('aria-checked')).toBe('true');
+    expect(runtime.listSkills).toHaveBeenCalledTimes(1);
+
+    runtime.setCapabilityWorkspaceActive.mockRejectedValueOnce(new Error('activation failed'));
+    await waitFor(() => expect((dataWorkspace as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(dataWorkspace);
+    expect(await screen.findByText('更新失败，已恢复原状态')).toBeTruthy();
+    expect(dataWorkspace.getAttribute('aria-checked')).toBe('true');
+    expect(runtime.listSkills).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole('button', { name: '完成' }));
+    await waitFor(() => expect(screen.queryByText('激活到工作区')).toBeNull());
+  });
+
+  it('keeps a global workspace change consistent while its writes are still in flight', async () => {
+    const skill = {
+      skillVersionId: 'sv-global-batch',
+      skillId: 'skill-global-batch',
+      name: 'global-batch-skill',
+      description: 'A Skill active in every workspace.',
+      version: '1.0.0',
+      allowedTools: [],
+      contentFingerprint: 'global-batch-fingerprint',
+      hasScripts: false,
+      warnings: [],
+      createdAt: '2026-08-09T00:00:00.000Z',
+      enabled: true,
+    };
+    const workspaces = ['cuitaliao', 'sync-think', 'MoreAT', 'Sub2api'].map((workspaceId) => ({
+      workspaceId: workspaceId as import('@sync-think/shared').WorkspaceId,
+      name: workspaceId,
+      folderPath: `D:\\${workspaceId}`,
+      createdAt: '2026-08-09T00:00:00.000Z',
+      updatedAt: '2026-08-09T00:00:00.000Z',
+    }));
+    const activeByWorkspace = new Map<string, boolean>(
+      workspaces.map(({ workspaceId }) => [workspaceId, true]),
+    );
+    const secondWrite = deferred<{
+      activation: { workspaceId: string; capabilityId: string; active: boolean };
+    }>();
+    let writeCount = 0;
+
+    runtime.listSkills.mockResolvedValue({ skills: [skill] });
+    runtime.listCapabilityGovernance.mockResolvedValue({
+      workspaceId: 'cuitaliao',
+      windowDays: 45,
+      skills: [
+        {
+          skill,
+          workspaceActive: true,
+          usage: {
+            capabilityType: 'skill',
+            capabilityId: skill.skillVersionId,
+            callCount: 0,
+            successCount: 0,
+            failedCount: 0,
+            cancelledCount: 0,
+            problemCount: 0,
+            contextTokens: 0,
+          },
+        },
+      ],
+      mcpServers: [],
+    });
+    runtime.listCapabilityWorkspaceActivations.mockImplementation(
+      ({ workspaceId }: { workspaceId: string }) =>
+        Promise.resolve({
+          activations: [
+            {
+              workspaceId,
+              capabilityType: 'skill',
+              capabilityId: skill.skillVersionId,
+              active: activeByWorkspace.get(workspaceId) ?? false,
+            },
+          ],
+        }),
+    );
+    runtime.setCapabilityWorkspaceActive.mockImplementation(
+      (request: { workspaceId: string; capabilityId: string; active: boolean }) => {
+        writeCount += 1;
+        activeByWorkspace.set(request.workspaceId, request.active);
+        const response = {
+          activation: {
+            workspaceId: request.workspaceId,
+            capabilityId: request.capabilityId,
+            active: request.active,
+          },
+        };
+        return writeCount === 2 ? secondWrite.promise : Promise.resolve(response);
+      },
+    );
+
+    render(
+      <AbilitiesPage
+        activeWorkspaceId="cuitaliao"
+        workspaces={workspaces}
+        onGoToAgents={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('skill-tab-mine'));
+    const trigger = await screen.findByTestId('skill-workspace-activation-sv-global-batch');
+    fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false });
+    const allWorkspaces = await screen.findByRole('switch', { name: '激活全部工作区' });
+    await waitFor(() =>
+      expect(runtime.listCapabilityWorkspaceActivations).toHaveBeenCalledTimes(workspaces.length),
+    );
+
+    fireEvent.click(allWorkspaces);
+    await waitFor(() => expect(runtime.setCapabilityWorkspaceActive).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+    secondWrite.resolve({
+      activation: {
+        workspaceId: 'sync-think',
+        capabilityId: skill.skillVersionId,
+        active: false,
+      },
+    });
+    await waitFor(() =>
+      expect(runtime.setCapabilityWorkspaceActive).toHaveBeenCalledTimes(workspaces.length),
+    );
+
+    expect(runtime.listCapabilityWorkspaceActivations).toHaveBeenCalledTimes(workspaces.length);
+    expect(allWorkspaces.getAttribute('aria-checked')).toBe('false');
+    for (const workspace of workspaces) {
+      expect(
+        screen
+          .getByRole('switch', { name: `${workspace.name} 工作区` })
+          .getAttribute('aria-checked'),
+      ).toBe('false');
+    }
+  });
+
+  it('keeps the installed Skill list mounted during a background catalog refresh', async () => {
+    const skill = {
+      skillVersionId: 'sv-scroll-stable',
+      skillId: 'skill-scroll-stable',
+      name: 'scroll-stable-skill',
+      description: 'The list must not jump during background refresh.',
+      version: '1.0.0',
+      allowedTools: [],
+      contentFingerprint: 'scroll-stable-fingerprint',
+      hasScripts: false,
+      warnings: [],
+      createdAt: '2026-08-09T00:00:00.000Z',
+      enabled: true,
+    };
+    const intervalSpy = vi.spyOn(window, 'setInterval');
+    runtime.listSkills.mockResolvedValue({ skills: [skill] });
+    runtime.skillLocalScan.mockResolvedValue({
+      directory: 'C:\\Users\\test\\.sync-think\\skills',
+      candidates: [],
+      exists: true,
+      watching: true,
+      sources: [],
+    });
+
+    render(<AbilitiesPage onGoToAgents={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('skill-tab-mine'));
+    await screen.findByText(skill.name);
+    await waitFor(() => expect(runtime.listSkills).toHaveBeenCalledTimes(2));
+    const intervalTick = intervalSpy.mock.calls.find(([, timeout]) => timeout === 30_000)?.[0];
+    expect(intervalTick).toBeTypeOf('function');
+
+    const scroll = document.querySelector<HTMLElement>('.ability-hub__scroll--installed')!;
+    scroll.scrollTop = 240;
+    const delayedCatalog = deferred<{ skills: (typeof skill)[] }>();
+    runtime.listSkills.mockReturnValueOnce(delayedCatalog.promise);
+
+    act(() => {
+      if (typeof intervalTick === 'function') intervalTick();
+    });
+    await waitFor(() => expect(runtime.listSkills).toHaveBeenCalledTimes(3));
+
+    expect(screen.getByText(skill.name)).toBeTruthy();
+    expect(document.querySelector('.ability-hub__scroll--installed')).toBe(scroll);
+    expect(scroll.scrollTop).toBe(240);
+
+    delayedCatalog.resolve({ skills: [skill] });
+    await waitFor(() => expect(screen.getByText(skill.name)).toBeTruthy());
+    expect(document.querySelector('.ability-hub__scroll--installed')).toBe(scroll);
+    expect(scroll.scrollTop).toBe(240);
+  });
+
+  it('renders globally disabled Skills as stopped while keeping the enable switch available', async () => {
+    const skill = {
+      skillVersionId: 'sv-paused',
+      skillId: 'skill-paused',
+      name: 'paused-skill',
+      description: 'A globally disabled Skill.',
+      version: '1.0.0',
+      allowedTools: [],
+      contentFingerprint: 'paused-fingerprint',
+      hasScripts: false,
+      warnings: [],
+      createdAt: '2026-08-09T00:00:00.000Z',
+      enabled: false,
+    };
+    runtime.listSkills.mockResolvedValue({ skills: [skill] });
+    runtime.listCapabilityGovernance.mockResolvedValue({
+      workspaceId: 'default-workspace',
+      windowDays: 45,
+      skills: [
+        {
+          skill,
+          workspaceActive: true,
+          usage: {
+            capabilityType: 'skill',
+            capabilityId: skill.skillVersionId,
+            callCount: 1,
+            successCount: 1,
+            failedCount: 0,
+            cancelledCount: 0,
+            problemCount: 0,
+            contextTokens: 0,
+          },
+        },
+      ],
+      mcpServers: [],
+    });
+    runtime.setSkillEnabled.mockResolvedValue({ skill: { ...skill, enabled: true } });
+
+    render(
+      <AbilitiesPage
+        activeWorkspaceId="default-workspace"
+        workspaces={[
+          {
+            workspaceId: 'default-workspace' as import('@sync-think/shared').WorkspaceId,
+            name: 'SYNC-THINK',
+            folderPath: 'D:\\workspace',
+            createdAt: '2026-08-09T00:00:00.000Z',
+            updatedAt: '2026-08-09T00:00:00.000Z',
+          },
+        ]}
+        onGoToAgents={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('skill-tab-mine'));
+
+    const name = await screen.findByText('paused-skill');
+    const row = name.closest('article');
+    expect(row?.getAttribute('data-enabled')).toBe('0');
+    expect(row?.classList.contains('is-disabled')).toBe(true);
+    expect(screen.getAllByText('已停用').length).toBeGreaterThanOrEqual(2);
+
+    const workspaceTrigger = screen.getByTestId('skill-workspace-activation-sv-paused');
+    expect(workspaceTrigger.textContent).toContain('已停用');
+    expect((workspaceTrigger as HTMLButtonElement).disabled).toBe(true);
+    expect(
+      (screen.getByRole('button', { name: '使用 paused-skill' }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+
+    const enableSwitch = screen.getByRole('switch', { name: '启用 paused-skill' });
+    expect((enableSwitch as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(enableSwitch);
+    await waitFor(() =>
+      expect(runtime.setSkillEnabled).toHaveBeenCalledWith({
+        skillVersionId: 'sv-paused',
+        enabled: true,
       }),
     );
   });

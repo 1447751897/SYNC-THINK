@@ -17,7 +17,7 @@ const rightRailSource = readFileSync(
 describe('run process renderer wiring', () => {
   it('loads and stores one projected process object per run', () => {
     expect(chatViewSource).toContain('runProcessById');
-    expect(chatViewSource).toContain('.getConversationRunProcess({ runId })');
+    expect(chatViewSource).toContain('.getConversationRunProcess({ runId: typedRunId })');
     expect(chatViewSource).toContain('process: event.snapshot.process');
     expect(chatViewSource).toContain('if (item.process) updateRunProcess(item.process)');
     expect(chatViewSource).toContain('updateRunProcess(frame.process)');
@@ -26,9 +26,11 @@ describe('run process renderer wiring', () => {
     );
   });
 
-  it('prefetches historical process views only for the visible message window', () => {
+  it('prefetches visible history plus transient and projected active runs', () => {
     expect(chatViewSource).toContain('visibleDurableMessages');
-    expect(chatViewSource).toContain('const runIds = new Set(');
+    expect(chatViewSource).toContain('const runIds = collectRunProcessIds({');
+    expect(chatViewSource).toContain('transientRunId: streamingMessage?.runId');
+    expect(chatViewSource).toContain('projectedActiveRunId: projected.activeRunId');
     expect(chatViewSource).toContain('runProcessRetryTimersRef.current.delete(runId)');
     expect(chatViewSource).not.toContain(
       "loadedMessages\n        .filter((message) => message.role === 'assistant'",

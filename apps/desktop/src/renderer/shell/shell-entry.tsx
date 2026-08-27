@@ -1,7 +1,11 @@
 import { createRoot } from 'react-dom/client';
 import { Phase3VisualFixture, resolvePhase3VisualCase } from './Phase3VisualFixture.js';
 import { ShellApp } from './ShellApp.js';
-import { applyShellTheme } from './SettingsPage.js';
+import {
+  applyAppearancePreferences,
+  readAppearancePreferences,
+  readShortcutPreferences,
+} from './preferences-store.js';
 
 const searchParams = new URLSearchParams(window.location.search);
 const phase3VisualCase = resolvePhase3VisualCase(window.location.search);
@@ -14,9 +18,10 @@ if (phase3VisualCase) {
 } else {
   // Restore persisted theme. Both light and dark are tuned against the NewMax
   // reference, so following the OS is the honest product default.
-  const storedTheme =
-    (localStorage.getItem('sync-think-shell-theme') as 'light' | 'dark' | 'system') || 'system';
-  applyShellTheme(storedTheme);
+  applyAppearancePreferences(readAppearancePreferences());
+
+  const quickWindow = readShortcutPreferences().quickWindow;
+  void window.syncThink?.runtime?.setGlobalShortcut?.(quickWindow);
 
   // Restore animation preference.
   const animPref = localStorage.getItem('sync-think-animation');
@@ -26,9 +31,8 @@ if (phase3VisualCase) {
 
   // Keep OS-follow responsive while theme is 'system'.
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
-    const current =
-      (localStorage.getItem('sync-think-shell-theme') as 'light' | 'dark' | 'system') || 'system';
-    if (current === 'system') applyShellTheme('system');
+    const current = readAppearancePreferences();
+    if (current.mode === 'system') applyAppearancePreferences(current);
   });
 }
 

@@ -6,6 +6,10 @@ import type {
   ExportDesktopDiagnosticsResponse,
 } from '../diagnostics-export-contract.js';
 import type {
+  DesktopUpdateAutoCheckPreference,
+  DesktopUpdateOpenResult,
+} from '../desktop-update-contract.js';
+import type {
   ExportDesktopDataPayload,
   ExportDesktopDataResponse,
   ImportDesktopDataPayload,
@@ -88,6 +92,9 @@ import type {
   ImportSkillResponse,
   ImportRemoteSkillPayload,
   ImportRemoteSkillResponse,
+  ListSkillMarketResponse,
+  InstallSkillMarketPayload,
+  InstallSkillMarketResponse,
   ListSkillsPayload,
   ListSkillsResponse,
   DeleteSkillPayload,
@@ -343,6 +350,7 @@ import type {
   DesktopUpdateActionResult,
   DesktopUpdateSnapshot,
 } from '../desktop-update-contract.js';
+import type { OpenExternalUrlResult } from '../external-link-contract.js';
 
 const api = {
   runtime: {
@@ -358,6 +366,8 @@ const api = {
     },
     appendMessage: (payload: AppendMessagePayload) =>
       ipcRenderer.invoke('runtime:append-message', payload) as Promise<AppendMessageResponse>,
+    openExternalUrl: (url: string) =>
+      ipcRenderer.invoke('desktop:open-external-url', url) as Promise<OpenExternalUrlResult>,
     detectKernels: () =>
       ipcRenderer.invoke('runtime:kernel-detect') as Promise<KernelDetectResponse>,
     getGatewayStatus: () =>
@@ -886,6 +896,13 @@ const api = {
         'runtime:skill-import-remote',
         payload,
       ) as Promise<ImportRemoteSkillResponse>,
+    listSkillMarket: () =>
+      ipcRenderer.invoke('runtime:skill-market-list') as Promise<ListSkillMarketResponse>,
+    installSkillMarket: (payload: InstallSkillMarketPayload) =>
+      ipcRenderer.invoke(
+        'runtime:skill-market-install',
+        payload,
+      ) as Promise<InstallSkillMarketResponse>,
     listSkills: (payload: ListSkillsPayload = {}) =>
       ipcRenderer.invoke('runtime:skill-list', payload) as Promise<ListSkillsResponse>,
     deleteSkill: (payload: DeleteSkillPayload) =>
@@ -1134,6 +1151,11 @@ const api = {
     /** Push the renderer theme preference onto the native frame/title bar. */
     setTheme: (theme: 'light' | 'dark' | 'system') =>
       ipcRenderer.invoke('desktop:set-theme', theme) as Promise<{ dark: boolean }>,
+    setGlobalShortcut: (payload: { accelerator: string; enabled: boolean }) =>
+      ipcRenderer.invoke('desktop:set-global-shortcut', payload) as Promise<{
+        registered: boolean;
+        error: string | null;
+      }>,
     listProjectFiles: (payload: { root: string; query?: string; maxEntries?: number }) =>
       ipcRenderer.invoke('desktop:list-project-files', payload) as Promise<{
         root: string;
@@ -1342,6 +1364,21 @@ const api = {
       ipcRenderer.invoke('desktop:update-download') as Promise<DesktopUpdateActionResult>,
     installUpdate: () =>
       ipcRenderer.invoke('desktop:update-install') as Promise<DesktopUpdateActionResult>,
+    getAutoCheck: () =>
+      ipcRenderer.invoke(
+        'desktop:update-get-auto-check',
+      ) as Promise<DesktopUpdateAutoCheckPreference>,
+    setAutoCheck: (payload: DesktopUpdateAutoCheckPreference) =>
+      ipcRenderer.invoke(
+        'desktop:update-set-auto-check',
+        payload,
+      ) as Promise<DesktopUpdateAutoCheckPreference>,
+    openReleaseNotes: () =>
+      ipcRenderer.invoke('desktop:update-open-release-notes') as Promise<DesktopUpdateOpenResult>,
+    openLogDirectory: () =>
+      ipcRenderer.invoke(
+        'desktop:data-open-directory',
+      ) as Promise<OpenDesktopDataDirectoryResponse>,
     subscribeState: (listener: (snapshot: DesktopUpdateSnapshot) => void) => {
       const channel = 'desktop:update-state';
       const handler = (_event: Electron.IpcRendererEvent, snapshot: DesktopUpdateSnapshot) =>

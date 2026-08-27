@@ -126,6 +126,35 @@ afterEach(() => {
 });
 
 describe('ChatView turn Skill draft', () => {
+  it('maps the compose shortcuts to the @ and / palettes', async () => {
+    renderChat(conversation('conversation-shortcuts'));
+    const input = screen.getByTestId('compose-input') as HTMLTextAreaElement;
+
+    fireEvent.click(screen.getByTestId('compose-mention-trigger'));
+    expect(input.value).toBe('@');
+    expect(await screen.findByTestId('compose-mention-pop')).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId('turn-skill-trigger'));
+    expect(input.value).toBe('@ /');
+    expect(await screen.findByTestId('compose-slash-pop')).toBeTruthy();
+  });
+
+  it('requests slash Skills for the current workspace and only renders the returned active set', async () => {
+    runtime.listSkills.mockResolvedValue({ skills: [skillCatalog.skills[0]] });
+    renderChat({
+      ...conversation('conversation-workspace'),
+      workspaceId: 'workspace-a',
+    } as Conversation);
+
+    fireEvent.click(screen.getByTestId('turn-skill-trigger'));
+    expect(await screen.findByTestId('turn-skill-option-skill-a')).toBeTruthy();
+    expect(screen.queryByTestId('turn-skill-option-skill-b')).toBeNull();
+    expect(runtime.listSkills).toHaveBeenCalledWith({
+      limit: 500,
+      workspaceId: 'workspace-a',
+    });
+  });
+
   it('starts Agent Compose empty and keeps an explicit selection after append succeeds', async () => {
     renderChat(conversation('conversation-a'));
     await waitForInitialMessages();

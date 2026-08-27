@@ -32,6 +32,48 @@ export interface VisionFallbackSetting {
   modelId: string | null;
 }
 
+export interface ImageToolGuidanceOptions {
+  visionCapable: boolean;
+  visionFallbackEnabled: boolean;
+  /** External kernels expose image tools through namespaced MCP servers. */
+  externalKernel: boolean;
+}
+
+/**
+ * Keep image-tool prompting out of native multimodal turns. OCR and visual
+ * fallback are recovery paths for text-only models, not a prerequisite for a
+ * model that can consume the original pixels.
+ */
+export function buildImageToolGuidance(options: ImageToolGuidanceOptions): string[] {
+  if (options.visionCapable) return [];
+
+  const ocrTool = options.externalKernel
+    ? '`mcp__windows-ocr__ocr_image`（Claude Code）或 `mcp__sync-think-platform__ocr_image`（Codex / Pi）'
+    : '`ocr_image`';
+  const guidance = [
+    [
+      '## 图片文字识别（Windows OCR）',
+      `当前模型不支持直接读取图片。只在需要提取工作区图片中的文字时调用 ${ocrTool}，并传入图片路径作为 \`path\`。`,
+      'OCR 只提取可辨认文字，不代表完整画面；不要读取图片二进制后猜测内容。',
+    ].join('\n'),
+  ];
+
+  if (options.visionFallbackEnabled) {
+    const describeTool = options.externalKernel
+      ? '`mcp__vision-fallback__describe_image`'
+      : '`describe_image`';
+    guidance.push(
+      [
+        '## 图像理解（vision fallback）',
+        `需要理解工作区图片中的画面、物体或布局时，调用 ${describeTool} 并传入图片路径作为 \`path\`。`,
+        '宿主会使用设置中选定的视觉模型返回描述。',
+      ].join('\n'),
+    );
+  }
+
+  return guidance;
+}
+
 export function parseVisionFallbackSetting(raw: unknown): VisionFallbackSetting {
   if (!raw || typeof raw !== 'object') return { enabled: false, modelId: null };
   const record = raw as Record<string, unknown>;

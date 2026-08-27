@@ -1474,7 +1474,7 @@ describe('mcp commands (§9.3 authz skeleton)', () => {
       await Promise.race([
         entered.promise,
         new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('Scheduler did not start the test Step')), 2_000),
+          setTimeout(() => reject(new Error('Scheduler did not start the test Step')), 10_000),
         ),
       ]);
       socket = await connectRuntime(installId);
@@ -1507,7 +1507,10 @@ describe('mcp commands (§9.3 authz skeleton)', () => {
         }),
       );
 
-      const markerDeadline = Date.now() + 3_000;
+      // Runtime's full suite starts many real process fixtures concurrently on
+      // Windows. Wait for the child-owned marker rather than treating scheduler
+      // load as a spawn failure after only three seconds.
+      const markerDeadline = Date.now() + 15_000;
       while (!existsSync(markerPath)) {
         if (earlyResponse) {
           throw new Error(`MCP call returned before spawn: ${JSON.stringify(earlyResponse)}`);
@@ -1554,7 +1557,7 @@ describe('mcp commands (§9.3 authz skeleton)', () => {
         }
       }
     }
-  }, 30_000);
+  }, 60_000);
 
   it('does not let an Agent allowlist bypass required actual-call scope', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'sync-think-mcp-call-fake-'));

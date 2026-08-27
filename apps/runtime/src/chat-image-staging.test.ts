@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import {
   readStagedImageAsDataUrl,
   resolveAppendMessageImageDataUrl,
+  resolveAppendMessageImageStagingPath,
   resolveChatImageStagingDir,
 } from './chat-image-staging.js';
 
@@ -39,6 +40,38 @@ describe('chat-image-staging', () => {
     } finally {
       delete process.env.SYNC_THINK_CHAT_IMAGE_STAGING;
       rmSync(staging, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts only the matching conversation image directory inside the workspace', () => {
+    const workspace = join(tmpdir(), `sync-think-workspace-image-${Date.now()}`);
+    const conversationId = 'conv-image-1';
+    const imageDir = join(workspace, '.sync-think', 'conversations', conversationId, 'images');
+    const file = join(imageDir, 'attachment-1.png');
+    const wrongConversationFile = join(
+      workspace,
+      '.sync-think',
+      'conversations',
+      'conv-other',
+      'images',
+      'attachment-1.png',
+    );
+    mkdirSync(imageDir, { recursive: true });
+    mkdirSync(join(wrongConversationFile, '..'), { recursive: true });
+    writeFileSync(file, Buffer.from([0x89, 0x50, 0x4e, 0x47, 1]));
+    writeFileSync(wrongConversationFile, Buffer.from([0x89, 0x50, 0x4e, 0x47, 2]));
+
+    try {
+      const trust = { workspaceRoot: workspace, conversationId };
+      expect(resolveAppendMessageImageStagingPath({ stagingPath: file }, trust)).toBe(file);
+      expect(
+        resolveAppendMessageImageDataUrl({ stagingPath: file, mimeType: 'image/png' }, trust),
+      ).toMatch(/^data:image\/png;base64,/);
+      expect(
+        resolveAppendMessageImageStagingPath({ stagingPath: wrongConversationFile }, trust),
+      ).toBeUndefined();
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
     }
   });
 });

@@ -165,10 +165,33 @@ export function formatElapsedZh(ms: number): string {
   return `${seconds}秒`;
 }
 
+function toolResultIndicatesFailure(result: string | undefined): boolean {
+  if (!result?.trim()) return false;
+
+  let parsed: unknown = result;
+  for (let depth = 0; depth < 2 && typeof parsed === 'string'; depth += 1) {
+    const candidate = parsed.trim();
+    if (!candidate.startsWith('{')) return false;
+    try {
+      parsed = JSON.parse(candidate) as unknown;
+    } catch {
+      return false;
+    }
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false;
+
+  const record = parsed as Record<string, unknown>;
+  if (record.ok === false || record.success === false) return true;
+  if (record.failed === true || record.isError === true) return true;
+  const exitCode = record.exitCode ?? record.exit_code;
+  return typeof exitCode === 'number' && exitCode !== 0;
+}
+
 export function toolStatusOf(item: ToolItem): 'running' | 'completed' | 'failed' {
-  return (
-    item.status ?? (item.failed ? 'failed' : item.result !== undefined ? 'completed' : 'running')
-  );
+  if (item.failed || item.status === 'failed' || toolResultIndicatesFailure(item.result)) {
+    return 'failed';
+  }
+  return item.status ?? (item.result !== undefined ? 'completed' : 'running');
 }
 
 export type ProcessActivityKind = 'tool' | 'thinking' | 'answering' | 'status' | 'waiting';

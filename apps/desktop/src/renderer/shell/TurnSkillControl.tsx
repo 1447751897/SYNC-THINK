@@ -22,6 +22,10 @@ export interface TurnSkillControlProps {
   workspaceId?: string;
   open: boolean;
   selectedSkillVersionIds: readonly string[];
+  /** NewMax-style shortcut: insert `/` in the owning composer. */
+  onShortcut?(): void;
+  /** Keeps the shortcut highlighted while the slash palette is open. */
+  shortcutActive?: boolean;
   onOpenChange(open: boolean): void;
   onChange(skillVersionIds: string[]): void;
 }
@@ -111,11 +115,7 @@ export function TurnSkillControl(props: TurnSkillControlProps) {
   }, [props.workspaceId, workspaceScopeKey]);
 
   useEffect(() => {
-    if (
-      props.open &&
-      catalog.scopeKey === workspaceScopeKey &&
-      catalog.status === 'idle'
-    ) {
+    if (props.open && catalog.scopeKey === workspaceScopeKey && catalog.status === 'idle') {
       loadCatalog();
     }
   }, [catalog.scopeKey, catalog.status, loadCatalog, props.open, workspaceScopeKey]);
@@ -147,11 +147,18 @@ export function TurnSkillControl(props: TurnSkillControlProps) {
       <button
         ref={buttonRef}
         type="button"
-        className="shell-compose__tool"
-        data-active={props.open || selected.length > 0 ? '1' : '0'}
+        className={`shell-compose__tool${props.onShortcut ? ' shell-compose__skill-shortcut' : ''}`}
+        data-active={props.open || props.shortcutActive || selected.length > 0 ? '1' : '0'}
         data-testid="turn-skill-trigger"
         title={title}
-        onClick={() => props.onOpenChange(!props.open)}
+        aria-label={props.onShortcut ? '打开 Skill 命令（输入 /）' : title}
+        onClick={() => {
+          if (props.onShortcut) {
+            props.onShortcut();
+            return;
+          }
+          props.onOpenChange(!props.open);
+        }}
       >
         <Puzzle size={15} />
         <span className="shell-compose__tool-label w-[3.5ch] tabular-nums">

@@ -1,20 +1,12 @@
-﻿import { useEffect, useState } from 'react';
-import {
-  AlertTriangle,
-  ArrowRight,
-  Check,
-  Download,
-  PackageCheck,
-  RefreshCw,
-  Radio,
-  ShieldCheck,
-} from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { AlertTriangle, Download, ExternalLink, Info, PackageCheck, RefreshCw } from 'lucide-react';
 import clsx from 'clsx';
 import type {
   DesktopUpdateActionResult,
   DesktopUpdatePhase,
   DesktopUpdateSnapshot,
 } from '../../desktop-update-contract.js';
+import syncThinkLogo from './assets/sync-think-logo.png';
 
 const PHASE_LABELS: Record<DesktopUpdatePhase, string> = {
   disabled: '更新通道未启用',
@@ -26,21 +18,6 @@ const PHASE_LABELS: Record<DesktopUpdatePhase, string> = {
   downloaded: '安装包已就绪',
   installing: '正在安全退出并启动安装…',
   error: '更新操作需要处理',
-};
-
-const PHASE_TONES: Record<
-  DesktopUpdatePhase,
-  'neutral' | 'info' | 'success' | 'warning' | 'error'
-> = {
-  disabled: 'neutral',
-  idle: 'neutral',
-  checking: 'info',
-  available: 'info',
-  'up-to-date': 'success',
-  downloading: 'info',
-  downloaded: 'success',
-  installing: 'warning',
-  error: 'error',
 };
 
 const ERROR_LABELS: Record<string, string> = {
@@ -57,87 +34,21 @@ const ERROR_LABELS: Record<string, string> = {
   'desktop.update.provider-failed': '更新服务返回异常。',
   'desktop.update.action-busy': '已有更新操作正在进行。',
   'desktop.update.action-invalid': '当前状态不允许执行该操作。',
-  'desktop.update.disabled': '当前构建未配置私有更新通道。',
+  'desktop.update.disabled': '当前构建未配置更新通道。',
   'desktop.update.initialization-failed': '更新组件初始化失败。',
+  'desktop.update.release-notes-open-failed': '打开更新日志失败。',
 };
 
 type UpdateAction = () => Promise<DesktopUpdateActionResult>;
 type UpdateActionKind = 'check' | 'download' | 'install';
-type StepState = 'pending' | 'current' | 'complete' | 'locked';
-
-interface UpdateStep {
-  id: UpdateActionKind;
-  label: string;
-  detail: string;
-  state: StepState;
-}
-
-function resolveStepStates(snapshot: DesktopUpdateSnapshot | null): UpdateStep[] {
-  const phase = snapshot?.phase;
-  const disabled = !snapshot || phase === 'disabled';
-  const checkComplete =
-    phase === 'available' ||
-    phase === 'up-to-date' ||
-    phase === 'downloading' ||
-    phase === 'downloaded' ||
-    phase === 'installing';
-  const downloadComplete = phase === 'downloaded' || phase === 'installing';
-
-  return [
-    {
-      id: 'check',
-      label: '检查',
-      detail: '读取通道版本',
-      state: disabled
-        ? 'locked'
-        : checkComplete
-          ? 'complete'
-          : phase === 'idle' || phase === 'checking' || phase === 'error'
-            ? 'current'
-            : 'pending',
-    },
-    {
-      id: 'download',
-      label: '下载',
-      detail: '校验完整安装包',
-      state: disabled
-        ? 'locked'
-        : downloadComplete
-          ? 'complete'
-          : phase === 'available' || phase === 'downloading'
-            ? 'current'
-            : 'pending',
-    },
-    {
-      id: 'install',
-      label: '安装',
-      detail: '安全退出并升级',
-      state: disabled
-        ? 'locked'
-        : phase === 'downloaded' || phase === 'installing'
-          ? 'current'
-          : 'pending',
-    },
-  ];
-}
-
-function formatStatusTime(value: string | null | undefined, fallback: string): string {
-  if (!value) return fallback;
-  const timestamp = new Date(value);
-  if (Number.isNaN(timestamp.getTime())) return fallback;
-  return new Intl.DateTimeFormat('zh-CN', {
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  }).format(timestamp);
-}
 
 export function DesktopUpdatePanel() {
   const [snapshot, setSnapshot] = useState<DesktopUpdateSnapshot | null>(null);
   const [pendingAction, setPendingAction] = useState<UpdateActionKind | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [auxiliaryError, setAuxiliaryError] = useState<string | null>(null);
+  const [autoCheck, setAutoCheck] = useState(true);
+  const [autoCheckBusy, setAutoCheckBusy] = useState(false);
 
   useEffect(() => {
     const bridge = window.syncThink?.updates;
@@ -154,6 +65,12 @@ export function DesktopUpdatePanel() {
       .catch(() => {
         if (active) setActionError('desktop.update.initialization-failed');
       });
+    void bridge
+      .getAutoCheck()
+      .then((preference) => {
+        if (active) setAutoCheck(preference.enabled);
+      })
+      .catch(() => undefined);
     return () => {
       active = false;
       unsubscribe();
@@ -174,6 +91,47 @@ export function DesktopUpdatePanel() {
     }
   }
 
+  async function changeAutoCheck(enabled: boolean) {
+    const bridge = window.syncThink?.updates;
+    if (!bridge || autoCheckBusy) return;
+    setAutoCheckBusy(true);
+    setAuxiliaryError(null);
+    try {
+      const preference = await bridge.setAutoCheck({ enabled });
+      setAutoCheck(preference.enabled);
+    } catch {
+      setAuxiliaryError('保存自动更新偏好失败。');
+    } finally {
+      setAutoCheckBusy(false);
+    }
+  }
+
+  async function openReleaseNotes() {
+    const bridge = window.syncThink?.updates;
+    if (!bridge) return;
+    setAuxiliaryError(null);
+    try {
+      const result = await bridge.openReleaseNotes();
+      if (!result.opened) {
+        setAuxiliaryError(ERROR_LABELS[result.error ?? ''] ?? '打开更新日志失败。');
+      }
+    } catch {
+      setAuxiliaryError('打开更新日志失败。');
+    }
+  }
+
+  async function openLogDirectory() {
+    const bridge = window.syncThink?.updates;
+    if (!bridge) return;
+    setAuxiliaryError(null);
+    try {
+      const result = await bridge.openLogDirectory();
+      if (!result.opened) setAuxiliaryError('打开日志目录失败。');
+    } catch {
+      setAuxiliaryError('打开日志目录失败。');
+    }
+  }
+
   const bridge = window.syncThink?.updates;
   const phase = snapshot?.phase;
   const configured = snapshot?.configured === true;
@@ -186,6 +144,7 @@ export function DesktopUpdatePanel() {
     phase !== 'installing';
   const canDownload = configured && pendingAction === null && phase === 'available';
   const canInstall = configured && pendingAction === null && phase === 'downloaded';
+  const visibleError = actionError ?? snapshot?.errorCode ?? null;
   const statusLabel = snapshot
     ? snapshot.phase === 'available' && snapshot.availableVersion
       ? `发现新版本 ${snapshot.availableVersion}`
@@ -193,186 +152,144 @@ export function DesktopUpdatePanel() {
         ? `正在下载安装包 ${snapshot.progressPercent.toFixed(1)}%`
         : PHASE_LABELS[snapshot.phase]
     : '正在读取更新状态…';
-  const visibleError = actionError ?? snapshot?.errorCode ?? null;
-  const steps = resolveStepStates(snapshot);
-  const phaseTone = snapshot ? PHASE_TONES[snapshot.phase] : 'neutral';
-  const targetVersion = snapshot?.availableVersion ?? null;
-  const checkedLabel = formatStatusTime(snapshot?.checkedAt, '尚未检查');
-  const downloadLabel = formatStatusTime(snapshot?.downloadedAt, '等待下载');
-  const progressPercent = snapshot?.progressPercent ?? 0;
+
+  const primaryAction: UpdateActionKind =
+    phase === 'downloaded' || phase === 'installing'
+      ? 'install'
+      : phase === 'available' || phase === 'downloading'
+        ? 'download'
+        : 'check';
+  const primaryEnabled =
+    primaryAction === 'install'
+      ? canInstall
+      : primaryAction === 'download'
+        ? canDownload
+        : canCheck;
+  const primaryLabel =
+    primaryAction === 'install'
+      ? pendingAction === 'install' || phase === 'installing'
+        ? '正在重启…'
+        : '重启并安装'
+      : primaryAction === 'download'
+        ? pendingAction === 'download' || phase === 'downloading'
+          ? '下载中…'
+          : '下载更新'
+        : pendingAction === 'check' || phase === 'checking'
+          ? '检查中…'
+          : '检查更新';
+  const PrimaryIcon =
+    primaryAction === 'install'
+      ? PackageCheck
+      : primaryAction === 'download'
+        ? Download
+        : RefreshCw;
+
+  const runPrimaryAction = () => {
+    if (!bridge) return;
+    if (primaryAction === 'install') {
+      void runAction('install', () => bridge.installUpdate());
+      return;
+    }
+    if (primaryAction === 'download') {
+      void runAction('download', () => bridge.downloadUpdate());
+      return;
+    }
+    void runAction('check', () => bridge.checkForUpdates());
+  };
 
   return (
-    <section
-      className={clsx('settings-update-panel', snapshot && `is-${snapshot.phase}`)}
-      aria-label="桌面更新"
-    >
-      <header className="settings-update-panel__header">
-        <div className="settings-update-panel__heading">
-          <span className="settings-update-panel__icon" aria-hidden="true">
-            <PackageCheck size={18} strokeWidth={1.8} />
-          </span>
+    <section className="settings-about-release" aria-label="关于 SYNC-THINK">
+      <div className="settings-about-brand">
+        <div className="settings-about-brand__line">
+          <img
+            src={syncThinkLogo}
+            alt=""
+            draggable={false}
+            className="sync-think-logo settings-about-brand__mark"
+          />
+          <h2>SYNC-THINK</h2>
+        </div>
+        <p>版本 v{snapshot?.currentVersion ?? '读取中'}</p>
+      </div>
+
+      <div className="settings-about-update">
+        <div className="settings-about-auto-check">
           <div>
-            <p className="settings-update-panel__eyebrow">DESKTOP RELEASE</p>
-            <h3>桌面发布通道</h3>
-            <span>手动检查、下载并安装经过完整性校验的版本。</span>
+            <strong>自动检查更新</strong>
+            <span>启动时自动检查新版本</span>
           </div>
-        </div>
-        <div
-          className={clsx('settings-update-status', `is-${phaseTone}`)}
-          aria-live="polite"
-          data-phase={phase ?? 'loading'}
-        >
-          <span aria-hidden="true" />
-          {statusLabel}
-        </div>
-      </header>
-
-      <div className="settings-update-version-lane" aria-label="版本信息">
-        <div className="settings-update-version-block">
-          <span>当前版本</span>
-          <strong>{snapshot?.currentVersion ?? '读取中'}</strong>
-          <small>本机正在运行</small>
-        </div>
-        <div className={clsx('settings-update-version-arrow', targetVersion && 'is-ready')}>
-          <ArrowRight size={18} strokeWidth={1.7} aria-hidden="true" />
-        </div>
-        <div
-          className={clsx(
-            'settings-update-version-block',
-            'is-target',
-            targetVersion && 'is-ready',
-          )}
-        >
-          <span>目标版本</span>
-          <strong>{targetVersion ?? '等待检查'}</strong>
-          <small>{targetVersion ? '来自受控发布通道' : '检查后显示可用版本'}</small>
-        </div>
-      </div>
-
-      <div className="settings-update-facts" aria-label="更新通道详情">
-        <span>
-          <Radio size={14} aria-hidden="true" />
-          <span>
-            <small>发布通道</small>
-            <code>{snapshot?.channel ?? '读取中'}</code>
-          </span>
-        </span>
-        <span>
-          <ShieldCheck size={14} aria-hidden="true" />
-          <span>
-            <small>完整性保护</small>
-            <strong>SHA-512 完整性校验</strong>
-          </span>
-        </span>
-        <span>
-          <span>
-            <small>上次检查</small>
-            <strong>{checkedLabel}</strong>
-          </span>
-        </span>
-        <span>
-          <span>
-            <small>下载状态</small>
-            <strong>{downloadLabel}</strong>
-          </span>
-        </span>
-      </div>
-
-      <ol className="settings-update-steps" aria-label="更新流程">
-        {steps.map((step, index) => (
-          <li
-            key={step.id}
-            className={clsx(`is-${step.state}`)}
-            aria-current={step.state === 'current' ? 'step' : undefined}
+          <button
+            type="button"
+            role="switch"
+            aria-label="自动检查更新"
+            aria-checked={autoCheck}
+            disabled={!bridge || autoCheckBusy}
+            className={clsx('settings-about-toggle', autoCheck && 'is-checked')}
+            onClick={() => void changeAutoCheck(!autoCheck)}
           >
-            <span className="settings-update-step__marker" aria-hidden="true">
-              {step.state === 'complete' ? <Check size={13} strokeWidth={2.4} /> : index + 1}
-            </span>
-            <span className="settings-update-step__copy">
-              <strong>{step.label}</strong>
-              <small>{step.detail}</small>
-            </span>
-          </li>
-        ))}
-      </ol>
+            <span />
+          </button>
+        </div>
 
-      {snapshot?.phase === 'downloading' && snapshot.progressPercent !== null ? (
-        <div className="settings-update-progress-wrap">
-          <div className="settings-update-progress__label">
-            <span>正在接收安装包</span>
-            <strong>{snapshot.progressPercent.toFixed(1)}%</strong>
-          </div>
+        <button
+          type="button"
+          className="settings-about-update__primary"
+          disabled={!primaryEnabled || !bridge}
+          onClick={runPrimaryAction}
+        >
+          <PrimaryIcon
+            size={15}
+            className={pendingAction === primaryAction ? 'is-spinning' : undefined}
+            aria-hidden="true"
+          />
+          {primaryLabel}
+        </button>
+
+        {snapshot?.phase === 'downloading' && snapshot.progressPercent !== null ? (
           <div
-            className="settings-update-progress"
+            className="settings-about-progress"
             role="progressbar"
             aria-label="更新下载进度"
             aria-valuemin={0}
             aria-valuemax={100}
             aria-valuenow={snapshot.progressPercent}
           >
-            <span style={{ width: `${Math.min(100, Math.max(0, progressPercent))}%` }} />
+            <span style={{ width: `${Math.min(100, Math.max(0, snapshot.progressPercent))}%` }} />
           </div>
-        </div>
-      ) : null}
+        ) : null}
 
-      {visibleError ? (
-        <div className="settings-update-alert" role="alert">
-          <AlertTriangle size={15} aria-hidden="true" />
-          <div>
-            <strong>本次更新已停止</strong>
+        {phase && phase !== 'idle' && phase !== 'disabled' && phase !== 'error' ? (
+          <p className="settings-about-update__status" aria-live="polite">
+            {statusLabel}
+          </p>
+        ) : null}
+
+        {visibleError ? (
+          <div className="settings-about-alert" role="alert">
+            <AlertTriangle size={14} aria-hidden="true" />
             <span>{ERROR_LABELS[visibleError] ?? '更新操作失败，请稍后重试。'}</span>
           </div>
-        </div>
-      ) : null}
+        ) : null}
 
-      {!configured && snapshot ? (
-        <p className="settings-update-disabled-note">
-          当前构建未配置私有更新通道。配置完成前，应用不会访问更新网络。
-        </p>
-      ) : null}
-
-      <footer className="settings-update-panel__footer">
-        <p>更新只在你主动操作时执行；安装前会先安全停止 Runtime 与桌面服务。</p>
-        <div className="settings-update-actions">
-          <button
-            type="button"
-            className={clsx(canCheck && 'is-primary')}
-            disabled={!canCheck || !bridge}
-            onClick={() =>
-              bridge ? void runAction('check', () => bridge.checkForUpdates()) : undefined
-            }
-          >
-            <RefreshCw
-              size={14}
-              className={pendingAction === 'check' ? 'is-spinning' : undefined}
-              aria-hidden="true"
-            />
-            {pendingAction === 'check' || phase === 'checking' ? '检查中…' : '检查更新'}
+        <div className="settings-about-links">
+          <button type="button" onClick={() => void openReleaseNotes()}>
+            <Info size={15} aria-hidden="true" />
+            查看更新日志
           </button>
-          <button
-            type="button"
-            className={clsx(canDownload && 'is-primary')}
-            disabled={!canDownload || !bridge}
-            onClick={() =>
-              bridge ? void runAction('download', () => bridge.downloadUpdate()) : undefined
-            }
-          >
-            <Download size={14} aria-hidden="true" />
-            {pendingAction === 'download' || phase === 'downloading' ? '下载中…' : '下载更新'}
-          </button>
-          <button
-            type="button"
-            className={clsx(canInstall && 'is-primary')}
-            disabled={!canInstall || !bridge}
-            onClick={() =>
-              bridge ? void runAction('install', () => bridge.installUpdate()) : undefined
-            }
-          >
-            <PackageCheck size={14} aria-hidden="true" />
-            {pendingAction === 'install' || phase === 'installing' ? '正在重启…' : '重启并安装'}
+          <button type="button" onClick={() => void openLogDirectory()}>
+            <ExternalLink size={15} aria-hidden="true" />
+            打开日志目录
           </button>
         </div>
-      </footer>
+
+        {auxiliaryError ? (
+          <p className="settings-about-auxiliary-error" role="alert">
+            {auxiliaryError}
+          </p>
+        ) : null}
+      </div>
+
+      <p className="settings-about-copyright">© 2026 SYNC-THINK. All rights reserved.</p>
     </section>
   );
 }

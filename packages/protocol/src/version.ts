@@ -88,6 +88,7 @@ export type Feature =
   | 'desktop.command.continue'
   | 'desktop.command.cancel'
   | 'skill.import'
+  | 'skill.market'
   | 'skill.list'
   | 'skill.get'
   | 'skill.delete'
@@ -215,6 +216,7 @@ export const DEFAULT_FEATURES: Feature[] = [
   'desktop.command.continue',
   'desktop.command.cancel',
   'skill.import',
+  'skill.market',
   'skill.list',
   'skill.get',
   'skill.delete',

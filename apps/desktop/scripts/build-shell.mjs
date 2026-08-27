@@ -4,7 +4,7 @@
 // switchover. Tailwind resolves `@import './tokens.css'` from shell.css, so the
 // generated palette (scripts/generate-shell-tokens.mjs) is picked up here too.
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, copyFileSync } from 'node:fs';
+import { mkdirSync, copyFileSync, cpSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -25,7 +25,14 @@ await esbuild.build({
   platform: 'browser',
   sourcemap: true,
   jsx: 'automatic',
-  loader: { '.tsx': 'tsx', '.ts': 'ts', '.png': 'dataurl', '.svg': 'dataurl' },
+  loader: {
+    '.tsx': 'tsx',
+    '.ts': 'ts',
+    '.png': 'dataurl',
+    '.svg': 'dataurl',
+    '.jpg': 'file',
+  },
+  assetNames: 'assets/[name]-[hash]',
   define: {
     'process.env.NODE_ENV': JSON.stringify(process.env.NODE_ENV ?? 'development'),
   },
@@ -66,12 +73,22 @@ const require = createRequire(import.meta.url);
 const cliPkgJson = require.resolve('@tailwindcss/cli/package.json');
 const cliPkg = require(cliPkgJson);
 const tailwindCli = join(dirname(cliPkgJson), cliPkg.bin?.tailwindcss ?? cliPkg.bin);
-execFileSync(process.execPath, [
-  tailwindCli,
-  '-i', join(shellSrc, 'shell.css'),
-  '-o', join(outdir, 'shell.css'),
-  '--cwd', shellSrc,
-], { stdio: 'inherit' });
+execFileSync(
+  process.execPath,
+  [
+    tailwindCli,
+    '-i',
+    join(shellSrc, 'shell.css'),
+    '-o',
+    join(outdir, 'shell.css'),
+    '--cwd',
+    shellSrc,
+  ],
+  { stdio: 'inherit' },
+);
 
 copyFileSync(join(shellSrc, 'index.html'), join(outdir, 'index.html'));
+cpSync(join(shellSrc, 'assets', 'fonts', 'files'), join(outdir, 'files'), {
+  recursive: true,
+});
 console.log(`[desktop] shell renderer built at ${outdir}`);

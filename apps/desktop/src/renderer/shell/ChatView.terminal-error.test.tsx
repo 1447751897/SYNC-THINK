@@ -2,7 +2,7 @@
  * @vitest-environment jsdom
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import type { Conversation, Message } from '@sync-think/shared';
 import { ChatView } from './ChatView.js';
 
@@ -107,7 +107,7 @@ afterEach(() => {
 });
 
 describe('ChatView terminal failure reason', () => {
-  it('opens the model picker from a failed turn and retries with the newly selected model', async () => {
+  it('keeps a failed turn factual without a model-switch retry action', async () => {
     runtime.listConversationMessages.mockResolvedValue({
       messages: [userMessage, outputlessFailure],
       hasMore: false,
@@ -125,19 +125,15 @@ describe('ChatView terminal failure reason', () => {
       />,
     );
 
-    fireEvent.click(await screen.findByTestId('process-panel-toggle'));
-    fireEvent.click(await screen.findByRole('button', { name: '选择模型并重试' }));
-    fireEvent.click(await screen.findByTestId('model-provider-Backup'));
-    fireEvent.click(await screen.findByText('gpt-5.6-sol'));
-
-    await waitFor(() =>
-      expect(runtime.appendMessage).toHaveBeenCalledWith(
-        expect.objectContaining({ modelId: 'model-backup' }),
-      ),
+    const terminal = await screen.findByTestId('assistant-terminal-failed');
+    expect(screen.queryByRole('button', { name: '选择模型并重试' })).toBeNull();
+    expect(screen.getByTestId('assistant-terminal-error').textContent).toContain(
+      'unsafe shell metacharacters',
     );
-    expect(runtime.appendMessage.mock.calls.at(-1)?.[0]).toMatchObject({
-      text: '请继续处理这个任务',
-    });
+    fireEvent.click(terminal.querySelector('summary')!);
+    expect(terminal.querySelector('.shell-harness-terminal__detail')?.textContent).toContain(
+      KERNEL_SPAWN_ERROR,
+    );
   });
 
   it('shows the concrete failure reason next to the failure notice', async () => {
@@ -151,11 +147,7 @@ describe('ChatView terminal failure reason', () => {
       />,
     );
 
-    const processToggle = await screen.findByTestId('process-panel-toggle');
-    expect(processToggle.getAttribute('aria-expanded')).toBe('false');
-    fireEvent.click(processToggle);
-    // The failure notice and concrete reason live inside the execution panel.
-    expect(await screen.findByText('回复失败，已保留中断前内容')).toBeTruthy();
+    expect(await screen.findByText('运行失败')).toBeTruthy();
     const reason = screen.getByTestId('assistant-terminal-error');
     expect(reason.textContent).toContain('请求被网关拒绝（400）');
     expect(reason.textContent).toContain('enable_thinking');
@@ -177,10 +169,7 @@ describe('ChatView terminal failure reason', () => {
       />,
     );
 
-    // The panel must exist even with zero process items — otherwise the run is
-    // silently invisible and the user just sees no reply.
-    const processToggle = await screen.findByTestId('process-panel-toggle');
-    fireEvent.click(processToggle);
+    // The failure row must exist even with zero process items.
     expect(await screen.findByTestId('assistant-terminal-failed')).toBeTruthy();
     expect(screen.getByTestId('assistant-terminal-error').textContent).toContain(
       'unsafe shell metacharacters',

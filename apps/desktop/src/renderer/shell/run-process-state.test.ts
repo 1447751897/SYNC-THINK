@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import type { RunProcessView } from '@sync-think/protocol';
 import type { Event } from '@sync-think/shared';
 import {
+  collectRunProcessIds,
   projectRunTerminalEvents,
+  reconcileStreamingMessageProcessTerminal,
   reconcileRunProcessTerminal,
   updateRunProcessMap,
 } from './run-process-state.js';
@@ -28,6 +30,36 @@ function processView(runId: string, stepCount: number): RunProcessView {
 }
 
 describe('run process state', () => {
+  it('loads a transient-only run so its durable process terminal can settle the UI', () => {
+    expect(
+      collectRunProcessIds({
+        durableRunIds: ['run-history'],
+        transientRunId: 'run-transient',
+        projectedActiveRunId: 'run-projected',
+      }),
+    ).toEqual(new Set(['run-history', 'run-transient', 'run-projected']));
+  });
+
+  it('lets a completed process snapshot settle a stale streaming message', () => {
+    const message = {
+      id: 'streaming-run-active',
+      runId: 'run-active',
+      streaming: true,
+    };
+    const completed = {
+      ...processView('run-active', 0),
+      running: false,
+      startedAt: '2026-08-25T05:53:47.990Z',
+      completedAt: '2026-08-25T05:55:19.960Z',
+      durationMs: 91_970,
+    };
+
+    expect(reconcileStreamingMessageProcessTerminal(message, completed)).toEqual({
+      ...message,
+      streaming: false,
+    });
+  });
+
   it('replaces only the addressed run when a 30-step snapshot streams', () => {
     const historical = processView('run-history', 2);
     const activeBefore = processView('run-active', 29);

@@ -67,6 +67,7 @@ describe('capability governance pipe commands', () => {
     const dbPath = join(dir, 'sync-think.db');
     const installId = `capability-${randomBytes(5).toString('hex')}`;
     const workspaceId = 'workspace-capability' as WorkspaceId;
+    const otherWorkspaceId = 'workspace-without-capability' as WorkspaceId;
     await runMigrations(dbPath);
     const connection = await openDatabaseAsync({ path: dbPath });
     const workspaceStore = new SqliteWorkspaceStore(connection.raw);
@@ -79,6 +80,12 @@ describe('capability governance pipe commands', () => {
       name: 'Capability Workspace',
       folderPath: dir,
       allowedRoots: [dir],
+    });
+    workspaceStore.createWorkspace({
+      id: otherWorkspaceId,
+      name: 'Workspace Without Capability',
+      folderPath: join(dir, 'other'),
+      allowedRoots: [join(dir, 'other')],
     });
     const skill = skillStore.importVersion({
       name: 'governed-skill',
@@ -135,6 +142,8 @@ describe('capability governance pipe commands', () => {
           installId,
           nonce: randomBytes(8).toString('hex'),
           features: [
+            'skill.list',
+            'skill.setEnabled',
             'capability.workspace.list',
             'capability.workspace.setActive',
             'capability.governance.list',
@@ -180,6 +189,49 @@ describe('capability governance pipe commands', () => {
           (activation) => activation.capabilityId,
         ),
       ).toEqual(expect.arrayContaining([skill.id, mcp.id]));
+
+      const activeWorkspaceSkills = await inbox.send({
+        id: 'list-active-workspace-skills',
+        kind: 'request',
+        type: 'skill.list',
+        payload: { workspaceId },
+      });
+      expect(activeWorkspaceSkills.error).toBeUndefined();
+      expect(
+        (activeWorkspaceSkills.payload as { skills: Array<{ skillVersionId: string }> }).skills,
+      ).toEqual([expect.objectContaining({ skillVersionId: skill.id })]);
+
+      const inactiveWorkspaceSkills = await inbox.send({
+        id: 'list-inactive-workspace-skills',
+        kind: 'request',
+        type: 'skill.list',
+        payload: { workspaceId: otherWorkspaceId },
+      });
+      expect(inactiveWorkspaceSkills.error).toBeUndefined();
+      expect((inactiveWorkspaceSkills.payload as { skills: unknown[] }).skills).toEqual([]);
+
+      const disabled = await inbox.send({
+        id: 'disable-active-skill',
+        kind: 'request',
+        type: 'skill.setEnabled',
+        payload: { skillVersionId: skill.id, enabled: false },
+      });
+      expect(disabled.error).toBeUndefined();
+      const disabledWorkspaceSkills = await inbox.send({
+        id: 'list-disabled-workspace-skills',
+        kind: 'request',
+        type: 'skill.list',
+        payload: { workspaceId },
+      });
+      expect((disabledWorkspaceSkills.payload as { skills: unknown[] }).skills).toEqual([]);
+
+      const reenabled = await inbox.send({
+        id: 'reenable-active-skill',
+        kind: 'request',
+        type: 'skill.setEnabled',
+        payload: { skillVersionId: skill.id, enabled: true },
+      });
+      expect(reenabled.error).toBeUndefined();
 
       const governance = await inbox.send({
         id: 'list-governance',

@@ -236,6 +236,20 @@ describe('shared tool naming', () => {
     ).toBe('running');
   });
 
+  it('treats a structured ok:false result as failed even when the transport completed', () => {
+    expect(
+      toolStatusOf({
+        ...completedRead,
+        status: 'completed',
+        result: JSON.stringify({
+          ok: false,
+          code: 'browser.command-persist-failed',
+          error: 'Browser command idempotency key was reused with different input.',
+        }),
+      } as never),
+    ).toBe('failed');
+  });
+
   it('formats elapsed windows in Chinese units', () => {
     expect(formatElapsedZh(8_000)).toBe('8秒');
     expect(formatElapsedZh(68_000)).toBe('1分8秒');

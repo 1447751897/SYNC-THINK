@@ -64,6 +64,9 @@ import {
   type ImportSkillPayload,
   type ImportSkillResponse,
   type ImportRemoteSkillResponse,
+  type ListSkillMarketResponse,
+  type InstallSkillMarketPayload,
+  type InstallSkillMarketResponse,
   type SkillPermissionDiffSummary,
   type DeleteSkillResponse,
   type SetSkillEnabledResponse,
@@ -194,6 +197,7 @@ import {
   type ExecuteBrowserWorkflowResponse,
   type KernelDetectResponse,
   COMPUTER_USE_PLUGIN_SETTING_KEY,
+  PERSONALIZATION_SETTING_KEY,
   isComputerUsePluginEnabled as isComputerUsePluginSettingEnabled,
   OPEN_GATEWAY_SETTING_KEY,
   normalizeOpenGatewaySetting,
@@ -201,6 +205,7 @@ import {
   type GatewayLogsResponse,
   type OpenGatewayStatusResponse,
 } from '@sync-think/protocol';
+import { buildPersonalizationInstructions } from './personalization-context.js';
 import {
   parseDataBackupPayload,
   parseDataCleanConversationsPayload,
@@ -435,6 +440,7 @@ import {
 import {
   VISION_FALLBACK_SETTING_KEY,
   buildDescriptionSuffix,
+  buildImageToolGuidance,
   buildImageHandlingFailureSuffix,
   buildImageDescriptionPrompt,
   buildWindowsOcrSuffix,
@@ -690,6 +696,11 @@ import {
   workspaceSkillsDirectory,
   type LocalSkillSourceInput,
 } from './local-skill-discovery.js';
+import {
+  getAuthorSkillMarketItem,
+  listAuthorSkillMarket,
+  resolveAuthorSkillMarketPackage,
+} from './skill-market.js';
 import type {
   KernelAdapter,
   KernelCredential,
@@ -2973,6 +2984,14 @@ export class Runtime {
         }
         if (frame.type === 'skill.importRemote') {
           this.trackBackgroundTask(this.handleImportRemoteSkill(socket, frame));
+          return;
+        }
+        if (frame.type === 'skill.market.list') {
+          this.handleListSkillMarket(socket, frame);
+          return;
+        }
+        if (frame.type === 'skill.market.install') {
+          this.trackBackgroundTask(this.handleInstallSkillMarket(socket, frame));
           return;
         }
         if (frame.type === 'skill.local.inspect') {
@@ -8275,11 +8294,15 @@ export class Runtime {
             ...run.skillPromptBlocks,
           ].join('\n\n')
         : undefined;
+    const personalizationPrompt = buildPersonalizationInstructions(
+      this.appSettingStore?.get(PERSONALIZATION_SETTING_KEY)?.value,
+    );
     return [
       agentIdentityPrompt ??
         (workspaceRoot
           ? 'You are a coding assistant with filesystem tools for the bound project folder.'
           : 'You are a helpful assistant.'),
+      personalizationPrompt,
       skillPrompt,
     ].filter((value): value is string => Boolean(value));
   }
@@ -11379,6 +11402,102 @@ export class Runtime {
           payload: response,
         }),
       );
+    } catch (error) {
+      this.writeProviderCommandError(socket, frame, error);
+    }
+  }
+
+  private handleListSkillMarket(socket: Socket, frame: Frame): void {
+    const response: ListSkillMarketResponse = { items: listAuthorSkillMarket() };
+    socket.write(
+      encodeFrame({
+        id: frame.id,
+        kind: 'response',
+        type: 'skill.market.list',
+        payload: response,
+      }),
+    );
+  }
+
+  private async handleInstallSkillMarket(socket: Socket, frame: Frame): Promise<void> {
+    const payload = frame.payload as InstallSkillMarketPayload | undefined;
+    if (
+      !payload ||
+      typeof payload.marketSkillId !== 'string' ||
+      payload.marketSkillId.trim().length === 0
+    ) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.skillStore) {
+      this.writeSkillStoreUnavailable(socket, frame);
+      return;
+    }
+
+    const marketSkillId = payload.marketSkillId.trim();
+    const item = getAuthorSkillMarketItem(marketSkillId);
+    if (!item) {
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'skill.market.install',
+          payload: {},
+          error: {
+            code: ErrorCode.RUN_NOT_FOUND,
+            message: `Skill market package not found: ${marketSkillId}`,
+          },
+        }),
+      );
+      return;
+    }
+
+    try {
+      const resolvedPackage = await resolveAuthorSkillMarketPackage(marketSkillId);
+      try {
+        const installation = installLocalSkillFolders(
+          resolvedPackage.skills,
+          localSkillsDirectory(),
+          false,
+        );
+        if (installation.conflictNames.length > 0) {
+          throw new Error(`Skill 已安装：${installation.conflictNames.join('、')}`);
+        }
+        const installed = installation.installed[0];
+        if (!installed) throw new Error('Skill 市场包没有生成可安装内容');
+
+        const skillMd = readFileSync(installed.installedSkillMdPath, 'utf8');
+        const parsed = parseSkillMd(skillMd);
+        const imported = this.finishSkillImport(skillMd, parsed, {
+          originType: 'market',
+          originRef: `market://skills/${item.id}`,
+        });
+
+        this.refreshLocalSkillCache();
+        this.restartLocalSkillWatch();
+        this.publishEvent(
+          this.appendEvent('system', 'skill.market_installed', {
+            marketSkillId: item.id,
+            skillVersionId: imported.skill.skillVersionId,
+            installedPaths: installation.installed.map((entry) => entry.installedDirectory),
+          }),
+        );
+        const response: InstallSkillMarketResponse = {
+          ...imported,
+          item,
+          installedPaths: installation.installed.map((entry) => entry.installedDirectory),
+        };
+        socket.write(
+          encodeFrame({
+            id: frame.id,
+            kind: 'response',
+            type: 'skill.market.install',
+            payload: response,
+          }),
+        );
+      } finally {
+        resolvedPackage.cleanup();
+      }
     } catch (error) {
       this.writeProviderCommandError(socket, frame, error);
     }
@@ -19178,14 +19297,23 @@ export class Runtime {
       responseContinuationScopeId,
     );
     const effective = this.effectiveContextWindowForRun(run);
-    const kernelImages = run.images
-      ?.map((image) => {
-        const dataUrl = resolveAppendMessageImageDataUrl(image);
-        return dataUrl ? { name: image.name, mimeType: image.mimeType, dataUrl } : undefined;
-      })
-      .filter((image): image is { name: string; mimeType: string; dataUrl: string } =>
-        Boolean(image),
-      );
+    const imageTrust = {
+      workspaceRoot,
+      conversationId: this.resolveConversationIdForThread(run.threadId),
+    };
+    const kernelImages = run.images?.flatMap((image): NonNullable<KernelRequest['images']> => {
+      const dataUrl = resolveAppendMessageImageDataUrl(image, imageTrust);
+      if (!dataUrl) return [];
+      const filePath = resolveAppendMessageImageStagingPath(image, imageTrust);
+      return [
+        {
+          name: image.name,
+          mimeType: image.mimeType,
+          dataUrl,
+          ...(filePath ? { filePath } : {}),
+        },
+      ];
+    });
     return {
       kernelId,
       model: run.modelId,
@@ -19783,26 +19911,12 @@ export class Runtime {
     // the session fingerprint rebuilds sessions created before this rule.
     parts.push(LANGUAGE_FOLLOW_PROMPT);
     parts.push(
-      [
-        '## 图片文字识别（Windows OCR）',
-        '需要读取工作区图片中的截图文字、报错信息或界面文本时，调用 `ocr_image`。ClaudeCode 中工具名为 `mcp__windows-ocr__ocr_image`，GPT / Pi 中为 `mcp__sync-think-platform__ocr_image`。',
-        '该工具使用 Windows 内置 OCR，不依赖当前模型的视觉能力。不要读取图片二进制后猜测内容。',
-      ].join('\n'),
+      ...buildImageToolGuidance({
+        visionCapable: this.isRunModelVisionCapable(run),
+        visionFallbackEnabled: this.isVisionFallbackSettingEnabled(),
+        externalKernel: true,
+      }),
     );
-    // NewMax-style vision fallback: the running model cannot see images and the
-    // user enabled a fallback — teach the model to call describe_image instead
-    // of guessing from file binaries (which is exactly what a non-vision model
-    // would otherwise do and previously got it into a search rabbit hole).
-    if (!this.isRunModelVisionCapable(run) && this.isVisionFallbackSettingEnabled()) {
-      parts.push(
-        [
-          '## 图像理解（vision fallback）',
-          '你（当前绑定的模型）不支持直接识别图片。',
-          '需要理解工作区中的 PNG / JPEG / GIF / WebP 图片时，直接调用 `describe_image`（外部内核中工具名为 `mcp__vision-fallback__describe_image`）并传入图片路径作为 `path` 参数；宿主会调用你配置的视觉模型返回图片的文字描述。',
-          '不要尝试读取图片二进制后猜测内容（无效且浪费轮次）。',
-        ].join('\n'),
-      );
-    }
     return parts.join('\n\n');
   }
 
@@ -26878,20 +26992,18 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
             : '- Permission mode is workspace/full-access: creating a Draft executes directly, while recording and publish review remain separate product gates.',
         ].join('\n')
       : 'Browser Automation Workflow tools are unavailable in this Runtime.';
-    const ocrGuidance =
-      '## 图片文字识别（Windows OCR）\n需要读取工作区图片中的截图文字、报错信息或界面文本时，调用 `ocr_image` 并传入图片路径（path 参数）。该工具使用 Windows 内置 OCR，不依赖当前模型的视觉能力。';
-    const visionGuidance =
-      !this.isRunModelVisionCapable(run) && this.isVisionFallbackSettingEnabled()
-        ? '## 图像理解（vision fallback）\n当前绑定的模型不支持直接识别图片。需要理解工作区中的 PNG / JPEG / GIF / WebP 图片时，直接调用 `describe_image` 并传入图片路径（path 参数），宿主会调用你配置的视觉模型并返回图片的文字描述。不要读取图片二进制后猜测内容（无效且浪费轮次）。'
-        : undefined;
+    const imageToolGuidance = buildImageToolGuidance({
+      visionCapable: this.isRunModelVisionCapable(run),
+      visionFallbackEnabled: this.isVisionFallbackSettingEnabled(),
+      externalKernel: false,
+    });
     const productBoundaryPrompt = [
       'Product capability boundaries (SYNC-THINK / this desktop shell):',
       CODEX_STYLE_COMMENTARY_PROMPT,
       agentCreationPrompt,
       planToolPrompt,
       browserWorkflowPrompt,
-      ocrGuidance,
-      ...(visionGuidance ? [visionGuidance] : []),
+      ...imageToolGuidance,
       '- Prefer built-in tools list_files / search_files / read_file / git_status / git_diff. search_files finds file contents by regex — do not call rg/ripgrep/fd/ag — they are often missing on Windows and will fail with ENOENT.',
       '- If a tool fails as unavailable, do not retry the same command; change approach or answer with what you already know.',
       '- Avoid long pure-exploration loops. After a few targeted looks, give the user a useful answer.',
@@ -27315,11 +27427,15 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       run.imagesMode = 'forwarded';
       return;
     }
+    const imageTrust = {
+      workspaceRoot: this.resolveChatWorkspaceRoot(run.threadId),
+      conversationId: this.resolveConversationIdForThread(run.threadId),
+    };
     const inputs = run.images
       .map((image) => {
-        const dataUrl = resolveAppendMessageImageDataUrl(image);
+        const dataUrl = resolveAppendMessageImageDataUrl(image, imageTrust);
         if (!dataUrl) return undefined;
-        const stagingPath = resolveAppendMessageImageStagingPath(image);
+        const stagingPath = resolveAppendMessageImageStagingPath(image, imageTrust);
         return {
           name: image.name,
           mimeType: image.mimeType,

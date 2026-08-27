@@ -1,6 +1,6 @@
 // NewMax-style Compose toolbar menus: permission / reasoning / model picker.
 // Menus render via portal + fixed position so parent overflow cannot clip them.
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { forwardRef, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import {
@@ -692,6 +692,8 @@ export function ModelPickerMenu(props: {
   defaultLabel: string;
   reasoningEffort?: ReasoningEffort;
   anchorEl: HTMLElement | null;
+  /** Use the real compose button as the Radix trigger when mounted in ChatView. */
+  trigger?: React.ReactElement;
   /** Kernel selector data (Slice 6); empty hides the kernel group. */
   kernels?: readonly KernelDetectionResult[];
   selectedKernelId?: string;
@@ -753,19 +755,32 @@ export function ModelPickerMenu(props: {
       }}
       modal={false}
     >
-      <DropdownMenu.Trigger asChild>
-        <span
-          aria-hidden="true"
-          style={{
-            position: 'fixed',
-            left: triggerRect?.left ?? 0,
-            top: triggerRect?.top ?? 0,
-            width: triggerRect?.width ?? 0,
-            height: triggerRect?.height ?? 0,
-            pointerEvents: 'none',
-          }}
-        />
-      </DropdownMenu.Trigger>
+      {props.trigger ? (
+        <DropdownMenu.Trigger asChild>{props.trigger}</DropdownMenu.Trigger>
+      ) : typeof document !== 'undefined' ? (
+        createPortal(
+          <DropdownMenu.Trigger asChild>
+            <span
+              aria-hidden="true"
+              data-testid="model-picker-anchor"
+              style={{
+                // The chat column owns a container query. A fixed element
+                // inside it is still measured in that container's coordinate
+                // space in Chromium, which moves Radix menus off-screen.
+                // Keep the virtual anchor under body so its fixed rect is
+                // genuinely viewport-relative.
+                position: 'fixed',
+                left: triggerRect?.left ?? 0,
+                top: triggerRect?.top ?? 0,
+                width: triggerRect?.width ?? 0,
+                height: triggerRect?.height ?? 0,
+                pointerEvents: 'none',
+              }}
+            />
+          </DropdownMenu.Trigger>,
+          document.body,
+        )
+      ) : null}
       <DropdownMenu.Portal>
         <DropdownMenu.Content
           className="shell-menu shell-menu--portal shell-menu--model-providers"
@@ -775,6 +790,9 @@ export function ModelPickerMenu(props: {
           collisionPadding={8}
           avoidCollisions
           onCloseAutoFocus={(event) => event.preventDefault()}
+          // Radix renders Provider items in a second portal; keep the root
+          // menu mounted while focus crosses into that flyout.
+          onFocusOutside={(event) => event.preventDefault()}
           onEscapeKeyDown={props.onClose}
         >
           <div className="shell-menu__scroll">
@@ -872,6 +890,12 @@ export function ModelPickerMenu(props: {
                         ownsSelected ? 'is-active' : ''
                       }`}
                       onClick={() => setOpenSubmenu(submenuKey)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'ArrowRight') {
+                          event.preventDefault();
+                          setOpenSubmenu(submenuKey);
+                        }
+                      }}
                     >
                       <span className="shell-menu__selection-slot" aria-hidden="true">
                         {ownsSelected ? <Check size={14} /> : null}
@@ -1531,29 +1555,43 @@ export function ContextRing(props: {
   );
 }
 
-export function ModelTrigger(props: {
+interface ModelTriggerProps {
   label: string;
   reasoningLabel?: string;
   open: boolean;
   buttonRef?: React.Ref<HTMLButtonElement>;
   onClick(): void;
-}) {
-  return (
-    <button
-      ref={props.buttonRef}
-      type="button"
-      className="shell-compose__model-btn"
-      data-open={props.open ? '1' : '0'}
-      aria-haspopup="menu"
-      aria-expanded={props.open}
-      onClick={props.onClick}
-      title={props.reasoningLabel ? `切换模型，思考强度：${props.reasoningLabel}` : '切换模型'}
-    >
-      <span className="shell-compose__model-label">{props.label}</span>
-      {props.reasoningLabel ? (
-        <span className="shell-compose__model-reasoning">{props.reasoningLabel}</span>
-      ) : null}
-      <ChevronDown size={12} />
-    </button>
-  );
 }
+
+function assignRef<T>(ref: React.Ref<T> | undefined, value: T | null): void {
+  if (!ref) return;
+  if (typeof ref === 'function') ref(value);
+  else (ref as React.MutableRefObject<T | null>).current = value;
+}
+
+export const ModelTrigger = forwardRef<HTMLButtonElement, ModelTriggerProps>(
+  function ModelTrigger(props, forwardedRef) {
+    return (
+      <button
+        ref={(node) => {
+          assignRef(props.buttonRef, node);
+          assignRef(forwardedRef, node);
+        }}
+        type="button"
+        className="shell-compose__model-btn"
+        data-open={props.open ? '1' : '0'}
+        aria-haspopup="menu"
+        aria-expanded={props.open}
+        onClick={props.onClick}
+        title={props.reasoningLabel ? `切换模型，思考强度：${props.reasoningLabel}` : '切换模型'}
+      >
+        <span className="shell-compose__model-label">{props.label}</span>
+        {props.reasoningLabel ? (
+          <span className="shell-compose__model-reasoning">{props.reasoningLabel}</span>
+        ) : null}
+        <ChevronDown size={12} />
+      </button>
+    );
+  },
+);
+ModelTrigger.displayName = 'ModelTrigger';

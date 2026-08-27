@@ -1,4 +1,5 @@
 import * as Dialog from '@radix-ui/react-dialog';
+import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import {
   AlertTriangle,
   ArrowLeft,
@@ -61,6 +62,7 @@ import type {
   SkillLocalImportPayload,
   SkillLocalInspectItem,
   SkillLocalInstallScope,
+  SkillMarketItemSummary,
   SkillPublishDraftSummary,
   SkillVersionSummary,
   WorkspaceSummary,
@@ -268,6 +270,7 @@ export function AbilitiesPage(props: {
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState(fallbackWorkspaceId);
   const [selectedSkillScope, setSelectedSkillScope] = useState('global');
   const [skills, setSkills] = useState<SkillVersionSummary[]>([]);
+  const [marketSkills, setMarketSkills] = useState<SkillMarketItemSummary[]>([]);
   const [servers, setServers] = useState<McpServerSummary[]>([]);
   const [localCandidates, setLocalCandidates] = useState<
     import('@sync-think/protocol').LocalSkillCandidate[]
@@ -303,35 +306,42 @@ export function AbilitiesPage(props: {
     if (props.activeWorkspaceId) setSelectedWorkspaceId(props.activeWorkspaceId);
   }, [props.activeWorkspaceId]);
 
-  const loadCatalog = useCallback(async () => {
-    const requestId = ++loadRequestRef.current;
-    const api = runtimeBridge();
-    if (!api?.listSkills || !api.listMcpServers) {
-      setLoadError('Runtime bridge 不可用');
-      setLoading(false);
-      return;
-    }
-    setLoading(true);
-    setLoadError(undefined);
-    try {
-      const [skillsResponse, mcpResponse, governanceResponse] = await Promise.all([
-        api.listSkills({ limit: 500 }),
-        api.listMcpServers({ limit: 100 }),
-        api.listCapabilityGovernance
-          ? api.listCapabilityGovernance({ workspaceId: selectedWorkspaceId })
-          : Promise.resolve(undefined),
-      ]);
-      if (requestId !== loadRequestRef.current) return;
-      setSkills(skillsResponse.skills);
-      setServers(mcpResponse.servers);
-      setGovernance(governanceResponse);
-    } catch (cause) {
-      if (requestId !== loadRequestRef.current) return;
-      setLoadError(capabilityErrorMessage(cause, '能力库加载失败'));
-    } finally {
-      if (requestId === loadRequestRef.current) setLoading(false);
-    }
-  }, [selectedWorkspaceId]);
+  const loadCatalog = useCallback(
+    async (options?: { background?: boolean }) => {
+      const requestId = ++loadRequestRef.current;
+      const api = runtimeBridge();
+      if (!api?.listSkills || !api.listMcpServers) {
+        setLoadError('Runtime bridge 不可用');
+        setLoading(false);
+        return;
+      }
+      if (!options?.background) setLoading(true);
+      setLoadError(undefined);
+      try {
+        const [skillsResponse, marketResponse, mcpResponse, governanceResponse] = await Promise.all(
+          [
+            api.listSkills({ limit: 500 }),
+            api.listSkillMarket ? api.listSkillMarket() : Promise.resolve({ items: SKILL_MARKET }),
+            api.listMcpServers({ limit: 100 }),
+            api.listCapabilityGovernance
+              ? api.listCapabilityGovernance({ workspaceId: selectedWorkspaceId })
+              : Promise.resolve(undefined),
+          ],
+        );
+        if (requestId !== loadRequestRef.current) return;
+        setSkills(skillsResponse.skills);
+        setMarketSkills(marketResponse.items);
+        setServers(mcpResponse.servers);
+        setGovernance(governanceResponse);
+      } catch (cause) {
+        if (requestId !== loadRequestRef.current) return;
+        setLoadError(capabilityErrorMessage(cause, '能力库加载失败'));
+      } finally {
+        if (requestId === loadRequestRef.current) setLoading(false);
+      }
+    },
+    [selectedWorkspaceId],
+  );
 
   useEffect(() => {
     void loadCatalog();
@@ -343,7 +353,7 @@ export function AbilitiesPage(props: {
     try {
       const res = await api.skillLocalScan({ refresh: true });
       setLocalCandidates(res.candidates);
-      await loadCatalog();
+      await loadCatalog({ background: true });
     } catch {
       // 扫描失败保持现状。
     }
@@ -493,7 +503,7 @@ export function AbilitiesPage(props: {
 
   const selectedSkill = skills.find((skill) => skill.skillVersionId === detailSkillVersionId);
   const selectedServer = servers.find((server) => server.mcpServerId === detailMcpServerId);
-  const selectedMarketSkill = SKILL_MARKET.find((item) => item.id === detailMarketSkillId);
+  const selectedMarketSkill = marketSkills.find((item) => item.id === detailMarketSkillId);
   const selectedMarketMcp = MCP_MARKET.find((item) => item.id === detailMarketMcpId);
 
   const notifyCatalogChanged = useCallback(() => {
@@ -508,32 +518,29 @@ export function AbilitiesPage(props: {
   const installMarketSkill = useCallback(
     async (item: SkillMarketItem) => {
       const api = runtimeBridge();
-      if (!api?.importSkill || busyId) return;
+      if (!api?.installSkillMarket || busyId) return;
       setBusyId(`market-skill:${item.id}`);
       setError(undefined);
       try {
-        const result = item.sourceUrl
-          ? await api.importRemoteSkill({
-              url: item.sourceUrl,
-              originRef: `market://skills/${item.id}`,
-            })
-          : await api.importSkill({
-              skillMd: item.source,
-              originType: 'market',
-              originRef: `market://skills/${item.id}`,
-            });
+        const result = await api.installSkillMarket({ marketSkillId: item.id });
+        setSkills((current) => {
+          const remaining = current.filter(
+            (skill) => skill.skillVersionId !== result.skill.skillVersionId,
+          );
+          return [...remaining, result.skill];
+        });
         setMessage(skillImportMessage(result));
         setDetailMarketSkillId(undefined);
         setDetailSkillVersionId(result.skill.skillVersionId);
         setTab('mine');
-        await refreshAfterMutation();
+        notifyCatalogChanged();
       } catch (cause) {
         setError(capabilityErrorMessage(cause, '安装 Skill 失败'));
       } finally {
         setBusyId(undefined);
       }
     },
-    [busyId, refreshAfterMutation],
+    [busyId, notifyCatalogChanged],
   );
 
   const saveSkillEditor = useCallback(
@@ -686,16 +693,44 @@ export function AbilitiesPage(props: {
       if (!api?.setSkillEnabled || busyId) return;
       setBusyId(`skill-global:${skill.skillVersionId}`);
       setError(undefined);
+      setSkills((current) =>
+        current.map((item) =>
+          item.skillVersionId === skill.skillVersionId ? { ...item, enabled } : item,
+        ),
+      );
       try {
-        await api.setSkillEnabled({ skillVersionId: skill.skillVersionId, enabled });
-        await refreshAfterMutation();
+        const response = await api.setSkillEnabled({
+          skillVersionId: skill.skillVersionId,
+          enabled,
+        });
+        setSkills((current) =>
+          current.map((item) =>
+            item.skillVersionId === response.skill.skillVersionId ? response.skill : item,
+          ),
+        );
+        setGovernance((current) =>
+          current
+            ? {
+                ...current,
+                skills: current.skills.map((row) =>
+                  row.skill.skillVersionId === response.skill.skillVersionId
+                    ? { ...row, skill: response.skill }
+                    : row,
+                ),
+              }
+            : current,
+        );
+        notifyCatalogChanged();
       } catch (cause) {
+        setSkills((current) =>
+          current.map((item) => (item.skillVersionId === skill.skillVersionId ? skill : item)),
+        );
         setError(capabilityErrorMessage(cause, '更新 Skill 全局状态失败'));
       } finally {
         setBusyId(undefined);
       }
     },
-    [busyId, refreshAfterMutation],
+    [busyId, notifyCatalogChanged],
   );
 
   const setMcpGlobalEnabled = useCallback(
@@ -745,26 +780,59 @@ export function AbilitiesPage(props: {
   );
 
   const setWorkspaceActive = useCallback(
-    async (capabilityType: 'skill' | 'mcp', capabilityId: string, active: boolean) => {
+    async (
+      capabilityType: 'skill' | 'mcp',
+      capabilityId: string,
+      active: boolean,
+      workspaceId?: string,
+    ): Promise<boolean> => {
       const api = runtimeBridge();
-      if (!api?.setCapabilityWorkspaceActive || busyId) return;
-      setBusyId(`workspace:${capabilityType}:${capabilityId}`);
+      if (!api?.setCapabilityWorkspaceActive) return false;
+      const targetWorkspaceId = workspaceId ?? selectedWorkspaceId;
+      setBusyId(`workspace:${capabilityType}:${capabilityId}:${targetWorkspaceId}`);
       setError(undefined);
       try {
-        await api.setCapabilityWorkspaceActive({
-          workspaceId: selectedWorkspaceId,
+        const response = await api.setCapabilityWorkspaceActive({
+          workspaceId: targetWorkspaceId,
           capabilityType,
           capabilityId,
           active,
         });
-        await refreshAfterMutation();
+        const nextActive = response.activation?.active ?? active;
+        if (targetWorkspaceId === selectedWorkspaceId) {
+          setGovernance((current) =>
+            current
+              ? {
+                  ...current,
+                  skills:
+                    capabilityType === 'skill'
+                      ? current.skills.map((row) =>
+                          row.skill.skillVersionId === capabilityId
+                            ? { ...row, workspaceActive: nextActive }
+                            : row,
+                        )
+                      : current.skills,
+                  mcpServers:
+                    capabilityType === 'mcp'
+                      ? current.mcpServers.map((row) =>
+                          row.server.mcpServerId === capabilityId
+                            ? { ...row, workspaceActive: nextActive }
+                            : row,
+                        )
+                      : current.mcpServers,
+                }
+              : current,
+          );
+        }
+        return true;
       } catch (cause) {
         setError(capabilityErrorMessage(cause, '更新工作区激活状态失败'));
+        return false;
       } finally {
         setBusyId(undefined);
       }
     },
-    [busyId, refreshAfterMutation, selectedWorkspaceId],
+    [selectedWorkspaceId],
   );
 
   const registerMcp = useCallback(
@@ -870,6 +938,7 @@ export function AbilitiesPage(props: {
     return (
       <main className="ability-hub" data-testid="abilities-page">
         <NewMaxSkillHub
+          marketItems={marketSkills}
           tab={tab === 'market' ? 'market' : 'mine'}
           query={query}
           category={skillCategory}
@@ -885,6 +954,7 @@ export function AbilitiesPage(props: {
           error={error}
           workspaces={workspaces}
           selectedScope={selectedSkillScope}
+          selectedWorkspaceId={selectedWorkspaceId}
           workspaceName={workspaceName}
           busyId={busyId}
           createMenuOpen={createMenuOpen}
@@ -919,8 +989,8 @@ export function AbilitiesPage(props: {
           onPublishSkill={(skill) => setPublishSkillVersionId(skill.skillVersionId)}
           onInstallMarket={(item) => void installMarketSkill(item)}
           onGlobalEnabled={(skill, enabled) => void setSkillGlobalEnabled(skill, enabled)}
-          onWorkspaceActive={(skill, active) =>
-            void setWorkspaceActive('skill', skill.skillVersionId, active)
+          onWorkspaceActive={(skill, active, workspaceId) =>
+            setWorkspaceActive('skill', skill.skillVersionId, active, workspaceId)
           }
           onOrganize={() => void previewOrganize()}
         />
@@ -1273,6 +1343,7 @@ export function AbilitiesPage(props: {
 }
 
 function NewMaxSkillHub(props: {
+  marketItems: SkillMarketItem[];
   tab: 'market' | 'mine';
   query: string;
   category: (typeof SKILL_CATEGORIES)[number];
@@ -1288,6 +1359,7 @@ function NewMaxSkillHub(props: {
   error?: string;
   workspaces: WorkspaceSummary[];
   selectedScope: string;
+  selectedWorkspaceId: string;
   workspaceName: string;
   busyId?: string;
   createMenuOpen: boolean;
@@ -1312,13 +1384,17 @@ function NewMaxSkillHub(props: {
   onPublishSkill(skill: SkillVersionSummary): void;
   onInstallMarket(item: SkillMarketItem): void;
   onGlobalEnabled(skill: SkillVersionSummary, enabled: boolean): void;
-  onWorkspaceActive(skill: SkillVersionSummary, active: boolean): void;
+  onWorkspaceActive(
+    skill: SkillVersionSummary,
+    active: boolean,
+    workspaceId?: string,
+  ): Promise<boolean | void> | boolean | void;
   onOrganize(): void;
 }): JSX.Element {
   const [sortMode, setSortMode] = useState<'triggers' | 'updated' | 'name'>('triggers');
   const [sortMenuOpen, setSortMenuOpen] = useState(false);
   const needle = props.query.trim().toLocaleLowerCase();
-  const marketItems = SKILL_MARKET.filter((item) => {
+  const marketItems = props.marketItems.filter((item) => {
     const categoryMatches = props.category === '全部' || item.category === props.category;
     const searchMatches =
       !needle ||
@@ -1404,11 +1480,17 @@ function NewMaxSkillHub(props: {
     if (skill.originType === 'market') return '市场安装';
     if (skill.originType === 'derived') return '共享';
     const path = skill.originRef?.toLocaleLowerCase();
+    // 库内导入的 skill 没有磁盘来源（originRef 为空），不属于任何安装目录
+    if (!path) return 'Skill 库';
     const candidate = props.localCandidates.find(
       (entry) =>
-        entry.path.toLocaleLowerCase() === path || (entry.name ?? entry.folderName) === skill.name,
+        entry.path.toLocaleLowerCase() === path ||
+        (entry.name ?? entry.folderName) === skill.name,
     );
-    return candidate?.sourceLabel ?? '~/.sync-think/skills';
+    if (!candidate) return 'Skill 库';
+    // 工作区源显示真实安装路径（SKILL.md 所在目录），而不是工作区名
+    if (candidate.sourceType === 'workspace') return candidate.skillDirectory;
+    return candidate.sourceLabel ?? candidate.skillDirectory;
   };
 
   return (
@@ -1483,7 +1565,7 @@ function NewMaxSkillHub(props: {
               className={props.tab === 'market' ? 'is-active' : undefined}
               onClick={() => props.onTabChange('market')}
             >
-              Skill 市场 <span>{SKILL_MARKET.length}</span>
+              Skill 市场 <span>{props.marketItems.length}</span>
             </button>
             <button
               type="button"
@@ -1576,7 +1658,7 @@ function NewMaxSkillHub(props: {
                         }
                       >
                         <span className="ability-market-card__icon">
-                          <PackageOpen size={23} />
+                          <MarketSkillGlyph icon={item.icon} />
                         </span>
                         <span className="ability-market-card__copy">
                           <span className="ability-market-card__title">
@@ -1589,16 +1671,25 @@ function NewMaxSkillHub(props: {
                         </span>
                       </button>
                       <footer className="ability-market-card__footer">
-                        <span>官方 · {item.category}</span>
+                        <span>{item.author === 'SYNC-THINK' ? '官方' : item.author}</span>
                         <div>
                           {installed ? (
-                            <button
-                              type="button"
-                              className="is-link"
-                              onClick={() => props.onOpenSkill(installed.skillVersionId)}
-                            >
-                              管理 <ArrowRight size={11} />
-                            </button>
+                            <>
+                              <button
+                                type="button"
+                                className="is-link"
+                                onClick={() => props.onOpenSkill(installed.skillVersionId)}
+                              >
+                                管理
+                              </button>
+                              <button
+                                type="button"
+                                className="is-use"
+                                onClick={() => props.onUseSkill(installed)}
+                              >
+                                使用
+                              </button>
+                            </>
                           ) : (
                             <button
                               type="button"
@@ -1813,8 +1904,18 @@ function NewMaxSkillHub(props: {
                   {visibleRows.map(({ family, skill, display, usage, workspaceActive }) => {
                     const issue =
                       usage.problemCount > 0 || skill.hasScripts || skill.warnings.length > 0;
+                    const globallyEnabled = skill.enabled !== false;
+                    const workspaceBusy = Boolean(
+                      props.busyId?.startsWith(`workspace:skill:${skill.skillVersionId}:`),
+                    );
                     return (
-                      <article key={family.skillId} className="ability-installed-row" role="row">
+                      <article
+                        key={family.skillId}
+                        className={`ability-installed-row${globallyEnabled ? '' : ' is-disabled'}`}
+                        role="row"
+                        data-enabled={globallyEnabled ? '1' : '0'}
+                        aria-disabled={!globallyEnabled || undefined}
+                      >
                         <button
                           type="button"
                           className="ability-installed-row__identity"
@@ -1828,21 +1929,33 @@ function NewMaxSkillHub(props: {
                                   ? `${usage.problemCount || skill.warnings.length} 个问题`
                                   : '已扫描'}
                               </em>
+                              {!globallyEnabled ? <em className="is-disabled">已停用</em> : null}
                               <small>v{skill.version}</small>
                             </span>
                             <small>{display.description || '未提供说明'}</small>
                           </span>
                         </button>
-                        <span className="ability-installed-row__location">{locationOf(skill)}</span>
-                        <button
-                          type="button"
-                          data-testid={`skill-workspace-activation-${skill.skillVersionId}`}
-                          className={`ability-installed-row__workspace${workspaceActive ? ' is-active' : ''}`}
-                          disabled={Boolean(props.busyId) || skill.enabled === false}
-                          onClick={() => props.onWorkspaceActive(skill, !workspaceActive)}
+                        <span
+                          className="ability-installed-row__location"
+                          title={locationOf(skill)}
                         >
-                          {workspaceActive ? props.workspaceName : '未激活'}
-                        </button>
+                          {locationOf(skill)}
+                        </span>
+                        <WorkspaceActivationControl
+                          active={workspaceActive}
+                          globallyEnabled={globallyEnabled}
+                          currentWorkspaceId={props.selectedWorkspaceId}
+                          workspaceName={props.workspaceName}
+                          workspaces={props.workspaces}
+                          capabilityType="skill"
+                          capabilityId={skill.skillVersionId}
+                          testId={`skill-workspace-activation-${skill.skillVersionId}`}
+                          busy={workspaceBusy}
+                          disabled={Boolean(props.busyId) && !workspaceBusy}
+                          onWorkspaceChange={(workspaceId, active) =>
+                            props.onWorkspaceActive(skill, active, workspaceId)
+                          }
+                        />
                         <strong className="ability-installed-row__metric">
                           {usage.callCount.toLocaleString('zh-CN')}
                         </strong>
@@ -1854,6 +1967,7 @@ function NewMaxSkillHub(props: {
                             type="button"
                             title="使用"
                             aria-label={`使用 ${display.name}`}
+                            disabled={!globallyEnabled || Boolean(props.busyId)}
                             onClick={() => props.onUseSkill(skill)}
                           >
                             <Play size={13} />
@@ -1917,6 +2031,16 @@ function NewMaxStat(props: {
       <p>{props.note}</p>
     </div>
   );
+}
+
+function MarketSkillGlyph(props: { icon?: string }): JSX.Element {
+  if (props.icon === 'folder-cog') return <Folder size={23} />;
+  if (props.icon === 'workflow') return <CircleGauge size={23} />;
+  if (props.icon === 'palette') return <WandSparkles size={23} />;
+  if (props.icon === 'file-text') return <FileCode2 size={23} />;
+  if (props.icon === 'chart-no-axes-combined') return <Layers3 size={23} />;
+  if (props.icon === 'send') return <Send size={23} />;
+  return <PackageOpen size={23} />;
 }
 
 function HeaderActions(props: {
@@ -2020,7 +2144,11 @@ export function SkillSurface(props: {
   onInstallMarket(item: SkillMarketItem): void;
   onCreate(): void;
   onGlobalEnabled(skill: SkillVersionSummary, enabled: boolean): void;
-  onWorkspaceActive(skill: SkillVersionSummary, active: boolean): void;
+  onWorkspaceActive(
+    skill: SkillVersionSummary,
+    active: boolean,
+    workspaceId?: string,
+  ): Promise<boolean | void> | boolean | void;
   onDelete(skill: SkillVersionSummary): void;
   onOrganize(): void;
   localCandidates: import('@sync-think/protocol').LocalSkillCandidate[];
@@ -2300,11 +2428,24 @@ export function SkillSurface(props: {
                   </span>
                   <WorkspaceActivationControl
                     active={workspaceActive}
+                    globallyEnabled={skill.enabled !== false}
+                    currentWorkspaceId={props.selectedWorkspaceId}
                     workspaceName={props.workspaceName}
+                    workspaces={props.workspaces}
+                    capabilityType="skill"
+                    capabilityId={skill.skillVersionId}
                     testId={`skill-workspace-activation-${skill.skillVersionId}`}
-                    busy={props.busyId === `workspace:skill:${skill.skillVersionId}`}
-                    disabled={Boolean(props.busyId) || skill.enabled === false}
-                    onChange={(active) => props.onWorkspaceActive(skill, active)}
+                    busy={
+                      props.busyId === `workspace:skill:${skill.skillVersionId}` ||
+                      Boolean(props.busyId?.startsWith(`workspace:skill:${skill.skillVersionId}:`))
+                    }
+                    disabled={
+                      Boolean(props.busyId) &&
+                      !props.busyId?.startsWith(`workspace:skill:${skill.skillVersionId}:`)
+                    }
+                    onWorkspaceChange={(workspaceId, active) =>
+                      props.onWorkspaceActive(skill, active, workspaceId)
+                    }
                   />
                   <strong className="capability-governance-row__metric">
                     {usage.callCount.toLocaleString('zh-CN')}
@@ -2805,37 +2946,274 @@ function GovernanceRuleNote(): JSX.Element {
 
 function WorkspaceActivationControl(props: {
   active: boolean;
+  globallyEnabled: boolean;
+  currentWorkspaceId: string;
   workspaceName: string;
+  workspaces: WorkspaceSummary[];
+  capabilityType: 'skill' | 'mcp';
+  capabilityId: string;
   testId?: string;
   busy?: boolean;
   disabled?: boolean;
-  onChange(active: boolean): void;
+  onWorkspaceChange(workspaceId: string, active: boolean): Promise<boolean | void> | boolean | void;
 }): JSX.Element {
-  return (
-    <button
-      type="button"
-      className={
-        props.active && !props.busy
-          ? 'capability-workspace-activation is-active'
-          : props.busy
-            ? 'capability-workspace-activation is-busy'
-            : 'capability-workspace-activation'
+  const { onWorkspaceChange, workspaces } = props;
+  const [open, setOpen] = useState(false);
+  const [activations, setActivations] = useState<Map<string, boolean>>(new Map());
+  const [loadingActivations, setLoadingActivations] = useState(false);
+  const [pendingWorkspaceIds, setPendingWorkspaceIds] = useState<Set<string>>(new Set());
+  const [activationError, setActivationError] = useState<string>();
+  const currentWorkspaceActiveRef = useRef(props.active);
+
+  useEffect(() => {
+    currentWorkspaceActiveRef.current = props.active;
+  }, [props.active]);
+
+  const loadActivations = useCallback(async () => {
+    setActivationError(undefined);
+    setActivations(
+      new Map(
+        props.currentWorkspaceId
+          ? ([[props.currentWorkspaceId, currentWorkspaceActiveRef.current]] as const)
+          : [],
+      ),
+    );
+    const api = runtimeBridge();
+    if (!api?.listCapabilityWorkspaceActivations) return;
+    setLoadingActivations(true);
+    try {
+      const entries = await Promise.all(
+        props.workspaces.map(async (workspace) => {
+          try {
+            const response = await api.listCapabilityWorkspaceActivations({
+              workspaceId: workspace.workspaceId,
+              capabilityType: props.capabilityType,
+            });
+            const record = response.activations.find(
+              (activation) => activation.capabilityId === props.capabilityId,
+            );
+            return [workspace.workspaceId, Boolean(record?.active)] as const;
+          } catch {
+            return [workspace.workspaceId, false] as const;
+          }
+        }),
+      );
+      setActivations(new Map(entries));
+    } finally {
+      setLoadingActivations(false);
+    }
+  }, [props.capabilityId, props.capabilityType, props.currentWorkspaceId, props.workspaces]);
+
+  useEffect(() => {
+    if (!open) return;
+    void loadActivations();
+  }, [open, loadActivations]);
+
+  useEffect(() => {
+    if (!props.globallyEnabled) setOpen(false);
+  }, [props.globallyEnabled]);
+
+  const changeWorkspace = useCallback(
+    async (workspaceId: string, nextActive: boolean): Promise<boolean> => {
+      const previous = activations.get(workspaceId) ?? false;
+      setActivationError(undefined);
+      setActivations((current) => new Map(current).set(workspaceId, nextActive));
+      setPendingWorkspaceIds((current) => new Set(current).add(workspaceId));
+      try {
+        const result = await onWorkspaceChange(workspaceId, nextActive);
+        if (result === false) {
+          setActivations((current) => new Map(current).set(workspaceId, previous));
+          setActivationError('更新失败，已恢复原状态');
+          return false;
+        }
+        return true;
+      } catch {
+        setActivations((current) => new Map(current).set(workspaceId, previous));
+        setActivationError('更新失败，已恢复原状态');
+        return false;
+      } finally {
+        setPendingWorkspaceIds((current) => {
+          const next = new Set(current);
+          next.delete(workspaceId);
+          return next;
+        });
       }
-      data-testid={props.testId}
-      disabled={props.disabled}
-      aria-busy={props.busy || undefined}
-      title={`${props.workspaceName}：${props.active ? '已激活' : '未激活'}`}
-      onClick={() => props.onChange(!props.active)}
-    >
-      <span>
-        {props.busy ? (
-          <Loader2 className="animate-spin" size={10} />
-        ) : props.active ? (
-          <Check size={10} />
-        ) : null}
-      </span>
-      {props.busy ? '更新中' : props.active ? '已激活' : '未激活'}
-    </button>
+    },
+    [activations, onWorkspaceChange],
+  );
+
+  const allWorkspacesActive =
+    workspaces.length > 0 &&
+    workspaces.every((workspace) => activations.get(workspace.workspaceId) === true);
+  const controlsBusy = loadingActivations || pendingWorkspaceIds.size > 0 || Boolean(props.busy);
+
+  const changeAllWorkspaces = useCallback(
+    async (nextActive: boolean) => {
+      const targets = workspaces.filter(
+        (workspace) => (activations.get(workspace.workspaceId) ?? false) !== nextActive,
+      );
+      if (targets.length === 0) return;
+
+      const previous = new Map(activations);
+      const targetIds = new Set(targets.map((workspace) => workspace.workspaceId));
+      setActivationError(undefined);
+      setActivations((current) => {
+        const next = new Map(current);
+        for (const workspace of targets) next.set(workspace.workspaceId, nextActive);
+        return next;
+      });
+      setPendingWorkspaceIds((current) => new Set([...current, ...targetIds]));
+
+      const failedIds = new Set<string>();
+      for (const workspace of targets) {
+        try {
+          const result = await onWorkspaceChange(workspace.workspaceId, nextActive);
+          if (result === false) failedIds.add(workspace.workspaceId);
+        } catch {
+          failedIds.add(workspace.workspaceId);
+        }
+      }
+
+      if (failedIds.size > 0) {
+        setActivations((current) => {
+          const next = new Map(current);
+          for (const workspaceId of failedIds) {
+            next.set(workspaceId, previous.get(workspaceId) ?? false);
+          }
+          return next;
+        });
+        setActivationError(
+          failedIds.size === targets.length
+            ? '工作区状态更新失败，已恢复原状态'
+            : `${failedIds.size} 个工作区更新失败`,
+        );
+      }
+      setPendingWorkspaceIds((current) => {
+        const next = new Set(current);
+        for (const workspaceId of targetIds) next.delete(workspaceId);
+        return next;
+      });
+    },
+    [activations, onWorkspaceChange, workspaces],
+  );
+
+  const triggerDisabled = !props.globallyEnabled || Boolean(props.disabled);
+
+  return (
+    <DropdownMenu.Root open={open} onOpenChange={setOpen} modal={false}>
+      <DropdownMenu.Trigger asChild>
+        <button
+          type="button"
+          className={`capability-workspace-activation${
+            props.active && props.globallyEnabled ? ' is-active' : ''
+          }${props.busy ? ' is-busy' : ''}${triggerDisabled ? ' is-disabled' : ''}`}
+          data-testid={props.testId}
+          disabled={triggerDisabled}
+          aria-haspopup="menu"
+          aria-expanded={open}
+          aria-busy={props.busy || undefined}
+          title={
+            props.globallyEnabled
+              ? `${props.workspaceName}：${props.active ? '已激活' : '未激活'}`
+              : 'Skill 已全局停用'
+          }
+        >
+          <span className="capability-workspace-activation__label">
+            {props.globallyEnabled ? (props.active ? props.workspaceName : '未激活') : '已停用'}
+          </span>
+          {props.globallyEnabled ? (
+            props.busy ? (
+              <Loader2 className="animate-spin" size={12} aria-hidden="true" />
+            ) : (
+              <ChevronDown size={12} aria-hidden="true" />
+            )
+          ) : null}
+        </button>
+      </DropdownMenu.Trigger>
+
+      <DropdownMenu.Portal>
+        <DropdownMenu.Content
+          className="skill-workspace-menu"
+          align="start"
+          side="bottom"
+          sideOffset={4}
+          collisionPadding={12}
+          aria-label="激活到工作区"
+        >
+          <DropdownMenu.Label className="skill-workspace-menu__title">
+            激活到工作区
+          </DropdownMenu.Label>
+          <button
+            type="button"
+            className="skill-workspace-menu__row"
+            role="switch"
+            aria-label="激活全部工作区"
+            aria-checked={allWorkspacesActive}
+            disabled={Boolean(props.disabled) || controlsBusy || workspaces.length === 0}
+            onClick={() => void changeAllWorkspaces(!allWorkspacesActive)}
+          >
+            <span>全局</span>
+            <span
+              className="skill-workspace-menu__switch"
+              data-checked={allWorkspacesActive ? '1' : '0'}
+              aria-hidden="true"
+            >
+              <i />
+            </span>
+          </button>
+          <DropdownMenu.Separator className="skill-workspace-menu__separator" />
+
+          <div className="skill-workspace-menu__list">
+            {workspaces.length === 0 ? (
+              <span className="skill-workspace-menu__empty">没有可用工作区</span>
+            ) : (
+              workspaces.map((workspace) => {
+                const name = workspace.name || workspace.workspaceId;
+                const isActive = activations.get(workspace.workspaceId) ?? false;
+                const pending = pendingWorkspaceIds.has(workspace.workspaceId);
+                return (
+                  <button
+                    key={workspace.workspaceId}
+                    type="button"
+                    className="skill-workspace-menu__row"
+                    role="switch"
+                    aria-label={`${name} 工作区`}
+                    aria-checked={isActive}
+                    aria-busy={pending || undefined}
+                    disabled={Boolean(props.disabled) || controlsBusy}
+                    title={name}
+                    onClick={() => void changeWorkspace(workspace.workspaceId, !isActive)}
+                  >
+                    <span>{name}</span>
+                    <span
+                      className="skill-workspace-menu__switch"
+                      data-checked={isActive ? '1' : '0'}
+                      aria-hidden="true"
+                    >
+                      <i />
+                    </span>
+                  </button>
+                );
+              })
+            )}
+          </div>
+
+          {activationError ? (
+            <span className="skill-workspace-menu__error" role="status">
+              {activationError}
+            </span>
+          ) : null}
+          <DropdownMenu.Separator className="skill-workspace-menu__separator" />
+          <button
+            type="button"
+            className="skill-workspace-menu__done"
+            onClick={() => setOpen(false)}
+          >
+            完成
+          </button>
+        </DropdownMenu.Content>
+      </DropdownMenu.Portal>
+    </DropdownMenu.Root>
   );
 }
 
@@ -2997,7 +3375,11 @@ function SkillDetailDrawer(props: {
               <div>
                 <Dialog.Title>{name}</Dialog.Title>
                 <Dialog.Description>
-                  {skill ? `${skillOriginLabel(skill)} · v${skill.version}` : marketItem?.category}
+                  {skill
+                    ? `${skillOriginLabel(skill)} · v${skill.version}`
+                    : marketItem
+                      ? `${marketItem.author} · ${marketItem.category} · v${marketItem.version}`
+                      : ''}
                 </Dialog.Description>
               </div>
             </div>

@@ -8,6 +8,36 @@ const RUN_TERMINAL_EVENT_TYPES = new Set([
   'run.paused',
 ]);
 
+export function collectRunProcessIds(input: {
+  durableRunIds: Iterable<string>;
+  transientRunId?: string;
+  projectedActiveRunId?: string;
+}): Set<string> {
+  const runIds = new Set(input.durableRunIds);
+  if (input.transientRunId) runIds.add(input.transientRunId);
+  if (input.projectedActiveRunId) runIds.add(input.projectedActiveRunId);
+  return runIds;
+}
+
+/**
+ * A Runtime-owned process terminal is newer and more authoritative than a
+ * reconnecting renderer's transient `streaming` bit. Keep the draft visible,
+ * but settle it so clocks, spinners, and composer controls stop immediately.
+ */
+export function reconcileStreamingMessageProcessTerminal<
+  T extends { runId?: string; streaming?: boolean },
+>(message: T | null, process: RunProcessView | undefined): T | null {
+  if (
+    !message?.streaming ||
+    !message.runId ||
+    !process?.completedAt ||
+    String(process.runId) !== String(message.runId)
+  ) {
+    return message;
+  }
+  return { ...message, streaming: false };
+}
+
 /**
  * Project the latest durable terminal boundary for every Run. Event sequence
  * is the authority because reconnect snapshots may replay an older process

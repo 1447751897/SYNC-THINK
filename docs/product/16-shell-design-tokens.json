@@ -8,9 +8,10 @@
       "id": "fonts",
       "prefix": "--font-",
       "utilities": true,
-      "_note": "One sans stack for the whole shell, CJK fallbacks included. Components must consume the token rather than re-declaring a family: a local stack that omitted PingFang/YaHei is what made Chinese text in the reasoning block render in a different face from everything around it.",
+      "_note": "NewMax's bundled variable fonts are the primary shell faces. Components must consume these tokens rather than re-declaring a family so Latin and Chinese metrics stay consistent across the settings window and the rest of the desktop shell.",
       "tokens": {
-        "sans": "'Segoe UI Variable', 'Segoe UI', 'PingFang SC', 'Microsoft YaHei UI', system-ui, sans-serif",
+        "sans": "'Inter Variable', Inter, 'Noto Sans SC Variable', 'Noto Sans SC', ui-sans-serif, system-ui, sans-serif",
+        "serif": "'Noto Serif SC Variable', 'Noto Serif SC', Georgia, 'Songti SC', serif",
         "mono": "'Cascadia Code', 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
       }
     },
@@ -59,6 +60,51 @@
     },
 
     {
+      "id": "preference-palettes",
+      "prefix": "--preference-color-",
+      "utilities": false,
+      "_note": "NewMax-aligned preference previews and runtime palette inputs. These colors are theme-agnostic source swatches; the preference engine derives active light/dark surfaces from them.",
+      "tokens": {
+        "image-lakewood-accent": "#042a18",
+        "image-lakewood-background": "#eaebeb",
+        "image-palm-shore-accent": "#6bbbda",
+        "image-palm-shore-background": "#91d1e8",
+        "image-ember-rock-accent": "#d89568",
+        "image-ember-rock-background": "#cc704d",
+        "image-atoll-blue-accent": "#cfaa92",
+        "image-atoll-blue-background": "#ced3d4",
+        "image-leaf-shadow-accent": "#6dcbff",
+        "image-leaf-shadow-background": "#c8cdd1",
+        "image-alpenglow-accent": "#00b3ad",
+        "image-alpenglow-background": "#6bb3ae",
+        "random-light-background": "#f5f7f6",
+        "random-light-accent": "#4a7c6b",
+        "random-dark-background": "#141716",
+        "random-dark-accent": "#7ab89e",
+        "default-light-background": "#faf8f3",
+        "default-light-accent": "#2d4739",
+        "default-dark-background": "#1e1f1f",
+        "default-dark-accent": "#36d385",
+        "azure-light-background": "#fbfbfb",
+        "azure-light-accent": "#0a64d6",
+        "azure-dark-background": "#232427",
+        "azure-dark-accent": "#0a84ff",
+        "professional-light-background": "#f4f7f6",
+        "professional-light-accent": "#0056b3",
+        "professional-dark-background": "#0a1628",
+        "professional-dark-accent": "#7aadcc",
+        "claude-light-background": "#faf9f5",
+        "claude-light-accent": "#d97757",
+        "claude-dark-background": "#262624",
+        "claude-dark-accent": "#d97757",
+        "luxury-light-background": "#f5f5f5",
+        "luxury-light-accent": "#b8993a",
+        "luxury-dark-background": "#1e1e1e",
+        "luxury-dark-accent": "#c9b56a"
+      }
+    },
+
+    {
       "id": "borders",
       "prefix": "--color-",
       "utilities": true,
@@ -75,7 +121,8 @@
       "tokens": {
         "text": ["#181b19", "rgba(255, 255, 255, 0.9)"],
         "text-secondary": ["#666763", "rgba(255, 255, 255, 0.5)"],
-        "text-faint": ["#8c8c87", "rgba(255, 255, 255, 0.38)"]
+        "text-faint": ["#8c8c87", "rgba(255, 255, 255, 0.38)"],
+        "text-inverse": ["#ffffff", "#ffffff"]
       }
     },
 

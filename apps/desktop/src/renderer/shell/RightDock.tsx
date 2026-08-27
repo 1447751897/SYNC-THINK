@@ -46,7 +46,7 @@ function dockBridge() {
   return window.syncThink?.runtime;
 }
 
-type WorkspaceFilesSection = 'conversation' | 'files' | 'git' | 'review';
+type WorkspaceFilesSection = 'changes' | 'all';
 
 interface ProjectFileEntry {
   path: string;
@@ -76,11 +76,10 @@ export function WorkspaceFilesPanel(props: {
   /** Latest run's file changes for the Review tab (NewMax-style per-run review). */
   reviewView?: RunProcessView | null;
 }) {
-  const [section, setSection] = useState<WorkspaceFilesSection>(() =>
-    (props.reviewView?.fileChanges.length ?? 0) > 0 ? 'conversation' : 'files',
-  );
+  // NewMax's compact browser always starts on all files. Conversation changes
+  // are a scope inside the browser, not a separate Git/review surface.
+  const [section, setSection] = useState<WorkspaceFilesSection>('all');
   const [searchExpanded, setSearchExpanded] = useState(false);
-  const [moreOpen, setMoreOpen] = useState(false);
   const [refreshRevision, setRefreshRevision] = useState(0);
   const conversationChanges = props.reviewView?.fileChanges ?? [];
 
@@ -99,24 +98,24 @@ export function WorkspaceFilesPanel(props: {
           <button
             type="button"
             role="tab"
-            aria-selected={section === 'conversation'}
+            aria-selected={section === 'changes'}
             className={clsx(
               'shell-workspace-files-switcher__tab',
-              section === 'conversation' && 'is-active',
+              section === 'changes' && 'is-active',
             )}
-            onClick={() => setSection('conversation')}
+            onClick={() => setSection('changes')}
           >
             对话文件 <span>{conversationChanges.length}</span>
           </button>
           <button
             type="button"
             role="tab"
-            aria-selected={section === 'files'}
+            aria-selected={section === 'all'}
             className={clsx(
               'shell-workspace-files-switcher__tab',
-              section === 'files' && 'is-active',
+              section === 'all' && 'is-active',
             )}
-            onClick={() => setSection('files')}
+            onClick={() => setSection('all')}
           >
             所有文件
           </button>
@@ -127,7 +126,7 @@ export function WorkspaceFilesPanel(props: {
             aria-label="搜索文件"
             aria-pressed={searchExpanded}
             onClick={() => {
-              setSection('files');
+              setSection('all');
               setSearchExpanded((open) => !open);
             }}
           >
@@ -140,48 +139,10 @@ export function WorkspaceFilesPanel(props: {
           >
             <RefreshCw size={14} />
           </button>
-          <div className="shell-workspace-files-more">
-            <button
-              type="button"
-              aria-label="工作区文件更多操作"
-              aria-expanded={moreOpen}
-              onClick={() => setMoreOpen((open) => !open)}
-            >
-              <MoreHorizontal size={15} />
-            </button>
-            {moreOpen ? (
-              <div className="shell-workspace-files-more__menu" role="menu">
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => {
-                    setSection('git');
-                    setMoreOpen(false);
-                  }}
-                >
-                  <GitBranch size={14} /> Git 状态
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => {
-                    if (props.reviewView && props.onOpenReview) {
-                      props.onOpenReview(props.reviewView);
-                    } else {
-                      setSection('review');
-                    }
-                    setMoreOpen(false);
-                  }}
-                >
-                  <FileDiff size={14} /> 审阅变动
-                </button>
-              </div>
-            ) : null}
-          </div>
         </div>
       </div>
       <div className="relative min-h-0 flex-1 overflow-hidden">
-        {section === 'conversation' ? (
+        {section === 'changes' ? (
           <div className="shell-dock-panel absolute inset-0 is-active">
             <ConversationFilesPanel
               changes={conversationChanges}
@@ -191,7 +152,7 @@ export function WorkspaceFilesPanel(props: {
               onOpenFileInNewTab={props.onOpenFileInNewTab}
             />
           </div>
-        ) : section === 'files' ? (
+        ) : (
           <div className="shell-dock-panel absolute inset-0 is-active">
             <FilesPanel
               projectFolder={props.projectFolder}
@@ -200,23 +161,6 @@ export function WorkspaceFilesPanel(props: {
               activeFilePath={props.activeFilePath}
               searchExpanded={searchExpanded}
               refreshRevision={refreshRevision}
-            />
-          </div>
-        ) : section === 'git' ? (
-          <div className="shell-dock-panel absolute inset-0 is-active">
-            <WorkspacePanel
-              projectFolder={props.projectFolder}
-              onOpenFile={props.onOpenFile}
-              onOpenFileInNewTab={props.onOpenFileInNewTab}
-            />
-          </div>
-        ) : (
-          <div className="shell-dock-panel absolute inset-0 is-active">
-            <ReviewPanel
-              view={props.reviewView ?? null}
-              projectFolder={props.projectFolder}
-              onOpenFile={props.onOpenFile}
-              onOpenFileInNewTab={props.onOpenFileInNewTab}
             />
           </div>
         )}
@@ -1267,7 +1211,7 @@ function FileTreeLevel({
 
 // ─── 工作区（git）面板 ────────────────────────────────────────────────────────
 
-function WorkspacePanel({
+export function WorkspacePanel({
   projectFolder,
   onOpenFile,
   onOpenFileInNewTab,

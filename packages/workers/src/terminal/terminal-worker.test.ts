@@ -310,7 +310,9 @@ describe('TerminalProcessWorker', () => {
         token: 'terminal-token',
         allowedRoot: root,
         allowedCommands: [shim],
-        timeoutMs: 2_000,
+        // cmd.exe cold starts can exceed two seconds while the Windows test
+        // suite is spawning several process-backed fixtures in parallel.
+        timeoutMs: 10_000,
       };
       const safe = await collect(
         worker.exec({ workingDir: root, action: { command: shim, args: ['ok'] } }, token),
@@ -329,6 +331,7 @@ describe('TerminalProcessWorker', () => {
         error: { code: 'worker.spawn-failed' },
       });
     },
+    30_000,
   );
 });
 

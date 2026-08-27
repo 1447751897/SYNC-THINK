@@ -3,6 +3,10 @@ import type {
   ExportDesktopDiagnosticsResponse,
 } from '../diagnostics-export-contract.js';
 import type {
+  DesktopUpdateAutoCheckPreference,
+  DesktopUpdateOpenResult,
+} from '../desktop-update-contract.js';
+import type {
   ExportDesktopDataPayload,
   ExportDesktopDataResponse,
   ImportDesktopDataPayload,
@@ -82,6 +86,9 @@ import type {
   ImportSkillResponse,
   ImportRemoteSkillPayload,
   ImportRemoteSkillResponse,
+  ListSkillMarketResponse,
+  InstallSkillMarketPayload,
+  InstallSkillMarketResponse,
   ListSkillsPayload,
   ListSkillsResponse,
   DeleteSkillPayload,
@@ -256,6 +263,7 @@ import type {
   StartProjectTerminalPayload,
   StartProjectTerminalResult,
 } from '../workspace-tools-contract.js';
+import type { OpenExternalUrlResult } from '../external-link-contract.js';
 
 declare global {
   interface Window {
@@ -263,6 +271,7 @@ declare global {
       runtime: {
         connect(): Promise<RuntimeConnectOutcome>;
         appendMessage(payload: AppendMessagePayload): Promise<AppendMessageResponse>;
+        openExternalUrl?(url: string): Promise<OpenExternalUrlResult>;
         detectKernels(): Promise<import('@sync-think/protocol').KernelDetectResponse>;
         getGatewayStatus?(): Promise<import('@sync-think/protocol').OpenGatewayStatusResponse>;
         getGatewayLogs?(query?: {
@@ -574,6 +583,8 @@ declare global {
         ): Promise<import('@sync-think/protocol').GoalClearResponse>;
         importSkill(payload: ImportSkillPayload): Promise<ImportSkillResponse>;
         importRemoteSkill(payload: ImportRemoteSkillPayload): Promise<ImportRemoteSkillResponse>;
+        listSkillMarket(): Promise<ListSkillMarketResponse>;
+        installSkillMarket(payload: InstallSkillMarketPayload): Promise<InstallSkillMarketResponse>;
         listSkills(payload?: ListSkillsPayload): Promise<ListSkillsResponse>;
         deleteSkill(payload: DeleteSkillPayload): Promise<DeleteSkillResponse>;
         setSkillEnabled(payload: SetSkillEnabledPayload): Promise<SetSkillEnabledResponse>;
@@ -704,6 +715,10 @@ declare global {
         pathForFile(file: File): string;
         /** Push the renderer theme preference onto the native frame/title bar. */
         setTheme(theme: 'light' | 'dark' | 'system'): Promise<{ dark: boolean }>;
+        setGlobalShortcut?(payload: { accelerator: string; enabled: boolean }): Promise<{
+          registered: boolean;
+          error: string | null;
+        }>;
         listProjectFiles(payload: { root: string; query?: string; maxEntries?: number }): Promise<{
           root: string;
           files: Array<{ path: string; name: string; kind: 'file' | 'dir' }>;
@@ -829,6 +844,12 @@ declare global {
         checkForUpdates(): Promise<DesktopUpdateActionResult>;
         downloadUpdate(): Promise<DesktopUpdateActionResult>;
         installUpdate(): Promise<DesktopUpdateActionResult>;
+        getAutoCheck(): Promise<DesktopUpdateAutoCheckPreference>;
+        setAutoCheck(
+          payload: DesktopUpdateAutoCheckPreference,
+        ): Promise<DesktopUpdateAutoCheckPreference>;
+        openReleaseNotes(): Promise<DesktopUpdateOpenResult>;
+        openLogDirectory(): Promise<OpenDesktopDataDirectoryResponse>;
         subscribeState(listener: (snapshot: DesktopUpdateSnapshot) => void): () => void;
       };
       platform: 'win32';
