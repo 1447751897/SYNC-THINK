@@ -29,6 +29,7 @@ describe('Phase 3 visual matrix', () => {
       'long-trace-closed',
       'long-trace-open',
       'streaming-follow',
+      'task-status-panel',
       'welcome',
       'workspace-file',
     ]);
@@ -53,6 +54,11 @@ describe('Phase 3 visual matrix', () => {
       PHASE3_VISUAL_MATRIX.some(
         (item) =>
           item.fixture === 'inline-process-hierarchy' && item.theme === 'dark' && item.width <= 760,
+      ),
+    );
+    assert.ok(
+      PHASE3_VISUAL_MATRIX.some(
+        (item) => item.fixture === 'task-status-panel' && item.state === 'wallpaper-switch',
       ),
     );
     assert.ok(

@@ -149,6 +149,7 @@ export function TurnSkillControl(props: TurnSkillControlProps) {
         type="button"
         className={`shell-compose__tool${props.onShortcut ? ' shell-compose__skill-shortcut' : ''}`}
         data-active={props.open || props.shortcutActive || selected.length > 0 ? '1' : '0'}
+        data-selected-count={selected.length}
         data-testid="turn-skill-trigger"
         title={title}
         aria-label={props.onShortcut ? '打开 Skill 命令（输入 /）' : title}
@@ -161,9 +162,9 @@ export function TurnSkillControl(props: TurnSkillControlProps) {
         }}
       >
         <Puzzle size={15} />
-        <span className="shell-compose__tool-label w-[3.5ch] tabular-nums">
-          {selected.length}/8
-        </span>
+        {selected.length > 0 ? (
+          <span className="shell-compose__tool-label tabular-nums">{selected.length}</span>
+        ) : null}
       </button>
       <SkillPickerMenu
         open={props.open}

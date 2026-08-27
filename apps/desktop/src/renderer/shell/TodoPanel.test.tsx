@@ -1,14 +1,16 @@
 /**
  * @vitest-environment jsdom
  *
- * 任务清单：事件投影生命周期（run 开始清空 / 终态保留 / 下一轮清空）+
- * TodoPanel 折叠展开与进度文案。
+ * 任务清单事件投影生命周期（run 开始清空 / 终态保留 / 下一轮清空）
+ * 与 Progress 汇总文案。
  */
-import { afterEach, describe, expect, it } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { describe, expect, it } from 'vitest';
 import type { Event } from '@sync-think/shared';
-import { TodoPanel } from './TodoPanel.js';
-import { projectTodoFromEvents, todoProgressLabel, type TodoProjection } from './todo-projection.js';
+import {
+  projectTodoFromEvents,
+  todoProgressLabel,
+  type TodoProjection,
+} from './todo-projection.js';
 
 function event(sequence: number, type: string, payload: Record<string, unknown> = {}): Event {
   return {
@@ -127,28 +129,5 @@ describe('todoProgressLabel', () => {
         total: 1,
       }),
     ).toBe('1 完成');
-  });
-});
-
-describe('TodoPanel', () => {
-  afterEach(cleanup);
-
-  it('collapses by default and expands on header click', () => {
-    render(<TodoPanel todo={todo} />);
-    expect(screen.getByTestId('todo-panel')).toBeTruthy();
-    expect(screen.getByText('任务清单')).toBeTruthy();
-    expect(screen.getByTestId('todo-progress').textContent).toBe('1 完成 · 1 进行中 · 1 待办');
-    expect(screen.queryByRole('list')).toBeNull();
-
-    fireEvent.click(screen.getByTestId('todo-panel-toggle'));
-    expect(screen.getByRole('list')).toBeTruthy();
-    expect(screen.getByText('B')).toBeTruthy();
-  });
-
-  it('renders nothing for an empty list', () => {
-    const { container } = render(
-      <TodoPanel todo={{ items: [], running: false, completed: 0, total: 0 }} />,
-    );
-    expect(container.firstChild).toBeNull();
   });
 });

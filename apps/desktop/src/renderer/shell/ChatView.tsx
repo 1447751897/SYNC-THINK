@@ -31,6 +31,7 @@ import {
   MicOff,
   MessageSquare,
   Plus,
+  Puzzle,
   PenLine,
   RefreshCw,
   SendHorizonal,
@@ -38,6 +39,7 @@ import {
   Shield,
   Sparkles,
   Square,
+  Target,
   Terminal,
   Users,
   X,
@@ -142,6 +144,7 @@ import {
   type ReasoningEffort,
 } from './compose-toolbar.js';
 import { TurnSkillControl } from './TurnSkillControl.js';
+import { keepListboxOptionVisible } from './compose-picker-scroll.js';
 import { FileChangesCard } from './ExecutionProcessBlock.js';
 import {
   formatCompactCount,
@@ -160,8 +163,8 @@ import {
   type PendingAsk,
 } from './AskQuestionCard.js';
 import { PlanApprovalCard } from './PlanApprovalCard.js';
-import { TodoPanel } from './TodoPanel.js';
 import { projectTodoFromEvents } from './todo-projection.js';
+import { TaskStatusPanel } from './TaskStatusPanel.js';
 import { InlineProcessFlow } from './InlineProcessFlow.js';
 import {
   buildAssistantTurnNavigationItems,
@@ -2168,11 +2171,13 @@ export function ChatView({
         ? displayRunProcessById.get(String(streamingMessage.runId))
         : undefined,
     );
-    const processSettled = Boolean(streamingMessage?.streaming && !settledStreamingMessage?.streaming);
+    const processSettled = Boolean(
+      streamingMessage?.streaming && !settledStreamingMessage?.streaming,
+    );
     const attachRuntimeNotice = Boolean(
       !processSettled &&
-        runtimeConnectionNotice &&
-        (settledStreamingMessage || projected.streaming || runConnectionStatus),
+      runtimeConnectionNotice &&
+      (settledStreamingMessage || projected.streaming || runConnectionStatus),
     );
     const statusText = processSettled
       ? undefined
@@ -3903,11 +3908,21 @@ export function ChatView({
         .toLocaleLowerCase()
         .includes(query);
     });
-  }, [selectedSkillVersionIds, slash, slashSkills]);
+  }, [slash, slashSkills]);
   const slashItemCount = slashCommands.length + filteredSlashSkills.length;
+  const selectedSlashSkills = useMemo(
+    () =>
+      selectedSkillVersionIds
+        .map((skillVersionId) =>
+          slashSkills.find((skill) => skill.skillVersionId === skillVersionId),
+        )
+        .filter((skill): skill is SkillVersionSummary => Boolean(skill)),
+    [selectedSkillVersionIds, slashSkills],
+  );
+  const shouldLoadSlashSkills = Boolean(slash) || selectedSkillVersionIds.length > 0;
 
   useEffect(() => {
-    if (!slash) return;
+    if (!shouldLoadSlashSkills) return;
     const api = bridge();
     if (!api?.listSkills) return;
     let cancelled = false;
@@ -3923,7 +3938,7 @@ export function ChatView({
           // Older Runtime payloads omit `enabled`; treat omission as enabled
           // so the slash palette remains backward-compatible with the Skill
           // picker and with persisted catalog snapshots.
-          setSlashSkills(response.skills.filter((skill) => skill.enabled !== false));
+          setSlashSkills(response.skills);
         }
       })
       .catch(() => {
@@ -3935,7 +3950,12 @@ export function ChatView({
     return () => {
       cancelled = true;
     };
-  }, [Boolean(slash), conversation.workspaceId]);
+  }, [conversation.workspaceId, shouldLoadSlashSkills]);
+
+  useLayoutEffect(() => {
+    if (!slash) return;
+    keepListboxOptionVisible(slashListRef.current, slashIndex);
+  }, [slash, slashIndex, slashItemCount]);
 
   // Tick while compacting so the capsule can show NewMax-style elapsed time.
   useEffect(() => {
@@ -5172,6 +5192,32 @@ export function ChatView({
 
         {/* ─── Messages ───────────────────────────────────────────────── */}
         <div className="shell-chat-message-stage">
+          <TaskStatusPanel
+            projectFolder={projectFolder}
+            goal={goalState?.goal}
+            evaluatorConfigured={Boolean(goalState?.evaluatorConfigured)}
+            todo={todoProjection}
+            onGoalPause={() => {
+              const api = bridge();
+              if (!api?.goalPause) return;
+              void api.goalPause({ conversationId: String(conversation.id) }).then(refreshGoal);
+            }}
+            onGoalResume={() => {
+              const api = bridge();
+              if (!api?.goalResume) return;
+              void api.goalResume({ conversationId: String(conversation.id) }).then(refreshGoal);
+            }}
+            onGoalEdit={() => {
+              setInput('/goal ');
+              inputRef.current?.focus();
+            }}
+            onGoalClear={() => {
+              const api = bridge();
+              if (!api?.clearGoal) return;
+              void api.clearGoal({ conversationId: String(conversation.id) }).then(refreshGoal);
+            }}
+            onOpenReview={onOpenReview}
+          />
           <div
             ref={messagesScrollRef}
             className="shell-chat-content-wrap shell-chat-message-scroller h-full overflow-y-auto py-6"
@@ -5460,34 +5506,6 @@ export function ChatView({
                 onCancel={() => void decideBrowserHandoff(handoff, 'cancel')}
               />
             ))}
-            {todoProjection ? <TodoPanel todo={todoProjection} /> : null}
-            {goalState?.goal ? (
-              <GoalCapsule
-                goal={goalState.goal}
-                evaluatorConfigured={Boolean(goalState.evaluatorConfigured)}
-                onPause={() => {
-                  const api = bridge();
-                  if (!conversation || !api?.goalPause) return;
-                  void api.goalPause({ conversationId: String(conversation.id) }).then(refreshGoal);
-                }}
-                onResume={() => {
-                  const api = bridge();
-                  if (!conversation || !api?.goalResume) return;
-                  void api
-                    .goalResume({ conversationId: String(conversation.id) })
-                    .then(refreshGoal);
-                }}
-                onEdit={() => {
-                  setInput('/goal ');
-                  inputRef.current?.focus();
-                }}
-                onClear={() => {
-                  const api = bridge();
-                  if (!conversation || !api?.clearGoal) return;
-                  void api.clearGoal({ conversationId: String(conversation.id) }).then(refreshGoal);
-                }}
-              />
-            ) : null}
             {!compactProgress &&
             kernelSelfManaged &&
             contextStatus &&
@@ -5768,6 +5786,24 @@ export function ChatView({
                 </div>
               )}
 
+              {selectedSlashSkills.length > 0 ? (
+                <div
+                  className="shell-compose__selected-skills"
+                  data-testid="compose-selected-skills"
+                >
+                  {selectedSlashSkills.map((skill) => (
+                    <span
+                      key={skill.skillVersionId}
+                      className="shell-compose__selected-skill"
+                      title={`${skill.name} · v${skill.version}`}
+                    >
+                      <Puzzle size={13} aria-hidden="true" />
+                      <span>{skill.name}</span>
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+
               {/* 问询卡片（ask_user_question 接管 composer；方案卡已移至消息流 §方案卡） */}
               {pendingAsk ? (
                 <AskQuestionCard ask={pendingAsk} onSettled={() => setPendingAsk(undefined)} />
@@ -5815,49 +5851,6 @@ export function ChatView({
                 onChange={handleImageInputChange}
                 tabIndex={-1}
               />
-
-              {/* Interaction work mode strip (规划/执行) */}
-              {interactionMode === 'plan' && (
-                <div className="shell-compose__mode-strip" data-mode="plan">
-                  <span className="shell-compose__mode-label">
-                    <Compass size={13} aria-hidden="true" />
-                    规划模式
-                  </span>
-                  <span className="shell-compose__mode-hint">只读分析，提交方案等待审批</span>
-                  <button
-                    type="button"
-                    className="shell-compose__mode-switch"
-                    onClick={() => {
-                      const api = bridge();
-                      void api?.setConversationInteractionMode?.({
-                        conversationId: conversation.id,
-                        interactionMode: 'execute',
-                      });
-                      setInteractionMode('execute');
-                    }}
-                  >
-                    切到执行模式
-                  </button>
-                </div>
-              )}
-
-              {/* plan-act 生效模型提示（规划模式路由） */}
-              {planActHint && (
-                <div
-                  className="shell-compose__mode-strip"
-                  data-mode={planActHint.role}
-                  data-testid="plan-act-hint"
-                >
-                  <span className="shell-compose__mode-label">
-                    <Compass size={13} aria-hidden="true" />
-                    本轮由规划模型驱动
-                  </span>
-                  <span className="shell-compose__mode-hint">
-                    {planActHint.label}
-                    {planActHint.ignoredLabel ? `（已忽略所选 ${planActHint.ignoredLabel}）` : ''}
-                  </span>
-                </div>
-              )}
 
               {/* Bottom toolbar */}
               <div className="shell-compose__bar">
@@ -5910,6 +5903,46 @@ export function ChatView({
                     onOpenChange={(open) => setMenu(open ? 'skill' : null)}
                     onChange={setSelectedSkillVersionIds}
                   />
+
+                  {goalState?.goal &&
+                  ['active', 'paused', 'blocked'].includes(goalState.goal.status) ? (
+                    <button
+                      type="button"
+                      className="shell-compose__tool shell-compose__mode-badge"
+                      data-mode="goal"
+                      data-testid="compose-goal-mode-badge"
+                      title={`目标：${goalState.goal.condition}`}
+                      onClick={() => {
+                        setInput('/goal ');
+                        window.requestAnimationFrame(() => inputRef.current?.focus());
+                      }}
+                    >
+                      <Target size={14} aria-hidden="true" />
+                      <span className="shell-compose__tool-label">目标</span>
+                    </button>
+                  ) : null}
+
+                  {interactionMode === 'plan' ? (
+                    <button
+                      type="button"
+                      className="shell-compose__tool shell-compose__mode-badge"
+                      data-mode="plan"
+                      data-testid="compose-plan-mode-badge"
+                      title={
+                        planActHint
+                          ? `规划模式 · ${planActHint.label}${
+                              planActHint.ignoredLabel
+                                ? `（已忽略所选 ${planActHint.ignoredLabel}）`
+                                : ''
+                            } · 点击切换到执行模式`
+                          : '规划模式 · 点击切换到执行模式'
+                      }
+                      onClick={() => void handlePlanSwitchMode('execute')}
+                    >
+                      <Compass size={14} aria-hidden="true" />
+                      <span className="shell-compose__tool-label">规划</span>
+                    </button>
+                  ) : null}
                 </div>
 
                 <div className="shell-compose__bar-right">
@@ -6241,7 +6274,10 @@ function HarnessTerminalNotice({
   state: 'failed' | 'cancelled';
   error?: string;
 }) {
-  const errorSummary = error?.split('\n').find((line) => line.trim())?.trim();
+  const errorSummary = error
+    ?.split('\n')
+    .find((line) => line.trim())
+    ?.trim();
   if (state === 'cancelled') {
     return (
       <div
@@ -6588,7 +6624,6 @@ const MessageBubble = memo(function MessageBubble({
           startedAt={processView?.startedAt ?? timelineTiming.startedAt}
           completedAt={processView?.completedAt ?? timelineTiming.completedAt}
           durationMs={processView?.durationMs}
-          turnPlan={processView?.taskPlan}
           onOpenChange={onOpenChange}
           supplementalContent={
             message.processStatus ||
@@ -7175,210 +7210,6 @@ function ToolApprovalCard({
           <Check size={13} />
           {busy ? '处理中…' : view.approveLabel}
         </button>
-      </div>
-    </div>
-  );
-}
-
-// ─── Run task capsule（输入框上方居中 + hover 展开可滚动任务清单） ─────────────
-//
-// NewMax 语义：只展示模型维护的「任务清单」（真正的待办），工具调用
-// 流水由执行过程区域单独展示，不混入任务清单。
-
-export function RunTaskCapsule({ view }: { view: RunProcessView }) {
-  const [hovered, setHovered] = useState(false);
-  const plan = view.taskPlan;
-
-  if (!plan || plan.items.length === 0) return null;
-
-  const runningItem = plan.items.find((item) => item.status === 'in_progress');
-  const label = runningItem
-    ? runningItem.title
-    : plan.completed >= plan.total
-      ? '任务已全部完成'
-      : plan.items[0]!.title;
-
-  return (
-    <div
-      className="shell-task-capsule-wrap"
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      data-testid="run-task-capsule"
-      data-mode="plan"
-    >
-      {hovered ? (
-        <div className="shell-task-capsule__pop" role="list" aria-label="本轮任务清单">
-          <div className="shell-task-capsule__pop-title">
-            任务清单（{plan.completed}/{plan.total}）
-          </div>
-          <ul className="shell-task-capsule__pop-list">
-            {plan.items.map((item, index) => (
-              <li
-                key={`${index}-${item.title}`}
-                className="shell-task-capsule__pop-item"
-                data-status={
-                  item.status === 'in_progress'
-                    ? 'running'
-                    : item.status === 'completed'
-                      ? 'done'
-                      : 'pending'
-                }
-              >
-                {item.status === 'in_progress' ? (
-                  <LoaderCircle size={12} className="shell-process-spin text-accent" />
-                ) : item.status === 'completed' ? (
-                  <Check size={12} className="text-[var(--color-success)]" />
-                ) : (
-                  <span className="shell-task-capsule__dot" aria-hidden />
-                )}
-                <span
-                  className="shell-task-capsule__pop-text"
-                  data-done={item.status === 'completed' ? 'true' : undefined}
-                  title={item.title}
-                >
-                  {item.title}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
-      <div className="shell-task-capsule">
-        {view.running ? (
-          <LoaderCircle size={13} className="shell-process-spin" />
-        ) : (
-          <Check size={13} className="text-[var(--color-success)]" />
-        )}
-        <span className="shell-task-capsule__label">{label}</span>
-        <span className="shell-task-capsule__count">
-          {plan.completed}/{plan.total}
-        </span>
-      </div>
-    </div>
-  );
-}
-
-// ─── Goal capsule（NewMax /goal：目标模式进行中/已达成状态展示） ────────────────
-
-function GoalCapsule({
-  goal,
-  evaluatorConfigured,
-  onPause,
-  onResume,
-  onEdit,
-  onClear,
-}: {
-  goal: import('@sync-think/protocol').GoalStatus;
-  evaluatorConfigured: boolean;
-  onPause: () => void;
-  onResume: () => void;
-  onEdit: () => void;
-  onClear: () => void;
-}) {
-  const [hovered, setHovered] = useState(false);
-  if (
-    goal.status !== 'active' &&
-    goal.status !== 'paused' &&
-    goal.status !== 'blocked' &&
-    goal.status !== 'achieved'
-  ) {
-    return null;
-  }
-  const elapsedMinutes = Math.max(
-    0,
-    Math.floor((Date.now() - Date.parse(goal.startedAt)) / 60_000),
-  );
-  const roundsStarted = goal.roundsStarted ?? 0;
-  const maxRounds = goal.maxGoalRounds ?? 5;
-  const stateLabel =
-    goal.status === 'achieved'
-      ? '目标已达成'
-      : goal.status === 'paused'
-        ? '目标已暂停'
-        : goal.status === 'blocked'
-          ? '目标受阻'
-          : '目标进行中';
-  return (
-    <div
-      className="shell-goal-capsule-wrap"
-      data-status={goal.status}
-      data-testid="goal-capsule"
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-    >
-      {hovered ? (
-        <div className="shell-task-capsule__pop shell-goal-capsule__pop">
-          <div className="shell-task-capsule__pop-title">{stateLabel}</div>
-          <div className="shell-goal-capsule__condition" title={goal.condition}>
-            {goal.condition}
-          </div>
-          <div className="shell-goal-capsule__meta">
-            已运行 {elapsedMinutes} 分钟 · 第 {roundsStarted}/{maxRounds} 轮
-            {!evaluatorConfigured ? ' · 评估模型未配置' : ''}
-          </div>
-          {goal.lastReason ? (
-            <div className="shell-goal-capsule__reason">
-              {goal.status === 'blocked'
-                ? `受阻原因：${goal.blockedReason ?? goal.lastReason}`
-                : `最近评估：${goal.lastReason}`}
-            </div>
-          ) : null}
-          <div className="shell-goal-capsule__actions">
-            {goal.status === 'active' ? (
-              <button
-                type="button"
-                className="shell-goal-capsule__clear"
-                onClick={onPause}
-                title="暂停目标"
-              >
-                ⏸ 暂停
-              </button>
-            ) : goal.status === 'paused' || goal.status === 'blocked' ? (
-              <button
-                type="button"
-                className="shell-goal-capsule__clear"
-                onClick={onResume}
-                title="恢复目标"
-              >
-                ▶ 恢复
-              </button>
-            ) : null}
-            <button
-              type="button"
-              className="shell-goal-capsule__clear"
-              onClick={onEdit}
-              title="编辑目标"
-            >
-              ✎ 编辑
-            </button>
-            <button
-              type="button"
-              className="shell-goal-capsule__clear"
-              onClick={onClear}
-              title="清除目标"
-            >
-              <X size={12} />
-              清除目标
-            </button>
-          </div>
-        </div>
-      ) : null}
-      <div className="shell-task-capsule shell-goal-capsule">
-        {goal.status === 'active' ? (
-          <LoaderCircle size={13} className="shell-process-spin" />
-        ) : goal.status === 'paused' ? (
-          <span className="shell-goal-capsule__paused-icon">⏸</span>
-        ) : goal.status === 'blocked' ? (
-          <AlertCircle size={13} className="text-[var(--color-warning)]" />
-        ) : (
-          <Check size={13} className="text-[var(--color-success)]" />
-        )}
-        <span className="shell-task-capsule__label">{stateLabel}</span>
-        {goal.status === 'active' || goal.status === 'paused' || goal.status === 'blocked' ? (
-          <span className="shell-task-capsule__count">
-            {roundsStarted}/{maxRounds} 轮
-          </span>
-        ) : null}
       </div>
     </div>
   );

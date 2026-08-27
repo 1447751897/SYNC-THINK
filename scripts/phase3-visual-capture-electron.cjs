@@ -157,6 +157,143 @@ async function verifyTargetedFixture(window, visualCase) {
     }
   }
 
+  if (visualCase.fixture === 'task-status-panel') {
+    let wallpaperSync = null;
+    if (visualCase.state === 'manual-open') {
+      await window.webContents.executeJavaScript(
+        `(async () => {
+          const startedAt = Date.now();
+          while (Date.now() - startedAt < 3000) {
+            const trigger = document.querySelector('.shell-task-status-mini');
+            if (trigger && getComputedStyle(trigger).display !== 'none') {
+              trigger.click();
+              await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+              return;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 25));
+          }
+        })()`,
+        true,
+      );
+    }
+    if (visualCase.state === 'wallpaper-switch') {
+      wallpaperSync = await window.webContents.executeJavaScript(
+        `(async () => {
+          const root = document.documentElement;
+          const stage = document.querySelector('.phase3-task-status');
+          const panel = document.querySelector('[data-testid="task-status-panel"]');
+          const applyPalette = async (background, composer, overlay) => {
+            root.dataset.imageTheme = 'active';
+            root.style.setProperty('--shell-chat-composer-surface', composer);
+            root.style.setProperty('--color-overlay', overlay);
+            if (stage) stage.style.backgroundColor = background;
+            await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+            return panel ? getComputedStyle(panel).backgroundColor : '';
+          };
+          const first = await applyPalette('#264f43', 'rgba(22, 37, 32, 0.86)', 'rgb(38, 79, 67)');
+          const second = await applyPalette('#613f55', 'rgba(43, 28, 38, 0.86)', 'rgb(97, 63, 85)');
+          return {
+            first,
+            second,
+            imageTheme: root.dataset.imageTheme,
+            stageBackground: stage ? getComputedStyle(stage).backgroundColor : '',
+          };
+        })()`,
+        true,
+      );
+    }
+    const startedAt = Date.now();
+    let result;
+    while (Date.now() - startedAt < 5000) {
+      result = await window.webContents.executeJavaScript(
+        `(() => {
+          const panel = document.querySelector('[data-testid="task-status-panel"]');
+          const rect = panel?.getBoundingClientRect();
+          const stage = panel?.closest('.shell-chat-message-stage');
+          const stageRect = stage?.getBoundingClientRect();
+          const sections = panel
+            ? [...panel.querySelectorAll('[data-testid="task-status-section"]')]
+            : [];
+          const close = panel?.querySelector('.shell-task-status-panel__close');
+          const firstStats = panel?.querySelector(
+            '.shell-task-status__section:first-of-type .shell-task-status__section-trailing'
+          );
+          const closeRect = close?.getBoundingClientRect();
+          const firstStatsRect = firstStats?.getBoundingClientRect();
+          return {
+            visible: Boolean(rect && rect.width > 0 && rect.height > 0),
+            width: rect?.width ?? 0,
+            top: rect?.top ?? 0,
+            right: rect ? window.innerWidth - rect.right : 0,
+            withinViewport: Boolean(
+              rect && rect.top >= 0 && rect.left >= 0 && rect.right <= window.innerWidth && rect.bottom <= window.innerHeight
+            ),
+            withinStage: Boolean(
+              rect && stageRect && rect.top >= stageRect.top && rect.bottom <= stageRect.bottom
+            ),
+            sectionOrder: sections.map((section) => section.getAttribute('data-section')),
+            sectionTitles: sections.map(
+              (section) => section.querySelector('.shell-task-status__section-toggle span')?.textContent?.trim() ?? ''
+            ),
+            changesEnabled: Boolean(
+              panel?.querySelector('button[aria-label^="更改 "]:not(:disabled)')
+            ),
+            closeStatsOverlap: Boolean(
+              closeRect &&
+              firstStatsRect &&
+              getComputedStyle(close).display !== 'none' &&
+              closeRect.left < firstStatsRect.right &&
+              closeRect.right > firstStatsRect.left &&
+              closeRect.top < firstStatsRect.bottom &&
+              closeRect.bottom > firstStatsRect.top
+            ),
+            background: panel ? getComputedStyle(panel).backgroundColor : '',
+            duplicateCount: document.querySelectorAll(
+              '.shell-todo-panel, .shell-goal-capsule-wrap, [data-testid="process-turn-plan"]'
+            ).length,
+          };
+        })()`,
+        true,
+      );
+      if (result.visible && result.sectionOrder.length === 3) break;
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+    }
+    if (
+      !result?.visible ||
+      result.width < 300 ||
+      result.width > 321 ||
+      !result.withinViewport ||
+      !result.withinStage ||
+      JSON.stringify(result.sectionOrder) !== JSON.stringify(['git', 'goal', 'progress']) ||
+      JSON.stringify(result.sectionTitles) !== JSON.stringify(['Git 工具', '目标', '进程']) ||
+      !result.changesEnabled ||
+      result.closeStatsOverlap ||
+      !result.background ||
+      result.background === 'rgba(0, 0, 0, 0)' ||
+      result.duplicateCount !== 0
+    ) {
+      throw new Error(
+        'phase3.visual.task_status_invalid:' + visualCase.id + ':' + JSON.stringify(result),
+      );
+    }
+    if (
+      visualCase.state === 'wallpaper-switch' &&
+      (!wallpaperSync ||
+        !wallpaperSync.first ||
+        !wallpaperSync.second ||
+        wallpaperSync.first === wallpaperSync.second ||
+        wallpaperSync.imageTheme !== 'active' ||
+        wallpaperSync.stageBackground !== 'rgb(97, 63, 85)')
+    ) {
+      throw new Error(
+        'phase3.visual.task_status_wallpaper_sync_invalid:' +
+          visualCase.id +
+          ':' +
+          JSON.stringify(wallpaperSync),
+      );
+    }
+  }
+
   if (visualCase.fixture === 'workspace-file') {
     const initial = await window.webContents.executeJavaScript(
       `(() => {

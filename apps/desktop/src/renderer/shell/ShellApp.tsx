@@ -1,13 +1,14 @@
 // New shell root — NewMax visual constitution (S3 / D3 first cut).
 // Sidebar top actions + three tracks with groups · workspace tabs (no 全部) ·
 // welcome empty state · settings modal.
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import {
   Bot,
   Compass,
   ImagePlus,
   MessageSquare,
+  Puzzle,
   SendHorizonal,
   Sparkles,
   Users,
@@ -97,6 +98,7 @@ import { compressImageDataUrl } from './image-compress.js';
 import { BrandLogoMark } from './BrandLogoMark.js';
 import { resolveKernelBrandLogo, resolveKernelDisplayName } from './brand-icons.js';
 import { TurnSkillControl } from './TurnSkillControl.js';
+import { keepListboxOptionVisible } from './compose-picker-scroll.js';
 import { canCloseSettings } from './settings-unsaved.js';
 import { NewConversationDialog, type ModelOption } from './NewConversationDialog.js';
 import { useDialog, DialogProvider } from './Dialog.js';
@@ -3432,6 +3434,7 @@ export function EmptyTalk(props: {
   const [skillMenuOpen, setSkillMenuOpen] = useState(false);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const slashListRef = useRef<HTMLDivElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const networkSettingRef = useRef<HTMLDivElement>(null);
   const permissionButtonRef = useRef<HTMLButtonElement>(null);
@@ -3570,9 +3573,19 @@ export function EmptyTalk(props: {
   }, [selectedSkillVersionIds, slash, slashSkills]);
   const slashItemCount = slashCommands.length + filteredSlashSkills.length;
   const slashOpen = slash !== null;
+  const selectedSlashSkills = useMemo(
+    () =>
+      selectedSkillVersionIds
+        .map((skillVersionId) =>
+          slashSkills.find((skill) => skill.skillVersionId === skillVersionId),
+        )
+        .filter((skill): skill is SkillVersionSummary => Boolean(skill)),
+    [selectedSkillVersionIds, slashSkills],
+  );
+  const shouldLoadSlashSkills = slashOpen || selectedSkillVersionIds.length > 0;
 
   useEffect(() => {
-    if (!slashOpen) return;
+    if (!shouldLoadSlashSkills) return;
     const api = bridge();
     if (!api?.listSkills) return;
     let cancelled = false;
@@ -3591,7 +3604,12 @@ export function EmptyTalk(props: {
     return () => {
       cancelled = true;
     };
-  }, [props.workspaceId, slashOpen]);
+  }, [props.workspaceId, shouldLoadSlashSkills]);
+
+  useLayoutEffect(() => {
+    if (!slashOpen) return;
+    keepListboxOptionVisible(slashListRef.current, slashIndex);
+  }, [slashIndex, slashItemCount, slashOpen]);
 
   const updatePickersFromCaret = useCallback((text: string, caret: number) => {
     const mention = detectMentionQuery(text, caret);
@@ -3871,6 +3889,7 @@ export function EmptyTalk(props: {
             >
               {slash ? (
                 <div
+                  ref={slashListRef}
                   className="shell-mention-pop shell-slash-pop shell-empty-slash-pop"
                   data-testid="empty-compose-slash-pop"
                   role="listbox"
@@ -3967,6 +3986,23 @@ export function EmptyTalk(props: {
                         <X size={12} />
                       </button>
                     </div>
+                  ))}
+                </div>
+              ) : null}
+              {selectedSlashSkills.length > 0 ? (
+                <div
+                  className="shell-compose__selected-skills"
+                  data-testid="empty-compose-selected-skills"
+                >
+                  {selectedSlashSkills.map((skill) => (
+                    <span
+                      key={skill.skillVersionId}
+                      className="shell-compose__selected-skill"
+                      title={`${skill.name} · v${skill.version}`}
+                    >
+                      <Puzzle size={13} aria-hidden="true" />
+                      <span>{skill.name}</span>
+                    </span>
                   ))}
                 </div>
               ) : null}
@@ -4067,24 +4103,6 @@ export function EmptyTalk(props: {
                 onDismiss={dismissNetworkSetting}
                 onChange={changeNetworkSetting}
               />
-              {interactionMode === 'plan' ? (
-                <div
-                  className="shell-compose__mode-strip"
-                  data-mode="plan"
-                  data-testid="empty-compose-mode"
-                >
-                  <Compass size={13} aria-hidden="true" />
-                  <span className="shell-compose__mode-label">规划模式</span>
-                  <span className="shell-compose__mode-hint">只读分析，提交方案等待审批</span>
-                  <button
-                    type="button"
-                    className="shell-compose__mode-switch"
-                    onClick={() => setInteractionMode('execute')}
-                  >
-                    切到执行模式
-                  </button>
-                </div>
-              ) : null}
               <div className="shell-compose__bar">
                 <div className="shell-compose__bar-left">
                   <button
@@ -4130,6 +4148,19 @@ export function EmptyTalk(props: {
                     onOpenChange={setSkillMenuOpen}
                     onChange={updateSelectedSkillVersionIds}
                   />
+                  {interactionMode === 'plan' ? (
+                    <button
+                      type="button"
+                      className="shell-compose__tool shell-compose__mode-badge"
+                      data-mode="plan"
+                      data-testid="empty-compose-mode"
+                      title="规划模式 · 点击切换到执行模式"
+                      onClick={() => setInteractionMode('execute')}
+                    >
+                      <Compass size={14} aria-hidden="true" />
+                      <span className="shell-compose__tool-label">规划</span>
+                    </button>
+                  ) : null}
                 </div>
                 <div className="shell-compose__bar-right">
                   <ContextRing

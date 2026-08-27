@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import type {
   CommentaryTimelineSegment,
   ContextStatusSection,
+  GoalStatus,
   RunProcessView,
 } from '@sync-think/protocol';
 import {
@@ -24,6 +25,8 @@ import { FirstLaunchGuide, FIRST_LAUNCH_GUIDE_KEY } from './FirstLaunchGuide.js'
 import { FileTypeIcon } from './FileTypeIcon.js';
 import { InlineProcessFlow } from './InlineProcessFlow.js';
 import { MarkdownContent } from './MarkdownContent.js';
+import { TaskStatusPanel } from './TaskStatusPanel.js';
+import type { TodoProjection } from './todo-projection.js';
 import { DataDiagnosticsSection } from './SettingsPage.js';
 import { WorkspaceFileView } from './WorkspaceFileView.js';
 
@@ -38,6 +41,7 @@ export const PHASE3_VISUAL_CASES = [
   'workspace-file',
   'execution-auto-disclosure',
   'inline-process-hierarchy',
+  'task-status-panel',
 ] as const;
 
 export type Phase3VisualCase = (typeof PHASE3_VISUAL_CASES)[number];
@@ -1002,6 +1006,118 @@ function WorkspaceFileFixture() {
   );
 }
 
+const TASK_STATUS_TODO: TodoProjection = {
+  items: [
+    { title: '初始化棋盘、棋子渲染和 15×15 网格布局', status: 'completed' },
+    { title: '实现玩家落子交互与五连判断', status: 'completed' },
+    { title: '接入启发式 AI 并处理电脑回合', status: 'in_progress' },
+    { title: '适配移动端棋盘和窄屏布局', status: 'pending' },
+    { title: '补齐回归测试与构建验证', status: 'pending' },
+  ],
+  completed: 2,
+  total: 5,
+  running: true,
+};
+
+const TASK_STATUS_GOAL: GoalStatus = {
+  conversationId: 'phase3-task-status',
+  condition: '五子棋人机对战：使用启发式 AI 算法实现电脑落子',
+  status: 'active',
+  startedAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+  turnCount: 2,
+  tokensIn: 64_000,
+  tokensOut: 25_000,
+  roundsStarted: 2,
+  maxGoalRounds: 5,
+  lastReason: '核心交互已完成，正在验证 AI 回合与窄屏布局。',
+};
+
+function installTaskStatusFixtureRuntime() {
+  Object.defineProperty(window, 'syncThink', {
+    configurable: true,
+    value: {
+      runtime: {
+        getGitInfo: async () => ({
+          branch: 'feat/gomoku-ai',
+          branches: ['feat/gomoku-ai', 'main', 'release/desktop'],
+          changes: [
+            { status: 'M', path: 'apps/desktop/src/game/GomokuBoard.tsx' },
+            { status: 'A', path: 'apps/desktop/src/game/gomoku-ai.ts' },
+          ],
+          recentCommits: [
+            {
+              hash: '13a7d2f',
+              subject: 'feat: add gomoku board',
+              files: [],
+              truncated: false,
+            },
+            {
+              hash: '991ce40',
+              subject: 'test: cover winning lines',
+              files: [],
+              truncated: false,
+            },
+          ],
+          additions: 734,
+          deletions: 7,
+          ahead: 1,
+          behind: 0,
+          hasRemote: true,
+          isRepo: true,
+        }),
+        getGitReview: async () => ({
+          files: [
+            {
+              path: 'apps/desktop/src/game/GomokuBoard.tsx',
+              action: 'edited',
+              previousContent: 'export function GomokuBoard() { return null; }\n',
+              content: 'export function GomokuBoard() { return <canvas />; }\n',
+            },
+          ],
+        }),
+        gitCheckout: async () => ({ ok: true, dirty: false, changes: [], error: null }),
+        gitCreateBranch: async () => ({ ok: true, error: null }),
+        gitCommit: async () => ({
+          ok: true,
+          committed: true,
+          pushed: false,
+          error: null,
+        }),
+        gitPush: async () => ({ ok: true, pushed: true, error: null }),
+      },
+    },
+  });
+}
+
+function TaskStatusFixture() {
+  useState(() => installTaskStatusFixtureRuntime());
+  return (
+    <FixtureFrame label="Git 工具 · 目标 · 进程">
+      <div className="phase3-task-status shell-chat-column">
+        <div className="shell-chat-message-stage">
+          <div className="phase3-task-status__conversation">
+            <article>
+              <strong>任务执行中</strong>
+              <p>继续完成五子棋 AI，并在交付前运行回归测试。</p>
+            </article>
+            <article>
+              <strong>当前进度</strong>
+              <p>棋盘和胜负判断已经完成，正在实现电脑落子策略。</p>
+            </article>
+          </div>
+          <TaskStatusPanel
+            projectFolder="C:/workspace/gomoku"
+            goal={TASK_STATUS_GOAL}
+            evaluatorConfigured
+            todo={TASK_STATUS_TODO}
+            onOpenReview={() => undefined}
+          />
+        </div>
+      </div>
+    </FixtureFrame>
+  );
+}
+
 export function Phase3VisualFixture({ visualCase }: { visualCase: Phase3VisualCase }) {
   if (visualCase === 'welcome') return <WelcomeFixture />;
   if (visualCase === 'diagnostics') return <DiagnosticsFixture />;
@@ -1011,5 +1127,6 @@ export function Phase3VisualFixture({ visualCase }: { visualCase: Phase3VisualCa
   if (visualCase === 'workspace-file') return <WorkspaceFileFixture />;
   if (visualCase === 'execution-auto-disclosure') return <ExecutionAutoDisclosureFixture />;
   if (visualCase === 'inline-process-hierarchy') return <InlineProcessHierarchyFixture />;
+  if (visualCase === 'task-status-panel') return <TaskStatusFixture />;
   return <TraceFixture open={visualCase === 'long-trace-open'} />;
 }

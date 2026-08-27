@@ -100,7 +100,7 @@ describe('TurnSkillControl', () => {
 
     fireEvent.click(options[1]!);
     fireEvent.click(options[2]!);
-    expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('2/8');
+    expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe('2');
 
     fireEvent.click(screen.getByTestId('turn-skill-trigger'));
     fireEvent.click(screen.getByTestId('turn-skill-trigger'));
@@ -134,7 +134,7 @@ describe('TurnSkillControl', () => {
       fireEvent.click(screen.getByTestId(`turn-skill-option-${id}`));
     }
 
-    expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('8/8');
+    expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe('8');
     expect((screen.getByTestId('turn-skill-option-skill-9') as HTMLButtonElement).disabled).toBe(
       true,
     );
@@ -144,10 +144,10 @@ describe('TurnSkillControl', () => {
       false,
     );
     fireEvent.click(screen.getByTestId('turn-skill-option-skill-9'));
-    expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('8/8');
+    expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe('8');
 
     fireEvent.click(screen.getByLabelText('清除本轮 Skill'));
-    expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('0/8');
+    expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe('');
   });
 
   it('loads the enabled global catalog for model-direct selection', async () => {

@@ -17,6 +17,14 @@ import type {
   OpenDesktopDataDirectoryResponse,
 } from '../data-management-contract.js';
 import type {
+  ProjectGitActionResult,
+  ProjectGitCheckoutResult,
+  ProjectGitCommitResult,
+  ProjectGitInfo,
+  ProjectGitPushResult,
+  ProjectGitReview,
+} from '../project-git-contract.js';
+import type {
   DataBackupPayload,
   DataBackupResponse,
   DataCleanConversationsPayload,
@@ -1260,33 +1268,28 @@ const api = {
         dir: string;
         entries: Array<{ name: string; path: string; kind: 'file' | 'dir' }>;
       }>,
-    /** 右栏「工作区」面板：git 分支 / 变更 / 最近提交摘要。 */
+    /** ZCode Git tools / 工作区面板共享的仓库事实快照。 */
     getGitInfo: (payload: { root: string }) =>
-      ipcRenderer.invoke('desktop:git-info', payload) as Promise<{
-        branch: string | null;
-        branches: string[];
-        changes: Array<{ status: string; path: string }>;
-        recentCommits: Array<{
-          hash: string;
-          subject: string;
-          files: Array<{ status: string; path: string }>;
-          truncated: boolean;
-        }>;
-        isRepo: boolean;
-      }>,
-    /** 右栏「工作区」面板：切换分支（脏工作区需显式 stash/force 策略）。 */
+      ipcRenderer.invoke('desktop:git-info', payload) as Promise<ProjectGitInfo>,
+    /** 打开 ZCode 式工作区更改审阅所需的前后文本快照。 */
+    getGitReview: (payload: { root: string }) =>
+      ipcRenderer.invoke('desktop:git-review', payload) as Promise<ProjectGitReview>,
+    /** 切换分支（脏工作区需显式 stash/force 策略）。 */
     gitCheckout: (payload: {
       root: string;
       branch: string;
       strategy?: 'check' | 'stash' | 'force';
-    }) =>
-      ipcRenderer.invoke('desktop:git-checkout', payload) as Promise<{
-        ok: boolean;
-        dirty: boolean;
-        changes: Array<{ status: string; path: string }>;
-        error: string | null;
-        stashed?: boolean;
-      }>,
+    }) => ipcRenderer.invoke('desktop:git-checkout', payload) as Promise<ProjectGitCheckoutResult>,
+    gitCreateBranch: (payload: { root: string; branch: string }) =>
+      ipcRenderer.invoke('desktop:git-create-branch', payload) as Promise<ProjectGitActionResult>,
+    gitCommit: (payload: {
+      root: string;
+      message: string;
+      includeUnstaged: boolean;
+      push: boolean;
+    }) => ipcRenderer.invoke('desktop:git-commit', payload) as Promise<ProjectGitCommitResult>,
+    gitPush: (payload: { root: string }) =>
+      ipcRenderer.invoke('desktop:git-push', payload) as Promise<ProjectGitPushResult>,
     /** 能力中心：主进程代理下载公网 SKILL.md 文本（renderer CSP 不放外网）。 */
     fetchSkillMd: (payload: { url: string }) =>
       ipcRenderer.invoke('desktop:fetch-skill-md', payload) as Promise<{

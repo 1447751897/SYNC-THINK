@@ -645,6 +645,864 @@ body {
   background: var(--color-border-strong);
 }
 
+/* Local ZCode 3.9.2 task status: one floating Git tools / Goal / Progress surface. */
+.shell-task-status-host {
+  position: absolute;
+  z-index: 46;
+  top: 16px;
+  right: 16px;
+  max-width: calc(100% - 32px);
+  pointer-events: none;
+}
+
+.shell-task-status-panel,
+.shell-task-status-mini,
+.shell-task-status-dialog,
+.shell-task-status-dialog__backdrop {
+  pointer-events: auto;
+}
+
+.shell-task-status-panel {
+  position: relative;
+  width: 320px;
+  max-width: 100%;
+  max-height: min(64dvh, 32rem);
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--color-border);
+  border-radius: 16px;
+  background: var(--color-overlay);
+  color: var(--color-text);
+  box-shadow: 0 12px 34px color-mix(in srgb, var(--color-text) 13%, transparent);
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--color-border-strong) 58%, transparent) transparent;
+}
+
+:is(
+  .shell-task-status__branch-menu,
+  .shell-task-status__branch-list,
+  .shell-task-status__progress-popover
+) {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--color-border-strong) 58%, transparent) transparent;
+}
+
+:is(
+  .shell-task-status-panel,
+  .shell-task-status__branch-menu,
+  .shell-task-status__branch-list,
+  .shell-task-status__progress-popover
+)::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+:is(
+  .shell-task-status-panel,
+  .shell-task-status__branch-menu,
+  .shell-task-status__branch-list,
+  .shell-task-status__progress-popover
+)::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+:is(
+  .shell-task-status-panel,
+  .shell-task-status__branch-menu,
+  .shell-task-status__branch-list,
+  .shell-task-status__progress-popover
+)::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-border-strong) 58%, transparent);
+}
+
+.shell-task-status-panel__close {
+  position: absolute;
+  z-index: 2;
+  top: 8px;
+  right: 8px;
+  display: none;
+  width: 26px;
+  height: 26px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.shell-task-status-panel__close:hover {
+  background: var(--color-hover);
+  color: var(--color-text);
+}
+
+.shell-task-status-mini {
+  display: none;
+  width: max-content;
+  min-width: 52px;
+  max-width: 320px;
+  height: 34px;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 7px;
+  padding: 0 11px;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: var(--color-overlay);
+  color: var(--color-text-secondary);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--color-text) 12%, transparent);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.shell-task-status-mini__label {
+  min-width: 0;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shell-task-status__section + .shell-task-status__section {
+  border-top: 1px solid color-mix(in srgb, var(--color-border) 76%, transparent);
+}
+
+.shell-task-status__section-header {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 9px 0 8px;
+}
+
+.shell-task-status__section-toggle {
+  display: flex;
+  min-width: 0;
+  min-height: 34px;
+  flex: 1;
+  align-items: center;
+  gap: 5px;
+  padding: 0 5px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+}
+
+.shell-task-status__section-toggle:hover {
+  background: color-mix(in srgb, var(--color-hover) 62%, transparent);
+  color: var(--color-text);
+}
+
+.shell-task-status__section-toggle svg {
+  transition: transform var(--shell-motion-fast, 110ms) ease;
+}
+
+.shell-task-status__section-toggle svg.is-open {
+  transform: rotate(180deg);
+}
+
+.shell-task-status__section-trailing {
+  display: flex;
+  flex: none;
+  align-items: center;
+  color: var(--color-text-faint);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.shell-task-status__section-body {
+  padding: 0 8px 10px;
+}
+
+.shell-task-status__git-stats {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.shell-task-status__git-stats strong:first-child {
+  color: var(--color-success);
+}
+
+.shell-task-status__git-stats strong:last-child {
+  color: var(--color-error);
+}
+
+.shell-task-status__git-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.shell-task-status__row {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  width: 100%;
+  min-height: 34px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.shell-task-status__row:hover,
+.shell-task-status__row[aria-expanded='true'] {
+  background: var(--color-hover);
+}
+
+.shell-task-status__row:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.shell-task-status__row > span:nth-child(2) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shell-task-status__row-tail,
+.shell-task-status__row-chevron {
+  justify-self: end;
+  color: var(--color-text-faint);
+  font-size: 11px;
+}
+
+.shell-task-status__branch-anchor {
+  position: relative;
+}
+
+.shell-task-status__branch-menu {
+  position: fixed;
+  z-index: 10060;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden auto;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-overlay);
+  box-shadow: 0 10px 26px color-mix(in srgb, var(--color-text) 12%, transparent);
+}
+
+.shell-task-status__branch-search {
+  display: flex;
+  height: 34px;
+  align-items: center;
+  gap: 7px;
+  margin: 6px;
+  padding: 0 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 7px;
+  background: var(--color-elevated);
+  color: var(--color-text-faint);
+}
+
+.shell-task-status__branch-search input,
+.shell-task-status__branch-create input {
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--color-text);
+  font: inherit;
+  font-size: 12px;
+}
+
+.shell-task-status__branch-list {
+  max-height: 150px;
+  overflow-y: auto;
+  padding: 0 5px 5px;
+}
+
+.shell-task-status__branch-list > button {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) 16px;
+  width: 100%;
+  min-height: 31px;
+  align-items: center;
+  gap: 5px;
+  padding: 0 7px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.shell-task-status__branch-list > button:hover:not(:disabled),
+.shell-task-status__branch-list > button.is-active {
+  background: var(--color-hover);
+  color: var(--color-text);
+}
+
+.shell-task-status__branch-list > button span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shell-task-status__branch-list > button:disabled {
+  cursor: default;
+}
+
+.shell-task-status__branch-create {
+  display: flex;
+  gap: 6px;
+  padding: 6px;
+  border-top: 1px solid var(--color-border);
+}
+
+.shell-task-status__branch-create input {
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-elevated);
+}
+
+.shell-task-status__branch-create button,
+.shell-task-status-dialog__footer button {
+  display: inline-flex;
+  min-height: 30px;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 0 10px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 6px;
+  background: var(--color-elevated);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.shell-task-status__branch-create button:disabled,
+.shell-task-status-dialog__footer button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.shell-task-status__git-graph {
+  padding: 7px 8px 8px;
+  border-top: 1px solid var(--color-border);
+}
+
+.shell-task-status__git-graph-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  color: var(--color-text-secondary);
+  font-size: 11.5px;
+  font-weight: 500;
+}
+
+.shell-task-status__commit-row {
+  display: grid;
+  grid-template-columns: 54px minmax(0, 1fr);
+  min-height: 25px;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-text-faint);
+  font-size: 10.5px;
+}
+
+.shell-task-status__commit-row code,
+.shell-task-status__commit-row span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shell-task-status__goal {
+  position: relative;
+  padding: 0 8px 2px;
+}
+
+.shell-task-status__goal-row {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  min-height: 48px;
+  padding: 4px 0;
+}
+
+.shell-task-status__goal-index {
+  display: inline-flex;
+  width: 20px;
+  height: 20px;
+  align-items: center;
+  justify-content: center;
+  margin-top: 1px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 50%;
+  color: var(--color-text-secondary);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.shell-task-status__goal-index[data-complete='true'] {
+  border-color: var(--color-success);
+  background: var(--color-success);
+  color: var(--color-accent-fg);
+}
+
+.shell-task-status__goal-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.shell-task-status__goal-copy strong {
+  overflow: hidden;
+  color: var(--color-text);
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.shell-task-status__goal-copy span,
+.shell-task-status__goal-note {
+  color: var(--color-text-faint);
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+
+.shell-task-status__goal-reason {
+  margin: 4px 0 0 30px;
+  padding: 7px 8px;
+  border-left: 2px solid var(--color-border-strong);
+  color: var(--color-text-secondary);
+  font-size: 10.5px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.shell-task-status__goal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 3px;
+  margin-top: 5px;
+}
+
+.shell-task-status__goal-actions button {
+  display: inline-flex;
+  width: 27px;
+  height: 27px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-faint);
+  cursor: pointer;
+}
+
+.shell-task-status__goal-actions button:hover {
+  background: var(--color-hover);
+  color: var(--color-text);
+}
+
+.shell-task-status__goal-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.shell-task-status__goal-state[data-status='achieved'] {
+  color: var(--color-success);
+}
+
+.shell-task-status__goal-state[data-status='blocked'] {
+  color: var(--color-warning);
+}
+
+.shell-task-status__progress-count {
+  color: var(--color-text-faint);
+}
+
+.shell-task-status__progress {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+.shell-task-status__progress-row {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  min-height: 32px;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 8px;
+  color: var(--color-text-faint);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.shell-task-status__progress-row[data-status='in_progress'] {
+  color: var(--color-text);
+}
+
+.shell-task-status__progress-row[data-status='completed'] {
+  color: var(--color-text-faint);
+}
+
+.shell-task-status__progress-icon {
+  display: inline-flex;
+  align-items: center;
+  color: var(--color-text-faint);
+}
+
+.shell-task-status__progress-row[data-status='completed'] .shell-task-status__progress-icon {
+  color: var(--color-success);
+}
+
+.shell-task-status__progress-row[data-status='in_progress'] .shell-task-status__progress-icon {
+  color: var(--color-accent);
+}
+
+.shell-task-status__progress-row .is-completed {
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+
+.shell-task-status__progress-fold {
+  position: relative;
+  display: flex;
+  min-height: 24px;
+  align-items: center;
+  padding-left: 7px;
+}
+
+.shell-task-status__progress-fold > button {
+  display: inline-flex;
+  min-height: 28px;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--color-text-faint);
+  font: inherit;
+  font-size: 10.5px;
+  cursor: pointer;
+}
+
+.shell-task-status__progress-fold > button:hover {
+  background: var(--color-hover);
+  color: var(--color-text-secondary);
+}
+
+.shell-task-status__progress-popover {
+  position: absolute;
+  z-index: 8;
+  top: 100%;
+  left: 6px;
+  width: 250px;
+  max-height: 180px;
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-overlay);
+  box-shadow: 0 10px 28px color-mix(in srgb, var(--color-text) 14%, transparent);
+}
+
+.shell-task-status__progress-fold:last-child .shell-task-status__progress-popover {
+  top: auto;
+  bottom: 100%;
+}
+
+.shell-task-status__progress-popover > div {
+  padding: 5px 7px;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.shell-task-status__empty {
+  padding: 16px 8px;
+  color: var(--color-text-faint);
+  font-size: 11.5px;
+  text-align: center;
+}
+
+.shell-task-status__error {
+  margin: 6px 8px 0;
+  padding: 7px 8px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--color-error) 8%, transparent);
+  color: var(--color-error);
+  font-size: 10.5px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.shell-task-status-dialog__backdrop {
+  position: fixed;
+  z-index: 10080;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  inset: 0;
+  padding: 16px;
+  background: color-mix(in srgb, var(--color-text) 24%, transparent);
+}
+
+.shell-task-status-dialog {
+  display: flex;
+  width: min(420px, calc(100vw - 32px));
+  max-height: min(620px, calc(100dvh - 32px));
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: var(--color-overlay);
+  color: var(--color-text);
+  box-shadow: 0 18px 48px color-mix(in srgb, var(--color-text) 18%, transparent);
+}
+
+.shell-task-status-dialog__header {
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.shell-task-status-dialog__header h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.shell-task-status-dialog__header button {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.shell-task-status-dialog__header button:hover {
+  background: var(--color-hover);
+  color: var(--color-text);
+}
+
+.shell-task-status-dialog__body {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px;
+}
+
+.shell-task-status-dialog__footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 7px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--color-border);
+}
+
+.shell-task-status-dialog__footer button.is-quiet {
+  margin-right: auto;
+  border-color: transparent;
+  background: transparent;
+  color: var(--color-text-secondary);
+}
+
+.shell-task-status-dialog__footer button.is-primary {
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+  color: var(--color-accent-fg);
+}
+
+.shell-task-status-dialog__branch-summary {
+  display: flex;
+  min-height: 32px;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-text-secondary);
+  font-size: 11.5px;
+}
+
+.shell-task-status-dialog__branch-summary .shell-task-status__git-stats {
+  margin-left: auto;
+}
+
+.shell-task-status-dialog__field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 9px;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+}
+
+.shell-task-status-dialog__field textarea {
+  width: 100%;
+  min-height: 74px;
+  resize: vertical;
+  padding: 9px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 7px;
+  outline: 0;
+  background: var(--color-elevated);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.shell-task-status-dialog__field textarea:focus,
+.shell-task-status__branch-search:focus-within,
+.shell-task-status__branch-create input:focus {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 2px var(--color-accent-soft);
+}
+
+.shell-task-status-dialog__checkbox {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 10px;
+  color: var(--color-text-secondary);
+  font-size: 11.5px;
+}
+
+.shell-task-status-dialog__checkbox input {
+  accent-color: var(--color-accent);
+}
+
+.shell-task-status-dialog__message {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.shell-task-status-panel :is(button, input, textarea):focus-visible,
+.shell-task-status-mini:focus-visible,
+.shell-task-status-dialog :is(button, input, textarea):focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 1px;
+}
+
+@container shell-chat (max-width: 1279px) {
+  .shell-task-status-panel {
+    display: none;
+  }
+
+  .shell-task-status-panel[data-manual-open='true'] {
+    display: block;
+  }
+
+  .shell-task-status-panel[data-manual-open='true'] .shell-task-status-panel__close {
+    display: inline-flex;
+  }
+
+  .shell-task-status-panel[data-manual-open='true']
+    .shell-task-status__section:first-of-type
+    .shell-task-status__section-header {
+    padding-right: 38px;
+  }
+
+  .shell-task-status-mini {
+    display: inline-flex;
+  }
+
+  .shell-task-status-host:has(.shell-task-status-panel[data-manual-open='true'])
+    .shell-task-status-mini {
+    display: none;
+  }
+}
+
+@container shell-chat (max-width: 420px) {
+  .shell-task-status-host {
+    top: 10px;
+    right: 10px;
+    max-width: calc(100% - 20px);
+  }
+
+  .shell-task-status-panel {
+    width: min(320px, calc(100cqw - 20px));
+    max-height: min(72dvh, 32rem);
+  }
+}
+
+:root[data-image-theme='active'] .shell-task-status-panel,
+:root[data-image-theme='active'] .shell-task-status-mini {
+  border-color: color-mix(in srgb, var(--color-text) 9%, transparent);
+  background: var(--shell-chat-composer-surface);
+  -webkit-backdrop-filter: blur(20px) saturate(1.08);
+  backdrop-filter: blur(20px) saturate(1.08);
+}
+
+:root[data-image-theme='active']
+  :is(
+    .shell-task-status__branch-menu,
+    .shell-task-status__progress-popover,
+    .shell-task-status-dialog
+  ) {
+  border-color: color-mix(in srgb, var(--color-text) 10%, transparent);
+  background: var(--shell-chat-composer-surface);
+  -webkit-backdrop-filter: blur(20px) saturate(1.08);
+  backdrop-filter: blur(20px) saturate(1.08);
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  :root[data-image-theme='active'] .shell-task-status-panel,
+  :root[data-image-theme='active'] .shell-task-status-mini,
+  :root[data-image-theme='active']
+    :is(
+      .shell-task-status__branch-menu,
+      .shell-task-status__progress-popover,
+      .shell-task-status-dialog
+    ) {
+    background: var(--color-overlay);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
 .shell-browser-handoff {
   display: flex;
   gap: 12px;
@@ -5920,6 +6778,39 @@ body {
   padding: 10px 12px 0;
 }
 
+.shell-compose__selected-skills {
+  display: flex;
+  min-height: 26px;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  padding: 9px 14px 0;
+  color: var(--color-text-secondary);
+}
+
+.shell-compose__selected-skill {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 100%;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-text-secondary);
+  font-size: 12.5px;
+  line-height: 18px;
+}
+
+.shell-compose__selected-skill svg {
+  flex: 0 0 auto;
+  color: var(--color-text-faint);
+}
+
+.shell-compose__selected-skill span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .shell-attach-chip {
   display: inline-flex;
   align-items: center;
@@ -6040,56 +6931,6 @@ body {
   justify-content: space-between;
   gap: 8px;
   padding: 6px 8px 8px;
-}
-
-/* 规划/执行 交互工作模式条 */
-.shell-compose__mode-strip {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 4px 8px 0;
-  padding: 5px 10px;
-  border-radius: 8px;
-  font-size: 12px;
-  line-height: 1.4;
-  color: var(--color-accent);
-  background: color-mix(in srgb, var(--color-accent-soft) 12%, transparent);
-}
-
-.shell-compose__mode-strip[data-mode='plan'] {
-  border: 1px dashed color-mix(in srgb, var(--color-accent) 45%, transparent);
-}
-
-.shell-compose__mode-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.shell-compose__mode-hint {
-  flex: 1;
-  min-width: 0;
-  opacity: 0.75;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.shell-compose__mode-switch {
-  flex: none;
-  padding: 2px 10px;
-  border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--color-accent) 40%, transparent);
-  background: transparent;
-  color: inherit;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.shell-compose__mode-switch:hover {
-  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
 }
 
 /* 计划审批卡（规划模式） */
@@ -6467,109 +7308,6 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-}
-
-/* ─── 任务清单面板（对齐 DSH TodoPanel，composer 上方常驻） ───────────────── */
-
-.shell-todo-panel {
-  margin: 4px 8px 0;
-  padding: 0 10px;
-  border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
-  border-radius: 12px 12px 0 0;
-  background: color-mix(in srgb, var(--color-border) 10%, transparent);
-  font-size: 12px;
-}
-
-.shell-todo-panel__body {
-  position: relative;
-}
-
-.shell-todo-panel__header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  height: 34px;
-  padding: 0 4px;
-  border: none;
-  background: transparent;
-  color: var(--color-text);
-  text-align: left;
-  cursor: pointer;
-  font-size: 12px;
-}
-
-.shell-todo-panel__lead {
-  display: inline-flex;
-  align-items: center;
-  color: var(--color-text-secondary);
-}
-
-.shell-todo-panel__title {
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.shell-todo-panel__progress {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--color-text-secondary);
-}
-
-.shell-todo-panel__chevron {
-  display: inline-flex;
-  align-items: center;
-  color: var(--color-text-secondary);
-}
-
-.shell-todo-panel__list {
-  max-height: 180px;
-  margin: 0;
-  padding: 0 0 6px;
-  list-style: none;
-  overflow-y: auto;
-}
-
-.shell-todo-panel__item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 28px;
-  padding: 2px 4px;
-}
-
-.shell-todo-panel__item + .shell-todo-panel__item {
-  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--color-border) 55%, transparent);
-}
-
-.shell-todo-panel__glyph {
-  flex: none;
-  width: 16px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.shell-todo-panel__dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--color-border-strong);
-}
-
-.shell-todo-panel__content {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.shell-todo-panel__item[data-status='completed'] .shell-todo-panel__content {
-  opacity: 0.6;
-  text-decoration: line-through;
 }
 
 /* ─── 问询卡片（ask_user_question 接管 composer；对齐 DSH QuestionComposer） ── */
@@ -8971,6 +9709,16 @@ body {
 .shell-compose__tool[data-active='1']:hover:not(:disabled) {
   border-color: color-mix(in srgb, var(--color-accent) 36%, transparent);
   background: color-mix(in srgb, var(--color-accent) 13%, var(--color-surface));
+}
+
+.shell-compose__mode-badge {
+  border-color: color-mix(in srgb, var(--color-accent) 22%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 8%, transparent);
+  color: var(--color-accent-text);
+}
+
+.shell-compose__mode-badge[data-mode='goal'] {
+  color: var(--color-text-secondary);
 }
 
 .shell-compose__tool[data-open='1'] {
@@ -24054,6 +24802,41 @@ body {
   width: min(760px, calc(100% - 44px));
   margin: 0 auto;
   padding: 26px 0 42px;
+}
+
+.phase3-task-status {
+  position: relative;
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--color-chat);
+}
+
+.phase3-task-status__conversation {
+  display: flex;
+  width: min(744px, calc(100% - 32px));
+  flex-direction: column;
+  gap: 28px;
+  margin: 0 auto;
+  padding: 48px 0;
+}
+
+.phase3-task-status__conversation article {
+  max-width: 620px;
+  color: var(--color-text);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.phase3-task-status__conversation article:nth-child(2) {
+  margin-top: 190px;
+}
+
+.phase3-task-status__conversation p {
+  margin: 5px 0 0;
+  color: var(--color-text-secondary);
 }
 
 .phase3-visual__history-marker {

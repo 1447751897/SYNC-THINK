@@ -1,3 +1,46 @@
+## 2026-08-28：NewMax Composer 反馈与 ZCode 状态卡交互收口
+
+### Fixed
+
+- 修复 `/` 命令与 Skill 菜单使用键盘上/下移动时活动项离开可视区、菜单却不跟随滚动的问题；活动项现在保持完整可见。
+- 本轮已选 Skill 现在按选择顺序在输入区上方显示真实名称；欢迎页与正式对话一致。底部 Skill 快捷入口只显示已选数量，不再显示 `0/8` 或 `1/8`。
+- 目标与规划模式改为 Composer 工具栏内的紧凑中文徽标，移除占据整行的模式说明条；目标和规划可同时提示。
+- ZCode 状态卡全部使用中文 `Git 工具 / 更改 / 提交 / 推送 / 目标 / 进程`；“更改”直接打开既有右侧工作树审阅区，删除重复的居中变更清单及其残留样式。
+
+### Changed
+
+- 状态卡继续以本机 ZCode 3.9.2 为首要参考：分支菜单从卡片左侧锚定，提交与脏工作树确认保留独立弹层，Git、Goal 和 Progress 仍是唯一任务状态入口。
+- 卡片、窄窗胶囊、分支菜单、进度预览和提交弹窗统一使用语义主题变量；图片背景下跟随 Composer 动态表面，切换背景无需重建组件即可同步换肤。
+
+### Verification
+
+- Desktop 高相关测试 `6 files / 38 tests` 与最终全量测试 `182 files / 1449 tests` 通过，覆盖键盘滚动、Skill 名称与数量、Goal/Plan 徽标、中文状态区、工作树审阅、分支/提交以及唯一入口合同。
+- 强制全仓生产构建 `11/11`（`0 cached`）、全仓 typecheck `20/20`、lint `11/11`（`0 error`）、Prettier、设计令牌与 `git diff --check` 通过。
+- 应用内 Browser 在 `1440 × 900` 明/暗主题和 `760 × 640` 窄屏完成页面身份、非空、控制台、横向溢出、区块顺序、单入口、分支左侧弹层、中文提交弹窗及关闭按钮不重叠检查；控制台无 warning/error。
+- Electron 状态卡专用矩阵 `4/4` 通过并生成带哈希的亮色、暗色、窄屏展开与壁纸切换截图；壁纸用两套 Composer 表面连续切换，计算背景确实变化。完整 Phase 3 矩阵继续被既有 workspace-file 标题栏 `4px` 对齐阈值拦截，与本次状态卡路径无关。
+- 最终生产窗口已替换旧进程；Electron 主进程 PID `45500`、Renderer PID `1352`，窗口标题为 `SYNC-THINK` 且进程响应正常。
+
+## 2026-08-27：任务状态严格对齐本机 ZCode 3.9.2
+
+### Added
+
+- 对话右上角新增本机 ZCode 同结构的单一浮动状态卡，按真实数据依次展示 Git tools、Goal 与 Progress；宽屏使用 `320px` 全卡，窄屏自动收为进度胶囊并可展开。
+- Main/Preload Git bridge 新增真实分支创建、提交和推送能力；状态卡支持 Changes 文件清单、分支搜索/创建/脏工作树确认与 stash 切换、最近提交、Commit、Commit & Push 和 Push。
+- 新增状态卡组件、Git 集成、唯一入口、主题变量和 Phase 3 视觉夹具回归；壁纸夹具连续应用两套取色色板，并断言卡片计算背景随 `--color-overlay` 与 composer 表面同步变化。
+
+### Changed
+
+- 移除 composer 上方 TodoPanel、GoalCapsule、RunTaskCapsule 以及消息执行流中的重复计划入口；旧组件定义一并删除，任务计划继续以持久事件投影作为 Progress 的唯一事实源。
+- Goal 只投影真实 `GoalStatus`，无目标时不生成模拟卡片；Progress 超过 6 项时以当前项为中心显示 3 项并提供前后折叠预览。
+- 状态卡、分支菜单、提交弹窗和折叠预览统一使用语义色与图片主题动态表面，覆盖亮色、暗色、图片壁纸和 reduced-transparency。
+
+### Verification
+
+- Desktop 全量测试 `182 files / 1445 tests`、最终 typecheck、生产 build、状态卡相关 `3 files / 49 tests`、Phase 3 矩阵脚本 `4/4`、lint（0 error）与 `git diff --check` 通过；Git 集成真实验证分支创建、脏工作树 gate、提交及 upstream push。
+- 本机 Browser 在构建产物上验证：状态卡挂载数 `1`、旧入口数 `0`、区块顺序 `Git tools / Goal / Progress`、宽度 `320px` 且位于视口内；窄宽度默认显示胶囊，点击后展开完整卡片。
+- Electron 生成并人工复核亮色、暗色、窄屏展开和壁纸切换四张状态卡截图；壁纸切换的两次计算背景不同。完整 Phase 3 矩阵在四张状态卡均通过后，停在既有 workspace-file header `4px` 对齐阈值，与本次状态卡路径无关。
+- 最终 Electron 主窗口 PID `27852`、Renderer PID `33304` 已载入最新构建，窗口标题为 `SYNC-THINK` 且进程响应正常。
+
 ## 2026-08-27：Skill 管理与本地目录库严格对齐 NewMax 1.1.14
 
 ### Added

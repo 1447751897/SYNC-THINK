@@ -49,6 +49,14 @@ import {
   type M1OpenDocId,
 } from './m1-open-doc.js';
 import { listProjectFiles } from './project-files.js';
+import {
+  checkoutProjectBranch,
+  commitProjectChanges,
+  createProjectBranch,
+  getProjectGitInfo,
+  getProjectGitReview,
+  pushProjectBranch,
+} from './project-git.js';
 import { ProjectContentSearchRegistry, searchProjectContent } from './project-content-search.js';
 import { parseProjectTerminalCommand, resolveProjectTerminalCwd } from './project-terminal.js';
 import {
@@ -3641,7 +3649,7 @@ function setupRuntimeBridge(): void {
     }
   });
 
-  // Switch branches only after the Renderer explicitly selects dirty-worktree handling.
+  // Git stays in Main: Renderer sends typed intent and never constructs shell commands.
   ipcMain.handle('desktop:git-checkout', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
     if (value === null || typeof value !== 'object' || Array.isArray(value)) {
@@ -3654,118 +3662,10 @@ function setupRuntimeBridge(): void {
     if (typeof payload.branch !== 'string' || !payload.branch.trim()) {
       throw new Error('Invalid git-checkout payload: branch required');
     }
-    const branch = payload.branch.trim();
-    // Branch-name guard: no flag injection / path tricks.
-    const hasInvalidBranchCharacter = [...branch].some((character) => {
-      const codePoint = character.charCodeAt(0);
-      return (
-        /\s/.test(character) ||
-        ['~', '^', ':', '?', '*', '[', '\\'].includes(character) ||
-        codePoint <= 0x1f ||
-        codePoint === 0x7f
-      );
-    });
-    if (branch.startsWith('-') || hasInvalidBranchCharacter) {
-      throw new Error('git-checkout: invalid branch name');
-    }
     const strategy =
       payload.strategy === 'stash' || payload.strategy === 'force' ? payload.strategy : 'check';
-    const root = path.resolve(payload.root);
-    if (!fs.existsSync(root)) {
-      return { ok: false, error: '项目文件夹不存在', dirty: false, changes: [] };
-    }
-    const { execFile } = await import('node:child_process');
-    const run = (args: string[]): Promise<{ ok: boolean; stdout: string; stderr: string }> =>
-      new Promise((resolve) => {
-        execFile(
-          'git',
-          args,
-          { cwd: root, timeout: 20_000, windowsHide: true, maxBuffer: 1024 * 1024 },
-          (error, stdout, stderr) =>
-            resolve({ ok: !error, stdout: String(stdout), stderr: String(stderr) }),
-        );
-      });
-    const status = await run(['status', '--short']);
-    const changes = status.stdout
-      .split(/\r?\n/)
-      .filter(Boolean)
-      .slice(0, 100)
-      .map((line) => ({ status: line.slice(0, 2).trim(), path: line.slice(3).trim() }));
-    if (changes.length > 0 && strategy === 'check') {
-      // Dirty worktree: UI must ask the user first (stash or carry over).
-      return { ok: false, dirty: true, changes, error: null };
-    }
-    if (changes.length > 0 && strategy === 'stash') {
-      const stash = await run(['stash', 'push', '-u', '-m', `sync-think: switch to ${branch}`]);
-      if (!stash.ok) {
-        return {
-          ok: false,
-          dirty: true,
-          changes,
-          error: `保存 stash 失败：${stash.stderr.trim() || '未知错误'}`,
-        };
-      }
-    }
-    const checkout = await run(['checkout', branch]);
-    if (!checkout.ok) {
-      // Stash already happened (if requested); surface it so the user can recover.
-      const detail = checkout.stderr.trim() || checkout.stdout.trim() || '未知错误';
-      return {
-        ok: false,
-        dirty: false,
-        changes: [],
-        error: `切换分支失败：${detail}${strategy === 'stash' && changes.length > 0 ? '；更改已保存到 stash，可用 git stash pop 恢复' : ''}`,
-      };
-    }
-    return {
-      ok: true,
-      dirty: false,
-      changes: [],
-      error: null,
-      stashed: strategy === 'stash' && changes.length > 0,
-    };
+    return checkoutProjectBranch(payload.root, payload.branch, strategy);
   });
-
-  // Read-only Git branch, status, and recent-commit summary for the workspace panel.
-  const MAX_FILES_PER_COMMIT = 100;
-  function parseRecentCommitBlocks(stdout: string): Array<{
-    hash: string;
-    subject: string;
-    files: Array<{ status: string; path: string }>;
-    truncated: boolean;
-  }> {
-    const normalized = stdout.replace(/\r\n/g, '\n');
-    const blocks = normalized.split(/\n{2,}/).filter((block) => block.trim().length > 0);
-    const commits: Array<{
-      hash: string;
-      subject: string;
-      files: Array<{ status: string; path: string }>;
-      truncated: boolean;
-    }> = [];
-    for (const block of blocks) {
-      const lines = block.split('\n').filter((line) => line.length > 0);
-      if (lines.length === 0) continue;
-      const [hash, subject = ''] = lines[0]!.split('\x00');
-      if (!hash) continue;
-      const files: Array<{ status: string; path: string }> = [];
-      let truncated = false;
-      for (const line of lines.slice(1)) {
-        if (files.length >= MAX_FILES_PER_COMMIT) {
-          truncated = true;
-          break;
-        }
-        const parts = line.split('\t');
-        if (parts.length < 2) continue;
-        const status = parts[0]!;
-        // 重命名 R100\told\tnew → 以新路径作为树节点展示。
-        const path = parts[parts.length - 1]!;
-        if (!path) continue;
-        files.push({ status, path });
-      }
-      commits.push({ hash, subject, files, truncated });
-    }
-    return commits;
-  }
 
   ipcMain.handle('desktop:git-info', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
@@ -3776,38 +3676,70 @@ function setupRuntimeBridge(): void {
     if (typeof payload.root !== 'string' || !payload.root.trim()) {
       throw new Error('Invalid git-info payload: root required');
     }
-    const root = path.resolve(payload.root);
-    if (!fs.existsSync(root)) {
-      return { branch: null, changes: [], recentCommits: [], isRepo: false };
+    return getProjectGitInfo(payload.root);
+  });
+
+  ipcMain.handle('desktop:git-review', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error('Invalid git-review payload');
     }
-    const { execFile } = await import('node:child_process');
-    const run = (args: string[]): Promise<string> =>
-      new Promise((resolve) => {
-        execFile(
-          'git',
-          args,
-          { cwd: root, timeout: 8_000, windowsHide: true, maxBuffer: 1024 * 1024 },
-          (error, stdout) => resolve(error ? '' : String(stdout)),
-        );
-      });
-    const branch = (await run(['rev-parse', '--abbrev-ref', 'HEAD'])).trim();
-    if (!branch)
-      return { branch: null, branches: [], changes: [], recentCommits: [], isRepo: false };
-    const branchesRaw = await run(['branch', '--format=%(refname:short)']);
-    const branches = branchesRaw
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .slice(0, 100);
-    const statusRaw = await run(['status', '--short']);
-    const changes = statusRaw
-      .split(/\r?\n/)
-      .filter(Boolean)
-      .slice(0, 100)
-      .map((line) => ({ status: line.slice(0, 2).trim(), path: line.slice(3).trim() }));
-    const logRaw = await run(['log', '-8', '--name-status', '--format=%h%x00%s']);
-    const recentCommits = parseRecentCommitBlocks(logRaw);
-    return { branch, branches, changes, recentCommits, isRepo: true };
+    const payload = value as { root?: unknown };
+    if (typeof payload.root !== 'string' || !payload.root.trim()) {
+      throw new Error('Invalid git-review payload: root required');
+    }
+    return getProjectGitReview(payload.root);
+  });
+
+  ipcMain.handle('desktop:git-create-branch', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error('Invalid git-create-branch payload');
+    }
+    const payload = value as { root?: unknown; branch?: unknown };
+    if (typeof payload.root !== 'string' || !payload.root.trim()) {
+      throw new Error('Invalid git-create-branch payload: root required');
+    }
+    if (typeof payload.branch !== 'string' || !payload.branch.trim()) {
+      throw new Error('Invalid git-create-branch payload: branch required');
+    }
+    return createProjectBranch(payload.root, payload.branch);
+  });
+
+  ipcMain.handle('desktop:git-commit', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error('Invalid git-commit payload');
+    }
+    const payload = value as {
+      root?: unknown;
+      message?: unknown;
+      includeUnstaged?: unknown;
+      push?: unknown;
+    };
+    if (typeof payload.root !== 'string' || !payload.root.trim()) {
+      throw new Error('Invalid git-commit payload: root required');
+    }
+    if (typeof payload.message !== 'string' || !payload.message.trim()) {
+      throw new Error('Invalid git-commit payload: message required');
+    }
+    return commitProjectChanges(payload.root, {
+      message: payload.message,
+      includeUnstaged: payload.includeUnstaged !== false,
+      push: payload.push === true,
+    });
+  });
+
+  ipcMain.handle('desktop:git-push', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error('Invalid git-push payload');
+    }
+    const payload = value as { root?: unknown };
+    if (typeof payload.root !== 'string' || !payload.root.trim()) {
+      throw new Error('Invalid git-push payload: root required');
+    }
+    return pushProjectBranch(payload.root);
   });
 }
 

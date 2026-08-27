@@ -595,7 +595,7 @@ hover/focus/active：focus 必须可见；hover 可有 1–2px 层级变化，�
 3. **问询卡片（接管 composer）**：pending ask 存在时输入区让位，卡片占据 compose 容器（模式条/提示条保留在上方）。通用形态对齐 DSH QuestionComposer：header（eyebrow + 标题 + ✕ 放弃整组）、detail Markdown、选项列表（单选编号 / 多选 checkbox）、**推荐徽章**（剥离后缀渲染）、description 小字、自定义答案输入（有选项时单行、无选项时 textarea；Enter 提交且 IME 组合不触发）、多问题分页（一次一题，‹ 1/3 › + 进度）、跳过本题、提交前校验未答跳回、busy 禁用。
 4. **plan-review 特例卡（方案待审）**：单问题 + `intent.kind=plan-review` + `detail` 方案全文 + 二选一（含 `intent.approve` 标签）时渲染特例形态——警示条「方案待审」+ Markdown 方案 + 「拒绝 / 确认执行 / 去聊天里说」。**已取代 plan_submit → PlanApprovalCard 流程**：规划模式提示词要求模型用 ask_user_question 提交方案；确认执行后规划轮结束，桌面端切执行模式并带 `planExecuting` 标志发起执行轮（执行指令 = 方案全文 Markdown，actModelId 路由见 §12.18）。`plan_submit` 工具不再注入；conversation.plan.* 命令族与存储保留为兼容层（历史数据可读）。
 5. **对话区问询记录**：消息流中该 run 的工具行照常显示 `ask_user_question` 调用；回答后工具结果渲染为可读文本（「你选择了：A、B」/「你的回答：xxx」/「已跳过」），问与答完整可回溯。
-6. **任务清单面板（对齐 DSH TodoPanel）**：composer 上方常驻 dock，默认折叠一行（图标 + 「任务清单」+ 进度文案「N 完成 · N 进行中 · N 待办」，零计数省略 + chevron），点击内嵌展开列表（max-height 180px 滚动，勾/转圈/圆点状态图标）。**持久化投影**：任务工具（update_task_plan / TaskCreate/TaskUpdate/TaskList）快照写事件流；最近一次 `run.started` 之后的有效快照为当前清单，run 终态保留刚完成的清单，新 `run.started` 清空——刷新/回放可恢复。
+6. **任务清单投影**：任务工具（update_task_plan / TaskCreate/TaskUpdate/TaskList）快照写事件流；最近一次 `run.started` 之后的有效快照为当前清单，run 终态保留刚完成的清单，新 `run.started` 清空——刷新/回放可恢复。原 composer 上方 TodoPanel 展示入口已由 §12.24 的 ZCode 浮动状态卡取代。
 
 ### 12.20 定时任务与随机任务（2026-08-16 用户确认）
 
@@ -621,7 +621,7 @@ hover/focus/active：focus 必须可见；hover 可有 1–2px 层级变化，�
 3. **结构化轮次提示**：自动轮注入 `<goal_round>` 块（Objective / Round N/max + 继续指示 + 完成前取证并 complete / 受阻才 block）。
 4. **模型工具 goal_manage**（平台工具全内核）：`complete`（自证完成）/ `block`（受阻说明停下）/ `progress`（进度记录）；仅该对话有 active goal 时可用；complete 直接标记 achieved。
 5. **命令**：`goal.pause` / `goal.resume`（恢复即续轮）；事件随 goal 状态变化。
-6. **目标卡 UI**（GoalCapsule 升级）：常驻胶囊 + hover 卡——状态徽标（进行中转圈 / 暂停 ⏸ / 受阻警告 / 达成 ✓）、objective、轮次进度 `第 N/上限 轮`、按钮（暂停/恢复、编辑=唤起 /goal 输入、清除）、最近评估/受阻原因。
+6. **目标状态投影**：状态徽标、objective、轮次进度、暂停/恢复、编辑、清除、最近评估与受阻原因继续使用 Runtime 的 `GoalStatus` 作为唯一事实源；原 GoalCapsule 展示入口已由 §12.24 的 ZCode 浮动状态卡取代。
 
 **本地 Skill 发现与导入**（对齐 NewMax 目录库）：
 
@@ -646,11 +646,31 @@ hover/focus/active：focus 必须可见；hover 可有 1–2px 层级变化，�
 
 本节补充 §12.17 与 §12.22；发生冲突时以本节为准。
 
-1. **信息层级**：折叠标题继续显示当前活动、过程项数与总耗时；展开后依次呈现本轮计划、真实智能体任务（若有）、ordered timeline 与补充状态。最终回答始终位于面板之外。
-2. **本轮计划**：仅当 `RunProcessView.taskPlan.items` 非空时展示“本轮计划”及完成数/总数；每项显示 pending / in_progress / completed 图标与真实标题，不从工具调用猜测计划。
+1. **信息层级**：折叠标题继续显示当前活动、过程项数与总耗时；展开后依次呈现真实智能体任务（若有）、ordered timeline 与补充状态。最终回答始终位于面板之外。
+2. **本轮计划**：`RunProcessView.taskPlan` 仍作为真实任务计划来源，但不再进入每条消息的执行过程，也不再进入 composer 上方 dock；它只由 §12.24 的 Progress 区展示，避免同一计划出现多个入口。
 3. **智能体任务**：只为真实委派任务投影预留区域；没有协议数据时整个区域不渲染，不显示空卡或模拟智能体。
 4. **真实时间线**：过程项按来源时间稳定排序，不显示人工序号。普通正文 / commentary 使用主文字色并与内容区左边缘对齐；工具与运行状态属于辅助动作，相对正文缩进 20px 并降低一个文字层级。工具行按读、写、目录、命令、Git、浏览器、搜索、MCP 和其他类型使用不同图标；图标只辅助识别，友好名称仍保留。
 5. **披露控制**：面板不提供“全部展开 / 全部收起”等批量入口；Think 与每个工具行只通过自身 Chevron 独立披露。展开状态按 `toolCallId / item id / sequence` 等稳定 key 维护；running 原位转 completed/failed 时不得重挂载或丢失选择。
 6. **耗时可见性**：running 工具主行使用面板唯一秒级时钟自增；完成或失败后主行冻结并继续显示最终耗时，展开详情同时保留耗时。此条覆盖 §12.22 规则 3 中“终态主行不再显示”的旧描述。
 7. **结构化详情**：顶层 JSON object 参数/结果以键值行展示，嵌套值保留格式化 JSON；数组、标量、无效 JSON 与普通文本继续使用可滚动原始文本，不做猜测性解析。失败输出沿用错误色。
 8. **稳定布局**：状态图标、耗时和 chevron 使用稳定尺寸；正文顶格后仍须保留右侧控件空间，工具缩进不得随内容变化。长标题、参数、路径与输出必须截断或换行，不能挤压状态控件，也不能与相邻消息或最终回答重叠。
+
+### 12.24 ZCode 浮动任务状态卡（2026-08-27 用户确认，本机 ZCode 3.9.2 优先）
+
+本节取代 §12.19 的 TodoPanel、§12.21 的 GoalCapsule，以及 §12.23 的行内“本轮计划”展示。三个旧入口全部移除；Git tools、Goal、Progress 只在对话右上角浮动状态卡出现。
+
+1. **参考优先级**：UI、排版、折叠与窄窗行为以本机 ZCode 3.9.2 为准。宽对话容器显示 `320px` 全卡，距上/右各 `16px`、`16px` 圆角，最大高度 `min(64dvh, 32rem)`；窄容器自动收为状态胶囊，点击后打开同一全卡，不遮挡或压缩消息正文。
+2. **条件展示**：区块只在有真实数据时出现。Git tools 需要已绑定 Git 仓库；Goal 需要 active/paused/blocked/achieved 目标；Progress 需要真实任务计划。卡片没有任何可展示区块时整卡不渲染。
+3. **Git 工具**：中文标题显示工作树新增/删除行数；“更改”直接把真实工作树 before/after 内容送入既有右侧审阅工作台，不再打开第二个居中变更清单；分支入口使用卡片左侧锚定弹层，支持搜索、脏工作树确认后 stash 切换、创建分支及最近提交列表；“提交 / 推送”打开中文提交面板，支持提交信息、是否包含未暂存更改、提交、提交并推送和单独推送。所有动作必须通过 Main/Preload Git IPC 执行并在完成后刷新，不在 Renderer 拼 shell 命令。
+4. **Goal**：显示真实 completion condition、状态、已运行时间、当前/上限轮次、真实 Progress 完成数（存在时）、最近评估或受阻原因；提供暂停/恢复、编辑与清除。SYNC 没有独立 Goal iteration 对象时，以真实 goal round 投影单行，不生成模拟迭代。
+5. **Progress**：直接使用持久事件流的最新任务计划；completed 使用绿色勾选与删除线，in_progress 使用活动图标，pending 使用弱化图标。总项数不超过 6 时全部显示；超过 6 时以当前进行中/首个未完成项为中心显示 3 项，前后折叠行悬停可查看被收起项目。
+6. **单一入口**：`InlineProcessFlow` 不接收或渲染 `turnPlan`，ChatView 不挂载 TodoPanel/GoalCapsule/RunTaskCapsule。方案审批卡与任务 Progress 语义不同，方案审批流程保留。
+7. **主题同步**：卡片只使用 `--color-*` 与图片主题动态表面变量，不写死浅色或深色背景。普通浅/深主题、预设图片、自定义图片、换图 crossfade 和 `prefers-reduced-transparency` 下都必须同步换肤并保持文字、边框和焦点态可读。
+
+### 12.25 NewMax Composer 选择反馈与模式提示（2026-08-28 用户确认）
+
+1. `/` 命令与 Skill 菜单使用同一个键盘活动索引。按上/下方向键越过当前可视区域时，菜单滚动容器必须同步移动，使活动项始终完整可见；鼠标悬停、方向键和 Enter 不得维护三套互相漂移的选择状态。
+2. 本轮选择 Skill 后，在输入区正文上方按选择顺序显示每个 Skill 的真实名称；名称来自当前 Runtime Skill 目录，不根据 ID 猜测。欢迎页 Composer 与正式对话 Composer 使用同一规则，切换模型或目录无变化刷新时保留选择。
+3. Composer 底部 Skill 快捷入口未选择时只显示图标，选择后只显示已选数量，例如 `1`、`2`；最大容量只保留在 tooltip 和菜单内部，不在按钮上显示 `1/8` 一类占用比。
+4. 当前对话有活动目标时，工具栏显示紧凑“目标”徽标；处于规划模式时显示紧凑“规划”徽标。两者可同时出现，位于 Composer 工具栏而不是占据整行的说明条；点击“规划”切回执行模式，点击“目标”聚焦目标命令入口。
+5. Skill 名称、目标与规划提示都必须使用 Composer 的语义表面、边框、文本和强调色；纯色主题、暗色主题和图片背景切换时随 Composer 同步变化，不额外创建固定色卡片。

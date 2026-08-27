@@ -66,7 +66,8 @@ describe('Phase3VisualFixture routing', () => {
     expect(resolvePhase3VisualCase('?phase3-visual=inline-process-hierarchy')).toBe(
       'inline-process-hierarchy',
     );
-    expect(PHASE3_VISUAL_CASES).toHaveLength(10);
+    expect(resolvePhase3VisualCase('?phase3-visual=task-status-panel')).toBe('task-status-panel');
+    expect(PHASE3_VISUAL_CASES).toHaveLength(11);
   });
 
   it('renders the current unnumbered process hierarchy with the final answer outside', () => {

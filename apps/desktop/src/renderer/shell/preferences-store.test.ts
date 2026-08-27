@@ -139,6 +139,22 @@ describe('appearance preferences', () => {
     const rich = document.documentElement.style.getPropertyValue('--color-page');
     expect(rich).not.toBe(mono);
   });
+
+  it('recomputes the overlay surface when a different wallpaper background is applied', () => {
+    const base = {
+      ...readAppearancePreferences(),
+      mode: 'dark' as const,
+      imageThemeId: 'custom-upload',
+      customImageDataUrl: 'data:image/webp;base64,AAAA',
+      customImageAccent: '#4f7665',
+    };
+    applyAppearancePreferences({ ...base, customImageBackground: '#264f43' });
+    const first = document.documentElement.style.getPropertyValue('--color-overlay');
+    applyAppearancePreferences({ ...base, customImageBackground: '#613f55' });
+    const second = document.documentElement.style.getPropertyValue('--color-overlay');
+
+    expect(first).not.toBe(second);
+  });
 });
 
 describe('shortcut preferences', () => {

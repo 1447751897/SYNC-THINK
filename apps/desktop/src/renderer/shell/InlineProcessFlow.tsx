@@ -8,14 +8,11 @@ import {
   Atom,
   Check,
   ChevronDown,
-  Circle,
   CircleAlert,
   FileCode2,
   FolderOpen,
   GitBranch,
   Globe,
-  ListTodo,
-  LoaderCircle,
   PencilLine,
   Plug,
   RotateCw,
@@ -24,11 +21,7 @@ import {
   Users,
   Wrench,
 } from 'lucide-react';
-import type {
-  CommentaryTimelineSegment,
-  ExecutionProcessStep,
-  TaskPlanView,
-} from '@sync-think/protocol';
+import type { CommentaryTimelineSegment, ExecutionProcessStep } from '@sync-think/protocol';
 import type { InlineProcessItem } from './ChatView.js';
 import { useAutoDisclosure } from './auto-disclosure.js';
 import { MarkdownContent } from './MarkdownContent.js';
@@ -53,7 +46,12 @@ function latestLine(text: string): string {
 }
 
 function firstLine(text: string): string {
-  return text.split('\n').find((part) => part.trim())?.trim() ?? '';
+  return (
+    text
+      .split('\n')
+      .find((part) => part.trim())
+      ?.trim() ?? ''
+  );
 }
 
 function toolErrorSummary(text: string): string {
@@ -333,9 +331,7 @@ function ToolRow({
   const errorSummary =
     status === 'failed' ? toolErrorSummary(item.result ?? '') || '工具执行失败' : '';
   const detailResult =
-    status === 'failed' && !(item.result ?? '').trim()
-      ? '工具未返回错误详情'
-      : item.result;
+    status === 'failed' && !(item.result ?? '').trim() ? '工具未返回错误详情' : item.result;
   const visibleSummary = errorSummary || summary;
   const resourcePath =
     summary && (visualKind === 'read' || visualKind === 'write' || visualKind === 'list')
@@ -524,13 +520,7 @@ function ProcessItemView({
   }
   if (item.kind === 'tool') {
     return (
-      <ToolRow
-        item={item}
-        now={now}
-        open={open}
-        onToggle={onToggle}
-        onOpenChange={onOpenChange}
-      />
+      <ToolRow item={item} now={now} open={open} onToggle={onToggle} onOpenChange={onOpenChange} />
     );
   }
   if (item.kind === 'status') return <StatusRow item={item} />;
@@ -724,41 +714,6 @@ function mergeMissingCommentary(
   return ordered;
 }
 
-function TurnPlanSection({ plan }: { plan: TaskPlanView }) {
-  if (plan.items.length === 0) return null;
-  return (
-    <section className="shell-process-plan" data-testid="process-turn-plan">
-      <div className="shell-process-plan__header">
-        <ListTodo size={13} aria-hidden="true" />
-        <span className="shell-process-plan__title">本轮计划</span>
-        <span className="shell-process-plan__progress">
-          {plan.completed}/{plan.total}
-        </span>
-      </div>
-      <ol className="shell-process-plan__list">
-        {plan.items.map((item, index) => (
-          <li
-            key={`${index}-${item.title}`}
-            className="shell-process-plan__item"
-            data-status={item.status}
-          >
-            <span className="shell-process-plan__status" aria-label={item.status}>
-              {item.status === 'completed' ? (
-                <Check size={12} aria-hidden="true" />
-              ) : item.status === 'in_progress' ? (
-                <LoaderCircle size={12} className="shell-inline-process__spin" aria-hidden="true" />
-              ) : (
-                <Circle size={10} aria-hidden="true" />
-              )}
-            </span>
-            <span className="shell-process-plan__item-title">{item.title}</span>
-          </li>
-        ))}
-      </ol>
-    </section>
-  );
-}
-
 export const InlineProcessFlow = memo(function InlineProcessFlow({
   items,
   steps,
@@ -770,7 +725,6 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
   completedAt,
   durationMs,
   defaultOpen,
-  turnPlan,
   agentTaskContent,
   supplementalContent,
   onOpenChange,
@@ -786,8 +740,6 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
   durationMs?: number;
   /** Deterministic fixture override; production follows the run phase. */
   defaultOpen?: boolean;
-  /** Model-authored checklist for this turn. */
-  turnPlan?: TaskPlanView;
   /** Reserved for real delegated task projections; omitted when no tasks exist. */
   agentTaskContent?: ReactNode;
   supplementalContent?: ReactNode;
@@ -857,7 +809,6 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
     now: clockNow,
     streaming,
   });
-  const hasTurnPlan = Boolean(turnPlan?.items.length);
   const hasActiveRow = orderedItems.some(
     (item) =>
       (item.kind === 'reasoning' && item.status === 'streaming') ||
@@ -865,17 +816,10 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
   );
   const showWaiting = Boolean(streaming && !answerStarted && !hasActiveRow);
   const failedToolCount = orderedItems.reduce(
-    (count, item) =>
-      count + (item.kind === 'tool' && toolStatusOf(item) === 'failed' ? 1 : 0),
+    (count, item) => count + (item.kind === 'tool' && toolStatusOf(item) === 'failed' ? 1 : 0),
     0,
   );
-  if (
-    orderedItems.length === 0 &&
-    !showWaiting &&
-    !hasTurnPlan &&
-    !agentTaskContent &&
-    !supplementalContent
-  ) {
+  if (orderedItems.length === 0 && !showWaiting && !agentTaskContent && !supplementalContent) {
     return null;
   }
   return (
@@ -917,7 +861,6 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
       </button>
       {panelOpen ? (
         <div className="shell-process-panel__body" data-testid="process-panel-body">
-          {turnPlan ? <TurnPlanSection plan={turnPlan} /> : null}
           {agentTaskContent ? (
             <section className="shell-process-agent-tasks" data-testid="process-agent-tasks">
               <div className="shell-process-agent-tasks__header">

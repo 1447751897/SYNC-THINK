@@ -1633,7 +1633,7 @@ describe('ShellApp empty conversation compose', () => {
     });
 
     await waitFor(() =>
-      expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('0/8'),
+      expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe(''),
     );
     fireEvent.click(screen.getByTitle(/切换模型/));
     const provider = await screen.findByTestId('model-provider-Provider A');
@@ -1641,11 +1641,11 @@ describe('ShellApp empty conversation compose', () => {
     fireEvent.keyDown(provider, { key: 'ArrowRight' });
     fireEvent.click(await screen.findByText('Model B'));
     await waitFor(() =>
-      expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('0/8'),
+      expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe(''),
     );
     fireEvent.click(screen.getByTestId('welcome-track-model'));
     await waitFor(() => {
-      expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('0/8');
+      expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe('');
       expect((screen.getByTestId('turn-skill-trigger') as HTMLButtonElement).disabled).toBe(false);
     });
 
@@ -1657,11 +1657,11 @@ describe('ShellApp empty conversation compose', () => {
       );
     });
     await waitFor(() =>
-      expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('0/8'),
+      expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe(''),
     );
     fireEvent.click(screen.getByTestId('turn-skill-trigger'));
     fireEvent.click(await screen.findByTestId('turn-skill-option-skill-b'));
-    expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('1/8');
+    expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe('1');
     fireEvent.change(screen.getByTestId('empty-compose-input'), {
       target: { value: '带 Skill 开始' },
     });
@@ -1696,7 +1696,7 @@ describe('ShellApp empty conversation compose', () => {
     clickNewConversationResource(await screen.findByTestId('conversation-tab-new'));
     await screen.findByTestId('empty-compose');
     await waitFor(() =>
-      expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('0/8'),
+      expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe(''),
     );
 
     fireEvent.click(screen.getByTestId('welcome-track-team'));
@@ -1707,7 +1707,7 @@ describe('ShellApp empty conversation compose', () => {
       );
     });
     await waitFor(() =>
-      expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('0/8'),
+      expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe(''),
     );
     fireEvent.click(screen.getByTitle(/切换模型/));
     const teamProvider = await screen.findByTestId('model-provider-Provider A');
@@ -1715,7 +1715,7 @@ describe('ShellApp empty conversation compose', () => {
     fireEvent.keyDown(teamProvider, { key: 'ArrowRight' });
     fireEvent.click(await screen.findByText('Model A'));
     await waitFor(() =>
-      expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('0/8'),
+      expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe(''),
     );
   });
 
@@ -1786,10 +1786,10 @@ describe('ShellApp empty conversation compose', () => {
       />,
     );
 
-    expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('0/8');
+    expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe('');
     fireEvent.click(screen.getByTestId('turn-skill-trigger'));
     fireEvent.click(await screen.findByTestId('turn-skill-option-skill-b'));
-    expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('1/8');
+    expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe('1');
 
     rerender(
       <EmptyTalk
@@ -1807,7 +1807,7 @@ describe('ShellApp empty conversation compose', () => {
     );
 
     await waitFor(() =>
-      expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('1/8'),
+      expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe('1'),
     );
   });
 
@@ -1872,10 +1872,10 @@ describe('ShellApp empty conversation compose', () => {
       />,
     );
 
-    expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('0/8');
+    expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe('');
     fireEvent.click(screen.getByTestId('turn-skill-trigger'));
     fireEvent.click(await screen.findByTestId('turn-skill-option-skill-b'));
-    expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('1/8');
+    expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe('1');
 
     rerender(
       <EmptyTalk
@@ -1893,7 +1893,7 @@ describe('ShellApp empty conversation compose', () => {
     );
 
     await waitFor(() =>
-      expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('1/8'),
+      expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe('1'),
     );
   });
 
@@ -1954,18 +1954,18 @@ describe('ShellApp empty conversation compose', () => {
       );
     });
     await waitFor(() =>
-      expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('0/8'),
+      expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe(''),
     );
     fireEvent.click(screen.getByTestId('turn-skill-trigger'));
     fireEvent.click(await screen.findByTestId('turn-skill-option-skill-a'));
-    expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('1/8');
+    expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe('1');
     fireEvent.change(screen.getByTestId('empty-compose-input'), {
       target: { value: '失败后重试' },
     });
     fireEvent.click(screen.getByTestId('empty-compose-send'));
 
     expect((await screen.findByRole('alert')).textContent).toContain('append failed');
-    expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('1/8');
+    expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe('1');
   });
 
   it('keeps a newer workspace Skill selection when an older first append succeeds', async () => {
@@ -2034,11 +2034,11 @@ describe('ShellApp empty conversation compose', () => {
       );
     });
     await waitFor(() =>
-      expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('0/8'),
+      expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe(''),
     );
     fireEvent.click(screen.getByTestId('turn-skill-trigger'));
     fireEvent.click(await screen.findByTestId('turn-skill-option-skill-a'));
-    expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('1/8');
+    expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe('1');
     fireEvent.change(screen.getByTestId('empty-compose-input'), {
       target: { value: '工作区 A 的首条消息' },
     });
@@ -2057,10 +2057,10 @@ describe('ShellApp empty conversation compose', () => {
         'agent-a',
       );
     });
-    expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('0/8');
+    expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe('');
     fireEvent.click(screen.getByTestId('turn-skill-trigger'));
     fireEvent.click(await screen.findByTestId('turn-skill-option-skill-a'));
-    expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('1/8');
+    expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe('1');
 
     await act(async () => {
       resolveAppend({ messageId: 'message-a', taskVersion: 1 });
@@ -2068,7 +2068,7 @@ describe('ShellApp empty conversation compose', () => {
 
     await waitFor(() => expect(runtime.createConversation).toHaveBeenCalledTimes(1));
     expect(window.localStorage.getItem('sync-think.activeWorkspaceId')).toBe('ws-b');
-    expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('1/8');
+    expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe('1');
   });
 
   it('uses selected permission and reasoning for the first message', async () => {

@@ -14,6 +14,14 @@ import type {
   OpenDesktopDataDirectoryResponse,
 } from '../data-management-contract.js';
 import type {
+  ProjectGitActionResult,
+  ProjectGitCheckoutResult,
+  ProjectGitCommitResult,
+  ProjectGitInfo,
+  ProjectGitPushResult,
+  ProjectGitReview,
+} from '../project-git-contract.js';
+import type {
   DataBackupPayload,
   DataBackupResponse,
   DataCleanConversationsPayload,
@@ -773,29 +781,21 @@ declare global {
           dir: string;
           entries: Array<{ name: string; path: string; kind: 'file' | 'dir' }>;
         }>;
-        getGitInfo(payload: { root: string }): Promise<{
-          branch: string | null;
-          branches: string[];
-          changes: Array<{ status: string; path: string }>;
-          recentCommits: Array<{
-            hash: string;
-            subject: string;
-            files: Array<{ status: string; path: string }>;
-            truncated: boolean;
-          }>;
-          isRepo: boolean;
-        }>;
+        getGitInfo(payload: { root: string }): Promise<ProjectGitInfo>;
+        getGitReview(payload: { root: string }): Promise<ProjectGitReview>;
         gitCheckout(payload: {
           root: string;
           branch: string;
           strategy?: 'check' | 'stash' | 'force';
-        }): Promise<{
-          ok: boolean;
-          dirty: boolean;
-          changes: Array<{ status: string; path: string }>;
-          error: string | null;
-          stashed?: boolean;
-        }>;
+        }): Promise<ProjectGitCheckoutResult>;
+        gitCreateBranch(payload: { root: string; branch: string }): Promise<ProjectGitActionResult>;
+        gitCommit(payload: {
+          root: string;
+          message: string;
+          includeUnstaged: boolean;
+          push: boolean;
+        }): Promise<ProjectGitCommitResult>;
+        gitPush(payload: { root: string }): Promise<ProjectGitPushResult>;
         getM1ExitEvidence(): Promise<{
           ok: boolean;
           handtestChecked: number;

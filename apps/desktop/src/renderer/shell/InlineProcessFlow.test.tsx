@@ -167,38 +167,15 @@ describe('InlineProcessFlow', () => {
     );
   });
 
-  it('shows the turn plan before the timeline and only exposes real agent tasks', () => {
-    const turnPlan = {
-      items: [
-        { title: '确认执行入口', status: 'completed' as const },
-        { title: '实现过程面板', status: 'in_progress' as const },
-        { title: '完成回归验证', status: 'pending' as const },
-      ],
-      completed: 1,
-      total: 3,
-    };
-    const { rerender } = render(
-      <InlineProcessFlow items={[toolItem]} turnPlan={turnPlan} defaultOpen />,
-    );
-
-    const plan = screen.getByTestId('process-turn-plan');
-    const timeline = screen.getByTestId('inline-process-flow');
-    expect(follows(plan, timeline)).toBe(true);
-    expect(plan.textContent).toContain('本轮计划');
-    expect(plan.textContent).toContain('1/3');
-    expect(within(plan).getByText('实现过程面板').closest('li')?.dataset.status).toBe(
-      'in_progress',
-    );
-    expect(screen.queryByTestId('process-agent-tasks')).toBeNull();
-
-    rerender(
+  it('keeps Progress out of the timeline and only exposes real agent tasks', () => {
+    render(
       <InlineProcessFlow
         items={[toolItem]}
-        turnPlan={turnPlan}
         agentTaskContent={<div>审查持久会话实现</div>}
         defaultOpen
       />,
     );
+    expect(screen.queryByTestId('process-turn-plan')).toBeNull();
     expect(screen.getByTestId('process-agent-tasks').textContent).toContain('审查持久会话实现');
   });
 
@@ -441,9 +418,7 @@ describe('InlineProcessFlow', () => {
   });
 
   it('drops the waiting row once the run reaches a terminal state', () => {
-    const { rerender } = render(
-      <InlineProcessFlow items={[toolItem]} runId="run-a" streaming />,
-    );
+    const { rerender } = render(<InlineProcessFlow items={[toolItem]} runId="run-a" streaming />);
     expect(screen.queryByTestId('inline-process-waiting')).toBeTruthy();
 
     rerender(<InlineProcessFlow items={[toolItem]} runId="run-a" streaming={false} />);
@@ -560,9 +535,7 @@ describe('InlineProcessFlow', () => {
   });
 
   it('explains a failed tool whose provider returned no error body', () => {
-    render(
-      <InlineProcessFlow items={[{ ...failedToolItem, result: '' }]} defaultOpen />,
-    );
+    render(<InlineProcessFlow items={[{ ...failedToolItem, result: '' }]} defaultOpen />);
 
     fireEvent.click(within(screen.getByTestId('inline-process-tool')).getByRole('button'));
     expect(screen.getByTestId('inline-process-tool-result').textContent).toContain(
