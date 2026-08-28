@@ -1,5 +1,6 @@
 import type { Event } from '@sync-think/shared';
 import type { AssistantTurnSegment, CommentaryTimelineSegment } from '@sync-think/protocol';
+import { formatRunPauseTerminalMessage } from '@sync-think/protocol/events';
 import {
   isHistoricalOrphanRunStart,
   type RunActivityAuthority,
@@ -130,14 +131,6 @@ function isProcessBoundaryEventType(type: string): boolean {
   );
 }
 
-export interface RunPauseNotice {
-  id: string;
-  runId?: string;
-  text: string;
-  timestamp: string;
-  tone: 'warning' | 'error';
-}
-
 export interface ConversationRunActivity {
   streaming: boolean;
   activeRunId?: string;
@@ -151,11 +144,64 @@ export interface RunConnectionStatus {
   sequence: number;
 }
 
+export interface RunPauseTerminalProjection {
+  id: string;
+  runId: string;
+  timestamp: string;
+  error: string;
+}
+
 export function belongsToConversation(event: Event, threadId: string, taskId?: string): boolean {
   const eventThread =
     typeof event.payload.threadId === 'string' ? event.payload.threadId : undefined;
   if (eventThread) return eventThread === threadId;
   return !(taskId && event.taskId && event.taskId !== taskId);
+}
+
+/** Recover pre-migration paused Runs that do not yet have a durable assistant message. */
+export function projectRunPauseTerminals(input: {
+  events: readonly Event[];
+  threadId: string;
+  taskId?: string;
+  excludedRunIds?: ReadonlySet<string>;
+}): RunPauseTerminalProjection[] {
+  const byRun = new Map<string, Event>();
+  for (const event of input.events) {
+    if (
+      event.type !== 'run.paused' ||
+      !event.runId ||
+      input.excludedRunIds?.has(event.runId) ||
+      !belongsToConversation(event, input.threadId, input.taskId)
+    ) {
+      continue;
+    }
+    const current = byRun.get(event.runId);
+    if (
+      !current ||
+      event.sequence > current.sequence ||
+      (event.sequence === current.sequence && event.id.localeCompare(current.id) > 0)
+    ) {
+      byRun.set(event.runId, event);
+    }
+  }
+  return [...byRun.values()]
+    .sort((left, right) => left.sequence - right.sequence || left.id.localeCompare(right.id))
+    .map((event) => ({
+      id: `run-paused-terminal-${String(event.id)}`,
+      runId: event.runId!,
+      timestamp: event.occurredAt,
+      error: formatRunPauseTerminalMessage({
+        reason: typeof event.payload.reason === 'string' ? event.payload.reason : undefined,
+        failureClass:
+          typeof event.payload.failureClass === 'string' ? event.payload.failureClass : undefined,
+        providerModelId:
+          typeof event.payload.providerModelId === 'string'
+            ? event.payload.providerModelId
+            : undefined,
+        errorMessage:
+          typeof event.payload.errorMessage === 'string' ? event.payload.errorMessage : undefined,
+      }),
+    }));
 }
 
 export function projectConversationRunActivity(input: {
@@ -393,11 +439,26 @@ export function collectConversationStreamBatch(input: {
       const terminalState =
         event.type === 'run.completed'
           ? 'completed'
-          : event.type === 'run.failed'
-            ? 'failed'
-            : 'cancelled';
-      const terminalError =
+          : event.type === 'run.cancelled'
+            ? 'cancelled'
+            : 'failed';
+      const payloadError =
         typeof event.payload.errorMessage === 'string' ? event.payload.errorMessage : undefined;
+      const terminalError =
+        event.type === 'run.paused'
+          ? formatRunPauseTerminalMessage({
+              reason: typeof event.payload.reason === 'string' ? event.payload.reason : undefined,
+              failureClass:
+                typeof event.payload.failureClass === 'string'
+                  ? event.payload.failureClass
+                  : undefined,
+              providerModelId:
+                typeof event.payload.providerModelId === 'string'
+                  ? event.payload.providerModelId
+                  : undefined,
+              errorMessage: payloadError,
+            })
+          : payloadError;
       operations.push({
         type: 'run.terminal',
         runId: event.runId,
@@ -577,64 +638,4 @@ function closeDraftCommentarySegment(
     ...draft,
     ...(commentarySegments && commentarySegments.length > 0 ? { commentarySegments } : {}),
   };
-}
-
-function formatRunPauseNotice(event: Event): RunPauseNotice {
-  const reason = typeof event.payload.reason === 'string' ? event.payload.reason : 'paused';
-  const failureClass =
-    typeof event.payload.failureClass === 'string' ? event.payload.failureClass : undefined;
-  const errorMessage =
-    typeof event.payload.errorMessage === 'string' ? event.payload.errorMessage.trim() : '';
-  const providerModelId =
-    typeof event.payload.providerModelId === 'string' ? event.payload.providerModelId.trim() : '';
-
-  const headline =
-    reason === 'fallback_exhausted'
-      ? '备用模型已全部尝试，任务已暂停。'
-      : reason === 'no_fallback_configured'
-        ? '当前模型不可用，且没有配置备用模型。'
-        : reason === 'recovery_expired'
-          ? '历史请求已过期，未自动重新执行。'
-          : `任务已暂停（${reason}）。`;
-  const details = [
-    providerModelId ? `模型：${providerModelId}` : '',
-    failureClass ? `失败类型：${failureClass}` : '',
-    errorMessage ? `详情：${errorMessage}` : '',
-  ].filter(Boolean);
-  const retryHint =
-    reason === 'fallback_exhausted' || reason === 'no_fallback_configured'
-      ? '请切换 Provider、模型或检查连接后重试。'
-      : reason === 'recovery_expired'
-        ? '请重新发送请求。'
-        : '';
-
-  return {
-    id: `run-paused-${String(event.id)}`,
-    runId: event.runId,
-    text: [headline, details.join('；'), retryHint].filter(Boolean).join(' '),
-    timestamp: event.occurredAt,
-    tone: failureClass || errorMessage ? 'error' : 'warning',
-  };
-}
-
-/** Return a notice only while the latest run lifecycle event is run.paused. */
-export function selectLatestRunPauseNotice(input: {
-  events: readonly Event[];
-  threadId: string;
-  taskId?: string;
-}): RunPauseNotice | undefined {
-  let latestLifecycle: Event | undefined;
-  for (const event of input.events) {
-    if (!belongsToConversation(event, input.threadId, input.taskId)) continue;
-    if (event.type !== 'run.started' && !isRunTerminalEventType(event.type)) continue;
-    if (
-      !latestLifecycle ||
-      event.sequence > latestLifecycle.sequence ||
-      (event.sequence === latestLifecycle.sequence &&
-        event.id.localeCompare(latestLifecycle.id) > 0)
-    ) {
-      latestLifecycle = event;
-    }
-  }
-  return latestLifecycle?.type === 'run.paused' ? formatRunPauseNotice(latestLifecycle) : undefined;
 }

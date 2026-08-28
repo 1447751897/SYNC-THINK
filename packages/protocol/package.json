@@ -18,6 +18,10 @@
       "types": "./dist/assistant-turn.d.ts",
       "default": "./dist/assistant-turn.js"
     },
+    "./events": {
+      "types": "./dist/events.d.ts",
+      "default": "./dist/events.js"
+    },
     "./plugins": {
       "types": "./dist/plugins.d.ts",
       "default": "./dist/plugins.js"

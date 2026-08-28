@@ -232,6 +232,65 @@ describe('message-store-backfill', () => {
     expect(store.messages.size).toBe(0);
   });
 
+  it('projects paused runs as durable failed assistant summaries and scrubs secrets', () => {
+    const store = new MemoryMessageStore();
+    const events: Event[] = [
+      event({
+        sequence: 1,
+        type: 'message.appended',
+        messageId: 'msg-before-pause' as MessageId,
+        payload: {
+          threadId: 'thread-1',
+          role: 'user',
+          text: 'please continue',
+          messageId: 'msg-before-pause',
+        },
+      }),
+      event({
+        sequence: 2,
+        type: 'run.paused',
+        runId: 'run-paused' as Event['runId'],
+        payload: {
+          threadId: 'thread-1',
+          reason: 'no_fallback_configured',
+          failureClass: 'unknown',
+          errorMessage: 'spawn codex.exe ENOENT with sk-abcdefgh1234',
+          modelId: 'model-vision',
+          providerModelId: 'vision-model',
+        },
+      }),
+    ];
+
+    const first = backfillMessagesFromEvents(store, events);
+    expect(first.writtenMessages).toBe(2);
+    const paused = store.getMessage('asst-run-paused' as MessageId);
+    expect(paused).toMatchObject({
+      role: 'assistant',
+      runId: 'run-paused',
+      modelId: 'model-vision',
+      sequence: 1,
+      createdAt: events[1]!.occurredAt,
+      blocks: [
+        {
+          type: 'error',
+          payload: {
+            terminalState: 'failed',
+            legacyBackfill: true,
+          },
+        },
+      ],
+    });
+    const errorMessage = (paused?.blocks[0]?.payload as { errorMessage?: string } | undefined)
+      ?.errorMessage;
+    expect(errorMessage).toContain('当前模型不可用');
+    expect(errorMessage).toContain('spawn codex.exe ENOENT');
+    expect(errorMessage).not.toContain('sk-abcdefgh1234');
+
+    const second = backfillMessagesFromEvents(store, events);
+    expect(second.writtenMessages).toBe(0);
+    expect(store.messages.size).toBe(2);
+  });
+
   it('parses stored progress for resume', () => {
     expect(
       readBackfillProgress({
@@ -253,5 +312,14 @@ describe('message-store-backfill', () => {
       completedAt: '2026-07-27T00:00:00.000Z',
     });
     expect(readBackfillProgress({ lastEventSequence: -1 })).toBeUndefined();
+    expect(
+      readBackfillProgress({
+        lastEventSequence: 7,
+        processedEvents: 7,
+        writtenMessages: 2,
+        updatedMessages: 0,
+        skippedEvents: 5,
+      })?.version,
+    ).toBe(1);
   });
 });

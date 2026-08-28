@@ -20,7 +20,10 @@ import {
   SqliteWorkspaceStore,
 } from '@sync-think/storage';
 import { openPersistentRuntime } from '../src/persistence.js';
-import { MESSAGE_STORE_BACKFILL_SETTING_KEY } from '../src/message-store-backfill.js';
+import {
+  MESSAGE_STORE_BACKFILL_SETTING_KEY,
+  MESSAGE_STORE_BACKFILL_VERSION,
+} from '../src/message-store-backfill.js';
 
 const tempDirs: string[] = [];
 
@@ -102,6 +105,39 @@ describe('runtime message-store backfill on restore', () => {
           },
         },
         {
+          id: 'evt-paused' as Event['id'],
+          workspaceId: workspace.id,
+          runId: 'legacy-paused-run' as RunId,
+          category: 'run',
+          type: 'run.paused',
+          occurredAt: '2026-07-01T00:00:00.500Z',
+          payload: {
+            threadId: task.threadId,
+            reason: 'no_fallback_configured',
+            failureClass: 'unknown',
+            errorMessage: 'spawn codex.exe ENOENT',
+            modelId: 'model-legacy',
+            providerModelId: 'legacy-provider-model',
+            idempotencyKey: 'legacy-paused-run',
+          },
+        },
+        {
+          id: 'evt-user-2' as Event['id'],
+          workspaceId: workspace.id,
+          taskId: task.taskId,
+          messageId: 'legacy-user-2' as MessageId,
+          category: 'message',
+          type: 'message.appended',
+          occurredAt: '2026-07-01T00:00:00.750Z',
+          payload: {
+            threadId: task.threadId,
+            role: 'user',
+            text: 'later question',
+            messageId: 'legacy-user-2',
+            taskVersion: 2,
+          },
+        },
+        {
           id: 'evt-asst' as Event['id'],
           workspaceId: workspace.id,
           taskId: task.taskId,
@@ -178,6 +214,8 @@ describe('runtime message-store backfill on restore', () => {
       expect(page.messages.map((message: Message) => message.role)).toEqual([
         'user',
         'assistant',
+        'user',
+        'assistant',
       ]);
       expect(page.messages[0]).toMatchObject({
         id: 'legacy-user-1',
@@ -198,11 +236,35 @@ describe('runtime message-store backfill on restore', () => {
         ]),
       );
       expect(page.messages[1]).toMatchObject({
-        id: 'asst-legacy-run-1',
+        id: 'asst-legacy-paused-run',
         role: 'assistant',
         sequence: 1,
+        runId: 'legacy-paused-run',
+        blocks: [
+          {
+            type: 'error',
+            payload: {
+              terminalState: 'failed',
+              legacyBackfill: true,
+            },
+          },
+        ],
       });
-      expect(page.messages[1]?.blocks).toEqual([{ type: 'text', text: 'legacy answer' }]);
+      expect(
+        (page.messages[1]?.blocks[0]?.payload as { errorMessage?: string } | undefined)
+          ?.errorMessage,
+      ).toContain('spawn codex.exe ENOENT');
+      expect(page.messages[2]).toMatchObject({
+        id: 'legacy-user-2',
+        role: 'user',
+        sequence: 2,
+      });
+      expect(page.messages[3]).toMatchObject({
+        id: 'asst-legacy-run-1',
+        role: 'assistant',
+        sequence: 3,
+      });
+      expect(page.messages[3]?.blocks).toEqual([{ type: 'text', text: 'legacy answer' }]);
 
       // Progress persisted for resume.
       const db = await openDatabaseAsync({ path: dbPath });
@@ -211,7 +273,11 @@ describe('runtime message-store backfill on restore', () => {
           .prepare('SELECT value_json FROM app_setting WHERE key = ?')
           .get(MESSAGE_STORE_BACKFILL_SETTING_KEY) as { value_json: string } | undefined;
         expect(row).toBeTruthy();
-        const progress = JSON.parse(row!.value_json) as { lastEventSequence: number };
+        const progress = JSON.parse(row!.value_json) as {
+          version: number;
+          lastEventSequence: number;
+        };
+        expect(progress.version).toBe(MESSAGE_STORE_BACKFILL_VERSION);
         expect(progress.lastEventSequence).toBeGreaterThanOrEqual(2);
       } finally {
         db.raw.close();
@@ -254,7 +320,7 @@ describe('runtime message-store backfill on restore', () => {
         (listed2.payload as ConversationListMessagesResponse).messages.map(
           (message: Message) => message.id,
         ),
-      ).toEqual(['legacy-user-1', 'asst-legacy-run-1']);
+      ).toEqual(['legacy-user-1', 'asst-legacy-paused-run', 'legacy-user-2', 'asst-legacy-run-1']);
     } finally {
       socket2.destroy();
       await session2.close();

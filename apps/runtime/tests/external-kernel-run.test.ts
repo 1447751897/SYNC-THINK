@@ -9,6 +9,7 @@ import {
   SqliteAppSettingStore,
   SqliteEventCheckpointStore,
   SqliteMessageStore,
+  SqliteWorkspaceStore,
 } from '@sync-think/storage';
 import type {
   KernelAdapter,
@@ -444,6 +445,57 @@ function assistantMessage(messages: Message[]): Message | undefined {
 }
 
 describe('Runtime external kernel finalization', () => {
+  it('treats a deleted workspace folder as unbound so external kernels can still start', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sync-think-kernel-missing-workspace-'));
+    tempDirs.push(dir);
+    const dbPath = join(dir, 'sync-think.db');
+    await runMigrations(dbPath);
+    const connection = await openDatabaseAsync({ path: dbPath });
+    const workspaceStore = new SqliteWorkspaceStore(connection.raw);
+    const workspace = workspaceStore.createWorkspace({
+      name: 'Moved project',
+      folderPath: join(dir, 'folder-that-no-longer-exists'),
+    });
+    const task = workspaceStore.createTask({
+      workspaceId: workspace.id,
+      title: 'Continue without stale cwd',
+      goal: 'Keep the conversation usable',
+    });
+    const adapter = new CapturingKernelAdapter('claude-code', [
+      { type: 'terminal', status: 'completed' },
+    ]);
+    const runtime = new Runtime({
+      installId: `missing-workspace-${Date.now()}`,
+      allowNoToken: true,
+      stateStore: new SqliteEventCheckpointStore(connection.raw),
+      messageStore: new SqliteMessageStore(connection.raw),
+      workspaceStore,
+      workspaceId: workspace.id,
+      kernelAdapterResolver: () => adapter,
+    }) as unknown as RuntimeExternalKernelHarness;
+    const runId = 'run-missing-workspace' as RunId;
+    runtime.demoRuns.set(
+      runId,
+      createDemoRun(runId, task.threadId, 'answer without project files', {
+        kernelId: 'claude-code',
+        modelId: 'claude-sonnet-4-5',
+        providerModelId: 'claude-sonnet-4-5',
+        useFakeProvider: false,
+      }),
+    );
+
+    try {
+      await runtime.executeExternalKernelRun(runId);
+      expect(adapter.requests).toHaveLength(1);
+      expect(adapter.requests[0]?.workspaceDir).toBe(process.cwd());
+      expect(adapter.requests[0]?.systemContext).toContain(
+        'No project folder is bound for this conversation.',
+      );
+    } finally {
+      connection.raw.close();
+    }
+  });
+
   it('retries a 503 and continues the same run on its configured fallback model', async () => {
     const serviceUnavailable: KernelEvent = {
       type: 'terminal',

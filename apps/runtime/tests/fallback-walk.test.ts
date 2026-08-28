@@ -1145,6 +1145,20 @@ describe('runtime fallback walk on model failure (design §5.3)', () => {
     reader.close();
     sock.destroy();
     await session.close();
+
+    const audit = await openDatabaseAsync({ path: dbPath });
+    try {
+      const assistant = new SqliteMessageStore(audit.raw)
+        .listMessages(taskPayload.threadId as never)
+        .messages.find((message) => message.role === 'assistant');
+      const errorBlock = assistant?.blocks.find((block) => block.type === 'error');
+      expect(errorBlock?.payload).toMatchObject({
+        terminalState: 'failed',
+        errorMessage: expect.stringContaining('当前模型不可用'),
+      });
+    } finally {
+      audit.raw.close();
+    }
   }, 30_000);
 
   it('opens the provider circuit after two endpoint failures without cycling into more same-provider models', async () => {

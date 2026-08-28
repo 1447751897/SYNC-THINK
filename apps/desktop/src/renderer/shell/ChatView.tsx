@@ -177,8 +177,8 @@ import {
   collectConversationStreamBatch,
   isRunTerminalEventType,
   projectConversationRunActivity,
+  projectRunPauseTerminals,
   selectLatestRunConnectionStatus,
-  selectLatestRunPauseNotice,
   type ConversationStreamDraft,
 } from './chat-stream.js';
 import {
@@ -334,6 +334,8 @@ export interface ChatMessage {
   kernelId?: string;
   terminalState?: 'failed' | 'cancelled';
   terminalError?: string;
+  /** Historical terminal event materialized after newer durable rows already existed. */
+  legacyTerminalBackfill?: boolean;
   /** Bound global agent identity for this assistant turn. */
   globalAgentId?: string;
   globalAgentName?: string;
@@ -819,9 +821,33 @@ export function messageToChat(msg: Message): ChatMessage {
     terminalState,
     terminalError:
       typeof terminalPayload.errorMessage === 'string' ? terminalPayload.errorMessage : undefined,
+    legacyTerminalBackfill: terminalPayload.legacyBackfill === true ? true : undefined,
     // sequence carried via id ordering; globalAgent fields are not in the store Message model
     // but could be enriched later if needed.
   };
+}
+
+/**
+ * A v2 backfill appends missing legacy terminal rows without rewriting durable
+ * sequence cursors. Only pages containing such a row use event time to restore
+ * the original visual turn order; normal pages retain canonical sequence order.
+ */
+export function orderDurableMessagesForDisplay(messages: readonly ChatMessage[]): ChatMessage[] {
+  const ordered = [...messages];
+  if (!ordered.some((message) => message.legacyTerminalBackfill)) {
+    return ordered.sort(
+      (left, right) =>
+        (left.sequence ?? Number.MAX_SAFE_INTEGER) - (right.sequence ?? Number.MAX_SAFE_INTEGER),
+    );
+  }
+  return ordered.sort((left, right) => {
+    const leftAt = Date.parse(left.timestamp);
+    const rightAt = Date.parse(right.timestamp);
+    if (Number.isFinite(leftAt) && Number.isFinite(rightAt) && leftAt !== rightAt) {
+      return leftAt - rightAt;
+    }
+    return (left.sequence ?? Number.MAX_SAFE_INTEGER) - (right.sequence ?? Number.MAX_SAFE_INTEGER);
+  });
 }
 
 export function shouldDisplayChatMessage(message: ChatMessage): boolean {
@@ -1794,15 +1820,11 @@ export function ChatView({
           setLoadedMessages((prev) => {
             const byId = new Map<string, ChatMessage>();
             for (const message of [...converted, ...prev]) byId.set(message.id, message);
-            return [...byId.values()].sort(
-              (left, right) =>
-                (left.sequence ?? Number.MAX_SAFE_INTEGER) -
-                (right.sequence ?? Number.MAX_SAFE_INTEGER),
-            );
+            return orderDurableMessagesForDisplay([...byId.values()]);
           });
         } else {
           // Initial / terminal refresh — already in chronological order (ASC).
-          setLoadedMessages(converted);
+          setLoadedMessages(orderDurableMessagesForDisplay(converted));
         }
         setHasMore(res.hasMore);
         setNextCursor(res.nextCursor);
@@ -2137,18 +2159,6 @@ export function ChatView({
   const runIsActive =
     !projectedProcessSettled &&
     (reconciledSending || projected.streaming || Boolean(projected.activeRunId));
-
-  const pausedRunNotice = useMemo(
-    () =>
-      threadId
-        ? selectLatestRunPauseNotice({
-            events: eventHistory,
-            threadId,
-            taskId: conversation.taskId ? String(conversation.taskId) : undefined,
-          })
-        : undefined,
-    [conversation.taskId, eventHistory, threadId],
-  );
 
   const runConnectionStatus = useMemo(
     () =>
@@ -2829,34 +2839,13 @@ export function ChatView({
       stamped.push({ value: visibleStreamingMessage, seq: nextVirtualSeq++, tie: 20_000 });
     }
 
-    // Local errors and the latest durable pause notice render after the live turn.
+    // Local diagnostics render after the live turn.
     for (let i = 0; i < localErrors.length; i++) {
       stamped.push({ value: localErrors[i]!, seq: nextVirtualSeq++, tie: 30_000 + i });
     }
-    if (pausedRunNotice) {
-      stamped.push({
-        value: {
-          id: pausedRunNotice.id,
-          role: 'system',
-          tone: pausedRunNotice.tone,
-          text: pausedRunNotice.text,
-          timestamp: pausedRunNotice.timestamp,
-          runId: pausedRunNotice.runId,
-        },
-        seq: nextVirtualSeq++,
-        tie: 40_000,
-      });
-    }
-
     stamped.sort((a, b) => (a.seq !== b.seq ? a.seq - b.seq : a.tie - b.tie));
     return stamped.map((s) => s.value);
-  }, [
-    localErrors,
-    loadedMessages,
-    pausedRunNotice,
-    pendingUserMessagesForDisplay,
-    visibleStreamingMessage,
-  ]);
+  }, [localErrors, loadedMessages, pendingUserMessagesForDisplay, visibleStreamingMessage]);
 
   const navigationItems = useMemo<ConversationNavigationItem[]>(
     () =>
@@ -2887,24 +2876,54 @@ export function ChatView({
   // Keep every fetched durable message mounted. History is still paginated in
   // 50-message pages, but native scrolling must not compete with virtual spacer
   // refinement or persistent visual-anchor restoration.
-  const visibleDurableMessages = loadedMessages;
+  const visibleDurableMessages = useMemo(() => {
+    if (!threadId) return loadedMessages;
+    const excludedRunIds = new Set(durableAssistantRunIds);
+    if (visibleStreamingMessage?.runId) excludedRunIds.add(visibleStreamingMessage.runId);
+    const recovered = projectRunPauseTerminals({
+      events: eventHistory,
+      threadId,
+      taskId: conversation.taskId ? String(conversation.taskId) : undefined,
+      excludedRunIds,
+    }).map((terminal): ChatMessage => ({
+      id: terminal.id,
+      role: 'assistant',
+      text: '',
+      timestamp: terminal.timestamp,
+      runId: terminal.runId,
+      terminalState: 'failed',
+      terminalError: terminal.error,
+    }));
+    if (recovered.length === 0) return loadedMessages;
+
+    const merged = [...loadedMessages];
+    for (const terminal of recovered) {
+      const terminalTime = Date.parse(terminal.timestamp);
+      const insertionIndex = Number.isFinite(terminalTime)
+        ? merged.findIndex((message) => {
+            const messageTime = Date.parse(message.timestamp);
+            return Number.isFinite(messageTime) && messageTime > terminalTime;
+          })
+        : -1;
+      if (insertionIndex < 0) merged.push(terminal);
+      else merged.splice(insertionIndex, 0, terminal);
+    }
+    return merged;
+  }, [
+    conversation.taskId,
+    durableAssistantRunIds,
+    eventHistory,
+    loadedMessages,
+    threadId,
+    visibleStreamingMessage?.runId,
+  ]);
   const liveMessages = useMemo(() => {
     const result: ChatMessage[] = [];
     result.push(...pendingUserMessagesForDisplay);
     if (visibleStreamingMessage) result.push(visibleStreamingMessage);
     result.push(...localErrors);
-    if (pausedRunNotice) {
-      result.push({
-        id: pausedRunNotice.id,
-        role: 'system',
-        tone: pausedRunNotice.tone,
-        text: pausedRunNotice.text,
-        timestamp: pausedRunNotice.timestamp,
-        runId: pausedRunNotice.runId,
-      });
-    }
     return result;
-  }, [localErrors, pausedRunNotice, pendingUserMessagesForDisplay, visibleStreamingMessage]);
+  }, [localErrors, pendingUserMessagesForDisplay, visibleStreamingMessage]);
 
   const capturePrependAnchor = useCallback((scroller: HTMLDivElement) => {
     const viewportTop = scroller.getBoundingClientRect().top;

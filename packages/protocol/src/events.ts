@@ -50,3 +50,35 @@ export interface ConversationTransientStreamEvent {
   streamId: string;
   frame: ConversationTransientFrame;
 }
+
+export interface RunPauseTerminalMessageInput {
+  reason?: string;
+  failureClass?: string;
+  providerModelId?: string;
+  errorMessage?: string;
+}
+
+/** User-facing terminal reason shared by live projection and durable messages. */
+export function formatRunPauseTerminalMessage(input: RunPauseTerminalMessageInput): string {
+  const reason = input.reason?.trim() || 'paused';
+  const headline =
+    reason === 'fallback_exhausted'
+      ? '备用模型已全部尝试，任务已暂停。'
+      : reason === 'no_fallback_configured'
+        ? '当前模型不可用，且没有配置备用模型。'
+        : reason === 'recovery_expired'
+          ? '历史请求已过期，未自动重新执行。'
+          : `任务已暂停（${reason}）。`;
+  const details = [
+    input.providerModelId?.trim() ? `模型：${input.providerModelId.trim()}` : '',
+    input.failureClass?.trim() ? `失败类型：${input.failureClass.trim()}` : '',
+    input.errorMessage?.trim() ? `详情：${input.errorMessage.trim()}` : '',
+  ].filter(Boolean);
+  const retryHint =
+    reason === 'fallback_exhausted' || reason === 'no_fallback_configured'
+      ? '请切换 Provider、模型或检查连接后重试。'
+      : reason === 'recovery_expired'
+        ? '请重新发送请求。'
+        : '';
+  return [headline, details.join('；'), retryHint].filter(Boolean).join(' ');
+}

@@ -1,12 +1,13 @@
 // Runtime - long-lived Agent Runtime process entry. UI lifecycle independent:
 // killing the UI must not terminate active Runs (design �?6 / �?).
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   pipePathPortable,
   encodeFrame,
+  formatRunPauseTerminalMessage,
   HEADER_BYTES,
   MAX_FRAME_BYTES,
   type AppendMessageResponse,
@@ -23044,6 +23045,12 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     const projectedRuns = new Map(this.demoRuns);
     projectedRuns.delete(runId);
     try {
+      const terminalError = formatRunPauseTerminalMessage({
+        reason: details.reason,
+        failureClass: details.failureClass,
+        providerModelId: run.providerModelId,
+        errorMessage: details.errorMessage,
+      });
       const event = this.persistProjectedEvent(
         {
           id: ulid() as Event['id'],
@@ -23069,6 +23076,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         },
         projectedRuns,
       );
+      this.persistAssistantTerminalMessage(runId, run, 'failed', terminalError);
       this.demoRuns.delete(runId);
       this.publishEvent(event);
       this.recordRunDiagnostic(runId, run, {
@@ -23625,7 +23633,12 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     if (!task || !this.workspaceStore) return undefined;
     const workspace = this.workspaceStore.getWorkspace(task.workspaceId);
     const folder = workspace?.folderPath?.trim();
-    return folder && folder.length > 0 ? folder : undefined;
+    if (!folder) return undefined;
+    try {
+      return existsSync(folder) && statSync(folder).isDirectory() ? folder : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   /** Resolve conversation.executionMode for the task/thread (default workspace). */

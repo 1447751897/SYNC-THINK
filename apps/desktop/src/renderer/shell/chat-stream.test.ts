@@ -5,7 +5,6 @@ import {
   collectConversationStreamBatch,
   projectConversationRunActivity,
   selectLatestRunConnectionStatus,
-  selectLatestRunPauseNotice,
 } from './chat-stream.js';
 import type { RunActivityAuthority } from '../run-activity-authority.js';
 
@@ -173,9 +172,7 @@ describe('conversation stream event consumption', () => {
   it('treats a durable assistant reply as terminal evidence for its run', () => {
     expect(
       projectConversationRunActivity({
-        events: [
-          event({ sequence: 1, type: 'run.started', runId: 'run-a', threadId: 'thread-a' }),
-        ],
+        events: [event({ sequence: 1, type: 'run.started', runId: 'run-a', threadId: 'thread-a' })],
         threadId: 'thread-a',
         taskId: 'task-a',
         durableAssistantRunIds: new Set(['run-a']),
@@ -257,7 +254,12 @@ describe('conversation stream event consumption', () => {
           type: 'run.paused',
           runId: 'run-a',
           threadId: 'thread-a',
-          payload: { reason: 'fallback_exhausted', failureClass: 'transient' },
+          payload: {
+            reason: 'fallback_exhausted',
+            failureClass: 'transient',
+            providerModelId: 'grok-4.5',
+            errorMessage: 'Provider Responses call failed (503)',
+          },
         }),
       ],
     });
@@ -270,7 +272,10 @@ describe('conversation stream event consumption', () => {
       commentaryText: '正在分析失败原因。',
       timestamp: new Date(1_000).toISOString(),
       terminal: true,
+      terminalState: 'failed',
     });
+    expect(draft?.terminalError).toContain('备用模型已全部尝试');
+    expect(draft?.terminalError).toContain('503');
     expect(draft?.commentarySegments?.[0]).toMatchObject({
       text: '正在分析失败原因。',
       completedAt: new Date(2_000).toISOString(),
@@ -332,43 +337,6 @@ describe('conversation stream event consumption', () => {
         [{ type: 'run.terminal', runId: 'run-a', sequence: 2 }],
       ),
     ).toBeNull();
-  });
-
-  it('builds an actionable pause notice only for the latest lifecycle state', () => {
-    const paused = event({
-      sequence: 2,
-      type: 'run.paused',
-      runId: 'run-a',
-      threadId: 'thread-a',
-      payload: {
-        reason: 'fallback_exhausted',
-        failureClass: 'transient',
-        providerModelId: 'grok-4.5',
-        errorMessage: 'Provider Responses call failed (503)',
-      },
-    });
-    const notice = selectLatestRunPauseNotice({
-      events: [
-        event({ sequence: 1, type: 'run.started', runId: 'run-a', threadId: 'thread-a' }),
-        paused,
-      ],
-      threadId: 'thread-a',
-      taskId: 'task-a',
-    });
-
-    expect(notice).toMatchObject({ runId: 'run-a', tone: 'error' });
-    expect(notice?.text).toContain('备用模型已全部尝试');
-    expect(notice?.text).toContain('503');
-
-    expect(
-      selectLatestRunPauseNotice({
-        events: [
-          paused,
-          event({ sequence: 3, type: 'run.started', runId: 'run-b', threadId: 'thread-a' }),
-        ],
-        threadId: 'thread-a',
-      }),
-    ).toBeUndefined();
   });
 
   it('shows retry and fallback status only until the active run makes progress', () => {

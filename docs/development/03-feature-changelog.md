@@ -1,3 +1,17 @@
+## 2026-08-28：失效工作区内核启动与失败总结持久化
+
+### Fixed
+
+- 修复已绑定工作区目录被移动或删除后，Codex/Claude Code 都以 `ENOENT` 或 native binary failed to launch 结束的问题；Runtime 现在先验证目录存在且为文件夹，失效绑定按未绑定工作区启动，不再把无效 `cwd` 传给外部内核。
+- `run.paused` 统一视为失败终态并写入 assistant 持久消息；错误进入对应“执行过程”的最终总结，不再额外显示独立红色系统气泡，也不会因发送下一轮消息而消失。
+- 消息回填升级到 v2：旧数据库中仅存在于事件表的暂停记录会脱敏后补为失败总结，并按事件时间还原到原用户消息之后；已有 assistant 终态消息保持幂等，不重复写入。
+
+### Verification
+
+- Runtime 高相关回归 `4 files / 40 tests`、Desktop 终态回归 `2 files / 18 tests` 通过；补充覆盖失效工作区、未来暂停消息持久化、旧事件回填、密钥脱敏、后续消息不隐藏失败与原轮次排序。
+- 全仓 typecheck `20/20`、build `11/11`、Runtime lint、Prettier 与 `git diff --check` 通过；高负载包以单 worker 完整复验：Desktop `182 files / 1450 tests`、Storage `42 / 441`、Workers `17 / 149`（另有 `3` 个环境 smoke 跳过）、Secure Store `2 / 11`，Runtime 全套退出码为 `0`。Runtime pipe healthcheck 返回 `ok` 且 `inFlightRuns=0`。
+- 真实数据库完成 v2 回填，原对话的 `3` 条 Claude Code 失败与 `1` 条 Codex 失败均生成持久 assistant error block。Electron 实窗检查得到 `4` 个默认折叠失败总结、`0` 个独立错误气泡，四条总结均紧跟原用户消息，后续成功 Run 仍可见。
+
 ## 2026-08-28：NewMax Composer 反馈与 ZCode 状态卡交互收口
 
 ### Fixed

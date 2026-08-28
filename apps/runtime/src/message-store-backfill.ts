@@ -10,9 +10,10 @@ import type {
   ThreadId,
 } from '@sync-think/shared';
 import { MessageStoreError, type SqliteMessageStore } from '@sync-think/storage';
+import { formatRunPauseTerminalMessage } from '@sync-think/protocol/events';
 
 export const MESSAGE_STORE_BACKFILL_SETTING_KEY = 'message-store-backfill';
-export const MESSAGE_STORE_BACKFILL_VERSION = 1;
+export const MESSAGE_STORE_BACKFILL_VERSION = 2;
 
 export interface MessageStoreBackfillProgress {
   version: number;
@@ -111,6 +112,16 @@ function writeMessage(store: MessageStoreLike, message: Message): 'written' | 's
     if (error instanceof MessageStoreError) return 'skipped';
     throw error;
   }
+}
+
+function scrubDiagnosticMessage(message: unknown): string | undefined {
+  if (typeof message !== 'string' || !message) return undefined;
+  let output = message;
+  output = output.replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, '[REDACTED]');
+  output = output.replace(/Bearer\s+[A-Za-z0-9._~\-+/=]+/gi, 'Bearer [REDACTED]');
+  output = output.replace(/plaintext-secret/gi, '[REDACTED]');
+  output = output.replace(/api[_-]?key["'\s:=]+[A-Za-z0-9._-]{8,}/gi, 'api_key=[REDACTED]');
+  return output.length > 240 ? output.slice(0, 240) : output;
 }
 
 /**
@@ -230,6 +241,59 @@ export function backfillMessagesFromEvents(
       continue;
     }
 
+    if (event.type === 'run.paused') {
+      const threadId =
+        typeof payload.threadId === 'string' && payload.threadId
+          ? (payload.threadId as ThreadId)
+          : undefined;
+      const runId =
+        (typeof event.runId === 'string' && event.runId) ||
+        (typeof payload.idempotencyKey === 'string' && payload.idempotencyKey) ||
+        '';
+      if (!threadId || !runId) {
+        skippedEvents += 1;
+        continue;
+      }
+      const messageId = `asst-${runId}` as MessageId;
+      if (store.getMessage(messageId)) {
+        skippedEvents += 1;
+        continue;
+      }
+      const modelId =
+        typeof payload.modelId === 'string' && payload.modelId
+          ? (payload.modelId as ModelId)
+          : undefined;
+      const errorMessage = formatRunPauseTerminalMessage({
+        reason: typeof payload.reason === 'string' ? payload.reason : undefined,
+        failureClass: typeof payload.failureClass === 'string' ? payload.failureClass : undefined,
+        providerModelId:
+          typeof payload.providerModelId === 'string' ? payload.providerModelId : undefined,
+        errorMessage: scrubDiagnosticMessage(payload.errorMessage),
+      });
+      const result = writeMessage(store, {
+        id: messageId,
+        threadId,
+        role: 'assistant',
+        sequence: store.nextSequence(threadId),
+        blocks: [
+          {
+            type: 'error',
+            payload: {
+              terminalState: 'failed',
+              errorMessage,
+              legacyBackfill: true,
+            },
+          },
+        ],
+        createdAt: event.occurredAt,
+        runId: runId as RunId,
+        ...(modelId ? { modelId } : {}),
+      });
+      if (result === 'written') writtenMessages += 1;
+      else skippedEvents += 1;
+      continue;
+    }
+
     if (event.type === 'message.images-attached') {
       const messageIdRaw =
         (typeof payload.messageId === 'string' && payload.messageId) ||
@@ -298,7 +362,7 @@ export function readBackfillProgress(value: unknown): MessageStoreBackfillProgre
     version:
       typeof record.version === 'number' && Number.isSafeInteger(record.version)
         ? record.version
-        : MESSAGE_STORE_BACKFILL_VERSION,
+        : 1,
     lastEventSequence,
     ...(typeof record.lastEventId === 'string' ? { lastEventId: record.lastEventId } : {}),
     processedEvents:

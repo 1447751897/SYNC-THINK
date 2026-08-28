@@ -3,7 +3,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
-import type { Conversation, Message } from '@sync-think/shared';
+import type { Conversation, Event, Message } from '@sync-think/shared';
 import { ChatView } from './ChatView.js';
 
 const runtime = {
@@ -174,5 +174,113 @@ describe('ChatView terminal failure reason', () => {
     expect(screen.getByTestId('assistant-terminal-error').textContent).toContain(
       'unsafe shell metacharacters',
     );
+  });
+
+  it('keeps a paused-run failure inside its assistant process panel without a duplicate bubble', async () => {
+    runtime.listConversationMessages.mockResolvedValue({
+      messages: [userMessage],
+      hasMore: false,
+    });
+    const pausedEvent = {
+      id: 'event-paused-terminal',
+      workspaceId: 'workspace-terminal',
+      taskId: 'task-terminal',
+      runId: 'run-spawn-failed',
+      category: 'run',
+      type: 'run.paused',
+      sequence: 3,
+      occurredAt: '2026-08-17T08:07:30.901Z',
+      payload: {
+        threadId: 'thread-terminal',
+        reason: 'no_fallback_configured',
+        failureClass: 'unknown',
+        errorMessage: KERNEL_SPAWN_ERROR,
+      },
+    } as unknown as Event;
+    const laterRun = {
+      ...pausedEvent,
+      id: 'event-later-run',
+      runId: 'run-later',
+      type: 'run.started',
+      sequence: 4,
+      occurredAt: '2026-08-17T08:08:00.000Z',
+      payload: { threadId: 'thread-terminal' },
+    } as unknown as Event;
+
+    const view = render(
+      <ChatView
+        conversation={conversation}
+        modelName="gpt-5.6-luna"
+        models={[{ modelId: 'model-terminal', displayName: 'gpt-5.6-luna', providerName: 'Relay' }]}
+        eventHistory={[pausedEvent, laterRun]}
+        onTitleUpdated={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByTestId('assistant-terminal-failed')).toBeTruthy();
+    expect(view.container.querySelector('.shell-error-bubble')).toBeNull();
+  });
+
+  it('places a legacy backfilled failure beside its original turn instead of after newer replies', async () => {
+    const laterUser = {
+      ...userMessage,
+      id: 'user-after-failure',
+      sequence: 1,
+      createdAt: '2026-08-07T09:31:00.000Z',
+      blocks: [{ type: 'text', text: '下一轮消息' }],
+    } as unknown as Message;
+    const laterAssistant = {
+      id: 'assistant-after-failure',
+      threadId: 'thread-terminal',
+      role: 'assistant',
+      runId: 'run-after-failure',
+      sequence: 2,
+      createdAt: '2026-08-07T09:32:00.000Z',
+      blocks: [{ type: 'text', text: '下一轮已完成' }],
+    } as unknown as Message;
+    const legacyFailure = {
+      ...outputlessFailure,
+      id: 'asst-run-legacy-paused',
+      runId: 'run-legacy-paused',
+      sequence: 3,
+      createdAt: '2026-08-07T09:30:00.000Z',
+      blocks: [
+        {
+          type: 'error',
+          payload: {
+            terminalState: 'failed',
+            errorMessage: KERNEL_SPAWN_ERROR,
+            legacyBackfill: true,
+          },
+        },
+      ],
+    } as unknown as Message;
+    runtime.listConversationMessages.mockResolvedValue({
+      // This is durable sequence order after a v2 backfill into an existing DB.
+      messages: [userMessage, laterUser, laterAssistant, legacyFailure],
+      hasMore: false,
+    });
+
+    const view = render(
+      <ChatView
+        conversation={conversation}
+        modelName="gpt-5.6-luna"
+        models={[{ modelId: 'model-terminal', displayName: 'gpt-5.6-luna', providerName: 'Relay' }]}
+        eventHistory={[]}
+        onTitleUpdated={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByTestId('assistant-terminal-failed')).toBeTruthy();
+    expect(
+      [...view.container.querySelectorAll<HTMLElement>('[data-message-id]')].map(
+        (node) => node.dataset.messageId,
+      ),
+    ).toEqual([
+      'user-before-failure',
+      'asst-run-legacy-paused',
+      'user-after-failure',
+      'assistant-after-failure',
+    ]);
   });
 });
