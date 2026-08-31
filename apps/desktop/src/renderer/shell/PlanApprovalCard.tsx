@@ -11,7 +11,17 @@
  *  - 「要求修改」切回规划模式让模型重新出方案。
  */
 import { useEffect, useMemo, useState } from 'react';
-import { Check, History, ListChecks, LoaderCircle, Plus, Save, Trash2, X } from 'lucide-react';
+import {
+  Check,
+  ChevronDown,
+  History,
+  ListChecks,
+  LoaderCircle,
+  Plus,
+  Save,
+  Trash2,
+  X,
+} from 'lucide-react';
 import type {
   ChatPlanRevision,
   ChatPlanStep,
@@ -103,6 +113,106 @@ function composerPlanSummary(plan: ChatPlanSubmission): string {
     .join(' · ');
 }
 
+function ComposerPlanList({ label, items }: { label: string; items: readonly string[] }) {
+  return (
+    <section className="shell-plan-card__composer-detail-group">
+      <h3>{label}</h3>
+      {items.length > 0 ? (
+        <ul>
+          {items.map((item, index) => (
+            <li key={`${label}-${index}-${item}`}>{item}</li>
+          ))}
+        </ul>
+      ) : (
+        <p className="shell-plan-card__composer-detail-empty">未填写</p>
+      )}
+    </section>
+  );
+}
+
+function ComposerPlanDetails({ plan }: { plan: ChatPlanSubmission }) {
+  return (
+    <div
+      className="shell-plan-card__composer-details"
+      id="plan-approval-details"
+      data-testid="plan-approval-details"
+      aria-label="完整执行方案"
+    >
+      <section className="shell-plan-card__composer-detail-group shell-plan-card__composer-detail-goal">
+        <h3>目标</h3>
+        <p>{plan.goal.trim() || '未填写'}</p>
+      </section>
+
+      <div className="shell-plan-card__composer-detail-grid">
+        <ComposerPlanList label="范围" items={plan.scope} />
+        <ComposerPlanList label="假设" items={plan.assumptions} />
+        <ComposerPlanList label="决策" items={plan.decisions} />
+      </div>
+
+      <section className="shell-plan-card__composer-detail-group">
+        <h3>步骤</h3>
+        {plan.steps.length > 0 ? (
+          <ol className="shell-plan-card__composer-detail-steps">
+            {plan.steps.map((step, index) => (
+              <li key={step.id} className="shell-plan-card__composer-detail-step">
+                <div className="shell-plan-card__composer-detail-step-head">
+                  <span className="shell-plan-card__composer-detail-step-number">
+                    {String(index + 1).padStart(2, '0')}
+                  </span>
+                  <strong>{step.title || '未命名步骤'}</strong>
+                </div>
+                <p>{step.description || '未填写描述'}</p>
+                {step.expectedFiles && step.expectedFiles.length > 0 ? (
+                  <div className="shell-plan-card__composer-detail-subgroup">
+                    <span>涉及文件</span>
+                    <ul>
+                      {step.expectedFiles.map((file) => (
+                        <li key={file}>{file}</li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+                <div className="shell-plan-card__composer-detail-subgroup">
+                  <span>验收标准</span>
+                  {step.acceptanceChecks.length > 0 ? (
+                    <ul>
+                      {step.acceptanceChecks.map((check, checkIndex) => (
+                        <li key={`${step.id}-check-${checkIndex}-${check}`}>{check}</li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="shell-plan-card__composer-detail-empty">未填写</p>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ol>
+        ) : (
+          <p className="shell-plan-card__composer-detail-empty">未填写</p>
+        )}
+      </section>
+
+      <section className="shell-plan-card__composer-detail-group">
+        <h3>风险</h3>
+        {plan.risks.length > 0 ? (
+          <ul className="shell-plan-card__composer-detail-risks">
+            {plan.risks.map((risk, index) => (
+              <li key={`risk-${index}-${risk.description}`}>
+                <strong>{risk.description || '未描述风险'}</strong>
+                <span>{risk.mitigation || '未填写应对措施'}</span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="shell-plan-card__composer-detail-empty">未填写</p>
+        )}
+      </section>
+
+      <ComposerPlanList label="总验收标准" items={plan.finalAcceptanceChecks} />
+    </div>
+  );
+}
+
 export function PlanApprovalCard({
   conversationId,
   plan,
@@ -116,12 +226,17 @@ export function PlanApprovalCard({
   const [draft, setDraft] = useState<ChatPlanSubmission>(() => clonePlan(latest.plan));
   const [viewingRevision, setViewingRevision] = useState<number | null>(null);
   const [action, setAction] = useState<'save' | 'approve' | 'cancel' | null>(null);
+  const [composerDetailsOpen, setComposerDetailsOpen] = useState(false);
 
   // 新版本（保存修订后 / 会话切换后）到来时，以最新版为编辑底稿。
   useEffect(() => {
     setDraft(clonePlan(latest.plan));
     setViewingRevision(null);
   }, [latest.id, latest.revision, latest.plan]);
+
+  useEffect(() => {
+    setComposerDetailsOpen(false);
+  }, [latest.id, latest.revision]);
 
   const revisions = useMemo(
     () => [...plan.revisions].sort((left, right) => right.revision - left.revision),
@@ -227,7 +342,23 @@ export function PlanApprovalCard({
               {composerPlanSummary(latest.plan) || '模型已提交执行方案'}
             </span>
           </span>
+          <button
+            type="button"
+            className="shell-plan-card__composer-details-toggle"
+            data-testid="plan-view-details"
+            aria-expanded={composerDetailsOpen}
+            aria-controls="plan-approval-details"
+            onClick={() => setComposerDetailsOpen((open) => !open)}
+          >
+            <span>{composerDetailsOpen ? '收起方案' : '查看完整方案'}</span>
+            <ChevronDown
+              size={13}
+              aria-hidden="true"
+              className={composerDetailsOpen ? 'is-open' : undefined}
+            />
+          </button>
         </div>
+        {composerDetailsOpen ? <ComposerPlanDetails plan={latest.plan} /> : null}
         <div className="shell-plan-card__composer-actions">
           <button
             type="button"
@@ -275,7 +406,9 @@ export function PlanApprovalCard({
               aria-label="计划标题"
               value={draft.title}
               disabled={busy}
-              onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))}
+              onChange={(event) =>
+                setDraft((current) => ({ ...current, title: event.target.value }))
+              }
             />
           ) : (
             <span className="shell-plan-card__title">{viewing.plan.title || '执行方案'}</span>
@@ -335,9 +468,7 @@ export function PlanApprovalCard({
             aria-label="计划目标"
             value={editorPlan.goal}
             disabled={!editable || busy}
-            onChange={(event) =>
-              setDraft((current) => ({ ...current, goal: event.target.value }))
-            }
+            onChange={(event) => setDraft((current) => ({ ...current, goal: event.target.value }))}
           />
         </label>
 
@@ -367,7 +498,9 @@ export function PlanApprovalCard({
           {editorPlan.steps.map((step, index) => (
             <div className="shell-plan-card__step-editor" key={String(step.id)}>
               <div className="shell-plan-card__step-editor-head">
-                <span className="shell-plan-card__step-no">{String(index + 1).padStart(2, '0')}</span>
+                <span className="shell-plan-card__step-no">
+                  {String(index + 1).padStart(2, '0')}
+                </span>
                 <input
                   aria-label={`步骤 ${index + 1} 标题`}
                   value={step.title}
@@ -537,7 +670,9 @@ export function PlanApprovalCard({
           label="总验收标准"
           items={editorPlan.finalAcceptanceChecks}
           disabled={!editable || busy}
-          onChange={(items) => setDraft((current) => ({ ...current, finalAcceptanceChecks: items }))}
+          onChange={(items) =>
+            setDraft((current) => ({ ...current, finalAcceptanceChecks: items }))
+          }
         />
       </div>
 
@@ -559,7 +694,11 @@ export function PlanApprovalCard({
             disabled={!editable || !dirty || !valid || busy}
             onClick={() => void handleSave()}
           >
-            {action === 'save' ? <LoaderCircle size={14} className="shell-process-spin" /> : <Save size={14} />}
+            {action === 'save' ? (
+              <LoaderCircle size={14} className="shell-process-spin" />
+            ) : (
+              <Save size={14} />
+            )}
             保存修改
           </button>
         )}
@@ -570,7 +709,11 @@ export function PlanApprovalCard({
           disabled={!editable || dirty || busy}
           onClick={() => void handleApprove()}
         >
-          {action === 'approve' ? <LoaderCircle size={14} className="shell-process-spin" /> : <Check size={15} />}
+          {action === 'approve' ? (
+            <LoaderCircle size={14} className="shell-process-spin" />
+          ) : (
+            <Check size={15} />
+          )}
           批准并执行 v{latest.revision}
         </button>
         <button
@@ -617,7 +760,11 @@ function StringListEditor({
             value={item}
             disabled={disabled}
             onChange={(event) =>
-              onChange(list.map((value, valueIndex) => (valueIndex === index ? event.target.value : value)))
+              onChange(
+                list.map((value, valueIndex) =>
+                  valueIndex === index ? event.target.value : value,
+                ),
+              )
             }
           />
           <button

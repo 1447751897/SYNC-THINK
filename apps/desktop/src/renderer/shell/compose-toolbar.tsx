@@ -836,7 +836,7 @@ function KernelBadge({ iconKey, name }: { iconKey: string; name: string }) {
       aria-label={brandLogo ? undefined : name}
       role={brandLogo ? undefined : 'img'}
     >
-      {brandLogo ? <BrandLogoMark logo={brandLogo} size={22} /> : <Sparkles size={18} />}
+      {brandLogo ? <BrandLogoMark logo={brandLogo} size={18} /> : <Sparkles size={16} />}
     </span>
   );
 }
@@ -964,6 +964,13 @@ export function ModelPickerMenu(props: {
                   const canInstall =
                     kernel.kernelId === 'pi' && !kernel.installed && Boolean(props.onInstallKernel);
                   const disabled = installPending || (!kernel.installed && !canInstall);
+                  // Installed kernels show a version badge on the right; install /
+                  // missing / error copy also stays on that same trailing slot so
+                  // every kernel row keeps NewMax's single-line height.
+                  const healthyInstalled =
+                    kernel.installed && !installPending && installState?.status !== 'error';
+                  const showVersionBadge = Boolean(healthyInstalled && kernel.version);
+                  const showStatus = !healthyInstalled;
                   let hint: string;
                   if (installState?.status === 'installing') {
                     hint = '安装中 · npm i -g pi';
@@ -987,6 +994,7 @@ export function ModelPickerMenu(props: {
                       aria-checked={active}
                       disabled={disabled}
                       data-testid={`kernel-option-${kernel.kernelId}`}
+                      aria-label={`${displayName}${kernel.version ? ` v${kernel.version}` : ''} · ${hint}`}
                       className={`shell-menu__item shell-menu__item--kernel ${
                         active ? 'is-active' : ''
                       } ${disabled ? 'is-disabled' : ''}`}
@@ -1009,19 +1017,27 @@ export function ModelPickerMenu(props: {
                           <Check size={14} />
                         ) : null}
                       </span>
-                      <div className="shell-menu__item-text shell-menu__kernel-copy">
-                        <div className="shell-menu__item-title shell-menu__kernel-title">
-                          <KernelBadge iconKey={kernel.icon} name={displayName} />
-                          <span className="shell-menu__kernel-name">{displayName}</span>
-                        </div>
-                        <div
-                          className={`shell-menu__item-hint ${
+                      <KernelBadge iconKey={kernel.icon} name={displayName} />
+                      <span className="shell-menu__kernel-name">{displayName}</span>
+                      {showVersionBadge ? (
+                        <span
+                          className="shell-menu__kernel-version"
+                          data-testid={`kernel-version-${kernel.kernelId}`}
+                          title={`版本 ${kernel.version}`}
+                        >
+                          v{kernel.version}
+                        </span>
+                      ) : showStatus ? (
+                        <span
+                          className={`shell-menu__kernel-status ${
                             installState?.status === 'error' ? 'is-error' : ''
                           }`}
+                          data-testid={`kernel-status-${kernel.kernelId}`}
+                          title={hint}
                         >
                           {hint}
-                        </div>
-                      </div>
+                        </span>
+                      ) : null}
                     </DropdownMenu.Item>
                   );
                 })}
@@ -1241,6 +1257,8 @@ export function ContextRing(props: {
   sessionDurationMs?: number;
   /** 本会话累计消耗 tokens（输入+输出跨全部轮次），tooltip 里展示。 */
   sessionTokens?: number;
+  /** Active kernel label, shown in the context header for subprocess kernels. */
+  kernelLabel?: string;
   title?: string;
 }) {
   const [open, setOpen] = useState(false);
@@ -1381,7 +1399,18 @@ export function ContextRing(props: {
             >
               <div className="shell-ctx-tooltip__header">
                 <div>
-                  <div className="shell-ctx-tooltip__title">当前上下文窗口</div>
+                  <div className="shell-ctx-tooltip__title-row">
+                    <div className="shell-ctx-tooltip__title">当前上下文窗口</div>
+                    {props.kernelLabel ? (
+                      <span
+                        className="shell-ctx-tooltip__kernel"
+                        data-testid="context-kernel-label"
+                        title={`当前内核：${props.kernelLabel}`}
+                      >
+                        {props.kernelLabel}
+                      </span>
+                    ) : null}
+                  </div>
                   <div className="shell-ctx-tooltip__subtitle">
                     当前模型实际可见的完整上下文窗口
                   </div>

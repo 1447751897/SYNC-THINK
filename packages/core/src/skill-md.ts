@@ -14,10 +14,7 @@ export interface ParsedSkillMd {
 }
 
 export type ParseSkillMdErrorCode =
-  | 'missing_frontmatter'
-  | 'invalid_frontmatter'
-  | 'missing_name'
-  | 'path_traversal';
+  'missing_frontmatter' | 'invalid_frontmatter' | 'missing_name' | 'path_traversal';
 
 export class ParseSkillMdError extends Error {
   readonly code: ParseSkillMdErrorCode;
@@ -30,10 +27,7 @@ export class ParseSkillMdError extends Error {
 
 function stripQuotes(value: string): string {
   const t = value.trim();
-  if (
-    (t.startsWith('"') && t.endsWith('"')) ||
-    (t.startsWith("'") && t.endsWith("'"))
-  ) {
+  if ((t.startsWith('"') && t.endsWith('"')) || (t.startsWith("'") && t.endsWith("'"))) {
     return t.slice(1, -1);
   }
   return t;
@@ -64,18 +58,80 @@ function parseAllowedTools(raw: string): string[] {
   return [stripQuotes(t)].filter(Boolean);
 }
 
+function leadingWhitespaceLength(line: string): number {
+  return line.match(/^\s*/)?.[0].length ?? 0;
+}
+
+function foldBlockScalar(lines: string[], mode: 'folded' | 'literal'): string {
+  if (mode === 'literal') return lines.join('\n');
+
+  let output = '';
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? '';
+    if (index === 0) {
+      output = line;
+      continue;
+    }
+    const previous = lines[index - 1] ?? '';
+    // YAML folded scalars turn ordinary line breaks into spaces while keeping
+    // paragraph boundaries visible as line breaks.
+    output += previous === '' || line === '' ? '\n' : ' ';
+    output += line;
+  }
+  return output;
+}
+
 function parseFrontmatterBlock(block: string): Record<string, string> {
   const out: Record<string, string> = {};
-  for (const line of block.split(/\r?\n/)) {
-    const trimmed = line.trim();
+  const lines = block.split(/\r?\n/);
+  for (let index = 0; index < lines.length; index += 1) {
+    const rawLine = lines[index] ?? '';
+    const trimmed = rawLine.trim();
     if (!trimmed || trimmed.startsWith('#')) continue;
     const colon = trimmed.indexOf(':');
     if (colon <= 0) continue;
     const key = trimmed.slice(0, colon).trim().toLowerCase();
-    const value = trimmed.slice(colon + 1).trim();
-    out[key] = value;
+    let value = trimmed.slice(colon + 1).trim();
+    const blockIndicator = value.match(/^([>|])(?:[+-])?$/);
+    if (blockIndicator) {
+      const keyIndent = leadingWhitespaceLength(rawLine);
+      const continuation: string[] = [];
+      let cursor = index + 1;
+      let contentIndent: number | undefined;
+      while (cursor < lines.length) {
+        const continuationLine = lines[cursor] ?? '';
+        const continuationTrimmed = continuationLine.trim();
+        if (!continuationTrimmed) {
+          continuation.push('');
+          cursor += 1;
+          continue;
+        }
+        const indentation = leadingWhitespaceLength(continuationLine);
+        if (indentation <= keyIndent) break;
+        contentIndent =
+          contentIndent === undefined ? indentation : Math.min(contentIndent, indentation);
+        continuation.push(continuationLine);
+        cursor += 1;
+      }
+      const normalized = continuation.map((line) =>
+        line ? line.slice(Math.min(contentIndent ?? keyIndent + 1, line.length)) : '',
+      );
+      value = foldBlockScalar(normalized, blockIndicator[1] === '|' ? 'literal' : 'folded').trim();
+      index = cursor - 1;
+    }
+    // Frontmatter scalar values are exposed as normalized text. Keep block
+    // scalar content intact while removing optional YAML-style quotes from
+    // ordinary values (the previous local scanner did the same).
+    out[key] = blockIndicator ? value : stripQuotes(value);
   }
   return out;
+}
+
+/** Parse only the YAML frontmatter subset used by SKILL.md discovery. */
+export function parseSkillFrontmatter(source: string): Record<string, string> {
+  const text = String(source ?? '').replace(/^\uFEFF/, '');
+  const fence = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
+  return fence ? parseFrontmatterBlock(fence[1] ?? '') : {};
 }
 
 function containsPathTraversal(value: string): boolean {
@@ -100,7 +156,7 @@ function assertNoPathTraversal(raw: string, where: string): void {
  * Does **not** execute scripts; callers must re-approve tools on upgrade (§9.3).
  */
 export function parseSkillMd(source: string): ParsedSkillMd {
-  const text = String(source ?? '');
+  const text = String(source ?? '').replace(/^\uFEFF/, '');
   if (!text.trim()) {
     throw new ParseSkillMdError('missing_frontmatter', 'SKILL.md is empty');
   }
@@ -139,8 +195,7 @@ export function parseSkillMd(source: string): ParsedSkillMd {
   }
 
   const hasScripts =
-    /scripts\//i.test(body) ||
-    allowedTools.some((t) => /shell|exec|bash|cmd/i.test(t));
+    /scripts\//i.test(body) || allowedTools.some((t) => /shell|exec|bash|cmd/i.test(t));
   if (hasScripts) {
     warnings.push('Scripts and shell tools are recorded but never auto-executed on import (§9.2).');
   }
@@ -163,12 +218,7 @@ export function skillContentFingerprint(input: {
   body: string;
   allowedTools: readonly string[];
 }): string {
-  const payload = [
-    input.name,
-    input.version,
-    input.allowedTools.join(','),
-    input.body,
-  ].join('\n');
+  const payload = [input.name, input.version, input.allowedTools.join(','), input.body].join('\n');
   let h = 2166136261;
   for (let i = 0; i < payload.length; i++) {
     h ^= payload.charCodeAt(i);

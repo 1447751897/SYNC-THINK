@@ -3748,6 +3748,23 @@ export function EmptyTalk(props: {
   const identityAvatar = draftTrack === 'agent' ? identityAgent : identityTeam;
   const IdentityIcon = draftTrack === 'agent' ? Bot : draftTrack === 'team' ? Users : MessageSquare;
   const activeKernel = kernelRegistry?.find((kernel) => kernel.kernelId === kernelOverride) ?? null;
+  const composerConfiguredContextWindow =
+    (typeof composerModel?.contextWindow === 'number' && composerModel.contextWindow > 0
+      ? composerModel.contextWindow
+      : undefined) || estimateContextWindow(composerModel?.displayName || composerModel?.modelId);
+  const composerKernelContextWindow = activeKernel?.capabilities?.contextWindow;
+  const composerContextWindow =
+    composerKernelContextWindow &&
+    !composerKernelContextWindow.overridable &&
+    composerConfiguredContextWindow > composerKernelContextWindow.nativeLimit
+      ? composerKernelContextWindow.nativeLimit
+      : composerConfiguredContextWindow;
+  const composerContextWindowSource =
+    composerKernelContextWindow &&
+    !composerKernelContextWindow.overridable &&
+    composerConfiguredContextWindow > composerKernelContextWindow.nativeLimit
+      ? 'kernel-capped'
+      : 'configured';
   const skillOwner = useMemo(
     () =>
       resolveConversationSkillOwner(
@@ -4838,12 +4855,13 @@ export function EmptyTalk(props: {
                   </div>
                   <ContextRing
                     used={Math.round(props.draft.length / 4)}
-                    limit={
-                      (typeof composerModel?.contextWindow === 'number' &&
-                      composerModel.contextWindow > 0
-                        ? composerModel.contextWindow
-                        : undefined) ||
-                      estimateContextWindow(composerModel?.displayName || composerModel?.modelId)
+                    limit={composerContextWindow}
+                    modelContextWindow={composerConfiguredContextWindow}
+                    contextWindowSource={composerContextWindowSource}
+                    kernelLabel={
+                      kernelOverride === 'native'
+                        ? undefined
+                        : resolveKernelDisplayName(kernelOverride, activeKernel?.name)
                     }
                   />
                   <div className="shell-compose__tool-wrap">
@@ -4859,9 +4877,7 @@ export function EmptyTalk(props: {
                       anchorEl={modelButtonRef.current}
                       trigger={
                         <ModelTrigger
-                          label={
-                            selectedModel?.displayName ?? selectedModel?.modelId ?? '选择模型'
-                          }
+                          label={selectedModel?.displayName ?? selectedModel?.modelId ?? '选择模型'}
                           reasoningLabel={REASONING_LABELS[reasoningEffort]}
                           mode={composerMode ?? 'execute'}
                           planLabel={

@@ -81,8 +81,9 @@ describe('CodexAppServerKernelAdapter', () => {
 
     expect(spawns).toHaveLength(1);
     expect(first).toContainEqual({ type: 'session-started', sessionId: 'thread-app-fixture' });
-    // agentMessage rides buffered semantics (no `final` flag): mid-turn
-    // messages stay in the process panel until a boundary classifies them.
+    // agentMessage stays unclassified (no `final` flag): mid-turn messages
+    // are classified at a tool or terminal boundary, while the host streams
+    // the tokens as a provisional answer.
     expect(first).toContainEqual({ type: 'delta', text: 'answer 1' });
     expect(second).toContainEqual({ type: 'delta', text: 'answer 2' });
     expect(second).toContainEqual({ type: 'terminal', status: 'completed' });

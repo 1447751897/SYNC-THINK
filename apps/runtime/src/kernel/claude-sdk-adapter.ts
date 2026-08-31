@@ -341,8 +341,12 @@ export class ClaudeSdkKernelAdapter implements KernelAdapter {
       // Prefer the user's local OAuth login — do not inject a key, and leave
       // their settings sources loaded.
     } else if (request.credential.apiKey) {
-      // Explicit environment credentials take precedence while Claude keeps
-      // its normal user/project/local settings and MCP discovery.
+      // An explicit provider credential is isolated from Claude's user/project
+      // settings. Those files may contain SessionStart hooks, apiKeyHelper,
+      // or a different endpoint; loading them can block this request before it
+      // reaches the provider selected in SYNC-THINK. The host supplies the
+      // provider credential and MCP servers explicitly for this run.
+      options.settingSources = [];
       if (request.credential.baseUrl) {
         env.ANTHROPIC_BASE_URL = stripAnthropicV1Suffix(request.credential.baseUrl);
       }

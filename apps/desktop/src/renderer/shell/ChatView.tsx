@@ -128,10 +128,7 @@ import { ComposeRequestQueue } from './ComposeRequestQueue.js';
 import { ComposerMenuHighlight } from './ComposerMenuHighlight.js';
 import { ComposerMcpMenu } from './ComposerMcpMenu.js';
 import { ComposerModeBanner } from './ComposerModeBanner.js';
-import {
-  ComposerActiveModePill,
-  ComposerModeKeywordHint,
-} from './ComposerModeControls.js';
+import { ComposerActiveModePill, ComposerModeKeywordHint } from './ComposerModeControls.js';
 import { ComposerApprovalStack } from './ComposerApprovalStack.js';
 import { ComposerEditor } from './ComposerEditor.js';
 import {
@@ -158,6 +155,7 @@ import { compressImageDataUrl } from './image-compress.js';
 import {
   ComposerActionSlot,
   ContextRing,
+  estimateContextWindow,
   IdentityPickerMenu,
   ModelPickerMenu,
   ModelTrigger,
@@ -664,6 +662,15 @@ export function projectTransientAnswerText(
   return { answerText: classifiedAnswer || undefined, pendingText };
 }
 
+/**
+ * Live bubble text: classified final_answer when present, otherwise the
+ * still-unclassified provider tail. Hiding that tail until the terminal
+ * boundary is what made the timer freeze and then dump the whole answer.
+ */
+export function visibleStreamingAnswerText(projected: ProjectedTransientAnswer): string {
+  return projected.answerText || projected.pendingText;
+}
+
 export interface ProjectedTransientAssistantDisplay extends ProjectedTransientAnswer {
   /** Only phase-confirmed items belong in the NewMax/DSH execution process. */
   commentaryText?: string;
@@ -673,8 +680,8 @@ export interface ProjectedTransientAssistantDisplay extends ProjectedTransientAn
 
 /**
  * Project a live turn without making the unclassified text tail jump through
- * the execution panel. The tail remains in the transient draft until Runtime
- * classifies it at a tool or terminal boundary.
+ * the execution panel. The tail stays out of process items until Runtime
+ * classifies it; the chat bubble still shows it as a provisional answer.
  */
 export function projectTransientAssistantDisplay(
   draftText: string,
@@ -1409,17 +1416,19 @@ export function ChatView({
             pendingText: '',
             processItems: undefined,
           };
+      const streamedAnswer = visibleStreamingAnswerText(projected);
+      const visibleAnswer = streamedAnswer.trim() ? streamedAnswer : undefined;
       setStreamingMessage(
         draft
           ? {
               id: `streaming-${draft.runId ?? fallbackSequence}`,
               role: 'assistant',
-              text: projected.answerText ?? '',
+              text: visibleAnswer ?? '',
               commentaryText: projected.commentaryText ?? draft.commentaryText,
               commentarySegments: draft.assistantTimeline ? undefined : draft.commentarySegments,
               reasoningText: projected.reasoningText ?? draft.reasoningText,
               assistantTimeline: draft.assistantTimeline,
-              answerText: projected.answerText,
+              answerText: visibleAnswer,
               processItems: projected.processItems,
               timestamp: draft.timestamp,
               streaming: !draft.terminal,
@@ -2028,12 +2037,22 @@ export function ChatView({
     void refreshDurableUsageSummary();
   };
 
-  // Load initial durable messages and the Runtime-owned context snapshot.
+  // Load the durable message page only when the selected conversation changes.
+  // Context refreshes can follow model/kernel changes and must not re-read the
+  // message list, otherwise switching a kernel causes an avoidable second
+  // history request (and makes conversation navigation feel slow).
   useEffect(() => {
     if (!conversation.id) return;
     void loadMessages();
+  }, [conversation.id, loadMessages]);
+
+  // Runtime-owned context is keyed by the active conversation, model, and
+  // kernel. Keep this independent from durable message loading so a context
+  // refresh never restarts the history fetch.
+  useEffect(() => {
+    if (!conversation.id) return;
     void refreshContextStatus();
-  }, [conversation.id, threadId, loadMessages, refreshContextStatus]);
+  }, [conversation.id, refreshContextStatus]);
 
   // Provider usage is Task-scoped and independent from thread resolution.
   useEffect(() => {
@@ -2903,11 +2922,7 @@ export function ChatView({
   const [decidingApprovalId, setDecidingApprovalId] = useState<string | null>(null);
 
   const handleToolApproval = useCallback(
-    async (
-      approvalId: string,
-      decision: 'approve' | 'deny',
-      scope: ToolApprovalScope = 'once',
-    ) => {
+    async (approvalId: string, decision: 'approve' | 'deny', scope: ToolApprovalScope = 'once') => {
       const api = bridge();
       if (!api?.decideToolApproval || decidingApprovalId) return;
       setDecidingApprovalId(approvalId);
@@ -4205,8 +4220,7 @@ export function ChatView({
   const planCommandPreview =
     composerSlashCommand.kind === 'plan' || composerSlashCommand.kind === 'plan-with-request';
   const goalCommandPreview =
-    composerSlashCommand.kind === 'goal' ||
-    composerSlashCommand.kind === 'goal-with-condition';
+    composerSlashCommand.kind === 'goal' || composerSlashCommand.kind === 'goal-with-condition';
   const visibleGoal =
     goalState?.goal && ['active', 'paused', 'blocked'].includes(goalState.goal.status)
       ? goalState.goal
@@ -4584,14 +4598,7 @@ export function ChatView({
         }
       });
     },
-    [
-      attachments.length,
-      closeComposePickers,
-      input,
-      resizeComposeInput,
-      runManualCompact,
-      slash,
-    ],
+    [attachments.length, closeComposePickers, input, resizeComposeInput, runManualCompact, slash],
   );
 
   const selectSlashSkill = useCallback(
@@ -5616,7 +5623,9 @@ export function ChatView({
       const result = await api.setGoal({
         conversationId: String(conversation.id),
         ...values,
-        ...(activeModelId ? { modelId: activeModelId as Parameters<typeof api.setGoal>[0]['modelId'] } : {}),
+        ...(activeModelId
+          ? { modelId: activeModelId as Parameters<typeof api.setGoal>[0]['modelId'] }
+          : {}),
         kernelId: kernelOverride as Parameters<typeof api.setGoal>[0]['kernelId'],
         reasoningEffort,
         networkEnabled: netEnabled,
@@ -5672,9 +5681,7 @@ export function ChatView({
         }
         onConfigureGoal={() => openGoalSettings(visibleGoal ? 'edit' : 'create')}
         onPauseGoal={
-          visibleGoal?.status === 'active'
-            ? () => void pauseGoalForTransition()
-            : undefined
+          visibleGoal?.status === 'active' ? () => void pauseGoalForTransition() : undefined
         }
         onResumeGoal={
           visibleGoal && ['paused', 'blocked'].includes(visibleGoal.status)
@@ -5686,14 +5693,10 @@ export function ChatView({
                     conversationId: String(conversation.id),
                     ...(activeModelId
                       ? {
-                          modelId: activeModelId as Parameters<
-                            typeof api.goalResume
-                          >[0]['modelId'],
+                          modelId: activeModelId as Parameters<typeof api.goalResume>[0]['modelId'],
                         }
                       : {}),
-                    kernelId: kernelOverride as Parameters<
-                      typeof api.goalResume
-                    >[0]['kernelId'],
+                    kernelId: kernelOverride as Parameters<typeof api.goalResume>[0]['kernelId'],
                     reasoningEffort,
                     networkEnabled: netEnabled,
                   })
@@ -5737,7 +5740,10 @@ export function ChatView({
     for (const [runId, process] of displayRunProcessById) {
       if (typeof process.contextWatermarkTokens !== 'number') continue;
       const kernelId = runKernelById.get(runId);
-      if (!kernelId || kernelId === 'native') continue;
+      // A conversation can switch between external kernels. A watermark from
+      // another kernel describes a different native session and must not leak
+      // into the currently selected context ring.
+      if (!kernelId || kernelId === 'native' || kernelId !== kernelOverride) continue;
       const stamp = process.completedAt ?? process.startedAt ?? '';
       if (!latestStamp || stamp >= latestStamp) {
         latestStamp = stamp;
@@ -5745,10 +5751,9 @@ export function ChatView({
       }
     }
     return latestTokens;
-  }, [displayRunProcessById, runKernelById]);
+  }, [displayRunProcessById, kernelOverride, runKernelById]);
   const kernelSelfManaged = kernelContextWatermark !== undefined;
   const contextUsed = kernelContextWatermark ?? contextStatus?.estimatedUsedTokens ?? 0;
-  const contextLimitRaw = contextStatus?.contextWindow ?? 0;
 
   // Session metrics for the NewMax ring hover card (会话 耗时 / 用量).
   const sessionMetrics = useMemo(() => {
@@ -5817,17 +5822,20 @@ export function ChatView({
   // Effective ring window + source label: the model's configured window is
   // capped by a non-overridable kernel native limit (Claude Code = 200k), so
   // the ring never shows a budget the kernel itself cannot honor.
+  const contextModelWindow =
+    contextStatus?.modelContextWindow ??
+    activeModelOption?.contextWindow ??
+    estimateContextWindow(activeModelId || activeModel);
+  const contextConfiguredWindow = contextStatus?.contextWindow ?? contextModelWindow;
   const contextWindowCap = activeKernel?.capabilities?.contextWindow;
   const contextWindowCapped =
     contextStatus?.contextWindowSource === 'kernel-limit' ||
     (contextWindowCap !== undefined &&
       contextWindowCap.overridable === false &&
-      contextLimitRaw > contextWindowCap.nativeLimit);
-  const contextLimit = contextStatus
-    ? contextLimitRaw
-    : contextWindowCapped
-      ? contextWindowCap!.nativeLimit
-      : contextLimitRaw;
+      contextConfiguredWindow > contextWindowCap.nativeLimit);
+  const contextLimit = contextWindowCapped
+    ? (contextWindowCap?.nativeLimit ?? contextConfiguredWindow)
+    : contextConfiguredWindow;
   const contextWindowSource: 'configured' | 'kernel-capped' | 'estimated' =
     contextStatus?.contextWindowEstimated === true
       ? 'estimated'
@@ -6229,9 +6237,8 @@ export function ChatView({
             ))}
             {!compactProgress &&
             kernelSelfManaged &&
-            contextStatus &&
-            typeof contextStatus.usageRatio === 'number' &&
-            contextStatus.usageRatio >= 0.85 ? (
+            contextLimit > 0 &&
+            contextUsed / contextLimit >= 0.85 ? (
               <div
                 className="shell-compact-capsule"
                 data-mode="kernel-near-limit"
@@ -6269,10 +6276,7 @@ export function ChatView({
               </div>
             ) : null}
             {interactionMode !== 'plan' ? (
-              <ComposerTaskPanel
-                scopeKey={String(conversation.id)}
-                todo={todoProjection}
-              />
+              <ComposerTaskPanel scopeKey={String(conversation.id)} todo={todoProjection} />
             ) : null}
             <ComposerApprovalStack
               hasSurfaceBelow={Boolean(composerModeBanner)}
@@ -6292,11 +6296,7 @@ export function ChatView({
                             )
                           }
                           onDeny={() =>
-                            void handleToolApproval(
-                              pendingApprovals[0]!.approvalId,
-                              'deny',
-                              'once',
-                            )
+                            void handleToolApproval(pendingApprovals[0]!.approvalId, 'deny', 'once')
                           }
                         />
                       ),
@@ -6578,10 +6578,9 @@ export function ChatView({
                     networkEnabled={netEnabled}
                     permissionMode={permissionMode}
                     showPermissionItems={
-                      composerToolbar.collapseLevel >=
-                      PERMISSION_MODE_COLLAPSED_TOOLBAR_LEVEL
+                      composerToolbar.collapseLevel >= PERMISSION_MODE_COLLAPSED_TOOLBAR_LEVEL
                     }
-                  disabled={Boolean(composerPendingAsk) || compactProgress?.status === 'running'}
+                    disabled={Boolean(composerPendingAsk) || compactProgress?.status === 'running'}
                     attachDisabled={
                       attachments.filter((attachment) => attachment.kind === 'image').length >= 8
                     }
@@ -6661,8 +6660,7 @@ export function ChatView({
                     className="shell-compose__tool-wrap"
                     data-testid="compose-permission-control"
                     hidden={
-                      composerToolbar.collapseLevel >=
-                      PERMISSION_MODE_COLLAPSED_TOOLBAR_LEVEL
+                      composerToolbar.collapseLevel >= PERMISSION_MODE_COLLAPSED_TOOLBAR_LEVEL
                     }
                   >
                     <button
@@ -6693,9 +6691,7 @@ export function ChatView({
                   <div
                     className="shell-compose__tool-wrap"
                     data-testid="compose-skill-control"
-                    hidden={
-                      composerToolbar.collapseLevel >= SKILL_COLLAPSED_TOOLBAR_LEVEL
-                    }
+                    hidden={composerToolbar.collapseLevel >= SKILL_COLLAPSED_TOOLBAR_LEVEL}
                   >
                     <TurnSkillControl
                       owner={skillOwner}
@@ -6708,7 +6704,6 @@ export function ChatView({
                       onChange={setSelectedSkillVersionIds}
                     />
                   </div>
-
                 </div>
 
                 <div ref={composerToolbar.rightRef} className="shell-compose__bar-right">
@@ -6763,10 +6758,18 @@ export function ChatView({
                   <ContextRing
                     used={contextUsed}
                     limit={contextLimit}
-                    modelContextWindow={contextStatus?.modelContextWindow}
+                    kernelLabel={
+                      kernelOverride === 'native'
+                        ? undefined
+                        : resolveKernelDisplayName(kernelOverride, activeKernel?.name)
+                    }
+                    modelContextWindow={contextStatus?.modelContextWindow ?? contextModelWindow}
                     contextWindowEstimated={contextStatus?.contextWindowEstimated}
                     contextWindowSource={contextWindowSource}
-                    usageRatio={contextStatus?.usageRatio}
+                    // External kernels report the authoritative watermark;
+                    // the Runtime snapshot ratio describes the host estimate
+                    // and must not override it in ContextRing.
+                    usageRatio={kernelSelfManaged ? undefined : contextStatus?.usageRatio}
                     compactThreshold={contextStatus?.compactThreshold}
                     compactedAt={contextStatus?.compactedAt}
                     sections={contextStatus?.sections}
@@ -6816,6 +6819,11 @@ export function ChatView({
                       }}
                       onInstallKernel={(kernelId) => void installKernel(kernelId)}
                       onPickKernel={(kernelId) => {
+                        // The old snapshot belongs to the previous kernel. Drop
+                        // it immediately so the ring never presents a stale
+                        // capacity while the Runtime builds the new snapshot.
+                        contextStatusLoadGenerationRef.current += 1;
+                        setContextStatus(null);
                         setKernelOverride(kernelId);
                         writeConversationKernelOverride(String(conversation.id), kernelId);
                         onConversationUpdated?.();
@@ -7911,12 +7919,8 @@ function ToolApprovalCard({
 }) {
   const persistentApp = persistentComputerUseAppOf(approval.toolName, approval.arguments);
   const scopes = approval.allowedScopes;
-  const canAlwaysAllowApp = Boolean(
-    persistentApp && (!scopes || scopes.includes('always-app')),
-  );
-  const canAllowSession = Boolean(
-    !persistentApp && (!scopes || scopes.includes('session')),
-  );
+  const canAlwaysAllowApp = Boolean(persistentApp && (!scopes || scopes.includes('always-app')));
+  const canAllowSession = Boolean(!persistentApp && (!scopes || scopes.includes('session')));
   const secondaryScope: ToolApprovalScope | undefined = canAlwaysAllowApp
     ? 'always-app'
     : canAllowSession
@@ -7941,7 +7945,9 @@ function ToolApprovalCard({
           <div className="shell-composer-tool-approval__detail">
             <span>需要批准</span>
             {detail ? <span aria-hidden="true"> · </span> : null}
-            {detail ? <span className="shell-composer-tool-approval__detail-text">{detail}</span> : null}
+            {detail ? (
+              <span className="shell-composer-tool-approval__detail-text">{detail}</span>
+            ) : null}
           </div>
         </div>
       </div>

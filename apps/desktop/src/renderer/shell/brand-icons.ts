@@ -49,9 +49,24 @@ export interface BrandLogo {
   mono: boolean;
   /** Accessible brand label (used for img alt / aria-label). */
   label: string;
+  /**
+   * Optical scale inside the layout box. Pi's SVG fills its viewBox edge-to-edge
+   * while Claude/GPT keep ~25% padding, so 1 looks oversized next to them.
+   */
+  opticalScale?: number;
 }
 
-const logo = (src: string, label: string, mono: boolean): BrandLogo => ({ src, label, mono });
+const logo = (
+  src: string,
+  label: string,
+  mono: boolean,
+  opticalScale?: number,
+): BrandLogo => ({
+  src,
+  label,
+  mono,
+  ...(opticalScale != null ? { opticalScale } : {}),
+});
 
 /** Provider catalog item id → upstream brand logo. */
 export const PROVIDER_BRAND_LOGOS: Readonly<Record<string, BrandLogo>> = {
@@ -93,10 +108,10 @@ export const PROVIDER_BRAND_LOGOS: Readonly<Record<string, BrandLogo>> = {
  * user-facing product logo. Internal kernel ids remain unchanged.
  */
 export const KERNEL_BRAND_LOGOS: Readonly<Record<string, BrandLogo>> = {
-  native: logo(syncThinkLogo, 'Sync-Think', true),
+  native: logo(syncThinkLogo, 'Sync-Think', true, 1.12),
   'claude-code': logo(claudeCodeLogo, 'ClaudeCode', false),
   codex: logo(chatgptLogo, 'GPT', true),
-  pi: logo(piLogo, 'Pi', true),
+  pi: logo(piLogo, 'Pi', true, 0.74),
 };
 
 const KERNEL_DISPLAY_NAMES: Readonly<Record<string, string>> = {

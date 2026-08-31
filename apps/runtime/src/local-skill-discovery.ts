@@ -26,6 +26,7 @@ import type {
   LocalSkillSourceType,
   SkillLocalInspectItem,
 } from '@sync-think/protocol';
+import { parseSkillFrontmatter } from '@sync-think/core';
 
 /** SYNC-THINK's managed global Skill library. */
 export function localSkillsDirectory(): string {
@@ -203,21 +204,10 @@ export function frontmatterOf(content: string): {
   description?: string;
   summary?: string;
 } {
-  const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(content);
-  const meta: Record<string, string> = {};
-  if (match) {
-    for (const line of match[1].split(/\r?\n/)) {
-      const colon = line.indexOf(':');
-      if (colon <= 0) continue;
-      const key = line.slice(0, colon).trim().toLowerCase();
-      const value = line
-        .slice(colon + 1)
-        .trim()
-        .replace(/^["']|["']$/g, '');
-      if (key === 'name' || key === 'description') meta[key] = value;
-    }
-  }
-  const body = match ? content.slice(match[0].length) : content;
+  const normalizedContent = String(content ?? '').replace(/^\uFEFF/, '');
+  const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(normalizedContent);
+  const meta = match ? parseSkillFrontmatter(normalizedContent) : {};
+  const body = match ? normalizedContent.slice(match[0].length) : normalizedContent;
   const firstLine =
     body
       .split(/\r?\n/)

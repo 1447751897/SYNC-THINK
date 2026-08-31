@@ -762,9 +762,9 @@ describe('ClaudeSdkKernelAdapter', () => {
     const options = captures[0].options;
     expect(options.sessionId).toBe('4c793e96-7a25-4c15-94dd-19e4f9b2c7ef');
     expect(options.resume).toBeUndefined();
-    // Omission matches Claude CLI defaults: user/project/local settings and
-    // their MCP servers remain available while explicit env credentials win.
-    expect(options.settingSources).toBeUndefined();
+    // Explicit provider credentials must not load user/project settings: those
+    // settings can run hooks or override the endpoint before this request.
+    expect(options.settingSources).toEqual([]);
     expect(options.env).toMatchObject({
       ANTHROPIC_BASE_URL: 'http://127.0.0.1:43123/anthropic',
       ANTHROPIC_API_KEY: 'gateway-ticket',

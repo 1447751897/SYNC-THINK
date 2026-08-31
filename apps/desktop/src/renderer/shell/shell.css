@@ -2244,6 +2244,7 @@ body {
 .shell-plan-card.shell-plan-card--composer {
   display: flex;
   min-width: 0;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 20px;
@@ -2418,6 +2419,7 @@ body {
   display: flex;
   min-width: 0;
   flex: 1 1 auto;
+  order: 1;
   align-items: center;
   gap: 8px;
   overflow: hidden;
@@ -2448,9 +2450,232 @@ body {
   white-space: nowrap;
 }
 
+.shell-plan-card__composer-details-toggle {
+  display: inline-flex;
+  min-width: 0;
+  min-height: 24px;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 6px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--composer-text-faint);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  line-height: 18px;
+  letter-spacing: 0;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    color 120ms ease,
+    background 120ms ease;
+}
+
+.shell-plan-card__composer-details-toggle:hover,
+.shell-plan-card__composer-details-toggle:focus-visible {
+  background: color-mix(in srgb, var(--composer-text) 8%, transparent);
+  color: var(--composer-text);
+  outline: none;
+}
+
+.shell-plan-card__composer-details-toggle > svg {
+  transition: transform 150ms ease;
+}
+
+.shell-plan-card__composer-details-toggle > svg.is-open {
+  transform: rotate(180deg);
+}
+
+.shell-plan-card__composer-details {
+  min-width: 0;
+  flex: 0 0 100%;
+  order: 3;
+  max-height: min(52vh, 380px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  margin-top: 2px;
+  padding: 10px 12px 2px;
+  border-top: 1px solid color-mix(in srgb, var(--composer-text) 12%, transparent);
+  color: var(--composer-text-secondary);
+  animation: shell-plan-details-in 160ms ease-out both;
+}
+
+@keyframes shell-plan-details-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.shell-plan-card__composer-detail-grid {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.shell-plan-card__composer-detail-group {
+  min-width: 0;
+  margin: 0 0 12px;
+}
+
+.shell-plan-card__composer-detail-group h3 {
+  margin: 0 0 5px;
+  color: var(--composer-text);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 16px;
+}
+
+.shell-plan-card__composer-detail-group p,
+.shell-plan-card__composer-detail-group ul,
+.shell-plan-card__composer-detail-group ol {
+  margin: 0;
+}
+
+.shell-plan-card__composer-detail-group ul,
+.shell-plan-card__composer-detail-group ol {
+  padding: 0;
+  list-style: none;
+}
+
+.shell-plan-card__composer-detail-group li {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--composer-text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.shell-plan-card__composer-detail-group li + li {
+  margin-top: 3px;
+}
+
+.shell-plan-card__composer-detail-goal p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.shell-plan-card__composer-detail-empty {
+  color: var(--composer-text-faint);
+  font-size: 12px;
+}
+
+.shell-plan-card__composer-detail-steps {
+  display: grid;
+  gap: 8px;
+}
+
+.shell-plan-card__composer-detail-step {
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--composer-text) 10%, transparent);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--composer-text) 4%, transparent);
+}
+
+.shell-plan-card__composer-detail-step-head {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+}
+
+.shell-plan-card__composer-detail-step-head strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--composer-text);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 18px;
+}
+
+.shell-plan-card__composer-detail-step-number {
+  display: inline-flex;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  color: var(--color-accent-text);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.shell-plan-card__composer-detail-step > p {
+  margin-top: 5px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.shell-plan-card__composer-detail-subgroup {
+  margin-top: 7px;
+  padding-top: 6px;
+  border-top: 1px solid color-mix(in srgb, var(--composer-text) 8%, transparent);
+}
+
+.shell-plan-card__composer-detail-subgroup > span {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--composer-text-faint);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.shell-plan-card__composer-detail-risks {
+  display: grid;
+  gap: 7px;
+}
+
+.shell-plan-card__composer-detail-risks li {
+  display: grid;
+  gap: 2px;
+}
+
+.shell-plan-card__composer-detail-risks strong {
+  color: var(--composer-text);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 18px;
+}
+
+.shell-plan-card__composer-detail-risks span {
+  color: var(--composer-text-faint);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+@container composer-approval (max-width: 520px) {
+  .shell-plan-card__composer-detail-grid {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shell-plan-card__composer-details-toggle > svg,
+  .shell-plan-card__composer-details {
+    animation: none;
+    transition: none;
+  }
+}
+
 .shell-plan-card__composer-actions {
   display: flex;
   flex: 0 0 auto;
+  order: 2;
   align-items: center;
   gap: 4px;
 }
@@ -7724,16 +7949,23 @@ body {
   animation-delay: var(--shell-pixel-delay, 0ms);
 }
 
-.shell-process-panel__activity-label {
+.shell-process-panel__activity-label,
+.shell-text-shimmer {
   position: relative;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: color-mix(in srgb, var(--color-accent) 78%, var(--color-text-secondary));
 }
 
-.shell-process-panel__activity-label::after {
+.shell-process-panel__activity-label {
+  color: var(--color-text);
+}
+
+/* Beautiful UI Loading State: shimmer clipped to the glyphs only — never a
+   separate buffer bar in leftover flex space. */
+.shell-process-panel__activity-label::after,
+.shell-text-shimmer::after {
   content: attr(data-label);
   position: absolute;
   inset: 0;
@@ -7744,13 +7976,13 @@ body {
   color: transparent;
   background-image: linear-gradient(
     100deg,
-    transparent 16%,
-    color-mix(in srgb, var(--color-accent) 58%, transparent) 34%,
-    color-mix(in srgb, var(--color-accent) 84%, var(--color-text)) 48%,
-    color-mix(in srgb, var(--color-accent) 58%, transparent) 62%,
-    transparent 80%
+    transparent 12%,
+    color-mix(in srgb, var(--color-accent) 70%, transparent) 36%,
+    color-mix(in srgb, var(--color-accent) 92%, var(--color-text)) 50%,
+    color-mix(in srgb, var(--color-accent) 70%, transparent) 64%,
+    transparent 88%
   );
-  background-size: 240% 100%;
+  background-size: 220% 100%;
   background-repeat: no-repeat;
   -webkit-background-clip: text;
   background-clip: text;
@@ -7807,7 +8039,8 @@ body {
 
 /* 动效是「活着」的证据，但降级后仍须可读：去掉 sweep，保留纯色文字。 */
 @media (prefers-reduced-motion: reduce) {
-  .shell-process-panel__activity-label::after {
+  .shell-process-panel__activity-label::after,
+  .shell-text-shimmer::after {
     content: none;
   }
 
@@ -7817,7 +8050,8 @@ body {
   }
 }
 
-[data-reduced-motion] .shell-process-panel__activity-label::after {
+[data-reduced-motion] .shell-process-panel__activity-label::after,
+[data-reduced-motion] .shell-text-shimmer::after {
   content: none;
 }
 
@@ -8624,37 +8858,6 @@ body {
   flex: 0 0 16px;
 }
 
-.shell-inline-process__think.is-running .shell-inline-process__think-toggle::after,
-.shell-inline-process__tool.is-running .shell-inline-process__tool-toggle::after,
-.shell-inline-process__waiting.is-running::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-  background: linear-gradient(
-    105deg,
-    transparent 18%,
-    color-mix(in srgb, var(--color-accent) 12%, transparent) 37%,
-    color-mix(in srgb, var(--color-accent) 36%, transparent) 49%,
-    color-mix(in srgb, var(--color-accent) 12%, transparent) 61%,
-    transparent 80%
-  );
-  background-position: 130% 0;
-  background-size: 260% 100%;
-  background-repeat: no-repeat;
-  animation: shell-harness-sweep 1.65s linear infinite;
-}
-
-@keyframes shell-harness-sweep {
-  from {
-    background-position: 130% 0;
-  }
-  to {
-    background-position: -130% 0;
-  }
-}
-
 .shell-harness-trace .shell-process-panel__supplemental {
   margin-top: 4px;
 }
@@ -8790,13 +8993,6 @@ body {
   .shell-inline-process__row-symbol,
   .shell-inline-process__row-disclosure {
     transition: none;
-  }
-
-  .shell-inline-process__think.is-running .shell-inline-process__think-toggle::after,
-  .shell-inline-process__tool.is-running .shell-inline-process__tool-toggle::after,
-  .shell-inline-process__waiting.is-running::after {
-    animation: none;
-    display: none;
   }
 
   .shell-harness-terminal__chevron {
@@ -12925,6 +13121,29 @@ body {
   font-weight: 650;
   color: var(--color-text);
 }
+.shell-ctx-tooltip__title-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+.shell-ctx-tooltip__kernel {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 11em;
+  align-items: center;
+  padding: 2px 6px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 28%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+  color: var(--color-accent-text);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .shell-ctx-tooltip__subtitle {
   max-width: 15em;
   margin-top: 2px;
@@ -13160,12 +13379,24 @@ body {
 }
 
 /* Model cascade menus. Popper owns viewport collision handling; the provider and
-   model panels keep independent scroll areas so resizing never changes the anchor. */
+   model panels keep independent scroll areas so resizing never changes the anchor.
+   Surface tokens match the NewMax composer menus (slash / MCP / add). */
+.shell-menu--model-providers,
+.shell-menu--model-flyout,
+.shell-menu--reasoning-flyout {
+  padding: 0;
+  border: 0;
+  border-radius: var(--composer-menu-radius);
+  background: var(--composer-surface);
+  box-shadow: var(--composer-menu-shadow);
+  color: var(--composer-text);
+  font-family: var(--font-sans);
+}
+
 .shell-menu--model-providers {
-  width: min(228px, calc(100vw - 16px));
-  max-height: min(420px, calc(100vh - 16px));
-  animation: shell-flyout-in var(--shell-motion-fast, 110ms)
-    var(--shell-ease-out, cubic-bezier(0.16, 1, 0.3, 1));
+  width: min(248px, calc(100vw - 16px));
+  max-height: min(var(--composer-menu-max-height), calc(100vh - 16px));
+  animation: shell-flyout-in var(--composer-menu-duration) var(--composer-menu-ease);
 }
 
 .shell-menu--model-flyout {
@@ -13173,8 +13404,7 @@ body {
   max-height: min(360px, calc(100vh - 16px));
   overflow: hidden;
   transform-origin: var(--radix-dropdown-menu-content-transform-origin);
-  animation: shell-model-submenu-in var(--shell-motion-fast, 110ms)
-    var(--shell-ease-out, cubic-bezier(0.16, 1, 0.3, 1));
+  animation: shell-model-submenu-in var(--composer-menu-duration) var(--composer-menu-ease);
 }
 
 .shell-menu--reasoning-flyout {
@@ -13182,25 +13412,64 @@ body {
   max-height: min(344px, calc(100vh - 16px));
   overflow: hidden;
   transform-origin: var(--radix-dropdown-menu-content-transform-origin);
-  animation: shell-model-submenu-in var(--shell-motion-fast, 110ms)
-    var(--shell-ease-out, cubic-bezier(0.16, 1, 0.3, 1));
+  animation: shell-model-submenu-in var(--composer-menu-duration) var(--composer-menu-ease);
 }
 
 .shell-menu--model-flyout > .shell-menu__scroll,
 .shell-menu--reasoning-flyout > .shell-menu__scroll,
 .shell-menu--model-providers > .shell-menu__scroll {
   max-height: inherit;
+  padding: var(--composer-menu-padding);
   overflow-y: auto;
+  scrollbar-width: thin;
 }
 
 .shell-menu--model-providers > .shell-menu__scroll {
   flex: 1;
 }
 
-.shell-menu__item--provider {
+.shell-menu--model-providers .shell-menu__item,
+.shell-menu--model-flyout .shell-menu__item,
+.shell-menu--reasoning-flyout .shell-menu__item {
   align-items: center;
-  min-height: 34px;
-  padding-block: 7px;
+  height: var(--composer-menu-row-height);
+  min-height: var(--composer-menu-row-height);
+  margin: 0;
+  width: 100%;
+  padding: var(--composer-menu-row-padding);
+  border-radius: var(--composer-menu-row-radius);
+  gap: var(--composer-menu-row-gap);
+  font-size: var(--composer-menu-command-size);
+  line-height: var(--composer-menu-command-line-height);
+  box-shadow: none;
+  outline: none;
+  user-select: none;
+}
+
+.shell-menu--model-providers .shell-menu__item-title,
+.shell-menu--model-flyout .shell-menu__item-title,
+.shell-menu--reasoning-flyout .shell-menu__item-title {
+  font-size: var(--composer-menu-command-size);
+  font-weight: 500;
+  line-height: var(--composer-menu-command-line-height);
+}
+
+.shell-menu--model-providers .shell-menu__item-icon,
+.shell-menu--model-flyout .shell-menu__item-icon,
+.shell-menu--reasoning-flyout .shell-menu__item-icon,
+.shell-menu--model-providers .shell-menu__chevron,
+.shell-menu--model-flyout .shell-menu__chevron,
+.shell-menu--reasoning-flyout .shell-menu__chevron,
+.shell-menu--model-providers .shell-menu__check,
+.shell-menu--model-flyout .shell-menu__check {
+  margin-top: 0;
+}
+
+.shell-menu__item--provider,
+.shell-menu__item--model,
+.shell-menu__item--kernel,
+.shell-menu__item--reasoning {
+  align-items: center;
   outline: none;
   user-select: none;
 }
@@ -13215,38 +13484,54 @@ body {
   color: var(--color-accent-text);
 }
 
+.shell-menu--model-providers .shell-menu__item:hover,
+.shell-menu--model-flyout .shell-menu__item:hover,
+.shell-menu--reasoning-flyout .shell-menu__item:hover,
 .shell-menu__item--provider:not(.is-active)[data-state='open'],
 .shell-menu__item--provider:not(.is-active)[data-highlighted],
 .shell-menu__item--model:not(.is-active)[data-highlighted],
-.shell-menu__item--kernel:not(.is-active)[data-highlighted] {
-  background: var(--color-control-hover, var(--color-hover));
+.shell-menu__item--kernel:not(.is-active)[data-highlighted],
+.shell-menu__item--reasoning[data-highlighted],
+.shell-menu__item--reasoning[data-state='open'] {
+  background: var(--composer-hover);
 }
 
-/* Multi-kernel selector group (Slice 6). */
+.shell-menu--model-providers .shell-menu__item.is-active,
+.shell-menu--model-flyout .shell-menu__item.is-active,
+.shell-menu--reasoning-flyout .shell-menu__item.is-active {
+  background: transparent;
+  box-shadow: none;
+  color: var(--color-accent-text);
+}
+
+.shell-menu--model-providers .shell-menu__item.is-active:hover,
+.shell-menu--model-providers .shell-menu__item.is-active[data-highlighted],
+.shell-menu--model-providers .shell-menu__item--provider.is-active[data-state='open'],
+.shell-menu--model-flyout .shell-menu__item.is-active:hover,
+.shell-menu--model-flyout .shell-menu__item.is-active[data-highlighted],
+.shell-menu--reasoning-flyout .shell-menu__item.is-active:hover,
+.shell-menu--reasoning-flyout .shell-menu__item.is-active[data-highlighted] {
+  background: var(--composer-hover);
+  box-shadow: none;
+  color: var(--color-accent-text);
+}
+
+.shell-menu--model-providers .shell-menu__item.is-active .shell-menu__item-title,
+.shell-menu--model-providers .shell-menu__item.is-active .shell-menu__kernel-name,
+.shell-menu--model-providers .shell-menu__item.is-active .shell-menu__chevron,
+.shell-menu--model-flyout .shell-menu__item.is-active .shell-menu__item-title,
+.shell-menu--reasoning-flyout .shell-menu__item.is-active .shell-menu__item-title {
+  color: var(--color-accent-text);
+}
+
 .shell-menu__group-label {
-  padding: 6px 12px 4px;
-  font-size: 11px;
-  line-height: 1.2;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--color-text-faint);
+  padding: 2px 10px 0;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 20px;
+  letter-spacing: 0;
+  color: var(--composer-text-faint);
   user-select: none;
-}
-
-.shell-menu__item--kernel {
-  min-height: 47px;
-  align-items: center;
-  gap: 7px;
-  margin: 1px 4px;
-  width: calc(100% - 8px);
-  padding: 6px 8px;
-  border-radius: var(--radius-row);
-  outline: none;
-  user-select: none;
-}
-
-.shell-menu__item--kernel .shell-menu__selection-slot {
-  align-self: center;
 }
 
 .shell-menu__item--kernel.is-disabled {
@@ -13258,11 +13543,8 @@ body {
   animation: shell-orb-spin 0.8s linear infinite;
 }
 
-.shell-menu__item-hint.is-error {
-  color: var(--color-error);
-}
-
 .shell-menu__kernel-name {
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   font-weight: 500;
@@ -13270,28 +13552,45 @@ body {
   white-space: nowrap;
 }
 
-.shell-menu__item-hint {
-  margin-top: 2px;
-  max-width: 100%;
+.shell-menu__kernel-status {
+  flex: 0 1 auto;
+  max-width: 46%;
   overflow: hidden;
-  font-size: 11px;
-  line-height: 1.2;
-  color: var(--color-text-faint);
+  color: var(--composer-text-faint);
+  font-size: var(--composer-menu-hint-size);
+  font-weight: 400;
+  line-height: var(--composer-menu-hint-line-height);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.shell-menu__kernel-copy {
-  display: flex;
-  min-height: 34px;
-  flex-direction: column;
-  justify-content: center;
+.shell-menu__kernel-status.is-error {
+  color: var(--color-error);
 }
 
-.shell-menu__kernel-title {
-  display: flex;
-  min-width: 0;
-  align-items: center;
+.shell-menu__kernel-version {
+  flex: 0 0 auto;
+  max-width: 7.5em;
+  overflow: hidden;
+  padding: 2px 6px;
+  border: 1px solid color-mix(in srgb, var(--composer-text) 14%, transparent);
+  border-radius: 999px;
+  color: var(--composer-text-faint);
+  background: color-mix(in srgb, var(--composer-text) 6%, transparent);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 550;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shell-menu--model-providers .shell-kernel-badge {
+  width: 18px;
+  height: 18px;
+  margin-right: 0;
+  vertical-align: 0;
+  overflow: visible;
 }
 
 .shell-kernel-badge {
@@ -13299,12 +13598,11 @@ body {
   align-items: center;
   justify-content: center;
   flex: 0 0 auto;
-  width: 24px;
-  height: 24px;
-  margin-right: 8px;
+  width: 18px;
+  height: 18px;
+  margin-right: 0;
   border: 0;
   border-radius: 0;
-  vertical-align: -7px;
   background: transparent;
   color: var(--color-text);
   box-shadow: none;
@@ -13320,8 +13618,8 @@ body {
 
 .shell-menu__separator {
   height: 1px;
-  margin: 6px 10px;
-  background: color-mix(in srgb, var(--color-text) 12%, transparent);
+  margin: 4px 10px;
+  background: var(--composer-border);
 }
 
 /* Compose kernel chip next to the model trigger. */
@@ -13358,35 +13656,17 @@ body {
   background-color: var(--color-text);
 }
 
-.shell-menu__item--model {
-  outline: none;
-  user-select: none;
-}
-
 .shell-menu__model-footer {
   flex-shrink: 0;
-  padding: 5px 6px 6px;
-  border-top: 1px solid var(--color-border);
-  background: color-mix(in srgb, var(--color-overlay) 94%, var(--color-page));
-}
-
-.shell-menu__item--reasoning {
-  align-items: center;
-  min-height: 34px;
-  padding: 7px 8px;
-  outline: none;
-  user-select: none;
-}
-
-.shell-menu__item--reasoning[data-highlighted],
-.shell-menu__item--reasoning[data-state='open'] {
-  background: color-mix(in srgb, var(--color-text) 7%, var(--color-overlay));
+  padding: 2px var(--composer-menu-padding) var(--composer-menu-padding);
+  border-top: 1px solid var(--composer-border);
+  background: transparent;
 }
 
 .shell-menu__reasoning-value {
   flex-shrink: 0;
-  color: var(--color-text-secondary);
-  font-size: 11.5px;
+  color: var(--composer-text-secondary);
+  font-size: var(--composer-menu-hint-size);
 }
 
 @keyframes shell-model-submenu-in {
@@ -22210,6 +22490,7 @@ body {
   object-fit: contain;
   vertical-align: middle;
   user-select: none;
+  transform-origin: center;
 }
 
 .shell-brand-logo--mono {
@@ -31009,19 +31290,28 @@ body {
 }
 
 .ability-hub__security-filter {
+  min-width: 0;
   gap: 2px;
   padding: 2px;
+  overflow-x: auto;
   border-radius: 9px;
   background: color-mix(in srgb, var(--color-elevated) 76%, var(--color-chat));
+  scrollbar-width: none;
+}
+
+.ability-hub__security-filter::-webkit-scrollbar {
+  display: none;
 }
 
 .ability-hub__security-filter button {
   min-height: 25px;
+  flex: 0 0 auto;
   padding: 0 9px;
   border-radius: 7px;
   background: transparent;
   color: var(--color-text-faint);
   font-size: 9px;
+  white-space: nowrap;
 }
 
 .ability-hub__security-filter button:hover,
@@ -31996,8 +32286,7 @@ body {
   letter-spacing: 0;
 }
 
-.ability-hub__back,
-.ability-hub__mcp-shortcut {
+.ability-hub__back {
   display: inline-flex;
   width: 32px;
   height: 32px;
@@ -32016,15 +32305,26 @@ body {
   background: color-mix(in srgb, var(--color-accent-soft) 82%, var(--color-elevated));
 }
 
-.ability-hub__mcp-shortcut {
-  position: absolute;
-  top: 0;
-  left: 0;
-  opacity: 0;
+.ability-hub__sibling-link {
+  display: inline-flex;
+  min-height: 30px;
+  align-items: center;
+  gap: 6px;
+  margin-left: 2px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text-faint);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 18px;
 }
 
-.ability-hub__mcp-shortcut:focus-visible {
-  opacity: 1;
+.ability-hub__sibling-link:hover {
+  border-color: color-mix(in srgb, var(--color-border) 72%, transparent);
+  background: var(--color-hover);
+  color: var(--color-accent-text);
 }
 
 .ability-hub__activation-action,
@@ -32452,6 +32752,69 @@ body {
 
 .ability-hub__scroll--installed {
   padding: 0 8px 24px;
+}
+
+.ability-hub__scroll--mcp {
+  padding: 12px 24px 24px;
+}
+
+.ability-hub__scroll--mcp .mcp-installed-grid {
+  gap: 14px;
+}
+
+.ability-hub__scroll--mcp .mcp-installed-card {
+  min-height: 144px;
+  gap: 12px;
+  padding: 16px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--color-surface) 92%, var(--color-chat));
+}
+
+.ability-hub__scroll--mcp .mcp-installed-card.is-disabled {
+  opacity: 0.64;
+}
+
+.ability-hub__scroll--mcp .mcp-installed-card__main {
+  gap: 11px;
+}
+
+.ability-hub__scroll--mcp .mcp-installed-card__main .capability-row-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+}
+
+.ability-hub__scroll--mcp .mcp-installed-card__main strong {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 19px;
+}
+
+.ability-hub__scroll--mcp .mcp-installed-card__main em {
+  margin-top: 2px;
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.ability-hub__scroll--mcp .mcp-installed-card__main small {
+  margin-top: 5px;
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.ability-hub__scroll--mcp .mcp-installed-card__facts {
+  grid-column: 1;
+  gap: 8px 14px;
+  font-size: 11px;
+  line-height: 17px;
+}
+
+.ability-hub__scroll--mcp .mcp-installed-card__refresh {
+  min-height: 28px;
+  align-self: end;
+  border-radius: 8px;
+  font-size: 11px;
+  line-height: 16px;
 }
 
 .ability-installed-list {
@@ -33569,6 +33932,17 @@ body {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .ability-hub__filter-row {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .ability-hub__filter-row > .ability-hub__security-filter {
+    width: 100%;
+    max-width: 100%;
+    flex: 1 1 100%;
+  }
+
   .mcp-installed-grid {
     grid-template-columns: 1fr;
   }
@@ -33580,6 +33954,16 @@ body {
   }
 
   .ability-hub__title-block p {
+    display: none;
+  }
+
+  .ability-hub__sibling-link {
+    width: 32px;
+    padding: 0;
+    justify-content: center;
+  }
+
+  .ability-hub__sibling-link span {
     display: none;
   }
 
@@ -33616,7 +34000,7 @@ body {
   }
 
   .ability-hub__security-filter {
-    order: 3;
+    order: 0;
   }
 
   .ability-hub__filter-note {

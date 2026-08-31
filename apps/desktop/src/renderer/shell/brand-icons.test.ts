@@ -46,6 +46,9 @@ describe('brand logo registries', () => {
     expect(resolveKernelBrandLogo('codex')?.mono).toBe(true);
     expect(resolveKernelBrandLogo('native')?.label).toBe('Sync-Think');
     expect(resolveKernelBrandLogo('native')?.mono).toBe(true);
+    expect(resolveKernelBrandLogo('native')?.opticalScale).toBe(1.12);
+    expect(resolveKernelBrandLogo('pi')?.opticalScale).toBe(0.74);
+    expect(resolveKernelBrandLogo('codex')?.opticalScale).toBeUndefined();
     expect(resolveKernelDisplayName('claude-code')).toBe('ClaudeCode');
     expect(resolveKernelDisplayName('codex')).toBe('GPT');
     expect(resolveKernelDisplayName('custom', 'Custom Kernel')).toBe('Custom Kernel');

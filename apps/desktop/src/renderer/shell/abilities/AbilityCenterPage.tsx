@@ -13,7 +13,6 @@ import {
   CircleGauge,
   Code2,
   Copy,
-  CloudDownload,
   Edit3,
   FileCode2,
   Folder,
@@ -304,7 +303,6 @@ export function AbilitiesPage(props: AbilitiesPageProps): JSX.Element {
   );
   const [skillMetadataEditor, setSkillMetadataEditor] = useState<SkillMetadataEditorState>();
   const [localSkillImportOpen, setLocalSkillImportOpen] = useState(false);
-  const [remoteSkillImportOpen, setRemoteSkillImportOpen] = useState(false);
   const [registerMcpItem, setRegisterMcpItem] = useState<McpRegistrationPreset | null>();
   const [sourceSkill, setSourceSkill] = useState<SkillVersionSummary>();
   const [publishSkillVersionId, setPublishSkillVersionId] = useState<string>();
@@ -613,46 +611,6 @@ export function AbilitiesPage(props: AbilitiesPageProps): JSX.Element {
     [busyId, refreshAfterMutation, skillEditor],
   );
 
-  const importRemoteSkill = useCallback(
-    async (url: string) => {
-      const api = runtimeBridge();
-      if (!api || (!api.importRemoteSkill && (!api.importSkill || !api.fetchSkillMd)) || busyId) {
-        return;
-      }
-      const normalizedUrl = url.trim();
-      if (!normalizedUrl) return;
-      setBusyId('skill-remote-import');
-      setError(undefined);
-      try {
-        let result: ImportSkillResponse;
-        if (api.importRemoteSkill) {
-          result = await api.importRemoteSkill({ url: normalizedUrl });
-        } else {
-          const fetched = await api.fetchSkillMd!({ url: normalizedUrl });
-          result = await api.importSkill!({
-            skillMd: fetched.skillMd,
-            originType: 'market',
-            originRef: fetched.url,
-          });
-        }
-        setRemoteSkillImportOpen(false);
-        setMessage(
-          result.deduped
-            ? `远端 Skill 已存在：${result.skill.name} v${result.skill.version}`
-            : `已导入远端 Skill：${result.skill.name} v${result.skill.version}`,
-        );
-        setDetailSkillVersionId(result.skill.skillVersionId);
-        setTab('mine');
-        await refreshAfterMutation();
-      } catch (cause) {
-        setError(capabilityErrorMessage(cause, '远端 Skill 导入失败'));
-      } finally {
-        setBusyId(undefined);
-      }
-    },
-    [busyId, refreshAfterMutation],
-  );
-
   const openSkillEditor = useCallback(async (skill?: SkillVersionSummary) => {
     if (!skill) {
       setSkillEditor({ mode: 'create', source: newSkillTemplate() });
@@ -817,31 +775,45 @@ export function AbilitiesPage(props: AbilitiesPageProps): JSX.Element {
           active,
         });
         const nextActive = response.activation?.active ?? active;
-        if (targetWorkspaceId === selectedWorkspaceId) {
-          setGovernance((current) =>
-            current
-              ? {
-                  ...current,
-                  skills:
-                    capabilityType === 'skill'
-                      ? current.skills.map((row) =>
-                          row.skill.skillVersionId === capabilityId
-                            ? { ...row, workspaceActive: nextActive }
-                            : row,
-                        )
-                      : current.skills,
-                  mcpServers:
-                    capabilityType === 'mcp'
-                      ? current.mcpServers.map((row) =>
-                          row.server.mcpServerId === capabilityId
-                            ? { ...row, workspaceActive: nextActive }
-                            : row,
-                        )
-                      : current.mcpServers,
-                }
-              : current,
-          );
-        }
+        const targetWorkspaceName =
+          workspaces.find((workspace) => workspace.workspaceId === targetWorkspaceId)?.name ??
+          targetWorkspaceId;
+        setGovernance((current) => {
+          if (!current) return current;
+          const updateWorkspaceNames = <
+            T extends { workspaceActive: boolean; activeWorkspaceNames?: string[] },
+          >(
+            row: T,
+            rowCapabilityId: string,
+          ): T => {
+            if (rowCapabilityId !== capabilityId) return row;
+            const seededNames = row.activeWorkspaceNames?.length
+              ? row.activeWorkspaceNames
+              : row.workspaceActive
+                ? [workspaceName]
+                : [];
+            const names = new Set(seededNames);
+            if (nextActive) names.add(targetWorkspaceName);
+            else names.delete(targetWorkspaceName);
+            return {
+              ...row,
+              workspaceActive:
+                targetWorkspaceId === selectedWorkspaceId ? nextActive : row.workspaceActive,
+              activeWorkspaceNames: [...names],
+            };
+          };
+          return {
+            ...current,
+            skills:
+              capabilityType === 'skill'
+                ? current.skills.map((row) => updateWorkspaceNames(row, row.skill.skillVersionId))
+                : current.skills,
+            mcpServers:
+              capabilityType === 'mcp'
+                ? current.mcpServers.map((row) => updateWorkspaceNames(row, row.server.mcpServerId))
+                : current.mcpServers,
+          };
+        });
         return true;
       } catch (cause) {
         setError(capabilityErrorMessage(cause, '更新工作区激活状态失败'));
@@ -850,7 +822,7 @@ export function AbilitiesPage(props: AbilitiesPageProps): JSX.Element {
         setBusyId(undefined);
       }
     },
-    [selectedWorkspaceId],
+    [selectedWorkspaceId, workspaces, workspaceName],
   );
 
   const registerMcp = useCallback(
@@ -977,7 +949,10 @@ export function AbilitiesPage(props: AbilitiesPageProps): JSX.Element {
           busyId={busyId}
           createMenuOpen={createMenuOpen}
           onBack={props.onGoToAgents}
-          onOpenMcp={() => setSection('mcp')}
+          onOpenMcp={() => {
+            setQuery('');
+            setSection('mcp');
+          }}
           onTabChange={setTab}
           onQueryChange={setQuery}
           onCategoryChange={setSkillCategory}
@@ -1107,159 +1082,36 @@ export function AbilitiesPage(props: AbilitiesPageProps): JSX.Element {
   }
 
   return (
-    <main className="capability-center" data-testid="abilities-page">
-      <header className="capability-center__header">
-        <div className="capability-center__heading">
-          <span className="capability-center__heading-icon">
-            <Plug size={16} />
-          </span>
-          <div>
-            <h1>MCP 管理</h1>
-            <p>管理全局外部工具服务，注册后启用即生效</p>
-          </div>
-        </div>
-
-        <SlidingTabs className="capability-center__section-switch" aria-label="能力类型">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={false}
-            onClick={() => setSection('skills')}
-          >
-            <Sparkles size={13} />
-            Skill
-          </button>
-          <button
-            type="button"
-            role="tab"
-            data-testid="abilities-section-mcp"
-            aria-selected
-            className="is-active"
-            onClick={() => setSection('mcp')}
-          >
-            <Plug size={13} />
-            MCP
-          </button>
-        </SlidingTabs>
-
-        <HeaderActions
-          section="mcp"
-          createMenuOpen={createMenuOpen}
-          hasSkills={families.length > 0}
-          onActivationCode={() => {
-            setMessage('Skill 激活码渠道筹备中');
-            setError(undefined);
-          }}
-          onToggleCreateMenu={() => setCreateMenuOpen((open) => !open)}
-          onCreateSkill={() => void openSkillEditor()}
-          onImportRemoteSkill={() => {
-            setCreateMenuOpen(false);
-            setRemoteSkillImportOpen(true);
-          }}
-          onPublishSkill={() => {
-            setPublishSkillVersionId(families[0]?.latest.skillVersionId);
-            setCreateMenuOpen(false);
-          }}
-          onRegisterMcp={() => setRegisterMcpItem(null)}
-        />
-      </header>
-
-      <section className="capability-center__toolbar">
-        <SlidingTabs className="capability-center__catalog-tabs" aria-label="能力目录">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={tab === 'market'}
-            className={tab === 'market' ? 'is-active' : undefined}
-            onClick={() => setTab('market')}
-          >
-            MCP 市场
-            <span>{MCP_MARKET.length}</span>
-          </button>
-          <button
-            type="button"
-            role="tab"
-            data-testid="mcp-tab-mine"
-            aria-selected={tab === 'mine'}
-            className={tab === 'mine' ? 'is-active' : undefined}
-            onClick={() => setTab('mine')}
-          >
-            我的 MCP
-            <span>{servers.length}</span>
-          </button>
-        </SlidingTabs>
-        <label className="capability-center__search">
-          <Search size={14} />
-          <input
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="搜索 MCP..."
-            aria-label="搜索 MCP"
-          />
-          {query ? (
-            <button type="button" aria-label="清除搜索" onClick={() => setQuery('')}>
-              <X size={12} />
-            </button>
-          ) : null}
-        </label>
-      </section>
-
-      {loadError ? (
-        <StatusBanner kind="error" title="能力库加载失败" detail={loadError}>
-          <button type="button" onClick={() => void loadCatalog()}>
-            重新加载
-          </button>
-        </StatusBanner>
-      ) : message ? (
-        <StatusBanner kind="success" title={message} onClose={closeNotices} />
-      ) : error ? (
-        <StatusBanner kind="error" title={error} onClose={closeNotices} />
-      ) : null}
-
-      <McpSurface
-        tab={tab}
+    <main className="ability-hub" data-testid="abilities-page">
+      <NewMaxMcpHub
+        tab={tab === 'market' ? 'market' : 'mine'}
         query={query}
         category={mcpCategory}
         statusFilter={statusFilter}
         servers={servers}
         governanceMap={mcpGovernanceMap}
         loading={loading}
-        workspaces={workspaces}
-        selectedWorkspaceId={selectedWorkspaceId}
-        workspaceName={workspaceName}
+        loadError={loadError}
+        message={message}
+        error={error}
         busyId={busyId}
+        onBack={props.onGoToAgents}
+        onOpenSkills={() => {
+          setQuery('');
+          setSection('skills');
+        }}
+        onTabChange={setTab}
+        onQueryChange={setQuery}
         onCategoryChange={setMcpCategory}
         onStatusFilterChange={setStatusFilter}
-        onWorkspaceChange={setSelectedWorkspaceId}
+        onReload={() => void loadCatalog()}
+        onCloseNotice={closeNotices}
         onOpenMarket={setDetailMarketMcpId}
         onOpenServer={setDetailMcpServerId}
         onRegister={setRegisterMcpItem}
         onGlobalEnabled={(server, enabled) => void setMcpGlobalEnabled(server, enabled)}
         onRefresh={(server) => void refreshMcpTools(server)}
         onOrganize={() => void previewOrganize()}
-      />
-
-      <SkillDetailDrawer
-        skill={selectedSkill}
-        marketItem={selectedMarketSkill}
-        governance={
-          selectedSkill ? skillGovernanceMap.get(selectedSkill.skillVersionId) : undefined
-        }
-        workspaceName={workspaceName}
-        open={Boolean(selectedSkill || selectedMarketSkill)}
-        busy={Boolean(busyId)}
-        onOpenChange={(open) => {
-          if (!open) {
-            setDetailSkillVersionId(undefined);
-            setDetailMarketSkillId(undefined);
-          }
-        }}
-        onInstall={(item) => void installMarketSkill(item)}
-        onEdit={(skill) => void openSkillEditor(skill)}
-        onViewSource={setSourceSkill}
-        onPublish={(skill) => setPublishSkillVersionId(skill.skillVersionId)}
-        onDelete={(skill) => void deleteSkill(skill)}
-        onGoToAgents={props.onGoToAgents}
       />
 
       <McpDetailDrawer
@@ -1283,54 +1135,6 @@ export function AbilitiesPage(props: AbilitiesPageProps): JSX.Element {
         }}
         onRefresh={(server) => void refreshMcpTools(server)}
         onDeleteMcp={(server) => void deleteMcpServer(server)}
-      />
-
-      <SkillEditorDialog
-        state={skillEditor}
-        saving={busyId === 'skill-editor'}
-        error={skillEditor ? error : undefined}
-        onOpenChange={(open) => {
-          if (!open) setSkillEditor(undefined);
-        }}
-        onSubmit={(source) => void saveSkillEditor(source)}
-      />
-
-      <SkillRemoteImportDialog
-        open={remoteSkillImportOpen}
-        loading={busyId === 'skill-remote-import'}
-        error={remoteSkillImportOpen ? error : undefined}
-        onOpenChange={(open) => {
-          if (!open && busyId !== 'skill-remote-import') {
-            setRemoteSkillImportOpen(false);
-            setError(undefined);
-          }
-        }}
-        onSubmit={(url) => void importRemoteSkill(url)}
-      />
-
-      <SkillSourceDialog
-        skill={sourceSkill}
-        onOpenChange={(open) => {
-          if (!open) setSourceSkill(undefined);
-        }}
-      />
-
-      <SkillPublishDialog
-        open={publishSkillVersionId !== undefined}
-        skillVersionId={publishSkillVersionId}
-        families={families}
-        onSkillVersionChange={setPublishSkillVersionId}
-        onOpenChange={(open) => {
-          if (!open) setPublishSkillVersionId(undefined);
-        }}
-        onMessage={(value) => {
-          setMessage(value);
-          setError(undefined);
-        }}
-        onError={(value) => {
-          setError(value);
-          setMessage(undefined);
-        }}
       />
 
       <McpRegisterDialog
@@ -1435,6 +1239,7 @@ function NewMaxSkillHub(props: {
       },
       usage: governance?.usage ?? defaultUsage('skill', skill.skillVersionId),
       workspaceActive: governance?.workspaceActive ?? false,
+      activeWorkspaceNames: governance?.activeWorkspaceNames ?? [],
     };
   });
   const filteredRows = rows.filter(({ skill, display, usage, workspaceActive }) => {
@@ -1527,12 +1332,12 @@ function NewMaxSkillHub(props: {
           <button
             type="button"
             data-testid="abilities-section-mcp"
-            className="ability-hub__mcp-shortcut"
+            className="ability-hub__sibling-link"
             aria-label="MCP 管理"
-            title="MCP 管理"
             onClick={props.onOpenMcp}
           >
             <Plug size={14} />
+            <span>MCP 管理</span>
           </button>
         </div>
         <div className="ability-hub__actions">
@@ -1651,6 +1456,7 @@ function NewMaxSkillHub(props: {
                 <button
                   key={category}
                   type="button"
+                  aria-pressed={props.category === category}
                   className={props.category === category ? 'is-active' : undefined}
                   onClick={() => props.onCategoryChange(category)}
                 >
@@ -1918,104 +1724,574 @@ function NewMaxSkillHub(props: {
                     <span>操作</span>
                     <span>启用</span>
                   </div>
-                  {visibleRows.map(({ family, skill, display, usage, workspaceActive }) => {
+                  {visibleRows.map(
+                    ({ family, skill, display, usage, workspaceActive, activeWorkspaceNames }) => {
+                      const issue =
+                        usage.problemCount > 0 || skill.hasScripts || skill.warnings.length > 0;
+                      const globallyEnabled = skill.enabled !== false;
+                      const workspaceBusy = Boolean(
+                        props.busyId?.startsWith(`workspace:skill:${skill.skillVersionId}:`),
+                      );
+                      return (
+                        <article
+                          key={family.skillId}
+                          className={`ability-installed-row${globallyEnabled ? '' : ' is-disabled'}`}
+                          role="row"
+                          data-enabled={globallyEnabled ? '1' : '0'}
+                          aria-disabled={!globallyEnabled || undefined}
+                        >
+                          <button
+                            type="button"
+                            className="ability-installed-row__identity"
+                            onClick={() => props.onOpenSkill(skill.skillVersionId)}
+                          >
+                            <span className="ability-installed-row__copy">
+                              <span className="ability-installed-row__name">
+                                <strong>{display.name}</strong>
+                                <em className={issue ? 'is-warning' : 'is-healthy'}>
+                                  {issue
+                                    ? `${usage.problemCount || skill.warnings.length} 个问题`
+                                    : '已扫描'}
+                                </em>
+                                {!globallyEnabled ? <em className="is-disabled">已停用</em> : null}
+                                <small>v{skill.version}</small>
+                              </span>
+                              <small>{display.description || '未提供说明'}</small>
+                            </span>
+                          </button>
+                          <span
+                            className="ability-installed-row__location"
+                            title={locationOf(skill)}
+                          >
+                            {locationOf(skill)}
+                          </span>
+                          <WorkspaceActivationControl
+                            active={workspaceActive}
+                            activeWorkspaceNames={activeWorkspaceNames}
+                            globallyEnabled={globallyEnabled}
+                            currentWorkspaceId={props.selectedWorkspaceId}
+                            workspaceName={props.workspaceName}
+                            workspaces={props.workspaces}
+                            capabilityType="skill"
+                            capabilityId={skill.skillVersionId}
+                            testId={`skill-workspace-activation-${skill.skillVersionId}`}
+                            busy={workspaceBusy}
+                            disabled={Boolean(props.busyId) && !workspaceBusy}
+                            onWorkspaceChange={(workspaceId, active) =>
+                              props.onWorkspaceActive(skill, active, workspaceId)
+                            }
+                          />
+                          <strong className="ability-installed-row__metric">
+                            {usage.callCount.toLocaleString('zh-CN')}
+                          </strong>
+                          <span className="ability-installed-row__date">
+                            {formatRelativeDate(usage.lastUsedAt)}
+                          </span>
+                          <div className="ability-installed-row__actions">
+                            <button
+                              type="button"
+                              title="使用"
+                              aria-label={`使用 ${display.name}`}
+                              disabled={!globallyEnabled || Boolean(props.busyId)}
+                              onClick={() => props.onUseSkill(skill)}
+                            >
+                              <Play size={13} />
+                            </button>
+                            <button
+                              type="button"
+                              title="编辑"
+                              aria-label={`编辑 ${display.name}`}
+                              onClick={() => props.onEditMetadata(skill)}
+                            >
+                              <Edit3 size={13} />
+                            </button>
+                            {skill.originType !== 'market' ? (
+                              <button
+                                type="button"
+                                title="共享"
+                                aria-label={`共享 ${display.name}`}
+                                onClick={() => props.onPublishSkill(skill)}
+                              >
+                                <Upload size={13} />
+                              </button>
+                            ) : null}
+                          </div>
+                          <button
+                            type="button"
+                            className="ability-enable-switch"
+                            role="switch"
+                            aria-checked={skill.enabled !== false}
+                            aria-label={`${skill.enabled === false ? '启用' : '停用'} ${display.name}`}
+                            data-enabled={skill.enabled !== false ? '1' : '0'}
+                            disabled={Boolean(props.busyId)}
+                            onClick={() => props.onGlobalEnabled(skill, skill.enabled === false)}
+                          >
+                            <span />
+                          </button>
+                        </article>
+                      );
+                    },
+                  )}
+                </div>
+              )}
+            </div>
+          </>
+        )}
+      </div>
+    </>
+  );
+}
+
+function NewMaxMcpHub(props: {
+  tab: 'market' | 'mine';
+  query: string;
+  category: (typeof MCP_CATEGORIES)[number];
+  statusFilter: StatusFilter;
+  servers: McpServerSummary[];
+  governanceMap: Map<string, GovernedMcpServerSummary>;
+  loading: boolean;
+  loadError?: string;
+  message?: string;
+  error?: string;
+  busyId?: string;
+  onBack(): void;
+  onOpenSkills(): void;
+  onTabChange(tab: CatalogTab): void;
+  onQueryChange(value: string): void;
+  onCategoryChange(value: (typeof MCP_CATEGORIES)[number]): void;
+  onStatusFilterChange(value: StatusFilter): void;
+  onReload(): void;
+  onCloseNotice(): void;
+  onOpenMarket(id: string): void;
+  onOpenServer(id: string): void;
+  onRegister(item: McpMarketItem | null): void;
+  onGlobalEnabled(server: McpServerSummary, enabled: boolean): void;
+  onRefresh(server: McpServerSummary): void;
+  onOrganize(): void;
+}): JSX.Element {
+  const [sortMode, setSortMode] = useState<'calls' | 'updated' | 'name'>('calls');
+  const [sortMenuOpen, setSortMenuOpen] = useState(false);
+  const needle = props.query.trim().toLocaleLowerCase();
+  const marketItems = MCP_MARKET.filter((item) => {
+    const categoryMatches = props.category === '全部' || item.category === props.category;
+    const searchMatches =
+      !needle ||
+      [item.name, item.category, item.description, item.endpoint]
+        .join('\n')
+        .toLocaleLowerCase()
+        .includes(needle);
+    return categoryMatches && searchMatches;
+  });
+  const rows = props.servers.map((server) => {
+    const governance = props.governanceMap.get(server.mcpServerId);
+    return {
+      server,
+      usage: governance?.usage ?? defaultUsage('mcp', server.mcpServerId),
+    };
+  });
+  const filteredRows = rows.filter(({ server, usage }) => {
+    const searchMatches =
+      !needle ||
+      [server.name, server.endpoint, server.notes, ...server.tools.map((tool) => tool.name)]
+        .join('\n')
+        .toLocaleLowerCase()
+        .includes(needle);
+    const statusMatches =
+      props.statusFilter === 'all' ||
+      (props.statusFilter === 'active' && usage.callCount > 0) ||
+      (props.statusFilter === 'enabled' && server.enabled !== false) ||
+      (props.statusFilter === 'inactive' && server.enabled === false) ||
+      (props.statusFilter === 'unused' && usage.callCount === 0) ||
+      (props.statusFilter === 'problem' &&
+        (usage.problemCount > 0 || !server.trusted || server.tools.length === 0));
+    return searchMatches && statusMatches;
+  });
+  const visibleRows = [...filteredRows].sort((left, right) => {
+    if (sortMode === 'name') return left.server.name.localeCompare(right.server.name, 'zh-CN');
+    if (sortMode === 'updated') {
+      return Date.parse(right.server.updatedAt) - Date.parse(left.server.updatedAt);
+    }
+    return (
+      right.usage.callCount - left.usage.callCount ||
+      Date.parse(right.server.updatedAt) - Date.parse(left.server.updatedAt)
+    );
+  });
+  const enabledCount = rows.filter((row) => row.server.enabled !== false).length;
+  const recentCount = rows.filter((row) => row.usage.callCount > 0).length;
+  const unusedCount = rows.filter((row) => row.usage.callCount === 0).length;
+  const problemCount = rows.filter(
+    (row) => row.usage.problemCount > 0 || !row.server.trusted || row.server.tools.length === 0,
+  ).length;
+  const statusCounts: Record<StatusFilter, number> = {
+    all: rows.length,
+    active: recentCount,
+    enabled: enabledCount,
+    inactive: rows.length - enabledCount,
+    unused: unusedCount,
+    problem: problemCount,
+  };
+
+  return (
+    <>
+      <header className="ability-hub__topbar">
+        <div className="ability-hub__title-block">
+          <button
+            type="button"
+            className="ability-hub__back"
+            aria-label="返回"
+            title="返回"
+            onClick={props.onBack}
+          >
+            <ArrowLeft size={17} />
+          </button>
+          <h1>MCP 管理</h1>
+          <button
+            type="button"
+            className="ability-hub__sibling-link"
+            aria-label="Skill 管理"
+            onClick={props.onOpenSkills}
+          >
+            <Sparkles size={14} />
+            <span>Skill 管理</span>
+          </button>
+        </div>
+        <div className="ability-hub__actions">
+          <button
+            type="button"
+            data-testid="mcp-register-open"
+            className="ability-hub__create-action"
+            onClick={() => props.onRegister(null)}
+          >
+            <Plus size={14} />
+            注册 MCP
+          </button>
+        </div>
+      </header>
+
+      <div className="ability-hub__body">
+        <section className="ability-hub__controls">
+          <SlidingTabs className="ability-hub__catalog-tabs" aria-label="MCP 目录">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={props.tab === 'market'}
+              className={props.tab === 'market' ? 'is-active' : undefined}
+              onClick={() => props.onTabChange('market')}
+            >
+              MCP 市场 <span>{MCP_MARKET.length}</span>
+            </button>
+            <button
+              type="button"
+              role="tab"
+              data-testid="mcp-tab-mine"
+              aria-selected={props.tab === 'mine'}
+              className={props.tab === 'mine' ? 'is-active' : undefined}
+              onClick={() => props.onTabChange('mine')}
+            >
+              我的 MCP <span>{props.servers.length}</span>
+            </button>
+          </SlidingTabs>
+          <label className="ability-hub__search">
+            <Search size={14} />
+            <input
+              value={props.query}
+              onChange={(event) => props.onQueryChange(event.target.value)}
+              placeholder="搜索 MCP"
+              aria-label="搜索 MCP"
+            />
+            {props.query ? (
+              <button type="button" aria-label="清除搜索" onClick={() => props.onQueryChange('')}>
+                <X size={12} />
+              </button>
+            ) : null}
+          </label>
+        </section>
+
+        {props.loadError ? (
+          <div className="ability-status is-error" role="alert">
+            <AlertTriangle size={14} />
+            <div>
+              <strong>能力库加载失败</strong>
+              <span>{props.loadError}</span>
+            </div>
+            <button type="button" onClick={props.onReload}>
+              重新加载
+            </button>
+          </div>
+        ) : props.message ? (
+          <div className="ability-status is-success" role="status">
+            <CheckCircle2 size={14} />
+            <div>
+              <strong>{props.message}</strong>
+            </div>
+            <button type="button" aria-label="关闭提示" onClick={props.onCloseNotice}>
+              <X size={12} />
+            </button>
+          </div>
+        ) : props.error ? (
+          <div className="ability-status is-error" role="alert">
+            <AlertTriangle size={14} />
+            <div>
+              <strong>{props.error}</strong>
+            </div>
+            <button type="button" aria-label="关闭错误" onClick={props.onCloseNotice}>
+              <X size={12} />
+            </button>
+          </div>
+        ) : null}
+
+        {props.tab === 'market' ? (
+          <>
+            <div className="ability-hub__category-row">
+              {MCP_CATEGORIES.map((category) => (
+                <button
+                  key={category}
+                  type="button"
+                  aria-pressed={props.category === category}
+                  className={props.category === category ? 'is-active' : undefined}
+                  onClick={() => props.onCategoryChange(category)}
+                >
+                  {category}
+                </button>
+              ))}
+            </div>
+            <div className="ability-hub__scroll">
+              <div className="ability-hub__market-grid">
+                {marketItems.map((item) => {
+                  const installed = marketMcpInstalled(item, props.servers);
+                  return (
+                    <article key={item.id} className="ability-market-card">
+                      <button
+                        type="button"
+                        className="ability-market-card__main"
+                        onClick={() =>
+                          installed
+                            ? props.onOpenServer(installed.mcpServerId)
+                            : props.onOpenMarket(item.id)
+                        }
+                      >
+                        <span className="ability-market-card__icon is-mcp">
+                          <McpMarketGlyph category={item.category} />
+                        </span>
+                        <span className="ability-market-card__copy">
+                          <span className="ability-market-card__title">
+                            <strong>{item.name}</strong>
+                            {installed ? <em>已注册</em> : null}
+                          </span>
+                          <span className="ability-market-card__description">
+                            {item.description}
+                          </span>
+                        </span>
+                      </button>
+                      <footer className="ability-market-card__footer">
+                        <span>{item.transport === 'local-stdio' ? '本地 stdio' : '远程 HTTP'}</span>
+                        <div>
+                          {installed ? (
+                            <button
+                              type="button"
+                              className="is-link"
+                              onClick={() => props.onOpenServer(installed.mcpServerId)}
+                            >
+                              管理
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              className="is-use"
+                              onClick={() => props.onRegister(item)}
+                            >
+                              <Plus size={11} />
+                              注册
+                            </button>
+                          )}
+                        </div>
+                      </footer>
+                    </article>
+                  );
+                })}
+              </div>
+              {marketItems.length === 0 ? <EmptyState title="没有匹配的 MCP" compact /> : null}
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="ability-hub__stats">
+              <NewMaxStat value={rows.length} label="全部 MCP" note="已登记的外部工具服务" />
+              <NewMaxStat value={enabledCount} label="已启用" note="可在 Agent 中绑定使用" />
+              <NewMaxStat value={recentCount} label="近期调用" note="45 天内有调用记录" />
+              <NewMaxStat value={unusedCount} label="未调用" note="45 天内没有调用记录" />
+              <NewMaxStat
+                value={problemCount}
+                label="需检查"
+                note="未信任、无工具或调用异常"
+                warning={problemCount > 0}
+              />
+            </div>
+            <div className="ability-hub__filter-row">
+              <div className="ability-hub__security-filter" aria-label="状态筛选">
+                {(
+                  [
+                    ['all', '全部状态'],
+                    ['enabled', '已启用'],
+                    ['active', '近期调用'],
+                    ['inactive', '已停用'],
+                    ['unused', '未调用'],
+                    ['problem', '需检查'],
+                  ] as const
+                ).map(([value, label]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    aria-pressed={props.statusFilter === value}
+                    className={props.statusFilter === value ? 'is-active' : undefined}
+                    onClick={() => props.onStatusFilterChange(value)}
+                  >
+                    {label}
+                    {statusCounts[value] > 0 ? <small>{statusCounts[value]}</small> : null}
+                  </button>
+                ))}
+              </div>
+              <button
+                type="button"
+                className="ability-hub__organize"
+                disabled={Boolean(props.busyId)}
+                onClick={props.onOrganize}
+              >
+                {props.busyId === 'organize' ? (
+                  <Loader2 className="animate-spin" size={13} />
+                ) : (
+                  <WandSparkles size={13} />
+                )}
+                一键整理
+              </button>
+              <div className="ability-hub__sort-wrap">
+                <button
+                  type="button"
+                  className="ability-hub__sort"
+                  aria-haspopup="menu"
+                  aria-expanded={sortMenuOpen}
+                  onClick={() => setSortMenuOpen((open) => !open)}
+                >
+                  {sortMode === 'calls'
+                    ? '按调用次数'
+                    : sortMode === 'updated'
+                      ? '最近更新'
+                      : '按名称'}{' '}
+                  <ChevronDown size={12} />
+                </button>
+                {sortMenuOpen ? (
+                  <div className="ability-hub__sort-menu" role="menu">
+                    {(
+                      [
+                        ['calls', '按调用次数'],
+                        ['updated', '最近更新'],
+                        ['name', '按名称'],
+                      ] as const
+                    ).map(([value, label]) => (
+                      <button
+                        key={value}
+                        type="button"
+                        role="menuitemradio"
+                        aria-checked={sortMode === value}
+                        onClick={() => {
+                          setSortMode(value);
+                          setSortMenuOpen(false);
+                        }}
+                      >
+                        {label}
+                        {sortMode === value ? <Check size={11} /> : null}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            </div>
+            <div className="ability-hub__scroll ability-hub__scroll--mcp">
+              {props.loading ? (
+                <LoadingState label="正在读取 MCP..." />
+              ) : rows.length === 0 ? (
+                <div className="ability-hub__empty-library">
+                  <span>
+                    <Plug size={20} />
+                  </span>
+                  <h2>还没有注册 MCP</h2>
+                  <p>从市场选择模板，或手动填写本地命令与远程 Endpoint。</p>
+                  <button type="button" onClick={() => props.onRegister(null)}>
+                    <Plus size={13} />
+                    注册 MCP
+                  </button>
+                </div>
+              ) : visibleRows.length === 0 ? (
+                <EmptyState title="没有匹配的 MCP" compact />
+              ) : (
+                <div className="mcp-installed-grid" aria-label="MCP 服务列表">
+                  {visibleRows.map(({ server, usage }) => {
                     const issue =
-                      usage.problemCount > 0 || skill.hasScripts || skill.warnings.length > 0;
-                    const globallyEnabled = skill.enabled !== false;
-                    const workspaceBusy = Boolean(
-                      props.busyId?.startsWith(`workspace:skill:${skill.skillVersionId}:`),
-                    );
+                      usage.problemCount > 0 || !server.trusted || server.tools.length === 0;
+                    const refreshBusy = props.busyId === `mcp-refresh:${server.mcpServerId}`;
                     return (
                       <article
-                        key={family.skillId}
-                        className={`ability-installed-row${globallyEnabled ? '' : ' is-disabled'}`}
-                        role="row"
-                        data-enabled={globallyEnabled ? '1' : '0'}
-                        aria-disabled={!globallyEnabled || undefined}
+                        key={server.mcpServerId}
+                        className={`mcp-installed-card${server.enabled === false ? ' is-disabled' : ''}`}
                       >
                         <button
                           type="button"
-                          className="ability-installed-row__identity"
-                          onClick={() => props.onOpenSkill(skill.skillVersionId)}
+                          className="mcp-installed-card__main"
+                          onClick={() => props.onOpenServer(server.mcpServerId)}
                         >
-                          <span className="ability-installed-row__copy">
-                            <span className="ability-installed-row__name">
-                              <strong>{display.name}</strong>
-                              <em className={issue ? 'is-warning' : 'is-healthy'}>
-                                {issue
-                                  ? `${usage.problemCount || skill.warnings.length} 个问题`
-                                  : '已扫描'}
-                              </em>
-                              {!globallyEnabled ? <em className="is-disabled">已停用</em> : null}
-                              <small>v{skill.version}</small>
-                            </span>
-                            <small>{display.description || '未提供说明'}</small>
+                          <span className="capability-row-icon is-mcp">
+                            <Server size={15} />
+                          </span>
+                          <span>
+                            <strong>{server.name}</strong>
+                            <em>
+                              {issue
+                                ? '需要检查'
+                                : `${server.tools.length.toLocaleString('zh-CN')} 个工具`}
+                            </em>
+                            <small>{server.endpoint || '未填写 Endpoint'}</small>
                           </span>
                         </button>
-                        <span className="ability-installed-row__location" title={locationOf(skill)}>
-                          {locationOf(skill)}
-                        </span>
-                        <WorkspaceActivationControl
-                          active={workspaceActive}
-                          globallyEnabled={globallyEnabled}
-                          currentWorkspaceId={props.selectedWorkspaceId}
-                          workspaceName={props.workspaceName}
-                          workspaces={props.workspaces}
-                          capabilityType="skill"
-                          capabilityId={skill.skillVersionId}
-                          testId={`skill-workspace-activation-${skill.skillVersionId}`}
-                          busy={workspaceBusy}
-                          disabled={Boolean(props.busyId) && !workspaceBusy}
-                          onWorkspaceChange={(workspaceId, active) =>
-                            props.onWorkspaceActive(skill, active, workspaceId)
-                          }
-                        />
-                        <strong className="ability-installed-row__metric">
-                          {usage.callCount.toLocaleString('zh-CN')}
-                        </strong>
-                        <span className="ability-installed-row__date">
-                          {formatRelativeDate(usage.lastUsedAt)}
-                        </span>
-                        <div className="ability-installed-row__actions">
-                          <button
-                            type="button"
-                            title="使用"
-                            aria-label={`使用 ${display.name}`}
-                            disabled={!globallyEnabled || Boolean(props.busyId)}
-                            onClick={() => props.onUseSkill(skill)}
-                          >
-                            <Play size={13} />
-                          </button>
-                          <button
-                            type="button"
-                            title="编辑"
-                            aria-label={`编辑 ${display.name}`}
-                            onClick={() => props.onEditMetadata(skill)}
-                          >
-                            <Edit3 size={13} />
-                          </button>
-                          {skill.originType !== 'market' ? (
-                            <button
-                              type="button"
-                              title="共享"
-                              aria-label={`共享 ${display.name}`}
-                              onClick={() => props.onPublishSkill(skill)}
-                            >
-                              <Upload size={13} />
-                            </button>
-                          ) : null}
-                        </div>
+                        {/* TD-041: MCP is global. Workspace activation records are audit-only. */}
                         <button
                           type="button"
                           className="ability-enable-switch"
                           role="switch"
-                          aria-checked={skill.enabled !== false}
-                          aria-label={`${skill.enabled === false ? '启用' : '停用'} ${display.name}`}
-                          data-enabled={skill.enabled !== false ? '1' : '0'}
+                          aria-checked={server.enabled !== false}
+                          aria-label={`${server.enabled === false ? '启用' : '停用'} ${server.name}`}
+                          data-enabled={server.enabled !== false ? '1' : '0'}
                           disabled={Boolean(props.busyId)}
-                          onClick={() => props.onGlobalEnabled(skill, skill.enabled === false)}
+                          onClick={() => props.onGlobalEnabled(server, server.enabled === false)}
                         >
                           <span />
+                        </button>
+                        <div className="mcp-installed-card__facts">
+                          <span>
+                            <Link2 size={12} />
+                            {server.transport === 'remote-http' ? '远程 HTTP' : '本地 stdio'}
+                          </span>
+                          <span>
+                            <ShieldCheck size={12} />
+                            {server.trusted ? '可信来源' : '未标记可信'}
+                          </span>
+                          <span>
+                            <CircleGauge size={12} />
+                            {usage.callCount.toLocaleString('zh-CN')} 次调用
+                          </span>
+                          <span>{formatRelativeDate(usage.lastUsedAt)}</span>
+                        </div>
+                        <button
+                          type="button"
+                          data-testid={`mcp-row-refresh-${server.mcpServerId}`}
+                          className="mcp-installed-card__refresh"
+                          disabled={Boolean(props.busyId)}
+                          onClick={() => props.onRefresh(server)}
+                        >
+                          <RefreshCw
+                            className={refreshBusy ? 'animate-spin' : undefined}
+                            size={12}
+                          />
+                          {refreshBusy ? '刷新中' : '刷新工具'}
                         </button>
                       </article>
                     );
@@ -2057,83 +2333,13 @@ function MarketSkillGlyph(props: { icon?: string }): JSX.Element {
   return <PackageOpen size={23} />;
 }
 
-function HeaderActions(props: {
-  section: AbilitySection;
-  createMenuOpen: boolean;
-  hasSkills: boolean;
-  onActivationCode(): void;
-  onToggleCreateMenu(): void;
-  onCreateSkill(): void;
-  onImportRemoteSkill(): void;
-  onPublishSkill(): void;
-  onRegisterMcp(): void;
-}): JSX.Element {
-  if (props.section === 'mcp') {
-    return (
-      <div className="capability-center__header-actions">
-        <button
-          type="button"
-          data-testid="mcp-register-open"
-          className="capability-button capability-button--primary"
-          onClick={props.onRegisterMcp}
-        >
-          <Plus size={14} />
-          注册 MCP
-        </button>
-      </div>
-    );
-  }
-
-  return (
-    <div className="capability-center__header-actions">
-      <button
-        type="button"
-        className="capability-button capability-button--outline"
-        onClick={props.onActivationCode}
-      >
-        <KeyRound size={13} />
-        Skill 激活码
-      </button>
-      <div className="capability-create-menu">
-        <button
-          type="button"
-          data-testid="open-skill-import"
-          className="capability-button capability-button--primary"
-          aria-expanded={props.createMenuOpen}
-          onClick={props.onToggleCreateMenu}
-        >
-          <Plus size={14} />
-          创建 Skill
-          <ChevronDown size={12} />
-        </button>
-        {props.createMenuOpen ? (
-          <div className="capability-create-menu__popover">
-            <button type="button" onClick={props.onCreateSkill}>
-              <FileCode2 size={15} />
-              <span>
-                <strong>本地创建</strong>
-                <small>新建或导入 SKILL.md</small>
-              </span>
-            </button>
-            <button type="button" onClick={props.onImportRemoteSkill}>
-              <CloudDownload size={15} />
-              <span>
-                <strong>远端导入</strong>
-                <small>从 URL 获取并保存到本地能力库</small>
-              </span>
-            </button>
-            <button type="button" disabled={!props.hasSkills} onClick={props.onPublishSkill}>
-              <Send size={15} />
-              <span>
-                <strong>发布到市场</strong>
-                <small>{props.hasSkills ? '保存本地发布草稿' : '请先创建一个 Skill'}</small>
-              </span>
-            </button>
-          </div>
-        ) : null}
-      </div>
-    </div>
-  );
+function McpMarketGlyph(props: { category: string }): JSX.Element {
+  if (props.category === '文件系统') return <Folder size={23} />;
+  if (props.category === '浏览器') return <Globe2 size={23} />;
+  if (props.category === '数据库') return <Layers3 size={23} />;
+  if (props.category === '协作') return <Boxes size={23} />;
+  if (props.category === '开发工具') return <Code2 size={23} />;
+  return <Plug size={23} />;
 }
 
 export function SkillSurface(props: {
@@ -2501,257 +2707,6 @@ export function SkillSurface(props: {
   );
 }
 
-function McpSurface(props: {
-  tab: CatalogTab;
-  query: string;
-  category: (typeof MCP_CATEGORIES)[number];
-  statusFilter: StatusFilter;
-  servers: McpServerSummary[];
-  governanceMap: Map<string, GovernedMcpServerSummary>;
-  loading: boolean;
-  workspaces: WorkspaceSummary[];
-  selectedWorkspaceId: string;
-  workspaceName: string;
-  busyId?: string;
-  onCategoryChange(value: (typeof MCP_CATEGORIES)[number]): void;
-  onStatusFilterChange(value: StatusFilter): void;
-  onWorkspaceChange(value: string): void;
-  onOpenMarket(id: string): void;
-  onOpenServer(id: string): void;
-  onRegister(item: McpMarketItem | null): void;
-  onGlobalEnabled(server: McpServerSummary, enabled: boolean): void;
-  onRefresh(server: McpServerSummary): void;
-  onOrganize(): void;
-}): JSX.Element {
-  const needle = props.query.trim().toLocaleLowerCase();
-  const marketItems = MCP_MARKET.filter((item) => {
-    const categoryMatches = props.category === '全部' || item.category === props.category;
-    const searchMatches =
-      !needle ||
-      [item.name, item.category, item.description, item.endpoint]
-        .join('\n')
-        .toLocaleLowerCase()
-        .includes(needle);
-    return categoryMatches && searchMatches;
-  });
-  const visibleServers = props.servers.filter((server) => {
-    const row = props.governanceMap.get(server.mcpServerId);
-    const usage = row?.usage ?? defaultUsage('mcp', server.mcpServerId);
-    const searchMatches =
-      !needle ||
-      [server.name, server.endpoint, server.notes, ...server.tools.map((tool) => tool.name)]
-        .join('\n')
-        .toLocaleLowerCase()
-        .includes(needle);
-    // MCP is global: enablement is the only gate (no workspace activation).
-    const statusMatches =
-      props.statusFilter === 'all' ||
-      (props.statusFilter === 'active' && usage.callCount > 0) ||
-      (props.statusFilter === 'enabled' && server.enabled !== false) ||
-      (props.statusFilter === 'inactive' && server.enabled === false) ||
-      (props.statusFilter === 'unused' && usage.callCount === 0) ||
-      (props.statusFilter === 'problem' &&
-        (usage.problemCount > 0 || !server.trusted || server.tools.length === 0));
-    return searchMatches && statusMatches;
-  });
-
-  if (props.tab === 'market') {
-    return (
-      <section className="capability-center__content">
-        <CategoryRail
-          items={MCP_CATEGORIES}
-          value={props.category}
-          onChange={props.onCategoryChange}
-        />
-        <div className="capability-market-grid">
-          {marketItems.map((item) => {
-            const installed = marketMcpInstalled(item, props.servers);
-            return (
-              <article key={item.id} className="capability-market-card">
-                <button
-                  type="button"
-                  className="capability-market-card__body"
-                  onClick={() =>
-                    installed
-                      ? props.onOpenServer(installed.mcpServerId)
-                      : props.onOpenMarket(item.id)
-                  }
-                >
-                  <span className="capability-market-card__icon is-mcp">
-                    <Plug size={20} />
-                  </span>
-                  <span className="capability-market-card__copy">
-                    <span>
-                      <strong>{item.name}</strong>
-                      {installed ? <em>已注册</em> : null}
-                    </span>
-                    <small>{item.description}</small>
-                  </span>
-                </button>
-                <footer>
-                  <span>{item.transport === 'local-stdio' ? '本地 stdio' : '远程 HTTP'}</span>
-                  {installed ? (
-                    <button
-                      type="button"
-                      className="capability-link-button"
-                      onClick={() => props.onOpenServer(installed.mcpServerId)}
-                    >
-                      管理
-                      <ArrowRight size={12} />
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      className="capability-install-button"
-                      onClick={() => props.onRegister(item)}
-                    >
-                      <Plus size={12} />
-                      注册
-                    </button>
-                  )}
-                </footer>
-              </article>
-            );
-          })}
-        </div>
-      </section>
-    );
-  }
-
-  const rows = props.servers.map((server) => {
-    const governance = props.governanceMap.get(server.mcpServerId);
-    return {
-      server,
-      usage: governance?.usage ?? defaultUsage('mcp', server.mcpServerId),
-    };
-  });
-  const recentCount = rows.filter((row) => row.usage.callCount > 0).length;
-  const unusedCount = rows.filter((row) => row.usage.callCount === 0).length;
-  const problemCount = rows.filter(
-    (row) => row.usage.problemCount > 0 || !row.server.trusted || row.server.tools.length === 0,
-  ).length;
-  const contextTokens = rows.reduce((sum, row) => sum + row.usage.contextTokens, 0);
-
-  return (
-    <section className="capability-center__content capability-center__content--mine">
-      <CapabilityStats
-        total={props.servers.length}
-        recent={recentCount}
-        unused={unusedCount}
-        problems={problemCount}
-        contextTokens={contextTokens}
-      />
-      <GovernanceFilters
-        workspaces={props.workspaces}
-        selectedWorkspaceId={props.selectedWorkspaceId}
-        workspaceName={props.workspaceName}
-        statusFilter={props.statusFilter}
-        sourceFilter="all"
-        organizing={props.busyId === 'organize'}
-        onWorkspaceChange={props.onWorkspaceChange}
-        onStatusFilterChange={props.onStatusFilterChange}
-        onSourceFilterChange={() => undefined}
-        onOrganize={props.onOrganize}
-      />
-      <div className="capability-list-shell">
-        {props.loading ? (
-          <LoadingState label="正在读取 MCP..." />
-        ) : props.servers.length === 0 ? (
-          <EmptyState
-            title="还没有注册 MCP"
-            description="从市场选择模板，或手动填写本地命令与远程 Endpoint。"
-            actionLabel="注册 MCP"
-            onAction={() => props.onRegister(null)}
-          />
-        ) : visibleServers.length === 0 ? (
-          <EmptyState title="没有匹配的 MCP" compact />
-        ) : (
-          <div
-            className="capability-governance-list capability-governance-list--mcp"
-            role="table"
-            aria-label="MCP 治理列表"
-          >
-            <div className="capability-governance-list__header" role="row">
-              <span>MCP 服务</span>
-              <span>连接</span>
-              <span>45 天调用</span>
-              <span>最后调用</span>
-              <span>操作</span>
-              <span>启用</span>
-            </div>
-            {visibleServers.map((server) => {
-              const governance = props.governanceMap.get(server.mcpServerId);
-              const usage = governance?.usage ?? defaultUsage('mcp', server.mcpServerId);
-              const issue = usage.problemCount > 0 || !server.trusted || server.tools.length === 0;
-              return (
-                <article key={server.mcpServerId} className="capability-governance-row" role="row">
-                  <button
-                    type="button"
-                    className="capability-governance-row__identity"
-                    onClick={() => props.onOpenServer(server.mcpServerId)}
-                  >
-                    <span className="capability-row-icon is-mcp">
-                      <Server size={15} />
-                    </span>
-                    <span className="ability-installed-row__copy">
-                      <span>
-                        <strong>{server.name}</strong>
-                        <em className={issue ? 'is-warning' : undefined}>
-                          {issue ? '需要检查' : `${server.tools.length} 个工具`}
-                        </em>
-                      </span>
-                      <small>{server.notes || server.endpoint || '未填写连接说明'}</small>
-                    </span>
-                  </button>
-                  <span className="capability-origin">
-                    {server.transport === 'remote-http' ? '远程 HTTP' : '本地 stdio'}
-                    <small>{server.trusted ? '可信来源' : '未标记可信'}</small>
-                  </span>
-                  <strong className="capability-governance-row__metric">
-                    {usage.callCount.toLocaleString('zh-CN')}
-                  </strong>
-                  <span>{formatRelativeDate(usage.lastUsedAt)}</span>
-                  <div className="capability-row-actions">
-                    <button
-                      type="button"
-                      data-testid={`mcp-row-refresh-${server.mcpServerId}`}
-                      title="刷新工具"
-                      disabled={Boolean(props.busyId)}
-                      onClick={() => props.onRefresh(server)}
-                    >
-                      <RefreshCw
-                        size={13}
-                        className={
-                          props.busyId === `mcp-refresh:${server.mcpServerId}`
-                            ? 'animate-spin'
-                            : undefined
-                        }
-                      />
-                    </button>
-                    <button
-                      type="button"
-                      title="查看详情"
-                      onClick={() => props.onOpenServer(server.mcpServerId)}
-                    >
-                      <BookOpen size={13} />
-                    </button>
-                  </div>
-                  <ToggleSwitch
-                    label={`${server.enabled === false ? '启用' : '停用'} ${server.name}`}
-                    checked={server.enabled !== false}
-                    disabled={Boolean(props.busyId)}
-                    onChange={(enabled) => props.onGlobalEnabled(server, enabled)}
-                  />
-                </article>
-              );
-            })}
-          </div>
-        )}
-      </div>
-    </section>
-  );
-}
-
 function CategoryRail<T extends string>(props: {
   items: readonly T[];
   value: T;
@@ -2960,6 +2915,7 @@ function GovernanceRuleNote(): JSX.Element {
 
 function WorkspaceActivationControl(props: {
   active: boolean;
+  activeWorkspaceNames?: readonly string[];
   globallyEnabled: boolean;
   currentWorkspaceId: string;
   workspaceName: string;
@@ -3112,6 +3068,22 @@ function WorkspaceActivationControl(props: {
   );
 
   const triggerDisabled = !props.globallyEnabled || Boolean(props.disabled);
+  const activeWorkspaceNames = (props.activeWorkspaceNames ?? [])
+    .map((name) => name.trim())
+    .filter(Boolean);
+  const displayedWorkspaceNames =
+    activeWorkspaceNames.length > 0
+      ? activeWorkspaceNames
+      : props.active
+        ? [props.workspaceName]
+        : [];
+  const hasActiveWorkspace = displayedWorkspaceNames.length > 0;
+  const activationLabel =
+    displayedWorkspaceNames.length === 0
+      ? '未激活'
+      : displayedWorkspaceNames.length === 1
+        ? displayedWorkspaceNames[0]
+        : `${displayedWorkspaceNames[0]} +${displayedWorkspaceNames.length - 1}`;
 
   return (
     <DropdownMenu.Root open={open} onOpenChange={setOpen} modal={false}>
@@ -3119,7 +3091,7 @@ function WorkspaceActivationControl(props: {
         <button
           type="button"
           className={`capability-workspace-activation${
-            props.active && props.globallyEnabled ? ' is-active' : ''
+            hasActiveWorkspace && props.globallyEnabled ? ' is-active' : ''
           }${props.busy ? ' is-busy' : ''}${triggerDisabled ? ' is-disabled' : ''}`}
           data-testid={props.testId}
           disabled={triggerDisabled}
@@ -3128,12 +3100,14 @@ function WorkspaceActivationControl(props: {
           aria-busy={props.busy || undefined}
           title={
             props.globallyEnabled
-              ? `${props.workspaceName}：${props.active ? '已激活' : '未激活'}`
+              ? hasActiveWorkspace
+                ? `${displayedWorkspaceNames.join('、')}：已激活`
+                : `${props.workspaceName}：未激活`
               : 'Skill 已全局停用'
           }
         >
           <span className="capability-workspace-activation__label">
-            {props.globallyEnabled ? (props.active ? props.workspaceName : '未激活') : '已停用'}
+            {props.globallyEnabled ? activationLabel : '已停用'}
           </span>
           {props.globallyEnabled ? (
             props.busy ? (
@@ -3273,37 +3247,6 @@ function StatCard(props: {
       </div>
       <p>{props.detail}</p>
     </article>
-  );
-}
-
-function StatusBanner(props: {
-  kind: 'success' | 'error';
-  title: string;
-  detail?: string;
-  children?: ReactNode;
-  onClose?(): void;
-}): JSX.Element {
-  return (
-    <div
-      className={
-        props.kind === 'success'
-          ? 'capability-status-banner is-success'
-          : 'capability-status-banner is-error'
-      }
-      role={props.kind === 'error' ? 'alert' : 'status'}
-    >
-      {props.kind === 'success' ? <CheckCircle2 size={14} /> : <AlertTriangle size={14} />}
-      <div>
-        <strong>{props.title}</strong>
-        {props.detail ? <span>{props.detail}</span> : null}
-      </div>
-      {props.children}
-      {props.onClose ? (
-        <button type="button" aria-label="关闭提示" onClick={props.onClose}>
-          <X size={13} />
-        </button>
-      ) : null}
-    </div>
   );
 }
 
@@ -4674,105 +4617,6 @@ function SkillEditorDialog(props: {
             >
               {props.saving ? <Loader2 className="animate-spin" size={13} /> : <Save size={13} />}
               {props.saving ? '保存中' : '保存'}
-            </button>
-          </footer>
-        </Dialog.Content>
-      </Dialog.Portal>
-    </Dialog.Root>
-  );
-}
-
-function SkillRemoteImportDialog(props: {
-  open: boolean;
-  loading: boolean;
-  error?: string;
-  onOpenChange(open: boolean): void;
-  onSubmit(url: string): void;
-}): JSX.Element {
-  const [url, setUrl] = useState('');
-
-  useEffect(() => {
-    if (props.open) return;
-    setUrl('');
-  }, [props.open]);
-
-  return (
-    <Dialog.Root open={props.open} onOpenChange={props.onOpenChange}>
-      <Dialog.Portal>
-        <Dialog.Overlay className="capability-dialog-overlay" />
-        <Dialog.Content className="capability-dialog capability-dialog--remote-import">
-          <header className="capability-dialog__header">
-            <div>
-              <Dialog.Title>导入远端 Skill</Dialog.Title>
-              <Dialog.Description>
-                从公开 HTTP(S) 地址读取 SKILL.md，校验后保存为本地版本。
-              </Dialog.Description>
-            </div>
-            <Dialog.Close asChild>
-              <button
-                type="button"
-                className="capability-icon-button"
-                aria-label="关闭远端 Skill 导入"
-                disabled={props.loading}
-              >
-                <X size={17} />
-              </button>
-            </Dialog.Close>
-          </header>
-          <div className="capability-dialog__body capability-remote-import-form">
-            <label className="capability-form-field">
-              <span>
-                <Link2 size={13} /> SKILL.md 地址
-              </span>
-              <input
-                data-testid="skill-remote-url-input"
-                type="url"
-                value={url}
-                spellCheck={false}
-                placeholder="https://raw.githubusercontent.com/org/repo/main/SKILL.md"
-                onChange={(event) => setUrl(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter' && url.trim() && !props.loading) {
-                    event.preventDefault();
-                    props.onSubmit(url);
-                  }
-                }}
-              />
-              <small>支持 GitHub blob 地址；内容仅作为文本解析，脚本不会执行。</small>
-            </label>
-            <div className="capability-remote-import-note">
-              <CloudDownload size={15} />
-              <div>
-                <strong>来源会被记录</strong>
-                <span>导入后可在“我的 Skill”中查看远端来源并继续编辑。</span>
-              </div>
-            </div>
-            {props.error ? (
-              <div className="capability-inline-error" role="alert">
-                <AlertTriangle size={14} />
-                {props.error}
-              </div>
-            ) : null}
-          </div>
-          <footer className="capability-dialog__footer">
-            <Dialog.Close asChild>
-              <button type="button" className="capability-button is-quiet" disabled={props.loading}>
-                取消
-              </button>
-            </Dialog.Close>
-            <button
-              type="button"
-              data-testid="skill-remote-import-submit"
-              className="capability-button capability-button--primary"
-              disabled={props.loading || !url.trim()}
-              onClick={() => props.onSubmit(url)}
-            >
-              {props.loading ? (
-                <Loader2 className="animate-spin" size={13} />
-              ) : (
-                <CloudDownload size={13} />
-              )}
-              {props.loading ? '获取中' : '获取并导入'}
             </button>
           </footer>
         </Dialog.Content>

@@ -312,6 +312,73 @@ describe('ChatView reply usage details', () => {
     expect(within(tooltip).getByTestId('context-compact-distance').textContent).toBe('97k');
   });
 
+  it('uses an external kernel watermark for the ring ratio and near-limit notice', async () => {
+    window.localStorage.setItem(
+      'sync-think.conversationKernelOverrides',
+      JSON.stringify({ 'conversation-usage': 'claude-code' }),
+    );
+    runtime.listConversationMessages.mockResolvedValue({
+      messages: [assistantMessage],
+      hasMore: false,
+    });
+    runtime.getConversationContextStatus.mockResolvedValue({
+      modelId: 'model-usage',
+      contextWindow: 200_000,
+      modelContextWindow: 200_000,
+      contextWindowSource: 'kernel-limit',
+      kernelContextWindowLimit: 200_000,
+      estimatedUsedTokens: 10_000,
+      usageRatio: 0.05,
+      compactThreshold: 0.7,
+      sections: [
+        { type: 'system', tokens: 0 },
+        { type: 'agent', tokens: 0 },
+        { type: 'project', tokens: 0 },
+        { type: 'summary', tokens: 0 },
+        { type: 'messages', tokens: 10_000 },
+        { type: 'tools', tokens: 0 },
+      ],
+    });
+    runtime.getConversationRunProcess.mockResolvedValue({
+      process: {
+        ...processView,
+        contextWatermarkTokens: 180_000,
+      },
+    });
+
+    render(
+      <ChatView
+        conversation={conversation}
+        modelName="GPT-5"
+        models={[{ modelId: 'model-usage', displayName: 'GPT-5', providerName: 'Provider' }]}
+        eventHistory={
+          [
+            {
+              id: 'run-started-usage',
+              workspaceId: 'workspace-usage',
+              taskId: 'task-usage',
+              runId: 'run-usage',
+              category: 'run',
+              type: 'run.started',
+              sequence: 1,
+              occurredAt: '2026-08-04T09:29:00.000Z',
+              payload: { kernelId: 'claude-code' },
+            },
+          ] as never
+        }
+        onTitleUpdated={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(runtime.getConversationRunProcess).toHaveBeenCalled());
+    const ring = screen.getByTestId('context-ring');
+    expect(ring.getAttribute('aria-label')).toContain('180k / 200k');
+    expect(await screen.findByTestId('context-near-limit')).toBeTruthy();
+    fireEvent.mouseEnter(ring);
+    const tooltip = await screen.findByTestId('context-ring-tooltip');
+    expect(within(tooltip).getByTestId('context-used-value').textContent).toContain('180k');
+  });
+
   it('shows the NewMax reply summary and cumulative input/cache/output in the hover panel', async () => {
     render(
       <ChatView

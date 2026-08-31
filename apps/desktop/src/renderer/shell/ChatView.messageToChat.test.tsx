@@ -13,6 +13,7 @@ import {
   messageToChat,
   projectTransientAssistantDisplay,
   projectTransientAnswerText,
+  visibleStreamingAnswerText,
   type InlineProcessItem,
 } from './ChatView.js';
 
@@ -136,6 +137,29 @@ describe('messageToChat inline process split', () => {
       answerText: undefined,
       pendingText: '',
     });
+    // Thinking already occupies 执行过程; the unclassified tail must still
+    // stream in the answer bubble, or the timer freezes and the whole reply
+    // dumps at the terminal.
+    expect(
+      visibleStreamingAnswerText(
+        projectTransientAnswerText('我先检查资料。正在生成最终回答', timeline),
+      ),
+    ).toBe('正在生成最终回答');
+  });
+
+  it('prefers a classified final answer over the provisional streaming tail', () => {
+    expect(
+      visibleStreamingAnswerText({
+        answerText: '答案。',
+        pendingText: '答案。更多',
+      }),
+    ).toBe('答案。');
+    expect(
+      visibleStreamingAnswerText({
+        answerText: undefined,
+        pendingText: '',
+      }),
+    ).toBe('');
   });
 
   it('keeps a phase-aware final answer without duplicating classified timeline text', () => {

@@ -31,6 +31,20 @@ describe('parseSkillMd (§9.2 SKILL.md subset)', () => {
     expect(parsed.allowedTools).toEqual(['read-file', 'write-fs']);
   });
 
+  it('folds YAML block scalar descriptions instead of exposing the marker', () => {
+    const parsed = parseSkillMd(`---
+name: folded-description
+description: >
+  将多行说明
+  按 YAML folded scalar 规则合并。
+version: 1.0.0
+---
+Body
+`);
+    expect(parsed.description).toBe('将多行说明 按 YAML folded scalar 规则合并。');
+    expect(parsed.description).not.toBe('>');
+  });
+
   it('rejects missing frontmatter', () => {
     expect(() => parseSkillMd(fixture('broken-frontmatter'))).toThrow(ParseSkillMdError);
     try {

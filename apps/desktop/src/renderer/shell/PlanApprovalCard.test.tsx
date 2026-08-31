@@ -111,6 +111,39 @@ describe('PlanApprovalCard', () => {
     expect(screen.getByRole('button', { name: '取消' })).toBeTruthy();
   });
 
+  it('expands the compact approval surface to show the complete plan', () => {
+    renderCard({ variant: 'composer' });
+
+    const toggle = screen.getByTestId('plan-view-details');
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByTestId('plan-approval-details')).toBeNull();
+
+    fireEvent.click(toggle);
+
+    const details = screen.getByTestId('plan-approval-details');
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    const detailText = details.textContent ?? '';
+    expect(detailText).toContain('目标');
+    expect(detailText).toContain('把登录模块改为新架构');
+    expect(detailText).toContain('范围');
+    expect(detailText).toContain('apps/desktop/src/auth');
+    expect(detailText).toContain('假设');
+    expect(detailText).toContain('依赖已就绪');
+    expect(detailText).toContain('决策');
+    expect(detailText).toContain('使用 vitest');
+    expect(detailText).toContain('拆分 auth 包');
+    expect(detailText).toContain('将登录逻辑拆为独立包');
+    expect(detailText).toContain('测试通过');
+    expect(detailText).toContain('风险');
+    expect(detailText).toContain('回归风险');
+    expect(detailText).toContain('跑全量测试');
+    expect(detailText).toContain('全部测试通过');
+
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByTestId('plan-approval-details')).toBeNull();
+  });
+
   it('disables approve while dirty and saves a revision to clear it', async () => {
     const { onPlanUpdated } = renderCard();
     const approve = screen.getByTestId('plan-approve');
@@ -131,7 +164,12 @@ describe('PlanApprovalCard', () => {
     };
     const runtime = mockBridge({
       conversationPlanRevise: vi.fn(async () => ({
-        plan: { ...summary, currentRevision: 2, latest: nextRevision, revisions: [nextRevision, revision] },
+        plan: {
+          ...summary,
+          currentRevision: 2,
+          latest: nextRevision,
+          revisions: [nextRevision, revision],
+        },
       })),
     });
     fireEvent.click(screen.getByTestId('plan-save'));
@@ -157,14 +195,17 @@ describe('PlanApprovalCard', () => {
       revision: 1,
     });
     expect(onSwitchMode).toHaveBeenCalledWith('execute');
-    expect(onExecute).toHaveBeenCalledWith(
-      buildPlanExecutionInstruction(revision, 1),
-    );
+    expect(onExecute).toHaveBeenCalledWith(buildPlanExecutionInstruction(revision, 1));
     expect(onPlanUpdated).toHaveBeenCalledWith(undefined);
   });
 
   it('shows a read-only history revision and returns to editing', () => {
-    const older: ChatPlanRevision = { ...revision, id: 'rev-0', revision: 0, plan: { ...revision.plan, title: '旧版标题' } };
+    const older: ChatPlanRevision = {
+      ...revision,
+      id: 'rev-0',
+      revision: 0,
+      plan: { ...revision.plan, title: '旧版标题' },
+    };
     const multi = { ...summary, revisions: [revision, older] };
     renderCard({ plan: multi });
 

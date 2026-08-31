@@ -403,6 +403,12 @@ describe('InlineProcessFlow', () => {
     );
 
     expect(screen.getByTestId('think-row-toggle').getAttribute('data-highlight-band')).toBe('true');
+    expect(screen.getByTestId('inline-process-reasoning').classList.contains('is-running')).toBe(
+      true,
+    );
+    const summary = screen.getByTestId('think-row-summary');
+    expect(summary.classList.contains('shell-text-shimmer')).toBe(true);
+    expect(summary.getAttribute('data-label')).toBe('第二行细节');
   });
 
   it('drops the activity summary once the turn reaches a terminal state', () => {

@@ -2,13 +2,14 @@
  * @vitest-environment jsdom
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { Conversation } from '@sync-think/shared';
 import { ChatView } from './ChatView.js';
 
 const runtime = {
   appendMessage: vi.fn(),
   detectKernels: vi.fn(),
+  getConversationContextStatus: vi.fn(),
   installKernel: vi.fn(),
   listConversationMessages: vi.fn(),
   openTask: vi.fn(),
@@ -66,6 +67,7 @@ const kernels = [
       compress: 'own' as const,
       usageReport: true,
       protocols: ['anthropic-messages' as const],
+      contextWindow: { nativeLimit: 200_000, overridable: false },
     },
     installed: true,
     version: '2.1.222',
@@ -127,6 +129,23 @@ beforeEach(() => {
     messageId: 'msg-kernel-1',
     taskVersion: 1,
   });
+  runtime.getConversationContextStatus.mockReset().mockResolvedValue({
+    modelId: 'model-a',
+    contextWindow: 400_000,
+    modelContextWindow: 400_000,
+    contextWindowSource: 'model-default',
+    estimatedUsedTokens: 0,
+    usageRatio: 0,
+    compactThreshold: 0.7,
+    sections: [
+      { type: 'system', tokens: 0 },
+      { type: 'agent', tokens: 0 },
+      { type: 'project', tokens: 0 },
+      { type: 'summary', tokens: 0 },
+      { type: 'messages', tokens: 0 },
+      { type: 'tools', tokens: 0 },
+    ],
+  });
   runtime.installKernel.mockReset();
   runtime.detectKernels.mockReset().mockResolvedValue({ kernels });
   Object.defineProperty(window, 'syncThink', {
@@ -140,10 +159,10 @@ afterEach(() => {
   Reflect.deleteProperty(window, 'syncThink');
 });
 
-function renderChat() {
+function renderChat(current = conversation()) {
   return render(
     <ChatView
-      conversation={conversation()}
+      conversation={current}
       modelName="Model A"
       models={[{ modelId: 'model-a', displayName: 'Model A', providerName: 'Provider' }]}
       eventHistory={[]}
@@ -222,6 +241,130 @@ describe('ChatView kernel selection', () => {
     );
   });
 
+  it('refreshes the context window for the selected kernel', async () => {
+    runtime.getConversationContextStatus.mockImplementation(
+      async ({ kernelId }: { kernelId?: string }) => ({
+        modelId: 'model-a',
+        contextWindow: kernelId === 'claude-code' ? 200_000 : 400_000,
+        modelContextWindow: 400_000,
+        contextWindowSource: kernelId === 'claude-code' ? 'kernel-limit' : 'model-default',
+        ...(kernelId === 'claude-code' ? { kernelContextWindowLimit: 200_000 } : {}),
+        estimatedUsedTokens: 12_000,
+        usageRatio: kernelId === 'claude-code' ? 0.06 : 0.03,
+        compactThreshold: 0.7,
+        sections: [
+          { type: 'system', tokens: 0 },
+          { type: 'agent', tokens: 0 },
+          { type: 'project', tokens: 0 },
+          { type: 'summary', tokens: 0 },
+          { type: 'messages', tokens: 12_000 },
+          { type: 'tools', tokens: 0 },
+        ],
+      }),
+    );
+
+    renderChat();
+    await waitFor(() => expect(runtime.getConversationContextStatus).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByTitle(/切换模型/));
+    fireEvent.click(await screen.findByTestId('kernel-option-claude-code'));
+
+    await waitFor(() =>
+      expect(runtime.getConversationContextStatus).toHaveBeenLastCalledWith(
+        expect.objectContaining({ conversationId: 'conversation-kernel', kernelId: 'claude-code' }),
+      ),
+    );
+    fireEvent.click(screen.getByTestId('context-ring'));
+
+    expect(screen.getByTestId('context-kernel-label').textContent).toBe('ClaudeCode');
+    expect(screen.getByTestId('context-limit-kernel-capped').textContent).toContain('受内核限制');
+    expect(screen.getByTestId('context-model-default').textContent).toContain('400k');
+  });
+
+  it('does not reload durable messages when only the kernel changes', async () => {
+    renderChat();
+    await waitFor(() => expect(runtime.listConversationMessages).toHaveBeenCalledTimes(1));
+    runtime.listConversationMessages.mockClear();
+
+    fireEvent.click(screen.getByTitle(/切换模型/));
+    fireEvent.click(await screen.findByTestId('kernel-option-claude-code'));
+
+    await waitFor(() =>
+      expect(runtime.getConversationContextStatus).toHaveBeenLastCalledWith(
+        expect.objectContaining({ kernelId: 'claude-code' }),
+      ),
+    );
+    expect(runtime.listConversationMessages).not.toHaveBeenCalled();
+  });
+
+  it('keeps the Claude Code ring capped when an older status reports the model window', async () => {
+    runtime.getConversationContextStatus.mockResolvedValue({
+      modelId: 'model-a',
+      contextWindow: 400_000,
+      modelContextWindow: 400_000,
+      contextWindowSource: 'model-default',
+      estimatedUsedTokens: 12_000,
+      usageRatio: 0.03,
+      compactThreshold: 0.7,
+      sections: [
+        { type: 'system', tokens: 0 },
+        { type: 'agent', tokens: 0 },
+        { type: 'project', tokens: 0 },
+        { type: 'summary', tokens: 0 },
+        { type: 'messages', tokens: 12_000 },
+        { type: 'tools', tokens: 0 },
+      ],
+    });
+
+    renderChat();
+    await waitFor(() => expect(runtime.getConversationContextStatus).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByTitle(/切换模型/));
+    fireEvent.click(await screen.findByTestId('kernel-option-claude-code'));
+    await waitFor(() =>
+      expect(runtime.getConversationContextStatus).toHaveBeenLastCalledWith(
+        expect.objectContaining({ kernelId: 'claude-code' }),
+      ),
+    );
+
+    expect(screen.getByTestId('context-ring').getAttribute('aria-label')).toContain('/ 200k');
+    fireEvent.click(screen.getByTestId('context-ring'));
+    expect(screen.getByTestId('context-limit-kernel-capped').textContent).toContain('受内核限制');
+  });
+
+  it('does not reload the latest messages when task thread resolution completes', async () => {
+    const taskA = deferred<{ task: { threadId: string } }>();
+    const taskB = deferred<{ task: { threadId: string } }>();
+    runtime.openTask.mockImplementation(({ taskId }: { taskId: string }) =>
+      taskId === 'task-conversation-kernel-b' ? taskB.promise : taskA.promise,
+    );
+
+    const view = renderChat();
+    await waitFor(() => expect(runtime.listConversationMessages).toHaveBeenCalledTimes(1));
+    runtime.listConversationMessages.mockClear();
+
+    view.rerender(
+      <ChatView
+        conversation={conversation('conversation-kernel-b')}
+        modelName="Model A"
+        models={[{ modelId: 'model-a', displayName: 'Model A', providerName: 'Provider' }]}
+        eventHistory={[]}
+        onTitleUpdated={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(runtime.listConversationMessages).toHaveBeenCalledTimes(1));
+    expect(runtime.listConversationMessages).toHaveBeenCalledWith(
+      expect.objectContaining({ conversationId: 'conversation-kernel-b' }),
+    );
+
+    await act(async () => {
+      taskB.resolve({ task: { threadId: 'thread-conversation-kernel-b' } });
+      await taskB.promise;
+    });
+    expect(runtime.listConversationMessages).toHaveBeenCalledTimes(1);
+  });
+
   it('installs Pi, re-detects it, and only then allows selection', async () => {
     runtime.installKernel.mockResolvedValue({ ok: true });
     runtime.detectKernels
@@ -237,7 +380,9 @@ describe('ChatView kernel selection', () => {
     await waitFor(() => expect(runtime.installKernel).toHaveBeenCalledWith('pi'));
     await waitFor(() => expect(runtime.detectKernels).toHaveBeenCalledTimes(2));
     await waitFor(() =>
-      expect(screen.getByTestId('kernel-option-pi').textContent).toContain('安装成功 v1.2.3'),
+      expect(screen.getByTestId('kernel-option-pi').getAttribute('aria-label')).toContain(
+        '安装成功 v1.2.3',
+      ),
     );
     expect(screen.getByTestId('kernel-option-pi').hasAttribute('aria-disabled')).toBe(false);
 
@@ -286,7 +431,9 @@ describe('ChatView kernel selection', () => {
 
     fireEvent.click(modelTrigger);
     await waitFor(() =>
-      expect(screen.getByTestId('kernel-option-pi').textContent).toContain('安装成功 v1.2.3'),
+      expect(screen.getByTestId('kernel-option-pi').getAttribute('aria-label')).toContain(
+        '安装成功 v1.2.3',
+      ),
     );
     expect(runtime.installKernel).toHaveBeenCalledTimes(1);
   });

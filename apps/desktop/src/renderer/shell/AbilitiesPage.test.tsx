@@ -671,6 +671,82 @@ describe('AbilitiesPage', () => {
     expect(screen.queryByText('Skill 有两条生效路径')).toBeNull();
   });
 
+  it('renders MCP in the shared ability hub and provides visible Skill navigation', async () => {
+    render(<AbilitiesPage onGoToAgents={vi.fn()} />);
+
+    fireEvent.click(screen.getByTestId('abilities-section-mcp'));
+
+    const page = screen.getByTestId('abilities-page');
+    expect(page.classList.contains('ability-hub')).toBe(true);
+    expect(screen.getByRole('heading', { name: 'MCP 管理' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '注册 MCP' })).toBeTruthy();
+    expect(screen.queryByLabelText('能力类型')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Skill 管理' }));
+    expect(screen.getByRole('heading', { name: 'Skill 管理' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'MCP 管理' })).toBeTruthy();
+  });
+
+  it('filters MCP market cards by category and search', async () => {
+    render(<AbilitiesPage onGoToAgents={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('abilities-section-mcp'));
+
+    expect(screen.getByText('Workspace Files')).toBeTruthy();
+    expect(screen.getByText('Playwright Browser')).toBeTruthy();
+    const allCategories = screen.getByRole('button', { name: '全部' });
+    const browserCategory = screen.getByRole('button', { name: '浏览器' });
+    expect(allCategories.getAttribute('aria-pressed')).toBe('true');
+    fireEvent.click(browserCategory);
+    expect(browserCategory.getAttribute('aria-pressed')).toBe('true');
+    expect(allCategories.getAttribute('aria-pressed')).toBe('false');
+    expect(screen.queryByText('Workspace Files')).toBeNull();
+    expect(screen.getByText('Playwright Browser')).toBeTruthy();
+
+    fireEvent.change(screen.getByRole('textbox', { name: '搜索 MCP' }), {
+      target: { value: 'PostgreSQL' },
+    });
+    expect(screen.getByText('没有匹配的 MCP')).toBeTruthy();
+    fireEvent.click(allCategories);
+    expect(screen.getByText('PostgreSQL')).toBeTruthy();
+  });
+
+  it('uses TD-041 global enablement for registered MCP servers', async () => {
+    const server = {
+      mcpServerId: 'mcp-toggle',
+      name: 'Toggle MCP',
+      transport: 'local-stdio',
+      endpoint: 'node toggle-mcp.mjs',
+      tools: [{ name: 'toggle_tool', description: 'Toggle fixture tool.' }],
+      trusted: true,
+      enabled: true,
+      maxOutputBytes: 1_000_000,
+      timeoutMs: 30_000,
+      notes: '',
+      createdAt: '2026-08-10T00:00:00.000Z',
+      updatedAt: '2026-08-10T00:00:00.000Z',
+    };
+    runtime.listMcpServers.mockResolvedValue({ servers: [server] });
+    runtime.setMcpServerEnabled.mockResolvedValue({ server: { ...server, enabled: false } });
+
+    render(<AbilitiesPage onGoToAgents={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('abilities-section-mcp'));
+    fireEvent.click(screen.getByTestId('mcp-tab-mine'));
+    const allStatuses = screen.getByRole('button', { name: /全部状态/ });
+    const enabledStatus = screen.getByRole('button', { name: /已启用/ });
+    expect(allStatuses.getAttribute('aria-pressed')).toBe('true');
+    fireEvent.click(enabledStatus);
+    expect(enabledStatus.getAttribute('aria-pressed')).toBe('true');
+    fireEvent.click(await screen.findByRole('switch', { name: '停用 Toggle MCP' }));
+
+    await waitFor(() =>
+      expect(runtime.setMcpServerEnabled).toHaveBeenCalledWith({
+        mcpServerId: 'mcp-toggle',
+        enabled: false,
+      }),
+    );
+    expect(screen.queryByText('激活到工作区')).toBeNull();
+  });
+
   it('registers a remote MCP with a one-time secret and shows only auth status', async () => {
     const secret = 'key-only-entered-once';
     const server = {
@@ -1274,6 +1350,76 @@ describe('AbilitiesPage', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '完成' }));
     await waitFor(() => expect(screen.queryByText('激活到工作区')).toBeNull());
+  });
+
+  it('shows active workspace names when the selected workspace is inactive', async () => {
+    const skill = {
+      skillVersionId: 'sv-active-other-workspace',
+      skillId: 'skill-active-other-workspace',
+      name: 'active-other-workspace',
+      description: 'A Skill active in another workspace.',
+      version: '1.0.0',
+      allowedTools: [],
+      contentFingerprint: 'active-other-workspace-fingerprint',
+      hasScripts: false,
+      warnings: [],
+      createdAt: '2026-08-09T00:00:00.000Z',
+      enabled: true,
+    };
+    const workspaces = [
+      {
+        workspaceId: 'active-workspace' as import('@sync-think/shared').WorkspaceId,
+        name: 'Active Workspace',
+        folderPath: 'D:\\active-workspace',
+        createdAt: '2026-08-09T00:00:00.000Z',
+        updatedAt: '2026-08-09T00:00:00.000Z',
+      },
+      {
+        workspaceId: 'selected-workspace' as import('@sync-think/shared').WorkspaceId,
+        name: 'Selected Workspace',
+        folderPath: 'D:\\selected-workspace',
+        createdAt: '2026-08-09T00:00:00.000Z',
+        updatedAt: '2026-08-09T00:00:00.000Z',
+      },
+    ];
+    runtime.listSkills.mockResolvedValue({ skills: [skill] });
+    runtime.listCapabilityGovernance.mockResolvedValue({
+      workspaceId: 'selected-workspace',
+      windowDays: 45,
+      skills: [
+        {
+          skill,
+          workspaceActive: false,
+          activeWorkspaceNames: ['Active Workspace'],
+          usage: {
+            capabilityType: 'skill',
+            capabilityId: skill.skillVersionId,
+            callCount: 0,
+            successCount: 0,
+            failedCount: 0,
+            cancelledCount: 0,
+            problemCount: 0,
+            contextTokens: 0,
+          },
+        },
+      ],
+      mcpServers: [],
+    });
+
+    render(
+      <AbilitiesPage
+        activeWorkspaceId="selected-workspace"
+        workspaces={workspaces}
+        onGoToAgents={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('skill-tab-mine'));
+
+    const trigger = await screen.findByTestId(
+      'skill-workspace-activation-sv-active-other-workspace',
+    );
+    expect(trigger.textContent).toContain('Active Workspace');
+    expect(trigger.textContent).not.toContain('未激活');
   });
 
   it('keeps a global workspace change consistent while its writes are still in flight', async () => {

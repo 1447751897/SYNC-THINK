@@ -304,6 +304,7 @@ class DeferredKernelAdapter implements KernelAdapter {
 interface RuntimeExternalKernelHarness {
   demoRuns: Map<string, DemoRunState>;
   demoRunAborts: Map<string, AbortController>;
+  transientReplay: Array<{ kind: string; textDelta?: string }>;
   openGateway: {
     tickets: {
       recordContinuationItem(scopeId: string, callId: string, responseId: string): void;
@@ -791,6 +792,31 @@ describe('Runtime external kernel finalization', () => {
         ],
       });
       expect(assistant?.blocks[1]).toEqual({ type: 'text', text: 'hello kernel' });
+    } finally {
+      fixture.connection.raw.close();
+    }
+  });
+
+  it('streams unclassified kernel deltas as live text for every kernel, not only at terminal', async () => {
+    const fixture = await createFixture([
+      { type: 'reasoning', text: 'think first' },
+      { type: 'delta', text: 'hello ' },
+      { type: 'delta', text: 'kernel' },
+      { type: 'terminal', status: 'completed' },
+    ]);
+    try {
+      await fixture.harness.executeExternalKernelRun(fixture.runId);
+
+      expect(
+        fixture.harness.transientReplay
+          .filter((frame) => frame.kind === 'text')
+          .map((frame) => frame.textDelta),
+      ).toEqual(['hello ', 'kernel']);
+      expect(
+        fixture.harness.transientReplay.some(
+          (frame) => frame.kind === 'commentary' && Boolean(frame.textDelta),
+        ),
+      ).toBe(false);
     } finally {
       fixture.connection.raw.close();
     }

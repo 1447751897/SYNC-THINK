@@ -58,6 +58,7 @@ export * from './credential-binding.js';
 
 export {
   parseSkillMd,
+  parseSkillFrontmatter,
   skillContentFingerprint,
   ParseSkillMdError,
   type ParsedSkillMd,

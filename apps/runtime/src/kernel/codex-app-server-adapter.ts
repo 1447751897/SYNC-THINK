@@ -690,13 +690,11 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
       const itemId = text(params.itemId);
       if (itemId) turn.streamedTextItems.add(itemId);
       // Do NOT mark agentMessage deltas final: models emit working prose as
-      // agentMessage between tool calls too (e.g. "收到，我调用视觉模型读取…"),
-      // and a `final` flag would stream it into the answer area only for the
-      // next tool boundary to reclassify it as commentary — the text would
-      // flash in the chat bubble and then retract into the process panel.
-      // Buffered semantics keep every mid-turn message in the process panel;
-      // the terminal flush promotes the true final answer into the chat area,
-      // matching the claude-code adapter and the durable timeline exactly.
+      // agentMessage between tool calls too (e.g. "收到，我调用视觉模型读取…").
+      // `final` would commit that prose as the durable answer before a later
+      // tool boundary can reclassify it as commentary. Leave the delta
+      // unclassified so Runtime buffers it; the host still streams the tokens
+      // as a provisional answer and only classifies at a tool or terminal.
       if (delta) this.pushTurnEvent({ type: 'delta', text: delta });
       return;
     }
@@ -913,8 +911,8 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
       }
     } else if (type === 'agentMessage' && !turn.streamedTextItems.has(id)) {
       const value = text(item.text);
-      // Buffered (no `final`) for the same reason as the streaming delta path:
-      // mid-turn agentMessages must never flash in the answer area.
+      // Unclassified (no `final`) for the same reason as the streaming path:
+      // mid-turn agentMessages are classified at a tool or terminal boundary.
       if (value) this.pushTurnEvent({ type: 'delta', text: value });
     } else if (type === 'reasoning' && !turn.streamedReasoningItems.has(id)) {
       const value = reasoningText(item);

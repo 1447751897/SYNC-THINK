@@ -2312,19 +2312,9 @@ export interface DeleteMcpServerResponse {
 // --- Bot conversation channels ------------------------------------------------
 
 export type BotChannelPlatform =
-  | 'telegram'
-  | 'feishu'
-  | 'wecom'
-  | 'wechat'
-  | 'discord'
-  | 'dingtalk'
-  | 'qq';
+  'telegram' | 'feishu' | 'wecom' | 'wechat' | 'discord' | 'dingtalk' | 'qq';
 
-export type BotChannelConnectionState =
-  | 'disconnected'
-  | 'connecting'
-  | 'connected'
-  | 'error';
+export type BotChannelConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error';
 
 export type BotChannelCheckVerdict = 'pass' | 'warn' | 'fail';
 
@@ -2490,12 +2480,16 @@ export interface CapabilityUsageSummary {
 export interface GovernedSkillSummary {
   skill: SkillVersionSummary;
   workspaceActive: boolean;
+  /** Human-readable names of every workspace where this Skill is active. */
+  activeWorkspaceNames?: string[];
   usage: CapabilityUsageSummary;
 }
 
 export interface GovernedMcpServerSummary {
   server: McpServerSummary;
   workspaceActive: boolean;
+  /** Human-readable names of every workspace where this MCP is active. */
+  activeWorkspaceNames?: string[];
   usage: CapabilityUsageSummary;
 }
 

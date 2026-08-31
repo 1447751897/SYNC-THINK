@@ -792,6 +792,40 @@ describe('conversation.getContextStatus runtime integration', () => {
     }
   });
 
+  it('invalidates cached context status when a durable message is written', async () => {
+    const harness = await createHarness(1_000_000, { target: 'model' });
+    const internals = harness.runtime as unknown as {
+      contextSnapshotByThread: Map<string, Map<string, unknown>>;
+      persistFinalChatMessage(input: {
+        id: string;
+        threadId: string;
+        role: 'user';
+        text: string;
+        createdAt: string;
+      }): void;
+    };
+    try {
+      const before = await getContextStatus(harness, 'cache-invalidation-before');
+      expect(internals.contextSnapshotByThread.has(String(harness.threadId))).toBe(true);
+
+      internals.persistFinalChatMessage({
+        id: 'cache-invalidation-message',
+        threadId: String(harness.threadId),
+        role: 'user',
+        text: 'A durable message written after the cached snapshot.',
+        createdAt: '2026-08-14T00:00:00.000Z',
+      });
+      expect(internals.contextSnapshotByThread.has(String(harness.threadId))).toBe(false);
+
+      const after = await getContextStatus(harness, 'cache-invalidation-after');
+      expect(after.sections.find((section) => section.type === 'messages')?.tokens).toBeGreaterThan(
+        before.sections.find((section) => section.type === 'messages')?.tokens ?? 0,
+      );
+    } finally {
+      await closeHarness(harness);
+    }
+  });
+
   it('returns a strict status whose breakdown matches the actual provider request and excludes reasoning', async () => {
     const harness = await createHarness(1_000_000);
     try {

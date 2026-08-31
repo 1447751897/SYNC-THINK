@@ -210,6 +210,19 @@ describe('capability governance pipe commands', () => {
       expect(inactiveWorkspaceSkills.error).toBeUndefined();
       expect((inactiveWorkspaceSkills.payload as { skills: unknown[] }).skills).toEqual([]);
 
+      const otherWorkspaceSkillActivation = await inbox.send({
+        id: 'activate-skill-in-other-workspace',
+        kind: 'request',
+        type: 'capability.workspace.setActive',
+        payload: {
+          capabilityType: 'skill',
+          capabilityId: skill.id,
+          workspaceId: otherWorkspaceId,
+          active: true,
+        },
+      });
+      expect(otherWorkspaceSkillActivation.error).toBeUndefined();
+
       const disabled = await inbox.send({
         id: 'disable-active-skill',
         kind: 'request',
@@ -246,6 +259,10 @@ describe('capability governance pipe commands', () => {
         skills: [
           {
             workspaceActive: true,
+            activeWorkspaceNames: expect.arrayContaining([
+              'Capability Workspace',
+              'Workspace Without Capability',
+            ]),
             usage: { callCount: 1, successCount: 1, contextTokens: 120 },
           },
         ],

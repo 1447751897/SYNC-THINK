@@ -8722,6 +8722,16 @@ export class Runtime {
     );
   }
 
+  /**
+   * Durable messages are part of the next provider context. Drop every cached
+   * model/kernel view when one is written so switching kernels cannot resurrect
+   * an occupancy snapshot from before that message.
+   */
+  private invalidateConversationContextSnapshot(threadId: string): void {
+    this.contextSnapshotByThread.delete(threadId);
+    this.contextRunByThread.delete(threadId);
+  }
+
   private contextSnapshotCacheKey(modelId: string, kernelId?: string): string {
     return `${modelId}\u0000${kernelId?.trim() || 'native'}`;
   }
@@ -8819,8 +8829,7 @@ export class Runtime {
         ...(task?.threadId ? [String(task.threadId)] : []),
       ]);
       for (const scopeId of scopeIds) {
-        this.contextSnapshotByThread.delete(scopeId);
-        this.contextRunByThread.delete(scopeId);
+        this.invalidateConversationContextSnapshot(scopeId);
       }
       const response: ConversationResponse = { conversation: this.toConversationSummary(updated) };
       socket.write(
@@ -9839,8 +9848,7 @@ export class Runtime {
         summaryText,
         compactedAt: written.compactEvent.occurredAt,
       });
-      this.contextSnapshotByThread.delete(threadId);
-      this.contextRunByThread.delete(threadId);
+      this.invalidateConversationContextSnapshot(threadId);
       this.publishEvent(written.compactEvent);
       this.publishEvent(written.markerEvent);
       lifecycleSettled = true;
@@ -11552,11 +11560,25 @@ export class Runtime {
   private toSkillVersionSummary(
     record: SkillVersionRecord | SkillVersionMetadataRecord,
   ): SkillVersionSummary {
+    let description = record.description;
+    // Older imports stored YAML block-scalar markers (for example `>`)
+    // literally. Repair those rows lazily from their durable source document.
+    if (/^[>|](?:[+-])?$/.test(description.trim()) && this.skillStore) {
+      const sourceMd =
+        'sourceMd' in record ? record.sourceMd : this.skillStore.getVersion(record.id)?.sourceMd;
+      if (sourceMd) {
+        try {
+          description = parseSkillMd(sourceMd).description;
+        } catch {
+          // Keep the persisted value when the legacy source cannot be parsed.
+        }
+      }
+    }
     return {
       skillVersionId: record.id,
       skillId: record.skillId,
       name: record.name,
-      description: record.description,
+      description,
       version: record.version,
       allowedTools: [...record.allowedTools],
       contentFingerprint: record.contentFingerprint,
@@ -13652,6 +13674,18 @@ export class Runtime {
       const skills = this.skillStore.listVersionMetadata(500);
       const mcpServers = this.mcpStore.list(500);
       const activations = this.capabilityStore.listWorkspaceActivations(payload.workspaceId);
+      const activeWorkspaceNamesByCapability = new Map<string, string[]>();
+      const workspaces = this.workspaceStore?.listWorkspaces() ?? [];
+      for (const workspace of workspaces) {
+        const workspaceActivations = this.capabilityStore.listWorkspaceActivations(workspace.id);
+        for (const activation of workspaceActivations) {
+          if (!activation.active) continue;
+          const key = `${activation.capabilityType}:${activation.capabilityId}`;
+          const names = activeWorkspaceNamesByCapability.get(key) ?? [];
+          if (!names.includes(workspace.name)) names.push(workspace.name);
+          activeWorkspaceNamesByCapability.set(key, names);
+        }
+      }
       const activeIds = new Set(
         activations
           .filter((activation) => activation.active)
@@ -13685,11 +13719,13 @@ export class Runtime {
         skills: skills.map((skill) => ({
           skill: this.toSkillVersionSummary(skill),
           workspaceActive: activeIds.has(`skill:${skill.id}`),
+          activeWorkspaceNames: activeWorkspaceNamesByCapability.get(`skill:${skill.id}`) ?? [],
           usage: skillUsage.get(skill.id)!,
         })),
         mcpServers: mcpServers.map((server) => ({
           server: this.toMcpServerSummary(server),
           workspaceActive: activeIds.has(`mcp:${server.id}`),
+          activeWorkspaceNames: activeWorkspaceNamesByCapability.get(`mcp:${server.id}`) ?? [],
           usage: mcpUsage.get(server.id)!,
         })),
       };
@@ -19116,8 +19152,8 @@ export class Runtime {
                   : {}),
               });
               // Publish every delta immediately into the reconnect-safe draft.
-              // Renderer only exposes phase-confirmed process/final segments;
-              // this unknown tail remains provisional until tool/terminal.
+              // The renderer streams this unknown tail as a provisional answer
+              // until a tool or terminal boundary classifies it.
               this.publishTransientDelta({
                 threadId: currentRun.threadId as ThreadId,
                 runId,
@@ -20997,7 +21033,11 @@ export class Runtime {
             providerName: provider.name,
             sortOrder: provider.sortOrder,
             baseUrl: provider.baseUrl,
-            protocol: provider.protocol,
+            // A provider may expose models on more than one wire dialect
+            // (for example an Anthropic model beside an OpenAI fallback).
+            // Route each catalog row using the protocol persisted on that
+            // model instead of applying the provider default to every row.
+            protocol: model.protocol,
             providerModelId: model.providerModelId,
             modelId: model.id,
             enabled: provider.enabled,
@@ -22525,9 +22565,10 @@ export class Runtime {
     // §12.17.18: kernel delta carries no phase metadata — buffer it and let
     // the next tool boundary (commentary) or the terminal (final_answer)
     // classify it, so process prose never masquerades as the final answer.
-    // The transient text frame still flows immediately for reconnect-safe
-    // accumulation, but Renderer keeps this unknown tail out of the execution
-    // panel until the phase boundary is authoritative.
+    // Publish the tokens as live `text` frames so the renderer can stream
+    // them as a provisional answer; hiding them as commentary made Codex
+    // (and Claude/Native after thinking) freeze the timer then dump the
+    // whole reply when the terminal snapshot arrived.
     // Record the timeline position where the buffer started so the flush can
     // insert the classified segment in real emission order.
     const alreadyBuffered = Boolean(run.legacyPendingText);
@@ -22540,17 +22581,11 @@ export class Runtime {
           }
         : {}),
     });
-    // Unclassified kernel prose must stream into the PROCESS panel, never the
-    // answer area: the real phase ('commentary' after a tool boundary, or
-    // 'final_answer' at the terminal) is authoritative only later, and the
-    // draft text would otherwise flash in the chat bubble and then retract
-    // (regression: "先显示正文区、流式结束后收回执行面板").
     this.publishTransientDelta({
       threadId: threadId as ThreadId,
       runId,
-      kind: 'commentary',
+      kind: 'text',
       textDelta: text,
-      afterSequence: this.eventSequence,
       occurredAt,
     });
   }
@@ -22937,12 +22972,7 @@ export class Runtime {
       };
       const committed = this.persistProjectedEvent(draft, new Map(this.demoRuns));
       this.publishEvent(committed);
-      this.addGoalUsageForRun(
-        runId,
-        run,
-        usage.input ?? usage.real,
-        usage.output ?? 0,
-      );
+      this.addGoalUsageForRun(runId, run, usage.input ?? usage.real, usage.output ?? 0);
     } catch {
       // Usage accounting must never crash the kernel stream.
     }
@@ -23069,12 +23099,10 @@ export class Runtime {
         // cursor — publishing run.completed after it would silently lose the
         // terminal event from every live stream (UI stuck on "executing").
         this.publishEvent(event);
-        this.maybeContinueGoalAfterRun(
-          String(terminalRun.threadId),
-          String(runId),
-          terminalRun,
-          { ...payload, assistantText: terminalRun.assistantText },
-        );
+        this.maybeContinueGoalAfterRun(String(terminalRun.threadId), String(runId), terminalRun, {
+          ...payload,
+          assistantText: terminalRun.assistantText,
+        });
         this.maybeProposeRunMemory(runId, durableTerminalRun, payload);
       }
       this.demoRuns.delete(runId);
@@ -26796,8 +26824,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         return;
       }
       const remembered = this.toolApprovalPolicy.remember({
-        conversationId:
-          this.resolveConversationIdForThread(pending.threadId) ?? pending.threadId,
+        conversationId: this.resolveConversationIdForThread(pending.threadId) ?? pending.threadId,
         toolName: toolCall.name,
         arguments: parseToolApprovalArguments(toolCall.argumentsJson),
         scope,
@@ -29328,6 +29355,14 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       };
       durableMessage = message;
       this.messageStore.createFinalMessage(message);
+      // The ring represents the most recent provider request. That request's
+      // snapshot already includes the current user turn and remains the right
+      // occupancy after its assistant terminal message is persisted. User and
+      // other non-assistant messages, however, change the next request and
+      // must force a rebuild.
+      if (input.role !== 'assistant') {
+        this.invalidateConversationContextSnapshot(String(input.threadId));
+      }
     } catch (error) {
       if (error instanceof MessageStoreError && error.code === 'message.conflict') {
         // Idempotent retry / same-id replay �?ignore.

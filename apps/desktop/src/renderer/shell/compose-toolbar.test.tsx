@@ -202,13 +202,7 @@ describe('ComposerActionSlot', () => {
     expect(onStop).toHaveBeenCalledTimes(1);
 
     rerender(
-      <ComposerActionSlot
-        hasContent
-        running
-        onVoice={onVoice}
-        onSend={onSend}
-        onStop={onStop}
-      />,
+      <ComposerActionSlot hasContent running onVoice={onVoice} onSend={onSend} onStop={onStop} />,
     );
     expect(screen.queryByTestId('compose-stop')).toBeNull();
     fireEvent.click(screen.getByTestId('compose-send'));
@@ -405,6 +399,25 @@ describe('ContextRing', () => {
     expect(screen.queryByText('距离压缩')).toBeNull();
     expect(screen.queryByText('最近压缩')).toBeNull();
     expect(screen.queryByText(/发送下一条消息前自动压缩/)).toBeNull();
+  });
+
+  it('shows the active kernel in the context window header', () => {
+    render(
+      <ContextRing
+        used={20_000}
+        limit={200_000}
+        kernelLabel="ClaudeCode"
+        contextWindowSource="kernel-capped"
+        kernelSelfManaged
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('context-ring'));
+
+    expect(screen.getByTestId('context-kernel-label').textContent).toBe('ClaudeCode');
+    expect(screen.getByTestId('context-kernel-label').getAttribute('title')).toBe(
+      '当前内核：ClaudeCode',
+    );
   });
 });
 
@@ -634,7 +647,8 @@ describe('ModelPickerMenu', () => {
     const ccOption = await screen.findByTestId('kernel-option-claude-code');
     expect(ccOption.textContent).toContain('ClaudeCode');
     expect(ccOption.textContent).not.toContain('Claude Code');
-    expect(ccOption.textContent).toContain('已安装 v2.1.222');
+    expect(screen.getByTestId('kernel-version-claude-code').textContent).toBe('v2.1.222');
+    expect(ccOption.getAttribute('aria-label')).toContain('已安装 v2.1.222');
     const codexOption = await screen.findByTestId('kernel-option-codex');
     expect(codexOption.textContent).toContain('GPT');
     expect(codexOption.textContent).not.toContain('Codex');
@@ -643,17 +657,26 @@ describe('ModelPickerMenu', () => {
     const nativeBadge = await screen.findByTestId('kernel-badge-native');
     expect(nativeBadge.textContent).toBe('');
     expect(nativeBadge.querySelector('[role="img"][aria-label="Sync-Think"]')).toBeTruthy();
+    expect(
+      (nativeBadge.querySelector('.shell-brand-logo') as HTMLElement | null)?.style.transform,
+    ).toBe('scale(1.12)');
     const ccBadge = await screen.findByTestId('kernel-badge-claude-code');
     expect(ccBadge.querySelector('img[alt="ClaudeCode"]')).toBeTruthy();
     expect(ccBadge.textContent).toBe('');
     const codexBadge = await screen.findByTestId('kernel-badge-codex');
     expect(codexBadge.querySelector('[role="img"][aria-label="GPT"]')).toBeTruthy();
+    const piBadge = await screen.findByTestId('kernel-badge-pi');
+    expect(
+      (piBadge.querySelector('.shell-brand-logo') as HTMLElement | null)?.style.transform,
+    ).toBe('scale(0.74)');
 
-    // Installable kernels remain actionable and route to the bounded install callback.
+    // Installable kernels stay on one row: status sits to the right of the name.
     const piOption = await screen.findByTestId('kernel-option-pi');
     expect(piOption.hasAttribute('aria-disabled')).toBe(false);
-    expect(piOption.textContent).toContain('未安装');
-    expect(piOption.textContent).toContain('npm i -g pi');
+    const piStatus = screen.getByTestId('kernel-status-pi');
+    expect(piStatus.textContent).toContain('未安装');
+    expect(piStatus.textContent).toContain('npm i -g pi');
+    expect(piOption.querySelector('.shell-menu__item-hint')).toBeNull();
     fireEvent.click(piOption);
     expect(onInstallKernel).toHaveBeenCalledWith('pi');
 
@@ -702,12 +725,12 @@ describe('ModelPickerMenu', () => {
       <ModelPickerMenu {...baseProps} kernelInstallStates={{ pi: { status: 'installing' } }} />,
     );
 
-    expect((await screen.findByTestId('kernel-option-pi')).textContent).toContain('安装中');
+    expect((await screen.findByTestId('kernel-status-pi')).textContent).toContain('安装中');
 
     rerender(
       <ModelPickerMenu {...baseProps} kernelInstallStates={{ pi: { status: 'verifying' } }} />,
     );
-    expect(screen.getByTestId('kernel-option-pi').textContent).toContain('安装成功 · 正在检测');
+    expect(screen.getByTestId('kernel-status-pi').textContent).toContain('安装成功 · 正在检测');
 
     rerender(
       <ModelPickerMenu
@@ -716,7 +739,14 @@ describe('ModelPickerMenu', () => {
         kernelInstallStates={{ pi: { status: 'success' } }}
       />,
     );
-    expect(screen.getByTestId('kernel-option-pi').textContent).toContain('安装成功 v1.2.3');
+    expect(screen.getByTestId('kernel-option-pi').getAttribute('aria-label')).toContain(
+      '安装成功 v1.2.3',
+    );
+    const installedPi = screen.getByTestId('kernel-option-pi');
+    expect(screen.getByTestId('kernel-version-pi').textContent).toBe('v1.2.3');
+    expect(screen.queryByTestId('kernel-status-pi')).toBeNull();
+    expect(installedPi.querySelector('.shell-menu__item-hint')).toBeNull();
+    expect(installedPi.textContent).not.toContain('安装成功 v1.2.3');
 
     rerender(
       <ModelPickerMenu
@@ -724,6 +754,6 @@ describe('ModelPickerMenu', () => {
         kernelInstallStates={{ pi: { status: 'error', error: '权限不足' } }}
       />,
     );
-    expect(screen.getByTestId('kernel-option-pi').textContent).toContain('安装失败 · 权限不足');
+    expect(screen.getByTestId('kernel-status-pi').textContent).toContain('安装失败 · 权限不足');
   });
 });

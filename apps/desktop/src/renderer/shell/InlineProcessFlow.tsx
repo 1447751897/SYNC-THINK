@@ -218,11 +218,20 @@ function ThinkRow({
             className={`shell-inline-process__row-disclosure${open ? ' is-open' : ''}`}
           />
         </span>
-        <span className="shell-inline-process__think-label">Think</span>
+        <span
+          className={`shell-inline-process__think-label${isStreaming ? ' shell-text-shimmer' : ''}`}
+          data-label={isStreaming ? 'Think' : undefined}
+        >
+          Think
+        </span>
         <span className="shell-inline-process__separator" aria-hidden="true">
           ·
         </span>
-        <span className="shell-inline-process__think-summary" data-testid="think-row-summary">
+        <span
+          className={`shell-inline-process__think-summary${isStreaming ? ' shell-text-shimmer' : ''}`}
+          data-testid="think-row-summary"
+          data-label={isStreaming ? summary : undefined}
+        >
           {summary}
         </span>
       </button>
