@@ -569,7 +569,7 @@ File editing：
   - Main 进程重新验证 root 内路径与 realpath；拒绝绝对路径、穿越和链接越界
   - read 返回 mtimeMs + size；write 使用 expected metadata、显式 force 与同目录原子替换
   - 父目录 fs.watch + 100ms 合并 + 5 秒轮询兜底；订阅随 Renderer 生命周期释放
-  - P0 使用 textarea；草稿只保留 Renderer 内存 Session，布局快照仅保存相对路径
+  - P0 工作区文件编辑使用 textarea；Composer 编辑器另见 TD-055，草稿只保留 Renderer 内存 Session，布局快照仅保存相对路径
 ```
 
 理由与影响：
@@ -578,7 +578,7 @@ File editing：
 - localStorage 是当前最小变更，因为 Workspace 协议与存储层尚未暴露完整 UI preferences；快照版本化和旧键双写保留回滚路径。
 - mtime 与 size 是轻量乐观并发，不依赖新增编辑器或文件数据库；冲突必须由用户显式选择，避免静默覆盖。
 - 未保存正文不进入 durable SQLite 或布局偏好，避免恢复出一份脱离磁盘真值的隐藏副本；代价是应用进程退出后草稿不恢复，此边界需要持续在 UI 与文档中保持明确。
-- 后续若引入 Monaco/CodeMirror、持久草稿或递归 Workspace watcher，必须重新走依赖、性能与数据真源技术门禁。
+- 工作区文件编辑若引入 Monaco/CodeMirror、持久草稿或递归 Workspace watcher，必须重新走依赖、性能与数据真源技术门禁；Composer 的 CodeMirror 6 采用边界已在 TD-055 单独确认。
 
 ---
 
@@ -1421,9 +1421,128 @@ Computer Use built-in plugin
 
 决策：
 
-1. `Conversation` 持久化可选 `contextWindowOverride`，范围固定为 1,024 到 10,000,000 Token；`null` 恢复模型默认。实际容量按“模型默认 -> 会话覆盖 -> 不可覆盖的内核上限”解析，并同时返回 `modelContextWindow`、`contextWindowOverride`、`contextWindowSource` 与生效的 `kernelContextWindowLimit`，UI 不从单个数字反推来源。
-2. ClaudeCode 的原生窗口按不可覆盖的 200k 上限处理；Codex/GPT 的窗口可通过 app-server 配置覆盖，因此其注册表 `nativeLimit` 只作能力说明，不截断用户设置。缺少模型元数据时仍采用 128k 估算，但只在没有会话覆盖时标记为估算。
-3. 上下文状态缓存必须按“会话/线程 + 模型 + 内核”隔离。模型或内核切换、会话容量修改后使对应快照失效，避免把 ClaudeCode 的 200k 上限复用于 GPT，或继续显示旧容量。
-4. 压缩所有权单一化：Native 由宿主在 70% 阈值执行自动压缩；声明 `compress=own` 的外部内核由自身管理，宿主只把 `kernel.context_compacted` 投影成可见通知，不再叠加宿主摘要。宿主压缩必须发布 started、completed、skipped、failed 四类可观察状态；成功状态包含耗时、压缩前后 Token 和折叠消息数，失败不得静默。
+1. 会话有效容量直接使用当前 Provider 模型的 `limitsJson.contextWindow`。旧数据中的 `Conversation.contextWindowOverride` 仅保留导入/协议兼容，不再参与新 Run 绑定，Renderer 也不提供会话级编辑入口，避免同一模型出现两套容量事实。
+2. 外部内核收到模型配置容量作为适配提示；厂商内核真实可用上限和压缩时机仍由其自身决定。缺少模型元数据时采用 128k 估算并明确标记，UI 不把估算值写回模型配置。
+3. 上下文状态缓存必须按“会话/线程 + 模型 + 内核”隔离。模型或内核切换后使对应快照失效，避免把一个内核的上限或 usage 投影复用于另一个内核。
+4. 压缩所有权单一化：Native 由宿主在 70% 阈值执行自动压缩；声明 `compress=own` 的外部内核由自身管理。宿主映射内核真实上报的 `kernel.context_compaction_started / compacted / compaction_failed`，不叠加宿主摘要；厂商只提供成功边界时只展示成功，不模拟开始或失败。宿主压缩继续发布 started、completed、skipped、failed 四类状态。
 5. 工具生命周期以稳定 `toolId` 为主键。Adapter 在收到工具开始块时立即发出 partial `tool-call`，参数 delta 只更新同一行，结果到达后原位转成 completed/failed；批量声明按真实开始顺序逐项出现，并行结果允许乱序回填但不得丢行或复制行。
 6. 运行中工具可携带有界的最新输出摘要，仅进入 transient snapshot；durable 消息保存终态参数与结果。Renderer 保持同一 DOM 行完成状态切换，显示旋转 loading、实时耗时与最新输出，连续工具按相邻调用分组但每一项独立展开。
+
+### TD-050：原生 Session 事实源与受限跨内核移交（2026-08-28）
+
+状态：已采用。覆盖 TD-042 第 2、6 条中“模型/Provider/系统上下文指纹变化即创建新 Session”和“以完整宿主历史重建外部内核上下文”的部分，并细化 TD-049 第 4 条的压缩所有权。
+
+背景：Runtime 曾把 durable message/timeline 当成外部内核上下文的重建材料。跨内核 gap 超过 60 条或粗估占窗口 35% 时，会清理持久 thread/session，并从宿主历史创建新会话。UI 为控制 SQLite message 大小写入的 process truncation 标记、reasoning、commentary 和工具详情因此可能进入新 prompt；同时原生 Codex rollout/Claude session 已经拥有自己的压缩结果，宿主重建既破坏 Prompt Cache 稳定前缀，也造成重复摘要和上下文职责冲突。DeThink 的实现证明更稳定的边界是保存并恢复厂商原生 session，只有原生材料缺失时才使用有界便携上下文。
+
+决策：
+
+1. Codex thread/rollout 与 Claude session 是外部内核模型上下文、压缩和缓存前缀的事实源；SQLite message/event/timeline 是 UI 恢复、审计和跨内核移交的事实源。两者职责并列，宿主投影不得覆盖厂商原生上下文。
+2. `kernel.session.<kernelId>.<conversationId>` 的稳定身份只覆盖 Kernel 与 Workspace 根目录。同一 Conversation + Kernel + Workspace 下，模型、Provider、Provider 模型、凭据、权限、规划模式、Agent、Skill 或 system context 变化不再使 session 失效；变更通过一次 `Host context update` 追加到原生会话尾部。
+3. Provider response-id continuation 与原生 session 分离。它按模型、Provider、协议和凭据路由计算独立 scope；路由变化只清理旧 continuation，不清理 native thread/session。
+4. 跨内核便携投影只允许用户 `text/code` 与助手最终 `text/code`。reasoning、commentary、tool-call、tool-result、运行状态和 durable truncation metadata 不进入移交 transcript。
+5. 便携上下文固定为最近 20 条、单条 8 KiB、总计 64 KiB；超限从最旧项开始省略并写明数量。gap 再大也继续原生 `resume`，不以宿主消息/token 估算触发重建。
+6. 外部内核首次进入已有对话时使用同一便携投影作为 bootstrap，而不是完整 UI transcript。当前用户消息仍独立作为本轮输入，不重复写入 restored context。
+7. 仅在 CLI/SDK 明确报告 session/thread 不存在或恢复失败，或 Workspace 根目录发生变化时，清理 session 映射并创建新会话。普通工具失败、取消、模型切换、上下文变更、app-server 淘汰和 Runtime 重启都保留映射。
+8. 兼容既有 `version: 1` session 记录：缺少 Workspace/context/routing 字段时先恢复原生 session；下一次 CLI 确认 session 后补齐新字段，升级本身不主动清理用户已有 rollout。
+
+验证门禁：`kernel-session-gap.test.ts` 覆盖 61 条 gap、200 KiB 单条文本、工具/思考隔离和 64 KiB 上限；`external-kernel-run.test.ts` 覆盖 Runtime 重启、模型切换、规划/Skill 上下文变化仍恢复同一 Codex/Claude session，以及明确 invalid-session 才清理。
+
+### TD-051：应用私有 Vendor CLI、原子升级与工具面不裁剪（2026-08-28）
+
+状态：已采用。补充 TD-045 的 Codex app-server 与 Claude Agent SDK 执行边界，并取代 §9 旧的系统全局安装策略。
+
+背景：DeThink 的 Codex 与 Claude Code 都来自应用私有目录，通过独立升级避免碰触用户全局安装；其中 Claude 实际使用 CLI `stream-json`，并非 Agent SDK。SYNC-THINK 已使用 Codex app-server 和 Claude Agent SDK，但 Claude SDK bundled CLI 无法独立升级，且 Adapter 还设置了 tool allow/deny、`strictMcpConfig` 与隔离 settings source，造成宿主在协议适配之外裁剪厂商工具面。便携包又只携带 `node.exe`，正式环境没有 npm installer。
+
+决策：
+
+1. Codex 继续使用官方 app-server；Claude 继续使用 Agent SDK 作为 transport/event/session adapter，不退回自维护 JSONL 协议。Agent SDK 通过 `pathToClaudeCodeExecutable` 运行应用私有 Claude CLI。
+2. 私有内核安装于数据库同级 `kernels/versions/<kernel>/<version>`。新版本先安装到随机 staging，校验 package name、精确版本与预期 executable 后进入版本目录，最后用临时文件 + rename 原子替换 `active.json`。失败不改变旧 active 记录。
+3. 关于页分别展示应用更新和 Codex/Claude Code 内核更新；检查只读取 registry，安装/升级必须由用户显式触发。系统 npm prefix、Codex App runtime 与用户全局 CLI 都不修改。
+4. Runtime 通过受限根目录 manifest 解析私有 executable。Codex 私有路径优先于 Codex App/PATH；Claude 私有路径优先于 SDK bundle。manifest 路径越界、包名不符或文件缺失时忽略并回退。
+5. Claude Adapter 不设置 `allowedTools`、`disallowedTools`、`strictMcpConfig` 或 `settingSources=[]`；原生工具、用户/项目设置与 MCP 保持 Claude CLI 默认语义。宿主只适配自己注入的 MCP、审批和 UI 事件，不按工具名删除厂商能力。
+6. 用户选择的权限档位继续映射为 Claude/Codex 原生权限与沙箱模式；平台 MCP 的联网、工作区、Store 能力和副作用审批继续由其实现合同约束。这些边界不等同于限制 Claude/Codex 自带工具调用。
+7. Anthropic Provider 地址按 Messages 协议补全：裸 root/custom prefix 自动加 `/v1/messages`，已完整地址不重复；DeepSeek `/v1` 与 `/anthropic` 规范化到 `/anthropic/v1/messages`。Codex custom provider 继续只使用 Responses wire API，不借 `/anthropic` 后缀猜测协议。
+8. Windows portable 必须携带完整受管 Node/npm 目录并校验 `npm-cli.js`；否则关于页只能检查而不能私有安装，属于 release 阻断错误。
+
+验证门禁：内核 updater 覆盖 registry 查询、版本目录激活和验证失败保留旧版本；managed resolver 覆盖越界拒绝；Claude Adapter 覆盖私有 executable、无 tool/MCP/settings 裁剪；Anthropic adapter 覆盖 bare/custom/`v1`/`messages`/DeepSeek 地址；Windows release 校验 npm CLI。
+
+### TD-052：模型容量单一事实、内核热切换与原生模式适配（2026-08-29）
+
+状态：已采用。修订 TD-049 的会话容量覆盖规则，并补充 TD-051 的激活语义。
+
+决策：
+
+1. Provider 模型配置是上下文容量的唯一可编辑事实源。Conversation 旧覆盖字段只保留兼容读取；运行绑定、上下文环和统计分母统一采用当前模型容量。
+2. 私有内核激活是应用级路由变更，不绑定新会话。Codex resident adapter 在安装后统一回收：空闲立即停止，活跃延迟到租约释放；下一轮以原 thread ID 恢复。Claude adapter 按轮创建，下一轮自然解析 active manifest。两者都不迁移或清空历史会话。
+3. 网关同协议请求仍经过鉴权、模型路由、usage 与审计边界，但 `converted=false`。产品表面称为“网关请求日志”，只有协议不同才标记转换。
+4. 外部内核 usage 必须同时保存内部 `modelId` 和 Provider `providerModelId`。历史事件缺少内部身份时，统计缓存以 Provider 模型名回退，不丢弃整条请求。
+5. 规划模式优先调用厂商原生能力：Claude SDK 使用 `permissionMode=plan` 与 `ExitPlanMode`；Codex app-server 使用 `turn/start.collaborationMode=plan`，并在执行轮显式复位为 `default`。宿主只把厂商 canonical plan 输出转换成统一审批卡。缺少原生规划协议的内核才使用 `plan_submit` 兼容层。
+6. 目标模式按 capability 适配。当前 SYNC-THINK 的跨内核续轮、评估与统一状态卡仍由宿主目标状态机负责；Codex 0.147.0 虽公开 `thread/goal/*`，在其完成事件、预算和续轮语义与宿主目标合同完整对齐前不做半套双状态同步，Claude SDK 也没有等价目标会话 API。
+7. Vendor 私有安装本身不携带 SYNC-THINK MCP 默认配置。每个 Run 由 Runtime 注入平台 MCP；Skill 作为提示/资源上下文注入。厂商原生工具和用户配置不裁剪，平台工具仍按自身的联网、Store、审批和规划模式合同执行。
+
+### TD-053：机器人通道复用持久会话，连接器目录只投影真实工具（2026-08-29）
+
+状态：已采用。补充 TD-046 的外部事件入口和 TD-052 的平台 MCP 注入边界。
+
+决策：
+
+1. 机器人通道只负责协议收发，不建立独立 Agent、模型路由或工具白名单。同一远端 chat id 映射到一个持久 Conversation/Task，消息进入现有 `prepareRunBinding` 与 Kernel Run，因而继续使用当前模型、Skill、MCP、Provider fallback、事件投影和原生内核会话。
+2. Telegram 是首个完整通道。Runtime 使用 `getMe` 校验身份、`getUpdates` 长轮询、`sendChatAction` 显示执行中，并用 `sendMessage` 返回最终可见文本；非文本 Update 也推进 offset，回复按 4,096 字符边界分段。
+3. Bot Token 只进入 Main/Runtime IPC 并存入 SecureStore。Renderer 和普通配置只接收 `tokenConfigured`、Bot 公开身份、代理、启用状态与脱敏错误；替换成功后删除旧 secret handle。
+4. 长轮询由 Runtime 生命周期持有。停用、重配或 Runtime 停止先 abort 当前请求并释放代理 dispatcher；处理完一批 Update 后才持久化 offset，保持至少一次处理语义。
+5. 设置页的托管连接器目录是接入入口，不是虚拟市场。余额、价格、固定动作数和预制动作都必须来自真实后端；当前没有结算合同，因此不展示。详情页只读取已注册 MCP Server 的真实 `tools`，首次点击先看能力详情，用户明确启用后再填写 Endpoint/鉴权并执行工具发现。
+6. 当前未实现完整收发合同的机器人平台保持可见但禁用并标注“待接入”，不以静态表单或成功 Toast 冒充可用。第三方 Provider 继续使用通用远程 MCP 配置，与托管连接器详情分开。
+
+验证门禁：Telegram client 覆盖 Token 校验、`getMe`、Update 投影/offset 与 4,096 字符分段；Desktop 覆盖托管详情首屏、真实工具目录、启用后配置弹窗、Telegram 安全占位、测试保存及未交付通道禁用；Runtime/Desktop typecheck 和生产构建通过后，使用本地 Electron 完成设置页交互 QA。
+
+### TD-054：多 IM 通道采用本地平台网关，连接器后端独立演进（2026-08-30）
+
+状态：已采用。用户确认机器人对话按本机 NewMax 1.1.15 的实际架构实现。
+
+技术需要：将飞书、企业微信、微信、Discord、钉钉、QQ 从“待接入”升级为真实机器人通道，并为 SYNC-THINK Provider 提供类似 NewMax 的动作目录与执行能力。
+
+约束：桌面端保持 local-first；远端 chat id 复用现有持久会话和工具治理；凭证只进入 SecureStore；连接器动作必须可发现、可执行且来源可追溯；不得依赖静态伪动作。
+
+选项：
+
+1. Runtime 内置平台适配器 + 现有远程 MCP（低云依赖）：逐个平台接官方 SDK/长连接协议；连接器继续要求用户提供 MCP Endpoint。优点是本地控制强，缺点是七个平台的协议维护与桌面包体成本最高，也无法形成统一的托管动作市场。
+2. Runtime IM 适配器 + SYNC-THINK 私有连接器网关（推荐）：机器人收发仍由本地 Runtime 管理；新增自有 `catalog/run/probe` 网关合同，动作目录、参数、计费/配额和执行由网关返回。优点是最接近 NewMax 的产品行为且不耦合 NewMax 账号；代价是需要建设、部署和运维后端。
+3. 全部外置为统一 Bridge 服务：IM Webhook/长连接和连接器执行都由远端 Bridge 承担，桌面只同步会话。实现集中，但会削弱 local-first、离线能力和故障隔离，外部消息与凭证的服务端边界也更大。
+
+采用：机器人对话选择选项 1，连接器动作目录不与本次 IM 网关绑定。Runtime 内建立统一 `BotChannelGatewayManager`，每个平台使用独立适配器和平台 SDK；适配器只负责鉴权、长连接、消息标准化、状态、重试和发送，所有入站消息继续进入 TD-053 的持久 Conversation/Task 与 Kernel Run。平台依赖按启用通道动态加载，避免未使用通道增加启动成本。
+
+首批平台与实现对齐本机 NewMax 1.1.15：Telegram 使用 `grammy`/`@grammyjs/runner`，飞书使用 `@larksuiteoapi/node-sdk`，企业微信使用 `@wecom/aibot-node-sdk`，Discord 使用 `discord.js`，钉钉使用 `dingtalk-stream`，QQ 使用 `qq-official-bot`，微信使用 iLink/ClawBot 扫码会话适配。SDK 版本进入 Runtime 锁文件，不依赖 NewMax 安装目录或账号。
+
+安全与生命周期：所有 Token、Secret、App Secret 继续写入 SYNC-THINK `SecureStore`，SQLite 只保存 opaque handle 与非敏感公开设置；平台启停按平台串行，Runtime 启动恢复全部已启用且凭据完整的通道，单通道失败不阻断其他通道。测试连接必须执行真实凭据/连接探测并返回分项结果，停用、重配和 Runtime 停止必须释放长连接、轮询和代理资源。
+
+连接器动作目录仍保留为独立技术问题：现有远程 MCP 可继续提供真实工具；自有托管 `catalog/run/probe` 网关在后端合同、计费和部署单独确认后再实现，不以机器人通道 SDK 伪装连接器动作。
+
+回滚：保持新增平台配置未启用即可退回 Telegram；通用会话映射沿用既有外部事件键，不迁移或删除历史 Conversation。
+
+### TD-055：NewMax Composer 共享 frame、CodeMirror 6 与方案/任务清单分层（2026-08-31）
+
+状态：已采用。用户确认 Composer 以本机 NewMax 当前安装包与 Renderer 实现为唯一验收基准；正式方案卡和运行任务清单必须维持独立事件域。
+
+背景：此前空态与会话态分别维护 Composer，Beautiful UI Prompt Bar 与旧 SYNC-THINK 输入框的几何和命令语义也存在分叉。方案审批还曾与模型维护的任务清单共用展示入口，容易把运行进度误认为人类批准的执行方案。当前实现已增加 CodeMirror 依赖并需要明确它只覆盖 Composer，不改变工作区文件编辑器的轻量边界。
+
+方案对比：
+
+| 方案 | 优点 | 缺点 | 结论 |
+| --- | --- | --- | --- |
+| 两套 textarea（空态/会话态各自维护） | 依赖少、迁移小 | 选择、IME、菜单、附件 token 和模式行为容易漂移 | 不采用 |
+| Monaco/CodeMirror 同时替换 Composer 与工作区文件编辑 | 能力统一、可扩展语法编辑 | 首屏包体、文件草稿持久化、路径/磁盘冲突边界显著扩大 | 不采用 |
+| NewMax 共享 frame + CodeMirror 6 Composer；文件编辑保留 textarea | 两个入口行为同构，支持原子引用 token 与稳定选区；文件真值边界不变 | Composer 增加轻量编辑器依赖，需要兼容既有 textarea 调用方 | 采用 |
+
+采用合同：
+
+1. 空态与会话态统一挂载 `NewMaxComposerFrame`；`ComposerEditor` 是唯一文本编辑实现。两处可分别负责首轮创建、消息发送、排队与审批编排，但不得复制编辑器、菜单、Plan/Goal Banner 或模式建议逻辑。
+2. `ComposerEditor` 使用 CodeMirror 6 的 `@codemirror/state`、`@codemirror/view` 和 `@codemirror/commands`。每次挂载只创建一个稳定 `EditorView`，启用行折行、历史/默认键盘映射、IME 安全的 Enter 提交、焦点/选区同步及原子 Skill/附件/粘贴引用 token 装饰；动态禁用、placeholder、主题和可访问属性通过 Compartment 重配置，不重建实例。
+3. 隐藏兼容 `<textarea>` 只镜像值/选区并承接既有 DOM 调用方与测试，绝不参与布局或作为第二个可见编辑器；工作区文件编辑仍按 TD-015 使用 textarea。任何把 CodeMirror/Monaco 扩展到文件编辑、持久草稿或磁盘同步的提案必须重新走技术门禁。
+4. Composer 几何与动效以 NewMax 实测合同为准：最大宽度 `744px`、外框圆角 `20px`、空态/会话态文本区最小高度 `72px / 36px`、共同最大高度 `200px`；模式 Banner `74px` 高并与 Composer 重叠 `32px`，Popover `150ms`，Plan/Goal Banner 分别 `220ms` / `240ms`。语义色优先使用 `--composer-*`，减少动态效果时立即定位。
+5. 正式方案只由 Codex canonical plan item 或 `plan_submit` 归一的 `conversation.plan_submitted` 产生；同一 Run 幂等生成一张会话态 Composer 上方的紧凑审批摘要。批准前允许“批准并执行 / 要求修改 / 取消”，要求修改回到 plan 并由下一次正式提交生成 revision；当前生产入口不承诺未挂载的全字段就地编辑器。
+6. `update_task_plan`、Task 系列工具和 Codex `turn/plan/updated` 只更新当前 Run 的 Progress 任务清单，按 `toolCallId` 关联并按 thread/task 隔离；首次真实快照自动展开，终态保留至当前对话下一轮开始，Plan 模式隐藏，退出后按生命周期恢复。任务清单不产生审批卡、不进入普通工具行，也不从自然语言反推正式方案。
+7. 规划 Run 终态没有正式 `conversation.plan_submitted` 时必须显示“方案未提交”并保持 plan；只有批准方案才切到 execute 并以 `planExecuting` 发起执行轮。工具清单完成状态不得触发方案审批或执行交接。
+
+验证门禁：ComposerEditor、NewMaxComposerFrame、Slash/MCP/加号菜单、Plan/Goal Banner、正式方案幂等与任务清单隔离均有 Desktop/Runtime 定向回归；`build:shell` 必须确认 CodeMirror 只进入 Renderer bundle，Renderer 产物不得引入 Node 内建模块；视觉验证覆盖浅/深主题、宽/窄 Pane、IME、reduced-motion 与无横向溢出。
+
+回滚：若 Composer CodeMirror 发现回归，可保留同一 NewMax frame 与 Plan/Progress 事件合同，将 `ComposerEditor` 实现回退为兼容 textarea；不得恢复两套 Composer、把任务清单升级为方案卡，或把审批重新放回消息流。

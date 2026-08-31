@@ -93,6 +93,39 @@ function insertEvent(
 }
 
 describe('usage summary cache projection', () => {
+  it('recovers legacy external-kernel usage rows that only stored the provider model id', async () => {
+    const fixture = await createFixture();
+    try {
+      insertEvent(fixture.raw, {
+        id: 'usage-legacy-kernel',
+        sequence: 1,
+        type: 'provider.usage',
+        occurredAt: '2026-08-29T00:00:00.000Z',
+        payload: {
+          requestId: 'kernel-request-1',
+          providerId: 'provider-kimi',
+          providerModelId: 'gpt-5.6-luna',
+          tokensIn: 2_000,
+          tokensOut: 100,
+          totalTokens: 2_100,
+        },
+      });
+
+      const summary = summarizeUsageSnapshot(refreshUsageSummarySnapshotFromDatabase(fixture.raw));
+
+      expect(summary.requests).toEqual([
+        expect.objectContaining({
+          requestId: 'kernel-request-1',
+          modelId: 'gpt-5.6-luna',
+          providerModelId: 'gpt-5.6-luna',
+          totalTokens: 2_100,
+        }),
+      ]);
+    } finally {
+      fixture.close();
+    }
+  });
+
   it('keeps legacy provider turns separate when only a shared packet id is available', async () => {
     const fixture = await createFixture();
     try {

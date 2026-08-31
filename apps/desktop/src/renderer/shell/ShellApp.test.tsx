@@ -20,6 +20,7 @@ const runtime = {
   detectKernels: vi.fn().mockResolvedValue({ kernels: [] }),
   installKernel: vi.fn().mockResolvedValue({ ok: true }),
   listSkills: vi.fn().mockResolvedValue({ skills: [] }),
+  listMcpServers: vi.fn().mockResolvedValue({ servers: [] }),
   getSkill: vi.fn(),
   renameConversation: vi.fn().mockResolvedValue({ conversation: { id: 'created-conversation' } }),
   setConversationPinned: vi
@@ -34,6 +35,19 @@ const runtime = {
   setConversationInteractionMode: vi
     .fn()
     .mockResolvedValue({ conversation: { id: 'created-conversation' } }),
+  setGoal: vi.fn().mockResolvedValue({
+    goal: {
+      conversationId: 'created-conversation',
+      condition: '完成登录页重构',
+      status: 'active',
+      startedAt: '2026-07-25T00:00:00.000Z',
+      turnCount: 0,
+      tokensIn: 0,
+      tokensOut: 0,
+    },
+    started: true,
+    evaluatorConfigured: true,
+  }),
   deleteConversation: vi.fn().mockResolvedValue({}),
   createConversation: vi.fn().mockResolvedValue({
     conversation: {
@@ -52,6 +66,8 @@ const runtime = {
   listTeams: vi.fn().mockResolvedValue({ teams: [] }),
   listProviders: vi.fn().mockResolvedValue({ providers: [] }),
   listWorkspaces: vi.fn().mockResolvedValue({ workspaces: [] }),
+  getSettings: vi.fn().mockResolvedValue({ settings: {} }),
+  setSetting: vi.fn().mockResolvedValue({}),
   readProjectFile: vi.fn().mockResolvedValue({
     path: 'notes.txt',
     content: 'before',
@@ -72,12 +88,71 @@ const chatViewProps: { current?: Record<string, unknown> } = {};
 const terminalPaneProps: { current?: Record<string, unknown> } = {};
 const sidebarProps: { current?: Record<string, unknown> } = {};
 const newConversationDialogProps: { current?: Record<string, unknown> } = {};
+const abilitiesPageProps: { current?: Record<string, unknown> } = {};
+const modelSettingsProps: { current?: Record<string, unknown> } = {};
 
 const completeMock = vi.fn(async () => true);
+
+const agentAFixture = {
+  id: 'agent-a',
+  name: 'Agent A',
+  avatar: 'A',
+  persona: '',
+  description: 'Agent A description',
+  defaultModelId: 'model-a',
+  fallbackModelIds: [],
+  skillIds: [],
+  mcpServerIds: [],
+  reasoningEffort: 'auto',
+  archived: false,
+  createdAt: '2026-07-25T00:00:00.000Z',
+  updatedAt: '2026-07-25T00:00:00.000Z',
+} as unknown as GlobalAgent;
+
+const teamAFixture = {
+  id: 'team-a',
+  name: 'Team A',
+  avatar: 'T',
+  mission: 'Team A mission',
+  strategy: 'parallel',
+  coordinatorAgentId: 'agent-a',
+  members: [
+    {
+      agentId: 'agent-a',
+      memberOrder: 0,
+      role: 'member',
+      title: 'Member',
+      dependsOn: [],
+    },
+  ],
+  createdAt: '2026-07-25T00:00:00.000Z',
+  updatedAt: '2026-07-25T00:00:00.000Z',
+} as unknown as Team;
 
 function clickNewConversationResource(button?: HTMLElement): void {
   fireEvent.click(button ?? screen.getByTestId('conversation-tab-new'));
   fireEvent.click(screen.getByTestId('new-resource-conversation'));
+}
+
+async function pickEmptyComposerIdentity(
+  track: 'model' | 'agent' | 'team',
+  targetRef?: string,
+): Promise<void> {
+  fireEvent.click(screen.getByTestId('empty-compose-identity'));
+  const option =
+    track === 'model'
+      ? await screen.findByRole('menuitemradio', { name: /直接跟模型聊/ })
+      : await screen.findByTestId(`identity-option-${track}-${targetRef}`);
+  fireEvent.click(option);
+}
+
+async function pickCollapsedEmptyComposerPermission(name: RegExp): Promise<void> {
+  fireEvent.click(screen.getByTestId('empty-compose-add-trigger'));
+  const menu = await screen.findByTestId('empty-compose-add-menu');
+  fireEvent.click(within(menu).getByRole('option', { name }));
+  fireEvent.animationEnd(menu);
+  await waitFor(() => expect(screen.queryByTestId('empty-compose-add-menu')).toBeNull());
+  await new Promise((resolve) => window.requestAnimationFrame(() => resolve(undefined)));
 }
 
 vi.mock('../runtime-connection.js', () => ({
@@ -168,8 +243,9 @@ vi.mock('./Sidebar.js', () => ({
 }));
 vi.mock('./AgentLibrary.js', () => ({ AgentLibrary: () => null }));
 vi.mock('./AbilitiesPage.js', () => ({
-  AbilitiesPage: (props: Record<string, unknown>) =>
-    createElement(
+  AbilitiesPage: (props: Record<string, unknown>) => {
+    abilitiesPageProps.current = props;
+    return createElement(
       'button',
       {
         type: 'button',
@@ -177,7 +253,8 @@ vi.mock('./AbilitiesPage.js', () => ({
         onClick: () => (props.onGoToAgents as (() => void) | undefined)?.(),
       },
       '能力中心',
-    ),
+    );
+  },
 }));
 vi.mock('./TeamLibrary.js', () => ({ TeamLibrary: () => null }));
 vi.mock('./NewConversationDialog.js', () => ({
@@ -187,16 +264,17 @@ vi.mock('./NewConversationDialog.js', () => ({
   },
 }));
 vi.mock('./ModelSettings.js', () => ({
-  ModelSettings: forwardRef(function MockModelSettings(
-    { onDirtyChange }: { onDirtyChange?(dirty: boolean): void },
-    ref,
-  ) {
+  ModelSettings: forwardRef(function MockModelSettings(props: Record<string, unknown>, ref) {
+    modelSettingsProps.current = props;
     useImperativeHandle(ref, () => ({
       complete: () => completeMock(),
     }));
     return createElement(
       'button',
-      { type: 'button', onClick: () => onDirtyChange?.(true) },
+      {
+        type: 'button',
+        onClick: () => (props.onDirtyChange as ((dirty: boolean) => void) | undefined)?.(true),
+      },
       '标记模型配置未保存',
     );
   }),
@@ -229,6 +307,8 @@ beforeEach(() => {
   terminalPaneProps.current = undefined;
   sidebarProps.current = undefined;
   newConversationDialogProps.current = undefined;
+  abilitiesPageProps.current = undefined;
+  modelSettingsProps.current = undefined;
   runtime.connect.mockResolvedValue({ snapshot: [] });
   runtime.onEvent.mockReturnValue(vi.fn());
   runtime.onOpenConversation.mockReturnValue(vi.fn());
@@ -242,6 +322,7 @@ beforeEach(() => {
   runtime.detectKernels.mockReset().mockResolvedValue({ kernels: [] });
   runtime.installKernel.mockReset().mockResolvedValue({ ok: true });
   runtime.listSkills.mockReset().mockResolvedValue({ skills: [] });
+  runtime.listMcpServers.mockReset().mockResolvedValue({ servers: [] });
   runtime.getSkill.mockReset();
   runtime.renameConversation.mockResolvedValue({ conversation: { id: 'created-conversation' } });
   runtime.setConversationPinned.mockResolvedValue({ conversation: { id: 'created-conversation' } });
@@ -253,6 +334,19 @@ beforeEach(() => {
   });
   runtime.setConversationInteractionMode.mockReset().mockResolvedValue({
     conversation: { id: 'created-conversation' },
+  });
+  runtime.setGoal.mockReset().mockResolvedValue({
+    goal: {
+      conversationId: 'created-conversation',
+      condition: '完成登录页重构',
+      status: 'active',
+      startedAt: '2026-07-25T00:00:00.000Z',
+      turnCount: 0,
+      tokensIn: 0,
+      tokensOut: 0,
+    },
+    started: true,
+    evaluatorConfigured: true,
   });
   runtime.deleteConversation.mockResolvedValue({});
   runtime.createConversation.mockResolvedValue({
@@ -272,6 +366,8 @@ beforeEach(() => {
   runtime.listTeams.mockResolvedValue({ teams: [] });
   runtime.listProviders.mockResolvedValue({ providers: [] });
   runtime.listWorkspaces.mockResolvedValue({ workspaces: [] });
+  runtime.getSettings.mockReset().mockResolvedValue({ settings: {} });
+  runtime.setSetting.mockReset().mockResolvedValue({});
   runtime.readProjectFile.mockResolvedValue({
     path: 'notes.txt',
     content: 'before',
@@ -320,6 +416,75 @@ describe('ShellApp abilities navigation', () => {
     fireEvent.click(screen.getByTestId('nav-abilities'));
     await waitFor(() => expect(screen.getByTestId('mock-abilities-page')).toBeTruthy());
     expect(screen.queryByText('能力 · 即将推出')).toBeNull();
+  });
+});
+
+describe('ShellApp composer deep navigation', () => {
+  async function renderConversationShell(): Promise<void> {
+    installRuntime();
+    runtime.listWorkspaces.mockResolvedValue({
+      workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\\\a' }],
+    });
+    runtime.listConversations.mockResolvedValue({
+      conversations: [
+        {
+          id: 'conv-a',
+          workspaceId: 'ws-a',
+          track: 'model',
+          targetRef: 'model-a',
+          title: '已有对话',
+          executionMode: 'full-access',
+          createdAt: '2026-07-25T00:00:00.000Z',
+          updatedAt: '2026-07-25T00:00:00.000Z',
+        },
+      ],
+    });
+    window.localStorage.setItem('sync-think.activeWorkspaceId', 'ws-a');
+    window.localStorage.setItem(
+      'sync-think.workspacePaneLayouts',
+      JSON.stringify({
+        version: 1,
+        workspaces: { 'ws-a': createWorkspacePaneLayout('ws-a', ['conv-a'], 'conv-a') },
+      }),
+    );
+
+    render(<ShellApp />);
+    await waitFor(() => expect(screen.getByTestId('mock-chat-view')).toBeTruthy());
+  }
+
+  it('opens the Plan and MCP destinations requested by the conversation composer', async () => {
+    await renderConversationShell();
+
+    act(() => (chatViewProps.current?.onOpenPlanSettings as (() => void) | undefined)?.());
+    await waitFor(() =>
+      expect(modelSettingsProps.current).toEqual(
+        expect.objectContaining({ initialDetailView: 'plan-act' }),
+      ),
+    );
+    const firstNavigationKey = modelSettingsProps.current?.navigationKey;
+    expect(firstNavigationKey).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '关闭设置' }));
+
+    act(() => (chatViewProps.current?.onOpenMcpSettings as (() => void) | undefined)?.());
+    const mcpTab = await screen.findByRole('tab', { name: 'MCP' });
+    expect(mcpTab.getAttribute('aria-selected')).toBe('true');
+    fireEvent.click(screen.getByRole('button', { name: '关闭设置' }));
+
+    act(() => (chatViewProps.current?.onOpenPlanSettings as (() => void) | undefined)?.());
+    await waitFor(() =>
+      expect(modelSettingsProps.current?.navigationKey).not.toBe(firstNavigationKey),
+    );
+  });
+
+  it('opens the existing Skill editor from the composer create action', async () => {
+    await renderConversationShell();
+
+    act(() => (chatViewProps.current?.onCreateSkill as (() => void) | undefined)?.());
+    await waitFor(() => expect(screen.getByTestId('mock-abilities-page')).toBeTruthy());
+    expect(abilitiesPageProps.current).toEqual(
+      expect.objectContaining({ initialView: 'create-skill' }),
+    );
+    expect(abilitiesPageProps.current?.navigationKey).toBeTruthy();
   });
 });
 
@@ -924,6 +1089,9 @@ describe('ShellApp workspace context', () => {
     const newButtons = screen.getAllByTestId('conversation-tab-new');
     clickNewConversationResource(newButtons[1]);
     await waitFor(() => expect(screen.getByTestId('empty-compose')).toBeTruthy());
+    const composer = screen.getByTestId('empty-compose');
+    expect(composer.getAttribute('data-layout')).toBe('tall');
+    expect(composer.classList.contains('shell-compose--tall')).toBe(false);
     fireEvent.change(screen.getByTestId('empty-compose-input'), {
       target: { value: '沿用右侧智能体' },
     });
@@ -1295,6 +1463,178 @@ describe('ShellApp pane visibility activity', () => {
 });
 
 describe('ShellApp empty conversation compose', () => {
+  it('uses the NewMax action slot without the legacy track launchers', async () => {
+    installRuntime();
+    runtime.listWorkspaces.mockResolvedValue({
+      workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }],
+    });
+
+    render(<ShellApp />);
+    const input = await screen.findByTestId('empty-compose-input');
+
+    expect(document.querySelector('[data-testid^="welcome-track-"]')).toBeNull();
+    expect(screen.getByTestId('home-tips-carousel')).toBeTruthy();
+    expect(screen.getAllByTestId('home-scenario-pill')).toHaveLength(6);
+    expect(screen.getByTestId('empty-compose-voice')).toBeTruthy();
+    expect(screen.queryByTestId('empty-compose-send')).toBeNull();
+
+    fireEvent.change(input, { target: { value: '开始一个新任务' } });
+
+    expect(screen.getByTestId('empty-compose-send')).toBeTruthy();
+    expect(screen.queryByTestId('empty-compose-voice')).toBeNull();
+  });
+
+  it('fills the empty composer from a NewMax home scenario without sending', async () => {
+    installRuntime();
+    runtime.listWorkspaces.mockResolvedValue({
+      workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }],
+    });
+
+    render(<ShellApp />);
+    const input = (await screen.findByTestId('empty-compose-input')) as HTMLTextAreaElement;
+
+    fireEvent.click(screen.getByRole('button', { name: '研究' }));
+    fireEvent.click(screen.getByRole('button', { name: /快速调研/ }));
+
+    await waitFor(() =>
+      expect(input.value).toBe(
+        '请先询问我要研究的主题和时间范围，再给出带来源的关键事实、分歧点和结论。',
+      ),
+    );
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole('textbox', { name: '消息' })),
+    );
+    expect(runtime.sendConversationMessage).not.toHaveBeenCalled();
+  });
+
+  it('selects Agent and Team drafts directly from the empty identity picker', async () => {
+    installRuntime();
+    runtime.listWorkspaces.mockResolvedValue({
+      workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }],
+    });
+    runtime.listGlobalAgents.mockResolvedValue({ agents: [agentAFixture] });
+    runtime.listTeams.mockResolvedValue({ teams: [teamAFixture] });
+
+    render(<ShellApp />);
+    await screen.findByTestId('empty-compose');
+
+    await pickEmptyComposerIdentity('agent', 'agent-a');
+    await waitFor(() =>
+      expect(screen.getByTestId('empty-compose-identity').getAttribute('title')).toBe(
+        '对话对象：Agent A',
+      ),
+    );
+    expect(screen.queryByTestId('mock-new-conversation-dialog')).toBeNull();
+
+    await pickEmptyComposerIdentity('team', 'team-a');
+    await waitFor(() =>
+      expect(screen.getByTestId('empty-compose-identity').getAttribute('title')).toBe(
+        '对话对象：Team A',
+      ),
+    );
+    expect(screen.queryByTestId('mock-new-conversation-dialog')).toBeNull();
+  });
+
+  it('applies the saved chat typography and NewMax auto-grow limit to the empty editor', async () => {
+    window.localStorage.setItem(
+      'sync-think.preferences.appearance.v1',
+      JSON.stringify({ chatFontSize: 18, useSerifFont: true }),
+    );
+    installRuntime();
+    runtime.listWorkspaces.mockResolvedValue({
+      workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }],
+    });
+    runtime.listProviders.mockResolvedValue({
+      providers: [
+        {
+          providerId: 'provider-a',
+          name: 'Provider A',
+          enabled: true,
+          models: [{ modelId: 'model-a', displayName: 'Model A' }],
+        },
+      ],
+    });
+
+    render(<ShellApp />);
+    const input = (await screen.findByTestId('empty-compose-input')) as HTMLTextAreaElement;
+    const editor = screen.getByRole('textbox', { name: '消息' });
+    Object.defineProperty(input, 'scrollHeight', { configurable: true, value: 260 });
+    fireEvent.change(input, { target: { value: '一段足够长的输入内容' } });
+
+    const editorRoot = editor.closest('.cm-editor');
+    expect(editorRoot).not.toBeNull();
+    await waitFor(() => expect(getComputedStyle(editorRoot as HTMLElement).maxHeight).toBe('200px'));
+    expect(getComputedStyle(editor).fontSize).toBe('18px');
+    expect(getComputedStyle(editor).fontFamily).toBe('var(--font-serif)');
+  });
+
+  it('uses the shared NewMax add menu and applies Goal in the empty composer', async () => {
+    installRuntime();
+    runtime.listWorkspaces.mockResolvedValue({
+      workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }],
+    });
+    runtime.listProviders.mockResolvedValue({
+      providers: [
+        {
+          providerId: 'provider-a',
+          name: 'Provider A',
+          enabled: true,
+          models: [{ modelId: 'model-a', displayName: 'Model A' }],
+        },
+      ],
+    });
+
+    render(<ShellApp />);
+    const input = (await screen.findByTestId('empty-compose-input')) as HTMLTextAreaElement;
+    const editor = screen.getByRole('textbox', { name: '消息' });
+    fireEvent.click(screen.getByTestId('empty-compose-add-trigger'));
+    const menu = await screen.findByTestId('empty-compose-add-menu');
+    expect(menu.getAttribute('data-placement')).toBe('below');
+    expect(within(menu).getByText('目标模式')).toBeTruthy();
+    expect(document.activeElement).toBe(editor);
+
+    fireEvent.click(within(menu).getByRole('option', { name: /目标模式/ }));
+    await waitFor(() => expect(input.value).toBe('/goal '));
+    await waitFor(() => expect(input.selectionStart).toBe(6));
+    expect(screen.getByTestId('empty-compose-add-menu').getAttribute('data-motion-state')).toBe(
+      'exiting',
+    );
+    await waitFor(() => expect(screen.queryByTestId('empty-compose-add-menu')).toBeNull());
+    const pill = screen.getByRole('button', { name: '退出目标模式' });
+    expect(pill.textContent).toContain('目标');
+    fireEvent.click(pill);
+    await waitFor(() => expect(input.value).toBe(''));
+  });
+
+  it('converts an ordinary Goal suggestion with Shift+Tab in the shared empty composer', async () => {
+    installRuntime();
+    runtime.listWorkspaces.mockResolvedValue({
+      workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }],
+    });
+    runtime.listProviders.mockResolvedValue({
+      providers: [
+        {
+          providerId: 'provider-a',
+          name: 'Provider A',
+          enabled: true,
+          models: [{ modelId: 'model-a', displayName: 'Model A' }],
+        },
+      ],
+    });
+
+    render(<ShellApp />);
+    const input = (await screen.findByTestId('empty-compose-input')) as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: '目标：完成输入框', selectionStart: 8 } });
+    expect((await screen.findByTestId('composer-mode-keyword-hint')).textContent).toContain(
+      '创建目标',
+    );
+
+    fireEvent.keyDown(input, { key: 'Tab', shiftKey: true });
+    await waitFor(() => expect(input.value).toBe('/goal 完成输入框'));
+    expect(screen.queryByTestId('composer-mode-keyword-hint')).toBeNull();
+    expect(screen.getByRole('button', { name: '退出目标模式' })).toBeTruthy();
+  });
+
   it('keeps @ keyboard focus inside the EmptyTalk pane that opened the menu', async () => {
     const props = {
       hasWorkspace: true,
@@ -1462,12 +1802,18 @@ describe('ShellApp empty conversation compose', () => {
 
     render(<ShellApp />);
     await screen.findByTestId('empty-compose');
-    expect(screen.getByRole('button', { name: '添加图片' })).toBeTruthy();
+    fireEvent.click(screen.getByTestId('empty-compose-add-trigger'));
+    fireEvent.click(
+      within(await screen.findByTestId('empty-compose-add-menu')).getByRole('option', {
+        name: '附加文件',
+      }),
+    );
     const image = new File(['PNG'], 'diagram.png', { type: 'image/png' });
     fireEvent.change(screen.getByTestId('empty-compose-image-input'), {
       target: { files: [image] },
     });
-    await screen.findByTestId('empty-compose-attachments');
+    await screen.findByTestId('composer-editor-attachments');
+    expect(screen.getAllByText('diagram.png')).toHaveLength(1);
     fireEvent.click(screen.getByTestId('empty-compose-send'));
 
     await waitFor(() => expect(runtime.appendMessage).toHaveBeenCalledTimes(1));
@@ -1506,10 +1852,20 @@ describe('ShellApp empty conversation compose', () => {
 
     render(<ShellApp />);
     const input = await screen.findByTestId('empty-compose-input');
+    expect(screen.getByTestId('newmax-composer-frame').getAttribute('data-variant')).toBe('empty');
     fireEvent.change(input, { target: { value: '/', selectionStart: 1 } });
     const slashMenu = await screen.findByTestId('empty-compose-slash-pop');
-    fireEvent.mouseDown(within(slashMenu).getByText('/plan'));
+    expect(slashMenu.getAttribute('aria-label')).toBe('斜杠命令与 Skill');
+    expect(within(slashMenu).getByRole('option', { selected: true }).textContent).toContain(
+      '/help',
+    );
+    fireEvent.click(within(slashMenu).getByRole('option', { name: /规划模式/ }));
     await waitFor(() => expect((input as HTMLTextAreaElement).value).toBe('/plan '));
+    await waitFor(() => expect((input as HTMLTextAreaElement).selectionStart).toBe(6));
+    expect(screen.getByTestId('empty-compose-slash-pop').getAttribute('data-motion-state')).toBe(
+      'exiting',
+    );
+    await waitFor(() => expect(screen.queryByTestId('empty-compose-slash-pop')).toBeNull());
 
     fireEvent.change(input, {
       target: { value: '/plan 审查当前项目', selectionStart: 12 },
@@ -1527,6 +1883,620 @@ describe('ShellApp empty conversation compose', () => {
     expect(runtime.setConversationInteractionMode.mock.invocationCallOrder[0]).toBeLessThan(
       runtime.appendMessage.mock.invocationCallOrder[0]!,
     );
+  });
+
+  it('routes an empty-state Plan first turn through the configured planning model', async () => {
+    installRuntime();
+    runtime.listWorkspaces.mockResolvedValue({
+      workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }],
+    });
+    runtime.listProviders.mockResolvedValue({
+      providers: [
+        {
+          providerId: 'provider-a',
+          name: 'Provider A',
+          enabled: true,
+          models: [
+            { modelId: 'model-a', displayName: 'Model A' },
+            { modelId: 'model-plan', displayName: '规划模型' },
+            { modelId: 'model-act', displayName: '执行模型' },
+          ],
+        },
+      ],
+    });
+    runtime.getSettings.mockResolvedValue({
+      settings: {
+        'plan-act': {
+          enabled: true,
+          planModelId: 'model-plan',
+          actModelId: 'model-act',
+          planReasoningEffort: 'high',
+          actReasoningEffort: 'low',
+        },
+      },
+    });
+
+    render(<ShellApp />);
+    const input = (await screen.findByTestId('empty-compose-input')) as HTMLTextAreaElement;
+    fireEvent.change(input, {
+      target: { value: '/plan 审查当前项目', selectionStart: 12 },
+    });
+    fireEvent.click(screen.getByTestId('empty-compose-send'));
+
+    await waitFor(() => expect(runtime.appendMessage).toHaveBeenCalledTimes(1));
+    expect(runtime.createConversation).toHaveBeenCalledWith(
+      expect.objectContaining({ targetRef: 'model-plan' }),
+    );
+    expect(runtime.appendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ modelId: 'model-plan', reasoningEffort: 'high' }),
+    );
+    expect(runtime.setConversationInteractionMode.mock.invocationCallOrder[0]).toBeLessThan(
+      runtime.appendMessage.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it('sends first-message Help through the real help-mode contract and keeps bare Help focused', async () => {
+    installRuntime();
+    runtime.listWorkspaces.mockResolvedValue({
+      workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }],
+    });
+    runtime.listProviders.mockResolvedValue({
+      providers: [
+        {
+          providerId: 'provider-a',
+          name: 'Provider A',
+          enabled: true,
+          models: [{ modelId: 'model-a', displayName: 'Model A' }],
+        },
+      ],
+    });
+
+    render(<ShellApp />);
+    const input = (await screen.findByTestId('empty-compose-input')) as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: '/help', selectionStart: 5 } });
+    fireEvent.click(screen.getByTestId('empty-compose-send'));
+    await waitFor(() => expect(input.value).toBe('/help '));
+    expect(runtime.createConversation).not.toHaveBeenCalled();
+
+    fireEvent.change(input, {
+      target: { value: '/help 如何切换规划模式', selectionStart: 16 },
+    });
+    fireEvent.click(screen.getByTestId('empty-compose-send'));
+
+    await waitFor(() => expect(runtime.appendMessage).toHaveBeenCalledTimes(1));
+    expect(runtime.sendConversationMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ text: '如何切换规划模式' }),
+    );
+    expect(runtime.appendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ text: '如何切换规划模式', helpMode: true }),
+    );
+  });
+
+  it('creates a real goal conversation without appending a duplicate first message', async () => {
+    installRuntime();
+    runtime.listWorkspaces.mockResolvedValue({
+      workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }],
+    });
+    runtime.listProviders.mockResolvedValue({
+      providers: [
+        {
+          providerId: 'provider-a',
+          name: 'Provider A',
+          enabled: true,
+          models: [{ modelId: 'model-a', displayName: 'Model A' }],
+        },
+      ],
+    });
+
+    render(<ShellApp />);
+    const input = await screen.findByTestId('empty-compose-input');
+    fireEvent.change(input, {
+      target: { value: '/goal 完成登录页重构', selectionStart: 15 },
+    });
+    fireEvent.click(screen.getByTestId('empty-compose-send'));
+
+    await waitFor(() => expect(runtime.setGoal).toHaveBeenCalledTimes(1));
+    expect(runtime.createConversation).toHaveBeenCalledWith({
+      track: 'model',
+      targetRef: 'model-a',
+      workspaceId: 'ws-a',
+      executionMode: 'full-access',
+    });
+    expect(runtime.setGoal).toHaveBeenCalledWith({
+      conversationId: 'created-conversation',
+      condition: '完成登录页重构',
+      modelId: 'model-a',
+      kernelId: 'native',
+      reasoningEffort: 'auto',
+      networkEnabled: true,
+    });
+    expect(runtime.createConversation.mock.invocationCallOrder[0]).toBeLessThan(
+      runtime.setGoal.mock.invocationCallOrder[0]!,
+    );
+    expect(runtime.sendConversationMessage).not.toHaveBeenCalled();
+    expect(runtime.appendMessage).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.queryByTestId('empty-compose')).toBeNull());
+    expect(window.localStorage.getItem('sync-think.newConversationDraft')).toBe('');
+  });
+
+  it('confirms a risky Goal shortcut before creating it and preserves the empty-state draft', async () => {
+    installRuntime();
+    runtime.listWorkspaces.mockResolvedValue({
+      workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }],
+    });
+    runtime.listProviders.mockResolvedValue({
+      providers: [
+        {
+          providerId: 'provider-a',
+          name: 'Provider A',
+          enabled: true,
+          models: [{ modelId: 'model-a', displayName: 'Model A' }],
+        },
+      ],
+    });
+
+    render(<ShellApp />);
+    const input = (await screen.findByTestId('empty-compose-input')) as HTMLTextAreaElement;
+    const draft = '/goal 执行 rm -rf ./generated 后重建';
+    fireEvent.change(input, { target: { value: draft, selectionStart: draft.length } });
+    fireEvent.click(screen.getByTestId('empty-compose-send'));
+
+    expect(await screen.findByRole('dialog', { name: '高风险操作' })).toBeTruthy();
+    expect(runtime.createConversation).not.toHaveBeenCalled();
+    expect(runtime.setGoal).not.toHaveBeenCalled();
+    expect(input.value).toBe(draft);
+
+    fireEvent.click(screen.getByRole('button', { name: '返回修改' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '高风险操作' })).toBeNull());
+    expect(input.value).toBe(draft);
+
+    fireEvent.click(screen.getByTestId('empty-compose-send'));
+    fireEvent.click(await screen.findByRole('button', { name: '仍然继续' }));
+    await waitFor(() => expect(runtime.setGoal).toHaveBeenCalledTimes(1));
+    expect(runtime.setGoal).toHaveBeenCalledWith(
+      expect.objectContaining({ condition: '执行 rm -rf ./generated 后重建' }),
+    );
+  });
+
+  it('inserts the goal command with a trailing space and closes the empty slash menu', async () => {
+    installRuntime();
+    runtime.listWorkspaces.mockResolvedValue({
+      workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }],
+    });
+    runtime.listProviders.mockResolvedValue({
+      providers: [
+        {
+          providerId: 'provider-a',
+          name: 'Provider A',
+          enabled: true,
+          models: [{ modelId: 'model-a', displayName: 'Model A' }],
+        },
+      ],
+    });
+
+    render(<ShellApp />);
+    const input = (await screen.findByTestId('empty-compose-input')) as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: '/go', selectionStart: 3 } });
+    const menu = await screen.findByTestId('empty-compose-slash-pop');
+    fireEvent.click(within(menu).getByRole('option', { name: /目标模式/ }));
+
+    await waitFor(() => expect(input.value).toBe('/goal '));
+    await waitFor(() => expect(input.selectionStart).toBe(6));
+    expect(screen.getByTestId('empty-compose-slash-pop').getAttribute('data-motion-state')).toBe(
+      'exiting',
+    );
+    await waitFor(() => expect(screen.queryByTestId('empty-compose-slash-pop')).toBeNull());
+  });
+
+  it('runs Compact immediately and opens the real MCP status panel from the empty menu', async () => {
+    installRuntime();
+    runtime.listWorkspaces.mockResolvedValue({
+      workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }],
+    });
+    runtime.listProviders.mockResolvedValue({
+      providers: [
+        {
+          providerId: 'provider-a',
+          name: 'Provider A',
+          enabled: true,
+          models: [{ modelId: 'model-a', displayName: 'Model A' }],
+        },
+      ],
+    });
+
+    render(<ShellApp />);
+    const input = (await screen.findByTestId('empty-compose-input')) as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: '/comp', selectionStart: 5 } });
+    fireEvent.click(
+      within(await screen.findByTestId('empty-compose-slash-pop')).getByRole('option', {
+        name: /压缩上下文/,
+      }),
+    );
+
+    await waitFor(() => expect(input.value).toBe(''));
+    expect((await screen.findByRole('alert')).textContent).toContain('新对话还没有可压缩的上下文');
+    expect(runtime.createConversation).not.toHaveBeenCalled();
+
+    fireEvent.change(input, { target: { value: '/mcp', selectionStart: 4 } });
+    fireEvent.click(
+      within(await screen.findByTestId('empty-compose-slash-pop')).getByRole('option', {
+        name: /MCP 服务器/,
+      }),
+    );
+
+    await waitFor(() => expect(input.value).toBe(''));
+    expect(await screen.findByTestId('composer-mcp-menu')).toBeTruthy();
+    expect(runtime.listMcpServers).toHaveBeenCalledWith({ limit: 100 });
+    expect(runtime.createConversation).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: '关闭 MCP 状态' }));
+    expect(screen.getByTestId('composer-mcp-menu').getAttribute('data-motion-state')).toBe(
+      'exiting',
+    );
+    await waitFor(() => expect(screen.queryByTestId('composer-mcp-menu')).toBeNull());
+    fireEvent.change(input, { target: { value: '/mcp', selectionStart: 4 } });
+    fireEvent.click(screen.getByTestId('empty-compose-send'));
+
+    await waitFor(() => expect(input.value).toBe(''));
+    expect(await screen.findByTestId('composer-mcp-menu')).toBeTruthy();
+    expect(runtime.listMcpServers).toHaveBeenCalledTimes(2);
+    expect(runtime.createConversation).not.toHaveBeenCalled();
+  });
+
+  it('switches empty-menu Skill categories from the textarea and ignores IME Enter', async () => {
+    installRuntime();
+    runtime.listWorkspaces.mockResolvedValue({
+      workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }],
+    });
+    runtime.listProviders.mockResolvedValue({
+      providers: [
+        {
+          providerId: 'provider-a',
+          name: 'Provider A',
+          enabled: true,
+          models: [{ modelId: 'model-a', displayName: 'Model A' }],
+        },
+      ],
+    });
+
+    render(<ShellApp />);
+    const input = (await screen.findByTestId('empty-compose-input')) as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: '/', selectionStart: 1 } });
+    const menu = await screen.findByTestId('empty-compose-slash-pop');
+
+    fireEvent.keyDown(input, { key: 'Tab' });
+    expect(within(menu).getByRole('button', { name: '全部' }).getAttribute('aria-pressed')).toBe(
+      'true',
+    );
+    expect(within(menu).getByText('/plan')).toBeTruthy();
+
+    fireEvent.keyDown(input, { key: 'Tab', shiftKey: true });
+    expect(within(menu).getByRole('button', { name: '全部' }).getAttribute('aria-pressed')).toBe(
+      'true',
+    );
+    expect(within(menu).getByRole('option', { selected: true }).textContent).toContain('/help');
+
+    fireEvent.keyDown(input, { key: 'Enter', isComposing: true, keyCode: 229 });
+    expect(input.value).toBe('/');
+    expect(screen.getByTestId('empty-compose-slash-pop')).toBeTruthy();
+
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() => expect(input.value).toBe('/help '));
+    await waitFor(() =>
+      expect(screen.getByTestId('empty-compose-slash-pop').getAttribute('data-motion-state')).toBe(
+        'exiting',
+      ),
+    );
+    await waitFor(() => expect(screen.queryByTestId('empty-compose-slash-pop')).toBeNull());
+  });
+
+  it('pins the empty composer configuration before starting the first goal turn', async () => {
+    installRuntime();
+    runtime.listWorkspaces.mockResolvedValue({
+      workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }],
+    });
+    runtime.listProviders.mockResolvedValue({
+      providers: [
+        {
+          providerId: 'provider-a',
+          name: 'Provider A',
+          enabled: true,
+          models: [{ modelId: 'model-a', displayName: 'Model A' }],
+        },
+      ],
+    });
+    runtime.detectKernels.mockResolvedValue({
+      kernels: [
+        {
+          kernelId: 'native',
+          name: 'Sync-Think',
+          icon: 'native',
+          capabilities: {},
+          installed: true,
+          version: null,
+          executablePath: null,
+          knownGood: true,
+        },
+        {
+          kernelId: 'codex',
+          name: 'Codex',
+          icon: 'codex',
+          capabilities: {},
+          installed: true,
+          version: '0.150.0',
+          executablePath: 'codex.exe',
+          knownGood: true,
+        },
+      ],
+    });
+    runtime.setGoal.mockImplementationOnce(async () => {
+      expect(runtime.createConversation).toHaveBeenCalledWith(
+        expect.objectContaining({ executionMode: 'ask' }),
+      );
+      expect(
+        JSON.parse(window.localStorage.getItem('sync-think.conversationModelOverrides') ?? '{}'),
+      ).toEqual(expect.objectContaining({ 'created-conversation': 'model-a' }));
+      expect(
+        JSON.parse(window.localStorage.getItem('sync-think.conversationKernelOverrides') ?? '{}'),
+      ).toEqual(expect.objectContaining({ 'created-conversation': 'codex' }));
+      expect(
+        JSON.parse(window.localStorage.getItem('sync-think.conversationReasoningEfforts') ?? '{}'),
+      ).toEqual(expect.objectContaining({ 'created-conversation': 'high' }));
+      expect(
+        JSON.parse(window.localStorage.getItem('sync-think.conversationNetworkEnabled') ?? '{}'),
+      ).toEqual(expect.objectContaining({ 'created-conversation': false }));
+      return {
+        goal: {
+          conversationId: 'created-conversation',
+          condition: '完成参数化目标',
+          status: 'active' as const,
+          startedAt: '2026-07-25T00:00:00.000Z',
+          turnCount: 0,
+          tokensIn: 0,
+          tokensOut: 0,
+        },
+        started: true,
+        evaluatorConfigured: true,
+      };
+    });
+
+    render(<ShellApp />);
+    const input = await screen.findByTestId('empty-compose-input');
+    await pickCollapsedEmptyComposerPermission(/询问批准/);
+    fireEvent.click(screen.getByTitle('切换模型，思考强度：自动'));
+    fireEvent.click(await screen.findByTestId('kernel-option-codex'));
+    fireEvent.click(screen.getByTitle('切换模型，思考强度：自动'));
+    fireEvent.click(await screen.findByTestId('model-reasoning-trigger'));
+    const reasoningOption = await screen.findByTestId('model-reasoning-option-high');
+    fireEvent.click(reasoningOption);
+    await waitFor(() => expect(screen.getByTitle('切换模型，思考强度：高')).toBeTruthy());
+    fireEvent.change(input, { target: { value: '@', selectionStart: 1 } });
+    fireEvent.click(await screen.findByRole('button', { name: '关闭联网搜索' }));
+    fireEvent.change(input, {
+      target: { value: '/goal 完成参数化目标', selectionStart: 15 },
+    });
+    fireEvent.click(screen.getByTestId('empty-compose-send'));
+
+    await waitFor(() => expect(runtime.setGoal).toHaveBeenCalledTimes(1));
+    expect(runtime.setGoal).toHaveBeenCalledWith(
+      expect.objectContaining({
+        condition: '完成参数化目标',
+        modelId: 'model-a',
+        kernelId: 'codex',
+        reasoningEffort: 'high',
+        networkEnabled: false,
+      }),
+    );
+  });
+
+  it('submits the empty Goal dialog limits through the real first-goal contract', async () => {
+    installRuntime();
+    runtime.listWorkspaces.mockResolvedValue({
+      workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }],
+    });
+    runtime.listProviders.mockResolvedValue({
+      providers: [
+        {
+          providerId: 'provider-a',
+          name: 'Provider A',
+          enabled: true,
+          models: [{ modelId: 'model-a', displayName: 'Model A' }],
+        },
+      ],
+    });
+
+    render(<ShellApp />);
+    const input = await screen.findByTestId('empty-compose-input');
+    fireEvent.change(input, {
+      target: { value: '/goal 完成 NewMax 输入框', selectionStart: 20 },
+    });
+    fireEvent.click(await screen.findByRole('button', { name: '高级设置' }));
+
+    const dialog = await screen.findByTestId('goal-settings-dialog');
+    expect(within(dialog).getByLabelText('目标')).toHaveProperty('value', '完成 NewMax 输入框');
+    fireEvent.change(within(dialog).getByLabelText('停止条件'), {
+      target: { value: '所有空态 Composer 回归通过' },
+    });
+    fireEvent.change(within(dialog).getByLabelText('最大轮次'), { target: { value: '18' } });
+    fireEvent.change(within(dialog).getByLabelText('Token 预算'), {
+      target: { value: '1250000' },
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: '开始' }));
+
+    await waitFor(() => expect(runtime.setGoal).toHaveBeenCalledTimes(1));
+    expect(runtime.setGoal).toHaveBeenCalledWith(
+      expect.objectContaining({
+        condition: '完成 NewMax 输入框',
+        stopCondition: '所有空态 Composer 回归通过',
+        maxGoalRounds: 18,
+        maxGoalTokens: 1_250_000,
+      }),
+    );
+    expect(runtime.sendConversationMessage).not.toHaveBeenCalled();
+    expect(runtime.appendMessage).not.toHaveBeenCalled();
+  });
+
+  it('keeps the empty goal draft and exposes the existing error path when goal start fails', async () => {
+    installRuntime();
+    runtime.listWorkspaces.mockResolvedValue({
+      workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }],
+    });
+    runtime.listProviders.mockResolvedValue({
+      providers: [
+        {
+          providerId: 'provider-a',
+          name: 'Provider A',
+          enabled: true,
+          models: [{ modelId: 'model-a', displayName: 'Model A' }],
+        },
+      ],
+    });
+    runtime.setGoal.mockRejectedValueOnce(new Error('goal start failed'));
+
+    render(<ShellApp />);
+    const input = (await screen.findByTestId('empty-compose-input')) as HTMLTextAreaElement;
+    fireEvent.change(input, {
+      target: { value: '/goal 保留这份草稿', selectionStart: 14 },
+    });
+    fireEvent.click(screen.getByTestId('empty-compose-send'));
+
+    expect((await screen.findByRole('alert')).textContent).toContain('goal start failed');
+    expect(input.value).toBe('/goal 保留这份草稿');
+    expect(window.localStorage.getItem('sync-think.newConversationDraft')).toBe(
+      '/goal 保留这份草稿',
+    );
+    expect(runtime.sendConversationMessage).not.toHaveBeenCalled();
+    expect(runtime.appendMessage).not.toHaveBeenCalled();
+  });
+
+  it('dismisses a bare goal preview and keeps goal clear as an actionable notice', async () => {
+    installRuntime();
+    runtime.listWorkspaces.mockResolvedValue({
+      workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }],
+    });
+    runtime.listProviders.mockResolvedValue({
+      providers: [
+        {
+          providerId: 'provider-a',
+          name: 'Provider A',
+          enabled: true,
+          models: [{ modelId: 'model-a', displayName: 'Model A' }],
+        },
+      ],
+    });
+
+    render(<ShellApp />);
+    const input = (await screen.findByTestId('empty-compose-input')) as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: '/goal', selectionStart: 5 } });
+    expect(await screen.findByTestId('composer-goal-banner')).toBeTruthy();
+    fireEvent.click(screen.getByTestId('empty-compose-send'));
+    await waitFor(() => {
+      expect(input.value).toBe('');
+      expect(screen.queryByTestId('composer-goal-banner')).toBeNull();
+    });
+    expect(screen.queryByRole('alert')).toBeNull();
+
+    fireEvent.change(input, { target: { value: '/goal clear', selectionStart: 11 } });
+    fireEvent.click(screen.getByTestId('empty-compose-send'));
+    expect((await screen.findByRole('alert')).textContent).toContain('新对话还没有可清除的目标');
+    expect(runtime.createConversation).not.toHaveBeenCalled();
+    expect(runtime.setGoal).not.toHaveBeenCalled();
+  });
+
+  it('dismisses bare plan and execute commands locally without creating a conversation', async () => {
+    installRuntime();
+    runtime.listWorkspaces.mockResolvedValue({
+      workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }],
+    });
+    runtime.listProviders.mockResolvedValue({
+      providers: [
+        {
+          providerId: 'provider-a',
+          name: 'Provider A',
+          enabled: true,
+          models: [{ modelId: 'model-a', displayName: 'Model A' }],
+        },
+      ],
+    });
+
+    render(<ShellApp />);
+    const input = (await screen.findByTestId('empty-compose-input')) as HTMLTextAreaElement;
+
+    fireEvent.change(input, { target: { value: '/plan', selectionStart: 5 } });
+    expect(await screen.findByTestId('composer-plan-banner')).toBeTruthy();
+    fireEvent.click(screen.getByTestId('empty-compose-send'));
+
+    await waitFor(() => {
+      expect(input.value).toBe('');
+      expect(screen.queryByTestId('composer-plan-banner')).toBeNull();
+    });
+    expect(runtime.createConversation).not.toHaveBeenCalled();
+    expect(runtime.sendConversationMessage).not.toHaveBeenCalled();
+    expect(runtime.appendMessage).not.toHaveBeenCalled();
+
+    fireEvent.change(input, { target: { value: '/execute', selectionStart: 8 } });
+    fireEvent.click(screen.getByTestId('empty-compose-send'));
+
+    await waitFor(() => expect(input.value).toBe(''));
+    expect(screen.queryByTestId('composer-plan-banner')).toBeNull();
+    expect(runtime.createConversation).not.toHaveBeenCalled();
+    expect(runtime.sendConversationMessage).not.toHaveBeenCalled();
+    expect(runtime.appendMessage).not.toHaveBeenCalled();
+  });
+
+  it('hides an unmatched empty-chat slash palette after the Skill catalog resolves', async () => {
+    installRuntime();
+    runtime.listWorkspaces.mockResolvedValue({
+      workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }],
+    });
+    runtime.listProviders.mockResolvedValue({
+      providers: [
+        {
+          providerId: 'provider-a',
+          name: 'Provider A',
+          enabled: true,
+          models: [{ modelId: 'model-a', displayName: 'Model A' }],
+        },
+      ],
+    });
+
+    render(<ShellApp />);
+    const input = await screen.findByTestId('empty-compose-input');
+    fireEvent.change(input, { target: { value: '/zzzz', selectionStart: 5 } });
+
+    await waitFor(() => expect(runtime.listSkills).toHaveBeenCalled());
+    await waitFor(() => expect(screen.queryByTestId('empty-compose-slash-pop')).toBeNull());
+    expect((input as HTMLTextAreaElement).value).toBe('/zzzz');
+  });
+
+  it('rejects slash commands after existing text in the empty-chat composer', async () => {
+    installRuntime();
+    runtime.listWorkspaces.mockResolvedValue({
+      workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }],
+    });
+    runtime.listProviders.mockResolvedValue({
+      providers: [
+        {
+          providerId: 'provider-a',
+          name: 'Provider A',
+          enabled: true,
+          models: [{ modelId: 'model-a', displayName: 'Model A' }],
+        },
+      ],
+    });
+
+    render(<ShellApp />);
+    const input = await screen.findByTestId('empty-compose-input');
+    fireEvent.change(input, { target: { value: 'keep /pl', selectionStart: 8 } });
+    const menu = await screen.findByTestId('empty-compose-slash-pop');
+    fireEvent.click(within(menu).getByRole('option', { name: /规划模式/ }));
+
+    expect((input as HTMLTextAreaElement).value).toBe('keep /pl');
+    expect(screen.getByText('斜杠命令只能出现在输入开头')).toBeTruthy();
+    expect(screen.getByTestId('empty-compose-slash-pop').getAttribute('data-motion-state')).toBe(
+      'exiting',
+    );
+    await waitFor(() => expect(screen.queryByTestId('empty-compose-slash-pop')).toBeNull());
   });
 
   it('keeps Agent/Team owners across model changes and carries explicit workspace picks into ChatView', async () => {
@@ -1624,13 +2594,7 @@ describe('ShellApp empty conversation compose', () => {
 
     render(<ShellApp />);
     await waitFor(() => expect(screen.getByTestId('empty-compose')).toBeTruthy());
-    fireEvent.click(screen.getByTestId('welcome-track-agent'));
-    await waitFor(() => expect(screen.getByTestId('mock-new-conversation-dialog')).toBeTruthy());
-    await act(async () => {
-      await (newConversationDialogProps.current?.onPick as (targetRef: string) => Promise<void>)(
-        'agent-a',
-      );
-    });
+    await pickEmptyComposerIdentity('agent', 'agent-a');
 
     await waitFor(() =>
       expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe(''),
@@ -1643,19 +2607,13 @@ describe('ShellApp empty conversation compose', () => {
     await waitFor(() =>
       expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe(''),
     );
-    fireEvent.click(screen.getByTestId('welcome-track-model'));
+    await pickEmptyComposerIdentity('model');
     await waitFor(() => {
       expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe('');
       expect((screen.getByTestId('turn-skill-trigger') as HTMLButtonElement).disabled).toBe(false);
     });
 
-    fireEvent.click(screen.getByTestId('welcome-track-agent'));
-    await waitFor(() => expect(screen.getByTestId('mock-new-conversation-dialog')).toBeTruthy());
-    await act(async () => {
-      await (newConversationDialogProps.current?.onPick as (targetRef: string) => Promise<void>)(
-        'agent-a',
-      );
-    });
+    await pickEmptyComposerIdentity('agent', 'agent-a');
     await waitFor(() =>
       expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe(''),
     );
@@ -1699,13 +2657,7 @@ describe('ShellApp empty conversation compose', () => {
       expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe(''),
     );
 
-    fireEvent.click(screen.getByTestId('welcome-track-team'));
-    await waitFor(() => expect(screen.getByTestId('mock-new-conversation-dialog')).toBeTruthy());
-    await act(async () => {
-      await (newConversationDialogProps.current?.onPick as (targetRef: string) => Promise<void>)(
-        'team-a',
-      );
-    });
+    await pickEmptyComposerIdentity('team', 'team-a');
     await waitFor(() =>
       expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe(''),
     );
@@ -1946,13 +2898,7 @@ describe('ShellApp empty conversation compose', () => {
 
     render(<ShellApp />);
     await waitFor(() => expect(screen.getByTestId('empty-compose')).toBeTruthy());
-    fireEvent.click(screen.getByTestId('welcome-track-agent'));
-    await waitFor(() => expect(screen.getByTestId('mock-new-conversation-dialog')).toBeTruthy());
-    await act(async () => {
-      await (newConversationDialogProps.current?.onPick as (targetRef: string) => Promise<void>)(
-        'agent-a',
-      );
-    });
+    await pickEmptyComposerIdentity('agent', 'agent-a');
     await waitFor(() =>
       expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe(''),
     );
@@ -2026,13 +2972,7 @@ describe('ShellApp empty conversation compose', () => {
 
     render(<ShellApp />);
     await waitFor(() => expect(screen.getByTestId('empty-compose')).toBeTruthy());
-    fireEvent.click(screen.getByTestId('welcome-track-agent'));
-    await waitFor(() => expect(screen.getByTestId('mock-new-conversation-dialog')).toBeTruthy());
-    await act(async () => {
-      await (newConversationDialogProps.current?.onPick as (targetRef: string) => Promise<void>)(
-        'agent-a',
-      );
-    });
+    await pickEmptyComposerIdentity('agent', 'agent-a');
     await waitFor(() =>
       expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe(''),
     );
@@ -2050,13 +2990,7 @@ describe('ShellApp empty conversation compose', () => {
       expect(window.localStorage.getItem('sync-think.activeWorkspaceId')).toBe('ws-b');
       expect((screen.getByTestId('turn-skill-trigger') as HTMLButtonElement).disabled).toBe(false);
     });
-    fireEvent.click(screen.getByTestId('welcome-track-agent'));
-    await waitFor(() => expect(screen.getByTestId('mock-new-conversation-dialog')).toBeTruthy());
-    await act(async () => {
-      await (newConversationDialogProps.current?.onPick as (targetRef: string) => Promise<void>)(
-        'agent-a',
-      );
-    });
+    await pickEmptyComposerIdentity('agent', 'agent-a');
     expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe('');
     fireEvent.click(screen.getByTestId('turn-skill-trigger'));
     fireEvent.click(await screen.findByTestId('turn-skill-option-skill-a'));
@@ -2089,11 +3023,11 @@ describe('ShellApp empty conversation compose', () => {
 
     render(<ShellApp />);
     await waitFor(() => expect(screen.getByTestId('empty-compose')).toBeTruthy());
-    fireEvent.click(screen.getByTitle('权限：完全访问'));
-    fireEvent.click(await screen.findByRole('menuitemradio', { name: /询问批准/ }));
+    await pickCollapsedEmptyComposerPermission(/询问批准/);
     fireEvent.click(screen.getByTitle('切换模型，思考强度：自动'));
     fireEvent.click(await screen.findByTestId('model-reasoning-trigger'));
     fireEvent.click(await screen.findByTestId('model-reasoning-option-high'));
+    await waitFor(() => expect(screen.getByTitle('切换模型，思考强度：高')).toBeTruthy());
     fireEvent.change(screen.getByTestId('empty-compose-input'), {
       target: { value: '按当前参数发送' },
     });
@@ -2129,6 +3063,7 @@ describe('ShellApp empty conversation compose', () => {
 
     render(<ShellApp />);
     const input = await screen.findByTestId('empty-compose-input');
+    const editor = screen.getByRole('textbox', { name: '消息' });
     expect(screen.getByTestId('empty-compose').closest('.shell-chat-column')).toBeTruthy();
     expect(screen.queryByTitle(/联网已开/)).toBeNull();
     fireEvent.change(input, { target: { value: '@', selectionStart: 1 } });
@@ -2136,7 +3071,7 @@ describe('ShellApp empty conversation compose', () => {
     fireEvent.keyDown(input, { key: 'Tab' });
     expect(document.activeElement).toBe(enableNetwork);
     fireEvent.keyDown(enableNetwork, { key: 'Tab', shiftKey: true });
-    await waitFor(() => expect(document.activeElement).toBe(input));
+    await waitFor(() => expect(document.activeElement).toBe(editor));
 
     fireEvent.change(input, { target: { value: '', selectionStart: 0 } });
     fireEvent.change(input, { target: { value: '@', selectionStart: 1 } });
@@ -2159,6 +3094,7 @@ describe('ShellApp empty conversation compose', () => {
     runtime.listWorkspaces.mockResolvedValue({
       workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }],
     });
+    runtime.listGlobalAgents.mockResolvedValue({ agents: [agentAFixture] });
 
     render(<ShellApp />);
     await waitFor(() => expect(screen.getByTestId('empty-compose')).toBeTruthy());
@@ -2172,13 +3108,9 @@ describe('ShellApp empty conversation compose', () => {
     close?.();
     await waitFor(() => expect(screen.queryByTestId('mock-new-conversation-dialog')).toBeNull());
 
-    // Re-open a plain picker through the agent welcome card and select a target.
-    // Picking a target only prepares the draft — Runtime create waits until send.
-    fireEvent.click(screen.getByTestId('welcome-track-agent'));
-    await waitFor(() => expect(screen.getByTestId('mock-new-conversation-dialog')).toBeTruthy());
-    const pick = newConversationDialogProps.current?.onPick as
-      ((targetRef: string) => void) | undefined;
-    pick?.('agent-a');
+    // Pick a target through the compact NewMax identity control. The selection
+    // only prepares the draft; Runtime creation still waits for Send.
+    await pickEmptyComposerIdentity('agent', 'agent-a');
 
     await waitFor(() => expect(screen.queryByTestId('mock-new-conversation-dialog')).toBeNull());
     expect(runtime.createConversation).not.toHaveBeenCalled();

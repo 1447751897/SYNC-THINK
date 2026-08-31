@@ -276,6 +276,7 @@ import type { OpenExternalUrlResult } from '../external-link-contract.js';
 declare global {
   interface Window {
     syncThink?: {
+      kernelUpdates: import('../kernel-update-contract.js').ManagedKernelUpdateBridge;
       runtime: {
         connect(): Promise<RuntimeConnectOutcome>;
         appendMessage(payload: AppendMessagePayload): Promise<AppendMessageResponse>;
@@ -609,6 +610,21 @@ declare global {
           payload: SetMcpServerEnabledPayload,
         ): Promise<SetMcpServerEnabledResponse>;
         deleteMcpServer(payload: DeleteMcpServerPayload): Promise<DeleteMcpServerResponse>;
+        getBotChannelConfig(
+          payload: import('@sync-think/protocol').GetBotChannelConfigPayload,
+        ): Promise<import('@sync-think/protocol').GetBotChannelConfigResponse>;
+        saveBotChannelConfig(
+          payload: import('@sync-think/protocol').SaveBotChannelConfigPayload,
+        ): Promise<import('@sync-think/protocol').SaveBotChannelConfigResponse>;
+        testBotChannel(
+          payload: import('@sync-think/protocol').TestBotChannelPayload,
+        ): Promise<import('@sync-think/protocol').TestBotChannelResponse>;
+        requestWechatBotQr(
+          payload?: import('@sync-think/protocol').RequestWechatBotQrPayload,
+        ): Promise<import('@sync-think/protocol').RequestWechatBotQrResponse>;
+        checkWechatBotQr(
+          payload: import('@sync-think/protocol').CheckWechatBotQrPayload,
+        ): Promise<import('@sync-think/protocol').CheckWechatBotQrResponse>;
         probeMcpPolicy(payload?: ProbeMcpPolicyPayload): Promise<ProbeMcpPolicyResponse>;
         requestMcpTool(payload: RequestMcpToolPayload): Promise<RequestMcpToolResponse>;
         probeMcpSpawn(payload?: ProbeMcpSpawnPayload): Promise<ProbeMcpSpawnResponse>;

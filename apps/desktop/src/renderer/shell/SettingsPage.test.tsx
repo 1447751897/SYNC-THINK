@@ -2,17 +2,19 @@
  * @vitest-environment jsdom
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { forwardRef } from 'react';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { COMPUTER_USE_PLUGIN_SETTING_KEY } from '@sync-think/protocol/plugins';
 import { OPEN_GATEWAY_SETTING_KEY } from '@sync-think/protocol/gateway';
+import { COMPUTER_USE_APPROVAL_POLICY_SETTING_KEY } from '@sync-think/protocol/tool-approval';
 import { SettingsPage } from './SettingsPage.js';
 
 const shellCss = readFileSync(resolve(process.cwd(), 'src/renderer/shell/shell.css'), 'utf8');
 
 vi.mock('./ModelSettings.js', () => ({
-  ModelSettings: () => null,
+  ModelSettings: forwardRef(() => null),
 }));
 
 const runtime = {
@@ -35,6 +37,14 @@ const runtime = {
   registerRemoteMcpServer: vi.fn(),
   setMcpServerEnabled: vi.fn(),
   deleteMcpServer: vi.fn(),
+  refreshMcpTools: vi.fn(),
+  getBotChannelConfig: vi.fn(),
+  saveBotChannelConfig: vi.fn(),
+  testBotChannel: vi.fn(),
+  requestWechatBotQr: vi.fn(),
+  checkWechatBotQr: vi.fn(),
+  getGatewayLogs: vi.fn(),
+  clearGatewayLogs: vi.fn(),
 };
 
 beforeEach(() => {
@@ -107,6 +117,35 @@ beforeEach(() => {
   });
   runtime.setMcpServerEnabled.mockResolvedValue({ server: {} });
   runtime.deleteMcpServer.mockResolvedValue({ mcpServerId: 'mcp-douyin', deleted: true });
+  runtime.refreshMcpTools.mockResolvedValue({ server: {} });
+  runtime.getBotChannelConfig.mockImplementation(async ({ platform }) => ({
+    platform,
+    enabled: false,
+    credentialsConfigured: false,
+    proxyUrl: platform === 'telegram' || platform === 'discord' ? '' : undefined,
+    connected: false,
+    state: 'disconnected',
+  }));
+  runtime.saveBotChannelConfig.mockImplementation(async (payload) => ({
+    config: {
+      platform: payload.platform,
+      enabled: payload.enabled,
+      credentialsConfigured: true,
+      proxyUrl: payload.proxyUrl,
+      connected: payload.enabled,
+      state: payload.enabled ? 'connected' : 'disconnected',
+      botUsername: payload.platform === 'telegram' ? 'sync_think_bot' : undefined,
+      botDisplayName: payload.platform === 'telegram' ? 'SYNC-THINK Bot' : undefined,
+    },
+  }));
+  runtime.testBotChannel.mockResolvedValue({
+    platform: 'telegram',
+    connected: true,
+    botUsername: 'sync_think_bot',
+    botDisplayName: 'SYNC-THINK Bot',
+    overall: 'pass',
+    checks: [{ id: 'connection', label: '连接与鉴权', verdict: 'pass' }],
+  });
   runtime.getSettings.mockResolvedValue({ settings: {} });
   runtime.setSetting.mockResolvedValue({
     key: COMPUTER_USE_PLUGIN_SETTING_KEY,
@@ -119,6 +158,23 @@ beforeEach(() => {
     port: 8788,
     host: '127.0.0.1',
   });
+  runtime.getGatewayLogs.mockResolvedValue({
+    entries: [
+      {
+        id: 'gateway-log-direct',
+        occurredAt: '2026-08-29T00:00:00.000Z',
+        inboundDialect: 'openai-responses',
+        upstreamProtocol: 'openai-responses',
+        converted: false,
+        status: 'success',
+        model: 'gpt-5.6-luna',
+        rawRequest: '{"model":"gpt-5.6-luna"}',
+        convertedRequest: '{"model":"gpt-5.6-luna"}',
+      },
+    ],
+    total: 1,
+  });
+  runtime.clearGatewayLogs.mockResolvedValue({ cleared: 1 });
   runtime.listProviders.mockResolvedValue({ providers: [] });
   Object.defineProperty(window, 'syncThink', {
     configurable: true,
@@ -137,6 +193,64 @@ describe('SettingsPage layout contract', () => {
     expect(shellCss).toMatch(/\.model-settings-detail\s*\{[^}]*overflow-x:\s*hidden;/s);
     expect(shellCss).toMatch(/\.model-settings-tabs\s*\{[^}]*overflow-x:\s*hidden;/s);
     expect(shellCss).toMatch(/\.shell-menu__scroll\s*\{[^}]*overflow-x:\s*hidden;/s);
+  });
+
+  it('opens a requested settings destination and only replays it for a new navigation key', async () => {
+    const { rerender } = render(
+      <SettingsPage
+        initialSection="connection"
+        initialConnectionTab="mcp"
+        navigationKey="open-mcp-1"
+      />,
+    );
+
+    expect(screen.getByRole('heading', { name: '连接' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'MCP' }).getAttribute('aria-selected')).toBe('true');
+
+    fireEvent.click(screen.getByRole('tab', { name: '连接器' }));
+    expect(screen.getByRole('tab', { name: '连接器' }).getAttribute('aria-selected')).toBe('true');
+
+    rerender(
+      <SettingsPage
+        initialSection="connection"
+        initialConnectionTab="mcp"
+        navigationKey="open-mcp-1"
+      />,
+    );
+    expect(screen.getByRole('tab', { name: '连接器' }).getAttribute('aria-selected')).toBe('true');
+
+    rerender(
+      <SettingsPage
+        initialSection="connection"
+        initialConnectionTab="mcp"
+        navigationKey="open-mcp-2"
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.getByRole('tab', { name: 'MCP' }).getAttribute('aria-selected')).toBe('true'),
+    );
+  });
+
+  it('opens the requested model settings section', () => {
+    render(<SettingsPage initialSection="models" initialModelDetail="plan-act" />);
+
+    expect(screen.getByRole('heading', { name: '模型' })).toBeTruthy();
+  });
+});
+
+describe('SettingsPage gateway request audit', () => {
+  it('describes same-protocol traffic as direct passthrough instead of a conversion', async () => {
+    render(<SettingsPage />);
+    fireEvent.change(screen.getByRole('textbox', { name: '搜索设置' }), {
+      target: { value: '连接' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '连接' }));
+    fireEvent.click(await screen.findByRole('tab', { name: '开放网关' }));
+
+    expect(await screen.findByText('网关请求日志')).toBeTruthy();
+    fireEvent.click(await screen.findByTestId('gateway-log-row'));
+    expect(screen.getByText(/上游请求格式/)).toBeTruthy();
+    expect(screen.queryByText(/转换后格式/)).toBeNull();
   });
 });
 
@@ -158,7 +272,7 @@ describe('SettingsPage Computer Use plugin', () => {
     expect(toggle.getAttribute('aria-checked')).toBe('false');
     expect(screen.queryByText(/能力尚未接入/)).toBeNull();
     expect(runtime.getSettings).toHaveBeenCalledWith({
-      keys: [COMPUTER_USE_PLUGIN_SETTING_KEY],
+      keys: [COMPUTER_USE_PLUGIN_SETTING_KEY, COMPUTER_USE_APPROVAL_POLICY_SETTING_KEY],
     });
   });
 
@@ -169,6 +283,60 @@ describe('SettingsPage Computer Use plugin', () => {
 
     const toggle = await openPlugins();
     expect(toggle.getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('loads and shows the always-allowed Computer Use apps', async () => {
+    runtime.getSettings.mockResolvedValue({
+      settings: {
+        [COMPUTER_USE_PLUGIN_SETTING_KEY]: { enabled: true },
+        [COMPUTER_USE_APPROVAL_POLICY_SETTING_KEY]: {
+          version: 1,
+          alwaysAllowedApps: [
+            { field: 'app_id', value: 'calculator.exe' },
+            { field: 'app', value: 'com.apple.Safari' },
+          ],
+        },
+      },
+    });
+
+    await openPlugins();
+
+    expect(screen.getByRole('heading', { name: '始终允许的应用' })).toBeTruthy();
+    expect(screen.getByText('calculator.exe')).toBeTruthy();
+    expect(screen.getByText('com.apple.Safari')).toBeTruthy();
+    expect(runtime.getSettings).toHaveBeenCalledWith({
+      keys: [COMPUTER_USE_PLUGIN_SETTING_KEY, COMPUTER_USE_APPROVAL_POLICY_SETTING_KEY],
+    });
+  });
+
+  it('removes one always-allowed app through the existing settings bridge', async () => {
+    runtime.getSettings.mockResolvedValue({
+      settings: {
+        [COMPUTER_USE_PLUGIN_SETTING_KEY]: { enabled: true },
+        [COMPUTER_USE_APPROVAL_POLICY_SETTING_KEY]: {
+          version: 1,
+          alwaysAllowedApps: [
+            { field: 'app_id', value: 'calculator.exe' },
+            { field: 'app_id', value: 'notepad.exe' },
+          ],
+        },
+      },
+    });
+
+    await openPlugins();
+    fireEvent.click(screen.getByRole('button', { name: '移除 notepad.exe' }));
+
+    await waitFor(() =>
+      expect(runtime.setSetting).toHaveBeenCalledWith({
+        key: COMPUTER_USE_APPROVAL_POLICY_SETTING_KEY,
+        value: {
+          version: 1,
+          alwaysAllowedApps: [{ field: 'app_id', value: 'calculator.exe' }],
+        },
+      }),
+    );
+    expect(screen.queryByText('notepad.exe')).toBeNull();
+    expect(screen.getByText('calculator.exe')).toBeTruthy();
   });
 
   it('persists an enabled toggle using the existing settings bridge', async () => {
@@ -312,8 +480,8 @@ describe('SettingsPage data management', () => {
   });
 });
 
-describe('SettingsPage NewMax connection catalog', () => {
-  it('matches the NewMax tabs, provider switcher and three-column catalog', async () => {
+describe('SettingsPage SYNC-THINK connection catalog', () => {
+  it('matches the connection tabs, provider switcher and three-column catalog', async () => {
     render(<SettingsPage />);
     const navigation = screen.getByRole('navigation', { name: '设置分类' });
     expect(
@@ -328,25 +496,72 @@ describe('SettingsPage NewMax connection catalog', () => {
     expect(screen.getByRole('tab', { name: '机器人对话' })).toBeTruthy();
     expect(screen.getByRole('tab', { name: '开放网关' })).toBeTruthy();
     expect(screen.getByRole('tab', { name: '网络' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'NewMax Provider' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '第三方 Provider' })).toBeTruthy();
-    expect(screen.getByText('NewMax 提供的托管连接器，云端执行、按量计费。')).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'SYNC-THINK Provider' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: '第三方 Provider' })).toBeTruthy();
+    expect(
+      screen.getByText('SYNC-THINK 连接器目录；动作数量以实际 MCP 工具发现结果为准。'),
+    ).toBeTruthy();
     expect(screen.getByRole('button', { name: '连接 抖音' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '连接 TikTok' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '连接 企查查' })).toBeTruthy();
     expect(document.querySelectorAll('.settings-connector-row')).toHaveLength(27);
+    expect(shellCss).toMatch(
+      /\.settings-connection-tabs button\.is-active\s*\{[^}]*background:\s*transparent;[^}]*box-shadow:\s*none;/s,
+    );
   });
 
-  it('opens a real remote MCP connection form from a managed connector', async () => {
+  it('opens a capability detail for a managed connector and renders discovered tools', async () => {
+    runtime.listMcpServers.mockResolvedValue({
+      servers: [
+        {
+          mcpServerId: 'mcp-douyin',
+          name: '抖音',
+          transport: 'remote-http',
+          endpoint: 'https://connector.example.com/mcp',
+          tools: [
+            { name: 'fetch_hot_search_list', description: '读取热搜榜' },
+            { name: 'fetch_video_detail', description: '读取视频详情' },
+          ],
+          trusted: false,
+          enabled: true,
+          maxOutputBytes: 1_000_000,
+          timeoutMs: 30_000,
+          notes: 'SYNC-THINK connector: douyin',
+          createdAt: '2026-08-24T03:00:00.000Z',
+          updatedAt: '2026-08-24T03:00:00.000Z',
+        },
+      ],
+    });
+    render(<SettingsPage />);
+    fireEvent.click(screen.getByRole('button', { name: '连接' }));
+    fireEvent.click(await screen.findByRole('button', { name: '打开 抖音' }));
+
+    expect(await screen.findByRole('heading', { name: '抖音' })).toBeTruthy();
+    expect(screen.getByText('可调用动作').parentElement?.textContent).toContain('2 个动作');
+    expect(screen.getByText('fetch_hot_search_list')).toBeTruthy();
+    expect(screen.getByText('fetch_video_detail')).toBeTruthy();
+    expect(screen.queryByRole('textbox', { name: 'MCP 服务地址' })).toBeNull();
+    expect(screen.getByRole('button', { name: '停用连接器' })).toBeTruthy();
+  });
+
+  it('keeps first-click navigation on the detail and opens setup only from enable', async () => {
     render(<SettingsPage />);
     fireEvent.click(screen.getByRole('button', { name: '连接' }));
     fireEvent.click(await screen.findByRole('button', { name: '连接 抖音' }));
+
+    expect(await screen.findByRole('heading', { name: '抖音' })).toBeTruthy();
+    expect(screen.queryByRole('textbox', { name: 'MCP 服务地址' })).toBeNull();
+    expect(screen.getByText(/不需要手工提供动作名称/)).toBeTruthy();
+    expect(screen.getByText(/tools\/list/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '启用连接器' }));
+
+    expect(await screen.findByRole('dialog', { name: '配置抖音连接器' })).toBeTruthy();
 
     fireEvent.change(screen.getByRole('textbox', { name: 'MCP 服务地址' }), {
       target: { value: 'https://connector.example.com/mcp' },
     });
     fireEvent.change(screen.getByLabelText('API Key'), { target: { value: 'secret-key' } });
-    fireEvent.click(screen.getByRole('button', { name: '保存并连接' }));
+    fireEvent.click(screen.getByRole('button', { name: '保存并启用' }));
 
     await waitFor(() =>
       expect(runtime.registerRemoteMcpServer).toHaveBeenCalledWith({
@@ -356,9 +571,203 @@ describe('SettingsPage NewMax connection catalog', () => {
         authScheme: 'bearer',
         discoverTools: true,
         trusted: false,
-        notes: 'NewMax connector: douyin',
+        notes: 'SYNC-THINK connector: douyin',
       }),
     );
+  });
+});
+
+describe('SettingsPage bot conversations', () => {
+  it('renders all seven usable robot channels instead of placeholders', async () => {
+    render(<SettingsPage />);
+    fireEvent.click(screen.getByRole('button', { name: '连接' }));
+    fireEvent.click(await screen.findByRole('tab', { name: '机器人对话' }));
+
+    expect(await screen.findByRole('heading', { name: 'Telegram' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Telegram' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '飞书' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '企业微信' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '微信' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Discord' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '钉钉' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'QQ' })).toBeTruthy();
+    expect(screen.getByRole('switch', { name: '启用 Telegram 机器人' })).toBeTruthy();
+    expect(runtime.getBotChannelConfig).toHaveBeenCalledWith({ platform: 'telegram' });
+  });
+
+  it('tests and securely saves the current Telegram token and proxy in one Runtime command', async () => {
+    render(<SettingsPage />);
+    fireEvent.click(screen.getByRole('button', { name: '连接' }));
+    fireEvent.click(await screen.findByRole('tab', { name: '机器人对话' }));
+    await screen.findByRole('heading', { name: 'Telegram' });
+
+    fireEvent.change(screen.getByLabelText('Bot Token'), {
+      target: { value: '123456:ABC-DEF' },
+    });
+    fireEvent.change(screen.getByLabelText('代理地址'), {
+      target: { value: 'http://127.0.0.1:7890' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '测试并保存' }));
+
+    await waitFor(() =>
+      expect(runtime.saveBotChannelConfig).toHaveBeenCalledWith({
+        platform: 'telegram',
+        token: '123456:ABC-DEF',
+        proxyUrl: 'http://127.0.0.1:7890',
+        enabled: false,
+        testConnection: true,
+      }),
+    );
+    expect(runtime.testBotChannel).not.toHaveBeenCalled();
+  });
+
+  it('switches platforms and shows each platform-specific credential form', async () => {
+    render(<SettingsPage />);
+    fireEvent.click(screen.getByRole('button', { name: '连接' }));
+    fireEvent.click(await screen.findByRole('tab', { name: '机器人对话' }));
+    await screen.findByRole('heading', { name: 'Telegram' });
+    fireEvent.click(screen.getByRole('button', { name: '飞书' }));
+
+    expect(await screen.findByRole('heading', { name: '飞书' })).toBeTruthy();
+    expect(screen.getByLabelText('App ID')).toBeTruthy();
+    expect(screen.getByLabelText('App Secret')).toBeTruthy();
+    expect(screen.getByRole('switch', { name: '启用 飞书 机器人' })).toBeTruthy();
+
+    const domainTabs = screen.getByRole('tablist', { name: '服务域名' });
+    const feishuTab = within(domainTabs).getByRole('tab', { name: '飞书' });
+    const larkTab = within(domainTabs).getByRole('tab', { name: 'Lark' });
+    expect(feishuTab.getAttribute('aria-selected')).toBe('true');
+    fireEvent.click(larkTab);
+    expect(larkTab.getAttribute('aria-selected')).toBe('true');
+    fireEvent.keyDown(larkTab, { key: 'ArrowLeft' });
+    expect(feishuTab.getAttribute('aria-selected')).toBe('true');
+
+    const renderTabs = screen.getByRole('tablist', { name: '回复样式' });
+    const textTab = within(renderTabs).getByRole('tab', { name: '纯文本' });
+    fireEvent.click(textTab);
+    expect(textTab.getAttribute('aria-selected')).toBe('true');
+  });
+
+  it.each([
+    ['企业微信', ['Bot ID', 'Secret']],
+    ['Discord', ['Bot Token', '代理地址']],
+    ['钉钉', ['Client ID (AppKey)', 'Client Secret (AppSecret)']],
+    ['QQ', ['AppID', 'AppSecret']],
+  ] as const)('shows the complete %s credential form', async (platform, labels) => {
+    render(<SettingsPage />);
+    fireEvent.click(screen.getByRole('button', { name: '连接' }));
+    fireEvent.click(await screen.findByRole('tab', { name: '机器人对话' }));
+    await screen.findByRole('heading', { name: 'Telegram' });
+    fireEvent.click(screen.getByRole('button', { name: platform }));
+
+    expect(await screen.findByRole('heading', { name: platform })).toBeTruthy();
+    for (const label of labels) expect(screen.getByLabelText(label)).toBeTruthy();
+  });
+
+  it('requests the native WeChat QR login and renders its scan popover', async () => {
+    runtime.requestWechatBotQr.mockResolvedValue({
+      qrcode: 'wechat-login-code',
+      qrcodeImage: 'data:image/png;base64,iVBORw0KGgo=',
+    });
+    render(<SettingsPage />);
+    fireEvent.click(screen.getByRole('button', { name: '连接' }));
+    fireEvent.click(await screen.findByRole('tab', { name: '机器人对话' }));
+    await screen.findByRole('heading', { name: 'Telegram' });
+    fireEvent.click(screen.getByRole('button', { name: '微信' }));
+    fireEvent.click(await screen.findByRole('button', { name: '扫码连接微信' }));
+
+    expect(await screen.findByRole('dialog', { name: '微信扫码登录' })).toBeTruthy();
+    expect(screen.getByRole('img', { name: '微信登录二维码' }).getAttribute('src')).toContain(
+      'data:image/png;base64',
+    );
+    expect(runtime.requestWechatBotQr).toHaveBeenCalledWith({
+      baseUrl: 'https://ilinkai.weixin.qq.com',
+    });
+    fireEvent.click(screen.getByRole('button', { name: '取消微信扫码' }));
+    expect(screen.queryByRole('dialog', { name: '微信扫码登录' })).toBeNull();
+    expect(screen.getByRole('button', { name: '扫码连接微信' })).toBeTruthy();
+  });
+
+  it('enables an unconfigured Telegram channel from the switch after a token is entered', async () => {
+    runtime.saveBotChannelConfig.mockResolvedValue({
+      config: {
+        platform: 'telegram',
+        enabled: true,
+        credentialsConfigured: true,
+        proxyUrl: '',
+        connected: true,
+        state: 'connected',
+        botUsername: 'sync_think_bot',
+        botDisplayName: 'SYNC-THINK Bot',
+      },
+    });
+    render(<SettingsPage />);
+    fireEvent.click(screen.getByRole('button', { name: '连接' }));
+    fireEvent.click(await screen.findByRole('tab', { name: '机器人对话' }));
+    await screen.findByRole('heading', { name: 'Telegram' });
+
+    fireEvent.change(screen.getByLabelText('Bot Token'), {
+      target: { value: '123456:ABC-DEF' },
+    });
+    fireEvent.click(screen.getByRole('switch', { name: '启用 Telegram 机器人' }));
+
+    await waitFor(() =>
+      expect(runtime.saveBotChannelConfig).toHaveBeenCalledWith({
+        platform: 'telegram',
+        token: '123456:ABC-DEF',
+        proxyUrl: '',
+        enabled: true,
+        testConnection: false,
+      }),
+    );
+    expect(
+      screen.getByRole('switch', { name: '启用 Telegram 机器人' }).getAttribute('aria-checked'),
+    ).toBe('true');
+  });
+
+  it('focuses the credential field when enabling is rejected for missing credentials', async () => {
+    runtime.saveBotChannelConfig.mockRejectedValue(
+      new Error(
+        "Error invoking remote method 'runtime:bot-channel-save': RuntimeResponseError: 请填写 Bot Token。",
+      ),
+    );
+    render(<SettingsPage />);
+    fireEvent.click(screen.getByRole('button', { name: '连接' }));
+    fireEvent.click(await screen.findByRole('tab', { name: '机器人对话' }));
+    const token = await screen.findByLabelText('Bot Token');
+
+    fireEvent.click(screen.getByRole('switch', { name: '启用 Telegram 机器人' }));
+
+    expect((await screen.findByRole('alert')).textContent).toBe('请填写 Bot Token。');
+    await waitFor(() => expect(document.activeElement).toBe(token));
+  });
+
+  it('turns an active Telegram channel off without requiring a network test first', async () => {
+    runtime.getBotChannelConfig.mockImplementation(async ({ platform }) => ({
+      platform,
+      enabled: platform === 'telegram',
+      credentialsConfigured: platform === 'telegram',
+      proxyUrl: platform === 'telegram' || platform === 'discord' ? '' : undefined,
+      connected: platform === 'telegram',
+      state: platform === 'telegram' ? 'connected' : 'disconnected',
+      botUsername: platform === 'telegram' ? 'sync_think_bot' : undefined,
+    }));
+    render(<SettingsPage />);
+    fireEvent.click(screen.getByRole('button', { name: '连接' }));
+    fireEvent.click(await screen.findByRole('tab', { name: '机器人对话' }));
+    const toggle = await screen.findByRole('switch', { name: '启用 Telegram 机器人' });
+
+    fireEvent.click(toggle);
+
+    await waitFor(() =>
+      expect(runtime.saveBotChannelConfig).toHaveBeenCalledWith({
+        platform: 'telegram',
+        proxyUrl: '',
+        enabled: false,
+        testConnection: false,
+      }),
+    );
+    expect(runtime.testBotChannel).not.toHaveBeenCalled();
   });
 });
 

@@ -95,6 +95,11 @@ export type CommandType =
   | 'provider.removeModel'
   | 'settings.get'
   | 'settings.set'
+  | 'bot.channel.get'
+  | 'bot.channel.save'
+  | 'bot.channel.test'
+  | 'bot.channel.wechat.qr.request'
+  | 'bot.channel.wechat.qr.check'
   | 'usage.summary'
   | 'agent.get'
   | 'agent.updateBinding'
@@ -219,6 +224,7 @@ export type CommandType =
   | 'activity.listExternalEvents'
   | 'activity.retryAnchor'
   | 'kernel.detect'
+  | 'kernel.recycle'
   | 'gateway.status'
   | 'gateway.logs'
   | 'gateway.logs.clear'
@@ -504,6 +510,11 @@ export interface AppendMessagePayload {
    */
   planExecuting?: boolean;
   /**
+   * Built-in product-help turn. Runtime adds the SYNC-THINK help contract to
+   * the system instructions; the flag is transient and never changes mode.
+   */
+  helpMode?: boolean;
+  /**
    * Exact immutable Skill versions selected for this turn.
    * Undefined keeps the legacy Agent-default behavior; [] explicitly loads none.
    */
@@ -539,6 +550,12 @@ export interface AppendMessageResponse {
 /** kernel.detect response: registry sweep with install state + capabilities. */
 export interface KernelDetectResponse {
   kernels: import('@sync-think/shared').KernelDetectionResult[];
+}
+
+export interface KernelRecycleResponse {
+  kernelId: 'codex' | 'claude-code';
+  recycled: number;
+  deferred: number;
 }
 
 export interface AttachMessageImagesPayload {
@@ -2292,6 +2309,139 @@ export interface DeleteMcpServerResponse {
   deleted: boolean;
 }
 
+// --- Bot conversation channels ------------------------------------------------
+
+export type BotChannelPlatform =
+  | 'telegram'
+  | 'feishu'
+  | 'wecom'
+  | 'wechat'
+  | 'discord'
+  | 'dingtalk'
+  | 'qq';
+
+export type BotChannelConnectionState =
+  | 'disconnected'
+  | 'connecting'
+  | 'connected'
+  | 'error';
+
+export type BotChannelCheckVerdict = 'pass' | 'warn' | 'fail';
+
+export interface BotChannelTestCheck {
+  id: string;
+  label: string;
+  verdict: BotChannelCheckVerdict;
+  detail?: string;
+}
+
+/** Public channel state. Bot tokens remain behind the Runtime/SecureStore boundary. */
+export interface BotChannelConfigSummary {
+  platform: BotChannelPlatform;
+  enabled: boolean;
+  credentialsConfigured: boolean;
+  connected: boolean;
+  state: BotChannelConnectionState;
+  /** Telegram and Discord only. */
+  proxyUrl?: string;
+  /** Feishu/Lark only. */
+  domain?: 'feishu' | 'lark';
+  /** Feishu only. */
+  renderMode?: 'card' | 'text';
+  /** Public application identity; secrets are never returned. */
+  appId?: string;
+  botId?: string;
+  clientId?: string;
+  /** WeChat iLink service root; the Bot Token remains in SecureStore. */
+  baseUrl?: string;
+  botUsername?: string;
+  botDisplayName?: string;
+  lastError?: string;
+  updatedAt?: string;
+}
+
+export interface GetBotChannelConfigPayload {
+  platform: BotChannelPlatform;
+}
+
+export type GetBotChannelConfigResponse = BotChannelConfigSummary;
+
+export interface SaveBotChannelConfigPayload {
+  platform: BotChannelPlatform;
+  /** Telegram/Discord replacement token. Omit to keep the SecureStore entry. */
+  token?: string;
+  /** WeChat iLink replacement token. */
+  botToken?: string;
+  /** Feishu/QQ public application id. */
+  appId?: string;
+  /** Feishu/QQ replacement application secret. */
+  appSecret?: string;
+  /** WeCom public bot id. */
+  botId?: string;
+  /** WeCom replacement secret. */
+  secret?: string;
+  /** DingTalk public client id. */
+  clientId?: string;
+  /** DingTalk replacement client secret. */
+  clientSecret?: string;
+  proxyUrl?: string;
+  domain?: 'feishu' | 'lark';
+  renderMode?: 'card' | 'text';
+  baseUrl?: string;
+  enabled: boolean;
+  /** Test the saved/current credential before committing this update. */
+  testConnection?: boolean;
+}
+
+export interface SaveBotChannelConfigResponse {
+  config: BotChannelConfigSummary;
+}
+
+export interface TestBotChannelPayload {
+  platform: BotChannelPlatform;
+  token?: string;
+  botToken?: string;
+  appId?: string;
+  appSecret?: string;
+  botId?: string;
+  secret?: string;
+  clientId?: string;
+  clientSecret?: string;
+  proxyUrl?: string;
+  domain?: 'feishu' | 'lark';
+  renderMode?: 'card' | 'text';
+  baseUrl?: string;
+}
+
+export interface TestBotChannelResponse {
+  platform: BotChannelPlatform;
+  connected: boolean;
+  overall: BotChannelCheckVerdict;
+  checks: BotChannelTestCheck[];
+  botUsername?: string;
+  botDisplayName?: string;
+}
+
+export interface RequestWechatBotQrPayload {
+  baseUrl?: string;
+}
+
+export interface RequestWechatBotQrResponse {
+  qrcode: string;
+  qrcodeImage: string;
+}
+
+export interface CheckWechatBotQrPayload {
+  qrcode: string;
+  baseUrl?: string;
+}
+
+export interface CheckWechatBotQrResponse {
+  status: 'waiting' | 'scanned' | 'confirmed' | 'expired' | 'cancelled';
+  /** Present after confirmation. Credentials stay in Runtime/SecureStore. */
+  config?: BotChannelConfigSummary;
+}
+
 // --- Capability governance (global enablement ∩ workspace activation ∩ Agent binding) ---
 
 export type GovernedCapabilityType = 'skill' | 'mcp';
@@ -3602,16 +3752,28 @@ export interface ConversationCompactResponse {
   messageId?: string;
 }
 
+export type ToolApprovalScope = 'once' | 'session' | 'always-app';
+
+export interface ToolApprovalRiskSummary {
+  level: string;
+  reasonCodes: string[];
+  humanOnlyAction?: string;
+}
+
 export interface PendingToolApprovalSummary {
   approvalId: string;
   threadId: ThreadId;
   runId: RunId;
   toolCallId?: string;
   toolName: string;
+  arguments?: Record<string, unknown>;
   title: string;
   detail: string;
   path?: string;
   command?: string;
+  risk?: ToolApprovalRiskSummary;
+  /** Runtime-authoritative scopes for this exact pending request. */
+  allowedScopes: ToolApprovalScope[];
   status: 'pending';
   createdAt: string;
 }
@@ -3632,11 +3794,14 @@ export interface ListPendingToolApprovalsResponse {
 export interface ConversationDecideToolApprovalPayload {
   approvalId: string;
   decision: 'approve' | 'deny';
+  /** Omitted by legacy clients and normalized to once by Runtime. */
+  scope?: ToolApprovalScope;
 }
 
 export interface ConversationDecideToolApprovalResponse {
   approvalId: string;
   decision: 'approve' | 'deny';
+  scope: ToolApprovalScope;
   runId?: RunId;
 }
 
@@ -4080,45 +4245,71 @@ export interface CancelBrowserHandoffResponse {
   stepId: StepId;
 }
 
-// --- Goal mode (NewMax-style /goal: keep working until a completion
-// condition is met; a separate evaluator model checks after every turn) ---
+// --- Goal mode (NewMax-style /goal: the selected work model reports a
+// GOAL_STATUS marker after every turn and keeps working until terminal) ---
 
 export type GoalStatusState = 'active' | 'paused' | 'blocked' | 'achieved' | 'cleared';
 
 export interface GoalStatus {
   /** Conversation-scoped goal identity (conversation id). */
   conversationId: string;
+  /** User-visible objective shown throughout the goal lifecycle. */
   condition: string;
+  /** Optional completion criterion included in every work-model Goal prompt. */
+  stopCondition?: string;
   status: GoalStatusState;
   startedAt: string;
-  /** Number of turns evaluated so far (resets on session resume). */
+  /** Number of turns evaluated so far; pause/resume preserves the count. */
   turnCount: number;
   tokensIn: number;
   tokensOut: number;
-  /** Most recent evaluator reason ("why the condition is or isn't met"). */
+  /** Most recent work-model Goal status summary. */
   lastReason?: string;
   achievedAt?: string;
-  /** 轮次上限（0/缺省 = 不设上限；耗尽自动 blocked）。 */
+  /** Resolved round limit; new goals default to 10 and block when exhausted. */
   maxGoalRounds?: number;
   /** 已启动的自动轮次数。 */
   roundsStarted?: number;
+  /** Total token budget across work-model Goal turns; new goals default to 1000000. */
+  maxGoalTokens?: number;
   pausedAt?: string;
   blockedAt?: string;
   blockedReason?: string;
+  /** Consecutive GOAL_STATUS: blocked reports; NewMax stops after three. */
+  blockedStreak?: number;
+  /** Composer model pinned when the goal was created; reused by every automatic round. */
+  modelId?: ModelId;
+  /** Composer kernel pinned when the goal was created. */
+  kernelId?: KernelId;
+  /** Composer reasoning setting pinned for automatic rounds. */
+  reasoningEffort?: string;
+  /** Composer network setting pinned for automatic rounds. */
+  networkEnabled?: boolean;
 }
 
 export interface GoalSetPayload {
   conversationId: string;
   /** Completion condition, up to 4000 chars. Setting a new goal replaces the active one. */
   condition: string;
-  /** 轮次上限（≥1）；缺省用默认值（5）。 */
+  /** Optional completion criterion included in every Goal turn, up to 4000 chars. */
+  stopCondition?: string;
+  /** 轮次上限（1..50）；缺省用默认值（10）。 */
   maxGoalRounds?: number;
+  /** Total goal token budget (integer >= 10000; defaults to 1000000). */
+  maxGoalTokens?: number;
+  /** Route every automatic round through the model selected in the composer. */
+  modelId?: ModelId;
+  /** Route every automatic round through the kernel selected in the composer. */
+  kernelId?: KernelId;
+  reasoningEffort?: string;
+  networkEnabled?: boolean;
 }
 
 export interface GoalSetResponse {
   goal: GoalStatus;
-  /** Immediately starts a goal turn when the evaluator model is configured. */
+  /** Immediately starts a Goal turn when the selected work route is available. */
   started: boolean;
+  /** Legacy compatibility bit; true because the work model now self-reports status. */
   evaluatorConfigured: boolean;
 }
 
@@ -4144,14 +4335,18 @@ export interface GoalPausePayload {
   conversationId: string;
 }
 
-export interface GoalResumePayload {
+export interface GoalResumePayload extends Pick<
+  GoalSetPayload,
+  'modelId' | 'kernelId' | 'reasoningEffort' | 'networkEnabled'
+> {
   conversationId: string;
 }
 
 export interface GoalResumeResponse {
   goal: GoalStatus;
-  /** 恢复后立即启动下一轮（若评估器已配置）。 */
+  /** 恢复后立即启动下一轮。 */
   started: boolean;
+  /** Legacy compatibility bit; true because the work model now self-reports status. */
   evaluatorConfigured: boolean;
 }
 

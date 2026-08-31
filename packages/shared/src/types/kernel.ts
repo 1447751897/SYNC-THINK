@@ -251,8 +251,13 @@ export type KernelEvent =
       toolInput: unknown;
     }
   | { type: 'usage'; usage: KernelUsage }
+  /** The kernel exposed a real compaction lifecycle boundary. */
+  | { type: 'compaction-started' }
+  | { type: 'compaction-failed'; error?: string }
   /** Optional notification that the kernel compacted its own context. */
   | { type: 'compacted' }
+  /** Native planning output, normalized by the host into its shared plan card. */
+  | { type: 'plan-submitted'; text: string }
   | { type: 'terminal'; status: 'completed' | 'failed'; error?: string };
 
 /**

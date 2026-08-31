@@ -5,14 +5,15 @@ function source(path: string): string {
   return readFileSync(new URL(path, import.meta.url), 'utf8');
 }
 
-describe('local ZCode task status contract', () => {
+describe('NewMax task status contract', () => {
   const chat = source('../src/renderer/shell/ChatView.tsx');
   const flow = source('../src/renderer/shell/InlineProcessFlow.tsx');
   const panel = source('../src/renderer/shell/TaskStatusPanel.tsx');
   const css = source('../src/renderer/shell/shell.css');
 
   it('mounts one status surface and removes the repeated Progress and Goal entrances', () => {
-    expect(chat.match(/<TaskStatusPanel\b/g)).toHaveLength(1);
+    expect(chat.match(/<ComposerTaskPanel\b/g)).toHaveLength(1);
+    expect(chat).not.toContain('<TaskStatusPanel');
     expect(chat).not.toContain('<TodoPanel');
     expect(chat).not.toContain('<GoalCapsule');
     expect(chat).not.toContain('function RunTaskCapsule');
@@ -26,7 +27,7 @@ describe('local ZCode task status contract', () => {
 
   it('keeps the ZCode section order and measured floating geometry', () => {
     expect(panel.indexOf('title="Git 工具"')).toBeLessThan(panel.indexOf('title="目标"'));
-    expect(panel.indexOf('title="目标"')).toBeLessThan(panel.indexOf('title="进程"'));
+    expect(panel.indexOf('title="目标"')).toBeLessThan(panel.indexOf('title="任务清单"'));
     expect(panel).not.toContain('title="Git tools"');
     expect(panel).not.toContain('<ChangesDialog');
     expect(panel).toContain('onOpenReview');

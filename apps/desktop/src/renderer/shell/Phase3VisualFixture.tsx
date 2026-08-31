@@ -1,34 +1,52 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import type {
+  BotChannelPlatform,
   CommentaryTimelineSegment,
   ContextStatusSection,
   GoalStatus,
   RunProcessView,
 } from '@sync-think/protocol';
 import {
+  ArrowUp,
   Bot,
   CheckCircle2,
+  Copy,
   FileCode2,
   MessageSquare,
+  Mic,
+  Plus,
   Puzzle,
   RefreshCw,
-  SendHorizonal,
+  ThumbsDown,
+  ThumbsUp,
   User,
   Zap,
 } from 'lucide-react';
 import { AssistantProcessGroup } from './ChatView.js';
 import type { InlineProcessItem } from './ChatView.js';
+import { AnswerSources } from './AnswerSources.js';
+import type { AnswerSource } from './answer-sources.js';
+import { BrandLogoMark } from './BrandLogoMark.js';
+import { resolveKernelBrandLogo } from './brand-icons.js';
+import { ComposerMenuHighlight } from './ComposerMenuHighlight.js';
 import { ContextRing } from './compose-toolbar.js';
+import { BUILTIN_SLASH_COMMANDS } from './compose-slash.js';
 import { ExecutionTimeline } from './ExecutionTimeline.js';
 import { FirstLaunchGuide, FIRST_LAUNCH_GUIDE_KEY } from './FirstLaunchGuide.js';
 import { FileTypeIcon } from './FileTypeIcon.js';
 import { InlineProcessFlow } from './InlineProcessFlow.js';
 import { MarkdownContent } from './MarkdownContent.js';
+import { SlidingTabs } from './SlidingTabs.js';
 import { TaskStatusPanel } from './TaskStatusPanel.js';
 import type { TodoProjection } from './todo-projection.js';
-import { DataDiagnosticsSection } from './SettingsPage.js';
+import { DataDiagnosticsSection, SettingsPage } from './SettingsPage.js';
 import { WorkspaceFileView } from './WorkspaceFileView.js';
+import { KernelUpdatePanel } from './KernelUpdatePanel.js';
+import type {
+  ManagedKernelUpdateBridge,
+  ManagedKernelUpdateSnapshot,
+} from '../../kernel-update-contract.js';
 
 export const PHASE3_VISUAL_CASES = [
   'welcome',
@@ -36,12 +54,17 @@ export const PHASE3_VISUAL_CASES = [
   'long-trace-closed',
   'connection-and-code',
   'streaming-follow',
+  'streaming-text',
   'diagnostics',
   'composer-context',
+  'composer-slash-open',
   'workspace-file',
   'execution-auto-disclosure',
   'inline-process-hierarchy',
   'task-status-panel',
+  'sliding-tabs',
+  'kernel-update-panel',
+  'connection-settings',
 ] as const;
 
 export type Phase3VisualCase = (typeof PHASE3_VISUAL_CASES)[number];
@@ -169,16 +192,37 @@ const INLINE_PROCESS_HIERARCHY_ITEMS: InlineProcessItem[] = [
     displayName: '运行命令',
     inputSummary: 'pnpm --filter @sync-think/desktop test',
     argumentsJson: '{"command":"pnpm","args":["--filter","@sync-think/desktop","test"]}',
-    result: '33 tests passed',
-    status: 'completed',
-    startedAt: '2026-08-22T10:00:02.000Z',
-    completedAt: '2026-08-22T10:00:05.180Z',
+    status: 'running',
   },
   {
     kind: 'text',
     id: 'inline-process-text',
     text: '布局检查完成：正文保持主阅读层级，工具调用作为辅助动作缩进显示。',
     status: 'completed',
+  },
+];
+
+const INLINE_PROCESS_SOURCES: AnswerSource[] = [
+  {
+    key: 'external:youtube',
+    kind: 'external',
+    url: 'https://www.youtube.com/watch?v=sync-think',
+    host: 'youtube.com',
+    label: '运行状态参考',
+  },
+  {
+    key: 'external:beautiful-ui',
+    kind: 'external',
+    url: 'https://www.beautifului.dev/',
+    host: 'beautifului.dev',
+    label: 'Beautiful UI',
+  },
+  {
+    key: 'file:inline-process',
+    kind: 'file',
+    path: 'apps/desktop/src/renderer/shell/InlineProcessFlow.tsx',
+    label: 'InlineProcessFlow.tsx',
+    action: 'read',
   },
 ];
 
@@ -340,12 +384,20 @@ function InlineProcessHierarchyFixture() {
                 items={INLINE_PROCESS_HIERARCHY_ITEMS}
                 runId="phase3-inline-process-hierarchy"
                 startedAt="2026-08-22T10:00:00.000Z"
-                completedAt="2026-08-22T10:00:06.000Z"
+                durationMs={6_180}
+                streaming
+                answerStarted
                 defaultOpen
               />
-              <p data-testid="inline-process-fixture-final">
-                最终结论保留在执行面板之外，作为本轮完整回复呈现。
-              </p>
+              <div data-testid="inline-process-fixture-final">
+                <MarkdownContent
+                  text="正在汇总 [运行状态参考](https://www.youtube.com/watch?v=sync-think)，结果会保留来源与工作区文件。"
+                  streaming
+                />
+                <div className="shell-msg-footer">
+                  <AnswerSources sources={INLINE_PROCESS_SOURCES} />
+                </div>
+              </div>
             </div>
           </article>
         </div>
@@ -466,6 +518,82 @@ function StreamingFollowFixture() {
                   streaming
                 />
               </AssistantProcessGroup>
+            </div>
+          </article>
+        </div>
+      </div>
+    </FixtureFrame>
+  );
+}
+
+const STREAMING_TEXT_WORDS = (
+  'Pistachio 是本月增长最快的口味，销量提升 23%，并领先香草口味 8 个百分点。' +
+  ' [beautifului.dev](https://www.beautifului.dev/) 的 Streaming Text 使用逐词输出、内联来源和完成后动作。'
+).match(/\S+\s*/g)!;
+
+function StreamingTextFixture() {
+  const [wordCount, setWordCount] = useState(1);
+  const done = wordCount >= STREAMING_TEXT_WORDS.length;
+
+  useEffect(() => {
+    if (done) return;
+    const timer = window.setTimeout(
+      () => setWordCount((current) => Math.min(current + 1, STREAMING_TEXT_WORDS.length)),
+      55,
+    );
+    return () => window.clearTimeout(timer);
+  }, [done, wordCount]);
+
+  return (
+    <FixtureFrame label="Streaming Text 高保真交互">
+      <div className="phase3-visual__conversation">
+        <div className="phase3-visual__conversation-column">
+          <article
+            className="shell-message-window-item phase3-visual__message phase3-visual__trace"
+            data-role="assistant"
+            aria-label="Streaming Text 示例"
+            data-streaming-state={done ? 'done' : 'streaming'}
+          >
+            <div className="phase3-visual__avatar" aria-hidden="true">
+              <Bot size={13} />
+            </div>
+            <div className="phase3-visual__trace-content">
+              <strong>SYNC-THINK</strong>
+              <MarkdownContent
+                text={STREAMING_TEXT_WORDS.slice(0, wordCount).join('')}
+                streaming={!done}
+              />
+              {done ? (
+                <div className="shell-msg-footer">
+                  <AnswerSources
+                    sources={INLINE_PROCESS_SOURCES}
+                    actions={
+                      <>
+                        <button className="shell-msg-footer__btn" type="button" aria-label="复制">
+                          <Copy size={14} />
+                        </button>
+                        <button
+                          className="shell-msg-footer__btn"
+                          type="button"
+                          aria-label="重新生成"
+                        >
+                          <RefreshCw size={14} />
+                        </button>
+                        <button className="shell-msg-footer__btn" type="button" aria-label="有帮助">
+                          <ThumbsUp size={14} />
+                        </button>
+                        <button
+                          className="shell-msg-footer__btn"
+                          type="button"
+                          aria-label="没有帮助"
+                        >
+                          <ThumbsDown size={14} />
+                        </button>
+                      </>
+                    }
+                  />
+                </div>
+              ) : null}
             </div>
           </article>
         </div>
@@ -621,6 +749,8 @@ const COMPOSER_CONTEXT_SECTIONS = [
   { type: 'tools', tokens: 16_060 },
 ] satisfies ContextStatusSection[];
 
+const COMPOSER_KERNEL_LOGO = resolveKernelBrandLogo('codex');
+
 function ComposerContextFixture() {
   const [input, setInput] = useState('');
 
@@ -701,6 +831,17 @@ function ComposerContextFixture() {
                   <span className="shell-compose__model-label">GPT-5.6 Luna</span>
                   <span className="shell-compose__model-reasoning">自动</span>
                 </button>
+                {COMPOSER_KERNEL_LOGO ? (
+                  <span
+                    className="shell-kernel-chip shell-kernel-chip--logo"
+                    data-testid="compose-kernel-chip"
+                    title="内核：GPT"
+                    aria-label="内核：GPT"
+                    role="img"
+                  >
+                    <BrandLogoMark logo={COMPOSER_KERNEL_LOGO} size={18} />
+                  </span>
+                ) : null}
                 <button
                   type="button"
                   className="shell-compose__send"
@@ -708,13 +849,123 @@ function ComposerContextFixture() {
                   aria-label="发送"
                   disabled={!input.trim()}
                 >
-                  <SendHorizonal size={15} />
+                  <ArrowUp size={18} />
                 </button>
               </div>
             </div>
           </div>
           <div className="phase3-visual__composer-caption">
             输入框聚焦时使用低饱和强调边框；所有控件保留透明边框，hover 不会引发布局跳动。
+          </div>
+        </div>
+      </div>
+    </FixtureFrame>
+  );
+}
+
+function ComposerSlashOpenFixture() {
+  const slashListRef = useRef<HTMLDivElement>(null);
+  const [activeIndex, setActiveIndex] = useState(-1);
+
+  return (
+    <FixtureFrame label="Composer 斜杠菜单打开态">
+      <div className="phase3-visual__composer-stage">
+        <div aria-hidden="true" />
+        <div
+          className="phase3-visual__composer-wrap"
+          style={{ width: '656px', maxWidth: 'calc(100% - 48px)' }}
+        >
+          <div
+            className="shell-compose shell-compose--tall relative phase3-visual__composer"
+            data-layout="tall"
+            data-testid="composer-slash-open"
+            style={{ width: '656px', maxWidth: '100%' }}
+          >
+            <div
+              ref={slashListRef}
+              className="shell-mention-pop shell-slash-pop shell-empty-slash-pop"
+              data-testid="composer-slash-open-menu"
+              role="listbox"
+              aria-label="斜杠命令视觉验收"
+            >
+              <ComposerMenuHighlight containerRef={slashListRef} activeIndex={activeIndex} />
+              <div className="shell-slash-pop__section">命令</div>
+              {BUILTIN_SLASH_COMMANDS.map((command, index) => (
+                <button
+                  key={command.id}
+                  type="button"
+                  role="option"
+                  aria-selected={index === activeIndex}
+                  data-composer-menu-index={index}
+                  className={`shell-mention-pop__item shell-slash-pop__item ${
+                    index === activeIndex ? 'is-active' : ''
+                  }`}
+                  onMouseEnter={() => setActiveIndex(index)}
+                >
+                  <span className="shell-slash-pop__cmd">{command.command}</span>
+                  <span className="shell-slash-pop__meta">
+                    <span className="shell-slash-pop__label">{command.label}</span>
+                    <span className="shell-slash-pop__desc">{command.description}</span>
+                  </span>
+                </button>
+              ))}
+              <div className="shell-composer-menu__hint">↑↓ 选择 · Enter 确认 · Esc 关闭</div>
+            </div>
+
+            <textarea
+              className="shell-compose__input"
+              aria-label="斜杠命令输入"
+              value="/"
+              readOnly
+              rows={2}
+            />
+            <div className="shell-compose__bar">
+              <div className="shell-compose__bar-left">
+                <button
+                  type="button"
+                  className="shell-compose__icon-tool shell-compose__shortcut-plus"
+                  aria-label="添加上下文"
+                  title="添加上下文"
+                >
+                  <Plus size={17} aria-hidden="true" />
+                </button>
+                <button
+                  type="button"
+                  className="shell-compose__tool"
+                  data-active="1"
+                  title="权限：完全访问"
+                >
+                  <Zap size={15} aria-hidden="true" />
+                  <span className="shell-compose__tool-label">完全访问</span>
+                </button>
+                <button type="button" className="shell-compose__tool" title="本轮技能：0/8">
+                  <Puzzle size={15} aria-hidden="true" />
+                  <span className="shell-compose__tool-label">0/8</span>
+                </button>
+              </div>
+              <div className="shell-compose__bar-right">
+                <button type="button" className="shell-compose__tool" title="对话对象：模型">
+                  <MessageSquare size={15} aria-hidden="true" />
+                  <span className="shell-compose__tool-label">模型</span>
+                </button>
+                <div className="shell-compose__tool-wrap">
+                  <button
+                    type="button"
+                    className="shell-compose__model-btn"
+                    title="切换模型，思考强度：自动"
+                  >
+                    <span className="shell-compose__model-label">GPT-5.6 Luna</span>
+                    <span className="shell-compose__model-reasoning">自动</span>
+                  </button>
+                </div>
+                <button type="button" className="shell-compose__voice" aria-label="开始语音输入">
+                  <Mic size={15} aria-hidden="true" />
+                </button>
+                <button type="button" className="shell-compose__send" aria-label="发送">
+                  <ArrowUp size={18} aria-hidden="true" />
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -1092,7 +1343,7 @@ function installTaskStatusFixtureRuntime() {
 function TaskStatusFixture() {
   useState(() => installTaskStatusFixtureRuntime());
   return (
-    <FixtureFrame label="Git 工具 · 目标 · 进程">
+    <FixtureFrame label="Git 工具 · 目标 · 任务清单">
       <div className="phase3-task-status shell-chat-column">
         <div className="shell-chat-message-stage">
           <div className="phase3-task-status__conversation">
@@ -1118,15 +1369,266 @@ function TaskStatusFixture() {
   );
 }
 
+function SlidingTabsFixture() {
+  const [activeTab, setActiveTab] = useState<'plan' | 'debug' | 'ask'>('plan');
+  const labels = {
+    plan: '规划任务',
+    debug: '调试与排查',
+    ask: '提问',
+  } as const;
+  return (
+    <FixtureFrame label="滑动标签">
+      <div className="phase3-sliding-tabs">
+        <SlidingTabs className="settings-connection-tabs" aria-label="工作模式">
+          {(Object.keys(labels) as Array<keyof typeof labels>).map((id) => (
+            <button
+              key={id}
+              type="button"
+              role="tab"
+              aria-selected={activeTab === id}
+              onClick={() => setActiveTab(id)}
+            >
+              {labels[id]}
+            </button>
+          ))}
+        </SlidingTabs>
+        <section role="tabpanel" aria-live="polite" data-testid="sliding-tabs-panel">
+          当前模式：{labels[activeTab]}
+        </section>
+      </div>
+    </FixtureFrame>
+  );
+}
+
+const KERNEL_UPDATE_FIXTURE_INITIAL: ManagedKernelUpdateSnapshot = {
+  schemaVersion: 1,
+  installerAvailable: true,
+  checkedAt: null,
+  items: [
+    {
+      kernelId: 'codex',
+      name: 'Codex',
+      packageName: '@openai/codex',
+      managedVersion: null,
+      latestVersion: null,
+      phase: 'idle',
+      errorCode: null,
+    },
+    {
+      kernelId: 'claude-code',
+      name: 'Claude Code',
+      packageName: '@anthropic-ai/claude-code',
+      managedVersion: '2.1.241',
+      latestVersion: null,
+      phase: 'idle',
+      errorCode: null,
+    },
+  ],
+};
+
+const KERNEL_UPDATE_FIXTURE_CHECKED: ManagedKernelUpdateSnapshot = {
+  ...KERNEL_UPDATE_FIXTURE_INITIAL,
+  checkedAt: '2026-08-29T00:00:00.000Z',
+  items: KERNEL_UPDATE_FIXTURE_INITIAL.items.map((item) => ({
+    ...item,
+    latestVersion: item.kernelId === 'codex' ? '0.150.1' : '2.1.250',
+    phase: 'available' as const,
+  })),
+};
+
+const KERNEL_UPDATE_FIXTURE_BRIDGE: ManagedKernelUpdateBridge = {
+  getState: async () => KERNEL_UPDATE_FIXTURE_INITIAL,
+  checkForUpdates: async () => ({
+    ok: true,
+    errorCode: null,
+    state: KERNEL_UPDATE_FIXTURE_CHECKED,
+  }),
+  installUpdate: async ({ kernelId }) => ({
+    ok: true,
+    errorCode: null,
+    state: {
+      ...KERNEL_UPDATE_FIXTURE_CHECKED,
+      items: KERNEL_UPDATE_FIXTURE_CHECKED.items.map((item) =>
+        item.kernelId === kernelId
+          ? {
+              ...item,
+              managedVersion: item.kernelId === 'codex' ? '0.150.1' : '2.1.250',
+              latestVersion: item.kernelId === 'codex' ? '0.150.1' : '2.1.250',
+              phase: 'installed' as const,
+            }
+          : item,
+      ),
+    },
+  }),
+};
+
+function KernelUpdateFixture() {
+  const [bridgeReady, setBridgeReady] = useState(false);
+
+  useEffect(() => {
+    const previous = Object.getOwnPropertyDescriptor(window, 'syncThink');
+    Object.defineProperty(window, 'syncThink', {
+      configurable: true,
+      value: {
+        kernelUpdates: KERNEL_UPDATE_FIXTURE_BRIDGE,
+        runtime: {
+          detectKernels: async () => ({
+            kernels: [
+              { kernelId: 'codex', version: '0.149.0' },
+              { kernelId: 'claude-code', version: '2.1.241' },
+            ],
+          }),
+        },
+      } as unknown as NonNullable<Window['syncThink']>,
+    });
+    setBridgeReady(true);
+    return () => {
+      if (previous) Object.defineProperty(window, 'syncThink', previous);
+      else Reflect.deleteProperty(window, 'syncThink');
+    };
+  }, []);
+
+  return (
+    <FixtureFrame label="关于页内核更新">
+      <div className="settings-scroll settings-about-page phase3-kernel-update">
+        {bridgeReady ? <KernelUpdatePanel /> : null}
+      </div>
+    </FixtureFrame>
+  );
+}
+
+const CONNECTION_SETTINGS_SERVER = {
+  mcpServerId: 'phase3-douyin',
+  name: '抖音',
+  transport: 'remote-http',
+  endpoint: 'https://connector.example.com/mcp',
+  tools: [
+    { name: 'fetch_hot_search_list', description: '读取品牌与内容热搜榜' },
+    { name: 'fetch_video_detail', description: '读取公开视频详情与统计数据' },
+    { name: 'fetch_hashtag_search_result', description: '按话题查询公开视频' },
+  ],
+  trusted: false,
+  enabled: true,
+  maxOutputBytes: 1_000_000,
+  timeoutMs: 30_000,
+  notes: 'SYNC-THINK connector: douyin',
+  authConfigured: true,
+  authScheme: 'bearer',
+  createdAt: '2026-08-29T00:00:00.000Z',
+  updatedAt: '2026-08-29T00:00:00.000Z',
+} as const;
+
+function installConnectionSettingsFixtureRuntime() {
+  let botEnabled = true;
+  Object.defineProperty(window, 'syncThink', {
+    configurable: true,
+    value: {
+      runtime: {
+        getSettings: async () => ({ settings: {} }),
+        setSetting: async ({ key, value }: { key: string; value: unknown }) => ({
+          key,
+          value,
+          updatedAt: '2026-08-29T00:00:00.000Z',
+        }),
+        listMcpServers: async () => ({ servers: [CONNECTION_SETTINGS_SERVER] }),
+        setMcpServerEnabled: async ({ enabled }: { enabled: boolean }) => ({
+          server: { ...CONNECTION_SETTINGS_SERVER, enabled },
+        }),
+        refreshMcpTools: async () => ({ server: CONNECTION_SETTINGS_SERVER }),
+        registerRemoteMcpServer: async () => ({
+          server: CONNECTION_SETTINGS_SERVER,
+          updated: false,
+          endpoint: CONNECTION_SETTINGS_SERVER.endpoint,
+          authConfigured: true,
+          discovered: true,
+        }),
+        deleteMcpServer: async () => ({
+          mcpServerId: CONNECTION_SETTINGS_SERVER.mcpServerId,
+          deleted: true,
+        }),
+        getBotChannelConfig: async ({ platform }: { platform: BotChannelPlatform }) => ({
+          platform,
+          enabled: platform === 'telegram' ? botEnabled : false,
+          credentialsConfigured: platform === 'telegram',
+          connected: platform === 'telegram',
+          state: platform === 'telegram' ? 'connected' : 'disconnected',
+          ...(platform === 'telegram'
+            ? {
+                proxyUrl: 'http://127.0.0.1:7890',
+                botUsername: 'sync_think_bot',
+                botDisplayName: 'SYNC-THINK Bot',
+              }
+            : {}),
+          updatedAt: '2026-08-29T00:00:00.000Z',
+        }),
+        testBotChannel: async ({ platform }: { platform: BotChannelPlatform }) => ({
+          platform,
+          connected: true,
+          overall: 'pass',
+          checks: [{ id: 'connection', label: '连接与鉴权', verdict: 'pass' }],
+          ...(platform === 'telegram'
+            ? { botUsername: 'sync_think_bot', botDisplayName: 'SYNC-THINK Bot' }
+            : {}),
+        }),
+        saveBotChannelConfig: async ({
+          platform,
+          enabled,
+        }: {
+          platform: BotChannelPlatform;
+          enabled: boolean;
+        }) => {
+          botEnabled = enabled;
+          return {
+            config: {
+              platform,
+              enabled,
+              credentialsConfigured: true,
+              connected: enabled,
+              state: enabled ? 'connected' : 'disconnected',
+              ...(platform === 'telegram'
+                ? {
+                    proxyUrl: 'http://127.0.0.1:7890',
+                    botUsername: 'sync_think_bot',
+                    botDisplayName: 'SYNC-THINK Bot',
+                  }
+                : {}),
+              updatedAt: '2026-08-29T00:00:00.000Z',
+            },
+          };
+        },
+        openExternalUrl: async () => ({ opened: true }),
+      },
+    } as unknown as NonNullable<Window['syncThink']>,
+  });
+}
+
+function ConnectionSettingsFixture() {
+  useState(() => installConnectionSettingsFixtureRuntime());
+  return (
+    <main className="phase3-settings-page" data-phase3-ready="true" aria-label="连接设置验收">
+      <div className="settings-modal-positioner">
+        <div className="settings-modal-content">
+          <SettingsPage />
+        </div>
+      </div>
+    </main>
+  );
+}
+
 export function Phase3VisualFixture({ visualCase }: { visualCase: Phase3VisualCase }) {
   if (visualCase === 'welcome') return <WelcomeFixture />;
   if (visualCase === 'diagnostics') return <DiagnosticsFixture />;
   if (visualCase === 'connection-and-code') return <ConnectionAndCodeFixture />;
   if (visualCase === 'streaming-follow') return <StreamingFollowFixture />;
+  if (visualCase === 'streaming-text') return <StreamingTextFixture />;
   if (visualCase === 'composer-context') return <ComposerContextFixture />;
+  if (visualCase === 'composer-slash-open') return <ComposerSlashOpenFixture />;
   if (visualCase === 'workspace-file') return <WorkspaceFileFixture />;
   if (visualCase === 'execution-auto-disclosure') return <ExecutionAutoDisclosureFixture />;
   if (visualCase === 'inline-process-hierarchy') return <InlineProcessHierarchyFixture />;
   if (visualCase === 'task-status-panel') return <TaskStatusFixture />;
+  if (visualCase === 'sliding-tabs') return <SlidingTabsFixture />;
+  if (visualCase === 'kernel-update-panel') return <KernelUpdateFixture />;
+  if (visualCase === 'connection-settings') return <ConnectionSettingsFixture />;
   return <TraceFixture open={visualCase === 'long-trace-open'} />;
 }

@@ -5,6 +5,7 @@ import {
   applyTransientConversationFrames,
   buildConversationSnapshotDisplayQueue,
   getConversationDisplayQueueBatchOptions,
+  getConversationDisplayQueueFlushDelay,
   mergeTransientConversationDraft,
   reconcileTransientConversationDraft,
   takeConversationDisplayQueueBatch,
@@ -269,8 +270,8 @@ describe('chat transient stream reducer', () => {
     expect(secondBoundary.remaining).toEqual([]);
   });
 
-  it('submits small provider deltas immediately without client-side replay', () => {
-    const queue = Array.from({ length: 4 }, (_, index) => ({
+  it('publishes one small provider delta per visual beat', () => {
+    const queue = Array.from({ length: 2 }, (_, index) => ({
       source: 'transient' as const,
       frame: frame(index + 1, 'text', { textDelta: 'x'.repeat(20) }),
       offset: 0,
@@ -280,12 +281,93 @@ describe('chat transient stream reducer', () => {
       getConversationDisplayQueueBatchOptions(queue),
     );
 
-    expect(batch.operations).toHaveLength(4);
-    expect(batch.completed).toHaveLength(4);
-    expect(batch.remaining).toEqual([]);
+    expect(batch.operations).toHaveLength(1);
+    expect(batch.completed).toHaveLength(1);
+    expect(batch.remaining).toHaveLength(1);
   });
 
-  it('publishes every text delta already received in one display frame', () => {
+  it('publishes one readable streaming token per visual beat', () => {
+    const text = 'Pistachio is your fastest-growing flavor';
+    const queue = [
+      { source: 'transient' as const, frame: frame(1, 'text', { textDelta: text }), offset: 0 },
+    ];
+    const batch = takeConversationDisplayQueueBatch(
+      queue,
+      getConversationDisplayQueueBatchOptions(queue),
+    );
+
+    expect(batch.operations).toEqual([
+      expect.objectContaining({ type: 'text.delta', delta: 'Pistachio ' }),
+    ]);
+    expect(batch.remaining).toEqual([expect.objectContaining({ source: 'transient', offset: 10 })]);
+  });
+
+  it('keeps the normal word rhythm for a small queue and accelerates a large backlog', () => {
+    const smallQueue = [
+      {
+        source: 'transient' as const,
+        frame: frame(1, 'text', { textDelta: 'small queue' }),
+        offset: 0,
+      },
+    ];
+    const largeQueue = [
+      {
+        source: 'transient' as const,
+        frame: frame(2, 'text', { textDelta: '长'.repeat(10_000) }),
+        offset: 0,
+      },
+    ];
+
+    expect(getConversationDisplayQueueBatchOptions(smallQueue)).toEqual({
+      maxFrames: 1,
+      maxTextCharacters: 24,
+      maxReadableTokens: 1,
+    });
+    expect(getConversationDisplayQueueFlushDelay(smallQueue)).toBe(55);
+    expect(getConversationDisplayQueueBatchOptions(largeQueue)).toEqual(
+      expect.objectContaining({
+        maxFrames: expect.any(Number),
+        maxTextCharacters: expect.any(Number),
+        maxReadableTokens: expect.any(Number),
+      }),
+    );
+    expect(getConversationDisplayQueueBatchOptions(largeQueue).maxTextCharacters).toBeGreaterThan(
+      24,
+    );
+    expect(getConversationDisplayQueueBatchOptions(largeQueue).maxReadableTokens).toBeGreaterThan(
+      1,
+    );
+    expect(getConversationDisplayQueueFlushDelay(largeQueue)).toBeLessThan(55);
+  });
+
+  it('drains a long Chinese summary within a bounded adaptive playback budget', () => {
+    const text = '这是用于验证自适应流式追帧的长总结。'.repeat(300);
+    let queue = [
+      { source: 'transient' as const, frame: frame(1, 'text', { textDelta: text }), offset: 0 },
+    ];
+    let rendered = '';
+    let playbackMs = 0;
+    let beats = 0;
+
+    while (queue.length > 0 && beats < 2_000) {
+      playbackMs += getConversationDisplayQueueFlushDelay(queue);
+      const batch = takeConversationDisplayQueueBatch(
+        queue,
+        getConversationDisplayQueueBatchOptions(queue),
+      );
+      for (const operation of batch.operations) {
+        if (operation.type === 'text.delta') rendered += operation.delta;
+      }
+      queue = batch.remaining as typeof queue;
+      beats += 1;
+    }
+
+    expect(rendered).toBe(text);
+    expect(queue).toHaveLength(0);
+    expect(playbackMs).toBeLessThan(12_000);
+  });
+
+  it('publishes the first small delta and preserves later provider order', () => {
     const queue = [
       { source: 'transient' as const, frame: frame(1, 'text', { textDelta: 'fine-a' }), offset: 0 },
       { source: 'transient' as const, frame: frame(2, 'text', { textDelta: 'fine-b' }), offset: 0 },
@@ -305,11 +387,16 @@ describe('chat transient stream reducer', () => {
       'text.delta',
       'text.delta',
     ]);
-    expect(batch.completed).toHaveLength(3);
-    expect(batch.remaining).toEqual([]);
+    expect(batch.completed).toHaveLength(2);
+    expect(batch.remaining).toEqual([
+      expect.objectContaining({ source: 'transient', offset: expect.any(Number) }),
+    ]);
+    expect(
+      batch.remaining[0]?.source === 'snapshot' ? 0 : (batch.remaining[0]?.offset ?? 0),
+    ).toBeGreaterThan(0);
   });
 
-  it('publishes a coarse provider delta atomically instead of replaying client-side chunks', () => {
+  it('paces a coarse provider delta across bounded paint batches', () => {
     const largeText = 'x'.repeat(10_000);
     const largeFrame = frame(1, 'text', { textDelta: largeText });
     const queue = [{ source: 'transient' as const, frame: largeFrame, offset: 0 }];
@@ -319,8 +406,16 @@ describe('chat transient stream reducer', () => {
     );
 
     expect(batch.operations).toHaveLength(1);
-    expect(batch.operations[0]).toMatchObject({ type: 'text.delta', delta: largeText });
-    expect(batch.remaining).toEqual([]);
+    expect(batch.operations[0]).toMatchObject({ type: 'text.delta' });
+    expect(
+      batch.operations[0]?.type === 'text.delta' ? batch.operations[0].delta.length : 0,
+    ).toBeGreaterThan(0);
+    expect(
+      batch.operations[0]?.type === 'text.delta' ? batch.operations[0].delta.length : Infinity,
+    ).toBeLessThan(largeText.length);
+    expect(batch.remaining).toEqual([
+      { source: 'transient', frame: largeFrame, offset: expect.any(Number) },
+    ]);
   });
 
   it('finishes a coarse text operation before its following process boundary', () => {
@@ -352,7 +447,7 @@ describe('chat transient stream reducer', () => {
     expect(queue).toEqual([{ source: 'transient', frame: afterTool, offset: 0 }]);
   });
 
-  it('publishes the complete timeline snapshot with its provider delta', () => {
+  it('paces the timeline snapshot in lockstep with its provider delta', () => {
     const text = 'timeline'.repeat(80);
     const textFrame = frame(1, 'text', {
       textDelta: text,
@@ -367,23 +462,30 @@ describe('chat transient stream reducer', () => {
         },
       ],
     });
-    const queue = [{ source: 'transient' as const, frame: textFrame, offset: 0 }];
-    const batch = takeConversationDisplayQueueBatch(
-      queue,
-      getConversationDisplayQueueBatchOptions(queue),
-    );
-    const operation = batch.operations[0];
-
-    expect(operation?.type).toBe('text.delta');
-    if (operation?.type !== 'text.delta') throw new Error('expected text delta');
-    const visibleSegment = operation.assistantTimeline?.[0];
-    expect(visibleSegment?.kind).toBe('text');
-    if (visibleSegment?.kind !== 'text') throw new Error('expected text timeline segment');
-    expect(visibleSegment.text).toBe(operation.delta);
-    expect(visibleSegment.text).toBe(text);
+    let queue = [{ source: 'transient' as const, frame: textFrame, offset: 0 }];
+    let published = '';
+    let visibleText = '';
+    while (queue.length > 0) {
+      const batch = takeConversationDisplayQueueBatch(
+        queue,
+        getConversationDisplayQueueBatchOptions(queue),
+      );
+      const operation = batch.operations[0];
+      expect(operation?.type).toBe('text.delta');
+      if (operation?.type !== 'text.delta') throw new Error('expected text delta');
+      published += operation.delta;
+      const visibleSegment = operation.assistantTimeline?.[0];
+      expect(visibleSegment?.kind).toBe('text');
+      if (visibleSegment?.kind !== 'text') throw new Error('expected text timeline segment');
+      visibleText = visibleSegment.text;
+      expect(visibleText).toBe(published);
+      queue = batch.remaining as typeof queue;
+    }
+    expect(published).toBe(text);
+    expect(visibleText).toBe(text);
   });
 
-  it('publishes terminal after the complete queued delta in the same boundary batch', () => {
+  it('keeps terminal behind the paced queued delta', () => {
     const text = 'final'.repeat(2_000);
     const queue = [
       { source: 'transient' as const, frame: frame(1, 'text', { textDelta: text }), offset: 0 },
@@ -398,12 +500,12 @@ describe('chat transient stream reducer', () => {
       getConversationDisplayQueueBatchOptions(queue),
     );
 
-    expect(batch.operations.map((operation) => operation.type)).toEqual([
-      'text.delta',
-      'run.terminal',
-    ]);
-    expect(batch.operations[0]).toMatchObject({ type: 'text.delta', delta: text });
-    expect(batch.remaining).toEqual([]);
+    expect(batch.operations.map((operation) => operation.type)).toEqual(['text.delta']);
+    expect(batch.remaining).toHaveLength(2);
+    expect(batch.remaining.at(-1)).toMatchObject({
+      source: 'transient',
+      frame: expect.objectContaining({ kind: 'terminal' }),
+    });
   });
 
   it('reconciles reset snapshots directly instead of replaying catch-up characters', () => {
@@ -449,7 +551,7 @@ describe('chat transient stream reducer', () => {
     expect(batch.remaining).toEqual([]);
   });
 
-  it('drains all ordering boundaries in one RAF loop with no leftover characters', () => {
+  it('drains all ordering boundaries without letting paced text overtake them', () => {
     const frames = [
       frame(1, 'text', { textDelta: 'a'.repeat(10_000) }),
       frame(2, 'process'),
@@ -472,6 +574,7 @@ describe('chat transient stream reducer', () => {
     expect(operationTypes).toEqual([
       'text.delta',
       'process.boundary',
+      'commentary.delta',
       'commentary.delta',
       'run.terminal',
     ]);

@@ -218,6 +218,37 @@
 6. 附件处理结果至少区分 `forwarded / described / ocr / failed`，并进入 `run.started` 与 append response，供诊断和用户提示使用。
 7. 已向视觉主模型直传原图的 Run 若发生模型故障转移，只允许选择同样支持视觉的备用模型；同 Provider 优先级与 Agent fallback 均须跳过纯文本候选。没有视觉候选时暂停，禁止在 rebind 时把原图带给文本模型。
 
+### 7.5 机器人对话通道（2026-08-29 用户确认）
+
+1. 机器人通道必须复用 SYNC-THINK 的持久会话、模型路由、Skill/MCP 注入、工具审批和执行事件，不建立第二套聊天或工具限制。
+2. Telegram 为首个生产通道：通过 `getMe` 校验 Token，通过 `getUpdates` 长轮询接收文本，通过 `sendChatAction` 提示执行中并以 `sendMessage` 返回最终文本；同一 chat id 永久复用同一会话。
+3. Bot Token 必须保存在 SecureStore，SQLite 仅保存 opaque handle、代理地址、更新 offset、Bot 公开身份和状态；列表、日志、事件、Renderer 响应与诊断不得回显 Token 或 handle。
+4. 更新 offset 必须在当前批次处理完成后持久化，避免 Runtime 重启后重复确认；非文本 Update 也必须推进 offset，避免同一 Update 永久阻塞队列。
+5. Telegram 单条回复按官方 `4096` 字符上限分段；长轮询使用官方推荐的正 timeout，停用、重配与 Runtime 停止必须中止当前请求并释放代理连接。
+6. 飞书、企业微信、微信、Discord、钉钉和 QQ 只有在各自协议、鉴权、收发与重试合同完整后才能启用；在此之前设置页只显示明确的待接入状态。
+7. 2026-08-30 的范围变更要求评估并接入上述非 Telegram 通道；各通道仍须复用同一持久会话、运行绑定、工具审批和事件投影，不允许通过只读表单或前端开关替代真实协议适配。
+8. 多平台实现采用 TD-054 已确认的本地平台网关：Telegram、飞书、企业微信、微信、Discord、钉钉和 QQ 都必须提供真实凭证测试、启停、收发、重试/断线恢复、错误诊断和持久会话回归；设置页不得再以禁用占位代替已确认范围。
+9. 七个平台共享统一入站消息、公开身份、连接状态和分项测试结果合同；平台专有字段由各自表单和适配器维护，不得把某个平台的 Token/代理字段强行复用于其他平台。
+10. Runtime 启动时恢复全部已启用且凭据完整的通道；一个平台连接失败只更新自身错误状态，不阻断其他平台、桌面 UI 或现有模型 Run。
+
+### 7.6 NewMax Composer、规划模式与目标模式（2026-08-31 用户确认）
+
+1. 新建对话空态与正式对话必须复用同一个 Composer 组件和同一套附件、权限、联网、工作区文件、模型、内核、Skill、Plan 与 Goal 行为；两种状态只允许因布局位置和文本区最小高度不同而产生视觉差异。
+2. Composer 的字体、表面、尺寸、菜单层级、模式提示和动效以本机 NewMax 当前安装包及其 Renderer 源码为验收基准；不得继续从旧 SYNC-THINK Composer 或 Beautiful UI 方案推导折中样式。
+3. 从 `/` 菜单选择 `/plan` 或 `/goal` 后，只替换当前命令 token、补一个空格、关闭菜单并把光标留在空格后。此时是本地模式预览，尚未创建消息或持久模式。
+4. 发送裸 `/plan` 或裸 `/goal` 只清空本地预览和输入，不创建用户消息、不启动 Run，也不改变已持久化的 Conversation 模式。`/plan <需求>` 必须先持久化 plan 模式，再发送去掉命令前缀的需求；`/goal <目标>` 必须启动真实 Goal。`/execute` 保留为 SYNC-THINK 的显式退出规划模式入口。
+5. Plan 与 Goal 互斥。进入 Plan 前暂停当前活动 Goal；启动 Goal 时退出 Plan 预览或活动态。Plan/Goal 的模式提示、工具栏激活胶囊、退出/暂停/恢复动作和高级设置都必须调用真实 Runtime 合同。
+6. 正式方案只来自 Codex canonical plan item 或平台 `plan_submit` 归一后的 `conversation.plan_submitted`；它在会话态 Composer 上方形成 NewMax 紧凑摘要与可审批方案表面，要求修改通过 Composer 回到规划模式并由下一次提交生成新 revision，不把未挂载的全字段就地编辑器写成交付能力。规划 Run 成功终结但没有正式提交事件时必须显示“方案未提交”并保持 plan 模式。
+7. `update_task_plan`、Task 系列工具与 Codex `turn/plan/updated` 只维护当前 Run 的任务清单。任务清单不得生成、替代或伪装正式方案卡，也不得作为普通工具行重复出现。
+8. 任务清单按当前 thread/task 隔离，兼容顶层参数与 `toolCall.argumentsJson`，并按 `toolCallId` 关联请求和完成事件。首次真实清单自动展开一次；Run 终态保留最终清单，当前对话下一轮开始时清空。
+9. Goal 默认上限为 10 轮、1,000,000 Token；支持暂停、恢复、取消和高级设置。命中 NewMax 已实现的高风险目标表达式时，开始目标前必须二次确认，返回修改不得丢失输入。
+10. NewMax 加号菜单中只有具备真实 SYNC-THINK 合同的动作才可启用。附件、Plan、Goal、联网、权限和工作区文件必须可用；会议纪要等尚无 Runtime 合同的能力不得以可点击占位项冒充完成。
+11. 普通文本首次出现 Plan/Goal 意图词且当前未处于模式、菜单或禁用态时，Composer 在上方显示 NewMax 模式建议；点击动作或按 `Shift + Tab` 把原正文无损转换为对应 `/plan` 或 `/goal` 草稿，Escape 或关闭按钮只关闭本次建议。
+12. Goal 循环由当前工作模型在每轮结果中返回 `GOAL_STATUS: complete|continue|blocked` 驱动，不要求用户额外配置独立评估模型。缺少或无效状态按 continue 处理并受轮次、Token 预算和停止条件约束，blocked/complete 必须落入真实 Goal 状态机。模型设置和目标状态面板不得再提供独立 evaluator 的设置入口、保存动作或“未配置”状态；遗留兼容字段不得成为 Renderer 的启动门禁。
+13. 工具审批在 Composer 上方仅显示当前请求，并提供批准、拒绝和“本会话允许”；会话允许只对当前 Conversation 内同名工具生效。Computer Use 请求包含 NewMax 可识别的 `app_id` 或 macOS bundle id 时，第二动作改为“始终允许此应用”，由 Runtime 持久化并对该应用后续 Computer Use 请求生效。标记为 `human-only` 的工具每次都必须由真人审批，只显示单次批准与拒绝，不展示“本会话允许”或“始终允许此应用”；即使旧客户端或构造请求提交这两类持久允许决定，Runtime 也必须拒绝。
+14. Composer 的最终接线必须同时包含 Plan/Goal 激活态胶囊、自然语言模式建议、Composer 上方的正式方案/工具审批叠层，以及空态与会话态共享的 NewMax frame；这些能力不得继续挂在旧 Composer 分支、消息流卡片或独立空态实现上。
+15. `ComposerEditor` 使用 CodeMirror 6（`@codemirror/state`、`@codemirror/view`、`@codemirror/commands`）作为唯一编辑实例，支持行折行、历史/键盘映射、IME 安全提交、焦点/选区桥接和原子 Skill/附件/粘贴引用 token；隐藏兼容 `<textarea>` 只供既有调用方和测试，不参与布局。工作区文件编辑仍保持 textarea，迁移该编辑器需另行技术决策。
+
 ## 8. 验收标准
 
 闭测完成必须满足（摘自设计文档 §23.2）：
@@ -236,6 +267,7 @@
 12. AI 登记远端 MCP 后用户只需在能力中心配置一次 Key；重启后鉴权状态与远端工具刷新/调用仍可用，所有持久化与公开响应均不包含明文 Key。
 13. 5-20 名邀请用户完成核心旅程，无数据丢失或高危权限缺陷。
 14. 已知限制与恢复说明可在诊断中获得。
+15. 空态与正式对话的 Composer 在宽窗和窄窗下保持同构、无覆盖；`/plan <需求>`、`/goal <目标>`、裸模式命令、正式方案审批与任务清单生命周期均通过自动化和真实 Electron 验证。
 
 ## 9. 待确认问题
 

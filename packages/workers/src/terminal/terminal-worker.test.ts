@@ -217,6 +217,34 @@ describe('TerminalProcessWorker', () => {
     });
   });
 
+  it('accepts an absolute cwd when its real path stays inside the workspace', async () => {
+    const root = fixture();
+    const events = await collect(
+      new TerminalProcessWorker().exec(
+        {
+          workingDir: root,
+          action: {
+            command: process.execPath,
+            args: ['-e', 'process.stdout.write(process.cwd())'],
+            cwd: root,
+          },
+        },
+        {
+          token: 'terminal-absolute-cwd-token',
+          allowedRoot: root,
+          allowedCommands: [process.execPath],
+          timeoutMs: 5_000,
+          maxOutputBytes: 1_024,
+        },
+      ),
+    );
+
+    expect(events.at(-1)).toMatchObject({
+      type: 'completed',
+      output: { ok: true, exitCode: 0 },
+    });
+  });
+
   it('rejects a cwd whose directory link resolves outside the workspace', async () => {
     const root = fixture();
     const outside = fixture();

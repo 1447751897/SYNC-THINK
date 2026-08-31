@@ -14,10 +14,12 @@ import {
 import {
   openDatabaseAsync,
   runMigrations,
+  SqliteConversationStore,
   SqliteEventCheckpointStore,
   SqliteMessageStore,
+  SqliteWorkspaceStore,
 } from '@sync-think/storage';
-import type { Message, RunId, WorkspaceId } from '@sync-think/shared';
+import type { Message, ModelId, RunId, WorkspaceId } from '@sync-think/shared';
 import { Runtime } from '../src/runtime.js';
 
 const tempDirs: string[] = [];
@@ -186,6 +188,61 @@ async function createFixture(events: () => AdapterEvent[], tickMs: number = 1) {
   return { connection, installId, runtime, store, workspaceId };
 }
 
+async function createNativePlanningFixture(events: () => AdapterEvent[]) {
+  const dir = mkdtempSync(join(tmpdir(), 'sync-think-native-planning-'));
+  tempDirs.push(dir);
+  const dbPath = join(dir, 'sync-think.db');
+  const installId = `native-planning-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const workspaceId = `workspace-native-planning-${Date.now()}` as WorkspaceId;
+  await runMigrations(dbPath);
+  const connection = await openDatabaseAsync({ path: dbPath });
+  const store = new SqliteEventCheckpointStore(connection.raw);
+  const messageStore = new SqliteMessageStore(connection.raw);
+  const workspaceStore = new SqliteWorkspaceStore(connection.raw);
+  const conversationStore = new SqliteConversationStore(connection.raw);
+  workspaceStore.createWorkspace({
+    id: workspaceId,
+    name: 'Native planning fixture',
+    folderPath: dir,
+    allowedRoots: [dir],
+  });
+  const task = workspaceStore.createTask({
+    workspaceId,
+    title: 'Native planning fixture',
+    goal: 'Verify missing formal plan completion guard',
+  });
+  const conversation = conversationStore.create({
+    target: { track: 'model', modelId: 'fake-mini' as ModelId },
+    workspaceId,
+    title: 'Native planning fixture',
+    interactionMode: 'plan',
+  });
+  conversationStore.bindTask(conversation.id, task.taskId);
+  const runtime = new Runtime({
+    installId,
+    allowNoToken: true,
+    stateStore: store,
+    messageStore,
+    workspaceStore,
+    conversationStore,
+    workspaceId,
+    checkpointRunId: `runtime-${installId}` as RunId,
+    demoProvider: new ScriptedProvider(events),
+  });
+  await runtime.start();
+  return {
+    connection,
+    conversation,
+    conversationStore,
+    installId,
+    messageStore,
+    runtime,
+    store,
+    task,
+    workspaceId,
+  };
+}
+
 async function createPartialMessageFixture(terminal: 'failed' | 'cancelled') {
   const dir = mkdtempSync(join(tmpdir(), `sync-think-partial-${terminal}-`));
   tempDirs.push(dir);
@@ -249,6 +306,86 @@ function transientFrames(inbox: ReturnType<typeof createInbox>): ConversationTra
 }
 
 describe('conversation transient shadow stream', () => {
+  it('fails a native planning run that finishes without submitting a formal plan', async () => {
+    let round = 0;
+    const fixture = await createNativePlanningFixture(() => {
+      round += 1;
+      if (round === 1) {
+        return [
+          {
+            type: 'tool-call',
+            toolCall: {
+              id: 'native-plan-progress-only',
+              name: 'update_task_plan',
+              argumentsJson: JSON.stringify({
+                items: [{ title: '分析问题', status: 'completed' }],
+              }),
+            },
+          },
+          { type: 'finished', reason: 'tool-requests' },
+        ];
+      }
+      return [
+        {
+          type: 'assistant-message-delta',
+          phase: 'final_answer',
+          itemId: 'native-plan-prose-only',
+          text: '方案已经创建完成。',
+        },
+        { type: 'finished', reason: 'stop' },
+      ];
+    });
+    const socket = await connectRuntime(fixture.installId);
+    const inbox = createInbox(socket);
+    try {
+      await hello(inbox, fixture.installId, 'hello-native-planning');
+      const append = await inbox.send({
+        id: 'append-native-planning',
+        kind: 'request',
+        type: 'task.appendMessage',
+        payload: {
+          threadId: fixture.task.threadId,
+          expectedTaskVersion: 0,
+          role: 'user',
+          text: '给我一份实施方案',
+        },
+      });
+      expect(append.error).toBeUndefined();
+      const runId = String((append.payload as { streamId?: string }).streamId ?? '') as RunId;
+      expect(runId).not.toBe('');
+      expect(
+        await waitFor(() =>
+          fixture.store
+            .listEventsByRun(runId)
+            .some((event) => event.type === 'run.completed' || event.type === 'run.failed'),
+        ),
+      ).toBe(true);
+
+      const events = fixture.store.listEventsByRun(runId);
+      expect(events.filter((event) => event.type === 'conversation.plan_submitted')).toHaveLength(0);
+      expect(events.filter((event) => event.type === 'run.completed')).toHaveLength(0);
+      expect(events.filter((event) => event.type === 'run.failed')).toHaveLength(1);
+      expect(events.at(-1)).toMatchObject({
+        type: 'run.failed',
+        payload: {
+          failureClass: 'protocol',
+          errorMessage: '规划轮已结束，但没有提交正式方案。请重试 /plan。',
+          assistantText: '',
+        },
+      });
+      expect(fixture.conversationStore.getConversationPlan(fixture.conversation.id)).toBeUndefined();
+      expect(fixture.conversationStore.get(fixture.conversation.id)?.interactionMode).toBe('plan');
+      const assistant = fixture.messageStore
+        .listMessages(fixture.task.threadId as never)
+        .messages.find((message: Message) => message.role === 'assistant');
+      expect(assistant?.blocks).not.toContainEqual({ type: 'text', text: '方案已经创建完成。' });
+    } finally {
+      socket.destroy();
+      await fixture.runtime.stop();
+      fixture.connection.raw.close();
+    }
+  });
+
   it.each(['failed', 'cancelled'] as const)(
     'persists partial assistant text when a run is %s',
     async (terminal) => {

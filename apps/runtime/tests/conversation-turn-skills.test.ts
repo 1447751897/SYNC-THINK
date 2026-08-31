@@ -20,7 +20,7 @@ import {
   SqliteUnitOfWork,
   SqliteWorkspaceStore,
 } from '@sync-think/storage';
-import type { RunId, WorkspaceId } from '@sync-think/shared';
+import type { MessageId, RunId, WorkspaceId } from '@sync-think/shared';
 import { Runtime } from '../src/runtime.js';
 
 const tempDirs: string[] = [];
@@ -222,9 +222,7 @@ async function expectUnauthorizedSelectionRejected(options: {
     skillStore,
     capabilityStore,
     unitOfWork,
-    ...(options.provider
-      ? { demoProvider: new FallbackRecordingAdapter(() => undefined) }
-      : {}),
+    ...(options.provider ? { demoProvider: new FallbackRecordingAdapter(() => undefined) } : {}),
   });
   await runtime.start();
   const socket = await connectRuntime(installId);
@@ -258,9 +256,7 @@ async function expectUnauthorizedSelectionRejected(options: {
     expect(workspaceStore.getTask(task.taskId)?.version).toBe(0);
     expect(messageStore.listMessages(task.threadId).messages).toEqual([]);
     expect(
-      stateStore
-        ?.listEvents(workspaceId, 0)
-        .some((event) => event.type === 'message.appended'),
+      stateStore?.listEvents(workspaceId, 0).some((event) => event.type === 'message.appended'),
     ).not.toBe(true);
   } finally {
     socket.destroy();
@@ -395,6 +391,17 @@ describe('per-turn Skill selection', () => {
         },
       });
       expect(firstAppend.error).toBeUndefined();
+      const firstMessageId = (firstAppend.payload as { messageId: string }).messageId;
+      expect(messageStore.getMessage(firstMessageId as MessageId)?.blocks).toEqual([
+        {
+          type: 'text',
+          text: 'Resume me after restart',
+          payload: {
+            skillVersionIds: [skill.id],
+            skills: [{ skillVersionId: skill.id, name: skill.name }],
+          },
+        },
+      ]);
       const firstRunId = (firstAppend.payload as { streamId: string }).streamId;
       expect(await waitFor(() => firstBlocker.calls.length === 1)).toBe(true);
       first.socket.destroy();
@@ -634,7 +641,9 @@ describe('per-turn Skill selection', () => {
       }
 
       const firstTurnEvents = stateStore.listEvents(workspaceId, 0);
-      const contextEvents = firstTurnEvents.filter((event) => event.type === 'context.packet.built');
+      const contextEvents = firstTurnEvents.filter(
+        (event) => event.type === 'context.packet.built',
+      );
       expect(contextEvents.length).toBeGreaterThanOrEqual(2);
       for (const event of contextEvents) {
         expect(JSON.stringify(event.payload)).not.toContain('DENIED_SKILL_BODY');
@@ -684,9 +693,7 @@ describe('per-turn Skill selection', () => {
       expect(await waitFor(() => adapter.calls.length >= 8)).toBe(true);
       expect(String(adapter.calls[7]!.systemPrompt)).toContain('ALPHA_SKILL_BODY');
       expect(String(adapter.calls[7]!.systemPrompt)).not.toContain('BETA_SKILL_BODY');
-      expect(String(adapter.calls[7]!.systemPrompt)).toContain(
-        '### Skill: empty-guidance (1.0.0)',
-      );
+      expect(String(adapter.calls[7]!.systemPrompt)).toContain('### Skill: empty-guidance (1.0.0)');
 
       const prepEmptyBody = await inbox.send({
         id: 'prep-empty-body',

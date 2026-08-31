@@ -176,6 +176,41 @@ afterEach(() => {
 });
 
 describe('AbilitiesPage', () => {
+  it('opens the real Skill editor from a navigation request and replays only for a new key', async () => {
+    const { rerender } = render(
+      <AbilitiesPage
+        initialView="create-skill"
+        navigationKey="create-skill-1"
+        onGoToAgents={vi.fn()}
+      />,
+    );
+
+    const editor = await screen.findByRole('dialog', { name: '创建 Skill' });
+    expect(screen.getByTestId('skill-md-input')).toBeTruthy();
+    expect(screen.getByTestId('import-skill-submit')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '关闭 Skill 编辑' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '创建 Skill' })).toBeNull());
+
+    rerender(
+      <AbilitiesPage
+        initialView="create-skill"
+        navigationKey="create-skill-1"
+        onGoToAgents={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole('dialog', { name: '创建 Skill' })).toBeNull();
+
+    rerender(
+      <AbilitiesPage
+        initialView="create-skill"
+        navigationKey="create-skill-2"
+        onGoToAgents={vi.fn()}
+      />,
+    );
+    expect(await screen.findByRole('dialog', { name: '创建 Skill' })).toBeTruthy();
+    expect(editor.textContent).toContain('每次保存都会创建一个不可变的新版本');
+  });
+
   it('imports a complete local Skill folder and refreshes the catalog', async () => {
     const skill = {
       skillVersionId: 'sv-1',

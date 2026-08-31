@@ -5,10 +5,7 @@ import { CHAT_PLAN_TOOL_SCHEMAS } from '../../chat-tools.js';
 import type { KernelMcpServerDefinition, KernelMcpToolDefinition } from './define-server.js';
 
 function toTool(schema: (typeof CHAT_PLAN_TOOL_SCHEMAS)[number]): KernelMcpToolDefinition {
-  const planningDenied =
-    schema.name === 'TaskCreate' ||
-    schema.name === 'TaskUpdate' ||
-    schema.name === 'update_task_plan';
+  const planningDenied = schema.name === 'TaskCreate' || schema.name === 'TaskUpdate';
   return {
     name: schema.name,
     description: schema.description ?? schema.name,

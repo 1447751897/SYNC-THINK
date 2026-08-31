@@ -3,18 +3,7 @@
 // welcome empty state · settings modal.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
-import {
-  Bot,
-  Compass,
-  ImagePlus,
-  MessageSquare,
-  Puzzle,
-  SendHorizonal,
-  Sparkles,
-  Users,
-  Zap,
-  X,
-} from 'lucide-react';
+import { Bot, MessageSquare, Users, Zap, X } from 'lucide-react';
 import type {
   Conversation,
   ConversationTrack,
@@ -53,26 +42,35 @@ import { AgentLibrary } from './AgentLibrary.js';
 import { TaskPanel } from './TaskPanel.js';
 import { ActivityCenterPage } from './ActivityCenterPage.js';
 import { TeamLibrary } from './TeamLibrary.js';
-import { AbilitiesPage } from './AbilitiesPage.js';
+import { AbilitiesPage, type AbilityCenterInitialView } from './AbilitiesPage.js';
 import { BrowserStage } from './BrowserStage.js';
-import { SettingsPage } from './SettingsPage.js';
+import { SettingsPage, type ConnectionTab, type SettingsSection } from './SettingsPage.js';
+import type { ModelSettingsDetailView } from './ModelSettings.js';
 import { FirstLaunchGuide } from './FirstLaunchGuide.js';
 import {
   ComposeAtSettingsMenu,
+  ComposerActionSlot,
   ContextRing,
   estimateContextWindow,
+  IdentityPickerMenu,
   ModelPickerMenu,
   ModelTrigger,
   PermissionMenu,
+  PERMISSION_MODE_COLLAPSED_TOOLBAR_LEVEL,
   PERMISSION_OPTIONS,
   REASONING_LABELS,
+  SKILL_COLLAPSED_TOOLBAR_LEVEL,
+  useComposerToolbarCollapse,
   type KernelInstallState,
+  type IdentityOption,
   type PermissionMode,
   type ReasoningEffort,
 } from './compose-toolbar.js';
 import {
   addAttachment,
+  buildMessageWithAttachments,
   detectMentionQuery,
+  fileNameFromPath,
   isImageFile,
   messageImagesFromAttachments,
   readFileAsDataUrl,
@@ -85,8 +83,13 @@ import {
 import {
   detectSlashQuery,
   filterSlashCommands,
+  parseComposerModeKeywordHint,
   parseSlashCommand,
+  replaceSlashTokenWithCommand,
   stripSlashToken,
+  withComposerModeKeywordHint,
+  withComposerModeCommand,
+  withoutComposerModeCommand,
   type SlashCommand,
   type SlashQuery,
 } from './compose-slash.js';
@@ -96,14 +99,44 @@ import {
 } from './compose-skill-selection.js';
 import { compressImageDataUrl } from './image-compress.js';
 import { BrandLogoMark } from './BrandLogoMark.js';
+import { AgentAvatarView } from './AgentAvatarView.js';
 import { resolveKernelBrandLogo, resolveKernelDisplayName } from './brand-icons.js';
 import { TurnSkillControl } from './TurnSkillControl.js';
+import { ComposerEditor } from './ComposerEditor.js';
+import { ComposerMcpMenu } from './ComposerMcpMenu.js';
+import { ComposerModeBanner } from './ComposerModeBanner.js';
+import { ComposerActiveModePill, ComposerModeKeywordHint } from './ComposerModeControls.js';
+import {
+  ComposerSlashMenu,
+  resolveComposerSlashMenuKeyboardAction,
+  type ComposerSkillCategory,
+  type ComposerSlashMenuResolvedItem,
+} from './ComposerSlashMenu.js';
+import {
+  GoalRiskConfirmationDialog,
+  GoalSettingsDialog,
+  goalRequiresRiskConfirmation,
+  type GoalSettingsValues,
+} from './GoalSettingsDialog.js';
+import { NewMaxComposerFrame } from './NewMaxComposerFrame.js';
+import { ComposerAddControl } from './ComposerAddMenu.js';
+import { TipsCarousel } from './TipsCarousel.js';
+import { HomeScenarios } from './HomeScenarios.js';
+import {
+  parseComposerPlanActSetting,
+  resolveComposerModelSelection,
+  type ComposerPlanActSetting,
+} from './composer-plan-model.js';
 import { keepListboxOptionVisible } from './compose-picker-scroll.js';
 import { canCloseSettings } from './settings-unsaved.js';
 import { NewConversationDialog, type ModelOption } from './NewConversationDialog.js';
 import { useDialog, DialogProvider } from './Dialog.js';
 import { startRuntimeConnection } from '../runtime-connection.js';
-import { matchesShortcut, readShortcutPreferences } from './preferences-store.js';
+import {
+  matchesShortcut,
+  readAppearancePreferences,
+  readShortcutPreferences,
+} from './preferences-store.js';
 import {
   createConversationGroup,
   deleteConversationGroup,
@@ -241,6 +274,9 @@ interface DraftConversationSession {
 
 interface DraftFirstMessage {
   text: string;
+  helpMode?: boolean;
+  goalCondition?: string;
+  goalSettings?: GoalSettingsValues;
   images: MessageImage[];
   modelId?: string;
   kernelId: string;
@@ -395,6 +431,17 @@ function ShellAppInner() {
     useState<RuntimeConnectionNotice>(null);
   const [pickerTrack, setPickerTrack] = useState<ConversationTrack | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const navigationRequestSequenceRef = useRef(0);
+  const [settingsNavigation, setSettingsNavigation] = useState<{
+    initialSection?: SettingsSection;
+    initialModelDetail?: ModelSettingsDetailView;
+    initialConnectionTab?: ConnectionTab;
+    navigationKey: number;
+  }>(() => ({ navigationKey: 0 }));
+  const [abilityNavigation, setAbilityNavigation] = useState<{
+    initialView: AbilityCenterInitialView;
+    navigationKey: number;
+  }>();
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | undefined>(() =>
     readActiveWorkspaceId(),
   );
@@ -1628,9 +1675,35 @@ function ShellAppInner() {
       }
 
       const hasFirstTurn = Boolean(
-        firstMessage && (firstMessage.text.trim() || firstMessage.images.length > 0),
+        firstMessage &&
+        (firstMessage.goalSettings?.condition.trim() ||
+          firstMessage.goalCondition?.trim() ||
+          firstMessage.text.trim() ||
+          firstMessage.images.length > 0),
       );
-      if (firstMessage && hasFirstTurn) {
+      const firstGoalCondition =
+        firstMessage?.goalSettings?.condition.trim() || firstMessage?.goalCondition?.trim();
+      if (firstMessage && firstGoalCondition) {
+        await api.setGoal({
+          conversationId: created.conversation.id,
+          condition: firstGoalCondition,
+          ...(firstMessage.goalSettings
+            ? {
+                stopCondition: firstMessage.goalSettings.stopCondition,
+                maxGoalRounds: firstMessage.goalSettings.maxGoalRounds,
+                maxGoalTokens: firstMessage.goalSettings.maxGoalTokens,
+              }
+            : {}),
+          ...(initialModelId
+            ? {
+                modelId: initialModelId as Parameters<typeof api.setGoal>[0]['modelId'],
+              }
+            : {}),
+          kernelId: initialKernelId as Parameters<typeof api.setGoal>[0]['kernelId'],
+          reasoningEffort: firstMessage.reasoningEffort,
+          networkEnabled: firstMessage.networkEnabled,
+        });
+      } else if (firstMessage && hasFirstTurn) {
         const outboundText = firstMessage.text.trim()
           ? firstMessage.text
           : firstMessage.images.map((image) => `[图片] ${image.name || 'image'}`).join('\n');
@@ -1651,6 +1724,7 @@ function ShellAppInner() {
           kernelId: initialKernelId,
           reasoningEffort: firstMessage.reasoningEffort,
           networkEnabled: firstMessage.networkEnabled || undefined,
+          helpMode: firstMessage.helpMode === true ? true : undefined,
           skillVersionIds,
           images:
             firstMessage.images.length > 0
@@ -2512,13 +2586,53 @@ function ShellAppInner() {
     settingsOpen,
   ]);
 
-  const handleSelectStage = useCallback((stage: ShellStage) => {
-    if (stage === 'settings') {
-      setSettingsOpen(true);
-      return;
-    }
-    setNav((n) => selectStage(n, stage));
+  const nextNavigationRequestKey = useCallback(() => {
+    navigationRequestSequenceRef.current += 1;
+    return navigationRequestSequenceRef.current;
   }, []);
+
+  const handleOpenPlanSettings = useCallback(() => {
+    setSettingsNavigation({
+      initialSection: 'models',
+      initialModelDetail: 'plan-act',
+      navigationKey: nextNavigationRequestKey(),
+    });
+    setSettingsOpen(true);
+  }, [nextNavigationRequestKey]);
+
+  const handleOpenMcpSettings = useCallback(() => {
+    setSettingsNavigation({
+      initialSection: 'connection',
+      initialConnectionTab: 'mcp',
+      navigationKey: nextNavigationRequestKey(),
+    });
+    setSettingsOpen(true);
+  }, [nextNavigationRequestKey]);
+
+  const handleCreateSkill = useCallback(() => {
+    setSettingsOpen(false);
+    setAbilityNavigation({
+      initialView: 'create-skill',
+      navigationKey: nextNavigationRequestKey(),
+    });
+    setNav((current) => selectStage(current, 'abilities'));
+  }, [nextNavigationRequestKey]);
+
+  const handleSelectStage = useCallback(
+    (stage: ShellStage) => {
+      if (stage === 'settings') {
+        setSettingsNavigation({
+          initialSection: 'general',
+          navigationKey: nextNavigationRequestKey(),
+        });
+        setSettingsOpen(true);
+        return;
+      }
+      if (stage === 'abilities') setAbilityNavigation(undefined);
+      setNav((n) => selectStage(n, stage));
+    },
+    [nextNavigationRequestKey],
+  );
 
   const handleDraftModelChange = useCallback(
     (modelId: string) => {
@@ -2536,6 +2650,9 @@ function ShellAppInner() {
   const handleDraftSend = useCallback(
     async (options: {
       text: string;
+      helpMode?: boolean;
+      goalCondition?: string;
+      goalSettings?: GoalSettingsValues;
       images: MessageImage[];
       modelId: string;
       kernelId: string;
@@ -2546,7 +2663,10 @@ function ShellAppInner() {
       skillVersionIds: string[];
     }) => {
       const text = options.text.trim();
-      if ((!text && options.images.length === 0) || newConversationSending) return false;
+      const goalCondition = options.goalSettings?.condition.trim() || options.goalCondition?.trim();
+      if ((!text && !goalCondition && options.images.length === 0) || newConversationSending) {
+        return false;
+      }
       if (!activeWorkspaceId) {
         setNewConversationError('请先创建或打开一个工作区');
         return false;
@@ -2563,6 +2683,9 @@ function ShellAppInner() {
       if (!session) return false;
       const requested = {
         text,
+        ...(options.helpMode === true ? { helpMode: true } : {}),
+        ...(goalCondition ? { goalCondition } : {}),
+        ...(options.goalSettings ? { goalSettings: options.goalSettings } : {}),
         images: options.images,
         modelId: options.modelId || undefined,
         kernelId: options.kernelId || 'native',
@@ -2648,10 +2771,31 @@ function ShellAppInner() {
     [beginDraftConversation, data.models, newConversationModel, rememberTrack, setDraftSession],
   );
 
+  const handleDraftIdentityPick = useCallback(
+    (track: ConversationTrack, targetRef: string) => {
+      rememberTrack(track);
+      const resolvedTarget =
+        track === 'model'
+          ? targetRef || newConversationModel || data.models[0]?.modelId || ''
+          : targetRef;
+      const draft = beginDraftConversation(track, resolvedTarget);
+      if (draft) {
+        setDraftSession({
+          ...draft,
+          track,
+          targetRef: resolvedTarget || undefined,
+        });
+      }
+      setPickerTrack(null);
+    },
+    [beginDraftConversation, data.models, newConversationModel, rememberTrack, setDraftSession],
+  );
+
   const emptyTalk = (
     <EmptyTalk
       hasWorkspace={Boolean(activeWorkspaceId)}
       workspaceId={activeWorkspaceId}
+      workspaceFolder={activeProjectFolder}
       models={data.models}
       agents={data.agents}
       teams={data.teams}
@@ -2672,6 +2816,10 @@ function ShellAppInner() {
         /* user uses topbar */
       }}
       onPickTrack={handleDraftTrackPick}
+      onPickIdentity={handleDraftIdentityPick}
+      onOpenPlanSettings={handleOpenPlanSettings}
+      onOpenMcpSettings={handleOpenMcpSettings}
+      onCreateSkill={handleCreateSkill}
     />
   );
 
@@ -3124,6 +3272,9 @@ function ShellAppInner() {
                                     handleOpenFileInSplit(pane.id, path, location)
                                   }
                                   onOpenReview={(view) => handleOpenReviewInSplit(pane.id, view)}
+                                  onOpenPlanSettings={handleOpenPlanSettings}
+                                  onOpenMcpSettings={handleOpenMcpSettings}
+                                  onCreateSkill={handleCreateSkill}
                                 />
                               ) : conversation ? (
                                 <button
@@ -3312,6 +3463,8 @@ function ShellAppInner() {
             <AbilitiesPage
               activeWorkspaceId={activeWorkspaceId}
               workspaces={data.workspaces}
+              initialView={abilityNavigation?.initialView}
+              navigationKey={abilityNavigation?.navigationKey}
               onCatalogChanged={() => {
                 setSkillCatalogRevision((revision) => revision + 1);
                 void refresh();
@@ -3357,20 +3510,49 @@ function ShellAppInner() {
         <SettingsModal
           onClose={() => setSettingsOpen(false)}
           onCatalogChanged={() => void refresh()}
+          initialSection={settingsNavigation.initialSection}
+          initialModelDetail={settingsNavigation.initialModelDetail}
+          initialConnectionTab={settingsNavigation.initialConnectionTab}
+          navigationKey={settingsNavigation.navigationKey}
         />
       </Dialog.Root>
     </div>
   );
 }
 
+interface EmptyComposerSpeechRecognitionResult {
+  readonly length: number;
+  readonly [index: number]: { transcript: string };
+}
+
+interface EmptyComposerSpeechRecognitionEvent {
+  readonly results: ArrayLike<EmptyComposerSpeechRecognitionResult>;
+}
+
+interface EmptyComposerSpeechRecognition {
+  lang: string;
+  continuous: boolean;
+  interimResults: boolean;
+  onresult: ((event: EmptyComposerSpeechRecognitionEvent) => void) | null;
+  onerror: ((event: { error: string }) => void) | null;
+  onend: (() => void) | null;
+  start(): void;
+  stop(): void;
+  abort(): void;
+}
+
+type EmptyComposerSpeechRecognitionConstructor = new () => EmptyComposerSpeechRecognition;
+
 export function EmptyTalk(props: {
   hasWorkspace: boolean;
   workspaceId?: string;
+  workspaceFolder?: string;
   models: readonly ModelOption[];
   agents: readonly GlobalAgent[];
   teams: readonly Team[];
   draft: string;
   selectedModelId: string;
+  draftConversationId?: string;
   /** Track/target carried from "new chat" while still a welcome draft. */
   draftTrack?: ConversationTrack;
   draftTargetRef?: string;
@@ -3380,6 +3562,9 @@ export function EmptyTalk(props: {
   onModelChange(modelId: string): void;
   onSend(options: {
     text: string;
+    helpMode?: boolean;
+    goalCondition?: string;
+    goalSettings?: GoalSettingsValues;
     images: MessageImage[];
     modelId: string;
     kernelId: string;
@@ -3391,18 +3576,18 @@ export function EmptyTalk(props: {
   }): Promise<boolean>;
   onOpenWorkspaceMenu(): void;
   onPickTrack(track: ConversationTrack): void;
+  onPickIdentity?(track: ConversationTrack, targetRef: string): void;
+  onOpenPlanSettings?(): void;
+  onOpenMcpSettings?(): void;
+  onCreateSkill?(): void;
 }) {
-  const chips: Array<{
-    track: ConversationTrack;
-    icon: typeof Sparkles;
-    label: string;
-    desc: string;
-  }> = [
-    { track: 'model', icon: Sparkles, label: '跟模型聊', desc: '使用下方当前模型直接开始' },
-    { track: 'agent', icon: Bot, label: '智能体', desc: '先选择一个智能体' },
-    { track: 'team', icon: Users, label: '小队', desc: '先选择一个小队' },
-  ];
   const [networkEnabled, setNetworkEnabled] = useState(true);
+  const [appearance, setAppearance] = useState(() => readAppearancePreferences());
+  useEffect(() => {
+    const syncAppearance = () => setAppearance(readAppearancePreferences());
+    window.addEventListener('shell-preferences-applied', syncAppearance);
+    return () => window.removeEventListener('shell-preferences-applied', syncAppearance);
+  }, []);
   const [userName, setUserName] = useState(() => readUserName());
   // Settings writes the name to localStorage; this event keeps the greeting
   // live without needing a restart or a shared store.
@@ -3412,11 +3597,35 @@ export function EmptyTalk(props: {
     return () => window.removeEventListener('shell-user-name-changed', sync);
   }, []);
   const greeting = buildGreeting(new Date().getHours(), userName);
+  useEffect(() => {
+    let cancelled = false;
+    const api = bridge();
+    if (!api?.getSettings) return;
+    void api
+      .getSettings({ keys: ['plan-act'] })
+      .then((response) => {
+        if (cancelled) return;
+        setPlanActSetting(parseComposerPlanActSetting(response.settings?.['plan-act']));
+      })
+      .catch(() => setPlanActSetting(null));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(() =>
     readDefaultPermission(),
   );
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>('auto');
   const [interactionMode, setInteractionMode] = useState<'plan' | 'execute'>('execute');
+  const [dismissedModeHintText, setDismissedModeHintText] = useState<string | null>(null);
+  const [goalSettingsOpen, setGoalSettingsOpen] = useState(false);
+  const [goalSettingsSubmitting, setGoalSettingsSubmitting] = useState(false);
+  const [pendingRiskGoal, setPendingRiskGoal] = useState<string | null>(null);
+  const [riskGoalSubmitting, setRiskGoalSubmitting] = useState(false);
+  const riskGoalSubmissionRef = useRef(false);
+  const [mcpMenuOpen, setMcpMenuOpen] = useState(false);
+  const [composerAddOpen, setComposerAddOpen] = useState(false);
+  const [planActSetting, setPlanActSetting] = useState<ComposerPlanActSetting | null>(null);
   const [kernelOverride, setKernelOverride] = useState(() => readNewConversationKernel());
   const [kernelRegistry, setKernelRegistry] = useState<KernelDetectionResult[] | null>(null);
   const [kernelInstallStates, setKernelInstallStates] = useState<
@@ -3427,24 +3636,117 @@ export function EmptyTalk(props: {
   const [composeNotice, setComposeNotice] = useState<string | undefined>();
   const [atQuery, setAtQuery] = useState<MentionQuery | null>(null);
   const [slash, setSlash] = useState<SlashQuery | null>(null);
-  const [slashIndex, setSlashIndex] = useState(0);
+  const [slashIndex, setSlashIndex] = useState(-1);
+  const [slashCategory, setSlashCategory] = useState<ComposerSkillCategory>('all');
+  const [availableSlashCategories, setAvailableSlashCategories] = useState<
+    readonly ComposerSkillCategory[]
+  >(['all']);
+  const [resolvedSlashItems, setResolvedSlashItems] = useState<
+    readonly ComposerSlashMenuResolvedItem[]
+  >([]);
   const [slashSkills, setSlashSkills] = useState<SkillVersionSummary[]>([]);
   const [slashSkillsLoading, setSlashSkillsLoading] = useState(false);
+  const [slashSkillsResolved, setSlashSkillsResolved] = useState(false);
   const [permissionMenuOpen, setPermissionMenuOpen] = useState(false);
   const [skillMenuOpen, setSkillMenuOpen] = useState(false);
+  const [identityMenuOpen, setIdentityMenuOpen] = useState(false);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const [voiceInputActive, setVoiceInputActive] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const composeRef = useRef<HTMLDivElement>(null);
   const slashListRef = useRef<HTMLDivElement>(null);
+  const dismissedSlashTextRef = useRef<string | null>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const networkSettingRef = useRef<HTMLDivElement>(null);
   const permissionButtonRef = useRef<HTMLButtonElement>(null);
+  const identityButtonRef = useRef<HTMLButtonElement>(null);
   const modelButtonRef = useRef<HTMLButtonElement>(null);
   const kernelInstallPromisesRef = useRef(new Map<string, Promise<void>>());
   const kernelDetectionGenerationRef = useRef(0);
   const kernelInstallMountedRef = useRef(true);
+  const speechRecognitionRef = useRef<EmptyComposerSpeechRecognition | null>(null);
+  const draftValueRef = useRef(props.draft);
+  draftValueRef.current = props.draft;
+  const composerToolbar = useComposerToolbarCollapse({
+    permissionMenuOpen,
+    onPermissionMenuOpenChange: setPermissionMenuOpen,
+  });
+  const updateResolvedSlashItems = useCallback(
+    (items: readonly ComposerSlashMenuResolvedItem[]) => {
+      setResolvedSlashItems((current) => {
+        const unchanged =
+          current.length === items.length &&
+          current.every((item, index) => {
+            const next = items[index];
+            if (!next || item.kind !== next.kind) return false;
+            return item.kind === 'command'
+              ? next.kind === 'command' && item.command === next.command
+              : next.kind === 'skill' && item.skill === next.skill;
+          });
+        return unchanged ? current : items;
+      });
+    },
+    [],
+  );
   const selectedModel =
     props.models.find((model) => model.modelId === props.selectedModelId) ?? props.models[0];
+  const parsedComposerMode = parseSlashCommand(props.draft);
+  const helpCommandPreview =
+    parsedComposerMode.kind === 'help' || parsedComposerMode.kind === 'help-with-request';
+  const planCommandPreview =
+    parsedComposerMode.kind === 'plan' || parsedComposerMode.kind === 'plan-with-request';
+  const goalCommandPreview =
+    parsedComposerMode.kind === 'goal' || parsedComposerMode.kind === 'goal-with-condition';
+  const composerMode: 'plan' | 'goal' | null = goalCommandPreview
+    ? 'goal'
+    : planCommandPreview || interactionMode === 'plan'
+      ? 'plan'
+      : null;
+  const modelLabel = (modelId: string | null | undefined) =>
+    props.models.find((model) => model.modelId === modelId)?.displayName ??
+    modelId ??
+    selectedModel?.displayName ??
+    '选择模型';
+  const planBannerModelLabel =
+    planActSetting?.enabled && planActSetting.planModelId
+      ? modelLabel(planActSetting.planModelId)
+      : modelLabel(selectedModel?.modelId);
+  const actBannerModelLabel =
+    planActSetting?.enabled && planActSetting.actModelId
+      ? modelLabel(planActSetting.actModelId)
+      : modelLabel(selectedModel?.modelId);
+  const composerModelSelection = resolveComposerModelSelection({
+    planMode: composerMode === 'plan',
+    setting: planActSetting,
+    currentModelId: selectedModel?.modelId ?? '',
+    currentReasoningEffort: reasoningEffort,
+  });
+  const composerModel =
+    props.models.find((model) => model.modelId === composerModelSelection.modelId) ?? selectedModel;
+  const updatePlanActSetting = (next: ComposerPlanActSetting) => {
+    const previous = planActSetting;
+    setPlanActSetting(next);
+    const api = bridge();
+    if (!api?.setSetting) return;
+    void api.setSetting({ key: 'plan-act', value: next }).catch(() => setPlanActSetting(previous));
+  };
   const draftTrack = props.draftTrack ?? 'model';
+  const identityAgent =
+    draftTrack === 'agent'
+      ? props.agents.find((agent) => String(agent.id) === String(props.draftTargetRef ?? ''))
+      : undefined;
+  const identityTeam =
+    draftTrack === 'team'
+      ? props.teams.find((team) => String(team.id) === String(props.draftTargetRef ?? ''))
+      : undefined;
+  const identityLabel =
+    draftTrack === 'agent'
+      ? (identityAgent?.name ?? '选择智能体')
+      : draftTrack === 'team'
+        ? (identityTeam?.name ?? '选择小队')
+        : '直接跟模型聊';
+  const identityAvatar = draftTrack === 'agent' ? identityAgent : identityTeam;
+  const IdentityIcon = draftTrack === 'agent' ? Bot : draftTrack === 'team' ? Users : MessageSquare;
   const activeKernel = kernelRegistry?.find((kernel) => kernel.kernelId === kernelOverride) ?? null;
   const skillOwner = useMemo(
     () =>
@@ -3480,6 +3782,71 @@ export function EmptyTalk(props: {
       kernelInstallMountedRef.current = false;
     };
   }, []);
+
+  useEffect(
+    () => () => {
+      speechRecognitionRef.current?.abort();
+      speechRecognitionRef.current = null;
+    },
+    [],
+  );
+
+  const toggleVoiceInput = useCallback(() => {
+    const activeRecognition = speechRecognitionRef.current;
+    if (activeRecognition) {
+      activeRecognition.stop();
+      return;
+    }
+
+    const browserWindow = window as typeof window & {
+      SpeechRecognition?: EmptyComposerSpeechRecognitionConstructor;
+      webkitSpeechRecognition?: EmptyComposerSpeechRecognitionConstructor;
+    };
+    const Recognition = browserWindow.SpeechRecognition ?? browserWindow.webkitSpeechRecognition;
+    if (!Recognition) {
+      setVoiceInputActive(false);
+      setComposeNotice('当前系统未提供语音识别服务。');
+      return;
+    }
+
+    const recognition = new Recognition();
+    const prefix = draftValueRef.current.trimEnd();
+    recognition.lang = navigator.language || 'zh-CN';
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.onresult = (event) => {
+      let transcript = '';
+      for (let index = 0; index < event.results.length; index += 1) {
+        transcript += event.results[index]?.[0]?.transcript ?? '';
+      }
+      props.onDraftChange(`${prefix}${prefix && transcript ? ' ' : ''}${transcript}`);
+      setComposeNotice(undefined);
+      window.requestAnimationFrame(() => inputRef.current?.focus());
+    };
+    recognition.onerror = ({ error }) => {
+      if (error === 'aborted' || error === 'no-speech') return;
+      setComposeNotice(`语音输入失败：${error}`);
+    };
+    recognition.onend = () => {
+      if (speechRecognitionRef.current === recognition) {
+        speechRecognitionRef.current = null;
+      }
+      setVoiceInputActive(false);
+    };
+    speechRecognitionRef.current = recognition;
+    try {
+      recognition.start();
+      setVoiceInputActive(true);
+      setComposeNotice(undefined);
+      inputRef.current?.focus();
+    } catch (error) {
+      speechRecognitionRef.current = null;
+      setVoiceInputActive(false);
+      setComposeNotice(
+        `语音输入启动失败：${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }, [props.onDraftChange]);
 
   const detectKernels = useCallback(async (): Promise<KernelDetectionResult[] | null> => {
     const api = bridge();
@@ -3563,7 +3930,9 @@ export function EmptyTalk(props: {
     if (!slash) return [];
     const query = slash.query.trim().toLocaleLowerCase();
     return slashSkills.filter((skill) => {
-      if (!skill.enabled || selectedSkillVersionIds.includes(skill.skillVersionId)) return false;
+      if (skill.enabled === false || selectedSkillVersionIds.includes(skill.skillVersionId)) {
+        return false;
+      }
       if (!query) return true;
       return [skill.name, skill.description, skill.skillId, skill.version]
         .join('\n')
@@ -3571,8 +3940,33 @@ export function EmptyTalk(props: {
         .includes(query);
     });
   }, [selectedSkillVersionIds, slash, slashSkills]);
-  const slashItemCount = slashCommands.length + filteredSlashSkills.length;
+  const slashCandidateItemCount = slashCommands.length + filteredSlashSkills.length;
+  const slashItemCount = resolvedSlashItems.length;
   const slashOpen = slash !== null;
+  const slashMenuOpen = Boolean(
+    slash &&
+    (!slash.query.trim() ||
+      slashCandidateItemCount > 0 ||
+      slashSkillsLoading ||
+      !slashSkillsResolved),
+  );
+  const detectedModeKeywordHint = parseComposerModeKeywordHint(props.draft);
+  const modeKeywordHint =
+    detectedModeKeywordHint &&
+    dismissedModeHintText !== props.draft &&
+    !helpCommandPreview &&
+    !composerMode &&
+    !atQuery &&
+    !slashMenuOpen &&
+    !mcpMenuOpen &&
+    !composerAddOpen &&
+    !permissionMenuOpen &&
+    !skillMenuOpen &&
+    !identityMenuOpen &&
+    !modelMenuOpen &&
+    !props.sending
+      ? detectedModeKeywordHint
+      : null;
   const selectedSlashSkills = useMemo(
     () =>
       selectedSkillVersionIds
@@ -3585,9 +3979,17 @@ export function EmptyTalk(props: {
   const shouldLoadSlashSkills = slashOpen || selectedSkillVersionIds.length > 0;
 
   useEffect(() => {
-    if (!shouldLoadSlashSkills) return;
+    if (!shouldLoadSlashSkills) {
+      setSlashSkillsLoading(false);
+      setSlashSkillsResolved(false);
+      return;
+    }
     const api = bridge();
-    if (!api?.listSkills) return;
+    if (!api?.listSkills) {
+      setSlashSkillsLoading(false);
+      setSlashSkillsResolved(true);
+      return;
+    }
     let cancelled = false;
     setSlashSkillsLoading(true);
     void api
@@ -3599,7 +4001,10 @@ export function EmptyTalk(props: {
         if (!cancelled) setSlashSkills([]);
       })
       .finally(() => {
-        if (!cancelled) setSlashSkillsLoading(false);
+        if (!cancelled) {
+          setSlashSkillsLoading(false);
+          setSlashSkillsResolved(true);
+        }
       });
     return () => {
       cancelled = true;
@@ -3607,44 +4012,132 @@ export function EmptyTalk(props: {
   }, [props.workspaceId, shouldLoadSlashSkills]);
 
   useLayoutEffect(() => {
-    if (!slashOpen) return;
+    if (!slashMenuOpen) return;
     keepListboxOptionVisible(slashListRef.current, slashIndex);
-  }, [slashIndex, slashItemCount, slashOpen]);
+  }, [slashIndex, slashItemCount, slashMenuOpen]);
 
   const updatePickersFromCaret = useCallback((text: string, caret: number) => {
+    if (dismissedSlashTextRef.current === text) {
+      setAtQuery(null);
+      setSlash(null);
+      setSlashIndex(-1);
+      return;
+    }
+    dismissedSlashTextRef.current = null;
     const mention = detectMentionQuery(text, caret);
     if (mention) {
       setAtQuery(mention);
       setSlash(null);
-      setSlashIndex(0);
+      setSlashIndex(-1);
       return;
     }
     setAtQuery(null);
     const nextSlash = detectSlashQuery(text, caret);
     setSlash(nextSlash);
-    if (!nextSlash) setSlashIndex(0);
+    setSlashIndex(nextSlash ? 0 : -1);
   }, []);
 
   const selectSlashCommand = useCallback(
     (command: SlashCommand) => {
       if (!slash) return;
-      const next =
-        props.draft.slice(0, slash.slashIndex) +
-        `${command.command} ` +
-        props.draft.slice(slash.caret);
-      props.onDraftChange(next);
+      if (slash.slashIndex !== 0 && props.draft.slice(0, slash.slashIndex).trim().length > 0) {
+        dismissedSlashTextRef.current = props.draft;
+        setSlash(null);
+        setSlashIndex(-1);
+        setComposeNotice('斜杠命令只能出现在输入开头');
+        window.requestAnimationFrame(() => inputRef.current?.focus());
+        return;
+      }
+      if (command.kind === 'action' || command.kind === 'panel') {
+        const stripped = stripSlashToken(props.draft, slash);
+        props.onDraftChange(stripped.text);
+        setSlash(null);
+        setSlashIndex(-1);
+        if (command.id === 'compact') {
+          setComposeNotice('新对话还没有可压缩的上下文');
+        } else if (command.id === 'mcp') {
+          setComposeNotice(undefined);
+          setMcpMenuOpen(true);
+        }
+        window.requestAnimationFrame(() => {
+          inputRef.current?.focus();
+          inputRef.current?.setSelectionRange(stripped.caret, stripped.caret);
+        });
+        return;
+      }
+      const replacement = replaceSlashTokenWithCommand(props.draft, slash, command.command);
+      if (command.id === 'goal') setInteractionMode('execute');
+      props.onDraftChange(replacement.text);
+      setComposeNotice(undefined);
       setSlash(null);
-      setSlashIndex(0);
+      setSlashIndex(-1);
       window.requestAnimationFrame(() => {
         inputRef.current?.focus();
-        inputRef.current?.setSelectionRange(
-          slash.slashIndex + command.command.length + 1,
-          slash.slashIndex + command.command.length + 1,
-        );
+        inputRef.current?.setSelectionRange(replacement.caret, replacement.caret);
       });
     },
     [props, slash],
   );
+
+  const toggleDraftMode = useCallback(
+    (mode: 'plan' | 'goal') => {
+      const parsed = parseSlashCommand(props.draft);
+      const active =
+        mode === 'plan'
+          ? parsed.kind === 'plan' || parsed.kind === 'plan-with-request'
+          : parsed.kind === 'goal' || parsed.kind === 'goal-with-condition';
+      const next = active
+        ? withoutComposerModeCommand(props.draft, mode)
+        : withComposerModeCommand(props.draft, mode);
+      if (mode === 'goal' || (mode === 'plan' && active)) setInteractionMode('execute');
+      props.onDraftChange(next);
+      setSlash(null);
+      setSlashIndex(-1);
+      window.requestAnimationFrame(() => {
+        inputRef.current?.focus();
+        inputRef.current?.setSelectionRange(next.length, next.length);
+      });
+    },
+    [props],
+  );
+
+  const acceptModeKeywordHint = useCallback(() => {
+    const next = withComposerModeKeywordHint(props.draft);
+    if (next === props.draft) return;
+    setDismissedModeHintText(null);
+    props.onDraftChange(next);
+    setAtQuery(null);
+    setSlash(null);
+    setSlashIndex(-1);
+    setMcpMenuOpen(false);
+    setComposerAddOpen(false);
+    setPermissionMenuOpen(false);
+    setSkillMenuOpen(false);
+    setIdentityMenuOpen(false);
+    setModelMenuOpen(false);
+    window.requestAnimationFrame(() => {
+      inputRef.current?.focus();
+      inputRef.current?.setSelectionRange(next.length, next.length);
+    });
+  }, [props.draft, props.onDraftChange]);
+
+  useEffect(() => {
+    const matchesDraft = (event: globalThis.Event) =>
+      String((event as CustomEvent<{ conversationId?: string }>).detail?.conversationId ?? '') ===
+      String(props.draftConversationId ?? '');
+    const togglePlan = (event: globalThis.Event) => {
+      if (matchesDraft(event)) toggleDraftMode('plan');
+    };
+    const toggleGoal = (event: globalThis.Event) => {
+      if (matchesDraft(event)) toggleDraftMode('goal');
+    };
+    window.addEventListener('shell-toggle-plan-mode', togglePlan);
+    window.addEventListener('shell-toggle-goal-mode', toggleGoal);
+    return () => {
+      window.removeEventListener('shell-toggle-plan-mode', togglePlan);
+      window.removeEventListener('shell-toggle-goal-mode', toggleGoal);
+    };
+  }, [props.draftConversationId, toggleDraftMode]);
 
   const selectSlashSkill = useCallback(
     (skill: SkillVersionSummary) => {
@@ -3655,7 +4148,7 @@ export function EmptyTalk(props: {
         resolveAppendSkillVersionIds(draftTrack, [...current, skill.skillVersionId]),
       );
       setSlash(null);
-      setSlashIndex(0);
+      setSlashIndex(-1);
       window.requestAnimationFrame(() => {
         inputRef.current?.focus();
         inputRef.current?.setSelectionRange(stripped.caret, stripped.caret);
@@ -3752,12 +4245,19 @@ export function EmptyTalk(props: {
 
   const submit = async () => {
     const parsed = parseSlashCommand(props.draft);
-    if (parsed.kind === 'plan') {
-      setInteractionMode('plan');
-      props.onDraftChange('');
+    if (parsed.kind === 'help') {
+      props.onDraftChange('/help ');
       setSlash(null);
       setComposeNotice(undefined);
-      window.requestAnimationFrame(() => inputRef.current?.focus());
+      window.requestAnimationFrame(() => {
+        inputRef.current?.focus();
+        inputRef.current?.setSelectionRange(6, 6);
+      });
+      return false;
+    }
+    if (parsed.kind === 'plan') {
+      toggleDraftMode('plan');
+      setComposeNotice(undefined);
       return false;
     }
     if (parsed.kind === 'execute') {
@@ -3772,12 +4272,35 @@ export function EmptyTalk(props: {
       setComposeNotice('新对话还没有可压缩的上下文');
       return false;
     }
-    if (
-      parsed.kind === 'goal' ||
-      parsed.kind === 'goal-with-condition' ||
-      parsed.kind === 'goal-clear'
-    ) {
-      setComposeNotice('先发送第一条消息，再为对话设置目标');
+    if (parsed.kind === 'mcp') {
+      props.onDraftChange('');
+      setSlash(null);
+      setSlashIndex(-1);
+      setComposeNotice(undefined);
+      setMcpMenuOpen(true);
+      window.requestAnimationFrame(() => inputRef.current?.focus());
+      return false;
+    }
+    if (parsed.kind === 'goal') {
+      toggleDraftMode('goal');
+      setComposeNotice(undefined);
+      return false;
+    }
+    if (parsed.kind === 'goal-clear') {
+      setComposeNotice('新对话还没有可清除的目标');
+      return false;
+    }
+    if (parsed.kind === 'goal-with-condition' && parsed.condition.length > 4000) {
+      setComposeNotice('目标条件过长（最多 4000 字符）');
+      return false;
+    }
+    if (parsed.kind === 'goal-with-condition' && goalRequiresRiskConfirmation(parsed.condition)) {
+      setPendingRiskGoal(parsed.condition);
+      setSlash(null);
+      setSlashIndex(-1);
+      setComposerAddOpen(false);
+      setMcpMenuOpen(false);
+      inputRef.current?.blur();
       return false;
     }
     if (parsed.kind === 'unknown') {
@@ -3785,17 +4308,28 @@ export function EmptyTalk(props: {
       return false;
     }
 
-    const text = parsed.kind === 'plan-with-request' ? parsed.request : props.draft;
+    const draftText =
+      parsed.kind === 'plan-with-request'
+        ? parsed.request
+        : parsed.kind === 'help-with-request'
+          ? parsed.request
+          : props.draft;
+    const text = buildMessageWithAttachments(draftText, attachments);
     const modeForTurn = parsed.kind === 'plan-with-request' ? 'plan' : interactionMode;
     const skillVersionIds = resolveAppendSkillVersionIds(draftTrack, selectedSkillVersionIds);
     const sent = await props.onSend({
       text,
+      ...(parsed.kind === 'help-with-request' ? { helpMode: true } : {}),
+      ...(parsed.kind === 'goal-with-condition' ? { goalCondition: parsed.condition } : {}),
       images: messageImagesFromAttachments(attachments),
-      modelId: selectedModel?.modelId ?? '',
+      // Keep the payload aligned with the model shown by the composer. When
+      // Plan is active, this is the configured planning model rather than the
+      // ordinary chat model.
+      modelId: composerModelSelection.modelId || selectedModel?.modelId || '',
       kernelId: kernelOverride,
       interactionMode: modeForTurn,
       permissionMode,
-      reasoningEffort,
+      reasoningEffort: composerModelSelection.reasoningEffort,
       networkEnabled,
       skillVersionIds,
     });
@@ -3804,6 +4338,61 @@ export function EmptyTalk(props: {
       setComposeNotice(undefined);
     }
     return sent;
+  };
+
+  const confirmRiskGoal = async () => {
+    if (!pendingRiskGoal || riskGoalSubmissionRef.current) return;
+    riskGoalSubmissionRef.current = true;
+    setRiskGoalSubmitting(true);
+    try {
+      const skillVersionIds = resolveAppendSkillVersionIds(draftTrack, selectedSkillVersionIds);
+      const sent = await props.onSend({
+        text: buildMessageWithAttachments(props.draft, attachments),
+        goalCondition: pendingRiskGoal,
+        images: messageImagesFromAttachments(attachments),
+        modelId: composerModelSelection.modelId || selectedModel?.modelId || '',
+        kernelId: kernelOverride,
+        interactionMode,
+        permissionMode,
+        reasoningEffort: composerModelSelection.reasoningEffort,
+        networkEnabled,
+        skillVersionIds,
+      });
+      if (!sent) return;
+      setPendingRiskGoal(null);
+      setAttachments([]);
+      setComposeNotice(undefined);
+    } finally {
+      riskGoalSubmissionRef.current = false;
+      setRiskGoalSubmitting(false);
+    }
+  };
+
+  const submitGoalSettings = async (values: GoalSettingsValues) => {
+    if (goalSettingsSubmitting) return;
+    setGoalSettingsSubmitting(true);
+    try {
+      const skillVersionIds = resolveAppendSkillVersionIds(draftTrack, selectedSkillVersionIds);
+      const sent = await props.onSend({
+        text: values.condition,
+        goalSettings: values,
+        images: [],
+        modelId: composerModelSelection.modelId || selectedModel?.modelId || '',
+        kernelId: kernelOverride,
+        interactionMode: 'execute',
+        permissionMode,
+        reasoningEffort: composerModelSelection.reasoningEffort,
+        networkEnabled,
+        skillVersionIds,
+      });
+      if (!sent) return;
+      setInteractionMode('execute');
+      setGoalSettingsOpen(false);
+      setAttachments([]);
+      setComposeNotice(undefined);
+    } finally {
+      setGoalSettingsSubmitting(false);
+    }
   };
 
   const changeNetworkSetting = (enabled: boolean) => {
@@ -3825,225 +4414,191 @@ export function EmptyTalk(props: {
     window.requestAnimationFrame(() => inputRef.current?.focus());
   };
 
+  const emptyModeBanner =
+    composerMode === 'plan' ? (
+      <ComposerModeBanner
+        mode="plan"
+        planModelLabel={planBannerModelLabel}
+        actModelLabel={actBannerModelLabel}
+        onOpenPlanSettings={() => props.onOpenPlanSettings?.()}
+      />
+    ) : composerMode === 'goal' ? (
+      <ComposerModeBanner
+        mode="goal"
+        pendingCondition={
+          parsedComposerMode.kind === 'goal-with-condition'
+            ? parsedComposerMode.condition
+            : undefined
+        }
+        onConfigureGoal={() => setGoalSettingsOpen(true)}
+        onClearGoal={() => toggleDraftMode('goal')}
+      />
+    ) : undefined;
+
   return (
-    <div className="shell-chat-column flex min-h-0 flex-1 flex-col bg-chat">
-      <div className="shell-welcome flex min-h-0 flex-1 flex-col items-center justify-center gap-6 px-8">
-        <div className="flex flex-col items-center gap-1.5">
-          <h2
-            data-testid="welcome-greeting"
-            className="shell-welcome-title m-0 text-[26px] font-semibold tracking-tight text-text"
-          >
-            {props.hasWorkspace ? greeting : '先打开一个工作区'}
-          </h2>
-          <p className="shell-welcome-subtitle m-0 text-[13px] text-text-faint">
-            {props.hasWorkspace ? '今天想做什么？' : '在顶栏打开文件夹或新建工作区后即可对话'}
-          </p>
-        </div>
+    <div
+      className={`shell-chat-column flex min-h-0 flex-1 flex-col bg-chat ${
+        props.hasWorkspace ? 'shell-chat-column--empty-newmax justify-center' : ''
+      }`.trim()}
+    >
+      {props.hasWorkspace ? <TipsCarousel /> : null}
+      <div
+        className={`shell-welcome flex min-h-0 flex-col items-center justify-center px-8 ${
+          props.hasWorkspace ? 'shell-welcome--newmax shrink-0' : 'flex-1 gap-6'
+        }`.trim()}
+      >
+        <h1
+          data-testid="welcome-greeting"
+          className="shell-welcome-title m-0 text-center font-medium text-text"
+        >
+          {props.hasWorkspace ? greeting : '先打开一个工作区'}
+        </h1>
 
-        <FirstLaunchGuide
-          hasWorkspace={props.hasWorkspace}
-          onOpenWorkspaceMenu={props.onOpenWorkspaceMenu}
-          onPickTrack={props.onPickTrack}
-        />
-
-        {props.hasWorkspace ? (
-          <div className="flex flex-wrap justify-center gap-2">
-            {chips.map((chip, i) => {
-              const Icon = chip.icon;
-              return (
-                <button
-                  key={chip.track}
-                  type="button"
-                  data-testid={`welcome-track-${chip.track}`}
-                  title={chip.desc}
-                  className="shell-chip flex cursor-pointer items-center gap-1.5 rounded-full border border-border bg-surface px-3 py-1.5 text-[12.5px] text-text-secondary"
-                  style={{ animationDelay: `${0.12 + i * 0.06}s` }}
-                  onClick={() => props.onPickTrack(chip.track)}
-                >
-                  <Icon size={13} className="text-accent" />
-                  {chip.label}
-                </button>
-              );
-            })}
-          </div>
-        ) : (
-          <p className="m-0 text-[12px] text-text-faint">
-            使用顶栏 <span className="font-medium text-text-secondary">+</span> 或工作区菜单创建
-          </p>
-        )}
+        {!props.hasWorkspace ? (
+          <>
+            <p className="shell-welcome-subtitle m-0 text-[13px] text-text-faint">
+              在顶栏打开文件夹或新建工作区后即可对话
+            </p>
+            <FirstLaunchGuide
+              hasWorkspace={false}
+              onOpenWorkspaceMenu={props.onOpenWorkspaceMenu}
+              onPickTrack={props.onPickTrack}
+            />
+            <p className="m-0 text-[12px] text-text-faint">
+              使用顶栏 <span className="font-medium text-text-secondary">+</span> 或工作区菜单创建
+            </p>
+          </>
+        ) : null}
       </div>
 
       {props.hasWorkspace ? (
         <div
-          className="shell-chat-content-wrap shrink-0 pb-4 pt-2"
+          className="shell-chat-content-wrap shell-empty-newmax-composer-wrap shrink-0"
           data-testid="empty-compose-wrap"
         >
-          <div className="shell-chat-content mx-auto">
-            <div
-              className={`shell-compose relative ${dragOver ? 'is-dragover' : ''}`}
+          <div className="shell-chat-content shell-chat-content--composer mx-auto">
+            <NewMaxComposerFrame
+              variant="empty"
+              modeBanner={emptyModeBanner}
+              innerRef={composeRef}
+              className={`relative ${dragOver ? 'is-dragover' : ''}`}
               data-testid="empty-compose"
+              data-layout="tall"
               onDragEnter={handleDragEnter}
               onDragOver={handleDragOver}
               onDragLeave={handleDragLeave}
               onDrop={handleDrop}
             >
-              {slash ? (
-                <div
-                  ref={slashListRef}
-                  className="shell-mention-pop shell-slash-pop shell-empty-slash-pop"
-                  data-testid="empty-compose-slash-pop"
-                  role="listbox"
-                  aria-label="斜杠命令"
-                >
-                  <div className="shell-slash-pop__section">命令</div>
-                  {slashCommands.length === 0 ? (
-                    <div className="shell-mention-pop__empty">无匹配命令</div>
-                  ) : (
-                    slashCommands.map((command, index) => (
-                      <button
-                        key={command.id}
-                        type="button"
-                        role="option"
-                        aria-selected={index === slashIndex}
-                        className={`shell-mention-pop__item shell-slash-pop__item ${
-                          index === slashIndex ? 'is-active' : ''
-                        }`}
-                        onMouseEnter={() => setSlashIndex(index)}
-                        onMouseDown={(event) => {
-                          event.preventDefault();
-                          selectSlashCommand(command);
-                        }}
-                      >
-                        <span className="shell-slash-pop__cmd">{command.command}</span>
-                        <span className="shell-slash-pop__meta">
-                          <span className="shell-slash-pop__label">{command.label}</span>
-                          <span className="shell-slash-pop__desc">{command.description}</span>
-                        </span>
-                      </button>
-                    ))
-                  )}
-                  <div className="shell-slash-pop__section">Skill</div>
-                  {slashSkillsLoading ? (
-                    <div className="shell-mention-pop__empty">正在读取已启用 Skill…</div>
-                  ) : filteredSlashSkills.length === 0 ? (
-                    <div className="shell-mention-pop__empty">没有匹配的已启用 Skill</div>
-                  ) : (
-                    filteredSlashSkills.map((skill, skillIndex) => {
-                      const index = slashCommands.length + skillIndex;
-                      return (
-                        <button
-                          key={skill.skillVersionId}
-                          type="button"
-                          role="option"
-                          aria-selected={index === slashIndex}
-                          className={`shell-mention-pop__item shell-slash-pop__item ${
-                            index === slashIndex ? 'is-active' : ''
-                          }`}
-                          onMouseEnter={() => setSlashIndex(index)}
-                          onMouseDown={(event) => {
-                            event.preventDefault();
-                            selectSlashSkill(skill);
-                          }}
-                        >
-                          <span className="shell-slash-pop__cmd">/{skill.name}</span>
-                          <span className="shell-slash-pop__meta">
-                            <span className="shell-slash-pop__label">{skill.name}</span>
-                            <span className="shell-slash-pop__desc">
-                              {skill.description || `v${skill.version}`}
-                            </span>
-                          </span>
-                          <span className="shell-slash-pop__badge">Skill</span>
-                        </button>
-                      );
-                    })
-                  )}
-                </div>
+              {modeKeywordHint ? (
+                <ComposerModeKeywordHint
+                  kind={modeKeywordHint.kind}
+                  onAccept={acceptModeKeywordHint}
+                  onDismiss={() => setDismissedModeHintText(props.draft)}
+                />
               ) : null}
+              <ComposerSlashMenu
+                open={slashMenuOpen}
+                skills={slashSkills}
+                loading={slashSkillsLoading}
+                query={slash?.query ?? ''}
+                selectedSkillVersionIds={selectedSkillVersionIds}
+                activeIndex={slashIndex}
+                onActiveIndexChange={setSlashIndex}
+                category={slashCategory}
+                onCategoryChange={setSlashCategory}
+                onAvailableCategoriesChange={setAvailableSlashCategories}
+                onResolvedItemsChange={updateResolvedSlashItems}
+                onCommand={selectSlashCommand}
+                onSkill={selectSlashSkill}
+                onCreateSkill={() => {
+                  setSlash(null);
+                  setSlashIndex(-1);
+                  props.onCreateSkill?.();
+                }}
+                placement="above"
+                testId="empty-compose-slash-pop"
+                className="shell-empty-slash-pop"
+                listRef={slashListRef}
+              />
+              <ComposerMcpMenu
+                open={mcpMenuOpen}
+                onDismiss={() => {
+                  setMcpMenuOpen(false);
+                  window.requestAnimationFrame(() => inputRef.current?.focus());
+                }}
+                onOpenSettings={() => props.onOpenMcpSettings?.()}
+                className="shell-empty-mcp-menu"
+              />
 
-              {attachments.length > 0 ? (
-                <div className="shell-compose__chips" data-testid="empty-compose-attachments">
-                  {attachments.map((image) => (
-                    <div
-                      key={image.path}
-                      className="shell-attach-chip"
-                      data-kind="image"
-                      title={image.name}
-                    >
-                      {image.previewUrl ? (
-                        <span className="shell-attach-chip__thumb" aria-hidden="true">
-                          <img src={image.previewUrl} alt="" />
-                        </span>
-                      ) : null}
-                      <span className="shell-attach-chip__name">{image.name}</span>
-                      <button
-                        type="button"
-                        className="shell-attach-chip__remove"
-                        aria-label={`移除图片 ${image.name}`}
-                        onClick={() =>
-                          setAttachments((current) => removeAttachment(current, image.path))
-                        }
-                      >
-                        <X size={12} />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              ) : null}
-              {selectedSlashSkills.length > 0 ? (
-                <div
-                  className="shell-compose__selected-skills"
-                  data-testid="empty-compose-selected-skills"
-                >
-                  {selectedSlashSkills.map((skill) => (
-                    <span
-                      key={skill.skillVersionId}
-                      className="shell-compose__selected-skill"
-                      title={`${skill.name} · v${skill.version}`}
-                    >
-                      <Puzzle size={13} aria-hidden="true" />
-                      <span>{skill.name}</span>
-                    </span>
-                  ))}
-                </div>
-              ) : null}
-              <textarea
-                ref={inputRef}
-                data-testid="empty-compose-input"
-                className="shell-compose__input"
+              <ComposerEditor
                 placeholder="输入消息…（输入 / 打开快捷面板）"
                 value={props.draft}
-                onChange={(event) => {
-                  props.onDraftChange(event.target.value);
+                inputElementRef={inputRef}
+                inputTestId="empty-compose-input"
+                testId="empty-composer-editor"
+                attachments={attachments}
+                selectedSkills={selectedSlashSkills}
+                disabled={props.sending}
+                minHeight={72}
+                maxHeight={200}
+                chatFontSize={appearance.chatFontSize}
+                serifFontFamily={appearance.useSerifFont ? 'var(--font-serif)' : 'var(--font-sans)'}
+                onRemoveAttachment={(path) =>
+                  setAttachments((current) => removeAttachment(current, path))
+                }
+                onRemoveSkill={(skillVersionId) =>
+                  updateSelectedSkillVersionIds(
+                    selectedSkillVersionIds.filter((selected) => selected !== skillVersionId),
+                  )
+                }
+                onChange={(value) => {
+                  props.onDraftChange(value);
                   setComposeNotice(undefined);
-                  updatePickersFromCaret(
-                    event.target.value,
-                    event.target.selectionStart ?? event.target.value.length,
-                  );
+                  if (composerAddOpen) {
+                    setAtQuery(null);
+                    setSlash(null);
+                    setSlashIndex(-1);
+                  }
                 }}
                 onKeyDown={(event) => {
-                  if (event.key === 'Escape' && slash) {
+                  if (event.key === 'Tab' && event.shiftKey && modeKeywordHint) {
                     event.preventDefault();
+                    acceptModeKeywordHint();
+                    return;
+                  }
+                  if (event.key === 'Escape' && slashMenuOpen) {
+                    event.preventDefault();
+                    dismissedSlashTextRef.current = props.draft;
                     setSlash(null);
-                    setSlashIndex(0);
+                    setSlashIndex(-1);
                     return;
                   }
-                  if (slash && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
-                    event.preventDefault();
-                    setSlashIndex((index) => {
-                      if (slashItemCount === 0) return 0;
-                      return event.key === 'ArrowDown'
-                        ? (index + 1) % slashItemCount
-                        : (index - 1 + slashItemCount) % slashItemCount;
+                  if (slashMenuOpen) {
+                    const action = resolveComposerSlashMenuKeyboardAction({
+                      key: event.key,
+                      shiftKey: event.shiftKey,
+                      isComposing:
+                        event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229,
+                      category: slashCategory,
+                      activeIndex: slashIndex,
+                      itemCount: slashItemCount,
+                      availableCategories: availableSlashCategories,
                     });
-                    return;
-                  }
-                  if (slash && (event.key === 'Enter' || event.key === 'Tab')) {
-                    const selectedCommand = slashCommands[slashIndex];
-                    const selectedSkill = filteredSlashSkills[slashIndex - slashCommands.length];
-                    if (selectedCommand || selectedSkill) {
+                    if (action) {
                       event.preventDefault();
-                      if (selectedCommand) selectSlashCommand(selectedCommand);
-                      else if (selectedSkill) selectSlashSkill(selectedSkill);
+                      if (action.kind === 'change-category') {
+                        setSlashCategory(action.category);
+                        // Category changes select the first visible item so
+                        // Enter remains useful immediately, including when
+                        // the dynamic category list only contains `all`.
+                        setSlashIndex(0);
+                      } else if (action.kind === 'change-active-index') {
+                        setSlashIndex(action.index);
+                      } else {
+                        const selected = resolvedSlashItems[action.index];
+                        if (selected?.kind === 'command') selectSlashCommand(selected.command);
+                        else if (selected?.kind === 'skill') selectSlashSkill(selected.skill);
+                      }
                       return;
                     }
                   }
@@ -4063,26 +4618,13 @@ export function EmptyTalk(props: {
                       return;
                     }
                   }
-                  if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
-                    event.preventDefault();
-                    void submit();
-                  }
                 }}
+                onSubmit={() => void submit()}
                 onPaste={handlePaste}
-                onClick={(event) =>
-                  updatePickersFromCaret(
-                    event.currentTarget.value,
-                    event.currentTarget.selectionStart ?? 0,
-                  )
-                }
-                onSelect={(event) =>
-                  updatePickersFromCaret(
-                    event.currentTarget.value,
-                    event.currentTarget.selectionStart ?? 0,
-                  )
-                }
-                rows={1}
-                disabled={props.sending}
+                onSelectionChange={({ start }) => {
+                  if (composerAddOpen) return;
+                  updatePickersFromCaret(inputRef.current?.value ?? props.draft, start);
+                }}
               />
               <input
                 ref={imageInputRef}
@@ -4102,20 +4644,87 @@ export function EmptyTalk(props: {
                 onClose={() => setAtQuery(null)}
                 onDismiss={dismissNetworkSetting}
                 onChange={changeNetworkSetting}
+                onUpload={() => imageInputRef.current?.click()}
               />
-              <div className="shell-compose__bar">
-                <div className="shell-compose__bar-left">
-                  <button
-                    type="button"
-                    className="shell-compose__icon-tool"
-                    aria-label="添加图片"
-                    title="添加图片"
-                    onClick={() => imageInputRef.current?.click()}
-                    disabled={props.sending || attachments.length >= 8}
+              <div ref={composerToolbar.outerRef} className="shell-compose__bar">
+                <div ref={composerToolbar.leftRef} className="shell-compose__bar-left">
+                  <ComposerAddControl
+                    variant="empty"
+                    open={composerAddOpen}
+                    inputRef={inputRef}
+                    composerRef={composeRef}
+                    value={props.draft}
+                    onValueChange={props.onDraftChange}
+                    onOpenChange={setComposerAddOpen}
+                    onBeforeOpen={() => {
+                      setSlash(null);
+                      setSlashIndex(-1);
+                      setAtQuery(null);
+                      setMcpMenuOpen(false);
+                      setPermissionMenuOpen(false);
+                      setSkillMenuOpen(false);
+                      setIdentityMenuOpen(false);
+                      setModelMenuOpen(false);
+                    }}
+                    workspaceFolder={props.workspaceFolder}
+                    selectedFilePaths={attachments
+                      .filter((attachment) => attachment.kind !== 'image')
+                      .map((attachment) => attachment.path)}
+                    networkEnabled={networkEnabled}
+                    permissionMode={permissionMode}
+                    showPermissionItems={
+                      composerToolbar.collapseLevel >= PERMISSION_MODE_COLLAPSED_TOOLBAR_LEVEL
+                    }
+                    disabled={props.sending}
+                    attachDisabled={
+                      attachments.filter((attachment) => attachment.kind === 'image').length >= 8
+                    }
+                    onAttach={() => imageInputRef.current?.click()}
+                    onPlan={() => toggleDraftMode('plan')}
+                    onGoal={() => toggleDraftMode('goal')}
+                    onNetworkChange={setNetworkEnabled}
+                    onPermissionChange={setPermissionMode}
+                    onFile={(file) =>
+                      setAttachments((current) =>
+                        current.some((attachment) => attachment.path === file.path)
+                          ? removeAttachment(current, file.path)
+                          : addAttachment(current, {
+                              path: file.path,
+                              name: file.name || fileNameFromPath(file.path),
+                              kind: file.kind,
+                            }),
+                      )
+                    }
+                    triggerTestId="empty-compose-add-trigger"
+                    menuTestId="empty-compose-add-menu"
+                  />
+                  {helpCommandPreview ? (
+                    <ComposerActiveModePill
+                      mode="help"
+                      onClick={() => {
+                        const next = props.draft.replace(/^\s*\/help(?:\s+|$)/i, '');
+                        props.onDraftChange(next);
+                        window.requestAnimationFrame(() => {
+                          inputRef.current?.focus();
+                          inputRef.current?.setSelectionRange(next.length, next.length);
+                        });
+                      }}
+                    />
+                  ) : null}
+                  {planCommandPreview || interactionMode === 'plan' ? (
+                    <ComposerActiveModePill mode="plan" onClick={() => toggleDraftMode('plan')} />
+                  ) : null}
+                  {goalCommandPreview ? (
+                    <ComposerActiveModePill mode="goal" onClick={() => toggleDraftMode('goal')} />
+                  ) : null}
+                  <div
+                    ref={composerToolbar.permissionRef}
+                    className="shell-compose__tool-wrap"
+                    data-testid="empty-compose-permission-control"
+                    hidden={
+                      composerToolbar.collapseLevel >= PERMISSION_MODE_COLLAPSED_TOOLBAR_LEVEL
+                    }
                   >
-                    <ImagePlus size={15} />
-                  </button>
-                  <div className="shell-compose__tool-wrap">
                     <button
                       ref={permissionButtonRef}
                       type="button"
@@ -4124,7 +4733,11 @@ export function EmptyTalk(props: {
                         permissionMenuOpen || permissionMode === 'full-access' ? '1' : '0'
                       }
                       title={`权限：${PERMISSION_OPTIONS.find((option) => option.value === permissionMode)?.title ?? '完全访问'}`}
-                      onClick={() => setPermissionMenuOpen((value) => !value)}
+                      onClick={() => {
+                        setIdentityMenuOpen(false);
+                        setModelMenuOpen(false);
+                        setPermissionMenuOpen((value) => !value);
+                      }}
                     >
                       <Zap size={15} />
                       <span className="shell-compose__tool-label">
@@ -4140,46 +4753,155 @@ export function EmptyTalk(props: {
                       onChange={setPermissionMode}
                     />
                   </div>
-                  <TurnSkillControl
-                    owner={skillOwner}
-                    workspaceId={props.workspaceId}
-                    open={skillMenuOpen}
-                    selectedSkillVersionIds={selectedSkillVersionIds}
-                    onOpenChange={setSkillMenuOpen}
-                    onChange={updateSelectedSkillVersionIds}
-                  />
-                  {interactionMode === 'plan' ? (
-                    <button
-                      type="button"
-                      className="shell-compose__tool shell-compose__mode-badge"
-                      data-mode="plan"
-                      data-testid="empty-compose-mode"
-                      title="规划模式 · 点击切换到执行模式"
-                      onClick={() => setInteractionMode('execute')}
-                    >
-                      <Compass size={14} aria-hidden="true" />
-                      <span className="shell-compose__tool-label">规划</span>
-                    </button>
-                  ) : null}
+                  <div
+                    className="shell-compose__tool-wrap"
+                    data-testid="empty-compose-skill-control"
+                    hidden={composerToolbar.collapseLevel >= SKILL_COLLAPSED_TOOLBAR_LEVEL}
+                  >
+                    <TurnSkillControl
+                      owner={skillOwner}
+                      workspaceId={props.workspaceId}
+                      open={skillMenuOpen}
+                      selectedSkillVersionIds={selectedSkillVersionIds}
+                      onOpenChange={(open) => {
+                        if (open) {
+                          setPermissionMenuOpen(false);
+                          setIdentityMenuOpen(false);
+                          setModelMenuOpen(false);
+                        }
+                        setSkillMenuOpen(open);
+                      }}
+                      onChange={updateSelectedSkillVersionIds}
+                    />
+                  </div>
                 </div>
-                <div className="shell-compose__bar-right">
+                <div ref={composerToolbar.rightRef} className="shell-compose__bar-right">
+                  <div className="shell-compose__tool-wrap">
+                    <button
+                      ref={identityButtonRef}
+                      type="button"
+                      className="shell-compose__tool"
+                      data-active={draftTrack !== 'model' ? '1' : '0'}
+                      data-open={identityMenuOpen ? '1' : '0'}
+                      aria-haspopup="menu"
+                      aria-expanded={identityMenuOpen}
+                      data-testid="empty-compose-identity"
+                      title={`对话对象：${identityLabel}`}
+                      onClick={() => {
+                        setPermissionMenuOpen(false);
+                        setSkillMenuOpen(false);
+                        setModelMenuOpen(false);
+                        setIdentityMenuOpen((open) => !open);
+                      }}
+                    >
+                      {identityAvatar?.avatar?.trim() ? (
+                        <AgentAvatarView
+                          name={identityAvatar.name}
+                          avatar={identityAvatar.avatar}
+                          size={18}
+                        />
+                      ) : (
+                        <IdentityIcon size={15} />
+                      )}
+                      <span className="shell-compose__tool-label">{identityLabel}</span>
+                    </button>
+                    <IdentityPickerMenu
+                      open={identityMenuOpen}
+                      agents={props.agents.map((agent) => ({
+                        id: String(agent.id),
+                        name: agent.name,
+                        description: agent.description,
+                        avatar: agent.avatar,
+                      }))}
+                      teams={props.teams.map((team) => ({
+                        id: String(team.id),
+                        name: team.name,
+                        description: team.mission,
+                        avatar: team.avatar,
+                      }))}
+                      currentTrack={draftTrack}
+                      currentTargetRef={String(props.draftTargetRef ?? '')}
+                      anchorEl={identityButtonRef.current}
+                      onClose={() => setIdentityMenuOpen(false)}
+                      onPick={(option: IdentityOption) => {
+                        const targetRef =
+                          option.track === 'model'
+                            ? (selectedModel?.modelId ?? '')
+                            : option.targetRef;
+                        if (props.onPickIdentity) {
+                          props.onPickIdentity(option.track, targetRef);
+                        } else {
+                          props.onPickTrack(option.track);
+                        }
+                      }}
+                    />
+                  </div>
                   <ContextRing
                     used={Math.round(props.draft.length / 4)}
                     limit={
-                      (typeof selectedModel?.contextWindow === 'number' &&
-                      selectedModel.contextWindow > 0
-                        ? selectedModel.contextWindow
+                      (typeof composerModel?.contextWindow === 'number' &&
+                      composerModel.contextWindow > 0
+                        ? composerModel.contextWindow
                         : undefined) ||
-                      estimateContextWindow(selectedModel?.displayName || selectedModel?.modelId)
+                      estimateContextWindow(composerModel?.displayName || composerModel?.modelId)
                     }
                   />
                   <div className="shell-compose__tool-wrap">
-                    <ModelTrigger
-                      label={selectedModel?.displayName ?? '选择模型'}
-                      reasoningLabel={REASONING_LABELS[reasoningEffort]}
+                    <ModelPickerMenu
                       open={modelMenuOpen}
-                      buttonRef={modelButtonRef}
-                      onClick={() => setModelMenuOpen((value) => !value)}
+                      models={props.models}
+                      selectedModelId={composerModelSelection.modelId}
+                      defaultLabel="选择模型"
+                      reasoningEffort={composerModelSelection.reasoningEffort}
+                      kernels={kernelRegistry ?? undefined}
+                      selectedKernelId={kernelOverride}
+                      kernelInstallStates={kernelInstallStates}
+                      anchorEl={modelButtonRef.current}
+                      trigger={
+                        <ModelTrigger
+                          label={
+                            selectedModel?.displayName ?? selectedModel?.modelId ?? '选择模型'
+                          }
+                          reasoningLabel={REASONING_LABELS[reasoningEffort]}
+                          mode={composerMode ?? 'execute'}
+                          planLabel={
+                            composerModel?.displayName ??
+                            composerModelSelection.modelId ??
+                            '选择模型'
+                          }
+                          planReasoningLabel={
+                            REASONING_LABELS[composerModelSelection.reasoningEffort]
+                          }
+                          open={modelMenuOpen}
+                          buttonRef={modelButtonRef}
+                          onClick={() => {
+                            setPermissionMenuOpen(false);
+                            setSkillMenuOpen(false);
+                            setIdentityMenuOpen(false);
+                            setModelMenuOpen((value) => !value);
+                          }}
+                        />
+                      }
+                      onClose={() => setModelMenuOpen(false)}
+                      onInstallKernel={(kernelId) => void installKernel(kernelId)}
+                      onPickKernel={(kernelId) => {
+                        setKernelOverride(kernelId);
+                        writeNewConversationKernel(kernelId);
+                      }}
+                      onPick={(modelId) => {
+                        if (composerModelSelection.routed && planActSetting) {
+                          updatePlanActSetting({ ...planActSetting, planModelId: modelId });
+                          return;
+                        }
+                        props.onModelChange(modelId);
+                      }}
+                      onReasoningChange={(value) => {
+                        if (composerModelSelection.routed && planActSetting) {
+                          updatePlanActSetting({ ...planActSetting, planReasoningEffort: value });
+                          return;
+                        }
+                        setReasoningEffort(value);
+                      }}
                     />
                     {kernelOverride !== 'native'
                       ? (() => {
@@ -4196,41 +4918,22 @@ export function EmptyTalk(props: {
                               data-testid="empty-compose-kernel-chip"
                               title={`内核：${label}`}
                             >
-                              {logo ? <BrandLogoMark logo={logo} size={14} /> : label}
+                              {logo ? <BrandLogoMark logo={logo} size={18} /> : label}
                             </span>
                           );
                         })()
                       : null}
-                    <ModelPickerMenu
-                      open={modelMenuOpen}
-                      models={props.models}
-                      selectedModelId={selectedModel?.modelId ?? ''}
-                      defaultLabel="选择模型"
-                      reasoningEffort={reasoningEffort}
-                      kernels={kernelRegistry ?? undefined}
-                      selectedKernelId={kernelOverride}
-                      kernelInstallStates={kernelInstallStates}
-                      anchorEl={modelButtonRef.current}
-                      onClose={() => setModelMenuOpen(false)}
-                      onInstallKernel={(kernelId) => void installKernel(kernelId)}
-                      onPickKernel={(kernelId) => {
-                        setKernelOverride(kernelId);
-                        writeNewConversationKernel(kernelId);
-                      }}
-                      onPick={props.onModelChange}
-                      onReasoningChange={setReasoningEffort}
-                    />
                   </div>
-                  <button
-                    type="button"
-                    className="shell-compose__send"
-                    onClick={() => void submit()}
-                    disabled={(!props.draft.trim() && attachments.length === 0) || props.sending}
-                    title="发送 (Enter)"
-                    data-testid="empty-compose-send"
-                  >
-                    <SendHorizonal size={15} />
-                  </button>
+                  <ComposerActionSlot
+                    testIdPrefix="empty-compose"
+                    hasContent={Boolean(props.draft.trim() || attachments.length > 0)}
+                    running={false}
+                    voiceActive={voiceInputActive}
+                    disabled={props.sending}
+                    onVoice={toggleVoiceInput}
+                    onSend={() => void submit()}
+                    onStop={() => undefined}
+                  />
                 </div>
               </div>
               {props.error || composeNotice ? (
@@ -4238,10 +4941,48 @@ export function EmptyTalk(props: {
                   {props.error ?? composeNotice}
                 </div>
               ) : null}
-            </div>
+            </NewMaxComposerFrame>
           </div>
         </div>
       ) : null}
+      {props.hasWorkspace ? (
+        <HomeScenarios
+          onSelectTemplate={(prompt) => {
+            setComposerAddOpen(false);
+            setSlash(null);
+            setSlashIndex(-1);
+            setAtQuery(null);
+            setMcpMenuOpen(false);
+            props.onDraftChange(prompt);
+            window.requestAnimationFrame(() => {
+              const input = inputRef.current;
+              if (!input) return;
+              input.focus();
+              input.setSelectionRange(prompt.length, prompt.length);
+            });
+          }}
+        />
+      ) : null}
+      <GoalSettingsDialog
+        open={goalSettingsOpen}
+        initialValues={{
+          condition:
+            parsedComposerMode.kind === 'goal-with-condition' ? parsedComposerMode.condition : '',
+        }}
+        submitting={goalSettingsSubmitting}
+        onOpenChange={setGoalSettingsOpen}
+        onSubmit={submitGoalSettings}
+      />
+      <GoalRiskConfirmationDialog
+        open={pendingRiskGoal !== null}
+        submitting={riskGoalSubmitting}
+        onOpenChange={(open) => {
+          if (open || riskGoalSubmitting) return;
+          setPendingRiskGoal(null);
+          window.requestAnimationFrame(() => inputRef.current?.focus());
+        }}
+        onContinue={() => void confirmRiskGoal()}
+      />
     </div>
   );
 }
@@ -4257,9 +4998,17 @@ function StagePlaceholder({ stage }: { stage: ShellNavState['stage'] }) {
 function SettingsModal({
   onClose,
   onCatalogChanged,
+  initialSection,
+  initialModelDetail,
+  initialConnectionTab,
+  navigationKey,
 }: {
   onClose(): void;
   onCatalogChanged(): void;
+  initialSection?: SettingsSection;
+  initialModelDetail?: ModelSettingsDetailView;
+  initialConnectionTab?: ConnectionTab;
+  navigationKey?: string | number;
 }) {
   const [dirty, setDirty] = useState(false);
   const [dragOffset, setDragOffset] = useState<{ dx: number; dy: number } | null>(null);
@@ -4426,6 +5175,10 @@ function SettingsModal({
             <X size={17} aria-hidden="true" />
           </button>
           <SettingsPage
+            initialSection={initialSection}
+            initialModelDetail={initialModelDetail}
+            initialConnectionTab={initialConnectionTab}
+            navigationKey={navigationKey}
             onDone={forceClose}
             onCatalogChanged={onCatalogChanged}
             onDirtyChange={setDirty}

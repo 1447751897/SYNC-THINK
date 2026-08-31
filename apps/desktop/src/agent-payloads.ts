@@ -46,7 +46,8 @@ export function parseUpdateAgentBindingPayload(value: unknown): UpdateAgentBindi
   }
   let skillVersionIds: string[] | undefined;
   if (value.skillVersionIds !== undefined) {
-    if (!Array.isArray(value.skillVersionIds)) throw new Error('Invalid update-agent-binding payload');
+    if (!Array.isArray(value.skillVersionIds))
+      throw new Error('Invalid update-agent-binding payload');
     skillVersionIds = [];
     for (const id of value.skillVersionIds) {
       if (typeof id !== 'string' || id.trim().length === 0) {
@@ -136,11 +137,7 @@ export function parseImportRemoteSkillPayload(value: unknown): ImportRemoteSkill
   } catch {
     throw new Error('Invalid import-remote-skill payload: URL required');
   }
-  if (
-    (url.protocol !== 'http:' && url.protocol !== 'https:') ||
-    url.username ||
-    url.password
-  ) {
+  if ((url.protocol !== 'http:' && url.protocol !== 'https:') || url.username || url.password) {
     throw new Error('Invalid import-remote-skill payload: only http(s) URLs are supported');
   }
   for (const key of ['originRef', 'skillId'] as const) {
@@ -197,9 +194,7 @@ export function parseListSkillsPayload(value: unknown): ListSkillsPayload {
   }
   return {
     limit: value.limit as number | undefined,
-    ...(typeof value.workspaceId === 'string'
-      ? { workspaceId: value.workspaceId.trim() }
-      : {}),
+    ...(typeof value.workspaceId === 'string' ? { workspaceId: value.workspaceId.trim() } : {}),
     skillVersionIds,
   };
 }
@@ -240,7 +235,9 @@ export function parseGetSkillPayload(value: unknown): GetSkillPayload {
   return { skillVersionId: value.skillVersionId.trim() };
 }
 
-export function parseRegisterMcpServerPayload(value: unknown): import('@sync-think/protocol').RegisterMcpServerPayload {
+export function parseRegisterMcpServerPayload(
+  value: unknown,
+): import('@sync-think/protocol').RegisterMcpServerPayload {
   if (!value || typeof value !== 'object') throw new Error('Invalid register-mcp payload');
   const rec = value as Record<string, unknown>;
   if (typeof rec.name !== 'string' || rec.name.trim().length === 0) {
@@ -273,11 +270,13 @@ export function parseRegisterMcpServerPayload(value: unknown): import('@sync-thi
     for (const t of rec.tools) {
       if (!t || typeof t !== 'object') throw new Error('Invalid register-mcp payload');
       const tool = t as Record<string, unknown>;
-      if (typeof tool.name !== 'string' || !tool.name.trim()) throw new Error('Invalid register-mcp payload');
+      if (typeof tool.name !== 'string' || !tool.name.trim())
+        throw new Error('Invalid register-mcp payload');
       tools.push({
         name: tool.name.trim(),
         description: typeof tool.description === 'string' ? tool.description : '',
-        inputSchemaJson: typeof tool.inputSchemaJson === 'string' ? tool.inputSchemaJson : undefined,
+        inputSchemaJson:
+          typeof tool.inputSchemaJson === 'string' ? tool.inputSchemaJson : undefined,
       });
     }
   }
@@ -321,8 +320,12 @@ export function parseRegisterRemoteMcpPayload(value: unknown): RegisterRemoteMcp
       throw new Error('Invalid register-remote-mcp payload');
     }
   }
-  if (value.authScheme !== undefined &&
-      (typeof value.authScheme !== 'string' || !value.authScheme.trim() || value.authScheme.length > 64)) {
+  if (
+    value.authScheme !== undefined &&
+    (typeof value.authScheme !== 'string' ||
+      !value.authScheme.trim() ||
+      value.authScheme.length > 64)
+  ) {
     throw new Error('Invalid register-remote-mcp payload');
   }
   if (value.discoverTools !== undefined && typeof value.discoverTools !== 'boolean') {
@@ -334,19 +337,29 @@ export function parseRegisterRemoteMcpPayload(value: unknown): RegisterRemoteMcp
       : typeof value.apiKey === 'string' && value.apiKey.trim()
         ? value.apiKey.trim()
         : undefined;
-  if (value.key !== undefined && value.apiKey !== undefined &&
-      typeof value.key === 'string' && typeof value.apiKey === 'string' &&
-      value.key.trim() && value.apiKey.trim() && value.key.trim() !== value.apiKey.trim()) {
+  if (
+    value.key !== undefined &&
+    value.apiKey !== undefined &&
+    typeof value.key === 'string' &&
+    typeof value.apiKey === 'string' &&
+    value.key.trim() &&
+    value.apiKey.trim() &&
+    value.key.trim() !== value.apiKey.trim()
+  ) {
     throw new Error('Invalid register-remote-mcp payload');
   }
   return {
     name: value.name.trim(),
     endpoint: endpoint.toString(),
     ...(key ? { key } : {}),
-    ...(typeof value.apiKey === 'string' && value.apiKey.trim() ? { apiKey: value.apiKey.trim() } : {}),
+    ...(typeof value.apiKey === 'string' && value.apiKey.trim()
+      ? { apiKey: value.apiKey.trim() }
+      : {}),
     authScheme: typeof value.authScheme === 'string' ? value.authScheme.trim() : undefined,
     discoverTools: value.discoverTools as boolean | undefined,
-    tools: Array.isArray(value.tools) ? (value.tools as RegisterRemoteMcpPayload['tools']) : undefined,
+    tools: Array.isArray(value.tools)
+      ? (value.tools as RegisterRemoteMcpPayload['tools'])
+      : undefined,
     trusted: typeof value.trusted === 'boolean' ? value.trusted : undefined,
     maxOutputBytes: typeof value.maxOutputBytes === 'number' ? value.maxOutputBytes : undefined,
     timeoutMs: typeof value.timeoutMs === 'number' ? value.timeoutMs : undefined,
@@ -354,7 +367,9 @@ export function parseRegisterRemoteMcpPayload(value: unknown): RegisterRemoteMcp
   };
 }
 
-export function parseListMcpServersPayload(value: unknown): import('@sync-think/protocol').ListMcpServersPayload {
+export function parseListMcpServersPayload(
+  value: unknown,
+): import('@sync-think/protocol').ListMcpServersPayload {
   if (value === undefined || value === null) return {};
   if (typeof value !== 'object') throw new Error('Invalid list-mcp payload');
   const rec = value as Record<string, unknown>;
@@ -364,9 +379,7 @@ export function parseListMcpServersPayload(value: unknown): import('@sync-think/
   return { limit: rec.limit as number | undefined };
 }
 
-export function parseSetMcpServerEnabledPayload(
-  value: unknown,
-): SetMcpServerEnabledPayload {
+export function parseSetMcpServerEnabledPayload(value: unknown): SetMcpServerEnabledPayload {
   if (
     !isRecord(value) ||
     typeof value.mcpServerId !== 'string' ||
@@ -389,17 +402,28 @@ export function parseDeleteMcpServerPayload(value: unknown): DeleteMcpServerPayl
   return { mcpServerId: value.mcpServerId.trim() };
 }
 
-export function parseProbeMcpPolicyPayload(value: unknown): import('@sync-think/protocol').ProbeMcpPolicyPayload {
+export function parseProbeMcpPolicyPayload(
+  value: unknown,
+): import('@sync-think/protocol').ProbeMcpPolicyPayload {
   if (value === undefined || value === null) return {};
   if (typeof value !== 'object') throw new Error('Invalid mcp-policy-probe payload');
   const rec = value as Record<string, unknown>;
-  if (rec.mcpServerId !== undefined && (typeof rec.mcpServerId !== 'string' || !rec.mcpServerId.trim())) {
+  if (
+    rec.mcpServerId !== undefined &&
+    (typeof rec.mcpServerId !== 'string' || !rec.mcpServerId.trim())
+  ) {
     throw new Error('Invalid mcp-policy-probe payload');
   }
-  if (rec.maxOutputBytes !== undefined && (typeof rec.maxOutputBytes !== 'number' || !Number.isFinite(rec.maxOutputBytes))) {
+  if (
+    rec.maxOutputBytes !== undefined &&
+    (typeof rec.maxOutputBytes !== 'number' || !Number.isFinite(rec.maxOutputBytes))
+  ) {
     throw new Error('Invalid mcp-policy-probe payload');
   }
-  if (rec.timeoutMs !== undefined && (typeof rec.timeoutMs !== 'number' || !Number.isFinite(rec.timeoutMs))) {
+  if (
+    rec.timeoutMs !== undefined &&
+    (typeof rec.timeoutMs !== 'number' || !Number.isFinite(rec.timeoutMs))
+  ) {
     throw new Error('Invalid mcp-policy-probe payload');
   }
   if (rec.trusted !== undefined && typeof rec.trusted !== 'boolean') {
@@ -411,7 +435,10 @@ export function parseProbeMcpPolicyPayload(value: unknown): import('@sync-think/
   if (rec.simulatedOutput !== undefined && typeof rec.simulatedOutput !== 'string') {
     throw new Error('Invalid mcp-policy-probe payload');
   }
-  if (rec.simulatedElapsedMs !== undefined && (typeof rec.simulatedElapsedMs !== 'number' || !Number.isFinite(rec.simulatedElapsedMs))) {
+  if (
+    rec.simulatedElapsedMs !== undefined &&
+    (typeof rec.simulatedElapsedMs !== 'number' || !Number.isFinite(rec.simulatedElapsedMs))
+  ) {
     throw new Error('Invalid mcp-policy-probe payload');
   }
   if (rec.transport !== undefined && typeof rec.transport !== 'string') {
@@ -424,12 +451,15 @@ export function parseProbeMcpPolicyPayload(value: unknown): import('@sync-think/
     trusted: typeof rec.trusted === 'boolean' ? rec.trusted : undefined,
     toolName: typeof rec.toolName === 'string' ? rec.toolName : undefined,
     simulatedOutput: typeof rec.simulatedOutput === 'string' ? rec.simulatedOutput : undefined,
-    simulatedElapsedMs: typeof rec.simulatedElapsedMs === 'number' ? rec.simulatedElapsedMs : undefined,
+    simulatedElapsedMs:
+      typeof rec.simulatedElapsedMs === 'number' ? rec.simulatedElapsedMs : undefined,
     transport: typeof rec.transport === 'string' ? rec.transport : undefined,
   };
 }
 
-export function parseRequestMcpToolPayload(value: unknown): import('@sync-think/protocol').RequestMcpToolPayload {
+export function parseRequestMcpToolPayload(
+  value: unknown,
+): import('@sync-think/protocol').RequestMcpToolPayload {
   if (value === undefined || value === null || typeof value !== 'object') {
     throw new Error('Invalid mcp-tool-request payload');
   }
@@ -437,7 +467,10 @@ export function parseRequestMcpToolPayload(value: unknown): import('@sync-think/
   if (typeof rec.toolName !== 'string' || !rec.toolName.trim()) {
     throw new Error('Invalid mcp-tool-request payload: toolName required');
   }
-  if (rec.mcpServerId !== undefined && (typeof rec.mcpServerId !== 'string' || !rec.mcpServerId.trim())) {
+  if (
+    rec.mcpServerId !== undefined &&
+    (typeof rec.mcpServerId !== 'string' || !rec.mcpServerId.trim())
+  ) {
     throw new Error('Invalid mcp-tool-request payload');
   }
   if (rec.argumentsJson !== undefined && typeof rec.argumentsJson !== 'string') {
@@ -464,11 +497,16 @@ export function parseRequestMcpToolPayload(value: unknown): import('@sync-think/
   };
 }
 
-export function parseProbeMcpSpawnPayload(value: unknown): import('@sync-think/protocol').ProbeMcpSpawnPayload {
+export function parseProbeMcpSpawnPayload(
+  value: unknown,
+): import('@sync-think/protocol').ProbeMcpSpawnPayload {
   if (value === undefined || value === null) return {};
   if (typeof value !== 'object') throw new Error('Invalid mcp-spawn-probe payload');
   const rec = value as Record<string, unknown>;
-  if (rec.mcpServerId !== undefined && (typeof rec.mcpServerId !== 'string' || !rec.mcpServerId.trim())) {
+  if (
+    rec.mcpServerId !== undefined &&
+    (typeof rec.mcpServerId !== 'string' || !rec.mcpServerId.trim())
+  ) {
     throw new Error('Invalid mcp-spawn-probe payload');
   }
   if (rec.endpoint !== undefined && typeof rec.endpoint !== 'string') {
@@ -477,10 +515,16 @@ export function parseProbeMcpSpawnPayload(value: unknown): import('@sync-think/p
   if (rec.transport !== undefined && typeof rec.transport !== 'string') {
     throw new Error('Invalid mcp-spawn-probe payload');
   }
-  if (rec.maxOutputBytes !== undefined && (typeof rec.maxOutputBytes !== 'number' || !Number.isFinite(rec.maxOutputBytes))) {
+  if (
+    rec.maxOutputBytes !== undefined &&
+    (typeof rec.maxOutputBytes !== 'number' || !Number.isFinite(rec.maxOutputBytes))
+  ) {
     throw new Error('Invalid mcp-spawn-probe payload');
   }
-  if (rec.timeoutMs !== undefined && (typeof rec.timeoutMs !== 'number' || !Number.isFinite(rec.timeoutMs))) {
+  if (
+    rec.timeoutMs !== undefined &&
+    (typeof rec.timeoutMs !== 'number' || !Number.isFinite(rec.timeoutMs))
+  ) {
     throw new Error('Invalid mcp-spawn-probe payload');
   }
   if (rec.trusted !== undefined && typeof rec.trusted !== 'boolean') {
@@ -500,7 +544,9 @@ export function parseProbeMcpSpawnPayload(value: unknown): import('@sync-think/p
   };
 }
 
-export function parseCallMcpToolPayload(value: unknown): import('@sync-think/protocol').CallMcpToolPayload {
+export function parseCallMcpToolPayload(
+  value: unknown,
+): import('@sync-think/protocol').CallMcpToolPayload {
   if (typeof value !== 'object' || value === null) throw new Error('Invalid mcp-tool-call payload');
   const rec = value as Record<string, unknown>;
   if (typeof rec.mcpServerId !== 'string' || !rec.mcpServerId.trim()) {
@@ -527,10 +573,16 @@ export function parseCallMcpToolPayload(value: unknown): import('@sync-think/pro
   if (rec.priorApprovalId !== undefined && typeof rec.priorApprovalId !== 'string') {
     throw new Error('Invalid mcp-tool-call payload');
   }
-  if (rec.maxOutputBytes !== undefined && (typeof rec.maxOutputBytes !== 'number' || !Number.isFinite(rec.maxOutputBytes))) {
+  if (
+    rec.maxOutputBytes !== undefined &&
+    (typeof rec.maxOutputBytes !== 'number' || !Number.isFinite(rec.maxOutputBytes))
+  ) {
     throw new Error('Invalid mcp-tool-call payload');
   }
-  if (rec.timeoutMs !== undefined && (typeof rec.timeoutMs !== 'number' || !Number.isFinite(rec.timeoutMs))) {
+  if (
+    rec.timeoutMs !== undefined &&
+    (typeof rec.timeoutMs !== 'number' || !Number.isFinite(rec.timeoutMs))
+  ) {
     throw new Error('Invalid mcp-tool-call payload');
   }
   for (const field of ['workspaceId', 'taskId', 'runId', 'stepId', 'agentVersionId'] as const) {
@@ -547,7 +599,8 @@ export function parseCallMcpToolPayload(value: unknown): import('@sync-think/pro
     forceEnqueue: typeof rec.forceEnqueue === 'boolean' ? rec.forceEnqueue : undefined,
     executeIfAutoApproved:
       typeof rec.executeIfAutoApproved === 'boolean' ? rec.executeIfAutoApproved : undefined,
-    priorApprovalId: typeof rec.priorApprovalId === 'string' ? rec.priorApprovalId.trim() : undefined,
+    priorApprovalId:
+      typeof rec.priorApprovalId === 'string' ? rec.priorApprovalId.trim() : undefined,
     workspaceId: rec.workspaceId as never,
     taskId: rec.taskId as never,
     runId: rec.runId as never,
@@ -561,15 +614,22 @@ export function parseCallMcpToolPayload(value: unknown): import('@sync-think/pro
 export function parseRefreshMcpToolsPayload(
   value: unknown,
 ): import('@sync-think/protocol').RefreshMcpToolsPayload {
-  if (typeof value !== 'object' || value === null) throw new Error('Invalid mcp-tools-refresh payload');
+  if (typeof value !== 'object' || value === null)
+    throw new Error('Invalid mcp-tools-refresh payload');
   const rec = value as Record<string, unknown>;
   if (typeof rec.mcpServerId !== 'string' || !rec.mcpServerId.trim()) {
     throw new Error('Invalid mcp-tools-refresh payload: mcpServerId required');
   }
-  if (rec.maxOutputBytes !== undefined && (typeof rec.maxOutputBytes !== 'number' || !Number.isFinite(rec.maxOutputBytes))) {
+  if (
+    rec.maxOutputBytes !== undefined &&
+    (typeof rec.maxOutputBytes !== 'number' || !Number.isFinite(rec.maxOutputBytes))
+  ) {
     throw new Error('Invalid mcp-tools-refresh payload');
   }
-  if (rec.timeoutMs !== undefined && (typeof rec.timeoutMs !== 'number' || !Number.isFinite(rec.timeoutMs))) {
+  if (
+    rec.timeoutMs !== undefined &&
+    (typeof rec.timeoutMs !== 'number' || !Number.isFinite(rec.timeoutMs))
+  ) {
     throw new Error('Invalid mcp-tools-refresh payload');
   }
   if (
@@ -587,4 +647,176 @@ export function parseRefreshMcpToolsPayload(
     timeoutMs: typeof rec.timeoutMs === 'number' ? rec.timeoutMs : undefined,
     maxTools: typeof rec.maxTools === 'number' ? rec.maxTools : undefined,
   };
+}
+
+function parseBotChannelPlatform(
+  value: unknown,
+): import('@sync-think/protocol').BotChannelPlatform {
+  if (
+    value !== 'telegram' &&
+    value !== 'feishu' &&
+    value !== 'wecom' &&
+    value !== 'wechat' &&
+    value !== 'discord' &&
+    value !== 'dingtalk' &&
+    value !== 'qq'
+  ) {
+    throw new Error('Invalid bot channel platform');
+  }
+  return value;
+}
+
+export function parseGetBotChannelConfigPayload(
+  value: unknown,
+): import('@sync-think/protocol').GetBotChannelConfigPayload {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Invalid bot-channel-get payload');
+  }
+  return { platform: parseBotChannelPlatform((value as Record<string, unknown>).platform) };
+}
+
+export function parseSaveBotChannelConfigPayload(
+  value: unknown,
+): import('@sync-think/protocol').SaveBotChannelConfigPayload {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Invalid bot-channel-save payload');
+  }
+  const record = value as Record<string, unknown>;
+  if (typeof record.enabled !== 'boolean') throw new Error('Invalid bot-channel-save payload');
+  if (record.testConnection !== undefined && typeof record.testConnection !== 'boolean') {
+    throw new Error('Invalid bot-channel-save payload');
+  }
+  const platform = parseBotChannelPlatform(record.platform);
+  return parseBotChannelFields(record, platform, {
+    platform,
+    enabled: record.enabled,
+    ...(typeof record.testConnection === 'boolean'
+      ? { testConnection: record.testConnection }
+      : {}),
+  }) as unknown as import('@sync-think/protocol').SaveBotChannelConfigPayload;
+}
+
+export function parseTestBotChannelPayload(
+  value: unknown,
+): import('@sync-think/protocol').TestBotChannelPayload {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Invalid bot-channel-test payload');
+  }
+  const record = value as Record<string, unknown>;
+  const platform = parseBotChannelPlatform(record.platform);
+  return parseBotChannelFields(record, platform, {
+    platform,
+  }) as unknown as import('@sync-think/protocol').TestBotChannelPayload;
+}
+
+export function parseRequestWechatBotQrPayload(
+  value: unknown,
+): import('@sync-think/protocol').RequestWechatBotQrPayload {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Invalid bot-channel-wechat-qr-request payload');
+  }
+  const record = value as Record<string, unknown>;
+  const baseUrl = optionalBotText(record.baseUrl, 2_048, 'baseUrl');
+  return baseUrl === undefined ? {} : { baseUrl };
+}
+
+export function parseCheckWechatBotQrPayload(
+  value: unknown,
+): import('@sync-think/protocol').CheckWechatBotQrPayload {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Invalid bot-channel-wechat-qr-check payload');
+  }
+  const record = value as Record<string, unknown>;
+  const qrcode = optionalBotText(record.qrcode, 8_192, 'qrcode');
+  const baseUrl = optionalBotText(record.baseUrl, 2_048, 'baseUrl');
+  if (!qrcode) throw new Error('Invalid bot-channel-wechat-qr-check payload');
+  return { qrcode, ...(baseUrl === undefined ? {} : { baseUrl }) };
+}
+
+function parseBotChannelFields(
+  record: Record<string, unknown>,
+  platform: import('@sync-think/protocol').BotChannelPlatform,
+  common: Record<string, unknown>,
+): Record<string, unknown> {
+  if (platform === 'telegram' || platform === 'discord') {
+    return {
+      ...common,
+      ...optionalSecretField(record, 'token'),
+      ...optionalPublicField(record, 'proxyUrl', 2_048),
+    };
+  }
+  if (platform === 'feishu') {
+    if (record.domain !== undefined && record.domain !== 'feishu' && record.domain !== 'lark') {
+      throw new Error('Invalid bot channel domain');
+    }
+    if (
+      record.renderMode !== undefined &&
+      record.renderMode !== 'card' &&
+      record.renderMode !== 'text'
+    ) {
+      throw new Error('Invalid bot channel render mode');
+    }
+    return {
+      ...common,
+      ...optionalPublicField(record, 'appId', 512),
+      ...optionalSecretField(record, 'appSecret'),
+      ...(record.domain ? { domain: record.domain } : {}),
+      ...(record.renderMode ? { renderMode: record.renderMode } : {}),
+    };
+  }
+  if (platform === 'wecom') {
+    return {
+      ...common,
+      ...optionalPublicField(record, 'botId', 512),
+      ...optionalSecretField(record, 'secret'),
+    };
+  }
+  if (platform === 'dingtalk') {
+    return {
+      ...common,
+      ...optionalPublicField(record, 'clientId', 512),
+      ...optionalSecretField(record, 'clientSecret'),
+    };
+  }
+  if (platform === 'qq') {
+    return {
+      ...common,
+      ...optionalPublicField(record, 'appId', 512),
+      ...optionalSecretField(record, 'appSecret'),
+    };
+  }
+  return {
+    ...common,
+    ...optionalSecretField(record, 'botToken'),
+    ...optionalPublicField(record, 'baseUrl', 2_048),
+  };
+}
+
+function optionalBotText(
+  value: unknown,
+  max: number,
+  field: string,
+): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string' || value.length > max) {
+    throw new Error(`Invalid bot channel ${field}`);
+  }
+  return value.trim();
+}
+
+function optionalSecretField(
+  record: Record<string, unknown>,
+  field: string,
+): Record<string, string> {
+  const value = optionalBotText(record[field], 8_192, field);
+  return value ? { [field]: value } : {};
+}
+
+function optionalPublicField(
+  record: Record<string, unknown>,
+  field: string,
+  max: number,
+): Record<string, string> {
+  const value = optionalBotText(record[field], max, field);
+  return value === undefined ? {} : { [field]: value };
 }

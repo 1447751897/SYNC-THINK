@@ -20,15 +20,21 @@ export function parseConversationDecideToolApprovalPayload(
 ): ConversationDecideToolApprovalPayload | undefined {
   if (
     !isRecord(value) ||
-    !hasOnlyKeys(value, ['approvalId', 'decision']) ||
+    !hasOnlyKeys(value, ['approvalId', 'decision', 'scope']) ||
     !boundedAgentText(value.approvalId, 128) ||
-    (value.decision !== 'approve' && value.decision !== 'deny')
+    (value.decision !== 'approve' && value.decision !== 'deny') ||
+    (value.scope !== undefined &&
+      value.scope !== 'once' &&
+      value.scope !== 'session' &&
+      value.scope !== 'always-app') ||
+    (value.decision === 'deny' && value.scope !== undefined && value.scope !== 'once')
   ) {
     return undefined;
   }
   return {
     approvalId: value.approvalId,
     decision: value.decision,
+    scope: value.scope ?? 'once',
   };
 }
 

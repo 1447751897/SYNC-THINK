@@ -19,6 +19,43 @@ function event(
 }
 
 describe('projectExecutionProcess', () => {
+  it('links a nameless plan completion to its request and keeps it out of tool steps', () => {
+    const events = [
+      event({
+        id: 'plan-request' as Event['id'],
+        sequence: 1,
+        type: 'tool.requested',
+        runId: 'run_1' as Event['runId'],
+        payload: {
+          toolCall: {
+            id: 'codex-plan-1',
+            name: 'update_task_plan',
+            argumentsJson: JSON.stringify({
+              items: [{ title: '检查状态', status: 'in_progress' }],
+            }),
+          },
+        },
+      }),
+      event({
+        id: 'plan-completed' as Event['id'],
+        sequence: 2,
+        type: 'tool.completed',
+        runId: 'run_1' as Event['runId'],
+        payload: {
+          toolCallId: 'codex-plan-1',
+          result: JSON.stringify({
+            ok: true,
+            plan: { items: [{ title: '检查状态', status: 'completed' }] },
+          }),
+        },
+      }),
+    ];
+
+    const view = projectExecutionProcess(events, { runId: 'run_1' });
+    expect(view.taskPlan?.items).toEqual([{ title: '检查状态', status: 'completed' }]);
+    expect(view.steps).toHaveLength(0);
+  });
+
   it('merges requested/completed tool calls into one detailed step', () => {
     const events = [
       event({

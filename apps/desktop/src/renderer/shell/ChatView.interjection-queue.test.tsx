@@ -162,6 +162,30 @@ afterEach(() => {
 });
 
 describe('ChatView queued requests and interjection', () => {
+  it('uses one action slot and keeps running drafts on the queue send path', async () => {
+    const current = conversation('conversation-action-slot');
+    renderChat(current, activeEvents(current));
+    await waitForInitialLoad();
+
+    expect(screen.getByTestId('compose-stop')).toBeTruthy();
+    expect(screen.queryByTestId('compose-voice')).toBeNull();
+    expect(screen.queryByTestId('compose-send')).toBeNull();
+
+    fireEvent.change(screen.getByTestId('compose-input'), {
+      target: { value: '运行中排队的新需求' },
+    });
+    expect(screen.getByTestId('compose-send')).toBeTruthy();
+    expect(screen.queryByTestId('compose-stop')).toBeNull();
+    expect(screen.queryByTestId('compose-voice')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('compose-send'));
+    expect(await screen.findByText('运行中排队的新需求')).toBeTruthy();
+    expect(runtime.sendConversationMessage).not.toHaveBeenCalled();
+    expect(runtime.appendMessage).not.toHaveBeenCalled();
+    expect(screen.getByTestId('compose-stop')).toBeTruthy();
+    expect(screen.queryByTestId('compose-send')).toBeNull();
+  });
+
   it('keeps a request above the composer without sending it while a Run is active', async () => {
     const current = conversation();
     renderChat(current, activeEvents(current));

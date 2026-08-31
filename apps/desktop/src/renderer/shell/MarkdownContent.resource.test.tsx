@@ -45,7 +45,30 @@ describe('MarkdownContent resources', () => {
     fireEvent.click(link);
 
     expect(openExternalUrl).toHaveBeenCalledWith('https://example.test/docs');
-    expect(container.querySelector('[data-resource-kind="external"] svg')).toBeTruthy();
+    const resource = container.querySelector('[data-resource-kind="external"]');
+    expect(resource?.getAttribute('data-source-host')).toBe('example.test');
+    expect(resource?.querySelector('.shell-external-source-icon svg')).toBeTruthy();
+  });
+
+  it('uses the matching local connector icon for a known streaming source', () => {
+    const { container } = render(
+      <MarkdownContent text="来源：[视频](https://www.youtube.com/watch?v=demo)" streaming />,
+    );
+
+    const resource = container.querySelector('[data-resource-kind="external"]');
+    expect(resource?.getAttribute('data-source-connector')).toBe('youtube');
+    expect(resource?.querySelector('.shell-external-source-icon img')).toBeTruthy();
+  });
+
+  it('uses the Beautiful UI site icon instead of the generic web globe', () => {
+    const { container } = render(
+      <MarkdownContent text="来源：[Beautiful UI](https://www.beautifului.dev/)" streaming />,
+    );
+
+    const resource = container.querySelector('[data-resource-kind="external"]');
+    expect(resource?.getAttribute('data-source-connector')).toBe('beautiful-ui');
+    expect(resource?.querySelector('.shell-external-source-icon img')).toBeTruthy();
+    expect(resource?.querySelector('.shell-external-source-icon svg')).toBeNull();
   });
 
   it('does not turn parent-directory traversal into a workspace open action', () => {

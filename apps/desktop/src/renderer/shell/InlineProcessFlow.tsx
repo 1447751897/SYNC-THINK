@@ -3,7 +3,7 @@
  * Every provider event stays on its own lightweight row; tool calls are never
  * grouped, and details expand in place without replacing the timeline.
  */
-import { memo, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   Atom,
   Check,
@@ -27,13 +27,19 @@ import { useAutoDisclosure } from './auto-disclosure.js';
 import { MarkdownContent } from './MarkdownContent.js';
 import { buildExecutionTimeline } from './ExecutionTimeline.js';
 import {
+  activityFingerprint,
+  deriveCurrentActivity,
+  deriveStallState,
   formatElapsedZh,
   friendlyToolName,
   toolVisualKind,
   toolInputSummary,
   toolStatusOf,
+  type ProcessActivity,
+  type ProcessStallState,
   type ProcessToolVisualKind,
 } from './process-activity.js';
+import { LoadingPixelGrid } from './LoadingPixelGrid.js';
 
 function latestLine(text: string): string {
   return (
@@ -201,6 +207,7 @@ function ThinkRow({
         type="button"
         className="shell-inline-process__think-toggle"
         data-testid="think-row-toggle"
+        data-highlight-band={isStreaming ? 'true' : undefined}
         aria-expanded={open}
         onClick={onToggle}
       >
@@ -308,12 +315,15 @@ function ToolPayload({
 
 function ToolRow({
   item,
+  liveClock,
   now,
   open,
   onToggle,
   onOpenChange,
 }: {
   item: Extract<InlineProcessItem, { kind: 'tool' }>;
+  /** 面板本次挂载中活过才展示实时计时；历史消息里残留的 running 行不走时钟。 */
+  liveClock?: boolean;
   /** 面板层的秒级时钟；仅运行中的行会用到。 */
   now: number;
   open: boolean;
@@ -323,7 +333,8 @@ function ToolRow({
   const status = toolStatusOf(item);
   const summary = toolInputSummary(item);
   const elapsed = elapsedLabel(item.startedAt, item.completedAt);
-  const liveElapsed = status === 'running' ? runningElapsedLabel(item.startedAt, now) : undefined;
+  const liveElapsed =
+    status === 'running' && liveClock ? runningElapsedLabel(item.startedAt, now) : undefined;
   const displayName = item.displayName?.trim() || friendlyToolName(item.name);
   const visualKind = toolVisualKind(item.name);
   const statusText = TOOL_STATUS_TEXT[status];
@@ -346,6 +357,7 @@ function ToolRow({
       <button
         type="button"
         className="shell-inline-process__tool-toggle"
+        data-highlight-band={status === 'running' ? 'true' : undefined}
         aria-expanded={open}
         onClick={onToggle}
       >
@@ -394,6 +406,14 @@ function ToolRow({
               : {})}
           >
             {visibleSummary}
+          </span>
+        ) : null}
+        {(status === 'running' ? liveElapsed : elapsed) ? (
+          <span
+            className="shell-inline-process__tool-elapsed"
+            data-testid="inline-process-tool-elapsed"
+          >
+            {status === 'running' ? liveElapsed : elapsed}
           </span>
         ) : null}
         <span
@@ -481,21 +501,38 @@ function StatusRow({ item }: { item: Extract<InlineProcessItem, { kind: 'status'
   );
 }
 
-function WaitingRow() {
+function ProcessActivityRow({
+  activity,
+  stall,
+  elapsed,
+}: {
+  activity: ProcessActivity;
+  stall?: ProcessStallState;
+  elapsed?: string;
+}) {
   return (
     <div
-      className="shell-inline-process__waiting is-running"
-      data-testid="inline-process-waiting"
+      className="shell-process-panel__activity"
+      data-testid="process-panel-activity"
+      data-kind={activity.kind}
+      data-stall={stall?.level ?? 'active'}
       role="status"
+      aria-live="polite"
     >
-      <span className="shell-inline-process__row-leading" aria-hidden="true">
-        <Atom size={14} className="shell-inline-process__row-symbol" />
+      <LoadingPixelGrid />
+      <span
+        className="shell-process-panel__activity-label"
+        data-label={activity.label}
+        data-testid="process-activity-label"
+      >
+        {activity.label}
       </span>
-      <span className="shell-inline-process__think-label">Think</span>
-      <span className="shell-inline-process__separator" aria-hidden="true">
-        ·
-      </span>
-      <span className="shell-inline-process__think-summary">等待模型响应</span>
+      {elapsed ? <span className="shell-process-panel__activity-elapsed">{elapsed}</span> : null}
+      {stall && stall.level !== 'active' ? (
+        <span className="shell-process-panel__activity-idle">
+          {stall.hint ?? `${Math.floor(stall.idleMs / 1000)}s 无输出`}
+        </span>
+      ) : null}
     </div>
   );
 }
@@ -503,6 +540,7 @@ function WaitingRow() {
 function ProcessItemView({
   item,
   streaming,
+  liveClock,
   now,
   open,
   onToggle,
@@ -510,6 +548,7 @@ function ProcessItemView({
 }: {
   item: InlineProcessItem;
   streaming?: boolean;
+  liveClock?: boolean;
   now: number;
   open: boolean;
   onToggle: () => void;
@@ -520,7 +559,14 @@ function ProcessItemView({
   }
   if (item.kind === 'tool') {
     return (
-      <ToolRow item={item} now={now} open={open} onToggle={onToggle} onOpenChange={onOpenChange} />
+      <ToolRow
+        item={item}
+        liveClock={liveClock}
+        now={now}
+        open={open}
+        onToggle={onToggle}
+        onOpenChange={onOpenChange}
+      />
     );
   }
   if (item.kind === 'status') return <StatusRow item={item} />;
@@ -538,6 +584,7 @@ function ProcessEntry({
   item,
   index,
   streaming,
+  liveClock,
   now,
   expandedItemKeys,
   toggleItem,
@@ -546,6 +593,7 @@ function ProcessEntry({
   item: InlineProcessItem;
   index: number;
   streaming?: boolean;
+  liveClock?: boolean;
   now: number;
   expandedItemKeys: ReadonlySet<string>;
   toggleItem(itemKey: string): void;
@@ -560,6 +608,7 @@ function ProcessEntry({
         <ProcessItemView
           item={item}
           streaming={streaming}
+          liveClock={liveClock}
           now={now}
           open={expandedItemKeys.has(itemKey)}
           onToggle={() => toggleItem(itemKey)}
@@ -788,6 +837,12 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
   // 面板层唯一的秒级时钟，驱动总耗时、每行运行耗时和停滞分级。运行中就必须
   // 走（不能再要求 startedAt）——工具行的耗时只依赖各自的 startedAt。
   const ticking = Boolean(streaming) && !completedAt;
+  // 本次挂载中面板是否活过：活过再 settle 时冻结显示最后的计时；而挂载时
+  // 就已 settle 的历史消息里若残留 status=running 的工具行，绝不能拿当前
+  // 时间对着几天前的 startedAt 计时（会显示几百小时）。
+  const everStreamedRef = useRef(Boolean(streaming));
+  if (streaming) everStreamedRef.current = true;
+  const liveClock = everStreamedRef.current;
   useEffect(() => {
     if (!ticking) return;
     setClockNow(Date.now());
@@ -814,6 +869,17 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
       (item.kind === 'reasoning' && item.status === 'streaming') ||
       (item.kind === 'tool' && toolStatusOf(item) === 'running'),
   );
+  // 活动摘要始终落在执行流最下方，作为这一轮的实时落点。像素格与 shimmer
+  // 是进程活着的视觉证据；停滞分级只在长时间无输出时追加中性提示。
+  const activity = deriveCurrentActivity(orderedItems, { streaming: Boolean(streaming) });
+  const fingerprint = useMemo(() => activityFingerprint(orderedItems), [orderedItems]);
+  const [lastProgressAt, setLastProgressAt] = useState(() => Date.now());
+  useEffect(() => {
+    setLastProgressAt(Date.now());
+  }, [fingerprint]);
+  const stall = activity
+    ? deriveStallState({ activity, lastProgressAt, now: clockNow })
+    : undefined;
   const showWaiting = Boolean(streaming && !answerStarted && !hasActiveRow);
   const failedToolCount = orderedItems.reduce(
     (count, item) => count + (item.kind === 'tool' && toolStatusOf(item) === 'failed' ? 1 : 0),
@@ -870,7 +936,7 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
               <div className="shell-process-agent-tasks__body">{agentTaskContent}</div>
             </section>
           ) : null}
-          {orderedItems.length > 0 || showWaiting ? (
+          {orderedItems.length > 0 ? (
             <div className="shell-inline-process" data-testid="inline-process-flow">
               {orderedItems.map((item, index) => (
                 <ProcessEntry
@@ -878,19 +944,22 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
                   item={item}
                   index={index}
                   streaming={streaming}
+                  liveClock={liveClock}
                   now={clockNow}
                   expandedItemKeys={expandedItemKeys}
                   toggleItem={toggleItem}
                   onOpenChange={onOpenChange}
                 />
               ))}
-              {showWaiting ? <WaitingRow /> : null}
             </div>
           ) : null}
         </div>
       ) : null}
       {supplementalContent ? (
         <div className="shell-process-panel__supplemental">{supplementalContent}</div>
+      ) : null}
+      {activity ? (
+        <ProcessActivityRow activity={activity} stall={stall} elapsed={durationLabel} />
       ) : null}
     </section>
   );

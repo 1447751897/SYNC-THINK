@@ -31,6 +31,7 @@ import {
   X,
 } from 'lucide-react';
 import clsx from 'clsx';
+import { SlidingTabs } from './SlidingTabs.js';
 import type { RunProcessView } from '@sync-think/protocol';
 import type {
   ProjectContentMatch,
@@ -90,11 +91,7 @@ export function WorkspaceFilesPanel(props: {
       data-workspace-compact-file-browser="true"
     >
       <div className="shell-workspace-files-switcher shrink-0">
-        <div
-          className="shell-workspace-files-switcher__views"
-          role="tablist"
-          aria-label="工作区文件视图"
-        >
+        <SlidingTabs className="shell-workspace-files-switcher__views" aria-label="工作区文件视图">
           <button
             type="button"
             role="tab"
@@ -119,7 +116,7 @@ export function WorkspaceFilesPanel(props: {
           >
             所有文件
           </button>
-        </div>
+        </SlidingTabs>
         <div className="shell-workspace-files-switcher__actions">
           <button
             type="button"
@@ -681,6 +678,7 @@ function FilesPanel({
   // 树形状态：dir path ('' = root) → children；expanded 记录展开集合。
   const [dirs, setDirs] = useState<Record<string, TreeDirState>>({});
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+  const [focusedTreePath, setFocusedTreePath] = useState<string | null>(null);
   const contentRequestRef = useRef(0);
   const searchMode = query.trim().length > 0;
 
@@ -719,6 +717,7 @@ function FilesPanel({
     if (!projectFolder) return;
     setDirs({});
     setExpanded(new Set());
+    setFocusedTreePath(null);
     loadDir('');
   }, [projectFolder, loadDir, refreshRevision]);
 
@@ -830,6 +829,54 @@ function FilesPanel({
         .finally(() => setPreviewLoading(false));
     },
     [projectFolder, onOpenFile, onOpenFileInNewTab],
+  );
+
+  const handleTreeKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLDivElement>) => {
+      const target = (event.target as HTMLElement).closest<HTMLElement>('[role="treeitem"]');
+      if (!target || !event.currentTarget.contains(target)) return;
+      const items = Array.from(
+        event.currentTarget.querySelectorAll<HTMLElement>('[role="treeitem"]'),
+      );
+      const index = items.indexOf(target);
+      if (index < 0) return;
+
+      const focusItem = (item: HTMLElement | undefined) => {
+        if (!item) return;
+        setFocusedTreePath(item.dataset.path ?? null);
+        item.focus();
+      };
+
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        focusItem(items[index + 1]);
+      } else if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        focusItem(items[index - 1]);
+      } else if (event.key === 'Home') {
+        event.preventDefault();
+        focusItem(items[0]);
+      } else if (event.key === 'End') {
+        event.preventDefault();
+        focusItem(items.at(-1));
+      } else if (event.key === 'ArrowRight' && target.dataset.kind === 'dir') {
+        event.preventDefault();
+        const path = target.dataset.path ?? '';
+        if (target.getAttribute('aria-expanded') !== 'true') toggleDir(path);
+        else {
+          focusItem(items.slice(index + 1).find((item) => item.dataset.parentPath === path));
+        }
+      } else if (event.key === 'ArrowLeft') {
+        event.preventDefault();
+        if (target.dataset.kind === 'dir' && target.getAttribute('aria-expanded') === 'true') {
+          toggleDir(target.dataset.path ?? '');
+          return;
+        }
+        const parentPath = target.dataset.parentPath;
+        focusItem(items.find((item) => item.dataset.path === parentPath));
+      }
+    },
+    [toggleDir],
   );
 
   if (!projectFolder) {
@@ -966,13 +1013,22 @@ function FilesPanel({
           ) : searchKind === 'content' ? (
             <div className="px-3 py-3 text-[11.5px] text-text-faint">输入关键词搜索文件内容</div>
           ) : (
-            <div className="p-1" data-testid="dock-files-tree">
+            <div
+              className="shell-workspace-tree p-1"
+              data-testid="dock-files-tree"
+              role="tree"
+              aria-label="工作区文件"
+              onKeyDown={handleTreeKeyDown}
+            >
               <FileTreeLevel
                 dir=""
                 depth={0}
                 dirs={dirs}
                 expanded={expanded}
                 selected={selected}
+                focusedPath={focusedTreePath}
+                rootFirstPath={dirs['']?.entries[0]?.path}
+                onFocusPath={setFocusedTreePath}
                 onToggleDir={toggleDir}
                 onOpenFile={openFile}
                 onOpenFileInNewTab={
@@ -1091,6 +1147,23 @@ function ContentSearchResults({
   );
 }
 
+function FolderStateIcon({ expanded }: { expanded: boolean }) {
+  return (
+    <span
+      className="shell-workspace-folder-icon"
+      data-expanded={expanded ? 'true' : 'false'}
+      aria-hidden="true"
+    >
+      <span className="shell-workspace-folder-icon__closed">
+        <Folder size={13} />
+      </span>
+      <span className="shell-workspace-folder-icon__open">
+        <FolderOpen size={13} />
+      </span>
+    </span>
+  );
+}
+
 /** 树形层级：一层目录（dirs[dir].entries），目录可展开递归渲染子层。 */
 function FileTreeLevel({
   dir,
@@ -1098,6 +1171,9 @@ function FileTreeLevel({
   dirs,
   expanded,
   selected,
+  focusedPath,
+  rootFirstPath,
+  onFocusPath,
   onToggleDir,
   onOpenFile,
   onOpenFileInNewTab,
@@ -1107,6 +1183,9 @@ function FileTreeLevel({
   dirs: Record<string, TreeDirState>;
   expanded: Set<string>;
   selected: string | null;
+  focusedPath: string | null;
+  rootFirstPath?: string;
+  onFocusPath(path: string): void;
   onToggleDir(dir: string): void;
   onOpenFile(path: string): void;
   onOpenFileInNewTab?(path: string): void;
@@ -1133,27 +1212,44 @@ function FileTreeLevel({
     );
   }
   return (
-    <ul>
+    <ul role="group" className="shell-workspace-tree-group">
       {state.entries.map((entry) =>
         entry.kind === 'dir' ? (
           <li key={entry.path}>
             <button
               type="button"
-              className="shell-workspace-file-directory"
-              style={{ paddingLeft: 8 + depth * 14 }}
+              role="treeitem"
+              aria-level={depth + 1}
+              aria-expanded={expanded.has(entry.path)}
+              data-kind="dir"
+              data-path={entry.path}
+              data-parent-path={dir}
+              data-depth={depth}
+              tabIndex={
+                focusedPath === entry.path || (!focusedPath && rootFirstPath === entry.path)
+                  ? 0
+                  : -1
+              }
+              className="shell-workspace-tree-row shell-workspace-file-directory"
+              style={
+                {
+                  paddingLeft: 8 + depth * 14,
+                  '--shell-tree-guide-left': `${13 + Math.max(0, depth - 1) * 14}px`,
+                } as CSSProperties
+              }
               title={entry.path}
+              onFocus={() => onFocusPath(entry.path)}
               onClick={() => onToggleDir(entry.path)}
             >
-              {expanded.has(entry.path) ? (
-                <ChevronDown size={11} className="shrink-0 text-text-faint" />
-              ) : (
-                <ChevronRight size={11} className="shrink-0 text-text-faint" />
-              )}
-              {expanded.has(entry.path) ? (
-                <FolderOpen size={12} className="shrink-0 text-accent" />
-              ) : (
-                <Folder size={12} className="shrink-0 text-text-faint" />
-              )}
+              <ChevronRight
+                size={11}
+                className={clsx(
+                  'shell-workspace-folder-caret',
+                  expanded.has(entry.path) && 'is-open',
+                )}
+                aria-hidden="true"
+              />
+              <FolderStateIcon expanded={expanded.has(entry.path)} />
               <span className="min-w-0 flex-1 truncate">{entry.name}</span>
             </button>
             {expanded.has(entry.path) ? (
@@ -1163,6 +1259,9 @@ function FileTreeLevel({
                 dirs={dirs}
                 expanded={expanded}
                 selected={selected}
+                focusedPath={focusedPath}
+                rootFirstPath={rootFirstPath}
+                onFocusPath={onFocusPath}
                 onToggleDir={onToggleDir}
                 onOpenFile={onOpenFile}
                 onOpenFileInNewTab={onOpenFileInNewTab}
@@ -1173,18 +1272,36 @@ function FileTreeLevel({
           <li key={entry.path}>
             <div
               className={clsx(
-                'shell-workspace-file-row',
+                'shell-workspace-tree-row shell-workspace-file-row',
                 selected === entry.path ? 'is-active' : undefined,
               )}
-              style={{ paddingLeft: 8 + depth * 14 + 15 }}
+              data-depth={depth}
+              style={
+                {
+                  paddingLeft: 8 + depth * 14 + 15,
+                  '--shell-tree-guide-left': `${13 + Math.max(0, depth - 1) * 14}px`,
+                } as CSSProperties
+              }
               title={entry.path}
             >
               <button
                 type="button"
+                role="treeitem"
+                aria-level={depth + 1}
+                aria-selected={selected === entry.path}
+                data-kind="file"
+                data-path={entry.path}
+                data-parent-path={dir}
+                tabIndex={
+                  focusedPath === entry.path || (!focusedPath && rootFirstPath === entry.path)
+                    ? 0
+                    : -1
+                }
                 className="shell-workspace-file-row__primary"
                 aria-label={
                   onOpenFileInNewTab ? `在当前文件标签打开 ${entry.path}` : `打开文件 ${entry.path}`
                 }
+                onFocus={() => onFocusPath(entry.path)}
                 onClick={() => onOpenFile(entry.path)}
               >
                 <FileTypeIcon path={entry.path} size={12} className="shrink-0" />

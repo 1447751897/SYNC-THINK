@@ -39,9 +39,13 @@ describe('open gateway settings section', () => {
   it('registers the connection section that the search box can find', () => {
     expect(settingsSource).toMatch(/id:\s*'connection',\s*\n\s*label:\s*'连接'/);
     expect(settingsSource).toContain("keywords: 'AI 模型网关 协议转换");
-    expect(settingsSource).toContain(
-      "<ConnectionSection onOpenWallet={() => setSection('wallet')} />",
+    expect(settingsSource).toMatch(
+      /\{section === 'connection' && \(\s*<ConnectionSection\s+initialTab=\{initialConnectionTab\}\s+navigationKey=\{navigationKey\}\s*\/>\s*\)\}/,
     );
+    // Connector availability is driven by real MCP discovery. A wallet or
+    // balance callback must not recreate an unimplemented billing surface.
+    expect(settingsSource).not.toContain('onOpenWallet');
+    expect(settingsSource).not.toContain('钱包余额');
     expect(settingsSource).toContain("{ id: 'gateway', label: '开放网关' }");
     // The gateway no longer has its own sidebar section.
     expect(settingsSource).not.toContain("{ section === 'gateway'");

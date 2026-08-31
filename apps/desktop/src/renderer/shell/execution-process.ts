@@ -400,6 +400,7 @@ export function projectExecutionProcess(
   let taskPlan: TaskPlanView | undefined;
   /** write_file body often only appears on tool.requested args, not on completed result. */
   const writeContentByCall = new Map<string, string>();
+  const toolNameByCall = new Map<string, string>();
   let tokensIn: number | undefined;
   let tokensOut: number | undefined;
   let startedAt: string | undefined;
@@ -452,7 +453,12 @@ export function projectExecutionProcess(
 
     const payload = event.payload;
     const toolCallId = extractToolCallId(payload, event.id);
-    const toolName = extractToolName(payload);
+    const extractedToolName = extractToolName(payload);
+    if (extractedToolName !== 'tool') toolNameByCall.set(toolCallId, extractedToolName);
+    const toolName =
+      extractedToolName === 'tool'
+        ? (toolNameByCall.get(toolCallId) ?? extractedToolName)
+        : extractedToolName;
 
     // Task-plan tools are pure UI signals: project the checklist, keep them
     // out of the tool step list (they would be noise there). update_task_plan
@@ -669,9 +675,10 @@ export function projectExecutionProcess(
  * Forward the pre-write snapshot carried on tool.completed payloads
  * (captured by the runtime write_file executor) into FileChangeItem fields.
  */
-function snapshotFields(
-  payload: Record<string, unknown>,
-): { previousContent?: string; previousTruncated?: boolean } {
+function snapshotFields(payload: Record<string, unknown>): {
+  previousContent?: string;
+  previousTruncated?: boolean;
+} {
   if (typeof payload.previousContent !== 'string' || payload.previousContent.length === 0) {
     return {};
   }

@@ -14,6 +14,43 @@ function event(input: Partial<Event> & Pick<Event, 'id' | 'sequence' | 'type' | 
 }
 
 describe('projectRunProcess', () => {
+  it('links a nameless plan completion to its request without creating a generic Tool step', () => {
+    const runId = 'run-codex-plan' as RunId;
+    const view = projectRunProcess(runId, [
+      event({
+        id: 'event-plan-request' as EventId,
+        sequence: 1,
+        runId,
+        type: 'tool.requested',
+        payload: {
+          toolCall: {
+            id: 'codex-plan-1',
+            name: 'update_task_plan',
+            argumentsJson: JSON.stringify({
+              items: [{ title: '检查状态', status: 'in_progress' }],
+            }),
+          },
+        },
+      }),
+      event({
+        id: 'event-plan-completed' as EventId,
+        sequence: 2,
+        runId,
+        type: 'tool.completed',
+        payload: {
+          toolCallId: 'codex-plan-1',
+          result: JSON.stringify({
+            ok: true,
+            plan: { items: [{ title: '检查状态', status: 'completed' }] },
+          }),
+        },
+      }),
+    ]);
+
+    expect(view.taskPlan?.items).toEqual([{ title: '检查状态', status: 'completed' }]);
+    expect(view.steps).toHaveLength(0);
+  });
+
   it('projects task tools as a checklist without mixing them into execution steps', () => {
     const runId = 'run-task-plan-tools' as RunId;
     const events = [

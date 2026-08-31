@@ -73,6 +73,19 @@ describe('platform tools', () => {
     expect(names).not.toContain('browser_screenshot');
   });
 
+  it('keeps checklist updates visible while fencing task mutations in planning mode', () => {
+    const names = buildPlatformMcpToolDefinitions({
+      planningMode: true,
+      includeTaskTools: true,
+    }).map((definition) => definition.name);
+
+    expect(names).toContain('update_task_plan');
+    expect(names).not.toContain('TaskCreate');
+    expect(names).not.toContain('TaskUpdate');
+    expect(names).not.toContain('file_write');
+    expect(names).not.toContain('task_schedule');
+  });
+
   it('serves platform_context identity', async () => {
     const content = await executePlatformTool('platform_context', {}, {
       workspaceDir: 'C:/workspace',

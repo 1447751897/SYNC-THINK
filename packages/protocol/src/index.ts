@@ -11,3 +11,4 @@ export * from './gateway.js';
 export * from './preferences.js';
 export * from './data.js';
 export * from './pipe.js';
+export * from './tool-approval.js';

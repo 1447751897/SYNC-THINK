@@ -33,6 +33,26 @@ function makeToolTurn(sequence: number): Message {
   };
 }
 
+function makeMixedAssistantTurn(sequence: number): Message {
+  return {
+    id: `a-${sequence}` as MessageId,
+    threadId: 'thread-test' as ThreadId,
+    role: 'assistant',
+    blocks: [
+      { type: 'reasoning', reasoningText: 'private chain of thought' },
+      { type: 'commentary', text: 'running a diagnostic command' },
+      {
+        type: 'tool-call',
+        payload: { name: 'run_command', argumentsJson: '{"command":"secret"}' },
+      },
+      { type: 'tool-result', text: 'verbose tool output' },
+      { type: 'text', text: 'final user-visible answer' },
+    ],
+    createdAt: new Date(0).toISOString(),
+    sequence,
+  };
+}
+
 describe('computeKernelGapFromMessages', () => {
   it('returns in-sync for an empty gap (no catch-up, not oversized)', () => {
     const result = computeKernelGapFromMessages([], 128_000);
@@ -50,25 +70,40 @@ describe('computeKernelGapFromMessages', () => {
     expect(result.catchUp).toContain('second gap turn');
   });
 
-  it('marks a gap with more turns than the message limit as oversized', () => {
-    const messages = Array.from({ length: 61 }, (_, index) => makeMessage(index + 1, `turn ${index}`));
+  it('keeps a large gap on the native session and appends only the latest 20 portable turns', () => {
+    const messages = Array.from({ length: 61 }, (_, index) =>
+      makeMessage(index + 1, `turn ${index}`),
+    );
     const result = computeKernelGapFromMessages(messages, 128_000);
-    expect(result.oversized).toBe(true);
+    expect(result.oversized).toBe(false);
     expect(result.count).toBe(61);
+    expect(result.catchUp).toContain('41 earlier portable turns omitted');
+    expect(result.catchUp).not.toContain('turn 40\n');
+    expect(result.catchUp).toContain('turn 41');
+    expect(result.catchUp).toContain('turn 60');
+  });
+
+  it('bounds a large portable gap instead of rebuilding the native session', () => {
+    const longText = 'x'.repeat(200_000);
+    const result = computeKernelGapFromMessages([makeMessage(1, longText)], 128_000);
+    expect(result.oversized).toBe(false);
+    expect(result.catchUp).toContain('portable turn truncated');
+    expect(Buffer.byteLength(result.catchUp ?? '', 'utf8')).toBeLessThanOrEqual(65_536);
+  });
+
+  it('does not replay tool-only host projections into the native session', () => {
+    const result = computeKernelGapFromMessages([makeToolTurn(1)], 128_000);
+    expect(result.oversized).toBe(false);
     expect(result.catchUp).toBeUndefined();
   });
 
-  it('marks a gap whose rough token share of the window exceeds the ratio as oversized', () => {
-    const longText = 'x'.repeat(200_000); // rough tokens ≈ 50k > 128k * 0.35 = 44.8k
-    const result = computeKernelGapFromMessages([makeMessage(1, longText)], 128_000);
-    expect(result.oversized).toBe(true);
-  });
-
-  it('renders tool calls with their name + arguments in the catch-up transcript', () => {
-    const result = computeKernelGapFromMessages([makeToolTurn(1)], 128_000);
-    expect(result.oversized).toBe(false);
-    expect(result.catchUp).toContain('write_file');
-    expect(result.catchUp).toContain('a.txt');
+  it('replays only final user-visible text, excluding reasoning, commentary and tool details', () => {
+    const result = computeKernelGapFromMessages([makeMixedAssistantTurn(1)], 128_000);
+    expect(result.catchUp).toContain('final user-visible answer');
+    expect(result.catchUp).not.toContain('private chain of thought');
+    expect(result.catchUp).not.toContain('running a diagnostic command');
+    expect(result.catchUp).not.toContain('run_command');
+    expect(result.catchUp).not.toContain('verbose tool output');
   });
 });
 

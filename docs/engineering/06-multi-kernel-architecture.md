@@ -75,6 +75,14 @@ SYNC-THINK 是自研 runtime 直连模型 API 的对话产品。runtime 拥有�
 | **② 备用模型链**     | 内核失败 → 宿主查链 → 切换"内核+模型"二元组继续。**内核之间互不知道对方存在**，这层天然属于宿主                           | NewMax 日志 `fallback: { providerId, model: 'grok-4.5' }`（宿主层切换）   |
 | **③ 用量统计**       | 读内核报告的 usage 事件 → 持久化 → UI 展示。**"不干预压缩" ≠ "不读用量报告"**：报告是内核对外输出，读它是适配协议的一部分 | NewMax 日志 `[ClaudeProxy][RealUsage] real=209623 window=1000000 pct=21%` |
 
+### 2.4 双真源边界：原生会话负责推理上下文，宿主持久化负责展示与审计
+
+1. Codex rollout/thread 与 Claude session 是各自模型上下文、压缩结果和缓存前缀的事实源。正常续轮必须优先调用原生 `resume`，宿主消息数量、UI block 数量、Renderer 截断或模型/Provider 切换不得触发原生会话重建。
+2. SQLite message/event/timeline 是跨设备恢复 UI、审计、检索和跨内核移交的事实源，但不是外部内核原生上下文的替代品。reasoning、commentary、工具调用/结果和 durable 截断状态只属于展示/审计投影，不得作为历史 transcript 回灌外部内核。
+3. 外部内核首次进入一个已有对话，或从另一个内核接回后续轮次时，只追加有界便携上下文：最近 20 条用户/最终助手消息，单条最多 8 KiB、总计最多 64 KiB。被省略内容必须显式标记，但不因此销毁原生 session。
+4. 模型、Provider、凭据、权限、规划模式、Agent 或 Skill 变化属于当前 turn 的路由/宿主上下文更新：继续恢复同一原生 session，并追加新规则。Provider response-id continuation 另按路由隔离，不能借此清理 native thread。
+5. 只有原生 CLI 明确报告 session/thread 不存在、不可恢复，或同一对话绑定到不同 Workspace 根目录时，Runtime 才清理映射并创建新会话。CLI 自己的 compaction/rollover 通知只做投影，不由宿主用消息历史模拟。
+
 ---
 
 ## 3. 架构总览
@@ -181,7 +189,7 @@ interface KernelAdapter {
 
 interface KernelRequest {
   model: string; // 内核模型标识（透传）
-  contextWindow: number; // ① 宿主配置的窗口容量
+  contextWindow: number; // 当前 Provider 模型配置的窗口容量
   credential: KernelCredential; // 凭据（见 §8）
   systemContext: string; // 共享事实 + 小队上下文（见 §10）
   platformTools: PlatformToolDefinition[]; // 平台工具注入（见 §7.3）
@@ -215,7 +223,10 @@ type KernelEvent =
   | { type: 'tool-result'; toolId: string; output: string; isError: boolean }
   | { type: 'permission-request'; requestId: string; toolName: string; toolInput: unknown }
   | { type: 'usage'; usage: KernelUsage }
-  | { type: 'compacted' } // 内核报告发生压缩（可选，仅通知用）
+  | { type: 'compaction-started' }
+  | { type: 'compacted' }
+  | { type: 'compaction-failed'; error?: string }
+  | { type: 'plan-submitted'; text: string }
   | { type: 'terminal'; status: 'completed' | 'failed'; error?: string };
 ```
 
@@ -224,6 +235,8 @@ type KernelEvent =
 - 内核输出**未知事件类型 → 忽略 + 记录日志**（NewMax 日志 `unhandled event type` 先例），不崩溃、不中断流
 - 内核**没有的事件类型 → 宿主降级**（如 Pi 无 reasoning 事件，UI 不显示思考区）
 - reasoning 语义各家不同（CC 无显式 reasoning 事件、Codex 有 `reasoning_text.delta`）——映射时尽力而为，映射不了就丢弃并记录
+- `plan-submitted` 是正式方案审批的唯一统一事件语义；canonical plan item 与平台 `plan_submit` 都可产生该事件，但同一 Run 只能落一次正式提交
+- `update_task_plan`、`TaskCreate/TaskUpdate/TaskList` 及厂商任务计划通知仍按工具/任务快照投影，不得映射成 `plan-submitted`，也不得从普通文本补造正式方案
 
 ---
 
@@ -239,46 +252,28 @@ type KernelEvent =
 
 ### 5.2 Claude Code 内核
 
-**协议**：只讲 Anthropic Messages（+ Bedrock/Vertex）。**不支持 OpenAI 协议**。
+**协议**：Claude Code 对上游只讲 Anthropic Messages（+ Bedrock/Vertex）；宿主不得把 OpenAI Responses 参数直接塞给 Claude。
 
-**启动参数（关键）**：
+**当前调用链**：Runtime 使用 `@anthropic-ai/claude-agent-sdk` 的 `query()` 驱动 CLI。SDK 负责 `stream-json` stdin/stdout、partial event、permission callback、interrupt 和 session 参数；Adapter 只把 SDK 事件归一为 `KernelEvent`。应用私有版本存在时通过 `pathToClaudeCodeExecutable` 指向 `<data>/kernels/versions/claude-code/<version>/.../claude.exe`，否则使用 SDK bundled CLI。
 
-```bash
-claude \
-  --output-format stream-json \
-  --input-format stream-json \
-  --verbose \
-  --permission-prompt-tool stdio \
-  --model <透传模型名>
-# 不使用 -p 参数；用户消息通过 stdin 的 JSON 控制消息发送
-```
+- 首轮传 `sessionId`，后续按持久化 `session_id` 传 `resume`；模型、Provider、权限、规划和 Skill 变化继续恢复同一原生 session，宿主差异以有界 context update 追加，详见 TD-050。
+- `includePartialMessages=true`，`stream_event` 的 text/thinking/tool input delta 按真实到达顺序投影；Renderer 不等待完整回答后再伪流式播放。
+- 权限使用 SDK `canUseTool`。`ask -> default`、`workspace -> dontAsk`、`full-access -> bypassPermissions`；规划模式使用 Claude 原生 `plan`。SYNC-THINK 不设置 `allowedTools`、`disallowedTools`、`strictMcpConfig` 或空 `settingSources`，因此 Claude 原生工具、用户/项目设置与用户 MCP 继续可见。平台 MCP 只是合并注入并适配到统一执行/审批事件。
+- `AskUserQuestion`、`EnterPlanMode`、`ExitPlanMode` 等原生工具不按名称拦截；出现交互时统一经过 SDK 回调和宿主 UI。宿主仍只对自己提供的 MCP 工具执行能力、联网、审批和工作区边界，这属于工具实现合同，不裁剪厂商工具面。
+- 凭据只经环境变量注入。复用本地登录时不注入 key；指定凭据时同时设置 `ANTHROPIC_API_KEY` 与 `ANTHROPIC_AUTH_TOKEN`，但保留 Claude 默认 user/project/local settings 加载。
+- pause 语义为 `turn`：取消当前 Query，下一轮继续恢复同一 session。
 
-- `--permission-prompt-tool stdio`：把内核权限请求通过控制协议发给宿主（`control_request`），宿主回 `control_response`（allow 必须带 `updatedInput`，deny 必须带 `message`，`request_id` 必须匹配）。**内核会阻塞等待答复（默认超时约 60s）**。不加此参数时，非交互模式下工具**自动拒绝**
-- 流式参数展示：stream-json 有 tool_use 的 partial_json 增量事件，映射到 `tool-call` 的 `partial: true`
-
-**接入 OpenAI 系模型的两条路（优先级从上到下）**：
-
-| 路径                                             | 做法                                                                                                                  | 代价 |
-| ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------- | ---- |
-| **A. 中转站 Messages 端点（首选）**              | `ANTHROPIC_BASE_URL` 指向中转站的 `/v1/messages`，模型名透传。用户的中转站兼容 Anthropic 协议，此路**零翻译层**       | 无   |
-| B. 宿主翻译层（备选，仅当中转站不支持 Messages） | NewMax ClaudeProxy 模式：宿主内建 Messages → Responses 翻译（见 §5.5 实证）。每处 `Stripped`/`unhandled` 都是能力损耗 | 高   |
-
-**已知 bug（适配时必须实测并兜底）**：
-
-1. `ExitPlanMode` 的批准经 stdin `control_response` 回复会被静默忽略，进程停止输出并挂起（anthropics/claude-code#39666）。**规避**：启动时加 `--permission-mode acceptEdits` 绕过 plan mode
-2. `.claude/skills/`、`.claude/agents/`、`.claude/commands/` 写入在 stream-json 模式下被静默拒绝，**且不发出任何 control_request**——宿主无从弹卡，agent 卡死在 "Claude requested permissions..."（#54850）。**规避**：平台工具注册时避开这些路径；或在能力探测时发现该行为
-3. settings 文件 `permissions.allow` 规则对 Write 工具在 stream-json 下可能不生效（#13468）
-4. hooks 在 `-p` 非交互模式不触发（#30143）——stream-json stdin 模式需自行验证
-5. **stream-json 权限协议官方无文档**，是社区逆向发现的（claude-agent-sdk-go 的 cli-protocol.md）——适配时以实测为准
-
-**凭据**：`ANTHROPIC_API_KEY` 或 `ANTHROPIC_AUTH_TOKEN` 环境变量注入（禁止命令行）。**红利**：用户本地 CC 的 OAuth 登录态可直接复用（检测到本地登录时优先用登录态，不注入 key）。
-
-**pause 语义**：'turn'——「暂停」= 停当前 turn（Esc 语义），无执行器级恢复。宿主 UI 不显示「继续」，显示「发新指令」。
+**Anthropic compatible base URL**：配置保存 Provider 的协议根，不要求用户填写最终 `/messages`。标准/自定义根自动补 `/v1/messages`；已经是 `/v1` 或 `/v1/messages` 时不重复。DeepSeek 的 `https://api.deepseek.com/v1` 与 `/anthropic` 都规范化为 `/anthropic/v1/messages`。若自建网关区分协议前缀，可配置 `<origin>/anthropic`，系统只在其后补 `/v1/messages`。
 
 ### 5.3 Codex 内核
 
 - **协议**：OpenAI 协议族原生（Chat Completions / Responses）。`OPENAI_BASE_URL` 指向中转站即可，**零翻译层**
 - **启动**：`codex app-server` stdio JSON-RPC；Runtime 发送 `initialize`、`thread/start|resume`、`turn/start`，接收 `item/*` 与 `turn/*` 通知。
+- **规划模式顺序**：Desktop 处理 `/plan <需求>` 时先持久化 Conversation 的 `interactionMode=plan`，再发送剥离命令前缀的需求；Runtime 随后才创建 Run，并在 `turn/start.collaborationMode` 发送 `plan`。裸 `/plan`、`/execute` 只持久化模式，执行轮显式发送 `default`。
+- **正式方案双通道**：完成的 `ThreadItem.type=plan` 是 canonical 方案文本，平台 `plan_submit` 是兼容提交入口；两者统一映射为 `plan-submitted`，并在宿主侧按 Run 幂等，只创建一次正式方案审批记录。任一通道已提交后，另一通道的重复到达不得创建第二张卡或新版本。
+- **规划完成门禁**：规划 Run 的内核 terminal 即使报告 `completed`，产品层也只有在该 Run 已观察到 `plan-submitted` 时才视为规划成功；否则发布明确的“方案未提交”错误、保持 Conversation 为 plan 模式，且不得从 delta、最终回答或任务清单推断成功。
+- **任务清单投影**：`turn/plan/updated` 归一为持久任务计划快照，Codex `inProgress` 映射为宿主 `in_progress`。`update_task_plan` 请求与完成按 `toolCallId` 关联，参数兼容顶层 `arguments/args` 与 `toolCall.argumentsJson/arguments/args`；快照按当前 thread/task 隔离，只进入任务进度投影，不进入正式方案审批。
+- **压缩**：`item/started|completed` 的 `contextCompaction` 映射开始/成功，压缩期间的非重试 error 映射失败；旧 `thread/compacted` 作为成功兼容通知去重。
 - **权限**：三层沙箱（read-only / workspace-write / danger-full-access）+ `--approval-policy`（untrusted / on-failure / on-request / never）。三档位映射：
   - 完全控制 → `--approval-policy never`（或 danger-full-access）
   - 询问批准 → `--approval-policy on-request`
@@ -345,6 +340,21 @@ Codex stream unhandled event type: response.reasoning_text.delta  ← 事件翻�
 
 内核崩溃 → 宿主重试 → `create_agent` 被调用两次的风险。**写库的平台工具必须幂等**（如 create 前按名称查重）或带执行去重。
 
+### 6.5 当前可注入外部内核的平台能力
+
+Runtime MCP registry 是唯一目录源，按 Store、联网与视觉开关选择：
+
+- `platform`：`platform_context`、`ask_user_question`、`plan_submit`、`task_schedule`、`goal_manage`。
+- `windows-ocr`：`ocr_image`。
+- `agent-library`：智能体查询、创建、更新、归档。
+- `team-library`：团队查询、创建、更新、删除。
+- `skill-center`：Skill 查询、读取、创建、远程导入、更新、删除。
+- `mcp-directory`：MCP 工具查询与远程 MCP 注册。
+- `task-board`：`update_task_plan`、`TaskCreate`、`TaskUpdate`、`TaskList`。
+- 条件能力：视觉回退 `describe_image`；联网开启时 `web_search/web_fetch` 与 `browser_open/click/type/read/screenshot`。
+
+私有 Vendor CLI 安装目录不预写这些 MCP。Claude 每轮通过 Agent SDK in-process MCP 注入，Codex 通过每 Run loopback stdio broker 注入；用户自己的厂商 MCP 和原生工具保持原样。Desktop 自动化含本机交互授权，只留在宿主通道。规划模式只过滤平台侧写入/命令/交互工具，厂商原生 plan 权限仍由厂商内核负责。
+
 ---
 
 ## 7. 凭据管理（已定稿）
@@ -371,13 +381,18 @@ Codex stream unhandled event type: response.reasoning_text.delta  ← 事件翻�
 
 ## 9. 内核获取与版本策略（已定稿）
 
-### 9.1 本地识别 + 引导安装（不打包二进制）
+### 9.1 应用私有版本 + 本地回退
 
-1. **探测**：启动时扫描 PATH + 常见安装路径 + Windows 注册表，`claude --version` / `codex --version` / `pi --version`
-2. **未安装**：内核选择器中该内核图标置灰，hover 显示「未安装 · 点击安装」→ 一键安装（宿主跑安装命令，如 `npm i -g @openai/codex`）或引导用户手动装 → 装完自动重新探测
-3. **兜底**：native 内核永远可用（自研红利）——"一个外部内核都没装"不影响应用运行
+1. **探测顺序**：先读取 `<data>/kernels/active.json` 中经过包名、版本、根目录 containment 和文件存在校验的私有版本；Codex 再回退 Codex App 完整 runtime/PATH，Claude 再回退 Agent SDK bundled CLI，Pi 使用现有 PATH/安装引导。
+2. **检查更新**：关于页分别查询 npm registry 的 `@openai/codex` 与 `@anthropic-ai/claude-code` 最新版本，显示当前实际版本、私有激活版本和可用版本。检查不会修改执行版本。
+3. **安装与激活**：使用 packaged Node 同目录的 `npm-cli.js` 安装到随机 staging；核对 package name/version/expected executable 后 rename 到版本目录，最后原子替换 `active.json`。下载、postinstall 或验证失败时旧 active manifest 不变。
+4. **首次安装与后续升级**：首次使用向导可选安装缺失的私有内核；跳过不影响进入应用。后续统一在关于页检查和升级。
+5. **全会话生效**：激活不创建新会话。Codex 空闲 resident app-server 立即回收，活跃实例本轮结束后回收；Claude 下一轮重新创建 SDK adapter。两者下一轮都从原 thread/session 恢复。
+6. **不影响系统安装**：不写系统 npm prefix、不覆盖 Codex App 或用户 `claude`/`codex`，只修改 SYNC-THINK 数据目录。Runtime 每次启动 Kernel 时解析 active manifest，因此激活后不需要改全局 PATH。
+7. **便携发布约束**：`resources/node` 必须包含 Node 20 与 `node_modules/npm/bin/npm-cli.js`，否则 release layout 校验失败。该 Node 用于 Runtime 与私有包安装；厂商原生 CLI 的实际运行要求由其二进制自身承担。
+8. **兜底**：native 内核始终可用；私有安装缺失或损坏时回退本地/bundled 版本，且不会把无效路径标成已激活。
 
-### 9.2 版本策略：跟随更新（不锁版本）
+### 9.2 版本策略：显式检查、用户触发升级（不锁死版本）
 
 内核更新频繁（CC 已到 v2.1.x 级别），锁版本会天天失配：
 
@@ -386,6 +401,7 @@ Codex stream unhandled event type: response.reasoning_text.delta  ← 事件翻�
 | **容错解析**         | 事件解析器对未知事件类型**忽略 + 记录日志**（NewMax `unhandled event type` 先例）——内核加新事件不会弄挂适配器                |
 | **已知良好版本提示** | `knownGoodVersions` 声明测试过的版本 → spawn 前探测，发现未验证的新版本 → 黄条提示"该内核版本未经测试，可能异常"，**继续用** |
 | **更新后回归**       | 内核更新后跑适配器回归测试（§13）                                                                                            |
+| **切换时机**         | 只有用户在关于页点击安装/升级并通过验证后才原子激活；检查更新本身不切换版本                                                  |
 
 ---
 
@@ -405,7 +421,7 @@ Codex stream unhandled event type: response.reasoning_text.delta  ← 事件翻�
 ### 10.2 小队 × 多内核
 
 - 小队成员可**各自绑定不同内核**（成员 A 用 claude code 内核、成员 B 用 codex 内核）——并行执行时通过共享事实层对齐认知，形成"异构智能体团队"
-- **中途切换内核**：宿主的持久化事件流是唯一真相源 → 切内核 = 用真相源重建启动上下文（历史摘要 + 共享事实 + 小队上下文喂给新内核）。旧内核内部压缩过的摘要拿不到没关系——真相源在宿主
+- **中途切换内核**：宿主事件流负责 UI、审计和有界跨内核移交；每个厂商原生 session 继续负责自己的推理上下文、压缩和缓存前缀。切回旧内核优先 resume，首次进入新内核只注入有界便携上下文，详见 §2.4。
 
 ### 10.3 同文件冲突提示
 
@@ -436,6 +452,12 @@ Codex stream unhandled event type: response.reasoning_text.delta  ← 事件翻�
 
 内核权限请求桥接 → 复用现有审批卡 UI（`tool.approval_requested` 渲染路径），用户无感知差异。
 
+### 11.4 上下文与 Composer
+
+- 容量数字只读显示当前模型配置，不提供会话级编辑按钮。
+- Native 显示宿主自动压缩、距离压缩、阈值和最近压缩；外部内核隐藏这些宿主控制，只显示有效容量、内核自管理说明与真实压缩事件。
+- Composer 内核图标使用固定 26px 命中区、18px 品牌图标并垂直居中，不随文字或工具栏高度漂移。
+
 ---
 
 ## 12. 计费与用量统计
@@ -443,6 +465,7 @@ Codex stream unhandled event type: response.reasoning_text.delta  ← 事件翻�
 1. **窗口容量**：模型记录的 `contextWindow` 注入内核 + 统计时分母
 2. **usage 报告**：各内核报告格式不同 → 统一 `KernelUsage { real, window }` 最小协议，分项（input/output/cached）按**最粗粒度对齐**（内核不报告的项置空，不估算）
 3. **计费映射**：usage 事件接入现有 `provider.usage` 通道 → `pricing.ts` 四档计费 + 能力中心 45 天统计
+   - 外部内核事件同时保存内部 `modelId` 与 Provider `providerModelId`；历史缺失内部身份时以 Provider 模型名回退。
 4. **UI 展示**：内核模式跑时，上下文占用/压缩状态**以内核报告的为准**——拿不到就不展示，宿主不自己瞎算
 
 ---
@@ -515,7 +538,7 @@ Codex stream unhandled event type: response.reasoning_text.delta  ← 事件翻�
 - [x] CC：用户本地登录态可由 spawn 子进程复用；凭据注入仅走环境变量
 - [x] Codex 0.145.0：无动态权限桥时采用 approval-policy 静态映射，平台 MCP 工具仍走宿主审批
 - [x] Codex：`mcp_tool_call` 的 `server/tool/arguments` 已按真实抓取保真（fixture `codex-0.145.0-mcp-capture.jsonl`）；`reasoning` 已投影
-- [ ] Codex exec 0.145.0 不输出上下文压缩通知：`compacted` 分支已实现但该内核暂无来源，需 app-server 通道才能覆盖
+- [x] Codex app-server 0.147.0：`contextCompaction` item 已覆盖开始/成功/失败，旧 `thread/compacted` 成功通知去重
 - [ ] Pi：内核适配器与多供应商 baseUrl 配置；当前仅完成安装 UI/重探
 - [ ] 中转站 `/v1/messages` 端点兼容性矩阵（CC 内核路径 A 的前提）
 - [x] Job Object：Windows 嵌套 Job + taskkill/父进程兜底实现与 fixture 回归
@@ -525,7 +548,7 @@ Codex stream unhandled event type: response.reasoning_text.delta  ← 事件翻�
 
 ### 16.1 当前未完成门禁（2026-08-14 更新）
 
-1. Browser/Desktop 工具仍不向外部内核暴露。Task/Agent/Skill/Team/MCP 目录与远端注册已通过 `executeHostPlatformTool` 复用原生执行器，审批走 `chatToolRequiresApproval`；Browser/Desktop 需要 controller 的 origin grant 与风险分级，留作后续批次。
+1. Desktop 自动化仍为 host-only；Browser 工具已在联网开启时注入外部内核，并继续经过 origin grant 与风险分级。Task/Agent/Skill/Team/MCP 目录与远端注册复用宿主执行器和审批合同。
 2. 幂等只覆盖同 Run 的 `(callId + 工具 + 参数摘要)` 重放。跨进程重启的持久化 operation key、以及 Skill/MCP 自然键的数据库 UNIQUE 仍未实现。
 3. 实窗仍缺三项证据：原生与 Claude Code 的成功回复（当前被中转站 400 / `503 分组 claude 未开通模型` 阻断）、审批卡 approve/deny 点选、重启后历史一致性。
 4. Pi 只有安装引导与安装后重探，没有内核适配器。

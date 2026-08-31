@@ -53,13 +53,14 @@ export class TerminalProcessWorker implements TerminalWorker {
   async *exec(input: TerminalWorkerInput, token: WorkerToken): AsyncIterable<WorkerEvent> {
     const command = String(input.action.command ?? '').trim();
     const args = input.action.args ?? [];
-    const relativeCwd = input.action.cwd ?? '.';
+    const requestedCwd = input.action.cwd ?? '.';
     const workingDir = resolve(input.workingDir);
-    const cwd = resolve(workingDir, relativeCwd);
+    const cwd =
+      isAbsolute(requestedCwd) || win32.isAbsolute(requestedCwd)
+        ? resolve(requestedCwd)
+        : resolve(workingDir, requestedCwd);
     if (
       !command ||
-      isAbsolute(relativeCwd) ||
-      win32.isAbsolute(relativeCwd) ||
       !isPathInside(workingDir, resolve(token.allowedRoot)) ||
       !isPathInside(cwd, resolve(token.allowedRoot)) ||
       !(await isRealPathInside(workingDir, token.allowedRoot)) ||

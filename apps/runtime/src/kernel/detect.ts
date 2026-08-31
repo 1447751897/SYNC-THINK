@@ -11,6 +11,7 @@ import { existsSync, readdirSync, statSync } from 'node:fs';
 import { delimiter, dirname, extname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import type { KernelId } from '@sync-think/shared';
+import { resolveManagedKernelExecutable } from './managed-kernel.js';
 
 export interface KernelProbeResult {
   /** Resolved executable path, or null when not found on any search path. */
@@ -26,6 +27,8 @@ export interface ResolveCodexExecutableOptions {
   pathExecutable?: string | null;
   /** Version probe injection for deterministic filesystem tests. */
   versionProbe?: (executablePath: string) => string | null;
+  /** SYNC-THINK private, atomically activated Codex candidate. */
+  managedExecutable?: string | null;
 }
 
 /** Common npm/pnpm global bin directories probed in addition to PATH. */
@@ -111,6 +114,11 @@ export function resolveCodexExecutablePath(
       ? resolveExecutableOnSearchPath('codex')
       : options.pathExecutable;
   const versionProbe = options.versionProbe ?? probeVersion;
+  const managedExecutable =
+    options.managedExecutable === undefined
+      ? resolveManagedKernelExecutable('codex')
+      : options.managedExecutable;
+  if (managedExecutable && versionProbe(managedExecutable)) return managedExecutable;
   const discovered: string[] = [];
   if (localAppData) {
     const managedRoot = join(localAppData, 'OpenAI', 'Codex', 'bin');
@@ -163,6 +171,10 @@ export function resolveExecutablePath(command: string): string | null {
   const pathExecutable = resolveExecutableOnSearchPath(command);
   if (process.platform === 'win32' && command.toLowerCase() === 'codex') {
     return resolveCodexExecutablePath({ pathExecutable });
+  }
+  if (command.toLowerCase() === 'codex') {
+    const managed = resolveManagedKernelExecutable('codex');
+    if (managed && probeVersion(managed)) return managed;
   }
   return pathExecutable;
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createDemoRun, parseDemoRuns, serializeDemoRuns } from './demo-run.js';
+import { createDemoRun, parseDemoRuns, serializeDemoRun, serializeDemoRuns } from './demo-run.js';
 
 describe('DemoRun Skill snapshot persistence', () => {
   it('persists exact ids and fingerprints without duplicating Skill bodies', () => {
@@ -36,5 +36,15 @@ describe('DemoRun Skill snapshot persistence', () => {
     expect(restored.globalAgentName).toBe('Builder');
     expect(restored.persona).toBe('Stable persona');
     expect(restored.skillPromptBlocks).toBeUndefined();
+  });
+});
+
+describe('DemoRun Help mode persistence', () => {
+  it('keeps the one-turn help flag through checkpoint serialization', () => {
+    const run = createDemoRun('run-help' as never, 'thread-1', '如何使用规划模式？', {
+      helpMode: true,
+    });
+
+    expect(parseDemoRuns([serializeDemoRun(run)])[0]?.helpMode).toBe(true);
   });
 });

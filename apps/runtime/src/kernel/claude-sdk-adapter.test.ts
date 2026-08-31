@@ -610,16 +610,34 @@ describe('ClaudeSdkKernelAdapter', () => {
     expect(decision).toEqual({ behavior: 'deny', message: 'nope' });
   });
 
-  it('denies host-unsupported built-in tools without surfacing an approval card', async () => {
-    // The SDK types canUseTool as returning `PermissionResult | null` (null =
-    // fall through to its own prompt); the host must never do that, which the
-    // per-decision assertions below enforce.
+  it('bridges EnterPlanMode instead of imposing a host tool-name blacklist', async () => {
+    let decision: PermissionResult | null = null;
+    const adapter = new ClaudeSdkKernelAdapter({
+      query: fakeQuery(async function* ({ canUseTool }) {
+        decision = await canUseTool('EnterPlanMode', {}, {
+          signal: new AbortController().signal,
+          toolUseID: 'toolu_EnterPlanMode',
+          requestId: 'perm-EnterPlanMode',
+        } as Parameters<CanUseTool>[2]);
+        yield resultSuccess();
+      }),
+    });
+
+    const { permissions } = await collect(adapter, makeRequest());
+
+    expect(permissions.map((permission) => permission.toolName)).toEqual(['EnterPlanMode']);
+    expect(decision).toMatchObject({ behavior: 'allow' });
+  });
+
+  it('bridges native ExitPlanMode and AskUserQuestion through the permission callback', async () => {
+    // Kernel-native planning (docs/engineering/06): both tools surface as
+    // permission requests the host resolves via the plan card / ask card.
     const decisions: Array<PermissionResult | null> = [];
     const adapter = new ClaudeSdkKernelAdapter({
       query: fakeQuery(async function* ({ canUseTool }) {
-        for (const tool of ['EnterPlanMode', 'ExitPlanMode', 'AskUserQuestion']) {
+        for (const tool of ['ExitPlanMode', 'AskUserQuestion']) {
           decisions.push(
-            await canUseTool(tool, {}, {
+            await canUseTool(tool, { plan: '# 方案' }, {
               signal: new AbortController().signal,
               toolUseID: `toolu_${tool}`,
               requestId: `perm-${tool}`,
@@ -630,17 +648,18 @@ describe('ClaudeSdkKernelAdapter', () => {
       }),
     });
 
-    const { permissions } = await collect(adapter, makeRequest(), { autoApprove: false });
+    const { permissions } = await collect(adapter, makeRequest({ planningMode: true }));
 
-    expect(permissions).toHaveLength(0);
-    expect(decisions).toHaveLength(3);
+    expect(permissions.map((permission) => permission.toolName)).toEqual([
+      'ExitPlanMode',
+      'AskUserQuestion',
+    ]);
     for (const decision of decisions) {
-      expect(decision).toMatchObject({ behavior: 'deny' });
-      expect((decision as { message: string }).message).toContain('plan_submit');
+      expect(decision).toMatchObject({ behavior: 'allow' });
     }
   });
 
-  it('forces a non-bypass permission mode and fences native plan tools during planning mode', async () => {
+  it('uses SDK-native plan mode without replacing Claude tool policy', async () => {
     const captures: QueryCapture[] = [];
     const adapter = new ClaudeSdkKernelAdapter({
       query: fakeQuery(async function* () {
@@ -652,13 +671,11 @@ describe('ClaudeSdkKernelAdapter', () => {
 
     const options = captures[0].options;
     // full-access must never bypass permissions on a planning run, else Claude
-    // executes EnterPlanMode/AskUserQuestion without consulting canUseTool.
-    expect(options.permissionMode).toBe('default');
+    // executes ExitPlanMode/AskUserQuestion without consulting canUseTool.
+    expect(options.permissionMode).toBe('plan');
     expect(options.allowDangerouslySkipPermissions).toBeUndefined();
-    expect(options.allowedTools).toEqual(['Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch']);
-    expect(options.disallowedTools).toEqual(
-      expect.arrayContaining(['EnterPlanMode', 'ExitPlanMode', 'AskUserQuestion', 'Bash', 'Write']),
-    );
+    expect(options.allowedTools).toBeUndefined();
+    expect(options.disallowedTools).toBeUndefined();
   });
 
   it('acknowledges the dangerous skip flag only for a real full-access run', async () => {
@@ -673,6 +690,22 @@ describe('ClaudeSdkKernelAdapter', () => {
 
     expect(captures[0].options.permissionMode).toBe('bypassPermissions');
     expect(captures[0].options.allowDangerouslySkipPermissions).toBe(true);
+    expect(captures[0].options.disallowedTools).toBeUndefined();
+  });
+
+  it('runs the SDK transport against the atomically activated private Claude CLI', async () => {
+    const captures: QueryCapture[] = [];
+    const executable = 'D:\\SYNC-THINK\\kernels\\claude-code\\2.1.250\\claude.exe';
+    const adapter = new ClaudeSdkKernelAdapter({
+      resolveExecutable: () => executable,
+      query: fakeQuery(async function* () {
+        yield resultSuccess();
+      }, captures),
+    });
+
+    await collect(adapter);
+
+    expect(captures[0].options.pathToClaudeCodeExecutable).toBe(executable);
   });
 
   it('maps workspace permission mode to dontAsk', async () => {
@@ -729,8 +762,9 @@ describe('ClaudeSdkKernelAdapter', () => {
     const options = captures[0].options;
     expect(options.sessionId).toBe('4c793e96-7a25-4c15-94dd-19e4f9b2c7ef');
     expect(options.resume).toBeUndefined();
-    // A host credential must not be shadowed by a stale token in user settings.
-    expect(options.settingSources).toEqual([]);
+    // Omission matches Claude CLI defaults: user/project/local settings and
+    // their MCP servers remain available while explicit env credentials win.
+    expect(options.settingSources).toBeUndefined();
     expect(options.env).toMatchObject({
       ANTHROPIC_BASE_URL: 'http://127.0.0.1:43123/anthropic',
       ANTHROPIC_API_KEY: 'gateway-ticket',
@@ -854,7 +888,7 @@ describe('ClaudeSdkKernelAdapter', () => {
     );
 
     const options = captures[0].options;
-    expect(options.strictMcpConfig).toBe(true);
+    expect(options.strictMcpConfig).toBeUndefined();
     const server = options.mcpServers?.['sync-think-platform'] as {
       type: string;
       command: string;

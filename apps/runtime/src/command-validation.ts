@@ -19,3 +19,4 @@ export * from './validation/browser-profile.js';
 export * from './validation/browser-recording.js';
 export * from './validation/browser-workflow.js';
 export * from './validation/desktop-command.js';
+export * from './validation/bot-channel.js';

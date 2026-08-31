@@ -256,7 +256,7 @@ function nodeMajor(binary: string): number | null {
   }
 }
 
-function resolveNodeBinary(): string | null {
+export function resolveNodeBinary(): string | null {
   // Runtime native dependencies are built for the workspace's required Node 20.
   // `node.exe` on PATH is frequently a different major (Node 24 on the current
   // development machine), which exits before opening the pipe with an ABI error.
@@ -325,6 +325,8 @@ export function buildManagedRuntimeEnvironment(
       baseEnvironment.SYNC_THINK_CHAT_IMAGE_STAGING ?? join(dataRoot, 'chat-image-staging'),
     SYNC_THINK_CHAT_MESSAGE_IMAGES:
       baseEnvironment.SYNC_THINK_CHAT_MESSAGE_IMAGES ?? join(dataRoot, 'message-images'),
+    SYNC_THINK_MANAGED_KERNEL_ROOT:
+      baseEnvironment.SYNC_THINK_MANAGED_KERNEL_ROOT ?? join(dataRoot, 'kernels'),
   };
   if (identity.pipeSecret) environment.SYNC_THINK_PIPE_SECRET = identity.pipeSecret;
   else delete environment.SYNC_THINK_PIPE_SECRET;

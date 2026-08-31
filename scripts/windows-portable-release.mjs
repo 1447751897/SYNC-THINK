@@ -112,6 +112,7 @@ const REQUIRED_LAYOUT_FILES = [
   ['resources/runtime/dist/main.js', 'release.runtime_main_missing'],
   ['resources/runtime/mcp-server/platform-mcp-server.mjs', 'release.platform_mcp_server_missing'],
   ['resources/node/node.exe', 'release.node_binary_missing'],
+  ['resources/node/node_modules/npm/bin/npm-cli.js', 'release.npm_cli_missing'],
 ];
 
 function normalizedPath(path) {
@@ -616,8 +617,7 @@ export async function stageWindowsPortableRelease(options = {}) {
     join(platformMcpDir, 'platform-mcp-server.mjs'),
   );
   const nodeDir = join(outputDir, 'resources', 'node');
-  await mkdir(nodeDir, { recursive: true });
-  await cp(managedNode.path, join(nodeDir, 'node.exe'));
+  await cp(dirname(managedNode.path), nodeDir, { recursive: true, force: true });
 
   const verification = await verifyWindowsPortableLayout(outputDir, {
     signingMode: updaterConfiguration.signingMode,

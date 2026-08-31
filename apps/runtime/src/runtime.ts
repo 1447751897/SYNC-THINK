@@ -76,6 +76,15 @@ import {
   type RegisterRemoteMcpResponse,
   type SetMcpServerEnabledResponse,
   type DeleteMcpServerResponse,
+  type BotChannelConfigSummary,
+  type BotChannelPlatform,
+  type CheckWechatBotQrResponse,
+  type GetBotChannelConfigResponse,
+  type RequestWechatBotQrResponse,
+  type SaveBotChannelConfigPayload,
+  type TestBotChannelPayload,
+  type SaveBotChannelConfigResponse,
+  type TestBotChannelResponse,
   type CapabilityWorkspaceListResponse,
   type CapabilityWorkspaceSetActiveResponse,
   type CapabilityGovernanceListResponse,
@@ -142,6 +151,8 @@ import {
   type ConversationPlanApproveResponse,
   type ConversationAskPendingResponse,
   type AskQuestion,
+  type AskQuestionAnswer,
+  type AskQuestionOption,
   type CreateScheduledTaskPayload,
   type ListScheduledTasksPayload,
   type ListScheduledTasksResponse,
@@ -173,6 +184,8 @@ import {
   type ListWaitingBrowserHandoffsResponse,
   type ListPendingToolApprovalsResponse,
   type PendingToolApprovalSummary,
+  type ToolApprovalRiskSummary,
+  type ToolApprovalScope,
   type DesktopWaitingCommandSummary,
   type ListWaitingDesktopCommandsResponse,
   type ContinueDesktopCommandResponse,
@@ -262,7 +275,11 @@ import type {
   ProviderToolCall,
   VisibleAssistantMessagePhase,
 } from '@sync-think/adapters';
-import { defaultSurfaceForProtocol, inferProviderSurface } from '@sync-think/shared';
+import {
+  defaultSurfaceForProtocol,
+  inferProviderSurface,
+  parsePlanMarkdown,
+} from '@sync-think/shared';
 import type { ConversationGetRunProcessResponse } from '@sync-think/protocol';
 import { projectRunProcess } from './run-process-view.js';
 import { projectRunIndexUpsert } from './run-index-projection.js';
@@ -530,6 +547,11 @@ import {
   parseRegisterRemoteMcpPayload,
   parseSetMcpServerEnabledPayload,
   parseDeleteMcpServerPayload,
+  parseGetBotChannelConfigPayload,
+  parseSaveBotChannelConfigPayload,
+  parseTestBotChannelPayload,
+  parseRequestWechatBotQrPayload,
+  parseCheckWechatBotQrPayload,
   parseCapabilityWorkspaceListPayload,
   parseCapabilityWorkspaceSetActivePayload,
   parseCapabilityGovernanceListPayload,
@@ -684,6 +706,7 @@ import {
   resolvePlanActRouteForContext,
   type PlanActRoute,
 } from './plan-act.js';
+import { ToolApprovalPolicy, toolApprovalScopesFor } from './tool-approval-policy.js';
 import { computeNextRunAt, initialNextRunAt } from './task-scheduler.js';
 import {
   enabledClaudePluginSkillSources,
@@ -783,6 +806,80 @@ import {
   sendExternalEventCompletionToDaemon,
   sendExternalEventHeartbeatToDaemon,
 } from './daemon/external-event-client.js';
+import { BOT_CHANNEL_PLATFORMS, BotChannelConfigStore } from './bot-channels/config-store.js';
+import { BotChannelGatewayManager } from './bot-channels/gateway-manager.js';
+import { TelegramGateway } from './bot-channels/telegram-gateway.js';
+import { FeishuGateway } from './bot-channels/feishu-gateway.js';
+import { WeComGateway } from './bot-channels/wecom-gateway.js';
+import { DiscordGateway } from './bot-channels/discord-gateway.js';
+import { DingTalkGateway } from './bot-channels/dingtalk-gateway.js';
+import { QQGateway } from './bot-channels/qq-gateway.js';
+import { WechatGateway } from './bot-channels/wechat-gateway.js';
+import type { NormalizedBotMessage } from './bot-channels/types.js';
+import { TelegramBotClient, type TelegramIncomingMessage } from './telegram-bot-client.js';
+
+const TELEGRAM_BOT_SETTING_KEY = 'bot.channel.telegram';
+
+interface PersistedTelegramBotConfig {
+  enabled: boolean;
+  tokenHandle?: string;
+  proxyUrl: string;
+  updateOffset?: number;
+  botUsername?: string;
+  botDisplayName?: string;
+  lastError?: string;
+  updatedAt?: string;
+}
+
+function botSecretReplacements(
+  payload: SaveBotChannelConfigPayload | TestBotChannelPayload,
+): Partial<Record<'token' | 'appSecret' | 'secret' | 'botToken' | 'clientSecret', string>> {
+  return {
+    ...(payload.token?.trim() ? { token: payload.token.trim() } : {}),
+    ...(payload.appSecret?.trim() ? { appSecret: payload.appSecret.trim() } : {}),
+    ...(payload.secret?.trim() ? { secret: payload.secret.trim() } : {}),
+    ...(payload.botToken?.trim() ? { botToken: payload.botToken.trim() } : {}),
+    ...(payload.clientSecret?.trim() ? { clientSecret: payload.clientSecret.trim() } : {}),
+  };
+}
+
+function botPublicSettings(
+  payload: SaveBotChannelConfigPayload | TestBotChannelPayload,
+): Record<string, string | undefined> {
+  return {
+    proxyUrl: payload.proxyUrl,
+    appId: payload.appId,
+    botId: payload.botId,
+    clientId: payload.clientId,
+    domain: payload.domain,
+    renderMode: payload.renderMode,
+    baseUrl: payload.baseUrl,
+  };
+}
+
+function normalizeWechatQrStatus(value: string): CheckWechatBotQrResponse['status'] {
+  if (
+    value === 'confirmed' ||
+    value === 'expired' ||
+    value === 'cancelled' ||
+    value === 'scanned'
+  ) {
+    return value;
+  }
+  return 'waiting';
+}
+
+function botPlatformLabel(platform: BotChannelPlatform): string {
+  return {
+    telegram: 'Telegram',
+    feishu: '飞书',
+    wecom: '企业微信',
+    wechat: '微信',
+    discord: 'Discord',
+    dingtalk: '钉钉',
+    qq: 'QQ',
+  }[platform];
+}
 
 const CODEX_STYLE_COMMENTARY_PROMPT = [
   'User-visible execution updates (Codex-style commentary):',
@@ -981,6 +1078,12 @@ interface PersistedKernelConversationSession {
   fingerprint: string;
   updatedAt: string;
   responseContinuationScopeId?: string;
+  /** Stable workspace identity owned by the native Codex/Claude session. */
+  workspaceRoot?: string;
+  /** Last host context appended to the native session. */
+  contextHash?: string;
+  /** Provider/model route owning response-id continuations for this session. */
+  routingHash?: string;
   /**
    * Host-message watermark (last `message.sequence` this kernel session saw).
    * Used to detect cross-kernel gaps when another kernel handled turns after
@@ -990,9 +1093,9 @@ interface PersistedKernelConversationSession {
   lastMessageAt?: string;
 }
 
-/** Cross-kernel gap handling: a gap larger than this is cheaper to rebuild. */
-const KERNEL_SESSION_GAP_MESSAGE_LIMIT = 60;
-const KERNEL_SESSION_GAP_TOKEN_RATIO = 0.35;
+const PORTABLE_KERNEL_CONTEXT_MESSAGE_LIMIT = 20;
+const PORTABLE_KERNEL_CONTEXT_TURN_BYTES = 8 * 1024;
+const PORTABLE_KERNEL_CONTEXT_TOTAL_BYTES = 64 * 1024;
 
 const KERNEL_SESSION_SETTING_PREFIX = 'kernel.session';
 const GATEWAY_RESPONSE_CONTINUATION_SETTING_PREFIX = 'gateway.response-continuation';
@@ -1025,6 +1128,15 @@ function parsePersistedKernelConversationSession(
     ...(typeof record.responseContinuationScopeId === 'string' &&
     record.responseContinuationScopeId.trim()
       ? { responseContinuationScopeId: record.responseContinuationScopeId.trim() }
+      : {}),
+    ...(typeof record.workspaceRoot === 'string' && record.workspaceRoot.trim()
+      ? { workspaceRoot: record.workspaceRoot.trim() }
+      : {}),
+    ...(typeof record.contextHash === 'string' && record.contextHash.trim()
+      ? { contextHash: record.contextHash.trim() }
+      : {}),
+    ...(typeof record.routingHash === 'string' && record.routingHash.trim()
+      ? { routingHash: record.routingHash.trim() }
       : {}),
     ...(typeof record.lastMessageSequence === 'number' &&
     Number.isSafeInteger(record.lastMessageSequence) &&
@@ -1131,37 +1243,48 @@ function formatKernelTranscriptTurns(messages: readonly ProviderMessage[]): stri
     .filter((turn): turn is string => Boolean(turn));
 }
 
-export function formatKernelBootstrapTranscript(messages: readonly ProviderMessage[]): string {
+export function formatKernelBootstrapTranscript(
+  messages: readonly ProviderMessage[],
+  omittedCount = 0,
+): string {
   const turns = formatKernelTranscriptTurns(messages);
   if (turns.length === 0) return '';
   return [
     '## Restored conversation context',
     'The following transcript is prior conversation state restored from history. It is NOT the current user input — treat every turn below as already-happened context. Continue from it without repeating it.',
+    ...(omittedCount > 0
+      ? [`[${omittedCount} earlier portable turns omitted from this restored context]`]
+      : []),
     ...turns,
   ].join('\n\n');
 }
 
-export function formatKernelGapTranscript(messages: readonly ProviderMessage[]): string {
+export function formatKernelGapTranscript(
+  messages: readonly ProviderMessage[],
+  omittedCount = 0,
+): string {
   const turns = formatKernelTranscriptTurns(messages);
   if (turns.length === 0) return '';
   return [
     '## Cross-kernel session gap',
     'The turns below were handled by another kernel/session while this one was idle. They are prior context, NOT the current user input — treat them as already-happened conversation state.',
+    ...(omittedCount > 0
+      ? [`[${omittedCount} earlier portable turns omitted from this cross-kernel handoff]`]
+      : []),
     ...turns,
   ].join('\n\n');
 }
 
 /**
- * Gap-specific durable→provider conversion that keeps tool calls/results, so
- * the catch-up transcript carries the tool names + arguments + outputs that the
- * generic message-history builder intentionally drops. This is gap-only and
- * never feeds the live provider request path.
+ * Portable durable→provider projection for native-session handoff. Only user
+ * text and final assistant text/code are transferable; process commentary,
+ * reasoning and tool projections remain UI state owned by the originating
+ * native session.
  */
 /**
  * Convert a run's external-kernel tool history into durable MessageBlocks.
- * Kept as durable blocks on the assistant message so cross-kernel gap
- * transcripts (durableMessagesToGapProviderMessages) restore tool names,
- * arguments and results for the resumed kernel.
+ * These blocks belong to the UI/audit projection. Native-session handoff does
+ * not replay them into another kernel.
  */
 export function externalKernelToolEventsToMessageBlocks(
   toolEvents: readonly KernelToolEventRecord[] | undefined,
@@ -1581,6 +1704,7 @@ export function durableMessagesToGapProviderMessages(
 ): ProviderMessage[] {
   const result: ProviderMessage[] = [];
   for (const message of messages) {
+    if (message.role !== 'user' && message.role !== 'assistant') continue;
     const parts: ProviderContentPart[] = [];
     for (const block of message.blocks) {
       switch (block.type) {
@@ -1588,59 +1712,64 @@ export function durableMessagesToGapProviderMessages(
         case 'code':
           if (block.text) parts.push({ type: 'text', text: block.text });
           break;
-        case 'commentary':
-          if (block.text) parts.push({ type: 'text', text: block.text });
-          break;
-        case 'tool-call': {
-          const payload = (block.payload ?? {}) as {
-            name?: string;
-            argumentsJson?: string;
-          };
-          parts.push({
-            type: 'tool-call',
-            toolCall: {
-              id: '',
-              name: payload.name ?? 'unknown',
-              argumentsJson: payload.argumentsJson ?? '',
-            },
-          });
-          break;
-        }
-        case 'tool-result':
-          parts.push({ type: 'tool-result', toolResult: block.text ?? '' });
-          break;
-        case 'reasoning':
-          if (block.reasoningText) parts.push({ type: 'text', text: block.reasoningText });
-          break;
         default:
           break;
       }
     }
     if (parts.length === 0) continue;
-    result.push({ role: message.role, content: parts });
+    const text = parts
+      .map((part) => (part.type === 'text' ? (part.text ?? '') : ''))
+      .filter(Boolean)
+      .join('\n')
+      .trim();
+    if (!text) continue;
+    const marker = '\n[portable turn truncated]';
+    const bytes = Buffer.byteLength(text, 'utf8');
+    const portableText =
+      bytes <= PORTABLE_KERNEL_CONTEXT_TURN_BYTES
+        ? text
+        : `${Buffer.from(text, 'utf8')
+            .subarray(0, PORTABLE_KERNEL_CONTEXT_TURN_BYTES - Buffer.byteLength(marker, 'utf8'))
+            .toString('utf8')
+            .replace(/\uFFFD$/u, '')}${marker}`;
+    result.push({ role: message.role, content: portableText });
   }
   return result;
 }
 
+function formatBoundedPortableKernelTranscript(
+  messages: readonly ProviderMessage[],
+  formatter: (messages: readonly ProviderMessage[], omittedCount?: number) => string,
+): string {
+  let omittedCount = Math.max(0, messages.length - PORTABLE_KERNEL_CONTEXT_MESSAGE_LIMIT);
+  const selected = messages.slice(-PORTABLE_KERNEL_CONTEXT_MESSAGE_LIMIT);
+  let transcript = formatter(selected, omittedCount);
+  while (
+    selected.length > 1 &&
+    Buffer.byteLength(transcript, 'utf8') > PORTABLE_KERNEL_CONTEXT_TOTAL_BYTES
+  ) {
+    selected.shift();
+    omittedCount += 1;
+    transcript = formatter(selected, omittedCount);
+  }
+  return transcript;
+}
+
 /**
- * Decide whether a set of gap messages should be patched into a resumed kernel
- * session (via a catch-up transcript) or treated as oversized (caller rebuilds).
- * Pure — the caller supplies the durable gap messages and the effective window.
+ * Build the bounded portable tail appended to a resumed native session. The
+ * legacy `oversized` field remains false for wire/test compatibility: native
+ * session lifetime is never derived from host message or token estimates.
  */
 export function computeKernelGapFromMessages(
   messages: readonly Message[],
-  effectiveWindow: number,
+  _effectiveWindow: number,
 ): { count: number; catchUp?: string; oversized: boolean } {
   if (messages.length === 0) return { count: 0, oversized: false };
-  const roughTokens = messages.reduce(
-    (sum, message) => sum + Math.ceil(JSON.stringify(message.blocks).length / 4),
-    0,
+  const portableMessages = durableMessagesToGapProviderMessages(messages);
+  const catchUp = formatBoundedPortableKernelTranscript(
+    portableMessages,
+    formatKernelGapTranscript,
   );
-  const oversized =
-    messages.length > KERNEL_SESSION_GAP_MESSAGE_LIMIT ||
-    roughTokens > effectiveWindow * KERNEL_SESSION_GAP_TOKEN_RATIO;
-  if (oversized) return { count: messages.length, oversized: true };
-  const catchUp = formatKernelGapTranscript(durableMessagesToGapProviderMessages(messages));
   return { count: messages.length, oversized: false, ...(catchUp ? { catchUp } : {}) };
 }
 
@@ -1736,33 +1865,76 @@ function normalizeModelTaskPlan(raw: unknown): ModelTaskPlan | undefined {
   return { items, total: items.length, completed };
 }
 
-/** Parse the goal evaluator's JSON answer ({met, reason}) with lenient extraction. */
-export function parseGoalEvaluatorOutput(
-  output: string,
-): { met: boolean; reason: string } | undefined {
-  if (!output || typeof output !== 'string') return undefined;
-  const trimmed = output.trim();
-  const jsonStart = trimmed.indexOf('{');
-  if (jsonStart >= 0) {
-    try {
-      const parsed = JSON.parse(trimmed.slice(jsonStart)) as unknown;
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        const record = parsed as Record<string, unknown>;
-        if (typeof record.met === 'boolean') {
-          return {
-            met: record.met,
-            reason: typeof record.reason === 'string' ? record.reason.slice(0, 240) : '',
-          };
-        }
-      }
-    } catch {
-      // fall through to keyword matching
-    }
+export type GoalTurnStatus = 'complete' | 'continue' | 'blocked';
+
+const GOAL_STATUS_PATTERN = /GOAL_STATUS\s*[：:]\s*(complete|blocked|continue)/gi;
+const GOAL_STATUS_LINE_PATTERN =
+  /^[ \t`*#>-]*GOAL_STATUS\s*[：:]\s*(?:complete|blocked|continue)[ \t`*]*$/gim;
+
+/** NewMax Goal protocol: the last status marker in the work model's final answer wins. */
+export function parseGoalTurnStatus(text: string): GoalTurnStatus | undefined {
+  let status: GoalTurnStatus | undefined;
+  for (const match of text.matchAll(GOAL_STATUS_PATTERN)) {
+    status = match[1]?.toLowerCase() as GoalTurnStatus | undefined;
   }
-  if (/\btrue\b/i.test(trimmed) || /^\s*(yes|是|满足|完成|达成)\b/i.test(trimmed)) {
-    return { met: true, reason: trimmed.slice(0, 240) };
+  return status;
+}
+
+/** Remove standalone Goal control lines from user-visible final answer text. */
+export function stripGoalStatus(text: string): string {
+  const stripped = text.replace(GOAL_STATUS_LINE_PATTERN, '');
+  return stripped === text ? text : stripped.replace(/\s+$/, '');
+}
+
+function goalStatusInstruction(chinese: boolean): string {
+  return chinese
+    ? '本轮结束时，最后单独一行输出状态标记 `GOAL_STATUS: complete` / `GOAL_STATUS: continue` / `GOAL_STATUS: blocked`：仅当目标每条要求都有证据证明已满足、且要求的内容已完整写在你的回复正文里、经得起逐条核对时才用 complete；只有确实需要人工介入、或必须修改实现方案、自己无法继续推进时才用 blocked，不要第一次遇到困难就用 blocked；其余情况一律用 continue 继续工作，不要因为想停下或预算将尽就声称完成或受阻。'
+    : 'At the end of this turn, output one final standalone status line: `GOAL_STATUS: complete` / `GOAL_STATUS: continue` / `GOAL_STATUS: blocked`. Use complete only when every requirement has evidence, the required content is fully present in your reply body, and it can survive item-by-item review. Use blocked only when human intervention is truly required, the approach must change, or you cannot continue on your own; do not mark blocked at the first difficulty. Use continue in all other cases, and never report complete or blocked just because you want to stop or the budget is running low.';
+}
+
+/** Work-model prompt for each Goal round, including the optional stopping condition. */
+export function formatGoalTurnModelPrompt(goal: GoalStatus): string {
+  const round = (goal.roundsStarted ?? 0) + 1;
+  const maxRounds = goal.maxGoalRounds ?? DEFAULT_GOAL_MAX_ROUNDS;
+  const tokenBudget = goal.maxGoalTokens ?? DEFAULT_GOAL_MAX_TOKENS;
+  const chinese = /[\u3400-\u9fff]/u.test(`${goal.condition}${goal.stopCondition ?? ''}`);
+  const stopping = goal.stopCondition
+    ? chinese
+      ? `停止条件：${goal.stopCondition}。`
+      : `Stopping condition: ${goal.stopCondition}. `
+    : '';
+  if (round === 1) {
+    return chinese
+      ? `[Goal 模式] 目标：${goal.condition}。${stopping}最多 ${maxRounds} 轮，token 预算 ${tokenBudget}。请从本轮起，直接在回复正文中按顺序逐步产出目标要求的实际内容、边做边推进；不要把整轮时间花在创建或更新任务清单等管理动作上，完成与否以正文是否实际覆盖目标为准。${goalStatusInstruction(true)}`
+      : `[Goal mode] Goal: ${goal.condition}. ${stopping}Maximum ${maxRounds} iterations, token budget ${tokenBudget}. Starting this turn, produce the actual content required by the goal directly in the reply body, step by step and in order. Do not spend the whole turn creating or updating task lists or other management artifacts. Completion is judged by whether the reply body actually covers the goal. ${goalStatusInstruction(false)}`;
   }
-  return { met: false, reason: trimmed.slice(0, 240) };
+  return chinese
+    ? `[Goal 第 ${round} 轮] 目标：${goal.condition}。${stopping}请核对你在本对话中已输出的回复正文，逐条对照目标的全部要求：仍有未覆盖的部分，就在本轮正文按顺序继续产出，不要跳步、不要重复已讲过的内容；只有当正文确已完整覆盖目标每一项要求时，才输出 GOAL_STATUS: complete。${goalStatusInstruction(true)}`
+    : `[Goal round ${round}] Goal: ${goal.condition}. ${stopping}Review the reply body already produced in this conversation against every requirement. Continue with only the uncovered work, without skipping steps or repeating completed content. Use GOAL_STATUS: complete only after the reply body fully covers the goal. ${goalStatusInstruction(false)}`;
+}
+
+function stripGoalStatusFromRun(run: DemoRunState): DemoRunState {
+  return {
+    ...run,
+    assistantText: stripGoalStatus(run.assistantText),
+    legacyPendingText: stripGoalStatus(run.legacyPendingText),
+    assistantTimeline: run.assistantTimeline.map((segment) =>
+      segment.kind === 'text' && segment.phase === 'final_answer'
+        ? { ...segment, text: stripGoalStatus(segment.text) }
+        : segment,
+    ),
+  };
+}
+
+/** User-facing message persisted for each automatic goal round. */
+export function formatGoalTurnUserMessage(goal: GoalStatus): string {
+  const round = (goal.roundsStarted ?? 0) + 1;
+  const maxRounds = goal.maxGoalRounds ?? DEFAULT_GOAL_MAX_ROUNDS;
+  return round === 1
+    ? goal.condition
+    : `继续目标（第 ${round}/${maxRounds} 轮）：${
+        goal.lastReason ? `处理上一轮未完成项：${goal.lastReason}` : goal.condition
+      }`;
 }
 
 /** NewMax-style checkbox checklist text injected into the model context. */
@@ -1955,8 +2127,52 @@ interface PendingAskEntry {
   onAbort(): void;
 }
 
-/** 目标模式默认轮次上限（防无限烧 token；达上限自动 blocked）。 */
-const DEFAULT_GOAL_MAX_ROUNDS = 5;
+/** NewMax goal defaults; both limits prevent an unbounded autonomous loop. */
+const DEFAULT_GOAL_MAX_ROUNDS = 10;
+const DEFAULT_GOAL_MAX_TOKENS = 1_000_000;
+
+/**
+ * Build the durable usage payload shared by Codex/Claude native reports and
+ * gateway-observed reports. `modelId` is the SYNC-THINK catalog identity used
+ * by usage aggregation; `providerModelId` remains the provider wire identity.
+ */
+export function buildKernelUsagePayload(
+  run: DemoRunState,
+  usage: KernelUsage,
+  sequence: number,
+  preferUsageIdentity = false,
+): Record<string, unknown> {
+  return {
+    threadId: run.threadId,
+    requestId: usage.requestId ?? `kernel-${run.runId}-${sequence}`,
+    ...(usage.providerResponseId ? { providerResponseId: usage.providerResponseId } : {}),
+    modelId: run.modelId,
+    providerId: preferUsageIdentity
+      ? (usage.providerId ?? run.providerId ?? run.kernelId ?? 'kernel')
+      : (run.providerId ?? usage.providerId ?? run.kernelId ?? 'kernel'),
+    providerModelId: usage.modelId ?? run.providerModelId,
+    purpose: 'normal',
+    tokensIn: usage.input ?? usage.real,
+    tokensOut: usage.output ?? 0,
+    ...(usage.cached !== undefined ? { cachedTokensHit: usage.cached } : {}),
+    ...(usage.cachedTokensCreated !== undefined
+      ? { cachedTokensCreated: usage.cachedTokensCreated }
+      : {}),
+    ...(usage.reasoningTokens !== undefined ? { reasoningTokens: usage.reasoningTokens } : {}),
+    totalTokens: usage.real,
+  };
+}
+
+function parseToolApprovalArguments(argumentsJson: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(argumentsJson || '{}') as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
 
 export class Runtime {
   readonly startedAt = Date.now();
@@ -1991,6 +2207,7 @@ export class Runtime {
   private readonly modelRetryBaseDelayMs: number;
   private readonly providerStore?: SqliteProviderStore;
   private readonly appSettingStore?: SqliteAppSettingStore;
+  private readonly toolApprovalPolicy: ToolApprovalPolicy;
   private readonly windowsOcrRecognizer: typeof recognizeImageTextWithWindowsOcr;
   /** 0044: 定时任务表与调度心跳。 */
   private readonly scheduledTaskStore?: SqliteScheduledTaskStore;
@@ -2060,6 +2277,21 @@ export class Runtime {
     string,
     { key?: string; storeHandle?: string; authScheme: string }
   >();
+  private readonly wechatBotGateway = new WechatGateway();
+  private readonly botGatewayManager = new BotChannelGatewayManager([
+    new TelegramGateway(),
+    new FeishuGateway(),
+    new WeComGateway(),
+    this.wechatBotGateway,
+    new DiscordGateway(),
+    new DingTalkGateway(),
+    new QQGateway(),
+  ]);
+  private readonly botChannelConfigStore?: BotChannelConfigStore;
+  /** Legacy polling client kept only for reading/migrating existing Telegram settings. */
+  private readonly telegramBotClient = new TelegramBotClient();
+  private telegramBotAbort?: AbortController;
+  private telegramBotLoop?: Promise<void>;
   private readonly browserHost?: BrowserHostLike;
   private readonly browserController?: RuntimeBrowserController;
   private readonly browserProfileService?: RuntimeBrowserProfileService;
@@ -2091,6 +2323,8 @@ export class Runtime {
     string,
     Map<string, Promise<{ ok: boolean; content?: string; error?: string }>>
   >();
+  /** The one formal, approval-ready plan revision submitted by each active run. */
+  private readonly formalPlanRevisionByRun = new Map<string, number>();
   /** Hot cache for external-kernel sessions; app_setting remains durable authority. */
   private readonly kernelConversationSessions = new Map<
     string,
@@ -2128,6 +2362,9 @@ export class Runtime {
       completedResults: Array<{ toolCallId: string; content: string }>;
       toolLoopRound: number;
       approvalSummary: { title: string; detail: string; path?: string; command?: string };
+      approvalArguments: Record<string, unknown>;
+      approvalRisk?: ToolApprovalRiskSummary;
+      allowedScopes: ToolApprovalScope[];
       resolve: (decision: 'approve' | 'deny') => void;
       createdAt: string;
     }
@@ -2171,6 +2408,7 @@ export class Runtime {
     this.modelRetryBaseDelayMs = Math.max(0, opts.modelRetryBaseDelayMs ?? 500);
     this.providerStore = opts.providerStore;
     this.appSettingStore = opts.appSettingStore;
+    this.toolApprovalPolicy = new ToolApprovalPolicy(opts.appSettingStore);
     this.windowsOcrRecognizer = opts.windowsOcrRecognizer ?? recognizeImageTextWithWindowsOcr;
     this.scheduledTaskStore = opts.scheduledTaskStore;
     this.runIndexStore = opts.runIndexStore;
@@ -2269,6 +2507,10 @@ export class Runtime {
     this.taskPlanStore = opts.taskPlanStore;
     this.capabilityStore = opts.capabilityStore;
     this.secureStore = opts.secureStore;
+    this.botChannelConfigStore =
+      opts.appSettingStore && opts.secureStore
+        ? new BotChannelConfigStore(opts.appSettingStore, opts.secureStore)
+        : undefined;
     this.browserHost = opts.browserHost;
     const browserProfileGate =
       opts.browserHost && opts.browserStore
@@ -2453,6 +2695,26 @@ export class Runtime {
         }
         if (frame.type === 'external.event.dispatch') {
           this.handleExternalEventDispatch(socket, frame);
+          return;
+        }
+        if (frame.type === 'bot.channel.get') {
+          this.handleGetBotChannelConfigUnified(socket, frame);
+          return;
+        }
+        if (frame.type === 'bot.channel.save') {
+          void this.handleSaveBotChannelConfigUnified(socket, frame);
+          return;
+        }
+        if (frame.type === 'bot.channel.test') {
+          void this.handleTestBotChannelUnified(socket, frame);
+          return;
+        }
+        if (frame.type === 'bot.channel.wechat.qr.request') {
+          void this.handleRequestWechatBotQr(socket, frame);
+          return;
+        }
+        if (frame.type === 'bot.channel.wechat.qr.check') {
+          void this.handleCheckWechatBotQr(socket, frame);
           return;
         }
         if (frame.type === 'scheduledTask.history') {
@@ -2669,6 +2931,10 @@ export class Runtime {
         }
         if (frame.type === 'kernel.detect') {
           void this.handleKernelDetect(socket, frame);
+          return;
+        }
+        if (frame.type === 'kernel.recycle') {
+          void this.handleKernelRecycle(socket, frame);
           return;
         }
         if (frame.type === 'gateway.status') {
@@ -8298,12 +8564,21 @@ export class Runtime {
     const personalizationPrompt = buildPersonalizationInstructions(
       this.appSettingStore?.get(PERSONALIZATION_SETTING_KEY)?.value,
     );
+    const helpModePrompt = run.helpMode
+      ? [
+          'SYNC-THINK built-in help mode is active for this turn.',
+          'Answer the user question as concise product guidance. Explain only controls and behavior that are available in this app.',
+          'The visible composer commands are /help, /plan, /goal, /compact, and /mcp. /execute is a hidden compatibility command that exits planning mode.',
+          'Do not edit workspace files, run commands, or claim that an action was performed. If the question is outside product usage, ask the user to send it as a normal request.',
+        ].join('\n')
+      : undefined;
     return [
       agentIdentityPrompt ??
         (workspaceRoot
           ? 'You are a coding assistant with filesystem tools for the bound project folder.'
           : 'You are a helpful assistant.'),
       personalizationPrompt,
+      helpModePrompt,
       skillPrompt,
     ].filter((value): value is string => Boolean(value));
   }
@@ -8770,6 +9045,17 @@ export class Runtime {
         payload.conversationId,
         payload.interactionMode,
       );
+      if (payload.interactionMode === 'plan') {
+        const goal = this.loadGoal(payload.conversationId);
+        if (goal?.status === 'active') {
+          this.saveGoal({
+            ...goal,
+            status: 'paused',
+            pausedAt: new Date().toISOString(),
+          });
+          this.pendingGoalTurns.delete(payload.conversationId);
+        }
+      }
       const conversation = this.toConversationSummary(updated);
       const event = this.appendEvent('system', 'conversation.interaction_mode_changed', {
         conversationId: conversation.id,
@@ -12516,6 +12802,692 @@ export class Runtime {
     }
   }
 
+  private requireBotChannelConfigStore(): BotChannelConfigStore {
+    if (!this.botChannelConfigStore) throw new Error('机器人设置存储尚未就绪。');
+    return this.botChannelConfigStore;
+  }
+
+  private handleGetBotChannelConfigUnified(socket: Socket, frame: Frame): void {
+    const payload = parseGetBotChannelConfigPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    try {
+      const store = this.requireBotChannelConfigStore();
+      const response: GetBotChannelConfigResponse = store.summary(
+        payload.platform,
+        this.botGatewayManager.status(payload.platform),
+      );
+      socket.write(
+        encodeFrame({ id: frame.id, kind: 'response', type: 'bot.channel.get', payload: response }),
+      );
+    } catch (error) {
+      this.writeProviderCommandError(socket, frame, error);
+    }
+  }
+
+  private async handleTestBotChannelUnified(socket: Socket, frame: Frame): Promise<void> {
+    const payload = parseTestBotChannelPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    try {
+      const store = this.requireBotChannelConfigStore();
+      const config = await store.resolve(
+        payload.platform,
+        botSecretReplacements(payload),
+        botPublicSettings(payload),
+      );
+      const response = await this.botGatewayManager.test(config);
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'bot.channel.test',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeProviderCommandError(socket, frame, error);
+    }
+  }
+
+  private async handleSaveBotChannelConfigUnified(socket: Socket, frame: Frame): Promise<void> {
+    const payload = parseSaveBotChannelConfigPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    try {
+      const store = this.requireBotChannelConfigStore();
+      const shouldTest =
+        payload.testConnection === true ||
+        payload.enabled ||
+        Object.keys(botSecretReplacements(payload)).length > 0;
+      let testResult: TestBotChannelResponse | undefined;
+      if (shouldTest) {
+        const config = await store.resolve(
+          payload.platform,
+          botSecretReplacements(payload),
+          botPublicSettings(payload),
+        );
+        testResult = await this.botGatewayManager.test(config);
+        if (testResult.overall === 'fail') {
+          const detail = testResult.checks
+            .filter((check) => check.verdict === 'fail')
+            .map((check) => check.detail ?? check.label)
+            .join('；');
+          throw new Error(detail || '机器人连接测试未通过。');
+        }
+      }
+      await store.commit(payload, testResult);
+      await this.restartBotChannel(payload.platform);
+      const response: SaveBotChannelConfigResponse = {
+        config: store.summary(payload.platform, this.botGatewayManager.status(payload.platform)),
+      };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'bot.channel.save',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeProviderCommandError(socket, frame, error);
+    }
+  }
+
+  private async handleRequestWechatBotQr(socket: Socket, frame: Frame): Promise<void> {
+    const payload = parseRequestWechatBotQrPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    try {
+      const current = this.requireBotChannelConfigStore().summary('wechat');
+      const response: RequestWechatBotQrResponse = await this.wechatBotGateway.requestQrLogin(
+        payload.baseUrl ?? current.baseUrl,
+      );
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'bot.channel.wechat.qr.request',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeProviderCommandError(socket, frame, error);
+    }
+  }
+
+  private async handleCheckWechatBotQr(socket: Socket, frame: Frame): Promise<void> {
+    const payload = parseCheckWechatBotQrPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    try {
+      const store = this.requireBotChannelConfigStore();
+      const current = store.summary('wechat');
+      const status = await this.wechatBotGateway.checkQrStatus(
+        payload.qrcode,
+        payload.baseUrl ?? current.baseUrl,
+      );
+      let config: BotChannelConfigSummary | undefined;
+      if (status.status === 'confirmed') {
+        if (!status.botToken) throw new Error('微信扫码已确认，但响应中没有 Bot Token。');
+        await store.commitWechatLogin({
+          botToken: status.botToken,
+          ...(status.baseUrl ? { baseUrl: status.baseUrl } : {}),
+          ...(status.botId ? { botId: status.botId } : {}),
+          ...(status.ilinkUserId ? { ilinkUserId: status.ilinkUserId } : {}),
+        });
+        await this.restartBotChannel('wechat');
+        config = store.summary('wechat', this.botGatewayManager.status('wechat'));
+      }
+      const response: CheckWechatBotQrResponse = {
+        status: normalizeWechatQrStatus(status.status),
+        ...(config ? { config } : {}),
+      };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'bot.channel.wechat.qr.check',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeProviderCommandError(socket, frame, error);
+    }
+  }
+
+  private async restartBotChannel(platform: BotChannelPlatform): Promise<void> {
+    await this.botGatewayManager.stop(platform);
+    if (this.runtimeStopped) return;
+    const store = this.requireBotChannelConfigStore();
+    const persisted = store.read(platform);
+    if (!persisted.enabled || !store.isConfigured(platform, persisted)) return;
+    const config = await store.resolve(platform);
+    await this.botGatewayManager.start(config, (message) =>
+      this.executeBotConversationTurn(message),
+    );
+  }
+
+  private async startEnabledBotChannels(): Promise<void> {
+    if (!this.botChannelConfigStore) return;
+    await Promise.allSettled(
+      BOT_CHANNEL_PLATFORMS.map((platform) => this.restartBotChannel(platform)),
+    );
+  }
+
+  private getOrCreateBotConversation(message: NormalizedBotMessage): {
+    conversationId: string;
+    threadId: string;
+  } {
+    if (!this.conversationStore || !this.workspaceStore || !this.appSettingStore) {
+      throw new Error('持久化会话尚未就绪。');
+    }
+    const identity = `${message.platform}:${message.conversationId}`;
+    const settingKey = this.externalEventSettingKey('conversation', identity);
+    const persisted = this.appSettingStore.get(settingKey)?.value as
+      { conversationId?: unknown } | undefined;
+    if (typeof persisted?.conversationId === 'string') {
+      const existing = this.conversationStore.get(persisted.conversationId as ConversationId);
+      const threadId = existing ? this.resolveConversationThreadId(existing.id) : undefined;
+      if (existing && threadId) return { conversationId: existing.id, threadId };
+    }
+
+    const label = botPlatformLabel(message.platform);
+    const defaultModelId = this.resolveAgentModelBinding().defaultModelId;
+    const now = new Date().toISOString();
+    const workspaceId = this.getOrCreateInboxWorkspace();
+    const title = `${label} · ${message.senderName ?? message.conversationId}`;
+    const conversation = this.conversationStore.create({
+      target: { track: 'model', modelId: defaultModelId },
+      workspaceId,
+      title,
+      now,
+    });
+    const task = this.workspaceStore.createTask({
+      workspaceId,
+      title,
+      goal: `通过 ${label} 与 SYNC-THINK 对话`,
+      now,
+    });
+    this.threadVersions.set(task.threadId, task.taskVersion);
+    this.conversationStore.bindTask(conversation.id, task.taskId, now);
+    this.appSettingStore.set(settingKey, { conversationId: conversation.id }, now);
+    return { conversationId: conversation.id, threadId: task.threadId };
+  }
+
+  private async executeBotConversationTurn(message: NormalizedBotMessage): Promise<string> {
+    if (
+      !this.stateStore ||
+      !this.workspaceStore ||
+      !this.messageStore ||
+      !this.canStartModelRun()
+    ) {
+      throw new Error('当前没有可执行的模型。');
+    }
+    const { threadId } = this.getOrCreateBotConversation(message);
+    const runId = ulid() as RunId;
+    const prepared = this.prepareRunBinding({
+      runId,
+      threadId: threadId as ThreadId,
+      userText: message.text,
+    });
+    const occurredAt = new Date().toISOString();
+    const workspaceTask = this.workspaceStore.getTaskByThreadId(threadId as ThreadId);
+    const events = this.persistProjectedEvents(
+      [
+        {
+          id: ulid() as Event['id'],
+          workspaceId: workspaceTask?.workspaceId ?? this.workspaceId,
+          taskId: workspaceTask?.id,
+          runId,
+          category: 'message',
+          type: 'message.appended',
+          occurredAt,
+          payload: {
+            threadId,
+            role: 'user',
+            text: message.text,
+            botPlatform: message.platform,
+            botChatId: message.conversationId,
+            botMessageId: message.messageId,
+          },
+        },
+        {
+          id: ulid() as Event['id'],
+          workspaceId: workspaceTask?.workspaceId ?? this.workspaceId,
+          taskId: workspaceTask?.id,
+          runId,
+          category: 'context',
+          type: 'context.packet.built',
+          occurredAt,
+          payload: {
+            threadId,
+            packetId: prepared.packetId,
+            proofHash: prepared.proofHash,
+            modelId: prepared.run.modelId,
+            providerModelId: prepared.run.providerModelId,
+            resolutionSource: prepared.run.resolutionSource,
+            credentialRefId: prepared.run.credentialRefId,
+            skillVersionIds: prepared.skillVersionIds,
+            mcpServerIds: prepared.mcpServerIds,
+            externalEventSource: 'bot',
+          },
+        },
+      ] as [EventDraft, EventDraft],
+      new Map(this.threadVersions),
+      new Map(this.demoRuns).set(runId, prepared.run),
+    );
+    this.recordCommittedEvents(events);
+    this.demoRuns.set(runId, prepared.run);
+    for (const event of events) this.publishEvent(event);
+    await this.executeKernelRun(runId);
+
+    const page = this.messageStore.listMessages(threadId as ThreadId, { limit: 100 });
+    const reply = [...page.messages]
+      .reverse()
+      .find((item) => item.role === 'assistant' && item.runId === runId);
+    const text = reply?.blocks
+      .map((block) => (typeof block.text === 'string' ? block.text : ''))
+      .join('\n')
+      .trim();
+    if (!text) throw new Error('本次执行没有生成文本回复。');
+    return text;
+  }
+
+  private readTelegramBotConfig(): PersistedTelegramBotConfig {
+    const value = this.appSettingStore?.get(TELEGRAM_BOT_SETTING_KEY)?.value;
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return { enabled: false, proxyUrl: '' };
+    }
+    const record = value as Record<string, unknown>;
+    return {
+      enabled: record.enabled === true,
+      proxyUrl: typeof record.proxyUrl === 'string' ? record.proxyUrl.trim() : '',
+      ...(typeof record.tokenHandle === 'string' && record.tokenHandle.trim()
+        ? { tokenHandle: record.tokenHandle.trim() }
+        : {}),
+      ...(typeof record.updateOffset === 'number' && Number.isSafeInteger(record.updateOffset)
+        ? { updateOffset: record.updateOffset }
+        : {}),
+      ...(typeof record.botUsername === 'string' && record.botUsername.trim()
+        ? { botUsername: record.botUsername.trim() }
+        : {}),
+      ...(typeof record.botDisplayName === 'string' && record.botDisplayName.trim()
+        ? { botDisplayName: record.botDisplayName.trim() }
+        : {}),
+      ...(typeof record.lastError === 'string' && record.lastError.trim()
+        ? { lastError: record.lastError.trim() }
+        : {}),
+      ...(typeof record.updatedAt === 'string' ? { updatedAt: record.updatedAt } : {}),
+    };
+  }
+
+  private writeTelegramBotConfig(config: PersistedTelegramBotConfig): void {
+    this.appSettingStore?.set(TELEGRAM_BOT_SETTING_KEY, config);
+  }
+
+  private telegramBotConfigSummary(config = this.readTelegramBotConfig()): BotChannelConfigSummary {
+    return {
+      platform: 'telegram',
+      enabled: config.enabled,
+      credentialsConfigured: Boolean(config.tokenHandle),
+      proxyUrl: config.proxyUrl,
+      connected: Boolean(config.tokenHandle && config.botUsername && !config.lastError),
+      state:
+        config.tokenHandle && config.botUsername && !config.lastError
+          ? 'connected'
+          : config.lastError
+            ? 'error'
+            : 'disconnected',
+      ...(config.botUsername ? { botUsername: config.botUsername } : {}),
+      ...(config.botDisplayName ? { botDisplayName: config.botDisplayName } : {}),
+      ...(config.lastError ? { lastError: config.lastError } : {}),
+      ...(config.updatedAt ? { updatedAt: config.updatedAt } : {}),
+    };
+  }
+
+  private async telegramBotToken(
+    config: PersistedTelegramBotConfig,
+    replacement?: string,
+  ): Promise<string | undefined> {
+    const supplied = replacement?.trim();
+    if (supplied) return supplied;
+    if (!config.tokenHandle || !this.secureStore) return undefined;
+    const stored = (await this.secureStore.retrieveSecret(config.tokenHandle)).trim();
+    return stored || undefined;
+  }
+
+  /** @deprecated Kept for binary-compatible tests while Telegram settings migrate. */
+  handleGetBotChannelConfig(socket: Socket, frame: Frame): void {
+    const payload = parseGetBotChannelConfigPayload(frame.payload);
+    if (!payload || payload.platform !== 'telegram') {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    const response: GetBotChannelConfigResponse = this.telegramBotConfigSummary();
+    socket.write(
+      encodeFrame({ id: frame.id, kind: 'response', type: 'bot.channel.get', payload: response }),
+    );
+  }
+
+  /** @deprecated Kept for binary-compatible tests while Telegram settings migrate. */
+  async handleTestBotChannel(socket: Socket, frame: Frame): Promise<void> {
+    const payload = parseTestBotChannelPayload(frame.payload);
+    if (!payload || payload.platform !== 'telegram') {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    try {
+      const current = this.readTelegramBotConfig();
+      const token = await this.telegramBotToken(current, payload.token);
+      if (!token) throw new Error('请先填写 Bot Token。');
+      const identity = await this.telegramBotClient.testConnection(
+        token,
+        payload.proxyUrl ?? current.proxyUrl,
+      );
+      const response: TestBotChannelResponse = {
+        platform: 'telegram',
+        connected: true,
+        overall: 'pass',
+        checks: [{ id: 'connection', label: '连接与鉴权', verdict: 'pass' }],
+        ...(identity.username ? { botUsername: identity.username } : {}),
+        ...(identity.displayName ? { botDisplayName: identity.displayName } : {}),
+      };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'bot.channel.test',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeProviderCommandError(socket, frame, error);
+    }
+  }
+
+  /** @deprecated Kept for binary-compatible tests while Telegram settings migrate. */
+  async handleSaveBotChannelConfig(socket: Socket, frame: Frame): Promise<void> {
+    const payload = parseSaveBotChannelConfigPayload(frame.payload);
+    if (!payload || payload.platform !== 'telegram') {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.appSettingStore || !this.secureStore) {
+      this.writeProviderCommandError(socket, frame, new Error('机器人设置存储尚未就绪。'));
+      return;
+    }
+    try {
+      const previous = this.readTelegramBotConfig();
+      const proxyUrl = payload.proxyUrl ?? previous.proxyUrl;
+      const replacementToken = payload.token?.trim();
+      const shouldTest =
+        payload.testConnection === true || payload.enabled || Boolean(replacementToken);
+      const token = shouldTest
+        ? await this.telegramBotToken(previous, replacementToken)
+        : undefined;
+      if (shouldTest && !token) throw new Error('请先填写 Bot Token。');
+      const identity = token
+        ? await this.telegramBotClient.testConnection(token, proxyUrl)
+        : {
+            username: previous.botUsername,
+            displayName: previous.botDisplayName,
+          };
+      let tokenHandle = previous.tokenHandle;
+      if (replacementToken && token) {
+        tokenHandle = await this.secureStore.storeSecret(token);
+      }
+      const now = new Date().toISOString();
+      const next: PersistedTelegramBotConfig = {
+        enabled: payload.enabled,
+        tokenHandle,
+        proxyUrl,
+        updateOffset: previous.updateOffset,
+        botUsername: identity.username,
+        botDisplayName: identity.displayName,
+        updatedAt: now,
+      };
+      this.writeTelegramBotConfig(next);
+      if (replacementToken && previous.tokenHandle && previous.tokenHandle !== tokenHandle) {
+        await this.secureStore.removeSecret(previous.tokenHandle).catch(() => undefined);
+      }
+      await this.restartTelegramBotLoop();
+      const response: SaveBotChannelConfigResponse = {
+        config: this.telegramBotConfigSummary(next),
+      };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'bot.channel.save',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeProviderCommandError(socket, frame, error);
+    }
+  }
+
+  private async restartTelegramBotLoop(): Promise<void> {
+    this.telegramBotAbort?.abort();
+    if (this.telegramBotLoop) await this.telegramBotLoop.catch(() => undefined);
+    this.telegramBotAbort = undefined;
+    this.telegramBotLoop = undefined;
+    if (this.runtimeStopped) return;
+    const config = this.readTelegramBotConfig();
+    if (!config.enabled || !config.tokenHandle) return;
+    const token = await this.telegramBotToken(config);
+    if (!token) return;
+    const controller = new AbortController();
+    this.telegramBotAbort = controller;
+    const loop = this.runTelegramBotLoop(token, controller.signal).catch((error) => {
+      if (!controller.signal.aborted) console.warn('[runtime] Telegram bot loop stopped', error);
+    });
+    this.telegramBotLoop = loop;
+    void loop.finally(() => {
+      if (this.telegramBotLoop === loop) this.telegramBotLoop = undefined;
+      if (this.telegramBotAbort === controller) this.telegramBotAbort = undefined;
+    });
+  }
+
+  private async runTelegramBotLoop(token: string, signal: AbortSignal): Promise<void> {
+    while (!signal.aborted && !this.runtimeStopped) {
+      const current = this.readTelegramBotConfig();
+      if (!current.enabled) return;
+      try {
+        const batch = await this.telegramBotClient.getUpdates({
+          token,
+          offset: current.updateOffset,
+          proxyUrl: current.proxyUrl,
+          signal,
+        });
+        for (const message of batch.messages) {
+          if (signal.aborted) return;
+          await this.processTelegramMessage(token, current.proxyUrl, message);
+        }
+        if (batch.nextOffset !== undefined) {
+          this.writeTelegramBotConfig({
+            ...this.readTelegramBotConfig(),
+            updateOffset: batch.nextOffset,
+            lastError: undefined,
+          });
+        } else if (current.lastError) {
+          this.writeTelegramBotConfig({ ...current, lastError: undefined });
+        }
+      } catch (error) {
+        if (signal.aborted) return;
+        const message = error instanceof Error ? error.message : 'Telegram 长轮询失败。';
+        this.writeTelegramBotConfig({ ...this.readTelegramBotConfig(), lastError: message });
+        await new Promise<void>((resolve) => {
+          const finish = () => {
+            clearTimeout(timer);
+            signal.removeEventListener('abort', finish);
+            resolve();
+          };
+          const timer = setTimeout(finish, 2_000);
+          signal.addEventListener('abort', finish, { once: true });
+          if (signal.aborted) finish();
+        });
+      }
+    }
+  }
+
+  private async processTelegramMessage(
+    token: string,
+    proxyUrl: string,
+    message: TelegramIncomingMessage,
+  ): Promise<void> {
+    await this.telegramBotClient.sendTyping(token, message.chatId, proxyUrl).catch(() => undefined);
+    const typingTimer = setInterval(() => {
+      void this.telegramBotClient
+        .sendTyping(token, message.chatId, proxyUrl)
+        .catch(() => undefined);
+    }, 4_000);
+    typingTimer.unref?.();
+    try {
+      const reply = await this.executeTelegramConversationTurn(message);
+      await this.telegramBotClient.sendMessage(token, message.chatId, reply, proxyUrl);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : '处理消息时出现错误。';
+      await this.telegramBotClient
+        .sendMessage(token, message.chatId, `SYNC-THINK 处理失败：${detail}`, proxyUrl)
+        .catch(() => undefined);
+    } finally {
+      clearInterval(typingTimer);
+    }
+  }
+
+  private getOrCreateTelegramConversation(message: TelegramIncomingMessage): {
+    conversationId: string;
+    threadId: string;
+  } {
+    if (!this.conversationStore || !this.workspaceStore || !this.appSettingStore) {
+      throw new Error('持久化会话尚未就绪。');
+    }
+    const identity = `telegram:${message.chatId}`;
+    const settingKey = this.externalEventSettingKey('conversation', identity);
+    const persisted = this.appSettingStore.get(settingKey)?.value as
+      { conversationId?: unknown } | undefined;
+    if (typeof persisted?.conversationId === 'string') {
+      const existing = this.conversationStore.get(persisted.conversationId as ConversationId);
+      const threadId = existing ? this.resolveConversationThreadId(existing.id) : undefined;
+      if (existing && threadId) return { conversationId: existing.id, threadId };
+    }
+
+    const defaultModelId = this.resolveAgentModelBinding().defaultModelId;
+    const now = new Date().toISOString();
+    const workspaceId = this.getOrCreateInboxWorkspace();
+    const title = `Telegram · ${message.senderName ?? message.chatId}`;
+    const conversation = this.conversationStore.create({
+      target: { track: 'model', modelId: defaultModelId },
+      workspaceId,
+      title,
+      now,
+    });
+    const task = this.workspaceStore.createTask({
+      workspaceId,
+      title,
+      goal: '通过 Telegram 与 SYNC-THINK 对话',
+      now,
+    });
+    this.threadVersions.set(task.threadId, task.taskVersion);
+    this.conversationStore.bindTask(conversation.id, task.taskId, now);
+    this.appSettingStore.set(settingKey, { conversationId: conversation.id }, now);
+    return { conversationId: conversation.id, threadId: task.threadId };
+  }
+
+  private async executeTelegramConversationTurn(message: TelegramIncomingMessage): Promise<string> {
+    if (
+      !this.stateStore ||
+      !this.workspaceStore ||
+      !this.messageStore ||
+      !this.canStartModelRun()
+    ) {
+      throw new Error('当前没有可执行的模型。');
+    }
+    const { threadId } = this.getOrCreateTelegramConversation(message);
+    const runId = ulid() as RunId;
+    const prepared = this.prepareRunBinding({
+      runId,
+      threadId: threadId as ThreadId,
+      userText: message.text,
+    });
+    const occurredAt = new Date().toISOString();
+    const workspaceTask = this.workspaceStore.getTaskByThreadId(threadId as ThreadId);
+    const eventDrafts: [EventDraft, EventDraft] = [
+      {
+        id: ulid() as Event['id'],
+        workspaceId: workspaceTask?.workspaceId ?? this.workspaceId,
+        taskId: workspaceTask?.id,
+        runId,
+        category: 'message',
+        type: 'message.appended',
+        occurredAt,
+        payload: {
+          threadId,
+          role: 'user',
+          text: message.text,
+          botPlatform: 'telegram',
+          botChatId: message.chatId,
+          botMessageId: message.messageId,
+        },
+      },
+      {
+        id: ulid() as Event['id'],
+        workspaceId: workspaceTask?.workspaceId ?? this.workspaceId,
+        taskId: workspaceTask?.id,
+        runId,
+        category: 'context',
+        type: 'context.packet.built',
+        occurredAt,
+        payload: {
+          threadId,
+          packetId: prepared.packetId,
+          proofHash: prepared.proofHash,
+          modelId: prepared.run.modelId,
+          providerModelId: prepared.run.providerModelId,
+          resolutionSource: prepared.run.resolutionSource,
+          credentialRefId: prepared.run.credentialRefId,
+          skillVersionIds: prepared.skillVersionIds,
+          mcpServerIds: prepared.mcpServerIds,
+          externalEventSource: 'bot',
+        },
+      },
+    ];
+    const projectedRuns = new Map(this.demoRuns);
+    projectedRuns.set(runId, prepared.run);
+    const events = this.persistProjectedEvents(
+      eventDrafts,
+      new Map(this.threadVersions),
+      projectedRuns,
+    );
+    this.recordCommittedEvents(events);
+    this.demoRuns.set(runId, prepared.run);
+    for (const event of events) this.publishEvent(event);
+    await this.executeKernelRun(runId);
+
+    const page = this.messageStore.listMessages(threadId as ThreadId, { limit: 100 });
+    const reply = [...page.messages]
+      .reverse()
+      .find((item) => item.role === 'assistant' && item.runId === runId);
+    const text = reply?.blocks
+      .map((block) => (typeof block.text === 'string' ? block.text : ''))
+      .join('\n')
+      .trim();
+    if (!text) throw new Error('本次执行没有生成文本回复。');
+    return text;
+  }
+
   private toCapabilityWorkspaceActivationSummary(
     record: import('@sync-think/storage').CapabilityWorkspaceActivationRecord,
   ): CapabilityWorkspaceActivationSummary {
@@ -15324,12 +16296,19 @@ export class Runtime {
           }
         : undefined;
     const messageId = ulid() as MessageId;
+    const selectedSkillSnapshot = (payload.skillVersionIds ?? []).map((skillVersionId) => ({
+      skillVersionId,
+      name: this.skillStore?.getVersionMetadata(skillVersionId)?.name ?? skillVersionId,
+    }));
     const eventPayload = {
       threadId: payload.threadId,
       role: payload.role,
       text: payload.text,
       messageId,
       taskVersion: nextVersion,
+      ...(payload.skillVersionIds && payload.skillVersionIds.length > 0
+        ? { skillVersionIds: [...payload.skillVersionIds], skills: selectedSkillSnapshot }
+        : {}),
       ...(generatedTaskIdentity
         ? {
             taskTitle: generatedTaskIdentity.title,
@@ -15429,6 +16408,7 @@ export class Runtime {
             typeof payload.reasoningEffort === 'string' ? payload.reasoningEffort : undefined,
           networkEnabled: payload.networkEnabled === true ? true : undefined,
           planExecuting: payload.planExecuting === true ? true : undefined,
+          helpMode: payload.helpMode === true ? true : undefined,
           images: Array.isArray(payload.images)
             ? payload.images.map((raw) => ({
                 name: raw.name,
@@ -15610,6 +16590,8 @@ export class Runtime {
         typeof payload.credentialRefId === 'string'
           ? (payload.credentialRefId as CredentialRefId)
           : undefined,
+      skillVersionIds: payload.skillVersionIds,
+      skillSnapshot: selectedSkillSnapshot,
       createdAt: messageEventDraft.occurredAt,
     });
 
@@ -15640,6 +16622,18 @@ export class Runtime {
   // ===== Goal mode (NewMax-style /goal) =====
 
   private readonly activeGoals = new Map<string, GoalStatus>();
+  private readonly goalRunRevisions = new Map<string, string>();
+  private readonly pendingGoalTurns = new Set<string>();
+
+  private goalRevision(goal: GoalStatus): string {
+    return [
+      goal.startedAt,
+      goal.condition,
+      goal.stopCondition ?? '',
+      goal.maxGoalRounds ?? '',
+      goal.maxGoalTokens ?? '',
+    ].join('\u0000');
+  }
 
   private loadGoal(conversationId: string): GoalStatus | undefined {
     const inMemory = this.activeGoals.get(conversationId);
@@ -15657,11 +16651,65 @@ export class Runtime {
     this.appSettingStore?.set(`goal.${goal.conversationId}`, goal);
   }
 
-  /** Evaluator model id from settings; goal mode stays inert until configured. */
-  private evaluatorModelId(): string | undefined {
-    const record = this.appSettingStore?.get('goal.evaluator-model');
-    const value = record?.value as string | undefined;
-    return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+  private addGoalUsage(
+    conversationId: string,
+    revision: string,
+    tokensIn: number,
+    tokensOut: number,
+  ): void {
+    const goal = this.loadGoal(conversationId);
+    if (!goal || this.goalRevision(goal) !== revision) return;
+    const input = Number.isFinite(tokensIn) ? Math.max(0, Math.floor(tokensIn)) : 0;
+    const output = Number.isFinite(tokensOut) ? Math.max(0, Math.floor(tokensOut)) : 0;
+    if (input === 0 && output === 0) return;
+    this.saveGoal({
+      ...goal,
+      tokensIn: goal.tokensIn + input,
+      tokensOut: goal.tokensOut + output,
+    });
+  }
+
+  private addGoalUsageForRun(
+    runId: RunId,
+    run: DemoRunState,
+    tokensIn: number,
+    tokensOut: number,
+  ): void {
+    const revision = this.goalRunRevisions.get(runId);
+    if (!revision) return;
+    const conversationId = this.resolveConversationIdForThread(run.threadId);
+    if (!conversationId) return;
+    this.addGoalUsage(conversationId, revision, tokensIn, tokensOut);
+  }
+
+  private blockGoalAtTokenLimit(goal: GoalStatus): GoalStatus | undefined {
+    const limit = goal.maxGoalTokens ?? DEFAULT_GOAL_MAX_TOKENS;
+    if (goal.tokensIn + goal.tokensOut < limit) return undefined;
+    const blocked: GoalStatus = {
+      ...goal,
+      status: 'blocked',
+      blockedAt: goal.blockedAt ?? new Date().toISOString(),
+      blockedReason: `已达 Token 上限（${limit}）`,
+    };
+    this.saveGoal(blocked);
+    this.pendingGoalTurns.delete(goal.conversationId);
+    return blocked;
+  }
+
+  /** Goal work always runs in execute mode; Plan and Goal are mutually exclusive. */
+  private leavePlanningModeForGoal(conversationId: string): void {
+    if (!this.conversationStore) return;
+    const current = this.conversationStore.get(conversationId as ConversationId);
+    if (!current || current.interactionMode !== 'plan') return;
+    const updated = this.conversationStore.setInteractionMode(
+      conversationId as ConversationId,
+      'execute',
+    );
+    const event = this.appendEvent('system', 'conversation.interaction_mode_changed', {
+      conversationId: updated.id,
+      interactionMode: updated.interactionMode,
+    });
+    this.publishEvent(event);
   }
 
   private handleGoalSet(socket: Socket, frame: Frame): void {
@@ -15670,20 +16718,30 @@ export class Runtime {
       this.writeMalformedPayload(socket, frame);
       return;
     }
+    this.leavePlanningModeForGoal(payload.conversationId);
     const now = new Date().toISOString();
     const goal: GoalStatus = {
       conversationId: payload.conversationId,
       condition: payload.condition,
+      ...(payload.stopCondition ? { stopCondition: payload.stopCondition } : {}),
       status: 'active',
       startedAt: now,
       turnCount: 0,
       tokensIn: 0,
       tokensOut: 0,
+      blockedStreak: 0,
       maxGoalRounds: payload.maxGoalRounds ?? DEFAULT_GOAL_MAX_ROUNDS,
+      maxGoalTokens: payload.maxGoalTokens ?? DEFAULT_GOAL_MAX_TOKENS,
+      ...(payload.modelId ? { modelId: payload.modelId } : {}),
+      ...(payload.kernelId ? { kernelId: payload.kernelId } : {}),
+      ...(payload.reasoningEffort ? { reasoningEffort: payload.reasoningEffort } : {}),
+      ...(typeof payload.networkEnabled === 'boolean'
+        ? { networkEnabled: payload.networkEnabled }
+        : {}),
     };
     this.saveGoal(goal);
-    const evaluatorConfigured = Boolean(this.evaluatorModelId());
-    const started = evaluatorConfigured;
+    const evaluatorConfigured = true;
+    const started = true;
     if (started) void this.triggerGoalTurn(payload.conversationId, goal);
     const response: GoalSetResponse = { goal, started, evaluatorConfigured };
     socket.write(
@@ -15705,6 +16763,7 @@ export class Runtime {
     const goal = this.loadGoal(payload.conversationId);
     if (goal && goal.status === 'active') {
       this.saveGoal({ ...goal, status: 'paused', pausedAt: new Date().toISOString() });
+      this.pendingGoalTurns.delete(payload.conversationId);
     }
     socket.write(
       encodeFrame({
@@ -15723,19 +16782,29 @@ export class Runtime {
       return;
     }
     const current = this.loadGoal(payload.conversationId);
-    const evaluatorConfigured = Boolean(this.evaluatorModelId());
+    const evaluatorConfigured = true;
     if (current && (current.status === 'paused' || current.status === 'blocked')) {
+      this.leavePlanningModeForGoal(payload.conversationId);
       const resumed: GoalStatus = {
         ...current,
         status: 'active',
         pausedAt: undefined,
         blockedAt: undefined,
         blockedReason: undefined,
+        blockedStreak: 0,
+        ...(payload.modelId ? { modelId: payload.modelId } : {}),
+        ...(payload.kernelId ? { kernelId: payload.kernelId } : {}),
+        ...(payload.reasoningEffort ? { reasoningEffort: payload.reasoningEffort } : {}),
+        ...(typeof payload.networkEnabled === 'boolean'
+          ? { networkEnabled: payload.networkEnabled }
+          : {}),
       };
-      this.saveGoal(resumed);
-      const started = evaluatorConfigured;
+      const budgetBlocked = this.blockGoalAtTokenLimit(resumed);
+      if (!budgetBlocked) this.saveGoal(resumed);
+      const responseGoal = budgetBlocked ?? resumed;
+      const started = evaluatorConfigured && !budgetBlocked;
       if (started) void this.triggerGoalTurn(payload.conversationId, resumed);
-      const response: GoalResumeResponse = { goal: resumed, started, evaluatorConfigured };
+      const response: GoalResumeResponse = { goal: responseGoal, started, evaluatorConfigured };
       socket.write(
         encodeFrame({
           id: frame.id,
@@ -15777,7 +16846,7 @@ export class Runtime {
     }
     const response: GoalGetResponse = {
       goal: this.loadGoal(payload.conversationId),
-      evaluatorConfigured: Boolean(this.evaluatorModelId()),
+      evaluatorConfigured: true,
     };
     socket.write(
       encodeFrame({
@@ -15797,11 +16866,14 @@ export class Runtime {
     }
     const goal = this.loadGoal(payload.conversationId);
     let cleared = false;
-    if (goal && goal.status === 'active') {
-      this.saveGoal({ ...goal, status: 'cleared' });
+    let responseGoal = goal;
+    if (goal && goal.status !== 'cleared') {
+      responseGoal = { ...goal, status: 'cleared' };
+      this.saveGoal(responseGoal);
+      this.pendingGoalTurns.delete(payload.conversationId);
       cleared = true;
     }
-    const response: GoalClearResponse = { cleared, goal };
+    const response: GoalClearResponse = { cleared, goal: responseGoal };
     socket.write(
       encodeFrame({
         id: frame.id,
@@ -16744,118 +17816,50 @@ export class Runtime {
     );
   }
 
-  private buildGoalTranscript(threadId: string): string {
-    const messages = this.listDurableContextMessages(threadId, 16_000);
-    const lines: string[] = [];
-    for (const message of messages.slice(-12)) {
-      const text = message.blocks
-        .map((block) => (typeof block.text === 'string' ? block.text : ''))
-        .join(' ')
-        .trim();
-      if (!text) continue;
-      lines.push(`${message.role === 'user' ? '用户' : '助手'}：${text.slice(0, 800)}`);
-    }
-    return lines.join('\n');
-  }
-
-  /**
-   * One evaluator call with the configured small model: the completion
-   * condition plus the recent transcript → met / not-met + short reason.
-   * The evaluator never runs tools; it only judges what the conversation
-   * already surfaced (NewMax /goal semantics).
-   */
-  private async evaluateGoal(
-    conversationId: string,
-    goal: GoalStatus,
-  ): Promise<{ met: boolean; reason: string }> {
-    const evaluatorModelId = this.evaluatorModelId();
-    if (!evaluatorModelId) return { met: false, reason: '评估模型未配置（goal.evaluator-model）' };
-    const threadId = this.resolveConversationThreadId(conversationId);
-    if (!threadId) return { met: false, reason: '找不到对话对应的线程' };
-    if (!this.providerStore || !this.secureStore)
-      return { met: false, reason: 'provider 存储不可用' };
-    const model = this.providerStore.getModel(evaluatorModelId as ModelId);
-    const provider = model ? this.providerStore.getProvider(model.providerId) : undefined;
-    const credentialRef = provider
-      ? this.providerStore.getPrimaryCredentialRef(provider.id)
-      : undefined;
-    const adapter = provider
-      ? (this.resolveDiscoveryAdapter(provider.protocol) ?? this.demoProvider)
-      : undefined;
-    if (!model || !provider || !adapter || !credentialRef) {
-      return { met: false, reason: '评估模型配置不完整（模型/供应商/凭据）' };
-    }
-    const storeHandle = this.providerStore.getCredentialStoreHandle(credentialRef.id);
-    if (!storeHandle) return { met: false, reason: '评估凭据不可用' };
-    const apiKey = await this.secureStore.retrieveSecret(storeHandle);
-    if (!apiKey || apiKey.trim().length === 0) return { met: false, reason: '评估凭据为空' };
-
-    const transcript = this.buildGoalTranscript(threadId);
-    const control = new AbortController();
-    const timer = setTimeout(() => control.abort(), 60_000);
-    try {
-      const messages: import('@sync-think/adapters').ProviderMessage[] = [
-        {
-          role: 'system',
-          content:
-            '你是任务完成条件评估器。只根据对话中已呈现的内容判断完成条件是否满足。' +
-            '不调用任何工具。只回答 JSON：{"met": true|false, "reason": "简短原因（≤120字）"}',
-        },
-        {
-          role: 'user',
-          content: `完成条件：${goal.condition}\n\n最近对话内容：\n${transcript.slice(0, 12_000)}`,
-        },
-      ];
-      let output = '';
-      for await (const event of adapter.call({
-        protocol: provider.protocol,
-        baseUrl: provider.baseUrl,
-        modelId: model.providerModelId ?? evaluatorModelId,
-        apiKey,
-        idempotencyKey: `goal-eval-${conversationId}-${Date.now()}`,
-        signal: control.signal,
-        messages,
-        stream: true,
-        maxOutputTokens: 300,
-        temperature: 0,
-      })) {
-        if (event.type === 'text-delta') output += event.text;
-        if (event.type === 'error') return { met: false, reason: '评估调用失败' };
-      }
-      return parseGoalEvaluatorOutput(output) ?? { met: false, reason: '评估输出无法解析' };
-    } catch {
-      return { met: false, reason: '评估调用异常' };
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-
-  /** After a run finishes on a thread with an active goal: evaluate → continue or achieve. */
-  private maybeEvaluateGoalAfterRun(threadId: string): void {
+  /** After a Goal turn, the selected work model's final status drives the next state. */
+  private maybeContinueGoalAfterRun(
+    threadId: string,
+    runId: string,
+    run: DemoRunState,
+    payload: Record<string, unknown>,
+  ): void {
     const conversationId = this.resolveConversationIdForThread(threadId);
     if (!conversationId) return;
+    const runRevision = this.goalRunRevisions.get(runId);
+    this.goalRunRevisions.delete(runId);
     const goal = this.loadGoal(conversationId);
     if (!goal || goal.status !== 'active') return;
-    void this.evaluateAndContinueGoal(conversationId, goal);
-  }
-
-  private async evaluateAndContinueGoal(conversationId: string, goal: GoalStatus): Promise<void> {
-    const { met, reason } = await this.evaluateGoal(conversationId, goal);
-    const current = this.loadGoal(conversationId);
-    if (!current || current.status !== 'active') return;
-    const roundsStarted = (current.roundsStarted ?? 0) + 1;
-    const updated: GoalStatus = {
-      ...current,
-      turnCount: current.turnCount + 1,
-      roundsStarted,
-      lastReason: reason,
-    };
-    if (met) {
-      this.saveGoal({ ...updated, status: 'achieved', achievedAt: new Date().toISOString() });
+    if (this.blockGoalAtTokenLimit(goal)) return;
+    if (!runRevision || runRevision !== this.goalRevision(goal)) {
+      this.pendingGoalTurns.add(conversationId);
       return;
     }
-    // 轮次上限：耗尽自动 blocked（防无限烧 token）。
-    const maxRounds = current.maxGoalRounds ?? DEFAULT_GOAL_MAX_ROUNDS;
+    const completionText =
+      assistantTimelineFinalText(run.assistantTimeline ?? []) ||
+      (typeof payload.assistantText === 'string' ? payload.assistantText : run.assistantText);
+    const signal = parseGoalTurnStatus(completionText);
+    const visibleText = stripGoalStatus(completionText).trim();
+    const roundsStarted = (goal.roundsStarted ?? 0) + 1;
+    const updated: GoalStatus = {
+      ...goal,
+      turnCount: goal.turnCount + 1,
+      roundsStarted,
+    };
+
+    // NewMax checks hard budgets before trusting a model-declared terminal state.
+    if (this.blockGoalAtTokenLimit(updated)) return;
+    if (signal === 'complete' && visibleText) {
+      this.saveGoal({
+        ...updated,
+        status: 'achieved',
+        achievedAt: new Date().toISOString(),
+        lastReason: '工作模型已确认目标完成',
+        blockedStreak: 0,
+      });
+      return;
+    }
+
+    const maxRounds = goal.maxGoalRounds ?? DEFAULT_GOAL_MAX_ROUNDS;
     if (maxRounds > 0 && roundsStarted >= maxRounds) {
       this.saveGoal({
         ...updated,
@@ -16865,35 +17869,82 @@ export class Runtime {
       });
       return;
     }
-    this.saveGoal(updated);
-    void this.triggerGoalTurn(conversationId, updated);
+
+    if (signal === 'blocked') {
+      const blockedStreak = (goal.blockedStreak ?? 0) + 1;
+      if (blockedStreak < 3) {
+        const rechecking: GoalStatus = {
+          ...updated,
+          blockedStreak,
+          lastReason: `工作模型报告受阻，正在复核（${blockedStreak}/3）`,
+        };
+        this.saveGoal(rechecking);
+        void this.triggerGoalTurn(conversationId, rechecking);
+        return;
+      }
+      this.saveGoal({
+        ...updated,
+        status: 'blocked',
+        blockedAt: new Date().toISOString(),
+        blockedReason: '工作模型连续 3 轮报告目标受阻',
+        blockedStreak,
+      });
+      return;
+    }
+
+    const lastReason =
+      signal === 'complete'
+        ? '上一轮仅返回完成标记，未提供可验收的正文'
+        : signal === 'continue'
+          ? '工作模型要求继续推进'
+          : '工作模型未声明完成，继续推进';
+    const continuing = { ...updated, lastReason, blockedStreak: 0 };
+    this.saveGoal(continuing);
+    void this.triggerGoalTurn(conversationId, continuing);
   }
 
   /** Start a goal turn: persist the condition as a user message and run it. */
   private triggerGoalTurn(conversationId: string, goal: GoalStatus): void {
+    const latestGoal = this.loadGoal(conversationId);
+    if (
+      !latestGoal ||
+      latestGoal.status !== 'active' ||
+      this.goalRevision(latestGoal) !== this.goalRevision(goal) ||
+      this.blockGoalAtTokenLimit(latestGoal)
+    ) {
+      return;
+    }
     const threadId = this.resolveConversationThreadId(conversationId);
     if (!threadId || !this.stateStore || !this.canStartModelRun()) return;
     const alreadyActive = [...this.demoRuns.values()].some(
       (run) => run.threadId === threadId && this.inFlight.has(String(run.runId)),
     );
-    if (alreadyActive) return;
+    if (alreadyActive) {
+      this.pendingGoalTurns.add(conversationId);
+      return;
+    }
     const runId = ulid() as RunId;
     try {
       const prepared = this.prepareRunBinding({
         runId,
         threadId: threadId as ThreadId,
-        userText: goal.condition,
+        userText: formatGoalTurnModelPrompt(goal),
+        ...(goal.kernelId ? { kernelId: goal.kernelId } : {}),
+        ...(goal.modelId ? { modelId: goal.modelId } : {}),
+        ...(goal.reasoningEffort ? { reasoningEffort: goal.reasoningEffort } : {}),
+        ...(goal.networkEnabled === true ? { networkEnabled: true } : {}),
         skillVersionIds: [],
       });
       const demoRun = prepared.run;
       const occurredAt = new Date().toISOString();
       const task = this.workspaceStore?.getTaskByThreadId(threadId as ThreadId);
-      const round = (goal.roundsStarted ?? 0) + 1;
-      const maxRounds = goal.maxGoalRounds ?? DEFAULT_GOAL_MAX_ROUNDS;
+      const messageId = ulid() as MessageId;
+      const visibleUserText = formatGoalTurnUserMessage(goal);
       const messageEventDraft: EventDraft = {
         id: ulid() as Event['id'],
         workspaceId: task?.workspaceId ?? this.workspaceId,
         taskId: task?.id,
+        messageId,
         runId,
         category: 'message',
         type: 'message.appended',
@@ -16901,16 +17952,8 @@ export class Runtime {
         payload: {
           threadId,
           role: 'user',
-          text: [
-            '【目标模式】',
-            `<goal_round>\nObjective: ${goal.condition}\nRound: ${round}/${maxRounds}`,
-            '',
-            'Continue working toward the objective in this same conversation. Inspect the current workspace, tool results and durable session state instead of assuming earlier narration is still current. Make concrete progress and verify the result. Before claiming completion, gather evidence that the whole objective is achieved, read the current goal, and call goal_manage complete. If blocked by an unresolvable obstacle, call goal_manage block with the reason. Otherwise leave the goal active for the next round.',
-            '</goal_round>',
-            goal.lastReason ? `（上一轮评估：${goal.lastReason}）` : '',
-          ]
-            .filter(Boolean)
-            .join('\n'),
+          messageId,
+          text: visibleUserText,
         },
       };
       const projectedRuns = new Map(this.demoRuns);
@@ -16942,11 +17985,33 @@ export class Runtime {
       );
       this.recordCommittedEvents(events);
       this.demoRuns.set(runId, demoRun);
+      this.goalRunRevisions.set(runId, this.goalRevision(goal));
+      this.pendingGoalTurns.delete(conversationId);
+      this.recordRunKernel(runId, demoRun.kernelId);
+      this.persistFinalChatMessage({
+        id: messageId,
+        threadId: threadId as ThreadId,
+        role: 'user',
+        text: visibleUserText,
+        ...(goal.modelId ? { modelId: goal.modelId } : {}),
+        createdAt: occurredAt,
+      });
       for (const event of events) this.publishEvent(event);
       void this.executeKernelRun(runId);
     } catch {
       // Goal turns must never break the session; the goal stays active for retry.
     }
+  }
+
+  private maybeStartPendingGoalTurn(threadId: string): void {
+    const conversationId = this.resolveConversationIdForThread(threadId);
+    if (!conversationId || !this.pendingGoalTurns.has(conversationId)) return;
+    const goal = this.loadGoal(conversationId);
+    if (!goal || goal.status !== 'active') {
+      this.pendingGoalTurns.delete(conversationId);
+      return;
+    }
+    this.triggerGoalTurn(conversationId, goal);
   }
 
   // ── 定时任务调度（0044） ──────────────────────────────────────────────────
@@ -18175,6 +19240,14 @@ export class Runtime {
             if (adapterEvent.type === 'finished' && adapterEvent.reason === 'tool-requests') {
               finishedWithToolRequests = true;
             }
+            if (adapterEvent.type === 'usage') {
+              this.addGoalUsageForRun(
+                runId,
+                currentRun,
+                adapterEvent.tokensIn,
+                adapterEvent.tokensOut,
+              );
+            }
 
             // When tools are requested, do not treat finished as terminal yet:
             // we still need a local tool loop + follow-up model turn.
@@ -18260,6 +19333,26 @@ export class Runtime {
                 projection.category = 'tool';
               }
             }
+            if (projection.terminal && projection.type === 'run.completed') {
+              const completion = this.guardFormalPlanCompletion(runId, currentRun);
+              if (completion.status === 'failed') {
+                currentRun = completion.run;
+                projection.category = 'run';
+                projection.type = 'run.failed';
+                projection.nextRun = completion.run;
+                projection.payload = {
+                  threadId: completion.run.threadId,
+                  failureClass: completion.failureClass,
+                  errorMessage: completion.error,
+                  assistantText: completion.run.assistantText,
+                  adapterEventIndex: completion.run.nextAdapterEventIndex,
+                  idempotencyKey: completion.run.runId,
+                  modelId: completion.run.modelId,
+                  providerModelId: completion.run.providerModelId,
+                  packetId: completion.run.packetId,
+                };
+              }
+            }
 
             // Enrich tool.requested payloads with NewMax-friendly fields.
             if (projection.type === 'tool.requested' && adapterEvent.type === 'tool-call') {
@@ -18299,6 +19392,13 @@ export class Runtime {
             if (projection.terminal) projectedRuns.delete(runId);
             else if (projection.nextRun) projectedRuns.set(runId, projection.nextRun);
             const payload = { ...projection.payload };
+            const isGoalCompletion =
+              projection.terminal &&
+              projection.type === 'run.completed' &&
+              this.goalRunRevisions.has(String(runId));
+            if (isGoalCompletion && typeof payload.assistantText === 'string') {
+              payload.assistantText = stripGoalStatus(payload.assistantText);
+            }
             if (typeof payload.errorMessage === 'string') {
               const scrubbed = this.scrubDiagnosticMessage(payload.errorMessage);
               if (scrubbed) payload.errorMessage = scrubbed;
@@ -18379,15 +19479,20 @@ export class Runtime {
               // without racing a later message-store write.
               const terminalRun = projection.nextRun ?? currentRun;
               if (projection.terminal && projection.type === 'run.completed') {
-                this.persistAssistantFinalMessage(runId, terminalRun, projection.payload, {
-                  reasoningDelta: terminalRun.reasoningText.slice(lastRoundReasoningStart),
+                const durableTerminalRun = isGoalCompletion
+                  ? stripGoalStatusFromRun(terminalRun)
+                  : terminalRun;
+                this.persistAssistantFinalMessage(runId, durableTerminalRun, payload, {
+                  reasoningDelta: durableTerminalRun.reasoningText.slice(lastRoundReasoningStart),
                   transcriptMessages: activeRoundTranscript?.messages ?? [],
                   hasToolRounds: toolLoopRound > 0,
                 });
-                // NewMax-style goal mode: after each finished turn, a separate
-                // evaluator checks the completion condition and either continues
-                // the goal loop or marks the goal achieved.
-                this.maybeEvaluateGoalAfterRun(String(currentRun.threadId));
+                this.maybeContinueGoalAfterRun(
+                  String(currentRun.threadId),
+                  String(runId),
+                  terminalRun,
+                  projection.payload,
+                );
               } else if (projection.terminal && projection.type === 'run.failed') {
                 this.persistAssistantTerminalMessage(
                   runId,
@@ -18403,7 +19508,11 @@ export class Runtime {
                 if (projection.type === 'run.failed') {
                   this.recordRunDiagnostic(runId, currentRun, projection.payload);
                 } else if (projection.type === 'run.completed') {
-                  this.maybeProposeRunMemory(runId, currentRun, projection.payload);
+                  this.maybeProposeRunMemory(
+                    runId,
+                    isGoalCompletion ? stripGoalStatusFromRun(currentRun) : currentRun,
+                    payload,
+                  );
                 }
               }
             } else if (projection.nextRun) {
@@ -18804,6 +19913,13 @@ export class Runtime {
                       ok: false,
                       error: platformResult.error ?? `platform tool failed: ${toolCall.name}`,
                     });
+              } else if (currentRun.planningMode === true && isPlanningDeniedTool(toolCall.name)) {
+                // 规划围栏对内置写工具同样生效：平台工具经 handlePlatformMcpToolCall
+                // 已有围栏，内置 write_file/run_command 走本分支，此前仅靠提示词约束。
+                resultText = JSON.stringify({
+                  ok: false,
+                  error: '规划模式只读：此操作需在执行模式中进行',
+                });
               } else {
                 resultText = await executeChatBuiltInTool({
                   workspaceRoot,
@@ -18911,7 +20027,9 @@ export class Runtime {
       }
     } finally {
       this.demoRunAborts.delete(runId);
+      this.formalPlanRevisionByRun.delete(runId);
       this.forgetInFlight(runId);
+      this.maybeStartPendingGoalTurn(String(initialRun.threadId));
     }
   }
 
@@ -19136,8 +20254,17 @@ export class Runtime {
               case 'usage':
                 kernelUsageReports.push({ ...event.usage });
                 break;
+              case 'compaction-started':
+                this.persistKernelCompaction(runId, attemptRun.threadId, 'started');
+                break;
               case 'compacted':
-                this.persistKernelCompacted(runId, attemptRun.threadId);
+                this.persistKernelCompaction(runId, attemptRun.threadId, 'completed');
+                break;
+              case 'compaction-failed':
+                this.persistKernelCompaction(runId, attemptRun.threadId, 'failed', event.error);
+                break;
+              case 'plan-submitted':
+                this.persistNativeKernelPlan(runId, attemptRun.threadId, event.text);
                 break;
               case 'permission-request':
                 break;
@@ -19165,12 +20292,21 @@ export class Runtime {
                 request.session.id,
               );
             }
-            persistAttemptUsage(finalRun);
+            const completion = this.guardFormalPlanCompletion(runId, finalRun);
+            this.demoRuns.set(runId, completion.run);
+            persistAttemptUsage(completion.run);
             await closeAttemptBroker();
-            this.finalizeKernelRun(runId, finalRun, 'completed');
+            this.finalizeKernelRun(
+              runId,
+              completion.run,
+              completion.status,
+              completion.error,
+              completion.failureClass,
+            );
+            if (completion.status === 'failed') return;
             // Finalization persists the assistant reply before the native
             // session watermark advances, preventing a phantom history gap.
-            this.refreshKernelConversationSessionWatermark(finalRun);
+            this.refreshKernelConversationSessionWatermark(completion.run);
             return;
           }
 
@@ -19230,11 +20366,13 @@ export class Runtime {
       this.openGateway.revokeRun(runId);
       this.platformMcpCatalogByRun.delete(runId);
       this.platformMcpResultsByRun.delete(runId);
+      this.formalPlanRevisionByRun.delete(runId);
       this.kernelToolProgressByRun.delete(runId);
       adapterLease?.release();
       sessionLease.release();
       this.demoRunAborts.delete(runId);
       this.forgetInFlight(runId);
+      this.maybeStartPendingGoalTurn(String(initialRun.threadId));
     }
   }
 
@@ -19250,8 +20388,7 @@ export class Runtime {
     kernelLimit?: number;
   } {
     const configured = run.contextWindow ?? 128_000;
-    const estimated =
-      run.contextWindowEstimated === true && run.contextWindowOverride === undefined;
+    const estimated = run.contextWindowEstimated === true;
     let window = configured;
     let source: 'configured' | 'kernel-capped' | 'estimated' = estimated
       ? 'estimated'
@@ -19488,28 +20625,45 @@ export class Runtime {
   }
 
   private kernelConversationSessionFingerprint(
-    run: DemoRunState,
     kernelId: string,
     workspaceRoot: string | undefined,
-    baseSystemContext: string,
   ): string {
     return createHash('sha256')
       .update(
         JSON.stringify({
-          version: 2,
+          version: 3,
           kernelId,
+          workspaceRoot: workspaceRoot ?? null,
+        }),
+      )
+      .digest('hex');
+  }
+
+  private kernelSystemContextHash(baseSystemContext: string): string {
+    return createHash('sha256').update(baseSystemContext, 'utf8').digest('hex');
+  }
+
+  private kernelRoutingHash(run: DemoRunState): string {
+    return createHash('sha256')
+      .update(
+        JSON.stringify({
+          version: 1,
           modelId: run.modelId,
           providerId: run.providerId ?? null,
           providerModelId: run.providerModelId,
           protocol: run.protocol,
           credentialRefId: run.credentialRefId ?? null,
-          workspaceRoot: workspaceRoot ?? null,
-          permissionMode: normalizeChatExecutionMode(this.resolveChatExecutionMode(run.threadId)),
-          planningMode: run.planningMode === true || this.isPlanningModeForThread(run.threadId),
-          systemContext: baseSystemContext,
         }),
       )
       .digest('hex');
+  }
+
+  private formatKernelSystemContextUpdate(baseSystemContext: string): string {
+    return [
+      '## Host context update',
+      'The host context below changed since this native session last ran. Apply it from this turn onward; it supersedes conflicting older host context without replacing the native conversation history.',
+      baseSystemContext,
+    ].join('\n\n');
   }
 
   /** Latest durable host message watermark for a thread (sequence + timestamp). */
@@ -19547,9 +20701,8 @@ export class Runtime {
 
   /**
    * Compute the cross-kernel gap for a resumed kernel session: durable host
-   * messages after the session's watermark. A gap that is too large (many
-   * turns or a big token share of the effective window) is marked oversized so
-   * the caller can rebuild the session instead of patching it.
+   * messages after the session's watermark. The portable projection is bounded;
+   * gap size never invalidates the native session or replaces native compaction.
    */
   private computeKernelSessionGap(
     run: DemoRunState,
@@ -19592,21 +20745,19 @@ export class Runtime {
     const workspaceRoot = this.resolveChatWorkspaceRoot(run.threadId);
     const baseSystemContext = this.buildKernelSystemContext(run, workspaceRoot);
     const key = this.kernelConversationSessionKey(kernelId, run);
-    const fingerprint = this.kernelConversationSessionFingerprint(
-      run,
-      kernelId,
-      workspaceRoot,
-      baseSystemContext,
-    );
+    const fingerprint = this.kernelConversationSessionFingerprint(kernelId, workspaceRoot);
+    const contextHash = this.kernelSystemContextHash(baseSystemContext);
+    const routingHash = this.kernelRoutingHash(run);
     const existing = this.loadKernelConversationSession(key);
     const responseContinuationScopeId =
       existing?.sessionId === normalizedSessionId &&
-      existing.fingerprint === fingerprint &&
+      existing.routingHash === routingHash &&
       existing.responseContinuationScopeId
         ? existing.responseContinuationScopeId
         : this.kernelResponseContinuationScopeId(
             kernelId,
             requestedSessionId?.trim() || normalizedSessionId,
+            routingHash,
           );
     const watermark = this.latestDurableMessageWatermark(run.threadId);
     this.saveKernelConversationSession(key, {
@@ -19615,6 +20766,9 @@ export class Runtime {
       fingerprint,
       updatedAt: new Date().toISOString(),
       responseContinuationScopeId,
+      ...(workspaceRoot ? { workspaceRoot } : {}),
+      contextHash,
+      routingHash,
       ...(watermark
         ? { lastMessageSequence: watermark.sequence, lastMessageAt: watermark.createdAt }
         : {}),
@@ -19632,27 +20786,19 @@ export class Runtime {
       return { session: undefined, gapCount: 0 };
     }
     const key = this.kernelConversationSessionKey(kernelId, run);
-    const fingerprint = this.kernelConversationSessionFingerprint(
-      run,
-      kernelId,
-      workspaceRoot,
-      baseSystemContext,
-    );
     const existing = this.loadKernelConversationSession(key);
-    if (existing?.fingerprint === fingerprint) {
+    const workspaceMatches =
+      existing?.workspaceRoot === undefined || existing.workspaceRoot === workspaceRoot;
+    if (existing && workspaceMatches) {
       const gap = this.computeKernelSessionGap(run, existing);
-      if (gap.oversized) {
-        // Gap too large to patch cheaply → invalidate the native session and
-        // rebuild with the full bootstrap transcript.
-        this.clearKernelConversationSession(run, existing.sessionId);
-        const freshId = kernelId === 'codex' ? undefined : randomUUID();
-        return {
-          session: { ...(freshId ? { id: freshId } : {}), mode: 'create' },
-          gapCount: 0,
-        };
-      }
       const session: KernelRequest['session'] = { id: existing.sessionId, mode: 'resume' };
-      if (gap.catchUp) session.catchUp = gap.catchUp;
+      const contextHash = this.kernelSystemContextHash(baseSystemContext);
+      const contextUpdate =
+        existing.contextHash !== contextHash
+          ? this.formatKernelSystemContextUpdate(baseSystemContext)
+          : undefined;
+      const catchUp = [contextUpdate, gap.catchUp].filter(Boolean).join('\n\n');
+      if (catchUp) session.catchUp = catchUp;
       return { session, gapCount: gap.count };
     }
     if (existing) this.clearKernelConversationSession(run, existing.sessionId);
@@ -19674,16 +20820,25 @@ export class Runtime {
     if (
       session.mode === 'resume' &&
       existing?.sessionId === session.id &&
+      existing.routingHash === this.kernelRoutingHash(run) &&
       existing.responseContinuationScopeId
     ) {
       return existing.responseContinuationScopeId;
     }
-    return this.kernelResponseContinuationScopeId(kernelId, session.id);
+    return this.kernelResponseContinuationScopeId(
+      kernelId,
+      session.id,
+      this.kernelRoutingHash(run),
+    );
   }
 
-  private kernelResponseContinuationScopeId(kernelId: string, sessionId: string): string {
+  private kernelResponseContinuationScopeId(
+    kernelId: string,
+    sessionId: string,
+    routingHash?: string,
+  ): string {
     const digest = createHash('sha256')
-      .update(JSON.stringify({ version: 1, kernelId, sessionId }))
+      .update(JSON.stringify({ version: routingHash ? 2 : 1, kernelId, sessionId, routingHash }))
       .digest('base64url');
     return `kernel_${digest}`;
   }
@@ -19719,9 +20874,16 @@ export class Runtime {
   }
 
   private buildKernelBootstrapSystemContext(run: DemoRunState, baseSystemContext: string): string {
-    const messages = this.buildChatProviderMessages(run);
-    if (isCurrentKernelUserMessage(messages.at(-1), run.userText)) messages.pop();
-    const transcript = formatKernelBootstrapTranscript(messages);
+    let messages = this.messageStore
+      ? durableMessagesToGapProviderMessages(this.listMessagesAfterSequence(run.threadId, -1))
+      : this.buildChatProviderMessages(run).filter(
+          (message) => message.role === 'user' || message.role === 'assistant',
+        );
+    if (isCurrentKernelUserMessage(messages.at(-1), run.userText)) messages = messages.slice(0, -1);
+    const transcript = formatBoundedPortableKernelTranscript(
+      messages,
+      formatKernelBootstrapTranscript,
+    );
     return [baseSystemContext, transcript].filter(Boolean).join('\n\n');
   }
 
@@ -19897,13 +21059,35 @@ export class Runtime {
             : 'The host requires approval before side effects are executed.',
       ].join('\n'),
     );
+    parts.push(
+      [
+        '## Task checklist',
+        'For any request needing 2+ distinct steps, FIRST call `mcp__sync-think-platform__update_task_plan` with the complete checklist and mark the first item `in_progress`.',
+        'Call the same tool again with the FULL checklist whenever a step completes or the plan changes. Keep titles short, imperative, and in Simplified Chinese.',
+        'The checklist tool only updates the user-visible progress panel. Do not merely say that you created or updated a plan in prose; the tool call is required for the checklist to appear.',
+      ].join('\n'),
+    );
     if (run.planningMode === true || this.isPlanningModeForThread(run.threadId)) {
       parts.push(
         [
           '## 规划模式（Planning mode）',
           '你正处于规划模式：只做只读调研，禁止任何写入、编辑、命令执行、浏览器交互或资源变更（宿主会在执行层强制拦截）。',
-          '完成调研后，调用 `plan_submit` 提交一份结构化执行方案（title 标题 / goal 目标 / scope 范围 / steps 步骤，每步含验收标准 acceptanceChecks / risks 风险 / finalAcceptanceChecks 总验收），然后简要总结要点并停止，等待用户审批——不要继续执行任何改动。',
-          '宿主已禁用 EnterPlanMode / ExitPlanMode / AskUserQuestion（claude-code 内置），不要调用它们，也不要尝试进入 Claude 原生规划流程；方案提交使用宿主提供的 `plan_submit` 工具，中途需要用户决策时使用 `ask_user_question`。',
+          // 内核分叉（docs/engineering/06）：Claude 与 Codex 都走各自原生
+          // 规划协议，宿主只负责把方案归一化成同一审批卡。
+          ...(run.kernelId === 'claude-code'
+            ? [
+                '完成调研后，使用原生 ExitPlanMode 提交方案（把完整 Markdown 方案写入 plan 参数）；宿主会渲染方案审批卡。提交后简要总结要点并停止，等待用户审批——不要继续执行任何改动。',
+                '中途需要用户决策时，直接使用原生 AskUserQuestion，宿主会渲染问询卡并把答案回填给你。不要调用 EnterPlanMode（规划模式由用户在界面切换）。',
+              ]
+            : run.kernelId === 'codex'
+              ? [
+                  '当前回合由 Codex app-server 原生 plan collaboration mode 驱动。请使用内核自己的规划流程输出最终方案；宿主会读取 canonical plan item 并统一渲染审批卡，不需要调用 plan_submit。',
+                  '中途需要用户决策时使用 Codex 原生问询能力；方案提交后停止，等待用户审批。',
+                ]
+              : [
+                  '完成调研后，调用 `plan_submit` 提交一份结构化执行方案（title 标题 / goal 目标 / scope 范围 / steps 步骤，每步含验收标准 acceptanceChecks / risks 风险 / finalAcceptanceChecks 总验收），然后简要总结要点并停止，等待用户审批——不要继续执行任何改动。',
+                  '中途需要用户决策时使用宿主提供的 `ask_user_question` 工具。',
+                ]),
         ].join('\n'),
       );
     }
@@ -20397,9 +21581,27 @@ export class Runtime {
     call: PlatformMcpToolCall,
     _argumentsJson: string,
   ): Promise<{ ok: boolean; content?: string; error?: string }> {
+    if (run.planningMode !== true) {
+      return { ok: false, error: 'plan_submit is only available during a planning run' };
+    }
+    const existingRevision = this.formalPlanRevisionByRun.get(runId);
+    if (existingRevision !== undefined) {
+      return {
+        ok: true,
+        content: JSON.stringify({
+          ok: true,
+          planSubmitted: true,
+          revision: existingRevision,
+          message: '计划已提交，等待用户审批。请简要总结计划要点并停止执行，不要继续做任何改动。',
+        }),
+      };
+    }
     const conversationId = this.resolveConversationIdForThread(run.threadId);
     if (!conversationId || !this.conversationStore) {
       return { ok: false, error: 'conversation store unavailable' };
+    }
+    if (this.conversationStore.get(conversationId)?.interactionMode !== 'plan') {
+      return { ok: false, error: 'plan_submit is only available during a planning run' };
     }
     const parsed = parseConversationPlanSubmitPayload({
       conversationId,
@@ -20413,12 +21615,19 @@ export class Runtime {
         parsed.conversationId,
         parsed.plan,
       );
-      const event = this.appendEvent('system', 'conversation.plan_submitted', {
-        conversationId: parsed.conversationId,
-        revision: plan.currentRevision,
+      const event = this.appendEvent(
+        'system',
+        'conversation.plan_submitted',
+        {
+          conversationId: parsed.conversationId,
+          revision: plan.currentRevision,
+          runId,
+        },
+        undefined,
         runId,
-      });
+      );
       this.publishEvent(event);
+      this.formalPlanRevisionByRun.set(runId, plan.currentRevision);
       return {
         ok: true,
         content: JSON.stringify({
@@ -20740,13 +21949,27 @@ export class Runtime {
     threadId: string,
     call: PlatformMcpToolCall,
   ): Promise<'approve' | 'deny'> {
+    const toolCall: ProviderToolCall = {
+      id: call.id,
+      name: call.tool,
+      argumentsJson: JSON.stringify(call.input ?? {}),
+    };
+    const approvalArguments = call.input ?? {};
+    const allowedScopes = toolApprovalScopesFor({
+      toolName: call.tool,
+      arguments: approvalArguments,
+    });
+    if (
+      this.toolApprovalPolicy.isAllowed({
+        conversationId: this.resolveConversationIdForThread(threadId) ?? threadId,
+        toolName: call.tool,
+        arguments: approvalArguments,
+      })
+    ) {
+      return Promise.resolve('approve');
+    }
     return new Promise((resolve) => {
       const approvalId = `kappr-${ulid()}`;
-      const toolCall: ProviderToolCall = {
-        id: call.id,
-        name: call.tool,
-        argumentsJson: JSON.stringify(call.input ?? {}),
-      };
       const summary = summarizeToolCallForApproval(call.tool, toolCall.argumentsJson);
       try {
         const event = this.persistProjectedEvent(
@@ -20770,6 +21993,7 @@ export class Runtime {
               path: summary.path,
               command: summary.command,
               executionMode: normalizeChatExecutionMode(this.resolveChatExecutionMode(threadId)),
+              allowedScopes,
             },
           },
           new Map(this.demoRuns),
@@ -20809,6 +22033,8 @@ export class Runtime {
         completedResults: [],
         toolLoopRound: 0,
         approvalSummary: summary,
+        approvalArguments,
+        allowedScopes,
         resolve: (decision) => {
           call.signal.removeEventListener('abort', onAbort);
           resolve(decision === 'approve' ? 'approve' : 'deny');
@@ -20869,6 +22095,29 @@ export class Runtime {
     }
   }
 
+  private async handleKernelRecycle(socket: Socket, frame: Frame): Promise<void> {
+    try {
+      const kernelId = (frame.payload as { kernelId?: unknown } | undefined)?.kernelId;
+      if (kernelId !== 'codex' && kernelId !== 'claude-code') {
+        throw new Error('kernel.recycle.kernel-invalid');
+      }
+      const result =
+        kernelId === 'codex'
+          ? await this.codexSessionHost.recycleAll()
+          : { recycled: 0, deferred: 0 };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'kernel.recycle',
+          payload: { kernelId, ...result },
+        }),
+      );
+    } catch (error) {
+      this.writeProviderCommandError(socket, frame, error);
+    }
+  }
+
   /**
    * Kernel permission bridge: the kernel's can_use_tool request surfaces as the
    * same tool.approval_requested card the native path uses; the shell decision
@@ -20890,6 +22139,37 @@ export class Runtime {
       // platform infrastructure tools; file writes / task_schedule keep their
       // own fences (approved inside their executors or by the card below).
       if (isHostAutoApprovedMcpTool(permission.toolName)) {
+        adapter.respondPermission(permission.requestId, { allow: true });
+        return;
+      }
+      // Kernel-native planning bridge (docs/engineering/06): Claude's own
+      // ExitPlanMode / AskUserQuestion resolve through the host plan card /
+      // ask card instead of the generic approval card.
+      if (permission.toolName === 'ExitPlanMode') {
+        this.handleNativePlanExitPermission(runId, threadId, adapter, permission);
+        return;
+      }
+      if (permission.toolName === 'AskUserQuestion') {
+        this.handleNativeAskUserQuestionPermission(runId, threadId, adapter, permission);
+        return;
+      }
+      const approvalArguments =
+        permission.toolInput &&
+        typeof permission.toolInput === 'object' &&
+        !Array.isArray(permission.toolInput)
+          ? (permission.toolInput as Record<string, unknown>)
+          : {};
+      const allowedScopes = toolApprovalScopesFor({
+        toolName: permission.toolName,
+        arguments: approvalArguments,
+      });
+      if (
+        this.toolApprovalPolicy.isAllowed({
+          conversationId: this.resolveConversationIdForThread(threadId) ?? threadId,
+          toolName: permission.toolName,
+          arguments: approvalArguments,
+        })
+      ) {
         adapter.respondPermission(permission.requestId, { allow: true });
         return;
       }
@@ -20916,13 +22196,14 @@ export class Runtime {
               runId,
               toolCallId: permission.requestId,
               toolName: permission.toolName,
-              arguments: permission.toolInput ?? {},
+              arguments: approvalArguments,
               ...(permission.reason ? { reason: permission.reason } : {}),
               title: summary.title,
               detail: summary.detail,
               path: summary.path,
               command: summary.command,
               executionMode: normalizeChatExecutionMode(this.resolveChatExecutionMode(threadId)),
+              allowedScopes,
             },
           },
           new Map(this.demoRuns),
@@ -20943,6 +22224,8 @@ export class Runtime {
         completedResults: [],
         toolLoopRound: 0,
         approvalSummary: summary,
+        approvalArguments,
+        allowedScopes,
         resolve: (decision) => {
           adapter.respondPermission(
             permission.requestId,
@@ -20954,6 +22237,236 @@ export class Runtime {
         createdAt: new Date().toISOString(),
       });
     });
+  }
+
+  /**
+   * Claude 原生规划桥（docs/engineering/06）：规划 run 里模型调用内置
+   * ExitPlanMode 提交方案。宿主把 Markdown 方案宽松解析成结构化草稿并走既有
+   * `conversation.plan_submitted` 生命周期（方案卡 → 审批 → 桌面端发执行轮），
+   * 然后以「已提交待审批」拒绝该权限请求，让模型总结要点后自然收轮——与
+   * plan_submit 工具的收轮语义一致，审批后的执行轮携带完整工具目录。
+   */
+  private handleNativePlanExitPermission(
+    runId: RunId,
+    threadId: string,
+    adapter: KernelAdapter,
+    permission: KernelPermissionRequest,
+  ): void {
+    const deny = (message: string): void =>
+      adapter.respondPermission(permission.requestId, { allow: false, message });
+    const input =
+      permission.toolInput && typeof permission.toolInput === 'object'
+        ? (permission.toolInput as Record<string, unknown>)
+        : {};
+    // 方案文本优先取 input.plan（SDK schema 未声明但实际携带）；缺失时回退
+    // 到本 run 已流出的回答文本（模型通常先写方案再调 ExitPlanMode）。
+    const run = this.demoRuns.get(runId);
+    const planMarkdown =
+      typeof input.plan === 'string' && input.plan.trim()
+        ? input.plan.trim()
+        : (run?.assistantText ?? '').trim();
+    if (!planMarkdown) {
+      deny('宿主未读到方案内容：请先在回复中写出完整方案（Markdown），再调用 ExitPlanMode。');
+      return;
+    }
+    const result = this.submitNativeKernelPlan(runId, threadId, planMarkdown);
+    if (result.ok) {
+      deny(
+        `方案已提交（第 ${result.revision} 版），等待用户在界面上审批。请简要总结方案要点并结束本轮，不要继续任何改动；用户批准后宿主会开启执行轮。`,
+      );
+    } else {
+      deny(`方案提交失败：${result.error}。可改用 plan_submit 工具提交。`);
+    }
+  }
+
+  /** Normalize any kernel-native Markdown plan into the shared approval card. */
+  private submitNativeKernelPlan(
+    runId: RunId,
+    threadId: string,
+    planMarkdown: string,
+  ): { ok: true; revision: number } | { ok: false; error: string } {
+    const existingRevision = this.formalPlanRevisionByRun.get(runId);
+    if (existingRevision !== undefined) {
+      return { ok: true, revision: existingRevision };
+    }
+    const conversationId = this.resolveConversationIdForThread(threadId) as
+      ConversationId | undefined;
+    if (!conversationId || !this.conversationStore) {
+      return { ok: false, error: '宿主无法定位当前对话' };
+    }
+    if (this.conversationStore.get(conversationId)?.interactionMode !== 'plan') {
+      return { ok: false, error: '当前对话不在规划模式' };
+    }
+    const markdown = planMarkdown.trim();
+    if (!markdown) return { ok: false, error: '内核没有返回方案正文' };
+    const heading = markdown.match(/^#{1,6}\s+(.+)$/m);
+    const title = heading?.[1]?.trim() || '执行方案';
+    try {
+      const plan = this.conversationStore.submitConversationPlan(
+        conversationId,
+        parsePlanMarkdown(title, markdown),
+      );
+      const event = this.appendEvent(
+        'system',
+        'conversation.plan_submitted',
+        {
+          conversationId,
+          revision: plan.currentRevision,
+          runId,
+        },
+        undefined,
+        runId,
+      );
+      this.publishEvent(event);
+      this.formalPlanRevisionByRun.set(runId, plan.currentRevision);
+      return { ok: true, revision: plan.currentRevision };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  private persistNativeKernelPlan(runId: RunId, threadId: string, markdown: string): void {
+    const result = this.submitNativeKernelPlan(runId, threadId, markdown);
+    if (result.ok) return;
+    const run = this.demoRuns.get(runId);
+    if (!run) return;
+    this.demoRuns.set(
+      runId,
+      appendAssistantStatus(run, {
+        statusType: 'other',
+        label: `原生方案未提交：${result.error}`,
+        occurredAt: new Date().toISOString(),
+      }),
+    );
+  }
+
+  /**
+   * Claude 原生问询桥：内置 AskUserQuestion 经 canUseTool 到达宿主后，
+   * 复用 ask_user_question 的挂起问询基础设施（conversation.ask_pending →
+   * 桌面问询卡 → answer/cancel）。回答以 allow + updatedInput.answers
+   * （question 原文 → 答案字符串）回给 SDK，模型在同一 run 内继续。
+   */
+  private handleNativeAskUserQuestionPermission(
+    runId: RunId,
+    threadId: string,
+    adapter: KernelAdapter,
+    permission: KernelPermissionRequest,
+  ): void {
+    const deny = (message: string): void =>
+      adapter.respondPermission(permission.requestId, { allow: false, message });
+    const input =
+      permission.toolInput && typeof permission.toolInput === 'object'
+        ? (permission.toolInput as Record<string, unknown>)
+        : undefined;
+    const rawQuestions = input && Array.isArray(input.questions) ? input.questions : [];
+    const questions: AskQuestion[] = [];
+    for (const [index, raw] of rawQuestions.entries()) {
+      if (!raw || typeof raw !== 'object') continue;
+      const record = raw as Record<string, unknown>;
+      if (typeof record.question !== 'string' || !record.question.trim()) continue;
+      const options: AskQuestionOption[] = [];
+      if (Array.isArray(record.options)) {
+        for (const option of record.options) {
+          if (!option || typeof option !== 'object') continue;
+          const opt = option as Record<string, unknown>;
+          if (typeof opt.label !== 'string' || !opt.label) continue;
+          options.push({
+            label: opt.label,
+            ...(typeof opt.description === 'string' && opt.description
+              ? { description: opt.description }
+              : {}),
+          });
+        }
+      }
+      questions.push({
+        id: `q-${index + 1}`,
+        question: record.question,
+        ...(typeof record.header === 'string' && record.header ? { header: record.header } : {}),
+        ...(options.length > 0 ? { options } : {}),
+        ...(record.multiSelect === true ? { multiSelect: true } : {}),
+      });
+    }
+    if (questions.length === 0) {
+      deny('AskUserQuestion 输入无效：缺少可用的 questions。');
+      return;
+    }
+    const askId = `ask-${ulid()}`;
+    const entry: PendingAskEntry = {
+      askId,
+      runId,
+      threadId,
+      questions,
+      createdAt: new Date().toISOString(),
+      resolve: (result) => {
+        if (!result.ok) {
+          deny(result.error ?? '用户取消了问询');
+          return;
+        }
+        // SDK 的 allow 约定：updatedInput.answers 以问题原文为 key、答案
+        // 字符串为值（多选逗号分隔）。缺答的问题回填占位，避免 SDK 端校验缺 key。
+        const answers: Record<string, string> = {};
+        try {
+          const parsed = JSON.parse(result.content ?? '{}') as {
+            answers?: AskQuestionAnswer[];
+          };
+          for (const answer of parsed.answers ?? []) {
+            const question = questions.find((q) => q.id === answer.id);
+            if (!question) continue;
+            const custom = typeof answer.custom === 'string' ? answer.custom.trim() : '';
+            const selected = Array.isArray(answer.selected)
+              ? answer.selected.filter((label): label is string => typeof label === 'string')
+              : [];
+            const text = custom || selected.join(', ');
+            if (text) answers[question.question] = text;
+          }
+        } catch {
+          // 占位回填兜底。
+        }
+        for (const question of questions) {
+          if (!(question.question in answers)) {
+            answers[question.question] = '（用户跳过了此问题）';
+          }
+        }
+        adapter.respondPermission(permission.requestId, {
+          allow: true,
+          updatedInput: { ...(input ?? {}), answers },
+        });
+      },
+      onAbort: () => {
+        if (this.pendingAsks.delete(askId)) {
+          this.publishEvent(
+            this.appendEvent('system', 'conversation.ask_cancelled', {
+              askId,
+              threadId,
+              runId,
+              reason: 'run-cancelled',
+            }),
+          );
+          deny('问询已取消（run 已结束）');
+        }
+      },
+    };
+    this.pendingAsks.set(askId, entry);
+    this.publishEvent(
+      this.persistProjectedEvent(
+        {
+          id: ulid() as Event['id'],
+          workspaceId: this.resolveEventWorkspaceId(threadId),
+          taskId: this.resolveEventTaskId(threadId),
+          runId,
+          category: 'system',
+          type: 'conversation.ask_pending',
+          occurredAt: entry.createdAt,
+          payload: {
+            askId,
+            threadId,
+            runId,
+            questions,
+          },
+        },
+        new Map(this.demoRuns),
+      ),
+    );
   }
 
   private publishKernelTextDelta(
@@ -21183,6 +22696,7 @@ export class Runtime {
         payload:
           type === 'tool.requested'
             ? {
+                threadId,
                 toolCall: {
                   id: (event as { toolId: string }).toolId,
                   name: (event as { name: string }).name,
@@ -21191,6 +22705,7 @@ export class Runtime {
                 ...((event as { partial?: boolean }).partial ? { partial: true } : {}),
               }
             : {
+                threadId,
                 toolCallId: (event as { toolId: string }).toolId,
                 result: (event as { output: string }).output,
                 ...((event as { isError?: boolean }).isError ? { failed: true } : {}),
@@ -21349,7 +22864,12 @@ export class Runtime {
    * provider history at its sequence, and an autonomous kernel's internal
    * compaction says nothing about what the host may still replay.
    */
-  private persistKernelCompacted(runId: RunId, threadId: string): void {
+  private persistKernelCompaction(
+    runId: RunId,
+    threadId: string,
+    status: 'started' | 'completed' | 'failed',
+    error?: string,
+  ): void {
     try {
       const occurredAt = new Date().toISOString();
       const run = this.demoRuns.get(runId);
@@ -21358,7 +22878,12 @@ export class Runtime {
           runId,
           appendAssistantStatus(run, {
             statusType: 'compaction',
-            label: '内核已压缩上下文',
+            label:
+              status === 'started'
+                ? '正在压缩上下文'
+                : status === 'completed'
+                  ? '上下文压缩成功'
+                  : '上下文压缩失败',
             occurredAt,
           }),
         );
@@ -21370,11 +22895,17 @@ export class Runtime {
           taskId: this.resolveEventTaskId(threadId),
           runId,
           category: 'context',
-          type: 'kernel.context_compacted',
+          type:
+            status === 'started'
+              ? 'kernel.context_compaction_started'
+              : status === 'completed'
+                ? 'kernel.context_compacted'
+                : 'kernel.context_compaction_failed',
           occurredAt,
           payload: {
             threadId,
             kernelId: run?.kernelId ?? 'kernel',
+            ...(error ? { error } : {}),
           },
         },
         new Map(this.demoRuns),
@@ -21402,31 +22933,16 @@ export class Runtime {
         category: 'provider',
         type: 'provider.usage',
         occurredAt,
-        payload: {
-          threadId: run.threadId,
-          // Stable per usage report: value-derived ids made progressive updates
-          // look like separate provider requests in the usage aggregate.
-          requestId: usage.requestId ?? `kernel-${runId}-${sequence}`,
-          ...(usage.providerResponseId ? { providerResponseId: usage.providerResponseId } : {}),
-          providerId: preferUsageIdentity
-            ? (usage.providerId ?? run.providerId ?? run.kernelId ?? 'kernel')
-            : (run.providerId ?? usage.providerId ?? run.kernelId ?? 'kernel'),
-          providerModelId: usage.modelId ?? run.providerModelId,
-          purpose: 'normal',
-          tokensIn: usage.input ?? usage.real,
-          tokensOut: usage.output ?? 0,
-          ...(usage.cached !== undefined ? { cachedTokensHit: usage.cached } : {}),
-          ...(usage.cachedTokensCreated !== undefined
-            ? { cachedTokensCreated: usage.cachedTokensCreated }
-            : {}),
-          ...(usage.reasoningTokens !== undefined
-            ? { reasoningTokens: usage.reasoningTokens }
-            : {}),
-          totalTokens: usage.real,
-        },
+        payload: buildKernelUsagePayload(run, usage, sequence, preferUsageIdentity),
       };
       const committed = this.persistProjectedEvent(draft, new Map(this.demoRuns));
       this.publishEvent(committed);
+      this.addGoalUsageForRun(
+        runId,
+        run,
+        usage.input ?? usage.real,
+        usage.output ?? 0,
+      );
     } catch {
       // Usage accounting must never crash the kernel stream.
     }
@@ -21461,6 +22977,30 @@ export class Runtime {
     );
   }
 
+  private guardFormalPlanCompletion(
+    runId: RunId,
+    run: DemoRunState,
+  ):
+    | { status: 'completed'; run: DemoRunState; error?: undefined; failureClass?: undefined }
+    | { status: 'failed'; run: DemoRunState; error: string; failureClass: 'protocol' } {
+    if (run.planningMode !== true || this.formalPlanRevisionByRun.has(runId)) {
+      return { status: 'completed', run };
+    }
+    return {
+      status: 'failed',
+      run: {
+        ...run,
+        assistantText: '',
+        legacyPendingText: '',
+        assistantTimeline: run.assistantTimeline.filter(
+          (segment) => segment.kind !== 'text' || segment.phase !== 'final_answer',
+        ),
+      },
+      error: '规划轮已结束，但没有提交正式方案。请重试 /plan。',
+      failureClass: 'protocol',
+    };
+  }
+
   private finalizeKernelRun(
     runId: RunId,
     run: DemoRunState,
@@ -21468,6 +23008,11 @@ export class Runtime {
     error?: string,
     failureClass: FailureClass = 'unknown',
   ): void {
+    // A terminated run must not leave a pending ask card behind (native
+    // AskUserQuestion has no MCP abort signal; platform asks are idempotent).
+    for (const entry of [...this.pendingAsks.values()]) {
+      if (entry.runId === runId) entry.onAbort();
+    }
     const occurredAt = new Date().toISOString();
     // §12.17.18: at the terminal boundary the remaining buffered kernel text
     // is the final answer — flush it into a final_answer timeline segment so
@@ -21481,10 +23026,12 @@ export class Runtime {
     );
     this.demoRuns.set(runId, terminalRun);
     const failed = status === 'failed';
+    const isGoalCompletion = !failed && this.goalRunRevisions.has(String(runId));
+    const durableTerminalRun = isGoalCompletion ? stripGoalStatusFromRun(terminalRun) : terminalRun;
     const payload: Record<string, unknown> = {
       threadId: terminalRun.threadId,
       ...(failed ? { failureClass, errorMessage: error ?? 'kernel failed' } : { reason: 'stop' }),
-      assistantText: terminalRun.assistantText,
+      assistantText: durableTerminalRun.assistantText,
       adapterEventIndex: terminalRun.nextAdapterEventIndex,
       idempotencyKey: run.runId,
       modelId: terminalRun.modelId,
@@ -21515,14 +23062,20 @@ export class Runtime {
         this.publishEvent(event);
         this.recordRunDiagnostic(runId, terminalRun, payload);
       } else {
-        this.persistAssistantFinalMessage(runId, terminalRun, payload);
+        this.persistAssistantFinalMessage(runId, durableTerminalRun, payload);
         // Publish the terminal BEFORE the memory proposal: maybeProposeRunMemory
         // appends and publishes a later-sequence memory.change.proposed event,
         // and publishEvent drops anything older than the subscriber's live
         // cursor — publishing run.completed after it would silently lose the
         // terminal event from every live stream (UI stuck on "executing").
         this.publishEvent(event);
-        this.maybeProposeRunMemory(runId, terminalRun, payload);
+        this.maybeContinueGoalAfterRun(
+          String(terminalRun.threadId),
+          String(runId),
+          terminalRun,
+          { ...payload, assistantText: terminalRun.assistantText },
+        );
+        this.maybeProposeRunMemory(runId, durableTerminalRun, payload);
       }
       this.demoRuns.delete(runId);
       this.transientSnapshotByThread.delete(terminalRun.threadId as ThreadId);
@@ -21553,6 +23106,7 @@ export class Runtime {
     globalAgentId?: string;
     teamId?: string;
     skillVersionIds?: readonly string[];
+    skillSnapshot?: readonly { skillVersionId: string; name: string }[];
   }): void {
     const track = input.track ?? (input.teamId ? 'team' : input.globalAgentId ? 'agent' : 'model');
     const isAgentTrack = track === 'agent' || track === 'team';
@@ -22015,6 +23569,8 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     networkEnabled?: boolean;
     /** 批准方案后的执行轮：强制使用 plan-act 的执行模型（仅本轮）。 */
     planExecuting?: boolean;
+    /** Built-in product guidance for this turn only. */
+    helpMode?: boolean;
     images?: Array<{
       name: string;
       mimeType: string;
@@ -22326,10 +23882,10 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         // Keep the stable Runtime fallback when provider metadata is malformed.
       }
     }
-    const contextWindowOverride = this.resolveConversationForThread(
-      input.threadId,
-    )?.contextWindowOverride;
-    const contextWindow = contextWindowOverride ?? modelContextWindow;
+    // Capacity is owned by the selected provider model. Legacy conversation
+    // overrides remain readable for import compatibility but no longer affect
+    // new runs or the context UI.
+    const contextWindow = modelContextWindow;
 
     const contextSectionForKind = (
       kind: ContextSourceRef['kind'],
@@ -22407,12 +23963,12 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       mcpServerIds: effectiveMcpIds,
       contextWindow,
       modelContextWindow,
-      contextWindowOverride,
       contextWindowEstimated,
       projectContextPromptBlocks,
       contextSources,
       reasoningEffort,
       networkEnabled: input.networkEnabled === true ? true : undefined,
+      helpMode: input.helpMode === true ? true : undefined,
       planningMode: this.isPlanningModeForThread(input.threadId),
       images: input.images,
       packetId: built.packet.id,
@@ -24953,6 +26509,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     threadId: string;
     runId: RunId;
     decision: 'approve' | 'deny';
+    scope?: ToolApprovalScope;
     reason?: string;
     toolCallId?: string;
     toolName?: string;
@@ -24962,6 +26519,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       threadId: input.threadId,
       runId: input.runId,
       decision: input.decision,
+      scope: input.scope ?? 'once',
       reason: input.reason,
       toolCallId: input.toolCallId,
       toolName: input.toolName,
@@ -25013,14 +26571,34 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     toolLoopRound: number;
     toolCall: import('@sync-think/adapters').ProviderToolCall;
     approvalArguments?: Record<string, unknown>;
-    approvalRisk?: { level: string; reasonCodes: string[]; humanOnlyAction?: string };
+    approvalRisk?: ToolApprovalRiskSummary;
     signal: AbortSignal;
   }): Promise<{ decision: 'approve' | 'deny'; approvalId: string }> {
+    const rawArguments = parseToolApprovalArguments(input.toolCall.argumentsJson);
+    const allowedScopes = toolApprovalScopesFor({
+      toolName: input.toolCall.name,
+      arguments: rawArguments,
+      risk: input.approvalRisk,
+    });
+    if (
+      this.toolApprovalPolicy.isAllowed({
+        conversationId: this.resolveConversationIdForThread(input.threadId) ?? input.threadId,
+        toolName: input.toolCall.name,
+        arguments: rawArguments,
+        risk: input.approvalRisk,
+      })
+    ) {
+      return Promise.resolve({
+        decision: 'approve',
+        approvalId: `remembered:${input.runId}:${input.toolCall.id}`,
+      });
+    }
     const approvalId = input.approvalId ?? `tappr-${ulid()}`;
     const summary = summarizeToolCallForApproval(
       input.toolCall.name,
       input.toolCall.argumentsJson || '{}',
     );
+    const approvalArguments = input.approvalArguments ?? rawArguments;
 
     const event = this.persistProjectedEvent(
       {
@@ -25036,21 +26614,14 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
           runId: input.runId,
           toolCallId: input.toolCall.id,
           toolName: input.toolCall.name,
-          arguments:
-            input.approvalArguments ??
-            (() => {
-              try {
-                return JSON.parse(input.toolCall.argumentsJson || '{}');
-              } catch {
-                return {};
-              }
-            })(),
+          arguments: approvalArguments,
           ...(input.approvalRisk ? { risk: input.approvalRisk } : {}),
           title: summary.title,
           detail: summary.detail,
           path: summary.path,
           command: summary.command,
           executionMode: normalizeChatExecutionMode(input.executionMode),
+          allowedScopes,
         },
       },
       new Map(this.demoRuns),
@@ -25100,6 +26671,9 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         completedResults: input.completedResults,
         toolLoopRound: input.toolLoopRound,
         approvalSummary: summary,
+        approvalArguments,
+        approvalRisk: input.approvalRisk,
+        allowedScopes,
         resolve: (decision) => {
           input.signal.removeEventListener('abort', onAbort);
           resolve({ decision, approvalId });
@@ -25120,6 +26694,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       // Not in the in-memory map: idempotent replay or an orphan card left by a
       // runtime restart / cancelled run. Resolve gracefully instead of erroring.
       let priorDecision: 'approve' | 'deny' | undefined;
+      let priorScope: ToolApprovalScope = 'once';
       let orphanRequested:
         { threadId: string; runId: RunId; toolCallId?: string; toolName?: string } | undefined;
       for (let i = this.events.length - 1; i >= 0; i--) {
@@ -25128,6 +26703,9 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         if (event.type === 'tool.approval_decided') {
           const d = event.payload.decision;
           priorDecision = d === 'approve' || d === 'deny' ? d : 'deny';
+          const eventScope = event.payload.scope;
+          priorScope =
+            eventScope === 'session' || eventScope === 'always-app' ? eventScope : 'once';
           break;
         }
         if (event.type === 'tool.approval_requested' && !orphanRequested) {
@@ -25150,7 +26728,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
             id: frame.id,
             kind: 'response',
             type: 'conversation.decideToolApproval',
-            payload: { approvalId: payload.approvalId, decision: priorDecision },
+            payload: { approvalId: payload.approvalId, decision: priorDecision, scope: priorScope },
           }),
         );
         return;
@@ -25172,7 +26750,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
             id: frame.id,
             kind: 'response',
             type: 'conversation.decideToolApproval',
-            payload: { approvalId: payload.approvalId, decision: 'deny' },
+            payload: { approvalId: payload.approvalId, decision: 'deny', scope: 'once' },
           }),
         );
         return;
@@ -25192,6 +26770,56 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       return;
     }
 
+    const scope = payload.scope ?? 'once';
+    const toolCall = pending.pendingToolCalls[pending.currentIndex];
+    if (payload.decision === 'approve' && !pending.allowedScopes.includes(scope)) {
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'conversation.decideToolApproval',
+          payload: {},
+          error: {
+            code: ErrorCode.PROTOCOL_UNEXPECTED_REQUEST,
+            message:
+              pending.approvalRisk?.level === 'human-only'
+                ? 'Human-only 工具每次都需要真人批准，仅支持单次批准'
+                : `当前审批不支持 ${scope} 授权`,
+          },
+        }),
+      );
+      return;
+    }
+    if (payload.decision === 'approve' && scope !== 'once') {
+      if (!toolCall) {
+        this.writeMalformedPayload(socket, frame);
+        return;
+      }
+      const remembered = this.toolApprovalPolicy.remember({
+        conversationId:
+          this.resolveConversationIdForThread(pending.threadId) ?? pending.threadId,
+        toolName: toolCall.name,
+        arguments: parseToolApprovalArguments(toolCall.argumentsJson),
+        scope,
+        risk: pending.approvalRisk,
+      });
+      if (!remembered.remembered) {
+        socket.write(
+          encodeFrame({
+            id: frame.id,
+            kind: 'response',
+            type: 'conversation.decideToolApproval',
+            payload: {},
+            error: {
+              code: ErrorCode.PROTOCOL_UNEXPECTED_REQUEST,
+              message: '当前工具不支持永久应用授权',
+            },
+          }),
+        );
+        return;
+      }
+    }
+
     this.pendingToolApprovals.delete(payload.approvalId);
     const decidedEvent = this.persistProjectedEvent(
       {
@@ -25206,6 +26834,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
           threadId: pending.threadId,
           runId: pending.runId,
           decision: payload.decision,
+          scope,
           toolCallId: pending.pendingToolCalls[pending.currentIndex]?.id,
           toolName: pending.pendingToolCalls[pending.currentIndex]?.name,
         },
@@ -25224,6 +26853,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         payload: {
           approvalId: payload.approvalId,
           decision: payload.decision,
+          scope,
           runId: pending.runId,
         },
       }),
@@ -25249,10 +26879,13 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         runId: pending.runId,
         toolCallId: toolCall.id,
         toolName: toolCall.name,
+        arguments: pending.approvalArguments,
         title: summary.title,
         detail: summary.detail,
         ...(summary.path ? { path: summary.path } : {}),
         ...(summary.command ? { command: summary.command } : {}),
+        ...(pending.approvalRisk ? { risk: pending.approvalRisk } : {}),
+        allowedScopes: pending.allowedScopes,
         status: 'pending',
         createdAt: pending.createdAt,
       });
@@ -27074,16 +28707,10 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       kernelId: run.kernelId,
       contextWindow: run.effectiveContextWindow ?? run.contextWindow ?? 128_000,
       modelContextWindow: run.modelContextWindow ?? run.contextWindow ?? 128_000,
-      contextWindowOverride: run.contextWindowOverride,
       contextWindowSource:
-        run.contextWindowSource === 'kernel-capped'
-          ? 'kernel-limit'
-          : run.contextWindowOverride !== undefined
-            ? 'conversation-override'
-            : 'model-default',
+        run.contextWindowSource === 'kernel-capped' ? 'kernel-limit' : 'model-default',
       kernelContextWindowLimit: run.kernelContextWindowLimit,
-      contextWindowEstimated:
-        run.contextWindowOverride === undefined && run.contextWindowEstimated === true,
+      contextWindowEstimated: run.contextWindowEstimated === true,
       systemInstructions: [
         productBoundaryPrompt,
         networkPrompt,
@@ -27634,6 +29261,8 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     agentVersionId?: AgentVersionId;
     modelId?: ModelId;
     credentialRefId?: CredentialRefId;
+    skillVersionIds?: readonly string[];
+    skillSnapshot?: readonly { skillVersionId: string; name: string }[];
     createdAt?: string;
     sequence?: number;
   }): void {
@@ -27641,17 +29270,44 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     let durableMessage: Message | undefined;
     try {
       const text = typeof input.text === 'string' ? input.text : '';
+      const skillVersionIds =
+        input.role === 'user' && input.skillVersionIds?.length
+          ? [...new Set(input.skillVersionIds)]
+          : undefined;
+      const skillSnapshot =
+        input.role === 'user' && input.skillSnapshot?.length
+          ? input.skillSnapshot.map((skill) => ({ ...skill }))
+          : undefined;
       const blocks: MessageBlock[] =
         input.blocks && input.blocks.length > 0
           ? [...input.blocks]
           : text
-            ? [{ type: 'text', text }]
+            ? [
+                {
+                  type: 'text',
+                  text,
+                  ...(skillVersionIds
+                    ? {
+                        payload: {
+                          skillVersionIds,
+                          ...(skillSnapshot ? { skills: skillSnapshot } : {}),
+                        },
+                      }
+                    : {}),
+                },
+              ]
             : [];
       // Empty user messages can still carry images attached later; empty assistant is skipped.
       if (blocks.length === 0 && input.role !== 'user') return;
       if (blocks.length === 0 && input.role === 'user') {
         // Keep a stable empty text block so image attach can updateBlocks later.
-        blocks.push({ type: 'text', text: '' });
+        blocks.push({
+          type: 'text',
+          text: '',
+          ...(skillVersionIds
+            ? { payload: { skillVersionIds, ...(skillSnapshot ? { skills: skillSnapshot } : {}) } }
+            : {}),
+        });
       }
       const sequence =
         typeof input.sequence === 'number' && Number.isSafeInteger(input.sequence)
@@ -28539,6 +30195,9 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
             console.warn('[runtime] open gateway start failed', error),
           ),
         );
+        void this.startEnabledBotChannels().catch((error) =>
+          console.warn('[runtime] bot channel start failed', error),
+        );
         if (this.scheduler) {
           const recovery = this.scheduler
             .recoverAll()
@@ -28559,6 +30218,10 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
 
   async stop(): Promise<void> {
     this.runtimeStopped = true;
+    await this.botGatewayManager.stopAll();
+    this.telegramBotAbort?.abort();
+    if (this.telegramBotLoop) await this.telegramBotLoop.catch(() => undefined);
+    await this.telegramBotClient.close();
     this.stopTaskSchedulerHeartbeat();
     if (this.externalEventHeartbeatTimer) {
       clearInterval(this.externalEventHeartbeatTimer);

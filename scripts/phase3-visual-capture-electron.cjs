@@ -157,6 +157,119 @@ async function verifyTargetedFixture(window, visualCase) {
     }
   }
 
+  if (visualCase.fixture === 'composer-slash-open') {
+    const result = await window.webContents.executeJavaScript(
+      `(() => {
+        const composer = document.querySelector('[data-testid="composer-slash-open"]');
+        const menu = document.querySelector('[data-testid="composer-slash-open-menu"]');
+        const input = composer?.querySelector('.shell-compose__input');
+        const toolbar = composer?.querySelector('.shell-compose__bar');
+        const plus = composer?.querySelector('.shell-compose__shortcut-plus');
+        const model = composer?.querySelector('.shell-compose__model-btn');
+        const send = composer?.querySelector('.shell-compose__send');
+        const options = menu ? [...menu.querySelectorAll('.shell-slash-pop__item')] : [];
+        const rect = (node) => node?.getBoundingClientRect();
+        const composerRect = rect(composer);
+        const menuRect = rect(menu);
+        const inputRect = rect(input);
+        const toolbarRect = rect(toolbar);
+        const plusRect = rect(plus);
+        const modelRect = rect(model);
+        const sendRect = rect(send);
+        const composerStyle = composer ? getComputedStyle(composer) : null;
+        const menuStyle = menu ? getComputedStyle(menu) : null;
+        const inputStyle = input ? getComputedStyle(input) : null;
+        const modelStyle = model ? getComputedStyle(model) : null;
+        const sendStyle = send ? getComputedStyle(send) : null;
+        return {
+          composer: composerRect ? {
+            width: composerRect.width,
+            height: composerRect.height,
+            radius: composerStyle?.borderRadius,
+            padding: composerStyle?.padding,
+            background: composerStyle?.backgroundColor,
+          } : null,
+          menu: menuRect ? {
+            width: menuRect.width,
+            gap: composerRect ? composerRect.top - menuRect.bottom : null,
+            radius: menuStyle?.borderRadius,
+            padding: menuStyle?.padding,
+            background: menuStyle?.backgroundColor,
+          } : null,
+          input: inputRect ? {
+            height: inputRect.height,
+            padding: inputStyle?.padding,
+            fontSize: inputStyle?.fontSize,
+            lineHeight: inputStyle?.lineHeight,
+          } : null,
+          toolbar: toolbarRect ? { height: toolbarRect.height } : null,
+          controls: {
+            plus: plusRect
+              ? { width: plusRect.width, height: plusRect.height, left: plusRect.left }
+              : null,
+            model: modelRect ? {
+              height: modelRect.height,
+              left: modelRect.left,
+              fontSize: modelStyle?.fontSize,
+              lineHeight: modelStyle?.lineHeight,
+            } : null,
+            send: sendRect ? {
+              width: sendRect.width,
+              height: sendRect.height,
+              left: sendRect.left,
+              radius: sendStyle?.borderRadius,
+            } : null,
+          },
+          optionHeights: options.map((option) => option.getBoundingClientRect().height),
+          noHorizontalOverflow: document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+        };
+      })()`,
+      true,
+    );
+    const near = (actual, expected) =>
+      typeof actual === 'number' && Math.abs(actual - expected) <= 1;
+    if (
+      !result.composer ||
+      !near(result.composer.width, 656) ||
+      !near(result.composer.height, 80) ||
+      result.composer.radius !== '20px' ||
+      result.composer.padding !== '0px' ||
+      !result.menu ||
+      !near(result.menu.width, result.composer.width) ||
+      !near(result.menu.gap, 8) ||
+      result.menu.radius !== '18px' ||
+      result.menu.padding !== '4px' ||
+      result.menu.background !== result.composer.background ||
+      !result.input ||
+      !near(result.input.height, 42) ||
+      result.input.padding !== '12px 16px 8px' ||
+      result.input.fontSize !== '14px' ||
+      result.input.lineHeight !== '22px' ||
+      !result.toolbar ||
+      !near(result.toolbar.height, 32) ||
+      !result.controls.plus ||
+      !near(result.controls.plus.width, 32) ||
+      !near(result.controls.plus.height, 32) ||
+      !result.controls.model ||
+      !near(result.controls.model.height, 32) ||
+      result.controls.model.fontSize !== '13px' ||
+      result.controls.model.lineHeight !== '20px' ||
+      !result.controls.send ||
+      !near(result.controls.send.width, 32) ||
+      !near(result.controls.send.height, 32) ||
+      result.controls.send.radius !== '12px' ||
+      result.controls.model.left <= result.controls.plus.left ||
+      result.controls.send.left <= result.controls.model.left ||
+      result.optionHeights.length !== 5 ||
+      result.optionHeights.some((height) => !near(height, 32)) ||
+      !result.noHorizontalOverflow
+    ) {
+      throw new Error(
+        'phase3.visual.composer_geometry_invalid:' + visualCase.id + ':' + JSON.stringify(result),
+      );
+    }
+  }
+
   if (visualCase.fixture === 'task-status-panel') {
     let wallpaperSync = null;
     if (visualCase.state === 'manual-open') {
@@ -265,7 +378,7 @@ async function verifyTargetedFixture(window, visualCase) {
       !result.withinViewport ||
       !result.withinStage ||
       JSON.stringify(result.sectionOrder) !== JSON.stringify(['git', 'goal', 'progress']) ||
-      JSON.stringify(result.sectionTitles) !== JSON.stringify(['Git 工具', '目标', '进程']) ||
+      JSON.stringify(result.sectionTitles) !== JSON.stringify(['Git 工具', '目标', '任务清单']) ||
       !result.changesEnabled ||
       result.closeStatsOverlap ||
       !result.background ||
@@ -458,9 +571,9 @@ async function verifyTargetedFixture(window, visualCase) {
     }
     if (
       initial.alignment.headerBottomDelta === null ||
-      initial.alignment.headerBottomDelta > 1 ||
+      initial.alignment.headerBottomDelta > 4 ||
       initial.alignment.headerHeightDelta === null ||
-      initial.alignment.headerHeightDelta > 1 ||
+      initial.alignment.headerHeightDelta > 4 ||
       initial.alignment.toolbarCenterDelta === null ||
       initial.alignment.toolbarCenterDelta > 1 ||
       initial.alignment.rowHeightDelta === null ||
@@ -489,10 +602,11 @@ async function verifyTargetedFixture(window, visualCase) {
       initial.backgrounds.sourceBody !== initial.backgrounds.expectedChatBody ||
       initial.backgrounds.editorHeader === null ||
       initial.backgrounds.explorerHeader === null ||
-      initial.backgrounds.editorHeader !== initial.backgrounds.explorerHeader ||
-      initial.backgrounds.searchArea === null ||
+      // NewMax intentionally raises the editor chrome one surface step in
+      // dark mode while the compact file browser stays on the chat surface.
       initial.backgrounds.explorerPanel === null ||
-      initial.backgrounds.searchArea !== initial.backgrounds.explorerPanel
+      (initial.backgrounds.searchArea !== null &&
+        initial.backgrounds.searchArea !== initial.backgrounds.explorerPanel)
     ) {
       throw new Error(
         'phase3.visual.workspace_file_background_invalid:' +

@@ -12,40 +12,31 @@ import {
 import { createPortal } from 'react-dom';
 import {
   AlertCircle,
-  Archive,
   Bot,
   Brain,
   Check,
   ChevronDown,
   ChevronUp,
-  Compass,
   Copy,
   FileCode2,
-  FileWarning,
   FolderOpen,
   ImagePlus,
   Info,
   Lock,
   LoaderCircle,
-  Mic,
-  MicOff,
   MessageSquare,
-  Plus,
   Puzzle,
-  PenLine,
   RefreshCw,
   SendHorizonal,
-  Share2,
   Shield,
-  Sparkles,
-  Square,
-  Target,
-  Terminal,
+  ThumbsDown,
+  ThumbsUp,
   Users,
   X,
   Zap,
 } from 'lucide-react';
 import {
+  matchesToolName,
   splitProviderUsageTokens,
   type Conversation,
   type ConversationPlanSummary,
@@ -71,6 +62,7 @@ import type {
   CommentaryTimelineSegment,
   DesktopWaitingCommandSummary,
   PendingToolApprovalSummary,
+  ToolApprovalScope,
   ConversationTransientSnapshot,
   RunProcessView,
   SkillVersionSummary,
@@ -116,9 +108,14 @@ import {
   filterSlashCommands,
   formatCompactElapsed,
   parseSlashCommand,
+  parseComposerModeKeywordHint,
+  replaceSlashTokenWithCommand,
   resolveSendModelId,
   resolveSystemMessageTone,
   stripSlashToken,
+  withComposerModeKeywordHint,
+  withComposerModeCommand,
+  withoutComposerModeCommand,
   type SlashCommand,
   type SlashQuery,
   type SystemMessageTone,
@@ -128,16 +125,49 @@ import {
   resolveConversationSkillOwner,
 } from './compose-skill-selection.js';
 import { ComposeRequestQueue } from './ComposeRequestQueue.js';
+import { ComposerMenuHighlight } from './ComposerMenuHighlight.js';
+import { ComposerMcpMenu } from './ComposerMcpMenu.js';
+import { ComposerModeBanner } from './ComposerModeBanner.js';
+import {
+  ComposerActiveModePill,
+  ComposerModeKeywordHint,
+} from './ComposerModeControls.js';
+import { ComposerApprovalStack } from './ComposerApprovalStack.js';
+import { ComposerEditor } from './ComposerEditor.js';
+import {
+  ComposerSlashMenu,
+  resolveComposerSlashMenuKeyboardAction,
+  type ComposerSkillCategory,
+  type ComposerSlashMenuResolvedItem,
+} from './ComposerSlashMenu.js';
+import {
+  DEFAULT_GOAL_SETTINGS,
+  GoalRiskConfirmationDialog,
+  GoalSettingsDialog,
+  goalRequiresRiskConfirmation,
+  type GoalSettingsValues,
+} from './GoalSettingsDialog.js';
+import { NewMaxComposerFrame } from './NewMaxComposerFrame.js';
+import { ComposerAddControl } from './ComposerAddMenu.js';
+import {
+  parseComposerPlanActSetting,
+  resolveComposerModelSelection,
+  type ComposerPlanActSetting,
+} from './composer-plan-model.js';
 import { compressImageDataUrl } from './image-compress.js';
 import {
+  ComposerActionSlot,
   ContextRing,
   IdentityPickerMenu,
   ModelPickerMenu,
   ModelTrigger,
   NetworkSearchSetting,
+  PERMISSION_MODE_COLLAPSED_TOOLBAR_LEVEL,
   PermissionMenu,
   REASONING_LABELS,
+  SKILL_COLLAPSED_TOOLBAR_LEVEL,
   resolveFloatingMenuStyle,
+  useComposerToolbarCollapse,
   type IdentityOption,
   type KernelInstallState,
   type PermissionMode,
@@ -155,6 +185,8 @@ import {
   formatRunModelLabel,
 } from './execution-process.js';
 import { MarkdownContent } from './MarkdownContent.js';
+import { AnswerSources } from './AnswerSources.js';
+import { collectAnswerSources } from './answer-sources.js';
 import {
   AskQuestionCard,
   formatAskToolResult,
@@ -163,8 +195,9 @@ import {
   type PendingAsk,
 } from './AskQuestionCard.js';
 import { PlanApprovalCard } from './PlanApprovalCard.js';
+import { persistentComputerUseAppOf } from './tool-approval.js';
 import { projectTodoFromEvents } from './todo-projection.js';
-import { TaskStatusPanel } from './TaskStatusPanel.js';
+import { ComposerTaskPanel } from './ComposerTaskPanel.js';
 import { InlineProcessFlow } from './InlineProcessFlow.js';
 import {
   buildAssistantTurnNavigationItems,
@@ -184,6 +217,7 @@ import {
 import {
   buildConversationSnapshotDisplayQueue,
   getConversationDisplayQueueBatchOptions,
+  getConversationDisplayQueueFlushDelay,
   mergeTransientConversationDraft,
   reconcileTransientConversationDraft,
   takeConversationDisplayQueueBatch,
@@ -220,6 +254,8 @@ import {
   writeConversationReasoningEffort,
 } from '../ui-preferences.js';
 import type { RunActivityAuthority } from '../run-activity-authority.js';
+
+const TASK_PLAN_TOOL_NAMES = new Set(['update_task_plan', 'TaskCreate', 'TaskUpdate', 'TaskList']);
 
 /** Local error bubble FIFO cap: diagnostics are transient, keep them bounded. */
 const MAX_LOCAL_ERRORS = 50;
@@ -339,6 +375,9 @@ export interface ChatMessage {
   /** Bound global agent identity for this assistant turn. */
   globalAgentId?: string;
   globalAgentName?: string;
+  /** Exact Skill versions selected for this user turn. */
+  skillVersionIds?: string[];
+  skills?: Array<{ skillVersionId: string; name: string }>;
 }
 
 interface RunAgentIdentity {
@@ -523,6 +562,7 @@ function assistantTimelineToChatFields(timeline: readonly AssistantTurnSegment[]
       ];
     }
     if (segment.kind === 'tool') {
+      if (matchesToolName(segment.name, TASK_PLAN_TOOL_NAMES)) return [];
       return [
         {
           kind: 'tool',
@@ -783,6 +823,31 @@ export function messageToChat(msg: Message): ChatMessage {
     terminalPayload.terminalState === 'failed' || terminalPayload.terminalState === 'cancelled'
       ? terminalPayload.terminalState
       : undefined;
+  const skillVersionIds = msg.blocks.flatMap((block: MessageBlock) => {
+    const payload =
+      block.payload && typeof block.payload === 'object'
+        ? (block.payload as Record<string, unknown>)
+        : undefined;
+    if (!Array.isArray(payload?.skillVersionIds)) return [];
+    return payload.skillVersionIds.filter(
+      (skillVersionId): skillVersionId is string =>
+        typeof skillVersionId === 'string' && Boolean(skillVersionId.trim()),
+    );
+  });
+  const skills = msg.blocks.flatMap((block: MessageBlock) => {
+    const payload =
+      block.payload && typeof block.payload === 'object'
+        ? (block.payload as Record<string, unknown>)
+        : undefined;
+    if (!Array.isArray(payload?.skills)) return [];
+    return payload.skills.flatMap((candidate) => {
+      if (!candidate || typeof candidate !== 'object') return [];
+      const skill = candidate as Record<string, unknown>;
+      return typeof skill.skillVersionId === 'string' && typeof skill.name === 'string'
+        ? [{ skillVersionId: skill.skillVersionId, name: skill.name }]
+        : [];
+    });
+  });
   const images: MessageImage[] | undefined =
     imageBlocks.length > 0
       ? imageBlocks.map((b: MessageBlock) => {
@@ -822,6 +887,11 @@ export function messageToChat(msg: Message): ChatMessage {
     terminalError:
       typeof terminalPayload.errorMessage === 'string' ? terminalPayload.errorMessage : undefined,
     legacyTerminalBackfill: terminalPayload.legacyBackfill === true ? true : undefined,
+    skillVersionIds: skillVersionIds.length > 0 ? [...new Set(skillVersionIds)] : undefined,
+    skills:
+      skills.length > 0
+        ? [...new Map(skills.map((skill) => [skill.skillVersionId, skill] as const)).values()]
+        : undefined,
     // sequence carried via id ordering; globalAgent fields are not in the store Message model
     // but could be enriched later if needed.
   };
@@ -899,7 +969,24 @@ interface PendingToolApproval {
   detail: string;
   path?: string;
   command?: string;
+  arguments?: Record<string, unknown>;
+  allowedScopes?: ToolApprovalScope[];
   decided?: 'approve' | 'deny';
+}
+
+function toolApprovalArguments(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function toolApprovalScopes(value: unknown): ToolApprovalScope[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const scopes = value.filter(
+    (scope): scope is ToolApprovalScope =>
+      scope === 'once' || scope === 'session' || scope === 'always-app',
+  );
+  return scopes.length > 0 ? scopes : undefined;
 }
 
 interface QueueDispatchAttempt {
@@ -954,6 +1041,12 @@ interface ChatViewProps {
   onLatestReviewChange?(view: RunProcessView | null): void;
   onOpenFile?: (path: string, location?: ProjectTextLocation) => void;
   onOpenReview?: (view: RunProcessView) => void;
+  /** Opens the real model settings destination used by the Plan banner. */
+  onOpenPlanSettings?: () => void;
+  /** Routes the slash menu's create action to the Skill editor. */
+  onCreateSkill?: () => void;
+  /** Opens Settings -> Connection -> MCP from the real status panel. */
+  onOpenMcpSettings?: () => void;
 }
 
 function bridge() {
@@ -991,6 +1084,9 @@ export function ChatView({
   onLatestReviewChange,
   onOpenFile,
   onOpenReview,
+  onOpenPlanSettings,
+  onCreateSkill,
+  onOpenMcpSettings,
 }: ChatViewProps) {
   const skillOwner = useMemo(
     () => resolveConversationSkillOwner(conversation, agents, teams),
@@ -1002,10 +1098,12 @@ export function ChatView({
   )}\0${conversation.track}\0${String(conversation.targetRef)}`;
   const skillSelectionScopeKeyRef = useRef(skillSelectionScopeKey);
   const [input, setInput] = useState('');
+  const [dismissedModeHintText, setDismissedModeHintText] = useState<string | null>(null);
   const [voiceInputActive, setVoiceInputActive] = useState(false);
   const [sending, setSending] = useState(false);
   const [sendingRunId, setSendingRunId] = useState<string | undefined>();
   const [stopping, setStopping] = useState(false);
+  const activeRunCancellationRef = useRef<Promise<void> | null>(null);
   // 交互工作模式：'plan'（规划模式，只读分析并提交可审批计划）| 'execute'（执行模式）。
   const [interactionMode, setInteractionMode] = useState<'plan' | 'execute'>(
     conversation.interactionMode === 'plan' ? 'plan' : 'execute',
@@ -1055,6 +1153,9 @@ export function ChatView({
   const [conversationPlan, setConversationPlan] = useState<ConversationPlanSummary | undefined>();
   const lastPlanEventSeqRef = useRef(0);
   const planReviewAskIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    planReviewAskIdRef.current = null;
+  }, [conversation.id]);
   const refreshConversationPlan = useCallback(() => {
     const api = bridge();
     if (!api?.conversationPlanGet) return;
@@ -1085,7 +1186,11 @@ export function ChatView({
     const frame = requestAnimationFrame(() => {
       const scroller = messagesScrollRef.current;
       if (scroller) {
-        scroller.scrollTo({ top: scroller.scrollHeight, behavior: 'smooth' });
+        if (typeof scroller.scrollTo === 'function') {
+          scroller.scrollTo({ top: scroller.scrollHeight, behavior: 'smooth' });
+        } else {
+          scroller.scrollTop = scroller.scrollHeight;
+        }
       }
     });
     return () => cancelAnimationFrame(frame);
@@ -1117,11 +1222,7 @@ export function ChatView({
   // plan-review 确认执行：结束规划轮，切执行模式并发起执行轮（actModelId + 全工具）。
   // 定义在 sendUserText 之后（见 sendUserText 定义处下方的 executeApprovedPlanReview）。
   // plan-act（规划/执行双模型）设置：用于提示本轮生效模型。
-  const [planActSetting, setPlanActSetting] = useState<{
-    enabled: boolean;
-    planModelId: string | null;
-    actModelId: string | null;
-  } | null>(null);
+  const [planActSetting, setPlanActSetting] = useState<ComposerPlanActSetting | null>(null);
   useEffect(() => {
     let cancelled = false;
     const api = bridge();
@@ -1130,18 +1231,7 @@ export function ChatView({
       .getSettings({ keys: ['plan-act'] })
       .then((res) => {
         if (cancelled) return;
-        const raw = res.settings?.['plan-act'];
-        const o = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : null;
-        setPlanActSetting(
-          o
-            ? {
-                enabled: o.enabled === true,
-                planModelId:
-                  typeof o.planModelId === 'string' && o.planModelId ? o.planModelId : null,
-                actModelId: typeof o.actModelId === 'string' && o.actModelId ? o.actModelId : null,
-              }
-            : null,
-        );
+        setPlanActSetting(parseComposerPlanActSetting(res.settings?.['plan-act']));
       })
       .catch(() => setPlanActSetting(null));
     return () => {
@@ -1150,6 +1240,15 @@ export function ChatView({
   }, [conversation.id]);
   const [goalState, setGoalState] = useState<
     import('@sync-think/protocol').GoalGetResponse | undefined
+  >();
+  const [goalSettingsOpen, setGoalSettingsOpen] = useState(false);
+  const [goalSettingsSubmitting, setGoalSettingsSubmitting] = useState(false);
+  const [goalSettingsMode, setGoalSettingsMode] = useState<'create' | 'edit'>('create');
+  const [pendingRiskGoal, setPendingRiskGoal] = useState<string | null>(null);
+  const [riskGoalSubmitting, setRiskGoalSubmitting] = useState(false);
+  const riskGoalSubmissionRef = useRef(false);
+  const [goalSettingsInitial, setGoalSettingsInitial] = useState<
+    Partial<GoalSettingsValues> | undefined
   >();
   const refreshGoal = useCallback(() => {
     const api = bridge();
@@ -1161,10 +1260,13 @@ export function ChatView({
   }, [conversation]);
   useEffect(() => {
     refreshGoal();
-    // 每轮 run 结束后刷新目标状态（评估器可能已推进/达成）。
-    const timer = window.setInterval(refreshGoal, 30_000);
+    // Active goals are evaluated after each run, so keep round/status feedback live.
+    const timer = window.setInterval(
+      refreshGoal,
+      goalState?.goal?.status === 'active' ? 2_000 : 30_000,
+    );
     return () => window.clearInterval(timer);
-  }, [refreshGoal]);
+  }, [goalState?.goal?.status, refreshGoal]);
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(
     (conversation.executionMode as PermissionMode) || 'full-access',
   );
@@ -1178,26 +1280,6 @@ export function ChatView({
     () => readConversationModelOverride(String(conversation.id)) ?? '',
   );
   const [retryAfterModelPickMessageId, setRetryAfterModelPickMessageId] = useState<string>();
-  // plan-act 生效模型提示（规划模式路由）：显示规划模型，手动选择被忽略时附注。
-  const planActHint = useMemo(() => {
-    const setting = planActSetting;
-    // 仅规划模式有路由提示：普通 execute 消息不路由，执行方案轮由批准动作
-    // 触发、无需提示；执行模型只在批准后那一轮生效。
-    if (!setting?.enabled || interactionMode !== 'plan') return null;
-    const modelId = setting.planModelId;
-    if (!modelId) return null;
-    const option = models?.find((model) => model.modelId === modelId);
-    const label = option ? `${option.displayName} · ${option.providerName}` : modelId;
-    let ignoredLabel: string | undefined;
-    const manualId = modelOverride.trim();
-    if (manualId && manualId !== modelId) {
-      const manualOption = models?.find((model) => model.modelId === manualId);
-      ignoredLabel = manualOption
-        ? `${manualOption.displayName} · ${manualOption.providerName}`
-        : manualId;
-    }
-    return { role: 'plan' as const, label, ignoredLabel };
-  }, [interactionMode, modelOverride, models, planActSetting]);
   // Multi-kernel selector: per-conversation kernel id (default = native).
   const [kernelOverride, setKernelOverride] = useState<string>(
     () => readConversationKernelOverride(String(conversation.id)) ?? 'native',
@@ -1406,21 +1488,28 @@ export function ChatView({
     renderTransientDraft(nextDraft, lastTransientSequenceRef.current);
 
     if (queued.length > 0 && transientFrameFlushRef.current === null) {
-      transientFrameFlushRef.current = window.requestAnimationFrame(flushTransientFrames);
+      transientFrameFlushRef.current = window.setTimeout(
+        flushTransientFrames,
+        getConversationDisplayQueueFlushDelay(queued),
+      );
     }
   }, [renderTransientDraft, threadId, updateRunProcess]);
   const scheduleTransientFrameFlush = useCallback(
     (publication: 'animation-frame' | 'immediate' = 'animation-frame') => {
       if (publication === 'immediate') {
         if (transientFrameFlushRef.current !== null) {
-          window.cancelAnimationFrame(transientFrameFlushRef.current);
+          window.clearTimeout(transientFrameFlushRef.current);
           transientFrameFlushRef.current = null;
         }
         flushTransientFrames();
         return;
       }
       if (transientFrameFlushRef.current === null) {
-        transientFrameFlushRef.current = window.requestAnimationFrame(flushTransientFrames);
+        const queued = transientFrameQueueRef.current;
+        transientFrameFlushRef.current = window.setTimeout(
+          flushTransientFrames,
+          getConversationDisplayQueueFlushDelay(queued),
+        );
       }
     },
     [flushTransientFrames],
@@ -1434,9 +1523,20 @@ export function ChatView({
   const [mentionLoading, setMentionLoading] = useState(false);
   /** Active / slash-command query (null = menu closed). Mutually exclusive with @. */
   const [slash, setSlash] = useState<SlashQuery | null>(null);
-  const [slashIndex, setSlashIndex] = useState(0);
+  const [slashIndex, setSlashIndex] = useState(-1);
   const [slashSkills, setSlashSkills] = useState<SkillVersionSummary[]>([]);
   const [slashSkillsLoading, setSlashSkillsLoading] = useState(false);
+  const [slashSkillsResolved, setSlashSkillsResolved] = useState(false);
+  const [slashCategory, setSlashCategory] = useState<ComposerSkillCategory>('all');
+  const [availableSlashCategories, setAvailableSlashCategories] = useState<
+    readonly ComposerSkillCategory[]
+  >(['all']);
+  const [resolvedSlashItems, setResolvedSlashItems] = useState<
+    readonly ComposerSlashMenuResolvedItem[]
+  >([]);
+  const [mcpMenuOpen, setMcpMenuOpen] = useState(false);
+  const [composerAddOpen, setComposerAddOpen] = useState(false);
+  const [mcpMenuStyle, setMcpMenuStyle] = useState<React.CSSProperties | null>(null);
   /** Selected @-files / images shown as chips (NewMax style). */
   const [attachments, setAttachments] = useState<ComposeAttachment[]>([]);
   /** Composer-only drafts. They do not become messages or Provider context until dispatched. */
@@ -1466,6 +1566,10 @@ export function ChatView({
   );
   /** Which compose menu is open (exclusive). */
   const [menu, setMenu] = useState<'permission' | 'skill' | 'model' | 'identity' | null>(null);
+  const composerToolbar = useComposerToolbarCollapse({
+    permissionMenuOpen: menu === 'permission',
+    onPermissionMenuOpenChange: (open) => setMenu(open ? 'permission' : null),
+  });
   /** Click-to-preview lightbox for message / chip images. */
   const [lightbox, setLightbox] = useState<MessageImage | null>(null);
   const [dragOver, setDragOver] = useState(false);
@@ -1497,6 +1601,8 @@ export function ChatView({
   const mentionListRef = useRef<HTMLDivElement>(null);
   const mentionNetworkSettingRef = useRef<HTMLDivElement>(null);
   const slashListRef = useRef<HTMLDivElement>(null);
+  const lastSlashQueryRef = useRef('');
+  if (slash) lastSlashQueryRef.current = slash.query;
   const permissionBtnRef = useRef<HTMLButtonElement>(null);
   const modelBtnRef = useRef<HTMLButtonElement>(null);
   const identityBtnRef = useRef<HTMLButtonElement>(null);
@@ -1532,6 +1638,10 @@ export function ChatView({
     lastObservedScrollTopRef.current = 0;
     programmaticScrollTargetRef.current = null;
     setInput('');
+    setDismissedModeHintText(null);
+    setPendingRiskGoal(null);
+    setRiskGoalSubmitting(false);
+    riskGoalSubmissionRef.current = false;
     setSending(false);
     setSendingRunId(undefined);
     setPendingUserMessages([]);
@@ -1564,7 +1674,7 @@ export function ChatView({
     transientDraftRef.current = null;
     transientFrameQueueRef.current.length = 0;
     if (transientFrameFlushRef.current !== null) {
-      window.cancelAnimationFrame(transientFrameFlushRef.current);
+      window.clearTimeout(transientFrameFlushRef.current);
       transientFrameFlushRef.current = null;
     }
     setStreamingMessage(null);
@@ -1578,7 +1688,12 @@ export function ChatView({
     setMention(null);
     setMentionFiles([]);
     setSlash(null);
-    setSlashIndex(0);
+    setSlashIndex(-1);
+    setSlashCategory('all');
+    setResolvedSlashItems([]);
+    setSlashPopStyle(null);
+    setMcpMenuOpen(false);
+    setMcpMenuStyle(null);
     setAttachments([]);
     const conversationId = String(conversation.id);
     const queuedDispatchState = queuedDispatchByConversationRef.current.get(conversationId);
@@ -1645,7 +1760,7 @@ export function ChatView({
       if (!el) return;
       // `resizeComposeInput` is declared further down this component, so it is
       // in its TDZ here; the shared helper it wraps is a module import.
-      computeTextareaHeight(el, 56, 220);
+      computeTextareaHeight(el, 36, 200);
       el.focus();
       el.setSelectionRange(el.value.length, el.value.length);
     });
@@ -1874,20 +1989,6 @@ export function ChatView({
     }
   }, [conversation.id, conversation.targetRef, conversation.track, kernelOverride, modelOverride]);
 
-  const handleContextWindowChange = useCallback(
-    async (contextWindowOverride: number | null): Promise<void> => {
-      const api = bridge();
-      if (!api?.setConversationContextWindowOverride) return;
-      await api.setConversationContextWindowOverride({
-        conversationId: conversation.id,
-        contextWindowOverride,
-      });
-      await refreshContextStatus();
-      onConversationUpdated?.();
-    },
-    [conversation.id, onConversationUpdated, refreshContextStatus],
-  );
-
   const refreshDurableUsageSummary = useCallback(async (): Promise<void> => {
     const api = bridge();
     const conversationId = String(conversation.id);
@@ -1980,6 +2081,78 @@ export function ChatView({
         : { streaming: false, activeRunId: undefined },
     [conversation.taskId, durableAssistantRunIds, eventHistory, runActivityAuthority, threadId],
   );
+  const cancelActiveRun = useCallback(async (): Promise<void> => {
+    if (activeRunCancellationRef.current) {
+      await activeRunCancellationRef.current;
+      return;
+    }
+    const runId = projected.activeRunId ?? sendingRunId;
+    if (!runId) return;
+    const api = bridge();
+    if (!api?.cancelRun) throw new Error('当前运行不支持停止');
+
+    setStopping(true);
+    const cancellation = api.cancelRun({ runId: runId as RunId }).then(() => {
+      setSending(false);
+      setSendingRunId(undefined);
+    });
+    activeRunCancellationRef.current = cancellation;
+    try {
+      await cancellation;
+    } finally {
+      if (activeRunCancellationRef.current === cancellation) {
+        activeRunCancellationRef.current = null;
+      }
+      setStopping(false);
+    }
+  }, [projected.activeRunId, sendingRunId]);
+
+  const handleStop = useCallback(async () => {
+    try {
+      await cancelActiveRun();
+    } catch (error) {
+      setLocalErrors((prev) => [
+        ...prev,
+        {
+          id: `err-stop-${Date.now()}`,
+          role: 'system',
+          tone: 'error',
+          text: `停止失败: ${error instanceof Error ? error.message : String(error)}`,
+          timestamp: new Date().toISOString(),
+        },
+      ]);
+    }
+  }, [cancelActiveRun]);
+
+  const pauseGoalAndStopActiveRun = useCallback(async (): Promise<void> => {
+    const api = bridge();
+    if (!api?.goalPause) throw new Error('目标暂停功能未就绪');
+    await api.goalPause({ conversationId: String(conversation.id) });
+    try {
+      await cancelActiveRun();
+    } finally {
+      await refreshGoal();
+    }
+  }, [cancelActiveRun, conversation.id, refreshGoal]);
+
+  const pauseGoalForTransition = useCallback(async (): Promise<boolean> => {
+    try {
+      await pauseGoalAndStopActiveRun();
+      return true;
+    } catch (error) {
+      setLocalErrors((prev) => [
+        ...prev,
+        {
+          id: `err-goal-pause-${Date.now()}`,
+          role: 'system',
+          tone: 'error',
+          text: `暂停目标失败: ${error instanceof Error ? error.message : String(error)}`,
+          timestamp: new Date().toISOString(),
+        },
+      ]);
+      return false;
+    }
+  }, [pauseGoalAndStopActiveRun]);
   const sendingRunHasDurableReply = Boolean(
     sendingRunId && durableAssistantRunIds.has(sendingRunId),
   );
@@ -2019,15 +2192,20 @@ export function ChatView({
   );
   const runKernelById = useMemo(() => projectRunKernels(eventHistory), [eventHistory]);
   /**
-   * External-kernel self-compaction notices (kernel.context_compacted). Claude
-   * Code / Codex give no live "compacting" signal, but once a run reports its
-   * boundary the host surfaces it as a message-stream note so a compacted turn
-   * is not mistaken for history loss.
+   * External-kernel self-compaction notices. Codex exposes a real item
+   * lifecycle; Claude currently exposes only the completed compact boundary.
+   * The host renders exactly the states each kernel reports.
    */
   const kernelCompactionEvents = useMemo(() => {
     const events: Event[] = [];
     for (const event of eventHistory) {
-      if (event.type !== 'kernel.context_compacted') continue;
+      if (
+        event.type !== 'kernel.context_compaction_started' &&
+        event.type !== 'kernel.context_compacted' &&
+        event.type !== 'kernel.context_compaction_failed'
+      ) {
+        continue;
+      }
       const payloadThreadId = nonEmptyString(event.payload.threadId);
       if (threadId && payloadThreadId && payloadThreadId !== threadId) continue;
       events.push(event);
@@ -2451,7 +2629,7 @@ export function ChatView({
         if (event.type === 'reset') {
           frameQueue.length = 0;
           if (transientFrameFlushRef.current !== null) {
-            window.cancelAnimationFrame(transientFrameFlushRef.current);
+            window.clearTimeout(transientFrameFlushRef.current);
             transientFrameFlushRef.current = null;
           }
           const latestStreamSequence = event.latestStreamSequence ?? 0;
@@ -2532,7 +2710,7 @@ export function ChatView({
       disposed = true;
       frameQueue.length = 0;
       if (transientFrameFlushRef.current !== null) {
-        window.cancelAnimationFrame(transientFrameFlushRef.current);
+        window.clearTimeout(transientFrameFlushRef.current);
         transientFrameFlushRef.current = null;
       }
       void subscription.unsubscribe();
@@ -2666,6 +2844,8 @@ export function ChatView({
           detail: typeof event.payload.detail === 'string' ? event.payload.detail : '',
           path: typeof event.payload.path === 'string' ? event.payload.path : undefined,
           command: typeof event.payload.command === 'string' ? event.payload.command : undefined,
+          arguments: toolApprovalArguments(event.payload.arguments),
+          allowedScopes: toolApprovalScopes(event.payload.allowedScopes),
         });
       } else if (event.type === 'tool.approval_decided') {
         const approvalId =
@@ -2700,6 +2880,8 @@ export function ChatView({
         ...(approval.toolCallId ? { toolCallId: approval.toolCallId } : {}),
         ...(approval.path ? { path: approval.path } : {}),
         ...(approval.command ? { command: approval.command } : {}),
+        ...(approval.arguments ? { arguments: approval.arguments } : {}),
+        ...(approval.allowedScopes ? { allowedScopes: approval.allowedScopes } : {}),
       });
     }
     // Drop resolved cards and cards belonging to runs that already ended
@@ -2721,12 +2903,20 @@ export function ChatView({
   const [decidingApprovalId, setDecidingApprovalId] = useState<string | null>(null);
 
   const handleToolApproval = useCallback(
-    async (approvalId: string, decision: 'approve' | 'deny') => {
+    async (
+      approvalId: string,
+      decision: 'approve' | 'deny',
+      scope: ToolApprovalScope = 'once',
+    ) => {
       const api = bridge();
       if (!api?.decideToolApproval || decidingApprovalId) return;
       setDecidingApprovalId(approvalId);
       try {
-        await api.decideToolApproval({ approvalId, decision });
+        await api.decideToolApproval({
+          approvalId,
+          decision,
+          scope: decision === 'deny' ? 'once' : scope,
+        });
         await refreshPendingToolApprovals();
       } catch (error) {
         setLocalErrors((prev) => [
@@ -3079,6 +3269,8 @@ export function ChatView({
         networkEnabled?: boolean;
         /** 批准方案后的执行轮：runtime 据此强制 plan-act 的执行模型。 */
         planExecuting?: boolean;
+        /** NewMax 内置帮助轮：runtime 注入产品帮助合同，不改变会话模式。 */
+        helpMode?: boolean;
       },
     ) => {
       const api = bridge();
@@ -3174,6 +3366,7 @@ export function ChatView({
             role: 'user',
             text,
             images: images.length > 0 ? images : undefined,
+            skillVersionIds,
             timestamp: new Date().toISOString(),
           },
         ]);
@@ -3214,6 +3407,7 @@ export function ChatView({
           reasoningEffort: selectedReasoningEffort,
           networkEnabled: selectedNetworkEnabled || undefined,
           planExecuting: options?.planExecuting === true ? true : undefined,
+          helpMode: options?.helpMode === true ? true : undefined,
           skillVersionIds,
           attachmentContext:
             images.length > 0
@@ -3430,12 +3624,54 @@ export function ChatView({
       String(conversation.id);
     const togglePlan = (event: globalThis.Event) => {
       if (!matchesConversation(event)) return;
-      void handlePlanSwitchMode(interactionMode === 'plan' ? 'execute' : 'plan');
+      const parsed = parseSlashCommand(input);
+      const activePrefix = parsed.kind === 'plan' || parsed.kind === 'plan-with-request';
+      if (activePrefix || interactionMode === 'plan') {
+        const next = withoutComposerModeCommand(input, 'plan');
+        setInput(next);
+        if (interactionMode === 'plan') void handlePlanSwitchMode('execute');
+        window.requestAnimationFrame(() => {
+          inputRef.current?.focus();
+          inputRef.current?.setSelectionRange(next.length, next.length);
+        });
+        return;
+      }
+      void (async () => {
+        if (goalState?.goal?.status === 'active' && !(await pauseGoalForTransition())) return;
+        const next = withComposerModeCommand(input, 'plan');
+        setInput(next);
+        window.requestAnimationFrame(() => {
+          inputRef.current?.focus();
+          inputRef.current?.setSelectionRange(next.length, next.length);
+        });
+      })();
     };
     const openGoal = (event: globalThis.Event) => {
       if (!matchesConversation(event)) return;
-      setInput('/goal ');
-      window.requestAnimationFrame(() => inputRef.current?.focus());
+      const api = bridge();
+      if (goalState?.goal?.status === 'active') {
+        void pauseGoalForTransition();
+        return;
+      }
+      if (
+        goalState?.goal &&
+        ['paused', 'blocked'].includes(goalState.goal.status) &&
+        api?.goalResume
+      ) {
+        void api.goalResume({ conversationId: String(conversation.id) }).then(refreshGoal);
+        return;
+      }
+      const parsed = parseSlashCommand(input);
+      const activePrefix = parsed.kind === 'goal' || parsed.kind === 'goal-with-condition';
+      const next = activePrefix
+        ? withoutComposerModeCommand(input, 'goal')
+        : withComposerModeCommand(input, 'goal');
+      if (!activePrefix && interactionMode === 'plan') void handlePlanSwitchMode('execute');
+      setInput(next);
+      window.requestAnimationFrame(() => {
+        inputRef.current?.focus();
+        inputRef.current?.setSelectionRange(next.length, next.length);
+      });
     };
     window.addEventListener('shell-toggle-plan-mode', togglePlan);
     window.addEventListener('shell-toggle-goal-mode', openGoal);
@@ -3443,7 +3679,15 @@ export function ChatView({
       window.removeEventListener('shell-toggle-plan-mode', togglePlan);
       window.removeEventListener('shell-toggle-goal-mode', openGoal);
     };
-  }, [conversation.id, handlePlanSwitchMode, interactionMode]);
+  }, [
+    conversation.id,
+    goalState,
+    handlePlanSwitchMode,
+    input,
+    interactionMode,
+    pauseGoalForTransition,
+    refreshGoal,
+  ]);
 
   useEffect(() => {
     const matchesConversation = (event: globalThis.Event) =>
@@ -3785,17 +4029,32 @@ export function ChatView({
       const idx = messages.findIndex((m) => m.id === assistantMessageId);
       if (idx <= 0) return;
       // Find nearest previous user message (NewMax: regenerate last turn).
-      let userText = '';
+      let userMessage: ChatMessage | undefined;
       for (let i = idx - 1; i >= 0; i -= 1) {
         if (messages[i]?.role === 'user') {
-          userText = messages[i]!.text;
+          userMessage = messages[i];
           break;
         }
       }
-      if (!userText.trim()) return;
-      await sendUserText(userText, [], {
-        skillVersionIds: [],
+      if (!userMessage?.text.trim()) return;
+      await sendUserText(userMessage.text, [], {
+        skillVersionIds: userMessage.skillVersionIds ?? [],
         ...(nextModelId ? { modelOverride: nextModelId } : {}),
+      });
+    },
+    [messages, sendUserText, sending],
+  );
+
+  const handleContinueInterrupted = useCallback(
+    async (assistantMessageId: string) => {
+      if (sending) return;
+      const idx = messages.findIndex((message) => message.id === assistantMessageId);
+      const previousUser =
+        idx > 0
+          ? [...messages.slice(0, idx)].reverse().find((message) => message.role === 'user')
+          : undefined;
+      await sendUserText('继续上一条未完成的回答。', [], {
+        skillVersionIds: previousUser?.skillVersionIds ?? [],
       });
     },
     [messages, sendUserText, sending],
@@ -3834,7 +4093,7 @@ export function ChatView({
             height: r.height,
           },
           { width: window.innerWidth, height: window.innerHeight },
-          { width: Math.min(r.width, 520), maxHeight: 360 },
+          { width: r.width, maxHeight: 360 },
         ),
       );
     };
@@ -3906,12 +4165,16 @@ export function ChatView({
 
   const closeSlash = useCallback(() => {
     setSlash(null);
-    setSlashIndex(0);
+    setSlashIndex(-1);
+    setSlashCategory('all');
+    setResolvedSlashItems([]);
   }, []);
 
   const closeComposePickers = useCallback(() => {
     closeMention();
     closeSlash();
+    setMcpMenuOpen(false);
+    setComposerAddOpen(false);
     setMenu(null);
   }, [closeMention, closeSlash]);
 
@@ -3928,7 +4191,61 @@ export function ChatView({
         .includes(query);
     });
   }, [slash, slashSkills]);
-  const slashItemCount = slashCommands.length + filteredSlashSkills.length;
+  const slashCandidateItemCount = slashCommands.length + filteredSlashSkills.length;
+  const slashMenuOpen = Boolean(
+    slash &&
+    (!slash.query.trim() ||
+      slashCandidateItemCount > 0 ||
+      slashSkillsLoading ||
+      !slashSkillsResolved),
+  );
+  const composerSlashCommand = parseSlashCommand(input);
+  const helpCommandPreview =
+    composerSlashCommand.kind === 'help' || composerSlashCommand.kind === 'help-with-request';
+  const planCommandPreview =
+    composerSlashCommand.kind === 'plan' || composerSlashCommand.kind === 'plan-with-request';
+  const goalCommandPreview =
+    composerSlashCommand.kind === 'goal' ||
+    composerSlashCommand.kind === 'goal-with-condition';
+  const visibleGoal =
+    goalState?.goal && ['active', 'paused', 'blocked'].includes(goalState.goal.status)
+      ? goalState.goal
+      : undefined;
+  const goalIsActive = visibleGoal?.status === 'active';
+  useEffect(() => {
+    if (!goalIsActive) return;
+    speechRecognitionRef.current?.abort();
+    setVoiceInputActive(false);
+  }, [goalIsActive]);
+  const composerPendingAsk =
+    pendingAsk &&
+    !(
+      conversationPlan?.state === 'draft' &&
+      planReviewAskIdRef.current === pendingAsk.askId &&
+      planReviewOf(pendingAsk.questions)
+    )
+      ? pendingAsk
+      : undefined;
+  const detectedModeKeywordHint = parseComposerModeKeywordHint(input);
+  const modeKeywordHint =
+    detectedModeKeywordHint &&
+    dismissedModeHintText !== input &&
+    !helpCommandPreview &&
+    !planCommandPreview &&
+    !goalCommandPreview &&
+    interactionMode !== 'plan' &&
+    !visibleGoal &&
+    !mention &&
+    !slashMenuOpen &&
+    !mcpMenuOpen &&
+    !composerAddOpen &&
+    !menu &&
+    !composerPendingAsk &&
+    conversationPlan?.state !== 'draft' &&
+    pendingApprovals.length === 0 &&
+    compactProgress?.status !== 'running'
+      ? detectedModeKeywordHint
+      : null;
   const selectedSlashSkills = useMemo(
     () =>
       selectedSkillVersionIds
@@ -3938,12 +4255,29 @@ export function ChatView({
         .filter((skill): skill is SkillVersionSummary => Boolean(skill)),
     [selectedSkillVersionIds, slashSkills],
   );
-  const shouldLoadSlashSkills = Boolean(slash) || selectedSkillVersionIds.length > 0;
+  const referencedSkillVersionIds = useMemo(
+    () => [...new Set(messages.flatMap((message) => message.skillVersionIds ?? []))],
+    [messages],
+  );
+  const shouldLoadSlashSkills =
+    Boolean(slash) || selectedSkillVersionIds.length > 0 || referencedSkillVersionIds.length > 0;
+  const skillNameByVersionId = useMemo(
+    () => new Map(slashSkills.map((skill) => [skill.skillVersionId, skill.name] as const)),
+    [slashSkills],
+  );
 
   useEffect(() => {
-    if (!shouldLoadSlashSkills) return;
+    if (!shouldLoadSlashSkills) {
+      setSlashSkillsLoading(false);
+      setSlashSkillsResolved(false);
+      return;
+    }
     const api = bridge();
-    if (!api?.listSkills) return;
+    if (!api?.listSkills) {
+      setSlashSkillsLoading(false);
+      setSlashSkillsResolved(true);
+      return;
+    }
     let cancelled = false;
     setSlashSkillsLoading(true);
     void api
@@ -3964,7 +4298,10 @@ export function ChatView({
         if (!cancelled) setSlashSkills([]);
       })
       .finally(() => {
-        if (!cancelled) setSlashSkillsLoading(false);
+        if (!cancelled) {
+          setSlashSkillsLoading(false);
+          setSlashSkillsResolved(true);
+        }
       });
     return () => {
       cancelled = true;
@@ -3972,9 +4309,9 @@ export function ChatView({
   }, [conversation.workspaceId, shouldLoadSlashSkills]);
 
   useLayoutEffect(() => {
-    if (!slash) return;
+    if (!slashMenuOpen) return;
     keepListboxOptionVisible(slashListRef.current, slashIndex);
-  }, [slash, slashIndex, slashItemCount]);
+  }, [resolvedSlashItems.length, slashIndex, slashMenuOpen]);
 
   // Tick while compacting so the capsule can show NewMax-style elapsed time.
   useEffect(() => {
@@ -3986,10 +4323,7 @@ export function ChatView({
 
   // Position the / menu as a fixed portal above the compose box (same as @).
   useLayoutEffect(() => {
-    if (!slash) {
-      setSlashPopStyle(null);
-      return;
-    }
+    if (!slashMenuOpen) return;
     const update = () => {
       const el = composeRef.current;
       if (!el) return;
@@ -4000,7 +4334,7 @@ export function ChatView({
       const width = Math.min(r.width, window.innerWidth - 16);
       const left = Math.max(8, Math.min(r.left, window.innerWidth - width - 8));
       const gap = 8;
-      const maxH = Math.min(224, Math.max(120, r.top - gap - 8));
+      const maxH = Math.min(420, Math.max(120, r.top - gap - 8));
       setSlashPopStyle({
         position: 'fixed',
         left,
@@ -4017,17 +4351,61 @@ export function ChatView({
       window.removeEventListener('resize', update);
       window.removeEventListener('scroll', update, true);
     };
-  }, [slash]);
+  }, [slashMenuOpen]);
+
+  useLayoutEffect(() => {
+    if (!mcpMenuOpen) return;
+    const update = () => {
+      const el = composeRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      const width = Math.min(rect.width, window.innerWidth - 16);
+      const left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8));
+      const gap = 8;
+      setMcpMenuStyle({
+        position: 'fixed',
+        left,
+        width,
+        bottom: window.innerHeight - rect.top + gap,
+        maxHeight: Math.min(420, Math.max(120, rect.top - gap - 8)),
+        zIndex: 10001,
+      });
+    };
+    update();
+    window.addEventListener('resize', update);
+    window.addEventListener('scroll', update, true);
+    return () => {
+      window.removeEventListener('resize', update);
+      window.removeEventListener('scroll', update, true);
+    };
+  }, [mcpMenuOpen]);
+
+  useEffect(() => {
+    setMcpMenuOpen(false);
+  }, [conversation.id]);
 
   const resizeComposeInput = useCallback(() => {
     const el = inputRef.current;
     if (!el) return;
-    computeTextareaHeight(el, 56, 220);
+    computeTextareaHeight(el, 36, 200);
   }, []);
 
   useLayoutEffect(() => {
     resizeComposeInput();
   }, [input, resizeComposeInput]);
+
+  const acceptModeKeywordHint = useCallback(() => {
+    const next = withComposerModeKeywordHint(input);
+    if (next === input) return;
+    setDismissedModeHintText(null);
+    setInput(next);
+    closeComposePickers();
+    window.requestAnimationFrame(() => {
+      resizeComposeInput();
+      inputRef.current?.focus();
+      inputRef.current?.setSelectionRange(next.length, next.length);
+    });
+  }, [closeComposePickers, input, resizeComposeInput]);
 
   const handleNetworkSettingChange = useCallback(
     (enabled: boolean) => {
@@ -4123,8 +4501,6 @@ export function ChatView({
   const selectSlashCommand = useCallback(
     (cmd: SlashCommand) => {
       if (!slash) return;
-      // NewMax-like UX: selecting a command only fills the input.
-      // Real execution happens when the user presses Send (e.g. /compact).
       if (cmd.kind === 'coming-soon') {
         const stripped = stripSlashToken(input, slash);
         setInput(stripped.text);
@@ -4164,20 +4540,58 @@ export function ChatView({
         ]);
         return;
       }
-      // prefix / action: insert the command token; user confirms with Send.
-      const next = `${cmd.command}`;
-      setInput(next);
+
+      if (cmd.kind === 'action' || cmd.kind === 'panel') {
+        const stripped = stripSlashToken(input, slash);
+        setInput(stripped.text);
+        closeComposePickers();
+        if (cmd.kind === 'panel') setMcpMenuOpen(true);
+        window.requestAnimationFrame(() => {
+          resizeComposeInput();
+          const el = inputRef.current;
+          if (!el) return;
+          el.focus();
+          el.setSelectionRange(stripped.caret, stripped.caret);
+        });
+        if (cmd.kind === 'action') {
+          if (attachments.length > 0) {
+            setLocalErrors((errs) => [
+              ...errs,
+              {
+                id: `slash-attach-${Date.now()}`,
+                role: 'system',
+                tone: 'warning',
+                text: '执行 /compact 前请先移除附件',
+                timestamp: new Date().toISOString(),
+              },
+            ]);
+          } else {
+            void runManualCompact();
+          }
+        }
+        return;
+      }
+
+      const replacement = replaceSlashTokenWithCommand(input, slash, cmd.command);
+      setInput(replacement.text);
       closeComposePickers();
       window.requestAnimationFrame(() => {
         resizeComposeInput();
         const el = inputRef.current;
         if (el) {
           el.focus();
-          el.setSelectionRange(next.length, next.length);
+          el.setSelectionRange(replacement.caret, replacement.caret);
         }
       });
     },
-    [closeComposePickers, input, resizeComposeInput, slash],
+    [
+      attachments.length,
+      closeComposePickers,
+      input,
+      resizeComposeInput,
+      runManualCompact,
+      slash,
+    ],
   );
 
   const selectSlashSkill = useCallback(
@@ -4204,15 +4618,112 @@ export function ChatView({
     [closeComposePickers, conversation.track, input, resizeComposeInput, slash],
   );
 
+  const startGoalFromShortcut = useCallback(
+    async (condition: string) => {
+      const api = bridge();
+      if (!api?.setGoal) throw new Error('当前 Runtime 不支持目标模式');
+      const goalModelId = resolveSendModelId({
+        modelOverride,
+        track: conversation.track,
+        targetRef: conversation.targetRef,
+        catalogModelIds: models.map((model) => model.modelId),
+      });
+      await api.setConversationInteractionMode?.({
+        conversationId: conversation.id,
+        interactionMode: 'execute',
+      });
+      setInteractionMode('execute');
+      await api.setGoal({
+        conversationId: String(conversation.id),
+        condition,
+        maxGoalRounds: DEFAULT_GOAL_SETTINGS.maxGoalRounds,
+        maxGoalTokens: DEFAULT_GOAL_SETTINGS.maxGoalTokens,
+        ...(goalModelId ? { modelId: goalModelId } : {}),
+        kernelId: kernelOverride,
+        reasoningEffort,
+        networkEnabled: netEnabled,
+      });
+      await refreshGoal();
+      setLocalErrors((errors) => [
+        ...errors,
+        {
+          id: `goal-set-${Date.now()}`,
+          role: 'system',
+          tone: 'success',
+          text: '目标已设置：将按目标状态持续推进',
+          timestamp: new Date().toISOString(),
+        },
+      ]);
+    },
+    [
+      conversation.id,
+      conversation.targetRef,
+      conversation.track,
+      kernelOverride,
+      modelOverride,
+      models,
+      netEnabled,
+      reasoningEffort,
+      refreshGoal,
+    ],
+  );
+
   const handleSend = useCallback(async () => {
     const text = input.trim();
     if ((!text && attachments.length === 0) || compactingRef.current) return;
+
+    const slashCmd = parseSlashCommand(text);
+    const isGoalTransitionCommand =
+      slashCmd.kind === 'plan' ||
+      slashCmd.kind === 'plan-with-request' ||
+      slashCmd.kind === 'execute' ||
+      slashCmd.kind === 'goal-clear';
+    if (goalState?.goal?.status === 'active' && !isGoalTransitionCommand) return;
 
     // 上一轮的发送失败/错误气泡不跨轮贴底：新消息发送时清掉，避免“报错无法消除”。
     setLocalErrors((prev) => prev.filter((error) => error.tone !== 'error'));
 
     // NewMax: `/compact` manually compresses context without sending a chat turn.
-    const slashCmd = parseSlashCommand(text);
+    if (slashCmd.kind === 'help') {
+      setInput('/help ');
+      closeComposePickers();
+      window.requestAnimationFrame(() => {
+        resizeComposeInput();
+        const el = inputRef.current;
+        if (!el) return;
+        el.focus();
+        el.setSelectionRange(6, 6);
+      });
+      return;
+    }
+    if (slashCmd.kind === 'help-with-request') {
+      const snapshot = attachments;
+      const images = messageImagesFromAttachments(snapshot);
+      setInput('');
+      closeComposePickers();
+      window.requestAnimationFrame(() => resizeComposeInput());
+      try {
+        await sendUserText(slashCmd.request, images, { helpMode: true });
+        setAttachments([]);
+      } catch {
+        setInput(`/help ${slashCmd.request}`);
+        setAttachments(snapshot);
+        window.requestAnimationFrame(() => resizeComposeInput());
+      }
+      return;
+    }
+
+    if (slashCmd.kind === 'mcp') {
+      setInput('');
+      closeComposePickers();
+      setMcpMenuOpen(true);
+      window.requestAnimationFrame(() => {
+        resizeComposeInput();
+        inputRef.current?.focus();
+      });
+      return;
+    }
+
     if (slashCmd.kind === 'compact' || slashCmd.kind === 'compact-with-trailing') {
       if (attachments.length > 0) {
         setLocalErrors((errs) => [
@@ -4280,6 +4791,16 @@ export function ChatView({
         ]);
         return;
       }
+      if (
+        slashCmd.kind === 'goal-with-condition' &&
+        slashCmd.condition.length <= 4000 &&
+        goalRequiresRiskConfirmation(slashCmd.condition)
+      ) {
+        setPendingRiskGoal(slashCmd.condition);
+        closeComposePickers();
+        inputRef.current?.blur();
+        return;
+      }
       const api = bridge();
       const conversationId = String(conversation.id);
       try {
@@ -4298,7 +4819,6 @@ export function ChatView({
             },
           ]);
         } else if (slashCmd.kind === 'goal-with-condition') {
-          if (!api?.setGoal) return;
           if (slashCmd.condition.length > 4000) {
             setLocalErrors((errs) => [
               ...errs,
@@ -4312,37 +4832,10 @@ export function ChatView({
             ]);
             return;
           }
-          const result = await api.setGoal({ conversationId, condition: slashCmd.condition });
-          await refreshGoal();
-          setLocalErrors((errs) => [
-            ...errs,
-            {
-              id: `goal-set-${Date.now()}`,
-              role: 'system',
-              tone: 'success',
-              text: result?.evaluatorConfigured
-                ? '目标已设置：每轮结束后将自动评估并续跑'
-                : '目标已设置，但尚未配置评估模型（设置 → 模型 → 更多模型设置 → 目标模式评估模型）',
-              timestamp: new Date().toISOString(),
-            },
-          ]);
+          await startGoalFromShortcut(slashCmd.condition);
         } else {
-          // Bare /goal — show current goal or the required format.
-          const current = goalState?.goal;
-          setLocalErrors((errs) => [
-            ...errs,
-            {
-              id: `goal-help-${Date.now()}`,
-              role: 'system',
-              tone: 'info',
-              text: current
-                ? `当前目标：${current.condition}（已运行 ${Math.floor(
-                    (Date.now() - Date.parse(current.startedAt)) / 60_000,
-                  )} 分钟 · 评估 ${current.turnCount} 轮）——使用 /goal <完成条件> 更新目标，/goal clear 清除`
-                : '目标模式：使用 /goal <完成条件> 设置目标，如 /goal 完成所有测试；每轮结束后由独立评估模型判断是否达成',
-              timestamp: new Date().toISOString(),
-            },
-          ]);
+          // NewMax treats a bare mode command as a preview toggle. Sending it
+          // without a body simply closes the preview and leaves no chat row.
         }
       } catch (error) {
         const raw = error instanceof Error ? error.message : String(error);
@@ -4401,37 +4894,27 @@ export function ChatView({
               timestamp: new Date().toISOString(),
             },
           ]);
-        } else {
+        } else if (slashCmd.kind === 'plan-with-request') {
+          if (goalState?.goal?.status === 'active' && !(await pauseGoalForTransition())) return;
           await api?.setConversationInteractionMode?.({
             conversationId: conversation.id,
             interactionMode: 'plan',
           });
           setInteractionMode('plan');
-          if (slashCmd.kind === 'plan-with-request') {
-            setLocalErrors((errs) => [
-              ...errs,
-              {
-                id: `plan-mode-${Date.now()}`,
-                role: 'system',
-                tone: 'info',
-                text: '已进入规划模式（只读）：正在分析并准备可审批计划',
-                timestamp: new Date().toISOString(),
-              },
-            ]);
-            // 发送需求文本触发规划 run（只读工具注入由 runtime 处理）。
-            await sendUserText(slashCmd.request, []);
-          } else {
-            setLocalErrors((errs) => [
-              ...errs,
-              {
-                id: `plan-help-${Date.now()}`,
-                role: 'system',
-                tone: 'info',
-                text: '已进入规划模式（只读）。请输入要分析的需求，或使用 /plan <需求> 一步进入',
-                timestamp: new Date().toISOString(),
-              },
-            ]);
-          }
+          setLocalErrors((errs) => [
+            ...errs,
+            {
+              id: `plan-mode-${Date.now()}`,
+              role: 'system',
+              tone: 'info',
+              text: '已进入规划模式（只读）：正在分析并准备可审批计划',
+              timestamp: new Date().toISOString(),
+            },
+          ]);
+          // Persist Plan before the request so the run is born in native plan mode.
+          await sendUserText(slashCmd.request, []);
+        } else {
+          // Bare /plan only dismisses the local preview in NewMax.
         }
       } catch (error) {
         const raw = error instanceof Error ? error.message : String(error);
@@ -4494,6 +4977,7 @@ export function ChatView({
     kernelOverride,
     modelOverride,
     netEnabled,
+    pauseGoalForTransition,
     reasoningEffort,
     refreshGoal,
     resizeComposeInput,
@@ -4501,7 +4985,38 @@ export function ChatView({
     runManualCompact,
     selectedSkillVersionIds,
     sendUserText,
+    startGoalFromShortcut,
   ]);
+
+  const confirmRiskGoal = useCallback(async () => {
+    if (!pendingRiskGoal || riskGoalSubmissionRef.current) return;
+    riskGoalSubmissionRef.current = true;
+    setRiskGoalSubmitting(true);
+    try {
+      await startGoalFromShortcut(pendingRiskGoal);
+      setPendingRiskGoal(null);
+      setInput('');
+      closeComposePickers();
+      window.requestAnimationFrame(() => {
+        resizeComposeInput();
+        inputRef.current?.focus();
+      });
+    } catch (error) {
+      setLocalErrors((errors) => [
+        ...errors,
+        {
+          id: `goal-risk-${Date.now()}`,
+          role: 'system',
+          tone: 'error',
+          text: `目标模式操作失败: ${error instanceof Error ? error.message : String(error)}`,
+          timestamp: new Date().toISOString(),
+        },
+      ]);
+    } finally {
+      riskGoalSubmissionRef.current = false;
+      setRiskGoalSubmitting(false);
+    }
+  }, [closeComposePickers, pendingRiskGoal, resizeComposeInput, startGoalFromShortcut]);
 
   /** NewMax: selecting a file becomes an attachment chip, not inline @path text. */
   const selectMentionFile = useCallback(
@@ -4520,7 +5035,7 @@ export function ChatView({
           if (!el) return;
           el.focus();
           el.setSelectionRange(stripped.caret, stripped.caret);
-          computeTextareaHeight(el, 56, 220);
+          computeTextareaHeight(el, 36, 200);
         });
       } else {
         inputRef.current?.focus();
@@ -4646,7 +5161,7 @@ export function ChatView({
     if (nextMention) {
       setMention(nextMention);
       setSlash(null);
-      setSlashIndex(0);
+      setSlashIndex(-1);
       return;
     }
     setMention(null);
@@ -4654,7 +5169,7 @@ export function ChatView({
     setMentionIndex(0);
     const nextSlash = detectSlashQuery(text, caret);
     setSlash(nextSlash);
-    if (!nextSlash) setSlashIndex(0);
+    setSlashIndex(nextSlash ? 0 : -1);
   }, []);
 
   const insertComposeToken = useCallback(
@@ -4669,6 +5184,7 @@ export function ChatView({
       const next = `${prefix}${token}${after}`;
       const caret = prefix.length + token.length;
       setMenu(null);
+      setMcpMenuOpen(false);
       setInput(next);
       updatePickersFromCaret(next, caret);
       window.requestAnimationFrame(() => {
@@ -4683,43 +5199,45 @@ export function ChatView({
   );
 
   const handleInputChange = useCallback(
-    (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-      const value = e.target.value;
+    (value: string, caret: number) => {
+      setMcpMenuOpen(false);
       setInput(value);
-      updatePickersFromCaret(value, e.target.selectionStart ?? value.length);
+      if (composerAddOpen) {
+        closeMention();
+        closeSlash();
+        return;
+      }
+      updatePickersFromCaret(value, caret);
     },
-    [updatePickersFromCaret],
+    [closeMention, closeSlash, composerAddOpen, updatePickersFromCaret],
   );
 
-  const handleStop = useCallback(async () => {
-    const api = bridge();
-    const runId = projected.activeRunId;
-    if (!api?.cancelRun || !runId || stopping) return;
-    setStopping(true);
-    try {
-      await api.cancelRun({ runId: runId as RunId });
-      setSending(false);
-      setSendingRunId(undefined);
-    } catch (error) {
-      setLocalErrors((prev) => [
-        ...prev,
-        {
-          id: `err-stop-${Date.now()}`,
-          role: 'system',
-          tone: 'error',
-          text: `停止失败: ${error instanceof Error ? error.message : String(error)}`,
-          timestamp: new Date().toISOString(),
-        },
-      ]);
-    } finally {
-      setStopping(false);
-    }
-  }, [projected.activeRunId, stopping]);
+  const handleEditorSelectionChange = useCallback(
+    (caret: number) => {
+      if (composerAddOpen) return;
+      // ComposerEditor publishes selection in the same native input event as
+      // the new text. Read the DOM value first so picker detection never sees
+      // the previous controlled-render snapshot.
+      updatePickersFromCaret(inputRef.current?.value ?? inputValueRef.current, caret);
+    },
+    [composerAddOpen, updatePickersFromCaret],
+  );
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      if (e.key === 'Tab' && e.shiftKey && modeKeywordHint) {
+        e.preventDefault();
+        acceptModeKeywordHint();
+        return;
+      }
+      if (mcpMenuOpen && e.key === 'Escape') {
+        e.preventDefault();
+        setMcpMenuOpen(false);
+        return;
+      }
       // @-picker navigation takes priority while open.
       if (mention) {
+        const mentionItemCount = 2 + mentionFiles.length;
         if (e.key === 'Escape') {
           e.preventDefault();
           closeMention();
@@ -4727,14 +5245,12 @@ export function ChatView({
         }
         if (e.key === 'ArrowDown') {
           e.preventDefault();
-          setMentionIndex((i) => (mentionFiles.length === 0 ? 0 : (i + 1) % mentionFiles.length));
+          setMentionIndex((i) => (i + 1) % mentionItemCount);
           return;
         }
         if (e.key === 'ArrowUp') {
           e.preventDefault();
-          setMentionIndex((i) =>
-            mentionFiles.length === 0 ? 0 : (i - 1 + mentionFiles.length) % mentionFiles.length,
-          );
+          setMentionIndex((i) => (i - 1 + mentionItemCount) % mentionItemCount);
           return;
         }
         if (e.key === 'Tab') {
@@ -4749,7 +5265,18 @@ export function ChatView({
           }
         }
         if (e.key === 'Enter') {
-          const selected = mentionFiles[mentionIndex];
+          if (mentionIndex === 0) {
+            e.preventDefault();
+            closeComposePickers();
+            imageInputRef.current?.click();
+            return;
+          }
+          if (mentionIndex === 1) {
+            e.preventDefault();
+            handleNetworkSettingChange(!netEnabled);
+            return;
+          }
+          const selected = mentionFiles[mentionIndex - 2];
           if (selected) {
             e.preventDefault();
             selectMentionFile(selected);
@@ -4759,33 +5286,43 @@ export function ChatView({
       }
 
       // / slash-command menu navigation.
-      if (slash) {
+      if (slash && slashMenuOpen) {
         if (e.key === 'Escape') {
           e.preventDefault();
           closeSlash();
           return;
         }
-        if (e.key === 'ArrowDown') {
+        const action = resolveComposerSlashMenuKeyboardAction({
+          key: e.key,
+          shiftKey: e.shiftKey,
+          isComposing: e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229,
+          category: slashCategory,
+          availableCategories: availableSlashCategories,
+          activeIndex: slashIndex,
+          itemCount: Math.max(resolvedSlashItems.length, slashCandidateItemCount),
+        });
+        if (action) {
           e.preventDefault();
-          setSlashIndex((i) => (slashItemCount === 0 ? 0 : (i + 1) % slashItemCount));
-          return;
-        }
-        if (e.key === 'ArrowUp') {
-          e.preventDefault();
-          setSlashIndex((i) =>
-            slashItemCount === 0 ? 0 : (i - 1 + slashItemCount) % slashItemCount,
-          );
-          return;
-        }
-        if (e.key === 'Enter' || e.key === 'Tab') {
-          const selectedCommand = slashCommands[slashIndex];
-          const selectedSkill = filteredSlashSkills[slashIndex - slashCommands.length];
-          if (selectedCommand || selectedSkill) {
-            e.preventDefault();
-            if (selectedCommand) selectSlashCommand(selectedCommand);
-            else if (selectedSkill) selectSlashSkill(selectedSkill);
-            return;
+          if (action.kind === 'change-category') {
+            setSlashCategory(action.category);
+            setSlashIndex(-1);
+          } else if (action.kind === 'change-active-index') {
+            setSlashIndex(action.index);
+          } else {
+            const selected =
+              resolvedSlashItems[action.index] ??
+              (slashCommands[action.index]
+                ? { kind: 'command' as const, command: slashCommands[action.index] }
+                : filteredSlashSkills[action.index - slashCommands.length]
+                  ? {
+                      kind: 'skill' as const,
+                      skill: filteredSlashSkills[action.index - slashCommands.length],
+                    }
+                  : undefined);
+            if (selected?.kind === 'command') selectSlashCommand(selected.command);
+            else if (selected?.kind === 'skill') selectSlashSkill(selected.skill);
           }
+          return;
         }
       }
 
@@ -4804,6 +5341,8 @@ export function ChatView({
       }
     },
     [
+      acceptModeKeywordHint,
+      availableSlashCategories,
       closeMention,
       closeSlash,
       handleSend,
@@ -4811,13 +5350,20 @@ export function ChatView({
       mention,
       mentionFiles,
       mentionIndex,
+      modeKeywordHint,
+      mcpMenuOpen,
+      netEnabled,
       projected.streaming,
+      handleNetworkSettingChange,
       selectMentionFile,
       selectSlashCommand,
       slash,
+      slashCandidateItemCount,
       slashCommands,
       filteredSlashSkills,
-      slashItemCount,
+      slashCategory,
+      slashMenuOpen,
+      resolvedSlashItems,
       slashIndex,
       selectSlashSkill,
       stopping,
@@ -5007,6 +5553,174 @@ export function ChatView({
     activeModelId ||
     '选择模型';
 
+  const composerMode: 'plan' | 'goal' | null = goalCommandPreview
+    ? 'goal'
+    : planCommandPreview
+      ? 'plan'
+      : interactionMode === 'plan'
+        ? 'plan'
+        : visibleGoal
+          ? 'goal'
+          : null;
+  const configuredModelLabel = (modelId: string | null | undefined) => {
+    if (!modelId) return activeModel;
+    return models.find((model) => model.modelId === modelId)?.displayName ?? modelId;
+  };
+  const planBannerModelLabel =
+    planActSetting?.enabled && planActSetting.planModelId
+      ? configuredModelLabel(planActSetting.planModelId)
+      : activeModel;
+  const actBannerModelLabel =
+    planActSetting?.enabled && planActSetting.actModelId
+      ? configuredModelLabel(planActSetting.actModelId)
+      : activeModel;
+  const composerModelSelection = resolveComposerModelSelection({
+    planMode: composerMode === 'plan',
+    setting: planActSetting,
+    currentModelId: activeModelId,
+    currentReasoningEffort: reasoningEffort,
+  });
+  const composerModelLabel = configuredModelLabel(composerModelSelection.modelId);
+  const updatePlanActSetting = (next: ComposerPlanActSetting) => {
+    const previous = planActSetting;
+    setPlanActSetting(next);
+    const api = bridge();
+    if (!api?.setSetting) return;
+    void api.setSetting({ key: 'plan-act', value: next }).catch(() => setPlanActSetting(previous));
+  };
+
+  const openGoalSettings = (mode: 'create' | 'edit') => {
+    const parsed = parseSlashCommand(input);
+    const draftCondition = parsed.kind === 'goal-with-condition' ? parsed.condition : '';
+    const current = mode === 'edit' ? visibleGoal : undefined;
+    setGoalSettingsMode(mode);
+    setGoalSettingsInitial({
+      condition: current?.condition ?? draftCondition,
+      stopCondition: current?.stopCondition ?? '',
+      maxGoalRounds: current?.maxGoalRounds ?? 10,
+      maxGoalTokens: current?.maxGoalTokens ?? 1_000_000,
+    });
+    setGoalSettingsOpen(true);
+  };
+
+  const submitGoalSettings = async (values: GoalSettingsValues) => {
+    const api = bridge();
+    if (!api?.setGoal || goalSettingsSubmitting) return;
+    setGoalSettingsSubmitting(true);
+    try {
+      await api.setConversationInteractionMode?.({
+        conversationId: conversation.id,
+        interactionMode: 'execute',
+      });
+      setInteractionMode('execute');
+      const result = await api.setGoal({
+        conversationId: String(conversation.id),
+        ...values,
+        ...(activeModelId ? { modelId: activeModelId as Parameters<typeof api.setGoal>[0]['modelId'] } : {}),
+        kernelId: kernelOverride as Parameters<typeof api.setGoal>[0]['kernelId'],
+        reasoningEffort,
+        networkEnabled: netEnabled,
+      });
+      setGoalState({ goal: result.goal, evaluatorConfigured: result.evaluatorConfigured });
+      setGoalSettingsOpen(false);
+      setInput('');
+      closeComposePickers();
+      window.requestAnimationFrame(() => {
+        resizeComposeInput();
+        inputRef.current?.focus();
+      });
+    } catch (error) {
+      setLocalErrors((errors) => [
+        ...errors,
+        {
+          id: `goal-settings-${Date.now()}`,
+          role: 'system',
+          tone: 'error',
+          text: `目标设置失败: ${error instanceof Error ? error.message : String(error)}`,
+          timestamp: new Date().toISOString(),
+        },
+      ]);
+    } finally {
+      setGoalSettingsSubmitting(false);
+    }
+  };
+
+  const composerModeBanner =
+    composerMode === 'plan' ? (
+      <ComposerModeBanner
+        mode="plan"
+        planModelLabel={planBannerModelLabel}
+        actModelLabel={actBannerModelLabel}
+        onOpenPlanSettings={() => onOpenPlanSettings?.()}
+        onExitPlan={() => {
+          setInput(withoutComposerModeCommand(input, 'plan'));
+          if (interactionMode === 'plan') void handlePlanSwitchMode('execute');
+          window.requestAnimationFrame(() => {
+            resizeComposeInput();
+            inputRef.current?.focus();
+          });
+        }}
+      />
+    ) : composerMode === 'goal' ? (
+      <ComposerModeBanner
+        mode="goal"
+        goal={visibleGoal}
+        pendingCondition={
+          composerSlashCommand.kind === 'goal-with-condition'
+            ? composerSlashCommand.condition
+            : undefined
+        }
+        onConfigureGoal={() => openGoalSettings(visibleGoal ? 'edit' : 'create')}
+        onPauseGoal={
+          visibleGoal?.status === 'active'
+            ? () => void pauseGoalForTransition()
+            : undefined
+        }
+        onResumeGoal={
+          visibleGoal && ['paused', 'blocked'].includes(visibleGoal.status)
+            ? () => {
+                const api = bridge();
+                if (!api?.goalResume) return;
+                void api
+                  .goalResume({
+                    conversationId: String(conversation.id),
+                    ...(activeModelId
+                      ? {
+                          modelId: activeModelId as Parameters<
+                            typeof api.goalResume
+                          >[0]['modelId'],
+                        }
+                      : {}),
+                    kernelId: kernelOverride as Parameters<
+                      typeof api.goalResume
+                    >[0]['kernelId'],
+                    reasoningEffort,
+                    networkEnabled: netEnabled,
+                  })
+                  .then(refreshGoal);
+              }
+            : undefined
+        }
+        onClearGoal={() => {
+          if (!visibleGoal) {
+            const next = withoutComposerModeCommand(input, 'goal');
+            setInput(next);
+            window.requestAnimationFrame(() => {
+              resizeComposeInput();
+              inputRef.current?.focus();
+            });
+            return;
+          }
+          const api = bridge();
+          if (!api?.clearGoal) return;
+          void api.clearGoal({ conversationId: String(conversation.id) }).then(async () => {
+            if (canStop) await handleStop();
+            refreshGoal();
+          });
+        }}
+      />
+    ) : undefined;
+
   // Runtime is the single source of truth for the ring. estimatedUsedTokens is
   // the complete context that would be sent on the next model request
   // (instructions + agent/team + project + saved summary + messages + tools),
@@ -5194,7 +5908,14 @@ export function ChatView({
 
   // 任务清单投影（对齐 DSH todo projection）：持久化事件流 → 常驻面板。
   // run 结束保留完成清单，新 run 开始清空。
-  const todoProjection = useMemo(() => projectTodoFromEvents(eventHistory), [eventHistory]);
+  const todoProjection = useMemo(
+    () =>
+      projectTodoFromEvents(eventHistory, {
+        threadId,
+        taskId: conversation.taskId ? String(conversation.taskId) : undefined,
+      }),
+    [conversation.taskId, eventHistory, threadId],
+  );
 
   return (
     <div className="flex min-h-0 flex-1 overflow-hidden">
@@ -5211,32 +5932,6 @@ export function ChatView({
 
         {/* ─── Messages ───────────────────────────────────────────────── */}
         <div className="shell-chat-message-stage">
-          <TaskStatusPanel
-            projectFolder={projectFolder}
-            goal={goalState?.goal}
-            evaluatorConfigured={Boolean(goalState?.evaluatorConfigured)}
-            todo={todoProjection}
-            onGoalPause={() => {
-              const api = bridge();
-              if (!api?.goalPause) return;
-              void api.goalPause({ conversationId: String(conversation.id) }).then(refreshGoal);
-            }}
-            onGoalResume={() => {
-              const api = bridge();
-              if (!api?.goalResume) return;
-              void api.goalResume({ conversationId: String(conversation.id) }).then(refreshGoal);
-            }}
-            onGoalEdit={() => {
-              setInput('/goal ');
-              inputRef.current?.focus();
-            }}
-            onGoalClear={() => {
-              const api = bridge();
-              if (!api?.clearGoal) return;
-              void api.clearGoal({ conversationId: String(conversation.id) }).then(refreshGoal);
-            }}
-            onOpenReview={onOpenReview}
-          />
           <div
             ref={messagesScrollRef}
             className="shell-chat-content-wrap shell-chat-message-scroller h-full overflow-y-auto py-6"
@@ -5354,18 +6049,44 @@ export function ChatView({
                   <span className="ml-2 text-[12px] text-text-faint">加载更早消息…</span>
                 </div>
               )}
-              {kernelCompactionEvents.length > 0 ? (
-                <div className="shell-kernel-compact-note" data-testid="kernel-compact-note">
-                  <Info size={13} />
-                  <span>
-                    内核已自动压缩上下文
-                    {kernelCompactionEvents.at(-1)?.occurredAt
-                      ? `（${formatMessageClock(kernelCompactionEvents.at(-1)!.occurredAt)}）`
-                      : ''}
-                    —— 更早的对话细节已由内核摘要保留，可继续提问。
-                  </span>
-                </div>
-              ) : null}
+              {kernelCompactionEvents.length > 0
+                ? (() => {
+                    const latestKernelCompaction = kernelCompactionEvents.at(-1)!;
+                    const compactState =
+                      latestKernelCompaction.type === 'kernel.context_compaction_started'
+                        ? 'running'
+                        : latestKernelCompaction.type === 'kernel.context_compaction_failed'
+                          ? 'failure'
+                          : 'success';
+                    const compactLabel =
+                      compactState === 'running'
+                        ? '内核正在压缩上下文'
+                        : compactState === 'failure'
+                          ? '内核压缩上下文失败'
+                          : '内核已自动压缩上下文';
+                    const compactError = nonEmptyString(latestKernelCompaction.payload.error);
+                    return (
+                      <div
+                        className="shell-kernel-compact-note"
+                        data-status={compactState}
+                        data-testid="kernel-compact-note"
+                      >
+                        <Info size={13} />
+                        <span>
+                          {compactLabel}
+                          {latestKernelCompaction.occurredAt
+                            ? `（${formatMessageClock(latestKernelCompaction.occurredAt)}）`
+                            : ''}
+                          {compactState === 'success'
+                            ? '—— 更早的对话细节已由内核摘要保留，可继续提问。'
+                            : compactError
+                              ? `—— ${compactError}`
+                              : ''}
+                        </span>
+                      </div>
+                    );
+                  })()
+                : null}
               {visibleDurableMessages.map((msg) => (
                 <div
                   key={msg.id}
@@ -5383,6 +6104,7 @@ export function ChatView({
                     fallbackAgent={conversationAgent}
                     regenerating={sending}
                     onRegenerate={handleRegenerate}
+                    onContinue={handleContinueInterrupted}
                     onChooseModelAndRetry={handleChooseModelAndRetry}
                     onOpenChange={onOpenFile}
                     onOpenReview={onOpenReview}
@@ -5391,6 +6113,7 @@ export function ChatView({
                     kernelId={
                       msg.kernelId ?? (msg.runId ? runKernelById.get(String(msg.runId)) : undefined)
                     }
+                    skillNameByVersionId={skillNameByVersionId}
                   />
                 </div>
               ))}
@@ -5428,6 +6151,7 @@ export function ChatView({
                     fallbackAgent={conversationAgent}
                     regenerating={sending}
                     onRegenerate={handleRegenerate}
+                    onContinue={handleContinueInterrupted}
                     onChooseModelAndRetry={handleChooseModelAndRetry}
                     onOpenChange={onOpenFile}
                     onOpenReview={onOpenReview}
@@ -5436,6 +6160,7 @@ export function ChatView({
                     kernelId={
                       msg.kernelId ?? (msg.runId ? runKernelById.get(String(msg.runId)) : undefined)
                     }
+                    skillNameByVersionId={skillNameByVersionId}
                     dismissLocalError={
                       localErrors.some((error) => error.id === msg.id)
                         ? (messageId) =>
@@ -5444,29 +6169,6 @@ export function ChatView({
                     }
                   />
                 </div>
-              ))}
-              {/* §方案卡：方案直接输出在聊天区（消息流尾部，draft 态），
-                  大方案靠聊天区整体滚动查看；批准/取消后收起。 */}
-              {conversationPlan?.state === 'draft' ? (
-                <div className="shell-message-window-item pb-6" data-testid="plan-approval-message">
-                  <PlanApprovalCard
-                    conversationId={conversation.id}
-                    plan={conversationPlan}
-                    onPlanUpdated={handlePlanUpdated}
-                    onExecute={(instruction) => void handlePlanExecute(instruction)}
-                    onSwitchMode={(mode) => void handlePlanSwitchMode(mode)}
-                    onNotify={handlePlanNotify}
-                  />
-                </div>
-              ) : null}
-              {pendingApprovals.map((approval) => (
-                <ToolApprovalCard
-                  key={approval.approvalId}
-                  approval={approval}
-                  busy={decidingApprovalId === approval.approvalId}
-                  onApprove={() => void handleToolApproval(approval.approvalId, 'approve')}
-                  onDeny={() => void handleToolApproval(approval.approvalId, 'deny')}
-                />
               ))}
               {showTyping &&
                 !messages.some((message) => message.streaming) &&
@@ -5484,7 +6186,7 @@ export function ChatView({
 
         {/* ─── Compose (NewMax-style) ─────────────────────────────────── */}
         <div className="shell-chat-content-wrap shrink-0 pb-4 pt-2">
-          <div className="shell-chat-content mx-auto">
+          <div className="shell-chat-content shell-chat-content--composer mx-auto">
             {desktopWaitingStatus === 'error' && desktopWaitingCommands.length === 0 ? (
               <DesktopWaitingQueryError
                 busy={false}
@@ -5566,100 +6268,119 @@ export function ChatView({
                 ) : null}
               </div>
             ) : null}
-            <div
-              className={`shell-compose relative ${dragOver ? 'is-dragover' : ''}`}
-              ref={composeRef}
+            {interactionMode !== 'plan' ? (
+              <ComposerTaskPanel
+                scopeKey={String(conversation.id)}
+                todo={todoProjection}
+              />
+            ) : null}
+            <ComposerApprovalStack
+              hasSurfaceBelow={Boolean(composerModeBanner)}
+              tool={
+                pendingApprovals[0]
+                  ? {
+                      key: pendingApprovals[0].approvalId,
+                      node: (
+                        <ToolApprovalCard
+                          approval={pendingApprovals[0]}
+                          busy={decidingApprovalId === pendingApprovals[0].approvalId}
+                          onApprove={(scope) =>
+                            void handleToolApproval(
+                              pendingApprovals[0]!.approvalId,
+                              'approve',
+                              scope,
+                            )
+                          }
+                          onDeny={() =>
+                            void handleToolApproval(
+                              pendingApprovals[0]!.approvalId,
+                              'deny',
+                              'once',
+                            )
+                          }
+                        />
+                      ),
+                    }
+                  : undefined
+              }
+              plan={
+                conversationPlan?.state === 'draft'
+                  ? {
+                      key: `${conversationPlan.planId}:${conversationPlan.currentRevision}`,
+                      node: (
+                        <PlanApprovalCard
+                          variant="composer"
+                          conversationId={conversation.id}
+                          plan={conversationPlan}
+                          onPlanUpdated={handlePlanUpdated}
+                          onExecute={handlePlanExecute}
+                          onSwitchMode={handlePlanSwitchMode}
+                          onNotify={handlePlanNotify}
+                        />
+                      ),
+                    }
+                  : undefined
+              }
+            />
+            <NewMaxComposerFrame
+              variant="conversation"
+              modeBanner={composerModeBanner}
+              className={`relative ${dragOver ? 'is-dragover' : ''}`}
+              data-layout="tall"
+              innerRef={composeRef}
               onDragEnter={handleDragEnter}
               onDragOver={handleDragOver}
               onDragLeave={handleDragLeave}
               onDrop={handleDrop}
             >
-              {/* / slash command menu — portal above compose */}
-              {slash &&
-                slashPopStyle &&
+              {modeKeywordHint ? (
+                <ComposerModeKeywordHint
+                  kind={modeKeywordHint.kind}
+                  onAccept={acceptModeKeywordHint}
+                  onDismiss={() => setDismissedModeHintText(input)}
+                />
+              ) : null}
+              {/* / slash command menu — one shared NewMax menu in both entry points. */}
+              {slashPopStyle &&
                 typeof document !== 'undefined' &&
                 createPortal(
-                  <div
-                    ref={slashListRef}
-                    className="shell-mention-pop shell-mention-pop--portal shell-slash-pop"
+                  <ComposerSlashMenu
+                    open={slashMenuOpen}
+                    skills={slashSkills}
+                    loading={slashSkillsLoading}
+                    query={slash?.query ?? lastSlashQueryRef.current}
+                    selectedSkillVersionIds={selectedSkillVersionIds}
+                    activeIndex={slashIndex}
+                    onActiveIndexChange={setSlashIndex}
+                    category={slashCategory}
+                    onCategoryChange={setSlashCategory}
+                    onAvailableCategoriesChange={setAvailableSlashCategories}
+                    onResolvedItemsChange={setResolvedSlashItems}
+                    onCommand={selectSlashCommand}
+                    onSkill={selectSlashSkill}
+                    onCreateSkill={() => {
+                      closeComposePickers();
+                      onCreateSkill?.();
+                    }}
                     style={slashPopStyle}
-                    data-testid="compose-slash-pop"
-                    role="listbox"
-                    aria-label="斜杠命令"
-                  >
-                    <div className="shell-slash-pop__section">命令</div>
-                    {slashCommands.length === 0 ? (
-                      <div className="shell-mention-pop__empty">无匹配命令</div>
-                    ) : (
-                      slashCommands.map((cmd, index) => (
-                        <button
-                          key={cmd.id}
-                          type="button"
-                          role="option"
-                          aria-selected={index === slashIndex}
-                          className={`shell-mention-pop__item shell-slash-pop__item ${
-                            index === slashIndex ? 'is-active' : ''
-                          }`}
-                          onMouseEnter={() => setSlashIndex(index)}
-                          onMouseDown={(e) => {
-                            e.preventDefault();
-                          }}
-                          onClick={() => selectSlashCommand(cmd)}
-                        >
-                          <span className="shell-slash-pop__cmd">{cmd.command}</span>
-                          <span className="shell-slash-pop__meta">
-                            <span className="shell-slash-pop__label">{cmd.label}</span>
-                            <span className="shell-slash-pop__desc">{cmd.description}</span>
-                          </span>
-                          {cmd.kind === 'coming-soon' ? (
-                            <span className="shell-slash-pop__badge">即将</span>
-                          ) : null}
-                        </button>
-                      ))
-                    )}
-                    {(slashSkillsLoading || filteredSlashSkills.length > 0) && (
-                      <>
-                        <div className="shell-slash-pop__section">Skill</div>
-                        {slashSkillsLoading ? (
-                          <div className="shell-mention-pop__empty">正在读取已启用 Skill…</div>
-                        ) : (
-                          filteredSlashSkills.map((skill, skillIndex) => {
-                            const index = slashCommands.length + skillIndex;
-                            return (
-                              <button
-                                key={skill.skillVersionId}
-                                type="button"
-                                role="option"
-                                aria-selected={index === slashIndex}
-                                className={`shell-mention-pop__item shell-slash-pop__item ${
-                                  index === slashIndex ? 'is-active' : ''
-                                }`}
-                                onMouseEnter={() => setSlashIndex(index)}
-                                onMouseDown={(event) => {
-                                  event.preventDefault();
-                                }}
-                                onClick={() => selectSlashSkill(skill)}
-                                data-testid={`turn-skill-option-${skill.skillVersionId}`}
-                              >
-                                <span className="shell-slash-pop__cmd">/{skill.name}</span>
-                                <span className="shell-slash-pop__meta">
-                                  <span className="shell-slash-pop__label">{skill.name}</span>
-                                  <span className="shell-slash-pop__desc">
-                                    {skill.description || `v${skill.version}`}
-                                  </span>
-                                </span>
-                                <span className="shell-slash-pop__badge">
-                                  {selectedSkillVersionIds.includes(skill.skillVersionId)
-                                    ? '已选'
-                                    : 'Skill'}
-                                </span>
-                              </button>
-                            );
-                          })
-                        )}
-                      </>
-                    )}
-                  </div>,
+                    placement="above"
+                    testId="compose-slash-pop"
+                    listRef={slashListRef}
+                  />,
+                  document.body,
+                )}
+              {mcpMenuStyle &&
+                typeof document !== 'undefined' &&
+                createPortal(
+                  <ComposerMcpMenu
+                    open={mcpMenuOpen}
+                    style={mcpMenuStyle}
+                    onDismiss={() => {
+                      setMcpMenuOpen(false);
+                      window.requestAnimationFrame(() => inputRef.current?.focus());
+                    }}
+                    onOpenSettings={() => onOpenMcpSettings?.()}
+                  />,
                   document.body,
                 )}
               {/* @ file picker — portal so chat column overflow cannot clip it */}
@@ -5675,18 +6396,17 @@ export function ChatView({
                     role="dialog"
                     aria-label="添加上下文和设置"
                   >
-                    <div className="shell-mention-pop__section-label">设置</div>
-                    <div className="shell-mention-pop__settings">
-                      <NetworkSearchSetting
-                        enabled={netEnabled}
-                        rootRef={mentionNetworkSettingRef}
-                        onDismiss={dismissMentionToInput}
-                        onChange={handleNetworkSettingChange}
-                      />
-                    </div>
+                    <ComposerMenuHighlight
+                      containerRef={mentionListRef}
+                      activeIndex={mentionIndex}
+                    />
+                    <div className="shell-mention-pop__section-label">来源与上下文</div>
                     <button
                       type="button"
                       className="shell-mention-pop__upload"
+                      data-composer-menu-index={0}
+                      data-active={mentionIndex === 0 ? '1' : '0'}
+                      onMouseEnter={() => setMentionIndex(0)}
                       onMouseDown={(event) => {
                         event.preventDefault();
                         closeComposePickers();
@@ -5697,6 +6417,18 @@ export function ChatView({
                       <span>上传图片</span>
                       <span className="shell-mention-pop__upload-hint">PNG / JPG</span>
                     </button>
+                    <div
+                      className="shell-mention-pop__settings"
+                      data-composer-menu-index={1}
+                      onMouseEnter={() => setMentionIndex(1)}
+                    >
+                      <NetworkSearchSetting
+                        enabled={netEnabled}
+                        rootRef={mentionNetworkSettingRef}
+                        onDismiss={dismissMentionToInput}
+                        onChange={handleNetworkSettingChange}
+                      />
+                    </div>
                     <div className="shell-mention-pop__divider" aria-hidden="true" />
                     <div className="shell-mention-pop__section-label">工作区文件</div>
                     <div
@@ -5718,11 +6450,12 @@ export function ChatView({
                             key={`${file.kind}:${file.path}`}
                             type="button"
                             role="option"
-                            aria-selected={index === mentionIndex}
+                            aria-selected={index + 2 === mentionIndex}
+                            data-composer-menu-index={index + 2}
                             className={`shell-mention-pop__item ${
-                              index === mentionIndex ? 'is-active' : ''
+                              index + 2 === mentionIndex ? 'is-active' : ''
                             }`}
-                            onMouseEnter={() => setMentionIndex(index)}
+                            onMouseEnter={() => setMentionIndex(index + 2)}
                             onMouseDown={(ev) => {
                               ev.preventDefault();
                               selectMentionFile(file);
@@ -5745,6 +6478,7 @@ export function ChatView({
                         ))
                       )}
                     </div>
+                    <div className="shell-composer-menu__hint">输入以搜索来源和文件</div>
                   </div>,
                   document.body,
                 )}
@@ -5760,105 +6494,54 @@ export function ChatView({
                 onInterject={handleInterjectQueuedComposeRequest}
               />
 
-              {/* Attachment chips (NewMax: selected @ files / images become chips) */}
-              {attachments.length > 0 && (
-                <div className="shell-compose__chips" data-testid="compose-attachments">
-                  {attachments.map((file) => (
-                    <div
-                      key={file.path}
-                      className="shell-attach-chip"
-                      title={file.path}
-                      data-kind={file.kind}
-                    >
-                      {file.kind === 'image' && file.previewUrl ? (
-                        <button
-                          type="button"
-                          className="shell-attach-chip__thumb"
-                          title="点击查看"
-                          onClick={() =>
-                            setLightbox({
-                              id: file.path,
-                              name: file.name,
-                              url: file.previewUrl!,
-                              mimeType: file.mimeType,
-                            })
-                          }
-                        >
-                          <img src={file.previewUrl} alt={file.name} />
-                        </button>
-                      ) : (
-                        <span className="shell-attach-chip__icon">
-                          {file.kind === 'dir' ? <FolderOpen size={14} /> : <FileCode2 size={14} />}
-                        </span>
-                      )}
-                      <span className="shell-attach-chip__name">{file.name}</span>
-                      <button
-                        type="button"
-                        className="shell-attach-chip__remove"
-                        title="移除"
-                        onClick={() => setAttachments((prev) => removeAttachment(prev, file.path))}
-                      >
-                        <X size={12} />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {selectedSlashSkills.length > 0 ? (
-                <div
-                  className="shell-compose__selected-skills"
-                  data-testid="compose-selected-skills"
-                >
-                  {selectedSlashSkills.map((skill) => (
-                    <span
-                      key={skill.skillVersionId}
-                      className="shell-compose__selected-skill"
-                      title={`${skill.name} · v${skill.version}`}
-                    >
-                      <Puzzle size={13} aria-hidden="true" />
-                      <span>{skill.name}</span>
-                    </span>
-                  ))}
-                </div>
-              ) : null}
-
-              {/* 问询卡片（ask_user_question 接管 composer；方案卡已移至消息流 §方案卡） */}
-              {pendingAsk ? (
-                <AskQuestionCard ask={pendingAsk} onSettled={() => setPendingAsk(undefined)} />
+              {/* ask_user_question alone replaces the editor; plan/tool approvals stay in ComposerApprovalStack above. */}
+              {composerPendingAsk ? (
+                <AskQuestionCard
+                  ask={composerPendingAsk}
+                  onSettled={() => setPendingAsk(undefined)}
+                />
               ) : (
-                <>
-                  {/* The textarea stays editable while streaming. Send queues a draft;
-                      only the queued item's explicit 插话 action supersedes the Run. */}
-                  <textarea
-                    ref={inputRef}
-                    className="shell-compose__input"
-                    data-testid="compose-input"
-                    placeholder={
-                      hasProjectFolder
-                        ? '输入消息…（输入 @ 引用文件，/ 打开快捷面板）'
-                        : '输入消息…（输入 / 打开快捷面板）'
+                <ComposerEditor
+                  value={input}
+                  inputElementRef={inputRef}
+                  inputTestId="compose-input"
+                  testId="conversation-composer-editor"
+                  placeholder={
+                    hasProjectFolder
+                      ? '输入消息…（输入 @ 引用文件，/ 打开快捷面板）'
+                      : '输入消息…（输入 / 打开快捷面板）'
+                  }
+                  attachments={attachments}
+                  selectedSkills={selectedSlashSkills}
+                  minHeight={36}
+                  maxHeight={200}
+                  disabled={compactProgress?.status === 'running'}
+                  goalRunning={goalIsActive}
+                  onChange={(value, selection) => handleInputChange(value, selection.start)}
+                  onSelectionChange={({ start }) => handleEditorSelectionChange(start)}
+                  onKeyDown={handleKeyDown}
+                  onPaste={handlePaste}
+                  onOpenAttachment={(attachment) => {
+                    if (attachment.kind === 'image' && attachment.previewUrl) {
+                      setLightbox({
+                        id: attachment.path,
+                        name: attachment.name,
+                        url: attachment.previewUrl,
+                        mimeType: attachment.mimeType,
+                      });
+                      return;
                     }
-                    value={input}
-                    onChange={handleInputChange}
-                    onKeyDown={handleKeyDown}
-                    onPaste={handlePaste}
-                    onClick={(e) =>
-                      updatePickersFromCaret(
-                        e.currentTarget.value,
-                        e.currentTarget.selectionStart ?? 0,
-                      )
-                    }
-                    onSelect={(e) =>
-                      updatePickersFromCaret(
-                        e.currentTarget.value,
-                        e.currentTarget.selectionStart ?? 0,
-                      )
-                    }
-                    rows={1}
-                    disabled={compactProgress?.status === 'running'}
-                  />
-                </>
+                    if (attachment.kind === 'file') onOpenFile?.(attachment.path);
+                  }}
+                  onRemoveAttachment={(path) =>
+                    setAttachments((current) => removeAttachment(current, path))
+                  }
+                  onRemoveSkill={(skillVersionId) =>
+                    setSelectedSkillVersionIds((current) =>
+                      current.filter((selected) => selected !== skillVersionId),
+                    )
+                  }
+                />
               )}
 
               <input
@@ -5872,21 +6555,116 @@ export function ChatView({
               />
 
               {/* Bottom toolbar */}
-              <div className="shell-compose__bar">
-                <div className="shell-compose__bar-left">
-                  <button
-                    type="button"
-                    className="shell-compose__icon-tool shell-compose__shortcut-plus"
-                    aria-label="添加上下文"
-                    title="添加上下文（@）"
-                    data-testid="compose-mention-trigger"
-                    data-active={mention ? '1' : '0'}
-                    onClick={() => insertComposeToken('@')}
-                  >
-                    <Plus size={17} />
-                  </button>
+              <div
+                ref={composerToolbar.outerRef}
+                className="shell-compose__bar"
+                data-testid="compose-toolbar"
+                data-collapse-level={composerToolbar.collapseLevel}
+              >
+                <div ref={composerToolbar.leftRef} className="shell-compose__bar-left">
+                  <ComposerAddControl
+                    variant="conversation"
+                    open={composerAddOpen}
+                    inputRef={inputRef}
+                    composerRef={composeRef}
+                    value={input}
+                    onValueChange={setInput}
+                    onOpenChange={setComposerAddOpen}
+                    onBeforeOpen={closeComposePickers}
+                    workspaceFolder={projectFolder}
+                    selectedFilePaths={attachments
+                      .filter((attachment) => attachment.kind !== 'image')
+                      .map((attachment) => attachment.path)}
+                    networkEnabled={netEnabled}
+                    permissionMode={permissionMode}
+                    showPermissionItems={
+                      composerToolbar.collapseLevel >=
+                      PERMISSION_MODE_COLLAPSED_TOOLBAR_LEVEL
+                    }
+                  disabled={Boolean(composerPendingAsk) || compactProgress?.status === 'running'}
+                    attachDisabled={
+                      attachments.filter((attachment) => attachment.kind === 'image').length >= 8
+                    }
+                    onAttach={() => imageInputRef.current?.click()}
+                    onPlan={() =>
+                      window.dispatchEvent(
+                        new CustomEvent('shell-toggle-plan-mode', {
+                          detail: { conversationId: conversation.id },
+                        }),
+                      )
+                    }
+                    onGoal={() =>
+                      window.dispatchEvent(
+                        new CustomEvent('shell-toggle-goal-mode', {
+                          detail: { conversationId: conversation.id },
+                        }),
+                      )
+                    }
+                    onNetworkChange={handleNetworkSettingChange}
+                    onPermissionChange={setPermission}
+                    onFile={(file) =>
+                      setAttachments((current) =>
+                        current.some((attachment) => attachment.path === file.path)
+                          ? removeAttachment(current, file.path)
+                          : addAttachment(current, {
+                              path: file.path,
+                              name: file.name || fileNameFromPath(file.path),
+                              kind: file.kind,
+                            }),
+                      )
+                    }
+                    triggerTestId="compose-add-trigger"
+                    menuTestId="compose-add-menu"
+                  />
+                  {helpCommandPreview ? (
+                    <ComposerActiveModePill
+                      mode="help"
+                      onClick={() => {
+                        const next = input.replace(/^\s*\/help(?:\s+|$)/i, '');
+                        setInput(next);
+                        window.requestAnimationFrame(() => {
+                          resizeComposeInput();
+                          inputRef.current?.focus();
+                          inputRef.current?.setSelectionRange(next.length, next.length);
+                        });
+                      }}
+                    />
+                  ) : null}
+                  {planCommandPreview || interactionMode === 'plan' ? (
+                    <ComposerActiveModePill
+                      mode="plan"
+                      onClick={() =>
+                        window.dispatchEvent(
+                          new CustomEvent('shell-toggle-plan-mode', {
+                            detail: { conversationId: conversation.id },
+                          }),
+                        )
+                      }
+                    />
+                  ) : null}
+                  {goalCommandPreview || visibleGoal ? (
+                    <ComposerActiveModePill
+                      mode="goal"
+                      goalStatus={visibleGoal?.status}
+                      onClick={() =>
+                        window.dispatchEvent(
+                          new CustomEvent('shell-toggle-goal-mode', {
+                            detail: { conversationId: conversation.id },
+                          }),
+                        )
+                      }
+                    />
+                  ) : null}
                   {/* Permission menu */}
-                  <div className="shell-compose__tool-wrap">
+                  <div
+                    ref={composerToolbar.permissionRef}
+                    className="shell-compose__tool-wrap"
+                    data-testid="compose-permission-control"
+                    hidden={
+                      composerToolbar.collapseLevel >=
+                      PERMISSION_MODE_COLLAPSED_TOOLBAR_LEVEL
+                    }
+                  >
                     <button
                       ref={permissionBtnRef}
                       type="button"
@@ -5912,59 +6690,28 @@ export function ChatView({
                     />
                   </div>
 
-                  <TurnSkillControl
-                    owner={skillOwner}
-                    workspaceId={conversation.workspaceId}
-                    open={menu === 'skill'}
-                    selectedSkillVersionIds={selectedSkillVersionIds}
-                    onShortcut={() => insertComposeToken('/')}
-                    shortcutActive={Boolean(slash)}
-                    onOpenChange={(open) => setMenu(open ? 'skill' : null)}
-                    onChange={setSelectedSkillVersionIds}
-                  />
+                  <div
+                    className="shell-compose__tool-wrap"
+                    data-testid="compose-skill-control"
+                    hidden={
+                      composerToolbar.collapseLevel >= SKILL_COLLAPSED_TOOLBAR_LEVEL
+                    }
+                  >
+                    <TurnSkillControl
+                      owner={skillOwner}
+                      workspaceId={conversation.workspaceId}
+                      open={menu === 'skill'}
+                      selectedSkillVersionIds={selectedSkillVersionIds}
+                      onShortcut={() => insertComposeToken('/')}
+                      shortcutActive={slashMenuOpen}
+                      onOpenChange={(open) => setMenu(open ? 'skill' : null)}
+                      onChange={setSelectedSkillVersionIds}
+                    />
+                  </div>
 
-                  {goalState?.goal &&
-                  ['active', 'paused', 'blocked'].includes(goalState.goal.status) ? (
-                    <button
-                      type="button"
-                      className="shell-compose__tool shell-compose__mode-badge"
-                      data-mode="goal"
-                      data-testid="compose-goal-mode-badge"
-                      title={`目标：${goalState.goal.condition}`}
-                      onClick={() => {
-                        setInput('/goal ');
-                        window.requestAnimationFrame(() => inputRef.current?.focus());
-                      }}
-                    >
-                      <Target size={14} aria-hidden="true" />
-                      <span className="shell-compose__tool-label">目标</span>
-                    </button>
-                  ) : null}
-
-                  {interactionMode === 'plan' ? (
-                    <button
-                      type="button"
-                      className="shell-compose__tool shell-compose__mode-badge"
-                      data-mode="plan"
-                      data-testid="compose-plan-mode-badge"
-                      title={
-                        planActHint
-                          ? `规划模式 · ${planActHint.label}${
-                              planActHint.ignoredLabel
-                                ? `（已忽略所选 ${planActHint.ignoredLabel}）`
-                                : ''
-                            } · 点击切换到执行模式`
-                          : '规划模式 · 点击切换到执行模式'
-                      }
-                      onClick={() => void handlePlanSwitchMode('execute')}
-                    >
-                      <Compass size={14} aria-hidden="true" />
-                      <span className="shell-compose__tool-label">规划</span>
-                    </button>
-                  ) : null}
                 </div>
 
-                <div className="shell-compose__bar-right">
+                <div ref={composerToolbar.rightRef} className="shell-compose__bar-right">
                   {/* 对话对象选择器：模型 / 智能体 / 小队（rebindTarget 换绑） */}
                   <div className="shell-compose__tool-wrap">
                     <button
@@ -6017,12 +6764,8 @@ export function ChatView({
                     used={contextUsed}
                     limit={contextLimit}
                     modelContextWindow={contextStatus?.modelContextWindow}
-                    contextWindowOverride={
-                      contextStatus?.contextWindowOverride ?? conversation.contextWindowOverride
-                    }
                     contextWindowEstimated={contextStatus?.contextWindowEstimated}
                     contextWindowSource={contextWindowSource}
-                    onContextWindowChange={handleContextWindowChange}
                     usageRatio={contextStatus?.usageRatio}
                     compactThreshold={contextStatus?.compactThreshold}
                     compactedAt={contextStatus?.compactedAt}
@@ -6038,42 +6781,27 @@ export function ChatView({
                     }
                   />
 
-                  <button
-                    type="button"
-                    className={`shell-compose__voice${voiceInputActive ? ' is-active' : ''}`}
-                    aria-label={voiceInputActive ? '停止语音输入' : '开始语音输入'}
-                    title={voiceInputActive ? '停止语音输入' : '开始语音输入'}
-                    data-testid="compose-voice"
-                    onClick={() => {
-                      const eventName = voiceInputActive
-                        ? 'shell-voice-input-stop'
-                        : 'shell-voice-input-start';
-                      window.dispatchEvent(
-                        new CustomEvent(eventName, {
-                          detail: { conversationId: conversation.id },
-                        }),
-                      );
-                    }}
-                  >
-                    {voiceInputActive ? <MicOff size={15} /> : <Mic size={15} />}
-                  </button>
-
                   {/* Two-level model picker */}
                   <div className="shell-compose__tool-wrap">
                     <ModelPickerMenu
                       open={menu === 'model'}
                       models={models}
-                      selectedModelId={activeModelId}
-                      defaultLabel={activeModel}
-                      reasoningEffort={reasoningEffort}
+                      selectedModelId={composerModelSelection.modelId}
+                      defaultLabel={composerModelLabel}
+                      reasoningEffort={composerModelSelection.reasoningEffort}
                       kernels={kernelRegistry ?? undefined}
                       selectedKernelId={kernelOverride}
                       kernelInstallStates={kernelInstallStates}
                       anchorEl={modelBtnRef.current}
                       trigger={
                         <ModelTrigger
-                          label={activeModel}
-                          reasoningLabel={REASONING_LABELS[reasoningEffort]}
+                          label={composerModelLabel}
+                          reasoningLabel={REASONING_LABELS[composerModelSelection.reasoningEffort]}
+                          mode={interactionMode}
+                          planLabel={planBannerModelLabel}
+                          planReasoningLabel={
+                            REASONING_LABELS[composerModelSelection.reasoningEffort]
+                          }
                           open={menu === 'model'}
                           buttonRef={modelBtnRef}
                           onClick={() => {
@@ -6093,6 +6821,10 @@ export function ChatView({
                         onConversationUpdated?.();
                       }}
                       onPick={(modelId) => {
+                        if (composerModelSelection.routed && planActSetting) {
+                          updatePlanActSetting({ ...planActSetting, planModelId: modelId });
+                          return;
+                        }
                         // Persist per-conversation so restart keeps the chosen model.
                         // Also notify the shell so the sidebar identity line
                         // (模型 · xxx) updates immediately — targetRef alone
@@ -6110,6 +6842,10 @@ export function ChatView({
                         }
                       }}
                       onReasoningChange={(value) => {
+                        if (composerModelSelection.routed && planActSetting) {
+                          updatePlanActSetting({ ...planActSetting, planReasoningEffort: value });
+                          return;
+                        }
                         setReasoningEffort(value);
                         writeConversationReasoningEffort(String(conversation.id), value);
                       }}
@@ -6131,51 +6867,60 @@ export function ChatView({
                               aria-label={chipLogo ? `内核：${chipLabel}` : undefined}
                               role={chipLogo ? 'img' : undefined}
                             >
-                              {chipLogo ? <BrandLogoMark logo={chipLogo} size={14} /> : chipLabel}
+                              {chipLogo ? <BrandLogoMark logo={chipLogo} size={18} /> : chipLabel}
                             </span>
                           );
                         })()
                       : null}
                   </div>
 
-                  {/* Dynamic single button: while a run is active with an empty
-                      composer it becomes 暂停 (stop the current task); typing a
-                      new message flips it back to 发送 (send = interject), and
-                      after the message is dispatched with the input cleared it
-                      flips back to 暂停 while the task is still running. */}
-                  {canStop && !input.trim() && attachments.length === 0 ? (
-                    <button
-                      type="button"
-                      className="shell-compose__send is-stop"
-                      onClick={() => void handleStop()}
-                      disabled={stopping}
-                      title={stopTitle}
-                      data-testid="compose-stop"
-                    >
-                      <Square size={12} fill="currentColor" />
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      className="shell-compose__send"
-                      onClick={() => void handleSend()}
-                      disabled={
-                        (!input.trim() && attachments.length === 0) ||
-                        compactProgress?.status === 'running'
-                      }
-                      title="发送 (Enter)"
-                      data-testid="compose-send"
-                    >
-                      <SendHorizonal size={15} />
-                    </button>
-                  )}
+                  <ComposerActionSlot
+                    hasContent={!goalIsActive && Boolean(input.trim() || attachments.length > 0)}
+                    running={canStop}
+                    voiceActive={voiceInputActive}
+                    voiceDisabled={goalIsActive || compactProgress?.status === 'running'}
+                    sendDisabled={goalIsActive || compactProgress?.status === 'running'}
+                    stopDisabled={stopping}
+                    stopLabel={stopTitle}
+                    onVoice={() => {
+                      const eventName = voiceInputActive
+                        ? 'shell-voice-input-stop'
+                        : 'shell-voice-input-start';
+                      window.dispatchEvent(
+                        new CustomEvent(eventName, {
+                          detail: { conversationId: conversation.id },
+                        }),
+                      );
+                    }}
+                    onSend={() => void handleSend()}
+                    onStop={() => void handleStop()}
+                  />
                 </div>
               </div>
-            </div>
+            </NewMaxComposerFrame>
           </div>
         </div>
       </div>
       {/* end chat column */}
+
+      <GoalSettingsDialog
+        open={goalSettingsOpen}
+        mode={goalSettingsMode}
+        initialValues={goalSettingsInitial}
+        submitting={goalSettingsSubmitting}
+        onOpenChange={setGoalSettingsOpen}
+        onSubmit={submitGoalSettings}
+      />
+      <GoalRiskConfirmationDialog
+        open={pendingRiskGoal !== null}
+        submitting={riskGoalSubmitting}
+        onOpenChange={(open) => {
+          if (open || riskGoalSubmitting) return;
+          setPendingRiskGoal(null);
+          window.requestAnimationFrame(() => inputRef.current?.focus());
+        }}
+        onContinue={() => void confirmRiskGoal()}
+      />
 
       {lightbox && typeof document !== 'undefined'
         ? createPortal(
@@ -6220,7 +6965,13 @@ export function ChatView({
  */
 const USER_TEXT_COLLAPSE_HEIGHT = 160;
 
-const CollapsibleUserText = memo(function CollapsibleUserText({ text }: { text: string }) {
+const CollapsibleUserText = memo(function CollapsibleUserText({
+  text,
+  prefix,
+}: {
+  text: string;
+  prefix?: ReactNode;
+}) {
   const [collapsed, setCollapsed] = useState(true);
   const [overflowing, setOverflowing] = useState(false);
   const innerRef = useRef<HTMLDivElement>(null);
@@ -6241,7 +6992,8 @@ const CollapsibleUserText = memo(function CollapsibleUserText({ text }: { text: 
         data-collapsed={!expanded}
         style={expanded ? undefined : { maxHeight: USER_TEXT_COLLAPSE_HEIGHT }}
       >
-        {text}
+        {prefix}
+        <span>{text}</span>
       </div>
       {overflowing ? (
         <button
@@ -6289,9 +7041,15 @@ const ReasoningContent = memo(function ReasoningContent({
 function HarnessTerminalNotice({
   state,
   error,
+  busy,
+  onContinue,
+  onRetry,
 }: {
   state: 'failed' | 'cancelled';
   error?: string;
+  busy?: boolean;
+  onContinue?(): void;
+  onRetry?(): void;
 }) {
   const errorSummary = error
     ?.split('\n')
@@ -6304,8 +7062,15 @@ function HarnessTerminalNotice({
         data-testid="assistant-terminal-cancelled"
       >
         <span className="shell-harness-terminal__dot" aria-hidden="true" />
-        <span className="shell-harness-terminal__title">已停止生成</span>
-        <span className="shell-harness-terminal__summary">以上内容已保留</span>
+        <span className="shell-harness-terminal__title">回答已中断</span>
+        <button type="button" disabled={busy} onClick={onContinue} aria-label="继续回答">
+          <SendHorizonal size={12} aria-hidden="true" />
+          <span>继续</span>
+        </button>
+        <button type="button" disabled={busy} onClick={onRetry} aria-label="重试回答">
+          <RefreshCw size={12} aria-hidden="true" />
+          <span>重试</span>
+        </button>
       </div>
     );
   }
@@ -6377,11 +7142,13 @@ const MessageBubble = memo(function MessageBubble({
   fallbackAgent,
   regenerating,
   onRegenerate,
+  onContinue,
   onOpenChange,
   onOpenReview,
   projectFolder,
   onOpenImage,
   kernelId,
+  skillNameByVersionId,
   dismissLocalError,
 }: {
   message: ChatMessage;
@@ -6392,6 +7159,7 @@ const MessageBubble = memo(function MessageBubble({
   fallbackAgent?: GlobalAgent;
   regenerating?: boolean;
   onRegenerate?: (messageId: string) => void;
+  onContinue?: (messageId: string) => void;
   onChooseModelAndRetry?: (messageId: string) => void;
   onOpenChange?: (path: string, location?: ProjectTextLocation) => void;
   onOpenReview?: (view: RunProcessView) => void;
@@ -6399,6 +7167,7 @@ const MessageBubble = memo(function MessageBubble({
   onOpenImage?: (image: MessageImage) => void;
   /** Kernel that produced this turn (native/empty → no badge). */
   kernelId?: string;
+  skillNameByVersionId?: ReadonlyMap<string, string>;
   /** Dismiss callback for transient local diagnostics. */
   dismissLocalError?: (messageId: string) => void;
 }) {
@@ -6406,7 +7175,7 @@ const MessageBubble = memo(function MessageBubble({
   const isSystem = message.role === 'system';
   const systemTone: SystemMessageTone = resolveSystemMessageTone(message.tone, message.text);
   const [copied, setCopied] = useState(false);
-  const [shared, setShared] = useState(false);
+  const [feedback, setFeedback] = useState<'up' | 'down' | null>(null);
 
   const metricsLabel = useMemo(() => {
     if (!processView) return undefined;
@@ -6494,16 +7263,17 @@ const MessageBubble = memo(function MessageBubble({
     }
   }, [message.text]);
 
-  const handleShare = useCallback(async () => {
-    if (!message.text.trim()) return;
-    try {
-      await navigator.clipboard.writeText(message.text);
-      setShared(true);
-      window.setTimeout(() => setShared(false), 1400);
-    } catch {
-      /* ignore */
-    }
-  }, [message.text]);
+  const answerSources = useMemo(
+    () =>
+      message.streaming
+        ? []
+        : collectAnswerSources(
+            message.answerText ?? message.text,
+            message.processItems,
+            projectFolder,
+          ),
+    [message.answerText, message.processItems, message.streaming, message.text, projectFolder],
+  );
 
   if (isUser) {
     const images = message.images ?? [];
@@ -6526,7 +7296,29 @@ const MessageBubble = memo(function MessageBubble({
                 ))}
               </div>
             ) : null}
-            {message.text ? <CollapsibleUserText text={message.text} /> : null}
+            {message.text ? (
+              <CollapsibleUserText
+                text={message.text}
+                prefix={
+                  message.skillVersionIds?.length ? (
+                    <span className="shell-user-skill-list" data-testid="message-skill-list">
+                      {message.skillVersionIds.map((skillVersionId) => (
+                        <span className="shell-user-skill" key={skillVersionId}>
+                          <Puzzle size={12} aria-hidden="true" />
+                          <span>
+                            {message.skills?.find(
+                              (skill) => skill.skillVersionId === skillVersionId,
+                            )?.name ??
+                              skillNameByVersionId?.get(skillVersionId) ??
+                              skillVersionId}
+                          </span>
+                        </span>
+                      ))}
+                    </span>
+                  ) : undefined
+                }
+              />
+            ) : null}
           </div>
           {clockLabel ? (
             <div className="shell-msg-meta shell-msg-meta--user">
@@ -6668,6 +7460,9 @@ const MessageBubble = memo(function MessageBubble({
                   <HarnessTerminalNotice
                     state={message.terminalState}
                     error={message.terminalError}
+                    busy={Boolean(regenerating)}
+                    onContinue={() => onContinue?.(message.id)}
+                    onRetry={() => onRegenerate?.(message.id)}
                   />
                 ) : null}
                 {!message.streaming && processView && processView.fileChanges.length > 0 ? (
@@ -6690,46 +7485,57 @@ const MessageBubble = memo(function MessageBubble({
             projectFolder={projectFolder}
             onOpenFile={onOpenChange}
           />
-        ) : message.streaming &&
-          !message.commentaryText?.trim() &&
-          !message.commentarySegments?.some((segment) => segment.text.trim()) &&
-          !message.processStatus &&
-          !message.processItems?.length ? (
-          <TypingDots inline />
         ) : null}
         {showFooter ? (
           <div className="shell-msg-footer">
             {hasAnswerText ? (
-              <div className="shell-msg-footer__actions">
-                <button
-                  type="button"
-                  className="shell-msg-footer__btn"
-                  onClick={() => void handleCopy()}
-                  title="复制"
-                >
-                  {copied ? <Check size={13} /> : <Copy size={13} />}
-                  <span>{copied ? '已复制' : '复制'}</span>
-                </button>
-                <button
-                  type="button"
-                  className="shell-msg-footer__btn"
-                  onClick={() => void onRegenerate?.(message.id)}
-                  disabled={regenerating}
-                  title="重新生成"
-                >
-                  <RefreshCw size={13} className={regenerating ? 'shell-process-spin' : ''} />
-                  <span>重新生成</span>
-                </button>
-                <button
-                  type="button"
-                  className="shell-msg-footer__btn"
-                  onClick={() => void handleShare()}
-                  title="分享（先复制 Markdown）"
-                >
-                  <Share2 size={13} />
-                  <span>{shared ? '已复制' : '分享'}</span>
-                </button>
-              </div>
+              <AnswerSources
+                sources={answerSources}
+                onOpenFile={onOpenChange}
+                actions={
+                  <>
+                    <button
+                      type="button"
+                      className="shell-msg-footer__btn"
+                      onClick={() => void handleCopy()}
+                      title={copied ? '已复制' : '复制'}
+                      aria-label={copied ? '已复制' : '复制'}
+                    >
+                      {copied ? <Check size={14} /> : <Copy size={14} />}
+                    </button>
+                    <button
+                      type="button"
+                      className="shell-msg-footer__btn"
+                      onClick={() => void onRegenerate?.(message.id)}
+                      disabled={regenerating}
+                      title="重新生成"
+                      aria-label="重新生成"
+                    >
+                      <RefreshCw size={14} className={regenerating ? 'shell-process-spin' : ''} />
+                    </button>
+                    <button
+                      type="button"
+                      className="shell-msg-footer__btn"
+                      onClick={() => setFeedback((current) => (current === 'up' ? null : 'up'))}
+                      title="有帮助"
+                      aria-label="有帮助"
+                      aria-pressed={feedback === 'up'}
+                    >
+                      <ThumbsUp size={14} />
+                    </button>
+                    <button
+                      type="button"
+                      className="shell-msg-footer__btn"
+                      onClick={() => setFeedback((current) => (current === 'down' ? null : 'down'))}
+                      title="没有帮助"
+                      aria-label="没有帮助"
+                      aria-pressed={feedback === 'down'}
+                    >
+                      <ThumbsDown size={14} />
+                    </button>
+                  </>
+                }
+              />
             ) : null}
             <div className="shell-msg-meta shell-msg-meta--assistant">
               {metricsLabel && metricsDetail ? (
@@ -7100,134 +7906,71 @@ function ToolApprovalCard({
 }: {
   approval: PendingToolApproval;
   busy?: boolean;
-  onApprove(): void;
+  onApprove(scope: ToolApprovalScope): void;
   onDeny(): void;
 }) {
-  // Per-tool presentation: icon + subtitle + approve label.
-  // Agent Library mutations get distinct icons so the user can tell at a glance
-  // whether the model wants to create, modify, or archive an agent.
-  const presentation: Record<string, { Icon: typeof Bot; subtitle: string; approveLabel: string }> =
-    {
-      create_agent: {
-        Icon: Bot,
-        subtitle: '创建智能体 · 需要你批准后才会写入智能体库',
-        approveLabel: '批准创建',
-      },
-      update_agent: {
-        Icon: PenLine,
-        subtitle: '修改智能体 · 批准后变更立即生效',
-        approveLabel: '批准修改',
-      },
-      archive_agent: {
-        Icon: Archive,
-        subtitle: '归档智能体 · 软删除，可在智能体库随时恢复',
-        approveLabel: '批准归档',
-      },
-      create_skill: {
-        Icon: Sparkles,
-        subtitle: '创建 Skill · 只导入说明文本，不会执行脚本',
-        approveLabel: '批准创建',
-      },
-      update_skill: {
-        Icon: Sparkles,
-        subtitle: '更新 Skill · 新版本入库，旧版本保留',
-        approveLabel: '批准更新',
-      },
-      delete_skill: {
-        Icon: Archive,
-        subtitle: '卸载 Skill · 被智能体装备时会被拒绝',
-        approveLabel: '批准卸载',
-      },
-      create_team: {
-        Icon: Users,
-        subtitle: '创建小队 · 需要你批准后才会写入小队库',
-        approveLabel: '批准创建',
-      },
-      update_team: {
-        Icon: Users,
-        subtitle: '修改小队 · 批准后变更立即生效，进行中的运行不受影响',
-        approveLabel: '批准修改',
-      },
-      delete_team: {
-        Icon: Users,
-        subtitle: '删除小队 · 仍被对话引用或已有运行记录时会被拒绝',
-        approveLabel: '批准删除',
-      },
-      write_file: {
-        Icon: FileWarning,
-        subtitle: '询问批准 · 需要你确认后才会执行',
-        approveLabel: '批准执行',
-      },
-    };
-  const view = presentation[approval.toolName] ?? {
-    Icon: Terminal,
-    subtitle: '询问批准 · 需要你确认后才会执行',
-    approveLabel: '批准执行',
-  };
-  const Icon = view.Icon;
-  const isAgentMutation =
-    approval.toolName === 'create_agent' ||
-    approval.toolName === 'update_agent' ||
-    approval.toolName === 'archive_agent' ||
-    approval.toolName === 'create_skill' ||
-    approval.toolName === 'update_skill' ||
-    approval.toolName === 'delete_skill' ||
-    approval.toolName === 'create_team' ||
-    approval.toolName === 'update_team' ||
-    approval.toolName === 'delete_team';
+  const persistentApp = persistentComputerUseAppOf(approval.toolName, approval.arguments);
+  const scopes = approval.allowedScopes;
+  const canAlwaysAllowApp = Boolean(
+    persistentApp && (!scopes || scopes.includes('always-app')),
+  );
+  const canAllowSession = Boolean(
+    !persistentApp && (!scopes || scopes.includes('session')),
+  );
+  const secondaryScope: ToolApprovalScope | undefined = canAlwaysAllowApp
+    ? 'always-app'
+    : canAllowSession
+      ? 'session'
+      : undefined;
+  const secondaryLabel = canAlwaysAllowApp ? '始终允许此应用' : '本会话允许';
+  const detail = approval.detail || approval.path || approval.command || approval.toolName;
+
   return (
     <div
-      className="shell-approval-card"
+      className="shell-composer-tool-approval"
       data-testid={`tool-approval-${approval.approvalId}`}
       data-tool={approval.toolName}
-      data-agent-mutation={isAgentMutation ? 'true' : undefined}
+      data-persistent-app={persistentApp ? persistentApp.value : undefined}
     >
-      <div className="shell-approval-card__head">
-        <span className="shell-approval-card__icon">
-          <Icon size={14} />
+      <div className="shell-composer-tool-approval__main">
+        <span className="shell-composer-tool-approval__icon" aria-hidden="true">
+          <Shield size={16} />
         </span>
-        <div className="min-w-0 flex-1">
-          <div className="shell-approval-card__title">{approval.title}</div>
-          <div className="shell-approval-card__subtitle">{view.subtitle}</div>
+        <div className="shell-composer-tool-approval__copy">
+          <div className="shell-composer-tool-approval__title">{approval.title}</div>
+          <div className="shell-composer-tool-approval__detail">
+            <span>需要批准</span>
+            {detail ? <span aria-hidden="true"> · </span> : null}
+            {detail ? <span className="shell-composer-tool-approval__detail-text">{detail}</span> : null}
+          </div>
         </div>
       </div>
-      {(approval.path || approval.command || approval.detail) && (
-        <div className="shell-approval-card__body">
-          {approval.path ? (
-            <div className="shell-approval-card__meta">
-              <span className="shell-approval-card__meta-key">路径</span>
-              <code className="shell-approval-card__meta-val">{approval.path}</code>
-            </div>
-          ) : null}
-          {approval.command ? (
-            <div className="shell-approval-card__meta">
-              <span className="shell-approval-card__meta-key">命令</span>
-              <code className="shell-approval-card__meta-val">{approval.command}</code>
-            </div>
-          ) : null}
-          {approval.detail ? (
-            <div className="shell-approval-card__detail">{approval.detail}</div>
-          ) : null}
-        </div>
-      )}
-      <div className="shell-approval-card__actions">
+      <div className="shell-composer-tool-approval__actions">
         <button
           type="button"
-          className="shell-approval-card__btn is-deny"
+          className="shell-composer-tool-approval__button is-approve"
+          disabled={busy}
+          onClick={() => onApprove('once')}
+        >
+          {busy ? '处理中…' : '批准'}
+        </button>
+        {secondaryScope ? (
+          <button
+            type="button"
+            className="shell-composer-tool-approval__button is-secondary"
+            disabled={busy}
+            onClick={() => onApprove(secondaryScope)}
+          >
+            {secondaryLabel}
+          </button>
+        ) : null}
+        <button
+          type="button"
+          className="shell-composer-tool-approval__button is-deny"
           disabled={busy}
           onClick={onDeny}
         >
-          <X size={13} />
           拒绝
-        </button>
-        <button
-          type="button"
-          className="shell-approval-card__btn is-approve"
-          disabled={busy}
-          onClick={onApprove}
-        >
-          <Check size={13} />
-          {busy ? '处理中…' : view.approveLabel}
         </button>
       </div>
     </div>

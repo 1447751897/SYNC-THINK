@@ -35,7 +35,11 @@ function sseStream(chunks: string[]): ReadableStream<Uint8Array> {
 }
 
 describe('joinMessagesUrl', () => {
-  it('appends /messages once', () => {
+  it('normalizes Anthropic-compatible roots and appends /v1/messages once', () => {
+    expect(joinMessagesUrl('https://gateway.example')).toBe('https://gateway.example/v1/messages');
+    expect(joinMessagesUrl('https://gateway.example/custom/anthropic')).toBe(
+      'https://gateway.example/custom/anthropic/v1/messages',
+    );
     expect(joinMessagesUrl('https://api.anthropic.com/v1')).toBe(
       'https://api.anthropic.com/v1/messages',
     );
@@ -44,6 +48,15 @@ describe('joinMessagesUrl', () => {
     );
     expect(joinMessagesUrl('https://gw.example/v1/messages')).toBe(
       'https://gw.example/v1/messages',
+    );
+  });
+
+  it('maps DeepSeek OpenAI and Anthropic aliases to its Anthropic endpoint', () => {
+    expect(joinMessagesUrl('https://api.deepseek.com/v1')).toBe(
+      'https://api.deepseek.com/anthropic/v1/messages',
+    );
+    expect(joinMessagesUrl('https://api.deepseek.com/anthropic')).toBe(
+      'https://api.deepseek.com/anthropic/v1/messages',
     );
   });
 });

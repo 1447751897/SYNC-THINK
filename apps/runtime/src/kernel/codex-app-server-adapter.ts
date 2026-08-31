@@ -58,6 +58,14 @@ interface ActiveTurn {
   reasoningSummaryIndexes: Map<string, number>;
   /** Prevent duplicate breaks when both summaryIndex and summaryPartAdded fire. */
   reasoningAtBoundary: boolean;
+  /** Stable ordinal for synthetic update_task_plan events from Codex plans. */
+  planUpdateIndex: number;
+  /** Native plan items are submitted only from their completed canonical text. */
+  submittedPlanItems: Set<string>;
+  /** Whether app-server has announced a contextCompaction item for this turn. */
+  compactionInProgress: boolean;
+  /** Avoid duplicate success events from item/completed + legacy thread/compacted. */
+  compactionCompleted: boolean;
   /**
    * Zero-output watchdogs for commandExecution items. codex CLI 0.147 on
    * Windows can hang forever after `item/started` (the spawned command never
@@ -283,6 +291,12 @@ function requestedModel(request: KernelRequest): string | undefined {
   return model && model !== 'codex-default' ? model : undefined;
 }
 
+function requestedReasoningEffort(request: KernelRequest): string | undefined {
+  const effort = request.reasoningEffort;
+  if (!effort || effort === 'auto') return undefined;
+  return effort === 'off' ? 'none' : effort;
+}
+
 export class CodexAppServerKernelAdapter implements KernelAdapter {
   readonly id = 'codex' as const;
   readonly name = 'Codex';
@@ -312,6 +326,7 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
   private activeContextWindow = 128_000;
   private activeUsageRequestId = '';
   private activePlanningMode = false;
+  private activeThreadModel = '';
   private diagnosticSecrets: string[] = [];
   private stopPromise?: Promise<void>;
   private initialized = false;
@@ -364,6 +379,10 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
       reasoningEmitted: false,
       reasoningSummaryIndexes: new Map(),
       reasoningAtBoundary: false,
+      planUpdateIndex: 0,
+      submittedPlanItems: new Set(),
+      compactionInProgress: false,
+      compactionCompleted: false,
       commandWatchdogs: new Map(),
     };
     this.activeTurn = turn;
@@ -388,6 +407,20 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
     }
     try {
       const policies = codexPolicies(request);
+      const effort = requestedReasoningEffort(request);
+      const collaborationMode = {
+        mode: request.planningMode === true ? 'plan' : 'default',
+        settings: {
+          model:
+            requestedModel(request) ||
+            this.activeThreadModel ||
+            request.providerModelId ||
+            request.model,
+          reasoning_effort: effort ?? null,
+          // null deliberately selects Codex's built-in instructions for the mode.
+          developer_instructions: null,
+        },
+      };
       const response = asRecord(
         await this.request('turn/start', {
           threadId,
@@ -395,10 +428,9 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
           cwd: request.workspaceDir,
           ...policies,
           model: requestedModel(request),
-          ...(request.reasoningEffort
-            ? { effort: request.reasoningEffort === 'off' ? 'minimal' : request.reasoningEffort }
-            : {}),
+          ...(effort ? { effort } : {}),
           summary: 'detailed',
+          collaborationMode,
         }),
       );
       turn.turnId = text(asRecord(response?.turn)?.id) ?? turn.turnId;
@@ -426,6 +458,7 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
           this.handle = undefined;
           this.processIdentity = undefined;
           this.initialized = false;
+          this.activeThreadModel = '';
           this.diagnosticSecrets = [];
         }
         this.stopPromise = undefined;
@@ -518,6 +551,8 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
     );
     const threadId = text(asRecord(result?.thread)?.id);
     if (!threadId) throw new Error('Codex app-server thread response missing thread.id');
+    this.activeThreadModel =
+      text(result?.model) ?? requestedModel(request) ?? this.activeThreadModel;
     return threadId;
   }
 
@@ -665,6 +700,11 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
       if (delta) this.pushTurnEvent({ type: 'delta', text: delta });
       return;
     }
+    if (method === 'item/plan/delta') {
+      // The completed plan item is canonical; app-server explicitly warns that
+      // concatenated deltas are not guaranteed to equal its final content.
+      return;
+    }
     if (method === 'item/reasoning/summaryTextDelta' || method === 'item/reasoning/textDelta') {
       const delta = text(params.delta);
       const itemId = text(params.itemId);
@@ -688,6 +728,46 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
       // section's tail (`**A****B**`). Skip when nothing streamed yet — the
       // first part may announce itself before any delta.
       this.pushReasoningBoundary(turn);
+      return;
+    }
+    if (method === 'turn/plan/updated') {
+      const rawPlan = Array.isArray(params.plan) ? params.plan : [];
+      const items = rawPlan.flatMap((entry) => {
+        const planEntry = asRecord(entry);
+        const title = text(planEntry?.step)?.trim();
+        if (!title) return [];
+        const rawStatus = text(planEntry?.status);
+        const status =
+          rawStatus === 'completed'
+            ? 'completed'
+            : rawStatus === 'inProgress' || rawStatus === 'in_progress'
+              ? 'in_progress'
+              : 'pending';
+        return [{ title, status }];
+      });
+      if (items.length === 0) return;
+      const toolId = `codex-plan-${turn.turnId ?? 'turn'}-${turn.planUpdateIndex++}`;
+      const argsJson = JSON.stringify({ items });
+      this.pushTurnEvent({
+        type: 'tool-call',
+        toolId,
+        name: 'update_task_plan',
+        argsJson,
+        partial: false,
+      });
+      this.pushTurnEvent({
+        type: 'tool-result',
+        toolId,
+        output: JSON.stringify({
+          ok: true,
+          plan: {
+            items,
+            completed: items.filter((item) => item.status === 'completed').length,
+            total: items.length,
+          },
+        }),
+        isError: false,
+      });
       return;
     }
     if (method === 'item/commandExecution/outputDelta') {
@@ -738,13 +818,24 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
       return;
     }
     if (method === 'thread/compacted') {
-      this.pushTurnEvent({ type: 'compacted' });
+      if (!turn.compactionCompleted) {
+        turn.compactionInProgress = false;
+        turn.compactionCompleted = true;
+        this.pushTurnEvent({ type: 'compacted' });
+      }
       return;
     }
     if (method === 'turn/completed') {
       const completed = asRecord(params.turn);
       const status = text(completed?.status);
       const failure = asRecord(completed?.error);
+      if ((status === 'failed' || status === 'interrupted') && turn.compactionInProgress) {
+        turn.compactionInProgress = false;
+        this.pushTurnEvent({
+          type: 'compaction-failed',
+          error: errorMessage(failure),
+        });
+      }
       this.pushTurnEvent(
         status === 'failed'
           ? { type: 'terminal', status: 'failed', error: errorMessage(failure) }
@@ -764,6 +855,10 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
     if (method === 'error') {
       if (params.willRetry === true) return;
       const message = sanitizeKernelDiagnostic(errorMessage(params), this.diagnosticSecrets);
+      if (turn.compactionInProgress) {
+        turn.compactionInProgress = false;
+        this.pushTurnEvent({ type: 'compaction-failed', error: message });
+      }
       this.pushTurnEvent({ type: 'terminal', status: 'failed', error: message });
       this.closeTurn(turn);
     }
@@ -782,6 +877,11 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
         partial: false,
       });
       if (turn) this.armCommandWatchdog(turn, id);
+    } else if (type === 'contextCompaction') {
+      if (turn && !turn.compactionInProgress && !turn.compactionCompleted) {
+        turn.compactionInProgress = true;
+        this.pushTurnEvent({ type: 'compaction-started' });
+      }
     } else if (type === 'mcpToolCall') {
       const server = text(item.server) ?? 'mcp';
       const tool = text(item.tool) ?? 'tool';
@@ -799,7 +899,19 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
     if (!item) return;
     const type = text(item.type);
     const id = text(item.id) ?? `codex-${randomUUID()}`;
-    if (type === 'agentMessage' && !turn.streamedTextItems.has(id)) {
+    if (type === 'plan') {
+      const value = text(item.text)?.trim();
+      if (value && !turn.submittedPlanItems.has(id)) {
+        turn.submittedPlanItems.add(id);
+        this.pushTurnEvent({ type: 'plan-submitted', text: value });
+      }
+    } else if (type === 'contextCompaction') {
+      turn.compactionInProgress = false;
+      if (!turn.compactionCompleted) {
+        turn.compactionCompleted = true;
+        this.pushTurnEvent({ type: 'compacted' });
+      }
+    } else if (type === 'agentMessage' && !turn.streamedTextItems.has(id)) {
       const value = text(item.text);
       // Buffered (no `final`) for the same reason as the streaming delta path:
       // mid-turn agentMessages must never flash in the answer area.

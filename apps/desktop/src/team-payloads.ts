@@ -857,9 +857,13 @@ export function parseConversationDecideToolApprovalPayload(
   if (!isRecord(value)) throw new Error(label);
   const decision = requiredString(value.decision, label);
   if (decision !== 'approve' && decision !== 'deny') throw new Error(label);
+  const scope = value.scope === undefined ? 'once' : requiredString(value.scope, label);
+  if (scope !== 'once' && scope !== 'session' && scope !== 'always-app') throw new Error(label);
+  if (decision === 'deny' && scope !== 'once') throw new Error(label);
   return {
     approvalId: requiredString(value.approvalId, label),
     decision,
+    scope,
   };
 }
 

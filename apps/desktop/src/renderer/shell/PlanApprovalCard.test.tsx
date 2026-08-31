@@ -97,6 +97,20 @@ describe('PlanApprovalCard', () => {
     expect(screen.getByLabelText('验收标准 1')).toBeTruthy();
   });
 
+  it('renders the NewMax composer approval surface as a compact summary', () => {
+    renderCard({ variant: 'composer' });
+
+    const card = screen.getByTestId('plan-approval-card');
+    expect(card.getAttribute('data-variant')).toBe('composer');
+    expect(card.textContent).toContain('方案待确认');
+    expect(card.textContent).toContain('重构登录模块');
+    expect(card.textContent).toContain('拆分 auth 包');
+    expect(screen.queryByLabelText('计划标题')).toBeNull();
+    expect(screen.getByRole('button', { name: '批准并执行' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '要求修改' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '取消' })).toBeTruthy();
+  });
+
   it('disables approve while dirty and saves a revision to clear it', async () => {
     const { onPlanUpdated } = renderCard();
     const approve = screen.getByTestId('plan-approve');

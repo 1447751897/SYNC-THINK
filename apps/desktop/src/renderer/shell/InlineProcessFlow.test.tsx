@@ -345,11 +345,11 @@ describe('InlineProcessFlow', () => {
 
   it('uses one Harness waiting row instead of a branded sync-thinking footer', () => {
     const { rerender } = render(<InlineProcessFlow items={[]} streaming />);
-    expect(screen.getByTestId('inline-process-waiting').textContent).toContain('等待模型响应');
+    expect(screen.getByTestId('process-activity-label').textContent).toContain('等待模型响应');
     expect(screen.queryByTestId('process-thinking')).toBeNull();
 
     rerender(<InlineProcessFlow items={[]} streaming answerStarted />);
-    expect(screen.queryByTestId('inline-process-waiting')).toBeNull();
+    expect(screen.queryByTestId('process-activity-label')).toBeNull();
 
     rerender(<InlineProcessFlow items={[]} />);
     expect(screen.queryByTestId('process-panel')).toBeNull();
@@ -373,7 +373,46 @@ describe('InlineProcessFlow', () => {
     expect(tool.querySelector('.shell-inline-process__tool-body')?.textContent).toContain('2.0s');
   });
 
-  it('keeps tool duration in expanded details instead of cluttering the Harness row', () => {
+  it('keeps the current activity at the bottom with the 3x3 pixel mark while streaming', () => {
+    render(<InlineProcessFlow items={[toolItem, runningTool]} streaming answerStarted />);
+
+    const activity = screen.getByTestId('process-panel-activity');
+    const panel = screen.getByTestId('process-panel');
+    expect(activity.getAttribute('data-kind')).toBe('tool');
+    expect(activity.textContent).toContain('运行命令');
+    expect(activity.textContent).toContain('pnpm -s test');
+    expect(screen.getByTestId('process-activity-label').getAttribute('data-label')).toContain(
+      '运行命令',
+    );
+    expect(panel.lastElementChild).toBe(activity);
+    expect(within(activity).getByTestId('loading-pixel-grid').children).toHaveLength(9);
+    expect(
+      within(screen.getAllByTestId('inline-process-tool').at(-1)!)
+        .getByRole('button')
+        .getAttribute('data-highlight-band'),
+    ).toBe('true');
+  });
+
+  it('marks a streaming Think row with the same live highlight band', () => {
+    render(
+      <InlineProcessFlow
+        items={[{ ...reasoningItem, status: 'streaming' }]}
+        streaming
+        defaultOpen
+      />,
+    );
+
+    expect(screen.getByTestId('think-row-toggle').getAttribute('data-highlight-band')).toBe('true');
+  });
+
+  it('drops the activity summary once the turn reaches a terminal state', () => {
+    render(<InlineProcessFlow items={[toolItem]} />);
+    expect(screen.queryByTestId('process-panel-activity')).toBeNull();
+  });
+
+  it('shows the completed tool duration on the Harness row and in expanded details', () => {
+    // 设计稿 01（Beautiful UI Tool Chips 采纳）：完成态收成行带耗时，
+    // 展开详情保留同一数字。
     render(
       <InlineProcessFlow
         items={[
@@ -387,7 +426,7 @@ describe('InlineProcessFlow', () => {
       />,
     );
 
-    expect(screen.queryByTestId('inline-process-tool-elapsed')).toBeNull();
+    expect(screen.getByTestId('inline-process-tool-elapsed').textContent).toBe('2.0s');
     const tool = screen.getByTestId('inline-process-tool');
     fireEvent.click(within(tool).getByRole('button'));
     expect(tool.querySelector('.shell-inline-process__tool-body')?.textContent).toContain('2.0s');
@@ -414,15 +453,15 @@ describe('InlineProcessFlow', () => {
 
   it('falls back to a waiting label before the first provider output arrives', () => {
     render(<InlineProcessFlow items={[toolItem]} runId="run-a" streaming />);
-    expect(screen.getByTestId('inline-process-waiting').textContent).toContain('等待模型响应');
+    expect(screen.getByTestId('process-activity-label').textContent).toContain('等待模型响应');
   });
 
   it('drops the waiting row once the run reaches a terminal state', () => {
     const { rerender } = render(<InlineProcessFlow items={[toolItem]} runId="run-a" streaming />);
-    expect(screen.queryByTestId('inline-process-waiting')).toBeTruthy();
+    expect(screen.queryByTestId('process-activity-label')).toBeTruthy();
 
     rerender(<InlineProcessFlow items={[toolItem]} runId="run-a" streaming={false} />);
-    expect(screen.queryByTestId('inline-process-waiting')).toBeNull();
+    expect(screen.queryByTestId('process-activity-label')).toBeNull();
   });
 
   it('counts elapsed time in expanded details and freezes when streaming settles', () => {
@@ -463,6 +502,21 @@ describe('InlineProcessFlow', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('hides live elapsed for a stale running tool in a settled turn', () => {
+    // 失败/中断的历史回合可能残留 status=running 的工具行；没有活的回合
+    // 兜底时不得继续对着几天前的 startedAt 实时计时（会显示几百小时）。
+    const startedAt = new Date(Date.now() - 36 * 60 * 60 * 1000).toISOString();
+    render(
+      <InlineProcessFlow
+        items={[{ ...runningTool, startedAt }]}
+        runId="run-a"
+        streaming={false}
+        defaultOpen
+      />,
+    );
+    expect(screen.queryByTestId('inline-process-tool-elapsed')).toBeNull();
   });
 
   it('keeps a tool row mounted and its details open while it flips to completed', () => {

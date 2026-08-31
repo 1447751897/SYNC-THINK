@@ -141,22 +141,27 @@ describe('upstreamUrlFor', () => {
     );
   });
 
-  it('leaves an explicit non-/v1 API prefix untouched', () => {
+  it('preserves custom prefixes and applies each protocol endpoint contract', () => {
     expect(upstreamUrlFor('https://a/api/openai', 'openai-chat')).toBe(
       'https://a/api/openai/chat/completions',
     );
     expect(upstreamUrlFor('https://a/custom/anthropic', 'anthropic-messages')).toBe(
-      'https://a/custom/anthropic/messages',
+      'https://a/custom/anthropic/v1/messages',
+    );
+  });
+
+  it('normalizes DeepSeek Anthropic compatibility without user-supplied suffixes', () => {
+    expect(upstreamUrlFor('https://api.deepseek.com/v1', 'anthropic-messages')).toBe(
+      'https://api.deepseek.com/anthropic/v1/messages',
+    );
+    expect(upstreamUrlFor('https://api.deepseek.com/anthropic', 'anthropic-messages')).toBe(
+      'https://api.deepseek.com/anthropic/v1/messages',
     );
   });
 
   it('targets the responses endpoint for the openai-responses dialect', () => {
-    expect(upstreamUrlFor('https://a', 'openai-responses')).toBe(
-      'https://a/v1/responses',
-    );
-    expect(upstreamUrlFor('https://a/v1', 'openai-responses')).toBe(
-      'https://a/v1/responses',
-    );
+    expect(upstreamUrlFor('https://a', 'openai-responses')).toBe('https://a/v1/responses');
+    expect(upstreamUrlFor('https://a/v1', 'openai-responses')).toBe('https://a/v1/responses');
     expect(upstreamUrlFor('https://a/v1/responses', 'openai-responses')).toBe(
       'https://a/v1/responses',
     );
@@ -419,8 +424,7 @@ describe('open gateway server', () => {
       'data: [DONE]\n\n',
     ]);
     const { server, externalToken } = await startServer({
-      resolveModelName: (model) =>
-        model === 'gpt-5.6-sol' ? openAiRoute : undefined,
+      resolveModelName: (model) => (model === 'gpt-5.6-sol' ? openAiRoute : undefined),
       fetchImpl: upstream.impl,
     });
 
@@ -671,7 +675,9 @@ describe('open gateway server', () => {
     expect(second.status).toBe(200);
     expect(secondText).toContain('"text":"完成"');
     expect(calls).toHaveLength(2);
-    expect((calls[1].body as { previous_response_id?: string }).previous_response_id).toBeUndefined();
+    expect(
+      (calls[1].body as { previous_response_id?: string }).previous_response_id,
+    ).toBeUndefined();
     expect(calls[1].body).toMatchObject({
       input: [
         { role: 'user', content: 'run it' },
@@ -778,7 +784,9 @@ describe('open gateway server', () => {
       }),
     });
     expect(await readAll(second)).toContain('"text":"json-complete"');
-    expect((calls[1].body as { previous_response_id?: string }).previous_response_id).toBeUndefined();
+    expect(
+      (calls[1].body as { previous_response_id?: string }).previous_response_id,
+    ).toBeUndefined();
     expect(calls[1].body).toMatchObject({
       input: [
         { role: 'user', content: 'run json' },
@@ -1178,7 +1186,11 @@ describe('open gateway server', () => {
     const response = await fetch(urlFor(server, '/openai/v1/chat/completions'), {
       method: 'POST',
       headers: { 'x-api-key': ticket.id, 'content-type': 'application/json' },
-      body: JSON.stringify({ model: 'anything', messages: [{ role: 'user', content: 'hi' }], stream: true }),
+      body: JSON.stringify({
+        model: 'anything',
+        messages: [{ role: 'user', content: 'hi' }],
+        stream: true,
+      }),
     });
     await readAll(response);
 

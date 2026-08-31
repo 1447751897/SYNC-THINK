@@ -242,6 +242,32 @@ async function openProviderCatalog() {
 }
 
 describe('ModelSettings NewMax provider detail', () => {
+  it('opens Plan & Act from a navigation request and replays only when its key changes', async () => {
+    const { rerender } = render(
+      <DialogProvider>
+        <ModelSettings initialDetailView="plan-act" navigationKey="plan-act-1" />
+      </DialogProvider>,
+    );
+
+    expect(await screen.findByRole('heading', { name: '规划 & 执行模型' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '图片识别 Fallback' }));
+    expect(await screen.findByRole('heading', { name: '图片识别 Fallback' })).toBeTruthy();
+
+    rerender(
+      <DialogProvider>
+        <ModelSettings initialDetailView="plan-act" navigationKey="plan-act-1" />
+      </DialogProvider>,
+    );
+    expect(screen.getByRole('heading', { name: '图片识别 Fallback' })).toBeTruthy();
+
+    rerender(
+      <DialogProvider>
+        <ModelSettings initialDetailView="plan-act" navigationKey="plan-act-2" />
+      </DialogProvider>,
+    );
+    expect(await screen.findByRole('heading', { name: '规划 & 执行模型' })).toBeTruthy();
+  });
+
   it('shows readable cache efficiency and expands one request cost breakdown on demand', async () => {
     await renderSettings();
     fireEvent.click(screen.getByRole('tab', { name: '使用统计' }));
@@ -452,15 +478,15 @@ describe('ModelSettings NewMax provider detail', () => {
     });
   });
 
-  it('matches the NewMax secondary list while keeping the goal evaluator in the more menu', async () => {
+  it('does not expose or load a separate Goal evaluator setting', async () => {
     await renderSettings();
 
     expect(screen.getByRole('button', { name: '模型配置云同步' })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: '目标模式评估模型' })).toBeNull();
-
-    fireEvent.click(screen.getByRole('button', { name: '更多模型设置' }));
-    fireEvent.click(await screen.findByRole('menuitem', { name: '目标模式评估模型' }));
-    expect(await screen.findByRole('heading', { name: '目标模式评估模型' })).toBeTruthy();
+    expect(runtime.getSettings).toHaveBeenCalledWith({
+      keys: ['vision-fallback', 'plan-act', 'model-config-cloud-sync'],
+    });
+    expect(screen.queryByRole('button', { name: '更多模型设置' })).toBeNull();
+    expect(screen.queryByText('目标模式评估模型')).toBeNull();
   });
 
   it('persists the model configuration cloud-sync preference', async () => {

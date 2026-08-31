@@ -17,6 +17,11 @@ export interface TodoProjection {
   total: number;
 }
 
+export interface TodoProjectionScope {
+  threadId?: string;
+  taskId?: string;
+}
+
 const TASK_PLAN_TOOL_NAMES = new Set(['update_task_plan', 'TaskCreate', 'TaskUpdate', 'TaskList']);
 
 function isToolEvent(type: string): boolean {
@@ -41,6 +46,12 @@ function extractToolName(payload: Record<string, unknown>): string {
   return 'tool';
 }
 
+function extractToolCallId(payload: Record<string, unknown>): string | undefined {
+  if (typeof payload.toolCallId === 'string' && payload.toolCallId) return payload.toolCallId;
+  const toolCall = isRecord(payload.toolCall) ? payload.toolCall : undefined;
+  return typeof toolCall?.id === 'string' && toolCall.id ? toolCall.id : undefined;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
@@ -61,7 +72,11 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 function extractArgs(payload: Record<string, unknown>): Record<string, unknown> | undefined {
   const raw = payload.arguments ?? payload.args;
   if (isRecord(raw)) return raw;
-  return asRecord(parseMaybeJson(raw));
+  const direct = asRecord(parseMaybeJson(raw));
+  if (direct) return direct;
+  const toolCall = asRecord(payload.toolCall);
+  if (!toolCall) return undefined;
+  return asRecord(parseMaybeJson(toolCall.argumentsJson ?? toolCall.arguments ?? toolCall.args));
 }
 
 function normalizeItems(raw: unknown): TaskPlanItem[] | undefined {
@@ -71,7 +86,8 @@ function normalizeItems(raw: unknown): TaskPlanItem[] | undefined {
     const rec = asRecord(entry);
     const title = typeof rec?.title === 'string' ? rec.title.trim() : '';
     if (!title) continue;
-    const status = rec?.status === 'in_progress' || rec?.status === 'completed' ? rec.status : 'pending';
+    const status =
+      rec?.status === 'in_progress' || rec?.status === 'completed' ? rec.status : 'pending';
     items.push({ title, status });
   }
   return items.length > 0 ? items : undefined;
@@ -84,14 +100,23 @@ export function extractTodoSnapshot(payload: Record<string, unknown>): TaskPlanV
     const plan = asRecord(result.plan);
     if (plan) {
       const items = normalizeItems(plan.items);
-      if (items) return { items, completed: items.filter((i) => i.status === 'completed').length, total: items.length };
+      if (items)
+        return {
+          items,
+          completed: items.filter((i) => i.status === 'completed').length,
+          total: items.length,
+        };
     }
   }
   const args = extractArgs(payload);
   if (!args) return undefined;
   const items = normalizeItems(args.items);
   if (!items) return undefined;
-  return { items, completed: items.filter((i) => i.status === 'completed').length, total: items.length };
+  return {
+    items,
+    completed: items.filter((i) => i.status === 'completed').length,
+    total: items.length,
+  };
 }
 
 const RUN_TERMINAL_TYPES = new Set(['run.completed', 'run.failed', 'run.cancelled', 'run.paused']);
@@ -100,12 +125,52 @@ const RUN_TERMINAL_TYPES = new Set(['run.completed', 'run.failed', 'run.cancelle
  * 从事件流投影任务清单。events 需按 sequence 升序（自动排序）。
  * 返回 null 表示当前无有效清单（不渲染）。
  */
-export function projectTodoFromEvents(events: readonly Event[]): TodoProjection | null {
+export function projectTodoFromEvents(
+  events: readonly Event[],
+  scope?: TodoProjectionScope,
+): TodoProjection | null {
   if (events.length === 0) return null;
   const ordered = [...events].sort((a, b) => a.sequence - b.sequence);
+  const scopedRunIds = new Set<string>();
+  if (scope?.threadId || scope?.taskId) {
+    const knownThreadIdsByRun = new Map<string, Set<string>>();
+    for (const event of ordered) {
+      if (!event.runId || !isRecord(event.payload)) continue;
+      const eventThreadId =
+        typeof event.payload.threadId === 'string' ? event.payload.threadId : undefined;
+      if (!eventThreadId) continue;
+      const runId = String(event.runId);
+      const knownThreadIds = knownThreadIdsByRun.get(runId) ?? new Set<string>();
+      knownThreadIds.add(eventThreadId);
+      knownThreadIdsByRun.set(runId, knownThreadIds);
+    }
+    for (const event of ordered) {
+      if (!event.runId) continue;
+      const runId = String(event.runId);
+      const knownThreadIds = knownThreadIdsByRun.get(runId);
+      if (scope.threadId && knownThreadIds && knownThreadIds.size > 0) {
+        if (knownThreadIds.has(scope.threadId)) scopedRunIds.add(runId);
+        continue;
+      }
+      if (scope.taskId && event.taskId === scope.taskId) scopedRunIds.add(runId);
+    }
+  }
+  const scopedEvents =
+    scope?.threadId || scope?.taskId
+      ? ordered.filter((event) => {
+          if (event.runId) return scopedRunIds.has(String(event.runId));
+          const eventThreadId =
+            isRecord(event.payload) && typeof event.payload.threadId === 'string'
+              ? event.payload.threadId
+              : undefined;
+          if (scope.threadId && eventThreadId) return eventThreadId === scope.threadId;
+          return Boolean(scope.taskId && event.taskId === scope.taskId);
+        })
+      : ordered;
   let snapshot: TaskPlanView | undefined;
   let running = false;
-  for (const event of ordered) {
+  const toolNamesByCallId = new Map<string, string>();
+  for (const event of scopedEvents) {
     if (event.type === 'run.started') {
       // 新轮开始：清空上一轮的计划（对齐 DSH turn/start）。
       snapshot = undefined;
@@ -117,7 +182,15 @@ export function projectTodoFromEvents(events: readonly Event[]): TodoProjection 
       continue;
     }
     if (isToolEvent(event.type) && isRecord(event.payload)) {
-      const toolName = extractToolName(event.payload);
+      const toolCallId = extractToolCallId(event.payload);
+      const extractedToolName = extractToolName(event.payload);
+      if (toolCallId && extractedToolName !== 'tool') {
+        toolNamesByCallId.set(toolCallId, extractedToolName);
+      }
+      const toolName =
+        extractedToolName === 'tool' && toolCallId
+          ? (toolNamesByCallId.get(toolCallId) ?? extractedToolName)
+          : extractedToolName;
       // 归一化：内核经 MCP 调用时名字是 mcp__sync-think-platform__TaskCreate。
       if (matchesToolName(toolName, TASK_PLAN_TOOL_NAMES)) {
         const next = extractTodoSnapshot(event.payload);

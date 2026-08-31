@@ -26,6 +26,7 @@ import type { ModelOption } from './NewConversationDialog.js';
 import { useDialog } from './Dialog.js';
 import { AgentAvatarView, isImageAvatar, readAvatarImage } from './AgentAvatarView.js';
 import { ModelPickerMenu, ModelTrigger } from './compose-toolbar.js';
+import { SlidingTabs } from './SlidingTabs.js';
 
 interface Props {
   agents: readonly GlobalAgent[];
@@ -621,7 +622,7 @@ export function AgentLibrary({
             )}
 
             {/* Tab row */}
-            <div className="shell-agent-tabs" role="tablist" aria-label="智能体详情">
+            <SlidingTabs className="shell-agent-tabs" aria-label="智能体详情">
               {AGENT_DRAWER_TABS.map((tab) => (
                 <button
                   key={tab.id}
@@ -635,7 +636,7 @@ export function AgentLibrary({
                   {tab.label}
                 </button>
               ))}
-            </div>
+            </SlidingTabs>
 
             {/* ── 概览：只读基本信息 ── */}
             {drawerTab === 'overview' && (
@@ -818,7 +819,7 @@ export function AgentLibrary({
             {drawerTab === 'abilities' && (
               <div className="shell-library-drawer__body" data-testid="agent-drawer-abilities">
                 <div className="shell-library-pane">
-                  <div className="shell-agent-subtabs" role="tablist" aria-label="能力子分类">
+                  <SlidingTabs className="shell-agent-subtabs" aria-label="能力子分类">
                     <button
                       type="button"
                       role="tab"
@@ -857,7 +858,7 @@ export function AgentLibrary({
                     >
                       人设指令
                     </button>
-                  </div>
+                  </SlidingTabs>
 
                   <div className="shell-agent-subpanel" data-testid="agent-ability-content">
                     {/* ── Skill 绑定 ── */}

@@ -1,3 +1,332 @@
+## 2026-08-31：Composer、Plan 与 Goal 按 NewMax 权威实现重构
+
+### Changed
+
+- 撤回 Beautiful UI Prompt Bar 作为 Composer 主参考；空态与正式对话统一采用本机 NewMax 的 `744px / 20px` 共享 frame、`72px / 36px` 文本区、`200px` 最大高度、Inter/Noto Sans SC 字体与 `74px` 模式 Banner。Popover 使用 `150ms`，Plan Banner 使用 `220ms ease-out`，Goal Banner 使用 `240ms cubic-bezier(0.22, 1, 0.36, 1)`；两处共享 `ComposerEditor`、视觉、菜单和模式组件，但保留各自的首轮创建/会话发送编排。
+- `ComposerEditor` 采用 CodeMirror 6（`@codemirror/state`、`@codemirror/view`、`@codemirror/commands`）作为空态/会话态唯一编辑实例，启用行折行、历史与默认键盘映射、IME 安全 Enter、焦点/选区桥接和原子 Skill/附件/粘贴引用 token；隐藏兼容 `<textarea>` 仅镜像既有调用方，不参与布局。工作区文件编辑仍保留 textarea，扩展编辑器需另行技术决策。
+- 空态改为中央 `744px` Composer，移除旧首次引导卡和三枚轨道按钮；工具栏可直接选择模型 / Agent / Team，并以单一动作槽在空输入语音与有内容发送之间原位切换。
+- `/` 菜单选择继续写入带尾随空格的命令并立即关闭；发送裸 `/plan` 或裸 `/goal` 现在只清空本地预览，不创建消息、Run 或持久模式。`/plan <需求>` 仍保证先持久化 plan 再发送，`/goal <目标>` 启动真实 Goal，`/execute` 保留为显式退出入口。
+- 正式方案卡与任务清单继续保持两个事件域：只有 canonical plan / `plan_submit` 产生正式审批表面，`update_task_plan`、Task 系列工具和 `turn/plan/updated` 只更新 Progress；Plan 模式按 NewMax 行为隐藏任务清单。
+- 加号菜单按 NewMax 整合附件、Plan、Goal、联网、权限和工作区文件；没有 Runtime 合同的会议纪要不放置可点击占位项。Plan/Goal 活动态、Goal 高级设置与设置深层入口均调用真实合同。
+- 普通文本的 Plan/Goal 关键词建议按 NewMax 原始规则接入，支持点击或 `Shift + Tab` 转换且保留正文；Plan/Goal 活动态在工具栏保留可操作胶囊。
+- 正式方案与工具审批从消息流迁移到会话态 Composer 上方 peek 叠层；工具审批协议补齐单次、本会话和 Computer Use 应用级持久允许，设置页同步提供已授权应用列表与逐项撤销入口。
+- `human-only` 工具保持每次真人审批，只显示单次批准与拒绝；会话级和应用级持久允许不展示，Runtime 同时拒绝此类决定。
+- Goal 循环改由当前工作模型的 `GOAL_STATUS: complete|continue|blocked` 驱动，不再要求单独配置评估模型；模型设置和目标状态面板同步移除独立 evaluator 入口、保存逻辑与未配置提示。
+- Composer 最终接线统一落在空态/会话态共享的 NewMax frame，模式胶囊和自然语言建议不再保留旧分支入口；依赖 Conversation/thread 的正式方案与工具审批只挂载在会话态。
+- Plan 与 Goal 强制互斥：进入 Plan 前暂停活动 Goal，开始或恢复 Goal 时由 Runtime 退出 Plan 并回到 execute。正式方案生产表面采用 NewMax 紧凑摘要与“批准并执行 / 要求修改 / 取消”，不再把未挂载的全字段编辑器写成交付能力。
+
+### Fixed
+
+- Goal 高风险目标在开始前增加二次确认；返回修改保留输入，“仍然继续”不会重复提交。
+- 旧 §12.25、§12.30 与 §12.32 的 Composer 几何、模式提示和裸命令冲突已由设计文档 §12.33 明确覆盖，后续实现不再在 NewMax 与 Beautiful UI 两套规范间折中。
+
+### Verification
+
+- ModelSettings 与 TaskStatusPanel 定向回归 `34/34`、Desktop typecheck 已通过。
+- Runtime 全量 `164 files / 1229 tests`（`178.15s`）与 Protocol 全量 `12 files / 77 tests`（`562ms`）通过。
+- Desktop `build:shell` 与 `tests/build-assets.test.ts`（`1/1`）通过；Renderer 产物确认不含 `node:crypto`、`node:path`、`node:os`。
+- `pnpm tokens:css` 已重新生成 `227` 个令牌；`pnpm lint:tokens` 与相关文件 `git diff --check` 通过。
+
+## 2026-08-30：`/plan` 正式方案闭环与任务清单可见性回归修复
+
+> 裸 `/plan` 与裸 `/goal` 的预览语义已由 2026-08-31 变更覆盖；本节保留正式方案与任务清单边界的历史修复记录。
+
+### Changed
+
+- 明确拆分正式方案与运行进度：Codex canonical plan 和平台 `plan_submit` 统一进入可审批的正式方案摘要卡；`update_task_plan`、Task 系列工具与 `turn/plan/updated` 只更新右上角任务清单。当前生产表面通过“要求修改”生成新 revision，不声称全字段就地编辑。
+
+### Fixed
+
+- `/plan <需求>` 先持久化规划模式，再发送去掉命令前缀的需求；裸 `/plan` 只关闭本地预览且不创建消息/Run/持久模式，`/execute` 显式恢复 execute。新建对话与正式对话选择命令后统一补分隔空格、关闭菜单并保持输入焦点。
+- 正式方案提交按 Run 幂等，canonical plan 与 `plan_submit` 同时到达时只生成一张审批卡；规划 Run 到达 completed 却没有正式方案时显示“方案未提交”并保持规划模式，不再用普通回答或任务清单伪装成功。
+- 任务清单继续兼容顶层参数与 Codex `toolCall.argumentsJson`，按 `toolCallId` 关联请求和完成事件、按 thread/task 隔离；首次真实快照即使与终态同批到达也自动展开，Run 完成后保留到当前对话下一轮开始，并从普通工具时间线去重。
+
+### Verification
+
+- Composer、规划提交门禁、任务清单投影与跨会话隔离相关定向回归 `137` 项通过；Desktop typecheck 通过。
+- Runtime 全量 `164 files / 1229 tests`、Protocol 全量 `12 files / 77 tests`、Desktop `build:shell` 与构建资产回归 `1/1` 通过。
+
+## 2026-08-30：Composer 对齐 Beautiful UI Prompt Bar
+
+### Changed
+
+- Composer 按 `beautifului.dev/harness` 的 Prompt Bar 实测样式统一几何、字体、层级与动效：最大宽度 `656px`、外框圆角 `22px`、内边距 `14px`，输入区为 `68px` 高、`14px/20px` 字体，工具栏与图标控件均为 `28px` 高；加号与模型选择器前置，聚焦态保持中性边框与阴影。
+- `/` 菜单与 Composer 边框等宽对齐并复用同一表面色，间距 `8px`、圆角 `10px`、内边距 `4px`、菜单行高 `36px`；命令使用比例无衬线字体和自然宽度，隐藏分组标题与重复的第三段说明，只保留命令旁的单行说明、移动高亮、键盘提示和上浮入场动效。上述尺寸、色彩、阴影与 `150–220ms` 交互时序已集中到 Composer 语义设计令牌。
+
+### Added
+
+- 新增固定 `656px` 的 `composer-slash-open` 视觉夹具及运行时几何合同，覆盖打开菜单、活动行、`/` 输入、工具栏顺序、菜单等宽、控件尺寸、菜单行高和横向溢出。
+
+### Fixed
+
+- 统一新建对话与正式对话的 `/` 命令选择：只替换当前 token、保留草稿其余内容、补一个命令分隔空格、把光标落在空格后并关闭菜单；两处都拒绝正文之后的斜杠命令。
+- Skill 目录完成读取后，非空查询若没有任何命令或 Skill 匹配会隐藏菜单；读取期间保留加载态，避免异步结果造成闪烁或持续显示空菜单。
+- 菜单打开时不再预先高亮首行，首次方向键或鼠标悬停后才显示活动高亮；麦克风与发送按钮改为右侧成组，消除与参考 Prompt Bar 的两处剩余结构偏差。
+
+### Verification
+
+- Composer 聚焦 Vitest 新增命令替换、光标、关闭、位置限制与零结果生命周期回归；本轮相关回归 `5 files / 96 tests` 通过，Desktop typecheck、正式 build、lint（0 errors、15 条既有 warnings）、设计令牌与 `git diff --check` 通过。
+- Composer 聚焦 Vitest `5 files / 89 tests`、Phase 3 截图合同 `4/4` 通过；Desktop typecheck、shell build、设计令牌检查与 `git diff --check` 均通过。
+- 定向 Electron Composer 截图通过运行时几何合同，证据位于 `.data/phase3-visual/composer-alignment-20260830/composer-slash-open-dark.png`。完整 Phase 3 截图矩阵仍被范围外的 Task Status 旧文案断言阻断：断言期望“进程”，当前夹具显示“任务清单”。
+- Electron 视觉复核在 `986 × 560 @ 125%` 下测得 Composer 约 `820px` 物理宽、菜单约 `820px`、菜单行高 `45px`，与参考截图缩放尺寸一致；`760 × 560 @ 100%` 下 Composer 与菜单同为 `647px`，工具栏保持单行且页面、菜单和工具栏横向溢出均为 `0px`。
+
+## 2026-08-30：Prompt Bar Skill、来源菜单与中断恢复
+
+### Changed
+
+- Composer 的已选 Skill chip 支持逐项移除；发送后把 Skill ID 与名称快照持久化在用户消息中，历史气泡以图标和强调名称展示该轮真实注入的 Skill。
+- `/` 命令/Skill 菜单和 `@` 来源/文件菜单改为 Beautiful UI Prompt Bar 的单一移动高亮、上浮入场、稳定行高和底部搜索提示；`@` 菜单与输入框等宽并加入图片上传入口。
+- 飞书服务域名与回复样式的滑动 pill 保留表单原有整行宽度。
+
+### Added
+
+- 回答取消或内核中断后显示“回答已中断”胶囊，可继续上一条未完成回答或按原文本与原 Skill 重试。
+
+### Verification
+
+- Desktop 全量回归 `189 files / 1505 tests` 通过；格式化后的聚焦回归 `6 files / 68 tests`、Runtime Skill 回归 `3/3`、Desktop/Runtime typecheck 与 build 均通过。两端 lint 为 0 error，Desktop 设计令牌检查通过。
+- 本地 Electron 实测 `/` 与 `@` 菜单移动高亮、Skill 选择/逐项移除、菜单与输入框等宽；`744px` 输入区下菜单宽度同为 `744px`，上传与联网高亮行均为 `36px`，Console 为 0 error。
+
+## 2026-08-30：Tall 多行 Composer 与滑动分段选择
+
+### Changed
+
+- 新建对话与正式会话 Composer 统一为 Beautiful UI Prompt Bar 的 tall 多行结构：首屏提供两行输入空间，底部权限、Skill、模式、上下文、模型、内核和发送操作保持稳定，不再以单行输入作为初始形态。
+- 飞书服务域名与回复样式改用共享 `SlidingTabs`。选中背景根据真实选项位置和宽度在 `250ms` 内滑动，首次渲染与 resize 直接定位，并沿用系统减少动态效果设置。
+
+### Verification
+
+- Desktop 定向测试覆盖空态/正式会话 tall 布局、飞书两个滑动分段控件的可访问名称、初始选中与点击切换。
+
+## 2026-08-30：NewMax 式七平台机器人对话
+
+### Added
+
+- “设置 → 连接 → 机器人对话”按本机 NewMax 1.1.15 的真实平台顺序接入 Telegram、飞书、企业微信、微信、Discord、钉钉和 QQ；七个平台均提供平台专属凭据、测试、启停、状态与本地平台图标，不再显示“待接入”占位。
+- Runtime 新增统一 `BotChannelGatewayManager` 与七个独立平台适配器：分别使用 Grammy、飞书 Node SDK、企业微信 AI Bot SDK、微信 iLink ClawBot、discord.js、DingTalk Stream 和 QQ 官方机器人 SDK；平台依赖只在启动对应通道时动态加载。
+- 微信通道接入真实 iLink 扫码、状态轮询和凭据确认流程。二维码在设置页内就近弹出，支持主动取消、过期处理和窄窗口完整展示。
+
+### Changed
+
+- 所有入站机器人消息统一映射为 `平台 + 远端会话 ID` 对应的持久 Conversation/Task，并继续进入现有 Kernel Run、模型路由、Skill、MCP、工具审批和事件投影；平台网关只负责收发、状态、重连和消息标准化。
+- 机器人设置采用 NewMax 风格双栏交互：左侧切换平台，右侧显示平台身份、实时连接状态、专属表单、文档入口、测试与启用开关；切换平台时取消未完成的微信扫码会话。
+- 敏感 Token/Secret 只保存在 SecureStore，Renderer 仅获取 `credentialsConfigured` 和公开 App/Bot/Client ID。旧 Telegram 设置会自动迁移到新通道存储合同。
+
+### Fixed
+
+- 修复非 Telegram 通道公开 App ID、Bot ID、Client ID 已保存但启动时未合并到 SDK 配置的问题。
+- 修复缺少凭据时点击启用只报错、不聚焦首个配置字段的问题；修复微信二维码可能被固定底栏裁切、取消后旧轮询仍更新页面的问题。
+- 机器人设置错误会剥离 Electron IPC 与 `RuntimeResponseError` 技术前缀，用户只看到平台返回的可操作诊断。
+- Discord 的 HTTP/HTTPS 代理现在同时用于 SDK REST 登录和连接测试，并在停止、失败或重配后释放代理资源。
+- 连接设置视觉夹具升级到七通道公开状态合同，不再依赖旧的 Telegram 拼接状态文案。
+
+### Verification
+
+- 根工作区低并发全量门禁通过：测试 `20/20`、typecheck `20/20`、build `11/11`、lint `11/11`，设计令牌检查通过。
+- Desktop 定向回归 `50/50`，覆盖七渠道设置、启用缺凭据聚焦与错误归一化、微信扫码取消、IPC payload 和连接设置视觉夹具；Runtime 通道回归 `24/24`，覆盖校验、SecureStore 配置、网关生命周期、微信 iLink 与 Discord 代理协议。
+- 本地 Electron 实测七个平台字段与开关均可切换，七个 400×400 本地图标全部解码；真实微信 iLink 成功返回 280×280 二维码并可取消。`1426×863` 与 `780×620` 视口均无横向溢出或 Console error。
+
+## 2026-08-30：Telegram 启用交互与连接器动作来源说明
+
+### Changed
+
+- 未配置的连接器详情不再只显示空白动作区：页面明确说明用户无需手工维护动作名称，只需连接兼容 MCP Provider；Runtime 会通过 `tools/list` 自动发现并持久化真实动作，后续模型调用继续走现有 `tools/call` 与审批链。
+
+### Fixed
+
+- 修复 Telegram 尚未保存 Token 时启用开关被直接禁用、用户无法得知下一步的问题。开关现在保持可操作；缺少 Token 时会显示原位错误并聚焦 Bot Token 输入框，填入凭证后可直接从开关触发 Runtime 身份验证、保存与长轮询启动。
+
+### Verification
+
+- Desktop `SettingsPage.test.tsx`：`28/28` 通过，覆盖缺少 Token 的聚焦提示、从开关启用、停用、测试保存、真实动作目录与未配置动作来源说明。
+- Desktop 全量回归：`188 files / 1491 tests` 通过；Desktop 与 Runtime typecheck 通过，Desktop build 通过，Desktop lint 为 `0 errors`（保留既有 Hooks warnings）。
+- Runtime `remote-capability-commands.test.ts + mcp-commands.test.ts`：`17/17` 通过，覆盖远程 MCP 注册、SecureStore 鉴权、重启持久化、`tools/list` 刷新和实际 `tools/call` 治理链。
+- 浏览器完成连接器动作空态、启用弹窗、Telegram 停用/重新启用与 `780x620` 窄窗口验收；页面无横向溢出、无 Console error。
+
+## 2026-08-29：机器人对话与连接器真实能力详情
+
+### Added
+
+- “设置 → 连接 → 机器人对话”新增可用的 Telegram 通道：支持 Bot Token/HTTP(S) 代理配置、`getMe` 测试、Runtime 长轮询、执行中 typing 状态、长回复分段和停用/重配；飞书、企业微信、微信、Discord、钉钉、QQ 明确显示为待接入。
+- Telegram chat id 映射到 SYNC-THINK 持久 Conversation/Task，消息走现有模型、Skill、MCP、工具审批、Provider fallback 与 Kernel Run，并在桌面对话和事件流中保留记录。
+- SYNC-THINK 托管连接器新增能力详情页：首次点击展示连接状态、真实 MCP 工具数量、搜索和刷新；未配置时从“启用连接器”打开居中配置弹窗，保存后执行真实工具发现。
+
+### Changed
+
+- 连接页的用户可见品牌统一为 SYNC-THINK Provider；移除没有结算后端支撑的余额、按量计费和虚构动作数量。第三方 Provider 仍保留通用远程 MCP 新增、编辑、启停和删除路径。
+- 连接页签、托管详情、配置弹窗、机器人通道和动作列表使用统一的短位移/透明度动效，系统开启减少动态效果时停用动画。
+
+### Fixed
+
+- 修复托管连接器首次点击直接进入通用 MCP 地址表单、与参考交互不一致的问题；现在先进入可调用动作详情，再由明确的启用操作进入配置。
+- Bot Token 只保存在 SecureStore，Renderer 不回读明文；Telegram 停用、重配和 Runtime 退出会中止长轮询并释放代理连接。
+
+### Verification
+
+- Telegram client 与 Desktop 连接页定向回归覆盖 Token 格式、身份测试、Update/offset、长回复分段、真实工具目录、启用弹窗、保存与未交付通道禁用。
+- 最终全量验证通过：根工作区测试 `20/20`，其中 Desktop `188 files / 1489 tests`、Runtime `157 files / 1180 tests`；根工作区 typecheck `20/20`、build `11/11`、lint `11/11`，Lint 为 `0 errors`，设计令牌检查通过。
+- 浏览器完成连接器目录、已配置/未配置能力详情、启用弹窗、机器人双栏配置、深浅主题和 `780x620` 紧凑视口 QA；两个 Tabs 轨道均在 `250ms` 内按实测位置与宽度滑动，页面无横向溢出、无 Console error。
+- 重启本地 Electron 后，Runtime 健康检查返回 `ok`、`inFlightRuns=0`，并通过真实 `bot.channel.get` 协议调用确认机器人命令已加载。
+
+## 2026-08-29：会话统计、私有内核全会话切换与原生规划/压缩适配
+
+### Added
+
+- 首次使用向导新增可选的 Codex / Claude Code 私有内核安装入口；关于页继续负责后续检查和升级。安装仍写入应用私有版本目录，不修改系统全局安装。
+- Codex app-server 规划模式改用本机 0.147.0 协议生成结果中的原生 `collaborationMode: plan/default`。完成的 canonical `plan` item 统一转换为 SYNC-THINK 方案审批卡；离开规划模式时显式发送 `default`，避免持久 thread 残留在 plan。
+- Codex `contextCompaction` item 映射为开始、成功、失败三态；Claude Agent SDK 当前只上报 `compact_boundary`，因此只投影真实成功边界。外部内核压缩状态在对话流中可见，但不触发宿主二次摘要。
+
+### Fixed
+
+- 修复外部内核 `provider.usage` 只保存 Provider 模型名、缺少内部 `modelId`，导致使用统计缓存跳过整条请求的问题。新事件同时保存两种身份；历史事件以 `providerModelId` 回退，缓存版本升级后自动重建。
+- 同协议直通请求不再在设置页称为“转换日志”，统一显示“网关请求日志”；`OpenAI Responses -> OpenAI Responses` 明确表示直通审计，上游格式标签不再暗示发生了转换。
+- 私有内核安装成功后通知 Runtime 回收 resident Codex app-server：空闲实例立即重建，活跃实例在本轮释放后重建。旧对话继续使用已持久的原生 thread/session，下一轮即由新版本恢复；Claude 每轮创建 SDK adapter，无 resident 进程需要回收。
+- 对话运行容量只取当前 Provider 模型配置的 `limitsJson.contextWindow`，不再应用历史会话覆盖值。Composer 移除容量编辑入口；Native 继续显示宿主自动/距离压缩，外部内核只显示有效容量与厂商自管理说明。
+- Composer 内核图标由 14px 调整为 18px，并使用固定 26px 居中占位，修复图标偏小且贴近工具栏上沿的问题。
+
+### Verification
+
+- Runtime 定向回归覆盖用量身份、历史统计重建、Session Host 延迟回收、Codex 原生 plan/default、canonical plan item 与压缩三态；Desktop 定向回归覆盖网关直通审计、首次私有安装、上下文所有权和容量编辑移除。
+
+## 2026-08-28：应用私有 Codex/Claude 更新与工具/协议对齐
+
+### Added
+
+- 关于页新增 Codex 与 Claude Code 内核更新区，可分别检查、私有安装和升级；registry 检查、安装、包版本/可执行文件验证与 active manifest 切换全部由 Main process 完成。
+- 新增应用私有版本目录与原子 `active.json`。Runtime 优先运行已激活的私有 Codex；Claude Agent SDK 通过 `pathToClaudeCodeExecutable` 运行已激活的私有 Claude CLI，旧版本和系统全局安装不被覆盖。
+
+### Fixed
+
+- 删除 Claude Adapter 的 `allowedTools`、`disallowedTools`、`strictMcpConfig` 与空 `settingSources`；Claude 原生工具、用户/项目配置与用户 MCP 保持 CLI 默认语义，SYNC-THINK 只注入并适配自己的平台 MCP。
+- Anthropic compatible 地址统一补全 `/v1/messages`，兼容裸 root、自定义 `/anthropic` 前缀、已带 `/v1`/`messages` 地址和 DeepSeek `/anthropic/v1/messages`，避免重复或漏掉协议后缀。
+- Windows portable staging 改为携带完整 Node/npm 目录，并将 `npm-cli.js` 加入 release layout 门禁，确保正式包的关于页私有安装可执行。
+
+### Verification
+
+- Desktop 更新服务/关于页定向回归 `13/13`；Runtime 私有 resolver、Codex 检测、Claude SDK 与 gateway 回归 `84/84`；Anthropic adapter `13/13`；Windows portable release `14/14`；设计令牌检查通过。
+- 最终全量验证通过：根工作区测试 `20/20`，其中 Runtime `155 files / 1169 tests`、Desktop `188 files / 1480 tests`、Workers `17 files / 150 tests`（另有 `3` 个环境 smoke skip）；根工作区 typecheck `20/20`、build `11/11`、lint `11/11`，Lint 为 `0 errors`，仅保留既有 warnings。
+- 浏览器在 `1280x800`、`680x760` 与 `390x760` 三档完成深/浅色响应式 QA；检查更新、单内核安装状态隔离、按钮禁用状态、无横向溢出和无 Console error 均通过。
+
+## 2026-08-28：DeThink 式原生 Session 恢复与缓存前缀治理
+
+### Fixed
+
+- 修复跨内核 gap 超过 60 条或粗估占上下文窗口 35% 后清理 Codex/Claude 原生 session、再从宿主消息重建上下文的问题；gap 大小不再使 `thread/resume` / Claude `resume` 失效。
+- 修复模型、Provider、凭据、权限、规划模式或 Skill 上下文变化后创建新 session 的问题；原生会话继续恢复，变化的宿主规则以一次 `Host context update` 追加。
+- 修复 reasoning、commentary、工具调用/输出和 UI durable 截断信息可能进入跨内核 transcript 的问题；便携投影现在只包含用户消息和助手最终可见文本/代码。
+- Provider response-id continuation 改为按具体模型/Provider/协议/凭据路由隔离；切换路由只更换 continuation scope，不清理 native thread。
+
+### Changed
+
+- 外部内核首次进入已有对话和跨内核接回统一使用有界便携上下文：最近 20 条、单条最多 8 KiB、总计最多 64 KiB，超限显式标记省略数量。
+- Session 稳定身份收窄为 `Conversation + Kernel + Workspace`；既有 v1 记录缺少新字段时先恢复，CLI 确认后渐进补齐，升级不主动丢弃本机 rollout。
+- 多内核架构明确双真源：厂商原生 session 负责模型上下文/压缩/缓存前缀，SQLite timeline 负责 UI 恢复、审计和受限跨内核移交。
+
+### Verification
+
+- 定向 Runtime 回归 `2 files / 36 tests` 通过，覆盖 61 条 gap、200 KiB 单条、工具/思考隔离、Runtime 重启、模型切换、规划/Skill 更新与 invalid-session 清理。
+- Runtime 全量 `154 files / 1165 tests`、typecheck、build、lint、Prettier 与 `git diff --check` 通过。
+- 旧 Runtime 在 `inFlightRuns=0` 时通过认证 shutdown 优雅退出；daemon 以新构建拉起 PID `61176`，重连 healthcheck 返回 `ok`、`inFlightRuns=0`。
+
+## 2026-08-28：目标评估容错、任务清单投影与滑动 Tabs
+
+> 本节保留当时的独立评估器历史；2026-08-31 起 Goal 已改为当前工作模型的 `GOAL_STATUS: complete|continue|blocked`，连续三轮 blocked 与轮次/Token 硬门禁规则以顶部最新记录为准。任务清单和 SlidingTabs 修复仍有效。
+
+### Fixed
+
+- 目标评估改为 `met / unmet / indeterminate` 三态：只有明确 `unmet` 才启动下一轮；评估调用错误、硬超时或结构化输出解析失败会把目标标记为受阻并显示原因，避免同一结论被误跑两遍。
+- 评估请求增加真正的 60 秒硬截止；即使 Provider 忽略 abort，也会按时结束本地等待。目标运行与 `startedAt + condition` 版本绑定，普通运行、旧运行和编辑前的评估结果不再推进新目标。
+- 自动续轮用户消息改为携带上一轮唯一缺口，内部提示要求只处理缺口与新增证据；中途编辑目标会预填当前条件、建立新版本并从第 0 轮重新计数，活跃目标状态每 2 秒刷新。
+- 修复 Codex `update_task_plan` 把参数放在 `payload.toolCall.argumentsJson` 时 Desktop 只读取顶层参数、导致真实任务清单不显示的问题。
+- 修复计划请求与完成事件分离后，完成事件只保留 `toolCallId`、被误显示成通用 `Tool 0ms` 的问题；投影现在按调用 ID 关联工具名，以完成结果更新清单，并按当前 thread/task 隔离其他会话的 `run.started`。
+- 修复计划快照与 `run.completed` 同批送达时，清单已存在却因 `running=false` 不自动展开的问题；首个真实快照无论批次时序都会展开一次。
+
+### Changed
+
+- 新增共享 `SlidingTabs`：按活动标签真实 `offsetLeft / offsetWidth` 移动底板，使用 `250ms` 与 `cubic-bezier(0.22, 1, 0.36, 1)`；首次布局与 window resize 无动画吸附，选中项重渲染不再重建 `ResizeObserver` 抢先吸到终点，reduced motion 下完全静止。
+- 设置分类、模型类型、文件预览、能力中心、智能体详情与工作区文件模式统一采用滑动底板；可拖拽、可关闭的会话/文档标签保留原交互，避免与拖拽命中区冲突。
+- Shell token 增加共享 Tabs 时长与缓动，组件不再各自写死交互时序。
+
+### Verification
+
+- 新增目标评估异常单轮阻断、Luna 执行 / Sol 评估路由保持、计划请求/完成关联、跨 thread 隔离、终态批次自动展开、Tabs 动画不被观察器吸附等回归；Runtime 全量 `154 files / 1164 tests`、Desktop 全量 `186 files / 1474 tests` 通过。
+- Desktop / Runtime typecheck、Runtime lint、生产 build `11/11`、设计令牌、Prettier 与 `git diff --check` 通过；Desktop lint 为 `0 error / 14` 条既有 Hook warning。
+- 应用内 Browser 在 `832px` 暗色完整动效夹具完成 DOM、点击、截图与溢出检查：底板从 `x=292,width=70` 滑向 `x=363,width=82`，`80ms` 中间帧为 `x=354.92,width=80.63`，`250ms` 后精确落位；任务状态夹具自动展开 `5` 项，通用 `Tool 0ms`、错误覆盖层与横向溢出均为 `0`。
+- 最终 Electron 主进程 PID `28560`、Runtime PID `13492`；pipe healthcheck 返回 `ok`、`inFlightRuns=0`，窗口标题为 `SYNC-THINK` 且响应正常。
+
+## 2026-08-28：目标模式消息、模型路由与自适应流式输出修复
+
+### Fixed
+
+- 修复设置目标后只有右上角状态卡、聊天区缺少对应用户消息的问题；第一轮持久化原始目标文字，自动续轮持久化“继续目标（第 N/M 轮）”，内部控制提示继续只进入模型上下文。
+- 修复目标自动续轮沿用会话创建时旧模型的问题；设置与恢复目标时会冻结当前 Composer 的模型、内核、思考强度和联网状态，后续每轮统一复用。修复前创建的暂停或受阻目标在恢复时也会更新为当前选择。
+- 修复 GPT Responses 评估器返回 `assistant-message-delta` 时被当作空输出、从而重复续跑并显示“评估输出无法解析”的问题；评估器兼容旧/新可见文本事件，并可从代码围栏及前后说明中提取首个完整 JSON 对象。
+- 修复固定 `55ms` 单词节拍让长总结在 Provider 已完成后仍长时间播放的问题；短回复继续逐词显示，积压超过 `240 / 1200 / 3000` 字符后分级提高每拍词元和帧预算、缩短到 `35 / 22 / 14ms`，工具与终态仍等待前序文字发布完毕。
+- 目标状态卡轮次从裸 `N/M` 调整为“第 N/M 轮”，并同步旧 ZCode 合同中的“任务清单”中文标题。
+
+### Verification
+
+- Runtime 全量测试 `154 files / 1162 tests`、Desktop 全量测试 `184 files / 1467 tests` 通过；新增目标路由、恢复兼容、GPT 分阶段评估事件、持久用户消息、长中文总结追帧预算与轮次文案回归。
+- Desktop 与 Runtime typecheck 通过；全仓生产构建 `11/11`（`0 cached`）成功，Prettier 与 `git diff --check` 通过。
+
+## 2026-08-28：Codex 任务清单与 Streaming Text 来源交互修复
+
+### Fixed
+
+- 修复 GPT/Codex 实际运行只在文字中声称“创建/更新计划”、却没有发出任何计划事件，导致右上角始终没有任务清单的问题；外部内核稳定系统上下文现在明确要求多步骤任务先调用 `mcp__sync-think-platform__update_task_plan`，并在每步完成时提交完整清单。既有 `turn/plan/updated` 映射继续作为原生 Codex 计划事件的兼容路径。
+- 修复 transient 队列按动画帧批量倾倒 provider delta、最终回答看起来整段突然出现的问题；现在每 `55ms` 最多发布一个可读词元，英文按单词、中文按短语推进，并在流式尾部显示光标，完成后再渐显动作栏。
+- 修复 `beautifului.dev` 未登记到本地图标映射、只能显示通用 Globe 的问题；新增官网 PNG 资产并保持既有 CSP，不在渲染期请求远程 favicon。
+- Streaming Text 底部动作改为 Beautiful UI 同结构的纯图标“复制 / 重新生成 / 赞 / 踩 / 来源”；来源详情使用 `300ms`、`cubic-bezier(0.23, 1, 0.32, 1)` 的消息流内网格展开，面板固定最大 `380px`，每行标题左对齐、域名或文件路径右对齐。
+- 修复 Codex app-server 的 `command_execution` 未命中本地工具名映射、界面显示英文 `Command Execution` 的问题；运行中和持久执行过程现在统一显示“命令执行”。
+- 增强底部活动文案的独立文字高亮层和 running Think/工具行扫带对比度；基础文字始终可读，减少动态效果时继续显示静态内容。
+
+### Verification
+
+- Runtime 外部内核回归 `24/24`、Desktop 高相关回归 `88/88` 通过，覆盖强制任务清单协议、逐词队列节拍、Beautiful UI 图标、来源展开语义与尺寸、中文工具名和消息底部动作。
+- Desktop 与 Runtime typecheck 通过。
+- 全仓生产构建 `11/11`、lint `11/11`（`0 error`）、Prettier 与 `git diff --check` 通过；lint 仅保留仓库既有的 `16` 条 Hook/测试类型 warning。
+- 应用内 Browser 在暗色完整动效夹具完成 DOM、截图、交互与溢出检查：流式正文在 `0 / 130 / 390ms` 持续增长，完成前不显示动作栏；Beautiful UI 官方图标以 `320 × 327` 原始尺寸成功解码；来源展开高度从 `15.8px → 90.6px → 100px`，计算时长 `0.3s`，最终面板 `380px`、三行来源；任务状态夹具渲染五项清单，页面无横向溢出或错误覆盖层。
+- 生产窗口已替换旧进程；Electron 主进程 PID `29368`，窗口标题为 `SYNC-THINK` 且响应正常。
+
+## 2026-08-28：GPT 内核、逐帧输出与任务清单回归修复
+
+### Fixed
+
+- 修复 Codex app-server 内核把界面推理档位 `auto` 直接发送为 `reasoning.effort`、导致 GPT 请求返回 `invalid_value` 并耗尽 fallback 的问题；`auto` 现在省略该字段，`off` 映射为 `none`。
+- 修复 Renderer 在单个动画帧清空全部 transient delta、导致 commentary 和最终正文突然整段出现的问题；粗粒度文本现在按每帧最多 `8` 个事件、`48` 个 UTF-16 字符稳定发布，ordered timeline 与可见文字保持同一进度，工具边界等待前序文字消费完成。
+- 修复底部 `3 × 3` 活动标记下方重复显示三圆点等待动画；执行中的消息只保留底部像素格与当前活动文案。
+- 修复任务计划工具以原始 `Update Task Plan` JSON 行混入执行时间线且窄屏只显示胶囊的问题；计划工具只投影到右上角“任务清单”，首次收到运行中计划时自动展开一次。
+- 修复终端拒绝位于 `allowedRoot` 内的显式绝对 `cwd`；当前同时接受工作区内相对/绝对目录，并保留 lexical、realpath 与符号链接越界检查。
+- 修复来源文件使用工作区绝对路径时被 Desktop bridge 当作 traversal 拒绝；渲染前将工作区内绝对路径规范化为相对路径。
+
+### Verification
+
+- Runtime Codex adapter `11/11`、Workers terminal `9/9`、Desktop 高相关回归 `52/52` 通过；Desktop、Runtime、Workers typecheck 均通过。
+- 回归覆盖 `auto` 字段省略/`off` 映射、工作区内绝对 `cwd`、48 字符逐帧拆分、任务计划行过滤与任务清单自动展开、绝对来源路径规范化。
+- 全仓生产构建 `11/11`、lint `11/11`（`0 error`）、Prettier 与 `git diff --check` 通过；lint 仅保留仓库已有 Hook 与测试类型告警，本次新增任务清单 effect 告警已清除。
+- 应用内 Browser 在 `1280 × 720` 暗色夹具完成 DOM、截图、控制台与溢出检查：底部活动区只有一组 `9` 个 `4 × 4px` 像素格、三圆点数量为 `0`、运行行挂载 sweep；任务清单自动展开并显示 `5` 项，原始计划工具 JSON 不可见，两个页面均无横向溢出或 warning/error。
+- 生产窗口已替换旧进程；Electron 主进程 PID `55480`，窗口标题为 `SYNC-THINK` 且响应正常。
+
+## 2026-08-28：执行 Loading State、Streaming Text 来源与文件树升级
+
+### Added
+
+- 执行过程新增位于时间线最下方的实时活动行，恢复 `3 × 3` 像素 Loading 标记；当前工具、思考、回复或等待状态都从同一活动投影得出，并保留停滞分级与共用秒级计时。
+- Markdown 流式回答中的外链升级为站点来源 chip：已知站点复用本地连接器图标，其他域名使用 Globe 回退；终态 footer 以图标堆叠显示来源数量，并可展开外链与工作区文件清单。
+- 工作区文件浏览器补齐 `tree / treeitem / group` 语义、上下/左右/Home/End 键盘导航、层级引导线与文件夹开合动效。
+
+### Changed
+
+- 当前活动从“执行过程”标题中移到底部；标题只保留终态摘要、失败数与耗时。运行中的 Think 与工具行改为窄高亮带扫过，取代宽泛的缓冲感。
+- JavaScript、TypeScript、Python 与 Markdown 从字母徽标改为与 CSS、JSON 等一致的 Lucide 文件类型图标；目录继续沿用原有 IPC 懒加载和当前标签/新标签打开逻辑。
+- 所有新动效继续使用现有语义色和 motion token；`prefers-reduced-motion` 下像素动画、扫带和文件夹过渡均降级为静态可读状态，未新增设计令牌。
+
+### Verification
+
+- Desktop 全量回归 `184 files / 1458 tests`、Desktop typecheck、正式 build、lint（0 error）、设计令牌、Prettier 与 `git diff --check` 通过；高相关回归 `7 files / 66 tests`，覆盖底部活动位置、9 像素标记、Think/工具高亮、站点图标与来源去重、文件图标、懒加载及方向键导航。
+- 应用内 Browser 在暗色执行夹具与亮色 workspace-file 夹具完成页面身份、非空、错误覆盖层、横向溢出和交互检查：活动行为面板最后元素，9 格均为 `4 × 4px`，运行行挂载 sweep，来源展开层 `340px` 且 3 行不重叠；文件树展开后子节点为 level 2，FolderOpen 可见、分支线 `1px`、目标文件类型全部使用 SVG。
+- Electron Phase 3 矩阵通过本次 inline-process 明暗/紧凑用例后，停在既有 workspace-file 标题高度差：编辑器 `36px`、文件区 `40px`，超出 `4px` 对齐阈值；本次文件树行高、节点中心与动作中心偏差均为 `0px`。
+
 ## 2026-08-28：失效工作区内核启动与失败总结持久化
 
 ### Fixed
@@ -642,6 +971,8 @@
 - Desktop：`AskQuestionCard.test.tsx` 11 项（渲染/推荐徽章/单选前进/多选/自定义 Enter 提交/跳过/校验/取消/plan-review 三动作/结果格式化）、`TodoPanel.test.tsx` 7 项（投影生命周期/进度文案/折叠展开）；全量 **166 files / 1276 tests** 通过；typecheck、tsc emit、build 通过。
 
 ## 2026-08-16：plan/exec 规划与执行双模型（可编辑方案卡 + 模型路由）
+
+> 本节保留完整编辑器和旧提示文案的历史交付记录；2026-08-31 的 NewMax 生产入口改为紧凑摘要卡与 Plan Banner，未挂载完整编辑器和“已忽略所选模型”附注。plan-act 路由规则继续有效。
 
 ### Added
 

@@ -1,9 +1,45 @@
 ﻿import { describe, expect, it } from 'vitest';
 import {
+  parseConversationDecideToolApprovalPayload,
   parseConversationGetContextStatusPayload,
   parseConversationGetRunProcessPayload,
   parseSetConversationContextWindowOverridePayload,
 } from './team-payloads.js';
+
+describe('parseConversationDecideToolApprovalPayload', () => {
+  it('preserves the real approval scope and defaults legacy calls to once', () => {
+    expect(
+      parseConversationDecideToolApprovalPayload({
+        approvalId: 'approval-1',
+        decision: 'approve',
+        scope: 'session',
+      }),
+    ).toEqual({ approvalId: 'approval-1', decision: 'approve', scope: 'session' });
+    expect(
+      parseConversationDecideToolApprovalPayload({
+        approvalId: 'approval-2',
+        decision: 'deny',
+      }),
+    ).toEqual({ approvalId: 'approval-2', decision: 'deny', scope: 'once' });
+  });
+
+  it('rejects remembered deny decisions and unknown scopes', () => {
+    expect(() =>
+      parseConversationDecideToolApprovalPayload({
+        approvalId: 'approval-1',
+        decision: 'deny',
+        scope: 'session',
+      }),
+    ).toThrow('Invalid conversation-decide-tool-approval payload');
+    expect(() =>
+      parseConversationDecideToolApprovalPayload({
+        approvalId: 'approval-1',
+        decision: 'approve',
+        scope: 'forever',
+      }),
+    ).toThrow('Invalid conversation-decide-tool-approval payload');
+  });
+});
 
 describe('parseConversationGetRunProcessPayload', () => {
   it('accepts one bounded non-empty run id', () => {

@@ -589,7 +589,6 @@ function GitToolsSection({
 
 function GoalSection({
   goal,
-  evaluatorConfigured,
   todo,
   onPause,
   onResume,
@@ -597,7 +596,6 @@ function GoalSection({
   onClear,
 }: {
   goal: GoalStatus;
-  evaluatorConfigured: boolean;
   todo?: TodoProjection | null;
   onPause?: () => void;
   onResume?: () => void;
@@ -619,14 +617,11 @@ function GoalSection({
         <div className="shell-task-status__goal-copy">
           <strong>{goal.condition}</strong>
           <span>
-            {roundsStarted}/{maxRounds} · {formatElapsed(goal.startedAt)}
+            第 {roundsStarted}/{maxRounds} 轮 · {formatElapsed(goal.startedAt)}
             {todo ? ` · ${todo.completed}/${todo.total}` : ''}
           </span>
         </div>
       </div>
-      {!evaluatorConfigured ? (
-        <div className="shell-task-status__goal-note">评估模型未配置</div>
-      ) : null}
       {goal.blockedReason || goal.lastReason ? (
         <div className="shell-task-status__goal-reason">
           {goal.blockedReason ?? goal.lastReason}
@@ -754,9 +749,9 @@ function goalStateLabel(goal: GoalStatus): string {
 }
 
 export function TaskStatusPanel({
+  scopeKey,
   projectFolder,
   goal,
-  evaluatorConfigured = false,
   todo,
   onGoalPause,
   onGoalResume,
@@ -764,6 +759,7 @@ export function TaskStatusPanel({
   onGoalClear,
   onOpenReview,
 }: {
+  scopeKey?: string;
   projectFolder?: string;
   goal?: GoalStatus;
   evaluatorConfigured?: boolean;
@@ -810,6 +806,17 @@ export function TaskStatusPanel({
     goal && ['active', 'paused', 'blocked', 'achieved'].includes(goal.status) ? goal : undefined;
   const visibleTodo = todo && todo.items.length > 0 ? todo : undefined;
   const visibleGit = projectFolder && gitInfo?.isRepo ? gitInfo : undefined;
+  const activeTodoSignature = visibleTodo?.items
+    .map((item) => `${item.status}:${item.title}`)
+    .join('\u0000');
+  const autoOpenedTodoScopesRef = useRef(new Set<string>());
+  useEffect(() => {
+    if (!activeTodoSignature) return;
+    const resolvedScopeKey = scopeKey?.trim() || '__default__';
+    if (autoOpenedTodoScopesRef.current.has(resolvedScopeKey)) return;
+    autoOpenedTodoScopesRef.current.add(resolvedScopeKey);
+    setManualOpen(true);
+  }, [activeTodoSignature, scopeKey]);
   if (!visibleGit && !visibleGoal && !visibleTodo) return null;
 
   const toggleSection = (section: keyof typeof openSections) => {
@@ -917,7 +924,6 @@ export function TaskStatusPanel({
           >
             <GoalSection
               goal={visibleGoal}
-              evaluatorConfigured={evaluatorConfigured}
               todo={visibleTodo}
               onPause={onGoalPause}
               onResume={onGoalResume}
@@ -929,7 +935,7 @@ export function TaskStatusPanel({
         {visibleTodo ? (
           <StatusSection
             id="progress"
-            title="进程"
+            title="任务清单"
             open={openSections.progress}
             onToggle={() => toggleSection('progress')}
             trailing={

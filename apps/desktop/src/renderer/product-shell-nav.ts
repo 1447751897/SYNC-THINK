@@ -5,12 +5,7 @@
  */
 
 export type ProductPrimaryNavId =
-  | 'talk'
-  | 'project'
-  | 'agents'
-  | 'teams'
-  | 'capabilities'
-  | 'settings';
+  'talk' | 'project' | 'agents' | 'teams' | 'capabilities' | 'settings';
 
 export type TalkTrackId = 'model' | 'agent' | 'team';
 
@@ -254,13 +249,11 @@ export function projectProductPrimaryNav(input: {
     active,
     items,
     stage,
-    summary: `${activeDef.label} · NewMax 式主导航`,
+    summary: `${activeDef.label} · SYNC-THINK 主导航`,
   };
 }
 
-export function projectTalkTrackNav(input: {
-  active: TalkTrackId;
-}): {
+export function projectTalkTrackNav(input: { active: TalkTrackId }): {
   active: TalkTrackId;
   items: Array<TalkTrackNavItem & { active: boolean }>;
   summary: string;
@@ -294,10 +287,9 @@ export function projectRightRailTabs(input: {
   const developerLog = Boolean(input.developerLog);
   const visible = RIGHT_RAIL_PRODUCT_TABS.filter((tab) => !tab.developerOnly || developerLog);
   const requested = input.active;
-  const active =
-    visible.some((tab) => tab.id === requested)
-      ? requested
-      : (visible[0]?.id ?? 'process');
+  const active = visible.some((tab) => tab.id === requested)
+    ? requested
+    : (visible[0]?.id ?? 'process');
 
   return {
     active,

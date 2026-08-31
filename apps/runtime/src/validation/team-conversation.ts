@@ -95,6 +95,9 @@ export function parseAppendMessagePayload(value: unknown): AppendMessagePayload 
   if (value.planExecuting !== undefined && typeof value.planExecuting !== 'boolean') {
     return undefined;
   }
+  if (value.helpMode !== undefined && typeof value.helpMode !== 'boolean') {
+    return undefined;
+  }
   if (value.images !== undefined) {
     if (!Array.isArray(value.images) || value.images.length > 8) return undefined;
     for (const image of value.images) {

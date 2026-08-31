@@ -26,6 +26,7 @@ interface SessionEntry<T extends KernelAdapter> {
   leased: boolean;
   stopping: boolean;
   stopPromise?: Promise<void>;
+  recycleRequested?: boolean;
   lastUsedAt: number;
   idleTimer?: ReturnType<typeof setTimeout>;
 }
@@ -99,6 +100,35 @@ export class BoundedKernelSessionHost<T extends KernelAdapter = KernelAdapter> {
       waiting: this.waiters.length,
       keys: [...this.entries.keys()],
     };
+  }
+
+  /**
+   * Replace every resident process without invalidating durable conversation
+   * sessions. Idle entries stop now; leased entries finish their current turn
+   * and stop on release so an update never truncates an in-flight response.
+   */
+  async recycleAll(): Promise<{ recycled: number; deferred: number }> {
+    if (this.stopped) return { recycled: 0, deferred: 0 };
+    const idle: SessionEntry<T>[] = [];
+    let deferred = 0;
+    for (const entry of this.entries.values()) {
+      this.clearIdleTimer(entry);
+      if (entry.leased) {
+        entry.recycleRequested = true;
+        deferred += 1;
+      } else if (!entry.stopping) {
+        entry.stopping = true;
+        idle.push(entry);
+      }
+    }
+    await Promise.all(
+      idle.map(async (entry) => {
+        await this.stopEntry(entry);
+        if (this.entries.get(entry.key) === entry) this.entries.delete(entry.key);
+      }),
+    );
+    void this.drain();
+    return { recycled: idle.length, deferred };
   }
 
   stopAll(): Promise<void> {
@@ -212,6 +242,19 @@ export class BoundedKernelSessionHost<T extends KernelAdapter = KernelAdapter> {
         if (!current || current.adapter !== entry!.adapter || !current.leased) return;
         current.leased = false;
         current.lastUsedAt = this.now();
+        if (current.recycleRequested) {
+          current.stopping = true;
+          void this.stopEntry(current).then(
+            () => {
+              if (this.entries.get(key) === current) this.entries.delete(key);
+              void this.drain();
+            },
+            () => {
+              // Keep a failed-stop entry counted; stopAll() can retry/report it.
+            },
+          );
+          return;
+        }
         this.scheduleIdleEviction(current);
         void this.drain();
       },

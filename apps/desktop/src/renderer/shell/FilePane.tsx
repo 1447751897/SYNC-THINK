@@ -14,6 +14,7 @@ import {
 import type { ProjectTextLocation } from '../../workspace-tools-contract.js';
 import { FileContentPreview, isRenderedMarkdownPath } from './FileContentPreview.js';
 import { matchesShortcut, readShortcutPreferences } from './preferences-store.js';
+import { SlidingTabs } from './SlidingTabs.js';
 
 export interface FileRevealTarget extends ProjectTextLocation {
   nonce: number;
@@ -391,7 +392,7 @@ export function FilePane({
   return (
     <div className="shell-file-pane" data-testid="file-pane">
       <header className="shell-file-pane-header">
-        <div className="shell-file-pane-view-tabs" role="tablist" aria-label="文件查看方式">
+        <SlidingTabs className="shell-file-pane-view-tabs" aria-label="文件查看方式">
           <button
             type="button"
             role="tab"
@@ -414,7 +415,7 @@ export function FilePane({
           >
             <FileCode2 size={13} aria-hidden="true" />
           </button>
-        </div>
+        </SlidingTabs>
         <span
           className={dirty ? 'shell-file-pane-status is-dirty' : 'shell-file-pane-status'}
           data-testid="file-pane-status"

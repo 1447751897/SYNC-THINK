@@ -33,6 +33,10 @@
     "./preferences": {
       "types": "./dist/preferences.d.ts",
       "default": "./dist/preferences.js"
+    },
+    "./tool-approval": {
+      "types": "./dist/tool-approval.d.ts",
+      "default": "./dist/tool-approval.js"
     }
   },
   "scripts": {

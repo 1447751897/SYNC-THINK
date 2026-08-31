@@ -118,6 +118,80 @@ input.on('line', (line) => {
     const progressFixture = request.params?.input?.some?.(
       (item) => item?.text === 'progress fixture',
     );
+    const effortFixture = request.params?.input?.some?.((item) => item?.text === 'effort fixture');
+    const collaborationFixture = request.params?.input?.some?.(
+      (item) => item?.text === 'collaboration fixture',
+    );
+    const nativePlanFixture = request.params?.input?.some?.(
+      (item) => item?.text === 'native plan fixture',
+    );
+    const compactionFixture = request.params?.input?.some?.(
+      (item) => item?.text === 'compaction lifecycle fixture',
+    );
+    const compactionFailureFixture = request.params?.input?.some?.(
+      (item) => item?.text === 'compaction failure fixture',
+    );
+    const planFixture = request.params?.input?.some?.((item) => item?.text === 'plan fixture');
+    if (planFixture) {
+      write({
+        method: 'turn/plan/updated',
+        params: {
+          threadId,
+          turnId,
+          explanation: 'Three-step fixture plan',
+          plan: [
+            { step: '读取 package.json', status: 'completed' },
+            { step: '运行 typecheck', status: 'inProgress' },
+            { step: '汇总结果', status: 'pending' },
+          ],
+        },
+      });
+    }
+    if (nativePlanFixture) {
+      write({
+        method: 'item/started',
+        params: { threadId, turnId, item: { id: 'native-plan', type: 'plan' } },
+      });
+      write({
+        method: 'item/plan/delta',
+        params: { threadId, turnId, itemId: 'native-plan', delta: '非规范增量' },
+      });
+      write({
+        method: 'item/completed',
+        params: {
+          threadId,
+          turnId,
+          item: { id: 'native-plan', type: 'plan', text: '# 原生方案\n\n1. 读取\n2. 验证' },
+        },
+      });
+    }
+    if (compactionFixture) {
+      write({
+        method: 'item/started',
+        params: { threadId, turnId, item: { id: 'compact-1', type: 'contextCompaction' } },
+      });
+      write({
+        method: 'item/completed',
+        params: { threadId, turnId, item: { id: 'compact-1', type: 'contextCompaction' } },
+      });
+      write({ method: 'thread/compacted', params: { threadId, turnId } });
+    }
+    if (compactionFailureFixture) {
+      write({
+        method: 'item/started',
+        params: { threadId, turnId, item: { id: 'compact-fail', type: 'contextCompaction' } },
+      });
+      write({
+        method: 'error',
+        params: {
+          threadId,
+          turnId,
+          willRetry: false,
+          error: { message: 'context compaction failed' },
+        },
+      });
+      return;
+    }
     if (progressFixture) {
       write({
         method: 'item/started',
@@ -159,11 +233,18 @@ input.on('line', (line) => {
               turnApprovalPolicy: request.params?.approvalPolicy,
               turnSandboxPolicy: request.params?.sandboxPolicy,
             })
-          : sawLocalImage
-            ? 'local image forwarded'
-            : sawInlineImage
-              ? 'inline image forwarded'
-            : `answer ${turnCount}`,
+          : collaborationFixture
+            ? JSON.stringify(request.params?.collaborationMode)
+            : effortFixture
+              ? JSON.stringify({
+                  hasEffort: Object.prototype.hasOwnProperty.call(request.params, 'effort'),
+                  effort: request.params?.effort,
+                })
+              : sawLocalImage
+                ? 'local image forwarded'
+                : sawInlineImage
+                  ? 'inline image forwarded'
+                  : `answer ${turnCount}`,
       },
     });
     if (request.params?.input?.some?.((item) => item?.text === 'hang fixture')) return;

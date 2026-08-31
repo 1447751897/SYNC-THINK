@@ -1,1 +1,5 @@
-export { AbilitiesPage } from './abilities/AbilityCenterPage.js';
+export {
+  AbilitiesPage,
+  type AbilitiesPageProps,
+  type AbilityCenterInitialView,
+} from './abilities/AbilityCenterPage.js';

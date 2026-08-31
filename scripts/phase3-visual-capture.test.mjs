@@ -23,6 +23,7 @@ describe('Phase 3 visual matrix', () => {
     const fixtures = new Set(PHASE3_VISUAL_MATRIX.map((item) => item.fixture));
     const themes = new Set(PHASE3_VISUAL_MATRIX.map((item) => item.theme));
     assert.deepEqual([...fixtures].sort(), [
+      'composer-slash-open',
       'connection-and-code',
       'diagnostics',
       'inline-process-hierarchy',
@@ -36,6 +37,17 @@ describe('Phase 3 visual matrix', () => {
     assert.deepEqual([...themes].sort(), ['dark', 'light']);
     assert.ok(PHASE3_VISUAL_MATRIX.some((item) => item.scale === 1.25));
     assert.ok(PHASE3_VISUAL_MATRIX.some((item) => item.width <= 760));
+    assert.ok(
+      PHASE3_VISUAL_MATRIX.some(
+        (item) =>
+          item.id === 'composer-slash-open-dark' &&
+          item.fixture === 'composer-slash-open' &&
+          item.theme === 'dark' &&
+          item.scale === 1 &&
+          item.width === 986 &&
+          item.height === 560,
+      ),
+    );
     assert.ok(
       PHASE3_VISUAL_MATRIX.some(
         (item) =>
@@ -134,6 +146,8 @@ describe('Phase 3 visual matrix', () => {
     assert.match(driver, /execution_timeline_closed_invalid/);
     assert.match(driver, /connection_code_invalid/);
     assert.match(driver, /streaming_follow_invalid/);
+    assert.match(driver, /composer_geometry_invalid/);
+    assert.match(driver, /composer-slash-open-menu/);
     assert.match(driver, /workspace_file_invalid/);
     assert.match(driver, /workspace_file_source_invalid/);
     assert.match(driver, /workspace_file_json_invalid/);

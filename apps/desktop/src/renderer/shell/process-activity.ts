@@ -11,15 +11,7 @@ import type { InlineProcessItem } from './ChatView.js';
 type ToolItem = Extract<InlineProcessItem, { kind: 'tool' }>;
 
 export type ProcessToolVisualKind =
-  | 'read'
-  | 'write'
-  | 'list'
-  | 'command'
-  | 'git'
-  | 'browser'
-  | 'search'
-  | 'mcp'
-  | 'other';
+  'read' | 'write' | 'list' | 'command' | 'git' | 'browser' | 'search' | 'mcp' | 'other';
 
 const TOOL_DISPLAY_NAMES: Readonly<Record<string, string>> = {
   read: '读取文件',
@@ -33,6 +25,7 @@ const TOOL_DISPLAY_NAMES: Readonly<Record<string, string>> = {
   execute_command: '运行命令',
   exec_command: '运行命令',
   run_command: '运行命令',
+  command_execution: '命令执行',
   list_files: '查看目录',
   glob: '查找文件',
   grep: '搜索内容',
@@ -69,7 +62,9 @@ export function toolVisualKind(name: string): ProcessToolVisualKind {
     return 'write';
   }
   if (/^(list_files|file_list|glob)$/.test(normalized)) return 'list';
-  if (/^(bash|execute_command|exec_command|run_command)$/.test(normalized)) return 'command';
+  if (/^(bash|execute_command|exec_command|run_command|command_execution)$/.test(normalized)) {
+    return 'command';
+  }
   if (normalized.startsWith('git_')) return 'git';
   if (/^(search_query|web_search|search_web|grep|file_search)$/.test(normalized)) return 'search';
   if (/^(open|web_fetch|browser_)/.test(normalized)) return 'browser';
@@ -287,7 +282,9 @@ export function activityFingerprint(items: readonly InlineProcessItem[]): string
   for (const item of items) {
     if (item.kind !== 'tool') continue;
     if (toolStatusOf(item) !== 'running') continue;
-    parts.push(`r:${item.toolCallId ?? item.name}:${item.progressBytes ?? 0}:${item.progressLine ?? ''}`);
+    parts.push(
+      `r:${item.toolCallId ?? item.name}:${item.progressBytes ?? 0}:${item.progressLine ?? ''}`,
+    );
   }
   const last = items.at(-1);
   if (last) {

@@ -66,7 +66,7 @@ describe('run process renderer wiring', () => {
   it('uses one adaptive display batch per animation frame and reschedules bounded catch-up', () => {
     expect(chatViewSource).toContain('transientFrameQueueRef');
     expect(chatViewSource).toContain('transientFrameFlushRef');
-    expect(chatViewSource).toContain('window.requestAnimationFrame(flushTransientFrames)');
+    expect(chatViewSource).toContain('getConversationDisplayQueueFlushDelay(queued)');
     expect(chatViewSource).toContain('takeConversationDisplayQueueBatch');
     expect(chatViewSource).toContain('getConversationDisplayQueueBatchOptions(queued)');
     expect(chatViewSource).not.toContain('while (queued.length > 0)');
@@ -75,6 +75,12 @@ describe('run process renderer wiring', () => {
     );
     expect(chatViewSource).toContain('applyConversationStreamOperations');
     expect(chatViewSource).toContain('lastTransientSequenceRef.current = Math.max');
+  });
+
+  it('pins goal rounds to the composer model and kernel route', () => {
+    expect(chatViewSource).toContain('const goalModelId = resolveSendModelId');
+    expect(chatViewSource).toContain('modelId: goalModelId');
+    expect(chatViewSource).toContain('kernelId: kernelOverride');
   });
 
   it('does not let durable terminal events overtake a healthy transient stream', () => {

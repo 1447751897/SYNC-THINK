@@ -1,5 +1,5 @@
 // P7/P8 · Settings Page
-// Strictly follows the NewMax settings information architecture shown in the
+// Follows the SYNC-THINK settings information architecture shown in the
 // product reference screenshots: searchable left navigation, compact rows,
 // page-local tabs, and a fixed completion action.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -21,6 +21,8 @@ import {
   Info,
   Keyboard,
   Link2,
+  LoaderCircle,
+  MessageCircle,
   Mic2,
   Network,
   Palette,
@@ -41,15 +43,28 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import type {
+  BotChannelConfigSummary,
   DataStorageStatsResponse,
   McpServerSummary,
   WorkspaceSummary,
 } from '@sync-think/protocol';
-import { NEWMAX_CONNECTOR_CATALOG, type ManagedConnectorCatalogItem } from './connector-catalog.js';
+import {
+  SYNC_THINK_CONNECTOR_CATALOG,
+  type ManagedConnectorCatalogItem,
+} from './connector-catalog.js';
+import telegramIcon from './assets/connectors/telegram.png';
+import { BotConversationPane } from './BotConversationPane.js';
 import {
   COMPUTER_USE_PLUGIN_SETTING_KEY,
   normalizeComputerUsePluginSetting,
 } from '@sync-think/protocol/plugins';
+import {
+  COMPUTER_USE_APPROVAL_POLICY_SETTING_KEY,
+  normalizeComputerUseApprovalPolicySetting,
+  removePersistentComputerUseApp,
+  type ComputerUseApprovalPolicySetting,
+  type PersistentComputerUseApp,
+} from '@sync-think/protocol/tool-approval';
 // Subpath import on purpose: the protocol barrel reaches node:os / node:crypto
 // through the pipe + handshake modules, which cannot be bundled for the renderer.
 import {
@@ -61,8 +76,14 @@ import {
   type OpenGatewayStatusResponse,
   type OpenGatewayUpstreamProtocol,
 } from '@sync-think/protocol/gateway';
-import { ModelSettings, type ModelSettingsHandle } from './ModelSettings.js';
+import {
+  ModelSettings,
+  type ModelSettingsDetailView,
+  type ModelSettingsHandle,
+} from './ModelSettings.js';
 import { DesktopUpdatePanel } from './DesktopUpdatePanel.js';
+import { KernelUpdatePanel } from './KernelUpdatePanel.js';
+import { SlidingTabs } from './SlidingTabs.js';
 import { PreferencesSettings } from './PreferencesSettings.js';
 import { BrandLogoMark } from './BrandLogoMark.js';
 import { resolveKernelBrandLogo, resolveKernelDisplayName } from './brand-icons.js';
@@ -73,7 +94,7 @@ import {
   type DefaultPermissionPreference,
 } from '../ui-preferences.js';
 
-type SettingsSection =
+export type SettingsSection =
   | 'account'
   | 'wallet'
   | 'general'
@@ -144,17 +165,33 @@ const SECTIONS: Array<{
 ];
 
 export interface SettingsPageProps {
+  initialSection?: SettingsSection;
+  initialModelDetail?: ModelSettingsDetailView;
+  initialConnectionTab?: ConnectionTab;
+  navigationKey?: string | number;
   onDone?(): void;
   onCatalogChanged?(): void;
   onDirtyChange?(dirty: boolean): void;
 }
 
-export function SettingsPage({ onDone, onCatalogChanged, onDirtyChange }: SettingsPageProps) {
-  const [section, setSection] = useState<SettingsSection>('general');
+export function SettingsPage({
+  initialSection,
+  initialModelDetail,
+  initialConnectionTab,
+  navigationKey,
+  onDone,
+  onCatalogChanged,
+  onDirtyChange,
+}: SettingsPageProps) {
+  const [section, setSection] = useState<SettingsSection>(initialSection ?? 'general');
   const [query, setQuery] = useState('');
   const [modelDirty, setModelDirty] = useState(false);
   const [completing, setCompleting] = useState(false);
   const modelSettingsRef = useRef<ModelSettingsHandle | null>(null);
+
+  useEffect(() => {
+    if (initialSection) setSection(initialSection);
+  }, [initialSection, navigationKey]);
 
   const reportDirty = useCallback(
     (dirty: boolean) => {
@@ -254,13 +291,15 @@ export function SettingsPage({ onDone, onCatalogChanged, onDirtyChange }: Settin
           {section === 'models' && (
             <ModelSettings
               ref={modelSettingsRef}
+              initialDetailView={initialModelDetail}
+              navigationKey={navigationKey}
               onCatalogChanged={onCatalogChanged}
               onDirtyChange={reportDirty}
             />
           )}
           {section === 'plugins' && <ComputerUsePluginSection />}
           {section === 'connection' && (
-            <ConnectionSection onOpenWallet={() => setSection('wallet')} />
+            <ConnectionSection initialTab={initialConnectionTab} navigationKey={navigationKey} />
           )}
           {section === 'data' && <DataDiagnosticsSection />}
           {section === 'about' && <AboutSection />}
@@ -358,6 +397,9 @@ function GeneralSection() {
 
 function ComputerUsePluginSection() {
   const [enabled, setEnabled] = useState(false);
+  const [approvalPolicy, setApprovalPolicy] = useState<ComputerUseApprovalPolicySetting>(() =>
+    normalizeComputerUseApprovalPolicySetting(undefined),
+  );
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
@@ -373,12 +415,19 @@ function ComputerUsePluginSection() {
       };
     }
     void runtime
-      .getSettings({ keys: [COMPUTER_USE_PLUGIN_SETTING_KEY] })
+      .getSettings({
+        keys: [COMPUTER_USE_PLUGIN_SETTING_KEY, COMPUTER_USE_APPROVAL_POLICY_SETTING_KEY],
+      })
       .then((response) => {
         if (disposed) return;
         setEnabled(
           normalizeComputerUsePluginSetting(response.settings[COMPUTER_USE_PLUGIN_SETTING_KEY])
             .enabled,
+        );
+        setApprovalPolicy(
+          normalizeComputerUseApprovalPolicySetting(
+            response.settings[COMPUTER_USE_APPROVAL_POLICY_SETTING_KEY],
+          ),
         );
         setError(undefined);
       })
@@ -414,6 +463,25 @@ function ComputerUsePluginSection() {
     }
   };
 
+  const handleRemoveAllowedApp = async (app: PersistentComputerUseApp) => {
+    const nextPolicy = removePersistentComputerUseApp(approvalPolicy, app);
+    setSaving(true);
+    setError(undefined);
+    try {
+      const runtime = window.syncThink?.runtime;
+      if (!runtime) throw new Error('Runtime 连接不可用。');
+      await runtime.setSetting({
+        key: COMPUTER_USE_APPROVAL_POLICY_SETTING_KEY,
+        value: nextPolicy,
+      });
+      setApprovalPolicy(nextPolicy);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '移除应用授权失败。');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <div className="settings-scroll settings-standard-pane">
       <div className="settings-rows">
@@ -440,6 +508,34 @@ function ComputerUsePluginSection() {
       <p className="settings-note">
         插件开关决定是否具有桌面能力；权限模式决定启用后的动作是否需要批准。「完全访问」不会自动启用插件。
       </p>
+      <section className="settings-permission-section" aria-labelledby="computer-use-apps-title">
+        <h2 id="computer-use-apps-title">始终允许的应用</h2>
+        {approvalPolicy.alwaysAllowedApps.length > 0 ? (
+          <div className="settings-rows">
+            {approvalPolicy.alwaysAllowedApps.map((app) => (
+              <SettingRow
+                key={`${app.field}:${app.value}`}
+                title={app.value}
+                description={app.field === 'app_id' ? 'Windows 应用' : 'macOS 应用'}
+                control={
+                  <button
+                    type="button"
+                    className="settings-gateway-button"
+                    aria-label={`移除 ${app.value}`}
+                    title={`移除 ${app.value}`}
+                    disabled={loading || saving}
+                    onClick={() => void handleRemoveAllowedApp(app)}
+                  >
+                    <Trash2 size={13} aria-hidden="true" />
+                  </button>
+                }
+              />
+            ))}
+          </div>
+        ) : (
+          <p className="settings-note">暂无已授权应用。</p>
+        )}
+      </section>
       {error ? (
         <p className="settings-note" role="alert">
           {error}
@@ -449,12 +545,33 @@ function ComputerUsePluginSection() {
   );
 }
 
-type ConnectionTab = 'connectors' | 'mcp' | 'plugins' | 'search' | 'bots' | 'gateway' | 'network';
+export type ConnectionTab =
+  | 'connectors'
+  | 'mcp'
+  | 'plugins'
+  | 'search'
+  | 'bots'
+  | 'gateway'
+  | 'network';
 
 type ConnectorSelection =
   | { kind: 'managed'; item: ManagedConnectorCatalogItem }
   | { kind: 'server'; server: McpServerSummary }
   | { kind: 'new' };
+
+function managedConnectorServer(
+  servers: readonly McpServerSummary[],
+  item: ManagedConnectorCatalogItem,
+): McpServerSummary | undefined {
+  const currentNote = `SYNC-THINK connector: ${item.id}`;
+  const legacyNote = `NewMax connector: ${item.id}`;
+  return servers.find(
+    (server) =>
+      server.notes.trim() === currentNote ||
+      server.notes.trim() === legacyNote ||
+      server.name.trim().toLocaleLowerCase() === item.name.trim().toLocaleLowerCase(),
+  );
+}
 
 const CONNECTION_TABS: Array<{ id: ConnectionTab; label: string }> = [
   { id: 'connectors', label: '连接器' },
@@ -466,16 +583,31 @@ const CONNECTION_TABS: Array<{ id: ConnectionTab; label: string }> = [
   { id: 'network', label: '网络' },
 ];
 
-function ConnectionSection({ onOpenWallet }: { onOpenWallet(): void }) {
-  const [tab, setTab] = useState<ConnectionTab>('connectors');
-  const [providerTab, setProviderTab] = useState<'newmax' | 'third-party'>('newmax');
+export interface ConnectionSectionProps {
+  initialTab?: ConnectionTab;
+  navigationKey?: string | number;
+}
+
+export function ConnectionSection({ initialTab, navigationKey }: ConnectionSectionProps = {}) {
+  const [tab, setTab] = useState<ConnectionTab>(initialTab ?? 'connectors');
+  const [providerTab, setProviderTab] = useState<'sync-think' | 'third-party'>('sync-think');
   const [query, setQuery] = useState('');
   const [servers, setServers] = useState<McpServerSummary[]>([]);
   const [serversLoading, setServersLoading] = useState(true);
   const [selection, setSelection] = useState<ConnectorSelection>();
+  const [managedSetup, setManagedSetup] = useState<ManagedConnectorCatalogItem>();
   const [busyId, setBusyId] = useState<string>();
   const [notice, setNotice] = useState<string>();
   const [error, setError] = useState<string>();
+
+  useEffect(() => {
+    if (!initialTab) return;
+    setTab(initialTab);
+    setSelection(undefined);
+    setManagedSetup(undefined);
+    setError(undefined);
+    setNotice(undefined);
+  }, [initialTab, navigationKey]);
 
   const loadServers = useCallback(async () => {
     const runtime = window.syncThink?.runtime;
@@ -505,6 +637,7 @@ function ConnectionSection({ onOpenWallet }: { onOpenWallet(): void }) {
     key?: string;
     authScheme: 'bearer' | 'api-key';
     notes: string;
+    managedItem?: ManagedConnectorCatalogItem;
   }) => {
     const runtime = window.syncThink?.runtime;
     if (!runtime?.registerRemoteMcpServer) {
@@ -529,7 +662,12 @@ function ConnectionSection({ onOpenWallet }: { onOpenWallet(): void }) {
           ? `连接已保存，工具发现失败：${result.discoveryError}`
           : `已连接 ${result.server.name}${result.discovered ? `，发现 ${result.server.tools.length} 个工具` : ''}。`,
       );
-      setSelection(undefined);
+      if (payload.managedItem) {
+        setSelection({ kind: 'managed', item: payload.managedItem });
+        setManagedSetup(undefined);
+      } else {
+        setSelection(undefined);
+      }
       await loadServers();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '连接失败。');
@@ -575,6 +713,22 @@ function ConnectionSection({ onOpenWallet }: { onOpenWallet(): void }) {
     }
   };
 
+  const refreshServerTools = async (server: McpServerSummary) => {
+    const runtime = window.syncThink?.runtime;
+    if (!runtime?.refreshMcpTools || busyId) return;
+    setBusyId(server.mcpServerId);
+    setError(undefined);
+    try {
+      await runtime.refreshMcpTools({ mcpServerId: server.mcpServerId, maxTools: 200 });
+      setNotice(`已刷新 ${server.name} 的可调用动作。`);
+      await loadServers();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '刷新连接器动作失败。');
+    } finally {
+      setBusyId(undefined);
+    }
+  };
+
   const connectedNames = useMemo(
     () => new Set(servers.map((server) => server.name.trim().toLocaleLowerCase())),
     [servers],
@@ -582,7 +736,7 @@ function ConnectionSection({ onOpenWallet }: { onOpenWallet(): void }) {
 
   return (
     <div className="settings-connection-page">
-      <div className="settings-connection-tabs" role="tablist" aria-label="连接设置分类">
+      <SlidingTabs className="settings-connection-tabs" aria-label="连接设置分类">
         {CONNECTION_TABS.map((item) => (
           <button
             key={item.id}
@@ -593,6 +747,7 @@ function ConnectionSection({ onOpenWallet }: { onOpenWallet(): void }) {
             onClick={() => {
               setTab(item.id);
               setSelection(undefined);
+              setManagedSetup(undefined);
               setError(undefined);
               setNotice(undefined);
             }}
@@ -600,31 +755,65 @@ function ConnectionSection({ onOpenWallet }: { onOpenWallet(): void }) {
             {item.label}
           </button>
         ))}
-      </div>
+      </SlidingTabs>
 
       <div className="settings-connection-body">
         {tab === 'connectors' ? (
           selection ? (
-            <RemoteMcpConnectionForm
-              key={
-                selection.kind === 'managed'
-                  ? selection.item.id
-                  : selection.kind === 'server'
-                    ? selection.server.mcpServerId
-                    : 'new'
-              }
-              selection={selection}
-              busy={busyId === 'save'}
-              error={error}
-              onBack={() => {
-                setSelection(undefined);
-                setError(undefined);
-              }}
-              onDelete={
-                selection.kind === 'server' ? () => void deleteServer(selection.server) : undefined
-              }
-              onSave={(payload) => void saveConnection(payload)}
-            />
+            selection.kind === 'managed' ? (
+              <>
+                <ManagedConnectorDetail
+                  item={selection.item}
+                  server={managedConnectorServer(servers, selection.item)}
+                  busy={Boolean(busyId)}
+                  notice={notice}
+                  error={error}
+                  onBack={() => {
+                    setSelection(undefined);
+                    setManagedSetup(undefined);
+                    setError(undefined);
+                  }}
+                  onConfigure={() => setManagedSetup(selection.item)}
+                  onToggle={(server, enabled) => void setServerEnabled(server, enabled)}
+                  onRefresh={(server) => void refreshServerTools(server)}
+                />
+                {managedSetup ? (
+                  <ManagedConnectorSetupDialog
+                    item={managedSetup}
+                    busy={busyId === 'save'}
+                    error={error}
+                    onClose={() => {
+                      setManagedSetup(undefined);
+                      setError(undefined);
+                    }}
+                    onSave={(payload) =>
+                      void saveConnection({
+                        ...payload,
+                        notes: `SYNC-THINK connector: ${managedSetup.id}`,
+                        managedItem: managedSetup,
+                      })
+                    }
+                  />
+                ) : null}
+              </>
+            ) : (
+              <RemoteMcpConnectionForm
+                key={selection.kind === 'server' ? selection.server.mcpServerId : 'new'}
+                selection={selection}
+                busy={busyId === 'save'}
+                error={error}
+                onBack={() => {
+                  setSelection(undefined);
+                  setError(undefined);
+                }}
+                onDelete={
+                  selection.kind === 'server'
+                    ? () => void deleteServer(selection.server)
+                    : undefined
+                }
+                onSave={(payload) => void saveConnection(payload)}
+              />
+            )
           ) : (
             <ConnectorCatalog
               providerTab={providerTab}
@@ -636,7 +825,6 @@ function ConnectionSection({ onOpenWallet }: { onOpenWallet(): void }) {
               error={error}
               onProviderTabChange={setProviderTab}
               onQueryChange={setQuery}
-              onOpenWallet={onOpenWallet}
               onOpenManaged={(item) => setSelection({ kind: 'managed', item })}
               onOpenServer={(server) => setSelection({ kind: 'server', server })}
               onAddServer={() => setSelection({ kind: 'new' })}
@@ -668,7 +856,7 @@ function ConnectionSection({ onOpenWallet }: { onOpenWallet(): void }) {
         {tab === 'plugins' ? <ComputerUsePluginSection /> : null}
         {tab === 'gateway' ? <OpenGatewaySection /> : null}
         {tab === 'search' ? <ConnectionEmptyPane icon={Search} title="暂无搜索服务连接" /> : null}
-        {tab === 'bots' ? <ConnectionEmptyPane icon={Bot} title="暂无机器人对话连接" /> : null}
+        {tab === 'bots' ? <BotConversationPane /> : null}
         {tab === 'network' ? (
           <ConnectionEmptyPane icon={Network} title="网络使用系统代理设置" />
         ) : null}
@@ -687,22 +875,20 @@ function ConnectorCatalog({
   error,
   onProviderTabChange,
   onQueryChange,
-  onOpenWallet,
   onOpenManaged,
   onOpenServer,
   onAddServer,
   onToggleServer,
 }: {
-  providerTab: 'newmax' | 'third-party';
+  providerTab: 'sync-think' | 'third-party';
   query: string;
   servers: McpServerSummary[];
   loading: boolean;
   connectedNames: Set<string>;
   notice?: string;
   error?: string;
-  onProviderTabChange(value: 'newmax' | 'third-party'): void;
+  onProviderTabChange(value: 'sync-think' | 'third-party'): void;
   onQueryChange(value: string): void;
-  onOpenWallet(): void;
   onOpenManaged(item: ManagedConnectorCatalogItem): void;
   onOpenServer(server: McpServerSummary): void;
   onAddServer(): void;
@@ -716,24 +902,26 @@ function ConnectorCatalog({
   return (
     <div className="settings-connector-catalog">
       <div className="settings-provider-switcher">
-        <div>
+        <SlidingTabs className="settings-provider-switcher__tabs" aria-label="连接器 Provider">
           <button
             type="button"
-            className={providerTab === 'newmax' ? 'is-active' : undefined}
-            aria-pressed={providerTab === 'newmax'}
-            onClick={() => onProviderTabChange('newmax')}
+            role="tab"
+            className={providerTab === 'sync-think' ? 'is-active' : undefined}
+            aria-selected={providerTab === 'sync-think'}
+            onClick={() => onProviderTabChange('sync-think')}
           >
-            NewMax Provider
+            SYNC-THINK Provider
           </button>
           <button
             type="button"
+            role="tab"
             className={providerTab === 'third-party' ? 'is-active' : undefined}
-            aria-pressed={providerTab === 'third-party'}
+            aria-selected={providerTab === 'third-party'}
             onClick={() => onProviderTabChange('third-party')}
           >
             第三方 Provider
           </button>
-        </div>
+        </SlidingTabs>
         {providerTab === 'third-party' ? (
           <label className="settings-provider-search">
             <Search size={13} aria-hidden="true" />
@@ -749,20 +937,16 @@ function ConnectorCatalog({
 
       <div className="settings-connectors-summary">
         <span>
-          {providerTab === 'newmax'
-            ? 'NewMax 提供的托管连接器，云端执行、按量计费。'
+          {providerTab === 'sync-think'
+            ? 'SYNC-THINK 连接器目录；动作数量以实际 MCP 工具发现结果为准。'
             : '通过远程 MCP 接入第三方 Provider，并在 Runtime 中发现可用工具。'}
         </span>
-        {providerTab === 'newmax' ? (
-          <button type="button" onClick={onOpenWallet}>
-            钱包余额 0.00 N币 ›
-          </button>
-        ) : (
+        {providerTab === 'third-party' ? (
           <button type="button" className="settings-connectors-add" onClick={onAddServer}>
             <Plus size={13} aria-hidden="true" />
             添加 Provider
           </button>
-        )}
+        ) : null}
       </div>
 
       {notice ? (
@@ -776,10 +960,10 @@ function ConnectorCatalog({
         </p>
       ) : null}
 
-      {providerTab === 'newmax' ? (
+      {providerTab === 'sync-think' ? (
         <div className="settings-connectors-scroll">
           <div className="settings-connectors-grid">
-            {NEWMAX_CONNECTOR_CATALOG.map((item) => {
+            {SYNC_THINK_CONNECTOR_CATALOG.map((item) => {
               const connected = connectedNames.has(item.name.toLocaleLowerCase());
               return (
                 <button
@@ -838,6 +1022,478 @@ function ConnectorCatalog({
   );
 }
 
+function ManagedConnectorDetail({
+  item,
+  server,
+  busy,
+  notice,
+  error,
+  onBack,
+  onConfigure,
+  onToggle,
+  onRefresh,
+}: {
+  item: ManagedConnectorCatalogItem;
+  server?: McpServerSummary;
+  busy: boolean;
+  notice?: string;
+  error?: string;
+  onBack(): void;
+  onConfigure(): void;
+  onToggle(server: McpServerSummary, enabled: boolean): void;
+  onRefresh(server: McpServerSummary): void;
+}) {
+  const [query, setQuery] = useState('');
+  const needle = query.trim().toLocaleLowerCase();
+  const tools = (server?.tools ?? []).filter(
+    (tool) => !needle || `${tool.name} ${tool.description}`.toLocaleLowerCase().includes(needle),
+  );
+  const enabled = server?.enabled === true;
+
+  return (
+    <section className="settings-managed-connector" aria-label={`${item.name} 连接器详情`}>
+      <button type="button" className="settings-connector-back" onClick={onBack}>
+        <ArrowLeft size={14} aria-hidden="true" />
+        返回
+      </button>
+
+      <div className="settings-managed-connector__hero">
+        <div className="settings-managed-connector__identity">
+          <img src={item.icon} alt="" draggable={false} />
+          <div>
+            <h2>{item.name}</h2>
+            <div>
+              <span>MCP 连接器</span>
+              <span className={clsx('settings-managed-connector__status', enabled && 'is-enabled')}>
+                {enabled ? '已启用' : server ? '已停用' : '未配置'}
+              </span>
+            </div>
+          </div>
+        </div>
+        <button
+          type="button"
+          className={clsx('settings-managed-connector__toggle', enabled && 'is-enabled')}
+          disabled={busy}
+          onClick={() => {
+            if (!server) onConfigure();
+            else onToggle(server, !server.enabled);
+          }}
+        >
+          {busy ? <LoaderCircle size={14} className="is-spinning" aria-hidden="true" /> : null}
+          {enabled ? '停用连接器' : '启用连接器'}
+        </button>
+      </div>
+
+      {notice ? (
+        <p className="settings-connectors-notice" role="status">
+          {notice}
+        </p>
+      ) : null}
+      {error ? (
+        <p className="settings-connectors-notice is-error" role="alert">
+          {error}
+        </p>
+      ) : null}
+
+      <div className="settings-managed-actions">
+        <div className="settings-managed-actions__head">
+          <div>
+            <strong>可调用动作</strong>
+            <span>{server?.tools.length ?? 0} 个动作</span>
+          </div>
+          <div>
+            {server ? (
+              <button
+                type="button"
+                className="settings-managed-actions__refresh"
+                aria-label="刷新可调用动作"
+                disabled={busy}
+                onClick={() => onRefresh(server)}
+              >
+                <RefreshCw size={13} aria-hidden="true" />
+              </button>
+            ) : null}
+            <label className="settings-managed-actions__search">
+              <Search size={13} aria-hidden="true" />
+              <input
+                aria-label="搜索动作"
+                value={query}
+                placeholder="搜索动作…"
+                onChange={(event) => setQuery(event.target.value)}
+              />
+            </label>
+          </div>
+        </div>
+        <div className="settings-managed-actions__list">
+          {!server ? (
+            <div className="settings-managed-actions__empty">
+              <Plug size={18} aria-hidden="true" />
+              <strong>连接 Provider 后自动发现动作</strong>
+              <span>
+                不需要手工提供动作名称。点击“启用连接器”，填写该服务的 MCP 地址与凭证；
+                Runtime 会通过 <code>tools/list</code> 读取真实动作并显示在这里。
+              </span>
+            </div>
+          ) : tools.length === 0 ? (
+            <div className="settings-managed-actions__empty">
+              {server.tools.length === 0 ? '服务当前没有返回可调用动作。' : '没有匹配的动作。'}
+            </div>
+          ) : (
+            tools.map((tool) => (
+              <div key={tool.name} className="settings-managed-action-row">
+                <span aria-hidden="true">›</span>
+                <div>
+                  <strong>{tool.name}</strong>
+                  {tool.description ? <small>{tool.description}</small> : null}
+                </div>
+                <span className="settings-managed-action-row__method">MCP</span>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function ManagedConnectorSetupDialog({
+  item,
+  busy,
+  error,
+  onClose,
+  onSave,
+}: {
+  item: ManagedConnectorCatalogItem;
+  busy: boolean;
+  error?: string;
+  onClose(): void;
+  onSave(payload: {
+    name: string;
+    endpoint: string;
+    key?: string;
+    authScheme: 'bearer' | 'api-key';
+  }): void;
+}) {
+  const [endpoint, setEndpoint] = useState('');
+  const [apiKey, setApiKey] = useState('');
+  const [authScheme, setAuthScheme] = useState<'bearer' | 'api-key'>('bearer');
+  const [showKey, setShowKey] = useState(false);
+
+  return (
+    <div className="settings-connector-dialog-backdrop" role="presentation" onMouseDown={onClose}>
+      <section
+        role="dialog"
+        aria-modal="true"
+        aria-label={`配置${item.name}连接器`}
+        className="settings-connector-dialog"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="settings-connector-dialog__head">
+          <img src={item.icon} alt="" draggable={false} />
+          <div>
+            <h3>配置 {item.name}</h3>
+            <p>连接后由 Runtime 读取服务真实提供的 MCP 工具。</p>
+          </div>
+          <button type="button" aria-label="关闭连接器配置" onClick={onClose}>
+            ×
+          </button>
+        </div>
+        <form
+          className="settings-connector-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (!endpoint.trim() || busy) return;
+            onSave({
+              name: item.name,
+              endpoint: endpoint.trim(),
+              ...(apiKey.trim() ? { key: apiKey.trim() } : {}),
+              authScheme,
+            });
+          }}
+        >
+          <label>
+            <span>MCP 服务地址</span>
+            <input
+              type="url"
+              aria-label="MCP 服务地址"
+              value={endpoint}
+              placeholder="https://provider.example.com/mcp"
+              autoFocus
+              onChange={(event) => setEndpoint(event.target.value)}
+            />
+          </label>
+          <div className="settings-connector-form__auth-row">
+            <label>
+              <span>鉴权方式</span>
+              <select
+                aria-label="鉴权方式"
+                value={authScheme}
+                onChange={(event) => setAuthScheme(event.target.value as 'bearer' | 'api-key')}
+              >
+                <option value="bearer">Bearer Token</option>
+                <option value="api-key">API Key Header</option>
+              </select>
+            </label>
+            <label>
+              <span>API Key</span>
+              <div className="settings-connector-form__secret">
+                <input
+                  type={showKey ? 'text' : 'password'}
+                  aria-label="API Key"
+                  value={apiKey}
+                  placeholder="可选"
+                  onChange={(event) => setApiKey(event.target.value)}
+                />
+                <button
+                  type="button"
+                  aria-label={showKey ? '隐藏 API Key' : '显示 API Key'}
+                  onClick={() => setShowKey((current) => !current)}
+                >
+                  {showKey ? <EyeOff size={14} /> : <Eye size={14} />}
+                </button>
+              </div>
+            </label>
+          </div>
+          {error ? (
+            <p className="settings-connector-form__error" role="alert">
+              {error}
+            </p>
+          ) : null}
+          <div className="settings-connector-form__actions">
+            <button type="button" disabled={busy} onClick={onClose}>
+              取消
+            </button>
+            <button type="submit" className="is-primary" disabled={busy || !endpoint.trim()}>
+              {busy ? <LoaderCircle size={14} className="is-spinning" /> : <Plug size={14} />}
+              {busy ? '正在连接' : '保存并启用'}
+            </button>
+          </div>
+        </form>
+      </section>
+    </div>
+  );
+}
+
+const BOT_CHANNELS = [
+  { id: 'telegram', label: 'Telegram', badge: 'TG', available: true },
+  { id: 'feishu', label: '飞书', badge: '飞', available: false },
+  { id: 'wecom', label: '企业微信', badge: '企', available: false },
+  { id: 'wechat', label: '微信', badge: '微', available: false },
+  { id: 'discord', label: 'Discord', badge: 'D', available: false },
+  { id: 'dingtalk', label: '钉钉', badge: '钉', available: false },
+  { id: 'qq', label: 'QQ', badge: 'Q', available: false },
+] as const;
+
+const EMPTY_TELEGRAM_CONFIG: BotChannelConfigSummary = {
+  platform: 'telegram',
+  enabled: false,
+  credentialsConfigured: false,
+  proxyUrl: '',
+  connected: false,
+  state: 'disconnected',
+};
+
+export function LegacyBotConversationPane() {
+  const [config, setConfig] = useState<BotChannelConfigSummary>(EMPTY_TELEGRAM_CONFIG);
+  const [token, setToken] = useState('');
+  const [proxyUrl, setProxyUrl] = useState('');
+  const [showToken, setShowToken] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<string>();
+  const [error, setError] = useState<string>();
+  const tokenInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    let active = true;
+    const load = async () => {
+      try {
+        const runtime = window.syncThink?.runtime;
+        if (!runtime?.getBotChannelConfig) throw new Error('Runtime 连接不可用。');
+        const response = await runtime.getBotChannelConfig({ platform: 'telegram' });
+        if (!active) return;
+        setConfig(response);
+        setProxyUrl(response.proxyUrl ?? '');
+      } catch (reason) {
+        if (active) setError(reason instanceof Error ? reason.message : '读取机器人设置失败。');
+      } finally {
+        if (active) setLoading(false);
+      }
+    };
+    void load();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const save = async (enabled: boolean, verifyFirst: boolean) => {
+    const runtime = window.syncThink?.runtime;
+    if (!runtime?.saveBotChannelConfig) {
+      setError('Runtime 连接不可用。');
+      return;
+    }
+    setBusy(true);
+    setError(undefined);
+    setNotice(undefined);
+    try {
+      const response = await runtime.saveBotChannelConfig({
+        platform: 'telegram',
+        ...(token.trim() ? { token: token.trim() } : {}),
+        proxyUrl: proxyUrl.trim(),
+        enabled,
+        testConnection: verifyFirst,
+      });
+      setConfig(response.config);
+      setToken('');
+      setNotice(
+        enabled
+          ? `Telegram 已启用${response.config.botUsername ? `：@${response.config.botUsername}` : ''}`
+          : verifyFirst
+            ? '连接测试通过，设置已保存。'
+            : 'Telegram 已停用。',
+      );
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Telegram 设置保存失败。');
+      if (enabled && !config.credentialsConfigured && !token.trim()) {
+        tokenInputRef.current?.focus();
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="settings-bot-pane" aria-label="机器人对话设置">
+      <aside className="settings-bot-channels" aria-label="机器人通道">
+        {BOT_CHANNELS.map((channel) => (
+          <button
+            key={channel.id}
+            type="button"
+            className={channel.id === 'telegram' ? 'is-active' : undefined}
+            disabled={!channel.available}
+            aria-label={channel.available ? channel.label : `${channel.label}，尚未接入`}
+          >
+            {channel.id === 'telegram' ? (
+              <img src={telegramIcon} alt="" draggable={false} />
+            ) : (
+              <span className={`settings-bot-channel-badge is-${channel.id}`}>{channel.badge}</span>
+            )}
+            <span>{channel.label}</span>
+            {!channel.available ? <small>待接入</small> : null}
+          </button>
+        ))}
+      </aside>
+
+      <div className="settings-bot-config">
+        <div className="settings-bot-config__hero">
+          <div>
+            <img src={telegramIcon} alt="" draggable={false} />
+            <div>
+              <h2>Telegram</h2>
+              <p>
+                {loading
+                  ? '正在读取设置…'
+                  : config.connected
+                    ? `已连接${config.botUsername ? ` · @${config.botUsername}` : ''}`
+                    : '未连接'}
+              </p>
+            </div>
+          </div>
+          <Toggle
+            checked={config.enabled}
+            disabled={loading || busy}
+            label="启用 Telegram 机器人"
+            onChange={(enabled) => {
+              if (enabled && !config.credentialsConfigured && !token.trim()) {
+                setNotice(undefined);
+                setError('请先填写 Bot Token，再启用 Telegram 机器人。');
+                tokenInputRef.current?.focus();
+                return;
+              }
+              void save(enabled, false);
+            }}
+          />
+        </div>
+
+        <button
+          type="button"
+          className="settings-bot-docs"
+          onClick={() =>
+            void window.syncThink?.runtime?.openExternalUrl?.(
+              'https://core.telegram.org/bots/tutorial#obtain-your-bot-token',
+            )
+          }
+        >
+          通过 @BotFather 创建 Bot 并获取 Token
+          <ArrowRight size={13} aria-hidden="true" />
+        </button>
+
+        <div className="settings-bot-form">
+          <label>
+            <span>Bot Token</span>
+            <div className="settings-bot-secret">
+              <input
+                ref={tokenInputRef}
+                type={showToken ? 'text' : 'password'}
+                aria-label="Bot Token"
+                value={token}
+                placeholder={
+                  config.credentialsConfigured ? '已安全保存，留空保持不变' : '123456:ABC-DEF…'
+                }
+                autoComplete="off"
+                onChange={(event) => {
+                  setToken(event.target.value);
+                  if (error?.includes('Bot Token')) setError(undefined);
+                }}
+              />
+              <button
+                type="button"
+                aria-label={showToken ? '隐藏 Bot Token' : '显示 Bot Token'}
+                onClick={() => setShowToken((current) => !current)}
+              >
+                {showToken ? <EyeOff size={14} /> : <Eye size={14} />}
+              </button>
+            </div>
+          </label>
+          <label>
+            <span>代理地址</span>
+            <input
+              aria-label="代理地址"
+              value={proxyUrl}
+              placeholder="http://127.0.0.1:7890"
+              onChange={(event) => setProxyUrl(event.target.value)}
+            />
+            <small>网络受限时可填写 HTTP/HTTPS 代理；直连环境留空。</small>
+          </label>
+        </div>
+
+        {notice ? (
+          <p className="settings-connectors-notice" role="status">
+            <Check size={13} aria-hidden="true" />
+            {notice}
+          </p>
+        ) : null}
+        {error || config.lastError ? (
+          <p className="settings-connectors-notice is-error" role="alert">
+            <AlertCircle size={13} aria-hidden="true" />
+            {error ?? config.lastError}
+          </p>
+        ) : null}
+
+        <button
+          type="button"
+          className="settings-bot-test"
+          disabled={busy || loading || (!token.trim() && !config.credentialsConfigured)}
+          onClick={() => void save(config.enabled, true)}
+        >
+          {busy ? <LoaderCircle size={14} className="is-spinning" /> : <MessageCircle size={14} />}
+          {busy ? '正在测试' : '测试并保存'}
+        </button>
+      </div>
+    </section>
+  );
+}
+
 function RemoteMcpConnectionForm({
   selection,
   busy,
@@ -846,7 +1502,7 @@ function RemoteMcpConnectionForm({
   onDelete,
   onSave,
 }: {
-  selection: ConnectorSelection;
+  selection: Exclude<ConnectorSelection, { kind: 'managed' }>;
   busy: boolean;
   error?: string;
   onBack(): void;
@@ -859,14 +1515,13 @@ function RemoteMcpConnectionForm({
     notes: string;
   }): void;
 }) {
-  const item = selection.kind === 'managed' ? selection.item : undefined;
   const server = selection.kind === 'server' ? selection.server : undefined;
-  const [name, setName] = useState(item?.name ?? server?.name ?? '');
+  const [name, setName] = useState(server?.name ?? '');
   const [endpoint, setEndpoint] = useState(server?.endpoint ?? '');
   const [apiKey, setApiKey] = useState('');
   const [authScheme, setAuthScheme] = useState<'bearer' | 'api-key'>('bearer');
   const [showKey, setShowKey] = useState(false);
-  const title = item?.name ?? server?.name ?? '添加第三方 Provider';
+  const title = server?.name ?? '添加第三方 Provider';
 
   return (
     <div className="settings-connector-detail">
@@ -875,13 +1530,9 @@ function RemoteMcpConnectionForm({
         返回连接器
       </button>
       <div className="settings-connector-detail__head">
-        {item ? (
-          <img src={item.icon} alt="" draggable={false} />
-        ) : (
-          <span className="settings-connector-detail__icon">
-            <Server size={20} aria-hidden="true" />
-          </span>
-        )}
+        <span className="settings-connector-detail__icon">
+          <Server size={20} aria-hidden="true" />
+        </span>
         <div>
           <h2>{title}</h2>
           <p>远程 MCP Provider</p>
@@ -897,7 +1548,7 @@ function RemoteMcpConnectionForm({
             endpoint: endpoint.trim(),
             ...(apiKey.trim() ? { key: apiKey.trim() } : {}),
             authScheme,
-            notes: item ? `NewMax connector: ${item.id}` : (server?.notes ?? ''),
+            notes: server?.notes ?? '',
           });
         }}
       >
@@ -906,7 +1557,6 @@ function RemoteMcpConnectionForm({
           <input
             aria-label="连接器名称"
             value={name}
-            readOnly={Boolean(item)}
             onChange={(event) => setName(event.target.value)}
           />
         </label>
@@ -1483,7 +2133,7 @@ function GatewayAuditLogs() {
     <div className="settings-gateway-logs" data-testid="settings-gateway-logs">
       <div className="settings-gateway-logs__head">
         <div className="settings-gateway-logs__title">
-          <h3>转换日志</h3>
+          <h3>网关请求日志</h3>
           <span className="settings-gateway-logs__count">
             {total > 0 ? `${total} 条` : '暂无请求'}
           </span>
@@ -1694,7 +2344,10 @@ function GatewayAuditLogs() {
                         <pre>{prettyJsonText(entry.rawRequest)}</pre>
                       </div>
                       <div className="settings-gateway-logs__detail-body">
-                        <p>转换后格式（{GATEWAY_DIALECT_LABEL[entry.upstreamProtocol]}）</p>
+                        <p>
+                          {entry.converted ? '转换后格式' : '上游请求格式'}（
+                          {GATEWAY_DIALECT_LABEL[entry.upstreamProtocol]}）
+                        </p>
                         <pre>{prettyJsonText(entry.convertedRequest)}</pre>
                       </div>
                     </div>
@@ -2287,6 +2940,8 @@ function AboutSection() {
   return (
     <div className="settings-scroll settings-about-page">
       <DesktopUpdatePanel />
+      <KernelUpdatePanel />
+      <p className="settings-about-copyright">© 2026 SYNC-THINK. All rights reserved.</p>
     </div>
   );
 }
@@ -2296,7 +2951,7 @@ function ComingSoonSection({ label }: { label: string }) {
     <div className="settings-scroll settings-standard-pane">
       <div className="settings-empty-panel">
         <p>“{label}”能力尚未接入。</p>
-        <span>入口按照 NewMax 信息架构保留，接入时不会再调整设置布局。</span>
+        <span>入口按照 SYNC-THINK 信息架构保留，接入时不会再调整设置布局。</span>
       </div>
     </div>
   );

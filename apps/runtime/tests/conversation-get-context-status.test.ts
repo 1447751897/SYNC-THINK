@@ -679,7 +679,7 @@ describe('conversation.getContextStatus runtime integration', () => {
     }
   });
 
-  it('applies a conversation capacity override and reports a non-overridable kernel cap', async () => {
+  it('keeps legacy conversation overrides out of model-owned context capacity', async () => {
     const harness = await createHarness(128_000, { target: 'model' });
     try {
       const changed = await harness.inbox.send({
@@ -699,26 +699,26 @@ describe('conversation.getContextStatus runtime integration', () => {
 
       const native = await getContextStatus(harness, 'context-status-override');
       expect(native).toMatchObject({
-        contextWindow: 400_000,
+        contextWindow: 128_000,
         modelContextWindow: 128_000,
-        contextWindowOverride: 400_000,
-        contextWindowSource: 'conversation-override',
+        contextWindowSource: 'model-default',
       });
+      expect(native.contextWindowOverride).toBeUndefined();
 
-      const claude = await getContextStatus(
+      const external = await getContextStatus(
         harness,
         'context-status-claude-cap',
         undefined,
         'claude-code',
       );
-      expect(claude).toMatchObject({
-        contextWindow: 200_000,
+      expect(external).toMatchObject({
+        contextWindow: 128_000,
         modelContextWindow: 128_000,
-        contextWindowOverride: 400_000,
-        contextWindowSource: 'kernel-limit',
-        kernelContextWindowLimit: 200_000,
+        contextWindowSource: 'model-default',
       });
-      expect(claude.usageRatio).toBe(claude.estimatedUsedTokens / claude.contextWindow);
+      expect(external.contextWindowOverride).toBeUndefined();
+      expect(external.kernelContextWindowLimit).toBeUndefined();
+      expect(external.usageRatio).toBe(external.estimatedUsedTokens / external.contextWindow);
 
       const cleared = await harness.inbox.send({
         id: 'clear-context-window-override',

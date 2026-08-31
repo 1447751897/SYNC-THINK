@@ -121,6 +121,16 @@ import type {
   SetMcpServerEnabledResponse,
   DeleteMcpServerPayload,
   DeleteMcpServerResponse,
+  GetBotChannelConfigPayload,
+  GetBotChannelConfigResponse,
+  SaveBotChannelConfigPayload,
+  SaveBotChannelConfigResponse,
+  TestBotChannelPayload,
+  TestBotChannelResponse,
+  RequestWechatBotQrPayload,
+  RequestWechatBotQrResponse,
+  CheckWechatBotQrPayload,
+  CheckWechatBotQrResponse,
   CapabilityWorkspaceListPayload,
   CapabilityWorkspaceListResponse,
   CapabilityWorkspaceSetActivePayload,
@@ -359,6 +369,11 @@ import type {
   DesktopUpdateSnapshot,
 } from '../desktop-update-contract.js';
 import type { OpenExternalUrlResult } from '../external-link-contract.js';
+import type {
+  ManagedKernelUpdateActionResult,
+  ManagedKernelUpdateBridge,
+  ManagedKernelUpdateSnapshot,
+} from '../kernel-update-contract.js';
 
 const api = {
   runtime: {
@@ -935,6 +950,28 @@ const api = {
       ) as Promise<SetMcpServerEnabledResponse>,
     deleteMcpServer: (payload: DeleteMcpServerPayload) =>
       ipcRenderer.invoke('runtime:mcp-delete', payload) as Promise<DeleteMcpServerResponse>,
+    getBotChannelConfig: (payload: GetBotChannelConfigPayload) =>
+      ipcRenderer.invoke(
+        'runtime:bot-channel-get',
+        payload,
+      ) as Promise<GetBotChannelConfigResponse>,
+    saveBotChannelConfig: (payload: SaveBotChannelConfigPayload) =>
+      ipcRenderer.invoke(
+        'runtime:bot-channel-save',
+        payload,
+      ) as Promise<SaveBotChannelConfigResponse>,
+    testBotChannel: (payload: TestBotChannelPayload) =>
+      ipcRenderer.invoke('runtime:bot-channel-test', payload) as Promise<TestBotChannelResponse>,
+    requestWechatBotQr: (payload: RequestWechatBotQrPayload = {}) =>
+      ipcRenderer.invoke(
+        'runtime:bot-channel-wechat-qr-request',
+        payload,
+      ) as Promise<RequestWechatBotQrResponse>,
+    checkWechatBotQr: (payload: CheckWechatBotQrPayload) =>
+      ipcRenderer.invoke(
+        'runtime:bot-channel-wechat-qr-check',
+        payload,
+      ) as Promise<CheckWechatBotQrResponse>,
     probeMcpPolicy: (payload: ProbeMcpPolicyPayload = {}) =>
       ipcRenderer.invoke('runtime:mcp-policy-probe', payload) as Promise<ProbeMcpPolicyResponse>,
     requestMcpTool: (payload: RequestMcpToolPayload) =>
@@ -1390,6 +1427,17 @@ const api = {
       return () => ipcRenderer.removeListener(channel, handler);
     },
   },
+  kernelUpdates: {
+    getState: () =>
+      ipcRenderer.invoke('desktop:kernel-update-get-state') as Promise<ManagedKernelUpdateSnapshot>,
+    checkForUpdates: () =>
+      ipcRenderer.invoke('desktop:kernel-update-check') as Promise<ManagedKernelUpdateActionResult>,
+    installUpdate: (payload: Parameters<ManagedKernelUpdateBridge['installUpdate']>[0]) =>
+      ipcRenderer.invoke(
+        'desktop:kernel-update-install',
+        payload,
+      ) as Promise<ManagedKernelUpdateActionResult>,
+  } satisfies ManagedKernelUpdateBridge,
   platform: 'win32' as const,
 };
 

@@ -30,6 +30,7 @@ import {
   anthropicRequestToOpenAIResponses,
   degradeRequestBody,
   encodeSseFrame,
+  joinMessagesUrl,
   normalizeOpenAICompatibleBaseUrl,
   openAIChatRequestToAnthropic,
   openaiResponsesToChat,
@@ -49,11 +50,7 @@ import {
   OPEN_GATEWAY_OPENAI_PATH,
   type GatewayRequestLogEntry,
 } from '@sync-think/protocol';
-import type {
-  GatewayRoute,
-  GatewayRunUsage,
-  GatewayUpstreamProtocol,
-} from './tickets.js';
+import type { GatewayRoute, GatewayRunUsage, GatewayUpstreamProtocol } from './tickets.js';
 
 /** 32 MiB cap: large image payloads are legitimate, unbounded bodies are not. */
 const REQUEST_BODY_CAP = 32 * 1024 * 1024;
@@ -112,11 +109,7 @@ export function createExternalGatewayToken(): string {
   return `stgx_${randomBytes(24).toString('base64url')}`;
 }
 
-function traceGateway(
-  options: OpenGatewayServerOptions,
-  label: string,
-  details: unknown,
-): void {
+function traceGateway(options: OpenGatewayServerOptions, label: string, details: unknown): void {
   if (!GATEWAY_TRACE_ENABLED) return;
   options.onLog?.(`[trace] ${label} ${JSON.stringify(details)}`);
 }
@@ -190,9 +183,7 @@ function summarizeResponsesEvent(event: OpenAIResponseSseEvent): Record<string, 
           item: {
             ...(typeof raw.item.type === 'string' ? { type: raw.item.type } : {}),
             ...(typeof raw.item.id === 'string' ? { id: raw.item.id } : {}),
-            ...(typeof raw.item.call_id === 'string'
-              ? { callId: raw.item.call_id }
-              : {}),
+            ...(typeof raw.item.call_id === 'string' ? { callId: raw.item.call_id } : {}),
             ...(typeof raw.item.name === 'string' ? { name: raw.item.name } : {}),
           },
         }
@@ -201,18 +192,14 @@ function summarizeResponsesEvent(event: OpenAIResponseSseEvent): Record<string, 
       ? {
           response: {
             ...(typeof raw.response.id === 'string' ? { id: raw.response.id } : {}),
-            ...(typeof raw.response.status === 'string'
-              ? { status: raw.response.status }
-              : {}),
+            ...(typeof raw.response.status === 'string' ? { status: raw.response.status } : {}),
           },
         }
       : {}),
   };
 }
 
-function responseIdFromResponsesEvent(
-  event: OpenAIResponseSseEvent,
-): string | undefined {
+function responseIdFromResponsesEvent(event: OpenAIResponseSseEvent): string | undefined {
   const response = (event as { response?: { id?: unknown } }).response;
   return typeof response?.id === 'string' ? response.id : undefined;
 }
@@ -341,10 +328,10 @@ export function matchGatewayRoute(
  * with their SPA fallback HTML instead of JSON.
  */
 export function upstreamUrlFor(baseUrl: string, protocol: GatewayUpstreamProtocol): string {
-  const root = normalizeOpenAICompatibleBaseUrl(baseUrl);
   if (protocol === 'anthropic-messages') {
-    return /\/messages$/i.test(root) ? root : `${root}/messages`;
+    return joinMessagesUrl(baseUrl);
   }
+  const root = normalizeOpenAICompatibleBaseUrl(baseUrl);
   if (protocol === 'openai-responses') {
     return /\/responses$/i.test(root) ? root : `${root}/responses`;
   }
@@ -452,7 +439,9 @@ async function handleRequest(
 
   // Ticket routing is authoritative: the user's selected model wins over
   // whatever the kernel wrote into the body.
-  const targetModel = modelOverride ? route.providerModelId : route.providerModelId || requestedModel;
+  const targetModel = modelOverride
+    ? route.providerModelId
+    : route.providerModelId || requestedModel;
   const streamRequested = body.stream !== false;
   const requestId = `stgwreq_${randomBytes(18).toString('base64url')}`;
   const responseContinuationScope =
@@ -479,7 +468,11 @@ async function handleRequest(
     }
     if (matched === 'anthropic-messages') {
       if (route.protocol === 'openai-chat') {
-        await translateAnthropicToOpenAI(response, body as unknown as AnthropicMessagesRequest, context);
+        await translateAnthropicToOpenAI(
+          response,
+          body as unknown as AnthropicMessagesRequest,
+          context,
+        );
         return;
       }
       if (route.protocol === 'openai-responses') {
@@ -496,7 +489,11 @@ async function handleRequest(
       // translate responses→chat. The same-dialect case (Responses upstream)
       // was already handled by `matched === route.protocol` above.
       if (route.protocol === 'openai-chat') {
-        await translateOpenAIResponsesToChat(response, body as unknown as OpenAIResponsesRequest, context);
+        await translateOpenAIResponsesToChat(
+          response,
+          body as unknown as OpenAIResponsesRequest,
+          context,
+        );
         return;
       }
       throw new Error(
@@ -537,9 +534,7 @@ async function handleRequest(
       convertedRequest: converted.text,
       truncated: raw.truncated || converted.truncated,
       status: context.audit?.error ? 'error' : 'success',
-      ...(context.audit?.statusCode !== undefined
-        ? { statusCode: context.audit.statusCode }
-        : {}),
+      ...(context.audit?.statusCode !== undefined ? { statusCode: context.audit.statusCode } : {}),
       ...(context.audit?.error ? { errorMessage: context.audit.error } : {}),
       latencyMs: Date.now() - requestStartedAt,
     });
@@ -667,12 +662,7 @@ async function proxyDirect(
       ...codexPromptCacheFields(context),
     };
     context.audit = { upstreamBody };
-    let upstream = await callUpstream(
-      context.route,
-      upstreamBody,
-      context.options,
-      abort.signal,
-    );
+    let upstream = await callUpstream(context.route, upstreamBody, context.options, abort.signal);
     let preReadErrorText: string | undefined;
     if (!upstream.ok && upstream.status === 400) {
       const errorText = await upstream.text().catch(() => '');
@@ -685,12 +675,7 @@ async function proxyDirect(
       if (rejectedOptionalParameters.length > 0) {
         upstreamBody = degradeRequestBody(upstreamBody, rejectedOptionalParameters);
         context.audit = { upstreamBody };
-        upstream = await callUpstream(
-          context.route,
-          upstreamBody,
-          context.options,
-          abort.signal,
-        );
+        upstream = await callUpstream(context.route, upstreamBody, context.options, abort.signal);
         preReadErrorText = undefined;
       }
     }
@@ -859,10 +844,7 @@ async function translateAnthropicToOpenAIResponses(
       targetModel: context.targetModel,
       resolveFunctionItemId: (callId) => {
         const itemId = context.responseContinuationScope
-          ? context.options.resolveContinuationItem?.(
-              context.responseContinuationScope,
-              callId,
-            )
+          ? context.options.resolveContinuationItem?.(context.responseContinuationScope, callId)
           : undefined;
         traceGateway(context.options, 'responses.continuation.resolve', {
           requestId: context.requestId,
@@ -889,11 +871,7 @@ async function translateAnthropicToOpenAIResponses(
   const persistFunctionCallItems = (): void => {
     if (!context.responseContinuationScope) return;
     for (const [callId, itemId] of functionCallItems) {
-      context.options.recordContinuationItem?.(
-        context.responseContinuationScope,
-        callId,
-        itemId,
-      );
+      context.options.recordContinuationItem?.(context.responseContinuationScope, callId, itemId);
       traceGateway(context.options, 'responses.continuation.record', {
         requestId: context.requestId,
         callId,
@@ -918,12 +896,7 @@ async function translateAnthropicToOpenAIResponses(
   );
   try {
     const upstreamStartedAt = Date.now();
-    const upstream = await callUpstream(
-      context.route,
-      upstreamBody,
-      context.options,
-      abort.signal,
-    );
+    const upstream = await callUpstream(context.route, upstreamBody, context.options, abort.signal);
     traceGateway(context.options, 'responses.upstream-response', {
       requestId: context.requestId,
       status: upstream.status,
@@ -945,12 +918,7 @@ async function translateAnthropicToOpenAIResponses(
         error?: { message?: string };
       };
       observeProviderResponseId(payload.id);
-      captureOpenAIResponsesUsage(
-        context,
-        payload.usage,
-        payload.id,
-        payload.model,
-      );
+      captureOpenAIResponsesUsage(context, payload.usage, payload.id, payload.model);
       beginSse(response);
       if (payload.error) {
         writeFrames(response, emitter.error(payload.error.message ?? 'upstream error'));
@@ -978,11 +946,7 @@ async function translateAnthropicToOpenAIResponses(
         const event = parseSseJson<OpenAIResponseSseEvent>(message.data);
         if (!event) continue;
         observeProviderResponseId(responseIdFromResponsesEvent(event));
-        traceGateway(
-          context.options,
-          'responses.sse',
-          summarizeResponsesEvent(event),
-        );
+        traceGateway(context.options, 'responses.sse', summarizeResponsesEvent(event));
         captureOpenAIResponsesEventUsage(context, event);
         writeFrames(response, emitter.push(event));
       }
@@ -991,11 +955,7 @@ async function translateAnthropicToOpenAIResponses(
       const event = parseSseJson<OpenAIResponseSseEvent>(message.data);
       if (event) {
         observeProviderResponseId(responseIdFromResponsesEvent(event));
-        traceGateway(
-          context.options,
-          'responses.sse',
-          summarizeResponsesEvent(event),
-        );
+        traceGateway(context.options, 'responses.sse', summarizeResponsesEvent(event));
         captureOpenAIResponsesEventUsage(context, event);
         writeFrames(response, emitter.push(event));
       }
@@ -1137,7 +1097,10 @@ async function translateOpenAIToAnthropic(
       captureAnthropicUsage(context, payload.usage, payload.id, payload.model);
       beginSse(response);
       // Replay a non-streaming Anthropic body as the SSE events the emitter expects.
-      writeFrames(response, emitter.push({ type: 'message_start', message: { usage: payload.usage } }));
+      writeFrames(
+        response,
+        emitter.push({ type: 'message_start', message: { usage: payload.usage } }),
+      );
       let index = 0;
       for (const block of payload.content ?? []) {
         if (block.type === 'text' && typeof block.text === 'string') {
@@ -1247,12 +1210,7 @@ function captureDirectJsonUsage(text: string, context: TranslateContext): void {
   const providerResponseId = stringValue(payload.id);
   const providerModelId = stringValue(payload.model);
   if (context.route.protocol === 'anthropic-messages') {
-    captureAnthropicUsage(
-      context,
-      recordValue(payload.usage),
-      providerResponseId,
-      providerModelId,
-    );
+    captureAnthropicUsage(context, recordValue(payload.usage), providerResponseId, providerModelId);
     return;
   }
   if (context.route.protocol === 'openai-responses') {
@@ -1336,12 +1294,8 @@ function captureOpenAIResponsesUsage(
     tokensIn,
     tokensOut,
     cachedTokensHit: optionalNumberValue(usage.input_tokens_details?.cached_tokens),
-    cachedTokensCreated: optionalNumberValue(
-      usage.input_tokens_details?.cache_write_tokens,
-    ),
-    reasoningTokens: optionalNumberValue(
-      usage.output_tokens_details?.reasoning_tokens,
-    ),
+    cachedTokensCreated: optionalNumberValue(usage.input_tokens_details?.cache_write_tokens),
+    reasoningTokens: optionalNumberValue(usage.output_tokens_details?.reasoning_tokens),
     totalTokens: optionalNumberValue(usage.total_tokens) ?? tokensIn + tokensOut,
   });
 }
@@ -1367,44 +1321,33 @@ function captureOpenAIUsage(
     tokensIn,
     tokensOut,
     cachedTokensHit,
-    cachedTokensCreated: optionalNumberValue(
-      usage.prompt_tokens_details?.cache_write_tokens,
-    ),
-    reasoningTokens: optionalNumberValue(
-      usage.completion_tokens_details?.reasoning_tokens,
-    ),
+    cachedTokensCreated: optionalNumberValue(usage.prompt_tokens_details?.cache_write_tokens),
+    reasoningTokens: optionalNumberValue(usage.completion_tokens_details?.reasoning_tokens),
     totalTokens: optionalNumberValue(usage.total_tokens) ?? tokensIn + tokensOut,
   });
 }
 
 function recordProviderUsage(
   context: TranslateContext,
-  usage: Omit<
-    GatewayRunUsage,
-    'requestId' | 'providerId' | 'providerModelId'
-  > & { providerModelId?: string },
+  usage: Omit<GatewayRunUsage, 'requestId' | 'providerId' | 'providerModelId'> & {
+    providerModelId?: string;
+  },
 ): void {
   if (!context.runId || !context.options.recordRunUsage) return;
   if (usage.providerResponseId) context.providerResponseId = usage.providerResponseId;
   if (usage.providerModelId) context.providerModelId = usage.providerModelId;
   context.options.recordRunUsage(context.runId, {
     requestId: context.requestId,
-    ...(context.providerResponseId
-      ? { providerResponseId: context.providerResponseId }
-      : {}),
+    ...(context.providerResponseId ? { providerResponseId: context.providerResponseId } : {}),
     ...(context.route.providerId ? { providerId: context.route.providerId } : {}),
     providerModelId: context.providerModelId ?? context.targetModel,
     tokensIn: usage.tokensIn,
     tokensOut: usage.tokensOut,
-    ...(usage.cachedTokensHit !== undefined
-      ? { cachedTokensHit: usage.cachedTokensHit }
-      : {}),
+    ...(usage.cachedTokensHit !== undefined ? { cachedTokensHit: usage.cachedTokensHit } : {}),
     ...(usage.cachedTokensCreated !== undefined
       ? { cachedTokensCreated: usage.cachedTokensCreated }
       : {}),
-    ...(usage.reasoningTokens !== undefined
-      ? { reasoningTokens: usage.reasoningTokens }
-      : {}),
+    ...(usage.reasoningTokens !== undefined ? { reasoningTokens: usage.reasoningTokens } : {}),
     totalTokens: usage.totalTokens,
   });
 }
@@ -1420,9 +1363,7 @@ function stringValue(value: unknown): string | undefined {
 }
 
 function optionalNumberValue(value: unknown): number | undefined {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0
-    ? value
-    : undefined;
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 
 function numberValue(value: unknown): number {

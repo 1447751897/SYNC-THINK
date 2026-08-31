@@ -109,6 +109,15 @@ Runtime 数据库默认位于：
 
 测试可通过 `SYNC_THINK_DB_PATH` 指向隔离数据库。不得把 `SYNC_THINK_PIPE_SECRET` 写入日志、数据库、Renderer 状态或诊断导出。
 
+Codex/Claude Code 私有内核默认保存在数据库同级 `kernels/`，生产由 Desktop 自动把该路径作为 `SYNC_THINK_MANAGED_KERNEL_ROOT` 传给 Runtime。本地排查更新器时可显式隔离：
+
+```powershell
+$env:SYNC_THINK_MANAGED_KERNEL_ROOT = 'D:\tmp\sync-think-kernels'
+$env:SYNC_THINK_NPM_CLI = 'C:\path\to\node_modules\npm\bin\npm-cli.js'
+```
+
+`SYNC_THINK_NPM_CLI` 只用于开发环境覆盖。便携包从 `resources/node/node_modules/npm/bin/npm-cli.js` 自动解析；关于页升级写入应用私有目录，不修改系统 npm prefix 或用户全局 Claude/Codex。
+
 ## 5. Electron 构建边界
 
 Electron 保持以下安全设置：
@@ -267,7 +276,6 @@ pnpm db:governance `
 6. 重新启动前对恢复数据库执行只读 quick governance/SQLite integrity 检查，再验证 Runtime `database ready` 与 hello handshake。
 
 P0.3 不执行 `VACUUM`、incremental vacuum 或物理文件压缩。真实大库维护必须单独排期并保留额外外部备份。
-
 
 ### Event payload backfill B2 durable execution
 

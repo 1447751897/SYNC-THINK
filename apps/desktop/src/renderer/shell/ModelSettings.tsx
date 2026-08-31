@@ -30,6 +30,7 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
+import { SlidingTabs } from './SlidingTabs.js';
 import {
   ArrowLeft,
   ArrowDown,
@@ -54,7 +55,6 @@ import {
   Server,
   Settings2,
   Sparkles,
-  Target,
   Trash2,
   X,
 } from 'lucide-react';
@@ -692,13 +692,23 @@ export interface ModelSettingsHandle {
   complete(): Promise<boolean>;
 }
 
-export const ModelSettings = forwardRef<
-  ModelSettingsHandle,
-  {
-    onCatalogChanged?: () => void;
-    onDirtyChange?: (dirty: boolean) => void;
-  }
->(function ModelSettings({ onCatalogChanged, onDirtyChange }, ref) {
+export type ModelSettingsDetailView =
+  | 'provider'
+  | 'vision'
+  | 'plan-act'
+  | 'cloud-sync';
+
+export interface ModelSettingsProps {
+  initialDetailView?: ModelSettingsDetailView;
+  navigationKey?: string | number;
+  onCatalogChanged?: () => void;
+  onDirtyChange?: (dirty: boolean) => void;
+}
+
+export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>(function ModelSettings(
+  { initialDetailView, navigationKey, onCatalogChanged, onDirtyChange },
+  ref,
+) {
   const dialog = useDialog();
   const [providers, setProviders] = useState<ProviderSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -724,15 +734,13 @@ export const ModelSettings = forwardRef<
   const [ccSwitchLoading, setCcSwitchLoading] = useState(false);
   const [ccSwitchImporting, setCcSwitchImporting] = useState(false);
   const [modelTab, setModelTab] = useState<ModelTab>('text');
-  const [detailView, setDetailView] = useState<
-    'provider' | 'vision' | 'plan-act' | 'cloud-sync' | 'goal-evaluator'
-  >('provider');
-  const [strategyMenuOpen, setStrategyMenuOpen] = useState(false);
+  const [detailView, setDetailView] = useState<ModelSettingsDetailView>(
+    initialDetailView ?? 'provider',
+  );
   const [visionFallback, setVisionFallback] = useState<VisionFallbackSetting>({
     enabled: false,
     modelId: null,
   });
-  const [goalEvaluatorModelId, setGoalEvaluatorModelId] = useState<string | null>(null);
   const [modelConfigCloudSync, setModelConfigCloudSync] = useState(false);
   const [planAct, setPlanAct] = useState<PlanActSetting>({
     enabled: false,
@@ -743,6 +751,12 @@ export const ModelSettings = forwardRef<
   });
 
   const [providerOrders, setProviderOrders] = useState<Record<string, ProviderModelSummary[]>>({});
+
+  useEffect(() => {
+    if (!initialDetailView) return;
+    setShowCreate(false);
+    setDetailView(initialDetailView);
+  }, [initialDetailView, navigationKey]);
   const selectedProvider = providers.find((provider) => provider.providerId === selectedId) ?? null;
   const selected = selectedProvider
     ? {
@@ -800,19 +814,13 @@ export const ModelSettings = forwardRef<
       const [listed, settings] = await Promise.all([
         api.listProviders({}),
         api.getSettings?.({
-          keys: ['vision-fallback', 'plan-act', 'goal.evaluator-model', 'model-config-cloud-sync'],
+          keys: ['vision-fallback', 'plan-act', 'model-config-cloud-sync'],
         }) ?? Promise.resolve({ settings: {} as Record<string, unknown> }),
       ]);
       const next = [...listed.providers].sort((a, b) => a.sortOrder - b.sortOrder);
       setProviders(next);
       setVisionFallback(parseVisionFallback(settings.settings?.['vision-fallback']));
       setPlanAct(parsePlanAct(settings.settings?.['plan-act']));
-      const storedEvaluator = settings.settings?.['goal.evaluator-model'];
-      setGoalEvaluatorModelId(
-        typeof storedEvaluator === 'string' && storedEvaluator.trim()
-          ? storedEvaluator.trim()
-          : null,
-      );
       setModelConfigCloudSync(settings.settings?.['model-config-cloud-sync'] === true);
       setSelectedId((prev) => {
         if (prev && next.some((p) => p.providerId === prev)) return prev;
@@ -1575,25 +1583,6 @@ export const ModelSettings = forwardRef<
     );
   };
 
-  const handleSaveGoalEvaluator = (modelId: string | null) => {
-    const previous = goalEvaluatorModelId;
-    setGoalEvaluatorModelId(modelId);
-    void withBusy(
-      { kind: 'save-preference', label: '正在保存目标模式评估模型…' },
-      async () => {
-        const api = bridge();
-        if (!api?.setSetting) throw new Error('Runtime 未连接');
-        try {
-          await api.setSetting({ key: 'goal.evaluator-model', value: modelId });
-        } catch (error) {
-          setGoalEvaluatorModelId(previous);
-          throw error;
-        }
-      },
-      modelId ? '目标模式评估模型已更新' : '已停用目标模式评估器',
-    );
-  };
-
   const handleSaveModelConfigCloudSync = (enabled: boolean) => {
     const previous = modelConfigCloudSync;
     setModelConfigCloudSync(enabled);
@@ -1761,9 +1750,8 @@ export const ModelSettings = forwardRef<
 
   return (
     <div className="model-settings-root flex h-full min-h-0 flex-col">
-      <div className="model-settings-tabs" role="tablist" aria-label="模型类型">
-        <div className="model-settings-tabs__rail" data-active-tab={modelTab}>
-          <span className="model-settings-tabs__indicator" aria-hidden="true" />
+      <div className="model-settings-tabs">
+        <SlidingTabs className="model-settings-tabs__rail" aria-label="模型类型">
           {MODEL_TABS.map(({ id, label }) => (
             <button
               key={id}
@@ -1780,7 +1768,7 @@ export const ModelSettings = forwardRef<
               {label}
             </button>
           ))}
-        </div>
+        </SlidingTabs>
         <span className="model-settings-guide">
           如果配置遇到问题，可以查阅<span>配置指南</span>。
         </span>
@@ -1794,7 +1782,7 @@ export const ModelSettings = forwardRef<
             {MODEL_TABS.find((tab) => tab.id === modelTab)?.label ?? '模型'}
             模型配置尚未接入。
           </p>
-          <span>入口按 NewMax 的模型设置结构保留。</span>
+          <span>入口按 SYNC-THINK 的模型设置结构保留。</span>
         </div>
       ) : (
         <>
@@ -1927,36 +1915,6 @@ export const ModelSettings = forwardRef<
                     >
                       <span>已停用模型 {disabledProviders.length}</span>
                     </button>
-                    <div className="model-disabled-list__menu-wrap">
-                      <button
-                        type="button"
-                        className="model-disabled-list__menu-trigger"
-                        aria-label="更多模型设置"
-                        aria-expanded={strategyMenuOpen}
-                        onClick={() => setStrategyMenuOpen((open) => !open)}
-                      >
-                        <MoreHorizontal size={14} aria-hidden="true" />
-                      </button>
-                      {strategyMenuOpen ? (
-                        <div className="model-disabled-list__menu" role="menu">
-                          <button
-                            type="button"
-                            role="menuitem"
-                            onClick={() => {
-                              void confirmDiscardChanges().then((ok) => {
-                                if (!ok) return;
-                                setStrategyMenuOpen(false);
-                                setShowCreate(false);
-                                setDetailView('goal-evaluator');
-                              });
-                            }}
-                          >
-                            <Target size={13} aria-hidden="true" />
-                            目标模式评估模型
-                          </button>
-                        </div>
-                      ) : null}
-                    </div>
                   </div>
                   <div className="model-disabled-list__body" aria-hidden={!disabledOpen}>
                     <ul>
@@ -2150,13 +2108,6 @@ export const ModelSettings = forwardRef<
                     busy={operation?.kind === 'save-preference'}
                     onChange={handleSaveModelConfigCloudSync}
                   />
-                ) : detailView === 'goal-evaluator' ? (
-                  <GoalEvaluatorPanel
-                    allModels={allModels}
-                    value={goalEvaluatorModelId}
-                    busy={operation?.kind === 'save-preference'}
-                    onChange={handleSaveGoalEvaluator}
-                  />
                 ) : selected ? (
                   <ProviderDetail
                     provider={selected}
@@ -2237,7 +2188,7 @@ function ProviderCatalog({
   const items = PROVIDER_CATALOG[category];
   return (
     <section className="model-provider-catalog" aria-label="添加模型">
-      <div className="model-provider-catalog__tabs" role="tablist" aria-label="模型服务商分类">
+      <SlidingTabs className="model-provider-catalog__tabs" aria-label="模型服务商分类">
         {PROVIDER_CATALOG_CATEGORIES.map((item) => (
           <button
             key={item.id}
@@ -2253,7 +2204,7 @@ function ProviderCatalog({
             {item.label}
           </button>
         ))}
-      </div>
+      </SlidingTabs>
 
       <div className="model-provider-catalog__grid" role="tabpanel">
         {items.map((item) => {
@@ -4056,58 +4007,6 @@ function modelCanServeAsVisionFallback(model: {
   );
 }
 
-function GoalEvaluatorPanel({
-  allModels,
-  value,
-  busy,
-  onChange,
-}: {
-  allModels: Array<{
-    modelId: string;
-    displayName: string;
-    providerName: string;
-    enabled: boolean;
-  }>;
-  value: string | null;
-  busy: boolean;
-  onChange(value: string | null): void;
-}) {
-  const options = enabledModelOptions(allModels);
-  return (
-    <div className="model-strategy-panel">
-      <div className="model-strategy-panel__head">
-        <span className="model-strategy-panel__icon">
-          <Target size={16} />
-        </span>
-        <div>
-          <h2>目标模式评估模型</h2>
-          <p>每轮任务结束后，用独立的小模型判断完成条件是否满足（NewMax /goal 语义）。</p>
-        </div>
-      </div>
-      <div className="model-strategy-panel__fields">
-        <Field label="评估模型（留空 = 停用目标模式）">
-          <select
-            className="st-field-input"
-            value={value ?? ''}
-            disabled={busy}
-            onChange={(event) => onChange(event.target.value || null)}
-          >
-            <option value="">（未配置）</option>
-            {options.map((option) => (
-              <option key={option.modelId} value={option.modelId}>
-                {option.providerName} · {option.displayName}
-              </option>
-            ))}
-          </select>
-        </Field>
-      </div>
-      <p className="model-strategy-panel__note">
-        评估器使用独立模型判断完成条件（不调用工具，只读对话内容）；不配置则目标模式不会自动启动。
-      </p>
-    </div>
-  );
-}
-
 function PlanActPanel({
   allModels,
   value,
@@ -4415,7 +4314,7 @@ export function UsageSettings() {
         />
       </div>
 
-      <div className="usage-tabs" role="tablist" aria-label="统计视图">
+      <SlidingTabs className="usage-tabs" aria-label="统计视图">
         {[
           ['requests', '请求日志'],
           ['providers', '供应商统计'],
@@ -4434,7 +4333,7 @@ export function UsageSettings() {
             {label}
           </button>
         ))}
-      </div>
+      </SlidingTabs>
 
       {usageTab === 'requests' ? (
         <section className="usage-panel">

@@ -230,6 +230,163 @@ describe('CodexAppServerKernelAdapter', () => {
     });
   });
 
+  it('omits the host auto reasoning sentinel and maps off to the app-server none value', async () => {
+    const automatic = createFixtureAdapter([]);
+    const automaticEvents: KernelEvent[] = [];
+    for await (const event of automatic.start(
+      makeRequest({ userText: 'effort fixture', reasoningEffort: 'auto' }),
+    )) {
+      automaticEvents.push(event);
+    }
+    expect(automaticEvents).toContainEqual({
+      type: 'delta',
+      text: JSON.stringify({ hasEffort: false }),
+    });
+
+    const disabled = createFixtureAdapter([]);
+    const disabledEvents: KernelEvent[] = [];
+    for await (const event of disabled.start(
+      makeRequest({ userText: 'effort fixture', reasoningEffort: 'off' }),
+    )) {
+      disabledEvents.push(event);
+    }
+    expect(disabledEvents).toContainEqual({
+      type: 'delta',
+      text: JSON.stringify({ hasEffort: true, effort: 'none' }),
+    });
+  });
+
+  it('uses Codex native collaboration modes and explicitly resets plan mode', async () => {
+    const adapter = createFixtureAdapter([]);
+    const planned: KernelEvent[] = [];
+    for await (const event of adapter.start(
+      makeRequest({
+        userText: 'collaboration fixture',
+        planningMode: true,
+        reasoningEffort: 'high',
+      }),
+    )) {
+      planned.push(event);
+    }
+    expect(planned).toContainEqual({
+      type: 'delta',
+      text: JSON.stringify({
+        mode: 'plan',
+        settings: {
+          model: 'gpt-5',
+          reasoning_effort: 'high',
+          developer_instructions: null,
+        },
+      }),
+    });
+
+    const executed: KernelEvent[] = [];
+    for await (const event of adapter.start(
+      makeRequest({
+        userText: 'collaboration fixture',
+        session: { id: 'thread-app-fixture', mode: 'resume' },
+      }),
+    )) {
+      executed.push(event);
+    }
+    expect(executed).toContainEqual({
+      type: 'delta',
+      text: JSON.stringify({
+        mode: 'default',
+        settings: {
+          model: 'gpt-5',
+          reasoning_effort: null,
+          developer_instructions: null,
+        },
+      }),
+    });
+  });
+
+  it('maps the canonical native plan item to a shared plan submission event', async () => {
+    const adapter = createFixtureAdapter([]);
+    const events: KernelEvent[] = [];
+    for await (const event of adapter.start(
+      makeRequest({ userText: 'native plan fixture', planningMode: true }),
+    )) {
+      events.push(event);
+    }
+    expect(events).toContainEqual({
+      type: 'plan-submitted',
+      text: '# 原生方案\n\n1. 读取\n2. 验证',
+    });
+    expect(events).not.toContainEqual({ type: 'delta', text: '非规范增量' });
+  });
+
+  it('maps contextCompaction items to one real lifecycle', async () => {
+    const adapter = createFixtureAdapter([]);
+    const events: KernelEvent[] = [];
+    for await (const event of adapter.start(
+      makeRequest({ userText: 'compaction lifecycle fixture' }),
+    )) {
+      events.push(event);
+    }
+    expect(events.filter((event) => event.type === 'compaction-started')).toHaveLength(1);
+    expect(events.filter((event) => event.type === 'compacted')).toHaveLength(1);
+  });
+
+  it('reports a failed native compaction before the turn failure', async () => {
+    const adapter = createFixtureAdapter([]);
+    const events: KernelEvent[] = [];
+    for await (const event of adapter.start(
+      makeRequest({ userText: 'compaction failure fixture' }),
+    )) {
+      events.push(event);
+    }
+    expect(events).toContainEqual({ type: 'compaction-started' });
+    expect(events).toContainEqual({
+      type: 'compaction-failed',
+      error: 'context compaction failed',
+    });
+    expect(events).toContainEqual({
+      type: 'terminal',
+      status: 'failed',
+      error: 'context compaction failed',
+    });
+  });
+
+  it('maps Codex turn plan notifications to the shared task checklist tool', async () => {
+    const adapter = createFixtureAdapter([]);
+    const events: KernelEvent[] = [];
+    for await (const event of adapter.start(makeRequest({ userText: 'plan fixture' }))) {
+      events.push(event);
+    }
+
+    const planCall = events.find(
+      (event): event is Extract<KernelEvent, { type: 'tool-call' }> =>
+        event.type === 'tool-call' && event.name === 'update_task_plan',
+    );
+    expect(planCall).toBeTruthy();
+    expect(JSON.parse(planCall!.argsJson)).toEqual({
+      items: [
+        { title: '读取 package.json', status: 'completed' },
+        { title: '运行 typecheck', status: 'in_progress' },
+        { title: '汇总结果', status: 'pending' },
+      ],
+    });
+    expect(events).toContainEqual({
+      type: 'tool-result',
+      toolId: planCall!.toolId,
+      output: JSON.stringify({
+        ok: true,
+        plan: {
+          items: [
+            { title: '读取 package.json', status: 'completed' },
+            { title: '运行 typecheck', status: 'in_progress' },
+            { title: '汇总结果', status: 'pending' },
+          ],
+          completed: 1,
+          total: 3,
+        },
+      }),
+      isError: false,
+    });
+  });
+
   it('forwards command outputDelta as live tool progress before the result', async () => {
     const adapter = createFixtureAdapter([]);
     const events: KernelEvent[] = [];

@@ -40,6 +40,7 @@ import {
   EyeOff,
   X,
 } from 'lucide-react';
+import { SlidingTabs } from '../SlidingTabs.js';
 import {
   useCallback,
   useEffect,
@@ -254,12 +255,18 @@ function fallbackMcpRows(servers: readonly McpServerSummary[]): GovernedMcpServe
   }));
 }
 
-export function AbilitiesPage(props: {
+export type AbilityCenterInitialView = 'create-skill';
+
+export interface AbilitiesPageProps {
   activeWorkspaceId?: string;
   workspaces?: WorkspaceSummary[];
+  initialView?: AbilityCenterInitialView;
+  navigationKey?: string | number;
   onGoToAgents(): void;
   onCatalogChanged?(): void;
-}): JSX.Element {
+}
+
+export function AbilitiesPage(props: AbilitiesPageProps): JSX.Element {
   const dialog = useDialog();
   const workspaces = useMemo(() => props.workspaces ?? [], [props.workspaces]);
   const onCatalogChanged = props.onCatalogChanged;
@@ -290,7 +297,11 @@ export function AbilitiesPage(props: {
   const [detailMcpServerId, setDetailMcpServerId] = useState<string>();
   const [detailMarketSkillId, setDetailMarketSkillId] = useState<string>();
   const [detailMarketMcpId, setDetailMarketMcpId] = useState<string>();
-  const [skillEditor, setSkillEditor] = useState<SkillEditorState>();
+  const [skillEditor, setSkillEditor] = useState<SkillEditorState | undefined>(() =>
+    props.initialView === 'create-skill'
+      ? { mode: 'create', source: newSkillTemplate() }
+      : undefined,
+  );
   const [skillMetadataEditor, setSkillMetadataEditor] = useState<SkillMetadataEditorState>();
   const [localSkillImportOpen, setLocalSkillImportOpen] = useState(false);
   const [remoteSkillImportOpen, setRemoteSkillImportOpen] = useState(false);
@@ -305,6 +316,13 @@ export function AbilitiesPage(props: {
   useEffect(() => {
     if (props.activeWorkspaceId) setSelectedWorkspaceId(props.activeWorkspaceId);
   }, [props.activeWorkspaceId]);
+
+  useEffect(() => {
+    if (props.initialView !== 'create-skill') return;
+    setSection('skills');
+    setCreateMenuOpen(false);
+    setSkillEditor({ mode: 'create', source: newSkillTemplate() });
+  }, [props.initialView, props.navigationKey]);
 
   const loadCatalog = useCallback(
     async (options?: { background?: boolean }) => {
@@ -1101,7 +1119,7 @@ export function AbilitiesPage(props: {
           </div>
         </div>
 
-        <div className="capability-center__section-switch" role="tablist" aria-label="能力类型">
+        <SlidingTabs className="capability-center__section-switch" aria-label="能力类型">
           <button
             type="button"
             role="tab"
@@ -1122,7 +1140,7 @@ export function AbilitiesPage(props: {
             <Plug size={13} />
             MCP
           </button>
-        </div>
+        </SlidingTabs>
 
         <HeaderActions
           section="mcp"
@@ -1147,7 +1165,7 @@ export function AbilitiesPage(props: {
       </header>
 
       <section className="capability-center__toolbar">
-        <div className="capability-center__catalog-tabs" role="tablist" aria-label="能力目录">
+        <SlidingTabs className="capability-center__catalog-tabs" aria-label="能力目录">
           <button
             type="button"
             role="tab"
@@ -1169,7 +1187,7 @@ export function AbilitiesPage(props: {
             我的 MCP
             <span>{servers.length}</span>
           </button>
-        </div>
+        </SlidingTabs>
         <label className="capability-center__search">
           <Search size={14} />
           <input
@@ -1484,8 +1502,7 @@ function NewMaxSkillHub(props: {
     if (!path) return 'Skill 库';
     const candidate = props.localCandidates.find(
       (entry) =>
-        entry.path.toLocaleLowerCase() === path ||
-        (entry.name ?? entry.folderName) === skill.name,
+        entry.path.toLocaleLowerCase() === path || (entry.name ?? entry.folderName) === skill.name,
     );
     if (!candidate) return 'Skill 库';
     // 工作区源显示真实安装路径（SKILL.md 所在目录），而不是工作区名
@@ -1557,7 +1574,7 @@ function NewMaxSkillHub(props: {
 
       <div className="ability-hub__body">
         <section className="ability-hub__controls">
-          <div className="ability-hub__catalog-tabs" role="tablist" aria-label="Skill 目录">
+          <SlidingTabs className="ability-hub__catalog-tabs" aria-label="Skill 目录">
             <button
               type="button"
               role="tab"
@@ -1577,7 +1594,7 @@ function NewMaxSkillHub(props: {
             >
               我的 Skill <span>{props.families.length}</span>
             </button>
-          </div>
+          </SlidingTabs>
           <label className="ability-hub__search">
             <Search size={14} />
             <input
@@ -1935,10 +1952,7 @@ function NewMaxSkillHub(props: {
                             <small>{display.description || '未提供说明'}</small>
                           </span>
                         </button>
-                        <span
-                          className="ability-installed-row__location"
-                          title={locationOf(skill)}
-                        >
+                        <span className="ability-installed-row__location" title={locationOf(skill)}>
                           {locationOf(skill)}
                         </span>
                         <WorkspaceActivationControl

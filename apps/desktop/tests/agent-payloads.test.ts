@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
   parseGetAgentPayload,
+  parseGetBotChannelConfigPayload,
+  parseCheckWechatBotQrPayload,
   parseImportSkillPayload,
   parseListSkillsPayload,
+  parseSaveBotChannelConfigPayload,
   parseUpdateAgentBindingPayload,
 } from '../src/agent-payloads.js';
 
@@ -78,5 +81,43 @@ describe('agent payloads', () => {
         originType: 'derived',
       }),
     ).toThrow(/import-skill/);
+  });
+
+  it('normalizes all bot-channel credentials at the Electron IPC boundary', () => {
+    expect(parseGetBotChannelConfigPayload({ platform: 'wecom' })).toEqual({
+      platform: 'wecom',
+    });
+    expect(
+      parseSaveBotChannelConfigPayload({
+        platform: 'dingtalk',
+        enabled: true,
+        testConnection: true,
+        clientId: ' ding-client ',
+        clientSecret: ' ding-secret ',
+      }),
+    ).toEqual({
+      platform: 'dingtalk',
+      enabled: true,
+      testConnection: true,
+      clientId: 'ding-client',
+      clientSecret: 'ding-secret',
+    });
+    expect(() => parseGetBotChannelConfigPayload({ platform: 'unknown' })).toThrow();
+    expect(() =>
+      parseSaveBotChannelConfigPayload({ platform: 'telegram', enabled: 'yes' }),
+    ).toThrow();
+  });
+
+  it('accepts a bounded WeChat QR status request and rejects a missing code', () => {
+    expect(
+      parseCheckWechatBotQrPayload({
+        qrcode: ' login-code ',
+        baseUrl: ' https://ilinkai.weixin.qq.com ',
+      }),
+    ).toEqual({
+      qrcode: 'login-code',
+      baseUrl: 'https://ilinkai.weixin.qq.com',
+    });
+    expect(() => parseCheckWechatBotQrPayload({ qrcode: '' })).toThrow();
   });
 });

@@ -7,6 +7,7 @@ import {
   openDatabaseAsync,
   runMigrations,
   SqliteAppSettingStore,
+  SqliteConversationStore,
   SqliteEventCheckpointStore,
   SqliteMessageStore,
   SqliteWorkspaceStore,
@@ -20,11 +21,13 @@ import type {
   KernelUsage,
   Message,
   MessageId,
+  ModelId,
   RunId,
   ThreadId,
   WorkspaceId,
 } from '@sync-think/shared';
 import { createDemoRun, type DemoRunState } from '../src/demo-run.js';
+import type { PlatformMcpToolCall } from '../src/kernel/mcp-broker.js';
 import { Runtime } from '../src/runtime.js';
 
 const tempDirs: string[] = [];
@@ -336,6 +339,12 @@ interface RuntimeExternalKernelHarness {
     };
   };
   executeExternalKernelRun(runId: RunId): Promise<void>;
+  handlePlanSubmitToolCall(
+    runId: RunId,
+    run: DemoRunState,
+    call: PlatformMcpToolCall,
+    argumentsJson: string,
+  ): Promise<{ ok: boolean; content?: string; error?: string }>;
   buildKernelRequestForRun(run: DemoRunState, runId?: RunId): Promise<KernelRequest>;
   clearKernelConversationSession(run: DemoRunState, expectedSessionId?: string): void;
   clearKernelConversationSessionByKey(
@@ -440,11 +449,223 @@ async function createFixture(events: readonly KernelEvent[], adapterOverride?: K
   return { adapter, connection, harness, messageStore, runId, stateStore, threadId };
 }
 
+async function createPlanningFixture(events: readonly KernelEvent[]) {
+  const root = mkdtempSync(join(tmpdir(), 'sync-think-external-kernel-plan-'));
+  tempDirs.push(root);
+  const dbPath = join(root, 'sync-think.db');
+  await runMigrations(dbPath);
+  const connection = await openDatabaseAsync({ path: dbPath });
+  const stateStore = new SqliteEventCheckpointStore(connection.raw);
+  const messageStore = new SqliteMessageStore(connection.raw);
+  const workspaceStore = new SqliteWorkspaceStore(connection.raw);
+  const conversationStore = new SqliteConversationStore(connection.raw);
+  const workspaceId = `workspace-plan-${Date.now()}` as WorkspaceId;
+  workspaceStore.createWorkspace({
+    id: workspaceId,
+    name: 'External kernel planning fixture',
+    folderPath: root,
+    allowedRoots: [root],
+  });
+  const task = workspaceStore.createTask({
+    workspaceId,
+    title: 'Planning fixture',
+    goal: 'Verify formal plan submission',
+  });
+  const conversation = conversationStore.create({
+    target: { track: 'model', modelId: 'gpt-5' as ModelId },
+    workspaceId,
+    title: 'Planning fixture',
+    interactionMode: 'plan',
+  });
+  conversationStore.bindTask(conversation.id, task.taskId);
+  const adapter = new CapturingKernelAdapter('codex', events);
+  const runtime = new Runtime({
+    installId: `external-kernel-plan-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    allowNoToken: true,
+    stateStore,
+    messageStore,
+    workspaceStore,
+    conversationStore,
+    workspaceId,
+    kernelAdapterResolver: () => adapter,
+  });
+  const runId = `run-plan-${Date.now()}-${Math.random().toString(36).slice(2)}` as RunId;
+  const run = createDemoRun(runId, task.threadId, 'Create a formal plan', {
+    kernelId: 'codex',
+    modelId: 'gpt-5',
+    providerModelId: 'gpt-5',
+    useFakeProvider: false,
+    planningMode: true,
+  });
+  const harness = runtime as unknown as RuntimeExternalKernelHarness;
+  harness.demoRuns.set(runId, run);
+  return {
+    connection,
+    conversation,
+    conversationStore,
+    harness,
+    messageStore,
+    root,
+    run,
+    runId,
+    stateStore,
+  };
+}
+
 function assistantMessage(messages: Message[]): Message | undefined {
   return messages.find((message) => message.role === 'assistant');
 }
 
 describe('Runtime external kernel finalization', () => {
+  it('persists one formal plan revision before completing a planning run', async () => {
+    const fixture = await createPlanningFixture([
+      { type: 'plan-submitted', text: '# 实施方案\n\n1. 读取现状\n2. 完成验证' },
+      { type: 'plan-submitted', text: '# 重复方案\n\n1. 不应创建第二版' },
+      { type: 'terminal', status: 'completed' },
+    ]);
+    try {
+      await fixture.harness.executeExternalKernelRun(fixture.runId);
+
+      const events = fixture.stateStore.listEventsByRun(fixture.runId);
+      expect(events.filter((event) => event.type === 'conversation.plan_submitted')).toHaveLength(1);
+      expect(events.at(-1)?.type).toBe('run.completed');
+      expect(fixture.conversationStore.getConversationPlan(fixture.conversation.id)).toMatchObject({
+        currentRevision: 1,
+        state: 'draft',
+      });
+      expect(fixture.conversationStore.get(fixture.conversation.id)?.interactionMode).toBe('plan');
+    } finally {
+      fixture.connection.raw.close();
+    }
+  });
+
+  it('fails a completed planning run that only produced progress and ordinary prose', async () => {
+    const fixture = await createPlanningFixture([
+      {
+        type: 'tool-call',
+        toolId: 'plan-progress-only',
+        name: 'update_task_plan',
+        argsJson: JSON.stringify({
+          plan: [{ id: 'step-1', title: '分析问题', status: 'completed' }],
+        }),
+        partial: false,
+      },
+      {
+        type: 'tool-result',
+        toolId: 'plan-progress-only',
+        output: JSON.stringify({ ok: true }),
+        isError: false,
+      },
+      { type: 'delta', text: '方案已经创建完成。', final: true },
+      { type: 'terminal', status: 'completed' },
+    ]);
+    try {
+      await fixture.harness.executeExternalKernelRun(fixture.runId);
+
+      const events = fixture.stateStore.listEventsByRun(fixture.runId);
+      expect(events.filter((event) => event.type === 'conversation.plan_submitted')).toHaveLength(0);
+      expect(events.filter((event) => event.type === 'run.completed')).toHaveLength(0);
+      expect(events.at(-1)).toMatchObject({
+        type: 'run.failed',
+        payload: {
+          failureClass: 'protocol',
+          errorMessage: '规划轮已结束，但没有提交正式方案。请重试 /plan。',
+          assistantText: '',
+        },
+      });
+      const assistant = assistantMessage(
+        fixture.messageStore.listMessages(fixture.run.threadId as never).messages,
+      );
+      expect(assistant?.blocks).not.toContainEqual({ type: 'text', text: '方案已经创建完成。' });
+      expect(fixture.conversationStore.getConversationPlan(fixture.conversation.id)).toBeUndefined();
+      expect(fixture.conversationStore.get(fixture.conversation.id)?.interactionMode).toBe('plan');
+    } finally {
+      fixture.connection.raw.close();
+    }
+  });
+
+  it('deduplicates platform and canonical plan submissions within the same run', async () => {
+    const fixture = await createPlanningFixture([
+      { type: 'plan-submitted', text: '# Canonical 方案\n\n1. 不应新增 revision' },
+      { type: 'terminal', status: 'completed' },
+    ]);
+    try {
+      const platformResult = await fixture.harness.handlePlanSubmitToolCall(
+        fixture.runId,
+        fixture.run,
+        {
+          id: 'platform-plan-submit',
+          tool: 'plan_submit',
+          input: {
+            title: '平台方案',
+            goal: '只提交一次',
+            scope: [],
+            assumptions: [],
+            decisions: [],
+            steps: [
+              {
+                id: 'step-1',
+                title: '完成实现',
+                description: '',
+                acceptanceChecks: ['只有一个 revision'],
+              },
+            ],
+            risks: [],
+            finalAcceptanceChecks: [],
+          },
+          signal: new AbortController().signal,
+        },
+        '{}',
+      );
+      expect(platformResult.ok).toBe(true);
+
+      await fixture.harness.executeExternalKernelRun(fixture.runId);
+
+      const events = fixture.stateStore.listEventsByRun(fixture.runId);
+      expect(events.filter((event) => event.type === 'conversation.plan_submitted')).toHaveLength(1);
+      expect(events.at(-1)?.type).toBe('run.completed');
+      expect(fixture.conversationStore.getConversationPlan(fixture.conversation.id)).toMatchObject({
+        currentRevision: 1,
+      });
+    } finally {
+      fixture.connection.raw.close();
+    }
+  });
+
+  it('rejects plan_submit outside a planning run', async () => {
+    const fixture = await createPlanningFixture([]);
+    try {
+      fixture.conversationStore.setInteractionMode(fixture.conversation.id, 'execute');
+      const result = await fixture.harness.handlePlanSubmitToolCall(
+        fixture.runId,
+        { ...fixture.run, planningMode: false },
+        {
+          id: 'execute-mode-plan-submit',
+          tool: 'plan_submit',
+          input: {
+            title: '不应提交的方案',
+            steps: [{ id: 'step-1', title: '不应创建', description: '' }],
+          },
+          signal: new AbortController().signal,
+        },
+        '{}',
+      );
+
+      expect(result).toEqual({
+        ok: false,
+        error: 'plan_submit is only available during a planning run',
+      });
+      expect(
+        fixture.stateStore
+          .listEventsByRun(fixture.runId)
+          .filter((event) => event.type === 'conversation.plan_submitted'),
+      ).toHaveLength(0);
+      expect(fixture.conversationStore.getConversationPlan(fixture.conversation.id)).toBeUndefined();
+    } finally {
+      fixture.connection.raw.close();
+    }
+  });
+
   it('treats a deleted workspace folder as unbound so external kernels can still start', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'sync-think-kernel-missing-workspace-'));
     tempDirs.push(dir);
@@ -491,6 +712,10 @@ describe('Runtime external kernel finalization', () => {
       expect(adapter.requests[0]?.systemContext).toContain(
         'No project folder is bound for this conversation.',
       );
+      expect(adapter.requests[0]?.systemContext).toContain(
+        'mcp__sync-think-platform__update_task_plan',
+      );
+      expect(adapter.requests[0]?.systemContext).toContain('2+ distinct steps');
     } finally {
       connection.raw.close();
     }
@@ -672,6 +897,7 @@ describe('Runtime external kernel finalization', () => {
     const fixture = await createFixture([
       { type: 'reasoning', text: 'internal plan' },
       { type: 'delta', text: 'visible answer' },
+      { type: 'compaction-started' },
       { type: 'compacted' },
       {
         type: 'usage',
@@ -722,7 +948,16 @@ describe('Runtime external kernel finalization', () => {
         assistantTimeline: [
           expect.objectContaining({ kind: 'thinking', text: 'internal plan' }),
           expect.objectContaining({ kind: 'text', phase: 'final_answer', text: 'visible answer' }),
-          expect.objectContaining({ kind: 'status', statusType: 'compaction' }),
+          expect.objectContaining({
+            kind: 'status',
+            statusType: 'compaction',
+            label: '正在压缩上下文',
+          }),
+          expect.objectContaining({
+            kind: 'status',
+            statusType: 'compaction',
+            label: '上下文压缩成功',
+          }),
         ],
       });
       expect(assistant?.blocks[1]).toEqual({ type: 'reasoning', reasoningText: 'internal plan' });
@@ -730,6 +965,7 @@ describe('Runtime external kernel finalization', () => {
 
       // The kernel compacted its own context; the host records a kernel-scoped
       // boundary and never the native context.compacted truncation marker.
+      expect(events.some((event) => event.type === 'kernel.context_compaction_started')).toBe(true);
       expect(events.some((event) => event.type === 'kernel.context_compacted')).toBe(true);
       expect(events.some((event) => event.type === 'context.compacted')).toBe(false);
 
@@ -823,9 +1059,16 @@ describe('Runtime external kernel finalization', () => {
       const events = fixture.stateStore.listEventsByRun(fixture.runId);
 
       const requested = events.find((event) => event.type === 'tool.requested');
-      expect(requested?.payload).toMatchObject({ partial: true });
+      expect(requested?.payload).toMatchObject({
+        threadId: fixture.threadId,
+        partial: true,
+      });
       const completed = events.find((event) => event.type === 'tool.completed');
-      expect(completed?.payload).toMatchObject({ result: 'boom', failed: true });
+      expect(completed?.payload).toMatchObject({
+        threadId: fixture.threadId,
+        result: 'boom',
+        failed: true,
+      });
     } finally {
       fixture.connection.raw.close();
     }
@@ -944,7 +1187,7 @@ describe('Runtime external kernel finalization', () => {
     }
   });
 
-  it('persists a Claude session only after the adapter reports it and rebuilds on context changes', async () => {
+  it('persists a Claude session only after the adapter reports it and appends context changes', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'sync-think-claude-session-'));
     tempDirs.push(dir);
     const dbPath = join(dir, 'sync-think.db');
@@ -1060,8 +1303,12 @@ describe('Runtime external kernel finalization', () => {
         makeRun('run-session-changed' as RunId, 'SKILL-V2'),
         'run-session-changed' as RunId,
       );
-      expect(changedRequest.session).toMatchObject({ mode: 'create' });
-      expect(changedRequest.session?.id).not.toBe(establishedSessionId);
+      expect(changedRequest.session).toMatchObject({
+        id: establishedSessionId,
+        mode: 'resume',
+      });
+      expect(changedRequest.session?.catchUp).toContain('## Host context update');
+      expect(changedRequest.session?.catchUp).toContain('SKILL-V2');
     } finally {
       connection.raw.close();
     }
@@ -1340,6 +1587,42 @@ describe('Runtime external kernel finalization', () => {
         id: 'codex-thread-1',
         mode: 'resume',
       });
+
+      const changedModelRun = createDemoRun(
+        'run-codex-session-model-change' as RunId,
+        threadId,
+        'continue with another model',
+        {
+          kernelId: 'codex',
+          modelId: 'gpt-5.6-luna',
+          providerModelId: 'gpt-5.6-luna',
+          useFakeProvider: false,
+        },
+      );
+      const changedModelRequest = await secondRuntime.buildKernelRequestForRun(changedModelRun);
+      expect(changedModelRequest.session).toMatchObject({
+        id: 'codex-thread-1',
+        mode: 'resume',
+      });
+
+      const planningRun = createDemoRun(
+        'run-codex-session-planning-change' as RunId,
+        threadId,
+        'plan the next change',
+        {
+          kernelId: 'codex',
+          modelId: 'gpt-5.6-luna',
+          providerModelId: 'gpt-5.6-luna',
+          useFakeProvider: false,
+          planningMode: true,
+        },
+      );
+      const planningRequest = await secondRuntime.buildKernelRequestForRun(planningRun);
+      expect(planningRequest.session).toMatchObject({
+        id: 'codex-thread-1',
+        mode: 'resume',
+      });
+      expect(planningRequest.session?.catchUp).toContain('规划模式（Planning mode）');
     } finally {
       connection.raw.close();
     }

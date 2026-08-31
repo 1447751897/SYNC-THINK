@@ -1,23 +1,35 @@
 // NewMax-style Compose toolbar menus: permission / reasoning / model picker.
 // Menus render via portal + fixed position so parent overflow cannot clip them.
-import { forwardRef, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MutableRefObject,
+} from 'react';
 import { createPortal } from 'react-dom';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import {
+  ArrowUp,
   Bot,
   Brain,
   Check,
   ChevronDown,
   ChevronRight,
   Globe,
+  ImagePlus,
   Lock,
   LoaderCircle,
   MessageSquare,
-  Pencil,
+  Mic,
+  MicOff,
   Puzzle,
-  RotateCcw,
   Shield,
   Sparkles,
+  Square,
   Users,
   Zap,
   X,
@@ -28,10 +40,127 @@ import { AgentAvatarView } from './AgentAvatarView.js';
 import { BrandLogoMark } from './BrandLogoMark.js';
 import { resolveKernelBrandLogo, resolveKernelDisplayName } from './brand-icons.js';
 import type { ModelOption } from './NewConversationDialog.js';
+import { ComposerMenuHighlight } from './ComposerMenuHighlight.js';
 
 export type PermissionMode = 'ask' | 'workspace' | 'full-access';
 /** Fixed NewMax-style effort ladder (full set always shown). */
 export type ReasoningEffort = 'auto' | 'off' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
+export const PERMISSION_MODE_COLLAPSED_TOOLBAR_LEVEL = 1;
+export const SKILL_COLLAPSED_TOOLBAR_LEVEL = 2;
+export type ComposerToolbarCollapseLevel = 0 | 1 | 2;
+
+export function resolveToolbarCollapseLevel(params: {
+  expandedWidth: number;
+  availableWidth: number;
+  permissionCollapseWidth: number;
+}): ComposerToolbarCollapseLevel {
+  if (params.expandedWidth <= params.availableWidth) return 0;
+  return params.expandedWidth - params.permissionCollapseWidth <= params.availableWidth
+    ? PERMISSION_MODE_COLLAPSED_TOOLBAR_LEVEL
+    : SKILL_COLLAPSED_TOOLBAR_LEVEL;
+}
+
+const COMPOSER_TOOLBAR_GAP = 8;
+const COMPOSER_TOOLBAR_HORIZONTAL_PADDING = 16;
+
+function measureToolbarChildren(element: HTMLElement): number {
+  let width = 0;
+  for (const child of element.children) {
+    const childWidth = (child as HTMLElement).offsetWidth;
+    if (childWidth === 0) continue;
+    if (width > 0) width += COMPOSER_TOOLBAR_GAP;
+    width += childWidth;
+  }
+  return width;
+}
+
+export interface ComposerToolbarCollapseOptions {
+  permissionMenuOpen?: boolean;
+  onPermissionMenuOpenChange?(open: boolean): void;
+}
+
+export interface ComposerToolbarCollapseController {
+  collapseLevel: ComposerToolbarCollapseLevel;
+  outerRef: MutableRefObject<HTMLDivElement | null>;
+  leftRef: MutableRefObject<HTMLDivElement | null>;
+  rightRef: MutableRefObject<HTMLDivElement | null>;
+  permissionRef: MutableRefObject<HTMLDivElement | null>;
+  measure(): void;
+}
+
+/**
+ * NewMax toolbar collapse state. The caller owns the markup and hides permission
+ * at level 1, then Skill/secondary controls at level 2.
+ */
+export function useComposerToolbarCollapse(
+  options: ComposerToolbarCollapseOptions = {},
+): ComposerToolbarCollapseController {
+  const permissionMenuOpen = options.permissionMenuOpen ?? false;
+  const onPermissionMenuOpenChange = options.onPermissionMenuOpenChange;
+  const [collapseLevel, setCollapseLevel] = useState<ComposerToolbarCollapseLevel>(0);
+  const collapseLevelRef = useRef<ComposerToolbarCollapseLevel>(0);
+  const outerRef = useRef<HTMLDivElement>(null);
+  const leftRef = useRef<HTMLDivElement>(null);
+  const rightRef = useRef<HTMLDivElement>(null);
+  const permissionRef = useRef<HTMLDivElement>(null);
+  const expandedWidthRef = useRef<number | null>(null);
+  const permissionCollapseWidthRef = useRef(0);
+  const permissionMenuOpenRef = useRef(permissionMenuOpen);
+  const onPermissionMenuOpenChangeRef = useRef(onPermissionMenuOpenChange);
+  permissionMenuOpenRef.current = permissionMenuOpen;
+  onPermissionMenuOpenChangeRef.current = onPermissionMenuOpenChange;
+
+  const measure = useCallback(() => {
+    const outer = outerRef.current;
+    const left = leftRef.current;
+    const right = rightRef.current;
+    if (!outer || !left || !right) return;
+
+    const availableWidth = Math.max(0, outer.clientWidth - COMPOSER_TOOLBAR_HORIZONTAL_PADDING);
+    const measuredWidth =
+      measureToolbarChildren(left) + COMPOSER_TOOLBAR_GAP + measureToolbarChildren(right);
+
+    if (collapseLevelRef.current === 0) {
+      expandedWidthRef.current = measuredWidth;
+      permissionCollapseWidthRef.current =
+        (permissionRef.current?.offsetWidth ?? 0) + COMPOSER_TOOLBAR_GAP;
+    }
+
+    const nextLevel = resolveToolbarCollapseLevel({
+      expandedWidth: expandedWidthRef.current ?? measuredWidth,
+      availableWidth,
+      permissionCollapseWidth: permissionCollapseWidthRef.current,
+    });
+    if (nextLevel === collapseLevelRef.current) return;
+
+    collapseLevelRef.current = nextLevel;
+    if (nextLevel > 0 && permissionMenuOpenRef.current) {
+      onPermissionMenuOpenChangeRef.current?.(false);
+    }
+    setCollapseLevel(nextLevel);
+  }, []);
+
+  useLayoutEffect(() => {
+    measure();
+  });
+
+  useEffect(() => {
+    const outer = outerRef.current;
+    if (!outer || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => queueMicrotask(measure));
+    observer.observe(outer);
+    return () => observer.disconnect();
+  }, [measure]);
+
+  useEffect(() => {
+    if (collapseLevel > 0 && permissionMenuOpen) {
+      onPermissionMenuOpenChange?.(false);
+    }
+  }, [collapseLevel, onPermissionMenuOpenChange, permissionMenuOpen]);
+
+  return { collapseLevel, outerRef, leftRef, rightRef, permissionRef, measure };
+}
 
 export const PERMISSION_OPTIONS: Array<{
   value: PermissionMode;
@@ -533,24 +662,51 @@ export function ComposeAtSettingsMenu(props: {
   onClose(): void;
   onDismiss(): void;
   onChange(enabled: boolean): void;
+  onUpload?(): void;
 }) {
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [activeIndex, setActiveIndex] = useState(0);
   return (
     <MenuShell
       open={props.open}
       onClose={props.onClose}
       anchorEl={props.anchorEl}
-      width={320}
+      width={Math.max(320, props.anchorEl?.getBoundingClientRect().width ?? 320)}
       role="dialog"
       ariaLabel="添加上下文和设置"
     >
-      <div className="shell-mention-pop__section-label">设置</div>
-      <div className="shell-mention-pop__settings">
-        <NetworkSearchSetting
-          enabled={props.enabled}
-          rootRef={props.networkSettingRef}
-          onDismiss={props.onDismiss}
-          onChange={props.onChange}
-        />
+      <div ref={menuRef} className="shell-mention-pop--context shell-compose-at-menu">
+        <ComposerMenuHighlight containerRef={menuRef} activeIndex={activeIndex} />
+        <div className="shell-mention-pop__section-label">来源与上下文</div>
+        {props.onUpload ? (
+          <button
+            type="button"
+            className="shell-mention-pop__upload"
+            data-composer-menu-index={0}
+            onMouseEnter={() => setActiveIndex(0)}
+            onClick={() => {
+              props.onClose();
+              props.onUpload?.();
+            }}
+          >
+            <ImagePlus size={13} aria-hidden="true" />
+            <span>上传图片</span>
+            <span className="shell-mention-pop__upload-hint">PNG / JPG</span>
+          </button>
+        ) : null}
+        <div
+          className="shell-mention-pop__settings"
+          data-composer-menu-index={props.onUpload ? 1 : 0}
+          onMouseEnter={() => setActiveIndex(props.onUpload ? 1 : 0)}
+        >
+          <NetworkSearchSetting
+            enabled={props.enabled}
+            rootRef={props.networkSettingRef}
+            onDismiss={props.onDismiss}
+            onChange={props.onChange}
+          />
+        </div>
+        <div className="shell-composer-menu__hint">输入以添加来源和上下文</div>
       </div>
     </MenuShell>
   );
@@ -1056,12 +1212,8 @@ export function ContextRing(props: {
   used: number;
   /** Context window limit for the ring. */
   limit: number;
-  /** Selected model capacity before applying a conversation override or kernel cap. */
+  /** Context capacity configured on the selected Provider model. */
   modelContextWindow?: number;
-  /** Persisted per-conversation capacity, when configured. */
-  contextWindowOverride?: number;
-  /** Saves an override; null restores the selected model's default. */
-  onContextWindowChange?(value: number | null): Promise<void> | void;
   /** True when the runtime fell back to 128k because the model has no window metadata. */
   contextWindowEstimated?: boolean;
   /**
@@ -1093,10 +1245,6 @@ export function ContextRing(props: {
 }) {
   const [open, setOpen] = useState(false);
   const [anchor, setAnchor] = useState<FloatingAnchorRect | null>(null);
-  const [editing, setEditing] = useState(false);
-  const [draftCapacity, setDraftCapacity] = useState('');
-  const [capacitySaving, setCapacitySaving] = useState(false);
-  const [capacityError, setCapacityError] = useState<string | null>(null);
   const btnRef = useRef<HTMLButtonElement>(null);
   const closeTimer = useRef<number | null>(null);
 
@@ -1162,52 +1310,6 @@ export function ContextRing(props: {
     closeTimer.current = window.setTimeout(() => setOpen(false), 120);
   };
   useEffect(() => () => cancelClose(), []);
-  useEffect(() => {
-    if (editing) return;
-    setDraftCapacity(
-      String(props.contextWindowOverride ?? props.modelContextWindow ?? props.limit),
-    );
-  }, [editing, props.contextWindowOverride, props.limit, props.modelContextWindow]);
-
-  const beginCapacityEdit = () => {
-    cancelClose();
-    setDraftCapacity(
-      String(props.contextWindowOverride ?? props.modelContextWindow ?? props.limit),
-    );
-    setCapacityError(null);
-    setEditing(true);
-  };
-  const saveCapacity = async () => {
-    const value = Number(draftCapacity);
-    if (!Number.isSafeInteger(value) || value < 1_024 || value > 10_000_000) {
-      setCapacityError('请输入 1,024 到 10,000,000 之间的整数');
-      return;
-    }
-    if (!props.onContextWindowChange) return;
-    setCapacitySaving(true);
-    setCapacityError(null);
-    try {
-      await props.onContextWindowChange(value);
-      setEditing(false);
-    } catch (error) {
-      setCapacityError(error instanceof Error ? error.message : '保存失败');
-    } finally {
-      setCapacitySaving(false);
-    }
-  };
-  const restoreModelCapacity = async () => {
-    if (!props.onContextWindowChange) return;
-    setCapacitySaving(true);
-    setCapacityError(null);
-    try {
-      await props.onContextWindowChange(null);
-      setEditing(false);
-    } catch (error) {
-      setCapacityError(error instanceof Error ? error.message : '恢复失败');
-    } finally {
-      setCapacitySaving(false);
-    }
-  };
 
   let tipStyle: React.CSSProperties | undefined;
   if (open && anchor && typeof window !== 'undefined') {
@@ -1225,7 +1327,7 @@ export function ContextRing(props: {
   const occupancyColor =
     rawRatio >= 0.9
       ? 'var(--color-error)'
-      : rawRatio >= compactThreshold
+      : !props.kernelSelfManaged && rawRatio >= compactThreshold
         ? 'var(--color-warning)'
         : 'var(--color-accent)';
 
@@ -1304,22 +1406,26 @@ export function ContextRing(props: {
                     background: occupancyColor,
                   }}
                 />
-                <span
-                  className="shell-ctx-tooltip__bar-threshold"
-                  style={{ left: `${compactThreshold * 100}%` }}
-                  title={`自动压缩阈值：${compactPct}%`}
-                  aria-hidden="true"
-                />
+                {!props.kernelSelfManaged ? (
+                  <span
+                    className="shell-ctx-tooltip__bar-threshold"
+                    style={{ left: `${compactThreshold * 100}%` }}
+                    title={`自动压缩阈值：${compactPct}%`}
+                    aria-hidden="true"
+                  />
+                ) : null}
               </div>
-              <div
-                className="shell-ctx-tooltip__status"
-                data-state={compactThresholdReached ? 'threshold' : 'healthy'}
-              >
-                <span aria-hidden="true" />
-                {compactThresholdReached
-                  ? '已达到阈值，发送下一条消息前会自动压缩'
-                  : `达到 ${compactPct}% 时，在发送下一条消息前自动压缩`}
-              </div>
+              {!props.kernelSelfManaged ? (
+                <div
+                  className="shell-ctx-tooltip__status"
+                  data-state={compactThresholdReached ? 'threshold' : 'healthy'}
+                >
+                  <span aria-hidden="true" />
+                  {compactThresholdReached
+                    ? '已达到阈值，发送下一条消息前会自动压缩'
+                    : `达到 ${compactPct}% 时，在发送下一条消息前自动压缩`}
+                </div>
+              ) : null}
               <div className="shell-ctx-tooltip__row">
                 <span>当前占用</span>
                 <strong data-testid="context-used-value" title={exactTokenTitle(props.used)}>
@@ -1349,7 +1455,7 @@ export function ContextRing(props: {
               </div>
               {props.modelContextWindow !== undefined ? (
                 <div className="shell-ctx-tooltip__row">
-                  <span>模型默认</span>
+                  <span>模型配置</span>
                   <strong
                     data-testid="context-model-default"
                     title={exactTokenTitle(props.modelContextWindow)}
@@ -1358,128 +1464,40 @@ export function ContextRing(props: {
                   </strong>
                 </div>
               ) : null}
-              {props.contextWindowOverride !== undefined ? (
-                <div className="shell-ctx-tooltip__row">
-                  <span>会话设置</span>
-                  <strong title={exactTokenTitle(props.contextWindowOverride)}>
-                    {formatTokenCount(props.contextWindowOverride)}
-                  </strong>
-                </div>
-              ) : null}
-              {props.onContextWindowChange ? (
-                editing ? (
-                  <form
-                    className="shell-ctx-tooltip__capacity-form"
-                    onSubmit={(event) => {
-                      event.preventDefault();
-                      void saveCapacity();
-                    }}
-                  >
-                    <label htmlFor="conversation-context-capacity">会话上下文容量</label>
-                    <div className="shell-ctx-tooltip__capacity-controls">
-                      <input
-                        id="conversation-context-capacity"
-                        aria-label="会话上下文容量"
-                        type="number"
-                        min={1_024}
-                        max={10_000_000}
-                        step={1}
-                        value={draftCapacity}
-                        disabled={capacitySaving}
-                        onChange={(event) => setDraftCapacity(event.target.value)}
-                      />
-                      <button
-                        type="submit"
-                        aria-label="保存会话容量"
-                        title="保存"
-                        disabled={capacitySaving}
-                      >
-                        {capacitySaving ? (
-                          <LoaderCircle size={14} className="shell-menu__kernel-spinner" />
-                        ) : (
-                          <Check size={14} />
-                        )}
-                      </button>
-                      <button
-                        type="button"
-                        aria-label="取消编辑会话容量"
-                        title="取消"
-                        disabled={capacitySaving}
-                        onClick={() => {
-                          setEditing(false);
-                          setCapacityError(null);
-                        }}
-                      >
-                        <X size={14} />
-                      </button>
-                    </div>
-                    {capacityError ? (
-                      <div className="shell-ctx-tooltip__capacity-error" role="alert">
-                        {capacityError}
-                      </div>
-                    ) : null}
-                  </form>
-                ) : (
-                  <div className="shell-ctx-tooltip__capacity-actions">
-                    <button
-                      type="button"
-                      aria-label="编辑会话容量"
-                      title="编辑会话容量"
-                      onClick={beginCapacityEdit}
-                    >
-                      <Pencil size={14} />
-                    </button>
-                    {props.contextWindowOverride !== undefined ? (
-                      <button
-                        type="button"
-                        aria-label="恢复模型默认容量"
-                        title="恢复模型默认容量"
-                        disabled={capacitySaving}
-                        onClick={() => void restoreModelCapacity()}
-                      >
-                        {capacitySaving ? (
-                          <LoaderCircle size={14} className="shell-menu__kernel-spinner" />
-                        ) : (
-                          <RotateCcw size={14} />
-                        )}
-                      </button>
-                    ) : null}
-                    {capacityError ? (
-                      <div className="shell-ctx-tooltip__capacity-error" role="alert">
-                        {capacityError}
-                      </div>
-                    ) : null}
-                  </div>
-                )
-              ) : null}
               <div className="shell-ctx-tooltip__row">
                 <span>窗口剩余</span>
                 <strong title={exactTokenTitle(remaining)}>{remainingLabel}</strong>
               </div>
-              <div className="shell-ctx-tooltip__row">
-                <span>自动压缩</span>
-                <strong title={exactTokenTitle(compactAtTokens)}>
-                  {compactAtLabel}
-                  <span className="shell-ctx-tooltip__pct"> · {compactPct}%</span>
-                </strong>
-              </div>
-              <div className="shell-ctx-tooltip__row">
-                <span>距离压缩</span>
-                <strong
-                  data-testid="context-compact-distance"
-                  title={
-                    compactThresholdReached
-                      ? '已达到自动压缩阈值'
-                      : exactTokenTitle(tokensUntilCompact)
-                  }
-                >
-                  {compactThresholdReached ? '已达阈值' : tokensUntilCompactLabel}
-                </strong>
-              </div>
-              <div className="shell-ctx-tooltip__row">
-                <span>最近压缩</span>
-                <strong data-testid="context-compacted-at">{compactedAtLabel ?? '尚未发生'}</strong>
-              </div>
+              {!props.kernelSelfManaged ? (
+                <>
+                  <div className="shell-ctx-tooltip__row">
+                    <span>自动压缩</span>
+                    <strong title={exactTokenTitle(compactAtTokens)}>
+                      {compactAtLabel}
+                      <span className="shell-ctx-tooltip__pct"> · {compactPct}%</span>
+                    </strong>
+                  </div>
+                  <div className="shell-ctx-tooltip__row">
+                    <span>距离压缩</span>
+                    <strong
+                      data-testid="context-compact-distance"
+                      title={
+                        compactThresholdReached
+                          ? '已达到自动压缩阈值'
+                          : exactTokenTitle(tokensUntilCompact)
+                      }
+                    >
+                      {compactThresholdReached ? '已达阈值' : tokensUntilCompactLabel}
+                    </strong>
+                  </div>
+                  <div className="shell-ctx-tooltip__row">
+                    <span>最近压缩</span>
+                    <strong data-testid="context-compacted-at">
+                      {compactedAtLabel ?? '尚未发生'}
+                    </strong>
+                  </div>
+                </>
+              ) : null}
               {props.kernelSelfManaged ? (
                 <div className="shell-ctx-tooltip__hint" data-testid="context-kernel-self-managed">
                   当前占用来自外部内核（Claude Code /
@@ -1555,9 +1573,94 @@ export function ContextRing(props: {
   );
 }
 
-interface ModelTriggerProps {
+export type ComposerActionKind = 'voice' | 'send' | 'stop';
+
+export function resolveComposerActionKind(params: {
+  hasContent: boolean;
+  running: boolean;
+  voiceActive?: boolean;
+}): ComposerActionKind {
+  if (params.running) return params.hasContent ? 'send' : 'stop';
+  if (params.voiceActive) return 'voice';
+  return params.hasContent ? 'send' : 'voice';
+}
+
+export interface ComposerActionSlotProps {
+  hasContent: boolean;
+  running: boolean;
+  /** Optional stable prefix for entry-point-specific regression selectors. */
+  testIdPrefix?: string;
+  voiceActive?: boolean;
+  disabled?: boolean;
+  voiceDisabled?: boolean;
+  sendDisabled?: boolean;
+  stopDisabled?: boolean;
+  voiceStartLabel?: string;
+  voiceStopLabel?: string;
+  sendLabel?: string;
+  stopLabel?: string;
+  onVoice(): void;
+  onSend(): void;
+  onStop(): void;
+}
+
+/** One NewMax action slot: microphone -> send -> stop as composer state changes. */
+export function ComposerActionSlot(props: ComposerActionSlotProps) {
+  const kind = resolveComposerActionKind(props);
+  const voiceLabel = props.voiceActive
+    ? (props.voiceStopLabel ?? '停止语音输入')
+    : (props.voiceStartLabel ?? '开始语音输入');
+  const label =
+    kind === 'stop'
+      ? (props.stopLabel ?? '停止当前任务')
+      : kind === 'send'
+        ? (props.sendLabel ?? '发送 (Enter)')
+        : voiceLabel;
+  const disabled =
+    props.disabled ||
+    (kind === 'stop'
+      ? props.stopDisabled
+      : kind === 'send'
+        ? props.sendDisabled
+        : props.voiceDisabled);
+  const className =
+    kind === 'voice'
+      ? `shell-compose__voice${props.voiceActive ? ' is-active' : ''}`
+      : `shell-compose__send${kind === 'stop' ? ' is-stop' : ''}`;
+
+  return (
+    <button
+      type="button"
+      className={className}
+      data-testid={`${props.testIdPrefix ?? 'compose'}-${kind}`}
+      data-action={kind}
+      aria-label={label}
+      aria-pressed={kind === 'voice' ? Boolean(props.voiceActive) : undefined}
+      title={label}
+      disabled={Boolean(disabled)}
+      onClick={kind === 'stop' ? props.onStop : kind === 'send' ? props.onSend : props.onVoice}
+    >
+      {kind === 'stop' ? (
+        <Square size={12} fill="currentColor" aria-hidden="true" />
+      ) : kind === 'send' ? (
+        <ArrowUp size={18} aria-hidden="true" />
+      ) : props.voiceActive ? (
+        <MicOff size={15} aria-hidden="true" />
+      ) : (
+        <Mic size={15} aria-hidden="true" />
+      )}
+    </button>
+  );
+}
+
+export type ComposerModelMode = 'execute' | 'plan' | 'goal';
+
+export interface ModelTriggerProps {
   label: string;
   reasoningLabel?: string;
+  mode?: ComposerModelMode;
+  planLabel?: string;
+  planReasoningLabel?: string;
   open: boolean;
   buttonRef?: React.Ref<HTMLButtonElement>;
   onClick(): void;
@@ -1571,6 +1674,11 @@ function assignRef<T>(ref: React.Ref<T> | undefined, value: T | null): void {
 
 export const ModelTrigger = forwardRef<HTMLButtonElement, ModelTriggerProps>(
   function ModelTrigger(props, forwardedRef) {
+    const planMode = props.mode === 'plan';
+    const displayLabel = planMode && props.planLabel?.trim() ? props.planLabel : props.label;
+    const displayReasoningLabel =
+      planMode && props.planReasoningLabel ? props.planReasoningLabel : props.reasoningLabel;
+    const actionLabel = planMode ? '切换规划模型' : '切换模型';
     return (
       <button
         ref={(node) => {
@@ -1580,14 +1688,17 @@ export const ModelTrigger = forwardRef<HTMLButtonElement, ModelTriggerProps>(
         type="button"
         className="shell-compose__model-btn"
         data-open={props.open ? '1' : '0'}
+        data-model-mode={planMode ? 'plan' : 'execute'}
         aria-haspopup="menu"
         aria-expanded={props.open}
         onClick={props.onClick}
-        title={props.reasoningLabel ? `切换模型，思考强度：${props.reasoningLabel}` : '切换模型'}
+        title={
+          displayReasoningLabel ? `${actionLabel}，思考强度：${displayReasoningLabel}` : actionLabel
+        }
       >
-        <span className="shell-compose__model-label">{props.label}</span>
-        {props.reasoningLabel ? (
-          <span className="shell-compose__model-reasoning">{props.reasoningLabel}</span>
+        <span className="shell-compose__model-label">{displayLabel}</span>
+        {displayReasoningLabel ? (
+          <span className="shell-compose__model-reasoning">{displayReasoningLabel}</span>
         ) : null}
         <ChevronDown size={12} />
       </button>

@@ -21,6 +21,7 @@ import {
   type PersonalizationSetting,
 } from '@sync-think/protocol/preferences';
 import { writeUserName } from '../ui-preferences.js';
+import { SlidingTabs } from './SlidingTabs.js';
 import {
   COLOR_THEME_OPTIONS,
   CUSTOM_IMAGE_THEME_ID,
@@ -71,7 +72,7 @@ export function PreferencesSettings() {
 
   return (
     <div className="settings-preferences">
-      <div className="settings-preferences__tabs" role="tablist" aria-label="偏好设置分类">
+      <SlidingTabs className="settings-preferences__tabs" aria-label="偏好设置分类">
         {PREFERENCE_TABS.map(({ id, label }) => (
           <button
             key={id}
@@ -84,7 +85,7 @@ export function PreferencesSettings() {
             {label}
           </button>
         ))}
-      </div>
+      </SlidingTabs>
 
       <div ref={scrollRef} className="settings-preferences__scroll settings-content-scroll">
         <div key={tab} className="settings-preferences__panel">

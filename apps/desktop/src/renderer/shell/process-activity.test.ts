@@ -202,6 +202,8 @@ describe('activityFingerprint', () => {
 describe('shared tool naming', () => {
   it('maps known tools and humanizes unknown ones', () => {
     expect(friendlyToolName('run_command')).toBe('运行命令');
+    expect(friendlyToolName('command_execution')).toBe('命令执行');
+    expect(toolVisualKind('command_execution')).toBe('command');
     expect(friendlyToolName('mcp.playwright.browser_click')).toBe('Browser Click');
   });
 
@@ -228,12 +230,12 @@ describe('shared tool naming', () => {
 
   it('infers status from legacy fields when status is absent', () => {
     expect(toolStatusOf({ ...completedRead, status: undefined } as never)).toBe('completed');
-    expect(
-      toolStatusOf({ ...runningCommand, status: undefined, failed: true } as never),
-    ).toBe('failed');
-    expect(
-      toolStatusOf({ ...runningCommand, status: undefined, result: undefined } as never),
-    ).toBe('running');
+    expect(toolStatusOf({ ...runningCommand, status: undefined, failed: true } as never)).toBe(
+      'failed',
+    );
+    expect(toolStatusOf({ ...runningCommand, status: undefined, result: undefined } as never)).toBe(
+      'running',
+    );
   });
 
   it('treats a structured ok:false result as failed even when the transport completed', () => {

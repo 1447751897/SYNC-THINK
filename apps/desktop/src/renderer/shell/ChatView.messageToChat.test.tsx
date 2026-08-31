@@ -28,6 +28,31 @@ function message(blocks: MessageBlock[]): Message {
 }
 
 describe('messageToChat inline process split', () => {
+  it('projects the exact Skill versions stored on a durable user message', () => {
+    const user = {
+      ...message([
+        {
+          type: 'text' as const,
+          text: '检查这个设计',
+          payload: {
+            skillVersionIds: ['skill-review-v1', 'skill-research-v2'],
+            skills: [
+              { skillVersionId: 'skill-review-v1', name: 'review' },
+              { skillVersionId: 'skill-research-v2', name: 'research' },
+            ],
+          },
+        },
+      ]),
+      role: 'user' as const,
+    };
+
+    expect(messageToChat(user).skillVersionIds).toEqual(['skill-review-v1', 'skill-research-v2']);
+    expect(messageToChat(user).skills).toEqual([
+      { skillVersionId: 'skill-review-v1', name: 'review' },
+      { skillVersionId: 'skill-research-v2', name: 'research' },
+    ]);
+  });
+
   it('derives settled process timing from durable timeline boundaries', () => {
     const timeline: AssistantTurnSegment[] = [
       {
@@ -137,6 +162,33 @@ describe('messageToChat inline process split', () => {
       answerText: '答案。',
       pendingText: '',
     });
+  });
+
+  it('projects task-plan tools into the task panel instead of the inline process timeline', () => {
+    const timeline: AssistantTurnSegment[] = [
+      {
+        id: 'plan-1',
+        sequence: 0,
+        kind: 'tool',
+        toolCallId: 'plan-call',
+        name: 'update_task_plan',
+        argumentsJson: '{"items":[]}',
+        status: 'completed',
+      },
+      {
+        id: 'read-1',
+        sequence: 1,
+        kind: 'tool',
+        toolCallId: 'read-call',
+        name: 'read_file',
+        argumentsJson: '{"path":"package.json"}',
+        status: 'completed',
+      },
+    ];
+
+    expect(projectTransientAssistantDisplay('', timeline).processItems).toEqual([
+      expect.objectContaining({ kind: 'tool', name: 'read_file', toolCallId: 'read-call' }),
+    ]);
   });
 
   it('splits the last text block as the final answer and keeps earlier blocks as process items', () => {

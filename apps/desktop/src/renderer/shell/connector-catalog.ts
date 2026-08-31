@@ -32,8 +32,8 @@ export interface ManagedConnectorCatalogItem {
   icon: string;
 }
 
-// Row-major order mirrors NewMax's three-column catalog at the reference width.
-export const NEWMAX_CONNECTOR_CATALOG: readonly ManagedConnectorCatalogItem[] = [
+// Row-major order mirrors the three-column catalog at the reference width.
+export const SYNC_THINK_CONNECTOR_CATALOG: readonly ManagedConnectorCatalogItem[] = [
   { id: 'douyin', name: '抖音', icon: douyinIcon },
   { id: 'tiktok', name: 'TikTok', icon: tiktokIcon },
   { id: 'qichacha', name: '企查查', icon: qichachaIcon },

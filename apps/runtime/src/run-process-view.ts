@@ -14,6 +14,7 @@ const TOOL_META: Record<string, { verb: string; kind: ProcessToolKind; zh: strin
   edit_file: { verb: 'Edit', kind: 'write', zh: '编辑文件' },
   list_files: { verb: 'List', kind: 'list', zh: '列出文件' },
   run_command: { verb: 'Bash', kind: 'bash', zh: '执行命令' },
+  command_execution: { verb: 'Bash', kind: 'bash', zh: '命令执行' },
   desktop_launch_app: { verb: 'Launch', kind: 'other', zh: '启动应用' },
   git_status: { verb: 'Git', kind: 'git', zh: 'Git 状态' },
   git_diff: { verb: 'Git', kind: 'git', zh: 'Git diff' },
@@ -372,6 +373,7 @@ export function projectRunProcess(runId: RunId, events: readonly Event[]): RunPr
   let taskPlan: TaskPlanView | undefined;
   /** write_file body often only appears on tool.requested args, not on completed result. */
   const writeContentByCall = new Map<string, string>();
+  const toolNameByCall = new Map<string, string>();
   const providerUsageByRequest = new Map<string, ProviderUsageProjection>();
   /** Max event sequence per requestId — used to pick the last request as the context watermark. */
   const usageRequestSequence = new Map<string, number>();
@@ -450,7 +452,12 @@ export function projectRunProcess(runId: RunId, events: readonly Event[]): RunPr
 
     const payload = event.payload;
     const toolCallId = extractToolCallId(payload, event.id);
-    const toolName = extractToolName(payload);
+    const extractedToolName = extractToolName(payload);
+    if (extractedToolName !== 'tool') toolNameByCall.set(toolCallId, extractedToolName);
+    const toolName =
+      extractedToolName === 'tool'
+        ? (toolNameByCall.get(toolCallId) ?? extractedToolName)
+        : extractedToolName;
 
     // Task-plan tools are pure UI signals: project the checklist, keep them
     // out of the tool step list (they would be noise there). The persisted

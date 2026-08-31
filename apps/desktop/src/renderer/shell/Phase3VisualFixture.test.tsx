@@ -1,6 +1,8 @@
 /**
  * @vitest-environment jsdom
  */
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import {
@@ -8,6 +10,16 @@ import {
   Phase3VisualFixture,
   resolvePhase3VisualCase,
 } from './Phase3VisualFixture.js';
+
+const SHELL_CSS = readFileSync(resolve(process.cwd(), 'src/renderer/shell/shell.css'), 'utf8');
+const TOKENS_CSS = readFileSync(resolve(process.cwd(), 'src/renderer/shell/tokens.css'), 'utf8');
+
+function cssRule(selector: string): string {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = SHELL_CSS.match(new RegExp(`(?:^|\\n)\\s*${escaped}\\s*\\{([^}]*)\\}`));
+  if (!match?.[1]) throw new Error(`Missing CSS rule: ${selector}`);
+  return match[1];
+}
 
 vi.mock('./ModelSettings.js', () => ({ ModelSettings: () => null }));
 
@@ -58,7 +70,11 @@ describe('Phase3VisualFixture routing', () => {
       'connection-and-code',
     );
     expect(resolvePhase3VisualCase('?phase3-visual=streaming-follow')).toBe('streaming-follow');
+    expect(resolvePhase3VisualCase('?phase3-visual=streaming-text')).toBe('streaming-text');
     expect(resolvePhase3VisualCase('?phase3-visual=composer-context')).toBe('composer-context');
+    expect(resolvePhase3VisualCase('?phase3-visual=composer-slash-open')).toBe(
+      'composer-slash-open',
+    );
     expect(resolvePhase3VisualCase('?phase3-visual=workspace-file')).toBe('workspace-file');
     expect(resolvePhase3VisualCase('?phase3-visual=execution-auto-disclosure')).toBe(
       'execution-auto-disclosure',
@@ -67,7 +83,84 @@ describe('Phase3VisualFixture routing', () => {
       'inline-process-hierarchy',
     );
     expect(resolvePhase3VisualCase('?phase3-visual=task-status-panel')).toBe('task-status-panel');
-    expect(PHASE3_VISUAL_CASES).toHaveLength(11);
+    expect(resolvePhase3VisualCase('?phase3-visual=sliding-tabs')).toBe('sliding-tabs');
+    expect(resolvePhase3VisualCase('?phase3-visual=kernel-update-panel')).toBe(
+      'kernel-update-panel',
+    );
+    expect(resolvePhase3VisualCase('?phase3-visual=connection-settings')).toBe(
+      'connection-settings',
+    );
+    expect(PHASE3_VISUAL_CASES).toHaveLength(16);
+  });
+
+  it('renders the deterministic 656px Composer slash-menu state', () => {
+    render(<Phase3VisualFixture visualCase="composer-slash-open" />);
+
+    const composer = screen.getByTestId('composer-slash-open');
+    const input = screen.getByRole('textbox', { name: '斜杠命令输入' }) as HTMLTextAreaElement;
+    const menu = screen.getByRole('listbox', { name: '斜杠命令视觉验收' });
+    const options = within(menu).getAllByRole('option');
+
+    expect(composer.style.width).toBe('656px');
+    expect(composer.style.maxWidth).toBe('100%');
+    expect(composer.parentElement?.style.maxWidth).toBe('calc(100% - 48px)');
+    expect(composer.getAttribute('data-layout')).toBe('tall');
+    expect(input.value).toBe('/');
+    expect(input.rows).toBe(2);
+    expect(menu.parentElement).toBe(composer);
+    expect(menu.classList.contains('shell-empty-slash-pop')).toBe(true);
+    expect(options).toHaveLength(5);
+    expect(within(menu).getByRole('option', { name: /\/goal.*目标模式/ })).toBeTruthy();
+    expect(options.every((option) => option.classList.contains('shell-slash-pop__item'))).toBe(
+      true,
+    );
+    expect(options.every((option) => option.getAttribute('aria-selected') === 'false')).toBe(true);
+    expect(within(menu).getByTestId('composer-menu-highlight').style.opacity).toBe('0');
+    expect(within(menu).getByText('↑↓ 选择 · Enter 确认 · Esc 关闭')).toBeTruthy();
+
+    const anchoredMenu = cssRule('.shell-mention-pop.shell-slash-pop.shell-empty-slash-pop');
+    const menuSurface = cssRule('.shell-mention-pop.shell-slash-pop');
+    const menuItem = cssRule('.shell-slash-pop__item');
+    const voiceControl = cssRule('.shell-compose__voice');
+    const sendControl = cssRule('.shell-compose__send');
+    expect(anchoredMenu).toContain('right: -1px;');
+    expect(anchoredMenu).toContain('left: -1px;');
+    expect(anchoredMenu).toContain('overflow-x: hidden;');
+    expect(menuSurface).toContain('border-radius: var(--composer-menu-radius);');
+    expect(menuSurface).toContain('padding: var(--composer-menu-padding);');
+    expect(menuItem).toContain('height: var(--composer-menu-row-height);');
+    expect(menuItem).toContain('min-height: var(--composer-menu-row-height);');
+    expect(voiceControl).toContain('margin-left: auto;');
+    expect(sendControl).toContain('margin-left: 0;');
+    expect(TOKENS_CSS).toContain('--composer-max-width: 744px;');
+    expect(TOKENS_CSS).toContain('--composer-text-min-height-empty: 72px;');
+    expect(TOKENS_CSS).toContain('--composer-menu-radius: 18px;');
+    expect(TOKENS_CSS).toContain('--composer-menu-padding: 4px;');
+    expect(TOKENS_CSS).toContain('--composer-menu-row-height: 32px;');
+  });
+
+  it('renders the production connection settings for interactive visual QA', async () => {
+    render(<Phase3VisualFixture visualCase="connection-settings" />);
+    fireEvent.click(screen.getByRole('button', { name: '连接' }));
+    fireEvent.click(await screen.findByRole('button', { name: '打开 抖音' }));
+
+    expect(await screen.findByRole('heading', { name: '抖音' })).toBeTruthy();
+    expect(screen.getByText('fetch_hot_search_list')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '返回' }));
+    fireEvent.click(screen.getByRole('tab', { name: '机器人对话' }));
+    const botPane = await screen.findByRole('region', { name: '机器人对话设置' });
+    expect(within(botPane).getByRole('heading', { name: 'Telegram' })).toBeTruthy();
+    expect(within(botPane).getByText('已连接')).toBeTruthy();
+  });
+
+  it('switches the measured sliding tab fixture', () => {
+    render(<Phase3VisualFixture visualCase="sliding-tabs" />);
+
+    const debugTab = screen.getByRole('tab', { name: '调试与排查' });
+    expect(screen.getByTestId('sliding-tabs-panel').textContent).toContain('规划任务');
+    fireEvent.click(debugTab);
+    expect(debugTab.getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByTestId('sliding-tabs-panel').textContent).toContain('调试与排查');
   });
 
   it('renders the current unnumbered process hierarchy with the final answer outside', () => {
@@ -79,6 +172,10 @@ describe('Phase3VisualFixture routing', () => {
     expect(within(panel).queryByTestId('process-entry-index')).toBeNull();
     expect(within(panel).queryByTestId('inline-process-fixture-final')).toBeNull();
     expect(screen.getByTestId('inline-process-fixture-final')).toBeTruthy();
+    expect(panel.lastElementChild).toBe(screen.getByTestId('process-panel-activity'));
+    expect(screen.getByTestId('loading-pixel-grid').children).toHaveLength(9);
+    expect(document.querySelector('[data-source-connector="youtube"] img')).toBeTruthy();
+    expect(screen.getByText('3 个来源')).toBeTruthy();
   });
 });
 

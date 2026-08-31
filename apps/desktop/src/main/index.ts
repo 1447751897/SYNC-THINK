@@ -40,6 +40,7 @@ import type {
   ImportDesktopDataResponse,
   OpenDesktopDataDirectoryResponse,
 } from '../data-management-contract.js';
+import type { ManagedKernelUpdateId } from '../kernel-update-contract.js';
 import { FileRuntimeActivityCursorStore } from './runtime-activity-cursor-store.js';
 import {
   isAllowedM1OpenDocId,
@@ -160,6 +161,11 @@ import {
   parseProbeMcpSpawnPayload,
   parseCallMcpToolPayload,
   parseRefreshMcpToolsPayload,
+  parseGetBotChannelConfigPayload,
+  parseSaveBotChannelConfigPayload,
+  parseTestBotChannelPayload,
+  parseRequestWechatBotQrPayload,
+  parseCheckWechatBotQrPayload,
 } from '../agent-payloads.js';
 
 function goalConversationId(value: unknown): string | undefined {
@@ -175,12 +181,68 @@ function parseGoalSetPayloadLocal(
   const conversationId = goalConversationId(value);
   if (!conversationId || !value || typeof value !== 'object' || Array.isArray(value))
     return undefined;
-  const condition =
-    typeof (value as Record<string, unknown>).condition === 'string'
-      ? ((value as Record<string, unknown>).condition as string).trim()
-      : '';
+  const record = value as Record<string, unknown>;
+  const condition = typeof record.condition === 'string' ? record.condition.trim() : '';
   if (!condition || condition.length > 4000) return undefined;
-  return { conversationId, condition };
+  if (record.stopCondition !== undefined && typeof record.stopCondition !== 'string') {
+    return undefined;
+  }
+  const stopConditionText =
+    typeof record.stopCondition === 'string' ? record.stopCondition.trim() : '';
+  if (stopConditionText.length > 4000) return undefined;
+  const stopCondition = stopConditionText || undefined;
+  if (
+    record.maxGoalRounds !== undefined &&
+    (typeof record.maxGoalRounds !== 'number' ||
+      !Number.isSafeInteger(record.maxGoalRounds) ||
+      record.maxGoalRounds < 1 ||
+      record.maxGoalRounds > 50)
+  ) {
+    return undefined;
+  }
+  const maxGoalRounds =
+    typeof record.maxGoalRounds === 'number' ? record.maxGoalRounds : undefined;
+  if (
+    record.maxGoalTokens !== undefined &&
+    (typeof record.maxGoalTokens !== 'number' ||
+      !Number.isSafeInteger(record.maxGoalTokens) ||
+      record.maxGoalTokens < 10_000)
+  ) {
+    return undefined;
+  }
+  const maxGoalTokens =
+    typeof record.maxGoalTokens === 'number' ? record.maxGoalTokens : undefined;
+  const modelId =
+    typeof record.modelId === 'string' && record.modelId.trim() && record.modelId.length <= 256
+      ? record.modelId.trim()
+      : undefined;
+  const kernelId =
+    typeof record.kernelId === 'string' && record.kernelId.trim() && record.kernelId.length <= 128
+      ? record.kernelId.trim()
+      : undefined;
+  const reasoningEffort =
+    typeof record.reasoningEffort === 'string' &&
+    record.reasoningEffort.trim() &&
+    record.reasoningEffort.length <= 64
+      ? record.reasoningEffort.trim()
+      : undefined;
+  return {
+    conversationId,
+    condition,
+    ...(stopCondition === undefined ? {} : { stopCondition }),
+    ...(maxGoalRounds === undefined ? {} : { maxGoalRounds }),
+    ...(maxGoalTokens === undefined ? {} : { maxGoalTokens }),
+    ...(modelId === undefined
+      ? {}
+      : { modelId: modelId as import('@sync-think/protocol').GoalSetPayload['modelId'] }),
+    ...(kernelId === undefined
+      ? {}
+      : { kernelId: kernelId as import('@sync-think/protocol').GoalSetPayload['kernelId'] }),
+    ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+    ...(typeof record.networkEnabled === 'boolean'
+      ? { networkEnabled: record.networkEnabled }
+      : {}),
+  };
 }
 
 function parseGoalGetPayloadLocal(
@@ -208,7 +270,37 @@ function parseGoalResumePayloadLocal(
   value: unknown,
 ): import('@sync-think/protocol').GoalResumePayload | undefined {
   const conversationId = goalConversationId(value);
-  return conversationId ? { conversationId } : undefined;
+  if (!conversationId || !value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  const modelId =
+    typeof record.modelId === 'string' && record.modelId.trim() && record.modelId.length <= 256
+      ? record.modelId.trim()
+      : undefined;
+  const kernelId =
+    typeof record.kernelId === 'string' && record.kernelId.trim() && record.kernelId.length <= 128
+      ? record.kernelId.trim()
+      : undefined;
+  const reasoningEffort =
+    typeof record.reasoningEffort === 'string' &&
+    record.reasoningEffort.trim() &&
+    record.reasoningEffort.length <= 64
+      ? record.reasoningEffort.trim()
+      : undefined;
+  return {
+    conversationId,
+    ...(modelId === undefined
+      ? {}
+      : { modelId: modelId as import('@sync-think/protocol').GoalResumePayload['modelId'] }),
+    ...(kernelId === undefined
+      ? {}
+      : { kernelId: kernelId as import('@sync-think/protocol').GoalResumePayload['kernelId'] }),
+    ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+    ...(typeof record.networkEnabled === 'boolean'
+      ? { networkEnabled: record.networkEnabled }
+      : {}),
+  };
 }
 import {
   parseCapabilityGovernanceListPayload,
@@ -388,11 +480,17 @@ import {
   readDaemonLogs,
   requestDaemonFrame,
   resolveManagedRuntimeDatabasePath,
+  resolveNodeBinary,
   setDaemonAutostart,
   stopManagedDaemon,
   stopManagedRuntime,
   waitForRuntimeProcess,
 } from './runtime-supervisor.js';
+import {
+  createKernelUpdateService,
+  resolveKernelInstallerInvocation,
+  type KernelUpdateService,
+} from './kernel-update-service.js';
 import { ArtifactImagePreviewRegistry } from './artifact-image-preview.js';
 import {
   describeDesktopRuntimeIdentity,
@@ -476,6 +574,7 @@ let runtimeShutdownComplete = false;
 let runtimeSession: RuntimeSession | null = null;
 let daemonAutostartFailureLogged = false;
 let desktopUpdateController: DesktopUpdateController | null = null;
+let kernelUpdateService: KernelUpdateService | null = null;
 let desktopUpdateRollbackCoordinator: DesktopUpdateRollbackCoordinator | null = null;
 let desktopUpdateRollbackHealthPromise: Promise<void> | null = null;
 let desktopShutdownPromise: Promise<void> | null = null;
@@ -548,6 +647,17 @@ interface ActiveProjectTerminalCommand {
 }
 
 const projectTerminalRegistry = new ProjectTerminalRegistry<ActiveProjectTerminalCommand>();
+
+function getKernelUpdateService(): KernelUpdateService {
+  if (kernelUpdateService) return kernelUpdateService;
+  const rootDir = path.join(path.dirname(resolveManagedRuntimeDatabasePath()), 'kernels');
+  const nodeExecutable = resolveNodeBinary();
+  kernelUpdateService = createKernelUpdateService({
+    rootDir,
+    installer: resolveKernelInstallerInvocation(nodeExecutable),
+  });
+  return kernelUpdateService;
+}
 
 function initializeDesktopUpdater(): void {
   const recoveryRoot = app.isPackaged ? resolveDesktopUpdateRecoveryRoot(process.env) : null;
@@ -1942,6 +2052,35 @@ function setupRuntimeBridge(): void {
     }
     return installPiKernel();
   });
+  ipcMain.handle('desktop:kernel-update-get-state', (event) => {
+    assertRuntimeIpcSource(event);
+    return getKernelUpdateService().getSnapshot();
+  });
+  ipcMain.handle('desktop:kernel-update-check', async (event) => {
+    assertRuntimeIpcSource(event);
+    return getKernelUpdateService().checkForUpdates();
+  });
+  ipcMain.handle('desktop:kernel-update-install', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    if (
+      !value ||
+      typeof value !== 'object' ||
+      !['codex', 'claude-code'].includes(String((value as { kernelId?: unknown }).kernelId))
+    ) {
+      throw new Error('kernel.update.kernel-invalid');
+    }
+    const kernelId = (value as { kernelId: ManagedKernelUpdateId }).kernelId;
+    const result = await getKernelUpdateService().installUpdate(kernelId);
+    if (result.ok) {
+      try {
+        await ensureRuntimeConnection();
+        await getRuntimeClient().request('kernel.recycle', { kernelId });
+      } catch (error) {
+        console.warn('[desktop] private kernel installed but resident recycle failed', error);
+      }
+    }
+    return result;
+  });
   ipcMain.handle('runtime:agent-create', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
     await ensureRuntimeConnection();
@@ -2575,6 +2714,38 @@ function setupRuntimeBridge(): void {
     assertRuntimeIpcSource(event);
     await ensureRuntimeConnection();
     return getRuntimeClient().request('mcp.tools.refresh', parseRefreshMcpToolsPayload(value));
+  });
+
+  ipcMain.handle('runtime:bot-channel-get', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('bot.channel.get', parseGetBotChannelConfigPayload(value));
+  });
+  ipcMain.handle('runtime:bot-channel-save', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('bot.channel.save', parseSaveBotChannelConfigPayload(value));
+  });
+  ipcMain.handle('runtime:bot-channel-test', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('bot.channel.test', parseTestBotChannelPayload(value));
+  });
+  ipcMain.handle('runtime:bot-channel-wechat-qr-request', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'bot.channel.wechat.qr.request',
+      parseRequestWechatBotQrPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:bot-channel-wechat-qr-check', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'bot.channel.wechat.qr.check',
+      parseCheckWechatBotQrPayload(value),
+    );
   });
 
   ipcMain.handle(

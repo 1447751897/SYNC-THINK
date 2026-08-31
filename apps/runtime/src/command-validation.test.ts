@@ -147,6 +147,12 @@ describe('append message per-turn Skill validation', () => {
       }),
     ).toBeUndefined();
   });
+
+  it('accepts a boolean help mode flag and rejects malformed values', () => {
+    expect(parseAppendMessagePayload({ ...base, helpMode: true })?.helpMode).toBe(true);
+    expect(parseAppendMessagePayload({ ...base, helpMode: false })?.helpMode).toBe(false);
+    expect(parseAppendMessagePayload({ ...base, helpMode: 'true' })).toBeUndefined();
+  });
 });
 
 const validTask = {

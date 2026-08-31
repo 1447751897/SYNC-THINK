@@ -329,9 +329,7 @@ describe('ChatView reply usage details', () => {
 
     const tooltip = await screen.findByTestId('reply-usage-tooltip');
     expect(within(tooltip).getByText('1s')).toBeTruthy();
-    expect(
-      within(tooltip).getByText('↑ 1.2k · ↓ 488 · 缓存读 12.8k'),
-    ).toBeTruthy();
+    expect(within(tooltip).getByText('↑ 1.2k · ↓ 488 · 缓存读 12.8k')).toBeTruthy();
     expect(within(tooltip).queryByText('本次回复累计')).toBeNull();
     expect(within(tooltip).queryByText('输入上下文')).toBeNull();
   });
@@ -666,19 +664,21 @@ describe('ChatView reply usage details', () => {
 
     expect(screen.queryByTitle(/联网已开/)).toBeNull();
     const input = await screen.findByTestId('compose-input');
+    const editor = screen.getByRole('textbox', { name: '消息' });
     fireEvent.change(input, { target: { value: '@', selectionStart: 1 } });
 
     const popover = await screen.findByTestId('compose-mention-pop');
-    expect(within(popover).getByText('设置')).toBeTruthy();
+    expect(within(popover).getByText('来源与上下文')).toBeTruthy();
     expect(within(popover).getByText('联网搜索')).toBeTruthy();
     fireEvent.keyDown(input, { key: 'Tab' });
     const enableNetwork = within(popover).getByRole('button', { name: '开启联网搜索' });
     expect(document.activeElement).toBe(enableNetwork);
     fireEvent.keyDown(enableNetwork, { key: 'Escape' });
-    await waitFor(() => expect(document.activeElement).toBe(input));
+    await waitFor(() => expect(document.activeElement).toBe(editor));
     await waitFor(() => expect(screen.queryByTestId('compose-mention-pop')).toBeNull());
 
     fireEvent.change(input, { target: { value: '', selectionStart: 0 } });
+    await new Promise((resolve) => window.requestAnimationFrame(() => resolve(undefined)));
     fireEvent.change(input, { target: { value: '@', selectionStart: 1 } });
     const reopenedPopover = await screen.findByTestId('compose-mention-pop');
     fireEvent.click(within(reopenedPopover).getByRole('button', { name: '关闭联网搜索' }));

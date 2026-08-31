@@ -110,12 +110,12 @@ describe('TaskStatusPanel', () => {
     expect(panel.textContent).toContain('-7');
     expect(panel.textContent).toContain('feat/status-card');
     expect(panel.textContent).toContain('完成五子棋并通过全部验证');
-    expect(panel.textContent).toContain('2/5');
+    expect(panel.textContent).toContain('第 2/5 轮');
     expect(panel.textContent).toContain('1/3');
     expect(screen.getByText('初始化棋盘').className).toContain('is-completed');
     expect(panel.textContent).toContain('Git 工具');
     expect(panel.textContent).toContain('目标');
-    expect(panel.textContent).toContain('进程');
+    expect(panel.textContent).toContain('任务清单');
     expect(panel.textContent).not.toContain('Git tools');
     expect(panel.textContent).not.toContain('Progress');
   });
@@ -129,6 +129,14 @@ describe('TaskStatusPanel', () => {
 
     expect(screen.queryByText('完成五子棋并通过全部验证')).toBeNull();
     expect(within(panel).getByText('实现落子逻辑')).toBeTruthy();
+  });
+
+  it('does not expose legacy evaluator configuration as Goal status', async () => {
+    render(<TaskStatusPanel goal={goal} evaluatorConfigured={false} />);
+
+    const panel = await screen.findByTestId('task-status-panel');
+    expect(panel.textContent).toContain('完成五子棋并通过全部验证');
+    expect(panel.textContent).not.toContain('评估模型未配置');
   });
 
   it('opens worktree review directly and keeps branch and commit tools functional', async () => {
@@ -190,6 +198,80 @@ describe('TaskStatusPanel', () => {
     fireEvent.mouseEnter(before);
     expect(screen.getByRole('tooltip').textContent).toContain('步骤 1');
     expect(screen.getByRole('tooltip').textContent).toContain('步骤 3');
+  });
+
+  it('opens the task checklist when a live plan first appears', async () => {
+    render(<TaskStatusPanel todo={todo} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('task-status-panel').getAttribute('data-manual-open')).toBe('true');
+    });
+    expect(screen.getAllByText('实现落子逻辑')).toHaveLength(2);
+  });
+
+  it('opens a newly delivered checklist even when the run terminal event arrived in the same batch', async () => {
+    render(<TaskStatusPanel todo={{ ...todo, running: false }} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('task-status-panel').getAttribute('data-manual-open')).toBe('true');
+    });
+    expect(screen.getByText('任务清单')).toBeTruthy();
+  });
+
+  it('opens when a checklist appears later and does not reopen after the user closes it', async () => {
+    const { rerender } = render(<TaskStatusPanel todo={null} />);
+    expect(screen.queryByTestId('task-status-panel')).toBeNull();
+
+    rerender(<TaskStatusPanel todo={todo} />);
+    await waitFor(() => {
+      expect(screen.getByTestId('task-status-panel').getAttribute('data-manual-open')).toBe('true');
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: '关闭任务状态' }));
+    expect(screen.getByTestId('task-status-panel').getAttribute('data-manual-open')).toBeNull();
+
+    rerender(
+      <TaskStatusPanel
+        todo={{
+          ...todo,
+          completed: 2,
+          items: todo.items.map((item, index) =>
+            index === 1 ? { ...item, status: 'completed' as const } : item,
+          ),
+        }}
+      />,
+    );
+    await waitFor(() => {
+      expect(screen.getByTestId('task-status-panel').getAttribute('data-manual-open')).toBeNull();
+    });
+  });
+
+  it('auto-opens once per conversation scope without resetting during a temporary clear', async () => {
+    const nextTodo: TodoProjection = {
+      ...todo,
+      items: [
+        { title: '检查新一轮', status: 'in_progress' },
+        { title: '完成新一轮', status: 'pending' },
+      ],
+      completed: 0,
+      total: 2,
+    };
+    const { rerender } = render(<TaskStatusPanel scopeKey="conversation-a" todo={todo} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('task-status-panel').getAttribute('data-manual-open')).toBe('true');
+    });
+    fireEvent.click(screen.getByRole('button', { name: '关闭任务状态' }));
+
+    rerender(<TaskStatusPanel scopeKey="conversation-a" todo={null} />);
+    expect(screen.queryByTestId('task-status-panel')).toBeNull();
+    rerender(<TaskStatusPanel scopeKey="conversation-a" todo={nextTodo} />);
+    expect(screen.getByTestId('task-status-panel').getAttribute('data-manual-open')).toBeNull();
+
+    rerender(<TaskStatusPanel scopeKey="conversation-b" todo={nextTodo} />);
+    await waitFor(() => {
+      expect(screen.getByTestId('task-status-panel').getAttribute('data-manual-open')).toBe('true');
+    });
   });
 
   it('renders nothing when Git, Goal and Progress have no real data', async () => {

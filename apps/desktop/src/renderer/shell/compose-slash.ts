@@ -1,7 +1,7 @@
 // Pure helpers for Compose slash-command menu (NewMax-style / menu).
 import type { ModelId } from '@sync-think/shared';
 
-export type SlashCommandKind = 'action' | 'prefix' | 'coming-soon';
+export type SlashCommandKind = 'action' | 'prefix' | 'panel' | 'coming-soon';
 
 export interface SlashCommand {
   /** Command without leading slash, e.g. "compact". */
@@ -15,6 +15,7 @@ export interface SlashCommand {
   /**
    * action — runs immediately (e.g. /compact)
    * prefix — replaces the slash token with a prompt prefix and keeps focus
+   * panel — removes the slash token and opens a contextual panel
    * coming-soon — select closes menu and shows a short notice
    */
   kind: SlashCommandKind;
@@ -34,39 +35,44 @@ export interface SlashQuery {
 /** Built-in slash commands shown above Skills (P6). */
 export const BUILTIN_SLASH_COMMANDS: readonly SlashCommand[] = [
   {
-    id: 'compact',
-    command: '/compact',
-    label: '压缩上下文',
-    description: '插入命令；发送后才开始压缩',
-    // Insert into the composer only — execution happens when the user presses Send.
+    id: 'help',
+    command: '/help',
+    label: '引导帮助',
+    description: '在当前输入框使用内置帮助',
     kind: 'prefix',
-    keywords: ['compress', 'context', '压缩', '上下文'],
+    keywords: ['guide', 'help', '帮助', '引导'],
   },
   {
     id: 'plan',
     command: '/plan',
-    label: '计划模式',
-    description:
-      '只读分析并提交可审批计划；发送后才进入规划模式（可附加需求，如 /plan 完善登录功能）',
+    label: '规划模式',
+    description: '先出方案，你确认后再执行',
     kind: 'prefix',
     keywords: ['outline', '规划', '计划', 'plan'],
-  },
-  {
-    id: 'execute',
-    command: '/execute',
-    label: '执行模式',
-    description: '退出规划模式，恢复正常执行（发送后生效）',
-    kind: 'prefix',
-    keywords: ['执行', 'execute', 'exit plan', 'plan'],
   },
   {
     id: 'goal',
     command: '/goal',
     label: '目标模式',
-    description: '插入命令；发送后才设置目标（可附加完成条件，如 /goal 完成所有测试）',
-    // Insert into the composer only — execution happens when the user presses Send.
+    description: '持续推进，直到目标完成',
     kind: 'prefix',
     keywords: ['autonomous', '目标', '循环', 'goal'],
+  },
+  {
+    id: 'compact',
+    command: '/compact',
+    label: '压缩上下文',
+    description: '手动整理此对话较早的上下文',
+    kind: 'action',
+    keywords: ['compress', 'context', '压缩', '上下文'],
+  },
+  {
+    id: 'mcp',
+    command: '/mcp',
+    label: 'MCP 服务器',
+    description: '查看工具服务器的启用状态',
+    kind: 'panel',
+    keywords: ['server', 'tools', 'mcp', '服务器', '工具'],
   },
 ];
 
@@ -112,6 +118,88 @@ export function stripSlashToken(text: string, slash: SlashQuery): { text: string
   return { text: next, caret: slash.slashIndex };
 }
 
+/** Replace the active slash token and leave the caret after one command separator. */
+export function replaceSlashTokenWithCommand(
+  text: string,
+  slash: SlashQuery,
+  command: string,
+): { text: string; caret: number } {
+  const before = text.slice(0, slash.slashIndex);
+  const after = text.slice(slash.caret).replace(/^[\t ]+/, '');
+  const separator = /^[\r\n]/.test(after) ? '' : ' ';
+  return {
+    text: `${before}${command}${separator}${after}`,
+    caret: before.length + command.length + separator.length,
+  };
+}
+
+export type ComposerModeCommand = 'plan' | 'goal';
+
+export interface ComposerModeKeywordHint {
+  kind: ComposerModeCommand;
+  body: string;
+}
+
+const COMPOSER_MODE_KEYWORD_HINTS: readonly {
+  kind: ComposerModeCommand;
+  search: RegExp;
+  leading: RegExp;
+}[] = [
+  {
+    kind: 'plan',
+    search: /\bplan(?:ning)?(?:\s+mode)?\b|规划|计划|方案/i,
+    leading: /^\s*(?:plan(?:ning)?|规划|计划|方案)(?:[\t :：,，、-]+([\s\S]*))?$/i,
+  },
+  {
+    kind: 'goal',
+    search: /\b(?:goal|objective)(?:\s+mode)?\b|目标|自主执行|循环执行/i,
+    leading:
+      /^\s*(?:goal|objective|目标|目标模式|自主执行|循环执行)(?:[\t :：,，、-]+([\s\S]*))?$/i,
+  },
+];
+
+/** Match NewMax's ordinary-text Plan/Goal intent prompt. */
+export function parseComposerModeKeywordHint(text: string): ComposerModeKeywordHint | null {
+  if (text.trimStart().startsWith('/')) return null;
+  const first = COMPOSER_MODE_KEYWORD_HINTS.map((config) => {
+    const match = config.search.exec(text);
+    return match ? { config, index: match.index } : null;
+  })
+    .filter(
+      (candidate): candidate is {
+        config: (typeof COMPOSER_MODE_KEYWORD_HINTS)[number];
+        index: number;
+      } => candidate !== null,
+    )
+    .sort((left, right) => left.index - right.index)[0];
+  if (!first) return null;
+  const leading = first.config.leading.exec(text);
+  const body = leading ? (leading[1] ?? '').trim() : text.trim();
+  return { kind: first.config.kind, body };
+}
+
+/** Convert the accepted NewMax keyword suggestion into a slash-mode draft. */
+export function withComposerModeKeywordHint(text: string): string {
+  const hint = parseComposerModeKeywordHint(text);
+  if (!hint) return text;
+  return hint.body ? `/${hint.kind} ${hint.body}` : `/${hint.kind} `;
+}
+
+/** Apply one mutually-exclusive NewMax mode prefix while preserving the draft body. */
+export function withComposerModeCommand(text: string, mode: ComposerModeCommand): string {
+  const body = text.replace(/^\s*\/(?:plan|goal)(?:\s+|$)/i, '');
+  return `/${mode} ${body}`;
+}
+
+/** Remove a leading NewMax mode prefix without discarding the user's draft body. */
+export function withoutComposerModeCommand(
+  text: string,
+  mode?: ComposerModeCommand,
+): string {
+  const command = mode ? mode : '(?:plan|goal)';
+  return text.replace(new RegExp(`^\\s*\\/${command}(?:\\s+|$)`, 'i'), '');
+}
+
 /** Format elapsed seconds for the compact capsule (NewMax shows duration). */
 export function formatCompactElapsed(startedAt: number, now: number = Date.now()): string {
   const ms = Math.max(0, now - startedAt);
@@ -121,6 +209,9 @@ export function formatCompactElapsed(startedAt: number, now: number = Date.now()
 }
 
 export type ParsedSlashCommand =
+  | { kind: 'help' }
+  | { kind: 'help-with-request'; request: string }
+  | { kind: 'mcp' }
   | { kind: 'compact' }
   | { kind: 'compact-with-trailing'; trailing: string }
   | { kind: 'goal' }
@@ -143,6 +234,13 @@ export function parseSlashCommand(text: string): ParsedSlashCommand {
   if (!match) return { kind: 'none' };
   const command = `/${(match[1] ?? '').toLowerCase()}`;
   const trailing = (match[2] ?? '').trim();
+  if (command === '/help') {
+    if (trailing) return { kind: 'help-with-request', request: trailing };
+    return { kind: 'help' };
+  }
+  if (command === '/mcp') {
+    return { kind: 'mcp' };
+  }
   if (command === '/compact') {
     if (trailing) return { kind: 'compact-with-trailing', trailing };
     return { kind: 'compact' };

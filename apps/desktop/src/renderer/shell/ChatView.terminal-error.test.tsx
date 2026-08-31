@@ -2,7 +2,7 @@
  * @vitest-environment jsdom
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { Conversation, Event, Message } from '@sync-think/shared';
 import { ChatView } from './ChatView.js';
 
@@ -79,6 +79,19 @@ const outputlessFailure = {
   ],
 } as unknown as Message;
 
+const cancelledMessage = {
+  id: 'assistant-cancelled',
+  threadId: 'thread-terminal',
+  role: 'assistant',
+  runId: 'run-cancelled',
+  sequence: 1,
+  createdAt: '2026-08-17T08:07:30.901Z',
+  blocks: [
+    { type: 'text', text: '已经完成了一部分' },
+    { type: 'error', payload: { terminalState: 'cancelled' } },
+  ],
+} as unknown as Message;
+
 beforeEach(() => {
   window.localStorage.clear();
   runtime.appendMessage
@@ -107,6 +120,83 @@ afterEach(() => {
 });
 
 describe('ChatView terminal failure reason', () => {
+  it('offers working continue and retry actions for an interrupted answer', async () => {
+    runtime.listConversationMessages.mockResolvedValue({
+      messages: [
+        {
+          ...userMessage,
+          blocks: [
+            {
+              type: 'text',
+              text: '请继续处理这个任务',
+              payload: { skillVersionIds: ['skill-review-v1'] },
+            },
+          ],
+        },
+        cancelledMessage,
+      ],
+      hasMore: false,
+    });
+    render(
+      <ChatView
+        conversation={conversation}
+        modelName="gpt-5.6-luna"
+        models={[{ modelId: 'model-terminal', displayName: 'gpt-5.6-luna', providerName: 'Relay' }]}
+        eventHistory={[]}
+        onTitleUpdated={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText('回答已中断')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '继续回答' }));
+    await waitFor(() =>
+      expect(runtime.appendMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: '继续上一条未完成的回答。',
+          skillVersionIds: ['skill-review-v1'],
+        }),
+      ),
+    );
+
+    cleanup();
+    runtime.appendMessage.mockClear();
+    runtime.listConversationMessages.mockResolvedValue({
+      messages: [
+        {
+          ...userMessage,
+          blocks: [
+            {
+              type: 'text',
+              text: '请继续处理这个任务',
+              payload: { skillVersionIds: ['skill-review-v1'] },
+            },
+          ],
+        },
+        cancelledMessage,
+      ],
+      hasMore: false,
+    });
+    render(
+      <ChatView
+        conversation={conversation}
+        modelName="gpt-5.6-luna"
+        models={[{ modelId: 'model-terminal', displayName: 'gpt-5.6-luna', providerName: 'Relay' }]}
+        eventHistory={[]}
+        onTitleUpdated={vi.fn()}
+      />,
+    );
+    await screen.findByText('回答已中断');
+    fireEvent.click(screen.getByRole('button', { name: '重试回答' }));
+    await waitFor(() =>
+      expect(runtime.appendMessage).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          text: '请继续处理这个任务',
+          skillVersionIds: ['skill-review-v1'],
+        }),
+      ),
+    );
+  });
+
   it('keeps a failed turn factual without a model-switch retry action', async () => {
     runtime.listConversationMessages.mockResolvedValue({
       messages: [userMessage, outputlessFailure],

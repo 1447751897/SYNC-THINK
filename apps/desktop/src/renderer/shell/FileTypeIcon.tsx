@@ -4,6 +4,7 @@ import {
   Container,
   Database,
   FileArchive,
+  FileCode2,
   FileCog,
   FileImage,
   FileJson2,
@@ -81,21 +82,21 @@ function fileIconSpec(path: string): FileIconSpec {
     case 'jsx':
     case 'mjs':
     case 'cjs':
-      return { kind: 'javascript', label: 'JS' };
+      return { kind: 'javascript', icon: FileCode2 };
     case 'ts':
     case 'tsx':
     case 'mts':
     case 'cts':
-      return { kind: 'typescript', label: 'TS' };
+      return { kind: 'typescript', icon: Braces };
     case 'py':
     case 'pyw':
-      return { kind: 'python', label: 'PY' };
+      return { kind: 'python', icon: FileCode2 };
     case 'json':
     case 'jsonc':
       return { kind: 'json', icon: FileJson2 };
     case 'md':
     case 'mdx':
-      return { kind: 'markdown', label: 'M' };
+      return { kind: 'markdown', icon: FileText };
     case 'html':
     case 'htm':
     case 'xml':

@@ -5,10 +5,7 @@ import type {
   RunProcessView,
 } from '@sync-think/protocol';
 import type { ConversationStreamDraft, ConversationStreamOperation } from './chat-stream.js';
-import {
-  applyConversationStreamOperations,
-  shouldRetainTerminalDraft,
-} from './chat-stream.js';
+import { applyConversationStreamOperations, shouldRetainTerminalDraft } from './chat-stream.js';
 
 export interface TransientDraftState {
   draft: ConversationStreamDraft | null;
@@ -19,6 +16,7 @@ export interface TransientDraftState {
 export interface TransientFrameBatchOptions {
   maxFrames: number;
   maxTextCharacters: number;
+  maxReadableTokens?: number;
 }
 
 export interface TransientFrameBatch {
@@ -113,24 +111,148 @@ function operationFromDisplayQueueItem(
   return item.source === 'transient' ? operationFromTransientFrame(item.frame) : item.operation;
 }
 
-/** One cumulative publication per paint frame, independent of provider chunk size. */
+const DISPLAY_MAX_FRAMES_PER_PAINT = 1;
+const DISPLAY_MAX_TEXT_CHARACTERS_PER_PAINT = 24;
+const DISPLAY_FLUSH_DELAY_MS = 55;
+
+function pendingDisplayTextCharacters(queued: readonly ConversationDisplayQueueItem[]): number {
+  return queued.reduce((total, item) => {
+    if (item.source === 'snapshot') return total;
+    const operation = operationFromDisplayQueueItem(item);
+    const delta = operation ? operationTextDelta(operation) : undefined;
+    return total + Math.max(0, (delta?.length ?? 0) - item.offset);
+  }, 0);
+}
+
+/** Keep one paint bounded even when a proxy/provider coalesces many deltas. */
 export function getConversationDisplayQueueBatchOptions(
-  _queued: readonly ConversationDisplayQueueItem[],
+  queued: readonly ConversationDisplayQueueItem[],
 ): TransientFrameBatchOptions {
+  const pendingCharacters = pendingDisplayTextCharacters(queued);
+  if (pendingCharacters > 3_000) {
+    return { maxFrames: 8, maxTextCharacters: 192, maxReadableTokens: 8 };
+  }
+  if (pendingCharacters > 1_200) {
+    return { maxFrames: 4, maxTextCharacters: 96, maxReadableTokens: 4 };
+  }
+  if (pendingCharacters > 240) {
+    return { maxFrames: 2, maxTextCharacters: 48, maxReadableTokens: 2 };
+  }
   return {
-    maxFrames: Number.MAX_SAFE_INTEGER,
-    maxTextCharacters: Number.MAX_SAFE_INTEGER,
+    maxFrames: DISPLAY_MAX_FRAMES_PER_PAINT,
+    maxTextCharacters: DISPLAY_MAX_TEXT_CHARACTERS_PER_PAINT,
+    maxReadableTokens: 1,
   };
+}
+
+/** Preserve the word-by-word feel while preventing a long provider burst from lagging behind. */
+export function getConversationDisplayQueueFlushDelay(
+  queued: readonly ConversationDisplayQueueItem[],
+): number {
+  const pendingCharacters = pendingDisplayTextCharacters(queued);
+  if (pendingCharacters > 3_000) return 14;
+  if (pendingCharacters > 1_200) return 22;
+  if (pendingCharacters > 240) return 35;
+  return DISPLAY_FLUSH_DELAY_MS;
+}
+
+function operationTextDelta(operation: ConversationStreamOperation): string | undefined {
+  return operation.type === 'text.delta' ||
+    operation.type === 'commentary.delta' ||
+    operation.type === 'reasoning.delta'
+    ? operation.delta
+    : undefined;
+}
+
+function safeTextEnd(
+  text: string,
+  start: number,
+  requestedEnd: number,
+  maxReadableTokens: number,
+): number {
+  const limit = Math.min(text.length, Math.max(start, requestedEnd));
+  let end = start;
+  let tokens = 0;
+  while (end < limit && tokens < Math.max(1, maxReadableTokens)) {
+    while (end < limit && /\s/.test(text.charAt(end))) end += 1;
+    if (end >= limit) break;
+    const cjk = /[\u3400-\u9fff\uf900-\ufaff]/.test(text.charAt(end));
+    if (cjk) {
+      let characters = 0;
+      while (end < limit && characters < 4 && !/\s/.test(text.charAt(end))) {
+        end += 1;
+        characters += 1;
+      }
+    } else {
+      while (end < limit && !/\s/.test(text.charAt(end))) end += 1;
+    }
+    while (end < limit && /\s/.test(text.charAt(end))) end += 1;
+    tokens += 1;
+  }
+  if (end === start) end = limit;
+  if (
+    end > start &&
+    end < text.length &&
+    /[\uD800-\uDBFF]/.test(text.charAt(end - 1)) &&
+    /[\uDC00-\uDFFF]/.test(text.charAt(end))
+  ) {
+    end -= 1;
+  }
+  return end === start && start < text.length ? Math.min(text.length, start + 2) : end;
+}
+
+function partialAssistantTimeline(
+  frame: ConversationTransientFrame,
+  consumedCharacters: number,
+): AssistantTurnSegment[] | undefined {
+  const timeline = frame.assistantTimeline;
+  const delta = frame.textDelta ?? '';
+  if (!timeline?.length || !delta || consumedCharacters >= delta.length) {
+    return timeline?.map((segment) => ({ ...segment }));
+  }
+  const matchesFrame = (segment: AssistantTurnSegment): boolean =>
+    frame.kind === 'reasoning'
+      ? segment.kind === 'thinking'
+      : frame.kind === 'commentary'
+        ? segment.kind === 'text' && segment.phase === 'commentary'
+        : frame.kind === 'text'
+          ? segment.kind === 'text'
+          : false;
+  let targetIndex = -1;
+  for (let index = timeline.length - 1; index >= 0; index -= 1) {
+    if (matchesFrame(timeline[index]!)) {
+      targetIndex = index;
+      break;
+    }
+  }
+  if (targetIndex < 0) return undefined;
+  const target = timeline[targetIndex]!;
+  if (target.kind !== 'thinking' && target.kind !== 'text') return undefined;
+  const priorLength = target.text.endsWith(delta)
+    ? target.text.length - delta.length
+    : Math.max(0, target.text.length - delta.length);
+  return timeline
+    .slice(0, targetIndex + 1)
+    .map((segment, index) =>
+      index === targetIndex && (segment.kind === 'thinking' || segment.kind === 'text')
+        ? { ...segment, text: segment.text.slice(0, priorLength + consumedCharacters) }
+        : { ...segment },
+    );
 }
 
 export function takeConversationDisplayQueueBatch(
   queued: readonly ConversationDisplayQueueItem[],
-  _options: TransientFrameBatchOptions,
+  options: TransientFrameBatchOptions,
 ): ConversationDisplayQueueBatch {
   if (queued.length === 0) return { operations: [], completed: [], remaining: [] };
 
   const operations: ConversationStreamOperation[] = [];
   const completed: ConversationDisplayQueueItem[] = [];
+  const maxFrames = Math.max(1, options.maxFrames);
+  const maxTextCharacters = Math.max(1, options.maxTextCharacters);
+  const maxReadableTokens = Math.max(1, options.maxReadableTokens ?? 1);
+  let consumedFrames = 0;
+  let consumedTextCharacters = 0;
   for (let index = 0; index < queued.length; index += 1) {
     const item = queued[index]!;
     if (item.source === 'snapshot') {
@@ -138,9 +260,48 @@ export function takeConversationDisplayQueueBatch(
       return { operations, completed, remaining: queued.slice(index + 1) };
     }
     const operation = operationFromDisplayQueueItem(item);
-    if (operation) operations.push(operation);
+    if (!operation) {
+      completed.push(item);
+      continue;
+    }
+    if (consumedFrames >= maxFrames) {
+      return { operations, completed, remaining: queued.slice(index) };
+    }
+    const textDelta = operationTextDelta(operation);
+    if (textDelta !== undefined) {
+      const available = Math.max(0, maxTextCharacters - consumedTextCharacters);
+      if (available === 0) {
+        return { operations, completed, remaining: queued.slice(index) };
+      }
+      const end = safeTextEnd(textDelta, item.offset, item.offset + available, maxReadableTokens);
+      const delta = textDelta.slice(item.offset, end);
+      const partialOperation = { ...operation, delta } as ConversationStreamOperation;
+      if (item.source === 'transient') {
+        const assistantTimeline = partialAssistantTimeline(item.frame, end);
+        if (assistantTimeline) partialOperation.assistantTimeline = assistantTimeline;
+        else delete partialOperation.assistantTimeline;
+      } else if (end < textDelta.length) {
+        delete partialOperation.assistantTimeline;
+      }
+      operations.push(partialOperation);
+      consumedFrames += 1;
+      consumedTextCharacters += delta.length;
+      if (end < textDelta.length) {
+        return {
+          operations,
+          completed,
+          remaining: [{ ...item, offset: end }, ...queued.slice(index + 1)],
+        };
+      }
+    } else {
+      operations.push(operation);
+      consumedFrames += 1;
+    }
     completed.push(item);
     if (operation && (operation.type === 'process.boundary' || operation.type === 'run.terminal')) {
+      return { operations, completed, remaining: queued.slice(index + 1) };
+    }
+    if (consumedFrames >= maxFrames || consumedTextCharacters >= maxTextCharacters) {
       return { operations, completed, remaining: queued.slice(index + 1) };
     }
   }
@@ -313,7 +474,8 @@ export function reconcileTransientConversationDraft(
   durableAssistantRunIds: Iterable<string>,
 ): ConversationStreamDraft | null {
   if (!current?.terminal) return current;
-  if (!shouldRetainTerminalDraft(current, current.terminalState, current.terminalError)) return null;
+  if (!shouldRetainTerminalDraft(current, current.terminalState, current.terminalError))
+    return null;
   if (!current.runId) return current;
   for (const runId of durableAssistantRunIds) {
     if (runId === current.runId) return null;

@@ -41,7 +41,7 @@ staging 负责：
 2. 将 `electron.exe` 重命名为 `SYNC-THINK.exe`，并用 `resedit` 写入 Windows icon group。
 3. 收集 Desktop、Runtime 和 production dependencies；输出必须位于 `apps/desktop/release/<child>` fence 内。
 4. 将 Runtime 写入 `resources/runtime`，入口为 `resources/runtime/main.js`。
-5. 将托管 Node 20.20.2 写入 `resources/node/node.exe`。
+5. 将完整托管 Node 20.20.2 目录写入 `resources/node`，至少包含 `node.exe` 与 `node_modules/npm/bin/npm-cli.js`；前者运行 Runtime，后者安装应用私有 Codex/Claude Code。
 6. 生成 `resources/app-update.yml`：正式 `release` 精确记录 updater cache identity 与完整 `publisherName`；显式 `unsigned-fixture` 只记录 cache identity。两种模式都禁止 provider URL、Bearer token 或请求 header。
 7. 生成 portable `release-manifest.json`。
 
@@ -52,6 +52,7 @@ apps/desktop/release/win-unpacked/SYNC-THINK.exe
 apps/desktop/release/win-unpacked/resources/app/dist/main/index.js
 apps/desktop/release/win-unpacked/resources/runtime/main.js
 apps/desktop/release/win-unpacked/resources/node/node.exe
+apps/desktop/release/win-unpacked/resources/node/node_modules/npm/bin/npm-cli.js
 apps/desktop/release/win-unpacked/resources/app-update.yml
 apps/desktop/release/win-unpacked/release-manifest.json
 ```
@@ -67,9 +68,9 @@ pnpm release:verify:win
 
 验证项包括：
 
-- Desktop executable、main、preload、renderer、Runtime launcher、Runtime main 与 Node binary 均存在。
+- Desktop executable、main、preload、renderer、Runtime launcher、Runtime main、Node binary 与 npm CLI 均存在。
 - `resources/app-update.yml` 必须与选定 signing mode 的期望内容字节级一致：正式 release 为 cache identity + 完整 publisher DN，unsigned fixture 仅为 cache identity；任何额外 provider、URL、Authorization 或 token 字段都失败。
-- 托管 Node 为 20.x，且 required native modules 存在。
+- 托管 Node 为 20.x、npm CLI 可供应用私有内核更新使用，且 required native modules 存在。
 - release 不包含 `.env*`、SQLite `.db/.db-*`、token、secret 或用户数据。
 - `release-manifest.json` 的文件集合、字节数和 SHA-256 与磁盘一致。
 - packaged PNG/ICO 与 executable icon group 一致。
@@ -104,6 +105,12 @@ $env:SYNC_THINK_DEV_NO_TOKEN = $null
 6. diagnostics 只暴露 `pipeSecretConfigured: true` 等状态，不输出 secret 原文。
 
 secret 仅由 Desktop Main 注入 managed Runtime，不进入 manifest、Renderer、命令行或 feed metadata。
+
+### 4.1 私有 Vendor 内核验收
+
+首次使用向导与关于页共用同一个应用私有安装服务。安装根位于 Runtime 数据库同级的 `kernels/versions`，不写系统 npm prefix。每次安装验证 package name、精确版本和预期 executable，最后原子切换 `kernels/active.json`；失败时保留上一 active 版本和本机/bundled 回退。
+
+安装成功后 Main 向 Runtime 发送 `kernel.recycle`。Codex 空闲 resident app-server 立即回收，活跃实例等当前 turn 释放后回收；Claude 下一轮创建新 SDK adapter。验收必须在一个安装前已经存在的对话中继续发送消息，确认原生 thread/session ID 保持不变、执行版本切换到新私有版本。不得用“新建对话成功”替代该项。
 
 ## 5. Authenticode NSIS installer
 

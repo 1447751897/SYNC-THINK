@@ -43,6 +43,18 @@ function approval(): PendingToolApprovalSummary {
   } as PendingToolApprovalSummary;
 }
 
+function computerUseApproval(): PendingToolApprovalSummary {
+  return {
+    ...approval(),
+    approvalId: 'approval-computer-use',
+    toolCallId: 'tool-call-computer-use',
+    toolName: 'mcp__computer-use__computer_click',
+    arguments: { app_id: 'Microsoft.WindowsCalculator_8wekyb3d8bbwe!App' },
+    title: '点击计算器',
+    detail: '点击按钮 7',
+  };
+}
+
 function renderChat(runtimeConnectionRevision = 0) {
   return render(
     <ChatView
@@ -83,6 +95,11 @@ describe('ChatView pending tool approval reconnect', () => {
     renderChat();
 
     expect(await screen.findByText('写入文件 README.md')).toBeTruthy();
+    expect(screen.getByTestId('composer-peek-surface').getAttribute('data-kind')).toBe('tool');
+    expect(screen.getByTestId('tool-approval-approval-reconnect-a').className).toContain(
+      'shell-composer-tool-approval',
+    );
+    expect(screen.queryByText('批准创建')).toBeNull();
     expect(runtime.listPendingToolApprovals).toHaveBeenCalledWith({
       threadId: 'thread-approval-reconnect',
     });
@@ -121,9 +138,59 @@ describe('ChatView pending tool approval reconnect', () => {
       expect(runtime.decideToolApproval).toHaveBeenCalledWith({
         approvalId: 'approval-reconnect-a',
         decision: 'deny',
+        scope: 'once',
       }),
     );
     await waitFor(() => expect(runtime.listPendingToolApprovals).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.queryByText('写入文件 README.md')).toBeNull());
+  });
+
+  it('offers session approval for ordinary tools and only renders the first pending item', async () => {
+    runtime.listPendingToolApprovals
+      .mockResolvedValueOnce({
+        approvals: [
+          approval(),
+          {
+            ...approval(),
+            approvalId: 'approval-second',
+            toolCallId: 'tool-call-second',
+            title: '第二条审批',
+          },
+        ],
+      })
+      .mockResolvedValue({ approvals: [] });
+    renderChat();
+
+    expect(await screen.findByText('写入文件 README.md')).toBeTruthy();
+    expect(screen.queryByText('第二条审批')).toBeNull();
+    expect(screen.queryByRole('button', { name: '始终允许此应用' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '本会话允许' }));
+
+    await waitFor(() =>
+      expect(runtime.decideToolApproval).toHaveBeenCalledWith({
+        approvalId: 'approval-reconnect-a',
+        decision: 'approve',
+        scope: 'session',
+      }),
+    );
+  });
+
+  it('offers persistent approval only for a valid Computer Use app id', async () => {
+    runtime.listPendingToolApprovals
+      .mockResolvedValueOnce({ approvals: [computerUseApproval()] })
+      .mockResolvedValue({ approvals: [] });
+    renderChat();
+
+    expect(await screen.findByText('点击计算器')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '本会话允许' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '始终允许此应用' }));
+
+    await waitFor(() =>
+      expect(runtime.decideToolApproval).toHaveBeenCalledWith({
+        approvalId: 'approval-computer-use',
+        decision: 'approve',
+        scope: 'always-app',
+      }),
+    );
   });
 });

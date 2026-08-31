@@ -164,6 +164,8 @@ export interface DemoRunState {
   reasoningEffort?: string;
   /** Compose 联网开关：本轮是否暴露 web_search / web_fetch。 */
   networkEnabled?: boolean;
+  /** Built-in SYNC-THINK usage-help turn; does not alter conversation mode. */
+  helpMode?: boolean;
   /**
    * Planning mode: this run is a read-only analysis run that submits an
    * approvable plan. The host hard-blocks side-effecting tools.
@@ -515,6 +517,7 @@ export interface CreateDemoRunInput {
   contextSources?: ContextSnapshotSource[];
   reasoningEffort?: string;
   networkEnabled?: boolean;
+  helpMode?: boolean;
   planningMode?: boolean;
   images?: DemoRunImage[];
   packetId?: string;
@@ -587,6 +590,7 @@ export function createDemoRun(
         : undefined,
     reasoningEffort: extras.reasoningEffort,
     networkEnabled: extras.networkEnabled === true ? true : undefined,
+    helpMode: extras.helpMode === true ? true : undefined,
     planningMode: extras.planningMode === true ? true : undefined,
     images: extras.images && extras.images.length > 0 ? extras.images : undefined,
     packetId: extras.packetId,
@@ -1101,6 +1105,7 @@ function parseDemoRun(value: unknown): DemoRunState {
     compactedAt: typeof run.compactedAt === 'string' ? run.compactedAt : undefined,
     reasoningEffort: typeof run.reasoningEffort === 'string' ? run.reasoningEffort : undefined,
     networkEnabled: run.networkEnabled === true ? true : undefined,
+    helpMode: run.helpMode === true ? true : undefined,
     images: Array.isArray(run.images)
       ? run.images
           .filter((img): img is DemoRunImage =>

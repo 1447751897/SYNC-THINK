@@ -153,7 +153,7 @@
   --color-cap-inset-highlight: rgba(255, 255, 255, 0.82);
 
   /*
-   * Provider brand accents are tokens so model settings can be re-themed.
+   * Provider and bot-channel brand accents are tokens so settings surfaces can be re-themed.
    * Theme-agnostic on purpose: these are real vendor brand colors, not part
    * of the skinnable palette.
    */
@@ -165,6 +165,13 @@
   --color-brand-deepseek-text: #8189ff;
   --color-brand-gemini: #6da7ff;
   --color-brand-gemini-text: #7bb4ff;
+  --color-brand-feishu: #3f70f4;
+  --color-brand-wecom: #2979ff;
+  --color-brand-wechat: #27c66f;
+  --color-brand-discord: #5865f2;
+  --color-brand-dingtalk: #1788ff;
+  --color-brand-qq: #e9eef3;
+  --color-brand-qq-text: #222222;
 
   --radius-card: 12px;
   --radius-row: 8px;
@@ -181,6 +188,70 @@
   --shell-tab-outline: rgba(0, 0, 0, 0.04);
   --shell-tab-highlight: rgba(255, 255, 255, 0.85);
   --shell-tab-shadow: drop-shadow(0.5px 0.5px 0.5px rgba(0, 0, 0, 0.08));
+
+  /* Measured sliding-tab timing; initial layout and resize snap without motion. */
+  --motion-tabs-duration: 250ms;
+  --motion-tabs-ease: cubic-bezier(0.22, 1, 0.36, 1);
+
+  /* NewMax 1.1.15 composer contract measured from the packaged desktop client. Empty and conversation editors intentionally keep different minimum heights while sharing one 744px frame, toolbar, menu, and mode-banner geometry. Popovers, Plan banners, and Goal banners use distinct measured timings; banner-duration/banner-ease remain Goal-compatible aliases for existing consumers. */
+  --composer-max-width: 744px;
+  --composer-padding: 0px;
+  --composer-text-min-height: 36px;
+  --composer-text-min-height-empty: 72px;
+  --composer-text-min-height-conversation: 36px;
+  --composer-text-max-height: 200px;
+  --composer-text-padding: 12px 16px 8px;
+  --composer-text-size: 14px;
+  --composer-text-line-height: 22px;
+  --composer-toolbar-height: 32px;
+  --composer-toolbar-gap: 4px;
+  --composer-control-gap: 4px;
+  --composer-control-size: 32px;
+  --composer-control-radius: 12px;
+  --composer-model-padding: 0 10px;
+  --composer-model-size: 13px;
+  --composer-model-line-height: 20px;
+  --composer-menu-gap: 8px;
+  --composer-menu-max-height: 420px;
+  --composer-menu-radius: 18px;
+  --composer-menu-padding: 4px;
+  --composer-menu-row-height: 32px;
+  --composer-menu-row-radius: 12px;
+  --composer-menu-row-padding: 4px 10px;
+  --composer-menu-row-gap: 8px;
+  --composer-menu-command-size: 13px;
+  --composer-menu-command-line-height: 16px;
+  --composer-menu-description-size: 13px;
+  --composer-menu-description-line-height: 16px;
+  --composer-menu-hint-size: 12px;
+  --composer-menu-hint-line-height: 20px;
+  --composer-menu-hint-margin: 4px 0 0;
+  --composer-menu-hint-padding: 2px 10px 0;
+  --composer-banner-height: 74px;
+  --composer-banner-overlap: 32px;
+  --composer-banner-content-y: 24px;
+  --composer-plan-banner-duration: 220ms;
+  --composer-plan-banner-ease: ease-out;
+  --composer-goal-banner-duration: 240ms;
+  --composer-goal-banner-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --composer-banner-duration: 240ms;
+  --composer-banner-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --composer-surface: #ffffff;
+  --composer-border: rgba(0, 0, 0, 0.10);
+  --composer-border-strong: rgba(0, 0, 0, 0.14);
+  --composer-text: #181b19;
+  --composer-text-secondary: #666763;
+  --composer-text-faint: #8c8c87;
+  --composer-hover: rgba(55, 61, 58, 0.06);
+  --composer-card-shadow: inset 0 0 0.5px rgba(255,255,255,0.84), 0 0 0 0.5px rgba(0,0,0,0.10), 0 0 4px -1px rgba(0,0,0,0.05), 0 0 14px -5px rgba(0,0,0,0.07), 0 0 28px -10px rgba(0,0,0,0.07);
+  --composer-card-shadow-focus: inset 0 0 0.5px rgba(255,255,255,0.88), 0 0 0 0.5px rgba(0,0,0,0.14), 0 0 6px -2px rgba(0,0,0,0.07), 0 0 18px -6px rgba(0,0,0,0.09), 0 0 34px -12px rgba(0,0,0,0.10);
+  --composer-menu-shadow: 0 0 0 0.5px rgba(45, 71, 57, 0.12), 0 9px 4px rgba(0,0,0,0.01), 0 5px 3px rgba(0,0,0,0.02), 0 2px 2px rgba(0,0,0,0.03), 0 1px 1px rgba(0,0,0,0.04), inset 0.5px 0.5px 0.5px rgba(255,255,255,0.85);
+  --composer-interaction-duration: 150ms;
+  --composer-popover-duration: 150ms;
+  --composer-send-duration: 200ms;
+  --composer-menu-duration: 150ms;
+  --composer-menu-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --composer-highlight-duration: 220ms;
 
   /* NewMax-aligned preference previews and runtime palette inputs. These colors are theme-agnostic source swatches; the preference engine derives active light/dark surfaces from them. */
   --preference-color-image-lakewood-accent: #042a18;
@@ -240,6 +311,17 @@
   --shell-tab-outline: rgba(255, 255, 255, 0.08);
   --shell-tab-highlight: transparent;
   --shell-tab-shadow: none;
+
+  --composer-surface: #252726;
+  --composer-border: rgba(255, 255, 255, 0.08);
+  --composer-border-strong: rgba(255, 255, 255, 0.13);
+  --composer-text: rgba(255, 255, 255, 0.9);
+  --composer-text-secondary: rgba(255, 255, 255, 0.5);
+  --composer-text-faint: rgba(255, 255, 255, 0.38);
+  --composer-hover: rgba(168, 184, 176, 0.08);
+  --composer-card-shadow: inset 0 0 0 0.5px rgba(255,255,255,0.08), 0 0 20px -10px rgba(0,0,0,0.08);
+  --composer-card-shadow-focus: inset 0 0 0 0.5px rgba(255,255,255,0.13), 0 0 24px -12px rgba(0,0,0,0.10);
+  --composer-menu-shadow: inset 0 0 0 0.5px rgba(255,255,255,0.12), 0 0 9px -4px rgba(0,0,0,0.40), 0 0 32px -8px rgba(0,0,0,0.16);
 
   --color-border: rgba(255, 255, 255, 0.08);
   --color-border-strong: rgba(255, 255, 255, 0.14);

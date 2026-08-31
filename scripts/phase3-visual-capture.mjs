@@ -13,6 +13,14 @@ export const PHASE3_VISUAL_MATRIX = Object.freeze([
   { id: 'welcome-light', fixture: 'welcome', theme: 'light', scale: 1, width: 1280, height: 800 },
   { id: 'welcome-dark', fixture: 'welcome', theme: 'dark', scale: 1, width: 1280, height: 800 },
   {
+    id: 'composer-slash-open-dark',
+    fixture: 'composer-slash-open',
+    theme: 'dark',
+    scale: 1,
+    width: 986,
+    height: 560,
+  },
+  {
     id: 'trace-open-light',
     fixture: 'long-trace-open',
     theme: 'light',

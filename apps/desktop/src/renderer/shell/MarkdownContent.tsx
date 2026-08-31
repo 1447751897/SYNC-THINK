@@ -2,19 +2,12 @@ import { memo, useCallback, useMemo, useRef, useState, type ReactNode } from 're
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
-import {
-  Check,
-  ChevronDown,
-  Copy,
-  ExternalLink,
-  FileCode2,
-  FileImage,
-  FolderOpen,
-} from 'lucide-react';
+import { Check, ChevronDown, Copy, FileCode2, FileImage, FolderOpen } from 'lucide-react';
 import { MermaidChart } from './MermaidChart.js';
 import { HtmlSandbox } from './HtmlSandbox.js';
 import { IncrementalMarkdownParser } from './incremental-markdown.js';
 import type { ProjectTextLocation } from '../../workspace-tools-contract.js';
+import { describeExternalSource, ExternalSourceIcon } from './ExternalSourceIcon.js';
 
 interface MarkdownContentProps {
   text: string;
@@ -286,8 +279,14 @@ function workspaceResourceFromHref(href: string, projectFolder?: string): Worksp
   };
 }
 
-function ResourceIcon({ kind }: { kind: WorkspaceResource['kind'] | 'external' }) {
-  if (kind === 'external') return <ExternalLink size={13} aria-hidden="true" />;
+function ResourceIcon({
+  kind,
+  href,
+}: {
+  kind: WorkspaceResource['kind'] | 'external';
+  href?: string;
+}) {
+  if (kind === 'external' && href) return <ExternalSourceIcon url={href} size={13} />;
   if (kind === 'image') return <FileImage size={13} aria-hidden="true" />;
   if (kind === 'directory') return <FolderOpen size={13} aria-hidden="true" />;
   return <FileCode2 size={13} aria-hidden="true" />;
@@ -323,19 +322,23 @@ function ResourceLink({
   }
   if (/^https?:/i.test(value)) {
     const label = extractText(children) || value;
+    const source = describeExternalSource(value);
     return (
       <a
         href={value}
         className="shell-md-resource shell-md-resource--external"
         data-resource-kind="external"
+        data-source-host={source.host}
+        data-source-connector={source.connectorId ?? 'web'}
+        title={source.connectorName ? `${source.connectorName} · ${source.host}` : source.host}
         aria-label={`打开网页 ${label}`}
         onClick={(event) => {
           event.preventDefault();
           void window.syncThink?.runtime?.openExternalUrl?.(value);
         }}
       >
-        <ResourceIcon kind="external" />
-        <span>{children || value}</span>
+        <ResourceIcon kind="external" href={value} />
+        <span>{source.host}</span>
       </a>
     );
   }

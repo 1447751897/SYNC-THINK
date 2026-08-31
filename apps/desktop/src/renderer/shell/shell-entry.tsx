@@ -14,7 +14,10 @@ if (phase3VisualCase) {
   const fixtureTheme = searchParams.get('theme') === 'dark' ? 'dark' : 'light';
   document.documentElement.classList.toggle('dark', fixtureTheme === 'dark');
   document.documentElement.dataset.phase3Theme = fixtureTheme;
-  document.documentElement.setAttribute('data-reduced-motion', '');
+  document.documentElement.toggleAttribute(
+    'data-reduced-motion',
+    searchParams.get('motion') !== 'full',
+  );
 } else {
   // Restore persisted theme. Both light and dark are tuned against the NewMax
   // reference, so following the OS is the honest product default.

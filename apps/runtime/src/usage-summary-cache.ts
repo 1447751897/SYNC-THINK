@@ -14,7 +14,7 @@ import { isMainThread, parentPort, Worker, workerData } from 'node:worker_thread
 import { openDatabaseAsync, type BetterSQLite3Raw } from '@sync-think/storage';
 import type { ProviderUsagePurpose } from '@sync-think/shared';
 
-export const USAGE_SUMMARY_CACHE_VERSION = 2 as const;
+export const USAGE_SUMMARY_CACHE_VERSION = 3 as const;
 
 export interface UsageSummaryRawResult {
   rows: Array<{
@@ -223,7 +223,10 @@ function optionalNumber(value: unknown): number | undefined {
 function projectUsageFact(row: EventScanRow): UsageEventFact | undefined {
   const payload = parseJsonObject(row.payload_json) ?? {};
   const run = parseJsonObject(payload.run);
-  const modelId = optionalString(payload.modelId);
+  // External-kernel rows written before 2026-08-29 omitted the catalog model
+  // id but did retain the provider wire id. Keep those durable requests visible
+  // instead of dropping them from every usage view.
+  const modelId = optionalString(payload.modelId) ?? optionalString(payload.providerModelId);
   if (!modelId) return undefined;
   return {
     kind: 'usage',

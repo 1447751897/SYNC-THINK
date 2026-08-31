@@ -2,15 +2,220 @@
  * @vitest-environment jsdom
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import {
+  ComposerActionSlot,
   ContextRing,
   ModelPickerMenu,
   ModelTrigger,
+  PERMISSION_MODE_COLLAPSED_TOOLBAR_LEVEL,
+  SKILL_COLLAPSED_TOOLBAR_LEVEL,
   resolveFloatingMenuStyle,
+  resolveToolbarCollapseLevel,
+  useComposerToolbarCollapse,
 } from './compose-toolbar.js';
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
+
+describe('resolveToolbarCollapseLevel', () => {
+  it('collapses permission first, then skill and secondary controls', () => {
+    expect(
+      resolveToolbarCollapseLevel({
+        expandedWidth: 414,
+        availableWidth: 434,
+        permissionCollapseWidth: 88,
+      }),
+    ).toBe(0);
+    expect(
+      resolveToolbarCollapseLevel({
+        expandedWidth: 414,
+        availableWidth: 384,
+        permissionCollapseWidth: 88,
+      }),
+    ).toBe(1);
+    expect(
+      resolveToolbarCollapseLevel({
+        expandedWidth: 414,
+        availableWidth: 314,
+        permissionCollapseWidth: 88,
+      }),
+    ).toBe(2);
+  });
+});
+
+describe('useComposerToolbarCollapse', () => {
+  it('measures real children, closes permission first, then hides secondary controls', async () => {
+    let resize: ResizeObserverCallback | undefined;
+    class ResizeObserverMock implements ResizeObserver {
+      constructor(callback: ResizeObserverCallback) {
+        resize = callback;
+      }
+      disconnect = vi.fn();
+      observe = vi.fn();
+      unobserve = vi.fn();
+    }
+    vi.stubGlobal('ResizeObserver', ResizeObserverMock);
+    const onPermissionMenuOpenChange = vi.fn();
+
+    function Harness() {
+      const toolbar = useComposerToolbarCollapse({
+        permissionMenuOpen: true,
+        onPermissionMenuOpenChange,
+      });
+      return (
+        <div
+          ref={toolbar.outerRef}
+          data-testid="toolbar-outer"
+          data-collapse-level={toolbar.collapseLevel}
+        >
+          <div ref={toolbar.leftRef} data-testid="toolbar-left">
+            <span data-testid="toolbar-add">add</span>
+            <span
+              data-testid="toolbar-skill"
+              hidden={toolbar.collapseLevel >= SKILL_COLLAPSED_TOOLBAR_LEVEL}
+            >
+              skill
+            </span>
+            <span
+              ref={toolbar.permissionRef}
+              data-testid="toolbar-permission"
+              hidden={toolbar.collapseLevel >= PERMISSION_MODE_COLLAPSED_TOOLBAR_LEVEL}
+            >
+              permission
+            </span>
+            <span
+              data-testid="toolbar-secondary"
+              hidden={toolbar.collapseLevel >= SKILL_COLLAPSED_TOOLBAR_LEVEL}
+            >
+              secondary
+            </span>
+          </div>
+          <div ref={toolbar.rightRef} data-testid="toolbar-right">
+            <span data-testid="toolbar-model">model</span>
+            <span data-testid="toolbar-action">action</span>
+          </div>
+        </div>
+      );
+    }
+
+    render(<Harness />);
+    let outerWidth = 450;
+    const widths: Record<string, number> = {
+      'toolbar-add': 40,
+      'toolbar-skill': 60,
+      'toolbar-permission': 80,
+      'toolbar-secondary': 50,
+      'toolbar-model': 100,
+      'toolbar-action': 36,
+    };
+    Object.defineProperty(screen.getByTestId('toolbar-outer'), 'clientWidth', {
+      configurable: true,
+      get: () => outerWidth,
+    });
+    for (const [testId, width] of Object.entries(widths)) {
+      Object.defineProperty(screen.getByTestId(testId), 'offsetWidth', {
+        configurable: true,
+        get: () => width,
+      });
+    }
+
+    await act(async () => {
+      resize?.([], {} as ResizeObserver);
+      await Promise.resolve();
+    });
+    expect(screen.getByTestId('toolbar-outer').dataset.collapseLevel).toBe('0');
+
+    outerWidth = 400;
+    await act(async () => {
+      resize?.([], {} as ResizeObserver);
+      await Promise.resolve();
+    });
+    expect(screen.getByTestId('toolbar-outer').dataset.collapseLevel).toBe('1');
+    expect(screen.getByTestId('toolbar-permission').hidden).toBe(true);
+    expect(screen.getByTestId('toolbar-skill').hidden).toBe(false);
+    expect(onPermissionMenuOpenChange).toHaveBeenLastCalledWith(false);
+
+    outerWidth = 330;
+    await act(async () => {
+      resize?.([], {} as ResizeObserver);
+      await Promise.resolve();
+    });
+    expect(screen.getByTestId('toolbar-outer').dataset.collapseLevel).toBe('2');
+    expect(screen.getByTestId('toolbar-skill').hidden).toBe(true);
+    expect(screen.getByTestId('toolbar-secondary').hidden).toBe(true);
+
+    outerWidth = 450;
+    await act(async () => {
+      resize?.([], {} as ResizeObserver);
+      await Promise.resolve();
+    });
+    expect(screen.getByTestId('toolbar-outer').dataset.collapseLevel).toBe('0');
+  });
+});
+
+describe('ComposerActionSlot', () => {
+  it('uses one slot for voice, send, stop, and running interjection', () => {
+    const onVoice = vi.fn();
+    const onSend = vi.fn();
+    const onStop = vi.fn();
+    const { rerender } = render(
+      <ComposerActionSlot
+        hasContent={false}
+        running={false}
+        onVoice={onVoice}
+        onSend={onSend}
+        onStop={onStop}
+      />,
+    );
+
+    expect(screen.getAllByRole('button')).toHaveLength(1);
+    fireEvent.click(screen.getByTestId('compose-voice'));
+    expect(onVoice).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <ComposerActionSlot
+        hasContent
+        running={false}
+        onVoice={onVoice}
+        onSend={onSend}
+        onStop={onStop}
+      />,
+    );
+    expect(screen.queryByTestId('compose-voice')).toBeNull();
+    fireEvent.click(screen.getByTestId('compose-send'));
+    expect(onSend).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <ComposerActionSlot
+        hasContent={false}
+        running
+        onVoice={onVoice}
+        onSend={onSend}
+        onStop={onStop}
+      />,
+    );
+    expect(screen.queryByTestId('compose-send')).toBeNull();
+    fireEvent.click(screen.getByTestId('compose-stop'));
+    expect(onStop).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <ComposerActionSlot
+        hasContent
+        running
+        onVoice={onVoice}
+        onSend={onSend}
+        onStop={onStop}
+      />,
+    );
+    expect(screen.queryByTestId('compose-stop')).toBeNull();
+    fireEvent.click(screen.getByTestId('compose-send'));
+    expect(onSend).toHaveBeenCalledTimes(2);
+    expect(screen.getAllByRole('button')).toHaveLength(1);
+  });
+});
 
 describe('resolveFloatingMenuStyle', () => {
   it('flips below a high anchor and clamps width inside the viewport', () => {
@@ -161,31 +366,45 @@ describe('ContextRing', () => {
     expect(screen.queryByTestId('context-limit-kernel-capped')).toBeNull();
   });
 
-  it('edits a conversation capacity and restores the model default from the tooltip', async () => {
-    const onContextWindowChange = vi.fn().mockResolvedValue(undefined);
+  it('uses the configured model capacity without exposing a conversation editor', () => {
     render(
       <ContextRing
         used={20_000}
         limit={200_000}
-        modelContextWindow={128_000}
-        contextWindowOverride={400_000}
-        contextWindowSource="kernel-limit"
+        modelContextWindow={200_000}
+        contextWindowSource="configured"
         compactThreshold={0.7}
         sections={[]}
-        onContextWindowChange={onContextWindowChange}
       />,
     );
 
     fireEvent.click(screen.getByTestId('context-ring'));
-    fireEvent.click(screen.getByRole('button', { name: '编辑会话容量' }));
-    const input = screen.getByLabelText('会话上下文容量');
-    fireEvent.change(input, { target: { value: '256000' } });
-    fireEvent.click(screen.getByRole('button', { name: '保存会话容量' }));
-    await waitFor(() => expect(onContextWindowChange).toHaveBeenCalledWith(256_000));
+    expect(screen.getByTestId('context-model-default').textContent).toContain('200k');
+    expect(screen.queryByText('会话设置')).toBeNull();
+    expect(screen.queryByRole('button', { name: '编辑会话容量' })).toBeNull();
+  });
 
-    fireEvent.click(screen.getByRole('button', { name: '恢复模型默认容量' }));
-    await waitFor(() => expect(onContextWindowChange).toHaveBeenLastCalledWith(null));
-    expect(screen.getByTestId('context-model-default').textContent).toContain('128k');
+  it('lets an external kernel own compaction without showing host thresholds', () => {
+    render(
+      <ContextRing
+        used={80_000}
+        limit={200_000}
+        modelContextWindow={400_000}
+        contextWindowSource="kernel-capped"
+        compactThreshold={0.7}
+        compactedAt="2026-08-29T00:00:00.000Z"
+        kernelSelfManaged
+        sections={[]}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('context-ring'));
+
+    expect(screen.getByTestId('context-kernel-self-managed')).toBeTruthy();
+    expect(screen.queryByText('自动压缩')).toBeNull();
+    expect(screen.queryByText('距离压缩')).toBeNull();
+    expect(screen.queryByText('最近压缩')).toBeNull();
+    expect(screen.queryByText(/发送下一条消息前自动压缩/)).toBeNull();
   });
 });
 
@@ -281,6 +500,40 @@ describe('ModelPickerMenu', () => {
       true,
     );
     expect(screen.getByTitle('切换模型，思考强度：超高')).toBeTruthy();
+  });
+
+  it('shows the planning model while Plan mode is active and restores the execution model', () => {
+    const { rerender } = render(
+      <ModelTrigger
+        label="GPT-5.6 Luna"
+        reasoningLabel="高"
+        mode="plan"
+        planLabel="GPT-5.6 Sol"
+        planReasoningLabel="最高"
+        open={false}
+        onClick={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText('GPT-5.6 Sol')).toBeTruthy();
+    expect(screen.getByText('最高')).toBeTruthy();
+    expect(screen.queryByText('GPT-5.6 Luna')).toBeNull();
+    expect(screen.getByTitle('切换规划模型，思考强度：最高')).toBeTruthy();
+
+    rerender(
+      <ModelTrigger
+        label="GPT-5.6 Luna"
+        reasoningLabel="高"
+        mode="execute"
+        planLabel="GPT-5.6 Sol"
+        planReasoningLabel="最高"
+        open={false}
+        onClick={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('GPT-5.6 Luna')).toBeTruthy();
+    expect(screen.getByText('高')).toBeTruthy();
+    expect(screen.queryByText('GPT-5.6 Sol')).toBeNull();
   });
 
   it('renders the kernel group with badges and install state', async () => {

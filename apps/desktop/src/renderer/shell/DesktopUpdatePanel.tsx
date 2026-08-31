@@ -288,8 +288,6 @@ export function DesktopUpdatePanel() {
           </p>
         ) : null}
       </div>
-
-      <p className="settings-about-copyright">© 2026 SYNC-THINK. All rights reserved.</p>
     </section>
   );
 }

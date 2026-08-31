@@ -3,10 +3,10 @@
  * (design doc §5.2).
  *
  * Replaces the hand-rolled `claude --print --output-format stream-json` child
- * process. The SDK owns the transport, the framing and the CLI binary itself
- * (it ships one — see `detectVersion`), so this adapter is reduced to what it
- * always should have been: host policy plus a mapping from `SDKMessage` to
- * `KernelEvent`.
+ * process. The SDK owns the transport and framing while SYNC-THINK may point it
+ * at an app-private, independently upgraded Claude Code executable. This
+ * adapter is therefore limited to event/permission adaptation and mapping
+ * `SDKMessage` to `KernelEvent`.
  *
  * What the migration deletes:
  *   - JSON-lines buffering + parsing of kernel stdout
@@ -17,8 +17,8 @@
  *
  * What the migration keeps (host-specific, transport-independent):
  *   - provider base-URL normalization (stripAnthropicV1Suffix)
- *   - host-denied built-ins that cannot be satisfied over the bridge
- *   - the planning-mode double fence (permission mode + tool allow/deny lists)
+ *   - Claude-native permission and planning modes
+ *   - host rendering for permission and MCP interaction events
  *   - assistant replay de-duplication and per-request usage semantics
  *   - credential redaction on every diagnostic that leaves the adapter
  *
@@ -58,6 +58,8 @@ import {
 } from './claude-sdk-protocol.js';
 import { formatKernelExitDiagnostic, sanitizeKernelDiagnostic } from './kernel-diagnostics.js';
 import { PLATFORM_MCP_SERVER_NAME } from './platform-mcp-config.js';
+import { probeVersion } from './detect.js';
+import { resolveManagedKernelExecutable } from './managed-kernel.js';
 
 export { stripAnthropicV1Suffix };
 
@@ -129,44 +131,6 @@ function hasClaudeUsage(value: ClaudeSdkUsage | undefined): boolean {
   ].some((candidate) => finiteNumber(candidate) !== undefined);
 }
 
-/**
- * Claude built-in tools the host does not support.
- *
- * AskUserQuestion cannot be approved over the bridge (an allow response
- * requires an `updatedInput` answer the host does not hold, which makes Claude
- * loop on a ZodError); EnterPlanMode/ExitPlanMode belong to Claude's native
- * planning flow, which the host does not use — planning runs ask through the
- * host's `ask_user_question` platform tool instead.
- *
- * These are denied inside `canUseTool` so the model never blocks on an
- * approval that cannot succeed.
- */
-const CLAUDE_HOST_DENIED_TOOLS: ReadonlySet<string> = new Set([
-  'EnterPlanMode',
-  'ExitPlanMode',
-  'AskUserQuestion',
-]);
-
-const CLAUDE_HOST_DENIED_TOOLS_MESSAGE =
-  '宿主不支持该工具。规划模式请用宿主提供的 plan_submit 提交方案，中途需要决策时用 ask_user_question；执行模式直接完成任务；不要进入 Claude 原生规划流程。';
-
-/** Read-only tools a planning run may use. */
-const PLANNING_ALLOWED_TOOLS = ['Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch'];
-
-/** Mutating + native-planning tools a planning run must never reach. */
-const PLANNING_DISALLOWED_TOOLS = [
-  'Bash',
-  'Write',
-  'Edit',
-  'MultiEdit',
-  'NotebookEdit',
-  'Task',
-  'Agent',
-  'EnterPlanMode',
-  'ExitPlanMode',
-  'AskUserQuestion',
-];
-
 export interface ClaudeSdkAdapterDeps {
   /**
    * Test seam: replace the real SDK entry point.
@@ -176,6 +140,8 @@ export interface ClaudeSdkAdapterDeps {
    * on the resolved `Options` and drive a scripted `SDKMessage` sequence.
    */
   query?: typeof sdkQuery;
+  /** Test seam and private-kernel resolver override. */
+  resolveExecutable?: () => string | null;
 }
 
 /**
@@ -252,13 +218,11 @@ export class ClaudeSdkKernelAdapter implements KernelAdapter {
   private readonly emittedUsageKeys = new Set<string>();
   private usageSequence = 0;
 
-  /**
-   * The SDK bundles its own CLI binary, so the kernel is always available once
-   * the dependency is installed — no PATH probe, no "not installed" state. A
-   * missing manifest means a broken install rather than a missing kernel.
-   */
+  /** Prefer the atomically activated private CLI, then report the SDK bundle. */
   async detectVersion(): Promise<string | null> {
-    return bundledClaudeVersion();
+    const executable =
+      this.deps.resolveExecutable?.() ?? resolveManagedKernelExecutable('claude-code');
+    return executable ? probeVersion(executable) : bundledClaudeVersion();
   }
 
   onPermissionRequest(callback: (request: KernelPermissionRequest) => void): void {
@@ -295,13 +259,12 @@ export class ClaudeSdkKernelAdapter implements KernelAdapter {
       // assistant messages arrive and the UI cannot stream text.
       includePartialMessages: true,
       permissionMode: request.planningMode
-        ? // Planning runs must never bypass permissions: with bypassPermissions
-          // Claude executes built-ins (EnterPlanMode / AskUserQuestion) without
-          // consulting canUseTool, so the host could not deny them and the run
-          // would trap in Claude's native planning flow. `default` keeps every
-          // tool flowing through the bridge (allowedTools still auto-allows the
-          // read-only set).
-          'default'
+        ? // SDK-native planning (NewMax-style): the model receives Claude's own
+          // plan-mode system reminders, researches read-only and submits via
+          // ExitPlanMode — which flows through canUseTool into the host plan
+          // card. Never bypassPermissions here: that would skip canUseTool and
+          // trap the run inside Claude's own interactive planning flow.
+          'plan'
         : mapPermissionMode(request.permissionMode),
       stderr: (data: string) => {
         this.stderrChunks.push(data);
@@ -310,12 +273,11 @@ export class ClaudeSdkKernelAdapter implements KernelAdapter {
       },
     };
 
-    if (request.planningMode) {
-      // Planning mode: read-only analysis only. The host MCP catalog is already
-      // filtered to read-only tools; this fence restricts Claude's native ones.
-      options.allowedTools = [...PLANNING_ALLOWED_TOOLS];
-      options.disallowedTools = [...PLANNING_DISALLOWED_TOOLS];
-    } else if (options.permissionMode === 'bypassPermissions') {
+    const managedExecutable =
+      this.deps.resolveExecutable?.() ?? resolveManagedKernelExecutable('claude-code');
+    if (managedExecutable) options.pathToClaudeCodeExecutable = managedExecutable;
+
+    if (options.permissionMode === 'bypassPermissions') {
       // The SDK refuses bypassPermissions without this explicit acknowledgement.
       options.allowDangerouslySkipPermissions = true;
     }
@@ -368,8 +330,8 @@ export class ClaudeSdkKernelAdapter implements KernelAdapter {
           },
         };
       }
-      // Keep only these servers visible; ignore the user's own MCP config.
-      options.strictMcpConfig = true;
+      // Merge the platform servers with Claude's native/user MCP discovery.
+      // SYNC-THINK adapts its own tools but does not narrow the vendor surface.
     }
 
     const env: Record<string, string | undefined> = { ...process.env };
@@ -379,10 +341,8 @@ export class ClaudeSdkKernelAdapter implements KernelAdapter {
       // Prefer the user's local OAuth login — do not inject a key, and leave
       // their settings sources loaded.
     } else if (request.credential.apiKey) {
-      // A host-supplied credential must not be silently overridden by a stale
-      // token in the user's Claude settings, so filesystem settings are
-      // disabled for this run (the CLI equivalent was `--setting-sources=`).
-      options.settingSources = [];
+      // Explicit environment credentials take precedence while Claude keeps
+      // its normal user/project/local settings and MCP discovery.
       if (request.credential.baseUrl) {
         env.ANTHROPIC_BASE_URL = stripAnthropicV1Suffix(request.credential.baseUrl);
       }
@@ -461,11 +421,6 @@ export class ClaudeSdkKernelAdapter implements KernelAdapter {
     };
 
     const canUseTool: CanUseTool = async (toolName, input, options) => {
-      // Host-unsupported built-ins are denied immediately and never surface an
-      // approval card the user could not act on.
-      if (CLAUDE_HOST_DENIED_TOOLS.has(toolName)) {
-        return { behavior: 'deny', message: CLAUDE_HOST_DENIED_TOOLS_MESSAGE };
-      }
       if (this.cancelled) {
         return { behavior: 'deny', message: 'run cancelled' };
       }

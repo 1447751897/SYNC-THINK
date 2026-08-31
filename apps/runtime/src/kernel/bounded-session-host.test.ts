@@ -159,6 +159,28 @@ describe('BoundedKernelSessionHost', () => {
     }
   });
 
+  it('recycles idle adapters immediately and active adapters after their lease is released', async () => {
+    const { adapters, host } = createHost({ maxEntries: 2 });
+    const active = await host.acquire('conversation-active');
+    const idle = await host.acquire('conversation-idle');
+    idle.release();
+
+    const result = await host.recycleAll();
+
+    expect(result).toEqual({ recycled: 1, deferred: 1 });
+    expect(idle.adapter.stopCalls).toBe(1);
+    expect(active.adapter.stopCalls).toBe(0);
+
+    active.release();
+    await active.adapter.stopped;
+    const resumed = await host.acquire('conversation-active');
+    expect(resumed.adapter).not.toBe(active.adapter);
+    expect(adapters).toHaveLength(3);
+
+    resumed.release();
+    await host.stopAll();
+  });
+
   it('never evicts an active turn even after the idle timeout elapses', async () => {
     vi.useFakeTimers();
     try {

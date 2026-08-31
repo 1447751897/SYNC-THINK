@@ -10,6 +10,7 @@ import {
   encodeFrame,
   pipePathPortable,
   type Frame,
+  type ToolApprovalScope,
 } from '@sync-think/protocol';
 import type { RunId, WorkspaceId } from '@sync-think/shared';
 import {
@@ -267,6 +268,36 @@ class SingleDesktopActionProvider implements ProviderAdapter {
   }
 }
 
+class RepeatedSensitiveDesktopActionProvider implements ProviderAdapter {
+  readonly protocol = 'openai-chat' as const;
+  completed = false;
+
+  constructor(private readonly argumentsJson: string) {}
+
+  async discoverModels(): Promise<string[]> {
+    return ['fake-mini'];
+  }
+
+  async *call(request: ProviderCallRequest): AsyncIterable<AdapterEvent> {
+    const resultMessages = request.messages.filter((message) => message.role === 'tool');
+    if (resultMessages.length < 2) {
+      yield {
+        type: 'tool-call',
+        toolCall: {
+          id: `desktop-sensitive-${resultMessages.length + 1}`,
+          name: 'desktop_set_value',
+          argumentsJson: this.argumentsJson,
+        },
+      };
+      yield { type: 'finished', reason: 'tool-requests' };
+      return;
+    }
+    this.completed = true;
+    yield { type: 'text-delta', text: 'Both Desktop actions completed.' };
+    yield { type: 'finished', reason: 'stop' };
+  }
+}
+
 class ResolvedDesktopActionProvider implements ProviderAdapter {
   readonly protocol = 'openai-chat' as const;
   toolResult?: string;
@@ -448,6 +479,7 @@ async function decideToolApproval(
   installId: string,
   approvalId: string,
   decision: 'approve' | 'deny',
+  scope: ToolApprovalScope = 'once',
 ): Promise<Frame> {
   const socket = await connectRuntime(installId);
   const inbox = createFrameInbox(socket);
@@ -468,7 +500,7 @@ async function decideToolApproval(
       id: `decide-${approvalId}`,
       kind: 'request',
       type: 'conversation.decideToolApproval',
-      payload: { approvalId, decision },
+      payload: { approvalId, decision, scope },
     });
   } finally {
     socket.destroy();
@@ -1126,6 +1158,45 @@ describe('Runtime Computer Use plugin gate', () => {
     }
   });
 
+  it('remembers a session-scoped approval for the same conversation and tool', async () => {
+    const provider = new RepeatedSensitiveDesktopActionProvider(
+      JSON.stringify({ target: FIXTURE_ELEMENT_TARGET, value: 'session-value' }),
+    );
+    const worker = new CompletedDesktopWorker();
+    const fixture = await startFullAccessDesktopFixture('session-approval', provider, worker);
+    try {
+      expect(
+        await waitFor(() =>
+          Boolean(latestEventPayload(fixture.connection, 'tool.approval_requested')),
+        ),
+      ).toBe(true);
+      const approval = latestEventPayload(fixture.connection, 'tool.approval_requested')!;
+      const response = await decideToolApproval(
+        fixture.installId,
+        String(approval.approvalId),
+        'approve',
+        'session',
+      );
+      expect(response.error).toBeUndefined();
+      expect(response.payload).toMatchObject({ decision: 'approve', scope: 'session' });
+      expect(await waitFor(() => provider.completed)).toBe(true);
+      expect(worker.calls).toBe(2);
+      expect(
+        fixture.connection.raw
+          .prepare("SELECT COUNT(*) AS count FROM event WHERE type = 'tool.approval_requested'")
+          .get(),
+      ).toEqual({ count: 1 });
+      expect(latestEventPayload(fixture.connection, 'tool.approval_decided')).toMatchObject({
+        decision: 'approve',
+        scope: 'session',
+      });
+    } finally {
+      fixture.socket.destroy();
+      await fixture.runtime.stop();
+      fixture.connection.raw.close();
+    }
+  });
+
   it('requires human approval in full-access and executes only after approval reaches the controller', async () => {
     const secretValue = 'runtime-password-value';
     const provider = new ResolvedDesktopActionProvider(
@@ -1192,6 +1263,74 @@ describe('Runtime Computer Use plugin gate', () => {
     }
   });
 
+  it.each(['session', 'always-app'] as const)(
+    'rejects %s memory for human-only Desktop approval and keeps the request pending',
+    async (scope) => {
+      const provider = new ResolvedDesktopActionProvider(
+        'desktop_set_value',
+        JSON.stringify({ target: FIXTURE_ELEMENT_TARGET, value: `human-only-${scope}` }),
+        { automationId: 'PasswordBox', controlType: 'Edit' },
+      );
+      const worker = new MetadataDesktopWorker({
+        name: 'Password',
+        automationId: 'PasswordBox',
+        controlType: 'Edit',
+        isPassword: true,
+        supportedPatterns: ['Value'],
+      });
+      const fixture = await startFullAccessDesktopFixture(
+        `human-only-${scope}`,
+        provider,
+        worker,
+      );
+      try {
+        expect(
+          await waitFor(() =>
+            Boolean(latestEventPayload(fixture.connection, 'tool.approval_requested')),
+          ),
+        ).toBe(true);
+        const approval = latestEventPayload(fixture.connection, 'tool.approval_requested')!;
+        const approvalId = String(approval.approvalId);
+
+        const remembered = await decideToolApproval(
+          fixture.installId,
+          approvalId,
+          'approve',
+          scope,
+        );
+        expect(remembered.error).toMatchObject({
+          code: 'protocol.unexpected_request',
+          message: 'Human-only 工具每次都需要真人批准，仅支持单次批准',
+        });
+        expect(provider.toolResult).toBeUndefined();
+        expect(worker.calls).toHaveLength(1);
+
+        const stillPending = await listPendingToolApprovals(fixture.installId, fixture.threadId);
+        expect(stillPending.payload).toMatchObject({
+          approvals: [
+            {
+              approvalId,
+              risk: {
+                level: 'human-only',
+                humanOnlyAction: 'access-or-create-secret',
+              },
+              allowedScopes: ['once'],
+            },
+          ],
+        });
+
+        const once = await decideToolApproval(fixture.installId, approvalId, 'approve', 'once');
+        expect(once.error).toBeUndefined();
+        expect(await waitFor(() => Boolean(provider.toolResult))).toBe(true);
+        expect(JSON.parse(provider.toolResult ?? '{}')).toMatchObject({ ok: true });
+      } finally {
+        fixture.socket.destroy();
+        await fixture.runtime.stop();
+        fixture.connection.raw.close();
+      }
+    },
+  );
+
   it('lists and resolves an in-flight approval after the original Desktop connection closes', async () => {
     const secretValue = 'runtime-reconnect-password-value';
     const provider = new ResolvedDesktopActionProvider(
@@ -1226,8 +1365,18 @@ describe('Runtime Computer Use plugin gate', () => {
             approvalId,
             threadId: fixture.threadId,
             toolName: 'desktop_set_value',
+            arguments: {
+              action: 'set-value',
+              element: { automationId: 'PasswordBox', controlType: 'Edit', isPassword: true },
+              valueLength: secretValue.length,
+            },
             title: 'desktop_set_value',
             detail: '需要你的批准',
+            risk: {
+              level: 'human-only',
+              humanOnlyAction: 'access-or-create-secret',
+            },
+            allowedScopes: ['once'],
             status: 'pending',
           },
         ],

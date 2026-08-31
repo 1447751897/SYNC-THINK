@@ -371,7 +371,6 @@ export const PLANNING_MODE_DENIED_TOOLS: ReadonlySet<string> = new Set([
   // Command execution.
   'run_command',
   // Task plan mutations.
-  'update_task_plan',
   'TaskCreate',
   'TaskUpdate',
   // Agent mutations.

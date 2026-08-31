@@ -11,7 +11,7 @@
  *  - 「要求修改」切回规划模式让模型重新出方案。
  */
 import { useEffect, useMemo, useState } from 'react';
-import { Check, History, LoaderCircle, Plus, Save, Trash2, X } from 'lucide-react';
+import { Check, History, ListChecks, LoaderCircle, Plus, Save, Trash2, X } from 'lucide-react';
 import type {
   ChatPlanRevision,
   ChatPlanStep,
@@ -32,6 +32,8 @@ export interface PlanApprovalCardProps {
   onSwitchMode(mode: 'plan' | 'execute'): void | Promise<void>;
   /** 操作反馈（信息/错误提示条）。 */
   onNotify(tone: 'info' | 'error', text: string): void;
+  /** NewMax keeps the default approval state as a compact composer surface. */
+  variant?: 'editor' | 'composer';
 }
 
 function bridge() {
@@ -94,6 +96,13 @@ function nextStepId(steps: readonly ChatPlanStep[]): string {
   return `step-${index}`;
 }
 
+function composerPlanSummary(plan: ChatPlanSubmission): string {
+  return [plan.title, plan.goal, ...plan.steps.map((step) => step.title)]
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join(' · ');
+}
+
 export function PlanApprovalCard({
   conversationId,
   plan,
@@ -101,6 +110,7 @@ export function PlanApprovalCard({
   onExecute,
   onSwitchMode,
   onNotify,
+  variant = 'editor',
 }: PlanApprovalCardProps) {
   const latest = plan.latest;
   const [draft, setDraft] = useState<ChatPlanSubmission>(() => clonePlan(latest.plan));
@@ -199,6 +209,57 @@ export function PlanApprovalCard({
     await onSwitchMode('plan');
     onNotify('info', '已切回规划模式。请描述需要修改的地方，模型将修订计划并生成新版本');
   };
+
+  if (variant === 'composer') {
+    return (
+      <section
+        className="shell-plan-card shell-plan-card--composer"
+        data-testid="plan-approval-card"
+        data-variant="composer"
+        aria-label="执行方案"
+      >
+        <div className="shell-plan-card__composer-summary">
+          <ListChecks size={17} aria-hidden="true" />
+          <span>
+            <strong>方案待确认</strong>
+            <span aria-hidden="true"> · </span>
+            <span className="shell-plan-card__composer-summary-text">
+              {composerPlanSummary(latest.plan) || '模型已提交执行方案'}
+            </span>
+          </span>
+        </div>
+        <div className="shell-plan-card__composer-actions">
+          <button
+            type="button"
+            className="shell-plan-card__approve"
+            disabled={!editable || dirty || busy}
+            onClick={() => void handleApprove()}
+          >
+            {action === 'approve' ? (
+              <LoaderCircle size={13} className="shell-process-spin" />
+            ) : null}
+            批准并执行
+          </button>
+          <button
+            type="button"
+            className="shell-plan-card__revise"
+            disabled={busy}
+            onClick={() => void handleRequestChanges()}
+          >
+            要求修改
+          </button>
+          <button
+            type="button"
+            className="shell-plan-card__cancel"
+            disabled={busy}
+            onClick={() => void handleCancel()}
+          >
+            {action === 'cancel' ? '取消中…' : '取消'}
+          </button>
+        </div>
+      </section>
+    );
+  }
 
   const isHistory = viewingRevision !== null;
   /** 编辑态渲染 draft（未保存改动即时回显）；历史回看渲染该版本内容（只读）。 */

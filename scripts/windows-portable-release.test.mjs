@@ -328,6 +328,7 @@ test('portable layout verifier reports missing critical resources without throwi
   assert.ok(result.errors.includes('release.updater_config_missing'));
   assert.ok(result.errors.includes('release.runtime_entry_missing'));
   assert.ok(result.errors.includes('release.platform_mcp_server_missing'));
+  assert.ok(result.errors.includes('release.npm_cli_missing'));
   assert.ok(result.errors.includes('release.node_binary_missing'));
   assert.deepEqual(result.forbiddenFiles, []);
 });

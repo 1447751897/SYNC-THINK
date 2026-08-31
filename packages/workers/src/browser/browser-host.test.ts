@@ -271,6 +271,17 @@ const tempRoots: string[] = [];
 
 afterEach(() => {
   for (const root of tempRoots.splice(0)) {
+    // Node 20 on Windows can leave a directory junction in place while
+    // recursively removing its parent, then fail the parent with ENOTEMPTY. A
+    // dangling junction is also invisible to Node's lstat/rm, so recreate its
+    // fixture target before removing the known Profile reparse point.
+    mkdirSync(join(root, 'missing-outside'), { recursive: true });
+    rmSync(join(root, 'profiles', 'work'), {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 100,
+    });
     rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });

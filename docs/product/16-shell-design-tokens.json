@@ -60,6 +60,93 @@
     },
 
     {
+      "id": "motion",
+      "prefix": "--motion-",
+      "utilities": false,
+      "_note": "Measured sliding-tab timing; initial layout and resize snap without motion.",
+      "tokens": {
+        "tabs-duration": "250ms",
+        "tabs-ease": "cubic-bezier(0.22, 1, 0.36, 1)"
+      }
+    },
+
+    {
+      "id": "composer",
+      "prefix": "--composer-",
+      "utilities": false,
+      "_note": "NewMax 1.1.15 composer contract measured from the packaged desktop client. Empty and conversation editors intentionally keep different minimum heights while sharing one 744px frame, toolbar, menu, and mode-banner geometry. Popovers, Plan banners, and Goal banners use distinct measured timings; banner-duration/banner-ease remain Goal-compatible aliases for existing consumers.",
+      "tokens": {
+        "max-width": "744px",
+        "padding": "0px",
+        "text-min-height": "36px",
+        "text-min-height-empty": "72px",
+        "text-min-height-conversation": "36px",
+        "text-max-height": "200px",
+        "text-padding": "12px 16px 8px",
+        "text-size": "14px",
+        "text-line-height": "22px",
+        "toolbar-height": "32px",
+        "toolbar-gap": "4px",
+        "control-gap": "4px",
+        "control-size": "32px",
+        "control-radius": "12px",
+        "model-padding": "0 10px",
+        "model-size": "13px",
+        "model-line-height": "20px",
+        "menu-gap": "8px",
+        "menu-max-height": "420px",
+        "menu-radius": "18px",
+        "menu-padding": "4px",
+        "menu-row-height": "32px",
+        "menu-row-radius": "12px",
+        "menu-row-padding": "4px 10px",
+        "menu-row-gap": "8px",
+        "menu-command-size": "13px",
+        "menu-command-line-height": "16px",
+        "menu-description-size": "13px",
+        "menu-description-line-height": "16px",
+        "menu-hint-size": "12px",
+        "menu-hint-line-height": "20px",
+        "menu-hint-margin": "4px 0 0",
+        "menu-hint-padding": "2px 10px 0",
+        "banner-height": "74px",
+        "banner-overlap": "32px",
+        "banner-content-y": "24px",
+        "plan-banner-duration": "220ms",
+        "plan-banner-ease": "ease-out",
+        "goal-banner-duration": "240ms",
+        "goal-banner-ease": "cubic-bezier(0.22, 1, 0.36, 1)",
+        "banner-duration": "240ms",
+        "banner-ease": "cubic-bezier(0.22, 1, 0.36, 1)",
+        "surface": ["#ffffff", "#252726"],
+        "border": ["rgba(0, 0, 0, 0.10)", "rgba(255, 255, 255, 0.08)"],
+        "border-strong": ["rgba(0, 0, 0, 0.14)", "rgba(255, 255, 255, 0.13)"],
+        "text": ["#181b19", "rgba(255, 255, 255, 0.9)"],
+        "text-secondary": ["#666763", "rgba(255, 255, 255, 0.5)"],
+        "text-faint": ["#8c8c87", "rgba(255, 255, 255, 0.38)"],
+        "hover": ["rgba(55, 61, 58, 0.06)", "rgba(168, 184, 176, 0.08)"],
+        "card-shadow": [
+          "inset 0 0 0.5px rgba(255,255,255,0.84), 0 0 0 0.5px rgba(0,0,0,0.10), 0 0 4px -1px rgba(0,0,0,0.05), 0 0 14px -5px rgba(0,0,0,0.07), 0 0 28px -10px rgba(0,0,0,0.07)",
+          "inset 0 0 0 0.5px rgba(255,255,255,0.08), 0 0 20px -10px rgba(0,0,0,0.08)"
+        ],
+        "card-shadow-focus": [
+          "inset 0 0 0.5px rgba(255,255,255,0.88), 0 0 0 0.5px rgba(0,0,0,0.14), 0 0 6px -2px rgba(0,0,0,0.07), 0 0 18px -6px rgba(0,0,0,0.09), 0 0 34px -12px rgba(0,0,0,0.10)",
+          "inset 0 0 0 0.5px rgba(255,255,255,0.13), 0 0 24px -12px rgba(0,0,0,0.10)"
+        ],
+        "menu-shadow": [
+          "0 0 0 0.5px rgba(45, 71, 57, 0.12), 0 9px 4px rgba(0,0,0,0.01), 0 5px 3px rgba(0,0,0,0.02), 0 2px 2px rgba(0,0,0,0.03), 0 1px 1px rgba(0,0,0,0.04), inset 0.5px 0.5px 0.5px rgba(255,255,255,0.85)",
+          "inset 0 0 0 0.5px rgba(255,255,255,0.12), 0 0 9px -4px rgba(0,0,0,0.40), 0 0 32px -8px rgba(0,0,0,0.16)"
+        ],
+        "interaction-duration": "150ms",
+        "popover-duration": "150ms",
+        "send-duration": "200ms",
+        "menu-duration": "150ms",
+        "menu-ease": "cubic-bezier(0.22, 1, 0.36, 1)",
+        "highlight-duration": "220ms"
+      }
+    },
+
+    {
       "id": "preference-palettes",
       "prefix": "--preference-color-",
       "utilities": false,
@@ -283,7 +370,7 @@
       "id": "brand",
       "prefix": "--color-brand-",
       "utilities": true,
-      "_note": "Provider brand accents are tokens so model settings can be re-themed.\nTheme-agnostic on purpose: these are real vendor brand colors, not part\nof the skinnable palette.",
+      "_note": "Provider and bot-channel brand accents are tokens so settings surfaces can be re-themed.\nTheme-agnostic on purpose: these are real vendor brand colors, not part\nof the skinnable palette.",
       "tokens": {
         "openai": "#74aa9c",
         "anthropic": "#d4a27f",
@@ -292,7 +379,14 @@
         "deepseek": "#6f78ff",
         "deepseek-text": "#8189ff",
         "gemini": "#6da7ff",
-        "gemini-text": "#7bb4ff"
+        "gemini-text": "#7bb4ff",
+        "feishu": "#3f70f4",
+        "wecom": "#2979ff",
+        "wechat": "#27c66f",
+        "discord": "#5865f2",
+        "dingtalk": "#1788ff",
+        "qq": "#e9eef3",
+        "qq-text": "#222222"
       }
     },
 

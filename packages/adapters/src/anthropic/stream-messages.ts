@@ -1,5 +1,5 @@
 import type { AdapterEvent, ProviderCallRequest, ProviderMessage } from '../types.js';
-import { scrubSecrets, normalizeOpenAICompatibleBaseUrl } from '../openai/discover-models.js';
+import { scrubSecrets } from '../openai/discover-models.js';
 import { anthropicReasoningBodyFields } from '../reasoning.js';
 import type { FailureClass } from '@sync-think/shared';
 import {
@@ -20,16 +20,32 @@ export class AnthropicCallError extends Error {
   }
 }
 
+/** Claude Code appends `/v1/messages` to this provider base URL. */
+export function normalizeAnthropicCompatibleBaseUrl(baseUrl: string): string {
+  const trimmed = baseUrl.trim().replace(/\/+$/, '');
+  if (!trimmed) throw new AnthropicCallError('Base URL must not be empty', 'protocol');
+  if (/\/messages$/i.test(trimmed)) return trimmed.replace(/\/messages$/i, '');
+  try {
+    const url = new URL(trimmed);
+    const path = url.pathname.replace(/\/+$/, '');
+    if (url.hostname.toLowerCase() === 'api.deepseek.com') {
+      if (/^\/v1$/i.test(path) || /^\/anthropic$/i.test(path)) {
+        return `${url.origin}/anthropic/v1`;
+      }
+    }
+    if (/\/v\d+$/i.test(path)) return trimmed;
+    return `${trimmed}/v1`;
+  } catch {
+    if (/\/v\d+$/i.test(trimmed)) return trimmed;
+    return `${trimmed}/v1`;
+  }
+}
+
 /** Join base URL to Anthropic Messages endpoint without doubling the path. */
 export function joinMessagesUrl(baseUrl: string): string {
-  let root: string;
-  try {
-    root = normalizeOpenAICompatibleBaseUrl(baseUrl);
-  } catch {
-    throw new AnthropicCallError('Base URL must not be empty', 'protocol');
-  }
-  if (/\/messages$/i.test(root)) return root;
-  return `${root}/messages`;
+  const trimmed = baseUrl.trim().replace(/\/+$/, '');
+  if (/\/messages$/i.test(trimmed)) return trimmed;
+  return `${normalizeAnthropicCompatibleBaseUrl(trimmed)}/messages`;
 }
 
 function messageContentToString(message: ProviderMessage): string {
@@ -51,28 +67,21 @@ type AnthropicWireMessage = {
   content: string | Array<Record<string, unknown>>;
 };
 
-function appendAnthropicMessage(
-  out: AnthropicWireMessage[],
-  message: AnthropicWireMessage,
-): void {
+function appendAnthropicMessage(out: AnthropicWireMessage[], message: AnthropicWireMessage): void {
   const previous = out.at(-1);
   if (!previous || previous.role !== message.role) {
     out.push(message);
     return;
   }
 
-  const toBlocks = (
-    content: AnthropicWireMessage['content'],
-  ): Array<Record<string, unknown>> => {
+  const toBlocks = (content: AnthropicWireMessage['content']): Array<Record<string, unknown>> => {
     if (Array.isArray(content)) return content;
     return content ? [{ type: 'text', text: content }] : [];
   };
   previous.content = [...toBlocks(previous.content), ...toBlocks(message.content)];
 }
 
-function toAnthropicMessages(
-  request: ProviderCallRequest,
-): AnthropicWireMessage[] {
+function toAnthropicMessages(request: ProviderCallRequest): AnthropicWireMessage[] {
   const out: AnthropicWireMessage[] = [];
   for (const message of request.messages) {
     if (message.role === 'system') continue;

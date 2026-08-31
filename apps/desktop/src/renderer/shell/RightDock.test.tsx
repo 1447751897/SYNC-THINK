@@ -70,7 +70,9 @@ describe('WorkspaceFilesPanel', () => {
       />,
     );
 
-    fireEvent.click(await screen.findByRole('button', { name: '在当前文件标签打开 src/app.ts' }));
+    fireEvent.click(
+      await screen.findByRole('treeitem', { name: '在当前文件标签打开 src/app.ts' }),
+    );
     expect(onOpenFile).toHaveBeenCalledWith('src/app.ts', undefined);
 
     fireEvent.click(screen.getByRole('button', { name: '在新文件标签打开 src/app.ts' }));
@@ -87,6 +89,10 @@ describe('WorkspaceFilesPanel', () => {
             entries: [
               { path: 'scripts/check.cjs', name: 'check.cjs', kind: 'file' },
               { path: 'scripts/report.py', name: 'report.py', kind: 'file' },
+              { path: 'src/app.tsx', name: 'app.tsx', kind: 'file' },
+              { path: 'src/theme.css', name: 'theme.css', kind: 'file' },
+              { path: 'package.json', name: 'package.json', kind: 'file' },
+              { path: 'README.md', name: 'README.md', kind: 'file' },
             ],
           })),
           listProjectFiles: vi.fn(async () => ({ root: 'C:/workspace', files: [] })),
@@ -99,6 +105,45 @@ describe('WorkspaceFilesPanel', () => {
     expect(await screen.findByText('check.cjs')).toBeTruthy();
     expect(document.querySelector('[data-file-type="javascript"]')).toBeTruthy();
     expect(document.querySelector('[data-file-type="python"]')).toBeTruthy();
+    for (const kind of ['javascript', 'python', 'typescript', 'css', 'package', 'markdown']) {
+      expect(document.querySelector(`[data-file-type="${kind}"] svg`)).toBeTruthy();
+    }
+  });
+
+  it('supports tree semantics and arrow-key navigation across lazy folders', async () => {
+    const listProjectDir = vi.fn(async ({ dir }: { dir: string }) => ({
+      dir,
+      entries:
+        dir === 'src'
+          ? [{ path: 'src/app.ts', name: 'app.ts', kind: 'file' as const }]
+          : [
+              { path: 'src', name: 'src', kind: 'dir' as const },
+              { path: 'README.md', name: 'README.md', kind: 'file' as const },
+            ],
+    }));
+    Object.defineProperty(window, 'syncThink', {
+      configurable: true,
+      value: {
+        runtime: {
+          listProjectDir,
+          listProjectFiles: vi.fn(async () => ({ root: 'C:/workspace', files: [] })),
+        },
+      },
+    });
+
+    render(<WorkspaceFilesPanel projectFolder="C:/workspace" />);
+
+    expect(await screen.findByRole('tree', { name: '工作区文件' })).toBeTruthy();
+    const folder = screen.getByRole('treeitem', { name: 'src' });
+    folder.focus();
+    fireEvent.keyDown(folder, { key: 'ArrowRight' });
+    expect(await screen.findByRole('treeitem', { name: '打开文件 src/app.ts' })).toBeTruthy();
+    expect(folder.getAttribute('aria-expanded')).toBe('true');
+
+    fireEvent.keyDown(folder, { key: 'ArrowDown' });
+    expect(document.activeElement).toBe(
+      screen.getByRole('treeitem', { name: '打开文件 src/app.ts' }),
+    );
   });
 
   it('renders Markdown documents in the standalone workspace-file preview', async () => {
@@ -125,7 +170,7 @@ describe('WorkspaceFilesPanel', () => {
 
     render(<WorkspaceFilesPanel projectFolder="C:/workspace" />);
 
-    fireEvent.click(await screen.findByRole('button', { name: '打开文件 README.md' }));
+    fireEvent.click(await screen.findByRole('treeitem', { name: '打开文件 README.md' }));
     expect(
       await screen.findByRole('heading', { level: 1, name: 'Standalone preview' }),
     ).toBeTruthy();
