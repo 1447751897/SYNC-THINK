@@ -1,7 +1,7 @@
 {
   "name": "sync-think",
   "private": true,
-  "version": "0.0.1",
+  "version": "0.1.0-rc.1",
   "description": "SYNC-THINK local-first multi-model Agent desktop workspace",
   "packageManager": "pnpm@10.28.2",
   "scripts": {
