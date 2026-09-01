@@ -10,6 +10,7 @@ describe('reasoningLevelsForModel', () => {
     const levels = reasoningLevelsForModel(undefined);
     expect(levels).toEqual([
       'auto',
+      'minimal',
       'off',
       'low',
       'medium',

@@ -8,10 +8,10 @@
  * (nodeMajor). Registry probing (Win32 registry) is deferred.
  */
 import { existsSync, readdirSync, statSync } from 'node:fs';
-import { delimiter, dirname, extname, join } from 'node:path';
+import { delimiter, dirname, extname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import type { KernelId } from '@sync-think/shared';
-import { resolveManagedKernelExecutable } from './managed-kernel.js';
+import { resolveManagedKernelActivation, resolveManagedKernelExecutable } from './managed-kernel.js';
 
 export interface KernelProbeResult {
   /** Resolved executable path, or null when not found on any search path. */
@@ -118,7 +118,10 @@ export function resolveCodexExecutablePath(
     options.managedExecutable === undefined
       ? resolveManagedKernelExecutable('codex')
       : options.managedExecutable;
-  if (managedExecutable && versionProbe(managedExecutable)) return managedExecutable;
+  if (managedExecutable) {
+    if (versionProbe(managedExecutable)) return managedExecutable;
+    if (resolveManagedKernelActivation('codex')) return managedExecutable;
+  }
   const discovered: string[] = [];
   if (localAppData) {
     const managedRoot = join(localAppData, 'OpenAI', 'Codex', 'bin');
@@ -174,7 +177,10 @@ export function resolveExecutablePath(command: string): string | null {
   }
   if (command.toLowerCase() === 'codex') {
     const managed = resolveManagedKernelExecutable('codex');
-    if (managed && probeVersion(managed)) return managed;
+    if (managed) return managed;
+  }
+  if (command.toLowerCase() === 'pi') {
+    return resolveManagedKernelExecutable('pi');
   }
   return pathExecutable;
 }
@@ -187,6 +193,19 @@ export function extractSemverVersion(output: string): string | null {
 
 const PROBE_TIMEOUT_MS = 5000;
 
+export function envWithRuntimeNode(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env = { ...base };
+  const nodeDir = dirname(process.execPath);
+  const current = env.PATH ?? env.Path ?? '';
+  const alreadyPresent = current
+    .split(delimiter)
+    .some((entry) => entry.replace(/^"|"$/g, '') && resolve(entry.replace(/^"|"$/g, '')) === resolve(nodeDir));
+  if (!alreadyPresent) {
+    env.PATH = current ? `${nodeDir}${delimiter}${current}` : nodeDir;
+  }
+  return env;
+}
+
 /**
  * Run `<executablePath> --version` and parse the first semver token.
  * Returns null when the binary is missing, times out, or prints no version.
@@ -195,9 +214,12 @@ const PROBE_TIMEOUT_MS = 5000;
  * exec directly (EINVAL); they are routed through cmd.exe with the quoted-path
  * pattern from packages/workers process-runner.ts (buildSafeCmdShimCommand).
  * Args are the fixed `--version` — no shell injection surface.
+ * npm shims look up `node` on PATH; prepend this Runtime's Node so a newer
+ * system Node 24 cannot break a private prefix installed against Node 20.
  */
 export function probeVersion(executablePath: string): string | null {
   const isCmdShim = /\.(?:cmd|bat)$/i.test(executablePath);
+  const env = envWithRuntimeNode();
   const result = isCmdShim
     ? spawnSync(
         process.env.ComSpec || 'cmd.exe',
@@ -208,6 +230,7 @@ export function probeVersion(executablePath: string): string | null {
           windowsHide: true,
           windowsVerbatimArguments: true,
           stdio: ['ignore', 'pipe', 'pipe'],
+          env,
         },
       )
     : spawnSync(executablePath, ['--version'], {
@@ -215,6 +238,7 @@ export function probeVersion(executablePath: string): string | null {
         timeout: PROBE_TIMEOUT_MS,
         windowsHide: true,
         stdio: ['ignore', 'pipe', 'pipe'],
+        env,
       });
   if (result.error || result.status !== 0) return null;
   const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
@@ -224,9 +248,24 @@ export function probeVersion(executablePath: string): string | null {
 /** Probe a kernel by its CLI command. Returns paths + version, never throws. */
 export function probeKernel(command: string): KernelProbeResult {
   try {
+    if (command.toLowerCase() === 'pi') {
+      const managed = resolveManagedKernelActivation('pi');
+      if (!managed) return { executablePath: null, version: null };
+      return {
+        executablePath: managed.executablePath,
+        version: probeVersion(managed.executablePath) ?? managed.version,
+      };
+    }
     const executablePath = resolveExecutablePath(command);
     if (!executablePath) return { executablePath: null, version: null };
-    return { executablePath, version: probeVersion(executablePath) };
+    const probed = probeVersion(executablePath);
+    if (probed) return { executablePath, version: probed };
+    const managed =
+      command.toLowerCase() === 'codex' ? resolveManagedKernelActivation('codex') : null;
+    if (managed && resolve(managed.executablePath) === resolve(executablePath)) {
+      return { executablePath, version: managed.version };
+    }
+    return { executablePath, version: null };
   } catch {
     return { executablePath: null, version: null };
   }

@@ -915,7 +915,6 @@ export function AgentLibrary({
                                       type="checkbox"
                                       className="mt-0.5 accent-[var(--color-accent)]"
                                       checked={checked}
-                                      disabled={!checked && draft.skillIds.length >= 8}
                                       onChange={() =>
                                         setDraft((d) => ({
                                           ...d,
@@ -943,15 +942,6 @@ export function AgentLibrary({
                               })}
                             </div>
                           )}
-                          {draft.skillIds.length >= 8 ? (
-                            <p className="mt-1 text-[11px] text-warning">
-                              最多装备 8 个 Skill；请先取消一个再选择。
-                            </p>
-                          ) : draft.skillIds.length > 0 ? (
-                            <p className="mt-1 text-[11px] text-text-faint">
-                              最多可装备 8 个 Skill
-                            </p>
-                          ) : null}
                         </Field>
                       </div>
                     )}

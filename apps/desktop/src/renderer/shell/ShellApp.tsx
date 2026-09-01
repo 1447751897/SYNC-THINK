@@ -44,11 +44,11 @@ import { ActivityCenterPage } from './ActivityCenterPage.js';
 import { TeamLibrary } from './TeamLibrary.js';
 import { AbilitiesPage, type AbilityCenterInitialView } from './AbilitiesPage.js';
 import { BrowserStage } from './BrowserStage.js';
+import type { BrowserWorkflowAiTaskRequest } from './BrowserWorkflowPanel.js';
 import { SettingsPage, type ConnectionTab, type SettingsSection } from './SettingsPage.js';
 import type { ModelSettingsDetailView } from './ModelSettings.js';
 import { FirstLaunchGuide } from './FirstLaunchGuide.js';
 import {
-  ComposeAtSettingsMenu,
   ComposerActionSlot,
   ContextRing,
   estimateContextWindow,
@@ -67,6 +67,10 @@ import {
   type ReasoningEffort,
 } from './compose-toolbar.js';
 import {
+  applyManagedKernelSnapshotToInstallStates,
+  useManagedKernelUpdateSync,
+} from './managed-kernel-sync.js';
+import {
   addAttachment,
   buildMessageWithAttachments,
   detectMentionQuery,
@@ -75,9 +79,7 @@ import {
   messageImagesFromAttachments,
   readFileAsDataUrl,
   removeAttachment,
-  stripMentionToken,
   type ComposeAttachment,
-  type MentionQuery,
   type MessageImage,
 } from './compose-mention.js';
 import {
@@ -103,6 +105,7 @@ import { AgentAvatarView } from './AgentAvatarView.js';
 import { resolveKernelBrandLogo, resolveKernelDisplayName } from './brand-icons.js';
 import { TurnSkillControl } from './TurnSkillControl.js';
 import { ComposerEditor } from './ComposerEditor.js';
+import { PromptEnhancementAction, usePromptEnhancement } from './prompt-enhancement.js';
 import { ComposerMcpMenu } from './ComposerMcpMenu.js';
 import { ComposerModeBanner } from './ComposerModeBanner.js';
 import { ComposerActiveModePill, ComposerModeKeywordHint } from './ComposerModeControls.js';
@@ -158,7 +161,9 @@ import {
   type ShellStage,
 } from './shell-state.js';
 import {
+  AGENT_PREFERENCES_CHANGED_EVENT,
   readActiveWorkspaceId,
+  readAgentPreferences,
   readConversationGroups,
   readDefaultPermission,
   readLastConversationTrack,
@@ -763,30 +768,29 @@ function ShellAppInner() {
   const handleAiBrowserOpen = useCallback(
     (url: string) => {
       if (!activeWorkspaceId) return;
-      let pendingNav: { browserId: string; url: string; seq: number } | null = null;
+      // Resolve the target before enqueueing the state update. A functional
+      // updater may run after this callback returns, so side effects inside it
+      // would leave the BrowserPanel without the navigation marker.
+      const currentLayout =
+        paneLayouts[activeWorkspaceId] ?? createWorkspacePaneLayout(activeWorkspaceId);
+      const targetPaneId = currentLayout.focusedPaneId;
+      const pane = currentLayout.panes[targetPaneId];
+      const browserTab = pane?.tabs.find((tab) => tab.type === 'browser');
+      const browserId =
+        browserTab && browserTab.type === 'browser' ? browserTab.browserId : createBrowserId();
+      setAiBrowserNav((current) => ({
+        browserId,
+        url,
+        seq: browserTab && browserTab.type === 'browser' ? (current?.seq ?? 0) + 1 : 1,
+      }));
       commitPaneLayout(activeWorkspaceId, (current) => {
-        const targetPaneId = current.focusedPaneId;
-        const pane = current.panes[targetPaneId];
-        const browserTab = pane?.tabs.find((tab) => tab.type === 'browser');
         if (browserTab && browserTab.type === 'browser') {
-          // seq < 0 marker: existing tab → bump from the previous nav sequence.
-          pendingNav = { browserId: browserTab.browserId, url, seq: -1 };
-          return navigateBrowserPaneTab(current, targetPaneId, browserTab.browserId, url);
+          return navigateBrowserPaneTab(current, targetPaneId, browserId, url);
         }
-        const browserId = createBrowserId();
-        pendingNav = { browserId, url, seq: 1 };
         return openBrowserInPane(current, browserId, url, targetPaneId);
       });
-      if (pendingNav) {
-        const { browserId, url: navUrl, seq } = pendingNav;
-        setAiBrowserNav((current) => ({
-          browserId,
-          url: navUrl,
-          seq: seq === 1 ? 1 : (current?.seq ?? 0) + 1,
-        }));
-      }
     },
-    [activeWorkspaceId, commitPaneLayout],
+    [activeWorkspaceId, commitPaneLayout, paneLayouts],
   );
 
   // AI browser_open tool.completed → navigate the tab-strip browser tab.
@@ -1841,6 +1845,20 @@ function ShellAppInner() {
       newConversationModel,
       rememberTrack,
     ],
+  );
+
+  const handleStartBrowserAiTask = useCallback(
+    (request: BrowserWorkflowAiTaskRequest) => {
+      // Browser AI creation is a real conversation turn: seed the exact
+      // tool-directed request into a model chat, then let Runtime execute the
+      // existing browser_workflow_create_draft contract and approval flow.
+      handleNewConversation('model');
+      setNewConversationDraft(request.prompt);
+      writeNewConversationDraft(request.prompt);
+      setNewConversationError(undefined);
+      setNav((current) => ({ ...current, stage: 'talk' }));
+    },
+    [handleNewConversation],
   );
 
   const handleOpenFolder = useCallback(async () => {
@@ -3458,7 +3476,7 @@ function ShellAppInner() {
               }}
             />
           ) : nav.stage === 'browser' ? (
-            <BrowserStage />
+            <BrowserStage onStartAiTask={handleStartBrowserAiTask} />
           ) : nav.stage === 'abilities' ? (
             <AbilitiesPage
               activeWorkspaceId={activeWorkspaceId}
@@ -3615,7 +3633,19 @@ export function EmptyTalk(props: {
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(() =>
     readDefaultPermission(),
   );
-  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>('auto');
+  const [agentPreferences, setAgentPreferences] = useState(() => readAgentPreferences());
+  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>(
+    () => readAgentPreferences().thinkingBudget,
+  );
+  useEffect(() => {
+    const syncAgentDefaults = () => {
+      const next = readAgentPreferences();
+      setAgentPreferences(next);
+      setReasoningEffort(next.thinkingBudget);
+    };
+    window.addEventListener(AGENT_PREFERENCES_CHANGED_EVENT, syncAgentDefaults);
+    return () => window.removeEventListener(AGENT_PREFERENCES_CHANGED_EVENT, syncAgentDefaults);
+  }, []);
   const [interactionMode, setInteractionMode] = useState<'plan' | 'execute'>('execute');
   const [dismissedModeHintText, setDismissedModeHintText] = useState<string | null>(null);
   const [goalSettingsOpen, setGoalSettingsOpen] = useState(false);
@@ -3634,7 +3664,6 @@ export function EmptyTalk(props: {
   const [attachments, setAttachments] = useState<ComposeAttachment[]>([]);
   const [dragOver, setDragOver] = useState(false);
   const [composeNotice, setComposeNotice] = useState<string | undefined>();
-  const [atQuery, setAtQuery] = useState<MentionQuery | null>(null);
   const [slash, setSlash] = useState<SlashQuery | null>(null);
   const [slashIndex, setSlashIndex] = useState(-1);
   const [slashCategory, setSlashCategory] = useState<ComposerSkillCategory>('all');
@@ -3657,7 +3686,6 @@ export function EmptyTalk(props: {
   const slashListRef = useRef<HTMLDivElement>(null);
   const dismissedSlashTextRef = useRef<string | null>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
-  const networkSettingRef = useRef<HTMLDivElement>(null);
   const permissionButtonRef = useRef<HTMLButtonElement>(null);
   const identityButtonRef = useRef<HTMLButtonElement>(null);
   const modelButtonRef = useRef<HTMLButtonElement>(null);
@@ -3723,6 +3751,20 @@ export function EmptyTalk(props: {
   });
   const composerModel =
     props.models.find((model) => model.modelId === composerModelSelection.modelId) ?? selectedModel;
+  const promptEnhancement = usePromptEnhancement({
+    value: props.draft,
+    onValueChange: props.onDraftChange,
+    enabled: agentPreferences.promptEnhancementEnabled,
+    configuredModelId: agentPreferences.promptEnhancementModelId,
+    currentModelId: props.selectedModelId,
+    models: props.models,
+    disabled:
+      props.sending ||
+      pendingRiskGoal !== null ||
+      riskGoalSubmitting ||
+      goalSettingsSubmitting ||
+      composerMode === 'goal',
+  });
   const updatePlanActSetting = (next: ComposerPlanActSetting) => {
     const previous = planActSetting;
     setPlanActSetting(next);
@@ -3888,6 +3930,17 @@ export function EmptyTalk(props: {
     void detectKernels();
   }, [detectKernels]);
 
+  const handleManagedKernelSnapshot = useCallback(
+    (snapshot: Parameters<typeof applyManagedKernelSnapshotToInstallStates>[1]) => {
+      setKernelInstallStates((current) =>
+        applyManagedKernelSnapshotToInstallStates(current, snapshot),
+      );
+      void detectKernels();
+    },
+    [detectKernels],
+  );
+  useManagedKernelUpdateSync(handleManagedKernelSnapshot);
+
   const installKernel = useCallback(
     (kernelId: string) => {
       const existing = kernelInstallPromisesRef.current.get(kernelId);
@@ -3973,7 +4026,6 @@ export function EmptyTalk(props: {
     dismissedModeHintText !== props.draft &&
     !helpCommandPreview &&
     !composerMode &&
-    !atQuery &&
     !slashMenuOpen &&
     !mcpMenuOpen &&
     !composerAddOpen &&
@@ -4035,7 +4087,6 @@ export function EmptyTalk(props: {
 
   const updatePickersFromCaret = useCallback((text: string, caret: number) => {
     if (dismissedSlashTextRef.current === text) {
-      setAtQuery(null);
       setSlash(null);
       setSlashIndex(-1);
       return;
@@ -4043,12 +4094,12 @@ export function EmptyTalk(props: {
     dismissedSlashTextRef.current = null;
     const mention = detectMentionQuery(text, caret);
     if (mention) {
-      setAtQuery(mention);
+      setComposerAddOpen(true);
       setSlash(null);
       setSlashIndex(-1);
       return;
     }
-    setAtQuery(null);
+    setComposerAddOpen(false);
     const nextSlash = detectSlashQuery(text, caret);
     setSlash(nextSlash);
     setSlashIndex(nextSlash ? 0 : -1);
@@ -4123,7 +4174,6 @@ export function EmptyTalk(props: {
     if (next === props.draft) return;
     setDismissedModeHintText(null);
     props.onDraftChange(next);
-    setAtQuery(null);
     setSlash(null);
     setSlashIndex(-1);
     setMcpMenuOpen(false);
@@ -4412,25 +4462,6 @@ export function EmptyTalk(props: {
     }
   };
 
-  const changeNetworkSetting = (enabled: boolean) => {
-    setNetworkEnabled(enabled);
-    if (!atQuery) return;
-    const stripped = stripMentionToken(props.draft, atQuery);
-    props.onDraftChange(stripped.text);
-    setAtQuery(null);
-    window.requestAnimationFrame(() => {
-      const input = inputRef.current;
-      if (!input) return;
-      input.focus();
-      input.setSelectionRange(stripped.caret, stripped.caret);
-    });
-  };
-
-  const dismissNetworkSetting = () => {
-    setAtQuery(null);
-    window.requestAnimationFrame(() => inputRef.current?.focus());
-  };
-
   const emptyModeBanner =
     composerMode === 'plan' ? (
       <ComposerModeBanner
@@ -4547,102 +4578,96 @@ export function EmptyTalk(props: {
                 className="shell-empty-mcp-menu"
               />
 
-              <ComposerEditor
-                placeholder="输入消息…（输入 / 打开快捷面板）"
-                value={props.draft}
-                inputElementRef={inputRef}
-                inputTestId="empty-compose-input"
-                testId="empty-composer-editor"
-                attachments={attachments}
-                selectedSkills={selectedSlashSkills}
-                disabled={props.sending}
-                minHeight={72}
-                maxHeight={200}
-                chatFontSize={appearance.chatFontSize}
-                serifFontFamily={appearance.useSerifFont ? 'var(--font-serif)' : 'var(--font-sans)'}
-                onRemoveAttachment={(path) =>
-                  setAttachments((current) => removeAttachment(current, path))
-                }
-                onRemoveSkill={(skillVersionId) =>
-                  updateSelectedSkillVersionIds(
-                    selectedSkillVersionIds.filter((selected) => selected !== skillVersionId),
-                  )
-                }
-                onChange={(value) => {
-                  props.onDraftChange(value);
-                  setComposeNotice(undefined);
-                  if (composerAddOpen) {
-                    setAtQuery(null);
-                    setSlash(null);
-                    setSlashIndex(-1);
+              <div className="shell-compose__editor-area">
+                <ComposerEditor
+                  placeholder="输入消息…（输入 / 打开快捷面板）"
+                  value={props.draft}
+                  inputElementRef={inputRef}
+                  inputTestId="empty-compose-input"
+                  testId="empty-composer-editor"
+                  attachments={attachments}
+                  selectedSkills={selectedSlashSkills}
+                  disabled={props.sending}
+                  minHeight={72}
+                  maxHeight={200}
+                  chatFontSize={appearance.chatFontSize}
+                  serifFontFamily={
+                    appearance.useSerifFont ? 'var(--font-serif)' : 'var(--font-sans)'
                   }
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === 'Tab' && event.shiftKey && modeKeywordHint) {
-                    event.preventDefault();
-                    acceptModeKeywordHint();
-                    return;
+                  onRemoveAttachment={(path) =>
+                    setAttachments((current) => removeAttachment(current, path))
                   }
-                  if (event.key === 'Escape' && slashMenuOpen) {
-                    event.preventDefault();
-                    dismissedSlashTextRef.current = props.draft;
-                    setSlash(null);
-                    setSlashIndex(-1);
-                    return;
+                  onRemoveSkill={(skillVersionId) =>
+                    updateSelectedSkillVersionIds(
+                      selectedSkillVersionIds.filter((selected) => selected !== skillVersionId),
+                    )
                   }
-                  if (slashMenuOpen) {
-                    const action = resolveComposerSlashMenuKeyboardAction({
-                      key: event.key,
-                      shiftKey: event.shiftKey,
-                      isComposing:
-                        event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229,
-                      category: slashCategory,
-                      activeIndex: slashIndex,
-                      itemCount: slashItemCount,
-                      availableCategories: availableSlashCategories,
-                    });
-                    if (action) {
+                  onChange={(value) => {
+                    props.onDraftChange(value);
+                    setComposeNotice(undefined);
+                    if (composerAddOpen) {
+                      setSlash(null);
+                      setSlashIndex(-1);
+                      return;
+                    }
+                    const caret = inputRef.current?.selectionStart ?? value.length;
+                    updatePickersFromCaret(value, caret);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Tab' && event.shiftKey && modeKeywordHint) {
                       event.preventDefault();
-                      if (action.kind === 'change-category') {
-                        setSlashCategory(action.category);
-                        // Category changes select the first visible item so
-                        // Enter remains useful immediately, including when
-                        // the dynamic category list only contains `all`.
-                        setSlashIndex(0);
-                      } else if (action.kind === 'change-active-index') {
-                        setSlashIndex(action.index);
-                      } else {
-                        const selected = resolvedSlashItems[action.index];
-                        if (selected?.kind === 'command') selectSlashCommand(selected.command);
-                        else if (selected?.kind === 'skill') selectSlashSkill(selected.skill);
+                      acceptModeKeywordHint();
+                      return;
+                    }
+                    if (event.key === 'Escape' && slashMenuOpen) {
+                      event.preventDefault();
+                      dismissedSlashTextRef.current = props.draft;
+                      setSlash(null);
+                      setSlashIndex(-1);
+                      return;
+                    }
+                    if (slashMenuOpen) {
+                      const action = resolveComposerSlashMenuKeyboardAction({
+                        key: event.key,
+                        shiftKey: event.shiftKey,
+                        isComposing:
+                          event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229,
+                        category: slashCategory,
+                        activeIndex: slashIndex,
+                        itemCount: slashItemCount,
+                        availableCategories: availableSlashCategories,
+                      });
+                      if (action) {
+                        event.preventDefault();
+                        if (action.kind === 'change-category') {
+                          setSlashCategory(action.category);
+                          // Category changes select the first visible item so
+                          // Enter remains useful immediately, including when
+                          // the dynamic category list only contains `all`.
+                          setSlashIndex(0);
+                        } else if (action.kind === 'change-active-index') {
+                          setSlashIndex(action.index);
+                        } else {
+                          const selected = resolvedSlashItems[action.index];
+                          if (selected?.kind === 'command') selectSlashCommand(selected.command);
+                          else if (selected?.kind === 'skill') selectSlashSkill(selected.skill);
+                        }
+                        return;
                       }
-                      return;
                     }
-                  }
-                  if (event.key === 'Escape' && atQuery) {
-                    event.preventDefault();
-                    setAtQuery(null);
-                    return;
-                  }
-                  if (event.key === 'Tab' && atQuery) {
-                    const segments = networkSettingRef.current?.querySelectorAll<HTMLButtonElement>(
-                      '.shell-mention-setting__segment',
-                    );
-                    const target = segments?.[event.shiftKey ? segments.length - 1 : 0];
-                    if (target) {
-                      event.preventDefault();
-                      target.focus();
-                      return;
-                    }
-                  }
-                }}
-                onSubmit={() => void submit()}
-                onPaste={handlePaste}
-                onSelectionChange={({ start }) => {
-                  if (composerAddOpen) return;
-                  updatePickersFromCaret(inputRef.current?.value ?? props.draft, start);
-                }}
-              />
+                  }}
+                  onSubmit={() => void submit()}
+                  onPaste={handlePaste}
+                  onSelectionChange={({ start }) => {
+                    if (composerAddOpen) return;
+                    updatePickersFromCaret(inputRef.current?.value ?? props.draft, start);
+                  }}
+                />
+                <PromptEnhancementAction
+                  enhancement={promptEnhancement}
+                  testId="empty-compose-prompt-enhance"
+                />
+              </div>
               <input
                 ref={imageInputRef}
                 type="file"
@@ -4652,16 +4677,6 @@ export function EmptyTalk(props: {
                 data-testid="empty-compose-image-input"
                 onChange={handleImageInputChange}
                 tabIndex={-1}
-              />
-              <ComposeAtSettingsMenu
-                open={Boolean(atQuery)}
-                enabled={networkEnabled}
-                anchorEl={inputRef.current}
-                networkSettingRef={networkSettingRef}
-                onClose={() => setAtQuery(null)}
-                onDismiss={dismissNetworkSetting}
-                onChange={changeNetworkSetting}
-                onUpload={() => imageInputRef.current?.click()}
               />
               <div ref={composerToolbar.outerRef} className="shell-compose__bar">
                 <div ref={composerToolbar.leftRef} className="shell-compose__bar-left">
@@ -4676,7 +4691,6 @@ export function EmptyTalk(props: {
                     onBeforeOpen={() => {
                       setSlash(null);
                       setSlashIndex(-1);
-                      setAtQuery(null);
                       setMcpMenuOpen(false);
                       setPermissionMenuOpen(false);
                       setSkillMenuOpen(false);
@@ -4967,7 +4981,6 @@ export function EmptyTalk(props: {
             setComposerAddOpen(false);
             setSlash(null);
             setSlashIndex(-1);
-            setAtQuery(null);
             setMcpMenuOpen(false);
             props.onDraftChange(prompt);
             window.requestAnimationFrame(() => {

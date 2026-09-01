@@ -36,6 +36,10 @@ import type {
 import type {
   AppendMessagePayload,
   AppendMessageResponse,
+  PromptEnhanceCancelPayload,
+  PromptEnhanceCancelResponse,
+  PromptEnhancePayload,
+  PromptEnhanceResponse,
   BindWorkspaceFolderPayload,
   BindWorkspaceFolderResponse,
   CancelRunPayload,
@@ -389,6 +393,13 @@ const api = {
     },
     appendMessage: (payload: AppendMessagePayload) =>
       ipcRenderer.invoke('runtime:append-message', payload) as Promise<AppendMessageResponse>,
+    enhancePrompt: (payload: PromptEnhancePayload) =>
+      ipcRenderer.invoke('runtime:prompt-enhance', payload) as Promise<PromptEnhanceResponse>,
+    cancelPromptEnhancement: (payload: PromptEnhanceCancelPayload) =>
+      ipcRenderer.invoke(
+        'runtime:prompt-enhance-cancel',
+        payload,
+      ) as Promise<PromptEnhanceCancelResponse>,
     openExternalUrl: (url: string) =>
       ipcRenderer.invoke('desktop:open-external-url', url) as Promise<OpenExternalUrlResult>,
     detectKernels: () =>
@@ -1430,13 +1441,23 @@ const api = {
   kernelUpdates: {
     getState: () =>
       ipcRenderer.invoke('desktop:kernel-update-get-state') as Promise<ManagedKernelUpdateSnapshot>,
-    checkForUpdates: () =>
-      ipcRenderer.invoke('desktop:kernel-update-check') as Promise<ManagedKernelUpdateActionResult>,
+    checkForUpdates: (payload?: Parameters<ManagedKernelUpdateBridge['checkForUpdates']>[0]) =>
+      ipcRenderer.invoke(
+        'desktop:kernel-update-check',
+        payload,
+      ) as Promise<ManagedKernelUpdateActionResult>,
     installUpdate: (payload: Parameters<ManagedKernelUpdateBridge['installUpdate']>[0]) =>
       ipcRenderer.invoke(
         'desktop:kernel-update-install',
         payload,
       ) as Promise<ManagedKernelUpdateActionResult>,
+    subscribeState: (listener: (snapshot: ManagedKernelUpdateSnapshot) => void) => {
+      const channel = 'desktop:kernel-update-state';
+      const handler = (_event: Electron.IpcRendererEvent, snapshot: ManagedKernelUpdateSnapshot) =>
+        listener(snapshot);
+      ipcRenderer.on(channel, handler);
+      return () => ipcRenderer.removeListener(channel, handler);
+    },
   } satisfies ManagedKernelUpdateBridge,
   platform: 'win32' as const,
 };

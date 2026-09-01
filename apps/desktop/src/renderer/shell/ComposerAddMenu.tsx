@@ -22,6 +22,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { PERMISSION_OPTIONS, type PermissionMode } from './compose-toolbar.js';
+import { detectMentionQuery } from './compose-mention.js';
 import { ComposerMenuHighlight } from './ComposerMenuHighlight.js';
 import { useNewMaxPopoverPresence } from './NewMaxComposerFrame.js';
 import { keepListboxOptionVisible } from './compose-picker-scroll.js';
@@ -56,7 +57,8 @@ function resolveSearchQuery(value: string, anchor: ComposerAddSearchAnchor | nul
   if (!anchor) return '';
   if (value.length < anchor.before.length + anchor.after.length) return '';
   if (!value.startsWith(anchor.before) || !value.endsWith(anchor.after)) return '';
-  return value.slice(anchor.before.length, value.length - anchor.after.length).trim();
+  const middle = value.slice(anchor.before.length, value.length - anchor.after.length);
+  return middle.replace(/^@/, '').trim();
 }
 
 function fileParts(file: ComposerWorkspaceFile): { name: string; directory: string } {
@@ -159,11 +161,23 @@ export function ComposerAddControl({
     const input = inputRef.current;
     const start = input?.selectionStart ?? value.length;
     const end = input?.selectionEnd ?? start;
-    searchAnchorRef.current = {
-      before: value.slice(0, start),
-      after: value.slice(end),
-    };
+    const mention =
+      detectMentionQuery(value, start) ?? detectMentionQuery(value, value.length);
+    searchAnchorRef.current = mention
+      ? {
+          before: value.slice(0, mention.atIndex),
+          after: value.slice(mention.caret),
+        }
+      : {
+          before: value.slice(0, start),
+          after: value.slice(end),
+        };
   }, [inputRef, value]);
+
+  useEffect(() => {
+    if (!open) return;
+    if (!searchAnchorRef.current) captureSearchAnchor();
+  }, [captureSearchAnchor, open]);
 
   const toggle = useCallback(() => {
     if (disabled) return;
@@ -314,6 +328,7 @@ export function ComposerAddControl({
       if (!item) return;
       if (item.kind === 'attach') {
         if (attachDisabled) return;
+        consumeSearchFragment();
         onAttach();
         close(false);
         return;

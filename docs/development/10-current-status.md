@@ -1,4 +1,19 @@
-﻿## 当前状态：2026-08-27 · Skill 管理 NewMax 对齐完成并运行最新构建
+﻿## 当前状态：2026-09-01 · NewMax Composer/Plan/Goal 与设计稿能力收口
+
+### 实现结果
+
+- 空态与正式对话 Composer 共用本机 NewMax 的 frame、CodeMirror 6 编辑器、模式 Banner、对象选择器、Slash/MCP/加号动作表和稳定动作槽；Plan/Goal 正式模式、审批卡与进度任务清单保持独立事件域。
+- `/plan <需求>`、`/goal <目标>`、`/execute` 的持久化顺序与本机 NewMax 对齐；任务清单兼容真实 Codex `toolCall.argumentsJson`，按 `toolCallId` 和当前 thread/task 隔离，首次快照自动展开，下一轮开始时清空。
+- 浏览器 Profile/录制/Workflow 审核执行、AI 创建草稿、电脑操作、网络和通用设置均接入真实 Runtime 合同；AI 设计稿支持 `design-html` 解析、交互预览、源码、复制、下载、项目保存和系统浏览器打开。
+- Runtime 将统一 `design-html` 输出合同注入普通 Provider 与外部 Kernel：完整自包含文档、唯一 fence、1 MiB 上限、可见/可访问内容，以及预览、浏览器打开和保存的事实边界均由提示与 Renderer 双重约束。
+- 会话切换使用有界缓存与 NewMax 风格骨架屏，提示词优化通过真实 Provider/IPC 闭环接入并支持取消、Esc、旧响应保护；私有内核状态由 Runtime 广播后即时回显。
+
+### 当前验证
+
+- Runtime 设计稿合同、上下文状态、外部 Kernel 规划/恢复回归共 `43` 项通过；Runtime/Desktop typecheck 通过。
+- 设计稿、提示词优化、浏览器定向测试和 BrowserStage 回归已通过；全量测试、类型检查、lint、构建及 Electron 实窗验收将在本轮完成后补录最终计数和产物时间。
+
+## 当前状态：2026-08-27 · Skill 管理 NewMax 对齐完成并运行最新构建
 
 ### 实现结果
 

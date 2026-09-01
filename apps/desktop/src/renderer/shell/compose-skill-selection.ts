@@ -8,8 +8,6 @@ export interface ComposeSkillOption {
   enabled?: boolean;
 }
 
-export const MAX_TURN_SKILL_SELECTION = 8;
-
 export function resolveAppendSkillVersionIds(
   _track: Conversation['track'],
   selectedSkillVersionIds: readonly string[],
@@ -21,7 +19,6 @@ export function resolveAppendSkillVersionIds(
     if (!id || seen.has(id)) continue;
     seen.add(id);
     result.push(id);
-    if (result.length === MAX_TURN_SKILL_SELECTION) break;
   }
   return result;
 }

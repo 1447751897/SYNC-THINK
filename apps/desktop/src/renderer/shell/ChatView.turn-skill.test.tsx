@@ -391,11 +391,15 @@ describe('ChatView turn Skill draft', () => {
 
     fireEvent.change(input, { target: { value: '@', selectionStart: 1 } });
     expect(input.value).toBe('@');
-    expect(await screen.findByTestId('compose-mention-pop')).toBeTruthy();
-    expect(screen.getByText('来源与上下文')).toBeTruthy();
-    expect(screen.getByText('上传图片')).toBeTruthy();
-    expect(screen.getByText('联网搜索')).toBeTruthy();
-    expect(screen.getByText('输入以搜索来源和文件')).toBeTruthy();
+    const addMenu = await screen.findByTestId('compose-add-menu');
+    expect(within(addMenu).getByText('附加文件')).toBeTruthy();
+    expect(within(addMenu).getByText('规划模式')).toBeTruthy();
+    expect(within(addMenu).getByText('目标模式')).toBeTruthy();
+    expect(within(addMenu).getByText('会议纪要')).toBeTruthy();
+    expect(within(addMenu).getByText('联网搜索')).toBeTruthy();
+    expect(within(addMenu).getByText('工作区文件')).toBeTruthy();
+    expect(screen.queryByText('来源与上下文')).toBeNull();
+    expect(screen.queryByText('上传图片')).toBeNull();
 
     fireEvent.click(screen.getByTestId('turn-skill-trigger'));
     expect(input.value).toBe('@ /');

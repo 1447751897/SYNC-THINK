@@ -238,7 +238,7 @@ export interface ResolveAllowedSkillSourcesInput {
   skillVersionIds: readonly string[];
   /** Lookup by skillVersionId; return undefined when not in library. */
   getSkill: (skillVersionId: string) => AllowedSkillSnapshot | undefined;
-  /** Hard cap on how many skill definitions enter candidates (default 8). */
+  /** Optional caller cap. Omitted means include every allowlisted Skill. */
   maxSkills?: number;
   /** Max characters of body counted toward tokenEstimate (default 2400). */
   bodyMaxChars?: number;
@@ -273,7 +273,8 @@ export interface ResolveAllowedSkillSourcesResult {
 export function resolveAllowedSkillSources(
   input: ResolveAllowedSkillSourcesInput,
 ): ResolveAllowedSkillSourcesResult {
-  const maxSkills = Math.min(Math.max(input.maxSkills ?? 8, 0), 16);
+  const maxSkills =
+    input.maxSkills === undefined ? Number.POSITIVE_INFINITY : Math.max(input.maxSkills, 0);
   const bodyMax = Math.min(Math.max(input.bodyMaxChars ?? 2400, 200), 12_000);
   const summaryMax = Math.min(Math.max(input.summaryMaxChars ?? 120, 32), 240);
 

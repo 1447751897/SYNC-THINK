@@ -2,10 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Puzzle } from 'lucide-react';
 import type { GlobalAgent } from '@sync-think/shared';
 import type { SkillVersionSummary } from '@sync-think/protocol';
-import {
-  MAX_TURN_SKILL_SELECTION,
-  resolveAppendSkillVersionIds,
-} from './compose-skill-selection.js';
+import { resolveAppendSkillVersionIds } from './compose-skill-selection.js';
 import { SkillPickerMenu } from './compose-toolbar.js';
 
 type CatalogStatus = 'idle' | 'loading' | 'loaded' | 'error';
@@ -128,7 +125,7 @@ export function TurnSkillControl(props: TurnSkillControlProps) {
     () => catalog.skills.filter((skill) => skill.enabled !== false),
     [catalog.skills],
   );
-  const title = `本轮 Skill：${selected.length}/8`;
+  const title = selected.length > 0 ? `本轮 Skill：${selected.length}` : '本轮 Skill';
 
   const toggle = useCallback(
     (skillVersionId: string) => {
@@ -136,7 +133,6 @@ export function TurnSkillControl(props: TurnSkillControlProps) {
         props.onChange(selected.filter((id) => id !== skillVersionId));
         return;
       }
-      if (selected.length >= MAX_TURN_SKILL_SELECTION) return;
       props.onChange([...selected, skillVersionId]);
     },
     [props, selected],

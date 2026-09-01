@@ -783,6 +783,9 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
   completedAt,
   durationMs,
   defaultOpen,
+  collapseExecutionProcess = true,
+  showToolUse = true,
+  toolCallExpandedByDefault = false,
   agentTaskContent,
   supplementalContent,
   onOpenChange,
@@ -798,18 +801,26 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
   durationMs?: number;
   /** Deterministic fixture override; production follows the run phase. */
   defaultOpen?: boolean;
+  /** Merge the completed trace behind an execution summary row. */
+  collapseExecutionProcess?: boolean;
+  /** Keep tool rows in the conversation trace. */
+  showToolUse?: boolean;
+  /** Open each newly observed tool's input/output until the user toggles it. */
+  toolCallExpandedByDefault?: boolean;
   /** Reserved for real delegated task projections; omitted when no tasks exist. */
   agentTaskContent?: ReactNode;
   supplementalContent?: ReactNode;
   onOpenChange?: (path: string) => void;
 }) {
   const orderedItems = useMemo<readonly InlineProcessItem[]>(() => {
-    if (items.some((item) => item.kind === 'tool' || item.kind === 'status')) {
-      return mergeMissingCommentary(items, steps, commentarySegments);
+    const visibleItems = showToolUse ? items : items.filter((item) => item.kind !== 'tool');
+    const visibleSteps = showToolUse ? steps : undefined;
+    if (visibleItems.some((item) => item.kind === 'tool' || item.kind === 'status')) {
+      return mergeMissingCommentary(visibleItems, visibleSteps, commentarySegments);
     }
-    if (!steps?.length && !commentarySegments?.length) return items;
+    if (!visibleSteps?.length && !commentarySegments?.length) return visibleItems;
     const merged: InlineProcessItem[] = [];
-    for (const item of buildExecutionTimeline({ steps, commentarySegments })) {
+    for (const item of buildExecutionTimeline({ steps: visibleSteps, commentarySegments })) {
       if (item.type === 'commentary') {
         if (item.text.trim()) merged.push({ kind: 'commentary', text: item.text });
         continue;
@@ -827,14 +838,32 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
         });
       }
     }
-    return [...items.filter((item) => item.kind !== 'commentary'), ...merged];
-  }, [items, steps, commentarySegments]);
+    return [...visibleItems.filter((item) => item.kind !== 'commentary'), ...merged];
+  }, [commentarySegments, items, showToolUse, steps]);
 
   const [expandedItemKeys, setExpandedItemKeys] = useState<ReadonlySet<string>>(() => new Set());
+  const userToggledItemKeysRef = useRef<Set<string>>(new Set());
+  const expandedRunIdRef = useRef(runId);
   useEffect(() => {
-    setExpandedItemKeys(new Set());
-  }, [runId]);
+    const runChanged = expandedRunIdRef.current !== runId;
+    if (runChanged) {
+      expandedRunIdRef.current = runId;
+      userToggledItemKeysRef.current.clear();
+    }
+    setExpandedItemKeys((current) => {
+      const next = runChanged ? new Set<string>() : new Set(current);
+      for (const [index, item] of orderedItems.entries()) {
+        if (item.kind !== 'tool') continue;
+        const itemKey = processItemKey(item, index);
+        if (userToggledItemKeysRef.current.has(itemKey)) continue;
+        if (toolCallExpandedByDefault) next.add(itemKey);
+        else next.delete(itemKey);
+      }
+      return next;
+    });
+  }, [orderedItems, runId, toolCallExpandedByDefault]);
   const toggleItem = useCallback((itemKey: string) => {
+    userToggledItemKeysRef.current.add(itemKey);
     setExpandedItemKeys((current) => {
       const next = new Set(current);
       if (next.has(itemKey)) next.delete(itemKey);
@@ -862,10 +891,11 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
   // trace. Commentary-only and terminal-only turns stay open so the entire
   // assistant response never collapses into an empty-looking header.
   const automaticPanelOpen = defaultOpen ?? Boolean(streaming || !answerStarted);
-  const { open: panelOpen, toggle: togglePanel } = useAutoDisclosure({
+  const { open: disclosedPanelOpen, toggle: togglePanel } = useAutoDisclosure({
     autoOpen: automaticPanelOpen,
     resetKey: runId,
   });
+  const panelOpen = collapseExecutionProcess ? disclosedPanelOpen : true;
   const durationLabel = processDurationLabel({
     ...(startedAt ? { startedAt } : {}),
     ...(completedAt ? { completedAt } : {}),
@@ -904,36 +934,38 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
       data-streaming={streaming ? '1' : '0'}
       data-failed={failedToolCount > 0 ? 'true' : 'false'}
     >
-      <button
-        type="button"
-        className="shell-process-panel__toggle"
-        data-testid="process-panel-toggle"
-        aria-expanded={panelOpen}
-        onClick={togglePanel}
-      >
-        <span className="shell-process-panel__title">执行过程</span>
-        {failedToolCount > 0 ? (
-          <>
-            <span className="shell-process-panel__separator" aria-hidden="true">
-              ·
-            </span>
-            <span className="shell-process-panel__failure">{failedToolCount} 项失败</span>
-          </>
-        ) : null}
-        {durationLabel ? (
-          <>
-            <span className="shell-process-panel__separator" aria-hidden="true">
-              ·
-            </span>
-            <span className="shell-process-panel__elapsed">{durationLabel}</span>
-          </>
-        ) : null}
-        <ChevronDown
-          size={13}
-          className={`shell-process-panel__chevron${panelOpen ? ' is-open' : ''}`}
-          aria-hidden="true"
-        />
-      </button>
+      {collapseExecutionProcess ? (
+        <button
+          type="button"
+          className="shell-process-panel__toggle"
+          data-testid="process-panel-toggle"
+          aria-expanded={panelOpen}
+          onClick={togglePanel}
+        >
+          <span className="shell-process-panel__title">执行过程</span>
+          {failedToolCount > 0 ? (
+            <>
+              <span className="shell-process-panel__separator" aria-hidden="true">
+                ·
+              </span>
+              <span className="shell-process-panel__failure">{failedToolCount} 项失败</span>
+            </>
+          ) : null}
+          {durationLabel ? (
+            <>
+              <span className="shell-process-panel__separator" aria-hidden="true">
+                ·
+              </span>
+              <span className="shell-process-panel__elapsed">{durationLabel}</span>
+            </>
+          ) : null}
+          <ChevronDown
+            size={13}
+            className={`shell-process-panel__chevron${panelOpen ? ' is-open' : ''}`}
+            aria-hidden="true"
+          />
+        </button>
+      ) : null}
       {panelOpen ? (
         <div className="shell-process-panel__body" data-testid="process-panel-body">
           {agentTaskContent ? (

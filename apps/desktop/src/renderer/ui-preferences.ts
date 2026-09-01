@@ -10,6 +10,35 @@ import {
 export type ConversationLayoutPreference = 'default' | 'single';
 export type ThemePreference = 'light' | 'dark' | 'system';
 export type DefaultPermissionPreference = 'ask' | 'workspace' | 'full-access';
+export type AgentThinkingBudget =
+  | 'auto'
+  | 'minimal'
+  | 'off'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'xhigh'
+  | 'max';
+
+export interface AgentPreferences {
+  promptEnhancementEnabled: boolean;
+  promptEnhancementModelId: string | null;
+  thinkingBudget: AgentThinkingBudget;
+  collapseExecutionProcess: boolean;
+  showToolUse: boolean;
+  toolCallExpandedByDefault: boolean;
+}
+
+export const DEFAULT_AGENT_PREFERENCES: Readonly<AgentPreferences> = {
+  promptEnhancementEnabled: true,
+  promptEnhancementModelId: null,
+  thinkingBudget: 'auto',
+  collapseExecutionProcess: true,
+  showToolUse: true,
+  toolCallExpandedByDefault: false,
+};
+
+export const AGENT_PREFERENCES_CHANGED_EVENT = 'shell-agent-preferences-changed';
 
 /** Shell conversation permission defaults to the user-confirmed full access mode. */
 export const DEFAULT_PERMISSION_PREFERENCE: DefaultPermissionPreference = 'full-access';
@@ -18,6 +47,7 @@ export const UI_PREF_KEYS = {
   conversationLayout: 'sync-think.conversationLayout',
   theme: 'sync-think.theme',
   traceCollapsed: 'sync-think.traceCollapsed',
+  agentPreferences: 'sync-think.agentPreferences',
   recentConversationSections: 'sync-think.recentConversationSections',
   pinnedConversations: 'sync-think.pinnedConversations',
   conversationTracks: 'sync-think.conversationTracks',
@@ -333,6 +363,85 @@ export function writeTraceCollapsedPreference(
     return;
   }
   safeSet(UI_PREF_KEYS.traceCollapsed, value);
+}
+
+const AGENT_THINKING_BUDGETS = new Set<AgentThinkingBudget>([
+  'auto',
+  'minimal',
+  'off',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+]);
+
+function normalizeAgentPreferences(value: unknown): AgentPreferences {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return { ...DEFAULT_AGENT_PREFERENCES };
+  }
+  const record = value as Record<string, unknown>;
+  const valid =
+    typeof record.promptEnhancementEnabled === 'boolean' &&
+    (record.promptEnhancementModelId === null ||
+      typeof record.promptEnhancementModelId === 'string') &&
+    typeof record.thinkingBudget === 'string' &&
+    AGENT_THINKING_BUDGETS.has(record.thinkingBudget as AgentThinkingBudget) &&
+    typeof record.collapseExecutionProcess === 'boolean' &&
+    typeof record.showToolUse === 'boolean' &&
+    typeof record.toolCallExpandedByDefault === 'boolean';
+  if (!valid) return { ...DEFAULT_AGENT_PREFERENCES };
+  return {
+    promptEnhancementEnabled: record.promptEnhancementEnabled as boolean,
+    promptEnhancementModelId:
+      typeof record.promptEnhancementModelId === 'string'
+        ? record.promptEnhancementModelId.trim() || null
+        : null,
+    thinkingBudget: record.thinkingBudget as AgentThinkingBudget,
+    collapseExecutionProcess: record.collapseExecutionProcess as boolean,
+    showToolUse: record.showToolUse as boolean,
+    toolCallExpandedByDefault: record.toolCallExpandedByDefault as boolean,
+  };
+}
+
+export function readAgentPreferences(storage?: Pick<Storage, 'getItem'>): AgentPreferences {
+  const raw = storage
+    ? (() => {
+        try {
+          return storage.getItem(UI_PREF_KEYS.agentPreferences);
+        } catch {
+          return null;
+        }
+      })()
+    : safeGet(UI_PREF_KEYS.agentPreferences);
+  if (!raw) return { ...DEFAULT_AGENT_PREFERENCES };
+  try {
+    return normalizeAgentPreferences(JSON.parse(raw) as unknown);
+  } catch {
+    return { ...DEFAULT_AGENT_PREFERENCES };
+  }
+}
+
+export function writeAgentPreferences(
+  preferences: AgentPreferences,
+  storage?: Pick<Storage, 'setItem'>,
+): void {
+  const normalized = normalizeAgentPreferences(preferences);
+  const value = JSON.stringify(normalized);
+  if (storage) {
+    try {
+      storage.setItem(UI_PREF_KEYS.agentPreferences, value);
+    } catch {
+      /* ignore */
+    }
+    return;
+  }
+  safeSet(UI_PREF_KEYS.agentPreferences, value);
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(
+      new CustomEvent(AGENT_PREFERENCES_CHANGED_EVENT, { detail: normalized }),
+    );
+  }
 }
 
 function readJsonPreference(key: string, storage?: Pick<Storage, 'getItem'>): unknown {
@@ -845,6 +954,7 @@ export function writeConversationKernelOverride(
  */
 const CONVERSATION_REASONING_EFFORTS = [
   'auto',
+  'minimal',
   'off',
   'low',
   'medium',

@@ -44,7 +44,15 @@ import { ComposerMenuHighlight } from './ComposerMenuHighlight.js';
 
 export type PermissionMode = 'ask' | 'workspace' | 'full-access';
 /** Fixed NewMax-style effort ladder (full set always shown). */
-export type ReasoningEffort = 'auto' | 'off' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+export type ReasoningEffort =
+  | 'auto'
+  | 'minimal'
+  | 'off'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'xhigh'
+  | 'max';
 
 export const PERMISSION_MODE_COLLAPSED_TOOLBAR_LEVEL = 1;
 export const SKILL_COLLAPSED_TOOLBAR_LEVEL = 2;
@@ -194,6 +202,7 @@ export const REASONING_OPTIONS: Array<{
   title: string;
 }> = [
   { value: 'auto', title: '自动' },
+  { value: 'minimal', title: '极低' },
   { value: 'off', title: '关闭' },
   { value: 'low', title: '低' },
   { value: 'medium', title: '中' },
@@ -204,6 +213,7 @@ export const REASONING_OPTIONS: Array<{
 
 export const REASONING_LABELS: Record<ReasoningEffort, string> = {
   auto: '自动',
+  minimal: '极低',
   off: '关闭',
   low: '低',
   medium: '中',
@@ -735,7 +745,9 @@ export function SkillPickerMenu(props: {
   return (
     <MenuShell open={props.open} onClose={props.onClose} anchorEl={props.anchorEl} width={320}>
       <div className="shell-menu__heading">
-        <span className="min-w-0 flex-1">本轮 Skill · {selected.size}/8</span>
+        <span className="min-w-0 flex-1">
+          {selected.size > 0 ? `本轮 Skill · ${selected.size}` : '本轮 Skill'}
+        </span>
         {selected.size > 0 ? (
           <button
             type="button"
@@ -772,16 +784,14 @@ export function SkillPickerMenu(props: {
         ) : (
           props.options.map((skill) => {
             const active = selected.has(skill.skillVersionId);
-            const disabled = !active && selected.size >= 8;
             return (
               <button
                 key={skill.skillVersionId}
                 type="button"
                 role="menuitemcheckbox"
                 aria-checked={active}
-                disabled={disabled}
                 data-testid={`turn-skill-option-${skill.skillVersionId}`}
-                className={`shell-menu__item ${active ? 'is-active' : ''} disabled:cursor-not-allowed disabled:opacity-40`}
+                className={`shell-menu__item ${active ? 'is-active' : ''}`}
                 onClick={() => props.onToggle(skill.skillVersionId)}
               >
                 <span className="shell-menu__item-icon-wrap" data-active={active ? '1' : '0'}>
@@ -967,16 +977,15 @@ export function ModelPickerMenu(props: {
                   // Installed kernels show a version badge on the right; install /
                   // missing / error copy also stays on that same trailing slot so
                   // every kernel row keeps NewMax's single-line height.
-                  const healthyInstalled =
-                    kernel.installed && !installPending && installState?.status !== 'error';
+                  const healthyInstalled = kernel.installed && !installPending;
                   const showVersionBadge = Boolean(healthyInstalled && kernel.version);
                   const showStatus = !healthyInstalled;
                   let hint: string;
                   if (installState?.status === 'installing') {
-                    hint = '安装中 · npm i -g pi';
+                    hint = '安装中 · 应用私有目录';
                   } else if (installState?.status === 'verifying') {
                     hint = '安装成功 · 正在检测';
-                  } else if (installState?.status === 'error') {
+                  } else if (installState?.status === 'error' && !kernel.installed) {
                     hint = `安装失败 · ${installState.error}`;
                   } else if (installState?.status === 'success' && kernel.installed) {
                     hint = kernel.version ? `安装成功 v${kernel.version}` : '安装成功';

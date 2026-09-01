@@ -26,12 +26,28 @@
 // "浏览器打开" writes the raw snippet to a temp file via the desktop bridge and
 // opens it in the system browser, so external links / relative assets behave
 // like a real page instead of a data: URL.
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Check, ChevronDown, ChevronUp, Copy, ExternalLink, FileCode2, Eye, RotateCcw } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import {
+  Check,
+  ChevronDown,
+  ChevronUp,
+  Copy,
+  ExternalLink,
+  FileCode2,
+  Eye,
+  PanelsTopLeft,
+  RotateCcw,
+} from 'lucide-react';
 import { highlightSource } from './highlight.js';
 
 interface HtmlSandboxProps {
   code: string;
+  appearance?: 'code' | 'design';
+  actions?: ReactNode;
+  notice?: {
+    tone: 'error' | 'warning' | 'success';
+    message: string;
+  } | null;
 }
 
 /**
@@ -148,7 +164,12 @@ const MEASURE_SCRIPT = `(() => {
   return Math.ceil(Math.max(bodyRect.height, body.scrollHeight, body.offsetHeight, childBottom));
 })()`;
 
-export function HtmlSandbox({ code }: HtmlSandboxProps) {
+export function HtmlSandbox({
+  code,
+  appearance = 'code',
+  actions,
+  notice = null,
+}: HtmlSandboxProps) {
   const src = useMemo(
     () => buildSandboxSource(code, readChatBackground()),
     [code],
@@ -288,7 +309,7 @@ export function HtmlSandbox({ code }: HtmlSandboxProps) {
   }, [code]);
 
   return (
-    <div className="shell-html">
+    <div className={`shell-html${appearance === 'design' ? ' shell-html--design' : ''}`}>
       <div className="shell-html__bar">
         <div className="shell-html__bar-left">
           <button
@@ -300,7 +321,14 @@ export function HtmlSandbox({ code }: HtmlSandboxProps) {
           >
             {collapsed ? <ChevronDown size={12} /> : <ChevronUp size={12} />}
           </button>
-          <span className="shell-md-code__lang">html</span>
+          {appearance === 'design' ? (
+            <span className="shell-html__identity">
+              <PanelsTopLeft size={13} aria-hidden="true" />
+              <span>设计稿</span>
+            </span>
+          ) : (
+            <span className="shell-md-code__lang">html</span>
+          )}
         </div>
         <div className="shell-html__view-tabs">
           <button
@@ -351,11 +379,20 @@ export function HtmlSandbox({ code }: HtmlSandboxProps) {
             <ExternalLink size={12} />
             <span>浏览器打开</span>
           </button>
+          {actions}
         </div>
       </div>
       {openError ? (
         <div className="shell-html__error" role="alert">
           {openError}
+        </div>
+      ) : null}
+      {notice ? (
+        <div
+          className={`shell-html__notice shell-html__notice--${notice.tone}`}
+          role={notice.tone === 'error' || notice.tone === 'warning' ? 'alert' : 'status'}
+        >
+          {notice.message}
         </div>
       ) : null}
       {!collapsed ? (

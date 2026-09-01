@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { MAX_SKILL_SELECTION_ITEMS } from '@sync-think/protocol';
 import {
   parseBindWorkspaceFolderPayload,
   parseCreateTaskPayload,
@@ -143,7 +144,10 @@ describe('append message per-turn Skill validation', () => {
     expect(
       parseAppendMessagePayload({
         ...base,
-        skillVersionIds: Array.from({ length: 9 }, (_, index) => `skill-${index}`),
+        skillVersionIds: Array.from(
+          { length: MAX_SKILL_SELECTION_ITEMS + 1 },
+          (_, index) => `skill-${index}`,
+        ),
       }),
     ).toBeUndefined();
   });

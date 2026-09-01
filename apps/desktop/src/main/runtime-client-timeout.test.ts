@@ -4,6 +4,7 @@ import {
   BROWSER_RECORDING_REQUEST_TIMEOUT_MS,
   BROWSER_WORKFLOW_REPLAY_REQUEST_TIMEOUT_MS,
   MCP_REMOTE_REQUEST_TIMEOUT_MS,
+  PROMPT_ENHANCEMENT_REQUEST_TIMEOUT_MS,
   USAGE_SUMMARY_REQUEST_TIMEOUT_MS,
   resolveRuntimeRequestTimeoutMs,
 } from './runtime-client.js';
@@ -14,6 +15,13 @@ describe('RuntimePipeClient request timeout policy', () => {
       USAGE_SUMMARY_REQUEST_TIMEOUT_MS,
     );
     expect(resolveRuntimeRequestTimeoutMs('runtime.healthcheck', 5_000)).toBe(5_000);
+  });
+
+  it('keeps the prompt enhancement provider call open beyond the CRUD budget', () => {
+    expect(resolveRuntimeRequestTimeoutMs('prompt.enhance', 5_000)).toBe(
+      PROMPT_ENHANCEMENT_REQUEST_TIMEOUT_MS,
+    );
+    expect(PROMPT_ENHANCEMENT_REQUEST_TIMEOUT_MS).toBeGreaterThan(5_000);
   });
 
   it('allows cold Browser Profile inspection and maintenance to finish', () => {

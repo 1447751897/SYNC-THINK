@@ -59,6 +59,12 @@ describe('Composer Skill owner and catalog filtering', () => {
       'skill-1',
       'skill-2',
     ]);
+    expect(
+      resolveAppendSkillVersionIds(
+        'agent',
+        Array.from({ length: 9 }, (_, index) => `skill-${index + 1}`),
+      ),
+    ).toEqual(Array.from({ length: 9 }, (_, index) => `skill-${index + 1}`));
   });
 
   it('keeps Compose defaults empty so Agent Skills stay on the runtime injection path', () => {

@@ -301,6 +301,24 @@ const api = {
       draft: { ...pendingDraft, status: 'approved' as const },
       version: publishedVersion,
     })),
+    execute: vi.fn(async () => ({
+      ok: true as const,
+      taskId: enabledTask.id,
+      versionId: publishedVersion.id,
+      profileId: enabledTask.profileId,
+      stepCount: 1,
+      executedStepCount: 1,
+      steps: [{ sequence: 1, ok: true, actionKind: 'navigate' }],
+    })),
+    approveAndExecute: vi.fn(async () => ({
+      ok: true as const,
+      taskId: enabledTask.id,
+      versionId: publishedVersion.id,
+      profileId: enabledTask.profileId,
+      stepCount: 1,
+      executedStepCount: 1,
+      steps: [{ sequence: 1, ok: true, actionKind: 'navigate' }],
+    })),
   },
 };
 
@@ -345,6 +363,24 @@ beforeEach(() => {
     draft: { ...pendingDraft, status: 'approved' },
     version: publishedVersion,
   });
+  api.browserWorkflow.execute.mockReset().mockResolvedValue({
+    ok: true,
+    taskId: enabledTask.id,
+    versionId: publishedVersion.id,
+    profileId: enabledTask.profileId,
+    stepCount: 1,
+    executedStepCount: 1,
+    steps: [{ sequence: 1, ok: true, actionKind: 'navigate' }],
+  });
+  api.browserWorkflow.approveAndExecute.mockReset().mockResolvedValue({
+    ok: true,
+    taskId: enabledTask.id,
+    versionId: publishedVersion.id,
+    profileId: enabledTask.profileId,
+    stepCount: 1,
+    executedStepCount: 1,
+    steps: [{ sequence: 1, ok: true, actionKind: 'navigate' }],
+  });
   Object.defineProperty(window, 'syncThink', {
     configurable: true,
     value: { runtime: api },
@@ -354,6 +390,74 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe('BrowserStage Runtime Profiles', () => {
+  it('identifies the real managed browser host and sends a complete AI Draft request to chat', async () => {
+    const onStartAiTask = vi.fn();
+
+    render(<BrowserStage onStartAiTask={onStartAiTask} />);
+
+    await waitFor(() => expect(screen.getAllByText('默认浏览器').length).toBeGreaterThan(0));
+    expect(screen.getByText('自动化任务')).toBeTruthy();
+    expect(screen.getByText('内置浏览器')).toBeTruthy();
+    expect(screen.getByTestId('browser-execution-host-status').textContent).toContain('当前执行宿主');
+    expect(screen.queryByText('Chrome 扩展')).toBeNull();
+    expect(screen.queryByText('未连接')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('browser-workflow-create-ai'));
+    expect(await screen.findByText('让 AI 创建自动化任务')).toBeTruthy();
+    fireEvent.change(screen.getByTestId('browser-workflow-name'), {
+      target: { value: '提交每周销售报表' },
+    });
+    fireEvent.change(screen.getByTestId('browser-workflow-instruction'), {
+      target: { value: '登录销售后台并提交本周销售报表。' },
+    });
+    fireEvent.change(screen.getByTestId('browser-workflow-start-url'), {
+      target: { value: 'https://user:secret@example.com/reports?token=private#today' },
+    });
+    fireEvent.click(screen.getByTestId('browser-workflow-create-submit'));
+
+    await waitFor(() => expect(onStartAiTask).toHaveBeenCalledTimes(1));
+    expect(onStartAiTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        profileId: 'default',
+        profileName: '默认浏览器',
+        name: '提交每周销售报表',
+        instruction: '登录销售后台并提交本周销售报表。',
+        startUrl: 'https://example.com/reports',
+        prompt: expect.stringMatching(/browser_workflow_create_draft[\s\S]+默认浏览器/),
+      }),
+    );
+    const request = onStartAiTask.mock.calls[0]?.[0] as { prompt?: string } | undefined;
+    expect(request?.prompt).toContain('提交每周销售报表');
+    expect(request?.prompt).toContain('登录销售后台并提交本周销售报表。');
+    expect(request?.prompt).toContain('https://example.com/reports');
+    expect(request?.prompt).not.toContain('secret');
+    expect(request?.prompt).not.toContain('private');
+    expect(api.browserWorkflow.createDraft).not.toHaveBeenCalled();
+    expect(screen.queryByText('让 AI 创建自动化任务')).toBeNull();
+  });
+
+  it('loads an AI-created durable Draft and continues through the recording workspace', async () => {
+    const aiTask = { ...draftTask, source: 'ai' as const };
+    api.browserWorkflow.list.mockResolvedValue({ tasks: [aiTask] });
+    api.browserWorkflow.get.mockResolvedValue({
+      task: aiTask,
+      draft: workflowDraft,
+      ...emptyWorkflowReviews,
+    });
+
+    render(<BrowserStage />);
+
+    const taskRow = await screen.findByTestId(`browser-workflow-task-${aiTask.id}`);
+    expect(within(taskRow).getByText('AI 创建')).toBeTruthy();
+    fireEvent.click(within(taskRow).getByRole('button', { name: /继续录制/ }));
+
+    const recordingContext = await screen.findByTestId('browser-workflow-recording-context');
+    expect(recordingContext.textContent).toContain('AI 草稿');
+    expect((screen.getByTestId('browser-recording-start-url') as HTMLInputElement).value).toBe(
+      aiTask.startUrl,
+    );
+  });
+
   it('loads Profiles, automation tasks, and cached sessions without mounting a webview', async () => {
     render(<BrowserStage />);
     expect(screen.getByText('浏览器自动化')).toBeTruthy();
@@ -825,6 +929,27 @@ describe('BrowserStage Runtime Profiles', () => {
     fireEvent.click(screen.getByRole('button', { name: '返回任务' }));
     expect(await screen.findByRole('button', { name: /继续录制/ })).toBeTruthy();
     expect(api.browserWorkflow.createRevisionDraft).toHaveBeenCalledTimes(1);
+  });
+
+  it('executes the published Workflow through the Runtime contract', async () => {
+    api.browserWorkflow.list.mockResolvedValue({ tasks: [enabledTask] });
+    api.browserWorkflow.get.mockResolvedValue({
+      task: enabledTask,
+      draft: approvedDraft,
+      version: publishedVersion,
+      reviews: [approvedReview],
+      reviewsTruncated: false,
+    });
+    render(<BrowserStage />);
+
+    fireEvent.click(await screen.findByTestId(`browser-workflow-execute-${enabledTask.id}`));
+    expect(await screen.findByText('执行自动化任务')).toBeTruthy();
+    fireEvent.click(screen.getByTestId('browser-workflow-run'));
+
+    await waitFor(() =>
+      expect(api.browserWorkflow.execute).toHaveBeenCalledWith({ taskId: enabledTask.id }),
+    );
+    expect(await screen.findByText(/执行完成/)).toBeTruthy();
   });
 
   it('reviews V2 from the current draft steps instead of the published V1 steps', async () => {

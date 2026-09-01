@@ -510,6 +510,8 @@ async function createPlanningFixture(events: readonly KernelEvent[]) {
     run,
     runId,
     stateStore,
+    workspaceId,
+    workspaceStore,
   };
 }
 
@@ -629,6 +631,69 @@ describe('Runtime external kernel finalization', () => {
         currentRevision: 1,
       });
     } finally {
+      fixture.connection.raw.close();
+    }
+  });
+
+  it('deduplicates a persisted plan submission after Runtime recovery', async () => {
+    const fixture = await createPlanningFixture([]);
+    const firstSubmission = await fixture.harness.handlePlanSubmitToolCall(
+      fixture.runId,
+      fixture.run,
+      {
+        id: 'platform-plan-before-recovery',
+        tool: 'plan_submit',
+        input: {
+          title: '恢复前方案',
+          goal: '恢复后仍只保留一个 revision',
+          scope: [],
+          assumptions: [],
+          decisions: [],
+          steps: [
+            {
+              id: 'step-1',
+              title: '完成实现',
+              description: '',
+              acceptanceChecks: ['只有一个 revision'],
+            },
+          ],
+          risks: [],
+          finalAcceptanceChecks: [],
+        },
+        signal: new AbortController().signal,
+      },
+      '{}',
+    );
+    expect(firstSubmission.ok).toBe(true);
+
+    const recoveredAdapter = new CapturingKernelAdapter('codex', [
+      { type: 'plan-submitted', text: '# Canonical 重放\n\n1. 不应新增 revision' },
+      { type: 'terminal', status: 'completed' },
+    ]);
+    const recoveredRuntime = new Runtime({
+      installId: `external-kernel-plan-recovery-${Date.now()}`,
+      allowNoToken: true,
+      stateStore: fixture.stateStore,
+      messageStore: fixture.messageStore,
+      workspaceStore: fixture.workspaceStore,
+      conversationStore: fixture.conversationStore,
+      workspaceId: fixture.workspaceId,
+      kernelAdapterResolver: () => recoveredAdapter,
+    });
+    const recoveredHarness = recoveredRuntime as unknown as RuntimeExternalKernelHarness;
+    recoveredHarness.demoRuns.set(fixture.runId, fixture.run);
+    try {
+      await recoveredRuntime.start();
+      await recoveredHarness.executeExternalKernelRun(fixture.runId);
+
+      const events = fixture.stateStore.listEventsByRun(fixture.runId);
+      expect(events.filter((event) => event.type === 'conversation.plan_submitted')).toHaveLength(1);
+      expect(events.at(-1)?.type).toBe('run.completed');
+      expect(fixture.conversationStore.getConversationPlan(fixture.conversation.id)).toMatchObject({
+        currentRevision: 1,
+      });
+    } finally {
+      await recoveredRuntime.stop();
       fixture.connection.raw.close();
     }
   });
@@ -1586,6 +1651,12 @@ describe('Runtime external kernel finalization', () => {
       expect(firstAdapter.requests[0].systemContext).toContain('Restored conversation context');
       expect(firstAdapter.requests[0].systemContext).toContain('Simplified Chinese');
       expect(firstAdapter.requests[0].systemContext).toContain('thinking/reasoning');
+      expect(firstAdapter.requests[0].systemContext).toContain(
+        'AI design draft output contract (design-html)',
+      );
+      expect(firstAdapter.requests[0].systemContext).toContain(
+        'exactly one fenced block tagged `design-html`',
+      );
       const sessionRecord = appSettingStore
         .list()
         .find((record) => record.key.startsWith('kernel.session.codex.'));

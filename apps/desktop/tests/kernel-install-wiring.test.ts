@@ -6,7 +6,7 @@ const preloadSource = readFileSync(new URL('../src/preload/index.ts', import.met
 const globalSource = readFileSync(new URL('../src/renderer/global.d.ts', import.meta.url), 'utf8');
 
 describe('Pi kernel install wiring', () => {
-  it('keeps the fixed install command behind trusted Main IPC', () => {
+  it('keeps the typed install request behind trusted Main IPC', () => {
     const handlerStart = mainSource.indexOf("ipcMain.handle('desktop:kernel-install'");
     expect(handlerStart).toBeGreaterThan(-1);
     const nextHandler = mainSource.indexOf('ipcMain.handle(', handlerStart + 1);
@@ -17,8 +17,8 @@ describe('Pi kernel install wiring', () => {
 
     expect(handlerSource).toContain('assertRuntimeIpcSource(event)');
     expect(handlerSource).toContain("value !== 'pi'");
-    expect(mainSource).toContain("['i', '-g', 'pi']");
-    expect(mainSource).toContain('shell: false');
+    expect(mainSource).toContain("installUpdate('pi')");
+    expect(mainSource).not.toContain("['i', '-g', 'pi']");
     expect(mainSource).not.toContain('spawn(executable, value');
   });
 

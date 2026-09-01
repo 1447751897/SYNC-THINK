@@ -48,6 +48,7 @@ const runtime = {
 };
 
 beforeEach(() => {
+  window.localStorage.clear();
   runtime.exportData.mockResolvedValue({
     status: 'saved',
     success: true,
@@ -195,6 +196,17 @@ describe('SettingsPage layout contract', () => {
     expect(shellCss).toMatch(/\.shell-menu__scroll\s*\{[^}]*overflow-x:\s*hidden;/s);
   });
 
+  it('keeps the done footer inset from the modal corner and aligned with the pane', () => {
+    expect(shellCss).toMatch(
+      /\.settings-content\s*\{[^}]*grid-template-rows:\s*48px minmax\(0, 1fr\) auto;/s,
+    );
+    expect(shellCss).toMatch(/\.settings-footer\s*\{[^}]*padding:\s*12px 28px 20px;/s);
+    expect(shellCss).toMatch(/\.settings-footer\s*\{[^}]*background:\s*inherit;/s);
+    expect(shellCss).toMatch(
+      /\.settings-daemon-row input\[type='range'\]\s*\{[^}]*flex:\s*0 0 128px;/s,
+    );
+  });
+
   it('opens a requested settings destination and only replays it for a new navigation key', async () => {
     const { rerender } = render(
       <SettingsPage
@@ -238,6 +250,70 @@ describe('SettingsPage layout contract', () => {
   });
 });
 
+describe('SettingsPage NewMax general tabs', () => {
+  it('offers the application, Agent, and task views in the reference order', () => {
+    render(<SettingsPage initialSection="general" />);
+
+    const tabs = screen.getByRole('tablist', { name: '通用设置分类' });
+    expect(Array.from(tabs.querySelectorAll('[role="tab"]'), (node) => node.textContent)).toEqual([
+      '应用',
+      'Agent',
+      '任务',
+    ]);
+    expect(screen.getByRole('tab', { name: '应用' }).getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByText('界面动画')).toBeTruthy();
+  });
+
+  it('shows the NewMax Agent controls with their real defaults', () => {
+    render(<SettingsPage initialSection="general" />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Agent' }));
+
+    expect(screen.getByText('提示词优化')).toBeTruthy();
+    expect(screen.getByText('优化模型')).toBeTruthy();
+    expect(screen.getByText('思考模式')).toBeTruthy();
+    expect(screen.getByRole('radio', { name: '自动' }).getAttribute('aria-checked')).toBe('true');
+    expect(screen.getByRole('switch', { name: '收起执行过程' }).getAttribute('aria-checked')).toBe(
+      'true',
+    );
+    expect(screen.getByRole('switch', { name: '显示工具调用' }).getAttribute('aria-checked')).toBe(
+      'true',
+    );
+    expect(
+      screen.getByRole('switch', { name: '默认展开工具调用' }).getAttribute('aria-checked'),
+    ).toBe('false');
+  });
+
+  it('persists Agent defaults and restores them when settings is reopened', () => {
+    const first = render(<SettingsPage initialSection="general" />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Agent' }));
+    fireEvent.click(screen.getByRole('radio', { name: '超高' }));
+    fireEvent.click(screen.getByRole('switch', { name: '显示工具调用' }));
+
+    expect(
+      JSON.parse(window.localStorage.getItem('sync-think.agentPreferences') ?? '{}'),
+    ).toMatchObject({
+      thinkingBudget: 'xhigh',
+      showToolUse: false,
+    });
+
+    first.unmount();
+    render(<SettingsPage initialSection="general" />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Agent' }));
+    expect(screen.getByRole('radio', { name: '超高' }).getAttribute('aria-checked')).toBe('true');
+    expect(screen.getByRole('switch', { name: '显示工具调用' }).getAttribute('aria-checked')).toBe(
+      'false',
+    );
+  });
+
+  it('keeps the real daemon controls in the task view', () => {
+    render(<SettingsPage initialSection="general" />);
+    fireEvent.click(screen.getByRole('tab', { name: '任务' }));
+
+    expect(screen.getByRole('heading', { name: '守护进程' })).toBeTruthy();
+    expect(screen.getByText(/应用关闭后定时任务照常触发/)).toBeTruthy();
+  });
+});
+
 describe('SettingsPage gateway request audit', () => {
   it('describes same-protocol traffic as direct passthrough instead of a conversion', async () => {
     render(<SettingsPage />);
@@ -256,16 +332,34 @@ describe('SettingsPage gateway request audit', () => {
 
 async function openPlugins() {
   render(<SettingsPage />);
-  fireEvent.change(screen.getByRole('textbox', { name: '搜索设置' }), {
-    target: { value: '插件' },
-  });
-  fireEvent.click(screen.getByRole('button', { name: '插件' }));
-  const toggle = await screen.findByRole('switch', { name: '启用 Computer Use 插件' });
+  fireEvent.click(screen.getByRole('button', { name: '电脑操作' }));
+  const toggle = await screen.findByRole('switch', { name: '任何应用' });
   await waitFor(() => expect((toggle as HTMLButtonElement).disabled).toBe(false));
   return toggle;
 }
 
 describe('SettingsPage Computer Use plugin', () => {
+  it('is a first-class settings destination and keeps the legacy plugin route working', async () => {
+    const { unmount } = render(<SettingsPage />);
+    expect(screen.getByRole('button', { name: '电脑操作' })).toBeTruthy();
+    unmount();
+
+    render(<SettingsPage initialSection="plugins" />);
+    expect(await screen.findByText('控制')).toBeTruthy();
+    expect(screen.getByRole('switch', { name: '任何应用' })).toBeTruthy();
+  });
+
+  it('matches the NewMax control copy and empty state', async () => {
+    await openPlugins();
+
+    expect(screen.getByText('控制')).toBeTruthy();
+    expect(
+      screen.getByText(/允许 SYNC-THINK 在任务执行期间查看和操作当前 Windows 桌面上的图形应用/),
+    ).toBeTruthy();
+    expect(screen.getByText('始终允许的应用')).toBeTruthy();
+    expect(screen.getByText('尚未始终允许任何应用')).toBeTruthy();
+  });
+
   it('defaults to disabled and replaces the plugins coming-soon placeholder', async () => {
     const toggle = await openPlugins();
 
@@ -486,7 +580,18 @@ describe('SettingsPage SYNC-THINK connection catalog', () => {
     const navigation = screen.getByRole('navigation', { name: '设置分类' });
     expect(
       Array.from(navigation.querySelectorAll('button span'), (node) => node.textContent),
-    ).toEqual(['账号', '钱包', '通用', '偏好', '模型', '每日回顾', '连接', '数据', '关于']);
+    ).toEqual([
+      '账号',
+      '钱包',
+      '通用',
+      '偏好',
+      '模型',
+      '每日回顾',
+      '连接',
+      '电脑操作',
+      '数据',
+      '关于',
+    ]);
     fireEvent.click(screen.getByRole('button', { name: '连接' }));
 
     expect(await screen.findByRole('tab', { name: '连接器' })).toBeTruthy();
@@ -508,6 +613,14 @@ describe('SettingsPage SYNC-THINK connection catalog', () => {
     expect(shellCss).toMatch(
       /\.settings-connection-tabs button\.is-active\s*\{[^}]*background:\s*transparent;[^}]*box-shadow:\s*none;/s,
     );
+  });
+
+  it('centers the system proxy status in the network pane', async () => {
+    render(<SettingsPage initialSection="connection" initialConnectionTab="network" />);
+
+    expect(await screen.findByRole('tab', { name: '网络' })).toBeTruthy();
+    expect(screen.getByText('网络使用系统代理设置')).toBeTruthy();
+    expect(document.querySelector('.settings-network-empty')).toBeTruthy();
   });
 
   it('opens a capability detail for a managed connector and renders discovered tools', async () => {

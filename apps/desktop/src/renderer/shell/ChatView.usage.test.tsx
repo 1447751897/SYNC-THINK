@@ -718,7 +718,7 @@ describe('ChatView reply usage details', () => {
     ).toEqual({ 'conversation-usage': 'high' });
   });
 
-  it('moves network search into the @ menu and persists it for the conversation', async () => {
+  it('moves network search into the @ add menu and persists it for the conversation', async () => {
     const view = render(
       <ChatView
         conversation={conversation}
@@ -731,24 +731,18 @@ describe('ChatView reply usage details', () => {
 
     expect(screen.queryByTitle(/联网已开/)).toBeNull();
     const input = await screen.findByTestId('compose-input');
-    const editor = screen.getByRole('textbox', { name: '消息' });
     fireEvent.change(input, { target: { value: '@', selectionStart: 1 } });
 
-    const popover = await screen.findByTestId('compose-mention-pop');
-    expect(within(popover).getByText('来源与上下文')).toBeTruthy();
-    expect(within(popover).getByText('联网搜索')).toBeTruthy();
-    fireEvent.keyDown(input, { key: 'Tab' });
-    const enableNetwork = within(popover).getByRole('button', { name: '开启联网搜索' });
-    expect(document.activeElement).toBe(enableNetwork);
-    fireEvent.keyDown(enableNetwork, { key: 'Escape' });
-    await waitFor(() => expect(document.activeElement).toBe(editor));
-    await waitFor(() => expect(screen.queryByTestId('compose-mention-pop')).toBeNull());
-
-    fireEvent.change(input, { target: { value: '', selectionStart: 0 } });
-    await new Promise((resolve) => window.requestAnimationFrame(() => resolve(undefined)));
-    fireEvent.change(input, { target: { value: '@', selectionStart: 1 } });
-    const reopenedPopover = await screen.findByTestId('compose-mention-pop');
-    fireEvent.click(within(reopenedPopover).getByRole('button', { name: '关闭联网搜索' }));
+    const menu = await screen.findByTestId('compose-add-menu');
+    expect(within(menu).getByText('规划模式')).toBeTruthy();
+    const networkOption = within(menu).getByRole('option', { name: /联网搜索/ });
+    expect(networkOption.getAttribute('aria-checked')).toBe('true');
+    fireEvent.click(networkOption);
+    expect(
+      within(screen.getByTestId('compose-add-menu'))
+        .getByRole('option', { name: /联网搜索/ })
+        .getAttribute('aria-checked'),
+    ).toBe('false');
 
     expect(
       JSON.parse(window.localStorage.getItem('sync-think.conversationNetworkEnabled') ?? '{}'),
@@ -767,7 +761,7 @@ describe('ChatView reply usage details', () => {
     const restoredInput = await screen.findByTestId('compose-input');
     fireEvent.change(restoredInput, { target: { value: '@', selectionStart: 1 } });
     expect(
-      (await screen.findByRole('button', { name: '关闭联网搜索' })).getAttribute('aria-pressed'),
-    ).toBe('true');
+      (await screen.findByRole('option', { name: /联网搜索/ })).getAttribute('aria-checked'),
+    ).toBe('false');
   });
 });

@@ -6,6 +6,8 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import type { Conversation } from '@sync-think/shared';
 import { ChatView } from './ChatView.js';
 
+let kernelUpdateListener: ((snapshot: unknown) => void) | null = null;
+
 const runtime = {
   appendMessage: vi.fn(),
   detectKernels: vi.fn(),
@@ -107,7 +109,7 @@ const kernels = [
     version: null,
     executablePath: null,
     knownGood: false,
-    installCommand: 'npm i -g pi',
+    installCommand: '应用私有目录',
   },
 ];
 
@@ -119,6 +121,7 @@ const installedKernels = kernels.map((kernel) =>
 
 beforeEach(() => {
   window.localStorage.clear();
+  kernelUpdateListener = null;
   runtime.openTask.mockReset().mockResolvedValue({ task: { threadId: 'thread-kernel' } });
   runtime.listConversationMessages.mockReset().mockResolvedValue({ messages: [], hasMore: false });
   runtime.sendConversationMessage.mockReset().mockResolvedValue({
@@ -150,7 +153,20 @@ beforeEach(() => {
   runtime.detectKernels.mockReset().mockResolvedValue({ kernels });
   Object.defineProperty(window, 'syncThink', {
     configurable: true,
-    value: { runtime },
+    value: {
+      runtime,
+      kernelUpdates: {
+        getState: vi.fn(async () => undefined),
+        checkForUpdates: vi.fn(),
+        installUpdate: vi.fn(),
+        subscribeState: vi.fn((listener: (snapshot: unknown) => void) => {
+          kernelUpdateListener = listener;
+          return () => {
+            kernelUpdateListener = null;
+          };
+        }),
+      },
+    },
   });
 });
 
@@ -239,6 +255,42 @@ describe('ChatView kernel selection', () => {
     expect(runtime.appendMessage).toHaveBeenCalledWith(
       expect.objectContaining({ kernelId: 'claude-code' }),
     );
+  });
+
+  it('refreshes kernel versions in the picker after a private update', async () => {
+    const updated = kernels.map((kernel) =>
+      kernel.kernelId === 'codex' ? { ...kernel, version: '0.151.0' } : kernel,
+    );
+    runtime.detectKernels
+      .mockResolvedValueOnce({ kernels })
+      .mockResolvedValueOnce({ kernels: updated });
+    renderChat();
+    await waitFor(() => expect(runtime.detectKernels).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByTitle(/切换模型/));
+    expect((await screen.findByTestId('kernel-version-codex')).textContent).toBe('v0.145.0');
+
+    await act(async () => {
+      kernelUpdateListener?.({
+        schemaVersion: 1,
+        installerAvailable: true,
+        checkedAt: '2026-08-31T00:00:00.000Z',
+        items: [
+          {
+            kernelId: 'codex',
+            name: 'Codex',
+            packageName: '@openai/codex',
+            managedVersion: '0.151.0',
+            latestVersion: '0.151.0',
+            phase: 'installed',
+            errorCode: null,
+          },
+        ],
+      });
+    });
+
+    await waitFor(() => expect(runtime.detectKernels).toHaveBeenCalledTimes(2));
+    expect((await screen.findByTestId('kernel-version-codex')).textContent).toBe('v0.151.0');
   });
 
   it('refreshes the context window for the selected kernel', async () => {

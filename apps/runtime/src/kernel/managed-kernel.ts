@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve, sep } from 'node:path';
 
-export type ManagedKernelId = 'codex' | 'claude-code';
+export type ManagedKernelId = 'codex' | 'claude-code' | 'pi';
 
 interface ManagedKernelRecord {
   version?: unknown;
@@ -12,6 +12,7 @@ interface ManagedKernelRecord {
 const EXPECTED_PACKAGES: Record<ManagedKernelId, string> = {
   codex: '@openai/codex',
   'claude-code': '@anthropic-ai/claude-code',
+  pi: '@earendil-works/pi-coding-agent',
 };
 
 export function managedKernelRoot(environment: NodeJS.ProcessEnv = process.env): string {
@@ -34,10 +35,10 @@ function insideRoot(root: string, candidate: string): boolean {
   return resolvedCandidate.startsWith(prefix);
 }
 
-export function resolveManagedKernelExecutable(
+export function resolveManagedKernelActivation(
   kernelId: ManagedKernelId,
   environment: NodeJS.ProcessEnv = process.env,
-): string | null {
+): { executablePath: string; version: string } | null {
   const root = managedKernelRoot(environment);
   try {
     const manifest = JSON.parse(readFileSync(join(root, 'active.json'), 'utf8')) as {
@@ -55,8 +56,15 @@ export function resolveManagedKernelExecutable(
     ) {
       return null;
     }
-    return resolve(record.executablePath);
+    return { executablePath: resolve(record.executablePath), version: record.version };
   } catch {
     return null;
   }
+}
+
+export function resolveManagedKernelExecutable(
+  kernelId: ManagedKernelId,
+  environment: NodeJS.ProcessEnv = process.env,
+): string | null {
+  return resolveManagedKernelActivation(kernelId, environment)?.executablePath ?? null;
 }

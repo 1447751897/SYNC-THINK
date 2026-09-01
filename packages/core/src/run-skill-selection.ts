@@ -53,9 +53,6 @@ export function resolveRunSkillSelection(
     input.inheritedSkillVersionIds === undefined
       ? [...requested]
       : uniqueIds([...inherited, ...(selected ?? [])]);
-  if (effective.length > 8) {
-    throw new Error('A run may use at most 8 Skill versions');
-  }
   const allowed = new Set(allowlisted);
   for (const id of effective) {
     if (!allowed.has(id)) {

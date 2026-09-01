@@ -81,7 +81,7 @@ describe('kernel registry contract', () => {
 
     const pi = registry.find((entry) => entry.id === 'pi')!;
     expect(pi.capabilities).toMatchObject({ permission: 'none', pause: 'kill' });
-    expect(pi.installCommand).toBe('npm i -g pi');
+    expect(pi.installCommand).toBe('应用私有目录');
   });
 
   it('always resolves native and its in-process adapter', () => {

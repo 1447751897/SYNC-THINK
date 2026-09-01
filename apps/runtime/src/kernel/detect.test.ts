@@ -156,4 +156,36 @@ describe('probeKernel', () => {
       version: null,
     });
   });
+
+  it('treats a verified private Pi record as installed even when --version fails', () => {
+    const root = mkdtempSync(join(tmpdir(), 'sync-think-pi-detect-'));
+    const originalRoot = process.env.SYNC_THINK_MANAGED_KERNEL_ROOT;
+    try {
+      const executable = join(root, 'versions', 'pi', '0.84.4', 'pi.cmd');
+      mkdirSync(join(root, 'versions', 'pi', '0.84.4'), { recursive: true });
+      writeFileSync(executable, '@echo off\r\nexit /b 1\r\n');
+      writeFileSync(
+        join(root, 'active.json'),
+        JSON.stringify({
+          schemaVersion: 1,
+          active: {
+            pi: {
+              version: '0.84.4',
+              packageName: '@earendil-works/pi-coding-agent',
+              executablePath: executable,
+            },
+          },
+        }),
+      );
+      process.env.SYNC_THINK_MANAGED_KERNEL_ROOT = root;
+
+      const result = probeKernel('pi');
+      expect(result.executablePath?.toLowerCase()).toBe(executable.toLowerCase());
+      expect(result.version).toBe('0.84.4');
+    } finally {
+      if (originalRoot === undefined) delete process.env.SYNC_THINK_MANAGED_KERNEL_ROOT;
+      else process.env.SYNC_THINK_MANAGED_KERNEL_ROOT = originalRoot;
+      removeDir(root);
+    }
+  });
 });

@@ -632,7 +632,7 @@ describe('ModelPickerMenu', () => {
             version: null,
             executablePath: null,
             knownGood: false,
-            installCommand: 'npm i -g pi',
+            installCommand: '应用私有目录',
           },
         ]}
         selectedKernelId="native"
@@ -675,7 +675,7 @@ describe('ModelPickerMenu', () => {
     expect(piOption.hasAttribute('aria-disabled')).toBe(false);
     const piStatus = screen.getByTestId('kernel-status-pi');
     expect(piStatus.textContent).toContain('未安装');
-    expect(piStatus.textContent).toContain('npm i -g pi');
+    expect(piStatus.textContent).toContain('应用私有目录');
     expect(piOption.querySelector('.shell-menu__item-hint')).toBeNull();
     fireEvent.click(piOption);
     expect(onInstallKernel).toHaveBeenCalledWith('pi');
@@ -714,7 +714,7 @@ describe('ModelPickerMenu', () => {
           version: null,
           executablePath: null,
           knownGood: false,
-          installCommand: 'npm i -g pi',
+          installCommand: '应用私有目录',
         },
       ],
       selectedKernelId: 'native',
@@ -755,5 +755,45 @@ describe('ModelPickerMenu', () => {
       />,
     );
     expect(screen.getByTestId('kernel-status-pi').textContent).toContain('安装失败 · 权限不足');
+  });
+
+  it('keeps an installed kernel version visible even if a leftover install error remains', async () => {
+    const anchor = document.createElement('button');
+    document.body.appendChild(anchor);
+    render(
+      <ModelPickerMenu
+        open
+        models={[{ modelId: 'model-a', displayName: 'Model A', providerName: 'Provider A' }]}
+        selectedModelId="model-a"
+        defaultLabel="选择模型"
+        anchorEl={anchor}
+        onClose={vi.fn()}
+        onPick={vi.fn()}
+        kernels={[
+          {
+            kernelId: 'pi',
+            name: 'Pi',
+            icon: 'pi',
+            capabilities: {
+              permission: 'none',
+              permissionBridge: false,
+              pause: 'kill',
+              compress: 'own',
+              usageReport: false,
+              protocols: [],
+            },
+            installed: true,
+            version: '0.84.4',
+            executablePath: 'D:/pi',
+            knownGood: true,
+          },
+        ]}
+        selectedKernelId="native"
+        kernelInstallStates={{ pi: { status: 'error', error: '安装失败' } }}
+      />,
+    );
+
+    expect(screen.getByTestId('kernel-version-pi').textContent).toBe('v0.84.4');
+    expect(screen.queryByTestId('kernel-status-pi')).toBeNull();
   });
 });

@@ -860,6 +860,9 @@ describe('conversation.getContextStatus runtime integration', () => {
       expect(actualRequest.systemPrompt).toContain(ACCEPTANCE_CRITERION);
       expect(actualRequest.systemPrompt).toContain(PROJECT_MEMORY);
       expect(actualRequest.systemPrompt).toContain(SKILL_BODY);
+      expect(actualRequest.systemPrompt).toContain('AI design draft output contract (design-html)');
+      expect(actualRequest.systemPrompt).toContain('exactly one fenced block tagged `design-html`');
+      expect(actualRequest.systemPrompt).toContain('at or below 1 MiB');
       expect(JSON.stringify(actualRequest)).not.toContain(HIDDEN_REASONING);
 
       const mcpTool = actualRequest.tools?.find((tool) =>

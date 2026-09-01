@@ -81,7 +81,7 @@ describe('resolveRunSkillSelection', () => {
     expect(result.skillVersionIds).toEqual(['skill-a']);
   });
 
-  it('caps the merged inherited and explicit set at eight Skill versions', () => {
+  it('keeps the full merged inherited and explicit set without an eight-skill cap', () => {
     const manyRecords = new Map(
       Array.from({ length: 9 }, (_, index) => {
         const id = `skill-${index}`;
@@ -92,14 +92,24 @@ describe('resolveRunSkillSelection', () => {
       }),
     );
 
-    expect(() =>
+    expect(
       resolveRunSkillSelection({
         allowlistedSkillVersionIds: [...manyRecords.keys()],
         inheritedSkillVersionIds: ['skill-0', 'skill-1', 'skill-2', 'skill-3'],
         selectedSkillVersionIds: ['skill-4', 'skill-5', 'skill-6', 'skill-7', 'skill-8'],
         getSkill: (id) => manyRecords.get(id),
-      }),
-    ).toThrow(/at most 8/i);
+      }).skillVersionIds,
+    ).toEqual([
+      'skill-0',
+      'skill-1',
+      'skill-2',
+      'skill-3',
+      'skill-4',
+      'skill-5',
+      'skill-6',
+      'skill-7',
+      'skill-8',
+    ]);
   });
 
   it('rejects missing, disabled, archived, and unapproved versions', () => {

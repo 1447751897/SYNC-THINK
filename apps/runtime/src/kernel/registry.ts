@@ -198,7 +198,7 @@ export function buildKernelRegistry(): KernelRegistryEntry[] {
       usageReport: false,
     },
     knownGoodVersions: [],
-    installCommand: 'npm i -g pi',
+    installCommand: '应用私有目录',
     createAdapter: undefined,
     detect: async () => toDetectionResult(piEntry),
   };

@@ -327,7 +327,15 @@ export interface ComposeTalkTargetState {
   /** model id | agent id | team template id */
   targetId: string | null;
   permissionMode: 'ask' | 'workspace' | 'full-access';
-  reasoningEffort: 'auto' | 'off' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  reasoningEffort:
+    | 'auto'
+    | 'minimal'
+    | 'off'
+    | 'low'
+    | 'medium'
+    | 'high'
+    | 'xhigh'
+    | 'max';
 }
 
 export function defaultComposeTalkTarget(

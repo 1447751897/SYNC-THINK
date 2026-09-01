@@ -438,7 +438,7 @@ describe('resolveAllowedSkillSources — allowlist only (§9.1 / §10.2)', () =>
     expect(result.missingSkillVersionIds).toEqual(['skv-gone']);
   });
 
-  it('dedupes allowlist ids and respects maxSkills', () => {
+  it('dedupes allowlist ids and respects an optional maxSkills cap', () => {
     const result = resolveAllowedSkillSources({
       skillVersionIds: ['skv-alpha', 'skv-alpha', 'skv-scripts'],
       getSkill: (id) => catalog.get(id),
@@ -446,6 +446,23 @@ describe('resolveAllowedSkillSources — allowlist only (§9.1 / §10.2)', () =>
     });
     expect(result.sources).toHaveLength(1);
     expect(result.resolvedSkillVersionIds).toEqual(['skv-alpha']);
+  });
+
+  it('includes every allowlisted Skill when maxSkills is omitted', () => {
+    const ids = Array.from({ length: 9 }, (_, index) => `skv-${index}`);
+    const result = resolveAllowedSkillSources({
+      skillVersionIds: ids,
+      getSkill: (id) => ({
+        id,
+        name: id,
+        version: '1.0.0',
+        description: id,
+        body: `${id} body`,
+        contentFingerprint: `fp-${id}`,
+      }),
+    });
+    expect(result.resolvedSkillVersionIds).toEqual(ids);
+    expect(result.sources).toHaveLength(9);
   });
 
   it('returns the same bounded exact content used for Provider prompt assembly', () => {

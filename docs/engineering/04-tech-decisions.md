@@ -650,7 +650,7 @@ Terminal:
 AppendMessagePayload.skillVersionIds:
   undefined -> 旧客户端继承有效 Agent allowlist
   []        -> 本轮明确不加载 Skill
-  [ids]     -> trim、按首次出现去重、最多 8 个精确不可变版本
+  [ids]     -> trim、按首次出现去重的精确不可变版本（无每轮 8 项产品上限；载荷仅受协议 DoS 边界约束）
 
 Runtime:
   effective Agent owner -> allowlist 子集/存在/未归档/审批校验
@@ -681,6 +681,8 @@ Automated Step:
 安全与一致性：Renderer 只能缩小 allowlist，Runtime 是最终权限边界；选择不执行脚本、不增加工具或 MCP 权限。Context Packet 的 `skill-definition`、Provider prompt、Manifest ID 与 Run 快照必须来自同一次选择结果，不允许第二条旁路注入。
 
 交互与回滚：Agent/Team 初始选择来自有效 owner 配置，成功与失败都保持；切换 Agent/Team 时使用新 owner 默认值，模型直聊显式发送 `[]`。仅切换模型 override 不改变 Agent Skill。欢迎页首条消息把临时覆盖交给新建对话。回滚可恢复默认空选，但旧 `undefined` 兼容路径继续可用。
+
+修订（2026-08-31）：对齐 NewMax Composer。每轮不再限制 8 个 Skill；Agent 装备也不再限制 8 个。Context Packet 默认注入本轮全部已解析 Skill，仅在调用方显式传入 `maxSkills` 时截断。协议仍拒绝超过 512 项的载荷，作为 DoS 边界而非产品配额。
 
 自动化边界：Team Composer 的 coordinator 规则只决定用户当前与谁对话时的默认显示；DAG Step 始终以自身已冻结的 `agentVersionId` 为权威。Skill 正文不会执行脚本，也不会增加 Worker、Tool 或 MCP 授权；任一配置版本缺失、归档或审批失效时在 Provider 调用前失败。
 
@@ -1457,7 +1459,7 @@ Computer Use built-in plugin
 
 1. Codex 继续使用官方 app-server；Claude 继续使用 Agent SDK 作为 transport/event/session adapter，不退回自维护 JSONL 协议。Agent SDK 通过 `pathToClaudeCodeExecutable` 运行应用私有 Claude CLI。
 2. 私有内核安装于数据库同级 `kernels/versions/<kernel>/<version>`。新版本先安装到随机 staging，校验 package name、精确版本与预期 executable 后进入版本目录，最后用临时文件 + rename 原子替换 `active.json`。失败不改变旧 active 记录。
-3. 关于页分别展示应用更新和 Codex/Claude Code 内核更新；检查只读取 registry，安装/升级必须由用户显式触发。系统 npm prefix、Codex App runtime 与用户全局 CLI 都不修改。
+3. 关于页分别展示应用更新和 Codex/Claude Code/Pi 内核更新；Pi 私有包是 `@earendil-works/pi-coding-agent`，不是 npm 数学库 `pi`。进入关于页自动检查三个包，每行可单独复查。检查只读取 registry。首次启动会自动私有安装尚未激活的内核；此后安装/升级由用户在关于页显式触发。系统 npm prefix、Codex App runtime 与用户全局 CLI 都不修改。Composer 内核菜单订阅激活结果并立即回显新版本。
 4. Runtime 通过受限根目录 manifest 解析私有 executable。Codex 私有路径优先于 Codex App/PATH；Claude 私有路径优先于 SDK bundle。manifest 路径越界、包名不符或文件缺失时忽略并回退。
 5. Claude Adapter 不设置 `allowedTools`、`disallowedTools`、`strictMcpConfig` 或 `settingSources=[]`；原生工具、用户/项目设置与 MCP 保持 Claude CLI 默认语义。宿主只适配自己注入的 MCP、审批和 UI 事件，不按工具名删除厂商能力。
 6. 用户选择的权限档位继续映射为 Claude/Codex 原生权限与沙箱模式；平台 MCP 的联网、工作区、Store 能力和副作用审批继续由其实现合同约束。这些边界不等同于限制 Claude/Codex 自带工具调用。
@@ -1546,3 +1548,18 @@ Computer Use built-in plugin
 验证门禁：ComposerEditor、NewMaxComposerFrame、Slash/MCP/加号菜单、Plan/Goal Banner、正式方案幂等与任务清单隔离均有 Desktop/Runtime 定向回归；`build:shell` 必须确认 CodeMirror 只进入 Renderer bundle，Renderer 产物不得引入 Node 内建模块；视觉验证覆盖浅/深主题、宽/窄 Pane、IME、reduced-motion 与无横向溢出。
 
 回滚：若 Composer CodeMirror 发现回归，可保留同一 NewMax frame 与 Plan/Progress 事件合同，将 `ComposerEditor` 实现回退为兼容 textarea；不得恢复两套 Composer、把任务清单升级为方案卡，或把审批重新放回消息流。
+
+### TD-056：`design-html` 作为 AI 设计稿的唯一输出合同（2026-09-01）
+
+状态：已采用。补充 TD-055 的设计稿预览边界，并统一普通 Provider 与外部 Kernel 的模型提示。
+
+背景：Renderer 只有在收到 `design-html` fence 时才挂载可交互设计稿预览；普通 `html` 代码块仍是示例/沙箱。没有明确合同时，模型可能返回截断 HTML、仅返回说明文字，或把预览误报为已经保存，导致设计稿入口不可用且会覆盖事实边界。
+
+采用合同：
+
+1. 当用户明确要求 UI mockup、视觉设计、原型或设计稿时，模型输出一个完整、自包含 HTML 文档，放在唯一的 `design-html` fenced block 中；CSS/JavaScript 尽量内联，页面必须有可见内容和可访问交互。
+2. fenced payload 是预览与保存的唯一规范输入，UTF-8 大小不超过 1 MiB；普通 HTML 示例继续使用 `html` fence。Renderer 对标签结构、嵌套标记、截断和可视元素执行校验，失败时保留上一版预览且不写盘。
+3. 预览、浏览器打开、项目保存是独立事实。只有真实 `browser_open` 返回结果才能说明页面已打开；只有真实成功的项目相对路径 `write_file` 返回结果才能说明已保存。模型不得把 fence、自然语言或静态路径当成工具成功。
+4. 合同同时注入普通 Provider 的产品能力系统提示与 Codex/Claude 等外部 Kernel 的稳定系统上下文，避免按内核分叉；Runtime 回归直接检查两条上下文路径中的关键约束。
+
+验证门禁：`apps/runtime/tests/design-html-contract.test.ts`、`conversation-get-context-status.test.ts` 与 `external-kernel-run.test.ts` 覆盖提示注入、1 MiB/fence/保存边界和外部 Kernel 恢复上下文；Desktop 设计稿解析与实窗预览验证保持通过。

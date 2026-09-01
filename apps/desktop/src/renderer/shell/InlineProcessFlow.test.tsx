@@ -221,6 +221,56 @@ describe('InlineProcessFlow', () => {
     expect(screen.getByTestId('inline-process-tool-result').textContent).toContain('a.txt: 1 line');
   });
 
+  it('can hide tool calls while preserving reasoning and commentary', () => {
+    render(
+      <InlineProcessFlow
+        items={[reasoningItem, commentaryItem, toolItem]}
+        showToolUse={false}
+        defaultOpen
+      />,
+    );
+
+    expect(screen.getByTestId('inline-process-reasoning')).toBeTruthy();
+    expect(screen.getByTestId('inline-process-commentary')).toBeTruthy();
+    expect(screen.queryByTestId('inline-process-tool')).toBeNull();
+  });
+
+  it('expands new tool calls by default without reopening a manually collapsed row', () => {
+    const { rerender } = render(
+      <InlineProcessFlow items={[toolItem]} toolCallExpandedByDefault defaultOpen runId="run-a" />,
+    );
+    expect(screen.getByTestId('inline-process-tool-details')).toBeTruthy();
+
+    fireEvent.click(within(screen.getByTestId('inline-process-tool')).getByRole('button'));
+    expect(screen.queryByTestId('inline-process-tool-details')).toBeNull();
+
+    rerender(
+      <InlineProcessFlow
+        items={[toolItem, secondReadTool]}
+        toolCallExpandedByDefault
+        defaultOpen
+        runId="run-a"
+      />,
+    );
+    const tools = screen.getAllByTestId('inline-process-tool');
+    expect(within(tools[0]).queryByTestId('inline-process-tool-details')).toBeNull();
+    expect(within(tools[1]).getByTestId('inline-process-tool-details')).toBeTruthy();
+  });
+
+  it('shows the full execution process without a summary row when collapsing is disabled', () => {
+    render(
+      <InlineProcessFlow
+        items={[reasoningItem, toolItem]}
+        collapseExecutionProcess={false}
+        answerStarted
+      />,
+    );
+
+    expect(screen.queryByTestId('process-panel-toggle')).toBeNull();
+    expect(screen.getByTestId('inline-process-reasoning')).toBeTruthy();
+    expect(screen.getByTestId('inline-process-tool')).toBeTruthy();
+  });
+
   it('renders JSON arguments and results as structured key-value details', () => {
     render(
       <InlineProcessFlow

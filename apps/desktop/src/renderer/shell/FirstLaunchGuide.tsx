@@ -55,14 +55,19 @@ export function FirstLaunchGuide({
 
   useEffect(() => {
     let active = true;
-    void window.syncThink?.kernelUpdates
+    const bridge = window.syncThink?.kernelUpdates;
+    void bridge
       ?.getState()
       .then((state) => {
         if (active) setKernels(state);
       })
       .catch(() => undefined);
+    const unsubscribe = bridge?.subscribeState?.((state) => {
+      if (active) setKernels(state);
+    });
     return () => {
       active = false;
+      unsubscribe?.();
     };
   }, []);
 
@@ -113,7 +118,7 @@ export function FirstLaunchGuide({
           </span>
           <div className="shell-first-launch__kernels-copy">
             <strong>私有内核（可选）</strong>
-            <span>安装在 SYNC-THINK 私有目录，不改动本机 Codex 或 Claude Code。</span>
+            <span>安装在 SYNC-THINK 私有目录，不改动本机 Codex、Claude Code 或 Pi。</span>
           </div>
           <div className="shell-first-launch__kernels-actions">
             {kernels.items.map((item) =>

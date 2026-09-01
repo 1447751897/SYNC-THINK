@@ -250,4 +250,43 @@ describe('MarkdownContent', () => {
     expect(decoded).toContain('name="viewport"');
     expect(decoded).not.toContain('body{min-height:100vh}');
   });
+
+  it('renders only an explicit design-html fence with the design draft surface', () => {
+    const design = renderToStaticMarkup(
+      createElement(MarkdownContent, {
+        text: '```design-html\n<main>Design surface</main>\n```',
+        projectFolder: 'D:/work/demo',
+      }),
+    );
+    const ordinary = renderToStaticMarkup(
+      createElement(MarkdownContent, {
+        text: '```html\n<main>Ordinary HTML</main>\n```',
+        projectFolder: 'D:/work/demo',
+      }),
+    );
+
+    expect(design).toContain('shell-html--design');
+    expect(design).toContain('保存到项目');
+    expect(design).toContain('下载');
+    expect(ordinary).toContain('shell-html');
+    expect(ordinary).not.toContain('shell-html--design');
+    expect(ordinary).not.toContain('保存到项目');
+  });
+
+  it('supports a strict standalone design-html tag while leaving fenced tags ordinary', () => {
+    const tagged = renderToStaticMarkup(
+      createElement(MarkdownContent, {
+        text: '<design-html>\n<main>Tagged design</main>\n</design-html>',
+      }),
+    );
+    const fenced = renderToStaticMarkup(
+      createElement(MarkdownContent, {
+        text: '```html\n<design-html>\n<main>Sample</main>\n</design-html>\n```',
+      }),
+    );
+
+    expect(tagged).toContain('shell-html--design');
+    expect(tagged).toContain('Tagged%20design');
+    expect(fenced).not.toContain('shell-html--design');
+  });
 });

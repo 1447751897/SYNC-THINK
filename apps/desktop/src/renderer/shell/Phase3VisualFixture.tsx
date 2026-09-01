@@ -801,9 +801,8 @@ function ComposerContextFixture() {
                   <Zap size={15} />
                   <span className="shell-compose__tool-label">完全访问</span>
                 </button>
-                <button type="button" className="shell-compose__tool" title="本轮技能：0/8">
+                <button type="button" className="shell-compose__tool" title="本轮 Skill">
                   <Puzzle size={15} />
-                  <span className="shell-compose__tool-label">0/8</span>
                 </button>
               </div>
 
@@ -938,9 +937,8 @@ function ComposerSlashOpenFixture() {
                   <Zap size={15} aria-hidden="true" />
                   <span className="shell-compose__tool-label">完全访问</span>
                 </button>
-                <button type="button" className="shell-compose__tool" title="本轮技能：0/8">
+                <button type="button" className="shell-compose__tool" title="本轮 Skill">
                   <Puzzle size={15} aria-hidden="true" />
-                  <span className="shell-compose__tool-label">0/8</span>
                 </button>
               </div>
               <div className="shell-compose__bar-right">

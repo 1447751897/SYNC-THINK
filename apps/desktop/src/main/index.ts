@@ -40,7 +40,10 @@ import type {
   ImportDesktopDataResponse,
   OpenDesktopDataDirectoryResponse,
 } from '../data-management-contract.js';
-import type { ManagedKernelUpdateId } from '../kernel-update-contract.js';
+import type {
+  ManagedKernelUpdateId,
+  ManagedKernelUpdateSnapshot,
+} from '../kernel-update-contract.js';
 import { FileRuntimeActivityCursorStore } from './runtime-activity-cursor-store.js';
 import {
   isAllowedM1OpenDocId,
@@ -90,6 +93,10 @@ import type {
   CancelRunPayload,
   Frame,
   GetArtifactVersionResponse,
+  PromptEnhanceCancelPayload,
+  PromptEnhanceCancelResponse,
+  PromptEnhancePayload,
+  PromptEnhanceResponse,
 } from '@sync-think/protocol';
 import {
   parseDataBackupPayload,
@@ -200,8 +207,7 @@ function parseGoalSetPayloadLocal(
   ) {
     return undefined;
   }
-  const maxGoalRounds =
-    typeof record.maxGoalRounds === 'number' ? record.maxGoalRounds : undefined;
+  const maxGoalRounds = typeof record.maxGoalRounds === 'number' ? record.maxGoalRounds : undefined;
   if (
     record.maxGoalTokens !== undefined &&
     (typeof record.maxGoalTokens !== 'number' ||
@@ -210,8 +216,7 @@ function parseGoalSetPayloadLocal(
   ) {
     return undefined;
   }
-  const maxGoalTokens =
-    typeof record.maxGoalTokens === 'number' ? record.maxGoalTokens : undefined;
+  const maxGoalTokens = typeof record.maxGoalTokens === 'number' ? record.maxGoalTokens : undefined;
   const modelId =
     typeof record.modelId === 'string' && record.modelId.trim() && record.modelId.length <= 256
       ? record.modelId.trim()
@@ -657,6 +662,33 @@ function getKernelUpdateService(): KernelUpdateService {
     installer: resolveKernelInstallerInvocation(nodeExecutable),
   });
   return kernelUpdateService;
+}
+
+function broadcastKernelUpdateState(snapshot: ManagedKernelUpdateSnapshot): void {
+  const target = mainWindow?.webContents;
+  if (target && !target.isDestroyed()) target.send('desktop:kernel-update-state', snapshot);
+}
+
+async function recyclePrivateKernel(kernelId: ManagedKernelUpdateId): Promise<void> {
+  if (kernelId !== 'codex' && kernelId !== 'claude-code') return;
+  try {
+    await ensureRuntimeConnection();
+    await getRuntimeClient().request('kernel.recycle', { kernelId });
+  } catch (error) {
+    console.warn('[desktop] private kernel installed but resident recycle failed', error);
+  }
+}
+
+async function bootstrapPrivateKernelsAtStartup(): Promise<void> {
+  const service = getKernelUpdateService();
+  const snapshot = service.getSnapshot();
+  if (!snapshot.installerAvailable) return;
+  const missing = snapshot.items.filter((item) => !item.managedVersion);
+  for (const item of missing) {
+    const result = await service.installUpdate(item.kernelId);
+    broadcastKernelUpdateState(result.state);
+    if (result.ok) await recyclePrivateKernel(item.kernelId);
+  }
 }
 
 function initializeDesktopUpdater(): void {
@@ -1395,6 +1427,50 @@ function parseCancelRunPayload(value: unknown): CancelRunPayload {
   }
   return payload as CancelRunPayload;
 }
+
+function parsePromptEnhancePayload(value: unknown): PromptEnhancePayload {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Invalid prompt-enhance payload');
+  }
+  const payload = value as Partial<PromptEnhancePayload>;
+  if (
+    typeof payload.requestId !== 'string' ||
+    payload.requestId.trim().length === 0 ||
+    payload.requestId.length > 160 ||
+    typeof payload.text !== 'string' ||
+    payload.text.trim().length === 0 ||
+    payload.text.length > 100_000
+  ) {
+    throw new Error('Invalid prompt-enhance payload');
+  }
+  if (payload.modelId !== undefined && typeof payload.modelId !== 'string') {
+    throw new Error('Invalid prompt-enhance model');
+  }
+  const requestId = payload.requestId.trim();
+  const text = payload.text.trim();
+  const modelId = typeof payload.modelId === 'string' ? payload.modelId.trim() : '';
+  return {
+    requestId,
+    text,
+    ...(modelId ? { modelId: modelId as PromptEnhancePayload['modelId'] } : {}),
+  };
+}
+
+function parsePromptEnhanceCancelPayload(value: unknown): PromptEnhanceCancelPayload {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Invalid prompt-enhance-cancel payload');
+  }
+  const payload = value as Partial<PromptEnhanceCancelPayload>;
+  if (
+    typeof payload.requestId !== 'string' ||
+    payload.requestId.trim().length === 0 ||
+    payload.requestId.length > 160
+  ) {
+    throw new Error('Invalid prompt-enhance-cancel payload');
+  }
+  return { requestId: payload.requestId.trim() };
+}
+
 function assertRuntimeIpcSource(event: IpcMainInvokeEvent): void {
   assertTrustedRendererIpcSource(
     event.sender,
@@ -1406,50 +1482,17 @@ function assertRuntimeIpcSource(event: IpcMainInvokeEvent): void {
 
 function installPiKernel(): Promise<KernelInstallResult> {
   if (piKernelInstallPromise) return piKernelInstallPromise;
-  piKernelInstallPromise = new Promise<KernelInstallResult>((resolve) => {
-    void import('node:child_process')
-      .then(({ spawn }) => {
-        const executable = process.platform === 'win32' ? process.env.ComSpec || 'cmd.exe' : 'npm';
-        const args =
-          process.platform === 'win32'
-            ? ['/d', '/s', '/c', 'npm', 'i', '-g', 'pi']
-            : ['i', '-g', 'pi'];
-        const child = spawn(executable, args, {
-          shell: false,
-          windowsHide: true,
-          stdio: ['ignore', 'ignore', 'pipe'],
-        });
-        let stderr = '';
-        const timeout = setTimeout(() => child.kill(), 5 * 60_000);
-        child.stderr?.setEncoding('utf8');
-        child.stderr?.on('data', (chunk: string) => {
-          if (stderr.length < 8_192) stderr += chunk.slice(0, 8_192 - stderr.length);
-        });
-        child.once('error', (error) => {
-          clearTimeout(timeout);
-          resolve({ ok: false, error: `无法启动 npm：${error.message}` });
-        });
-        child.once('close', (code, signal) => {
-          clearTimeout(timeout);
-          if (code === 0) {
-            resolve({ ok: true });
-            return;
-          }
-          const detail = stderr.trim().split(/\r?\n/).slice(-4).join('\n');
-          resolve({
-            ok: false,
-            error:
-              detail ||
-              (signal
-                ? `npm 安装被终止（${signal}）`
-                : `npm 安装失败（退出码 ${code ?? 'unknown'}）`),
-          });
-        });
-      })
-      .catch((error: unknown) => {
-        resolve({ ok: false, error: `无法加载进程执行能力：${errorMessage(error)}` });
-      });
-  }).finally(() => {
+  piKernelInstallPromise = (async () => {
+    const result = await getKernelUpdateService().installUpdate('pi');
+    broadcastKernelUpdateState(result.state);
+    if (!result.ok) {
+      return {
+        ok: false as const,
+        error: result.errorCode ?? 'kernel.update.install-failed',
+      };
+    }
+    return { ok: true as const };
+  })().finally(() => {
     piKernelInstallPromise = null;
   });
   return piKernelInstallPromise;
@@ -1566,6 +1609,22 @@ function setupRuntimeBridge(): void {
       await getRuntimeClient().request('message.attachImages', eventDraft);
     }
     return { ...response, images };
+  });
+  ipcMain.handle('runtime:prompt-enhance', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request<PromptEnhanceResponse>(
+      'prompt.enhance',
+      parsePromptEnhancePayload(value),
+    );
+  });
+  ipcMain.handle('runtime:prompt-enhance-cancel', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request<PromptEnhanceCancelResponse>(
+      'prompt.enhance.cancel',
+      parsePromptEnhanceCancelPayload(value),
+    );
   });
   ipcMain.handle('runtime:workspace-create', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
@@ -2056,29 +2115,36 @@ function setupRuntimeBridge(): void {
     assertRuntimeIpcSource(event);
     return getKernelUpdateService().getSnapshot();
   });
-  ipcMain.handle('desktop:kernel-update-check', async (event) => {
+  ipcMain.handle('desktop:kernel-update-check', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
-    return getKernelUpdateService().checkForUpdates();
+    let kernelId: ManagedKernelUpdateId | undefined;
+    if (value != null) {
+      if (
+        !value ||
+        typeof value !== 'object' ||
+        !['codex', 'claude-code', 'pi'].includes(String((value as { kernelId?: unknown }).kernelId))
+      ) {
+        throw new Error('kernel.update.kernel-invalid');
+      }
+      kernelId = (value as { kernelId: ManagedKernelUpdateId }).kernelId;
+    }
+    const result = await getKernelUpdateService().checkForUpdates(kernelId);
+    broadcastKernelUpdateState(result.state);
+    return result;
   });
   ipcMain.handle('desktop:kernel-update-install', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
     if (
       !value ||
       typeof value !== 'object' ||
-      !['codex', 'claude-code'].includes(String((value as { kernelId?: unknown }).kernelId))
+      !['codex', 'claude-code', 'pi'].includes(String((value as { kernelId?: unknown }).kernelId))
     ) {
       throw new Error('kernel.update.kernel-invalid');
     }
     const kernelId = (value as { kernelId: ManagedKernelUpdateId }).kernelId;
     const result = await getKernelUpdateService().installUpdate(kernelId);
-    if (result.ok) {
-      try {
-        await ensureRuntimeConnection();
-        await getRuntimeClient().request('kernel.recycle', { kernelId });
-      } catch (error) {
-        console.warn('[desktop] private kernel installed but resident recycle failed', error);
-      }
-    }
+    broadcastKernelUpdateState(result.state);
+    if (result.ok) await recyclePrivateKernel(kernelId);
     return result;
   });
   ipcMain.handle('runtime:agent-create', async (event, value: unknown) => {
@@ -3979,6 +4045,12 @@ void app
     setupRuntimeBridge();
     createWindow();
     void maybeCheckForDesktopUpdatesAtStartup().catch(() => undefined);
+    void bootstrapPrivateKernelsAtStartup().catch((error: unknown) => {
+      console.warn(
+        '[desktop] private kernel first-run install failed',
+        error instanceof Error ? error.message : error,
+      );
+    });
     void maybeRunDesktopUpdateInstallProbe().catch((error: unknown) => {
       console.error(
         '[desktop] update install probe failed',

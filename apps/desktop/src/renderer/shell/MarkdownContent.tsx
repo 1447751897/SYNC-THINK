@@ -5,6 +5,8 @@ import rehypeHighlight from 'rehype-highlight';
 import { Check, ChevronDown, Copy, FileCode2, FileImage, FolderOpen } from 'lucide-react';
 import { MermaidChart } from './MermaidChart.js';
 import { HtmlSandbox } from './HtmlSandbox.js';
+import { DesignDraftPreview } from './DesignDraftPreview.js';
+import { normalizeTaggedDesignHtmlBlocks } from './design-draft.js';
 import { IncrementalMarkdownParser } from './incremental-markdown.js';
 import type { ProjectTextLocation } from '../../workspace-tools-contract.js';
 import { describeExternalSource, ExternalSourceIcon } from './ExternalSourceIcon.js';
@@ -46,7 +48,7 @@ function splitMarkdownSections(text: string): MarkdownSection[] {
   const sections: MarkdownSection[] = [];
   let title: string | undefined;
   let body: string[] = [];
-  let fence: '```' | '~~~' | undefined;
+  let fence: { marker: '`' | '~'; length: number } | undefined;
 
   const flush = () => {
     if (title !== undefined || body.length > 0) {
@@ -56,11 +58,19 @@ function splitMarkdownSections(text: string): MarkdownSection[] {
   };
 
   for (const line of lines) {
-    const fenceMatch = /^\s{0,3}(```|~~~)/.exec(line);
+    const fenceMatch = /^\s{0,3}(`{3,}|~{3,})/.exec(line);
     if (fenceMatch) {
-      const marker = fenceMatch[1] as '```' | '~~~';
-      if (!fence) fence = marker;
-      else if (fence === marker) fence = undefined;
+      const run = fenceMatch[1] ?? '';
+      const marker = run[0] as '`' | '~';
+      if (!fence) {
+        fence = { marker, length: run.length };
+      } else if (
+        fence.marker === marker &&
+        run.length >= fence.length &&
+        /^\s*$/.test(line.slice(fenceMatch[0].length))
+      ) {
+        fence = undefined;
+      }
       body.push(line);
       continue;
     }
@@ -393,6 +403,12 @@ const MarkdownRenderer = memo(function MarkdownRenderer({
             }
             return <MermaidChart code={raw.replace(/\n$/, '')} />;
           }
+          if (language === 'design-html') {
+            if (streaming || !interactiveEmbeds) {
+              return <CodeBlock language={language}>{children}</CodeBlock>;
+            }
+            return <DesignDraftPreview code={raw} projectFolder={projectFolder} />;
+          }
           if (language === 'html' || language === 'htm') {
             if (streaming || !interactiveEmbeds) {
               return <CodeBlock language={language}>{children}</CodeBlock>;
@@ -524,12 +540,16 @@ export function MarkdownContent({
   projectFolder,
   onOpenFile,
 }: MarkdownContentProps) {
-  const sections = useMemo(() => (streaming ? [] : splitMarkdownSections(text)), [streaming, text]);
+  const normalizedText = useMemo(() => normalizeTaggedDesignHtmlBlocks(text), [text]);
+  const sections = useMemo(
+    () => (streaming ? [] : splitMarkdownSections(normalizedText)),
+    [normalizedText, streaming],
+  );
   return (
     <div className={`shell-md ${className ?? ''}`} data-streaming={streaming ? '1' : '0'}>
       {streaming ? (
         <IncrementalStreamingMarkdown
-          text={text}
+          text={normalizedText}
           projectFolder={projectFolder}
           onOpenFile={onOpenFile}
         />

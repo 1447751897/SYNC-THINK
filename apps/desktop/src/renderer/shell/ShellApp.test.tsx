@@ -90,6 +90,8 @@ const sidebarProps: { current?: Record<string, unknown> } = {};
 const newConversationDialogProps: { current?: Record<string, unknown> } = {};
 const abilitiesPageProps: { current?: Record<string, unknown> } = {};
 const modelSettingsProps: { current?: Record<string, unknown> } = {};
+const browserStageProps: { current?: Record<string, unknown> } = {};
+const browserPanelProps: { current?: Record<string, unknown> } = {};
 
 const completeMock = vi.fn(async () => true);
 
@@ -257,6 +259,38 @@ vi.mock('./AbilitiesPage.js', () => ({
   },
 }));
 vi.mock('./TeamLibrary.js', () => ({ TeamLibrary: () => null }));
+vi.mock('./BrowserStage.js', () => ({
+  BrowserStage: (props: Record<string, unknown>) => {
+    browserStageProps.current = props;
+    return createElement(
+      'button',
+      {
+        type: 'button',
+        'data-testid': 'mock-browser-stage-ai',
+        onClick: () =>
+          (
+            props.onStartAiTask as
+              | ((request: Record<string, unknown>) => void)
+              | undefined
+          )?.({
+            profileId: 'profile-a',
+            profileName: 'Profile A',
+            name: '测试浏览器任务',
+            instruction: '打开测试页面',
+            startUrl: 'https://example.com',
+            prompt: '请创建一个浏览器自动化任务草稿。',
+          }),
+      },
+      '切换至新对话',
+    );
+  },
+}));
+vi.mock('./BrowserPanel.js', () => ({
+  BrowserPanel: (props: Record<string, unknown>) => {
+    browserPanelProps.current = props;
+    return createElement('div', { 'data-testid': 'mock-browser-panel' });
+  },
+}));
 vi.mock('./NewConversationDialog.js', () => ({
   NewConversationDialog: (props: Record<string, unknown>) => {
     newConversationDialogProps.current = props;
@@ -309,6 +343,8 @@ beforeEach(() => {
   newConversationDialogProps.current = undefined;
   abilitiesPageProps.current = undefined;
   modelSettingsProps.current = undefined;
+  browserStageProps.current = undefined;
+  browserPanelProps.current = undefined;
   runtime.connect.mockResolvedValue({ snapshot: [] });
   runtime.onEvent.mockReturnValue(vi.fn());
   runtime.onOpenConversation.mockReturnValue(vi.fn());
@@ -486,6 +522,21 @@ describe('ShellApp composer deep navigation', () => {
     );
     expect(abilitiesPageProps.current?.navigationKey).toBeTruthy();
   });
+
+  it('routes the browser AI entry through the reusable draft conversation', async () => {
+    await renderConversationShell();
+
+    act(() =>
+      (sidebarProps.current?.onSelectStage as ((stage: string) => void) | undefined)?.('browser'),
+    );
+    await waitFor(() => expect(screen.getByTestId('mock-browser-stage-ai')).toBeTruthy());
+
+    fireEvent.click(screen.getByTestId('mock-browser-stage-ai'));
+
+    await waitFor(() => expect(screen.getByTestId('empty-compose')).toBeTruthy());
+    expect(screen.getByTestId('empty-compose-input')).toBeTruthy();
+    expect(runtime.createConversation).not.toHaveBeenCalled();
+  });
 });
 
 describe('ShellApp settings modal', () => {
@@ -586,6 +637,49 @@ describe('ShellApp settings modal', () => {
 });
 
 describe('ShellApp workspace context', () => {
+  it('opens and navigates a visible browser tab after a successful AI browser_open event', async () => {
+    installRuntime();
+    let onEvent: ((event: Event) => void) | undefined;
+    runtime.onEvent.mockImplementation((listener: (event: Event) => void) => {
+      onEvent = listener;
+      return vi.fn();
+    });
+    runtime.listWorkspaces.mockResolvedValue({
+      workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }],
+    });
+    window.localStorage.setItem('sync-think.activeWorkspaceId', 'ws-a');
+
+    render(<ShellApp />);
+    await waitFor(() => expect(topBarProps.current?.activeWorkspaceId).toBe('ws-a'));
+
+    await act(async () => {
+      onEvent?.({
+        id: 'event-browser-open' as Event['id'],
+        workspaceId: 'ws-a' as Event['workspaceId'],
+        category: 'run',
+        type: 'tool.completed',
+        sequence: 1,
+        occurredAt: '2026-08-31T08:00:00.000Z',
+        payload: {
+          toolName: 'browser_open',
+          toolCallId: 'tool-browser-open',
+          result: JSON.stringify({ ok: true, url: 'https://example.com/dashboard' }),
+        },
+      });
+    });
+
+    await waitFor(() => expect(screen.getByTestId('mock-browser-panel')).toBeTruthy());
+    expect(browserPanelProps.current).toEqual(
+      expect.objectContaining({
+        initialUrl: 'https://example.com/dashboard',
+        navigateUrl: 'https://example.com/dashboard',
+        navigateSeq: 1,
+        registerForAutomation: false,
+      }),
+    );
+    expect(String(browserPanelProps.current?.partition)).toMatch(/^pane-browser-/);
+  });
+
   it('persists and restores right workbench visibility independently for each workspace', async () => {
     installRuntime();
     runtime.listWorkspaces.mockResolvedValue({
@@ -1635,7 +1729,7 @@ describe('ShellApp empty conversation compose', () => {
     expect(screen.getByRole('button', { name: '退出目标模式' })).toBeTruthy();
   });
 
-  it('keeps @ keyboard focus inside the EmptyTalk pane that opened the menu', async () => {
+  it('keeps @ action sheets independent across EmptyTalk panes', async () => {
     const props = {
       hasWorkspace: true,
       models: [],
@@ -1660,12 +1754,19 @@ describe('ShellApp empty conversation compose', () => {
     const inputs = screen.getAllByTestId('empty-compose-input');
     fireEvent.change(inputs[0]!, { target: { value: '@', selectionStart: 1 } });
     fireEvent.change(inputs[1]!, { target: { value: '@', selectionStart: 1 } });
-    const dialogs = await screen.findAllByRole('dialog', { name: '添加上下文和设置' });
-    const secondEnable = within(dialogs[1]!).getByRole('button', { name: '开启联网搜索' });
+    const menus = await screen.findAllByTestId('empty-compose-add-menu');
+    expect(menus).toHaveLength(2);
+    expect(within(menus[0]!).getByText('规划模式')).toBeTruthy();
+    expect(within(menus[1]!).getByText('规划模式')).toBeTruthy();
 
-    fireEvent.keyDown(inputs[1]!, { key: 'Tab' });
+    fireEvent.click(within(menus[1]!).getByRole('option', { name: /联网搜索/ }));
 
-    expect(document.activeElement).toBe(secondEnable);
+    expect(
+      within(menus[0]!).getByRole('option', { name: /联网搜索/ }).getAttribute('aria-checked'),
+    ).toBe('true');
+    expect(
+      within(menus[1]!).getByRole('option', { name: /联网搜索/ }).getAttribute('aria-checked'),
+    ).toBe('false');
   });
 
   it('creates a full-access model conversation and sends the first message', async () => {
@@ -2271,7 +2372,11 @@ describe('ShellApp empty conversation compose', () => {
     fireEvent.click(reasoningOption);
     await waitFor(() => expect(screen.getByTitle('切换模型，思考强度：高')).toBeTruthy());
     fireEvent.change(input, { target: { value: '@', selectionStart: 1 } });
-    fireEvent.click(await screen.findByRole('button', { name: '关闭联网搜索' }));
+    fireEvent.click(
+      within(await screen.findByTestId('empty-compose-add-menu')).getByRole('option', {
+        name: /联网搜索/,
+      }),
+    );
     fireEvent.change(input, {
       target: { value: '/goal 完成参数化目标', selectionStart: 15 },
     });
@@ -3063,19 +3168,20 @@ describe('ShellApp empty conversation compose', () => {
 
     render(<ShellApp />);
     const input = await screen.findByTestId('empty-compose-input');
-    const editor = screen.getByRole('textbox', { name: '消息' });
     expect(screen.getByTestId('empty-compose').closest('.shell-chat-column')).toBeTruthy();
     expect(screen.queryByTitle(/联网已开/)).toBeNull();
     fireEvent.change(input, { target: { value: '@', selectionStart: 1 } });
-    const enableNetwork = await screen.findByRole('button', { name: '开启联网搜索' });
-    fireEvent.keyDown(input, { key: 'Tab' });
-    expect(document.activeElement).toBe(enableNetwork);
-    fireEvent.keyDown(enableNetwork, { key: 'Tab', shiftKey: true });
-    await waitFor(() => expect(document.activeElement).toBe(editor));
+    const addMenu = await screen.findByTestId('empty-compose-add-menu');
+    expect(within(addMenu).getByText('规划模式')).toBeTruthy();
+    const networkOption = within(addMenu).getByRole('option', { name: /联网搜索/ });
+    expect(networkOption.getAttribute('aria-checked')).toBe('true');
+    fireEvent.click(networkOption);
+    expect(
+      within(screen.getByTestId('empty-compose-add-menu'))
+        .getByRole('option', { name: /联网搜索/ })
+        .getAttribute('aria-checked'),
+    ).toBe('false');
 
-    fireEvent.change(input, { target: { value: '', selectionStart: 0 } });
-    fireEvent.change(input, { target: { value: '@', selectionStart: 1 } });
-    fireEvent.click(await screen.findByRole('button', { name: '关闭联网搜索' }));
     fireEvent.change(input, { target: { value: '不要联网', selectionStart: 4 } });
     fireEvent.click(screen.getByTestId('empty-compose-send'));
 

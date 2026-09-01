@@ -123,6 +123,9 @@ import {
   type GoalClearResponse,
   type GoalResumeResponse,
   type GoalStatus,
+  type PromptEnhancePayload,
+  type PromptEnhanceResponse,
+  type PromptEnhanceCancelResponse,
   type PlanDraftResponse,
   type PlanReviseResponse,
   type PlanListRevisionsResponse,
@@ -215,6 +218,7 @@ import {
   isComputerUsePluginEnabled as isComputerUsePluginSettingEnabled,
   OPEN_GATEWAY_SETTING_KEY,
   normalizeOpenGatewaySetting,
+  MAX_SKILL_SELECTION_ITEMS,
   type GatewayLogsQuery,
   type GatewayLogsResponse,
   type OpenGatewayStatusResponse,
@@ -890,6 +894,30 @@ const CODEX_STYLE_COMMENTARY_PROMPT = [
   '- Commentary may describe observable plans, actions, progress, and findings. Never expose hidden chain-of-thought or provider reasoning summaries.',
   '- Use the provider commentary phase for progress updates when phase metadata is available. Keep the terminal response separate as the final answer.',
   '- Do not add timestamps to commentary; Runtime sequence metadata determines display order.',
+].join('\n');
+
+/**
+ * Contract shared by native/external kernels and the regular Provider path.
+ * The Renderer only mounts DesignDraftPreview for this explicit fence, so the
+ * model must not rely on an ambiguous HTML code block or a prose claim.
+ */
+const DESIGN_HTML_OUTPUT_CONTRACT = [
+  'AI design draft output contract (design-html):',
+  '- When the user asks to create a UI mockup, visual design, prototype, or design draft, return one complete, self-contained HTML document inside exactly one fenced block tagged `design-html`.',
+  '- The fence must be ` ```design-html ` followed by a complete `<!doctype html>` / `<html>` / `<head>` / `<body>` document and a matching closing fence. Put CSS and JavaScript inline when needed so the preview works without a build step; do not put Markdown or explanatory prose inside the fence.',
+  '- Include visible page content and accessible labels/interactions. Do not output a placeholder description instead of the page. Do not nest `<design-html>` tags or truncate the document.',
+  '- Keep the UTF-8 payload at or below 1 MiB. Outside the fence you may briefly summarize the draft, but the fenced document is the canonical preview/save payload.',
+  '- Preview, save, and browser-open are separate facts: a preview only means the fenced payload passed the UI parser; opening the page requires an actual `browser_open` result; saving requires an actual successful `write_file` result.',
+  '- When the user asks to save the design, call `write_file` with a project-relative path (for example `designs/<slug>.html`); never use an absolute path and never claim that a file was saved before the tool reports success.',
+  '- If the generated document is empty, malformed, truncated, or otherwise fails validation, do not call `write_file` and do not overwrite an existing design file; return a complete replacement first.',
+  '- Use this contract only for design requests; ordinary HTML examples should remain regular `html` code fences.',
+].join('\n');
+
+const PROMPT_ENHANCEMENT_SYSTEM_PROMPT = [
+  '你是提示词优化助手。',
+  '在不改变用户原始意图和语言的前提下，把草稿改写得具体、清晰、可执行。',
+  '根据需要补全目标、上下文、约束、交付物与验收标准，但不要虚构用户未表达的事实。',
+  '只输出优化后的提示词，不要回答提示词中的问题，不要添加标题、解释、引号或代码围栏。',
 ].join('\n');
 
 export interface RuntimeOptions {
@@ -2342,6 +2370,8 @@ export class Runtime {
   private readonly demoRuns = new Map<string, DemoRunState>();
   /** Abort controllers for in-flight demo chat streams (Stop button). */
   private readonly demoRunAborts = new Map<string, AbortController>();
+  /** Draft-only provider calls, isolated from conversation runs and durable history. */
+  private readonly promptEnhancementAborts = new Map<string, AbortController>();
   /**
    * Chat tool approvals under「询问批准�?
    * mutating tools pause here until conversation.decideToolApproval.
@@ -2369,6 +2399,11 @@ export class Runtime {
       createdAt: string;
     }
   >();
+  private readonly durableChatToolApprovalStateById = new Map<
+    string,
+    { requested: Event; decided?: Event }
+  >();
+  private durableChatToolApprovalsHydrated = false;
   private readonly backgroundTasks = new Set<Promise<void>>();
   /** Thread-scoped Manifest amendments (force-exclude source ids). In-memory for M1. */
   private readonly threadContextAmendments = new Map<string, { excludeSourceIds: string[] }>();
@@ -3135,6 +3170,14 @@ export class Runtime {
         }
         if (frame.type === 'conversation.compact') {
           void this.handleConversationCompact(socket, frame);
+          return;
+        }
+        if (frame.type === 'prompt.enhance') {
+          void this.handlePromptEnhance(socket, frame);
+          return;
+        }
+        if (frame.type === 'prompt.enhance.cancel') {
+          this.handlePromptEnhanceCancel(socket, frame);
           return;
         }
         if (frame.type === 'conversation.listPendingToolApprovals') {
@@ -7981,8 +8024,10 @@ export class Runtime {
 
   private assertGlobalAgentSkillVersions(skillIds: readonly string[] | undefined): void {
     if (skillIds === undefined) return;
-    if (skillIds.length > 8) {
-      throw new Error('global agent may equip at most 8 Skill versions');
+    if (skillIds.length > MAX_SKILL_SELECTION_ITEMS) {
+      throw new Error(
+        `global agent Skill selection is too large (max ${MAX_SKILL_SELECTION_ITEMS})`,
+      );
     }
     if (!this.skillStore && skillIds.length > 0) {
       throw new Error('Skill store is not configured on this Runtime');
@@ -8601,7 +8646,6 @@ export class Runtime {
 
     const resolved = resolveAllowedSkillSources({
       skillVersionIds,
-      maxSkills: 8,
       getSkill: (skillVersionId) => {
         const row = this.skillStore?.getVersion(skillVersionId);
         if (!row || row.archivedAt) return undefined;
@@ -10128,6 +10172,149 @@ export class Runtime {
     } catch (error) {
       this.writeTeamModelCommandError(socket, frame, error);
     }
+  }
+
+  private parsePromptEnhancePayload(value: unknown): PromptEnhancePayload | undefined {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+    const payload = value as Record<string, unknown>;
+    if (typeof payload.requestId !== 'string' || typeof payload.text !== 'string') {
+      return undefined;
+    }
+    const requestId = payload.requestId.trim();
+    const text = payload.text.trim();
+    if (!requestId || requestId.length > 160 || !text || text.length > 100_000) return undefined;
+    if (payload.modelId !== undefined && typeof payload.modelId !== 'string') return undefined;
+    const modelId = typeof payload.modelId === 'string' ? payload.modelId.trim() : '';
+    return {
+      requestId,
+      text,
+      ...(modelId ? { modelId: modelId as ModelId } : {}),
+    };
+  }
+
+  private resolvePromptEnhancementModelId(requested?: ModelId): ModelId {
+    const requestedText = String(requested ?? '').trim();
+    const providers = this.providerStore?.listProviders() ?? [];
+    const enabledModels = providers
+      .filter((entry) => entry.provider.enabled !== false)
+      .flatMap((entry) => entry.models);
+    if (requestedText) {
+      const configured = enabledModels.find(
+        (model) => model.id === requestedText || model.providerModelId === requestedText,
+      );
+      if (configured) return configured.id;
+      if (!this.providerStore && this.demoProvider) return requestedText as ModelId;
+    }
+    const fallback = enabledModels[0];
+    if (fallback) return fallback.id;
+    if (this.demoProvider) return (requestedText || 'fake-mini') as ModelId;
+    throw new Error('没有可用于提示词优化的已启用模型');
+  }
+
+  private async handlePromptEnhance(socket: Socket, frame: Frame): Promise<void> {
+    const payload = this.parsePromptEnhancePayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+
+    const controller = new AbortController();
+    this.promptEnhancementAborts.get(payload.requestId)?.abort();
+    this.promptEnhancementAborts.set(payload.requestId, controller);
+    try {
+      const modelId = this.resolvePromptEnhancementModelId(payload.modelId);
+      const prepared = this.prepareRunBinding({
+        runId: ulid() as RunId,
+        threadId: `prompt-enhancement:${payload.requestId}`,
+        userText: payload.text,
+        modelId,
+        skillVersionIds: [],
+        skillContextMode: 'maintenance',
+        reasoningEffort: 'off',
+        networkEnabled: false,
+      });
+      const stream = await this.openProviderStream(prepared.run, {
+        messages: [{ role: 'user', content: payload.text }],
+        toolsEnabled: false,
+        networkEnabled: false,
+        signal: controller.signal,
+        systemPromptOverride: PROMPT_ENHANCEMENT_SYSTEM_PROMPT,
+      });
+      if (!stream) throw new Error('提示词优化模型当前不可用');
+
+      let enhanced = '';
+      for await (const event of stream) {
+        if (controller.signal.aborted) throw new Error('提示词优化已取消');
+        if (event.type === 'text-delta' || event.type === 'assistant-message-delta') {
+          enhanced += event.text;
+        } else if (event.type === 'error') {
+          throw new Error(`提示词优化失败（${event.failureClass}）：${event.message}`);
+        } else if (event.type === 'finished') {
+          break;
+        }
+      }
+      if (controller.signal.aborted) throw new Error('提示词优化已取消');
+      const text = enhanced.trim();
+      if (!text) throw new Error('模型没有返回有效的优化结果');
+
+      const response: PromptEnhanceResponse = {
+        requestId: payload.requestId,
+        text,
+        modelId: prepared.run.modelId as ModelId,
+      };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: frame.type,
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: frame.type,
+          payload: {},
+          error: {
+            code: ErrorCode.PROVIDER_CALL_FAILED,
+            message: error instanceof Error ? error.message : '提示词优化失败',
+          },
+        }),
+      );
+    } finally {
+      if (this.promptEnhancementAborts.get(payload.requestId) === controller) {
+        this.promptEnhancementAborts.delete(payload.requestId);
+      }
+    }
+  }
+
+  private handlePromptEnhanceCancel(socket: Socket, frame: Frame): void {
+    const value = frame.payload;
+    const requestId =
+      value && typeof value === 'object' && !Array.isArray(value)
+        ? (value as Record<string, unknown>).requestId
+        : undefined;
+    if (typeof requestId !== 'string' || !requestId.trim() || requestId.trim().length > 160) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    const normalizedRequestId = requestId.trim();
+    const controller = this.promptEnhancementAborts.get(normalizedRequestId);
+    controller?.abort();
+    const response: PromptEnhanceCancelResponse = {
+      requestId: normalizedRequestId,
+      cancelled: Boolean(controller),
+    };
+    socket.write(
+      encodeFrame({
+        id: frame.id,
+        kind: 'response',
+        type: frame.type,
+        payload: response,
+      }),
+    );
   }
 
   private getOrCreateInboxWorkspace(): WorkspaceId {
@@ -18838,6 +19025,7 @@ export class Runtime {
 
   private rememberRecentEvents(events: readonly Event[]): void {
     if (events.length === 0) return;
+    for (const event of events) this.rememberDurableChatToolApprovalEvent(event);
     this.events.push(...events);
     if (this.events.length > MAX_RECENT_RUNTIME_EVENTS) {
       this.events.splice(0, this.events.length - MAX_RECENT_RUNTIME_EVENTS);
@@ -21107,6 +21295,7 @@ export class Runtime {
         'The checklist tool only updates the user-visible progress panel. Do not merely say that you created or updated a plan in prose; the tool call is required for the checklist to appear.',
       ].join('\n'),
     );
+    parts.push(DESIGN_HTML_OUTPUT_CONTRACT);
     if (run.planningMode === true || this.isPlanningModeForThread(run.threadId)) {
       parts.push(
         [
@@ -21624,7 +21813,7 @@ export class Runtime {
     if (run.planningMode !== true) {
       return { ok: false, error: 'plan_submit is only available during a planning run' };
     }
-    const existingRevision = this.formalPlanRevisionByRun.get(runId);
+    const existingRevision = this.formalPlanRevisionForRun(runId);
     if (existingRevision !== undefined) {
       return {
         ok: true,
@@ -22325,7 +22514,7 @@ export class Runtime {
     threadId: string,
     planMarkdown: string,
   ): { ok: true; revision: number } | { ok: false; error: string } {
-    const existingRevision = this.formalPlanRevisionByRun.get(runId);
+    const existingRevision = this.formalPlanRevisionForRun(runId);
     if (existingRevision !== undefined) {
       return { ok: true, revision: existingRevision };
     }
@@ -23013,7 +23202,7 @@ export class Runtime {
   ):
     | { status: 'completed'; run: DemoRunState; error?: undefined; failureClass?: undefined }
     | { status: 'failed'; run: DemoRunState; error: string; failureClass: 'protocol' } {
-    if (run.planningMode !== true || this.formalPlanRevisionByRun.has(runId)) {
+    if (run.planningMode !== true || this.formalPlanRevisionForRun(runId) !== undefined) {
       return { status: 'completed', run };
     }
     return {
@@ -23029,6 +23218,21 @@ export class Runtime {
       error: '规划轮已结束，但没有提交正式方案。请重试 /plan。',
       failureClass: 'protocol',
     };
+  }
+
+  private formalPlanRevisionForRun(runId: RunId): number | undefined {
+    const cached = this.formalPlanRevisionByRun.get(runId);
+    if (cached !== undefined) return cached;
+    const events = this.stateStore?.listEventsByRun?.(runId) ?? [];
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = events[index];
+      if (event?.type !== 'conversation.plan_submitted') continue;
+      const revision = event.payload?.revision;
+      if (typeof revision !== 'number' || !Number.isInteger(revision) || revision < 1) continue;
+      this.formalPlanRevisionByRun.set(runId, revision);
+      return revision;
+    }
+    return undefined;
   }
 
   private finalizeKernelRun(
@@ -23465,7 +23669,6 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
               hasScripts: row.hasScripts,
             };
           },
-          maxSkills: 8,
         });
         for (const source of skills.sources) {
           candidates.push(source);
@@ -25491,7 +25694,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         models,
         approvedSkills,
         existingAgents,
-        note: 'Use these ids in create_agent. skillIds must be approved skillVersionId values (max 8).',
+        note: 'Use these ids in create_agent. skillIds must be approved skillVersionId values.',
       });
     }
 
@@ -26725,27 +26928,19 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       let priorScope: ToolApprovalScope = 'once';
       let orphanRequested:
         { threadId: string; runId: RunId; toolCallId?: string; toolName?: string } | undefined;
-      for (let i = this.events.length - 1; i >= 0; i--) {
-        const event = this.events[i];
-        if (event.payload?.approvalId !== payload.approvalId) continue;
-        if (event.type === 'tool.approval_decided') {
-          const d = event.payload.decision;
-          priorDecision = d === 'approve' || d === 'deny' ? d : 'deny';
-          const eventScope = event.payload.scope;
-          priorScope =
-            eventScope === 'session' || eventScope === 'always-app' ? eventScope : 'once';
-          break;
-        }
-        if (event.type === 'tool.approval_requested' && !orphanRequested) {
+      const durableState = this.durableChatToolApprovalStates().get(payload.approvalId);
+      if (durableState?.decided) {
+        const d = durableState.decided.payload?.decision;
+        priorDecision = d === 'approve' || d === 'deny' ? d : 'deny';
+        priorScope = parseToolApprovalScope(durableState.decided.payload?.scope);
+      } else if (durableState) {
+        const requested = pendingToolApprovalSummaryFromEvent(durableState.requested);
+        if (requested) {
           orphanRequested = {
-            threadId: typeof event.payload.threadId === 'string' ? event.payload.threadId : '',
-            runId: (typeof event.payload.runId === 'string'
-              ? event.payload.runId
-              : event.runId) as RunId,
-            toolCallId:
-              typeof event.payload.toolCallId === 'string' ? event.payload.toolCallId : undefined,
-            toolName:
-              typeof event.payload.toolName === 'string' ? event.payload.toolName : undefined,
+            threadId: requested.threadId,
+            runId: requested.runId,
+            ...(requested.toolCallId ? { toolCallId: requested.toolCallId } : {}),
+            toolName: requested.toolName,
           };
         }
       }
@@ -26887,20 +27082,53 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     );
   }
 
+  private durableChatToolApprovalStates(): Map<string, { requested: Event; decided?: Event }> {
+    if (!this.durableChatToolApprovalsHydrated) {
+      const events = this.stateStore?.listAllEvents
+        ? this.stateStore.listAllEvents(0)
+        : this.events;
+      for (const event of events) this.rememberDurableChatToolApprovalEvent(event);
+      this.durableChatToolApprovalsHydrated = true;
+    }
+    return this.durableChatToolApprovalStateById;
+  }
+
+  private rememberDurableChatToolApprovalEvent(event: Event): void {
+    if (event.type !== 'tool.approval_requested' && event.type !== 'tool.approval_decided') {
+      return;
+    }
+    const approvalId = event.payload?.approvalId;
+    if (typeof approvalId !== 'string' || !approvalId) return;
+    const states = this.durableChatToolApprovalStateById;
+    const current = states.get(approvalId);
+    if (event.type === 'tool.approval_requested') {
+      states.set(approvalId, {
+        requested: event,
+        ...(current?.decided ? { decided: current.decided } : {}),
+      });
+    } else if (current) {
+      current.decided = event;
+    } else {
+      // A decision without its request is not listable, but retaining it
+      // prevents a later replayed request from looking pending.
+      states.set(approvalId, { requested: event, decided: event });
+    }
+  }
+
   private handleListPendingToolApprovals(socket: Socket, frame: Frame): void {
     const payload = parseListPendingToolApprovalsPayload(frame.payload);
     if (!payload) {
       this.writeMalformedPayload(socket, frame);
       return;
     }
-    const approvals: PendingToolApprovalSummary[] = [];
+    const approvalsById = new Map<string, PendingToolApprovalSummary>();
     for (const pending of this.pendingToolApprovals.values()) {
       if (pending.threadId !== payload.threadId) continue;
       if (payload.runId && pending.runId !== payload.runId) continue;
       const toolCall = pending.pendingToolCalls[pending.currentIndex];
       if (!toolCall) continue;
       const summary = pending.approvalSummary;
-      approvals.push({
+      approvalsById.set(pending.approvalId, {
         approvalId: pending.approvalId,
         threadId: pending.threadId as PendingToolApprovalSummary['threadId'],
         runId: pending.runId,
@@ -26917,7 +27145,22 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         createdAt: pending.createdAt,
       });
     }
-    approvals.sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+    // The in-memory waiter is required to continue the live tool loop. The
+    // durable event stream is the recovery source for cards after Runtime
+    // restart, when that waiter and its Promise no longer exist.
+    for (const state of this.durableChatToolApprovalStates().values()) {
+      const summary = pendingToolApprovalSummaryFromEvent(state.requested);
+      if (!summary || summary.threadId !== payload.threadId) continue;
+      if (payload.runId && summary.runId !== payload.runId) continue;
+      if (state.decided) {
+        approvalsById.delete(summary.approvalId);
+      } else if (!approvalsById.has(summary.approvalId)) {
+        approvalsById.set(summary.approvalId, summary);
+      }
+    }
+    const approvals = [...approvalsById.values()].sort((left, right) =>
+      left.createdAt.localeCompare(right.createdAt),
+    );
     const response: ListPendingToolApprovalsResponse = { approvals };
     socket.write(
       encodeFrame({
@@ -28622,7 +28865,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
           executionMode === 'full-access'
             ? '- Permission mode is full-access: create/update/archive execute immediately without extra confirmation. Still show the user exactly what you changed.'
             : '- Permission mode is NOT full-access: create_agent / update_agent / archive_agent will pause and show the user an approval card. Wait for their decision; if denied, do not retry — hand them the draft/diff instead.',
-          '- skillIds must be approved skill version ids from list_agent_resources (max 8). Never invent ids.',
+          '- skillIds must be approved skill version ids from list_agent_resources. Never invent ids.',
           '- Resolve update/archive targets by exact agent id when possible; names must be unique or the call fails.',
           '- Do NOT search the repository for a hidden createAgent API — use these tools.',
           'Skill capability-center tools are ENABLED (list_skills, read_skill, create_skill, update_skill, delete_skill, import_remote_skill):',
@@ -28673,6 +28916,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     const productBoundaryPrompt = [
       'Product capability boundaries (SYNC-THINK / this desktop shell):',
       CODEX_STYLE_COMMENTARY_PROMPT,
+      DESIGN_HTML_OUTPUT_CONTRACT,
       agentCreationPrompt,
       planToolPrompt,
       browserWorkflowPrompt,
@@ -30272,6 +30516,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     // app-server processes. Their finally blocks release both the per-session
     // turn queue and the bounded host lease.
     for (const controller of this.demoRunAborts.values()) controller.abort();
+    for (const controller of this.promptEnhancementAborts.values()) controller.abort();
     await this.codexSessionHost.stopAll();
     if (this.externalKernelSessionTails.size > 0) {
       await Promise.allSettled([...this.externalKernelSessionTails.values()]);
@@ -30341,6 +30586,54 @@ function browserRecordingErrorCode(error: unknown): string | undefined {
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function parseToolApprovalScope(value: unknown): ToolApprovalScope {
+  return value === 'session' || value === 'always-app' ? value : 'once';
+}
+
+function pendingToolApprovalSummaryFromEvent(event: Event): PendingToolApprovalSummary | undefined {
+  const payload = event.payload ?? {};
+  const approvalId = typeof payload.approvalId === 'string' ? payload.approvalId : undefined;
+  const threadId = typeof payload.threadId === 'string' ? payload.threadId : undefined;
+  const runId = (typeof payload.runId === 'string' ? payload.runId : event.runId) ?? undefined;
+  const toolName = typeof payload.toolName === 'string' ? payload.toolName : undefined;
+  if (!approvalId || !threadId || !runId || !toolName) return undefined;
+
+  const argumentsValue = payload.arguments;
+  const argumentsObject = isPlainRecord(argumentsValue) ? argumentsValue : undefined;
+  const riskValue = payload.risk;
+  const risk = isPlainRecord(riskValue)
+    ? {
+        level: typeof riskValue.level === 'string' ? riskValue.level : 'unknown',
+        reasonCodes: Array.isArray(riskValue.reasonCodes)
+          ? riskValue.reasonCodes.filter((item): item is string => typeof item === 'string')
+          : [],
+        ...(typeof riskValue.humanOnlyAction === 'string'
+          ? { humanOnlyAction: riskValue.humanOnlyAction }
+          : {}),
+      }
+    : undefined;
+  const allowedScopes: ToolApprovalScope[] = Array.isArray(payload.allowedScopes)
+    ? [...new Set(payload.allowedScopes.map(parseToolApprovalScope))]
+    : ['once'];
+
+  return {
+    approvalId,
+    threadId: threadId as PendingToolApprovalSummary['threadId'],
+    runId: runId as RunId,
+    ...(typeof payload.toolCallId === 'string' ? { toolCallId: payload.toolCallId } : {}),
+    toolName,
+    ...(argumentsObject ? { arguments: argumentsObject } : {}),
+    title: typeof payload.title === 'string' && payload.title ? payload.title : toolName,
+    detail: typeof payload.detail === 'string' && payload.detail ? payload.detail : '需要你的批准',
+    ...(typeof payload.path === 'string' ? { path: payload.path } : {}),
+    ...(typeof payload.command === 'string' ? { command: payload.command } : {}),
+    ...(risk ? { risk } : {}),
+    allowedScopes,
+    status: 'pending',
+    createdAt: event.occurredAt,
+  };
 }
 
 function browserWorkflowErrorCode(error: unknown): string | undefined {

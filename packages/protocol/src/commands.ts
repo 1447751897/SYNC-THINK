@@ -141,6 +141,8 @@ export type CommandType =
   | 'conversation.delete'
   | 'conversation.sendMessage'
   | 'conversation.compact'
+  | 'prompt.enhance'
+  | 'prompt.enhance.cancel'
   | 'conversation.listPendingToolApprovals'
   | 'conversation.decideToolApproval'
   | 'conversation.submitBrowserResult'
@@ -3706,6 +3708,34 @@ export interface ConversationSendMessageResponse {
   taskVersion: number;
   /** Present on first message — the auto-derived conversation title. */
   conversationTitle?: string;
+}
+
+/**
+ * Rewrite a composer draft without creating a conversation message or run.
+ * `requestId` is stable across the enhance/cancel pair and is independent of
+ * the command envelope id used by the transport.
+ */
+export interface PromptEnhancePayload {
+  requestId: string;
+  text: string;
+  /** Preferred catalog model. Runtime falls back to an available model when omitted or stale. */
+  modelId?: import('@sync-think/shared').ModelId;
+}
+
+export interface PromptEnhanceResponse {
+  requestId: string;
+  text: string;
+  /** Catalog model actually used for the rewrite. */
+  modelId: import('@sync-think/shared').ModelId;
+}
+
+export interface PromptEnhanceCancelPayload {
+  requestId: string;
+}
+
+export interface PromptEnhanceCancelResponse {
+  requestId: string;
+  cancelled: boolean;
 }
 
 /**

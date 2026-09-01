@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  DEFAULT_AGENT_PREFERENCES,
+  readAgentPreferences,
   readConversationGroups,
   readConversationLayoutPreference,
   readConversationTrackPreferences,
@@ -9,6 +11,7 @@ import {
   readThemePreference,
   readTraceCollapsedPreference,
   writeConversationGroups,
+  writeAgentPreferences,
   writeConversationLayoutPreference,
   writeConversationTrackPreferences,
   writeWorkspacePaneLayouts,
@@ -75,6 +78,44 @@ describe('ui-preferences (Locked IA §15.2 workspace prefs)', () => {
     expect(readTraceCollapsedPreference(s)).toBe(true);
     writeTraceCollapsedPreference(false, s);
     expect(readTraceCollapsedPreference(s)).toBe(false);
+  });
+
+  it('persists NewMax-style Agent defaults and rejects malformed values', () => {
+    const s = memoryStorage();
+    expect(readAgentPreferences(s)).toEqual(DEFAULT_AGENT_PREFERENCES);
+
+    writeAgentPreferences(
+      {
+        promptEnhancementEnabled: false,
+        promptEnhancementModelId: 'model-fast',
+        thinkingBudget: 'minimal',
+        collapseExecutionProcess: false,
+        showToolUse: false,
+        toolCallExpandedByDefault: true,
+      },
+      s,
+    );
+    expect(readAgentPreferences(s)).toEqual({
+      promptEnhancementEnabled: false,
+      promptEnhancementModelId: 'model-fast',
+      thinkingBudget: 'minimal',
+      collapseExecutionProcess: false,
+      showToolUse: false,
+      toolCallExpandedByDefault: true,
+    });
+
+    s.setItem(
+      UI_PREF_KEYS.agentPreferences,
+      JSON.stringify({
+        promptEnhancementEnabled: 'yes',
+        promptEnhancementModelId: 42,
+        thinkingBudget: 'impossible',
+        collapseExecutionProcess: 0,
+        showToolUse: null,
+        toolCallExpandedByDefault: 'true',
+      }),
+    );
+    expect(readAgentPreferences(s)).toEqual(DEFAULT_AGENT_PREFERENCES);
   });
 
   it('persists recent conversation section disclosure and pinned ids', () => {

@@ -12,7 +12,7 @@
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
 import { buildSafeCmdShimCommand, createKillOnCloseJob, type KernelJobObject } from '@sync-think/workers';
-import { resolveExecutablePath } from './detect.js';
+import { envWithRuntimeNode, resolveExecutablePath } from './detect.js';
 
 const DEFAULT_STDERR_TAIL_BYTES = 16 * 1024;
 
@@ -62,12 +62,12 @@ function buildSpawnTuple(
 export function startKernelProcess(options: KernelProcessOptions): KernelProcessHandle {
   const executablePath = resolveExecutablePath(options.command) ?? options.command;
   const { command, args, options: spawnTupleOptions } = buildSpawnTuple(executablePath, options.args);
-  const env = {
+  const env = envWithRuntimeNode({
     ...process.env,
     // Never leak the Electron runtime marker into a kernel subprocess.
     ...(process.env.ELECTRON_RUN_AS_NODE ? { ELECTRON_RUN_AS_NODE: undefined } : {}),
     ...(options.env ?? {}),
-  };
+  });
   const child = spawn(command, args, {
     cwd: options.cwd,
     env,

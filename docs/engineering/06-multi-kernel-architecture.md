@@ -383,14 +383,14 @@ Runtime MCP registry 是唯一目录源，按 Store、联网与视觉开关选�
 
 ### 9.1 应用私有版本 + 本地回退
 
-1. **探测顺序**：先读取 `<data>/kernels/active.json` 中经过包名、版本、根目录 containment 和文件存在校验的私有版本；Codex 再回退 Codex App 完整 runtime/PATH，Claude 再回退 Agent SDK bundled CLI，Pi 使用现有 PATH/安装引导。
-2. **检查更新**：关于页分别查询 npm registry 的 `@openai/codex` 与 `@anthropic-ai/claude-code` 最新版本，显示当前实际版本、私有激活版本和可用版本。检查不会修改执行版本。
+1. **探测顺序**：先读取 `<data>/kernels/active.json` 中经过包名、版本、根目录 containment 和文件存在校验的私有版本，并以该记录为已安装。`--version` 只用来确认或刷新版本号；探测失败时仍使用 manifest 版本，不把已激活的私有内核标成未安装。Codex 再回退 Codex App 完整 runtime/PATH，Claude 再回退 Agent SDK bundled CLI。Pi 只使用应用私有目录，不再探测或安装用户全局 `npm i -g pi`。探测 npm `.cmd` shim 时把 Runtime 自己的 Node 20 放到 PATH 前面，避免系统 Node 24 让私有前缀跑不起来。
+2. **检查更新**：关于页分别查询 npm registry 的 `@openai/codex`、`@anthropic-ai/claude-code` 与 `@earendil-works/pi-coding-agent` 最新版本，显示当前实际版本、私有激活版本和可用版本。进入关于页时自动检查全部三个包；每行刷新只查询该内核。检查不会修改执行版本。安装/升级成功后广播 `desktop:kernel-update-state`，Composer 立即重新探测并回显。
 3. **安装与激活**：使用 packaged Node 同目录的 `npm-cli.js` 安装到随机 staging；核对 package name/version/expected executable 后 rename 到版本目录，最后原子替换 `active.json`。下载、postinstall 或验证失败时旧 active manifest 不变。
-4. **首次安装与后续升级**：首次使用向导可选安装缺失的私有内核；跳过不影响进入应用。后续统一在关于页检查和升级。
+4. **首次安装与后续升级**：应用首次启动在后台自动安装缺失的私有内核；跳过向导不影响进入应用。后续统一在关于页检查和升级。
 5. **全会话生效**：激活不创建新会话。Codex 空闲 resident app-server 立即回收，活跃实例本轮结束后回收；Claude 下一轮重新创建 SDK adapter。两者下一轮都从原 thread/session 恢复。
-6. **不影响系统安装**：不写系统 npm prefix、不覆盖 Codex App 或用户 `claude`/`codex`，只修改 SYNC-THINK 数据目录。Runtime 每次启动 Kernel 时解析 active manifest，因此激活后不需要改全局 PATH。
+6. **不影响系统安装**：不写系统 npm prefix、不覆盖 Codex App 或用户 `claude`/`codex`/`pi`，只修改 SYNC-THINK 数据目录。Runtime 每次启动 Kernel 时解析 active manifest，因此激活后不需要改全局 PATH。
 7. **便携发布约束**：`resources/node` 必须包含 Node 20 与 `node_modules/npm/bin/npm-cli.js`，否则 release layout 校验失败。该 Node 用于 Runtime 与私有包安装；厂商原生 CLI 的实际运行要求由其二进制自身承担。
-8. **兜底**：native 内核始终可用；私有安装缺失或损坏时回退本地/bundled 版本，且不会把无效路径标成已激活。
+8. **兜底**：native 内核始终可用；Codex/Claude 私有安装缺失或损坏时回退本地/bundled 版本，且不会把无效路径标成已激活。Pi 没有本地回退，未私有安装时在选择器中显示未安装。
 
 ### 9.2 版本策略：显式检查、用户触发升级（不锁死版本）
 

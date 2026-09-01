@@ -18,9 +18,6 @@ import {
   ChevronDown,
   ChevronUp,
   Copy,
-  FileCode2,
-  FolderOpen,
-  ImagePlus,
   Info,
   Lock,
   LoaderCircle,
@@ -89,9 +86,7 @@ import {
   messageImagesFromAttachments,
   readFileAsDataUrl,
   removeAttachment,
-  stripMentionToken,
   type ComposeAttachment,
-  type MentionQuery,
   type MessageImage,
 } from './compose-mention.js';
 import {
@@ -125,12 +120,12 @@ import {
   resolveConversationSkillOwner,
 } from './compose-skill-selection.js';
 import { ComposeRequestQueue } from './ComposeRequestQueue.js';
-import { ComposerMenuHighlight } from './ComposerMenuHighlight.js';
 import { ComposerMcpMenu } from './ComposerMcpMenu.js';
 import { ComposerModeBanner } from './ComposerModeBanner.js';
 import { ComposerActiveModePill, ComposerModeKeywordHint } from './ComposerModeControls.js';
 import { ComposerApprovalStack } from './ComposerApprovalStack.js';
 import { ComposerEditor } from './ComposerEditor.js';
+import { PromptEnhancementAction, usePromptEnhancement } from './prompt-enhancement.js';
 import {
   ComposerSlashMenu,
   resolveComposerSlashMenuKeyboardAction,
@@ -159,18 +154,20 @@ import {
   IdentityPickerMenu,
   ModelPickerMenu,
   ModelTrigger,
-  NetworkSearchSetting,
   PERMISSION_MODE_COLLAPSED_TOOLBAR_LEVEL,
   PermissionMenu,
   REASONING_LABELS,
   SKILL_COLLAPSED_TOOLBAR_LEVEL,
-  resolveFloatingMenuStyle,
   useComposerToolbarCollapse,
   type IdentityOption,
   type KernelInstallState,
   type PermissionMode,
   type ReasoningEffort,
 } from './compose-toolbar.js';
+import {
+  applyManagedKernelSnapshotToInstallStates,
+  useManagedKernelUpdateSync,
+} from './managed-kernel-sync.js';
 import { TurnSkillControl } from './TurnSkillControl.js';
 import { keepListboxOptionVisible } from './compose-picker-scroll.js';
 import { FileChangesCard } from './ExecutionProcessBlock.js';
@@ -242,6 +239,8 @@ import {
   updateRunProcessMap,
 } from './run-process-state.js';
 import {
+  AGENT_PREFERENCES_CHANGED_EVENT,
+  readAgentPreferences,
   readConversationKernelOverride,
   readConversationModelOverride,
   readConversationNetworkEnabled,
@@ -250,6 +249,7 @@ import {
   writeConversationModelOverride,
   writeConversationNetworkEnabled,
   writeConversationReasoningEffort,
+  type AgentPreferences,
 } from '../ui-preferences.js';
 import type { RunActivityAuthority } from '../run-activity-authority.js';
 
@@ -376,6 +376,61 @@ export interface ChatMessage {
   /** Exact Skill versions selected for this user turn. */
   skillVersionIds?: string[];
   skills?: Array<{ skillVersionId: string; name: string }>;
+}
+
+interface CachedConversationPage {
+  messages: ChatMessage[];
+  hasMore: boolean;
+  nextCursor?: number;
+}
+
+const RECENT_CONVERSATION_CACHE_SIZE = 8;
+const RECENT_CONVERSATION_MESSAGE_LIMIT = 100;
+const recentConversationPages = new Map<string, CachedConversationPage>();
+
+function readRecentConversationPage(conversationId: string): CachedConversationPage | undefined {
+  const cached = recentConversationPages.get(conversationId);
+  if (!cached) return undefined;
+  // Refresh insertion order so the bounded map behaves as a small LRU cache.
+  recentConversationPages.delete(conversationId);
+  recentConversationPages.set(conversationId, cached);
+  return cached;
+}
+
+function cacheRecentConversationPage(conversationId: string, page: CachedConversationPage): void {
+  recentConversationPages.delete(conversationId);
+  recentConversationPages.set(conversationId, {
+    ...page,
+    messages: page.messages.slice(-RECENT_CONVERSATION_MESSAGE_LIMIT),
+  });
+  while (recentConversationPages.size > RECENT_CONVERSATION_CACHE_SIZE) {
+    const oldest = recentConversationPages.keys().next().value as string | undefined;
+    if (!oldest) break;
+    recentConversationPages.delete(oldest);
+  }
+}
+
+function ConversationLoadingSkeleton() {
+  return (
+    <div className="shell-chat-skeleton" role="status" aria-label="正在加载对话">
+      <span className="sr-only">正在加载对话</span>
+      <div className="shell-chat-skeleton__turn shell-chat-skeleton__turn--user" aria-hidden="true">
+        <span className="shell-chat-skeleton__line shell-chat-skeleton__line--short" />
+        <span className="shell-chat-skeleton__line shell-chat-skeleton__line--medium" />
+      </div>
+      <div
+        className="shell-chat-skeleton__turn shell-chat-skeleton__turn--assistant"
+        aria-hidden="true"
+      >
+        <span className="shell-chat-skeleton__avatar" />
+        <div className="shell-chat-skeleton__copy">
+          <span className="shell-chat-skeleton__line shell-chat-skeleton__line--long" />
+          <span className="shell-chat-skeleton__line shell-chat-skeleton__line--medium" />
+          <span className="shell-chat-skeleton__line shell-chat-skeleton__line--short" />
+        </div>
+      </div>
+    </div>
+  );
 }
 
 interface RunAgentIdentity {
@@ -1277,11 +1332,27 @@ export function ChatView({
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(
     (conversation.executionMode as PermissionMode) || 'full-access',
   );
+  const [agentPreferences, setAgentPreferences] = useState<AgentPreferences>(() =>
+    readAgentPreferences(),
+  );
   // Restore the conversation's own reasoning effort across switches/restarts;
   // each conversation keeps its chosen thinking intensity until changed again.
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>(
-    () => readConversationReasoningEffort(String(conversation.id)) ?? 'auto',
+    () =>
+      readConversationReasoningEffort(String(conversation.id)) ??
+      readAgentPreferences().thinkingBudget,
   );
+  useEffect(() => {
+    const syncAgentPreferences = () => {
+      const next = readAgentPreferences();
+      setAgentPreferences(next);
+      if (readConversationReasoningEffort(String(conversation.id)) === undefined) {
+        setReasoningEffort(next.thinkingBudget);
+      }
+    };
+    window.addEventListener(AGENT_PREFERENCES_CHANGED_EVENT, syncAgentPreferences);
+    return () => window.removeEventListener(AGENT_PREFERENCES_CHANGED_EVENT, syncAgentPreferences);
+  }, [conversation.id]);
   // Restore last explicit model pick for this conversation across restarts.
   const [modelOverride, setModelOverride] = useState<string>(
     () => readConversationModelOverride(String(conversation.id)) ?? '',
@@ -1346,7 +1417,10 @@ export function ChatView({
     });
   }, []);
   /** Paginated message store state. */
-  const [loadedMessages, setLoadedMessages] = useState<ChatMessage[]>([]);
+  const initialCachedPage = readRecentConversationPage(String(conversation.id));
+  const [loadedMessages, setLoadedMessages] = useState<ChatMessage[]>(
+    () => initialCachedPage?.messages ?? [],
+  );
   const [runProcessById, setRunProcessById] = useState<Map<string, RunProcessView>>(
     () => new Map(),
   );
@@ -1367,11 +1441,13 @@ export function ChatView({
   const updateRunProcess = useCallback((process: RunProcessView | null | undefined) => {
     setRunProcessById((previous) => updateRunProcessMap(previous, process));
   }, []);
-  const [hasMore, setHasMore] = useState(false);
-  const [nextCursor, setNextCursor] = useState<number | undefined>(undefined);
+  const [hasMore, setHasMore] = useState(() => initialCachedPage?.hasMore ?? false);
+  const [nextCursor, setNextCursor] = useState<number | undefined>(
+    () => initialCachedPage?.nextCursor,
+  );
   const [loadingMore, setLoadingMore] = useState(false);
   /** Whether the initial page load has completed (success or failure). */
-  const [initialLoaded, setInitialLoaded] = useState(false);
+  const [initialLoaded, setInitialLoaded] = useState(Boolean(initialCachedPage));
   /** Runtime-owned snapshot used by the ring and compact threshold. */
   const [contextStatus, setContextStatus] = useState<ConversationGetContextStatusResponse | null>(
     null,
@@ -1523,13 +1599,6 @@ export function ChatView({
     },
     [flushTransientFrames],
   );
-  /** Active @-mention query (null = picker closed). */
-  const [mention, setMention] = useState<MentionQuery | null>(null);
-  const [mentionFiles, setMentionFiles] = useState<
-    Array<{ path: string; name: string; kind: 'file' | 'dir' }>
-  >([]);
-  const [mentionIndex, setMentionIndex] = useState(0);
-  const [mentionLoading, setMentionLoading] = useState(false);
   /** Active / slash-command query (null = menu closed). Mutually exclusive with @. */
   const [slash, setSlash] = useState<SlashQuery | null>(null);
   const [slashIndex, setSlashIndex] = useState(-1);
@@ -1607,15 +1676,12 @@ export function ChatView({
   const suppressPickerRefreshRef = useRef(false);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const composeRef = useRef<HTMLDivElement>(null);
-  const mentionListRef = useRef<HTMLDivElement>(null);
-  const mentionNetworkSettingRef = useRef<HTMLDivElement>(null);
   const slashListRef = useRef<HTMLDivElement>(null);
   const lastSlashQueryRef = useRef('');
   if (slash) lastSlashQueryRef.current = slash.query;
   const permissionBtnRef = useRef<HTMLButtonElement>(null);
   const modelBtnRef = useRef<HTMLButtonElement>(null);
   const identityBtnRef = useRef<HTMLButtonElement>(null);
-  const [mentionPopStyle, setMentionPopStyle] = useState<React.CSSProperties | null>(null);
   const [slashPopStyle, setSlashPopStyle] = useState<React.CSSProperties | null>(null);
   const commitQueuedComposeRequests = useCallback(
     (update: (current: readonly QueuedComposeRequest[]) => QueuedComposeRequest[]): void => {
@@ -1665,17 +1731,19 @@ export function ChatView({
     setDesktopWaitingStatus('idle');
     setDesktopWaitingError(undefined);
     setBusyDesktopCommandId(undefined);
-    setLoadedMessages([]);
+    const conversationId = String(conversation.id);
+    const cachedPage = readRecentConversationPage(conversationId);
+    setLoadedMessages(cachedPage?.messages ?? []);
     setRunProcessById(new Map());
     inFlightRunProcessesRef.current.clear();
     clearRunProcessRetryState();
     processLoadGenerationRef.current += 1;
     loadedMessagesConversationIdRef.current = undefined;
-    setHasMore(false);
-    setNextCursor(undefined);
+    setHasMore(cachedPage?.hasMore ?? false);
+    setNextCursor(cachedPage?.nextCursor);
     setLoadingMore(false);
     loadingMoreRef.current = false;
-    setInitialLoaded(false);
+    setInitialLoaded(Boolean(cachedPage));
     contextStatusLoadGenerationRef.current += 1;
     setContextStatus(null);
     usageSummaryLoadGenerationRef.current += 1;
@@ -1694,8 +1762,7 @@ export function ChatView({
     transientResetGenerationRef.current += 1;
     threadConversationIdRef.current = undefined;
     messageLoadGenerationRef.current += 1;
-    setMention(null);
-    setMentionFiles([]);
+    setComposerAddOpen(false);
     setSlash(null);
     setSlashIndex(-1);
     setSlashCategory('all');
@@ -1704,7 +1771,6 @@ export function ChatView({
     setMcpMenuOpen(false);
     setMcpMenuStyle(null);
     setAttachments([]);
-    const conversationId = String(conversation.id);
     const queuedDispatchState = queuedDispatchByConversationRef.current.get(conversationId);
     setQueuedComposeRequests(readQueuedComposeRequests(conversationId));
     setDispatchingQueuedRequestId(queuedDispatchState?.dispatching?.requestId);
@@ -1717,7 +1783,10 @@ export function ChatView({
     setModelOverride(readConversationModelOverride(String(conversation.id)) ?? '');
     setRetryAfterModelPickMessageId(undefined);
     setKernelOverride(readConversationKernelOverride(String(conversation.id)) ?? 'native');
-    setReasoningEffort(readConversationReasoningEffort(String(conversation.id)) ?? 'auto');
+    setReasoningEffort(
+      readConversationReasoningEffort(String(conversation.id)) ??
+        readAgentPreferences().thinkingBudget,
+    );
     setNetEnabled(readConversationNetworkEnabled(String(conversation.id)) ?? true);
     // Always land at the latest message when opening a chat — no animated scroll.
     stickToBottomRef.current = true;
@@ -1805,6 +1874,17 @@ export function ChatView({
     void detectKernels();
   }, [conversation.id, detectKernels]);
 
+  const handleManagedKernelSnapshot = useCallback(
+    (snapshot: Parameters<typeof applyManagedKernelSnapshotToInstallStates>[1]) => {
+      setKernelInstallStates((current) =>
+        applyManagedKernelSnapshotToInstallStates(current, snapshot),
+      );
+      void detectKernels();
+    },
+    [detectKernels],
+  );
+  useManagedKernelUpdateSync(handleManagedKernelSnapshot);
+
   const installKernel = useCallback(
     (kernelId: string) => {
       const existing = kernelInstallPromisesRef.current.get(kernelId);
@@ -1835,7 +1915,7 @@ export function ChatView({
           }));
           const detected = await detectKernels();
           if (!detected?.some((kernel) => kernel.kernelId === kernelId && kernel.installed)) {
-            throw new Error('安装完成，但未检测到 Pi，请检查 npm 全局目录是否在 PATH 中');
+            throw new Error('安装完成，但仍未检测到内核');
           }
           if (!kernelInstallMountedRef.current) return;
           setKernelInstallStates((current) => ({
@@ -1944,11 +2024,23 @@ export function ChatView({
           setLoadedMessages((prev) => {
             const byId = new Map<string, ChatMessage>();
             for (const message of [...converted, ...prev]) byId.set(message.id, message);
-            return orderDurableMessagesForDisplay([...byId.values()]);
+            const merged = orderDurableMessagesForDisplay([...byId.values()]);
+            cacheRecentConversationPage(conversationId, {
+              messages: merged,
+              hasMore: res.hasMore,
+              nextCursor: res.nextCursor,
+            });
+            return merged;
           });
         } else {
           // Initial / terminal refresh — already in chronological order (ASC).
-          setLoadedMessages(orderDurableMessagesForDisplay(converted));
+          const ordered = orderDurableMessagesForDisplay(converted);
+          cacheRecentConversationPage(conversationId, {
+            messages: ordered,
+            hasMore: res.hasMore,
+            nextCursor: res.nextCursor,
+          });
+          setLoadedMessages(ordered);
         }
         setHasMore(res.hasMore);
         setNextCursor(res.nextCursor);
@@ -4086,98 +4178,6 @@ export function ChatView({
   const projectFolder = boundWorkspace?.folderPath?.trim();
   const hasProjectFolder = Boolean(projectFolder);
 
-  // Position the @ picker as a fixed portal above the compose box so parent
-  // overflow:hidden (chat column / page flex) cannot clip it.
-  useLayoutEffect(() => {
-    if (!mention) {
-      setMentionPopStyle(null);
-      return;
-    }
-    const update = () => {
-      const el = composeRef.current;
-      if (!el) return;
-      const r = el.getBoundingClientRect();
-      setMentionPopStyle(
-        resolveFloatingMenuStyle(
-          {
-            top: r.top,
-            bottom: r.bottom,
-            left: r.left,
-            right: r.right,
-            width: r.width,
-            height: r.height,
-          },
-          { width: window.innerWidth, height: window.innerHeight },
-          { width: r.width, maxHeight: 360 },
-        ),
-      );
-    };
-    update();
-    window.addEventListener('resize', update);
-    window.addEventListener('scroll', update, true);
-    return () => {
-      window.removeEventListener('resize', update);
-      window.removeEventListener('scroll', update, true);
-    };
-  }, [mention]);
-
-  // Load project files when an @-mention is active.
-  useEffect(() => {
-    if (!mention) {
-      setMentionFiles([]);
-      setMentionLoading(false);
-      return;
-    }
-    if (!projectFolder) {
-      setMentionFiles([]);
-      setMentionLoading(false);
-      return;
-    }
-    const api = bridge();
-    if (!api?.listProjectFiles) {
-      setMentionFiles([]);
-      return;
-    }
-    let cancelled = false;
-    setMentionLoading(true);
-    const handle = window.setTimeout(() => {
-      void api
-        .listProjectFiles({ root: projectFolder, query: mention.query, maxEntries: 40 })
-        .then((result: { files?: Array<{ path: string; name: string; kind: 'file' | 'dir' }> }) => {
-          if (cancelled) return;
-          setMentionFiles(result.files ?? []);
-          setMentionIndex(0);
-          setMentionLoading(false);
-        })
-        .catch(() => {
-          if (cancelled) return;
-          setMentionFiles([]);
-          setMentionLoading(false);
-        });
-    }, 80);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(handle);
-    };
-  }, [mention, projectFolder]);
-
-  const closeMention = useCallback(() => {
-    setMention(null);
-    setMentionFiles([]);
-    setMentionIndex(0);
-  }, []);
-
-  const dismissMentionToInput = useCallback(() => {
-    suppressPickerRefreshRef.current = true;
-    closeMention();
-    window.requestAnimationFrame(() => {
-      inputRef.current?.focus();
-      window.requestAnimationFrame(() => {
-        suppressPickerRefreshRef.current = false;
-      });
-    });
-  }, [closeMention]);
-
   const closeSlash = useCallback(() => {
     setSlash(null);
     setSlashIndex(-1);
@@ -4186,12 +4186,11 @@ export function ChatView({
   }, []);
 
   const closeComposePickers = useCallback(() => {
-    closeMention();
     closeSlash();
     setMcpMenuOpen(false);
     setComposerAddOpen(false);
     setMenu(null);
-  }, [closeMention, closeSlash]);
+  }, [closeSlash]);
 
   const slashCommands = useMemo(() => (slash ? filterSlashCommands(slash.query) : []), [slash]);
   const filteredSlashSkills = useMemo(() => {
@@ -4249,7 +4248,6 @@ export function ChatView({
     !goalCommandPreview &&
     interactionMode !== 'plan' &&
     !visibleGoal &&
-    !mention &&
     !slashMenuOpen &&
     !mcpMenuOpen &&
     !composerAddOpen &&
@@ -4425,20 +4423,8 @@ export function ChatView({
     (enabled: boolean) => {
       setNetEnabled(enabled);
       writeConversationNetworkEnabled(String(conversation.id), enabled);
-      if (mention) {
-        const stripped = stripMentionToken(input, mention);
-        setInput(stripped.text);
-        closeComposePickers();
-        window.requestAnimationFrame(() => {
-          const el = inputRef.current;
-          if (!el) return;
-          resizeComposeInput();
-          el.focus();
-          el.setSelectionRange(stripped.caret, stripped.caret);
-        });
-      }
     },
-    [closeComposePickers, conversation.id, input, mention, resizeComposeInput],
+    [conversation.id],
   );
 
   /** NewMax: manual /compact — model summary path, no chat turn. */
@@ -5025,33 +5011,6 @@ export function ChatView({
     }
   }, [closeComposePickers, pendingRiskGoal, resizeComposeInput, startGoalFromShortcut]);
 
-  /** NewMax: selecting a file becomes an attachment chip, not inline @path text. */
-  const selectMentionFile = useCallback(
-    (file: { path: string; name?: string; kind: 'file' | 'dir' }) => {
-      const attachment: ComposeAttachment = {
-        path: file.path,
-        name: file.name || fileNameFromPath(file.path),
-        kind: file.kind,
-      };
-      setAttachments((prev) => addAttachment(prev, attachment));
-      if (mention) {
-        const stripped = stripMentionToken(input, mention);
-        setInput(stripped.text);
-        window.requestAnimationFrame(() => {
-          const el = inputRef.current;
-          if (!el) return;
-          el.focus();
-          el.setSelectionRange(stripped.caret, stripped.caret);
-          computeTextareaHeight(el, 36, 200);
-        });
-      } else {
-        inputRef.current?.focus();
-      }
-      closeComposePickers();
-    },
-    [closeComposePickers, input, mention],
-  );
-
   const addImageFiles = useCallback(
     async (files: FileList | File[]) => {
       const remainingSlots = Math.max(
@@ -5162,18 +5121,15 @@ export function ChatView({
   );
 
   const updatePickersFromCaret = useCallback((text: string, caret: number) => {
-    if (suppressPickerRefreshRef.current) return;
-    // @ takes priority when both could match; mutually exclusive menus.
+    // @ opens the shared + action sheet; / remains the slash/Skill palette.
     const nextMention = detectMentionQuery(text, caret);
     if (nextMention) {
-      setMention(nextMention);
+      setComposerAddOpen(true);
       setSlash(null);
       setSlashIndex(-1);
       return;
     }
-    setMention(null);
-    setMentionFiles([]);
-    setMentionIndex(0);
+    setComposerAddOpen(false);
     const nextSlash = detectSlashQuery(text, caret);
     setSlash(nextSlash);
     setSlashIndex(nextSlash ? 0 : -1);
@@ -5192,14 +5148,17 @@ export function ChatView({
       const caret = prefix.length + token.length;
       setMenu(null);
       setMcpMenuOpen(false);
+      suppressPickerRefreshRef.current = true;
       setInput(next);
       updatePickersFromCaret(next, caret);
       window.requestAnimationFrame(() => {
         resizeComposeInput();
         const inputElement = inputRef.current;
-        if (!inputElement) return;
-        inputElement.focus();
-        inputElement.setSelectionRange(caret, caret);
+        if (inputElement) {
+          inputElement.focus();
+          inputElement.setSelectionRange(caret, caret);
+        }
+        suppressPickerRefreshRef.current = false;
       });
     },
     [input, resizeComposeInput, updatePickersFromCaret],
@@ -5209,18 +5168,19 @@ export function ChatView({
     (value: string, caret: number) => {
       setMcpMenuOpen(false);
       setInput(value);
+      if (suppressPickerRefreshRef.current) return;
       if (composerAddOpen) {
-        closeMention();
         closeSlash();
         return;
       }
       updatePickersFromCaret(value, caret);
     },
-    [closeMention, closeSlash, composerAddOpen, updatePickersFromCaret],
+    [closeSlash, composerAddOpen, updatePickersFromCaret],
   );
 
   const handleEditorSelectionChange = useCallback(
     (caret: number) => {
+      if (suppressPickerRefreshRef.current) return;
       if (composerAddOpen) return;
       // ComposerEditor publishes selection in the same native input event as
       // the new text. Read the DOM value first so picker detection never sees
@@ -5241,55 +5201,6 @@ export function ChatView({
         e.preventDefault();
         setMcpMenuOpen(false);
         return;
-      }
-      // @-picker navigation takes priority while open.
-      if (mention) {
-        const mentionItemCount = 2 + mentionFiles.length;
-        if (e.key === 'Escape') {
-          e.preventDefault();
-          closeMention();
-          return;
-        }
-        if (e.key === 'ArrowDown') {
-          e.preventDefault();
-          setMentionIndex((i) => (i + 1) % mentionItemCount);
-          return;
-        }
-        if (e.key === 'ArrowUp') {
-          e.preventDefault();
-          setMentionIndex((i) => (i - 1 + mentionItemCount) % mentionItemCount);
-          return;
-        }
-        if (e.key === 'Tab') {
-          const segments = mentionNetworkSettingRef.current?.querySelectorAll<HTMLButtonElement>(
-            '.shell-mention-setting__segment',
-          );
-          const target = segments?.[e.shiftKey ? segments.length - 1 : 0];
-          if (target) {
-            e.preventDefault();
-            target.focus();
-            return;
-          }
-        }
-        if (e.key === 'Enter') {
-          if (mentionIndex === 0) {
-            e.preventDefault();
-            closeComposePickers();
-            imageInputRef.current?.click();
-            return;
-          }
-          if (mentionIndex === 1) {
-            e.preventDefault();
-            handleNetworkSettingChange(!netEnabled);
-            return;
-          }
-          const selected = mentionFiles[mentionIndex - 2];
-          if (selected) {
-            e.preventDefault();
-            selectMentionFile(selected);
-            return;
-          }
-        }
       }
 
       // / slash-command menu navigation.
@@ -5334,7 +5245,7 @@ export function ChatView({
       }
 
       // Esc while the model is streaming = stop generation (NewMax parity).
-      if (e.key === 'Escape' && !mention && !slash) {
+      if (e.key === 'Escape' && !slash) {
         if (projected.streaming && !stopping) {
           e.preventDefault();
           void handleStop();
@@ -5350,19 +5261,12 @@ export function ChatView({
     [
       acceptModeKeywordHint,
       availableSlashCategories,
-      closeMention,
       closeSlash,
       handleSend,
       handleStop,
-      mention,
-      mentionFiles,
-      mentionIndex,
       modeKeywordHint,
       mcpMenuOpen,
-      netEnabled,
       projected.streaming,
-      handleNetworkSettingChange,
-      selectMentionFile,
       selectSlashCommand,
       slash,
       slashCandidateItemCount,
@@ -5588,6 +5492,22 @@ export function ChatView({
     currentReasoningEffort: reasoningEffort,
   });
   const composerModelLabel = configuredModelLabel(composerModelSelection.modelId);
+  const promptEnhancement = usePromptEnhancement({
+    value: input,
+    onValueChange: setInput,
+    enabled: agentPreferences.promptEnhancementEnabled,
+    configuredModelId: agentPreferences.promptEnhancementModelId,
+    currentModelId: activeModelId,
+    models,
+    disabled:
+      sending ||
+      runIsActive ||
+      Boolean(composerPendingAsk) ||
+      goalIsActive ||
+      conversationPlan?.state === 'draft' ||
+      pendingApprovals.length > 0 ||
+      compactProgress?.status === 'running',
+  });
   const updatePlanActSetting = (next: ComposerPlanActSetting) => {
     const previous = planActSetting;
     setPlanActSetting(next);
@@ -6042,13 +5962,15 @@ export function ChatView({
               }
             }}
           >
-            {messages.length === 0 && !showTyping && (
-              <div className="flex h-full items-center justify-center">
-                <span className="text-[13px] text-text-faint">
-                  {!initialLoaded ? '加载中…' : '发送消息开始对话'}
-                </span>
-              </div>
-            )}
+            {messages.length === 0 && !showTyping ? (
+              !initialLoaded ? (
+                <ConversationLoadingSkeleton />
+              ) : (
+                <div className="flex h-full items-center justify-center">
+                  <span className="text-[13px] text-text-faint">发送消息开始对话</span>
+                </div>
+              )
+            ) : null}
             {/* Keep message column and compose at the same content width. */}
             <div ref={messagesContentRef} className="shell-chat-content mx-auto flex flex-col">
               {loadingMore && (
@@ -6122,6 +6044,7 @@ export function ChatView({
                       msg.kernelId ?? (msg.runId ? runKernelById.get(String(msg.runId)) : undefined)
                     }
                     skillNameByVersionId={skillNameByVersionId}
+                    agentPreferences={agentPreferences}
                   />
                 </div>
               ))}
@@ -6169,6 +6092,7 @@ export function ChatView({
                       msg.kernelId ?? (msg.runId ? runKernelById.get(String(msg.runId)) : undefined)
                     }
                     skillNameByVersionId={skillNameByVersionId}
+                    agentPreferences={agentPreferences}
                     dismissLocalError={
                       localErrors.some((error) => error.id === msg.id)
                         ? (messageId) =>
@@ -6383,105 +6307,6 @@ export function ChatView({
                   />,
                   document.body,
                 )}
-              {/* @ file picker — portal so chat column overflow cannot clip it */}
-              {mention &&
-                mentionPopStyle &&
-                typeof document !== 'undefined' &&
-                createPortal(
-                  <div
-                    ref={mentionListRef}
-                    className="shell-mention-pop shell-mention-pop--context shell-mention-pop--portal"
-                    style={mentionPopStyle}
-                    data-testid="compose-mention-pop"
-                    role="dialog"
-                    aria-label="添加上下文和设置"
-                  >
-                    <ComposerMenuHighlight
-                      containerRef={mentionListRef}
-                      activeIndex={mentionIndex}
-                    />
-                    <div className="shell-mention-pop__section-label">来源与上下文</div>
-                    <button
-                      type="button"
-                      className="shell-mention-pop__upload"
-                      data-composer-menu-index={0}
-                      data-active={mentionIndex === 0 ? '1' : '0'}
-                      onMouseEnter={() => setMentionIndex(0)}
-                      onMouseDown={(event) => {
-                        event.preventDefault();
-                        closeComposePickers();
-                        imageInputRef.current?.click();
-                      }}
-                    >
-                      <ImagePlus size={13} aria-hidden="true" />
-                      <span>上传图片</span>
-                      <span className="shell-mention-pop__upload-hint">PNG / JPG</span>
-                    </button>
-                    <div
-                      className="shell-mention-pop__settings"
-                      data-composer-menu-index={1}
-                      onMouseEnter={() => setMentionIndex(1)}
-                    >
-                      <NetworkSearchSetting
-                        enabled={netEnabled}
-                        rootRef={mentionNetworkSettingRef}
-                        onDismiss={dismissMentionToInput}
-                        onChange={handleNetworkSettingChange}
-                      />
-                    </div>
-                    <div className="shell-mention-pop__divider" aria-hidden="true" />
-                    <div className="shell-mention-pop__section-label">工作区文件</div>
-                    <div
-                      className="shell-mention-pop__files"
-                      role="listbox"
-                      aria-label="工作区文件"
-                    >
-                      {!hasProjectFolder ? (
-                        <div className="shell-mention-pop__empty">未绑定项目文件夹</div>
-                      ) : mentionLoading ? (
-                        <div className="shell-mention-pop__empty">搜索文件…</div>
-                      ) : mentionFiles.length === 0 ? (
-                        <div className="shell-mention-pop__empty">
-                          {mention.query ? '无匹配文件' : '输入以过滤项目文件'}
-                        </div>
-                      ) : (
-                        mentionFiles.map((file, index) => (
-                          <button
-                            key={`${file.kind}:${file.path}`}
-                            type="button"
-                            role="option"
-                            aria-selected={index + 2 === mentionIndex}
-                            data-composer-menu-index={index + 2}
-                            className={`shell-mention-pop__item ${
-                              index + 2 === mentionIndex ? 'is-active' : ''
-                            }`}
-                            onMouseEnter={() => setMentionIndex(index + 2)}
-                            onMouseDown={(ev) => {
-                              ev.preventDefault();
-                              selectMentionFile(file);
-                            }}
-                          >
-                            <span className="shell-mention-pop__icon">
-                              {file.kind === 'dir' ? (
-                                <FolderOpen size={13} />
-                              ) : (
-                                <FileCode2 size={13} />
-                              )}
-                            </span>
-                            <span className="shell-mention-pop__path" title={file.path}>
-                              {file.path}
-                            </span>
-                            <span className="shell-mention-pop__kind">
-                              {file.kind === 'dir' ? '目录' : '文件'}
-                            </span>
-                          </button>
-                        ))
-                      )}
-                    </div>
-                    <div className="shell-composer-menu__hint">输入以搜索来源和文件</div>
-                  </div>,
-                  document.body,
-                )}
 
               <ComposeRequestQueue
                 items={queuedComposeRequests}
@@ -6501,47 +6326,53 @@ export function ChatView({
                   onSettled={() => setPendingAsk(undefined)}
                 />
               ) : (
-                <ComposerEditor
-                  value={input}
-                  inputElementRef={inputRef}
-                  inputTestId="compose-input"
-                  testId="conversation-composer-editor"
-                  placeholder={
-                    hasProjectFolder
-                      ? '输入消息…（输入 @ 引用文件，/ 打开快捷面板）'
-                      : '输入消息…（输入 / 打开快捷面板）'
-                  }
-                  attachments={attachments}
-                  selectedSkills={selectedSlashSkills}
-                  minHeight={36}
-                  maxHeight={200}
-                  disabled={compactProgress?.status === 'running'}
-                  goalRunning={goalIsActive}
-                  onChange={(value, selection) => handleInputChange(value, selection.start)}
-                  onSelectionChange={({ start }) => handleEditorSelectionChange(start)}
-                  onKeyDown={handleKeyDown}
-                  onPaste={handlePaste}
-                  onOpenAttachment={(attachment) => {
-                    if (attachment.kind === 'image' && attachment.previewUrl) {
-                      setLightbox({
-                        id: attachment.path,
-                        name: attachment.name,
-                        url: attachment.previewUrl,
-                        mimeType: attachment.mimeType,
-                      });
-                      return;
+                <div className="shell-compose__editor-area">
+                  <ComposerEditor
+                    value={input}
+                    inputElementRef={inputRef}
+                    inputTestId="compose-input"
+                    testId="conversation-composer-editor"
+                    placeholder={
+                      hasProjectFolder
+                        ? '输入消息…（输入 @ 引用文件，/ 打开快捷面板）'
+                        : '输入消息…（输入 / 打开快捷面板）'
                     }
-                    if (attachment.kind === 'file') onOpenFile?.(attachment.path);
-                  }}
-                  onRemoveAttachment={(path) =>
-                    setAttachments((current) => removeAttachment(current, path))
-                  }
-                  onRemoveSkill={(skillVersionId) =>
-                    setSelectedSkillVersionIds((current) =>
-                      current.filter((selected) => selected !== skillVersionId),
-                    )
-                  }
-                />
+                    attachments={attachments}
+                    selectedSkills={selectedSlashSkills}
+                    minHeight={36}
+                    maxHeight={200}
+                    disabled={compactProgress?.status === 'running'}
+                    goalRunning={goalIsActive}
+                    onChange={(value, selection) => handleInputChange(value, selection.start)}
+                    onSelectionChange={({ start }) => handleEditorSelectionChange(start)}
+                    onKeyDown={handleKeyDown}
+                    onPaste={handlePaste}
+                    onOpenAttachment={(attachment) => {
+                      if (attachment.kind === 'image' && attachment.previewUrl) {
+                        setLightbox({
+                          id: attachment.path,
+                          name: attachment.name,
+                          url: attachment.previewUrl,
+                          mimeType: attachment.mimeType,
+                        });
+                        return;
+                      }
+                      if (attachment.kind === 'file') onOpenFile?.(attachment.path);
+                    }}
+                    onRemoveAttachment={(path) =>
+                      setAttachments((current) => removeAttachment(current, path))
+                    }
+                    onRemoveSkill={(skillVersionId) =>
+                      setSelectedSkillVersionIds((current) =>
+                        current.filter((selected) => selected !== skillVersionId),
+                      )
+                    }
+                  />
+                  <PromptEnhancementAction
+                    enhancement={promptEnhancement}
+                    testId="compose-prompt-enhance"
+                  />
+                </div>
               )}
 
               <input
@@ -7157,6 +6988,7 @@ const MessageBubble = memo(function MessageBubble({
   onOpenImage,
   kernelId,
   skillNameByVersionId,
+  agentPreferences,
   dismissLocalError,
 }: {
   message: ChatMessage;
@@ -7176,6 +7008,7 @@ const MessageBubble = memo(function MessageBubble({
   /** Kernel that produced this turn (native/empty → no badge). */
   kernelId?: string;
   skillNameByVersionId?: ReadonlyMap<string, string>;
+  agentPreferences: AgentPreferences;
   /** Dismiss callback for transient local diagnostics. */
   dismissLocalError?: (messageId: string) => void;
 }) {
@@ -7443,6 +7276,9 @@ const MessageBubble = memo(function MessageBubble({
           startedAt={processView?.startedAt ?? timelineTiming.startedAt}
           completedAt={processView?.completedAt ?? timelineTiming.completedAt}
           durationMs={processView?.durationMs}
+          collapseExecutionProcess={agentPreferences.collapseExecutionProcess}
+          showToolUse={agentPreferences.showToolUse}
+          toolCallExpandedByDefault={agentPreferences.toolCallExpandedByDefault}
           onOpenChange={onOpenChange}
           supplementalContent={
             message.processStatus ||

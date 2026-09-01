@@ -36,12 +36,18 @@ import {
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import clsx from 'clsx';
-import { BrowserWorkflowPanel, type BrowserWorkflowDraftContext } from './BrowserWorkflowPanel.js';
+import {
+  BrowserWorkflowPanel,
+  type BrowserWorkflowAiTaskRequest,
+  type BrowserWorkflowDraftContext,
+} from './BrowserWorkflowPanel.js';
 
 type Feedback = { kind: 'success' | 'error'; text: string };
 type BrowserView = 'tasks' | 'sessions' | 'recordings';
 
-export function BrowserStage(): JSX.Element {
+export function BrowserStage(
+  props: { onStartAiTask?(request: BrowserWorkflowAiTaskRequest): void } = {},
+): JSX.Element {
   const [profiles, setProfiles] = useState<BrowserProfileSummary[]>([]);
   const [activeProfileId, setActiveProfileId] = useState<string>();
   const [sessions, setSessions] = useState<BrowserSiteSessionSummary[]>([]);
@@ -560,6 +566,7 @@ export function BrowserStage(): JSX.Element {
               key={activeProfile.id}
               profile={activeProfile}
               refreshToken={workflowRefreshToken}
+              onStartAiTask={props.onStartAiTask}
               onRecordWorkflow={(context) => {
                 setWorkflowDraft(context);
                 setView('recordings');

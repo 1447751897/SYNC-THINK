@@ -247,6 +247,10 @@ import type {
   CreateAgentVersionResponse,
   ConversationSendMessagePayload,
   ConversationSendMessageResponse,
+  PromptEnhancePayload,
+  PromptEnhanceResponse,
+  PromptEnhanceCancelPayload,
+  PromptEnhanceCancelResponse,
   ConversationTransientFrame,
   ConversationTransientSnapshot,
 } from '@sync-think/protocol';
@@ -460,6 +464,10 @@ declare global {
         sendConversationMessage(
           payload: ConversationSendMessagePayload,
         ): Promise<ConversationSendMessageResponse>;
+        enhancePrompt(payload: PromptEnhancePayload): Promise<PromptEnhanceResponse>;
+        cancelPromptEnhancement(
+          payload: PromptEnhanceCancelPayload,
+        ): Promise<PromptEnhanceCancelResponse>;
         compactConversation(
           payload: import('@sync-think/protocol').ConversationCompactPayload,
         ): Promise<import('@sync-think/protocol').ConversationCompactResponse>;

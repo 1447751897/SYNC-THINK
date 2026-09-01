@@ -1,4 +1,4 @@
-export type ManagedKernelUpdateId = 'codex' | 'claude-code';
+export type ManagedKernelUpdateId = 'codex' | 'claude-code' | 'pi';
 
 export type ManagedKernelUpdatePhase =
   'idle' | 'checking' | 'available' | 'up-to-date' | 'installing' | 'installed' | 'error';
@@ -28,8 +28,11 @@ export interface ManagedKernelUpdateActionResult {
 
 export interface ManagedKernelUpdateBridge {
   getState(): Promise<ManagedKernelUpdateSnapshot>;
-  checkForUpdates(): Promise<ManagedKernelUpdateActionResult>;
+  checkForUpdates(payload?: {
+    kernelId: ManagedKernelUpdateId;
+  }): Promise<ManagedKernelUpdateActionResult>;
   installUpdate(payload: {
     kernelId: ManagedKernelUpdateId;
   }): Promise<ManagedKernelUpdateActionResult>;
+  subscribeState?(listener: (snapshot: ManagedKernelUpdateSnapshot) => void): () => void;
 }

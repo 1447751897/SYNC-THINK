@@ -1,3 +1,69 @@
+## 2026-08-31：`@` 与加号共用同一动作表
+
+### Changed
+
+- 输入 `@` 不再打开旧的「来源与上下文」面板，改为与加号相同的 NewMax 动作表：附加文件、规划、目标、会议纪要、联网搜索和工作区文件。
+- `@` 后继续输入会按文件名过滤；选中动作或文件会吃掉 `@` 查询片段。
+
+### Verification
+
+- Desktop `ComposerAddMenu`、`ChatView.turn-skill`、`ChatView.usage`、`ShellApp` `@` 空态定向回归。
+- Desktop `typecheck` 通过。
+
+## 2026-08-31：取消每轮 8 个 Skill 上限
+
+### Changed
+
+- 对齐 NewMax：Composer 可勾选当前目录里的全部 Skill，不再显示或强制 `n/8`。
+- 协议、Run 选择、Context Packet 和自动化 Step 都注入本轮已解析的完整集合；Agent 装备同样取消 8 个上限。
+- 仅保留 512 项载荷边界，防止异常大数组，不作为产品配额。
+
+### Verification
+
+- Protocol `skill-selection` 3、Core `run-skill-selection` + `context-packet` 39、Desktop `TurnSkillControl` / `compose-skill-selection` / `ChatView.turn-skill` 48。
+- Protocol build、Core / Runtime / Desktop `typecheck` 通过。
+
+## 2026-08-31：设置页完成底栏贴角修复
+
+### Fixed
+
+- 设置页右下角完成按钮不再贴着弹窗圆角：底栏改为随内容增高、与正文同色同 28px 内边距，并加顶部分隔。守护进程并发滑块不再把数值挤出卡片。
+
+### Verification
+
+- Desktop `SettingsPage` 布局合同覆盖底栏 grid / padding / 滑块宽度。
+
+## 2026-08-31：Pi 编码内核探测修复与关于页内核行样式
+
+### Fixed
+
+- Pi 私有安装改为 `@earendil-works/pi-coding-agent`。此前误装 npm 数学库 `pi@2.0.5`，关于页显示已激活但 Composer 探测不到真实内核。
+- 私有内核激活后清掉选择器里残留的安装失败态；已检测到的内核优先显示版本徽章。
+- Composer 不再要求 `pi --version` 成功才承认私有 Pi。关于页已激活的记录即可视为已安装；菜单里点安装后因探测失败出现的「安装完成，但仍未检测到内核」会消失。
+- 探测/启动 npm `.cmd` shim 时使用 Runtime 自己的 Node 20，避免系统 PATH 上的更新 Node 让私有内核探测失败。
+
+### Changed
+
+- 关于页核心运行环境与应用更新区同宽对齐：每行使用 GPT / ClaudeCode / Pi 品牌 logo，进入页面自动检查全部三个包，每行刷新只检查该内核，安装/升级使用与应用更新相同的全宽描边按钮。
+
+### Verification
+
+- Desktop 定向回归：KernelUpdatePanel、compose-toolbar、managed-kernel-sync、kernel-update-service、kernel-update-wiring。
+- Runtime `managed-kernel` 覆盖拒绝 npm 数学库 `pi`。
+
+## 2026-08-31：私有内核版本即时回显与首次启动自动安装
+
+### Changed
+
+- 关于页将 Pi 纳入与 Codex / Claude Code 相同的应用私有安装通道；Pi 不再执行 `npm i -g pi`，也不再回退用户全局 PATH。
+- 首次启动在后台自动下载尚未激活的私有 Codex、Claude Code 和 Pi，不改动系统全局安装，也不阻塞进入应用。
+- 关于页检查/安装成功后广播内核状态；Composer 内核菜单立即重新探测并回显新版本，不必重进会话。
+
+### Verification
+
+- Desktop 定向回归：`kernel-update-service` 5、`managed-kernel-sync` 2、`KernelUpdatePanel` 3、`FirstLaunchGuide` 5、`compose-toolbar` 20、`ChatView.kernel` 12、install/update wiring 4，共 51 项通过。
+- Runtime `managed-kernel` / `registry` / `detect` 17 项通过；Desktop 与 Runtime `typecheck` 通过。
+
 ## 2026-08-31：Composer、Plan 与 Goal 按 NewMax 权威实现重构
 
 ### Changed
@@ -4304,3 +4370,30 @@ Desktop typecheck/build：passed
 - Runtime / Desktop lint 均为 0 error（Desktop 保留 18 条既有 Hook warning），设计令牌检查通过。
 - 新 OCR 模块在本机直接识别用户报错截图成功，返回 `zh-Hans-CN` 并提取到 `unknown ... input_image` 关键错误文本；Electron 实窗使用 `deepseek-v4-flash` 文本模型完成 `ocr_image` 调用并显示“Windows OCR 识别完成”。
 - Electron 实窗验证浅色与深色主题：ClaudeCode 为透明橙色标志，GPT 与 Sync-Think 分别随主题显示黑色 / 白色透明标志；执行过程展开态无“全部展开 / 全部收起”。验证后已恢复浅色主题、折叠执行过程并关闭模型选择器。
+## 2026-08-31: Durable chat approval recovery
+
+### Changed
+
+- Runtime now rebuilds pending chat tool approval cards from the durable event stream when the in-memory waiter has been lost or evicted.
+- Replayed approval decisions use the durable request/decision history, so duplicate decisions remain idempotent after a Runtime restart.
+
+### Verification
+
+- Added `apps/runtime/tests/approval-recovery.test.ts` covering durable listing and repeated orphan decisions.
+- Runtime focused approval/Desktop tests: `22/22`; Runtime typecheck and build pass.
+## 2026-09-01：AI 设计稿输出合同与 NewMax Composer 闭环收口
+
+### Changed
+
+- Runtime 现在把 `design-html` 输出合同注入普通 Provider 与外部 Kernel 上下文：设计请求必须返回唯一的完整、自包含 `design-html` HTML fence，前端才能稳定进入设计稿预览。
+- 合同明确 1 MiB UTF-8 上限、可访问可交互页面内容、内联 CSS/JavaScript，以及预览、浏览器打开和保存是三个独立事实；只有真实 `browser_open` / `write_file` 工具结果才可对外声称对应动作完成。
+- NewMax Composer、Plan/Goal、任务清单、浏览器 AI 草稿、设计稿预览/源码/下载/保存、提示词优化和会话切换骨架屏的实现与本机参考资源保持同一行为边界。
+
+### Fixed
+
+- 模型只返回普通 HTML 或文字时不再被误当成可保存设计稿；无效、截断或未通过校验的设计稿不得覆盖已有文件。
+
+### Verification
+
+- Runtime `design-html-contract`、`conversation-get-context-status`、`external-kernel-run` 共 `43` 项通过；Runtime/Desktop typecheck 通过。
+- 设计稿解析、预览、源码、下载、保存、浏览器工作流、提示词优化与 Composer/Plan/Goal 定向回归保持全绿。

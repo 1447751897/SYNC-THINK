@@ -11,6 +11,7 @@ import {
   type KeyboardEventHandler,
   type MutableRefObject,
   type Ref,
+  type ReactNode,
 } from 'react';
 import { Annotation, Compartment, EditorState, Prec } from '@codemirror/state';
 import { EditorView, keymap, placeholder as codeMirrorPlaceholder } from '@codemirror/view';
@@ -94,6 +95,8 @@ export interface ComposerEditorProps {
   inputClassName?: string;
   style?: CSSProperties;
   inputStyle?: CSSProperties;
+  /** NewMax-style inline action anchored to the input's lower trailing edge. */
+  trailingAction?: ReactNode;
   autoFocus?: boolean;
   spellCheck?: boolean;
 }
@@ -278,6 +281,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
       inputClassName = '',
       style,
       inputStyle,
+      trailingAction,
       autoFocus = false,
       spellCheck = true,
     },
@@ -746,7 +750,9 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
     return (
       <div
         ref={rootRef}
-        className={`shell-composer-editor ${effectiveDisabled ? 'is-disabled' : ''} ${className}`.trim()}
+        className={`shell-composer-editor ${
+          effectiveDisabled ? 'is-disabled' : ''
+        } ${trailingAction ? 'has-trailing-action' : ''} ${className}`.trim()}
         data-testid={testId}
         data-goal-running={goalRunning ? 'true' : undefined}
         onDrop={handleDrop}
@@ -878,6 +884,9 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
           className={`shell-composer-editor__surface shell-composer-editor__input ${inputClassName}`.trim()}
           style={inputStyle}
         />
+        {trailingAction ? (
+          <div className="shell-composer-editor__trailing-action">{trailingAction}</div>
+        ) : null}
         <textarea
           ref={setInputRef}
           id={inputId}

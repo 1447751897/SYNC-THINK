@@ -24,6 +24,7 @@ import {
   LoaderCircle,
   MessageCircle,
   Mic2,
+  Monitor,
   Network,
   Palette,
   Plug,
@@ -89,8 +90,12 @@ import { BrandLogoMark } from './BrandLogoMark.js';
 import { resolveKernelBrandLogo, resolveKernelDisplayName } from './brand-icons.js';
 import { decideSettingsPageAction } from './settings-unsaved.js';
 import {
+  readAgentPreferences,
   readDefaultPermission,
+  writeAgentPreferences,
   writeDefaultPermission,
+  type AgentPreferences,
+  type AgentThinkingBudget,
   type DefaultPermissionPreference,
 } from '../ui-preferences.js';
 
@@ -106,6 +111,7 @@ export type SettingsSection =
   | 'connection'
   | 'security'
   | 'plugins'
+  | 'computer-use'
   | 'data'
   | 'about';
 type PermissionDefault = DefaultPermissionPreference;
@@ -153,6 +159,13 @@ const SECTIONS: Array<{
     ready: true,
     visible: false,
     keywords: 'Computer Use 桌面 UIA 自动化',
+  },
+  {
+    id: 'computer-use',
+    label: '电脑操作',
+    icon: Monitor,
+    ready: true,
+    keywords: 'Computer Use 桌面 Windows UIA 自动化 任何应用',
   },
   {
     id: 'data',
@@ -297,7 +310,7 @@ export function SettingsPage({
               onDirtyChange={reportDirty}
             />
           )}
-          {section === 'plugins' && <ComputerUsePluginSection />}
+          {(section === 'plugins' || section === 'computer-use') && <ComputerUsePluginSection />}
           {section === 'connection' && (
             <ConnectionSection initialTab={initialConnectionTab} navigationKey={navigationKey} />
           )}
@@ -330,8 +343,31 @@ const PERMISSION_OPTIONS: Array<{
   { value: 'full-access', label: '完全访问', desc: '直接执行并保留审计记录' },
 ];
 
+type GeneralTab = 'app' | 'agent' | 'task';
+
+const GENERAL_TABS: Array<{ id: GeneralTab; label: string }> = [
+  { id: 'app', label: '应用' },
+  { id: 'agent', label: 'Agent' },
+  { id: 'task', label: '任务' },
+];
+
+const THINKING_OPTIONS: Array<{ value: AgentThinkingBudget; label: string }> = [
+  { value: 'auto', label: '自动' },
+  { value: 'minimal', label: '极低' },
+  { value: 'low', label: '低' },
+  { value: 'medium', label: '中' },
+  { value: 'high', label: '高' },
+  { value: 'xhigh', label: '超高' },
+  { value: 'max', label: '最高' },
+  { value: 'off', label: '关闭' },
+];
+
 function GeneralSection() {
+  const [tab, setTab] = useState<GeneralTab>('app');
   const [permission, setPermission] = useState<PermissionDefault>(() => readDefaultPermission());
+  const [agentPreferences, setAgentPreferences] = useState<AgentPreferences>(() =>
+    readAgentPreferences(),
+  );
   const [animationEnabled, setAnimationEnabled] = useState<boolean>(() => {
     const stored = localStorage.getItem('sync-think-animation');
     return stored === null ? true : stored === '1';
@@ -348,27 +384,78 @@ function GeneralSection() {
     document.documentElement.toggleAttribute('data-reduced-motion', !enabled);
   };
 
+  const updateAgentPreference = <K extends keyof AgentPreferences>(
+    key: K,
+    value: AgentPreferences[K],
+  ) => {
+    const next = { ...agentPreferences, [key]: value } as AgentPreferences;
+    setAgentPreferences(next);
+    writeAgentPreferences(next);
+  };
+
   return (
-    <div className="settings-scroll settings-standard-pane">
-      <div className="settings-rows">
-        <SettingRow
-          title="界面动画"
-          description="开启界面过渡动画"
-          control={
-            <Toggle checked={animationEnabled} label="界面动画" onChange={handleAnimation} />
-          }
-        />
-        <SettingRow
-          title="命令白名单"
-          description="允许自动运行的命令"
-          control={
-            <Toggle checked={false} label="命令白名单" disabled onChange={() => undefined} />
-          }
-        />
+    <div className="settings-scroll settings-standard-pane settings-general-page">
+      <div className="settings-general-tabs" role="tablist" aria-label="通用设置分类">
+        {GENERAL_TABS.map(({ id, label }) => (
+          <button
+            key={id}
+            type="button"
+            role="tab"
+            aria-selected={tab === id}
+            className={clsx(tab === id && 'is-active')}
+            onClick={() => setTab(id)}
+          >
+            {label}
+          </button>
+        ))}
       </div>
 
-      <section className="settings-permission-section">
-        <h2>权限模式</h2>
+      <div className="settings-general-panel" key={tab}>
+        {tab === 'app' ? (
+          <div className="settings-rows">
+            <SettingRow
+              title="界面动画"
+              description="开启界面过渡动画"
+              control={
+                <Toggle checked={animationEnabled} label="界面动画" onChange={handleAnimation} />
+              }
+            />
+          </div>
+        ) : null}
+
+        {tab === 'agent' ? (
+          <AgentGeneralPanel
+            permission={permission}
+            agentPreferences={agentPreferences}
+            onPermissionChange={handlePermission}
+            onAgentPreferenceChange={updateAgentPreference}
+          />
+        ) : null}
+
+        {tab === 'task' ? <DaemonCard /> : null}
+      </div>
+    </div>
+  );
+}
+
+function AgentGeneralPanel({
+  permission,
+  agentPreferences,
+  onPermissionChange,
+  onAgentPreferenceChange,
+}: {
+  permission: PermissionDefault;
+  agentPreferences: AgentPreferences;
+  onPermissionChange(value: PermissionDefault): void;
+  onAgentPreferenceChange<K extends keyof AgentPreferences>(
+    key: K,
+    value: AgentPreferences[K],
+  ): void;
+}) {
+  return (
+    <div className="settings-general-agent">
+      <section className="settings-general-block" aria-labelledby="settings-permission-title">
+        <h2 id="settings-permission-title">权限模式</h2>
         <div className="settings-permission-grid" role="radiogroup" aria-label="默认权限模式">
           {PERMISSION_OPTIONS.map(({ value, label, desc }) => {
             const active = permission === value;
@@ -379,7 +466,7 @@ function GeneralSection() {
                 role="radio"
                 aria-checked={active}
                 className={clsx('settings-permission-option', active && 'is-active')}
-                onClick={() => handlePermission(value)}
+                onClick={() => onPermissionChange(value)}
               >
                 <span>{label}</span>
                 <small>{desc}</small>
@@ -390,8 +477,159 @@ function GeneralSection() {
         </div>
       </section>
 
-      <DaemonCard />
+      <section className="settings-general-block" aria-labelledby="settings-prompt-title">
+        <SettingRow
+          title="提示词优化"
+          description="开启后，输入框有内容时悬停可点击优化按钮；只改写草稿，不会自动发送。"
+          control={
+            <Toggle
+              checked={agentPreferences.promptEnhancementEnabled}
+              label="提示词优化"
+              onChange={(value) => onAgentPreferenceChange('promptEnhancementEnabled', value)}
+            />
+          }
+        />
+        <div className="settings-general-select-row">
+          <div>
+            <p id="settings-prompt-title">优化模型</p>
+            <span>建议选择响应速度较快的模型，例如 Gemini Flash、GPT mini 或 Claude Haiku。</span>
+          </div>
+          <AgentModelSelect
+            value={agentPreferences.promptEnhancementModelId}
+            onChange={(value) => onAgentPreferenceChange('promptEnhancementModelId', value)}
+          />
+        </div>
+      </section>
+
+      <section className="settings-general-block" aria-labelledby="settings-thinking-title">
+        <div className="settings-general-heading">
+          <h2 id="settings-thinking-title">思考模式</h2>
+          <p>新对话的默认思考强度。已在对话中单独调整过的对话会保留自己的设置。</p>
+        </div>
+        <div className="settings-thinking-options" role="radiogroup" aria-label="思考模式">
+          {THINKING_OPTIONS.map(({ value, label }) => (
+            <button
+              key={value}
+              type="button"
+              role="radio"
+              aria-label={label}
+              aria-checked={agentPreferences.thinkingBudget === value}
+              className={clsx(agentPreferences.thinkingBudget === value && 'is-active')}
+              onClick={() => onAgentPreferenceChange('thinkingBudget', value)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </section>
+
+      <section
+        className="settings-general-block settings-general-display"
+        aria-labelledby="settings-display-title"
+      >
+        <h2 id="settings-display-title">显示</h2>
+        <div className="settings-rows">
+          <SettingRow
+            title="收起执行过程"
+            description="开启后合并为一条可展开的执行摘要；关闭时直接展示完整过程，不生成额外的「执行过程」折叠项"
+            control={
+              <Toggle
+                checked={agentPreferences.collapseExecutionProcess}
+                label="收起执行过程"
+                onChange={(value) => onAgentPreferenceChange('collapseExecutionProcess', value)}
+              />
+            }
+          />
+          <SettingRow
+            title="显示工具调用"
+            description="在对话中显示 AI 使用的工具详情"
+            control={
+              <Toggle
+                checked={agentPreferences.showToolUse}
+                label="显示工具调用"
+                onChange={(value) => onAgentPreferenceChange('showToolUse', value)}
+              />
+            }
+          />
+          <SettingRow
+            title="默认展开工具调用"
+            description="自动展开工具调用的输入和输出内容"
+            control={
+              <Toggle
+                checked={agentPreferences.toolCallExpandedByDefault}
+                label="默认展开工具调用"
+                onChange={(value) => onAgentPreferenceChange('toolCallExpandedByDefault', value)}
+              />
+            }
+          />
+        </div>
+      </section>
     </div>
+  );
+}
+
+function AgentModelSelect({
+  value,
+  onChange,
+}: {
+  value: string | null;
+  onChange(value: string | null): void;
+}) {
+  const [options, setOptions] = useState<Array<{ value: string; label: string }>>([]);
+
+  useEffect(() => {
+    let disposed = false;
+    const listProviders = window.syncThink?.runtime?.listProviders;
+    if (!listProviders)
+      return () => {
+        disposed = true;
+      };
+    void listProviders({})
+      .then((response) => {
+        if (disposed) return;
+        const next: Array<{ value: string; label: string }> = [];
+        for (const provider of response.providers ?? []) {
+          for (const model of provider.models ?? []) {
+            const modelId = String(model.modelId ?? '').trim();
+            if (!modelId) continue;
+            next.push({
+              value: modelId,
+              label: `${model.displayName || model.providerModelId || modelId} · ${provider.name}`,
+            });
+          }
+        }
+        setOptions(
+          next.filter(
+            (item, index) =>
+              next.findIndex((candidate) => candidate.value === item.value) === index,
+          ),
+        );
+      })
+      .catch(() => {
+        if (!disposed) setOptions([]);
+      });
+    return () => {
+      disposed = true;
+    };
+  }, []);
+
+  return (
+    <select
+      className="settings-general-select"
+      aria-label="优化模型"
+      value={value ?? ''}
+      onChange={(event) => onChange(event.target.value || null)}
+    >
+      <option value="">自动选择</option>
+      {value && !options.some((option) => option.value === value) ? (
+        <option value={value}>{value}</option>
+      ) : null}
+      {options.map((option) => (
+        <option key={option.value} value={option.value}>
+          {option.label}
+        </option>
+      ))}
+    </select>
   );
 }
 
@@ -483,33 +721,31 @@ function ComputerUsePluginSection() {
   };
 
   return (
-    <div className="settings-scroll settings-standard-pane">
-      <div className="settings-rows">
+    <div className="settings-scroll settings-standard-pane settings-computer-use-page">
+      <section className="settings-computer-use-intro" aria-labelledby="computer-use-control-title">
+        <h2 id="computer-use-control-title">控制</h2>
+        <p>
+          允许 SYNC-THINK 在任务执行期间查看和操作当前 Windows 桌面上的图形应用。Windows
+          无需额外系统授权，但普通权限的 SYNC-THINK 对管理员身份运行的应用操作受限。
+        </p>
+      </section>
+      <div className="settings-computer-use-toggle">
         <SettingRow
-          title="Computer Use"
-          description="使用 Windows UI Automation 检查并操作桌面应用。插件默认关闭。"
+          title="任何应用"
+          description="开启电脑操作总开关；具体应用仍需逐次、当前会话或始终允许"
           control={
             <Toggle
               checked={enabled}
               disabled={loading || saving}
-              label="启用 Computer Use 插件"
+              label="任何应用"
               onChange={(next) => void handleEnabledChange(next)}
             />
           }
         />
       </div>
-      <p className="settings-note">
-        {loading
-          ? '正在读取插件状态…'
-          : enabled
-            ? '已启用：新的对话轮次可以使用桌面工具。'
-            : '已停用：Runtime 不会暴露桌面工具，也不会启动 Desktop Host。'}
-      </p>
-      <p className="settings-note">
-        插件开关决定是否具有桌面能力；权限模式决定启用后的动作是否需要批准。「完全访问」不会自动启用插件。
-      </p>
-      <section className="settings-permission-section" aria-labelledby="computer-use-apps-title">
+      <section className="settings-computer-use-allowed" aria-labelledby="computer-use-apps-title">
         <h2 id="computer-use-apps-title">始终允许的应用</h2>
+        <p>这些应用在后续任务中无需再次确认即可操作。</p>
         {approvalPolicy.alwaysAllowedApps.length > 0 ? (
           <div className="settings-rows">
             {approvalPolicy.alwaysAllowedApps.map((app) => (
@@ -533,7 +769,7 @@ function ComputerUsePluginSection() {
             ))}
           </div>
         ) : (
-          <p className="settings-note">暂无已授权应用。</p>
+          <p className="settings-note">尚未始终允许任何应用</p>
         )}
       </section>
       {error ? (
@@ -858,7 +1094,11 @@ export function ConnectionSection({ initialTab, navigationKey }: ConnectionSecti
         {tab === 'search' ? <ConnectionEmptyPane icon={Search} title="暂无搜索服务连接" /> : null}
         {tab === 'bots' ? <BotConversationPane /> : null}
         {tab === 'network' ? (
-          <ConnectionEmptyPane icon={Network} title="网络使用系统代理设置" />
+          <ConnectionEmptyPane
+            className="settings-network-empty"
+            icon={Network}
+            title="网络使用系统代理设置"
+          />
         ) : null}
       </div>
     </div>
@@ -1714,9 +1954,17 @@ function McpManagementPane({
   );
 }
 
-function ConnectionEmptyPane({ icon: Icon, title }: { icon: typeof Search; title: string }) {
+function ConnectionEmptyPane({
+  icon: Icon,
+  title,
+  className,
+}: {
+  icon: typeof Search;
+  title: string;
+  className?: string;
+}) {
   return (
-    <div className="settings-connectors-empty settings-connectors-empty--pane">
+    <div className={clsx('settings-connectors-empty settings-connectors-empty--pane', className)}>
       <Icon size={26} aria-hidden="true" />
       <span>{title}</span>
     </div>

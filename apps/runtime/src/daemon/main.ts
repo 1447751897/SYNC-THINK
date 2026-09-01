@@ -364,6 +364,8 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
         ...process.env,
         SYNC_THINK_INSTALL_ID: installId,
         SYNC_THINK_DB_PATH: dbPath,
+        SYNC_THINK_MANAGED_KERNEL_ROOT:
+          process.env.SYNC_THINK_MANAGED_KERNEL_ROOT ?? join(dirname(dbPath), 'kernels'),
         SYNC_THINK_DEV_NO_TOKEN: allowNoToken ? '1' : '0',
       };
       if (helloSecret) env.SYNC_THINK_PIPE_SECRET = helloSecret;

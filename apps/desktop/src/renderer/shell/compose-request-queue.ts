@@ -36,6 +36,7 @@ interface PersistedComposeRequestQueue {
 
 const VALID_REASONING_EFFORTS: ReadonlySet<ReasoningEffort> = new Set([
   'auto',
+  'minimal',
   'off',
   'low',
   'medium',

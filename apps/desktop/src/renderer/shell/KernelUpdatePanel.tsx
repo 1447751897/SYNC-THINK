@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { CheckCircle2, Download, Package, RefreshCw } from 'lucide-react';
+import { CheckCircle2, Download, RefreshCw } from 'lucide-react';
 import type { KernelDetectionResult } from '@sync-think/shared';
 import type {
   ManagedKernelUpdateActionResult,
@@ -7,6 +7,8 @@ import type {
   ManagedKernelUpdateItem,
   ManagedKernelUpdateSnapshot,
 } from '../../kernel-update-contract.js';
+import { BrandLogoMark } from './BrandLogoMark.js';
+import { resolveKernelBrandLogo, resolveKernelDisplayName } from './brand-icons.js';
 
 const ERROR_LABELS: Record<string, string> = {
   'kernel.update.busy': '已有内核更新操作正在执行。',
@@ -39,7 +41,7 @@ function itemStatus(item: ManagedKernelUpdateItem, detectedVersion: string | nul
     return `可升级到 ${item.latestVersion}`;
   }
   if (item.errorCode) return ERROR_LABELS[item.errorCode] ?? '内核更新失败。';
-  return item.managedVersion ? '由 SYNC-THINK 私有管理' : '当前使用本机或随应用版本';
+  return item.managedVersion ? '由 SYNC-THINK 私有管理' : '将安装到应用私有目录';
 }
 
 export function KernelUpdatePanel() {
@@ -57,21 +59,60 @@ export function KernelUpdatePanel() {
     }
   };
 
+  const applyResult = (result: ManagedKernelUpdateActionResult) => {
+    setSnapshot(result.state);
+    setErrorCode(result.errorCode);
+  };
+
+  const check = async (kernelId?: ManagedKernelUpdateId) => {
+    const bridge = window.syncThink?.kernelUpdates;
+    if (!bridge || pending) return;
+    setPending(kernelId ?? 'check');
+    setErrorCode(null);
+    try {
+      applyResult(await bridge.checkForUpdates(kernelId ? { kernelId } : undefined));
+      await refreshDetected();
+    } catch {
+      setErrorCode('kernel.update.check-failed');
+    } finally {
+      setPending(null);
+    }
+  };
+
   useEffect(() => {
     let active = true;
     const bridge = window.syncThink?.kernelUpdates;
     if (!bridge) return;
     void Promise.all([bridge.getState(), window.syncThink?.runtime.detectKernels()])
-      .then(([state, detection]) => {
+      .then(async ([state, detection]) => {
         if (!active) return;
         setSnapshot(state);
         if (detection) setDetected(detection.kernels);
+        if (state.installerAvailable !== false) {
+          setPending('check');
+          try {
+            const result = await bridge.checkForUpdates();
+            if (!active) return;
+            applyResult(result);
+            await refreshDetected();
+          } catch {
+            if (active) setErrorCode('kernel.update.check-failed');
+          } finally {
+            if (active) setPending(null);
+          }
+        }
       })
       .catch(() => {
         if (active) setErrorCode('kernel.update.check-failed');
       });
+    const unsubscribe = bridge.subscribeState?.((state) => {
+      if (!active) return;
+      setSnapshot(state);
+      void refreshDetected();
+    });
     return () => {
       active = false;
+      unsubscribe?.();
     };
   }, []);
 
@@ -80,25 +121,6 @@ export function KernelUpdatePanel() {
       new Map(snapshot?.items.map((item) => [item.kernelId, currentVersion(item, detected)]) ?? []),
     [detected, snapshot],
   );
-
-  const applyResult = (result: ManagedKernelUpdateActionResult) => {
-    setSnapshot(result.state);
-    setErrorCode(result.errorCode);
-  };
-
-  const check = async () => {
-    const bridge = window.syncThink?.kernelUpdates;
-    if (!bridge || pending) return;
-    setPending('check');
-    setErrorCode(null);
-    try {
-      applyResult(await bridge.checkForUpdates());
-    } catch {
-      setErrorCode('kernel.update.check-failed');
-    } finally {
-      setPending(null);
-    }
-  };
 
   const install = async (kernelId: ManagedKernelUpdateId) => {
     const bridge = window.syncThink?.kernelUpdates;
@@ -122,49 +144,61 @@ export function KernelUpdatePanel() {
   return (
     <section className="settings-kernel-update" aria-labelledby="kernel-update-title">
       <header className="settings-kernel-update__header">
-        <div>
-          <span className="settings-kernel-update__eyebrow">核心运行环境</span>
-          <h3 id="kernel-update-title">Codex 与 Claude Code</h3>
-          <p>应用私有安装，升级不会改动系统全局版本。</p>
-        </div>
-        <button
-          type="button"
-          className="settings-kernel-update__check"
-          disabled={!bridgeReady || !installerAvailable || Boolean(pending)}
-          onClick={() => void check()}
-        >
-          <RefreshCw size={14} className={pending === 'check' ? 'is-spinning' : undefined} />
-          {pending === 'check' ? '检查中…' : '检查内核更新'}
-        </button>
+        <h3 id="kernel-update-title">核心运行环境</h3>
+        <p>Codex、Claude Code 与 Pi 安装在应用私有目录，升级不会改动系统全局版本。</p>
       </header>
 
       <div className="settings-kernel-update__list">
         {snapshot?.items.map((item) => {
           const version = versions.get(item.kernelId) ?? null;
+          const displayName = resolveKernelDisplayName(item.kernelId, item.name);
+          const brandLogo = resolveKernelBrandLogo(item.kernelId);
+          const checking =
+            pending === 'check' || pending === item.kernelId || item.phase === 'checking';
           const busy = pending === item.kernelId || item.phase === 'installing';
           const upToDate = item.phase === 'up-to-date' || item.phase === 'installed';
+          const canInstall = !upToDate && item.phase !== 'checking';
           return (
-            <div className="settings-kernel-update__row" key={item.kernelId}>
-              <span className="settings-kernel-update__icon" aria-hidden="true">
-                <Package size={17} />
-              </span>
-              <div className="settings-kernel-update__copy">
-                <div>
-                  <strong>{item.name}</strong>
-                  <code>{version ? `v${version}` : '未检测到版本'}</code>
-                </div>
-                <span className={item.errorCode ? 'is-error' : undefined}>
-                  {itemStatus(item, version)}
+            <article className="settings-kernel-update__row" key={item.kernelId}>
+              <div className="settings-kernel-update__meta">
+                <span className="settings-kernel-update__icon">
+                  {brandLogo ? (
+                    <BrandLogoMark logo={brandLogo} size={22} />
+                  ) : (
+                    <span className="settings-kernel-update__glyph" aria-hidden="true">
+                      {displayName.slice(0, 1)}
+                    </span>
+                  )}
                 </span>
+                <div className="settings-kernel-update__copy">
+                  <div>
+                    <strong>{displayName}</strong>
+                    <code>{version ? `v${version}` : '未检测到版本'}</code>
+                  </div>
+                  <span className={item.errorCode ? 'is-error' : undefined}>
+                    {itemStatus(item, version)}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  className="settings-kernel-update__check"
+                  disabled={!bridgeReady || !installerAvailable || Boolean(pending)}
+                  onClick={() => void check(item.kernelId)}
+                  aria-label={`检查更新 ${displayName}`}
+                >
+                  <RefreshCw size={14} className={checking ? 'is-spinning' : undefined} />
+                </button>
               </div>
               <button
                 type="button"
                 className="settings-kernel-update__action"
-                disabled={!bridgeReady || !installerAvailable || Boolean(pending) || upToDate}
+                disabled={
+                  !bridgeReady || !installerAvailable || Boolean(pending) || !canInstall
+                }
                 onClick={() => void install(item.kernelId)}
-                aria-label={`${busy ? '正在安装' : upToDate ? '已是最新' : item.managedVersion ? '升级' : '私有安装'} ${item.name}`}
+                aria-label={`${busy ? '正在安装' : upToDate ? '已是最新' : item.managedVersion ? '升级' : '私有安装'} ${displayName}`}
               >
-                {upToDate ? <CheckCircle2 size={14} /> : <Download size={14} />}
+                {upToDate ? <CheckCircle2 size={15} /> : <Download size={15} />}
                 {busy
                   ? '安装中…'
                   : upToDate
@@ -173,7 +207,7 @@ export function KernelUpdatePanel() {
                       ? '升级'
                       : '私有安装'}
               </button>
-            </div>
+            </article>
           );
         })}
       </div>

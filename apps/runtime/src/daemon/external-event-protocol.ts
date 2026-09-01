@@ -1,4 +1,4 @@
-import type { Frame } from '@sync-think/protocol';
+import { MAX_SKILL_SELECTION_ITEMS, type Frame } from '@sync-think/protocol';
 import type {
   ExternalEventEnvelope,
   ExternalEventRecord,
@@ -9,7 +9,7 @@ import type {
 const MAX_ID_LENGTH = 512;
 const MAX_INSTRUCTION_LENGTH = 100_000;
 const MAX_METADATA_BYTES = 64 * 1024;
-const MAX_SKILLS = 128;
+const MAX_SKILLS = MAX_SKILL_SELECTION_ITEMS;
 const SENSITIVE_METADATA_KEY = /^(authorization|proxy-authorization|token|access_token|refresh_token|secret|password|cookie|set-cookie|signature|api[-_]?key)$/i;
 
 export interface ExternalEventDispatchPayload {

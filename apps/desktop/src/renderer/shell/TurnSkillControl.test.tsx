@@ -123,28 +123,26 @@ describe('TurnSkillControl', () => {
     expect(runtime.getSkill).not.toHaveBeenCalled();
   });
 
-  it('caps selection at eight while allowing selected items to be removed and replaced', async () => {
+  it('lets the current turn select more than eight Skills', async () => {
     const ids = Array.from({ length: 9 }, (_, index) => `skill-${index + 1}`);
     runtime.listSkills.mockResolvedValue({ skills: ids.map((id) => skill(id)) });
     render(<Harness workspaceId="workspace-a" />);
 
     fireEvent.click(screen.getByTestId('turn-skill-trigger'));
     await screen.findByTestId('turn-skill-option-skill-9');
-    for (const id of ids.slice(0, 8)) {
+    for (const id of ids) {
       fireEvent.click(screen.getByTestId(`turn-skill-option-${id}`));
     }
 
-    expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe('8');
-    expect((screen.getByTestId('turn-skill-option-skill-9') as HTMLButtonElement).disabled).toBe(
-      true,
-    );
-
-    fireEvent.click(screen.getByTestId('turn-skill-option-skill-1'));
+    expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe('9');
     expect((screen.getByTestId('turn-skill-option-skill-9') as HTMLButtonElement).disabled).toBe(
       false,
     );
-    fireEvent.click(screen.getByTestId('turn-skill-option-skill-9'));
+
+    fireEvent.click(screen.getByTestId('turn-skill-option-skill-1'));
     expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe('8');
+    fireEvent.click(screen.getByTestId('turn-skill-option-skill-1'));
+    expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe('9');
 
     fireEvent.click(screen.getByLabelText('清除本轮 Skill'));
     expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe('');

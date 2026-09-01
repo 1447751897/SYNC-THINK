@@ -244,6 +244,47 @@ describe('ComposerAddControl', () => {
     expect(document.activeElement).toBe(input);
   });
 
+  it('treats a typed @ token as the same action sheet as the plus trigger', async () => {
+    runtime.listProjectFiles.mockImplementation(async ({ query }: { query?: string }) => ({
+      files: query
+        ? [{ path: 'src/App.tsx', name: 'App.tsx', kind: 'file' as const }]
+        : [{ path: 'README.md', name: 'README.md', kind: 'file' as const }],
+    }));
+    render(<Harness />);
+    const input = screen.getByRole('textbox', { name: '消息' }) as HTMLTextAreaElement;
+
+    fireEvent.change(input, { target: { value: '@', selectionStart: 1, selectionEnd: 1 } });
+    fireEvent.click(screen.getByTestId('conversation-add-trigger'));
+
+    const menu = await screen.findByTestId('conversation-add-menu');
+    expect(within(menu).getByText('附加文件')).toBeTruthy();
+    expect(within(menu).getByText('规划模式')).toBeTruthy();
+    expect(within(menu).getByText('目标模式')).toBeTruthy();
+    expect(within(menu).getByText('会议纪要')).toBeTruthy();
+    expect(within(menu).getByText('联网搜索')).toBeTruthy();
+    expect(within(menu).getByText('工作区文件')).toBeTruthy();
+    expect(within(menu).queryByText('来源与上下文')).toBeNull();
+    expect(within(menu).queryByText('上传图片')).toBeNull();
+    await waitFor(() =>
+      expect(runtime.listProjectFiles).toHaveBeenCalledWith({
+        root: 'D:\\workspace',
+        query: '',
+        maxEntries: 80,
+      }),
+    );
+
+    fireEvent.change(input, { target: { value: '@App', selectionStart: 4, selectionEnd: 4 } });
+    await waitFor(() =>
+      expect(runtime.listProjectFiles).toHaveBeenCalledWith({
+        root: 'D:\\workspace',
+        query: 'App',
+        maxEntries: 80,
+      }),
+    );
+    expect(within(screen.getByTestId('conversation-add-menu')).queryByText('规划模式')).toBeNull();
+    expect(within(screen.getByTestId('conversation-add-menu')).getByText('App.tsx')).toBeTruthy();
+  });
+
   it('keeps network changes open, closes after permission selection, and reports missing folders', async () => {
     const view = render(<Harness showPermissionItems />);
     const trigger = screen.getByTestId('conversation-add-trigger');

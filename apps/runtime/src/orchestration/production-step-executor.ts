@@ -870,7 +870,6 @@ function resolveProductionStepSkills(
   });
   const resolved = resolveAllowedSkillSources({
     skillVersionIds: selection.skillVersionIds,
-    maxSkills: 8,
     getSkill: (skillVersionId) => {
       const row = skillStore.getVersion(skillVersionId);
       if (!row || row.archivedAt || !skillStore.isPermissionApproved(row.id)) return undefined;

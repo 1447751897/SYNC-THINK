@@ -49,16 +49,26 @@ export interface BrowserWorkflowDraftContext {
   recordingId?: string;
 }
 
+export interface BrowserWorkflowAiTaskRequest {
+  profileId: string;
+  profileName: string;
+  name: string;
+  instruction: string;
+  startUrl: string;
+  prompt: string;
+}
+
 interface BrowserWorkflowPanelProps {
   profile: BrowserProfileSummary;
   refreshToken: number;
+  onStartAiTask?(request: BrowserWorkflowAiTaskRequest): void;
   onRecordWorkflow(context: BrowserWorkflowDraftContext): void;
 }
 
 type WorkflowFeedback = { kind: 'success' | 'error'; text: string };
 
 export function BrowserWorkflowPanel(props: BrowserWorkflowPanelProps): JSX.Element {
-  const { profile, refreshToken, onRecordWorkflow } = props;
+  const { profile, refreshToken, onRecordWorkflow, onStartAiTask } = props;
   const [tasks, setTasks] = useState<BrowserAutomationTaskSummary[]>([]);
   const [detailsByTaskId, setDetailsByTaskId] = useState<
     Record<string, GetBrowserWorkflowResponse>
@@ -328,17 +338,19 @@ export function BrowserWorkflowPanel(props: BrowserWorkflowPanelProps): JSX.Elem
             <Sparkles size={14} />
           </span>
           <div className="min-w-0 flex-1">
-            <strong>直接在对话中告诉 AI 你想做什么，AI 会自动打开浏览器帮你完成。</strong>
-            <span>例如：“帮我登录小红书发一条视频笔记｜查一下 HackerNews 今天的热帖”</span>
+            <strong>描述任务后，在对话中由 AI 创建可编辑草稿。</strong>
+            <span>草稿保存后会回到这里继续录制、审核和发布。</span>
           </div>
           <button
             type="button"
+            data-testid="browser-workflow-switch-chat"
             className="browser-workflow__tip-action"
             onClick={() => setCreateSource('ai')}
           >
-            创建 AI 任务
+            描述任务
           </button>
         </section>
+        <BrowserExecutionHostCard />
         {loading ? <WorkflowListSkeleton /> : null}
         {!loading && tasks.length === 0 ? (
           <div className="browser-workflow__empty">
@@ -398,6 +410,7 @@ export function BrowserWorkflowPanel(props: BrowserWorkflowPanelProps): JSX.Elem
         onOpenChange={(open) => {
           if (!open && !busyAction) setCreateSource(undefined);
         }}
+        onAiRequested={onStartAiTask}
         onCreated={onRecordWorkflow}
       />
 
@@ -430,6 +443,35 @@ export function BrowserWorkflowPanel(props: BrowserWorkflowPanelProps): JSX.Elem
         }}
       />
     </div>
+  );
+}
+
+function BrowserExecutionHostCard(): JSX.Element {
+  return (
+    <section
+      className="mb-2.5 flex min-h-[58px] items-center gap-3 rounded-md border border-border bg-elevated px-3 py-2.5"
+      data-testid="browser-execution-host-card"
+      aria-label="浏览器执行宿主"
+    >
+      <span
+        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-accent-soft text-accent-text"
+        aria-hidden="true"
+      >
+        <Globe2 size={17} />
+      </span>
+      <span className="min-w-0 flex-1 text-left">
+        <strong className="block text-[12px] font-semibold leading-5 text-text">内置浏览器</strong>
+        <span className="block truncate text-[10.5px] leading-4 text-text-faint">
+          录制和回放使用 Runtime 管理的 Chrome / Edge Profile。
+        </span>
+      </span>
+      <span
+        className="shrink-0 rounded-md border border-border px-2 py-1 text-[10.5px] text-text-faint"
+        data-testid="browser-execution-host-status"
+      >
+        当前执行宿主
+      </span>
+    </section>
   );
 }
 
@@ -578,9 +620,10 @@ function WorkflowCreateDialog(props: {
   profile: BrowserProfileSummary;
   source?: BrowserAutomationSource;
   onOpenChange(open: boolean): void;
+  onAiRequested?(request: BrowserWorkflowAiTaskRequest): void;
   onCreated(context: BrowserWorkflowDraftContext): void;
 }): JSX.Element {
-  const { profile, source, onOpenChange, onCreated } = props;
+  const { profile, source, onOpenChange, onAiRequested, onCreated } = props;
   const [name, setName] = useState('');
   const [instruction, setInstruction] = useState('');
   const [startUrl, setStartUrl] = useState('');
@@ -601,18 +644,38 @@ function WorkflowCreateDialog(props: {
       setError('请填写任务名称和目标说明。');
       return;
     }
-    if (!isHttpUrl(startUrl.trim())) {
+    const safeStartUrl = sanitizeWorkflowStartUrl(startUrl.trim());
+    if (!safeStartUrl) {
       setError('请输入有效的 HTTP 或 HTTPS 起始网址。');
       return;
     }
     setSubmitting(true);
     setError(undefined);
     try {
+      if (source === 'ai') {
+        if (!onAiRequested) {
+          setError('当前对话入口未就绪，请稍后重试。');
+          return;
+        }
+        const request = {
+          profileId: profile.id,
+          profileName: profile.name,
+          name: name.trim(),
+          instruction: instruction.trim(),
+          startUrl: safeStartUrl,
+        };
+        onOpenChange(false);
+        onAiRequested({
+          ...request,
+          prompt: buildBrowserWorkflowAiPrompt(request),
+        });
+        return;
+      }
       const response = await workflowRuntime().browserWorkflow.createDraft({
         profileId: profile.id,
         name: name.trim(),
         instruction: instruction.trim(),
-        startUrl: startUrl.trim(),
+        startUrl: safeStartUrl,
         source,
       });
       onOpenChange(false);
@@ -630,7 +693,18 @@ function WorkflowCreateDialog(props: {
     } finally {
       setSubmitting(false);
     }
-  }, [instruction, name, onCreated, onOpenChange, profile.id, source, startUrl, submitting]);
+  }, [
+    instruction,
+    name,
+    onAiRequested,
+    onCreated,
+    onOpenChange,
+    profile.id,
+    profile.name,
+    source,
+    startUrl,
+    submitting,
+  ]);
 
   return (
     <Dialog.Root open={Boolean(source)} onOpenChange={onOpenChange}>
@@ -644,7 +718,7 @@ function WorkflowCreateDialog(props: {
               </Dialog.Title>
               <Dialog.Description className="mt-1 text-[11.5px] leading-5 text-text-faint">
                 {source === 'ai'
-                  ? '创建 AI 来源草稿并进入录制工作区。浏览器动作录制完成后，仍由你审核并决定是否发布。'
+                  ? '将这组需求交给对话中的 AI 创建 AI 来源草稿，保存后回到这里继续录制。'
                   : '定义任务目标与起始站点，然后录制一条可复用的浏览器操作流程。'}
               </Dialog.Description>
             </div>
@@ -738,7 +812,7 @@ function WorkflowCreateDialog(props: {
               ) : (
                 <Radio size={13} />
               )}
-              创建并进入录制
+              {source === 'ai' ? '交给 AI 创建草稿' : '创建并进入录制'}
             </button>
           </div>
         </Dialog.Content>
@@ -920,7 +994,7 @@ function WorkflowExecuteDialog(props: {
 }): JSX.Element {
   const { detail, busy, onOpenChange, onResult } = props;
   const version = detail?.version;
-  const steps = version?.steps ?? [];
+  const steps = useMemo(() => version?.steps ?? [], [version?.steps]);
   const variables = useMemo(() => {
     const names: string[] = [];
     const seen = new Set<string>();
@@ -1461,13 +1535,40 @@ function boundedText(value: string): string {
   return normalized.length > 180 ? `${normalized.slice(0, 177)}...` : normalized;
 }
 
-function isHttpUrl(value: string): boolean {
+function sanitizeWorkflowStartUrl(value: string): string | undefined {
   try {
     const url = new URL(value);
-    return url.protocol === 'http:' || url.protocol === 'https:';
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return undefined;
+    url.username = '';
+    url.password = '';
+    url.search = '';
+    url.hash = '';
+    return url.toString();
   } catch {
-    return false;
+    return undefined;
   }
+}
+
+function buildBrowserWorkflowAiPrompt(
+  request: Omit<BrowserWorkflowAiTaskRequest, 'prompt'>,
+): string {
+  return [
+    '请创建一个浏览器自动化任务草稿。',
+    '请调用 browser_workflow_create_draft，并使用下面的精确参数：',
+    JSON.stringify(
+      {
+        profileId: request.profileId,
+        name: request.name,
+        instruction: request.instruction,
+        startUrl: request.startUrl,
+      },
+      null,
+      2,
+    ),
+    `当前 Profile：${request.profileName}`,
+    '只创建可编辑 Draft，不要录制、提交审核、批准、发布或执行。',
+    '创建成功后告诉我回到“浏览器自动化”继续录制。',
+  ].join('\n');
 }
 
 function workflowRuntime(): NonNullable<typeof window.syncThink>['runtime'] {

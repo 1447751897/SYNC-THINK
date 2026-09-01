@@ -14,9 +14,34 @@ const NPM_REGISTRY = 'https://registry.npmjs.org/';
 const OUTPUT_LIMIT = 256 * 1024;
 const INSTALL_TIMEOUT_MS = 5 * 60_000;
 
-const KERNELS: Record<ManagedKernelUpdateId, { name: string; packageName: string }> = {
-  codex: { name: 'Codex', packageName: '@openai/codex' },
-  'claude-code': { name: 'Claude Code', packageName: '@anthropic-ai/claude-code' },
+const KERNELS: Record<
+  ManagedKernelUpdateId,
+  {
+    name: string;
+    packageName: string;
+    windowsBin: (prefix: string) => string;
+    unixBin: (prefix: string) => string;
+  }
+> = {
+  codex: {
+    name: 'Codex',
+    packageName: '@openai/codex',
+    windowsBin: (prefix) => join(prefix, 'codex.cmd'),
+    unixBin: (prefix) => join(prefix, 'bin', 'codex'),
+  },
+  'claude-code': {
+    name: 'Claude Code',
+    packageName: '@anthropic-ai/claude-code',
+    windowsBin: (prefix) =>
+      join(prefix, 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe'),
+    unixBin: (prefix) => join(prefix, 'bin', 'claude'),
+  },
+  pi: {
+    name: 'Pi',
+    packageName: '@earendil-works/pi-coding-agent',
+    windowsBin: (prefix) => join(prefix, 'pi.cmd'),
+    unixBin: (prefix) => join(prefix, 'bin', 'pi'),
+  },
 };
 
 export interface KernelInstallerInvocation {
@@ -139,12 +164,8 @@ function compareVersion(left: string, right: string): number {
 }
 
 function installedExecutable(prefix: string, kernelId: ManagedKernelUpdateId): string {
-  if (process.platform === 'win32') {
-    return kernelId === 'claude-code'
-      ? join(prefix, 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe')
-      : join(prefix, 'codex.cmd');
-  }
-  return join(prefix, 'bin', kernelId === 'claude-code' ? 'claude' : 'codex');
+  const config = KERNELS[kernelId];
+  return process.platform === 'win32' ? config.windowsBin(prefix) : config.unixBin(prefix);
 }
 
 function verifyInstallation(
@@ -298,14 +319,18 @@ export function createKernelUpdateService(options: KernelUpdateServiceOptions) {
 
   return {
     getSnapshot: snapshot,
-    async checkForUpdates(): Promise<ManagedKernelUpdateActionResult> {
+    async checkForUpdates(
+      kernelId?: ManagedKernelUpdateId,
+    ): Promise<ManagedKernelUpdateActionResult> {
+      if (kernelId && !KERNELS[kernelId]) return failure('kernel.update.kernel-invalid');
       if (!options.installer) return failure('kernel.update.installer-missing');
       if (busy) return failure('kernel.update.busy');
       busy = true;
       try {
-        const versions = await Promise.all(
-          (Object.keys(KERNELS) as ManagedKernelUpdateId[]).map(checkOne),
-        );
+        const targets = kernelId
+          ? [kernelId]
+          : (Object.keys(KERNELS) as ManagedKernelUpdateId[]);
+        const versions = await Promise.all(targets.map(checkOne));
         checkedAt = now().toISOString();
         const ok = versions.every(Boolean);
         return {

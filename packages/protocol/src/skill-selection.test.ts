@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  MAX_TURN_SKILL_VERSIONS,
+  MAX_SKILL_SELECTION_ITEMS,
   normalizeSelectedSkillVersionIds,
 } from './skill-selection.js';
 
@@ -16,15 +16,16 @@ describe('normalizeSelectedSkillVersionIds', () => {
     ).toEqual(['skill-v2', 'skill-v1']);
   });
 
-  it('rejects malformed ids and more than eight unique versions', () => {
-    expect(MAX_TURN_SKILL_VERSIONS).toBe(8);
+  it('accepts more than eight unique versions and rejects oversized payloads', () => {
+    const nine = Array.from({ length: 9 }, (_, index) => `skill-v${index}`);
+    expect(normalizeSelectedSkillVersionIds(nine)).toEqual(nine);
     expect(() => normalizeSelectedSkillVersionIds([''])).toThrow(/skill version id/i);
     expect(() => normalizeSelectedSkillVersionIds([1])).toThrow(/skill version id/i);
     expect(() => normalizeSelectedSkillVersionIds('skill-v1')).toThrow(/array/i);
     expect(() =>
       normalizeSelectedSkillVersionIds(
-        Array.from({ length: MAX_TURN_SKILL_VERSIONS + 1 }, (_, index) => `skill-v${index}`),
+        Array.from({ length: MAX_SKILL_SELECTION_ITEMS + 1 }, (_, index) => `skill-v${index}`),
       ),
-    ).toThrow(/at most 8/i);
+    ).toThrow(/too large/i);
   });
 });
