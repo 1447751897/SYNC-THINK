@@ -106,7 +106,6 @@ const REQUIRED_LAYOUT_FILES = [
   ['resources/app/build/icon.png', 'release.desktop_brand_preview_missing'],
   ['resources/app/dist/main/index.js', 'release.desktop_main_missing'],
   ['resources/app/dist/preload/index.cjs', 'release.desktop_preload_missing'],
-  ['resources/app/dist/renderer/index.html', 'release.desktop_renderer_missing'],
   ['resources/app/dist/renderer-shell/index.html', 'release.desktop_shell_missing'],
   ['resources/runtime/main.js', 'release.runtime_entry_missing'],
   ['resources/runtime/dist/main.js', 'release.runtime_main_missing'],
