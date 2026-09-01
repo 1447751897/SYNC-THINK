@@ -37,7 +37,6 @@ function Harness(props: {
         onChange={(event) => setValue(event.target.value)}
       />
       <PromptEnhancementAction enhancement={enhancement} testId="enhance-action" />
-      {enhancement.feedback ? <div role="alert">{enhancement.feedback}</div> : null}
     </div>
   );
 }
@@ -74,5 +73,33 @@ describe('prompt enhancement composer control', () => {
       modelId: 'model-enhance',
     });
     expect(enhancePrompt.mock.calls[0]?.[0]?.requestId).toEqual(expect.any(String));
+  });
+
+  it('shows a live status while enhancing and surfaces provider errors in the composer', async () => {
+    let resolveEnhance: ((value: { requestId: string; text: string; modelId: string }) => void) | undefined;
+    const enhancePrompt = vi.fn().mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveEnhance = resolve;
+        }),
+    );
+    Object.defineProperty(window, 'syncThink', {
+      configurable: true,
+      value: { runtime: { enhancePrompt, cancelPromptEnhancement: vi.fn() } },
+    });
+
+    render(<Harness />);
+    fireEvent.click(screen.getByTestId('enhance-action'));
+
+    expect(screen.getByRole('status').textContent).toBe('正在优化提示词');
+    expect(screen.getByTestId('enhance-action').getAttribute('data-busy')).toBe('1');
+
+    resolveEnhance?.({
+      requestId: 'request-from-ui',
+      text: '',
+      modelId: 'model-enhance',
+    });
+
+    expect((await screen.findByRole('alert')).textContent).toBe('模型没有返回有效的优化结果');
   });
 });

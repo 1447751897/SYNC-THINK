@@ -122,6 +122,35 @@ describe('KernelUpdatePanel', () => {
     );
   });
 
+  it('keeps other kernel install actions available while one private install is running', async () => {
+    let releaseCodex: (() => void) | undefined;
+    const codexGate = new Promise<void>((resolve) => {
+      releaseCodex = resolve;
+    });
+    kernelUpdates.installUpdate.mockImplementation(async (payload?: { kernelId?: string }) => {
+      if (payload?.kernelId === 'codex') await codexGate;
+      return { ok: true, errorCode: null, state };
+    });
+
+    render(<KernelUpdatePanel />);
+    await waitFor(() => expect(kernelUpdates.checkForUpdates).toHaveBeenCalled());
+    const installGpt = await screen.findByRole('button', { name: '私有安装 GPT' });
+    await waitFor(() => expect((installGpt as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(installGpt);
+
+    const installClaude = screen.getByRole('button', { name: '升级 ClaudeCode' });
+    await waitFor(() => expect((installClaude as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(installClaude);
+
+    await waitFor(() =>
+      expect(kernelUpdates.installUpdate).toHaveBeenCalledWith({ kernelId: 'claude-code' }),
+    );
+    releaseCodex?.();
+    await waitFor(() =>
+      expect(kernelUpdates.installUpdate).toHaveBeenCalledWith({ kernelId: 'codex' }),
+    );
+  });
+
   it('does not present an already activated version as a reinstall action', async () => {
     const upToDate = {
       ...state,

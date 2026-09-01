@@ -149,6 +149,8 @@ interface RuntimeHarness {
   connection: Awaited<ReturnType<typeof openDatabaseAsync>>;
   conversationId: ConversationId;
   inbox: FrameInbox;
+  modelId: string;
+  providerId: string;
   runtime: Runtime;
   socket: Socket;
   skillStore: SqliteSkillStore;
@@ -332,7 +334,12 @@ async function createHarness(
       appVersion: '0.0.1',
       installId,
       nonce: randomBytes(8).toString('hex'),
-      features: ['task.appendMessage', 'conversation.getContextStatus', 'conversation.compact'],
+      features: [
+        'task.appendMessage',
+        'conversation.getContextStatus',
+        'conversation.compact',
+        'provider.updateModel',
+      ],
     },
   });
   expect(hello.error).toBeUndefined();
@@ -343,6 +350,8 @@ async function createHarness(
     connection,
     conversationId: conversation.id,
     inbox,
+    modelId: model.id,
+    providerId: provider.provider.id,
     runtime,
     socket,
     skillStore,
@@ -821,6 +830,39 @@ describe('conversation.getContextStatus runtime integration', () => {
       expect(after.sections.find((section) => section.type === 'messages')?.tokens).toBeGreaterThan(
         before.sections.find((section) => section.type === 'messages')?.tokens ?? 0,
       );
+    } finally {
+      await closeHarness(harness);
+    }
+  });
+
+  it('rebuilds context capacity after the model window is updated', async () => {
+    const harness = await createHarness(128_000, { target: 'model' });
+    const internals = harness.runtime as unknown as {
+      contextSnapshotByThread: Map<string, Map<string, unknown>>;
+    };
+    try {
+      const before = await getContextStatus(harness, 'update-model-window-before');
+      expect(before.contextWindow).toBe(128_000);
+      expect(before.contextWindowEstimated).toBeUndefined();
+      expect(internals.contextSnapshotByThread.has(String(harness.threadId))).toBe(true);
+
+      const updated = await harness.inbox.send({
+        id: 'update-model-window',
+        kind: 'request',
+        type: 'provider.updateModel',
+        payload: {
+          providerId: harness.providerId,
+          modelId: harness.modelId,
+          contextWindow: 372_000,
+        },
+      });
+      expect(updated.error).toBeUndefined();
+      expect(internals.contextSnapshotByThread.has(String(harness.threadId))).toBe(false);
+
+      const after = await getContextStatus(harness, 'update-model-window-after');
+      expect(after.contextWindow).toBe(372_000);
+      expect(after.modelContextWindow).toBe(372_000);
+      expect(after.contextWindowEstimated).toBeUndefined();
     } finally {
       await closeHarness(harness);
     }

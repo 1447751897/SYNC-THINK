@@ -2,7 +2,7 @@
  * @vitest-environment jsdom
  */
 import { createRef, useState, type Ref } from 'react';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   ComposerEditor,
@@ -341,6 +341,44 @@ describe('ComposerEditor', () => {
     fireEvent.keyDown(textbox, { key: 'Delete' });
     expect(onRemovePastedReference).toHaveBeenCalledWith('paste-1');
     expect(onValueChange).toHaveBeenLastCalledWith('结尾', { start: 0, end: 0 });
+  });
+
+  it('keeps the trailing action in the editor after the last draft character', () => {
+    render(
+      <ControlledEditor
+        initialValue="你现在能随便给个设计搞吗？"
+        ariaLabel="消息"
+        trailingAction={
+          <button type="button" data-testid="trailing-action">
+            优化
+          </button>
+        }
+      />,
+    );
+
+    const editor = screen.getByTestId('composer-editor');
+    expect(editor.className).toContain('has-trailing-action');
+    expect(within(editor).getByTestId('trailing-action')).toBeTruthy();
+    expect(editor.querySelector('.shell-composer-editor__trailing-action-slot')).not.toBeNull();
+  });
+
+  it('blurs draft text while the trailing action is enhancing', () => {
+    render(
+      <ControlledEditor
+        initialValue="写一个发布计划"
+        ariaLabel="消息"
+        enhancing
+        trailingAction={
+          <button type="button" data-testid="trailing-action">
+            优化
+          </button>
+        }
+      />,
+    );
+
+    const editor = screen.getByTestId('composer-editor');
+    expect(editor.getAttribute('data-enhancing')).toBe('true');
+    expect(editor.className).toContain('is-enhancing');
   });
 
   it('forwards paste, drop, host key, and selection events at the editor boundary', () => {

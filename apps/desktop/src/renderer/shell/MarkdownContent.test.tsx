@@ -168,7 +168,7 @@ describe('MarkdownContent', () => {
     expect(html).toContain('html-sandbox');
     const src = html.match(/src="([^"]*)"/)?.[1] ?? '';
     const decoded = decodeURIComponent(src);
-    expect(decoded).toContain('html,body{margin:0}');
+    expect(decoded).toContain('html,body{margin:0;');
     expect(decoded).toContain('background-color:');
     expect(decoded).not.toContain('body{min-height:100vh}');
   });
@@ -223,7 +223,7 @@ describe('MarkdownContent', () => {
     const src = html.match(/src="([^"]*)"/)?.[1] ?? '';
     const decoded = decodeURIComponent(src);
     const headPos = decoded.indexOf('</head>');
-    const fillPos = decoded.indexOf('<style>html,body{margin:0}');
+    const fillPos = decoded.indexOf('<style>html,body{margin:0;');
     expect(headPos).toBeGreaterThan(-1);
     expect(fillPos).toBeGreaterThan(-1);
     expect(fillPos).toBeLessThan(headPos);
@@ -242,7 +242,7 @@ describe('MarkdownContent', () => {
     const src = html.match(/src="([^"]*)"/)?.[1] ?? '';
     const decoded = decodeURIComponent(src);
     const headPos = decoded.indexOf('<head>');
-    const fillPos = decoded.indexOf('<style>html,body{margin:0}');
+    const fillPos = decoded.indexOf('<style>html,body{margin:0;');
     expect(headPos).toBeGreaterThan(-1);
     expect(fillPos).toBeGreaterThan(-1);
     expect(fillPos).toBeGreaterThan(headPos);

@@ -57,8 +57,8 @@ interface HtmlSandboxProps {
  * - MIN/MAX: clamps applied to measured content heights. MIN is deliberately
  *   low so genuinely short pages collapse to their real height.
  */
-const DEFAULT_HEIGHT = 320;
-const MIN_HEIGHT = 200;
+const DEFAULT_HEIGHT = 240;
+const MIN_HEIGHT = 72;
 const MAX_HEIGHT = 960;
 const HEIGHT_JITTER = 8; // px; below this, a re-measurement is ignored
 
@@ -98,7 +98,7 @@ function readChatBackground(): string {
  */
 function buildSandboxSource(code: string, fallbackBg: string): string {
   const fill =
-    '<style>html,body{margin:0}html{background-color:' +
+    '<style>html,body{margin:0;min-height:0!important;height:auto!important}html{background-color:' +
     fallbackBg +
     '}</style>';
   const viewport =
@@ -156,12 +156,13 @@ interface HtmlSandboxWebview {
 const MEASURE_SCRIPT = `(() => {
   const body = document.body;
   if (!body) return 0;
-  const bodyRect = body.getBoundingClientRect();
+  const top = body.getBoundingClientRect().top;
   const childBottom = Array.from(body.children).reduce((bottom, child) => {
     const rect = child.getBoundingClientRect();
-    return Math.max(bottom, rect.bottom - bodyRect.top);
+    return Math.max(bottom, rect.bottom - top);
   }, 0);
-  return Math.ceil(Math.max(bodyRect.height, body.scrollHeight, body.offsetHeight, childBottom));
+  if (childBottom > 0) return Math.ceil(childBottom);
+  return Math.ceil(Math.max(body.scrollHeight, body.offsetHeight, 0));
 })()`;
 
 export function HtmlSandbox({

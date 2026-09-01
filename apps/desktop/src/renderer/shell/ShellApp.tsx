@@ -4662,10 +4662,15 @@ export function EmptyTalk(props: {
                     if (composerAddOpen) return;
                     updatePickersFromCaret(inputRef.current?.value ?? props.draft, start);
                   }}
-                />
-                <PromptEnhancementAction
-                  enhancement={promptEnhancement}
-                  testId="empty-compose-prompt-enhance"
+                  enhancing={promptEnhancement.busy}
+                  trailingAction={
+                    promptEnhancement.visible ? (
+                      <PromptEnhancementAction
+                        enhancement={promptEnhancement}
+                        testId="empty-compose-prompt-enhance"
+                      />
+                    ) : undefined
+                  }
                 />
               </div>
               <input

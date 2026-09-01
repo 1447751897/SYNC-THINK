@@ -112,4 +112,47 @@ describe('prompt enhancement runtime', () => {
     expect(provider.requests[0]?.systemPrompt).toContain('只输出优化后的提示词');
     expect(runtime.createCheckpoint()).toMatchObject({ events: [], threadVersions: [] });
   });
+
+  it('keeps only the visible final answer when the provider also streams commentary', async () => {
+    const installId = `prompt-enhance-phases-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const provider: ProviderAdapter = {
+      protocol: 'openai-responses',
+      async discoverModels() {
+        return ['fake-mini'];
+      },
+      async *call() {
+        yield { type: 'assistant-message-delta', phase: 'commentary', text: '先想一下怎么改。' };
+        yield {
+          type: 'assistant-message-delta',
+          phase: 'final_answer',
+          text: '请制定一份包含里程碑、风险和验收标准的发布计划。',
+        };
+        yield { type: 'finished', reason: 'stop' };
+      },
+    };
+    const runtime = new Runtime({ installId, allowNoToken: true, demoProvider: provider });
+    runtimes.push(runtime);
+    await runtime.start();
+    const socket = await connectRuntime(installId);
+    const client = frameClient(socket);
+    await hello(client, installId);
+
+    const response = await client.send({
+      id: 'enhance-frame-2',
+      kind: 'request',
+      type: 'prompt.enhance',
+      payload: {
+        requestId: 'enhance-2',
+        text: '写一个发布计划',
+        modelId: 'fake-mini',
+      },
+    });
+
+    expect(response.error).toBeUndefined();
+    expect(response.payload).toEqual({
+      requestId: 'enhance-2',
+      text: '请制定一份包含里程碑、风险和验收标准的发布计划。',
+      modelId: 'fake-mini',
+    });
+  });
 });

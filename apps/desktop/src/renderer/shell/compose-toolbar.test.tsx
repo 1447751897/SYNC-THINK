@@ -10,6 +10,7 @@ import {
   ModelTrigger,
   PERMISSION_MODE_COLLAPSED_TOOLBAR_LEVEL,
   SKILL_COLLAPSED_TOOLBAR_LEVEL,
+  resolveDisplayedContextWindow,
   resolveFloatingMenuStyle,
   resolveToolbarCollapseLevel,
   useComposerToolbarCollapse,
@@ -18,6 +19,39 @@ import {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+});
+
+describe('resolveDisplayedContextWindow', () => {
+  it('uses the live catalog window instead of a stale estimated snapshot', () => {
+    expect(
+      resolveDisplayedContextWindow({
+        catalogContextWindow: 372_000,
+        snapshotContextWindow: 128_000,
+        snapshotModelContextWindow: 128_000,
+        snapshotEstimated: true,
+        modelId: 'deepseek-v4-flash',
+      }),
+    ).toEqual({
+      modelContextWindow: 372_000,
+      contextWindow: 372_000,
+      estimated: false,
+    });
+  });
+
+  it('keeps an estimated 128k fallback when the catalog has no window', () => {
+    expect(
+      resolveDisplayedContextWindow({
+        snapshotContextWindow: 128_000,
+        snapshotModelContextWindow: 128_000,
+        snapshotEstimated: true,
+        modelId: 'deepseek-v4-flash',
+      }),
+    ).toEqual({
+      modelContextWindow: 128_000,
+      contextWindow: 128_000,
+      estimated: true,
+    });
+  });
 });
 
 describe('resolveToolbarCollapseLevel', () => {

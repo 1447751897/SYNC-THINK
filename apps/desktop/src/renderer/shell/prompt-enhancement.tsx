@@ -99,7 +99,9 @@ export function usePromptEnhancement(input: {
     setBusy(false);
     const cancelPromptEnhancement = window.syncThink?.runtime?.cancelPromptEnhancement;
     if (cancelPromptEnhancement) {
-      void cancelPromptEnhancement({ requestId: active.requestId }).catch(() => undefined);
+      void Promise.resolve(cancelPromptEnhancement({ requestId: active.requestId })).catch(
+        () => undefined,
+      );
     }
   }, []);
 
@@ -195,7 +197,9 @@ export function usePromptEnhancement(input: {
       activeRequestRef.current = null;
       const cancelPromptEnhancement = window.syncThink?.runtime?.cancelPromptEnhancement;
       if (cancelPromptEnhancement) {
-        void cancelPromptEnhancement({ requestId: active.requestId }).catch(() => undefined);
+        void Promise.resolve(cancelPromptEnhancement({ requestId: active.requestId })).catch(
+          () => undefined,
+        );
       }
     },
     [],
@@ -228,35 +232,46 @@ export function PromptEnhancementAction(props: {
       ? `${label}（Esc）`
       : label;
   return (
-    <button
-      type="button"
-      className="shell-compose__prompt-enhance"
-      data-busy={props.enhancement.busy ? '1' : '0'}
-      data-state={props.enhancement.busy ? 'busy' : props.enhancement.feedback ? 'error' : 'idle'}
-      data-testid={props.testId}
-      aria-label={label}
-      title={title}
-      onMouseDown={(event) => event.preventDefault()}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      onClick={() => {
-        if (props.enhancement.busy) props.enhancement.cancel();
-        else void props.enhancement.enhance();
-      }}
-    >
-      {props.enhancement.busy ? (
-        hovered ? (
-          <X size={14} aria-hidden="true" />
+    <span className="shell-compose__prompt-enhance-wrap">
+      <button
+        type="button"
+        className="shell-compose__prompt-enhance"
+        data-busy={props.enhancement.busy ? '1' : '0'}
+        data-state={props.enhancement.busy ? 'busy' : props.enhancement.feedback ? 'error' : 'idle'}
+        data-testid={props.testId}
+        aria-label={label}
+        title={title}
+        onMouseDown={(event) => event.preventDefault()}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+        onClick={() => {
+          if (props.enhancement.busy) props.enhancement.cancel();
+          else void props.enhancement.enhance();
+        }}
+      >
+        {props.enhancement.busy ? (
+          hovered ? (
+            <X size={14} aria-hidden="true" />
+          ) : (
+            <LoaderCircle
+              className="shell-compose__prompt-enhance-spinner"
+              size={14}
+              aria-hidden="true"
+            />
+          )
         ) : (
-          <LoaderCircle
-            className="shell-compose__prompt-enhance-spinner"
-            size={14}
-            aria-hidden="true"
-          />
-        )
-      ) : (
-        <WandSparkles size={14} aria-hidden="true" />
-      )}
-    </button>
+          <WandSparkles size={14} aria-hidden="true" />
+        )}
+      </button>
+      {props.enhancement.busy ? (
+        <span className="sr-only" role="status">
+          正在优化提示词
+        </span>
+      ) : props.enhancement.feedback ? (
+        <span className="shell-compose__prompt-enhance-feedback" role="alert">
+          {props.enhancement.feedback}
+        </span>
+      ) : null}
+    </span>
   );
 }

@@ -273,11 +273,13 @@ import {
   type TaskRule,
   type ExternalEventEnvelope,
 } from '@sync-think/shared';
-import type {
-  ProviderContentPart,
-  ProviderMessage,
-  ProviderToolCall,
-  VisibleAssistantMessagePhase,
+import {
+  textFromEvents,
+  type AdapterEvent,
+  type ProviderContentPart,
+  type ProviderMessage,
+  type ProviderToolCall,
+  type VisibleAssistantMessagePhase,
 } from '@sync-think/adapters';
 import {
   defaultSurfaceForProtocol,
@@ -7215,6 +7217,10 @@ export class Runtime {
         displayName: payload.displayName,
         contextWindow: payload.contextWindow,
       });
+      if (payload.contextWindow !== undefined) {
+        this.contextSnapshotByThread.clear();
+        this.contextRunByThread.clear();
+      }
       const response: UpdateModelResponse = {
         providerId: payload.providerId,
         model: this.toModelSummary(model),
@@ -10242,19 +10248,26 @@ export class Runtime {
       });
       if (!stream) throw new Error('提示词优化模型当前不可用');
 
-      let enhanced = '';
+      const events: AdapterEvent[] = [];
       for await (const event of stream) {
         if (controller.signal.aborted) throw new Error('提示词优化已取消');
-        if (event.type === 'text-delta' || event.type === 'assistant-message-delta') {
-          enhanced += event.text;
-        } else if (event.type === 'error') {
+        if (event.type === 'error') {
           throw new Error(`提示词优化失败（${event.failureClass}）：${event.message}`);
-        } else if (event.type === 'finished') {
-          break;
         }
+        events.push(event);
+        if (event.type === 'finished') break;
       }
       if (controller.signal.aborted) throw new Error('提示词优化已取消');
-      const text = enhanced.trim();
+      const text =
+        textFromEvents(events).trim() ||
+        events
+          .filter(
+            (event) =>
+              event.type === 'assistant-message-delta' && event.phase === 'commentary',
+          )
+          .map((event) => (event.type === 'assistant-message-delta' ? event.text : ''))
+          .join('')
+          .trim();
       if (!text) throw new Error('模型没有返回有效的优化结果');
 
       const response: PromptEnhanceResponse = {

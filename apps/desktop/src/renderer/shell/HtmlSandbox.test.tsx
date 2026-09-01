@@ -35,9 +35,16 @@ describe('HtmlSandbox', () => {
     await waitFor(() => expect(webview.style.height).toBe('412px'));
 
     expect(executeJavaScript).toHaveBeenCalled();
-    expect(String(executeJavaScript.mock.calls[0]?.[0])).toContain('body.getBoundingClientRect');
-    expect(String(executeJavaScript.mock.calls[0]?.[0])).not.toContain('devicePixelRatio');
+    const measureScript = String(executeJavaScript.mock.calls[0]?.[0]);
+    expect(measureScript).toContain('body.children');
+    expect(measureScript).not.toContain('bodyRect.height');
+    expect(measureScript).not.toContain('devicePixelRatio');
     expect(setZoomFactor).not.toHaveBeenCalled();
+
+    const src = webview.getAttribute('src') ?? '';
+    const html = decodeURIComponent(src.replace(/^data:text\/html[^,]*,/, ''));
+    expect(html).toContain('min-height:0');
+    expect(html).toContain('height:auto');
   });
 
   it('keeps the shell mounted when Electron rejects an early measurement synchronously', async () => {
@@ -50,7 +57,7 @@ describe('HtmlSandbox', () => {
     render(<HtmlSandbox code={'<main style="height:412px">content</main>'} />);
 
     const webview = screen.getByTestId('html-sandbox') as HTMLElement;
-    expect(webview.style.height).toBe('320px');
+    expect(webview.style.height).toBe('240px');
 
     webview.dispatchEvent(new Event('dom-ready'));
     await waitFor(() => expect(webview.style.height).toBe('412px'));

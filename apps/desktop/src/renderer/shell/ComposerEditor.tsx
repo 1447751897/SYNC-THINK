@@ -13,8 +13,15 @@ import {
   type Ref,
   type ReactNode,
 } from 'react';
-import { Annotation, Compartment, EditorState, Prec } from '@codemirror/state';
-import { EditorView, keymap, placeholder as codeMirrorPlaceholder } from '@codemirror/view';
+import { Annotation, Compartment, EditorState, Prec, StateField } from '@codemirror/state';
+import {
+  Decoration,
+  EditorView,
+  keymap,
+  placeholder as codeMirrorPlaceholder,
+  WidgetType,
+  type DecorationSet,
+} from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 import { File, FileText, Folder, Puzzle, X } from 'lucide-react';
 import type { SkillVersionSummary } from '@sync-think/protocol';
@@ -95,8 +102,10 @@ export interface ComposerEditorProps {
   inputClassName?: string;
   style?: CSSProperties;
   inputStyle?: CSSProperties;
-  /** NewMax-style inline action anchored to the input's lower trailing edge. */
+  /** Inline action rendered after the last draft character. */
   trailingAction?: ReactNode;
+  /** Blur the draft and lock editing while an inline action is in progress. */
+  enhancing?: boolean;
   autoFocus?: boolean;
   spellCheck?: boolean;
 }
@@ -242,6 +251,46 @@ function composerEditorTheme(options: {
   });
 }
 
+class ComposerTrailingActionSlotWidget extends WidgetType {
+  toDOM() {
+    const slot = document.createElement('span');
+    slot.className = 'shell-composer-editor__trailing-action-slot';
+    slot.setAttribute('contenteditable', 'false');
+    slot.setAttribute('aria-hidden', 'true');
+    return slot;
+  }
+
+  eq() {
+    return true;
+  }
+
+  ignoreEvent() {
+    return true;
+  }
+}
+
+function trailingActionDecorations(docLength: number): DecorationSet {
+  return Decoration.set([
+    Decoration.widget({
+      widget: new ComposerTrailingActionSlotWidget(),
+      side: 1,
+    }).range(docLength),
+  ]);
+}
+
+const trailingActionDecorationField = StateField.define<DecorationSet>({
+  create(state) {
+    return trailingActionDecorations(state.doc.length);
+  },
+  update(decorations, transaction) {
+    if (transaction.docChanged) {
+      return trailingActionDecorations(transaction.state.doc.length);
+    }
+    return decorations.map(transaction.changes);
+  },
+  provide: (field) => EditorView.decorations.from(field),
+});
+
 export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
   function ComposerEditor(
     {
@@ -282,6 +331,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
       style,
       inputStyle,
       trailingAction,
+      enhancing = false,
       autoFocus = false,
       spellCheck = true,
     },
@@ -289,6 +339,9 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
   ) {
     const rootRef = useRef<HTMLDivElement>(null);
     const editorHostRef = useRef<HTMLDivElement>(null);
+    const trailingActionRef = useRef<HTMLDivElement>(null);
+    const trailingActionCompartmentRef = useRef(new Compartment());
+    const hasTrailingAction = Boolean(trailingAction);
     const viewRef = useRef<EditorView | null>(null);
     const inputRef = useRef<HTMLTextAreaElement | null>(null);
     const compatibilityPendingValueRef = useRef<string | null>(null);
@@ -302,6 +355,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
     const themeCompartmentRef = useRef(new Compartment());
     const attributesCompartmentRef = useRef(new Compartment());
     const effectiveDisabled = disabled || goalRunning;
+    const enhancingLocked = effectiveDisabled || enhancing;
     const effectivePlaceholder = goalRunning ? goalRunningPlaceholder : placeholder;
     const safeMinHeight = Math.max(0, Math.min(minHeight, maxHeight));
     const safeMaxHeight = Math.max(safeMinHeight, maxHeight);
@@ -365,6 +419,19 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
       if (input) input.style.height = `${nextHeight}px`;
       if (host) host.style.height = `${nextHeight}px`;
     }, [safeMaxHeight, safeMinHeight]);
+
+    const syncTrailingActionPosition = useCallback(() => {
+      const root = rootRef.current;
+      const action = trailingActionRef.current;
+      const slot = root?.querySelector<HTMLElement>(
+        '.shell-composer-editor__trailing-action-slot',
+      );
+      if (!root || !action || !slot) return;
+      const rootRect = root.getBoundingClientRect();
+      const slotRect = slot.getBoundingClientRect();
+      action.style.left = `${Math.max(0, slotRect.left - rootRect.left)}px`;
+      action.style.top = `${Math.max(0, slotRect.top - rootRect.top)}px`;
+    }, []);
 
     const syncEditorFromCompatibilityInput = useCallback(
       (nextValue: string, selection: ComposerEditorSelection) => {
@@ -457,6 +524,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
       const selection = readEditorSelection(update.view);
       syncCompatibilityInput(update.state.doc.toString(), selection);
       syncEditorHeight();
+      syncTrailingActionPosition();
           const isExternalValueSync = update.transactions.some((transaction) =>
             transaction.annotation(externalValueSyncAnnotation),
           );
@@ -468,7 +536,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
           }
         }),
       ],
-      [syncCompatibilityInput, syncEditorHeight],
+      [syncCompatibilityInput, syncEditorHeight, syncTrailingActionPosition],
     );
 
     useLayoutEffect(() => {
@@ -480,8 +548,8 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
         extensions: [
           ...baseExtensions,
           placeholderCompartmentRef.current.of(codeMirrorPlaceholder(effectivePlaceholder)),
-          readOnlyCompartmentRef.current.of(EditorState.readOnly.of(effectiveDisabled)),
-          editableCompartmentRef.current.of(EditorView.editable.of(!effectiveDisabled)),
+          readOnlyCompartmentRef.current.of(EditorState.readOnly.of(enhancingLocked)),
+          editableCompartmentRef.current.of(EditorView.editable.of(!enhancingLocked)),
           themeCompartmentRef.current.of(
             composerEditorTheme({
               minHeight: safeMinHeight,
@@ -494,11 +562,14 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
             EditorView.contentAttributes.of({
               'aria-label': ariaLabel,
               ...(ariaDescribedBy ? { 'aria-describedby': ariaDescribedBy } : {}),
-              'aria-disabled': effectiveDisabled ? 'true' : 'false',
+              'aria-disabled': enhancingLocked ? 'true' : 'false',
               spellcheck: spellCheck ? 'true' : 'false',
               autocorrect: 'on',
               autocapitalize: 'sentences',
             }),
+          ),
+          trailingActionCompartmentRef.current.of(
+            hasTrailingAction ? trailingActionDecorationField : [],
           ),
         ],
       });
@@ -574,6 +645,10 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
       });
       if (autoFocus && !effectiveDisabled) view.focus();
       syncEditorHeight();
+      syncTrailingActionPosition();
+      const handleScroll = () => syncTrailingActionPosition();
+      view.scrollDOM.addEventListener('scroll', handleScroll);
+      const positionFrame = window.requestAnimationFrame(syncTrailingActionPosition);
       return () => {
         view.contentDOM.removeEventListener('compositionstart', handleCompositionStart);
         view.contentDOM.removeEventListener('compositionend', handleCompositionEnd);
@@ -582,6 +657,8 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
         view.contentDOM.removeEventListener('change', handleCompatibilityChange);
         view.contentDOM.removeEventListener('focus', handleFocus);
         view.contentDOM.removeEventListener('blur', handleBlur);
+        view.scrollDOM.removeEventListener('scroll', handleScroll);
+        window.cancelAnimationFrame(positionFrame);
         view.destroy();
         viewRef.current = null;
       };
@@ -630,8 +707,8 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
           placeholderCompartmentRef.current.reconfigure(
             codeMirrorPlaceholder(effectivePlaceholder),
           ),
-          readOnlyCompartmentRef.current.reconfigure(EditorState.readOnly.of(effectiveDisabled)),
-          editableCompartmentRef.current.reconfigure(EditorView.editable.of(!effectiveDisabled)),
+          readOnlyCompartmentRef.current.reconfigure(EditorState.readOnly.of(enhancingLocked)),
+          editableCompartmentRef.current.reconfigure(EditorView.editable.of(!enhancingLocked)),
           themeCompartmentRef.current.reconfigure(
             composerEditorTheme({
               minHeight: safeMinHeight,
@@ -644,24 +721,30 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
             EditorView.contentAttributes.of({
               'aria-label': ariaLabel,
               ...(ariaDescribedBy ? { 'aria-describedby': ariaDescribedBy } : {}),
-              'aria-disabled': effectiveDisabled ? 'true' : 'false',
+              'aria-disabled': enhancingLocked ? 'true' : 'false',
               spellcheck: spellCheck ? 'true' : 'false',
               autocorrect: 'on',
               autocapitalize: 'sentences',
             }),
           ),
+          trailingActionCompartmentRef.current.reconfigure(
+            hasTrailingAction ? trailingActionDecorationField : [],
+          ),
         ],
       });
+      syncTrailingActionPosition();
     }, [
       ariaDescribedBy,
       ariaLabel,
       chatFontSize,
-      effectiveDisabled,
+      enhancingLocked,
       effectivePlaceholder,
+      hasTrailingAction,
       safeMaxHeight,
       safeMinHeight,
       serifFontFamily,
       spellCheck,
+      syncTrailingActionPosition,
     ]);
 
     useImperativeHandle(
@@ -752,8 +835,9 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
         ref={rootRef}
         className={`shell-composer-editor ${
           effectiveDisabled ? 'is-disabled' : ''
-        } ${trailingAction ? 'has-trailing-action' : ''} ${className}`.trim()}
+        } ${enhancing ? 'is-enhancing' : ''} ${hasTrailingAction ? 'has-trailing-action' : ''} ${className}`.trim()}
         data-testid={testId}
+        data-enhancing={enhancing ? 'true' : undefined}
         data-goal-running={goalRunning ? 'true' : undefined}
         onDrop={handleDrop}
         onDragOver={handleDragOver}
@@ -885,7 +969,9 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
           style={inputStyle}
         />
         {trailingAction ? (
-          <div className="shell-composer-editor__trailing-action">{trailingAction}</div>
+          <div ref={trailingActionRef} className="shell-composer-editor__trailing-action">
+            {trailingAction}
+          </div>
         ) : null}
         <textarea
           ref={setInputRef}

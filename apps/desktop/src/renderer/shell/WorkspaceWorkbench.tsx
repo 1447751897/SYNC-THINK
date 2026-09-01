@@ -101,23 +101,24 @@ export function WorkspaceWorkbench(props: WorkspaceWorkbenchProps) {
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const hostRef = useRef<HTMLElement>(null);
   const dragRef = useRef<ResizeDrag | null>(null);
+  const newMenuTriggerRef = useRef<HTMLButtonElement>(null);
+  const newMenuRef = useRef<HTMLDivElement>(null);
+  const onSizeChangeRef = useRef(props.onSizeChange);
+  onSizeChangeRef.current = props.onSizeChange;
   const activeTab =
     props.scope.tabs.find((tab) => tab.id === props.scope.activeTabId) ?? props.scope.tabs.at(-1);
 
-  const finishResize = useCallback(
-    (commit = true) => {
-      const drag = dragRef.current;
-      if (!drag) return;
-      dragRef.current = null;
-      if (drag.target.hasPointerCapture?.(drag.pointerId)) {
-        drag.target.releasePointerCapture?.(drag.pointerId);
-      }
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-      if (commit) props.onSizeChange(drag.lastSize, true);
-    },
-    [props],
-  );
+  const finishResize = useCallback((commit = true) => {
+    const drag = dragRef.current;
+    if (!drag) return;
+    dragRef.current = null;
+    if (drag.target.hasPointerCapture?.(drag.pointerId)) {
+      drag.target.releasePointerCapture?.(drag.pointerId);
+    }
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+    if (commit) onSizeChangeRef.current(drag.lastSize, true);
+  }, []);
 
   useEffect(() => {
     const blur = () => finishResize();
@@ -141,6 +142,45 @@ export function WorkspaceWorkbench(props: WorkspaceWorkbenchProps) {
       window.removeEventListener('blur', close);
     };
   }, [moreMenuOpen, newMenuOpen]);
+
+  useEffect(() => {
+    if (!newMenuOpen) return;
+    newMenuRef.current
+      ?.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')
+      ?.focus();
+  }, [newMenuOpen]);
+
+  const selectNewResource = (resource: WorkbenchNewResource) => {
+    setNewMenuOpen(false);
+    props.onNewResource(resource);
+  };
+
+  const handleNewMenuKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      setNewMenuOpen(false);
+      newMenuTriggerRef.current?.focus();
+      return;
+    }
+    if (event.key === 'Tab') {
+      setNewMenuOpen(false);
+      return;
+    }
+    const items = Array.from(
+      event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)'),
+    );
+    if (items.length === 0) return;
+    const currentIndex = items.indexOf(document.activeElement as HTMLButtonElement);
+    let nextIndex: number | undefined;
+    if (event.key === 'ArrowDown') nextIndex = (currentIndex + 1 + items.length) % items.length;
+    else if (event.key === 'ArrowUp') {
+      nextIndex = (currentIndex - 1 + items.length) % items.length;
+    } else if (event.key === 'Home') nextIndex = 0;
+    else if (event.key === 'End') nextIndex = items.length - 1;
+    if (nextIndex === undefined) return;
+    event.preventDefault();
+    items[nextIndex]?.focus();
+  };
 
   const beginResize = (event: PointerEvent<HTMLDivElement>) => {
     if (event.pointerType === 'mouse' && event.button !== 0) return;
@@ -267,47 +307,48 @@ export function WorkspaceWorkbench(props: WorkspaceWorkbenchProps) {
               </div>
             );
           })}
-          <div className="shell-workbench__menu-anchor">
-            <button
-              type="button"
-              className="shell-workbench__tab-action"
-              aria-label={`添加${props.placement === 'right' ? '右侧' : '底部'}工作台标签`}
-              aria-expanded={newMenuOpen}
+        </div>
+
+        <div className="shell-workbench__menu-anchor">
+          <button
+            ref={newMenuTriggerRef}
+            type="button"
+            className="shell-workbench__tab-action"
+            aria-label={`添加${props.placement === 'right' ? '右侧' : '底部'}工作台标签`}
+            aria-haspopup="menu"
+            aria-expanded={newMenuOpen}
+            onMouseDown={(event) => event.stopPropagation()}
+            onClick={() => {
+              setNewMenuOpen((open) => !open);
+              setMoreMenuOpen(false);
+            }}
+          >
+            <Plus size={15} />
+          </button>
+          {newMenuOpen ? (
+            <div
+              ref={newMenuRef}
+              className="shell-workbench-menu shell-workbench-menu--end"
+              role="menu"
               onMouseDown={(event) => event.stopPropagation()}
-              onClick={() => {
-                setNewMenuOpen((open) => !open);
-                setMoreMenuOpen(false);
-              }}
+              onKeyDown={handleNewMenuKeyDown}
             >
-              <Plus size={15} />
-            </button>
-            {newMenuOpen ? (
-              <div
-                className="shell-workbench-menu"
-                role="menu"
-                onMouseDown={(event) => event.stopPropagation()}
+              <button type="button" role="menuitem" onClick={() => selectNewResource('files')}>
+                <Folder size={14} /> 工作区文件
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                disabled={props.canOpenTerminal === false}
+                onClick={() => selectNewResource('terminal')}
               >
-                <button type="button" role="menuitem" onClick={() => props.onNewResource('files')}>
-                  <Folder size={14} /> 工作区文件
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  disabled={props.canOpenTerminal === false}
-                  onClick={() => props.onNewResource('terminal')}
-                >
-                  <SquareTerminal size={14} /> 新建终端
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => props.onNewResource('browser')}
-                >
-                  <Globe size={14} /> 网页浏览
-                </button>
-              </div>
-            ) : null}
-          </div>
+                <SquareTerminal size={14} /> 新建终端
+              </button>
+              <button type="button" role="menuitem" onClick={() => selectNewResource('browser')}>
+                <Globe size={14} /> 网页浏览
+              </button>
+            </div>
+          ) : null}
         </div>
 
         <div className="shell-workbench__menu-anchor shell-workbench__more">

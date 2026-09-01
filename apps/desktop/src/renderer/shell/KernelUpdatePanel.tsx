@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { CheckCircle2, Download, RefreshCw } from 'lucide-react';
 import type { KernelDetectionResult } from '@sync-think/shared';
 import type {
@@ -11,7 +11,7 @@ import { BrandLogoMark } from './BrandLogoMark.js';
 import { resolveKernelBrandLogo, resolveKernelDisplayName } from './brand-icons.js';
 
 const ERROR_LABELS: Record<string, string> = {
-  'kernel.update.busy': '已有内核更新操作正在执行。',
+  'kernel.update.busy': '该内核正在更新，请稍候。',
   'kernel.update.installer-missing': '内核安装器尚未就绪。',
   'kernel.update.check-failed': '检查内核版本失败，请稍后重试。',
   'kernel.update.install-failed': '内核下载或安装失败。',
@@ -47,8 +47,27 @@ function itemStatus(item: ManagedKernelUpdateItem, detectedVersion: string | nul
 export function KernelUpdatePanel() {
   const [snapshot, setSnapshot] = useState<ManagedKernelUpdateSnapshot | null>(null);
   const [detected, setDetected] = useState<KernelDetectionResult[]>([]);
-  const [pending, setPending] = useState<ManagedKernelUpdateId | 'check' | null>(null);
+  const [pending, setPending] = useState<ReadonlySet<ManagedKernelUpdateId>>(() => new Set());
+  const pendingRef = useRef<Set<ManagedKernelUpdateId>>(new Set());
   const [errorCode, setErrorCode] = useState<string | null>(null);
+
+  const beginPending = (ids: readonly ManagedKernelUpdateId[]): ManagedKernelUpdateId[] => {
+    const started = ids.filter((id) => !pendingRef.current.has(id));
+    if (started.length === 0) return [];
+    const next = new Set(pendingRef.current);
+    for (const id of started) next.add(id);
+    pendingRef.current = next;
+    setPending(next);
+    return started;
+  };
+
+  const endPending = (ids: readonly ManagedKernelUpdateId[]): void => {
+    if (ids.length === 0) return;
+    const next = new Set(pendingRef.current);
+    for (const id of ids) next.delete(id);
+    pendingRef.current = next;
+    setPending(next);
+  };
 
   const refreshDetected = async () => {
     try {
@@ -66,16 +85,22 @@ export function KernelUpdatePanel() {
 
   const check = async (kernelId?: ManagedKernelUpdateId) => {
     const bridge = window.syncThink?.kernelUpdates;
-    if (!bridge || pending) return;
-    setPending(kernelId ?? 'check');
+    if (!bridge) return;
+    const targets = kernelId
+      ? [kernelId]
+      : (['codex', 'claude-code', 'pi'] as ManagedKernelUpdateId[]);
+    const started = beginPending(targets);
+    if (started.length === 0) return;
     setErrorCode(null);
     try {
-      applyResult(await bridge.checkForUpdates(kernelId ? { kernelId } : undefined));
+      applyResult(
+        await (kernelId ? bridge.checkForUpdates({ kernelId }) : bridge.checkForUpdates()),
+      );
       await refreshDetected();
     } catch {
       setErrorCode('kernel.update.check-failed');
     } finally {
-      setPending(null);
+      endPending(started);
     }
   };
 
@@ -89,17 +114,8 @@ export function KernelUpdatePanel() {
         setSnapshot(state);
         if (detection) setDetected(detection.kernels);
         if (state.installerAvailable !== false) {
-          setPending('check');
-          try {
-            const result = await bridge.checkForUpdates();
-            if (!active) return;
-            applyResult(result);
-            await refreshDetected();
-          } catch {
-            if (active) setErrorCode('kernel.update.check-failed');
-          } finally {
-            if (active) setPending(null);
-          }
+          await check();
+          if (!active) return;
         }
       })
       .catch(() => {
@@ -124,8 +140,9 @@ export function KernelUpdatePanel() {
 
   const install = async (kernelId: ManagedKernelUpdateId) => {
     const bridge = window.syncThink?.kernelUpdates;
-    if (!bridge || pending) return;
-    setPending(kernelId);
+    if (!bridge) return;
+    const started = beginPending([kernelId]);
+    if (started.length === 0) return;
     setErrorCode(null);
     try {
       const result = await bridge.installUpdate({ kernelId });
@@ -134,7 +151,7 @@ export function KernelUpdatePanel() {
     } catch {
       setErrorCode('kernel.update.install-failed');
     } finally {
-      setPending(null);
+      endPending(started);
     }
   };
 
@@ -153,9 +170,9 @@ export function KernelUpdatePanel() {
           const version = versions.get(item.kernelId) ?? null;
           const displayName = resolveKernelDisplayName(item.kernelId, item.name);
           const brandLogo = resolveKernelBrandLogo(item.kernelId);
-          const checking =
-            pending === 'check' || pending === item.kernelId || item.phase === 'checking';
-          const busy = pending === item.kernelId || item.phase === 'installing';
+          const rowPending = pending.has(item.kernelId);
+          const checking = rowPending || item.phase === 'checking';
+          const busy = rowPending || item.phase === 'installing';
           const upToDate = item.phase === 'up-to-date' || item.phase === 'installed';
           const canInstall = !upToDate && item.phase !== 'checking';
           return (
@@ -182,7 +199,7 @@ export function KernelUpdatePanel() {
                 <button
                   type="button"
                   className="settings-kernel-update__check"
-                  disabled={!bridgeReady || !installerAvailable || Boolean(pending)}
+                  disabled={!bridgeReady || !installerAvailable || rowPending}
                   onClick={() => void check(item.kernelId)}
                   aria-label={`检查更新 ${displayName}`}
                 >
@@ -192,9 +209,7 @@ export function KernelUpdatePanel() {
               <button
                 type="button"
                 className="settings-kernel-update__action"
-                disabled={
-                  !bridgeReady || !installerAvailable || Boolean(pending) || !canInstall
-                }
+                disabled={!bridgeReady || !installerAvailable || rowPending || !canInstall}
                 onClick={() => void install(item.kernelId)}
                 aria-label={`${busy ? '正在安装' : upToDate ? '已是最新' : item.managedVersion ? '升级' : '私有安装'} ${displayName}`}
               >

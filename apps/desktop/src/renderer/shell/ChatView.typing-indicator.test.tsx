@@ -97,7 +97,7 @@ afterEach(() => {
 });
 
 describe('ChatView typing indicator reconciliation', () => {
-  it('hides the indicator once the active run has a durable final reply', async () => {
+  it('hides the legacy typing dots once the active run has a durable final reply', async () => {
     runtime.listConversationMessages.mockResolvedValue({
       messages: [finalReply],
       hasMore: false,
@@ -111,7 +111,7 @@ describe('ChatView typing indicator reconciliation', () => {
     });
   });
 
-  it('keeps the indicator visible while the run has no durable final reply', async () => {
+  it('does not show the legacy typing dots while waiting for the NewMax process timeline', async () => {
     runtime.listConversationMessages.mockResolvedValue({
       messages: [],
       hasMore: false,
@@ -120,8 +120,10 @@ describe('ChatView typing indicator reconciliation', () => {
     renderChat();
 
     await waitFor(() => {
-      expect(document.querySelector('.shell-typing-dot')).toBeTruthy();
+      expect(runtime.openTask).toHaveBeenCalled();
     });
+    expect(document.querySelector('.shell-typing-dot')).toBeNull();
+    expect(screen.queryByTestId('assistant-typing-indicator')).toBeNull();
   });
 
   it.each(['run.failed', 'run.cancelled'] as const)(

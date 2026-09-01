@@ -10,6 +10,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ReactNode,
 } from 'react';
 import {
   closestCenter,
@@ -4173,18 +4174,19 @@ export function UsageSettings() {
 
   if (loading) {
     return (
-      <div className="flex items-center gap-2 px-6 py-8 text-[12px] text-text-faint">
-        <Loader2 size={14} className="animate-spin" /> 加载使用统计…
+      <div className="usage-settings-state">
+        <Loader2 size={16} className="animate-spin" />
+        <span>正在加载使用统计…</span>
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="px-6 py-8">
-        <p className="text-[12px] text-error">{error}</p>
+      <div className="usage-settings-state is-error">
+        <p>{error}</p>
         <button type="button" className="usage-retry" onClick={() => void load()}>
-          重试
+          重新加载
         </button>
       </div>
     );
@@ -4266,7 +4268,10 @@ export function UsageSettings() {
   return (
     <div className="usage-settings">
       <div className="usage-toolbar">
-        <span>使用统计</span>
+        <div className="usage-toolbar-copy">
+          <span>用量概览</span>
+          <small>按时间范围查看请求、费用与缓存效率</small>
+        </div>
         <div className="usage-toolbar-actions">
           <div className="usage-range" role="group" aria-label="统计时间范围">
             {[
@@ -4297,7 +4302,14 @@ export function UsageSettings() {
         <UsageMetric
           label="总 Token"
           value={formatTokenCount(totalUsageTokens.totalTokens)}
-          hint={`普通输入 ${formatTokenCount(totalUsageTokens.inputTokens)} / 缓存读取 ${formatTokenCount(totalUsageTokens.cacheReadTokens)} / 缓存创建 ${formatTokenCount(totalUsageTokens.cacheWriteTokens)} / 输出 ${formatTokenCount(totalUsageTokens.outputTokens)}`}
+          hint={
+            <span className="usage-metric-chips">
+              <span>普通输入 {formatTokenCount(totalUsageTokens.inputTokens)}</span>
+              <span>缓存读取 {formatTokenCount(totalUsageTokens.cacheReadTokens)}</span>
+              <span>缓存创建 {formatTokenCount(totalUsageTokens.cacheWriteTokens)}</span>
+              <span>输出 {formatTokenCount(totalUsageTokens.outputTokens)}</span>
+            </span>
+          }
         />
         <UsageMetric
           label="缓存命中率"
@@ -4308,7 +4320,7 @@ export function UsageSettings() {
           }
           hint={
             hasCacheUsage
-              ? `读取 ${formatTokenCount(totalUsageTokens.cacheReadTokens)} / 创建 ${formatTokenCount(totalUsageTokens.cacheWriteTokens)} · ${cacheReadReported.requests}/${requests.length} 请求上报读取`
+              ? `读取 ${formatTokenCount(totalUsageTokens.cacheReadTokens)} · 创建 ${formatTokenCount(totalUsageTokens.cacheWriteTokens)} · ${cacheReadReported.requests}/${requests.length} 条已上报`
               : '当前供应商未返回缓存用量'
           }
         />
@@ -4341,7 +4353,7 @@ export function UsageSettings() {
             <input
               value={modelQuery}
               onChange={(event) => setModelQuery(event.target.value)}
-              placeholder="按模型筛选…"
+              placeholder="按模型或供应商筛选…"
               aria-label="按模型筛选"
             />
             <select
@@ -4422,7 +4434,7 @@ function UsageMetric({
 }: {
   label: string;
   value: string;
-  hint?: string;
+  hint?: ReactNode;
   tone?: 'positive' | 'negative';
 }) {
   return (
@@ -4532,7 +4544,10 @@ function UsageRequestTable({ rows }: { rows: UsageSummaryResponse['requests'] })
             const detailsId = `usage-request-details-${row.requestId}`;
             return (
               <Fragment key={row.requestId}>
-                <tr className="usage-request-row">
+                <tr
+                  className={clsx('usage-request-row', isExpanded && 'is-expanded')}
+                  onClick={() => setExpandedRequestId(isExpanded ? null : row.requestId)}
+                >
                   <td>{formatTimestamp(row.occurredAt)}</td>
                   <td className="usage-request-model" title={row.modelId}>
                     <strong>{displayName}</strong>
@@ -4570,8 +4585,12 @@ function UsageRequestTable({ rows }: { rows: UsageSummaryResponse['requests'] })
                       aria-controls={detailsId}
                       aria-label={`${isExpanded ? '收起' : '查看'} ${displayName} 请求详情`}
                       title={isExpanded ? '收起请求详情' : '展开请求详情'}
-                      onClick={() => setExpandedRequestId(isExpanded ? null : row.requestId)}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setExpandedRequestId(isExpanded ? null : row.requestId);
+                      }}
                     >
+                      <span>{isExpanded ? '收起' : '详情'}</span>
                       <ChevronDown size={13} />
                     </button>
                   </td>

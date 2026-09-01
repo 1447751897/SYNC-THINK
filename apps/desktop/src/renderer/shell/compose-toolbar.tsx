@@ -264,6 +264,42 @@ export function estimateContextWindow(modelId: string | undefined): number {
   return 128_000;
 }
 
+/**
+ * Live catalog capacity wins over a stale run snapshot. Changing a model's
+ * context window in 设置 must update the ring immediately, even if the last
+ * snapshot still carries the previous 128k estimate.
+ */
+export function resolveDisplayedContextWindow(input: {
+  catalogContextWindow?: number;
+  snapshotContextWindow?: number;
+  snapshotModelContextWindow?: number;
+  snapshotEstimated?: boolean;
+  modelId?: string;
+}): {
+  modelContextWindow: number;
+  contextWindow: number;
+  estimated: boolean;
+} {
+  const catalog =
+    typeof input.catalogContextWindow === 'number' && input.catalogContextWindow > 0
+      ? input.catalogContextWindow
+      : undefined;
+  const snapshotModel =
+    typeof input.snapshotModelContextWindow === 'number' && input.snapshotModelContextWindow > 0
+      ? input.snapshotModelContextWindow
+      : undefined;
+  const snapshotWindow =
+    typeof input.snapshotContextWindow === 'number' && input.snapshotContextWindow > 0
+      ? input.snapshotContextWindow
+      : undefined;
+  const modelContextWindow = catalog ?? snapshotModel ?? estimateContextWindow(input.modelId);
+  return {
+    modelContextWindow,
+    contextWindow: catalog ?? snapshotWindow ?? modelContextWindow,
+    estimated: !catalog && input.snapshotEstimated === true,
+  };
+}
+
 export function formatTokenCount(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n % 1_000_000 === 0 ? 0 : 1)}M`;
   if (n >= 1000) return `${(n / 1000).toFixed(n % 1000 === 0 ? 0 : 1)}k`;

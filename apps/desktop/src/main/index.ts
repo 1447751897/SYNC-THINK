@@ -684,11 +684,14 @@ async function bootstrapPrivateKernelsAtStartup(): Promise<void> {
   const snapshot = service.getSnapshot();
   if (!snapshot.installerAvailable) return;
   const missing = snapshot.items.filter((item) => !item.managedVersion);
-  for (const item of missing) {
-    const result = await service.installUpdate(item.kernelId);
-    broadcastKernelUpdateState(result.state);
-    if (result.ok) await recyclePrivateKernel(item.kernelId);
-  }
+  await Promise.all(
+    missing.map(async (item) => {
+      const result = await service.installUpdate(item.kernelId);
+      broadcastKernelUpdateState(result.state);
+      if (result.ok) await recyclePrivateKernel(item.kernelId);
+    }),
+  );
+  broadcastKernelUpdateState(service.getSnapshot());
 }
 
 function initializeDesktopUpdater(): void {

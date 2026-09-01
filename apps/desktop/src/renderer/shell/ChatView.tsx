@@ -150,7 +150,6 @@ import { compressImageDataUrl } from './image-compress.js';
 import {
   ComposerActionSlot,
   ContextRing,
-  estimateContextWindow,
   IdentityPickerMenu,
   ModelPickerMenu,
   ModelTrigger,
@@ -158,6 +157,7 @@ import {
   PermissionMenu,
   REASONING_LABELS,
   SKILL_COLLAPSED_TOOLBAR_LEVEL,
+  resolveDisplayedContextWindow,
   useComposerToolbarCollapse,
   type IdentityOption,
   type KernelInstallState,
@@ -2063,6 +2063,12 @@ export function ChatView({
     [conversation.id, renderTransientDraft],
   );
 
+  const catalogContextWindow = models.find((model) => {
+    const requestedModelId =
+      modelOverride.trim() ||
+      (conversation.track === 'model' ? String(conversation.targetRef ?? '').trim() : '');
+    return requestedModelId !== '' && model.modelId === requestedModelId;
+  })?.contextWindow;
   const refreshContextStatus = useCallback(async (): Promise<void> => {
     const api = bridge();
     if (!api?.getConversationContextStatus) return;
@@ -2088,7 +2094,14 @@ export function ChatView({
     } catch {
       // Keep the last validated snapshot on transient IPC/runtime failures.
     }
-  }, [conversation.id, conversation.targetRef, conversation.track, kernelOverride, modelOverride]);
+  }, [
+    conversation.id,
+    conversation.targetRef,
+    conversation.track,
+    kernelOverride,
+    modelOverride,
+    catalogContextWindow,
+  ]);
 
   const refreshDurableUsageSummary = useCallback(async (): Promise<void> => {
     const api = bridge();
@@ -2431,17 +2444,6 @@ export function ChatView({
         : undefined,
     [conversation.targetRef, conversation.track, teams],
   );
-  const activeRunAgent = useMemo(() => {
-    const identity = projected.activeRunId
-      ? runAgentIdentityById.get(String(projected.activeRunId))
-      : undefined;
-    if (!identity) return conversationAgent;
-    return agents.find(
-      (agent) =>
-        (identity.id && String(agent.id) === identity.id) ||
-        (!identity.id && identity.name && agent.name === identity.name),
-    );
-  }, [agents, conversationAgent, projected.activeRunId, runAgentIdentityById]);
   const projectedProcessSettled = Boolean(
     projected.activeRunId && displayRunProcessById.get(String(projected.activeRunId))?.completedAt,
   );
@@ -5742,11 +5744,15 @@ export function ChatView({
   // Effective ring window + source label: the model's configured window is
   // capped by a non-overridable kernel native limit (Claude Code = 200k), so
   // the ring never shows a budget the kernel itself cannot honor.
-  const contextModelWindow =
-    contextStatus?.modelContextWindow ??
-    activeModelOption?.contextWindow ??
-    estimateContextWindow(activeModelId || activeModel);
-  const contextConfiguredWindow = contextStatus?.contextWindow ?? contextModelWindow;
+  const displayedContext = resolveDisplayedContextWindow({
+    catalogContextWindow: activeModelOption?.contextWindow,
+    snapshotContextWindow: contextStatus?.contextWindow,
+    snapshotModelContextWindow: contextStatus?.modelContextWindow,
+    snapshotEstimated: contextStatus?.contextWindowEstimated === true,
+    modelId: activeModelId || activeModel,
+  });
+  const contextModelWindow = displayedContext.modelContextWindow;
+  const contextConfiguredWindow = displayedContext.contextWindow;
   const contextWindowCap = activeKernel?.capabilities?.contextWindow;
   const contextWindowCapped =
     contextStatus?.contextWindowSource === 'kernel-limit' ||
@@ -5757,7 +5763,7 @@ export function ChatView({
     ? (contextWindowCap?.nativeLimit ?? contextConfiguredWindow)
     : contextConfiguredWindow;
   const contextWindowSource: 'configured' | 'kernel-capped' | 'estimated' =
-    contextStatus?.contextWindowEstimated === true
+    displayedContext.estimated
       ? 'estimated'
       : contextWindowCapped
         ? 'kernel-capped'
@@ -6102,9 +6108,6 @@ export function ChatView({
                   />
                 </div>
               ))}
-              {showTyping &&
-                !messages.some((message) => message.streaming) &&
-                pendingApprovals.length === 0 && <TypingIndicator agent={activeRunAgent} />}
               <div ref={messagesEndRef} />
             </div>
           </div>
@@ -6367,10 +6370,15 @@ export function ChatView({
                         current.filter((selected) => selected !== skillVersionId),
                       )
                     }
-                  />
-                  <PromptEnhancementAction
-                    enhancement={promptEnhancement}
-                    testId="compose-prompt-enhance"
+                    enhancing={promptEnhancement.busy}
+                    trailingAction={
+                      promptEnhancement.visible ? (
+                        <PromptEnhancementAction
+                          enhancement={promptEnhancement}
+                          testId="compose-prompt-enhance"
+                        />
+                      ) : undefined
+                    }
                   />
                 </div>
               )}
@@ -6594,13 +6602,18 @@ export function ChatView({
                         ? undefined
                         : resolveKernelDisplayName(kernelOverride, activeKernel?.name)
                     }
-                    modelContextWindow={contextStatus?.modelContextWindow ?? contextModelWindow}
-                    contextWindowEstimated={contextStatus?.contextWindowEstimated}
+                    modelContextWindow={contextModelWindow}
+                    contextWindowEstimated={displayedContext.estimated}
                     contextWindowSource={contextWindowSource}
                     // External kernels report the authoritative watermark;
                     // the Runtime snapshot ratio describes the host estimate
                     // and must not override it in ContextRing.
-                    usageRatio={kernelSelfManaged ? undefined : contextStatus?.usageRatio}
+                    usageRatio={
+                      kernelSelfManaged ||
+                      contextStatus?.contextWindow !== displayedContext.contextWindow
+                        ? undefined
+                        : contextStatus?.usageRatio
+                    }
                     compactThreshold={contextStatus?.compactThreshold}
                     compactedAt={contextStatus?.compactedAt}
                     sections={contextStatus?.sections}
@@ -7815,40 +7828,6 @@ function ToolApprovalCard({
           拒绝
         </button>
       </div>
-    </div>
-  );
-}
-
-// ─── Typing Indicator ─────────────────────────────────────────────────────────
-
-function TypingDots({ inline = false }: { inline?: boolean }) {
-  return (
-    <div className={`flex items-center gap-1.5 ${inline ? '' : 'pt-3'}`}>
-      {[0, 1, 2].map((i) => (
-        <span key={i} className="shell-typing-dot" style={{ animationDelay: `${i * 160}ms` }} />
-      ))}
-    </div>
-  );
-}
-
-function TypingIndicator({ agent }: { agent?: GlobalAgent }) {
-  return (
-    <div
-      className="flex items-start gap-3"
-      data-testid="assistant-typing-indicator"
-      role="status"
-      aria-label="助手正在思考"
-    >
-      {agent?.avatar?.trim() ? (
-        <div className="mt-0.5" data-agent-id={String(agent.id)}>
-          <AgentAvatarView name={agent.name} avatar={agent.avatar} size={26} />
-        </div>
-      ) : (
-        <div className="shell-ai-avatar mt-0.5" title={agent?.name ?? '助手'}>
-          <Bot size={13} />
-        </div>
-      )}
-      <TypingDots />
     </div>
   );
 }

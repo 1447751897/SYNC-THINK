@@ -1,11 +1,14 @@
 /** @vitest-environment jsdom */
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { useState } from 'react';
 import { WorkspaceWorkbench } from './WorkspaceWorkbench.js';
 import {
   createWorkspaceWorkbenchLayout,
   fileWorkbenchTab,
   openWorkbenchTab,
+  terminalWorkbenchTab,
+  WORKBENCH_BOTTOM_DEFAULT_HEIGHT,
   WORKBENCH_RIGHT_PREVIEW_WIDTH,
   workspaceFilesWorkbenchTab,
 } from './workspace-workbench.js';
@@ -90,9 +93,83 @@ describe('WorkspaceWorkbench', () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: '添加右侧工作台标签' }));
+    const trigger = screen.getByRole('button', { name: '添加右侧工作台标签' });
+    expect(trigger.closest('.shell-workbench__tabs')).toBeNull();
+    fireEvent.click(trigger);
+    const menu = screen.getByRole('menu');
+    expect(menu.classList.contains('shell-workbench-menu--end')).toBe(true);
     fireEvent.click(screen.getByRole('menuitem', { name: /新建终端/ }));
     expect(onNewResource).toHaveBeenCalledWith('terminal');
+    expect(screen.queryByRole('menu')).toBeNull();
+  });
+
+  it('keeps a controlled resize active across preview rerenders', () => {
+    const changes: Array<{ size: number; commit: boolean }> = [];
+
+    function ControlledWorkbench() {
+      const [scope, setScope] = useState(rightScope);
+      return (
+        <WorkspaceWorkbench
+          placement="right"
+          scope={scope}
+          renderContent={() => null}
+          onActivateTab={vi.fn()}
+          onCloseTab={vi.fn()}
+          onNewResource={vi.fn()}
+          onClose={vi.fn()}
+          onSizeChange={(size, commit) => {
+            changes.push({ size, commit });
+            setScope((current) => ({ ...current, size }));
+          }}
+        />
+      );
+    }
+
+    render(<ControlledWorkbench />);
+    const separator = screen.getByRole('separator', { name: '调整右侧工作台宽度' });
+    fireEvent.pointerDown(separator, { pointerId: 7, clientX: 1_200 });
+    fireEvent.pointerMove(separator, { pointerId: 7, clientX: 1_100 });
+    fireEvent.pointerMove(separator, { pointerId: 7, clientX: 1_050 });
+    fireEvent.pointerUp(separator, { pointerId: 7, clientX: 1_050 });
+
+    expect(changes).toContainEqual({
+      size: WORKBENCH_RIGHT_PREVIEW_WIDTH + 150,
+      commit: false,
+    });
+    expect(changes.at(-1)).toEqual({
+      size: WORKBENCH_RIGHT_PREVIEW_WIDTH + 150,
+      commit: true,
+    });
+  });
+
+  it('supports keyboard navigation and dismissal in the add menu', () => {
+    render(
+      <WorkspaceWorkbench
+        placement="right"
+        scope={rightScope()}
+        renderContent={() => null}
+        onActivateTab={vi.fn()}
+        onCloseTab={vi.fn()}
+        onNewResource={vi.fn()}
+        onClose={vi.fn()}
+        onSizeChange={vi.fn()}
+      />,
+    );
+
+    const trigger = screen.getByRole('button', { name: '添加右侧工作台标签' });
+    fireEvent.click(trigger);
+    const menu = screen.getByRole('menu');
+    const items = screen.getAllByRole('menuitem').filter((item) => !item.hasAttribute('disabled'));
+    expect(document.activeElement).toBe(items[0]);
+    fireEvent.keyDown(menu, { key: 'ArrowDown' });
+    expect(document.activeElement).toBe(items[1]);
+    fireEvent.keyDown(menu, { key: 'Escape' });
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+
+    fireEvent.click(trigger);
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'Tab' });
+    expect(screen.queryByRole('menu')).toBeNull();
   });
 
   it('resizes from its outer edge with pointer and keyboard controls', () => {
@@ -119,5 +196,51 @@ describe('WorkspaceWorkbench', () => {
 
     fireEvent.keyDown(separator, { key: 'ArrowRight' });
     expect(onSizeChange).toHaveBeenLastCalledWith(WORKBENCH_RIGHT_PREVIEW_WIDTH - 16, true);
+  });
+
+  it('keeps a controlled bottom resize active across preview rerenders', () => {
+    const changes: Array<{ size: number; commit: boolean }> = [];
+
+    function ControlledBottomWorkbench() {
+      const [scope, setScope] = useState(
+        () =>
+          openWorkbenchTab(
+            createWorkspaceWorkbenchLayout(),
+            'bottom',
+            terminalWorkbenchTab('terminal-1'),
+          ).bottom,
+      );
+      return (
+        <WorkspaceWorkbench
+          placement="bottom"
+          scope={scope}
+          renderContent={() => null}
+          onActivateTab={vi.fn()}
+          onCloseTab={vi.fn()}
+          onNewResource={vi.fn()}
+          onClose={vi.fn()}
+          onSizeChange={(size, commit) => {
+            changes.push({ size, commit });
+            setScope((current) => ({ ...current, size }));
+          }}
+        />
+      );
+    }
+
+    render(<ControlledBottomWorkbench />);
+    const separator = screen.getByRole('separator', { name: '调整底部工作台高度' });
+    fireEvent.pointerDown(separator, { pointerId: 8, clientY: 800 });
+    fireEvent.pointerMove(separator, { pointerId: 8, clientY: 700 });
+    fireEvent.pointerMove(separator, { pointerId: 8, clientY: 650 });
+    fireEvent.pointerUp(separator, { pointerId: 8, clientY: 650 });
+
+    expect(changes).toContainEqual({
+      size: WORKBENCH_BOTTOM_DEFAULT_HEIGHT + 150,
+      commit: false,
+    });
+    expect(changes.at(-1)).toEqual({
+      size: WORKBENCH_BOTTOM_DEFAULT_HEIGHT + 150,
+      commit: true,
+    });
   });
 });

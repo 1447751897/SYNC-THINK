@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   createKernelUpdateService,
   resolveKernelInstallerInvocation,
@@ -251,6 +251,94 @@ describe('kernel update service', () => {
       expect(result.ok).toBe(false);
       expect(result.errorCode).toBe('kernel.update.verify-failed');
       expect(manifest.active.codex.version).toBe('0.149.0');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('installs different kernels at the same time without a global lock', async () => {
+    const root = fixtureRoot();
+    try {
+      let releaseCodex: (() => void) | undefined;
+      const codexGate = new Promise<void>((resolve) => {
+        releaseCodex = resolve;
+      });
+      const started: string[] = [];
+      const service = createKernelUpdateService({
+        rootDir: root,
+        installer: { command: 'node', prefixArgs: ['npm-cli.js'] },
+        run: async (args) => {
+          if (args[0] === 'view') {
+            return {
+              exitCode: 0,
+              stdout: args.includes('@openai/codex') ? '"0.150.1"' : '"2.1.250"',
+              stderr: '',
+            };
+          }
+          const spec = args.find((arg) => arg.includes('@')) ?? '';
+          started.push(spec);
+          if (spec.startsWith('@openai/codex@')) await codexGate;
+          const prefix = args[args.indexOf('--prefix') + 1]!;
+          packageExecutable(
+            prefix,
+            spec.startsWith('@openai/codex@') ? '@openai/codex' : '@anthropic-ai/claude-code',
+            spec.startsWith('@openai/codex@') ? '0.150.1' : '2.1.250',
+          );
+          return { exitCode: 0, stdout: 'installed', stderr: '' };
+        },
+      });
+
+      const codex = service.installUpdate('codex');
+      await vi.waitFor(() => expect(started.some((spec) => spec.startsWith('@openai/codex@'))).toBe(true));
+      const claude = service.installUpdate('claude-code');
+      await vi.waitFor(() =>
+        expect(started.some((spec) => spec.startsWith('@anthropic-ai/claude-code@'))).toBe(true),
+      );
+      releaseCodex?.();
+
+      const [codexResult, claudeResult] = await Promise.all([codex, claude]);
+      const manifest = JSON.parse(readFileSync(join(root, 'active.json'), 'utf8')) as {
+        active: { codex: { version: string }; 'claude-code': { version: string } };
+      };
+
+      expect(codexResult.ok).toBe(true);
+      expect(claudeResult.ok).toBe(true);
+      expect(manifest.active.codex.version).toBe('0.150.1');
+      expect(manifest.active['claude-code'].version).toBe('2.1.250');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a second install of the same kernel while the first is still running', async () => {
+    const root = fixtureRoot();
+    try {
+      let releaseCodex: (() => void) | undefined;
+      const codexGate = new Promise<void>((resolve) => {
+        releaseCodex = resolve;
+      });
+      let installs = 0;
+      const service = createKernelUpdateService({
+        rootDir: root,
+        installer: { command: 'node', prefixArgs: ['npm-cli.js'] },
+        run: async (args) => {
+          if (args[0] === 'view') return { exitCode: 0, stdout: '"0.150.1"', stderr: '' };
+          installs += 1;
+          await codexGate;
+          const prefix = args[args.indexOf('--prefix') + 1]!;
+          packageExecutable(prefix, '@openai/codex', '0.150.1');
+          return { exitCode: 0, stdout: 'installed', stderr: '' };
+        },
+      });
+
+      const first = service.installUpdate('codex');
+      await vi.waitFor(() => expect(installs).toBe(1));
+      await expect(service.installUpdate('codex')).resolves.toMatchObject({
+        ok: false,
+        errorCode: 'kernel.update.busy',
+      });
+      releaseCodex?.();
+      await expect(first).resolves.toMatchObject({ ok: true });
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

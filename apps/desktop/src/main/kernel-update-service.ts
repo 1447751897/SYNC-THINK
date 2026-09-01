@@ -242,8 +242,35 @@ export function createKernelUpdateService(options: KernelUpdateServiceOptions) {
   const latest = new Map<ManagedKernelUpdateId, string>();
   const phases = new Map<ManagedKernelUpdateId, ManagedKernelUpdatePhase>();
   const errors = new Map<ManagedKernelUpdateId, string>();
+  const kernelLocks = new Set<ManagedKernelUpdateId>();
   let checkedAt: string | null = null;
-  let busy = false;
+  let manifestWrite: Promise<void> = Promise.resolve();
+
+  const tryLock = (kernelId: ManagedKernelUpdateId): boolean => {
+    if (kernelLocks.has(kernelId)) return false;
+    kernelLocks.add(kernelId);
+    return true;
+  };
+
+  const unlock = (kernelId: ManagedKernelUpdateId): void => {
+    kernelLocks.delete(kernelId);
+  };
+
+  const writeActiveRecord = (
+    kernelId: ManagedKernelUpdateId,
+    record: ActiveKernelRecord,
+  ): Promise<void> => {
+    const write = manifestWrite.then(() => {
+      const manifest = readManifest(rootDir);
+      manifest.active[kernelId] = record;
+      writeManifest(rootDir, manifest);
+    });
+    manifestWrite = write.then(
+      () => undefined,
+      () => undefined,
+    );
+    return write;
+  };
 
   const run = async (args: string[]): Promise<KernelInstallerRunResult> => {
     if (options.run) return options.run(args);
@@ -324,12 +351,15 @@ export function createKernelUpdateService(options: KernelUpdateServiceOptions) {
     ): Promise<ManagedKernelUpdateActionResult> {
       if (kernelId && !KERNELS[kernelId]) return failure('kernel.update.kernel-invalid');
       if (!options.installer) return failure('kernel.update.installer-missing');
-      if (busy) return failure('kernel.update.busy');
-      busy = true;
+      const requested = kernelId
+        ? [kernelId]
+        : (Object.keys(KERNELS) as ManagedKernelUpdateId[]);
+      const targets = requested.filter((id) => tryLock(id));
+      if (kernelId && targets.length === 0) return failure('kernel.update.busy');
+      if (targets.length === 0) {
+        return { ok: true, state: snapshot(), errorCode: null };
+      }
       try {
-        const targets = kernelId
-          ? [kernelId]
-          : (Object.keys(KERNELS) as ManagedKernelUpdateId[]);
         const versions = await Promise.all(targets.map(checkOne));
         checkedAt = now().toISOString();
         const ok = versions.every(Boolean);
@@ -339,14 +369,13 @@ export function createKernelUpdateService(options: KernelUpdateServiceOptions) {
           errorCode: ok ? null : 'kernel.update.check-failed',
         };
       } finally {
-        busy = false;
+        for (const id of targets) unlock(id);
       }
     },
     async installUpdate(kernelId: ManagedKernelUpdateId): Promise<ManagedKernelUpdateActionResult> {
       if (!KERNELS[kernelId]) return failure('kernel.update.kernel-invalid');
       if (!options.installer) return failure('kernel.update.installer-missing');
-      if (busy) return failure('kernel.update.busy');
-      busy = true;
+      if (!tryLock(kernelId)) return failure('kernel.update.busy');
       try {
         errors.delete(kernelId);
         let version = latest.get(kernelId) ?? null;
@@ -388,18 +417,16 @@ export function createKernelUpdateService(options: KernelUpdateServiceOptions) {
           errors.set(kernelId, 'kernel.update.verify-failed');
           return failure('kernel.update.verify-failed');
         }
-        const manifest = readManifest(rootDir);
-        manifest.active[kernelId] = {
+        await writeActiveRecord(kernelId, {
           version,
           packageName: KERNELS[kernelId].packageName,
           executablePath: installedExecutable(finalPrefix, kernelId),
-        };
-        writeManifest(rootDir, manifest);
+        });
         phases.set(kernelId, 'installed');
         checkedAt = now().toISOString();
         return { ok: true, state: snapshot(), errorCode: null };
       } finally {
-        busy = false;
+        unlock(kernelId);
       }
     },
   };

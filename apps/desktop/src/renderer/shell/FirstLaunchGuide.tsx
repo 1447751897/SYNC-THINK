@@ -50,7 +50,9 @@ export function FirstLaunchGuide({
 }) {
   const [dismissed, setDismissed] = useState(() => readFirstLaunchGuideDismissed());
   const [kernels, setKernels] = useState<ManagedKernelUpdateSnapshot | null>(null);
-  const [installing, setInstalling] = useState<ManagedKernelUpdateId | null>(null);
+  const [installing, setInstalling] = useState<ReadonlySet<ManagedKernelUpdateId>>(
+    () => new Set(),
+  );
   const [installError, setInstallError] = useState(false);
 
   useEffect(() => {
@@ -80,8 +82,8 @@ export function FirstLaunchGuide({
 
   const installKernel = async (kernelId: ManagedKernelUpdateId) => {
     const bridge = window.syncThink?.kernelUpdates;
-    if (!bridge || installing) return;
-    setInstalling(kernelId);
+    if (!bridge || installing.has(kernelId)) return;
+    setInstalling((current) => new Set(current).add(kernelId));
     setInstallError(false);
     try {
       const result = await bridge.installUpdate({ kernelId });
@@ -90,7 +92,11 @@ export function FirstLaunchGuide({
     } catch {
       setInstallError(true);
     } finally {
-      setInstalling(null);
+      setInstalling((current) => {
+        const next = new Set(current);
+        next.delete(kernelId);
+        return next;
+      });
     }
   };
 
@@ -131,16 +137,16 @@ export function FirstLaunchGuide({
                 <button
                   key={item.kernelId}
                   type="button"
-                  disabled={!kernels.installerAvailable || installing !== null}
+                  disabled={!kernels.installerAvailable || installing.has(item.kernelId)}
                   aria-label={`私有安装 ${item.name}`}
                   onClick={() => void installKernel(item.kernelId)}
                 >
-                  {installing === item.kernelId ? (
+                  {installing.has(item.kernelId) ? (
                     <LoaderCircle size={13} className="is-spinning" aria-hidden="true" />
                   ) : (
                     <Download size={13} aria-hidden="true" />
                   )}
-                  {installing === item.kernelId ? '安装中…' : item.name}
+                  {installing.has(item.kernelId) ? '安装中…' : item.name}
                 </button>
               ),
             )}

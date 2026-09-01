@@ -142,7 +142,7 @@ export function BrowserPanel(props: {
   }, [props.navigateUrl, props.navigateSeq]);
 
   return (
-    <div className="flex h-full min-h-0 flex-col" data-testid="browser-panel">
+    <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col" data-testid="browser-panel">
       <div className="flex h-11 shrink-0 items-center gap-1 border-b border-border px-2">
         <button
           type="button"
@@ -184,7 +184,10 @@ export function BrowserPanel(props: {
           <Home size={13} />
         </button>
         <div className="relative min-w-0 flex-1">
-          <Globe size={11} className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-text-faint" />
+          <Globe
+            size={11}
+            className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-text-faint"
+          />
           <input
             data-testid="browser-address-input"
             className="h-7 w-full rounded-md border border-border bg-page pl-6.5 pr-2 text-[11.5px] text-text focus:border-accent focus:outline-none"
@@ -210,7 +213,10 @@ export function BrowserPanel(props: {
         ) : null}
       </div>
       {title ? (
-        <div className="shrink-0 truncate border-b border-border bg-page px-3 py-1 text-[10.5px] text-text-faint" title={currentUrl}>
+        <div
+          className="shrink-0 truncate border-b border-border bg-page px-3 py-1 text-[10.5px] text-text-faint"
+          title={currentUrl}
+        >
           {title}
         </div>
       ) : null}

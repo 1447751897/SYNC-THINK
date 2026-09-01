@@ -312,6 +312,56 @@ describe('ChatView reply usage details', () => {
     expect(within(tooltip).getByTestId('context-compact-distance').textContent).toBe('97k');
   });
 
+  it('uses the live catalog window instead of a stale estimated 128k snapshot', async () => {
+    runtime.getConversationContextStatus.mockResolvedValue({
+      modelId: 'model-usage',
+      contextWindow: 128_000,
+      modelContextWindow: 128_000,
+      contextWindowEstimated: true,
+      contextWindowSource: 'model-default',
+      estimatedUsedTokens: 111_200,
+      usageRatio: 111_200 / 128_000,
+      compactThreshold: 0.7,
+      sections: [
+        { type: 'system', tokens: 2_000 },
+        { type: 'agent', tokens: 27 },
+        { type: 'project', tokens: 79 },
+        { type: 'summary', tokens: 0 },
+        { type: 'messages', tokens: 109_094 },
+        { type: 'tools', tokens: 0 },
+      ],
+    });
+
+    render(
+      <ChatView
+        conversation={conversation}
+        modelName="deepseek-v4-flash"
+        models={[
+          {
+            modelId: 'model-usage',
+            displayName: 'deepseek-v4-flash',
+            providerName: 'Provider',
+            contextWindow: 372_000,
+          },
+        ]}
+        eventHistory={[]}
+        onTitleUpdated={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(runtime.getConversationContextStatus).toHaveBeenCalled());
+    await waitFor(() => {
+      fireEvent.mouseEnter(screen.getByTestId('context-ring'));
+      expect(screen.getByTestId('context-used-value').textContent).toContain('111.2k');
+    });
+
+    const tooltip = screen.getByTestId('context-ring-tooltip');
+    expect(within(tooltip).getByTestId('context-model-default').textContent).toBe('372k');
+    expect(within(tooltip).getByRole('progressbar').getAttribute('aria-valuemax')).toBe('372000');
+    expect(within(tooltip).queryByTestId('context-limit-estimated')).toBeNull();
+    expect(within(tooltip).getByTestId('context-used-value').textContent).toContain('30%');
+  });
+
   it('uses an external kernel watermark for the ring ratio and near-limit notice', async () => {
     window.localStorage.setItem(
       'sync-think.conversationKernelOverrides',
