@@ -666,7 +666,7 @@ export async function inspectWindowsAuthenticodeSignature(artifactPath, options 
     'TimestampThumbprint = if ($signature.TimeStamperCertificate) { $signature.TimeStamperCertificate.Thumbprint } else { $null }',
     'TimestampSubject = if ($signature.TimeStamperCertificate) { $signature.TimeStamperCertificate.Subject } else { $null }',
     '} | ConvertTo-Json -Compress',
-  ].join('; ');
+  ].join('\n');
   const result = await runCommandCapture(
     'powershell.exe',
     ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script],
