@@ -6,6 +6,7 @@ import { Check, ChevronDown, Copy, FileCode2, FileImage, FolderOpen } from 'luci
 import { MermaidChart } from './MermaidChart.js';
 import { HtmlSandbox } from './HtmlSandbox.js';
 import { DesignDraftPreview } from './DesignDraftPreview.js';
+import { UiDesignPreview } from './UiDesignPreview.js';
 import { ExcalidrawDraftPreview } from './ExcalidrawDraftPreview.js';
 import { InlineVisualizationPreview } from './InlineVisualizationPreview.js';
 import { parseInlineVisualizationSegments } from './inline-visualization.js';
@@ -468,6 +469,12 @@ const MarkdownRenderer = memo(function MarkdownRenderer({
                 onOpenInBrowser={onOpenHtmlInBrowser}
               />
             );
+          }
+          if (language === 'design-ui' || language === 'ui-design') {
+            if (streaming || !interactiveEmbeds) {
+              return <CodeBlock language={language}>{children}</CodeBlock>;
+            }
+            return <UiDesignPreview code={raw} />;
           }
           if (language === 'excalidraw' || language === 'excalidraw-json') {
             if (streaming || !interactiveEmbeds) {

@@ -20,12 +20,14 @@ function pngHeader(size) {
   return buffer;
 }
 
-test('brand SVG uses the approved continuum palette and stable ST identity', () => {
+test('brand SVG uses the approved continuum palette and stable infinity identity', () => {
   const svg = createWindowsBrandSvg();
-  assert.match(svg, /SYNC-THINK continuum ST monogram/);
-  assert.match(svg, /#141816/);
-  assert.match(svg, /#29b982/);
-  assert.match(svg, />ST<\/text>/);
+  assert.match(svg, /SYNC-THINK continuum infinity mark/);
+  assert.match(svg, /#FFFFFF/);
+  // Transparent tile: no dark rounded <rect> background, no brand frame, no ST text.
+  assert.doesNotMatch(svg, /fill="#141816"/);
+  assert.ok(!(svg.match(/<rect/g) ?? []).length, 'svg must be transparent (no rect tile)');
+  assert.doesNotMatch(svg, />ST<\/text>/);
 });
 
 test('ICO encoder preserves the complete Windows multi-resolution icon set', () => {

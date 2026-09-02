@@ -22,4 +22,5 @@ export * from './diagnostics/recovery.js';
 export * from './components/ModelPathPicker.js';
 export * from './components/ModelPathBoard.js';
 export * from './components/AgentWorkspace.js';
+export * from './components/UiDesignSurface.js';
 export * from './model-path-tree.js';

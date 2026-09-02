@@ -167,6 +167,22 @@ describe('InlineProcessFlow', () => {
     );
   });
 
+  it('uses the same icon box size for Think and tool rows', () => {
+    render(<InlineProcessFlow items={[reasoningItem, toolItem]} defaultOpen />);
+
+    const thinkIcon = screen
+      .getByTestId('inline-process-reasoning')
+      .querySelector('.shell-inline-process__row-symbol');
+    const toolIcon = screen
+      .getByTestId('process-tool-kind')
+      .querySelector('svg');
+
+    expect(thinkIcon?.getAttribute('width')).toBe('14');
+    expect(thinkIcon?.getAttribute('height')).toBe('14');
+    expect(toolIcon?.getAttribute('width')).toBe('14');
+    expect(toolIcon?.getAttribute('height')).toBe('14');
+  });
+
   it('keeps Progress out of the timeline and only exposes real agent tasks', () => {
     render(
       <InlineProcessFlow

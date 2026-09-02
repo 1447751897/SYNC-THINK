@@ -2134,6 +2134,7 @@ body {
 
 .shell-browser__viewport {
   position: relative;
+  height: 100%;
   min-height: 100%;
   margin: 0 auto;
   overflow: hidden;
@@ -2150,6 +2151,7 @@ body {
 .shell-browser__webview {
   display: block;
   width: 100%;
+  height: 100%;
   min-height: 100%;
   border: 0;
   background: var(--color-chat);
@@ -9368,6 +9370,8 @@ body {
 
 .shell-inline-process__row-symbol,
 .shell-inline-process__row-disclosure {
+  width: 14px;
+  height: 14px;
   position: absolute;
   transition:
     opacity 120ms ease,
@@ -15747,6 +15751,39 @@ body {
   margin-top: 2px;
 }
 
+/* Structured UI-kit design artifacts. These stay in the shell document, so
+   they remain crisp and bounded instead of relying on a heavyweight WebView. */
+.shell-ui-design-preview { margin: 0 0 0.95em; overflow: hidden; border: 1px solid var(--color-border); border-radius: 10px; background: var(--color-chat); }
+.shell-ui-design-preview__bar { display: flex; align-items: center; justify-content: space-between; min-height: 32px; padding: 0 10px; border-bottom: 1px solid var(--color-border); color: var(--color-text-secondary); font-size: 11.5px; }
+.shell-ui-design-preview__bar span, .shell-ui-design-preview__bar button { display: inline-flex; align-items: center; gap: 6px; }
+.shell-ui-design-preview__bar button { border: 0; background: transparent; color: var(--color-text-secondary); cursor: pointer; }
+.shell-ui-design-preview__bar button:hover { color: var(--color-accent-strong); }
+.st-ui-design { color: var(--color-text); background: var(--color-surface); }
+.st-ui-design__header { display: flex; justify-content: space-between; gap: 20px; padding: 22px 24px 18px; border-bottom: 1px solid var(--color-border); background: color-mix(in srgb, var(--color-surface) 88%, var(--color-accent-soft)); }
+.st-ui-design__header h2 { margin: 4px 0 0; font-size: 20px; line-height: 1.25; letter-spacing: 0; }
+.st-ui-design__header p { margin: 5px 0 0; color: var(--color-text-secondary); font-size: 12px; }
+.st-ui-design__header > svg { flex: none; color: var(--color-accent-strong); }
+.st-ui-design__eyebrow { color: var(--color-accent-strong); font-size: 10px; font-weight: 700; letter-spacing: .08em; }
+.st-ui-design__body { display: flex; min-height: 280px; }
+.st-ui-design__sidebar { width: 178px; flex: none; padding: 16px 10px; border-right: 1px solid var(--color-border); background: var(--color-sidebar); }
+.st-ui-design__sidebar strong { display: block; padding: 0 8px 10px; font-size: 12px; }
+.st-ui-design__sidebar nav { display: grid; gap: 3px; }
+.st-ui-design__sidebar button { display: flex; justify-content: space-between; width: 100%; padding: 8px; border: 0; border-radius: 6px; background: transparent; color: var(--color-text-secondary); text-align: left; font-size: 12px; cursor: pointer; }
+.st-ui-design__sidebar button:hover, .st-ui-design__sidebar button.is-active { background: var(--color-hover); color: var(--color-text); }
+.st-ui-design__sidebar small { color: var(--color-text-faint); }
+.st-ui-design__content { min-width: 0; flex: 1; padding: 20px 24px 26px; }
+.st-ui-design__heading { margin: 0 0 10px; letter-spacing: 0; }
+.st-ui-design__heading--1 { font-size: 20px; }.st-ui-design__heading--2 { font-size: 16px; }.st-ui-design__heading--3 { font-size: 13px; }
+.st-ui-design__text { margin: 0 0 14px; color: var(--color-text-secondary); font-size: 12px; line-height: 1.6; }
+.st-ui-design__metric-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.st-ui-design__metric, .st-ui-design__card { display: grid; gap: 6px; padding: 13px; border: 1px solid var(--color-border); border-radius: 8px; background: var(--color-elevated); }
+.st-ui-design__metric span, .st-ui-design__metric small, .st-ui-design__card p { color: var(--color-text-secondary); font-size: 11px; }.st-ui-design__metric strong { font-size: 20px; }.st-ui-design__metric[data-tone='positive'] strong { color: var(--color-success); }.st-ui-design__metric[data-tone='warning'] strong { color: var(--color-warning); }
+.st-ui-design__card { margin: 10px 0; border-top: 3px solid var(--color-accent); }.st-ui-design__card h3 { margin: 0; font-size: 13px; }.st-ui-design__card p { margin: 0; }
+.st-ui-design__block { margin: 14px 0; }.st-ui-design__block-title { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; font-size: 12px; font-weight: 650; }.st-ui-design__list { display: grid; gap: 7px; margin: 0; padding: 0; list-style: none; color: var(--color-text-secondary); font-size: 12px; }.st-ui-design__list li { display: flex; align-items: center; gap: 8px; }.st-ui-design__list svg { color: var(--color-accent-strong); }
+.st-ui-design__table-wrap { overflow-x: auto; border: 1px solid var(--color-border); border-radius: 7px; }.st-ui-design__table-wrap table { width: 100%; border-collapse: collapse; font-size: 11px; }.st-ui-design__table-wrap th, .st-ui-design__table-wrap td { padding: 8px 10px; border-bottom: 1px solid var(--color-border); text-align: left; white-space: nowrap; }.st-ui-design__table-wrap th { color: var(--color-text-secondary); background: var(--color-sidebar); font-weight: 650; }.st-ui-design__table-wrap tr:last-child td { border-bottom: 0; }
+.st-ui-design__form { display: grid; gap: 10px; max-width: 420px; }.st-ui-design__form label { display: grid; gap: 5px; color: var(--color-text-secondary); font-size: 11px; }.st-ui-design__form input, .st-ui-design__form select { min-height: 32px; padding: 0 9px; border: 1px solid var(--color-border-strong); border-radius: 6px; background: var(--color-control); color: var(--color-text); }.st-ui-design__toggle { display: inline-flex; width: 36px; height: 22px; align-items: center; justify-content: center; border: 0; border-radius: 999px; background: var(--color-accent-soft); color: var(--color-accent-strong); }.st-ui-design__submit { width: fit-content; min-height: 30px; padding: 0 12px; border: 0; border-radius: 6px; background: var(--color-accent); color: var(--color-accent-fg); font-size: 11px; }
+@media (max-width: 620px) { .st-ui-design__body { display: block; }.st-ui-design__sidebar { width: auto; border-right: 0; border-bottom: 1px solid var(--color-border); }.st-ui-design__metric-grid { grid-template-columns: 1fr; }.st-ui-design__content { padding: 16px; } }
+
 /* NewMax's design files are editable Excalidraw scenes rather than HTML cards. */
 .shell-excalidraw-draft,
 .shell-file-document-preview--excalidraw {
@@ -15889,7 +15926,7 @@ body {
   --excalidraw-text-tertiary: var(--color-text-faint);
   --excalidraw-brand-primary: var(--color-accent);
   --excalidraw-brand-primary-text: var(--color-accent-fg);
-  --excalidraw-icon: var(--color-text-faint);
+  --excalidraw-icon: var(--color-text-secondary);
   --excalidraw-on-surface: var(--color-hover);
   --excalidraw-on-surface-active: var(--color-active);
   --excalidraw-pill-bg: var(--color-accent-soft);
@@ -15935,7 +15972,7 @@ body {
   --text-primary-color: var(--excalidraw-text-primary) !important;
   --color-on-surface: var(--excalidraw-text-primary) !important;
   --color-muted: var(--excalidraw-text-tertiary) !important;
-  --icon-fill-color: var(--excalidraw-text-primary) !important;
+  --icon-fill-color: var(--excalidraw-text-secondary) !important;
   --color-primary: var(--excalidraw-brand-primary) !important;
   --color-primary-darker: var(--excalidraw-brand-primary) !important;
   --color-primary-darkest: var(--excalidraw-brand-primary) !important;

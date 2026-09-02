@@ -245,15 +245,15 @@ function ThinkRow({
 }
 
 function ToolKindIcon({ kind }: { kind: ProcessToolVisualKind }) {
-  if (kind === 'read') return <FileCode2 size={13} />;
-  if (kind === 'write') return <PencilLine size={13} />;
-  if (kind === 'list') return <FolderOpen size={13} />;
-  if (kind === 'command') return <SquareTerminal size={13} />;
-  if (kind === 'git') return <GitBranch size={13} />;
-  if (kind === 'browser') return <Globe size={13} />;
-  if (kind === 'search') return <Search size={13} />;
-  if (kind === 'mcp') return <Plug size={13} />;
-  return <Wrench size={13} />;
+  if (kind === 'read') return <FileCode2 size={14} />;
+  if (kind === 'write') return <PencilLine size={14} />;
+  if (kind === 'list') return <FolderOpen size={14} />;
+  if (kind === 'command') return <SquareTerminal size={14} />;
+  if (kind === 'git') return <GitBranch size={14} />;
+  if (kind === 'browser') return <Globe size={14} />;
+  if (kind === 'search') return <Search size={14} />;
+  if (kind === 'mcp') return <Plug size={14} />;
+  return <Wrench size={14} />;
 }
 
 const TOOL_STATUS_TEXT: Readonly<Record<'running' | 'completed' | 'failed', string>> = {

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildDesignGenerationPrompt,
   extractGeneratedDesignHtml,
+  isExplicitExcalidrawRequest,
   parseDesignGeneratePayload,
 } from './design-generation.js';
 
@@ -16,6 +17,14 @@ describe('design generation protocol', () => {
     const parsed = parseDesignGeneratePayload(payload);
     expect(parsed).toEqual(payload);
     expect(buildDesignGenerationPrompt(parsed!)).toContain('Children JSON');
+    expect(buildDesignGenerationPrompt(parsed!)).toContain('target <= 160 KB');
+  });
+
+  it('routes Excalidraw only when the user explicitly names the source format', () => {
+    expect(isExplicitExcalidrawRequest('请做一个登录页设计稿')).toBe(false);
+    expect(isExplicitExcalidrawRequest('请输出 Excalidraw 源文件')).toBe(true);
+    expect(isExplicitExcalidrawRequest('保存为 designs/login.excalidraw')).toBe(true);
+    expect(isExplicitExcalidrawRequest('做一个可编辑的画布 JSON')).toBe(true);
   });
 
   it('rejects unknown keys, non-record children and oversized scenes', () => {

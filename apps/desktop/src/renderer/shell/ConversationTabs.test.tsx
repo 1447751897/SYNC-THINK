@@ -371,6 +371,7 @@ describe('ConversationTabs pane actions', () => {
     const onNew = vi.fn();
     const onNewTerminal = vi.fn();
     const onNewBrowser = vi.fn();
+    const onNewCanvas = vi.fn();
     render(
       <ConversationTabs
         paneId="pane-a"
@@ -383,6 +384,7 @@ describe('ConversationTabs pane actions', () => {
         onNew={onNew}
         onNewTerminal={onNewTerminal}
         onNewBrowser={onNewBrowser}
+        onNewCanvas={onNewCanvas}
       />,
     );
 
@@ -391,6 +393,7 @@ describe('ConversationTabs pane actions', () => {
     expect(screen.getByTestId('new-resource-conversation')).toBeTruthy();
     expect(screen.getByTestId('new-resource-terminal')).toBeTruthy();
     expect(screen.getByTestId('new-resource-browser')).toBeTruthy();
+    expect(screen.getByTestId('new-resource-canvas')).toBeTruthy();
 
     fireEvent.click(screen.getByTestId('new-resource-browser'));
     expect(onNewBrowser).toHaveBeenCalledOnce();

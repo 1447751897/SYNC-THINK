@@ -137,14 +137,13 @@ describe('messageToChat inline process split', () => {
       answerText: undefined,
       pendingText: '',
     });
-    // Thinking already occupies 执行过程; the unclassified tail must still
-    // stream in the answer bubble, or the timer freezes and the whole reply
-    // dumps at the terminal.
+    // Unclassified text stays buffered until Runtime assigns a phase; it must
+    // never appear in the final answer area while the turn is still running.
     expect(
       visibleStreamingAnswerText(
         projectTransientAnswerText('我先检查资料。正在生成最终回答', timeline),
       ),
-    ).toBe('正在生成最终回答');
+    ).toBe('');
   });
 
   it('prefers a classified final answer over the provisional streaming tail', () => {

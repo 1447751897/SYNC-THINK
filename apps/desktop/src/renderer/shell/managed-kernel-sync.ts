@@ -21,6 +21,11 @@ export function applyManagedKernelSnapshotToInstallStates(
         status: 'error',
         error: item.errorCode ?? '安装失败',
       };
+    } else if (item.phase === 'idle' || item.phase === 'available') {
+      // `available` without a managed version is a settled not-installed
+      // state. Remove any renderer-only spinner left by an interrupted IPC
+      // request so the picker can show the real install action again.
+      delete next[item.kernelId];
     }
   }
   return next;
@@ -32,10 +37,18 @@ export function useManagedKernelUpdateSync(
   useEffect(() => {
     let active = true;
     const bridge = window.syncThink?.kernelUpdates;
-    void bridge?.getState?.()?.then((snapshot) => {
-      if (active && snapshot) onSnapshot(snapshot);
+    let receivedLiveSnapshot = false;
+    const unsubscribe = bridge?.subscribeState?.((snapshot) => {
+      if (!active) return;
+      receivedLiveSnapshot = true;
+      onSnapshot(snapshot);
     });
-    const unsubscribe = bridge?.subscribeState?.(onSnapshot);
+    void bridge?.getState?.()?.then((snapshot) => {
+      // A live broadcast can arrive before the initial IPC response. In that
+      // case the response may be an older `installing` snapshot; keep the
+      // already delivered terminal state instead of regressing the picker.
+      if (active && snapshot && !receivedLiveSnapshot) onSnapshot(snapshot);
+    });
     return () => {
       active = false;
       unsubscribe?.();

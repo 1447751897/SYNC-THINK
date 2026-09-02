@@ -8,12 +8,14 @@ import {
   Check,
   Columns2,
   FileDiff,
+  FilePlus2,
   Folder,
   Globe,
   MessageSquare,
   MessageSquarePlus,
   MoreHorizontal,
   Plus,
+  Pencil,
   Rows2,
   Search,
   SquareTerminal,
@@ -70,6 +72,8 @@ export interface ConversationTabsProps {
   onSelectBrowser?(browserId: string): void;
   onCloseBrowser?(browserId: string): void;
   onNewBrowser?(): void;
+  onNewCanvas?(): void;
+  onNewDocument?(): void;
   onSelectReview?(runId: string): void;
   onCloseReview?(runId: string): void;
   onSelectWorkspaceFiles?(): void;
@@ -784,6 +788,41 @@ export function ConversationTabs(props: ConversationTabsProps) {
                     <span>
                       <strong>新建对话</strong>
                       <small>在当前窗格打开新的对话草稿</small>
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    data-testid="new-resource-document"
+                    disabled={props.canOpenTerminal === false}
+                    title={props.canOpenTerminal === false ? '先绑定项目文件夹' : undefined}
+                    onClick={() => {
+                      setNewResourceMenuOpen(false);
+                      props.onNewDocument?.();
+                    }}
+                  >
+                    <FilePlus2 size={14} />
+                    <span>
+                      <strong>新建文档</strong>
+                      <small>在当前窗格打开一个 Markdown 文档</small>
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    data-testid="new-resource-canvas"
+                    className="shell-new-resource-menu__item"
+                    disabled={props.canOpenTerminal === false}
+                    title={props.canOpenTerminal === false ? '先绑定项目文件夹' : undefined}
+                    onClick={() => {
+                      setNewResourceMenuOpen(false);
+                      props.onNewCanvas?.();
+                    }}
+                  >
+                    <Pencil size={14} />
+                    <span>
+                      <strong>新建绘图</strong>
+                      <small>打开一个独立的 Excalidraw 画布</small>
                     </span>
                   </button>
                   <button

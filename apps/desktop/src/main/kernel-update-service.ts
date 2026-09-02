@@ -1,5 +1,12 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { delimiter, dirname, join, resolve, sep } from 'node:path';
 import { spawn } from 'node:child_process';
 import type {
@@ -13,6 +20,11 @@ import type {
 const NPM_REGISTRY = 'https://registry.npmjs.org/';
 const OUTPUT_LIMIT = 256 * 1024;
 const INSTALL_TIMEOUT_MS = 5 * 60_000;
+// Windows Defender and npm can keep a handle open on a freshly installed
+// package for several seconds after npm exits. Keep the UI in an honest
+// installing state while that handle drains, then return a terminal error.
+const ACTIVATION_RETRY_ATTEMPTS = 25;
+const ACTIVATION_RETRY_DELAY_MS = 500;
 
 const KERNELS: Record<
   ManagedKernelUpdateId,
@@ -203,6 +215,34 @@ function writeManifest(rootDir: string, manifest: ActiveKernelManifest): void {
   renameSync(temporary, path);
 }
 
+function cleanupStaging(stagingPrefix: string | undefined): void {
+  if (!stagingPrefix) return;
+  try {
+    rmSync(stagingPrefix, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+  } catch {
+    // A package manager child may briefly retain a file handle. Leaving the
+    // staging directory is harmless; the next update can use a new one.
+  }
+}
+
+async function activateStaging(stagingPrefix: string, finalPrefix: string): Promise<void> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < ACTIVATION_RETRY_ATTEMPTS; attempt += 1) {
+    try {
+      renameSync(stagingPrefix, finalPrefix);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (attempt + 1 < ACTIVATION_RETRY_ATTEMPTS) {
+        await new Promise((resolveDelay) =>
+          setTimeout(resolveDelay, ACTIVATION_RETRY_DELAY_MS),
+        );
+      }
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error('kernel activation failed');
+}
+
 function defaultRun(
   installer: KernelInstallerInvocation,
   args: string[],
@@ -218,20 +258,36 @@ function defaultRun(
     let stderr = '';
     const append = (current: string, chunk: Buffer | string): string =>
       `${current}${String(chunk)}`.slice(-OUTPUT_LIMIT);
+    let settled = false;
+    function settle(result: KernelInstallerRunResult): void {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolveRun(result);
+    }
+    const timer = setTimeout(() => {
+      try {
+        child.kill();
+      } catch {
+        // The process may have exited between the timer and kill call.
+      }
+      settle({
+        exitCode: null,
+        stdout,
+        stderr: append(stderr, 'installer timed out'),
+      });
+    }, INSTALL_TIMEOUT_MS);
     child.stdout?.on('data', (chunk) => {
       stdout = append(stdout, chunk);
     });
     child.stderr?.on('data', (chunk) => {
       stderr = append(stderr, chunk);
     });
-    const timer = setTimeout(() => child.kill(), INSTALL_TIMEOUT_MS);
     child.on('error', (error) => {
-      clearTimeout(timer);
-      resolveRun({ exitCode: null, stdout, stderr: append(stderr, error.message) });
+      settle({ exitCode: null, stdout, stderr: append(stderr, error.message) });
     });
     child.on('exit', (exitCode) => {
-      clearTimeout(timer);
-      resolveRun({ exitCode, stdout, stderr });
+      settle({ exitCode, stdout, stderr });
     });
   });
 }
@@ -278,7 +334,24 @@ export function createKernelUpdateService(options: KernelUpdateServiceOptions) {
     return defaultRun(options.installer, args);
   };
 
+  const recoverOrphanedPhases = (): void => {
+    for (const kernelId of Object.keys(KERNELS) as ManagedKernelUpdateId[]) {
+      const phase = phases.get(kernelId);
+      if ((phase === 'checking' || phase === 'installing') && !kernelLocks.has(kernelId)) {
+        phases.set(kernelId, 'error');
+        errors.set(
+          kernelId,
+          phase === 'checking' ? 'kernel.update.check-failed' : 'kernel.update.install-failed',
+        );
+      }
+    }
+  };
+
   const snapshot = (): ManagedKernelUpdateSnapshot => {
+    // A failed async operation must never leave a transient phase visible once
+    // its per-kernel lock has been released. This also repairs state after an
+    // unexpected exception from a filesystem or package-manager boundary.
+    recoverOrphanedPhases();
     const manifest = readManifest(rootDir);
     const items = (Object.keys(KERNELS) as ManagedKernelUpdateId[]).map((kernelId) => {
       const config = KERNELS[kernelId];
@@ -316,32 +389,47 @@ export function createKernelUpdateService(options: KernelUpdateServiceOptions) {
     errorCode,
   });
 
+  const markFailure = (
+    kernelId: ManagedKernelUpdateId,
+    errorCode: string,
+  ): ManagedKernelUpdateActionResult => {
+    phases.set(kernelId, 'error');
+    errors.set(kernelId, errorCode);
+    return failure(errorCode);
+  };
+
   const checkOne = async (kernelId: ManagedKernelUpdateId): Promise<string | null> => {
     phases.set(kernelId, 'checking');
     errors.delete(kernelId);
-    const result = await run([
-      'view',
-      KERNELS[kernelId].packageName,
-      'version',
-      '--json',
-      '--registry',
-      NPM_REGISTRY,
-    ]);
-    const version = result.exitCode === 0 ? parseVersion(result.stdout) : null;
-    if (!version) {
+    try {
+      const result = await run([
+        'view',
+        KERNELS[kernelId].packageName,
+        'version',
+        '--json',
+        '--registry',
+        NPM_REGISTRY,
+      ]);
+      const version = result.exitCode === 0 ? parseVersion(result.stdout) : null;
+      if (!version) {
+        phases.set(kernelId, 'error');
+        errors.set(kernelId, 'kernel.update.check-failed');
+        return null;
+      }
+      latest.set(kernelId, version);
+      const record = readManifest(rootDir).active[kernelId];
+      phases.set(
+        kernelId,
+        validActiveRecord(rootDir, kernelId, record) && compareVersion(record.version, version) >= 0
+          ? 'up-to-date'
+          : 'available',
+      );
+      return version;
+    } catch {
       phases.set(kernelId, 'error');
       errors.set(kernelId, 'kernel.update.check-failed');
       return null;
     }
-    latest.set(kernelId, version);
-    const record = readManifest(rootDir).active[kernelId];
-    phases.set(
-      kernelId,
-      validActiveRecord(rootDir, kernelId, record) && compareVersion(record.version, version) >= 0
-        ? 'up-to-date'
-        : 'available',
-    );
-    return version;
   };
 
   return {
@@ -368,6 +456,19 @@ export function createKernelUpdateService(options: KernelUpdateServiceOptions) {
           state: snapshot(),
           errorCode: ok ? null : 'kernel.update.check-failed',
         };
+      } catch {
+        for (const id of targets) {
+          if (phases.get(id) === 'checking') {
+            phases.set(id, 'error');
+            errors.set(id, 'kernel.update.check-failed');
+          }
+        }
+        checkedAt = now().toISOString();
+        return {
+          ok: false,
+          state: snapshot(),
+          errorCode: 'kernel.update.check-failed',
+        };
       } finally {
         for (const id of targets) unlock(id);
       }
@@ -376,6 +477,7 @@ export function createKernelUpdateService(options: KernelUpdateServiceOptions) {
       if (!KERNELS[kernelId]) return failure('kernel.update.kernel-invalid');
       if (!options.installer) return failure('kernel.update.installer-missing');
       if (!tryLock(kernelId)) return failure('kernel.update.busy');
+      let stagingPrefix: string | undefined;
       try {
         errors.delete(kernelId);
         let version = latest.get(kernelId) ?? null;
@@ -384,7 +486,7 @@ export function createKernelUpdateService(options: KernelUpdateServiceOptions) {
         phases.set(kernelId, 'installing');
         const finalPrefix = join(rootDir, 'versions', kernelId, version);
         if (!verifyInstallation(finalPrefix, kernelId, version)) {
-          const stagingPrefix = join(rootDir, 'staging', `${kernelId}-${version}-${randomUUID()}`);
+          stagingPrefix = join(rootDir, 'staging', `${kernelId}-${version}-${randomUUID()}`);
           mkdirSync(dirname(stagingPrefix), { recursive: true });
           const install = await run([
             'install',
@@ -400,22 +502,16 @@ export function createKernelUpdateService(options: KernelUpdateServiceOptions) {
             '--no-fund',
           ]);
           if (install.exitCode !== 0) {
-            phases.set(kernelId, 'error');
-            errors.set(kernelId, 'kernel.update.install-failed');
-            return failure('kernel.update.install-failed');
+            return markFailure(kernelId, 'kernel.update.install-failed');
           }
           if (!verifyInstallation(stagingPrefix, kernelId, version)) {
-            phases.set(kernelId, 'error');
-            errors.set(kernelId, 'kernel.update.verify-failed');
-            return failure('kernel.update.verify-failed');
+            return markFailure(kernelId, 'kernel.update.verify-failed');
           }
           mkdirSync(dirname(finalPrefix), { recursive: true });
-          if (!existsSync(finalPrefix)) renameSync(stagingPrefix, finalPrefix);
+          if (!existsSync(finalPrefix)) await activateStaging(stagingPrefix, finalPrefix);
         }
         if (!verifyInstallation(finalPrefix, kernelId, version)) {
-          phases.set(kernelId, 'error');
-          errors.set(kernelId, 'kernel.update.verify-failed');
-          return failure('kernel.update.verify-failed');
+          return markFailure(kernelId, 'kernel.update.verify-failed');
         }
         await writeActiveRecord(kernelId, {
           version,
@@ -425,7 +521,10 @@ export function createKernelUpdateService(options: KernelUpdateServiceOptions) {
         phases.set(kernelId, 'installed');
         checkedAt = now().toISOString();
         return { ok: true, state: snapshot(), errorCode: null };
+      } catch {
+        return markFailure(kernelId, 'kernel.update.install-failed');
       } finally {
+        cleanupStaging(stagingPrefix);
         unlock(kernelId);
       }
     },

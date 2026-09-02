@@ -102,9 +102,9 @@ describe('CodexAppServerKernelAdapter', () => {
     // 直接拼接会把 `**标题A**` 和 `**标题B**` 融成一行。
     expect(reasoning).toEqual([
       { type: 'reasoning', text: '完整正文' },
-      { type: 'reasoning', text: '\n\n' },
+      { type: 'reasoning', text: '\n\n', boundary: true },
       { type: 'reasoning', text: '只有摘要' },
-      { type: 'reasoning', text: '\n\n' },
+      { type: 'reasoning', text: '\n\n', boundary: true },
       { type: 'reasoning', text: '内容部件正文' },
     ]);
   });
@@ -127,6 +127,17 @@ describe('CodexAppServerKernelAdapter', () => {
     // summaryPartAdded notification. Both that boundary and a new reasoning
     // item must remain visible in the host's single thinking flow.
     expect(reasoning.join('')).toBe('**分析**正文A\n\n**验证**\n\n**新思考**');
+    expect(events.filter((event) => event.type === 'reasoning' && event.boundary)).toHaveLength(2);
+  });
+
+  it('keeps the raw reasoning stream disabled for the Codex-style Think view', async () => {
+    const adapter = createFixtureAdapter([]);
+    const events: KernelEvent[] = [];
+    for await (const event of adapter.start(makeRequest({ userText: 'raw reasoning fixture' }))) {
+      events.push(event);
+    }
+
+    expect(events.filter((event) => event.type === 'reasoning')).toEqual([]);
   });
 
   it('terminates an active iterator when the app-server is stopped', async () => {

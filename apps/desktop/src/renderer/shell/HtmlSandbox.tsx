@@ -339,26 +339,28 @@ export function HtmlSandbox({
             <span className="shell-md-code__lang">html</span>
           )}
         </div>
-        <div className="shell-html__view-tabs">
-          <button
-            type="button"
-            className={`shell-html__view-tab${view === 'preview' ? ' is-active' : ''}`}
-            onClick={() => setView('preview')}
-            aria-pressed={view === 'preview'}
-          >
-            <Eye size={12} />
-            <span>预览</span>
-          </button>
-          <button
-            type="button"
-            className={`shell-html__view-tab${view === 'source' ? ' is-active' : ''}`}
-            onClick={() => setView('source')}
-            aria-pressed={view === 'source'}
-          >
-            <FileCode2 size={12} />
-            <span>源码</span>
-          </button>
-        </div>
+        {appearance === 'code' ? (
+          <div className="shell-html__view-tabs">
+            <button
+              type="button"
+              className={`shell-html__view-tab${view === 'preview' ? ' is-active' : ''}`}
+              onClick={() => setView('preview')}
+              aria-pressed={view === 'preview'}
+            >
+              <Eye size={12} />
+              <span>预览</span>
+            </button>
+            <button
+              type="button"
+              className={`shell-html__view-tab${view === 'source' ? ' is-active' : ''}`}
+              onClick={() => setView('source')}
+              aria-pressed={view === 'source'}
+            >
+              <FileCode2 size={12} />
+              <span>源码</span>
+            </button>
+          </div>
+        ) : null}
         <div className="shell-md-code__actions">
           <button
             type="button"

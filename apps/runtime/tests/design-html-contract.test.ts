@@ -46,6 +46,30 @@ describe('Runtime design-html product contract', () => {
       'do not call `write_file` and do not overwrite an existing design file',
     );
     expect(prompt).toContain('ordinary HTML examples should remain regular `html` code fences');
+    expect(prompt).toContain('speed-first NewMax-style preview');
+    expect(prompt).not.toContain('AI editable design output contract (excalidraw):');
+  });
+
+  it('adds the editable Excalidraw contract only for an explicit source request', () => {
+    const runtime = new Runtime({
+      installId: `excalidraw-contract-${Date.now()}`,
+      allowNoToken: true,
+    });
+    const run = createDemoRun(
+      'run-excalidraw-contract' as RunId,
+      'thread-excalidraw-contract',
+      '请输出 Excalidraw 源文件，保存为 designs/login.excalidraw',
+    );
+    const snapshot = (
+      runtime as unknown as ContextSnapshotBuilder
+    ).buildDefaultProviderContextSnapshot(run, {
+      messages: [{ role: 'user', content: run.userText }],
+      toolsEnabled: false,
+    });
+    const prompt = snapshot.providerRequest.systemPrompt;
+
+    expect(prompt).toContain('AI editable design output contract (excalidraw):');
+    expect(prompt).toContain('Use this contract only when the user explicitly asks for Excalidraw');
   });
 
   it('injects the file-backed inline visualization contract and keeps it separate from drafts', () => {

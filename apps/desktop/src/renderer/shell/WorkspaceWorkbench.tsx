@@ -7,7 +7,7 @@ import {
   type PointerEvent,
   type ReactNode,
 } from 'react';
-import { FileDiff, Folder, Globe, MoreHorizontal, Plus, SquareTerminal, X } from 'lucide-react';
+import { FileDiff, FilePlus2, Folder, Globe, MoreHorizontal, Pencil, Plus, SquareTerminal, X } from 'lucide-react';
 import clsx from 'clsx';
 import { FileTypeIcon } from './FileTypeIcon.js';
 import type { WorkbenchPlacement, WorkbenchScope, WorkbenchTab } from './workspace-workbench.js';
@@ -20,7 +20,7 @@ import {
   WORKBENCH_RIGHT_MIN_WIDTH,
 } from './workspace-workbench.js';
 
-export type WorkbenchNewResource = 'files' | 'terminal' | 'browser';
+export type WorkbenchNewResource = 'files' | 'terminal' | 'browser' | 'canvas' | 'document';
 
 export interface WorkspaceWorkbenchProps {
   placement: WorkbenchPlacement;
@@ -335,6 +335,12 @@ export function WorkspaceWorkbench(props: WorkspaceWorkbenchProps) {
             >
               <button type="button" role="menuitem" onClick={() => selectNewResource('files')}>
                 <Folder size={14} /> 工作区文件
+              </button>
+              <button type="button" role="menuitem" disabled={props.canOpenTerminal === false} onClick={() => selectNewResource('canvas')}>
+                <Pencil size={14} /> 新建绘图
+              </button>
+              <button type="button" role="menuitem" disabled={props.canOpenTerminal === false} onClick={() => selectNewResource('document')}>
+                <FilePlus2 size={14} /> 新建文档
               </button>
               <button
                 type="button"

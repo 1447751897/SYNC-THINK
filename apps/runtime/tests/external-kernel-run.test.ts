@@ -862,7 +862,7 @@ describe('Runtime external kernel finalization', () => {
     }
   });
 
-  it('streams unclassified kernel deltas as live text for every kernel, not only at terminal', async () => {
+  it('replays the terminally classified kernel answer through the transient stream', async () => {
     const fixture = await createFixture([
       { type: 'reasoning', text: 'think first' },
       { type: 'delta', text: 'hello ' },
@@ -872,16 +872,73 @@ describe('Runtime external kernel finalization', () => {
     try {
       await fixture.harness.executeExternalKernelRun(fixture.runId);
 
-      expect(
-        fixture.harness.transientReplay
-          .filter((frame) => frame.kind === 'text')
-          .map((frame) => frame.textDelta),
-      ).toEqual(['hello ', 'kernel']);
+      const textFrames = fixture.harness.transientReplay.filter((frame) => frame.kind === 'text');
+      expect(textFrames.map((frame) => frame.textDelta)).toEqual(['hello kernel']);
+      const terminalIndex = fixture.harness.transientReplay.findIndex(
+        (frame) => frame.kind === 'terminal',
+      );
+      const textIndex = fixture.harness.transientReplay.findIndex((frame) => frame.kind === 'text');
+      expect(textIndex).toBeGreaterThanOrEqual(0);
+      expect(textIndex).toBeLessThan(terminalIndex);
       expect(
         fixture.harness.transientReplay.some(
           (frame) => frame.kind === 'commentary' && Boolean(frame.textDelta),
         ),
       ).toBe(false);
+    } finally {
+      fixture.connection.raw.close();
+    }
+  });
+
+  it('flushes buffered kernel prose before the next reasoning section', async () => {
+    const fixture = await createFixture([
+      { type: 'reasoning', text: 'first thought' },
+      { type: 'delta', text: 'progress update' },
+      { type: 'reasoning', text: 'second thought' },
+      { type: 'terminal', status: 'completed' },
+    ]);
+    try {
+      await fixture.harness.executeExternalKernelRun(fixture.runId);
+
+      const snapshots = fixture.harness.transientReplay
+        .map((frame) => frame.assistantTimeline)
+        .filter((timeline): timeline is NonNullable<typeof timeline> => Boolean(timeline?.length));
+      const textBeforeSecondThinking = snapshots.find((timeline) => {
+        const textIndex = timeline.findIndex(
+          (segment) => segment.kind === 'text' && segment.phase === 'commentary',
+        );
+        const secondThinkingIndex = timeline.findIndex(
+          (segment) => segment.kind === 'thinking' && segment.text === 'second thought',
+        );
+        return textIndex >= 0 && secondThinkingIndex >= 0 && textIndex < secondThinkingIndex;
+      });
+
+      expect(textBeforeSecondThinking).toBeDefined();
+    } finally {
+      fixture.connection.raw.close();
+    }
+  });
+
+  it('renders Codex reasoning summary sections as separate process rows', async () => {
+    const fixture = await createFixture([
+      { type: 'reasoning', text: 'Planning login layout' },
+      { type: 'reasoning', text: '\n\n', boundary: true },
+      { type: 'reasoning', text: 'Reviewing interaction states' },
+      { type: 'terminal', status: 'completed' },
+    ]);
+    try {
+      await fixture.harness.executeExternalKernelRun(fixture.runId);
+      const assistant = assistantMessage(
+        fixture.messageStore.listMessages(fixture.threadId as never).messages,
+      );
+      const metadata = assistant?.blocks.find((block) => block.type === 'commentary') as
+        { payload?: { assistantTimeline?: Array<Record<string, unknown>> } } | undefined;
+      expect(metadata?.payload?.assistantTimeline).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ kind: 'thinking', text: 'Planning login layout' }),
+          expect.objectContaining({ kind: 'thinking', text: 'Reviewing interaction states' }),
+        ]),
+      );
     } finally {
       fixture.connection.raw.close();
     }

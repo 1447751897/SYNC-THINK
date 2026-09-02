@@ -291,6 +291,7 @@ import type { ConversationGetRunProcessResponse } from '@sync-think/protocol';
 import {
   buildDesignGenerationPrompt,
   extractGeneratedDesignHtml,
+  isExplicitExcalidrawRequest,
   parseDesignGeneratePayload,
 } from '@sync-think/protocol';
 import { projectRunProcess } from './run-process-view.js';
@@ -924,19 +925,31 @@ const DESIGN_HTML_OUTPUT_CONTRACT = [
   '- When the user asks to create a UI mockup, visual design, prototype, or design draft, return one complete, self-contained HTML document inside exactly one fenced block tagged `design-html`.',
   '- The fence must be ` ```design-html ` followed by a complete `<!doctype html>` / `<html>` / `<head>` / `<body>` document and a matching closing fence. Put CSS and JavaScript inline when needed so the preview works without a build step; do not put Markdown or explanatory prose inside the fence.',
   '- Include visible page content and accessible labels/interactions. Do not output a placeholder description instead of the page. Do not nest `<design-html>` tags or truncate the document.',
-  '- Keep the UTF-8 payload at or below 1 MiB. Outside the fence you may briefly summarize the draft, but the fenced document is the canonical preview/save payload.',
+  '- This is a speed-first NewMax-style preview: target the first viewport and the key interaction states, keep the UTF-8 payload compact (target at or below 160 KiB), keep the payload at or below 1 MiB, and stop once the page is usable.',
+  '- Do not embed base64 assets, large generated SVG path data, exhaustive screen variants, or hidden content that is not needed for the preview. Use CSS primitives and short inline data only when they materially improve the visible result.',
+  '- Outside the fence you may briefly summarize the draft, but the fenced document is the canonical preview/save payload.',
   '- Preview, save, and browser-open are separate facts: a preview only means the fenced payload passed the UI parser; opening the page requires an actual `browser_open` result; saving requires an actual successful `write_file` result.',
   '- When the user asks to save the design, call `write_file` with a project-relative path (for example `designs/<slug>.html`); never use an absolute path and never claim that a file was saved before the tool reports success.',
   '- If the generated document is empty, malformed, truncated, or otherwise fails validation, do not call `write_file` and do not overwrite an existing design file; return a complete replacement first.',
   '- Use this contract only for design requests; ordinary HTML examples should remain regular `html` code fences.',
 ].join('\n');
 
+const DESIGN_UI_OUTPUT_CONTRACT = [
+  'AI design draft output contract (design-ui):',
+  '- For ordinary UI mockups, product screens, dashboards, and design drafts, prefer one compact JSON artifact in exactly one fenced block tagged `design-ui`.',
+  '- The JSON must be `{ "version": 1, "type": "ui-design", "title": "...", "nodes": [...] }`; optional sidebar supports `{title,items:[{label,active,badge}]}`.',
+  '- Nodes may be heading, text, metric, card, list, table, or form. Keep the artifact focused on the first viewport and key interaction states; do not emit HTML, CSS, scripts, base64 assets, or remote resources in this block.',
+  '- Keep the JSON under 180 KB and use at most 40 nodes. The desktop renders it with the shared UI kit, so preserve hierarchy, labels, states, and table/form semantics.',
+  '- Use `design-html` only when the user explicitly requests raw HTML, CSS, or a browser-ready HTML document.',
+].join('\n');
+
 /** Editable drawing contract used by NewMax's Excalidraw file preview. */
 const EXCALIDRAW_OUTPUT_CONTRACT = [
   'AI editable design output contract (excalidraw):',
-  '- When the user asks for an editable design draft, wireframe, flowchart, whiteboard, or canvas drawing, return exactly one fenced block tagged `excalidraw` containing valid JSON.',
+  '- Use this contract only when the user explicitly asks for Excalidraw, a `.excalidraw` file, Excalidraw JSON/source, or an editable canvas/whiteboard JSON. Ordinary UI mockups, prototypes, wireframes, and design drafts use the compact `design-html` contract instead.',
+  '- When explicitly requested, return exactly one fenced block tagged `excalidraw` containing valid JSON.',
   '- The JSON must have `type: "excalidraw"`, `version: 2`, `elements: [...]`, `appState: { ... }`, and `files: { ... }`. Use real Excalidraw elements with stable ids, coordinates, dimensions, and visible text; do not return a prose description or HTML.',
-  '- Keep the payload self-contained and at or below 1 MiB. `files` may contain embedded image data only when required by the requested design.',
+  '- Keep the payload minimal and self-contained, preferably below 160 KiB and at or below 1 MiB. `files` may contain embedded image data only when required by the requested design.',
   '- The fenced JSON is the canonical editable scene. Previewing it does not mean it was saved; only a successful `write_file` result confirms a project file.',
   '- When the user asks to save it, call `write_file` with a project-relative `.excalidraw` path such as `designs/<slug>.excalidraw`; never claim a save before the tool reports success.',
   '- If the JSON is malformed, incomplete, or truncated, return a complete replacement and do not overwrite an existing file.',
@@ -20630,7 +20643,12 @@ export class Runtime {
                 this.publishKernelTextDelta(runId, attemptRun.threadId, event.text, event.final);
                 break;
               case 'reasoning':
-                this.publishKernelReasoningDelta(runId, attemptRun.threadId, event.text);
+                this.publishKernelReasoningDelta(
+                  runId,
+                  attemptRun.threadId,
+                  event.text,
+                  event.boundary === true,
+                );
                 break;
               case 'session-started':
                 reportedSessionId ??= this.saveReportedKernelConversationSession(
@@ -21468,8 +21486,10 @@ export class Runtime {
         'The checklist tool only updates the user-visible progress panel. Do not merely say that you created or updated a plan in prose; the tool call is required for the checklist to appear.',
       ].join('\n'),
     );
-    parts.push(DESIGN_HTML_OUTPUT_CONTRACT);
-    parts.push(EXCALIDRAW_OUTPUT_CONTRACT);
+    parts.push(DESIGN_UI_OUTPUT_CONTRACT, DESIGN_HTML_OUTPUT_CONTRACT);
+    if (isExplicitExcalidrawRequest(run.userText)) {
+      parts.push(EXCALIDRAW_OUTPUT_CONTRACT);
+    }
     parts.push(INLINE_VISUALIZATION_OUTPUT_CONTRACT);
     if (run.planningMode === true || this.isPlanningModeForThread(run.threadId)) {
       parts.push(
@@ -22909,7 +22929,10 @@ export class Runtime {
         threadId: threadId as ThreadId,
         runId,
         kind: 'text',
-        textDelta: text,
+        // The pending prefix was buffered until this terminal classification.
+        // Replay it through the paced display queue together with the final
+        // delta so a large answer grows progressively instead of jumping in.
+        textDelta: pending + text,
         occurredAt,
       });
       this.updateTransientTextSnapshot({
@@ -22929,10 +22952,10 @@ export class Runtime {
     // §12.17.18: kernel delta carries no phase metadata — buffer it and let
     // the next tool boundary (commentary) or the terminal (final_answer)
     // classify it, so process prose never masquerades as the final answer.
-    // Publish the tokens as live `text` frames so the renderer can stream
-    // them as a provisional answer; hiding them as commentary made Codex
-    // (and Claude/Native after thinking) freeze the timer then dump the
-    // whole reply when the terminal snapshot arrived.
+    // Keep the tokens in the host buffer until a tool or terminal boundary
+    // assigns their phase. Emitting them as `kind: text` would put
+    // unclassified kernel prose in the final-answer area before Codex has
+    // declared whether it is commentary or the actual answer.
     // Record the timeline position where the buffer started so the flush can
     // insert the classified segment in real emission order.
     const alreadyBuffered = Boolean(run.legacyPendingText);
@@ -22944,13 +22967,6 @@ export class Runtime {
             legacyPendingTextSeq: nextAssistantTimelineSequence(run.assistantTimeline ?? []),
           }
         : {}),
-    });
-    this.publishTransientDelta({
-      threadId: threadId as ThreadId,
-      runId,
-      kind: 'text',
-      textDelta: text,
-      occurredAt,
     });
   }
 
@@ -23227,10 +23243,45 @@ export class Runtime {
    * Kernel reasoning: diagnostic-only, exactly like native provider reasoning.
    * It streams for live visibility but never becomes durable chat text.
    */
-  private publishKernelReasoningDelta(runId: RunId, threadId: string, text: string): void {
-    const run = this.demoRuns.get(runId);
-    if (!run || !text) return;
+  private publishKernelReasoningDelta(
+    runId: RunId,
+    threadId: string,
+    text: string,
+    boundary = false,
+  ): void {
+    let run = this.demoRuns.get(runId);
+    if (!run) return;
     const occurredAt = new Date().toISOString();
+    // An unclassified kernel delta belongs before the next reasoning section.
+    // Flush it at this boundary instead of waiting for a later tool/terminal
+    // event, otherwise the next Think snapshot can briefly overtake the text.
+    if (run.legacyPendingText) {
+      this.flushLegacyAssistantText({ runId, phase: 'commentary', occurredAt });
+      run = this.demoRuns.get(runId);
+      if (!run) return;
+    }
+    if (boundary) {
+      const next = closeAssistantTimeline(run, occurredAt);
+      this.demoRuns.set(runId, next);
+      this.publishTransientDelta({
+        threadId: threadId as ThreadId,
+        runId,
+        kind: 'reasoning',
+        textDelta: '',
+        occurredAt,
+      });
+      this.updateTransientTextSnapshot({
+        threadId: threadId as ThreadId,
+        runId,
+        streamSequence: this.transientSequenceByThread.get(threadId) ?? 0,
+        text: next.assistantText,
+        reasoningText: next.reasoningText,
+        assistantTimeline: next.assistantTimeline,
+        updatedAt: occurredAt,
+      });
+      return;
+    }
+    if (!text) return;
     const next = appendAssistantThinkingDelta(
       { ...run, reasoningText: `${run.reasoningText ?? ''}${text}` },
       text,
@@ -29276,8 +29327,9 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     const productBoundaryPrompt = [
       'Product capability boundaries (SYNC-THINK / this desktop shell):',
       CODEX_STYLE_COMMENTARY_PROMPT,
+      DESIGN_UI_OUTPUT_CONTRACT,
       DESIGN_HTML_OUTPUT_CONTRACT,
-      EXCALIDRAW_OUTPUT_CONTRACT,
+      ...(isExplicitExcalidrawRequest(run.userText) ? [EXCALIDRAW_OUTPUT_CONTRACT] : []),
       INLINE_VISUALIZATION_OUTPUT_CONTRACT,
       agentCreationPrompt,
       planToolPrompt,
@@ -30509,10 +30561,9 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     }
 
     this.demoRuns.set(input.runId, nextRun);
-    // The full text was already transported delta-by-delta into the transient
-    // draft. Commentary emits only a boundary frame (empty delta + sequence),
-    // while final_answer becomes visible from the authoritative timeline
-    // snapshot; neither path replays duplicate text.
+    // Commentary emits only a boundary frame (empty delta + sequence), while
+    // final_answer is replayed as one logical text frame so the renderer can
+    // pace large responses without duplicating the durable content.
     if (input.phase === 'commentary') {
       this.publishTransientDelta({
         threadId: nextRun.threadId as ThreadId,
@@ -30520,6 +30571,18 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         kind: 'commentary',
         textDelta: '',
         afterSequence: this.eventSequence,
+        occurredAt: input.occurredAt,
+      });
+    } else {
+      // The kernel did not expose a phase while it was streaming. Once the
+      // terminal boundary confirms this buffer is the final answer, replay it
+      // as one logical delta; the renderer's bounded queue reveals it in
+      // chunks and keeps the final bubble responsive for large replies.
+      this.publishTransientDelta({
+        threadId: nextRun.threadId as ThreadId,
+        runId: input.runId,
+        kind: 'text',
+        textDelta,
         occurredAt: input.occurredAt,
       });
     }

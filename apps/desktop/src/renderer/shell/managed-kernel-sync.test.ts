@@ -91,4 +91,13 @@ describe('applyManagedKernelSnapshotToInstallStates', () => {
       pi: { status: 'success' },
     });
   });
+
+  it('clears a stale installing state when an update settles without activation', () => {
+    expect(
+      applyManagedKernelSnapshotToInstallStates(
+        { codex: { status: 'installing' } },
+        snapshot('available'),
+      ),
+    ).toEqual({});
+  });
 });

@@ -73,6 +73,7 @@ export interface SidebarProps {
   onToggleSidebar(): void;
   onOpenConversation(id: string): void;
   onNewConversation(track?: ConversationTrack): void;
+  onNewCanvas?(): void;
   onTogglePin(id: string, pinned: boolean): void;
   onRename(id: string, currentTitle: string): void;
   onArchive(id: string): void;
@@ -204,6 +205,13 @@ export function Sidebar(props: SidebarProps) {
               label="新建对话"
               testId="nav-new-chat"
               onClick={() => props.onNewConversation()}
+            />
+            <ActionRow
+              icon={<Pencil size={15} />}
+              label="新建绘图"
+              testId="nav-new-canvas"
+              placeholder={!props.onNewCanvas}
+              onClick={() => props.onNewCanvas?.()}
             />
             <ActionRow
               icon={<Search size={15} />}

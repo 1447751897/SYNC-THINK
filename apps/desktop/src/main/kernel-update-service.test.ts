@@ -256,6 +256,35 @@ describe('kernel update service', () => {
     }
   });
 
+  it('converts installer exceptions into a terminal error state', async () => {
+    const root = fixtureRoot();
+    try {
+      const service = createKernelUpdateService({
+        rootDir: root,
+        installer: { command: 'node', prefixArgs: ['npm-cli.js'] },
+        run: async (args) => {
+          if (args[0] === 'view') return { exitCode: 0, stdout: '"0.150.1"', stderr: '' };
+          throw new Error('network unavailable');
+        },
+      });
+
+      const result = await service.installUpdate('codex');
+
+      expect(result).toMatchObject({
+        ok: false,
+        errorCode: 'kernel.update.install-failed',
+      });
+      expect(result.state.items.find((item) => item.kernelId === 'codex')).toEqual(
+        expect.objectContaining({
+          phase: 'error',
+          errorCode: 'kernel.update.install-failed',
+        }),
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('installs different kernels at the same time without a global lock', async () => {
     const root = fixtureRoot();
     try {

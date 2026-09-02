@@ -738,13 +738,28 @@ async function bootstrapPrivateKernelsAtStartup(): Promise<void> {
   const snapshot = service.getSnapshot();
   if (!snapshot.installerAvailable) return;
   const missing = snapshot.items.filter((item) => !item.managedVersion);
-  await Promise.all(
+  const results = await Promise.allSettled(
     missing.map(async (item) => {
       const result = await service.installUpdate(item.kernelId);
       broadcastKernelUpdateState(result.state);
       if (result.ok) await recyclePrivateKernel(item.kernelId);
+      return result;
     }),
   );
+  for (const [index, result] of results.entries()) {
+    if (result.status === 'rejected') {
+      const item = missing[index];
+      console.warn(
+        '[desktop] private kernel bootstrap operation failed',
+        item?.kernelId ?? 'unknown',
+        errorMessage(result.reason),
+      );
+      // The update service normally converts failures to an error snapshot.
+      // Still publish the latest state when an unexpected boundary exception
+      // escapes so the Renderer cannot remain on a stale progress frame.
+      broadcastKernelUpdateState(service.getSnapshot());
+    }
+  }
   broadcastKernelUpdateState(service.getSnapshot());
 }
 
@@ -1564,15 +1579,26 @@ function assertRuntimeIpcSource(event: IpcMainInvokeEvent): void {
 function installPiKernel(): Promise<KernelInstallResult> {
   if (piKernelInstallPromise) return piKernelInstallPromise;
   piKernelInstallPromise = (async () => {
-    const result = await getKernelUpdateService().installUpdate('pi');
-    broadcastKernelUpdateState(result.state);
-    if (!result.ok) {
+    const service = getKernelUpdateService();
+    try {
+      const result = await service.installUpdate('pi');
+      broadcastKernelUpdateState(result.state);
+      if (!result.ok) {
+        return {
+          ok: false as const,
+          error: result.errorCode ?? 'kernel.update.install-failed',
+        };
+      }
+      return { ok: true as const };
+    } catch (error) {
+      console.warn('[desktop] Pi private install failed', errorMessage(error));
+      const errorCode = 'kernel.update.install-failed';
+      broadcastKernelUpdateState(service.getSnapshot());
       return {
         ok: false as const,
-        error: result.errorCode ?? 'kernel.update.install-failed',
+        error: errorCode,
       };
     }
-    return { ok: true as const };
   })().finally(() => {
     piKernelInstallPromise = null;
   });
@@ -2241,9 +2267,22 @@ function setupRuntimeBridge(): void {
       }
       kernelId = (value as { kernelId: ManagedKernelUpdateId }).kernelId;
     }
-    const result = await getKernelUpdateService().checkForUpdates(kernelId);
-    broadcastKernelUpdateState(result.state);
-    return result;
+    const service = getKernelUpdateService();
+    try {
+      const result = await service.checkForUpdates(kernelId);
+      broadcastKernelUpdateState(result.state);
+      return result;
+    } catch (error) {
+      console.warn('[desktop] kernel update check failed', errorMessage(error));
+      const state = service.getSnapshot();
+      const result = {
+        ok: false as const,
+        state,
+        errorCode: 'kernel.update.check-failed',
+      };
+      broadcastKernelUpdateState(state);
+      return result;
+    }
   });
   ipcMain.handle('desktop:kernel-update-install', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
@@ -2255,10 +2294,23 @@ function setupRuntimeBridge(): void {
       throw new Error('kernel.update.kernel-invalid');
     }
     const kernelId = (value as { kernelId: ManagedKernelUpdateId }).kernelId;
-    const result = await getKernelUpdateService().installUpdate(kernelId);
-    broadcastKernelUpdateState(result.state);
-    if (result.ok) await recyclePrivateKernel(kernelId);
-    return result;
+    const service = getKernelUpdateService();
+    try {
+      const result = await service.installUpdate(kernelId);
+      broadcastKernelUpdateState(result.state);
+      if (result.ok) await recyclePrivateKernel(kernelId);
+      return result;
+    } catch (error) {
+      console.warn('[desktop] kernel update install failed', kernelId, errorMessage(error));
+      const state = service.getSnapshot();
+      const result = {
+        ok: false as const,
+        state,
+        errorCode: 'kernel.update.install-failed',
+      };
+      broadcastKernelUpdateState(state);
+      return result;
+    }
   });
   ipcMain.handle('runtime:agent-create', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);

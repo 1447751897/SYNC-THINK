@@ -236,15 +236,10 @@ function providerConfig(request: KernelRequest): {
     model_auto_compact_token_limit:
       request.effectiveContextWindow ?? request.contextWindow ?? 128_000,
     model_reasoning_summary: 'detailed',
-    // Codex gates the raw reasoning chain behind `show_raw_agent_reasoning`
-    // (default false): without it, `item/reasoning/textDelta` (the full
-    // thinking text) never fires and the host only ever sees the condensed
-    // `summaryTextDelta` headline, so the Think row collapses to one line.
-    // Turning it on streams the full chain alongside the summary, matching
-    // DeThink's expanded reasoning blocks. Tracked upstream in
-    // codex-rs/core/src/config/mod.rs (`show_raw_agent_reasoning`) and
-    // codex-rs/core/src/session/session.rs (`as_legacy_events`).
-    show_raw_agent_reasoning: true,
+    // Keep the Codex-style Think row on the provider's user-visible summary.
+    // The raw reasoning chain is an internal diagnostic stream and can turn a
+    // single turn into dozens of Markdown headings in the chat UI.
+    show_raw_agent_reasoning: false,
   };
   const mcpServers = mcpConfig(request.platformBroker);
   if (mcpServers) config.mcp_servers = mcpServers;
@@ -973,7 +968,7 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
 
   private pushReasoningBoundary(turn: ActiveTurn): void {
     if (!turn.reasoningEmitted || turn.reasoningAtBoundary) return;
-    this.pushTurnEvent({ type: 'reasoning', text: '\n\n' });
+    this.pushTurnEvent({ type: 'reasoning', text: '\n\n', boundary: true });
     turn.reasoningAtBoundary = true;
   }
 

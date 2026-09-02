@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CheckCircle2, Download, RefreshCw } from 'lucide-react';
 import type { KernelDetectionResult } from '@sync-think/shared';
 import type {
@@ -51,7 +51,7 @@ export function KernelUpdatePanel() {
   const pendingRef = useRef<Set<ManagedKernelUpdateId>>(new Set());
   const [errorCode, setErrorCode] = useState<string | null>(null);
 
-  const beginPending = (ids: readonly ManagedKernelUpdateId[]): ManagedKernelUpdateId[] => {
+  const beginPending = useCallback((ids: readonly ManagedKernelUpdateId[]): ManagedKernelUpdateId[] => {
     const started = ids.filter((id) => !pendingRef.current.has(id));
     if (started.length === 0) return [];
     const next = new Set(pendingRef.current);
@@ -59,31 +59,31 @@ export function KernelUpdatePanel() {
     pendingRef.current = next;
     setPending(next);
     return started;
-  };
+  }, []);
 
-  const endPending = (ids: readonly ManagedKernelUpdateId[]): void => {
+  const endPending = useCallback((ids: readonly ManagedKernelUpdateId[]): void => {
     if (ids.length === 0) return;
     const next = new Set(pendingRef.current);
     for (const id of ids) next.delete(id);
     pendingRef.current = next;
     setPending(next);
-  };
+  }, []);
 
-  const refreshDetected = async () => {
+  const refreshDetected = useCallback(async () => {
     try {
       const response = await window.syncThink?.runtime.detectKernels();
       if (response) setDetected(response.kernels);
     } catch {
       // Version detection is auxiliary; update state remains usable.
     }
-  };
+  }, []);
 
-  const applyResult = (result: ManagedKernelUpdateActionResult) => {
+  const applyResult = useCallback((result: ManagedKernelUpdateActionResult) => {
     setSnapshot(result.state);
     setErrorCode(result.errorCode);
-  };
+  }, []);
 
-  const check = async (kernelId?: ManagedKernelUpdateId) => {
+  const check = useCallback(async (kernelId?: ManagedKernelUpdateId) => {
     const bridge = window.syncThink?.kernelUpdates;
     if (!bridge) return;
     const targets = kernelId
@@ -102,16 +102,25 @@ export function KernelUpdatePanel() {
     } finally {
       endPending(started);
     }
-  };
+  }, [applyResult, beginPending, endPending, refreshDetected]);
 
   useEffect(() => {
     let active = true;
     const bridge = window.syncThink?.kernelUpdates;
     if (!bridge) return;
+    let receivedLiveSnapshot = false;
+    const unsubscribe = bridge.subscribeState?.((state) => {
+      if (!active) return;
+      receivedLiveSnapshot = true;
+      setSnapshot(state);
+      void refreshDetected();
+    });
     void Promise.all([bridge.getState(), window.syncThink?.runtime.detectKernels()])
       .then(async ([state, detection]) => {
         if (!active) return;
-        setSnapshot(state);
+        // A state broadcast may win the race with the initial IPC response.
+        // Do not let that response roll a terminal error back to installing.
+        if (!receivedLiveSnapshot) setSnapshot(state);
         if (detection) setDetected(detection.kernels);
         if (state.installerAvailable !== false) {
           await check();
@@ -121,16 +130,11 @@ export function KernelUpdatePanel() {
       .catch(() => {
         if (active) setErrorCode('kernel.update.check-failed');
       });
-    const unsubscribe = bridge.subscribeState?.((state) => {
-      if (!active) return;
-      setSnapshot(state);
-      void refreshDetected();
-    });
     return () => {
       active = false;
       unsubscribe?.();
     };
-  }, []);
+  }, [check, refreshDetected]);
 
   const versions = useMemo(
     () =>
@@ -138,7 +142,7 @@ export function KernelUpdatePanel() {
     [detected, snapshot],
   );
 
-  const install = async (kernelId: ManagedKernelUpdateId) => {
+  const install = useCallback(async (kernelId: ManagedKernelUpdateId) => {
     const bridge = window.syncThink?.kernelUpdates;
     if (!bridge) return;
     const started = beginPending([kernelId]);
@@ -153,7 +157,7 @@ export function KernelUpdatePanel() {
     } finally {
       endPending(started);
     }
-  };
+  }, [applyResult, beginPending, endPending, refreshDetected]);
 
   const bridgeReady = Boolean(window.syncThink?.kernelUpdates);
   const installerAvailable = snapshot?.installerAvailable !== false;

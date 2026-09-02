@@ -31,6 +31,7 @@ import { ConversationTabs } from './ConversationTabs.js';
 import { WorkspacePaneHost } from './WorkspacePaneHost.js';
 import { WallpaperReadingLayers } from './WallpaperReadingLayers.js';
 import { WorkspaceWorkbench, type WorkbenchNewResource } from './WorkspaceWorkbench.js';
+import { emptyExcalidrawContent } from './ExcalidrawPreview.js';
 import { ChatView, type RuntimeConnectionNotice } from './ChatView.js';
 import { clearFilePaneSession, isFilePaneSessionDirty, type FileRevealTarget } from './FilePane.js';
 import { WorkspaceFileView } from './WorkspaceFileView.js';
@@ -768,6 +769,68 @@ function ShellAppInner() {
     [activeWorkspaceId, commitPaneLayout],
   );
 
+  const handleNewCanvasInPane = useCallback(
+    async (paneId?: string) => {
+      if (!activeWorkspaceId) return;
+      const projectFolder = data.workspaces
+        .find((workspace) => workspace.workspaceId === activeWorkspaceId)
+        ?.folderPath?.trim();
+      const api = bridge();
+      if (!projectFolder || !api?.writeProjectFile) {
+        setNewConversationError('新建绘图前请先绑定项目文件夹');
+        return;
+      }
+      const path = `designs/canvas-${Date.now().toString(36)}.excalidraw`;
+      try {
+        const result = await api.writeProjectFile({
+          root: projectFolder,
+          path,
+          content: emptyExcalidrawContent(),
+          expectedMtimeMs: null,
+          expectedSize: null,
+        });
+        if (!result.ok) {
+          setNewConversationError(result.error ?? '新建绘图失败');
+          return;
+        }
+        handleOpenFileInPane(paneId ?? '', path);
+      } catch (error) {
+        setNewConversationError(error instanceof Error ? error.message : '新建绘图失败');
+      }
+    },
+    [activeWorkspaceId, data.workspaces, handleOpenFileInPane],
+  );
+
+  const handleNewDocumentInPane = useCallback(
+    async (paneId?: string) => {
+      if (!activeWorkspaceId) return;
+      const projectFolder = data.workspaces.find((workspace) => workspace.workspaceId === activeWorkspaceId)?.folderPath?.trim();
+      const api = bridge();
+      if (!projectFolder || !api?.writeProjectFile) {
+        setNewConversationError('新建文档前请先绑定项目文件夹');
+        return;
+      }
+      const path = `notes/note-${Date.now().toString(36)}.md`;
+      try {
+        const result = await api.writeProjectFile({
+          root: projectFolder,
+          path,
+          content: '# 未命名文档\n\n',
+          expectedMtimeMs: null,
+          expectedSize: null,
+        });
+        if (!result.ok) {
+          setNewConversationError(result.error ?? '新建文档失败');
+          return;
+        }
+        handleOpenFileInPane(paneId ?? '', path);
+      } catch (error) {
+        setNewConversationError(error instanceof Error ? error.message : '新建文档失败');
+      }
+    },
+    [activeWorkspaceId, data.workspaces, handleOpenFileInPane],
+  );
+
   const handleOpenBrowserInWorkbench = useCallback(
     (placement: WorkbenchPlacement, url = 'about:blank') => {
       if (!activeWorkspaceId) return;
@@ -1060,6 +1123,27 @@ function ShellAppInner() {
         commitWorkbenchLayout(activeWorkspaceId, (current) =>
           openWorkbenchTab(current, placement, terminalWorkbenchTab(createTerminalId())),
         );
+        return;
+      }
+      if (resource === 'canvas' || resource === 'document') {
+        const projectFolder = data.workspaces.find((workspace) => workspace.workspaceId === activeWorkspaceId)?.folderPath?.trim();
+        const api = bridge();
+        if (!projectFolder || !api?.writeProjectFile) return;
+        const path = resource === 'canvas'
+          ? `designs/canvas-${Date.now().toString(36)}.excalidraw`
+          : `notes/note-${Date.now().toString(36)}.md`;
+        void api.writeProjectFile({
+          root: projectFolder,
+          path,
+          content: resource === 'canvas' ? emptyExcalidrawContent() : '# 未命名文档\n\n',
+          expectedMtimeMs: null,
+          expectedSize: null,
+        }).then((result) => {
+          if (!result.ok) return;
+          commitWorkbenchLayout(activeWorkspaceId, (current) =>
+            openWorkbenchTab(current, placement, fileWorkbenchTab(path)),
+          );
+        });
         return;
       }
       commitWorkbenchLayout(activeWorkspaceId, (current) =>
@@ -3076,6 +3160,7 @@ function ShellAppInner() {
           onToggleSidebar={() => setNav((n) => setSidebarCollapsed(n, true))}
           onOpenConversation={(id) => focusConversation(id)}
           onNewConversation={handleNewConversation}
+          onNewCanvas={() => void handleNewCanvasInPane(activePaneLayout?.focusedPaneId)}
           onTogglePin={(id, pinned) => void handleTogglePin(id, pinned)}
           onRename={(id, currentTitle) => void handleRename(id, currentTitle)}
           onArchive={(id) => void handleArchive(id)}
@@ -3340,6 +3425,8 @@ function ShellAppInner() {
                                 handleCloseBrowserTab(pane.id, browserId)
                               }
                               onNewBrowser={() => handleOpenBrowserInPane(pane.id)}
+                              onNewCanvas={() => void handleNewCanvasInPane(pane.id)}
+                              onNewDocument={() => void handleNewDocumentInPane(pane.id)}
                               onSelectReview={(runId) => handleActivateReviewTab(pane.id, runId)}
                               onCloseReview={(runId) => handleCloseReviewTab(pane.id, runId)}
                               onSelectWorkspaceFiles={() =>

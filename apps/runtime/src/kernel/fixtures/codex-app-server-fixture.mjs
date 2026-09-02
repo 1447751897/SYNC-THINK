@@ -106,6 +106,14 @@ input.on('line', (line) => {
       write(delta('s-1', 1, '**验证**'));
       write(delta('s-2', 0, '**新思考**'));
     }
+    if (request.params?.input?.some?.((item) => item?.text === 'raw reasoning fixture')) {
+      if (threadPolicy?.config?.show_raw_agent_reasoning === true) {
+        write({
+          method: 'item/reasoning/textDelta',
+          params: { threadId, turnId, itemId: 'raw-1', delta: '原始 reasoning 正文' },
+        });
+      }
+    }
     const sawInlineImage = request.params?.input?.some?.(
       (item) => item?.type === 'image' && item?.url === 'data:image/png;base64,QUJDRA==',
     );

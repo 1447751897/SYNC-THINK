@@ -11,6 +11,7 @@ import type { RunProcessView } from '@sync-think/protocol';
 import type { ProjectTextLocation } from '../../workspace-tools-contract.js';
 import { FilePane, type FileRevealTarget } from './FilePane.js';
 import { WorkspaceFilesPanel } from './RightDock.js';
+import { isExcalidrawPath } from './excalidraw-document.js';
 
 const DEFAULT_EXPLORER_WIDTH = 288;
 const MIN_EXPLORER_WIDTH = 221;
@@ -72,7 +73,10 @@ export function WorkspaceFileView({
   onOpenFileInNewTab(path: string, location?: ProjectTextLocation): void;
 }) {
   const [internalWorkspaceFilesOpen, setInternalWorkspaceFilesOpen] = useState(true);
-  const workspaceFilesOpen = controlledWorkspaceFilesOpen ?? internalWorkspaceFilesOpen;
+  const canvasDocument = isExcalidrawPath(path);
+  const workspaceFilesOpen = canvasDocument
+    ? false
+    : (controlledWorkspaceFilesOpen ?? internalWorkspaceFilesOpen);
   const setWorkspaceFilesOpen = useCallback(
     (open: boolean) => {
       if (controlledWorkspaceFilesOpen === undefined) setInternalWorkspaceFilesOpen(open);

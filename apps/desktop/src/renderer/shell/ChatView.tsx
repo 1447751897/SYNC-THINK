@@ -719,12 +719,12 @@ export function projectTransientAnswerText(
 }
 
 /**
- * Live bubble text: classified final_answer when present, otherwise the
- * still-unclassified provider tail. Hiding that tail until the terminal
- * boundary is what made the timer freeze and then dump the whole answer.
+ * Live bubble text: only a phase-confirmed final answer is allowed here.
+ * Unclassified kernel prose stays buffered until a tool/terminal boundary
+ * assigns it to commentary or final_answer, matching Codex's split panes.
  */
 export function visibleStreamingAnswerText(projected: ProjectedTransientAnswer): string {
-  return projected.answerText || projected.pendingText;
+  return projected.answerText || '';
 }
 
 export interface ProjectedTransientAssistantDisplay extends ProjectedTransientAnswer {

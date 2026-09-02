@@ -233,7 +233,12 @@ export type KernelEvent =
        */
       final?: boolean;
     }
-  | { type: 'reasoning'; text: string }
+  | {
+      type: 'reasoning';
+      text: string;
+      /** Starts a new provider reasoning summary section in the process flow. */
+      boundary?: boolean;
+    }
   | {
       type: 'tool-call';
       toolId: string;

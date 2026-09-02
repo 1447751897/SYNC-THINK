@@ -89,12 +89,11 @@ describe('DesignDraftPreview', () => {
     );
   });
 
-  it('provides preview/source, copy, browser, download, and project-save controls', async () => {
+  it('keeps design drafts focused on the rendered UI with action controls', async () => {
     render(<DesignDraftPreview code={validHtml} projectFolder="D:/work/demo" />);
 
-    expect(screen.getByRole('button', { name: '预览' })).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: '源码' }));
-    expect(screen.getByText('Version one', { exact: false })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '预览' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '源码' })).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: '复制' }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(validHtml));

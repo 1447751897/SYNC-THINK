@@ -5,6 +5,17 @@ export const MAX_DESIGN_GENERATION_BYTES = 1_500_000;
 export const MAX_DESIGN_GENERATION_CHILDREN = 512;
 export const MAX_DESIGN_GENERATION_REQUEST_ID = 160;
 
+/**
+ * Excalidraw is an explicit source-file format, not the default response for
+ * a visual design request. Keeping this policy in protocol makes native and
+ * external kernels use the same routing rule.
+ */
+export function isExplicitExcalidrawRequest(userText: string): boolean {
+  return /(?:excalidraw|\.excalidraw\b|excalidraw\s*(?:源文件|json|文件)|可编辑(?:的)?(?:画布|白板)\s*(?:json|源文件)?)/i.test(
+    userText,
+  );
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
@@ -54,6 +65,8 @@ export function buildDesignGenerationPrompt(payload: DesignGeneratePayload): str
     'Return only one complete HTML document: <!doctype html>, <html>, <head>, <body>.',
     'Put all CSS and JavaScript inline. Do not return Markdown fences, explanations, or a prose description.',
     'Preserve the visible hierarchy, labels, relative layout, colors, and interactions represented by the wireframe.',
+    'This is a speed-first NewMax-style preview: implement the first viewport and the key interaction states only, keep the HTML compact (target <= 160 KB), and stop once it is usable.',
+    'Do not embed base64 assets, large generated SVG path data, exhaustive screen variants, or hidden content that is not needed for the preview.',
     'Do not load remote scripts, stylesheets, fonts, images, or network resources.',
     `Frame JSON:\n${JSON.stringify(payload.frame)}`,
     `Children JSON:\n${JSON.stringify(payload.children)}`,
