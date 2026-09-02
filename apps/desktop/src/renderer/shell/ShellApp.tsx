@@ -135,6 +135,7 @@ import { canCloseSettings } from './settings-unsaved.js';
 import { NewConversationDialog, type ModelOption } from './NewConversationDialog.js';
 import { useDialog, DialogProvider } from './Dialog.js';
 import { startRuntimeConnection } from '../runtime-connection.js';
+import type { HtmlBrowserOpenOptions } from './html-browser.js';
 import {
   matchesShortcut,
   readAppearancePreferences,
@@ -267,6 +268,19 @@ interface ShellData {
   models: ModelOption[];
   workspaces: WorkspaceSummary[];
   skills: SkillVersionSummary[];
+}
+
+function resolveProjectRelativePath(root: string, relativePath: string): string {
+  const normalizedRoot = root.trim().replace(/[\\/]+$/, '');
+  const separator = normalizedRoot.includes('\\') ? '\\' : '/';
+  return `${normalizedRoot}${separator}${relativePath.replace(/[\\/]+/g, separator)}`;
+}
+
+function isSafeProjectRelativePath(value: string): boolean {
+  const normalized = value.trim().replace(/\\/g, '/');
+  if (!normalized || normalized.startsWith('/') || /^[A-Za-z]:\//.test(normalized)) return false;
+  if (normalized.split('/').some((part) => !part || part === '.' || part === '..')) return false;
+  return /\.html?$/i.test(normalized);
 }
 
 interface DraftConversationSession {
@@ -739,19 +753,92 @@ function ShellAppInner() {
   );
 
   const handleOpenBrowserInPane = useCallback(
-    (paneId?: string) => {
+    (paneId?: string, url = 'about:blank') => {
       if (!activeWorkspaceId) return;
       const browserId = createBrowserId();
       commitPaneLayout(activeWorkspaceId, (current) =>
         openBrowserInPane(
           current,
           browserId,
-          'https://www.bing.com',
+          url,
           paneId ?? current.focusedPaneId,
         ),
       );
     },
     [activeWorkspaceId, commitPaneLayout],
+  );
+
+  const handleOpenBrowserInWorkbench = useCallback(
+    (placement: WorkbenchPlacement, url = 'about:blank') => {
+      if (!activeWorkspaceId) return;
+      commitWorkbenchLayout(activeWorkspaceId, (current) =>
+        openWorkbenchTab(current, placement, browserWorkbenchTab(createBrowserId(), url)),
+      );
+    },
+    [activeWorkspaceId, commitWorkbenchLayout],
+  );
+
+  const handleOpenHtmlInBrowser = useCallback(
+    async (html: string, options: HtmlBrowserOpenOptions = {}) => {
+      if (!activeWorkspaceId || !html.trim()) return;
+
+      const api = bridge();
+      const projectFolder = data.workspaces
+        .find((workspace) => workspace.workspaceId === activeWorkspaceId)
+        ?.folderPath?.trim();
+
+      // A conversation can be created before a local project is selected. Keep
+      // that existing path usable while project-backed previews use the same
+      // tokenized local-page URL as NewMax.
+      if (!projectFolder) {
+        if (!api?.openHtmlInBrowser) throw new Error('当前对话没有绑定项目，无法打开浏览器预览');
+        const result = await api.openHtmlInBrowser(html);
+        if (!result.ok) throw new Error(result.error ?? '打开失败');
+        return;
+      }
+
+      const browserId = createBrowserId();
+      const partition = `pane-browser-${browserId}`;
+      const relativePath = options.relativePath?.trim() || `designs/ai-preview-${browserId}.html`;
+      if (!isSafeProjectRelativePath(relativePath)) {
+        throw new Error('浏览器预览路径必须是项目内的 HTML 文件');
+      }
+      const absolutePath = resolveProjectRelativePath(projectFolder, relativePath);
+
+      if (options.persist !== false) {
+        if (!api?.readProjectFile || !api.writeProjectFile) {
+          throw new Error('当前环境不支持保存浏览器预览文件');
+        }
+        const current = await api.readProjectFile({ root: projectFolder, path: relativePath });
+        const metadataOnlyError =
+          current.errorCode === 'file_too_large' &&
+          current.mtimeMs !== null &&
+          current.size !== null;
+        if (current.error && current.errorCode !== 'file_not_found' && !metadataOnlyError) {
+          throw new Error(current.error);
+        }
+        const saved = await api.writeProjectFile({
+          root: projectFolder,
+          path: relativePath,
+          content: html,
+          expectedMtimeMs: current.errorCode === 'file_not_found' ? null : current.mtimeMs,
+          expectedSize: current.errorCode === 'file_not_found' ? null : current.size,
+        });
+        if (!saved.ok) {
+          throw new Error(saved.error ?? (saved.conflict ? '文件已在磁盘上发生变化' : '保存失败'));
+        }
+      }
+
+      if (!api?.createLocalPageUrl) throw new Error('当前环境不支持本地浏览器页面');
+      const localPage = await api.createLocalPageUrl({ filePath: absolutePath, partition });
+      if (!localPage.ok || !localPage.url) {
+        throw new Error(localPage.error ?? '本地浏览器页面创建失败');
+      }
+      commitPaneLayout(activeWorkspaceId, (current) =>
+        openBrowserInPane(current, browserId, localPage.url!, current.focusedPaneId),
+      );
+    },
+    [activeWorkspaceId, commitPaneLayout, data.workspaces],
   );
 
   const handleActivateBrowserTab = useCallback(
@@ -798,6 +885,35 @@ function ShellAppInner() {
   // afterwards each fresh browser_open result navigates the focused pane's tab.
   const seenBrowserOpenIdsRef = useRef<Set<string>>(new Set());
   const browserNavPrimedRef = useRef(false);
+  const seenBrowserRequestIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    // The embedded bridge must mount before ChatView tries to execute the
+    // request. Open/focus the browser tab as soon as Runtime asks for a
+    // navigation; the renderer command executor waits briefly for its guest
+    // to attach before running the action.
+    for (const event of eventHistory) {
+      if (event.type !== 'browser.command_requested') continue;
+      const payload = event.payload as {
+        requestId?: unknown;
+        toolName?: unknown;
+        args?: unknown;
+        toolCallId?: unknown;
+      };
+      const requestId = typeof payload.requestId === 'string' ? payload.requestId : '';
+      if (!requestId || seenBrowserRequestIdsRef.current.has(requestId)) continue;
+      seenBrowserRequestIdsRef.current.add(requestId);
+      if (payload.toolName !== 'browser_open' || !payload.args || typeof payload.args !== 'object') {
+        continue;
+      }
+      const url = (payload.args as Record<string, unknown>).url;
+      if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) continue;
+      if (typeof payload.toolCallId === 'string' && payload.toolCallId) {
+        seenBrowserOpenIdsRef.current.add(payload.toolCallId);
+      }
+      handleAiBrowserOpen(url);
+    }
+  }, [eventHistory, handleAiBrowserOpen]);
+
   useEffect(() => {
     const priming = !browserNavPrimedRef.current;
     browserNavPrimedRef.current = true;
@@ -950,7 +1066,7 @@ function ShellAppInner() {
         openWorkbenchTab(
           current,
           placement,
-          browserWorkbenchTab(createBrowserId(), 'https://www.bing.com'),
+          browserWorkbenchTab(createBrowserId(), 'about:blank'),
         ),
       );
     },
@@ -2926,8 +3042,11 @@ function ShellAppInner() {
         navigateUrl={aiBrowserNav?.browserId === tab.browserId ? aiBrowserNav.url : undefined}
         navigateSeq={aiBrowserNav?.browserId === tab.browserId ? aiBrowserNav.seq : undefined}
         onClose={() => void handleCloseWorkbenchTab(placement, tab)}
+        onNewTab={(url) => handleOpenBrowserInWorkbench(placement, url)}
+        projectFolder={activeProjectFolder}
         partition={`workbench-browser-${tab.browserId}`}
-        registerForAutomation={false}
+        registerForAutomation
+        automationActive={false}
       />
     );
   };
@@ -3289,6 +3408,7 @@ function ShellAppInner() {
                                   onOpenFile={(path, location) =>
                                     handleOpenFileInSplit(pane.id, path, location)
                                   }
+                                  onOpenHtmlInBrowser={handleOpenHtmlInBrowser}
                                   onOpenReview={(view) => handleOpenReviewInSplit(pane.id, view)}
                                   onOpenPlanSettings={handleOpenPlanSettings}
                                   onOpenMcpSettings={handleOpenMcpSettings}
@@ -3324,8 +3444,11 @@ function ShellAppInner() {
                                   onClose={() =>
                                     handleCloseBrowserTab(pane.id, activeTab.browserId)
                                   }
+                                  onNewTab={(url) => handleOpenBrowserInPane(pane.id, url)}
+                                  projectFolder={activeProjectFolder}
                                   partition={`pane-browser-${activeTab.browserId}`}
-                                  registerForAutomation={false}
+                                  registerForAutomation
+                                  automationActive={focused}
                                 />
                               ) : activeTab?.type === 'workspace-files' ? (
                                 <WorkspaceFilesPanel

@@ -289,4 +289,45 @@ describe('MarkdownContent', () => {
     expect(tagged).toContain('Tagged%20design');
     expect(fenced).not.toContain('shell-html--design');
   });
+
+  it('renders a file-backed inline visualization between Markdown segments', () => {
+    const html = renderToStaticMarkup(
+      createElement(MarkdownContent, {
+        text: '可视化结果：\n\n::newmax-inline-vis{file="visualizations/overview.html"}\n\n以上为实时预览。',
+        projectFolder: 'D:/work/demo',
+        conversationId: 'conv-inline-vis',
+      }),
+    );
+
+    expect(html).toContain('shell-inline-vis');
+    expect(html).toContain('data-file="visualizations/overview.html"');
+    expect(html).toContain('可视化结果');
+    expect(html).toContain('以上为实时预览');
+  });
+
+  it('keeps inline visualization directives passive when interactive embeds are disabled', () => {
+    const html = renderToStaticMarkup(
+      createElement(MarkdownContent, {
+        text: '::codex-inline-vis{file="visualizations/overview.html"}',
+        interactiveEmbeds: false,
+      }),
+    );
+
+    expect(html).toContain('shell-md-code');
+    expect(html).toContain('newmax-inline-vis');
+    expect(html).not.toContain('shell-inline-vis');
+  });
+
+  it('does not execute a visualization directive inside a fenced code block', () => {
+    const html = renderToStaticMarkup(
+      createElement(MarkdownContent, {
+        text: '```md\n::newmax-inline-vis{file="visualizations/overview.html"}\n```',
+        projectFolder: 'D:/work/demo',
+      }),
+    );
+
+    expect(html).toContain('shell-md-code');
+    expect(html).toContain('newmax-inline-vis');
+    expect(html).not.toContain('shell-inline-vis');
+  });
 });

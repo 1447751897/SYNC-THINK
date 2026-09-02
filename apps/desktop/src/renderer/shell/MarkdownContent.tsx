@@ -6,8 +6,12 @@ import { Check, ChevronDown, Copy, FileCode2, FileImage, FolderOpen } from 'luci
 import { MermaidChart } from './MermaidChart.js';
 import { HtmlSandbox } from './HtmlSandbox.js';
 import { DesignDraftPreview } from './DesignDraftPreview.js';
+import { ExcalidrawDraftPreview } from './ExcalidrawDraftPreview.js';
+import { InlineVisualizationPreview } from './InlineVisualizationPreview.js';
+import { parseInlineVisualizationSegments } from './inline-visualization.js';
 import { normalizeTaggedDesignHtmlBlocks } from './design-draft.js';
 import { IncrementalMarkdownParser } from './incremental-markdown.js';
+import type { OpenHtmlInBrowser } from './html-browser.js';
 import type { ProjectTextLocation } from '../../workspace-tools-contract.js';
 import { describeExternalSource, ExternalSourceIcon } from './ExternalSourceIcon.js';
 
@@ -19,7 +23,10 @@ interface MarkdownContentProps {
   interactiveEmbeds?: boolean;
   className?: string;
   projectFolder?: string;
+  conversationId?: string;
+  modelId?: string;
   onOpenFile?: (path: string, location?: ProjectTextLocation) => void;
+  onOpenHtmlInBrowser?: OpenHtmlInBrowser;
 }
 
 interface MarkdownSection {
@@ -364,14 +371,61 @@ const MarkdownRenderer = memo(function MarkdownRenderer({
   streaming,
   interactiveEmbeds,
   projectFolder,
+  conversationId,
+  modelId,
   onOpenFile,
+  onOpenHtmlInBrowser,
+  skipVisualizations = false,
 }: {
   text: string;
   streaming: boolean;
   interactiveEmbeds: boolean;
   projectFolder?: string;
+  conversationId?: string;
+  modelId?: string;
   onOpenFile?: (path: string, location?: ProjectTextLocation) => void;
+  onOpenHtmlInBrowser?: OpenHtmlInBrowser;
+  skipVisualizations?: boolean;
 }) {
+  const visualizationSegments = useMemo(() => parseInlineVisualizationSegments(text), [text]);
+  if (!skipVisualizations && visualizationSegments.some((segment) => segment.type === 'visualization')) {
+    return (
+      <>
+        {visualizationSegments.map((segment, index) => {
+          if (segment.type === 'visualization') {
+            return interactiveEmbeds ? (
+              <InlineVisualizationPreview
+                key={`visualization:${index}:${segment.file}`}
+                file={segment.file}
+                projectFolder={projectFolder}
+                conversationId={conversationId}
+                onOpenInBrowser={onOpenHtmlInBrowser}
+              />
+            ) : (
+              <CodeBlock key={`visualization-text:${index}`} language="text">
+                {`::newmax-inline-vis{file="${segment.file}"}`}
+              </CodeBlock>
+            );
+          }
+          if (!segment.content) return null;
+          return (
+            <MarkdownRenderer
+              key={`markdown:${index}`}
+              text={segment.content}
+              streaming={streaming}
+              interactiveEmbeds={interactiveEmbeds}
+              projectFolder={projectFolder}
+              conversationId={conversationId}
+              modelId={modelId}
+              onOpenFile={onOpenFile}
+              onOpenHtmlInBrowser={onOpenHtmlInBrowser}
+              skipVisualizations
+            />
+          );
+        })}
+      </>
+    );
+  }
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
@@ -407,13 +461,32 @@ const MarkdownRenderer = memo(function MarkdownRenderer({
             if (streaming || !interactiveEmbeds) {
               return <CodeBlock language={language}>{children}</CodeBlock>;
             }
-            return <DesignDraftPreview code={raw} projectFolder={projectFolder} />;
+            return (
+              <DesignDraftPreview
+                code={raw}
+                projectFolder={projectFolder}
+                onOpenInBrowser={onOpenHtmlInBrowser}
+              />
+            );
+          }
+          if (language === 'excalidraw' || language === 'excalidraw-json') {
+            if (streaming || !interactiveEmbeds) {
+              return <CodeBlock language={language}>{children}</CodeBlock>;
+            }
+            return (
+              <ExcalidrawDraftPreview
+                code={raw}
+                projectFolder={projectFolder}
+                modelId={modelId}
+                onOpenInBrowser={onOpenHtmlInBrowser}
+              />
+            );
           }
           if (language === 'html' || language === 'htm') {
             if (streaming || !interactiveEmbeds) {
               return <CodeBlock language={language}>{children}</CodeBlock>;
             }
-            return <HtmlSandbox code={raw} />;
+            return <HtmlSandbox code={raw} onOpenInBrowser={onOpenHtmlInBrowser} />;
           }
           return <CodeBlock language={language}>{children}</CodeBlock>;
         },
@@ -438,11 +511,17 @@ const MarkdownRenderer = memo(function MarkdownRenderer({
 const StreamingMarkdownBlock = memo(function StreamingMarkdownBlock({
   text,
   projectFolder,
+  conversationId,
+  modelId,
   onOpenFile,
+  onOpenHtmlInBrowser,
 }: {
   text: string;
   projectFolder?: string;
+  conversationId?: string;
+  modelId?: string;
   onOpenFile?: (path: string, location?: ProjectTextLocation) => void;
+  onOpenHtmlInBrowser?: OpenHtmlInBrowser;
 }) {
   return (
     <MarkdownRenderer
@@ -450,7 +529,10 @@ const StreamingMarkdownBlock = memo(function StreamingMarkdownBlock({
       streaming
       interactiveEmbeds={false}
       projectFolder={projectFolder}
+      conversationId={conversationId}
+      modelId={modelId}
       onOpenFile={onOpenFile}
+      onOpenHtmlInBrowser={onOpenHtmlInBrowser}
     />
   );
 });
@@ -458,11 +540,17 @@ const StreamingMarkdownBlock = memo(function StreamingMarkdownBlock({
 function IncrementalStreamingMarkdown({
   text,
   projectFolder,
+  conversationId,
+  modelId,
   onOpenFile,
+  onOpenHtmlInBrowser,
 }: {
   text: string;
   projectFolder?: string;
+  conversationId?: string;
+  modelId?: string;
   onOpenFile?: (path: string, location?: ProjectTextLocation) => void;
+  onOpenHtmlInBrowser?: OpenHtmlInBrowser;
 }) {
   const parserRef = useRef<IncrementalMarkdownParser>();
   if (!parserRef.current) parserRef.current = new IncrementalMarkdownParser();
@@ -474,7 +562,10 @@ function IncrementalStreamingMarkdown({
           key={block.key}
           text={block.text}
           projectFolder={projectFolder}
+          conversationId={conversationId}
+          modelId={modelId}
           onOpenFile={onOpenFile}
+          onOpenHtmlInBrowser={onOpenHtmlInBrowser}
         />
       ))}
     </>
@@ -487,14 +578,20 @@ function CollapsibleSection({
   streaming,
   interactiveEmbeds,
   projectFolder,
+  conversationId,
+  modelId,
   onOpenFile,
+  onOpenHtmlInBrowser,
 }: {
   title: string;
   body: string;
   streaming: boolean;
   interactiveEmbeds: boolean;
   projectFolder?: string;
+  conversationId?: string;
+  modelId?: string;
   onOpenFile?: (path: string, location?: ProjectTextLocation) => void;
+  onOpenHtmlInBrowser?: OpenHtmlInBrowser;
 }) {
   const [expanded, setExpanded] = useState(true);
   return (
@@ -517,7 +614,10 @@ function CollapsibleSection({
             streaming={streaming}
             interactiveEmbeds={interactiveEmbeds}
             projectFolder={projectFolder}
+            conversationId={conversationId}
+            modelId={modelId}
             onOpenFile={onOpenFile}
+            onOpenHtmlInBrowser={onOpenHtmlInBrowser}
           />
         </div>
       </div>
@@ -538,7 +638,10 @@ export function MarkdownContent({
   interactiveEmbeds = true,
   className,
   projectFolder,
+  conversationId,
+  modelId,
   onOpenFile,
+  onOpenHtmlInBrowser,
 }: MarkdownContentProps) {
   const normalizedText = useMemo(() => normalizeTaggedDesignHtmlBlocks(text), [text]);
   const sections = useMemo(
@@ -551,7 +654,10 @@ export function MarkdownContent({
         <IncrementalStreamingMarkdown
           text={normalizedText}
           projectFolder={projectFolder}
+          conversationId={conversationId}
+          modelId={modelId}
           onOpenFile={onOpenFile}
+          onOpenHtmlInBrowser={onOpenHtmlInBrowser}
         />
       ) : (
         sections.map((section, index) =>
@@ -563,7 +669,10 @@ export function MarkdownContent({
               streaming={false}
               interactiveEmbeds={interactiveEmbeds}
               projectFolder={projectFolder}
+              conversationId={conversationId}
+              modelId={modelId}
               onOpenFile={onOpenFile}
+              onOpenHtmlInBrowser={onOpenHtmlInBrowser}
             />
           ) : (
             <MarkdownRenderer
@@ -572,7 +681,10 @@ export function MarkdownContent({
               streaming={false}
               interactiveEmbeds={interactiveEmbeds}
               projectFolder={projectFolder}
+              conversationId={conversationId}
+              modelId={modelId}
               onOpenFile={onOpenFile}
+              onOpenHtmlInBrowser={onOpenHtmlInBrowser}
             />
           ),
         )

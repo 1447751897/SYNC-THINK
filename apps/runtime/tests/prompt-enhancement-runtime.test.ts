@@ -155,4 +155,49 @@ describe('prompt enhancement runtime', () => {
       modelId: 'fake-mini',
     });
   });
+
+  it('generates a complete design document from a wireframe without persisting a chat turn', async () => {
+    const installId = `design-generate-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const provider: ProviderAdapter = {
+      protocol: 'openai-responses',
+      async discoverModels() {
+        return ['fake-mini'];
+      },
+      async *call(request) {
+        expect(JSON.stringify(request.messages)).toContain('Children JSON');
+        yield {
+          type: 'assistant-message-delta',
+          phase: 'final_answer',
+          text: '<!doctype html><html><head><title>Generated</title></head><body><main>Generated</main></body></html>',
+        };
+        yield { type: 'finished', reason: 'stop' };
+      },
+    };
+    const runtime = new Runtime({ installId, allowNoToken: true, demoProvider: provider });
+    runtimes.push(runtime);
+    await runtime.start();
+    const socket = await connectRuntime(installId);
+    const client = frameClient(socket);
+    await hello(client, installId);
+
+    const response = await client.send({
+      id: 'design-frame-1',
+      kind: 'request',
+      type: 'design.generate',
+      payload: {
+        requestId: 'design-1',
+        modelId: 'fake-mini',
+        frame: { type: 'magicframe', x: 0, y: 0, width: 320, height: 180 },
+        children: [{ id: 'title', type: 'text', text: 'Hello' }],
+      },
+    });
+
+    expect(response.error).toBeUndefined();
+    expect(response.payload).toEqual({
+      requestId: 'design-1',
+      modelId: 'fake-mini',
+      html: '<!doctype html><html><head><title>Generated</title></head><body><main>Generated</main></body></html>',
+    });
+    expect(runtime.createCheckpoint()).toMatchObject({ events: [], threadVersions: [] });
+  });
 });

@@ -38,6 +38,7 @@ import {
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import clsx from 'clsx';
+import { ChromeExtensionBridgeCard } from './ChromeExtensionBridgeCard.js';
 
 export interface BrowserWorkflowDraftContext {
   taskId: string;
@@ -350,6 +351,7 @@ export function BrowserWorkflowPanel(props: BrowserWorkflowPanelProps): JSX.Elem
             描述任务
           </button>
         </section>
+        <ChromeExtensionBridgeCard />
         <BrowserExecutionHostCard />
         {loading ? <WorkflowListSkeleton /> : null}
         {!loading && tasks.length === 0 ? (

@@ -3,6 +3,7 @@ import {
   BROWSER_PROFILE_MAINTENANCE_REQUEST_TIMEOUT_MS,
   BROWSER_RECORDING_REQUEST_TIMEOUT_MS,
   BROWSER_WORKFLOW_REPLAY_REQUEST_TIMEOUT_MS,
+  DESIGN_GENERATION_REQUEST_TIMEOUT_MS,
   MCP_REMOTE_REQUEST_TIMEOUT_MS,
   PROMPT_ENHANCEMENT_REQUEST_TIMEOUT_MS,
   USAGE_SUMMARY_REQUEST_TIMEOUT_MS,
@@ -22,6 +23,13 @@ describe('RuntimePipeClient request timeout policy', () => {
       PROMPT_ENHANCEMENT_REQUEST_TIMEOUT_MS,
     );
     expect(PROMPT_ENHANCEMENT_REQUEST_TIMEOUT_MS).toBeGreaterThan(5_000);
+  });
+
+  it('keeps design generation open for a provider cold start', () => {
+    expect(resolveRuntimeRequestTimeoutMs('design.generate', 5_000)).toBe(
+      DESIGN_GENERATION_REQUEST_TIMEOUT_MS,
+    );
+    expect(DESIGN_GENERATION_REQUEST_TIMEOUT_MS).toBeGreaterThan(5_000);
   });
 
   it('allows cold Browser Profile inspection and maintenance to finish', () => {

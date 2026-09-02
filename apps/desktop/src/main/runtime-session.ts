@@ -116,8 +116,10 @@ const EMPTY_ACTIVITY_CURSOR_STORE: RuntimeActivityCursorStore = {
 
 // system 类事件承载对话级生命周期（conversation.ask_pending/answered/cancelled、
 // conversation.interaction_mode_changed、plan.* 等），桌面端需订阅才能弹出
-// 问询卡片并刷新 plan-review 链路。
-const ACTIVITY_EVENT_CATEGORIES = ['message', 'run', 'approval', 'system'] as const satisfies readonly EventCategory[];
+// 问询卡片并刷新 plan-review 链路。tool 还承载嵌入浏览器 Worker 的
+// browser.command_requested 交互桥；它不是历史工具行的替代品，而是把已校验
+// 的一次性命令送到当前 WebView，漏订阅会让 Worker 一直等到超时。
+const ACTIVITY_EVENT_CATEGORIES = ['message', 'run', 'tool', 'approval', 'system'] as const satisfies readonly EventCategory[];
 const MAX_ACTIVITY_EVENT_HISTORY = 2_048;
 
 export class RuntimeSession {

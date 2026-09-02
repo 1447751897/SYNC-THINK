@@ -92,7 +92,9 @@ $env:SYNC_THINK_INSTALL_ID = 'dev-0001'
 pnpm dev:desktop
 ```
 
-启动日志应依次出现 `pipe ready`、`database ready` 和 `hello accepted`；窗口标题应为 `SYNC-THINK` 且进程保持 Responding。建议把 stdout/stderr 重定向到 `.data/local-restart-<timestamp>/`，便于回看本次闭测。
+启动日志应依次出现 `pipe ready`、`database ready` 和 `hello accepted`；窗口标题应为 `SYNC-THINK` 且进程保持 Responding。Runtime 冷启动 readiness 预算为 120 秒，启动完成还会经私有 IPC 发出 ready 信号。
+
+Runtime 子进程的 stdout/stderr 与 spawn、ready、error、exit 生命周期会追加到数据库同级的 `runtime-<installId>.log`；daemon 自身仍写 `daemon.log`。排查大库冷启动或 Runtime code 1 时先查看这两个文件的尾部，日志缺失不影响应用继续重试。
 
 认证模式下，两个进程必须使用完全相同的 install ID 和 secret：
 

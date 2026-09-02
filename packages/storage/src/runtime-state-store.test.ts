@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { EventId, RunId, TaskId, WorkspaceId } from '@sync-think/shared';
+import type { BetterSQLite3Raw, ListEventPageInput } from './index.js';
 import { openDatabaseAsync, SqliteEventCheckpointStore } from './index.js';
 import { runMigrations } from './scripts/migrate.js';
 
@@ -29,6 +30,26 @@ function eventDraft(id: string, workspaceId: WorkspaceId, text: string) {
     occurredAt: '2026-07-11T00:00:00.000Z',
     payload: { threadId: 'thread-1', text },
   };
+}
+
+function captureEventPageQuery(raw: BetterSQLite3Raw, input: ListEventPageInput) {
+  let sql = '';
+  let params: unknown[] = [];
+  const tracedRaw = {
+    prepare(source: string) {
+      sql = source;
+      const statement = raw.prepare(source);
+      return {
+        all(...values: unknown[]) {
+          params = values;
+          return statement.all(...values);
+        },
+      };
+    },
+  } as unknown as BetterSQLite3Raw;
+
+  new SqliteEventCheckpointStore(tracedRaw).listEventPage(input);
+  return { sql, params };
 }
 
 describe('SqliteEventCheckpointStore', () => {
@@ -209,6 +230,59 @@ describe('SqliteEventCheckpointStore', () => {
           .listEventPage({ afterSequence: 2, throughSequence: 6, limit: 10 })
           .map((event) => event.id),
       ).toEqual(['event-page-5', 'event-page-6']);
+      expect(
+        store
+          .listEventPage({
+            afterSequence: 2,
+            afterId: 'event-page-2',
+            throughSequence: 6,
+            limit: 10,
+          })
+          .map((event) => event.id),
+      ).toEqual(['event-page-3', 'event-page-4', 'event-page-5', 'event-page-6']);
+      expect(
+        store
+          .listEventPage({
+            afterSequence: 0,
+            throughSequence: 2,
+            throughId: 'event-page-3',
+            limit: 10,
+          })
+          .map((event) => event.id),
+      ).toEqual(['event-page-1', 'event-page-2', 'event-page-3']);
+    } finally {
+      connection.raw.close();
+    }
+  });
+
+  it('uses an indexed keyset range for every event page cursor shape', async () => {
+    const dbPath = makeDbPath();
+    await runMigrations(dbPath);
+    const connection = await openDatabaseAsync({ path: dbPath });
+
+    try {
+      const cursorShapes: ListEventPageInput[] = [
+        { afterSequence: 10, throughSequence: 20, limit: 100 },
+        { afterSequence: 10, afterId: 'event-10', throughSequence: 20, limit: 100 },
+        { afterSequence: 10, throughSequence: 20, throughId: 'event-20', limit: 100 },
+        {
+          afterSequence: 10,
+          afterId: 'event-10',
+          throughSequence: 20,
+          throughId: 'event-20',
+          limit: 100,
+        },
+      ];
+
+      for (const input of cursorShapes) {
+        const query = captureEventPageQuery(connection.raw, input);
+        const plan = connection.raw
+          .prepare(`EXPLAIN QUERY PLAN ${query.sql}`)
+          .all(...query.params) as Array<{ detail: string }>;
+        const details = plan.map((row) => row.detail).join('\n');
+        expect(details).toContain('SEARCH event USING INDEX event_global_cursor_idx');
+        expect(details).not.toContain('SCAN event');
+      }
     } finally {
       connection.raw.close();
     }

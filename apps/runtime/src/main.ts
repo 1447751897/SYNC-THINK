@@ -11,6 +11,7 @@ import {
 } from '@sync-think/adapters';
 import type { ProtocolFamily } from '@sync-think/shared';
 import { openPersistentRuntime, resolveRuntimeDatabasePath } from './persistence.js';
+import { SUPERVISED_RUNTIME_READY_MESSAGE } from './daemon/runtime-child.js';
 
 function buildDiscoveryByProtocol() {
   // Live OpenAI-compatible discovery for chat/responses/images gateways.
@@ -72,6 +73,9 @@ async function main() {
     },
     ...(eventPayloadSidecar ? { eventPayloadSidecar } : {}),
     daemonWorker,
+    // The desktop client owns one visible embedded WebView. Chat browser tools
+    // are bridged to that page; daemon workers keep the CDP fallback.
+    useEmbeddedBrowser: !daemonWorker,
     demoProvider:
       process.env.SYNC_THINK_DISABLE_DEMO_PROVIDER === '1'
         ? undefined
@@ -79,6 +83,16 @@ async function main() {
     discoveryByProtocol: buildDiscoveryByProtocol(),
   });
   await session.runtime.start();
+  // The daemon uses this private IPC signal as the authoritative readiness
+  // state. Named-pipe probing remains a compatibility fallback for older
+  // Runtime processes that predate the signal.
+  if (typeof process.send === 'function') {
+    try {
+      process.send(SUPERVISED_RUNTIME_READY_MESSAGE, () => undefined);
+    } catch {
+      // The parent may have already closed its IPC channel during shutdown.
+    }
+  }
 
   // worker 模式：执行指定任务后退出（跑完即退）。
   if (daemonWorker) {

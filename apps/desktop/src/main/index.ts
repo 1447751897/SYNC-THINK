@@ -19,7 +19,7 @@ import {
   shell,
 } from 'electron';
 import type { IpcMainInvokeEvent } from 'electron';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
@@ -40,6 +40,10 @@ import type {
   ImportDesktopDataResponse,
   OpenDesktopDataDirectoryResponse,
 } from '../data-management-contract.js';
+import type {
+  BrowserExtensionOpenFolderResult,
+  BrowserExtensionStatus,
+} from '../browser-extension-contract.js';
 import type {
   ManagedKernelUpdateId,
   ManagedKernelUpdateSnapshot,
@@ -68,6 +72,12 @@ import {
   type ProjectTerminalReservation,
 } from './project-terminal-registry.js';
 import {
+  LOCAL_WEB_PAGE_SCHEME,
+  LocalWebPageRegistry,
+  registerLocalWebPageProtocol,
+} from './local-web-page-registry.js';
+import { installBrowserWebviewPopupHandler } from './browser-webview-popup.js';
+import {
   readProjectFile,
   watchProjectFile,
   writeProjectFile,
@@ -81,6 +91,7 @@ import {
   encodeFrame,
   decodeFrames,
   normalizeSelectedSkillVersionIds,
+  parseDesignGeneratePayload,
   type ConversationTransientFrame,
   type ConversationTransientSnapshot,
   type GatewayLogsResponse,
@@ -97,6 +108,8 @@ import type {
   PromptEnhanceCancelResponse,
   PromptEnhancePayload,
   PromptEnhanceResponse,
+  DesignGeneratePayload,
+  DesignGenerateResponse,
 } from '@sync-think/protocol';
 import {
   parseDataBackupPayload,
@@ -483,6 +496,7 @@ import {
   probeDaemonPipe,
   probeRuntimePipe,
   readDaemonLogs,
+  RUNTIME_COLD_START_TIMEOUT_MS,
   requestDaemonFrame,
   resolveManagedRuntimeDatabasePath,
   resolveNodeBinary,
@@ -541,6 +555,10 @@ protocol.registerSchemesAsPrivileged([
     scheme: 'sync-think-image',
     privileges: { standard: true, secure: true, supportFetchAPI: true },
   },
+  {
+    scheme: LOCAL_WEB_PAGE_SCHEME,
+    privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true },
+  },
 ]);
 
 const defaultDesktopUserDataPath = app.getPath('userData');
@@ -592,6 +610,42 @@ const projectFileWatchSubscriptions = new Map<string, { senderId: number; dispos
 const projectTerminalCleanupRegisteredSenders = new Set<number>();
 const projectContentSearchCleanupRegisteredSenders = new Set<number>();
 const projectContentSearchRegistry = new ProjectContentSearchRegistry();
+const localWebPageRegistries = new Map<string, LocalWebPageRegistry>();
+const DEFAULT_LOCAL_WEB_PARTITION = 'persist:browser-panel';
+
+function localWebPagePersistencePath(partition: string): string {
+  // Partition names contain `:` on purpose, so encode them instead of using
+  // them directly as Windows file names. A fixed-size digest also keeps the
+  // file name below the Windows component limit for 200-character partitions.
+  const key = createHash('sha256').update(partition).digest('hex');
+  return path.join(app.getPath('userData'), 'browser', 'local-pages', `${key}.json`);
+}
+
+function normalizeLocalWebPartition(value: unknown): string {
+  if (value === undefined) return DEFAULT_LOCAL_WEB_PARTITION;
+  if (typeof value !== 'string') throw new Error('Invalid local web partition');
+  const partition = value.trim();
+  if (
+    !partition ||
+    partition.length > 200 ||
+    partition.includes('\0') ||
+    !/^[A-Za-z0-9:_-]+$/.test(partition)
+  ) {
+    throw new Error('Invalid local web partition');
+  }
+  return partition;
+}
+
+function localWebPageRegistryForPartition(partition: string): LocalWebPageRegistry {
+  const existing = localWebPageRegistries.get(partition);
+  if (existing) return existing;
+  const registry = new LocalWebPageRegistry({
+    persistencePath: localWebPagePersistencePath(partition),
+  });
+  registerLocalWebPageProtocol(session.fromPartition(partition), registry);
+  localWebPageRegistries.set(partition, registry);
+  return registry;
+}
 
 function recordDesktopCrashEvidence(input: {
   source: 'main' | 'renderer' | 'runtime' | 'worker' | 'updater';
@@ -876,17 +930,32 @@ function createWindow(): void {
     webPreferences.contextIsolation = true;
     webPreferences.sandbox = true;
     const src = String(params.src ?? '');
-    // Allow the interactive-HTML sandbox (data:text/html, see HtmlSandbox.tsx)
-    // alongside the trusted http(s)/about:blank set. data: of any other type
-    // (images, scripts, etc.) stays blocked.
+    if (new RegExp(`^${LOCAL_WEB_PAGE_SCHEME}://[^/]+/`, 'i').test(src)) {
+      try {
+        // A restored Browser tab can hit the protocol before the renderer has
+        // had a chance to call createLocalPageUrl again. Hydrate its registry
+        // from the durable per-partition index before the guest is created.
+        localWebPageRegistryForPartition(normalizeLocalWebPartition(params.partition));
+      } catch {
+        event.preventDefault();
+        return;
+      }
+    }
+    // Allow interactive HTML sandboxes and tokenized local project pages. Other
+    // data/local schemes stay blocked before Chromium creates the guest.
     if (
       src &&
       !/^https?:\/\//i.test(src) &&
       src !== 'about:blank' &&
-      !/^data:text\/html(;|,)/i.test(src)
+      !/^data:text\/html(;|,)/i.test(src) &&
+      !new RegExp(`^${LOCAL_WEB_PAGE_SCHEME}://[^/]+/`, 'i').test(src)
     ) {
       event.preventDefault();
     }
+  });
+  installBrowserWebviewPopupHandler(window.webContents, ({ openerWebContentsId, url }) => {
+    if (window.isDestroyed()) return;
+    window.webContents.send('desktop:browser-new-tab', { openerWebContentsId, url });
   });
   window.webContents.on('preload-error', (_event, _preloadPath, error) => {
     console.error('[desktop] preload failed', error.message);
@@ -1218,7 +1287,10 @@ async function ensureRuntimeConnection(): Promise<RuntimeConnectResult> {
     console.warn('[desktop] daemon login startup registration failed');
   }
   if (daemon.ready) {
-    const runtimeReady = await waitForRuntimeProcess(identity.installId, 20_000);
+    const runtimeReady = await waitForRuntimeProcess(
+      identity.installId,
+      RUNTIME_COLD_START_TIMEOUT_MS,
+    );
     if (!runtimeReady) {
       throw new Error('runtime.daemon-supervision-timeout');
     }
@@ -1474,6 +1546,12 @@ function parsePromptEnhanceCancelPayload(value: unknown): PromptEnhanceCancelPay
   return { requestId: payload.requestId.trim() };
 }
 
+function parseDesignGeneratePayloadLocal(value: unknown): DesignGeneratePayload {
+  const payload = parseDesignGeneratePayload(value);
+  if (!payload) throw new Error('Invalid design-generate payload');
+  return payload;
+}
+
 function assertRuntimeIpcSource(event: IpcMainInvokeEvent): void {
   assertTrustedRendererIpcSource(
     event.sender,
@@ -1579,6 +1657,30 @@ function setupRuntimeBridge(): void {
     }
   });
 
+  // Create a NewMax-compatible token URL for a saved project HTML document.
+  // The handler is installed on the same partition as the eventual BrowserPanel
+  // so relative assets stay available without exposing arbitrary file:// paths.
+  ipcMain.handle('desktop:create-local-page-url', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      return { ok: false, url: null, error: 'invalid local page payload' };
+    }
+    const payload = value as { filePath?: unknown; partition?: unknown };
+    if (typeof payload.filePath !== 'string' || !path.isAbsolute(payload.filePath.trim())) {
+      return { ok: false, url: null, error: '本地页面路径必须是绝对路径' };
+    }
+    try {
+      const partition = normalizeLocalWebPartition(payload.partition);
+      const registry = localWebPageRegistryForPartition(partition);
+      const url = await registry.createUrl(payload.filePath.trim());
+      return url
+        ? { ok: true, url, error: null }
+        : { ok: false, url: null, error: '本地页面不存在或不是 HTML 文件' };
+    } catch (error) {
+      return { ok: false, url: null, error: errorMessage(error) };
+    }
+  });
+
   ipcMain.handle('runtime:connect', (event) => {
     assertRuntimeIpcSource(event);
     return connectRendererToRuntime();
@@ -1627,6 +1729,14 @@ function setupRuntimeBridge(): void {
     return getRuntimeClient().request<PromptEnhanceCancelResponse>(
       'prompt.enhance.cancel',
       parsePromptEnhanceCancelPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:design-generate', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request<DesignGenerateResponse>(
+      'design.generate',
+      parseDesignGeneratePayloadLocal(value),
     );
   });
   ipcMain.handle('runtime:workspace-create', async (event, value: unknown) => {
@@ -2941,6 +3051,38 @@ function setupRuntimeBridge(): void {
     return getRuntimeClient().request(
       'desktop.command.cancel',
       parseCancelDesktopCommandPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:browser-extension-status', async (event) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request<BrowserExtensionStatus>(
+      'browser.extension.status',
+      {},
+    );
+  });
+  ipcMain.handle('runtime:browser-extension-restart', async (event) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request<BrowserExtensionStatus>(
+      'browser.extension.restart',
+      {},
+    );
+  });
+  ipcMain.handle('runtime:browser-extension-reset-pairing', async (event) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request<BrowserExtensionStatus>(
+      'browser.extension.resetPairing',
+      {},
+    );
+  });
+  ipcMain.handle('runtime:browser-extension-open-folder', async (event) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request<BrowserExtensionOpenFolderResult>(
+      'browser.extension.openFolder',
+      {},
     );
   });
   ipcMain.handle('runtime:browser-profile-list', async (event, value: unknown) => {

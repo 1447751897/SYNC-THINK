@@ -267,11 +267,7 @@ export class SqliteEventCheckpointStore {
   listEventPage(input: ListEventPageInput): Event[] {
     const limit = Math.max(1, Math.min(1_000, Math.trunc(input.limit)));
     if (input.throughSequence < input.afterSequence) return [];
-    const afterId = input.afterId ?? null;
-    const throughId = input.throughId ?? null;
-    const rows = this.raw
-      .prepare(
-        `SELECT
+    const select = `SELECT
           id,
           workspace_id AS workspaceId,
           task_id AS taskId,
@@ -283,28 +279,50 @@ export class SqliteEventCheckpointStore {
           sequence,
           occurred_at AS occurredAt,
           payload_json AS payloadJson
-        FROM event
-        WHERE (
-          sequence > ?
-          OR (? IS NOT NULL AND sequence = ? AND id > ?)
-        ) AND (
-          sequence < ?
-          OR (sequence = ? AND (? IS NULL OR id <= ?))
-        )
+        FROM event`;
+
+    // Keep each cursor shape as a concrete keyset range. A single query with
+    // nullable OR predicates makes SQLite scan the complete cursor index for
+    // every page, which turns a large replay into quadratic work.
+    let sql: string;
+    let params: readonly unknown[];
+    if (input.afterId !== undefined && input.throughId !== undefined) {
+      sql = `${select}
+        WHERE (sequence, id) > (?, ?)
+          AND (sequence, id) <= (?, ?)
         ORDER BY sequence ASC, id ASC
-        LIMIT ?`,
-      )
-      .all(
+        LIMIT ?`;
+      params = [
         input.afterSequence,
-        afterId,
-        input.afterSequence,
-        afterId,
+        input.afterId,
         input.throughSequence,
-        input.throughSequence,
-        throughId,
-        throughId,
+        input.throughId,
         limit,
-      ) as EventDatabaseRow[];
+      ];
+    } else if (input.afterId !== undefined) {
+      sql = `${select}
+        WHERE (sequence, id) > (?, ?)
+          AND sequence <= ?
+        ORDER BY sequence ASC, id ASC
+        LIMIT ?`;
+      params = [input.afterSequence, input.afterId, input.throughSequence, limit];
+    } else if (input.throughId !== undefined) {
+      sql = `${select}
+        WHERE sequence > ?
+          AND (sequence, id) <= (?, ?)
+        ORDER BY sequence ASC, id ASC
+        LIMIT ?`;
+      params = [input.afterSequence, input.throughSequence, input.throughId, limit];
+    } else {
+      sql = `${select}
+        WHERE sequence > ?
+          AND sequence <= ?
+        ORDER BY sequence ASC, id ASC
+        LIMIT ?`;
+      params = [input.afterSequence, input.throughSequence, limit];
+    }
+
+    const rows = this.raw.prepare(sql).all(...params) as EventDatabaseRow[];
     return rows.map((row) => mapEventRow(row, this.payloadExternalization?.sidecar));
   }
 

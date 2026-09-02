@@ -84,7 +84,9 @@ function normalizeTerminalCwd(value: string): string {
 }
 
 function normalizeBrowserUrl(value: string): string {
-  return value.trim().slice(0, MAX_ID_LENGTH) || 'https://www.bing.com';
+  const normalized = value.trim();
+  if (/^data:text\/html(?:;|,)/i.test(normalized)) return normalized.slice(0, 8 * 1024 * 1024);
+  return normalized.slice(0, MAX_ID_LENGTH) || 'https://www.bing.com';
 }
 
 function normalizeWorkbenchTab(value: unknown): WorkbenchTab | null {

@@ -40,6 +40,8 @@ import type {
   PromptEnhanceCancelResponse,
   PromptEnhancePayload,
   PromptEnhanceResponse,
+  DesignGeneratePayload,
+  DesignGenerateResponse,
   BindWorkspaceFolderPayload,
   BindWorkspaceFolderResponse,
   CancelRunPayload,
@@ -372,6 +374,10 @@ import type {
   DesktopUpdateActionResult,
   DesktopUpdateSnapshot,
 } from '../desktop-update-contract.js';
+import type {
+  BrowserExtensionOpenFolderResult,
+  BrowserExtensionStatus,
+} from '../browser-extension-contract.js';
 import type { OpenExternalUrlResult } from '../external-link-contract.js';
 import type {
   ManagedKernelUpdateActionResult,
@@ -395,6 +401,8 @@ const api = {
       ipcRenderer.invoke('runtime:append-message', payload) as Promise<AppendMessageResponse>,
     enhancePrompt: (payload: PromptEnhancePayload) =>
       ipcRenderer.invoke('runtime:prompt-enhance', payload) as Promise<PromptEnhanceResponse>,
+    generateDesign: (payload: DesignGeneratePayload) =>
+      ipcRenderer.invoke('runtime:design-generate', payload) as Promise<DesignGenerateResponse>,
     cancelPromptEnhancement: (payload: PromptEnhanceCancelPayload) =>
       ipcRenderer.invoke(
         'runtime:prompt-enhance-cancel',
@@ -882,6 +890,13 @@ const api = {
         pageUrl?: string;
         error?: string;
       }>,
+    /** NewMax-compatible token URL for a saved local HTML page. */
+    createLocalPageUrl: (payload: { filePath: string; partition?: string }) =>
+      ipcRenderer.invoke('desktop:create-local-page-url', payload) as Promise<{
+        ok: boolean;
+        url: string | null;
+        error: string | null;
+      }>,
     upgradeConversationTrack: (payload: UpgradeConversationTrackPayload) =>
       ipcRenderer.invoke(
         'runtime:conversation-upgrade-track',
@@ -1147,6 +1162,20 @@ const api = {
           payload,
         ) as Promise<ExecuteBrowserWorkflowResponse>,
     },
+    browserExtension: {
+      status: () =>
+        ipcRenderer.invoke('runtime:browser-extension-status') as Promise<BrowserExtensionStatus>,
+      restart: () =>
+        ipcRenderer.invoke('runtime:browser-extension-restart') as Promise<BrowserExtensionStatus>,
+      resetPairing: () =>
+        ipcRenderer.invoke(
+          'runtime:browser-extension-reset-pairing',
+        ) as Promise<BrowserExtensionStatus>,
+      openFolder: () =>
+        ipcRenderer.invoke(
+          'runtime:browser-extension-open-folder',
+        ) as Promise<BrowserExtensionOpenFolderResult>,
+    },
     listWaitingBrowserHandoffs: (payload: ListWaitingBrowserHandoffsPayload = {}) =>
       ipcRenderer.invoke(
         'runtime:browser-handoff-list-waiting',
@@ -1395,6 +1424,29 @@ const api = {
         listener(payload.conversationId);
       ipcRenderer.on('desktop:open-conversation', handler);
       return () => ipcRenderer.removeListener('desktop:open-conversation', handler);
+    },
+    /** Relay an Electron 33 guest popup to the owning embedded browser tab. */
+    onBrowserNewTab: (
+      listener: (payload: { openerWebContentsId: number; url: string }) => void,
+    ): (() => void) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        payload: { openerWebContentsId?: unknown; url?: unknown },
+      ) => {
+        if (
+          typeof payload?.openerWebContentsId !== 'number' ||
+          !Number.isInteger(payload.openerWebContentsId) ||
+          typeof payload?.url !== 'string'
+        ) {
+          return;
+        }
+        listener({
+          openerWebContentsId: payload.openerWebContentsId,
+          url: payload.url,
+        });
+      };
+      ipcRenderer.on('desktop:browser-new-tab', handler);
+      return () => ipcRenderer.removeListener('desktop:browser-new-tab', handler);
     },
     notifyRendererReady: () => {
       ipcRenderer.send('desktop:renderer-ready');

@@ -17,11 +17,35 @@ export interface BrowserWebviewElement extends HTMLElement {
   getWebContentsId(): number;
 }
 
-// BrowserPanel 挂载时注册自己的 webview；卸载（右栏关闭）时注销。
+// Multiple browser panes may stay mounted at once. Keep every live instance and
+// route commands to the pane that is focused or was interacted with most recently.
+const registeredWebviews: BrowserWebviewElement[] = [];
 let activeWebview: BrowserWebviewElement | null = null;
 
-export function registerBrowserWebview(view: BrowserWebviewElement | null): void {
+export function registerBrowserWebview(
+  view: BrowserWebviewElement | null,
+  activate = true,
+): void {
+  if (!view) {
+    registeredWebviews.splice(0, registeredWebviews.length);
+    activeWebview = null;
+    return;
+  }
+  if (!registeredWebviews.includes(view)) registeredWebviews.push(view);
+  if (activate || !activeWebview) activeWebview = view;
+}
+
+export function activateBrowserWebview(view: BrowserWebviewElement | null): void {
+  if (!view) return;
+  if (!registeredWebviews.includes(view)) registeredWebviews.push(view);
   activeWebview = view;
+}
+
+export function unregisterBrowserWebview(view: BrowserWebviewElement | null): void {
+  if (!view) return;
+  const index = registeredWebviews.indexOf(view);
+  if (index >= 0) registeredWebviews.splice(index, 1);
+  if (activeWebview === view) activeWebview = registeredWebviews.at(-1) ?? null;
 }
 
 export function getActiveBrowserWebview(): BrowserWebviewElement | null {
@@ -169,10 +193,21 @@ export interface ExecuteBrowserCommandInput {
 export async function executeBrowserCommand(
   input: ExecuteBrowserCommandInput,
 ): Promise<BrowserCommandOutcome> {
-  const view = activeWebview;
+  const view = await waitForActiveWebview();
   if (!view) return { ok: false, error: PANEL_NOT_READY_ERROR };
 
   try {
+    if (input.action === 'browser_open' || input.action === 'navigate') {
+      const url = typeof input.args.url === 'string' ? input.args.url.trim() : '';
+      if (!/^https?:\/\//i.test(url)) {
+        return { ok: false, error: 'browser_open: 需要有效的 http(s) URL。' };
+      }
+      view.src = url;
+      return {
+        ok: true,
+        resultJson: clampResult({ ok: true, opened: true, url }),
+      };
+    }
     if (input.action === 'browser_click') {
       const result = await view.executeJavaScript(buildClickScript(input.args));
       return { ok: true, resultJson: clampResult(result) };
@@ -222,4 +257,17 @@ export async function executeBrowserCommand(
       error: `浏览器命令执行失败：${error instanceof Error ? error.message : String(error)}`,
     };
   }
+}
+
+/** The BrowserPanel may be mounted in response to the request event itself. */
+async function waitForActiveWebview(timeoutMs = 5_000): Promise<BrowserWebviewElement | null> {
+  const deadline = Date.now() + timeoutMs;
+  const setTimer =
+    typeof globalThis.setTimeout === 'function'
+      ? globalThis.setTimeout.bind(globalThis)
+      : ((resolve: () => void, delay: number) => setTimeout(resolve, delay));
+  while (!activeWebview && Date.now() < deadline) {
+    await new Promise<void>((resolve) => setTimer(resolve, 50));
+  }
+  return activeWebview;
 }

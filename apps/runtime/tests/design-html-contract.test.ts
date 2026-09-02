@@ -47,4 +47,33 @@ describe('Runtime design-html product contract', () => {
     );
     expect(prompt).toContain('ordinary HTML examples should remain regular `html` code fences');
   });
+
+  it('injects the file-backed inline visualization contract and keeps it separate from drafts', () => {
+    const runtime = new Runtime({
+      installId: `inline-visualization-contract-${Date.now()}`,
+      allowNoToken: true,
+    });
+    const run = createDemoRun(
+      'run-inline-visualization-contract' as RunId,
+      'thread-inline-visualization-contract',
+      '请创建一个交互式数据可视化并显示在对话中',
+    );
+    const snapshot = (
+      runtime as unknown as ContextSnapshotBuilder
+    ).buildDefaultProviderContextSnapshot(run, {
+      messages: [{ role: 'user', content: run.userText }],
+      toolsEnabled: false,
+    });
+    const prompt = snapshot.providerRequest.systemPrompt;
+
+    expect(prompt).toContain('AI inline visualization output contract (newmax-inline-vis):');
+    expect(prompt).toContain('first create the complete self-contained HTML document in the bound project');
+    expect(prompt).toContain('Wait for an actual successful `write_file` result before emitting');
+    expect(prompt).toContain('`::newmax-inline-vis{file="visualizations/<slug>.html"}`');
+    expect(prompt).toContain('do not invent a path, use an absolute path, or use a data URL');
+    expect(prompt).toContain('Emit the directive as a standalone line outside Markdown fences');
+    expect(prompt).toContain('Only emit the directive when a project folder is bound and the file write succeeded');
+    expect(prompt).toContain('Inline preview, browser-open, and saving are separate facts');
+    expect(prompt).toContain('This contract is distinct from `design-html` and `excalidraw`');
+  });
 });

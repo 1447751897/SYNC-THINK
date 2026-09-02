@@ -9,6 +9,7 @@ import { useCallback, useEffect, useState } from 'react';
 
 export interface DaemonStatusPayload {
   running: boolean;
+  runtimeReady?: boolean;
   heartbeatAt?: string;
   heartbeatStale: boolean;
   todayFired: number;
@@ -74,6 +75,11 @@ export function DaemonCard() {
 
       <div className="settings-daemon-status-row">
         <span className={`settings-daemon-badge ${badgeClass}`}>{badgeLabel}</span>
+        {running ? (
+          <span className="settings-daemon-heartbeat">
+            Runtime {status?.runtimeReady ? '就绪' : '启动中'}
+          </span>
+        ) : null}
         {status?.heartbeatAt ? (
           <span className="settings-daemon-heartbeat">
             上次心跳 {new Date(status.heartbeatAt).toLocaleTimeString()}

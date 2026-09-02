@@ -320,6 +320,43 @@ const api = {
       steps: [{ sequence: 1, ok: true, actionKind: 'navigate' }],
     })),
   },
+  browserExtension: {
+    status: vi.fn(async () => ({
+      state: 'disconnected' as const,
+      hostAvailable: false,
+      connected: false,
+      installedVersion: null,
+      versionMismatch: false,
+      busy: false,
+      lastErrorCode: null,
+      connectionInfo: {
+        bundledVersion: '1.1.4',
+        url: 'ws://127.0.0.1:17373/browser-extension/v1',
+        token: 'test-token',
+      },
+    })),
+    restart: vi.fn(async () => ({
+      state: 'disconnected' as const,
+      hostAvailable: false,
+      connected: false,
+      installedVersion: null,
+      versionMismatch: false,
+      busy: false,
+      lastErrorCode: null,
+      connectionInfo: null,
+    })),
+    resetPairing: vi.fn(async () => ({
+      state: 'disconnected' as const,
+      hostAvailable: false,
+      connected: false,
+      installedVersion: null,
+      versionMismatch: false,
+      busy: false,
+      lastErrorCode: null,
+      connectionInfo: null,
+    })),
+    openFolder: vi.fn(async () => ({ success: true as const })),
+  },
 };
 
 beforeEach(() => {
@@ -381,6 +418,41 @@ beforeEach(() => {
     executedStepCount: 1,
     steps: [{ sequence: 1, ok: true, actionKind: 'navigate' }],
   });
+  api.browserExtension.status.mockReset().mockResolvedValue({
+    state: 'disconnected',
+    hostAvailable: false,
+    connected: false,
+    installedVersion: null,
+    versionMismatch: false,
+    busy: false,
+    lastErrorCode: null,
+    connectionInfo: {
+      bundledVersion: '1.1.4',
+      url: 'ws://127.0.0.1:17373/browser-extension/v1',
+      token: 'test-token',
+    },
+  });
+  api.browserExtension.restart.mockReset().mockResolvedValue({
+    state: 'disconnected',
+    hostAvailable: false,
+    connected: false,
+    installedVersion: null,
+    versionMismatch: false,
+    busy: false,
+    lastErrorCode: null,
+    connectionInfo: null,
+  });
+  api.browserExtension.resetPairing.mockReset().mockResolvedValue({
+    state: 'disconnected',
+    hostAvailable: false,
+    connected: false,
+    installedVersion: null,
+    versionMismatch: false,
+    busy: false,
+    lastErrorCode: null,
+    connectionInfo: null,
+  });
+  api.browserExtension.openFolder.mockReset().mockResolvedValue({ success: true });
   Object.defineProperty(window, 'syncThink', {
     configurable: true,
     value: { runtime: api },
@@ -399,8 +471,10 @@ describe('BrowserStage Runtime Profiles', () => {
     expect(screen.getByText('自动化任务')).toBeTruthy();
     expect(screen.getByText('内置浏览器')).toBeTruthy();
     expect(screen.getByTestId('browser-execution-host-status').textContent).toContain('当前执行宿主');
-    expect(screen.queryByText('Chrome 扩展')).toBeNull();
-    expect(screen.queryByText('未连接')).toBeNull();
+    expect(screen.getByTestId('chrome-extension-bridge-card')).toBeTruthy();
+    await waitFor(() =>
+      expect(screen.getByTestId('chrome-extension-status').textContent).toContain('未连接'),
+    );
 
     fireEvent.click(screen.getByTestId('browser-workflow-create-ai'));
     expect(await screen.findByText('让 AI 创建自动化任务')).toBeTruthy();

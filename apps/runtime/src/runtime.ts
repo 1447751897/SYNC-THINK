@@ -126,6 +126,7 @@ import {
   type PromptEnhancePayload,
   type PromptEnhanceResponse,
   type PromptEnhanceCancelResponse,
+  type DesignGenerateResponse,
   type PlanDraftResponse,
   type PlanReviseResponse,
   type PlanListRevisionsResponse,
@@ -287,6 +288,11 @@ import {
   parsePlanMarkdown,
 } from '@sync-think/shared';
 import type { ConversationGetRunProcessResponse } from '@sync-think/protocol';
+import {
+  buildDesignGenerationPrompt,
+  extractGeneratedDesignHtml,
+  parseDesignGeneratePayload,
+} from '@sync-think/protocol';
 import { projectRunProcess } from './run-process-view.js';
 import { projectRunIndexUpsert } from './run-index-projection.js';
 import {
@@ -779,8 +785,18 @@ import {
   BrowserWorkflowRunner,
   BrowserWorkflowRunnerError,
 } from './browser/runtime-browser-workflow-runner.js';
+import {
+  RendererBrowserWorker,
+  type RendererBrowserCommandRequest,
+  type RendererBrowserCommandResult,
+} from './browser/renderer-browser-worker.js';
 import { RuntimeDesktopController } from './desktop/runtime-desktop-controller.js';
 import type { RuntimeDataManagementService } from './data-management-service.js';
+import {
+  type BrowserExtensionOpenFolderResult,
+  type BrowserExtensionHostLike,
+  type BrowserExtensionStatus,
+} from './browser/browser-extension-host.js';
 
 import {
   estimateUsageCostBreakdown,
@@ -915,6 +931,29 @@ const DESIGN_HTML_OUTPUT_CONTRACT = [
   '- Use this contract only for design requests; ordinary HTML examples should remain regular `html` code fences.',
 ].join('\n');
 
+/** Editable drawing contract used by NewMax's Excalidraw file preview. */
+const EXCALIDRAW_OUTPUT_CONTRACT = [
+  'AI editable design output contract (excalidraw):',
+  '- When the user asks for an editable design draft, wireframe, flowchart, whiteboard, or canvas drawing, return exactly one fenced block tagged `excalidraw` containing valid JSON.',
+  '- The JSON must have `type: "excalidraw"`, `version: 2`, `elements: [...]`, `appState: { ... }`, and `files: { ... }`. Use real Excalidraw elements with stable ids, coordinates, dimensions, and visible text; do not return a prose description or HTML.',
+  '- Keep the payload self-contained and at or below 1 MiB. `files` may contain embedded image data only when required by the requested design.',
+  '- The fenced JSON is the canonical editable scene. Previewing it does not mean it was saved; only a successful `write_file` result confirms a project file.',
+  '- When the user asks to save it, call `write_file` with a project-relative `.excalidraw` path such as `designs/<slug>.excalidraw`; never claim a save before the tool reports success.',
+  '- If the JSON is malformed, incomplete, or truncated, return a complete replacement and do not overwrite an existing file.',
+].join('\n');
+
+/** File-backed inline visualization contract used by NewMax's chat preview. */
+const INLINE_VISUALIZATION_OUTPUT_CONTRACT = [
+  'AI inline visualization output contract (newmax-inline-vis):',
+  '- When the user asks for a file-backed interactive visualization, dashboard, chart, prototype, or other HTML artifact to appear inline in the conversation, first create the complete self-contained HTML document in the bound project by calling `write_file` with a project-relative `.html` path (for example `visualizations/<slug>.html`).',
+  '- Wait for an actual successful `write_file` result before emitting `::newmax-inline-vis{file="visualizations/<slug>.html"}`. Use the exact normalized project-relative path that was successfully written; do not invent a path, use an absolute path, or use a data URL.',
+  '- Emit the directive as a standalone line outside Markdown fences. Do not put it inside `html`, `md`, or other code fences. Emit one directive per successfully written HTML file.',
+  '- Only emit the directive when a project folder is bound and the file write succeeded. If there is no project folder or the write fails, explain the concrete state and do not claim that the visualization was saved or available inline.',
+  '- Inline preview, browser-open, and saving are separate facts: the directive mounts the saved project file; opening the live page requires an actual successful `browser_open` result; saving requires the successful `write_file` result.',
+  '- Keep the UTF-8 HTML payload at or below 2 MiB. Include visible content and working interactions, keep CSS and JavaScript self-contained when practical, and do not substitute a prose description for the page.',
+  '- This contract is distinct from `design-html` and `excalidraw`: use the fenced `design-html` contract for an in-message design draft and the fenced `excalidraw` contract for an editable drawing. Do not emit an inline visualization directive for those artifacts unless the user separately asks for a saved HTML visualization.',
+].join('\n');
+
 const PROMPT_ENHANCEMENT_SYSTEM_PROMPT = [
   '你是提示词优化助手。',
   '在不改变用户原始意图和语言的前提下，把草稿改写得具体、清晰、可执行。',
@@ -969,6 +1008,10 @@ export interface RuntimeOptions {
   browserProfileGate?: BrowserProfileOperationGate;
   /** Existing local directory used for non-file browser actions without a bound Workspace. */
   browserFallbackWorkingDir?: string;
+  /** Use the single Desktop WebView as the visible Browser Worker for chat tools. */
+  useEmbeddedBrowser?: boolean;
+  /** NewMax-compatible Chrome extension bridge. Production enables this explicitly. */
+  browserExtensionHost?: BrowserExtensionHostLike;
   /** Server-owned plan readiness lookup; clients cannot assert plan approval. */
   hasApprovedPlan?: (taskId: TaskId) => boolean;
   /** Test/embedding seam; production defaults to the registered adapters. */
@@ -1977,10 +2020,6 @@ export function formatTaskPlanForModel(plan: ModelTaskPlan): string {
   return `当前任务清单（${plan.completed}/${plan.total} 已完成）：\n${lines.join('\n')}`;
 }
 
-function sameCursor(left: EventReplayCursor, right: EventReplayCursor): boolean {
-  return left.sequence === right.sequence && left.eventId === right.eventId;
-}
-
 function compareCursor(left: EventReplayCursor, right: EventReplayCursor): number {
   if (left.sequence !== right.sequence) return left.sequence - right.sequence;
   return left.eventId.localeCompare(right.eventId);
@@ -1996,6 +2035,7 @@ const MAX_REPLAY_EVENTS_PER_PAGE = 64;
 const MAX_REPLAY_SCANNED_EVENTS_PER_PAGE = 256;
 const MAX_RECENT_RUNTIME_EVENTS = 2_048;
 const RESTORE_EVENT_PAGE_SIZE = 1_000;
+const APPROVAL_HYDRATION_PAGE_SIZE = 1_000;
 const REPLAY_FRAME_RESERVE_BYTES = 1_024;
 /** Global memory bound; frames retain a thread-local cursor for isolated replay. */
 const MAX_TRANSIENT_REPLAY_FRAMES = 256;
@@ -2324,6 +2364,17 @@ export class Runtime {
   private telegramBotLoop?: Promise<void>;
   private readonly browserHost?: BrowserHostLike;
   private readonly browserController?: RuntimeBrowserController;
+  private readonly browserExtensionHost?: BrowserExtensionHostLike;
+  private readonly useEmbeddedBrowser: boolean;
+  private readonly pendingRendererBrowserCommands = new Map<
+    string,
+    {
+      resolve: (result: RendererBrowserCommandResult) => void;
+      runId: string;
+      threadId: string;
+      toolCallId: string;
+    }
+  >();
   private readonly browserProfileService?: RuntimeBrowserProfileService;
   private readonly browserRecordingService?: RuntimeBrowserRecordingService;
   private readonly browserWorkflowService?: RuntimeBrowserWorkflowService;
@@ -2549,6 +2600,8 @@ export class Runtime {
         ? new BotChannelConfigStore(opts.appSettingStore, opts.secureStore)
         : undefined;
     this.browserHost = opts.browserHost;
+    this.browserExtensionHost = opts.browserExtensionHost;
+    this.useEmbeddedBrowser = opts.useEmbeddedBrowser === true && !this.daemonWorker;
     const browserProfileGate =
       opts.browserHost && opts.browserStore
         ? (opts.browserProfileGate ?? new RuntimeBrowserProfileGate())
@@ -3178,6 +3231,10 @@ export class Runtime {
           void this.handlePromptEnhance(socket, frame);
           return;
         }
+        if (frame.type === 'design.generate') {
+          void this.handleDesignGenerate(socket, frame);
+          return;
+        }
         if (frame.type === 'prompt.enhance.cancel') {
           this.handlePromptEnhanceCancel(socket, frame);
           return;
@@ -3192,6 +3249,22 @@ export class Runtime {
         }
         if (frame.type === 'conversation.submitBrowserResult') {
           this.handleConversationSubmitBrowserResult(socket, frame);
+          return;
+        }
+        if (frame.type === 'browser.extension.status') {
+          this.handleBrowserExtensionStatus(socket, frame);
+          return;
+        }
+        if (frame.type === 'browser.extension.restart') {
+          this.trackBackgroundTask(this.handleBrowserExtensionRestart(socket, frame));
+          return;
+        }
+        if (frame.type === 'browser.extension.resetPairing') {
+          this.trackBackgroundTask(this.handleBrowserExtensionResetPairing(socket, frame));
+          return;
+        }
+        if (frame.type === 'browser.extension.openFolder') {
+          this.trackBackgroundTask(this.handleBrowserExtensionOpenFolder(socket, frame));
           return;
         }
         if (frame.type === 'browser.profile.list') {
@@ -3883,8 +3956,14 @@ export class Runtime {
         } catch {
           return undefined;
         }
+        // A corrupt or legacy event may be larger than one protocol frame.
+        // Advance past it so one bad record cannot permanently wedge the
+        // subscription; live delivery follows the same skip-on-oversize rule.
+        if (eventBytes > eventBytesBudget) {
+          nextCursor = cursorForEvent(event);
+          continue;
+        }
         if (serializedEventBytes + eventBytes > eventBytesBudget) {
-          if (sameCursor(nextCursor, subscription.replayCursor)) return undefined;
           stoppedBeforeCandidate = true;
           break;
         }
@@ -10262,8 +10341,7 @@ export class Runtime {
         textFromEvents(events).trim() ||
         events
           .filter(
-            (event) =>
-              event.type === 'assistant-message-delta' && event.phase === 'commentary',
+            (event) => event.type === 'assistant-message-delta' && event.phase === 'commentary',
           )
           .map((event) => (event.type === 'assistant-message-delta' ? event.text : ''))
           .join('')
@@ -10300,6 +10378,88 @@ export class Runtime {
       if (this.promptEnhancementAborts.get(payload.requestId) === controller) {
         this.promptEnhancementAborts.delete(payload.requestId);
       }
+    }
+  }
+
+  /**
+   * Local equivalent of NewMax's diagramToCode plugin. It uses the same
+   * configured provider path as prompt enhancement, but remains a one-shot
+   * request: no conversation message, run, or file is persisted here. The
+   * renderer owns the Excalidraw customData write and project save.
+   */
+  private async handleDesignGenerate(socket: Socket, frame: Frame): Promise<void> {
+    const payload = parseDesignGeneratePayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    try {
+      const modelId = this.resolvePromptEnhancementModelId(payload.modelId);
+      const prepared = this.prepareRunBinding({
+        runId: ulid() as RunId,
+        threadId: `design-generation:${payload.requestId}`,
+        userText: 'Generate an HTML design from an Excalidraw wireframe',
+        modelId,
+        skillVersionIds: [],
+        skillContextMode: 'maintenance',
+        reasoningEffort: 'off',
+        networkEnabled: false,
+      });
+      const prompt = buildDesignGenerationPrompt(payload);
+      const stream = await this.openProviderStream(prepared.run, {
+        messages: [{ role: 'user', content: prompt }],
+        toolsEnabled: false,
+        networkEnabled: false,
+        systemPromptOverride:
+          'You are a diagram-to-code provider. Return only a complete self-contained HTML document. Never return prose or Markdown.',
+      });
+      if (!stream) throw new Error('设计稿生成模型当前不可用');
+      const events: AdapterEvent[] = [];
+      for await (const event of stream) {
+        if (event.type === 'error') {
+          throw new Error(`设计稿生成失败（${event.failureClass}）：${event.message}`);
+        }
+        events.push(event);
+        if (event.type === 'finished') break;
+      }
+      const raw =
+        textFromEvents(events).trim() ||
+        events
+          .filter(
+            (event) =>
+              event.type === 'assistant-message-delta' &&
+              (event.phase === 'commentary' || event.phase === 'final_answer'),
+          )
+          .map((event) => (event.type === 'assistant-message-delta' ? event.text : ''))
+          .join('')
+          .trim();
+      const html = extractGeneratedDesignHtml(raw);
+      const response: DesignGenerateResponse = {
+        requestId: payload.requestId,
+        html,
+        modelId: prepared.run.modelId as ModelId,
+      };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: frame.type,
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: frame.type,
+          payload: {},
+          error: {
+            code: ErrorCode.PROVIDER_CALL_FAILED,
+            message: error instanceof Error ? error.message : '设计稿生成失败',
+          },
+        }),
+      );
     }
   }
 
@@ -21309,6 +21469,8 @@ export class Runtime {
       ].join('\n'),
     );
     parts.push(DESIGN_HTML_OUTPUT_CONTRACT);
+    parts.push(EXCALIDRAW_OUTPUT_CONTRACT);
+    parts.push(INLINE_VISUALIZATION_OUTPUT_CONTRACT);
     if (run.planningMode === true || this.isPlanningModeForThread(run.threadId)) {
       parts.push(
         [
@@ -27097,10 +27259,33 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
 
   private durableChatToolApprovalStates(): Map<string, { requested: Event; decided?: Event }> {
     if (!this.durableChatToolApprovalsHydrated) {
-      const events = this.stateStore?.listAllEvents
-        ? this.stateStore.listAllEvents(0)
-        : this.events;
-      for (const event of events) this.rememberDurableChatToolApprovalEvent(event);
+      const stateStore = this.stateStore;
+      if (
+        stateStore?.listEventPage &&
+        (stateStore.getLatestEventCursor || stateStore.getLatestEventSequence)
+      ) {
+        const throughCursor = stateStore.getLatestEventCursor
+          ? stateStore.getLatestEventCursor()
+          : { sequence: stateStore.getLatestEventSequence!(), eventId: '' };
+        let cursor: EventReplayCursor = { sequence: 0, eventId: '' };
+        while (compareCursor(cursor, throughCursor) < 0) {
+          const page = stateStore.listEventPage({
+            afterSequence: cursor.sequence,
+            ...(cursor.eventId ? { afterId: cursor.eventId } : {}),
+            throughSequence: throughCursor.sequence,
+            ...(throughCursor.eventId ? { throughId: throughCursor.eventId } : {}),
+            limit: APPROVAL_HYDRATION_PAGE_SIZE,
+          });
+          if (page.length === 0) break;
+          for (const event of page) this.rememberDurableChatToolApprovalEvent(event);
+          const nextCursor = cursorForEvent(page[page.length - 1]!);
+          if (compareCursor(nextCursor, cursor) <= 0) break;
+          cursor = nextCursor;
+        }
+      } else {
+        const events = stateStore?.listAllEvents ? stateStore.listAllEvents(0) : this.events;
+        for (const event of events) this.rememberDurableChatToolApprovalEvent(event);
+      }
       this.durableChatToolApprovalsHydrated = true;
     }
     return this.durableChatToolApprovalStateById;
@@ -27429,7 +27614,8 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     }
   }
 
-  /** Runtime-owned Browser Worker path. Renderer receives only completed URLs for preview. */
+  /** Runtime-owned Browser Worker path. The production Desktop can opt into the
+   * embedded WebView adapter so the AI and the user share one visible page. */
   private async executeChatBrowserWorkerTool(input: {
     runId: RunId;
     threadId: string;
@@ -27447,6 +27633,15 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       });
     }
     const requestId = `brw-${ulid()}`;
+    const rendererWorker = this.useEmbeddedBrowser
+      ? new RendererBrowserWorker({
+          toolName: input.toolCall.name,
+          runId: String(input.runId),
+          threadId: input.threadId,
+          toolCallId: input.toolCall.id,
+          onRequest: (request) => this.requestEmbeddedBrowserCommand(request),
+        })
+      : undefined;
     return this.browserController.execute({
       toolName: input.toolCall.name,
       argumentsJson: input.toolCall.argumentsJson || '{}',
@@ -27457,6 +27652,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       capabilityToken: `browser:${input.runId}:${input.toolCall.id}`,
       workspaceRoot: input.workspaceRoot,
       signal: input.signal,
+      ...(rendererWorker ? { worker: rendererWorker } : {}),
       approval: input.approval,
       beforeStart: () => !input.signal.aborted && this.demoRuns.has(input.runId),
       beforeExecute: (intent) => {
@@ -27485,6 +27681,46 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         );
         this.publishEvent(event);
       },
+    });
+  }
+
+  private requestEmbeddedBrowserCommand(
+    request: RendererBrowserCommandRequest,
+  ): Promise<RendererBrowserCommandResult> {
+    return new Promise<RendererBrowserCommandResult>((resolve) => {
+      this.pendingRendererBrowserCommands.set(request.requestId, {
+        resolve,
+        runId: request.runId,
+        threadId: request.threadId,
+        toolCallId: request.toolCallId,
+      });
+
+      // This is an interactive bridge event, not a durable audit record. The
+      // validated/sanitized command intent is persisted separately by the
+      // controller; keeping the live action ephemeral prevents passwords and
+      // query tokens from being written to the event store.
+      const event: Event = {
+        id: ulid() as Event['id'],
+        workspaceId: this.resolveEventWorkspaceId(request.threadId),
+        runId: request.runId as RunId,
+        category: 'tool',
+        type: 'browser.command_requested',
+        occurredAt: new Date().toISOString(),
+        sequence: ++this.eventSequence,
+        payload: {
+          requestId: request.requestId,
+          threadId: request.threadId,
+          runId: request.runId,
+          toolCallId: request.toolCallId,
+          toolName: request.toolName,
+          action: request.toolName,
+          args: rendererBrowserArgs(request.action),
+          browserAction: request.action,
+          profileId: request.profileId,
+          ownerId: request.ownerId,
+        },
+      };
+      this.publishEvent(event);
     });
   }
 
@@ -27659,6 +27895,108 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       createdAt: command.createdAt,
       updatedAt: command.updatedAt,
     };
+  }
+
+  private handleBrowserExtensionStatus(socket: Socket, frame: Frame): void {
+    if (!isEmptyPayload(frame.payload)) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    try {
+      const status: BrowserExtensionStatus =
+        this.browserExtensionHost?.status() ?? this.browserExtensionHostStatusUnavailable();
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: frame.type,
+          payload: status,
+        }),
+      );
+    } catch (error) {
+      this.writeBrowserExtensionCommandError(socket, frame, error);
+    }
+  }
+
+  private async handleBrowserExtensionRestart(socket: Socket, frame: Frame): Promise<void> {
+    if (!isEmptyPayload(frame.payload)) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    try {
+      const status = this.browserExtensionHost
+        ? await this.browserExtensionHost.restart()
+        : this.browserExtensionHostStatusUnavailable();
+      socket.write(
+        encodeFrame({ id: frame.id, kind: 'response', type: frame.type, payload: status }),
+      );
+    } catch (error) {
+      this.writeBrowserExtensionCommandError(socket, frame, error);
+    }
+  }
+
+  private async handleBrowserExtensionResetPairing(socket: Socket, frame: Frame): Promise<void> {
+    if (!isEmptyPayload(frame.payload)) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    try {
+      const status = this.browserExtensionHost
+        ? await this.browserExtensionHost.resetPairing()
+        : this.browserExtensionHostStatusUnavailable();
+      socket.write(
+        encodeFrame({ id: frame.id, kind: 'response', type: frame.type, payload: status }),
+      );
+    } catch (error) {
+      this.writeBrowserExtensionCommandError(socket, frame, error);
+    }
+  }
+
+  private async handleBrowserExtensionOpenFolder(socket: Socket, frame: Frame): Promise<void> {
+    if (!isEmptyPayload(frame.payload)) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    try {
+      const result: BrowserExtensionOpenFolderResult = this.browserExtensionHost
+        ? await this.browserExtensionHost.openFolder()
+        : {
+            success: false,
+            path: null,
+            message: 'Browser extension host is not configured',
+          };
+      socket.write(
+        encodeFrame({ id: frame.id, kind: 'response', type: frame.type, payload: result }),
+      );
+    } catch (error) {
+      this.writeBrowserExtensionCommandError(socket, frame, error);
+    }
+  }
+
+  private browserExtensionHostStatusUnavailable(): BrowserExtensionStatus {
+    return {
+      state: 'disabled',
+      hostAvailable: false,
+      connected: false,
+      installedVersion: null,
+      versionMismatch: false,
+      busy: false,
+      lastErrorCode: 'host-unavailable',
+      connectionInfo: null,
+    };
+  }
+
+  private writeBrowserExtensionCommandError(socket: Socket, frame: Frame, error: unknown): void {
+    const message = error instanceof Error ? error.message : 'Browser extension command failed';
+    socket.write(
+      encodeFrame({
+        id: frame.id,
+        kind: 'response',
+        type: frame.type,
+        payload: {},
+        error: { code: ErrorCode.STORAGE_WRITE_FAILED, message },
+      }),
+    );
   }
 
   private handleListBrowserProfiles(socket: Socket, frame: Frame): void {
@@ -28760,19 +29098,28 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     );
   }
 
-  /** Legacy Renderer reverse channel retained during migration; no real command waits here. */
+  /** Resolve a live embedded-WebView command request. */
   private handleConversationSubmitBrowserResult(socket: Socket, frame: Frame): void {
     const payload = parseConversationSubmitBrowserResultPayload(frame.payload);
     if (!payload) {
       this.writeMalformedPayload(socket, frame);
       return;
     }
+    const pending = this.pendingRendererBrowserCommands.get(payload.requestId);
+    if (pending) {
+      this.pendingRendererBrowserCommands.delete(payload.requestId);
+      pending.resolve({
+        ok: payload.ok,
+        ...(payload.resultJson !== undefined ? { resultJson: payload.resultJson } : {}),
+        ...(payload.error !== undefined ? { error: payload.error } : {}),
+      });
+    }
     socket.write(
       encodeFrame({
         id: frame.id,
         kind: 'response',
         type: 'conversation.submitBrowserResult',
-        payload: { requestId: payload.requestId, accepted: false },
+        payload: { requestId: payload.requestId, accepted: Boolean(pending) },
       }),
     );
   }
@@ -28930,6 +29277,8 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       'Product capability boundaries (SYNC-THINK / this desktop shell):',
       CODEX_STYLE_COMMENTARY_PROMPT,
       DESIGN_HTML_OUTPUT_CONTRACT,
+      EXCALIDRAW_OUTPUT_CONTRACT,
+      INLINE_VISUALIZATION_OUTPUT_CONTRACT,
       agentCreationPrompt,
       planToolPrompt,
       browserWorkflowPrompt,
@@ -30478,31 +30827,44 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       this.server = createPipeServer(this.handlers, this.installId);
       const path = pipePathPortable(this.installId);
       this.server.listen(path, () => {
-        this.handlers.onReady(path);
-        this.resumeDemoRuns();
-        // Open gateway: bind on boot when the persisted setting has it enabled,
-        // so external CLIs pointed at the fixed port work without opening the UI.
-        this.trackBackgroundTask(
-          this.syncOpenGatewayFromSettings().catch((error) =>
-            console.warn('[runtime] open gateway start failed', error),
-          ),
-        );
-        void this.startEnabledBotChannels().catch((error) =>
-          console.warn('[runtime] bot channel start failed', error),
-        );
-        if (this.scheduler) {
-          const recovery = this.scheduler
-            .recoverAll()
-            .then(() => this.syncOrchestrationEvents())
-            .catch((error) => console.warn('[runtime] orchestration recovery failed', error));
-          this.trackBackgroundTask(recovery);
-        }
-        // 双 tick 让位（T5）：守护进程活着 → 关自身调度 tick（唯一调度者）。
-        void this.probeDaemonAndStartScheduler().catch((error) =>
-          console.warn('[runtime] daemon probe failed, falling back to own tick', error),
-        );
-        this.startLocalSkillWatch();
-        resolve();
+        const browserExtensionReady = this.browserExtensionHost
+          ? this.browserExtensionHost.start().catch((error) => {
+              console.warn(
+                '[runtime] browser extension host start failed',
+                error instanceof Error ? error.message : String(error),
+              );
+            })
+          : Promise.resolve();
+        this.trackBackgroundTask(browserExtensionReady);
+        // The desktop must not query extension.status before the loopback host
+        // has finished binding; await the bind while keeping the pipe alive.
+        void browserExtensionReady.finally(() => {
+          this.handlers.onReady(path);
+          this.resumeDemoRuns();
+          // Open gateway: bind on boot when the persisted setting has it enabled,
+          // so external CLIs pointed at the fixed port work without opening the UI.
+          this.trackBackgroundTask(
+            this.syncOpenGatewayFromSettings().catch((error) =>
+              console.warn('[runtime] open gateway start failed', error),
+            ),
+          );
+          void this.startEnabledBotChannels().catch((error) =>
+            console.warn('[runtime] bot channel start failed', error),
+          );
+          if (this.scheduler) {
+            const recovery = this.scheduler
+              .recoverAll()
+              .then(() => this.syncOrchestrationEvents())
+              .catch((error) => console.warn('[runtime] orchestration recovery failed', error));
+            this.trackBackgroundTask(recovery);
+          }
+          // 双 tick 让位（T5）：守护进程活着 → 关自身调度 tick（唯一调度者）。
+          void this.probeDaemonAndStartScheduler().catch((error) =>
+            console.warn('[runtime] daemon probe failed, falling back to own tick', error),
+          );
+          this.startLocalSkillWatch();
+          resolve();
+        });
       });
       this.server.on('error', (e) => reject(e));
     });
@@ -30510,6 +30872,10 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
 
   async stop(): Promise<void> {
     this.runtimeStopped = true;
+    for (const [requestId, pending] of this.pendingRendererBrowserCommands) {
+      this.pendingRendererBrowserCommands.delete(requestId);
+      pending.resolve({ ok: false, error: 'Runtime 正在关闭，内置浏览器命令已取消' });
+    }
     await this.botGatewayManager.stopAll();
     this.telegramBotAbort?.abort();
     if (this.telegramBotLoop) await this.telegramBotLoop.catch(() => undefined);
@@ -30569,6 +30935,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     await this.scheduler?.shutdown();
     await this.openGateway.dispose();
     await Promise.allSettled([...this.backgroundTasks]);
+    await this.browserExtensionHost?.stop();
     const preserveBrowserSessions = (this.browserController?.listWaitingHandoffs().length ?? 0) > 0;
     await this.browserHost?.shutdown({ preserveSessions: preserveBrowserSessions });
   }
@@ -30597,8 +30964,44 @@ function browserRecordingErrorCode(error: unknown): string | undefined {
   return undefined;
 }
 
+function rendererBrowserArgs(
+  action: import('@sync-think/workers').BrowserAction,
+): Record<string, unknown> {
+  switch (action.kind) {
+    case 'navigate':
+      return { url: action.url };
+    case 'click':
+      return {
+        ...(action.selector ? { selector: action.selector } : {}),
+        ...(action.x !== undefined ? { x: action.x } : {}),
+        ...(action.y !== undefined ? { y: action.y } : {}),
+      };
+    case 'fill':
+      return { selector: action.selector, text: action.text };
+    case 'read':
+    case 'extract':
+      return { ...(action.selector ? { selector: action.selector } : {}) };
+    case 'screenshot':
+      return {};
+    case 'wait':
+      return {
+        ...(action.selector ? { selector: action.selector } : {}),
+        ...(action.durationMs !== undefined ? { durationMs: action.durationMs } : {}),
+      };
+  }
+}
+
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** Commands that only control the extension host do not accept options yet. */
+function isEmptyPayload(value: unknown): boolean {
+  return (
+    value === undefined ||
+    value === null ||
+    (isPlainRecord(value) && Object.keys(value).length === 0)
+  );
 }
 
 function parseToolApprovalScope(value: unknown): ToolApprovalScope {

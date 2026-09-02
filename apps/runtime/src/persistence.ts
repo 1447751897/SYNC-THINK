@@ -59,6 +59,10 @@ import { RuntimeBrowserProfileService } from './browser/runtime-browser-profile-
 import { RuntimeBrowserProfileGate } from './browser/runtime-browser-profile-gate.js';
 import { RuntimeBrowserRecordingService } from './browser/runtime-browser-recording-service.js';
 import { RuntimeDataManagementService } from './data-management-service.js';
+import {
+  BrowserExtensionHost,
+  resolveBrowserExtensionDirectory,
+} from './browser/browser-extension-host.js';
 
 export interface RuntimeEventPayloadSidecarOptions {
   /** Explicit opt-in. Omitting this object keeps every Event payload inline. */
@@ -374,6 +378,18 @@ export async function openPersistentRuntime(
       externalEventStore: new SqliteExternalEventStore(connection.raw),
       queryUsageSummary,
       browserHost,
+      browserExtensionHost:
+        runtimeOptions.browserExtensionHost ??
+        (options.daemonWorker
+          ? undefined
+          : new BrowserExtensionHost({
+              appSettingStore,
+              extensionDirectory: resolveBrowserExtensionDirectory(
+                process.env.SYNC_THINK_BROWSER_EXTENSION_DIR ??
+                  join(homedir(), '.newmax', 'chrome-extension'),
+                process.cwd(),
+              ),
+            })),
       browserProfileGate,
       browserFallbackWorkingDir: runtimeOptions.browserFallbackWorkingDir ?? runtimeDataRoot,
     });

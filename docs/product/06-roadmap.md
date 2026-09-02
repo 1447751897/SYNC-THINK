@@ -285,7 +285,7 @@ M1 完成日期：2026-07-15（用户将 dogfood 门槛改为 1 天；有效 1/1
 4. 诊断、崩溃恢复、安装包、签名、更新
 5. 视觉 polish、动效、无障碍、性能、闭测运营
 
-当前交付切片（更新至 2026-08-01）：
+当前交付切片（更新至 2026-09-02）：
 
 - [x] File Worker：读、列目录、原子写；删除禁用；路径和真实路径边界。
 - [x] Terminal Worker：命令 allowlist、无 Shell、受限 cwd、超时/取消、输出限幅。
@@ -311,6 +311,13 @@ M1 完成日期：2026-07-15（用户将 dogfood 门槛改为 1 天；有效 1/1
     - [ ] 后续切片：步骤编辑、固定值/运行变量/秘密引用绑定，以及已发布 WorkflowVersion 的确定性回放。
   - [ ] P1.4：运行历史、逐步日志/截图、失败定位与登录 handoff。
   - [ ] P1.5：手动启停的定时任务；条件、循环与 AI 自修复留在 P2。
+
+- [x] NewMax 浏览器与设计稿工作区对齐。
+  - [x] A1：单实例内嵌浏览器作为 AI/用户共同 Page，补齐 NewMax 工具栏、同页 AI 动作和状态反馈。
+  - [x] E1：真实 Chrome 扩展配对、Token 重置、单连接替换与断线重连。
+  - [x] B3：HTML 原型与 Excalidraw 画布双资产，按需加载、编辑并导出 PNG/SVG。
+  - [x] C1/D1：项目资产保存与冲突保护、受控本地页面加载，以及真实工具结果驱动的当前浏览器标签打开。
+  - 实现相关定向回归和 Runtime/Desktop typecheck 已通过；全量测试、lint、生产构建及 Electron 宽窄屏实窗复验仍属于本分支提交前门禁。
 - [x] Windows UI Automation Worker 与人工接管回退。
   - [x] 技术 Spike 与 P0 边界：Koffi COM、.NET sidecar、Microsoft WinAppCLI 三方案完成真实 Windows fixture 验证。
   - [x] 用户确认短生命周期 Node Host + Koffi UIA COM，并更新 TD-007。

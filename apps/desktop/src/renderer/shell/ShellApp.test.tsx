@@ -674,7 +674,7 @@ describe('ShellApp workspace context', () => {
         initialUrl: 'https://example.com/dashboard',
         navigateUrl: 'https://example.com/dashboard',
         navigateSeq: 1,
-        registerForAutomation: false,
+        registerForAutomation: true,
       }),
     );
     expect(String(browserPanelProps.current?.partition)).toMatch(/^pane-browser-/);

@@ -180,6 +180,7 @@ import {
   formatRunModelLabel,
 } from './execution-process.js';
 import { MarkdownContent } from './MarkdownContent.js';
+import type { OpenHtmlInBrowser } from './html-browser.js';
 import { AnswerSources } from './AnswerSources.js';
 import { collectAnswerSources } from './answer-sources.js';
 import {
@@ -1102,6 +1103,8 @@ interface ChatViewProps {
    *  (ConversationTabs) can render the Review panel. */
   onLatestReviewChange?(view: RunProcessView | null): void;
   onOpenFile?: (path: string, location?: ProjectTextLocation) => void;
+  /** Opens generated HTML in the embedded browser tab. */
+  onOpenHtmlInBrowser?: OpenHtmlInBrowser;
   onOpenReview?: (view: RunProcessView) => void;
   /** Opens the real model settings destination used by the Plan banner. */
   onOpenPlanSettings?: () => void;
@@ -1145,11 +1148,14 @@ export function ChatView({
   onSeedComposerTextConsumed,
   onLatestReviewChange,
   onOpenFile,
+  onOpenHtmlInBrowser,
   onOpenReview,
   onOpenPlanSettings,
   onCreateSkill,
   onOpenMcpSettings,
 }: ChatViewProps) {
+  const activeConversationIdRef = useRef(String(conversation.id));
+  activeConversationIdRef.current = String(conversation.id);
   const skillOwner = useMemo(
     () => resolveConversationSkillOwner(conversation, agents, teams),
     [agents, conversation, teams],
@@ -1178,14 +1184,35 @@ export function ChatView({
   /** Resolved thread for this conversation (from bound task). */
   const [threadId, setThreadId] = useState<string | undefined>(undefined);
   const lastAskEventSeqRef = useRef(0);
+  const pendingAskLoadGenerationRef = useRef(0);
   const refreshPendingAsk = useCallback(() => {
     const api = bridge();
-    if (!threadId || !api?.conversationAskPending) return;
+    const conversationId = String(conversation.id);
+    const requestedThreadId = threadId;
+    const generation = (pendingAskLoadGenerationRef.current += 1);
+    if (!requestedThreadId || !api?.conversationAskPending) {
+      setPendingAsk(undefined);
+      return;
+    }
     void api
-      .conversationAskPending({ threadId })
-      .then((res) => setPendingAsk(res.ask))
-      .catch(() => setPendingAsk(undefined));
-  }, [threadId]);
+      .conversationAskPending({ threadId: requestedThreadId })
+      .then((res) => {
+        if (
+          activeConversationIdRef.current !== conversationId ||
+          pendingAskLoadGenerationRef.current !== generation
+        )
+          return;
+        setPendingAsk(res.ask);
+      })
+      .catch(() => {
+        if (
+          activeConversationIdRef.current !== conversationId ||
+          pendingAskLoadGenerationRef.current !== generation
+        )
+          return;
+        setPendingAsk(undefined);
+      });
+  }, [conversation.id, threadId]);
   useEffect(() => {
     // 会话切换 / 刷新恢复：始终查询一次当前挂起问询。
     refreshPendingAsk();
@@ -1213,18 +1240,44 @@ export function ChatView({
   // 模型仍以 ask plan-review 提交方案 → 前端把 detail 宽松解析为结构化草稿并
   // submit，渲染可编辑/可审批的 PlanApprovalCard；中途普通问询保持 ask 卡。
   const [conversationPlan, setConversationPlan] = useState<ConversationPlanSummary | undefined>();
+  // A previous conversation can still be present during the navigation render;
+  // never expose that stale aggregate through the current composer.
+  const activeConversationPlan =
+    conversationPlan && String(conversationPlan.conversationId) === String(conversation.id)
+      ? conversationPlan
+      : undefined;
   const lastPlanEventSeqRef = useRef(0);
+  const conversationPlanLoadGenerationRef = useRef(0);
   const planReviewAskIdRef = useRef<string | null>(null);
   useEffect(() => {
     planReviewAskIdRef.current = null;
   }, [conversation.id]);
   const refreshConversationPlan = useCallback(() => {
     const api = bridge();
-    if (!api?.conversationPlanGet) return;
+    const conversationId = String(conversation.id);
+    const generation = (conversationPlanLoadGenerationRef.current += 1);
+    if (!api?.conversationPlanGet) {
+      setConversationPlan(undefined);
+      return;
+    }
     void api
       .conversationPlanGet({ conversationId: conversation.id })
-      .then((res) => setConversationPlan(res.plan))
-      .catch(() => setConversationPlan(undefined));
+      .then((res) => {
+        if (
+          activeConversationIdRef.current !== conversationId ||
+          conversationPlanLoadGenerationRef.current !== generation
+        )
+          return;
+        setConversationPlan(res.plan);
+      })
+      .catch(() => {
+        if (
+          activeConversationIdRef.current !== conversationId ||
+          conversationPlanLoadGenerationRef.current !== generation
+        )
+          return;
+        setConversationPlan(undefined);
+      });
   }, [conversation.id]);
   useEffect(() => {
     refreshConversationPlan();
@@ -1244,7 +1297,7 @@ export function ChatView({
   }, [eventHistory, refreshConversationPlan]);
   // 方案卡进入 draft 时滚到底部——方案直接输出在消息流尾部，让用户看到整卡。
   useEffect(() => {
-    if (conversationPlan?.state !== 'draft') return;
+    if (activeConversationPlan?.state !== 'draft') return;
     const frame = requestAnimationFrame(() => {
       const scroller = messagesScrollRef.current;
       if (scroller) {
@@ -1256,7 +1309,7 @@ export function ChatView({
       }
     });
     return () => cancelAnimationFrame(frame);
-  }, [conversationPlan?.state]);
+  }, [activeConversationPlan?.state]);
   // plan-review 问询到达 → 解析 detail 并提交为 plan 草稿（按 askId 幂等）；
   // 提交失败（detail 无法满足校验）回退到只读方案卡。
   useEffect(() => {
@@ -1272,6 +1325,7 @@ export function ChatView({
         plan: parsePlanReviewDetail(review.question, review.plan),
       })
       .then((res) => {
+        if (activeConversationIdRef.current !== String(conversation.id)) return;
         // 提交成功才标记「已由方案卡接管」——失败回退到只读方案卡时，
         // ask_answered 事件路径仍须生效（executeApprovedPlanReview 不被跳过）。
         planReviewAskIdRef.current = pendingAsk.askId;
@@ -1303,6 +1357,25 @@ export function ChatView({
   const [goalState, setGoalState] = useState<
     import('@sync-think/protocol').GoalGetResponse | undefined
   >();
+  const activeGoalState =
+    goalState?.goal &&
+    String(goalState.goal.conversationId) === String(conversation.id)
+      ? goalState
+      : undefined;
+  const goalLoadGenerationRef = useRef(0);
+  const scopedStateConversationIdRef = useRef(String(conversation.id));
+  useLayoutEffect(() => {
+    const conversationId = String(conversation.id);
+    if (scopedStateConversationIdRef.current === conversationId) return;
+    scopedStateConversationIdRef.current = conversationId;
+    pendingAskLoadGenerationRef.current += 1;
+    conversationPlanLoadGenerationRef.current += 1;
+    goalLoadGenerationRef.current += 1;
+    setPendingAsk(undefined);
+    setConversationPlan(undefined);
+    setGoalState(undefined);
+    setThreadId(undefined);
+  }, [conversation.id]);
   const [goalSettingsOpen, setGoalSettingsOpen] = useState(false);
   const [goalSettingsSubmitting, setGoalSettingsSubmitting] = useState(false);
   const [goalSettingsMode, setGoalSettingsMode] = useState<'create' | 'edit'>('create');
@@ -1314,21 +1387,40 @@ export function ChatView({
   >();
   const refreshGoal = useCallback(() => {
     const api = bridge();
-    if (!conversation || !api?.getGoal) return;
+    const conversationId = String(conversation.id);
+    const generation = (goalLoadGenerationRef.current += 1);
+    if (!api?.getGoal) {
+      setGoalState(undefined);
+      return;
+    }
     void api
-      .getGoal({ conversationId: String(conversation.id) })
-      .then(setGoalState)
-      .catch(() => setGoalState(undefined));
-  }, [conversation]);
+      .getGoal({ conversationId })
+      .then((res) => {
+        if (
+          activeConversationIdRef.current !== conversationId ||
+          goalLoadGenerationRef.current !== generation
+        )
+          return;
+        setGoalState(res);
+      })
+      .catch(() => {
+        if (
+          activeConversationIdRef.current !== conversationId ||
+          goalLoadGenerationRef.current !== generation
+        )
+          return;
+        setGoalState(undefined);
+      });
+  }, [conversation.id]);
   useEffect(() => {
     refreshGoal();
     // Active goals are evaluated after each run, so keep round/status feedback live.
     const timer = window.setInterval(
       refreshGoal,
-      goalState?.goal?.status === 'active' ? 2_000 : 30_000,
+      activeGoalState?.goal?.status === 'active' ? 2_000 : 30_000,
     );
     return () => window.clearInterval(timer);
-  }, [goalState?.goal?.status, refreshGoal]);
+  }, [activeGoalState?.goal?.status, refreshGoal]);
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(
     (conversation.executionMode as PermissionMode) || 'full-access',
   );
@@ -1480,8 +1572,6 @@ export function ChatView({
   const threadConversationIdRef = useRef<string | undefined>(undefined);
   /** Invalidates in-flight durable message reads after a refresh or conversation switch. */
   const messageLoadGenerationRef = useRef(0);
-  const activeConversationIdRef = useRef(String(conversation.id));
-  activeConversationIdRef.current = String(conversation.id);
   const renderTransientDraft = useCallback(
     (draft: ConversationStreamDraft | null, fallbackSequence: number) => {
       transientDraftRef.current = draft;
@@ -3746,7 +3836,7 @@ export function ChatView({
         return;
       }
       void (async () => {
-        if (goalState?.goal?.status === 'active' && !(await pauseGoalForTransition())) return;
+        if (activeGoalState?.goal?.status === 'active' && !(await pauseGoalForTransition())) return;
         const next = withComposerModeCommand(input, 'plan');
         setInput(next);
         window.requestAnimationFrame(() => {
@@ -3758,13 +3848,13 @@ export function ChatView({
     const openGoal = (event: globalThis.Event) => {
       if (!matchesConversation(event)) return;
       const api = bridge();
-      if (goalState?.goal?.status === 'active') {
+      if (activeGoalState?.goal?.status === 'active') {
         void pauseGoalForTransition();
         return;
       }
       if (
-        goalState?.goal &&
-        ['paused', 'blocked'].includes(goalState.goal.status) &&
+        activeGoalState?.goal &&
+        ['paused', 'blocked'].includes(activeGoalState.goal.status) &&
         api?.goalResume
       ) {
         void api.goalResume({ conversationId: String(conversation.id) }).then(refreshGoal);
@@ -3790,7 +3880,7 @@ export function ChatView({
     };
   }, [
     conversation.id,
-    goalState,
+    activeGoalState,
     handlePlanSwitchMode,
     input,
     interactionMode,
@@ -4223,8 +4313,8 @@ export function ChatView({
   const goalCommandPreview =
     composerSlashCommand.kind === 'goal' || composerSlashCommand.kind === 'goal-with-condition';
   const visibleGoal =
-    goalState?.goal && ['active', 'paused', 'blocked'].includes(goalState.goal.status)
-      ? goalState.goal
+    activeGoalState?.goal && ['active', 'paused', 'blocked'].includes(activeGoalState.goal.status)
+      ? activeGoalState.goal
       : undefined;
   const goalIsActive = visibleGoal?.status === 'active';
   useEffect(() => {
@@ -4235,7 +4325,7 @@ export function ChatView({
   const composerPendingAsk =
     pendingAsk &&
     !(
-      conversationPlan?.state === 'draft' &&
+      activeConversationPlan?.state === 'draft' &&
       planReviewAskIdRef.current === pendingAsk.askId &&
       planReviewOf(pendingAsk.questions)
     )
@@ -4255,7 +4345,7 @@ export function ChatView({
     !composerAddOpen &&
     !menu &&
     !composerPendingAsk &&
-    conversationPlan?.state !== 'draft' &&
+    activeConversationPlan?.state !== 'draft' &&
     pendingApprovals.length === 0 &&
     compactProgress?.status !== 'running'
       ? detectedModeKeywordHint
@@ -4673,7 +4763,7 @@ export function ChatView({
       slashCmd.kind === 'plan-with-request' ||
       slashCmd.kind === 'execute' ||
       slashCmd.kind === 'goal-clear';
-    if (goalState?.goal?.status === 'active' && !isGoalTransitionCommand) return;
+    if (activeGoalState?.goal?.status === 'active' && !isGoalTransitionCommand) return;
 
     // 上一轮的发送失败/错误气泡不跨轮贴底：新消息发送时清掉，避免“报错无法消除”。
     setLocalErrors((prev) => prev.filter((error) => error.tone !== 'error'));
@@ -4890,7 +4980,7 @@ export function ChatView({
             },
           ]);
         } else if (slashCmd.kind === 'plan-with-request') {
-          if (goalState?.goal?.status === 'active' && !(await pauseGoalForTransition())) return;
+          if (activeGoalState?.goal?.status === 'active' && !(await pauseGoalForTransition())) return;
           await api?.setConversationInteractionMode?.({
             conversationId: conversation.id,
             interactionMode: 'plan',
@@ -4967,7 +5057,7 @@ export function ChatView({
     closeComposePickers,
     commitQueuedComposeRequests,
     conversation.id,
-    goalState,
+    activeGoalState,
     input,
     kernelOverride,
     modelOverride,
@@ -5506,7 +5596,7 @@ export function ChatView({
       runIsActive ||
       Boolean(composerPendingAsk) ||
       goalIsActive ||
-      conversationPlan?.state === 'draft' ||
+      activeConversationPlan?.state === 'draft' ||
       pendingApprovals.length > 0 ||
       compactProgress?.status === 'running',
   });
@@ -6043,6 +6133,8 @@ export function ChatView({
                     onContinue={handleContinueInterrupted}
                     onChooseModelAndRetry={handleChooseModelAndRetry}
                     onOpenChange={onOpenFile}
+                    conversationId={String(conversation.id)}
+                    onOpenHtmlInBrowser={onOpenHtmlInBrowser}
                     onOpenReview={onOpenReview}
                     projectFolder={projectFolder}
                     onOpenImage={setLightbox}
@@ -6091,6 +6183,8 @@ export function ChatView({
                     onContinue={handleContinueInterrupted}
                     onChooseModelAndRetry={handleChooseModelAndRetry}
                     onOpenChange={onOpenFile}
+                    conversationId={String(conversation.id)}
+                    onOpenHtmlInBrowser={onOpenHtmlInBrowser}
                     onOpenReview={onOpenReview}
                     projectFolder={projectFolder}
                     onOpenImage={setLightbox}
@@ -6231,14 +6325,14 @@ export function ChatView({
                   : undefined
               }
               plan={
-                conversationPlan?.state === 'draft'
+                activeConversationPlan?.state === 'draft'
                   ? {
-                      key: `${conversationPlan.planId}:${conversationPlan.currentRevision}`,
+                      key: `${activeConversationPlan.planId}:${activeConversationPlan.currentRevision}`,
                       node: (
                         <PlanApprovalCard
                           variant="composer"
                           conversationId={conversation.id}
-                          plan={conversationPlan}
+                          plan={activeConversationPlan}
                           onPlanUpdated={handlePlanUpdated}
                           onExecute={handlePlanExecute}
                           onSwitchMode={handlePlanSwitchMode}
@@ -6996,6 +7090,8 @@ const MessageBubble = memo(function MessageBubble({
   onRegenerate,
   onContinue,
   onOpenChange,
+  conversationId,
+  onOpenHtmlInBrowser,
   onOpenReview,
   projectFolder,
   onOpenImage,
@@ -7015,6 +7111,8 @@ const MessageBubble = memo(function MessageBubble({
   onContinue?: (messageId: string) => void;
   onChooseModelAndRetry?: (messageId: string) => void;
   onOpenChange?: (path: string, location?: ProjectTextLocation) => void;
+  conversationId?: string;
+  onOpenHtmlInBrowser?: OpenHtmlInBrowser;
   onOpenReview?: (view: RunProcessView) => void;
   projectFolder?: string;
   onOpenImage?: (image: MessageImage) => void;
@@ -7340,7 +7438,9 @@ const MessageBubble = memo(function MessageBubble({
             text={message.answerText ?? message.text}
             streaming={Boolean(message.streaming)}
             projectFolder={projectFolder}
+            conversationId={conversationId}
             onOpenFile={onOpenChange}
+            onOpenHtmlInBrowser={onOpenHtmlInBrowser}
           />
         ) : null}
         {showFooter ? (

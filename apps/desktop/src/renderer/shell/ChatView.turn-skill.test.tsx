@@ -935,6 +935,112 @@ describe('ChatView turn Skill draft', () => {
     expect(screen.queryByTestId('plan-approval-message')).toBeNull();
   });
 
+  it('clears the previous plan card immediately when switching conversations', async () => {
+    const nextPlan = deferred<{ plan: ConversationPlanSummary | undefined }>();
+    runtime.conversationPlanGet.mockImplementation(
+      ({ conversationId }: { conversationId: string }) =>
+        conversationId === 'conversation-plan-surface'
+          ? Promise.resolve({ plan: planSummary })
+          : nextPlan.promise,
+    );
+    const view = renderChat(conversation('conversation-plan-surface'));
+    expect(await screen.findByTestId('plan-approval-card')).toBeTruthy();
+
+    view.rerender(
+      <ChatView
+        conversation={conversation('conversation-without-plan')}
+        modelName="Model A"
+        models={[{ modelId: 'model-a', displayName: 'Model A', providerName: 'Provider' }]}
+        agents={agents}
+        teams={[]}
+        eventHistory={[]}
+        onTitleUpdated={vi.fn()}
+        onConversationUpdated={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.queryByTestId('plan-approval-card')?.closest('[data-state="exiting"]') ?? null,
+    ).not.toBeNull();
+    nextPlan.resolve({ plan: undefined });
+  });
+
+  it('ignores an old conversation plan lookup that resolves after navigation', async () => {
+    const previousPlan = deferred<{ plan: ConversationPlanSummary | undefined }>();
+    runtime.conversationPlanGet.mockImplementation(
+      ({ conversationId }: { conversationId: string }) =>
+        conversationId === 'conversation-plan-stale'
+          ? previousPlan.promise
+          : Promise.resolve({ plan: undefined }),
+    );
+    const view = renderChat(conversation('conversation-plan-stale'));
+    await waitFor(() => expect(runtime.conversationPlanGet).toHaveBeenCalledTimes(1));
+
+    view.rerender(
+      <ChatView
+        conversation={conversation('conversation-plan-current')}
+        modelName="Model A"
+        models={[{ modelId: 'model-a', displayName: 'Model A', providerName: 'Provider' }]}
+        agents={agents}
+        teams={[]}
+        eventHistory={[]}
+        onTitleUpdated={vi.fn()}
+        onConversationUpdated={vi.fn()}
+      />,
+    );
+    await waitFor(() => expect(runtime.conversationPlanGet).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      previousPlan.resolve({ plan: planSummary });
+      await previousPlan.promise;
+    });
+
+    expect(screen.queryByTestId('plan-approval-card')).toBeNull();
+  });
+
+  it('clears the previous Goal banner immediately when switching conversations', async () => {
+    const nextGoal = deferred<{
+      goal: null;
+      evaluatorConfigured: boolean;
+    }>();
+    runtime.getGoal.mockImplementation(({ conversationId }: { conversationId: string }) =>
+      conversationId === 'conversation-goal-active'
+        ? Promise.resolve({
+            goal: {
+              conversationId,
+              condition: '仅属于旧对话的目标',
+              status: 'active',
+              startedAt: '2026-09-01T00:00:00.000Z',
+              turnCount: 0,
+              tokensIn: 0,
+              tokensOut: 0,
+              roundsStarted: 1,
+            },
+            evaluatorConfigured: false,
+          })
+        : nextGoal.promise,
+    );
+    const view = renderChat(conversation('conversation-goal-active'));
+    expect(await screen.findByTestId('composer-goal-banner')).toBeTruthy();
+
+    view.rerender(
+      <ChatView
+        conversation={conversation('conversation-without-goal')}
+        modelName="Model A"
+        models={[{ modelId: 'model-a', displayName: 'Model A', providerName: 'Provider' }]}
+        agents={agents}
+        teams={[]}
+        eventHistory={[]}
+        onTitleUpdated={vi.fn()}
+        onConversationUpdated={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.queryByTestId('composer-goal-banner')?.closest('[data-mode-state="exiting"]') ?? null,
+    ).not.toBeNull();
+    nextGoal.resolve({ goal: null, evaluatorConfigured: false });
+  });
+
   it('hides the legacy plan-review Ask after it becomes the canonical Plan card', async () => {
     runtime.conversationAskPending.mockResolvedValue({ ask: legacyPlanReviewAsk });
     runtime.conversationPlanGet.mockResolvedValue({ plan: undefined });

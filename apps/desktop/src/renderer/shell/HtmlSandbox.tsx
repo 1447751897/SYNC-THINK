@@ -23,9 +23,9 @@
 //
 // Card chrome: the block is a collapsible card with a header bar that offers
 // 预览 (default live view) / 源码 (source view) tabs, 复制 and 浏览器打开.
-// "浏览器打开" writes the raw snippet to a temp file via the desktop bridge and
-// opens it in the system browser, so external links / relative assets behave
-// like a real page instead of a data: URL.
+// The shell callback persists the snippet and opens a tokenized local page in
+// the NewMax-style embedded browser; standalone consumers retain the desktop
+// bridge fallback for opening it externally.
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   Check,
@@ -39,11 +39,14 @@ import {
   RotateCcw,
 } from 'lucide-react';
 import { highlightSource } from './highlight.js';
+import type { OpenHtmlInBrowser } from './html-browser.js';
 
 interface HtmlSandboxProps {
   code: string;
   appearance?: 'code' | 'design';
   actions?: ReactNode;
+  /** Open the document in the embedded browser tab when the shell provides one. */
+  onOpenInBrowser?: OpenHtmlInBrowser;
   notice?: {
     tone: 'error' | 'warning' | 'success';
     message: string;
@@ -169,6 +172,7 @@ export function HtmlSandbox({
   code,
   appearance = 'code',
   actions,
+  onOpenInBrowser,
   notice = null,
 }: HtmlSandboxProps) {
   const src = useMemo(
@@ -297,6 +301,10 @@ export function HtmlSandbox({
       return;
     }
     try {
+      if (onOpenInBrowser) {
+        await onOpenInBrowser(html);
+        return;
+      }
       const bridge = window.syncThink?.runtime;
       if (!bridge || typeof bridge.openHtmlInBrowser !== 'function') {
         setOpenError('当前环境不支持在浏览器中打开');
@@ -307,7 +315,7 @@ export function HtmlSandbox({
     } catch {
       setOpenError('打开失败');
     }
-  }, [code]);
+  }, [code, onOpenInBrowser]);
 
   return (
     <div className={`shell-html${appearance === 'design' ? ' shell-html--design' : ''}`}>
