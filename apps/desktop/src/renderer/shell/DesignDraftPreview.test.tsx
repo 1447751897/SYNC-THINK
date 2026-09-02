@@ -120,6 +120,25 @@ describe('DesignDraftPreview', () => {
     expect(await screen.findByText('已保存到 designs/aurora-dashboard.html')).toBeTruthy();
   });
 
+  it('hands the stable design path to the embedded browser opener', async () => {
+    const onOpenInBrowser = vi.fn().mockResolvedValue(undefined);
+    render(
+      <DesignDraftPreview
+        code={validHtml}
+        projectFolder="D:/work/demo"
+        onOpenInBrowser={onOpenInBrowser}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '浏览器打开' }));
+    await waitFor(() =>
+      expect(onOpenInBrowser).toHaveBeenCalledWith(validHtml, {
+        relativePath: 'designs/aurora-dashboard.html',
+        persist: true,
+      }),
+    );
+  });
+
   it('shows a useful invalid state when no previous valid draft exists', () => {
     render(<DesignDraftPreview code="plain text" projectFolder="D:/work/demo" />);
 

@@ -2,10 +2,12 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, Download, LoaderCircle, PanelsTopLeft, Save } from 'lucide-react';
 import { HtmlSandbox } from './HtmlSandbox.js';
 import { deriveDesignDraftPath, parseDesignHtml } from './design-draft.js';
+import type { OpenHtmlInBrowser } from './html-browser.js';
 
 interface DesignDraftPreviewProps {
   code: string;
   projectFolder?: string;
+  onOpenInBrowser?: OpenHtmlInBrowser;
 }
 
 type DraftNotice = {
@@ -17,7 +19,11 @@ function designDraftBridge(): NonNullable<Window['syncThink']>['runtime'] | unde
   return window.syncThink?.runtime;
 }
 
-export function DesignDraftPreview({ code, projectFolder }: DesignDraftPreviewProps) {
+export function DesignDraftPreview({
+  code,
+  projectFolder,
+  onOpenInBrowser,
+}: DesignDraftPreviewProps) {
   const parsed = useMemo(() => parseDesignHtml(code), [code]);
   const [lastValidHtml, setLastValidHtml] = useState<string | null>(
     parsed.ok ? parsed.html : null,
@@ -98,6 +104,17 @@ export function DesignDraftPreview({ code, projectFolder }: DesignDraftPreviewPr
     }
   }, [activeHtml, projectFolder, projectPath, saving]);
 
+  const handleOpenInBrowser = useCallback<OpenHtmlInBrowser>(
+    async (html, options) => {
+      await onOpenInBrowser?.(html, {
+        relativePath: projectPath,
+        persist: true,
+        ...options,
+      });
+    },
+    [onOpenInBrowser, projectPath],
+  );
+
   if (!activeHtml) {
     return (
       <section className="shell-design-draft-invalid" role="alert">
@@ -121,6 +138,7 @@ export function DesignDraftPreview({ code, projectFolder }: DesignDraftPreviewPr
     <HtmlSandbox
       code={activeHtml}
       appearance="design"
+      onOpenInBrowser={onOpenInBrowser ? handleOpenInBrowser : undefined}
       notice={visibleNotice}
       actions={
         <>

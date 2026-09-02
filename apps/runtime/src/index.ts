@@ -17,6 +17,14 @@ export {
 export { healthcheck, makeHealthcheck, type HealthcheckResult, type HealthcheckError } from './healthcheck.js';
 export { createPipeServer, type PipeServerHandlers } from './pipe/server.js';
 export {
+  BrowserExtensionHost,
+  resolveBrowserExtensionDirectory,
+  type BrowserExtensionHostLike,
+  type BrowserExtensionHostOptions,
+  type BrowserExtensionStatus,
+  type BrowserExtensionOpenFolderResult,
+} from './browser/browser-extension-host.js';
+export {
   Scheduler,
   type SchedulerOptions,
   type SchedulerTickResult,

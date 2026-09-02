@@ -145,6 +145,8 @@ export type RuntimeBrowserPermissionDecision =
 export interface RuntimeBrowserExecuteInput extends RuntimeBrowserPermissionInput {
   capabilityToken: string;
   signal: AbortSignal;
+  /** Optional per-command Worker override (the desktop embedded WebView path). */
+  worker?: BrowserWorker;
   approval?: { approvalId: string };
   beforeStart?: () => boolean;
   beforeExecute?(intent: RuntimeBrowserIntent): void | Promise<void>;
@@ -408,7 +410,7 @@ export class RuntimeBrowserController {
     };
 
     try {
-      for await (const event of this.worker.exec(workerInput, token)) {
+      for await (const event of (input.worker ?? this.worker).exec(workerInput, token)) {
         await input.onWorkerEvent?.(event);
         if (event.type === 'failed') {
           this.store.failCommand(command.id, {

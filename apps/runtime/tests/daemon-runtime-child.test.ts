@@ -1,9 +1,15 @@
 import { EventEmitter } from 'node:events';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { ChildProcess } from 'node:child_process';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  appendRuntimeChildLog,
   buildSupervisedRuntimeSpawnOptions,
+  isSupervisedRuntimeReadyMessage,
   stopSupervisedRuntimeChild,
+  SUPERVISED_RUNTIME_READY_MESSAGE,
   SUPERVISED_RUNTIME_SHUTDOWN_MESSAGE,
 } from '../src/daemon/runtime-child.js';
 
@@ -46,9 +52,27 @@ describe('supervised Runtime child lifecycle', () => {
       detached: true,
       windowsHide: true,
       shell: false,
-      stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+      stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
       env: { FIXTURE: '1' },
     });
+  });
+
+  it('recognizes the independent Runtime-ready signal', () => {
+    expect(isSupervisedRuntimeReadyMessage(SUPERVISED_RUNTIME_READY_MESSAGE)).toBe(true);
+    expect(isSupervisedRuntimeReadyMessage({ type: 'other-message' })).toBe(false);
+    expect(isSupervisedRuntimeReadyMessage(null)).toBe(false);
+  });
+
+  it('appends bounded diagnostic output to a per-install Runtime log', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sync-think-runtime-log-'));
+    const path = join(dir, 'runtime-dev-0001.log');
+    try {
+      appendRuntimeChildLog(path, 'stderr', 'startup failed');
+      expect(existsSync(path)).toBe(true);
+      expect(readFileSync(path, 'utf8')).toContain('[stderr] startup failed');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('requests graceful Runtime shutdown and waits without killing the process', async () => {

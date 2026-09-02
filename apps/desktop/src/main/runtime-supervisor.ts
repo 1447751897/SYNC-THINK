@@ -6,6 +6,7 @@
 // keep serving a stale process that already holds the named pipe.
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import {
+  appendFileSync,
   existsSync,
   readFileSync,
   unlinkSync,
@@ -83,6 +84,34 @@ function resolveRuntimeEntry(): string | null {
 
 function runtimeStateDir(): string {
   return dirname(resolveManagedRuntimeDatabasePath());
+}
+
+export function runtimeLogPath(installId: string): string {
+  const safeInstallId = installId.replace(/[^A-Za-z0-9._-]/g, '_') || 'unknown';
+  return join(runtimeStateDir(), `runtime-${safeInstallId}.log`);
+}
+
+function appendRuntimeChildLog(logPath: string, level: 'stdout' | 'stderr' | 'lifecycle', value: unknown): void {
+  const text = String(value).trim();
+  if (!text) return;
+  const bounded = text.length > 128 * 1024 ? `${text.slice(0, 128 * 1024)} [truncated]` : text;
+  try {
+    mkdirSync(dirname(logPath), { recursive: true });
+    for (const line of bounded.split(/\r?\n/)) {
+      if (!line) continue;
+      appendFileSync(logPath, `${new Date().toISOString()} [${level}] ${line}\n`, 'utf8');
+    }
+  } catch {
+    // Diagnostics must never stop Desktop supervision.
+  }
+}
+
+function isRuntimeReadyMessage(value: unknown): boolean {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    (value as { type?: unknown }).type === 'sync-think.runtime.ready'
+  );
 }
 
 function runtimePidPath(installId: string): string {
@@ -164,16 +193,27 @@ export function probeRuntimePipe(installId: string, timeoutMs = 800): Promise<bo
   });
 }
 
-async function waitForPipe(installId: string, totalMs = 12_000): Promise<boolean> {
+export const RUNTIME_COLD_START_TIMEOUT_MS = 120_000;
+
+async function waitForPipe(
+  installId: string,
+  totalMs = RUNTIME_COLD_START_TIMEOUT_MS,
+  shouldAbort?: () => boolean,
+): Promise<boolean> {
   const started = Date.now();
   while (Date.now() - started < totalMs) {
+    if (shouldAbort?.()) return false;
     if (await probeRuntimePipe(installId, 500)) return true;
     await new Promise((r) => setTimeout(r, 250));
   }
+  if (shouldAbort?.()) return false;
   return probeRuntimePipe(installId, 500);
 }
 
-export async function waitForRuntimeProcess(installId: string, totalMs = 12_000): Promise<boolean> {
+export async function waitForRuntimeProcess(
+  installId: string,
+  totalMs = RUNTIME_COLD_START_TIMEOUT_MS,
+): Promise<boolean> {
   return waitForPipe(installId, totalMs);
 }
 
@@ -350,6 +390,7 @@ function spawnRuntime(
     /* ignore */
   }
   const env = buildManagedRuntimeEnvironment(identity, process.env, dataRoot);
+  const logPath = runtimeLogPath(identity.installId);
 
   const childProcess = spawn(
     nodeBin,
@@ -364,15 +405,33 @@ function spawnRuntime(
     writePidFile(identity.installId, childProcess.pid);
   }
 
+  appendRuntimeChildLog(
+    logPath,
+    'lifecycle',
+    JSON.stringify({ event: 'spawned', pid: childProcess.pid ?? null, entry }),
+  );
+
   childProcess.stdout?.on('data', (chunk: Buffer) => {
     const text = chunk.toString('utf8').trim();
+    appendRuntimeChildLog(logPath, 'stdout', text);
     if (text) safeConsoleWrite(() => console.log('[runtime-child]', text));
   });
   childProcess.stderr?.on('data', (chunk: Buffer) => {
     const text = chunk.toString('utf8').trim();
+    appendRuntimeChildLog(logPath, 'stderr', text);
     if (text) safeConsoleWrite(() => console.warn('[runtime-child]', text));
   });
+  childProcess.on('message', (message: unknown) => {
+    if (isRuntimeReadyMessage(message)) {
+      appendRuntimeChildLog(logPath, 'lifecycle', 'Runtime ready signal received');
+    }
+  });
   childProcess.on('exit', (code, signal) => {
+    appendRuntimeChildLog(
+      logPath,
+      'lifecycle',
+      JSON.stringify({ event: 'exit', code, signal }),
+    );
     safeConsoleWrite(() => console.warn('[desktop] runtime process exited', { code, signal }));
     if (child === childProcess) {
       child = null;
@@ -381,6 +440,7 @@ function spawnRuntime(
     clearPidFile(identity.installId);
   });
   childProcess.on('error', (error) => {
+    appendRuntimeChildLog(logPath, 'lifecycle', `spawn error: ${String(error)}`);
     safeConsoleWrite(() => console.error('[desktop] runtime process failed to start', error));
     if (child === childProcess) {
       child = null;
@@ -394,14 +454,14 @@ function spawnRuntime(
 
 export function buildRuntimeSpawnOptions(env: NodeJS.ProcessEnv = process.env): {
   env: NodeJS.ProcessEnv;
-  stdio: ['ignore', 'ignore', 'ignore', 'ipc'];
+  stdio: ['ignore', 'pipe', 'pipe', 'ipc'];
   windowsHide: true;
   detached: true;
   shell: false;
 } {
   return {
     env,
-    stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+    stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     windowsHide: true,
     detached: true,
     shell: false,
@@ -576,7 +636,14 @@ export async function ensureRuntimeProcess(
       console.log('[desktop] starting managed runtime', { entry, nodeBin });
       child = spawnRuntime(entry, identity, nodeBin);
     }
-    const ok = await waitForPipe(installId);
+    const managedChild = child;
+    const ok = await waitForPipe(
+      installId,
+      RUNTIME_COLD_START_TIMEOUT_MS,
+      managedChild
+        ? () => managedChild.exitCode !== null || managedChild.signalCode !== null
+        : undefined,
+    );
     if (!ok) {
       console.error('[desktop] runtime pipe did not become ready in time');
     }

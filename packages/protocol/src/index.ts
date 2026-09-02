@@ -10,5 +10,6 @@ export * from './plugins.js';
 export * from './gateway.js';
 export * from './preferences.js';
 export * from './data.js';
+export * from './design-generation.js';
 export * from './pipe.js';
 export * from './tool-approval.js';

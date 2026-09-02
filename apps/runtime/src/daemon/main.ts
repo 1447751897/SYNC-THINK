@@ -62,12 +62,18 @@ import { parseTaskFrame } from './protocol.js';
 import { planCatchupSweep } from './catchup.js';
 import { TaskConcurrencyManager } from './queue.js';
 import { createRuleAwareTimerRegistrar } from './timers.js';
-import { buildSupervisedRuntimeSpawnOptions, stopSupervisedRuntimeChild } from './runtime-child.js';
+import {
+  appendRuntimeChildLog,
+  buildSupervisedRuntimeSpawnOptions,
+  isSupervisedRuntimeReadyMessage,
+  stopSupervisedRuntimeChild,
+} from './runtime-child.js';
 import { requestRuntimeShutdown } from './runtime-control-client.js';
 
 const HEARTBEAT_INTERVAL_MS = 1_000;
 const RUNTIME_HEALTH_INTERVAL_MS = 5_000;
-const RUNTIME_START_TIMEOUT_MS = 15_000;
+/** Large databases can spend tens of seconds in migrations/index repair. */
+export const RUNTIME_COLD_START_TIMEOUT_MS = 120_000;
 const STATUS_FILE = 'daemon-status.json';
 let configuredLogPath: string | undefined;
 const baseConsole = {
@@ -166,6 +172,11 @@ function stateDir(dbPath: string): string {
   if (dbPath !== ':memory:') return dirname(dbPath);
   const dataRoot = process.env.LOCALAPPDATA ?? join(homedir(), '.sync-think');
   return join(dataRoot, 'SYNC-THINK');
+}
+
+export function runtimeLogPath(dbPath: string, installId: string): string {
+  const safeInstallId = installId.replace(/[^A-Za-z0-9._-]/g, '_') || 'unknown';
+  return join(stateDir(dbPath), `runtime-${safeInstallId}.log`);
 }
 
 function statusFilePath(dbPath: string): string {
@@ -301,13 +312,18 @@ function killManagedRuntimeProcessTree(pid: number, installId: string): boolean 
 
 async function waitForRuntimePipe(
   installId: string,
-  timeoutMs = RUNTIME_START_TIMEOUT_MS,
+  timeoutMs = RUNTIME_COLD_START_TIMEOUT_MS,
+  options: { isReady?: () => boolean; shouldAbort?: () => boolean } = {},
 ): Promise<boolean> {
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
+    if (options.shouldAbort?.()) return false;
+    if (options.isReady?.()) return true;
     if (await probeDesktopPipe(installId, undefined, 500)) return true;
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
+  if (options.shouldAbort?.()) return false;
+  if (options.isReady?.()) return true;
   return probeDesktopPipe(installId, undefined, 500);
 }
 
@@ -333,19 +349,35 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
   // this supervisor keeps conversation runs alive when the window closes and
   // restarts the Runtime after an unexpected process failure.
   let runtimeChild: ChildProcess | null = null;
+  let runtimeReadyChild: ChildProcess | null = null;
+  let runtimeReady = false;
   let runtimeStarting: Promise<boolean> | null = null;
   let runtimeStopRequested = false;
   let runtimeRestartTimer: ReturnType<typeof setTimeout> | null = null;
   const ensureRuntime = async (): Promise<boolean> => {
     if (runtimeStopRequested) return false;
-    if (await probeDesktopPipe(installId, undefined, 500)) return true;
+    if (runtimeReady && (await probeDesktopPipe(installId, undefined, 500))) return true;
+    runtimeReady = false;
+    if (await probeDesktopPipe(installId, undefined, 500)) {
+      // A Runtime inherited from an earlier daemon has no private IPC signal;
+      // a live pipe is the compatibility fallback for that case.
+      runtimeReady = true;
+      return true;
+    }
     if (runtimeStarting) return runtimeStarting;
     runtimeStarting = (async () => {
-      if (await probeDesktopPipe(installId, undefined, 500)) return true;
+      if (runtimeReady && (await probeDesktopPipe(installId, undefined, 500))) return true;
+      if (await probeDesktopPipe(installId, undefined, 500)) {
+        runtimeReady = true;
+        return true;
+      }
       const existingPid = readRuntimePid(dbPath, installId);
       if (existingPid && existingPid !== process.pid && isProcessAlive(existingPid)) {
         const ready = await waitForRuntimePipe(installId);
-        if (ready) return true;
+        if (ready) {
+          runtimeReady = true;
+          return true;
+        }
       }
       if (existingPid) {
         killManagedRuntimeProcessTree(existingPid, installId);
@@ -371,18 +403,46 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
       if (helloSecret) env.SYNC_THINK_PIPE_SECRET = helloSecret;
       else delete env.SYNC_THINK_PIPE_SECRET;
       delete env.SYNC_THINK_DAEMON_WORKER;
-      console.log('[daemon] starting supervised Runtime', { entry, nodeBin });
+      const logPath = runtimeLogPath(dbPath, installId);
+      console.log('[daemon] starting supervised Runtime', { entry, nodeBin, logPath });
       const child = spawn(
         nodeBin,
         [entry, managedProcessMarker('runtime', installId)],
         buildSupervisedRuntimeSpawnOptions(env),
       );
+      let childSpawnFailed = false;
       runtimeChild = child;
+      runtimeReadyChild = null;
+      runtimeReady = false;
+      appendRuntimeChildLog(
+        logPath,
+        'lifecycle',
+        JSON.stringify({ event: 'spawned', pid: child.pid ?? null, entry }),
+      );
+      child.stdout?.on('data', (chunk: Buffer) =>
+        appendRuntimeChildLog(logPath, 'stdout', chunk.toString('utf8')),
+      );
+      child.stderr?.on('data', (chunk: Buffer) =>
+        appendRuntimeChildLog(logPath, 'stderr', chunk.toString('utf8')),
+      );
+      child.on('message', (message: unknown) => {
+        if (!isSupervisedRuntimeReadyMessage(message)) return;
+        runtimeReadyChild = child;
+        runtimeReady = true;
+        appendRuntimeChildLog(logPath, 'lifecycle', 'Runtime ready signal received');
+      });
       writeRuntimePid(dbPath, installId, child.pid ?? 0);
       child.unref();
       child.once('exit', (code, signal) => {
         if (runtimeChild === child) runtimeChild = null;
+        if (runtimeReadyChild === child) runtimeReadyChild = null;
+        runtimeReady = false;
         clearRuntimePid(dbPath, installId);
+        appendRuntimeChildLog(
+          logPath,
+          'lifecycle',
+          JSON.stringify({ event: 'exit', code, signal }),
+        );
         if (!runtimeStopRequested) {
           console.warn('[daemon] supervised Runtime exited', { code, signal });
           if (!runtimeRestartTimer) {
@@ -393,10 +453,19 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
           }
         }
       });
-      child.once('error', (error) =>
-        console.warn('[daemon] supervised Runtime spawn failed', error),
-      );
-      return waitForRuntimePipe(installId);
+      child.once('error', (error) => {
+        childSpawnFailed = true;
+        appendRuntimeChildLog(logPath, 'lifecycle', `spawn error: ${String(error)}`);
+        console.warn('[daemon] supervised Runtime spawn failed', error);
+      });
+      return waitForRuntimePipe(installId, RUNTIME_COLD_START_TIMEOUT_MS, {
+        isReady: () => runtimeReadyChild === child,
+        shouldAbort: () =>
+          childSpawnFailed || child.exitCode !== null || child.signalCode !== null,
+      }).then((ready) => {
+        if (ready) runtimeReady = true;
+        return ready;
+      });
     })().finally(() => {
       runtimeStarting = null;
     });
@@ -410,6 +479,8 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
     }
     const child = runtimeChild;
     runtimeChild = null;
+    runtimeReadyChild = null;
+    runtimeReady = false;
     let gracefulRequested = false;
     if (child && child.exitCode === null) {
       const result = await stopSupervisedRuntimeChild(child, {
@@ -1006,6 +1077,7 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
             type: 'daemon.status',
             payload: buildDaemonStatusPayload(status, {
               running: true,
+              runtimeReady,
               autostartRegistered: autostartRegistered(),
               maxConcurrent: taskMaxConcurrent(),
             }),
@@ -1078,8 +1150,8 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
     });
   });
 
-  const runtimeReady = await ensureRuntime();
-  if (!runtimeReady) {
+  const runtimeInitiallyReady = await ensureRuntime();
+  if (!runtimeInitiallyReady) {
     console.warn('[daemon] Runtime is not ready; will keep retrying in the background');
   }
 

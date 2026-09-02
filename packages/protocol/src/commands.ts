@@ -143,9 +143,14 @@ export type CommandType =
   | 'conversation.compact'
   | 'prompt.enhance'
   | 'prompt.enhance.cancel'
+  | 'design.generate'
   | 'conversation.listPendingToolApprovals'
   | 'conversation.decideToolApproval'
   | 'conversation.submitBrowserResult'
+  | 'browser.extension.status'
+  | 'browser.extension.restart'
+  | 'browser.extension.resetPairing'
+  | 'browser.extension.openFolder'
   | 'browser.profile.list'
   | 'browser.profile.create'
   | 'browser.profile.rename'
@@ -3736,6 +3741,28 @@ export interface PromptEnhanceCancelPayload {
 export interface PromptEnhanceCancelResponse {
   requestId: string;
   cancelled: boolean;
+}
+
+/**
+ * Generate a self-contained HTML design from an Excalidraw frame/selection.
+ * The payload is deliberately scene-only: Runtime uses the currently
+ * configured provider and never persists this one-shot request as a chat turn.
+ */
+export interface DesignGeneratePayload {
+  requestId: string;
+  /** Preferred catalog model. Runtime falls back to an enabled model. */
+  modelId?: import('@sync-think/shared').ModelId;
+  /** Excalidraw frame metadata (normally type=magicframe). */
+  frame: Record<string, unknown>;
+  /** Non-deleted elements contained by the frame/selection. */
+  children: Record<string, unknown>[];
+}
+
+export interface DesignGenerateResponse {
+  requestId: string;
+  html: string;
+  /** Catalog model actually used for generation. */
+  modelId: import('@sync-think/shared').ModelId;
 }
 
 /**

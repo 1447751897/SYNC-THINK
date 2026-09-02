@@ -3,10 +3,13 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
+  activateBrowserWebview,
   BROWSER_READ_TEXT_MAX_CHARS,
   BROWSER_RESULT_MAX_CHARS,
   executeBrowserCommand,
+  getActiveBrowserWebview,
   registerBrowserWebview,
+  unregisterBrowserWebview,
   type BrowserWebviewElement,
 } from '../src/renderer/shell/browser-commands.js';
 
@@ -104,11 +107,27 @@ describe('browser command bridge wiring', () => {
 
   it('BrowserPanel registers its webview for AI commands and unregisters on unmount', () => {
     expect(browserPanelSource).toContain('registerBrowserWebview(');
-    expect(browserPanelSource).toContain('registerBrowserWebview(null)');
+    expect(browserPanelSource).toContain('unregisterBrowserWebview(');
   });
 });
 
 describe('executeBrowserCommand', () => {
+  it('keeps commands on the explicitly active webview across multi-pane cleanup', () => {
+    const first = fakeWebview({ getURL: () => 'https://first.test/' });
+    const second = fakeWebview({ getURL: () => 'https://second.test/' });
+    registerBrowserWebview(first);
+    registerBrowserWebview(second, false);
+    expect(getActiveBrowserWebview()).toBe(first);
+
+    activateBrowserWebview(second);
+    expect(getActiveBrowserWebview()).toBe(second);
+    unregisterBrowserWebview(first);
+    expect(getActiveBrowserWebview()).toBe(second);
+
+    unregisterBrowserWebview(second);
+    expect(getActiveBrowserWebview()).toBeNull();
+  });
+
   it('fails with a recovery hint when no webview is registered', async () => {
     registerBrowserWebview(null);
     const outcome = await executeBrowserCommand({ action: 'browser_read', args: {} });

@@ -35,7 +35,9 @@ if (!electronPath || !existsSync(electronPath)) {
 import { spawn } from 'node:child_process';
 const desktopMain = join(desktopDir, 'dist', 'main', 'index.js');
 const desktopPreload = join(desktopDir, 'dist', 'preload', 'index.cjs');
-const rendererHtml = join(desktopDir, 'dist', 'renderer', 'index.html');
+// The shell renderer is the only production renderer. Keep this check aligned
+// with build-shell.mjs so a stale legacy dist/renderer cannot bypass a rebuild.
+const rendererHtml = join(desktopDir, 'dist', 'renderer-shell', 'index.html');
 if (!existsSync(desktopMain) || !existsSync(desktopPreload) || !existsSync(rendererHtml)) {
   console.log('[dev:desktop] build outputs missing; running desktop build first...');
   execFileSync('pnpm', ['--filter', '@sync-think/desktop', 'build'], {

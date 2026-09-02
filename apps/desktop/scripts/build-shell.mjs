@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import * as esbuild from 'esbuild';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const require = createRequire(import.meta.url);
 const desktopRoot = join(__dirname, '..');
 const shellSrc = join(desktopRoot, 'src', 'renderer', 'shell');
 const outdir = join(desktopRoot, 'dist', 'renderer-shell');
@@ -68,8 +69,31 @@ await esbuild.build({
   },
 });
 
+// Excalidraw is a heavy editor. Keep it out of the chat first paint and load
+// the vendor only when an .excalidraw file/design draft is actually rendered.
+await esbuild.build({
+  entryPoints: [join(shellSrc, 'excalidraw-vendor.tsx')],
+  outfile: join(outdir, 'excalidraw-vendor.js'),
+  bundle: true,
+  format: 'iife',
+  platform: 'browser',
+  // Excalidraw exposes its production entry points and stylesheet through
+  // conditional package exports. The shell vendor is a production bundle,
+  // so resolve the same condition explicitly instead of relying on esbuild's
+  // default browser/import conditions.
+  conditions: ['production'],
+  sourcemap: true,
+  jsx: 'automatic',
+  loader: { '.tsx': 'tsx', '.ts': 'ts', '.css': 'css' },
+  define: {
+    'process.env.NODE_ENV': JSON.stringify(process.env.NODE_ENV ?? 'development'),
+  },
+});
+
+const excalidrawEntry = require.resolve('@excalidraw/excalidraw');
+copyFileSync(join(dirname(excalidrawEntry), 'index.css'), join(outdir, 'excalidraw-vendor.css'));
+
 // Tailwind v4 CLI scans the shell sources referenced from shell.css.
-const require = createRequire(import.meta.url);
 const cliPkgJson = require.resolve('@tailwindcss/cli/package.json');
 const cliPkg = require(cliPkgJson);
 const tailwindCli = join(dirname(cliPkgJson), cliPkg.bin?.tailwindcss ?? cliPkg.bin);

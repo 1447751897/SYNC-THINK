@@ -42,6 +42,8 @@ export const USAGE_SUMMARY_REQUEST_TIMEOUT_MS = 300_000;
  * for that one-shot rewrite to finish.
  */
 export const PROMPT_ENHANCEMENT_REQUEST_TIMEOUT_MS = 120_000;
+/** Design-to-code generation waits on the same provider cold-start budget. */
+export const DESIGN_GENERATION_REQUEST_TIMEOUT_MS = 120_000;
 export const BROWSER_PROFILE_MAINTENANCE_REQUEST_TIMEOUT_MS = 30_000;
 export const BROWSER_RECORDING_REQUEST_TIMEOUT_MS = 30_000;
 const CONVERSATION_COMPACT_REQUEST_TIMEOUT_MS = 120_000;
@@ -57,6 +59,7 @@ export const MCP_REMOTE_REQUEST_TIMEOUT_MS = 130_000;
 export function resolveRuntimeRequestTimeoutMs(type: string, defaultTimeoutMs: number): number {
   if (type === 'usage.summary') return USAGE_SUMMARY_REQUEST_TIMEOUT_MS;
   if (type === 'prompt.enhance') return PROMPT_ENHANCEMENT_REQUEST_TIMEOUT_MS;
+  if (type === 'design.generate') return DESIGN_GENERATION_REQUEST_TIMEOUT_MS;
   if (type === 'conversation.compact') return CONVERSATION_COMPACT_REQUEST_TIMEOUT_MS;
   if (
     type === 'browser.profile.listSiteSessions' ||

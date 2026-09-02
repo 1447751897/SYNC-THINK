@@ -515,7 +515,23 @@ export function FilePane({
               aria-label={`预览 ${path}`}
               hidden={view !== 'preview'}
             >
-              <FileContentPreview text={draft} path={path} highlightLine={revealTarget?.line} />
+              <FileContentPreview
+                text={draft}
+                path={path}
+                highlightLine={revealTarget?.line}
+                onChange={(next) => {
+                  setDraft(next);
+                  dirtyRef.current = next !== loadedRef.current?.content;
+                  if (sessionKey && loadedRef.current) {
+                    filePaneSessions.set(sessionKey, {
+                      loaded: loadedRef.current,
+                      draft: next,
+                      diskChange,
+                      cleanStatus,
+                    });
+                  }
+                }}
+              />
             </div>
             <textarea
               ref={editorRef}

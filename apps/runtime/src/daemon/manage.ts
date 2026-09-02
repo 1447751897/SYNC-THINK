@@ -13,6 +13,8 @@ export const HEARTBEAT_STALE_MS = 5_000;
 
 export interface DaemonStatusPayload {
   running: boolean;
+  /** Runtime child has completed startup (IPC ready signal or compatibility probe). */
+  runtimeReady: boolean;
   heartbeatAt?: string;
   /** 心跳超 5s 未更新（或从未心跳）→ 异常。 */
   heartbeatStale: boolean;
@@ -41,6 +43,7 @@ export function buildDaemonStatusPayload(
   status: DaemonStatus,
   extras: {
     running: boolean;
+    runtimeReady?: boolean;
     autostartRegistered?: boolean;
     maxConcurrent?: number;
     now?: Date;
@@ -49,6 +52,7 @@ export function buildDaemonStatusPayload(
   const now = extras.now ?? new Date();
   return {
     running: extras.running,
+    runtimeReady: extras.runtimeReady ?? false,
     ...(status.heartbeatAt ? { heartbeatAt: status.heartbeatAt } : {}),
     heartbeatStale: isHeartbeatStale(status.heartbeatAt, now),
     todayFired: status.todayFired,

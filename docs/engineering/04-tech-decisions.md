@@ -1563,3 +1563,36 @@ Computer Use built-in plugin
 4. 合同同时注入普通 Provider 的产品能力系统提示与 Codex/Claude 等外部 Kernel 的稳定系统上下文，避免按内核分叉；Runtime 回归直接检查两条上下文路径中的关键约束。
 
 验证门禁：`apps/runtime/tests/design-html-contract.test.ts`、`conversation-get-context-status.test.ts` 与 `external-kernel-run.test.ts` 覆盖提示注入、1 MiB/fence/保存边界和外部 Kernel 恢复上下文；Desktop 设计稿解析与实窗预览验证保持通过。
+
+### TD-057：NewMax 单实例浏览器、扩展配对与双设计稿资产（2026-09-01）
+
+状态：已实现，待最终全量与实窗发布门禁。用户确认的推荐组合 `A1 + E1 + B3 + C1 + D1` 已按以下边界落地。
+
+技术需要：将 Browser Automation Studio 和 AI 设计稿工作流对齐本机 NewMax 的实际浏览器工作区与画布体验，同时保持 Runtime 权限、Profile 和 Artifact 真源。
+
+约束：AI 与用户必须操作同一可见页面；扩展配对必须有真实连接与 Token 生命周期；HTML 原型和可编辑画布都要可保存、恢复、导出；重型画布依赖不得进入首屏主包；预览、打开、保存、版本和导出必须分别有事实结果。
+
+方案选择：
+
+1. 浏览器 `A1`：对话中的浏览器操作以内嵌 WebView 作为唯一可见页面，AI 命令经 Main/Runtime 代理到同一 WebContents；用户与 AI 共享导航、DOM、截图和人工接管状态。录制与既有 Workflow 继续使用 Runtime 系统浏览器宿主。
+2. 浏览器 `A2`：保留系统 Edge/Chrome Worker 与内嵌预览镜像；迁移量较小，但页面状态分离，无法满足 NewMax 单实例交互。
+3. 设计稿 `B3`：同时支持 `design-html` HTML 原型和 Excalidraw 画布；HTML 继续使用沙箱预览，画布按需加载并持久化标准 scene JSON。
+
+采用：
+
+1. 浏览器采用 `A1`。当前 WebView 注册为对话浏览器动作的权威目标；系统浏览器 Worker 保留给既有录制、Workflow 和兼容执行路径，所有对话动作仍先通过 Runtime 权限与 durable command 校验。
+2. 扩展采用 `E1`。Runtime 建立配对会话、连接状态、Token 重置和断线恢复合同；Renderer 只显示脱敏状态、配对 URL 和可复制 Token，不保存密钥明文。
+3. 设计稿采用 `B3`。新增 `@excalidraw/excalidraw@0.18.1`，使用 dynamic import/代码分割；HTML 与 Excalidraw scene 都以项目文件作为当前版本真源，编辑器可从文件内容和元数据恢复，不另行伪造 ArtifactVersion 记录。
+4. 保存采用 `C1`。HTML 写入项目 `designs/<slug>.html`，画布写入项目 `designs/<slug>.excalidraw`，通过项目文件写入合同的 mtime/size 预期值做乐观并发检查；下载、导出 PNG/SVG 与项目保存互相独立。
+5. 打开采用 `D1`。AI 或用户请求打开设计资源时复用当前工作区浏览器标签；只有真实 `browser_open` 完成事件或受控本地页面注册/导航结果才能展示“已打开”，只有写文件成功才能展示“已保存”。生成完成本身只代表可预览，不自动推断已经打开或保存。
+
+性能与回滚：Excalidraw 仅在画布资产或画布工具首次打开时加载；若编辑器加载失败，HTML 预览和原始 scene JSON 仍可恢复。浏览器可回退到兼容执行宿主，扩展会话停用不影响内置 WebView。所有新增协议先由合同测试锁定。
+
+当前验证：单 WebView 接线、扩展配对 Host/Runtime/UI、HTML 与 scene 双资产保存/加载/导出、冲突保护、AI 浏览器打开和设计生成均有定向回归，Runtime/Desktop typecheck 已通过。全量测试、lint、生产构建，以及宽窄窗口、浅深主题和 reduced-motion Electron 实窗验证仍是提交前门禁。
+
+### TD-058：Runtime 冷启动 readiness 与子进程日志分层（2026-09-02）
+
+- **决策**：Desktop/daemon 的 Runtime readiness 统一使用 120 秒有界预算；Runtime 启动完成后经私有 IPC 发出 ready 状态，活动命名管道保留为旧进程兼容回退。
+- **原因**：大数据库迁移、索引修复和 BrowserHost 初始化可能超过原有 15–20 秒。单看 pipe connect 还会把“监听已建立”和“Runtime 已完成启动”混为一谈。
+- **可观测性**：supervised/fallback Runtime 的 stdout、stderr 与 spawn/ready/error/exit 生命周期按 install id 追加到 `runtime-<installId>.log`；daemon 自身继续写 `daemon.log`。日志写入失败不阻断调度或退出。
+- **恢复边界**：子进程 error/exit 会立即结束 readiness 等待，daemon 继续按有界退避重启；旧 Runtime 没有 ready IPC 时仍可由活动管道接管，避免升级期间停摆。

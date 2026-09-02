@@ -4397,3 +4397,32 @@ Desktop typecheck/build：passed
 
 - Runtime `design-html-contract`、`conversation-get-context-status`、`external-kernel-run` 共 `43` 项通过；Runtime/Desktop typecheck 通过。
 - 设计稿解析、预览、源码、下载、保存、浏览器工作流、提示词优化与 Composer/Plan/Goal 定向回归保持全绿。
+
+## 2026-09-02：NewMax 单实例浏览器与双设计稿工作区落地
+
+### Added
+
+- Browser Pane 的单一内嵌 WebView 现为用户和 AI 的共同 Page。Runtime 继续负责站点授权、审批、幂等与 durable command，Renderer Browser Worker 只把已校验动作送到当前可见页面；新的真实 `browser_open` 完成事件会打开或聚焦工作区浏览器标签，历史事件不会重复导航。
+- 浏览器工具栏补齐 NewMax 的地址/搜索、前进后退、刷新停止、页内查找、缩放、设备预览、截图、下载、外部打开和人工聚焦状态。
+- Runtime 新增 NewMax 协议兼容的 loopback Chrome 扩展 Host：持久配对 Token/pairing id、协议和认证校验、单活动连接替换、断线重连，以及状态、重启、重置配对和打开扩展目录命令；Desktop 使用真实 IPC 状态渲染连接卡。
+- 设计稿扩展为 `design-html` 与 `.excalidraw` 双资产。Excalidraw vendor 与样式按需加载，标准 scene JSON 支持编辑/恢复、项目保存及 PNG/SVG 导出；选定 frame/children 可通过真实 `design.generate` Provider 请求生成完整 HTML。
+- HTML 和画布保存使用稳定项目路径与乐观冲突保护；受控 `newmax-local-web` 页面注册器加载 HTML 及相对资源并拒绝目录穿越、未知 Token、非 HTML 入口和越界符号链接。预览、保存、生成和浏览器打开继续作为四个独立事实呈现。
+
+### Verification
+
+- 页面注册与浏览器工具栏、扩展 Host/Runtime/连接卡、Excalidraw 文档/懒加载/UI/导出、设计生成协议和内联可视化均有定向回归；当前已知 Runtime `19` 项、Desktop `10` 项聚焦检查通过，Runtime/Desktop typecheck 通过。
+- Runtime/Desktop 全量测试、lint、生产构建已通过：根级 `20/20` tasks，Desktop `221 files / 1770 tests`，Runtime `172 files / 1260 tests`，typecheck `20/20`、lint `11/11`（0 error）和 build `11/11` 全部通过。Electron 已按最新构建重启并确认浏览器工作区四块面板真实渲染；AI 浏览器五步网络交互未在本轮重复执行，不把历史超时会话记为成功。
+
+## 2026-09-02：Runtime 冷启动可观测性与 readiness 收口
+
+### Fixed
+
+- Desktop 与 daemon 统一使用 `120s` Runtime 冷启动预算，覆盖大数据库迁移、索引修复和浏览器宿主初始化，避免 15–20 秒窗口误报 `runtime.daemon-supervision-timeout`。
+- Runtime 在 `session.runtime.start()` 完成后通过私有 IPC 发送 ready 信号；daemon 状态快照新增 `runtimeReady`，旧 Runtime 仍以活动管道作为兼容回退。
+- supervised Runtime 与 Desktop fallback Runtime 的 stdout/stderr 不再丢弃，按 install id 追加到数据目录的 `runtime-<installId>.log`，并记录 spawn、ready、error、exit 生命周期。
+- Runtime 子进程异常退出会立即结束本轮 readiness 等待，让 daemon 按退避策略重新拉起，不再把下一次重启阻塞在完整冷启动超时上。
+
+### Verification
+
+- Runtime daemon child/entry/manage 定向回归通过；Desktop runtime-supervisor 定向回归通过。
+- Runtime 与 Desktop typecheck 通过；后续全量测试、构建和 Electron 实窗复验在本轮验证阶段补录。

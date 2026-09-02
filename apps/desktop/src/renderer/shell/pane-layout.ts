@@ -136,6 +136,7 @@ function terminalTab(terminalId: string, cwd = ''): TerminalPaneTab {
 
 function normalizeBrowserUrl(url: string): string {
   const normalized = url.trim();
+  if (/^data:text\/html(?:;|,)/i.test(normalized)) return normalized.slice(0, 8 * 1024 * 1024);
   return normalized.slice(0, 4_000) || 'https://www.bing.com';
 }
 

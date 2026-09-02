@@ -251,6 +251,8 @@ import type {
   PromptEnhanceResponse,
   PromptEnhanceCancelPayload,
   PromptEnhanceCancelResponse,
+  DesignGeneratePayload,
+  DesignGenerateResponse,
   ConversationTransientFrame,
   ConversationTransientSnapshot,
 } from '@sync-think/protocol';
@@ -266,6 +268,10 @@ import type {
   DesktopUpdateActionResult,
   DesktopUpdateSnapshot,
 } from '../desktop-update-contract.js';
+import type {
+  BrowserExtensionOpenFolderResult,
+  BrowserExtensionStatus,
+} from '../browser-extension-contract.js';
 import type {
   CancelProjectTerminalPayload,
   CancelProjectTerminalResult,
@@ -465,6 +471,7 @@ declare global {
           payload: ConversationSendMessagePayload,
         ): Promise<ConversationSendMessageResponse>;
         enhancePrompt(payload: PromptEnhancePayload): Promise<PromptEnhanceResponse>;
+        generateDesign(payload: DesignGeneratePayload): Promise<DesignGenerateResponse>;
         cancelPromptEnhancement(
           payload: PromptEnhanceCancelPayload,
         ): Promise<PromptEnhanceCancelResponse>;
@@ -579,6 +586,11 @@ declare global {
           embedUrl?: string;
           pageUrl?: string;
           error?: string;
+        }>;
+        createLocalPageUrl(payload: { filePath: string; partition?: string }): Promise<{
+          ok: boolean;
+          url: string | null;
+          error: string | null;
         }>;
         upgradeConversationTrack(
           payload: import('@sync-think/protocol').UpgradeConversationTrackPayload,
@@ -718,6 +730,12 @@ declare global {
             payload: ApproveExecuteBrowserWorkflowPayload,
           ): Promise<ExecuteBrowserWorkflowResponse>;
         };
+        browserExtension: {
+          status(): Promise<BrowserExtensionStatus>;
+          restart(): Promise<BrowserExtensionStatus>;
+          resetPairing(): Promise<BrowserExtensionStatus>;
+          openFolder(): Promise<BrowserExtensionOpenFolderResult>;
+        };
         listWaitingBrowserHandoffs(
           payload?: ListWaitingBrowserHandoffsPayload,
         ): Promise<ListWaitingBrowserHandoffsResponse>;
@@ -856,6 +874,9 @@ declare global {
         }>;
         onEvent(listener: (event: Event) => void): () => void;
         onOpenConversation(listener: (conversationId: string) => void): () => void;
+        onBrowserNewTab?(
+          listener: (payload: { openerWebContentsId: number; url: string }) => void,
+        ): () => void;
         notifyRendererReady(): void;
         openHtmlInBrowser(html: string): Promise<{
           ok: boolean;

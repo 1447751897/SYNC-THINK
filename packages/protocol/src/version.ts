@@ -81,6 +81,7 @@ export type Feature =
   | 'conversation.upgradeTrack'
   | 'conversation.delete'
   | 'prompt.enhance'
+  | 'design.generate'
   | 'conversation.listPendingToolApprovals'
   | 'conversation.decideToolApproval'
   | 'browser.handoff'
@@ -211,6 +212,7 @@ export const DEFAULT_FEATURES: Feature[] = [
   'conversation.upgradeTrack',
   'conversation.delete',
   'prompt.enhance',
+  'design.generate',
   'conversation.listPendingToolApprovals',
   'browser.handoff',
   'browser.recording',

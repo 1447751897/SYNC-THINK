@@ -12,12 +12,14 @@ describe('buildDaemonStatusPayload', () => {
     const status = { ...createDaemonStatus(), heartbeatAt: '2025-01-01T09:59:59.000Z' };
     const payload = buildDaemonStatusPayload(status, {
       running: true,
+      runtimeReady: true,
       autostartRegistered: true,
       maxConcurrent: 2,
       now: new Date('2025-01-01T10:00:00.000Z'),
     });
     expect(payload).toMatchObject({
       running: true,
+      runtimeReady: true,
       autostart: true,
       maxConcurrent: 2,
       todayFired: 0,
@@ -59,6 +61,7 @@ describe('daemon status payload shape', () => {
   it('exposes the fields the settings card renders', () => {
     const payload: DaemonStatusPayload = {
       running: true,
+      runtimeReady: false,
       heartbeatAt: '2025-01-01T10:00:00.000Z',
       heartbeatStale: false,
       todayFired: 6,

@@ -5,8 +5,10 @@ import {
   buildManagedRuntimeEnvironment,
   buildRuntimeSpawnOptions,
   DAEMON_COLD_START_TIMEOUT_MS,
+  RUNTIME_COLD_START_TIMEOUT_MS,
   daemonRestartDelayMs,
   managedRuntimeCommandLineMatches,
+  runtimeLogPath,
   resolveDaemonAutostartStartupAction,
 } from './runtime-supervisor.js';
 
@@ -18,7 +20,7 @@ describe('buildRuntimeSpawnOptions', () => {
       detached: true,
       windowsHide: true,
       shell: false,
-      stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+      stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     });
   });
 });
@@ -26,6 +28,12 @@ describe('buildRuntimeSpawnOptions', () => {
 describe('daemon supervised restart', () => {
   it('allows enough time for a large database backup and migration on cold start', () => {
     expect(DAEMON_COLD_START_TIMEOUT_MS).toBeGreaterThanOrEqual(120_000);
+    expect(RUNTIME_COLD_START_TIMEOUT_MS).toBeGreaterThanOrEqual(120_000);
+  });
+
+  it('keeps Runtime diagnostics isolated by install id', () => {
+    expect(runtimeLogPath('install-a')).not.toBe(runtimeLogPath('install-b'));
+    expect(runtimeLogPath('install-a')).toContain('runtime-install-a.log');
   });
 
   it('uses bounded backoff independent from the cold-start spawn debounce', () => {

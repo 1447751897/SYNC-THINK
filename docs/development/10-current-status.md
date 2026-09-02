@@ -11,7 +11,7 @@
 ### 当前验证
 
 - Runtime 设计稿合同、上下文状态、外部 Kernel 规划/恢复回归共 `43` 项通过；Runtime/Desktop typecheck 通过。
-- 设计稿、提示词优化、浏览器定向测试和 BrowserStage 回归已通过；全量测试、类型检查、lint、构建及 Electron 实窗验收将在本轮完成后补录最终计数和产物时间。
+- 设计稿、提示词优化、浏览器定向测试和 BrowserStage 回归已通过；最终根级测试 `20/20` tasks（Desktop `221 files / 1770 tests`、Runtime `172 files / 1260 tests`）通过，typecheck `20/20`、lint `11/11`（0 error）、build `11/11` 和 `git diff --check` 通过。
 
 ## 当前状态：2026-08-27 · Skill 管理 NewMax 对齐完成并运行最新构建
 
@@ -1434,3 +1434,40 @@
 - Desktop focused tests `5 files / 47 tests` 全绿；Desktop typecheck、正式 build、Prettier 和 `git diff --check` 通过。
 - 真实 Electron `1424 × 861` 实测：主题图片上传无“图片内容无法读取”错误；亮色和深色图片壁纸的 minimap 均清晰；Compose 为 `744 × 112px`，`/` 面板约为 `744 × 165px`，模型按钮为 `148 × 30px`，模型菜单与 Provider 子菜单均在视口内。
 - 当前窗口已恢复到亮色 `preset-lakewood` 主题；daemon 与 Runtime 未被本轮 Renderer/Main 验收操作停止。
+
+## 当前状态：2026-09-02 · NewMax 浏览器与双设计稿工作区实现完成
+
+### 本轮完成
+
+- `A1` 已落地：Browser Pane 的单一内嵌 WebView 同时承载用户导航和 AI `browser_*` 动作；Renderer Worker 只执行 Runtime 已校验的命令，页面权限、幂等和 durable command 状态继续由 Runtime 管理。工具栏已覆盖地址/搜索、前进后退、刷新停止、页内查找、缩放、设备预览、截图、下载、外部打开和人工聚焦。
+- `E1` 已落地：Runtime 提供与 NewMax 协议兼容的 loopback WebSocket 扩展 Host，持久管理配对 Token 和 pairing id，校验协议版本与认证，允许新连接替换陈旧 service worker，并暴露状态、重启、重置配对和打开扩展目录命令；Desktop 卡片呈现真实连接与错误状态。
+- `B3` 已落地：`design-html` 与标准 `.excalidraw` scene JSON 均可解析、预览和保存；Excalidraw 编辑器及样式按需加载，支持编辑、冷恢复、PNG/SVG 导出，并可将选定 frame/children 通过真实 `design.generate` Provider 请求生成自包含 HTML。
+- `C1/D1` 已落地：HTML 与画布使用项目内稳定路径、读取哈希和乐观冲突保护；受控 `newmax-local-web` 页面注册器支持 HTML 相对资源并拒绝越界/符号链接逃逸；新的真实 `browser_open` 完成事件会创建或聚焦浏览器标签并导航，历史回放不会重复打开。
+
+### 当前验证
+
+- 浏览器页面注册与工具栏、扩展 Host/Runtime/设置卡、Excalidraw 文档/懒加载/UI/导出、`design.generate`、HTML/画布浏览器打开和内联可视化均有定向回归；当前已知 Runtime `19` 项、Desktop `10` 项聚焦检查通过，Runtime/Desktop typecheck 通过。
+
+### 待完成
+
+- AI 浏览器五步网络交互的历史会话曾停在 Renderer 超时；`tool` 类活动事件订阅已修复并通过全量回归，本轮没有把未重新执行的模型网络交互记作成功。
+
+## 当前状态：2026-09-02 · Runtime 冷启动可观测性与 readiness 收口
+
+### 本轮完成
+
+- Desktop 与 daemon 的 Runtime 冷启动等待统一为 120 秒，覆盖大数据库迁移、索引修复和浏览器宿主初始化。
+- Runtime `session.runtime.start()` 完成后通过私有 IPC 发送 ready；daemon 状态快照提供 `runtimeReady`，旧 Runtime 继续支持活动管道回退。
+- supervised Runtime 和 Desktop fallback Runtime 的 stdout/stderr、spawn/ready/error/exit 生命周期追加到数据库同级的 `runtime-<installId>.log`；daemon 自身日志仍在 `daemon.log`。
+- 子进程 error/exit 会立即结束 readiness 等待，daemon 可按退避策略重新拉起，避免等待窗口阻塞重启。
+
+### 本轮验证
+
+- Runtime daemon child/entry/manage 定向测试通过；Desktop runtime-supervisor 定向测试通过。
+- Runtime 与 Desktop typecheck 通过。
+- 最终根级测试 `20/20` tasks（Desktop `221 files / 1770 tests`、Runtime `172 files / 1260 tests`）通过；typecheck `20/20`、lint `11/11`（0 error，保留既有 Hook warnings）、build `11/11` 和 `git diff --check` 通过。
+- Electron 已按最新构建重启并保持运行；真实窗口可进入浏览器工作区并显示 Profile、录制、自动化任务、扩展和内置浏览器面板。大数据库冷启动约两分钟后 Runtime ready，日志确认 pipe/gateway/hello 正常。
+
+### 待完成
+
+- AI 浏览器五步链路的历史会话曾在渲染服务超时处停止；本轮不把未重新执行的网络模型交互记为成功，相关 `tool` 事件订阅修复已由 Runtime/Desktop 全量回归覆盖。
