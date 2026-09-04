@@ -407,6 +407,10 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
       const input = inputRef.current;
       const host = editorHostRef.current;
       const content = host?.querySelector<HTMLElement>('.cm-content');
+      // Collapse the last explicit height first. Otherwise scrollHeight stays at
+      // the previous grown size after send/delete and the box never shrinks.
+      if (input) input.style.height = 'auto';
+      if (host) host.style.height = 'auto';
       const measured = Math.max(
         input?.scrollHeight ?? 0,
         content?.scrollHeight ?? 0,

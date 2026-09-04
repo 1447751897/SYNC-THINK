@@ -778,7 +778,7 @@ export function TopBar(props: TopBarProps) {
             <button
               type="button"
               data-testid="topbar-toggle-right-workbench"
-              data-workspace-files-toggle="true"
+              data-workspace-right-toggle="true"
               aria-label={props.rightWorkbenchOpen ? '隐藏右侧工作台' : '打开右侧工作台'}
               aria-pressed={Boolean(props.rightWorkbenchOpen)}
               className={clsx(

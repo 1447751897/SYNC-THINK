@@ -22,7 +22,7 @@ import { teamLibraryServer } from './team-library-server.js';
 import { skillCenterServer } from './skill-center-server.js';
 import { mcpDirectoryServer } from './mcp-directory-server.js';
 import { taskBoardServer } from './task-board-server.js';
-import { webServer } from './web-server.js';
+import { webFetchServer, webSearchServer } from './web-server.js';
 import { browserServer } from './browser-server.js';
 import { visionFallbackServer } from './vision-fallback-server.js';
 import { windowsOcrServer } from './windows-ocr-server.js';
@@ -45,6 +45,8 @@ export interface KernelMcpServerConditions {
   hasSkillStore?: boolean;
   hasTeamStore?: boolean;
   networkEnabled?: boolean;
+  /** A configured external provider is needed because this run has no native search route. */
+  fallbackWebSearchEnabled?: boolean;
   /** Settings > 模型 > 图片识别 Fallback switched on. */
   visionFallbackEnabled?: boolean;
 }
@@ -53,7 +55,13 @@ let currentConditions: KernelMcpServerConditions = {};
 
 /** Inject the current capability flags (called by the runtime before each run). */
 export function setKernelMcpServerConditions(conditions: KernelMcpServerConditions): void {
-  currentConditions = conditions;
+  currentConditions = {
+    ...conditions,
+    // Backward-compatible default for direct registry callers. Runtime route
+    // selection always passes this explicitly.
+    fallbackWebSearchEnabled:
+      conditions.fallbackWebSearchEnabled ?? conditions.networkEnabled ?? false,
+  };
 }
 
 const storeCondition = (key: keyof KernelMcpServerConditions) => (): boolean =>
@@ -88,7 +96,11 @@ export const KERNEL_MCP_SERVERS: readonly KernelMcpServerDefinition[] = [
     condition: storeCondition('visionFallbackEnabled'),
   },
   {
-    ...webServer,
+    ...webSearchServer,
+    condition: storeCondition('fallbackWebSearchEnabled'),
+  },
+  {
+    ...webFetchServer,
     condition: storeCondition('networkEnabled'),
   },
   {

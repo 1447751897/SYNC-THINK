@@ -38,10 +38,15 @@ import type { ConversationGroupPreference, ConversationGroupsByTrack } from '../
 import {
   TRACK_LABELS,
   buildTrackTree,
+  resolveConversationRowMark,
   targetName,
+  type ConversationRowMark,
   type ShellNavState,
   type ShellStage,
 } from './shell-state.js';
+import { AgentAvatarView } from './AgentAvatarView.js';
+import { BrandLogoMark } from './BrandLogoMark.js';
+import { resolveKernelBrandLogo } from './brand-icons.js';
 
 const TRACK_ICONS: Record<ConversationTrack, typeof Sparkles> = {
   model: Sparkles,
@@ -60,6 +65,8 @@ export interface SidebarProps {
   modelNames: ReadonlyMap<string, string>;
   /** Per-conversation compose model overrides (model-track identity). */
   modelOverrides?: Readonly<Record<string, string>>;
+  /** Per-conversation compose kernel overrides (model-track logo). */
+  kernelOverrides?: Readonly<Record<string, string>>;
   groups: ConversationGroupsByTrack;
   bootState?: 'loading' | 'ready' | 'error';
   bootError?: string;
@@ -496,6 +503,9 @@ export function Sidebar(props: SidebarProps) {
                                   onToggleSelected={props.onToggleSelected}
                                   onToggleMultiSelect={props.onToggleMultiSelect}
                                   conversationActivity={props.conversationActivity}
+                                  agents={props.agents}
+                                  teams={props.teams}
+                                  kernelOverrides={props.kernelOverrides}
                                 />
                               ))}
 
@@ -522,6 +532,12 @@ export function Sidebar(props: SidebarProps) {
                                     key={c.id}
                                     conversation={c}
                                     name={resolveName(c)}
+                                    mark={resolveConversationRowMark(
+                                      c,
+                                      props.agents,
+                                      props.teams,
+                                      props.kernelOverrides,
+                                    )}
                                     active={props.nav.selectedConversationId === c.id}
                                     multiSelect={props.multiSelect}
                                     selected={props.selectedIds.has(c.id)}
@@ -583,6 +599,12 @@ export function Sidebar(props: SidebarProps) {
                             key={c.id}
                             conversation={c}
                             name={resolveName(c)}
+                            mark={resolveConversationRowMark(
+                              c,
+                              props.agents,
+                              props.teams,
+                              props.kernelOverrides,
+                            )}
                             active={props.nav.selectedConversationId === c.id}
                             archived
                             multiSelect={props.multiSelect}
@@ -747,6 +769,9 @@ function GroupBlock(props: {
   onToggleSelected(id: string): void;
   onToggleMultiSelect(): void;
   conversationActivity?: ReadonlyMap<string, { running: boolean; unread: boolean }>;
+  agents: readonly GlobalAgent[];
+  teams: readonly Team[];
+  kernelOverrides?: Readonly<Record<string, string>>;
 }) {
   const collapsed = props.group.collapsed === true;
   return (
@@ -802,6 +827,12 @@ function GroupBlock(props: {
                 key={c.id}
                 conversation={c}
                 name={props.resolveName(c)}
+                mark={resolveConversationRowMark(
+                  c,
+                  props.agents,
+                  props.teams,
+                  props.kernelOverrides,
+                )}
                 active={props.selectedConversationId === c.id}
                 multiSelect={props.multiSelect}
                 selected={props.selectedIds.has(c.id)}
@@ -828,9 +859,35 @@ function GroupBlock(props: {
   );
 }
 
+function ConversationIdentityMark(props: {
+  conversationId: string;
+  mark: ConversationRowMark;
+}) {
+  const logo = props.mark.kind === 'kernel' ? resolveKernelBrandLogo(props.mark.kernelId) : undefined;
+  return (
+    <span
+      className="st-conv-row__identity"
+      data-testid={`conversation-identity-${props.conversationId}`}
+      data-kind={props.mark.kind}
+      data-kernel={props.mark.kind === 'kernel' ? props.mark.kernelId : undefined}
+    >
+      {props.mark.kind === 'kernel' ? (
+        logo ? (
+          <BrandLogoMark logo={logo} size={16} />
+        ) : (
+          <Sparkles size={14} className="text-text-faint" aria-hidden="true" />
+        )
+      ) : (
+        <AgentAvatarView name={props.mark.name} avatar={props.mark.avatar} size={16} />
+      )}
+    </span>
+  );
+}
+
 function ConversationRow(props: {
   conversation: Conversation;
   name: string;
+  mark: ConversationRowMark;
   active: boolean;
   archived?: boolean;
   multiSelect: boolean;
@@ -895,6 +952,7 @@ function ConversationRow(props: {
             <Check size={10} />
           </span>
         ) : null}
+        <ConversationIdentityMark conversationId={String(c.id)} mark={props.mark} />
         <span className="flex-1 truncate text-[13px] font-medium leading-5">{title}</span>
         {title.startsWith('任务 ·') ? (
           <span className="shell-task-conv-badge" title="定时任务会话">

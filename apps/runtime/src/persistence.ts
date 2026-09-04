@@ -37,6 +37,7 @@ import {
   SqliteAgentContextStore,
   SqliteScheduledTaskStore,
   SqliteRunIndexStore,
+  SqliteAssistantTimelineStore,
   SqliteExternalEventStore,
 } from '@sync-think/storage';
 import {
@@ -82,6 +83,7 @@ export interface OpenPersistentRuntimeOptions extends Omit<
   | 'teamStore'
   | 'conversationStore'
   | 'messageStore'
+  | 'assistantTimelineStore'
   | 'memoryStore'
   | 'skillStore'
   | 'mcpStore'
@@ -350,6 +352,7 @@ export async function openPersistentRuntime(
       teamStore,
       conversationStore,
       messageStore: new SqliteMessageStore(connection.raw),
+      assistantTimelineStore: new SqliteAssistantTimelineStore(connection.raw),
       memoryStore: new SqliteMemoryStore(connection.raw),
       skillStore,
       mcpStore: new SqliteMcpStore(connection.raw),

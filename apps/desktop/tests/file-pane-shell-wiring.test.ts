@@ -9,6 +9,10 @@ const chatSource = readFileSync(
   new URL('../src/renderer/shell/ChatView.tsx', import.meta.url),
   'utf8',
 );
+const workspaceFileViewSource = readFileSync(
+  new URL('../src/renderer/shell/WorkspaceFileView.tsx', import.meta.url),
+  'utf8',
+);
 
 describe('unified file pane shell wiring', () => {
   it('renders file resources from the workspace pane snapshot', () => {
@@ -24,9 +28,9 @@ describe('unified file pane shell wiring', () => {
     expect(shellSource).toContain('<WorkspaceFileView');
     expect(shellSource).toContain('path={activeTab.path}');
     expect(shellSource).toContain('onDirtyChange={(dirty) =>');
-    expect(shellSource).toContain('onOpenFileInCurrentTab={(path, location) =>');
-    expect(shellSource).toContain('handleOpenFileInCurrentTab(');
-    expect(shellSource).toContain('onOpenFileInNewTab={(path, location) =>');
+    expect(workspaceFileViewSource).not.toContain('WorkspaceFilesPanel');
+    expect(shellSource).toContain('toggleWorkspaceFilesWorkbench');
+    expect(shellSource).toContain('<WorkspaceFilesPanel');
   });
 
   it('routes file and review actions through the shell-owned pane layout', () => {

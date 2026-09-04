@@ -364,6 +364,95 @@ describe('streamOpenAIResponses', () => {
     expect(JSON.stringify(body.input)).not.toContain('prompt_cache_breakpoint');
   });
 
+  it('combines provider-hosted web search with local function tools', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json' },
+      body: null,
+      text: async () => JSON.stringify({ status: 'completed', output: [] }),
+    } as unknown as Response);
+
+    await collect(
+      streamOpenAIResponses(
+        req({
+          hostedTools: [{ type: 'web_search', searchContextSize: 'high' }],
+          tools: [{ name: 'read_file', inputSchema: { type: 'object' } }],
+        }),
+        { fetchImpl: fetchMock as unknown as typeof fetch },
+      ),
+    );
+
+    const body = JSON.parse((fetchMock.mock.calls[0]![1] as { body: string }).body);
+    expect(body.tools).toEqual([
+      { type: 'web_search', search_context_size: 'high' },
+      { type: 'function', name: 'read_file', parameters: { type: 'object' } },
+    ]);
+    expect(body.include).toEqual(['web_search_call.action.sources']);
+  });
+
+  it('projects hosted web search as display-only tool lifecycle events', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'text/event-stream' },
+      body: sseStream([
+        'data: {"type":"response.output_item.added","output_index":0,"item":{"id":"ws-1","type":"web_search_call","status":"in_progress"}}\n\n',
+        'data: {"type":"response.web_search_call.searching","output_index":0,"item_id":"ws-1"}\n\n',
+        'data: {"type":"response.output_item.done","output_index":0,"item":{"id":"ws-1","type":"web_search_call","status":"completed","action":{"type":"search","query":"OpenAI news","sources":[{"type":"url","url":"https://openai.com/news/"}]}}}\n\n',
+        'data: {"type":"response.output_text.delta","delta":"Search complete"}\n\n',
+        'data: {"type":"response.completed","response":{"status":"completed"}}\n\n',
+      ]),
+      text: async () => '',
+    } as unknown as Response);
+
+    const events = await collect(
+      streamOpenAIResponses(req({ hostedTools: [{ type: 'web_search' }] }), {
+        fetchImpl: fetchMock as unknown as typeof fetch,
+      }),
+    );
+
+    expect(events.filter((event) => event.type === 'hosted-tool-call')).toHaveLength(1);
+    expect(events.filter((event) => event.type === 'hosted-tool-result')).toHaveLength(1);
+    expect(events).toContainEqual({
+      type: 'hosted-tool-call',
+      toolCall: { id: 'ws-1', name: 'web_search', argumentsJson: '{}' },
+    });
+    const completed = events.find((event) => event.type === 'hosted-tool-result');
+    expect(
+      completed?.type === 'hosted-tool-result' ? JSON.parse(completed.result) : {},
+    ).toMatchObject({
+      ok: true,
+      provider: 'openai',
+      action: { type: 'search', query: 'OpenAI news' },
+    });
+    expect(events.at(-1)).toEqual({ type: 'finished', reason: 'stop' });
+  });
+
+  it('appends hosted-search URL annotations as clickable Markdown sources', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'text/event-stream' },
+      body: sseStream([
+        'data: {"type":"response.output_text.delta","item_id":"msg-1","output_index":1,"delta":"Current answer."}\n\n',
+        'data: {"type":"response.output_item.done","output_index":1,"item":{"id":"msg-1","type":"message","role":"assistant","content":[{"type":"output_text","text":"Current answer.","annotations":[{"type":"url_citation","url":"https://openai.com/news/","title":"OpenAI News"}]}]}}\n\n',
+        'data: {"type":"response.completed","response":{"status":"completed"}}\n\n',
+      ]),
+      text: async () => '',
+    } as unknown as Response);
+
+    const events = await collect(
+      streamOpenAIResponses(req({ hostedTools: [{ type: 'web_search' }] }), {
+        fetchImpl: fetchMock as unknown as typeof fetch,
+      }),
+    );
+
+    expect(textFromEvents(events)).toBe(
+      'Current answer.\n\nSources:\n- [OpenAI News](https://openai.com/news/)',
+    );
+  });
+
   it('serializes prior function calls and their local outputs for the next Responses turn', async () => {
     fetchMock.mockResolvedValue({
       ok: true,
@@ -612,7 +701,9 @@ describe('streamOpenAIResponses', () => {
     expect(reasoningFromEvents(events)).toBe('Internal diagnostic summary.');
     expect(assistantMessageText(events, 'commentary')).toBe('我先检查消息链路。');
     expect(assistantMessageText(events, 'final_answer')).toBe('检查完成。');
-    expect(assistantMessageText(events, 'commentary')).not.toContain('Internal diagnostic summary.');
+    expect(assistantMessageText(events, 'commentary')).not.toContain(
+      'Internal diagnostic summary.',
+    );
   });
 
   it('maps auth errors without leaking the API key', async () => {

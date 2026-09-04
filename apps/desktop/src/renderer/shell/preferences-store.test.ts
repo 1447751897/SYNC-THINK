@@ -170,4 +170,11 @@ describe('shortcut preferences', () => {
     expect(matchesShortcut(event, 'CommandOrControl+Left')).toBe(true);
     expect(matchesShortcut(event, 'CommandOrControl+Right')).toBe(false);
   });
+
+  it('matches a bare Tab accelerator without modifiers', () => {
+    expect(matchesShortcut(new KeyboardEvent('keydown', { key: 'Tab' }), 'Tab')).toBe(true);
+    expect(
+      matchesShortcut(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true }), 'Tab'),
+    ).toBe(false);
+  });
 });

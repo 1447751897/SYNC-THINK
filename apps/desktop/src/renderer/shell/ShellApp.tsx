@@ -33,7 +33,17 @@ import { WallpaperReadingLayers } from './WallpaperReadingLayers.js';
 import { WorkspaceWorkbench, type WorkbenchNewResource } from './WorkspaceWorkbench.js';
 import { emptyExcalidrawContent } from './ExcalidrawPreview.js';
 import { ChatView, type RuntimeConnectionNotice } from './ChatView.js';
-import { clearFilePaneSession, isFilePaneSessionDirty, type FileRevealTarget } from './FilePane.js';
+import {
+  clearFilePaneSession,
+  isFilePaneSessionDirty,
+  seedFilePaneUnsavedDraft,
+  type FileRevealTarget,
+} from './FilePane.js';
+import {
+  allocateUntitledCanvasPath,
+  allocateUntitledDocumentPath,
+  collectOpenFilePaths,
+} from './untitled-project-file.js';
 import { WorkspaceFileView } from './WorkspaceFileView.js';
 import { TerminalPane } from './TerminalPane.js';
 import { disposeTerminalSession } from './terminal-session-store.js';
@@ -106,7 +116,12 @@ import { AgentAvatarView } from './AgentAvatarView.js';
 import { resolveKernelBrandLogo, resolveKernelDisplayName } from './brand-icons.js';
 import { TurnSkillControl } from './TurnSkillControl.js';
 import { ComposerEditor } from './ComposerEditor.js';
-import { PromptEnhancementAction, usePromptEnhancement } from './prompt-enhancement.js';
+import {
+  PromptEnhancementAction,
+  tryHandlePromptEnhancementShortcut,
+  usePromptEnhancement,
+  usePromptEnhancementShortcutEnabled,
+} from './prompt-enhancement.js';
 import { ComposerMcpMenu } from './ComposerMcpMenu.js';
 import { ComposerModeBanner } from './ComposerModeBanner.js';
 import { ComposerActiveModePill, ComposerModeKeywordHint } from './ComposerModeControls.js';
@@ -164,6 +179,7 @@ import {
 } from './shell-state.js';
 import {
   AGENT_PREFERENCES_CHANGED_EVENT,
+  CONVERSATION_KERNEL_OVERRIDES_CHANGED_EVENT,
   readActiveWorkspaceId,
   readAgentPreferences,
   readConversationGroups,
@@ -172,6 +188,7 @@ import {
   readNewConversationDraft,
   readNewConversationKernel,
   readNewConversationModel,
+  readConversationKernelOverrides,
   readConversationModelOverrides,
   readOpenConversationTabs,
   readSelectedConversationByWorkspace,
@@ -205,7 +222,6 @@ import {
   activatePaneTab,
   activateBrowserPaneTab,
   activateReviewPaneTab,
-  activateWorkspaceFilesPaneTab,
   activateTerminalPaneTab,
   closeBrowserPaneTab,
   closeReviewPaneTab,
@@ -213,12 +229,11 @@ import {
   closeConversationInLayout,
   closePane,
   closePaneTab,
-  closeWorkspaceFilesPaneTab,
   closeTerminalPaneTab,
   createWorkspacePaneLayout,
-  findWorkspaceFilesPane,
   focusPane,
   focusedConversationId,
+  layoutHasOpenTabs,
   migrateLegacyPaneLayouts,
   movePaneResourceToPane,
   navigateBrowserPaneTab,
@@ -227,14 +242,14 @@ import {
   openConversationInPane,
   openTerminalInPane,
   paneConversationIds,
+  paneKeepAliveBrowserId,
+  paneKeepAliveConversationId,
   pruneWorkspacePaneLayout,
   replaceConversationInPane,
-  replaceFileInPane,
   reorderPaneTabs,
   setSplitRatio,
   splitPaneWithConversation,
   splitPaneWithResource,
-  splitPaneWithWorkspaceFiles,
   updateTerminalPaneCwd,
   type PaneResourceRef,
   type PaneSplitDirection,
@@ -249,11 +264,12 @@ import {
   fileWorkbenchTab,
   openWorkbenchTab,
   reviewWorkbenchTab,
-  setWorkbenchFileBrowserWidth,
   setWorkbenchFileBrowserOpen,
+  setWorkbenchFileBrowserWidth,
   setWorkbenchOpen,
   setWorkbenchSize,
   terminalWorkbenchTab,
+  toggleWorkspaceFilesWorkbench,
   workspaceFilesWorkbenchTab,
   type WorkbenchPlacement,
   type WorkbenchTab,
@@ -397,7 +413,7 @@ function paneTabMatchesResource(
   if (resource.type === 'review') {
     return tab.type === 'review' && tab.runId === resource.id;
   }
-  return tab.type === 'workspace-files';
+  return false;
 }
 
 function parsePaneResourceDrag(raw: string): PaneResourceRef | null {
@@ -414,9 +430,6 @@ function parsePaneResourceDrag(raw: string): PaneResourceRef | null {
       return typeof value.id === 'string' && value.id.trim()
         ? { type: value.type, id: value.id }
         : null;
-    }
-    if (value.type === 'workspace-files') {
-      return { type: 'workspace-files', id: 'workspace-files' };
     }
   } catch {
     return null;
@@ -440,6 +453,9 @@ function ShellAppInner() {
     ...INITIAL_NAV,
     lastTrack: readLastConversationTrack(),
   }));
+  const lastTrackRef = useRef(nav.lastTrack);
+  lastTrackRef.current = nav.lastTrack;
+  const ensureDefaultDraftRef = useRef<(workspaceId: string) => void>(() => {});
   const [data, setData] = useState<ShellData>(EMPTY);
   const [skillCatalogRevision, setSkillCatalogRevision] = useState(0);
   const [eventHistory, setEventHistory] = useState<readonly Event[]>([]);
@@ -490,6 +506,8 @@ function ShellAppInner() {
     ),
   );
   const initialPaneLayoutsRef = useRef(paneLayouts);
+  const paneLayoutsRef = useRef(paneLayouts);
+  paneLayoutsRef.current = paneLayouts;
   const [workbenchLayouts, setWorkbenchLayouts] = useState<WorkspaceWorkbenchLayouts>(() =>
     readWorkspaceWorkbenchLayouts(),
   );
@@ -504,8 +522,13 @@ function ShellAppInner() {
    * otherwise switching models in Compose leaves the left list stale.
    */
   const [modelOverrides, setModelOverrides] = useState(() => readConversationModelOverrides());
-  /** Latest run with file changes, reported up from the active ChatView for the
-   *  workspace-files tab Review panel (right rail was removed; tabs are the only chrome). */
+  const [kernelOverrides, setKernelOverrides] = useState(() => readConversationKernelOverrides());
+  useEffect(() => {
+    const sync = () => setKernelOverrides(readConversationKernelOverrides());
+    window.addEventListener(CONVERSATION_KERNEL_OVERRIDES_CHANGED_EVENT, sync);
+    return () => window.removeEventListener(CONVERSATION_KERNEL_OVERRIDES_CHANGED_EVENT, sync);
+  }, []);
+  /** Latest run with file changes, reported up from the active ChatView for review surfaces. */
   const [latestReviewView, setLatestReviewView] = useState<RunProcessView | null>(null);
   const [reviewViewsByRunId, setReviewViewsByRunId] = useState<Map<string, RunProcessView>>(
     () => new Map(),
@@ -527,6 +550,21 @@ function ShellAppInner() {
     url: string;
     seq: number;
   } | null>(null);
+  const [browserPageMeta, setBrowserPageMeta] = useState<
+    Record<string, { title?: string; favicon?: string }>
+  >({});
+  const handleBrowserPageMeta = useCallback(
+    (browserId: string, meta: { title?: string; favicon?: string }) => {
+      setBrowserPageMeta((current) => {
+        const prev = current[browserId];
+        if (prev?.title === meta.title && prev?.favicon === meta.favicon) return current;
+        return { ...current, [browserId]: { title: meta.title, favicon: meta.favicon } };
+      });
+    },
+    [],
+  );
+  const lastConversationIdByPaneRef = useRef(new Map<string, string>());
+  const lastBrowserIdByPaneRef = useRef(new Map<string, string>());
   /**
    * 正在被拖拽的对话 tab id（NewMax 式跨屏移动）：拖动 tab 时聊天区右缘
    * 显示「拖到此处开分屏」落点，drop 后该对话进入右侧分屏。
@@ -701,9 +739,12 @@ function ShellAppInner() {
           return next;
         });
       }
-      commitWorkbenchLayout(activeWorkspaceId, (current) =>
-        openWorkbenchTab(current, placement, fileWorkbenchTab(path)),
-      );
+      commitWorkbenchLayout(activeWorkspaceId, (current) => {
+        const opened = openWorkbenchTab(current, placement, fileWorkbenchTab(path));
+        return placement === 'right'
+          ? setWorkbenchFileBrowserOpen(opened, 'right', true)
+          : opened;
+      });
     },
     [activeWorkspaceId, commitWorkbenchLayout],
   );
@@ -758,77 +799,72 @@ function ShellAppInner() {
       if (!activeWorkspaceId) return;
       const browserId = createBrowserId();
       commitPaneLayout(activeWorkspaceId, (current) =>
-        openBrowserInPane(
-          current,
-          browserId,
-          url,
-          paneId ?? current.focusedPaneId,
-        ),
+        openBrowserInPane(current, browserId, url, paneId ?? current.focusedPaneId),
       );
     },
     [activeWorkspaceId, commitPaneLayout],
   );
 
-  const handleNewCanvasInPane = useCallback(
-    async (paneId?: string) => {
+  const openUntitledProjectFile = useCallback(
+    (
+      kind: 'document' | 'canvas',
+      openIn:
+        { type: 'pane'; paneId?: string } | { type: 'workbench'; placement: WorkbenchPlacement },
+    ) => {
       if (!activeWorkspaceId) return;
       const projectFolder = data.workspaces
         .find((workspace) => workspace.workspaceId === activeWorkspaceId)
         ?.folderPath?.trim();
-      const api = bridge();
-      if (!projectFolder || !api?.writeProjectFile) {
-        setNewConversationError('新建绘图前请先绑定项目文件夹');
+      if (!projectFolder) {
+        setNewConversationError(
+          kind === 'canvas' ? '新建绘图前请先绑定项目文件夹' : '新建文档前请先绑定项目文件夹',
+        );
         return;
       }
-      const path = `designs/canvas-${Date.now().toString(36)}.excalidraw`;
-      try {
-        const result = await api.writeProjectFile({
-          root: projectFolder,
-          path,
-          content: emptyExcalidrawContent(),
-          expectedMtimeMs: null,
-          expectedSize: null,
-        });
-        if (!result.ok) {
-          setNewConversationError(result.error ?? '新建绘图失败');
-          return;
-        }
-        handleOpenFileInPane(paneId ?? '', path);
-      } catch (error) {
-        setNewConversationError(error instanceof Error ? error.message : '新建绘图失败');
+      const workbench = workbenchLayouts[activeWorkspaceId];
+      const openPaths = collectOpenFilePaths({
+        panes: Object.values(paneLayouts[activeWorkspaceId]?.panes ?? {}),
+        workbenchTabs: [...(workbench?.right.tabs ?? []), ...(workbench?.bottom.tabs ?? [])],
+      });
+      const path =
+        kind === 'canvas'
+          ? allocateUntitledCanvasPath(openPaths)
+          : allocateUntitledDocumentPath(openPaths);
+      seedFilePaneUnsavedDraft(
+        projectFolder,
+        path,
+        kind === 'canvas' ? emptyExcalidrawContent() : '# 未命名文档\n\n',
+      );
+      if (openIn.type === 'workbench') {
+        commitWorkbenchLayout(activeWorkspaceId, (current) =>
+          openWorkbenchTab(current, openIn.placement, fileWorkbenchTab(path)),
+        );
+        return;
       }
+      handleOpenFileInPane(openIn.paneId ?? '', path);
     },
-    [activeWorkspaceId, data.workspaces, handleOpenFileInPane],
+    [
+      activeWorkspaceId,
+      commitWorkbenchLayout,
+      data.workspaces,
+      handleOpenFileInPane,
+      paneLayouts,
+      workbenchLayouts,
+    ],
+  );
+
+  const handleNewCanvasInPane = useCallback(
+    (paneId?: string) => {
+      openUntitledProjectFile('canvas', { type: 'pane', paneId });
+    },
+    [openUntitledProjectFile],
   );
 
   const handleNewDocumentInPane = useCallback(
-    async (paneId?: string) => {
-      if (!activeWorkspaceId) return;
-      const projectFolder = data.workspaces.find((workspace) => workspace.workspaceId === activeWorkspaceId)?.folderPath?.trim();
-      const api = bridge();
-      if (!projectFolder || !api?.writeProjectFile) {
-        setNewConversationError('新建文档前请先绑定项目文件夹');
-        return;
-      }
-      const path = `notes/note-${Date.now().toString(36)}.md`;
-      try {
-        const result = await api.writeProjectFile({
-          root: projectFolder,
-          path,
-          content: '# 未命名文档\n\n',
-          expectedMtimeMs: null,
-          expectedSize: null,
-        });
-        if (!result.ok) {
-          setNewConversationError(result.error ?? '新建文档失败');
-          return;
-        }
-        handleOpenFileInPane(paneId ?? '', path);
-      } catch (error) {
-        setNewConversationError(error instanceof Error ? error.message : '新建文档失败');
-      }
+    (paneId?: string) => {
+      openUntitledProjectFile('document', { type: 'pane', paneId });
     },
-    [activeWorkspaceId, data.workspaces, handleOpenFileInPane],
+    [openUntitledProjectFile],
   );
 
   const handleOpenBrowserInWorkbench = useCallback(
@@ -965,7 +1001,11 @@ function ShellAppInner() {
       const requestId = typeof payload.requestId === 'string' ? payload.requestId : '';
       if (!requestId || seenBrowserRequestIdsRef.current.has(requestId)) continue;
       seenBrowserRequestIdsRef.current.add(requestId);
-      if (payload.toolName !== 'browser_open' || !payload.args || typeof payload.args !== 'object') {
+      if (
+        payload.toolName !== 'browser_open' ||
+        !payload.args ||
+        typeof payload.args !== 'object'
+      ) {
         continue;
       }
       const url = (payload.args as Record<string, unknown>).url;
@@ -1027,6 +1067,12 @@ function ShellAppInner() {
       commitPaneLayout(activeWorkspaceId, (current) =>
         closeBrowserPaneTab(current, paneId, browserId),
       );
+      setBrowserPageMeta((current) => {
+        if (!(browserId in current)) return current;
+        const next = { ...current };
+        delete next[browserId];
+        return next;
+      });
     },
     [activeWorkspaceId, commitPaneLayout],
   );
@@ -1049,41 +1095,12 @@ function ShellAppInner() {
     [activeWorkspaceId, commitPaneLayout],
   );
 
-  const handleToggleWorkspaceFilesPane = useCallback(
-    (targetPaneId?: string) => {
-      if (!activeWorkspaceId) return;
-      commitPaneLayout(activeWorkspaceId, (current) => {
-        const existingPaneId = findWorkspaceFilesPane(current);
-        if (existingPaneId) {
-          return closeWorkspaceFilesPaneTab(current, existingPaneId);
-        }
-        return splitPaneWithWorkspaceFiles(
-          current,
-          targetPaneId ?? current.focusedPaneId,
-          'horizontal',
-        );
-      });
-    },
-    [activeWorkspaceId, commitPaneLayout],
-  );
-
-  const handleActivateWorkspaceFilesTab = useCallback(
-    (paneId: string) => {
-      if (!activeWorkspaceId) return;
-      commitPaneLayout(activeWorkspaceId, (current) =>
-        activateWorkspaceFilesPaneTab(current, paneId),
-      );
-    },
-    [activeWorkspaceId, commitPaneLayout],
-  );
-
-  const handleCloseWorkspaceFilesTab = useCallback(
-    (paneId: string) => {
-      if (!activeWorkspaceId) return;
-      commitPaneLayout(activeWorkspaceId, (current) => closeWorkspaceFilesPaneTab(current, paneId));
-    },
-    [activeWorkspaceId, commitPaneLayout],
-  );
+  const handleToggleWorkspaceFilesWorkbench = useCallback(() => {
+    if (!activeWorkspaceId) return;
+    commitWorkbenchLayout(activeWorkspaceId, (current) =>
+      toggleWorkspaceFilesWorkbench(current, 'right'),
+    );
+  }, [activeWorkspaceId, commitWorkbenchLayout]);
 
   const handleToggleWorkbench = useCallback(
     (placement: WorkbenchPlacement) => {
@@ -1097,9 +1114,10 @@ function ShellAppInner() {
         const scope = current[placement];
         if (scope.open) return setWorkbenchOpen(current, placement, false);
         if (scope.tabs.length > 0) return setWorkbenchOpen(current, placement, true);
-        if (placement === 'right' || !hasProjectFolder) {
+        if (placement === 'right') {
           return openWorkbenchTab(current, placement, workspaceFilesWorkbenchTab());
         }
+        if (!hasProjectFolder) return current;
         return openWorkbenchTab(current, placement, terminalWorkbenchTab(createTerminalId()));
       });
     },
@@ -1111,7 +1129,7 @@ function ShellAppInner() {
       if (!activeWorkspaceId) return;
       if (resource === 'files') {
         commitWorkbenchLayout(activeWorkspaceId, (current) =>
-          openWorkbenchTab(current, placement, workspaceFilesWorkbenchTab()),
+          toggleWorkspaceFilesWorkbench(current, 'right'),
         );
         return;
       }
@@ -1126,35 +1144,14 @@ function ShellAppInner() {
         return;
       }
       if (resource === 'canvas' || resource === 'document') {
-        const projectFolder = data.workspaces.find((workspace) => workspace.workspaceId === activeWorkspaceId)?.folderPath?.trim();
-        const api = bridge();
-        if (!projectFolder || !api?.writeProjectFile) return;
-        const path = resource === 'canvas'
-          ? `designs/canvas-${Date.now().toString(36)}.excalidraw`
-          : `notes/note-${Date.now().toString(36)}.md`;
-        void api.writeProjectFile({
-          root: projectFolder,
-          path,
-          content: resource === 'canvas' ? emptyExcalidrawContent() : '# 未命名文档\n\n',
-          expectedMtimeMs: null,
-          expectedSize: null,
-        }).then((result) => {
-          if (!result.ok) return;
-          commitWorkbenchLayout(activeWorkspaceId, (current) =>
-            openWorkbenchTab(current, placement, fileWorkbenchTab(path)),
-          );
-        });
+        openUntitledProjectFile(resource, { type: 'workbench', placement });
         return;
       }
       commitWorkbenchLayout(activeWorkspaceId, (current) =>
-        openWorkbenchTab(
-          current,
-          placement,
-          browserWorkbenchTab(createBrowserId(), 'about:blank'),
-        ),
+        openWorkbenchTab(current, placement, browserWorkbenchTab(createBrowserId(), 'about:blank')),
       );
     },
-    [activeWorkspaceId, commitWorkbenchLayout, data.workspaces],
+    [activeWorkspaceId, commitWorkbenchLayout, data.workspaces, openUntitledProjectFile],
   );
 
   const handleActivateWorkbenchTab = useCallback(
@@ -1183,28 +1180,6 @@ function ShellAppInner() {
       commitWorkbenchLayout(
         activeWorkspaceId,
         (current) => setWorkbenchSize(current, placement, size),
-        commit,
-      );
-    },
-    [activeWorkspaceId, commitWorkbenchLayout],
-  );
-
-  const handleWorkbenchFileBrowserOpenChange = useCallback(
-    (placement: WorkbenchPlacement, open: boolean) => {
-      if (!activeWorkspaceId) return;
-      commitWorkbenchLayout(activeWorkspaceId, (current) =>
-        setWorkbenchFileBrowserOpen(current, placement, open),
-      );
-    },
-    [activeWorkspaceId, commitWorkbenchLayout],
-  );
-
-  const handleWorkbenchFileBrowserWidthChange = useCallback(
-    (placement: WorkbenchPlacement, width: number, commit: boolean) => {
-      if (!activeWorkspaceId) return;
-      commitWorkbenchLayout(
-        activeWorkspaceId,
-        (current) => setWorkbenchFileBrowserWidth(current, placement, width),
         commit,
       );
     },
@@ -1262,51 +1237,6 @@ function ShellAppInner() {
       return next;
     });
   }, []);
-
-  const handleOpenFileInCurrentTab = useCallback(
-    (paneId: string, currentPath: string, nextPath: string, location?: ProjectTextLocation) => {
-      if (!activeWorkspaceId) return;
-      const normalizedPath = nextPath.trim();
-      if (!normalizedPath) return;
-      if (normalizedPath === currentPath) {
-        handleOpenFileInPane(paneId, normalizedPath, location);
-        return;
-      }
-
-      const projectFolder = data.workspaces
-        .find((workspace) => workspace.workspaceId === activeWorkspaceId)
-        ?.folderPath?.trim();
-      if (projectFolder && isFilePaneSessionDirty(projectFolder, currentPath)) {
-        handleOpenFileInPane(paneId, normalizedPath, location);
-        return;
-      }
-
-      if (projectFolder) clearFilePaneSession(projectFolder, currentPath);
-      handleFileDirtyChange(activeWorkspaceId, currentPath, false);
-      setFileRevealTargets((current) => {
-        const next = new Map(current);
-        next.delete(fileTabDirtyKey(activeWorkspaceId, currentPath));
-        if (location) {
-          fileRevealNonceRef.current += 1;
-          next.set(fileTabDirtyKey(activeWorkspaceId, normalizedPath), {
-            ...location,
-            nonce: fileRevealNonceRef.current,
-          });
-        }
-        return next;
-      });
-      commitPaneLayout(activeWorkspaceId, (current) =>
-        replaceFileInPane(current, paneId, currentPath, normalizedPath),
-      );
-    },
-    [
-      activeWorkspaceId,
-      commitPaneLayout,
-      data.workspaces,
-      handleFileDirtyChange,
-      handleOpenFileInPane,
-    ],
-  );
 
   const handleCloseFileTab = useCallback(
     async (paneId: string, path: string) => {
@@ -1508,6 +1438,7 @@ function ShellAppInner() {
       setSelectedIds(new Set());
       setMultiSelect(false);
       setPickerTrack(null);
+      ensureDefaultDraftRef.current(workspaceId);
     },
     [setDraftSession],
   );
@@ -1621,6 +1552,8 @@ function ShellAppInner() {
       writeActiveWorkspaceId(next);
       return next;
     });
+    const landingId = activeWorkspaceIdRef.current;
+    if (landingId) ensureDefaultDraftRef.current(landingId);
   }, []);
 
   // After boot data is ready, restore the last focused conversation for the
@@ -1806,14 +1739,15 @@ function ShellAppInner() {
       track: ConversationTrack,
       targetRef?: string,
       targetPaneId?: string,
+      workspaceId = activeWorkspaceId,
     ): DraftConversationSession | null => {
-      if (!activeWorkspaceId) {
+      if (!workspaceId) {
         setNewConversationError('请先创建或打开一个工作区');
         return null;
       }
       const existing = draftSessionRef.current;
-      if (existing?.workspaceId === activeWorkspaceId) {
-        commitPaneLayout(activeWorkspaceId, (current) =>
+      if (existing?.workspaceId === workspaceId) {
+        commitPaneLayout(workspaceId, (current) =>
           openConversationInPane(current, existing.id, targetPaneId),
         );
         setNav((current) => openConversation(current, existing.id));
@@ -1823,14 +1757,14 @@ function ShellAppInner() {
       draftNonceRef.current += 1;
       const createdAt = new Date().toISOString();
       const draft: DraftConversationSession = {
-        id: `draft:${activeWorkspaceId}:${createdAt}:${draftNonceRef.current}`,
-        workspaceId: activeWorkspaceId,
+        id: `draft:${workspaceId}:${createdAt}:${draftNonceRef.current}`,
+        workspaceId,
         track,
         targetRef: targetRef?.trim() || undefined,
         createdAt,
       };
       setDraftSession(draft);
-      commitPaneLayout(activeWorkspaceId, (current) =>
+      commitPaneLayout(workspaceId, (current) =>
         openConversationInPane(current, draft.id, targetPaneId),
       );
       setNav((current) => openConversation({ ...current, stage: 'talk' }, draft.id));
@@ -1838,6 +1772,11 @@ function ShellAppInner() {
     },
     [activeWorkspaceId, commitPaneLayout, setDraftSession],
   );
+
+  ensureDefaultDraftRef.current = (workspaceId: string) => {
+    if (layoutHasOpenTabs(paneLayoutsRef.current[workspaceId])) return;
+    beginDraftConversation(lastTrackRef.current, undefined, undefined, workspaceId);
+  };
 
   const createConversationWithTarget = useCallback(
     async (track: ConversationTrack, targetRef: string, firstMessage?: DraftFirstMessage) => {
@@ -1868,6 +1807,12 @@ function ShellAppInner() {
       }
       if (firstMessage) {
         writeConversationKernelOverride(createdConversationId, initialKernelId);
+        if (initialKernelId !== 'native') {
+          setKernelOverrides((current) => ({
+            ...current,
+            [createdConversationId]: initialKernelId,
+          }));
+        }
         writeConversationReasoningEffort(createdConversationId, firstMessage.reasoningEffort);
         writeConversationNetworkEnabled(createdConversationId, firstMessage.networkEnabled);
         if (firstMessage.interactionMode === 'plan') {
@@ -2548,6 +2493,17 @@ function ShellAppInner() {
         : undefined,
     [activeWorkspaceId, workbenchLayouts],
   );
+  const handleWorkbenchFileBrowserWidthChange = useCallback(
+    (width: number, commit: boolean) => {
+      if (!activeWorkspaceId) return;
+      commitWorkbenchLayout(
+        activeWorkspaceId,
+        (current) => setWorkbenchFileBrowserWidth(current, 'right', width),
+        commit,
+      );
+    },
+    [activeWorkspaceId, commitWorkbenchLayout],
+  );
 
   useEffect(() => {
     let voiceConversationId: string | undefined;
@@ -2619,7 +2575,7 @@ function ShellAppInner() {
         matchesShortcut(event, shortcuts.sidebarRight.accelerator)
       ) {
         event.preventDefault();
-        handleToggleWorkspaceFilesPane(activePaneLayout?.focusedPaneId);
+        handleToggleWorkbench('right');
         return;
       }
       if (shortcuts.planMode.enabled && matchesShortcut(event, shortcuts.planMode.accelerator)) {
@@ -2661,7 +2617,6 @@ function ShellAppInner() {
         else if (tab.type === 'terminal') void handleCloseTerminalTab(paneId, tab.terminalId);
         else if (tab.type === 'browser') handleCloseBrowserTab(paneId, tab.browserId);
         else if (tab.type === 'review') handleCloseReviewTab(paneId, tab.runId);
-        else if (tab.type === 'workspace-files') handleCloseWorkspaceFilesTab(paneId);
       }
     };
     const handleShortcutRelease = () => {
@@ -2687,9 +2642,8 @@ function ShellAppInner() {
     handleCloseFileTab,
     handleCloseReviewTab,
     handleCloseTerminalTab,
-    handleCloseWorkspaceFilesTab,
     handleNewConversation,
-    handleToggleWorkspaceFilesPane,
+    handleToggleWorkbench,
     selectWorkspace,
     settingsOpen,
   ]);
@@ -2704,12 +2658,17 @@ function ShellAppInner() {
   const hasOpenPaneTabs = Boolean(
     activePaneLayout && Object.values(activePaneLayout.panes).some((pane) => pane.tabs.length > 0),
   );
+  const hasActiveConversationPane = Boolean(
+    activePaneLayout &&
+    Object.values(activePaneLayout.panes).some((pane) =>
+      pane.tabs.some((tab) => tab.id === pane.activeTabId && tab.type === 'conversation'),
+    ),
+  );
+  const shouldRenderWallpaperReadingLayers = !hasOpenPaneTabs || hasActiveConversationPane;
   const mountedConversationPaneIds = useMemo(() => {
     if (!activePaneLayout) return new Set<string>();
     const candidates = Object.values(activePaneLayout.panes)
-      .filter(
-        (pane) => pane.tabs.find((tab) => tab.id === pane.activeTabId)?.type === 'conversation',
-      )
+      .filter((pane) => pane.tabs.some((tab) => tab.type === 'conversation'))
       .map((pane) => pane.id);
     const ordered = activePaneLayout.focusedPaneId
       ? [
@@ -2742,9 +2701,10 @@ function ShellAppInner() {
   );
 
   const handleConversationUpdated = useCallback(() => {
-    // Re-read local model overrides so sidebar identity updates immediately
-    // after a compose model switch (without waiting for a full runtime refresh).
+    // Re-read local model/kernel overrides so sidebar identity updates immediately
+    // after a compose model or kernel switch (without waiting for a full runtime refresh).
     setModelOverrides(readConversationModelOverrides());
+    setKernelOverrides(readConversationKernelOverrides());
     void refresh();
   }, [refresh]);
 
@@ -3042,7 +3002,6 @@ function ShellAppInner() {
   );
 
   const renderWorkbenchContent = (placement: WorkbenchPlacement, tab: WorkbenchTab) => {
-    const scope = activeWorkbenchLayout?.[placement];
     if (tab.type === 'workspace-files') {
       return (
         <WorkspaceFilesPanel
@@ -3068,25 +3027,9 @@ function ShellAppInner() {
               ? fileRevealTargets.get(fileTabDirtyKey(activeWorkspaceId, tab.path))
               : undefined
           }
-          workspaceFilesOpen={scope?.fileBrowserOpen ?? true}
-          onWorkspaceFilesOpenChange={(open) =>
-            handleWorkbenchFileBrowserOpenChange(placement, open)
-          }
-          explorerWidth={scope?.fileBrowserWidth}
-          onExplorerWidthChange={(width, commit) =>
-            handleWorkbenchFileBrowserWidthChange(placement, width, commit)
-          }
-          reviewView={latestReviewView}
-          onOpenReview={(view) => handleOpenReviewInWorkbench(placement, view)}
           onDirtyChange={(dirty) => {
             if (activeWorkspaceId) handleFileDirtyChange(activeWorkspaceId, tab.path, dirty);
           }}
-          onOpenFileInCurrentTab={(path, location) =>
-            handleOpenFileInWorkbench(placement, path, location)
-          }
-          onOpenFileInNewTab={(path, location) =>
-            handleOpenFileInWorkbench(placement, path, location)
-          }
         />
       );
     }
@@ -3149,6 +3092,7 @@ function ShellAppInner() {
           teams={data.teams}
           modelNames={data.modelNames}
           modelOverrides={modelOverrides}
+          kernelOverrides={kernelOverrides}
           groups={groups}
           bootState={bootState}
           bootError={bootError}
@@ -3263,7 +3207,7 @@ function ShellAppInner() {
                   className="shell-workspace-primary-content"
                   data-workspace-primary-content="true"
                 >
-                  <WallpaperReadingLayers />
+                  {shouldRenderWallpaperReadingLayers ? <WallpaperReadingLayers /> : null}
                   {activePaneLayout && hasOpenPaneTabs ? (
                     <WorkspacePaneHost
                       layout={activePaneLayout}
@@ -3284,11 +3228,15 @@ function ShellAppInner() {
                         const localTerminalTabs = pane.tabs.filter(
                           (tab) => tab.type === 'terminal',
                         );
-                        const localBrowserTabs = pane.tabs.filter((tab) => tab.type === 'browser');
+                        const localBrowserTabs = pane.tabs
+                          .filter((tab) => tab.type === 'browser')
+                          .map((tab) => {
+                            const meta = browserPageMeta[tab.browserId];
+                            return meta
+                              ? { ...tab, title: meta.title, favicon: meta.favicon }
+                              : tab;
+                          });
                         const localReviewTabs = pane.tabs.filter((tab) => tab.type === 'review');
-                        const hasLocalWorkspaceFilesTab = pane.tabs.some(
-                          (tab) => tab.type === 'workspace-files',
-                        );
                         const activeTab = pane.tabs.find((tab) => tab.id === pane.activeTabId);
                         const activeFilePath =
                           activeTab?.type === 'file' ? activeTab.path : undefined;
@@ -3298,16 +3246,30 @@ function ShellAppInner() {
                           activeTab?.type === 'browser' ? activeTab.browserId : undefined;
                         const activeReviewRunId =
                           activeTab?.type === 'review' ? activeTab.runId : undefined;
-                        const workspaceFilesPaneId = findWorkspaceFilesPane(activePaneLayout);
+                        if (activeTab?.type === 'conversation') {
+                          lastConversationIdByPaneRef.current.set(
+                            pane.id,
+                            activeTab.conversationId,
+                          );
+                        }
+                        if (activeTab?.type === 'browser') {
+                          lastBrowserIdByPaneRef.current.set(pane.id, activeTab.browserId);
+                        }
+                        const keepAliveConversationId = paneKeepAliveConversationId(
+                          pane,
+                          lastConversationIdByPaneRef.current.get(pane.id),
+                        );
+                        const keepAliveBrowserId = paneKeepAliveBrowserId(
+                          pane,
+                          lastBrowserIdByPaneRef.current.get(pane.id),
+                        );
+                        const conversationSurfaceActive = activeTab?.type === 'conversation';
                         const isDraftConversation =
-                          activeTab?.type === 'conversation' &&
-                          activeTab.conversationId === draftSession?.id;
-                        const conversation =
-                          activeTab?.type === 'conversation'
-                            ? visibleConversations.find(
-                                (item) => item.id === activeTab.conversationId,
-                              )
-                            : undefined;
+                          conversationSurfaceActive &&
+                          keepAliveConversationId === draftSession?.id;
+                        const conversation = keepAliveConversationId
+                          ? visibleConversations.find((item) => item.id === keepAliveConversationId)
+                          : undefined;
                         const conversationsForPane = visibleConversations.filter(
                           (item) =>
                             localConversationIds.includes(String(item.id)) ||
@@ -3321,7 +3283,6 @@ function ShellAppInner() {
                             'conversation',
                         ).length;
                         const shouldMountConversation = mountedConversationPaneIds.has(pane.id);
-                        const canToggleWorkspaceFiles = focused || hasLocalWorkspaceFilesTab;
                         const draggingFromThisPane = Boolean(
                           tabDragResource &&
                           pane.tabs.some((tab) => paneTabMatchesResource(tab, tabDragResource)),
@@ -3394,7 +3355,7 @@ function ShellAppInner() {
                               focused={focused}
                               conversations={conversationsForPane}
                               openIds={localConversationIds}
-                              activeId={conversation?.id}
+                              activeId={conversationSurfaceActive ? conversation?.id : undefined}
                               fileTabs={localFileTabs}
                               activeFilePath={activeFilePath}
                               terminalTabs={localTerminalTabs}
@@ -3403,9 +3364,6 @@ function ShellAppInner() {
                               activeBrowserId={activeBrowserId}
                               reviewTabs={localReviewTabs}
                               activeReviewRunId={activeReviewRunId}
-                              workspaceFilesActive={activeTab?.type === 'workspace-files'}
-                              workspaceFilesTab={hasLocalWorkspaceFilesTab}
-                              workspaceFilesPaneOpen={Boolean(workspaceFilesPaneId)}
                               canSplit={activeConversationPaneCount < MAX_MOUNTED_CHAT_VIEWS}
                               onSelect={(id) => handleActivatePaneTab(pane.id, id)}
                               onClose={(id) => handleCloseConversationTab(pane.id, id)}
@@ -3429,15 +3387,6 @@ function ShellAppInner() {
                               onNewDocument={() => void handleNewDocumentInPane(pane.id)}
                               onSelectReview={(runId) => handleActivateReviewTab(pane.id, runId)}
                               onCloseReview={(runId) => handleCloseReviewTab(pane.id, runId)}
-                              onSelectWorkspaceFiles={() =>
-                                handleActivateWorkspaceFilesTab(pane.id)
-                              }
-                              onCloseWorkspaceFiles={() => handleCloseWorkspaceFilesTab(pane.id)}
-                              onToggleWorkspaceFilesPane={
-                                canToggleWorkspaceFiles
-                                  ? () => handleToggleWorkspaceFilesPane(pane.id)
-                                  : undefined
-                              }
                               canOpenTerminal={Boolean(activeProjectFolder)}
                               onNew={() => {
                                 handleFocusPane(pane.id);
@@ -3461,47 +3410,65 @@ function ShellAppInner() {
                               }}
                               conversationActivity={conversationActivityView}
                             />
-                            <div className="shell-pane-canvas relative flex min-h-0 flex-1 overflow-hidden">
+                            <div
+                              className="shell-pane-canvas relative flex min-h-0 flex-1 flex-col overflow-hidden"
+                              data-surface={activeTab?.type ?? 'empty'}
+                            >
                               {isDraftConversation ? (
-                                emptyTalk
+                                <div
+                                  className="shell-pane-surface"
+                                  data-surface="conversation"
+                                  data-active={conversationSurfaceActive ? 'true' : 'false'}
+                                  data-testid="pane-surface-conversation"
+                                >
+                                  {emptyTalk}
+                                </div>
                               ) : conversation && shouldMountConversation ? (
-                                <ChatView
-                                  key={conversation.id}
-                                  conversation={conversation}
-                                  modelName={resolveTargetName(conversation)}
-                                  models={data.models}
-                                  agents={data.agents}
-                                  teams={data.teams}
-                                  workspaces={data.workspaces}
-                                  eventHistory={eventHistory}
-                                  runActivityAuthority={runActivityAuthority}
-                                  runtimeConnectionRevision={runtimeConnectionRevision}
-                                  runtimeConnectionNotice={runtimeConnectionNotice}
-                                  initialSkillVersionIds={initialConversationSkillSelectionsRef.current.get(
-                                    String(conversation.id),
-                                  )}
-                                  onInitialSkillSelectionConsumed={(conversationId) => {
-                                    initialConversationSkillSelectionsRef.current.delete(
-                                      conversationId,
-                                    );
-                                  }}
-                                  seedComposerText={readSeedComposerText(String(conversation.id))}
-                                  onSeedComposerTextConsumed={(conversationId) => {
-                                    seedComposerTextRef.current.delete(conversationId);
-                                  }}
-                                  onTitleUpdated={() => void refresh()}
-                                  onConversationUpdated={handleConversationUpdated}
-                                  onLatestReviewChange={handleLatestReviewChange}
-                                  onOpenFile={(path, location) =>
-                                    handleOpenFileInSplit(pane.id, path, location)
-                                  }
-                                  onOpenHtmlInBrowser={handleOpenHtmlInBrowser}
-                                  onOpenReview={(view) => handleOpenReviewInSplit(pane.id, view)}
-                                  onOpenPlanSettings={handleOpenPlanSettings}
-                                  onOpenMcpSettings={handleOpenMcpSettings}
-                                  onCreateSkill={handleCreateSkill}
-                                />
-                              ) : conversation ? (
+                                <div
+                                  className="shell-pane-surface"
+                                  data-surface="conversation"
+                                  data-active={conversationSurfaceActive ? 'true' : 'false'}
+                                  data-testid="pane-surface-conversation"
+                                >
+                                  <ChatView
+                                    key={conversation.id}
+                                    conversation={conversation}
+                                    modelName={resolveTargetName(conversation)}
+                                    models={data.models}
+                                    agents={data.agents}
+                                    teams={data.teams}
+                                    workspaces={data.workspaces}
+                                    eventHistory={eventHistory}
+                                    runActivityAuthority={runActivityAuthority}
+                                    runtimeConnectionRevision={runtimeConnectionRevision}
+                                    runtimeConnectionNotice={runtimeConnectionNotice}
+                                    initialSkillVersionIds={initialConversationSkillSelectionsRef.current.get(
+                                      String(conversation.id),
+                                    )}
+                                    onInitialSkillSelectionConsumed={(conversationId) => {
+                                      initialConversationSkillSelectionsRef.current.delete(
+                                        conversationId,
+                                      );
+                                    }}
+                                    seedComposerText={readSeedComposerText(String(conversation.id))}
+                                    onSeedComposerTextConsumed={(conversationId) => {
+                                      seedComposerTextRef.current.delete(conversationId);
+                                    }}
+                                    onTitleUpdated={() => void refresh()}
+                                    onConversationUpdated={handleConversationUpdated}
+                                    onLatestReviewChange={handleLatestReviewChange}
+                                    onOpenFile={(path, location) =>
+                                      handleOpenFileInSplit(pane.id, path, location)
+                                    }
+                                    onOpenHtmlInBrowser={handleOpenHtmlInBrowser}
+                                    onOpenWebUrl={(url) => handleOpenBrowserInPane(pane.id, url)}
+                                    onOpenReview={(view) => handleOpenReviewInSplit(pane.id, view)}
+                                    onOpenPlanSettings={handleOpenPlanSettings}
+                                    onOpenMcpSettings={handleOpenMcpSettings}
+                                    onCreateSkill={handleCreateSkill}
+                                  />
+                                </div>
+                              ) : conversation && conversationSurfaceActive ? (
                                 <button
                                   type="button"
                                   className="shell-chat-parked"
@@ -3514,99 +3481,107 @@ function ShellAppInner() {
                                     <small>此对话暂时休眠，点击加载</small>
                                   </span>
                                 </button>
-                              ) : activeTab?.type === 'browser' ? (
-                                <BrowserPanel
-                                  key={activeTab.browserId}
-                                  initialUrl={activeTab.url}
-                                  navigateUrl={
-                                    aiBrowserNav?.browserId === activeTab.browserId
-                                      ? aiBrowserNav.url
-                                      : undefined
-                                  }
-                                  navigateSeq={
-                                    aiBrowserNav?.browserId === activeTab.browserId
-                                      ? aiBrowserNav.seq
-                                      : undefined
-                                  }
-                                  onClose={() =>
-                                    handleCloseBrowserTab(pane.id, activeTab.browserId)
-                                  }
-                                  onNewTab={(url) => handleOpenBrowserInPane(pane.id, url)}
-                                  projectFolder={activeProjectFolder}
-                                  partition={`pane-browser-${activeTab.browserId}`}
-                                  registerForAutomation
-                                  automationActive={focused}
-                                />
-                              ) : activeTab?.type === 'workspace-files' ? (
-                                <WorkspaceFilesPanel
-                                  projectFolder={activeProjectFolder}
-                                  activeFilePath={undefined}
-                                  reviewView={latestReviewView}
-                                  onOpenReview={(view) =>
-                                    handleOpenReviewInWorkbench('right', view)
-                                  }
-                                  onOpenFile={(path, location) =>
-                                    handleOpenFileInPane(pane.id, path, location)
-                                  }
-                                />
-                              ) : activeTab?.type === 'review' ? (
-                                <ReviewPanel
-                                  view={reviewViewsByRunId.get(activeTab.runId) ?? null}
-                                  projectFolder={activeProjectFolder}
-                                  standalone
-                                  onOpenFile={(path, location) =>
-                                    handleOpenFileInPane(pane.id, path, location)
-                                  }
-                                  onOpenFileInNewTab={(path, location) =>
-                                    handleOpenFileInPane(pane.id, path, location)
-                                  }
-                                />
-                              ) : activeTab?.type === 'file' ? (
-                                <WorkspaceFileView
-                                  projectFolder={activeProjectFolder}
-                                  path={activeTab.path}
-                                  reviewView={latestReviewView}
-                                  onOpenReview={(view) =>
-                                    handleOpenReviewInWorkbench('right', view)
-                                  }
-                                  revealTarget={
-                                    activeWorkspaceId
-                                      ? fileRevealTargets.get(
-                                          fileTabDirtyKey(activeWorkspaceId, activeTab.path),
-                                        )
-                                      : undefined
-                                  }
-                                  onDirtyChange={(dirty) => {
-                                    if (activeWorkspaceId) {
-                                      handleFileDirtyChange(
-                                        activeWorkspaceId,
-                                        activeTab.path,
-                                        dirty,
-                                      );
+                              ) : null}
+                              {localBrowserTabs.map((tab) => {
+                                const browserActive =
+                                  activeTab?.type === 'browser' &&
+                                  activeTab.browserId === tab.browserId;
+                                return (
+                                  <div
+                                    key={tab.browserId}
+                                    className="shell-pane-surface"
+                                    data-surface="browser"
+                                    data-active={browserActive ? 'true' : 'false'}
+                                    data-testid={`pane-surface-browser-${tab.browserId}`}
+                                  >
+                                    <BrowserPanel
+                                      initialUrl={tab.url}
+                                      navigateUrl={
+                                        aiBrowserNav?.browserId === tab.browserId
+                                          ? aiBrowserNav.url
+                                          : undefined
+                                      }
+                                      navigateSeq={
+                                        aiBrowserNav?.browserId === tab.browserId
+                                          ? aiBrowserNav.seq
+                                          : undefined
+                                      }
+                                      onClose={() => handleCloseBrowserTab(pane.id, tab.browserId)}
+                                      onNewTab={(url) => handleOpenBrowserInPane(pane.id, url)}
+                                      onPageMeta={(meta) =>
+                                        handleBrowserPageMeta(tab.browserId, meta)
+                                      }
+                                      projectFolder={activeProjectFolder}
+                                      partition={`pane-browser-${tab.browserId}`}
+                                      registerForAutomation
+                                      automationActive={
+                                        focused && keepAliveBrowserId === tab.browserId
+                                      }
+                                    />
+                                  </div>
+                                );
+                              })}
+                              {activeTab?.type === 'review' ? (
+                                <div
+                                  className="shell-pane-surface"
+                                  data-surface="review"
+                                  data-active="true"
+                                >
+                                  <ReviewPanel
+                                    view={reviewViewsByRunId.get(activeTab.runId) ?? null}
+                                    projectFolder={activeProjectFolder}
+                                    standalone
+                                    onOpenFile={(path, location) =>
+                                      handleOpenFileInPane(pane.id, path, location)
                                     }
-                                  }}
-                                  onOpenFileInCurrentTab={(path, location) =>
-                                    handleOpenFileInCurrentTab(
-                                      pane.id,
-                                      activeTab.path,
-                                      path,
-                                      location,
-                                    )
-                                  }
-                                  onOpenFileInNewTab={(path, location) =>
-                                    handleOpenFileInPane(pane.id, path, location)
-                                  }
-                                />
+                                    onOpenFileInNewTab={(path, location) =>
+                                      handleOpenFileInPane(pane.id, path, location)
+                                    }
+                                  />
+                                </div>
+                              ) : activeTab?.type === 'file' ? (
+                                <div
+                                  className="shell-pane-surface"
+                                  data-surface="file"
+                                  data-active="true"
+                                >
+                                  <WorkspaceFileView
+                                    projectFolder={activeProjectFolder}
+                                    path={activeTab.path}
+                                    revealTarget={
+                                      activeWorkspaceId
+                                        ? fileRevealTargets.get(
+                                            fileTabDirtyKey(activeWorkspaceId, activeTab.path),
+                                          )
+                                        : undefined
+                                    }
+                                    onDirtyChange={(dirty) => {
+                                      if (activeWorkspaceId) {
+                                        handleFileDirtyChange(
+                                          activeWorkspaceId,
+                                          activeTab.path,
+                                          dirty,
+                                        );
+                                      }
+                                    }}
+                                  />
+                                </div>
                               ) : activeTab?.type === 'terminal' ? (
-                                <TerminalPane
-                                  key={activeTab.terminalId}
-                                  terminalId={activeTab.terminalId}
-                                  projectFolder={activeProjectFolder}
-                                  cwd={activeTab.cwd}
-                                  onCwdChange={(cwd) =>
-                                    handleTerminalCwdChange(pane.id, activeTab.terminalId, cwd)
-                                  }
-                                />
+                                <div
+                                  className="shell-pane-surface"
+                                  data-surface="terminal"
+                                  data-active="true"
+                                >
+                                  <TerminalPane
+                                    key={activeTab.terminalId}
+                                    terminalId={activeTab.terminalId}
+                                    projectFolder={activeProjectFolder}
+                                    cwd={activeTab.cwd}
+                                    onCwdChange={(cwd) =>
+                                      handleTerminalCwdChange(pane.id, activeTab.terminalId, cwd)
+                                    }
+                                  />
+                                </div>
                               ) : null}
                               {paneDropTarget?.paneId === pane.id ? (
                                 <div
@@ -3620,32 +3595,58 @@ function ShellAppInner() {
                       }}
                     />
                   ) : (
-                    <div className="shell-pane-canvas shell-pane-canvas--empty relative flex min-h-0 flex-1 overflow-hidden">
+                    <div className="shell-pane-canvas shell-pane-canvas--empty relative flex min-h-0 flex-1 flex-col overflow-hidden">
                       {emptyTalk}
                     </div>
                   )}
                 </div>
-                {activeWorkbenchLayout?.right.open &&
-                activeWorkbenchLayout.right.tabs.length > 0 ? (
+                {activeWorkbenchLayout &&
+                (activeWorkbenchLayout.right.open ||
+                  activeWorkbenchLayout.right.tabs.length > 0) ? (
                   <WorkspaceWorkbench
                     placement="right"
+                    open={activeWorkbenchLayout.right.open}
                     scope={activeWorkbenchLayout.right}
                     canOpenTerminal={Boolean(activeProjectFolder)}
                     renderContent={(tab) => renderWorkbenchContent('right', tab)}
+                    renderFileBrowser={
+                      activeProjectFolder
+                        ? () => (
+                            <WorkspaceFilesPanel
+                              projectFolder={activeProjectFolder}
+                              activeFilePath={undefined}
+                              reviewView={latestReviewView}
+                              onOpenReview={(view) => handleOpenReviewInWorkbench('right', view)}
+                              onOpenFile={(path, location) =>
+                                handleOpenFileInWorkbench('right', path, location)
+                              }
+                              onOpenFileInNewTab={(path, location) =>
+                                handleOpenFileInWorkbench('right', path, location)
+                              }
+                            />
+                          )
+                        : undefined
+                    }
                     onActivateTab={(tabId) => handleActivateWorkbenchTab('right', tabId)}
                     onCloseTab={(tab) => void handleCloseWorkbenchTab('right', tab)}
                     onNewResource={(resource) => handleNewWorkbenchResource('right', resource)}
+                    onToggleFileBrowser={
+                      activeProjectFolder ? handleToggleWorkspaceFilesWorkbench : undefined
+                    }
                     onClose={() => handleCloseWorkbench('right')}
                     onSizeChange={(size, commit) =>
                       handleWorkbenchSizeChange('right', size, commit)
                     }
+                    onFileBrowserWidthChange={handleWorkbenchFileBrowserWidthChange}
                   />
                 ) : null}
               </div>
-              {activeWorkbenchLayout?.bottom.open &&
-              activeWorkbenchLayout.bottom.tabs.length > 0 ? (
+              {activeWorkbenchLayout &&
+              (activeWorkbenchLayout.bottom.open ||
+                activeWorkbenchLayout.bottom.tabs.length > 0) ? (
                 <WorkspaceWorkbench
                   placement="bottom"
+                  open={activeWorkbenchLayout.bottom.open}
                   scope={activeWorkbenchLayout.bottom}
                   canOpenTerminal={Boolean(activeProjectFolder)}
                   renderContent={(tab) => renderWorkbenchContent('bottom', tab)}
@@ -3961,10 +3962,11 @@ export function EmptyTalk(props: {
   });
   const composerModel =
     props.models.find((model) => model.modelId === composerModelSelection.modelId) ?? selectedModel;
+  const promptEnhancementShortcutEnabled = usePromptEnhancementShortcutEnabled();
   const promptEnhancement = usePromptEnhancement({
     value: props.draft,
     onValueChange: props.onDraftChange,
-    enabled: agentPreferences.promptEnhancementEnabled,
+    enabled: agentPreferences.promptEnhancementEnabled && promptEnhancementShortcutEnabled,
     configuredModelId: agentPreferences.promptEnhancementModelId,
     currentModelId: props.selectedModelId,
     models: props.models,
@@ -4829,6 +4831,7 @@ export function EmptyTalk(props: {
                       acceptModeKeywordHint();
                       return;
                     }
+                    if (tryHandlePromptEnhancementShortcut(event, promptEnhancement)) return;
                     if (event.key === 'Escape' && slashMenuOpen) {
                       event.preventDefault();
                       dismissedSlashTextRef.current = props.draft;
@@ -5087,6 +5090,7 @@ export function EmptyTalk(props: {
                     limit={composerContextWindow}
                     modelContextWindow={composerConfiguredContextWindow}
                     contextWindowSource={composerContextWindowSource}
+                    kernelId={kernelOverride === 'native' ? undefined : kernelOverride}
                     kernelLabel={
                       kernelOverride === 'native'
                         ? undefined

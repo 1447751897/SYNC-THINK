@@ -89,6 +89,69 @@ describe('CodexAppServerKernelAdapter', () => {
     expect(second).toContainEqual({ type: 'terminal', status: 'completed' });
   });
 
+  it('restarts app-server when the per-run platform broker changes', async () => {
+    const spawns: string[][] = [];
+    const adapter = createFixtureAdapter(spawns);
+    const broker = (port: number, token: string): NonNullable<KernelRequest['platformBroker']> => ({
+      host: '127.0.0.1',
+      port,
+      token,
+      workspaceDir: process.cwd(),
+      command: process.execPath,
+      args: ['platform-mcp-server.mjs'],
+    });
+
+    for await (const _event of adapter.start(
+      makeRequest({ platformBroker: broker(41_001, 'broker-turn-1') }),
+    )) {
+      void _event;
+      // Consume the first turn so the resident process is eligible for reuse.
+    }
+    const resumed: KernelEvent[] = [];
+    for await (const event of adapter.start(
+      makeRequest({
+        userText: 'second broker turn',
+        platformBroker: broker(41_002, 'broker-turn-2'),
+        session: { id: 'thread-app-fixture', mode: 'resume' },
+      }),
+    )) {
+      resumed.push(event);
+    }
+
+    // A Codex app-server process owns the stdio MCP child it started. Reusing
+    // it with a new ephemeral broker leaves that child connected to the dead
+    // previous socket, which used to make every later tool call wait 90s.
+    expect(spawns).toHaveLength(2);
+    expect(resumed).toContainEqual({ type: 'session-started', sessionId: 'thread-app-fixture' });
+    expect(resumed).toContainEqual({ type: 'terminal', status: 'completed' });
+  });
+
+  it('enables Codex live search only for native-search routes', async () => {
+    const native = createFixtureAdapter([]);
+    const nativeEvents: KernelEvent[] = [];
+    for await (const event of native.start(
+      makeRequest({ userText: 'web search fixture', webSearchMode: 'native' }),
+    )) {
+      nativeEvents.push(event);
+    }
+    expect(nativeEvents).toContainEqual({
+      type: 'delta',
+      text: JSON.stringify({ webSearch: 'live' }),
+    });
+
+    const fallback = createFixtureAdapter([]);
+    const fallbackEvents: KernelEvent[] = [];
+    for await (const event of fallback.start(
+      makeRequest({ userText: 'web search fixture', webSearchMode: 'external' }),
+    )) {
+      fallbackEvents.push(event);
+    }
+    expect(fallbackEvents).toContainEqual({
+      type: 'delta',
+      text: JSON.stringify({ webSearch: 'disabled' }),
+    });
+  });
+
   it('maps completed reasoning items from body, summary and content parts', async () => {
     const adapter = createFixtureAdapter([]);
     const events: KernelEvent[] = [];
@@ -361,6 +424,29 @@ describe('CodexAppServerKernelAdapter', () => {
     });
   });
 
+  it('maps thread token usage into kernel occupancy', async () => {
+    const adapter = createFixtureAdapter([]);
+    const events: KernelEvent[] = [];
+    for await (const event of adapter.start(makeRequest({ userText: 'token usage fixture' }))) {
+      events.push(event);
+    }
+    expect(events).toContainEqual({
+      type: 'context-occupancy',
+      usedTokens: 42_000,
+      windowTokens: 272_000,
+    });
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: 'usage',
+        usage: expect.objectContaining({
+          input: 42_000,
+          cached: 38_000,
+          window: 272_000,
+        }),
+      }),
+    );
+  });
+
   it('maps Codex turn plan notifications to the shared task checklist tool', async () => {
     const adapter = createFixtureAdapter([]);
     const events: KernelEvent[] = [];
@@ -397,6 +483,73 @@ describe('CodexAppServerKernelAdapter', () => {
       }),
       isError: false,
     });
+  });
+
+  it('maps native fileChange items to file_change tool events with paths', async () => {
+    const adapter = createFixtureAdapter([]);
+    const events: KernelEvent[] = [];
+    for await (const event of adapter.start(makeRequest({ userText: 'file change fixture' }))) {
+      events.push(event);
+    }
+
+    const started = events.find(
+      (event): event is Extract<KernelEvent, { type: 'tool-call' }> =>
+        event.type === 'tool-call' && event.name === 'file_change',
+    );
+    expect(started).toBeTruthy();
+    expect(JSON.parse(started!.argsJson)).toEqual({
+      changes: [
+        { path: 'README.md', kind: 'update', diff: '-old\n+new' },
+        { path: 'codex-edit-test.txt', kind: 'add', diff: '+hello' },
+      ],
+    });
+    expect(events).toContainEqual({
+      type: 'tool-result',
+      toolId: started!.toolId,
+      output: JSON.stringify({
+        ok: true,
+        status: 'completed',
+        changes: [
+          { path: 'README.md', kind: 'update', diff: '-old\n+new' },
+          { path: 'codex-edit-test.txt', kind: 'add', diff: '+hello' },
+        ],
+      }),
+      isError: false,
+    });
+  });
+
+  it('maps completed-only snake_case file_change maps to file_change paths', async () => {
+    const adapter = createFixtureAdapter([]);
+    const events: KernelEvent[] = [];
+    for await (const event of adapter.start(makeRequest({ userText: 'file change map fixture' }))) {
+      events.push(event);
+    }
+
+    const calls = events.filter(
+      (event): event is Extract<KernelEvent, { type: 'tool-call' }> =>
+        event.type === 'tool-call' && event.name === 'file_change',
+    );
+    expect(calls.length).toBeGreaterThanOrEqual(1);
+    expect(JSON.parse(calls.at(-1)!.argsJson).changes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: 'codex-edit-test.txt', kind: 'delete' }),
+        expect.objectContaining({ path: 'codex-edit-test-2.txt', kind: 'add' }),
+      ]),
+    );
+    const result = events.find(
+      (event) =>
+        event.type === 'tool-result' && event.toolId === 'exec-6422071b-c6ec-40b1-bd23-24f0e5cedc6d',
+    );
+    expect(result).toMatchObject({
+      type: 'tool-result',
+      isError: false,
+    });
+    expect(JSON.parse((result as { output: string }).output).changes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: 'codex-edit-test.txt', kind: 'delete' }),
+        expect.objectContaining({ path: 'codex-edit-test-2.txt', kind: 'add' }),
+      ]),
+    );
   });
 
   it('forwards command outputDelta as live tool progress before the result', async () => {

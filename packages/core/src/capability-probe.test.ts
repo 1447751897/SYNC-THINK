@@ -40,6 +40,26 @@ describe('suggestCapabilities (product §7.2)', () => {
     );
   });
 
+  it('suggests native web search only for known search-capable model families', () => {
+    const openai = suggestCapabilities({
+      providerModelId: 'gpt-5.6-luna',
+      protocol: 'openai-responses',
+    });
+    expect(openai.capabilities).toContain('web-search');
+
+    const claude = suggestCapabilities({
+      providerModelId: 'claude-sonnet-4-6',
+      protocol: 'anthropic-messages',
+    });
+    expect(claude.capabilities).toContain('web-search');
+
+    const compatibleGatewayModel = suggestCapabilities({
+      providerModelId: 'custom-chat-model',
+      protocol: 'openai-responses',
+    });
+    expect(compatibleGatewayModel.capabilities).not.toContain('web-search');
+  });
+
   it('suggests image-generation for image models and marks chat text optional', () => {
     const result = suggestCapabilities({
       providerModelId: 'dall-e-3',
@@ -102,6 +122,7 @@ describe('normalizeCapabilities / mergeCapabilitySuggestions', () => {
       'text',
       'vision',
       'tool-calling',
+      'web-search',
       'image-generation',
       'embeddings',
     ]);

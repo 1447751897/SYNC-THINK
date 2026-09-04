@@ -12,6 +12,9 @@ const TOOL_META: Record<string, { verb: string; kind: ProcessToolKind; zh: strin
   read_file: { verb: 'Read', kind: 'read', zh: '读取文件' },
   write_file: { verb: 'Edit', kind: 'write', zh: '写入文件' },
   edit_file: { verb: 'Edit', kind: 'write', zh: '编辑文件' },
+  file_write: { verb: 'Edit', kind: 'write', zh: '写入文件' },
+  file_change: { verb: 'Edit', kind: 'write', zh: '编辑文件' },
+  apply_patch: { verb: 'Edit', kind: 'write', zh: '编辑文件' },
   list_files: { verb: 'List', kind: 'list', zh: '列出文件' },
   run_command: { verb: 'Bash', kind: 'bash', zh: '执行命令' },
   command_execution: { verb: 'Bash', kind: 'bash', zh: '命令执行' },
@@ -117,7 +120,8 @@ function extractArgs(payload: Record<string, unknown>): Record<string, unknown> 
     asRecord(payload.arguments) ??
     asRecord(payload.args) ??
     asRecord(asRecord(payload.toolCall)?.arguments) ??
-    asRecord(parseMaybeJson(asRecord(payload.toolCall)?.argumentsJson))
+    asRecord(parseMaybeJson(asRecord(payload.toolCall)?.argumentsJson)) ??
+    asRecord(parseMaybeJson(payload.argumentsJson))
   );
 }
 
@@ -128,6 +132,284 @@ function extractToolName(payload: Record<string, unknown>): string {
   const toolCall = asRecord(payload.toolCall);
   if (typeof toolCall?.name === 'string' && toolCall.name) return toolCall.name;
   return 'tool';
+}
+
+const WRITE_FILE_TOOL_NAMES = new Set([
+  'write_file',
+  'edit_file',
+  'file_write',
+  'file_change',
+  'apply_patch',
+  'write',
+  'edit',
+]);
+
+function isWriteFileTool(toolName: string): boolean {
+  return matchesToolName(toolName, WRITE_FILE_TOOL_NAMES);
+}
+
+function fileChangeActionFromKind(kind: unknown): FileChangeItem['action'] {
+  const raw =
+    typeof kind === 'string'
+      ? kind
+      : kind && typeof kind === 'object' && typeof (kind as { type?: unknown }).type === 'string'
+        ? (kind as { type: string }).type
+        : '';
+  const normalized = raw.toLowerCase();
+  if (normalized === 'add' || normalized === 'create' || normalized === 'created') return 'created';
+  if (normalized === 'delete' || normalized === 'remove' || normalized === 'deleted') {
+    return 'deleted';
+  }
+  return 'edited';
+}
+
+function normalizeWritePathEntry(
+  rec: Record<string, unknown> | undefined,
+  fallbackPath?: string,
+): { path: string; action: FileChangeItem['action']; preview?: string } | undefined {
+  const path =
+    (typeof rec?.path === 'string' && rec.path.trim()) ||
+    (typeof rec?.file === 'string' && rec.file.trim()) ||
+    (typeof rec?.file_path === 'string' && rec.file_path.trim()) ||
+    fallbackPath?.trim() ||
+    '';
+  if (!path) return undefined;
+  const preview =
+    typeof rec?.diff === 'string'
+      ? rec.diff
+      : typeof rec?.unified_diff === 'string'
+        ? rec.unified_diff
+        : typeof rec?.unifiedDiff === 'string'
+          ? rec.unifiedDiff
+          : typeof rec?.content === 'string'
+            ? rec.content
+            : undefined;
+  return {
+    path,
+    action: fileChangeActionFromKind(rec?.kind ?? rec?.type ?? rec),
+    ...(preview ? { preview } : {}),
+  };
+}
+
+function extractChangeList(
+  source?: Record<string, unknown>,
+): Array<{ path: string; action: FileChangeItem['action']; preview?: string }> {
+  const changes = source?.changes ?? source?.files;
+  if (Array.isArray(changes)) {
+    return changes.flatMap((entry) => {
+      const normalized = normalizeWritePathEntry(asRecord(entry));
+      return normalized ? [normalized] : [];
+    });
+  }
+  const map = asRecord(changes);
+  if (!map) return [];
+  return Object.entries(map).flatMap(([path, value]) => {
+    const normalized = normalizeWritePathEntry(asRecord(value) ?? {}, path);
+    return normalized ? [normalized] : [];
+  });
+}
+
+function extractApplyPatchEntries(
+  text?: string,
+): Array<{ path: string; action: FileChangeItem['action'] }> {
+  if (!text) return [];
+  const entries: Array<{ path: string; action: FileChangeItem['action'] }> = [];
+  const pattern = /^\*\*\*\s+(Add|Delete|Update)\s+File:\s+(.+?)\s*$/gm;
+  for (const match of text.matchAll(pattern)) {
+    const kind = match[1]?.toLowerCase();
+    const path = match[2]?.trim();
+    if (!path) continue;
+    entries.push({
+      path,
+      action: kind === 'add' ? 'created' : kind === 'delete' ? 'deleted' : 'edited',
+    });
+  }
+  return entries;
+}
+
+function gitStatusAction(stat: string): FileChangeItem['action'] {
+  const code = stat.replace(/\s/g, '');
+  if (code === '??' || code.includes('A')) return 'created';
+  if (code.includes('D')) return 'deleted';
+  return 'edited';
+}
+
+function extractTargetedGitStatusEntries(
+  command?: string,
+  result?: string,
+): Array<{ path: string; action: FileChangeItem['action'] }> {
+  if (!command || !result || !/\bgit\s+status\b/i.test(command)) return [];
+  if (!/\s--\s+/.test(command)) return [];
+  const entries: Array<{ path: string; action: FileChangeItem['action'] }> = [];
+  for (const line of result.split(/\r?\n/)) {
+    const match = line.match(/^([ MADRCU?!]{1,2})\s+(\S.*)$/);
+    if (!match) continue;
+    const path = match[2]?.trim();
+    if (!path) continue;
+    entries.push({ path, action: gitStatusAction(match[1] ?? '') });
+  }
+  return entries;
+}
+
+function extractWritePathEntries(
+  args?: Record<string, unknown>,
+  resultRaw?: unknown,
+): Array<{ path: string; action: FileChangeItem['action']; preview?: string }> {
+  const sources = [args, asRecord(parseMaybeJson(resultRaw))];
+  for (const source of sources) {
+    const entries = extractChangeList(source);
+    if (entries.length > 0) return entries;
+  }
+  const patchText = [
+    typeof args?.command === 'string' ? args.command : '',
+    typeof resultRaw === 'string' ? resultRaw : '',
+  ].join('\n');
+  const patchEntries = extractApplyPatchEntries(patchText);
+  if (patchEntries.length > 0) return patchEntries;
+  const path =
+    typeof args?.path === 'string'
+      ? args.path
+      : typeof args?.file === 'string'
+        ? args.file
+        : typeof args?.file_path === 'string'
+          ? args.file_path
+          : undefined;
+  if (!path) return [];
+  return [{ path, action: 'edited' }];
+}
+
+function hasFileChangeEntries(
+  args?: Record<string, unknown>,
+  resultRaw?: unknown,
+): boolean {
+  return extractWritePathEntries(args, resultRaw).length > 0;
+}
+
+function isLegacyFileChangedResult(resultRaw: unknown): boolean {
+  return typeof resultRaw === 'string' && resultRaw.trim() === 'file changed';
+}
+
+function upsertFileChange(
+  fileChanges: FileChangeItem[],
+  entry: { path: string; action: FileChangeItem['action']; preview?: string },
+  toolCallId: string,
+  extras: Partial<FileChangeItem> = {},
+): void {
+  const already = fileChanges.find(
+    (item) => item.path === entry.path && (item.toolCallId === toolCallId || !item.toolCallId),
+  );
+  if (already) {
+    already.action = entry.action;
+    already.toolCallId = toolCallId;
+    if (entry.preview) already.preview = entry.preview;
+    if (extras.content) already.content = extras.content;
+    if (extras.previousContent) already.previousContent = extras.previousContent;
+    return;
+  }
+  fileChanges.push({
+    path: entry.path,
+    action: entry.action,
+    toolCallId,
+    ...(entry.preview ? { preview: entry.preview } : {}),
+    ...extras,
+  });
+}
+
+function harvestSupplementalFileChanges(
+  events: readonly Event[],
+  fileChanges: FileChangeItem[],
+): void {
+  const commandByCall = new Map<string, string>();
+  for (const event of events) {
+    if (!isToolEvent(event.type)) continue;
+    const args = extractArgs(event.payload);
+    const toolCallId = extractToolCallId(event.payload, event.id);
+    if (typeof args?.command === 'string' && args.command) {
+      commandByCall.set(toolCallId, args.command);
+    }
+  }
+  const sawFileChangeMarker = events.some((event) => {
+    if (!isToolEvent(event.type)) return false;
+    const payload = event.payload;
+    const result = payload.result ?? payload.output;
+    return isWriteFileTool(extractToolName(payload)) || isLegacyFileChangedResult(result);
+  });
+  for (const event of events) {
+    if (!isToolEvent(event.type)) continue;
+    const payload = event.payload;
+    const args = extractArgs(payload);
+    const toolCallId = extractToolCallId(payload, event.id);
+    const command =
+      typeof args?.command === 'string' && args.command
+        ? args.command
+        : (commandByCall.get(toolCallId) ?? '');
+    const result = payload.result ?? payload.output;
+    const resultText = typeof result === 'string' ? result : '';
+    for (const entry of extractApplyPatchEntries(`${command}\n${resultText}`)) {
+      upsertFileChange(fileChanges, entry, toolCallId);
+    }
+    if (!sawFileChangeMarker) continue;
+    for (const entry of extractTargetedGitStatusEntries(command, resultText)) {
+      upsertFileChange(fileChanges, entry, toolCallId);
+    }
+  }
+}
+
+function recordWriteFileChanges(
+  fileChanges: FileChangeItem[],
+  toolName: string,
+  toolCallId: string,
+  args: Record<string, unknown> | undefined,
+  builtPath: string | undefined,
+  summary: { created?: boolean; content?: string; preview?: string },
+  payload: Record<string, unknown>,
+): void {
+  const resultRaw = payload.result ?? payload.output;
+  if (
+    !isWriteFileTool(toolName) &&
+    !hasFileChangeEntries(args, resultRaw) &&
+    !isLegacyFileChangedResult(resultRaw)
+  ) {
+    return;
+  }
+  const entries = extractWritePathEntries(args, payload.result ?? payload.output);
+  const paths =
+    entries.length > 0
+      ? entries.map((entry) =>
+          summary.created ? { ...entry, action: 'created' as const } : entry,
+        )
+      : builtPath
+        ? [{ path: builtPath, action: summary.created ? ('created' as const) : ('edited' as const) }]
+        : [];
+  const snapshot = snapshotFields(payload);
+  for (const entry of paths) {
+    const preview = entry.preview ?? summary.content ?? summary.preview;
+    const already = fileChanges.find(
+      (item) => item.path === entry.path && item.toolCallId === toolCallId,
+    );
+    if (already) {
+      if (preview) already.preview = preview;
+      already.action = entry.action;
+      if (typeof summary.content === 'string' && summary.content.length > 0) {
+        already.content = summary.content;
+      }
+      if (snapshot.previousContent) already.previousContent = snapshot.previousContent;
+      if (snapshot.previousTruncated !== undefined) {
+        already.previousTruncated = snapshot.previousTruncated;
+      }
+      continue;
+    }
+    fileChanges.push({
+      path: entry.path,
+      action: entry.action,
+      toolCallId,
+      preview,
+      ...snapshot,
+      ...(typeof summary.content === 'string' && summary.content.length > 0
+        ? { content: summary.content }
+        : {}),
+    });
+  }
 }
 
 function extractToolCallId(payload: Record<string, unknown>, eventId: string): string {
@@ -171,7 +453,9 @@ function buildLabel(
       ? args.path
       : typeof args?.file === 'string'
         ? args.file
-        : undefined;
+        : typeof args?.file_path === 'string'
+          ? args.file_path
+          : extractWritePathEntries(args)[0]?.path;
   const command =
     typeof args?.command === 'string' ? formatCommandLine(args.command, args?.args) : undefined;
   const url = typeof args?.url === 'string' ? args.url : undefined;
@@ -262,7 +546,7 @@ function summarizeResult(
     }
   }
 
-  if (toolName === 'write_file' || toolName === 'edit_file') {
+  if (isWriteFileTool(toolName)) {
     const created = obj?.created === true || obj?.isNew === true;
     const bytes =
       typeof obj?.bytes === 'number'
@@ -361,6 +645,21 @@ function sumUsageValues(
   return reported ? total : undefined;
 }
 
+function occupancyCategoriesFromPayload(
+  value: unknown,
+): Array<{ name: string; tokens: number }> | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const categories: Array<{ name: string; tokens: number }> = [];
+  for (const row of value) {
+    const record = asRecord(row);
+    const name = typeof record?.name === 'string' ? record.name.trim() : '';
+    const tokens = providerUsageNumber(record?.tokens);
+    if (!name || tokens === undefined) continue;
+    categories.push({ name, tokens });
+  }
+  return categories.length > 0 ? categories : undefined;
+}
+
 /**
  * Project NewMax-style "执行过程" steps + file changes + token usage.
  */
@@ -377,6 +676,9 @@ export function projectRunProcess(runId: RunId, events: readonly Event[]): RunPr
   const providerUsageByRequest = new Map<string, ProviderUsageProjection>();
   /** Max event sequence per requestId — used to pick the last request as the context watermark. */
   const usageRequestSequence = new Map<string, number>();
+  let occupancyUsedTokens: number | undefined;
+  let occupancyWindowTokens: number | undefined;
+  let occupancyCategories: Array<{ name: string; tokens: number }> | undefined;
   let startedAt: string | undefined;
   let completedAt: string | undefined;
   let providerModelId: string | undefined;
@@ -409,6 +711,16 @@ export function projectRunProcess(runId: RunId, events: readonly Event[]): RunPr
       }
       providerModelId = eventProviderModelId(event) ?? providerModelId;
       modelId = eventModelId(event) ?? modelId;
+      continue;
+    }
+
+    if (event.type === 'kernel.context_occupancy') {
+      const usedTokens = providerUsageNumber(event.payload.usedTokens);
+      if (usedTokens !== undefined) occupancyUsedTokens = usedTokens;
+      const windowTokens = providerUsageNumber(event.payload.windowTokens);
+      if (windowTokens !== undefined) occupancyWindowTokens = windowTokens;
+      const categories = occupancyCategoriesFromPayload(event.payload.categories);
+      if (categories) occupancyCategories = categories;
       continue;
     }
 
@@ -542,17 +854,16 @@ export function projectRunProcess(runId: RunId, events: readonly Event[]): RunPr
         ...(completed || failed ? { completedAt: event.occurredAt } : {}),
         occurredAt: event.occurredAt,
       });
-      if (completed && (toolName === 'write_file' || toolName === 'edit_file') && built.path) {
-        fileChanges.push({
-          path: built.path,
-          action: resultSummary.created ? 'created' : 'edited',
+      if (completed || requested) {
+        recordWriteFileChanges(
+          fileChanges,
+          toolName,
           toolCallId,
-          preview: resultSummary.preview,
-          ...snapshotFields(payload),
-          ...(typeof resultSummary.content === 'string' && resultSummary.content.length > 0
-            ? { content: resultSummary.content }
-            : {}),
-        });
+          argsForSummary,
+          built.path,
+          resultSummary,
+          payload,
+        );
       }
       continue;
     }
@@ -577,34 +888,15 @@ export function projectRunProcess(runId: RunId, events: readonly Event[]): RunPr
         existing.error =
           extractToolResultError(payload.result ?? payload.output) ?? existing.preview;
       }
-      if (
-        (toolName === 'write_file' || toolName === 'edit_file') &&
-        (existing.path || built.path)
-      ) {
-        const path = existing.path || built.path!;
-        const contentPreview = summary.preview;
-        const already = fileChanges.find(
-          (item) => item.path === path && item.toolCallId === toolCallId,
-        );
-        if (already) {
-          if (contentPreview) already.preview = contentPreview;
-          if (summary.created) already.action = 'created';
-          if (typeof summary.content === 'string' && summary.content.length > 0) {
-            already.content = summary.content;
-          }
-        } else {
-          fileChanges.push({
-            path,
-            action: summary.created ? 'created' : 'edited',
-            toolCallId,
-            preview: contentPreview,
-            ...snapshotFields(payload),
-            ...(typeof summary.content === 'string' && summary.content.length > 0
-              ? { content: summary.content }
-              : {}),
-          });
-        }
-      }
+      recordWriteFileChanges(
+        fileChanges,
+        toolName,
+        toolCallId,
+        argsForSummary,
+        existing.path || built.path,
+        summary,
+        payload,
+      );
     } else if (requested) {
       existing.status =
         existing.status === 'done' || existing.status === 'error' ? existing.status : 'running';
@@ -612,6 +904,15 @@ export function projectRunProcess(runId: RunId, events: readonly Event[]): RunPr
       if (!existing.startedAt || event.sequence <= (existing.sequence ?? event.sequence)) {
         existing.startedAt = event.occurredAt;
       }
+      recordWriteFileChanges(
+        fileChanges,
+        toolName,
+        toolCallId,
+        argsForSummary,
+        existing.path || built.path,
+        {},
+        payload,
+      );
     }
 
     // Prefer richer labels/args if a later event carries them.
@@ -682,6 +983,8 @@ export function projectRunProcess(runId: RunId, events: readonly Event[]): RunPr
     steps.push({ ...step, count: 1 });
   }
 
+  harvestSupplementalFileChanges(ordered, fileChanges);
+
   // Dedupe file changes by path (keep last action).
   const changeByPath = new Map<string, FileChangeItem>();
   for (const change of fileChanges) {
@@ -694,9 +997,8 @@ export function projectRunProcess(runId: RunId, events: readonly Event[]): RunPr
   const cachedTokensHit = sumUsageValues(usageRows, 'cachedTokensHit');
   const cachedTokensCreated = sumUsageValues(usageRows, 'cachedTokensCreated');
 
-  // Context watermark: input tokens sent by the provider's LAST request of this
-  // run. Output is tracked separately; including it here makes the displayed
-  // context appear to shrink when a later response is shorter.
+  // Context watermark: last billed request input, unless the kernel reported
+  // a live occupancy snapshot (Claude /context, Codex tokenUsage.last).
   let contextWatermarkTokens: number | undefined;
   let lastRequestUsage:
     | {
@@ -730,6 +1032,9 @@ export function projectRunProcess(runId: RunId, events: readonly Event[]): RunPr
       };
     }
   }
+  if (occupancyUsedTokens !== undefined) {
+    contextWatermarkTokens = occupancyUsedTokens;
+  }
 
   let durationMs: number | undefined;
   if (startedAt && completedAt) {
@@ -753,6 +1058,12 @@ export function projectRunProcess(runId: RunId, events: readonly Event[]): RunPr
     cachedTokensHit,
     cachedTokensCreated,
     ...(contextWatermarkTokens !== undefined ? { contextWatermarkTokens } : {}),
+    ...(occupancyWindowTokens !== undefined
+      ? { contextOccupancyWindowTokens: occupancyWindowTokens }
+      : {}),
+    ...(occupancyCategories !== undefined
+      ? { contextOccupancyCategories: occupancyCategories }
+      : {}),
     ...(lastRequestUsage !== undefined ? { lastRequestUsage } : {}),
     durationMs,
     providerModelId,

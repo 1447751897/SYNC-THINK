@@ -2,7 +2,7 @@ import { memo, useCallback, useMemo, useRef, useState, type ReactNode } from 're
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
-import { Check, ChevronDown, Copy, FileCode2, FileImage, FolderOpen } from 'lucide-react';
+import { Check, ChevronDown, Copy, FolderOpen } from 'lucide-react';
 import { MermaidChart } from './MermaidChart.js';
 import { HtmlSandbox } from './HtmlSandbox.js';
 import { DesignDraftPreview } from './DesignDraftPreview.js';
@@ -14,7 +14,8 @@ import { normalizeTaggedDesignHtmlBlocks } from './design-draft.js';
 import { IncrementalMarkdownParser } from './incremental-markdown.js';
 import type { OpenHtmlInBrowser } from './html-browser.js';
 import type { ProjectTextLocation } from '../../workspace-tools-contract.js';
-import { describeExternalSource, ExternalSourceIcon } from './ExternalSourceIcon.js';
+import { FileTypeIcon } from './FileTypeIcon.js';
+import { WebTextLink } from './WebTextLink.js';
 
 interface MarkdownContentProps {
   text: string;
@@ -28,6 +29,7 @@ interface MarkdownContentProps {
   modelId?: string;
   onOpenFile?: (path: string, location?: ProjectTextLocation) => void;
   onOpenHtmlInBrowser?: OpenHtmlInBrowser;
+  onOpenUrl?: (url: string) => void;
 }
 
 interface MarkdownSection {
@@ -297,68 +299,53 @@ function workspaceResourceFromHref(href: string, projectFolder?: string): Worksp
   };
 }
 
-function ResourceIcon({
-  kind,
-  href,
-}: {
-  kind: WorkspaceResource['kind'] | 'external';
-  href?: string;
-}) {
-  if (kind === 'external' && href) return <ExternalSourceIcon url={href} size={13} />;
-  if (kind === 'image') return <FileImage size={13} aria-hidden="true" />;
-  if (kind === 'directory') return <FolderOpen size={13} aria-hidden="true" />;
-  return <FileCode2 size={13} aria-hidden="true" />;
-}
-
 function ResourceLink({
   href,
   children,
   projectFolder,
   onOpenFile,
+  onOpenUrl,
 }: {
   href?: string;
   children?: ReactNode;
   projectFolder?: string;
   onOpenFile?: (path: string, location?: ProjectTextLocation) => void;
+  onOpenUrl?: (url: string) => void;
 }) {
   const value = href ?? '';
   const workspace = workspaceResourceFromHref(value, projectFolder);
   if (workspace && onOpenFile) {
     const label = extractText(children) || workspace.label;
+    const text =
+      workspace.location?.line && !/\(\s*line\s+\d+\s*\)/i.test(label)
+        ? `${label} (line ${workspace.location.line})`
+        : label;
+    const hoverPath = projectFolder
+      ? `${normalizePath(projectFolder)}/${workspace.path}`
+      : workspace.path;
+    const title = workspace.location?.line
+      ? `${hoverPath} (line ${workspace.location.line})`
+      : hoverPath;
     return (
       <button
         type="button"
         className="shell-md-resource shell-md-resource--file"
         data-resource-kind={workspace.kind}
+        title={title}
         aria-label={`打开文件 ${label}${workspace.location?.line ? `，第 ${workspace.location.line} 行` : ''}`}
         onClick={() => onOpenFile(workspace.path, workspace.location)}
       >
-        <ResourceIcon kind={workspace.kind} />
-        <span>{children || workspace.label}</span>
+        {workspace.kind === 'directory' ? (
+          <FolderOpen size={13} aria-hidden="true" />
+        ) : (
+          <FileTypeIcon path={workspace.path} size={13} />
+        )}
+        <span>{text}</span>
       </button>
     );
   }
   if (/^https?:/i.test(value)) {
-    const label = extractText(children) || value;
-    const source = describeExternalSource(value);
-    return (
-      <a
-        href={value}
-        className="shell-md-resource shell-md-resource--external"
-        data-resource-kind="external"
-        data-source-host={source.host}
-        data-source-connector={source.connectorId ?? 'web'}
-        title={source.connectorName ? `${source.connectorName} · ${source.host}` : source.host}
-        aria-label={`打开网页 ${label}`}
-        onClick={(event) => {
-          event.preventDefault();
-          void window.syncThink?.runtime?.openExternalUrl?.(value);
-        }}
-      >
-        <ResourceIcon kind="external" href={value} />
-        <span>{source.host}</span>
-      </a>
-    );
+    return <WebTextLink url={value} label={extractText(children)} onOpen={onOpenUrl} />;
   }
   return (
     <a href={value} target="_blank" rel="noreferrer noopener">
@@ -376,6 +363,7 @@ const MarkdownRenderer = memo(function MarkdownRenderer({
   modelId,
   onOpenFile,
   onOpenHtmlInBrowser,
+  onOpenUrl,
   skipVisualizations = false,
 }: {
   text: string;
@@ -386,6 +374,7 @@ const MarkdownRenderer = memo(function MarkdownRenderer({
   modelId?: string;
   onOpenFile?: (path: string, location?: ProjectTextLocation) => void;
   onOpenHtmlInBrowser?: OpenHtmlInBrowser;
+  onOpenUrl?: (url: string) => void;
   skipVisualizations?: boolean;
 }) {
   const visualizationSegments = useMemo(() => parseInlineVisualizationSegments(text), [text]);
@@ -420,6 +409,7 @@ const MarkdownRenderer = memo(function MarkdownRenderer({
               modelId={modelId}
               onOpenFile={onOpenFile}
               onOpenHtmlInBrowser={onOpenHtmlInBrowser}
+              onOpenUrl={onOpenUrl}
               skipVisualizations
             />
           );
@@ -434,7 +424,12 @@ const MarkdownRenderer = memo(function MarkdownRenderer({
       urlTransform={markdownUrlTransform}
       components={{
         a: ({ href, children }) => (
-          <ResourceLink href={href} projectFolder={projectFolder} onOpenFile={onOpenFile}>
+          <ResourceLink
+            href={href}
+            projectFolder={projectFolder}
+            onOpenFile={onOpenFile}
+            onOpenUrl={onOpenUrl}
+          >
             {children}
           </ResourceLink>
         ),
@@ -522,6 +517,7 @@ const StreamingMarkdownBlock = memo(function StreamingMarkdownBlock({
   modelId,
   onOpenFile,
   onOpenHtmlInBrowser,
+  onOpenUrl,
 }: {
   text: string;
   projectFolder?: string;
@@ -529,6 +525,7 @@ const StreamingMarkdownBlock = memo(function StreamingMarkdownBlock({
   modelId?: string;
   onOpenFile?: (path: string, location?: ProjectTextLocation) => void;
   onOpenHtmlInBrowser?: OpenHtmlInBrowser;
+  onOpenUrl?: (url: string) => void;
 }) {
   return (
     <MarkdownRenderer
@@ -540,6 +537,7 @@ const StreamingMarkdownBlock = memo(function StreamingMarkdownBlock({
       modelId={modelId}
       onOpenFile={onOpenFile}
       onOpenHtmlInBrowser={onOpenHtmlInBrowser}
+      onOpenUrl={onOpenUrl}
     />
   );
 });
@@ -551,6 +549,7 @@ function IncrementalStreamingMarkdown({
   modelId,
   onOpenFile,
   onOpenHtmlInBrowser,
+  onOpenUrl,
 }: {
   text: string;
   projectFolder?: string;
@@ -558,6 +557,7 @@ function IncrementalStreamingMarkdown({
   modelId?: string;
   onOpenFile?: (path: string, location?: ProjectTextLocation) => void;
   onOpenHtmlInBrowser?: OpenHtmlInBrowser;
+  onOpenUrl?: (url: string) => void;
 }) {
   const parserRef = useRef<IncrementalMarkdownParser>();
   if (!parserRef.current) parserRef.current = new IncrementalMarkdownParser();
@@ -573,6 +573,7 @@ function IncrementalStreamingMarkdown({
           modelId={modelId}
           onOpenFile={onOpenFile}
           onOpenHtmlInBrowser={onOpenHtmlInBrowser}
+          onOpenUrl={onOpenUrl}
         />
       ))}
     </>
@@ -589,6 +590,7 @@ function CollapsibleSection({
   modelId,
   onOpenFile,
   onOpenHtmlInBrowser,
+  onOpenUrl,
 }: {
   title: string;
   body: string;
@@ -599,6 +601,7 @@ function CollapsibleSection({
   modelId?: string;
   onOpenFile?: (path: string, location?: ProjectTextLocation) => void;
   onOpenHtmlInBrowser?: OpenHtmlInBrowser;
+  onOpenUrl?: (url: string) => void;
 }) {
   const [expanded, setExpanded] = useState(true);
   return (
@@ -625,6 +628,7 @@ function CollapsibleSection({
             modelId={modelId}
             onOpenFile={onOpenFile}
             onOpenHtmlInBrowser={onOpenHtmlInBrowser}
+            onOpenUrl={onOpenUrl}
           />
         </div>
       </div>
@@ -649,6 +653,7 @@ export function MarkdownContent({
   modelId,
   onOpenFile,
   onOpenHtmlInBrowser,
+  onOpenUrl,
 }: MarkdownContentProps) {
   const normalizedText = useMemo(() => normalizeTaggedDesignHtmlBlocks(text), [text]);
   const sections = useMemo(
@@ -665,6 +670,7 @@ export function MarkdownContent({
           modelId={modelId}
           onOpenFile={onOpenFile}
           onOpenHtmlInBrowser={onOpenHtmlInBrowser}
+          onOpenUrl={onOpenUrl}
         />
       ) : (
         sections.map((section, index) =>
@@ -680,6 +686,7 @@ export function MarkdownContent({
               modelId={modelId}
               onOpenFile={onOpenFile}
               onOpenHtmlInBrowser={onOpenHtmlInBrowser}
+              onOpenUrl={onOpenUrl}
             />
           ) : (
             <MarkdownRenderer
@@ -692,6 +699,7 @@ export function MarkdownContent({
               modelId={modelId}
               onOpenFile={onOpenFile}
               onOpenHtmlInBrowser={onOpenHtmlInBrowser}
+              onOpenUrl={onOpenUrl}
             />
           ),
         )

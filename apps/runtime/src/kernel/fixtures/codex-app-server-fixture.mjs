@@ -130,6 +130,9 @@ input.on('line', (line) => {
     const collaborationFixture = request.params?.input?.some?.(
       (item) => item?.text === 'collaboration fixture',
     );
+    const webSearchFixture = request.params?.input?.some?.(
+      (item) => item?.text === 'web search fixture',
+    );
     const nativePlanFixture = request.params?.input?.some?.(
       (item) => item?.text === 'native plan fixture',
     );
@@ -138,6 +141,15 @@ input.on('line', (line) => {
     );
     const compactionFailureFixture = request.params?.input?.some?.(
       (item) => item?.text === 'compaction failure fixture',
+    );
+    const tokenUsageFixture = request.params?.input?.some?.(
+      (item) => item?.text === 'token usage fixture',
+    );
+    const fileChangeFixture = request.params?.input?.some?.(
+      (item) => item?.text === 'file change fixture',
+    );
+    const fileChangeMapFixture = request.params?.input?.some?.(
+      (item) => item?.text === 'file change map fixture',
     );
     const planFixture = request.params?.input?.some?.((item) => item?.text === 'plan fixture');
     if (planFixture) {
@@ -200,6 +212,88 @@ input.on('line', (line) => {
       });
       return;
     }
+    if (tokenUsageFixture) {
+      write({
+        method: 'thread/tokenUsage/updated',
+        params: {
+          threadId,
+          turnId,
+          tokenUsage: {
+            last: {
+              inputTokens: 42_000,
+              outputTokens: 800,
+              cachedInputTokens: 38_000,
+              totalTokens: 42_800,
+            },
+            modelContextWindow: 272_000,
+          },
+        },
+      });
+    }
+    if (fileChangeFixture) {
+      write({
+        method: 'item/started',
+        params: {
+          threadId,
+          turnId,
+          item: {
+            id: 'fc-1',
+            type: 'fileChange',
+            status: 'inProgress',
+            changes: [
+              { path: 'README.md', kind: 'update', diff: '-old\n+new' },
+              { path: 'codex-edit-test.txt', kind: 'add', diff: '+hello' },
+            ],
+          },
+        },
+      });
+      write({
+        method: 'item/completed',
+        params: {
+          threadId,
+          turnId,
+          item: {
+            id: 'fc-1',
+            type: 'fileChange',
+            status: 'completed',
+            changes: [
+              { path: 'README.md', kind: 'update', diff: '-old\n+new' },
+              { path: 'codex-edit-test.txt', kind: 'add', diff: '+hello' },
+            ],
+          },
+        },
+      });
+    }
+    if (fileChangeMapFixture) {
+      write({
+        method: 'item/fileChange/patchUpdated',
+        params: {
+          threadId,
+          turnId,
+          itemId: 'exec-6422071b-c6ec-40b1-bd23-24f0e5cedc6d',
+          changes: {
+            'codex-edit-test.txt': { type: 'delete', content: 'old' },
+            'codex-edit-test-2.txt': { type: 'add', content: 'hello' },
+          },
+        },
+      });
+      write({
+        method: 'item/completed',
+        params: {
+          threadId,
+          turnId,
+          item: {
+            id: 'exec-6422071b-c6ec-40b1-bd23-24f0e5cedc6d',
+            type: 'file_change',
+            status: 'completed',
+            changes: {
+              'codex-edit-test.txt': { type: 'delete', content: 'old' },
+              'codex-edit-test-2.txt': { type: 'add', content: 'hello' },
+            },
+          },
+        },
+      });
+    }
     if (progressFixture) {
       write({
         method: 'item/started',
@@ -243,6 +337,8 @@ input.on('line', (line) => {
             })
           : collaborationFixture
             ? JSON.stringify(request.params?.collaborationMode)
+            : webSearchFixture
+              ? JSON.stringify({ webSearch: threadPolicy?.config?.web_search })
             : effortFixture
               ? JSON.stringify({
                   hasEffort: Object.prototype.hasOwnProperty.call(request.params, 'effort'),

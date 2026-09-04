@@ -374,6 +374,20 @@ export const MIGRATIONS: { name: string; sql: string }[] = [
     name: '0050_conversation_context_window_override',
     sql: `ALTER TABLE conversation ADD COLUMN context_window_override INTEGER;`,
   },
+  {
+    name: '0051_assistant_timeline',
+    sql: `CREATE TABLE assistant_timeline_segment (
+      run_id TEXT NOT NULL,
+      segment_id TEXT NOT NULL,
+      sequence INTEGER NOT NULL CHECK (sequence >= 0),
+      segment_json TEXT NOT NULL CHECK (json_valid(segment_json)),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (run_id, segment_id)
+    );
+    CREATE INDEX assistant_timeline_segment_order_idx
+      ON assistant_timeline_segment(run_id, sequence, segment_id);`,
+  },
 ];
 
 function taskPlanDdlSql(): string {

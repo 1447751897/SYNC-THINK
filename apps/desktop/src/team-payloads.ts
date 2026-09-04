@@ -13,6 +13,7 @@ import type {
   ConversationListMessagesPayload,
   ConversationGetContextStatusPayload,
   ConversationGetRunProcessPayload,
+  ConversationListRunTimelinePayload,
   SubscribeConversationTransientStreamPayload,
   ListGlobalAgentsPayload,
   RenameConversationPayload,
@@ -330,6 +331,30 @@ export function parseConversationGetRunProcessPayload(
   const runId = requiredString(value.runId, label);
   if (runId.length > 128) throw new Error(label);
   return { runId: runId as ConversationGetRunProcessPayload['runId'] };
+}
+
+export function parseConversationListRunTimelinePayload(
+  value: unknown,
+): ConversationListRunTimelinePayload {
+  const label = 'Invalid list-conversation-run-timeline payload';
+  if (!isRecord(value)) throw new Error(label);
+  const allowed = new Set(['runId', 'cursor', 'limit']);
+  if (Object.keys(value).some((key) => !allowed.has(key))) throw new Error(label);
+  const runId = requiredString(value.runId, label);
+  if (runId.length > 128) throw new Error(label);
+  const cursor = value.cursor === undefined ? undefined : requiredString(value.cursor, label);
+  if (cursor !== undefined && cursor.length > 512) throw new Error(label);
+  if (
+    value.limit !== undefined &&
+    (!Number.isInteger(value.limit) || (value.limit as number) < 1 || (value.limit as number) > 100)
+  ) {
+    throw new Error(label);
+  }
+  return {
+    runId: runId as ConversationListRunTimelinePayload['runId'],
+    ...(cursor ? { cursor } : {}),
+    ...(typeof value.limit === 'number' ? { limit: value.limit } : {}),
+  };
 }
 
 export function parseSubscribeConversationTransientStreamPayload(

@@ -1137,6 +1137,52 @@ describe('Runtime external kernel finalization', () => {
     }
   });
 
+  it('persists kernel occupancy separately from billed provider usage', async () => {
+    const fixture = await createFixture([
+      {
+        type: 'usage',
+        usage: {
+          real: 43_364,
+          window: 372_000,
+          input: 39_585,
+          output: 3_779,
+          cached: 38_528,
+          requestId: 'kernel-provider-request-occupancy',
+        },
+      },
+      {
+        type: 'context-occupancy',
+        usedTokens: 57_234,
+        windowTokens: 200_000,
+        categories: [
+          { name: 'System prompt', tokens: 12_000 },
+          { name: 'Messages', tokens: 8_234 },
+        ],
+      },
+      { type: 'terminal', status: 'completed' },
+    ]);
+    try {
+      await fixture.harness.executeExternalKernelRun(fixture.runId);
+      const events = fixture.stateStore.listEventsByRun(fixture.runId);
+      const occupancy = events.find((event) => event.type === 'kernel.context_occupancy');
+      expect(occupancy?.payload).toMatchObject({
+        usedTokens: 57_234,
+        windowTokens: 200_000,
+        categories: [
+          { name: 'System prompt', tokens: 12_000 },
+          { name: 'Messages', tokens: 8_234 },
+        ],
+      });
+      const usage = events.find((event) => event.type === 'provider.usage');
+      expect(usage?.payload).toMatchObject({
+        requestId: 'kernel-provider-request-occupancy',
+        tokensIn: 39_585,
+      });
+    } finally {
+      fixture.connection.raw.close();
+    }
+  });
+
   it('prefers gateway provider usage over zero-valued kernel usage', async () => {
     const fixture = await createFixture([
       {

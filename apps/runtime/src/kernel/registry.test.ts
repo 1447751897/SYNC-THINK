@@ -51,8 +51,8 @@ describe('kernel registry contract', () => {
       pause: 'turn',
       compress: 'own',
       usageReport: true,
-      // CC has no window override entry → host must cap to its 200k native budget.
-      contextWindow: { nativeLimit: 200_000, overridable: false },
+      // Claude Code honors the host-configured model window (up to 1M).
+      contextWindow: { nativeLimit: 1_000_000, overridable: true },
     });
     expect(claudeCode.knownGoodVersions).toContain('2.1.222');
     // The binary bundled with the Agent SDK dependency.

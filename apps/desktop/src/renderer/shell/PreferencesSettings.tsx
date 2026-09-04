@@ -886,7 +886,6 @@ const APP_SHORTCUTS: ShortcutDefinition[] = [
     label: '优化提示词',
     description: '输入普通文本后触发提示词优化',
     allowSingleKey: true,
-    disabled: true,
   },
   {
     id: 'workspaceSwitch',

@@ -1,5 +1,6 @@
 import { CodePreview } from './ExecutionProcessBlock.js';
 import { MarkdownContent } from './MarkdownContent.js';
+import { MarkdownDocumentEditor } from './MarkdownDocumentEditor.js';
 import { ExcalidrawPreview } from './ExcalidrawPreview.js';
 import { isExcalidrawPath, parseExcalidrawDocument } from './excalidraw-document.js';
 
@@ -21,6 +22,9 @@ export function FileContentPreview({
   onChange?: (content: string) => void;
 }) {
   if (isRenderedMarkdownPath(path)) {
+    if (onChange) {
+      return <MarkdownDocumentEditor text={text} onChange={onChange} />;
+    }
     return (
       <div className="shell-file-document-preview" data-preview-kind="markdown">
         <MarkdownContent

@@ -313,6 +313,9 @@ describe('ContextRing', () => {
     expect(screen.getByText('累计 Token 消耗')).toBeTruthy();
     expect(screen.getByText('48k')).toBeTruthy();
     expect(screen.queryByText(/prompt body|hidden reasoning/i)).toBeNull();
+    expect(screen.queryByText(/当前占用来自/)).toBeNull();
+    expect(screen.queryByText(/各构成按字节/)).toBeNull();
+    expect(screen.queryByText(/不参与自动压缩判定/)).toBeNull();
   });
 
   it('opens on click and reports remaining capacity before automatic compact', () => {
@@ -412,34 +415,43 @@ describe('ContextRing', () => {
     expect(screen.queryByRole('button', { name: '编辑会话容量' })).toBeNull();
   });
 
-  it('lets an external kernel own compaction without showing host thresholds', () => {
-    render(
-      <ContextRing
-        used={80_000}
-        limit={200_000}
-        modelContextWindow={400_000}
-        contextWindowSource="kernel-capped"
-        compactThreshold={0.7}
-        compactedAt="2026-08-29T00:00:00.000Z"
-        kernelSelfManaged
-        sections={[]}
-      />,
-    );
+  it.each(['GPT', 'ClaudeCode'] as const)(
+    'lets the %s kernel own compaction without host 70%% copy',
+    (kernelLabel) => {
+      render(
+        <ContextRing
+          used={80_000}
+          limit={200_000}
+          modelContextWindow={400_000}
+          contextWindowSource="kernel-capped"
+          compactThreshold={0.7}
+          compactedAt="2026-08-29T00:00:00.000Z"
+          kernelLabel={kernelLabel}
+          kernelSelfManaged
+          sections={[]}
+        />,
+      );
 
-    fireEvent.click(screen.getByTestId('context-ring'));
+      fireEvent.click(screen.getByTestId('context-ring'));
 
-    expect(screen.getByTestId('context-kernel-self-managed')).toBeTruthy();
-    expect(screen.queryByText('自动压缩')).toBeNull();
-    expect(screen.queryByText('距离压缩')).toBeNull();
-    expect(screen.queryByText('最近压缩')).toBeNull();
-    expect(screen.queryByText(/发送下一条消息前自动压缩/)).toBeNull();
-  });
+      expect(screen.getByTestId('context-kernel-self-managed').textContent).toBe(
+        `上下文压缩由 ${kernelLabel} 内核自行管理`,
+      );
+      expect(screen.queryByText('自动压缩')).toBeNull();
+      expect(screen.queryByText('距离压缩')).toBeNull();
+      expect(screen.queryByText('最近压缩')).toBeNull();
+      expect(screen.queryByText(/发送下一条消息前自动压缩/)).toBeNull();
+      expect(screen.queryByText(/当前占用来自/)).toBeNull();
+      expect(screen.queryByText(/各构成按字节/)).toBeNull();
+    },
+  );
 
   it('shows the active kernel in the context window header', () => {
     render(
       <ContextRing
         used={20_000}
         limit={200_000}
+        kernelId="claude-code"
         kernelLabel="ClaudeCode"
         contextWindowSource="kernel-capped"
         kernelSelfManaged
@@ -448,10 +460,58 @@ describe('ContextRing', () => {
 
     fireEvent.click(screen.getByTestId('context-ring'));
 
-    expect(screen.getByTestId('context-kernel-label').textContent).toBe('ClaudeCode');
-    expect(screen.getByTestId('context-kernel-label').getAttribute('title')).toBe(
-      '当前内核：ClaudeCode',
+    const badge = screen.getByTestId('context-kernel-label');
+    expect(badge.getAttribute('title')).toBe('当前内核：ClaudeCode');
+    expect(screen.getByRole('img', { name: 'ClaudeCode' })).toBeTruthy();
+    expect(badge.textContent).toBe('');
+  });
+
+  it('labels a kernel-reported occupancy window and shows kernel category rows', () => {
+    render(
+      <ContextRing
+        used={57_234}
+        limit={200_000}
+        modelContextWindow={372_000}
+        contextWindowSource="kernel-reported"
+        kernelLabel="ClaudeCode"
+        kernelSelfManaged
+        occupancySections={[
+          { name: 'System prompt', tokens: 12_000 },
+          { name: 'Tools', tokens: 37_000 },
+          { name: 'Messages', tokens: 8_234 },
+        ]}
+      />,
     );
+
+    fireEvent.click(screen.getByTestId('context-ring'));
+
+    expect(screen.getByTestId('context-limit-kernel-reported').textContent).toContain('内核窗口');
+    expect(screen.getByTestId('context-model-default').textContent).toContain('372k');
+    expect(screen.getByTestId('context-occupancy-categories')).toBeTruthy();
+    expect(screen.getByTestId('context-occupancy-System prompt').textContent).toContain('12k');
+    expect(screen.getByTestId('context-occupancy-Tools').textContent).toContain('37k');
+    expect(screen.getByTestId('context-occupancy-Messages').textContent).toContain('8.2k');
+    expect(screen.queryByText('自动压缩')).toBeNull();
+    expect(screen.queryByText('当前对话上下文构成')).toBeNull();
+  });
+
+  it('uses the GPT brand mark instead of the GPT word', () => {
+    render(
+      <ContextRing
+        used={20_000}
+        limit={400_000}
+        kernelId="codex"
+        kernelLabel="GPT"
+        kernelSelfManaged
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('context-ring'));
+
+    const badge = screen.getByTestId('context-kernel-label');
+    expect(badge.getAttribute('title')).toBe('当前内核：GPT');
+    expect(screen.getByRole('img', { name: 'GPT' })).toBeTruthy();
+    expect(badge.textContent).toBe('');
   });
 });
 

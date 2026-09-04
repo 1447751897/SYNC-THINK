@@ -165,6 +165,7 @@ const CAPABILITY_TAGS = new Set([
   'text',
   'vision',
   'tool-calling',
+  'web-search',
   'image-generation',
   'embeddings',
 ]);

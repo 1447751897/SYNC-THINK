@@ -639,6 +639,7 @@ export class SqliteProviderStore {
       'text',
       'vision',
       'tool-calling',
+      'web-search',
       'image-generation',
       'embeddings',
     ]);
@@ -646,6 +647,7 @@ export class SqliteProviderStore {
       'text',
       'vision',
       'tool-calling',
+      'web-search',
       'image-generation',
       'embeddings',
     ];

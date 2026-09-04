@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { Globe2 } from 'lucide-react';
 import beautifulUiIcon from './assets/connectors/beautiful-ui.png';
 import { SYNC_THINK_CONNECTOR_CATALOG } from './connector-catalog.js';
@@ -81,6 +82,10 @@ export function describeExternalSource(url: string): ExternalSourceDescriptor {
   };
 }
 
+export function siteFaviconUrl(host: string): string {
+  return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(host)}&sz=64`;
+}
+
 export function ExternalSourceIcon({
   url,
   size = 14,
@@ -91,6 +96,11 @@ export function ExternalSourceIcon({
   className?: string;
 }) {
   const source = describeExternalSource(url);
+  const [remoteFailed, setRemoteFailed] = useState(false);
+  const remoteIcon =
+    !source.icon && source.host.includes('.') && !remoteFailed
+      ? siteFaviconUrl(source.host)
+      : undefined;
   return (
     <span
       className={`shell-external-source-icon${className ? ` ${className}` : ''}`}
@@ -100,6 +110,14 @@ export function ExternalSourceIcon({
     >
       {source.icon ? (
         <img src={source.icon} alt="" width={size} height={size} />
+      ) : remoteIcon ? (
+        <img
+          src={remoteIcon}
+          alt=""
+          width={size}
+          height={size}
+          onError={() => setRemoteFailed(true)}
+        />
       ) : (
         <Globe2 size={size} strokeWidth={1.8} />
       )}

@@ -70,6 +70,7 @@ export type Feature =
   | 'conversation.getContextStatus'
   | 'conversation.setContextWindowOverride'
   | 'conversation.getRunProcess'
+  | 'conversation.listRunTimeline'
   | 'conversation.create'
   | 'conversation.rename'
   | 'conversation.setPinned'
@@ -100,6 +101,10 @@ export type Feature =
   | 'mcp.list'
   | 'mcp.setEnabled'
   | 'mcp.delete'
+  | 'webSearch.providers.list'
+  | 'webSearch.providers.save'
+  | 'webSearch.providers.reorder'
+  | 'webSearch.providers.test'
   | 'capability.workspace.list'
   | 'capability.workspace.setActive'
   | 'capability.governance.list'
@@ -201,6 +206,7 @@ export const DEFAULT_FEATURES: Feature[] = [
   'conversation.getContextStatus',
   'conversation.setContextWindowOverride',
   'conversation.getRunProcess',
+  'conversation.listRunTimeline',
   'conversation.create',
   'conversation.rename',
   'conversation.setPinned',
@@ -230,6 +236,10 @@ export const DEFAULT_FEATURES: Feature[] = [
   'mcp.list',
   'mcp.setEnabled',
   'mcp.delete',
+  'webSearch.providers.list',
+  'webSearch.providers.save',
+  'webSearch.providers.reorder',
+  'webSearch.providers.test',
   'capability.workspace.list',
   'capability.workspace.setActive',
   'capability.governance.list',

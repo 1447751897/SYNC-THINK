@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { Event } from '@sync-think/shared';
 import type {
   BrowserAutomationTaskSummary,
@@ -355,6 +355,12 @@ describe('chat execution mode tool gating', () => {
 
     const on = toolsForExecutionMode('workspace', { networkEnabled: true }).map((t) => t.name);
     expect(on).toEqual(expect.arrayContaining(['web_search', 'web_fetch', 'read_file']));
+    const nativeSearch = toolsForExecutionMode('workspace', {
+      networkEnabled: true,
+      includeWebSearchTools: false,
+    }).map((tool) => tool.name);
+    expect(nativeSearch).not.toContain('web_search');
+    expect(nativeSearch).toContain('web_fetch');
     expect(isChatToolAllowed('workspace', 'web_search', { networkEnabled: true })).toBe(true);
 
     const networkOnly = toolsForExecutionMode('workspace', {
@@ -821,6 +827,71 @@ describe('network tools', () => {
       networkEnabled: false,
     });
     expect(JSON.parse(disabled).ok).toBe(false);
+  });
+
+  it('extracts readable page content and validates redirects before following them', async () => {
+    const { executeChatBuiltInTool } = await import('./chat-tools.js');
+    const page = await executeChatBuiltInTool({
+      toolCall: {
+        id: 'readable-page',
+        name: 'web_fetch',
+        argumentsJson: JSON.stringify({ url: 'https://example.com/article', maxChars: 2_000 }),
+      },
+      networkEnabled: true,
+      fetchImpl: (async () =>
+        new Response(
+          `<!doctype html><html><head>
+        <title>Readable &amp; useful</title><style>.hidden{}</style></head><body>
+        <header>Site navigation</header><main><h1>Release notes</h1>
+        <p>First paragraph.</p><script>secretNoise()</script><p>Second paragraph.</p></main>
+        </body></html>`,
+          { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' } },
+        )) as typeof fetch,
+    });
+    expect(JSON.parse(page)).toMatchObject({
+      ok: true,
+      title: 'Readable & useful',
+      text: 'Release notes\nFirst paragraph.\nSecond paragraph.',
+      truncated: false,
+    });
+
+    const redirectFetch = vi.fn(
+      async () =>
+        new Response(null, {
+          status: 302,
+          headers: { location: 'http://127.0.0.1/private' },
+        }),
+    );
+    const blockedRedirect = await executeChatBuiltInTool({
+      toolCall: {
+        id: 'redirect-page',
+        name: 'web_fetch',
+        argumentsJson: JSON.stringify({ url: 'https://example.com/redirect' }),
+      },
+      networkEnabled: true,
+      fetchImpl: redirectFetch as typeof fetch,
+    });
+    expect(JSON.parse(blockedRedirect)).toMatchObject({ ok: false });
+    expect(redirectFetch).toHaveBeenCalledTimes(1);
+
+    const clientRendered = await executeChatBuiltInTool({
+      toolCall: {
+        id: 'spa-page',
+        name: 'web_fetch',
+        argumentsJson: JSON.stringify({ url: 'https://example.com/app' }),
+      },
+      networkEnabled: true,
+      fetchImpl: (async () =>
+        new Response(
+          '<html><head><title>SPA</title><script type="module" src="/assets/app.js"></script></head><body></body></html>',
+          { status: 200, headers: { 'content-type': 'text/html' } },
+        )) as typeof fetch,
+    });
+    expect(JSON.parse(clientRendered)).toMatchObject({
+      ok: false,
+      code: 'RENDER_REQUIRED',
+      browserRequired: true,
+    });
   });
 });
 

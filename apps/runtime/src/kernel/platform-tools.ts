@@ -24,6 +24,7 @@ import {
   CHAT_DESKTOP_TOOL_SCHEMAS,
   CHAT_MCP_CATALOG_TOOL_SCHEMAS,
   CHAT_MCP_REGISTRY_TOOL_SCHEMAS,
+  CHAT_NETWORK_TOOL_SCHEMAS,
   CHAT_PLAN_TOOL_SCHEMAS,
   CHAT_SKILL_TOOL_SCHEMAS,
   CHAT_TEAM_TOOL_SCHEMAS,
@@ -448,6 +449,8 @@ export function nativePlatformToolSchemas(
 export interface PlatformToolCatalogOptions {
   executionMode?: string;
   networkEnabled?: boolean;
+  /** False when the kernel/model pair uses provider-native keyword search. */
+  includeWebSearchTools?: boolean;
   includeAgentTools?: boolean;
   includeBrowserTools?: boolean;
   includeDesktopTools?: boolean;
@@ -507,6 +510,13 @@ export function buildPlatformMcpToolDefinitions(
   if (options.includeMcpTools) {
     add(CHAT_MCP_CATALOG_TOOL_SCHEMAS);
     add(CHAT_MCP_REGISTRY_TOOL_SCHEMAS);
+  }
+  if (options.networkEnabled) {
+    add(
+      options.includeWebSearchTools === false
+        ? CHAT_NETWORK_TOOL_SCHEMAS.filter((schema) => schema.name !== 'web_search')
+        : CHAT_NETWORK_TOOL_SCHEMAS,
+    );
   }
   if (options.networkEnabled && options.includeBrowserTools) add(CHAT_BROWSER_TOOL_SCHEMAS);
   if (options.includeDesktopTools) add(CHAT_DESKTOP_TOOL_SCHEMAS);

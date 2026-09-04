@@ -53,6 +53,7 @@ import type {
   AskQuestionAnswer,
   ConversationGetContextStatusResponse,
   ConversationGetRunProcessResponse,
+  ConversationListRunTimelineResponse,
   ConversationListMessagesResponse,
   ConversationTransientFrame,
   BrowserHandoffSummary,
@@ -125,7 +126,12 @@ import { ComposerModeBanner } from './ComposerModeBanner.js';
 import { ComposerActiveModePill, ComposerModeKeywordHint } from './ComposerModeControls.js';
 import { ComposerApprovalStack } from './ComposerApprovalStack.js';
 import { ComposerEditor } from './ComposerEditor.js';
-import { PromptEnhancementAction, usePromptEnhancement } from './prompt-enhancement.js';
+import {
+  PromptEnhancementAction,
+  tryHandlePromptEnhancementShortcut,
+  usePromptEnhancement,
+  usePromptEnhancementShortcutEnabled,
+} from './prompt-enhancement.js';
 import {
   ComposerSlashMenu,
   resolveComposerSlashMenuKeyboardAction,
@@ -172,6 +178,7 @@ import { TurnSkillControl } from './TurnSkillControl.js';
 import { keepListboxOptionVisible } from './compose-picker-scroll.js';
 import { FileChangesCard } from './ExecutionProcessBlock.js';
 import {
+  buildConversationReviewView,
   formatCompactCount,
   formatCompactDuration,
   formatCompactRunMetrics,
@@ -201,6 +208,9 @@ import {
   type ConversationNavigationItem,
 } from './ConversationMinimapRail.js';
 import { executeBrowserCommand } from './browser-commands.js';
+import { splitUserMessageLinks } from './user-message-links.js';
+import { WebTextLink } from './WebTextLink.js';
+import { loadRunTimelinePage, mergeRunTimelineSegments } from './run-timeline-loader.js';
 import {
   applyConversationStreamOperations,
   collectConversationStreamBatch,
@@ -1099,12 +1109,13 @@ interface ChatViewProps {
    */
   seedComposerText?: string;
   onSeedComposerTextConsumed?(conversationId: string): void;
-  /** Latest run with file changes, reported up so the workspace-files tab
-   *  (ConversationTabs) can render the Review panel. */
+  /** Latest run with file changes, reported up so review surfaces can render it. */
   onLatestReviewChange?(view: RunProcessView | null): void;
   onOpenFile?: (path: string, location?: ProjectTextLocation) => void;
   /** Opens generated HTML in the embedded browser tab. */
   onOpenHtmlInBrowser?: OpenHtmlInBrowser;
+  /** Opens a user-message http(s) URL in the embedded browser tab. */
+  onOpenWebUrl?: (url: string) => void;
   onOpenReview?: (view: RunProcessView) => void;
   /** Opens the real model settings destination used by the Plan banner. */
   onOpenPlanSettings?: () => void;
@@ -1149,6 +1160,7 @@ export function ChatView({
   onLatestReviewChange,
   onOpenFile,
   onOpenHtmlInBrowser,
+  onOpenWebUrl,
   onOpenReview,
   onOpenPlanSettings,
   onCreateSkill,
@@ -1358,8 +1370,7 @@ export function ChatView({
     import('@sync-think/protocol').GoalGetResponse | undefined
   >();
   const activeGoalState =
-    goalState?.goal &&
-    String(goalState.goal.conversationId) === String(conversation.id)
+    goalState?.goal && String(goalState.goal.conversationId) === String(conversation.id)
       ? goalState
       : undefined;
   const goalLoadGenerationRef = useRef(0);
@@ -2381,22 +2392,12 @@ export function ChatView({
     }
     return display;
   }, [runProcessById, runTerminalById]);
-  /** NewMax-style Review: latest run with file changes (drives the Review tab). */
-  const latestReviewView = useMemo(() => {
-    let latest: RunProcessView | null = null;
-    for (const process of displayRunProcessById.values()) {
-      if (process.fileChanges.length === 0) continue;
-      if (!latest) {
-        latest = process;
-        continue;
-      }
-      const candidateStamp = process.completedAt ?? process.startedAt ?? '';
-      const latestStamp = latest.completedAt ?? latest.startedAt ?? '';
-      if (candidateStamp > latestStamp) latest = process;
-    }
-    return latest;
-  }, [displayRunProcessById]);
-  /** Report up so the workspace-files tab (ConversationTabs) can render Review. */
+  /** Conversation-scoped Review: every created/edited file across this chat. */
+  const latestReviewView = useMemo(
+    () => buildConversationReviewView(displayRunProcessById.values()),
+    [displayRunProcessById],
+  );
+  /** Report up so workspace review surfaces can render the latest run. */
   useEffect(() => {
     onLatestReviewChange?.(latestReviewView);
   }, [latestReviewView, onLatestReviewChange]);
@@ -2918,16 +2919,10 @@ export function ChatView({
       }
       void subscription.unsubscribe();
     };
-  }, [
-    conversation.id,
-    flushTransientFrames,
-    loadMessages,
-    refreshContextStatus,
-    renderTransientDraft,
-    scheduleTransientFrameFlush,
-    threadId,
-    updateRunProcess,
-  ]);
+    // Kernel/model context refreshes must not resubscribe: tearing down the
+    // live stream on a picker click races the 5s IPC budget and makes the
+    // shell look frozen while conversation.subscribeTransientStream times out.
+  }, [conversation.id, scheduleTransientFrameFlush, threadId, updateRunProcess]);
 
   // Streaming via durable events is now a compatibility/failure fallback.
   // While transient is healthy it owns the complete visible order, including
@@ -3432,6 +3427,8 @@ export function ChatView({
   const flowTipSignature = `${conversation.id}:${messages.at(-1)?.id ?? 'empty'}:${
     messages.at(-1)?.streaming ? 'streaming' : 'settled'
   }:${pendingApprovals.at(-1)?.approvalId ?? 'no-approval'}`;
+  const followMainContentResize =
+    !visibleStreamingMessage?.streaming || Boolean(visibleStreamingMessage.answerText?.trim());
   const pinMessagesToBottom = useCallback(() => {
     const scroller = messagesScrollRef.current;
     if (!scroller || !stickToBottomRef.current) return;
@@ -3443,18 +3440,22 @@ export function ChatView({
     lastObservedScrollTopRef.current = scroller.scrollTop;
   }, []);
 
-  // Message boundaries use a stable tip signature. Actual Markdown/process
-  // growth follows ResizeObserver and does not force layout on every text delta.
+  // Place a new turn once, then keep its visual anchor stable while the
+  // reasoning/process panel grows. That panel owns its own capped scrolling;
+  // forcing the outer list to the bottom for every Think row makes the whole
+  // conversation jump upward. Final-answer text still follows the live tail.
   useLayoutEffect(() => {
     pinMessagesToBottom();
-  }, [flowTipSignature, pinMessagesToBottom]);
+  }, [flowTipSignature, followMainContentResize, pinMessagesToBottom]);
   useEffect(() => {
     const content = messagesContentRef.current;
     if (!content || typeof ResizeObserver === 'undefined') return;
-    const observer = new ResizeObserver(() => pinMessagesToBottom());
+    const observer = new ResizeObserver(() => {
+      if (followMainContentResize) pinMessagesToBottom();
+    });
     observer.observe(content);
     return () => observer.disconnect();
-  }, [conversation.id, pinMessagesToBottom]);
+  }, [conversation.id, followMainContentResize, pinMessagesToBottom]);
 
   const sendUserText = useCallback(
     async (
@@ -4980,7 +4981,8 @@ export function ChatView({
             },
           ]);
         } else if (slashCmd.kind === 'plan-with-request') {
-          if (activeGoalState?.goal?.status === 'active' && !(await pauseGoalForTransition())) return;
+          if (activeGoalState?.goal?.status === 'active' && !(await pauseGoalForTransition()))
+            return;
           await api?.setConversationInteractionMode?.({
             conversationId: conversation.id,
             interactionMode: 'plan',
@@ -5584,10 +5586,11 @@ export function ChatView({
     currentReasoningEffort: reasoningEffort,
   });
   const composerModelLabel = configuredModelLabel(composerModelSelection.modelId);
+  const promptEnhancementShortcutEnabled = usePromptEnhancementShortcutEnabled();
   const promptEnhancement = usePromptEnhancement({
     value: input,
     onValueChange: setInput,
-    enabled: agentPreferences.promptEnhancementEnabled,
+    enabled: agentPreferences.promptEnhancementEnabled && promptEnhancementShortcutEnabled,
     configuredModelId: agentPreferences.promptEnhancementModelId,
     currentModelId: activeModelId,
     models,
@@ -5743,11 +5746,16 @@ export function ChatView({
   //
   // External kernels (claude-code / codex) keep their history inside the spawned
   // process, so the host estimate has no relation to what they actually hold.
-  // When the latest external-kernel run reports its final request occupancy
-  // (context watermark — last request totalInput+output, never the tool-loop
-  // sum), use that for the ring and mark the breakdown as kernel-managed.
-  const kernelContextWatermark = useMemo(() => {
-    let latestTokens: number | undefined;
+  // Prefer kernel.context_occupancy (Claude /context, Codex tokenUsage.last);
+  // fall back to the last billed request input when the kernel did not report.
+  const kernelContextOccupancy = useMemo(() => {
+    let latest:
+      | {
+          usedTokens: number;
+          windowTokens?: number;
+          categories?: Array<{ name: string; tokens: number }>;
+        }
+      | undefined;
     let latestStamp = '';
     for (const [runId, process] of displayRunProcessById) {
       if (typeof process.contextWatermarkTokens !== 'number') continue;
@@ -5759,13 +5767,21 @@ export function ChatView({
       const stamp = process.completedAt ?? process.startedAt ?? '';
       if (!latestStamp || stamp >= latestStamp) {
         latestStamp = stamp;
-        latestTokens = process.contextWatermarkTokens;
+        latest = {
+          usedTokens: process.contextWatermarkTokens,
+          ...(typeof process.contextOccupancyWindowTokens === 'number'
+            ? { windowTokens: process.contextOccupancyWindowTokens }
+            : {}),
+          ...(process.contextOccupancyCategories && process.contextOccupancyCategories.length > 0
+            ? { categories: process.contextOccupancyCategories }
+            : {}),
+        };
       }
     }
-    return latestTokens;
+    return latest;
   }, [displayRunProcessById, kernelOverride, runKernelById]);
-  const kernelSelfManaged = kernelContextWatermark !== undefined;
-  const contextUsed = kernelContextWatermark ?? contextStatus?.estimatedUsedTokens ?? 0;
+  const kernelSelfManaged = kernelOverride !== 'native' && Boolean(kernelOverride);
+  const contextUsed = kernelContextOccupancy?.usedTokens ?? contextStatus?.estimatedUsedTokens ?? 0;
 
   // Session metrics for the NewMax ring hover card (会话 耗时 / 用量).
   const sessionMetrics = useMemo(() => {
@@ -5831,9 +5847,8 @@ export function ChatView({
   const canStop = Boolean(projected.activeRunId) && (reconciledSending || projected.streaming);
   // Active kernel display + pause degradation per capabilities.pause.
   const activeKernel = kernelRegistry?.find((kernel) => kernel.kernelId === kernelOverride) ?? null;
-  // Effective ring window + source label: the model's configured window is
-  // capped by a non-overridable kernel native limit (Claude Code = 200k), so
-  // the ring never shows a budget the kernel itself cannot honor.
+  // Effective ring window + source label: a non-overridable kernel native
+  // limit still caps the ring; Claude Code now follows the model window.
   const displayedContext = resolveDisplayedContextWindow({
     catalogContextWindow: activeModelOption?.contextWindow,
     snapshotContextWindow: contextStatus?.contextWindow,
@@ -5849,15 +5864,21 @@ export function ChatView({
     (contextWindowCap !== undefined &&
       contextWindowCap.overridable === false &&
       contextConfiguredWindow > contextWindowCap.nativeLimit);
-  const contextLimit = contextWindowCapped
-    ? (contextWindowCap?.nativeLimit ?? contextConfiguredWindow)
-    : contextConfiguredWindow;
-  const contextWindowSource: 'configured' | 'kernel-capped' | 'estimated' =
-    displayedContext.estimated
-      ? 'estimated'
+  const occupancyWindow = kernelContextOccupancy?.windowTokens;
+  const contextLimit =
+    occupancyWindow !== undefined && occupancyWindow > 0
+      ? occupancyWindow
       : contextWindowCapped
-        ? 'kernel-capped'
-        : 'configured';
+        ? (contextWindowCap?.nativeLimit ?? contextConfiguredWindow)
+        : contextConfiguredWindow;
+  const contextWindowSource: 'configured' | 'kernel-capped' | 'estimated' | 'kernel-reported' =
+    occupancyWindow !== undefined && occupancyWindow > 0
+      ? 'kernel-reported'
+      : displayedContext.estimated
+        ? 'estimated'
+        : contextWindowCapped
+          ? 'kernel-capped'
+          : 'configured';
   const stopTitle = activeKernel?.capabilities.pause
     ? activeKernel.capabilities.pause === 'executor'
       ? '暂停任务'
@@ -6135,6 +6156,7 @@ export function ChatView({
                     onOpenChange={onOpenFile}
                     conversationId={String(conversation.id)}
                     onOpenHtmlInBrowser={onOpenHtmlInBrowser}
+                    onOpenWebUrl={onOpenWebUrl}
                     onOpenReview={onOpenReview}
                     projectFolder={projectFolder}
                     onOpenImage={setLightbox}
@@ -6185,6 +6207,7 @@ export function ChatView({
                     onOpenChange={onOpenFile}
                     conversationId={String(conversation.id)}
                     onOpenHtmlInBrowser={onOpenHtmlInBrowser}
+                    onOpenWebUrl={onOpenWebUrl}
                     onOpenReview={onOpenReview}
                     projectFolder={projectFolder}
                     onOpenImage={setLightbox}
@@ -6442,7 +6465,10 @@ export function ChatView({
                     goalRunning={goalIsActive}
                     onChange={(value, selection) => handleInputChange(value, selection.start)}
                     onSelectionChange={({ start }) => handleEditorSelectionChange(start)}
-                    onKeyDown={handleKeyDown}
+                    onKeyDown={(event) => {
+                      if (tryHandlePromptEnhancementShortcut(event, promptEnhancement)) return;
+                      handleKeyDown(event);
+                    }}
                     onPaste={handlePaste}
                     onOpenAttachment={(attachment) => {
                       if (attachment.kind === 'image' && attachment.previewUrl) {
@@ -6691,6 +6717,7 @@ export function ChatView({
                   <ContextRing
                     used={contextUsed}
                     limit={contextLimit}
+                    kernelId={kernelOverride === 'native' ? undefined : kernelOverride}
                     kernelLabel={
                       kernelOverride === 'native'
                         ? undefined
@@ -6712,6 +6739,7 @@ export function ChatView({
                     compactedAt={contextStatus?.compactedAt}
                     sections={contextStatus?.sections}
                     kernelSelfManaged={kernelSelfManaged}
+                    occupancySections={kernelContextOccupancy?.categories}
                     sessionDurationMs={sessionMetrics.durationMs}
                     sessionTokens={
                       durableUsageSummary
@@ -6760,11 +6788,13 @@ export function ChatView({
                         // The old snapshot belongs to the previous kernel. Drop
                         // it immediately so the ring never presents a stale
                         // capacity while the Runtime builds the new snapshot.
+                        // Kernel override is local-only — do not refresh the
+                        // whole workspace catalog here; that races the snapshot
+                        // rebuild and the 5s IPC budget.
                         contextStatusLoadGenerationRef.current += 1;
                         setContextStatus(null);
                         setKernelOverride(kernelId);
                         writeConversationKernelOverride(String(conversation.id), kernelId);
-                        onConversationUpdated?.();
                       }}
                       onPick={(modelId) => {
                         if (composerModelSelection.routed && planActSetting) {
@@ -6914,13 +6944,16 @@ const USER_TEXT_COLLAPSE_HEIGHT = 160;
 const CollapsibleUserText = memo(function CollapsibleUserText({
   text,
   prefix,
+  onOpenUrl,
 }: {
   text: string;
   prefix?: ReactNode;
+  onOpenUrl?: (url: string) => void;
 }) {
   const [collapsed, setCollapsed] = useState(true);
   const [overflowing, setOverflowing] = useState(false);
   const innerRef = useRef<HTMLDivElement>(null);
+  const parts = useMemo(() => splitUserMessageLinks(text), [text]);
 
   useLayoutEffect(() => {
     const el = innerRef.current;
@@ -6939,7 +6972,13 @@ const CollapsibleUserText = memo(function CollapsibleUserText({
         style={expanded ? undefined : { maxHeight: USER_TEXT_COLLAPSE_HEIGHT }}
       >
         {prefix}
-        <span>{text}</span>
+        {parts.map((part, index) =>
+          part.type === 'url' ? (
+            <WebTextLink key={`url-${index}`} url={part.value} onOpen={onOpenUrl} />
+          ) : (
+            <span key={`text-${index}`}>{part.value}</span>
+          ),
+        )}
       </div>
       {overflowing ? (
         <button
@@ -7092,6 +7131,7 @@ const MessageBubble = memo(function MessageBubble({
   onOpenChange,
   conversationId,
   onOpenHtmlInBrowser,
+  onOpenWebUrl,
   onOpenReview,
   projectFolder,
   onOpenImage,
@@ -7113,6 +7153,7 @@ const MessageBubble = memo(function MessageBubble({
   onOpenChange?: (path: string, location?: ProjectTextLocation) => void;
   conversationId?: string;
   onOpenHtmlInBrowser?: OpenHtmlInBrowser;
+  onOpenWebUrl?: (url: string) => void;
   onOpenReview?: (view: RunProcessView) => void;
   projectFolder?: string;
   onOpenImage?: (image: MessageImage) => void;
@@ -7128,6 +7169,93 @@ const MessageBubble = memo(function MessageBubble({
   const systemTone: SystemMessageTone = resolveSystemMessageTone(message.tone, message.text);
   const [copied, setCopied] = useState(false);
   const [feedback, setFeedback] = useState<'up' | 'down' | null>(null);
+  const [loadedAssistantTimeline, setLoadedAssistantTimeline] = useState<AssistantTurnSegment[]>();
+  const [timelineLoadState, setTimelineLoadState] = useState<
+    'idle' | 'loading' | 'loaded' | 'error'
+  >('idle');
+  const [timelineNextCursor, setTimelineNextCursor] = useState<string>();
+  const [timelineTotalSegments, setTimelineTotalSegments] = useState<number>();
+  const timelineLoadPromiseRef = useRef<Promise<void> | null>(null);
+  const timelineLoadGenerationRef = useRef(0);
+  const timelineNextCursorRef = useRef<string>();
+  const timelineHasLoadedPageRef = useRef(false);
+  const timelineSeenCursorsRef = useRef(new Set<string>());
+  const observedTimelineRunRef = useRef(message.runId);
+
+  useEffect(() => {
+    if (observedTimelineRunRef.current === message.runId) return;
+    observedTimelineRunRef.current = message.runId;
+    timelineLoadGenerationRef.current += 1;
+    timelineLoadPromiseRef.current = null;
+    timelineNextCursorRef.current = undefined;
+    timelineHasLoadedPageRef.current = false;
+    timelineSeenCursorsRef.current.clear();
+    setLoadedAssistantTimeline(undefined);
+    setTimelineNextCursor(undefined);
+    setTimelineTotalSegments(undefined);
+    setTimelineLoadState('idle');
+  }, [message.runId]);
+
+  useEffect(
+    () => () => {
+      timelineLoadGenerationRef.current += 1;
+    },
+    [],
+  );
+
+  const loadAssistantTimelinePage = useCallback(() => {
+    const runId = message.runId;
+    const api = bridge();
+    if (!runId || message.streaming || !api?.listConversationRunTimeline) return;
+    if (timelineLoadPromiseRef.current) return;
+    const requestCursor = timelineHasLoadedPageRef.current
+      ? timelineNextCursorRef.current
+      : undefined;
+    if (timelineHasLoadedPageRef.current && !requestCursor) return;
+
+    const generation = timelineLoadGenerationRef.current;
+    setTimelineLoadState('loading');
+    const request = loadRunTimelinePage(
+      (payload) =>
+        api.listConversationRunTimeline(payload) as Promise<ConversationListRunTimelineResponse>,
+      runId as RunId,
+      requestCursor,
+    )
+      .then((page) => {
+        if (timelineLoadGenerationRef.current !== generation) return;
+        if (page.nextCursor && timelineSeenCursorsRef.current.has(page.nextCursor)) {
+          throw new Error('conversation.run_timeline_cursor_repeated');
+        }
+        if (page.nextCursor) timelineSeenCursorsRef.current.add(page.nextCursor);
+        timelineHasLoadedPageRef.current = true;
+        timelineNextCursorRef.current = page.nextCursor;
+        setTimelineNextCursor(page.nextCursor);
+        setTimelineTotalSegments(page.totalSegments);
+        if (page.segments.length > 0) {
+          setLoadedAssistantTimeline((current) =>
+            mergeRunTimelineSegments(current ?? [], page.segments),
+          );
+        }
+        setTimelineLoadState('loaded');
+      })
+      .catch(() => {
+        if (timelineLoadGenerationRef.current === generation) setTimelineLoadState('error');
+      })
+      .finally(() => {
+        if (timelineLoadPromiseRef.current === request) timelineLoadPromiseRef.current = null;
+      });
+    timelineLoadPromiseRef.current = request;
+  }, [message.runId, message.streaming]);
+
+  const loadedTimelineFields = useMemo(
+    () => assistantTimelineToChatFields(loadedAssistantTimeline),
+    [loadedAssistantTimeline],
+  );
+  const hasLoadedTimeline = Boolean(loadedAssistantTimeline?.length);
+  const displayedTimeline = hasLoadedTimeline ? loadedAssistantTimeline : message.assistantTimeline;
+  const displayedProcessItems = hasLoadedTimeline
+    ? loadedTimelineFields.processItems
+    : message.processItems;
 
   const metricsLabel = useMemo(() => {
     if (!processView) return undefined;
@@ -7221,10 +7349,10 @@ const MessageBubble = memo(function MessageBubble({
         ? []
         : collectAnswerSources(
             message.answerText ?? message.text,
-            message.processItems,
+            displayedProcessItems,
             projectFolder,
           ),
-    [message.answerText, message.processItems, message.streaming, message.text, projectFolder],
+    [displayedProcessItems, message.answerText, message.streaming, message.text, projectFolder],
   );
 
   if (isUser) {
@@ -7251,6 +7379,7 @@ const MessageBubble = memo(function MessageBubble({
             {message.text ? (
               <CollapsibleUserText
                 text={message.text}
+                onOpenUrl={onOpenWebUrl}
                 prefix={
                   message.skillVersionIds?.length ? (
                     <span className="shell-user-skill-list" data-testid="message-skill-list">
@@ -7354,10 +7483,7 @@ const MessageBubble = memo(function MessageBubble({
     message.globalAgentName?.trim() || runAgentIdentity?.name || avatarSource?.name;
   const avatarName = avatarSource?.name ?? visibleAgentLabel ?? '助手';
   const hasAnswerText = Boolean((message.answerText ?? message.text).trim());
-  const timelineTiming = assistantTimelineProcessTiming(
-    message.assistantTimeline,
-    !message.streaming,
-  );
+  const timelineTiming = assistantTimelineProcessTiming(displayedTimeline, !message.streaming);
   const showFooter = !message.streaming && (hasAnswerText || Boolean(processView));
   return (
     <div className="shell-msg shell-msg--assistant group relative flex items-start gap-2.5">
@@ -7373,14 +7499,14 @@ const MessageBubble = memo(function MessageBubble({
             // Streaming snapshots carry reasoning in the message field (not in
             // blocks yet); prepend it so the thinking row streams in time
             // order. Completed messages already derive it from blocks.
-            ...(!(message.processItems ?? []).some((item) => item.kind === 'reasoning') &&
+            ...(!(displayedProcessItems ?? []).some((item) => item.kind === 'reasoning') &&
             message.reasoningText
               ? [{ kind: 'reasoning' as const, text: message.reasoningText }]
               : []),
-            ...(message.processItems ?? []),
+            ...(displayedProcessItems ?? []),
           ]}
-          steps={processView?.steps}
-          commentarySegments={message.commentarySegments}
+          steps={hasLoadedTimeline ? undefined : processView?.steps}
+          commentarySegments={hasLoadedTimeline ? undefined : message.commentarySegments}
           streaming={Boolean(message.streaming)}
           answerStarted={hasAnswerText}
           runId={message.runId ?? message.id}
@@ -7391,6 +7517,17 @@ const MessageBubble = memo(function MessageBubble({
           showToolUse={agentPreferences.showToolUse}
           toolCallExpandedByDefault={agentPreferences.toolCallExpandedByDefault}
           onOpenChange={onOpenChange}
+          onPanelOpen={
+            !message.streaming && message.runId && bridge()?.listConversationRunTimeline
+              ? loadAssistantTimelinePage
+              : undefined
+          }
+          timelineLoadState={timelineLoadState}
+          timelineLoadedCount={loadedAssistantTimeline?.length}
+          timelineTotalSegments={timelineTotalSegments}
+          timelineHasMore={Boolean(timelineNextCursor)}
+          onLoadMoreTimeline={loadAssistantTimelinePage}
+          onRetryTimelineLoad={loadAssistantTimelinePage}
           supplementalContent={
             message.processStatus ||
             message.terminalState ||
@@ -7441,6 +7578,7 @@ const MessageBubble = memo(function MessageBubble({
             conversationId={conversationId}
             onOpenFile={onOpenChange}
             onOpenHtmlInBrowser={onOpenHtmlInBrowser}
+            onOpenUrl={onOpenWebUrl}
           />
         ) : null}
         {showFooter ? (

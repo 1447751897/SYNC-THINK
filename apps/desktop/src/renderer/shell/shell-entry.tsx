@@ -1,6 +1,7 @@
 import { createRoot } from 'react-dom/client';
 import { Phase3VisualFixture, resolvePhase3VisualCase } from './Phase3VisualFixture.js';
 import { ShellApp } from './ShellApp.js';
+import { applyShellMotionPreference } from '../ui-preferences.js';
 import {
   applyAppearancePreferences,
   readAppearancePreferences,
@@ -26,11 +27,8 @@ if (phase3VisualCase) {
   const quickWindow = readShortcutPreferences().quickWindow;
   void window.syncThink?.runtime?.setGlobalShortcut?.(quickWindow);
 
-  // Restore animation preference.
-  const animPref = localStorage.getItem('sync-think-animation');
-  if (animPref === '0') {
-    document.documentElement.setAttribute('data-reduced-motion', '');
-  }
+  // Restore animation preference. The in-app switch wins over OS reduced-motion.
+  applyShellMotionPreference(localStorage.getItem('sync-think-animation') !== '0');
 
   // Keep OS-follow responsive while theme is 'system'.
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {

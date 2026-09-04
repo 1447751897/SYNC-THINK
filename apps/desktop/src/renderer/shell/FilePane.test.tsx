@@ -1,7 +1,12 @@
 /** @vitest-environment jsdom */
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { FilePane, clearFilePaneSession, isFilePaneSessionDirty } from './FilePane.js';
+import {
+  FilePane,
+  clearFilePaneSession,
+  isFilePaneSessionDirty,
+  seedFilePaneUnsavedDraft,
+} from './FilePane.js';
 
 interface Change {
   path: string;
@@ -53,6 +58,8 @@ afterEach(() => {
   clearFilePaneSession('C:/workspace', 'notes.txt');
   clearFilePaneSession('C:/workspace', 'src/example.ts');
   clearFilePaneSession('C:/workspace', 'README.md');
+  clearFilePaneSession('C:/workspace', 'designs/draft.excalidraw');
+  clearFilePaneSession('C:/workspace', 'notes/未命名文档.md');
   Reflect.deleteProperty(window, 'syncThink');
   Reflect.deleteProperty(navigator, 'clipboard');
 });
@@ -89,6 +96,30 @@ describe('FilePane', () => {
 
     fireEvent.click(screen.getByRole('tab', { name: '高亮预览' }));
     expect(preview.textContent).toContain('43');
+    expect(
+      document.querySelector('.shell-file-pane-view-tabs .shell-sliding-tabs__pill'),
+    ).toBeTruthy();
+  });
+
+  it('keeps save status on the save control instead of a separate label', async () => {
+    const bridge = installBridge();
+    bridge.readProjectFile.mockResolvedValue({
+      path: 'notes.txt',
+      content: 'before',
+      error: null,
+      errorCode: null,
+      mtimeMs: 10,
+      size: 6,
+    });
+
+    render(<FilePane projectFolder="C:/workspace" path="notes.txt" />);
+    await screen.findByTestId('file-pane-editor');
+
+    const save = screen.getByTestId('file-pane-save');
+    const status = screen.getByTestId('file-pane-status');
+    expect(save.contains(status)).toBe(true);
+    expect(status.textContent).toContain('已同步');
+    expect(save.getAttribute('aria-label')).toBe('保存文件');
   });
 
   it('renders Markdown as a document preview while preserving editable source', async () => {
@@ -105,18 +136,28 @@ describe('FilePane', () => {
 
     render(<FilePane projectFolder="C:/workspace" path="README.md" />);
 
-    const preview = await screen.findByTestId('file-pane-preview');
-    expect(preview.querySelector('[data-preview-kind="markdown"]')).toBeTruthy();
-    expect(screen.getByRole('heading', { level: 1, name: 'Preview title' })).toBeTruthy();
-    expect(preview.querySelectorAll('li')).toHaveLength(2);
-    expect(preview.querySelector('table')?.textContent).toContain('Cache');
-    expect(preview.querySelector('.shell-code-preview__ln')).toBeNull();
+    const richEditor = await screen.findByTestId('file-pane-rich-editor');
+    const preview = screen.getByTestId('file-pane-preview');
+    expect(richEditor.hidden).toBe(false);
+    expect(preview.hidden).toBe(true);
+    expect(richEditor.querySelector('[data-preview-kind="markdown"]')).toBeTruthy();
+    expect(await screen.findByRole('heading', { level: 1, name: 'Preview title' })).toBeTruthy();
+    expect(richEditor.querySelectorAll('li')).toHaveLength(2);
+    expect(richEditor.querySelector('table')?.textContent).toContain('Cache');
+    expect(richEditor.querySelector('.shell-code-preview__ln')).toBeNull();
+    expect(screen.getByRole('toolbar', { name: '富文本编辑' })).toBeTruthy();
+    expect(richEditor.querySelector('[contenteditable="true"]')).toBeTruthy();
+    expect(screen.getByRole('tab', { name: '富文本编辑' }).getAttribute('aria-selected')).toBe(
+      'true',
+    );
 
-    fireEvent.click(screen.getByRole('tab', { name: '源码' }));
+    fireEvent.click(screen.getByRole('tab', { name: '源码编辑' }));
     const editor = screen.getByTestId('file-pane-editor') as HTMLTextAreaElement;
     expect(editor.value).toContain('# Preview title');
     fireEvent.change(editor, { target: { value: '# Updated title\n\nNew body' } });
-    fireEvent.click(screen.getByRole('tab', { name: '文档预览' }));
+    fireEvent.click(screen.getByRole('tab', { name: '预览' }));
+    expect(preview.hidden).toBe(false);
+    expect(preview.querySelector('[contenteditable="true"]')).toBeNull();
     expect(screen.getByRole('heading', { level: 1, name: 'Updated title' })).toBeTruthy();
   });
 
@@ -141,11 +182,32 @@ describe('FilePane', () => {
 
     const editor = (await screen.findByTestId('file-pane-editor')) as HTMLTextAreaElement;
     await waitFor(() => expect(editor.hidden).toBe(false));
-    expect(screen.getByRole('tab', { name: '源码' }).getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByRole('tab', { name: '源码编辑' }).getAttribute('aria-selected')).toBe(
+      'true',
+    );
     expect(editor.selectionStart).toBe('# Title\n\nFirst paragraph\n\n'.length);
   });
 
-  it('copies the complete current source and shows success feedback', async () => {
+  it('keeps canvas resources in one drawing mode without preview or source tabs', async () => {
+    const bridge = installBridge();
+    bridge.readProjectFile.mockResolvedValue({
+      path: 'designs/draft.excalidraw',
+      content: '{}',
+      error: null,
+      errorCode: null,
+      mtimeMs: 10,
+      size: 2,
+    });
+
+    render(<FilePane projectFolder="C:/workspace" path="designs/draft.excalidraw" />);
+
+    expect(await screen.findByTestId('file-pane-canvas')).toBeTruthy();
+    expect(screen.queryByRole('tab')).toBeNull();
+    expect(screen.queryByLabelText('文件查看方式')).toBeNull();
+    expect(screen.getByTestId('file-pane').getAttribute('data-kind')).toBe('canvas');
+  });
+
+  it('copies the complete current source from the status menu', async () => {
     const bridge = installBridge();
     const writeText = installClipboard();
     bridge.readProjectFile.mockResolvedValue({
@@ -160,18 +222,19 @@ describe('FilePane', () => {
     render(<FilePane projectFolder="C:/workspace" path="src/example.ts" />);
 
     await screen.findByTestId('file-pane-editor');
-    expect(screen.queryByRole('button', { name: '复制源码' })).toBeNull();
+    expect(screen.queryByRole('menuitem', { name: '复制源码' })).toBeNull();
     fireEvent.click(screen.getByRole('tab', { name: '源码' }));
     const editor = screen.getByTestId('file-pane-editor') as HTMLTextAreaElement;
     fireEvent.change(editor, {
       target: { value: 'const answer: number = 43;\nexport { answer };\n' },
     });
-    fireEvent.click(screen.getByRole('button', { name: '复制源码' }));
+    fireEvent.click(screen.getByTestId('file-pane-save-menu'));
+    fireEvent.click(screen.getByRole('menuitem', { name: '复制源码' }));
 
     await waitFor(() =>
       expect(writeText).toHaveBeenCalledWith('const answer: number = 43;\nexport { answer };\n'),
     );
-    expect(screen.getByRole('button', { name: '源码已复制' }).textContent).toContain('已复制');
+    expect(screen.getByRole('menuitem', { name: '源码已复制' }).textContent).toContain('已复制');
   });
 
   it('loads metadata, tracks a dirty draft, and saves with optimistic concurrency', async () => {
@@ -337,6 +400,42 @@ describe('FilePane', () => {
       expectedSize: 6,
       force: true,
     });
+    expect(screen.getByTestId('file-pane-status').textContent).toContain('已保存');
+  });
+
+  it('opens a seeded untitled draft without reading or writing disk', async () => {
+    const bridge = installBridge();
+    bridge.writeProjectFile.mockResolvedValue({
+      path: 'notes/未命名文档.md',
+      ok: true,
+      conflict: false,
+      error: null,
+      errorCode: null,
+      mtimeMs: 20,
+      size: 10,
+    });
+    seedFilePaneUnsavedDraft('C:/workspace', 'notes/未命名文档.md', '# 未命名文档\n\n');
+
+    render(<FilePane projectFolder="C:/workspace" path="notes/未命名文档.md" />);
+
+    const editor = await screen.findByTestId('file-pane-editor');
+    expect((editor as HTMLTextAreaElement).value).toBe('# 未命名文档\n\n');
+    expect(bridge.readProjectFile).not.toHaveBeenCalled();
+    expect(bridge.writeProjectFile).not.toHaveBeenCalled();
+    expect(bridge.watchProjectFile).not.toHaveBeenCalled();
+    expect(isFilePaneSessionDirty('C:/workspace', 'notes/未命名文档.md')).toBe(false);
+    expect(screen.getByTestId('file-pane-status').textContent).toContain('草稿');
+
+    fireEvent.click(screen.getByTestId('file-pane-save'));
+    await waitFor(() =>
+      expect(bridge.writeProjectFile).toHaveBeenCalledWith({
+        root: 'C:/workspace',
+        path: 'notes/未命名文档.md',
+        content: '# 未命名文档\n\n',
+        expectedMtimeMs: null,
+        expectedSize: null,
+      }),
+    );
     expect(screen.getByTestId('file-pane-status').textContent).toContain('已保存');
   });
 

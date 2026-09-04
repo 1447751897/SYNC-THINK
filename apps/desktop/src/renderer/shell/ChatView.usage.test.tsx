@@ -13,6 +13,7 @@ const runtime = {
   getConversationContextStatus: vi.fn(),
   getUsageSummary: vi.fn(),
   listConversationMessages: vi.fn(),
+  listConversationRunTimeline: vi.fn(),
   openTask: vi.fn(),
 };
 
@@ -87,6 +88,10 @@ beforeEach(() => {
     messages: [assistantMessage],
     hasMore: false,
   });
+  runtime.listConversationRunTimeline.mockReset().mockResolvedValue({
+    segments: [],
+    totalSegments: 0,
+  });
   runtime.getConversationRunProcess.mockReset().mockResolvedValue({ process: processView });
   runtime.getUsageSummary.mockReset().mockResolvedValue({
     rows: [],
@@ -114,6 +119,109 @@ afterEach(() => {
 });
 
 describe('ChatView reply usage details', () => {
+  it('loads the complete execution timeline only after the folded panel opens', async () => {
+    runtime.listConversationMessages.mockResolvedValue({
+      messages: [
+        {
+          ...assistantMessage,
+          blocks: [
+            {
+              type: 'commentary',
+              payload: {
+                assistantTimeline: [
+                  {
+                    id: 'compact-thinking',
+                    sequence: 90,
+                    kind: 'thinking',
+                    text: '最近的简略思考',
+                    status: 'completed',
+                  },
+                  {
+                    id: 'final-answer',
+                    sequence: 91,
+                    kind: 'text',
+                    phase: 'final_answer',
+                    text: '任务完成',
+                    status: 'completed',
+                  },
+                ],
+              },
+            },
+            { type: 'text', text: '任务完成' },
+          ],
+        } as Message,
+      ],
+      hasMore: false,
+    });
+    runtime.listConversationRunTimeline
+      .mockResolvedValueOnce({
+        segments: [
+          {
+            id: 'earliest-thinking',
+            sequence: 1,
+            kind: 'thinking',
+            text: '最早的完整思考',
+            status: 'completed',
+          },
+        ],
+        totalSegments: 3,
+        nextCursor: 'page-2',
+      })
+      .mockResolvedValueOnce({
+        segments: [
+          {
+            id: 'compact-thinking',
+            sequence: 90,
+            kind: 'thinking',
+            text: '最近的简略思考',
+            status: 'completed',
+          },
+          {
+            id: 'final-answer',
+            sequence: 91,
+            kind: 'text',
+            phase: 'final_answer',
+            text: '任务完成',
+            status: 'completed',
+          },
+        ],
+        totalSegments: 3,
+      });
+
+    render(
+      <ChatView
+        conversation={conversation}
+        modelName="GPT-5"
+        models={[{ modelId: 'model-usage', displayName: 'GPT-5', providerName: 'Provider' }]}
+        eventHistory={[]}
+        onTitleUpdated={vi.fn()}
+      />,
+    );
+
+    const toggle = await screen.findByTestId('process-panel-toggle');
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(runtime.listConversationRunTimeline).not.toHaveBeenCalled();
+
+    fireEvent.click(toggle);
+
+    expect(await screen.findByText('最早的完整思考')).toBeTruthy();
+    expect(runtime.listConversationRunTimeline).toHaveBeenCalledTimes(1);
+    expect(runtime.listConversationRunTimeline).toHaveBeenCalledWith({
+      runId: 'run-usage',
+      limit: 64,
+    });
+    expect(screen.queryByText('最近的简略思考')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('process-timeline-load-more'));
+
+    expect(await screen.findByText('最近的简略思考')).toBeTruthy();
+    expect(runtime.listConversationRunTimeline).toHaveBeenLastCalledWith({
+      runId: 'run-usage',
+      cursor: 'page-2',
+      limit: 64,
+    });
+  });
+
   it('uses the durable task-scoped usage summary for cumulative conversation tokens', async () => {
     runtime.getUsageSummary.mockResolvedValueOnce({
       rows: [],
@@ -429,6 +537,89 @@ describe('ChatView reply usage details', () => {
     expect(within(tooltip).getByTestId('context-used-value').textContent).toContain('180k');
   });
 
+  it('uses the kernel occupancy window as the ring limit and shows kernel categories', async () => {
+    window.localStorage.setItem(
+      'sync-think.conversationKernelOverrides',
+      JSON.stringify({ 'conversation-usage': 'claude-code' }),
+    );
+    runtime.listConversationMessages.mockResolvedValue({
+      messages: [assistantMessage],
+      hasMore: false,
+    });
+    runtime.getConversationContextStatus.mockResolvedValue({
+      modelId: 'model-usage',
+      contextWindow: 372_000,
+      modelContextWindow: 372_000,
+      contextWindowSource: 'model-default',
+      estimatedUsedTokens: 10_000,
+      usageRatio: 10_000 / 372_000,
+      compactThreshold: 0.7,
+      sections: [
+        { type: 'system', tokens: 0 },
+        { type: 'agent', tokens: 0 },
+        { type: 'project', tokens: 0 },
+        { type: 'summary', tokens: 0 },
+        { type: 'messages', tokens: 10_000 },
+        { type: 'tools', tokens: 0 },
+      ],
+    });
+    runtime.getConversationRunProcess.mockResolvedValue({
+      process: {
+        ...processView,
+        contextWatermarkTokens: 57_234,
+        contextOccupancyWindowTokens: 200_000,
+        contextOccupancyCategories: [
+          { name: 'System prompt', tokens: 12_000 },
+          { name: 'Tools', tokens: 37_000 },
+          { name: 'Messages', tokens: 8_234 },
+        ],
+      },
+    });
+
+    render(
+      <ChatView
+        conversation={conversation}
+        modelName="deepseek-v4-flash"
+        models={[
+          {
+            modelId: 'model-usage',
+            displayName: 'deepseek-v4-flash',
+            providerName: 'Provider',
+            contextWindow: 372_000,
+          },
+        ]}
+        eventHistory={
+          [
+            {
+              id: 'run-started-usage',
+              workspaceId: 'workspace-usage',
+              taskId: 'task-usage',
+              runId: 'run-usage',
+              category: 'run',
+              type: 'run.started',
+              sequence: 1,
+              occurredAt: '2026-08-04T09:29:00.000Z',
+              payload: { kernelId: 'claude-code' },
+            },
+          ] as never
+        }
+        onTitleUpdated={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(runtime.getConversationRunProcess).toHaveBeenCalled());
+    const ring = screen.getByTestId('context-ring');
+    expect(ring.getAttribute('aria-label')).toContain('57.2k / 200k');
+    fireEvent.mouseEnter(ring);
+    const tooltip = await screen.findByTestId('context-ring-tooltip');
+    expect(within(tooltip).getByTestId('context-limit-kernel-reported').textContent).toContain(
+      '内核窗口',
+    );
+    expect(within(tooltip).getByTestId('context-model-default').textContent).toBe('372k');
+    expect(within(tooltip).getByTestId('context-occupancy-Tools').textContent).toContain('37k');
+    expect(within(tooltip).queryByText('自动压缩')).toBeNull();
+  });
+
   it('shows the NewMax reply summary and cumulative input/cache/output in the hover panel', async () => {
     render(
       <ChatView
@@ -724,6 +915,50 @@ describe('ChatView reply usage details', () => {
 
     expect(await screen.findByText('短消息')).toBeTruthy();
     expect(screen.queryByRole('button', { name: /显示更多|收起/ })).toBeNull();
+  });
+
+  it('turns a URL glued to Chinese into a clickable user-message link', async () => {
+    const onOpenWebUrl = vi.fn();
+    runtime.listConversationMessages.mockResolvedValue({
+      messages: [
+        {
+          id: 'user-url',
+          threadId: 'thread-usage',
+          role: 'user',
+          sequence: 0,
+          createdAt: '2026-08-04T09:00:00.000Z',
+          blocks: [
+            {
+              type: 'text',
+              text: 'https://beui.dev/components/agents/message-scroller看一下区别',
+            },
+          ],
+        } as unknown as Message,
+      ],
+      hasMore: false,
+    });
+    render(
+      <ChatView
+        conversation={conversation}
+        modelName="GPT-5"
+        models={[{ modelId: 'model-usage', displayName: 'GPT-5', providerName: 'Provider' }]}
+        eventHistory={[]}
+        onTitleUpdated={vi.fn()}
+        onOpenWebUrl={onOpenWebUrl}
+      />,
+    );
+
+    const link = await screen.findByRole('link', {
+      name: '打开网页 message-scroller',
+    });
+    expect(link.getAttribute('href')).toBe('https://beui.dev/components/agents/message-scroller');
+    expect(link.getAttribute('title')).toBe('https://beui.dev/components/agents/message-scroller');
+    expect(link.textContent).toContain('message-scroller');
+    expect(link.textContent).not.toMatch(/https?:/);
+    fireEvent.click(link);
+    expect(onOpenWebUrl).toHaveBeenCalledWith(
+      'https://beui.dev/components/agents/message-scroller',
+    );
   });
 
   it('restores the per-conversation reasoning effort from storage on mount', async () => {

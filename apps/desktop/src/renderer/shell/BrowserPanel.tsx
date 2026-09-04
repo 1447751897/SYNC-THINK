@@ -30,6 +30,7 @@ import {
   unregisterBrowserWebview,
   type BrowserWebviewElement,
 } from './browser-commands.js';
+import { siteFaviconUrl } from './ExternalSourceIcon.js';
 
 // NewMax opens a fresh embedded tab as an empty page. Search is still routed
 // to Bing for non-URL address input, but the home/new-tab target stays blank.
@@ -130,6 +131,30 @@ function firstFavicon(value: unknown): string | undefined {
   return typeof favicon === 'string' ? favicon.trim() : undefined;
 }
 
+function fallbackSiteFavicon(url: string): string | undefined {
+  if (isEmptyBrowserUrl(url)) return undefined;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return undefined;
+    const host = parsed.hostname.toLowerCase().replace(/^www\./, '');
+    if (!host.includes('.')) return undefined;
+    return siteFaviconUrl(host);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Electron <webview> ignores percentage height; the guest needs a pixel box. */
+export function browserGuestBox(size: { width: number; height: number }): {
+  width: number;
+  height: number;
+} | null {
+  const width = Math.round(size.width);
+  const height = Math.round(size.height);
+  if (width <= 0 || height <= 0) return null;
+  return { width, height };
+}
+
 function nextZoom(value: number, direction: -1 | 1): number {
   const currentIndex = ZOOM_LEVELS.findIndex((level) => level >= value - 0.001);
   const index = currentIndex < 0 ? ZOOM_LEVELS.length - 1 : currentIndex;
@@ -159,6 +184,8 @@ export function BrowserPanel(props: {
   registerForAutomation?: boolean;
   /** 宿主认定的当前聚焦窗格，优先接收 AI 浏览器命令。 */
   automationActive?: boolean;
+  /** Live page chrome for the pane tab (favicon + title). */
+  onPageMeta?(meta: { title?: string; favicon?: string; url: string }): void;
   onClose(): void;
 }) {
   const webviewRef = useRef<WebviewElement | null>(null);
@@ -172,8 +199,11 @@ export function BrowserPanel(props: {
   const [addressHovered, setAddressHovered] = useState(false);
   const [title, setTitle] = useState('');
   const [favicon, setFavicon] = useState<string>();
+  const onPageMetaRef = useRef(props.onPageMeta);
+  onPageMetaRef.current = props.onPageMeta;
   const [loading, setLoading] = useState(true);
   const [pageReady, setPageReady] = useState(false);
+  const pageReadyRef = useRef(false);
   const [canBack, setCanBack] = useState(false);
   const [canForward, setCanForward] = useState(false);
   const [failure, setFailure] = useState<string>();
@@ -182,7 +212,9 @@ export function BrowserPanel(props: {
   );
   const [zoomFactor, setZoomFactor] = useState(1);
   const [autoFit, setAutoFit] = useState(() => loadBrowserPanelSettings().autoFit);
-  const [fitCalculating, setFitCalculating] = useState(false);
+  const [guestBox, setGuestBox] = useState<{ width: number; height: number } | null>(null);
+  const viewportRef = useRef<HTMLDivElement | null>(null);
+  const zoomFactorRef = useRef(1);
   const [devicePreset, setDevicePreset] = useState<BrowserDevicePreset>('responsive');
   const [isDeviceToolbarOpen, setIsDeviceToolbarOpen] = useState(false);
   const [findOpen, setFindOpen] = useState(false);
@@ -198,6 +230,10 @@ export function BrowserPanel(props: {
   useEffect(() => {
     autoFitRef.current = autoFit;
   }, [autoFit]);
+
+  useEffect(() => {
+    pageReadyRef.current = pageReady;
+  }, [pageReady]);
 
   useEffect(() => {
     currentUrlRef.current = currentUrl;
@@ -233,6 +269,16 @@ export function BrowserPanel(props: {
     if (automationActive) activateForAutomation();
   }, [activateForAutomation, automationActive]);
 
+  const displayFavicon = favicon ?? fallbackSiteFavicon(currentUrl);
+
+  useEffect(() => {
+    onPageMetaRef.current?.({
+      title: title || undefined,
+      favicon: displayFavicon,
+      url: currentUrl,
+    });
+  }, [currentUrl, displayFavicon, title]);
+
   const syncNavigationState = useCallback(() => {
     const view = webviewRef.current;
     if (!view) return;
@@ -260,12 +306,13 @@ export function BrowserPanel(props: {
       return;
     }
     setZoomFactor(clamped);
+    zoomFactorRef.current = clamped;
     if (manual) setAutoFit(false);
   }, []);
 
   const detectPageWidth = useCallback(async () => {
     const view = webviewRef.current;
-    if (!view || typeof view.executeJavaScript !== 'function' || !pageReady) return null;
+    if (!view || typeof view.executeJavaScript !== 'function' || !pageReadyRef.current) return null;
     try {
       const value = await view.executeJavaScript(`(() => Math.max(
         document.body?.scrollWidth || 0,
@@ -278,25 +325,18 @@ export function BrowserPanel(props: {
     } catch {
       return null;
     }
-  }, [pageReady]);
+  }, []);
 
   const calculateAutoFit = useCallback(async () => {
-    if (!autoFitRef.current || !canvasRef.current || !pageReady) return;
+    if (!autoFitRef.current || !canvasRef.current || !pageReadyRef.current) return;
     const containerWidth = canvasRef.current.clientWidth;
     if (containerWidth <= 0) return;
-    setFitCalculating(true);
-    try {
-      applyZoom(1);
-      await new Promise<void>((resolve) => window.setTimeout(resolve, 40));
-      const pageWidth = await detectPageWidth();
-      const factor = pageWidth
-        ? Math.max(MIN_AUTO_ZOOM, Math.min(MAX_AUTO_ZOOM, containerWidth / pageWidth))
-        : 1;
-      applyZoom(factor);
-    } finally {
-      setFitCalculating(false);
-    }
-  }, [applyZoom, detectPageWidth, pageReady]);
+    const pageWidth = await detectPageWidth();
+    if (!pageWidth || pageWidth <= containerWidth) return;
+    const factor = Math.max(MIN_AUTO_ZOOM, Math.min(MAX_AUTO_ZOOM, containerWidth / pageWidth));
+    if (Math.abs(factor - zoomFactorRef.current) < 0.01) return;
+    applyZoom(factor);
+  }, [applyZoom, detectPageWidth]);
 
   // webview 是自定义元素，React 不识别其事件，手动接入 NewMax 的导航生命周期。
   useEffect(() => {
@@ -304,17 +344,22 @@ export function BrowserPanel(props: {
     if (!view) return;
     const onStart = () => {
       setLoading(true);
+      pageReadyRef.current = false;
       setPageReady(false);
       setFailure(undefined);
       setNotice(undefined);
+      setFavicon(undefined);
+      setTitle('');
     };
     const onDomReady = () => {
+      pageReadyRef.current = true;
       setPageReady(true);
       syncNavigationState();
       if (autoFitRef.current) window.requestAnimationFrame(() => void calculateAutoFit());
     };
     const onStop = () => {
       setLoading(false);
+      pageReadyRef.current = true;
       setPageReady(true);
       syncNavigationState();
       if (autoFitRef.current) window.requestAnimationFrame(() => void calculateAutoFit());
@@ -406,6 +451,29 @@ export function BrowserPanel(props: {
       if (timer !== undefined) window.clearTimeout(timer);
     };
   }, [autoFit, calculateAutoFit]);
+
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    const sync = () => {
+      const next = browserGuestBox({
+        width: viewport.clientWidth,
+        height: viewport.clientHeight,
+      });
+      if (!next) return;
+      setGuestBox((current) =>
+        current?.width === next.width && current.height === next.height ? current : next,
+      );
+    };
+    sync();
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', sync);
+      return () => window.removeEventListener('resize', sync);
+    }
+    const observer = new ResizeObserver(sync);
+    observer.observe(viewport);
+    return () => observer.disconnect();
+  }, []);
 
   const navigate = useCallback((raw: string) => {
     const url = normalizeBrowserInput(raw);
@@ -546,7 +614,7 @@ export function BrowserPanel(props: {
       : isDeviceToolbarOpen && devicePreset === 'tablet'
         ? 768
         : undefined;
-  const toolbarLoading = !isEmptyPage && (loading || fitCalculating || !pageReady);
+  const toolbarLoading = !isEmptyPage && (loading || !pageReady);
 
   // NewMax's progress starts at 12%, approaches 92% while Chromium is busy,
   // and remains visible for 620ms as a completed line before disappearing.
@@ -567,7 +635,7 @@ export function BrowserPanel(props: {
 
   return (
     <div
-      className="shell-browser flex min-w-0 flex-1"
+      className="shell-browser flex h-full min-h-0 min-w-0 flex-1"
       data-testid="browser-panel"
       onPointerDownCapture={activateForAutomation}
       onFocusCapture={activateForAutomation}
@@ -657,12 +725,17 @@ export function BrowserPanel(props: {
           ) : null}
           {!addressEditing ? (
             <span className="shell-browser__address-label" data-testid="browser-address-label">
-              {isEmptyPage ? '输入网址或搜索' : currentUrl}
+              {displayFavicon ? (
+                <img className="shell-browser__favicon" src={displayFavicon} alt="" />
+              ) : null}
+              <span className="shell-browser__address-text">
+                {isEmptyPage ? '输入网址或搜索' : currentUrl}
+              </span>
             </span>
           ) : (
             <>
-              {favicon ? (
-                <img className="shell-browser__favicon" src={favicon} alt="" />
+              {displayFavicon ? (
+                <img className="shell-browser__favicon" src={displayFavicon} alt="" />
               ) : (
                 <Globe className="shell-browser__address-icon" size={13} aria-hidden="true" />
               )}
@@ -765,11 +838,6 @@ export function BrowserPanel(props: {
         </div>
       ) : null}
       {notice ? <div className="shell-browser__notice" role="status">{notice}</div> : null}
-      {title ? (
-        <div className="shell-browser__title" title={currentUrl}>
-          {title}
-        </div>
-      ) : null}
       {isDeviceToolbarOpen ? (
         <div className="shell-browser__device-toolbar" data-testid="browser-device-toolbar">
           <button type="button" className={devicePreset === 'responsive' ? 'is-active' : ''} onClick={() => setDevicePreset('responsive')}><Monitor size={14} /> 自适应</button>
@@ -778,8 +846,17 @@ export function BrowserPanel(props: {
           <button type="button" className="shell-browser__device-close" title="关闭设备预览" aria-label="关闭设备预览" onClick={() => setIsDeviceToolbarOpen(false)}><X size={14} /></button>
         </div>
       ) : null}
-      <div className={`shell-browser__canvas${isDeviceToolbarOpen && devicePreset !== 'responsive' ? ' is-device-preview' : ''}`} ref={canvasRef}>
-        <div className="shell-browser__viewport" style={{ width: deviceWidth, maxWidth: '100%' }}>
+      <div
+        className={`shell-browser__canvas${isDeviceToolbarOpen && devicePreset !== 'responsive' ? ' is-device-preview' : ''}`}
+        ref={canvasRef}
+        data-testid="browser-canvas"
+      >
+        <div
+          ref={viewportRef}
+          className="shell-browser__viewport"
+          data-testid="browser-viewport"
+          style={{ width: deviceWidth, maxWidth: '100%' }}
+        >
           {findOpen ? (
             <div className="shell-browser__find" data-testid="browser-find-bar">
               <Search size={13} aria-hidden="true" />
@@ -822,7 +899,13 @@ export function BrowserPanel(props: {
             // @ts-expect-error 自定义元素属性
             allowpopups="true"
             className="shell-browser__webview"
-            style={{ opacity: toolbarLoading || failure ? 0 : 1 }}
+            style={{
+              position: 'absolute',
+              inset: 0,
+              width: guestBox ? `${guestBox.width}px` : '100%',
+              height: guestBox ? `${guestBox.height}px` : '100%',
+              opacity: toolbarLoading || failure ? 0 : 1,
+            }}
           />
         </div>
       </div>

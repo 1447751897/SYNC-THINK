@@ -45,6 +45,10 @@ const runtime = {
   checkWechatBotQr: vi.fn(),
   getGatewayLogs: vi.fn(),
   clearGatewayLogs: vi.fn(),
+  listWebSearchProviders: vi.fn(),
+  saveWebSearchProvider: vi.fn(),
+  reorderWebSearchProviders: vi.fn(),
+  testWebSearchProvider: vi.fn(),
 };
 
 beforeEach(() => {
@@ -177,6 +181,45 @@ beforeEach(() => {
   });
   runtime.clearGatewayLogs.mockResolvedValue({ cleared: 1 });
   runtime.listProviders.mockResolvedValue({ providers: [] });
+  runtime.listWebSearchProviders.mockResolvedValue({
+    nativeSearchPreferred: true,
+    providers: [
+      {
+        id: 'tavily',
+        name: 'Tavily',
+        description: '面向 AI 的联网搜索',
+        enabled: false,
+        configured: false,
+        priority: 0,
+      },
+      {
+        id: 'brave',
+        name: 'Brave Search',
+        description: '独立网页索引',
+        enabled: true,
+        configured: true,
+        priority: 1,
+      },
+    ],
+  });
+  runtime.saveWebSearchProvider.mockImplementation(async (payload) => ({
+    provider: {
+      id: payload.providerId,
+      name: payload.providerId === 'tavily' ? 'Tavily' : 'Brave Search',
+      description: payload.providerId === 'tavily' ? '面向 AI 的联网搜索' : '独立网页索引',
+      enabled: payload.enabled,
+      configured: !payload.clearApiKey,
+      priority: payload.providerId === 'tavily' ? 0 : 1,
+      updatedAt: '2026-09-03T00:00:00.000Z',
+    },
+  }));
+  runtime.reorderWebSearchProviders.mockResolvedValue({ providers: [] });
+  runtime.testWebSearchProvider.mockResolvedValue({
+    ok: true,
+    providerId: 'tavily',
+    resultCount: 3,
+    elapsedMs: 120,
+  });
   Object.defineProperty(window, 'syncThink', {
     configurable: true,
     value: { runtime },
@@ -186,6 +229,9 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  document.documentElement.removeAttribute('data-reduced-motion');
+  document.documentElement.removeAttribute('data-motion');
+  localStorage.removeItem('sync-think-animation');
 });
 
 describe('SettingsPage layout contract', () => {
@@ -243,6 +289,32 @@ describe('SettingsPage layout contract', () => {
     );
   });
 
+  it('configures and tests a search provider without reloading the settings page', async () => {
+    render(<SettingsPage initialSection="connection" initialConnectionTab="search" />);
+
+    expect(await screen.findByText('Tavily')).toBeTruthy();
+    expect(screen.getByText('1 个已启用')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '配置 Tavily' }));
+    fireEvent.change(screen.getByPlaceholderText('输入 API Key'), {
+      target: { value: 'tavily-test-key' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '测试' }));
+    await waitFor(() => expect(runtime.testWebSearchProvider).toHaveBeenCalledWith({
+      providerId: 'tavily',
+      apiKey: 'tavily-test-key',
+    }));
+    expect(await screen.findByText(/连接正常/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: '保存并启用' }));
+    await waitFor(() => expect(runtime.saveWebSearchProvider).toHaveBeenCalledWith({
+      providerId: 'tavily',
+      enabled: true,
+      apiKey: 'tavily-test-key',
+    }));
+    expect(runtime.listWebSearchProviders).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('switch', { name: 'Tavily 搜索' }).getAttribute('aria-checked')).toBe('true');
+  });
+
   it('opens the requested model settings section', () => {
     render(<SettingsPage initialSection="models" initialModelDetail="plan-act" />);
 
@@ -262,6 +334,34 @@ describe('SettingsPage NewMax general tabs', () => {
     ]);
     expect(screen.getByRole('tab', { name: '应用' }).getAttribute('aria-selected')).toBe('true');
     expect(screen.getByText('界面动画')).toBeTruthy();
+  });
+
+  it('lets the in-app animation switch win over OS reduced motion', () => {
+    localStorage.setItem('sync-think-animation', '1');
+    document.documentElement.removeAttribute('data-reduced-motion');
+    document.documentElement.removeAttribute('data-motion');
+    render(<SettingsPage initialSection="general" />);
+
+    const toggle = screen.getByRole('switch', { name: '界面动画' });
+    fireEvent.click(toggle);
+    expect(document.documentElement.hasAttribute('data-reduced-motion')).toBe(true);
+    expect(document.documentElement.getAttribute('data-motion')).toBeNull();
+
+    fireEvent.click(toggle);
+    expect(document.documentElement.hasAttribute('data-reduced-motion')).toBe(false);
+    expect(document.documentElement.getAttribute('data-motion')).toBe('full');
+    expect(shellCss).toContain(":root:not([data-motion='full']) .shell-sidebar-panel");
+    expect(shellCss).toContain(":root:not([data-motion='full']) .shell-workbench");
+    expect(shellCss).toContain(":root:not([data-motion='full']) .shell-sliding-tabs__pill");
+    expect(shellCss).toContain(
+      ":root:not([data-motion='full']) .shell-workspace-files-switcher__tab",
+    );
+    expect(shellCss).not.toMatch(
+      /@media \(prefers-reduced-motion: reduce\) \{\s*\n\s+\.shell-dock-panel\.is-active,/,
+    );
+    expect(shellCss).toMatch(
+      /\.shell-workspace-files-switcher__views \{\s*--sliding-tabs-inset: 3px;\s*--sliding-tabs-pill-background: var\(--color-overlay\);/s,
+    );
   });
 
   it('shows the NewMax Agent controls with their real defaults', () => {

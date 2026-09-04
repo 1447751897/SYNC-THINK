@@ -37,6 +37,7 @@ function fakeQuery(
     signal: AbortSignal;
   }) => AsyncIterable<SDKMessage>,
   capture?: QueryCapture[],
+  controls?: Pick<Partial<Query>, 'getContextUsage'>,
 ) {
   return ((params: { prompt: unknown; options?: Options }) => {
     const options = params.options ?? {};
@@ -58,6 +59,11 @@ function fakeQuery(
       },
       interrupt: async () => undefined,
       close: () => undefined,
+      getContextUsage:
+        controls?.getContextUsage ??
+        (async () => {
+          throw new Error('getContextUsage unavailable');
+        }),
     };
     return handle as Query;
   }) as never;
@@ -693,6 +699,23 @@ describe('ClaudeSdkKernelAdapter', () => {
     expect(captures[0].options.disallowedTools).toBeUndefined();
   });
 
+  it('uses Claude native search only for native-search routes', async () => {
+    const captures: QueryCapture[] = [];
+    const adapter = new ClaudeSdkKernelAdapter({
+      query: fakeQuery(async function* () {
+        yield resultSuccess();
+      }, captures),
+    });
+
+    await collect(adapter, makeRequest({ webSearchMode: 'native' }));
+    await collect(adapter, makeRequest({ webSearchMode: 'external' }));
+    await collect(adapter, makeRequest({ webSearchMode: 'disabled' }));
+
+    expect(captures[0].options.disallowedTools).toBeUndefined();
+    expect(captures[1].options.disallowedTools).toEqual(['WebSearch']);
+    expect(captures[2].options.disallowedTools).toEqual(['WebSearch', 'WebFetch']);
+  });
+
   it('runs the SDK transport against the atomically activated private Claude CLI', async () => {
     const captures: QueryCapture[] = [];
     const executable = 'D:\\SYNC-THINK\\kernels\\claude-code\\2.1.250\\claude.exe';
@@ -776,6 +799,62 @@ describe('ClaudeSdkKernelAdapter', () => {
     expect(
       (options.env as Record<string, string>).PATH ?? (options.env as Record<string, string>).Path,
     ).toBeTruthy();
+  });
+
+  it('forwards the host-configured window so Claude auto-compacts at that budget', async () => {
+    const captures: QueryCapture[] = [];
+    const adapter = new ClaudeSdkKernelAdapter({
+      query: fakeQuery(async function* () {
+        yield resultSuccess();
+      }, captures),
+    });
+
+    await collect(
+      adapter,
+      makeRequest({
+        contextWindow: 400_000,
+        effectiveContextWindow: 400_000,
+      }),
+    );
+
+    expect(captures[0].options.env).toMatchObject({
+      CLAUDE_CODE_AUTO_COMPACT_WINDOW: '400000',
+      CLAUDE_CODE_MAX_CONTEXT_TOKENS: '400000',
+    });
+  });
+
+  it('clamps the Claude window env to the 100k–1M range the CLI accepts', async () => {
+    const captures: QueryCapture[] = [];
+    const adapter = new ClaudeSdkKernelAdapter({
+      query: fakeQuery(async function* () {
+        yield resultSuccess();
+      }, captures),
+    });
+
+    await collect(
+      adapter,
+      makeRequest({
+        contextWindow: 2_000_000,
+        effectiveContextWindow: 2_000_000,
+      }),
+    );
+    expect(captures[0].options.env).toMatchObject({
+      CLAUDE_CODE_AUTO_COMPACT_WINDOW: '1000000',
+      CLAUDE_CODE_MAX_CONTEXT_TOKENS: '1000000',
+    });
+
+    captures.length = 0;
+    await collect(
+      adapter,
+      makeRequest({
+        contextWindow: 12_000,
+        effectiveContextWindow: 12_000,
+      }),
+    );
+    expect(captures[0].options.env).toMatchObject({
+      CLAUDE_CODE_AUTO_COMPACT_WINDOW: '100000',
+      CLAUDE_CODE_MAX_CONTEXT_TOKENS: '100000',
+    });
   });
 
   it('keeps local Claude settings available when reusing the local login', async () => {
@@ -970,6 +1049,71 @@ describe('ClaudeSdkKernelAdapter', () => {
     });
     const { events } = await collect(adapter);
     expect(events).toContainEqual({ type: 'compacted' });
+  });
+
+  it('reports Claude /context occupancy after a successful turn', async () => {
+    const adapter = new ClaudeSdkKernelAdapter({
+      query: fakeQuery(
+        async function* () {
+          yield systemInit();
+          yield resultSuccess();
+        },
+        undefined,
+        {
+          getContextUsage: async () => ({
+            categories: [
+              { name: 'System prompt', tokens: 12_000, color: 'blue' },
+              { name: 'Tools', tokens: 37_000, color: 'orange' },
+              { name: 'Messages', tokens: 8_234, color: 'green' },
+              { name: 'Free space', tokens: 142_766, color: 'gray' },
+            ],
+            totalTokens: 57_234,
+            maxTokens: 200_000,
+            rawMaxTokens: 200_000,
+            percentage: 29,
+            gridRows: [],
+            model: 'claude-sonnet-4-5',
+            memoryFiles: [],
+            mcpTools: [],
+            agents: [],
+            isAutoCompactEnabled: true,
+            apiUsage: null,
+          }),
+        },
+      ),
+    });
+
+    const { events } = await collect(adapter);
+    expect(events).toContainEqual({
+      type: 'context-occupancy',
+      usedTokens: 57_234,
+      windowTokens: 200_000,
+      categories: [
+        { name: 'System prompt', tokens: 12_000 },
+        { name: 'Tools', tokens: 37_000 },
+        { name: 'Messages', tokens: 8_234 },
+      ],
+    });
+  });
+
+  it('keeps compact metadata occupancy when /context is unavailable', async () => {
+    const adapter = new ClaudeSdkKernelAdapter({
+      query: fakeQuery(async function* () {
+        yield {
+          type: 'system',
+          subtype: 'compact_boundary',
+          compact_metadata: { trigger: 'auto', pre_tokens: 150_000, post_tokens: 42_000 },
+          uuid: 'u',
+          session_id: 's',
+        } as unknown as SDKMessage;
+        yield resultSuccess();
+      }),
+    });
+    const { events } = await collect(adapter);
+    expect(events).toContainEqual({
+      type: 'context-occupancy',
+      usedTokens: 42_000,
+    });
   });
 
   it('extracts a readable failure from nested Claude result payloads', async () => {

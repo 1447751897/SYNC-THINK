@@ -101,6 +101,47 @@ describe('InlineProcessFlow', () => {
     expect(screen.getByTestId('inline-process-reasoning')).toBeTruthy();
   });
 
+  it('requests lazy process details only when a folded panel opens', () => {
+    const onPanelOpen = vi.fn();
+    render(
+      <InlineProcessFlow
+        items={[reasoningItem]}
+        runId="run-lazy"
+        streaming={false}
+        answerStarted
+        onPanelOpen={onPanelOpen}
+      />,
+    );
+
+    expect(onPanelOpen).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId('process-panel-toggle'));
+    expect(onPanelOpen).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByTestId('process-panel-toggle'));
+    expect(onPanelOpen).toHaveBeenCalledTimes(1);
+  });
+
+  it('offers the next lazy page without hiding the process already loaded', () => {
+    const onLoadMoreTimeline = vi.fn();
+    render(
+      <InlineProcessFlow
+        items={[reasoningItem]}
+        runId="run-pages"
+        defaultOpen
+        timelineLoadState="loaded"
+        timelineLoadedCount={64}
+        timelineTotalSegments={157}
+        timelineHasMore
+        onLoadMoreTimeline={onLoadMoreTimeline}
+      />,
+    );
+
+    expect(screen.getByTestId('inline-process-reasoning')).toBeTruthy();
+    const loadMore = screen.getByTestId('process-timeline-load-more');
+    expect(loadMore.textContent).toContain('64/157');
+    fireEvent.click(loadMore);
+    expect(onLoadMoreTimeline).toHaveBeenCalledTimes(1);
+  });
+
   it('shows a NewMax-style execution-process summary with the total duration', () => {
     render(
       <InlineProcessFlow
@@ -173,9 +214,7 @@ describe('InlineProcessFlow', () => {
     const thinkIcon = screen
       .getByTestId('inline-process-reasoning')
       .querySelector('.shell-inline-process__row-symbol');
-    const toolIcon = screen
-      .getByTestId('process-tool-kind')
-      .querySelector('svg');
+    const toolIcon = screen.getByTestId('process-tool-kind').querySelector('svg');
 
     expect(thinkIcon?.getAttribute('width')).toBe('14');
     expect(thinkIcon?.getAttribute('height')).toBe('14');

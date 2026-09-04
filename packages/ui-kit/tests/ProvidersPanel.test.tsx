@@ -113,7 +113,7 @@ describe('ProvidersPanel', () => {
                 providerModelId: 'gpt-4o',
                 displayName: 'GPT-4o',
                 protocol: 'openai-chat',
-                capabilities: ['text', 'vision', 'tool-calling'],
+                capabilities: ['text', 'vision', 'tool-calling', 'web-search'],
                 capabilitiesConfirmed: false,
               },
             ],
@@ -129,6 +129,7 @@ describe('ProvidersPanel', () => {
     expect(screen.getByTestId('provider-cap-suggested-m1')).toBeTruthy();
     expect(screen.getByTestId('provider-cap-m1-text').getAttribute('data-active')).toBe('1');
     expect(screen.getByTestId('provider-cap-m1-vision').getAttribute('data-active')).toBe('1');
+    expect(screen.getByTestId('provider-cap-m1-web-search').getAttribute('data-active')).toBe('1');
 
     fireEvent.click(screen.getByTestId('provider-probe-p1'));
     expect(onProbeCapabilities).toHaveBeenCalledWith('p1');
@@ -141,7 +142,7 @@ describe('ProvidersPanel', () => {
     });
     const call = onConfirmCapabilities.mock.calls[0];
     expect(call[0]).toBe('m1');
-    expect(call[1]).toEqual(expect.arrayContaining(['text', 'vision']));
+    expect(call[1]).toEqual(expect.arrayContaining(['text', 'vision', 'web-search']));
     expect(call[1]).not.toContain('tool-calling');
     expect(call[2]).toBe(true);
   });

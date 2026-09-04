@@ -97,6 +97,10 @@ import {
   type GatewayLogsResponse,
   type KernelDetectResponse,
   type OpenGatewayStatusResponse,
+  parseListWebSearchProvidersPayload,
+  parseSaveWebSearchProviderPayload,
+  parseReorderWebSearchProvidersPayload,
+  parseTestWebSearchProviderPayload,
 } from '@sync-think/protocol';
 import type {
   AppendMessagePayload,
@@ -416,6 +420,7 @@ import {
   parseConversationListMessagesPayload,
   parseConversationGetContextStatusPayload,
   parseConversationGetRunProcessPayload,
+  parseConversationListRunTimelinePayload,
   parseSubscribeConversationTransientStreamPayload,
   parseUnsubscribeConversationTransientStreamPayload,
   parseListGlobalAgentsPayload,
@@ -2080,6 +2085,34 @@ function setupRuntimeBridge(): void {
     await ensureRuntimeConnection();
     return getRuntimeClient().request('settings.set', parseSetSettingPayload(value));
   });
+  ipcMain.handle('runtime:web-search-providers-list', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    const payload = parseListWebSearchProvidersPayload(value ?? {});
+    if (!payload) throw new Error('Invalid web search providers list payload');
+    return getRuntimeClient().request('webSearch.providers.list', payload);
+  });
+  ipcMain.handle('runtime:web-search-provider-save', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    const payload = parseSaveWebSearchProviderPayload(value);
+    if (!payload) throw new Error('Invalid web search provider save payload');
+    return getRuntimeClient().request('webSearch.providers.save', payload);
+  });
+  ipcMain.handle('runtime:web-search-providers-reorder', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    const payload = parseReorderWebSearchProvidersPayload(value);
+    if (!payload) throw new Error('Invalid web search provider reorder payload');
+    return getRuntimeClient().request('webSearch.providers.reorder', payload);
+  });
+  ipcMain.handle('runtime:web-search-provider-test', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    const payload = parseTestWebSearchProviderPayload(value);
+    if (!payload) throw new Error('Invalid web search provider test payload');
+    return getRuntimeClient().request('webSearch.providers.test', payload);
+  });
   ipcMain.handle('runtime:data-storage-stats', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
     const payload = parseEmptyDataPayload(value ?? {});
@@ -2406,6 +2439,14 @@ function setupRuntimeBridge(): void {
     return getRuntimeClient().request(
       'conversation.getRunProcess',
       parseConversationGetRunProcessPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:conversation-list-run-timeline', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'conversation.listRunTimeline',
+      parseConversationListRunTimelinePayload(value),
     );
   });
   ipcMain.handle('runtime:conversation-subscribe-transient', async (event, value: unknown) => {

@@ -128,6 +128,29 @@ describe('PreferencesSettings', () => {
     expect(screen.getByText('应用快捷键')).toBeTruthy();
   });
 
+  it('lets the user turn the prompt-enhancement shortcut on and off', () => {
+    render(<PreferencesSettings />);
+    fireEvent.click(screen.getByRole('tab', { name: '快捷键' }));
+
+    const toggle = screen.getByRole('switch', { name: '优化提示词' });
+    expect(toggle.hasAttribute('disabled')).toBe(false);
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
+
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-checked')).toBe('true');
+    expect(screen.getByRole('button', { name: '修改优化提示词快捷键' }).textContent).toMatch(/Tab/i);
+
+    const saved = JSON.parse(localStorage.getItem(SHORTCUT_PREFERENCE_KEY) ?? '{}');
+    expect(saved.promptEnhancement.enabled).toBe(true);
+    expect(saved.promptEnhancement.accelerator).toBe('Tab');
+
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
+    expect(JSON.parse(localStorage.getItem(SHORTCUT_PREFERENCE_KEY) ?? '{}').promptEnhancement.enabled).toBe(
+      false,
+    );
+  });
+
   it('resets the shared viewport when switching tabs', async () => {
     const { container } = render(<PreferencesSettings />);
     const scroller = container.querySelector('.settings-preferences__scroll') as HTMLDivElement;

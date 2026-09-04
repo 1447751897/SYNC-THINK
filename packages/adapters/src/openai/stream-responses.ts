@@ -37,6 +37,9 @@ interface ResponsesParseState {
   activeAnonymousAssistantItemKey?: string;
   emittedAssistantTextByPhase: Map<VisibleAssistantMessagePhase, string>;
   assistantPhasesWithLiveDelta: Set<VisibleAssistantMessagePhase>;
+  hostedToolStartedIds: Set<string>;
+  hostedToolCompletedIds: Set<string>;
+  emittedCitationUrls: Set<string>;
 }
 
 interface AssistantMessageParseState {
@@ -220,14 +223,51 @@ function outputItemText(item: unknown): string {
   for (const part of content) {
     if (!part || typeof part !== 'object') continue;
     const typed = part as { type?: unknown; text?: unknown };
-    if (
-      (typed.type === 'output_text' || typed.type === 'text') &&
-      typeof typed.text === 'string'
-    ) {
+    if ((typed.type === 'output_text' || typed.type === 'text') && typeof typed.text === 'string') {
       parts.push(typed.text);
     }
   }
   return parts.join('');
+}
+
+function outputItemAnnotations(item: unknown): unknown[] {
+  if (!item || typeof item !== 'object') return [];
+  const content = (item as { content?: unknown }).content;
+  if (!Array.isArray(content)) return [];
+  return content.flatMap((part) => {
+    if (!part || typeof part !== 'object') return [];
+    const annotations = (part as { annotations?: unknown }).annotations;
+    return Array.isArray(annotations) ? annotations : [];
+  });
+}
+
+function citationMarkdown(state: ResponsesParseState, annotations: unknown): string {
+  if (!Array.isArray(annotations)) return '';
+  const lines: string[] = [];
+  for (const value of annotations) {
+    if (!value || typeof value !== 'object') continue;
+    const item = value as { type?: unknown; url?: unknown; title?: unknown };
+    if (item.type !== 'url_citation' || typeof item.url !== 'string') continue;
+    let url: URL;
+    try {
+      url = new URL(item.url);
+    } catch {
+      continue;
+    }
+    if (
+      (url.protocol !== 'http:' && url.protocol !== 'https:') ||
+      state.emittedCitationUrls.has(url.href)
+    ) {
+      continue;
+    }
+    state.emittedCitationUrls.add(url.href);
+    const title = (typeof item.title === 'string' && item.title.trim() ? item.title : url.hostname)
+      .replaceAll('[', '')
+      .replaceAll(']', '')
+      .trim();
+    lines.push(`- [${title}](${url.href})`);
+  }
+  return lines.length > 0 ? `\n\nSources:\n${lines.join('\n')}` : '';
 }
 
 function outputItemId(item: unknown, outputIndex?: number): string | undefined {
@@ -235,6 +275,71 @@ function outputItemId(item: unknown, outputIndex?: number): string | undefined {
     return (item as { id: string }).id;
   }
   return outputIndex !== undefined ? `output-${outputIndex}` : undefined;
+}
+
+function webSearchCallId(item: unknown, fallback?: string): string {
+  if (item && typeof item === 'object' && typeof (item as { id?: unknown }).id === 'string') {
+    return (item as { id: string }).id;
+  }
+  return fallback || 'web-search-call';
+}
+
+function webSearchAction(item: unknown): Record<string, unknown> | undefined {
+  if (!item || typeof item !== 'object') return undefined;
+  const action = (item as { action?: unknown }).action;
+  return action && typeof action === 'object' && !Array.isArray(action)
+    ? (action as Record<string, unknown>)
+    : undefined;
+}
+
+function hostedWebSearchStart(
+  state: ResponsesParseState,
+  id: string,
+  item?: unknown,
+): AdapterEvent[] {
+  if (state.hostedToolStartedIds.has(id)) return [];
+  state.hostedToolStartedIds.add(id);
+  const action = webSearchAction(item);
+  const query =
+    typeof action?.query === 'string'
+      ? action.query
+      : Array.isArray(action?.queries)
+        ? action.queries.filter((entry): entry is string => typeof entry === 'string')
+        : undefined;
+  return [
+    {
+      type: 'hosted-tool-call',
+      toolCall: {
+        id,
+        name: 'web_search',
+        argumentsJson: JSON.stringify({
+          ...(query ? { query } : {}),
+          ...(typeof action?.type === 'string' ? { action: action.type } : {}),
+        }),
+      },
+    },
+  ];
+}
+
+function hostedWebSearchResult(
+  state: ResponsesParseState,
+  id: string,
+  item?: unknown,
+): AdapterEvent[] {
+  if (state.hostedToolCompletedIds.has(id)) return [];
+  state.hostedToolCompletedIds.add(id);
+  return [
+    {
+      type: 'hosted-tool-result',
+      toolCallId: id,
+      result: JSON.stringify({
+        ok: true,
+        provider: 'openai',
+        status: 'completed',
+        ...(webSearchAction(item) ? { action: webSearchAction(item) } : {}),
+      }),
+    },
+  ];
 }
 
 function ensureAssistantItem(
@@ -254,12 +359,11 @@ function ensureAssistantItem(
     input.itemId ??
     (input.outputIndex !== undefined
       ? `output-${input.outputIndex}`
-      : state.activeAnonymousAssistantItemKey ?? `anonymous-${state.assistantItems.size}`);
+      : (state.activeAnonymousAssistantItemKey ?? `anonymous-${state.assistantItems.size}`));
   if (input.outputIndex === undefined && !input.itemId && !indexedId) {
     state.activeAnonymousAssistantItemKey = key;
   }
-  const current =
-    state.assistantItems.get(key) ??
+  const current = state.assistantItems.get(key) ??
     (input.itemId ? state.assistantItems.get(input.itemId) : undefined) ?? {
       defaultedPhase: false,
       emittedText: '',
@@ -267,10 +371,7 @@ function ensureAssistantItem(
       sawDelta: false,
       ended: false,
     };
-  if (
-    input.phase &&
-    (!current.phase || !current.started || current.phase === input.phase)
-  ) {
+  if (input.phase && (!current.phase || !current.started || current.phase === input.phase)) {
     current.phase = input.phase;
     current.defaultedPhase = false;
   }
@@ -367,14 +468,8 @@ function assistantMessageSnapshotEvents(
     ? (state.emittedAssistantTextByPhase.get(item.phase) ?? '')
     : '';
   const baseline = item.emittedText || phaseBaseline;
-  const suffix = missingSnapshotSuffix(
-    text,
-    baseline,
-    phaseHadLiveDelta && !item.emittedText,
-  );
-  const events = suffix
-    ? assistantMessageDeltaEvents(state, itemId, item, suffix, 'snapshot')
-    : [];
+  const suffix = missingSnapshotSuffix(text, baseline, phaseHadLiveDelta && !item.emittedText);
+  const events = suffix ? assistantMessageDeltaEvents(state, itemId, item, suffix, 'snapshot') : [];
   item.sawDelta = true;
   item.emittedText = text;
   return events;
@@ -540,6 +635,7 @@ function parseResponseEvent(
     call_id?: unknown;
     id?: unknown;
     error?: unknown;
+    annotations?: unknown;
     choices?: Array<{
       delta?: { content?: unknown };
       finish_reason?: unknown;
@@ -566,7 +662,8 @@ function parseResponseEvent(
     root.type === 'response.reasoning.done' ||
     root.type === 'response.reasoning_text.done'
   ) {
-    if (state.sawReasoningDelta || typeof root.text !== 'string' || root.text.length === 0) return [];
+    if (state.sawReasoningDelta || typeof root.text !== 'string' || root.text.length === 0)
+      return [];
     state.sawReasoningDelta = true;
     return [{ type: 'reasoning-delta', text: root.text }];
   }
@@ -576,6 +673,13 @@ function parseResponseEvent(
       root.item && typeof root.item === 'object'
         ? (root.item as { type?: unknown; role?: unknown; phase?: unknown })
         : undefined;
+    if (item?.type === 'web_search_call') {
+      return hostedWebSearchStart(
+        state,
+        webSearchCallId(root.item, typeof root.item_id === 'string' ? root.item_id : undefined),
+        root.item,
+      );
+    }
     if (item?.type !== 'message' || item.role !== 'assistant') return [];
     const outputIndex =
       typeof root.output_index === 'number' && Number.isInteger(root.output_index)
@@ -587,6 +691,15 @@ function parseResponseEvent(
       phase: visibleAssistantMessagePhase(item.phase),
     });
     return assistantMessageStartEvents(tracked.itemId, tracked.item);
+  }
+
+  if (
+    root.type === 'response.web_search_call.in_progress' ||
+    root.type === 'response.web_search_call.searching' ||
+    root.type === 'response.web_search_call.completed'
+  ) {
+    const id = typeof root.item_id === 'string' ? root.item_id : 'web-search-call';
+    return hostedWebSearchStart(state, id);
   }
 
   if (root.type === 'response.output_text.delta' || root.type === 'response.refusal.delta') {
@@ -614,7 +727,14 @@ function parseResponseEvent(
     });
     if (typeof root.text !== 'string' || root.text.length === 0) return [];
     defaultAssistantItemToFinalAnswer(tracked.item);
-    return assistantMessageSnapshotEvents(state, tracked.itemId, tracked.item, root.text);
+    const events = assistantMessageSnapshotEvents(state, tracked.itemId, tracked.item, root.text);
+    const citations = citationMarkdown(state, root.annotations);
+    if (citations) {
+      events.push(
+        ...assistantMessageDeltaEvents(state, tracked.itemId, tracked.item, citations, 'snapshot'),
+      );
+    }
+    return events;
   }
 
   if (root.type === 'response.output_item.done') {
@@ -622,6 +742,16 @@ function parseResponseEvent(
       root.item && typeof root.item === 'object'
         ? (root.item as { type?: unknown; role?: unknown; phase?: unknown })
         : undefined;
+    if (item?.type === 'web_search_call') {
+      const id = webSearchCallId(
+        root.item,
+        typeof root.item_id === 'string' ? root.item_id : undefined,
+      );
+      return [
+        ...hostedWebSearchStart(state, id, root.item),
+        ...hostedWebSearchResult(state, id, root.item),
+      ];
+    }
     if (item?.type !== 'message' || item.role !== 'assistant') return [];
     const outputIndex =
       typeof root.output_index === 'number' && Number.isInteger(root.output_index)
@@ -637,18 +767,15 @@ function parseResponseEvent(
     if (!tracked.item.phase && text) defaultAssistantItemToFinalAnswer(tracked.item);
     if (!tracked.item.phase) return [];
     if (text) {
+      events.push(...assistantMessageSnapshotEvents(state, tracked.itemId, tracked.item, text));
+    }
+    const citations = citationMarkdown(state, outputItemAnnotations(root.item));
+    if (citations) {
       events.push(
-        ...assistantMessageSnapshotEvents(state, tracked.itemId, tracked.item, text),
+        ...assistantMessageDeltaEvents(state, tracked.itemId, tracked.item, citations, 'snapshot'),
       );
     }
-    events.push(
-      ...assistantMessageEndEvents(
-        state,
-        tracked.key,
-        tracked.itemId,
-        tracked.item,
-      ),
-    );
+    events.push(...assistantMessageEndEvents(state, tracked.key, tracked.itemId, tracked.item));
     return events;
   }
 
@@ -711,23 +838,33 @@ function parseResponseEvent(
           if (tracked.item.phase) {
             if (text) {
               events.push(
-                ...assistantMessageSnapshotEvents(
+                ...assistantMessageSnapshotEvents(state, tracked.itemId, tracked.item, text),
+              );
+            }
+            const citations = citationMarkdown(state, outputItemAnnotations(item));
+            if (citations) {
+              events.push(
+                ...assistantMessageDeltaEvents(
                   state,
                   tracked.itemId,
                   tracked.item,
-                  text,
+                  citations,
+                  'snapshot',
                 ),
               );
             }
             events.push(
-              ...assistantMessageEndEvents(
-                state,
-                tracked.key,
-                tracked.itemId,
-                tracked.item,
-              ),
+              ...assistantMessageEndEvents(state, tracked.key, tracked.itemId, tracked.item),
             );
           }
+          continue;
+        }
+        if (typed.type === 'web_search_call') {
+          const id = webSearchCallId(item, `web-search-${outputIndex + 1}`);
+          events.push(
+            ...hostedWebSearchStart(state, id, item),
+            ...hostedWebSearchResult(state, id, item),
+          );
           continue;
         }
         if (typed.type !== 'function_call' || typeof typed.name !== 'string') continue;
@@ -755,14 +892,12 @@ function parseResponseEvent(
         defaultAssistantItemToFinalAnswer(tracked.item);
         events.push(
           ...assistantMessageSnapshotEvents(state, tracked.itemId, tracked.item, text),
-          ...assistantMessageEndEvents(
-            state,
-            tracked.key,
-            tracked.itemId,
-            tracked.item,
-          ),
+          ...assistantMessageEndEvents(state, tracked.key, tracked.itemId, tracked.item),
         );
       }
+    }
+    for (const id of state.hostedToolStartedIds) {
+      events.push(...hostedWebSearchResult(state, id));
     }
     events.push(...openAssistantMessageEndEvents(state));
     const usage = usageEvent(response);
@@ -841,6 +976,9 @@ function createResponsesParseState(): ResponsesParseState {
     assistantItemIdsByOutputIndex: new Map(),
     emittedAssistantTextByPhase: new Map(),
     assistantPhasesWithLiveDelta: new Set(),
+    hostedToolStartedIds: new Set(),
+    hostedToolCompletedIds: new Set(),
+    emittedCitationUrls: new Set(),
   };
 }
 
@@ -895,13 +1033,28 @@ export async function* streamOpenAIResponses(
       };
     }
   }
+  const tools: Array<Record<string, unknown>> = [];
+  if (request.hostedTools?.length) {
+    tools.push(
+      ...request.hostedTools.map((tool) => ({
+        type: tool.type,
+        ...(tool.searchContextSize ? { search_context_size: tool.searchContextSize } : {}),
+      })),
+    );
+    body.include = ['web_search_call.action.sources'];
+  }
   if (request.tools?.length) {
-    body.tools = request.tools.map((tool) => ({
-      type: 'function',
-      name: tool.name,
-      description: tool.description,
-      parameters: tool.inputSchema,
-    }));
+    tools.push(
+      ...request.tools.map((tool) => ({
+        type: 'function',
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.inputSchema,
+      })),
+    );
+  }
+  if (tools.length > 0) {
+    body.tools = tools;
     if (request.toolChoice) body.tool_choice = request.toolChoice;
   }
 

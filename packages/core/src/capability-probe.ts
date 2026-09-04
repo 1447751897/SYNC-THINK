@@ -5,6 +5,7 @@ export const CAPABILITY_TAGS: readonly CapabilityTag[] = [
   'text',
   'vision',
   'tool-calling',
+  'web-search',
   'image-generation',
   'embeddings',
 ] as const;
@@ -84,6 +85,21 @@ function isGeneratedMediaModelId(id: string): boolean {
     /\bimage[-_]?gen/.test(id) ||
     /\bvideo[-_]?gen/.test(id)
   );
+}
+
+function isKnownNativeWebSearchModel(id: string, protocol: ProtocolFamily): boolean {
+  if (protocol === 'openai-responses') {
+    return (
+      /^gpt-5(?:[.\-_]|$)/.test(id) ||
+      /^gpt-4\.1(?:[.\-_]|$)/.test(id) ||
+      /^o[34](?:[.\-_]|$)/.test(id) ||
+      /(?:^|[-_])search-preview(?:$|[-_])/.test(id)
+    );
+  }
+  if (protocol === 'anthropic-messages') {
+    return /^claude-(?:3|4|fable|mythos|opus|sonnet|haiku)(?:[.\-_]|$)/.test(id);
+  }
+  return false;
 }
 
 function isAudioOnlyModelId(id: string): boolean {
@@ -191,6 +207,10 @@ export function suggestCapabilities(input: CapabilitySuggestionInput): Capabilit
     if (isTool) {
       flags['tool-calling'] = true;
       reasons.push('modern chat model id suggests tool calling');
+    }
+    if (isKnownNativeWebSearchModel(id, protocol)) {
+      flags['web-search'] = true;
+      reasons.push('model family and protocol support provider-native web search');
     }
   }
 

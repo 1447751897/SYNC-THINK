@@ -14,3 +14,4 @@ export * from './design-generation.js';
 export * from './ui-design.js';
 export * from './pipe.js';
 export * from './tool-approval.js';
+export * from './web-search.js';

@@ -28,6 +28,11 @@ export interface ProviderCallRequest {
   messages: ProviderMessage[];
   /** Optional tool schemas (§ capability = 'tool-calling'). */
   tools?: ProviderToolSchema[];
+  /** Provider-hosted tools executed remotely without a local function result loop. */
+  hostedTools?: Array<{
+    type: 'web_search';
+    searchContextSize?: 'low' | 'medium' | 'high';
+  }>;
   /** Provider tool selection policy. `none` preserves tool schemas while forcing a text turn. */
   toolChoice?: 'auto' | 'none';
   /** Stopping criteria for cost control & determinism. */
@@ -147,6 +152,9 @@ export type AdapterEvent =
   | { type: 'reasoning-delta'; text: string }
   | { type: 'tool-call'; toolCall: ProviderToolCall }
   | { type: 'tool-result'; toolCallId: string; result: string }
+  /** Provider-hosted tool lifecycle. The Runtime displays it but never executes it locally. */
+  | { type: 'hosted-tool-call'; toolCall: ProviderToolCall }
+  | { type: 'hosted-tool-result'; toolCallId: string; result: string }
   | { type: 'image-ready'; imageRef: string; mimeType: string }
   | ({ type: 'usage' } & ProviderUsage)
   | { type: 'finished'; reason: 'stop' | 'length' | 'tool-requests' | 'image' }

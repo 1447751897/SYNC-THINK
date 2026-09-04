@@ -49,7 +49,7 @@ function scopeDefaults(placement: WorkbenchPlacement): WorkbenchScope {
     open: false,
     size: placement === 'right' ? WORKBENCH_RIGHT_COMPACT_WIDTH : WORKBENCH_BOTTOM_DEFAULT_HEIGHT,
     tabs: [],
-    fileBrowserOpen: true,
+    fileBrowserOpen: false,
     fileBrowserWidth: WORKBENCH_FILE_BROWSER_WIDTH,
   };
 }
@@ -140,6 +140,7 @@ function normalizeScope(value: unknown, placement: WorkbenchPlacement): Workbenc
   if (Array.isArray(record.tabs)) {
     for (const candidate of record.tabs.slice(0, MAX_WORKBENCH_TABS)) {
       const tab = normalizeWorkbenchTab(candidate);
+      if (placement === 'bottom' && tab?.type === 'workspace-files') continue;
       if (!tab || seen.has(tab.id)) continue;
       seen.add(tab.id);
       tabs.push(tab);
@@ -154,7 +155,7 @@ function normalizeScope(value: unknown, placement: WorkbenchPlacement): Workbenc
     size: placementSize(placement, typeof record.size === 'number' ? record.size : defaults.size),
     tabs,
     activeTabId,
-    fileBrowserOpen: record.fileBrowserOpen !== false,
+    fileBrowserOpen: record.fileBrowserOpen === true,
     fileBrowserWidth: clamp(
       typeof record.fileBrowserWidth === 'number'
         ? record.fileBrowserWidth
@@ -211,16 +212,23 @@ export function openWorkbenchTab(
 ): WorkspaceWorkbenchLayout {
   const normalized = normalizeWorkbenchTab(tab);
   if (!normalized) return layout;
+  if (normalized.type === 'workspace-files' && placement !== 'right') {
+    return openWorkbenchTab(layout, 'right', normalized);
+  }
   const otherPlacement: WorkbenchPlacement = placement === 'right' ? 'bottom' : 'right';
-  const other =
-    normalized.type === 'workspace-files'
-      ? layout[otherPlacement]
-      : scopeWithoutTab(layout[otherPlacement], normalized.id);
+  const other = scopeWithoutTab(layout[otherPlacement], normalized.id);
   const current = layout[placement];
   const existing = current.tabs.find((item) => item.id === normalized.id);
-  const tabs = existing
+  let tabs = existing
     ? current.tabs.map((item) => (item.id === normalized.id ? normalized : item))
     : [...current.tabs, normalized].slice(-MAX_WORKBENCH_TABS);
+  if (
+    placement === 'right' &&
+    normalized.type !== 'workspace-files' &&
+    !tabs.some((item) => item.type === 'workspace-files')
+  ) {
+    tabs = [workspaceFilesWorkbenchTab(), ...tabs].slice(0, MAX_WORKBENCH_TABS);
+  }
   const openingCompactFiles =
     placement === 'right' && normalized.type === 'workspace-files' && current.tabs.length === 0;
   const minimumPreviewWidth =
@@ -280,6 +288,32 @@ export function setWorkbenchOpen(
   return { ...layout, [placement]: { ...scope, open } };
 }
 
+export function toggleWorkspaceFilesWorkbench(
+  layout: WorkspaceWorkbenchLayout,
+  placement: WorkbenchPlacement = 'right',
+): WorkspaceWorkbenchLayout {
+  const target: WorkbenchPlacement = placement === 'bottom' ? 'right' : placement;
+  const scope = layout[target];
+  const resources = scope.tabs.filter((tab) => tab.type !== 'workspace-files');
+  const hasFilesTab = scope.tabs.some((tab) => tab.type === 'workspace-files');
+  const activeIsFiles = !scope.activeTabId || scope.activeTabId === 'workspace-files';
+
+  if (resources.length === 0) {
+    if (scope.open && hasFilesTab && activeIsFiles) return layout;
+    return openWorkbenchTab(layout, 'right', workspaceFilesWorkbenchTab());
+  }
+
+  if (activeIsFiles) {
+    return setWorkbenchFileBrowserOpen(
+      activateWorkbenchTab(layout, 'right', resources.at(-1)!.id),
+      'right',
+      true,
+    );
+  }
+
+  return setWorkbenchFileBrowserOpen(layout, 'right', !scope.fileBrowserOpen);
+}
+
 export function setWorkbenchSize(
   layout: WorkspaceWorkbenchLayout,
   placement: WorkbenchPlacement,
@@ -298,9 +332,20 @@ export function setWorkbenchFileBrowserOpen(
   open: boolean,
 ): WorkspaceWorkbenchLayout {
   const scope = layout[placement];
-  return scope.fileBrowserOpen === open
-    ? layout
-    : { ...layout, [placement]: { ...scope, fileBrowserOpen: open } };
+  if (scope.fileBrowserOpen === open) return layout;
+  if (placement !== 'right') {
+    return { ...layout, [placement]: { ...scope, fileBrowserOpen: open } };
+  }
+  return {
+    ...layout,
+    right: {
+      ...scope,
+      fileBrowserOpen: open,
+      size: open
+        ? placementSize('right', Math.max(scope.size, WORKBENCH_RIGHT_PREVIEW_WIDTH))
+        : scope.size,
+    },
+  };
 }
 
 export function setWorkbenchFileBrowserWidth(

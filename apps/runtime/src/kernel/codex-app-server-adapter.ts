@@ -99,6 +99,64 @@ function numberValue(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
+function fileChangeKind(value: unknown): string {
+  if (typeof value === 'string' && value.trim()) return value.trim();
+  const record = asRecord(value);
+  if (typeof record?.type === 'string' && record.type.trim()) return record.type.trim();
+  if (typeof record?.kind === 'string' && record.kind.trim()) return record.kind.trim();
+  return 'update';
+}
+
+function fileChangeDiff(record: JsonRecord | undefined): string | undefined {
+  if (typeof record?.diff === 'string') return record.diff;
+  if (typeof record?.unified_diff === 'string') return record.unified_diff;
+  if (typeof record?.unifiedDiff === 'string') return record.unifiedDiff;
+  if (typeof record?.content === 'string') return record.content;
+  return undefined;
+}
+
+function normalizeFileChangeEntry(
+  record: JsonRecord | undefined,
+  fallbackPath?: string,
+): JsonRecord | undefined {
+  const path =
+    text(record?.path) ?? text(record?.file) ?? text(record?.file_path) ?? text(fallbackPath);
+  if (!path) return undefined;
+  const kind = fileChangeKind(record?.kind ?? record?.type ?? record);
+  const diff = fileChangeDiff(record);
+  return {
+    path,
+    kind,
+    ...(diff ? { diff } : {}),
+  };
+}
+
+function fileChangeEntries(item: JsonRecord | undefined): JsonRecord[] {
+  const changes = item?.changes ?? item?.files;
+  if (Array.isArray(changes)) {
+    return changes.flatMap((entry) => {
+      const normalized = normalizeFileChangeEntry(asRecord(entry));
+      return normalized ? [normalized] : [];
+    });
+  }
+  const map = asRecord(changes);
+  if (!map) return [];
+  return Object.entries(map).flatMap(([path, value]) => {
+    const normalized = normalizeFileChangeEntry(asRecord(value), path);
+    return normalized ? [normalized] : [];
+  });
+}
+
+function isFileChangeItemType(type: string | undefined): boolean {
+  return type === 'fileChange' || type === 'file_change';
+}
+
+function fileChangeArgsJson(item: JsonRecord): string {
+  return JSON.stringify({
+    changes: fileChangeEntries(item),
+  });
+}
+
 function commandOutputText(value: unknown): string | undefined {
   if (typeof value === 'string') return value;
   if (Array.isArray(value)) {
@@ -221,6 +279,17 @@ function processIdentity(request: KernelRequest): string {
         baseUrl: request.credential.baseUrl ?? null,
         apiKey: request.credential.apiKey ?? null,
         reuseLocalLogin: request.credential.reuseLocalLogin === true,
+        webSearchMode: request.webSearchMode ?? 'disabled',
+        platformBroker: request.platformBroker
+          ? {
+              host: request.platformBroker.host,
+              port: request.platformBroker.port,
+              token: request.platformBroker.token,
+              workspaceDir: request.platformBroker.workspaceDir,
+              command: request.platformBroker.command,
+              args: request.platformBroker.args,
+            }
+          : null,
       }),
     )
     .digest('hex');
@@ -240,6 +309,10 @@ function providerConfig(request: KernelRequest): {
     // The raw reasoning chain is an internal diagnostic stream and can turn a
     // single turn into dozens of Markdown headings in the chat UI.
     show_raw_agent_reasoning: false,
+    // Codex's top-level search mode is the app-server equivalent of `codex
+    // --search`. Keep it explicit so turning Compose 联网 off also removes a
+    // cached search tool inherited from the user's local config.
+    web_search: request.webSearchMode === 'native' ? 'live' : 'disabled',
   };
   const mcpServers = mcpConfig(request.platformBroker);
   if (mcpServers) config.mcp_servers = mcpServers;
@@ -662,6 +735,19 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
         toolInput: params,
         ...(text(params.reason) ? { reason: text(params.reason) } : {}),
       };
+      if (method === 'item/fileChange/requestApproval') {
+        const item = asRecord(params.item) ?? params;
+        const changes = fileChangeEntries(item);
+        if (changes.length > 0) {
+          this.pushTurnEvent({
+            type: 'tool-call',
+            toolId: text(params.itemId) ?? text(item.id) ?? requestId,
+            name: 'file_change',
+            argsJson: JSON.stringify({ changes }),
+            partial: true,
+          });
+        }
+      }
       this.permissionCallback?.(request);
       this.pushTurnEvent({ type: 'permission-request', ...request });
       return;
@@ -782,6 +868,20 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
       }
       return;
     }
+    if (method === 'item/fileChange/patchUpdated') {
+      const itemId = text(params.itemId) ?? text(asRecord(params.item)?.id);
+      const changes = fileChangeEntries(asRecord(params.item) ?? params);
+      if (itemId && changes.length > 0) {
+        this.pushTurnEvent({
+          type: 'tool-call',
+          toolId: itemId,
+          name: 'file_change',
+          argsJson: JSON.stringify({ changes }),
+          partial: true,
+        });
+      }
+      return;
+    }
     if (method === 'item/started') {
       this.mapItemStarted(asRecord(params.item), turn);
       return;
@@ -807,6 +907,14 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
         requestId: this.activeUsageRequestId,
       };
       this.pushTurnEvent({ type: 'usage', usage: mapped });
+      const usedTokens = numberValue(usage.inputTokens);
+      if (usedTokens !== undefined) {
+        this.pushTurnEvent({
+          type: 'context-occupancy',
+          usedTokens,
+          ...(Number.isFinite(mapped.window) ? { windowTokens: mapped.window } : {}),
+        });
+      }
       this.usageCallback?.(mapped);
       return;
     }
@@ -885,6 +993,14 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
         argsJson: JSON.stringify(item.arguments ?? {}),
         partial: false,
       });
+    } else if (isFileChangeItemType(type)) {
+      this.pushTurnEvent({
+        type: 'tool-call',
+        toolId: id,
+        name: 'file_change',
+        argsJson: fileChangeArgsJson(item),
+        partial: false,
+      });
     }
   }
 
@@ -935,12 +1051,25 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
         output: JSON.stringify(item.result ?? item.error ?? {}),
         isError: item.error != null,
       });
-    } else if (type === 'fileChange') {
+    } else if (isFileChangeItemType(type)) {
+      const status = text(item.status);
+      const failed = status === 'failed' || status === 'declined';
+      this.pushTurnEvent({
+        type: 'tool-call',
+        toolId: id,
+        name: 'file_change',
+        argsJson: fileChangeArgsJson(item),
+        partial: false,
+      });
       this.pushTurnEvent({
         type: 'tool-result',
         toolId: id,
-        output: 'file changed',
-        isError: false,
+        output: JSON.stringify({
+          ok: !failed,
+          status: status ?? 'completed',
+          changes: fileChangeEntries(item),
+        }),
+        isError: failed,
       });
     }
   }

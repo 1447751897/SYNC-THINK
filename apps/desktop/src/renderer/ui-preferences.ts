@@ -39,6 +39,18 @@ export const DEFAULT_AGENT_PREFERENCES: Readonly<AgentPreferences> = {
 };
 
 export const AGENT_PREFERENCES_CHANGED_EVENT = 'shell-agent-preferences-changed';
+export const CONVERSATION_KERNEL_OVERRIDES_CHANGED_EVENT =
+  'shell-conversation-kernel-overrides-changed';
+
+export const SHELL_ANIMATION_PREFERENCE_KEY = 'sync-think-animation';
+
+/** In-app 界面动画 is the source of truth; OS reduced-motion must not override it. */
+export function applyShellMotionPreference(enabled: boolean): void {
+  if (typeof document === 'undefined') return;
+  document.documentElement.toggleAttribute('data-reduced-motion', !enabled);
+  if (enabled) document.documentElement.setAttribute('data-motion', 'full');
+  else document.documentElement.removeAttribute('data-motion');
+}
 
 /** Shell conversation permission defaults to the user-confirmed full access mode. */
 export const DEFAULT_PERMISSION_PREFERENCE: DefaultPermissionPreference = 'full-access';
@@ -920,6 +932,11 @@ export function writeConversationKernelOverrides(
   storage?: Pick<Storage, 'setItem'>,
 ): void {
   writeJsonPreference(UI_PREF_KEYS.conversationKernelOverrides, overrides, storage);
+  if (!storage && typeof window !== 'undefined') {
+    window.dispatchEvent(
+      new CustomEvent(CONVERSATION_KERNEL_OVERRIDES_CHANGED_EVENT, { detail: overrides }),
+    );
+  }
 }
 
 /** Default kernel: native (the in-process runtime) — no override needed. */

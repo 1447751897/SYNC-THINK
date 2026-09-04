@@ -71,6 +71,13 @@ describe('provider-payloads', () => {
     expect(confirmed.modelId).toBe('m1');
     expect(confirmed.capabilities).toEqual(['text', 'vision']);
     expect(confirmed.confirmed).toBe(true);
+    expect(
+      parseConfirmCapabilitiesPayload({
+        modelId: 'm1',
+        capabilities: ['text', 'vision', 'tool-calling', 'web-search'],
+        confirmed: true,
+      }).capabilities,
+    ).toEqual(['text', 'vision', 'tool-calling', 'web-search']);
     expect(() =>
       parseConfirmCapabilitiesPayload({
         modelId: 'm1',

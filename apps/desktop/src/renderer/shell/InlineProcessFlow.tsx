@@ -789,6 +789,13 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
   agentTaskContent,
   supplementalContent,
   onOpenChange,
+  onPanelOpen,
+  timelineLoadState = 'idle',
+  timelineLoadedCount,
+  timelineTotalSegments,
+  timelineHasMore = false,
+  onLoadMoreTimeline,
+  onRetryTimelineLoad,
 }: {
   items: readonly InlineProcessItem[];
   steps?: readonly ExecutionProcessStep[];
@@ -811,6 +818,14 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
   agentTaskContent?: ReactNode;
   supplementalContent?: ReactNode;
   onOpenChange?: (path: string) => void;
+  /** Lazy detail seam: invoked once when this run's folded panel first opens. */
+  onPanelOpen?: () => void;
+  timelineLoadState?: 'idle' | 'loading' | 'loaded' | 'error';
+  timelineLoadedCount?: number;
+  timelineTotalSegments?: number;
+  timelineHasMore?: boolean;
+  onLoadMoreTimeline?: () => void;
+  onRetryTimelineLoad?: () => void;
 }) {
   const orderedItems = useMemo<readonly InlineProcessItem[]>(() => {
     const visibleItems = showToolUse ? items : items.filter((item) => item.kind !== 'tool');
@@ -896,6 +911,39 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
     resetKey: runId,
   });
   const panelOpen = collapseExecutionProcess ? disclosedPanelOpen : true;
+  const notifiedOpenRunRef = useRef<string>();
+  useEffect(() => {
+    if (!panelOpen || !onPanelOpen) return;
+    const key = runId ?? 'anonymous-run';
+    if (notifiedOpenRunRef.current === key) return;
+    notifiedOpenRunRef.current = key;
+    onPanelOpen();
+  }, [onPanelOpen, panelOpen, runId]);
+  const timelineLoadMoreRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    const target = timelineLoadMoreRef.current;
+    if (
+      !panelOpen ||
+      timelineLoadState !== 'loaded' ||
+      !timelineHasMore ||
+      !onLoadMoreTimeline ||
+      !target ||
+      typeof IntersectionObserver === 'undefined'
+    ) {
+      return;
+    }
+    let requested = false;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (requested || !entries.some((entry) => entry.isIntersecting)) return;
+        requested = true;
+        onLoadMoreTimeline();
+      },
+      { rootMargin: '160px 0px' },
+    );
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [onLoadMoreTimeline, panelOpen, timelineHasMore, timelineLoadState]);
   const durationLabel = processDurationLabel({
     ...(startedAt ? { startedAt } : {}),
     ...(completedAt ? { completedAt } : {}),
@@ -993,6 +1041,37 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
                 />
               ))}
             </div>
+          ) : null}
+          {timelineLoadState === 'loading' ? (
+            <div className="shell-process-panel__lazy-state" role="status">
+              <RotateCw size={12} className="shell-process-spin" aria-hidden="true" />
+              <span>{timelineLoadedCount ? '继续加载执行过程…' : '加载完整执行过程…'}</span>
+            </div>
+          ) : timelineLoadState === 'error' ? (
+            <button
+              type="button"
+              className="shell-process-panel__lazy-retry"
+              onClick={onRetryTimelineLoad}
+            >
+              <RotateCw size={12} aria-hidden="true" />
+              <span>重新加载完整执行过程</span>
+            </button>
+          ) : timelineHasMore ? (
+            <button
+              ref={timelineLoadMoreRef}
+              type="button"
+              className="shell-process-panel__lazy-retry"
+              data-testid="process-timeline-load-more"
+              onClick={onLoadMoreTimeline}
+            >
+              <ChevronDown size={12} aria-hidden="true" />
+              <span>
+                继续加载
+                {timelineTotalSegments !== undefined && timelineLoadedCount !== undefined
+                  ? `（${timelineLoadedCount}/${timelineTotalSegments}）`
+                  : ''}
+              </span>
+            </button>
           ) : null}
         </div>
       ) : null}

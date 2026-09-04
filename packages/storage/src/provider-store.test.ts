@@ -263,10 +263,10 @@ describe('SqliteProviderStore', () => {
 
       const confirmed = store.updateModelCapabilities({
         modelId,
-        capabilities: ['text', 'vision'],
+        capabilities: ['text', 'vision', 'web-search'],
         capabilitiesConfirmed: true,
       });
-      expect(confirmed.capabilities).toEqual(['text', 'vision']);
+      expect(confirmed.capabilities).toEqual(['text', 'vision', 'web-search']);
       expect(confirmed.capabilitiesConfirmed).toBe(true);
 
       const listed = store.listModels(created.provider.id as ProviderId);
@@ -478,4 +478,3 @@ describe('SqliteProviderStore', () => {
   });
 
 });
-

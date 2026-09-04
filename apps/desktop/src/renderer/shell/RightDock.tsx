@@ -1,5 +1,5 @@
-// 工作区文件面板（NewMax 式）：文件 / Git / Review 三个视图，由对话标签行的
-// 「工作区文件」标签挂载（右栏已移除，标签是唯一 chrome）。
+// 工作区文件面板（NewMax 式）：由右侧 WorkspaceWorkbench 独占挂载，主聊天、
+// 文档和画布只通过工作台按钮打开它，不直接嵌入文件树。
 // - 文件面板：搜索 + 预览项目内文本文件（主进程只读 IPC，防目录穿越）；
 // - Git 面板：当前分支 / 未提交变更 / 最近提交；
 // - Review 面板：本轮文件变更（A/M/D）+ 行级 diff。
@@ -139,28 +139,35 @@ export function WorkspaceFilesPanel(props: {
         </div>
       </div>
       <div className="relative min-h-0 flex-1 overflow-hidden">
-        {section === 'changes' ? (
-          <div className="shell-dock-panel absolute inset-0 is-active">
-            <ConversationFilesPanel
-              changes={conversationChanges}
-              projectFolder={props.projectFolder}
-              activeFilePath={props.activeFilePath}
-              onOpenFile={props.onOpenFile}
-              onOpenFileInNewTab={props.onOpenFileInNewTab}
-            />
-          </div>
-        ) : (
-          <div className="shell-dock-panel absolute inset-0 is-active">
-            <FilesPanel
-              projectFolder={props.projectFolder}
-              onOpenFile={props.onOpenFile}
-              onOpenFileInNewTab={props.onOpenFileInNewTab}
-              activeFilePath={props.activeFilePath}
-              searchExpanded={searchExpanded}
-              refreshRevision={refreshRevision}
-            />
-          </div>
-        )}
+        <div
+          className={clsx(
+            'shell-dock-panel absolute inset-0',
+            section === 'changes' ? 'is-active' : 'is-hidden',
+          )}
+        >
+          <ConversationFilesPanel
+            changes={conversationChanges}
+            projectFolder={props.projectFolder}
+            activeFilePath={props.activeFilePath}
+            onOpenFile={props.onOpenFile}
+            onOpenFileInNewTab={props.onOpenFileInNewTab}
+          />
+        </div>
+        <div
+          className={clsx(
+            'shell-dock-panel absolute inset-0',
+            section === 'all' ? 'is-active' : 'is-hidden',
+          )}
+        >
+          <FilesPanel
+            projectFolder={props.projectFolder}
+            onOpenFile={props.onOpenFile}
+            onOpenFileInNewTab={props.onOpenFileInNewTab}
+            activeFilePath={props.activeFilePath}
+            searchExpanded={searchExpanded}
+            refreshRevision={refreshRevision}
+          />
+        </div>
       </div>
     </div>
   );
@@ -195,7 +202,7 @@ function ConversationFilesPanel({
       <DockEmpty
         icon={<Folder size={22} />}
         title="暂无对话文件"
-        subtitle="当前对话修改过的文件会显示在这里"
+        subtitle="当前对话里智能体写入或改过的文件会显示在这里"
       />
     );
   }
@@ -223,7 +230,7 @@ function ConversationFilesPanel({
               onClick={() => (onOpenFile ?? onOpenFileInNewTab)?.(item.path)}
             >
               <FileTypeIcon path={item.path} size={14} />
-              <span>{reviewFileName(item.path)}</span>
+              <span className="shell-conversation-files__name">{reviewFileName(item.path)}</span>
               <small>
                 {item.action === 'created' ? 'A' : item.action === 'deleted' ? 'D' : 'M'}
               </small>
@@ -667,7 +674,7 @@ function FilesPanel({
   const [contentError, setContentError] = useState<string>();
   const [loading, setLoading] = useState(false);
   const [selectedInternal, setSelectedInternal] = useState<string | null>(null);
-  // 分屏模式下高亮跟随宿主的分屏文件；内嵌预览模式沿用内部选中态。
+  // 工作台模式下高亮跟随宿主文件；无宿主回调时沿用面板内部选中态。
   const selected = onOpenFile ? (activeFilePath ?? null) : selectedInternal;
   const [preview, setPreview] = useState<{
     path: string;

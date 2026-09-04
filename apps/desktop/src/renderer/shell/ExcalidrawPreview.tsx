@@ -352,11 +352,20 @@ function NewMaxExcalidrawChrome({ handle }: { handle: ExcalidrawVendorHandle }) 
       }
     };
 
+    let frame = 0;
+    const scheduleSync = () => {
+      if (frame) return;
+      frame = window.requestAnimationFrame(() => {
+        frame = 0;
+        syncHosts();
+      });
+    };
     syncHosts();
-    const observer = new MutationObserver(syncHosts);
+    const observer = new MutationObserver(scheduleSync);
     observer.observe(root, { childList: true, subtree: true });
     return () => {
       observer.disconnect();
+      if (frame) window.cancelAnimationFrame(frame);
       hostsRef.current.menu?.remove();
       hostsRef.current.auxiliary?.remove();
       hostsRef.current.tools?.remove();
@@ -395,10 +404,21 @@ function NewMaxExcalidrawChrome({ handle }: { handle: ExcalidrawVendorHandle }) 
         setNativeTools(nextTools);
       }
     };
+    let frame = 0;
+    const scheduleSync = () => {
+      if (frame) return;
+      frame = window.requestAnimationFrame(() => {
+        frame = 0;
+        syncTools();
+      });
+    };
     syncTools();
-    const observer = new MutationObserver(syncTools);
+    const observer = new MutationObserver(scheduleSync);
     observer.observe(root, { childList: true, subtree: true });
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      if (frame) window.cancelAnimationFrame(frame);
+    };
   }, [root]);
 
   const selectTool = useCallback(
@@ -640,10 +660,21 @@ function ExcalidrawSidebarTabIcons({ root }: { root: HTMLElement }) {
       tabsRef.current = nextTabs;
       setTabs(nextTabs);
     };
+    let frame = 0;
+    const scheduleSync = () => {
+      if (frame) return;
+      frame = window.requestAnimationFrame(() => {
+        frame = 0;
+        syncTabs();
+      });
+    };
     syncTabs();
-    const observer = new MutationObserver(syncTabs);
+    const observer = new MutationObserver(scheduleSync);
     observer.observe(root, { childList: true, subtree: true });
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      if (frame) window.cancelAnimationFrame(frame);
+    };
   }, [root]);
 
   return (
@@ -771,14 +802,25 @@ export function ExcalidrawPreview({
       // embedded editor, while keeping the native menu as the source of
       // truth for all supported actions.
       root.querySelectorAll<HTMLElement>('[data-testid="toolbar-embeddable"]').forEach((node) => node.remove());
-      root.querySelectorAll<HTMLElement>('div').forEach((node) => {
+      root.querySelectorAll<HTMLElement>('button').forEach((node) => {
         if (node.childNodes.length === 1 && node.textContent?.trim() === 'Generate') node.remove();
       });
     };
+    let frame = 0;
+    const schedulePatch = () => {
+      if (frame) return;
+      frame = window.requestAnimationFrame(() => {
+        frame = 0;
+        patchNativeSurface();
+      });
+    };
     patchNativeSurface();
-    const observer = new MutationObserver(patchNativeSurface);
-    observer.observe(root, { childList: true, subtree: true, characterData: true });
-    return () => observer.disconnect();
+    const observer = new MutationObserver(schedulePatch);
+    observer.observe(root, { childList: true, subtree: true });
+    return () => {
+      observer.disconnect();
+      if (frame) window.cancelAnimationFrame(frame);
+    };
   }, [editorHandle]);
 
   useEffect(() => {

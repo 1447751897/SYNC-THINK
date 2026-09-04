@@ -16,6 +16,7 @@ const runtime = {
   listConversationMessages: vi.fn(),
   openTask: vi.fn(),
   sendConversationMessage: vi.fn(),
+  subscribeConversationTransientStream: vi.fn(),
 };
 
 function deferred<T>() {
@@ -69,7 +70,7 @@ const kernels = [
       compress: 'own' as const,
       usageReport: true,
       protocols: ['anthropic-messages' as const],
-      contextWindow: { nativeLimit: 200_000, overridable: false },
+      contextWindow: { nativeLimit: 1_000_000, overridable: true },
     },
     installed: true,
     version: '2.1.222',
@@ -151,6 +152,10 @@ beforeEach(() => {
   });
   runtime.installKernel.mockReset();
   runtime.detectKernels.mockReset().mockResolvedValue({ kernels });
+  runtime.subscribeConversationTransientStream.mockReset().mockReturnValue({
+    ready: Promise.resolve({ subscriptionId: 'sub-kernel' }),
+    unsubscribe: vi.fn(async () => undefined),
+  });
   Object.defineProperty(window, 'syncThink', {
     configurable: true,
     value: {
@@ -295,14 +300,13 @@ describe('ChatView kernel selection', () => {
 
   it('refreshes the context window for the selected kernel', async () => {
     runtime.getConversationContextStatus.mockImplementation(
-      async ({ kernelId }: { kernelId?: string }) => ({
+      async () => ({
         modelId: 'model-a',
-        contextWindow: kernelId === 'claude-code' ? 200_000 : 400_000,
+        contextWindow: 400_000,
         modelContextWindow: 400_000,
-        contextWindowSource: kernelId === 'claude-code' ? 'kernel-limit' : 'model-default',
-        ...(kernelId === 'claude-code' ? { kernelContextWindowLimit: 200_000 } : {}),
+        contextWindowSource: 'model-default',
         estimatedUsedTokens: 12_000,
-        usageRatio: kernelId === 'claude-code' ? 0.06 : 0.03,
+        usageRatio: 0.03,
         compactThreshold: 0.7,
         sections: [
           { type: 'system', tokens: 0 },
@@ -328,9 +332,40 @@ describe('ChatView kernel selection', () => {
     );
     fireEvent.click(screen.getByTestId('context-ring'));
 
-    expect(screen.getByTestId('context-kernel-label').textContent).toBe('ClaudeCode');
-    expect(screen.getByTestId('context-limit-kernel-capped').textContent).toContain('受内核限制');
+    expect(screen.getByTestId('context-kernel-label').getAttribute('title')).toBe(
+      '当前内核：ClaudeCode',
+    );
+    expect(
+      screen.getByTestId('context-kernel-label').querySelector('[role="img"], img'),
+    ).toBeTruthy();
+    expect(screen.queryByTestId('context-limit-kernel-capped')).toBeNull();
     expect(screen.getByTestId('context-model-default').textContent).toContain('400k');
+    expect(screen.getByTestId('context-kernel-self-managed').textContent).toBe(
+      '上下文压缩由 ClaudeCode 内核自行管理',
+    );
+    expect(screen.queryByText('自动压缩')).toBeNull();
+    expect(screen.queryByText(/发送下一条消息前自动压缩/)).toBeNull();
+  });
+
+  it('switches GPT to kernel-owned compact immediately without a watermark', async () => {
+    window.localStorage.setItem(
+      'sync-think.conversationKernelOverrides',
+      JSON.stringify({ 'conversation-kernel': 'codex' }),
+    );
+    renderChat();
+    await waitFor(() => expect(runtime.getConversationContextStatus).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByTestId('context-ring'));
+    expect(screen.getByTestId('context-kernel-label').getAttribute('title')).toBe(
+      '当前内核：GPT',
+    );
+    expect(
+      screen.getByTestId('context-kernel-label').querySelector('[role="img"], img'),
+    ).toBeTruthy();
+    expect(screen.getByTestId('context-kernel-self-managed').textContent).toBe(
+      '上下文压缩由 GPT 内核自行管理',
+    );
+    expect(screen.queryByText('自动压缩')).toBeNull();
   });
 
   it('does not reload durable messages when only the kernel changes', async () => {
@@ -349,7 +384,36 @@ describe('ChatView kernel selection', () => {
     expect(runtime.listConversationMessages).not.toHaveBeenCalled();
   });
 
-  it('keeps the Claude Code ring capped when an older status reports the model window', async () => {
+  it('does not tear down the live stream when only the kernel changes', async () => {
+    const onConversationUpdated = vi.fn();
+    render(
+      <ChatView
+        conversation={conversation()}
+        modelName="Model A"
+        models={[{ modelId: 'model-a', displayName: 'Model A', providerName: 'Provider' }]}
+        eventHistory={[]}
+        onTitleUpdated={vi.fn()}
+        onConversationUpdated={onConversationUpdated}
+      />,
+    );
+    await waitFor(() =>
+      expect(runtime.subscribeConversationTransientStream).toHaveBeenCalledTimes(1),
+    );
+    runtime.subscribeConversationTransientStream.mockClear();
+
+    fireEvent.click(screen.getByTitle(/切换模型/));
+    fireEvent.click(await screen.findByTestId('kernel-option-claude-code'));
+
+    await waitFor(() =>
+      expect(runtime.getConversationContextStatus).toHaveBeenLastCalledWith(
+        expect.objectContaining({ kernelId: 'claude-code' }),
+      ),
+    );
+    expect(runtime.subscribeConversationTransientStream).not.toHaveBeenCalled();
+    expect(onConversationUpdated).not.toHaveBeenCalled();
+  });
+
+  it('follows the model window for Claude Code instead of a 200k host cap', async () => {
     runtime.getConversationContextStatus.mockResolvedValue({
       modelId: 'model-a',
       contextWindow: 400_000,
@@ -379,9 +443,9 @@ describe('ChatView kernel selection', () => {
       ),
     );
 
-    expect(screen.getByTestId('context-ring').getAttribute('aria-label')).toContain('/ 200k');
+    expect(screen.getByTestId('context-ring').getAttribute('aria-label')).toContain('/ 400k');
     fireEvent.click(screen.getByTestId('context-ring'));
-    expect(screen.getByTestId('context-limit-kernel-capped').textContent).toContain('受内核限制');
+    expect(screen.queryByTestId('context-limit-kernel-capped')).toBeNull();
   });
 
   it('does not reload the latest messages when task thread resolution completes', async () => {

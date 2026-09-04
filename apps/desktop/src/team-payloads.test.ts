@@ -3,6 +3,7 @@ import {
   parseConversationDecideToolApprovalPayload,
   parseConversationGetContextStatusPayload,
   parseConversationGetRunProcessPayload,
+  parseConversationListRunTimelinePayload,
   parseSetConversationContextWindowOverridePayload,
 } from './team-payloads.js';
 
@@ -59,6 +60,21 @@ describe('parseConversationGetRunProcessPayload', () => {
   ])('rejects malformed payload %#', (payload) => {
     expect(() => parseConversationGetRunProcessPayload(payload)).toThrow(
       'Invalid get-conversation-run-process payload',
+    );
+  });
+});
+
+describe('parseConversationListRunTimelinePayload', () => {
+  it('validates the lazy timeline cursor and page size', () => {
+    expect(
+      parseConversationListRunTimelinePayload({
+        runId: 'run-1',
+        cursor: 'cursor-1',
+        limit: 64,
+      }),
+    ).toEqual({ runId: 'run-1', cursor: 'cursor-1', limit: 64 });
+    expect(() => parseConversationListRunTimelinePayload({ runId: 'run-1', limit: 0 })).toThrow(
+      'Invalid list-conversation-run-timeline payload',
     );
   });
 });

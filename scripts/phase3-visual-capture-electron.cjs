@@ -412,6 +412,7 @@ async function verifyTargetedFixture(window, visualCase) {
       `(() => {
         const root = document.querySelector('[data-testid="workspace-file-view"]');
         const explorer = document.querySelector('[data-testid="workspace-file-explorer"]');
+        const explorerPanel = document.querySelector('.shell-workspace-files-panel');
         const preview = document.querySelector('[data-testid="file-pane-preview"]');
         const source = document.querySelector('[data-testid="file-pane-editor"]');
         const tabs = [...document.querySelectorAll('.shell-file-pane-view-tabs button')];
@@ -424,26 +425,12 @@ async function verifyTargetedFixture(window, visualCase) {
         );
         const regularLineRow = previewRows.find((row) => row !== longLineRow);
         const editorBody = document.querySelector('.shell-file-workbench__editor');
-        const explorerBody = document.querySelector('.shell-file-workbench__explorer');
         const editorHeader = document.querySelector('.shell-file-pane-header');
-        const explorerHeader = document.querySelector('.shell-workspace-files-switcher');
-        const searchArea = document.querySelector('.shell-workspace-files-search');
-        const explorerPanel = document.querySelector('.shell-workspace-files-panel');
         const toolbarControls = editorHeader
           ? [...editorHeader.querySelectorAll(
               '.shell-file-pane-view-tabs button, .shell-file-pane-icon-button'
             )]
           : [];
-        const rows = [...document.querySelectorAll(
-          '.shell-workspace-file-row:not(.shell-workspace-file-row--search)'
-        )];
-        const firstActionRow = rows.find((row) =>
-          row.querySelector('.shell-workspace-file-row__new-tab')
-        );
-        const firstPrimary = firstActionRow?.querySelector('.shell-workspace-file-row__primary');
-        const firstIcon = firstPrimary?.querySelector('[data-file-type]');
-        const firstLabel = firstPrimary?.querySelector(':scope > span');
-        const firstAction = firstActionRow?.querySelector('.shell-workspace-file-row__new-tab');
         const bounds = root?.getBoundingClientRect();
         const rect = (node) => {
           const value = node?.getBoundingClientRect();
@@ -459,17 +446,21 @@ async function verifyTargetedFixture(window, visualCase) {
               }
             : null;
         };
+        const rootRect = rect(root);
+        const editorRect = rect(editorBody);
         const editorHeaderRect = rect(editorHeader);
-        const explorerHeaderRect = rect(explorerHeader);
         const toolbarRects = toolbarControls.map(rect).filter(Boolean);
-        const rowRects = rows.map(rect).filter(Boolean);
-        const rowHeights = rowRects.map((value) => value.height);
         const toolbarCenters = toolbarRects.map((value) => value.centerY);
-        const itemCenters = [firstIcon, firstLabel, firstAction]
-          .map(rect)
-          .filter(Boolean)
-          .map((value) => value.centerY);
         const background = (node) => node ? getComputedStyle(node).backgroundColor : null;
+        const visualStyle = (node) => {
+          if (!node) return null;
+          const style = getComputedStyle(node);
+          return {
+            opacity: style.opacity,
+            filter: style.filter,
+            backdropFilter: style.backdropFilter || style.webkitBackdropFilter || 'none',
+          };
+        };
         const resolvedTokenBackground = (token) => {
           const node = document.createElement('div');
           node.style.background = \`var(\${token})\`;
@@ -480,10 +471,13 @@ async function verifyTargetedFixture(window, visualCase) {
         };
         return {
           rootVisible: Boolean(root && bounds && bounds.width > 0 && bounds.height > 0),
-          explorerVisible: Boolean(
-            explorer &&
-              explorer.getBoundingClientRect().width > 0 &&
-              explorer.getBoundingClientRect().height > 0
+          explorerPresent: Boolean(explorer || explorerPanel),
+          editorFillsRoot: Boolean(
+            rootRect &&
+              editorRect &&
+              Math.abs(rootRect.left - editorRect.left) <= 1 &&
+              Math.abs(rootRect.right - editorRect.right) <= 1 &&
+              Math.abs(rootRect.width - editorRect.width) <= 1
           ),
           previewVisible: Boolean(preview && !preview.hidden && preview.getBoundingClientRect().height > 0),
           sourceHidden: Boolean(source?.hidden),
@@ -503,35 +497,23 @@ async function verifyTargetedFixture(window, visualCase) {
             .map((node) => node.getAttribute('data-file-type')),
           backgrounds: {
             editorBody: background(editorBody),
-            explorerBody: background(explorerBody),
             previewBody: background(previewBody),
             sourceBody: background(source),
             expectedChatBody: resolvedTokenBackground('--color-chat'),
             editorHeader: background(editorHeader),
-            explorerHeader: background(explorerHeader),
-            searchArea: background(searchArea),
-            explorerPanel: background(explorerPanel),
+          },
+          clarity: {
+            root: visualStyle(root),
+            editor: visualStyle(editorBody),
+            header: visualStyle(editorHeader),
+            preview: visualStyle(previewBody),
           },
           alignment: {
             editorHeaderRect,
-            explorerHeaderRect,
-            headerBottomDelta:
-              editorHeaderRect && explorerHeaderRect
-                ? Math.abs(editorHeaderRect.bottom - explorerHeaderRect.bottom)
-                : null,
-            headerHeightDelta:
-              editorHeaderRect && explorerHeaderRect
-                ? Math.abs(editorHeaderRect.height - explorerHeaderRect.height)
-                : null,
             toolbarCenterDelta:
               toolbarCenters.length > 0
                 ? Math.max(...toolbarCenters) - Math.min(...toolbarCenters)
                 : null,
-            rowHeightDelta:
-              rowHeights.length > 0 ? Math.max(...rowHeights) - Math.min(...rowHeights) : null,
-            rowHeights,
-            itemCenterDelta:
-              itemCenters.length === 3 ? Math.max(...itemCenters) - Math.min(...itemCenters) : null,
           },
         };
       })()`,
@@ -539,7 +521,8 @@ async function verifyTargetedFixture(window, visualCase) {
     );
     if (
       !initial.rootVisible ||
-      !initial.explorerVisible ||
+      initial.explorerPresent ||
+      !initial.editorFillsRoot ||
       !initial.previewVisible ||
       !initial.sourceHidden ||
       JSON.stringify(initial.tabStates) !== JSON.stringify(['true', 'false']) ||
@@ -547,12 +530,25 @@ async function verifyTargetedFixture(window, visualCase) {
       initial.language !== 'bash' ||
       initial.lineCount < 10 ||
       initial.codeTextLength < 100 ||
-      !initial.iconTypes.includes('shell') ||
-      !initial.iconTypes.includes('json') ||
-      !initial.iconTypes.includes('markdown')
+      !initial.iconTypes.includes('shell')
     ) {
       throw new Error(
         'phase3.visual.workspace_file_invalid:' + visualCase.id + ':' + JSON.stringify(initial),
+      );
+    }
+    const unclearSurface = Object.values(initial.clarity).find(
+      (style) =>
+        !style ||
+        style.opacity !== '1' ||
+        style.filter !== 'none' ||
+        style.backdropFilter !== 'none',
+    );
+    if (unclearSurface) {
+      throw new Error(
+        'phase3.visual.workspace_file_clarity_invalid:' +
+          visualCase.id +
+          ':' +
+          JSON.stringify(initial.clarity),
       );
     }
     if (
@@ -569,20 +565,7 @@ async function verifyTargetedFixture(window, visualCase) {
           JSON.stringify(initial.wrapping),
       );
     }
-    if (
-      initial.alignment.headerBottomDelta === null ||
-      initial.alignment.headerBottomDelta > 4 ||
-      initial.alignment.headerHeightDelta === null ||
-      initial.alignment.headerHeightDelta > 4 ||
-      initial.alignment.toolbarCenterDelta === null ||
-      initial.alignment.toolbarCenterDelta > 1 ||
-      initial.alignment.rowHeightDelta === null ||
-      initial.alignment.rowHeightDelta > 1 ||
-      initial.alignment.rowHeights.length < 3 ||
-      initial.alignment.rowHeights.some((height) => Math.abs(height - 26) > 1) ||
-      initial.alignment.itemCenterDelta === null ||
-      initial.alignment.itemCenterDelta > 1
-    ) {
+    if (initial.alignment.toolbarCenterDelta === null || initial.alignment.toolbarCenterDelta > 1) {
       throw new Error(
         'phase3.visual.workspace_file_alignment_invalid:' +
           visualCase.id +
@@ -592,21 +575,13 @@ async function verifyTargetedFixture(window, visualCase) {
     }
     if (
       initial.backgrounds.editorBody === null ||
-      initial.backgrounds.explorerBody === null ||
       initial.backgrounds.previewBody === null ||
       initial.backgrounds.sourceBody === null ||
       initial.backgrounds.expectedChatBody === null ||
       initial.backgrounds.editorBody !== initial.backgrounds.expectedChatBody ||
-      initial.backgrounds.explorerBody !== initial.backgrounds.expectedChatBody ||
       initial.backgrounds.previewBody !== initial.backgrounds.expectedChatBody ||
       initial.backgrounds.sourceBody !== initial.backgrounds.expectedChatBody ||
-      initial.backgrounds.editorHeader === null ||
-      initial.backgrounds.explorerHeader === null ||
-      // NewMax intentionally raises the editor chrome one surface step in
-      // dark mode while the compact file browser stays on the chat surface.
-      initial.backgrounds.explorerPanel === null ||
-      (initial.backgrounds.searchArea !== null &&
-        initial.backgrounds.searchArea !== initial.backgrounds.explorerPanel)
+      initial.backgrounds.editorHeader === null
     ) {
       throw new Error(
         'phase3.visual.workspace_file_background_invalid:' +
@@ -625,7 +600,16 @@ async function verifyTargetedFixture(window, visualCase) {
         await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
         const preview = document.querySelector('[data-testid="file-pane-preview"]');
         const editor = document.querySelector('[data-testid="file-pane-editor"]');
-        const copyButton = document.querySelector('button[aria-label="复制源码"]');
+        const menuButton = document.querySelector('button[aria-label="更多文件操作"]');
+        if (menuButton?.getAttribute('aria-expanded') !== 'true') menuButton?.click();
+        const menuStartedAt = Date.now();
+        let copyButton = null;
+        while (Date.now() - menuStartedAt < 2000 && !copyButton) {
+          copyButton = document.querySelector(
+            'button[role="menuitem"][aria-label="复制源码"]'
+          );
+          if (!copyButton) await new Promise((resolve) => setTimeout(resolve, 25));
+        }
         copyButton?.click();
         const startedAt = Date.now();
         while (
@@ -667,94 +651,6 @@ async function verifyTargetedFixture(window, visualCase) {
           visualCase.id +
           ':' +
           JSON.stringify(source),
-      );
-    }
-
-    const json = await window.webContents.executeJavaScript(
-      `(async () => {
-        const previewTab = document.querySelector(
-          '.shell-file-pane-view-tabs button[aria-label="高亮预览"]'
-        );
-        previewTab?.click();
-        const packageButton = [...document.querySelectorAll('.shell-workspace-file-row__primary')]
-          .find((button) => button.textContent?.includes('package.json'));
-        packageButton?.click();
-        const packageIconVisible = Boolean(
-          packageButton?.querySelector('[data-file-type="package"]')
-        );
-        const jsonStartedAt = Date.now();
-        let jsonLanguage = null;
-        let jsonKeywordCount = 0;
-        let jsonActiveFile = null;
-        while (Date.now() - jsonStartedAt < 5000) {
-          const jsonCode = document.querySelector(
-            '[data-testid="file-pane-preview"] [data-language="json"]'
-          );
-          jsonActiveFile = document
-            .querySelector(
-              '.shell-workspace-file-row.is-active .shell-workspace-file-row__primary'
-            )
-            ?.textContent?.trim() ?? null;
-          if (jsonCode && jsonActiveFile?.includes('package.json')) {
-            jsonLanguage = jsonCode.getAttribute('data-language');
-            jsonKeywordCount = jsonCode.querySelectorAll('.hljs-attr').length;
-            break;
-          }
-          await new Promise((resolve) => setTimeout(resolve, 25));
-        }
-        const shellButton = [...document.querySelectorAll('.shell-workspace-file-row__primary')]
-          .find((button) => button.textContent?.includes('install-all.sh'));
-        shellButton?.click();
-        const shellStartedAt = Date.now();
-        let shellActiveFile = null;
-        let shellLanguage = null;
-        while (Date.now() - shellStartedAt < 5000) {
-          const shellCode = document.querySelector(
-            '[data-testid="file-pane-preview"] [data-language="bash"]'
-          );
-          shellActiveFile = document
-            .querySelector(
-              '.shell-workspace-file-row.is-active .shell-workspace-file-row__primary'
-            )
-            ?.textContent?.trim() ?? null;
-          shellLanguage = shellCode?.getAttribute('data-language') ?? null;
-          if (shellCode && shellActiveFile?.includes('install-all.sh')) {
-            return {
-              jsonLanguage,
-              jsonKeywordCount,
-              packageButtonFound: Boolean(packageButton),
-              packageIconVisible,
-              jsonActiveFile,
-              shellButtonFound: Boolean(shellButton),
-              shellActiveFile,
-              shellLanguage,
-              restoredShell: true,
-            };
-          }
-          await new Promise((resolve) => setTimeout(resolve, 25));
-        }
-        return {
-          jsonLanguage,
-          jsonKeywordCount,
-          packageButtonFound: Boolean(packageButton),
-          packageIconVisible,
-          jsonActiveFile,
-          shellButtonFound: Boolean(shellButton),
-          shellActiveFile,
-          shellLanguage,
-          restoredShell: false,
-        };
-      })()`,
-      true,
-    );
-    if (
-      json.jsonLanguage !== 'json' ||
-      json.jsonKeywordCount < 1 ||
-      !json.packageIconVisible ||
-      !json.restoredShell
-    ) {
-      throw new Error(
-        'phase3.visual.workspace_file_json_invalid:' + visualCase.id + ':' + JSON.stringify(json),
       );
     }
   }
@@ -799,13 +695,24 @@ async function captureCase(request, visualCase) {
             '.shell-file-pane-view-tabs button[aria-label="源码"]'
           );
           sourceTab?.click();
+          if (document.querySelector('button[aria-label="源码已复制"]')) {
+            return { sourceSelected: sourceTab?.getAttribute('aria-selected'), copied: true };
+          }
           const startedAt = Date.now();
+          let menuOpened = false;
           while (Date.now() - startedAt < 3000) {
             const editor = document.querySelector('[data-testid="file-pane-editor"]');
-            const copyButton = document.querySelector('button[aria-label="复制源码"]');
+            const copyButton = document.querySelector(
+              'button[role="menuitem"][aria-label="复制源码"]'
+            );
             if (editor && !editor.hidden && copyButton) {
               copyButton.click();
               break;
+            }
+            if (editor && !editor.hidden && !menuOpened) {
+              const menuButton = document.querySelector('button[aria-label="更多文件操作"]');
+              if (menuButton?.getAttribute('aria-expanded') !== 'true') menuButton?.click();
+              menuOpened = true;
             }
             await new Promise((resolve) => setTimeout(resolve, 25));
           }

@@ -4,7 +4,6 @@ import {
   Container,
   Database,
   FileArchive,
-  FileCode2,
   FileCog,
   FileImage,
   FileJson2,
@@ -13,7 +12,6 @@ import {
   FileText,
   GitBranch,
   Package,
-  Palette,
   SquareTerminal,
   type LucideIcon,
 } from 'lucide-react';
@@ -82,15 +80,15 @@ function fileIconSpec(path: string): FileIconSpec {
     case 'jsx':
     case 'mjs':
     case 'cjs':
-      return { kind: 'javascript', icon: FileCode2 };
+      return { kind: 'javascript', label: 'JS' };
     case 'ts':
     case 'tsx':
     case 'mts':
     case 'cts':
-      return { kind: 'typescript', icon: Braces };
+      return { kind: 'typescript', label: 'TS' };
     case 'py':
     case 'pyw':
-      return { kind: 'python', icon: FileCode2 };
+      return { kind: 'python', label: 'PY' };
     case 'json':
     case 'jsonc':
       return { kind: 'json', icon: FileJson2 };
@@ -108,7 +106,7 @@ function fileIconSpec(path: string): FileIconSpec {
     case 'scss':
     case 'sass':
     case 'less':
-      return { kind: 'css', icon: Palette };
+      return { kind: 'css', label: 'CSS' };
     case 'sh':
     case 'bash':
     case 'zsh':

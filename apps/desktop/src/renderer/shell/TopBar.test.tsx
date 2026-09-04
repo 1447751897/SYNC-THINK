@@ -89,7 +89,7 @@ describe('TopBar NewMax tab track', () => {
     const right = screen.getByTestId('topbar-toggle-right-workbench');
     expect(bottom.getAttribute('data-workspace-bottom-toggle')).toBe('true');
     expect(bottom.getAttribute('aria-pressed')).toBe('false');
-    expect(right.getAttribute('data-workspace-files-toggle')).toBe('true');
+    expect(right.getAttribute('data-workspace-right-toggle')).toBe('true');
     expect(right.getAttribute('aria-pressed')).toBe('true');
 
     fireEvent.click(bottom);

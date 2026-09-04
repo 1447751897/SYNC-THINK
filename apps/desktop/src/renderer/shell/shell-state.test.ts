@@ -20,6 +20,7 @@ import {
   reorderConversationTab,
   resolveWorkspaceSelection,
   selectStage,
+  resolveConversationRowMark,
   targetName,
   toggleSidebar,
   toggleTrack,
@@ -284,5 +285,41 @@ describe('conversation grouping', () => {
         { j: 'grok-4.5' },
       ),
     ).toBe('前端小张');
+  });
+
+  it('resolves a kernel mark for model chats and avatars for agent/team chats', () => {
+    const agents = [{ id: 'agent-1', name: '质量与复审官', avatar: '🧪' }] as never[];
+    const teams = [{ id: 'team-1', name: '交付小队', avatar: '🚀' }] as never[];
+
+    expect(
+      resolveConversationRowMark(conv({ id: 'm1', track: 'model' }), agents, teams),
+    ).toEqual({ kind: 'kernel', kernelId: 'native' });
+    expect(
+      resolveConversationRowMark(conv({ id: 'm2', track: 'model' }), agents, teams, {
+        m2: 'codex',
+      }),
+    ).toEqual({ kind: 'kernel', kernelId: 'codex' });
+    expect(
+      resolveConversationRowMark(
+        conv({ id: 'a1', track: 'agent', targetRef: 'agent-1' }),
+        agents,
+        teams,
+        { a1: 'codex' },
+      ),
+    ).toEqual({ kind: 'agent', name: '质量与复审官', avatar: '🧪' });
+    expect(
+      resolveConversationRowMark(
+        conv({ id: 't1', track: 'team', targetRef: 'team-1' }),
+        agents,
+        teams,
+      ),
+    ).toEqual({ kind: 'team', name: '交付小队', avatar: '🚀' });
+    expect(
+      resolveConversationRowMark(
+        conv({ id: 'missing', track: 'agent', targetRef: 'gone' }),
+        agents,
+        teams,
+      ),
+    ).toEqual({ kind: 'agent', name: '智能体', avatar: undefined });
   });
 });

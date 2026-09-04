@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { LoaderCircle, WandSparkles, X } from 'lucide-react';
 import type { PromptEnhancePayload } from '@sync-think/protocol';
+import {
+  matchesShortcut,
+  readShortcutPreferences,
+  type ShortcutPreference,
+} from './preferences-store.js';
 
 export interface PromptEnhancementModelOption {
   modelId: string;
@@ -41,6 +46,51 @@ export function canShowPromptEnhancementButton(input: {
   if (input.busy) return true;
   const text = input.value.trim();
   return Boolean(text) && !text.startsWith('/');
+}
+
+export function shouldHandlePromptEnhancementShortcut(input: {
+  event: KeyboardEvent;
+  enabled: boolean;
+  accelerator: string;
+  available: boolean;
+}): boolean {
+  if (!input.enabled || !input.available) return false;
+  if (input.event.repeat || input.event.isComposing) return false;
+  return matchesShortcut(input.event, input.accelerator);
+}
+
+export function tryHandlePromptEnhancementShortcut(
+  event: { preventDefault(): void; nativeEvent: KeyboardEvent },
+  enhancement: Pick<PromptEnhancementController, 'visible' | 'busy' | 'enhance' | 'cancel'>,
+  shortcut?: ShortcutPreference,
+): boolean {
+  const preference = shortcut ?? readShortcutPreferences().promptEnhancement;
+  if (
+    !shouldHandlePromptEnhancementShortcut({
+      event: event.nativeEvent,
+      enabled: preference.enabled,
+      accelerator: preference.accelerator,
+      available: enhancement.visible,
+    })
+  ) {
+    return false;
+  }
+  event.preventDefault();
+  if (enhancement.busy) enhancement.cancel();
+  else void enhancement.enhance();
+  return true;
+}
+
+export function usePromptEnhancementShortcutEnabled(): boolean {
+  const [enabled, setEnabled] = useState(
+    () => readShortcutPreferences().promptEnhancement.enabled,
+  );
+  useEffect(() => {
+    const sync = () => setEnabled(readShortcutPreferences().promptEnhancement.enabled);
+    window.addEventListener('shell-shortcuts-changed', sync);
+    return () => window.removeEventListener('shell-shortcuts-changed', sync);
+  }, []);
+  return enabled;
 }
 
 export function shouldApplyPromptEnhancementResult(input: {

@@ -73,6 +73,8 @@ const runtime = {
   updateProviderCredential: vi.fn(),
   discoverModels: vi.fn(),
   addModels: vi.fn(),
+  probeCapabilities: vi.fn(),
+  confirmCapabilities: vi.fn(),
   removeProviderModel: vi.fn(),
   setModelPriorities: vi.fn(),
   setSetting: vi.fn(),
@@ -158,6 +160,37 @@ beforeEach(() => {
     previousModelCount: 1,
   });
   runtime.addModels.mockResolvedValue({ providerId: provider.providerId, models: provider.models });
+  runtime.probeCapabilities.mockResolvedValue({
+    providerId: provider.providerId,
+    applied: true,
+    suggestions: [
+      {
+        modelId: provider.models[0]!.modelId,
+        providerModelId: provider.models[0]!.providerModelId,
+        displayName: provider.models[0]!.displayName,
+        capabilities: ['text', 'vision', 'tool-calling', 'web-search'],
+        capabilitiesConfirmed: false,
+        results: {
+          text: true,
+          vision: true,
+          'tool-calling': true,
+          'web-search': true,
+        },
+        confidence: 'medium',
+        reasons: ['model family and protocol support provider-native web search'],
+        source: 'heuristic',
+      },
+    ],
+  });
+  runtime.confirmCapabilities.mockImplementation(
+    async (payload: { capabilities: ProviderSummary['models'][number]['capabilities'] }) => ({
+      model: {
+        ...provider.models[0]!,
+        capabilities: payload.capabilities,
+        capabilitiesConfirmed: true,
+      },
+    }),
+  );
   runtime.removeProviderModel.mockResolvedValue({ providerId: provider.providerId, removed: true });
   runtime.setModelPriorities.mockResolvedValue({
     providerId: provider.providerId,
@@ -375,6 +408,95 @@ describe('ModelSettings NewMax provider detail', () => {
     expect(screen.getByRole('tab', { name: '语音识别' })).toBeTruthy();
     expect(document.querySelector('.model-settings-guide')?.textContent).toBe(
       '如果配置遇到问题，可以查阅配置指南。',
+    );
+  });
+
+  it('opens a unified model detail dialog and confirms detected capabilities', async () => {
+    await renderSettings();
+
+    fireEvent.click(screen.getByRole('button', { name: '查看模型 gpt-5' }));
+
+    const detail = await screen.findByRole('dialog', { name: 'gpt-5' });
+    expect(within(detail).getByText('CODEX / gpt-5')).toBeTruthy();
+    expect(within(detail).getByText('OpenAI Chat Completions')).toBeTruthy();
+    expect(within(detail).getByText('372k')).toBeTruthy();
+    expect(within(detail).getByRole('button', { name: '文本：支持' })).toBeTruthy();
+    expect(within(detail).getByRole('button', { name: '联网搜索：未标记' })).toBeTruthy();
+
+    fireEvent.click(within(detail).getByRole('button', { name: '检测能力' }));
+
+    await waitFor(() => {
+      expect(runtime.probeCapabilities).toHaveBeenCalledWith({
+        providerId: 'provider-1',
+        modelId: 'model-1',
+      });
+    });
+    expect(await within(detail).findByRole('button', { name: '联网搜索：支持' })).toBeTruthy();
+    expect(within(detail).getByText(/检测完成：按协议和模型名推断出 4 项能力/)).toBeTruthy();
+
+    fireEvent.click(within(detail).getByRole('button', { name: '保存能力' }));
+
+    await waitFor(() => {
+      expect(runtime.confirmCapabilities).toHaveBeenCalledWith({
+        modelId: 'model-1',
+        capabilities: ['text', 'vision', 'tool-calling', 'web-search'],
+        confirmed: true,
+      });
+    });
+    expect(await within(detail).findByText('能力配置已确认并保存')).toBeTruthy();
+    expect(within(detail).getByRole('button', { name: '已保存' })).toHaveProperty('disabled', true);
+  });
+
+  it('portals the model capability dialog outside the settings frame', async () => {
+    await renderSettings();
+
+    fireEvent.click(screen.getByRole('button', { name: '查看模型 gpt-5' }));
+
+    const detail = await screen.findByRole('dialog', { name: 'gpt-5' });
+    expect(detail.closest('.model-settings-root')).toBeNull();
+    expect(detail.closest('.model-priority-row')).toBeNull();
+    expect(detail.closest('.settings-modal-content')).toBeNull();
+    expect(document.body.contains(detail)).toBe(true);
+    expect(document.querySelector('.model-capability-dialog__overlay')?.parentElement).toBe(
+      detail.parentElement,
+    );
+  });
+
+  it('keeps model details open and allows retry when capability detection fails', async () => {
+    runtime.probeCapabilities.mockRejectedValueOnce(new Error('能力检测请求超时'));
+    await renderSettings();
+
+    fireEvent.click(screen.getByRole('button', { name: '查看模型 gpt-5' }));
+    const detail = await screen.findByRole('dialog', { name: 'gpt-5' });
+    fireEvent.click(within(detail).getByRole('button', { name: '检测能力' }));
+
+    expect((await within(detail).findByRole('alert')).textContent).toContain('能力检测请求超时');
+    expect(within(detail).getByRole('button', { name: '检测能力' })).toHaveProperty(
+      'disabled',
+      false,
+    );
+    expect(screen.getByRole('dialog', { name: 'gpt-5' })).toBeTruthy();
+  });
+
+  it('maps invalid confirm-capabilities IPC errors to a readable save failure', async () => {
+    runtime.confirmCapabilities.mockRejectedValueOnce(
+      new Error(
+        "Error invoking remote method 'runtime:provider-confirm-capabilities': Error: Invalid confirm-capabilities payload",
+      ),
+    );
+    await renderSettings();
+
+    fireEvent.click(screen.getByRole('button', { name: '查看模型 gpt-5' }));
+    const detail = await screen.findByRole('dialog', { name: 'gpt-5' });
+    fireEvent.click(within(detail).getByRole('button', { name: '联网搜索：未标记' }));
+    fireEvent.click(within(detail).getByRole('button', { name: '保存能力' }));
+
+    expect((await within(detail).findByRole('alert')).textContent).toContain(
+      '保存失败：当前勾选的能力无法提交',
+    );
+    expect(within(detail).getByRole('button', { name: '保存能力' })).toHaveProperty(
+      'disabled',
+      false,
     );
   });
 

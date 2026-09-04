@@ -55,6 +55,7 @@ import {
 } from './connector-catalog.js';
 import telegramIcon from './assets/connectors/telegram.png';
 import { BotConversationPane } from './BotConversationPane.js';
+import { WebSearchSettings } from './WebSearchSettings.js';
 import {
   COMPUTER_USE_PLUGIN_SETTING_KEY,
   normalizeComputerUsePluginSetting,
@@ -90,6 +91,7 @@ import { BrandLogoMark } from './BrandLogoMark.js';
 import { resolveKernelBrandLogo, resolveKernelDisplayName } from './brand-icons.js';
 import { decideSettingsPageAction } from './settings-unsaved.js';
 import {
+  applyShellMotionPreference,
   readAgentPreferences,
   readDefaultPermission,
   writeAgentPreferences,
@@ -381,7 +383,7 @@ function GeneralSection() {
   const handleAnimation = (enabled: boolean) => {
     setAnimationEnabled(enabled);
     localStorage.setItem('sync-think-animation', enabled ? '1' : '0');
-    document.documentElement.toggleAttribute('data-reduced-motion', !enabled);
+    applyShellMotionPreference(enabled);
   };
 
   const updateAgentPreference = <K extends keyof AgentPreferences>(
@@ -1091,7 +1093,7 @@ export function ConnectionSection({ initialTab, navigationKey }: ConnectionSecti
         ) : null}
         {tab === 'plugins' ? <ComputerUsePluginSection /> : null}
         {tab === 'gateway' ? <OpenGatewaySection /> : null}
-        {tab === 'search' ? <ConnectionEmptyPane icon={Search} title="暂无搜索服务连接" /> : null}
+        {tab === 'search' ? <WebSearchSettings /> : null}
         {tab === 'bots' ? <BotConversationPane /> : null}
         {tab === 'network' ? (
           <ConnectionEmptyPane

@@ -223,6 +223,14 @@ import {
   type GatewayLogsQuery,
   type GatewayLogsResponse,
   type OpenGatewayStatusResponse,
+  type ListWebSearchProvidersResponse,
+  type SaveWebSearchProviderResponse,
+  type ReorderWebSearchProvidersResponse,
+  type TestWebSearchProviderResponse,
+  parseListWebSearchProvidersPayload,
+  parseSaveWebSearchProviderPayload,
+  parseReorderWebSearchProvidersPayload,
+  parseTestWebSearchProviderPayload,
 } from '@sync-think/protocol';
 import { buildPersonalizationInstructions } from './personalization-context.js';
 import {
@@ -287,7 +295,10 @@ import {
   inferProviderSurface,
   parsePlanMarkdown,
 } from '@sync-think/shared';
-import type { ConversationGetRunProcessResponse } from '@sync-think/protocol';
+import type {
+  ConversationGetRunProcessResponse,
+  ConversationListRunTimelineResponse,
+} from '@sync-think/protocol';
 import {
   buildDesignGenerationPrompt,
   extractGeneratedDesignHtml,
@@ -341,6 +352,7 @@ import {
   type SqliteTeamStore,
   type SqliteConversationStore,
   type SqliteMessageStore,
+  type SqliteAssistantTimelineStore,
   type SqliteAgentContextStore,
   type GlobalAgentRecord,
   type TeamRecord,
@@ -351,6 +363,7 @@ import {
   type MemoryChangeRecord,
   type DurableMemoryEntry,
   type DiagnosticRecord,
+  DEFAULT_ASSISTANT_TIMELINE_PAGE_LIMIT,
   DEFAULT_CONVERSATION_AGENT_ID,
   toModelBinding,
   defaultCcSwitchDbPath,
@@ -418,6 +431,7 @@ import {
   shouldRetrySameModel,
   startAssistantTool,
   completeAssistantTool,
+  isAssistantTurnSegment,
   type DemoProvider,
   type DemoRunState,
   type KernelToolEventRecord,
@@ -433,6 +447,7 @@ import {
   CHAT_TASK_PLAN_TOOL_NAMES,
   CHAT_MCP_CATALOG_TOOL_NAMES,
   CHAT_MCP_REGISTRY_TOOL_NAMES,
+  CHAT_NETWORK_TOOL_NAMES,
   CHAT_SKILL_TOOL_NAMES,
   CHAT_TEAM_TOOL_NAMES,
   chatToolDeniedMessage,
@@ -617,6 +632,7 @@ import {
   parseListConversationsPayload,
   parseConversationListMessagesPayload,
   parseConversationGetRunProcessPayload,
+  parseConversationListRunTimelinePayload,
   parseCreateConversationPayload,
   parseRenameConversationPayload,
   parseSetConversationPinnedPayload,
@@ -840,6 +856,9 @@ import { QQGateway } from './bot-channels/qq-gateway.js';
 import { WechatGateway } from './bot-channels/wechat-gateway.js';
 import type { NormalizedBotMessage } from './bot-channels/types.js';
 import { TelegramBotClient, type TelegramIncomingMessage } from './telegram-bot-client.js';
+import { WebSearchConfigStore } from './web-search-config-store.js';
+import { searchWebWithProviders, type RuntimeWebSearchProviderId } from './web-search-service.js';
+import { resolveWebSearchMode, type WebSearchMode } from './web-search-routing.js';
 
 const TELEGRAM_BOT_SETTING_KEY = 'bot.channel.telegram';
 
@@ -994,6 +1013,7 @@ export interface RuntimeOptions {
   teamStore?: SqliteTeamStore;
   conversationStore?: SqliteConversationStore;
   messageStore?: SqliteMessageStore;
+  assistantTimelineStore?: SqliteAssistantTimelineStore;
   memoryStore?: SqliteMemoryStore;
   approvalStore?: SqliteApprovalStore;
   policyStore?: SqlitePolicyStore;
@@ -2335,6 +2355,8 @@ export class Runtime {
   private readonly teamStore?: SqliteTeamStore;
   private readonly conversationStore?: SqliteConversationStore;
   private readonly messageStore?: SqliteMessageStore;
+  private readonly assistantTimelineStore?: SqliteAssistantTimelineStore;
+  private readonly assistantTimelineFingerprintsByRun = new Map<string, Map<string, string>>();
   private readonly memoryStore?: SqliteMemoryStore;
   private readonly approvalStore?: SqliteApprovalStore;
   private readonly policyStore?: SqlitePolicyStore;
@@ -2350,6 +2372,7 @@ export class Runtime {
   private readonly capabilityStore?: SqliteCapabilityStore;
   private readonly recordedCapabilityUsageKeys = new Set<string>();
   private readonly secureStore?: SecureStore;
+  private readonly webSearchConfigStore?: WebSearchConfigStore;
   /**
    * Remote MCP auth. Key is stored as plaintext in app settings (product
    * requirement: the key is echoed back into the register dialog), so the
@@ -2533,6 +2556,7 @@ export class Runtime {
     this.teamStore = opts.teamStore;
     this.conversationStore = opts.conversationStore;
     this.messageStore = opts.messageStore;
+    this.assistantTimelineStore = opts.assistantTimelineStore;
     this.memoryStore = opts.memoryStore;
     this.approvalStore = opts.approvalStore;
     this.policyStore = opts.policyStore;
@@ -2608,6 +2632,10 @@ export class Runtime {
     this.taskPlanStore = opts.taskPlanStore;
     this.capabilityStore = opts.capabilityStore;
     this.secureStore = opts.secureStore;
+    this.webSearchConfigStore =
+      opts.appSettingStore && opts.secureStore
+        ? new WebSearchConfigStore(opts.appSettingStore, opts.secureStore)
+        : undefined;
     this.botChannelConfigStore =
       opts.appSettingStore && opts.secureStore
         ? new BotChannelConfigStore(opts.appSettingStore, opts.secureStore)
@@ -2798,6 +2826,22 @@ export class Runtime {
         }
         if (frame.type === 'external.event.dispatch') {
           this.handleExternalEventDispatch(socket, frame);
+          return;
+        }
+        if (frame.type === 'webSearch.providers.list') {
+          this.handleListWebSearchProviders(socket, frame);
+          return;
+        }
+        if (frame.type === 'webSearch.providers.save') {
+          void this.handleSaveWebSearchProvider(socket, frame);
+          return;
+        }
+        if (frame.type === 'webSearch.providers.reorder') {
+          this.handleReorderWebSearchProviders(socket, frame);
+          return;
+        }
+        if (frame.type === 'webSearch.providers.test') {
+          void this.handleTestWebSearchProvider(socket, frame);
           return;
         }
         if (frame.type === 'bot.channel.get') {
@@ -3162,6 +3206,10 @@ export class Runtime {
         }
         if (frame.type === 'conversation.getRunProcess') {
           this.handleGetConversationRunProcess(socket, frame);
+          return;
+        }
+        if (frame.type === 'conversation.listRunTimeline') {
+          this.handleListConversationRunTimeline(socket, frame);
           return;
         }
         if (frame.type === 'conversation.create') {
@@ -9017,6 +9065,45 @@ export class Runtime {
     }
   }
 
+  private handleListConversationRunTimeline(socket: Socket, frame: Frame): void {
+    const payload = parseConversationListRunTimelinePayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    try {
+      let pageLimit = payload.limit ?? DEFAULT_ASSISTANT_TIMELINE_PAGE_LIMIT;
+      let encodedResponse: Buffer | undefined;
+      while (!encodedResponse) {
+        const page = this.assistantTimelineStore?.listSegments(payload.runId, {
+          ...(payload.cursor ? { cursor: payload.cursor } : {}),
+          limit: pageLimit,
+        });
+        const response: ConversationListRunTimelineResponse = {
+          segments: (page?.segments ?? [])
+            .map((record) => record.value)
+            .filter(isAssistantTurnSegment),
+          totalSegments: page?.totalSegments ?? 0,
+          ...(page?.nextCursor ? { nextCursor: page.nextCursor } : {}),
+        };
+        try {
+          encodedResponse = encodeFrame({
+            id: frame.id,
+            kind: 'response',
+            type: 'conversation.listRunTimeline',
+            payload: response,
+          });
+        } catch (error) {
+          if (pageLimit <= 1) throw error;
+          pageLimit = Math.max(1, Math.floor(pageLimit / 2));
+        }
+      }
+      socket.write(encodedResponse);
+    } catch (error) {
+      this.writeTeamModelCommandError(socket, frame, error);
+    }
+  }
+
   private handleCreateConversation(socket: Socket, frame: Frame): void {
     const payload = parseCreateConversationPayload(frame.payload);
     if (!payload) {
@@ -13200,6 +13287,123 @@ export class Runtime {
   private requireBotChannelConfigStore(): BotChannelConfigStore {
     if (!this.botChannelConfigStore) throw new Error('机器人设置存储尚未就绪。');
     return this.botChannelConfigStore;
+  }
+
+  private requireWebSearchConfigStore(): WebSearchConfigStore {
+    if (!this.webSearchConfigStore) throw new Error('搜索服务设置存储尚未就绪。');
+    return this.webSearchConfigStore;
+  }
+
+  private handleListWebSearchProviders(socket: Socket, frame: Frame): void {
+    const payload = parseListWebSearchProvidersPayload(frame.payload ?? {});
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    try {
+      const response: ListWebSearchProvidersResponse = {
+        providers: this.requireWebSearchConfigStore().list(payload.includeDisabled !== false),
+        nativeSearchPreferred: true,
+      };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'webSearch.providers.list',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeProviderCommandError(socket, frame, error);
+    }
+  }
+
+  private async handleSaveWebSearchProvider(socket: Socket, frame: Frame): Promise<void> {
+    const payload = parseSaveWebSearchProviderPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    try {
+      const response: SaveWebSearchProviderResponse = {
+        provider: await this.requireWebSearchConfigStore().save(payload),
+      };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'webSearch.providers.save',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeProviderCommandError(socket, frame, error);
+    }
+  }
+
+  private handleReorderWebSearchProviders(socket: Socket, frame: Frame): void {
+    const payload = parseReorderWebSearchProvidersPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    try {
+      const response: ReorderWebSearchProvidersResponse = {
+        providers: this.requireWebSearchConfigStore().reorder(payload),
+      };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'webSearch.providers.reorder',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeProviderCommandError(socket, frame, error);
+    }
+  }
+
+  private async handleTestWebSearchProvider(socket: Socket, frame: Frame): Promise<void> {
+    const payload = parseTestWebSearchProviderPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    const startedAt = Date.now();
+    try {
+      const store = this.requireWebSearchConfigStore();
+      const provider = await store.resolveForTest(payload);
+      const result = provider
+        ? await searchWebWithProviders({
+            query: payload.query ?? 'OpenAI official documentation',
+            limit: 3,
+            providerId: payload.providerId,
+            providers: [provider],
+          })
+        : undefined;
+      const response: TestWebSearchProviderResponse = {
+        ok: result?.ok === true,
+        providerId: payload.providerId,
+        resultCount: result?.ok ? result.results.length : 0,
+        elapsedMs: Date.now() - startedAt,
+        ...(!provider
+          ? { error: '请先填写 API Key。' }
+          : result && !result.ok
+            ? { error: result.error }
+            : {}),
+      };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'webSearch.providers.test',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeProviderCommandError(socket, frame, error);
+    }
   }
 
   private handleGetBotChannelConfigUnified(socket: Socket, frame: Frame): void {
@@ -19539,12 +19743,16 @@ export class Runtime {
               continue;
             }
 
-            if (adapterEvent.type === 'tool-call' && currentRun.legacyPendingText) {
+            if (
+              (adapterEvent.type === 'tool-call' || adapterEvent.type === 'hosted-tool-call') &&
+              currentRun.legacyPendingText
+            ) {
               currentRun =
                 this.flushLegacyAssistantText({
                   runId,
                   phase: 'commentary',
                   occurredAt: new Date().toISOString(),
+                  replayFinalText: false,
                 }) ?? currentRun;
               appendProviderRoundLegacyMessage(roundTranscript, 'commentary');
             } else if (adapterEvent.type === 'finished' && currentRun.legacyPendingText) {
@@ -19554,6 +19762,7 @@ export class Runtime {
                   runId,
                   phase,
                   occurredAt: new Date().toISOString(),
+                  replayFinalText: false,
                 }) ?? currentRun;
               appendProviderRoundLegacyMessage(roundTranscript, phase);
             } else if (adapterEvent.type === 'error' && currentRun.legacyPendingText) {
@@ -19563,6 +19772,7 @@ export class Runtime {
                   runId,
                   phase,
                   occurredAt: new Date().toISOString(),
+                  replayFinalText: false,
                 }) ?? currentRun;
               appendProviderRoundLegacyMessage(roundTranscript, phase);
             }
@@ -19725,7 +19935,17 @@ export class Runtime {
                 // §工具实时显示：宣布不入 timeline（模型可能一次宣布多个工具）。
                 // 工具行在下方本地工具循环里「实际开始执行时」才入段并推快照，
                 // 做到调用哪个显示哪个（§12.17.4 每个工具一行）。
-              } else if (adapterEvent.type === 'tool-result') {
+              } else if (adapterEvent.type === 'hosted-tool-call') {
+                projection.nextRun = startAssistantTool(projection.nextRun, {
+                  toolCallId: adapterEvent.toolCall.id,
+                  name: adapterEvent.toolCall.name,
+                  argumentsJson: adapterEvent.toolCall.argumentsJson,
+                  occurredAt: projectionOccurredAt,
+                });
+              } else if (
+                adapterEvent.type === 'tool-result' ||
+                adapterEvent.type === 'hosted-tool-result'
+              ) {
                 projection.nextRun = completeAssistantTool(projection.nextRun, {
                   toolCallId: adapterEvent.toolCallId,
                   output: adapterEvent.result,
@@ -19765,7 +19985,10 @@ export class Runtime {
             }
 
             // Enrich tool.requested payloads with NewMax-friendly fields.
-            if (projection.type === 'tool.requested' && adapterEvent.type === 'tool-call') {
+            if (
+              projection.type === 'tool.requested' &&
+              (adapterEvent.type === 'tool-call' || adapterEvent.type === 'hosted-tool-call')
+            ) {
               projection.payload = {
                 ...projection.payload,
                 threadId: currentRun.threadId,
@@ -20336,6 +20559,7 @@ export class Runtime {
                   toolCall,
                   signal: abort.signal,
                   networkEnabled,
+                  webSearch: (input) => this.executeRunWebSearch(input),
                   ...(toolCall.name === 'write_file' ? { snapshotOut: writeSnapshot } : {}),
                 });
               }
@@ -20669,6 +20893,9 @@ export class Runtime {
               case 'usage':
                 kernelUsageReports.push({ ...event.usage });
                 break;
+              case 'context-occupancy':
+                this.persistKernelContextOccupancy(runId, attemptRun.threadId, event);
+                break;
               case 'compaction-started':
                 this.persistKernelCompaction(runId, attemptRun.threadId, 'started');
                 break;
@@ -20793,9 +21020,9 @@ export class Runtime {
 
   /**
    * Effective context window the kernel should honor. For kernels whose native
-   * window is not overridable (Claude Code) the effective window is capped at
-   * the kernel's native limit; the configured value wins otherwise. Used for
-   * context trimming, kernel injection and the observable run snapshot.
+   * window is not overridable the effective window is capped at the kernel's
+   * native limit; the configured value wins otherwise. Used for context
+   * trimming, kernel injection and the observable run snapshot.
    */
   private effectiveContextWindowForRun(run: DemoRunState): {
     window: number;
@@ -20824,6 +21051,58 @@ export class Runtime {
       }
     }
     return { window, source };
+  }
+
+  private resolveWebSearchModeForRun(run: DemoRunState): WebSearchMode {
+    const model = this.providerStore?.getModel(run.modelId);
+    const capabilities = model?.capabilitiesConfirmed
+      ? model.capabilities
+      : suggestCapabilities({
+          providerModelId: run.providerModelId,
+          protocol: run.protocol,
+          existing: model?.capabilities,
+        }).capabilities;
+    return resolveWebSearchMode({
+      networkEnabled: run.networkEnabled === true,
+      kernelId: run.kernelId,
+      protocol: run.protocol,
+      baseUrl: run.baseUrl,
+      capabilities,
+      capabilitiesConfirmed: model?.capabilitiesConfirmed,
+      // Configured providers run first; the in-process server keeps a no-key
+      // public-search fallback so keyword search works before setup.
+      externalProviderConfigured: true,
+    });
+  }
+
+  private async executeRunWebSearch(input: {
+    query: string;
+    limit: number;
+    providerId?: string;
+    allowedDomains?: string[];
+    blockedDomains?: string[];
+    signal?: AbortSignal;
+  }): Promise<string> {
+    const providers = await this.webSearchConfigStore?.resolveEnabled();
+    const result = await searchWebWithProviders({
+      query: input.query,
+      limit: input.limit,
+      ...(input.providerId ? { providerId: input.providerId as RuntimeWebSearchProviderId } : {}),
+      ...(input.allowedDomains ? { allowedDomains: input.allowedDomains } : {}),
+      ...(input.blockedDomains ? { blockedDomains: input.blockedDomains } : {}),
+      // Saved providers retain priority. Two no-key routes keep a fresh install
+      // usable when either public search endpoint is unavailable in the user's
+      // region; Bing RSS is first because it returns compact, clean source URLs.
+      providers: [
+        ...(providers ?? []),
+        { id: 'bing-rss', apiKey: '' },
+        { id: 'duckduckgo', apiKey: '' },
+      ],
+      timeoutMs: 12_000,
+      overallTimeoutMs: 35_000,
+      signal: input.signal,
+    });
+    return JSON.stringify(result);
   }
 
   private async buildKernelRequestForRun(run: DemoRunState, runId?: RunId): Promise<KernelRequest> {
@@ -20884,6 +21163,7 @@ export class Runtime {
       // Platform tools ride the MCP channel; the broker address is attached by
       // startPlatformMcpBrokerForRun right after this request is built.
       platformTools: [],
+      webSearchMode: this.resolveWebSearchModeForRun(run),
       permissionMode: normalizeChatExecutionMode(executionMode),
       planningMode,
       workspaceDir: workspaceRoot ?? process.cwd(),
@@ -21545,6 +21825,9 @@ export class Runtime {
   ): Promise<KernelMcpBroker | undefined> {
     const workspaceRoot = request.workspaceDir;
     const planningMode = request.planningMode === true || run.planningMode === true;
+    const webSearchMode = request.webSearchMode ?? this.resolveWebSearchModeForRun(run);
+    const networkEnabled = webSearchMode !== 'disabled';
+    const externalWebSearch = webSearchMode === 'external';
     // Frozen for this run: capability/permission changes must not widen an
     // in-flight kernel. Desktop tools stay host-only this round; Browser tools
     // follow the 联网 switch and are injected for every kernel (the Browser
@@ -21555,12 +21838,13 @@ export class Runtime {
       hasMcpStore: Boolean(this.mcpStore),
       hasSkillStore: Boolean(this.skillStore),
       hasTeamStore: Boolean(this.teamStore && this.globalAgentStore),
-      networkEnabled: run.networkEnabled === true,
+      networkEnabled,
+      fallbackWebSearchEnabled: externalWebSearch,
       visionFallbackEnabled: this.isVisionFallbackSettingEnabled(),
     });
     const selection = selectKernelMcpRun({
       executionMode: this.resolveChatExecutionMode(run.threadId),
-      networkEnabled: run.networkEnabled === true,
+      networkEnabled,
       planningMode,
     });
     // Back-compat: keep the legacy catalog for tool-call handling so the
@@ -21568,13 +21852,14 @@ export class Runtime {
     // is the authority for what the kernel sees.
     const tools = buildPlatformMcpToolDefinitions({
       executionMode: this.resolveChatExecutionMode(run.threadId),
-      networkEnabled: run.networkEnabled === true,
+      networkEnabled,
+      includeWebSearchTools: externalWebSearch,
       includeAgentTools: Boolean(this.globalAgentStore),
       includeTaskTools: Boolean(this.taskPlanStore),
       includeMcpTools: Boolean(this.mcpStore),
       includeSkillTools: Boolean(this.skillStore),
       includeTeamTools: Boolean(this.teamStore && this.globalAgentStore),
-      includeBrowserTools: run.networkEnabled === true,
+      includeBrowserTools: networkEnabled,
       planningMode,
     });
     this.platformMcpCatalogByRun.set(runId, tools);
@@ -21784,7 +22069,7 @@ export class Runtime {
       argumentsJson,
     };
     try {
-      const content = await this.executeHostPlatformTool(run, toolCall, workspaceRoot);
+      const content = await this.executeHostPlatformTool(run, toolCall, workspaceRoot, call.signal);
       return { ok: true, content };
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) };
@@ -22311,6 +22596,7 @@ export class Runtime {
     run: DemoRunState,
     toolCall: ProviderToolCall,
     workspaceRoot: string,
+    signal?: AbortSignal,
   ): Promise<string> {
     const name = toolCall.name;
     if (CHAT_TASK_PLAN_TOOL_NAMES.has(name) && this.taskPlanStore) {
@@ -22340,6 +22626,15 @@ export class Runtime {
     }
     if (CHAT_MCP_CATALOG_TOOL_NAMES.has(name)) {
       return this.executeChatMcpCatalogTool(run);
+    }
+    if (CHAT_NETWORK_TOOL_NAMES.has(name)) {
+      return executeChatBuiltInTool({
+        workspaceRoot,
+        toolCall,
+        signal,
+        networkEnabled: run.networkEnabled === true,
+        webSearch: (input) => this.executeRunWebSearch(input),
+      });
     }
     const ctx: PlatformToolContext = {
       workspaceDir: workspaceRoot,
@@ -23100,6 +23395,13 @@ export class Runtime {
           this.pushKernelTimelineSnapshot(runId, threadId, occurredAt);
         }
       }
+      const priorCall =
+        type === 'tool.completed'
+          ? ((this.demoRuns.get(runId)?.kernelToolEvents ?? []).find(
+              (entry) =>
+                entry.kind === 'tool-call' && entry.toolId === (event as { toolId: string }).toolId,
+            ) as { name?: string; argsJson?: string } | undefined)
+          : undefined;
       const draft: EventDraft = {
         id: ulid() as Event['id'],
         workspaceId: this.resolveEventWorkspaceId(threadId),
@@ -23123,6 +23425,8 @@ export class Runtime {
                 threadId,
                 toolCallId: (event as { toolId: string }).toolId,
                 result: (event as { output: string }).output,
+                ...(priorCall?.name ? { toolName: priorCall.name } : {}),
+                ...(priorCall?.argsJson ? { argumentsJson: priorCall.argsJson } : {}),
                 ...((event as { isError?: boolean }).isError ? { failed: true } : {}),
               },
       };
@@ -23363,6 +23667,47 @@ export class Runtime {
       this.publishEvent(committed);
     } catch {
       // Compaction notices are advisory; never crash the kernel stream.
+    }
+  }
+
+  /**
+   * Kernel-owned occupancy snapshot (Claude /context, Codex tokenUsage.last).
+   * Never written as provider.usage — that channel stays billed request facts.
+   */
+  private persistKernelContextOccupancy(
+    runId: RunId,
+    threadId: string,
+    occupancy: Extract<KernelEvent, { type: 'context-occupancy' }>,
+  ): void {
+    try {
+      const occurredAt = new Date().toISOString();
+      const run = this.demoRuns.get(runId);
+      const committed = this.persistProjectedEvent(
+        {
+          id: ulid() as Event['id'],
+          workspaceId: this.resolveEventWorkspaceId(threadId),
+          taskId: this.resolveEventTaskId(threadId),
+          runId,
+          category: 'context',
+          type: 'kernel.context_occupancy',
+          occurredAt,
+          payload: {
+            threadId,
+            kernelId: run?.kernelId ?? 'kernel',
+            usedTokens: occupancy.usedTokens,
+            ...(occupancy.windowTokens !== undefined
+              ? { windowTokens: occupancy.windowTokens }
+              : {}),
+            ...(occupancy.categories && occupancy.categories.length > 0
+              ? { categories: occupancy.categories }
+              : {}),
+          },
+        },
+        new Map(this.demoRuns),
+      );
+      this.publishEvent(committed);
+    } catch {
+      // Occupancy is advisory; billed usage still stands.
     }
   }
 
@@ -29189,6 +29534,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
   ): ContextSnapshot {
     const executionMode = normalizeChatExecutionMode(options.executionMode);
     const networkEnabled = options.networkEnabled === true || run.networkEnabled === true;
+    const webSearchMode = networkEnabled ? this.resolveWebSearchModeForRun(run) : 'disabled';
     const hasProjectTools = Boolean(options.toolsEnabled && options.workspaceRoot);
     const mcpExtra = (() => {
       if (!options.toolsEnabled || !this.mcpStore) {
@@ -29236,6 +29582,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         platformToolCount > 0)
         ? toolsForExecutionMode(executionMode, {
             networkEnabled,
+            includeWebSearchTools: webSearchMode === 'external',
             includeProjectTools: hasProjectTools,
             includeAgentTools: agentToolsEnabled,
             includeDesktopTools: desktopToolsEnabled,
@@ -29245,10 +29592,16 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
             extraTools: [...mcpExtra.tools, ...(options.platformSchemas ?? [])],
           })
         : undefined;
+    const searchRoutePrompt =
+      webSearchMode === 'native'
+        ? 'Keyword search is provided by the model host. Use its native web search for current facts.'
+        : webSearchMode === 'external'
+          ? 'Use web_search for current facts; configured providers fail over in priority order.'
+          : 'Keyword search is not configured. web_fetch can still read a known public URL; do not claim keyword search succeeded.';
     const networkPrompt = networkEnabled
       ? [
-          'Web tools are ENABLED for this turn (web_search, web_fetch, browser_open, browser_click, browser_type, browser_read, browser_screenshot).',
-          'Use web_search for current facts, then web_fetch to READ a static page. Cite URLs you used.',
+          `Web access is ENABLED for this turn. ${searchRoutePrompt}`,
+          'Use web_fetch to READ a static page after finding or receiving a URL. If it returns RENDER_REQUIRED, use browser_open followed by browser_read to read the JavaScript-rendered page, then cite the URL.',
           'Built-in browser panel: browser_open SHOWS a page to the user beside the chat (e.g. 用户说「打开/看看这个网站」).',
           'To OPERATE that live page: browser_click clicks an element (CSS selector or x/y), browser_type fills an input (selector + text), browser_read returns the live page title/URL/visible text and link+button summary (works on logged-in / JS-rendered pages where web_fetch cannot).',
           'ALWAYS browser_open the page first and browser_read to locate elements before clicking/typing. These actions run visibly in front of the user and need no approval.',
@@ -29430,6 +29783,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     const signal = options.signal ?? new AbortController().signal;
     const executionMode = normalizeChatExecutionMode(options.executionMode);
     const networkEnabled = options.networkEnabled === true || run.networkEnabled === true;
+    const webSearchMode = networkEnabled ? this.resolveWebSearchModeForRun(run) : 'disabled';
     const hasProjectTools = Boolean(options.toolsEnabled && options.workspaceRoot);
     // MCP tools bound on the run �?expose schemas to the provider when tools are on.
     const mcpExtra = (() => {
@@ -29479,6 +29833,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         ? [
             ...toolsForExecutionMode(executionMode, {
               networkEnabled,
+              includeWebSearchTools: webSearchMode === 'external',
               includeProjectTools: hasProjectTools,
               includeAgentTools: agentToolsEnabled,
               includeDesktopTools: desktopToolsEnabled,
@@ -29492,6 +29847,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     let requestExtras: {
       messages?: import('@sync-think/adapters').ProviderMessage[];
       tools?: import('@sync-think/adapters').ProviderToolSchema[];
+      hostedTools?: import('@sync-think/adapters').ProviderCallRequest['hostedTools'];
       toolChoice?: import('@sync-think/adapters').ProviderCallRequest['toolChoice'];
       systemPrompt: string;
     };
@@ -29524,6 +29880,9 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       requestExtras = snapshot.providerRequest;
     }
     if (options.toolChoice) requestExtras.toolChoice = options.toolChoice;
+    if (options.toolsEnabled && webSearchMode === 'native' && run.protocol === 'openai-responses') {
+      requestExtras.hostedTools = [{ type: 'web_search', searchContextSize: 'high' }];
+    }
 
     // Diagnostic: confirm multimodal parts actually reached the provider request.
     if (run.images && run.images.length > 0) {
@@ -30078,6 +30437,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       occurredAt,
     );
     const timeline = terminalRun.assistantTimeline ?? [];
+    this.persistAssistantTimelineSegments(runId, timeline);
     const timelineText = assistantTimelineFinalText(timeline);
     const assistantText =
       timelineText ||
@@ -30157,6 +30517,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       occurredAt,
     );
     const timeline = terminalRun.assistantTimeline ?? [];
+    this.persistAssistantTimelineSegments(runId, timeline);
     const assistantText =
       assistantTimelineFinalText(timeline) ||
       (typeof terminalRun.assistantText === 'string' ? terminalRun.assistantText : '');
@@ -30528,6 +30889,8 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     runId: RunId;
     phase: 'commentary' | 'final_answer';
     occurredAt: string;
+    /** Provider `text-delta` frames already reached the transient stream. */
+    replayFinalText?: boolean;
   }): DemoRunState | undefined {
     const current = this.demoRuns.get(input.runId);
     if (!current?.legacyPendingText) return current;
@@ -30561,9 +30924,9 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     }
 
     this.demoRuns.set(input.runId, nextRun);
-    // Commentary emits only a boundary frame (empty delta + sequence), while
-    // final_answer is replayed as one logical text frame so the renderer can
-    // pace large responses without duplicating the durable content.
+    // Provider text deltas are already live; only external-kernel buffered
+    // text needs a final replay. Commentary still emits a zero-length boundary
+    // so the renderer can switch the provisional text into its process lane.
     if (input.phase === 'commentary') {
       this.publishTransientDelta({
         threadId: nextRun.threadId as ThreadId,
@@ -30573,7 +30936,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         afterSequence: this.eventSequence,
         occurredAt: input.occurredAt,
       });
-    } else {
+    } else if (input.replayFinalText !== false) {
       // The kernel did not expose a phase while it was streaming. Once the
       // terminal boundary confirms this buffer is the final answer, replay it
       // as one logical delta; the renderer's bounded queue reveals it in
@@ -30804,6 +31167,12 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
   private publishTransientFrame(
     input: Omit<ConversationTransientFrame, 'streamSequence'>,
   ): ConversationTransientFrame {
+    if (input.assistantTimeline?.length) {
+      this.persistAssistantTimelineSegments(input.runId, input.assistantTimeline);
+    }
+    if (input.kind === 'terminal') {
+      this.assistantTimelineFingerprintsByRun.delete(String(input.runId));
+    }
     const streamSequence = (this.transientSequenceByThread.get(input.threadId) ?? 0) + 1;
     this.transientSequenceByThread.set(input.threadId, streamSequence);
     const transientFrame: ConversationTransientFrame = {
@@ -30857,6 +31226,40 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       writeFrame(degraded);
     }
     return transientFrame;
+  }
+
+  private persistAssistantTimelineSegments(
+    runId: RunId,
+    timeline: readonly AssistantTurnSegment[],
+  ): void {
+    const store = this.assistantTimelineStore;
+    if (!store || timeline.length === 0) return;
+    let fingerprints = this.assistantTimelineFingerprintsByRun.get(String(runId));
+    if (!fingerprints) {
+      fingerprints = new Map();
+      this.assistantTimelineFingerprintsByRun.set(String(runId), fingerprints);
+    }
+    const changed: Array<{ id: string; sequence: number; value: Record<string, unknown> }> = [];
+    for (const segment of timeline) {
+      const sanitized = sanitizeAssistantTimelineSegment(segment);
+      const fingerprint = JSON.stringify(sanitized);
+      if (fingerprints.get(sanitized.id) === fingerprint) continue;
+      fingerprints.set(sanitized.id, fingerprint);
+      changed.push({
+        id: sanitized.id,
+        sequence: sanitized.sequence,
+        value: sanitized as unknown as Record<string, unknown>,
+      });
+    }
+    if (changed.length === 0) return;
+    try {
+      store.upsertSegments(String(runId), changed);
+    } catch (error) {
+      console.warn(
+        '[runtime] assistant timeline persistence failed',
+        error instanceof Error ? error.message : String(error),
+      );
+    }
   }
 
   private subscriptionMatches(subscription: RuntimeEventSubscription, event: Event): boolean {

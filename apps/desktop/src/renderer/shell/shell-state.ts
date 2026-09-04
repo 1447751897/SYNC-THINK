@@ -301,6 +301,33 @@ export function targetName(
   return ref;
 }
 
+export type ConversationRowMark =
+  | { kind: 'kernel'; kernelId: string }
+  | { kind: 'agent'; name: string; avatar?: string }
+  | { kind: 'team'; name: string; avatar?: string };
+
+/**
+ * Leading mark for a sidebar conversation row: kernel logo on the model track,
+ * the live agent/team avatar on the other two tracks.
+ */
+export function resolveConversationRowMark(
+  conversation: Conversation,
+  agents: readonly GlobalAgent[],
+  teams: readonly Team[],
+  kernelOverrides?: Readonly<Record<string, string>>,
+): ConversationRowMark {
+  if (conversation.track === 'agent') {
+    const agent = agents.find((item) => String(item.id) === String(conversation.targetRef));
+    return { kind: 'agent', name: agent?.name ?? '智能体', avatar: agent?.avatar };
+  }
+  if (conversation.track === 'team') {
+    const team = teams.find((item) => String(item.id) === String(conversation.targetRef));
+    return { kind: 'team', name: team?.name ?? '小队', avatar: team?.avatar };
+  }
+  const override = kernelOverrides?.[String(conversation.id)]?.trim();
+  return { kind: 'kernel', kernelId: override || 'native' };
+}
+
 // ─── Conversation groups (local CRUD) ───────────────────────────────────────
 
 export interface TrackTreeSection {

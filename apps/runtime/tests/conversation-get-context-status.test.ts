@@ -748,6 +748,26 @@ describe('conversation.getContextStatus runtime integration', () => {
     }
   });
 
+  it('lets Claude Code use the configured model window instead of a 200k host cap', async () => {
+    const harness = await createHarness(400_000, { target: 'model' });
+    try {
+      const status = await getContextStatus(
+        harness,
+        'context-status-claude-follows-model',
+        undefined,
+        'claude-code',
+      );
+      expect(status).toMatchObject({
+        contextWindow: 400_000,
+        modelContextWindow: 400_000,
+        contextWindowSource: 'model-default',
+      });
+      expect(status.kernelContextWindowLimit).toBeUndefined();
+    } finally {
+      await closeHarness(harness);
+    }
+  });
+
   it('previews an explicit compose model for an Agent conversation without changing its default', async () => {
     const harness = await createHarness(128_000, {
       target: 'agent',

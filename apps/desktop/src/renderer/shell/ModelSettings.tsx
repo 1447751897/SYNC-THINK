@@ -12,6 +12,7 @@ import {
   useState,
   type ReactNode,
 } from 'react';
+import * as RadixDialog from '@radix-ui/react-dialog';
 import {
   closestCenter,
   DndContext,
@@ -38,9 +39,13 @@ import {
   ArrowUp,
   Check,
   ChevronDown,
+  ChevronRight,
   Cloud,
+  Cpu,
   Database,
+  FileText,
   Gauge,
+  Globe2,
   GripVertical,
   Image,
   Loader2,
@@ -57,11 +62,13 @@ import {
   Settings2,
   Sparkles,
   Trash2,
+  Wrench,
   X,
 } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import clsx from 'clsx';
 import type {
+  CapabilityProbeSuggestion,
   CcSwitchImportPreviewItem,
   ImportCcSwitchResponse,
   ModelPricingEntry,
@@ -80,6 +87,28 @@ import { REASONING_OPTIONS } from './compose-toolbar.js';
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 type ProtocolFamily = 'openai-chat' | 'openai-responses' | 'openai-images' | 'anthropic-messages';
+
+type ModelCapabilityTag = ProviderModelSummary['capabilities'][number];
+
+const MODEL_CAPABILITY_OPTIONS: ReadonlyArray<{
+  value: ModelCapabilityTag;
+  label: string;
+  description: string;
+}> = [
+  { value: 'text', label: '文本', description: '读取并生成文本内容' },
+  { value: 'vision', label: '图片理解', description: '直接读取图片内容' },
+  { value: 'tool-calling', label: '工具调用', description: '调用 MCP 与本地工具' },
+  { value: 'web-search', label: '联网搜索', description: '调用模型原生网页搜索' },
+  { value: 'image-generation', label: '图片生成', description: '根据提示生成图片' },
+  { value: 'embeddings', label: '向量嵌入', description: '生成语义向量数据' },
+];
+
+const PROTOCOL_LABELS: Record<ProtocolFamily, string> = {
+  'openai-chat': 'OpenAI Chat Completions',
+  'openai-responses': 'OpenAI Responses',
+  'openai-images': 'OpenAI Images',
+  'anthropic-messages': 'Anthropic Messages',
+};
 
 interface VisionFallbackSetting {
   enabled: boolean;
@@ -1481,6 +1510,77 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
       '上下文窗口已更新',
     );
 
+  const handleProbeModelCapabilities = useCallback(
+    async (providerId: string, modelId: string): Promise<CapabilityProbeSuggestion> => {
+      const api = bridge();
+      if (!api?.probeCapabilities) throw new Error('Runtime 未连接或不支持能力检测');
+      try {
+        const result = await api.probeCapabilities({
+          providerId: providerId as never,
+          modelId: modelId as never,
+        });
+        const suggestion = result.suggestions.find((item) => item.modelId === modelId);
+        if (!suggestion) throw new Error('没有返回该模型的能力检测结果');
+        const provider = providers.find((item) => item.providerId === providerId);
+        if (provider) {
+          mergeProviderModels(
+            providerId,
+            provider.models.map((model) =>
+              model.modelId === modelId
+                ? {
+                    ...model,
+                    capabilities: [...suggestion.capabilities],
+                    capabilitiesConfirmed: false,
+                  }
+                : model,
+            ),
+          );
+        }
+        showToast('success', `${suggestion.displayName} 能力检测完成`);
+        onCatalogChanged?.();
+        return suggestion;
+      } catch (error) {
+        showToast('error', error instanceof Error ? error.message : '能力检测失败');
+        throw error;
+      }
+    },
+    [mergeProviderModels, onCatalogChanged, providers, showToast],
+  );
+
+  const handleConfirmModelCapabilities = useCallback(
+    async (
+      providerId: string,
+      modelId: string,
+      capabilities: ModelCapabilityTag[],
+    ): Promise<ProviderModelSummary> => {
+      const api = bridge();
+      if (!api?.confirmCapabilities) throw new Error('Runtime 未连接或不支持保存模型能力');
+      try {
+        const result = await api.confirmCapabilities({
+          modelId: modelId as never,
+          capabilities,
+          confirmed: true,
+        });
+        const provider = providers.find((item) => item.providerId === providerId);
+        if (provider) {
+          mergeProviderModels(
+            providerId,
+            provider.models.map((model) =>
+              model.modelId === modelId ? { ...model, ...result.model } : model,
+            ),
+          );
+        }
+        showToast('success', `${result.model.displayName} 能力配置已保存`);
+        onCatalogChanged?.();
+        return result.model;
+      } catch (error) {
+        showToast('error', describeCapabilityDialogError(error, '保存模型能力失败'));
+        throw error;
+      }
+    },
+    [mergeProviderModels, onCatalogChanged, providers, showToast],
+  );
+
   const handleMoveModel = (provider: ProviderSummary, modelId: string, direction: -1 | 1) => {
     const ordered = [...provider.models].sort((a, b) => a.priority - b.priority);
     const idx = ordered.findIndex((m) => m.modelId === modelId);
@@ -2137,6 +2237,8 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
                     onAddModel={handleAddModel}
                     onRemoveModel={handleRemoveModel}
                     onUpdateModelContext={handleUpdateModelContext}
+                    onProbeModelCapabilities={handleProbeModelCapabilities}
+                    onConfirmModelCapabilities={handleConfirmModelCapabilities}
                     onReorderModels={handleReorderModels}
                     onMoveModel={handleMoveModel}
                     onTransientDraftChange={setDetailDraftDirty}
@@ -2827,6 +2929,7 @@ function ProtocolSelector({
         <Toggle
           checked={protocol === 'openai-responses'}
           disabled={disabled || family !== 'openai'}
+          label="使用 Responses API"
           onChange={(enabled) => onChange(enabled ? 'openai-responses' : 'openai-chat')}
         />
       </div>
@@ -2889,6 +2992,8 @@ function ProviderDetail({
   onAddModel,
   onRemoveModel,
   onUpdateModelContext,
+  onProbeModelCapabilities,
+  onConfirmModelCapabilities,
   onReorderModels,
   onMoveModel,
   onPinCredential,
@@ -2921,6 +3026,15 @@ function ProviderDetail({
   ) => Promise<boolean>;
   onRemoveModel: (providerId: string, modelId: string) => void;
   onUpdateModelContext: (providerId: string, modelId: string, contextWindow: number | null) => void;
+  onProbeModelCapabilities: (
+    providerId: string,
+    modelId: string,
+  ) => Promise<CapabilityProbeSuggestion>;
+  onConfirmModelCapabilities: (
+    providerId: string,
+    modelId: string,
+    capabilities: ModelCapabilityTag[],
+  ) => Promise<ProviderModelSummary>;
   onReorderModels: (provider: ProviderSummary, models: ProviderModelSummary[]) => void;
   onMoveModel: (provider: ProviderSummary, modelId: string, direction: -1 | 1) => void;
   onPinCredential: (
@@ -2945,6 +3059,7 @@ function ProviderDetail({
   const [manualName, setManualName] = useState('');
   const [manualContext, setManualContext] = useState('');
   const [activeModelId, setActiveModelId] = useState<string | null>(null);
+  const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
   const modelSensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
@@ -2976,6 +3091,7 @@ function ProviderDetail({
     setManualId('');
     setManualName('');
     setManualContext('');
+    setSelectedModelId(null);
   }, [provider.providerId]);
 
   const models = useMemo(
@@ -3186,6 +3302,7 @@ function ProviderDetail({
                     total={models.length}
                     credentials={provider.credentials}
                     busy={busy}
+                    onOpen={() => setSelectedModelId(model.modelId)}
                     onMove={(direction) => onMoveModel(provider, model.modelId, direction)}
                     onRemove={() => {
                       void dialog
@@ -3346,6 +3463,16 @@ function ProviderDetail({
           ) : null}
         </div>
       </section>
+      <ModelCapabilityDialog
+        key={selectedModelId ?? 'closed-model-capability-dialog'}
+        provider={provider}
+        model={models.find((model) => model.modelId === selectedModelId) ?? null}
+        onClose={() => setSelectedModelId(null)}
+        onProbe={(modelId) => onProbeModelCapabilities(provider.providerId, modelId)}
+        onConfirm={(modelId, capabilities) =>
+          onConfirmModelCapabilities(provider.providerId, modelId, capabilities)
+        }
+      />
     </div>
   );
 }
@@ -3681,6 +3808,7 @@ function SortableModelRow({
   total,
   credentials,
   busy,
+  onOpen,
   onMove,
   onRemove,
   onPin,
@@ -3691,6 +3819,7 @@ function SortableModelRow({
   total: number;
   credentials: ProviderSummary['credentials'];
   busy: boolean;
+  onOpen: () => void;
   onMove: (dir: -1 | 1) => void;
   onRemove: () => void;
   onPin: (credentialRefId: string | null) => void;
@@ -3759,12 +3888,21 @@ function SortableModelRow({
       >
         <GripVertical size={14} />
       </button>
-      <span className={clsx('model-priority-row__rank', index === 0 && 'is-primary')}>
-        {rankLabel}
-      </span>
-      <div className="model-priority-row__copy">
-        <p title={title}>{title}</p>
-      </div>
+      <button
+        type="button"
+        className="model-priority-row__main"
+        disabled={busy}
+        aria-label={`查看模型 ${title}`}
+        onClick={onOpen}
+      >
+        <span className={clsx('model-priority-row__rank', index === 0 && 'is-primary')}>
+          {rankLabel}
+        </span>
+        <span className="model-priority-row__copy">
+          <span title={title}>{title}</span>
+        </span>
+        <ChevronRight className="model-priority-row__open-icon" size={13} aria-hidden="true" />
+      </button>
       <div className="model-priority-row__context">
         {editingContext ? (
           <input
@@ -3860,6 +3998,297 @@ function SortableModelRow({
   );
 }
 
+function ModelCapabilityIcon({ capability }: { capability: ModelCapabilityTag }) {
+  switch (capability) {
+    case 'text':
+      return <FileText size={16} aria-hidden="true" />;
+    case 'vision':
+      return <Eye size={16} aria-hidden="true" />;
+    case 'tool-calling':
+      return <Wrench size={16} aria-hidden="true" />;
+    case 'web-search':
+      return <Globe2 size={16} aria-hidden="true" />;
+    case 'image-generation':
+      return <Image size={16} aria-hidden="true" />;
+    case 'embeddings':
+      return <Database size={16} aria-hidden="true" />;
+  }
+}
+
+function capabilitySetKey(capabilities: readonly ModelCapabilityTag[]): string {
+  return [...capabilities].sort().join('|');
+}
+
+function describeCapabilityDialogError(error: unknown, fallback: string): string {
+  const raw = error instanceof Error ? error.message : String(error ?? '').trim();
+  if (!raw) return fallback;
+  if (/Invalid confirm-capabilities payload/i.test(raw)) {
+    return '保存失败：当前勾选的能力无法提交。请重新勾选后再保存。';
+  }
+  const ipc = raw.match(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?(.*)$/u);
+  if (ipc?.[1]) return ipc[1];
+  return raw;
+}
+
+function ModelCapabilityDialog({
+  provider,
+  model,
+  onClose,
+  onProbe,
+  onConfirm,
+}: {
+  provider: ProviderSummary;
+  model: ProviderModelSummary | null;
+  onClose: () => void;
+  onProbe: (modelId: string) => Promise<CapabilityProbeSuggestion>;
+  onConfirm: (
+    modelId: string,
+    capabilities: ModelCapabilityTag[],
+  ) => Promise<ProviderModelSummary>;
+}) {
+  const [draft, setDraft] = useState<ModelCapabilityTag[]>(() => [
+    ...(model?.capabilities ?? []),
+  ]);
+  const [phase, setPhase] = useState<'idle' | 'probing' | 'saving' | 'success' | 'error'>(
+    'idle',
+  );
+  const [notice, setNotice] = useState<string | null>(null);
+
+  if (!model) return null;
+
+  const title = modelPrimaryLabel(model);
+  const busy = phase === 'probing' || phase === 'saving';
+  const draftChanged = capabilitySetKey(draft) !== capabilitySetKey(model.capabilities);
+  const canSave = draft.length > 0 && (draftChanged || !model.capabilitiesConfirmed);
+  const protocolLabel =
+    PROTOCOL_LABELS[model.protocol as ProtocolFamily] ?? String(model.protocol);
+
+  const toggleCapability = (capability: ModelCapabilityTag) => {
+    if (busy) return;
+    setDraft((current) =>
+      current.includes(capability)
+        ? current.filter((item) => item !== capability)
+        : MODEL_CAPABILITY_OPTIONS.map((option) => option.value).filter(
+            (item) => current.includes(item) || item === capability,
+          ),
+    );
+    setPhase('idle');
+    setNotice(null);
+  };
+
+  const runProbe = async () => {
+    setPhase('probing');
+    setNotice('正在按模型名称和 API 格式做本地推断');
+    try {
+      const suggestion = await onProbe(model.modelId);
+      setDraft([...suggestion.capabilities]);
+      setPhase('success');
+      setNotice(
+        `检测完成：按协议和模型名推断出 ${suggestion.capabilities.length} 项能力（本地启发式，未向接口发探测请求）。请核对后保存。`,
+      );
+    } catch (error) {
+      setPhase('error');
+      setNotice(describeCapabilityDialogError(error, '能力检测失败，请重试'));
+    }
+  };
+
+  const saveCapabilities = async () => {
+    if (!canSave) return;
+    setPhase('saving');
+    setNotice('正在保存能力配置');
+    try {
+      const updated = await onConfirm(model.modelId, draft);
+      setDraft([...updated.capabilities]);
+      setPhase('success');
+      setNotice('能力配置已确认并保存');
+    } catch (error) {
+      setPhase('error');
+      setNotice(describeCapabilityDialogError(error, '保存失败，请重试'));
+    }
+  };
+
+  return (
+    <RadixDialog.Root
+      open
+      onOpenChange={(open) => {
+        if (!open && !busy) onClose();
+      }}
+    >
+      <RadixDialog.Portal>
+        <RadixDialog.Overlay className="model-capability-dialog__overlay" />
+        <RadixDialog.Content
+          className="model-capability-dialog"
+          data-testid="model-capability-dialog"
+          onEscapeKeyDown={(event) => {
+            if (busy) event.preventDefault();
+          }}
+        >
+        <header className="model-capability-dialog__header">
+          <span className="model-capability-dialog__model-icon">
+            <Cpu size={18} aria-hidden="true" />
+          </span>
+          <div className="model-capability-dialog__identity">
+            <RadixDialog.Title>{title}</RadixDialog.Title>
+            <RadixDialog.Description>
+              {provider.name} / {model.providerModelId}
+            </RadixDialog.Description>
+          </div>
+          <span
+            className={clsx(
+              'model-capability-dialog__state',
+              model.capabilitiesConfirmed && !draftChanged && 'is-confirmed',
+            )}
+          >
+            {model.capabilitiesConfirmed && !draftChanged ? '已确认' : '待确认'}
+          </span>
+          <RadixDialog.Close asChild>
+            <button
+              type="button"
+              className="model-capability-dialog__close"
+              aria-label="关闭模型详情"
+              disabled={busy}
+            >
+              <X size={16} />
+            </button>
+          </RadixDialog.Close>
+        </header>
+
+        <div className="model-capability-dialog__body">
+          <dl className="model-capability-dialog__facts">
+            <div>
+              <dt>API 格式</dt>
+              <dd>{protocolLabel}</dd>
+            </div>
+            <div>
+              <dt>上下文窗口</dt>
+              <dd>{formatContext(model.contextWindow) ?? '未设置'}</dd>
+            </div>
+            <div>
+              <dt>优先级</dt>
+              <dd>{modelRankLabel(model.priority)}</dd>
+            </div>
+          </dl>
+
+          <section className="model-capability-dialog__section">
+            <div className="model-capability-dialog__section-head">
+              <div>
+                <h3>模型能力</h3>
+                <p>
+                  检测按模型名称和 API 格式做本地推断，不会向接口发真实探测请求。结果是建议值，点选修正后保存才会生效。
+                </p>
+              </div>
+              <span>
+                {draft.length} / {MODEL_CAPABILITY_OPTIONS.length}
+              </span>
+            </div>
+            <div
+              className={clsx(
+                'model-capability-dialog__grid',
+                phase === 'probing' && 'is-probing',
+              )}
+              aria-busy={phase === 'probing'}
+            >
+              {MODEL_CAPABILITY_OPTIONS.map((option) => {
+                const active = draft.includes(option.value);
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    className={clsx(
+                      'model-capability-dialog__capability',
+                      active && 'is-active',
+                    )}
+                    aria-pressed={active}
+                    aria-label={`${option.label}：${active ? '支持' : '未标记'}`}
+                    disabled={busy}
+                    onClick={() => toggleCapability(option.value)}
+                  >
+                    <span className="model-capability-dialog__capability-icon">
+                      <ModelCapabilityIcon capability={option.value} />
+                    </span>
+                    <span className="model-capability-dialog__capability-copy">
+                      <strong>{option.label}</strong>
+                      <small>{option.description}</small>
+                    </span>
+                    <span className="model-capability-dialog__capability-check">
+                      {active ? <Check size={12} aria-hidden="true" /> : null}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+            {notice ? (
+              <p
+                className={clsx(
+                  'model-capability-dialog__notice',
+                  phase === 'error' && 'is-error',
+                  phase === 'success' && 'is-success',
+                )}
+                role={phase === 'error' ? 'alert' : 'status'}
+              >
+                {phase === 'probing' || phase === 'saving' ? (
+                  <Loader2 size={13} className="model-settings-spin" aria-hidden="true" />
+                ) : phase === 'success' ? (
+                  <Check size={13} aria-hidden="true" />
+                ) : (
+                  <X size={13} aria-hidden="true" />
+                )}
+                <span>{notice}</span>
+              </p>
+            ) : (
+              <p className="model-capability-dialog__notice">
+                <Settings2 size={13} aria-hidden="true" />
+                <span>
+                  {model.capabilitiesConfirmed
+                    ? '当前能力已经确认，可以重新检测或直接调整。'
+                    : '当前能力尚未确认，建议检测后核对并保存。'}
+                </span>
+              </p>
+            )}
+          </section>
+        </div>
+
+        <footer className="model-capability-dialog__footer">
+          <button
+            type="button"
+            className="model-capability-dialog__probe"
+            disabled={busy}
+            onClick={() => void runProbe()}
+          >
+            {phase === 'probing' ? (
+              <Loader2 size={14} className="model-settings-spin" />
+            ) : (
+              <RefreshCw size={14} />
+            )}
+            {phase === 'probing' ? '检测中' : '检测能力'}
+          </button>
+          <div>
+            <RadixDialog.Close asChild>
+              <button type="button" className="is-cancel" disabled={busy}>
+                关闭
+              </button>
+            </RadixDialog.Close>
+            <button
+              type="button"
+              className="is-primary"
+              disabled={busy || !canSave}
+              onClick={() => void saveCapabilities()}
+            >
+              {phase === 'saving' ? (
+                <Loader2 size={14} className="model-settings-spin" />
+              ) : (
+                <Check size={14} />
+              )}
+              {phase === 'saving' ? '保存中' : canSave ? '保存能力' : '已保存'}
+            </button>
+          </div>
+        </footer>
+        </RadixDialog.Content>
+      </RadixDialog.Portal>
+    </RadixDialog.Root>
+  );
+}
+
 function ModelRowPreview({ model }: { model: ProviderModelSummary | null }) {
   if (!model) return null;
   const title = modelPrimaryLabel(model);
@@ -3938,6 +4367,7 @@ function VisionFallbackPanel({
         <Toggle
           checked={value.enabled}
           disabled={busy || options.length === 0}
+          label="图片识别 Fallback"
           onChange={(enabled) => onChange({ ...value, enabled })}
         />
       </div>
@@ -3988,7 +4418,12 @@ function ModelCloudSyncPanel({
               等模型配置同步到云端（包含密钥，默认关闭）。开关对账号下所有设备生效。
             </p>
           </div>
-          <Toggle checked={enabled} disabled={busy} onChange={onChange} />
+          <Toggle
+            checked={enabled}
+            disabled={busy}
+            label="模型配置云同步"
+            onChange={onChange}
+          />
         </div>
       </section>
     </div>
@@ -4038,6 +4473,7 @@ function PlanActPanel({
         <Toggle
           checked={value.enabled}
           disabled={busy}
+          label="规划与执行模型"
           onChange={(enabled) => onChange({ ...value, enabled })}
         />
       </div>
@@ -5184,16 +5620,19 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 function Toggle({
   checked,
   disabled,
+  label,
   onChange,
 }: {
   checked: boolean;
   disabled?: boolean;
+  label: string;
   onChange: (v: boolean) => void;
 }) {
   return (
     <button
       type="button"
       role="switch"
+      aria-label={label}
       aria-checked={checked}
       disabled={disabled}
       onClick={() => onChange(!checked)}

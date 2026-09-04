@@ -1279,10 +1279,11 @@ export function ContextRing(props: {
   contextWindowEstimated?: boolean;
   /**
    * Why the displayed limit may differ from the model's configured window:
-   * 'configured' / 'kernel-capped' (non-overridable kernel native cap, e.g.
-   * Claude Code 200k) / 'estimated' (no metadata, fell back to 128k).
+   * 'configured' / 'kernel-capped' (non-overridable kernel native cap) /
+   * 'estimated' (no metadata, fell back to 128k) /
+   * 'kernel-reported' (Claude /context or Codex tokenUsage window).
    */
-  contextWindowSource?: 'configured' | 'kernel-capped' | 'estimated';
+  contextWindowSource?: 'configured' | 'kernel-capped' | 'estimated' | 'kernel-reported';
   /** Runtime-computed ratio; may exceed 1 when the request is over the window. */
   usageRatio?: number;
   /** Runtime-owned auto-compact threshold (currently 70%). */
@@ -1292,24 +1293,28 @@ export function ContextRing(props: {
   /** Audit-only Runtime breakdown. It contains category names and token counts only. */
   sections?: ContextStatusSection[];
   /**
-   * True when `used` comes from an external kernel's reported context watermark
-   * (claude-code / codex) instead of the host estimate. The host cannot see the
-   * kernel's internal breakdown, so the section audit is hidden and replaced by
-   * a "kernel-managed" note.
+   * True when `used` comes from an external kernel's reported occupancy
+   * (claude-code / codex) instead of the host estimate. Host 70% auto-compact
+   * copy stays hidden; kernel-reported category rows still show when present.
    */
   kernelSelfManaged?: boolean;
+  /** Kernel `/context` or tokenUsage breakdown; names and token counts only. */
+  occupancySections?: Array<{ name: string; tokens: number }>;
   /** 本会话累计时长（ms），tooltip 里展示。 */
   sessionDurationMs?: number;
   /** 本会话累计消耗 tokens（输入+输出跨全部轮次），tooltip 里展示。 */
   sessionTokens?: number;
   /** Active kernel label, shown in the context header for subprocess kernels. */
   kernelLabel?: string;
+  /** Kernel id used to resolve the brand mark in the header badge. */
+  kernelId?: string;
   title?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [anchor, setAnchor] = useState<FloatingAnchorRect | null>(null);
   const btnRef = useRef<HTMLButtonElement>(null);
   const closeTimer = useRef<number | null>(null);
+  const kernelLogo = props.kernelId ? resolveKernelBrandLogo(props.kernelId) : undefined;
 
   const rawRatio =
     typeof props.usageRatio === 'number' && Number.isFinite(props.usageRatio)
@@ -1323,6 +1328,7 @@ export function ContextRing(props: {
   const dash = `${(visualRatio * c).toFixed(2)} ${c.toFixed(2)}`;
   const pct = Math.round(rawRatio * 100);
   const sections = props.sections ?? [];
+  const occupancySections = (props.occupancySections ?? []).filter((section) => section.tokens > 0);
   const compactThreshold =
     typeof props.compactThreshold === 'number' &&
     Number.isFinite(props.compactThreshold) &&
@@ -1448,11 +1454,13 @@ export function ContextRing(props: {
                     <div className="shell-ctx-tooltip__title">当前上下文窗口</div>
                     {props.kernelLabel ? (
                       <span
-                        className="shell-ctx-tooltip__kernel"
+                        className={`shell-ctx-tooltip__kernel${
+                          kernelLogo ? ' shell-ctx-tooltip__kernel--logo' : ''
+                        }`}
                         data-testid="context-kernel-label"
                         title={`当前内核：${props.kernelLabel}`}
                       >
-                        {props.kernelLabel}
+                        {kernelLogo ? <BrandLogoMark logo={kernelLogo} size={14} /> : props.kernelLabel}
                       </span>
                     ) : null}
                   </div>
@@ -1489,7 +1497,15 @@ export function ContextRing(props: {
                   />
                 ) : null}
               </div>
-              {!props.kernelSelfManaged ? (
+              {props.kernelSelfManaged ? (
+                <div
+                  className="shell-ctx-tooltip__status"
+                  data-testid="context-kernel-self-managed"
+                >
+                  <span aria-hidden="true" />
+                  {`上下文压缩由 ${props.kernelLabel || '当前'} 内核自行管理`}
+                </div>
+              ) : (
                 <div
                   className="shell-ctx-tooltip__status"
                   data-state={compactThresholdReached ? 'threshold' : 'healthy'}
@@ -1499,7 +1515,7 @@ export function ContextRing(props: {
                     ? '已达到阈值，发送下一条消息前会自动压缩'
                     : `达到 ${compactPct}% 时，在发送下一条消息前自动压缩`}
                 </div>
-              ) : null}
+              )}
               <div className="shell-ctx-tooltip__row">
                 <span>当前占用</span>
                 <strong data-testid="context-used-value" title={exactTokenTitle(props.used)}>
@@ -1515,6 +1531,14 @@ export function ContextRing(props: {
                     <span className="shell-ctx-tooltip__pct" data-testid="context-limit-estimated">
                       {' '}
                       · 估算
+                    </span>
+                  ) : props.contextWindowSource === 'kernel-reported' ? (
+                    <span
+                      className="shell-ctx-tooltip__pct"
+                      data-testid="context-limit-kernel-reported"
+                    >
+                      {' '}
+                      · 内核窗口
                     </span>
                   ) : props.contextWindowSource === 'kernel-capped' ? (
                     <span
@@ -1572,17 +1596,36 @@ export function ContextRing(props: {
                   </div>
                 </>
               ) : null}
-              {props.kernelSelfManaged ? (
-                <div className="shell-ctx-tooltip__hint" data-testid="context-kernel-self-managed">
-                  当前占用来自外部内核（Claude Code /
-                  Codex）上报的最后一次请求水位；内核历史由内核自管，宿主不可见明细。
-                </div>
-              ) : (
-                <div className="shell-ctx-tooltip__hint">
-                  当前占用来自 Runtime 将发送给模型的完整对话上下文，不是单条回复的 Token。
-                </div>
-              )}
-              {props.kernelSelfManaged ? null : sections.length > 0 ? (
+              {occupancySections.length > 0 ? (
+                <>
+                  <div className="shell-ctx-tooltip__divider" aria-hidden="true" />
+                  <div
+                    className="shell-ctx-tooltip__title shell-ctx-tooltip__title--section"
+                    data-testid="context-occupancy-categories"
+                  >
+                    内核上下文构成
+                  </div>
+                  {occupancySections.map((section) => (
+                    <div
+                      key={section.name}
+                      className="shell-ctx-tooltip__row"
+                      data-testid={`context-occupancy-${section.name}`}
+                    >
+                      <span>{section.name}</span>
+                      <strong title={exactTokenTitle(section.tokens)}>
+                        {formatTokenCount(section.tokens)}
+                      </strong>
+                    </div>
+                  ))}
+                  <div
+                    className="shell-ctx-tooltip__row shell-ctx-tooltip__row--muted"
+                    data-testid="context-occupancy-total"
+                  >
+                    <span>构成合计</span>
+                    <strong title={exactTokenTitle(props.used)}>{usedLabel}</strong>
+                  </div>
+                </>
+              ) : props.kernelSelfManaged ? null : sections.length > 0 ? (
                 <>
                   <div className="shell-ctx-tooltip__divider" aria-hidden="true" />
                   <div className="shell-ctx-tooltip__title shell-ctx-tooltip__title--section">
@@ -1607,9 +1650,6 @@ export function ContextRing(props: {
                     <span>构成合计</span>
                     <strong title={exactTokenTitle(props.used)}>{usedLabel}</strong>
                   </div>
-                  <p className="shell-ctx-tooltip__hint">
-                    各构成按字节估算，四舍五入后合计与「当前占用」一致；工具定义与消息同样为估算值。
-                  </p>
                 </>
               ) : null}
               <div className="shell-ctx-tooltip__divider" aria-hidden="true" />
@@ -1635,10 +1675,6 @@ export function ContextRing(props: {
                   <strong>{sessionDurationLabel}</strong>
                 </div>
               ) : null}
-              <div className="shell-ctx-tooltip__hint">
-                会话累计 =
-                全部轮次输入与输出的总和，可大于窗口上限；与「当前窗口占用」是两个独立口径，不参与自动压缩判定。
-              </div>
             </div>,
             document.body,
           )

@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { useState } from 'react';
 import { WorkspaceWorkbench } from './WorkspaceWorkbench.js';
@@ -71,11 +71,45 @@ describe('WorkspaceWorkbench', () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole('tab', { name: /工作区文件/ }));
+    expect(screen.getByRole('tab', { name: '工作区文件' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('tab', { name: '工作区文件' }));
     expect(onActivateTab).toHaveBeenCalledWith('workspace-files');
+    fireEvent.click(screen.getByRole('tab', { name: /app.ts/ }));
+    expect(onActivateTab).toHaveBeenCalledWith('file:src/app.ts');
     fireEvent.click(screen.getByRole('button', { name: '关闭 app.ts' }));
     expect(onCloseTab).toHaveBeenCalledWith(expect.objectContaining({ path: 'src/app.ts' }));
     expect(screen.getByText('file:src/app.ts')).toBeTruthy();
+  });
+
+  it('docks workspace files beside the active resource from the workbench header', () => {
+    const onToggleFileBrowser = vi.fn();
+    const scope = { ...rightScope(), fileBrowserOpen: true };
+    render(
+      <WorkspaceWorkbench
+        placement="right"
+        scope={scope}
+        renderContent={(tab) => <div>{tab.id}</div>}
+        renderFileBrowser={() => <div>工作区文件树</div>}
+        onActivateTab={vi.fn()}
+        onCloseTab={vi.fn()}
+        onNewResource={vi.fn()}
+        onToggleFileBrowser={onToggleFileBrowser}
+        onClose={vi.fn()}
+        onSizeChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByRole('tab', { name: '工作区文件' })).toBeNull();
+    expect(screen.getByRole('tab', { name: /app.ts/ })).toBeTruthy();
+    const toggle = screen.getByTestId('workspace-files-workbench-toggle');
+    expect(toggle.getAttribute('aria-pressed')).toBe('true');
+    expect(document.querySelector('[data-testid="workspace-workbench-file-browser"]')?.getAttribute('data-open')).toBe(
+      'true',
+    );
+    expect(screen.getByText('工作区文件树')).toBeTruthy();
+    expect(screen.getByText('file:src/app.ts')).toBeTruthy();
+    fireEvent.click(toggle);
+    expect(onToggleFileBrowser).toHaveBeenCalledOnce();
   });
 
   it('offers the NewMax-style add menu', () => {
@@ -101,6 +135,29 @@ describe('WorkspaceWorkbench', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: /新建终端/ }));
     expect(onNewResource).toHaveBeenCalledWith('terminal');
     expect(screen.queryByRole('menu')).toBeNull();
+  });
+
+  it('offers workspace files only from the right-side workbench', () => {
+    const bottomScope = openWorkbenchTab(
+      createWorkspaceWorkbenchLayout(),
+      'bottom',
+      terminalWorkbenchTab('terminal-1'),
+    ).bottom;
+    render(
+      <WorkspaceWorkbench
+        placement="bottom"
+        scope={bottomScope}
+        renderContent={() => null}
+        onActivateTab={vi.fn()}
+        onCloseTab={vi.fn()}
+        onNewResource={vi.fn()}
+        onClose={vi.fn()}
+        onSizeChange={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '添加底部工作台标签' }));
+    expect(screen.queryByRole('menuitem', { name: '工作区文件' })).toBeNull();
   });
 
   it('keeps a controlled resize active across preview rerenders', () => {
@@ -241,6 +298,48 @@ describe('WorkspaceWorkbench', () => {
     expect(changes.at(-1)).toEqual({
       size: WORKBENCH_BOTTOM_DEFAULT_HEIGHT + 150,
       commit: true,
+    });
+  });
+
+  it('starts collapsed then reveals the right workbench so the width can animate', async () => {
+    const scope = rightScope();
+    const { rerender } = render(
+      <WorkspaceWorkbench
+        placement="right"
+        open={false}
+        scope={scope}
+        renderContent={() => null}
+        onActivateTab={vi.fn()}
+        onCloseTab={vi.fn()}
+        onNewResource={vi.fn()}
+        onClose={vi.fn()}
+        onSizeChange={vi.fn()}
+      />,
+    );
+
+    const panel = document.querySelector('[data-workspace-file-inspector="true"]');
+    expect(panel).toBeTruthy();
+    expect(panel?.getAttribute('data-workspace-panel-open')).toBe('false');
+    expect((panel as HTMLElement).style.width).toBe('0px');
+    expect((panel as HTMLElement).style.flexBasis).toBe('0px');
+
+    rerender(
+      <WorkspaceWorkbench
+        placement="right"
+        open
+        scope={scope}
+        renderContent={() => null}
+        onActivateTab={vi.fn()}
+        onCloseTab={vi.fn()}
+        onNewResource={vi.fn()}
+        onClose={vi.fn()}
+        onSizeChange={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(panel?.getAttribute('data-workspace-panel-open')).toBe('true');
+      expect((panel as HTMLElement).style.width).toBe(`${scope.size}px`);
     });
   });
 });

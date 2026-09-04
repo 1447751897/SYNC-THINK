@@ -12,6 +12,7 @@ import {
   setWorkbenchOpen,
   setWorkbenchSize,
   terminalWorkbenchTab,
+  toggleWorkspaceFilesWorkbench,
   WORKBENCH_BOTTOM_MAX_HEIGHT,
   WORKBENCH_FILE_BROWSER_MIN_WIDTH,
   WORKBENCH_RIGHT_COMPACT_WIDTH,
@@ -34,6 +35,18 @@ describe('workspace workbench state', () => {
 
     const compactAgain = closeWorkbenchTab(preview, 'right', 'file:src/app.ts');
     expect(compactAgain.right.size).toBe(WORKBENCH_RIGHT_COMPACT_WIDTH);
+
+    const documentOnly = openWorkbenchTab(
+      createWorkspaceWorkbenchLayout(),
+      'right',
+      fileWorkbenchTab('notes.md'),
+    );
+    expect(documentOnly.right.tabs.map((tab) => tab.id)).toEqual([
+      'workspace-files',
+      'file:notes.md',
+    ]);
+    expect(documentOnly.right.activeTabId).toBe('file:notes.md');
+    expect(documentOnly.right.fileBrowserOpen).toBe(false);
   });
 
   it('moves a stateful resource between placements and collapses an empty scope', () => {
@@ -46,7 +59,11 @@ describe('workspace workbench state', () => {
     );
 
     const closed = closeWorkbenchTab(right, 'right', 'terminal:terminal-1');
-    expect(closed.right).toMatchObject({ open: false, tabs: [] });
+    expect(closed.right).toMatchObject({
+      open: true,
+      activeTabId: 'workspace-files',
+      tabs: [{ id: 'workspace-files', type: 'workspace-files' }],
+    });
   });
 
   it('activates existing tabs and preserves their order', () => {
@@ -59,6 +76,7 @@ describe('workspace workbench state', () => {
     const activated = activateWorkbenchTab(withTabs, 'right', 'review:run-1');
     expect(activated.right.activeTabId).toBe('review:run-1');
     expect(activated.right.tabs.map((tab) => tab.id)).toEqual([
+      'workspace-files',
       'review:run-1',
       'browser:browser-1',
     ]);
@@ -101,5 +119,64 @@ describe('workspace workbench state', () => {
     );
     expect(resized.right.size).toBe(WORKBENCH_RIGHT_MAX_WIDTH);
     expect(resized.right.fileBrowserWidth).toBe(WORKBENCH_FILE_BROWSER_MIN_WIDTH);
+  });
+
+  it('docks workspace files beside a resource instead of stealing the workbench tab', () => {
+    const initial = createWorkspaceWorkbenchLayout();
+    const opened = toggleWorkspaceFilesWorkbench(initial);
+    expect(opened.right).toMatchObject({
+      open: true,
+      activeTabId: 'workspace-files',
+      fileBrowserOpen: false,
+    });
+
+    const stillFiles = toggleWorkspaceFilesWorkbench(opened);
+    expect(stillFiles.right.open).toBe(true);
+    expect(stillFiles.right.activeTabId).toBe('workspace-files');
+
+    const preview = openWorkbenchTab(opened, 'right', fileWorkbenchTab('src/app.ts'));
+    expect(preview.right.activeTabId).toBe('file:src/app.ts');
+    expect(preview.right.fileBrowserOpen).toBe(false);
+
+    const docked = toggleWorkspaceFilesWorkbench(preview);
+    expect(docked.right).toMatchObject({
+      open: true,
+      activeTabId: 'file:src/app.ts',
+      fileBrowserOpen: true,
+    });
+    expect(docked.right.size).toBe(WORKBENCH_RIGHT_PREVIEW_WIDTH);
+    expect(docked.right.tabs.map((tab) => tab.id)).toEqual(['workspace-files', 'file:src/app.ts']);
+
+    const tabsAgain = toggleWorkspaceFilesWorkbench(docked);
+    expect(tabsAgain.right.open).toBe(true);
+    expect(tabsAgain.right.activeTabId).toBe('file:src/app.ts');
+    expect(tabsAgain.right.fileBrowserOpen).toBe(false);
+
+    const onFilesTab = activateWorkbenchTab(preview, 'right', 'workspace-files');
+    const dockedFromFilesTab = toggleWorkspaceFilesWorkbench(onFilesTab);
+    expect(dockedFromFilesTab.right.activeTabId).toBe('file:src/app.ts');
+    expect(dockedFromFilesTab.right.fileBrowserOpen).toBe(true);
+  });
+
+  it('keeps workspace files exclusive to the right-side workbench', () => {
+    const opened = openWorkbenchTab(
+      createWorkspaceWorkbenchLayout(),
+      'bottom',
+      workspaceFilesWorkbenchTab(),
+    );
+    expect(opened.bottom.tabs).toEqual([]);
+    expect(opened.right).toMatchObject({ open: true, activeTabId: 'workspace-files' });
+
+    const restored = parseWorkspaceWorkbenchLayouts({
+      workspace: {
+        version: 1,
+        right: { open: false, tabs: [] },
+        bottom: {
+          open: true,
+          tabs: [{ id: 'workspace-files', type: 'workspace-files' }],
+        },
+      },
+    });
+    expect(restored.workspace?.bottom).toMatchObject({ open: false, tabs: [] });
   });
 });

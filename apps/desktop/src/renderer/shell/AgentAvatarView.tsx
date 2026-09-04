@@ -54,7 +54,7 @@ export function AgentAvatarView({
  * (96×96 webp ≈ a few KB) so avatars stay cheap to store and stream.
  *
  * The file is read through FileReader into a `data:` URL first: the shell CSP
- * (`img-src 'self' data: sync-think-image:`) blocks `blob:` URLs, so loading
+   * (`img-src 'self' data: https: http: sync-think-image:`) blocks `blob:` URLs, so loading
  * a createObjectURL blob into an Image would fire onerror and fail the import.
  */
 export function readAvatarImage(file: File): Promise<string> {

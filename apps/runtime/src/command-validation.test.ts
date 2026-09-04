@@ -6,6 +6,7 @@ import {
   parseCreateWorkspacePayload,
   parseConversationListMessagesPayload,
   parseConversationGetRunProcessPayload,
+  parseConversationListRunTimelinePayload,
   parseSubscribeConversationTransientStreamPayload,
   parseUnsubscribeConversationTransientStreamPayload,
   parseAppendMessagePayload,
@@ -241,6 +242,22 @@ describe('conversation get run process payload validation', () => {
     expect(parseConversationGetRunProcessPayload({ runId: 'run-1' })).toEqual({ runId: 'run-1' });
     expect(parseConversationGetRunProcessPayload({ runId: '' })).toBeUndefined();
     expect(parseConversationGetRunProcessPayload({ runId: 'run-1', extra: true })).toBeUndefined();
+  });
+});
+
+describe('conversation list run timeline payload validation', () => {
+  it('accepts a bounded cursor page and rejects invalid limits', () => {
+    expect(
+      parseConversationListRunTimelinePayload({
+        runId: 'run-1',
+        cursor: 'cursor-1',
+        limit: 100,
+      }),
+    ).toEqual({ runId: 'run-1', cursor: 'cursor-1', limit: 100 });
+    expect(parseConversationListRunTimelinePayload({ runId: 'run-1', limit: 101 })).toBeUndefined();
+    expect(
+      parseConversationListRunTimelinePayload({ runId: 'run-1', cursor: '', limit: 10 }),
+    ).toBeUndefined();
   });
 });
 

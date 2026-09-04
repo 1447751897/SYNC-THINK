@@ -141,9 +141,9 @@ export function buildKernelRegistry(): KernelRegistryEntry[] {
       pause: 'turn',
       compress: 'own',
       usageReport: true,
-      // No CLI/config entry to override the window; CC auto-compacts on its own
-      // 200k native budget, so the host must trim to min(configured, 200k).
-      contextWindow: { nativeLimit: 200_000, overridable: false },
+      // Claude Code now accepts the host-configured model window (up to 1M).
+      // The adapter forwards it as CLAUDE_CODE_AUTO_COMPACT_WINDOW.
+      contextWindow: { nativeLimit: 1_000_000, overridable: true },
     },
     knownGoodVersions: ['2.1.222', '2.1.238'],
     // Accept the whole 2.x line; 3.0 must be re-validated before it is trusted.

@@ -21,6 +21,7 @@ const TOOL_DISPLAY_NAMES: Readonly<Record<string, string>> = {
   edit: '编辑文件',
   edit_file: '编辑文件',
   apply_patch: '编辑文件',
+  file_change: '编辑文件',
   bash: '运行命令',
   execute_command: '运行命令',
   exec_command: '运行命令',
@@ -58,7 +59,7 @@ export function friendlyToolName(name: string): string {
 export function toolVisualKind(name: string): ProcessToolVisualKind {
   const normalized = normalizeToolName(name.trim()).toLowerCase();
   if (/^(read|read_file|file_read|view_image)$/.test(normalized)) return 'read';
-  if (/^(write|write_file|file_write|edit|edit_file|apply_patch)$/.test(normalized)) {
+  if (/^(write|write_file|file_write|edit|edit_file|apply_patch|file_change)$/.test(normalized)) {
     return 'write';
   }
   if (/^(list_files|file_list|glob)$/.test(normalized)) return 'list';

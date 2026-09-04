@@ -1,10 +1,16 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { AssistantTurnSegment } from '@sync-think/protocol';
+import {
+  decodeFrames,
+  type AssistantTurnSegment,
+  type ConversationTransientFrame,
+  type Frame,
+} from '@sync-think/protocol';
 import type { Message, MessageBlock, MessageId, RunId, ThreadId } from '@sync-think/shared';
 import {
   MAX_MESSAGE_BLOCKS,
   MAX_MESSAGE_BLOCKS_JSON_BYTES,
   MessageStoreError,
+  type SqliteAssistantTimelineStore,
   type SqliteMessageStore,
 } from '@sync-think/storage';
 import {
@@ -259,5 +265,116 @@ describe('ordered assistant timeline persistence', () => {
       }),
     ]);
     warning.mockRestore();
+  });
+
+  it('persists new segments incrementally after the live 512-segment window rolls forward', () => {
+    const upsertSegments = vi.fn();
+    const runtime = new Runtime({
+      installId: 'timeline-incremental-test',
+      assistantTimelineStore: { upsertSegments } as unknown as SqliteAssistantTimelineStore,
+    });
+    const publishTransientFrame = (
+      runtime as unknown as {
+        publishTransientFrame(
+          input: Omit<ConversationTransientFrame, 'streamSequence'>,
+        ): ConversationTransientFrame;
+      }
+    ).publishTransientFrame.bind(runtime);
+    const timeline = (start: number, count: number): AssistantTurnSegment[] =>
+      Array.from({ length: count }, (_, index) => {
+        const sequence = start + index;
+        return {
+          id: `thinking-${sequence}`,
+          sequence,
+          kind: 'thinking' as const,
+          text: `segment-${sequence}`,
+          status: 'completed' as const,
+        };
+      });
+    const baseFrame = {
+      threadId: 'thread-incremental' as ThreadId,
+      runId: 'run-incremental' as RunId,
+      kind: 'process' as const,
+      occurredAt: '2026-09-04T09:00:00.000Z',
+    };
+
+    publishTransientFrame({ ...baseFrame, assistantTimeline: timeline(0, 512) });
+    publishTransientFrame({ ...baseFrame, assistantTimeline: timeline(128, 512) });
+    publishTransientFrame({
+      ...baseFrame,
+      assistantTimeline: [
+        {
+          id: 'thinking-639',
+          sequence: 639,
+          kind: 'thinking',
+          text: 'completed-tail',
+          status: 'completed',
+        },
+      ],
+    });
+
+    expect(upsertSegments).toHaveBeenCalledTimes(3);
+    expect(upsertSegments.mock.calls[0]?.[1]).toHaveLength(512);
+    expect(upsertSegments.mock.calls[1]?.[1]).toHaveLength(128);
+    expect(upsertSegments.mock.calls[2]?.[1]).toEqual([
+      expect.objectContaining({ id: 'thinking-639', value: expect.any(Object) }),
+    ]);
+  });
+
+  it('shrinks a large timeline page until it fits the protocol frame', () => {
+    const listSegments = vi.fn((_runId: string, options: { limit?: number }) => {
+      const limit = options.limit ?? 64;
+      return {
+        segments: Array.from({ length: limit }, (_, sequence) => ({
+          id: `tool-${sequence}`,
+          sequence,
+          value: {
+            id: `tool-${sequence}`,
+            sequence,
+            kind: 'tool',
+            toolCallId: `call-${sequence}`,
+            name: 'command_execution',
+            output: 'x'.repeat(30_000),
+            status: 'completed',
+          },
+          createdAt: '2026-09-04T09:00:00.000Z',
+          updatedAt: '2026-09-04T09:00:00.000Z',
+        })),
+        totalSegments: 64,
+        ...(limit < 64 ? { nextCursor: `after-${limit}` } : {}),
+      };
+    });
+    const runtime = new Runtime({
+      installId: 'timeline-frame-test',
+      assistantTimelineStore: { listSegments } as unknown as SqliteAssistantTimelineStore,
+    });
+    const handleListConversationRunTimeline = (
+      runtime as unknown as {
+        handleListConversationRunTimeline(
+          socket: { write(data: Buffer): unknown },
+          frame: Frame,
+        ): void;
+      }
+    ).handleListConversationRunTimeline.bind(runtime);
+    const writes: Buffer[] = [];
+
+    handleListConversationRunTimeline(
+      { write: (data) => writes.push(data) },
+      {
+        id: 'timeline-page',
+        kind: 'request',
+        type: 'conversation.listRunTimeline',
+        payload: { runId: 'run-large' as RunId, limit: 64 },
+      },
+    );
+
+    expect(listSegments.mock.calls.map((call) => call[1].limit)).toEqual([64, 32]);
+    const response = decodeFrames(writes[0]!).frames[0]!;
+    expect(response.error).toBeUndefined();
+    expect(response.payload).toMatchObject({
+      totalSegments: 64,
+      nextCursor: 'after-32',
+    });
+    expect((response.payload as { segments: unknown[] }).segments).toHaveLength(32);
   });
 });

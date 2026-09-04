@@ -1323,6 +1323,35 @@ export const CHAT_NETWORK_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
       properties: {
         query: { type: 'string', description: 'Search query in natural language' },
         limit: { type: 'integer', minimum: 1, maximum: 8 },
+        provider: {
+          type: 'string',
+          enum: [
+            'auto',
+            'tavily',
+            'exa',
+            'brave',
+            'serpapi',
+            'serper',
+            'bing',
+            'google',
+            'firecrawl',
+            'metaso',
+            'doubao',
+          ],
+          description: 'Optional configured provider; auto follows the saved priority order',
+        },
+        allowed_domains: {
+          type: 'array',
+          maxItems: 20,
+          items: { type: 'string' },
+          description: 'Only return results from these domains',
+        },
+        blocked_domains: {
+          type: 'array',
+          maxItems: 20,
+          items: { type: 'string' },
+          description: 'Exclude results from these domains',
+        },
       },
     },
   },
@@ -1401,6 +1430,8 @@ export function toolsForExecutionMode(
   _mode: string | undefined | null,
   options: {
     networkEnabled?: boolean;
+    /** False when keyword search is provided by the model host or unavailable. */
+    includeWebSearchTools?: boolean;
     includeProjectTools?: boolean;
     /** Agent-management tools (create_agent / list_agent_resources). */
     includeAgentTools?: boolean;
@@ -1424,7 +1455,11 @@ export function toolsForExecutionMode(
     tools.push(...CHAT_BROWSER_WORKFLOW_TOOL_SCHEMAS);
   }
   if (options.networkEnabled) {
-    tools.push(...CHAT_NETWORK_TOOL_SCHEMAS);
+    tools.push(
+      ...(options.includeWebSearchTools === false
+        ? CHAT_NETWORK_TOOL_SCHEMAS.filter((tool) => tool.name !== 'web_search')
+        : CHAT_NETWORK_TOOL_SCHEMAS),
+    );
     // Browser panel tool rides on the same 联网 switch — it displays public
     // pages, so it should not exist when the user has networking off.
     tools.push(...CHAT_BROWSER_TOOL_SCHEMAS);
@@ -2556,6 +2591,15 @@ export async function executeChatBuiltInTool(input: {
   signal?: AbortSignal;
   networkEnabled?: boolean;
   fetchImpl?: typeof fetch;
+  /** Runtime-owned provider router; omitted only by isolated legacy tests. */
+  webSearch?: (input: {
+    query: string;
+    limit: number;
+    providerId?: string;
+    allowedDomains?: string[];
+    blockedDomains?: string[];
+    signal?: AbortSignal;
+  }) => Promise<string>;
   /** Optional out-parameter receiving the pre-write snapshot of a write_file call. */
   snapshotOut?: ChatWriteSnapshot;
 }): Promise<string> {
@@ -2575,6 +2619,30 @@ export async function executeChatBuiltInTool(input: {
     }
     try {
       if (input.toolCall.name === 'web_search') {
+        if (input.webSearch) {
+          return await input.webSearch({
+            query: String(args.query ?? ''),
+            limit: typeof args.limit === 'number' ? args.limit : 5,
+            ...(typeof args.provider === 'string' && args.provider !== 'auto'
+              ? { providerId: args.provider }
+              : {}),
+            ...(Array.isArray(args.allowed_domains)
+              ? {
+                  allowedDomains: args.allowed_domains.filter(
+                    (value): value is string => typeof value === 'string',
+                  ),
+                }
+              : {}),
+            ...(Array.isArray(args.blocked_domains)
+              ? {
+                  blockedDomains: args.blocked_domains.filter(
+                    (value): value is string => typeof value === 'string',
+                  ),
+                }
+              : {}),
+            signal: input.signal,
+          });
+        }
         return await executeWebSearch({
           query: String(args.query ?? ''),
           limit: typeof args.limit === 'number' ? args.limit : 5,
@@ -2730,7 +2798,9 @@ export async function executeChatBuiltInTool(input: {
   }
 }
 
-const WEB_FETCH_TIMEOUT_MS = 15_000;
+const WEB_FETCH_TIMEOUT_MS = 30_000;
+const WEB_FETCH_MAX_BYTES = 2 * 1024 * 1024;
+const WEB_FETCH_MAX_REDIRECTS = 5;
 const WEB_SEARCH_TIMEOUT_MS = 12_000;
 const BLOCKED_HOSTS = new Set([
   'localhost',
@@ -2777,21 +2847,125 @@ function assertPublicHttpUrl(raw: string): URL {
   return url;
 }
 
-function htmlToText(html: string): string {
-  return html
-    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<noscript[\s\S]*?<\/noscript>/gi, ' ')
-    .replace(/<!--[\s\S]*?-->/g, ' ')
-    .replace(/<[^>]+>/g, ' ')
+function decodeHtmlEntities(value: string): string {
+  return value
+    .replace(/&#(\d+);/g, (_match, code: string) => String.fromCodePoint(Number(code)))
+    .replace(/&#x([\da-f]+);/gi, (_match, code: string) =>
+      String.fromCodePoint(Number.parseInt(code, 16)),
+    )
     .replace(/&nbsp;/gi, ' ')
     .replace(/&amp;/gi, '&')
     .replace(/&lt;/gi, '<')
     .replace(/&gt;/gi, '>')
     .replace(/&quot;/gi, '"')
-    .replace(/&#39;/gi, "'")
+    .replace(/&#39;|&apos;/gi, "'");
+}
+
+function extractHtmlDocument(html: string): { title?: string; text: string } {
+  const title = decodeHtmlEntities(
+    html.match(/<title\b[^>]*>([\s\S]*?)<\/title>/i)?.[1]?.replace(/<[^>]+>/g, ' ') ?? '',
+  )
     .replace(/\s+/g, ' ')
     .trim();
+  const withoutNoise = html
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, ' ')
+    .replace(/<(?:svg|canvas|template)\b[\s\S]*?<\/(?:svg|canvas|template)>/gi, ' ')
+    .replace(/<!--[\s\S]*?-->/g, ' ')
+    .replace(/<(?:nav|header|footer|aside)\b[\s\S]*?<\/(?:nav|header|footer|aside)>/gi, ' ');
+  const main =
+    withoutNoise.match(/<main\b[^>]*>([\s\S]*?)<\/main>/i)?.[1] ??
+    withoutNoise.match(/<article\b[^>]*>([\s\S]*?)<\/article>/i)?.[1] ??
+    withoutNoise.match(/<body\b[^>]*>([\s\S]*?)<\/body>/i)?.[1] ??
+    withoutNoise;
+  const text = decodeHtmlEntities(
+    main
+      .replace(/<(?:br|hr)\s*\/?\s*>/gi, '\n')
+      .replace(/<\/(?:p|div|section|article|main|h[1-6]|li|tr|blockquote)>/gi, '\n')
+      .replace(/<li\b[^>]*>/gi, '- ')
+      .replace(/<[^>]+>/g, ' '),
+  )
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\s*\n\s*/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  return { ...(title ? { title } : {}), text };
+}
+
+async function fetchPublicPage(
+  fetchFn: typeof fetch,
+  initialUrl: URL,
+  signal: AbortSignal,
+): Promise<{ response: Response; url: URL }> {
+  let url = initialUrl;
+  for (let redirects = 0; redirects <= WEB_FETCH_MAX_REDIRECTS; redirects++) {
+    const response = await fetchFn(url.toString(), {
+      method: 'GET',
+      redirect: 'manual',
+      signal,
+      headers: {
+        Accept:
+          'text/html,application/xhtml+xml,application/json,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.3',
+        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.7',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) SyncThink/1.0',
+      },
+    });
+    if (![301, 302, 303, 307, 308].includes(response.status)) return { response, url };
+    const location = response.headers.get('location');
+    if (!location) throw new Error(`Redirect response ${response.status} has no Location header`);
+    if (redirects === WEB_FETCH_MAX_REDIRECTS) throw new Error('Too many redirects');
+    url = assertPublicHttpUrl(new URL(location, url).toString());
+  }
+  throw new Error('Too many redirects');
+}
+
+async function readLimitedResponseText(
+  response: Response,
+  contentType: string,
+): Promise<{ raw: string; byteTruncated: boolean }> {
+  const reader = response.body?.getReader();
+  if (!reader) return { raw: await response.text(), byteTruncated: false };
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  let byteTruncated = false;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      const remaining = WEB_FETCH_MAX_BYTES - total;
+      if (remaining <= 0) {
+        byteTruncated = true;
+        await reader.cancel();
+        break;
+      }
+      const chunk = value.byteLength > remaining ? value.subarray(0, remaining) : value;
+      chunks.push(chunk);
+      total += chunk.byteLength;
+      if (chunk.byteLength < value.byteLength) {
+        byteTruncated = true;
+        await reader.cancel();
+        break;
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  const charset = /charset\s*=\s*["']?([^;\s"']+)/i.exec(contentType)?.[1] ?? 'utf-8';
+  let decoder = new TextDecoder('utf-8');
+  try {
+    decoder = new TextDecoder(charset);
+  } catch {
+    // Keep UTF-8 when the declared charset is unsupported by this runtime.
+  }
+  return { raw: decoder.decode(bytes), byteTruncated };
 }
 
 async function executeWebFetch(input: {
@@ -2807,28 +2981,54 @@ async function executeWebFetch(input: {
   const onAbort = () => controller.abort();
   input.signal?.addEventListener('abort', onAbort, { once: true });
   try {
-    const response = await fetchFn(url.toString(), {
-      method: 'GET',
-      redirect: 'follow',
-      signal: controller.signal,
-      headers: {
-        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.5',
-        'User-Agent': 'SyncThink-WebFetch/1.0',
-      },
-    });
+    const fetched = await fetchPublicPage(fetchFn, url, controller.signal);
+    const response = fetched.response;
     const contentType = response.headers.get('content-type') ?? '';
-    const raw = await response.text();
+    if (contentType && !/(?:text|html|json|xml|javascript|xhtml)/i.test(contentType)) {
+      return JSON.stringify({
+        ok: false,
+        status: response.status,
+        url: fetched.url.toString(),
+        contentType,
+        error: 'The URL returned binary content; use the browser or download flow instead.',
+      });
+    }
+    const { raw, byteTruncated } = await readLimitedResponseText(response, contentType);
     const max = Math.min(Math.max(input.maxChars || 12_000, 500), 50_000);
-    const text = contentType.includes('html')
-      ? htmlToText(raw).slice(0, max)
-      : raw.replace(/\s+/g, ' ').trim().slice(0, max);
+    const document =
+      contentType.includes('html') || /^\s*<!doctype html|^\s*<html/i.test(raw)
+        ? extractHtmlDocument(raw)
+        : {
+            text: raw
+              .replace(/[ \t]+/g, ' ')
+              .replace(/\n{3,}/g, '\n\n')
+              .trim(),
+          };
+    const text = document.text.slice(0, max);
+    const looksLikeClientRenderedApp =
+      contentType.includes('html') &&
+      text.length === 0 &&
+      /<script\b[^>]*\bsrc\s*=|type=["']module["']/i.test(raw);
+    if (looksLikeClientRenderedApp) {
+      return JSON.stringify({
+        ok: false,
+        code: 'RENDER_REQUIRED',
+        status: response.status,
+        url: response.url || fetched.url.toString(),
+        contentType,
+        error:
+          'This page is rendered by JavaScript and has no readable server HTML. Use browser_open followed by browser_read for the rendered page.',
+        browserRequired: true,
+      });
+    }
     return JSON.stringify({
       ok: response.ok,
       status: response.status,
-      url: response.url || url.toString(),
+      url: response.url || fetched.url.toString(),
       contentType,
+      ...(document.title ? { title: document.title } : {}),
       text,
-      truncated: raw.length > max,
+      truncated: byteTruncated || document.text.length > max,
     });
   } finally {
     clearTimeout(timer);

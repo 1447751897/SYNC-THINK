@@ -26,12 +26,13 @@ import {
 } from '@sync-think/shared';
 
 export type ProviderCapabilityTag =
-  'text' | 'vision' | 'tool-calling' | 'image-generation' | 'embeddings';
+  'text' | 'vision' | 'tool-calling' | 'web-search' | 'image-generation' | 'embeddings';
 
 export const CAPABILITY_OPTIONS: Array<{ value: ProviderCapabilityTag; label: string }> = [
   { value: 'text', label: '文本' },
   { value: 'vision', label: '视觉' },
   { value: 'tool-calling', label: '工具' },
+  { value: 'web-search', label: '网页搜索' },
   { value: 'image-generation', label: '生图' },
   { value: 'embeddings', label: '向量' },
 ];

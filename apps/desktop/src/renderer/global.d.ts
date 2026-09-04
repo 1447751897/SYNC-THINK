@@ -392,6 +392,18 @@ declare global {
         removeProviderModel(payload: RemoveModelPayload): Promise<RemoveModelResponse>;
         getSettings(payload?: GetSettingsPayload): Promise<GetSettingsResponse>;
         setSetting(payload: SetSettingPayload): Promise<SetSettingResponse>;
+        listWebSearchProviders(
+          payload?: import('@sync-think/protocol').ListWebSearchProvidersPayload,
+        ): Promise<import('@sync-think/protocol').ListWebSearchProvidersResponse>;
+        saveWebSearchProvider(
+          payload: import('@sync-think/protocol').SaveWebSearchProviderPayload,
+        ): Promise<import('@sync-think/protocol').SaveWebSearchProviderResponse>;
+        reorderWebSearchProviders(
+          payload: import('@sync-think/protocol').ReorderWebSearchProvidersPayload,
+        ): Promise<import('@sync-think/protocol').ReorderWebSearchProvidersResponse>;
+        testWebSearchProvider(
+          payload: import('@sync-think/protocol').TestWebSearchProviderPayload,
+        ): Promise<import('@sync-think/protocol').TestWebSearchProviderResponse>;
         getDataStorageStats(): Promise<DataStorageStatsResponse>;
         exportData(payload?: ExportDesktopDataPayload): Promise<ExportDesktopDataResponse>;
         importData(payload: ImportDesktopDataPayload): Promise<ImportDesktopDataResponse>;
@@ -449,6 +461,9 @@ declare global {
         getConversationRunProcess(
           payload: import('@sync-think/protocol').ConversationGetRunProcessPayload,
         ): Promise<import('@sync-think/protocol').ConversationGetRunProcessResponse>;
+        listConversationRunTimeline(
+          payload: import('@sync-think/protocol').ConversationListRunTimelinePayload,
+        ): Promise<import('@sync-think/protocol').ConversationListRunTimelineResponse>;
         subscribeConversationTransientStream(
           payload: { threadId: string; afterStreamSequence?: number },
           listener: (

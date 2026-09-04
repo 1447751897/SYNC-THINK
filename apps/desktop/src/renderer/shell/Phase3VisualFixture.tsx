@@ -1223,7 +1223,7 @@ function installWorkspaceFileFixtureRuntime() {
 }
 
 function WorkspaceFileFixture() {
-  const [path, setPath] = useState(() => {
+  const [path] = useState(() => {
     installWorkspaceFileFixtureRuntime();
     return 'install-all.sh';
   });
@@ -1239,17 +1239,9 @@ function WorkspaceFileFixture() {
           <FileTypeIcon path={path} size={13} />
           <span>{path}</span>
         </div>
-        <div className="phase3-workspace-file__tab">
-          <span>工作区文件</span>
-        </div>
       </header>
       <section className="phase3-workspace-file__content">
-        <WorkspaceFileView
-          projectFolder="C:/workspace"
-          path={path}
-          onOpenFileInCurrentTab={(nextPath) => setPath(nextPath)}
-          onOpenFileInNewTab={(nextPath) => setPath(nextPath)}
-        />
+        <WorkspaceFileView projectFolder="C:/workspace" path={path} />
       </section>
     </main>
   );

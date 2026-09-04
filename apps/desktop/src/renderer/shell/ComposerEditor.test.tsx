@@ -52,6 +52,64 @@ describe('ComposerEditor', () => {
     expect(textbox.textContent).toBe('second');
   });
 
+  it('returns to the minimum height after a tall draft is cleared', () => {
+    const { rerender } = render(
+      <ComposerEditor
+        value=""
+        onChange={() => undefined}
+        ariaLabel="消息"
+        inputTestId="compat-input"
+        minHeight={36}
+        maxHeight={200}
+      />,
+    );
+
+    const host = screen
+      .getByTestId('composer-editor')
+      .querySelector('.shell-composer-editor__surface') as HTMLElement;
+    const content = host.querySelector('.cm-content') as HTMLElement;
+    const input = screen.getByTestId('compat-input') as HTMLTextAreaElement;
+    const contentHeight = { current: 36 };
+    const installStyledScrollHeight = (element: HTMLElement) => {
+      Object.defineProperty(element, 'scrollHeight', {
+        configurable: true,
+        get() {
+          const styled = Number.parseFloat(this.style.height || '');
+          return Math.max(contentHeight.current, Number.isFinite(styled) ? styled : 0);
+        },
+      });
+    };
+    installStyledScrollHeight(host);
+    installStyledScrollHeight(content);
+    installStyledScrollHeight(input);
+
+    contentHeight.current = 180;
+    rerender(
+      <ComposerEditor
+        value={`${'很长的一行文字，用来把输入框撑高。\n'.repeat(8)}结尾`}
+        onChange={() => undefined}
+        ariaLabel="消息"
+        inputTestId="compat-input"
+        minHeight={36}
+        maxHeight={200}
+      />,
+    );
+    expect(host.style.height).toBe('180px');
+
+    contentHeight.current = 36;
+    rerender(
+      <ComposerEditor
+        value=""
+        onChange={() => undefined}
+        ariaLabel="消息"
+        inputTestId="compat-input"
+        minHeight={36}
+        maxHeight={200}
+      />,
+    );
+    expect(host.style.height).toBe('36px');
+  });
+
   it('publishes controlled text changes within the NewMax height and type metrics', () => {
     render(
       <ControlledEditor

@@ -77,6 +77,9 @@ const TOOL_META: Record<string, { verb: string; kind: ProcessToolKind; zh: strin
   read_file: { verb: 'Read', kind: 'read', zh: '读取文件' },
   write_file: { verb: 'Edit', kind: 'write', zh: '写入文件' },
   edit_file: { verb: 'Edit', kind: 'write', zh: '编辑文件' },
+  file_write: { verb: 'Edit', kind: 'write', zh: '写入文件' },
+  file_change: { verb: 'Edit', kind: 'write', zh: '编辑文件' },
+  apply_patch: { verb: 'Edit', kind: 'write', zh: '编辑文件' },
   list_files: { verb: 'List', kind: 'list', zh: '列出文件' },
   run_command: { verb: 'Bash', kind: 'bash', zh: '执行命令' },
   git_status: { verb: 'Git', kind: 'git', zh: 'Git 状态' },
@@ -191,7 +194,8 @@ function extractArgs(payload: Record<string, unknown>): Record<string, unknown> 
     asRecord(payload.arguments) ??
     asRecord(payload.args) ??
     asRecord(asRecord(payload.toolCall)?.arguments) ??
-    asRecord(parseMaybeJson(asRecord(payload.toolCall)?.argumentsJson))
+    asRecord(parseMaybeJson(asRecord(payload.toolCall)?.argumentsJson)) ??
+    asRecord(parseMaybeJson(payload.argumentsJson))
   );
 }
 
@@ -202,6 +206,280 @@ function extractToolName(payload: Record<string, unknown>): string {
   const toolCall = asRecord(payload.toolCall);
   if (typeof toolCall?.name === 'string' && toolCall.name) return toolCall.name;
   return 'tool';
+}
+
+const WRITE_FILE_TOOL_NAMES = new Set([
+  'write_file',
+  'edit_file',
+  'file_write',
+  'file_change',
+  'apply_patch',
+  'write',
+  'edit',
+]);
+
+function isWriteFileTool(toolName: string): boolean {
+  return matchesToolName(toolName, WRITE_FILE_TOOL_NAMES);
+}
+
+function fileChangeActionFromKind(kind: unknown): FileChangeItem['action'] {
+  const raw =
+    typeof kind === 'string'
+      ? kind
+      : kind && typeof kind === 'object' && typeof (kind as { type?: unknown }).type === 'string'
+        ? (kind as { type: string }).type
+        : '';
+  const normalized = raw.toLowerCase();
+  if (normalized === 'add' || normalized === 'create' || normalized === 'created') return 'created';
+  if (normalized === 'delete' || normalized === 'remove' || normalized === 'deleted') {
+    return 'deleted';
+  }
+  return 'edited';
+}
+
+function normalizeWritePathEntry(
+  rec: Record<string, unknown> | undefined,
+  fallbackPath?: string,
+): { path: string; action: FileChangeItem['action']; preview?: string } | undefined {
+  const path =
+    (typeof rec?.path === 'string' && rec.path.trim()) ||
+    (typeof rec?.file === 'string' && rec.file.trim()) ||
+    (typeof rec?.file_path === 'string' && rec.file_path.trim()) ||
+    fallbackPath?.trim() ||
+    '';
+  if (!path) return undefined;
+  const preview =
+    typeof rec?.diff === 'string'
+      ? rec.diff
+      : typeof rec?.unified_diff === 'string'
+        ? rec.unified_diff
+        : typeof rec?.unifiedDiff === 'string'
+          ? rec.unifiedDiff
+          : typeof rec?.content === 'string'
+            ? rec.content
+            : undefined;
+  return {
+    path,
+    action: fileChangeActionFromKind(rec?.kind ?? rec?.type ?? rec),
+    ...(preview ? { preview } : {}),
+  };
+}
+
+function extractChangeList(
+  source?: Record<string, unknown>,
+): Array<{ path: string; action: FileChangeItem['action']; preview?: string }> {
+  const changes = source?.changes ?? source?.files;
+  if (Array.isArray(changes)) {
+    return changes.flatMap((entry) => {
+      const normalized = normalizeWritePathEntry(asRecord(entry));
+      return normalized ? [normalized] : [];
+    });
+  }
+  const map = asRecord(changes);
+  if (!map) return [];
+  return Object.entries(map).flatMap(([path, value]) => {
+    const normalized = normalizeWritePathEntry(asRecord(value) ?? {}, path);
+    return normalized ? [normalized] : [];
+  });
+}
+
+function extractApplyPatchEntries(
+  text?: string,
+): Array<{ path: string; action: FileChangeItem['action'] }> {
+  if (!text) return [];
+  const entries: Array<{ path: string; action: FileChangeItem['action'] }> = [];
+  const pattern = /^\*\*\*\s+(Add|Delete|Update)\s+File:\s+(.+?)\s*$/gm;
+  for (const match of text.matchAll(pattern)) {
+    const kind = match[1]?.toLowerCase();
+    const path = match[2]?.trim();
+    if (!path) continue;
+    entries.push({
+      path,
+      action: kind === 'add' ? 'created' : kind === 'delete' ? 'deleted' : 'edited',
+    });
+  }
+  return entries;
+}
+
+function gitStatusAction(stat: string): FileChangeItem['action'] {
+  const code = stat.replace(/\s/g, '');
+  if (code === '??' || code.includes('A')) return 'created';
+  if (code.includes('D')) return 'deleted';
+  return 'edited';
+}
+
+function extractTargetedGitStatusEntries(
+  command?: string,
+  result?: string,
+): Array<{ path: string; action: FileChangeItem['action'] }> {
+  if (!command || !result || !/\bgit\s+status\b/i.test(command)) return [];
+  if (!/\s--\s+/.test(command)) return [];
+  const entries: Array<{ path: string; action: FileChangeItem['action'] }> = [];
+  for (const line of result.split(/\r?\n/)) {
+    const match = line.match(/^([ MADRCU?!]{1,2})\s+(\S.*)$/);
+    if (!match) continue;
+    const path = match[2]?.trim();
+    if (!path) continue;
+    entries.push({ path, action: gitStatusAction(match[1] ?? '') });
+  }
+  return entries;
+}
+
+function extractWritePathEntries(
+  args?: Record<string, unknown>,
+  resultRaw?: unknown,
+): Array<{ path: string; action: FileChangeItem['action']; preview?: string }> {
+  const sources = [args, asRecord(parseMaybeJson(resultRaw))];
+  for (const source of sources) {
+    const entries = extractChangeList(source);
+    if (entries.length > 0) return entries;
+  }
+  const patchText = [
+    typeof args?.command === 'string' ? args.command : '',
+    typeof resultRaw === 'string' ? resultRaw : '',
+  ].join('\n');
+  const patchEntries = extractApplyPatchEntries(patchText);
+  if (patchEntries.length > 0) return patchEntries;
+  const path =
+    typeof args?.path === 'string'
+      ? args.path
+      : typeof args?.file === 'string'
+        ? args.file
+        : typeof args?.file_path === 'string'
+          ? args.file_path
+          : undefined;
+  if (!path) return [];
+  return [{ path, action: 'edited' }];
+}
+
+function hasFileChangeEntries(
+  args?: Record<string, unknown>,
+  resultRaw?: unknown,
+): boolean {
+  return extractWritePathEntries(args, resultRaw).length > 0;
+}
+
+function isLegacyFileChangedResult(resultRaw: unknown): boolean {
+  return typeof resultRaw === 'string' && resultRaw.trim() === 'file changed';
+}
+
+function upsertFileChange(
+  fileChanges: FileChangeItem[],
+  entry: { path: string; action: FileChangeItem['action']; preview?: string },
+  toolCallId: string,
+): void {
+  const already = fileChanges.find(
+    (item) => item.path === entry.path && (item.toolCallId === toolCallId || !item.toolCallId),
+  );
+  if (already) {
+    already.action = entry.action;
+    already.toolCallId = toolCallId;
+    if (entry.preview) already.preview = entry.preview;
+    return;
+  }
+  fileChanges.push({
+    path: entry.path,
+    action: entry.action,
+    toolCallId,
+    ...(entry.preview ? { preview: entry.preview } : {}),
+  });
+}
+
+function harvestSupplementalFileChanges(
+  events: readonly Event[],
+  fileChanges: FileChangeItem[],
+): void {
+  const commandByCall = new Map<string, string>();
+  for (const event of events) {
+    if (!isToolEvent(event.type)) continue;
+    const args = extractArgs(event.payload);
+    const toolCallId = extractToolCallId(event.payload, event.id);
+    if (typeof args?.command === 'string' && args.command) {
+      commandByCall.set(toolCallId, args.command);
+    }
+  }
+  const sawFileChangeMarker = events.some((event) => {
+    if (!isToolEvent(event.type)) return false;
+    const payload = event.payload;
+    const result = payload.result ?? payload.output;
+    return isWriteFileTool(extractToolName(payload)) || isLegacyFileChangedResult(result);
+  });
+  for (const event of events) {
+    if (!isToolEvent(event.type)) continue;
+    const payload = event.payload;
+    const args = extractArgs(payload);
+    const toolCallId = extractToolCallId(payload, event.id);
+    const command =
+      typeof args?.command === 'string' && args.command
+        ? args.command
+        : (commandByCall.get(toolCallId) ?? '');
+    const result = payload.result ?? payload.output;
+    const resultText = typeof result === 'string' ? result : '';
+    for (const entry of extractApplyPatchEntries(`${command}\n${resultText}`)) {
+      upsertFileChange(fileChanges, entry, toolCallId);
+    }
+    if (!sawFileChangeMarker) continue;
+    for (const entry of extractTargetedGitStatusEntries(command, resultText)) {
+      upsertFileChange(fileChanges, entry, toolCallId);
+    }
+  }
+}
+
+function recordWriteFileChanges(
+  fileChanges: FileChangeItem[],
+  toolName: string,
+  toolCallId: string,
+  args: Record<string, unknown> | undefined,
+  builtPath: string | undefined,
+  summary: { created?: boolean; content?: string; preview?: string },
+  payload: Record<string, unknown>,
+): void {
+  const resultRaw = payload.result ?? payload.output;
+  if (
+    !isWriteFileTool(toolName) &&
+    !hasFileChangeEntries(args, resultRaw) &&
+    !isLegacyFileChangedResult(resultRaw)
+  ) {
+    return;
+  }
+  const entries = extractWritePathEntries(args, payload.result ?? payload.output);
+  const paths =
+    entries.length > 0
+      ? entries.map((entry) =>
+          summary.created ? { ...entry, action: 'created' as const } : entry,
+        )
+      : builtPath
+        ? [{ path: builtPath, action: summary.created ? ('created' as const) : ('edited' as const) }]
+        : [];
+  const snapshot = snapshotFields(payload);
+  for (const entry of paths) {
+    const preview = entry.preview ?? summary.content ?? summary.preview;
+    const already = fileChanges.find(
+      (item) => item.path === entry.path && item.toolCallId === toolCallId,
+    );
+    if (already) {
+      if (preview) already.preview = preview;
+      already.action = entry.action;
+      if (typeof summary.content === 'string' && summary.content.length > 0) {
+        already.content = summary.content;
+      }
+      if (snapshot.previousContent) already.previousContent = snapshot.previousContent;
+      if (snapshot.previousTruncated !== undefined) {
+        already.previousTruncated = snapshot.previousTruncated;
+      }
+      continue;
+    }
+    fileChanges.push({
+      path: entry.path,
+      action: entry.action,
+      toolCallId,
+      preview,
+      ...snapshot,
+      ...(typeof summary.content === 'string' && summary.content.length > 0
+        ? { content: summary.content }
+        : {}),
+    });
+  }
 }
 
 function extractToolCallId(payload: Record<string, unknown>, eventId: string): string {
@@ -230,7 +508,9 @@ function buildLabel(
       ? args.path
       : typeof args?.file === 'string'
         ? args.file
-        : undefined;
+        : typeof args?.file_path === 'string'
+          ? args.file_path
+          : extractWritePathEntries(args)[0]?.path;
   const command =
     typeof args?.command === 'string' ? formatCommandLine(args.command, args?.args) : undefined;
   const url = typeof args?.url === 'string' ? args.url : undefined;
@@ -313,7 +593,7 @@ function summarizeResult(
     }
   }
 
-  if (toolName === 'write_file' || toolName === 'edit_file') {
+  if (isWriteFileTool(toolName)) {
     const created = obj?.created === true || obj?.isNew === true;
     const bytes =
       typeof obj?.bytes === 'number'
@@ -538,17 +818,16 @@ export function projectExecutionProcess(
                 : undefined,
         occurredAt: event.occurredAt,
       });
-      if (completed && (toolName === 'write_file' || toolName === 'edit_file') && built.path) {
-        fileChanges.push({
-          path: built.path,
-          action: resultSummary.created ? 'created' : 'edited',
+      if (completed || requested) {
+        recordWriteFileChanges(
+          fileChanges,
+          toolName,
           toolCallId,
-          preview: resultSummary.content ?? resultSummary.preview,
-          ...snapshotFields(payload),
-          ...(typeof resultSummary.content === 'string' && resultSummary.content.length > 0
-            ? { content: resultSummary.content }
-            : {}),
-        });
+          argsForSummary,
+          built.path,
+          resultSummary,
+          payload,
+        );
       }
       continue;
     }
@@ -571,37 +850,27 @@ export function projectExecutionProcess(
         existing.error =
           extractToolResultError(payload.result ?? payload.output) ?? existing.preview;
       }
-      if (
-        (toolName === 'write_file' || toolName === 'edit_file') &&
-        (existing.path || built.path)
-      ) {
-        const path = existing.path || built.path!;
-        const contentPreview = summary.content ?? summary.preview;
-        const already = fileChanges.find(
-          (item) => item.path === path && item.toolCallId === toolCallId,
-        );
-        if (already) {
-          if (contentPreview) already.preview = contentPreview;
-          if (summary.created) already.action = 'created';
-          if (typeof summary.content === 'string' && summary.content.length > 0) {
-            already.content = summary.content;
-          }
-        } else {
-          fileChanges.push({
-            path,
-            action: summary.created ? 'created' : 'edited',
-            toolCallId,
-            preview: contentPreview,
-            ...snapshotFields(payload),
-            ...(typeof summary.content === 'string' && summary.content.length > 0
-              ? { content: summary.content }
-              : {}),
-          });
-        }
-      }
+      recordWriteFileChanges(
+        fileChanges,
+        toolName,
+        toolCallId,
+        argsForSummary,
+        existing.path || built.path,
+        summary,
+        payload,
+      );
     } else if (requested) {
       existing.status =
         existing.status === 'done' || existing.status === 'error' ? existing.status : 'running';
+      recordWriteFileChanges(
+        fileChanges,
+        toolName,
+        toolCallId,
+        argsForSummary,
+        existing.path || built.path,
+        {},
+        payload,
+      );
     }
 
     // Prefer richer labels/args if a later event carries them.
@@ -638,6 +907,8 @@ export function projectExecutionProcess(
     }
     steps.push({ ...step, count: 1 });
   }
+
+  harvestSupplementalFileChanges(ordered, fileChanges);
 
   // Dedupe file changes by path (keep last action).
   const changeByPath = new Map<string, FileChangeItem>();
@@ -828,6 +1099,39 @@ export function formatMessageAbsoluteTime(iso?: string): string | undefined {
     second: '2-digit',
     hour12: false,
   }).format(date);
+}
+
+export function mergeConversationFileChanges<
+  T extends { fileChanges: FileChangeItem[]; completedAt?: string; startedAt?: string },
+>(processes: Iterable<T>): FileChangeItem[] {
+  const ordered = [...processes].sort((left, right) => {
+    const leftStamp = left.completedAt ?? left.startedAt ?? '';
+    const rightStamp = right.completedAt ?? right.startedAt ?? '';
+    return leftStamp < rightStamp ? -1 : leftStamp > rightStamp ? 1 : 0;
+  });
+  const byPath = new Map<string, FileChangeItem>();
+  for (const process of ordered) {
+    for (const change of process.fileChanges) {
+      byPath.set(change.path, change);
+    }
+  }
+  return [...byPath.values()];
+}
+
+export function buildConversationReviewView<
+  T extends { fileChanges: FileChangeItem[]; completedAt?: string; startedAt?: string },
+>(processes: Iterable<T>): (T & { fileChanges: FileChangeItem[] }) | null {
+  const list = [...processes];
+  if (list.length === 0) return null;
+  const fileChanges = mergeConversationFileChanges(list);
+  if (fileChanges.length === 0) return null;
+  let latest = list[0]!;
+  for (const process of list) {
+    const candidateStamp = process.completedAt ?? process.startedAt ?? '';
+    const latestStamp = latest.completedAt ?? latest.startedAt ?? '';
+    if (candidateStamp > latestStamp) latest = process;
+  }
+  return { ...latest, fileChanges };
 }
 
 /** Friendly model label for footer / hover. */

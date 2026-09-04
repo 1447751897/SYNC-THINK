@@ -1,13 +1,24 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type KeyboardEvent,
   type PointerEvent,
   type ReactNode,
 } from 'react';
-import { FileDiff, FilePlus2, Folder, Globe, MoreHorizontal, Pencil, Plus, SquareTerminal, X } from 'lucide-react';
+import {
+  FileDiff,
+  FilePlus2,
+  Folder,
+  Globe,
+  MoreHorizontal,
+  Pencil,
+  Plus,
+  SquareTerminal,
+  X,
+} from 'lucide-react';
 import clsx from 'clsx';
 import { FileTypeIcon } from './FileTypeIcon.js';
 import type { WorkbenchPlacement, WorkbenchScope, WorkbenchTab } from './workspace-workbench.js';
@@ -15,6 +26,8 @@ import {
   WORKBENCH_BOTTOM_DEFAULT_HEIGHT,
   WORKBENCH_BOTTOM_MAX_HEIGHT,
   WORKBENCH_BOTTOM_MIN_HEIGHT,
+  WORKBENCH_FILE_BROWSER_MAX_WIDTH,
+  WORKBENCH_FILE_BROWSER_MIN_WIDTH,
   WORKBENCH_RIGHT_COMPACT_WIDTH,
   WORKBENCH_RIGHT_MAX_WIDTH,
   WORKBENCH_RIGHT_MIN_WIDTH,
@@ -25,17 +38,23 @@ export type WorkbenchNewResource = 'files' | 'terminal' | 'browser' | 'canvas' |
 export interface WorkspaceWorkbenchProps {
   placement: WorkbenchPlacement;
   scope: WorkbenchScope;
+  /** When false the panel stays mounted at zero size so open/close can animate. */
+  open?: boolean;
   focused?: boolean;
   canOpenTerminal?: boolean;
   renderContent(tab: WorkbenchTab): ReactNode;
+  renderFileBrowser?(): ReactNode;
   onActivateTab(tabId: string): void;
   onCloseTab(tab: WorkbenchTab): void;
   onNewResource(resource: WorkbenchNewResource): void;
+  onToggleFileBrowser?(): void;
   onClose(): void;
   onSizeChange(size: number, commit: boolean): void;
+  onFileBrowserWidthChange?(width: number, commit: boolean): void;
 }
 
 interface ResizeDrag {
+  kind: 'host' | 'files';
   startClient: number;
   startSize: number;
   pointerId: number;
@@ -99,25 +118,60 @@ function clamp(value: number, min: number, max: number): number {
 export function WorkspaceWorkbench(props: WorkspaceWorkbenchProps) {
   const [newMenuOpen, setNewMenuOpen] = useState(false);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
+  const [entered, setEntered] = useState(false);
+  const [resizing, setResizing] = useState(false);
+  const [fileBrowserResizing, setFileBrowserResizing] = useState(false);
   const hostRef = useRef<HTMLElement>(null);
   const dragRef = useRef<ResizeDrag | null>(null);
+  const open = props.open !== false;
+  const revealed = open && entered;
+
+  useLayoutEffect(() => {
+    let inner = 0;
+    const outer = window.requestAnimationFrame(() => {
+      inner = window.requestAnimationFrame(() => setEntered(true));
+    });
+    return () => {
+      window.cancelAnimationFrame(outer);
+      window.cancelAnimationFrame(inner);
+    };
+  }, []);
   const newMenuTriggerRef = useRef<HTMLButtonElement>(null);
   const newMenuRef = useRef<HTMLDivElement>(null);
   const onSizeChangeRef = useRef(props.onSizeChange);
   onSizeChangeRef.current = props.onSizeChange;
+  const onFileBrowserWidthChangeRef = useRef(props.onFileBrowserWidthChange);
+  onFileBrowserWidthChangeRef.current = props.onFileBrowserWidthChange;
   const activeTab =
     props.scope.tabs.find((tab) => tab.id === props.scope.activeTabId) ?? props.scope.tabs.at(-1);
+  const visibleTabs = props.scope.tabs.filter((tab) => {
+    if (tab.type !== 'workspace-files') return true;
+    return props.placement === 'right' && !props.scope.fileBrowserOpen;
+  });
+  const showingFilesTab = activeTab?.type === 'workspace-files';
+  const showFilesBeside =
+    props.placement === 'right' &&
+    Boolean(props.renderFileBrowser) &&
+    props.scope.fileBrowserOpen &&
+    !!activeTab &&
+    activeTab.type !== 'workspace-files';
+  const showFilesFull = showingFilesTab;
+  const fileBrowserPressed = showingFilesTab || showFilesBeside;
 
   const finishResize = useCallback((commit = true) => {
     const drag = dragRef.current;
     if (!drag) return;
     dragRef.current = null;
+    setResizing(false);
+    setFileBrowserResizing(false);
     if (drag.target.hasPointerCapture?.(drag.pointerId)) {
       drag.target.releasePointerCapture?.(drag.pointerId);
     }
     document.body.style.cursor = '';
     document.body.style.userSelect = '';
-    if (commit) onSizeChangeRef.current(drag.lastSize, true);
+    if (!commit) return;
+    if (drag.kind === 'files') onFileBrowserWidthChangeRef.current?.(drag.lastSize, true);
+    else onSizeChangeRef.current(drag.lastSize, true);
   }, []);
 
   useEffect(() => {
@@ -187,6 +241,7 @@ export function WorkspaceWorkbench(props: WorkspaceWorkbenchProps) {
     event.preventDefault();
     event.currentTarget.setPointerCapture?.(event.pointerId);
     dragRef.current = {
+      kind: 'host',
       startClient: props.placement === 'right' ? event.clientX : event.clientY,
       startSize: props.scope.size,
       pointerId: event.pointerId,
@@ -195,18 +250,48 @@ export function WorkspaceWorkbench(props: WorkspaceWorkbenchProps) {
     };
     document.body.style.cursor = props.placement === 'right' ? 'col-resize' : 'row-resize';
     document.body.style.userSelect = 'none';
+    setResizing(true);
   };
 
   const resizeWithPointer = (event: PointerEvent<HTMLDivElement>) => {
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
     const client = props.placement === 'right' ? event.clientX : event.clientY;
+    if (drag.kind === 'files') {
+      const width = Math.round(
+        clamp(
+          drag.startSize - (client - drag.startClient),
+          WORKBENCH_FILE_BROWSER_MIN_WIDTH,
+          WORKBENCH_FILE_BROWSER_MAX_WIDTH,
+        ),
+      );
+      drag.lastSize = width;
+      props.onFileBrowserWidthChange?.(width, false);
+      return;
+    }
     const bounds = sizeBounds(props.placement, hostRef.current);
     const size = Math.round(
       clamp(drag.startSize - (client - drag.startClient), bounds.min, bounds.max),
     );
     drag.lastSize = size;
     props.onSizeChange(size, false);
+  };
+
+  const beginFileBrowserResize = (event: PointerEvent<HTMLDivElement>) => {
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    dragRef.current = {
+      kind: 'files',
+      startClient: event.clientX,
+      startSize: props.scope.fileBrowserWidth,
+      pointerId: event.pointerId,
+      target: event.currentTarget,
+      lastSize: props.scope.fileBrowserWidth,
+    };
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    setFileBrowserResizing(true);
   };
 
   const resizeWithKeyboard = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -232,6 +317,7 @@ export function WorkspaceWorkbench(props: WorkspaceWorkbenchProps) {
 
   const defaultSize =
     props.placement === 'right' ? WORKBENCH_RIGHT_COMPACT_WIDTH : WORKBENCH_BOTTOM_DEFAULT_HEIGHT;
+  const revealedSize = revealed ? props.scope.size : 0;
 
   return (
     <section
@@ -241,16 +327,25 @@ export function WorkspaceWorkbench(props: WorkspaceWorkbenchProps) {
       data-workspace-bottom-inspector={props.placement === 'bottom' ? 'true' : undefined}
       data-workspace-panel-layout="true"
       data-workspace-panel-placement={props.placement}
-      data-workspace-panel-open="true"
+      data-workspace-panel-open={revealed ? 'true' : 'false'}
+      data-resizing={resizing ? 'true' : undefined}
       style={
         props.placement === 'right'
-          ? { width: props.scope.size, flexBasis: props.scope.size }
-          : { height: props.scope.size, flexBasis: props.scope.size }
+          ? {
+              width: revealedSize,
+              flexBasis: revealedSize,
+              ['--workbench-size' as string]: `${props.scope.size}px`,
+            }
+          : {
+              height: revealedSize,
+              flexBasis: revealedSize,
+              ['--workbench-size' as string]: `${props.scope.size}px`,
+            }
       }
     >
       <div
         role="separator"
-        tabIndex={0}
+        tabIndex={revealed ? 0 : -1}
         aria-label={props.placement === 'right' ? '调整右侧工作台宽度' : '调整底部工作台高度'}
         aria-orientation={props.placement === 'right' ? 'vertical' : 'horizontal'}
         aria-valuemin={sizeBounds(props.placement, hostRef.current).min}
@@ -272,7 +367,7 @@ export function WorkspaceWorkbench(props: WorkspaceWorkbenchProps) {
         data-pane-tab-bar="true"
       >
         <div className="shell-workbench__tabs" role="tablist" aria-label="工作台标签">
-          {props.scope.tabs.map((tab) => {
+          {visibleTabs.map((tab) => {
             const active = tab.id === activeTab?.id;
             const label = tabLabel(tab);
             return (
@@ -293,21 +388,38 @@ export function WorkspaceWorkbench(props: WorkspaceWorkbenchProps) {
                 <span className="shell-workbench-tab__label" data-pane-tab-label="true">
                   {label}
                 </span>
-                <button
-                  type="button"
-                  className="shell-workbench-tab__close"
-                  aria-label={`关闭 ${label}`}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    props.onCloseTab(tab);
-                  }}
-                >
-                  <X size={12} />
-                </button>
+                {tab.type === 'workspace-files' ? null : (
+                  <button
+                    type="button"
+                    className="shell-workbench-tab__close"
+                    aria-label={`关闭 ${label}`}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      props.onCloseTab(tab);
+                    }}
+                  >
+                    <X size={12} />
+                  </button>
+                )}
               </div>
             );
           })}
         </div>
+
+        {props.placement === 'right' && props.onToggleFileBrowser ? (
+          <button
+            type="button"
+            data-testid="workspace-files-workbench-toggle"
+            className={clsx('shell-workbench__tab-action', fileBrowserPressed && 'is-active')}
+            title={fileBrowserPressed ? '收起工作区文件' : '在文档右侧显示工作区文件'}
+            aria-label={fileBrowserPressed ? '收起工作区文件' : '在文档右侧显示工作区文件'}
+            aria-pressed={fileBrowserPressed}
+            onMouseDown={(event) => event.stopPropagation()}
+            onClick={props.onToggleFileBrowser}
+          >
+            <Folder size={15} />
+          </button>
+        ) : null}
 
         <div className="shell-workbench__menu-anchor">
           <button
@@ -333,13 +445,25 @@ export function WorkspaceWorkbench(props: WorkspaceWorkbenchProps) {
               onMouseDown={(event) => event.stopPropagation()}
               onKeyDown={handleNewMenuKeyDown}
             >
-              <button type="button" role="menuitem" onClick={() => selectNewResource('files')}>
-                <Folder size={14} /> 工作区文件
-              </button>
-              <button type="button" role="menuitem" disabled={props.canOpenTerminal === false} onClick={() => selectNewResource('canvas')}>
+              {props.placement === 'right' ? (
+                <button type="button" role="menuitem" onClick={() => selectNewResource('files')}>
+                  <Folder size={14} /> 工作区文件
+                </button>
+              ) : null}
+              <button
+                type="button"
+                role="menuitem"
+                disabled={props.canOpenTerminal === false}
+                onClick={() => selectNewResource('canvas')}
+              >
                 <Pencil size={14} /> 新建绘图
               </button>
-              <button type="button" role="menuitem" disabled={props.canOpenTerminal === false} onClick={() => selectNewResource('document')}>
+              <button
+                type="button"
+                role="menuitem"
+                disabled={props.canOpenTerminal === false}
+                onClick={() => selectNewResource('document')}
+              >
                 <FilePlus2 size={14} /> 新建文档
               </button>
               <button
@@ -377,7 +501,7 @@ export function WorkspaceWorkbench(props: WorkspaceWorkbenchProps) {
               role="menu"
               onMouseDown={(event) => event.stopPropagation()}
             >
-              {props.scope.tabs.map((tab) => (
+              {visibleTabs.map((tab) => (
                 <button
                   key={tab.id}
                   type="button"
@@ -399,7 +523,43 @@ export function WorkspaceWorkbench(props: WorkspaceWorkbenchProps) {
       </div>
       <div className="shell-workbench__divider" data-pane-tab-divider="true" />
       <div className="shell-workbench__content">
-        {activeTab ? props.renderContent(activeTab) : null}
+        <div className="shell-workbench__main">
+          {showFilesFull
+            ? (props.renderFileBrowser?.() ?? (activeTab ? props.renderContent(activeTab) : null))
+            : activeTab
+              ? props.renderContent(activeTab)
+              : null}
+        </div>
+        {props.placement === 'right' && props.renderFileBrowser && visibleTabs.length > 0 ? (
+          <aside
+            className="shell-workbench__files"
+            data-testid="workspace-workbench-file-browser"
+            data-open={showFilesBeside ? 'true' : 'false'}
+            data-resizing={fileBrowserResizing ? 'true' : undefined}
+            style={{
+              width: showFilesBeside ? props.scope.fileBrowserWidth : 0,
+              flexBasis: showFilesBeside ? props.scope.fileBrowserWidth : 0,
+              ['--workbench-file-browser-size' as string]: `${props.scope.fileBrowserWidth}px`,
+            }}
+          >
+            <div
+              role="separator"
+              tabIndex={showFilesBeside ? 0 : -1}
+              aria-label="调整工作区文件宽度"
+              aria-orientation="vertical"
+              aria-valuemin={WORKBENCH_FILE_BROWSER_MIN_WIDTH}
+              aria-valuemax={WORKBENCH_FILE_BROWSER_MAX_WIDTH}
+              aria-valuenow={Math.round(props.scope.fileBrowserWidth)}
+              className="shell-workbench__files-resizer"
+              onPointerDown={beginFileBrowserResize}
+              onPointerMove={resizeWithPointer}
+              onPointerUp={() => finishResize()}
+              onPointerCancel={() => finishResize()}
+              onLostPointerCapture={() => finishResize()}
+            />
+            <div className="shell-workbench__files-body">{props.renderFileBrowser()}</div>
+          </aside>
+        ) : null}
       </div>
     </section>
   );

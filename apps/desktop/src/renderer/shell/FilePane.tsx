@@ -2,22 +2,29 @@ import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 're
 import {
   AlertTriangle,
   Check,
+  ChevronDown,
+  Code,
   Copy,
   Eye,
-  FileCode2,
   Loader2,
-  PanelRightClose,
-  PanelRightOpen,
+  PencilLine,
   RefreshCw,
   Save,
 } from 'lucide-react';
 import type { ProjectTextLocation } from '../../workspace-tools-contract.js';
+import { isExcalidrawPath } from './excalidraw-document.js';
 import { FileContentPreview, isRenderedMarkdownPath } from './FileContentPreview.js';
 import { matchesShortcut, readShortcutPreferences } from './preferences-store.js';
 import { SlidingTabs } from './SlidingTabs.js';
 
 export interface FileRevealTarget extends ProjectTextLocation {
   nonce: number;
+}
+
+type FilePaneView = 'rich' | 'source' | 'preview';
+
+function defaultFilePaneView(path: string): FilePaneView {
+  return isRenderedMarkdownPath(path) ? 'rich' : 'preview';
 }
 
 interface LoadedFile {
@@ -52,8 +59,26 @@ export function isFilePaneSessionDirty(projectFolder: string, path: string): boo
   return Boolean(session && session.draft !== session.loaded.content);
 }
 
+export function seedFilePaneUnsavedDraft(
+  projectFolder: string,
+  path: string,
+  initialContent: string,
+): void {
+  const loaded: LoadedFile = { content: initialContent, mtimeMs: null, size: null };
+  filePaneSessions.set(filePaneSessionKey(projectFolder, path), {
+    loaded,
+    draft: initialContent,
+    diskChange: null,
+    cleanStatus: '已同步',
+  });
+}
+
 export function clearFilePaneSession(projectFolder: string, path: string): void {
   filePaneSessions.delete(filePaneSessionKey(projectFolder, path));
+}
+
+function isNeverSavedFile(loaded: LoadedFile | null | undefined): boolean {
+  return Boolean(loaded && loaded.mtimeMs === null && loaded.size === null);
 }
 
 function fileBridge() {
@@ -83,15 +108,11 @@ export function FilePane({
   path,
   onDirtyChange,
   revealTarget,
-  workspaceFilesOpen,
-  onToggleWorkspaceFiles,
 }: {
   projectFolder?: string;
   path: string;
   onDirtyChange?(dirty: boolean): void;
   revealTarget?: FileRevealTarget;
-  workspaceFilesOpen?: boolean;
-  onToggleWorkspaceFiles?(): void;
 }) {
   const sessionKey = projectFolder ? filePaneSessionKey(projectFolder, path) : undefined;
   const initialSession = sessionKey ? filePaneSessions.get(sessionKey) : undefined;
@@ -106,9 +127,11 @@ export function FilePane({
   const [cleanStatus, setCleanStatus] = useState<'已同步' | '已保存'>(
     initialSession?.cleanStatus ?? '已同步',
   );
-  const [view, setView] = useState<'preview' | 'source'>('preview');
+  const [view, setView] = useState<FilePaneView>(() => defaultFilePaneView(path));
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle');
+  const [saveMenuOpen, setSaveMenuOpen] = useState(false);
   const loadedRef = useRef<LoadedFile | null>(initialSession?.loaded ?? null);
+  const saveMenuRef = useRef<HTMLDivElement>(null);
   const dirtyRef = useRef(
     Boolean(initialSession && initialSession.draft !== initialSession.loaded.content),
   );
@@ -205,15 +228,15 @@ export function FilePane({
     savingRef.current = false;
     setError(null);
     const cached = sessionKey ? filePaneSessions.get(sessionKey) : undefined;
-    if (cached && cached.draft !== cached.loaded.content) {
+    if (cached && (cached.draft !== cached.loaded.content || isNeverSavedFile(cached.loaded))) {
       loadedRef.current = cached.loaded;
-      dirtyRef.current = true;
+      dirtyRef.current = cached.draft !== cached.loaded.content;
       setLoaded(cached.loaded);
       setDraft(cached.draft);
       setDiskChange(cached.diskChange);
       setCleanStatus(cached.cleanStatus);
       setLoading(false);
-      void verifyCachedSession(cached.loaded);
+      if (!isNeverSavedFile(cached.loaded)) void verifyCachedSession(cached.loaded);
     } else {
       loadedRef.current = null;
       dirtyRef.current = false;
@@ -230,6 +253,8 @@ export function FilePane({
 
   useEffect(() => {
     setCopyState('idle');
+    setSaveMenuOpen(false);
+    setView(defaultFilePaneView(path));
     if (copyResetTimerRef.current !== undefined) {
       window.clearTimeout(copyResetTimerRef.current);
       copyResetTimerRef.current = undefined;
@@ -242,13 +267,34 @@ export function FilePane({
   }, [path]);
 
   useEffect(() => {
+    if (!saveMenuOpen) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!saveMenuRef.current?.contains(event.target as Node)) {
+        setSaveMenuOpen(false);
+      }
+    };
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape') setSaveMenuOpen(false);
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [saveMenuOpen]);
+
+  useEffect(() => {
     if (!sessionKey || !loaded) return;
     filePaneSessions.set(sessionKey, { loaded, draft, diskChange, cleanStatus });
   }, [cleanStatus, diskChange, draft, loaded, sessionKey]);
 
+  const neverSaved = isNeverSavedFile(loaded);
+  const shouldWatch = !isNeverSavedFile(loaded ?? loadedRef.current);
+
   useEffect(() => {
     const api = fileBridge();
-    if (!projectFolder || !api?.watchProjectFile) return;
+    if (!projectFolder || !api?.watchProjectFile || !shouldWatch) return;
     const subscription = api.watchProjectFile({ root: projectFolder, path }, (change) => {
       if (savingRef.current || dirtyRef.current) {
         setDiskChange({
@@ -264,9 +310,9 @@ export function FilePane({
     return () => {
       void subscription.unsubscribe();
     };
-  }, [loadFromDisk, path, projectFolder]);
-
+  }, [loadFromDisk, path, projectFolder, shouldWatch]);
   const dirty = Boolean(loaded && draft !== loaded.content);
+  const canSave = Boolean(loaded && (dirty || neverSaved));
 
   useEffect(() => {
     const editor = editorRef.current;
@@ -366,7 +412,7 @@ export function FilePane({
     const shortcut = readShortcutPreferences().saveFile;
     if (shortcut.enabled && matchesShortcut(event.nativeEvent, shortcut.accelerator)) {
       event.preventDefault();
-      if (dirty && !saving) void saveFile(false);
+      if (canSave && !saving) void saveFile(false);
     }
   };
 
@@ -386,95 +432,169 @@ export function FilePane({
     }, 1500);
   }, [draft]);
 
-  const status = saving ? '保存中' : dirty ? '未保存' : cleanStatus;
+  const status = saving ? '保存中' : dirty ? '未保存' : neverSaved ? '草稿' : cleanStatus;
   const previewLabel = isRenderedMarkdownPath(path) ? '文档预览' : '高亮预览';
+  const pending = dirty || neverSaved || saving;
+  const copyLabel =
+    copyState === 'copied' ? '已复制' : copyState === 'error' ? '重试复制' : '复制源码';
+  const copyAriaLabel =
+    copyState === 'copied' ? '源码已复制' : copyState === 'error' ? '复制失败，重试' : '复制源码';
+  const canvasDocument = isExcalidrawPath(path);
+  const richTextDocument = isRenderedMarkdownPath(path);
+  const updateDraft = useCallback(
+    (next: string) => {
+      setDraft(next);
+      dirtyRef.current = next !== loadedRef.current?.content;
+      if (sessionKey && loadedRef.current) {
+        filePaneSessions.set(sessionKey, {
+          loaded: loadedRef.current,
+          draft: next,
+          diskChange,
+          cleanStatus,
+        });
+      }
+    },
+    [cleanStatus, diskChange, sessionKey],
+  );
 
   return (
-    <div className="shell-file-pane" data-testid="file-pane">
+    <div
+      className="shell-file-pane"
+      data-testid="file-pane"
+      data-kind={canvasDocument ? 'canvas' : richTextDocument ? 'document' : 'code'}
+    >
       <header className="shell-file-pane-header">
-        <SlidingTabs className="shell-file-pane-view-tabs" aria-label="文件查看方式">
-          <button
-            type="button"
-            role="tab"
-            aria-label={previewLabel}
-            title={previewLabel}
-            aria-selected={view === 'preview'}
-            className={view === 'preview' ? 'is-active' : undefined}
-            onClick={() => setView('preview')}
-          >
-            <Eye size={13} aria-hidden="true" />
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-label="源码"
-            title="源码"
-            aria-selected={view === 'source'}
-            className={view === 'source' ? 'is-active' : undefined}
-            onClick={() => setView('source')}
-          >
-            <FileCode2 size={13} aria-hidden="true" />
-          </button>
-        </SlidingTabs>
-        <span
-          className={dirty ? 'shell-file-pane-status is-dirty' : 'shell-file-pane-status'}
-          data-testid="file-pane-status"
-        >
-          {status}
-        </span>
-        <div className="shell-file-pane-actions">
-          {view === 'source' ? (
-            <button
-              type="button"
-              className={`shell-file-pane-copy-button is-${copyState}`}
-              aria-label={
-                copyState === 'copied'
-                  ? '源码已复制'
-                  : copyState === 'error'
-                    ? '复制失败，重试'
-                    : '复制源码'
-              }
-              title={copyState === 'error' ? '复制失败，点击重试' : '复制源码'}
-              onClick={() => void handleCopySource()}
-            >
-              {copyState === 'copied' ? (
-                <Check size={12} aria-hidden="true" />
-              ) : (
-                <Copy size={12} aria-hidden="true" />
-              )}
-              <span>
-                {copyState === 'copied'
-                  ? '已复制'
-                  : copyState === 'error'
-                    ? '重试复制'
-                    : '复制源码'}
-              </span>
-            </button>
+        <div className="shell-file-pane-bar">
+          {!canvasDocument ? (
+            <div className="shell-file-pane-tools">
+              <SlidingTabs
+                className="shell-file-pane-view-tabs"
+                aria-label={richTextDocument ? '文档编辑模式' : '文件查看方式'}
+              >
+                {richTextDocument ? (
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-label="富文本编辑"
+                    title="富文本编辑"
+                    aria-selected={view === 'rich'}
+                    className={view === 'rich' ? 'is-active' : undefined}
+                    onClick={() => setView('rich')}
+                  >
+                    <PencilLine size={15} aria-hidden="true" />
+                  </button>
+                ) : null}
+                {!richTextDocument ? (
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-label={previewLabel}
+                    title={previewLabel}
+                    aria-selected={view === 'preview'}
+                    className={view === 'preview' ? 'is-active' : undefined}
+                    onClick={() => setView('preview')}
+                  >
+                    <Eye size={15} aria-hidden="true" />
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  role="tab"
+                  aria-label={richTextDocument ? '源码编辑' : '源码'}
+                  title={richTextDocument ? '源码编辑' : '源码'}
+                  aria-selected={view === 'source'}
+                  className={view === 'source' ? 'is-active' : undefined}
+                  onClick={() => setView('source')}
+                >
+                  <Code size={15} aria-hidden="true" />
+                </button>
+                {richTextDocument ? (
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-label="预览"
+                    title="预览"
+                    aria-selected={view === 'preview'}
+                    className={view === 'preview' ? 'is-active' : undefined}
+                    onClick={() => setView('preview')}
+                  >
+                    <Eye size={15} aria-hidden="true" />
+                  </button>
+                ) : null}
+              </SlidingTabs>
+            </div>
           ) : null}
-          {onToggleWorkspaceFiles ? (
-            <button
-              type="button"
-              className="shell-file-pane-icon-button"
-              data-testid="file-pane-workspace-files-toggle"
-              aria-label={workspaceFilesOpen ? '隐藏工作区文件' : '展开工作区文件'}
-              aria-pressed={Boolean(workspaceFilesOpen)}
-              title={workspaceFilesOpen ? '隐藏工作区文件' : '展开工作区文件'}
-              onClick={onToggleWorkspaceFiles}
+          <div className="shell-file-pane-save-wrap" ref={saveMenuRef}>
+            <div
+              className={[
+                'shell-file-pane-save-pill',
+                pending ? 'is-dirty' : '',
+                saveMenuOpen ? 'is-open' : '',
+              ]
+                .filter(Boolean)
+                .join(' ')}
             >
-              {workspaceFilesOpen ? <PanelRightClose size={13} /> : <PanelRightOpen size={13} />}
-            </button>
-          ) : null}
-          <button
-            type="button"
-            className="shell-file-pane-icon-button"
-            data-testid="file-pane-save"
-            aria-label="保存文件"
-            title="保存文件"
-            disabled={!dirty || saving || loading}
-            onClick={() => void saveFile(false)}
-          >
-            {saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
-          </button>
+              <button
+                type="button"
+                className="shell-file-pane-save-pill__action"
+                data-testid="file-pane-save"
+                aria-label="保存文件"
+                title={canSave ? '保存文件' : status}
+                disabled={saving || loading}
+                onClick={() => {
+                  setSaveMenuOpen(false);
+                  if (canSave) void saveFile(false);
+                }}
+              >
+                {saving ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : null}
+                <span className="shell-file-pane-status" data-testid="file-pane-status">
+                  {status}
+                </span>
+              </button>
+              <button
+                type="button"
+                className="shell-file-pane-save-pill__menu"
+                data-testid="file-pane-save-menu"
+                aria-label="更多文件操作"
+                title="更多文件操作"
+                aria-expanded={saveMenuOpen}
+                aria-haspopup="menu"
+                onClick={() => setSaveMenuOpen((open) => !open)}
+              >
+                <ChevronDown size={13} aria-hidden="true" />
+              </button>
+            </div>
+            {saveMenuOpen ? (
+              <div className="shell-file-pane-save-menu" role="menu" aria-label="文件操作">
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={!canSave || saving || loading}
+                  onClick={() => {
+                    setSaveMenuOpen(false);
+                    if (canSave) void saveFile(false);
+                  }}
+                >
+                  <Save size={14} aria-hidden="true" />
+                  <span>保存</span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className={`is-${copyState}`}
+                  aria-label={copyAriaLabel}
+                  onClick={() => void handleCopySource()}
+                >
+                  {copyState === 'copied' ? (
+                    <Check size={14} aria-hidden="true" />
+                  ) : (
+                    <Copy size={14} aria-hidden="true" />
+                  )}
+                  <span>{copyLabel}</span>
+                </button>
+              </div>
+            ) : null}
+          </div>
         </div>
       </header>
 
@@ -507,59 +627,52 @@ export function FilePane({
             <span>读取中</span>
           </div>
         ) : loaded ? (
-          <>
+          canvasDocument ? (
             <div
               className="shell-file-pane-view shell-file-pane-preview"
-              data-testid="file-pane-preview"
-              role="tabpanel"
-              aria-label={`预览 ${path}`}
-              hidden={view !== 'preview'}
+              data-testid="file-pane-canvas"
+              aria-label={`绘图 ${path}`}
             >
-              <FileContentPreview
-                text={draft}
-                path={path}
-                highlightLine={revealTarget?.line}
-                onChange={(next) => {
-                  setDraft(next);
-                  dirtyRef.current = next !== loadedRef.current?.content;
-                  if (sessionKey && loadedRef.current) {
-                    filePaneSessions.set(sessionKey, {
-                      loaded: loadedRef.current,
-                      draft: next,
-                      diskChange,
-                      cleanStatus,
-                    });
-                  }
-                }}
-              />
+              <FileContentPreview text={draft} path={path} onChange={updateDraft} />
             </div>
-            <textarea
-              ref={editorRef}
-              className="shell-file-pane-editor shell-file-pane-view"
-              data-testid="file-pane-editor"
-              aria-label={`编辑 ${path}`}
-              role="tabpanel"
-              value={draft}
-              disabled={saving}
-              hidden={view !== 'source'}
-              wrap="soft"
-              spellCheck={false}
-              onChange={(event) => {
-                const next = event.currentTarget.value;
-                setDraft(next);
-                dirtyRef.current = next !== loadedRef.current?.content;
-                if (sessionKey && loadedRef.current) {
-                  filePaneSessions.set(sessionKey, {
-                    loaded: loadedRef.current,
-                    draft: next,
-                    diskChange,
-                    cleanStatus,
-                  });
-                }
-              }}
-              onKeyDown={handleEditorKeyDown}
-            />
-          </>
+          ) : (
+            <>
+              {richTextDocument ? (
+                <div
+                  className="shell-file-pane-view shell-file-pane-preview"
+                  data-testid="file-pane-rich-editor"
+                  role="tabpanel"
+                  aria-label={`富文本编辑 ${path}`}
+                  hidden={view !== 'rich'}
+                >
+                  <FileContentPreview text={draft} path={path} onChange={updateDraft} />
+                </div>
+              ) : null}
+              <div
+                className="shell-file-pane-view shell-file-pane-preview"
+                data-testid="file-pane-preview"
+                role="tabpanel"
+                aria-label={`预览 ${path}`}
+                hidden={view !== 'preview'}
+              >
+                <FileContentPreview text={draft} path={path} highlightLine={revealTarget?.line} />
+              </div>
+              <textarea
+                ref={editorRef}
+                className="shell-file-pane-editor shell-file-pane-view"
+                data-testid="file-pane-editor"
+                aria-label={`编辑 ${path}`}
+                role="tabpanel"
+                value={draft}
+                disabled={saving}
+                hidden={view !== 'source'}
+                wrap="soft"
+                spellCheck={false}
+                onChange={(event) => updateDraft(event.currentTarget.value)}
+                onKeyDown={handleEditorKeyDown}
+              />
+            </>
+          )
         ) : null}
       </div>
     </div>

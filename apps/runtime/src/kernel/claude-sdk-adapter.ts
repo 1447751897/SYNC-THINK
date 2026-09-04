@@ -37,6 +37,8 @@ import type {
   PermissionMode,
   PermissionResult,
   Query,
+  SDKCompactBoundaryMessage,
+  SDKControlGetContextUsageResponse,
   SDKMessage,
   SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk';
@@ -131,6 +133,45 @@ function hasClaudeUsage(value: ClaudeSdkUsage | undefined): boolean {
   ].some((candidate) => finiteNumber(candidate) !== undefined);
 }
 
+const FREE_CONTEXT_CATEGORY = /^(free(?:\s+space)?)$/i;
+
+function occupancyCategoriesFromClaude(
+  rows: SDKControlGetContextUsageResponse['categories'] | undefined,
+): Array<{ name: string; tokens: number }> {
+  const categories: Array<{ name: string; tokens: number }> = [];
+  for (const row of rows ?? []) {
+    const name = row.name?.trim();
+    const tokens = finiteNumber(row.tokens);
+    if (!name || tokens === undefined || tokens <= 0) continue;
+    if (row.isDeferred === true || FREE_CONTEXT_CATEGORY.test(name)) continue;
+    categories.push({ name, tokens });
+  }
+  return categories;
+}
+
+function occupancyFromClaudeContextUsage(
+  usage: SDKControlGetContextUsageResponse,
+): Extract<KernelEvent, { type: 'context-occupancy' }> | undefined {
+  const usedTokens = finiteNumber(usage.totalTokens);
+  if (usedTokens === undefined) return undefined;
+  const windowTokens = finiteNumber(usage.maxTokens) ?? finiteNumber(usage.rawMaxTokens);
+  const categories = occupancyCategoriesFromClaude(usage.categories);
+  return {
+    type: 'context-occupancy',
+    usedTokens,
+    ...(windowTokens !== undefined ? { windowTokens } : {}),
+    ...(categories.length > 0 ? { categories } : {}),
+  };
+}
+
+function occupancyFromCompactMetadata(
+  metadata: SDKCompactBoundaryMessage['compact_metadata'] | undefined,
+): Extract<KernelEvent, { type: 'context-occupancy' }> | undefined {
+  const usedTokens = finiteNumber(metadata?.post_tokens) ?? finiteNumber(metadata?.pre_tokens);
+  if (usedTokens === undefined) return undefined;
+  return { type: 'context-occupancy', usedTokens };
+}
+
 export interface ClaudeSdkAdapterDeps {
   /**
    * Test seam: replace the real SDK entry point.
@@ -163,6 +204,20 @@ function bundledClaudeVersion(): string | null {
   }
 }
 
+/** Official Claude Code range for `CLAUDE_CODE_AUTO_COMPACT_WINDOW`. */
+export const CLAUDE_CONTEXT_WINDOW_MIN_TOKENS = 100_000;
+export const CLAUDE_CONTEXT_WINDOW_MAX_TOKENS = 1_000_000;
+
+export function resolveClaudeContextWindowEnvValue(tokens: number): string {
+  const rounded = Math.round(tokens);
+  return String(
+    Math.min(
+      CLAUDE_CONTEXT_WINDOW_MAX_TOKENS,
+      Math.max(CLAUDE_CONTEXT_WINDOW_MIN_TOKENS, rounded),
+    ),
+  );
+}
+
 export class ClaudeSdkKernelAdapter implements KernelAdapter {
   readonly id = 'claude-code' as const;
   readonly name = 'Claude Code';
@@ -174,9 +229,8 @@ export class ClaudeSdkKernelAdapter implements KernelAdapter {
     pause: 'turn' as const,
     compress: 'own' as const,
     usageReport: true,
-    // Mirrors the registry entry: no option overrides the window, and Claude
-    // auto-compacts against its own 200k budget.
-    contextWindow: { nativeLimit: 200_000, overridable: false },
+    // Mirrors the registry: honor the host-configured window up to 1M.
+    contextWindow: { nativeLimit: 1_000_000, overridable: true },
   };
   readonly knownGoodVersions: readonly string[] = ['2.1.222', '2.1.238'];
 
@@ -303,6 +357,15 @@ export class ClaudeSdkKernelAdapter implements KernelAdapter {
 
     if (request.providerModelId) options.model = request.providerModelId;
 
+    if (request.webSearchMode === 'disabled') {
+      options.disallowedTools = ['WebSearch', 'WebFetch'];
+    } else if (
+      request.webSearchMode === 'external' ||
+      request.webSearchMode === 'fetch-only'
+    ) {
+      options.disallowedTools = ['WebSearch'];
+    }
+
     if (request.platformBroker) {
       // In-process SDK MCP servers (design Phase 1/5): the SDK owns an
       // in-process MCP transport, so the platform servers arrive as live
@@ -337,6 +400,12 @@ export class ClaudeSdkKernelAdapter implements KernelAdapter {
     const env: Record<string, string | undefined> = { ...process.env };
     env.ENABLE_PROMPT_CACHING_1H = '1';
     delete env.FORCE_PROMPT_CACHING_5M;
+    const windowTokens = request.effectiveContextWindow ?? request.contextWindow;
+    if (typeof windowTokens === 'number' && Number.isFinite(windowTokens) && windowTokens > 0) {
+      const value = resolveClaudeContextWindowEnvValue(windowTokens);
+      env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = value;
+      env.CLAUDE_CODE_MAX_CONTEXT_TOKENS = value;
+    }
     if (request.credential.reuseLocalLogin === true) {
       // Prefer the user's local OAuth login — do not inject a key, and leave
       // their settings sources loaded.
@@ -474,6 +543,15 @@ export class ClaudeSdkKernelAdapter implements KernelAdapter {
       try {
         for await (const message of queryHandle) {
           this.processMessage(message, pushEvent);
+          if (
+            message.type === 'result' &&
+            (message as { subtype?: string }).subtype === 'success' &&
+            (message as { is_error?: boolean }).is_error !== true &&
+            !this.cancelled
+          ) {
+            await this.reportClaudeContextOccupancy(queryHandle, pushEvent);
+            pushEvent({ type: 'terminal', status: 'completed' });
+          }
         }
         if (!terminalSeen && !this.cancelled) {
           this.flushPendingUsage(pushEvent);
@@ -581,7 +659,8 @@ export class ClaudeSdkKernelAdapter implements KernelAdapter {
         this.flushPendingUsage(push, result);
         const failed = result.subtype !== 'success' || result.is_error === true;
         if (!failed) {
-          push({ type: 'terminal', status: 'completed' });
+          // Occupancy is reported by the pump before this result becomes terminal,
+          // so host loops that stop at `terminal` still see the /context snapshot.
           return;
         }
         const error =
@@ -605,6 +684,10 @@ export class ClaudeSdkKernelAdapter implements KernelAdapter {
         }
         if (system.subtype === 'compact_boundary') {
           push({ type: 'compacted' });
+          const occupancy = occupancyFromCompactMetadata(
+            (message as SDKCompactBoundaryMessage).compact_metadata,
+          );
+          if (occupancy) push(occupancy);
           return;
         }
         if (system.subtype === 'api_retry') {
@@ -835,6 +918,19 @@ export class ClaudeSdkKernelAdapter implements KernelAdapter {
         }) || emitted;
     }
     return emitted;
+  }
+
+  private async reportClaudeContextOccupancy(
+    queryHandle: Query,
+    push: (event: KernelEvent) => void,
+  ): Promise<void> {
+    if (typeof queryHandle.getContextUsage !== 'function') return;
+    try {
+      const occupancy = occupancyFromClaudeContextUsage(await queryHandle.getContextUsage());
+      if (occupancy) push(occupancy);
+    } catch {
+      // Older CLIs or a closed query: billed last-request watermark still stands.
+    }
   }
 
   private emitUsage(

@@ -95,6 +95,10 @@ export type CommandType =
   | 'provider.removeModel'
   | 'settings.get'
   | 'settings.set'
+  | 'webSearch.providers.list'
+  | 'webSearch.providers.save'
+  | 'webSearch.providers.reorder'
+  | 'webSearch.providers.test'
   | 'bot.channel.get'
   | 'bot.channel.save'
   | 'bot.channel.test'
@@ -122,6 +126,7 @@ export type CommandType =
   | 'conversation.getContextStatus'
   | 'conversation.setContextWindowOverride'
   | 'conversation.getRunProcess'
+  | 'conversation.listRunTimeline'
   | 'conversation.create'
   | 'conversation.rename'
   | 'conversation.setPinned'
@@ -3498,11 +3503,16 @@ export interface RunProcessView {
   cachedTokensHit?: number;
   cachedTokensCreated?: number;
   /**
-   * Context occupancy of the LAST provider request in this run (totalInput +
-   * output), not the billing cumulative. Distinct from tokensIn/tokensOut,
-   * which sum every request and inflate when a tool loop re-sends the prefix.
+   * Live context occupancy for the composer ring. Prefers a kernel-reported
+   * snapshot (Claude `/context`, Codex `tokenUsage.last`); falls back to the
+   * last provider request's input tokens when the kernel did not report one.
+   * Distinct from tokensIn/tokensOut, which sum every billed request.
    */
   contextWatermarkTokens?: number;
+  /** Kernel-reported occupancy window (autocompact / model window), when known. */
+  contextOccupancyWindowTokens?: number;
+  /** Kernel-reported occupancy breakdown; names only, never prompt text. */
+  contextOccupancyCategories?: Array<{ name: string; tokens: number }>;
   /**
    * Per-request usage of the LAST provider request in this run (single-request
    * granularity), for showing real input/cache/output in the footer without the
@@ -3527,6 +3537,18 @@ export interface ConversationGetRunProcessPayload {
 
 export interface ConversationGetRunProcessResponse {
   process: RunProcessView;
+}
+
+export interface ConversationListRunTimelinePayload {
+  runId: RunId;
+  cursor?: string;
+  limit?: number;
+}
+
+export interface ConversationListRunTimelineResponse {
+  segments: import('./assistant-turn.js').AssistantTurnSegment[];
+  totalSegments: number;
+  nextCursor?: string;
 }
 export interface CreateConversationPayload {
   track: import('@sync-think/shared').ConversationTrack;

@@ -48,9 +48,9 @@ export interface KernelCapabilities {
    * window (native in-process kernel). For subprocess kernels:
    * - `nativeLimit` is the kernel's own window cap (tokens) when left untouched;
    * - `overridable` is true when the host can override the window via CLI/config
-   *   (`-c model_context_window=<n>` for Codex) — then the effective window
-   *   equals the configured value; when false (Claude Code) the effective window
-   *   is capped at `nativeLimit` and the host must trim to that.
+   *   (`-c model_context_window=<n>` for Codex, `CLAUDE_CODE_AUTO_COMPACT_WINDOW`
+   *   for Claude Code) — then the effective window equals the configured value;
+   *   when false the effective window is capped at `nativeLimit`.
    */
   contextWindow?: {
     nativeLimit: number;
@@ -190,6 +190,13 @@ export interface KernelRequest {
   platformTools: PlatformToolDefinition[];
   /** Loopback broker for host platform tools (MCP channel). */
   platformBroker?: PlatformBrokerInfo;
+  /**
+   * Search route selected by the host for this exact model + kernel pairing.
+   * `native` lets the harness expose its provider-hosted search tool;
+   * `external` injects Sync-Think's configured web-search MCP;
+   * `fetch-only` exposes known-URL retrieval but no keyword search.
+   */
+  webSearchMode?: 'disabled' | 'native' | 'external' | 'fetch-only';
   permissionMode: KernelPermissionMode;
   /**
    * Planning mode: the kernel runs read-only to produce an approvable plan.
@@ -256,6 +263,17 @@ export type KernelEvent =
       toolInput: unknown;
     }
   | { type: 'usage'; usage: KernelUsage }
+  /**
+   * Kernel-owned live context occupancy. Distinct from `usage`, which is the
+   * billed provider request. Claude `/context` and Codex `tokenUsage.last`
+   * report this; the host must not invent it.
+   */
+  | {
+      type: 'context-occupancy';
+      usedTokens: number;
+      windowTokens?: number;
+      categories?: Array<{ name: string; tokens: number }>;
+    }
   /** The kernel exposed a real compaction lifecycle boundary. */
   | { type: 'compaction-started' }
   | { type: 'compaction-failed'; error?: string }

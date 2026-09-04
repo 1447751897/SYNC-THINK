@@ -27,3 +27,4 @@ export * from './agent-context.js';
 // NewMax-style structured task checklists (workspace-scoped, with dependency
 // and execution tracking).
 export * from './task-plan.js';
+export * from './assistant-timeline.js';

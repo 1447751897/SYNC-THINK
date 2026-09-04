@@ -215,6 +215,7 @@ describe('shared tool naming', () => {
   it('classifies tool rows into stable visual kinds', () => {
     expect(toolVisualKind('read_file')).toBe('read');
     expect(toolVisualKind('apply_patch')).toBe('write');
+    expect(toolVisualKind('file_change')).toBe('write');
     expect(toolVisualKind('list_files')).toBe('list');
     expect(toolVisualKind('run_command')).toBe('command');
     expect(toolVisualKind('git_status')).toBe('git');

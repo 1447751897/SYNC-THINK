@@ -1,7 +1,11 @@
 /** @vitest-environment jsdom */
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { BrowserPanel, normalizeBrowserInput } from './BrowserPanel.js';
+import { BrowserPanel, browserGuestBox, normalizeBrowserInput } from './BrowserPanel.js';
+
+const shellCss = readFileSync(resolve(process.cwd(), 'src/renderer/shell/shell.css'), 'utf8');
 
 const webviewMethods = {
   canGoBack: vi.fn(() => false),
@@ -30,6 +34,7 @@ function attachWebviewMethods() {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  vi.unstubAllGlobals();
   Object.defineProperty(window, 'syncThink', { configurable: true, value: undefined });
 });
 
@@ -57,6 +62,73 @@ describe('BrowserPanel layout contract', () => {
     const panel = screen.getByTestId('browser-panel');
     expect(panel.classList.contains('flex-1')).toBe(true);
     expect(panel.classList.contains('min-w-0')).toBe(true);
+    expect(panel.classList.contains('min-h-0')).toBe(true);
+    expect(panel.classList.contains('h-full')).toBe(true);
+  });
+
+  it('keeps the guest on a remaining-height flex chain instead of the 150px intrinsic box', () => {
+    expect(browserGuestBox({ width: 960, height: 720 })).toEqual({ width: 960, height: 720 });
+    expect(browserGuestBox({ width: 0, height: 720 })).toBeNull();
+    expect(shellCss).toMatch(/\.shell-pane-canvas\s*\{[\s\S]*?flex-direction:\s*column;/);
+    expect(shellCss).toMatch(
+      /\.shell-pane-surface\[data-active='true'\]\s*\{[\s\S]*?height:\s*100%;/,
+    );
+    expect(shellCss).toMatch(/\.shell-browser__canvas\s*\{[\s\S]*?flex:\s*1 1 0;/);
+    expect(shellCss).toMatch(/\.shell-browser__viewport\s*\{[\s\S]*?height:\s*100%;/);
+    expect(shellCss).toMatch(/\.shell-browser__webview\s*\{[\s\S]*?min-height:\s*100%;/);
+  });
+
+  it('copies the viewport pixel box onto the webview so Electron can attach the guest', async () => {
+    const callbacks: ResizeObserverCallback[] = [];
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        constructor(callback: ResizeObserverCallback) {
+          callbacks.push(callback);
+        }
+        observe() {}
+        disconnect() {}
+        unobserve() {}
+      },
+    );
+
+    render(
+      <BrowserPanel
+        embedded
+        registerForAutomation={false}
+        initialUrl="https://example.test"
+        onClose={vi.fn()}
+      />,
+    );
+
+    const viewport = screen.getByTestId('browser-viewport');
+    Object.defineProperty(viewport, 'clientWidth', { configurable: true, value: 960 });
+    Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 720 });
+    callbacks.forEach((callback) => callback([], {} as ResizeObserver));
+
+    await waitFor(() => {
+      const webview = screen.getByTestId('browser-panel').querySelector('webview') as HTMLElement;
+      expect(webview.style.width).toBe('960px');
+      expect(webview.style.height).toBe('720px');
+    });
+  });
+
+  it('does not reset Electron zoom to 1 while measuring a page that already fits', async () => {
+    render(
+      <BrowserPanel
+        embedded
+        registerForAutomation={false}
+        initialUrl="https://example.test"
+        onClose={vi.fn()}
+      />,
+    );
+    const canvas = screen.getByTestId('browser-canvas');
+    Object.defineProperty(canvas, 'clientWidth', { configurable: true, value: 960 });
+    webviewMethods.executeJavaScript.mockResolvedValueOnce(800);
+    attachWebviewMethods();
+
+    await waitFor(() => expect(webviewMethods.executeJavaScript).toHaveBeenCalled());
+    expect(webviewMethods.setZoomFactor).not.toHaveBeenCalled();
   });
 
   it('renders NewMax empty state for a blank tab without showing a loading skeleton', () => {
@@ -195,5 +267,43 @@ describe('BrowserPanel layout contract', () => {
     await waitFor(() => expect(onNewTab).toHaveBeenCalledWith('https://new.example.test'));
     view.unmount();
     expect(unsubscribe).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not render a page-title strip and reports live chrome to the host', async () => {
+    const onPageMeta = vi.fn();
+    render(
+      <BrowserPanel
+        embedded
+        registerForAutomation={false}
+        initialUrl="https://beui.dev/components/agents/message-scroller"
+        onPageMeta={onPageMeta}
+        onClose={vi.fn()}
+      />,
+    );
+    const webview = attachWebviewMethods();
+
+    expect(screen.getByTestId('browser-panel').querySelector('.shell-browser__title')).toBeNull();
+
+    const titleEvent = new Event('page-title-updated') as Event & { title?: string };
+    titleEvent.title = 'Message Scroller for Streaming AI Chat';
+    webview.dispatchEvent(titleEvent);
+
+    const faviconEvent = new Event('page-favicon-updated') as Event & { favicons?: string[] };
+    faviconEvent.favicons = ['https://beui.dev/favicon.ico'];
+    webview.dispatchEvent(faviconEvent);
+
+    await waitFor(() =>
+      expect(onPageMeta).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: 'Message Scroller for Streaming AI Chat',
+          favicon: 'https://beui.dev/favicon.ico',
+          url: 'https://example.test',
+        }),
+      ),
+    );
+    expect(screen.getByTestId('browser-panel').querySelector('.shell-browser__title')).toBeNull();
+    expect(
+      screen.getByTestId('browser-panel').querySelector('.shell-browser__favicon')?.getAttribute('src'),
+    ).toBe('https://beui.dev/favicon.ico');
   });
 });

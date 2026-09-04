@@ -45,7 +45,7 @@ afterEach(() => {
 });
 
 describe('WorkspaceFilesPanel', () => {
-  it('offers current-file and new-tab actions when embedded in a file view', async () => {
+  it('offers current-file and new-tab actions from the workspace workbench', async () => {
     Object.defineProperty(window, 'syncThink', {
       configurable: true,
       value: {
@@ -70,9 +70,7 @@ describe('WorkspaceFilesPanel', () => {
       />,
     );
 
-    fireEvent.click(
-      await screen.findByRole('treeitem', { name: '在当前文件标签打开 src/app.ts' }),
-    );
+    fireEvent.click(await screen.findByRole('treeitem', { name: '在当前文件标签打开 src/app.ts' }));
     expect(onOpenFile).toHaveBeenCalledWith('src/app.ts', undefined);
 
     fireEvent.click(screen.getByRole('button', { name: '在新文件标签打开 src/app.ts' }));
@@ -202,6 +200,13 @@ describe('WorkspaceFilesPanel', () => {
       'true',
     );
     expect(screen.getByText('app.ts')).toBeTruthy();
+    const fileRow = screen.getByRole('listitem', { name: /app\.ts/ });
+    expect(fileRow.querySelector('.shell-conversation-files__name')).toBeTruthy();
+    expect(fileRow.querySelector('.shell-file-type-icon')).toBeTruthy();
+    const panels = document.querySelectorAll('.shell-workspace-files-panel .shell-dock-panel');
+    expect(panels).toHaveLength(2);
+    expect(panels[0].classList.contains('is-active')).toBe(true);
+    expect(panels[1].classList.contains('is-hidden')).toBe(true);
   });
 });
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Event } from '@sync-think/shared';
 import {
+  buildConversationReviewView,
   formatCompactRunMetrics,
   formatTokenUsage,
   projectExecutionProcess,
@@ -428,5 +429,194 @@ describe('projectExecutionProcess', () => {
         tokensOut: view.tokensOut,
       }),
     ).toBe('51s · 647.9k');
+  });
+
+  it('collects Codex file_change and MCP file_write paths as conversation file changes', () => {
+    const events = [
+      event({
+        id: 'e_fc' as Event['id'],
+        sequence: 1,
+        type: 'tool.completed',
+        runId: 'run_codex' as Event['runId'],
+        payload: {
+          threadId: 'th_1',
+          toolCallId: 'call_fc',
+          toolName: 'file_change',
+          arguments: {
+            changes: [
+              { path: 'README.md', kind: 'update', diff: '-old\n+new' },
+              { path: 'codex-edit-test.txt', kind: 'add', diff: '+hello' },
+            ],
+          },
+          result: JSON.stringify({ ok: true, status: 'completed' }),
+        },
+      }),
+      event({
+        id: 'e_mcp' as Event['id'],
+        sequence: 2,
+        type: 'tool.completed',
+        runId: 'run_codex' as Event['runId'],
+        payload: {
+          threadId: 'th_1',
+          toolCallId: 'call_mcp',
+          toolName: 'mcp__sync-think-platform__file_write',
+          arguments: { path: 'notes/hello.md', content: '# hi\n' },
+          result: JSON.stringify({ created: true, bytes: 5 }),
+        },
+      }),
+    ];
+    const view = projectExecutionProcess(events, { runId: 'run_codex' });
+    expect(view.fileChanges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: 'README.md', action: 'edited' }),
+        expect.objectContaining({ path: 'codex-edit-test.txt', action: 'created' }),
+        expect.objectContaining({ path: 'notes/hello.md', action: 'created' }),
+      ]),
+    );
+  });
+
+  it('collects Codex file changes from the persisted kernel event shape', () => {
+    const view = projectExecutionProcess(
+      [
+        event({
+          id: 'e_req' as Event['id'],
+          sequence: 1,
+          type: 'tool.requested',
+          runId: 'run_codex_persist' as Event['runId'],
+          payload: {
+            threadId: 'th_1',
+            toolCall: {
+              id: 'exec-6422071b-c6ec-40b1-bd23-24f0e5cedc6d',
+              name: 'file_change',
+              argumentsJson: JSON.stringify({
+                changes: {
+                  'codex-edit-test.txt': { type: 'delete' },
+                  'codex-edit-test-2.txt': { type: 'add' },
+                },
+              }),
+            },
+          },
+        }),
+        event({
+          id: 'e_done' as Event['id'],
+          sequence: 2,
+          type: 'tool.completed',
+          runId: 'run_codex_persist' as Event['runId'],
+          payload: {
+            threadId: 'th_1',
+            toolCallId: 'exec-6422071b-c6ec-40b1-bd23-24f0e5cedc6d',
+            result: JSON.stringify({
+              ok: true,
+              status: 'completed',
+              changes: {
+                'codex-edit-test.txt': { type: 'delete' },
+                'codex-edit-test-2.txt': { type: 'add' },
+              },
+            }),
+          },
+        }),
+      ],
+      { runId: 'run_codex_persist' },
+    );
+
+    expect(view.fileChanges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: 'codex-edit-test.txt', action: 'deleted' }),
+        expect.objectContaining({ path: 'codex-edit-test-2.txt', action: 'created' }),
+      ]),
+    );
+  });
+
+  it('recovers file changes from a nameless "file changed" result plus targeted git status', () => {
+    const view = projectExecutionProcess(
+      [
+        event({
+          id: 'e_changed' as Event['id'],
+          sequence: 1,
+          type: 'tool.completed',
+          runId: 'run_legacy' as Event['runId'],
+          payload: {
+            threadId: 'th_1',
+            toolCallId: 'exec-legacy',
+            result: 'file changed',
+          },
+        }),
+        event({
+          id: 'e_status_req' as Event['id'],
+          sequence: 2,
+          type: 'tool.requested',
+          runId: 'run_legacy' as Event['runId'],
+          payload: {
+            threadId: 'th_1',
+            toolCall: {
+              id: 'exec-status',
+              name: 'command_execution',
+              argumentsJson: JSON.stringify({
+                command:
+                  'powershell.exe -Command "git status --short -- codex-edit-test.txt codex-edit-test-2.txt"',
+              }),
+            },
+          },
+        }),
+        event({
+          id: 'e_status_done' as Event['id'],
+          sequence: 3,
+          type: 'tool.completed',
+          runId: 'run_legacy' as Event['runId'],
+          payload: {
+            threadId: 'th_1',
+            toolCallId: 'exec-status',
+            result: ' D codex-edit-test.txt\n?? codex-edit-test-2.txt\n',
+          },
+        }),
+      ],
+      { runId: 'run_legacy' },
+    );
+
+    expect(view.fileChanges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: 'codex-edit-test.txt', action: 'deleted' }),
+        expect.objectContaining({ path: 'codex-edit-test-2.txt', action: 'created' }),
+      ]),
+    );
+  });
+
+  it('merges created and edited files across every run in the conversation', () => {
+    const merged = buildConversationReviewView([
+      {
+        runId: 'run-old',
+        steps: [],
+        fileChanges: [{ path: 'README.md', action: 'edited' }],
+        running: false,
+        doneCount: 1,
+        errorCount: 0,
+        startedAt: '2026-09-04T10:00:00.000Z',
+        completedAt: '2026-09-04T10:00:10.000Z',
+      },
+      {
+        runId: 'run-new',
+        steps: [],
+        fileChanges: [{ path: 'codex-edit-test.txt', action: 'created' }],
+        running: false,
+        doneCount: 1,
+        errorCount: 0,
+        startedAt: '2026-09-04T10:01:00.000Z',
+        completedAt: '2026-09-04T10:01:08.000Z',
+      },
+      {
+        runId: 'run-empty',
+        steps: [],
+        fileChanges: [],
+        running: false,
+        doneCount: 0,
+        errorCount: 0,
+        startedAt: '2026-09-04T10:02:00.000Z',
+      },
+    ]);
+    expect(merged?.runId).toBe('run-empty');
+    expect(merged?.fileChanges).toEqual([
+      expect.objectContaining({ path: 'README.md', action: 'edited' }),
+      expect.objectContaining({ path: 'codex-edit-test.txt', action: 'created' }),
+    ]);
   });
 });

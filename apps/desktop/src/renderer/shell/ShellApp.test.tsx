@@ -680,6 +680,71 @@ describe('ShellApp workspace context', () => {
     expect(String(browserPanelProps.current?.partition)).toMatch(/^pane-browser-/);
   });
 
+  it('keeps the conversation view and browser guest mounted when switching pane tabs', async () => {
+    installRuntime();
+    let onEvent: ((event: Event) => void) | undefined;
+    runtime.onEvent.mockImplementation((listener: (event: Event) => void) => {
+      onEvent = listener;
+      return vi.fn();
+    });
+    runtime.listWorkspaces.mockResolvedValue({
+      workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }],
+    });
+    runtime.listConversations.mockResolvedValue({
+      conversations: [
+        {
+          id: 'conv-a',
+          workspaceId: 'ws-a',
+          track: 'model',
+          targetRef: 'model-a',
+          title: 'hi',
+          executionMode: 'full-access',
+        },
+      ],
+    });
+    window.localStorage.setItem('sync-think.activeWorkspaceId', 'ws-a');
+    window.localStorage.setItem(
+      'sync-think.openConversationTabs',
+      JSON.stringify({ 'ws-a': ['conv-a'] }),
+    );
+
+    render(<ShellApp />);
+    await waitFor(() => expect(screen.getByTestId('mock-chat-view')).toBeTruthy());
+
+    await act(async () => {
+      onEvent?.({
+        id: 'event-browser-open' as Event['id'],
+        workspaceId: 'ws-a' as Event['workspaceId'],
+        category: 'run',
+        type: 'tool.completed',
+        sequence: 1,
+        occurredAt: '2026-08-31T08:00:00.000Z',
+        payload: {
+          toolName: 'browser_open',
+          toolCallId: 'tool-browser-keep-alive',
+          result: JSON.stringify({ ok: true, url: 'https://beui.dev/components/agents/message-scroller' }),
+        },
+      });
+    });
+
+    await waitFor(() => expect(screen.getByTestId('mock-browser-panel')).toBeTruthy());
+    expect(screen.getByTestId('mock-chat-view')).toBeTruthy();
+    expect(screen.getByTestId('pane-surface-conversation').getAttribute('data-active')).toBe(
+      'false',
+    );
+
+    fireEvent.click(
+      within(screen.getByTestId('conversation-tab-conv-a')).getByRole('button', { name: 'hi' }),
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId('pane-surface-conversation').getAttribute('data-active')).toBe(
+        'true',
+      ),
+    );
+    expect(screen.getByTestId('mock-browser-panel')).toBeTruthy();
+    expect(screen.getByTestId('mock-chat-view')).toBeTruthy();
+  });
+
   it('persists and restores right workbench visibility independently for each workspace', async () => {
     installRuntime();
     runtime.listWorkspaces.mockResolvedValue({
@@ -1402,6 +1467,41 @@ describe('ShellApp workspace context', () => {
       // element rather than the copy.
       expect(screen.getByTestId('welcome-greeting')).toBeTruthy();
     });
+    await waitFor(() => {
+      const conversations = (sidebarProps.current?.conversations as Array<{ id: string }>) ?? [];
+      expect(conversations.some((conversation) => conversation.id.startsWith('draft:'))).toBe(true);
+    });
+  });
+
+  it('opens a default draft conversation when a workspace has no conversation tabs', async () => {
+    installRuntime();
+    runtime.listWorkspaces.mockResolvedValue({
+      workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }],
+    });
+    runtime.listConversations.mockResolvedValue({ conversations: [] });
+    runtime.listProviders.mockResolvedValue({
+      providers: [
+        {
+          providerId: 'provider-a',
+          name: 'Provider A',
+          enabled: true,
+          models: [{ modelId: 'model-a', displayName: 'Model A' }],
+        },
+      ],
+    });
+    window.localStorage.setItem('sync-think.activeWorkspaceId', 'ws-a');
+
+    render(<ShellApp />);
+
+    const draft = await waitFor(() => {
+      const conversations = (sidebarProps.current?.conversations as Array<{ id: string }>) ?? [];
+      const item = conversations.find((conversation) => conversation.id.startsWith('draft:'));
+      expect(item).toBeTruthy();
+      return item!;
+    });
+    expect(screen.getByTestId(`conversation-tab-${draft.id}`)).toBeTruthy();
+    expect(screen.getByTestId('welcome-greeting')).toBeTruthy();
+    expect(screen.getByTestId('empty-compose')).toBeTruthy();
   });
 
   it('opens a conversation tab on click and restores it after workspace switch', async () => {

@@ -17,6 +17,10 @@ const shellStyles = readFileSync(
   new URL('../src/renderer/shell/shell.css', import.meta.url),
   'utf8',
 );
+const workspaceFileViewSource = readFileSync(
+  new URL('../src/renderer/shell/WorkspaceFileView.tsx', import.meta.url),
+  'utf8',
+);
 
 describe('responsive pane layout wiring', () => {
   it('sizes the composer from its pane instead of the whole window', () => {
@@ -47,6 +51,9 @@ describe('responsive pane layout wiring', () => {
     expect(shellSource).toContain('shell-stage--talk');
     expect(shellSource).toContain('shell-pane-frame');
     expect(shellSource).toContain('shell-pane-canvas');
+    expect(shellSource).toContain(
+      'shell-pane-canvas relative flex min-h-0 flex-1 flex-col overflow-hidden',
+    );
     expect(shellStyles).toMatch(
       /\.shell-pane-frame\s*\{[\s\S]*margin:[\s\S]*var\(--shell-pane-frame-gutter\)[\s\S]*border-radius:\s*var\(--shell-pane-frame-radius\)[\s\S]*background:\s*var\(--color-chat\)/,
     );
@@ -58,22 +65,40 @@ describe('responsive pane layout wiring', () => {
     );
   });
 
-  it('keeps a 360px preview and floats the file tree when a workbench is narrow', () => {
+  it('keeps file content full-width and owns workspace files in a separate workbench', () => {
     expect(shellStyles).toContain('.shell-file-workbench__layout');
-    expect(shellStyles).toContain(
-      ".shell-file-workbench[data-explorer-open='true'] .shell-file-workbench__layout",
-    );
+    expect(workspaceFileViewSource).not.toContain('WorkspaceFilesPanel');
+    expect(workspaceFileViewSource).not.toContain('workspace-file-explorer');
+    expect(shellStyles).not.toContain(".shell-file-workbench[data-explorer-open='true']");
     expect(shellStyles).toMatch(
-      /\.shell-file-workbench\[data-explorer-open='true'\] \.shell-file-workbench__layout\s*\{[\s\S]*grid-template-columns:[\s\S]*minmax\(360px, 1fr\) 1px[\s\S]*var\(--shell-file-explorer-width, 288px\)/,
-    );
-    expect(shellStyles).toMatch(
-      /\.shell-file-workbench\[data-explorer-floating='true'\] \.shell-file-workbench__explorer\s*\{[\s\S]*position:\s*absolute;[\s\S]*width:\s*var\(--shell-file-explorer-width, 288px\)/,
+      /\.shell-dock-panel\.is-active\s*\{[\s\S]*opacity:\s*1;[\s\S]*animation:\s*shell-dock-panel-in/,
     );
     expect(shellStyles).toMatch(
       /\.shell-review-panel\s*\{[\s\S]*width:\s*100%;[\s\S]*flex:\s*1 1 auto;/,
     );
     expect(shellStyles).toMatch(
       /\.shell-workbench--right\s*\{[\s\S]*box-shadow:\s*inset 1px 0 var\(--color-border\);/,
+    );
+    expect(shellStyles).toMatch(
+      /\.shell-workbench__tabbar\s*\{[\s\S]*background:\s*var\(--color-chat\);/,
+    );
+    expect(shellStyles).toMatch(
+      /:root\[data-image-theme='active'\] \.shell-workbench__tabbar\s*\{[\s\S]*background:\s*var\(--color-chat\);/,
+    );
+  });
+
+  it('lets the image-theme wallpaper show on the empty welcome pane without reading blur', () => {
+    expect(shellStyles).toMatch(
+      /:root\[data-image-theme='active'\][\s\S]*\.shell-pane-canvas--empty[\s\S]*background:\s*transparent;/,
+    );
+    expect(shellStyles).toMatch(
+      /:root\[data-image-theme='active'\][\s\S]*\.shell-pane-canvas:has\(\.shell-chat-column--empty-newmax\)[\s\S]*background:\s*transparent;/,
+    );
+    expect(shellStyles).toMatch(
+      /\.shell-workspace-primary-content:has\(\.shell-chat-column--empty-newmax\)::before/,
+    );
+    expect(shellStyles).toMatch(
+      /\.shell-workspace-primary-content:has\(\.shell-chat-column--empty-newmax\)\s+\[data-wallpaper-reading-blur-stack\]/,
     );
   });
 });

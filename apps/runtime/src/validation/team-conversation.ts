@@ -10,6 +10,7 @@ import {
   type ListConversationsPayload,
   type ConversationListMessagesPayload,
   type ConversationGetRunProcessPayload,
+  type ConversationListRunTimelinePayload,
   type CreateConversationPayload,
   type RenameConversationPayload,
   type SetConversationPinnedPayload,
@@ -392,6 +393,35 @@ export function parseConversationGetRunProcessPayload(
     return undefined;
   }
   return { runId: value.runId as ConversationGetRunProcessPayload['runId'] };
+}
+
+export function parseConversationListRunTimelinePayload(
+  value: unknown,
+): ConversationListRunTimelinePayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['runId', 'cursor', 'limit']) ||
+    !boundedAgentText(value.runId, 128)
+  ) {
+    return undefined;
+  }
+  if (
+    value.cursor !== undefined &&
+    (typeof value.cursor !== 'string' || value.cursor.length === 0 || value.cursor.length > 512)
+  ) {
+    return undefined;
+  }
+  if (
+    value.limit !== undefined &&
+    (!Number.isInteger(value.limit) || (value.limit as number) < 1 || (value.limit as number) > 100)
+  ) {
+    return undefined;
+  }
+  return {
+    runId: value.runId as ConversationListRunTimelinePayload['runId'],
+    ...(typeof value.cursor === 'string' ? { cursor: value.cursor } : {}),
+    ...(typeof value.limit === 'number' ? { limit: value.limit } : {}),
+  };
 }
 
 export function parseCreateConversationPayload(

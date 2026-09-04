@@ -96,6 +96,14 @@ import type {
   GetSettingsResponse,
   SetSettingPayload,
   SetSettingResponse,
+  ListWebSearchProvidersPayload,
+  ListWebSearchProvidersResponse,
+  SaveWebSearchProviderPayload,
+  SaveWebSearchProviderResponse,
+  ReorderWebSearchProvidersPayload,
+  ReorderWebSearchProvidersResponse,
+  TestWebSearchProviderPayload,
+  TestWebSearchProviderResponse,
   UsageSummaryPayload,
   UsageSummaryResponse,
   GetAgentPayload,
@@ -293,6 +301,8 @@ import type {
   ConversationGetContextStatusResponse,
   ConversationGetRunProcessPayload,
   ConversationGetRunProcessResponse,
+  ConversationListRunTimelinePayload,
+  ConversationListRunTimelineResponse,
   ConversationTransientFrame,
   ConversationTransientSnapshot,
   CreateConversationPayload,
@@ -580,6 +590,26 @@ const api = {
       ipcRenderer.invoke('runtime:settings-get', payload) as Promise<GetSettingsResponse>,
     setSetting: (payload: SetSettingPayload) =>
       ipcRenderer.invoke('runtime:settings-set', payload) as Promise<SetSettingResponse>,
+    listWebSearchProviders: (payload: ListWebSearchProvidersPayload = {}) =>
+      ipcRenderer.invoke(
+        'runtime:web-search-providers-list',
+        payload,
+      ) as Promise<ListWebSearchProvidersResponse>,
+    saveWebSearchProvider: (payload: SaveWebSearchProviderPayload) =>
+      ipcRenderer.invoke(
+        'runtime:web-search-provider-save',
+        payload,
+      ) as Promise<SaveWebSearchProviderResponse>,
+    reorderWebSearchProviders: (payload: ReorderWebSearchProvidersPayload) =>
+      ipcRenderer.invoke(
+        'runtime:web-search-providers-reorder',
+        payload,
+      ) as Promise<ReorderWebSearchProvidersResponse>,
+    testWebSearchProvider: (payload: TestWebSearchProviderPayload) =>
+      ipcRenderer.invoke(
+        'runtime:web-search-provider-test',
+        payload,
+      ) as Promise<TestWebSearchProviderResponse>,
     getDataStorageStats: () =>
       ipcRenderer.invoke('runtime:data-storage-stats', {}) as Promise<DataStorageStatsResponse>,
     exportData: (payload: ExportDesktopDataPayload = {}) =>
@@ -667,6 +697,11 @@ const api = {
         'runtime:conversation-get-run-process',
         payload,
       ) as Promise<ConversationGetRunProcessResponse>,
+    listConversationRunTimeline: (payload: ConversationListRunTimelinePayload) =>
+      ipcRenderer.invoke(
+        'runtime:conversation-list-run-timeline',
+        payload,
+      ) as Promise<ConversationListRunTimelineResponse>,
     subscribeConversationTransientStream: (
       payload: { threadId: string; afterStreamSequence?: number },
       listener: (

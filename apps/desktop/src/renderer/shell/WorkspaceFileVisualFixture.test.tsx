@@ -32,9 +32,10 @@ describe('workspace file visual fixture', () => {
     expect(editor.hidden).toBe(false);
     expect(editor.wrap).toBe('soft');
 
-    fireEvent.click(screen.getByRole('button', { name: '复制源码' }));
+    fireEvent.click(screen.getByRole('button', { name: '更多文件操作' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '复制源码' }));
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: '源码已复制' })).toBeTruthy(),
+      expect(screen.getByRole('menuitem', { name: '源码已复制' })).toBeTruthy(),
     );
     expect(
       (window as Window & { __phase3CopiedText?: string }).__phase3CopiedText,

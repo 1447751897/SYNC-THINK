@@ -13,7 +13,7 @@ const conversations = [
 
 describe('ConversationTabs NewMax tab track', () => {
   it('shares the 58-172px measured width rule across every resource tab', () => {
-    expect(calculatePaneTabWidth(760, 5)).toBe(141);
+    expect(calculatePaneTabWidth(760, 5)).toBe(149);
     expect(calculatePaneTabWidth(2400, 5)).toBe(172);
     expect(calculatePaneTabWidth(260, 8)).toBe(58);
   });
@@ -367,6 +367,58 @@ describe('ConversationTabs pane actions', () => {
     expect(onTabDragStateChange).toHaveBeenCalledWith({ type: 'review', id: 'run-1' });
   });
 
+  it('shows the live page favicon on a browser tab when the guest reports one', () => {
+    render(
+      <ConversationTabs
+        paneId="pane-a"
+        conversations={conversations}
+        openIds={['c1']}
+        browserTabs={[
+          {
+            id: 'browser:b1',
+            browserId: 'b1',
+            url: 'https://beui.dev/components/agents/message-scroller',
+            title: 'Message Scroller',
+            favicon: 'https://beui.dev/favicon.ico',
+          },
+        ]}
+        activeBrowserId="b1"
+        onSelect={vi.fn()}
+        onClose={vi.fn()}
+        onNew={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId('browser-tab-favicon-b1').getAttribute('src')).toBe(
+      'https://beui.dev/favicon.ico',
+    );
+    expect(screen.getByRole('button', { name: '打开网页 Message Scroller' })).toBeTruthy();
+  });
+
+  it('falls back to the site favicon for a browser tab that only has a URL', () => {
+    render(
+      <ConversationTabs
+        paneId="pane-a"
+        conversations={conversations}
+        openIds={['c1']}
+        browserTabs={[
+          {
+            id: 'browser:b2',
+            browserId: 'b2',
+            url: 'https://beui.dev/components/agents/message-scroller',
+          },
+        ]}
+        onSelect={vi.fn()}
+        onClose={vi.fn()}
+        onNew={vi.fn()}
+      />,
+    );
+
+    const src = screen.getByTestId('browser-tab-favicon-b2').getAttribute('src') ?? '';
+    expect(src).toContain('google.com/s2/favicons');
+    expect(src).toContain('beui.dev');
+  });
+
   it('keeps the plus button as a resource menu without splitting automatically', () => {
     const onNew = vi.fn();
     const onNewTerminal = vi.fn();
@@ -394,6 +446,15 @@ describe('ConversationTabs pane actions', () => {
     expect(screen.getByTestId('new-resource-terminal')).toBeTruthy();
     expect(screen.getByTestId('new-resource-browser')).toBeTruthy();
     expect(screen.getByTestId('new-resource-canvas')).toBeTruthy();
+    expect(screen.getByTestId('new-resource-document').className).toContain(
+      'shell-new-resource-menu__item',
+    );
+    expect(screen.getByTestId('new-resource-document').textContent).toBe('新建文档');
+    expect(screen.getByTestId('new-resource-canvas').textContent).toBe('新建绘图');
+    expect(screen.getByTestId('new-resource-menu').querySelectorAll('small')).toHaveLength(0);
+    expect(
+      screen.getByTestId('new-resource-menu').querySelector('.shell-new-resource-menu__title'),
+    ).toBeNull();
 
     fireEvent.click(screen.getByTestId('new-resource-browser'));
     expect(onNewBrowser).toHaveBeenCalledOnce();
@@ -403,8 +464,7 @@ describe('ConversationTabs pane actions', () => {
     expect(onNewTerminal).not.toHaveBeenCalled();
   });
 
-  it('keeps workspace files on the right-side pane action and out of the plus menu', () => {
-    const onToggleWorkspaceFilesPane = vi.fn();
+  it('keeps workspace files out of standalone pane resources', () => {
     render(
       <ConversationTabs
         paneId="pane-a"
@@ -414,69 +474,36 @@ describe('ConversationTabs pane actions', () => {
         onSelect={vi.fn()}
         onClose={vi.fn()}
         onNew={vi.fn()}
-        onToggleWorkspaceFilesPane={onToggleWorkspaceFilesPane}
       />,
     );
 
-    expect(screen.getByTestId('workspace-files-toggle-pane-a')).toBeTruthy();
-    expect(screen.queryByTestId('chat-toggle-rail')).toBeNull();
+    expect(screen.queryByTestId('workspace-files-tab-pane-a')).toBeNull();
+    expect(screen.queryByTestId('workspace-files-toggle-pane-a')).toBeNull();
 
     fireEvent.click(screen.getByTestId('conversation-tab-new'));
     expect(screen.queryByRole('menuitem', { name: /工作区文件/ })).toBeNull();
-
-    fireEvent.click(screen.getByTestId('workspace-files-toggle-pane-a'));
-    expect(onToggleWorkspaceFilesPane).toHaveBeenCalledOnce();
   });
 
-  it('renders and toggles the workspace files resource separately from the pane split', () => {
-    const onSelectWorkspaceFiles = vi.fn();
-    const onCloseWorkspaceFiles = vi.fn();
-    const onToggleWorkspaceFilesPane = vi.fn();
+  it('keeps the workspace-files toggle out of the conversation tab strip', () => {
     render(
       <ConversationTabs
         paneId="pane-a"
         conversations={conversations}
         openIds={['c1']}
         activeId="c1"
-        workspaceFilesTab
-        workspaceFilesPaneOpen
-        workspaceFilesActive
+        fileTabs={[{ id: 'file:notes', path: 'notes.md' }]}
+        activeFilePath="notes.md"
         onSelect={vi.fn()}
         onClose={vi.fn()}
+        onSelectFile={vi.fn()}
+        onCloseFile={vi.fn()}
         onNew={vi.fn()}
-        onSelectWorkspaceFiles={onSelectWorkspaceFiles}
-        onCloseWorkspaceFiles={onCloseWorkspaceFiles}
-        onToggleWorkspaceFilesPane={onToggleWorkspaceFilesPane}
       />,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: '打开工作区文件' }));
-    fireEvent.click(screen.getByRole('button', { name: '关闭工作区文件' }));
-    fireEvent.click(screen.getByTestId('workspace-files-toggle-pane-a'));
-    expect(onSelectWorkspaceFiles).toHaveBeenCalledOnce();
-    expect(onCloseWorkspaceFiles).toHaveBeenCalledOnce();
-    expect(onToggleWorkspaceFilesPane).toHaveBeenCalledOnce();
-  });
-
-  it('shows the workspace files split button before the resource is opened', () => {
-    const onToggleWorkspaceFilesPane = vi.fn();
-    render(
-      <ConversationTabs
-        paneId="pane-a"
-        conversations={conversations}
-        openIds={['c1']}
-        activeId="c1"
-        onSelect={vi.fn()}
-        onClose={vi.fn()}
-        onNew={vi.fn()}
-        onToggleWorkspaceFilesPane={onToggleWorkspaceFilesPane}
-      />,
-    );
-
-    const toggle = screen.getByTestId('workspace-files-toggle-pane-a');
-    expect(toggle.getAttribute('aria-label')).toBe('打开工作区文件');
-    fireEvent.click(toggle);
-    expect(onToggleWorkspaceFilesPane).toHaveBeenCalledOnce();
+    expect(screen.queryByTestId('workspace-files-workbench-toggle-pane-a')).toBeNull();
+    expect(screen.queryByRole('button', { name: '收起右侧工作区文件' })).toBeNull();
+    expect(screen.getByTestId('conversation-tab-new')).toBeTruthy();
   });
 });
 

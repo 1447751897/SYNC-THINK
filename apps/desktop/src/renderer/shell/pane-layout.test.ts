@@ -11,18 +11,24 @@ import {
   closeTerminalPaneTab,
   createWorkspacePaneLayout,
   focusedConversationId,
+  layoutHasConversationTab,
+  layoutHasOpenTabs,
   migrateLegacyPaneLayouts,
   moveConversationToPane,
+  openBrowserInPane,
   openFileInPane,
   openConversationInPane,
   openTerminalInPane,
   paneConversationIds,
+  paneKeepAliveBrowserId,
+  paneKeepAliveConversationId,
   parseWorkspacePaneLayout,
   parseWorkspacePaneLayouts,
   pruneWorkspacePaneLayout,
   replaceFileInPane,
   replaceConversationInPane,
   reorderPaneTabs,
+  setPaneFileBrowserOpen,
   setSplitRatio,
   splitPaneWithConversation,
   splitPaneWithFile,
@@ -49,6 +55,11 @@ describe('workspace pane layout', () => {
     ).toEqual(['c1', 'c2']);
     expect(layout.panes[paneId]?.activeTabId).toBe('conversation:c2');
     expect(focusedConversationId(layout)).toBe('c2');
+    expect(layoutHasConversationTab(layout)).toBe(true);
+    expect(layoutHasOpenTabs(layout)).toBe(true);
+    expect(layoutHasConversationTab(createWorkspacePaneLayout('ws-empty'))).toBe(false);
+    expect(layoutHasOpenTabs(createWorkspacePaneLayout('ws-empty'))).toBe(false);
+    expect(layoutHasConversationTab(undefined)).toBe(false);
   });
 
   it('recursively splits panes horizontally and vertically while moving an existing tab', () => {
@@ -309,6 +320,50 @@ describe('workspace pane layout', () => {
     expect(replaced.panes[paneId]?.activeTabId).toBe('file:src/second.ts');
   });
 
+  it('persists the embedded workspace explorer state with its pane', () => {
+    const initial = createWorkspacePaneLayout('ws-a', ['c1'], 'c1');
+    const paneId = rootPaneId(initial);
+    const opened = openFileInPane(initial, 'notes/brief.md', paneId);
+    const collapsed = setPaneFileBrowserOpen(opened, paneId, false);
+    const restored = parseWorkspacePaneLayout(JSON.parse(JSON.stringify(collapsed)));
+
+    expect(collapsed.panes[paneId]?.fileBrowserOpen).toBe(false);
+    expect(restored?.panes[paneId]?.fileBrowserOpen).toBe(false);
+  });
+
+  it('drops the legacy standalone workspace-files pane while restoring layouts', () => {
+    const parsed = parseWorkspacePaneLayout({
+      version: 1,
+      panes: {
+        main: {
+          id: 'main',
+          tabs: [{ id: 'conversation:c1', type: 'conversation', conversationId: 'c1' }],
+          activeTabId: 'conversation:c1',
+        },
+        files: {
+          id: 'files',
+          tabs: [{ id: 'workspace-files', type: 'workspace-files' }],
+          activeTabId: 'workspace-files',
+        },
+      },
+      focusedPaneId: 'files',
+      root: {
+        type: 'split',
+        id: 'legacy-split',
+        direction: 'horizontal',
+        ratio: 0.7,
+        children: [
+          { type: 'pane', id: 'main-node', paneId: 'main' },
+          { type: 'pane', id: 'files-node', paneId: 'files' },
+        ],
+      },
+    });
+
+    expect(parsed?.root).toEqual({ type: 'pane', id: 'main-node', paneId: 'main' });
+    expect(Object.keys(parsed?.panes ?? {})).toEqual(['main']);
+    expect(parsed?.focusedPaneId).toBe('main');
+  });
+
   it('activates an existing destination instead of duplicating it when replacing a file tab', () => {
     const initial = createWorkspacePaneLayout('ws-a', ['c1'], 'c1');
     const paneId = rootPaneId(initial);
@@ -415,6 +470,25 @@ describe('workspace pane layout', () => {
       expect.objectContaining({ type: 'terminal', terminalId: 'terminal-running' }),
     );
     expect(overflowed.panes[paneId]?.activeTabId).toBe('conversation:c-overflow');
+  });
+
+  it('keeps the last conversation and browser ids when the other tab is active', () => {
+    let layout = createWorkspacePaneLayout('ws-a', ['c1'], 'c1');
+    const paneId = rootPaneId(layout);
+    layout = openBrowserInPane(layout, 'browser-1', 'https://beui.dev/components', paneId);
+    const pane = layout.panes[paneId];
+    expect(pane).toBeDefined();
+    if (!pane) return;
+
+    expect(paneKeepAliveConversationId(pane, 'c1')).toBe('c1');
+    expect(paneKeepAliveBrowserId(pane)).toBe('browser-1');
+
+    layout = activatePaneTab(layout, paneId, 'c1');
+    const chatPane = layout.panes[paneId];
+    expect(chatPane).toBeDefined();
+    if (!chatPane) return;
+    expect(paneKeepAliveConversationId(chatPane)).toBe('c1');
+    expect(paneKeepAliveBrowserId(chatPane, 'browser-1')).toBe('browser-1');
   });
 
   it('blocks a new stateful resource when all 100 tabs require lifecycle preservation', () => {

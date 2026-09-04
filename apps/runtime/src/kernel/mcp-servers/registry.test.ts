@@ -158,6 +158,25 @@ describe('kernel mcp-servers registry', () => {
     setKernelMcpServerConditions({});
   });
 
+  it('injects fallback search only when the selected route needs it', () => {
+    setKernelMcpServerConditions({
+      networkEnabled: true,
+      fallbackWebSearchEnabled: false,
+    });
+    const native = selectKernelMcpRun({});
+    expect(native.externalTools.map((tool) => tool.name)).not.toContain('web_search');
+    expect(native.externalTools.map((tool) => tool.name)).toContain('web_fetch');
+
+    setKernelMcpServerConditions({
+      networkEnabled: true,
+      fallbackWebSearchEnabled: true,
+    });
+    const fallback = selectKernelMcpRun({});
+    expect(fallback.externalTools.map((tool) => tool.name)).toContain('web_search');
+    expect(fallback.servers.map((server) => server.name)).toContain('web-search');
+    setKernelMcpServerConditions({});
+  });
+
   it('builds in-process SDK servers with the correct namespace', async () => {
     const selection = selectKernelMcpRun({});
     const servers = buildSdkMcpServers(

@@ -63,6 +63,7 @@ export type CapabilityTag =
   | 'text'
   | 'vision'
   | 'tool-calling'
+  | 'web-search'
   | 'image-generation'
   | 'embeddings';
 
@@ -118,4 +119,3 @@ export type TraceCategory =
   | 'review'
   | 'context-transfer'
   | 'recovery';
-

@@ -150,11 +150,12 @@ describe('Phase 3 visual matrix', () => {
     assert.match(driver, /composer-slash-open-menu/);
     assert.match(driver, /workspace_file_invalid/);
     assert.match(driver, /workspace_file_source_invalid/);
-    assert.match(driver, /workspace_file_json_invalid/);
+    assert.match(driver, /workspace_file_clarity_invalid/);
     assert.match(driver, /workspace_file_alignment_invalid/);
     assert.match(driver, /workspace_file_background_invalid/);
+    assert.match(driver, /explorerPresent/);
+    assert.match(driver, /editorFillsRoot/);
     assert.match(driver, /editorBody/);
-    assert.match(driver, /explorerBody/);
     assert.match(driver, /previewBody/);
     assert.match(driver, /sourceBody/);
     assert.match(driver, /expectedChatBody/);

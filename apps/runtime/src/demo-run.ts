@@ -239,7 +239,7 @@ export interface KernelToolEventRecord {
 
 const MAX_ASSISTANT_TIMELINE_SEGMENTS = 512;
 
-function isAssistantTurnSegment(value: unknown): value is AssistantTurnSegment {
+export function isAssistantTurnSegment(value: unknown): value is AssistantTurnSegment {
   if (!value || typeof value !== 'object') return false;
   const segment = value as Record<string, unknown>;
   return (
@@ -680,6 +680,7 @@ export function createDemoProviderRequest(
   extras: {
     messages?: ProviderCallRequest['messages'];
     tools?: ProviderCallRequest['tools'];
+    hostedTools?: ProviderCallRequest['hostedTools'];
     toolChoice?: ProviderCallRequest['toolChoice'];
     systemPrompt?: string;
     reasoningEffort?: string;
@@ -703,6 +704,9 @@ export function createDemoProviderRequest(
     ...(extras.systemPrompt ? { systemPrompt: extras.systemPrompt } : {}),
     messages: extras.messages ?? [{ role: 'user', content: run.userText }],
     ...(extras.tools && extras.tools.length > 0 ? { tools: [...extras.tools] } : {}),
+    ...(extras.hostedTools && extras.hostedTools.length > 0
+      ? { hostedTools: [...extras.hostedTools] }
+      : {}),
     ...(extras.toolChoice ? { toolChoice: extras.toolChoice } : {}),
     ...(reasoningEffort ? { reasoningEffort } : {}),
     ...(promptCache ? { promptCache } : {}),
@@ -868,7 +872,7 @@ export function projectAdapterEvent(
       terminal: false,
     };
   }
-  if (adapterEvent.type === 'tool-call') {
+  if (adapterEvent.type === 'tool-call' || adapterEvent.type === 'hosted-tool-call') {
     return {
       category: 'tool',
       type: 'tool.requested',
@@ -880,7 +884,7 @@ export function projectAdapterEvent(
       terminal: false,
     };
   }
-  if (adapterEvent.type === 'tool-result') {
+  if (adapterEvent.type === 'tool-result' || adapterEvent.type === 'hosted-tool-result') {
     return {
       category: 'tool',
       type: 'tool.completed',
