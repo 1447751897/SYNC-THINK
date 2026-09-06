@@ -16,7 +16,7 @@
 - 用户状态保存在 Electron `userData` 下；升级不得删除 Install ID、safeStorage 密文或 SQLite 数据。
 - Updater 只在 Main process 中运行，使用 Generic provider、显式下载/安装、HTTPS/Bearer、`allowDowngrade=false`、`disableWebInstaller=true`，并启用 differential download。
 
-正式 installer 默认使用 `release` signing mode。证书和 timestamp server 未显式配置、签名无效或 timestamp 缺失时，构建或验证立即失败。`unsigned-fixture` 仅用于隔离测试，不得进入正式 channel。
+正式 installer 默认使用 `release` signing mode。证书和 timestamp server 未显式配置、签名无效或 timestamp 缺失时，构建或验证立即失败。`unsigned-fixture` 仅用于隔离测试与 **0.1.0-beta.1 公开无签名 Beta**；不得把它标成已签名正式包，也不得给它配置公开自动更新源。
 
 ## 2. Windows portable staging
 
@@ -388,3 +388,114 @@ automatic rollback 使用独立、非 `userData` 的恢复根：
 UI 改动在本地源码实例验证时，先执行 `pnpm --filter @sync-think/desktop build`，再用 `pnpm dev:desktop` 启动 Electron。启动环境使用 `SYNC_THINK_DEV_NO_TOKEN=1` 和固定的本地 `SYNC_THINK_INSTALL_ID`；不运行 installer/portable/release 流程，也不复用签名发布产物。（`SYNC_THINK_SHELL` 开关已于 2026-08-18 随旧渲染层删除，不再需要设置。）
 
 最小验收证据是：Electron 窗口可见且 `Responding=True`，Runtime 日志包含 `pipe ready`、`database ready`、`hello accepted`，并且测试操作只写入本地开发数据库。
+
+## 13. 0.1.0-beta.1 公开无签名 Beta
+
+这一版给陌生人做公开下载，**不是**已签名正式发布。测试者从你的域名或网盘取包，本机安装，使用他们自己的模型密钥。
+
+### 13.1 构建
+
+不要走默认 `pnpm release:stage:win` / `pnpm release:installer:win`：它们默认 `release` 签名模式，没有证书会失败。
+
+```powershell
+pnpm build
+pnpm release:assets:win
+node scripts/windows-portable-release.mjs stage --signing-mode unsigned-fixture
+node scripts/windows-installer-release.mjs build --signing-mode unsigned-fixture
+node scripts/windows-installer-release.mjs verify --allow-unsigned-fixture
+node scripts/assemble-beta-public.mjs
+```
+
+产物：
+
+```text
+apps/desktop/release/installer/SYNC-THINK-Setup-0.1.0-beta.1-x64.exe
+apps/desktop/release/installer/SYNC-THINK-Setup-0.1.0-beta.1-x64.exe.blockmap
+apps/desktop/release/installer/installer-manifest.json
+apps/desktop/release/public/index.html
+apps/desktop/release/public/BETA-TESTER-GUIDE.md
+apps/desktop/release/public/SYNC-THINK-Setup-0.1.0-beta.1-x64.exe
+```
+
+`installer-manifest.json` 的 `signing.mode` 必须是 `unsigned-fixture`。验证必须确认包内没有 `.env*`、`.db`、token 或开发者 userData。当前公开夹产物是含精简开头页的重发包：317,718,294B，SHA-256 `49d3bd8ecf98a8ab28b178c86371a34350c0c13c5145b571848f953052556d33`。
+
+### 13.2 上传
+
+把 `apps/desktop/release/public/` **整夹**上传到现有域名或网盘，保持 `index.html` 与 exe 同级。不要配置 `SYNC_THINK_UPDATE_FEED_URL` / `SYNC_THINK_UPDATE_TOKEN`。无签名公开自动更新会被冒充。
+
+测试者机器不得设置 `SYNC_THINK_DEV_NO_TOKEN` 或固定 `SYNC_THINK_INSTALL_ID`。
+
+### 13.3 SmartScreen 与回滚
+
+测试者若看到「Windows 已保护你的 PC」，按下载页「更多信息 → 仍要运行」。哈希不一致则停用该文件。
+
+`appId` 仍是 `com.syncthink.desktop`。本轮无更新源：出问题就卸新包并保留 userData，或改发上一内部 `0.0.1` unsigned 包。买到 Authenticode 后再打更高版本签名包并另开 HTTPS feed。
+
+## 本地开发窗口成套切换准备 · 2026-09-06
+
+目标为本机 dev-0001 / D:/projects/SYNC-THINK，不发布 installer 或更新 channel。用户已要求构建并重启；备份/验证完成前保持业务窗口和 Runtime 运行，历史物理清理不属于本次操作。
+
+- 已确认旧 Runtime PID 33492（Node 20.20.2），守护进程 PID 19720；Desktop 主进程 PID 52872，由 scripts/dev-desktop.mjs 启动。实际 healthcheck 返回 inFlightRuns=0、eventSequence=1993640；后续停写前再次确认，不能用这一观察代替停机时状态。
+- 数据源为 .data/SYNC-THINK/sync-think.db，约 17.01GB，D 盘约 50.86GiB。采用仓库 backupDatabase / SQLite Online Backup，而非复制正在写入的 db 文件；新增独立时间戳备份，不轮转/删除旧备份。
+- 本轮先生成备份并执行 SQLite integrity_check，记录字节数、SHA-256、事件/检查点高水位、全表行数和迁移记录。失败时保持业务实例，不执行迁移或切换。
+- 当前 dist 已被候选构建覆盖，运行中旧进程的精确源码/二进制快照尚未捕获。切换前必须明确一个可启动、与升级前数据兼容的回退构建及恢复步骤，不能仅凭相同 package version 声称可回到完全相同的旧版本。
+- 0052/0053/0054 仍待成套验证；预留迁移自己的备份空间和余量。备份不等于迁移成功，开发测试不等于真实 native/Claude/Codex 和整窗验收。正式停写/切换与结果会追加到此节。
+
+### 切换前证据与停写（2026-09-06）
+
+- 第一份备份：.data/SYNC-THINK/backups/2026-09-06T00-09-16-646Z.backup.db，17,007,509,504B；SHA-256 af1e15c01694bfed3b786db0629c90055fa67902063f56830d8a061c8e5c1ef8。00:18:10Z 完成 integrity_check=ok 和82表计数；清单位于 .data/optimization-rollout-20260906/pre-upgrade-backup.json。
+- 独立回退源码：同目录 rollback-source-1e1427a，Git完整提交1e1427af1f52467db7055f58d0e2c581783f21fd。offline/frozen/ignore-scripts 安装和11项构建成功；复制已核对同版本的本机 better-sqlite3 11.10.0 Node20二进制，SHA-256 1eeaea9a4acb37a35d5057ab76b9ca923b6684df019b1316717f1ea6d9eff1a1。没有修改 Git工作区/提交/分支。
+- 01:00:53Z 旧存储对第一备份只读读出检查点1993540、100条尾事件及高水位1993640，核对960条message、34项task、31个conversation；独立空库worker启动和关闭成功。证据 rollback-verification.json；这不是旧 Desktop、整库业务执行恢复或精确原运行构建的证明。
+- 01:02Z CloseMainWindow 正常退出 Desktop52872；health确认无进行中运行、事件高水位1993644，daemon.stop返回ok，确认两个受管进程均退出后才迁移。cutover-before.json记录现场；初备份高水位1993640不是最终切换点。
+- 01:02:49Z PID9968运行原 runMigrations；保留自动生成的停写后一致性备份，迁移0052/0053/0054。没有增加跳过备份开关，没有复制正在写入的数据库，也没有为了空间删除旧备份。迁移前D盘34.69GiB，预留第二份17GB备份和索引空间。
+
+### 成套切换结果与真实窗口边界（2026-09-06）
+
+- 01:12:37Z 三项迁移全部提交，连同自动备份耗时587.771秒。迁移前后事件高水位1993644，message960/task34/conversation31保持；投影表与四个被核对的索引存在。详见 migration-result.json。此量级升级应有独立维护进度，不宜依赖120秒启动ready等待掩盖耗时。
+- 最终停写点备份：.data/SYNC-THINK/backups/2026-09-06T01-02-49-596Z.backup.db，17,007,509,504B，SHA-256 f69d645f849258a4d2973acf1958ea4a8f2bf0ac45e77906cf9c92059345a13d。01:18:29Z 旧存储只读核对0051、检查点1993540、104条尾事件/高水位1993644和三项业务计数；第二备份未重复全库integrity_check，第一份的完整校验不可混称第二份结果。证据 cutover-backup-verification.json。
+- 新 Runtime PID31156；daemon PID78144，由常驻监督进程82368管理（同入口标记，不按两个daemon标记就判定孤儿）。01:24:01Z hello + healthcheck成功，inFlightRuns=0 / eventSequence1993644。最终常规 scripts/dev-desktop.mjs 启动器60552，Desktop77300，09:20:17+08启动、可见窗口标题SYNC-THINK且Responding=true。不是仅重开旧Renderer。
+- Browser plugin not available，使用现有 Playwright Electron API、生产renderer-shell/index.html和真实本机数据。1426x863下设置打开/关闭及草稿不变通过，page/console errors=0；有一个既有allowpopups开发警告，未宣称其已解决。独立探针未发送提示或调用实际模型，首轮截屏仍在历史加载，不能据此说历史验收通过。
+- 第二轮等待到6条真实历史消息，零页面错误，但等待composer-task-panel失败。已保留失败证据，而非将整个窗口流程标绿。只读重放当前会话206条事件证明：1993435处有5项旧清单；1993436的后续Codex run.started使当前reducer清空非Claude计划；1993540终态仍为null。旧成功事件尚在，不是重启删除数据；旧清单也不是本次新内核生成的证明。需要历史任务回看/当前计划边界的产品闭环，见审查18.15。
+- QA产生的Electron窗口已退出，正常开发窗口保留；自有74904已关闭，其余已退出的QA助手没有作为业务实例留存。未物理清理历史、未安装更新包/签名/发布channel，也未完成native/Claude/Codex完整矩阵或旧Desktop/业务执行回退。
+- 回退步骤：先停止新Desktop及执行所有者并确认无进行中运行；保存新版本开始后的数据，再将最终停写点备份恢复到明确目标（不要让旧代码直接读新delta检查点）；使用已固定且独立构建的1e1427a基线。完整业务恢复/旧Desktop应在隔离门禁中继续验证，不自动恢复用户旧工具执行。
+
+### 失效审批补丁成套重启（2026-09-06）
+
+- 本批只是源代码构建更新：最终11项构建通过，首屏JS1,912,981B/全部2,731,399B。0052/0053/0054已在前批迁移，此次没有新增迁移、重复17GB备份或数据清理；原验证备份和独立回退源保持。
+- 正常关闭Desktop77300；Runtime31156健康且inFlight0后daemon.stop返回ok，核对原Desktop/Runtime/daemon/supervisor/launcher均退出。以Node20和dev-0001启动普通scripts/dev-desktop.mjs，launcher53896、Desktop77880响应正常。
+- 2026-09-06T02:44:02Z hello/health成功，Runtime66672，inFlight0、eventSequence1993653；02:47:11Z只读message960/task34/conversation31及5个既有迁移对象保持。证据.data/expired-approval-restart-before.json、restart-health.log及rollout-result.json（同expired-approval-前缀）。
+- 新Main/Preload/Renderer/Runtime已随成套启动加载。隔离实际ChatView/SQLite/Runtime/Main图片边界已实测，IPC传输为模拟；普通业务窗口仅核对进程、标题、健康和数据保持，不冒充真实Electron IPC及内核审批矩阵通过。
+- 未发布installer，未执行旧Desktop/全业务恢复回退。继续按原六方向验收，详见审查18.16。
+
+### 原生任务历史补丁成套重启（2026-09-06）
+
+- 本次为源码构建更新，工作区11项构建全部通过（0缓存）；首屏JS1,920,099B、全部2,738,517B。没有新迁移、重复17GB备份、业务数据清理或installer发布；既有0052/0053/0054与上批备份、独立回退源保持。
+- 重启前确认Desktop77880标题SYNC-THINK且响应，Runtime66672健康/inFlight0；CloseMainWindow正常退出后再次health确认0，daemon.stop返回ok，核对旧Runtime/daemon83896/supervisor50920/launcher53896均退出。未按等待超时强杀。
+- 普通Node20 scripts/dev-desktop.mjs + dev-0001 启动器85488，Desktop85260、受管Runtime68032（daemon63652、监督进程17228）。04:26:10Z hello/health成功、新conversation.taskPlanHistory能力存在，inFlight0、eventSequence1993657。窗口标题/Responding正常。
+- 只读message960/task34/conversation31及5个既有迁移对象保持；新业务pipe历史API读出原run JHF8GQ16Y13N6WZ9N9Q07W2D2Y的5项清单，与只读原始重放一致。普通业务窗口没有逐页交互冒充实测；完整实际Electron IPC交互另在隔离合成SQLite中通过，含成套重启恢复。
+- 最终4202项全量、Runtime/Desktop lint与diff-check通过，Desktop18个既有Hook提示保留。记录.data/task-plan-history-restart-before.json、restart-health.log、rollout-result.json（均同task-plan-history-前缀）及Electron验收记录；详见审查18.17。真实三内核生命周期、正式更新/旧Desktop和整库业务恢复回退门禁继续保留。
+
+### 原生 Codex 工具启用补丁成套重启（2026-09-06）
+
+- Runtime受管Codex创建/续接显式tools.update_plan.enabled=true；保持全局配置与goals。三内核真实原生任务/详细说明/下一轮记忆/Runtime对象重开通过，旧失败Codex保持原sessionId恢复；自检分项误报修复。真实权限/图片/取消等完整矩阵仍待验。
+- Runtime195文件/1462全量、31定向、lint和工作区11项构建通过（10缓存）。其它四包沿用未变基线，累计4210而非本批五包全量重跑；JS首屏1,920,099B/全部2,738,517B不变。没有新迁移、重复17GB备份、业务历史清理或installer。
+- Desktop85260正常CloseMainWindow退出，Runtime68032健康/inFlight0后daemon.stop成功，旧daemon63652、监督17228与launcher85488退出已核对。普通Node20启动器81184开启Desktop90236；新监督83628/daemon12620/Runtime86068。
+- 2026-09-06T05:29:37Z hello/health成功，inFlight0、eventSequence1993662；只读业务960message/34task/31conversation及5个迁移对象保持，新业务pipe仍读出原5项历史。普通业务窗口只核对标题/响应/健康与pipe，不冒充实际Electron点击新任务。记录.data/kernel-live-restart-before.json、kernel-live-business-health.log及kernel-live-rollout-result.json。
+- 既有完整备份与独立旧存储回退源保留；完整旧Desktop/整库业务恢复、正式发布和三内核剩余门禁继续按原六方向推进。详见审查18.18和TD078。
+
+
+### 原生审批登记与运行关闭补丁成套重启（2026-09-06）
+
+- 原生权限请求登记失败时deny且不建waiter；Runtime关闭等待Native/外部完整执行收尾，并禁止关停后目标续轮。6项回归先红后绿、Runtime197文件/1468项全量、lint和11项构建（10缓存）通过。15个实际三内核审批场景独立验收通过，不是Electron审批点击或全生命周期全绿。
+- 首屏JS1,920,099B、全部2,738,517B不变；无新迁移、依赖、清理、installer和重复17GB备份。既有0052/0053/0054与已核验备份、回退源保留。
+- 重启前06:40:24Z业务Runtime86068健康且inFlight0；核对Desktop90236的标题、路径和响应后CloseMainWindow，daemon.stop之前再次确认无活动运行；旧Desktop90236/Runtime86068/launcher81184退出。没有根据超时强杀业务进程。
+- 普通Node20启动器40432打开Desktop92580；2026-09-06T06:41:58Z新Runtime39392 hello/health成功、inFlight0、eventSequence1993672；Desktop标题SYNC-THINK、Responding=true。只读message960/task34/conversation31与5个既有迁移对象保持；实际新pipe读取原5项历史并与旧结果相等。
+- 记录.data/kernel-approval-restart-before.json、kernel-approval-rollout-result.json、kernel-approval-acceptance-summary.json及对应启动/测试日志。全目标仍在原六方向中，图片/执行中取消/实际Electron、整窗多窗、正式更新/旧Desktop与全库业务恢复回退继续验证；见审查18.19、TD079。
+
+### 真实窗口审批与原请求关联补丁成套重启（2026-09-06）
+
+- 修复待审批误判stall、普通user缺runId及旧NULL行保守只读关联，分离checking/installing状态。Storage501/Runtime1469/Desktop2089三包全量4059项、lint、diff-check与工作区11项构建通过（7缓存）；其它两包未变基线175项沿用，累计4234。JS首屏1,920,706B/全部2,739,124B，各+607B。
+- 真实生产Electron三内核4场景/内核，共12项通过；同一个真实旧失败数据库升级后的草稿合并与原文恢复通过。Renderer/CSS/Preload/Runtime构建指纹与最终产物一致；18项既有Hook提示保留。详情审查18.20，不替代其它模型/图片/执行中取消或正式更新门禁。
+- 08:17:18Z旧Runtime39392健康/inFlight0；Desktop92580正常CloseMainWindow并等待退出，再次health0后daemon.stop，旧39392/84720/40432退出核对通过。Node20 scripts/dev-desktop.mjs、dev-0001普通隐藏启动器94792启动Desktop94292/Runtime94336。
+- 08:19:20Z（北京时间16:19）标题SYNC-THINK、Responding、hello/health成功，inFlight0、eventSequence1993680。只读业务message960/task34/conversation31及5个迁移对象保持；实际业务pipe返回原5项历史，与原只读源一致，单次含连接读取320.614ms，不是暖态或p95。
+- 无业务模型请求、新迁移、清理、重复17GB备份或installer。0052/0053/0054、原已验证备份及回退源保持。新的restart-before、rollout-result与acceptance-summary在仓库外QA根，同kernel-window-前缀；不覆盖上批证据。完整旧Desktop/业务库恢复和正式更新回退继续保留。

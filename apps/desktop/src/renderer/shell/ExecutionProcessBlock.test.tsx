@@ -9,6 +9,7 @@ import {
   CodePreview,
   ExecutionProcessBlock,
   FileChangesCard,
+  LineDiffView,
   resolveAbsoluteProjectPath,
 } from './ExecutionProcessBlock.js';
 
@@ -25,6 +26,48 @@ function step(overrides: Partial<ExecutionProcessStep> = {}): ExecutionProcessSt
     ...overrides,
   };
 }
+
+describe('line diff presentation', () => {
+  afterEach(cleanup);
+  it('shows old/new gutters and syntax highlighting without modifying source', () => {
+    const { container } = render(
+      <LineDiffView
+        oldText={'const value = 1;\nreturn value;'}
+        newText={'const value = 2;\nreturn value;'}
+        path="src/value.ts"
+      />,
+    );
+    const removed = container.querySelector('[data-kind="del"]')!;
+    const added = container.querySelector('[data-kind="add"]')!;
+    expect(removed.querySelector('[data-old-line]')?.textContent).toBe('1');
+    expect(removed.querySelector('[data-new-line]')?.textContent).toBe('');
+    expect(added.querySelector('[data-new-line]')?.textContent).toBe('1');
+    expect(added.querySelector('.hljs-keyword')).toBeTruthy();
+    expect(added.querySelector('code')?.textContent).toBe('const value = 2;');
+    expect(screen.getByRole('button', { name: '复制修改后内容' })).toBeTruthy();
+  });
+
+  it('does not present truncated snapshots as a complete diff', () => {
+    const { container } = render(<LineDiffView oldText="before" newText="after" truncated />);
+    expect(container.querySelector('[data-kind]')).toBeNull();
+    expect(screen.queryByRole('button', { name: '复制修改后内容' })).toBeNull();
+  });
+
+  it('does not invent a deleted blank line for a newly created file', () => {
+    const { container } = render(
+      <LineDiffView oldText="" newText="const created = true;" path="created.ts" />,
+    );
+    expect(container.querySelectorAll('[data-kind="del"]')).toHaveLength(0);
+    expect(container.querySelectorAll('[data-kind="add"]')).toHaveLength(1);
+  });
+
+  it('keeps missing and oversized snapshots out of the diff renderer', () => {
+    const { container, rerender } = render(<LineDiffView oldText={undefined} newText="after" />);
+    expect(container.querySelector('[data-kind]')).toBeNull();
+    rerender(<LineDiffView oldText={Array(401).fill('before').join('\n')} newText="after" />);
+    expect(container.querySelector('[data-kind]')).toBeNull();
+  });
+});
 
 function processView(steps: ExecutionProcessStep[]): RunProcessView {
   return {
@@ -49,6 +92,16 @@ function processViewWithChanges(): RunProcessView {
         content: 'const value = 2;',
       },
     ],
+  } as unknown as RunProcessView;
+}
+
+function processViewWithManyChanges(count: number): RunProcessView {
+  return {
+    ...processView([]),
+    fileChanges: Array.from({ length: count }, (_, index) => ({
+      path: `file-${index + 1}.ts`,
+      action: 'edited' as const,
+    })),
   } as unknown as RunProcessView;
 }
 
@@ -227,12 +280,36 @@ describe('FileChangesCard interactions', () => {
     const fileButton = screen.getByRole('button', { name: '打开文件 src/app.ts' });
 
     fireEvent.focus(fileButton);
-    expect(screen.getByRole('tooltip').textContent).toBe(
-      'D:\\projects\\SYNC-THINK\\src\\app.ts',
-    );
+    expect(screen.getByRole('tooltip').textContent).toBe('D:\\projects\\SYNC-THINK\\src\\app.ts');
 
     fireEvent.blur(fileButton);
     expect(screen.queryByRole('tooltip')).toBeNull();
+  });
+
+  it('shows at most four files until the overflow list is expanded', () => {
+    render(<FileChangesCard view={processViewWithManyChanges(8)} />);
+
+    expect(screen.getByText('已更改 8 个文件')).toBeTruthy();
+    expect(screen.getAllByRole('button', { name: /打开文件/ })).toHaveLength(4);
+    expect(screen.queryByRole('button', { name: '打开文件 file-5.ts' })).toBeNull();
+
+    const toggle = screen.getByRole('button', { name: '展开其余 4 个文件' });
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(toggle.textContent).toContain('还有 4 个文件');
+
+    fireEvent.click(toggle);
+
+    expect(screen.getAllByRole('button', { name: /打开文件/ })).toHaveLength(8);
+    expect(screen.getByRole('button', { name: '打开文件 file-8.ts' })).toBeTruthy();
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByRole('button', { name: '收起其余文件' }).textContent).toContain('收起');
+  });
+
+  it('does not show an overflow toggle for four or fewer files', () => {
+    render(<FileChangesCard view={processViewWithManyChanges(4)} />);
+
+    expect(screen.getAllByRole('button', { name: /打开文件/ })).toHaveLength(4);
+    expect(screen.queryByRole('button', { name: /展开其余/ })).toBeNull();
   });
 
   it('resolves project-relative paths without changing absolute paths', () => {

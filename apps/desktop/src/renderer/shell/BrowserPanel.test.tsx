@@ -3,7 +3,14 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { BrowserPanel, browserGuestBox, normalizeBrowserInput } from './BrowserPanel.js';
+import {
+  BrowserPanel,
+  browserGuestBox,
+  browserZoomStepFromWheel,
+  guestBrowserZoomBridgeScript,
+  normalizeBrowserInput,
+  parseGuestZoomDelta,
+} from './BrowserPanel.js';
 
 const shellCss = readFileSync(resolve(process.cwd(), 'src/renderer/shell/shell.css'), 'utf8');
 
@@ -305,5 +312,41 @@ describe('BrowserPanel layout contract', () => {
     expect(
       screen.getByTestId('browser-panel').querySelector('.shell-browser__favicon')?.getAttribute('src'),
     ).toBe('https://beui.dev/favicon.ico');
+  });
+
+  it('maps Ctrl/Cmd wheel deltas onto the same zoom steps as the toolbar', () => {
+    expect(browserZoomStepFromWheel(-120)).toBe(1);
+    expect(browserZoomStepFromWheel(120)).toBe(-1);
+    expect(parseGuestZoomDelta('__SYNC_THINK_BROWSER_ZOOM__:-80')).toBe(-80);
+    expect(parseGuestZoomDelta('unrelated console text')).toBeNull();
+    expect(guestBrowserZoomBridgeScript()).toContain('__SYNC_THINK_BROWSER_ZOOM__:');
+  });
+
+  it('zooms the guest from Ctrl+wheel on the host viewport and from guest console zoom marks', async () => {
+    render(
+      <BrowserPanel
+        embedded
+        registerForAutomation={false}
+        initialUrl="https://example.test"
+        onClose={vi.fn()}
+      />,
+    );
+    const webview = attachWebviewMethods();
+    await waitFor(() =>
+      expect(webviewMethods.executeJavaScript).toHaveBeenCalledWith(
+        expect.stringContaining('__SYNC_THINK_BROWSER_ZOOM__:'),
+      ),
+    );
+
+    fireEvent.wheel(screen.getByTestId('browser-viewport'), { ctrlKey: true, deltaY: -120 });
+    expect(webviewMethods.setZoomFactor).toHaveBeenCalledWith(1.1);
+
+    fireEvent.wheel(screen.getByTestId('browser-viewport'), { deltaY: 120 });
+    expect(webviewMethods.setZoomFactor).toHaveBeenLastCalledWith(1.1);
+
+    const guestZoom = new Event('console-message') as Event & { message?: string };
+    guestZoom.message = '__SYNC_THINK_BROWSER_ZOOM__:80';
+    webview.dispatchEvent(guestZoom);
+    expect(webviewMethods.setZoomFactor).toHaveBeenLastCalledWith(1);
   });
 });

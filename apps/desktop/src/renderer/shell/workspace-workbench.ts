@@ -1,5 +1,6 @@
 import type {
   BrowserPaneTab,
+  ConversationPaneTab,
   FilePaneTab,
   ReviewPaneTab,
   TerminalPaneTab,
@@ -9,7 +10,12 @@ import type {
 export type WorkbenchPlacement = 'right' | 'bottom';
 
 export type WorkbenchTab =
-  FilePaneTab | TerminalPaneTab | BrowserPaneTab | ReviewPaneTab | WorkspaceFilesPaneTab;
+  | ConversationPaneTab
+  | FilePaneTab
+  | TerminalPaneTab
+  | BrowserPaneTab
+  | ReviewPaneTab
+  | WorkspaceFilesPaneTab;
 
 export interface WorkbenchScope {
   open: boolean;
@@ -89,11 +95,22 @@ function normalizeBrowserUrl(value: string): string {
   return normalized.slice(0, MAX_ID_LENGTH) || 'https://www.bing.com';
 }
 
+export function workbenchBrowserUrlsMatch(left: string, right: string): boolean {
+  const normalize = (value: string) => normalizeBrowserUrl(value).replace(/\/+$/, '').toLowerCase();
+  return normalize(left) === normalize(right);
+}
+
 function normalizeWorkbenchTab(value: unknown): WorkbenchTab | null {
   if (!value || typeof value !== 'object') return null;
   const record = value as Record<string, unknown>;
   if (record.type === 'workspace-files') {
     return { id: 'workspace-files', type: 'workspace-files' };
+  }
+  if (record.type === 'conversation' && typeof record.conversationId === 'string') {
+    const conversationId = record.conversationId.trim().slice(0, MAX_ID_LENGTH);
+    return conversationId
+      ? { id: `conversation:${conversationId}`, type: 'conversation', conversationId }
+      : null;
   }
   if (record.type === 'file' && typeof record.path === 'string') {
     const path = normalizeRelativePath(record.path);
@@ -225,6 +242,7 @@ export function openWorkbenchTab(
   if (
     placement === 'right' &&
     normalized.type !== 'workspace-files' &&
+    normalized.type !== 'browser' &&
     !tabs.some((item) => item.type === 'workspace-files')
   ) {
     tabs = [workspaceFilesWorkbenchTab(), ...tabs].slice(0, MAX_WORKBENCH_TABS);
@@ -276,6 +294,24 @@ export function closeWorkbenchTab(
       ? { ...next, size: WORKBENCH_RIGHT_COMPACT_WIDTH }
       : next;
   return { ...layout, [placement]: compact };
+}
+
+export function updateWorkbenchBrowserUrl(
+  layout: WorkspaceWorkbenchLayout,
+  placement: WorkbenchPlacement,
+  browserId: string,
+  url: string,
+): WorkspaceWorkbenchLayout {
+  const scope = layout[placement];
+  const normalized = normalizeBrowserUrl(url);
+  let changed = false;
+  const tabs = scope.tabs.map((tab) => {
+    if (tab.type !== 'browser' || tab.browserId !== browserId || tab.url === normalized) return tab;
+    changed = true;
+    return { ...tab, url: normalized };
+  });
+  if (!changed) return layout;
+  return { ...layout, [placement]: { ...scope, tabs } };
 }
 
 export function setWorkbenchOpen(
@@ -366,6 +402,105 @@ export function setWorkbenchFileBrowserWidth(
 
 export function workspaceFilesWorkbenchTab(): WorkspaceFilesPaneTab {
   return { id: 'workspace-files', type: 'workspace-files' };
+}
+
+export function conversationWorkbenchTab(conversationId: string): ConversationPaneTab {
+  const normalized = conversationId.trim().slice(0, MAX_ID_LENGTH);
+  return {
+    id: `conversation:${normalized}`,
+    type: 'conversation',
+    conversationId: normalized,
+  };
+}
+
+export function findWorkbenchBrowser(
+  layout: WorkspaceWorkbenchLayout,
+): { placement: WorkbenchPlacement; tab: BrowserPaneTab } | null {
+  for (const placement of ['right', 'bottom'] as const) {
+    const tab = layout[placement].tabs.find(
+      (item): item is BrowserPaneTab => item.type === 'browser',
+    );
+    if (tab) return { placement, tab };
+  }
+  return null;
+}
+
+export function findWorkbenchBrowserByUrl(
+  layout: WorkspaceWorkbenchLayout,
+  url: string,
+): { placement: WorkbenchPlacement; tab: BrowserPaneTab } | null {
+  for (const placement of ['right', 'bottom'] as const) {
+    const tab = layout[placement].tabs.find(
+      (item): item is BrowserPaneTab =>
+        item.type === 'browser' && workbenchBrowserUrlsMatch(item.url, url),
+    );
+    if (tab) return { placement, tab };
+  }
+  return null;
+}
+
+export function openOrFocusWorkbenchBrowser(
+  layout: WorkspaceWorkbenchLayout,
+  browserId: string,
+  url: string,
+  placement: WorkbenchPlacement = 'right',
+): WorkspaceWorkbenchLayout {
+  const existingSame = findWorkbenchBrowserByUrl(layout, url);
+  if (existingSame) {
+    return activateWorkbenchTab(layout, existingSame.placement, existingSame.tab.id);
+  }
+  return openWorkbenchTab(layout, placement, browserWorkbenchTab(browserId, url));
+}
+
+export function findWorkbenchConversation(
+  layout: WorkspaceWorkbenchLayout,
+  conversationId: string,
+): { placement: WorkbenchPlacement; tab: ConversationPaneTab } | null {
+  const id = conversationId.trim();
+  if (!id) return null;
+  for (const placement of ['right', 'bottom'] as const) {
+    const tab = layout[placement].tabs.find(
+      (item): item is ConversationPaneTab =>
+        item.type === 'conversation' && item.conversationId === id,
+    );
+    if (tab) return { placement, tab };
+  }
+  return null;
+}
+
+export function closeWorkbenchConversation(
+  layout: WorkspaceWorkbenchLayout,
+  conversationId: string,
+): WorkspaceWorkbenchLayout {
+  const found = findWorkbenchConversation(layout, conversationId);
+  return found ? closeWorkbenchTab(layout, found.placement, found.tab.id) : layout;
+}
+
+export function replaceWorkbenchConversation(
+  layout: WorkspaceWorkbenchLayout,
+  fromConversationId: string,
+  toConversationId: string,
+): WorkspaceWorkbenchLayout {
+  const fromId = fromConversationId.trim();
+  const toId = toConversationId.trim();
+  if (!fromId || !toId || fromId === toId) return layout;
+  const found = findWorkbenchConversation(layout, fromId);
+  if (!found) return layout;
+  const existing = findWorkbenchConversation(layout, toId);
+  if (existing) {
+    const closed = closeWorkbenchTab(layout, found.placement, found.tab.id);
+    return activateWorkbenchTab(closed, existing.placement, existing.tab.id);
+  }
+  const replacement = conversationWorkbenchTab(toId);
+  const scope = layout[found.placement];
+  return {
+    ...layout,
+    [found.placement]: {
+      ...scope,
+      tabs: scope.tabs.map((tab) => (tab.id === found.tab.id ? replacement : tab)),
+      activeTabId: scope.activeTabId === found.tab.id ? replacement.id : scope.activeTabId,
+    },
+  };
 }
 
 export function fileWorkbenchTab(path: string): FilePaneTab {

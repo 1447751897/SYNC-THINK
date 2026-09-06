@@ -13,9 +13,11 @@ import {
   CircleGauge,
   Code2,
   Copy,
+  Database,
   Edit3,
   FileCode2,
   Folder,
+  Github,
   Globe2,
   KeyRound,
   Layers3,
@@ -88,9 +90,18 @@ import {
   skillOriginLabel,
   type SkillFamily,
 } from './capability-utils.js';
+import {
+  SKILL_BUDGET_CHARS,
+  computeContextBudget,
+  formatCharCount,
+  residentDescriptionChars,
+  skillCountsTowardResidentBudget,
+  skillScanBadge,
+  scanSkillDescription,
+} from './skill-resident-context.js';
+import { mcpAvailability, resolveMcpVisual, type McpMark } from './mcp-identity.js';
 
 const MAX_SKILL_MD_CHARS = 512_000;
-const CONTEXT_BUDGET_TOKENS = 15_000;
 
 type AbilitySection = 'skills' | 'mcp';
 type CatalogTab = 'market' | 'mine' | 'local';
@@ -909,7 +920,7 @@ export function AbilitiesPage(props: AbilitiesPageProps): JSX.Element {
     try {
       const response = await api.previewCapabilityOrganize({
         workspaceId: selectedWorkspaceId,
-        contextBudgetTokens: CONTEXT_BUDGET_TOKENS,
+        contextBudgetTokens: SKILL_BUDGET_CHARS,
       });
       setOrganizeReport(response.report);
     } catch (cause) {
@@ -1266,7 +1277,10 @@ function NewMaxSkillHub(props: {
       (props.statusFilter === 'inactive' && !enabled) ||
       (props.statusFilter === 'unused' && usage.callCount === 0) ||
       (props.statusFilter === 'problem' &&
-        (usage.problemCount > 0 || skill.hasScripts || skill.warnings.length > 0));
+        (scanSkillDescription(skill.description).issues.length > 0 ||
+          usage.problemCount > 0 ||
+          skill.hasScripts ||
+          skill.warnings.length > 0));
     return searchMatches && sourceMatches && statusMatches;
   });
   const visibleRows = [...filteredRows].sort((left, right) => {
@@ -1282,9 +1296,23 @@ function NewMaxSkillHub(props: {
   const recentCount = rows.filter((row) => row.usage.callCount > 0).length;
   const unusedCount = rows.filter((row) => row.usage.callCount === 0).length;
   const problemCount = rows.filter(
-    (row) => row.usage.problemCount > 0 || row.skill.hasScripts || row.skill.warnings.length > 0,
+    (row) =>
+      scanSkillDescription(row.skill.description).issues.length > 0 ||
+      row.usage.problemCount > 0 ||
+      row.skill.hasScripts ||
+      row.skill.warnings.length > 0,
   ).length;
-  const contextTokens = rows.reduce((sum, row) => sum + row.usage.contextTokens, 0);
+  const residentBudget = computeContextBudget(
+    rows
+      .filter((row) =>
+        skillCountsTowardResidentBudget({
+          enabled: row.skill.enabled !== false,
+          workspaceActive: row.workspaceActive,
+          scope: props.selectedScope,
+        }),
+      )
+      .map((row) => residentDescriptionChars(row.skill.description)),
+  );
   const sourceCounts: Record<SourceFilter, number> = {
     all: rows.length,
     market: rows.filter((row) => row.skill.originType === 'market').length,
@@ -1550,26 +1578,27 @@ function NewMaxSkillHub(props: {
                 warning={problemCount > 0}
               />
               <div
-                className={`ability-stat ability-stat--context${contextTokens > CONTEXT_BUDGET_TOKENS ? ' is-warning' : ''}`}
+                className={`ability-stat ability-stat--context${residentBudget.overBudget ? ' is-warning' : ''}`}
+                data-testid="skill-resident-context"
               >
                 <div>
                   <span>常驻上下文占用</span>
                   <strong>
-                    {contextTokens > CONTEXT_BUDGET_TOKENS
-                      ? `≈ 超限 ${(contextTokens / CONTEXT_BUDGET_TOKENS).toFixed(1)}×`
+                    {residentBudget.overBudget
+                      ? `≈ 超限 ${residentBudget.ratio.toFixed(1)}×`
                       : '正常'}
                   </strong>
                 </div>
                 <span className="ability-stat__meter">
                   <i
                     style={{
-                      width: `${Math.min(100, (contextTokens / CONTEXT_BUDGET_TOKENS) * 100)}%`,
+                      width: `${Math.min(100, residentBudget.ratio * 100)}%`,
                     }}
                   />
                 </span>
                 <p>
-                  {formatTokens(contextTokens)} 字符 / 建议上限约{' '}
-                  {formatTokens(CONTEXT_BUDGET_TOKENS)}（估算）
+                  {formatCharCount(residentBudget.totalChars)} 字符 / 建议上限约{' '}
+                  {formatCharCount(residentBudget.budgetChars)}（估算）
                 </p>
               </div>
             </div>
@@ -1577,6 +1606,7 @@ function NewMaxSkillHub(props: {
               <button
                 type="button"
                 className={`ability-hub__scope-pill${props.selectedScope === 'global' ? ' is-active' : ''}`}
+                data-testid="skill-scope-global"
                 onClick={() => props.onScopeChange('global')}
               >
                 <Folder size={11} />
@@ -1589,6 +1619,7 @@ function NewMaxSkillHub(props: {
                   className={`ability-hub__scope-pill${
                     workspace.workspaceId === props.selectedScope ? ' is-active' : ''
                   }`}
+                  data-testid={`skill-scope-${workspace.workspaceId}`}
                   onClick={() => props.onScopeChange(workspace.workspaceId)}
                 >
                   <Folder size={11} />
@@ -1726,8 +1757,12 @@ function NewMaxSkillHub(props: {
                   </div>
                   {visibleRows.map(
                     ({ family, skill, display, usage, workspaceActive, activeWorkspaceNames }) => {
+                      const scan = skillScanBadge(skill.description);
                       const issue =
-                        usage.problemCount > 0 || skill.hasScripts || skill.warnings.length > 0;
+                        !scan.ok ||
+                        usage.problemCount > 0 ||
+                        skill.hasScripts ||
+                        skill.warnings.length > 0;
                       const globallyEnabled = skill.enabled !== false;
                       const workspaceBusy = Boolean(
                         props.busyId?.startsWith(`workspace:skill:${skill.skillVersionId}:`),
@@ -1749,9 +1784,11 @@ function NewMaxSkillHub(props: {
                               <span className="ability-installed-row__name">
                                 <strong>{display.name}</strong>
                                 <em className={issue ? 'is-warning' : 'is-healthy'}>
-                                  {issue
-                                    ? `${usage.problemCount || skill.warnings.length} 个问题`
-                                    : '已扫描'}
+                                  {scan.ok
+                                    ? issue
+                                      ? `${usage.problemCount || skill.warnings.length || 1} 个问题`
+                                      : scan.label
+                                    : scan.label}
                                 </em>
                                 {!globallyEnabled ? <em className="is-disabled">已停用</em> : null}
                                 <small>v{skill.version}</small>
@@ -1903,7 +1940,14 @@ function NewMaxMcpHub(props: {
       (props.statusFilter === 'inactive' && server.enabled === false) ||
       (props.statusFilter === 'unused' && usage.callCount === 0) ||
       (props.statusFilter === 'problem' &&
-        (usage.problemCount > 0 || !server.trusted || server.tools.length === 0));
+        mcpAvailability({
+          enabled: server.enabled,
+          trusted: server.trusted,
+          tools: server.tools,
+          transport: server.transport,
+          endpoint: server.endpoint,
+          problemCount: usage.problemCount,
+        }).issue);
     return searchMatches && statusMatches;
   });
   const visibleRows = [...filteredRows].sort((left, right) => {
@@ -1919,8 +1963,15 @@ function NewMaxMcpHub(props: {
   const enabledCount = rows.filter((row) => row.server.enabled !== false).length;
   const recentCount = rows.filter((row) => row.usage.callCount > 0).length;
   const unusedCount = rows.filter((row) => row.usage.callCount === 0).length;
-  const problemCount = rows.filter(
-    (row) => row.usage.problemCount > 0 || !row.server.trusted || row.server.tools.length === 0,
+  const problemCount = rows.filter((row) =>
+    mcpAvailability({
+      enabled: row.server.enabled,
+      trusted: row.server.trusted,
+      tools: row.server.tools,
+      transport: row.server.transport,
+      endpoint: row.server.endpoint,
+      problemCount: row.usage.problemCount,
+    }).issue,
   ).length;
   const statusCounts: Record<StatusFilter, number> = {
     all: rows.length,
@@ -2071,7 +2122,11 @@ function NewMaxMcpHub(props: {
                         }
                       >
                         <span className="ability-market-card__icon is-mcp">
-                          <McpMarketGlyph category={item.category} />
+                          <McpIdentityMark
+                            name={item.name}
+                            endpoint={item.endpoint}
+                            size={23}
+                          />
                         </span>
                         <span className="ability-market-card__copy">
                           <span className="ability-market-card__title">
@@ -2226,13 +2281,20 @@ function NewMaxMcpHub(props: {
               ) : (
                 <div className="mcp-installed-grid" aria-label="MCP 服务列表">
                   {visibleRows.map(({ server, usage }) => {
-                    const issue =
-                      usage.problemCount > 0 || !server.trusted || server.tools.length === 0;
+                    const availability = mcpAvailability({
+                      enabled: server.enabled,
+                      trusted: server.trusted,
+                      tools: server.tools,
+                      transport: server.transport,
+                      endpoint: server.endpoint,
+                      problemCount: usage.problemCount,
+                    });
                     const refreshBusy = props.busyId === `mcp-refresh:${server.mcpServerId}`;
                     return (
                       <article
                         key={server.mcpServerId}
                         className={`mcp-installed-card${server.enabled === false ? ' is-disabled' : ''}`}
+                        data-mcp-callable={availability.callable ? '1' : '0'}
                       >
                         <button
                           type="button"
@@ -2240,14 +2302,16 @@ function NewMaxMcpHub(props: {
                           onClick={() => props.onOpenServer(server.mcpServerId)}
                         >
                           <span className="capability-row-icon is-mcp">
-                            <Server size={15} />
+                            <McpIdentityMark
+                              name={server.name}
+                              endpoint={server.endpoint}
+                              size={15}
+                            />
                           </span>
                           <span>
                             <strong>{server.name}</strong>
-                            <em>
-                              {issue
-                                ? '需要检查'
-                                : `${server.tools.length.toLocaleString('zh-CN')} 个工具`}
+                            <em className={availability.issue ? 'is-warning' : undefined}>
+                              {availability.label}
                             </em>
                             <small>{server.endpoint || '未填写 Endpoint'}</small>
                           </span>
@@ -2333,13 +2397,31 @@ function MarketSkillGlyph(props: { icon?: string }): JSX.Element {
   return <PackageOpen size={23} />;
 }
 
-function McpMarketGlyph(props: { category: string }): JSX.Element {
-  if (props.category === '文件系统') return <Folder size={23} />;
-  if (props.category === '浏览器') return <Globe2 size={23} />;
-  if (props.category === '数据库') return <Layers3 size={23} />;
-  if (props.category === '协作') return <Boxes size={23} />;
-  if (props.category === '开发工具') return <Code2 size={23} />;
-  return <Plug size={23} />;
+const MCP_MARK_ICON: Record<McpMark, typeof Server> = {
+  github: Github,
+  folder: Folder,
+  globe: Globe2,
+  database: Database,
+  server: Server,
+};
+
+function McpIdentityMark(props: { name?: string; endpoint?: string; size?: number }): JSX.Element {
+  const visual = resolveMcpVisual(props);
+  const size = props.size ?? 15;
+  if (visual.kind === 'favicon') {
+    return (
+      <img
+        src={visual.src}
+        alt=""
+        width={size}
+        height={size}
+        draggable={false}
+        data-testid={`mcp-icon-${visual.id}`}
+      />
+    );
+  }
+  const Icon = MCP_MARK_ICON[visual.mark];
+  return <Icon size={size} data-testid={`mcp-icon-${visual.id}`} />;
 }
 
 export function SkillSurface(props: {
@@ -2482,7 +2564,10 @@ export function SkillSurface(props: {
       (props.statusFilter === 'inactive' && !workspaceActive) ||
       (props.statusFilter === 'unused' && usage.callCount === 0) ||
       (props.statusFilter === 'problem' &&
-        (usage.problemCount > 0 || skill.hasScripts || skill.warnings.length > 0));
+        (scanSkillDescription(skill.description).issues.length > 0 ||
+          usage.problemCount > 0 ||
+          skill.hasScripts ||
+          skill.warnings.length > 0));
     return searchMatches && sourceMatches && statusMatches;
   });
 
@@ -2564,11 +2649,22 @@ export function SkillSurface(props: {
   const unusedCount = rows.filter((row) => row.usage.callCount === 0).length;
   const problemCount = rows.filter(
     (row) =>
+      scanSkillDescription(row.family.latest.description).issues.length > 0 ||
       row.usage.problemCount > 0 ||
       row.family.latest.hasScripts ||
       row.family.latest.warnings.length > 0,
   ).length;
-  const contextTokens = rows.reduce((sum, row) => sum + row.usage.contextTokens, 0);
+  const residentBudget = computeContextBudget(
+    rows
+      .filter((row) =>
+        skillCountsTowardResidentBudget({
+          enabled: row.family.latest.enabled !== false,
+          workspaceActive: row.workspaceActive,
+          scope: 'global',
+        }),
+      )
+      .map((row) => residentDescriptionChars(row.family.latest.description)),
+  );
 
   return (
     <section className="capability-center__content capability-center__content--mine">
@@ -2577,7 +2673,7 @@ export function SkillSurface(props: {
         recent={recentCount}
         unused={unusedCount}
         problems={problemCount}
-        contextTokens={contextTokens}
+        contextChars={residentBudget.totalChars}
       />
       <GovernanceFilters
         workspaces={props.workspaces}
@@ -2733,11 +2829,11 @@ function CapabilityStats(props: {
   recent: number;
   unused: number;
   problems: number;
-  contextTokens: number;
+  contextChars: number;
 }): JSX.Element {
   const contextPercent = Math.min(
     100,
-    Math.round((props.contextTokens / CONTEXT_BUDGET_TOKENS) * 100),
+    Math.round((props.contextChars / SKILL_BUDGET_CHARS) * 100),
   );
   return (
     <div className="capability-stats">
@@ -2777,7 +2873,7 @@ function CapabilityStats(props: {
           <span>常驻上下文占用</span>
           <strong>
             {contextPercent >= 100
-              ? `≈ 超限 ${(props.contextTokens / CONTEXT_BUDGET_TOKENS).toFixed(1)}x`
+              ? `≈ 超限 ${(props.contextChars / SKILL_BUDGET_CHARS).toFixed(1)}x`
               : `${contextPercent}%`}
           </strong>
         </div>
@@ -2785,8 +2881,8 @@ function CapabilityStats(props: {
           <span style={{ width: `${contextPercent}%` }} />
         </div>
         <p>
-          {formatTokens(props.contextTokens)} tokens / 建议上限{' '}
-          {formatTokens(CONTEXT_BUDGET_TOKENS)}
+          {formatCharCount(props.contextChars)} 字符 / 建议上限约{' '}
+          {formatCharCount(SKILL_BUDGET_CHARS)}
         </p>
       </article>
     </div>
@@ -3611,6 +3707,16 @@ function McpDetailDrawer(props: {
   const description =
     marketItem?.description ?? server?.notes ?? '已注册的 MCP 服务，可刷新并发现工具。';
   const usage = props.governance?.usage;
+  const availability = server
+    ? mcpAvailability({
+        enabled: server.enabled,
+        trusted: server.trusted,
+        tools: server.tools,
+        transport: server.transport,
+        endpoint: server.endpoint,
+        problemCount: usage?.problemCount,
+      })
+    : undefined;
 
   return (
     <Dialog.Root open={props.open} onOpenChange={props.onOpenChange}>
@@ -3620,7 +3726,11 @@ function McpDetailDrawer(props: {
           <header className="capability-drawer__header">
             <div className="capability-drawer__identity">
               <span className="capability-drawer__icon is-mcp">
-                <Plug size={20} />
+                <McpIdentityMark
+                  name={name}
+                  endpoint={server?.endpoint ?? marketItem?.endpoint}
+                  size={20}
+                />
               </span>
               <div>
                 <Dialog.Title>{name}</Dialog.Title>
@@ -3653,6 +3763,11 @@ function McpDetailDrawer(props: {
                     label="全局状态"
                     value={server.enabled === false ? '已停用' : '已启用'}
                     tone={server.enabled === false ? 'muted' : 'success'}
+                  />
+                  <DetailMetric
+                    label="可调用"
+                    value={availability?.callable ? '可以调用' : availability?.label ?? '不可调用'}
+                    tone={availability?.callable ? 'success' : 'muted'}
                   />
                   <DetailMetric
                     label="45 天调用"

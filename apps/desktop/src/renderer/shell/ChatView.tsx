@@ -1,4 +1,13 @@
+import type { ReviewView } from './review-view.js';
 import {
+  readFailedComposeDrafts,
+  rememberFailedComposeDraft,
+  subscribeFailedComposeDrafts,
+  takeFailedComposeDrafts,
+} from './failed-compose-drafts.js';
+import { useRunProcessPage } from './use-run-process-page.js';
+import {
+  Fragment,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -6,10 +15,18 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type ReactNode,
   type SetStateAction,
 } from 'react';
 import { createPortal } from 'react-dom';
+import {
+  historyRangeGaps,
+  mergeHistoryPageMessages,
+  mergeHistoryRanges,
+  type HistoryRange,
+} from './conversation-history-pages.js';
+import { useConversationNavigation } from './use-conversation-navigation.js';
 import {
   AlertCircle,
   Bot,
@@ -34,6 +51,8 @@ import {
 } from 'lucide-react';
 import {
   matchesToolName,
+  isKernelExecutionSupported,
+  kernelExecutionUnavailableReason,
   splitProviderUsageTokens,
   type Conversation,
   type ConversationPlanSummary,
@@ -42,6 +61,7 @@ import {
   type KernelDetectionResult,
   type Message,
   type MessageBlock,
+  type MessageId,
   type RunId,
   type TaskId,
   type ThreadId,
@@ -52,7 +72,6 @@ import type {
   AskQuestion,
   AskQuestionAnswer,
   ConversationGetContextStatusResponse,
-  ConversationGetRunProcessResponse,
   ConversationListRunTimelineResponse,
   ConversationListMessagesResponse,
   ConversationTransientFrame,
@@ -60,6 +79,7 @@ import type {
   CommentaryTimelineSegment,
   DesktopWaitingCommandSummary,
   PendingToolApprovalSummary,
+  ExpiredToolApprovalSummary,
   ToolApprovalScope,
   ConversationTransientSnapshot,
   RunProcessView,
@@ -125,6 +145,8 @@ import { ComposerMcpMenu } from './ComposerMcpMenu.js';
 import { ComposerModeBanner } from './ComposerModeBanner.js';
 import { ComposerActiveModePill, ComposerModeKeywordHint } from './ComposerModeControls.js';
 import { ComposerApprovalStack } from './ComposerApprovalStack.js';
+import { ExpiredToolApprovalNotice } from './ExpiredToolApprovalNotice.js';
+import { prepareApprovalRequestDraft } from './approval-request-recovery.js';
 import { ComposerEditor } from './ComposerEditor.js';
 import {
   PromptEnhancementAction,
@@ -177,8 +199,13 @@ import {
 import { TurnSkillControl } from './TurnSkillControl.js';
 import { keepListboxOptionVisible } from './compose-picker-scroll.js';
 import { FileChangesCard } from './ExecutionProcessBlock.js';
+import { RunProcessLoadNotice } from './RunProcessLoadNotice.js';
+import type { RunProcessLoadFailure } from './run-process-history-loader.js';
 import {
-  buildConversationReviewView,
+  useRunProcessHistoryLoader,
+  useRunProcessHistoryRequests,
+} from './use-run-process-history.js';
+import {
   formatCompactCount,
   formatCompactDuration,
   formatCompactRunMetrics,
@@ -187,6 +214,8 @@ import {
   formatRunModelLabel,
 } from './execution-process.js';
 import { MarkdownContent } from './MarkdownContent.js';
+import { MessageTextContent, type MessageTextPart } from './MessageTextContent.js';
+import { resolveMessageText } from './message-text-source.js';
 import type { OpenHtmlInBrowser } from './html-browser.js';
 import { AnswerSources } from './AnswerSources.js';
 import { collectAnswerSources } from './answer-sources.js';
@@ -202,6 +231,7 @@ import { persistentComputerUseAppOf } from './tool-approval.js';
 import { projectTodoFromEvents } from './todo-projection.js';
 import { ComposerTaskPanel } from './ComposerTaskPanel.js';
 import { InlineProcessFlow } from './InlineProcessFlow.js';
+import { reconcileProcessItemOutcomes } from './process-item-outcome.js';
 import {
   buildAssistantTurnNavigationItems,
   ConversationMinimapRail,
@@ -240,10 +270,10 @@ import {
 import {
   inferNativeScrollIntent,
   resolveBottomPinState,
+  shouldFollowConversationContentResize,
   shouldRestorePrependAnchor,
 } from './message-window.js';
 import {
-  collectRunProcessIds,
   projectRunTerminalEvents,
   reconcileStreamingMessageProcessTerminal,
   reconcileRunProcessTerminal,
@@ -256,6 +286,7 @@ import {
   readConversationModelOverride,
   readConversationNetworkEnabled,
   readConversationReasoningEffort,
+  writeAgentPreferences,
   writeConversationKernelOverride,
   writeConversationModelOverride,
   writeConversationNetworkEnabled,
@@ -302,6 +333,7 @@ export type InlineProcessItem =
   | {
       kind: 'reasoning';
       text: string;
+      contentRef?: import('@sync-think/shared').DeferredContent;
       id?: string;
       sequence?: number;
       status?: 'streaming' | 'completed';
@@ -309,6 +341,7 @@ export type InlineProcessItem =
   | {
       kind: 'text' | 'commentary';
       text: string;
+      contentRef?: import('@sync-think/shared').DeferredContent;
       id?: string;
       sequence?: number;
       status?: 'streaming' | 'completed';
@@ -323,6 +356,9 @@ export type InlineProcessItem =
       inputSummary?: string;
       argumentsJson: string;
       result?: string;
+      argumentsRef?: import('@sync-think/shared').DeferredContent;
+      resultRef?: import('@sync-think/shared').DeferredContent;
+      detailsRef?: import('@sync-think/shared').DeferredContent;
       failed?: boolean;
       status?: 'running' | 'completed' | 'failed';
       /** First observed tool boundary (native steps carry these). */
@@ -351,6 +387,8 @@ export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
   text: string;
+  textParts?: MessageTextPart[];
+  answerParts?: MessageTextPart[];
   /** User-visible assistant progress, separate from the final answer. */
   commentaryText?: string;
   /** Ordered commentary fragments interleaved with durable tool boundaries. */
@@ -391,6 +429,7 @@ export interface ChatMessage {
 
 interface CachedConversationPage {
   messages: ChatMessage[];
+  ranges: HistoryRange[];
   hasMore: boolean;
   nextCursor?: number;
 }
@@ -409,10 +448,29 @@ function readRecentConversationPage(conversationId: string): CachedConversationP
 }
 
 function cacheRecentConversationPage(conversationId: string, page: CachedConversationPage): void {
+  const retainedIds = new Set(
+    [...page.messages]
+      .sort((left, right) => (left.sequence ?? 0) - (right.sequence ?? 0))
+      .slice(-RECENT_CONVERSATION_MESSAGE_LIMIT)
+      .map((message) => message.id),
+  );
+  const messages = page.messages.filter((message) => retainedIds.has(message.id));
+  const trimmed = messages.length < page.messages.length;
+  const firstSequence = Math.min(
+    ...messages.map((message) => message.sequence ?? Number.MAX_SAFE_INTEGER),
+  );
+  const ranges = trimmed
+    ? page.ranges
+        .filter((range) => range.end >= firstSequence)
+        .map((range) => ({ ...range, start: Math.max(range.start, firstSequence) }))
+    : page.ranges;
   recentConversationPages.delete(conversationId);
   recentConversationPages.set(conversationId, {
     ...page,
-    messages: page.messages.slice(-RECENT_CONVERSATION_MESSAGE_LIMIT),
+    messages,
+    ranges,
+    hasMore: trimmed || page.hasMore,
+    nextCursor: trimmed && Number.isSafeInteger(firstSequence) ? firstSequence : page.nextCursor,
   });
   while (recentConversationPages.size > RECENT_CONVERSATION_CACHE_SIZE) {
     const oldest = recentConversationPages.keys().next().value as string | undefined;
@@ -572,12 +630,18 @@ function parseAssistantTimeline(
 
 function assistantTimelineToChatFields(timeline: readonly AssistantTurnSegment[] | undefined): {
   answerText?: string;
+  answerParts?: MessageTextPart[];
   commentaryText?: string;
   reasoningText?: string;
   processItems?: InlineProcessItem[];
 } {
   if (!timeline?.length) return {};
   const ordered = [...timeline].sort((left, right) => left.sequence - right.sequence);
+  const answerParts = ordered.flatMap((segment): MessageTextPart[] =>
+    segment.kind === 'text' && segment.phase === 'final_answer'
+      ? [{ text: segment.text, ...(segment.textRef ? { contentRef: segment.textRef } : {}) }]
+      : [],
+  );
   const answerText = ordered
     .filter(
       (segment): segment is Extract<AssistantTurnSegment, { kind: 'text' }> =>
@@ -600,6 +664,7 @@ function assistantTimelineToChatFields(timeline: readonly AssistantTurnSegment[]
     .map((segment) => segment.text)
     .join('\n\n');
   const processItems = ordered.flatMap((segment): InlineProcessItem[] => {
+    if (segment.id === 'durable-timeline-truncated') return [];
     if (segment.kind === 'thinking') {
       return segment.text.trim()
         ? [
@@ -608,6 +673,7 @@ function assistantTimelineToChatFields(timeline: readonly AssistantTurnSegment[]
               id: segment.id,
               sequence: segment.sequence,
               text: segment.text,
+              ...(segment.textRef ? { contentRef: segment.textRef } : {}),
               status: segment.status,
             },
           ]
@@ -621,6 +687,7 @@ function assistantTimelineToChatFields(timeline: readonly AssistantTurnSegment[]
           id: segment.id,
           sequence: segment.sequence,
           text: segment.text,
+          ...(segment.textRef ? { contentRef: segment.textRef } : {}),
           status: segment.status,
         },
       ];
@@ -638,6 +705,8 @@ function assistantTimelineToChatFields(timeline: readonly AssistantTurnSegment[]
           ...(segment.inputSummary ? { inputSummary: segment.inputSummary } : {}),
           argumentsJson: segment.argumentsJson ?? '',
           ...(segment.output !== undefined ? { result: segment.output } : {}),
+          ...(segment.argumentsRef ? { argumentsRef: segment.argumentsRef } : {}),
+          ...(segment.outputRef ? { resultRef: segment.outputRef } : {}),
           ...(segment.isError || segment.status === 'failed' ? { failed: true } : {}),
           status: segment.status,
           ...(segment.startedAt ? { startedAt: segment.startedAt } : {}),
@@ -657,7 +726,9 @@ function assistantTimelineToChatFields(timeline: readonly AssistantTurnSegment[]
     ];
   });
   return {
-    ...(answerText ? { answerText } : {}),
+    ...(answerText
+      ? { answerText, ...(answerParts.some((part) => part.contentRef) ? { answerParts } : {}) }
+      : {}),
     ...(commentaryText ? { commentaryText } : {}),
     ...(reasoningText ? { reasoningText } : {}),
     ...(processItems.length > 0 ? { processItems } : {}),
@@ -745,20 +816,30 @@ export interface ProjectedTransientAssistantDisplay extends ProjectedTransientAn
 }
 
 /**
- * Project a live turn without making the unclassified text tail jump through
- * the execution panel. The tail stays out of process items until Runtime
- * classifies it; the chat bubble still shows it as a provisional answer.
+ * Project a live turn. Unclassified tokens stay out of the final-answer
+ * bubble and stream as a pending commentary row at the current process
+ * position until a tool or terminal boundary classifies them.
  */
 export function projectTransientAssistantDisplay(
   draftText: string,
   timeline: readonly AssistantTurnSegment[] | undefined,
 ): ProjectedTransientAssistantDisplay {
+  const projected = projectTransientAnswerText(draftText, timeline);
   const timelineFields = assistantTimelineToChatFields(timeline);
+  const processItems = [...(timelineFields.processItems ?? [])];
+  if (projected.pendingText.trim()) {
+    processItems.push({
+      kind: 'commentary',
+      id: 'pending-text',
+      text: projected.pendingText,
+      status: 'streaming',
+    });
+  }
   return {
-    ...projectTransientAnswerText(draftText, timeline),
+    ...projected,
     ...(timelineFields.commentaryText ? { commentaryText: timelineFields.commentaryText } : {}),
     ...(timelineFields.reasoningText ? { reasoningText: timelineFields.reasoningText } : {}),
-    ...(timelineFields.processItems ? { processItems: timelineFields.processItems } : {}),
+    ...(processItems.length > 0 ? { processItems } : {}),
   };
 }
 
@@ -802,23 +883,43 @@ export function messageToChat(msg: Message): ChatMessage {
                 : undefined;
           const reasoning =
             typeof blockReasoning === 'string' ? blockReasoning : (block.text ?? '');
-          if (reasoning.trim()) processItems.push({ kind: 'reasoning', text: reasoning });
+          if (reasoning.trim())
+            processItems.push({
+              kind: 'reasoning',
+              text: reasoning,
+              ...(block.contentRef ? { contentRef: block.contentRef } : {}),
+            });
           break;
         }
         case 'text':
           if ((block.text ?? '').trim())
-            processItems.push({ kind: 'text', text: block.text ?? '' });
+            processItems.push({
+              kind: 'text',
+              text: block.text ?? '',
+              ...(block.contentRef ? { contentRef: block.contentRef } : {}),
+            });
           break;
         case 'commentary':
           if ((block.text ?? '').trim())
-            processItems.push({ kind: 'commentary', text: block.text ?? '' });
+            processItems.push({
+              kind: 'commentary',
+              text: block.text ?? '',
+              ...(block.contentRef ? { contentRef: block.contentRef } : {}),
+            });
           break;
         case 'tool-call': {
-          const payload = (block.payload ?? {}) as { name?: string; argumentsJson?: string };
+          const payload = (block.payload ?? {}) as {
+            name?: string;
+            toolCallId?: string;
+            argumentsJson?: string;
+            argumentsRef?: import('@sync-think/shared').DeferredContent;
+          };
           processItems.push({
             kind: 'tool',
             name: payload.name ?? '工具',
             argumentsJson: payload.argumentsJson ?? '',
+            ...(payload.toolCallId ? { toolCallId: payload.toolCallId } : {}),
+            ...(payload.argumentsRef ? { argumentsRef: payload.argumentsRef } : {}),
           });
           break;
         }
@@ -833,6 +934,7 @@ export function messageToChat(msg: Message): ChatMessage {
             }
             const payload = (block.payload ?? {}) as { failed?: boolean };
             if (payload.failed === true) last.failed = true;
+            if (block.contentRef) last.resultRef = block.contentRef;
           }
           break;
         }
@@ -941,6 +1043,19 @@ export function messageToChat(msg: Message): ChatMessage {
     id: String(msg.id),
     role,
     text,
+    ...(timelineFields.answerText === undefined && textBlocks.some((block) => block.contentRef)
+      ? {
+          textParts: textBlocks.map((block) => ({
+            text: block.text ?? '',
+            ...(block.contentRef ? { contentRef: block.contentRef } : {}),
+          })),
+        }
+      : {}),
+    ...(timelineFields.answerParts
+      ? { answerParts: timelineFields.answerParts }
+      : answerBlock?.contentRef
+        ? { answerParts: [{ text: answerBlock.text ?? '', contentRef: answerBlock.contentRef }] }
+        : {}),
     commentaryText: timelineFields.commentaryText ?? (commentaryText || undefined),
     commentarySegments: assistantTimeline
       ? undefined
@@ -1110,7 +1225,7 @@ interface ChatViewProps {
   seedComposerText?: string;
   onSeedComposerTextConsumed?(conversationId: string): void;
   /** Latest run with file changes, reported up so review surfaces can render it. */
-  onLatestReviewChange?(view: RunProcessView | null): void;
+  onLatestReviewChange?(view: ReviewView | null): void;
   onOpenFile?: (path: string, location?: ProjectTextLocation) => void;
   /** Opens generated HTML in the embedded browser tab. */
   onOpenHtmlInBrowser?: OpenHtmlInBrowser;
@@ -1140,13 +1255,17 @@ const PERMISSION_ICONS: Record<PermissionMode, typeof Shield> = {
   'full-access': Zap,
 };
 
+const EMPTY_CHAT_AGENTS: readonly GlobalAgent[] = [];
+const EMPTY_CHAT_TEAMS: readonly Team[] = [];
+const EMPTY_CHAT_WORKSPACES: readonly WorkspaceSummary[] = [];
+
 export function ChatView({
   conversation,
   modelName,
   models,
-  agents = [],
-  teams = [],
-  workspaces = [],
+  agents = EMPTY_CHAT_AGENTS,
+  teams = EMPTY_CHAT_TEAMS,
+  workspaces = EMPTY_CHAT_WORKSPACES,
   eventHistory,
   runActivityAuthority,
   runtimeConnectionRevision = 0,
@@ -1520,30 +1639,46 @@ export function ChatView({
     });
   }, []);
   /** Paginated message store state. */
-  const initialCachedPage = readRecentConversationPage(String(conversation.id));
+  const historyScopeKey = JSON.stringify([conversation.id, conversation.taskId ?? null]);
+  const historyScopeRef = useRef({ key: historyScopeKey });
+  if (historyScopeRef.current.key !== historyScopeKey)
+    historyScopeRef.current = { key: historyScopeKey };
+  const initialCachedPage = readRecentConversationPage(historyScopeKey);
   const [loadedMessages, setLoadedMessages] = useState<ChatMessage[]>(
     () => initialCachedPage?.messages ?? [],
   );
+  const [historyRanges, setHistoryRanges] = useState<HistoryRange[]>(
+    () => initialCachedPage?.ranges ?? [],
+  );
+  const historyRangesRef = useRef(historyRanges);
+  const [historyLoadError, setHistoryLoadError] = useState(false);
+  const [loadingHistoryTarget, setLoadingHistoryTarget] = useState<string>();
+  const historyTargetTokenRef = useRef<object>();
+  const navigationIntentRef = useRef(0);
+  const navigationDirectory = useConversationNavigation(
+    String(conversation.id),
+    Boolean(conversation.taskId),
+    historyScopeKey,
+  );
+  const refreshNavigationDirectory = navigationDirectory.refresh;
   const [runProcessById, setRunProcessById] = useState<Map<string, RunProcessView>>(
     () => new Map(),
   );
-  const inFlightRunProcessesRef = useRef(new Set<string>());
-  const processLoadGenerationRef = useRef(0);
-  const runProcessRetryTimersRef = useRef(new Map<string, number>());
-  const runProcessRetryAttemptsRef = useRef(new Map<string, number>());
-  const [runProcessRetryEpoch, setRunProcessRetryEpoch] = useState(0);
-  const clearRunProcessRetryState = useCallback(() => {
-    for (const timer of runProcessRetryTimersRef.current.values()) {
-      window.clearTimeout(timer);
-    }
-    runProcessRetryTimersRef.current.clear();
-    runProcessRetryAttemptsRef.current.clear();
-  }, []);
-  useEffect(() => () => clearRunProcessRetryState(), [clearRunProcessRetryState]);
-  const loadedMessagesConversationIdRef = useRef<string | undefined>(undefined);
-  const updateRunProcess = useCallback((process: RunProcessView | null | undefined) => {
+  const {
+    loader: runProcessLoader,
+    failures: runProcessLoadFailures,
+    retry: retryRunProcess,
+  } = useRunProcessHistoryLoader(String(conversation.id), (process) => {
     setRunProcessById((previous) => updateRunProcessMap(previous, process));
-  }, []);
+  });
+  const loadedMessagesConversationIdRef = useRef<string | undefined>(undefined);
+  const updateRunProcess = useCallback(
+    (process: RunProcessView | null | undefined) => {
+      if (process) runProcessLoader.accept(String(process.runId));
+      setRunProcessById((previous) => updateRunProcessMap(previous, process));
+    },
+    [runProcessLoader],
+  );
   const [hasMore, setHasMore] = useState(() => initialCachedPage?.hasMore ?? false);
   const [nextCursor, setNextCursor] = useState<number | undefined>(
     () => initialCachedPage?.nextCursor,
@@ -1551,6 +1686,10 @@ export function ChatView({
   const [loadingMore, setLoadingMore] = useState(false);
   /** Whether the initial page load has completed (success or failure). */
   const [initialLoaded, setInitialLoaded] = useState(Boolean(initialCachedPage));
+  const [durableTaskPlan, setDurableTaskPlan] = useState<{
+    conversationId: string;
+    state: NonNullable<ConversationListMessagesResponse['taskPlan']>;
+  }>();
   /** Runtime-owned snapshot used by the ring and compact threshold. */
   const [contextStatus, setContextStatus] = useState<ConversationGetContextStatusResponse | null>(
     null,
@@ -1659,7 +1798,7 @@ export function ChatView({
       if (frame.process) {
         updateRunProcess(frame.process);
       } else if (frame.kind === 'terminal') {
-        inFlightRunProcessesRef.current.delete(String(frame.runId));
+        runProcessLoader.invalidate(String(frame.runId));
         setRunProcessById((previous) => {
           if (!previous.has(frame.runId)) return previous;
           const updated = new Map(previous);
@@ -1679,7 +1818,7 @@ export function ChatView({
         getConversationDisplayQueueFlushDelay(queued),
       );
     }
-  }, [renderTransientDraft, threadId, updateRunProcess]);
+  }, [renderTransientDraft, runProcessLoader, threadId, updateRunProcess]);
   const scheduleTransientFrameFlush = useCallback(
     (publication: 'animation-frame' | 'immediate' = 'animation-frame') => {
       if (publication === 'immediate') {
@@ -1718,6 +1857,30 @@ export function ChatView({
   const [mcpMenuStyle, setMcpMenuStyle] = useState<React.CSSProperties | null>(null);
   /** Selected @-files / images shown as chips (NewMax style). */
   const [attachments, setAttachments] = useState<ComposeAttachment[]>([]);
+  const failedComposeDraftScope = JSON.stringify([
+    conversation.workspaceId ?? '',
+    String(conversation.id),
+  ]);
+  const subscribeFailedDrafts = useCallback(
+    (listener: () => void) => subscribeFailedComposeDrafts(failedComposeDraftScope, listener),
+    [failedComposeDraftScope],
+  );
+  const getFailedDrafts = useCallback(
+    () => readFailedComposeDrafts(failedComposeDraftScope),
+    [failedComposeDraftScope],
+  );
+  const failedComposeDrafts = useSyncExternalStore(
+    subscribeFailedDrafts,
+    getFailedDrafts,
+    getFailedDrafts,
+  );
+  const composeMountedRef = useRef(true);
+  useEffect(() => {
+    composeMountedRef.current = true;
+    return () => {
+      composeMountedRef.current = false;
+    };
+  }, []);
   /** Composer-only drafts. They do not become messages or Provider context until dispatched. */
   const [queuedComposeRequests, setQueuedComposeRequests] = useState<QueuedComposeRequest[]>(() =>
     readQueuedComposeRequests(String(conversation.id)),
@@ -1759,6 +1922,26 @@ export function ChatView({
   const messagesContentRef = useRef<HTMLDivElement>(null);
   /** Prevent duplicate history-page requests while a top-edge load is pending. */
   const loadingMoreRef = useRef(false);
+  const previousHistoryScopeRef = useRef(historyScopeKey);
+  useLayoutEffect(() => {
+    if (previousHistoryScopeRef.current === historyScopeKey) return;
+    previousHistoryScopeRef.current = historyScopeKey;
+    const cachedPage = readRecentConversationPage(historyScopeKey);
+    setLoadedMessages(cachedPage?.messages ?? []);
+    historyRangesRef.current = cachedPage?.ranges ?? [];
+    setHistoryRanges(historyRangesRef.current);
+    setHasMore(cachedPage?.hasMore ?? false);
+    setNextCursor(cachedPage?.nextCursor);
+    setLoadingMore(false);
+    loadingMoreRef.current = false;
+    historyTargetTokenRef.current = undefined;
+    setLoadingHistoryTarget(undefined);
+    setHistoryLoadError(false);
+    setInitialLoaded(Boolean(cachedPage));
+    setDurableTaskPlan(undefined);
+    loadedMessagesConversationIdRef.current = undefined;
+    messageLoadGenerationRef.current += 1;
+  }, [historyScopeKey]);
   /** Invalidates an async prepend anchor when the user keeps scrolling meanwhile. */
   const userScrollRevisionRef = useRef(0);
   /** Distinguishes native/user scroll direction, including scrollbar dragging. */
@@ -1833,12 +2016,16 @@ export function ChatView({
     setDesktopWaitingError(undefined);
     setBusyDesktopCommandId(undefined);
     const conversationId = String(conversation.id);
-    const cachedPage = readRecentConversationPage(conversationId);
+    const cachedPage = readRecentConversationPage(historyScopeRef.current.key);
     setLoadedMessages(cachedPage?.messages ?? []);
+    historyRangesRef.current = cachedPage?.ranges ?? [];
+    setHistoryRanges(historyRangesRef.current);
+    setHistoryLoadError(false);
+    setLoadingHistoryTarget(undefined);
+    historyTargetTokenRef.current = undefined;
+    setDurableTaskPlan(undefined);
     setRunProcessById(new Map());
-    inFlightRunProcessesRef.current.clear();
-    clearRunProcessRetryState();
-    processLoadGenerationRef.current += 1;
+    runProcessLoader.suspend();
     loadedMessagesConversationIdRef.current = undefined;
     setHasMore(cachedPage?.hasMore ?? false);
     setNextCursor(cachedPage?.nextCursor);
@@ -1897,7 +2084,7 @@ export function ChatView({
     // onConversationUpdated → refresh 更新该字段，导致此「切换对话」重置
     // effect 被误触发：消息被清空而 loadMessages 不重跑，聊天区永远停在
     // 「加载中…」。权限模式由 setPermission 自行同步，这里只需跟随 id。
-  }, [clearCompactDismissTimer, clearRunProcessRetryState, conversation.id]);
+  }, [clearCompactDismissTimer, conversation.id, runProcessLoader]);
 
   // A provider can be disabled while a conversation still has its old local
   // override. Repair that hidden stale selection as soon as the available
@@ -2070,44 +2257,48 @@ export function ChatView({
     };
   }, [conversation.id, conversation.taskId]);
 
-  // ─── Paginated message loading from the durable store ───────────────────────
   const loadMessages = useCallback(
-    async (cursor?: number): Promise<boolean> => {
+    async (
+      cursor?: number,
+      options?: { aroundMessageId?: string; accept?: () => boolean },
+    ): Promise<boolean> => {
+      const latest = cursor === undefined && !options?.aroundMessageId;
       const api = bridge();
       if (!api?.listConversationMessages) {
-        if (cursor === undefined) setInitialLoaded(true);
+        if (latest) setInitialLoaded(true);
         return false;
       }
       const conversationId = String(conversation.id);
-      // Every latest-page read supersedes earlier initial/terminal refreshes and
-      // any older-page request that started from an obsolete list snapshot.
-      const generation =
-        cursor === undefined
-          ? (messageLoadGenerationRef.current += 1)
-          : messageLoadGenerationRef.current;
-      if (cursor === undefined) {
-        setLoadingMore(false);
-      } else {
-        // Wheel events can arrive several times before React commits the
-        // loadingMore state update. Guard the imperative edge-trigger as well
-        // so one scroll gesture cannot start overlapping prepends.
+      const scope = historyScopeRef.current;
+      if (scope.key !== historyScopeKey) return false;
+      const generation = latest
+        ? ++messageLoadGenerationRef.current
+        : messageLoadGenerationRef.current;
+      if (cursor !== undefined) {
         if (loadingMoreRef.current) return false;
         loadingMoreRef.current = true;
         setLoadingMore(true);
       }
+      const current = () =>
+        scope === historyScopeRef.current &&
+        (!latest || generation === messageLoadGenerationRef.current);
+      setHistoryLoadError(false);
       try {
         const res: ConversationListMessagesResponse = await api.listConversationMessages({
           conversationId: conversation.id,
           beforeSequence: cursor,
+          ...(options?.aroundMessageId
+            ? { aroundMessageId: options.aroundMessageId as MessageId }
+            : {}),
           limit: 50,
         });
-        if (
-          activeConversationIdRef.current !== conversationId ||
-          messageLoadGenerationRef.current !== generation
-        ) {
+        if (!current() || options?.accept?.() === false) {
           return false;
         }
         loadedMessagesConversationIdRef.current = conversationId;
+        if (latest && res.taskPlan) {
+          setDurableTaskPlan({ conversationId, state: res.taskPlan });
+        }
         const converted = res.messages.map(messageToChat).filter(shouldDisplayChatMessage);
         const durableAssistantRunIds = converted
           .filter((message) => message.role === 'assistant' && Boolean(message.runId))
@@ -2119,49 +2310,61 @@ export function ChatView({
         if (reconciledDraft !== transientDraftRef.current) {
           renderTransientDraft(reconciledDraft, lastTransientSequenceRef.current);
         }
-        if (cursor !== undefined) {
-          // Prepend older messages and de-duplicate defensive retries. Durable
-          // sequence is the canonical order, not async response arrival order.
-          setLoadedMessages((prev) => {
-            const byId = new Map<string, ChatMessage>();
-            for (const message of [...converted, ...prev]) byId.set(message.id, message);
-            const merged = orderDurableMessagesForDisplay([...byId.values()]);
-            cacheRecentConversationPage(conversationId, {
-              messages: merged,
-              hasMore: res.hasMore,
-              nextCursor: res.nextCursor,
-            });
-            return merged;
-          });
-        } else {
-          // Initial / terminal refresh — already in chronological order (ASC).
-          const ordered = orderDurableMessagesForDisplay(converted);
-          cacheRecentConversationPage(conversationId, {
-            messages: ordered,
+        const sequences = res.messages.map((message) => message.sequence);
+        const latestEnd = Math.max(...sequences);
+        const previousRanges = latest
+          ? res.hasMore
+            ? historyRangesRef.current
+                .filter((range) => range.start <= latestEnd)
+                .map((range) => ({ ...range, end: Math.min(range.end, latestEnd) }))
+            : []
+          : historyRangesRef.current;
+        const ranges = mergeHistoryRanges(
+          previousRanges,
+          {
+            sequences: res.messages.map((message) => message.sequence),
             hasMore: res.hasMore,
-            nextCursor: res.nextCursor,
+          },
+          cursor,
+        );
+        historyRangesRef.current = ranges;
+        setHistoryRanges(ranges);
+        const more = ranges.length ? ranges[0]!.start > 0 : res.hasMore;
+        const next = more ? (ranges[0]?.start ?? res.nextCursor) : undefined;
+        setLoadedMessages((previous) => {
+          if (scope !== historyScopeRef.current) return previous;
+          const merged = orderDurableMessagesForDisplay(
+            mergeHistoryPageMessages(previous, converted, {
+              sequences,
+              hasMore: res.hasMore,
+              latest,
+            }),
+          );
+          cacheRecentConversationPage(scope.key, {
+            messages: merged,
+            ranges,
+            hasMore: more,
+            nextCursor: next,
           });
-          setLoadedMessages(ordered);
-        }
-        setHasMore(res.hasMore);
-        setNextCursor(res.nextCursor);
+          return merged;
+        });
+        setHasMore(more);
+        setNextCursor(next);
+        if (latest) refreshNavigationDirectory();
         return true;
       } catch {
-        // Non-fatal: the user can still send messages.
+        if (current() && options?.accept?.() !== false) setHistoryLoadError(true);
         return false;
       } finally {
-        if (
-          activeConversationIdRef.current === conversationId &&
-          messageLoadGenerationRef.current === generation
-        ) {
+        if (current()) {
           if (cursor !== undefined) {
             loadingMoreRef.current = false;
             setLoadingMore(false);
-          } else setInitialLoaded(true);
+          } else if (latest) setInitialLoaded(true);
         }
       }
     },
-    [conversation.id, renderTransientDraft],
+    [conversation.id, historyScopeKey, refreshNavigationDirectory, renderTransientDraft],
   );
 
   const catalogContextWindow = models.find((model) => {
@@ -2393,14 +2596,14 @@ export function ChatView({
     return display;
   }, [runProcessById, runTerminalById]);
   /** Conversation-scoped Review: every created/edited file across this chat. */
-  const latestReviewView = useMemo(
-    () => buildConversationReviewView(displayRunProcessById.values()),
-    [displayRunProcessById],
+  const latestReviewView = useMemo<ReviewView>(
+    () => ({ reviewScope: 'conversation', conversationId: conversation.id }),
+    [conversation.id],
   );
   /** Report up so workspace review surfaces can render the latest run. */
   useEffect(() => {
     onLatestReviewChange?.(latestReviewView);
-  }, [latestReviewView, onLatestReviewChange]);
+  }, [latestReviewView, onLatestReviewChange, conversation.id]);
   const runAgentIdentityById = useMemo(
     () => projectRunAgentIdentities(eventHistory),
     [eventHistory],
@@ -2882,7 +3085,7 @@ export function ChatView({
             if (frame.process) {
               updateRunProcess(frame.process);
             } else {
-              inFlightRunProcessesRef.current.delete(String(frame.runId));
+              runProcessLoader.invalidate(String(frame.runId));
               setRunProcessById((previous) => {
                 if (!previous.has(frame.runId)) return previous;
                 const next = new Map(previous);
@@ -2922,7 +3125,7 @@ export function ChatView({
     // Kernel/model context refreshes must not resubscribe: tearing down the
     // live stream on a picker click races the 5s IPC budget and makes the
     // shell look frozen while conversation.subscribeTransientStream times out.
-  }, [conversation.id, scheduleTransientFrameFlush, threadId, updateRunProcess]);
+  }, [conversation.id, runProcessLoader, scheduleTransientFrameFlush, threadId, updateRunProcess]);
 
   // Streaming via durable events is now a compatibility/failure fallback.
   // While transient is healthy it owns the complete visible order, including
@@ -2972,6 +3175,104 @@ export function ChatView({
   const [runtimePendingApprovals, setRuntimePendingApprovals] = useState<
     PendingToolApprovalSummary[]
   >([]);
+  const [runtimeExpiredApprovals, setRuntimeExpiredApprovals] = useState<
+    ExpiredToolApprovalSummary[]
+  >([]);
+  const [expiredApprovalCount, setExpiredApprovalCount] = useState(0);
+  const [recoveringApprovalId, setRecoveringApprovalId] = useState<string>();
+  const approvalRecoveryRead = useRef<AbortController>();
+  useEffect(() => {
+    setRecoveringApprovalId(undefined);
+    return () => {
+      approvalRecoveryRead.current?.abort();
+      approvalRecoveryRead.current = undefined;
+    };
+  }, [conversation.id]);
+  const handleRecoverApproval = useCallback(
+    async (approval: ExpiredToolApprovalSummary) => {
+      const api = bridge();
+      if (
+        !api?.listConversationMessages ||
+        !approval.requestMessageId ||
+        approvalRecoveryRead.current ||
+        String(approval.threadId) !== threadId
+      )
+        return;
+      const targetConversationId = String(conversation.id);
+      const controller = new AbortController();
+      approvalRecoveryRead.current = controller;
+      setRecoveringApprovalId(approval.approvalId);
+      try {
+        const response = await api.listConversationMessages({
+          conversationId: conversation.id,
+          aroundMessageId: approval.requestMessageId,
+          limit: 1,
+        });
+        if (controller.signal.aborted || activeConversationIdRef.current !== targetConversationId)
+          return;
+        const original = response.messages.find(
+          (message) => message.id === approval.requestMessageId,
+        );
+        if (
+          !original ||
+          original.role !== 'user' ||
+          String(original.threadId) !== threadId ||
+          (original.runId != null && String(original.runId) !== String(approval.runId))
+        )
+          throw new Error('原请求已变更或不属于该审批');
+        const draft = await prepareApprovalRequestDraft(
+          messageToChat(original),
+          targetConversationId,
+          controller.signal,
+          api.readApprovalRequestImage,
+        );
+        if (controller.signal.aborted || activeConversationIdRef.current !== targetConversationId)
+          return;
+        setInput((current) => [current, draft.text].filter(Boolean).join('\n\n'));
+        setAttachments((current) => [
+          ...new Map(
+            [...draft.attachments, ...current].map((attachment) => [attachment.path, attachment]),
+          ).values(),
+        ]);
+        setSelectedSkillVersionIds((current) => [
+          ...new Set([...current, ...draft.skillVersionIds]),
+        ]);
+        setLocalErrors((previous) => [
+          ...previous,
+          {
+            id: 'approval-recovered-' + approval.approvalId + '-' + Date.now(),
+            role: 'system',
+            tone: 'info',
+            text: '已恢复原请求，请核对后发送。新请求不会沿用旧批准，原运行可能已完成部分操作。',
+            timestamp: new Date().toISOString(),
+          },
+        ]);
+        window.requestAnimationFrame(() => inputRef.current?.focus());
+      } catch (error) {
+        const cancelled = controller.signal.aborted;
+        controller.abort();
+        if (!cancelled && activeConversationIdRef.current === targetConversationId)
+          setLocalErrors((previous) => [
+            ...previous,
+            {
+              id: 'approval-recovery-error-' + Date.now(),
+              role: 'system',
+              tone: 'error',
+              text:
+                '恢复原请求失败，当前草稿保持不变：' +
+                (error instanceof Error ? error.message : String(error)),
+              timestamp: new Date().toISOString(),
+            },
+          ]);
+      } finally {
+        if (approvalRecoveryRead.current === controller) {
+          approvalRecoveryRead.current = undefined;
+          setRecoveringApprovalId(undefined);
+        }
+      }
+    },
+    [conversation.id, threadId, setLocalErrors],
+  );
   const pendingToolApprovalLoadGenerationRef = useRef(0);
   const toolApprovalLifecycleRevision = useMemo(() => {
     let revision = 0;
@@ -2994,6 +3295,8 @@ export function ChatView({
     if (!api?.listPendingToolApprovals || !threadId) {
       pendingToolApprovalLoadGenerationRef.current += 1;
       setRuntimePendingApprovals([]);
+      setRuntimeExpiredApprovals([]);
+      setExpiredApprovalCount(0);
       return;
     }
     const generation = (pendingToolApprovalLoadGenerationRef.current += 1);
@@ -3003,6 +3306,11 @@ export function ChatView({
       setRuntimePendingApprovals(
         response.approvals.filter((approval) => String(approval.threadId) === threadId),
       );
+      const expired = (response.expired ?? []).filter(
+        (approval) => String(approval.threadId) === threadId && approval.status === 'expired',
+      );
+      setRuntimeExpiredApprovals(expired);
+      setExpiredApprovalCount(response.expiredCount ?? expired.length);
     } catch {
       // Keep the last validated Runtime snapshot. Durable events still resolve
       // cards while a reconnect query is transiently unavailable.
@@ -3098,21 +3406,45 @@ export function ChatView({
     return [...byToolCall.values(), ...noToolCall];
   }, [eventHistory, runtimePendingApprovals, threadId]);
 
+  const approvalWaitingRunIds = useMemo(
+    () => new Set(pendingApprovals.flatMap((approval) => (approval.runId ? [approval.runId] : []))),
+    [pendingApprovals],
+  );
+
   const [decidingApprovalId, setDecidingApprovalId] = useState<string | null>(null);
+  useEffect(() => {
+    setDecidingApprovalId(null);
+  }, [conversation.id]);
 
   const handleToolApproval = useCallback(
     async (approvalId: string, decision: 'approve' | 'deny', scope: ToolApprovalScope = 'once') => {
       const api = bridge();
       if (!api?.decideToolApproval || decidingApprovalId) return;
+      const targetConversationId = String(conversation.id);
       setDecidingApprovalId(approvalId);
       try {
-        await api.decideToolApproval({
+        const response = await api.decideToolApproval({
           approvalId,
           decision,
           scope: decision === 'deny' ? 'once' : scope,
         });
+        if (activeConversationIdRef.current !== targetConversationId) return;
+        if (response.outcome === 'expired' || response.decision !== decision) {
+          const id = 'approval-outcome-' + approvalId;
+          const text =
+            response.outcome === 'expired'
+              ? '原审批已失效，本次点击没有授予权限。请重新编辑原请求并核对后发送。'
+              : response.decision === 'deny'
+                ? '该请求此前已被拒绝，本次点击没有授予权限。'
+                : '该请求此前已获批准，本次拒绝没有撤回已生效的批准。';
+          setLocalErrors((previous) => [
+            ...previous.filter((message) => message.id !== id),
+            { id, role: 'system', tone: 'warning', text, timestamp: new Date().toISOString() },
+          ]);
+        }
         await refreshPendingToolApprovals();
       } catch (error) {
+        if (activeConversationIdRef.current !== targetConversationId) return;
         setLocalErrors((prev) => [
           ...prev,
           {
@@ -3124,10 +3456,10 @@ export function ChatView({
           },
         ]);
       } finally {
-        setDecidingApprovalId(null);
+        if (activeConversationIdRef.current === targetConversationId) setDecidingApprovalId(null);
       }
     },
-    [decidingApprovalId, refreshPendingToolApprovals],
+    [conversation.id, decidingApprovalId, refreshPendingToolApprovals, setLocalErrors],
   );
 
   // Remove optimistic bubbles only after their durable message id arrives.
@@ -3231,24 +3563,62 @@ export function ChatView({
     return stamped.map((s) => s.value);
   }, [localErrors, loadedMessages, pendingUserMessagesForDisplay, visibleStreamingMessage]);
 
-  const navigationItems = useMemo<ConversationNavigationItem[]>(
-    () =>
-      buildAssistantTurnNavigationItems(
-        messages.filter(shouldDisplayChatMessage).map((message) => ({
-          id: message.id,
-          role: message.role,
-          text: message.text,
-          commentaryText: message.commentaryText,
-          processStatus: message.processStatus,
-          timestamp: message.timestamp,
-        })),
-      ),
-    [messages],
+  const navigationItems = useMemo<ConversationNavigationItem[]>(() => {
+    const byId = new Map<string, ChatMessage>(
+      navigationDirectory.entries.map((entry) => [
+        String(entry.id),
+        {
+          id: String(entry.id),
+          role: entry.role,
+          text: entry.text,
+          sequence: entry.sequence,
+          timestamp: entry.createdAt,
+          runId: entry.runId,
+          terminalState: entry.terminalState,
+          legacyTerminalBackfill: entry.legacyTerminalBackfill,
+        },
+      ]),
+    );
+    for (const message of messages.filter(shouldDisplayChatMessage)) byId.set(message.id, message);
+    return buildAssistantTurnNavigationItems(
+      orderDurableMessagesForDisplay([...byId.values()]).map((message) => ({
+        id: message.id,
+        role: message.role,
+        text: message.text,
+        commentaryText: message.commentaryText,
+        processStatus: message.processStatus,
+        streaming: message.streaming,
+        terminalState: message.terminalState,
+        timestamp: message.timestamp,
+      })),
+    );
+  }, [messages, navigationDirectory.entries]);
+
+  const loadNavigationTarget = useCallback(
+    async (messageId: string, isCurrent: () => boolean) => {
+      const token = {};
+      historyTargetTokenRef.current = token;
+      navigationIntentRef.current += 1;
+      setLoadingHistoryTarget(messageId);
+      stickToBottomRef.current = false;
+      bottomPinIntentRef.current = null;
+      userScrollRevisionRef.current += 1;
+      try {
+        return await loadMessages(undefined, { aroundMessageId: messageId, accept: isCurrent });
+      } finally {
+        if (historyTargetTokenRef.current === token) {
+          historyTargetTokenRef.current = undefined;
+          setLoadingHistoryTarget(undefined);
+        }
+      }
+    },
+    [loadMessages],
   );
 
   const handleNavigateMessage = useCallback((_messageId: string, targetScrollTop: number) => {
     const scroller = messagesScrollRef.current;
     if (!scroller) return;
+    navigationIntentRef.current += 1;
     stickToBottomRef.current = false;
     bottomPinIntentRef.current = null;
     userScrollRevisionRef.current += 1;
@@ -3350,85 +3720,70 @@ export function ChatView({
     [],
   );
 
-  // Historical assistant bubbles load one already-projected process snapshot per run.
-  useEffect(() => {
-    const conversationId = String(conversation.id);
-    if (loadedMessagesConversationIdRef.current !== conversationId) return;
-    const api = bridge();
-    if (!api?.getConversationRunProcess) return;
-    const generation = processLoadGenerationRef.current;
-    const runIds = collectRunProcessIds({
-      durableRunIds: visibleDurableMessages
-        .filter((message) => message.role === 'assistant' && Boolean(message.runId))
-        .map((message) => message.runId as string),
-      transientRunId: streamingMessage?.runId,
-      projectedActiveRunId: projected.activeRunId ? String(projected.activeRunId) : undefined,
-    });
-    for (const [runId, timer] of runProcessRetryTimersRef.current) {
-      if (runIds.has(runId)) continue;
-      window.clearTimeout(timer);
-      runProcessRetryTimersRef.current.delete(runId);
-      runProcessRetryAttemptsRef.current.delete(runId);
+  const gapBeforeMessage = useMemo(() => {
+    const result = new Map<string, number>();
+    for (const gap of historyRangeGaps(historyRanges)) {
+      const first = visibleDurableMessages.find(
+        (message) =>
+          !message.legacyTerminalBackfill &&
+          message.sequence !== undefined &&
+          message.sequence >= gap.beforeSequence,
+      );
+      if (first) result.set(first.id, gap.beforeSequence);
     }
-    for (const runId of runIds) {
-      if (runProcessById.has(runId) || inFlightRunProcessesRef.current.has(runId)) continue;
-      inFlightRunProcessesRef.current.add(runId);
-      const typedRunId = runId as RunId;
-      void api
-        .getConversationRunProcess({ runId: typedRunId })
-        .then((response: ConversationGetRunProcessResponse) => {
-          if (
-            activeConversationIdRef.current !== conversationId ||
-            processLoadGenerationRef.current !== generation
-          ) {
-            return;
-          }
-          inFlightRunProcessesRef.current.delete(runId);
-          runProcessRetryAttemptsRef.current.delete(runId);
-          const retryTimer = runProcessRetryTimersRef.current.get(runId);
-          if (retryTimer !== undefined) window.clearTimeout(retryTimer);
-          runProcessRetryTimersRef.current.delete(runId);
-          updateRunProcess(response.process);
-        })
-        .catch(() => {
-          if (
-            processLoadGenerationRef.current !== generation ||
-            activeConversationIdRef.current !== conversationId
-          ) {
-            return;
-          }
-          inFlightRunProcessesRef.current.delete(runId);
-          if (runProcessRetryTimersRef.current.has(runId)) return;
-          const attempts = (runProcessRetryAttemptsRef.current.get(runId) ?? 0) + 1;
-          runProcessRetryAttemptsRef.current.set(runId, attempts);
-          const delayMs = Math.min(500 * 2 ** Math.min(attempts - 1, 4), 8_000);
-          const timer = window.setTimeout(() => {
-            runProcessRetryTimersRef.current.delete(runId);
-            if (
-              processLoadGenerationRef.current === generation &&
-              activeConversationIdRef.current === conversationId
-            ) {
-              setRunProcessRetryEpoch((value) => value + 1);
-            }
-          }, delayMs);
-          runProcessRetryTimersRef.current.set(runId, timer);
+    return result;
+  }, [historyRanges, visibleDurableMessages]);
+  const loadHistoryGap = useCallback(
+    async (cursor: number) => {
+      const scroller = messagesScrollRef.current;
+      const anchor = scroller ? capturePrependAnchor(scroller) : null;
+      const revision = userScrollRevisionRef.current;
+      const intent = navigationIntentRef.current;
+      const applied = await loadMessages(cursor, {
+        accept: () => navigationIntentRef.current === intent,
+      });
+      if (applied && scroller && anchor)
+        window.requestAnimationFrame(() => {
+          if (messagesScrollRef.current === scroller)
+            restorePrependAnchor(scroller, anchor, revision);
         });
-    }
-  }, [
-    conversation.id,
-    runProcessById,
-    runProcessRetryEpoch,
-    projected.activeRunId,
-    streamingMessage?.runId,
-    updateRunProcess,
-    visibleDurableMessages,
-  ]);
+    },
+    [capturePrependAnchor, loadMessages, restorePrependAnchor],
+  );
+
+  const durableProcessRunIds = useMemo(
+    () =>
+      visibleDurableMessages
+        .filter((message) => message.role === 'assistant' && Boolean(message.runId))
+        .map((message) => String(message.runId)),
+    [visibleDurableMessages],
+  );
+  const activeProcessRunIds = useMemo(
+    () =>
+      [streamingMessage?.runId, projected.activeRunId]
+        .filter((runId): runId is RunId => Boolean(runId))
+        .map(String),
+    [projected.activeRunId, streamingMessage?.runId],
+  );
+  useRunProcessHistoryRequests({
+    loader: runProcessLoader,
+    conversationId: String(conversation.id),
+    enabled:
+      loadedMessagesConversationIdRef.current === String(conversation.id) &&
+      Boolean(bridge()?.getConversationRunProcess),
+    scrollerRef: messagesScrollRef,
+    durableRunIds: durableProcessRunIds,
+    activeRunIds: activeProcessRunIds,
+    available: runProcessById,
+  });
 
   const flowTipSignature = `${conversation.id}:${messages.at(-1)?.id ?? 'empty'}:${
     messages.at(-1)?.streaming ? 'streaming' : 'settled'
   }:${pendingApprovals.at(-1)?.approvalId ?? 'no-approval'}`;
-  const followMainContentResize =
-    !visibleStreamingMessage?.streaming || Boolean(visibleStreamingMessage.answerText?.trim());
+  const followMainContentResize = shouldFollowConversationContentResize({
+    streaming: Boolean(visibleStreamingMessage?.streaming),
+    hasAnswerText: Boolean(visibleStreamingMessage?.answerText?.trim()),
+  });
   const pinMessagesToBottom = useCallback(() => {
     const scroller = messagesScrollRef.current;
     if (!scroller || !stickToBottomRef.current) return;
@@ -3440,10 +3795,8 @@ export function ChatView({
     lastObservedScrollTopRef.current = scroller.scrollTop;
   }, []);
 
-  // Place a new turn once, then keep its visual anchor stable while the
-  // reasoning/process panel grows. That panel owns its own capped scrolling;
-  // forcing the outer list to the bottom for every Think row makes the whole
-  // conversation jump upward. Final-answer text still follows the live tail.
+  // Follow the live tail while the user stays pinned. Think, commentary,
+  // tools, and the final answer all grow the same content column.
   useLayoutEffect(() => {
     pinMessagesToBottom();
   }, [flowTipSignature, followMainContentResize, pinMessagesToBottom]);
@@ -3456,6 +3809,28 @@ export function ChatView({
     observer.observe(content);
     return () => observer.disconnect();
   }, [conversation.id, followMainContentResize, pinMessagesToBottom]);
+
+  const ensureKernelExecution = useCallback(
+    (selectedKernelId: string) => {
+      const kernel = kernelRegistry?.find((entry) => entry.kernelId === selectedKernelId);
+      if (isKernelExecutionSupported(kernel ?? { kernelId: selectedKernelId })) return true;
+      const text =
+        kernel?.executionUnavailableReason ??
+        kernelExecutionUnavailableReason(resolveKernelDisplayName(selectedKernelId, kernel?.name));
+      setLocalErrors((previous) => [
+        ...previous.filter((message) => message.id !== 'kernel-unavailable-' + conversation.id),
+        {
+          id: 'kernel-unavailable-' + conversation.id,
+          role: 'system',
+          tone: 'warning',
+          text,
+          timestamp: new Date().toISOString(),
+        },
+      ]);
+      return false;
+    },
+    [conversation.id, kernelRegistry, setLocalErrors],
+  );
 
   const sendUserText = useCallback(
     async (
@@ -3475,6 +3850,9 @@ export function ChatView({
     ) => {
       const api = bridge();
       if (!api || (!text.trim() && images.length === 0)) return;
+      if (!ensureKernelExecution(options?.kernelOverride ?? kernelOverride)) {
+        throw new Error('当前内核执行尚未接通');
+      }
       const conversationId = String(conversation.id);
       const isActiveConversation = () => activeConversationIdRef.current === conversationId;
       // Freeze before auto-compaction or any IPC so menu changes cannot alter this Run.
@@ -3740,6 +4118,7 @@ export function ChatView({
     },
     [
       clearCompactDismissTimer,
+      ensureKernelExecution,
       conversation.id,
       conversation.workspaceId,
       conversation.targetRef,
@@ -4177,6 +4556,9 @@ export function ChatView({
   useEffect(() => {
     const next = queuedComposeRequests[0];
     const dispatchState = queuedDispatchByConversationRef.current.get(String(conversation.id));
+    // Only dispatch after the current Run is actually inactive. A delayed
+    // "ghost run" timer used to fire while a long Run was still live and
+    // cancelled it as soon as the user queued a follow-up.
     if (
       !next ||
       next.conversationId !== String(conversation.id) ||
@@ -4185,28 +4567,6 @@ export function ChatView({
       dispatchState?.blocked?.requestId === next.id ||
       (conversation.taskId && !threadId)
     ) {
-      // Safety net for a "ghost" active run: right after switching the kernel
-      // the projected activeRunId can briefly outlive the run's terminal event,
-      // which would park the first queued message behind `runIsActive` forever
-      // (compose clears, the message never lands). When there is genuinely no
-      // in-flight send (`reconciledSending`), force-dispatch after a short
-      // grace period so the user's message is not silently dropped.
-      if (
-        next &&
-        next.conversationId === String(conversation.id) &&
-        !reconciledSending &&
-        !dispatchState?.dispatching &&
-        dispatchState?.blocked?.requestId !== next.id
-      ) {
-        const safetyTimer = window.setTimeout(() => {
-          const current = queuedDispatchByConversationRef.current.get(String(conversation.id));
-          if (current?.dispatching || current?.blocked?.requestId === next.id) return;
-          if (queuedComposeRequests[0]?.id === next.id) {
-            void dispatchQueuedComposeRequest(next, 'auto');
-          }
-        }, 6_000);
-        return () => window.clearTimeout(safetyTimer);
-      }
       return;
     }
     const timer = window.setTimeout(() => {
@@ -4223,9 +4583,18 @@ export function ChatView({
     threadId,
   ]);
 
+  const regenerationRead = useRef<AbortController>();
+  useEffect(
+    () => () => {
+      regenerationRead.current?.abort();
+      regenerationRead.current = undefined;
+    },
+    [conversation.id],
+  );
+
   const handleRegenerate = useCallback(
     async (assistantMessageId: string, nextModelId?: string) => {
-      if (sending) return;
+      if (sending || regenerationRead.current) return;
       const idx = messages.findIndex((m) => m.id === assistantMessageId);
       if (idx <= 0) return;
       // Find nearest previous user message (NewMax: regenerate last turn).
@@ -4237,12 +4606,40 @@ export function ChatView({
         }
       }
       if (!userMessage?.text.trim()) return;
-      await sendUserText(userMessage.text, [], {
-        skillVersionIds: userMessage.skillVersionIds ?? [],
-        ...(nextModelId ? { modelOverride: nextModelId } : {}),
-      });
+      const controller = new AbortController();
+      const conversationId = String(conversation.id);
+      regenerationRead.current = controller;
+      try {
+        const text = await resolveMessageText(
+          userMessage.textParts,
+          userMessage.text,
+          conversationId,
+          controller.signal,
+        );
+        if (controller.signal.aborted || activeConversationIdRef.current !== conversationId) return;
+        await sendUserText(text, [], {
+          skillVersionIds: userMessage.skillVersionIds ?? [],
+          ...(nextModelId ? { modelOverride: nextModelId } : {}),
+        });
+      } catch (error) {
+        if (!controller.signal.aborted && activeConversationIdRef.current === conversationId)
+          setLocalErrors((previous) => [
+            ...previous,
+            {
+              id: 'regenerate-read-' + Date.now(),
+              role: 'system',
+              tone: 'error',
+              text:
+                '读取原始提示失败，未重新发送：' +
+                (error instanceof Error ? error.message : String(error)),
+              timestamp: new Date().toISOString(),
+            },
+          ]);
+      } finally {
+        if (regenerationRead.current === controller) regenerationRead.current = undefined;
+      }
     },
-    [messages, sendUserText, sending],
+    [conversation.id, messages, sendUserText, sending, setLocalErrors],
   );
 
   const handleContinueInterrupted = useCallback(
@@ -5023,6 +5420,7 @@ export function ChatView({
       return;
     }
 
+    if (!ensureKernelExecution(kernelOverride)) return;
     const snapshot = attachments;
     if (runIsActive) {
       const request = createQueuedComposeRequest({
@@ -5043,22 +5441,46 @@ export function ChatView({
       return;
     }
 
-    const outbound = buildMessageWithAttachments(input, snapshot);
+    const draftText = input;
+    const draftConversationId = String(conversation.id);
+    const outbound = buildMessageWithAttachments(draftText, snapshot);
     const images = messageImagesFromAttachments(snapshot);
     setInput('');
     closeComposePickers();
     window.requestAnimationFrame(() => resizeComposeInput());
     try {
       await sendUserText(outbound, images);
-      setAttachments([]);
+      if (composeMountedRef.current && activeConversationIdRef.current === draftConversationId) {
+        setAttachments((current) =>
+          current.filter((attachment) => !snapshot.some((sent) => sent.path === attachment.path)),
+        );
+      }
     } catch {
-      setAttachments(snapshot);
+      if (
+        composeMountedRef.current &&
+        activeConversationIdRef.current === draftConversationId &&
+        inputRef.current?.value === ''
+      ) {
+        setInput(draftText);
+        setAttachments((current) => [
+          ...new Map(
+            [...snapshot, ...current].map((attachment) => [attachment.path, attachment]),
+          ).values(),
+        ]);
+      } else {
+        rememberFailedComposeDraft(failedComposeDraftScope, {
+          text: draftText,
+          attachments: snapshot,
+        });
+      }
     }
   }, [
     attachments,
     closeComposePickers,
     commitQueuedComposeRequests,
+    ensureKernelExecution,
     conversation.id,
+    failedComposeDraftScope,
     activeGoalState,
     input,
     kernelOverride,
@@ -5936,6 +6358,9 @@ export function ChatView({
           saveScreenshot: api?.saveBrowserScreenshot
             ? (payload) => api.saveBrowserScreenshot(payload)
             : undefined,
+          sendTrustedClick: api?.sendBrowserTrustedClick
+            ? (payload) => api.sendBrowserTrustedClick(payload)
+            : undefined,
         });
         try {
           await api?.submitBrowserResult?.({
@@ -5952,14 +6377,21 @@ export function ChatView({
   }, [eventHistory, projectFolder, threadId]);
 
   // 任务清单投影（对齐 DSH todo projection）：持久化事件流 → 常驻面板。
-  // run 结束保留完成清单，新 run 开始清空。
   const todoProjection = useMemo(
     () =>
-      projectTodoFromEvents(eventHistory, {
-        threadId,
-        taskId: conversation.taskId ? String(conversation.taskId) : undefined,
-      }),
-    [conversation.taskId, eventHistory, threadId],
+      !threadId && !conversation.taskId
+        ? null
+        : projectTodoFromEvents(
+            eventHistory,
+            {
+              threadId,
+              taskId: conversation.taskId ? String(conversation.taskId) : undefined,
+            },
+            durableTaskPlan?.conversationId === String(conversation.id)
+              ? durableTaskPlan.state
+              : undefined,
+          ),
+    [conversation.id, conversation.taskId, durableTaskPlan, eventHistory, threadId],
   );
 
   return (
@@ -6070,7 +6502,10 @@ export function ChatView({
               if (currentScrollTop < 50 && hasMore && !loadingMore && !loadingMoreRef.current) {
                 const anchor = capturePrependAnchor(scroller);
                 const expectedUserScrollRevision = userScrollRevisionRef.current;
-                void loadMessages(nextCursor).then((applied) => {
+                const expectedNavigationIntent = navigationIntentRef.current;
+                void loadMessages(nextCursor, {
+                  accept: () => navigationIntentRef.current === expectedNavigationIntent,
+                }).then((applied) => {
                   if (!applied || !anchor) return;
                   requestAnimationFrame(() => {
                     restorePrependAnchor(scroller, anchor, expectedUserScrollRevision);
@@ -6135,38 +6570,63 @@ export function ChatView({
                   })()
                 : null}
               {visibleDurableMessages.map((msg) => (
-                <div
-                  key={msg.id}
-                  data-message-id={msg.id}
-                  className="shell-message-window-item pb-6"
-                >
-                  <MessageBubble
-                    message={msg}
-                    processView={msg.runId ? displayRunProcessById.get(msg.runId) : undefined}
-                    models={models}
-                    agents={agents}
-                    runAgentIdentity={
-                      msg.runId ? runAgentIdentityById.get(String(msg.runId)) : undefined
-                    }
-                    fallbackAgent={conversationAgent}
-                    regenerating={sending}
-                    onRegenerate={handleRegenerate}
-                    onContinue={handleContinueInterrupted}
-                    onChooseModelAndRetry={handleChooseModelAndRetry}
-                    onOpenChange={onOpenFile}
-                    conversationId={String(conversation.id)}
-                    onOpenHtmlInBrowser={onOpenHtmlInBrowser}
-                    onOpenWebUrl={onOpenWebUrl}
-                    onOpenReview={onOpenReview}
-                    projectFolder={projectFolder}
-                    onOpenImage={setLightbox}
-                    kernelId={
-                      msg.kernelId ?? (msg.runId ? runKernelById.get(String(msg.runId)) : undefined)
-                    }
-                    skillNameByVersionId={skillNameByVersionId}
-                    agentPreferences={agentPreferences}
-                  />
-                </div>
+                <Fragment key={msg.id}>
+                  {gapBeforeMessage.has(msg.id) ? (
+                    <div
+                      className="shell-history-gap"
+                      data-history-gap={gapBeforeMessage.get(msg.id)}
+                    >
+                      <span>这两段之间的历史消息尚未加载</span>
+                      <button
+                        type="button"
+                        disabled={loadingMore}
+                        onClick={() => void loadHistoryGap(gapBeforeMessage.get(msg.id)!)}
+                      >
+                        {loadingMore ? '正在加载…' : '加载中间消息'}
+                      </button>
+                    </div>
+                  ) : null}
+                  <div
+                    data-message-id={msg.id}
+                    data-process-run-id={msg.role === 'assistant' ? msg.runId : undefined}
+                    className="shell-message-window-item pb-6"
+                  >
+                    <MessageBubble
+                      message={msg}
+                      waitingForApproval={Boolean(
+                        msg.runId && approvalWaitingRunIds.has(msg.runId),
+                      )}
+                      processView={msg.runId ? displayRunProcessById.get(msg.runId) : undefined}
+                      processLoadFailure={
+                        msg.runId ? runProcessLoadFailures.get(msg.runId) : undefined
+                      }
+                      onRetryProcess={retryRunProcess}
+                      models={models}
+                      agents={agents}
+                      runAgentIdentity={
+                        msg.runId ? runAgentIdentityById.get(String(msg.runId)) : undefined
+                      }
+                      fallbackAgent={conversationAgent}
+                      regenerating={sending}
+                      onRegenerate={handleRegenerate}
+                      onContinue={handleContinueInterrupted}
+                      onChooseModelAndRetry={handleChooseModelAndRetry}
+                      onOpenChange={onOpenFile}
+                      conversationId={String(conversation.id)}
+                      onOpenHtmlInBrowser={onOpenHtmlInBrowser}
+                      onOpenWebUrl={onOpenWebUrl}
+                      onOpenReview={onOpenReview}
+                      projectFolder={projectFolder}
+                      onOpenImage={setLightbox}
+                      kernelId={
+                        msg.kernelId ??
+                        (msg.runId ? runKernelById.get(String(msg.runId)) : undefined)
+                      }
+                      skillNameByVersionId={skillNameByVersionId}
+                      agentPreferences={agentPreferences}
+                    />
+                  </div>
+                </Fragment>
               ))}
               {standaloneRuntimeConnectionNotice ? (
                 <div className="pb-4">
@@ -6189,11 +6649,17 @@ export function ChatView({
                 <div
                   key={msg.id}
                   data-message-id={msg.id}
+                  data-process-run-id={msg.role === 'assistant' ? msg.runId : undefined}
                   className="shell-message-window-item pb-6"
                 >
                   <MessageBubble
                     message={msg}
+                    waitingForApproval={Boolean(msg.runId && approvalWaitingRunIds.has(msg.runId))}
                     processView={msg.runId ? displayRunProcessById.get(msg.runId) : undefined}
+                    processLoadFailure={
+                      msg.runId ? runProcessLoadFailures.get(msg.runId) : undefined
+                    }
+                    onRetryProcess={retryRunProcess}
                     models={models}
                     agents={agents}
                     runAgentIdentity={
@@ -6229,12 +6695,41 @@ export function ChatView({
             </div>
           </div>
 
-          <ConversationMinimapRail
-            items={navigationItems}
-            scrollerRef={messagesScrollRef}
-            onNavigate={handleNavigateMessage}
-          />
+          {navigationDirectory.loading ||
+          navigationDirectory.error ||
+          loadingHistoryTarget ||
+          historyLoadError ? (
+            <div className="shell-history-status" role="status" aria-live="polite">
+              <span>
+                {historyLoadError
+                  ? '历史消息读取失败，请重试导航或加载操作。'
+                  : loadingHistoryTarget
+                    ? '正在读取目标附近的消息…'
+                    : navigationDirectory.error
+                      ? '历史目录尚未加载完整。'
+                      : '正在加载历史目录…'}
+              </span>
+              {navigationDirectory.error ? (
+                <button type="button" onClick={navigationDirectory.refresh}>
+                  重试目录
+                </button>
+              ) : null}
+              {historyLoadError ? (
+                <button type="button" onClick={() => void loadMessages()}>
+                  重试最新消息
+                </button>
+              ) : null}
+            </div>
+          ) : null}
         </div>
+
+        <ConversationMinimapRail
+          key={historyScopeKey}
+          items={navigationItems}
+          scrollerRef={messagesScrollRef}
+          onNavigate={handleNavigateMessage}
+          onLoadItem={loadNavigationTarget}
+        />
 
         {/* ─── Compose (NewMax-style) ─────────────────────────────────── */}
         <div className="shell-chat-content-wrap shrink-0 pb-4 pt-2">
@@ -6322,6 +6817,14 @@ export function ChatView({
             {interactionMode !== 'plan' ? (
               <ComposerTaskPanel scopeKey={String(conversation.id)} todo={todoProjection} />
             ) : null}
+            <ExpiredToolApprovalNotice
+              approvals={runtimeExpiredApprovals.filter(
+                (approval) => String(approval.threadId) === threadId,
+              )}
+              total={expiredApprovalCount}
+              busy={Boolean(recoveringApprovalId)}
+              onRecover={(approval) => void handleRecoverApproval(approval)}
+            />
             <ComposerApprovalStack
               hasSurfaceBelow={Boolean(composerModeBanner)}
               tool={
@@ -6427,6 +6930,33 @@ export function ChatView({
                   />,
                   document.body,
                 )}
+
+              {failedComposeDrafts.length > 0 && (
+                <div className="shell-compose__draft-recovery" role="status">
+                  <span>发送失败的草稿已保留，恢复会追加到当前输入。</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const drafts = takeFailedComposeDrafts(failedComposeDraftScope);
+                      setInput((current) =>
+                        [current, ...drafts.map((draft) => draft.text)]
+                          .filter(Boolean)
+                          .join('\n\n'),
+                      );
+                      setAttachments((current) => [
+                        ...new Map(
+                          [...drafts.flatMap((draft) => draft.attachments), ...current].map(
+                            (attachment) => [attachment.path, attachment],
+                          ),
+                        ).values(),
+                      ]);
+                      window.requestAnimationFrame(() => inputRef.current?.focus());
+                    }}
+                  >
+                    恢复未发送草稿
+                  </button>
+                </div>
+              )}
 
               <ComposeRequestQueue
                 items={queuedComposeRequests}
@@ -7120,7 +7650,10 @@ function ProviderAccountUsageSection({ identity }: { identity: ProviderUsageIden
 
 const MessageBubble = memo(function MessageBubble({
   message,
-  processView,
+  waitingForApproval = false,
+  processView: sourceProcessView,
+  processLoadFailure,
+  onRetryProcess,
   models,
   agents,
   runAgentIdentity,
@@ -7141,7 +7674,10 @@ const MessageBubble = memo(function MessageBubble({
   dismissLocalError,
 }: {
   message: ChatMessage;
+  waitingForApproval?: boolean;
   processView?: RunProcessView;
+  processLoadFailure?: RunProcessLoadFailure;
+  onRetryProcess?: (runId: string) => void;
   models?: readonly ModelOption[];
   agents?: readonly GlobalAgent[];
   runAgentIdentity?: RunAgentIdentity;
@@ -7164,10 +7700,30 @@ const MessageBubble = memo(function MessageBubble({
   /** Dismiss callback for transient local diagnostics. */
   dismissLocalError?: (messageId: string) => void;
 }) {
+  const { process: processView, controls: processPageControls } = useRunProcessPage(
+    sourceProcessView,
+    'steps',
+    conversationId,
+    { accumulate: true },
+  );
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
   const systemTone: SystemMessageTone = resolveSystemMessageTone(message.tone, message.text);
   const [copied, setCopied] = useState(false);
+  const [copying, setCopying] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
+  const copyRead = useRef<AbortController>();
+  const copyTimer = useRef<ReturnType<typeof setTimeout>>();
+  useEffect(() => {
+    setCopied(false);
+    setCopying(false);
+    setCopyFailed(false);
+    return () => {
+      copyRead.current?.abort();
+      copyRead.current = undefined;
+      clearTimeout(copyTimer.current);
+    };
+  }, [conversationId, message.id]);
   const [feedback, setFeedback] = useState<'up' | 'down' | null>(null);
   const [loadedAssistantTimeline, setLoadedAssistantTimeline] = useState<AssistantTurnSegment[]>();
   const [timelineLoadState, setTimelineLoadState] = useState<
@@ -7206,7 +7762,7 @@ const MessageBubble = memo(function MessageBubble({
   const loadAssistantTimelinePage = useCallback(() => {
     const runId = message.runId;
     const api = bridge();
-    if (!runId || message.streaming || !api?.listConversationRunTimeline) return;
+    if (!runId || !api?.listConversationRunTimeline) return;
     if (timelineLoadPromiseRef.current) return;
     const requestCursor = timelineHasLoadedPageRef.current
       ? timelineNextCursorRef.current
@@ -7229,6 +7785,7 @@ const MessageBubble = memo(function MessageBubble({
         if (page.nextCursor) timelineSeenCursorsRef.current.add(page.nextCursor);
         timelineHasLoadedPageRef.current = true;
         timelineNextCursorRef.current = page.nextCursor;
+        if (timelineLoadPromiseRef.current === request) timelineLoadPromiseRef.current = null;
         setTimelineNextCursor(page.nextCursor);
         setTimelineTotalSegments(page.totalSegments);
         if (page.segments.length > 0) {
@@ -7245,17 +7802,35 @@ const MessageBubble = memo(function MessageBubble({
         if (timelineLoadPromiseRef.current === request) timelineLoadPromiseRef.current = null;
       });
     timelineLoadPromiseRef.current = request;
-  }, [message.runId, message.streaming]);
+  }, [message.runId]);
 
-  const loadedTimelineFields = useMemo(
-    () => assistantTimelineToChatFields(loadedAssistantTimeline),
-    [loadedAssistantTimeline],
+  useEffect(() => {
+    if (timelineLoadState !== 'loaded' || !timelineNextCursor) return;
+    loadAssistantTimelinePage();
+  }, [loadAssistantTimelinePage, timelineLoadState, timelineNextCursor]);
+
+  const displayedTimeline = useMemo(
+    () => mergeRunTimelineSegments(message.assistantTimeline ?? [], loadedAssistantTimeline ?? []),
+    [loadedAssistantTimeline, message.assistantTimeline],
+  );
+  const displayedTimelineFields = useMemo(
+    () => assistantTimelineToChatFields(displayedTimeline),
+    [displayedTimeline],
   );
   const hasLoadedTimeline = Boolean(loadedAssistantTimeline?.length);
-  const displayedTimeline = hasLoadedTimeline ? loadedAssistantTimeline : message.assistantTimeline;
-  const displayedProcessItems = hasLoadedTimeline
-    ? loadedTimelineFields.processItems
-    : message.processItems;
+  const displayedProcessItems = useMemo(
+    () =>
+      reconcileProcessItemOutcomes(
+        displayedTimeline.length ? displayedTimelineFields.processItems : message.processItems,
+        processView,
+      ),
+    [
+      displayedTimeline.length,
+      displayedTimelineFields.processItems,
+      message.processItems,
+      processView,
+    ],
+  );
 
   const metricsLabel = useMemo(() => {
     if (!processView) return undefined;
@@ -7333,15 +7908,34 @@ const MessageBubble = memo(function MessageBubble({
   }, [absoluteTime, modelLabel, processView]);
 
   const handleCopy = useCallback(async () => {
-    if (!message.text.trim()) return;
+    if (!message.text.trim() || copyRead.current) return;
+    const controller = new AbortController();
+    copyRead.current = controller;
+    setCopying(true);
+    setCopyFailed(false);
     try {
-      await navigator.clipboard.writeText(message.text);
+      const text = await resolveMessageText(
+        message.textParts ?? message.answerParts,
+        message.text,
+        conversationId ?? '',
+        controller.signal,
+        message.textParts ? '\n' : '',
+      );
+      if (controller.signal.aborted) return;
+      await navigator.clipboard.writeText(text);
+      if (controller.signal.aborted) return;
       setCopied(true);
-      window.setTimeout(() => setCopied(false), 1400);
+      clearTimeout(copyTimer.current);
+      copyTimer.current = setTimeout(() => setCopied(false), 1400);
     } catch {
-      /* ignore */
+      if (!controller.signal.aborted) setCopyFailed(true);
+    } finally {
+      if (copyRead.current === controller) {
+        copyRead.current = undefined;
+        setCopying(false);
+      }
     }
-  }, [message.text]);
+  }, [conversationId, message.answerParts, message.text, message.textParts]);
 
   const answerSources = useMemo(
     () =>
@@ -7377,27 +7971,34 @@ const MessageBubble = memo(function MessageBubble({
               </div>
             ) : null}
             {message.text ? (
-              <CollapsibleUserText
+              <MessageTextContent
                 text={message.text}
-                onOpenUrl={onOpenWebUrl}
-                prefix={
-                  message.skillVersionIds?.length ? (
-                    <span className="shell-user-skill-list" data-testid="message-skill-list">
-                      {message.skillVersionIds.map((skillVersionId) => (
-                        <span className="shell-user-skill" key={skillVersionId}>
-                          <Puzzle size={12} aria-hidden="true" />
-                          <span>
-                            {message.skills?.find(
-                              (skill) => skill.skillVersionId === skillVersionId,
-                            )?.name ??
-                              skillNameByVersionId?.get(skillVersionId) ??
-                              skillVersionId}
-                          </span>
+                parts={message.textParts}
+                conversationId={conversationId}
+                renderPreview={(text) => (
+                  <CollapsibleUserText
+                    text={text}
+                    onOpenUrl={onOpenWebUrl}
+                    prefix={
+                      message.skillVersionIds?.length ? (
+                        <span className="shell-user-skill-list" data-testid="message-skill-list">
+                          {message.skillVersionIds.map((skillVersionId) => (
+                            <span className="shell-user-skill" key={skillVersionId}>
+                              <Puzzle size={12} aria-hidden="true" />
+                              <span>
+                                {message.skills?.find(
+                                  (skill) => skill.skillVersionId === skillVersionId,
+                                )?.name ??
+                                  skillNameByVersionId?.get(skillVersionId) ??
+                                  skillVersionId}
+                              </span>
+                            </span>
+                          ))}
                         </span>
-                      ))}
-                    </span>
-                  ) : undefined
-                }
+                      ) : undefined
+                    }
+                  />
+                )}
               />
             ) : null}
           </div>
@@ -7416,12 +8017,14 @@ const MessageBubble = memo(function MessageBubble({
                   </div>
                 }
               />
+              {copyFailed ? <span role="alert">读取或复制失败，请重试</span> : null}
               {message.text?.trim() ? (
                 <button
                   type="button"
                   className="ml-1.5 inline-flex items-center rounded p-0.5 text-text-faint transition-colors hover:bg-[color-mix(in_srgb,var(--color-text)_10%,transparent)] hover:text-text"
                   onClick={() => void handleCopy()}
-                  title="复制"
+                  disabled={copying}
+                  title={copying ? '读取原文中' : copyFailed ? '读取或复制失败，请重试' : '复制'}
                   aria-label="复制我的消息"
                 >
                   {copied ? <Check size={12} /> : <Copy size={12} />}
@@ -7453,7 +8056,12 @@ const MessageBubble = memo(function MessageBubble({
           className={`${bubbleClass} max-w-[80%] rounded-xl border px-4 py-2.5 text-[12.5px]`}
           data-tone={systemTone}
         >
-          <span className="whitespace-pre-wrap">{message.text}</span>
+          <MessageTextContent
+            text={message.text}
+            parts={message.textParts}
+            conversationId={conversationId}
+            renderPreview={(text) => <span className="whitespace-pre-wrap">{text}</span>}
+          />
           {dismissible ? (
             <button
               type="button"
@@ -7470,7 +8078,7 @@ const MessageBubble = memo(function MessageBubble({
     );
   }
 
-  // AI message — thinking + process + file changes + markdown + NewMax-style footer
+  // AI message — thinking + process + markdown + file changes + NewMax-style footer
   // Agent avatar: prefer the run's immutable agent (matched by id), then the
   // conversation's current agent, then a first-letter placeholder circle.
   const identityAgent = runAgentIdentity?.id
@@ -7494,6 +8102,13 @@ const MessageBubble = memo(function MessageBubble({
         {visibleAgentLabel ? (
           <div className="mb-1 text-[11.5px] font-medium text-text-faint">{visibleAgentLabel}</div>
         ) : null}
+        {message.runId && onRetryProcess ? (
+          <RunProcessLoadNotice
+            runId={message.runId}
+            failure={processLoadFailure}
+            onRetry={onRetryProcess}
+          />
+        ) : null}
         <InlineProcessFlow
           items={[
             // Streaming snapshots carry reasoning in the message field (not in
@@ -7503,22 +8118,36 @@ const MessageBubble = memo(function MessageBubble({
             message.reasoningText
               ? [{ kind: 'reasoning' as const, text: message.reasoningText }]
               : []),
-            ...(displayedProcessItems ?? []),
+            ...(processView?.pages && !hasLoadedTimeline
+              ? (displayedProcessItems ?? []).filter(
+                  (item) => item.kind !== 'tool' && item.kind !== 'status',
+                )
+              : (displayedProcessItems ?? [])),
           ]}
           steps={hasLoadedTimeline ? undefined : processView?.steps}
+          totalFailedTools={processView?.pages ? processView.errorCount : undefined}
+          pageControls={
+            !hasLoadedTimeline && agentPreferences.showToolUse ? processPageControls : null
+          }
           commentarySegments={hasLoadedTimeline ? undefined : message.commentarySegments}
           streaming={Boolean(message.streaming)}
+          waitingForApproval={waitingForApproval}
           answerStarted={hasAnswerText}
           runId={message.runId ?? message.id}
+          conversationId={conversationId}
           startedAt={processView?.startedAt ?? timelineTiming.startedAt}
           completedAt={processView?.completedAt ?? timelineTiming.completedAt}
           durationMs={processView?.durationMs}
           collapseExecutionProcess={agentPreferences.collapseExecutionProcess}
           showToolUse={agentPreferences.showToolUse}
+          showThinking={agentPreferences.showThinking}
+          onShowThinkingChange={(value) => {
+            writeAgentPreferences({ ...agentPreferences, showThinking: value });
+          }}
           toolCallExpandedByDefault={agentPreferences.toolCallExpandedByDefault}
           onOpenChange={onOpenChange}
           onPanelOpen={
-            !message.streaming && message.runId && bridge()?.listConversationRunTimeline
+            message.runId && bridge()?.listConversationRunTimeline
               ? loadAssistantTimelinePage
               : undefined
           }
@@ -7529,9 +8158,7 @@ const MessageBubble = memo(function MessageBubble({
           onLoadMoreTimeline={loadAssistantTimelinePage}
           onRetryTimelineLoad={loadAssistantTimelinePage}
           supplementalContent={
-            message.processStatus ||
-            message.terminalState ||
-            (!message.streaming && (processView?.fileChanges.length ?? 0) > 0) ? (
+            message.processStatus || message.terminalState ? (
               <>
                 {message.processStatus ? (
                   <div
@@ -7557,21 +8184,13 @@ const MessageBubble = memo(function MessageBubble({
                     onRetry={() => onRegenerate?.(message.id)}
                   />
                 ) : null}
-                {!message.streaming && processView && processView.fileChanges.length > 0 ? (
-                  <FileChangesCard
-                    view={processView}
-                    nested
-                    onOpenChange={onOpenChange}
-                    onOpenReview={onOpenReview}
-                    projectFolder={projectFolder}
-                  />
-                ) : null}
               </>
             ) : undefined
           }
         />
         {message.answerText || (!message.processItems?.length && message.text) ? (
-          <MarkdownContent
+          <MessageTextContent
+            parts={message.answerText !== undefined ? message.answerParts : message.textParts}
             text={message.answerText ?? message.text}
             streaming={Boolean(message.streaming)}
             projectFolder={projectFolder}
@@ -7579,6 +8198,15 @@ const MessageBubble = memo(function MessageBubble({
             onOpenFile={onOpenChange}
             onOpenHtmlInBrowser={onOpenHtmlInBrowser}
             onOpenUrl={onOpenWebUrl}
+          />
+        ) : null}
+        {!message.streaming && processView && processView.fileChanges.length > 0 ? (
+          <FileChangesCard
+            view={processView}
+            conversationId={conversationId}
+            onOpenChange={onOpenChange}
+            onOpenReview={onOpenReview}
+            projectFolder={projectFolder}
           />
         ) : null}
         {showFooter ? (
@@ -7589,11 +8217,21 @@ const MessageBubble = memo(function MessageBubble({
                 onOpenFile={onOpenChange}
                 actions={
                   <>
+                    {copyFailed ? <span role="alert">读取或复制失败，请重试</span> : null}
                     <button
                       type="button"
                       className="shell-msg-footer__btn"
                       onClick={() => void handleCopy()}
-                      title={copied ? '已复制' : '复制'}
+                      disabled={copying}
+                      title={
+                        copying
+                          ? '读取原文中'
+                          : copyFailed
+                            ? '读取或复制失败，请重试'
+                            : copied
+                              ? '已复制'
+                              : '复制'
+                      }
                       aria-label={copied ? '已复制' : '复制'}
                     >
                       {copied ? <Check size={14} /> : <Copy size={14} />}
@@ -7863,8 +8501,8 @@ export function AssistantProcessGroup({
     commentaryText?.trim() || commentarySegments?.some((segment) => segment.text.trim()),
   );
   const hasReasoning = Boolean(reasoningText?.trim());
-  const stepCount = processView?.steps.length ?? 0;
-  const changeCount = processView?.fileChanges.length ?? 0;
+  const stepCount = processView?.pages?.steps.total ?? processView?.steps.length ?? 0;
+  const changeCount = processView?.pages?.fileChanges.total ?? processView?.fileChanges.length ?? 0;
   const completed = Boolean(processView?.completedAt);
   const lifecycleActive = Boolean(processView?.startedAt && !processView?.completedAt);
   const active = !completed && Boolean(streaming || processView?.running || lifecycleActive);
@@ -7883,7 +8521,7 @@ export function AssistantProcessGroup({
   const followTailRef = useRef(true);
   const previousScrollTopRef = useRef<number | null>(null);
   const lastCommentarySegment = commentarySegments?.at(-1);
-  const lastProcessStep = processView?.steps.at(-1);
+  const lastProcessStep = processView?.latestStep ?? processView?.steps.at(-1);
   const commentaryRevision = [
     commentarySegments?.length ?? 0,
     lastCommentarySegment?.id ?? '',

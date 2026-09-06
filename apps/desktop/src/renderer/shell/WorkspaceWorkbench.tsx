@@ -9,18 +9,24 @@ import {
   type ReactNode,
 } from 'react';
 import {
+  Bot,
   FileDiff,
   FilePlus2,
   Folder,
   Globe,
+  MessageSquare,
+  MessageSquarePlus,
   MoreHorizontal,
   Pencil,
   Plus,
   SquareTerminal,
+  Users,
   X,
 } from 'lucide-react';
 import clsx from 'clsx';
+import type { ConversationTrack } from '@sync-think/shared';
 import { FileTypeIcon } from './FileTypeIcon.js';
+import { browserTabFaviconSrc } from './ExternalSourceIcon.js';
 import type { WorkbenchPlacement, WorkbenchScope, WorkbenchTab } from './workspace-workbench.js';
 import {
   WORKBENCH_BOTTOM_DEFAULT_HEIGHT,
@@ -33,7 +39,13 @@ import {
   WORKBENCH_RIGHT_MIN_WIDTH,
 } from './workspace-workbench.js';
 
-export type WorkbenchNewResource = 'files' | 'terminal' | 'browser' | 'canvas' | 'document';
+export type WorkbenchNewResource =
+  | 'files'
+  | 'terminal'
+  | 'browser'
+  | 'canvas'
+  | 'document'
+  | 'conversation';
 
 export interface WorkspaceWorkbenchProps {
   placement: WorkbenchPlacement;
@@ -44,9 +56,12 @@ export interface WorkspaceWorkbenchProps {
   canOpenTerminal?: boolean;
   renderContent(tab: WorkbenchTab): ReactNode;
   renderFileBrowser?(): ReactNode;
+  browserPageMeta?: Record<string, { title?: string; favicon?: string }>;
+  conversationTabMeta?: Record<string, { title?: string; track?: ConversationTrack }>;
   onActivateTab(tabId: string): void;
   onCloseTab(tab: WorkbenchTab): void;
   onNewResource(resource: WorkbenchNewResource): void;
+  onChromeFocus?(): void;
   onToggleFileBrowser?(): void;
   onClose(): void;
   onSizeChange(size: number, commit: boolean): void;
@@ -62,10 +77,17 @@ interface ResizeDrag {
   lastSize: number;
 }
 
-function tabLabel(tab: WorkbenchTab): string {
+function tabLabel(
+  tab: WorkbenchTab,
+  chrome?: { title?: string; favicon?: string },
+  conversation?: { title?: string },
+): string {
+  if (tab.type === 'conversation') return conversation?.title?.trim() || '新对话';
   if (tab.type === 'file') return tab.path.split(/[\\/]/).at(-1) || tab.path;
   if (tab.type === 'terminal') return 'Terminal';
   if (tab.type === 'browser') {
+    const title = chrome?.title?.trim();
+    if (title) return title;
     try {
       return new URL(tab.url).hostname || '浏览器';
     } catch {
@@ -76,10 +98,48 @@ function tabLabel(tab: WorkbenchTab): string {
   return '工作区文件';
 }
 
-function WorkbenchTabIcon({ tab }: { tab: WorkbenchTab }) {
+function WorkbenchBrowserIcon({
+  tab,
+  favicon,
+}: {
+  tab: Extract<WorkbenchTab, { type: 'browser' }>;
+  favicon?: string;
+}) {
+  const src = browserTabFaviconSrc({ url: tab.url, favicon });
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    setFailed(false);
+  }, [src]);
+  if (!src || failed) {
+    return <Globe size={14} aria-hidden="true" />;
+  }
+  return (
+    <img
+      className="shell-pane-tab__favicon"
+      src={src}
+      alt=""
+      data-testid={`workbench-tab-favicon-${tab.browserId}`}
+      onError={() => setFailed(true)}
+    />
+  );
+}
+
+function WorkbenchTabIcon({
+  tab,
+  favicon,
+  track,
+}: {
+  tab: WorkbenchTab;
+  favicon?: string;
+  track?: ConversationTrack;
+}) {
+  if (tab.type === 'conversation') {
+    const Icon = track === 'agent' ? Bot : track === 'team' ? Users : MessageSquare;
+    return <Icon size={14} aria-hidden="true" />;
+  }
   if (tab.type === 'file') return <FileTypeIcon path={tab.path} size={14} className="shrink-0" />;
   if (tab.type === 'terminal') return <SquareTerminal size={14} aria-hidden="true" />;
-  if (tab.type === 'browser') return <Globe size={14} aria-hidden="true" />;
+  if (tab.type === 'browser') return <WorkbenchBrowserIcon tab={tab} favicon={favicon} />;
   if (tab.type === 'review') return <FileDiff size={14} aria-hidden="true" />;
   return <Folder size={14} aria-hidden="true" />;
 }
@@ -196,6 +256,10 @@ export function WorkspaceWorkbench(props: WorkspaceWorkbenchProps) {
       window.removeEventListener('blur', close);
     };
   }, [moreMenuOpen, newMenuOpen]);
+
+  useEffect(() => {
+    if (props.focused === false) setNewMenuOpen(false);
+  }, [props.focused]);
 
   useEffect(() => {
     if (!newMenuOpen) return;
@@ -328,7 +392,9 @@ export function WorkspaceWorkbench(props: WorkspaceWorkbenchProps) {
       data-workspace-panel-layout="true"
       data-workspace-panel-placement={props.placement}
       data-workspace-panel-open={revealed ? 'true' : 'false'}
+      data-workspace-chrome-focus={props.focused === false ? 'false' : 'true'}
       data-resizing={resizing ? 'true' : undefined}
+      onPointerDownCapture={() => props.onChromeFocus?.()}
       style={
         props.placement === 'right'
           ? {
@@ -366,10 +432,14 @@ export function WorkspaceWorkbench(props: WorkspaceWorkbenchProps) {
         data-workspace-inspector-tabbar="true"
         data-pane-tab-bar="true"
       >
-        <div className="shell-workbench__tabs" role="tablist" aria-label="工作台标签">
+        <div className="shell-workbench__tab-cluster">
+          <div className="shell-workbench__tabs" role="tablist" aria-label="工作台标签">
           {visibleTabs.map((tab) => {
             const active = tab.id === activeTab?.id;
-            const label = tabLabel(tab);
+            const chrome = tab.type === 'browser' ? props.browserPageMeta?.[tab.browserId] : undefined;
+            const conversation =
+              tab.type === 'conversation' ? props.conversationTabMeta?.[tab.conversationId] : undefined;
+            const label = tabLabel(tab, chrome, conversation);
             return (
               <div
                 key={tab.id}
@@ -384,7 +454,11 @@ export function WorkspaceWorkbench(props: WorkspaceWorkbenchProps) {
                 title={label}
                 onClick={() => props.onActivateTab(tab.id)}
               >
-                <WorkbenchTabIcon tab={tab} />
+                <WorkbenchTabIcon
+                  tab={tab}
+                  favicon={chrome?.favicon}
+                  track={conversation?.track}
+                />
                 <span className="shell-workbench-tab__label" data-pane-tab-label="true">
                   {label}
                 </span>
@@ -405,6 +479,81 @@ export function WorkspaceWorkbench(props: WorkspaceWorkbenchProps) {
             );
           })}
         </div>
+          <div
+            className={clsx(
+              'shell-workbench__menu-anchor',
+              props.focused === false && 'shell-tab-add--hidden',
+            )}
+          >
+            <button
+              ref={newMenuTriggerRef}
+              type="button"
+              data-testid="workbench-tab-new"
+              className="shell-workbench__tab-action"
+              aria-label={`添加${props.placement === 'right' ? '右侧' : '底部'}工作台标签`}
+              aria-haspopup="menu"
+              aria-expanded={newMenuOpen}
+              aria-hidden={props.focused === false}
+              tabIndex={props.focused === false ? -1 : undefined}
+              onMouseDown={(event) => event.stopPropagation()}
+              onClick={() => {
+                setNewMenuOpen((open) => !open);
+                setMoreMenuOpen(false);
+              }}
+            >
+              <Plus size={15} />
+            </button>
+            {newMenuOpen ? (
+              <div
+                ref={newMenuRef}
+                className="shell-workbench-menu"
+                role="menu"
+                onMouseDown={(event) => event.stopPropagation()}
+                onKeyDown={handleNewMenuKeyDown}
+              >
+                {props.placement === 'right' ? (
+                  <button type="button" role="menuitem" onClick={() => selectNewResource('files')}>
+                    <Folder size={14} /> 工作区文件
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => selectNewResource('conversation')}
+                >
+                  <MessageSquarePlus size={14} /> 新建对话
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={props.canOpenTerminal === false}
+                  onClick={() => selectNewResource('canvas')}
+                >
+                  <Pencil size={14} /> 新建绘图
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={props.canOpenTerminal === false}
+                  onClick={() => selectNewResource('document')}
+                >
+                  <FilePlus2 size={14} /> 新建文档
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={props.canOpenTerminal === false}
+                  onClick={() => selectNewResource('terminal')}
+                >
+                  <SquareTerminal size={14} /> 新建终端
+                </button>
+                <button type="button" role="menuitem" onClick={() => selectNewResource('browser')}>
+                  <Globe size={14} /> 网页浏览
+                </button>
+              </div>
+            ) : null}
+          </div>
+        </div>
 
         {props.placement === 'right' && props.onToggleFileBrowser ? (
           <button
@@ -420,66 +569,6 @@ export function WorkspaceWorkbench(props: WorkspaceWorkbenchProps) {
             <Folder size={15} />
           </button>
         ) : null}
-
-        <div className="shell-workbench__menu-anchor">
-          <button
-            ref={newMenuTriggerRef}
-            type="button"
-            className="shell-workbench__tab-action"
-            aria-label={`添加${props.placement === 'right' ? '右侧' : '底部'}工作台标签`}
-            aria-haspopup="menu"
-            aria-expanded={newMenuOpen}
-            onMouseDown={(event) => event.stopPropagation()}
-            onClick={() => {
-              setNewMenuOpen((open) => !open);
-              setMoreMenuOpen(false);
-            }}
-          >
-            <Plus size={15} />
-          </button>
-          {newMenuOpen ? (
-            <div
-              ref={newMenuRef}
-              className="shell-workbench-menu shell-workbench-menu--end"
-              role="menu"
-              onMouseDown={(event) => event.stopPropagation()}
-              onKeyDown={handleNewMenuKeyDown}
-            >
-              {props.placement === 'right' ? (
-                <button type="button" role="menuitem" onClick={() => selectNewResource('files')}>
-                  <Folder size={14} /> 工作区文件
-                </button>
-              ) : null}
-              <button
-                type="button"
-                role="menuitem"
-                disabled={props.canOpenTerminal === false}
-                onClick={() => selectNewResource('canvas')}
-              >
-                <Pencil size={14} /> 新建绘图
-              </button>
-              <button
-                type="button"
-                role="menuitem"
-                disabled={props.canOpenTerminal === false}
-                onClick={() => selectNewResource('document')}
-              >
-                <FilePlus2 size={14} /> 新建文档
-              </button>
-              <button
-                type="button"
-                role="menuitem"
-                disabled={props.canOpenTerminal === false}
-                onClick={() => selectNewResource('terminal')}
-              >
-                <SquareTerminal size={14} /> 新建终端
-              </button>
-              <button type="button" role="menuitem" onClick={() => selectNewResource('browser')}>
-                <Globe size={14} /> 网页浏览
-              </button>
-            </div>
-          ) : null}
-        </div>
 
         <div className="shell-workbench__menu-anchor shell-workbench__more">
           <button
@@ -501,18 +590,30 @@ export function WorkspaceWorkbench(props: WorkspaceWorkbenchProps) {
               role="menu"
               onMouseDown={(event) => event.stopPropagation()}
             >
-              {visibleTabs.map((tab) => (
-                <button
-                  key={tab.id}
-                  type="button"
-                  role="menuitem"
-                  className={tab.id === activeTab?.id ? 'is-active' : undefined}
-                  onClick={() => props.onActivateTab(tab.id)}
-                >
-                  <WorkbenchTabIcon tab={tab} />
-                  <span>{tabLabel(tab)}</span>
-                </button>
-              ))}
+              {visibleTabs.map((tab) => {
+                const chrome =
+                  tab.type === 'browser' ? props.browserPageMeta?.[tab.browserId] : undefined;
+                const conversation =
+                  tab.type === 'conversation'
+                    ? props.conversationTabMeta?.[tab.conversationId]
+                    : undefined;
+                return (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    role="menuitem"
+                    className={tab.id === activeTab?.id ? 'is-active' : undefined}
+                    onClick={() => props.onActivateTab(tab.id)}
+                  >
+                    <WorkbenchTabIcon
+                      tab={tab}
+                      favicon={chrome?.favicon}
+                      track={conversation?.track}
+                    />
+                    <span>{tabLabel(tab, chrome, conversation)}</span>
+                  </button>
+                );
+              })}
               <div className="shell-workbench-menu__divider" />
               <button type="button" role="menuitem" onClick={props.onClose}>
                 <X size={14} /> 关闭工作台
@@ -524,11 +625,31 @@ export function WorkspaceWorkbench(props: WorkspaceWorkbenchProps) {
       <div className="shell-workbench__divider" data-pane-tab-divider="true" />
       <div className="shell-workbench__content">
         <div className="shell-workbench__main">
-          {showFilesFull
-            ? (props.renderFileBrowser?.() ?? (activeTab ? props.renderContent(activeTab) : null))
-            : activeTab
-              ? props.renderContent(activeTab)
-              : null}
+          {props.scope.tabs
+            .filter((tab) => tab.type === 'browser')
+            .map((tab) => {
+              const browserActive = !showFilesFull && tab.id === activeTab?.id;
+              return (
+                <div
+                  key={tab.id}
+                  className="shell-pane-surface"
+                  data-surface="browser"
+                  data-active={browserActive ? 'true' : 'false'}
+                  data-testid={`workbench-surface-browser-${tab.browserId}`}
+                >
+                  {props.renderContent(tab)}
+                </div>
+              );
+            })}
+          {showFilesFull ? (
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+              {props.renderFileBrowser?.() ?? (activeTab ? props.renderContent(activeTab) : null)}
+            </div>
+          ) : activeTab && activeTab.type !== 'browser' ? (
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+              {props.renderContent(activeTab)}
+            </div>
+          ) : null}
         </div>
         {props.placement === 'right' && props.renderFileBrowser && visibleTabs.length > 0 ? (
           <aside

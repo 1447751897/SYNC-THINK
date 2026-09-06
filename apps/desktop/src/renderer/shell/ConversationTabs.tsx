@@ -38,20 +38,9 @@ import {
   sortableKeyboardCoordinates,
   useSortable,
 } from '@dnd-kit/sortable';
-import { CSS } from '@dnd-kit/utilities';
 import { FileTypeIcon } from './FileTypeIcon.js';
-import { siteFaviconUrl } from './ExternalSourceIcon.js';
-
-function browserTabFaviconSrc(browser: { url: string; favicon?: string }): string | undefined {
-  if (browser.favicon?.trim()) return browser.favicon.trim();
-  try {
-    const host = new URL(browser.url).hostname.toLowerCase().replace(/^www\./, '');
-    if (!host.includes('.')) return undefined;
-    return siteFaviconUrl(host);
-  } catch {
-    return undefined;
-  }
-}
+import { browserTabFaviconSrc } from './ExternalSourceIcon.js';
+import { pointerDragLeft, tabTranslate, visualIndexFor } from './workspace-tab-morph.js';
 
 export interface ConversationTabsProps {
   paneId?: string;
@@ -92,6 +81,8 @@ export interface ConversationTabsProps {
   onCloseReview?(runId: string): void;
   canOpenTerminal?: boolean;
   onNew(): void;
+  /** When false the plus stays mounted but collapsed so pane chrome can hide it. */
+  showAddButton?: boolean;
   onReorder?(fromId: string, toId: string): void;
   onRename?(conversationId: string, currentTitle: string): void;
   /** Right-click a tab → open that conversation in the split pane. */
@@ -153,15 +144,22 @@ export function calculatePaneTabWidth(containerWidth: number, tabCount: number):
   return Math.max(PANE_TAB_MIN_WIDTH, Math.min(PANE_TAB_MAX_WIDTH, width));
 }
 
-function usePaneTabWidth(ref: React.RefObject<HTMLElement>, tabCount: number): number {
+function usePaneTabWidth(
+  containerRef: React.RefObject<HTMLElement>,
+  reservedRef: React.RefObject<HTMLElement>,
+  tabCount: number,
+): number {
   const [width, setWidth] = useState(PANE_TAB_MAX_WIDTH);
 
   useLayoutEffect(() => {
-    const element = ref.current;
+    const element = containerRef.current;
     if (!element) return;
 
     const measure = () => {
-      const containerWidth = element.clientWidth || element.getBoundingClientRect().width;
+      const reserved = reservedRef.current?.offsetWidth ?? 0;
+      const gap = reserved > 0 ? 3 : 0;
+      const containerWidth =
+        (element.clientWidth || element.getBoundingClientRect().width) - reserved - gap;
       setWidth(calculatePaneTabWidth(containerWidth, tabCount));
     };
     measure();
@@ -169,12 +167,14 @@ function usePaneTabWidth(ref: React.RefObject<HTMLElement>, tabCount: number): n
     if (typeof ResizeObserver !== 'undefined') {
       const observer = new ResizeObserver(measure);
       observer.observe(element);
+      const reserved = reservedRef.current;
+      if (reserved) observer.observe(reserved);
       return () => observer.disconnect();
     }
 
     window.addEventListener('resize', measure);
     return () => window.removeEventListener('resize', measure);
-  }, [ref, tabCount]);
+  }, [containerRef, reservedRef, tabCount]);
 
   return width;
 }
@@ -273,6 +273,7 @@ export function ConversationTabs(props: ConversationTabsProps) {
   const splitPickerRef = useRef<HTMLDivElement>(null);
   const tabManagerAnchorRef = useRef<HTMLDivElement>(null);
   const tabTrackRef = useRef<HTMLDivElement>(null);
+  const tabClusterRef = useRef<HTMLDivElement>(null);
   const newResourceMenuStyle = useAnchoredMenuStyle(
     newResourceMenuOpen,
     newResourceAnchorRef,
@@ -306,6 +307,10 @@ export function ConversationTabs(props: ConversationTabsProps) {
     };
   }, [ctxMenu, newResourceMenuOpen, splitPickerDirection, tabManagerOpen]);
 
+  useEffect(() => {
+    if (props.showAddButton === false) setNewResourceMenuOpen(false);
+  }, [props.showAddButton]);
+
   /**
    * Conversations eligible for the split pane: any other than the active one.
    * Open tabs come first (most likely targets), then the rest of the workspace.
@@ -325,7 +330,7 @@ export function ConversationTabs(props: ConversationTabsProps) {
     (props.terminalTabs?.length ?? 0) +
     (props.browserTabs?.length ?? 0) +
     (props.reviewTabs?.length ?? 0);
-  const paneTabWidth = usePaneTabWidth(tabTrackRef, paneResourceTabCount);
+  const paneTabWidth = usePaneTabWidth(tabClusterRef, newResourceAnchorRef, paneResourceTabCount);
   const normalizedTabQuery = tabManagerQuery.trim().toLocaleLowerCase();
   const managedTabs = normalizedTabQuery
     ? tabs.filter((conversation) =>
@@ -349,9 +354,20 @@ export function ConversationTabs(props: ConversationTabsProps) {
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
   const nativeConversationDragIdRef = useRef<string | null>(null);
+  const [morphDrag, setMorphDrag] = useState<{
+    id: string;
+    startIndex: number;
+    startLeft: number;
+    targetIndex: number;
+    originX: number;
+    dragLeft: number;
+  } | null>(null);
+  const morphDragRef = useRef(morphDrag);
+  morphDragRef.current = morphDrag;
 
   const handleTabDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
+    setMorphDrag(null);
     props.onTabDragStateChange?.(null);
     if (!over || active.id === over.id) return;
     props.onReorder?.(String(active.id), String(over.id));
@@ -362,6 +378,20 @@ export function ConversationTabs(props: ConversationTabsProps) {
     conversationId: string,
   ) => {
     nativeConversationDragIdRef.current = conversationId;
+    const startIndex = props.openIds.indexOf(conversationId);
+    if (startIndex >= 0) {
+      const startLeft = startIndex * (paneTabWidth + PANE_TAB_GAP);
+      const next = {
+        id: conversationId,
+        startIndex,
+        startLeft,
+        targetIndex: startIndex,
+        originX: event.clientX,
+        dragLeft: startLeft,
+      };
+      morphDragRef.current = next;
+      setMorphDrag(next);
+    }
     beginResourceDrag(
       event,
       { type: 'conversation', id: conversationId },
@@ -369,26 +399,57 @@ export function ConversationTabs(props: ConversationTabsProps) {
     );
   };
 
+  const updateConversationMorphFromPointer = (clientX: number) => {
+    setMorphDrag((current) => {
+      if (!current) return current;
+      const next = pointerDragLeft(
+        clientX,
+        current.originX,
+        current.startIndex,
+        paneTabWidth,
+        props.openIds.length,
+        PANE_TAB_GAP,
+      );
+      if (next.dragLeft === current.dragLeft && next.targetIndex === current.targetIndex) {
+        return current;
+      }
+      const updated = { ...current, ...next };
+      morphDragRef.current = updated;
+      return updated;
+    });
+  };
+
   const handleConversationDragOver = (event: React.DragEvent<HTMLDivElement>) => {
     if (!nativeConversationDragIdRef.current) return;
     event.preventDefault();
     event.stopPropagation();
     event.dataTransfer.dropEffect = 'move';
+    updateConversationMorphFromPointer(event.clientX);
   };
 
-  const handleConversationDrop = (
-    event: React.DragEvent<HTMLDivElement>,
-    targetConversationId: string,
-  ) => {
+  const clearConversationMorph = () => {
+    nativeConversationDragIdRef.current = null;
+    morphDragRef.current = null;
+    setMorphDrag(null);
+    props.onTabDragStateChange?.(null);
+  };
+
+  const commitConversationMorph = () => {
+    const drag = morphDragRef.current;
     const sourceConversationId = nativeConversationDragIdRef.current;
-    if (!sourceConversationId) return;
+    clearConversationMorph();
+    if (!sourceConversationId || !drag || drag.targetIndex === drag.startIndex) return;
+    const targetId = props.openIds[drag.targetIndex];
+    if (targetId && targetId !== sourceConversationId) {
+      props.onReorder?.(sourceConversationId, targetId);
+    }
+  };
+
+  const handleConversationDrop = (event: React.DragEvent<HTMLDivElement>) => {
+    if (!nativeConversationDragIdRef.current) return;
     event.preventDefault();
     event.stopPropagation();
-    nativeConversationDragIdRef.current = null;
-    props.onTabDragStateChange?.(null);
-    if (sourceConversationId !== targetConversationId) {
-      props.onReorder?.(sourceConversationId, targetConversationId);
-    }
+    commitConversationMorph();
   };
 
   const requestSplit = (direction: PaneSplitDirection) => {
@@ -405,12 +466,15 @@ export function ConversationTabs(props: ConversationTabsProps) {
       data-testid="conversation-tabs"
       className="shell-conversation-tabs relative flex h-10 shrink-0 items-center gap-[3px] p-1"
     >
-      {/* Scrollable tab area is isolated from the right-side action group so
-          pane actions stay visible even when many tabs overflow. */}
+      {/* Tab cluster keeps the plus beside the last tab; overflow stays in the
+          scroller so the more-menu can remain pinned to the trailing chrome. */}
+      <div ref={tabClusterRef} className="shell-conversation-tabs__cluster">
       <div
         ref={tabTrackRef}
-        className="shell-conversation-tabs__scroller flex min-w-0 flex-1 items-center gap-[3px] overflow-x-auto"
+        className="shell-conversation-tabs__scroller flex min-w-0 items-center gap-[3px] overflow-x-auto"
         style={{ '--shell-pane-tab-width': `${paneTabWidth}px` } as React.CSSProperties}
+        onDragOver={handleConversationDragOver}
+        onDrop={handleConversationDrop}
       >
         <DndContext
           sensors={sensors}
@@ -422,7 +486,7 @@ export function ConversationTabs(props: ConversationTabsProps) {
             })
           }
           onDragEnd={handleTabDragEnd}
-          onDragCancel={() => props.onTabDragStateChange?.(null)}
+          onDragCancel={clearConversationMorph}
         >
           <SortableContext
             items={tabs.map((c) => String(c.id))}
@@ -457,11 +521,22 @@ export function ConversationTabs(props: ConversationTabsProps) {
                   hasSplitAction={Boolean(props.onRename)}
                   onNativeDragStart={(event) => beginConversationDrag(event, id)}
                   onNativeDragOver={handleConversationDragOver}
-                  onNativeDrop={(event) => handleConversationDrop(event, id)}
-                  onNativeDragEnd={() => {
-                    nativeConversationDragIdRef.current = null;
-                    props.onTabDragStateChange?.(null);
-                  }}
+                  morphOffset={
+                    morphDrag
+                      ? morphDrag.id === id
+                        ? morphDrag.dragLeft - morphDrag.startLeft
+                        : (visualIndexFor(
+                            props.openIds.indexOf(id),
+                            morphDrag.startIndex,
+                            morphDrag.targetIndex,
+                          ) -
+                            props.openIds.indexOf(id)) *
+                          (paneTabWidth + PANE_TAB_GAP)
+                      : 0
+                  }
+                  dragging={morphDrag?.id === id}
+                  onNativeDrop={handleConversationDrop}
+                  onNativeDragEnd={clearConversationMorph}
                 />
               );
             })}
@@ -707,8 +782,13 @@ export function ConversationTabs(props: ConversationTabsProps) {
         })}
       </div>
 
-      <div className="ml-[3px] flex shrink-0 items-center gap-[3px]">
-        <div ref={newResourceAnchorRef} className="relative shrink-0">
+        <div
+          ref={newResourceAnchorRef}
+          className={clsx(
+            'relative shrink-0',
+            props.showAddButton === false && 'shell-tab-add--hidden',
+          )}
+        >
           <button
             type="button"
             data-testid="conversation-tab-new"
@@ -722,6 +802,8 @@ export function ConversationTabs(props: ConversationTabsProps) {
             aria-label="新建资源"
             aria-expanded={newResourceMenuOpen}
             aria-haspopup="menu"
+            aria-hidden={props.showAddButton === false}
+            tabIndex={props.showAddButton === false ? -1 : undefined}
             onMouseDown={(event) => event.stopPropagation()}
             onClick={() => setNewResourceMenuOpen((open) => !open)}
           >
@@ -813,6 +895,8 @@ export function ConversationTabs(props: ConversationTabsProps) {
               )
             : null}
         </div>
+      </div>
+      <div className="ml-[3px] flex shrink-0 items-center gap-[3px]">
         {paneResourceTabCount > 0 ? (
           <div ref={tabManagerAnchorRef} className="relative shrink-0">
             <button
@@ -1091,6 +1175,8 @@ function SortableConversationTab(props: {
   onNativeDragOver(e: React.DragEvent<HTMLDivElement>): void;
   onNativeDrop(e: React.DragEvent<HTMLDivElement>): void;
   onNativeDragEnd(): void;
+  morphOffset?: number;
+  dragging?: boolean;
 }) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useSortable({
     id: props.conversationId,
@@ -1106,16 +1192,14 @@ function SortableConversationTab(props: {
         props.active
           ? 'shell-conversation-tab-active font-medium text-text'
           : 'text-text-secondary hover:bg-hover/70 hover:text-text',
-        isDragging && 'z-50 opacity-70',
+        (isDragging || props.dragging) && 'is-dragging z-50 opacity-70',
+        !props.dragging && 'is-gliding',
         'cursor-grab active:cursor-grabbing',
       )}
       style={{
-        ...(transform
-          ? {
-              transform: CSS.Transform.toString({ ...transform, scaleX: 1, scaleY: 1 }),
-              transition: 'transform 150ms ease',
-            }
-          : {}),
+        transform: tabTranslate(
+          (props.morphOffset ?? 0) + (props.dragging ? 0 : (transform?.x ?? 0)),
+        ),
       }}
       {...attributes}
       {...listeners}

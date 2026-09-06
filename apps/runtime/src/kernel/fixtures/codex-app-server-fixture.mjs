@@ -64,6 +64,45 @@ input.on('line', (line) => {
     }
     // Reasoning items that were never streamed arrive only via item/completed,
     // and app-server has shipped three different shapes for the same payload.
+    const commandOutcome = request.params?.input
+      ?.find?.((item) => item?.text?.startsWith('command outcome fixture:'))
+      ?.text?.split(':')[1];
+    if (commandOutcome) {
+      write({
+        jsonrpc: '2.0',
+        id: 'permission-command',
+        method: 'item/commandExecution/requestApproval',
+        params: { threadId, turnId, itemId: 'command-outcome', command: 'echo outcome' },
+      });
+      write({
+        method: 'item/started',
+        params: {
+          threadId,
+          turnId,
+          item: { id: 'command-outcome', type: 'commandExecution', command: 'echo outcome' },
+        },
+      });
+      write({
+        method: 'item/completed',
+        params: {
+          threadId,
+          turnId,
+          item: {
+            id: 'command-outcome',
+            type: 'commandExecution',
+            command: 'echo outcome',
+            status: commandOutcome,
+            exitCode: null,
+            aggregatedOutput: '',
+          },
+        },
+      });
+      write({
+        method: 'turn/completed',
+        params: { threadId, turn: { id: turnId, status: 'completed' } },
+      });
+      return;
+    }
     if (request.params?.input?.some?.((item) => item?.text === 'reasoning fixture')) {
       write({
         method: 'item/completed',
@@ -152,7 +191,10 @@ input.on('line', (line) => {
       (item) => item?.text === 'file change map fixture',
     );
     const planFixture = request.params?.input?.some?.((item) => item?.text === 'plan fixture');
-    if (planFixture) {
+    const detailedPlanFixture = request.params?.input?.some?.(
+      (item) => item?.text === 'detailed plan fixture',
+    );
+    if (planFixture || detailedPlanFixture) {
       write({
         method: 'turn/plan/updated',
         params: {
@@ -161,7 +203,12 @@ input.on('line', (line) => {
           explanation: 'Three-step fixture plan',
           plan: [
             { step: '读取 package.json', status: 'completed' },
-            { step: '运行 typecheck', status: 'inProgress' },
+            {
+              step: detailedPlanFixture
+                ? '运行 typecheck\r\n检查 runtime 与 desktop 的类型错误\n记录失败文件'
+                : '运行 typecheck',
+              status: 'inProgress',
+            },
             { step: '汇总结果', status: 'pending' },
           ],
         },
@@ -328,27 +375,34 @@ input.on('line', (line) => {
         threadId,
         turnId,
         itemId: `item-${turnCount}`,
-        delta: permissionFixture
+        delta: request.params?.input?.some?.(
+          (item) => item?.text === 'native plan availability fixture',
+        )
           ? JSON.stringify({
-              threadApprovalPolicy: threadPolicy?.approvalPolicy,
-              threadSandboxPolicy: threadPolicy?.sandboxPolicy,
-              turnApprovalPolicy: request.params?.approvalPolicy,
-              turnSandboxPolicy: request.params?.sandboxPolicy,
+              planEnabled: threadPolicy?.config?.tools?.update_plan?.enabled,
+              goals: threadPolicy?.config?.features?.goals,
             })
-          : collaborationFixture
-            ? JSON.stringify(request.params?.collaborationMode)
-            : webSearchFixture
-              ? JSON.stringify({ webSearch: threadPolicy?.config?.web_search })
-            : effortFixture
-              ? JSON.stringify({
-                  hasEffort: Object.prototype.hasOwnProperty.call(request.params, 'effort'),
-                  effort: request.params?.effort,
-                })
-              : sawLocalImage
-                ? 'local image forwarded'
-                : sawInlineImage
-                  ? 'inline image forwarded'
-                  : `answer ${turnCount}`,
+          : permissionFixture
+            ? JSON.stringify({
+                threadApprovalPolicy: threadPolicy?.approvalPolicy,
+                threadSandboxPolicy: threadPolicy?.sandboxPolicy,
+                turnApprovalPolicy: request.params?.approvalPolicy,
+                turnSandboxPolicy: request.params?.sandboxPolicy,
+              })
+            : collaborationFixture
+              ? JSON.stringify(request.params?.collaborationMode)
+              : webSearchFixture
+                ? JSON.stringify({ webSearch: threadPolicy?.config?.web_search })
+                : effortFixture
+                  ? JSON.stringify({
+                      hasEffort: Object.prototype.hasOwnProperty.call(request.params, 'effort'),
+                      effort: request.params?.effort,
+                    })
+                  : sawLocalImage
+                    ? 'local image forwarded'
+                    : sawInlineImage
+                      ? 'inline image forwarded'
+                      : `answer ${turnCount}`,
       },
     });
     if (request.params?.input?.some?.((item) => item?.text === 'hang fixture')) return;

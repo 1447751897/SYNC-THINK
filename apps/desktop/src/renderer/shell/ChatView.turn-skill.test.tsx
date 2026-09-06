@@ -28,6 +28,7 @@ const runtime = {
   listConversationMessages: vi.fn(),
   listSkills: vi.fn(),
   openTask: vi.fn(),
+  readTaskPlanHistory: vi.fn(),
   rebindConversationTarget: vi.fn(),
   goalPause: vi.fn(),
   goalResume: vi.fn(),
@@ -210,6 +211,7 @@ beforeEach(() => {
   runtime.listSkills.mockReset().mockResolvedValue(skillCatalog);
   runtime.listMcpServers.mockReset().mockResolvedValue({ servers: [] });
   runtime.openTask.mockReset().mockResolvedValue({ task: { threadId: 'thread-a' } });
+  runtime.readTaskPlanHistory.mockReset();
   runtime.rebindConversationTarget.mockReset().mockResolvedValue({ conversation: {} });
   runtime.sendConversationMessage.mockReset().mockResolvedValue({
     threadId: 'thread-a',
@@ -231,6 +233,14 @@ afterEach(() => {
 });
 
 describe('ChatView turn Skill draft', () => {
+  it('does not mount or request historical task lists', async () => {
+    renderChat({ ...conversation('conversation-current-tasks'), taskId: 'task-a' } as Conversation);
+    await waitFor(() => expect(runtime.listConversationMessages).toHaveBeenCalled());
+    expect(screen.queryByRole('button', { name: '历史任务' })).toBeNull();
+    expect(screen.queryByTestId('task-plan-history')).toBeNull();
+    expect(runtime.readTaskPlanHistory).not.toHaveBeenCalled();
+  });
+
   it('measures the toolbar and collapses permission before Skill', async () => {
     let outerWidth = 460;
     let resizeToolbar: ResizeObserverCallback | undefined;
@@ -331,7 +341,7 @@ describe('ChatView turn Skill draft', () => {
     expect(trigger.textContent).toContain('高');
   });
 
-  it('projects an unscoped checklist while a conversation has no task id', async () => {
+  it('keeps unscoped checklists out of conversations without a task or thread binding', async () => {
     const events = [
       {
         id: 'run-started',
@@ -368,7 +378,9 @@ describe('ChatView turn Skill draft', () => {
 
     renderChat(conversation('conversation-without-task'), undefined, undefined, events);
 
-    expect(await screen.findAllByText('检查无任务会话')).toHaveLength(2);
+    expect(await screen.findByTestId('compose-input')).toBeTruthy();
+    expect(screen.queryAllByText('检查无任务会话')).toHaveLength(0);
+    expect(screen.queryAllByText('记录验证结果')).toHaveLength(0);
   });
 
   it('uses the shared NewMax editor for the active conversation', () => {

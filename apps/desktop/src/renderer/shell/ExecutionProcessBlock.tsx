@@ -1,3 +1,4 @@
+import { ConversationContentScope, DeferredToolContent } from './DeferredToolContent.js';
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
@@ -14,40 +15,10 @@ import {
   Wrench,
   XCircle,
 } from 'lucide-react';
-import hljs from 'highlight.js/lib/core';
-import javascript from 'highlight.js/lib/languages/javascript';
-import typescript from 'highlight.js/lib/languages/typescript';
-import json from 'highlight.js/lib/languages/json';
-import xml from 'highlight.js/lib/languages/xml';
-import css from 'highlight.js/lib/languages/css';
-import markdown from 'highlight.js/lib/languages/markdown';
-import bash from 'highlight.js/lib/languages/bash';
-import python from 'highlight.js/lib/languages/python';
-import yaml from 'highlight.js/lib/languages/yaml';
-import sql from 'highlight.js/lib/languages/sql';
-import c from 'highlight.js/lib/languages/c';
-import cmake from 'highlight.js/lib/languages/cmake';
-import cpp from 'highlight.js/lib/languages/cpp';
-import csharp from 'highlight.js/lib/languages/csharp';
-import dart from 'highlight.js/lib/languages/dart';
-import diff from 'highlight.js/lib/languages/diff';
-import dockerfile from 'highlight.js/lib/languages/dockerfile';
-import dos from 'highlight.js/lib/languages/dos';
-import go from 'highlight.js/lib/languages/go';
-import graphql from 'highlight.js/lib/languages/graphql';
-import ini from 'highlight.js/lib/languages/ini';
-import java from 'highlight.js/lib/languages/java';
-import kotlin from 'highlight.js/lib/languages/kotlin';
-import less from 'highlight.js/lib/languages/less';
-import lua from 'highlight.js/lib/languages/lua';
-import makefile from 'highlight.js/lib/languages/makefile';
-import php from 'highlight.js/lib/languages/php';
-import powershell from 'highlight.js/lib/languages/powershell';
-import protobuf from 'highlight.js/lib/languages/protobuf';
-import ruby from 'highlight.js/lib/languages/ruby';
-import rust from 'highlight.js/lib/languages/rust';
-import scss from 'highlight.js/lib/languages/scss';
-import swift from 'highlight.js/lib/languages/swift';
+import { highlightCodeLines, languageFromPath } from './code-highlight.js';
+import { CopyTextButton } from './CopyTextButton.js';
+import { DeferredFileDiff, needsDeferredFileDiff } from './DeferredFileDiff.js';
+import { useRunProcessPage } from './use-run-process-page.js';
 import type {
   ExecutionProcessStep,
   FileChangeItem,
@@ -55,135 +26,6 @@ import type {
   RunProcessView,
 } from '@sync-think/protocol';
 import { useAutoDisclosure } from './auto-disclosure.js';
-
-let hljsReady = false;
-function ensureHljs(): void {
-  if (hljsReady) return;
-  hljs.registerLanguage('javascript', javascript);
-  hljs.registerLanguage('typescript', typescript);
-  hljs.registerLanguage('json', json);
-  hljs.registerLanguage('xml', xml);
-  hljs.registerLanguage('html', xml);
-  hljs.registerLanguage('css', css);
-  hljs.registerLanguage('markdown', markdown);
-  hljs.registerLanguage('bash', bash);
-  hljs.registerLanguage('shell', bash);
-  hljs.registerLanguage('python', python);
-  hljs.registerLanguage('yaml', yaml);
-  hljs.registerLanguage('sql', sql);
-  hljs.registerLanguage('c', c);
-  hljs.registerLanguage('cmake', cmake);
-  hljs.registerLanguage('cpp', cpp);
-  hljs.registerLanguage('csharp', csharp);
-  hljs.registerLanguage('dart', dart);
-  hljs.registerLanguage('diff', diff);
-  hljs.registerLanguage('dockerfile', dockerfile);
-  hljs.registerLanguage('dos', dos);
-  hljs.registerLanguage('go', go);
-  hljs.registerLanguage('graphql', graphql);
-  hljs.registerLanguage('ini', ini);
-  hljs.registerLanguage('java', java);
-  hljs.registerLanguage('kotlin', kotlin);
-  hljs.registerLanguage('less', less);
-  hljs.registerLanguage('lua', lua);
-  hljs.registerLanguage('makefile', makefile);
-  hljs.registerLanguage('php', php);
-  hljs.registerLanguage('powershell', powershell);
-  hljs.registerLanguage('protobuf', protobuf);
-  hljs.registerLanguage('ruby', ruby);
-  hljs.registerLanguage('rust', rust);
-  hljs.registerLanguage('scss', scss);
-  hljs.registerLanguage('swift', swift);
-  hljsReady = true;
-}
-
-const LANGUAGE_BY_FILENAME: Readonly<Record<string, string>> = {
-  dockerfile: 'dockerfile',
-  makefile: 'makefile',
-  'cmakelists.txt': 'cmake',
-  '.bashrc': 'bash',
-  '.zshrc': 'bash',
-};
-
-const LANGUAGE_BY_EXTENSION: Readonly<Record<string, string>> = {
-  ts: 'typescript',
-  mts: 'typescript',
-  cts: 'typescript',
-  tsx: 'typescript',
-  js: 'javascript',
-  mjs: 'javascript',
-  cjs: 'javascript',
-  jsx: 'javascript',
-  json: 'json',
-  jsonc: 'json',
-  md: 'markdown',
-  mdx: 'markdown',
-  css: 'css',
-  scss: 'scss',
-  sass: 'scss',
-  less: 'less',
-  html: 'html',
-  htm: 'html',
-  svg: 'html',
-  vue: 'html',
-  svelte: 'html',
-  xml: 'xml',
-  yml: 'yaml',
-  yaml: 'yaml',
-  py: 'python',
-  pyw: 'python',
-  sh: 'bash',
-  bash: 'bash',
-  zsh: 'bash',
-  fish: 'bash',
-  ps1: 'powershell',
-  psm1: 'powershell',
-  psd1: 'powershell',
-  bat: 'dos',
-  cmd: 'dos',
-  ini: 'ini',
-  toml: 'ini',
-  conf: 'ini',
-  config: 'ini',
-  properties: 'ini',
-  sql: 'sql',
-  rs: 'rust',
-  graphql: 'graphql',
-  gql: 'graphql',
-  go: 'go',
-  java: 'java',
-  kt: 'kotlin',
-  kts: 'kotlin',
-  swift: 'swift',
-  c: 'c',
-  h: 'c',
-  cc: 'cpp',
-  cpp: 'cpp',
-  cxx: 'cpp',
-  hpp: 'cpp',
-  hxx: 'cpp',
-  cs: 'csharp',
-  rb: 'ruby',
-  php: 'php',
-  lua: 'lua',
-  dart: 'dart',
-  diff: 'diff',
-  patch: 'diff',
-  mk: 'makefile',
-  cmake: 'cmake',
-  proto: 'protobuf',
-};
-
-function languageFromPath(path?: string): string | undefined {
-  if (!path) return undefined;
-  const base = path.split(/[\\/]/).pop()?.toLowerCase() ?? '';
-  if (base === 'dockerfile' || base.startsWith('dockerfile.')) return 'dockerfile';
-  if (base.startsWith('.env')) return 'ini';
-  const namedLanguage = LANGUAGE_BY_FILENAME[base];
-  if (namedLanguage) return namedLanguage;
-  const ext = base.includes('.') ? base.slice(base.lastIndexOf('.') + 1) : '';
-  return LANGUAGE_BY_EXTENSION[ext];
-}
 
 function isStatusOnlyPreview(preview?: string): boolean {
   if (!preview) return true;
@@ -248,17 +90,24 @@ export function ExecutionProcessStepCard({
   step,
   onOpenChange,
   autoOpen = false,
+  conversationId,
 }: {
   step: ExecutionProcessStep;
   onOpenChange?: (path: string) => void;
   autoOpen?: boolean;
+  conversationId?: string;
 }) {
   const { open, toggle } = useAutoDisclosure({ autoOpen, resetKey: step.id });
   const title = formatExecutionStepTitle(step);
   const output = step.error || step.preview;
   const showOutput = hasRichOutput(step);
   const hasBody = Boolean(
-    step.path || step.command || step.url || showOutput || step.exitCode !== undefined,
+    step.path ||
+    step.command ||
+    step.url ||
+    showOutput ||
+    step.exitCode !== undefined ||
+    step.detailsRef,
   );
 
   return (
@@ -312,6 +161,16 @@ export function ExecutionProcessStepCard({
             </div>
           ) : null}
 
+          {step.detailsRef ? (
+            <ConversationContentScope.Provider value={conversationId}>
+              <DeferredToolContent
+                deferred={step.detailsRef}
+                preview="包含较大的附加字段；完整事件展示数据按需读取。"
+                label="事件详情"
+                testId="process-card-event-details"
+              />
+            </ConversationContentScope.Provider>
+          ) : null}
           {showOutput && output ? (
             <div className="shell-tool-card__field">
               <div className="shell-tool-card__field-key">Output</div>
@@ -334,10 +193,14 @@ export function ExecutionProcessStepCard({
 }
 
 export function ExecutionProcessBlock({
-  view,
+  view: sourceView,
   nested = false,
   onOpenChange,
 }: ExecutionProcessBlockProps) {
+  const { process, controls } = useRunProcessPage(sourceView, 'steps', sourceView.conversationId, {
+    accumulate: true,
+  });
+  const view = process ?? sourceView;
   if (view.steps.length === 0) return null;
 
   return (
@@ -345,8 +208,14 @@ export function ExecutionProcessBlock({
       className={`shell-tool-stack ${nested ? 'is-nested' : ''}`}
       data-testid="execution-process"
     >
+      {controls}
       {view.steps.map((step) => (
-        <ExecutionProcessStepCard key={step.id} step={step} onOpenChange={onOpenChange} />
+        <ExecutionProcessStepCard
+          key={step.id}
+          step={step}
+          onOpenChange={onOpenChange}
+          conversationId={view.conversationId}
+        />
       ))}
     </div>
   );
@@ -394,7 +263,6 @@ export function CodePreview({
   compact?: boolean;
   highlightLine?: number;
 }) {
-  ensureHljs();
   const language = languageFromPath(path);
   const previewRef = useRef<HTMLDivElement>(null);
   const normalized = text.replace(/\r\n/g, '\n');
@@ -402,28 +270,10 @@ export function CodePreview({
   const display =
     rawLines.length > 1 && rawLines[rawLines.length - 1] === '' ? rawLines.slice(0, -1) : rawLines;
 
-  const highlightedHtml = useMemo(() => {
-    if (!language || !hljs.getLanguage(language)) return undefined;
-    try {
-      return hljs.highlight(normalized.replace(/\n$/, ''), {
-        language,
-        ignoreIllegals: true,
-      }).value;
-    } catch {
-      return undefined;
-    }
-  }, [language, normalized]);
-
-  const htmlLines = useMemo(() => {
-    if (!highlightedHtml) return undefined;
-    const parts = highlightedHtml.split('\n');
-    // hljs may drop a trailing empty line after we stripped it from source.
-    if (parts.length === display.length + 1 && parts[parts.length - 1] === '') {
-      return parts.slice(0, -1);
-    }
-    while (parts.length < display.length) parts.push('');
-    return parts.slice(0, display.length);
-  }, [highlightedHtml, display.length]);
+  const htmlLines = useMemo(
+    () => highlightCodeLines(normalized.replace(/\n$/, ''), language),
+    [language, normalized],
+  );
 
   const style =
     maxHeight !== undefined
@@ -483,12 +333,15 @@ export function CodePreview({
   );
 }
 
+const FILE_CHANGES_CARD_PREVIEW_LIMIT = 4;
+
 export function FileChangesCard({
-  view,
+  view: sourceView,
   nested = false,
   onOpenChange,
   onOpenReview,
   projectFolder,
+  conversationId = sourceView.conversationId,
 }: {
   view: RunProcessView;
   nested?: boolean;
@@ -496,9 +349,13 @@ export function FileChangesCard({
   onOpenChange?: (path: string) => void;
   onOpenReview?: (view: RunProcessView) => void;
   projectFolder?: string;
+  conversationId?: string;
 }) {
+  const { process, controls } = useRunProcessPage(sourceView, 'fileChanges', conversationId);
+  const view = process ?? sourceView;
   // File changes stay folded by default; the user expands a file to see its diff.
   const [expandedPath, setExpandedPath] = useState<string | null>(null);
+  const [overflowOpen, setOverflowOpen] = useState(false);
   const [pathTooltip, setPathTooltip] = useState<{
     anchor: HTMLButtonElement;
     itemKey: string;
@@ -508,132 +365,187 @@ export function FileChangesCard({
 
   if (view.fileChanges.length === 0) return null;
 
-  const totals = view.fileChanges.reduce<{ added: number; removed: number; countable: boolean }>(
+  const totals = view.fileChanges.reduce<{
+    added: number;
+    removed: number;
+    countable: boolean;
+    unknown: boolean;
+  }>(
     (acc, item) => {
       const counts = countLineChanges(item);
-      if (!counts) return acc;
+      if (!counts) return { ...acc, unknown: true };
       return {
         added: acc.added + counts.added,
         removed: acc.removed + counts.removed,
         countable: true,
+        unknown: acc.unknown,
       };
     },
-    { added: 0, removed: 0, countable: false },
+    {
+      added: 0,
+      removed: 0,
+      countable: false,
+      unknown: (view.pages?.fileChanges.total ?? view.fileChanges.length) > view.fileChanges.length,
+    },
   );
+  const previewItems = view.fileChanges.slice(0, FILE_CHANGES_CARD_PREVIEW_LIMIT);
+  const overflowItems = view.fileChanges.slice(FILE_CHANGES_CARD_PREVIEW_LIMIT);
+  const overflowCount = overflowItems.length;
+
+  const renderChangeItems = (items: readonly FileChangeItem[]) =>
+    items.map((item) => {
+      const itemKey = `${item.action}:${item.path}`;
+      const hasBody = !isStatusOnlyPreview(item.preview);
+      const hasDiff = item.previousContent !== undefined && item.content !== undefined;
+      const deferred = needsDeferredFileDiff(item);
+      const open = expandedPath === item.path;
+      const counts = countLineChanges(item);
+      const absolutePath = resolveAbsoluteProjectPath(projectFolder, item.path);
+      return (
+        <li key={itemKey} className={`shell-changes-card__item ${open ? 'is-open' : ''}`}>
+          <div className="shell-changes-card__row">
+            <button
+              type="button"
+              className="shell-changes-card__expand"
+              disabled={!hasBody && !hasDiff && !deferred}
+              onClick={() => {
+                setExpandedPath((prev) => (prev === item.path ? null : item.path));
+              }}
+              title={
+                hasBody || hasDiff || deferred
+                  ? open
+                    ? '收起 diff'
+                    : '展开 diff'
+                  : '暂无可展开内容'
+              }
+              aria-label={open ? `收起 ${item.path} diff` : `展开 ${item.path} diff`}
+            >
+              <ChevronDown
+                size={13}
+                className={`shell-changes-card__chevron ${open ? 'is-open' : ''}`}
+              />
+            </button>
+            <button
+              type="button"
+              className="shell-changes-card__file"
+              onClick={() => onOpenChange?.(item.path)}
+              onMouseEnter={(event) => {
+                setPathTooltip({
+                  anchor: event.currentTarget,
+                  itemKey,
+                  path: absolutePath,
+                });
+              }}
+              onMouseLeave={(event) => {
+                setPathTooltip((current) =>
+                  current?.anchor === event.currentTarget ? null : current,
+                );
+              }}
+              onFocus={(event) => {
+                setPathTooltip({
+                  anchor: event.currentTarget,
+                  itemKey,
+                  path: absolutePath,
+                });
+              }}
+              onBlur={(event) => {
+                setPathTooltip((current) =>
+                  current?.anchor === event.currentTarget ? null : current,
+                );
+              }}
+              aria-describedby={pathTooltip?.itemKey === itemKey ? pathTooltipId : undefined}
+              aria-label={`打开文件 ${item.path}`}
+            >
+              <span
+                className={`shell-changes-card__badge is-${item.action}`}
+                data-action={item.action}
+              >
+                {item.action === 'created' ? 'A' : item.action === 'deleted' ? 'D' : 'M'}
+              </span>
+              <span className="shell-changes-card__path">{item.path}</span>
+              {counts ? (
+                <span className="shell-changes-card__file-lines">
+                  <span className="is-add">+{counts.added}</span>
+                  <span className="is-del">−{counts.removed}</span>
+                </span>
+              ) : null}
+              <span className="shell-changes-card__action-label">{actionLabel(item.action)}</span>
+            </button>
+          </div>
+          {open && deferred ? (
+            <DeferredFileDiff item={item} conversationId={conversationId} />
+          ) : open && hasDiff ? (
+            <div className="shell-changes-card__diff">
+              <LineDiffView
+                oldText={item.previousContent}
+                newText={item.content}
+                path={item.path}
+                truncated={item.previousTruncated}
+              />
+            </div>
+          ) : open && hasBody && item.preview ? (
+            <div className="shell-changes-card__preview">
+              <CodePreview text={item.preview} path={item.path} compact maxHeight={220} />
+            </div>
+          ) : null}
+        </li>
+      );
+    });
 
   return (
     <div className={`shell-changes-card ${nested ? 'is-nested' : ''}`}>
       <div className="shell-changes-card__header">
-        <span className="shell-changes-card__title">已更改 {view.fileChanges.length} 个文件</span>
-        {totals.countable ? (
+        <span className="shell-changes-card__title">
+          已更改 {view.pages?.fileChanges.total ?? view.fileChanges.length} 个文件
+        </span>
+        {totals.countable && !totals.unknown ? (
           <span className="shell-changes-card__lines" title="新增 / 删除行数">
             <span className="is-add">+{totals.added}</span>
             <span className="is-del">−{totals.removed}</span>
           </span>
         ) : null}
+        {totals.unknown ? <span className="shell-changes-card__lines">行数按需计算</span> : null}
         <button
           type="button"
           className="shell-changes-card__action"
-          onClick={() => onOpenReview?.(view)}
+          onClick={() => onOpenReview?.(conversationId ? { ...view, conversationId } : view)}
           title="审阅本轮文件修改"
         >
           <FileDiff size={12} aria-hidden="true" />
           审阅文件
         </button>
       </div>
-      <ul className="shell-changes-card__list">
-        {view.fileChanges.map((item) => {
-          const itemKey = `${item.action}:${item.path}`;
-          const hasBody = !isStatusOnlyPreview(item.preview);
-          const hasDiff = item.previousContent !== undefined && item.content !== undefined;
-          const open = expandedPath === item.path;
-          const counts = countLineChanges(item);
-          const absolutePath = resolveAbsoluteProjectPath(projectFolder, item.path);
-          return (
-            <li key={itemKey} className={`shell-changes-card__item ${open ? 'is-open' : ''}`}>
-              <div className="shell-changes-card__row">
-                <button
-                  type="button"
-                  className="shell-changes-card__expand"
-                  disabled={!hasBody && !hasDiff}
-                  onClick={() => {
-                    setExpandedPath((prev) => (prev === item.path ? null : item.path));
-                  }}
-                  title={hasBody || hasDiff ? (open ? '收起 diff' : '展开 diff') : '暂无可展开内容'}
-                  aria-label={open ? `收起 ${item.path} diff` : `展开 ${item.path} diff`}
-                >
-                  <ChevronDown
-                    size={13}
-                    className={`shell-changes-card__chevron ${open ? 'is-open' : ''}`}
-                  />
-                </button>
-                <button
-                  type="button"
-                  className="shell-changes-card__file"
-                  onClick={() => onOpenChange?.(item.path)}
-                  onMouseEnter={(event) => {
-                    setPathTooltip({
-                      anchor: event.currentTarget,
-                      itemKey,
-                      path: absolutePath,
-                    });
-                  }}
-                  onMouseLeave={(event) => {
-                    setPathTooltip((current) =>
-                      current?.anchor === event.currentTarget ? null : current,
-                    );
-                  }}
-                  onFocus={(event) => {
-                    setPathTooltip({
-                      anchor: event.currentTarget,
-                      itemKey,
-                      path: absolutePath,
-                    });
-                  }}
-                  onBlur={(event) => {
-                    setPathTooltip((current) =>
-                      current?.anchor === event.currentTarget ? null : current,
-                    );
-                  }}
-                  aria-describedby={pathTooltip?.itemKey === itemKey ? pathTooltipId : undefined}
-                  aria-label={`打开文件 ${item.path}`}
-                >
-                  <span
-                    className={`shell-changes-card__badge is-${item.action}`}
-                    data-action={item.action}
-                  >
-                    {item.action === 'created' ? 'A' : item.action === 'deleted' ? 'D' : 'M'}
-                  </span>
-                  <span className="shell-changes-card__path">{item.path}</span>
-                  {counts ? (
-                    <span className="shell-changes-card__file-lines">
-                      <span className="is-add">+{counts.added}</span>
-                      <span className="is-del">−{counts.removed}</span>
-                    </span>
-                  ) : null}
-                  <span className="shell-changes-card__action-label">
-                    {actionLabel(item.action)}
-                  </span>
-                </button>
-              </div>
-              {open && hasDiff ? (
-                <div className="shell-changes-card__diff">
-                  <LineDiffView
-                    oldText={item.previousContent}
-                    newText={item.content}
-                    path={item.path}
-                    truncated={item.previousTruncated}
-                  />
-                </div>
-              ) : open && hasBody && item.preview ? (
-                <div className="shell-changes-card__preview">
-                  <CodePreview text={item.preview} path={item.path} compact maxHeight={220} />
-                </div>
-              ) : null}
-            </li>
-          );
-        })}
-      </ul>
+      {controls}
+      <ul className="shell-changes-card__list">{renderChangeItems(previewItems)}</ul>
+      {overflowCount > 0 ? (
+        <>
+          <div
+            className={`shell-changes-card__overflow${overflowOpen ? ' is-open' : ''}`}
+            data-testid="file-changes-overflow"
+          >
+            <div className="shell-changes-card__overflow-inner">
+              <ul className="shell-changes-card__list is-overflow" aria-hidden={!overflowOpen}>
+                {renderChangeItems(overflowItems)}
+              </ul>
+            </div>
+          </div>
+          <button
+            type="button"
+            className="shell-changes-card__more"
+            data-testid="file-changes-overflow-toggle"
+            aria-expanded={overflowOpen}
+            aria-label={overflowOpen ? '收起其余文件' : `展开其余 ${overflowCount} 个文件`}
+            onClick={() => setOverflowOpen((open) => !open)}
+          >
+            <ChevronDown
+              size={13}
+              className={`shell-changes-card__more-chevron${overflowOpen ? ' is-open' : ''}`}
+              aria-hidden="true"
+            />
+            <span>{overflowOpen ? '收起' : `还有 ${overflowCount} 个文件`}</span>
+          </button>
+        </>
+      ) : null}
       {pathTooltip ? (
         <FilePathTooltip
           id={pathTooltipId}
@@ -729,6 +641,7 @@ export function computeLineDiff(
 ): DiffLine[] | undefined {
   if (oldText === undefined || newText === undefined) return undefined;
   const splitLines = (text: string) => {
+    if (!text) return [];
     const lines = text.replace(/\r\n/g, '\n').split('\n');
     if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop();
     return lines;
@@ -779,8 +692,12 @@ export function computeLineDiff(
 
 /** Added/removed line counts for a change item. Undefined when not countable. */
 export function countLineChanges(
-  item: Pick<FileChangeItem, 'action' | 'previousContent' | 'content'>,
+  item: Pick<
+    FileChangeItem,
+    'action' | 'previousContent' | 'content' | 'contentRef' | 'previousContentRef' | 'contentKind'
+  >,
 ): { added: number; removed: number } | undefined {
+  if (needsDeferredFileDiff(item)) return undefined;
   if (item.action === 'created') {
     if (item.content === undefined) return undefined;
     const lines = item.content.replace(/\r\n/g, '\n').split('\n');
@@ -829,7 +746,19 @@ export function LineDiffView({
   showToolbar?: boolean;
   showWhitespace?: boolean;
 }) {
-  const lines = computeLineDiff(oldText, newText);
+  const lines = useMemo(
+    () => (truncated ? undefined : computeLineDiff(oldText, newText)),
+    [oldText, newText, truncated],
+  );
+  const language = languageFromPath(path);
+  const oldHighlight = useMemo(
+    () => (lines ? highlightCodeLines(oldText ?? '', language) : undefined),
+    [lines, oldText, language],
+  );
+  const newHighlight = useMemo(
+    () => (lines ? highlightCodeLines(newText ?? '', language) : undefined),
+    [lines, newText, language],
+  );
   const [internalWrap, setInternalWrap] = useState(true);
   const wrap = wrapLines ?? internalWrap;
   if (!lines) {
@@ -847,6 +776,10 @@ export function LineDiffView({
     <div className="shell-changes-card__diff-body">
       {showToolbar ? (
         <div className="shell-changes-card__diff-toolbar">
+          <span className="shell-changes-card__diff-counts" aria-label="变更统计">
+            <span className="is-add">+{lines.filter((line) => line.kind === 'add').length}</span>
+            <span className="is-del">−{lines.filter((line) => line.kind === 'del').length}</span>
+          </span>
           <label className="shell-changes-card__diff-wrap">
             <input
               type="checkbox"
@@ -858,6 +791,7 @@ export function LineDiffView({
             />
             自动换行
           </label>
+          <CopyTextButton text={newText ?? ''} label="复制修改后内容" />
         </div>
       ) : null}
       <div className={`shell-changes-card__diff-lines ${wrap ? 'is-wrap' : ''}`} data-path={path}>
@@ -867,17 +801,32 @@ export function LineDiffView({
             className={`shell-changes-card__diff-line is-${line.kind}`}
             data-kind={line.kind}
           >
-            <span className="shell-changes-card__diff-no" aria-hidden="true">
-              {line.kind === 'del' ? line.oldLine : (line.newLine ?? line.oldLine ?? '')}
+            <span className="shell-changes-card__diff-no" data-old-line aria-hidden="true">
+              {line.oldLine ?? ''}
+            </span>
+            <span className="shell-changes-card__diff-no" data-new-line aria-hidden="true">
+              {line.newLine ?? ''}
             </span>
             <span className="shell-changes-card__diff-gutter" aria-hidden="true">
               {line.kind === 'add' ? '+' : line.kind === 'del' ? '−' : ' '}
             </span>
-            <code className="shell-changes-card__diff-text">
-              {showWhitespace
-                ? (line.text || ' ').replace(/\t/g, '→\t').replace(/ /g, '·')
-                : line.text || ' '}
-            </code>
+            {!showWhitespace && (line.kind === 'del' ? oldHighlight : newHighlight) ? (
+              <code
+                className="shell-changes-card__diff-text hljs"
+                dangerouslySetInnerHTML={{
+                  __html:
+                    (line.kind === 'del'
+                      ? oldHighlight?.[(line.oldLine ?? 1) - 1]
+                      : newHighlight?.[(line.newLine ?? 1) - 1]) || ' ',
+                }}
+              />
+            ) : (
+              <code className="shell-changes-card__diff-text">
+                {showWhitespace
+                  ? (line.text || ' ').replace(/\t/g, '→\t').replace(/ /g, '·')
+                  : line.text || ' '}
+              </code>
+            )}
           </div>
         ))}
       </div>

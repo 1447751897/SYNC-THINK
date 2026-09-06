@@ -12,6 +12,16 @@ import {
 import { jsonSchemaToZodShape } from './schema-bridge.js';
 
 describe('kernel mcp-servers registry', () => {
+  it.each(['claude-code', 'codex'])('leaves task ownership with the %s native kernel', (kernelId) => {
+    setKernelMcpServerConditions({ hasTaskStore: true });
+    const selection = selectKernelMcpRun({ kernelId });
+    expect(selection.servers.map((server) => server.name)).not.toContain('task-board');
+    for (const name of ['update_task_plan', 'TaskCreate', 'TaskUpdate', 'TaskList']) {
+      expect(selection.externalTools.map((tool) => tool.name)).not.toContain(name);
+    }
+    expect(selection.externalTools.map((tool) => tool.name)).toContain('platform_context');
+  });
+
   it('registers the platform server with alwaysLoad', () => {
     const names = KERNEL_MCP_SERVERS.map((server) => server.name);
     expect(names).toContain('platform');
@@ -49,6 +59,19 @@ describe('kernel mcp-servers registry', () => {
     expect(nativeNames).toContain('ask_user_question');
     // task_schedule is planning-denied; planning mode hides it.
     expect(selection.servers.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('hides goal_manage unless the conversation has an active Goal', () => {
+    setKernelMcpServerConditions({});
+    const hidden = selectKernelMcpRun({});
+    expect(hidden.externalTools.map((tool) => tool.name)).not.toContain('goal_manage');
+    expect(hidden.nativeTools.map((tool) => tool.name)).not.toContain('goal_manage');
+
+    setKernelMcpServerConditions({ hasActiveGoal: true });
+    const visible = selectKernelMcpRun({});
+    expect(visible.externalTools.map((tool) => tool.name)).toContain('goal_manage');
+    expect(visible.nativeTools.map((tool) => tool.name)).toContain('goal_manage');
+    setKernelMcpServerConditions({});
   });
 
   it('loads store-gated servers only when their store exists', () => {

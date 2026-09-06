@@ -15,6 +15,10 @@ import { constants as fsConstants, existsSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Data, NtExecutable, NtExecutableResource, Resource } from 'resedit';
+import {
+  assertProductionShellBuild,
+  removeGeneratedDirectory,
+} from '../apps/desktop/scripts/shell-build-config.mjs';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_WORKSPACE_ROOT = resolve(SCRIPT_DIR, '..');
@@ -236,6 +240,7 @@ export async function collectForbiddenReleaseFiles(releaseDir) {
     const rel = toPortableRelative(releaseDir, absolute);
     const name = entry.name.toLowerCase();
     if (entry.isDirectory() && isOwnedSourceTree(rel)) found.add(rel);
+    if (entry.isDirectory() && rel === 'resources/app/dist/renderer') found.add(rel);
     if (isBuildOnlyPayload(rel, entry)) found.add(rel);
     if (
       entry.isFile() &&
@@ -306,6 +311,11 @@ export async function verifyWindowsPortableLayout(releaseDir, options = {}) {
     if (!(await isNonEmptyFile(join(root, path)))) errors.push(code);
   }
   const updaterConfigPath = join(root, 'resources', 'app-update.yml');
+  try {
+    assertProductionShellBuild(join(root, 'resources/app/dist/renderer-shell'));
+  } catch {
+    errors.push('release.desktop_shell_not_production');
+  }
   if (updaterConfiguration && (await isNonEmptyFile(updaterConfigPath))) {
     try {
       assertWindowsUpdaterBootstrapConfig(
@@ -481,6 +491,13 @@ async function pruneOwnedPayload(packageRoot) {
   }
 }
 
+export async function pruneDesktopRendererModules(packageRoot) {
+  const packageJson = JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8'));
+  if (packageJson.name !== '@sync-think/desktop')
+    throw new Error('release.desktop_package_required');
+  removeGeneratedDirectory(join(packageRoot, 'dist/renderer'), join(packageRoot, 'dist'));
+}
+
 async function pruneAllOwnedPackages(root) {
   await pruneOwnedPayload(root);
   const packageRoots = [];
@@ -558,6 +575,7 @@ export async function stageWindowsPortableRelease(options = {}) {
       : join(workspaceRoot, 'apps', 'desktop', 'build', 'icon.ico');
   await ensureReadable(join(electronDist, 'electron.exe'), 'release.electron_distribution_missing');
   await ensureReadable(brandIconPath, 'release.desktop_brand_icon_missing');
+  assertProductionShellBuild(join(workspaceRoot, 'apps/desktop/dist/renderer-shell'));
   const managedNode = await resolveManagedNodeBinary(workspaceRoot);
   const updaterConfiguration = resolveWindowsUpdaterBootstrapConfiguration(
     {
@@ -586,6 +604,7 @@ export async function stageWindowsPortableRelease(options = {}) {
   try {
     await deployWorkspacePackage(workspaceRoot, '@sync-think/desktop', stagedAppDir);
     await pruneAllOwnedPackages(stagedAppDir);
+    await pruneDesktopRendererModules(stagedAppDir);
     await pruneProductionBinDirectories(stagedAppDir);
     await deployWorkspacePackage(workspaceRoot, '@sync-think/runtime', stagedRuntimeDir);
     await pruneAllOwnedPackages(stagedRuntimeDir);

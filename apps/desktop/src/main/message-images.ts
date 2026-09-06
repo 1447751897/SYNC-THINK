@@ -1,6 +1,14 @@
 // Durable chat-image storage shared by Desktop and Runtime.
 // Messages persist only opaque `storageRef` basenames; arbitrary paths are never exposed.
-import { copyFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
+import {
+  closeSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readSync,
+} from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, extname, isAbsolute, join, normalize, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -81,6 +89,7 @@ export function resolveMessageImagePath(storageRef: string): string | undefined 
 
 export function readMessageImage(
   storageRef: string,
+  maxBytes?: number,
 ): { data: Buffer; mimeType: string } | undefined {
   const absolute = resolveMessageImagePath(storageRef);
   if (!absolute) return undefined;
@@ -93,6 +102,24 @@ export function readMessageImage(
         : extension === '.gif'
           ? 'image/gif'
           : 'image/jpeg';
+  if (maxBytes !== undefined) {
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > 700_000)
+      throw new Error('Invalid image read budget');
+    const descriptor = openSync(absolute, 'r');
+    try {
+      const buffer = Buffer.alloc(maxBytes + 1);
+      let total = 0;
+      while (total < buffer.length) {
+        const count = readSync(descriptor, buffer, total, buffer.length - total, total);
+        if (count === 0) break;
+        total += count;
+      }
+      if (total > maxBytes) throw new Error('Original image exceeds the read budget');
+      return { data: buffer.subarray(0, total), mimeType };
+    } finally {
+      closeSync(descriptor);
+    }
+  }
   return { data: readFileSync(absolute), mimeType };
 }
 

@@ -23,6 +23,18 @@ export function shouldRestorePrependAnchor(input: {
   );
 }
 
+/**
+ * Follow the live conversation tail whenever the user is still pinned.
+ * Think, commentary, and tool rows all count — not only the final answer.
+ * `stickToBottom` is enforced by the pin function itself.
+ */
+export function shouldFollowConversationContentResize(_input?: {
+  streaming?: boolean;
+  hasAnswerText?: boolean;
+}): boolean {
+  return true;
+}
+
 export function resolveBottomPinState(input: {
   currentlyPinned: boolean;
   distanceFromBottom: number;

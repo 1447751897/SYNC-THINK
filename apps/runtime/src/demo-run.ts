@@ -6,6 +6,7 @@ import {
 } from '@sync-think/protocol';
 import { normalizeAssistantTurnPhases } from '@sync-think/protocol/assistant-turn';
 import type { ContextSnapshot, ContextSnapshotSource } from './context-snapshot.js';
+import { applyRunStateDelta } from './run-state-delta.js';
 import { isRetryable } from '@sync-think/shared';
 import type {
   Event,
@@ -239,6 +240,8 @@ export interface KernelToolEventRecord {
 
 const MAX_ASSISTANT_TIMELINE_SEGMENTS = 512;
 
+export { MAX_ASSISTANT_TIMELINE_SEGMENTS };
+
 export function isAssistantTurnSegment(value: unknown): value is AssistantTurnSegment {
   if (!value || typeof value !== 'object') return false;
   const segment = value as Record<string, unknown>;
@@ -275,14 +278,34 @@ function closeAssistantTimelineTail(
   return next;
 }
 
+function isProtectedAssistantTimelineSegment(segment: AssistantTurnSegment): boolean {
+  return segment.kind === 'thinking' || segment.kind === 'text';
+}
+
 export function nextAssistantTimelineSequence(timeline: readonly AssistantTurnSegment[]): number {
   return (timeline.at(-1)?.sequence ?? -1) + 1;
 }
 
-function boundAssistantTimeline(timeline: AssistantTurnSegment[]): AssistantTurnSegment[] {
-  return timeline.length > MAX_ASSISTANT_TIMELINE_SEGMENTS
-    ? timeline.slice(-MAX_ASSISTANT_TIMELINE_SEGMENTS)
-    : timeline;
+/**
+ * 内存窗口只淘汰较早的工具/状态，思考和说明正文始终保留。
+ * 否则长 Run 滚过 512 条后，界面会只剩命令执行。
+ */
+export function boundAssistantTimeline(timeline: AssistantTurnSegment[]): AssistantTurnSegment[] {
+  if (timeline.length <= MAX_ASSISTANT_TIMELINE_SEGMENTS) return timeline;
+  const protectedSegments: AssistantTurnSegment[] = [];
+  const evictable: AssistantTurnSegment[] = [];
+  for (const segment of timeline) {
+    if (isProtectedAssistantTimelineSegment(segment)) protectedSegments.push(segment);
+    else evictable.push(segment);
+  }
+  const keptEvictable =
+    evictable.length > MAX_ASSISTANT_TIMELINE_SEGMENTS
+      ? evictable.slice(-MAX_ASSISTANT_TIMELINE_SEGMENTS)
+      : evictable;
+  if (protectedSegments.length + keptEvictable.length === timeline.length) return timeline;
+  return [...protectedSegments, ...keptEvictable].sort(
+    (left, right) => left.sequence - right.sequence || left.id.localeCompare(right.id),
+  );
 }
 
 export function appendAssistantThinkingDelta(
@@ -954,6 +977,17 @@ export function applyDemoRunEvent(runs: Map<string, DemoRunState>, event: Event)
     runs.delete(event.runId);
     return;
   }
+  if (Object.hasOwn(event.payload, 'runStateDelta')) {
+    const previous = runs.get(event.runId);
+    if (!previous) throw new Error('run-state.base-missing');
+    if (previous.runId !== event.runId) throw new Error('run-state.identity-mismatch');
+    const normalized = serializeDemoRun(parseDemoRun(serializeDemoRun(previous)));
+    const next = parseDemoRun(applyRunStateDelta(normalized, event.payload.runStateDelta));
+    if (next.runId !== event.runId || next.threadId !== previous.threadId)
+      throw new Error('run-state.identity-mismatch');
+    runs.set(event.runId, next);
+    return;
+  }
   const run = event.payload.run;
   if (run !== undefined) runs.set(event.runId, parseDemoRun(run));
 }
@@ -1153,7 +1187,7 @@ function parseDemoRun(value: unknown): DemoRunState {
       segments.slice(-MAX_COMMENTARY_TIMELINE_SEGMENTS),
     ),
     assistantTimeline: Array.isArray(run.assistantTimeline)
-      ? run.assistantTimeline.filter(isAssistantTurnSegment).slice(-512)
+      ? boundAssistantTimeline(run.assistantTimeline.filter(isAssistantTurnSegment))
       : [],
     // Legacy checkpoints predate kernel tool history; normalize to an empty list.
     kernelToolEvents: Array.isArray(run.kernelToolEvents)

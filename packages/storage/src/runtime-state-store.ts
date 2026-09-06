@@ -1,3 +1,9 @@
+import {
+  SqliteNativeTaskPlanHistory,
+  type PreparedTaskPlanHistory,
+} from './native-task-plan-history.js';
+import type { ContentReadScope } from './conversation-content-store.js';
+import type { TaskPlanHistoryOptions } from '@sync-think/shared';
 import type {
   Checkpoint,
   Event,
@@ -7,10 +13,18 @@ import type {
   RunId,
   StepId,
   TaskId,
+  TaskPlanState,
   WorkspaceId,
 } from '@sync-think/shared';
 import type { BetterSQLite3Raw } from './connection.js';
+import { TASK_PLAN_TOOL_NAMES, PUBLIC_RUN_FIELDS, publicEventPayload } from '@sync-think/shared';
 import { EventPayloadSidecarStore, parseStoredEventPayload } from './event-payload-sidecar.js';
+import {
+  SqliteNativeTaskPlanProjection,
+  type TaskPlanSnapshot,
+} from './native-task-plan-projection.js';
+
+const publicRunFieldsSql = PUBLIC_RUN_FIELDS.map((field) => "'" + field + "'").join(', ');
 
 export type EventDraft = Omit<Event, 'sequence'>;
 export type CheckpointDraft = Omit<Checkpoint, 'lastEventSequence'>;
@@ -38,6 +52,8 @@ export interface ListEventPageInput {
   throughId?: string;
   limit: number;
 }
+
+export type ToolApprovalEventScope = { threadId: string; runId?: RunId } | { approvalId: string };
 
 export interface EventPayloadExternalizationOptions {
   sidecar: EventPayloadSidecarStore;
@@ -95,10 +111,124 @@ function mapEventRow(row: EventDatabaseRow, sidecar?: EventPayloadSidecarStore):
 }
 
 export class SqliteEventCheckpointStore {
+  private readonly taskPlanHistory: SqliteNativeTaskPlanHistory;
+  private readonly taskPlanProjection: SqliteNativeTaskPlanProjection;
+
   constructor(
     private readonly raw: BetterSQLite3Raw,
     private readonly payloadExternalization?: EventPayloadExternalizationOptions,
-  ) {}
+  ) {
+    this.taskPlanHistory = new SqliteNativeTaskPlanHistory(raw, (taskId) =>
+      this.listTaskPlanEvents(taskId),
+    );
+    this.taskPlanProjection = new SqliteNativeTaskPlanProjection(raw, (taskId) =>
+      this.listTaskPlanEvents(taskId),
+    );
+  }
+
+  getTaskPlanHistory(
+    scope: ContentReadScope,
+    options: TaskPlanHistoryOptions = {},
+  ): PreparedTaskPlanHistory {
+    return this.taskPlanHistory.read(scope, options);
+  }
+
+  getTaskPlanState(taskId: TaskId, threadId?: string): TaskPlanState {
+    return this.taskPlanProjection.read(taskId, threadId);
+  }
+
+  getCachedTaskPlanState(taskId: TaskId, threadId?: string): TaskPlanState | undefined {
+    return this.taskPlanProjection.readCached(taskId, threadId);
+  }
+
+  captureTaskPlanSnapshot(taskId: TaskId, threadId?: string): TaskPlanSnapshot {
+    return this.taskPlanProjection.capture(taskId, threadId);
+  }
+
+  installTaskPlanSnapshot(snapshot: TaskPlanSnapshot): boolean {
+    return this.taskPlanProjection.install(snapshot);
+  }
+
+  getRunEventCursor(runId: RunId): EventCursor {
+    return (
+      (this.raw
+        .prepare(
+          `SELECT sequence, id AS eventId FROM event
+      WHERE run_id = ? ORDER BY sequence DESC, id DESC LIMIT 1`,
+        )
+        .get(runId) as EventCursor | undefined) ?? { sequence: 0, eventId: '' }
+    );
+  }
+
+  listRunProcessEvents(runId: RunId): Event[] {
+    const rows = this.raw
+      .prepare(
+        `SELECT id, workspace_id AS workspaceId, task_id AS taskId,
+      run_id AS runId, step_id AS stepId, message_id AS messageId, category, type, sequence,
+      occurred_at AS occurredAt,
+      CASE WHEN json_type(payload_json, '$.run') = 'object' THEN
+        json_set(json_remove(payload_json, '$.run', '$.runStateDelta'), '$.run', json((
+          SELECT json_group_object(key, json_extract(event.payload_json, '$.run.' || key))
+          FROM json_each(event.payload_json, '$.run') WHERE key IN (${publicRunFieldsSql})
+        )))
+      ELSE json_remove(payload_json, '$.run', '$.runStateDelta') END AS payloadJson
+      FROM event WHERE run_id = ? AND (
+        type IN ('run.started', 'run.completed', 'run.failed', 'run.cancelled', 'run.paused',
+          'provider.usage', 'kernel.context_occupancy', 'tool.requested', 'tool.completed', 'tool.failed',
+          'execution.tool.requested', 'execution.tool.completed', 'execution.tool.failed',
+          'tool.approval_requested', 'tool.approval_decided')
+        OR type GLOB 'mcp.*'
+      ) ORDER BY sequence ASC, id ASC`,
+      )
+      .all(runId) as EventDatabaseRow[];
+    return rows.map((row) => {
+      const event = mapEventRow(row, this.payloadExternalization?.sidecar);
+      return { ...event, payload: publicEventPayload(event.payload) };
+    });
+  }
+
+  captureRunProcessSnapshot<Process>(
+    runId: RunId,
+    project: (events: readonly Event[]) => Process,
+  ): {
+    cursor: EventCursor;
+    process: Process;
+  } {
+    return this.raw
+      .transaction(() => ({
+        cursor: this.getRunEventCursor(runId),
+        process: project(this.listRunProcessEvents(runId)),
+      }))
+      .deferred();
+  }
+
+  listToolApprovalEvents(scope: ToolApprovalEventScope): Event[] {
+    const byApproval = 'approvalId' in scope;
+    const index = byApproval ? 'event_tool_approval_id_idx' : 'event_tool_approval_thread_idx';
+    const field = byApproval
+      ? "COALESCE(json_extract(payload_json, '$.approvalId'), id)"
+      : "json_extract(payload_json, '$.threadId')";
+    const parameters: string[] = [byApproval ? scope.approvalId : scope.threadId];
+    const runClause =
+      !byApproval && scope.runId
+        ? " AND COALESCE(run_id, json_extract(payload_json, '$.runId')) = ?"
+        : '';
+    if (!byApproval && scope.runId) parameters.push(scope.runId);
+    const rows = this.raw
+      .prepare(
+        `
+      SELECT id, workspace_id AS workspaceId, task_id AS taskId, run_id AS runId,
+        step_id AS stepId, message_id AS messageId, category, type, sequence,
+        occurred_at AS occurredAt, json_remove(payload_json, '$.run', '$.runStateDelta') AS payloadJson
+      FROM event INDEXED BY ${index}
+      WHERE type IN ('tool.approval_requested', 'tool.approval_decided')
+        AND ${field} = ?${runClause}
+      ORDER BY sequence ASC, id ASC
+    `,
+      )
+      .all(...parameters) as EventDatabaseRow[];
+    return rows.map((row) => mapEventRow(row, this.payloadExternalization?.sidecar));
+  }
 
   private serializeEventPayload(event: Event): string {
     const payloadJson = JSON.stringify(event.payload);
@@ -147,6 +277,7 @@ export class SqliteEventCheckpointStore {
         );
       }
 
+      this.taskPlanProjection.updateExisting(events);
       if (!transition.checkpoint) return { events };
 
       const checkpoint: Checkpoint = {
@@ -252,6 +383,52 @@ export class SqliteEventCheckpointStore {
     return this.getLatestEventCursor().sequence;
   }
 
+  listTaskPlanEvents(taskId: TaskId): Event[] {
+    const names = [...TASK_PLAN_TOOL_NAMES];
+    const matches = names.map(() => '(tool_name = ? OR tool_name GLOB ?)').join(' OR ');
+    const rows = this.raw
+      .prepare(
+        `
+      WITH tool_metadata AS MATERIALIZED (
+        SELECT id, run_id, type, json_extract(payload_json,
+          '$.toolName', '$.tool', '$.name', '$.toolCall.name', '$.toolCallId', '$.toolCall.id') AS metadata
+        FROM event INDEXED BY event_task_idx
+        WHERE task_id = ? AND type IN ('tool.requested', 'tool.completed', 'tool.failed',
+          'execution.tool.requested', 'execution.tool.completed', 'execution.tool.failed')
+      ), named_tools AS MATERIALIZED (
+        SELECT id, run_id, type,
+          COALESCE(json_extract(metadata, '$[0]'), json_extract(metadata, '$[1]'),
+            json_extract(metadata, '$[2]'), json_extract(metadata, '$[3]'), '') AS tool_name,
+          COALESCE(json_extract(metadata, '$[4]'), json_extract(metadata, '$[5]')) AS call_id
+        FROM tool_metadata
+      ), plan_tools AS MATERIALIZED (
+        SELECT id, run_id, type, call_id FROM named_tools WHERE ${matches}
+      ), eligible_tools AS (
+        SELECT id FROM plan_tools
+        UNION
+        SELECT result.id FROM named_tools AS result JOIN plan_tools AS request
+          ON result.run_id = request.run_id AND result.call_id = request.call_id
+        WHERE request.type IN ('tool.requested', 'execution.tool.requested')
+          AND result.type IN ('tool.completed', 'tool.failed', 'execution.tool.completed', 'execution.tool.failed')
+      )
+      SELECT id, workspace_id AS workspaceId, task_id AS taskId, run_id AS runId,
+        step_id AS stepId, message_id AS messageId, category, type, sequence,
+        occurred_at AS occurredAt, json_remove(payload_json, '$.run', '$.runStateDelta') AS payloadJson
+      FROM event INDEXED BY event_task_idx
+      WHERE task_id = ? AND (
+        type IN ('run.started', 'run.completed', 'run.failed', 'run.cancelled', 'run.paused')
+        OR id IN (SELECT id FROM eligible_tools)
+      ) ORDER BY sequence ASC, id ASC
+    `,
+      )
+      .all(
+        taskId,
+        ...names.flatMap((name) => [name, `mcp__*__${name}`]),
+        taskId,
+      ) as EventDatabaseRow[];
+    return rows.map((row) => mapEventRow(row, this.payloadExternalization?.sidecar));
+  }
+
   getLatestEventCursor(): EventCursor {
     const row = this.raw
       .prepare('SELECT sequence, id FROM event ORDER BY sequence DESC, id DESC LIMIT 1')
@@ -292,13 +469,7 @@ export class SqliteEventCheckpointStore {
           AND (sequence, id) <= (?, ?)
         ORDER BY sequence ASC, id ASC
         LIMIT ?`;
-      params = [
-        input.afterSequence,
-        input.afterId,
-        input.throughSequence,
-        input.throughId,
-        limit,
-      ];
+      params = [input.afterSequence, input.afterId, input.throughSequence, input.throughId, limit];
     } else if (input.afterId !== undefined) {
       sql = `${select}
         WHERE (sequence, id) > (?, ?)

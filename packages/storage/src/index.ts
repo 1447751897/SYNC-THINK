@@ -42,8 +42,12 @@ export * from './scheduled-task-store.js';
 export * from './external-event-store.js';
 export * from './run-index-store.js';
 export * from './assistant-timeline-store.js';
+export type { TaskPlanSnapshot } from './native-task-plan-projection.js';
 export * from './event-payload-backfill-executor.js';
 export * from './event-payload-backfill-rollback.js';
 export * from './event-payload-sidecar-gc.js';
 export * from './event-retention-archive.js';
 export * from './database-compaction.js';
+export * from './conversation-content-store.js';
+
+export { SqliteNativeTaskPlanHistory, type PreparedTaskPlanHistory } from './native-task-plan-history.js';

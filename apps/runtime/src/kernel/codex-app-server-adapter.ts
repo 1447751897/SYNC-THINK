@@ -301,6 +301,7 @@ function providerConfig(request: KernelRequest): {
   config: JsonRecord;
 } {
   const config: JsonRecord = {
+    tools: { update_plan: { enabled: true } },
     model_context_window: request.effectiveContextWindow ?? request.contextWindow ?? 128_000,
     model_auto_compact_token_limit:
       request.effectiveContextWindow ?? request.contextWindow ?? 128_000,
@@ -729,8 +730,10 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
         id: message.id!,
         kind: method.includes('commandExecution') ? 'command' : 'file',
       });
+      const toolId = text(params.itemId) ?? text(asRecord(params.item)?.id);
       const request: KernelPermissionRequest = {
         requestId,
+        ...(toolId ? { toolId } : {}),
         toolName: method.includes('commandExecution') ? 'command_execution' : 'file_change',
         toolInput: params,
         ...(text(params.reason) ? { reason: text(params.reason) } : {}),
@@ -810,11 +813,15 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
       return;
     }
     if (method === 'turn/plan/updated') {
+      if (!Array.isArray(params.plan)) return;
       const rawPlan = Array.isArray(params.plan) ? params.plan : [];
       const items = rawPlan.flatMap((entry) => {
         const planEntry = asRecord(entry);
-        const title = text(planEntry?.step)?.trim();
-        if (!title) return [];
+        const step = text(planEntry?.step)?.trim();
+        if (!step) return [];
+        const [titleLine, ...descriptionLines] = step.split(/\r?\n/);
+        const title = titleLine!.trim();
+        const description = descriptionLines.join('\n').trim();
         const rawStatus = text(planEntry?.status);
         const status =
           rawStatus === 'completed'
@@ -822,15 +829,14 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
             : rawStatus === 'inProgress' || rawStatus === 'in_progress'
               ? 'in_progress'
               : 'pending';
-        return [{ title, status }];
+        return [{ title, ...(description ? { description } : {}), status }];
       });
-      if (items.length === 0) return;
       const toolId = `codex-plan-${turn.turnId ?? 'turn'}-${turn.planUpdateIndex++}`;
       const argsJson = JSON.stringify({ items });
       this.pushTurnEvent({
         type: 'tool-call',
         toolId,
-        name: 'update_task_plan',
+        name: 'update_plan',
         argsJson,
         partial: false,
       });
@@ -1042,7 +1048,9 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
         toolId: id,
         output:
           commandOutputText(item.aggregatedOutput ?? item.aggregated_output ?? item.output) ?? '',
-        isError: (numberValue(item.exitCode) ?? 0) !== 0,
+        isError:
+          (numberValue(item.exitCode) ?? 0) !== 0 ||
+          ['failed', 'declined', 'cancelled'].includes(text(item.status) ?? ''),
       });
     } else if (type === 'mcpToolCall') {
       this.pushTurnEvent({

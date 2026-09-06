@@ -489,9 +489,9 @@ describe('runtime commands', () => {
     }
   });
 
-  it('replays twelve large durable events across bounded encodable pages', async () => {
+  it('replays thirty-two large durable events across bounded encodable pages', async () => {
     const installId = `test-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const events = Array.from({ length: 12 }, (_, index) => {
+    const events = Array.from({ length: 32 }, (_, index) => {
       const sequence = index + 1;
       return {
         id: `event-large-${sequence}` as Event['id'],
@@ -500,14 +500,14 @@ describe('runtime commands', () => {
         type: 'message.appended',
         sequence,
         occurredAt: new Date().toISOString(),
-        payload: { text: `${sequence}:`.padEnd(99_000, 'x') },
+        payload: { text: `${sequence}:`.padEnd(40_000, 'x') },
       } satisfies Event;
     });
     const runtime = new Runtime({
       installId,
       allowNoToken: true,
       checkpoint: {
-        eventSequence: 12,
+        eventSequence: 32,
         threadVersions: [],
         events,
         createdAt: new Date().toISOString(),
@@ -536,7 +536,7 @@ describe('runtime commands', () => {
           highWatermark: number;
           replayComplete: boolean;
         };
-        expect(page.highWatermark).toBe(12);
+        expect(page.highWatermark).toBe(32);
         if (page.replayComplete) break;
         response = await writeAndRead(sock, reader, {
           id: `continue-large-replay-${pageIndex}`,
@@ -557,11 +557,11 @@ describe('runtime commands', () => {
       );
       expect(pages.length).toBeGreaterThanOrEqual(2);
       expect(pages.flatMap((page) => page.replayedEvents.map((event) => event.sequence))).toEqual(
-        Array.from({ length: 12 }, (_, index) => index + 1),
+        Array.from({ length: 32 }, (_, index) => index + 1),
       );
       expect(pages.at(-1)).toMatchObject({
-        nextCursor: 12,
-        highWatermark: 12,
+        nextCursor: 32,
+        highWatermark: 32,
         replayComplete: true,
       });
     } finally {
@@ -573,7 +573,7 @@ describe('runtime commands', () => {
   it('keeps a fixed replay high-watermark and hands concurrent events to live once', async () => {
     const installId = `test-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const events = Array.from(
-      { length: 12 },
+      { length: 32 },
       (_, index) =>
         ({
           id: `event-handoff-${index + 1}` as Event['id'],
@@ -582,14 +582,14 @@ describe('runtime commands', () => {
           type: 'message.appended',
           sequence: index + 1,
           occurredAt: new Date().toISOString(),
-          payload: { text: `${index + 1}:`.padEnd(99_000, 'x') },
+          payload: { text: `${index + 1}:`.padEnd(40_000, 'x') },
         }) satisfies Event,
     );
     const runtime = new Runtime({
       installId,
       allowNoToken: true,
       checkpoint: {
-        eventSequence: 12,
+        eventSequence: 32,
         threadVersions: [],
         events,
         createdAt: new Date().toISOString(),
@@ -644,15 +644,15 @@ describe('runtime commands', () => {
         pages.push(response.payload as (typeof pages)[number]);
       }
 
-      expect(pages.every((page) => page.highWatermark === 12)).toBe(true);
+      expect(pages.every((page) => page.highWatermark === 32)).toBe(true);
       expect(pages.flatMap((page) => page.replayedEvents.map((event) => event.sequence))).toEqual(
-        Array.from({ length: 12 }, (_, index) => index + 1),
+        Array.from({ length: 32 }, (_, index) => index + 1),
       );
       const [live] = await subscriberReader.read(1);
       expect(live).toMatchObject({
         kind: 'event',
         type: 'runtime.event',
-        payload: { event: { sequence: 13, payload: { text: 'live during replay' } } },
+        payload: { event: { sequence: 33, payload: { text: 'live during replay' } } },
       });
       await new Promise((resolve) => setTimeout(resolve, 20));
       expect(subscriberReader.queuedCount()).toBe(0);
@@ -1279,4 +1279,39 @@ describe('runtime commands', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+});
+
+it('rejects a saved Pi selection before recording a user message or starting a run', async () => {
+  const installId = 'test-pi-admission-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+  const provider = new RecordingProvider();
+  const runtime = new Runtime({ installId, allowNoToken: true, demoProvider: provider });
+  await runtime.start();
+  const socket = await connectRuntime(installId);
+  const reader = createFrameReader(socket);
+  try {
+    await hello(socket, reader, installId);
+    const before = runtime.createCheckpoint();
+    const response = await writeAndRead(socket, reader, {
+      id: 'append-saved-pi',
+      kind: 'request',
+      type: 'task.appendMessage',
+      payload: {
+        threadId: 'thread-pi',
+        expectedTaskVersion: 0,
+        role: 'user',
+        text: 'keep draft',
+        kernelId: 'pi',
+      },
+    });
+    expect(response.error).toMatchObject({ code: 'protocol.unexpected_request' });
+    expect(response.error?.message).toContain('执行尚未接通');
+    const after = runtime.createCheckpoint();
+    expect(after.eventSequence).toBe(before.eventSequence);
+    expect(after.threadVersions).toEqual(before.threadVersions);
+    expect(after.events).toEqual(before.events);
+    expect(provider.callCount).toBe(0);
+  } finally {
+    socket.destroy();
+    await runtime.stop();
+  }
 });

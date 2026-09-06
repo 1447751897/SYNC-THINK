@@ -144,7 +144,7 @@ describe('MarkdownContent', () => {
     expect(html).toContain('shell-md-code');
   });
 
-  it('defers syntax highlighting until the streaming response settles', () => {
+  it('keeps syntax highlighting and distinguishes writing from settled code', () => {
     const text = '```ts\nconst answer = true;\n```';
     const streamingHtml = renderToStaticMarkup(
       createElement(MarkdownContent, { text, streaming: true }),
@@ -153,7 +153,9 @@ describe('MarkdownContent', () => {
       createElement(MarkdownContent, { text, streaming: false }),
     );
 
-    expect(streamingHtml).not.toContain('hljs-keyword');
+    expect(streamingHtml).toContain('hljs-keyword');
+    expect(streamingHtml).toContain('生成中');
+    expect(settledHtml).toContain('已完成');
     expect(settledHtml).toContain('hljs-keyword');
   });
 

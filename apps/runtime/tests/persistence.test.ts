@@ -2,7 +2,7 @@ import { connect, type Socket } from 'node:net';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { decodeFrames, encodeFrame, pipePathPortable, type Frame } from '@sync-think/protocol';
 import {
   EVENT_PAYLOAD_ENVELOPE_KEY,
@@ -11,10 +11,16 @@ import {
   runMigrations,
   SqliteEventCheckpointStore,
   SqliteMessageStore,
+  SqliteConversationStore,
+  SqliteTaskPlanStore,
   SqliteWorkspaceStore,
 } from '@sync-think/storage';
 import {
   ulid,
+  projectTaskPlan,
+  reduceTaskPlanEvents,
+  type TaskPlanState,
+  type ModelId,
   type EventId,
   type MessageId,
   type RunId,
@@ -81,6 +87,62 @@ async function sendFrame(socket: Socket, frame: Frame): Promise<Frame> {
 }
 
 describe('persistent Runtime bootstrap', () => {
+  it('restores native task state through conversation.listMessages after a real Runtime restart', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sync-think-native-task-restart-'));
+    tempDirs.push(dir);
+    const dbPath = join(dir, 'sync-think.db');
+    const installId = `task-restart-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const options = { dbPath, installId, allowNoToken: true };
+    const first = await openPersistentRuntime(options);
+    const connection = await openDatabaseAsync({ path: dbPath });
+    const workspaceStore = new SqliteWorkspaceStore(connection.raw);
+    const conversationStore = new SqliteConversationStore(connection.raw);
+    const workspace = workspaceStore.createWorkspace({ name: 'Native task restart' });
+    const task = workspaceStore.createTask({ workspaceId: workspace.id, title: '原生任务', goal: '重启恢复' });
+    const conversation = conversationStore.create({ workspaceId: workspace.id, target: { track: 'model', modelId: 'fixture' as ModelId }, title: '原生任务' });
+    conversationStore.bindTask(conversation.id, task.taskId);
+    const store = runtimeStateStore(first);
+    const runId = 'native-task-run' as RunId;
+    const append = (type: string, payload: Record<string, unknown>) => store.commitTransition({ events: [{
+      id: ulid() as EventId, workspaceId: workspace.id, taskId: task.taskId, runId,
+      category: type.startsWith('run.') ? 'run' : 'tool', type, occurredAt: '2026-09-05T00:49:26Z', payload,
+    }] });
+    let durableSequence = 0;
+    try {
+      expect((first.runtime as unknown as { taskPlanStore: unknown }).taskPlanStore).toBeInstanceOf(SqliteTaskPlanStore);
+      append('run.started', { threadId: task.threadId, kernelId: 'claude-code' });
+      append('tool.requested', { toolCall: { id: 'create-native-task', name: 'TaskCreate', argumentsJson: JSON.stringify({ subject: '验证原生任务', description: '检查重启后恢复任务编号与说明' }) } });
+      append('tool.completed', { toolCallId: 'create-native-task', result: 'Task #1 created', structuredResult: { task: { id: '1', subject: '验证原生任务' } } });
+      append('run.completed', {});
+      append('tool.requested', { toolCall: { id: 'unrelated-read', name: 'Read', argumentsJson: '{"file_path":"large.log"}' } });
+      append('tool.completed', { toolCallId: 'unrelated-read', result: 'unrelated'.repeat(50_000) });
+      durableSequence = store.getLatestEventSequence();
+      expect(store.listTaskPlanEvents(task.taskId).map((event) => event.type)).toEqual(['run.started', 'tool.requested', 'tool.completed', 'run.completed']);
+      expect(store.getTaskPlanState(task.taskId, task.threadId).items).toHaveLength(1);
+    } finally {
+      connection.raw.close();
+      await first.close();
+    }
+    const restarted = await openPersistentRuntime(options);
+    await restarted.runtime.start();
+    const socket = await connectRuntime(installId);
+    const historicalPlanReads = vi.spyOn(runtimeStateStore(restarted), 'listTaskPlanEvents')
+      .mockImplementation(() => { throw new Error('A persisted task snapshot should not read historical payloads'); });
+    try {
+      await sendFrame(socket, { id: 'hello', kind: 'request', type: '__hello', payload: { protocolVersion: 2, appVersion: '0.0.1', installId, nonce: 'task-restart', features: ['conversation.listMessages'] } });
+      expect(runtimeStateStore(restarted).listAllEvents(durableSequence)).toEqual([]);
+      const response = await sendFrame(socket, { id: 'read-tasks', kind: 'request', type: 'conversation.listMessages', payload: { conversationId: conversation.id } });
+      expect(response.kind).toBe('response');
+      const state = (response.payload as { taskPlan: TaskPlanState }).taskPlan;
+      expect(projectTaskPlan(reduceTaskPlanEvents([], { taskId: task.taskId }, state))).toEqual({ running: false, completed: 0, total: 1, items: [{ id: '1', title: '验证原生任务', description: '检查重启后恢复任务编号与说明', status: 'pending' }] });
+      expect(historicalPlanReads).not.toHaveBeenCalled();
+    } finally {
+      historicalPlanReads.mockRestore();
+      socket.destroy();
+      await restarted.close();
+    }
+  });
+
   it('selects Windows DPAPI for production and keeps XorDev explicit to tests', () => {
     const dir = mkdtempSync(join(tmpdir(), 'sync-think-secure-selection-'));
     tempDirs.push(dir);

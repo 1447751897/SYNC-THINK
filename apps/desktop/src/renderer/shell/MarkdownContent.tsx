@@ -1,7 +1,16 @@
-import { memo, useCallback, useMemo, useRef, useState, type ReactNode } from 'react';
-import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
+import {
+  createContext,
+  memo,
+  useCallback,
+  useContext,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
+import ReactMarkdown, { defaultUrlTransform, type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import rehypeHighlight from 'rehype-highlight';
+import { CodeBlock as AgentCodeBlock, type CodeBlockReadingState } from './CodeBlock.js';
 import { Check, ChevronDown, Copy, FolderOpen } from 'lucide-react';
 import { MermaidChart } from './MermaidChart.js';
 import { HtmlSandbox } from './HtmlSandbox.js';
@@ -16,6 +25,12 @@ import type { OpenHtmlInBrowser } from './html-browser.js';
 import type { ProjectTextLocation } from '../../workspace-tools-contract.js';
 import { FileTypeIcon } from './FileTypeIcon.js';
 import { WebTextLink } from './WebTextLink.js';
+
+const CodeReadingContext = createContext<Map<number, CodeBlockReadingState> | undefined>(undefined);
+
+function MarkdownPre({ children }: { children?: ReactNode }) {
+  return <>{children}</>;
+}
 
 interface MarkdownContentProps {
   text: string;
@@ -35,6 +50,7 @@ interface MarkdownContentProps {
 interface MarkdownSection {
   title?: string;
   body: string;
+  start: number;
 }
 
 function languageFromClassName(className: string | undefined): string | undefined {
@@ -58,16 +74,19 @@ function splitMarkdownSections(text: string): MarkdownSection[] {
   const sections: MarkdownSection[] = [];
   let title: string | undefined;
   let body: string[] = [];
+  let offset = 0;
+  let bodyStart = 0;
   let fence: { marker: '`' | '~'; length: number } | undefined;
 
   const flush = () => {
     if (title !== undefined || body.length > 0) {
-      sections.push({ title, body: body.join('\n') });
+      sections.push({ title, body: body.join('\n'), start: bodyStart });
     }
     body = [];
   };
 
   for (const line of lines) {
+    offset += line.length + 1;
     const fenceMatch = /^\s{0,3}(`{3,}|~{3,})/.exec(line);
     if (fenceMatch) {
       const run = fenceMatch[1] ?? '';
@@ -89,84 +108,41 @@ function splitMarkdownSections(text: string): MarkdownSection[] {
     if (heading) {
       flush();
       title = heading[1];
+      bodyStart = offset;
       continue;
     }
     body.push(line);
   }
   flush();
 
-  return sections.length > 0 ? sections : [{ body: text }];
+  return sections.length > 0 ? sections : [{ body: text, start: 0 }];
 }
 
-function CodeBlock({ language, children }: { language?: string; children: ReactNode }) {
-  const [copied, setCopied] = useState(false);
-  const [expanded, setExpanded] = useState(false);
+function CodeBlock({
+  language,
+  children,
+  streaming = false,
+  sourceOffset,
+}: {
+  language?: string;
+  children: ReactNode;
+  streaming?: boolean;
+  sourceOffset?: number;
+}) {
   const text = useMemo(() => extractText(children).replace(/\n$/, ''), [children]);
-  const lineCount = useMemo(() => Math.max(1, text.split('\n').length), [text]);
-  const canExpand = lineCount > 12;
-
-  const handleCopy = useCallback(async () => {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1400);
-    } catch {
-      /* ignore clipboard failures */
-    }
-  }, [text]);
-
+  const states = useContext(CodeReadingContext);
+  let readingState = sourceOffset === undefined ? undefined : states?.get(sourceOffset);
+  if (states && sourceOffset !== undefined && !readingState) {
+    readingState = { expanded: false, following: true, scrollTop: 0, scrollLeft: 0 };
+    states.set(sourceOffset, readingState);
+  }
   return (
-    <div
-      className={`shell-md-code${canExpand ? ' is-expandable' : ''} ${
-        expanded ? 'is-expanded' : 'is-collapsed'
-      }`}
-      data-language={language || 'text'}
-    >
-      <div className="shell-md-code__bar">
-        <span className="shell-md-code__lang">{language || 'text'}</span>
-        <div className="shell-md-code__actions">
-          <button
-            type="button"
-            className="shell-md-code__action"
-            onClick={() => void handleCopy()}
-            title="复制代码"
-          >
-            {copied ? <Check size={12} /> : <Copy size={12} />}
-            <span>{copied ? '已复制' : '复制'}</span>
-          </button>
-          {canExpand ? (
-            <button
-              type="button"
-              className="shell-md-code__action shell-md-code__collapse"
-              onClick={() => setExpanded((value) => !value)}
-              title={expanded ? '收起代码' : '展开代码'}
-              aria-label={expanded ? '收起代码' : `展开全部 ${lineCount} 行代码`}
-              aria-expanded={expanded}
-            >
-              <ChevronDown size={13} aria-hidden="true" />
-              <span>{expanded ? '收起' : '展开'}</span>
-            </button>
-          ) : null}
-        </div>
-      </div>
-      <div className="shell-md-code__viewport">
-        <pre className="shell-md-code__pre">
-          <code className={language ? `hljs language-${language}` : 'hljs'}>{children}</code>
-        </pre>
-        {canExpand && !expanded ? <div className="shell-md-code__fade" aria-hidden="true" /> : null}
-      </div>
-      {canExpand ? (
-        <button
-          type="button"
-          className="shell-md-code__expand"
-          onClick={() => setExpanded((value) => !value)}
-          aria-expanded={expanded}
-        >
-          <ChevronDown size={13} aria-hidden="true" />
-          <span>{expanded ? '收起代码' : `展开全部 ${lineCount} 行`}</span>
-        </button>
-      ) : null}
-    </div>
+    <AgentCodeBlock
+      code={text}
+      language={language}
+      streaming={streaming}
+      readingState={readingState}
+    />
   );
 }
 
@@ -365,6 +341,7 @@ const MarkdownRenderer = memo(function MarkdownRenderer({
   onOpenHtmlInBrowser,
   onOpenUrl,
   skipVisualizations = false,
+  sourceOffset = 0,
 }: {
   text: string;
   streaming: boolean;
@@ -376,9 +353,101 @@ const MarkdownRenderer = memo(function MarkdownRenderer({
   onOpenHtmlInBrowser?: OpenHtmlInBrowser;
   onOpenUrl?: (url: string) => void;
   skipVisualizations?: boolean;
+  sourceOffset?: number;
 }) {
   const visualizationSegments = useMemo(() => parseInlineVisualizationSegments(text), [text]);
-  if (!skipVisualizations && visualizationSegments.some((segment) => segment.type === 'visualization')) {
+  const renderCode = useMemo<Components['code']>(
+    () =>
+      ({ className, children, node, ...props }) => {
+        const language = languageFromClassName(className);
+        const codeOffset = node?.position?.start.offset;
+        const readingOffset = codeOffset === undefined ? undefined : sourceOffset + codeOffset;
+        const raw = extractText(children);
+        const isBlock = Boolean(language) || raw.includes('\n');
+        if (!isBlock) {
+          return (
+            <code className="shell-md-inline-code" {...props}>
+              {children}
+            </code>
+          );
+        }
+        if (language === 'mermaid' || language === 'mmd') {
+          // Streaming blocks are still being produced — keep them as code so
+          // the chart only mounts (and renders) once the block is complete.
+          if (streaming) {
+            return (
+              <CodeBlock language={language} streaming={streaming} sourceOffset={readingOffset}>
+                {children}
+              </CodeBlock>
+            );
+          }
+          return <MermaidChart code={raw.replace(/\n$/, '')} />;
+        }
+        if (language === 'design-html') {
+          if (streaming || !interactiveEmbeds) {
+            return (
+              <CodeBlock language={language} streaming={streaming} sourceOffset={readingOffset}>
+                {children}
+              </CodeBlock>
+            );
+          }
+          return (
+            <DesignDraftPreview
+              code={raw}
+              projectFolder={projectFolder}
+              onOpenInBrowser={onOpenHtmlInBrowser}
+            />
+          );
+        }
+        if (language === 'design-ui' || language === 'ui-design') {
+          if (streaming || !interactiveEmbeds) {
+            return (
+              <CodeBlock language={language} streaming={streaming} sourceOffset={readingOffset}>
+                {children}
+              </CodeBlock>
+            );
+          }
+          return <UiDesignPreview code={raw} />;
+        }
+        if (language === 'excalidraw' || language === 'excalidraw-json') {
+          if (streaming || !interactiveEmbeds) {
+            return (
+              <CodeBlock language={language} streaming={streaming} sourceOffset={readingOffset}>
+                {children}
+              </CodeBlock>
+            );
+          }
+          return (
+            <ExcalidrawDraftPreview
+              code={raw}
+              projectFolder={projectFolder}
+              modelId={modelId}
+              onOpenInBrowser={onOpenHtmlInBrowser}
+            />
+          );
+        }
+        if (language === 'html' || language === 'htm') {
+          if (streaming || !interactiveEmbeds) {
+            return (
+              <CodeBlock language={language} streaming={streaming} sourceOffset={readingOffset}>
+                {children}
+              </CodeBlock>
+            );
+          }
+          return <HtmlSandbox code={raw} onOpenInBrowser={onOpenHtmlInBrowser} />;
+        }
+        return (
+          <CodeBlock language={language} streaming={streaming} sourceOffset={readingOffset}>
+            {children}
+          </CodeBlock>
+        );
+      },
+    [streaming, interactiveEmbeds, projectFolder, modelId, onOpenHtmlInBrowser, sourceOffset],
+  );
+  if (
+    !skipVisualizations &&
+    visualizationSegments.some((segment) => segment.type === 'visualization')
+  ) {
     return (
       <>
         {visualizationSegments.map((segment, index) => {
@@ -402,6 +471,7 @@ const MarkdownRenderer = memo(function MarkdownRenderer({
             <MarkdownRenderer
               key={`markdown:${index}`}
               text={segment.content}
+              sourceOffset={sourceOffset + segment.start}
               streaming={streaming}
               interactiveEmbeds={interactiveEmbeds}
               projectFolder={projectFolder}
@@ -420,7 +490,6 @@ const MarkdownRenderer = memo(function MarkdownRenderer({
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
-      rehypePlugins={streaming ? undefined : [rehypeHighlight]}
       urlTransform={markdownUrlTransform}
       components={{
         a: ({ href, children }) => (
@@ -433,65 +502,8 @@ const MarkdownRenderer = memo(function MarkdownRenderer({
             {children}
           </ResourceLink>
         ),
-        pre: ({ children }) => <>{children}</>,
-        code: ({ className, children, ...props }) => {
-          const language = languageFromClassName(className);
-          const raw = extractText(children);
-          const isBlock = Boolean(language) || raw.includes('\n');
-          if (!isBlock) {
-            return (
-              <code className="shell-md-inline-code" {...props}>
-                {children}
-              </code>
-            );
-          }
-          if (language === 'mermaid' || language === 'mmd') {
-            // Streaming blocks are still being produced — keep them as code so
-            // the chart only mounts (and renders) once the block is complete.
-            if (streaming) {
-              return <CodeBlock language={language}>{children}</CodeBlock>;
-            }
-            return <MermaidChart code={raw.replace(/\n$/, '')} />;
-          }
-          if (language === 'design-html') {
-            if (streaming || !interactiveEmbeds) {
-              return <CodeBlock language={language}>{children}</CodeBlock>;
-            }
-            return (
-              <DesignDraftPreview
-                code={raw}
-                projectFolder={projectFolder}
-                onOpenInBrowser={onOpenHtmlInBrowser}
-              />
-            );
-          }
-          if (language === 'design-ui' || language === 'ui-design') {
-            if (streaming || !interactiveEmbeds) {
-              return <CodeBlock language={language}>{children}</CodeBlock>;
-            }
-            return <UiDesignPreview code={raw} />;
-          }
-          if (language === 'excalidraw' || language === 'excalidraw-json') {
-            if (streaming || !interactiveEmbeds) {
-              return <CodeBlock language={language}>{children}</CodeBlock>;
-            }
-            return (
-              <ExcalidrawDraftPreview
-                code={raw}
-                projectFolder={projectFolder}
-                modelId={modelId}
-                onOpenInBrowser={onOpenHtmlInBrowser}
-              />
-            );
-          }
-          if (language === 'html' || language === 'htm') {
-            if (streaming || !interactiveEmbeds) {
-              return <CodeBlock language={language}>{children}</CodeBlock>;
-            }
-            return <HtmlSandbox code={raw} onOpenInBrowser={onOpenHtmlInBrowser} />;
-          }
-          return <CodeBlock language={language}>{children}</CodeBlock>;
-        },
+        pre: MarkdownPre,
+        code: renderCode,
         table: ({ children }) => <MarkdownTable>{children}</MarkdownTable>,
         th: ({ children }) => (
           <th className={isAtomicTableCell(children) ? 'shell-md-table-cell--atomic' : undefined}>
@@ -512,6 +524,7 @@ const MarkdownRenderer = memo(function MarkdownRenderer({
 
 const StreamingMarkdownBlock = memo(function StreamingMarkdownBlock({
   text,
+  sourceOffset,
   projectFolder,
   conversationId,
   modelId,
@@ -520,6 +533,7 @@ const StreamingMarkdownBlock = memo(function StreamingMarkdownBlock({
   onOpenUrl,
 }: {
   text: string;
+  sourceOffset: number;
   projectFolder?: string;
   conversationId?: string;
   modelId?: string;
@@ -530,6 +544,7 @@ const StreamingMarkdownBlock = memo(function StreamingMarkdownBlock({
   return (
     <MarkdownRenderer
       text={text}
+      sourceOffset={sourceOffset}
       streaming
       interactiveEmbeds={false}
       projectFolder={projectFolder}
@@ -568,6 +583,7 @@ function IncrementalStreamingMarkdown({
         <StreamingMarkdownBlock
           key={block.key}
           text={block.text}
+          sourceOffset={block.start}
           projectFolder={projectFolder}
           conversationId={conversationId}
           modelId={modelId}
@@ -583,6 +599,7 @@ function IncrementalStreamingMarkdown({
 function CollapsibleSection({
   title,
   body,
+  sourceOffset,
   streaming,
   interactiveEmbeds,
   projectFolder,
@@ -594,6 +611,7 @@ function CollapsibleSection({
 }: {
   title: string;
   body: string;
+  sourceOffset: number;
   streaming: boolean;
   interactiveEmbeds: boolean;
   projectFolder?: string;
@@ -621,6 +639,7 @@ function CollapsibleSection({
         <div className="shell-md-section__body-inner">
           <MarkdownRenderer
             text={body}
+            sourceOffset={sourceOffset}
             streaming={streaming}
             interactiveEmbeds={interactiveEmbeds}
             projectFolder={projectFolder}
@@ -656,55 +675,67 @@ export function MarkdownContent({
   onOpenUrl,
 }: MarkdownContentProps) {
   const normalizedText = useMemo(() => normalizeTaggedDesignHtmlBlocks(text), [text]);
+  const readingRef = useRef({
+    source: normalizedText,
+    states: new Map<number, CodeBlockReadingState>(),
+  });
+  if (!normalizedText.startsWith(readingRef.current.source)) {
+    readingRef.current = { source: normalizedText, states: new Map() };
+  }
+  readingRef.current.source = normalizedText;
   const sections = useMemo(
     () => (streaming ? [] : splitMarkdownSections(normalizedText)),
     [normalizedText, streaming],
   );
   return (
-    <div className={`shell-md ${className ?? ''}`} data-streaming={streaming ? '1' : '0'}>
-      {streaming ? (
-        <IncrementalStreamingMarkdown
-          text={normalizedText}
-          projectFolder={projectFolder}
-          conversationId={conversationId}
-          modelId={modelId}
-          onOpenFile={onOpenFile}
-          onOpenHtmlInBrowser={onOpenHtmlInBrowser}
-          onOpenUrl={onOpenUrl}
-        />
-      ) : (
-        sections.map((section, index) =>
-          section.title ? (
-            <CollapsibleSection
-              key={`${index}:${section.title}`}
-              title={section.title}
-              body={section.body}
-              streaming={false}
-              interactiveEmbeds={interactiveEmbeds}
-              projectFolder={projectFolder}
-              conversationId={conversationId}
-              modelId={modelId}
-              onOpenFile={onOpenFile}
-              onOpenHtmlInBrowser={onOpenHtmlInBrowser}
-              onOpenUrl={onOpenUrl}
-            />
-          ) : (
-            <MarkdownRenderer
-              key={`intro:${index}`}
-              text={section.body}
-              streaming={false}
-              interactiveEmbeds={interactiveEmbeds}
-              projectFolder={projectFolder}
-              conversationId={conversationId}
-              modelId={modelId}
-              onOpenFile={onOpenFile}
-              onOpenHtmlInBrowser={onOpenHtmlInBrowser}
-              onOpenUrl={onOpenUrl}
-            />
-          ),
-        )
-      )}
-      {streaming ? <span className="shell-md-cursor" aria-hidden="true" /> : null}
-    </div>
+    <CodeReadingContext.Provider value={readingRef.current.states}>
+      <div className={`shell-md ${className ?? ''}`} data-streaming={streaming ? '1' : '0'}>
+        {streaming ? (
+          <IncrementalStreamingMarkdown
+            text={normalizedText}
+            projectFolder={projectFolder}
+            conversationId={conversationId}
+            modelId={modelId}
+            onOpenFile={onOpenFile}
+            onOpenHtmlInBrowser={onOpenHtmlInBrowser}
+            onOpenUrl={onOpenUrl}
+          />
+        ) : (
+          sections.map((section, index) =>
+            section.title ? (
+              <CollapsibleSection
+                key={`${index}:${section.title}`}
+                title={section.title}
+                body={section.body}
+                sourceOffset={section.start}
+                streaming={false}
+                interactiveEmbeds={interactiveEmbeds}
+                projectFolder={projectFolder}
+                conversationId={conversationId}
+                modelId={modelId}
+                onOpenFile={onOpenFile}
+                onOpenHtmlInBrowser={onOpenHtmlInBrowser}
+                onOpenUrl={onOpenUrl}
+              />
+            ) : (
+              <MarkdownRenderer
+                key={`intro:${index}`}
+                text={section.body}
+                sourceOffset={section.start}
+                streaming={false}
+                interactiveEmbeds={interactiveEmbeds}
+                projectFolder={projectFolder}
+                conversationId={conversationId}
+                modelId={modelId}
+                onOpenFile={onOpenFile}
+                onOpenHtmlInBrowser={onOpenHtmlInBrowser}
+                onOpenUrl={onOpenUrl}
+              />
+            ),
+          )
+        )}
+        {streaming ? <span className="shell-md-cursor" aria-hidden="true" /> : null}
+      </div>
+    </CodeReadingContext.Provider>
   );
 }

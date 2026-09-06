@@ -14,10 +14,19 @@ const rightRailSource = readFileSync(
   'utf8',
 );
 
+const historyHookSource = readFileSync(
+  new URL('../src/renderer/shell/use-run-process-history.ts', import.meta.url),
+  'utf8',
+);
+const historyLoaderSource = readFileSync(
+  new URL('../src/renderer/shell/run-process-history-loader.ts', import.meta.url),
+  'utf8',
+);
+
 describe('run process renderer wiring', () => {
   it('loads and stores one projected process object per run', () => {
     expect(chatViewSource).toContain('runProcessById');
-    expect(chatViewSource).toContain('.getConversationRunProcess({ runId: typedRunId })');
+    expect(historyHookSource).toContain('api.getConversationRunProcess({ runId: runId as RunId })');
     expect(chatViewSource).toContain('process: event.snapshot.process');
     expect(chatViewSource).toContain('if (item.process) updateRunProcess(item.process)');
     expect(chatViewSource).toContain('updateRunProcess(frame.process)');
@@ -28,20 +37,20 @@ describe('run process renderer wiring', () => {
 
   it('prefetches visible history plus transient and projected active runs', () => {
     expect(chatViewSource).toContain('visibleDurableMessages');
-    expect(chatViewSource).toContain('const runIds = collectRunProcessIds({');
-    expect(chatViewSource).toContain('transientRunId: streamingMessage?.runId');
-    expect(chatViewSource).toContain('projectedActiveRunId: projected.activeRunId');
-    expect(chatViewSource).toContain('runProcessRetryTimersRef.current.delete(runId)');
+    expect(chatViewSource).toContain('useRunProcessHistoryRequests({');
+    expect(chatViewSource).toContain('streamingMessage?.runId, projected.activeRunId');
+    expect(historyHookSource).toContain('new IntersectionObserver(');
+    expect(historyHookSource).not.toContain('getBoundingClientRect');
     expect(chatViewSource).not.toContain(
       "loadedMessages\n        .filter((message) => message.role === 'assistant'",
     );
   });
 
   it('retries transient historical process query failures with bounded backoff', () => {
-    expect(chatViewSource).toContain('runProcessRetryTimersRef');
-    expect(chatViewSource).toContain('runProcessRetryAttemptsRef');
-    expect(chatViewSource).toContain('setRunProcessRetryEpoch((value) => value + 1)');
-    expect(chatViewSource).toContain('Math.min(500 * 2 ** Math.min(attempts - 1, 4), 8_000)');
+    expect(historyLoaderSource).toContain('entry.attempts < 3');
+    expect(historyLoaderSource).toContain('this.inFlight.size < 3');
+    expect(chatViewSource).toContain('onRetryProcess={retryRunProcess}');
+    expect(chatViewSource).not.toContain('runProcessRetryTimersRef');
   });
 
   it('does not project raw events inside production renderer components', () => {
@@ -50,7 +59,10 @@ describe('run process renderer wiring', () => {
     expect(rightRailSource).not.toContain('projectExecutionProcess');
     expect(processBlockSource).toContain('view: RunProcessView');
     expect(processBlockSource).toContain('<ExecutionProcessStepCard');
-    expect(processBlockSource).toContain('view.fileChanges.map');
+    expect(processBlockSource).toContain(
+      'view.fileChanges.slice(0, FILE_CHANGES_CARD_PREVIEW_LIMIT)',
+    );
+    expect(processBlockSource).toContain('renderChangeItems(previewItems)');
   });
 
   it('memoizes message bubbles and keeps list callbacks stable during process updates', () => {

@@ -179,6 +179,14 @@ const SECTIONS: Array<{
   { id: 'about', label: '关于', icon: Info, ready: true },
 ];
 
+const AVAILABLE_SECTIONS = SECTIONS.filter((item) => item.ready && item.visible !== false);
+
+function resolveSettingsSection(section?: SettingsSection): SettingsSection {
+  if (section === 'plugins') return 'computer-use';
+  if (section === 'shortcuts') return 'theme';
+  return AVAILABLE_SECTIONS.some((item) => item.id === section) ? section! : 'general';
+}
+
 export interface SettingsPageProps {
   initialSection?: SettingsSection;
   initialModelDetail?: ModelSettingsDetailView;
@@ -198,14 +206,14 @@ export function SettingsPage({
   onCatalogChanged,
   onDirtyChange,
 }: SettingsPageProps) {
-  const [section, setSection] = useState<SettingsSection>(initialSection ?? 'general');
+  const [section, setSection] = useState<SettingsSection>(() => resolveSettingsSection(initialSection));
   const [query, setQuery] = useState('');
   const [modelDirty, setModelDirty] = useState(false);
   const [completing, setCompleting] = useState(false);
   const modelSettingsRef = useRef<ModelSettingsHandle | null>(null);
 
   useEffect(() => {
-    if (initialSection) setSection(initialSection);
+    if (initialSection) setSection(resolveSettingsSection(initialSection));
   }, [initialSection, navigationKey]);
 
   const reportDirty = useCallback(
@@ -234,14 +242,14 @@ export function SettingsPage({
 
   const visibleSections = useMemo(() => {
     const value = query.trim().toLocaleLowerCase('zh-CN');
-    if (!value) return SECTIONS.filter((item) => item.visible !== false);
-    return SECTIONS.filter((item) =>
+    if (!value) return AVAILABLE_SECTIONS;
+    return AVAILABLE_SECTIONS.filter((item) =>
       `${item.label} ${item.keywords ?? ''}`.toLocaleLowerCase('zh-CN').includes(value),
     );
   }, [query]);
 
   const current =
-    SECTIONS.find((item) => item.id === section) ?? SECTIONS.find((item) => item.id === 'general')!;
+    AVAILABLE_SECTIONS.find((item) => item.id === section)!;
   const fullBleed = section === 'models';
 
   return (
@@ -318,7 +326,6 @@ export function SettingsPage({
           )}
           {section === 'data' && <DataDiagnosticsSection />}
           {section === 'about' && <AboutSection />}
-          {!current.ready && <ComingSoonSection label={current.label} />}
         </div>
         <footer className="settings-footer">
           <button
@@ -554,6 +561,17 @@ function AgentGeneralPanel({
             }
           />
           <SettingRow
+            title="显示思考过程"
+            description="在执行过程中显示 Think 行；关闭后时间线只保留说明、状态和工具动作"
+            control={
+              <Toggle
+                checked={agentPreferences.showThinking}
+                label="显示思考过程"
+                onChange={(value) => onAgentPreferenceChange('showThinking', value)}
+              />
+            }
+          />
+          <SettingRow
             title="默认展开工具调用"
             description="自动展开工具调用的输入和输出内容"
             control={
@@ -784,13 +802,7 @@ function ComputerUsePluginSection() {
 }
 
 export type ConnectionTab =
-  | 'connectors'
-  | 'mcp'
-  | 'plugins'
-  | 'search'
-  | 'bots'
-  | 'gateway'
-  | 'network';
+  'connectors' | 'mcp' | 'plugins' | 'search' | 'bots' | 'gateway' | 'network';
 
 type ConnectorSelection =
   | { kind: 'managed'; item: ManagedConnectorCatalogItem }
@@ -1372,8 +1384,8 @@ function ManagedConnectorDetail({
               <Plug size={18} aria-hidden="true" />
               <strong>连接 Provider 后自动发现动作</strong>
               <span>
-                不需要手工提供动作名称。点击“启用连接器”，填写该服务的 MCP 地址与凭证；
-                Runtime 会通过 <code>tools/list</code> 读取真实动作并显示在这里。
+                不需要手工提供动作名称。点击“启用连接器”，填写该服务的 MCP 地址与凭证； Runtime
+                会通过 <code>tools/list</code> 读取真实动作并显示在这里。
               </span>
             </div>
           ) : tools.length === 0 ? (
@@ -2846,31 +2858,6 @@ export function DataDiagnosticsSection() {
 
   return (
     <div className="settings-scroll settings-data-page settings-diagnostics-export">
-      <section className="settings-data-card" aria-labelledby="data-sync-title">
-        <h2 className="settings-data-card__title" id="data-sync-title">
-          云端同步
-        </h2>
-        <div className="settings-data-card__body settings-data-switch-row">
-          <div className="settings-data-copy">
-            <strong>设置云同步</strong>
-            <p>
-              在多设备间同步设置中心的配置（不含模型配置，也不含本机路径、代理等设备本地项）。开关对账号下所有设备生效。
-            </p>
-          </div>
-          <button
-            type="button"
-            className="settings-data-switch"
-            role="switch"
-            aria-checked="false"
-            aria-label="设置云同步"
-            title="当前版本暂未开放云端同步"
-            disabled
-          >
-            <span />
-          </button>
-        </div>
-      </section>
-
       <section className="settings-data-card" aria-labelledby="data-migration-title">
         <h2 className="settings-data-card__title" id="data-migration-title">
           数据迁移
@@ -3192,17 +3179,6 @@ function AboutSection() {
       <DesktopUpdatePanel />
       <KernelUpdatePanel />
       <p className="settings-about-copyright">© 2026 SYNC-THINK. All rights reserved.</p>
-    </div>
-  );
-}
-
-function ComingSoonSection({ label }: { label: string }) {
-  return (
-    <div className="settings-scroll settings-standard-pane">
-      <div className="settings-empty-panel">
-        <p>“{label}”能力尚未接入。</p>
-        <span>入口按照 SYNC-THINK 信息架构保留，接入时不会再调整设置布局。</span>
-      </div>
     </div>
   );
 }

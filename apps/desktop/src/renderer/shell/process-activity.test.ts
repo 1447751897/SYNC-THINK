@@ -11,6 +11,8 @@ import {
   formatCommandLine,
   formatElapsedZh,
   friendlyToolName,
+  summarizeProcessActions,
+  groupConsecutiveProcessTools,
   toolInputSummary,
   toolStatusOf,
   toolVisualKind,
@@ -61,7 +63,38 @@ describe('deriveCurrentActivity', () => {
       [{ kind: 'reasoning', text: '在想', status: 'streaming' }],
       { streaming: true },
     );
-    expect(activity).toMatchObject({ kind: 'thinking', label: '思考中' });
+    expect(activity).toMatchObject({ kind: 'thinking', label: '在想' });
+  });
+
+  it('uses the latest Think line instead of a generic 思考中 label', () => {
+    const activity = deriveCurrentActivity(
+      [
+        {
+          kind: 'reasoning',
+          text: '**Planning task tool discovery**\nInspecting task plan tool metadata',
+          status: 'streaming',
+        },
+      ],
+      { streaming: true },
+    );
+    expect(activity).toMatchObject({
+      kind: 'thinking',
+      label: 'Inspecting task plan tool metadata',
+    });
+  });
+
+  it('keeps the latest Think line while waiting for the next model step', () => {
+    const activity = deriveCurrentActivity(
+      [
+        completedRead,
+        { kind: 'reasoning', text: 'Planning task tool discovery', status: 'completed' },
+      ],
+      { streaming: true },
+    );
+    expect(activity).toMatchObject({
+      kind: 'thinking',
+      label: 'Planning task tool discovery',
+    });
   });
 
   it('reports answering while text streams', () => {
@@ -258,5 +291,106 @@ describe('shared tool naming', () => {
     expect(formatElapsedZh(68_000)).toBe('1分8秒');
     expect(formatElapsedZh(3_700_000)).toBe('1小时1分40秒');
     expect(formatElapsedZh(-5)).toBe('0秒');
+  });
+});
+
+describe('summarizeProcessActions', () => {
+  it('omits empty categories and unique-counts explored files', () => {
+    expect(
+      summarizeProcessActions([
+        completedRead,
+        { ...completedRead, toolCallId: 'tool-read-2', argumentsJson: '{"path":"b.txt"}' },
+        { ...completedRead, toolCallId: 'tool-read-dup', argumentsJson: '{"path":"a.txt"}' },
+        runningCommand,
+        {
+          kind: 'tool',
+          toolCallId: 'tool-write',
+          name: 'write_file',
+          argumentsJson: '{"path":"out.ts"}',
+          status: 'completed',
+        },
+        {
+          kind: 'tool',
+          toolCallId: 'tool-search',
+          name: 'grep',
+          argumentsJson: '{"pattern":"InlineProcessFlow"}',
+          status: 'completed',
+        },
+      ]),
+    ).toBe('探索了 2 个文件，编辑了 1 个文件，搜索了 1 次');
+  });
+
+  it('returns nothing when the timeline has no tools', () => {
+    expect(
+      summarizeProcessActions([{ kind: 'reasoning', text: '在想', status: 'completed' }]),
+    ).toBeUndefined();
+  });
+});
+
+describe('groupConsecutiveProcessTools', () => {
+  it('keeps a single tool inline and folds only consecutive runs', () => {
+    const commentary: InlineProcessItem = { kind: 'commentary', text: '先看环境' };
+    const thinking: InlineProcessItem = {
+      kind: 'reasoning',
+      text: '接着检查',
+      status: 'completed',
+    };
+    const blocks = groupConsecutiveProcessTools([
+      commentary,
+      completedRead,
+      { ...completedRead, toolCallId: 'tool-read-2', argumentsJson: '{"path":"b.txt"}' },
+      thinking,
+      runningCommand,
+    ]);
+
+    expect(blocks).toHaveLength(4);
+    expect(blocks[0]).toMatchObject({ kind: 'item', item: commentary });
+    expect(blocks[1]).toMatchObject({
+      kind: 'tools',
+      summary: '探索了 2 个文件',
+    });
+    expect(blocks[2]).toMatchObject({ kind: 'item', item: thinking });
+    expect(blocks[3]).toMatchObject({ kind: 'item', item: runningCommand });
+  });
+
+  it('splits consecutive runs when a status row sits between tools', () => {
+    const status: InlineProcessItem = {
+      kind: 'status',
+      statusType: 'compaction',
+      label: '正在压缩上下文',
+    };
+    const blocks = groupConsecutiveProcessTools([
+      completedRead,
+      { ...completedRead, toolCallId: 'tool-read-2', argumentsJson: '{"path":"b.txt"}' },
+      status,
+      runningCommand,
+      { ...runningCommand, toolCallId: 'tool-run-2', status: 'completed', result: 'ok' },
+    ]);
+
+    expect(blocks).toHaveLength(3);
+    expect(blocks[0]).toMatchObject({ kind: 'tools', summary: '探索了 2 个文件' });
+    expect(blocks[1]).toMatchObject({ kind: 'item', item: status });
+    expect(blocks[2]).toMatchObject({ kind: 'tools', summary: '运行了 1 个命令' });
+  });
+});
+
+describe('approval wait activity', () => {
+  it.each([true, false])(
+    'prioritizes an actual approval waiter over tool progress (streaming=%s)',
+    (streaming) => {
+      expect(
+        deriveCurrentActivity([runningCommand], { streaming, waitingForApproval: true }),
+      ).toEqual({ kind: 'approval', label: '等待你的批准' });
+    },
+  );
+
+  it('does not classify time waiting for user approval as stalled model output', () => {
+    expect(
+      deriveStallState({
+        activity: { kind: 'approval', label: '等待你的批准' },
+        lastProgressAt: 1000,
+        now: 601000,
+      }),
+    ).toEqual({ level: 'active', idleMs: 600000 });
   });
 });

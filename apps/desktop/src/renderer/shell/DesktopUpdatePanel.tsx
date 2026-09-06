@@ -34,7 +34,7 @@ const ERROR_LABELS: Record<string, string> = {
   'desktop.update.provider-failed': '更新服务返回异常。',
   'desktop.update.action-busy': '已有更新操作正在进行。',
   'desktop.update.action-invalid': '当前状态不允许执行该操作。',
-  'desktop.update.disabled': '当前构建未配置更新通道。',
+  'desktop.update.disabled': '当前 Beta 为手动下载，未配置自动更新通道。',
   'desktop.update.initialization-failed': '更新组件初始化失败。',
   'desktop.update.release-notes-open-failed': '打开更新日志失败。',
 };
@@ -216,7 +216,7 @@ export function DesktopUpdatePanel() {
         <div className="settings-about-auto-check">
           <div>
             <strong>自动检查更新</strong>
-            <span>启动时自动检查新版本</span>
+            <span>{configured ? '启动时自动检查新版本' : '当前 Beta 为手动下载，不会自动检查更新'}</span>
           </div>
           <button
             type="button"
@@ -258,9 +258,9 @@ export function DesktopUpdatePanel() {
           </div>
         ) : null}
 
-        {phase && phase !== 'idle' && phase !== 'disabled' && phase !== 'error' ? (
+        {phase && phase !== 'idle' && phase !== 'error' ? (
           <p className="settings-about-update__status" aria-live="polite">
-            {statusLabel}
+            {phase === 'disabled' ? '当前 Beta 为手动下载，未配置自动更新通道。' : statusLabel}
           </p>
         ) : null}
 

@@ -1,4 +1,12 @@
 import type {
+  ConversationListFileChangesPayload,
+  ConversationFileChangesPage,
+} from '@sync-think/protocol';
+import type {
+  ConversationReadFileDiffPayload,
+  ConversationReadFileDiffResponse,
+} from '@sync-think/protocol';
+import type {
   ExportDesktopDiagnosticsPayload,
   ExportDesktopDiagnosticsResponse,
 } from '../diagnostics-export-contract.js';
@@ -455,12 +463,27 @@ declare global {
         listConversationMessages(
           payload: import('@sync-think/protocol').ConversationListMessagesPayload,
         ): Promise<import('@sync-think/protocol').ConversationListMessagesResponse>;
+        listConversationNavigation(
+          payload: import('@sync-think/protocol').ConversationListNavigationPayload,
+        ): Promise<import('@sync-think/protocol').ConversationListNavigationResponse>;
         getConversationContextStatus(
           payload: import('@sync-think/protocol').ConversationGetContextStatusPayload,
         ): Promise<import('@sync-think/protocol').ConversationGetContextStatusResponse>;
+        readTaskPlanHistory(
+          payload: import('@sync-think/protocol').TaskPlanHistoryPayload,
+        ): Promise<import('@sync-think/protocol').TaskPlanHistoryPage>;
+        listConversationFileChanges(
+          payload: ConversationListFileChangesPayload,
+        ): Promise<ConversationFileChangesPage>;
         getConversationRunProcess(
           payload: import('@sync-think/protocol').ConversationGetRunProcessPayload,
         ): Promise<import('@sync-think/protocol').ConversationGetRunProcessResponse>;
+        readConversationFileDiff(
+          payload: ConversationReadFileDiffPayload,
+        ): Promise<ConversationReadFileDiffResponse>;
+        readConversationContent(
+          payload: import('@sync-think/protocol').ConversationReadContentPayload,
+        ): Promise<import('@sync-think/protocol').ConversationReadContentResponse>;
         listConversationRunTimeline(
           payload: import('@sync-think/protocol').ConversationListRunTimelinePayload,
         ): Promise<import('@sync-think/protocol').ConversationListRunTimelineResponse>;
@@ -585,6 +608,9 @@ declare global {
         skillLocalImport(
           payload: import('@sync-think/protocol').SkillLocalImportPayload,
         ): Promise<import('@sync-think/protocol').SkillLocalImportResponse>;
+        readApprovalRequestImage(
+          payload: import('../approval-recovery-contract.js').ReadApprovalRequestImagePayload,
+        ): Promise<import('../approval-recovery-contract.js').ReadApprovalRequestImageResponse>;
         decideToolApproval(
           payload: import('@sync-think/protocol').ConversationDecideToolApprovalPayload,
         ): Promise<import('@sync-think/protocol').ConversationDecideToolApprovalResponse>;
@@ -602,6 +628,11 @@ declare global {
           pageUrl?: string;
           error?: string;
         }>;
+        sendBrowserTrustedClick(payload: {
+          webContentsId: number;
+          x: number;
+          y: number;
+        }): Promise<{ ok: boolean; error?: string }>;
         createLocalPageUrl(payload: { filePath: string; partition?: string }): Promise<{
           ok: boolean;
           url: string | null;

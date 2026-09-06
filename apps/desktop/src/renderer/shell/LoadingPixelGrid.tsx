@@ -1,6 +1,7 @@
 import type { CSSProperties } from 'react';
 
-const DRIVE_DELAYS = Array.from({ length: 9 }, (_, index) => {
+/** Beautiful UI Drive: (column + |row - 1|) × 90ms so two wavefronts stay in flight. */
+export const LOADING_PIXEL_DRIVE_DELAYS_MS = Array.from({ length: 9 }, (_, index) => {
   const row = Math.floor(index / 3);
   const column = index % 3;
   return (column + Math.abs(row - 1)) * 90;
@@ -13,7 +14,7 @@ export function LoadingPixelGrid({ className }: { className?: string }) {
       data-testid="loading-pixel-grid"
       aria-hidden="true"
     >
-      {DRIVE_DELAYS.map((delay, index) => (
+      {LOADING_PIXEL_DRIVE_DELAYS_MS.map((delay, index) => (
         <span
           key={index}
           className="shell-loading-pixel-grid__cell"

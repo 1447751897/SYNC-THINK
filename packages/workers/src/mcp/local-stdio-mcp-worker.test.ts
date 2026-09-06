@@ -3,7 +3,11 @@ import { fileURLToPath } from 'node:url';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { LocalStdioMcpWorker, parseLocalStdioCommand } from './local-stdio-mcp-worker.js';
+import {
+  expandStdioEndpoint,
+  LocalStdioMcpWorker,
+  parseLocalStdioCommand,
+} from './local-stdio-mcp-worker.js';
 import { collect } from '../support.js';
 
 describe('parseLocalStdioCommand', () => {
@@ -28,6 +32,24 @@ describe('parseLocalStdioCommand', () => {
 
   it('refuses non-allowlisted binaries', () => {
     expect(parseLocalStdioCommand('python -c print(1)').ok).toBe(false);
+  });
+
+  it('expands Claude-style MCP env commands before the allowlist', () => {
+    expect(expandStdioEndpoint('MCP_GITHUB_COMMAND', {}).ok).toBe(false);
+    expect(
+      parseLocalStdioCommand('MCP_GITHUB_COMMAND', {
+        MCP_GITHUB_COMMAND: 'npx -y @modelcontextprotocol/server-github',
+      }),
+    ).toEqual({
+      ok: true,
+      command: 'npx',
+      args: ['-y', '@modelcontextprotocol/server-github'],
+    });
+    expect(parseLocalStdioCommand('uvx heygen-mcp')).toEqual({
+      ok: true,
+      command: 'uvx',
+      args: ['heygen-mcp'],
+    });
   });
 });
 

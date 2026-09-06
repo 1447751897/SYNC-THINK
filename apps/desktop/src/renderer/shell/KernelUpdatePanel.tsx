@@ -9,6 +9,11 @@ import type {
 } from '../../kernel-update-contract.js';
 import { BrandLogoMark } from './BrandLogoMark.js';
 import { resolveKernelBrandLogo, resolveKernelDisplayName } from './brand-icons.js';
+import {
+  BETA_INSTALLABLE_KERNEL_IDS,
+  isKernelInstallOffered,
+  visibleManagedKernelItems,
+} from './kernel-beta-availability.js';
 
 const ERROR_LABELS: Record<string, string> = {
   'kernel.update.busy': '该内核正在更新，请稍候。',
@@ -88,7 +93,7 @@ export function KernelUpdatePanel() {
     if (!bridge) return;
     const targets = kernelId
       ? [kernelId]
-      : (['codex', 'claude-code', 'pi'] as ManagedKernelUpdateId[]);
+      : [...BETA_INSTALLABLE_KERNEL_IDS];
     const started = beginPending(targets);
     if (started.length === 0) return;
     setErrorCode(null);
@@ -136,15 +141,19 @@ export function KernelUpdatePanel() {
     };
   }, [check, refreshDetected]);
 
+  const visibleItems = useMemo(
+    () => (snapshot ? visibleManagedKernelItems(snapshot.items) : []),
+    [snapshot],
+  );
   const versions = useMemo(
     () =>
-      new Map(snapshot?.items.map((item) => [item.kernelId, currentVersion(item, detected)]) ?? []),
-    [detected, snapshot],
+      new Map(visibleItems.map((item) => [item.kernelId, currentVersion(item, detected)])),
+    [detected, visibleItems],
   );
 
   const install = useCallback(async (kernelId: ManagedKernelUpdateId) => {
     const bridge = window.syncThink?.kernelUpdates;
-    if (!bridge) return;
+    if (!bridge || !isKernelInstallOffered(kernelId)) return;
     const started = beginPending([kernelId]);
     if (started.length === 0) return;
     setErrorCode(null);
@@ -166,11 +175,11 @@ export function KernelUpdatePanel() {
     <section className="settings-kernel-update" aria-labelledby="kernel-update-title">
       <header className="settings-kernel-update__header">
         <h3 id="kernel-update-title">核心运行环境</h3>
-        <p>Codex、Claude Code 与 Pi 安装在应用私有目录，升级不会改动系统全局版本。</p>
+        <p>Codex 与 Claude Code 安装在应用私有目录，升级不会改动系统全局版本。Pi 执行尚未接通，Beta 不提供安装。</p>
       </header>
 
       <div className="settings-kernel-update__list">
-        {snapshot?.items.map((item) => {
+        {visibleItems.map((item) => {
           const version = versions.get(item.kernelId) ?? null;
           const displayName = resolveKernelDisplayName(item.kernelId, item.name);
           const brandLogo = resolveKernelBrandLogo(item.kernelId);

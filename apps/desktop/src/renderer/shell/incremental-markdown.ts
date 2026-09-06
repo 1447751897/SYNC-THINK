@@ -11,6 +11,7 @@ interface MarkdownBlockRange {
 
 export interface IncrementalMarkdownBlock {
   key: string;
+  start: number;
   text: string;
   frozen: boolean;
 }
@@ -50,7 +51,9 @@ export class IncrementalMarkdownParser {
   private readonly frozenBlocks: IncrementalMarkdownBlock[] = [];
   private snapshot: IncrementalMarkdownSnapshot = { blocks: [], unstableStart: 0 };
 
-  constructor(private readonly parseTopLevelBlocks: MarkdownTopLevelParser = parseMarkdownTopLevelBlocks) {}
+  constructor(
+    private readonly parseTopLevelBlocks: MarkdownTopLevelParser = parseMarkdownTopLevelBlocks,
+  ) {}
 
   update(source: string): IncrementalMarkdownSnapshot {
     if (source === this.source) return this.snapshot;
@@ -67,6 +70,7 @@ export class IncrementalMarkdownParser {
       const segmentEnd = ranges[index + 1]?.start ?? range.end;
       this.frozenBlocks.push({
         key: `block:${this.unstableStart + range.start}`,
+        start: this.unstableStart + segmentStart,
         text: unstableText.slice(segmentStart, segmentEnd),
         frozen: true,
       });
@@ -80,7 +84,14 @@ export class IncrementalMarkdownParser {
       blocks: [
         ...this.frozenBlocks,
         ...(tail
-          ? [{ key: `tail:${this.unstableStart}`, text: tail, frozen: false } as const]
+          ? [
+              {
+                key: `tail:${this.unstableStart}`,
+                start: this.unstableStart,
+                text: tail,
+                frozen: false,
+              } as const,
+            ]
           : []),
       ],
       unstableStart: this.unstableStart,

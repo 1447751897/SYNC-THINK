@@ -180,7 +180,7 @@ describe('S3 durable event recovery', () => {
     expect(page?.payload.nextCursor).toBeGreaterThan(0);
   });
 
-  it('hydrates durable chat approvals through bounded pages instead of a full global read', () => {
+  it('reads durable chat approvals by scope without replaying unrelated event pages', () => {
     const approval: Event = {
       ...eventAt(2),
       category: 'approval',
@@ -203,6 +203,12 @@ describe('S3 durable event recovery', () => {
       ...Array.from({ length: 2_100 }, (_, index) => eventAt(index + 3)),
     ];
     const fixture = pagedStore(events);
+    const approvalReads: Array<{ threadId: string }> = [];
+    fixture.store.listToolApprovalEvents = (scope) => {
+      expect(scope).toEqual({ threadId: 'thread-paged-approvals' });
+      approvalReads.push(scope as { threadId: string });
+      return [approval];
+    };
     const runtime = new Runtime({
       installId: 's3-approval-hydration',
       allowNoToken: true,
@@ -210,16 +216,20 @@ describe('S3 durable event recovery', () => {
     });
 
     const internal = runtime as unknown as {
-      durableChatToolApprovalStates(): Map<string, { requested: Event; decided?: Event }>;
+      durableChatToolApprovalStates(scope: {
+        threadId: string;
+      }): Map<string, { requested: Event; decided?: Event }>;
     };
-    const states = internal.durableChatToolApprovalStates();
+    fixture.pageCalls.length = 0;
+    const states = internal.durableChatToolApprovalStates({ threadId: 'thread-paged-approvals' });
 
     expect(states.get('approval-paged-1')?.requested.id).toBe(approval.id);
     expect(fixture.listAllCalls).toBe(0);
-    expect(fixture.pageCalls.length).toBeGreaterThan(2);
+    expect(fixture.pageCalls).toEqual([]);
+    expect(approvalReads).toEqual([{ threadId: 'thread-paged-approvals' }]);
   });
 
-  it('skips an oversized first replay event and continues with later events', () => {
+  it('retains a bounded reference for an oversized first replay event', () => {
     const oversized: Event = {
       ...eventAt(1),
       payload: { data: 'x'.repeat(MAX_FRAME_BYTES) },
@@ -270,13 +280,19 @@ describe('S3 durable event recovery', () => {
       },
     );
 
-    expect(page?.payload.replayedEvents.map((event) => event.sequence)).toEqual([2]);
+    expect(page?.payload.replayedEvents.map((event) => event.sequence)).toEqual([1, 2]);
+    expect(page?.payload.replayedEvents[0]?.displayPayloadRef?.reference).toMatchObject({
+      source: 'event-display',
+      id: oversized.id,
+      path: ['payload'],
+    });
+    expect(Buffer.byteLength(JSON.stringify(page), 'utf8')).toBeLessThan(MAX_FRAME_BYTES);
     expect(page?.payload.nextCursor).toBe(2);
     expect(page?.payload.nextEventId).toBe('event-000002');
     expect(page?.payload.replayComplete).toBe(true);
   });
 
-  it('skips an oversized event after earlier events in the same page', () => {
+  it('retains a bounded reference for an oversized event after earlier events', () => {
     const oversized: Event = {
       ...eventAt(2),
       payload: { data: 'x'.repeat(MAX_FRAME_BYTES) },
@@ -327,7 +343,13 @@ describe('S3 durable event recovery', () => {
       },
     );
 
-    expect(page?.payload.replayedEvents.map((event) => event.sequence)).toEqual([1, 3]);
+    expect(page?.payload.replayedEvents.map((event) => event.sequence)).toEqual([1, 2, 3]);
+    expect(page?.payload.replayedEvents[1]?.displayPayloadRef?.reference).toMatchObject({
+      source: 'event-display',
+      id: oversized.id,
+      path: ['payload'],
+    });
+    expect(Buffer.byteLength(JSON.stringify(page), 'utf8')).toBeLessThan(MAX_FRAME_BYTES);
     expect(page?.payload.nextCursor).toBe(3);
     expect(page?.payload.nextEventId).toBe('event-000003');
     expect(page?.payload.replayComplete).toBe(true);

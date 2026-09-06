@@ -33,7 +33,7 @@ import { ComposerMenuHighlight } from './ComposerMenuHighlight.js';
 import { ContextRing } from './compose-toolbar.js';
 import { BUILTIN_SLASH_COMMANDS } from './compose-slash.js';
 import { ExecutionTimeline } from './ExecutionTimeline.js';
-import { FirstLaunchGuide, FIRST_LAUNCH_GUIDE_KEY } from './FirstLaunchGuide.js';
+import { FIRST_LAUNCH_GUIDE_KEY } from './FirstLaunchGuide.js';
 import { FileTypeIcon } from './FileTypeIcon.js';
 import { InlineProcessFlow } from './InlineProcessFlow.js';
 import { MarkdownContent } from './MarkdownContent.js';
@@ -275,23 +275,28 @@ function WelcomeFixture() {
     try {
       window.localStorage.removeItem(FIRST_LAUNCH_GUIDE_KEY);
     } catch {
-      // The guide itself remains usable when storage is unavailable.
+      // The start page remains usable when storage is unavailable.
     }
   }, []);
 
   return (
-    <FixtureFrame label="首次启动引导">
-      <div className="phase3-visual__welcome">
-        <div className="phase3-visual__welcome-copy">
-          <span>LOCAL-FIRST AGENT WORKSPACE</span>
-          <h1>今天想完成什么？</h1>
-          <p>从一个本地工作区开始，选择模型、智能体或小队，然后在同一任务中持续推进。</p>
+    <FixtureFrame label="开头页">
+      <div className="phase3-visual__welcome shell-chat-column shell-chat-column--empty-newmax">
+        <div className="shell-welcome shell-welcome--newmax">
+          <h1 className="shell-welcome-title">下午好</h1>
         </div>
-        <FirstLaunchGuide
-          hasWorkspace={false}
-          onOpenWorkspaceMenu={() => undefined}
-          onPickTrack={() => undefined}
-        />
+        <div className="shell-chat-content-wrap shell-empty-newmax-composer-wrap" data-locked="true">
+          <div className="shell-chat-content shell-chat-content--composer">
+            <div className="shell-compose relative" data-layout="tall">
+              <div className="shell-compose__editor-area">
+                <p className="m-0 text-[14px] text-text-faint">打开工作区后即可输入</p>
+              </div>
+              <button type="button" className="shell-empty-workspace-gate">
+                打开工作区
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
     </FixtureFrame>
   );

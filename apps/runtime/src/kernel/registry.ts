@@ -5,6 +5,7 @@
  * kernel adapters are added in later slices; until then `createAdapter()` is
  * undefined and the kernel appears in the selector as "未接入/未安装".
  */
+import { kernelExecutionUnavailableReason } from '@sync-think/shared';
 import type {
   KernelAdapter,
   KernelCapabilities,
@@ -53,6 +54,7 @@ function toDetectionResult(
     | 'name'
     | 'icon'
     | 'capabilities'
+    | 'createAdapter'
     | 'knownGoodVersions'
     | 'minimumSupportedVersion'
     | 'upperExclusiveVersion'
@@ -66,6 +68,7 @@ function toDetectionResult(
     name: entry.name,
     icon: entry.icon,
     capabilities: entry.capabilities,
+    ...kernelExecutionMetadata(entry),
     ...(entry.installCommand ? { installCommand: entry.installCommand } : {}),
     installed: probe.executablePath !== null && version !== null,
     version,
@@ -79,9 +82,7 @@ function toDetectionResult(
         ? { upperExclusiveVersion: entry.upperExclusiveVersion }
         : {}),
     }),
-    ...(entry.id === 'pi' && entry.installCommand
-      ? { installHint: entry.installCommand }
-      : {}),
+    ...(entry.id === 'pi' && entry.installCommand ? { installHint: entry.installCommand } : {}),
   };
 }
 
@@ -100,6 +101,7 @@ async function bundledDetectionResult(
     | 'name'
     | 'icon'
     | 'capabilities'
+    | 'createAdapter'
     | 'knownGoodVersions'
     | 'minimumSupportedVersion'
     | 'upperExclusiveVersion'
@@ -112,6 +114,7 @@ async function bundledDetectionResult(
     name: entry.name,
     icon: entry.icon,
     capabilities: entry.capabilities,
+    ...kernelExecutionMetadata(entry),
     installed: version !== null,
     version,
     // Bundled binaries have no host-visible executable to display.
@@ -218,6 +221,7 @@ export function buildKernelRegistry(): KernelRegistryEntry[] {
         icon: 'native',
         capabilities: nativeKernelAdapter.capabilities,
         installed: true,
+        executionSupported: true,
         version: null,
         executablePath: null,
         knownGood: true,
@@ -255,4 +259,31 @@ export function resolveKernelAdapter(kernelId?: string): KernelAdapter | undefin
   const entry = resolveKernelEntry(kernelId);
   if (!entry.createAdapter) return undefined;
   return entry.createAdapter();
+}
+
+export function kernelExecutionMetadata(
+  entry: Pick<KernelRegistryEntry, 'name' | 'createAdapter'>,
+): Pick<KernelDetectionResult, 'executionSupported' | 'executionUnavailableReason'> {
+  return entry.createAdapter
+    ? { executionSupported: true }
+    : {
+        executionSupported: false,
+        executionUnavailableReason: kernelExecutionUnavailableReason(entry.name),
+      };
+}
+
+export class KernelExecutionUnavailableError extends Error {
+  constructor(kernelId: string, name: string) {
+    super(
+      'kernel.execution_unavailable: ' + kernelId + ' · ' + kernelExecutionUnavailableReason(name),
+    );
+    this.name = 'KernelExecutionUnavailableError';
+  }
+}
+
+export function assertKernelExecutionSupported(kernelId?: string): void {
+  const resolvedId = kernelId || 'native';
+  const entry = getKernelRegistry().find((candidate) => candidate.id === resolvedId);
+  if (!entry?.createAdapter)
+    throw new KernelExecutionUnavailableError(resolvedId, entry?.name ?? resolvedId);
 }

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import {
   buildPlatformMcpToolDefinitions,
   executePlatformTool,
+  nativePlatformToolSchemas,
   resolveWithinWorkspace,
 } from './platform-tools.js';
 import {
@@ -48,6 +49,14 @@ describe('platform tools', () => {
     expect(byName.get('list_skills')?.inputSchema).toBeDefined();
   });
 
+  it('omits goal_manage from native schemas when Goal mode is off', () => {
+    const hidden = nativePlatformToolSchemas({ includeGoalManage: false }).map(
+      (schema) => schema.name,
+    );
+    expect(hidden).not.toContain('goal_manage');
+    expect(hidden).toContain('ask_user_question');
+  });
+
   it('does not expose optional tools when their run capabilities are disabled', () => {
     const names = buildPlatformMcpToolDefinitions().map((definition) => definition.name);
     expect(names).toEqual(
@@ -71,6 +80,19 @@ describe('platform tools', () => {
     expect(names).not.toContain('browser_type');
     expect(names).not.toContain('browser_read');
     expect(names).not.toContain('browser_screenshot');
+  });
+
+  it('hides goal_manage from the catalog unless Goal mode is active', () => {
+    const hidden = buildPlatformMcpToolDefinitions({ includeGoalManage: false }).map(
+      (definition) => definition.name,
+    );
+    expect(hidden).not.toContain('goal_manage');
+    expect(hidden).toContain('ask_user_question');
+
+    const visible = buildPlatformMcpToolDefinitions({ includeGoalManage: true }).map(
+      (definition) => definition.name,
+    );
+    expect(visible).toContain('goal_manage');
   });
 
   it('keeps checklist updates visible while fencing task mutations in planning mode', () => {

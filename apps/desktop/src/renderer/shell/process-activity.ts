@@ -5,7 +5,7 @@
  * 「现在跑的是哪个工具」和「这是卡住了还是还在跑」。工具命名与参数摘要
  * 也集中在这里，保证面板头部的活动摘要和工具行的文字永远一致。
  */
-import { normalizeToolName } from '@sync-think/shared';
+import { isToolResultFailure, normalizeToolName } from '@sync-think/shared';
 import type { InlineProcessItem } from './ChatView.js';
 
 type ToolItem = Extract<InlineProcessItem, { kind: 'tool' }>;
@@ -53,6 +53,114 @@ export function friendlyToolName(name: string): string {
       .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
       .join(' ') || '工具'
   );
+}
+
+function actionFileKey(item: ToolItem, bucket: 'read' | 'write' | 'list'): string {
+  const summary = toolInputSummary(item);
+  if (summary) return `${bucket}:${summary}`;
+  return `${bucket}:${item.toolCallId ?? item.name}`;
+}
+
+/**
+ * 执行过程里给用户看的动作盘点：探索/编辑按路径去重，搜索和命令按调用次数。
+ * 零次的类别直接省略，避免「探索了 0 个文件」这种空话。
+ */
+export function summarizeProcessActions(items: readonly InlineProcessItem[]): string | undefined {
+  const explored = new Set<string>();
+  const edited = new Set<string>();
+  let searches = 0;
+  let commands = 0;
+  let browses = 0;
+  let other = 0;
+
+  for (const item of items) {
+    if (item.kind !== 'tool' || toolStatusOf(item) !== 'completed') continue;
+    const kind = toolVisualKind(item.name);
+    if (kind === 'read' || kind === 'list') {
+      explored.add(actionFileKey(item, kind === 'list' ? 'list' : 'read'));
+    } else if (kind === 'write') {
+      edited.add(actionFileKey(item, 'write'));
+    } else if (kind === 'search') {
+      searches += 1;
+    } else if (kind === 'command' || kind === 'git') {
+      commands += 1;
+    } else if (kind === 'browser') {
+      browses += 1;
+    } else {
+      other += 1;
+    }
+  }
+
+  const parts: string[] = [];
+  if (explored.size > 0) parts.push(`探索了 ${explored.size} 个文件`);
+  if (edited.size > 0) parts.push(`编辑了 ${edited.size} 个文件`);
+  if (searches > 0) parts.push(`搜索了 ${searches} 次`);
+  if (commands > 0) parts.push(`运行了 ${commands} 个命令`);
+  if (browses > 0) parts.push(`浏览了 ${browses} 次`);
+  if (other > 0) parts.push(`调用了 ${other} 个工具`);
+  return parts.length > 0 ? parts.join('，') : undefined;
+}
+
+export type ConsecutiveProcessItemBlock = {
+  kind: 'item';
+  index: number;
+  item: InlineProcessItem;
+};
+
+export type ConsecutiveProcessToolBlock = {
+  kind: 'tools';
+  key: string;
+  summary: string;
+  entries: Array<{ index: number; item: Extract<InlineProcessItem, { kind: 'tool' }> }>;
+};
+
+export type ConsecutiveProcessBlock = ConsecutiveProcessItemBlock | ConsecutiveProcessToolBlock;
+
+const MIN_CONSECUTIVE_TOOLS_TO_FOLD = 2;
+
+/**
+ * 只折叠被思考 / 说明 / 状态隔开的连续工具段。整轮不收成一条总摘要；
+ * 单独一条工具仍直接出现在时间线里。
+ */
+export function groupConsecutiveProcessTools(
+  items: readonly InlineProcessItem[],
+): ConsecutiveProcessBlock[] {
+  const blocks: ConsecutiveProcessBlock[] = [];
+  let pending: ConsecutiveProcessToolBlock['entries'] = [];
+
+  const flushPending = () => {
+    if (pending.length === 0) return;
+    if (pending.length < MIN_CONSECUTIVE_TOOLS_TO_FOLD) {
+      for (const entry of pending) {
+        blocks.push({ kind: 'item', index: entry.index, item: entry.item });
+      }
+    } else {
+      const first = pending[0]!;
+      const summary =
+        summarizeProcessActions(pending.map((entry) => entry.item)) ??
+        `运行了 ${pending.length} 个命令`;
+      blocks.push({
+        kind: 'tools',
+        key: first.item.toolCallId
+          ? `tool-run:${first.item.toolCallId}`
+          : `tool-run:${first.item.id ?? first.index}`,
+        summary,
+        entries: pending,
+      });
+    }
+    pending = [];
+  };
+
+  items.forEach((item, index) => {
+    if (item.kind === 'tool') {
+      pending.push({ index, item });
+      return;
+    }
+    flushPending();
+    blocks.push({ kind: 'item', index, item });
+  });
+  flushPending();
+  return blocks;
 }
 
 /** Stable visual category for the compact icon shown on each tool row. */
@@ -141,6 +249,32 @@ export function toolInputSummary(item: ToolItem): string {
 /** 面板头部的活动摘要要短，工具行才展示完整参数。 */
 const ACTIVITY_SUMMARY_MAX = 48;
 
+function latestNonEmptyLine(text: string): string {
+  return (
+    text
+      .split('\n')
+      .filter((part) => part.trim())
+      .at(-1)
+      ?.trim() ?? ''
+  );
+}
+
+function stripActivityMarkdown(line: string): string {
+  return line
+    .replace(/^\s{0,3}#{1,6}\s+/, '')
+    .replace(/^\s{0,3}[-*+]\s+/, '')
+    .replace(/`{1,3}([^`]+)`{1,3}/g, '$1')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/__([^_]+)__/g, '$1')
+    .trim();
+}
+
+/** Bottom activity uses the same latest Think line the Think row would show. */
+export function thinkingActivityLabel(text: string): string {
+  const line = stripActivityMarkdown(latestNonEmptyLine(text));
+  return line ? clampSummary(line) : '思考中';
+}
+
 /**
  * 摘要过长时保留尾部：命令的可执行文件名信息量最低（`pnpm`、`node`），
  * 真正区分「在跑什么」的是后面的子命令与参数；路径同理，文件名在末尾。
@@ -161,36 +295,15 @@ export function formatElapsedZh(ms: number): string {
   return `${seconds}秒`;
 }
 
-function toolResultIndicatesFailure(result: string | undefined): boolean {
-  if (!result?.trim()) return false;
-
-  let parsed: unknown = result;
-  for (let depth = 0; depth < 2 && typeof parsed === 'string'; depth += 1) {
-    const candidate = parsed.trim();
-    if (!candidate.startsWith('{')) return false;
-    try {
-      parsed = JSON.parse(candidate) as unknown;
-    } catch {
-      return false;
-    }
-  }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false;
-
-  const record = parsed as Record<string, unknown>;
-  if (record.ok === false || record.success === false) return true;
-  if (record.failed === true || record.isError === true) return true;
-  const exitCode = record.exitCode ?? record.exit_code;
-  return typeof exitCode === 'number' && exitCode !== 0;
-}
-
 export function toolStatusOf(item: ToolItem): 'running' | 'completed' | 'failed' {
-  if (item.failed || item.status === 'failed' || toolResultIndicatesFailure(item.result)) {
+  if (item.failed || item.status === 'failed' || isToolResultFailure(item.result)) {
     return 'failed';
   }
   return item.status ?? (item.result !== undefined ? 'completed' : 'running');
 }
 
-export type ProcessActivityKind = 'tool' | 'thinking' | 'answering' | 'status' | 'waiting';
+export type ProcessActivityKind =
+  'tool' | 'thinking' | 'answering' | 'status' | 'waiting' | 'approval';
 
 export interface ProcessActivity {
   kind: ProcessActivityKind;
@@ -208,8 +321,9 @@ export interface ProcessActivity {
  */
 export function deriveCurrentActivity(
   items: readonly InlineProcessItem[],
-  input: { streaming?: boolean },
+  input: { streaming?: boolean; waitingForApproval?: boolean },
 ): ProcessActivity | undefined {
+  if (input.waitingForApproval) return { kind: 'approval', label: '等待你的批准' };
   if (!input.streaming) return undefined;
 
   // 运行中的工具是对「在做什么」最具体的回答，即使它不是最后一项
@@ -228,13 +342,20 @@ export function deriveCurrentActivity(
   }
 
   const last = items.at(-1);
-  if (last?.kind === 'reasoning' && last.status !== 'completed') {
-    return { kind: 'thinking', label: '思考中' };
+  if (last?.kind === 'reasoning') {
+    return { kind: 'thinking', label: thinkingActivityLabel(last.text) };
   }
   if ((last?.kind === 'text' || last?.kind === 'commentary') && last.status !== 'completed') {
     return { kind: 'answering', label: '正在回复' };
   }
   if (last?.kind === 'status') return { kind: 'status', label: last.label };
+
+  const lastReasoning = [...items]
+    .reverse()
+    .find((item) => item.kind === 'reasoning' && item.text.trim());
+  if (lastReasoning?.kind === 'reasoning') {
+    return { kind: 'thinking', label: thinkingActivityLabel(lastReasoning.text) };
+  }
 
   // 请求已发出但首个 token 还没到，或一轮结束后模型还在决定下一步。
   return { kind: 'waiting', label: '等待模型响应' };
@@ -265,7 +386,7 @@ export function deriveStallState(input: {
   now: number;
 }): ProcessStallState {
   const idleMs = Math.max(0, input.now - input.lastProgressAt);
-  if (!input.activity) return { level: 'active', idleMs };
+  if (!input.activity || input.activity.kind === 'approval') return { level: 'active', idleMs };
   const patient = input.activity.kind === 'tool';
   const stalledAt = patient ? TOOL_STALLED_MS : IDLE_STALLED_MS;
   const slowAt = patient ? TOOL_SLOW_MS : IDLE_SLOW_MS;

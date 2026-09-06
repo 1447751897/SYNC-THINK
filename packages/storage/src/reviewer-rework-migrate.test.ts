@@ -218,7 +218,13 @@ describe('0017_reviewer_rework migration', () => {
     expect(daemonExternalEventIndex).toBe(daemonTaskQueueIndex + 1);
     expect(runIndexIndex).toBe(daemonExternalEventIndex + 1);
     expect(contextWindowOverrideIndex).toBe(runIndexIndex + 1);
-    expect(contextWindowOverrideIndex).toBe(names.length - 1);
+    expect(names.slice(contextWindowOverrideIndex)).toEqual([
+      '0050_conversation_context_window_override',
+      '0051_assistant_timeline',
+      '0052_tool_approval_read_indexes',
+      '0053_native_task_plan_projection',
+      '0054_conversation_file_directory_indexes',
+    ]);
     expect(names.slice(frozenIndex, reviewerReworkIndex + 2)).toEqual([
       '0016_production_execution',
       '0017_reviewer_rework',

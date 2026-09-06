@@ -299,20 +299,26 @@ describe('SettingsPage layout contract', () => {
       target: { value: 'tavily-test-key' },
     });
     fireEvent.click(screen.getByRole('button', { name: '测试' }));
-    await waitFor(() => expect(runtime.testWebSearchProvider).toHaveBeenCalledWith({
-      providerId: 'tavily',
-      apiKey: 'tavily-test-key',
-    }));
+    await waitFor(() =>
+      expect(runtime.testWebSearchProvider).toHaveBeenCalledWith({
+        providerId: 'tavily',
+        apiKey: 'tavily-test-key',
+      }),
+    );
     expect(await screen.findByText(/连接正常/)).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: '保存并启用' }));
-    await waitFor(() => expect(runtime.saveWebSearchProvider).toHaveBeenCalledWith({
-      providerId: 'tavily',
-      enabled: true,
-      apiKey: 'tavily-test-key',
-    }));
+    await waitFor(() =>
+      expect(runtime.saveWebSearchProvider).toHaveBeenCalledWith({
+        providerId: 'tavily',
+        enabled: true,
+        apiKey: 'tavily-test-key',
+      }),
+    );
     expect(runtime.listWebSearchProviders).toHaveBeenCalledTimes(1);
-    expect(screen.getByRole('switch', { name: 'Tavily 搜索' }).getAttribute('aria-checked')).toBe('true');
+    expect(screen.getByRole('switch', { name: 'Tavily 搜索' }).getAttribute('aria-checked')).toBe(
+      'true',
+    );
   });
 
   it('opens the requested model settings section', () => {
@@ -353,6 +359,8 @@ describe('SettingsPage NewMax general tabs', () => {
     expect(shellCss).toContain(":root:not([data-motion='full']) .shell-sidebar-panel");
     expect(shellCss).toContain(":root:not([data-motion='full']) .shell-workbench");
     expect(shellCss).toContain(":root:not([data-motion='full']) .shell-sliding-tabs__pill");
+    expect(shellCss).toContain(":root:not([data-motion='full']) .shell-workspace-tab.is-gliding");
+    expect(shellCss).toContain(":root:not([data-motion='full']) .shell-pane-tab.is-gliding");
     expect(shellCss).toContain(
       ":root:not([data-motion='full']) .shell-workspace-files-switcher__tab",
     );
@@ -378,6 +386,9 @@ describe('SettingsPage NewMax general tabs', () => {
     expect(screen.getByRole('switch', { name: '显示工具调用' }).getAttribute('aria-checked')).toBe(
       'true',
     );
+    expect(screen.getByRole('switch', { name: '显示思考过程' }).getAttribute('aria-checked')).toBe(
+      'true',
+    );
     expect(
       screen.getByRole('switch', { name: '默认展开工具调用' }).getAttribute('aria-checked'),
     ).toBe('false');
@@ -388,12 +399,14 @@ describe('SettingsPage NewMax general tabs', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Agent' }));
     fireEvent.click(screen.getByRole('radio', { name: '超高' }));
     fireEvent.click(screen.getByRole('switch', { name: '显示工具调用' }));
+    fireEvent.click(screen.getByRole('switch', { name: '显示思考过程' }));
 
     expect(
       JSON.parse(window.localStorage.getItem('sync-think.agentPreferences') ?? '{}'),
     ).toMatchObject({
       thinkingBudget: 'xhigh',
       showToolUse: false,
+      showThinking: false,
     });
 
     first.unmount();
@@ -401,6 +414,9 @@ describe('SettingsPage NewMax general tabs', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Agent' }));
     expect(screen.getByRole('radio', { name: '超高' }).getAttribute('aria-checked')).toBe('true');
     expect(screen.getByRole('switch', { name: '显示工具调用' }).getAttribute('aria-checked')).toBe(
+      'false',
+    );
+    expect(screen.getByRole('switch', { name: '显示思考过程' }).getAttribute('aria-checked')).toBe(
       'false',
     );
   });
@@ -415,6 +431,30 @@ describe('SettingsPage NewMax general tabs', () => {
 });
 
 describe('SettingsPage gateway request audit', () => {
+  it.each(['账号', '钱包', '每日回顾', '语音模型', '安全查杀'])(
+    'keeps unavailable settings out of both navigation and search: %s',
+    (label) => {
+      render(<SettingsPage />);
+      expect(screen.queryByRole('button', { name: label })).toBeNull();
+      fireEvent.change(screen.getByRole('textbox', { name: '搜索设置' }), {
+        target: { value: label },
+      });
+      expect(screen.queryByRole('button', { name: label })).toBeNull();
+    },
+  );
+
+  it('normalizes unavailable links while keeping the hidden plugin alias functional', () => {
+    const { rerender } = render(<SettingsPage initialSection="wallet" />);
+    expect(screen.getByRole('heading', { name: '通用' })).toBeTruthy();
+    rerender(<SettingsPage initialSection="plugins" navigationKey={1} />);
+    expect(screen.getByRole('heading', { name: '电脑操作' })).toBeTruthy();
+    fireEvent.change(screen.getByRole('textbox', { name: '搜索设置' }), {
+      target: { value: '插件' },
+    });
+    const navigation = screen.getByRole('navigation', { name: '设置分类' });
+    expect(within(navigation).queryByRole('button', { name: '插件' })).toBeNull();
+  });
+
   it('describes same-protocol traffic as direct passthrough instead of a conversion', async () => {
     render(<SettingsPage />);
     fireEvent.change(screen.getByRole('textbox', { name: '搜索设置' }), {
@@ -572,7 +612,7 @@ describe('SettingsPage data management', () => {
   it('uses the NewMax information architecture with live storage values', async () => {
     await openDataSettings();
 
-    expect(screen.getByRole('region', { name: '云端同步' })).toBeTruthy();
+    expect(screen.queryByRole('region', { name: '云端同步' })).toBeNull();
     expect(screen.getByRole('region', { name: '数据迁移' })).toBeTruthy();
     expect(screen.getByRole('region', { name: '数据备份' })).toBeTruthy();
     expect(screen.getByRole('region', { name: '存储管理' })).toBeTruthy();
@@ -587,9 +627,7 @@ describe('SettingsPage data management', () => {
     expect(screen.getByText('12 个')).toBeTruthy();
     expect(screen.getByText('48 条')).toBeTruthy();
 
-    const syncToggle = screen.getByRole('switch', { name: '设置云同步' });
-    expect(syncToggle.getAttribute('aria-checked')).toBe('false');
-    expect((syncToggle as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole('switch', { name: '设置云同步' })).toBeNull();
     expect((screen.getByRole('button', { name: '选择并导入' }) as HTMLButtonElement).disabled).toBe(
       false,
     );
@@ -681,12 +719,9 @@ describe('SettingsPage SYNC-THINK connection catalog', () => {
     expect(
       Array.from(navigation.querySelectorAll('button span'), (node) => node.textContent),
     ).toEqual([
-      '账号',
-      '钱包',
       '通用',
       '偏好',
       '模型',
-      '每日回顾',
       '连接',
       '电脑操作',
       '数据',

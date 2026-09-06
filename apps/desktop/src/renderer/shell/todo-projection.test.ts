@@ -1,6 +1,33 @@
 import { describe, expect, it } from 'vitest';
 import type { Event } from '@sync-think/shared';
-import { projectTodoFromEvents } from './todo-projection.js';
+import { extractTodoSnapshot, projectTodoFromEvents } from './todo-projection.js';
+
+describe('task plan descriptions', () => {
+  it.each(['arguments', 'result'] as const)('preserves descriptions from %s', (source) => {
+    const items = [
+      {
+        title: '审计架构',
+        description: '  找出 runtime/desktop 中的重复实现  ',
+        status: 'in_progress',
+      },
+      { title: '旧清单', description: 42, status: 'pending' },
+      { title: '空说明', description: '  ', status: 'completed' },
+    ];
+    const payload =
+      source === 'arguments'
+        ? { arguments: { items } }
+        : { result: JSON.stringify({ ok: true, plan: { items } }) };
+    expect(extractTodoSnapshot(payload)?.items).toEqual([
+      {
+        title: '审计架构',
+        description: '找出 runtime/desktop 中的重复实现',
+        status: 'in_progress',
+      },
+      { title: '旧清单', status: 'pending' },
+      { title: '空说明', status: 'completed' },
+    ]);
+  });
+});
 
 function makeEvent(
   sequence: number,

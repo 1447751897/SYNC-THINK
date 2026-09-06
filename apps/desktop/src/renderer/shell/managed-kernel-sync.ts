@@ -8,8 +8,10 @@ export function applyManagedKernelSnapshotToInstallStates(
 ): Record<string, KernelInstallState | undefined> {
   const next: Record<string, KernelInstallState | undefined> = { ...current };
   for (const item of snapshot.items) {
-    if (item.phase === 'installing' || item.phase === 'checking') {
+    if (item.phase === 'installing') {
       next[item.kernelId] = { status: 'installing' };
+    } else if (item.phase === 'checking') {
+      next[item.kernelId] = { status: 'checking' };
     } else if (
       item.phase === 'installed' ||
       item.phase === 'up-to-date' ||

@@ -413,6 +413,38 @@ describe('chat execution mode tool gating', () => {
     expect(JSON.parse(executeChatPlanTool(JSON.stringify({ items: [] }))).ok).toBe(false);
   });
 
+  it('update_task_plan exposes and preserves specific step descriptions', async () => {
+    const { CHAT_PLAN_TOOL_SCHEMAS, executeChatPlanTool } = await import('./chat-tools.js');
+    const schema = CHAT_PLAN_TOOL_SCHEMAS.find((tool) => tool.name === 'update_task_plan');
+    expect(JSON.stringify(schema?.inputSchema)).toContain('"description":{"type":"string"');
+    const result = JSON.parse(
+      executeChatPlanTool(
+        JSON.stringify({
+          items: [
+            {
+              title: '审计架构',
+              description: '  找出 runtime/desktop 中的重复实现  ',
+              status: 'in_progress',
+            },
+            { title: '兼容旧清单', status: 'pending' },
+            { title: '忽略无效说明', description: 42, status: 'pending' },
+            { title: '忽略空说明', description: '  ', status: 'completed' },
+          ],
+        }),
+      ),
+    );
+    expect(result.plan.items).toEqual([
+      {
+        title: '审计架构',
+        description: '找出 runtime/desktop 中的重复实现',
+        status: 'in_progress',
+      },
+      { title: '兼容旧清单', status: 'pending' },
+      { title: '忽略无效说明', status: 'pending' },
+      { title: '忽略空说明', status: 'completed' },
+    ]);
+  });
+
   it('TaskCreate/TaskUpdate/TaskList: persisted NewMax-style checklist tools', async () => {
     const {
       executeTaskCreateTool,
@@ -425,6 +457,7 @@ describe('chat execution mode tool gating', () => {
       id: string;
       workspaceId: string;
       title: string;
+      description?: string;
       status: string;
       priority: string;
       dependsOn: string[];
@@ -435,6 +468,7 @@ describe('chat execution mode tool gating', () => {
       create(input: {
         workspaceId: string;
         title: string;
+        description?: string;
         priority?: string;
         dependsOn?: readonly string[];
       }) {
@@ -442,6 +476,7 @@ describe('chat execution mode tool gating', () => {
           id: `task-${++nextId}`,
           workspaceId: input.workspaceId,
           title: input.title,
+          description: input.description,
           status: 'pending',
           priority: input.priority ?? 'medium',
           dependsOn: [...(input.dependsOn ?? [])],
@@ -471,7 +506,11 @@ describe('chat execution mode tool gating', () => {
     // TaskCreate
     const created = JSON.parse(
       executeTaskCreateTool(
-        JSON.stringify({ title: '设计接口', priority: 'high' }),
+        JSON.stringify({
+          title: '设计接口',
+          description: '定义任务列表字段及状态迁移规则',
+          priority: 'high',
+        }),
         'ws-alpha',
         store,
       ),
@@ -480,6 +519,7 @@ describe('chat execution mode tool gating', () => {
     expect(created.task.title).toBe('设计接口');
     expect(created.task.priority).toBe('high');
     expect(created.plan.total).toBe(1);
+    expect(created.plan.items[0].description).toBe('定义任务列表字段及状态迁移规则');
 
     // TaskCreate with dependency
     const child = JSON.parse(
@@ -502,11 +542,13 @@ describe('chat execution mode tool gating', () => {
     expect(updated.task.status).toBe('completed');
     expect(updated.plan.completed).toBe(1);
     expect(updated.plan.total).toBe(2);
+    expect(updated.plan.items[0].description).toBe('定义任务列表字段及状态迁移规则');
 
     // TaskList
     const listed = JSON.parse(executeTaskListTool('{}', 'ws-alpha', store));
     expect(listed.ok).toBe(true);
     expect(listed.tasks.length).toBe(2);
+    expect(listed.plan.items[0].description).toBe('定义任务列表字段及状态迁移规则');
 
     // Failures: missing title / unknown task / no workspace
     expect(JSON.parse(executeTaskCreateTool('{}', 'ws-alpha', store)).ok).toBe(false);
@@ -578,6 +620,25 @@ describe('chat execution mode tool gating', () => {
     expect(validateChatBrowserCommand('browser_click', JSON.stringify({ x: 10 })).ok).toBe(false);
     expect(validateChatBrowserCommand('browser_click', '{}').ok).toBe(false);
     expect(validateChatBrowserCommand('browser_click', 'not json').ok).toBe(false);
+    const byPlaywright = validateChatBrowserCommand(
+      'browser_click',
+      JSON.stringify({ selector: 'a:has-text("造梦西游online")' }),
+    );
+    expect(byPlaywright).toEqual({
+      ok: true,
+      command: {
+        action: 'browser_click',
+        args: { selector: 'a', text: '造梦西游online' },
+      },
+    });
+    const byText = validateChatBrowserCommand(
+      'browser_click',
+      JSON.stringify({ text: '造梦西游online' }),
+    );
+    expect(byText).toEqual({
+      ok: true,
+      command: { action: 'browser_click', args: { text: '造梦西游online' } },
+    });
   });
 
   it('validateChatBrowserCommand: type needs selector + bounded text', async () => {

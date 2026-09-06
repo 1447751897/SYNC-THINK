@@ -39,6 +39,30 @@ const ZOOM_LEVELS = [0.25, 0.33, 0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1
 const MIN_AUTO_ZOOM = 0.5;
 const MAX_AUTO_ZOOM = 1;
 const BROWSER_SETTINGS_KEY = 'sync-think:embedded-browser-settings:v1';
+const GUEST_ZOOM_PREFIX = '__SYNC_THINK_BROWSER_ZOOM__:';
+
+export function browserZoomStepFromWheel(deltaY: number): -1 | 1 {
+  return deltaY < 0 ? 1 : -1;
+}
+
+export function parseGuestZoomDelta(message: string): number | null {
+  if (!message.startsWith(GUEST_ZOOM_PREFIX)) return null;
+  const delta = Number(message.slice(GUEST_ZOOM_PREFIX.length));
+  return Number.isFinite(delta) && delta !== 0 ? delta : null;
+}
+
+export function guestBrowserZoomBridgeScript(): string {
+  return `(() => {
+    if (window.__syncThinkBrowserZoomBound) return true;
+    window.__syncThinkBrowserZoomBound = true;
+    window.addEventListener('wheel', (event) => {
+      if (!(event.ctrlKey || event.metaKey)) return;
+      event.preventDefault();
+      console.debug(${JSON.stringify(GUEST_ZOOM_PREFIX)} + event.deltaY);
+    }, { passive: false, capture: true });
+    return true;
+  })()`;
+}
 
 interface BrowserPanelSettings {
   autoFit: boolean;
@@ -250,7 +274,7 @@ export function BrowserPanel(props: {
     if (!registerForAutomation) return;
     const register = () => {
       const current = webviewRef.current as unknown as BrowserWebviewElement | null;
-      registerBrowserWebview(current, false);
+      registerBrowserWebview(current, false, props.navigateUrl || initialUrl);
     };
     register();
     const view = webviewRef.current;
@@ -263,7 +287,7 @@ export function BrowserPanel(props: {
       view?.removeEventListener('pointerdown', activateForAutomation);
       unregisterBrowserWebview(view as unknown as BrowserWebviewElement | null);
     };
-  }, [activateForAutomation, registerForAutomation]);
+  }, [activateForAutomation, initialUrl, props.navigateUrl, registerForAutomation]);
 
   useEffect(() => {
     if (automationActive) activateForAutomation();
@@ -310,6 +334,14 @@ export function BrowserPanel(props: {
     if (manual) setAutoFit(false);
   }, []);
 
+  const applyWheelZoom = useCallback(
+    (deltaY: number) => {
+      if (!pageReadyRef.current) return;
+      applyZoom(nextZoom(zoomFactorRef.current, browserZoomStepFromWheel(deltaY)), true);
+    },
+    [applyZoom],
+  );
+
   const detectPageWidth = useCallback(async () => {
     const view = webviewRef.current;
     if (!view || typeof view.executeJavaScript !== 'function' || !pageReadyRef.current) return null;
@@ -355,7 +387,17 @@ export function BrowserPanel(props: {
       pageReadyRef.current = true;
       setPageReady(true);
       syncNavigationState();
+      if (typeof view.executeJavaScript === 'function') {
+        void view.executeJavaScript(guestBrowserZoomBridgeScript()).catch(() => undefined);
+      }
       if (autoFitRef.current) window.requestAnimationFrame(() => void calculateAutoFit());
+    };
+    const onConsoleMessage = (event: Event) => {
+      const message = (event as Event & { message?: string }).message;
+      if (typeof message !== 'string') return;
+      const delta = parseGuestZoomDelta(message);
+      if (delta == null) return;
+      applyWheelZoom(delta);
     };
     const onStop = () => {
       setLoading(false);
@@ -404,6 +446,7 @@ export function BrowserPanel(props: {
     };
     view.addEventListener('did-start-loading', onStart);
     view.addEventListener('dom-ready', onDomReady);
+    view.addEventListener('console-message', onConsoleMessage);
     view.addEventListener('did-stop-loading', onStop);
     view.addEventListener('did-finish-load', onStop);
     view.addEventListener('did-navigate', onNavigate);
@@ -416,6 +459,7 @@ export function BrowserPanel(props: {
     return () => {
       view.removeEventListener('did-start-loading', onStart);
       view.removeEventListener('dom-ready', onDomReady);
+      view.removeEventListener('console-message', onConsoleMessage);
       view.removeEventListener('did-stop-loading', onStop);
       view.removeEventListener('did-finish-load', onStop);
       view.removeEventListener('did-navigate', onNavigate);
@@ -426,7 +470,19 @@ export function BrowserPanel(props: {
       view.removeEventListener('found-in-page', onFound);
       view.removeEventListener('did-fail-load', onFail);
     };
-  }, [calculateAutoFit, syncNavigationState]);
+  }, [applyWheelZoom, calculateAutoFit, syncNavigationState]);
+
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    const onWheel = (event: WheelEvent) => {
+      if (!(event.ctrlKey || event.metaKey)) return;
+      event.preventDefault();
+      applyWheelZoom(event.deltaY);
+    };
+    viewport.addEventListener('wheel', onWheel, { passive: false });
+    return () => viewport.removeEventListener('wheel', onWheel);
+  }, [applyWheelZoom]);
 
   // Auto-fit tracks pane resize and remains bounded to the NewMax 50%-100% range.
   useEffect(() => {

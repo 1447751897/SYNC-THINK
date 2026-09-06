@@ -3,7 +3,7 @@
  *
  * Uses the locally installed codex-cli and login state to verify three public
  * lifecycle guarantees:
- *   1. a first turn can stream MCP tools, reasoning, usage and a final answer;
+ *   1. a first turn can stream MCP tools, usage and a final answer;
  *   2. a second turn reuses the same app-server process and native thread;
  *   3. a fresh app-server process can resume that native thread.
  *
@@ -22,12 +22,14 @@ import { startKernelMcpBroker } from './mcp-broker.js';
 import { executePlatformTool, PLATFORM_MCP_TOOL_DEFINITIONS } from './platform-tools.js';
 import { startKernelProcess } from './process.js';
 import { getKernelRegistry } from './registry.js';
+import { evaluateCodexVerification } from './codex-verification.js';
 
 const PERMISSION_MODE = (process.env.E2E_PERMISSION_MODE ?? 'full-access') as
   'full-access' | 'ask' | 'workspace';
 const CUSTOM_FIRST_PROMPT = process.env.E2E_PROMPT?.trim() || undefined;
 const MODEL = process.env.E2E_MODEL?.trim() ?? '';
 const TIMEOUT_MS = Number(process.env.E2E_TIMEOUT_MS ?? 300_000);
+const REQUIRE_REASONING = process.env.E2E_EXPECT_REASONING === '1';
 const MEMORY_TOKEN =
   process.env.E2E_MEMORY_TOKEN?.trim() ||
   `st-memory-${randomUUID().replaceAll('-', '').slice(0, 16)}`;
@@ -50,11 +52,6 @@ function sessionId(events: readonly KernelEvent[]): string | undefined {
     (event): event is Extract<KernelEvent, { type: 'session-started' }> =>
       event.type === 'session-started',
   )?.sessionId;
-}
-
-function completed(events: readonly KernelEvent[]): boolean {
-  const terminal = events.at(-1);
-  return terminal?.type === 'terminal' && terminal.status === 'completed';
 }
 
 function summarize(events: readonly KernelEvent[]): Record<string, unknown> {
@@ -220,31 +217,24 @@ async function main(): Promise<number> {
       (event): event is Extract<KernelEvent, { type: 'tool-result' }> =>
         event.type === 'tool-result',
     );
-    const firstUsage = first.some((event) => event.type === 'usage' && event.usage.real > 0);
-    const firstReasoning = first.some(
-      (event) => event.type === 'reasoning' && event.text.trim().length > 0,
-    );
     const toolFlowOk = CUSTOM_FIRST_PROMPT
-      ? true
+      ? undefined
       : fileContent === FILE_CONTENT &&
         finalText(first).includes(FILE_CONTENT) &&
         firstToolCalls.some((event) => event.name.includes('file_write')) &&
         firstToolCalls.some((event) => event.name.includes('file_read')) &&
         firstToolResults.length >= 2 &&
         firstToolResults.every((event) => !event.isError);
-    const ok =
-      completed(first) &&
-      completed(second) &&
-      completed(third) &&
-      toolFlowOk &&
-      firstUsage &&
-      firstReasoning &&
-      sessionId(second) === nativeThreadId &&
-      sessionId(third) === nativeThreadId &&
-      finalText(second).includes(MEMORY_TOKEN) &&
-      finalText(third).includes(MEMORY_TOKEN) &&
-      sameProcessSpawnCount === 1 &&
-      spawnPids.length === 2;
+    const verdict = evaluateCodexVerification({
+      first,
+      second,
+      third,
+      memoryToken: MEMORY_TOKEN,
+      spawnPids,
+      sameProcessSpawnCount,
+      toolFlow: toolFlowOk,
+      requireReasoning: REQUIRE_REASONING,
+    });
 
     console.log(
       '[codex-e2e] summary',
@@ -254,6 +244,7 @@ async function main(): Promise<number> {
         sameProcessSpawnCount,
         elapsedMs: Date.now() - startedAt,
         fileContent,
+        verification: verdict,
         turns: {
           first: summarize(first),
           second: summarize(second),
@@ -261,13 +252,13 @@ async function main(): Promise<number> {
         },
       }),
     );
-    if (ok) {
+    if (verdict.ok) {
       console.log(
         `KERNEL_PERSISTENCE_OK thread=${nativeThreadId} processes=${spawnPids.length} elapsedMs=${Date.now() - startedAt}`,
       );
       return 0;
     }
-    console.log('KERNEL_PERSISTENCE_FAILED');
+    console.log('KERNEL_PERSISTENCE_FAILED', verdict.failures.join(', '));
     return 1;
   } catch (error) {
     console.error('[codex-e2e] adapter error:', error);

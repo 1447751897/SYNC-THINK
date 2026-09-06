@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { connect, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AdapterEvent, ProviderAdapter, ProviderCallRequest } from '@sync-think/adapters';
 import {
   COMPUTER_USE_PLUGIN_SETTING_KEY,
@@ -593,6 +593,7 @@ async function startFullAccessDesktopFixture<
     provider,
     runtime,
     socket,
+    stateStore,
     threadId: task.threadId,
     worker,
   };
@@ -1152,6 +1153,55 @@ describe('Runtime Computer Use plugin gate', () => {
         fixture.connection.raw.prepare('SELECT COUNT(*) AS count FROM desktop_command').get(),
       ).toEqual({ count: 0 });
     } finally {
+      fixture.socket.destroy();
+      await fixture.runtime.stop();
+      fixture.connection.raw.close();
+    }
+  });
+
+  it('keeps a failed approval pending and grants no session permission before retry', async () => {
+    const provider = new RepeatedSensitiveDesktopActionProvider(
+      JSON.stringify({ target: FIXTURE_ELEMENT_TARGET, value: 'retry-value' }),
+    );
+    const worker = new CompletedDesktopWorker();
+    const fixture = await startFullAccessDesktopFixture('approval-write-failure', provider, worker);
+    try {
+      expect(await waitFor(() => Boolean(
+        latestEventPayload(fixture.connection, 'tool.approval_requested'),
+      ))).toBe(true);
+      const approvalId = String(
+        latestEventPayload(fixture.connection, 'tool.approval_requested')!.approvalId,
+      );
+      const commit = fixture.stateStore.commitTransition.bind(fixture.stateStore);
+      const failure = vi.spyOn(fixture.stateStore, 'commitTransition').mockImplementation((input) => {
+        if (input.events.some((event) => event.type === 'tool.approval_decided')) {
+          throw new Error('approval decision write failed');
+        }
+        return commit(input);
+      });
+      const failed = await decideToolApproval(fixture.installId, approvalId, 'approve', 'session');
+      expect(failed.error).toBeDefined();
+      expect(worker.calls).toBe(0);
+      expect((await listPendingToolApprovals(fixture.installId, fixture.threadId)).payload)
+        .toMatchObject({ approvals: [{ approvalId }] });
+      expect(latestEventPayload(fixture.connection, 'tool.approval_decided')).toBeUndefined();
+      failure.mockRestore();
+      const retried = await decideToolApproval(fixture.installId, approvalId, 'approve', 'once');
+      expect(retried.error).toBeUndefined();
+      expect(await waitFor(() => {
+        const latest = latestEventPayload(fixture.connection, 'tool.approval_requested');
+        return Boolean(latest && latest.approvalId !== approvalId);
+      })).toBe(true);
+      expect(worker.calls).toBe(1);
+      const secondId = String(
+        latestEventPayload(fixture.connection, 'tool.approval_requested')!.approvalId,
+      );
+      const replay = await decideToolApproval(fixture.installId, approvalId, 'approve', 'session');
+      expect(replay.payload).toMatchObject({ decision: 'approve', scope: 'once' });
+      await decideToolApproval(fixture.installId, secondId, 'deny');
+      expect(await waitFor(() => provider.completed)).toBe(true);
+    } finally {
+      vi.restoreAllMocks();
       fixture.socket.destroy();
       await fixture.runtime.stop();
       fixture.connection.raw.close();

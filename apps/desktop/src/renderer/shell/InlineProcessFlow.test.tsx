@@ -55,6 +55,54 @@ function follows(left: Element, right: Element): boolean {
 describe('InlineProcessFlow', () => {
   afterEach(cleanup);
 
+  it('opens live output then folds successful results unless the user chose otherwise', () => {
+    const { rerender } = render(
+      <InlineProcessFlow
+        items={[{ ...runningTool, result: 'first output' }]}
+        defaultOpen
+        streaming
+      />,
+    );
+    expect(screen.getByTestId('inline-process-tool-details')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '复制输出' })).toBeTruthy();
+    rerender(
+      <InlineProcessFlow
+        items={[{ ...runningTool, status: 'completed', result: 'done' }]}
+        defaultOpen
+      />,
+    );
+    expect(screen.queryByTestId('inline-process-tool-details')).toBeNull();
+    fireEvent.click(
+      screen
+        .getByTestId('inline-process-tool')
+        .querySelector('.shell-inline-process__tool-toggle')!,
+    );
+    rerender(
+      <InlineProcessFlow
+        items={[{ ...runningTool, status: 'completed', result: 'done again' }]}
+        defaultOpen
+      />,
+    );
+    expect(screen.getByTestId('inline-process-tool-details')).toBeTruthy();
+  });
+
+  it('folds failed results after the run finishes, and keeps them readable when opened', () => {
+    render(<InlineProcessFlow items={[toolItem, failedToolItem]} answerStarted />);
+    expect(screen.getByTestId('process-panel-toggle').getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByTestId('inline-process-tool-result')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('process-panel-toggle'));
+    fireEvent.click(screen.getByTestId('process-action-summary-toggle'));
+    const failedToggle = screen
+      .getAllByTestId('inline-process-tool')
+      .at(-1)
+      ?.querySelector('.shell-inline-process__tool-toggle');
+    expect(failedToggle?.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(failedToggle!);
+    expect(screen.getByTestId('inline-process-tool-result').textContent).toContain('boom');
+    expect(screen.getByRole('button', { name: '复制错误' })).toBeTruthy();
+  });
+
   it('renders nothing when there are no items', () => {
     const { container } = render(<InlineProcessFlow items={[]} />);
     expect(container.firstChild).toBeNull();
@@ -120,7 +168,7 @@ describe('InlineProcessFlow', () => {
     expect(onPanelOpen).toHaveBeenCalledTimes(1);
   });
 
-  it('offers the next lazy page without hiding the process already loaded', () => {
+  it('requests remaining timeline pages automatically without a next-page control', () => {
     const onLoadMoreTimeline = vi.fn();
     render(
       <InlineProcessFlow
@@ -136,9 +184,7 @@ describe('InlineProcessFlow', () => {
     );
 
     expect(screen.getByTestId('inline-process-reasoning')).toBeTruthy();
-    const loadMore = screen.getByTestId('process-timeline-load-more');
-    expect(loadMore.textContent).toContain('64/157');
-    fireEvent.click(loadMore);
+    expect(screen.queryByTestId('process-timeline-load-more')).toBeNull();
     expect(onLoadMoreTimeline).toHaveBeenCalledTimes(1);
   });
 
@@ -241,8 +287,9 @@ describe('InlineProcessFlow', () => {
     expect(tools).toHaveLength(2);
     expect(tools[0].textContent).toContain('a.txt');
     expect(tools[1].textContent).toContain('b.txt');
-    expect(screen.queryByTestId('tool-group')).toBeNull();
-    expect(screen.queryByText(/运行了 2 个命令|×2|2 个调用/)).toBeNull();
+    expect(screen.queryByTestId('tool-batch')).toBeNull();
+    expect(screen.queryByText(/×2|2 个调用/)).toBeNull();
+    expect(screen.getByTestId('process-action-summary').textContent).toContain('探索了 2 个文件');
   });
 
   it('omits bulk disclosure controls while preserving row-level expansion', () => {
@@ -290,13 +337,176 @@ describe('InlineProcessFlow', () => {
     expect(screen.queryByTestId('inline-process-tool')).toBeNull();
   });
 
+  it('can hide Think rows from the execution process without collapsing the panel', () => {
+    const onShowThinkingChange = vi.fn();
+    render(
+      <InlineProcessFlow
+        items={[reasoningItem, commentaryItem, toolItem]}
+        defaultOpen
+        showThinking
+        onShowThinkingChange={onShowThinkingChange}
+      />,
+    );
+
+    const thinkSwitch = screen.getByRole('switch', { name: '显示 Think' });
+    expect(thinkSwitch.getAttribute('aria-checked')).toBe('true');
+    expect(screen.getByTestId('inline-process-reasoning')).toBeTruthy();
+
+    fireEvent.click(thinkSwitch);
+    expect(onShowThinkingChange).toHaveBeenCalledWith(false);
+    expect(screen.getByTestId('process-panel-toggle').getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('omits Think rows when showThinking is off and keeps the header switch available', () => {
+    render(
+      <InlineProcessFlow
+        items={[reasoningItem, commentaryItem, toolItem]}
+        defaultOpen
+        showThinking={false}
+      />,
+    );
+
+    expect(screen.queryByTestId('inline-process-reasoning')).toBeNull();
+    expect(screen.getByTestId('inline-process-commentary')).toBeTruthy();
+    expect(screen.getByTestId('inline-process-tool')).toBeTruthy();
+    expect(screen.getByRole('switch', { name: '显示 Think' }).getAttribute('aria-checked')).toBe(
+      'false',
+    );
+  });
+
+  it('shows the latest Think line on the activity row even when Think rows are hidden', () => {
+    render(
+      <InlineProcessFlow
+        items={[
+          {
+            kind: 'reasoning',
+            text: 'Think · Planning task tool discovery',
+            status: 'streaming',
+          },
+        ]}
+        streaming
+        showThinking={false}
+        defaultOpen
+      />,
+    );
+
+    expect(screen.queryByTestId('inline-process-reasoning')).toBeNull();
+    expect(screen.getByTestId('process-activity-label').textContent).toContain(
+      'Planning task tool discovery',
+    );
+    expect(screen.getByTestId('process-activity-label').textContent).not.toContain('思考中');
+    expect(screen.getByTestId('process-activity-label').textContent).not.toContain('等待模型响应');
+  });
+
+  it('folds a consecutive tool stretch in place while keeping Think visible', () => {
+    render(
+      <InlineProcessFlow
+        items={[reasoningItem, toolItem, secondReadTool, runningTool]}
+        defaultOpen
+      />,
+    );
+
+    const summary = screen.getByTestId('process-action-summary');
+    expect(summary.textContent).toContain('探索了 2 个文件');
+    expect(summary.textContent).not.toContain('运行了 1 个命令');
+    expect(screen.getAllByTestId('inline-process-tool')).toHaveLength(3);
+
+    fireEvent.click(screen.getByTestId('process-action-summary-toggle'));
+    expect(screen.queryByTestId('inline-process-tool')).toBeNull();
+    expect(screen.getByTestId('inline-process-reasoning')).toBeTruthy();
+    expect(screen.getByTestId('process-action-summary-toggle').getAttribute('aria-expanded')).toBe(
+      'false',
+    );
+  });
+
+  it('folds each consecutive tool stretch in place instead of one whole-turn summary', () => {
+    render(
+      <InlineProcessFlow
+        items={[
+          commentaryItem,
+          toolItem,
+          secondReadTool,
+          reasoningItem,
+          failedToolItem,
+          {
+            ...failedToolItem,
+            toolCallId: 'tool-cmd-b',
+            failed: false,
+            status: 'completed',
+            result: 'ok',
+            argumentsJson: '{"command":"git","args":["status"]}',
+          },
+        ]}
+        collapseExecutionProcess={false}
+        answerStarted
+      />,
+    );
+
+    const folds = screen.getAllByTestId('process-action-summary');
+    expect(folds).toHaveLength(2);
+    expect(folds[0].textContent).toContain('探索了 2 个文件');
+    expect(folds[1].textContent).toContain('运行了 1 个命令');
+    expect(screen.getByTestId('inline-process-commentary')).toBeTruthy();
+    expect(screen.getByTestId('inline-process-reasoning')).toBeTruthy();
+    expect(within(folds[0]).queryByTestId('inline-process-tool')).toBeNull();
+    expect(within(folds[1]).queryByTestId('inline-process-tool')).toBeNull();
+    expect(
+      within(folds[1]).getByTestId('process-action-summary-toggle').getAttribute('aria-expanded'),
+    ).toBe('false');
+
+    fireEvent.click(within(folds[0]).getByTestId('process-action-summary-toggle'));
+    fireEvent.click(within(folds[1]).getByTestId('process-action-summary-toggle'));
+    expect(screen.getAllByTestId('inline-process-tool')).toHaveLength(4);
+    expect(screen.getByTestId('inline-process-reasoning')).toBeTruthy();
+    expect(
+      within(folds[1]).getByTestId('process-action-summary-toggle').getAttribute('aria-expanded'),
+    ).toBe('true');
+  });
+
+  it('folds a completed command stretch even before the next narrative starts', () => {
+    render(
+      <InlineProcessFlow
+        items={[toolItem, secondReadTool]}
+        streaming
+        collapseExecutionProcess={false}
+        runId="run-a"
+      />,
+    );
+
+    expect(screen.queryByTestId('inline-process-tool')).toBeNull();
+    expect(screen.getByTestId('process-action-summary-toggle').getAttribute('aria-expanded')).toBe(
+      'false',
+    );
+  });
+
+  it('folds a completed command stretch when the final answer starts', () => {
+    render(
+      <InlineProcessFlow
+        items={[toolItem, secondReadTool]}
+        streaming
+        answerStarted
+        collapseExecutionProcess={false}
+        runId="run-a"
+      />,
+    );
+
+    expect(screen.queryByTestId('inline-process-tool')).toBeNull();
+    expect(screen.getByTestId('process-action-summary-toggle').getAttribute('aria-expanded')).toBe(
+      'false',
+    );
+  });
+
   it('expands new tool calls by default without reopening a manually collapsed row', () => {
     const { rerender } = render(
       <InlineProcessFlow items={[toolItem]} toolCallExpandedByDefault defaultOpen runId="run-a" />,
     );
     expect(screen.getByTestId('inline-process-tool-details')).toBeTruthy();
 
-    fireEvent.click(within(screen.getByTestId('inline-process-tool')).getByRole('button'));
+    fireEvent.click(
+      screen
+        .getByTestId('inline-process-tool')
+        .querySelector('.shell-inline-process__tool-toggle')!,
+    );
     expect(screen.queryByTestId('inline-process-tool-details')).toBeNull();
 
     rerender(
@@ -322,6 +532,7 @@ describe('InlineProcessFlow', () => {
     );
 
     expect(screen.queryByTestId('process-panel-toggle')).toBeNull();
+    expect(screen.queryByTestId('process-action-summary')).toBeNull();
     expect(screen.getByTestId('inline-process-reasoning')).toBeTruthy();
     expect(screen.getByTestId('inline-process-tool')).toBeTruthy();
   });
@@ -444,7 +655,10 @@ describe('InlineProcessFlow', () => {
     ).toBe('failed');
     expect(tools[2].getAttribute('data-failed')).toBe('true');
 
-    fireEvent.click(within(tools[2]).getByRole('button'));
+    expect(
+      tools[2].querySelector('.shell-inline-process__tool-toggle')?.getAttribute('aria-expanded'),
+    ).toBe('false');
+    fireEvent.click(tools[2].querySelector('.shell-inline-process__tool-toggle')!);
     expect(screen.getByTestId('inline-process-tool-result').textContent).toContain('boom');
   });
 
@@ -702,7 +916,9 @@ describe('InlineProcessFlow', () => {
   it('explains a failed tool whose provider returned no error body', () => {
     render(<InlineProcessFlow items={[{ ...failedToolItem, result: '' }]} defaultOpen />);
 
-    fireEvent.click(within(screen.getByTestId('inline-process-tool')).getByRole('button'));
+    fireEvent.click(
+      screen.getByTestId('inline-process-tool').querySelector('.shell-inline-process__tool-toggle')!,
+    );
     expect(screen.getByTestId('inline-process-tool-result').textContent).toContain(
       '工具未返回错误详情',
     );
@@ -920,5 +1136,86 @@ describe('InlineProcessFlow', () => {
     expect(follows(commentary[2], tools[1])).toBe(true);
     expect(follows(tools[1], commentary[3])).toBe(true);
     expect(commentary.filter((entry) => entry.textContent?.includes('继续检查。'))).toHaveLength(2);
+  });
+});
+describe('paged process reading state', () => {
+  afterEach(() => cleanup());
+  it('keeps expansion attached to a tool identity when a process page changes', () => {
+    const step = (id: string) => ({
+      id,
+      toolName: 'run_command',
+      label: 'Bash',
+      verb: 'Bash',
+      zh: '执行命令',
+      status: 'done' as const,
+      kind: 'bash' as const,
+      command: `echo ${id}`,
+      preview: `result ${id}`,
+      completedAt: '2026-09-05T16:00:00Z',
+    });
+    const fixture = render(
+      <InlineProcessFlow items={[]} steps={[step('one')]} collapseExecutionProcess={false} />,
+    );
+    const toggle = () =>
+      screen
+        .getByTestId('inline-process-tool')
+        .querySelector('.shell-inline-process__tool-toggle')!;
+    fireEvent.click(toggle());
+    expect(toggle().getAttribute('aria-expanded')).toBe('true');
+    fixture.rerender(
+      <InlineProcessFlow items={[]} steps={[step('two')]} collapseExecutionProcess={false} />,
+    );
+    expect(toggle().getAttribute('aria-expanded')).toBe('false');
+    fixture.rerender(
+      <InlineProcessFlow items={[]} steps={[step('one')]} collapseExecutionProcess={false} />,
+    );
+    expect(toggle().getAttribute('aria-expanded')).toBe('true');
+  });
+  it('does not keep a finished failed process open across a clean page', () => {
+    const fixture = render(
+      <InlineProcessFlow items={[failedToolItem]} answerStarted totalFailedTools={10} />,
+    );
+    expect(screen.getByTestId('process-panel-toggle').getAttribute('aria-expanded')).toBe('false');
+    fixture.rerender(<InlineProcessFlow items={[toolItem]} answerStarted totalFailedTools={10} />);
+    expect(screen.getByTestId('process-panel-toggle').getAttribute('aria-expanded')).toBe('false');
+  });
+});
+
+describe('approval wait presentation', () => {
+  it('keeps approval waits neutral and restarts the progress clock after a decision', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-06T07:00:00Z'));
+    try {
+      const view = render(
+        <InlineProcessFlow items={[runningTool]} streaming waitingForApproval defaultOpen />,
+      );
+      act(() => vi.advanceTimersByTime(600000));
+      expect(screen.getByTestId('process-activity-label').textContent).toBe('等待你的批准');
+      expect(screen.getByTestId('process-panel-activity').getAttribute('data-kind')).toBe(
+        'approval',
+      );
+      expect(screen.getByTestId('process-panel-activity').getAttribute('data-stall')).toBe(
+        'active',
+      );
+      expect(screen.queryByText('长时间无输出')).toBeNull();
+      view.rerender(<InlineProcessFlow items={[runningTool]} streaming defaultOpen />);
+      act(() => vi.advanceTimersByTime(20000));
+      expect(screen.getByTestId('process-panel-activity').getAttribute('data-kind')).toBe('tool');
+      expect(screen.getByTestId('process-panel-activity').getAttribute('data-stall')).toBe(
+        'active',
+      );
+    } finally {
+      cleanup();
+      vi.useRealTimers();
+    }
+  });
+
+  it('shows a restored approval even before any process segments arrive', () => {
+    try {
+      render(<InlineProcessFlow items={[]} waitingForApproval defaultOpen />);
+      expect(screen.getByTestId('process-activity-label').textContent).toBe('等待你的批准');
+    } finally {
+      cleanup();
+    }
   });
 });

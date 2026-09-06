@@ -91,6 +91,7 @@ describe('ui-preferences (Locked IA §15.2 workspace prefs)', () => {
         thinkingBudget: 'minimal',
         collapseExecutionProcess: false,
         showToolUse: false,
+        showThinking: false,
         toolCallExpandedByDefault: true,
       },
       s,
@@ -101,7 +102,24 @@ describe('ui-preferences (Locked IA §15.2 workspace prefs)', () => {
       thinkingBudget: 'minimal',
       collapseExecutionProcess: false,
       showToolUse: false,
+      showThinking: false,
       toolCallExpandedByDefault: true,
+    });
+
+    s.setItem(
+      UI_PREF_KEYS.agentPreferences,
+      JSON.stringify({
+        promptEnhancementEnabled: false,
+        promptEnhancementModelId: null,
+        thinkingBudget: 'auto',
+        collapseExecutionProcess: true,
+        showToolUse: false,
+        toolCallExpandedByDefault: false,
+      }),
+    );
+    expect(readAgentPreferences(s)).toMatchObject({
+      showToolUse: false,
+      showThinking: true,
     });
 
     s.setItem(

@@ -48,6 +48,42 @@ const planCompleted = toolEvent(4, 'tool.completed', {
 });
 
 describe('extractLatestTaskPlanFromEvents', () => {
+  it('preserves detailed steps in replay and the next model context', () => {
+    const plan = extractLatestTaskPlanFromEvents(
+      [
+        toolEvent(1, 'tool.completed', {
+          threadId: 'thread-a',
+          toolName: 'update_task_plan',
+          result: JSON.stringify({
+            ok: true,
+            plan: {
+              items: [
+                {
+                  title: '审计架构',
+                  description: '  找出 runtime/desktop 中的重复实现  ',
+                  status: 'in_progress',
+                },
+                { title: '旧清单', description: 42, status: 'pending' },
+              ],
+            },
+          }),
+        }),
+      ],
+      'thread-a',
+    );
+    expect(plan?.items).toEqual([
+      {
+        title: '审计架构',
+        description: '找出 runtime/desktop 中的重复实现',
+        status: 'in_progress',
+      },
+      { title: '旧清单', status: 'pending' },
+    ]);
+    expect(formatTaskPlanForModel(plan!)).toContain(
+      '- [~] 审计架构\n  找出 runtime/desktop 中的重复实现',
+    );
+  });
+
   it('prefers the executed result over the request arguments', () => {
     const plan = extractLatestTaskPlanFromEvents([planRequested, planCompleted], 'thread-a');
     expect(plan).toEqual({

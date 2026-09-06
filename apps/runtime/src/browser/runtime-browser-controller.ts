@@ -946,20 +946,22 @@ function prepareBrowserAction(
   const args = validated.command.args;
   switch (validated.command.action) {
     case 'browser_click':
-      if (typeof args.selector === 'string') {
-        return {
-          ok: true,
-          value: {
-            action: { kind: 'click', selector: args.selector },
-            auditArgs: { selector: args.selector },
-          },
-        };
-      }
       return {
         ok: true,
         value: {
-          action: { kind: 'click', x: Number(args.x), y: Number(args.y) },
-          auditArgs: { x: Number(args.x), y: Number(args.y) },
+          action: {
+            kind: 'click',
+            ...(typeof args.selector === 'string' ? { selector: args.selector } : {}),
+            ...(typeof args.text === 'string' ? { text: args.text } : {}),
+            ...(typeof args.x === 'number' ? { x: Number(args.x) } : {}),
+            ...(typeof args.y === 'number' ? { y: Number(args.y) } : {}),
+          },
+          auditArgs: {
+            ...(typeof args.selector === 'string' ? { selector: args.selector } : {}),
+            ...(typeof args.text === 'string' ? { text: args.text } : {}),
+            ...(typeof args.x === 'number' ? { x: Number(args.x) } : {}),
+            ...(typeof args.y === 'number' ? { y: Number(args.y) } : {}),
+          },
         },
       };
     case 'browser_type':

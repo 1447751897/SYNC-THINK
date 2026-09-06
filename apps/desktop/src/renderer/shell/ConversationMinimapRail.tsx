@@ -1,6 +1,7 @@
 import {
+  memo,
   useCallback,
-  useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -11,6 +12,7 @@ import {
   type WheelEvent as ReactWheelEvent,
 } from 'react';
 import { formatMessageAbsoluteTime, formatMessageClock } from './execution-process.js';
+import { ConversationNavigationGeometry } from './conversation-navigation-geometry.js';
 
 export interface ConversationNavigationItem {
   id: string;
@@ -18,33 +20,85 @@ export interface ConversationNavigationItem {
   text: string;
   /** User prompt paired with this assistant turn; never rendered as a separate tick. */
   promptText?: string;
+  promptId?: string;
   commentaryText?: string;
   processStatus?: string;
+  streaming?: boolean;
+  terminalState?: 'failed' | 'cancelled';
   timestamp: string;
 }
 
-interface ConversationNavigationLayout {
+const NavigationTick = memo(function NavigationTick({
+  id,
+  role,
+  label,
+  top,
+  hitHeight,
+  active,
+  hovered,
+  tooltipId,
+  onHover,
+  onNavigate,
+}: {
   id: string;
-  contentTop: number;
-}
+  role: ConversationNavigationItem['role'];
+  label: string;
+  top: number;
+  hitHeight: number;
+  active: boolean;
+  hovered: boolean;
+  tooltipId: string;
+  onHover(id: string, hovered: boolean): void;
+  onNavigate(id: string): void;
+}) {
+  return (
+    <button
+      type="button"
+      className="shell-conversation-minimap__tick"
+      data-testid={`conversation-minimap-${id}`}
+      data-role={role}
+      data-active={active ? 'true' : undefined}
+      data-hovered={hovered ? 'true' : undefined}
+      aria-current={active ? 'location' : undefined}
+      aria-label={label}
+      aria-describedby={hovered ? tooltipId : undefined}
+      style={
+        {
+          '--minimap-tick-top': `${top}px`,
+          '--minimap-tick-hit-height': `${hitHeight}px`,
+        } as CSSProperties
+      }
+      onMouseEnter={() => onHover(id, true)}
+      onMouseLeave={() => onHover(id, false)}
+      onFocus={() => onHover(id, true)}
+      onBlur={() => onHover(id, false)}
+      onClick={(event) => {
+        event.stopPropagation();
+        onNavigate(id);
+      }}
+    >
+      <span aria-hidden="true" />
+    </button>
+  );
+});
 
 interface ConversationMinimapRailProps {
   items: readonly ConversationNavigationItem[];
   scrollerRef: RefObject<HTMLDivElement>;
   onNavigate(itemId: string, targetScrollTop: number): void;
+  onLoadItem?(itemId: string, isCurrent: () => boolean): Promise<boolean>;
 }
 
 const READING_FOCUS_RATIO = 0.25;
 const NAVIGATION_LAYOUT_WARMUP_FRAMES = 2;
-const NAVIGATION_CORRECTION_FRAMES = 2;
-const MINIMAP_VERTICAL_INSET_PX = 8;
+const NAVIGATION_CORRECTION_FRAMES = 12;
+const NAVIGATION_STABLE_FRAMES = 2;
 const COMPACT_NAVIGATION_EDGE_PX = 16;
 const COMPACT_NAVIGATION_MAX_GAP_PX = 18;
 const COMPACT_NAVIGATION_MIN_GAP_PX = 6;
 const COMPACT_NAVIGATION_GAP_DECAY_PX = 1.75;
-const COMPACT_NAVIGATION_MAX_HIT_HEIGHT_PX = 8;
-const COMPACT_NAVIGATION_MIN_HIT_HEIGHT_PX = 3;
-const COMPACT_NAVIGATION_MAX_HOVER_DISTANCE_PX = 6;
+const COMPACT_NAVIGATION_MAX_HIT_HEIGHT_PX = 20;
+const COMPACT_NAVIGATION_MIN_HIT_HEIGHT_PX = 1;
 const MINIMAP_TOOLTIP_SAFE_EDGE_PX = 72;
 
 function clamp(value: number, minimum: number, maximum: number): number {
@@ -62,12 +116,15 @@ function summarizeText(value: string | undefined, max = 92): string {
 }
 
 function primarySummary(item: ConversationNavigationItem): string {
-  return (
-    summarizeText(item.text) ||
-    summarizeText(item.commentaryText) ||
-    summarizeText(item.processStatus) ||
-    '空消息'
-  );
+  if (item.streaming) return summarizeText(item.processStatus, 120) || '正在生成回复…';
+  if (compactText(item.text)) return summarizeText(item.text, 220);
+  if (item.terminalState === 'failed') return '回复失败';
+  if (item.terminalState === 'cancelled') return '本轮已停止';
+  return summarizeText(item.processStatus, 120) || '暂无回答摘要';
+}
+
+function questionSummary(item: ConversationNavigationItem): string {
+  return summarizeText(item.promptText, 160) || (item.promptId ? '本轮提问' : '助手回答');
 }
 
 /**
@@ -80,9 +137,11 @@ export function buildAssistantTurnNavigationItems(
 ): ConversationNavigationItem[] {
   const result: ConversationNavigationItem[] = [];
   let pendingPrompts: string[] = [];
+  let pendingPromptId: string | undefined;
 
   for (const item of items) {
     if (item.role === 'user') {
+      pendingPromptId ??= item.id;
       const prompt = compactText(item.text);
       if (prompt) pendingPrompts.push(prompt);
       continue;
@@ -93,9 +152,11 @@ export function buildAssistantTurnNavigationItems(
     result.push({
       ...item,
       role: 'assistant',
+      ...(pendingPromptId ? { promptId: pendingPromptId } : {}),
       ...(pairedPrompt ? { promptText: pairedPrompt } : {}),
     });
     pendingPrompts = [];
+    pendingPromptId = undefined;
   }
 
   return result;
@@ -132,12 +193,6 @@ export function buildCompactNavigationTops(itemCount: number, trackHeight: numbe
   return Array.from({ length: itemCount }, (_unused, index) => groupTop + index * gap);
 }
 
-function findMessageNode(scroller: HTMLDivElement, itemId: string): HTMLElement | undefined {
-  return Array.from(scroller.querySelectorAll<HTMLElement>('[data-message-id]')).find(
-    (candidate) => candidate.dataset.messageId === itemId,
-  );
-}
-
 function messageContentTop(
   scroller: HTMLDivElement,
   node: HTMLElement,
@@ -155,103 +210,97 @@ export function ConversationMinimapRail({
   items,
   scrollerRef,
   onNavigate,
+  onLoadItem,
 }: ConversationMinimapRailProps) {
   const [trackHeight, setTrackHeight] = useState(0);
+  const railRef = useRef<HTMLElement>(null);
+  const visible = items.length >= 2;
   const [activeId, setActiveId] = useState<string | undefined>(items[0]?.id);
   const [hoveredId, setHoveredId] = useState<string | undefined>();
-  const animationFrameRef = useRef<number | null>(null);
+  const tooltipId = useId();
+  const geometryRef = useRef<ConversationNavigationGeometry>();
+  const itemAnchorsRef = useRef(items);
+  itemAnchorsRef.current = items;
+  const layoutKey = JSON.stringify(items.map((item) => [item.id, item.promptId]));
+  const navigationTargetRef = useRef<HTMLElement>();
   const navigationFrameRef = useRef<number | null>(null);
   const navigationGenerationRef = useRef(0);
 
-  const measure = useCallback(() => {
-    const scroller = scrollerRef.current;
-    if (!scroller || items.length === 0) {
-      setTrackHeight(0);
-      setActiveId(undefined);
-      return;
-    }
-
-    const scrollerRect = scroller.getBoundingClientRect();
-    const measuredTrackHeight = Math.max(0, scroller.clientHeight - MINIMAP_VERTICAL_INSET_PX * 2);
-    setTrackHeight((previous) =>
-      Math.abs(previous - measuredTrackHeight) < 0.5 ? previous : measuredTrackHeight,
-    );
-    if (scroller.dataset.navigationSettling === 'true') return;
-
-    const measured = items.flatMap((item): ConversationNavigationLayout[] => {
-      const node = findMessageNode(scroller, item.id);
-      if (!node) return [];
-      const contentTop = messageContentTop(scroller, node, scrollerRect);
-      return [
-        {
-          id: item.id,
-          contentTop,
-        },
-      ];
-    });
-
-    const maximumScrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
-    let closest: ConversationNavigationLayout | undefined;
-    if (scroller.scrollTop <= 1) {
-      closest = measured[0];
-    } else if (maximumScrollTop - scroller.scrollTop <= 1) {
-      closest = measured.at(-1);
-    } else {
-      const readingFocus = scroller.scrollTop + scroller.clientHeight * READING_FOCUS_RATIO;
-      let closestDistance = Number.POSITIVE_INFINITY;
-      for (const candidate of measured) {
-        const distance = Math.abs(candidate.contentTop - readingFocus);
-        if (distance >= closestDistance) continue;
-        closest = candidate;
-        closestDistance = distance;
-      }
-    }
-    setActiveId((previous) => (previous === closest?.id ? previous : closest?.id));
-  }, [items, scrollerRef]);
+  useLayoutEffect(() => {
+    const rail = railRef.current;
+    if (!rail) return undefined;
+    const measure = () => {
+      const height = rail.getBoundingClientRect().height;
+      setTrackHeight((previous) => (Math.abs(previous - height) < 0.5 ? previous : height));
+    };
+    measure();
+    const observer =
+      typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(measure);
+    observer?.observe(rail);
+    window.addEventListener('resize', measure);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', measure);
+    };
+  }, [visible]);
 
   const scheduleMeasure = useCallback(() => {
-    if (animationFrameRef.current !== null) return;
-    animationFrameRef.current = window.requestAnimationFrame(() => {
-      animationFrameRef.current = null;
-      measure();
-    });
-  }, [measure]);
+    geometryRef.current?.schedule();
+  }, []);
+  const cancelNavigation = useCallback(() => {
+    navigationGenerationRef.current += 1;
+    if (navigationFrameRef.current !== null)
+      window.cancelAnimationFrame(navigationFrameRef.current);
+    navigationFrameRef.current = null;
+    if (navigationTargetRef.current) delete navigationTargetRef.current.dataset.navigationTarget;
+    navigationTargetRef.current = undefined;
+    const scroller = scrollerRef.current;
+    if (scroller) delete scroller.dataset.navigationSettling;
+    scheduleMeasure();
+  }, [scheduleMeasure, scrollerRef]);
 
   useLayoutEffect(() => {
-    measure();
-  }, [measure]);
-
-  useEffect(() => {
     const scroller = scrollerRef.current;
     if (!scroller) return undefined;
-
-    scroller.addEventListener('scroll', scheduleMeasure, { passive: true });
-    window.addEventListener('resize', scheduleMeasure);
-
-    const observer =
-      typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(scheduleMeasure);
-    observer?.observe(scroller);
-    for (const node of scroller.querySelectorAll<HTMLElement>('[data-message-id]')) {
-      observer?.observe(node);
-    }
-    scheduleMeasure();
-
+    const geometry = new ConversationNavigationGeometry(scroller, (snapshot) => {
+      if (!snapshot.navigating)
+        setActiveId((previous) => (previous === snapshot.activeId ? previous : snapshot.activeId));
+    });
+    geometryRef.current = geometry;
+    geometry.setItems(itemAnchorsRef.current);
+    const cancelFromKey = (event: KeyboardEvent) => {
+      if (
+        ['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', 'Escape', ' '].includes(
+          event.key,
+        )
+      )
+        cancelNavigation();
+    };
+    scroller.addEventListener('wheel', cancelNavigation, { passive: true });
+    scroller.addEventListener('touchstart', cancelNavigation, { passive: true });
+    scroller.addEventListener('pointerdown', cancelNavigation, { passive: true });
+    scroller.addEventListener('keydown', cancelFromKey);
     return () => {
-      scroller.removeEventListener('scroll', scheduleMeasure);
-      window.removeEventListener('resize', scheduleMeasure);
-      observer?.disconnect();
-      if (animationFrameRef.current !== null) {
-        window.cancelAnimationFrame(animationFrameRef.current);
-        animationFrameRef.current = null;
-      }
+      scroller.removeEventListener('wheel', cancelNavigation);
+      scroller.removeEventListener('touchstart', cancelNavigation);
+      scroller.removeEventListener('pointerdown', cancelNavigation);
+      scroller.removeEventListener('keydown', cancelFromKey);
+      geometry.dispose();
+      geometryRef.current = undefined;
       navigationGenerationRef.current += 1;
       if (navigationFrameRef.current !== null) {
         window.cancelAnimationFrame(navigationFrameRef.current);
         navigationFrameRef.current = null;
       }
+      if (navigationTargetRef.current) delete navigationTargetRef.current.dataset.navigationTarget;
+      navigationTargetRef.current = undefined;
       delete scroller.dataset.navigationSettling;
     };
-  }, [items, scheduleMeasure, scrollerRef]);
+  }, [cancelNavigation, scrollerRef]);
+
+  useLayoutEffect(() => {
+    geometryRef.current?.setItems(itemAnchorsRef.current);
+  }, [layoutKey]);
 
   const positionedItems = useMemo(() => {
     const tops = buildCompactNavigationTops(items.length, trackHeight);
@@ -266,18 +315,25 @@ export function ConversationMinimapRail({
     );
     return items.map((item, index) => ({
       item,
+      label: `跳转到第 ${index + 1} 轮：${compactText(item.promptText) ? questionSummary(item) : primarySummary(item)}`,
       top: tops[index] ?? COMPACT_NAVIGATION_EDGE_PX,
       hitHeight,
     }));
   }, [items, trackHeight]);
   const hoveredItem = items.find((item) => item.id === hoveredId);
   const hoveredPosition = positionedItems.find(({ item }) => item.id === hoveredId);
+  const handleTickHover = useCallback((id: string, hovered: boolean) => {
+    setHoveredId((current) => (hovered ? id : current === id ? undefined : current));
+  }, []);
 
   const navigate = useCallback(
     (itemId: string) => {
       const scroller = scrollerRef.current;
       if (!scroller) return;
-      if (!findMessageNode(scroller, itemId)) return;
+      const item = items.find((candidate) => candidate.id === itemId);
+      if (!item) return;
+      const targetNode = geometryRef.current?.findNode(item);
+      if (!targetNode && !onLoadItem) return;
 
       navigationGenerationRef.current += 1;
       const generation = navigationGenerationRef.current;
@@ -286,15 +342,16 @@ export function ConversationMinimapRail({
         navigationFrameRef.current = null;
       }
 
-      // Offscreen message rows use content-visibility for long-thread performance.
-      // Their intrinsic estimates can differ substantially from the real height
-      // (large HTML/Mermaid/tool results are common), so measuring and scrolling in
-      // the same frame can leave the requested message thousands of pixels away.
-      // Briefly warm the loaded rows, then correct the anchor over two frames.
+      if (navigationTargetRef.current) delete navigationTargetRef.current.dataset.navigationTarget;
+      navigationTargetRef.current = targetNode;
+      if (targetNode) targetNode.dataset.navigationTarget = 'true';
       scroller.dataset.navigationSettling = 'true';
       setActiveId(itemId);
       let warmupFrames = NAVIGATION_LAYOUT_WARMUP_FRAMES;
       let correctionFrames = NAVIGATION_CORRECTION_FRAMES;
+      let stableFrames = 0;
+      let previousContentTop: number | undefined;
+      let previousScrollHeight: number | undefined;
 
       const settleNavigation = () => {
         if (generation !== navigationGenerationRef.current) return;
@@ -307,14 +364,29 @@ export function ConversationMinimapRail({
           return;
         }
 
-        const node = findMessageNode(currentScroller, itemId);
+        const node = geometryRef.current?.findNode(item);
         if (!node) {
+          if (navigationTargetRef.current)
+            delete navigationTargetRef.current.dataset.navigationTarget;
+          navigationTargetRef.current = undefined;
           delete currentScroller.dataset.navigationSettling;
           navigationFrameRef.current = null;
           return;
         }
+        navigationTargetRef.current = node;
+        node.dataset.navigationTarget = 'true';
         const contentTop = messageContentTop(currentScroller, node);
-        const maximum = Math.max(0, currentScroller.scrollHeight - currentScroller.clientHeight);
+        const scrollHeight = currentScroller.scrollHeight;
+        const maximum = Math.max(0, scrollHeight - currentScroller.clientHeight);
+        stableFrames =
+          previousContentTop !== undefined &&
+          previousScrollHeight !== undefined &&
+          Math.abs(contentTop - previousContentTop) < 0.5 &&
+          Math.abs(scrollHeight - previousScrollHeight) < 0.5
+            ? stableFrames + 1
+            : 0;
+        previousContentTop = contentTop;
+        previousScrollHeight = scrollHeight;
         const target = clamp(
           Math.round(contentTop - currentScroller.clientHeight * READING_FOCUS_RATIO),
           0,
@@ -323,20 +395,37 @@ export function ConversationMinimapRail({
         setActiveId(itemId);
         onNavigate(itemId, target);
 
-        if (correctionFrames > 0) {
+        if (correctionFrames > 0 && stableFrames < NAVIGATION_STABLE_FRAMES) {
           correctionFrames -= 1;
           navigationFrameRef.current = window.requestAnimationFrame(settleNavigation);
           return;
         }
 
+        if (navigationTargetRef.current)
+          delete navigationTargetRef.current.dataset.navigationTarget;
+        navigationTargetRef.current = undefined;
         delete currentScroller.dataset.navigationSettling;
         navigationFrameRef.current = null;
         scheduleMeasure();
       };
 
-      navigationFrameRef.current = window.requestAnimationFrame(settleNavigation);
+      const isCurrent = () =>
+        generation === navigationGenerationRef.current && scrollerRef.current === scroller;
+      if (targetNode) {
+        navigationFrameRef.current = window.requestAnimationFrame(settleNavigation);
+      } else {
+        void onLoadItem!(item.promptId ?? itemId, isCurrent)
+          .then((loaded) => {
+            if (!isCurrent()) return;
+            if (loaded) navigationFrameRef.current = window.requestAnimationFrame(settleNavigation);
+            else cancelNavigation();
+          })
+          .catch(() => {
+            if (isCurrent()) cancelNavigation();
+          });
+      }
     },
-    [onNavigate, scheduleMeasure, scrollerRef],
+    [items, onNavigate, onLoadItem, cancelNavigation, scheduleMeasure, scrollerRef],
   );
 
   const closestItemAtPointer = useCallback(
@@ -344,20 +433,19 @@ export function ConversationMinimapRail({
       const railRect = rail.getBoundingClientRect();
       if (railRect.height <= 0 || positionedItems.length === 0) return undefined;
       const pointerTop = clamp(clientY - railRect.top, 0, railRect.height);
-      let closest = positionedItems[0];
-      let closestDistance = Math.abs((closest?.top ?? 0) - pointerTop);
-      for (const candidate of positionedItems.slice(1)) {
-        const distance = Math.abs(candidate.top - pointerTop);
-        if (distance >= closestDistance) continue;
-        closest = candidate;
-        closestDistance = distance;
-      }
-      const hoverDistance = Math.min(
-        COMPACT_NAVIGATION_MAX_HOVER_DISTANCE_PX,
-        Math.max(COMPACT_NAVIGATION_MIN_HIT_HEIGHT_PX, (closest?.hitHeight ?? 0) / 2),
-      );
-      if (closestDistance > hoverDistance) return undefined;
-      return closest?.item;
+      const firstTop = positionedItems[0]!.top;
+      const lastTop = positionedItems.at(-1)!.top;
+      if (
+        pointerTop < firstTop - COMPACT_NAVIGATION_EDGE_PX ||
+        pointerTop > lastTop + COMPACT_NAVIGATION_EDGE_PX
+      )
+        return undefined;
+      const gap = positionedItems.length > 1 ? positionedItems[1]!.top - firstTop : 0;
+      const index =
+        gap > 0
+          ? clamp(Math.ceil((pointerTop - firstTop) / gap - 0.5), 0, positionedItems.length - 1)
+          : 0;
+      return positionedItems[index]?.item;
     },
     [positionedItems],
   );
@@ -375,78 +463,81 @@ export function ConversationMinimapRail({
       const scroller = scrollerRef.current;
       if (!scroller || event.deltaY === 0) return;
       event.preventDefault();
-      scroller.scrollTop += event.deltaY;
+      cancelNavigation();
+      const target = clamp(
+        scroller.scrollTop + event.deltaY,
+        0,
+        Math.max(0, scroller.scrollHeight - scroller.clientHeight),
+      );
+      scroller.scrollTop = target;
+      onNavigate(activeId ?? items[0]?.id ?? '', target);
       scheduleMeasure();
     },
-    [scheduleMeasure, scrollerRef],
+    [activeId, cancelNavigation, items, onNavigate, scheduleMeasure, scrollerRef],
   );
 
-  if (items.length < 2) return null;
+  if (!visible) return null;
 
-  const tooltipMaximum = Math.max(
-    MINIMAP_TOOLTIP_SAFE_EDGE_PX,
-    trackHeight - MINIMAP_TOOLTIP_SAFE_EDGE_PX,
-  );
+  const tooltipSafeEdge = Math.min(MINIMAP_TOOLTIP_SAFE_EDGE_PX, trackHeight / 2);
+  const tooltipMaximum = Math.max(tooltipSafeEdge, trackHeight - tooltipSafeEdge);
   const tooltipTop = clamp(
     hoveredPosition?.top ?? MINIMAP_TOOLTIP_SAFE_EDGE_PX,
-    MINIMAP_TOOLTIP_SAFE_EDGE_PX,
+    tooltipSafeEdge,
     tooltipMaximum,
   );
   const tooltipStyle = { '--minimap-tooltip-top': `${tooltipTop}px` } as CSSProperties;
+  const trackTop = Math.max(0, (positionedItems[0]?.top ?? 0) - COMPACT_NAVIGATION_EDGE_PX);
+  const trackBottom = Math.min(
+    trackHeight,
+    (positionedItems.at(-1)?.top ?? 0) + COMPACT_NAVIGATION_EDGE_PX,
+  );
 
   return (
     <nav
+      ref={railRef}
       className="shell-conversation-minimap"
       aria-label="对话消息导航"
       onMouseMove={handleRailMouseMove}
       onMouseLeave={() => setHoveredId(undefined)}
+      onClick={(event) => {
+        const closest = closestItemAtPointer(event.clientY, event.currentTarget);
+        if (closest) navigate(closest.id);
+      }}
+      onKeyDown={(event) => {
+        if (event.key === 'Escape') setHoveredId(undefined);
+      }}
       onWheel={handleRailWheel}
     >
-      <div className="shell-conversation-minimap__track" aria-hidden="true" />
-      {positionedItems.map(({ item, top, hitHeight }) => {
-        const summary = primarySummary(item);
-        return (
-          <button
-            key={item.id}
-            type="button"
-            className="shell-conversation-minimap__tick"
-            data-testid={`conversation-minimap-${item.id}`}
-            data-role={item.role}
-            data-active={activeId === item.id ? 'true' : undefined}
-            data-hovered={hoveredId === item.id ? 'true' : undefined}
-            aria-current={activeId === item.id ? 'location' : undefined}
-            aria-label={`跳转到助手回答：${summary}`}
-            style={
-              {
-                '--minimap-tick-top': `${top}px`,
-                '--minimap-tick-hit-height': `${hitHeight}px`,
-              } as CSSProperties
-            }
-            onMouseEnter={() => setHoveredId(item.id)}
-            onMouseLeave={() =>
-              setHoveredId((current) => (current === item.id ? undefined : current))
-            }
-            onFocus={() => setHoveredId(item.id)}
-            onBlur={() => setHoveredId((current) => (current === item.id ? undefined : current))}
-            onClick={() => navigate(item.id)}
-          >
-            <span aria-hidden="true" />
-          </button>
-        );
-      })}
+      <div
+        className="shell-conversation-minimap__track"
+        aria-hidden="true"
+        style={{ top: trackTop, height: Math.max(0, trackBottom - trackTop) }}
+      />
+      {positionedItems.map(({ item, top, hitHeight, label }) => (
+        <NavigationTick
+          key={item.id}
+          id={item.id}
+          role={item.role}
+          label={label}
+          top={top}
+          hitHeight={hitHeight}
+          active={activeId === item.id}
+          hovered={hoveredId === item.id}
+          tooltipId={tooltipId}
+          onHover={handleTickHover}
+          onNavigate={navigate}
+        />
+      ))}
       {hoveredItem ? (
         <div
+          id={tooltipId}
           className="shell-conversation-minimap__tooltip"
           style={tooltipStyle}
           role="tooltip"
           data-role={hoveredItem.role}
         >
           <div className="shell-conversation-minimap__tooltip-head">
-            <strong>
-              {compactText(hoveredItem.promptText)
-                ? summarizeText(hoveredItem.promptText, 48)
-                : '助手回答'}
-            </strong>
+            <strong>{questionSummary(hoveredItem)}</strong>
             {formatMessageClock(hoveredItem.timestamp) ? (
               <time title={formatMessageAbsoluteTime(hoveredItem.timestamp)}>
                 {formatMessageClock(hoveredItem.timestamp)}
@@ -454,17 +545,6 @@ export function ConversationMinimapRail({
             ) : null}
           </div>
           <div className="shell-conversation-minimap__summary">{primarySummary(hoveredItem)}</div>
-          {compactText(hoveredItem.commentaryText) &&
-          compactText(hoveredItem.commentaryText) !== compactText(hoveredItem.text) ? (
-            <div className="shell-conversation-minimap__detail">
-              {summarizeText(hoveredItem.commentaryText, 126)}
-            </div>
-          ) : null}
-          {compactText(hoveredItem.processStatus) ? (
-            <div className="shell-conversation-minimap__status">
-              {summarizeText(hoveredItem.processStatus, 126)}
-            </div>
-          ) : null}
         </div>
       ) : null}
     </nav>

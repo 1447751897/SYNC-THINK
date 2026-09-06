@@ -89,6 +89,7 @@ export interface KernelUsage {
 /** A permission request bridged from the kernel to the host approval card. */
 export interface KernelPermissionRequest {
   requestId: string;
+  toolId?: string;
   toolName: string;
   toolInput: unknown;
   reason?: string;
@@ -255,10 +256,17 @@ export type KernelEvent =
     }
   /** Ephemeral output emitted while a still-running tool is producing data. */
   | { type: 'tool-progress'; toolId: string; output: string }
-  | { type: 'tool-result'; toolId: string; output: string; isError: boolean }
+  | {
+      type: 'tool-result';
+      toolId: string;
+      output: string;
+      isError: boolean;
+      structuredOutput?: unknown;
+    }
   | {
       type: 'permission-request';
       requestId: string;
+      toolId?: string;
       toolName: string;
       toolInput: unknown;
     }
@@ -328,6 +336,8 @@ export interface KernelDetectionResult {
   /** Human-readable install command shown for missing kernels. */
   installCommand?: string;
   installed: boolean;
+  executionSupported?: boolean;
+  executionUnavailableReason?: string;
   /** Parsed version string, or null when the probe failed. */
   version: string | null;
   /** Resolved executable path, or null when not found. */

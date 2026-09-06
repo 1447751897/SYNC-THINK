@@ -19,6 +19,10 @@ const entry = readFileSync(
   new URL('../src/renderer/shell/shell-entry.tsx', import.meta.url),
   'utf8',
 );
+const qaEntry = readFileSync(
+  new URL('../src/renderer/shell/qa-entry.tsx', import.meta.url),
+  'utf8',
+);
 
 describe('Phase 3 accessibility contract', () => {
   it('keeps trace disclosure, diagnostics announcements, and current-step semantics explicit', () => {
@@ -47,8 +51,11 @@ describe('Phase 3 accessibility contract', () => {
   });
 
   it('isolates visual evidence behind an explicit query route and disables motion', () => {
-    expect(entry).toContain('resolvePhase3VisualCase(window.location.search)');
-    expect(entry).toContain("document.documentElement.setAttribute('data-reduced-motion', '')");
-    expect(entry).toContain("fixtureTheme === 'dark'");
+    expect(entry).not.toContain('Phase3VisualFixture');
+    expect(qaEntry).toContain('resolvePhase3VisualCase(window.location.search)');
+    expect(qaEntry).toMatch(
+      /document\.documentElement\.toggleAttribute\(\s*'data-reduced-motion',\s*params\.get\('motion'\) !== 'full'/,
+    );
+    expect(qaEntry).toContain("theme === 'dark'");
   });
 });

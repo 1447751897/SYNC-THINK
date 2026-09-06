@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { cleanup, createEvent, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Conversation } from '@sync-think/shared';
 import { ConversationTabs, calculatePaneTabWidth } from './ConversationTabs.js';
@@ -10,6 +10,17 @@ const conversations = [
   { id: 'c1', title: '对话一', track: 'model' },
   { id: 'c2', title: '对话二', track: 'agent' },
 ] as unknown as Conversation[];
+
+function fireDrag(
+  type: 'dragStart' | 'dragOver' | 'drop',
+  node: Element,
+  dataTransfer: Record<string, unknown>,
+  clientX: number,
+) {
+  const event = createEvent[type](node, { dataTransfer });
+  Object.defineProperty(event, 'clientX', { configurable: true, value: clientX });
+  fireEvent(node, event);
+}
 
 describe('ConversationTabs NewMax tab track', () => {
   it('shares the 58-172px measured width rule across every resource tab', () => {
@@ -44,6 +55,39 @@ describe('ConversationTabs NewMax tab track', () => {
         container.querySelector('.shell-conversation-tabs__scroller') as HTMLElement
       ).style.getPropertyValue('--shell-pane-tab-width'),
     ).toBe('172px');
+  });
+
+  it('places the plus beside the last tab instead of the trailing chrome', () => {
+    render(
+      <ConversationTabs
+        conversations={conversations}
+        openIds={['c1', 'c2']}
+        activeId="c1"
+        onSelect={vi.fn()}
+        onClose={vi.fn()}
+        onNew={vi.fn()}
+      />,
+    );
+
+    const trigger = screen.getByTestId('conversation-tab-new');
+    expect(trigger.closest('.shell-conversation-tabs__scroller')).toBeNull();
+    expect(trigger.closest('.shell-conversation-tabs__cluster')).not.toBeNull();
+  });
+
+  it('collapses the plus when the main pane chrome is not focused', () => {
+    render(
+      <ConversationTabs
+        conversations={conversations}
+        openIds={['c1']}
+        activeId="c1"
+        showAddButton={false}
+        onSelect={vi.fn()}
+        onClose={vi.fn()}
+        onNew={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId('conversation-tab-new').closest('.shell-tab-add--hidden')).not.toBeNull();
   });
 });
 
@@ -293,6 +337,47 @@ describe('ConversationTabs pane actions', () => {
       JSON.stringify({ type: 'conversation', id: 'c1' }),
     );
     expect(onTabDragStateChange).toHaveBeenCalledWith({ type: 'conversation', id: 'c1' });
+  });
+
+  it('slides neighboring conversation tabs while a tab is dragged to a new slot', () => {
+    const onReorder = vi.fn();
+    const values = new Map<string, string>();
+    const dataTransfer = {
+      effectAllowed: 'none',
+      dropEffect: 'none',
+      setData: vi.fn((type: string, value: string) => values.set(type, value)),
+      getData: vi.fn((type: string) => values.get(type) ?? ''),
+    };
+
+    render(
+      <ConversationTabs
+        conversations={conversations}
+        openIds={['c1', 'c2']}
+        activeId="c1"
+        onSelect={vi.fn()}
+        onClose={vi.fn()}
+        onReorder={onReorder}
+        onNew={vi.fn()}
+      />,
+    );
+
+    const first = screen.getByTestId('conversation-tab-c1');
+    const second = screen.getByTestId('conversation-tab-c2');
+    fireDrag('dragStart', first, dataTransfer, 86);
+    fireDrag('dragOver', second, dataTransfer, 261);
+
+    expect(first.classList.contains('is-dragging')).toBe(true);
+    expect(second.classList.contains('is-gliding')).toBe(true);
+    expect(second.style.transform).toBe('translate3d(-175px, 0, 0)');
+    expect(first.style.transform).toBe('translate3d(175px, 0, 0)');
+
+    fireDrag('dragOver', first, dataTransfer, 261);
+    expect(second.style.transform).toBe('translate3d(-175px, 0, 0)');
+    expect(first.style.transform).toBe('translate3d(175px, 0, 0)');
+
+    fireDrag('drop', first, dataTransfer, 261);
+    expect(onReorder).toHaveBeenCalledWith('c1', 'c2');
+    expect(onReorder).toHaveBeenCalledOnce();
   });
 
   it('renders terminal resources and exposes a pane-local terminal command', () => {

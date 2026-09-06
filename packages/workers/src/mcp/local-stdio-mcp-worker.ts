@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import type {
   Worker,
@@ -85,12 +86,44 @@ export interface LocalStdioMcpWorkerOutput extends WorkerJobOutput {
 
 const DEFAULT_TOKEN_TIMEOUT = 30_000;
 
+const ENV_NAME = /^[A-Z][A-Z0-9_]*$/;
+const ENV_PLACEHOLDER = /\$\{([A-Z][A-Z0-9_]*)\}|%([A-Z][A-Z0-9_]*)%/g;
+
+/** Expand Claude/NewMax-style `${VAR}`, `%VAR%`, and bare `MCP_*` command tokens. */
+export function expandStdioEndpoint(
+  endpoint: string,
+  env: NodeJS.Dict<string> = process.env,
+): { ok: true; endpoint: string } | { ok: false; reason: string } {
+  let raw = String(endpoint ?? '').trim();
+  if (!raw) return { ok: false, reason: 'endpoint 为空' };
+  if (ENV_NAME.test(raw)) {
+    const value = String(env[raw] ?? '').trim();
+    if (!value) return { ok: false, reason: `环境变量 ${raw} 未设置` };
+    raw = value;
+  }
+  const missing: string[] = [];
+  const expanded = raw.replace(ENV_PLACEHOLDER, (_match, dollar?: string, percent?: string) => {
+    const name = dollar || percent || '';
+    const value = String(env[name] ?? '').trim();
+    if (!value) {
+      missing.push(name);
+      return '';
+    }
+    return value;
+  });
+  if (missing[0]) return { ok: false, reason: `环境变量 ${missing[0]} 未设置` };
+  const next = expanded.trim();
+  return next ? { ok: true, endpoint: next } : { ok: false, reason: 'endpoint 为空' };
+}
+
 /** Split a simple command line without shell metacharacters. */
 export function parseLocalStdioCommand(
   endpoint: string,
+  env: NodeJS.Dict<string> = process.env,
 ): { ok: true; command: string; args: string[] } | { ok: false; reason: string } {
-  const raw = String(endpoint ?? '').trim();
-  if (!raw) return { ok: false, reason: 'endpoint 为空' };
+  const expanded = expandStdioEndpoint(endpoint, env);
+  if (!expanded.ok) return expanded;
+  const raw = expanded.endpoint;
   const lower = raw.toLowerCase();
   if (
     lower.startsWith('fake://') ||
@@ -117,16 +150,29 @@ export function parseLocalStdioCommand(
   }
   const command = parts[0];
   const args = parts.slice(1);
-  // Soft allowlist for M1 skeleton: node/npx and common echo helpers only.
   const base = command.replace(/^.*[\\/]/, '').toLowerCase();
-  const allowed = new Set(['node', 'node.exe', 'npx', 'npx.cmd', 'echo', 'cmd', 'cmd.exe']);
-  if (!allowed.has(base)) {
-    return {
-      ok: false,
-      reason: `M1 spawn 白名单未包含命令 "${base}"（当前允许 node/npx/echo/cmd）`,
-    };
+  const allowed = new Set([
+    'node',
+    'node.exe',
+    'npx',
+    'npx.cmd',
+    'echo',
+    'cmd',
+    'cmd.exe',
+    'uvx',
+    'uvx.exe',
+    'bun',
+    'bun.exe',
+    'bunx',
+    'bunx.exe',
+  ]);
+  if (allowed.has(base) || existsSync(command)) {
+    return { ok: true, command, args };
   }
-  return { ok: true, command, args };
+  return {
+    ok: false,
+    reason: `不支持的 MCP 启动命令 "${base}"（允许 node/npx/uvx/bunx/cmd，或已展开的本地可执行文件）`,
+  };
 }
 
 function refuseOutput(

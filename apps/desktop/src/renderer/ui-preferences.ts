@@ -11,14 +11,7 @@ export type ConversationLayoutPreference = 'default' | 'single';
 export type ThemePreference = 'light' | 'dark' | 'system';
 export type DefaultPermissionPreference = 'ask' | 'workspace' | 'full-access';
 export type AgentThinkingBudget =
-  | 'auto'
-  | 'minimal'
-  | 'off'
-  | 'low'
-  | 'medium'
-  | 'high'
-  | 'xhigh'
-  | 'max';
+  'auto' | 'minimal' | 'off' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 export interface AgentPreferences {
   promptEnhancementEnabled: boolean;
@@ -26,6 +19,7 @@ export interface AgentPreferences {
   thinkingBudget: AgentThinkingBudget;
   collapseExecutionProcess: boolean;
   showToolUse: boolean;
+  showThinking: boolean;
   toolCallExpandedByDefault: boolean;
 }
 
@@ -35,6 +29,7 @@ export const DEFAULT_AGENT_PREFERENCES: Readonly<AgentPreferences> = {
   thinkingBudget: 'auto',
   collapseExecutionProcess: true,
   showToolUse: true,
+  showThinking: true,
   toolCallExpandedByDefault: false,
 };
 
@@ -412,6 +407,7 @@ function normalizeAgentPreferences(value: unknown): AgentPreferences {
     thinkingBudget: record.thinkingBudget as AgentThinkingBudget,
     collapseExecutionProcess: record.collapseExecutionProcess as boolean,
     showToolUse: record.showToolUse as boolean,
+    showThinking: record.showThinking !== false,
     toolCallExpandedByDefault: record.toolCallExpandedByDefault as boolean,
   };
 }
@@ -450,9 +446,7 @@ export function writeAgentPreferences(
   }
   safeSet(UI_PREF_KEYS.agentPreferences, value);
   if (typeof window !== 'undefined') {
-    window.dispatchEvent(
-      new CustomEvent(AGENT_PREFERENCES_CHANGED_EVENT, { detail: normalized }),
-    );
+    window.dispatchEvent(new CustomEvent(AGENT_PREFERENCES_CHANGED_EVENT, { detail: normalized }));
   }
 }
 

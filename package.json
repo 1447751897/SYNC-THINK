@@ -1,7 +1,7 @@
 {
   "name": "sync-think",
   "private": true,
-  "version": "0.1.0-alpha.1",
+  "version": "0.1.0-beta.1",
   "description": "SYNC-THINK local-first multi-model Agent desktop workspace",
   "packageManager": "pnpm@10.28.2",
   "scripts": {
@@ -49,7 +49,7 @@
     "test:live-image-provider": "node --test scripts/live-image-provider-acceptance.test.mjs",
     "selftest:live-image-provider": "pnpm --filter @sync-think/adapters build && pnpm --filter @sync-think/runtime build && node scripts/live-image-provider-acceptance.mjs",
     "test:phase3": "node --test scripts/phase3-visual-capture.test.mjs scripts/selftest-phase3-exit.test.mjs",
-    "capture:phase3": "pnpm --filter @sync-think/desktop build && node scripts/phase3-visual-capture.mjs",
+    "capture:phase3": "pnpm --filter @sync-think/desktop build:shell:qa && node scripts/phase3-visual-capture.mjs",
     "selftest:phase3": "node scripts/selftest-phase3-exit.mjs"
   },
   "engines": {

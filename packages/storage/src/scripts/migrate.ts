@@ -388,6 +388,33 @@ export const MIGRATIONS: { name: string; sql: string }[] = [
     CREATE INDEX assistant_timeline_segment_order_idx
       ON assistant_timeline_segment(run_id, sequence, segment_id);`,
   },
+  {
+    name: '0052_tool_approval_read_indexes',
+    sql: `CREATE INDEX event_tool_approval_thread_idx
+      ON event(json_extract(payload_json, '$.threadId'), sequence, id)
+      WHERE type IN ('tool.approval_requested', 'tool.approval_decided');
+    CREATE INDEX event_tool_approval_id_idx
+      ON event(COALESCE(json_extract(payload_json, '$.approvalId'), id), sequence, id)
+      WHERE type IN ('tool.approval_requested', 'tool.approval_decided');`,
+  },
+  {
+    name: '0053_native_task_plan_projection',
+    sql: `CREATE TABLE native_task_plan_projection (
+      task_id TEXT PRIMARY KEY NOT NULL,
+      thread_id TEXT,
+      last_event_sequence INTEGER NOT NULL CHECK (last_event_sequence >= 0),
+      last_event_id TEXT NOT NULL,
+      state_json TEXT NOT NULL CHECK (json_valid(state_json))
+    );
+    CREATE INDEX event_task_cursor_idx ON event(task_id, sequence, id);`,
+  },
+  {
+    name: '0054_conversation_file_directory_indexes',
+    sql: `CREATE INDEX event_conversation_start_idx
+      ON event(workspace_id, COALESCE(json_extract(payload_json, '$.threadId'), json_extract(payload_json, '$.run.threadId')), run_id)
+      WHERE type = 'run.started';
+    CREATE INDEX event_run_cursor_idx ON event(run_id, sequence, id);`,
+  },
 ];
 
 function taskPlanDdlSql(): string {

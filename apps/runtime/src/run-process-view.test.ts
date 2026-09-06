@@ -189,7 +189,7 @@ describe('projectRunProcess', () => {
     expect(view.steps).toHaveLength(0);
   });
 
-  it('settles a running tool when the Run is paused', () => {
+  it('settles an unreported tool when recovery is paused after expiry', () => {
     const runId = 'run-paused' as RunId;
     const view = projectRunProcess(runId, [
       event({
@@ -218,14 +218,14 @@ describe('projectRunProcess', () => {
         runId,
         type: 'run.paused',
         occurredAt: '2026-08-08T10:00:08.000Z',
-        payload: {},
+        payload: { reason: 'recovery_expired' },
       }),
     ]);
 
     expect(view.running).toBe(false);
     expect(view.completedAt).toBe('2026-08-08T10:00:08.000Z');
     expect(view.durationMs).toBe(8_000);
-    expect(view.steps[0]?.status).toBe('done');
+    expect(view.steps[0]?.status).toBe('error');
   });
 
   it('projects cache usage separately from total provider input', () => {
@@ -654,7 +654,7 @@ describe('projectRunProcess', () => {
       }),
     ]);
 
-    expect(completed.steps[0]?.status).toBe('done');
+    expect(completed.steps[0]?.status).toBe('error');
     expect(completed.running).toBe(false);
     expect(failed.steps[0]?.status).toBe('error');
     expect(failed.running).toBe(false);
@@ -699,7 +699,7 @@ describe('projectRunProcess', () => {
     expect(view.fileChanges[0]?.previousTruncated).toBeUndefined();
   });
 
-  it('omits snapshot fields when the event carries no pre-write content', () => {
+  it('uses an empty before snapshot for a known newly created file', () => {
     const runId = 'run-snapshot-none' as RunId;
     const view = projectRunProcess(runId, [
       event({
@@ -717,7 +717,7 @@ describe('projectRunProcess', () => {
     ]);
 
     expect(view.fileChanges[0]).toMatchObject({ path: 'new.txt', action: 'created' });
-    expect(view.fileChanges[0]?.previousContent).toBeUndefined();
+    expect(view.fileChanges[0]?.previousContent).toBe('');
     expect(view.fileChanges[0]?.content).toBe('hello');
   });
 
@@ -814,7 +814,7 @@ describe('projectRunProcess', () => {
     );
   });
 
-  it('recovers file changes from a nameless "file changed" result plus targeted git status', () => {
+  it('preserves legacy results without attributing dirty git files to this run', () => {
     const runId = 'run-codex-legacy-file-changed' as RunId;
     const view = projectRunProcess(runId, [
       event({
@@ -858,12 +858,8 @@ describe('projectRunProcess', () => {
       }),
     ]);
 
-    expect(view.fileChanges).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ path: 'codex-edit-test.txt', action: 'deleted' }),
-        expect.objectContaining({ path: 'codex-edit-test-2.txt', action: 'created' }),
-      ]),
-    );
+    expect(view.fileChanges).toEqual([]);
+    expect(view.steps.some((step) => step.preview === 'file changed')).toBe(true);
   });
 
   it('prefers kernel-reported occupancy over last billed request input', () => {

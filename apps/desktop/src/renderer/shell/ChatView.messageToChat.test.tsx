@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { AssistantTurnSegment } from '@sync-think/protocol';
-import type { Message, MessageBlock } from '@sync-think/shared';
+import type { DeferredContent, RunId, Message, MessageBlock } from '@sync-think/shared';
 import {
   assistantTimelineProcessTiming,
   messageToChat,
@@ -105,8 +105,8 @@ describe('messageToChat inline process split', () => {
       },
     ];
 
-    // NewMax boundary: phase-unknown text is retained for later classification,
-    // but only confirmed thinking/commentary/tools may render in 执行过程.
+    // Unclassified tokens stay out of the final-answer bubble, but they must
+    // stream in the process lane so commentary does not pop in as one block.
     expect(projectTransientAnswerText('我先检查资料。正在生成最终回答', timeline)).toEqual({
       answerText: undefined,
       pendingText: '正在生成最终回答',
@@ -130,6 +130,12 @@ describe('messageToChat inline process split', () => {
           sequence: 1,
           text: '我先检查资料。',
           status: 'completed',
+        },
+        {
+          kind: 'commentary',
+          id: 'pending-text',
+          text: '正在生成最终回答',
+          status: 'streaming',
         },
       ],
     });
@@ -482,5 +488,95 @@ describe('messageToChat inline process split', () => {
     expect(chat.processItems).toEqual([
       expect.objectContaining({ kind: 'commentary', text: '正在处理。' }),
     ]);
+  });
+
+  it('hides the durable truncation marker instead of rendering it as a process row', () => {
+    const timeline: AssistantTurnSegment[] = [
+      {
+        id: 'durable-timeline-truncated',
+        sequence: 0,
+        kind: 'status',
+        statusType: 'other',
+        label: '78 earlier process segments truncated for durable storage',
+      },
+      {
+        id: 'thinking-a',
+        sequence: 1,
+        kind: 'thinking',
+        text: '完整思考',
+        status: 'completed',
+      },
+      {
+        id: 'tool-a',
+        sequence: 2,
+        kind: 'tool',
+        toolCallId: 'call-a',
+        name: 'command_execution',
+        status: 'completed',
+      },
+    ];
+    const chat = messageToChat(
+      message([{ type: 'commentary', payload: { assistantTimeline: timeline } }]),
+    );
+
+    expect(chat.processItems).toEqual([
+      expect.objectContaining({ kind: 'reasoning', text: '完整思考' }),
+      expect.objectContaining({ kind: 'tool', toolCallId: 'call-a' }),
+    ]);
+    expect(chat.processItems?.some((item) => item.kind === 'status')).toBe(false);
+  });
+});
+
+it('preserves canonical prose references without copying duplicated compatibility blocks', () => {
+  const textRef: DeferredContent = {
+    reference: {
+      source: 'timeline' as const,
+      runId: 'run-prose' as RunId,
+      id: 'answer',
+      path: ['text'],
+    },
+    utf16Length: 20000,
+    utf8Bytes: 60000,
+    format: 'text' as const,
+  };
+  const timeline: AssistantTurnSegment[] = [
+    {
+      id: 'thinking',
+      kind: 'thinking',
+      sequence: 0,
+      status: 'completed',
+      text: '思考预览',
+      textRef: { ...textRef, reference: { ...textRef.reference, id: 'thinking' } },
+    },
+    {
+      id: 'answer',
+      kind: 'text',
+      phase: 'final_answer',
+      sequence: 1,
+      status: 'completed',
+      text: '答案预览',
+      textRef,
+    },
+    {
+      id: 'tail',
+      kind: 'text',
+      phase: 'final_answer',
+      sequence: 2,
+      status: 'completed',
+      text: '结尾',
+    },
+  ];
+  const chat = messageToChat(
+    message([
+      { type: 'commentary', payload: { assistantTimeline: timeline } },
+      { type: 'text', text: '兼容正文', contentRef: textRef },
+    ]),
+  );
+  expect(chat.text).toBe('答案预览结尾');
+  expect(chat.textParts).toBeUndefined();
+  expect(chat.answerParts).toEqual([{ text: '答案预览', contentRef: textRef }, { text: '结尾' }]);
+  expect(chat.processItems?.[0]).toMatchObject({
+    kind: 'reasoning',
+    contentRef: { reference: { id: 'thinking' } },
   });
 });

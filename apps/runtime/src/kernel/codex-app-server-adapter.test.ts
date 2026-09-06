@@ -50,6 +50,61 @@ function makeRequest(overrides: Partial<KernelRequest> = {}): KernelRequest {
 }
 
 describe('CodexAppServerKernelAdapter', () => {
+  it.each(['failed', 'declined', 'completed'])(
+    'preserves command item identity and %s outcome without an exit code',
+    async (status) => {
+      const adapter = createFixtureAdapter([]);
+      const permissions: Array<{ requestId: string; toolId?: string }> = [];
+      adapter.onPermissionRequest((permission) => {
+        permissions.push(permission);
+        adapter.respondPermission(permission.requestId, { allow: false });
+      });
+      const events: KernelEvent[] = [];
+      for await (const event of adapter.start(
+        makeRequest({ userText: 'command outcome fixture:' + status }),
+      ))
+        events.push(event);
+      expect(permissions).toContainEqual(
+        expect.objectContaining({ requestId: 'permission-command', toolId: 'command-outcome' }),
+      );
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: 'tool-result',
+          toolId: 'command-outcome',
+          isError: status !== 'completed',
+        }),
+      );
+    },
+  );
+
+  it.each([true, false])(
+    'keeps native plan tools available on create and resume (localLogin=%s)',
+    async (localLogin) => {
+      const adapter = createFixtureAdapter([]);
+      const credential = localLogin
+        ? { reuseLocalLogin: true }
+        : { baseUrl: 'http://127.0.0.1:12345/v1', apiKey: 'fixture-only-key' };
+      for (const session of [
+        { mode: 'create' as const },
+        { mode: 'resume' as const, id: 'thread-app-fixture' },
+      ]) {
+        const events: KernelEvent[] = [];
+        for await (const event of adapter.start(
+          makeRequest({ userText: 'native plan availability fixture', credential, session }),
+        ))
+          events.push(event);
+        expect(events).toContainEqual({ type: 'terminal', status: 'completed' });
+        const content = events
+          .filter(
+            (event): event is Extract<KernelEvent, { type: 'delta' }> => event.type === 'delta',
+          )
+          .map((event) => event.text)
+          .join('');
+        expect(JSON.parse(content)).toEqual({ planEnabled: true });
+      }
+    },
+  );
+
   it('lets app-server choose its configured model for the codex-default sentinel', async () => {
     const adapter = createFixtureAdapter([]);
     const events: KernelEvent[] = [];
@@ -447,43 +502,60 @@ describe('CodexAppServerKernelAdapter', () => {
     );
   });
 
-  it('maps Codex turn plan notifications to the shared task checklist tool', async () => {
-    const adapter = createFixtureAdapter([]);
-    const events: KernelEvent[] = [];
-    for await (const event of adapter.start(makeRequest({ userText: 'plan fixture' }))) {
-      events.push(event);
-    }
+  it.each([false, true])(
+    'maps Codex turn plan notifications to the shared task checklist tool (detailed=%s)',
+    async (detailed) => {
+      const adapter = createFixtureAdapter([]);
+      const events: KernelEvent[] = [];
+      for await (const event of adapter.start(
+        makeRequest({ userText: detailed ? 'detailed plan fixture' : 'plan fixture' }),
+      )) {
+        events.push(event);
+      }
 
-    const planCall = events.find(
-      (event): event is Extract<KernelEvent, { type: 'tool-call' }> =>
-        event.type === 'tool-call' && event.name === 'update_task_plan',
-    );
-    expect(planCall).toBeTruthy();
-    expect(JSON.parse(planCall!.argsJson)).toEqual({
-      items: [
-        { title: '读取 package.json', status: 'completed' },
-        { title: '运行 typecheck', status: 'in_progress' },
-        { title: '汇总结果', status: 'pending' },
-      ],
-    });
-    expect(events).toContainEqual({
-      type: 'tool-result',
-      toolId: planCall!.toolId,
-      output: JSON.stringify({
-        ok: true,
-        plan: {
-          items: [
-            { title: '读取 package.json', status: 'completed' },
-            { title: '运行 typecheck', status: 'in_progress' },
-            { title: '汇总结果', status: 'pending' },
-          ],
-          completed: 1,
-          total: 3,
-        },
-      }),
-      isError: false,
-    });
-  });
+      const planCall = events.find(
+        (event): event is Extract<KernelEvent, { type: 'tool-call' }> =>
+          event.type === 'tool-call' && event.name === 'update_plan',
+      );
+      expect(planCall).toBeTruthy();
+      expect(JSON.parse(planCall!.argsJson)).toEqual({
+        items: [
+          { title: '读取 package.json', status: 'completed' },
+          {
+            title: '运行 typecheck',
+            ...(detailed
+              ? { description: '检查 runtime 与 desktop 的类型错误\n记录失败文件' }
+              : {}),
+            status: 'in_progress',
+          },
+          { title: '汇总结果', status: 'pending' },
+        ],
+      });
+      expect(events).toContainEqual({
+        type: 'tool-result',
+        toolId: planCall!.toolId,
+        output: JSON.stringify({
+          ok: true,
+          plan: {
+            items: [
+              { title: '读取 package.json', status: 'completed' },
+              {
+                title: '运行 typecheck',
+                ...(detailed
+                  ? { description: '检查 runtime 与 desktop 的类型错误\n记录失败文件' }
+                  : {}),
+                status: 'in_progress',
+              },
+              { title: '汇总结果', status: 'pending' },
+            ],
+            completed: 1,
+            total: 3,
+          },
+        }),
+        isError: false,
+      });
+    },
+  );
 
   it('maps native fileChange items to file_change tool events with paths', async () => {
     const adapter = createFixtureAdapter([]);
@@ -538,7 +610,8 @@ describe('CodexAppServerKernelAdapter', () => {
     );
     const result = events.find(
       (event) =>
-        event.type === 'tool-result' && event.toolId === 'exec-6422071b-c6ec-40b1-bd23-24f0e5cedc6d',
+        event.type === 'tool-result' &&
+        event.toolId === 'exec-6422071b-c6ec-40b1-bd23-24f0e5cedc6d',
     );
     expect(result).toMatchObject({
       type: 'tool-result',

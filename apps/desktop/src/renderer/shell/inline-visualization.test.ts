@@ -11,13 +11,13 @@ describe('inline visualization contract', () => {
       '结果如下：\n\n::newmax-inline-vis{file="./visualizations/overview.html"}\n\n结束。',
     );
     expect(parts).toEqual([
-      { type: 'markdown', content: '结果如下：\n\n' },
-      { type: 'visualization', file: 'visualizations/overview.html' },
-      { type: 'markdown', content: '\n\n结束。' },
+      { type: 'markdown', start: 0, content: '结果如下：\n\n' },
+      { type: 'visualization', start: 7, file: 'visualizations/overview.html' },
+      { type: 'markdown', start: 65, content: '\n\n结束。' },
     ]);
     expect(
       parseInlineVisualizationSegments("::codex-inline-vis{file='charts/today.htm'}"),
-    ).toEqual([{ type: 'visualization', file: 'charts/today.htm' }]);
+    ).toEqual([{ type: 'visualization', start: 0, file: 'charts/today.htm' }]);
     expect(hasInlineVisualization('::newmax-inline-vis{file="charts/today.html"}')).toBe(true);
   });
 
@@ -25,7 +25,7 @@ describe('inline visualization contract', () => {
     expect(
       parseInlineVisualizationSegments('```md\n::newmax-inline-vis{file="x.html"}\n```'),
     ).toEqual([
-      { type: 'markdown', content: '```md\n::newmax-inline-vis{file="x.html"}\n```' },
+      { type: 'markdown', start: 0, content: '```md\n::newmax-inline-vis{file="x.html"}\n```' },
     ]);
     expect(hasInlineVisualization('::newmax-inline-vis{file="../outside.html"}')).toBe(false);
     expect(hasInlineVisualization('::newmax-inline-vis{file="C:/outside.html"}')).toBe(false);

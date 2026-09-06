@@ -542,6 +542,7 @@ async function executeProviderStep(
       const fallbackAgentBinding = shouldSkipSameProviderFallback(
         failureClass,
         providerFailureCount,
+        lastError instanceof Error ? lastError.message : undefined,
       )
         ? {
             ...agentBinding,

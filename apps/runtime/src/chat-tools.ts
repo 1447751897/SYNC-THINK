@@ -10,7 +10,7 @@ import type {
   GetBrowserWorkflowResponse,
   ListBrowserWorkflowsPayload,
 } from '@sync-think/protocol';
-import type { Event } from '@sync-think/shared';
+import { resolveBrowserClickTarget, type Event } from '@sync-think/shared';
 import {
   CHAT_DESKTOP_MUTATING_TOOL_NAMES,
   CHAT_DESKTOP_TOOL_NAMES,
@@ -534,7 +534,7 @@ export const CHAT_PLAN_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
   {
     name: 'update_task_plan',
     description:
-      'Maintain the user-visible task checklist for THIS run. Call it when a request needs 2+ distinct steps: once at the start with all steps (first step in_progress), then again whenever a step completes or plans change (send the FULL list each time, not a diff). Keep titles short (imperative, ≤40 chars). Do NOT use it for single-step answers.',
+      'Maintain the user-visible task checklist for THIS run. Call it when a request needs 2+ distinct steps: once at the start with all steps (first step in_progress), then again whenever a step completes or plans change (send the FULL list each time, including descriptions, not a diff). Give each step a short imperative title (≤40 chars) AND a concrete description of its scope, target files/modules, checks or expected output. Avoid vague steps such as "test functionality" without saying what to test. Do NOT use it for single-step answers.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -550,6 +550,12 @@ export const CHAT_PLAN_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
             required: ['title', 'status'],
             properties: {
               title: { type: 'string', description: 'Short imperative step title' },
+              description: {
+                type: 'string',
+                maxLength: 400,
+                description:
+                  'Concrete scope, target files/modules, checks or expected output for this step; preserve it on status updates.',
+              },
               status: {
                 type: 'string',
                 enum: ['pending', 'in_progress', 'completed'],
@@ -631,7 +637,7 @@ export const CHAT_TASK_PLAN_TOOL_NAMES = new Set(['TaskCreate', 'TaskUpdate', 'T
  * through the same tool.completed event extraction as update_task_plan.
  */
 export interface ChatTaskPlanSnapshot {
-  items: Array<{ title: string; status: 'pending' | 'in_progress' | 'completed' }>;
+  items: ChatPlanItem[];
   completed: number;
   total: number;
 }
@@ -644,6 +650,7 @@ function toSnapshot(
     ): Array<{
       id: string;
       title: string;
+      description?: string;
       status: string;
       priority: string;
       dependsOn: string[];
@@ -654,6 +661,7 @@ function toSnapshot(
   const rows = store.list(workspaceId, { statuses: ['pending', 'in_progress', 'completed'] });
   const items: ChatTaskPlanSnapshot['items'] = rows.map((row) => ({
     title: row.title,
+    ...(row.description?.trim() ? { description: row.description.trim() } : {}),
     status: row.status === 'in_progress' || row.status === 'completed' ? row.status : 'pending',
   }));
   return {
@@ -1055,24 +1063,29 @@ export const CHAT_BROWSER_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
   {
     name: 'browser_click',
     description:
-      'Click an element on the current system-browser Page. Provide a CSS selector (preferred) OR x/y viewport coordinates. The Page must already be opened with browser_open. Use browser_read afterwards to verify the result.',
+      'Click a visible element on the current system-browser Page. Provide a CSS selector, visible text (or Playwright a:has-text("...") / text=...), or x/y viewport coordinates. The Page must already be opened with browser_open. Use browser_read afterwards to verify the result.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
       properties: {
         selector: {
           type: 'string',
-          description: 'CSS selector of the element to click (preferred over coordinates)',
+          description:
+            'CSS selector, or a Playwright text locator such as a:has-text("Open") / text=Open',
+        },
+        text: {
+          type: 'string',
+          description: 'Visible link/button text to click when CSS is unknown or ambiguous',
         },
         x: {
           type: 'integer',
           minimum: 0,
-          description: 'Viewport X coordinate (with y, when no selector)',
+          description: 'Viewport X coordinate (with y, when no selector or text)',
         },
         y: {
           type: 'integer',
           minimum: 0,
-          description: 'Viewport Y coordinate (with x, when no selector)',
+          description: 'Viewport Y coordinate (with x, when no selector or text)',
         },
       },
     },
@@ -1156,30 +1169,46 @@ export function validateChatBrowserCommand(
 
   if (toolName === 'browser_click') {
     const selector = typeof parsed.selector === 'string' ? parsed.selector.trim() : '';
+    const text = typeof parsed.text === 'string' ? parsed.text.trim() : '';
     const x =
       typeof parsed.x === 'number' && Number.isFinite(parsed.x) ? Math.round(parsed.x) : undefined;
     const y =
       typeof parsed.y === 'number' && Number.isFinite(parsed.y) ? Math.round(parsed.y) : undefined;
-    if (!selector && (x === undefined || y === undefined)) {
+    const target = resolveBrowserClickTarget({
+      ...(selector ? { selector } : {}),
+      ...(text ? { text } : {}),
+      ...(x !== undefined ? { x } : {}),
+      ...(y !== undefined ? { y } : {}),
+    });
+    if (!target.css && !target.text && (target.x === undefined || target.y === undefined)) {
       return {
         ok: false,
-        error: 'browser_click: provide a CSS selector, or both x and y viewport coordinates.',
+        error:
+          'browser_click: provide a CSS selector, visible text, or both x and y viewport coordinates.',
       };
     }
-    if (selector.length > 500) {
+    if ((target.css?.length ?? 0) > 500) {
       return { ok: false, error: 'browser_click: selector too long (max 500 chars).' };
     }
-    if (x !== undefined && (x < 0 || x > 20_000)) {
+    if ((target.text?.length ?? 0) > 200) {
+      return { ok: false, error: 'browser_click: text too long (max 200 chars).' };
+    }
+    if (target.x !== undefined && (target.x < 0 || target.x > 20_000)) {
       return { ok: false, error: 'browser_click: x out of range.' };
     }
-    if (y !== undefined && (y < 0 || y > 20_000)) {
+    if (target.y !== undefined && (target.y < 0 || target.y > 20_000)) {
       return { ok: false, error: 'browser_click: y out of range.' };
     }
     return {
       ok: true,
       command: {
         action: 'browser_click',
-        args: selector ? { selector } : { x, y },
+        args: {
+          ...(target.css ? { selector: target.css } : {}),
+          ...(target.text ? { text: target.text } : {}),
+          ...(target.x !== undefined ? { x: target.x } : {}),
+          ...(target.y !== undefined ? { y: target.y } : {}),
+        },
       },
     };
   }
@@ -1253,6 +1282,7 @@ export function executeChatBrowserTool(argumentsJson: string): string {
 
 export interface ChatPlanItem {
   title: string;
+  description?: string;
   status: 'pending' | 'in_progress' | 'completed';
 }
 
@@ -1277,12 +1307,14 @@ export function executeChatPlanTool(argumentsJson: string): string {
   }
   const items: ChatPlanItem[] = [];
   for (const raw of rawItems.slice(0, 20)) {
-    const rec = raw as { title?: unknown; status?: unknown };
+    const rec = raw as { title?: unknown; description?: unknown; status?: unknown };
     const title = typeof rec?.title === 'string' ? rec.title.trim().slice(0, 80) : '';
     if (!title) continue;
     const status =
       rec.status === 'in_progress' || rec.status === 'completed' ? rec.status : 'pending';
-    items.push({ title, status });
+    const description =
+      typeof rec.description === 'string' ? rec.description.trim().slice(0, 400) : '';
+    items.push({ title, ...(description ? { description } : {}), status });
   }
   if (items.length === 0) {
     return JSON.stringify({ ok: false, error: 'update_task_plan: no valid items.' });

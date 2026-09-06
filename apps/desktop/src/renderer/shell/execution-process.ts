@@ -1,7 +1,12 @@
-import { matchesToolName, type Event } from '@sync-think/shared';
-
-/** Task-plan tools update the checklist projection; they are not execution steps. */
-const TASK_PLAN_TOOL_NAMES = new Set(['update_task_plan', 'TaskCreate', 'TaskUpdate', 'TaskList']);
+import {
+  isToolResultFailure,
+  projectDeniedToolCalls,
+  toolEventPhase,
+  matchesToolName,
+  TASK_PLAN_TOOL_NAMES,
+  type Event,
+} from '@sync-think/shared';
+import type { DeferredContent } from '@sync-think/shared';
 
 export type ProcessStepStatus = 'running' | 'done' | 'error';
 export type ProcessToolKind =
@@ -22,6 +27,9 @@ export interface ExecutionProcessStep {
   command?: string;
   url?: string;
   preview?: string;
+  outputRef?: DeferredContent;
+  detailsRef?: DeferredContent;
+  argumentsRef?: DeferredContent;
   exitCode?: number;
   error?: string;
   count?: number;
@@ -39,11 +47,15 @@ export interface FileChangeItem {
   previousTruncated?: boolean;
   /** Full post-write content when the written body was captured from the tool call. */
   content?: string;
+  contentRef?: DeferredContent;
+  previousContentRef?: DeferredContent;
+  contentKind?: 'replacement-fragment';
 }
 
 /** NewMax-style model-authored task checklist (update_task_plan tool). */
 export interface TaskPlanItem {
   title: string;
+  description?: string;
   status: 'pending' | 'in_progress' | 'completed';
 }
 
@@ -219,7 +231,7 @@ const WRITE_FILE_TOOL_NAMES = new Set([
 ]);
 
 function isWriteFileTool(toolName: string): boolean {
-  return matchesToolName(toolName, WRITE_FILE_TOOL_NAMES);
+  return matchesToolName(toolName.toLowerCase(), WRITE_FILE_TOOL_NAMES);
 }
 
 function fileChangeActionFromKind(kind: unknown): FileChangeItem['action'] {
@@ -301,40 +313,18 @@ function extractApplyPatchEntries(
   return entries;
 }
 
-function gitStatusAction(stat: string): FileChangeItem['action'] {
-  const code = stat.replace(/\s/g, '');
-  if (code === '??' || code.includes('A')) return 'created';
-  if (code.includes('D')) return 'deleted';
-  return 'edited';
-}
-
-function extractTargetedGitStatusEntries(
-  command?: string,
-  result?: string,
-): Array<{ path: string; action: FileChangeItem['action'] }> {
-  if (!command || !result || !/\bgit\s+status\b/i.test(command)) return [];
-  if (!/\s--\s+/.test(command)) return [];
-  const entries: Array<{ path: string; action: FileChangeItem['action'] }> = [];
-  for (const line of result.split(/\r?\n/)) {
-    const match = line.match(/^([ MADRCU?!]{1,2})\s+(\S.*)$/);
-    if (!match) continue;
-    const path = match[2]?.trim();
-    if (!path) continue;
-    entries.push({ path, action: gitStatusAction(match[1] ?? '') });
-  }
-  return entries;
-}
-
 function extractWritePathEntries(
   args?: Record<string, unknown>,
   resultRaw?: unknown,
 ): Array<{ path: string; action: FileChangeItem['action']; preview?: string }> {
-  const sources = [args, asRecord(parseMaybeJson(resultRaw))];
+  const sources = [asRecord(parseMaybeJson(resultRaw)), args];
   for (const source of sources) {
     const entries = extractChangeList(source);
     if (entries.length > 0) return entries;
   }
   const patchText = [
+    typeof args?.patch === 'string' ? args.patch : '',
+    typeof args?.input === 'string' ? args.input : '',
     typeof args?.command === 'string' ? args.command : '',
     typeof resultRaw === 'string' ? resultRaw : '',
   ].join('\n');
@@ -352,79 +342,6 @@ function extractWritePathEntries(
   return [{ path, action: 'edited' }];
 }
 
-function hasFileChangeEntries(
-  args?: Record<string, unknown>,
-  resultRaw?: unknown,
-): boolean {
-  return extractWritePathEntries(args, resultRaw).length > 0;
-}
-
-function isLegacyFileChangedResult(resultRaw: unknown): boolean {
-  return typeof resultRaw === 'string' && resultRaw.trim() === 'file changed';
-}
-
-function upsertFileChange(
-  fileChanges: FileChangeItem[],
-  entry: { path: string; action: FileChangeItem['action']; preview?: string },
-  toolCallId: string,
-): void {
-  const already = fileChanges.find(
-    (item) => item.path === entry.path && (item.toolCallId === toolCallId || !item.toolCallId),
-  );
-  if (already) {
-    already.action = entry.action;
-    already.toolCallId = toolCallId;
-    if (entry.preview) already.preview = entry.preview;
-    return;
-  }
-  fileChanges.push({
-    path: entry.path,
-    action: entry.action,
-    toolCallId,
-    ...(entry.preview ? { preview: entry.preview } : {}),
-  });
-}
-
-function harvestSupplementalFileChanges(
-  events: readonly Event[],
-  fileChanges: FileChangeItem[],
-): void {
-  const commandByCall = new Map<string, string>();
-  for (const event of events) {
-    if (!isToolEvent(event.type)) continue;
-    const args = extractArgs(event.payload);
-    const toolCallId = extractToolCallId(event.payload, event.id);
-    if (typeof args?.command === 'string' && args.command) {
-      commandByCall.set(toolCallId, args.command);
-    }
-  }
-  const sawFileChangeMarker = events.some((event) => {
-    if (!isToolEvent(event.type)) return false;
-    const payload = event.payload;
-    const result = payload.result ?? payload.output;
-    return isWriteFileTool(extractToolName(payload)) || isLegacyFileChangedResult(result);
-  });
-  for (const event of events) {
-    if (!isToolEvent(event.type)) continue;
-    const payload = event.payload;
-    const args = extractArgs(payload);
-    const toolCallId = extractToolCallId(payload, event.id);
-    const command =
-      typeof args?.command === 'string' && args.command
-        ? args.command
-        : (commandByCall.get(toolCallId) ?? '');
-    const result = payload.result ?? payload.output;
-    const resultText = typeof result === 'string' ? result : '';
-    for (const entry of extractApplyPatchEntries(`${command}\n${resultText}`)) {
-      upsertFileChange(fileChanges, entry, toolCallId);
-    }
-    if (!sawFileChangeMarker) continue;
-    for (const entry of extractTargetedGitStatusEntries(command, resultText)) {
-      upsertFileChange(fileChanges, entry, toolCallId);
-    }
-  }
-}
-
 function recordWriteFileChanges(
   fileChanges: FileChangeItem[],
   toolName: string,
@@ -434,22 +351,18 @@ function recordWriteFileChanges(
   summary: { created?: boolean; content?: string; preview?: string },
   payload: Record<string, unknown>,
 ): void {
-  const resultRaw = payload.result ?? payload.output;
-  if (
-    !isWriteFileTool(toolName) &&
-    !hasFileChangeEntries(args, resultRaw) &&
-    !isLegacyFileChangedResult(resultRaw)
-  ) {
-    return;
-  }
+  if (!isWriteFileTool(toolName)) return;
   const entries = extractWritePathEntries(args, payload.result ?? payload.output);
   const paths =
     entries.length > 0
-      ? entries.map((entry) =>
-          summary.created ? { ...entry, action: 'created' as const } : entry,
-        )
+      ? entries.map((entry) => (summary.created ? { ...entry, action: 'created' as const } : entry))
       : builtPath
-        ? [{ path: builtPath, action: summary.created ? ('created' as const) : ('edited' as const) }]
+        ? [
+            {
+              path: builtPath,
+              action: summary.created ? ('created' as const) : ('edited' as const),
+            },
+          ]
         : [];
   const snapshot = snapshotFields(payload);
   for (const entry of paths) {
@@ -541,6 +454,7 @@ function summarizeResult(
   toolName: string,
   resultRaw: unknown,
   args?: Record<string, unknown>,
+  fullEntryCount?: number,
 ): { preview?: string; exitCode?: number; created?: boolean; content?: string } {
   const parsed = parseMaybeJson(resultRaw);
   const obj = asRecord(parsed);
@@ -565,11 +479,15 @@ function summarizeResult(
         })
         .filter(Boolean);
       const total =
-        typeof obj?.count === 'number'
-          ? obj.count
-          : typeof obj?.total === 'number'
-            ? obj.total
-            : entries.length;
+        typeof fullEntryCount === 'number' &&
+        Number.isSafeInteger(fullEntryCount) &&
+        fullEntryCount >= 0
+          ? fullEntryCount
+          : typeof obj?.count === 'number'
+            ? obj.count
+            : typeof obj?.total === 'number'
+              ? obj.total
+              : entries.length;
       return {
         preview: `找到 ${total} 项\n${names.join('\n')}${total > names.length ? '\n…' : ''}`,
       };
@@ -673,13 +591,19 @@ export function projectExecutionProcess(
   options: { threadId?: string; runId?: string } = {},
 ): ExecutionProcessView {
   const { threadId, runId } = options;
-  const ordered = [...events].sort((a, b) => a.sequence - b.sequence);
+  const ordered = events
+    .filter(
+      (event) =>
+        (!runId || eventRunId(event) === runId) &&
+        (!threadId || !eventThreadId(event) || eventThreadId(event) === threadId),
+    )
+    .sort((left, right) => left.sequence - right.sequence || left.id.localeCompare(right.id));
+  const deniedToolCalls = projectDeniedToolCalls(ordered);
   const byId = new Map<string, ExecutionProcessStep>();
   const order: string[] = [];
   const fileChanges: FileChangeItem[] = [];
   let taskPlan: TaskPlanView | undefined;
-  /** write_file body often only appears on tool.requested args, not on completed result. */
-  const writeContentByCall = new Map<string, string>();
+  const toolArgumentsByCall = new Map<string, Record<string, unknown>>();
   const toolNameByCall = new Map<string, string>();
   let tokensIn: number | undefined;
   let tokensOut: number | undefined;
@@ -687,6 +611,7 @@ export function projectExecutionProcess(
   let completedAt: string | undefined;
   let providerModelId: string | undefined;
   let modelId: string | undefined;
+  let terminalStepError: string | undefined;
 
   for (const event of ordered) {
     if (runId && eventRunId(event) !== runId) continue;
@@ -705,7 +630,20 @@ export function projectExecutionProcess(
       event.type === 'run.cancelled' ||
       event.type === 'run.paused'
     ) {
+      if (
+        event.type === 'run.paused' &&
+        !['no_fallback_configured', 'fallback_exhausted', 'recovery_expired'].includes(
+          String(event.payload.reason),
+        )
+      )
+        continue;
       completedAt = event.occurredAt;
+      terminalStepError =
+        event.type === 'run.cancelled'
+          ? '运行已取消，工具未报告完成'
+          : event.type === 'run.completed'
+            ? '运行已结束，工具未报告执行结果'
+            : '运行已停止，工具未报告完成';
       providerModelId = eventProviderModelId(event) ?? providerModelId;
       modelId = eventModelId(event) ?? modelId;
       continue;
@@ -752,35 +690,22 @@ export function projectExecutionProcess(
       continue;
     }
 
-    const args = extractArgs(payload);
+    const args = extractArgs(payload) ?? toolArgumentsByCall.get(toolCallId);
+    if (args) toolArgumentsByCall.set(toolCallId, args);
     const built = buildLabel(toolName, args);
-    const writeBody = extractWriteContent(args);
-    if (writeBody !== undefined) {
-      writeContentByCall.set(toolCallId, writeBody);
-    }
-    const argsForSummary =
-      writeBody !== undefined
-        ? args
-        : writeContentByCall.has(toolCallId)
-          ? { ...(args ?? {}), content: writeContentByCall.get(toolCallId) }
-          : args;
-
-    const requested =
-      event.type.endsWith('.requested') ||
-      event.type === 'tool.requested' ||
-      event.type === 'execution.tool.requested' ||
-      event.type === 'mcp.tool_requested';
+    const argsForSummary = args;
+    const phase = toolEventPhase(event.type);
+    const requested = phase === 'requested';
     const failed =
-      event.type.endsWith('.failed') ||
-      event.type === 'tool.failed' ||
-      event.type === 'execution.tool.failed' ||
-      event.type === 'mcp.tool_failed';
-    const completed =
-      event.type.endsWith('.completed') ||
-      event.type === 'tool.completed' ||
-      event.type === 'execution.tool.completed' ||
-      event.type === 'mcp.tool_completed';
+      phase === 'failed' ||
+      (phase === 'completed' &&
+        (deniedToolCalls.has(toolCallId) ||
+          isToolResultFailure(payload.result ?? payload.output, {}, payload)));
+    const completed = phase === 'completed';
 
+    const detailsRef = event.displayPayloadRef;
+    const outputRef = payload.resultRef as DeferredContent | undefined;
+    const argumentsRef = payload.argumentsRef as DeferredContent | undefined;
     const existing = byId.get(toolCallId);
     if (!existing) {
       order.push(toolCallId);
@@ -790,10 +715,11 @@ export function projectExecutionProcess(
               toolName,
               payload.result ?? payload.output ?? payload.error,
               argsForSummary,
+              typeof payload.resultEntryCount === 'number' ? payload.resultEntryCount : undefined,
             )
           : {};
       const resultFailed =
-        completed && isToolResultFailure(payload.result ?? payload.output, resultSummary);
+        completed && isToolResultFailure(payload.result ?? payload.output, resultSummary, payload);
       byId.set(toolCallId, {
         id: toolCallId,
         label: built.label,
@@ -806,6 +732,9 @@ export function projectExecutionProcess(
         command: built.command,
         url: built.url,
         preview: resultSummary.preview,
+        ...(outputRef ? { outputRef } : {}),
+        ...(detailsRef ? { detailsRef } : {}),
+        ...(argumentsRef ? { argumentsRef } : {}),
         exitCode: resultSummary.exitCode,
         error:
           failed && typeof payload.error === 'string'
@@ -818,7 +747,7 @@ export function projectExecutionProcess(
                 : undefined,
         occurredAt: event.occurredAt,
       });
-      if (completed || requested) {
+      if (completed && !failed && !resultFailed) {
         recordWriteFileChanges(
           fileChanges,
           toolName,
@@ -832,6 +761,9 @@ export function projectExecutionProcess(
       continue;
     }
 
+    if (outputRef) existing.outputRef = outputRef;
+    if (detailsRef) existing.detailsRef = detailsRef;
+    if (argumentsRef) existing.argumentsRef = argumentsRef;
     if (failed) {
       existing.status = 'error';
       existing.error =
@@ -841,8 +773,13 @@ export function projectExecutionProcess(
             ? payload.errorMessage
             : existing.error;
     } else if (completed) {
-      const summary = summarizeResult(toolName, payload.result ?? payload.output, argsForSummary);
-      const resultFailed = isToolResultFailure(payload.result ?? payload.output, summary);
+      const summary = summarizeResult(
+        toolName,
+        payload.result ?? payload.output,
+        argsForSummary,
+        typeof payload.resultEntryCount === 'number' ? payload.resultEntryCount : undefined,
+      );
+      const resultFailed = isToolResultFailure(payload.result ?? payload.output, summary, payload);
       existing.status = existing.status === 'error' || resultFailed ? 'error' : 'done';
       existing.preview = summary.preview ?? existing.preview;
       existing.exitCode = summary.exitCode ?? existing.exitCode;
@@ -850,27 +787,20 @@ export function projectExecutionProcess(
         existing.error =
           extractToolResultError(payload.result ?? payload.output) ?? existing.preview;
       }
-      recordWriteFileChanges(
-        fileChanges,
-        toolName,
-        toolCallId,
-        argsForSummary,
-        existing.path || built.path,
-        summary,
-        payload,
-      );
+      if (!resultFailed && !deniedToolCalls.has(toolCallId)) {
+        recordWriteFileChanges(
+          fileChanges,
+          toolName,
+          toolCallId,
+          argsForSummary,
+          existing.path || built.path,
+          summary,
+          payload,
+        );
+      }
     } else if (requested) {
       existing.status =
         existing.status === 'done' || existing.status === 'error' ? existing.status : 'running';
-      recordWriteFileChanges(
-        fileChanges,
-        toolName,
-        toolCallId,
-        argsForSummary,
-        existing.path || built.path,
-        {},
-        payload,
-      );
     }
 
     // Prefer richer labels/args if a later event carries them.
@@ -885,6 +815,17 @@ export function projectExecutionProcess(
     existing.occurredAt = event.occurredAt;
   }
 
+  for (const step of byId.values()) {
+    const denied = deniedToolCalls.get(step.id);
+    if (denied) {
+      step.status = 'error';
+      step.error = denied.error;
+    } else if (terminalStepError && step.status === 'running') {
+      step.status = 'error';
+      step.error = terminalStepError;
+    }
+  }
+
   // Merge adjacent identical labels (read-only / same command) into ×N.
   const raw = order.map((id) => byId.get(id)!).filter(Boolean);
   const steps: ExecutionProcessStep[] = [];
@@ -892,6 +833,8 @@ export function projectExecutionProcess(
     const prev = steps[steps.length - 1];
     const sameKey =
       prev &&
+      !prev.detailsRef &&
+      !step.detailsRef &&
       prev.toolName === step.toolName &&
       (prev.path ?? prev.command ?? prev.url ?? prev.label) ===
         (step.path ?? step.command ?? step.url ?? step.label) &&
@@ -907,8 +850,6 @@ export function projectExecutionProcess(
     }
     steps.push({ ...step, count: 1 });
   }
-
-  harvestSupplementalFileChanges(ordered, fileChanges);
 
   // Dedupe file changes by path (keep last action).
   const changeByPath = new Map<string, FileChangeItem>();
@@ -987,7 +928,8 @@ function normalizeTaskPlanItems(raw: unknown): TaskPlanView | undefined {
     if (!title) continue;
     const status =
       rec?.status === 'in_progress' || rec?.status === 'completed' ? rec.status : 'pending';
-    items.push({ title, status });
+    const description = typeof rec?.description === 'string' ? rec.description.trim() : '';
+    items.push({ title, ...(description ? { description } : {}), status });
   }
   if (items.length === 0) return undefined;
   return {
@@ -995,15 +937,6 @@ function normalizeTaskPlanItems(raw: unknown): TaskPlanView | undefined {
     completed: items.filter((item) => item.status === 'completed').length,
     total: items.length,
   };
-}
-
-function isToolResultFailure(resultRaw: unknown, summary: { exitCode?: number }): boolean {
-  if (typeof summary.exitCode === 'number' && summary.exitCode !== 0) return true;
-  const parsed = parseMaybeJson(resultRaw);
-  const obj = asRecord(parsed);
-  if (obj && obj.ok === false) return true;
-  if (typeof resultRaw === 'string' && /"ok"\s*:\s*false/.test(resultRaw)) return true;
-  return false;
 }
 
 function extractToolResultError(resultRaw: unknown): string | undefined {
@@ -1116,22 +1049,6 @@ export function mergeConversationFileChanges<
     }
   }
   return [...byPath.values()];
-}
-
-export function buildConversationReviewView<
-  T extends { fileChanges: FileChangeItem[]; completedAt?: string; startedAt?: string },
->(processes: Iterable<T>): (T & { fileChanges: FileChangeItem[] }) | null {
-  const list = [...processes];
-  if (list.length === 0) return null;
-  const fileChanges = mergeConversationFileChanges(list);
-  if (fileChanges.length === 0) return null;
-  let latest = list[0]!;
-  for (const process of list) {
-    const candidateStamp = process.completedAt ?? process.startedAt ?? '';
-    const latestStamp = latest.completedAt ?? latest.startedAt ?? '';
-    if (candidateStamp > latestStamp) latest = process;
-  }
-  return { ...latest, fileChanges };
 }
 
 /** Friendly model label for footer / hover. */

@@ -180,13 +180,15 @@ describe('Phase3VisualFixture routing', () => {
 });
 
 describe('Phase3VisualFixture accessibility', () => {
-  it('renders the real first-launch guide with named actions', () => {
+  it('renders the start page with the same empty-chat rhythm', () => {
     render(<Phase3VisualFixture visualCase="welcome" />);
 
-    expect(screen.getByRole('main', { name: '首次启动引导' })).toBeTruthy();
-    expect(screen.getByRole('heading', { name: '三步开始第一项任务' })).toBeTruthy();
+    expect(screen.getByRole('main', { name: '开头页' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: '下午好' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '打开工作区' })).toBeTruthy();
-    expect(screen.getByText('当前步骤')).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: '开始第一项任务' })).toBeNull();
+    expect(screen.queryByText('当前步骤')).toBeNull();
+    expect(screen.queryByText('私有内核（可选）')).toBeNull();
   });
 
   it('keeps trace disclosure state explicit for open and closed evidence', () => {

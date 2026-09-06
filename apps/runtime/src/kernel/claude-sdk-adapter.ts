@@ -211,10 +211,7 @@ export const CLAUDE_CONTEXT_WINDOW_MAX_TOKENS = 1_000_000;
 export function resolveClaudeContextWindowEnvValue(tokens: number): string {
   const rounded = Math.round(tokens);
   return String(
-    Math.min(
-      CLAUDE_CONTEXT_WINDOW_MAX_TOKENS,
-      Math.max(CLAUDE_CONTEXT_WINDOW_MIN_TOKENS, rounded),
-    ),
+    Math.min(CLAUDE_CONTEXT_WINDOW_MAX_TOKENS, Math.max(CLAUDE_CONTEXT_WINDOW_MIN_TOKENS, rounded)),
   );
 }
 
@@ -252,6 +249,7 @@ export class ClaudeSdkKernelAdapter implements KernelAdapter {
   private streamedText = false;
   /** Claude may replay a complete assistant message while resuming a tool loop. */
   private readonly seenAssistantToolUses = new Set<string>();
+  private readonly nativeTaskToolIds = new Set<string>();
   /** Tool blocks currently receiving streamed input_json_delta fragments. */
   private readonly streamedToolUses = new Map<
     number,
@@ -359,10 +357,7 @@ export class ClaudeSdkKernelAdapter implements KernelAdapter {
 
     if (request.webSearchMode === 'disabled') {
       options.disallowedTools = ['WebSearch', 'WebFetch'];
-    } else if (
-      request.webSearchMode === 'external' ||
-      request.webSearchMode === 'fetch-only'
-    ) {
+    } else if (request.webSearchMode === 'external' || request.webSearchMode === 'fetch-only') {
       options.disallowedTools = ['WebSearch'];
     }
 
@@ -435,6 +430,7 @@ export class ClaudeSdkKernelAdapter implements KernelAdapter {
     this.cancelled = false;
     this.streamedText = false;
     this.seenAssistantToolUses.clear();
+    this.nativeTaskToolIds.clear();
     this.streamedToolUses.clear();
     this.activeStreamUsage = undefined;
     this.pendingAssistantUsages.clear();
@@ -500,6 +496,7 @@ export class ClaudeSdkKernelAdapter implements KernelAdapter {
       const requestId = options.requestId || options.toolUseID || `perm-${randomUUID()}`;
       const permission = toSdkPermissionRequest({
         requestId,
+        toolId: options.toolUseID,
         toolName,
         input,
         decisionReason: options.decisionReason,
@@ -642,7 +639,11 @@ export class ClaudeSdkKernelAdapter implements KernelAdapter {
             toolId: result.toolId,
             output: result.output,
             isError: result.isError,
+            ...(this.nativeTaskToolIds.has(result.toolId) && 'tool_use_result' in message
+              ? { structuredOutput: message.tool_use_result }
+              : {}),
           });
+          this.nativeTaskToolIds.delete(result.toolId);
         }
         return;
       }
@@ -767,6 +768,8 @@ export class ClaudeSdkKernelAdapter implements KernelAdapter {
       if (!Number.isInteger(index)) return;
       const toolId = inner.content_block.id?.trim() || `tool-${randomUUID()}`;
       const name = inner.content_block.name?.trim() || 'unknown';
+      if (['TodoWrite', 'TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet'].includes(name))
+        this.nativeTaskToolIds.add(toolId);
       const initialJson = JSON.stringify(inner.content_block.input ?? {});
       this.streamedToolUses.set(index!, { toolId, name, partialJson: '' });
       push({ type: 'tool-call', toolId, name, argsJson: initialJson, partial: true });
@@ -829,6 +832,12 @@ export class ClaudeSdkKernelAdapter implements KernelAdapter {
         if (!this.streamedText) push({ type: 'delta', text: block.text });
       } else if (block.type === 'tool_use') {
         const toolId = block.id ?? `tool-${randomUUID()}`;
+        if (
+          ['TodoWrite', 'TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet'].includes(
+            block.name ?? '',
+          )
+        )
+          this.nativeTaskToolIds.add(toolId);
         const replayKey = `${inner.id ?? 'unknown-message'}\u0000${toolId}`;
         if (this.seenAssistantToolUses.has(toolId) || this.seenAssistantToolUses.has(replayKey)) {
           continue;

@@ -1,3 +1,5 @@
+export const UNTITLED_DOCUMENT_CONTENT = '';
+
 export function allocateUntitledDocumentPath(openPaths: readonly string[] = []): string {
   return allocateUntitledPath(openPaths, 'notes', '未命名文档', 'md');
 }
@@ -20,6 +22,38 @@ function allocateUntitledPath(
     if (!taken.has(next)) return next;
   }
   return `${directory}/${stem}-${Date.now()}.${extension}`;
+}
+
+export interface UntitledFileWriteResult {
+  ok: boolean;
+  conflict: boolean;
+  error: string | null;
+  path: string;
+}
+
+export async function createUntitledProjectFile(input: {
+  kind: 'document' | 'canvas';
+  openPaths: readonly string[];
+  canvasContent: string;
+  write: (path: string, content: string) => Promise<UntitledFileWriteResult>;
+}): Promise<{ path: string } | { error: string }> {
+  const taken = [...input.openPaths];
+  const failed = input.kind === 'canvas' ? '新建绘图失败' : '新建文档失败';
+  for (let attempt = 0; attempt < 32; attempt += 1) {
+    const path =
+      input.kind === 'canvas'
+        ? allocateUntitledCanvasPath(taken)
+        : allocateUntitledDocumentPath(taken);
+    const content = input.kind === 'canvas' ? input.canvasContent : UNTITLED_DOCUMENT_CONTENT;
+    const saved = await input.write(path, content);
+    if (saved.ok) return { path: saved.path || path };
+    if (saved.conflict) {
+      taken.push(path);
+      continue;
+    }
+    return { error: saved.error ?? failed };
+  }
+  return { error: failed };
 }
 
 export function collectOpenFilePaths(input: {

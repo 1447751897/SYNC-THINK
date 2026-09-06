@@ -1,7 +1,7 @@
 /**
  * @vitest-environment jsdom
  */
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { Conversation, Event } from '@sync-think/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ChatView } from './ChatView.js';
@@ -98,66 +98,72 @@ afterEach(() => {
 });
 
 describe('ChatView streaming scroll anchor', () => {
-  it('keeps the main viewport stable while reasoning-only content grows', async () => {
-    const events = [
-      event(1, 'run.started'),
-      event(2, 'message.reasoning_delta', { textDelta: '正在核对联网搜索能力。' }),
-    ];
-    const { container } = render(
-      <ChatView
-        conversation={conversation}
-        modelName="Scroll model"
-        models={[
-          {
-            modelId: 'model-scroll-anchor',
-            displayName: 'Scroll model',
-            providerName: 'Provider',
+  it.each([true, false])(
+    'follows reasoning growth only while the reader stays pinned: %s',
+    async (following) => {
+      const events = [
+        event(1, 'run.started'),
+        event(2, 'message.reasoning_delta', { textDelta: '正在核对联网搜索能力。' }),
+      ];
+      const { container } = render(
+        <ChatView
+          conversation={conversation}
+          modelName="Scroll model"
+          models={[
+            {
+              modelId: 'model-scroll-anchor',
+              displayName: 'Scroll model',
+              providerName: 'Provider',
+            },
+          ]}
+          eventHistory={events}
+          onTitleUpdated={vi.fn()}
+        />,
+      );
+
+      await waitFor(() =>
+        expect(screen.getByTestId('think-row-summary').textContent).toBe('正在核对联网搜索能力。'),
+      );
+
+      const scroller = container.querySelector('.shell-chat-message-scroller') as HTMLDivElement;
+      const content = container.querySelector(
+        '.shell-chat-content:not(.shell-chat-content--composer)',
+      );
+      await waitFor(() => {
+        expect(
+          resizeObservers.some((observer) => observer.active && observer.target === content),
+        ).toBe(true);
+      });
+      const mainObserver = resizeObservers.find(
+        (observer) => observer.active && observer.target === content,
+      )!;
+
+      let scrollHeight = 900;
+      let scrollTop = 300;
+      const writes: number[] = [];
+      Object.defineProperties(scroller, {
+        clientHeight: { configurable: true, get: () => 600 },
+        scrollHeight: { configurable: true, get: () => scrollHeight },
+        scrollTop: {
+          configurable: true,
+          get: () => scrollTop,
+          set: (value: number) => {
+            writes.push(value);
+            scrollTop = value;
           },
-        ]}
-        eventHistory={events}
-        onTitleUpdated={vi.fn()}
-      />,
-    );
-
-    expect(await screen.findByText('正在核对联网搜索能力。')).toBeTruthy();
-
-    const scroller = container.querySelector('.shell-chat-message-scroller') as HTMLDivElement;
-    const content = container.querySelector(
-      '.shell-chat-content:not(.shell-chat-content--composer)',
-    );
-    await waitFor(() => {
-      expect(
-        resizeObservers.some((observer) => observer.active && observer.target === content),
-      ).toBe(true);
-    });
-    const mainObserver = resizeObservers.find(
-      (observer) => observer.active && observer.target === content,
-    )!;
-
-    let scrollHeight = 900;
-    let scrollTop = 300;
-    const writes: number[] = [];
-    Object.defineProperties(scroller, {
-      clientHeight: { configurable: true, get: () => 600 },
-      scrollHeight: { configurable: true, get: () => scrollHeight },
-      scrollTop: {
-        configurable: true,
-        get: () => scrollTop,
-        set: (value: number) => {
-          writes.push(value);
-          scrollTop = value;
         },
-      },
-    });
+      });
 
-    for (const nextHeight of [930, 960, 990]) {
-      scrollHeight = nextHeight;
-      act(() => mainObserver.callback([], {} as ResizeObserver));
-    }
+      if (!following) fireEvent.wheel(scroller, { deltaY: -30 });
+      for (const nextHeight of [930, 960, 990]) {
+        scrollHeight = nextHeight;
+        act(() => mainObserver.callback([], {} as ResizeObserver));
+      }
 
-    expect(writes).toEqual([]);
-    expect(scrollTop).toBe(300);
-  });
+      expect(writes).toEqual(following ? [330, 360, 390] : []);
+      expect(scrollTop).toBe(following ? 390 : 300);
+    },
+  );
 
   it('continues following ordinary content growth outside a reasoning-only stream', async () => {
     const { container } = render(

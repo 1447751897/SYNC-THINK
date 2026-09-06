@@ -1,6 +1,7 @@
 // Payload validation for the mutable global Agent / Team / Conversation
 // commands (2026-07-22 model). Same strict style as agent-payloads.ts: reject
 // wrong shapes at the IPC boundary before frames reach the Runtime.
+import { parseRunProcessPayload } from '@sync-think/protocol';
 import type {
   CreateConversationPayload,
   CreateGlobalAgentPayload,
@@ -11,6 +12,7 @@ import type {
   ConversationCompactPayload,
   ListConversationsPayload,
   ConversationListMessagesPayload,
+  ConversationListNavigationPayload,
   ConversationGetContextStatusPayload,
   ConversationGetRunProcessPayload,
   ConversationListRunTimelinePayload,
@@ -277,7 +279,7 @@ export function parseConversationListMessagesPayload(
 ): ConversationListMessagesPayload {
   const label = 'Invalid list-conversation-messages payload';
   if (!isRecord(value)) throw new Error(label);
-  const allowed = new Set(['conversationId', 'beforeSequence', 'limit']);
+  const allowed = new Set(['conversationId', 'beforeSequence', 'aroundMessageId', 'limit']);
   if (Object.keys(value).some((key) => !allowed.has(key))) throw new Error(label);
   if (
     value.beforeSequence !== undefined &&
@@ -285,6 +287,14 @@ export function parseConversationListMessagesPayload(
   ) {
     throw new Error(label);
   }
+  if (
+    value.aroundMessageId !== undefined &&
+    (typeof value.aroundMessageId !== 'string' ||
+      !value.aroundMessageId.trim() ||
+      value.aroundMessageId.length > 128 ||
+      value.beforeSequence !== undefined)
+  )
+    throw new Error(label);
   if (
     value.limit !== undefined &&
     (!Number.isInteger(value.limit) || (value.limit as number) < 1 || (value.limit as number) > 100)
@@ -296,6 +306,40 @@ export function parseConversationListMessagesPayload(
       value.conversationId,
       label,
     ) as ConversationListMessagesPayload['conversationId'],
+    beforeSequence: value.beforeSequence as number | undefined,
+    ...(value.aroundMessageId !== undefined
+      ? {
+          aroundMessageId:
+            value.aroundMessageId as ConversationListMessagesPayload['aroundMessageId'],
+        }
+      : {}),
+    limit: value.limit as number | undefined,
+  };
+}
+
+export function parseConversationListNavigationPayload(
+  value: unknown,
+): ConversationListNavigationPayload {
+  const label = 'Invalid list-conversation-navigation payload';
+  if (
+    !isRecord(value) ||
+    Object.keys(value).some((key) => !['conversationId', 'beforeSequence', 'limit'].includes(key))
+  )
+    throw new Error(label);
+  const conversationId = requiredString(value.conversationId, label);
+  if (conversationId.length > 128) throw new Error(label);
+  if (
+    value.beforeSequence !== undefined &&
+    (!Number.isSafeInteger(value.beforeSequence) || (value.beforeSequence as number) < 0)
+  )
+    throw new Error(label);
+  if (
+    value.limit !== undefined &&
+    (!Number.isInteger(value.limit) || (value.limit as number) < 1 || (value.limit as number) > 500)
+  )
+    throw new Error(label);
+  return {
+    conversationId: conversationId as ConversationListNavigationPayload['conversationId'],
     beforeSequence: value.beforeSequence as number | undefined,
     limit: value.limit as number | undefined,
   };
@@ -325,12 +369,9 @@ export function parseConversationGetRunProcessPayload(
   value: unknown,
 ): ConversationGetRunProcessPayload {
   const label = 'Invalid get-conversation-run-process payload';
-  if (!isRecord(value)) throw new Error(label);
-  const allowed = new Set(['runId']);
-  if (Object.keys(value).some((key) => !allowed.has(key))) throw new Error(label);
-  const runId = requiredString(value.runId, label);
-  if (runId.length > 128) throw new Error(label);
-  return { runId: runId as ConversationGetRunProcessPayload['runId'] };
+  const payload = parseRunProcessPayload(value);
+  if (!payload) throw new Error(label);
+  return payload;
 }
 
 export function parseConversationListRunTimelinePayload(

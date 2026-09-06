@@ -1,3 +1,5 @@
+import type { DeferredContent } from '@sync-think/shared';
+
 /**
  * One user-visible assistant turn, kept in the exact order emitted by the
  * provider/kernel. The renderer treats this as the source of truth instead of
@@ -9,6 +11,7 @@ export type AssistantTurnSegment =
       sequence: number;
       kind: 'thinking';
       text: string;
+      textRef?: DeferredContent;
       status: 'streaming' | 'completed';
       startedAt?: string;
       completedAt?: string;
@@ -19,6 +22,7 @@ export type AssistantTurnSegment =
       kind: 'text';
       phase: 'commentary' | 'final_answer';
       text: string;
+      textRef?: DeferredContent;
       status: 'streaming' | 'completed';
       startedAt?: string;
       completedAt?: string;
@@ -33,6 +37,8 @@ export type AssistantTurnSegment =
       inputSummary?: string;
       argumentsJson?: string;
       output?: string;
+      argumentsRef?: DeferredContent;
+      outputRef?: DeferredContent;
       isError?: boolean;
       /**
        * Ephemeral live output. Runtime only places these fields on transient

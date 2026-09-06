@@ -19,6 +19,7 @@ import {
   SqliteGlobalAgentStore,
   SqliteTeamStore,
   SqliteConversationStore,
+  SqliteTaskPlanStore,
   SqliteMessageStore,
   SqliteMemoryStore,
   SqliteSkillStore,
@@ -38,6 +39,7 @@ import {
   SqliteScheduledTaskStore,
   SqliteRunIndexStore,
   SqliteAssistantTimelineStore,
+  SqliteConversationContentStore,
   SqliteExternalEventStore,
 } from '@sync-think/storage';
 import {
@@ -48,6 +50,7 @@ import {
   type SecureStoreBackend,
 } from '@sync-think/secure-store';
 import { Runtime, type RuntimeOptions } from './runtime.js';
+import { ConversationHistoryReadService } from './conversation-history-read-service.js';
 import {
   UsageSummaryQueryService,
   refreshUsageSummarySnapshotFromDatabase,
@@ -100,6 +103,7 @@ export interface OpenPersistentRuntimeOptions extends Omit<
   | 'secureStore'
   | 'appSettingStore'
   | 'queryUsageSummary'
+  | 'conversationHistory'
   | 'dataManagement'
   | 'runIndexStore'
   | 'externalEventStore'
@@ -216,6 +220,7 @@ export async function openPersistentRuntime(
       ? join(tmpdir(), 'sync-think-runtime', options.installId)
       : dirname(databasePath);
   let browserHost: BrowserHostLike | undefined = runtimeOptions.browserHost;
+  let conversationHistory: ConversationHistoryReadService | undefined;
   let runtime: Runtime;
   try {
     const unitOfWork = new SqliteUnitOfWork(connection.raw);
@@ -307,15 +312,17 @@ export async function openPersistentRuntime(
           join(runtimeDataRoot, 'artifacts', 'generated-images'),
         ),
       });
+    const sidecarRoot =
+      eventPayloadSidecar?.enabled === true
+        ? eventPayloadSidecar.rootDirectory
+          ? resolve(eventPayloadSidecar.rootDirectory)
+          : resolveRuntimeEventPayloadSidecarRoot(databasePath, options.installId)
+        : undefined;
     const eventPayloadStateStore = new SqliteEventCheckpointStore(
       connection.raw,
       eventPayloadSidecar?.enabled === true
         ? {
-            sidecar: new EventPayloadSidecarStore(
-              eventPayloadSidecar.rootDirectory
-                ? resolve(eventPayloadSidecar.rootDirectory)
-                : resolveRuntimeEventPayloadSidecarRoot(databasePath, options.installId),
-            ),
+            sidecar: new EventPayloadSidecarStore(sidecarRoot!),
             minimumBytes: runtimeEventPayloadMinimumBytes(eventPayloadSidecar.minimumBytes),
             shouldExternalize: (event) => event.type === EVENT_PAYLOAD_BACKFILL_EVENT_TYPES[0],
             project: (event) => buildEventPayloadBackfillProjection(event.type, event.payload),
@@ -342,6 +349,17 @@ export async function openPersistentRuntime(
       );
     }
 
+    const messageStore = new SqliteMessageStore(connection.raw);
+    conversationHistory = new ConversationHistoryReadService({
+      databasePath,
+      sidecarRoot,
+      store: eventPayloadStateStore,
+      messageStore,
+      contentStore: new SqliteConversationContentStore(
+        connection.raw,
+        sidecarRoot ? new EventPayloadSidecarStore(sidecarRoot) : undefined,
+      ),
+    });
     runtime = new Runtime({
       ...runtimeOptions,
       stateStore: eventPayloadStateStore,
@@ -351,7 +369,8 @@ export async function openPersistentRuntime(
       globalAgentStore,
       teamStore,
       conversationStore,
-      messageStore: new SqliteMessageStore(connection.raw),
+      taskPlanStore: runtimeOptions.taskPlanStore ?? new SqliteTaskPlanStore(connection.raw),
+      messageStore,
       assistantTimelineStore: new SqliteAssistantTimelineStore(connection.raw),
       memoryStore: new SqliteMemoryStore(connection.raw),
       skillStore,
@@ -380,6 +399,7 @@ export async function openPersistentRuntime(
       // Read-only here: the daemon owns every write to this queue.
       externalEventStore: new SqliteExternalEventStore(connection.raw),
       queryUsageSummary,
+      conversationHistory,
       browserHost,
       browserExtensionHost:
         runtimeOptions.browserExtensionHost ??
@@ -397,6 +417,7 @@ export async function openPersistentRuntime(
       browserFallbackWorkingDir: runtimeOptions.browserFallbackWorkingDir ?? runtimeDataRoot,
     });
   } catch (error) {
+    await conversationHistory?.close();
     if (!runtimeOptions.browserHost) await browserHost?.shutdown();
     connection.raw.close();
     throw error;

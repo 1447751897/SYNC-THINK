@@ -82,8 +82,13 @@ describe('browser command bridge wiring', () => {
     expect(preloadSource).toContain("'runtime:conversation-submit-browser-result'");
     expect(preloadSource).toContain('saveBrowserScreenshot:');
     expect(preloadSource).toContain("'desktop:save-browser-screenshot'");
+    expect(mainSource).toContain("ipcMain.handle('desktop:browser-trusted-click'");
+    expect(mainSource).toContain('sendInputEvent');
+    expect(preloadSource).toContain('sendBrowserTrustedClick:');
+    expect(preloadSource).toContain("'desktop:browser-trusted-click'");
     expect(globalSource).toContain('submitBrowserResult(');
     expect(globalSource).toContain('saveBrowserScreenshot(');
+    expect(globalSource).toContain('sendBrowserTrustedClick(');
   });
 
   it('screenshot IPC only captures webview guests and serves PNGs via sync-think-image', () => {
@@ -93,7 +98,7 @@ describe('browser command bridge wiring', () => {
     expect(mainSource).toContain("url.hostname === 'screenshot'");
     expect(mainSource).toContain("'/.sync-think/screenshots/'");
     // Markdown renderer allows the protocol for ![](embedUrl) embedding.
-    expect(markdownSource).toContain("sync-think-image://");
+    expect(markdownSource).toContain('sync-think-image://');
     expect(markdownSource).toContain('defaultUrlTransform');
   });
 
@@ -128,6 +133,33 @@ describe('executeBrowserCommand', () => {
     expect(getActiveBrowserWebview()).toBeNull();
   });
 
+  it('does not navigate an existing GitHub guest when browser_open asks for another site', async () => {
+    const github = fakeWebview({
+      src: 'https://github.com/sync-think',
+      getURL: () => 'https://github.com/sync-think',
+    });
+    registerBrowserWebview(github, true, 'https://github.com/sync-think');
+    try {
+      const outcome = await executeBrowserCommand({
+        action: 'browser_open',
+        args: { url: 'https://www.4399.com/' },
+      });
+      expect(outcome.ok).toBe(true);
+      expect(github.src).toBe('https://github.com/sync-think');
+      expect(getActiveBrowserWebview()).toBeNull();
+    } finally {
+      registerBrowserWebview(null);
+    }
+  });
+
+  it('bridges the readonly history navigation directory through main, preload and renderer types', () => {
+    expect(mainSource).toContain("ipcMain.handle('runtime:conversation-list-navigation'");
+    expect(mainSource).toContain("'conversation.listNavigation'");
+    expect(preloadSource).toContain('listConversationNavigation:');
+    expect(preloadSource).toContain("'runtime:conversation-list-navigation'");
+    expect(globalSource).toContain('listConversationNavigation(');
+  });
+
   it('fails with a recovery hint when no webview is registered', async () => {
     registerBrowserWebview(null);
     const outcome = await executeBrowserCommand({ action: 'browser_read', args: {} });
@@ -141,6 +173,16 @@ describe('executeBrowserCommand', () => {
       fakeWebview({
         executeJavaScript: async (code: string) => {
           executed.push(code);
+          if (code.includes('clickableNodes') || code.includes('no visible element matches')) {
+            return {
+              found: true,
+              x: 8,
+              y: 9,
+              tag: 'a',
+              text: 'Go',
+              url: 'https://example.com/',
+            };
+          }
           return { found: true, title: 'Example', url: 'https://example.com/' };
         },
       }),
@@ -156,17 +198,19 @@ describe('executeBrowserCommand', () => {
       expect(executed[0]).toContain(String(BROWSER_READ_TEXT_MAX_CHARS));
 
       await executeBrowserCommand({ action: 'browser_click', args: { selector: '#go' } });
-      expect(executed[1]).toContain('querySelector');
+      expect(executed.some((code) => code.includes('querySelectorAll') && code.includes('#go'))).toBe(
+        true,
+      );
       await executeBrowserCommand({ action: 'browser_click', args: { x: 5, y: 6 } });
-      expect(executed[2]).toContain('elementFromPoint');
+      expect(executed.some((code) => code.includes('elementFromPoint'))).toBe(true);
 
       await executeBrowserCommand({
         action: 'browser_type',
         args: { selector: 'input', text: 'hi' },
       });
       // React controlled inputs need the native value setter + input event.
-      expect(executed[3]).toContain('getOwnPropertyDescriptor');
-      expect(executed[3]).toContain("new Event('input'");
+      const typeScript = executed.find((code) => code.includes('getOwnPropertyDescriptor'));
+      expect(typeScript).toContain("new Event('input'");
     } finally {
       registerBrowserWebview(null);
     }
@@ -215,6 +259,72 @@ describe('executeBrowserCommand', () => {
       const result = JSON.parse(saved.resultJson ?? '{}');
       expect(result.embedUrl).toBe('sync-think-image://screenshot/abc');
       expect(result.note).toContain('![');
+    } finally {
+      registerBrowserWebview(null);
+    }
+  });
+
+  it('turns Playwright :has-text locators into visible text matches and reports misses', async () => {
+    const executed: string[] = [];
+    registerBrowserWebview(
+      fakeWebview({
+        executeJavaScript: async (code: string) => {
+          executed.push(code);
+          return {
+            found: false,
+            reason: 'no visible element matches selector and text',
+            candidates: ['造梦西游'],
+            url: 'https://www.4399.com/',
+          };
+        },
+      }),
+    );
+    try {
+      const outcome = await executeBrowserCommand({
+        action: 'browser_click',
+        args: { selector: 'a:has-text("造梦西游online")' },
+      });
+      expect(outcome.ok).toBe(false);
+      expect(outcome.error).toContain('没有点到可见元素');
+      expect(executed[0]).toContain('造梦西游online');
+      expect(executed[0]).not.toContain(':has-text');
+      expect(JSON.parse(outcome.resultJson ?? '{}').candidates).toEqual(['造梦西游']);
+    } finally {
+      registerBrowserWebview(null);
+    }
+  });
+
+  it('uses a trusted main-process click when the guest reports coordinates', async () => {
+    const clicks: Array<{ webContentsId: number; x: number; y: number }> = [];
+    registerBrowserWebview(
+      fakeWebview({
+        executeJavaScript: async () => ({
+          found: true,
+          x: 24,
+          y: 48,
+          tag: 'a',
+          text: '造梦西游online',
+          href: 'https://www.4399.com/flash/123.htm',
+          url: 'https://www.4399.com/',
+        }),
+      }),
+    );
+    try {
+      const outcome = await executeBrowserCommand({
+        action: 'browser_click',
+        args: { text: '造梦西游online' },
+        sendTrustedClick: async (payload) => {
+          clicks.push(payload);
+          return { ok: true };
+        },
+      });
+      expect(outcome.ok).toBe(true);
+      expect(clicks).toEqual([{ webContentsId: 42, x: 24, y: 48 }]);
+      expect(JSON.parse(outcome.resultJson ?? '{}')).toMatchObject({
+        clicked: true,
+        trusted: true,
+        href: 'https://www.4399.com/flash/123.htm',
+      });
     } finally {
       registerBrowserWebview(null);
     }

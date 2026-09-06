@@ -199,6 +199,64 @@ async function collect(
 }
 
 describe('ClaudeSdkKernelAdapter', () => {
+  it('preserves native Claude task results without replacing them with host task tools', async () => {
+    const nativeResult = { task: { id: '42', subject: '验证持久化任务' } };
+    const adapter = new ClaudeSdkKernelAdapter({
+      query: fakeQuery(async function* () {
+        yield {
+          type: 'assistant',
+          parent_tool_use_id: null,
+          uuid: 'native-task',
+          session_id: 's',
+          message: {
+            id: 'native-task-message',
+            content: [
+              {
+                type: 'tool_use',
+                id: 'task-call',
+                name: 'TaskCreate',
+                input: {
+                  subject: '验证持久化任务',
+                  description: '验证真实 SDK 结构化结果与任务编号',
+                },
+              },
+            ],
+          },
+        } as unknown as SDKMessage;
+        yield {
+          type: 'user',
+          parent_tool_use_id: null,
+          uuid: 'native-result',
+          session_id: 's',
+          tool_use_result: nativeResult,
+          message: {
+            role: 'user',
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: 'task-call',
+                content: 'Task #42 created successfully: 验证持久化任务',
+              },
+            ],
+          },
+        } as unknown as SDKMessage;
+        yield resultSuccess();
+      }),
+    });
+    const { events } = await collect(adapter);
+    expect(events.find((event) => event.type === 'tool-call')).toMatchObject({
+      name: 'TaskCreate',
+    });
+    expect(events.find((event) => event.type === 'tool-result')).toMatchObject({
+      toolId: 'task-call',
+      structuredOutput: nativeResult,
+      isError: false,
+    });
+    expect(
+      events.some((event) => event.type === 'tool-call' && event.name === 'update_task_plan'),
+    ).toBe(false);
+  });
+
   it('translates assistant text, tool calls and usage into KernelEvents', async () => {
     const adapter = new ClaudeSdkKernelAdapter({
       query: fakeQuery(async function* () {
@@ -558,6 +616,7 @@ describe('ClaudeSdkKernelAdapter', () => {
     expect(permissions).toHaveLength(1);
     expect(permissions[0]).toMatchObject({
       requestId: 'perm-1',
+      toolId: 'toolu_bash',
       toolName: 'Bash',
       toolInput: { command: 'ls' },
     });

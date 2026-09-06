@@ -4,6 +4,11 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { AbilitiesPage } from './AbilitiesPage.js';
+import {
+  SKILL_DESC_CUT,
+  formatCharCount,
+  residentDescriptionChars,
+} from './abilities/skill-resident-context.js';
 
 class PointerEventPolyfill extends MouseEvent {
   readonly pointerId: number;
@@ -660,6 +665,53 @@ describe('AbilitiesPage', () => {
     );
     expect(await screen.findByText('read_file')).toBeTruthy();
     expect(await screen.findByText(/已注册 MCP/)).toBeTruthy();
+  });
+
+  it('shows brand MCP icons and refuses an unresolved GitHub env command', async () => {
+    const context7 = {
+      mcpServerId: 'mcp-context7',
+      name: 'context7',
+      transport: 'remote-http' as const,
+      endpoint: 'https://mcp.context7.com/mcp',
+      tools: [
+        { name: 'resolve-library-id', description: 'Resolve a library.' },
+        { name: 'query-docs', description: 'Query docs.' },
+      ],
+      trusted: true,
+      enabled: true,
+      maxOutputBytes: 1_000_000,
+      timeoutMs: 30_000,
+      notes: '',
+      createdAt: '2026-08-09T00:00:00.000Z',
+      updatedAt: '2026-08-09T00:00:00.000Z',
+    };
+    const github = {
+      mcpServerId: 'mcp-github',
+      name: 'GitHub',
+      transport: 'local-stdio' as const,
+      endpoint: 'MCP_GITHUB_COMMAND',
+      tools: [],
+      trusted: true,
+      enabled: false,
+      maxOutputBytes: 1_000_000,
+      timeoutMs: 30_000,
+      notes: '',
+      createdAt: '2026-08-09T00:00:00.000Z',
+      updatedAt: '2026-08-09T00:00:00.000Z',
+    };
+    runtime.listMcpServers.mockResolvedValue({ servers: [context7, github] });
+
+    render(<AbilitiesPage onGoToAgents={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('abilities-section-mcp'));
+    fireEvent.click(screen.getByTestId('mcp-tab-mine'));
+    await screen.findByText('context7');
+
+    expect(screen.getByTestId('mcp-icon-context7').getAttribute('src')).toContain('context7.com');
+    expect(screen.getByTestId('mcp-icon-github')).toBeTruthy();
+    expect(screen.getByText('2 个工具')).toBeTruthy();
+    expect(screen.getByText('命令未配置')).toBeTruthy();
+    expect(document.querySelector('[data-mcp-callable="1"]')?.textContent).toContain('context7');
+    expect(document.querySelector('[data-mcp-callable="0"]')?.textContent).toContain('GitHub');
   });
 
   it('does not show the Skill activation-path note in MCP management', async () => {
@@ -1670,6 +1722,112 @@ describe('AbilitiesPage', () => {
         skillVersionId: 'sv-paused',
         enabled: true,
       }),
+    );
+  });
+
+  it('counts unused Skill frontmatter descriptions for resident context, not historical tokens', async () => {
+    const idleDescription = '从需求拆解到目录和里程碑。';
+    const disabledDescription = '不会进入全局预算的停用 Skill。';
+    const truncatedDescription = 'x'.repeat(SKILL_DESC_CUT + 1);
+    const idle = {
+      skillVersionId: 'sv-idle',
+      skillId: 'skill-idle',
+      name: 'idle-skill',
+      description: idleDescription,
+      version: '1.0.0',
+      allowedTools: [],
+      contentFingerprint: 'idle-fingerprint',
+      hasScripts: false,
+      warnings: [],
+      createdAt: '2026-08-09T00:00:00.000Z',
+      enabled: true,
+    };
+    const disabled = {
+      skillVersionId: 'sv-disabled-budget',
+      skillId: 'skill-disabled-budget',
+      name: 'disabled-budget-skill',
+      description: disabledDescription,
+      version: '1.0.0',
+      allowedTools: [],
+      contentFingerprint: 'disabled-budget-fingerprint',
+      hasScripts: false,
+      warnings: [],
+      createdAt: '2026-08-09T00:00:00.000Z',
+      enabled: false,
+    };
+    const truncated = {
+      skillVersionId: 'sv-truncated',
+      skillId: 'skill-truncated',
+      name: 'truncated-skill',
+      description: truncatedDescription,
+      version: '1.0.0',
+      allowedTools: [],
+      contentFingerprint: 'truncated-fingerprint',
+      hasScripts: false,
+      warnings: [],
+      createdAt: '2026-08-09T00:00:00.000Z',
+      enabled: true,
+    };
+    const unusedUsage = (capabilityId: string) => ({
+      capabilityType: 'skill' as const,
+      capabilityId,
+      callCount: 0,
+      successCount: 0,
+      failedCount: 0,
+      cancelledCount: 0,
+      problemCount: 0,
+      contextTokens: 0,
+    });
+    runtime.listSkills.mockResolvedValue({ skills: [idle, disabled, truncated] });
+    runtime.listCapabilityGovernance.mockResolvedValue({
+      workspaceId: 'default-workspace',
+      windowDays: 45,
+      skills: [
+        { skill: idle, workspaceActive: false, usage: unusedUsage(idle.skillVersionId) },
+        { skill: disabled, workspaceActive: true, usage: unusedUsage(disabled.skillVersionId) },
+        { skill: truncated, workspaceActive: true, usage: unusedUsage(truncated.skillVersionId) },
+      ],
+      mcpServers: [],
+    });
+
+    render(
+      <AbilitiesPage
+        activeWorkspaceId="default-workspace"
+        workspaces={[
+          {
+            workspaceId: 'default-workspace' as import('@sync-think/shared').WorkspaceId,
+            name: 'SYNC-THINK',
+            folderPath: 'D:\\workspace',
+            createdAt: '2026-08-09T00:00:00.000Z',
+            updatedAt: '2026-08-09T00:00:00.000Z',
+          },
+        ]}
+        onGoToAgents={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('skill-tab-mine'));
+    await screen.findByText('idle-skill');
+
+    const widget = screen.getByTestId('skill-resident-context');
+    const globalChars =
+      residentDescriptionChars(idleDescription) + residentDescriptionChars(truncatedDescription);
+    expect(widget.textContent).toContain(`${formatCharCount(globalChars)} 字符`);
+    expect(widget.textContent).toContain('建议上限约 15,000（估算）');
+    expect(widget.textContent).not.toMatch(/(?:^|[^\d,])0 字符/);
+    expect(screen.getAllByText('已扫描').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText('描述截断')).toBeTruthy();
+    expect(
+      screen.getByText('有问题').closest('.ability-stat')?.querySelector('strong')?.textContent,
+    ).toBe('1');
+
+    fireEvent.click(screen.getByTestId('skill-scope-default-workspace'));
+    await waitFor(() =>
+      expect(screen.getByTestId('skill-resident-context').textContent).toContain(
+        `${formatCharCount(residentDescriptionChars(truncatedDescription))} 字符`,
+      ),
+    );
+    expect(screen.getByTestId('skill-resident-context').textContent).not.toContain(
+      `${formatCharCount(globalChars)} 字符`,
     );
   });
 

@@ -778,10 +778,11 @@ describe('Runtime external kernel finalization', () => {
       expect(adapter.requests[0]?.systemContext).toContain(
         'No project folder is bound for this conversation.',
       );
-      expect(adapter.requests[0]?.systemContext).toContain(
+      expect(adapter.requests[0]?.systemContext).not.toContain(
         'mcp__sync-think-platform__update_task_plan',
       );
-      expect(adapter.requests[0]?.systemContext).toContain('2+ distinct steps');
+      expect(adapter.requests[0]?.systemContext).toContain('Use Claude Code native task tools for multi-step work');
+      expect(adapter.requests[0]?.systemContext).toContain('TaskCreate (subject, description)');
     } finally {
       connection.raw.close();
     }

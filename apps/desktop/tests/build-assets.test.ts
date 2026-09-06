@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { assertProductionShellBuild } from '../scripts/shell-build-config.mjs';
 
 const desktopRoot = join(__dirname, '..');
 
@@ -48,6 +49,7 @@ describe('desktop renderer build assets', () => {
 
     const html = readFileSync(htmlPath, 'utf8');
     expect(html).toContain('./shell.js');
+    expect(html).toContain('type="module"');
     expect(html).toContain('./shell.css');
     expect(html).not.toContain('shell-entry.tsx');
     // TODO: the shell's CSP relies on `default-src 'self'` and does not spell out
@@ -56,6 +58,28 @@ describe('desktop renderer build assets', () => {
     // (pre-existing) gap — hardening it is a security change, not a token change.
     expect(html).toContain("default-src 'self'");
     expect(html).not.toContain('unsafe-eval');
+    const outputDirectory = join(desktopRoot, 'dist/renderer-shell');
+    const manifest = assertProductionShellBuild(outputDirectory);
+    expect(manifest.shell.initialJsBytes).toBeGreaterThan(500_000);
+    expect(manifest.shell.initialJsBytes).toBeLessThan(manifest.shell.totalJsBytes);
+    expect(manifest.shell.inputs.join('\n')).not.toMatch(
+      /Phase3VisualFixture|qa-entry|highlight\.js\/lib\/index\.js/,
+    );
+    expect(
+      manifest.shell.files.some(
+        (file: { path: string; initial: boolean }) =>
+          !file.initial && file.path.includes('SettingsPage'),
+      ),
+    ).toBe(true);
+    for (const file of manifest.shell.files) {
+      expect(existsSync(join(outputDirectory, file.path))).toBe(true);
+      expect(readFileSync(join(outputDirectory, file.path), 'utf8')).not.toContain(
+        'react.development.js',
+      );
+      for (const dependency of file.imports)
+        expect(existsSync(join(outputDirectory, dependency.path))).toBe(true);
+    }
+    expect(existsSync(join(outputDirectory, 'shell.js.map'))).toBe(false);
 
     const main = readFileSync(mainPath, 'utf8');
     const runtimeSession = readFileSync(runtimeSessionPath, 'utf8');
@@ -68,6 +92,10 @@ describe('desktop renderer build assets', () => {
     const runtimeViewStateSource = readFileSync(runtimeViewStateSourcePath, 'utf8');
     expect(main).toContain("path.join(__dirname, '../preload/index.cjs')");
     expect(main).toContain("path.join(__dirname, '../renderer-shell/index.html')");
+    expect(main).toContain(
+      "!app.isPackaged && process.env.SYNC_THINK_RENDERER_MODE === 'development'",
+    );
+    expect(main).toContain('../../../../.data/renderer-builds/development/index.html');
     expect(main).toContain('installNavigationGuards');
     expect(main).toContain('assertTrustedRendererIpcSource');
     expect(main).toContain('isTrustedRendererUrl');

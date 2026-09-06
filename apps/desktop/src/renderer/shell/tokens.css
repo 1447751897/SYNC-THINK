@@ -200,6 +200,7 @@
   --composer-text-min-height-empty: 72px;
   --composer-text-min-height-conversation: 36px;
   --composer-text-max-height: 200px;
+  --composer-task-list-max-height: min(360px, 50vh);
   --composer-text-padding: 12px 16px 8px;
   --composer-text-size: 14px;
   --composer-text-line-height: 22px;

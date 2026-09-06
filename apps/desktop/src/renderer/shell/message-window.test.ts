@@ -5,6 +5,7 @@ import {
   inferNativeScrollIntent,
   preservePrependScrollTop,
   resolveBottomPinState,
+  shouldFollowConversationContentResize,
   shouldRestorePrependAnchor,
   MESSAGE_WINDOW_ESTIMATED_HEIGHT,
 } from './message-window.js';
@@ -98,6 +99,16 @@ describe('message windowing', () => {
         userIntent: null,
       }),
     ).toBe(true);
+  });
+
+  it('follows process and Think growth while streaming before the final answer', () => {
+    expect(
+      shouldFollowConversationContentResize({ streaming: true, hasAnswerText: false }),
+    ).toBe(true);
+    expect(
+      shouldFollowConversationContentResize({ streaming: true, hasAnswerText: true }),
+    ).toBe(true);
+    expect(shouldFollowConversationContentResize({ streaming: false })).toBe(true);
   });
 
   it('releases bottom pinning on the first explicit upward gesture', () => {

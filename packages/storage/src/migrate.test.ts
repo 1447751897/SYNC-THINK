@@ -94,6 +94,10 @@ async function createLegacy0013TerminalDatabase(dbPath: string) {
       '0048_daemon_external_event',
       '0049_run_index',
       '0050_conversation_context_window_override',
+      '0051_assistant_timeline',
+      '0052_tool_approval_read_indexes',
+      '0053_native_task_plan_projection',
+      '0054_conversation_file_directory_indexes',
     ]);
     await runMigrations(dbPath);
   } finally {
@@ -317,6 +321,10 @@ async function createLegacy0011Database(dbPath: string, withMatchingEvent: boole
       '0048_daemon_external_event',
       '0049_run_index',
       '0050_conversation_context_window_override',
+      '0051_assistant_timeline',
+      '0052_tool_approval_read_indexes',
+      '0053_native_task_plan_projection',
+      '0054_conversation_file_directory_indexes',
     ]);
     await runMigrations(dbPath);
   } finally {
@@ -588,6 +596,10 @@ describe('migration planner (pure)', () => {
           '0048_daemon_external_event',
           '0049_run_index',
           '0050_conversation_context_window_override',
+          '0051_assistant_timeline',
+          '0052_tool_approval_read_indexes',
+          '0053_native_task_plan_projection',
+          '0054_conversation_file_directory_indexes',
         ]);
         const after = await openDatabaseAsync({ path: dbPath });
         try {
@@ -706,6 +718,10 @@ describe('migration planner (pure)', () => {
       '0048_daemon_external_event',
       '0049_run_index',
       '0050_conversation_context_window_override',
+      '0051_assistant_timeline',
+      '0052_tool_approval_read_indexes',
+      '0053_native_task_plan_projection',
+      '0054_conversation_file_directory_indexes',
     ]);
   });
 
@@ -751,6 +767,10 @@ describe('migration planner (pure)', () => {
       '0048_daemon_external_event',
       '0049_run_index',
       '0050_conversation_context_window_override',
+      '0051_assistant_timeline',
+      '0052_tool_approval_read_indexes',
+      '0053_native_task_plan_projection',
+      '0054_conversation_file_directory_indexes',
     ]);
   });
 
@@ -804,6 +824,10 @@ describe('migration planner (pure)', () => {
       '0048_daemon_external_event',
       '0049_run_index',
       '0050_conversation_context_window_override',
+      '0051_assistant_timeline',
+      '0052_tool_approval_read_indexes',
+      '0053_native_task_plan_projection',
+      '0054_conversation_file_directory_indexes',
     ]);
   });
 
@@ -850,6 +874,10 @@ describe('migration planner (pure)', () => {
       '0048_daemon_external_event',
       '0049_run_index',
       '0050_conversation_context_window_override',
+      '0051_assistant_timeline',
+      '0052_tool_approval_read_indexes',
+      '0053_native_task_plan_projection',
+      '0054_conversation_file_directory_indexes',
     ]);
   });
 
@@ -895,6 +923,10 @@ describe('migration planner (pure)', () => {
       '0048_daemon_external_event',
       '0049_run_index',
       '0050_conversation_context_window_override',
+      '0051_assistant_timeline',
+      '0052_tool_approval_read_indexes',
+      '0053_native_task_plan_projection',
+      '0054_conversation_file_directory_indexes',
     ]);
   });
 
@@ -957,6 +989,10 @@ describe('migration planner (pure)', () => {
       '0048_daemon_external_event',
       '0049_run_index',
       '0050_conversation_context_window_override',
+      '0051_assistant_timeline',
+      '0052_tool_approval_read_indexes',
+      '0053_native_task_plan_projection',
+      '0054_conversation_file_directory_indexes',
     ]);
     expect(plan.skipped).toEqual(['0001_baseline_v1']);
   });
@@ -1012,6 +1048,10 @@ describe('migration planner (pure)', () => {
       '0048_daemon_external_event',
       '0049_run_index',
       '0050_conversation_context_window_override',
+      '0051_assistant_timeline',
+      '0052_tool_approval_read_indexes',
+      '0053_native_task_plan_projection',
+      '0054_conversation_file_directory_indexes',
     ]);
     expect(plan.skipped).toEqual(['0001_baseline_v1', '0002_fts_messages']);
   });
@@ -1070,6 +1110,10 @@ describe('migration planner (pure)', () => {
       '0048_daemon_external_event',
       '0049_run_index',
       '0050_conversation_context_window_override',
+      '0051_assistant_timeline',
+      '0052_tool_approval_read_indexes',
+      '0053_native_task_plan_projection',
+      '0054_conversation_file_directory_indexes',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -1132,6 +1176,10 @@ describe('migration planner (pure)', () => {
       '0048_daemon_external_event',
       '0049_run_index',
       '0050_conversation_context_window_override',
+      '0051_assistant_timeline',
+      '0052_tool_approval_read_indexes',
+      '0053_native_task_plan_projection',
+      '0054_conversation_file_directory_indexes',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -1195,6 +1243,10 @@ describe('migration planner (pure)', () => {
       '0048_daemon_external_event',
       '0049_run_index',
       '0050_conversation_context_window_override',
+      '0051_assistant_timeline',
+      '0052_tool_approval_read_indexes',
+      '0053_native_task_plan_projection',
+      '0054_conversation_file_directory_indexes',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -1259,6 +1311,10 @@ describe('migration planner (pure)', () => {
       '0048_daemon_external_event',
       '0049_run_index',
       '0050_conversation_context_window_override',
+      '0051_assistant_timeline',
+      '0052_tool_approval_read_indexes',
+      '0053_native_task_plan_projection',
+      '0054_conversation_file_directory_indexes',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -1324,6 +1380,10 @@ describe('migration planner (pure)', () => {
       '0048_daemon_external_event',
       '0049_run_index',
       '0050_conversation_context_window_override',
+      '0051_assistant_timeline',
+      '0052_tool_approval_read_indexes',
+      '0053_native_task_plan_projection',
+      '0054_conversation_file_directory_indexes',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -1391,6 +1451,10 @@ describe('migration planner (pure)', () => {
       '0048_daemon_external_event',
       '0049_run_index',
       '0050_conversation_context_window_override',
+      '0051_assistant_timeline',
+      '0052_tool_approval_read_indexes',
+      '0053_native_task_plan_projection',
+      '0054_conversation_file_directory_indexes',
     ]);
     expect(plan.skipped).toEqual(prior);
   });
@@ -1450,6 +1514,10 @@ describe('migration planner (pure)', () => {
       '0048_daemon_external_event',
       '0049_run_index',
       '0050_conversation_context_window_override',
+      '0051_assistant_timeline',
+      '0052_tool_approval_read_indexes',
+      '0053_native_task_plan_projection',
+      '0054_conversation_file_directory_indexes',
     ]);
     expect(plan.skipped).toEqual(prior);
   });
@@ -1506,6 +1574,10 @@ describe('migration planner (pure)', () => {
       '0048_daemon_external_event',
       '0049_run_index',
       '0050_conversation_context_window_override',
+      '0051_assistant_timeline',
+      '0052_tool_approval_read_indexes',
+      '0053_native_task_plan_projection',
+      '0054_conversation_file_directory_indexes',
     ]);
     expect(plan.skipped).toEqual(['0002_fts_messages']);
   });
@@ -1783,6 +1855,10 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0048_daemon_external_event',
         '0049_run_index',
         '0050_conversation_context_window_override',
+        '0051_assistant_timeline',
+        '0052_tool_approval_read_indexes',
+        '0053_native_task_plan_projection',
+        '0054_conversation_file_directory_indexes',
       ]);
       const after = await openDatabaseAsync({ path: dbPath });
       try {
@@ -1897,6 +1973,10 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0048_daemon_external_event',
         '0049_run_index',
         '0050_conversation_context_window_override',
+        '0051_assistant_timeline',
+        '0052_tool_approval_read_indexes',
+        '0053_native_task_plan_projection',
+        '0054_conversation_file_directory_indexes',
       ]);
       try {
         await runMigrations(dbPath);
@@ -1968,6 +2048,10 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0048_daemon_external_event',
         '0049_run_index',
         '0050_conversation_context_window_override',
+        '0051_assistant_timeline',
+        '0052_tool_approval_read_indexes',
+        '0053_native_task_plan_projection',
+        '0054_conversation_file_directory_indexes',
       ]);
       const upgraded = await openDatabaseAsync({ path: dbPath });
       try {
@@ -2366,6 +2450,10 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0048_daemon_external_event',
         '0049_run_index',
         '0050_conversation_context_window_override',
+        '0051_assistant_timeline',
+        '0052_tool_approval_read_indexes',
+        '0053_native_task_plan_projection',
+        '0054_conversation_file_directory_indexes',
       ]);
       await runMigrations(dbPath);
     } finally {
@@ -2450,6 +2538,10 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0048_daemon_external_event',
         '0049_run_index',
         '0050_conversation_context_window_override',
+        '0051_assistant_timeline',
+        '0052_tool_approval_read_indexes',
+        '0053_native_task_plan_projection',
+        '0054_conversation_file_directory_indexes',
       ]);
       expect((await runMigrations(dbPath)).applied).toEqual([]);
       const after = await openDatabaseAsync({ path: dbPath });
@@ -2509,6 +2601,10 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0048_daemon_external_event',
         '0049_run_index',
         '0050_conversation_context_window_override',
+        '0051_assistant_timeline',
+        '0052_tool_approval_read_indexes',
+        '0053_native_task_plan_projection',
+        '0054_conversation_file_directory_indexes',
       ]);
       await runMigrations(dbPath);
     } finally {
@@ -2567,6 +2663,10 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0048_daemon_external_event',
         '0049_run_index',
         '0050_conversation_context_window_override',
+        '0051_assistant_timeline',
+        '0052_tool_approval_read_indexes',
+        '0053_native_task_plan_projection',
+        '0054_conversation_file_directory_indexes',
       ]);
       expect((await runMigrations(dbPath)).applied).toEqual([]);
       const after = await openDatabaseAsync({ path: dbPath });
@@ -2632,6 +2732,10 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0048_daemon_external_event',
         '0049_run_index',
         '0050_conversation_context_window_override',
+        '0051_assistant_timeline',
+        '0052_tool_approval_read_indexes',
+        '0053_native_task_plan_projection',
+        '0054_conversation_file_directory_indexes',
       ]);
       const { raw } = await openDatabaseAsync({ path: dbPath });
       try {
@@ -2765,6 +2869,10 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0048_daemon_external_event',
         '0049_run_index',
         '0050_conversation_context_window_override',
+        '0051_assistant_timeline',
+        '0052_tool_approval_read_indexes',
+        '0053_native_task_plan_projection',
+        '0054_conversation_file_directory_indexes',
       ]);
       const { raw } = await openDatabaseAsync({ path: dbPath });
       try {
@@ -2849,6 +2957,10 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0048_daemon_external_event',
         '0049_run_index',
         '0050_conversation_context_window_override',
+        '0051_assistant_timeline',
+        '0052_tool_approval_read_indexes',
+        '0053_native_task_plan_projection',
+        '0054_conversation_file_directory_indexes',
       ]);
       const { raw } = await openDatabaseAsync({ path: dbPath });
       try {

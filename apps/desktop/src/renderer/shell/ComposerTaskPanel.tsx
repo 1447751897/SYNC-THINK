@@ -1,16 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import {
-  ChevronDown,
-  Circle,
-  CircleCheck,
-  CircleDot,
-  ListTodo,
-  X,
-} from 'lucide-react';
+import { ChevronDown, Circle, CircleCheck, CircleDot, ListTodo, X } from 'lucide-react';
 import type { TodoProjection } from './todo-projection.js';
 
 function taskSignature(todo: TodoProjection): string {
-  return todo.items.map((item) => `${item.status}:${item.title}`).join('\u0000');
+  return JSON.stringify(
+    todo.items.map((item) => [item.status, item.title, item.description ?? '']),
+  );
 }
 
 export function ComposerTaskPanel({
@@ -24,7 +19,7 @@ export function ComposerTaskPanel({
   const [dismissed, setDismissed] = useState<{ scope: string; signature: string }>();
   const panelRef = useRef<HTMLDivElement>(null);
   const autoExpandedScopesRef = useRef(new Set<string>());
-  const visibleTodo = todo && todo.items.length > 1 ? todo : undefined;
+  const visibleTodo = todo?.items.some((item) => item.status !== 'completed') ? todo : undefined;
   const signature = useMemo(() => (visibleTodo ? taskSignature(visibleTodo) : ''), [visibleTodo]);
 
   useEffect(() => {
@@ -80,10 +75,16 @@ export function ComposerTaskPanel({
           <ListTodo size={16} aria-hidden="true" />
           <span className="shell-composer-task-panel__headline">
             {headline}
-            <span>({visibleTodo.completed}/{visibleTodo.total})</span>
+            <span>
+              ({visibleTodo.completed}/{visibleTodo.total})
+            </span>
           </span>
           {progress === 1 ? (
-            <CircleCheck size={14} className="shell-composer-task-panel__complete" aria-hidden="true" />
+            <CircleCheck
+              size={14}
+              className="shell-composer-task-panel__complete"
+              aria-hidden="true"
+            />
           ) : progress > 0 ? (
             <span className="shell-composer-task-panel__progress" aria-hidden="true">
               <span style={{ width: `${progress * 100}%` }} />
@@ -100,7 +101,10 @@ export function ComposerTaskPanel({
           <X size={14} aria-hidden="true" />
         </button>
       </div>
-      <div className="shell-composer-task-panel__reveal" data-expanded={expanded ? 'true' : 'false'}>
+      <div
+        className="shell-composer-task-panel__reveal"
+        data-expanded={expanded ? 'true' : 'false'}
+      >
         <div>
           {expanded ? (
             <div className="shell-composer-task-panel__list" data-testid="composer-task-list">
@@ -118,7 +122,14 @@ export function ComposerTaskPanel({
                     data-status={item.status}
                   >
                     <Icon size={16} aria-hidden="true" />
-                    <span>{item.title}</span>
+                    <div className="shell-composer-task-panel__content">
+                      <span className="shell-composer-task-panel__title">{item.title}</span>
+                      {item.description?.trim() ? (
+                        <span className="shell-composer-task-panel__description">
+                          {item.description}
+                        </span>
+                      ) : null}
+                    </div>
                   </div>
                 );
               })}

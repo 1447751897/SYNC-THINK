@@ -152,6 +152,7 @@ describe('DesktopUpdatePanel', () => {
 
     const checkButton = await screen.findByRole('button', { name: '检查更新' });
     expect((checkButton as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText('当前 Beta 为手动下载，未配置自动更新通道。')).toBeTruthy();
     expect(screen.queryByRole('alert')).toBeNull();
     expect(screen.queryByRole('button', { name: '下载更新' })).toBeNull();
     expect(screen.queryByRole('button', { name: '重启并安装' })).toBeNull();

@@ -42,17 +42,32 @@ export function MarkdownDocumentEditor({
     <div className="shell-file-document-preview shell-markdown-document" data-preview-kind="markdown">
       {onChange ? (
         <div className="shell-markdown-document__toolbar" role="toolbar" aria-label="富文本编辑">
+          <button type="button" aria-label="撤销" title="撤销" onMouseDown={(event) => event.preventDefault()} onClick={() => format('undo')}>
+            ↺
+          </button>
+          <button type="button" aria-label="重做" title="重做" onMouseDown={(event) => event.preventDefault()} onClick={() => format('redo')}>
+            ↻
+          </button>
           <button type="button" aria-label="加粗" title="加粗" onMouseDown={(event) => event.preventDefault()} onClick={() => format('bold')}>
             B
           </button>
           <button type="button" aria-label="斜体" title="斜体" onMouseDown={(event) => event.preventDefault()} onClick={() => format('italic')}>
             I
           </button>
-          <button type="button" aria-label="标题" title="标题" onMouseDown={(event) => event.preventDefault()} onClick={() => format('formatBlock', 'H1')}>
+          <button type="button" aria-label="标题 1" title="标题 1" onMouseDown={(event) => event.preventDefault()} onClick={() => format('formatBlock', 'H1')}>
             H1
           </button>
-          <button type="button" aria-label="列表" title="列表" onMouseDown={(event) => event.preventDefault()} onClick={() => format('insertUnorderedList')}>
+          <button type="button" aria-label="标题 2" title="标题 2" onMouseDown={(event) => event.preventDefault()} onClick={() => format('formatBlock', 'H2')}>
+            H2
+          </button>
+          <button type="button" aria-label="标题 3" title="标题 3" onMouseDown={(event) => event.preventDefault()} onClick={() => format('formatBlock', 'H3')}>
+            H3
+          </button>
+          <button type="button" aria-label="无序列表" title="无序列表" onMouseDown={(event) => event.preventDefault()} onClick={() => format('insertUnorderedList')}>
             ≡
+          </button>
+          <button type="button" aria-label="有序列表" title="有序列表" onMouseDown={(event) => event.preventDefault()} onClick={() => format('insertOrderedList')}>
+            1.
           </button>
         </div>
       ) : null}

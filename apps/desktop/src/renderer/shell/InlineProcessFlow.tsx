@@ -1,7 +1,7 @@
 /**
  * DeepSeek Harness-style ordered assistant execution flow.
- * Every provider event stays on its own lightweight row; tool calls are never
- * grouped, and details expand in place without replacing the timeline.
+ * Think, commentary and status stay on their own rows in document order.
+ * Consecutive tool calls fold into a local action summary that expands in place.
  */
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
@@ -17,6 +17,7 @@ import {
   Plug,
   RotateCw,
   Search,
+  Shield,
   SquareTerminal,
   Users,
   Wrench,
@@ -24,7 +25,9 @@ import {
 import type { CommentaryTimelineSegment, ExecutionProcessStep } from '@sync-think/protocol';
 import type { InlineProcessItem } from './ChatView.js';
 import { useAutoDisclosure } from './auto-disclosure.js';
-import { MarkdownContent } from './MarkdownContent.js';
+import { MessageTextContent } from './MessageTextContent.js';
+import { CodeBlock } from './CodeBlock.js';
+import { CopyTextButton } from './CopyTextButton.js';
 import { buildExecutionTimeline } from './ExecutionTimeline.js';
 import {
   activityFingerprint,
@@ -32,14 +35,18 @@ import {
   deriveStallState,
   formatElapsedZh,
   friendlyToolName,
+  groupConsecutiveProcessTools,
   toolVisualKind,
   toolInputSummary,
   toolStatusOf,
+  type ConsecutiveProcessBlock,
   type ProcessActivity,
   type ProcessStallState,
   type ProcessToolVisualKind,
 } from './process-activity.js';
 import { LoadingPixelGrid } from './LoadingPixelGrid.js';
+import { ConversationContentScope, DeferredToolContent } from './DeferredToolContent.js';
+import { parseDeferredContent } from '@sync-think/shared';
 
 function latestLine(text: string): string {
   return (
@@ -237,7 +244,11 @@ function ThinkRow({
       </button>
       {open && body ? (
         <div className="shell-inline-process__think-body" data-testid="think-row-body">
-          <MarkdownContent text={body} streaming={false} />
+          <MessageTextContent
+            text={body}
+            parts={item.contentRef ? [{ text: body, contentRef: item.contentRef }] : undefined}
+            sourceStreaming={isStreaming}
+          />
         </div>
       ) : null}
     </div>
@@ -288,37 +299,63 @@ function ToolPayload({
   text,
   testId,
   failed = false,
+  streaming = false,
+  label = '输出',
+  deferred,
 }: {
   text: string;
   testId: string;
   failed?: boolean;
+  streaming?: boolean;
+  label?: string;
+  deferred?: import('@sync-think/shared').DeferredContent;
 }) {
+  const contentReference = parseDeferredContent(deferred);
+  if (contentReference)
+    return (
+      <DeferredToolContent
+        deferred={contentReference}
+        preview={text}
+        label={label}
+        streaming={streaming}
+        failed={failed}
+        testId={testId}
+      />
+    );
   const fields = structuredFields(text);
   if (!fields) {
     return (
-      <pre
-        className={`shell-inline-process__tool-code${failed ? ' is-failed' : ''}`}
-        data-testid={testId}
-      >
-        {text}
-      </pre>
+      <div className={`shell-tool-result${failed ? ' is-failed' : ''}`} data-testid={testId}>
+        <CodeBlock
+          code={text}
+          language={['{', '['].includes(text.trimStart().charAt(0)) ? 'json' : 'text'}
+          streaming={streaming}
+          copyLabel={`复制${label}`}
+          collapsible={false}
+          maxHeight={240}
+          showStatus={false}
+        />
+      </div>
     );
   }
   return (
-    <dl
-      className={`shell-inline-process__structured${failed ? ' is-failed' : ''}`}
-      data-testid={testId}
-    >
-      {fields.map(([key, value]) => {
-        const nested = value !== null && typeof value === 'object';
-        return (
-          <div className="shell-inline-process__structured-row" key={key}>
-            <dt>{key}</dt>
-            <dd className={nested ? 'is-nested' : undefined}>{structuredValueText(value)}</dd>
-          </div>
-        );
-      })}
-    </dl>
+    <div className={`shell-tool-result${failed ? ' is-failed' : ''}`} data-testid={testId}>
+      <div className="shell-tool-result__bar">
+        <span>JSON</span>
+        <CopyTextButton text={text} label={`复制${label}`} />
+      </div>
+      <dl className={`shell-inline-process__structured${failed ? ' is-failed' : ''}`}>
+        {fields.map(([key, value]) => {
+          const nested = value !== null && typeof value === 'object';
+          return (
+            <div className="shell-inline-process__structured-row" key={key}>
+              <dt>{key}</dt>
+              <dd className={nested ? 'is-nested' : undefined}>{structuredValueText(value)}</dd>
+            </div>
+          );
+        })}
+      </dl>
+    </div>
   );
 }
 
@@ -461,8 +498,21 @@ function ToolRow({
           {item.argumentsJson ? (
             <div className="shell-inline-process__detail-block">
               <span>参数</span>
-              <ToolPayload text={item.argumentsJson} testId="inline-process-tool-arguments" />
+              <ToolPayload
+                text={item.argumentsJson}
+                testId="inline-process-tool-arguments"
+                label="参数"
+                deferred={item.argumentsRef}
+              />
             </div>
+          ) : null}
+          {item.detailsRef ? (
+            <DeferredToolContent
+              deferred={item.detailsRef}
+              preview="包含较大的附加字段；完整事件展示数据按需读取。"
+              label="事件详情"
+              testId="inline-process-event-details"
+            />
           ) : null}
           {detailResult !== undefined ? (
             <div className="shell-inline-process__detail-block">
@@ -471,6 +521,9 @@ function ToolRow({
                 text={detailResult}
                 testId="inline-process-tool-result"
                 failed={status === 'failed'}
+                streaming={status === 'running'}
+                label={status === 'failed' ? '错误' : '输出'}
+                deferred={item.resultRef}
               />
             </div>
           ) : null}
@@ -528,7 +581,7 @@ function ProcessActivityRow({
       role="status"
       aria-live="polite"
     >
-      <LoadingPixelGrid />
+      {activity.kind === 'approval' ? <Shield size={16} aria-hidden="true" /> : <LoadingPixelGrid />}
       <span
         className="shell-process-panel__activity-label"
         data-label={activity.label}
@@ -584,7 +637,11 @@ function ProcessItemView({
       className="shell-inline-process__markdown"
       data-testid={item.kind === 'commentary' ? 'inline-process-commentary' : 'inline-process-text'}
     >
-      <MarkdownContent text={item.text} streaming={false} />
+      <MessageTextContent
+        text={item.text}
+        parts={item.contentRef ? [{ text: item.text, contentRef: item.contentRef }] : undefined}
+        sourceStreaming={item.status === 'streaming'}
+      />
     </div>
   );
 }
@@ -772,19 +829,123 @@ function mergeMissingCommentary(
   return ordered;
 }
 
+function ProcessActionSummary({
+  summary,
+  open,
+  onToggle,
+  children,
+}: {
+  summary: string;
+  open: boolean;
+  onToggle: () => void;
+  children?: ReactNode;
+}) {
+  return (
+    <div className="shell-process-actions" data-testid="process-action-summary">
+      <button
+        type="button"
+        className="shell-process-actions__toggle"
+        data-testid="process-action-summary-toggle"
+        aria-expanded={open}
+        onClick={onToggle}
+      >
+        <ChevronDown
+          size={13}
+          className={`shell-process-actions__chevron${open ? ' is-open' : ''}`}
+          aria-hidden="true"
+        />
+        <span className="shell-process-actions__label">{summary}</span>
+      </button>
+      {open ? <div className="shell-process-actions__body">{children}</div> : null}
+    </div>
+  );
+}
+
+function consecutiveToolRunShouldOpen(
+  block: Extract<ConsecutiveProcessBlock, { kind: 'tools' }>,
+  input: {
+    defaultOpen?: boolean;
+    userToggled: ReadonlySet<string>;
+    currentlyOpen: ReadonlySet<string>;
+  },
+): boolean {
+  if (input.userToggled.has(block.key)) return input.currentlyOpen.has(block.key);
+  if (input.defaultOpen === true) return true;
+  return block.entries.some((entry) => toolStatusOf(entry.item) === 'running');
+}
+
+function nextOpenToolRuns(
+  blocks: readonly ConsecutiveProcessBlock[],
+  input: {
+    defaultOpen?: boolean;
+    userToggled: ReadonlySet<string>;
+    currentlyOpen: ReadonlySet<string>;
+  },
+): Set<string> {
+  const next = new Set<string>();
+  for (const block of blocks) {
+    if (block.kind !== 'tools') continue;
+    if (consecutiveToolRunShouldOpen(block, input)) next.add(block.key);
+  }
+  return next;
+}
+
+function sameStringSet(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
+  if (left.size !== right.size) return false;
+  for (const value of left) {
+    if (!right.has(value)) return false;
+  }
+  return true;
+}
+
+function ThinkVisibilitySwitch({
+  checked,
+  onChange,
+}: {
+  checked: boolean;
+  onChange?: (value: boolean) => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-label="显示 Think"
+      aria-checked={checked}
+      data-testid="process-think-switch"
+      className={`shell-process-panel__think-switch${checked ? ' is-checked' : ''}`}
+      onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        onChange?.(!checked);
+      }}
+    >
+      <span className="shell-process-panel__think-switch-label">Think</span>
+      <span className="shell-process-panel__think-switch-track" aria-hidden="true">
+        <span />
+      </span>
+    </button>
+  );
+}
+
 export const InlineProcessFlow = memo(function InlineProcessFlow({
   items,
   steps,
+  totalFailedTools,
+  pageControls,
   commentarySegments,
   streaming,
+  waitingForApproval = false,
   answerStarted = false,
   runId,
+  conversationId,
   startedAt,
   completedAt,
   durationMs,
   defaultOpen,
   collapseExecutionProcess = true,
   showToolUse = true,
+  showThinking = true,
+  onShowThinkingChange,
   toolCallExpandedByDefault = false,
   agentTaskContent,
   supplementalContent,
@@ -799,10 +960,14 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
 }: {
   items: readonly InlineProcessItem[];
   steps?: readonly ExecutionProcessStep[];
+  totalFailedTools?: number;
+  pageControls?: ReactNode;
   commentarySegments?: readonly CommentaryTimelineSegment[];
   streaming?: boolean;
+  waitingForApproval?: boolean;
   answerStarted?: boolean;
   runId?: string;
+  conversationId?: string;
   startedAt?: string;
   completedAt?: string;
   durationMs?: number;
@@ -812,6 +977,9 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
   collapseExecutionProcess?: boolean;
   /** Keep tool rows in the conversation trace. */
   showToolUse?: boolean;
+  /** Keep Think rows in the conversation trace. */
+  showThinking?: boolean;
+  onShowThinkingChange?: (value: boolean) => void;
   /** Open each newly observed tool's input/output until the user toggles it. */
   toolCallExpandedByDefault?: boolean;
   /** Reserved for real delegated task projections; omitted when no tasks exist. */
@@ -828,7 +996,32 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
   onRetryTimelineLoad?: () => void;
 }) {
   const orderedItems = useMemo<readonly InlineProcessItem[]>(() => {
-    const visibleItems = showToolUse ? items : items.filter((item) => item.kind !== 'tool');
+    const stepsById = new Map(steps?.map((step) => [step.id, step]));
+    const visibleItems = items
+      .filter((item) => {
+        if (!showToolUse && item.kind === 'tool') return false;
+        if (!showThinking && item.kind === 'reasoning') return false;
+        return true;
+      })
+      .map((item) => {
+        if (item.kind !== 'tool') return item;
+        const step =
+          (item.toolCallId ? stepsById.get(item.toolCallId) : undefined) ??
+          (item.id ? stepsById.get(item.id) : undefined);
+        if (!step?.outputRef && !step?.argumentsRef && !step?.detailsRef) return item;
+        return {
+          ...item,
+          detailsRef: step.detailsRef ?? item.detailsRef,
+          resultRef:
+            !item.resultRef || item.resultRef.reference.source === 'message'
+              ? (step.outputRef ?? item.resultRef)
+              : item.resultRef,
+          argumentsRef:
+            !item.argumentsRef || item.argumentsRef.reference.source === 'message'
+              ? (step.argumentsRef ?? item.argumentsRef)
+              : item.argumentsRef,
+        };
+      });
     const visibleSteps = showToolUse ? steps : undefined;
     if (visibleItems.some((item) => item.kind === 'tool' || item.kind === 'status')) {
       return mergeMissingCommentary(visibleItems, visibleSteps, commentarySegments);
@@ -843,9 +1036,13 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
       for (const step of item.steps) {
         merged.push({
           kind: 'tool',
+          toolCallId: step.id,
           name: step.toolName ?? step.label ?? '工具',
           argumentsJson: step.command ?? step.url ?? step.path ?? '',
           result: step.preview ?? step.error ?? '',
+          ...(step.outputRef ? { resultRef: step.outputRef } : {}),
+          ...(step.detailsRef ? { detailsRef: step.detailsRef } : {}),
+          ...(step.argumentsRef ? { argumentsRef: step.argumentsRef } : {}),
           status: step.status === 'error' ? 'failed' : step.completedAt ? 'completed' : 'running',
           ...(step.status === 'error' ? { failed: true } : {}),
           ...(step.startedAt ? { startedAt: step.startedAt } : {}),
@@ -854,7 +1051,8 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
       }
     }
     return [...visibleItems.filter((item) => item.kind !== 'commentary'), ...merged];
-  }, [commentarySegments, items, showToolUse, steps]);
+  }, [commentarySegments, items, showThinking, showToolUse, steps]);
+  const timelineBlocks = useMemo(() => groupConsecutiveProcessTools(orderedItems), [orderedItems]);
 
   const [expandedItemKeys, setExpandedItemKeys] = useState<ReadonlySet<string>>(() => new Set());
   const userToggledItemKeysRef = useRef<Set<string>>(new Set());
@@ -871,7 +1069,11 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
         if (item.kind !== 'tool') continue;
         const itemKey = processItemKey(item, index);
         if (userToggledItemKeysRef.current.has(itemKey)) continue;
-        if (toolCallExpandedByDefault) next.add(itemKey);
+        if (
+          toolCallExpandedByDefault ||
+          (toolStatusOf(item) === 'running' && Boolean(item.result))
+        )
+          next.add(itemKey);
         else next.delete(itemKey);
       }
       return next;
@@ -905,12 +1107,46 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
   // A completed turn only folds when it has a real final answer beside the
   // trace. Commentary-only and terminal-only turns stay open so the entire
   // assistant response never collapses into an empty-looking header.
-  const automaticPanelOpen = defaultOpen ?? Boolean(streaming || !answerStarted);
+  const automaticPanelOpen =
+    defaultOpen ??
+    Boolean(streaming || !answerStarted);
   const { open: disclosedPanelOpen, toggle: togglePanel } = useAutoDisclosure({
     autoOpen: automaticPanelOpen,
     resetKey: runId,
   });
   const panelOpen = collapseExecutionProcess ? disclosedPanelOpen : true;
+  const userToggledToolRunsRef = useRef(new Set<string>());
+  const toolRunResetKeyRef = useRef(runId);
+  const [openToolRuns, setOpenToolRuns] = useState<ReadonlySet<string>>(() =>
+    nextOpenToolRuns(timelineBlocks, {
+      defaultOpen,
+      userToggled: new Set(),
+      currentlyOpen: new Set(),
+    }),
+  );
+  if (toolRunResetKeyRef.current !== runId) {
+    toolRunResetKeyRef.current = runId;
+    userToggledToolRunsRef.current.clear();
+  }
+  useEffect(() => {
+    setOpenToolRuns((current) => {
+      const next = nextOpenToolRuns(timelineBlocks, {
+        defaultOpen,
+        userToggled: userToggledToolRunsRef.current,
+        currentlyOpen: current,
+      });
+      return sameStringSet(next, current) ? current : next;
+    });
+  }, [defaultOpen, runId, timelineBlocks]);
+  const toggleToolRun = useCallback((key: string) => {
+    userToggledToolRunsRef.current.add(key);
+    setOpenToolRuns((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
   const notifiedOpenRunRef = useRef<string>();
   useEffect(() => {
     if (!panelOpen || !onPanelOpen) return;
@@ -919,30 +1155,10 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
     notifiedOpenRunRef.current = key;
     onPanelOpen();
   }, [onPanelOpen, panelOpen, runId]);
-  const timelineLoadMoreRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
-    const target = timelineLoadMoreRef.current;
-    if (
-      !panelOpen ||
-      timelineLoadState !== 'loaded' ||
-      !timelineHasMore ||
-      !onLoadMoreTimeline ||
-      !target ||
-      typeof IntersectionObserver === 'undefined'
-    ) {
+    if (!panelOpen || timelineLoadState !== 'loaded' || !timelineHasMore || !onLoadMoreTimeline)
       return;
-    }
-    let requested = false;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (requested || !entries.some((entry) => entry.isIntersecting)) return;
-        requested = true;
-        onLoadMoreTimeline();
-      },
-      { rootMargin: '160px 0px' },
-    );
-    observer.observe(target);
-    return () => observer.disconnect();
+    onLoadMoreTimeline();
   }, [onLoadMoreTimeline, panelOpen, timelineHasMore, timelineLoadState]);
   const durationLabel = processDurationLabel({
     ...(startedAt ? { startedAt } : {}),
@@ -958,129 +1174,167 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
   );
   // 活动摘要始终落在执行流最下方，作为这一轮的实时落点。像素格与 shimmer
   // 是进程活着的视觉证据；停滞分级只在长时间无输出时追加中性提示。
-  const activity = deriveCurrentActivity(orderedItems, { streaming: Boolean(streaming) });
+  // Activity still reads hidden Think rows so the bottom status can show the
+  // latest reasoning line after the user turns the Think switch off.
+  const activity = deriveCurrentActivity(items, {
+    streaming: Boolean(streaming),
+    waitingForApproval,
+  });
   const fingerprint = useMemo(() => activityFingerprint(orderedItems), [orderedItems]);
   const [lastProgressAt, setLastProgressAt] = useState(() => Date.now());
   useEffect(() => {
     setLastProgressAt(Date.now());
-  }, [fingerprint]);
+  }, [fingerprint, waitingForApproval]);
   const stall = activity
     ? deriveStallState({ activity, lastProgressAt, now: clockNow })
     : undefined;
   const showWaiting = Boolean(streaming && !answerStarted && !hasActiveRow);
-  const failedToolCount = orderedItems.reduce(
-    (count, item) => count + (item.kind === 'tool' && toolStatusOf(item) === 'failed' ? 1 : 0),
-    0,
-  );
-  if (orderedItems.length === 0 && !showWaiting && !agentTaskContent && !supplementalContent) {
+  const failedToolCount =
+    totalFailedTools ??
+    orderedItems.reduce(
+      (count, item) => count + (item.kind === 'tool' && toolStatusOf(item) === 'failed' ? 1 : 0),
+      0,
+    );
+  const hasHiddenThinking = !showThinking && items.some((item) => item.kind === 'reasoning');
+  if (
+    orderedItems.length === 0 &&
+    !waitingForApproval &&
+    !showWaiting &&
+    !agentTaskContent &&
+    !supplementalContent &&
+    !hasHiddenThinking
+  ) {
     return null;
   }
+  const processMeta =
+    failedToolCount > 0 || durationLabel ? (
+      <>
+        {failedToolCount > 0 ? (
+          <>
+            <span className="shell-process-panel__separator" aria-hidden="true">
+              ·
+            </span>
+            <span className="shell-process-panel__failure">{failedToolCount} 项失败</span>
+          </>
+        ) : null}
+        {durationLabel ? (
+          <>
+            <span className="shell-process-panel__separator" aria-hidden="true">
+              ·
+            </span>
+            <span className="shell-process-panel__elapsed">{durationLabel}</span>
+          </>
+        ) : null}
+      </>
+    ) : null;
+  const renderProcessEntry = (item: InlineProcessItem, index: number) => (
+    <ProcessEntry
+      key={processItemKey(item, index)}
+      item={item}
+      index={index}
+      streaming={streaming}
+      liveClock={liveClock}
+      now={clockNow}
+      expandedItemKeys={expandedItemKeys}
+      toggleItem={toggleItem}
+      onOpenChange={onOpenChange}
+    />
+  );
   return (
-    <section
-      className="shell-process-panel shell-harness-trace"
-      data-testid="process-panel"
-      data-streaming={streaming ? '1' : '0'}
-      data-failed={failedToolCount > 0 ? 'true' : 'false'}
-    >
-      {collapseExecutionProcess ? (
-        <button
-          type="button"
-          className="shell-process-panel__toggle"
-          data-testid="process-panel-toggle"
-          aria-expanded={panelOpen}
-          onClick={togglePanel}
-        >
-          <span className="shell-process-panel__title">执行过程</span>
-          {failedToolCount > 0 ? (
-            <>
-              <span className="shell-process-panel__separator" aria-hidden="true">
-                ·
-              </span>
-              <span className="shell-process-panel__failure">{failedToolCount} 项失败</span>
-            </>
-          ) : null}
-          {durationLabel ? (
-            <>
-              <span className="shell-process-panel__separator" aria-hidden="true">
-                ·
-              </span>
-              <span className="shell-process-panel__elapsed">{durationLabel}</span>
-            </>
-          ) : null}
-          <ChevronDown
-            size={13}
-            className={`shell-process-panel__chevron${panelOpen ? ' is-open' : ''}`}
-            aria-hidden="true"
-          />
-        </button>
-      ) : null}
-      {panelOpen ? (
-        <div className="shell-process-panel__body" data-testid="process-panel-body">
-          {agentTaskContent ? (
-            <section className="shell-process-agent-tasks" data-testid="process-agent-tasks">
-              <div className="shell-process-agent-tasks__header">
-                <Users size={13} aria-hidden="true" />
-                <span>智能体任务</span>
-              </div>
-              <div className="shell-process-agent-tasks__body">{agentTaskContent}</div>
-            </section>
-          ) : null}
-          {orderedItems.length > 0 ? (
-            <div className="shell-inline-process" data-testid="inline-process-flow">
-              {orderedItems.map((item, index) => (
-                <ProcessEntry
-                  key={processItemKey(item, index)}
-                  item={item}
-                  index={index}
-                  streaming={streaming}
-                  liveClock={liveClock}
-                  now={clockNow}
-                  expandedItemKeys={expandedItemKeys}
-                  toggleItem={toggleItem}
-                  onOpenChange={onOpenChange}
-                />
-              ))}
-            </div>
-          ) : null}
-          {timelineLoadState === 'loading' ? (
-            <div className="shell-process-panel__lazy-state" role="status">
-              <RotateCw size={12} className="shell-process-spin" aria-hidden="true" />
-              <span>{timelineLoadedCount ? '继续加载执行过程…' : '加载完整执行过程…'}</span>
-            </div>
-          ) : timelineLoadState === 'error' ? (
+    <ConversationContentScope.Provider value={conversationId}>
+      <section
+        className="shell-process-panel shell-harness-trace"
+        data-testid="process-panel"
+        data-streaming={streaming ? '1' : '0'}
+        data-failed={failedToolCount > 0 ? 'true' : 'false'}
+      >
+        <div className="shell-process-panel__header">
+          {collapseExecutionProcess ? (
             <button
               type="button"
-              className="shell-process-panel__lazy-retry"
-              onClick={onRetryTimelineLoad}
+              className="shell-process-panel__toggle"
+              data-testid="process-panel-toggle"
+              aria-expanded={panelOpen}
+              onClick={togglePanel}
             >
-              <RotateCw size={12} aria-hidden="true" />
-              <span>重新加载完整执行过程</span>
+              <span className="shell-process-panel__title">执行过程</span>
+              {processMeta}
+              <ChevronDown
+                size={13}
+                className={`shell-process-panel__chevron${panelOpen ? ' is-open' : ''}`}
+                aria-hidden="true"
+              />
             </button>
-          ) : timelineHasMore ? (
-            <button
-              ref={timelineLoadMoreRef}
-              type="button"
-              className="shell-process-panel__lazy-retry"
-              data-testid="process-timeline-load-more"
-              onClick={onLoadMoreTimeline}
-            >
-              <ChevronDown size={12} aria-hidden="true" />
-              <span>
-                继续加载
-                {timelineTotalSegments !== undefined && timelineLoadedCount !== undefined
-                  ? `（${timelineLoadedCount}/${timelineTotalSegments}）`
-                  : ''}
-              </span>
-            </button>
-          ) : null}
+          ) : (
+            <div className="shell-process-panel__heading">
+              <span className="shell-process-panel__title">执行过程</span>
+              {processMeta}
+            </div>
+          )}
+          <ThinkVisibilitySwitch checked={showThinking} onChange={onShowThinkingChange} />
         </div>
-      ) : null}
-      {supplementalContent ? (
-        <div className="shell-process-panel__supplemental">{supplementalContent}</div>
-      ) : null}
-      {activity ? (
-        <ProcessActivityRow activity={activity} stall={stall} elapsed={durationLabel} />
-      ) : null}
-    </section>
+        {panelOpen ? (
+          <div className="shell-process-panel__body" data-testid="process-panel-body">
+            {pageControls}
+            {agentTaskContent ? (
+              <section className="shell-process-agent-tasks" data-testid="process-agent-tasks">
+                <div className="shell-process-agent-tasks__header">
+                  <Users size={13} aria-hidden="true" />
+                  <span>智能体任务</span>
+                </div>
+                <div className="shell-process-agent-tasks__body">{agentTaskContent}</div>
+              </section>
+            ) : null}
+            {orderedItems.length > 0 ? (
+              <div className="shell-inline-process" data-testid="inline-process-flow">
+                {timelineBlocks.map((block) => {
+                  if (block.kind === 'item') return renderProcessEntry(block.item, block.index);
+                  const open = openToolRuns.has(block.key);
+                  return (
+                    <ProcessActionSummary
+                      key={block.key}
+                      summary={block.summary}
+                      open={open}
+                      onToggle={() => toggleToolRun(block.key)}
+                    >
+                      {open
+                        ? block.entries.map((entry) => renderProcessEntry(entry.item, entry.index))
+                        : null}
+                    </ProcessActionSummary>
+                  );
+                })}
+              </div>
+            ) : null}
+            {timelineLoadState === 'loading' ? (
+              <div className="shell-process-panel__lazy-state" role="status">
+                <RotateCw size={12} className="shell-process-spin" aria-hidden="true" />
+                <span>
+                  {timelineLoadedCount
+                    ? timelineTotalSegments
+                      ? `继续加载执行过程…（${timelineLoadedCount}/${timelineTotalSegments}）`
+                      : '继续加载执行过程…'
+                    : '加载完整执行过程…'}
+                </span>
+              </div>
+            ) : timelineLoadState === 'error' ? (
+              <button
+                type="button"
+                className="shell-process-panel__lazy-retry"
+                onClick={onRetryTimelineLoad}
+              >
+                <RotateCw size={12} aria-hidden="true" />
+                <span>重新加载完整执行过程</span>
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+        {supplementalContent ? (
+          <div className="shell-process-panel__supplemental">{supplementalContent}</div>
+        ) : null}
+        {activity ? (
+          <ProcessActivityRow activity={activity} stall={stall} elapsed={durationLabel} />
+        ) : null}
+      </section>
+    </ConversationContentScope.Provider>
   );
 });

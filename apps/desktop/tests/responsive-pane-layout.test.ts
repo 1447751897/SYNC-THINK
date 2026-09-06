@@ -30,12 +30,14 @@ describe('responsive pane layout wiring', () => {
     expect(shellStyles).toContain('@container shell-chat (max-width: 620px)');
   });
 
-  it('uses native resource dragging for conversation tabs without a pointer transform track', () => {
+  it('uses morphing pointer slots for workspace tabs and native dragging for conversation tabs', () => {
     expect(tabsSource).not.toContain('PointerSensor');
     expect(tabsSource).toContain('draggable');
     expect(tabsSource).toContain('application/x-sync-think-pane-resource');
     expect(topBarSource).not.toContain('PointerSensor');
-    expect(topBarSource).toContain('application/x-sync-think-workspace');
+    expect(topBarSource).not.toContain('application/x-sync-think-workspace');
+    expect(topBarSource).toContain('useMorphingWorkspaceTabs');
+    expect(topBarSource).toContain('workspace-tab-surface');
   });
 
   it('contains all application-level horizontal overflow inside owned scroll regions', () => {

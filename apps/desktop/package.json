@@ -1,16 +1,19 @@
 {
   "name": "@sync-think/desktop",
-  "version": "0.1.0-alpha.1",
+  "version": "0.1.0-beta.1",
   "private": true,
   "type": "module",
   "main": "./dist/main/index.js",
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/build-preload.mjs && node scripts/build-shell.mjs",
     "build:shell": "node scripts/build-shell.mjs",
+    "build:shell:dev": "node scripts/build-shell.mjs --mode development",
+    "build:shell:qa": "node scripts/build-shell.mjs --mode qa",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --passWithNoTests --testTimeout=15000",
     "lint": "eslint src --ext .ts,.tsx && node ../../scripts/check-design-tokens.mjs",
     "dev": "node ../../scripts/dev-desktop.mjs",
+    "dev:renderer": "node ../../scripts/dev-desktop.mjs --renderer-development",
     "start": "electron .",
     "start:shell": "electron ."
   },

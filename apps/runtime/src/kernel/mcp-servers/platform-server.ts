@@ -202,7 +202,7 @@ export const platformServer: KernelMcpServerDefinition = {
     {
       name: 'goal_manage',
       description:
-        'Manage the active goal (目标模式). Actions: "complete" (mark the objective achieved with evidence you gathered), "block" (reason — stop and wait for the user when an unresolvable obstacle blocks progress), "progress" (note — record a short progress note). Only usable while a goal is active in this conversation.',
+        'Manage the active Goal mode objective only. Actions: "complete" (mark the objective achieved with evidence you gathered), "block" (reason — stop and wait for the user when an unresolvable obstacle blocks progress), "progress" (note — record a short progress note). Never use this for a task checklist; use the current kernel’s task/plan tools instead. This tool is omitted unless the user started Goal mode.',
       approval: 'never',
       inputSchema: {
         type: 'object',

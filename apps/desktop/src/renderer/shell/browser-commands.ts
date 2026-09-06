@@ -3,6 +3,7 @@
 // 在 BrowserPanel 注册的 <webview> 上执行 executeJavaScript / capturePage，
 // 结果经 conversation.submitBrowserResult 回传给等待中的工具循环。
 // 安全边界：脚本只在 guest 页执行；回传值 JSON 序列化并截断（64KB 上限）。
+import { resolveBrowserClickTarget } from '@sync-think/shared';
 
 /** Guest 页可见文本读取上限（约 8KB），避免整页 dump 挤爆模型上下文。 */
 export const BROWSER_READ_TEXT_MAX_CHARS = 8_192;
@@ -20,11 +21,30 @@ export interface BrowserWebviewElement extends HTMLElement {
 // Multiple browser panes may stay mounted at once. Keep every live instance and
 // route commands to the pane that is focused or was interacted with most recently.
 const registeredWebviews: BrowserWebviewElement[] = [];
+const intendedUrls = new WeakMap<BrowserWebviewElement, string>();
 let activeWebview: BrowserWebviewElement | null = null;
+
+function normalizeGuestUrl(value: string): string {
+  return value.trim().replace(/\/+$/, '').toLowerCase();
+}
+
+function guestUrlsMatch(left: string | undefined, right: string): boolean {
+  if (!left) return false;
+  return normalizeGuestUrl(left) === normalizeGuestUrl(right);
+}
+
+function currentGuestUrl(view: BrowserWebviewElement): string {
+  try {
+    return view.getURL?.() || view.src || '';
+  } catch {
+    return view.src || '';
+  }
+}
 
 export function registerBrowserWebview(
   view: BrowserWebviewElement | null,
   activate = true,
+  intendedUrl?: string,
 ): void {
   if (!view) {
     registeredWebviews.splice(0, registeredWebviews.length);
@@ -32,7 +52,17 @@ export function registerBrowserWebview(
     return;
   }
   if (!registeredWebviews.includes(view)) registeredWebviews.push(view);
+  if (intendedUrl) intendedUrls.set(view, intendedUrl);
   if (activate || !activeWebview) activeWebview = view;
+}
+
+export function findRegisteredBrowserWebview(url: string): BrowserWebviewElement | null {
+  return (
+    registeredWebviews.find(
+      (view) =>
+        guestUrlsMatch(intendedUrls.get(view), url) || guestUrlsMatch(currentGuestUrl(view), url),
+    ) ?? null
+  );
 }
 
 export function activateBrowserWebview(view: BrowserWebviewElement | null): void {
@@ -78,35 +108,91 @@ function clampResult(value: unknown): string {
   return json;
 }
 
-/** 点击脚本：selector 优先；无 selector 时用 elementFromPoint(x, y)。 */
-function buildClickScript(args: Record<string, unknown>): string {
-  const selector = typeof args.selector === 'string' ? args.selector : '';
-  const x = typeof args.x === 'number' ? Math.round(args.x) : -1;
-  const y = typeof args.y === 'number' ? Math.round(args.y) : -1;
+function isVisibleGuestElementSource(): string {
+  return `function isVisible(el) {
+      if (!el || !(el instanceof Element)) return false;
+      const style = getComputedStyle(el);
+      if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return false;
+      const rect = el.getBoundingClientRect();
+      return rect.width > 1 && rect.height > 1;
+    }
+    function labelOf(el) {
+      return String(el.innerText || el.value || el.getAttribute('aria-label') || el.getAttribute('title') || '').replace(/\\s+/g, ' ').trim();
+    }
+    function clickableNodes() {
+      return Array.from(document.querySelectorAll('a[href], button, [role="button"], [role="link"], input[type="submit"], input[type="button"], [onclick]'));
+    }`;
+}
+
+/** 解析目标：可见 CSS / 可见文本；坐标回传给主进程做可信点击。 */
+function buildResolveClickScript(args: Record<string, unknown>): string {
+  const target = resolveBrowserClickTarget({
+    selector: typeof args.selector === 'string' ? args.selector : undefined,
+    text: typeof args.text === 'string' ? args.text : undefined,
+    x: typeof args.x === 'number' ? args.x : undefined,
+    y: typeof args.y === 'number' ? args.y : undefined,
+  });
+  const css = target.css ?? '';
+  const text = target.text ?? '';
+  const x = target.x ?? -1;
+  const y = target.y ?? -1;
   return `(() => {
-    const sel = ${JSON.stringify(selector)};
+    ${isVisibleGuestElementSource()}
+    const css = ${JSON.stringify(css)};
+    const text = ${JSON.stringify(text)};
+    const needle = text.toLowerCase();
     let el = null;
-    if (sel) el = document.querySelector(sel);
-    else el = document.elementFromPoint(${x}, ${y});
+    let reason = '';
+    if (css) {
+      try {
+        const matches = Array.from(document.querySelectorAll(css)).filter(isVisible);
+        el = needle
+          ? matches.find((node) => labelOf(node).toLowerCase().includes(needle)) || null
+          : matches[0] || null;
+        if (!el) reason = needle ? 'no visible element matches selector and text' : 'no visible element matches selector';
+      } catch {
+        reason = 'invalid CSS selector';
+      }
+    } else if (needle) {
+      el = clickableNodes().filter(isVisible).find((node) => {
+        const label = labelOf(node).toLowerCase();
+        return label === needle || label.includes(needle);
+      }) || null;
+      if (!el) reason = 'no visible link or button matches text';
+    } else {
+      el = document.elementFromPoint(${x}, ${y});
+      if (!el) reason = 'no element at coordinates';
+    }
     if (!el) {
-      return { clicked: false, reason: sel ? 'no element matches selector' : 'no element at coordinates', url: location.href };
+      const candidates = clickableNodes().filter(isVisible).slice(0, 12).map(labelOf).filter(Boolean);
+      return { found: false, clicked: false, reason, candidates, url: location.href };
     }
     try { el.scrollIntoView({ block: 'center', inline: 'center' }); } catch {}
     const rect = el.getBoundingClientRect();
-    const opts = {
-      bubbles: true, cancelable: true, view: window,
-      clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2,
+    return {
+      found: true,
+      x: Math.round(rect.left + rect.width / 2),
+      y: Math.round(rect.top + rect.height / 2),
+      tag: el.tagName.toLowerCase(),
+      text: labelOf(el).slice(0, 120),
+      href: el instanceof HTMLAnchorElement ? el.href : undefined,
+      url: location.href,
     };
+  })()`;
+}
+
+function buildSyntheticClickScript(x: number, y: number): string {
+  return `(() => {
+    const el = document.elementFromPoint(${x}, ${y});
+    if (!el) return { clicked: false, reason: 'no element at coordinates', url: location.href };
+    const opts = { bubbles: true, cancelable: true, view: window, clientX: ${x}, clientY: ${y} };
+    el.dispatchEvent(new PointerEvent('pointerdown', opts));
     el.dispatchEvent(new MouseEvent('mousedown', opts));
+    el.dispatchEvent(new PointerEvent('pointerup', opts));
     el.dispatchEvent(new MouseEvent('mouseup', opts));
     if (typeof el.click === 'function') el.click();
     else el.dispatchEvent(new MouseEvent('click', opts));
-    return {
-      clicked: true,
-      tag: el.tagName.toLowerCase(),
-      text: String(el.innerText || el.value || '').trim().slice(0, 120),
-      url: location.href,
-    };
+    return { clicked: true, tag: el.tagName.toLowerCase(), url: location.href };
   })()`;
 }
 
@@ -151,14 +237,24 @@ function buildReadScript(args: Record<string, unknown>): string {
     if (!target) {
       return { found: false, error: 'no element matches selector', title: document.title, url: location.href };
     }
+    const isVisible = (el) => {
+      if (!el || !(el instanceof Element)) return false;
+      const style = getComputedStyle(el);
+      if (style.display === 'none' || style.visibility === 'hidden') return false;
+      const rect = el.getBoundingClientRect();
+      return rect.width > 1 && rect.height > 1;
+    };
     const fullText = String(target.innerText || '').replace(/\\n{3,}/g, '\\n\\n').trim();
-    const links = Array.from(document.querySelectorAll('a[href]')).slice(0, 40)
-      .map((a) => ({ text: String(a.innerText || '').trim().slice(0, 80), href: a.href }))
-      .filter((l) => l.text);
+    const links = Array.from(document.querySelectorAll('a[href]'))
+      .filter(isVisible)
+      .map((a) => ({ text: String(a.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 80), href: a.href }))
+      .filter((l) => l.text)
+      .slice(0, 80);
     const buttons = Array.from(document.querySelectorAll('button, input[type="submit"], [role="button"]'))
-      .slice(0, 40)
-      .map((b) => String(b.innerText || b.value || b.getAttribute('aria-label') || '').trim().slice(0, 80))
-      .filter(Boolean);
+      .filter(isVisible)
+      .map((b) => String(b.innerText || b.value || b.getAttribute('aria-label') || '').replace(/\\s+/g, ' ').trim().slice(0, 80))
+      .filter(Boolean)
+      .slice(0, 40);
     return {
       found: true,
       title: document.title,
@@ -184,6 +280,12 @@ export interface ExecuteBrowserCommandInput {
     embedUrl?: string;
     error?: string;
   }>;
+  /** 主进程对 webview guest 发送可信鼠标事件（isTrusted）。 */
+  sendTrustedClick?: (payload: {
+    webContentsId: number;
+    x: number;
+    y: number;
+  }) => Promise<{ ok: boolean; error?: string }>;
 }
 
 /**
@@ -193,24 +295,85 @@ export interface ExecuteBrowserCommandInput {
 export async function executeBrowserCommand(
   input: ExecuteBrowserCommandInput,
 ): Promise<BrowserCommandOutcome> {
+  if (input.action === 'browser_open') {
+    const url = typeof input.args.url === 'string' ? input.args.url.trim() : '';
+    if (!/^https?:\/\//i.test(url)) {
+      return { ok: false, error: 'browser_open: 需要有效的 http(s) URL。' };
+    }
+    const matching = findRegisteredBrowserWebview(url);
+    if (matching) activateBrowserWebview(matching);
+    else if (activeWebview) activeWebview = null;
+    return {
+      ok: true,
+      resultJson: clampResult({ ok: true, opened: true, url }),
+    };
+  }
+
   const view = await waitForActiveWebview();
   if (!view) return { ok: false, error: PANEL_NOT_READY_ERROR };
 
   try {
-    if (input.action === 'browser_open' || input.action === 'navigate') {
+    if (input.action === 'navigate') {
       const url = typeof input.args.url === 'string' ? input.args.url.trim() : '';
       if (!/^https?:\/\//i.test(url)) {
         return { ok: false, error: 'browser_open: 需要有效的 http(s) URL。' };
       }
-      view.src = url;
+      const matching = findRegisteredBrowserWebview(url);
+      if (matching) activateBrowserWebview(matching);
+      else view.src = url;
       return {
         ok: true,
         resultJson: clampResult({ ok: true, opened: true, url }),
       };
     }
     if (input.action === 'browser_click') {
-      const result = await view.executeJavaScript(buildClickScript(input.args));
-      return { ok: true, resultJson: clampResult(result) };
+      const resolved = (await view.executeJavaScript(buildResolveClickScript(input.args))) as {
+        found?: boolean;
+        clicked?: boolean;
+        x?: number;
+        y?: number;
+        tag?: string;
+        text?: string;
+        href?: string;
+        url?: string;
+        reason?: string;
+        candidates?: string[];
+      };
+      const x = Math.round(Number(resolved?.x));
+      const y = Math.round(Number(resolved?.y));
+      if (!resolved || resolved.found !== true || !Number.isFinite(x) || !Number.isFinite(y)) {
+        return {
+          ok: false,
+          error: resolved?.reason
+            ? `browser_click: 没有点到可见元素（${resolved.reason}）。请改用可见文案、更精确的 CSS，或先 browser_read。`
+            : 'browser_click: 没有点到可见元素。请改用可见文案、更精确的 CSS，或先 browser_read。',
+          resultJson: clampResult(resolved ?? { clicked: false }),
+        };
+      }
+      let trusted = false;
+      if (input.sendTrustedClick) {
+        try {
+          const webContentsId = view.getWebContentsId();
+          const sent = await input.sendTrustedClick({ webContentsId, x, y });
+          trusted = sent.ok === true;
+        } catch {
+          trusted = false;
+        }
+      }
+      if (!trusted) {
+        await view.executeJavaScript(buildSyntheticClickScript(x, y));
+      }
+      return {
+        ok: true,
+        resultJson: clampResult({
+          clicked: true,
+          trusted,
+          tag: resolved.tag,
+          text: resolved.text,
+          href: resolved.href,
+          url: view.getURL() || resolved.url,
+        }),
+      };
     }
     if (input.action === 'browser_type') {
       const result = await view.executeJavaScript(buildTypeScript(input.args));

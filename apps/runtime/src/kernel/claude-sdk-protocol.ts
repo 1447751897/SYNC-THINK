@@ -185,12 +185,14 @@ export function stripAnthropicV1Suffix(baseUrl: string): string {
  */
 export function toSdkPermissionRequest(params: {
   requestId: string;
+  toolId?: string;
   toolName: string;
   input: Record<string, unknown>;
   decisionReason?: string;
 }): KernelPermissionRequest {
   return {
     requestId: params.requestId,
+    ...(params.toolId ? { toolId: params.toolId } : {}),
     toolName: params.toolName,
     toolInput: params.input ?? {},
     reason: params.decisionReason ?? 'can_use_tool',

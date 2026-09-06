@@ -47,6 +47,14 @@ if (!existsSync(desktopMain) || !existsSync(desktopPreload) || !existsSync(rende
   });
 }
 
+const developmentRenderer = process.argv.includes('--renderer-development');
+if (developmentRenderer && !process.env.VITE_DEV_SERVER_URL) {
+  execFileSync(process.execPath, ['scripts/build-shell.mjs', '--mode', 'development'], {
+    cwd: desktopDir,
+    stdio: 'inherit',
+  });
+}
+
 const child = spawn(electronPath, ['.'], {
   cwd: desktopDir,
   stdio: 'inherit',
@@ -55,6 +63,7 @@ const child = spawn(electronPath, ['.'], {
     SYNC_THINK_INSTALL_ID: process.env.SYNC_THINK_INSTALL_ID ?? 'dev-0001',
     SYNC_THINK_DEV_NO_TOKEN: process.env.SYNC_THINK_DEV_NO_TOKEN ?? '1',
     VITE_DEV_SERVER_URL: process.env.VITE_DEV_SERVER_URL,
+    SYNC_THINK_RENDERER_MODE: developmentRenderer ? 'development' : 'production',
   },
 });
 child.on('exit', (code) => process.exit(code ?? 0));

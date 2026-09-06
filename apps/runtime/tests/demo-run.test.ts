@@ -91,7 +91,14 @@ class PauseAfterFirstDeltaProvider implements ProviderAdapter {
       if (event.type === 'text-delta' || event.type === 'reasoning-delta') {
         this.emittedDelta = true;
       }
-      if (emitted === 2) await new Promise<void>(() => {});
+      if (emitted === 2) {
+        if (!request.signal.aborted) {
+          await new Promise<void>((resolve) => {
+            request.signal.addEventListener('abort', () => resolve(), { once: true });
+          });
+        }
+        return;
+      }
     }
   }
 }

@@ -1,5 +1,6 @@
 // team-conversation command payload parsers (extracted from command-validation.ts).
 import {
+  parseRunProcessPayload,
   normalizeSelectedSkillVersionIds,
   type AppendMessagePayload,
   type CreateTeamPayload,
@@ -9,6 +10,7 @@ import {
   type SetTeamRunStatusPayload,
   type ListConversationsPayload,
   type ConversationListMessagesPayload,
+  type ConversationListNavigationPayload,
   type ConversationGetRunProcessPayload,
   type ConversationListRunTimelinePayload,
   type CreateConversationPayload,
@@ -362,7 +364,7 @@ export function parseConversationListMessagesPayload(
 ): ConversationListMessagesPayload | undefined {
   if (
     !isRecord(value) ||
-    !hasOnlyKeys(value, ['conversationId', 'beforeSequence', 'limit']) ||
+    !hasOnlyKeys(value, ['conversationId', 'beforeSequence', 'aroundMessageId', 'limit']) ||
     !boundedAgentText(value.conversationId, 128)
   ) {
     return undefined;
@@ -374,6 +376,11 @@ export function parseConversationListMessagesPayload(
     return undefined;
   }
   if (
+    value.aroundMessageId !== undefined &&
+    (!boundedAgentText(value.aroundMessageId, 128) || value.beforeSequence !== undefined)
+  )
+    return undefined;
+  if (
     value.limit !== undefined &&
     (!Number.isInteger(value.limit) || (value.limit as number) < 1 || (value.limit as number) > 100)
   ) {
@@ -382,6 +389,38 @@ export function parseConversationListMessagesPayload(
   return {
     conversationId: value.conversationId as ConversationListMessagesPayload['conversationId'],
     beforeSequence: value.beforeSequence as number | undefined,
+    ...(value.aroundMessageId !== undefined
+      ? {
+          aroundMessageId:
+            value.aroundMessageId as ConversationListMessagesPayload['aroundMessageId'],
+        }
+      : {}),
+    limit: value.limit as number | undefined,
+  };
+}
+
+export function parseConversationListNavigationPayload(
+  value: unknown,
+): ConversationListNavigationPayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['conversationId', 'beforeSequence', 'limit']) ||
+    !boundedAgentText(value.conversationId, 128)
+  )
+    return undefined;
+  if (
+    value.beforeSequence !== undefined &&
+    (!Number.isSafeInteger(value.beforeSequence) || (value.beforeSequence as number) < 0)
+  )
+    return undefined;
+  if (
+    value.limit !== undefined &&
+    (!Number.isInteger(value.limit) || (value.limit as number) < 1 || (value.limit as number) > 500)
+  )
+    return undefined;
+  return {
+    conversationId: value.conversationId as ConversationListNavigationPayload['conversationId'],
+    beforeSequence: value.beforeSequence as number | undefined,
     limit: value.limit as number | undefined,
   };
 }
@@ -389,10 +428,7 @@ export function parseConversationListMessagesPayload(
 export function parseConversationGetRunProcessPayload(
   value: unknown,
 ): ConversationGetRunProcessPayload | undefined {
-  if (!isRecord(value) || !hasOnlyKeys(value, ['runId']) || !boundedAgentText(value.runId, 128)) {
-    return undefined;
-  }
-  return { runId: value.runId as ConversationGetRunProcessPayload['runId'] };
+  return parseRunProcessPayload(value);
 }
 
 export function parseConversationListRunTimelinePayload(

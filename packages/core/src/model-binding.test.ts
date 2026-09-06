@@ -4,6 +4,8 @@ import {
   resolveProviderPriorityFallback,
   shouldAttemptFallback,
   shouldSkipSameProviderFallback,
+  isSharedProviderEndpointFailure,
+  formatModelSwitchDetail,
   type AgentModelBinding,
 } from './model-binding.js';
 import type { AgentVersionId, ModelId } from '@sync-think/shared';
@@ -184,6 +186,27 @@ describe('shouldSkipSameProviderFallback', () => {
       expect(shouldSkipSameProviderFallback(failureClass, 2)).toBe(false);
     },
   );
+
+  it('skips same-provider fallback on the first local-gateway 502', () => {
+    expect(
+      shouldSkipSameProviderFallback(
+        'transient',
+        1,
+        'unexpected status 502 Bad Gateway: fetch failed, url: http://127.0.0.1:58677/openai/v1/responses',
+      ),
+    ).toBe(true);
+    expect(isSharedProviderEndpointFailure('fetch failed, url: https://api.example.com')).toBe(
+      false,
+    );
+    expect(
+      formatModelSwitchDetail(
+        'gpt-5.6-luna',
+        'gpt-5.6-sol',
+        'transient',
+        'unexpected status 502 Bad Gateway: fetch failed, url: http://127.0.0.1:58677/openai/v1/responses',
+      ),
+    ).toBe('gpt-5.6-luna → gpt-5.6-sol · 网关 502');
+  });
 });
 
 describe('resolveProviderPriorityFallback', () => {

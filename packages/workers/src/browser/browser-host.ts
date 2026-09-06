@@ -53,6 +53,7 @@ export type BrowserAction =
   | {
       kind: 'click';
       selector?: string;
+      text?: string;
       x?: number;
       y?: number;
       button?: 'left' | 'right' | 'middle';
@@ -1598,6 +1599,11 @@ function validateBrowserAction(action: BrowserAction): void {
     case 'click': {
       const selectorProvided = action.selector !== undefined;
       const hasSelector = selectorIsValid(action.selector) && Boolean(action.selector);
+      const hasText =
+        typeof action.text === 'string' &&
+        action.text.trim().length > 0 &&
+        action.text.length <= 500 &&
+        !action.text.includes('\0');
       const hasCoordinates =
         Number.isFinite(action.x) &&
         Number.isFinite(action.y) &&
@@ -1605,7 +1611,7 @@ function validateBrowserAction(action: BrowserAction): void {
         action.y! >= 0 &&
         action.x! <= 100_000 &&
         action.y! <= 100_000;
-      valid = selectorProvided ? hasSelector : hasCoordinates;
+      valid = (selectorProvided ? hasSelector : false) || hasCoordinates || hasText;
       break;
     }
     case 'fill':
@@ -3032,7 +3038,12 @@ export class PlaywrightDriverPage implements BrowserDriverPage {
         });
         return {};
       case 'click': {
-        if (action.selector) {
+        if (action.text) {
+          const locator = action.selector
+            ? this.page.locator(action.selector).filter({ hasText: action.text })
+            : this.page.getByText(action.text, { exact: false });
+          await locator.first().click({ button: action.button, timeout });
+        } else if (action.selector) {
           await this.page.locator(action.selector).click({ button: action.button, timeout });
         } else if (
           Number.isFinite(action.x) &&
@@ -3044,7 +3055,7 @@ export class PlaywrightDriverPage implements BrowserDriverPage {
         } else {
           throw new BrowserHostError(
             'browser.click-target-required',
-            'Click requires a selector or non-negative x/y coordinates',
+            'Click requires a selector, visible text, or non-negative x/y coordinates',
             'acceptance',
           );
         }

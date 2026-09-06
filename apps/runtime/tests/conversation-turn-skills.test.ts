@@ -117,12 +117,16 @@ class BlockingRecordingAdapter implements ProviderAdapter {
 
   async *call(request: ProviderCallRequest): AsyncIterable<AdapterEvent> {
     this.calls.push({ ...request, apiKey: '[present]' });
+    const releaseOnAbort = () => this.release();
+    request.signal.addEventListener('abort', releaseOnAbort, { once: true });
+    if (request.signal.aborted) releaseOnAbort();
     try {
       await this.released;
       const error = new Error('restart fixture aborted');
       error.name = 'AbortError';
       throw error;
     } finally {
+      request.signal.removeEventListener('abort', releaseOnAbort);
       this.finish();
     }
   }

@@ -1,4 +1,6 @@
 import type {
+  DeferredContent,
+  ConversationId,
   MessageId,
   ThreadId,
   WorkspaceId,
@@ -123,10 +125,15 @@ export type CommandType =
   | 'team.setRunStatus'
   | 'conversation.list'
   | 'conversation.listMessages'
+  | 'conversation.listNavigation'
   | 'conversation.getContextStatus'
   | 'conversation.setContextWindowOverride'
   | 'conversation.getRunProcess'
   | 'conversation.listRunTimeline'
+  | 'conversation.readContent'
+  | 'conversation.readFileDiff'
+  | 'conversation.listFileChanges'
+  | 'conversation.taskPlanHistory'
   | 'conversation.create'
   | 'conversation.rename'
   | 'conversation.setPinned'
@@ -3358,6 +3365,7 @@ export type MessageSummary = import('@sync-think/shared').Message;
 
 export interface ConversationListMessagesPayload {
   conversationId: import('@sync-think/shared').ConversationId;
+  aroundMessageId?: import('@sync-think/shared').MessageId;
   /** Exclusive thread-local sequence cursor. */
   beforeSequence?: number;
   /** Defaults to 50; valid range is 1..100. */
@@ -3366,8 +3374,21 @@ export interface ConversationListMessagesPayload {
 
 export interface ConversationListMessagesResponse {
   messages: MessageSummary[];
+  taskPlan?: import('@sync-think/shared').TaskPlanState;
   nextCursor?: number;
   hasMore: boolean;
+}
+
+export interface ConversationListNavigationPayload {
+  conversationId: import('@sync-think/shared').ConversationId;
+  beforeSequence?: number;
+  limit?: number;
+}
+
+export interface ConversationListNavigationResponse {
+  entries: import('@sync-think/shared').MessageNavigationEntry[];
+  hasMore: boolean;
+  nextCursor?: number;
 }
 export type ContextStatusSectionType =
   'system' | 'agent' | 'project' | 'summary' | 'messages' | 'tools';
@@ -3430,6 +3451,9 @@ export interface ExecutionProcessStep {
   url?: string;
   /** Bounded summary only. Full output is loaded separately when an artifactRef exists. */
   preview?: string;
+  outputRef?: import('@sync-think/shared').DeferredContent;
+  detailsRef?: import('@sync-think/shared').DeferredContent;
+  argumentsRef?: import('@sync-think/shared').DeferredContent;
   artifactRef?: string;
   exitCode?: number;
   error?: string;
@@ -3456,6 +3480,9 @@ export interface FileChangeItem {
   previousTruncated?: boolean;
   /** Full post-write content when the written body was captured from the tool call. */
   content?: string;
+  contentRef?: DeferredContent;
+  previousContentRef?: DeferredContent;
+  contentKind?: 'replacement-fragment';
 }
 
 export interface ConversationGetFileDiffPayload {
@@ -3492,6 +3519,9 @@ export interface TaskPlanView {
 
 export interface RunProcessView {
   runId: RunId;
+  pages?: import('./run-process-page.js').RunProcessPages;
+  latestStep?: ExecutionProcessStep;
+  conversationId?: string;
   steps: ExecutionProcessStep[];
   fileChanges: FileChangeItem[];
   taskPlan?: TaskPlanView;
@@ -3533,6 +3563,8 @@ export interface RunProcessView {
 
 export interface ConversationGetRunProcessPayload {
   runId: RunId;
+  conversationId?: ConversationId;
+  page?: import('./run-process-page.js').RunProcessPageRequest;
 }
 
 export interface ConversationGetRunProcessResponse {
@@ -3851,6 +3883,20 @@ export interface PendingToolApprovalSummary {
   createdAt: string;
 }
 
+export interface ExpiredToolApprovalSummary {
+  approvalId: string;
+  threadId: ThreadId;
+  runId: RunId;
+  toolCallId?: string;
+  toolName: string;
+  title: string;
+  detail: string;
+  status: 'expired';
+  reason: 'stale-approval';
+  expiredAt: string;
+  requestMessageId?: import('@sync-think/shared').MessageId;
+}
+
 export interface ListPendingToolApprovalsPayload {
   threadId: ThreadId;
   runId?: RunId;
@@ -3858,6 +3904,8 @@ export interface ListPendingToolApprovalsPayload {
 
 export interface ListPendingToolApprovalsResponse {
   approvals: PendingToolApprovalSummary[];
+  expired?: ExpiredToolApprovalSummary[];
+  expiredCount?: number;
 }
 
 /**
@@ -3876,6 +3924,8 @@ export interface ConversationDecideToolApprovalResponse {
   decision: 'approve' | 'deny';
   scope: ToolApprovalScope;
   runId?: RunId;
+  outcome?: 'expired';
+  reason?: 'stale-approval';
 }
 
 /**

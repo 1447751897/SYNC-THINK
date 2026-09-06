@@ -1,13 +1,15 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { SqliteEventCheckpointStore } from './runtime-state-store.js';
 import type { Message, MessageId, ThreadId } from '@sync-think/shared';
 import { openDatabaseAsync, type BetterSQLite3Raw } from './connection.js';
 import {
   MAX_MESSAGE_BLOCKS_JSON_BYTES,
   MessageStoreError,
   SqliteMessageStore,
+  validateMessageBlocks,
 } from './message-store.js';
 import { runMigrations } from './scripts/migrate.js';
 
@@ -62,6 +64,121 @@ function explainMessagePage(raw: BetterSQLite3Raw, threadId: ThreadId, beforeSeq
 }
 
 describe('SqliteMessageStore', () => {
+  it('locates only a unique original user request in the exact thread and run', async () => {
+    const { store, raw, close } = await openStore();
+    try {
+      const runId = 'approval-source-run' as never;
+      store.append({ ...message(1), runId });
+      store.append({ ...message(2), runId });
+      store.append({ ...message(3), runId: 'later-run' as never });
+      expect(store.findRunUserMessageId(threadA, runId)).toBe(message(1).id);
+      expect(store.findRunUserMessageId(threadB, runId)).toBeUndefined();
+      expect(store.findRunUserMessageId(threadA, 'missing-run' as never)).toBeUndefined();
+      const plan = raw
+        .prepare(
+          "EXPLAIN QUERY PLAN SELECT id FROM message WHERE run_id = ? AND thread_id = ? AND role = 'user' LIMIT 2",
+        )
+        .all(runId, threadA) as Array<{ detail: string }>;
+      expect(plan.map((row) => row.detail).join(' ')).toContain('message_run_idx');
+      store.append({ ...message(5), runId });
+      expect(store.findRunUserMessageId(threadA, runId)).toBeUndefined();
+    } finally {
+      close();
+    }
+  });
+
+  it('reads a bounded navigation directory without returning message bodies', async () => {
+    const { store, close } = await openStore();
+    try {
+      for (let sequence = 1; sequence <= 6; sequence += 1) store.append(message(sequence));
+      store.append(message(7, threadB));
+      store.updateBlocks(message(4).id, [
+        { type: 'reasoning', reasoningText: 'private reasoning' },
+        { type: 'text', text: '历史摘要'.repeat(12_000) },
+        { type: 'tool-result', payload: { secret: 'not part of navigation' } },
+      ]);
+      const latest = store.listNavigation(threadA, { limit: 3 });
+      expect(latest.entries.map((entry) => entry.sequence)).toEqual([4, 5, 6]);
+      expect(latest).toMatchObject({ hasMore: true, nextCursor: 4 });
+      expect([...latest.entries[0].text]).toHaveLength(240);
+      expect(JSON.stringify(latest)).not.toMatch(
+        /private reasoning|not part of navigation|blocks|payload/,
+      );
+      expect(Buffer.byteLength(JSON.stringify(latest))).toBeLessThan(3_000);
+      const oldest = store.listNavigation(threadA, { beforeSequence: latest.nextCursor, limit: 3 });
+      expect(oldest.entries.map((entry) => entry.sequence)).toEqual([1, 2, 3]);
+      expect(oldest.hasMore).toBe(false);
+      store.updateBlocks(message(4).id, [{ type: 'text', text: 'updated preview' }]);
+      expect(
+        store.listNavigation(threadA).entries.find((entry) => entry.id === message(4).id)?.text,
+      ).toBe('updated preview');
+    } finally {
+      close();
+    }
+  });
+
+  it('loads an anchor-centered page without walking intermediate history', async () => {
+    const { store, close } = await openStore();
+    try {
+      for (let sequence = 1; sequence <= 200; sequence += 1) store.append(message(sequence));
+      store.append(message(1, threadB));
+      const middle = store.listMessages(threadA, { aroundMessageId: message(30).id, limit: 5 });
+      expect(middle.messages.map((entry) => entry.sequence)).toEqual([28, 29, 30, 31, 32]);
+      expect(middle).toMatchObject({ hasMore: true, nextCursor: 28 });
+      expect(
+        store
+          .listMessages(threadA, { aroundMessageId: message(1).id, limit: 5 })
+          .messages.map((entry) => entry.sequence),
+      ).toEqual([1, 2, 3, 4, 5]);
+      expect(
+        store
+          .listMessages(threadA, { aroundMessageId: message(200).id, limit: 5 })
+          .messages.map((entry) => entry.sequence),
+      ).toEqual([196, 197, 198, 199, 200]);
+      expect(
+        store
+          .listMessages(threadA, { aroundMessageId: message(30).id, limit: 1 })
+          .messages.map((entry) => entry.sequence),
+      ).toEqual([30]);
+      expect(() =>
+        store.listMessages(threadA, { aroundMessageId: message(1, threadB).id }),
+      ).toThrow('message.not_found');
+      expect(() =>
+        store.listMessages(threadA, { aroundMessageId: message(30).id, beforeSequence: 10 }),
+      ).toThrow('message.invalid_input');
+    } finally {
+      close();
+    }
+  });
+
+  it('keeps bounded legacy terminal metadata so unloaded turns retain their visual chronology', async () => {
+    const { store, close } = await openStore();
+    try {
+      store.append({
+        ...message(2),
+        blocks: [
+          {
+            type: 'error',
+            text: 'stopped',
+            payload: {
+              terminalState: 'cancelled',
+              legacyBackfill: true,
+              privateDetails: 'not a preview',
+            },
+          },
+        ],
+      });
+      expect(store.listNavigation(threadA).entries[0]).toMatchObject({
+        terminalState: 'cancelled',
+        legacyTerminalBackfill: true,
+        text: 'stopped',
+      });
+      expect(JSON.stringify(store.listNavigation(threadA))).not.toContain('privateDetails');
+    } finally {
+      close();
+    }
+  });
+
   it('paginates one thread newest-first in SQL and returns ascending exclusive pages', async () => {
     const { raw, store, close } = await openStore();
     try {
@@ -189,7 +306,9 @@ describe('SqliteMessageStore', () => {
     try {
       const input = message(1);
       expect(store.append(input)).toEqual(input);
-      expect(store.append({ ...input, blocks: [{ type: 'text', text: 'message 1' }] })).toEqual(input);
+      expect(store.append({ ...input, blocks: [{ type: 'text', text: 'message 1' }] })).toEqual(
+        input,
+      );
       expect(raw.prepare('SELECT COUNT(*) AS count FROM message').get()).toEqual({ count: 1 });
 
       expect(() =>
@@ -238,12 +357,10 @@ describe('SqliteMessageStore', () => {
       ]);
       expect(store.getMessage(first.id)).toEqual(withImage);
       // Same blocks → idempotent.
-      expect(
-        store.updateBlocks(first.id, withImage.blocks),
-      ).toEqual(withImage);
-      expect(() => store.updateBlocks('missing' as MessageId, [{ type: 'text', text: 'x' }])).toThrow(
-        /does not exist/,
-      );
+      expect(store.updateBlocks(first.id, withImage.blocks)).toEqual(withImage);
+      expect(() =>
+        store.updateBlocks('missing' as MessageId, [{ type: 'text', text: 'x' }]),
+      ).toThrow(/does not exist/);
     } finally {
       close();
     }
@@ -269,9 +386,7 @@ describe('SqliteMessageStore', () => {
       );
       expect(() => store.listMessages(threadA, { limit: 0 })).toThrow(/between 1 and 100/);
       expect(() => store.listMessages(threadA, { limit: 101 })).toThrow(/between 1 and 100/);
-      expect(() => store.listMessages(threadA, { beforeSequence: -1 })).toThrow(
-        /beforeSequence/,
-      );
+      expect(() => store.listMessages(threadA, { beforeSequence: -1 })).toThrow(/beforeSequence/);
     } finally {
       close();
     }
@@ -283,6 +398,152 @@ describe('SqliteMessageStore', () => {
       expect(() => store.append(message(1, 'missing-thread' as ThreadId))).toThrow(
         /message\.thread_not_found/,
       );
+    } finally {
+      close();
+    }
+  });
+});
+
+describe('message block preflight', () => {
+  it('includes skill metadata and JSON escaping in the existing byte budget', () => {
+    const blocks: Message['blocks'] = [
+      {
+        type: 'text',
+        text: '汉'.repeat(80_000),
+        payload: {
+          skillVersionIds: ['skill-version'],
+          skills: [{ skillVersionId: 'skill-version', name: '\u0000'.repeat(4000) }],
+        },
+      },
+    ];
+    expect(Buffer.byteLength(JSON.stringify(blocks))).toBeGreaterThan(
+      MAX_MESSAGE_BLOCKS_JSON_BYTES,
+    );
+    expect(() => validateMessageBlocks(blocks)).toThrow('blocks_json exceeds');
+  });
+
+  it('does not mutate valid user text or compatibility payloads', () => {
+    const blocks: Message['blocks'] = [
+      { type: 'text', text: '原样保存🙂\n', payload: { skillVersionIds: ['skill'] } },
+    ];
+    const original = JSON.stringify(blocks);
+    expect(validateMessageBlocks(blocks)).toBeUndefined();
+    expect(JSON.stringify(blocks)).toBe(original);
+  });
+});
+
+function legacyRequestEvents(
+  input: {
+    threadId?: string;
+    contextRunId?: string;
+    packetId?: string;
+    text?: string;
+    messageId?: string;
+    interleaved?: boolean;
+    suffix?: string;
+  } = {},
+) {
+  const runId = 'legacy-approval-run';
+  const suffix = input.suffix ?? '';
+  const draft = (
+    id: string,
+    type: string,
+    payload: Record<string, unknown>,
+    eventRunId?: string,
+  ) => ({
+    id: id + suffix,
+    workspaceId: 'legacy-workspace',
+    category: 'message',
+    type,
+    ...(eventRunId ? { runId: eventRunId } : {}),
+    occurredAt: '2026-09-06T07:00:00Z',
+    payload,
+  });
+  return [
+    draft('legacy-append', 'message.appended', {
+      threadId: threadA,
+      role: 'user',
+      messageId: input.messageId ?? message(1).id,
+      text: input.text ?? 'message 1',
+    }),
+    draft(
+      'legacy-context',
+      'context.packet.built',
+      { threadId: input.threadId ?? threadA, packetId: input.packetId ?? 'legacy-packet' },
+      input.contextRunId ?? runId,
+    ),
+    ...(input.interleaved ? [draft('interleaved', 'noise', {})] : []),
+    draft(
+      'legacy-start',
+      'run.started',
+      {
+        threadId: threadA,
+        packetId: 'legacy-packet',
+        run: { threadId: threadA, userText: 'message 1' },
+      },
+      runId,
+    ),
+  ];
+}
+
+describe('legacy approval request correlation', () => {
+  it('resolves the canonical atomic append/context/start boundary without changing old rows', async () => {
+    const { store, raw, close } = await openStore();
+    const prepare = vi.spyOn(raw, 'prepare');
+    try {
+      store.append(message(1));
+      new SqliteEventCheckpointStore(raw).commitTransition({
+        events: legacyRequestEvents() as never,
+      });
+      expect(store.findRunUserMessageId(threadA, 'legacy-approval-run' as never)).toBe(
+        message(1).id,
+      );
+      expect(store.getMessage(message(1).id)?.runId).toBeUndefined();
+      const query = prepare.mock.calls
+        .map(([sql]) => String(sql))
+        .find((sql) => sql.includes('context.packet.built'));
+      expect(query).toBeTruthy();
+      const plan = raw
+        .prepare('EXPLAIN QUERY PLAN ' + query)
+        .all({ runId: 'legacy-approval-run', threadId: threadA }) as Array<{ detail: string }>;
+      expect(plan.some((row) => row.detail.includes('event_ws_seq_idx'))).toBe(true);
+      expect(plan.some((row) => row.detail.startsWith('SCAN '))).toBe(false);
+    } finally {
+      prepare.mockRestore();
+      close();
+    }
+  });
+
+  it.each([
+    { name: 'another thread in the context', input: { threadId: threadB } },
+    { name: 'another context run', input: { contextRunId: 'other-run' } },
+    { name: 'another context packet', input: { packetId: 'other-packet' } },
+    { name: 'different original input', input: { text: 'other input' } },
+    { name: 'missing source message', input: { messageId: 'missing-message' } },
+    { name: 'a non-atomic event boundary', input: { interleaved: true } },
+  ])('rejects $name instead of guessing the previous user message', async ({ input }) => {
+    const { store, raw, close } = await openStore();
+    try {
+      store.append(message(1));
+      new SqliteEventCheckpointStore(raw).commitTransition({
+        events: legacyRequestEvents(input) as never,
+      });
+      expect(store.findRunUserMessageId(threadA, 'legacy-approval-run' as never)).toBeUndefined();
+    } finally {
+      close();
+    }
+  });
+
+  it('rejects contradictory row ownership and ambiguous start boundaries', async () => {
+    const { store, raw, close } = await openStore();
+    try {
+      store.append({ ...message(1), runId: 'other-run' as never });
+      const events = new SqliteEventCheckpointStore(raw);
+      events.commitTransition({ events: legacyRequestEvents() as never });
+      expect(store.findRunUserMessageId(threadA, 'legacy-approval-run' as never)).toBeUndefined();
+      raw.prepare('UPDATE message SET run_id = NULL WHERE id = ?').run(message(1).id);
+      events.commitTransition({ events: legacyRequestEvents({ suffix: '-duplicate' }) as never });
+      expect(store.findRunUserMessageId(threadA, 'legacy-approval-run' as never)).toBeUndefined();
     } finally {
       close();
     }

@@ -3,16 +3,22 @@ import {
   activateWorkbenchTab,
   browserWorkbenchTab,
   closeWorkbenchTab,
+  conversationWorkbenchTab,
   createWorkspaceWorkbenchLayout,
   fileWorkbenchTab,
+  findWorkbenchBrowser,
+  findWorkbenchBrowserByUrl,
+  openOrFocusWorkbenchBrowser,
   openWorkbenchTab,
   parseWorkspaceWorkbenchLayouts,
+  replaceWorkbenchConversation,
   reviewWorkbenchTab,
   setWorkbenchFileBrowserWidth,
   setWorkbenchOpen,
   setWorkbenchSize,
   terminalWorkbenchTab,
   toggleWorkspaceFilesWorkbench,
+  updateWorkbenchBrowserUrl,
   WORKBENCH_BOTTOM_MAX_HEIGHT,
   WORKBENCH_FILE_BROWSER_MIN_WIDTH,
   WORKBENCH_RIGHT_COMPACT_WIDTH,
@@ -80,6 +86,85 @@ describe('workspace workbench state', () => {
       'review:run-1',
       'browser:browser-1',
     ]);
+  });
+
+  it('opens a website on the right workbench without docking workspace files or overwriting another page', () => {
+    const opened = openOrFocusWorkbenchBrowser(
+      createWorkspaceWorkbenchLayout(),
+      'browser-ai',
+      'https://github.com/sync-think',
+    );
+    expect(opened.right.open).toBe(true);
+    expect(opened.right.activeTabId).toBe('browser:browser-ai');
+    expect(opened.right.tabs.map((tab) => tab.id)).toEqual(['browser:browser-ai']);
+    expect(findWorkbenchBrowser(opened)).toMatchObject({
+      placement: 'right',
+      tab: { browserId: 'browser-ai', url: 'https://github.com/sync-think' },
+    });
+
+    const second = openOrFocusWorkbenchBrowser(
+      opened,
+      'browser-4399',
+      'https://www.4399.com/',
+    );
+    expect(findWorkbenchBrowserByUrl(second, 'https://github.com/sync-think')?.tab.browserId).toBe(
+      'browser-ai',
+    );
+    expect(findWorkbenchBrowserByUrl(second, 'https://www.4399.com')?.tab.browserId).toBe(
+      'browser-4399',
+    );
+    expect(second.right.tabs.filter((tab) => tab.type === 'browser')).toHaveLength(2);
+    expect(second.right.tabs.some((tab) => tab.type === 'workspace-files')).toBe(false);
+    expect(second.right.activeTabId).toBe('browser:browser-4399');
+
+    const focused = openOrFocusWorkbenchBrowser(
+      second,
+      'browser-repeat',
+      'https://www.4399.com',
+    );
+    expect(focused.right.tabs.filter((tab) => tab.type === 'browser')).toHaveLength(2);
+    expect(focused.right.activeTabId).toBe('browser:browser-4399');
+  });
+
+  it('updates a browser tab URL without stealing the active document tab', () => {
+    const withTabs = openWorkbenchTab(
+      openWorkbenchTab(createWorkspaceWorkbenchLayout(), 'right', fileWorkbenchTab('README.md')),
+      'right',
+      browserWorkbenchTab('browser-1', 'about:blank'),
+    );
+    const onDocument = activateWorkbenchTab(withTabs, 'right', 'file:README.md');
+    const updated = updateWorkbenchBrowserUrl(
+      onDocument,
+      'right',
+      'browser-1',
+      'https://yucoder.cn/index',
+    );
+    expect(updated.right.activeTabId).toBe('file:README.md');
+    expect(updated.right.tabs.find((tab) => tab.type === 'browser')).toMatchObject({
+      browserId: 'browser-1',
+      url: 'https://yucoder.cn/index',
+    });
+  });
+
+  it('opens a conversation as a workbench tab and can replace a draft id', () => {
+    const opened = openWorkbenchTab(
+      createWorkspaceWorkbenchLayout(),
+      'right',
+      conversationWorkbenchTab('draft:ws-a:1'),
+    );
+    expect(opened.right.size).toBe(WORKBENCH_RIGHT_PREVIEW_WIDTH);
+    expect(opened.right.tabs.map((tab) => tab.id)).toEqual([
+      'workspace-files',
+      'conversation:draft:ws-a:1',
+    ]);
+    expect(opened.right.activeTabId).toBe('conversation:draft:ws-a:1');
+
+    const replaced = replaceWorkbenchConversation(opened, 'draft:ws-a:1', 'conv-created');
+    expect(replaced.right.tabs.map((tab) => tab.id)).toEqual([
+      'workspace-files',
+      'conversation:conv-created',
+    ]);
+    expect(replaced.right.activeTabId).toBe('conversation:conv-created');
   });
 
   it('clamps persisted dimensions and ignores duplicate or malformed tabs', () => {

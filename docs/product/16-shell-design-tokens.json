@@ -82,6 +82,7 @@
         "text-min-height-empty": "72px",
         "text-min-height-conversation": "36px",
         "text-max-height": "200px",
+        "task-list-max-height": "min(360px, 50vh)",
         "text-padding": "12px 16px 8px",
         "text-size": "14px",
         "text-line-height": "22px",

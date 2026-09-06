@@ -35,7 +35,12 @@ import {
   X,
 } from 'lucide-react';
 import type { ContextStatusSection, ContextStatusSectionType } from '@sync-think/protocol';
-import type { KernelDetectionResult } from '@sync-think/shared';
+import {
+  isKernelExecutable,
+  isKernelExecutionSupported,
+  kernelExecutionUnavailableReason,
+  type KernelDetectionResult,
+} from '@sync-think/shared';
 import { AgentAvatarView } from './AgentAvatarView.js';
 import { BrandLogoMark } from './BrandLogoMark.js';
 import { resolveKernelBrandLogo, resolveKernelDisplayName } from './brand-icons.js';
@@ -45,14 +50,7 @@ import { ComposerMenuHighlight } from './ComposerMenuHighlight.js';
 export type PermissionMode = 'ask' | 'workspace' | 'full-access';
 /** Fixed NewMax-style effort ladder (full set always shown). */
 export type ReasoningEffort =
-  | 'auto'
-  | 'minimal'
-  | 'off'
-  | 'low'
-  | 'medium'
-  | 'high'
-  | 'xhigh'
-  | 'max';
+  'auto' | 'minimal' | 'off' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 export const PERMISSION_MODE_COLLAPSED_TOOLBAR_LEVEL = 1;
 export const SKILL_COLLAPSED_TOOLBAR_LEVEL = 2;
@@ -863,6 +861,7 @@ export function SkillPickerMenu(props: {
  * hover-gap races that made the old hand-positioned portal drift across viewports.
  */
 export type KernelInstallState =
+  | { status: 'checking' }
   | { status: 'installing' }
   | { status: 'verifying' }
   | { status: 'success' }
@@ -1006,23 +1005,32 @@ export function ModelPickerMenu(props: {
                   const active = kernel.kernelId === props.selectedKernelId;
                   const installState = props.kernelInstallStates?.[kernel.kernelId];
                   const installPending =
-                    installState?.status === 'installing' || installState?.status === 'verifying';
-                  const canInstall =
-                    kernel.kernelId === 'pi' && !kernel.installed && Boolean(props.onInstallKernel);
-                  const disabled = installPending || (!kernel.installed && !canInstall);
+                    installState?.status === 'installing' ||
+                    installState?.status === 'verifying' ||
+                    (installState?.status === 'checking' && !kernel.installed);
+                  const canInstall = false;
+                  const executionSupported = isKernelExecutionSupported(kernel);
+                  const executable = isKernelExecutable(kernel);
+                  const disabled = installPending || (!executable && !canInstall);
                   // Installed kernels show a version badge on the right; install /
                   // missing / error copy also stays on that same trailing slot so
                   // every kernel row keeps NewMax's single-line height.
                   const healthyInstalled = kernel.installed && !installPending;
                   const showVersionBadge = Boolean(healthyInstalled && kernel.version);
-                  const showStatus = !healthyInstalled;
+                  const showStatus = !healthyInstalled || !executionSupported;
                   let hint: string;
-                  if (installState?.status === 'installing') {
+                  if (installState?.status === 'checking') {
+                    hint = '正在检查更新';
+                  } else if (installState?.status === 'installing') {
                     hint = '安装中 · 应用私有目录';
                   } else if (installState?.status === 'verifying') {
                     hint = '安装成功 · 正在检测';
                   } else if (installState?.status === 'error' && !kernel.installed) {
                     hint = `安装失败 · ${installState.error}`;
+                  } else if (kernel.installed && !executionSupported) {
+                    hint =
+                      kernel.executionUnavailableReason ??
+                      kernelExecutionUnavailableReason(displayName);
                   } else if (installState?.status === 'success' && kernel.installed) {
                     hint = kernel.version ? `安装成功 v${kernel.version}` : '安装成功';
                   } else if (kernel.installed) {
@@ -1041,10 +1049,10 @@ export function ModelPickerMenu(props: {
                       data-testid={`kernel-option-${kernel.kernelId}`}
                       aria-label={`${displayName}${kernel.version ? ` v${kernel.version}` : ''} · ${hint}`}
                       className={`shell-menu__item shell-menu__item--kernel ${
-                        active ? 'is-active' : ''
-                      } ${disabled ? 'is-disabled' : ''}`}
+                        active && executable ? 'is-active' : ''
+                      } ${disabled ? 'is-disabled' : ''} ${!executionSupported ? 'is-execution-unavailable' : ''}`}
                       onSelect={(event) => {
-                        if (kernel.installed && props.onPickKernel) {
+                        if (executable && props.onPickKernel) {
                           props.onPickKernel(kernel.kernelId);
                           props.onClose();
                           return;
@@ -1058,7 +1066,7 @@ export function ModelPickerMenu(props: {
                       <span className="shell-menu__selection-slot" aria-hidden="true">
                         {installPending ? (
                           <LoaderCircle size={14} className="shell-menu__kernel-spinner" />
-                        ) : active ? (
+                        ) : active && executable ? (
                           <Check size={14} />
                         ) : null}
                       </span>
@@ -1072,15 +1080,16 @@ export function ModelPickerMenu(props: {
                         >
                           v{kernel.version}
                         </span>
-                      ) : showStatus ? (
+                      ) : null}
+                      {showStatus ? (
                         <span
                           className={`shell-menu__kernel-status ${
-                            installState?.status === 'error' ? 'is-error' : ''
+                            installState?.status === 'error' && !kernel.installed ? 'is-error' : ''
                           }`}
                           data-testid={`kernel-status-${kernel.kernelId}`}
                           title={hint}
                         >
-                          {hint}
+                          {healthyInstalled && !executionSupported ? '执行尚未接通' : hint}
                         </span>
                       ) : null}
                     </DropdownMenu.Item>
@@ -1460,7 +1469,11 @@ export function ContextRing(props: {
                         data-testid="context-kernel-label"
                         title={`当前内核：${props.kernelLabel}`}
                       >
-                        {kernelLogo ? <BrandLogoMark logo={kernelLogo} size={14} /> : props.kernelLabel}
+                        {kernelLogo ? (
+                          <BrandLogoMark logo={kernelLogo} size={14} />
+                        ) : (
+                          props.kernelLabel
+                        )}
                       </span>
                     ) : null}
                   </div>

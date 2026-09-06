@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import * as detection from './detect.js';
 import {
   buildKernelRegistry,
   getKernelRegistry,
@@ -22,21 +23,14 @@ function expectedKnownGood(
     ...(entry.minimumSupportedVersion
       ? { minimumSupportedVersion: entry.minimumSupportedVersion }
       : {}),
-    ...(entry.upperExclusiveVersion
-      ? { upperExclusiveVersion: entry.upperExclusiveVersion }
-      : {}),
+    ...(entry.upperExclusiveVersion ? { upperExclusiveVersion: entry.upperExclusiveVersion } : {}),
   });
 }
 
 describe('kernel registry contract', () => {
   it('registers native, claude-code, codex and pi entries with full capability declarations', () => {
     const registry = buildKernelRegistry();
-    expect(registry.map((entry) => entry.id)).toEqual([
-      'native',
-      'claude-code',
-      'codex',
-      'pi',
-    ]);
+    expect(registry.map((entry) => entry.id)).toEqual(['native', 'claude-code', 'codex', 'pi']);
 
     const native = registry.find((entry) => entry.id === 'native')!;
     expect(native.kind).toBe('in-process');
@@ -103,8 +97,9 @@ describe('kernel registry contract', () => {
       const detection = await entry.detect();
       expect(detection.kernelId).toBe(id);
       expect(typeof detection.installed).toBe('boolean');
-      expect(detection.executablePath === null || typeof detection.executablePath === 'string')
-        .toBe(true);
+      expect(
+        detection.executablePath === null || typeof detection.executablePath === 'string',
+      ).toBe(true);
       // knownGood must follow the declared compat range, never an exact pin.
       if (detection.version !== null) {
         expect(detection.knownGood).toBe(expectedKnownGood(entry, detection.version));
@@ -151,4 +146,24 @@ describe('kernel registry contract', () => {
     expect(native.installed).toBe(true);
     expect(native.knownGood).toBe(true);
   });
+});
+
+it('reports installed Pi separately from executable kernels without constructing an adapter', async () => {
+  const probe = vi.spyOn(detection, 'probeKernel').mockReturnValue({
+    executablePath: 'D:/fixture/pi.cmd',
+    version: '1.2.3',
+  });
+  try {
+    const registry = buildKernelRegistry();
+    const pi = await registry.find((entry) => entry.id === 'pi')!.detect();
+    expect(pi).toMatchObject({ installed: true, executionSupported: false });
+    expect(pi.executionUnavailableReason).toContain('执行尚未接通');
+    for (const kernelId of ['native', 'codex'] as const) {
+      expect(await registry.find((entry) => entry.id === kernelId)!.detect()).toMatchObject({
+        executionSupported: true,
+      });
+    }
+  } finally {
+    probe.mockRestore();
+  }
 });

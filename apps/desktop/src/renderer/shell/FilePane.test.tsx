@@ -5,7 +5,6 @@ import {
   FilePane,
   clearFilePaneSession,
   isFilePaneSessionDirty,
-  seedFilePaneUnsavedDraft,
 } from './FilePane.js';
 
 interface Change {
@@ -55,6 +54,7 @@ function installClipboard() {
 
 afterEach(() => {
   cleanup();
+  localStorage.removeItem('sync-think:file-pane:auto-save');
   clearFilePaneSession('C:/workspace', 'notes.txt');
   clearFilePaneSession('C:/workspace', 'src/example.ts');
   clearFilePaneSession('C:/workspace', 'README.md');
@@ -118,7 +118,7 @@ describe('FilePane', () => {
     const save = screen.getByTestId('file-pane-save');
     const status = screen.getByTestId('file-pane-status');
     expect(save.contains(status)).toBe(true);
-    expect(status.textContent).toContain('已同步');
+    expect(status.textContent).toContain('已保存');
     expect(save.getAttribute('aria-label')).toBe('保存文件');
   });
 
@@ -146,6 +146,8 @@ describe('FilePane', () => {
     expect(richEditor.querySelector('table')?.textContent).toContain('Cache');
     expect(richEditor.querySelector('.shell-code-preview__ln')).toBeNull();
     expect(screen.getByRole('toolbar', { name: '富文本编辑' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '标题 1' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '标题 2' })).toBeTruthy();
     expect(richEditor.querySelector('[contenteditable="true"]')).toBeTruthy();
     expect(screen.getByRole('tab', { name: '富文本编辑' }).getAttribute('aria-selected')).toBe(
       'true',
@@ -266,7 +268,7 @@ describe('FilePane', () => {
 
     fireEvent.change(editor, { target: { value: 'draft' } });
     await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(true));
-    expect(screen.getByTestId('file-pane-status').textContent).toContain('未保存');
+    expect(screen.getByTestId('file-pane-status').textContent).toBe('保存');
     fireEvent.keyDown(editor, { key: 's', ctrlKey: true });
 
     await waitFor(() =>
@@ -351,7 +353,7 @@ describe('FilePane', () => {
 
     await waitFor(() => expect((editor as HTMLTextAreaElement).value).toBe('from disk'));
     expect(screen.queryByTestId('file-pane-conflict')).toBeNull();
-    expect(screen.getByTestId('file-pane-status').textContent).toContain('已同步');
+    expect(screen.getByTestId('file-pane-status').textContent).toContain('已保存');
   });
 
   it('surfaces an mtime conflict and overwrites only after the explicit command', async () => {
@@ -403,40 +405,30 @@ describe('FilePane', () => {
     expect(screen.getByTestId('file-pane-status').textContent).toContain('已保存');
   });
 
-  it('opens a seeded untitled draft without reading or writing disk', async () => {
+  it('opens a disk-created untitled document as a saved empty file', async () => {
     const bridge = installBridge();
-    bridge.writeProjectFile.mockResolvedValue({
+    bridge.readProjectFile.mockResolvedValue({
       path: 'notes/未命名文档.md',
-      ok: true,
-      conflict: false,
+      content: '',
       error: null,
       errorCode: null,
       mtimeMs: 20,
-      size: 10,
+      size: 0,
     });
-    seedFilePaneUnsavedDraft('C:/workspace', 'notes/未命名文档.md', '# 未命名文档\n\n');
 
     render(<FilePane projectFolder="C:/workspace" path="notes/未命名文档.md" />);
 
     const editor = await screen.findByTestId('file-pane-editor');
-    expect((editor as HTMLTextAreaElement).value).toBe('# 未命名文档\n\n');
-    expect(bridge.readProjectFile).not.toHaveBeenCalled();
+    expect((editor as HTMLTextAreaElement).value).toBe('');
+    expect(bridge.readProjectFile).toHaveBeenCalled();
     expect(bridge.writeProjectFile).not.toHaveBeenCalled();
-    expect(bridge.watchProjectFile).not.toHaveBeenCalled();
     expect(isFilePaneSessionDirty('C:/workspace', 'notes/未命名文档.md')).toBe(false);
-    expect(screen.getByTestId('file-pane-status').textContent).toContain('草稿');
-
-    fireEvent.click(screen.getByTestId('file-pane-save'));
-    await waitFor(() =>
-      expect(bridge.writeProjectFile).toHaveBeenCalledWith({
-        root: 'C:/workspace',
-        path: 'notes/未命名文档.md',
-        content: '# 未命名文档\n\n',
-        expectedMtimeMs: null,
-        expectedSize: null,
-      }),
-    );
     expect(screen.getByTestId('file-pane-status').textContent).toContain('已保存');
+    expect(screen.getByRole('tab', { name: '富文本编辑' }).getAttribute('aria-selected')).toBe(
+      'true',
+    );
+    expect(screen.getByRole('button', { name: '加粗' })).toBeTruthy();
+    expect((screen.getByTestId('file-pane-save') as HTMLButtonElement).disabled).toBe(true);
   });
 
   it('keeps an unsaved in-memory draft when its tab unmounts and mounts again', async () => {
@@ -459,7 +451,7 @@ describe('FilePane', () => {
     render(<FilePane projectFolder="C:/workspace" path="notes.txt" />);
     const restored = await screen.findByTestId('file-pane-editor');
     expect((restored as HTMLTextAreaElement).value).toBe('local draft');
-    expect(screen.getByTestId('file-pane-status').textContent).toContain('未保存');
+    expect(screen.getByTestId('file-pane-status').textContent).toBe('保存');
   });
 
   it('reveals a transient content-search line without persisting editor position', async () => {

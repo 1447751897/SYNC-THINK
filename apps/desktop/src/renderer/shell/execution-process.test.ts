@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Event } from '@sync-think/shared';
 import {
-  buildConversationReviewView,
   formatCompactRunMetrics,
   formatTokenUsage,
   projectExecutionProcess,
@@ -20,6 +19,48 @@ function event(
 }
 
 describe('projectExecutionProcess', () => {
+  it('uses the full listing count rather than a bounded preview array length', () => {
+    const view = projectExecutionProcess([
+      event({
+        id: 'listing' as Event['id'],
+        sequence: 1,
+        type: 'tool.completed',
+        payload: {
+          toolCallId: 'listing',
+          toolName: 'list_files',
+          result: { entries: ['first.ts', '[详情按需读取]'] },
+          resultEntryCount: 60,
+        },
+      }),
+    ]);
+    expect(view.steps[0]?.preview).toContain('找到 60 项');
+  });
+  it('keeps step descriptions in the execution task plan', () => {
+    const view = projectExecutionProcess([
+      event({
+        id: 'detailed-plan' as Event['id'],
+        sequence: 1,
+        type: 'tool.completed',
+        payload: {
+          toolName: 'update_task_plan',
+          result: JSON.stringify({
+            ok: true,
+            plan: {
+              items: [
+                { title: '审计架构', description: '定位重复实现与并行机制', status: 'in_progress' },
+              ],
+            },
+          }),
+        },
+      }),
+    ]);
+    expect(view.taskPlan?.items[0]).toEqual({
+      title: '审计架构',
+      description: '定位重复实现与并行机制',
+      status: 'in_progress',
+    });
+  });
+
   it('links a nameless plan completion to its request and keeps it out of tool steps', () => {
     const events = [
       event({
@@ -527,7 +568,7 @@ describe('projectExecutionProcess', () => {
     );
   });
 
-  it('recovers file changes from a nameless "file changed" result plus targeted git status', () => {
+  it('preserves legacy results without attributing dirty git files to this run', () => {
     const view = projectExecutionProcess(
       [
         event({
@@ -573,50 +614,7 @@ describe('projectExecutionProcess', () => {
       { runId: 'run_legacy' },
     );
 
-    expect(view.fileChanges).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ path: 'codex-edit-test.txt', action: 'deleted' }),
-        expect.objectContaining({ path: 'codex-edit-test-2.txt', action: 'created' }),
-      ]),
-    );
-  });
-
-  it('merges created and edited files across every run in the conversation', () => {
-    const merged = buildConversationReviewView([
-      {
-        runId: 'run-old',
-        steps: [],
-        fileChanges: [{ path: 'README.md', action: 'edited' }],
-        running: false,
-        doneCount: 1,
-        errorCount: 0,
-        startedAt: '2026-09-04T10:00:00.000Z',
-        completedAt: '2026-09-04T10:00:10.000Z',
-      },
-      {
-        runId: 'run-new',
-        steps: [],
-        fileChanges: [{ path: 'codex-edit-test.txt', action: 'created' }],
-        running: false,
-        doneCount: 1,
-        errorCount: 0,
-        startedAt: '2026-09-04T10:01:00.000Z',
-        completedAt: '2026-09-04T10:01:08.000Z',
-      },
-      {
-        runId: 'run-empty',
-        steps: [],
-        fileChanges: [],
-        running: false,
-        doneCount: 0,
-        errorCount: 0,
-        startedAt: '2026-09-04T10:02:00.000Z',
-      },
-    ]);
-    expect(merged?.runId).toBe('run-empty');
-    expect(merged?.fileChanges).toEqual([
-      expect.objectContaining({ path: 'README.md', action: 'edited' }),
-      expect.objectContaining({ path: 'codex-edit-test.txt', action: 'created' }),
-    ]);
+    expect(view.fileChanges).toEqual([]);
+    expect(view.steps.some((step) => step.preview === 'file changed')).toBe(true);
   });
 });

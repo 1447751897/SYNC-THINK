@@ -1,4 +1,4 @@
-import type { ProcessStepStatus, RunProcessView } from '@sync-think/protocol';
+import type { ExecutionProcessStep, ProcessStepStatus, RunProcessView } from '@sync-think/protocol';
 import type { Event } from '@sync-think/shared';
 
 const RUN_TERMINAL_EVENT_TYPES = new Set([
@@ -67,7 +67,7 @@ export function reconcileRunProcessTerminal(
 
   const failed = terminal.type === 'run.failed' || terminal.type === 'run.cancelled';
   const terminalStepStatus: ProcessStepStatus = failed ? 'error' : 'done';
-  const steps = process.steps.map((step) =>
+  const settleStep = (step: ExecutionProcessStep): ExecutionProcessStep =>
     step.status === 'running'
       ? {
           ...step,
@@ -75,10 +75,17 @@ export function reconcileRunProcessTerminal(
           completedAt: step.completedAt ?? terminal.occurredAt,
           occurredAt: terminal.occurredAt,
         }
-      : step,
-  );
-  const doneCount = steps.filter((step) => step.status === 'done').length;
-  const errorCount = steps.filter((step) => step.status === 'error').length;
+      : step;
+  const steps = process.steps.map(settleStep);
+  const remaining = process.pages
+    ? Math.max(0, process.pages.steps.total - process.doneCount - process.errorCount)
+    : 0;
+  const doneCount = process.pages
+    ? process.doneCount + (failed ? 0 : remaining)
+    : steps.filter((step) => step.status === 'done').length;
+  const errorCount = process.pages
+    ? process.errorCount + (failed ? remaining : 0)
+    : steps.filter((step) => step.status === 'error').length;
   const startedAt = process.startedAt ? Date.parse(process.startedAt) : Number.NaN;
   const completedAt = Date.parse(terminal.occurredAt);
   const durationMs =
@@ -89,6 +96,7 @@ export function reconcileRunProcessTerminal(
   return {
     ...process,
     steps,
+    ...(process.latestStep ? { latestStep: settleStep(process.latestStep) } : {}),
     running: false,
     doneCount,
     errorCount,

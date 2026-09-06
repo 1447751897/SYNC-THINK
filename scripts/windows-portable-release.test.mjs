@@ -17,6 +17,7 @@ import {
   pruneProductionBinDirectories,
   resolveWindowsUpdaterBootstrapConfiguration,
   verifyWindowsPortableLayout,
+  pruneDesktopRendererModules,
 } from './windows-portable-release.mjs';
 
 test('release output must be a child of apps/desktop/release', () => {
@@ -317,6 +318,35 @@ test('critical file manifest is stable, relative and content-addressed', async (
   assert.equal(manifest[0]?.bytes, 7);
   assert.match(manifest[0]?.sha256 ?? '', /^[a-f0-9]{64}$/);
   assert.equal(JSON.stringify(manifest).includes(root), false);
+});
+
+test('release staging removes unused renderer modules and QA fixtures but preserves executable bundles', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'sync-think-release-renderer-'));
+  await writeFile(join(root, 'package.json'), JSON.stringify({ name: '@sync-think/desktop' }));
+  for (const directory of ['renderer', 'renderer-shell', 'main', 'preload']) {
+    await mkdir(join(root, 'dist', directory), { recursive: true });
+    await writeFile(join(root, 'dist', directory, 'entry.js'), 'entry');
+  }
+  await writeFile(join(root, 'dist/renderer/Phase3VisualFixture.js'), 'fixture');
+  await pruneDesktopRendererModules(root);
+  await assert.rejects(access(join(root, 'dist/renderer')), { code: 'ENOENT' });
+  for (const directory of ['renderer-shell', 'main', 'preload']) {
+    await access(join(root, 'dist', directory, 'entry.js'));
+  }
+  await writeFile(join(root, 'package.json'), JSON.stringify({ name: '@sync-think/runtime' }));
+  await assert.rejects(pruneDesktopRendererModules(root), /desktop_package_required/);
+});
+
+test('release verification rejects development renderer manifests', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'sync-think-release-renderer-mode-'));
+  const shell = join(root, 'resources/app/dist/renderer-shell');
+  await mkdir(shell, { recursive: true });
+  await writeFile(
+    join(shell, 'build-manifest.json'),
+    JSON.stringify({ schemaVersion: 1, mode: 'development' }),
+  );
+  const result = await verifyWindowsPortableLayout(root, { probeNode: false });
+  assert.ok(result.errors.includes('release.desktop_shell_not_production'));
 });
 
 test('portable layout verifier reports missing critical resources without throwing', async () => {

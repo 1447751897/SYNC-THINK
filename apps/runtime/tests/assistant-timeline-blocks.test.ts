@@ -223,6 +223,50 @@ describe('ordered assistant timeline persistence', () => {
     expect(blocks[0]?.text).not.toContain('\ud83d\n');
   });
 
+  it('keeps every thinking row when later commands overflow the durable budget', () => {
+    const timeline: AssistantTurnSegment[] = [
+      ...Array.from({ length: 12 }, (_, index) => ({
+        id: `thinking-${index}`,
+        sequence: index,
+        kind: 'thinking' as const,
+        text: `完整思考 ${index}`,
+        status: 'completed' as const,
+      })),
+      ...Array.from({ length: 80 }, (_, index) => ({
+        id: `tool-${index}`,
+        sequence: index + 12,
+        kind: 'tool' as const,
+        toolCallId: `call-${index}`,
+        name: 'command_execution',
+        argumentsJson: '{"command":"powershell.exe"}',
+        output: `output-${index}:` + 'x'.repeat(8_000),
+        status: 'completed' as const,
+      })),
+      {
+        id: 'answer',
+        sequence: 92,
+        kind: 'text',
+        phase: 'final_answer',
+        text: '最终回答仍然存在。',
+        status: 'completed',
+      },
+    ];
+
+    const blocks = assistantTimelineToMessageBlocks(timeline);
+    const stored = (blocks[0]?.payload as { assistantTimeline: AssistantTurnSegment[] } | undefined)
+      ?.assistantTimeline;
+
+    expect(stored?.filter((segment) => segment.kind === 'thinking')).toHaveLength(12);
+    expect(stored?.some((segment) => segment.id === 'thinking-0')).toBe(true);
+    expect(stored?.some((segment) => segment.id === 'durable-timeline-truncated')).toBe(false);
+    expect(JSON.stringify(stored ?? [])).not.toContain(
+      'earlier process segments truncated for durable storage',
+    );
+    expect(
+      blocks.some((block) => block.type === 'text' && block.text === '最终回答仍然存在。'),
+    ).toBe(true);
+  });
+
   it('retries an invalid oversized assistant message as final text with the same id', () => {
     const persisted: Message[] = [];
     let attempts = 0;
@@ -368,13 +412,18 @@ describe('ordered assistant timeline persistence', () => {
       },
     );
 
-    expect(listSegments.mock.calls.map((call) => call[1].limit)).toEqual([64, 32]);
+    expect(listSegments.mock.calls.map((call) => call[1].limit)).toEqual([64]);
     const response = decodeFrames(writes[0]!).frames[0]!;
     expect(response.error).toBeUndefined();
     expect(response.payload).toMatchObject({
       totalSegments: 64,
-      nextCursor: 'after-32',
     });
-    expect((response.payload as { segments: unknown[] }).segments).toHaveLength(32);
+    expect((response.payload as { segments: unknown[] }).segments).toHaveLength(64);
+    expect(JSON.stringify(response.payload)).toContain('完整内容按需读取');
+    expect(
+      (response.payload as { segments: Array<{ outputRef?: unknown }> }).segments.every(
+        (segment) => segment.outputRef,
+      ),
+    ).toBe(true);
   });
 });

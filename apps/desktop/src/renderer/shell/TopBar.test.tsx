@@ -1,8 +1,34 @@
 /** @vitest-environment jsdom */
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { WorkspaceSummary } from '@sync-think/protocol';
 import { TopBar, calculateWorkspaceTabLayout } from './TopBar.js';
+
+class PointerEventPolyfill extends MouseEvent {
+  readonly pointerId: number;
+  readonly pointerType: string;
+  constructor(type: string, init: PointerEventInit = {}) {
+    super(type, init);
+    this.pointerId = init.pointerId ?? 0;
+    this.pointerType = init.pointerType ?? 'mouse';
+  }
+}
+
+const nativePointerEvent = window.PointerEvent;
+
+beforeAll(() => {
+  Object.defineProperty(window, 'PointerEvent', {
+    configurable: true,
+    value: PointerEventPolyfill,
+  });
+});
+
+afterAll(() => {
+  Object.defineProperty(window, 'PointerEvent', {
+    configurable: true,
+    value: nativePointerEvent,
+  });
+});
 
 afterEach(cleanup);
 
@@ -57,9 +83,38 @@ describe('TopBar NewMax tab track', () => {
 
     const active = screen.getByTestId('project-tab-同步工作区');
     const inactive = screen.getByTestId('project-tab-第二工作区');
+    const surface = screen.getByTestId('workspace-tab-surface');
     expect(active.getAttribute('data-active')).toBe('true');
-    expect(active.querySelector('[data-testid="workspace-tab-shape"]')).toBeTruthy();
+    expect(surface.querySelector('[data-testid="workspace-tab-shape"]')).toBeTruthy();
+    expect(surface.getAttribute('data-workspace-id')).toBe(visibleWorkspace.workspaceId);
+    expect(surface.getAttribute('data-slot')).toBe('0');
     expect(inactive.querySelector('[data-testid="workspace-tab-shape"]')).toBeNull();
+  });
+
+  it('glides the shared tab surface when another workspace is selected', () => {
+    const visibleWorkspace = { ...workspace, hidden: false } as WorkspaceSummary;
+    const onSelectWorkspace = vi.fn();
+    render(
+      <TopBar
+        workspaces={[visibleWorkspace, workspaceTwo]}
+        activeWorkspaceId={visibleWorkspace.workspaceId}
+        sidebarCollapsed={false}
+        onSelectWorkspace={onSelectWorkspace}
+        onOpenFolder={vi.fn()}
+        onCreateWorkspace={vi.fn().mockResolvedValue(true)}
+        onUpdateWorkspace={vi.fn().mockResolvedValue(true)}
+        onDeleteWorkspace={vi.fn().mockResolvedValue(true)}
+        onToggleSidebar={vi.fn()}
+        onPickFolder={vi.fn().mockResolvedValue({ canceled: true })}
+      />,
+    );
+
+    const surface = screen.getByTestId('workspace-tab-surface');
+    expect(surface.getAttribute('data-slot')).toBe('0');
+    expect(surface.classList.contains('is-gliding')).toBe(true);
+
+    fireEvent.click(screen.getByRole('tab', { name: '第二工作区' }));
+    expect(onSelectWorkspace).toHaveBeenCalledWith(workspaceTwo.workspaceId);
   });
 
   it('exposes the bottom and right workbench toggles with their persisted state', () => {
@@ -121,23 +176,17 @@ describe('TopBar workspace menu', () => {
     expect(screen.getByTestId('topbar-workspace-scroller').classList.contains('hidden')).toBe(true);
   });
 
-  it('uses native dragging to reorder workspace tabs without transforming the scroll track', () => {
+  it('slides neighboring workspace tabs live while a tab is dragged, then commits the new order', () => {
     const visibleWorkspace = { ...workspace, hidden: false } as WorkspaceSummary;
     const onReorderWorkspaces = vi.fn();
-    const values = new Map<string, string>();
-    const dataTransfer = {
-      effectAllowed: 'none',
-      dropEffect: 'none',
-      setData: vi.fn((type: string, value: string) => values.set(type, value)),
-      getData: vi.fn((type: string) => values.get(type) ?? ''),
-    };
+    const onSelectWorkspace = vi.fn();
 
     render(
       <TopBar
         workspaces={[visibleWorkspace, workspaceTwo]}
         activeWorkspaceId={visibleWorkspace.workspaceId}
         sidebarCollapsed={false}
-        onSelectWorkspace={vi.fn()}
+        onSelectWorkspace={onSelectWorkspace}
         onOpenFolder={vi.fn()}
         onCreateWorkspace={vi.fn().mockResolvedValue(true)}
         onUpdateWorkspace={vi.fn().mockResolvedValue(true)}
@@ -150,19 +199,28 @@ describe('TopBar workspace menu', () => {
 
     const first = screen.getByTestId('project-tab-同步工作区');
     const second = screen.getByTestId('project-tab-第二工作区');
-    expect(first.getAttribute('draggable')).toBe('true');
-    fireEvent.dragStart(first, { dataTransfer });
-    fireEvent.dragOver(second, { dataTransfer });
-    fireEvent.drop(second, { dataTransfer });
+    const surface = screen.getByTestId('workspace-tab-surface');
+    expect(first.getAttribute('draggable')).toBeNull();
+    expect(first.style.transform).toBe('translate3d(0px, 0, 0)');
+    expect(second.style.transform).toBe('translate3d(175px, 0, 0)');
 
-    expect(dataTransfer.setData).toHaveBeenCalledWith(
-      'application/x-sync-think-workspace',
-      visibleWorkspace.workspaceId,
-    );
+    fireEvent.pointerDown(first, { button: 0, pointerId: 1, clientX: 10 });
+    fireEvent.pointerMove(first, { pointerId: 1, clientX: 20 });
+    fireEvent.pointerMove(first, { pointerId: 1, clientX: 185 });
+
+    expect(first.classList.contains('is-dragging')).toBe(true);
+    expect(first.style.transform).toBe('translate3d(175px, 0, 0)');
+    expect(second.style.transform).toBe('translate3d(0px, 0, 0)');
+    expect(surface.style.transform).toBe('translate3d(175px, 0, 0)');
+    expect(onSelectWorkspace).not.toHaveBeenCalled();
+
+    fireEvent.pointerUp(first, { pointerId: 1, clientX: 185 });
+
     expect(onReorderWorkspaces).toHaveBeenCalledWith([
       workspaceTwo.workspaceId,
       visibleWorkspace.workspaceId,
     ]);
+    expect(onSelectWorkspace).not.toHaveBeenCalled();
   });
 
   it('flips the workspace picker above the trigger near the viewport bottom', async () => {

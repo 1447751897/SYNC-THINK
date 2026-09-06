@@ -1,9 +1,13 @@
 /** @vitest-environment jsdom */
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 import type { RunProcessView } from '@sync-think/protocol';
 import { ReviewPanel, WorkspaceFilesPanel } from './RightDock.js';
+
+const shellCss = readFileSync(resolve(process.cwd(), 'src/renderer/shell/shell.css'), 'utf8');
 
 class PointerEventPolyfill extends MouseEvent {
   readonly pointerId: number;
@@ -45,6 +49,18 @@ afterEach(() => {
 });
 
 describe('WorkspaceFilesPanel', () => {
+  it('gives the file tree a readable row density', () => {
+    expect(shellCss).toMatch(
+      /\.shell-workspace-files-panel \{[\s\S]*?--shell-file-row-height:\s*32px;[\s\S]*?--shell-file-row-font-size:\s*13px;/,
+    );
+    expect(shellCss).toMatch(
+      /\.shell-workspace-file-row__primary \{[\s\S]*?font-size:\s*var\(--shell-file-row-font-size\);/,
+    );
+    expect(shellCss).toMatch(
+      /\.shell-workspace-file-directory \{[\s\S]*?font-size:\s*var\(--shell-file-row-font-size\);/,
+    );
+  });
+
   it('offers current-file and new-tab actions from the workspace workbench', async () => {
     Object.defineProperty(window, 'syncThink', {
       configurable: true,
@@ -101,9 +117,11 @@ describe('WorkspaceFilesPanel', () => {
     render(<WorkspaceFilesPanel projectFolder="C:/workspace" />);
 
     expect(await screen.findByText('check.cjs')).toBeTruthy();
-    expect(document.querySelector('[data-file-type="javascript"]')).toBeTruthy();
-    expect(document.querySelector('[data-file-type="python"]')).toBeTruthy();
-    for (const kind of ['javascript', 'python', 'typescript', 'css', 'package', 'markdown']) {
+    expect(document.querySelector('[data-file-type="javascript"]')?.textContent).toBe('JS');
+    expect(document.querySelector('[data-file-type="python"]')?.textContent).toBe('PY');
+    expect(document.querySelector('[data-file-type="typescript"]')?.textContent).toBe('TS');
+    expect(document.querySelector('[data-file-type="css"]')?.textContent).toBe('CSS');
+    for (const kind of ['package', 'markdown']) {
       expect(document.querySelector(`[data-file-type="${kind}"] svg`)).toBeTruthy();
     }
   });
@@ -200,8 +218,11 @@ describe('WorkspaceFilesPanel', () => {
       'true',
     );
     expect(screen.getByText('app.ts')).toBeTruthy();
-    const fileRow = screen.getByRole('listitem', { name: /app\.ts/ });
-    expect(fileRow.querySelector('.shell-conversation-files__name')).toBeTruthy();
+    expect(screen.getByRole('treeitem', { name: '打开文件 src/app.ts' })).toBeTruthy();
+    expect(screen.queryByRole('listitem', { name: /app\.ts/ })).toBeNull();
+    expect(screen.queryByText('src/app.ts')).toBeNull();
+    const fileRow = screen.getByRole('treeitem', { name: '打开文件 src/app.ts' });
+    expect(fileRow.querySelector('.shell-conversation-files__status')?.textContent).toBe('M');
     expect(fileRow.querySelector('.shell-file-type-icon')).toBeTruthy();
     const panels = document.querySelectorAll('.shell-workspace-files-panel .shell-dock-panel');
     expect(panels).toHaveLength(2);

@@ -25,6 +25,7 @@ afterEach(() => {
 });
 
 interface PlatformToolHarness {
+  buildKernelSystemContext(run: DemoRunState, workspaceRoot?: string): string;
   demoRuns: Map<string, DemoRunState>;
   platformMcpCatalogByRun: Map<string, unknown>;
   pendingToolApprovals: Map<string, { resolve(decision: 'approve' | 'deny'): void }>;
@@ -135,15 +136,35 @@ async function createFixture(executionMode: 'ask' | 'workspace' | 'full-access')
 }
 
 describe('external kernel platform tool dispatch', () => {
+  it.each(['claude-code', 'codex'] as const)('instructs %s to use only its native task surface', async (kernelId) => {
+    const fixture = await createFixture('full-access');
+    try {
+      const run = fixture.harness.demoRuns.get(fixture.runId)!;
+      const context = fixture.harness.buildKernelSystemContext({ ...run, kernelId }, fixture.root);
+      expect(context).not.toContain('mcp__sync-think-platform__update_task_plan');
+      expect(context).toContain('Do not call any MCP/platform task tools');
+      expect(context).toContain(kernelId === 'codex' ? 'Codex native update_plan' : 'Claude Code native task tools');
+    } finally {
+      fixture.connection.raw.close();
+    }
+  });
+
   it('executes the persisted task checklist through the native task executors', async () => {
     const fixture = await createFixture('workspace');
     try {
       const created = await fixture.callTool({
         id: 'call-task-create',
         tool: 'TaskCreate',
-        input: { title: 'kernel created task', priority: 'high' },
+        input: {
+          title: 'kernel created task',
+          description: 'Inspect runtime/desktop duplicate modules',
+          priority: 'high',
+        },
       });
       expect(created.ok).toBe(true);
+      expect(JSON.parse(created.content!).plan.items[0].description).toBe(
+        'Inspect runtime/desktop duplicate modules',
+      );
       expect(fixture.taskPlanStore.list(fixture.workspaceId).map((task) => task.title)).toEqual([
         'kernel created task',
       ]);
@@ -155,6 +176,9 @@ describe('external kernel platform tool dispatch', () => {
       });
       expect(listed.ok).toBe(true);
       expect(String(listed.content)).toContain('kernel created task');
+      expect(JSON.parse(listed.content!).plan.items[0].description).toBe(
+        'Inspect runtime/desktop duplicate modules',
+      );
     } finally {
       fixture.connection.raw.close();
     }

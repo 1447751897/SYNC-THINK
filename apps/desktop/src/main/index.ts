@@ -5,6 +5,9 @@
 // Visual Studio Build Tools. Once installed and `pnpm rebuild electron` runs,
 // `pnpm dev:desktop` launches this module.
 
+import { parseTaskPlanHistoryPayload } from '@sync-think/protocol';
+import { parseConversationListFileChangesPayload } from '@sync-think/protocol';
+import { parseConversationReadFileDiffPayload } from '@sync-think/protocol';
 import {
   app,
   BrowserWindow,
@@ -408,6 +411,7 @@ import {
   parseAgentListPayload,
   parseAgentVersionsPayload,
 } from '../orchestration-payloads.js';
+import { parseConversationReadContentPayload } from '@sync-think/protocol';
 import {
   parseCreateConversationPayload,
   parseCreateGlobalAgentPayload,
@@ -418,6 +422,7 @@ import {
   parseDeleteTeamPayload,
   parseListConversationsPayload,
   parseConversationListMessagesPayload,
+  parseConversationListNavigationPayload,
   parseConversationGetContextStatusPayload,
   parseConversationGetRunProcessPayload,
   parseConversationListRunTimelinePayload,
@@ -523,6 +528,7 @@ import {
 } from './packaged-install-identity.js';
 import { materializeChatImageDataUrl, stageChatImageDataUrl } from './image-staging.js';
 import { messageImageUrl, persistMessageImages, readMessageImage } from './message-images.js';
+import { readApprovalRequestImage } from './approval-request-images.js';
 import {
   CAPABILITY_RUNTIME_IPC_CHANNELS,
   type RuntimeConnectOutcome,
@@ -742,7 +748,9 @@ async function bootstrapPrivateKernelsAtStartup(): Promise<void> {
   const service = getKernelUpdateService();
   const snapshot = service.getSnapshot();
   if (!snapshot.installerAvailable) return;
-  const missing = snapshot.items.filter((item) => !item.managedVersion);
+  const missing = snapshot.items.filter(
+    (item) => !item.managedVersion && item.kernelId !== 'pi',
+  );
   const results = await Promise.allSettled(
     missing.map(async (item) => {
       const result = await service.installUpdate(item.kernelId);
@@ -915,7 +923,10 @@ function createWindow(): void {
   // The NewMax-style shell is the only product UI. The legacy task-board
   // renderer and its SYNC_THINK_SHELL escape hatch were removed once the shell
   // reached parity — there is nothing to switch between any more.
-  const rendererPath = path.join(__dirname, '../renderer-shell/index.html');
+  const rendererPath =
+    !app.isPackaged && process.env.SYNC_THINK_RENDERER_MODE === 'development'
+      ? path.resolve(__dirname, '../../../../.data/renderer-builds/development/index.html')
+      : path.join(__dirname, '../renderer-shell/index.html');
   const nextTrustedRendererLocation: TrustedRendererLocation = parsedDevServerUrl
     ? { kind: 'origin', value: parsedDevServerUrl.origin }
     : trustedFileLocation(rendererPath);
@@ -2425,6 +2436,14 @@ function setupRuntimeBridge(): void {
       parseConversationListMessagesPayload(value),
     );
   });
+  ipcMain.handle('runtime:conversation-list-navigation', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'conversation.listNavigation',
+      parseConversationListNavigationPayload(value),
+    );
+  });
   ipcMain.handle('runtime:conversation-get-context-status', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
     await ensureRuntimeConnection();
@@ -2435,11 +2454,37 @@ function setupRuntimeBridge(): void {
   });
   ipcMain.handle('runtime:conversation-get-run-process', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
+    const payload = parseConversationGetRunProcessPayload(value);
     await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'conversation.getRunProcess',
-      parseConversationGetRunProcessPayload(value),
-    );
+    return getRuntimeClient().request('conversation.getRunProcess', payload);
+  });
+  ipcMain.handle('runtime:conversation-task-plan-history', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    const payload = parseTaskPlanHistoryPayload(value);
+    if (!payload) throw new Error('Invalid conversation task history request');
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('conversation.taskPlanHistory', payload);
+  });
+  ipcMain.handle('runtime:conversation-list-file-changes', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    const payload = parseConversationListFileChangesPayload(value);
+    if (!payload) throw new Error('Invalid conversation file directory request');
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('conversation.listFileChanges', payload);
+  });
+  ipcMain.handle('runtime:conversation-read-content', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    const payload = parseConversationReadContentPayload(value);
+    if (!payload) throw new Error('Invalid conversation content request');
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('conversation.readContent', payload);
+  });
+  ipcMain.handle('runtime:conversation-read-file-diff', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    const payload = parseConversationReadFileDiffPayload(value);
+    if (!payload) throw new Error('Invalid conversation file diff request');
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('conversation.readFileDiff', payload);
   });
   ipcMain.handle('runtime:conversation-list-run-timeline', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
@@ -2760,6 +2805,20 @@ function setupRuntimeBridge(): void {
       parseInstallSkillMarketPayload(value),
     );
   });
+  ipcMain.handle(
+    'runtime:conversation-read-approval-request-image',
+    async (event, value: unknown) => {
+      assertRuntimeIpcSource(event);
+      await ensureRuntimeConnection();
+      return readApprovalRequestImage(value, {
+        listMessages: (payload) =>
+          getRuntimeClient().request<
+            import('@sync-think/protocol').ConversationListMessagesResponse
+          >('conversation.listMessages', payload),
+        readImage: readMessageImage,
+      });
+    },
+  );
   ipcMain.handle('runtime:conversation-decide-tool-approval', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
     await ensureRuntimeConnection();
@@ -2845,6 +2904,50 @@ function setupRuntimeBridge(): void {
       return {
         ok: false,
         error: `截图失败：${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+  });
+  ipcMain.handle('desktop:browser-trusted-click', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error('Invalid browser-trusted-click payload');
+    }
+    const payload = value as { webContentsId?: unknown; x?: unknown; y?: unknown };
+    if (typeof payload.webContentsId !== 'number' || !Number.isInteger(payload.webContentsId)) {
+      throw new Error('Invalid browser-trusted-click payload: webContentsId required');
+    }
+    if (
+      typeof payload.x !== 'number' ||
+      typeof payload.y !== 'number' ||
+      !Number.isFinite(payload.x) ||
+      !Number.isFinite(payload.y)
+    ) {
+      throw new Error('Invalid browser-trusted-click payload: x and y required');
+    }
+    const { webContents: webContentsModule } = await import('electron');
+    const guest = webContentsModule.fromId(payload.webContentsId);
+    if (!guest || guest.isDestroyed()) {
+      return { ok: false, error: '浏览器页面不存在或已关闭' };
+    }
+    const guestUrl = guest.getURL();
+    if (guest.getType() !== 'webview' || !/^https?:\/\//i.test(guestUrl)) {
+      return { ok: false, error: '仅支持当前 http(s) WebView 页面点击' };
+    }
+    const x = Math.round(payload.x);
+    const y = Math.round(payload.y);
+    if (x < 0 || y < 0 || x > 20_000 || y > 20_000) {
+      return { ok: false, error: '点击坐标超出范围' };
+    }
+    try {
+      guest.focus();
+      guest.sendInputEvent({ type: 'mouseMove', x, y });
+      guest.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 });
+      guest.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 });
+      return { ok: true };
+    } catch (error) {
+      return {
+        ok: false,
+        error: `可信点击失败：${error instanceof Error ? error.message : String(error)}`,
       };
     }
   });
@@ -3149,26 +3252,17 @@ function setupRuntimeBridge(): void {
   ipcMain.handle('runtime:browser-extension-status', async (event) => {
     assertRuntimeIpcSource(event);
     await ensureRuntimeConnection();
-    return getRuntimeClient().request<BrowserExtensionStatus>(
-      'browser.extension.status',
-      {},
-    );
+    return getRuntimeClient().request<BrowserExtensionStatus>('browser.extension.status', {});
   });
   ipcMain.handle('runtime:browser-extension-restart', async (event) => {
     assertRuntimeIpcSource(event);
     await ensureRuntimeConnection();
-    return getRuntimeClient().request<BrowserExtensionStatus>(
-      'browser.extension.restart',
-      {},
-    );
+    return getRuntimeClient().request<BrowserExtensionStatus>('browser.extension.restart', {});
   });
   ipcMain.handle('runtime:browser-extension-reset-pairing', async (event) => {
     assertRuntimeIpcSource(event);
     await ensureRuntimeConnection();
-    return getRuntimeClient().request<BrowserExtensionStatus>(
-      'browser.extension.resetPairing',
-      {},
-    );
+    return getRuntimeClient().request<BrowserExtensionStatus>('browser.extension.resetPairing', {});
   });
   ipcMain.handle('runtime:browser-extension-open-folder', async (event) => {
     assertRuntimeIpcSource(event);

@@ -311,7 +311,7 @@ export const PLATFORM_MCP_TOOL_DEFINITIONS: readonly PlatformMcpToolDefinition[]
   {
     name: 'goal_manage',
     description:
-      'Manage the active goal (目标模式). Actions: "complete" (mark the objective achieved with evidence you gathered), "block" (reason — stop and wait for the user when an unresolvable obstacle blocks progress), "progress" (note — record a short progress note). Only usable while a goal is active in this conversation.',
+      'Manage the active Goal mode objective only. Actions: "complete" (mark the objective achieved with evidence you gathered), "block" (reason — stop and wait for the user when an unresolvable obstacle blocks progress), "progress" (note — record a short progress note). Never use this for a task checklist; use the current kernel’s task/plan tools instead. This tool is omitted unless the user started Goal mode.',
     approval: 'never',
     inputSchema: {
       type: 'object',
@@ -324,6 +324,10 @@ export const PLATFORM_MCP_TOOL_DEFINITIONS: readonly PlatformMcpToolDefinition[]
     },
   },
 ];
+
+export const GOAL_MANAGE_NO_ACTIVE_GOAL =
+  'goal_manage: 当前对话没有进行中的目标。任务清单请使用当前内核的任务/计划工具，不要调用 goal_manage。goal_manage 仅在用户开启 Goal 模式后可用。';
+
 /** Host-only workspace tools implemented by `executePlatformTool` itself. */
 const PLATFORM_FILE_TOOL_NAMES: ReadonlySet<string> = new Set([
   'platform_context',
@@ -415,9 +419,14 @@ export function nativePlatformToolSchemas(
     planningMode?: boolean;
     /** 设置 > 模型 > 图片识别 Fallback 开关：把 describe_image 并入 native 目录。 */
     visionFallbackEnabled?: boolean;
+    /** False when this conversation has no active Goal. */
+    includeGoalManage?: boolean;
   } = {},
 ): import('@sync-think/adapters').ProviderToolSchema[] {
-  const definitions = buildPlatformMcpToolDefinitions({ planningMode: options.planningMode });
+  const definitions = buildPlatformMcpToolDefinitions({
+    planningMode: options.planningMode,
+    includeGoalManage: options.includeGoalManage,
+  });
   const extra = [
     {
       name: WINDOWS_OCR_TOOL_NAME,
@@ -460,6 +469,8 @@ export interface PlatformToolCatalogOptions {
   includeSkillTools?: boolean;
   /** Planning mode: drop all side-effecting tools from the catalog. */
   planningMode?: boolean;
+  /** False hides Goal-mode bookkeeping. Default keeps the tool for back-compat catalogs. */
+  includeGoalManage?: boolean;
 }
 
 function toPlatformDefinition(
@@ -520,12 +531,13 @@ export function buildPlatformMcpToolDefinitions(
   }
   if (options.networkEnabled && options.includeBrowserTools) add(CHAT_BROWSER_TOOL_SCHEMAS);
   if (options.includeDesktopTools) add(CHAT_DESKTOP_TOOL_SCHEMAS);
-  if (options.planningMode) {
-    // Planning runs only ever see read-only tools (the executor fence enforces
-    // the same set — this filter just keeps them out of the model's sight).
-    return definitions.filter((definition) => !isPlanningDeniedTool(definition.name));
+  const catalog = options.planningMode
+    ? definitions.filter((definition) => !isPlanningDeniedTool(definition.name))
+    : definitions;
+  if (options.includeGoalManage === false) {
+    return catalog.filter((definition) => definition.name !== 'goal_manage');
   }
-  return definitions;
+  return catalog;
 }
 
 /** Stores + context the executors need; supplied by the runtime. */

@@ -4,6 +4,8 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import { useState } from 'react';
 import { WorkspaceWorkbench } from './WorkspaceWorkbench.js';
 import {
+  browserWorkbenchTab,
+  conversationWorkbenchTab,
   createWorkspaceWorkbenchLayout,
   fileWorkbenchTab,
   openWorkbenchTab,
@@ -129,12 +131,83 @@ describe('WorkspaceWorkbench', () => {
 
     const trigger = screen.getByRole('button', { name: '添加右侧工作台标签' });
     expect(trigger.closest('.shell-workbench__tabs')).toBeNull();
+    expect(trigger.closest('.shell-workbench__tab-cluster')).not.toBeNull();
     fireEvent.click(trigger);
     const menu = screen.getByRole('menu');
-    expect(menu.classList.contains('shell-workbench-menu--end')).toBe(true);
+    expect(menu.classList.contains('shell-workbench-menu--end')).toBe(false);
+    const items = screen.getAllByRole('menuitem').map((item) => item.textContent?.trim());
+    expect(items[0]).toBe('工作区文件');
+    expect(items[1]).toBe('新建对话');
     fireEvent.click(screen.getByRole('menuitem', { name: /新建终端/ }));
     expect(onNewResource).toHaveBeenCalledWith('terminal');
     expect(screen.queryByRole('menu')).toBeNull();
+  });
+
+  it('creates a conversation from the right-side add menu', () => {
+    const onNewResource = vi.fn();
+    render(
+      <WorkspaceWorkbench
+        placement="right"
+        scope={rightScope()}
+        renderContent={() => null}
+        onActivateTab={vi.fn()}
+        onCloseTab={vi.fn()}
+        onNewResource={onNewResource}
+        onClose={vi.fn()}
+        onSizeChange={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('workbench-tab-new'));
+    fireEvent.click(screen.getByRole('menuitem', { name: /新建对话/ }));
+    expect(onNewResource).toHaveBeenCalledWith('conversation');
+  });
+
+  it('renders a conversation tab in the workbench strip', () => {
+    const scope = openWorkbenchTab(
+      createWorkspaceWorkbenchLayout(),
+      'right',
+      conversationWorkbenchTab('draft:ws-a:1'),
+    ).right;
+    render(
+      <WorkspaceWorkbench
+        placement="right"
+        scope={scope}
+        conversationTabMeta={{ 'draft:ws-a:1': { title: '新对话', track: 'model' } }}
+        renderContent={(tab) => <div data-testid={`content-${tab.id}`}>{tab.id}</div>}
+        onActivateTab={vi.fn()}
+        onCloseTab={vi.fn()}
+        onNewResource={vi.fn()}
+        onClose={vi.fn()}
+        onSizeChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole('tab', { name: /新对话/ })).toBeTruthy();
+    expect(screen.getByTestId('content-conversation:draft:ws-a:1')).toBeTruthy();
+  });
+
+  it('hides the add button until the workbench chrome is focused', () => {
+    const onChromeFocus = vi.fn();
+    render(
+      <WorkspaceWorkbench
+        placement="right"
+        focused={false}
+        scope={rightScope()}
+        renderContent={() => null}
+        onActivateTab={vi.fn()}
+        onCloseTab={vi.fn()}
+        onNewResource={vi.fn()}
+        onChromeFocus={onChromeFocus}
+        onClose={vi.fn()}
+        onSizeChange={vi.fn()}
+      />,
+    );
+
+    const trigger = screen.getByTestId('workbench-tab-new');
+    expect(trigger.closest('.shell-tab-add--hidden')).not.toBeNull();
+    fireEvent.pointerDown(screen.getByRole('tablist'));
+    expect(onChromeFocus).toHaveBeenCalled();
   });
 
   it('offers workspace files only from the right-side workbench', () => {
@@ -341,5 +414,68 @@ describe('WorkspaceWorkbench', () => {
       expect(panel?.getAttribute('data-workspace-panel-open')).toBe('true');
       expect((panel as HTMLElement).style.width).toBe(`${scope.size}px`);
     });
+  });
+
+  it('shows the live site favicon on a browser workbench tab', () => {
+    const scope = openWorkbenchTab(
+      createWorkspaceWorkbenchLayout(),
+      'right',
+      browserWorkbenchTab('b1', 'https://yucoder.cn/index'),
+    ).right;
+    render(
+      <WorkspaceWorkbench
+        placement="right"
+        scope={scope}
+        browserPageMeta={{
+          b1: { title: '摸鱼岛', favicon: 'https://yucoder.cn/favicon.ico' },
+        }}
+        renderContent={(tab) => <div data-testid={`content-${tab.id}`}>{tab.id}</div>}
+        onActivateTab={vi.fn()}
+        onCloseTab={vi.fn()}
+        onNewResource={vi.fn()}
+        onClose={vi.fn()}
+        onSizeChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId('workbench-tab-favicon-b1').getAttribute('src')).toBe(
+      'https://yucoder.cn/favicon.ico',
+    );
+    expect(screen.getByRole('tab', { name: /摸鱼岛/ })).toBeTruthy();
+  });
+
+  it('keeps a browser guest mounted after switching to a document tab', () => {
+    const opened = openWorkbenchTab(
+      openWorkbenchTab(createWorkspaceWorkbenchLayout(), 'right', fileWorkbenchTab('README.md')),
+      'right',
+      browserWorkbenchTab('b1', 'https://yucoder.cn/index'),
+    );
+
+    function Harness() {
+      const [scope, setScope] = useState(opened.right);
+      return (
+        <WorkspaceWorkbench
+          placement="right"
+          scope={scope}
+          renderContent={(tab) => <div data-testid={`content-${tab.id}`}>{tab.id}</div>}
+          onActivateTab={(tabId) => setScope((current) => ({ ...current, activeTabId: tabId }))}
+          onCloseTab={vi.fn()}
+          onNewResource={vi.fn()}
+          onClose={vi.fn()}
+          onSizeChange={vi.fn()}
+        />
+      );
+    }
+
+    render(<Harness />);
+    expect(screen.getByTestId('workbench-surface-browser-b1').getAttribute('data-active')).toBe(
+      'true',
+    );
+    fireEvent.click(screen.getByRole('tab', { name: /README\.md/ }));
+    expect(screen.getByTestId('workbench-surface-browser-b1').getAttribute('data-active')).toBe(
+      'false',
+    );
+    expect(screen.getByTestId('content-browser:b1')).toBeTruthy();
+    expect(screen.getByTestId('content-file:README.md')).toBeTruthy();
   });
 });

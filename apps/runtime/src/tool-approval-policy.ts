@@ -1,7 +1,4 @@
-import {
-  type ToolApprovalRiskSummary,
-  type ToolApprovalScope,
-} from '@sync-think/protocol';
+import { type ToolApprovalRiskSummary, type ToolApprovalScope } from '@sync-think/protocol';
 import {
   COMPUTER_USE_APPROVAL_POLICY_SETTING_KEY,
   normalizeComputerUseApprovalPolicySetting,
@@ -20,11 +17,17 @@ interface SettingStoreLike {
   set(key: string, value: unknown): unknown;
 }
 
-interface ToolApprovalPolicyInput {
+export interface ToolApprovalPolicyInput {
   conversationId: string;
   toolName: string;
   arguments: Record<string, unknown>;
   risk?: ToolApprovalRiskSummary;
+}
+
+interface PreparedToolApprovalGrant {
+  persistentApp?: PersistentComputerUseApp;
+  persist(): void;
+  activate(): void;
 }
 
 export function toolApprovalScopesFor(
@@ -51,30 +54,57 @@ export class ToolApprovalPolicy {
     if (this.sessionTools.has(this.sessionKey(input.conversationId, input.toolName))) return true;
     const app = persistentComputerUseAppOf(input.toolName, input.arguments);
     if (!app) return false;
-    return this.readPersistentApps().some((allowed) => persistentAppKey(allowed) === persistentAppKey(app));
+    return this.readPersistentApps().some(
+      (allowed) => persistentAppKey(allowed) === persistentAppKey(app),
+    );
   }
 
-  remember(
+  remember(input: ToolApprovalPolicyInput & { scope: ToolApprovalScope }): {
+    remembered: boolean;
+    persistentApp?: PersistentComputerUseApp;
+  } {
+    const grant = this.prepareRemember(input);
+    if (!grant) return { remembered: false };
+    grant.persist();
+    grant.activate();
+    return {
+      remembered: true,
+      ...(grant.persistentApp ? { persistentApp: grant.persistentApp } : {}),
+    };
+  }
+
+  prepareRemember(
     input: ToolApprovalPolicyInput & { scope: ToolApprovalScope },
-  ): { remembered: boolean; persistentApp?: PersistentComputerUseApp } {
-    if (input.scope === 'once') return { remembered: false };
-    if (!toolApprovalScopesFor(input).includes(input.scope)) return { remembered: false };
+  ): PreparedToolApprovalGrant | undefined {
+    if (input.scope === 'once' || !toolApprovalScopesFor(input).includes(input.scope)) return;
     if (input.scope === 'session') {
-      this.sessionTools.add(this.sessionKey(input.conversationId, input.toolName));
-      return { remembered: true };
+      const key = this.sessionKey(input.conversationId, input.toolName);
+      return {
+        persist: () => {},
+        activate: () => {
+          this.sessionTools.add(key);
+        },
+      };
     }
 
     const persistentApp = persistentComputerUseAppOf(input.toolName, input.arguments);
-    if (!persistentApp || !this.settings) return { remembered: false };
-    const apps = this.readPersistentApps();
-    if (!apps.some((allowed) => persistentAppKey(allowed) === persistentAppKey(persistentApp))) {
-      const policy: ComputerUseApprovalPolicySetting = {
-        version: 1,
-        alwaysAllowedApps: [...apps, persistentApp],
-      };
-      this.settings.set(COMPUTER_USE_APPROVAL_POLICY_SETTING_KEY, policy);
-    }
-    return { remembered: true, persistentApp };
+    const settings = this.settings;
+    if (!persistentApp || !settings) return;
+    return {
+      persistentApp,
+      persist: () => {
+        const apps = this.readPersistentApps();
+        if (apps.some((allowed) => persistentAppKey(allowed) === persistentAppKey(persistentApp))) {
+          return;
+        }
+        const policy: ComputerUseApprovalPolicySetting = {
+          version: 1,
+          alwaysAllowedApps: [...apps, persistentApp],
+        };
+        settings.set(COMPUTER_USE_APPROVAL_POLICY_SETTING_KEY, policy);
+      },
+      activate: () => {},
+    };
   }
 
   private readPersistentApps(): PersistentComputerUseApp[] {

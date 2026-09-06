@@ -19,6 +19,63 @@ const todo: TodoProjection = {
 afterEach(cleanup);
 
 describe('ComposerTaskPanel', () => {
+  it('hides empty and fully completed native lists, including restored snapshots', () => {
+    const { rerender } = render(<ComposerTaskPanel todo={null} />);
+    expect(screen.queryByTestId('composer-task-panel')).toBeNull();
+    rerender(<ComposerTaskPanel todo={{ ...todo, items: [], total: 0, completed: 0 }} />);
+    expect(screen.queryByTestId('composer-task-panel')).toBeNull();
+    for (const running of [true, false]) {
+      rerender(
+        <ComposerTaskPanel
+          todo={{
+            ...todo,
+            running,
+            completed: todo.total,
+            items: todo.items.map((item) => ({ ...item, status: 'completed' })),
+          }}
+        />,
+      );
+      expect(screen.queryByTestId('composer-task-panel')).toBeNull();
+    }
+    rerender(<ComposerTaskPanel todo={{ ...todo, running: false }} />);
+    expect(screen.getByRole('button', { name: '任务进度 1/3' })).toBeTruthy();
+    expect(within(screen.getByTestId('composer-task-list')).getByText('确认需求')).toBeTruthy();
+  });
+
+  it('shows step descriptions below their titles and keeps legacy items compact', () => {
+    render(
+      <ComposerTaskPanel
+        todo={{
+          ...todo,
+          items: [
+            { ...todo.items[0]!, description: '确认任务清单的生成、事件投影与展示链路' },
+            { ...todo.items[1]!, description: '为每项增加具体范围，并验证状态更新保留说明' },
+            todo.items[2]!,
+          ],
+        }}
+      />,
+    );
+    const list = screen.getByTestId('composer-task-list');
+    const description = within(list).getByText('为每项增加具体范围，并验证状态更新保留说明');
+    expect(description.className).toBe('shell-composer-task-panel__description');
+    expect(list.querySelectorAll('.shell-composer-task-panel__description')).toHaveLength(2);
+    expect(within(list).getByText('实窗验证')).toBeTruthy();
+  });
+
+  it('shows a dismissed snapshot again when only its description changes', () => {
+    const { rerender } = render(<ComposerTaskPanel todo={todo} />);
+    fireEvent.click(screen.getByRole('button', { name: '清除任务清单' }));
+    rerender(
+      <ComposerTaskPanel
+        todo={{
+          ...todo,
+          items: todo.items.map((item) => ({ ...item, description: '补充可核验的执行范围' })),
+        }}
+      />,
+    );
+    expect(screen.getByTestId('composer-task-panel')).toBeTruthy();
+  });
+
   it('auto-expands the first real NewMax task summary and collapses in place', async () => {
     render(<ComposerTaskPanel todo={todo} scopeKey="conversation-a" />);
 
@@ -35,7 +92,7 @@ describe('ComposerTaskPanel', () => {
     expect(screen.queryByTestId('composer-task-list')).toBeNull();
   });
 
-  it('does not render one-item checklists and keeps dismissal scoped to one snapshot', () => {
+  it('reflects even one native task and keeps dismissal scoped to one snapshot', () => {
     const { rerender } = render(<ComposerTaskPanel todo={todo} scopeKey="conversation-a" />);
     fireEvent.click(screen.getByRole('button', { name: '清除任务清单' }));
     expect(screen.queryByTestId('composer-task-panel')).toBeNull();
@@ -56,11 +113,11 @@ describe('ComposerTaskPanel', () => {
 
     rerender(
       <ComposerTaskPanel
-        todo={{ running: true, completed: 0, total: 1, items: [todo.items[0]!] }}
+        todo={{ running: true, completed: 0, total: 1, items: [todo.items[1]!] }}
         scopeKey="conversation-a"
       />,
     );
-    expect(screen.queryByTestId('composer-task-panel')).toBeNull();
+    expect(screen.getByTestId('composer-task-panel')).toBeTruthy();
   });
 
   it('auto-expands once per scope, including terminal snapshots, without reopening after manual collapse', async () => {
@@ -91,9 +148,9 @@ describe('ComposerTaskPanel', () => {
 
     rerender(<ComposerTaskPanel todo={todo} scopeKey="conversation-b" />);
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: '任务进度 1/3' }).getAttribute('aria-expanded')).toBe(
-        'true',
-      ),
+      expect(
+        screen.getByRole('button', { name: '任务进度 1/3' }).getAttribute('aria-expanded'),
+      ).toBe('true'),
     );
   });
 });

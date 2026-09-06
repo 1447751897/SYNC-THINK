@@ -1,5 +1,13 @@
 // Preload runs in the renderer with contextIsolation: true. Bridge exposes a
 // narrow window.api so the renderer never touches Node directly (搂19).
+import type {
+  ConversationListFileChangesPayload,
+  ConversationFileChangesPage,
+} from '@sync-think/protocol';
+import type {
+  ConversationReadFileDiffPayload,
+  ConversationReadFileDiffResponse,
+} from '@sync-think/protocol';
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type {
   ExportDesktopDiagnosticsPayload,
@@ -297,10 +305,14 @@ import type {
   ListConversationsResponse,
   ConversationListMessagesPayload,
   ConversationListMessagesResponse,
+  ConversationListNavigationPayload,
+  ConversationListNavigationResponse,
   ConversationGetContextStatusPayload,
   ConversationGetContextStatusResponse,
   ConversationGetRunProcessPayload,
   ConversationGetRunProcessResponse,
+  ConversationReadContentPayload,
+  ConversationReadContentResponse,
   ConversationListRunTimelinePayload,
   ConversationListRunTimelineResponse,
   ConversationTransientFrame,
@@ -687,16 +699,39 @@ const api = {
         'runtime:conversation-list-messages',
         payload,
       ) as Promise<ConversationListMessagesResponse>,
+    listConversationNavigation: (payload: ConversationListNavigationPayload) =>
+      ipcRenderer.invoke(
+        'runtime:conversation-list-navigation',
+        payload,
+      ) as Promise<ConversationListNavigationResponse>,
     getConversationContextStatus: (payload: ConversationGetContextStatusPayload) =>
       ipcRenderer.invoke(
         'runtime:conversation-get-context-status',
         payload,
       ) as Promise<ConversationGetContextStatusResponse>,
+    readTaskPlanHistory: (
+      payload: import('@sync-think/protocol').TaskPlanHistoryPayload,
+    ): Promise<import('@sync-think/protocol').TaskPlanHistoryPage> =>
+      ipcRenderer.invoke('runtime:conversation-task-plan-history', payload),
+    listConversationFileChanges: (
+      payload: ConversationListFileChangesPayload,
+    ): Promise<ConversationFileChangesPage> =>
+      ipcRenderer.invoke('runtime:conversation-list-file-changes', payload),
     getConversationRunProcess: (payload: ConversationGetRunProcessPayload) =>
       ipcRenderer.invoke(
         'runtime:conversation-get-run-process',
         payload,
       ) as Promise<ConversationGetRunProcessResponse>,
+    readConversationFileDiff: (payload: ConversationReadFileDiffPayload) =>
+      ipcRenderer.invoke(
+        'runtime:conversation-read-file-diff',
+        payload,
+      ) as Promise<ConversationReadFileDiffResponse>,
+    readConversationContent: (payload: ConversationReadContentPayload) =>
+      ipcRenderer.invoke(
+        'runtime:conversation-read-content',
+        payload,
+      ) as Promise<ConversationReadContentResponse>,
     listConversationRunTimeline: (payload: ConversationListRunTimelinePayload) =>
       ipcRenderer.invoke(
         'runtime:conversation-list-run-timeline',
@@ -894,6 +929,12 @@ const api = {
         'runtime:skill-local-import',
         payload,
       ) as Promise<SkillLocalImportResponse>,
+    readApprovalRequestImage: (
+      payload: import('../approval-recovery-contract.js').ReadApprovalRequestImagePayload,
+    ) =>
+      ipcRenderer.invoke('runtime:conversation-read-approval-request-image', payload) as Promise<
+        import('../approval-recovery-contract.js').ReadApprovalRequestImageResponse
+      >,
     decideToolApproval: (payload: ConversationDecideToolApprovalPayload) =>
       ipcRenderer.invoke(
         'runtime:conversation-decide-tool-approval',
@@ -923,6 +964,11 @@ const api = {
         relativePath?: string;
         embedUrl?: string;
         pageUrl?: string;
+        error?: string;
+      }>,
+    sendBrowserTrustedClick: (payload: { webContentsId: number; x: number; y: number }) =>
+      ipcRenderer.invoke('desktop:browser-trusted-click', payload) as Promise<{
+        ok: boolean;
         error?: string;
       }>,
     /** NewMax-compatible token URL for a saved local HTML page. */

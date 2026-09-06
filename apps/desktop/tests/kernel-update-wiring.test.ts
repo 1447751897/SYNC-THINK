@@ -22,5 +22,6 @@ describe('private kernel update wiring', () => {
     expect(contractSource).toContain("export type ManagedKernelUpdateId = 'codex' | 'claude-code' | 'pi'");
     expect(mainSource).toContain("installUpdate('pi')");
     expect(mainSource).toContain('void bootstrapPrivateKernelsAtStartup()');
+    expect(mainSource).toContain('item.kernelId !== \'pi\'');
   });
 });

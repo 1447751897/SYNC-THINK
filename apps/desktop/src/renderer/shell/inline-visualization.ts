@@ -1,16 +1,17 @@
 export interface InlineVisualizationMarkdownSegment {
   type: 'markdown';
+  start: number;
   content: string;
 }
 
 export interface InlineVisualizationSegment {
   type: 'visualization';
+  start: number;
   file: string;
 }
 
 export type InlineVisualizationParts =
-  | InlineVisualizationMarkdownSegment
-  | InlineVisualizationSegment;
+  InlineVisualizationMarkdownSegment | InlineVisualizationSegment;
 
 const DIRECTIVE_RE = /::(?:newmax|codex)-inline-vis\s*\{([^{}]*)\}/gi;
 const FILE_RE = /(?:^|\s)file\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s]+))/i;
@@ -80,12 +81,13 @@ export function parseInlineVisualizationSegments(text: string): InlineVisualizat
     if (isInsideRange(start, ranges)) continue;
     const file = directiveFile(match[1] ?? '');
     if (!file) continue;
-    if (start > cursor) parts.push({ type: 'markdown', content: text.slice(cursor, start) });
-    parts.push({ type: 'visualization', file });
+    if (start > cursor)
+      parts.push({ type: 'markdown', start: cursor, content: text.slice(cursor, start) });
+    parts.push({ type: 'visualization', start, file });
     cursor = end;
   }
   if (cursor < text.length || parts.length === 0) {
-    parts.push({ type: 'markdown', content: text.slice(cursor) });
+    parts.push({ type: 'markdown', start: cursor, content: text.slice(cursor) });
   }
   return parts;
 }
@@ -128,10 +130,7 @@ export function buildVisualizationDocument(
     // head/body structure and mounts the shared root inside body when needed.
     documentSource = injectHead(trimmed, extras);
     if (!rootWrapped && /<body(?:\s[^>]*)?>/i.test(documentSource)) {
-      documentSource = documentSource.replace(
-        /(<body(?:\s[^>]*)?>)/i,
-        '$1<main class="viz-root">',
-      );
+      documentSource = documentSource.replace(/(<body(?:\s[^>]*)?>)/i, '$1<main class="viz-root">');
       documentSource = documentSource.replace(/<\/body>/i, '</main></body>');
     }
   } else {

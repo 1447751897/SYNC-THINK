@@ -49,6 +49,8 @@ export interface KernelMcpServerConditions {
   fallbackWebSearchEnabled?: boolean;
   /** Settings > 模型 > 图片识别 Fallback switched on. */
   visionFallbackEnabled?: boolean;
+  /** True only when this conversation has an active Goal-mode objective. */
+  hasActiveGoal?: boolean;
 }
 
 let currentConditions: KernelMcpServerConditions = {};
@@ -135,6 +137,7 @@ export interface KernelMcpRunSelection {
  * must not mutate them.
  */
 export function selectKernelMcpRun(options: {
+  kernelId?: string;
   executionMode?: string;
   networkEnabled?: boolean;
   planningMode?: boolean;
@@ -143,6 +146,7 @@ export function selectKernelMcpRun(options: {
   const externalTools: KernelMcpToolDefinition[] = [];
   const nativeTools: KernelMcpToolDefinition[] = [];
   for (const server of KERNEL_MCP_SERVERS) {
+    if (server.name === 'task-board' && (options.kernelId === 'claude-code' || options.kernelId === 'codex')) continue;
     if (!server.alwaysLoad) {
       const condition = server.condition;
       if (condition) {
@@ -153,9 +157,11 @@ export function selectKernelMcpRun(options: {
         }
       }
     }
-    const visibleTools = options.planningMode
-      ? server.tools.filter((tool) => !tool.planningDenied)
-      : server.tools;
+    const visibleTools = (
+      options.planningMode
+        ? server.tools.filter((tool) => !tool.planningDenied)
+        : server.tools
+    ).filter((tool) => tool.name !== 'goal_manage' || currentConditions.hasActiveGoal === true);
     if (visibleTools.length === 0) continue;
     servers.push(server);
     nativeTools.push(...visibleTools);

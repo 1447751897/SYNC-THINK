@@ -251,7 +251,7 @@ export async function capturePhase3VisualEvidence(options = {}) {
     options.outputDir ?? join(workspaceRoot, '.data', 'phase3-visual', 'current'),
   );
   assertOutputPath(workspaceRoot, outputDir);
-  const htmlPath = join(workspaceRoot, 'apps', 'desktop', 'dist', 'renderer-shell', 'index.html');
+  const htmlPath = join(workspaceRoot, '.data', 'renderer-builds', 'qa', 'index.html');
   if (!existsSync(htmlPath)) throw new Error('phase3.visual.shell_build_missing:' + htmlPath);
 
   await rm(outputDir, { recursive: true, force: true });

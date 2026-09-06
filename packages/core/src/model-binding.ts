@@ -195,10 +195,52 @@ export function shouldAttemptFallback(failureClass: FailureClass | undefined): b
 }
 
 /** Failures that normally affect a Provider endpoint or credential, not one model. */
+export function isSharedProviderEndpointFailure(errorMessage?: string): boolean {
+  if (!errorMessage) return false;
+  const transport =
+    /unexpected status 50[234]|bad gateway|gateway timeout|fetch failed|econnreset|econnrefused|socket hang up/i.test(
+      errorMessage,
+    );
+  const localGateway = /127\.0\.0\.1|localhost/i.test(errorMessage);
+  return transport && localGateway;
+}
+
+export function describeModelFallbackReason(
+  failureClass: FailureClass | string,
+  errorMessage?: string,
+): string {
+  if (/502/.test(errorMessage ?? '')) return '网关 502';
+  if (/504|gateway timeout/i.test(errorMessage ?? '')) return '网关超时';
+  if (/429|rate[\s_-]*limit/i.test(errorMessage ?? '')) return '限流';
+  if (failureClass === 'timeout') return '超时';
+  if (failureClass === 'transient') return '暂时失败';
+  if (failureClass === 'auth') return '认证失败';
+  return String(failureClass);
+}
+
+export function formatModelSwitchDetail(
+  fromLabel: string,
+  toLabel: string,
+  failureClass: FailureClass | string,
+  errorMessage?: string,
+): string {
+  const reason = describeModelFallbackReason(failureClass, errorMessage);
+  return `${fromLabel} → ${toLabel} · ${reason}`;
+}
+
 export function shouldSkipSameProviderFallback(
   failureClass: FailureClass,
   consecutiveProviderFailures = 1,
+  errorMessage?: string,
 ): boolean {
+  if (
+    isSharedProviderEndpointFailure(errorMessage) &&
+    (failureClass === 'timeout' ||
+      failureClass === 'transient' ||
+      failureClass === 'rate-limit')
+  ) {
+    return true;
+  }
   if (consecutiveProviderFailures < 2) return false;
   return (
     failureClass === 'timeout' ||

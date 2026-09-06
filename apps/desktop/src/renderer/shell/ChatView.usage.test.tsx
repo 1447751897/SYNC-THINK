@@ -119,6 +119,26 @@ afterEach(() => {
 });
 
 describe('ChatView reply usage details', () => {
+  it('hydrates the task panel from durable conversation state with an empty activity stream', async () => {
+    runtime.listConversationMessages.mockResolvedValue({
+      messages: [assistantMessage], hasMore: false,
+      taskPlan: {
+        sequence: 1993426, running: false, pending: {}, source: 'plan',
+        items: [
+          { title: '检查原生任务', description: '读取内核提供的任务状态', status: 'completed' },
+          { title: '验证重启恢复', description: '从当前会话持久化状态恢复', status: 'in_progress' },
+        ],
+      },
+    });
+    const { rerender } = render(<ChatView conversation={conversation} modelName="GPT-5" models={[]} eventHistory={[]} onTitleUpdated={vi.fn()} />);
+    const panel = await screen.findByTestId('composer-task-panel');
+    expect(panel.textContent).toContain('(1/2)');
+    expect(await screen.findByText('从当前会话持久化状态恢复')).toBeTruthy();
+    runtime.listConversationMessages.mockResolvedValue({ messages: [], hasMore: false, taskPlan: { sequence: 0, running: false, pending: {}, items: null } });
+    rerender(<ChatView conversation={{ ...conversation, id: 'other-conversation', taskId: 'other-task' } as Conversation} modelName="GPT-5" models={[]} eventHistory={[]} onTitleUpdated={vi.fn()} />);
+    await waitFor(() => expect(screen.queryByTestId('composer-task-panel')).toBeNull());
+  });
+
   it('loads the complete execution timeline only after the folded panel opens', async () => {
     runtime.listConversationMessages.mockResolvedValue({
       messages: [
@@ -205,21 +225,21 @@ describe('ChatView reply usage details', () => {
     fireEvent.click(toggle);
 
     expect(await screen.findByText('最早的完整思考')).toBeTruthy();
-    expect(runtime.listConversationRunTimeline).toHaveBeenCalledTimes(1);
     expect(runtime.listConversationRunTimeline).toHaveBeenCalledWith({
       runId: 'run-usage',
       limit: 64,
     });
-    expect(screen.queryByText('最近的简略思考')).toBeNull();
+    expect(screen.getByText('最近的简略思考')).toBeTruthy();
+    expect(screen.queryByTestId('process-timeline-load-more')).toBeNull();
 
-    fireEvent.click(screen.getByTestId('process-timeline-load-more'));
-
-    expect(await screen.findByText('最近的简略思考')).toBeTruthy();
-    expect(runtime.listConversationRunTimeline).toHaveBeenLastCalledWith({
-      runId: 'run-usage',
-      cursor: 'page-2',
-      limit: 64,
-    });
+    await waitFor(() =>
+      expect(runtime.listConversationRunTimeline).toHaveBeenCalledWith({
+        runId: 'run-usage',
+        cursor: 'page-2',
+        limit: 64,
+      }),
+    );
+    expect(runtime.listConversationRunTimeline).toHaveBeenCalledTimes(2);
   });
 
   it('uses the durable task-scoped usage summary for cumulative conversation tokens', async () => {
@@ -1048,5 +1068,39 @@ describe('ChatView reply usage details', () => {
     expect(
       (await screen.findByRole('option', { name: /联网搜索/ })).getAttribute('aria-checked'),
     ).toBe('false');
+  });
+
+  it('renders file changes below the final answer instead of above it', async () => {
+    runtime.listConversationMessages.mockResolvedValue({
+      messages: [
+        {
+          ...assistantMessage,
+          blocks: [{ type: 'text', text: '两个文件已完整对比完。' }],
+        } as Message,
+      ],
+      hasMore: false,
+    });
+    runtime.getConversationRunProcess.mockResolvedValue({
+      process: {
+        ...processView,
+        fileChanges: [{ path: 'apps/desktop/package.json', action: 'edited' }],
+      },
+    });
+
+    render(
+      <ChatView
+        conversation={conversation}
+        modelName="GPT-5"
+        models={[{ modelId: 'model-usage', displayName: 'GPT-5', providerName: 'Provider' }]}
+        eventHistory={[]}
+        onTitleUpdated={vi.fn()}
+      />,
+    );
+
+    const answer = await screen.findByText('两个文件已完整对比完。');
+    const card = await screen.findByText(/已更改 1 个文件/);
+    expect(answer.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
   });
 });

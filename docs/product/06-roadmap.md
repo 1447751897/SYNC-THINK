@@ -13,7 +13,7 @@
 2. [ ] 用最终 packaged build 跑 Native、ClaudeCode、GPT/Codex 的真实 Provider 矩阵：普通回复、连续多轮、中文思考、OCR/图片、工具 running/completed/failed、ask/workspace/full-access、最终正文、缓存/Token、Desktop 重连和 Runtime 重启。Pi 在有真实 adapter 前必须保持不可选或明确隐藏，不能出现“检测已安装但执行失败”。
 3. [ ] 定义并实现 Runtime/系统重启期间的待审批语义。当前 `pendingToolApprovals` 仍是内存 Promise；至少要持久恢复可继续的审批，或在接管时持久终结为明确失败，不能留下看似可批准但已无执行上下文的卡片。
 4. [ ] 收敛首版产品表面：隐藏账号、钱包、组织、快捷键、语音、每日回顾、安全查杀等 `ready: false` 空入口；已展示的 Pi、外部事件配置等入口必须与真实可用范围一致。
-5. [ ] 发布版本从开发占位 `0.0.1` 升为明确 RC/正式版本并锁定 channel。邀请闭测可使用现有 unsigned 内部链；公开发布前完成 Authenticode、RFC 3161、真实 private feed、签名更新与 rollback E2E。
+5. [x] 发布版本已升为 `0.1.0-beta.1`，并提供无签名公开下载页（手动分发、无自动更新源）。正式签名公开发布前仍需完成 Authenticode、RFC 3161、真实 private feed、签名更新与 rollback E2E。
 6. [x] 统一多内核主模型故障转移：ClaudeCode/GPT 外部内核已接入宿主失败分类、可见重试、Provider 优先级与 Agent fallback 链；终态 503 直接续接备用模型，停用 Provider 会被跳过，失败卡可手动选模型重试。最终 packaged 真实 Provider 矩阵仍由第 2 项统一验收。
 
 ### P1：首版稳定后优先补齐

@@ -46,7 +46,24 @@ interface FilePaneSession {
   cleanStatus: '已同步' | '已保存';
 }
 
+const AUTO_SAVE_KEY = 'sync-think:file-pane:auto-save';
 const filePaneSessions = new Map<string, FilePaneSession>();
+
+function readAutoSave(): boolean {
+  try {
+    return localStorage.getItem(AUTO_SAVE_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+function writeAutoSave(enabled: boolean): void {
+  try {
+    localStorage.setItem(AUTO_SAVE_KEY, String(enabled));
+  } catch {
+    /* ignore quota / private-mode */
+  }
+}
 
 function filePaneSessionKey(projectFolder: string, path: string): string {
   const root = projectFolder.trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
@@ -130,6 +147,7 @@ export function FilePane({
   const [view, setView] = useState<FilePaneView>(() => defaultFilePaneView(path));
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle');
   const [saveMenuOpen, setSaveMenuOpen] = useState(false);
+  const [autoSave, setAutoSave] = useState(readAutoSave);
   const loadedRef = useRef<LoadedFile | null>(initialSession?.loaded ?? null);
   const saveMenuRef = useRef<HTMLDivElement>(null);
   const dirtyRef = useRef(
@@ -408,6 +426,18 @@ export function FilePane({
     [draft, path, projectFolder, sessionKey],
   );
 
+  useEffect(() => {
+    writeAutoSave(autoSave);
+  }, [autoSave]);
+
+  useEffect(() => {
+    if (!autoSave || !canSave || saving || diskChange) return;
+    const timer = window.setTimeout(() => {
+      void saveFile(false);
+    }, 2000);
+    return () => window.clearTimeout(timer);
+  }, [autoSave, canSave, diskChange, saveFile, saving]);
+
   const handleEditorKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     const shortcut = readShortcutPreferences().saveFile;
     if (shortcut.enabled && matchesShortcut(event.nativeEvent, shortcut.accelerator)) {
@@ -432,9 +462,19 @@ export function FilePane({
     }, 1500);
   }, [draft]);
 
-  const status = saving ? '保存中' : dirty ? '未保存' : neverSaved ? '草稿' : cleanStatus;
+  const status = diskChange
+    ? '等待选择版本'
+    : autoSave
+      ? dirty || saving
+        ? '保存中'
+        : '已保存'
+      : saving
+        ? '保存中'
+        : dirty
+          ? '保存'
+          : '已保存';
   const previewLabel = isRenderedMarkdownPath(path) ? '文档预览' : '高亮预览';
-  const pending = dirty || neverSaved || saving;
+  const pending = dirty && !autoSave && !diskChange;
   const copyLabel =
     copyState === 'copied' ? '已复制' : copyState === 'error' ? '重试复制' : '复制源码';
   const copyAriaLabel =
@@ -540,10 +580,10 @@ export function FilePane({
                 data-testid="file-pane-save"
                 aria-label="保存文件"
                 title={canSave ? '保存文件' : status}
-                disabled={saving || loading}
+                disabled={saving || loading || autoSave || Boolean(diskChange) || !canSave}
                 onClick={() => {
                   setSaveMenuOpen(false);
-                  if (canSave) void saveFile(false);
+                  if (canSave && !autoSave) void saveFile(false);
                 }}
               >
                 {saving ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : null}
@@ -569,14 +609,23 @@ export function FilePane({
                 <button
                   type="button"
                   role="menuitem"
-                  disabled={!canSave || saving || loading}
+                  disabled={!canSave || saving || loading || autoSave}
                   onClick={() => {
                     setSaveMenuOpen(false);
-                    if (canSave) void saveFile(false);
+                    if (canSave && !autoSave) void saveFile(false);
                   }}
                 >
                   <Save size={14} aria-hidden="true" />
                   <span>保存</span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitemcheckbox"
+                  aria-checked={autoSave}
+                  onClick={() => setAutoSave((enabled) => !enabled)}
+                >
+                  <span>自动保存</span>
+                  {autoSave ? <Check size={13} aria-hidden="true" /> : null}
                 </button>
                 <button
                   type="button"

@@ -268,11 +268,7 @@ vi.mock('./BrowserStage.js', () => ({
         type: 'button',
         'data-testid': 'mock-browser-stage-ai',
         onClick: () =>
-          (
-            props.onStartAiTask as
-              | ((request: Record<string, unknown>) => void)
-              | undefined
-          )?.({
+          (props.onStartAiTask as ((request: Record<string, unknown>) => void) | undefined)?.({
             profileId: 'profile-a',
             profileName: 'Profile A',
             name: '测试浏览器任务',
@@ -329,6 +325,7 @@ import { EmptyTalk, ShellApp } from './ShellApp.js';
 import {
   createWorkspacePaneLayout,
   focusPane,
+  openBrowserInPane,
   openFileInPane,
   paneConversationIds,
   splitPaneWithConversation,
@@ -437,12 +434,13 @@ function installRuntime(): void {
   });
 }
 
-function openDirtySettings(): void {
+async function openDirtySettings(): Promise<void> {
   render(<ShellApp />);
   fireEvent.click(screen.getByTestId('nav-settings'));
-  fireEvent.click(screen.getByRole('button', { name: '模型' }));
-  fireEvent.click(screen.getByRole('button', { name: '标记模型配置未保存' }));
-  expect(screen.getByRole('button', { name: '完成' })).toBeTruthy();
+  const dialog = await screen.findByRole('dialog', { name: '设置' });
+  fireEvent.click(await within(dialog).findByRole('button', { name: '模型' }));
+  fireEvent.click(await within(dialog).findByRole('button', { name: '标记模型配置未保存' }));
+  expect(within(dialog).getByRole('button', { name: '完成' })).toBeTruthy();
 }
 
 describe('ShellApp abilities navigation', () => {
@@ -585,7 +583,7 @@ describe('ShellApp settings modal', () => {
     installRuntime();
     completeMock.mockResolvedValue(false);
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
-    openDirtySettings();
+    await openDirtySettings();
 
     fireEvent.click(screen.getByRole('button', { name: '完成' }));
 
@@ -598,7 +596,7 @@ describe('ShellApp settings modal', () => {
     installRuntime();
     completeMock.mockResolvedValue(true);
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
-    openDirtySettings();
+    await openDirtySettings();
 
     fireEvent.click(screen.getByRole('button', { name: '完成' }));
 
@@ -609,10 +607,10 @@ describe('ShellApp settings modal', () => {
     });
   });
 
-  it('asks once and stays open when dirty close is cancelled via the X button', () => {
+  it('asks once and stays open when dirty close is cancelled via the X button', async () => {
     installRuntime();
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
-    openDirtySettings();
+    await openDirtySettings();
 
     fireEvent.click(screen.getByRole('button', { name: '关闭设置' }));
 
@@ -627,7 +625,7 @@ describe('ShellApp settings modal', () => {
     render(<ShellApp />);
     fireEvent.click(screen.getByTestId('nav-settings'));
     // Default section is general — complete gate is models-only.
-    fireEvent.click(screen.getByRole('button', { name: '完成' }));
+    fireEvent.click(await screen.findByRole('button', { name: '完成' }));
 
     expect(confirmSpy).not.toHaveBeenCalled();
     await waitFor(() => {
@@ -677,7 +675,139 @@ describe('ShellApp workspace context', () => {
         registerForAutomation: true,
       }),
     );
-    expect(String(browserPanelProps.current?.partition)).toMatch(/^pane-browser-/);
+    expect(String(browserPanelProps.current?.partition)).toMatch(/^workbench-browser-/);
+    const storedWorkbench = JSON.parse(
+      window.localStorage.getItem('sync-think.workspaceWorkbenchLayouts') ?? '{}',
+    );
+    expect(storedWorkbench.workspaces['ws-a'].right.tabs).toEqual([
+      expect.objectContaining({ type: 'browser', url: 'https://example.com/dashboard' }),
+    ]);
+  });
+
+  it('opens a new website beside an existing GitHub tab without docking workspace files', async () => {
+    installRuntime();
+    let onEvent: ((event: Event) => void) | undefined;
+    runtime.onEvent.mockImplementation((listener: (event: Event) => void) => {
+      onEvent = listener;
+      return vi.fn();
+    });
+    runtime.listWorkspaces.mockResolvedValue({
+      workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }],
+    });
+    const pane = openBrowserInPane(
+      createWorkspacePaneLayout('ws-a', ['conv-a'], 'conv-a'),
+      'browser-github',
+      'https://github.com/sync-think',
+    );
+    window.localStorage.setItem('sync-think.activeWorkspaceId', 'ws-a');
+    window.localStorage.setItem(
+      'sync-think.workspacePaneLayouts',
+      JSON.stringify({ version: 1, workspaces: { 'ws-a': pane } }),
+    );
+
+    render(<ShellApp />);
+    await waitFor(() => expect(screen.getByTestId('browser-tab-browser-github')).toBeTruthy());
+
+    await act(async () => {
+      onEvent?.({
+        id: 'event-browser-4399' as Event['id'],
+        workspaceId: 'ws-a' as Event['workspaceId'],
+        category: 'run',
+        type: 'tool.completed',
+        sequence: 2,
+        occurredAt: '2026-09-06T12:00:00.000Z',
+        payload: {
+          toolName: 'browser_open',
+          toolCallId: 'tool-browser-4399',
+          result: JSON.stringify({ ok: true, url: 'https://www.4399.com/' }),
+        },
+      });
+    });
+
+    await waitFor(() => {
+      const storedWorkbench = JSON.parse(
+        window.localStorage.getItem('sync-think.workspaceWorkbenchLayouts') ?? '{}',
+      );
+      expect(storedWorkbench.workspaces['ws-a'].right.tabs).toEqual([
+        expect.objectContaining({ type: 'browser', url: 'https://www.4399.com/' }),
+      ]);
+    });
+
+    const storedPanes = JSON.parse(
+      window.localStorage.getItem('sync-think.workspacePaneLayouts') ?? '{}',
+    );
+    const paneTabs = Object.values(storedPanes.workspaces['ws-a'].panes as Record<string, { tabs: Array<{ type: string; url?: string }> }>)
+      .flatMap((item) => item.tabs);
+    expect(paneTabs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'browser', url: 'https://github.com/sync-think' }),
+      ]),
+    );
+    expect(paneTabs.filter((tab) => tab.type === 'browser')).toHaveLength(1);
+    expect(screen.getByTestId('browser-tab-browser-github')).toBeTruthy();
+  });
+
+  it('opens each distinct website from a batched browser_open turn', async () => {
+    installRuntime();
+    let onEvent: ((event: Event) => void) | undefined;
+    runtime.onEvent.mockImplementation((listener: (event: Event) => void) => {
+      onEvent = listener;
+      return vi.fn();
+    });
+    runtime.listWorkspaces.mockResolvedValue({
+      workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }],
+    });
+    window.localStorage.setItem('sync-think.activeWorkspaceId', 'ws-a');
+
+    render(<ShellApp />);
+    await waitFor(() => expect(topBarProps.current?.activeWorkspaceId).toBe('ws-a'));
+
+    await act(async () => {
+      onEvent?.({
+        id: 'event-browser-4399-batch' as Event['id'],
+        workspaceId: 'ws-a' as Event['workspaceId'],
+        category: 'run',
+        type: 'tool.completed',
+        sequence: 3,
+        occurredAt: '2026-09-06T12:20:00.000Z',
+        payload: {
+          toolName: 'browser_open',
+          toolCallId: 'tool-browser-4399-batch',
+          result: JSON.stringify({ ok: true, url: 'https://www.4399.com/' }),
+        },
+      });
+      onEvent?.({
+        id: 'event-browser-github-batch' as Event['id'],
+        workspaceId: 'ws-a' as Event['workspaceId'],
+        category: 'run',
+        type: 'tool.completed',
+        sequence: 4,
+        occurredAt: '2026-09-06T12:20:01.000Z',
+        payload: {
+          toolName: 'browser_open',
+          toolCallId: 'tool-browser-github-batch',
+          result: JSON.stringify({ ok: true, url: 'https://github.com/sync-think' }),
+        },
+      });
+    });
+
+    await waitFor(() => {
+      const storedWorkbench = JSON.parse(
+        window.localStorage.getItem('sync-think.workspaceWorkbenchLayouts') ?? '{}',
+      );
+      const tabs = storedWorkbench.workspaces['ws-a'].right.tabs as Array<{
+        type: string;
+        url?: string;
+      }>;
+      expect(tabs.filter((tab) => tab.type === 'browser')).toHaveLength(2);
+      expect(tabs).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ type: 'browser', url: 'https://www.4399.com/' }),
+          expect.objectContaining({ type: 'browser', url: 'https://github.com/sync-think' }),
+        ]),
+      );
+      expect(tabs.some((tab) => tab.type === 'workspace-files')).toBe(false);
+    });
   });
 
   it('keeps the conversation view and browser guest mounted when switching pane tabs', async () => {
@@ -722,7 +852,10 @@ describe('ShellApp workspace context', () => {
         payload: {
           toolName: 'browser_open',
           toolCallId: 'tool-browser-keep-alive',
-          result: JSON.stringify({ ok: true, url: 'https://beui.dev/components/agents/message-scroller' }),
+          result: JSON.stringify({
+            ok: true,
+            url: 'https://beui.dev/components/agents/message-scroller',
+          }),
         },
       });
     });
@@ -730,8 +863,9 @@ describe('ShellApp workspace context', () => {
     await waitFor(() => expect(screen.getByTestId('mock-browser-panel')).toBeTruthy());
     expect(screen.getByTestId('mock-chat-view')).toBeTruthy();
     expect(screen.getByTestId('pane-surface-conversation').getAttribute('data-active')).toBe(
-      'false',
+      'true',
     );
+    expect(String(browserPanelProps.current?.partition)).toMatch(/^workbench-browser-/);
 
     fireEvent.click(
       within(screen.getByTestId('conversation-tab-conv-a')).getByRole('button', { name: 'hi' }),
@@ -794,6 +928,59 @@ describe('ShellApp workspace context', () => {
       window.localStorage.getItem('sync-think.workspaceWorkbenchLayouts') ?? '{}',
     );
     expect(stored.workspaces['ws-b']).toBeUndefined();
+  });
+
+  it('hides the workbench plus until that workspace is clicked and can create a conversation', async () => {
+    installRuntime();
+    runtime.listWorkspaces.mockResolvedValue({
+      workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }],
+    });
+    runtime.listConversations.mockResolvedValue({
+      conversations: [
+        {
+          id: 'conv-a',
+          workspaceId: 'ws-a',
+          track: 'model',
+          targetRef: 'model-a',
+          title: 'hi',
+          executionMode: 'full-access',
+        },
+      ],
+    });
+    window.localStorage.setItem('sync-think.activeWorkspaceId', 'ws-a');
+    window.localStorage.setItem(
+      'sync-think.openConversationTabs',
+      JSON.stringify({ 'ws-a': ['conv-a'] }),
+    );
+    window.localStorage.setItem(
+      'sync-think.selectedConversationByWorkspace',
+      JSON.stringify({ 'ws-a': 'conv-a' }),
+    );
+
+    render(<ShellApp />);
+    const mainPlus = await screen.findByTestId('conversation-tab-new');
+    expect(mainPlus.closest('.shell-tab-add--hidden')).toBeNull();
+
+    act(() => (topBarProps.current?.onToggleRightWorkbench as (() => void) | undefined)?.());
+    const workbenchPlus = await screen.findByTestId('workbench-tab-new');
+    expect(workbenchPlus.closest('.shell-workbench__tab-cluster')).not.toBeNull();
+    expect(workbenchPlus.closest('.shell-tab-add--hidden')).not.toBeNull();
+
+    fireEvent.pointerDown(workbenchPlus.closest('.shell-workbench') as HTMLElement);
+    await waitFor(() => {
+      expect(screen.getByTestId('workbench-tab-new').closest('.shell-tab-add--hidden')).toBeNull();
+      expect(
+        screen.getByTestId('conversation-tab-new').closest('.shell-tab-add--hidden'),
+      ).not.toBeNull();
+    });
+
+    fireEvent.click(screen.getByTestId('workbench-tab-new'));
+    fireEvent.click(screen.getByRole('menuitem', { name: /新建对话/ }));
+    await waitFor(() => expect(screen.getByTestId('workbench-surface-conversation')).toBeTruthy());
+    expect(screen.getByTestId('empty-compose').closest('.shell-workbench')).not.toBeNull();
+    expect(screen.getByRole('tab', { name: /新对话/ }).closest('.shell-workbench')).not.toBeNull();
+    expect(screen.queryAllByTestId(/conversation-tab-draft/)).toHaveLength(0);
+    expect(screen.getByTestId('conversation-tab-conv-a')).toBeTruthy();
   });
 
   it('keeps same-path file drafts and dirty markers isolated by workspace', async () => {
@@ -1662,6 +1849,16 @@ describe('ShellApp empty conversation compose', () => {
     runtime.listWorkspaces.mockResolvedValue({
       workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }],
     });
+    runtime.listProviders.mockResolvedValue({
+      providers: [
+        {
+          providerId: 'provider-a',
+          name: 'Provider A',
+          enabled: true,
+          models: [{ modelId: 'model-a', displayName: 'Model A' }],
+        },
+      ],
+    });
 
     render(<ShellApp />);
     const input = await screen.findByTestId('empty-compose-input');
@@ -1757,7 +1954,9 @@ describe('ShellApp empty conversation compose', () => {
 
     const editorRoot = editor.closest('.cm-editor');
     expect(editorRoot).not.toBeNull();
-    await waitFor(() => expect(getComputedStyle(editorRoot as HTMLElement).maxHeight).toBe('200px'));
+    await waitFor(() =>
+      expect(getComputedStyle(editorRoot as HTMLElement).maxHeight).toBe('200px'),
+    );
     expect(getComputedStyle(editor).fontSize).toBe('18px');
     expect(getComputedStyle(editor).fontFamily).toBe('var(--font-serif)');
   });
@@ -1862,10 +2061,14 @@ describe('ShellApp empty conversation compose', () => {
     fireEvent.click(within(menus[1]!).getByRole('option', { name: /联网搜索/ }));
 
     expect(
-      within(menus[0]!).getByRole('option', { name: /联网搜索/ }).getAttribute('aria-checked'),
+      within(menus[0]!)
+        .getByRole('option', { name: /联网搜索/ })
+        .getAttribute('aria-checked'),
     ).toBe('true');
     expect(
-      within(menus[1]!).getByRole('option', { name: /联网搜索/ }).getAttribute('aria-checked'),
+      within(menus[1]!)
+        .getByRole('option', { name: /联网搜索/ })
+        .getAttribute('aria-checked'),
     ).toBe('false');
   });
 
@@ -3573,4 +3776,49 @@ describe('ShellApp deep links', () => {
     expect(screen.queryByTestId('mock-chat-view')).toBeNull();
     expect(window.localStorage.getItem('sync-think.activeWorkspaceId')).toBe('ws-a');
   });
+});
+
+it('preserves the first-turn draft instead of creating a conversation for a saved Pi kernel', async () => {
+  installRuntime();
+  window.localStorage.setItem('sync-think.newConversationKernel', 'pi');
+  runtime.listWorkspaces.mockResolvedValue({
+    workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:/a' }],
+  });
+  runtime.listProviders.mockResolvedValue({
+    providers: [
+      {
+        providerId: 'provider-a',
+        name: 'Provider A',
+        enabled: true,
+        models: [{ modelId: 'model-a', displayName: 'Model A' }],
+      },
+    ],
+  });
+  runtime.detectKernels.mockResolvedValue({
+    kernels: [
+      {
+        kernelId: 'pi',
+        name: 'Pi',
+        icon: 'pi',
+        capabilities: {},
+        installed: true,
+        version: '1.2.3',
+        executablePath: 'pi.cmd',
+        knownGood: true,
+        executionSupported: false,
+      },
+    ],
+  });
+  render(<ShellApp />);
+  await screen.findByTestId('empty-compose-input');
+  fireEvent.change(screen.getByTestId('empty-compose-input'), {
+    target: { value: 'preserve first Pi draft' },
+  });
+  fireEvent.click(screen.getByTestId('empty-compose-send'));
+  expect(await screen.findByText(/Pi 执行尚未接通/)).toBeTruthy();
+  expect((screen.getByTestId('empty-compose-input') as HTMLTextAreaElement).value).toBe(
+    'preserve first Pi draft',
+  );
+  expect(runtime.createConversation).not.toHaveBeenCalled();
+  expect(runtime.appendMessage).not.toHaveBeenCalled();
 });

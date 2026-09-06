@@ -86,6 +86,17 @@ export function siteFaviconUrl(host: string): string {
   return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(host)}&sz=64`;
 }
 
+export function browserTabFaviconSrc(browser: { url: string; favicon?: string }): string | undefined {
+  if (browser.favicon?.trim()) return browser.favicon.trim();
+  try {
+    const host = new URL(browser.url).hostname.toLowerCase().replace(/^www\./, '');
+    if (!host.includes('.')) return undefined;
+    return siteFaviconUrl(host);
+  } catch {
+    return undefined;
+  }
+}
+
 export function ExternalSourceIcon({
   url,
   size = 14,

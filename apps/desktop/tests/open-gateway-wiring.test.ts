@@ -55,7 +55,9 @@ describe('open gateway settings section', () => {
       settingsSource.indexOf('export interface SettingsPageProps'),
     );
     expect(sections.indexOf("id: 'general'")).toBeLessThan(sections.indexOf("id: 'connection'"));
-    expect(settingsSource).toContain("SECTIONS.find((item) => item.id === 'general')!");
+    expect(settingsSource).toContain(
+      "return AVAILABLE_SECTIONS.some((item) => item.id === section) ? section! : 'general'",
+    );
   });
 
   it('persists through the shared settings bridge and re-polls status afterwards', () => {

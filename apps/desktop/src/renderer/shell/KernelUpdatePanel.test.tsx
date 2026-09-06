@@ -89,17 +89,17 @@ describe('KernelUpdatePanel', () => {
     expect(await screen.findByRole('heading', { name: '核心运行环境' })).toBeTruthy();
     expect(screen.getByText('GPT')).toBeTruthy();
     expect(screen.getByText('ClaudeCode')).toBeTruthy();
-    expect(screen.getByText('Pi')).toBeTruthy();
+    expect(screen.queryByText('Pi')).toBeNull();
     expect(screen.getByText('v0.149.0')).toBeTruthy();
     expect(screen.getByText('v2.1.241')).toBeTruthy();
-    expect(screen.getByText('未检测到版本')).toBeTruthy();
+    expect(screen.queryByText('未检测到版本')).toBeNull();
     expect(screen.getByLabelText('GPT')).toBeTruthy();
     expect(screen.getByAltText('ClaudeCode')).toBeTruthy();
-    expect(screen.getByLabelText('Pi')).toBeTruthy();
+    expect(screen.queryByLabelText('Pi')).toBeNull();
 
     await waitFor(() => expect(kernelUpdates.checkForUpdates).toHaveBeenCalled());
     expect(kernelUpdates.checkForUpdates.mock.calls[0]).toEqual([]);
-    expect(await screen.findAllByText('可升级到 9.9.9')).toHaveLength(3);
+    expect(await screen.findAllByText('可升级到 9.9.9')).toHaveLength(2);
     const checkGpt = screen.getByRole('button', { name: '检查更新 GPT' });
     await waitFor(() => expect((checkGpt as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(checkGpt);

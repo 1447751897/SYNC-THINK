@@ -19,6 +19,7 @@ export type Feature =
   | 'runtime.subscribeEvents'
   | 'runtime.continueEventReplay'
   | 'conversation.transientStream'
+  | 'runtime.incrementalRunState'
   | 'runtime.healthcheck'
   | 'context.packet.peek'
   | 'context.packet.amend'
@@ -67,10 +68,18 @@ export type Feature =
   | 'team.setRunStatus'
   | 'conversation.list'
   | 'conversation.listMessages'
+  | 'conversation.listNavigation'
   | 'conversation.getContextStatus'
   | 'conversation.setContextWindowOverride'
   | 'conversation.getRunProcess'
   | 'conversation.listRunTimeline'
+  | 'conversation.readContent'
+  | 'conversation.readFileDiff'
+  | 'conversation.listFileChanges'
+  | 'conversation.taskPlanHistory'
+  | 'conversation.eventDisplayContent'
+  | 'conversation.legacyProseContent'
+  | 'conversation.runProcessPages'
   | 'conversation.create'
   | 'conversation.rename'
   | 'conversation.setPinned'
@@ -148,6 +157,7 @@ export const DEFAULT_FEATURES: Feature[] = [
   'runtime.subscribeEvents',
   'runtime.continueEventReplay',
   'conversation.transientStream',
+  'runtime.incrementalRunState',
   'runtime.healthcheck',
   'context.packet.peek',
   'context.packet.amend',
@@ -203,10 +213,18 @@ export const DEFAULT_FEATURES: Feature[] = [
   'team.setRunStatus',
   'conversation.list',
   'conversation.listMessages',
+  'conversation.listNavigation',
   'conversation.getContextStatus',
   'conversation.setContextWindowOverride',
   'conversation.getRunProcess',
   'conversation.listRunTimeline',
+  'conversation.readContent',
+  'conversation.readFileDiff',
+  'conversation.runProcessPages',
+  'conversation.listFileChanges',
+  'conversation.taskPlanHistory',
+  'conversation.eventDisplayContent',
+  'conversation.legacyProseContent',
   'conversation.create',
   'conversation.rename',
   'conversation.setPinned',

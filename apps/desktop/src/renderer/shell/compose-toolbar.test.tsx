@@ -1,6 +1,7 @@
 /**
  * @vitest-environment jsdom
  */
+import { applyManagedKernelSnapshotToInstallStates } from './managed-kernel-sync.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import {
@@ -766,13 +767,13 @@ describe('ModelPickerMenu', () => {
 
     // Installable kernels stay on one row: status sits to the right of the name.
     const piOption = await screen.findByTestId('kernel-option-pi');
-    expect(piOption.hasAttribute('aria-disabled')).toBe(false);
+    expect(piOption.getAttribute('aria-disabled')).toBe('true');
     const piStatus = screen.getByTestId('kernel-status-pi');
     expect(piStatus.textContent).toContain('未安装');
     expect(piStatus.textContent).toContain('应用私有目录');
     expect(piOption.querySelector('.shell-menu__item-hint')).toBeNull();
     fireEvent.click(piOption);
-    expect(onInstallKernel).toHaveBeenCalledWith('pi');
+    expect(onInstallKernel).not.toHaveBeenCalled();
 
     // Selecting an installed kernel routes through onPickKernel.
     fireEvent.click(ccOption);
@@ -834,11 +835,14 @@ describe('ModelPickerMenu', () => {
       />,
     );
     expect(screen.getByTestId('kernel-option-pi').getAttribute('aria-label')).toContain(
-      '安装成功 v1.2.3',
+      '执行尚未接通',
     );
     const installedPi = screen.getByTestId('kernel-option-pi');
     expect(screen.getByTestId('kernel-version-pi').textContent).toBe('v1.2.3');
-    expect(screen.queryByTestId('kernel-status-pi')).toBeNull();
+    expect(screen.getByTestId('kernel-status-pi').textContent).toContain('执行尚未接通');
+    expect(installedPi.getAttribute('aria-disabled')).toBe('true');
+    fireEvent.click(installedPi);
+    expect(baseProps.onPickKernel).not.toHaveBeenCalled();
     expect(installedPi.querySelector('.shell-menu__item-hint')).toBeNull();
     expect(installedPi.textContent).not.toContain('安装成功 v1.2.3');
 
@@ -888,6 +892,70 @@ describe('ModelPickerMenu', () => {
     );
 
     expect(screen.getByTestId('kernel-version-pi').textContent).toBe('v0.84.4');
-    expect(screen.queryByTestId('kernel-status-pi')).toBeNull();
+    expect(screen.getByTestId('kernel-status-pi').textContent).toContain('执行尚未接通');
   });
+});
+
+it('keeps an installed executable kernel selectable while background update checking is active', async () => {
+  const anchor = document.createElement('button');
+  document.body.appendChild(anchor);
+  const onPickKernel = vi.fn();
+  const kernelInstallStates = applyManagedKernelSnapshotToInstallStates(
+    {},
+    {
+      schemaVersion: 1,
+      installerAvailable: true,
+      checkedAt: null,
+      items: [
+        {
+          kernelId: 'codex',
+          name: 'Codex',
+          packageName: '@openai/codex',
+          managedVersion: '0.152.0',
+          latestVersion: null,
+          phase: 'checking',
+          errorCode: null,
+        },
+      ],
+    },
+  );
+  render(
+    <ModelPickerMenu
+      open
+      models={[]}
+      selectedModelId="model-a"
+      defaultLabel="模型"
+      anchorEl={anchor}
+      onClose={vi.fn()}
+      onPick={vi.fn()}
+      onPickKernel={onPickKernel}
+      selectedKernelId="native"
+      kernelInstallStates={kernelInstallStates}
+      kernels={[
+        {
+          kernelId: 'codex',
+          name: 'Codex',
+          icon: 'codex',
+          capabilities: {
+            protocols: ['openai-responses'],
+            permission: 'own',
+            permissionBridge: true,
+            pause: 'session',
+            compress: 'own',
+            usageReport: true,
+          },
+          installed: true,
+          version: '0.152.0',
+          executablePath: 'fixture-codex',
+          knownGood: true,
+        },
+      ]}
+    />,
+  );
+  const option = screen.getByTestId('kernel-option-codex');
+  expect(option.getAttribute('aria-disabled')).not.toBe('true');
+  expect(option.getAttribute('aria-label')).toContain('正在检查更新');
+  expect(screen.getByTestId('kernel-version-codex').textContent).toBe('v0.152.0');
+  fireEvent.click(option);
+  expect(onPickKernel).toHaveBeenCalledWith('codex');
 });

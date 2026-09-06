@@ -101,3 +101,9 @@ describe('applyManagedKernelSnapshotToInstallStates', () => {
     ).toEqual({});
   });
 });
+
+it('preserves checking as a read-only update phase instead of claiming installation', () => {
+  expect(applyManagedKernelSnapshotToInstallStates({}, snapshot('checking'))).toEqual({
+    codex: { status: 'checking' },
+  });
+});

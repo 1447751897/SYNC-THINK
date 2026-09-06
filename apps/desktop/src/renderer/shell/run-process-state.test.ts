@@ -30,6 +30,28 @@ function processView(runId: string, stepCount: number): RunProcessView {
 }
 
 describe('run process state', () => {
+  it('settles a paged process without replacing full totals with the current page count', () => {
+    const current = processView('paged', 2);
+    current.doneCount = 98;
+    current.latestStep = { ...current.steps[1], id: 'last' };
+    current.pages = {
+      version: 'a'.repeat(64),
+      steps: { offset: 0, total: 100, nextOffset: 2 },
+      fileChanges: { offset: 0, total: 0 },
+      taskPlan: { offset: 0, total: 0 },
+    };
+    const terminal = {
+      runId: current.runId,
+      type: 'run.failed',
+      occurredAt: '2026-09-05T16:00:00Z',
+    } as Event;
+    const settled = reconcileRunProcessTerminal(current, terminal);
+    expect(settled.doneCount).toBe(98);
+    expect(settled.errorCount).toBe(2);
+    expect(settled.latestStep?.status).toBe('error');
+    expect(settled.running).toBe(false);
+  });
+
   it('loads a transient-only run so its durable process terminal can settle the UI', () => {
     expect(
       collectRunProcessIds({

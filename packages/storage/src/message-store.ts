@@ -4,6 +4,7 @@ import {
   type Message,
   type MessageBlock,
   type MessageId,
+  type MessageNavigationEntry,
   type MessageRole,
   type ModelId,
   type RunId,
@@ -14,6 +15,8 @@ import type { BetterSQLite3Raw } from './connection.js';
 
 export const DEFAULT_MESSAGE_PAGE_LIMIT = 50;
 export const MAX_MESSAGE_PAGE_LIMIT = 100;
+export const MAX_MESSAGE_NAVIGATION_PAGE_LIMIT = 500;
+export const MESSAGE_NAVIGATION_TEXT_LIMIT = 240;
 export const MAX_MESSAGE_BLOCKS = 128;
 export const MAX_MESSAGE_BLOCKS_JSON_BYTES = 256 * 1024;
 const MAX_MESSAGE_JSON_DEPTH = 16;
@@ -34,6 +37,7 @@ export type MessageStoreErrorCode =
   | 'message.invalid_input'
   | 'message.invalid_record'
   | 'message.thread_not_found'
+  | 'message.not_found'
   | 'message.conflict';
 
 export class MessageStoreError extends Error {
@@ -49,7 +53,19 @@ export class MessageStoreError extends Error {
 
 export interface ListMessagesOptions {
   beforeSequence?: number;
+  aroundMessageId?: MessageId;
   limit?: number;
+}
+
+export interface ListMessageNavigationOptions {
+  beforeSequence?: number;
+  limit?: number;
+}
+
+export interface MessageNavigationPage {
+  entries: MessageNavigationEntry[];
+  hasMore: boolean;
+  nextCursor?: number;
 }
 
 export interface MessagePage {
@@ -80,7 +96,8 @@ function validateJsonValue(value: unknown, path: string, depth: number): void {
   if (depth > MAX_MESSAGE_JSON_DEPTH) invalidInput(`${path} exceeds maximum JSON depth`);
   if (value === null || typeof value === 'boolean') return;
   if (typeof value === 'string') {
-    if (/data:image\//i.test(value)) invalidInput(`${path} must use a storageRef instead of data:image/`);
+    if (/data:image\//i.test(value))
+      invalidInput(`${path} must use a storageRef instead of data:image/`);
     return;
   }
   if (typeof value === 'number') {
@@ -140,6 +157,10 @@ function encodeBlocks(blocks: readonly MessageBlock[]): string {
     invalidInput(`blocks_json exceeds ${MAX_MESSAGE_BLOCKS_JSON_BYTES} UTF-8 bytes`);
   }
   return json;
+}
+
+export function validateMessageBlocks(blocks: readonly MessageBlock[]): void {
+  encodeBlocks(blocks);
 }
 
 function validateMessage(message: Message): string {
@@ -236,9 +257,8 @@ export class SqliteMessageStore {
 
   append(message: Message): Message {
     const blocksJson = validateMessage(message);
-    const existing = this.raw
-      .prepare(`${MESSAGE_SELECT} WHERE id = ?`)
-      .get(message.id) as MessageDatabaseRow | undefined;
+    const existing = this.raw.prepare(`${MESSAGE_SELECT} WHERE id = ?`).get(message.id) as
+      MessageDatabaseRow | undefined;
     if (existing) {
       if (!rowMatchesMessage(existing, message, blocksJson)) {
         throw new MessageStoreError('message.conflict', `message id ${message.id} was reused`);
@@ -248,7 +268,10 @@ export class SqliteMessageStore {
 
     const thread = this.raw.prepare('SELECT 1 FROM thread WHERE id = ?').get(message.threadId);
     if (!thread) {
-      throw new MessageStoreError('message.thread_not_found', `thread ${message.threadId} does not exist`);
+      throw new MessageStoreError(
+        'message.thread_not_found',
+        `thread ${message.threadId} does not exist`,
+      );
     }
 
     const sequenceOwner = this.raw
@@ -305,9 +328,7 @@ export class SqliteMessageStore {
       invalidInput('threadId is required');
     }
     const row = this.raw
-      .prepare(
-        'SELECT COALESCE(MAX(sequence), -1) AS maxSequence FROM message WHERE thread_id = ?',
-      )
+      .prepare('SELECT COALESCE(MAX(sequence), -1) AS maxSequence FROM message WHERE thread_id = ?')
       .get(threadId) as { maxSequence: number };
     const next = Number(row.maxSequence) + 1;
     if (!Number.isSafeInteger(next) || next < 0) {
@@ -322,9 +343,8 @@ export class SqliteMessageStore {
    */
   updateBlocks(messageId: MessageId, blocks: readonly MessageBlock[]): Message {
     if (typeof messageId !== 'string' || messageId.length === 0) invalidInput('id is required');
-    const existing = this.raw
-      .prepare(`${MESSAGE_SELECT} WHERE id = ?`)
-      .get(messageId) as MessageDatabaseRow | undefined;
+    const existing = this.raw.prepare(`${MESSAGE_SELECT} WHERE id = ?`).get(messageId) as
+      MessageDatabaseRow | undefined;
     if (!existing) {
       throw new MessageStoreError('message.invalid_input', `message ${messageId} does not exist`);
     }
@@ -336,10 +356,43 @@ export class SqliteMessageStore {
     return { ...next, blocks: decodeBlocks(blocksJson) };
   }
 
+  findRunUserMessageId(threadId: ThreadId, runId: RunId): MessageId | undefined {
+    const rows = this.raw
+      .prepare(
+        "SELECT id FROM message WHERE run_id = ? AND thread_id = ? AND role = 'user' LIMIT 2",
+      )
+      .all(runId, threadId) as Array<{ id: string }>;
+    if (rows.length > 0) return rows.length === 1 ? (rows[0]!.id as MessageId) : undefined;
+    const legacy = this.raw
+      .prepare(
+        `SELECT message.id
+         FROM event AS started
+         JOIN event AS context
+           ON context.workspace_id = started.workspace_id
+          AND context.sequence = started.sequence - 1
+         JOIN event AS appended
+           ON appended.workspace_id = started.workspace_id
+          AND appended.sequence = started.sequence - 2
+         JOIN message ON message.id = json_extract(appended.payload_json, '$.messageId')
+         WHERE started.run_id = @runId AND started.type = 'run.started'
+           AND context.run_id = started.run_id AND context.type = 'context.packet.built'
+           AND appended.type = 'message.appended'
+           AND json_extract(started.payload_json, '$.threadId') = @threadId
+           AND json_extract(context.payload_json, '$.threadId') = @threadId
+           AND json_extract(appended.payload_json, '$.threadId') = @threadId
+           AND json_extract(appended.payload_json, '$.role') = 'user'
+           AND json_extract(context.payload_json, '$.packetId') = json_extract(started.payload_json, '$.packetId')
+           AND json_extract(appended.payload_json, '$.text') = json_extract(started.payload_json, '$.run.userText')
+           AND message.thread_id = @threadId AND message.role = 'user' AND message.run_id IS NULL
+         LIMIT 2`,
+      )
+      .all({ runId, threadId }) as Array<{ id: string }>;
+    return legacy.length === 1 ? (legacy[0]!.id as MessageId) : undefined;
+  }
+
   getMessage(messageId: MessageId): Message | undefined {
-    const row = this.raw
-      .prepare(`${MESSAGE_SELECT} WHERE id = ?`)
-      .get(messageId) as MessageDatabaseRow | undefined;
+    const row = this.raw.prepare(`${MESSAGE_SELECT} WHERE id = ?`).get(messageId) as
+      MessageDatabaseRow | undefined;
     return row ? mapMessageRow(row) : undefined;
   }
 
@@ -353,6 +406,44 @@ export class SqliteMessageStore {
       (!Number.isSafeInteger(options.beforeSequence) || options.beforeSequence < 0)
     ) {
       invalidInput('beforeSequence must be a non-negative safe integer');
+    }
+
+    if (options.aroundMessageId !== undefined) {
+      if (
+        options.beforeSequence !== undefined ||
+        typeof options.aroundMessageId !== 'string' ||
+        !options.aroundMessageId.trim()
+      ) {
+        invalidInput('aroundMessageId must be non-empty and exclusive of beforeSequence');
+      }
+      return this.raw.transaction(() => {
+        const anchor = this.raw
+          .prepare('SELECT sequence FROM message WHERE id = ? AND thread_id = ?')
+          .get(options.aroundMessageId, threadId) as { sequence: number } | undefined;
+        if (!anchor)
+          throw new MessageStoreError('message.not_found', 'anchor is not in this thread');
+        const readBefore = (count: number) =>
+          this.raw
+            .prepare(
+              `${MESSAGE_SELECT} WHERE thread_id = ? AND sequence < ? ORDER BY sequence DESC LIMIT ?`,
+            )
+            .all(threadId, anchor.sequence, count) as MessageDatabaseRow[];
+        let before = readBefore(Math.floor(limit / 2));
+        const after = this.raw
+          .prepare(
+            `${MESSAGE_SELECT} WHERE thread_id = ? AND sequence >= ? ORDER BY sequence ASC LIMIT ?`,
+          )
+          .all(threadId, anchor.sequence, limit - before.length) as MessageDatabaseRow[];
+        if (before.length + after.length < limit) before = readBefore(limit - after.length);
+        const messages = [...before.reverse(), ...after].map(mapMessageRow);
+        const firstSequence = messages[0].sequence;
+        const hasMore = Boolean(
+          this.raw
+            .prepare('SELECT 1 FROM message WHERE thread_id = ? AND sequence < ? LIMIT 1')
+            .get(threadId, firstSequence),
+        );
+        return { messages, hasMore, ...(hasMore ? { nextCursor: firstSequence } : {}) };
+      })();
     }
 
     const beforeClause = options.beforeSequence === undefined ? '' : 'AND sequence < ?';
@@ -375,6 +466,78 @@ export class SqliteMessageStore {
       messages,
       hasMore,
       ...(hasMore && messages.length > 0 ? { nextCursor: messages[0].sequence } : {}),
+    };
+  }
+
+  listNavigation(
+    threadId: ThreadId,
+    options: ListMessageNavigationOptions = {},
+  ): MessageNavigationPage {
+    const limit = options.limit ?? 200;
+    if (!Number.isInteger(limit) || limit < 1 || limit > MAX_MESSAGE_NAVIGATION_PAGE_LIMIT) {
+      invalidInput(`navigation limit must be between 1 and ${MAX_MESSAGE_NAVIGATION_PAGE_LIMIT}`);
+    }
+    if (
+      options.beforeSequence !== undefined &&
+      (!Number.isSafeInteger(options.beforeSequence) || options.beforeSequence < 0)
+    ) {
+      invalidInput('beforeSequence must be a non-negative safe integer');
+    }
+    const beforeClause = options.beforeSequence === undefined ? '' : 'AND sequence < ?';
+    const parameters =
+      options.beforeSequence === undefined
+        ? [threadId, limit + 1]
+        : [threadId, options.beforeSequence, limit + 1];
+    const rows = this.raw
+      .prepare(
+        `
+      SELECT id, sequence, role, created_at AS createdAt, run_id AS runId,
+        COALESCE((SELECT substr(group_concat(preview, ' '), 1, ${MESSAGE_NAVIGATION_TEXT_LIMIT}) FROM (
+          SELECT substr(json_extract(block.value, '$.text'), 1, ${MESSAGE_NAVIGATION_TEXT_LIMIT}) AS preview
+          FROM json_each(CASE WHEN json_valid(message.blocks_json) THEN message.blocks_json ELSE '[]' END) AS block
+          WHERE json_extract(block.value, '$.type') IN ('text', 'code', 'error')
+            AND json_type(block.value, '$.text') = 'text'
+          ORDER BY CAST(block.key AS INTEGER) LIMIT 4
+        )), '') AS text,
+        (SELECT json_object(
+          'state', CASE WHEN json_extract(block.value, '$.payload.terminalState') IN ('failed', 'cancelled')
+            THEN json_extract(block.value, '$.payload.terminalState') ELSE NULL END,
+          'legacy', CASE WHEN json_type(block.value, '$.payload.legacyBackfill') = 'true' THEN 1 ELSE 0 END)
+          FROM json_each(CASE WHEN json_valid(message.blocks_json) THEN message.blocks_json ELSE '[]' END) AS block
+          WHERE json_extract(block.value, '$.type') = 'error'
+          ORDER BY CAST(block.key AS INTEGER) LIMIT 1) AS terminalMetadata
+      FROM message WHERE thread_id = ? AND role IN ('user', 'assistant') ${beforeClause}
+      ORDER BY sequence DESC LIMIT ?
+    `,
+      )
+      .all(...parameters) as Array<
+      Omit<MessageNavigationEntry, 'runId'> & {
+        runId: RunId | null;
+        terminalMetadata: string | null;
+      }
+    >;
+    const hasMore = rows.length > limit;
+    const entries = rows
+      .slice(0, limit)
+      .reverse()
+      .map(({ runId, terminalMetadata, ...entry }) => {
+        const terminal = terminalMetadata
+          ? (JSON.parse(terminalMetadata) as {
+              state: MessageNavigationEntry['terminalState'] | null;
+              legacy: number;
+            })
+          : undefined;
+        return {
+          ...entry,
+          ...(runId ? { runId } : {}),
+          ...(terminal?.state ? { terminalState: terminal.state } : {}),
+          ...(terminal?.legacy ? { legacyTerminalBackfill: true } : {}),
+        };
+      });
+    return {
+      entries,
+      hasMore,
+      ...(hasMore && entries.length ? { nextCursor: entries[0].sequence } : {}),
     };
   }
 

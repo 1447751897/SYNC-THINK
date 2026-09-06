@@ -1,5 +1,14 @@
-import type { MessageId, ThreadId, AgentVersionId, ModelId, CredentialRefId, RunId, StepId } from './ids.js';
+import type {
+  MessageId,
+  ThreadId,
+  AgentVersionId,
+  ModelId,
+  CredentialRefId,
+  RunId,
+  StepId,
+} from './ids.js';
 import type { MessageRole } from './enums.js';
+import type { DeferredContent } from '../deferred-content.js';
 
 export interface MessageBlock {
   type:
@@ -17,6 +26,7 @@ export interface MessageBlock {
   reasoningText?: string;
   /** Structured payload per block type. Kept opaque here; refined in core. */
   payload?: unknown;
+  contentRef?: DeferredContent;
 }
 
 export interface Message {
@@ -38,4 +48,15 @@ export interface Message {
   createdAt: string;
   /** Logical ordering within thread (stable across retries & recovery). */
   sequence: number;
+}
+
+export interface MessageNavigationEntry {
+  id: MessageId;
+  sequence: number;
+  role: 'user' | 'assistant';
+  text: string;
+  createdAt: string;
+  runId?: RunId;
+  terminalState?: 'failed' | 'cancelled';
+  legacyTerminalBackfill?: boolean;
 }

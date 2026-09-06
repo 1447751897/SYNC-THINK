@@ -262,6 +262,28 @@ describe('ChatView queued requests and interjection', () => {
     );
   });
 
+  it('does not auto-dispatch a queued request while the current Run is still active', async () => {
+    const current = conversation();
+    renderChat(current, activeEvents(current));
+    await waitForInitialLoad();
+    await queueRequest('排队不应打断当前回复');
+    expect(runtime.appendMessage).not.toHaveBeenCalled();
+
+    vi.useFakeTimers();
+    try {
+      await act(async () => {
+        vi.advanceTimersByTime(7_000);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(runtime.appendMessage).not.toHaveBeenCalled();
+    expect(runtime.sendConversationMessage).not.toHaveBeenCalled();
+    expect(screen.getByText('排队不应打断当前回复')).toBeTruthy();
+    expect(screen.queryByText('回答已中断')).toBeNull();
+  });
+
   it('automatically dispatches the FIFO head after the current Run becomes terminal', async () => {
     const current = conversation();
     const view = renderChat(current, activeEvents(current));

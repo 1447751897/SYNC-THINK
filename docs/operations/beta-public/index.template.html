@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SYNC-THINK {{VERSION}} 公开 Beta</title>
+    <meta
+      name="description"
+      content="SYNC-THINK Windows 公开 Beta。本机安装，数据留在你的电脑。当前包未签名，请先核对 SHA-256。"
+    />
+    <style>
+      :root {
+        color-scheme: light dark;
+        --page: #f2eee6;
+        --ink: #181b19;
+        --muted: #666763;
+        --faint: #8c8c87;
+        --rule: rgba(24, 27, 25, 0.12);
+        --surface: #faf9f5;
+        --accent: #2d4739;
+        --warn: #8a4b12;
+        --mono: 'Cascadia Code', 'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace;
+        --sans: Inter, 'Noto Sans SC', ui-sans-serif, system-ui, sans-serif;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --page: #1e1f1f;
+          --ink: rgba(255, 255, 255, 0.9);
+          --muted: rgba(255, 255, 255, 0.5);
+          --faint: rgba(255, 255, 255, 0.38);
+          --rule: rgba(255, 255, 255, 0.1);
+          --surface: #252726;
+          --accent: #9bb8a6;
+          --warn: #e0b07a;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+        background: var(--page);
+        color: var(--ink);
+        font-family: var(--sans);
+      }
+      body {
+        display: grid;
+        place-items: start center;
+        padding: 48px 20px 72px;
+      }
+      main {
+        width: min(720px, 100%);
+      }
+      .eyebrow {
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        font-size: 11px;
+        color: var(--faint);
+      }
+      h1 {
+        margin: 10px 0 8px;
+        font-size: 36px;
+        font-weight: 560;
+        letter-spacing: -0.03em;
+        line-height: 1.15;
+      }
+      .lede {
+        margin: 0 0 28px;
+        max-width: 38em;
+        color: var(--muted);
+        line-height: 1.6;
+      }
+      .card {
+        background: var(--surface);
+        border: 1px solid var(--rule);
+        padding: 22px 22px 20px;
+      }
+      .meta {
+        display: grid;
+        grid-template-columns: 7.5rem 1fr;
+        gap: 8px 16px;
+        margin: 0;
+        font-size: 14px;
+      }
+      .meta dt {
+        color: var(--faint);
+      }
+      .meta dd {
+        margin: 0;
+        word-break: break-all;
+        font-family: var(--mono);
+        font-size: 13px;
+      }
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin: 22px 0 0;
+      }
+      a.button {
+        display: inline-flex;
+        align-items: center;
+        min-height: 40px;
+        padding: 0 16px;
+        background: var(--ink);
+        color: var(--page);
+        text-decoration: none;
+        font-size: 14px;
+      }
+      a.button.secondary {
+        background: transparent;
+        color: var(--ink);
+        border: 1px solid var(--rule);
+      }
+      h2 {
+        margin: 36px 0 10px;
+        font-size: 18px;
+        font-weight: 560;
+      }
+      ol,
+      ul {
+        margin: 0;
+        padding-left: 1.2em;
+        color: var(--muted);
+        line-height: 1.65;
+      }
+      .warn {
+        margin: 22px 0 0;
+        padding: 14px 16px;
+        border-left: 3px solid var(--warn);
+        color: var(--muted);
+      }
+      .warn strong {
+        color: var(--warn);
+      }
+      footer {
+        margin-top: 40px;
+        color: var(--faint);
+        font-size: 13px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <p class="eyebrow">Public Beta · Windows 11 x64</p>
+      <h1>把 Agent 工作台装到你自己的电脑上</h1>
+      <p class="lede">
+        SYNC-THINK {{VERSION}} 是公开 Beta。安装包在本机运行，对话、密钥和数据库不会上传到我们的服务器。当前构建没有代码签名，下载后请先核对本页的 SHA-256。
+      </p>
+
+      <section class="card" aria-labelledby="download-title">
+        <h2 id="download-title" style="margin-top: 0">安装包</h2>
+        <dl class="meta">
+          <dt>文件</dt>
+          <dd>{{FILENAME}}</dd>
+          <dt>版本</dt>
+          <dd>{{VERSION}}</dd>
+          <dt>大小</dt>
+          <dd>{{BYTES_LABEL}}</dd>
+          <dt>SHA-256</dt>
+          <dd>{{SHA256}}</dd>
+        </dl>
+        <div class="actions">
+          <a class="button" href="{{FILENAME}}">下载 Windows 安装包</a>
+          <a class="button secondary" href="./BETA-TESTER-GUIDE.md">打开测试说明</a>
+        </div>
+        <p class="warn">
+          <strong>SmartScreen：</strong>
+          未签名包可能提示「Windows 已保护你的 PC」。选「更多信息」→「仍要运行」。若哈希与本页不一致，不要安装。
+        </p>
+      </section>
+
+      <h2>装上之后</h2>
+      <ol>
+        <li>打开一个本地工作区文件夹。</li>
+        <li>到「设置 → 模型」添加你自己的 API 密钥或网关，不要使用别人的密钥。</li>
+        <li>可选：在关于页安装私有 Codex / Claude Code。Pi 本轮不可用。</li>
+        <li>本轮没有自动更新。有新包时回到这个页面重新下载。</li>
+      </ol>
+
+      <h2>数据与范围</h2>
+      <ul>
+        <li>数据只写本机 userData 与本地数据库，卸载默认保留。</li>
+        <li>包内不含开发者密钥，也不含别人的对话记录。</li>
+        <li>需要排障时，用「设置 → 数据」导出脱敏诊断，不要发送原始数据库。</li>
+      </ul>
+
+      <footer>SYNC-THINK · 0.1.0-beta.1 · 无签名公开 Beta · 手动分发</footer>
+    </main>
+  </body>
+</html>

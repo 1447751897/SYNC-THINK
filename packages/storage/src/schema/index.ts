@@ -28,3 +28,4 @@ export * from './agent-context.js';
 // and execution tracking).
 export * from './task-plan.js';
 export * from './assistant-timeline.js';
+export * from './native-task-plan-projection.js';

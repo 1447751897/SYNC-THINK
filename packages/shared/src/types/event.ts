@@ -1,3 +1,4 @@
+import type { DeferredContent } from '../deferred-content.js';
 import type { EventId, RunId, StepId, TaskId, MessageId, WorkspaceId, AgentVersionId, ModelId, CredentialRefId, ArtifactVersionId } from './ids.js';
 import type { EventCategory, RunState, FailureClass } from './enums.js';
 
@@ -19,6 +20,7 @@ export interface Event {
   occurredAt: string;
   /** Structured payload by event type; opaque here. */
   payload: Record<string, unknown>;
+  displayPayloadRef?: DeferredContent;
 }
 
 export interface Checkpoint {

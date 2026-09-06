@@ -53,6 +53,95 @@ function captureEventPageQuery(raw: BetterSQLite3Raw, input: ListEventPageInput)
 }
 
 describe('SqliteEventCheckpointStore', () => {
+  it('includes precise approval boundaries in the scoped process read without loading context bodies', async () => {
+    const path = makeDbPath();
+    await runMigrations(path);
+    const { raw } = await openDatabaseAsync({ path });
+    try {
+      const store = new SqliteEventCheckpointStore(raw);
+      const workspaceId = 'workspace-approval-process' as WorkspaceId;
+      const runId = 'run-approval-process' as RunId;
+      const drafts = [
+        'tool.requested',
+        'tool.approval_requested',
+        'tool.approval_decided',
+        'context.packet.built',
+      ].map((type, index) => ({
+        ...eventDraft('approval-process-' + index, workspaceId, 'unused'),
+        runId,
+        type,
+        payload: {
+          threadId: 'thread-1',
+          toolCallId: 'actual',
+          approvalId: 'approval',
+          arguments: { path: 'actual.txt' },
+          decision: 'deny',
+          reason: 'stale-approval',
+        },
+      }));
+      store.commitTransition({ events: [drafts[0]!, ...drafts.slice(1)] });
+      const events = store.listRunProcessEvents(runId);
+      expect(events.map((event) => event.type)).toEqual([
+        'tool.requested',
+        'tool.approval_requested',
+        'tool.approval_decided',
+      ]);
+      expect(events[1]?.payload.arguments).toEqual({ path: 'actual.txt' });
+      expect(events[2]?.payload.reason).toBe('stale-approval');
+    } finally {
+      raw.close();
+    }
+  });
+
+  it('keeps precise public run metadata without manufacturing absent run objects', async () => {
+    const path = makeDbPath();
+    await runMigrations(path);
+    const { raw } = await openDatabaseAsync({ path });
+    try {
+      const store = new SqliteEventCheckpointStore(raw);
+      const workspaceId = 'workspace-display' as WorkspaceId;
+      const runId = 'run-display' as RunId;
+      store.commitTransition({
+        events: [
+          {
+            ...eventDraft('public-run', workspaceId, 'unused'),
+            type: 'tool.completed',
+            runId,
+            payload: {
+              result: 'ok',
+              run: {
+                modelId: 'model',
+                kernelId: 'codex',
+                contextWindow: 128000,
+                kernelSessionPlan: { values: ['one', 2] },
+                assistantText: 'private',
+              },
+              runStateDelta: { private: true },
+            },
+          },
+          {
+            ...eventDraft('no-run', workspaceId, 'unused'),
+            type: 'tool.completed',
+            runId,
+            payload: { result: 'other' },
+          },
+        ],
+      });
+      const events = store.listRunProcessEvents(runId);
+      expect(events[0]?.payload).toEqual({
+        result: 'ok',
+        run: {
+          modelId: 'model',
+          kernelId: 'codex',
+          contextWindow: 128000,
+          kernelSessionPlan: { values: ['one', 2] },
+        },
+      });
+      expect(events[1]?.payload).toEqual({ result: 'other' });
+    } finally {
+      raw.close();
+    }
+  });
   it('lists one Task through event_task_idx without returning global telemetry or other Tasks', async () => {
     const dbPath = makeDbPath();
     const workspaceId = 'workspace-task-events' as WorkspaceId;
@@ -76,9 +165,7 @@ describe('SqliteEventCheckpointStore', () => {
         'event-task-a-1',
         'event-task-a-2',
       ]);
-      expect(store.listEventsByTask(taskB).map((event) => event.id)).toEqual([
-        'event-task-b-1',
-      ]);
+      expect(store.listEventsByTask(taskB).map((event) => event.id)).toEqual(['event-task-b-1']);
       expect(store.listEventsByTask('missing-task' as TaskId)).toEqual([]);
       expect(
         connection.raw

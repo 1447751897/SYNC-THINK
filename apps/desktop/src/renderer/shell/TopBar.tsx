@@ -1,6 +1,6 @@
 // NewMax-style top bar: workspace tabs + full menu from "+"
 // Menu portals to body so overflow:hidden stage boards cannot clip it.
-import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   Activity,
@@ -23,23 +23,8 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import type { WorkspaceSummary } from '@sync-think/protocol';
-import {
-  DndContext,
-  KeyboardSensor,
-  closestCenter,
-  useSensor,
-  useSensors,
-  type DragEndEvent,
-} from '@dnd-kit/core';
-import {
-  SortableContext,
-  arrayMove,
-  horizontalListSortingStrategy,
-  sortableKeyboardCoordinates,
-  useSortable,
-} from '@dnd-kit/sortable';
-import { CSS } from '@dnd-kit/utilities';
 import { STAGE_LABELS, type ShellStage } from './shell-state.js';
+import { tabTranslate, useMorphingWorkspaceTabs } from './workspace-tab-morph.js';
 
 const WORKSPACE_ICON_PRESETS = ['📁', '💼', '🧠', '🚀', '📦', '🛠', '📚', '🧪', '🏠', '⭐'] as const;
 
@@ -327,10 +312,9 @@ export function TopBar(props: TopBarProps) {
   const [orderIds, setOrderIds] = useState<string[]>(() =>
     visibleWorkspaces.map((w) => w.workspaceId),
   );
-  const isDraggingRef = useRef(false);
-  const nativeDraggingWorkspaceIdRef = useRef<string | null>(null);
+  const draggingRef = useRef(false);
   useEffect(() => {
-    if (isDraggingRef.current) return;
+    if (draggingRef.current) return;
     setOrderIds(props.workspaces.filter((w) => !w.hidden).map((w) => w.workspaceId));
   }, [props.workspaces]);
   const workspaceTrackWidth = useElementWidth(workspaceTrackRef);
@@ -339,62 +323,23 @@ export function TopBar(props: TopBarProps) {
     orderIds,
     props.activeWorkspaceId,
   );
-
-  const sensors = useSensors(
-    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  const onReorderWorkspaces = props.onReorderWorkspaces;
+  const commitWorkspaceOrder = useCallback(
+    (next: string[]) => {
+      setOrderIds(next);
+      void onReorderWorkspaces?.(next);
+    },
+    [onReorderWorkspaces],
   );
-
-  const handleDragStart = () => {
-    isDraggingRef.current = true;
-  };
-
-  const reorderWorkspace = (activeId: string, overId: string) => {
-    if (activeId === overId) return;
-    setOrderIds((current) => {
-      const oldIndex = current.indexOf(activeId);
-      const newIndex = current.indexOf(overId);
-      if (oldIndex < 0 || newIndex < 0) return current;
-      const next = arrayMove(current, oldIndex, newIndex);
-      void props.onReorderWorkspaces?.(next);
-      return next;
-    });
-  };
-
-  const handleDragEnd = (event: DragEndEvent) => {
-    isDraggingRef.current = false;
-    const { active, over } = event;
-    if (!over) return;
-    reorderWorkspace(String(active.id), String(over.id));
-  };
-
-  const beginNativeWorkspaceDrag = (
-    event: React.DragEvent<HTMLDivElement>,
-    workspaceId: string,
-  ) => {
-    isDraggingRef.current = true;
-    nativeDraggingWorkspaceIdRef.current = workspaceId;
-    event.dataTransfer.effectAllowed = 'move';
-    event.dataTransfer.setData('application/x-sync-think-workspace', workspaceId);
-    event.dataTransfer.setData('text/plain', workspaceId);
-  };
-
-  const handleNativeWorkspaceDragOver = (event: React.DragEvent<HTMLDivElement>) => {
-    if (!nativeDraggingWorkspaceIdRef.current) return;
-    event.preventDefault();
-    event.dataTransfer.dropEffect = 'move';
-  };
-
-  const handleNativeWorkspaceDrop = (
-    event: React.DragEvent<HTMLDivElement>,
-    targetWorkspaceId: string,
-  ) => {
-    const sourceWorkspaceId = nativeDraggingWorkspaceIdRef.current;
-    if (!sourceWorkspaceId) return;
-    event.preventDefault();
-    nativeDraggingWorkspaceIdRef.current = null;
-    isDraggingRef.current = false;
-    reorderWorkspace(sourceWorkspaceId, targetWorkspaceId);
-  };
+  const morph = useMorphingWorkspaceTabs({
+    visibleIds: workspaceLayout.visibleIds,
+    fullOrder: orderIds,
+    tabWidth: workspaceLayout.tabWidth,
+    activeId: props.activeWorkspaceId,
+    onSelect: props.onSelectWorkspace,
+    onReorder: commitWorkspaceOrder,
+  });
+  draggingRef.current = Boolean(morph.draggingId);
 
   useLayoutEffect(() => {
     if (!menuOpen) {
@@ -505,49 +450,67 @@ export function TopBar(props: TopBarProps) {
         )}
         aria-hidden={props.contextStage ? 'true' : undefined}
       >
-        <DndContext
-          sensors={sensors}
-          collisionDetection={closestCenter}
-          onDragStart={handleDragStart}
-          onDragEnd={handleDragEnd}
-          onDragCancel={() => {
-            isDraggingRef.current = false;
-          }}
+        <div
+          className="shell-workspace-tabs__rail"
+          role="tablist"
+          aria-label="工作区"
+          style={{ width: morph.railWidth }}
         >
-          <SortableContext
-            items={workspaceLayout.visibleIds}
-            strategy={horizontalListSortingStrategy}
-          >
-            {workspaceLayout.visibleIds.map((workspaceId) => {
-              const workspace = props.workspaces.find((w) => w.workspaceId === workspaceId);
-              if (!workspace) return null;
-              return (
-                <SortableProjectTab
-                  key={workspace.workspaceId}
-                  workspaceId={workspace.workspaceId}
-                  label={workspace.name}
-                  icon={workspace.icon}
-                  title={workspace.folderPath}
-                  active={props.activeWorkspaceId === workspace.workspaceId}
-                  running={props.workspaceActivity?.get(workspace.workspaceId)?.running ?? false}
-                  unread={props.workspaceActivity?.get(workspace.workspaceId)?.unread ?? false}
-                  width={workspaceLayout.tabWidth}
-                  onClick={() => props.onSelectWorkspace(workspace.workspaceId)}
-                  onHide={() => props.onSetWorkspaceHidden?.(workspace.workspaceId, true)}
-                  onNativeDragStart={(event) =>
-                    beginNativeWorkspaceDrag(event, workspace.workspaceId)
-                  }
-                  onNativeDragOver={handleNativeWorkspaceDragOver}
-                  onNativeDrop={(event) => handleNativeWorkspaceDrop(event, workspace.workspaceId)}
-                  onNativeDragEnd={() => {
-                    nativeDraggingWorkspaceIdRef.current = null;
-                    isDraggingRef.current = false;
-                  }}
-                />
-              );
-            })}
-          </SortableContext>
-        </DndContext>
+          {props.activeWorkspaceId && workspaceLayout.visibleIds.includes(props.activeWorkspaceId) ? (
+            <div
+              data-testid="workspace-tab-surface"
+              data-workspace-id={props.activeWorkspaceId}
+              data-slot={String(Math.max(0, morph.surfaceSlot))}
+              className={clsx(
+                'shell-workspace-tabs__surface',
+                morph.draggingId !== props.activeWorkspaceId && 'is-gliding',
+              )}
+              style={{
+                width: workspaceLayout.tabWidth,
+                transform: tabTranslate(morph.surfaceLeft),
+              }}
+            >
+              <WorkspaceTabShape width={workspaceLayout.tabWidth} />
+            </div>
+          ) : null}
+          {workspaceLayout.visibleIds.map((workspaceId) => {
+            const workspace = props.workspaces.find((w) => w.workspaceId === workspaceId);
+            if (!workspace) return null;
+            return (
+              <ProjectTab
+                key={workspace.workspaceId}
+                workspaceId={workspace.workspaceId}
+                label={workspace.name}
+                icon={workspace.icon}
+                title={workspace.folderPath}
+                active={props.activeWorkspaceId === workspace.workspaceId}
+                running={props.workspaceActivity?.get(workspace.workspaceId)?.running ?? false}
+                unread={props.workspaceActivity?.get(workspace.workspaceId)?.unread ?? false}
+                width={workspaceLayout.tabWidth}
+                left={morph.leftFor(workspace.workspaceId)}
+                dragging={morph.draggingId === workspace.workspaceId}
+                onHide={
+                  props.onSetWorkspaceHidden
+                    ? () => props.onSetWorkspaceHidden?.(workspace.workspaceId, true)
+                    : undefined
+                }
+                onPointerDown={(event) => morph.startDrag(workspace.workspaceId, event)}
+                onPointerMove={morph.moveDrag}
+                onPointerUp={(event) => morph.finishDrag(event.pointerId)}
+                onPointerCancel={(event) => morph.finishDrag(event.pointerId)}
+                onLostPointerCapture={(event) => {
+                  if (event.target !== event.currentTarget || event.buttons !== 0) return;
+                  morph.finishDrag(event.pointerId);
+                }}
+                onKeyDown={(event) => morph.handleKeyDown(workspace.workspaceId, event)}
+                onActivate={() => {
+                  if (morph.consumeClick() || morph.draggingId === workspace.workspaceId) return;
+                  props.onSelectWorkspace(workspace.workspaceId);
+                }}
+              />
+            );
+          })}
+        </div>
 
         {workspaceLayout.overflowCount > 0 ? (
           <div className="flex h-[31px] shrink-0 items-start pb-[3px]">
@@ -848,37 +811,36 @@ export function TopBar(props: TopBarProps) {
 }
 
 function ProjectTab(props: {
+  workspaceId: string;
   label: string;
   icon?: string;
   title?: string;
   active: boolean;
   width: number;
+  left: number;
   /** 该工作区有任务正在运行 → 呼吸圆点动效。 */
   running?: boolean;
   /** 该工作区有已完成但未查看的任务 → 静态未读圆点。 */
   unread?: boolean;
   dragging?: boolean;
-  /** Drag transform from dnd-kit; applied as a visual offset while dragging. */
-  dragTransform?: string | undefined;
-  onClick(): void;
-  /** Hide this workspace from the folder row (data untouched). */
   onHide?(): void;
-  onNativeDragStart(e: React.DragEvent<HTMLDivElement>): void;
-  onNativeDragOver(e: React.DragEvent<HTMLDivElement>): void;
-  onNativeDrop(e: React.DragEvent<HTMLDivElement>): void;
-  onNativeDragEnd(): void;
-  sortableProps?: {
-    ref(node: HTMLDivElement | null): void;
-    attributes: Record<string, unknown>;
-    listeners: Record<string, unknown>;
-  };
+  onPointerDown(event: React.PointerEvent<HTMLDivElement>): void;
+  onPointerMove(event: React.PointerEvent<HTMLDivElement>): void;
+  onPointerUp(event: React.PointerEvent<HTMLDivElement>): void;
+  onPointerCancel(event: React.PointerEvent<HTMLDivElement>): void;
+  onLostPointerCapture(event: React.PointerEvent<HTMLDivElement>): void;
+  onKeyDown(event: React.KeyboardEvent<HTMLDivElement>): void;
+  onActivate(): void;
 }) {
   return (
     <div
-      ref={props.sortableProps?.ref}
+      role="tab"
+      tabIndex={props.active ? 0 : -1}
+      aria-label={props.label}
+      aria-selected={props.active}
       data-testid={`project-tab-${props.label}`}
+      data-workspace-id={props.workspaceId}
       data-active={props.active ? 'true' : 'false'}
-      draggable
       title={
         props.running
           ? `${props.title ?? props.label} · 有任务正在运行`
@@ -886,79 +848,75 @@ function ProjectTab(props: {
             ? `${props.title ?? props.label} · 有已完成任务待查看`
             : props.title
       }
-      {...props.sortableProps?.attributes}
-      {...props.sortableProps?.listeners}
-      onDragStart={props.onNativeDragStart}
-      onDragOver={props.onNativeDragOver}
-      onDrop={props.onNativeDrop}
-      onDragEnd={props.onNativeDragEnd}
+      onPointerDown={props.onPointerDown}
+      onPointerMove={props.onPointerMove}
+      onPointerUp={props.onPointerUp}
+      onPointerCancel={props.onPointerCancel}
+      onLostPointerCapture={props.onLostPointerCapture}
+      onKeyDown={props.onKeyDown}
+      onClick={() => {
+        props.onActivate();
+      }}
       className={clsx(
-        'shell-workspace-tab group relative h-[31px] shrink-0 pb-[3px]',
+        'shell-workspace-tab group h-[31px] pb-[3px]',
         props.active && 'shell-workspace-tab-active',
-        props.dragging && 'z-50 opacity-70',
+        props.dragging ? 'is-dragging' : 'is-gliding',
       )}
       style={{
         width: props.width,
-        ...(props.dragTransform
-          ? { transform: props.dragTransform, transition: 'transform 150ms ease' }
-          : {}),
+        transform: tabTranslate(props.left),
       }}
     >
-      {props.active ? <WorkspaceTabShape width={props.width} /> : null}
       <div
         className={clsx(
           'shell-workspace-tab__body st-row-motion relative z-[1] flex h-7 w-full items-center gap-1.5 rounded-[10px] pl-2.5 pr-1 text-[13px] font-medium',
           props.active ? 'text-text' : 'text-text-secondary hover:bg-hover hover:text-text',
         )}
       >
-        <button
-          type="button"
-          className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
-          onClick={props.onClick}
+        <span
+          className={clsx(
+            'flex h-4 w-4 shrink-0 items-center justify-center leading-none',
+            props.active ? 'text-text-secondary' : 'text-text-faint',
+          )}
+          aria-hidden
         >
+          {props.icon?.trim() ? (
+            <span className="text-[13px]">{props.icon}</span>
+          ) : (
+            <FolderOpen size={14} strokeWidth={1.7} />
+          )}
+        </span>
+        <span className="min-w-0 flex-1 truncate text-left">{props.label}</span>
+        {props.running ? (
           <span
-            className={clsx(
-              'flex h-4 w-4 shrink-0 items-center justify-center leading-none',
-              props.active ? 'text-text-secondary' : 'text-text-faint',
-            )}
-            aria-hidden
-          >
-            {props.icon?.trim() ? (
-              <span className="text-[13px]">{props.icon}</span>
-            ) : (
-              <FolderOpen size={14} strokeWidth={1.7} />
-            )}
-          </span>
-          <span className="truncate">{props.label}</span>
-          {props.running ? (
-            <span
-              className="shell-activity-dot shell-activity-dot--running"
-              data-testid={`workspace-running-${props.label}`}
-              aria-label="有任务正在运行"
-            />
-          ) : props.unread ? (
-            <span
-              className="shell-activity-dot shell-activity-dot--unread"
-              data-testid={`workspace-unread-${props.label}`}
-              aria-label="有已完成任务待查看"
-            />
-          ) : null}
-        </button>
+            className="shell-activity-dot shell-activity-dot--running"
+            data-testid={`workspace-running-${props.label}`}
+            aria-label="有任务正在运行"
+          />
+        ) : props.unread ? (
+          <span
+            className="shell-activity-dot shell-activity-dot--unread"
+            data-testid={`workspace-unread-${props.label}`}
+            aria-label="有已完成任务待查看"
+          />
+        ) : null}
         {props.onHide ? (
           <span
             className="shell-workspace-tab__close flex h-5 shrink-0 items-center justify-center overflow-hidden rounded text-text-faint hover:bg-hover hover:text-text"
             role="button"
-            tabIndex={0}
+            tabIndex={-1}
             aria-label={`从文件夹行移除 ${props.label}`}
             title="从文件夹行移除"
-            onClick={(e) => {
-              e.stopPropagation();
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
               props.onHide?.();
             }}
-            onKeyDown={(e) => {
-              if (e.key !== 'Enter' && e.key !== ' ') return;
-              e.preventDefault();
-              e.stopPropagation();
+            onKeyDown={(event) => {
+              if (event.key !== 'Enter' && event.key !== ' ') return;
+              event.preventDefault();
+              event.stopPropagation();
               props.onHide?.();
             }}
           >
@@ -967,53 +925,6 @@ function ProjectTab(props: {
         ) : null}
       </div>
     </div>
-  );
-}
-
-function SortableProjectTab(props: {
-  workspaceId: string;
-  label: string;
-  icon?: string;
-  title?: string;
-  active: boolean;
-  width: number;
-  running?: boolean;
-  unread?: boolean;
-  onClick(): void;
-  onHide?(): void;
-  onNativeDragStart(e: React.DragEvent<HTMLDivElement>): void;
-  onNativeDragOver(e: React.DragEvent<HTMLDivElement>): void;
-  onNativeDrop(e: React.DragEvent<HTMLDivElement>): void;
-  onNativeDragEnd(): void;
-}) {
-  const { attributes, listeners, setNodeRef, transform, isDragging } = useSortable({
-    id: props.workspaceId,
-  });
-  return (
-    <ProjectTab
-      label={props.label}
-      icon={props.icon}
-      title={props.title}
-      active={props.active}
-      width={props.width}
-      running={props.running}
-      unread={props.unread}
-      dragging={isDragging}
-      dragTransform={
-        transform ? CSS.Transform.toString({ ...transform, scaleX: 1, scaleY: 1 }) : undefined
-      }
-      onClick={props.onClick}
-      onHide={props.onHide}
-      onNativeDragStart={props.onNativeDragStart}
-      onNativeDragOver={props.onNativeDragOver}
-      onNativeDrop={props.onNativeDrop}
-      onNativeDragEnd={props.onNativeDragEnd}
-      sortableProps={{
-        ref: setNodeRef,
-        attributes: attributes as unknown as Record<string, unknown>,
-        listeners: listeners as unknown as Record<string, unknown>,
-      }}
-    />
   );
 }
 

@@ -3,6 +3,8 @@ export {
   resolveModelBinding,
   shouldAttemptFallback,
   shouldSkipSameProviderFallback,
+  isSharedProviderEndpointFailure,
+  formatModelSwitchDetail,
   resolveProviderPriorityFallback,
   type AgentModelBinding,
   type ResolveModelBindingInput,

@@ -3,6 +3,8 @@
 // - 文件面板：搜索 + 预览项目内文本文件（主进程只读 IPC，防目录穿越）；
 // - Git 面板：当前分支 / 未提交变更 / 最近提交；
 // - Review 面板：本轮文件变更（A/M/D）+ 行级 diff。
+import { isConversationReview, type ReviewView } from './review-view.js';
+import { useConversationFileChanges } from './use-conversation-file-changes.js';
 import {
   useCallback,
   useEffect,
@@ -41,6 +43,22 @@ import type {
 import { FileContentPreview } from './FileContentPreview.js';
 import { FileTypeIcon } from './FileTypeIcon.js';
 import { countLineChanges, LineDiffView } from './ExecutionProcessBlock.js';
+import { DeferredFileDiff, needsDeferredFileDiff } from './DeferredFileDiff.js';
+import { useRunProcessPage } from './use-run-process-page.js';
+import {
+  WORKSPACE_FILE_ICON_SIZE,
+  WORKSPACE_FOLDER_ICON_SIZE,
+  WORKSPACE_TREE_CHEVRON_SIZE,
+  WORKSPACE_TREE_FILE_GUTTER,
+  WORKSPACE_TREE_PAD,
+  WORKSPACE_TREE_STEP,
+  buildConversationFileTree,
+  collectConversationDirPaths,
+  conversationFileStatus,
+  projectRelativePath,
+  workspaceTreeOffset,
+  type ConversationTreeNode,
+} from './workspace-file-tree.js';
 
 /** Preload bridge accessor (undefined in bare unit-test DOM). */
 function dockBridge() {
@@ -72,17 +90,26 @@ export function WorkspaceFilesPanel(props: {
   projectFolder?: string;
   onOpenFile?(path: string, location?: ProjectTextLocation): void;
   onOpenFileInNewTab?(path: string, location?: ProjectTextLocation): void;
-  onOpenReview?(view: RunProcessView): void;
+  onOpenReview?(view: ReviewView): void;
   activeFilePath?: string | null;
   /** Latest run's file changes for the Review tab (NewMax-style per-run review). */
-  reviewView?: RunProcessView | null;
+  reviewView?: ReviewView | null;
 }) {
   // NewMax's compact browser always starts on all files. Conversation changes
   // are a scope inside the browser, not a separate Git/review surface.
   const [section, setSection] = useState<WorkspaceFilesSection>('all');
   const [searchExpanded, setSearchExpanded] = useState(false);
   const [refreshRevision, setRefreshRevision] = useState(0);
-  const conversationChanges = props.reviewView?.fileChanges ?? [];
+  const sourceReview = props.reviewView;
+  const conversationReview = isConversationReview(sourceReview);
+  const directory = useConversationFileChanges(
+    conversationReview ? sourceReview.conversationId : undefined,
+    section === 'changes',
+  );
+  const conversationChanges = conversationReview
+    ? (directory.page?.items ?? [])
+    : (sourceReview?.fileChanges ?? []);
+  const conversationCount = conversationReview ? directory.page?.total : conversationChanges.length;
 
   return (
     <div
@@ -102,7 +129,7 @@ export function WorkspaceFilesPanel(props: {
             )}
             onClick={() => setSection('changes')}
           >
-            对话文件 <span>{conversationChanges.length}</span>
+            对话文件 <span>{conversationCount ?? '…'}</span>
           </button>
           <button
             type="button"
@@ -132,7 +159,10 @@ export function WorkspaceFilesPanel(props: {
           <button
             type="button"
             aria-label="刷新"
-            onClick={() => setRefreshRevision((revision) => revision + 1)}
+            onClick={() => {
+              if (section === 'changes' && conversationReview) directory.reload();
+              else setRefreshRevision((revision) => revision + 1);
+            }}
           >
             <RefreshCw size={14} />
           </button>
@@ -145,6 +175,16 @@ export function WorkspaceFilesPanel(props: {
             section === 'changes' ? 'is-active' : 'is-hidden',
           )}
         >
+          {directory.controls}
+          {conversationReview && props.onOpenReview ? (
+            <button
+              type="button"
+              className="shell-conversation-files-review"
+              onClick={() => props.onOpenReview?.(props.reviewView!)}
+            >
+              审阅会话文件
+            </button>
+          ) : null}
           <ConversationFilesPanel
             changes={conversationChanges}
             projectFolder={props.projectFolder}
@@ -186,59 +226,169 @@ function ConversationFilesPanel({
   onOpenFile?(path: string, location?: ProjectTextLocation): void;
   onOpenFileInNewTab?(path: string, location?: ProjectTextLocation): void;
 }) {
-  const groups = useMemo(() => {
-    const next = new Map<string, typeof changes>();
-    for (const change of changes) {
-      const directory = reviewDirectory(change.path);
-      const current = next.get(directory);
-      if (current) current.push(change);
-      else next.set(directory, [change]);
-    }
-    return [...next.entries()];
-  }, [changes]);
+  const tree = useMemo(
+    () => buildConversationFileTree(changes, projectFolder),
+    [changes, projectFolder],
+  );
+  const [expanded, setExpanded] = useState<Set<string>>(
+    () => new Set(collectConversationDirPaths(tree)),
+  );
 
-  if (changes.length === 0) {
+  useEffect(() => {
+    setExpanded((current) => {
+      const next = new Set(current);
+      for (const path of collectConversationDirPaths(tree)) next.add(path);
+      return next;
+    });
+  }, [tree]);
+
+  const openFile = onOpenFile ?? onOpenFileInNewTab;
+  const selected = activeFilePath ? projectRelativePath(activeFilePath, projectFolder) : null;
+
+  if (tree.length === 0) {
     return (
       <DockEmpty
         icon={<Folder size={22} />}
-        title="暂无对话文件"
-        subtitle="当前对话里智能体写入或改过的文件会显示在这里"
+        title="当前对话暂无文件变动"
+        subtitle="智能体写入或改过的文件会显示在这里"
       />
     );
   }
 
   return (
-    <div className="shell-conversation-files" role="list" aria-label="对话文件">
-      {groups.map(([directory, items]) => (
-        <div className="shell-conversation-files__group" key={directory}>
-          <div className="shell-conversation-files__directory" title={directory}>
-            <ChevronDown size={12} />
-            <FolderOpen size={14} />
-            <span>{directory}</span>
-            <small>{items.length}</small>
-          </div>
-          {items.map((item) => (
-            <button
-              key={item.path}
-              type="button"
-              role="listitem"
-              className={clsx(
-                'shell-conversation-files__item',
-                activeFilePath === item.path && 'is-active',
-              )}
-              title={reviewAbsolutePath(projectFolder, item.path)}
-              onClick={() => (onOpenFile ?? onOpenFileInNewTab)?.(item.path)}
-            >
-              <FileTypeIcon path={item.path} size={14} />
-              <span className="shell-conversation-files__name">{reviewFileName(item.path)}</span>
-              <small>
-                {item.action === 'created' ? 'A' : item.action === 'deleted' ? 'D' : 'M'}
-              </small>
-            </button>
-          ))}
-        </div>
-      ))}
+    <div
+      className="shell-conversation-files shell-workspace-tree p-1"
+      role="tree"
+      aria-label="对话文件"
+    >
+      <ConversationFileTreeLevel
+        nodes={tree}
+        depth={0}
+        expanded={expanded}
+        selected={selected}
+        onToggleDir={(dir) => {
+          setExpanded((current) => {
+            const next = new Set(current);
+            if (next.has(dir)) next.delete(dir);
+            else next.add(dir);
+            return next;
+          });
+        }}
+        onOpenFile={(path) => openFile?.(path)}
+        onOpenFileInNewTab={onOpenFileInNewTab}
+      />
     </div>
+  );
+}
+
+function ConversationFileTreeLevel({
+  nodes,
+  depth,
+  expanded,
+  selected,
+  onToggleDir,
+  onOpenFile,
+  onOpenFileInNewTab,
+}: {
+  nodes: ConversationTreeNode[];
+  depth: number;
+  expanded: Set<string>;
+  selected: string | null;
+  onToggleDir(dir: string): void;
+  onOpenFile(path: string): void;
+  onOpenFileInNewTab?(path: string, location?: ProjectTextLocation): void;
+}) {
+  return (
+    <ul role="group" className="shell-workspace-tree-group">
+      {nodes.map((node) =>
+        node.kind === 'dir' ? (
+          <li key={node.path}>
+            <button
+              type="button"
+              role="treeitem"
+              aria-level={depth + 1}
+              aria-expanded={expanded.has(node.path)}
+              data-kind="dir"
+              data-path={node.path}
+              data-depth={depth}
+              className="shell-workspace-tree-row shell-workspace-file-directory"
+              style={workspaceTreeOffset(depth)}
+              title={node.path}
+              onClick={() => onToggleDir(node.path)}
+            >
+              <ChevronRight
+                size={WORKSPACE_TREE_CHEVRON_SIZE}
+                className={clsx(
+                  'shell-workspace-folder-caret',
+                  expanded.has(node.path) && 'is-open',
+                )}
+                aria-hidden="true"
+              />
+              <FolderStateIcon expanded={expanded.has(node.path)} />
+              <span className="min-w-0 flex-1 truncate">{node.name}</span>
+            </button>
+            {expanded.has(node.path) ? (
+              <ConversationFileTreeLevel
+                nodes={node.children}
+                depth={depth + 1}
+                expanded={expanded}
+                selected={selected}
+                onToggleDir={onToggleDir}
+                onOpenFile={onOpenFile}
+                onOpenFileInNewTab={onOpenFileInNewTab}
+              />
+            ) : null}
+          </li>
+        ) : (
+          <li key={node.path}>
+            <div
+              className={clsx(
+                'shell-workspace-tree-row shell-workspace-file-row',
+                selected === node.path ? 'is-active' : undefined,
+              )}
+              data-depth={depth}
+              style={workspaceTreeOffset(depth, WORKSPACE_TREE_FILE_GUTTER)}
+              title={node.path}
+            >
+              <button
+                type="button"
+                role="treeitem"
+                aria-level={depth + 1}
+                aria-selected={selected === node.path}
+                data-kind="file"
+                data-path={node.path}
+                className="shell-workspace-file-row__primary"
+                aria-label={
+                  onOpenFileInNewTab ? `在当前文件标签打开 ${node.path}` : `打开文件 ${node.path}`
+                }
+                onClick={() => onOpenFile(node.path)}
+              >
+                <FileTypeIcon
+                  path={node.path}
+                  size={WORKSPACE_FILE_ICON_SIZE}
+                  className="shrink-0"
+                />
+                <span className="min-w-0 flex-1 truncate">{node.name}</span>
+                <small className="shell-conversation-files__status">
+                  {conversationFileStatus(node.action)}
+                </small>
+              </button>
+              {onOpenFileInNewTab ? (
+                <button
+                  type="button"
+                  className="shell-workspace-file-row__new-tab"
+                  aria-label={`在新文件标签打开 ${node.path}`}
+                  title="在新文件标签打开"
+                  onClick={() => onOpenFileInNewTab(node.path)}
+                >
+                  <ExternalLink size={WORKSPACE_TREE_CHEVRON_SIZE} />
+                </button>
+              ) : null}
+            </div>
+          </li>
+        ),
+      )}
+    </ul>
   );
 }
 
@@ -292,18 +442,30 @@ function reviewListWidthBounds(panelWidth: number): { min: number; max: number }
 }
 
 export function ReviewPanel({
-  view,
+  view: sourceView,
   onOpenFile,
   onOpenFileInNewTab,
   projectFolder,
   standalone = false,
 }: {
-  view: RunProcessView | null;
+  view: ReviewView | null;
   onOpenFile?(path: string, location?: ProjectTextLocation): void;
   onOpenFileInNewTab?(path: string, location?: ProjectTextLocation): void;
   projectFolder?: string;
   standalone?: boolean;
 }) {
+  const conversationReview = isConversationReview(sourceView);
+  const directory = useConversationFileChanges(
+    conversationReview ? sourceView.conversationId : undefined,
+  );
+  const { process, controls: processControls } = useRunProcessPage(
+    conversationReview ? undefined : (sourceView ?? undefined),
+    'fileChanges',
+    sourceView?.conversationId,
+    { accumulate: true },
+  );
+  const view = process ?? (conversationReview ? undefined : sourceView);
+  const controls = conversationReview ? directory.controls : processControls;
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [reviewOptionsOpen, setReviewOptionsOpen] = useState(false);
   const [wrapLines, setWrapLines] = useState(true);
@@ -318,7 +480,13 @@ export function ReviewPanel({
   const reviewListRef = useRef<HTMLDivElement>(null);
   const resizeDragRef = useRef<ReviewResizeDrag | null>(null);
   const desiredReviewListWidthRef = useRef(DEFAULT_REVIEW_LIST_WIDTH);
-  const changes = useMemo(() => view?.fileChanges ?? [], [view]);
+  const changes = useMemo(
+    () => (conversationReview ? (directory.page?.items ?? []) : (view?.fileChanges ?? [])),
+    [conversationReview, directory.page, view],
+  );
+  const totalFiles = conversationReview
+    ? (directory.page?.total ?? 0)
+    : (view?.pages?.fileChanges.total ?? changes.length);
   const selected = changes.find((item) => item.path === selectedPath) ?? changes[0];
   const groupedChanges = useMemo(() => {
     const groups = new Map<string, typeof changes>();
@@ -454,7 +622,7 @@ export function ReviewPanel({
       } as CSSProperties)
     : undefined;
 
-  if (!view || changes.length === 0) {
+  if (changes.length === 0) {
     return (
       <div
         ref={panelRef}
@@ -462,11 +630,16 @@ export function ReviewPanel({
         data-testid="review-panel"
         style={panelStyle}
       >
+        {controls}
         <div className="shell-review-empty">
           <FileDiff size={22} />
-          <div className="shell-review-empty__title">暂无本轮变更</div>
+          <div className="shell-review-empty__title">
+            {conversationReview ? '会话文件审阅' : '暂无本轮变更'}
+          </div>
           <div className="shell-review-empty__hint">
-            让 AI 修改文件后，这里会显示本轮的文件清单与行级 diff。
+            {conversationReview
+              ? '目录按整个会话的持久记录读取；同路径保留最近一次变动。'
+              : '让 AI 修改文件后，这里会显示本轮的文件清单与行级 diff。'}
           </div>
         </div>
       </div>
@@ -482,11 +655,17 @@ export function ReviewPanel({
       data-resizing={isResizing ? 'true' : 'false'}
       style={panelStyle}
     >
-      <div ref={reviewListRef} className="shell-review-list" role="list" aria-label="本轮变动文件">
+      <div
+        ref={reviewListRef}
+        className="shell-review-list"
+        role="list"
+        aria-label={conversationReview ? '会话变动文件' : '本轮变动文件'}
+      >
         <div className="shell-review-list__title">
-          <strong>本轮变动</strong>
-          <span>{changes.length}</span>
+          <strong>{conversationReview ? '会话变动' : '本轮变动'}</strong>
+          <span>{totalFiles}</span>
         </div>
+        {controls}
         {groupedChanges.map(([directory, items]) => (
           <div className="shell-review-list__group" key={directory}>
             <div className="shell-review-list__directory" title={directory}>
@@ -555,13 +734,21 @@ export function ReviewPanel({
           <>
             <div className="shell-review-summary" data-review-header="true">
               <div className="shell-review-summary__stats">
-                <strong data-review-scope="turn">上一轮</strong>
-                <span className="is-added" data-review-total-additions="true">
-                  +{totals.added}
-                </span>
-                <span className="is-removed" data-review-total-deletions="true">
-                  -{totals.removed}
-                </span>
+                <strong data-review-scope={conversationReview ? 'conversation' : 'turn'}>
+                  {conversationReview ? '最近一次变动' : '上一轮'}
+                </strong>
+                {changeStats.size === changes.length && totalFiles === changes.length ? (
+                  <>
+                    <span className="is-added" data-review-total-additions="true">
+                      +{totals.added}
+                    </span>
+                    <span className="is-removed" data-review-total-deletions="true">
+                      -{totals.removed}
+                    </span>
+                  </>
+                ) : (
+                  <span>行数按需计算</span>
+                )}
               </div>
               <div className="shell-review-options">
                 <button
@@ -626,16 +813,25 @@ export function ReviewPanel({
               ) : null}
             </div>
             <div className="shell-changes-card__diff">
-              <LineDiffView
-                oldText={selected.previousContent}
-                newText={selected.content}
-                path={selected.path}
-                truncated={selected.previousTruncated}
-                wrapLines={wrapLines}
-                onWrapLinesChange={setWrapLines}
-                showToolbar={false}
-                showWhitespace={showWhitespace}
-              />
+              {needsDeferredFileDiff(selected) ? (
+                <DeferredFileDiff
+                  item={selected}
+                  conversationId={sourceView?.conversationId}
+                  wrapLines={wrapLines}
+                  showWhitespace={showWhitespace}
+                />
+              ) : (
+                <LineDiffView
+                  oldText={selected.previousContent}
+                  newText={selected.content}
+                  path={selected.path}
+                  truncated={selected.previousTruncated}
+                  wrapLines={wrapLines}
+                  onWrapLinesChange={setWrapLines}
+                  showToolbar={false}
+                  showWhitespace={showWhitespace}
+                />
+              )}
             </div>
           </>
         ) : null}
@@ -918,7 +1114,7 @@ function FilesPanel({
             ))}
           </div>
           <div className="shell-workspace-files-search__field">
-            <Search size={11} className="shell-workspace-files-search__icon" />
+            <Search size={13} className="shell-workspace-files-search__icon" />
             <input
               className="shell-workspace-files-search__input"
               value={query}
@@ -995,9 +1191,13 @@ function FilesPanel({
                         }
                         onClick={() => openFile(file.path)}
                       >
-                        <FileTypeIcon path={file.path} size={12} className="shrink-0" />
+                        <FileTypeIcon
+                          path={file.path}
+                          size={WORKSPACE_FILE_ICON_SIZE}
+                          className="shrink-0"
+                        />
                         <span className="min-w-0 flex-1 truncate">{file.name}</span>
-                        <span className="max-w-[45%] shrink-0 truncate text-[10.5px] text-text-faint">
+                        <span className="max-w-[45%] shrink-0 truncate text-[11px] text-text-faint">
                           {file.path}
                         </span>
                       </button>
@@ -1009,7 +1209,7 @@ function FilesPanel({
                           title="在新文件标签打开"
                           onClick={() => openFile(file.path, undefined, 'new-tab')}
                         >
-                          <ExternalLink size={11} />
+                          <ExternalLink size={WORKSPACE_TREE_CHEVRON_SIZE} />
                         </button>
                       ) : null}
                     </div>
@@ -1048,9 +1248,9 @@ function FilesPanel({
         {!onOpenFile && selected ? (
           <div className="flex min-h-0 flex-1 flex-col">
             <div className="flex h-8 shrink-0 items-center gap-2 border-b border-border px-3">
-              <FileTypeIcon path={selected} size={12} className="shrink-0" />
+              <FileTypeIcon path={selected} size={WORKSPACE_FILE_ICON_SIZE} className="shrink-0" />
               <span
-                className="min-w-0 flex-1 truncate text-[11.5px] font-medium text-text"
+                className="min-w-0 flex-1 truncate text-[13px] font-medium text-text"
                 title={selected}
               >
                 {selected}
@@ -1118,8 +1318,12 @@ function ContentSearchResults({
                 onClick={() => onOpen(result)}
               >
                 <span className="flex min-w-0 items-center gap-2">
-                  <FileTypeIcon path={result.path} size={12} className="shrink-0" />
-                  <span className="min-w-0 flex-1 truncate text-[11.5px]" title={result.path}>
+                  <FileTypeIcon
+                    path={result.path}
+                    size={WORKSPACE_FILE_ICON_SIZE}
+                    className="shrink-0"
+                  />
+                  <span className="min-w-0 flex-1 truncate text-[13px]" title={result.path}>
                     {result.path}
                   </span>
                   <span className="shrink-0 font-mono text-[10px] text-text-faint">
@@ -1138,7 +1342,7 @@ function ContentSearchResults({
                   title="在新文件标签打开"
                   onClick={() => onOpenInNewTab(result)}
                 >
-                  <ExternalLink size={11} />
+                  <ExternalLink size={WORKSPACE_TREE_CHEVRON_SIZE} />
                 </button>
               ) : null}
             </div>
@@ -1162,10 +1366,10 @@ function FolderStateIcon({ expanded }: { expanded: boolean }) {
       aria-hidden="true"
     >
       <span className="shell-workspace-folder-icon__closed">
-        <Folder size={13} />
+        <Folder size={WORKSPACE_FOLDER_ICON_SIZE} />
       </span>
       <span className="shell-workspace-folder-icon__open">
-        <FolderOpen size={13} />
+        <FolderOpen size={WORKSPACE_FOLDER_ICON_SIZE} />
       </span>
     </span>
   );
@@ -1201,18 +1405,18 @@ function FileTreeLevel({
   if (!state || (state.loading && !state.loaded)) {
     return (
       <div
-        className="flex items-center gap-2 px-2 py-1 text-[11.5px] text-text-faint"
-        style={{ paddingLeft: 8 + depth * 14 }}
+        className="flex items-center gap-2 px-2 py-1 text-[13px] text-text-faint"
+        style={{ paddingLeft: WORKSPACE_TREE_PAD + depth * WORKSPACE_TREE_STEP }}
       >
-        <Loader2 size={11} className="animate-spin" /> 加载中…
+        <Loader2 size={WORKSPACE_TREE_CHEVRON_SIZE} className="animate-spin" /> 加载中…
       </div>
     );
   }
   if (state.entries.length === 0) {
     return (
       <div
-        className="px-2 py-1 text-[11px] text-text-faint opacity-70"
-        style={{ paddingLeft: 8 + depth * 14 }}
+        className="px-2 py-1 text-[13px] text-text-faint opacity-70"
+        style={{ paddingLeft: WORKSPACE_TREE_PAD + depth * WORKSPACE_TREE_STEP }}
       >
         （空目录）
       </div>
@@ -1238,18 +1442,13 @@ function FileTreeLevel({
                   : -1
               }
               className="shell-workspace-tree-row shell-workspace-file-directory"
-              style={
-                {
-                  paddingLeft: 8 + depth * 14,
-                  '--shell-tree-guide-left': `${13 + Math.max(0, depth - 1) * 14}px`,
-                } as CSSProperties
-              }
+              style={workspaceTreeOffset(depth)}
               title={entry.path}
               onFocus={() => onFocusPath(entry.path)}
               onClick={() => onToggleDir(entry.path)}
             >
               <ChevronRight
-                size={11}
+                size={WORKSPACE_TREE_CHEVRON_SIZE}
                 className={clsx(
                   'shell-workspace-folder-caret',
                   expanded.has(entry.path) && 'is-open',
@@ -1283,12 +1482,7 @@ function FileTreeLevel({
                 selected === entry.path ? 'is-active' : undefined,
               )}
               data-depth={depth}
-              style={
-                {
-                  paddingLeft: 8 + depth * 14 + 15,
-                  '--shell-tree-guide-left': `${13 + Math.max(0, depth - 1) * 14}px`,
-                } as CSSProperties
-              }
+              style={workspaceTreeOffset(depth, WORKSPACE_TREE_FILE_GUTTER)}
               title={entry.path}
             >
               <button
@@ -1311,7 +1505,11 @@ function FileTreeLevel({
                 onFocus={() => onFocusPath(entry.path)}
                 onClick={() => onOpenFile(entry.path)}
               >
-                <FileTypeIcon path={entry.path} size={12} className="shrink-0" />
+                <FileTypeIcon
+                  path={entry.path}
+                  size={WORKSPACE_FILE_ICON_SIZE}
+                  className="shrink-0"
+                />
                 <span className="min-w-0 flex-1 truncate">{entry.name}</span>
               </button>
               {onOpenFileInNewTab ? (
@@ -1322,7 +1520,7 @@ function FileTreeLevel({
                   title="在新文件标签打开"
                   onClick={() => onOpenFileInNewTab(entry.path)}
                 >
-                  <ExternalLink size={11} />
+                  <ExternalLink size={WORKSPACE_TREE_CHEVRON_SIZE} />
                 </button>
               ) : null}
             </div>

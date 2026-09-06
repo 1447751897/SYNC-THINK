@@ -1,3 +1,4 @@
+export * from './event-display.js';
 export * from './types/ids.js';
 export * from './types/enums.js';
 export * from './types/workspace.js';
@@ -19,6 +20,7 @@ export * from './types/artifact.js';
 export * from './types/review.js';
 export * from './types/errors.js';
 export * from './types/browser-recording.js';
+export * from './browser-click-locator.js';
 export * from './types/kernel.js';
 export * from './provider-surface.js';
 export * from './acceptance-criteria.js';
@@ -26,4 +28,14 @@ export * from './review-policy.js';
 export * from './image-generation.js';
 export * from './task-title.js';
 export * from './tool-name.js';
+export * from './tool-outcome.js';
+export * from './task-plan.js';
 export * from './plan-markdown.js';
+export * from './deferred-content.js';
+export * from './file-diff.js';
+
+export * from './kernel-execution.js';
+
+export * from './durable-text.js';
+
+export * from './task-plan-history.js';
