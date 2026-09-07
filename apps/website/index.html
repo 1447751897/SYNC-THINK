@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="SYNC-THINK，本地优先的多模型 Agent 工作台。连接模型、上下文与行动，让每一次思考接着向前。下载 Windows 版，或登录你的云端账号。"
+    />
+    <title>SYNC-THINK | 让思考接续，让工作向前。</title>
+    <link rel="icon" href="/assets/sync-think-logo.png" />
+    <link rel="stylesheet" href="/tokens.css" />
+    <link rel="stylesheet" href="/styles.css" />
+    <link rel="preload" as="image" href="/assets/hero-alpine-painted.webp" />
+    <script type="module" src="/site.js"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#product">跳转到产品介绍</a>
+    <main>
+      <section class="hero" aria-labelledby="hero-title">
+        <img
+          class="hero-landscape"
+          src="/assets/hero-alpine-painted.webp"
+          alt=""
+          width="1536"
+          height="1024"
+          fetchpriority="high"
+        />
+        <header class="site-header">
+          <a class="brand" href="/" aria-label="SYNC-THINK 首页"
+            ><span class="brand-mark" aria-hidden="true"></span><span>SYNC-THINK</span></a
+          >
+          <nav class="desktop-nav" aria-label="主导航">
+            <a href="#product">产品</a><a href="#start">开始使用</a><a href="#faq">常见问题</a>
+          </nav>
+          <a class="header-login" href="/login" data-account-link>登录</a>
+          <details class="mobile-nav">
+            <summary aria-label="展开导航">导航</summary>
+            <nav aria-label="移动导航">
+              <a href="#product">产品</a><a href="#start">开始使用</a><a href="#faq">常见问题</a>
+            </nav>
+          </details>
+        </header>
+        <div class="hero-copy">
+          <h1 id="hero-title">SYNC-THINK</h1>
+          <p class="hero-tagline">让思考接续，让工作向前。</p>
+          <p class="hero-description">在同一个工作台，连接模型、上下文与行动。</p>
+          <div class="hero-actions">
+            <a class="button primary" href="https://github.com/1447751897/SYNC-THINK/releases"
+              >下载 Windows 版</a
+            ><a class="button secondary" href="/login">登录云端账号</a>
+          </div>
+        </div>
+      </section>
+
+      <section id="product" class="product-section section-content" aria-labelledby="product-title">
+        <div class="section-heading">
+          <h2 id="product-title">从一个想法，到一项完成的工作。</h2>
+          <p>把对话、资料和行动放在一起。</p>
+        </div>
+        <div class="demo-toolbar">
+          <span>SYNC-THINK 交互演示</span
+          ><a href="/demo" target="_blank" rel="noopener">独立窗口体验</a>
+        </div>
+        <iframe
+          class="workspace-demo"
+          src="/demo"
+          title="SYNC-THINK 工作台交互演示"
+          loading="lazy"
+          sandbox="allow-scripts allow-same-origin"
+          referrerpolicy="no-referrer"
+        ></iframe>
+        <div class="demo-caption">
+          <span>交互演示 · 示例数据</span
+          ><button
+            class="text-button"
+            type="button"
+            id="copy-embed"
+            title="用于已开通嵌入权限的网站"
+          >
+            复制嵌入代码</button
+          ><span id="embed-status" role="status"></span
+          ><textarea
+            id="embed-code"
+            class="embed-code"
+            aria-label="iframe 嵌入代码"
+            readonly
+            hidden
+          ></textarea>
+        </div>
+        <div class="feature-columns">
+          <article>
+            <span class="feature-number" aria-hidden="true">01</span>
+            <h3>上下文接着走</h3>
+            <p>对话、文件与任务留在同一个工作空间。继续一项任务时，从已有的上下文开始。</p>
+          </article>
+          <article>
+            <span class="feature-number" aria-hidden="true">02</span>
+            <h3>模型由你掌舵</h3>
+            <p>连接自己的模型与 API 密钥，为 Agent 选择合适的模型。什么时候切换，由你决定。</p>
+          </article>
+          <article>
+            <span class="feature-number" aria-hidden="true">03</span>
+            <h3>每一步都有迹可循</h3>
+            <p>查看执行过程、工具调用与文件变更。需要介入时，随时回到任务现场。</p>
+          </article>
+        </div>
+      </section>
+
+      <section id="start" class="start-section" aria-labelledby="start-title">
+        <div class="section-content start-layout">
+          <div>
+            <p class="section-index">开始使用</p>
+            <h2 id="start-title">把下一件事，<br />交给你的工作台。</h2>
+            <a class="inline-command" href="https://github.com/1447751897/SYNC-THINK#readme"
+              >阅读使用文档</a
+            >
+          </div>
+          <ol class="steps">
+            <li>
+              <span class="step-index">01</span>
+              <div>
+                <h3>安装桌面端</h3>
+                <p>下载 Windows 11 x64 版本，打开你的工作区文件夹。</p>
+              </div>
+            </li>
+            <li>
+              <span class="step-index">02</span>
+              <div>
+                <h3>连接你的模型</h3>
+                <p>在设置中添加模型服务和自己的 API 密钥，选择要使用的 Agent。</p>
+              </div>
+            </li>
+            <li>
+              <span class="step-index">03</span>
+              <div>
+                <h3>开始一个真实任务</h3>
+                <p>从一句需求开始，逐步推进对话、规划与执行。云端账号在官网单独管理。</p>
+              </div>
+            </li>
+          </ol>
+        </div>
+      </section>
+
+      <section id="faq" class="section-content faq-section" aria-labelledby="faq-title">
+        <div>
+          <p class="section-index">常见问题</p>
+          <h2 id="faq-title">开始之前，<br />你可能想知道。</h2>
+        </div>
+        <div class="faq-list">
+          <details open>
+            <summary>桌面端一定要登录才能使用吗？</summary>
+            <p>
+              本地工作台可独立使用。官网账号用于云端身份，桌面端账号绑定和跨设备同步将在后续接入。
+            </p>
+          </details>
+          <details>
+            <summary>我的任务和 API 密钥保存在哪里？</summary>
+            <p>
+              桌面端对话与任务保存在本机，模型请求会发送到你配置的服务商。模型密钥使用本机安全存储，云端账号不会自动上传这些密钥。
+            </p>
+          </details>
+          <details>
+            <summary>现在可以在云端运行 Agent 吗？</summary>
+            <p>
+              当前版本仍由 Windows
+              桌面端执行任务。云端首版包含官网与账号服务；设备连接、任务同步和远程执行属于后续阶段。
+            </p>
+          </details>
+          <details>
+            <summary>支持哪些模型和工具？</summary>
+            <p>
+              支持 OpenAI-compatible 与 Anthropic-compatible 服务，可使用已配置的
+              Skill、MCP，以及项目支持的 Codex / Claude Code
+              内核。具体可用范围以当前版本和本机配置为准。
+            </p>
+          </details>
+          <details>
+            <summary>如何下载和更新？</summary>
+            <p>
+              前往 GitHub Releases 下载 Windows 安装包。目前为 Alpha
+              阶段，安装包未签名，更新通过手动下载完成。安装前请核对版本说明与文件校验值。
+            </p>
+            <a href="https://github.com/1447751897/SYNC-THINK/releases">查看发行版本</a>
+          </details>
+          <details>
+            <summary>我可以查看源码或反馈问题吗？</summary>
+            <p>项目以 MIT 许可证开放源码。使用中遇到问题，可通过 GitHub Issues 提交反馈。</p>
+            <a href="https://github.com/1447751897/SYNC-THINK/issues">提交反馈</a>
+          </details>
+        </div>
+      </section>
+      <section class="closing-section">
+        <div class="section-content closing-inner">
+          <h2>让下一次思考，有一个起点。</h2>
+          <div class="hero-actions">
+            <a class="button primary" href="https://github.com/1447751897/SYNC-THINK/releases"
+              >下载 Windows 版</a
+            ><a class="button secondary" href="/register">创建云端账号</a>
+          </div>
+        </div>
+      </section>
+    </main>
+    <footer class="site-footer">
+      <div class="footer-glass">
+        <div class="footer-content section-content">
+          <div class="footer-brand">
+            <a class="brand" href="/"
+              ><span class="brand-mark" aria-hidden="true"></span>SYNC-THINK</a
+            >
+            <p>让思考接续，让工作向前。<br />你的模型、你的上下文、你的工作台。</p>
+          </div>
+          <nav aria-label="产品链接">
+            <span class="footer-nav-title">产品</span><a href="#product">交互演示</a
+            ><a href="https://github.com/1447751897/SYNC-THINK/releases">下载与更新</a
+            ><a href="/login">云端账号</a>
+          </nav>
+          <nav aria-label="资源链接">
+            <span class="footer-nav-title">资源</span
+            ><a href="https://github.com/1447751897/SYNC-THINK#readme">使用文档</a
+            ><a href="https://github.com/1447751897/SYNC-THINK">GitHub</a
+            ><a href="https://github.com/1447751897/SYNC-THINK/issues">问题反馈</a>
+          </nav>
+        </div>
+        <div class="footer-bottom section-content">
+          <span>© 2026 SYNC-THINK</span><span>本地优先 · MIT 开源</span>
+        </div>
+      </div>
+    </footer>
+  </body>
+</html>

@@ -1,0 +1,11 @@
+{
+  "id": "2026-09-07T11-44-10-310Z-use-case-ui-mockup-asset-type-one-desktop-websit",
+  "provider": "openai-compatible",
+  "model": "gpt-image-2",
+  "prompt": "Use case: ui-mockup. Asset type: one desktop website product overview section design reference, screenshot format 1536x1024, continuation of SYNC-THINK marketing website. Single unframed white full-width product section with generous organized spacing, constrained inner width ~1200px. Top centered H2 in neutral charcoal #18231e bold Chinese sans-serif 36px: '从一个想法，到一项完成的工作。'. A short single line under heading: '把对话、资料和行动放在一起。'. Large dark desktop application screenshot dominant in middle, approximately 1080x550px, subtle thin border and 8px corners. It is a sophisticated actual-looking AI workspace: narrow icon rail, sidebar with 项目 / 对话 / 工作区, center conversation area with small white Chinese text, right contextual file preview. Green restrained action accents. Top bar label SYNC-THINK and a model selector. This image is only a layout reference; avoid fake functional claims and fake metrics. Bottom three unframed equal text columns with small simple line icons and exact titles '上下文接着走' / '模型由你掌舵' / '每一步都有迹可循'. Smaller secondary Chinese prose below each title. Not cards, no outer boxes around columns. Dominant white canvas, charcoal ink, subtle cool gray dividers, green #247648 accents. Inter and Noto Sans SC. No decorative landscape, no gradient, no purple, no spheres, no nested cards, no marketing badges, no customers/testimonials, no long-page collage.",
+  "imagePath": "docs/design-explorations/cloud-website-2026-09-07/02-product-concept.png",
+  "metadataPath": "docs/design-explorations/cloud-website-2026-09-07/02-product-concept.generation.json",
+  "createdAt": "2026-09-07T11:44:10.310Z",
+  "size": "1536x1024",
+  "conversationContextIncluded": false
+}

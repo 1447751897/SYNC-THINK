@@ -6,6 +6,9 @@ This repo is a multi-context monorepo. Each package/app is its own context with 
 
 ### Apps
 
+- **`apps/website/`** — public product website, cloud account UI, and isolated embeddable demo
+- **`apps/cloud/`** — self-hosted account service, SMTP lifecycle, and public website HTTP host
+
 - **`apps/cli/`** — CLI entrypoints
 - **`apps/desktop/`** — desktop application
 - **`apps/mcp-server/`** — MCP server

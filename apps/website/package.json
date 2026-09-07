@@ -1,0 +1,11 @@
+{
+  "name": "@sync-think/website",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test tests",
+    "lint": "node --check auth.js && node --check site.js && node --check auth-client.js && node --check demo.js"
+  }
+}
