@@ -19,6 +19,10 @@ describe('Windows installer rollback archive contract', () => {
     expect(include).toContain('recovery\\installers\\${VERSION}');
     expect(include).toContain('installer.exe.pending');
     expect(include).toContain('MoveFileExW');
+    expect(include).toContain("i .R4'");
+    expect(include).not.toContain("i .r4'");
+    expect(include).toContain('ShowInstDetails show');
+    expect(include).toContain('SetDetailsPrint both');
     expect(include).toContain('${ifNot} ${isUpdated}');
     expect(include).not.toContain('!define APP_INSTALLER_STORE_FILE');
   });

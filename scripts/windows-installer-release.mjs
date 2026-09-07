@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { prepareDirectExtractionScript } from './windows-installer-extraction.mjs';
 
 import {
   DEFAULT_WINDOWS_RELEASE_DIR,
@@ -763,6 +764,13 @@ export async function buildWindowsInstaller(options = {}) {
   await rm(paths.installerDir, { recursive: true, force: true });
   await mkdir(paths.installerDir, { recursive: true });
 
+  const configuration = JSON.parse(await readFile(builderConfig, 'utf8'));
+  const installerInclude = await prepareDirectExtractionScript(
+    workspaceRoot,
+    paths.installerDir,
+    resolve(workspaceRoot, configuration.nsis?.include ?? 'apps/desktop/build/installer.nsh'),
+  );
+
   const cli = resolveElectronBuilderCli(workspaceRoot);
   const args = [
     ...cli.prefixArgs,
@@ -779,6 +787,7 @@ export async function buildWindowsInstaller(options = {}) {
     paths.portableDir,
     '--config.extraMetadata.version=' + version,
     '--config.compression=' + compression,
+    '--config.nsis.include=' + installerInclude,
     ...signing.builderArgs,
   ];
   const buildStartedAt = performance.now();

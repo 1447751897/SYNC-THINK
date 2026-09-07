@@ -2,7 +2,7 @@
 
 Local-first、用户可控的多模型 Agent 桌面工作台（Windows）。
 
-> 当前状态：**Alpha 内测**（`0.1.0-rc.2`）。功能与数据格式仍可能变化，不建议作为生产环境使用。
+> 当前状态：**Alpha 内测**（`0.1.0-rc.4`）。功能与数据格式仍可能变化，不建议作为生产环境使用。
 
 ## 下载内测包
 
@@ -13,7 +13,7 @@ Local-first、用户可控的多模型 Agent 桌面工作台（Windows）。
 - 安装前建议核对 Release 页给出的 SHA-256：
 
   ```powershell
-  Get-FileHash .\SYNC-THINK-Setup-0.1.0-rc.2-x64.exe -Algorithm SHA256
+  Get-FileHash .\SYNC-THINK-Setup-0.1.0-rc.4-x64.exe -Algorithm SHA256
   ```
 
 - 首次打开：选择一个本地工作区文件夹 → 设置 → 模型 → 添加你自己的 API 密钥。安装包不包含任何开发者密钥。
