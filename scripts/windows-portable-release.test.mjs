@@ -18,7 +18,9 @@ import {
   resolveWindowsUpdaterBootstrapConfiguration,
   verifyWindowsPortableLayout,
   pruneDesktopRendererModules,
+  pruneElectronLocales,
   pruneOwnedPayload,
+  pruneThirdPartyDevelopmentFiles,
 } from './windows-portable-release.mjs';
 
 test('desktop production dependencies exclude bundled renderer libraries', async () => {
@@ -398,6 +400,47 @@ test('release staging removes unused renderer modules and QA fixtures but preser
   }
   await writeFile(join(root, 'package.json'), JSON.stringify({ name: '@sync-think/runtime' }));
   await assert.rejects(pruneDesktopRendererModules(root), /desktop_package_required/);
+});
+
+test('third-party pruning strips declarations, maps, native sources and docs but keeps runtime files and licenses', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'sync-think-release-third-party-'));
+  const pkg = join(root, 'node_modules', 'some-lib');
+  await mkdir(join(pkg, 'deps'), { recursive: true });
+  await mkdir(join(pkg, 'build', 'Release'), { recursive: true });
+  const removable = [
+    'index.d.ts',
+    'index.js.map',
+    'deps/sqlite3.c',
+    'deps/sqlite3.h',
+    'README.md',
+    'CHANGELOG.md',
+    'index.test.js',
+  ];
+  const kept = ['index.js', 'LICENSE', 'package.json', 'build/Release/binding.node', 'data.json'];
+  for (const file of [...removable, ...kept]) await writeFile(join(pkg, file), 'x');
+  // Files outside node_modules are never touched, even if they match the pattern.
+  await writeFile(join(root, 'own.d.ts'), 'x');
+  const removedCount = await pruneThirdPartyDevelopmentFiles(root);
+  assert.equal(removedCount, removable.length);
+  for (const file of removable) await assert.rejects(access(join(pkg, file)), { code: 'ENOENT' });
+  for (const file of kept) await access(join(pkg, file));
+  await access(join(root, 'own.d.ts'));
+});
+
+test('electron locale pruning keeps only shipped locales and fails when a kept locale is absent', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'sync-think-release-locales-'));
+  await mkdir(join(root, 'locales'), { recursive: true });
+  for (const name of ['zh-CN.pak', 'en-US.pak', 'fr.pak', 'ja.pak', 'zh-TW.pak']) {
+    await writeFile(join(root, 'locales', name), 'pak');
+  }
+  const removed = await pruneElectronLocales(root);
+  assert.deepEqual(removed, ['fr.pak', 'ja.pak', 'zh-TW.pak']);
+  await access(join(root, 'locales/zh-CN.pak'));
+  await access(join(root, 'locales/en-US.pak'));
+  const missing = await mkdtemp(join(tmpdir(), 'sync-think-release-locales-missing-'));
+  await mkdir(join(missing, 'locales'), { recursive: true });
+  await writeFile(join(missing, 'locales', 'fr.pak'), 'pak');
+  await assert.rejects(pruneElectronLocales(missing), /electron_locale_missing/);
 });
 
 test('release verification rejects development renderer manifests', async () => {

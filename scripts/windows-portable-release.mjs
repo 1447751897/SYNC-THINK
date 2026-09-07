@@ -496,6 +496,54 @@ export async function pruneOwnedPayload(packageRoot) {
   });
 }
 
+const THIRD_PARTY_PRUNE_FILE_PATTERN =
+  /(?:\.d\.[cm]?ts|\.map|\.(?:c|cc|cpp|h|hpp)|\.(?:test|spec)\.[cm]?js)$/i;
+const THIRD_PARTY_PRUNE_DOC_PATTERN =
+  /^(?:readme|changelog|changes|history|contributing|code_of_conduct|security)(?:\.[a-z-]+)?\.(?:md|markdown|txt)$/i;
+
+/**
+ * Remove development-only artefacts from third-party node_modules that are never read at runtime:
+ * TypeScript declarations, source maps, native C/C++ sources (prebuilt .node binaries are kept),
+ * bundled unit tests and README/CHANGELOG documents. LICENSE files are always preserved.
+ */
+export async function pruneThirdPartyDevelopmentFiles(root) {
+  const removed = [];
+  await walk(root, async (absolute, entry) => {
+    if (!entry.isFile()) return;
+    if (!absolute.split(sep).includes('node_modules')) return;
+    if (/^license/i.test(entry.name)) return;
+    if (THIRD_PARTY_PRUNE_FILE_PATTERN.test(entry.name) || THIRD_PARTY_PRUNE_DOC_PATTERN.test(entry.name)) {
+      await rm(absolute, { force: true });
+      removed.push(absolute);
+    }
+  });
+  return removed.length;
+}
+
+const ELECTRON_LOCALES_TO_KEEP = Object.freeze(['zh-CN.pak', 'en-US.pak']);
+
+/** Keep only the locales the product ships UI strings for; Chromium falls back to en-US. */
+export async function pruneElectronLocales(outputDir, keep = ELECTRON_LOCALES_TO_KEEP) {
+  const localesDir = join(outputDir, 'locales');
+  let entries;
+  try {
+    entries = await readdir(localesDir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const kept = new Set(keep.map((name) => name.toLowerCase()));
+  const removed = [];
+  for (const entry of entries) {
+    if (!entry.isFile() || kept.has(entry.name.toLowerCase())) continue;
+    await rm(join(localesDir, entry.name), { force: true });
+    removed.push(entry.name);
+  }
+  for (const name of keep) {
+    await ensureReadable(join(localesDir, name), 'release.electron_locale_missing');
+  }
+  return removed.sort();
+}
+
 export async function pruneDesktopRendererModules(packageRoot) {
   const packageJson = JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8'));
   if (packageJson.name !== '@sync-think/desktop')
@@ -595,6 +643,7 @@ export async function stageWindowsPortableRelease(options = {}) {
   await cp(electronDist, outputDir, { recursive: true, force: true });
   await rename(join(outputDir, 'electron.exe'), join(outputDir, 'SYNC-THINK.exe'));
   await applyWindowsExecutableBranding(join(outputDir, 'SYNC-THINK.exe'), brandIconPath);
+  await pruneElectronLocales(outputDir);
 
   const rootPackage = JSON.parse(await readFile(join(workspaceRoot, 'package.json'), 'utf8'));
   const releaseVersion = normalizeWindowsReleaseVersion(options.version ?? rootPackage.version);
@@ -611,9 +660,11 @@ export async function stageWindowsPortableRelease(options = {}) {
     await pruneAllOwnedPackages(stagedAppDir);
     await pruneDesktopRendererModules(stagedAppDir);
     await pruneProductionBinDirectories(stagedAppDir);
+    await pruneThirdPartyDevelopmentFiles(stagedAppDir);
     await deployWorkspacePackage(workspaceRoot, '@sync-think/runtime', stagedRuntimeDir);
     await pruneAllOwnedPackages(stagedRuntimeDir);
     await pruneProductionBinDirectories(stagedRuntimeDir);
+    await pruneThirdPartyDevelopmentFiles(stagedRuntimeDir);
     await rename(stagedAppDir, appDir);
     await rename(stagedRuntimeDir, runtimeDir);
   } finally {
