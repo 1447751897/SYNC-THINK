@@ -42,3 +42,8 @@ sync-think-arch.html
 .restart-app.ps1
 .shots/
 .zcode/
+
+# 本地 MCP/侧车产物与一次性探针
+/.playwright-mcp/
+/.desktop-governance-*.meta.json
+/scripts/tmp-*.mjs
