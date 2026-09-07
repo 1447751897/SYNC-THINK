@@ -27,7 +27,7 @@ const WORKSPACE_PACKAGE_PARTS = new Map([
   ['@sync-think/desktop', ['apps', 'desktop']],
   ['@sync-think/runtime', ['apps', 'runtime']],
 ]);
-const OWNED_PRUNE_NAMES = ['.turbo', 'src', 'tests', 'scripts', 'release'];
+const OWNED_PRUNE_NAMES = ['.turbo', '.data', 'src', 'tests', 'scripts', 'release'];
 const RECURSIVE_REMOVE_OPTIONS = Object.freeze({
   recursive: true,
   force: true,
@@ -475,7 +475,7 @@ async function deployWorkspacePackage(workspaceRoot, packageName, targetDir) {
   await ensureReadable(join(targetDir, 'package.json'), 'release.deploy_incomplete');
 }
 
-async function pruneOwnedPayload(packageRoot) {
+export async function pruneOwnedPayload(packageRoot) {
   let packageJson;
   try {
     packageJson = JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8'));
@@ -489,6 +489,11 @@ async function pruneOwnedPayload(packageRoot) {
   for (const name of ['tsconfig.json', 'tsconfig.tsbuildinfo', 'drizzle.config.ts']) {
     await rm(join(packageRoot, name), { force: true });
   }
+  await walk(join(packageRoot, 'dist'), async (absolute, entry) => {
+    if (entry.isFile() && /(?:\.d\.[cm]?ts|\.map|\.(?:test|spec)\.[cm]?js)$/.test(entry.name)) {
+      await rm(absolute, { force: true });
+    }
+  });
 }
 
 export async function pruneDesktopRendererModules(packageRoot) {

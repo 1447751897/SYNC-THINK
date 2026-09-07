@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "main": "./dist/index.js",
+  "files": [
+    "dist"
+  ],
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
@@ -18,7 +21,6 @@
     "lint": "eslint src --ext .ts"
   },
   "dependencies": {
-    "@sync-think/protocol": "workspace:*",
     "@sync-think/shared": "workspace:*",
     "koffi": "3.1.4",
     "playwright-core": "^1.62.0",

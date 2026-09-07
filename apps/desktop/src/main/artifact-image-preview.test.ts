@@ -1,8 +1,8 @@
 ﻿import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
   ArtifactImagePreviewRegistry,
   MAX_ARTIFACT_IMAGE_PREVIEW_BYTES,
@@ -11,9 +11,17 @@ import {
 const PNG = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 0]);
 const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 1, 2, 3]);
 const WEBP = Buffer.from('RIFF0000WEBPVP8 ', 'ascii');
+const fixtureDirectories: string[] = [];
+
+afterEach(async () => {
+  for (const directory of fixtureDirectories.splice(0)) {
+    await rm(directory, { recursive: true, force: true, maxRetries: 3 });
+  }
+});
 
 async function fixture() {
   const dir = await mkdtemp(join(tmpdir(), 'artifact-image-preview-'));
+  fixtureDirectories.push(dir);
   const root = join(dir, 'artifacts', 'generated-images');
   await mkdir(root, { recursive: true });
   let tokenIndex = 0;

@@ -18,7 +18,70 @@ import {
   resolveWindowsUpdaterBootstrapConfiguration,
   verifyWindowsPortableLayout,
   pruneDesktopRendererModules,
+  pruneOwnedPayload,
 } from './windows-portable-release.mjs';
+
+test('desktop production dependencies exclude bundled renderer libraries', async () => {
+  const desktop = JSON.parse(
+    await readFile(new URL('../apps/desktop/package.json', import.meta.url), 'utf8'),
+  );
+  assert.deepEqual(Object.keys(desktop.dependencies).sort(), [
+    '@sync-think/protocol',
+    '@sync-think/secure-store',
+    '@sync-think/shared',
+    '@sync-think/workers',
+    'electron-updater',
+  ]);
+  for (const name of ['@excalidraw/excalidraw', '@sync-think/ui-kit', 'lucide-react', 'mermaid']) {
+    assert.ok(desktop.devDependencies[name]);
+  }
+});
+
+test('desktop deploy only includes runtime outputs, never nested releases', async () => {
+  const desktop = JSON.parse(
+    await readFile(new URL('../apps/desktop/package.json', import.meta.url), 'utf8'),
+  );
+  assert.deepEqual(desktop.files, ['dist', 'build']);
+  const workers = JSON.parse(
+    await readFile(new URL('../packages/workers/package.json', import.meta.url), 'utf8'),
+  );
+  assert.deepEqual(workers.files, ['dist']);
+});
+
+test('owned payload pruning removes emitted tests and declarations without changing runtime assets', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'sync-think-release-owned-'));
+  await writeFile(join(root, 'package.json'), JSON.stringify({ name: '@sync-think/desktop' }));
+  await mkdir(join(root, 'dist/main'), { recursive: true });
+  await mkdir(join(root, '.data'), { recursive: true });
+  await writeFile(join(root, '.data/qa.png'), 'fixture');
+  for (const name of [
+    'index.js',
+    'index.d.ts',
+    'index.js.map',
+    'service.test.js',
+    'service.test.d.ts',
+    'service.spec.js',
+    'asset.json',
+  ]) {
+    await writeFile(join(root, 'dist/main', name), 'fixture');
+  }
+  await pruneOwnedPayload(root);
+  await assert.rejects(access(join(root, '.data')), { code: 'ENOENT' });
+  for (const name of [
+    'index.d.ts',
+    'index.js.map',
+    'service.test.js',
+    'service.test.d.ts',
+    'service.spec.js',
+  ]) {
+    await assert.rejects(access(join(root, 'dist/main', name)), { code: 'ENOENT' });
+  }
+  for (const name of ['index.js', 'asset.json']) await access(join(root, 'dist/main', name));
+  await writeFile(join(root, 'package.json'), JSON.stringify({ name: 'third-party' }));
+  await writeFile(join(root, 'dist/main/vendor.test.js'), 'keep');
+  await pruneOwnedPayload(root);
+  await access(join(root, 'dist/main/vendor.test.js'));
+});
 
 test('release output must be a child of apps/desktop/release', () => {
   const root = resolve('D:/workspace/sync-think');
