@@ -48,7 +48,12 @@ export async function assembleBetaPublicPage({
 
   await mkdir(publicDir, { recursive: true });
   await writeFile(join(publicDir, 'index.html'), html, 'utf8');
-  await copyFile(join(TEMPLATE_DIR, 'BETA-TESTER-GUIDE.md'), join(publicDir, 'BETA-TESTER-GUIDE.md'));
+  const guide = await readFile(join(TEMPLATE_DIR, 'BETA-TESTER-GUIDE.md'), 'utf8');
+  await writeFile(
+    join(publicDir, 'BETA-TESTER-GUIDE.md'),
+    guide.replaceAll('{{VERSION}}', resolvedVersion).replaceAll('{{FILENAME}}', filename),
+    'utf8',
+  );
   await copyFile(installerPath, join(publicDir, filename));
 
   return {

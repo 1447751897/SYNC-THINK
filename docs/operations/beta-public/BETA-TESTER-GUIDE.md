@@ -1,6 +1,6 @@
 # SYNC-THINK 公开 Beta 测试说明
 
-版本：`0.1.0-beta.1`  
+版本：`{{VERSION}}`  
 平台：Windows 11 x64  
 签名：无（SmartScreen 会提醒）  
 自动更新：关闭，请从下载页手动取新包
@@ -8,11 +8,11 @@
 ## 1. 安装前
 
 1. 只要 Windows 11 x64。不要在 Windows 10 / ARM 上当正式环境。
-2. 下载 `SYNC-THINK-Setup-0.1.0-beta.1-x64.exe`。
+2. 下载 `{{FILENAME}}`。
 3. 用 PowerShell 核对哈希，必须与下载页一致：
 
 ```powershell
-Get-FileHash .\SYNC-THINK-Setup-0.1.0-beta.1-x64.exe -Algorithm SHA256
+Get-FileHash .\{{FILENAME}} -Algorithm SHA256
 ```
 
 4. 若哈希不一致，删除文件，不要安装。
@@ -50,7 +50,7 @@ Get-FileHash .\SYNC-THINK-Setup-0.1.0-beta.1-x64.exe -Algorithm SHA256
 
 导出脱敏诊断，附上：
 
-- 版本 `0.1.0-beta.1`
+- 版本 `{{VERSION}}`
 - 重现步骤
 - 是否改过 SmartScreen / 杀毒软件
 - 不要发送 API 密钥、数据库文件或完整 userData
