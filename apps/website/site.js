@@ -6,7 +6,7 @@ for (const link of document.querySelectorAll('.mobile-nav a')) {
   });
 }
 document.getElementById('copy-embed').addEventListener('click', async () => {
-  const snippet = `<iframe src="${location.origin}/demo" title="SYNC-THINK 工作台交互演示" width="100%" height="700" loading="lazy" sandbox="allow-scripts allow-same-origin" referrerpolicy="no-referrer" style="border:0"></iframe>`;
+  const snippet = `<iframe src="${location.origin}/demo.html" title="SYNC-THINK 工作台交互演示" width="100%" height="700" loading="lazy" sandbox="allow-scripts allow-same-origin" referrerpolicy="no-referrer" style="border:0"></iframe>`;
   const code = document.getElementById('embed-code');
   code.value = snippet;
   try {

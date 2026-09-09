@@ -67,6 +67,13 @@ jobs:
         run: |
           rsync -az --delete \
             --exclude downloads/ \
+            --exclude demo.html \
+            --exclude demo.js \
+            --exclude demo.css \
+            --exclude demo-build-manifest.json \
+            --exclude assets/chat-* \
+            --exclude assets/files/ \
+            --exclude assets/LICENSE-* \
             -e "ssh -i $HOME/.ssh/sync-think-deploy -o IdentitiesOnly=yes" \
             apps/website/dist/ "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/"
 
