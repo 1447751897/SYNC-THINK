@@ -30,6 +30,38 @@ const defaultScheduler: RuntimeRetryScheduler = {
   cancel: (handle) => globalThis.clearTimeout(handle as ReturnType<typeof setTimeout>),
 };
 
+/** Cold-start IPC often times out once; retry immediately, then once more. */
+export const TRANSIENT_RUNTIME_RETRY_DELAYS_MS = [0, 800] as const;
+
+export function isTransientRuntimeError(error: unknown): boolean {
+  const text = error instanceof Error ? error.message : String(error);
+  return /timed out|not connected|ECONNRESET|EPIPE|EADDRINUSE/i.test(text);
+}
+
+export async function retryTransientRuntime<T>(
+  run: () => Promise<T>,
+  options?: {
+    delaysMs?: readonly number[];
+    sleep?: (ms: number) => Promise<void>;
+  },
+): Promise<T> {
+  const delaysMs = options?.delaysMs ?? TRANSIENT_RUNTIME_RETRY_DELAYS_MS;
+  const sleep =
+    options?.sleep ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= delaysMs.length; attempt += 1) {
+    try {
+      return await run();
+    } catch (error) {
+      lastError = error;
+      if (!isTransientRuntimeError(error) || attempt === delaysMs.length) throw error;
+      const delayMs = delaysMs[attempt];
+      if (delayMs > 0) await sleep(delayMs);
+    }
+  }
+  throw lastError;
+}
+
 export function startRuntimeConnection(options: RuntimeConnectionOptions): () => void {
   const retryDelaysMs = options.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS;
   const scheduler = options.scheduler ?? defaultScheduler;

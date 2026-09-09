@@ -322,6 +322,7 @@ vi.mock('./image-compress.js', () => ({
 }));
 
 import { EmptyTalk, ShellApp } from './ShellApp.js';
+import { SHELL_BOOT_SNAPSHOT_KEY } from './shell-boot-snapshot.js';
 import {
   createWorkspacePaneLayout,
   focusPane,
@@ -443,6 +444,49 @@ async function openDirtySettings(): Promise<void> {
   expect(within(dialog).getByRole('button', { name: '完成' })).toBeTruthy();
 }
 
+describe('ShellApp boot snapshot', () => {
+  it('shows the persisted conversation list before runtime connect finishes', () => {
+    installRuntime();
+    runtime.connect.mockReturnValue(new Promise(() => undefined));
+    window.localStorage.setItem('sync-think.activeWorkspaceId', 'ws-a');
+    window.localStorage.setItem(
+      SHELL_BOOT_SNAPSHOT_KEY,
+      JSON.stringify({
+        conversations: [
+          {
+            id: 'conv-cached',
+            workspaceId: 'ws-a',
+            track: 'model',
+            targetRef: 'model-a',
+            title: '缓存对话',
+            executionMode: 'full-access',
+            createdAt: '2026-07-25T00:00:00.000Z',
+            updatedAt: '2026-07-25T00:00:00.000Z',
+          },
+        ],
+        agents: [],
+        teams: [],
+        modelNames: [],
+        models: [],
+        workspaces: [
+          {
+            workspaceId: 'ws-a',
+            name: 'A',
+            folderPath: 'D:\\a',
+            createdAt: '2026-07-25T00:00:00.000Z',
+            updatedAt: '2026-07-25T00:00:00.000Z',
+          },
+        ],
+        skills: [],
+      }),
+    );
+
+    render(<ShellApp />);
+    expect(screen.getByText('缓存对话')).toBeTruthy();
+    expect((sidebarProps.current as { bootState?: string } | undefined)?.bootState).toBe('ready');
+  });
+});
+
 describe('ShellApp abilities navigation', () => {
   it('renders the real ability stage instead of the placeholder', async () => {
     installRuntime();
@@ -450,6 +494,107 @@ describe('ShellApp abilities navigation', () => {
     fireEvent.click(screen.getByTestId('nav-abilities'));
     await waitFor(() => expect(screen.getByTestId('mock-abilities-page')).toBeTruthy());
     expect(screen.queryByText('能力 · 即将推出')).toBeNull();
+  });
+});
+
+describe('ShellApp surface keep-alive', () => {
+  it('keeps opened conversation views mounted when switching tabs in the same pane', async () => {
+    installRuntime();
+    runtime.listWorkspaces.mockResolvedValue({
+      workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }],
+    });
+    runtime.listConversations.mockResolvedValue({
+      conversations: [
+        {
+          id: 'conv-a',
+          workspaceId: 'ws-a',
+          track: 'model',
+          targetRef: 'model-a',
+          title: '对话 A',
+          executionMode: 'full-access',
+        },
+        {
+          id: 'conv-b',
+          workspaceId: 'ws-a',
+          track: 'model',
+          targetRef: 'model-a',
+          title: '对话 B',
+          executionMode: 'full-access',
+        },
+      ],
+    });
+    window.localStorage.setItem('sync-think.activeWorkspaceId', 'ws-a');
+    window.localStorage.setItem(
+      'sync-think.openConversationTabs',
+      JSON.stringify({ 'ws-a': ['conv-a', 'conv-b'] }),
+    );
+    window.localStorage.setItem(
+      'sync-think.selectedConversationByWorkspace',
+      JSON.stringify({ 'ws-a': 'conv-a' }),
+    );
+
+    render(<ShellApp />);
+    await waitFor(() => expect(screen.getAllByTestId('mock-chat-view')).toHaveLength(1));
+    const first = screen.getByTestId('mock-chat-view');
+    expect(first.getAttribute('data-conversation-id')).toBe('conv-a');
+
+    fireEvent.click(
+      within(screen.getByTestId('conversation-tab-conv-b')).getByRole('button', { name: '对话 B' }),
+    );
+    await waitFor(() => expect(screen.getAllByTestId('mock-chat-view')).toHaveLength(2));
+    expect(screen.getByTestId('pane-surface-conversation').getAttribute('data-active')).toBe(
+      'true',
+    );
+    expect(
+      screen
+        .getByTestId('pane-surface-conversation')
+        .querySelector('[data-conversation-id]')
+        ?.getAttribute('data-conversation-id'),
+    ).toBe('conv-b');
+    expect(
+      screen.getByTestId('pane-surface-conversation-conv-a').getAttribute('data-active'),
+    ).toBe('false');
+    expect(document.querySelector('[data-conversation-id="conv-a"]')).toBe(first);
+  });
+
+  it('keeps the talk stage mounted while visiting abilities', async () => {
+    installRuntime();
+    runtime.listWorkspaces.mockResolvedValue({
+      workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }],
+    });
+    runtime.listConversations.mockResolvedValue({
+      conversations: [
+        {
+          id: 'conv-a',
+          workspaceId: 'ws-a',
+          track: 'model',
+          targetRef: 'model-a',
+          title: '已有对话',
+          executionMode: 'full-access',
+        },
+      ],
+    });
+    window.localStorage.setItem('sync-think.activeWorkspaceId', 'ws-a');
+    window.localStorage.setItem(
+      'sync-think.openConversationTabs',
+      JSON.stringify({ 'ws-a': ['conv-a'] }),
+    );
+
+    render(<ShellApp />);
+    await waitFor(() => expect(screen.getByTestId('mock-chat-view')).toBeTruthy());
+    const chat = screen.getByTestId('mock-chat-view');
+
+    fireEvent.click(screen.getByTestId('nav-abilities'));
+    await waitFor(() => expect(screen.getByTestId('mock-abilities-page')).toBeTruthy());
+    expect(screen.getByTestId('stage-talk').getAttribute('data-active')).toBe('false');
+    expect(screen.getByTestId('mock-chat-view')).toBe(chat);
+
+    act(() => (sidebarProps.current?.onSelectStage as ((stage: string) => void) | undefined)?.('talk'));
+    await waitFor(() =>
+      expect(screen.getByTestId('stage-talk').getAttribute('data-active')).toBe('true'),
+    );
+    expect(screen.getByTestId('mock-chat-view')).toBe(chat);
+    expect(screen.getByTestId('stage-abilities').hasAttribute('hidden')).toBe(true);
   });
 });
 
@@ -1290,6 +1435,45 @@ describe('ShellApp workspace context', () => {
       direction: 'horizontal',
     });
     expect(paneConversationIds(stored.workspaces['ws-a'])).toEqual(['c1', 'c2']);
+  });
+
+  it('opens a NewMax PTY terminal without a bound project folder', async () => {
+    installRuntime();
+    runtime.listWorkspaces.mockResolvedValue({
+      workspaces: [{ workspaceId: 'ws-a', name: 'A' }],
+    });
+    runtime.listConversations.mockResolvedValue({
+      conversations: [
+        {
+          id: 'c1',
+          workspaceId: 'ws-a',
+          track: 'model',
+          targetRef: 'model-a',
+          title: 'C1',
+          executionMode: 'full-access',
+        },
+      ],
+    });
+    window.localStorage.setItem('sync-think.activeWorkspaceId', 'ws-a');
+    window.localStorage.setItem(
+      'sync-think.workspacePaneLayouts',
+      JSON.stringify({
+        version: 1,
+        workspaces: { 'ws-a': createWorkspacePaneLayout('ws-a', ['c1'], 'c1') },
+      }),
+    );
+
+    render(<ShellApp />);
+    await waitFor(() => expect(screen.getByTestId('mock-chat-view')).toBeTruthy());
+    act(() => (topBarProps.current?.onOpenTerminal as (() => void) | undefined)?.());
+    await waitFor(() => expect(screen.getByTestId('mock-terminal-pane')).toBeTruthy());
+    act(() => (topBarProps.current?.onToggleBottomWorkbench as (() => void) | undefined)?.());
+    await waitFor(() => {
+      const stored = JSON.parse(window.localStorage.getItem('sync-think.workspaceWorkbenchLayouts') ?? '{}');
+      const bottom = stored.workspaces?.['ws-a']?.bottom as { open?: boolean; tabs?: Array<{ type?: string }> };
+      expect(bottom?.open).toBe(true);
+      expect(bottom?.tabs?.some((tab) => tab.type === 'terminal')).toBe(true);
+    });
   });
 
   it('opens a terminal in the focused pane and persists only its cwd in the layout', async () => {

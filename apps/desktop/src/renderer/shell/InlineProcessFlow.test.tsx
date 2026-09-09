@@ -5,10 +5,17 @@
  * a compact expandable row, every tool call owns one row, and commentary or
  * status events keep their original positions.
  */
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import type { InlineProcessItem } from './ChatView.js';
 import { InlineProcessFlow } from './InlineProcessFlow.js';
+
+beforeAll(() => {
+  Object.defineProperty(HTMLCanvasElement.prototype, 'getContext', {
+    configurable: true,
+    value: () => null,
+  });
+});
 
 const reasoningItem: InlineProcessItem = {
   kind: 'reasoning',
@@ -1217,5 +1224,52 @@ describe('approval wait presentation', () => {
     } finally {
       cleanup();
     }
+  });
+
+  it('shows GridReveal while generate_image is running', () => {
+    render(
+      <InlineProcessFlow
+        items={[
+          {
+            kind: 'tool',
+            toolCallId: 'tool-image',
+            name: 'generate_image',
+            argumentsJson: '{"prompt":"湖边小屋"}',
+            status: 'running',
+          },
+        ]}
+        streaming
+        defaultOpen
+      />,
+    );
+    expect(screen.getByText('生成图片')).toBeTruthy();
+    expect(screen.getByText('湖边小屋')).toBeTruthy();
+    expect(screen.getByTestId('inline-process-grid-reveal')).toBeTruthy();
+    expect(screen.getByTestId('grid-reveal-caption').textContent).toBe('生成中');
+  });
+
+  it('shows GridReveal while capability-broker use_capability is generating an image', () => {
+    cleanup();
+    render(
+      <InlineProcessFlow
+        items={[
+          {
+            kind: 'tool',
+            toolCallId: 'tool-use-cap',
+            name: 'mcp__capability-broker__use_capability',
+            argumentsJson: JSON.stringify({
+              ref: 'cap_1',
+              arguments: { prompt: '海边灯塔' },
+            }),
+            status: 'running',
+          },
+        ]}
+        streaming
+        defaultOpen
+      />,
+    );
+    expect(screen.getByText('capability-broker · use capability')).toBeTruthy();
+    expect(screen.getByText('海边灯塔')).toBeTruthy();
+    expect(screen.getByTestId('inline-process-grid-reveal')).toBeTruthy();
   });
 });

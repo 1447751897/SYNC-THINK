@@ -5,9 +5,11 @@ import { FileDiff, ListTodo, X } from 'lucide-react';
 import type { RunProcessView } from '@sync-think/protocol';
 import {
   CodePreview,
+  UnifiedDiffPreview,
   actionLabel,
   fileName,
   isStatusOnlyPreview,
+  looksLikeUnifiedDiff,
 } from './ExecutionProcessBlock.js';
 
 export type RailTab = 'changes' | 'tasks';
@@ -145,7 +147,11 @@ export function RightRail({
                       </div>
                       <div className="shell-rail-editor__body min-h-0 flex-1 overflow-auto">
                         {!isStatusOnlyPreview(selected.preview) && selected.preview ? (
-                          <CodePreview text={selected.preview} path={selected.path} />
+                          looksLikeUnifiedDiff(selected.preview) ? (
+                            <UnifiedDiffPreview text={selected.preview} path={selected.path} />
+                          ) : (
+                            <CodePreview text={selected.preview} path={selected.path} />
+                          )
                         ) : (
                           <div className="px-4 py-6 text-[12px] text-text-faint">
                             {selected.preview || '暂无内容预览；完整 diff 将在后续增强'}

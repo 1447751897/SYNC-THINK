@@ -5,7 +5,7 @@ import { ChromeExtensionBridgeCard } from './ChromeExtensionBridgeCard.js';
 
 const connectionInfo = {
   bundledVersion: '1.1.4',
-  url: 'ws://127.0.0.1:17373/browser-extension/v1',
+  url: 'ws://127.0.0.1:17374/browser-extension/v1',
   token: 'pairing-token',
 };
 

@@ -1756,10 +1756,10 @@ describe('Runtime external kernel finalization', () => {
       expect(firstAdapter.requests[0].systemContext).toContain('Simplified Chinese');
       expect(firstAdapter.requests[0].systemContext).toContain('thinking/reasoning');
       expect(firstAdapter.requests[0].systemContext).toContain(
-        'AI design draft output contract (design-html)',
+        'AI design draft output contract (html)',
       );
       expect(firstAdapter.requests[0].systemContext).toContain(
-        'exactly one fenced block tagged `design-html`',
+        'exactly one fenced block tagged `html`',
       );
       const sessionRecord = appSettingStore
         .list()

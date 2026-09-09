@@ -758,12 +758,8 @@ export function TopBar(props: TopBarProps) {
         <button
           type="button"
           data-testid="topbar-open-terminal"
-          disabled={props.canOpenTerminal === false}
-          className={clsx(
-            'st-icon-motion flex h-7 w-7 shrink-0 items-center justify-center rounded-[10px] text-text-secondary hover:bg-hover hover:text-text',
-            props.canOpenTerminal === false && 'cursor-not-allowed opacity-35',
-          )}
-          title={props.canOpenTerminal === false ? '先绑定项目文件夹' : '在当前窗格打开终端'}
+          className="st-icon-motion flex h-7 w-7 shrink-0 items-center justify-center rounded-[10px] text-text-secondary hover:bg-hover hover:text-text"
+          title="在当前窗格打开终端"
           aria-label="在当前窗格打开终端"
           onClick={props.onOpenTerminal}
         >

@@ -33,6 +33,13 @@ import {
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { SlidingTabs } from './SlidingTabs.js';
+import { DsTabBar } from './DsTabBar.js';
+import {
+  detectProviderConnectionInput,
+  isLocalUrl,
+  type DetectedApiFormat,
+  type ProviderConnectionDetection,
+} from './detect-provider-connection.js';
 import {
   ArrowLeft,
   ArrowDown,
@@ -64,6 +71,7 @@ import {
   Trash2,
   Wrench,
   X,
+  Zap,
 } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import clsx from 'clsx';
@@ -83,6 +91,12 @@ import { BrandLogoMark } from './BrandLogoMark.js';
 import { resolveProviderBrandLogo, resolveProviderBrandLogoByName } from './brand-icons.js';
 import { useDialog } from './Dialog.js';
 import { REASONING_OPTIONS } from './compose-toolbar.js';
+import { retryTransientRuntime } from '../runtime-connection.js';
+import { ImageGenerationSettings } from './ImageGenerationSettings.js';
+import {
+  composeTextProviderOrder,
+  isTextGenerationProvider,
+} from './image-generation-providers.js';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -229,6 +243,70 @@ const MODEL_TABS: Array<{ id: ModelTab; label: string }> = [
   { id: 'recognition', label: '语音识别' },
   { id: 'usage', label: '使用统计' },
 ];
+
+const MEDIA_TAB_EMPTY: Record<
+  Exclude<ModelTab, 'text' | 'usage'>,
+  { description: string; empty: string }
+> = {
+  image: {
+    description:
+      '这里集中配置对话中“画一张 / 生成图片”会使用的生图模型。支持 Grok 订阅登录、OpenAI/兼容接口、Google Gemini/Imagen 和 DashScope 通义万象；ChatGPT/Codex 订阅登录暂不作为生图 API Key 使用。',
+    empty: '还没有配置过生图模型的提供商。可以点击「添加生图模型」，测试成功后会出现在左侧列表。',
+  },
+  video: {
+    description:
+      '用法：在对话里描述画面，如"生成一段海边日落的 5 秒视频"。AI 会调用 generate_video 工具提交任务并等待完成（通常 1~5 分钟）。',
+    empty:
+      '还没有配置过视频生成的供应商。可以点击「添加视频模型」，配置成功后会出现在左侧列表，AI 即可在对话中调用生成视频。',
+  },
+  voice: {
+    description:
+      '用法：直接在对话里说"把这段文案生成语音"。AI 会调用 generate_speech 工具，用默认供应商与音色合成 mp3 保存到工作区。',
+    empty:
+      '还没有配置过语音生成的供应商。可以点击「添加语音模型」，配置成功后会出现在左侧列表，AI 即可在对话中调用生成语音。',
+  },
+  recognition: {
+    description: '配置转录模型、凭证和接口地址',
+    empty:
+      '还没有配置过云端转录的供应商。可以点击「添加转录模型」，配置成功后语音输入和转录会走该云端渠道。',
+  },
+};
+
+const API_FORMAT_LABELS: Record<DetectedApiFormat, string> = {
+  openai: 'OpenAI 格式',
+  anthropic: 'Anthropic 格式',
+};
+
+function protocolFamilyOf(protocol: ProtocolFamily): DetectedApiFormat {
+  return protocol === 'anthropic-messages' ? 'anthropic' : 'openai';
+}
+
+function protocolFromDetection(
+  current: ProtocolFamily,
+  detection: ProviderConnectionDetection,
+): ProtocolFamily {
+  if (!detection.apiFormat) return current;
+  if (detection.apiFormat === 'anthropic') return 'anthropic-messages';
+  if (detection.forceResponsesApi === true) return 'openai-responses';
+  if (detection.forceResponsesApi === false) return 'openai-chat';
+  return current === 'openai-responses' ? 'openai-responses' : 'openai-chat';
+}
+
+function isConfiguredProvider(provider: ProviderSummary): boolean {
+  if (provider.credentials.length > 0) return true;
+  if (isLocalUrl(provider.baseUrl)) return provider.enabled !== false;
+  return false;
+}
+
+function connectionHintText(detection: ProviderConnectionDetection | null): string {
+  if (detection?.apiFormat) {
+    return `已根据地址识别为 ${API_FORMAT_LABELS[detection.apiFormat]}；仍可在下方手动修改。`;
+  }
+  if (detection?.normalized) {
+    return '已自动整理 API Base URL，并保留当前 API 格式。';
+  }
+  return '请从服务商接入文档复制 Base URL 或完整请求地址，离开输入框后会自动识别并整理。';
+}
 
 const PROVIDER_CATALOG_CATEGORIES: Array<{
   id: ProviderCatalogCategory;
@@ -720,6 +798,8 @@ function parsePlanAct(raw: unknown): PlanActSetting {
 export interface ModelSettingsHandle {
   /** Complete gate: stage secrets → test connection → true only when ready to close. */
   complete(): Promise<boolean>;
+  /** Open the provider catalog without leaving the settings page. */
+  startCreate(): void;
 }
 
 export type ModelSettingsDetailView =
@@ -750,7 +830,10 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
   const toastTimer = useRef<number | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [lastSelectedId, setLastSelectedId] = useState<string | null>(null);
-  const [disabledOpen, setDisabledOpen] = useState(false);
+  const [disabledMenuOpen, setDisabledMenuOpen] = useState(false);
+  const [disabledActionMenuOpen, setDisabledActionMenuOpen] = useState(false);
+  const disabledMenuTriggerRef = useRef<HTMLButtonElement>(null);
+  const disabledActionTriggerRef = useRef<HTMLElement>(null);
   const [activeProviderId, setActiveProviderId] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [createStep, setCreateStep] = useState<CreateProviderStep>('catalog');
@@ -787,7 +870,11 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
     setShowCreate(false);
     setDetailView(initialDetailView);
   }, [initialDetailView, navigationKey]);
-  const selectedProvider = providers.find((provider) => provider.providerId === selectedId) ?? null;
+  const selectedProvider =
+    providers.find(
+      (provider) =>
+        provider.providerId === selectedId && isTextGenerationProvider(provider),
+    ) ?? null;
   const selected = selectedProvider
     ? {
         ...selectedProvider,
@@ -841,20 +928,23 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
     setLoading(true);
     setError(null);
     try {
-      const [listed, settings] = await Promise.all([
-        api.listProviders({}),
-        api.getSettings?.({
-          keys: ['vision-fallback', 'plan-act', 'model-config-cloud-sync'],
-        }) ?? Promise.resolve({ settings: {} as Record<string, unknown> }),
-      ]);
+      const [listed, settings] = await retryTransientRuntime(() =>
+        Promise.all([
+          api.listProviders({}),
+          api.getSettings?.({
+            keys: ['vision-fallback', 'plan-act', 'model-config-cloud-sync'],
+          }) ?? Promise.resolve({ settings: {} as Record<string, unknown> }),
+        ]),
+      );
       const next = [...listed.providers].sort((a, b) => a.sortOrder - b.sortOrder);
       setProviders(next);
       setVisionFallback(parseVisionFallback(settings.settings?.['vision-fallback']));
       setPlanAct(parsePlanAct(settings.settings?.['plan-act']));
       setModelConfigCloudSync(settings.settings?.['model-config-cloud-sync'] === true);
       setSelectedId((prev) => {
-        if (prev && next.some((p) => p.providerId === prev)) return prev;
-        return next[0]?.providerId ?? null;
+        const text = next.filter(isTextGenerationProvider);
+        if (prev && text.some((p) => p.providerId === prev)) return prev;
+        return text[0]?.providerId ?? null;
       });
     } catch (e) {
       setError(e instanceof Error ? e.message : '加载模型源失败');
@@ -866,6 +956,14 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
   useEffect(() => {
     void load();
   }, [load]);
+
+  const previousModelTab = useRef(modelTab);
+  useEffect(() => {
+    const previous = previousModelTab.current;
+    previousModelTab.current = modelTab;
+    if (modelTab !== 'text' || previous === 'text') return;
+    void load();
+  }, [load, modelTab]);
 
   const withBusy = useCallback(
     async (
@@ -898,8 +996,8 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
     [onCatalogChanged, showToast],
   );
 
-  const handleCreate = () =>
-    void withBusy({ kind: 'create-provider', label: '正在创建供应商…' }, async () => {
+  const handleCreate = (action: 'discover' | 'test' = 'discover') =>
+    void withBusy({ kind: 'create-provider', label: '测试中...' }, async () => {
       const api = bridge();
       if (!api?.createProvider) throw new Error('Runtime 未连接');
       const name = createDraft.name.trim();
@@ -913,25 +1011,50 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
       if (!usesCustomEndpoint && (!baseUrl || baseUrl === 'https://')) {
         throw new Error('该服务商模板尚未配置连接地址');
       }
-      if (!apiKey) throw new Error('请填写 API Key，并先复制到剪贴板');
+      if (!apiKey) throw new Error('请填写 API 密钥');
       await navigator.clipboard.writeText(apiKey);
       const result = await api.createProvider({
         name,
         baseUrl,
         protocol: createDraft.protocol,
-        supportsDiscovery: createDraft.supportsDiscovery,
+        supportsDiscovery: true,
+        ...(createTemplate?.id === 'custom' ? { discoverOnCreate: false } : {}),
       });
+      if (createTemplate?.id === 'custom' && api.discoverModels) {
+        try {
+          const discoveredResult = await api.discoverModels({
+            providerId: result.provider.providerId as never,
+            persist: false,
+          });
+          const discovered = discoveredResult.discoveredIds.map((id) => ({
+            providerModelId: id,
+            displayName: id,
+            alreadyAdded: false,
+          }));
+          if (action === 'discover') {
+            setImportDialog({
+              providerId: result.provider.providerId,
+              protocol: (result.provider.protocol as ProtocolFamily) || createDraft.protocol,
+              discovered,
+              selectedIds: [],
+              query: '',
+              applying: false,
+            });
+          } else {
+            showToast('success', `连接成功 · 发现 ${discovered.length} 个模型`);
+          }
+        } catch (error) {
+          showToast('error', error instanceof Error ? error.message : '拉取模型失败，可稍后手动添加');
+        }
+      }
       setCreateDraft(EMPTY_CREATE);
       setShowCreate(false);
       setCreateStep('catalog');
       setCreateTemplate(null);
       setSelectedId(result.provider.providerId);
       setLastSelectedId(result.provider.providerId);
+      setDetailView('provider');
       await load();
-      showToast(
-        'success',
-        `已创建 ${result.provider.name} · 发现 ${result.discoveredModelCount} 个模型`,
-      );
     });
 
   const restoreProviderSelection = useCallback(() => {
@@ -1047,11 +1170,11 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
     async (orderedEnabled: ProviderSummary[], previousProviders = providers) => {
       const api = bridge();
       if (!api?.reorderProviders) throw new Error('Runtime 未连接');
-      const disabled = previousProviders.filter((provider) => !provider.enabled);
       await api.reorderProviders({
-        orderedProviderIds: [...orderedEnabled, ...disabled].map(
-          (provider) => provider.providerId as never,
-        ),
+        orderedProviderIds: composeTextProviderOrder({
+          all: previousProviders,
+          nextEnabledTextIds: orderedEnabled.map((provider) => provider.providerId),
+        }) as never,
       });
     },
     [providers],
@@ -1070,12 +1193,18 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
     if (!overId || activeId === overId || providerListBusy) return;
 
     const previous = providers;
-    const enabled = previous.filter((provider) => provider.enabled);
+    const enabled = previous.filter(
+      (provider) => provider.enabled && isTextGenerationProvider(provider),
+    );
     const oldIndex = enabled.findIndex((provider) => provider.providerId === activeId);
     const newIndex = enabled.findIndex((provider) => provider.providerId === overId);
     if (oldIndex < 0 || newIndex < 0) return;
     const nextEnabled = arrayMove(enabled, oldIndex, newIndex);
-    const nextProviders = [...nextEnabled, ...previous.filter((provider) => !provider.enabled)];
+    const nextProviders = [
+      ...nextEnabled,
+      ...previous.filter((provider) => isTextGenerationProvider(provider) && !provider.enabled),
+      ...previous.filter((provider) => !isTextGenerationProvider(provider)),
+    ];
     setProviders(nextProviders);
     void withBusy(
       { kind: 'reorder-provider', targetId: activeId, label: '正在保存模型顺序…' },
@@ -1102,7 +1231,8 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
         nextProviders.find((item) => item.enabled)?.providerId ?? provider.providerId;
       setSelectedId(nextSelected);
     }
-    if (enabled) setDisabledOpen(true);
+    setDisabledMenuOpen(false);
+    setDisabledActionMenuOpen(false);
     void withBusy(
       {
         kind: 'toggle-provider',
@@ -1123,6 +1253,70 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
       },
       `${provider.name} 已${enabled ? '启用' : '停用'}`,
     );
+  };
+
+  const wipeProviderCredentials = async (provider: ProviderSummary) => {
+    const api = bridge();
+    if (!api?.removeProviderCredential || !api.updateProvider) throw new Error('Runtime 未连接');
+    for (const credential of provider.credentials) {
+      await api.removeProviderCredential({
+        providerId: provider.providerId as never,
+        credentialRefId: credential.credentialRefId as never,
+      });
+    }
+    await api.updateProvider({ providerId: provider.providerId, enabled: false });
+  };
+
+  const handleRemoveProvider = (provider: ProviderSummary) => {
+    const previous = providers;
+    const remaining = previous.filter((item) => item.providerId !== provider.providerId);
+    setProviders(remaining);
+    if (selectedId === provider.providerId) {
+      setSelectedId(remaining.find((item) => item.enabled)?.providerId ?? remaining[0]?.providerId ?? null);
+    }
+    setDisabledMenuOpen(false);
+    setDisabledActionMenuOpen(false);
+    void withBusy(
+      { kind: 'toggle-provider', targetId: provider.providerId, label: '正在移除…' },
+      async () => {
+        try {
+          await wipeProviderCredentials(provider);
+          await load();
+        } catch (error) {
+          setProviders(previous);
+          setSelectedId(provider.providerId);
+          throw error;
+        }
+      },
+    );
+  };
+
+  const handleEnableAllDisabled = () => {
+    const targets = providers.filter((item) => !item.enabled);
+    if (targets.length === 0) return;
+    setDisabledMenuOpen(false);
+    setDisabledActionMenuOpen(false);
+    void withBusy({ kind: 'toggle-provider', label: '正在启用…' }, async () => {
+      const api = bridge();
+      if (!api?.updateProvider) throw new Error('Runtime 未连接');
+      for (const provider of targets) {
+        await api.updateProvider({ providerId: provider.providerId, enabled: true });
+      }
+      await load();
+    });
+  };
+
+  const handleClearDisabled = () => {
+    const targets = providers.filter((item) => !item.enabled);
+    if (targets.length === 0) return;
+    setDisabledMenuOpen(false);
+    setDisabledActionMenuOpen(false);
+    void withBusy({ kind: 'toggle-provider', label: '正在清空…' }, async () => {
+      for (const provider of targets) {
+        await wipeProviderCredentials(provider);
+      }
+      await load();
+    });
   };
 
   const handleUpdateProvider = useCallback(
@@ -1709,8 +1903,7 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
     (Boolean(createDraft.name.trim()) ||
       createDraft.baseUrl !== EMPTY_CREATE.baseUrl ||
       createDraft.protocol !== EMPTY_CREATE.protocol ||
-      Boolean(createDraft.apiKey.trim()) ||
-      createDraft.supportsDiscovery !== EMPTY_CREATE.supportsDiscovery);
+      Boolean(createDraft.apiKey.trim()));
   const [detailDraftDirty, setDetailDraftDirty] = useState(false);
   /** credentialRefId → staged plaintext secret (not yet written to secure-store). */
   const [stagedSecrets, setStagedSecrets] = useState<Record<string, string>>({});
@@ -1824,19 +2017,25 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
     ref,
     () => ({
       complete: completeSettings,
+      startCreate: openCreateCatalog,
     }),
-    [completeSettings],
+    [completeSettings, openCreateCatalog],
   );
 
-  const confirmDiscardChanges = useCallback(async (): Promise<boolean> => {
-    if (!hasTransientDraft) return true;
-    return dialog.confirm({
-      title: '放弃未提交的修改',
-      message: '当前有未提交的模型配置草稿，确认放弃并继续吗？',
-      confirmText: '放弃',
-      danger: false,
-    });
-  }, [hasTransientDraft, dialog]);
+  useEffect(() => {
+    if (!disabledMenuOpen && !disabledActionMenuOpen) return;
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (disabledMenuTriggerRef.current?.contains(target)) return;
+      if (disabledActionTriggerRef.current?.contains(target)) return;
+      const root = disabledMenuTriggerRef.current?.closest('.model-disabled-list');
+      if (root?.contains(target)) return;
+      setDisabledMenuOpen(false);
+      setDisabledActionMenuOpen(false);
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    return () => document.removeEventListener('pointerdown', onPointerDown);
+  }, [disabledMenuOpen, disabledActionMenuOpen]);
 
   if (loading) {
     return (
@@ -1846,44 +2045,41 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
     );
   }
 
-  const enabledProviders = providers.filter((provider) => provider.enabled);
-  const disabledProviders = providers.filter((provider) => !provider.enabled);
+  const listedProviders = providers.filter(
+    (provider) => isConfiguredProvider(provider) && isTextGenerationProvider(provider),
+  );
+  const enabledProviders = listedProviders.filter((provider) => provider.enabled);
+  const disabledProviders = listedProviders.filter((provider) => !provider.enabled);
+  const mediaCopy =
+    modelTab !== 'text' && modelTab !== 'usage' && modelTab !== 'image'
+      ? MEDIA_TAB_EMPTY[modelTab]
+      : null;
 
   return (
     <div className="model-settings-root flex h-full min-h-0 flex-col">
       <div className="model-settings-tabs">
-        <SlidingTabs className="model-settings-tabs__rail" aria-label="模型类型">
-          {MODEL_TABS.map(({ id, label }) => (
-            <button
-              key={id}
-              type="button"
-              role="tab"
-              aria-selected={modelTab === id}
-              className={modelTab === id ? 'is-active' : undefined}
-              onClick={() => {
-                void confirmDiscardChanges().then((ok) => {
-                  if (ok) setModelTab(id);
-                });
-              }}
-            >
-              {label}
-            </button>
-          ))}
-        </SlidingTabs>
-        <span className="model-settings-guide">
-          如果配置遇到问题，可以查阅<span>配置指南</span>。
-        </span>
+        <DsTabBar
+          className="model-settings-tabs__rail"
+          aria-label="模型类型"
+          value={modelTab}
+          onChange={(value) => setModelTab(value as ModelTab)}
+          items={MODEL_TABS.map(({ id, label }) => ({ value: id, label }))}
+        />
+        {modelTab === 'text' || modelTab === 'image' ? (
+          <span className="model-settings-guide">
+            如果配置遇到问题，可以查阅<span>配置指南</span>。
+          </span>
+        ) : null}
       </div>
 
       {modelTab === 'usage' ? (
         <UsageSettings />
-      ) : modelTab !== 'text' ? (
+      ) : modelTab === 'image' ? (
+        <ImageGenerationSettings onCatalogChanged={onCatalogChanged} />
+      ) : mediaCopy ? (
         <div key={modelTab} className="model-settings-tab-panel model-settings-unavailable">
-          <p>
-            {MODEL_TABS.find((tab) => tab.id === modelTab)?.label ?? '模型'}
-            模型配置尚未接入。
-          </p>
-          <span>入口按 SYNC-THINK 的模型设置结构保留。</span>
+          <p>{mediaCopy.description}</p>
+          <span>{mediaCopy.empty}</span>
         </div>
       ) : (
         <>
@@ -1907,10 +2103,7 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
                   title="添加模型"
                   disabled={operation?.kind === 'create-provider'}
                   onClick={() => {
-                    void confirmDiscardChanges().then((ok) => {
-                      if (!ok) return;
-                      openCreateCatalog();
-                    });
+                    openCreateCatalog();
                   }}
                 >
                   <Plus size={15} />
@@ -1918,13 +2111,7 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
               </div>
 
               <div className="model-enabled-list__body">
-                {providers.length === 0 ? (
-                  <div className="model-settings-empty-list">
-                    <Server size={22} />
-                    <p>尚未配置模型</p>
-                    <span>点击右上角 + 添加</span>
-                  </div>
-                ) : (
+                {enabledProviders.length === 0 ? null : (
                   <DndContext
                     sensors={sensors}
                     collisionDetection={closestCenter}
@@ -1949,15 +2136,14 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
                             }
                             busy={providerListBusy}
                             onSelect={() => {
-                              void confirmDiscardChanges().then((ok) => {
-                                if (!ok) return;
-                                setShowCreate(false);
-                                setDetailView('provider');
-                                setSelectedId(provider.providerId);
-                                setLastSelectedId(provider.providerId);
-                              });
+                              setShowCreate(false);
+                              resetCreateState();
+                              setDetailView('provider');
+                              setSelectedId(provider.providerId);
+                              setLastSelectedId(provider.providerId);
                             }}
                             onDisable={() => handleToggleEnabled(provider, false)}
+                            onRemove={() => handleRemoveProvider(provider)}
                           />
                         ))}
                       </ul>
@@ -1991,78 +2177,96 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
                   className={clsx('model-enabled-list__add', showCreate && 'is-active')}
                   disabled={operation?.kind === 'create-provider'}
                   onClick={() => {
-                    void confirmDiscardChanges().then((ok) => {
-                      if (!ok) return;
-                      openCreateCatalog();
-                    });
+                    openCreateCatalog();
                   }}
                 >
                   <Plus size={13} /> 添加模型
                 </button>
-                <div
-                  className={clsx(
-                    'model-disabled-list',
-                    disabledOpen && 'is-open',
-                    disabledProviders.length === 0 && 'is-empty',
-                  )}
-                >
-                  <div className="model-disabled-list__head">
+                {disabledProviders.length > 0 ? (
+                  <div className="model-disabled-list">
                     <button
+                      ref={disabledMenuTriggerRef}
                       type="button"
-                      className="model-disabled-list__summary"
-                      onClick={() => setDisabledOpen((value) => !value)}
-                      aria-expanded={disabledOpen}
-                      disabled={disabledProviders.length === 0}
+                      className={clsx(
+                        'model-disabled-list__trigger',
+                        (disabledMenuOpen || disabledActionMenuOpen) && 'is-active',
+                      )}
+                      aria-expanded={disabledMenuOpen}
+                      data-testid="model-settings-disabled-menu-trigger"
+                      onClick={() => {
+                        setDisabledMenuOpen((open) => !open);
+                        setDisabledActionMenuOpen(false);
+                      }}
                     >
-                      <span>已停用模型 {disabledProviders.length}</span>
+                      <span>已停用模型</span>
+                      <span className="model-disabled-list__count">{disabledProviders.length}</span>
+                      <span className="model-disabled-list__menu-wrap">
+                        <span
+                          ref={disabledActionTriggerRef}
+                          role="button"
+                          tabIndex={0}
+                          className="model-disabled-list__menu-trigger"
+                          aria-label="已停用模型操作"
+                          data-testid="model-settings-disabled-action-menu-trigger"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setDisabledActionMenuOpen((open) => !open);
+                            setDisabledMenuOpen(false);
+                          }}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter' || event.key === ' ') {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              setDisabledActionMenuOpen((open) => !open);
+                              setDisabledMenuOpen(false);
+                            }
+                          }}
+                        >
+                          <MoreHorizontal size={14} />
+                        </span>
+                      </span>
                     </button>
-                  </div>
-                  <div className="model-disabled-list__body" aria-hidden={!disabledOpen}>
-                    <ul>
-                      {disabledProviders.map((provider) => {
-                        const primaryModel = [...provider.models].sort(
-                          (a, b) => a.priority - b.priority,
-                        )[0];
-                        return (
-                          <li
+                    {disabledActionMenuOpen ? (
+                      <div className="model-disabled-list__menu" role="menu">
+                        <button type="button" role="menuitem" onClick={handleEnableAllDisabled}>
+                          启用全部
+                        </button>
+                        <button type="button" role="menuitem" onClick={handleClearDisabled}>
+                          清空
+                        </button>
+                      </div>
+                    ) : null}
+                    {disabledMenuOpen ? (
+                      <div
+                        className="model-disabled-list__popover"
+                        data-testid="model-settings-disabled-menu-list"
+                      >
+                        {disabledProviders.map((provider) => (
+                          <DisabledProviderRow
                             key={provider.providerId}
-                            className={clsx(
-                              'model-enabled-row is-disabled',
+                            provider={provider}
+                            active={
                               detailView === 'provider' &&
-                                provider.providerId === selectedId &&
-                                !showCreate &&
-                                'is-active',
-                            )}
-                          >
-                            <ProviderRowAvatar provider={provider} />
-                            <button
-                              type="button"
-                              className="model-enabled-row__main"
-                              onClick={() => {
-                                setShowCreate(false);
-                                setSelectedId(provider.providerId);
-                                setLastSelectedId(provider.providerId);
-                              }}
-                            >
-                              <span className="model-enabled-row__copy">
-                                <span>{provider.name}</span>
-                                <small>{primaryModel?.displayName ?? '未添加模型'}</small>
-                              </span>
-                            </button>
-                            <button
-                              type="button"
-                              className="model-disabled-list__enable"
-                              disabled={providerListBusy}
-                              onClick={() => handleToggleEnabled(provider, true)}
-                            >
-                              启用
-                            </button>
-                          </li>
-                        );
-                      })}
-                    </ul>
+                              provider.providerId === selectedId &&
+                              !showCreate
+                            }
+                            busy={providerListBusy}
+                            onSelect={() => {
+                              setDisabledMenuOpen(false);
+                              setShowCreate(false);
+                              resetCreateState();
+                              setDetailView('provider');
+                              setSelectedId(provider.providerId);
+                              setLastSelectedId(provider.providerId);
+                            }}
+                            onEnable={() => handleToggleEnabled(provider, true)}
+                            onRemove={() => handleRemoveProvider(provider)}
+                          />
+                        ))}
+                      </div>
+                    ) : null}
                   </div>
-                </div>
+                ) : null}
               </div>
 
               <div className="model-enabled-list__secondary">
@@ -2071,11 +2275,9 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
                   className={detailView === 'vision' ? 'is-active' : undefined}
                   aria-pressed={detailView === 'vision'}
                   onClick={() => {
-                    void confirmDiscardChanges().then((ok) => {
-                      if (!ok) return;
-                      setShowCreate(false);
-                      setDetailView('vision');
-                    });
+                    setShowCreate(false);
+                    resetCreateState();
+                    setDetailView('vision');
                   }}
                 >
                   <Image size={13} />
@@ -2087,11 +2289,9 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
                   aria-pressed={detailView === 'plan-act'}
                   data-testid="model-strategy-plan-act"
                   onClick={() => {
-                    void confirmDiscardChanges().then((ok) => {
-                      if (!ok) return;
-                      setShowCreate(false);
-                      setDetailView('plan-act');
-                    });
+                    setShowCreate(false);
+                    resetCreateState();
+                    setDetailView('plan-act');
                   }}
                 >
                   <Sparkles size={13} />
@@ -2103,11 +2303,9 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
                   aria-pressed={detailView === 'cloud-sync'}
                   data-testid="model-strategy-cloud-sync"
                   onClick={() => {
-                    void confirmDiscardChanges().then((ok) => {
-                      if (!ok) return;
-                      setShowCreate(false);
-                      setDetailView('cloud-sync');
-                    });
+                    setShowCreate(false);
+                    resetCreateState();
+                    setDetailView('cloud-sync');
                   }}
                 >
                   <Cloud size={13} />
@@ -2179,14 +2377,14 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
                       template={createTemplate ?? undefined}
                       busy={operation?.kind === 'create-provider'}
                       onChange={setCreateDraft}
-                      onSubmit={handleCreate}
+                      onDiscover={() => handleCreate('discover')}
+                      onTest={() => handleCreate('test')}
                       onBackToCatalog={() => {
                         setCreateStep('catalog');
                         setCreateDraft(EMPTY_CREATE);
                         setCreateTemplate(null);
                         setError(null);
                       }}
-                      onCancel={cancelCreateFlow}
                     />
                   )
                 ) : detailView === 'vision' ? (
@@ -2291,23 +2489,17 @@ function ProviderCatalog({
   const items = PROVIDER_CATALOG[category];
   return (
     <section className="model-provider-catalog" aria-label="添加模型">
-      <SlidingTabs className="model-provider-catalog__tabs" aria-label="模型服务商分类">
-        {PROVIDER_CATALOG_CATEGORIES.map((item) => (
-          <button
-            key={item.id}
-            type="button"
-            role="tab"
-            aria-selected={category === item.id}
-            className={clsx(
-              'model-provider-catalog__tab',
-              category === item.id && 'model-provider-catalog__tab--active',
-            )}
-            onClick={() => onCategoryChange(item.id)}
-          >
-            {item.label}
-          </button>
-        ))}
-      </SlidingTabs>
+      <DsTabBar
+        className="model-provider-catalog__tabs"
+        aria-label="模型服务商分类"
+        stretch
+        value={category}
+        onChange={onCategoryChange}
+        items={PROVIDER_CATALOG_CATEGORIES.map((item) => ({
+          value: item.id,
+          label: item.label,
+        }))}
+      />
 
       <div className="model-provider-catalog__grid" role="tabpanel">
         {items.map((item) => {
@@ -2463,8 +2655,15 @@ function CcSwitchImportPanel({
   return (
     <section className="model-cc-switch" aria-labelledby="model-cc-switch-title">
       <header className="model-provider-form__header">
-        <button type="button" aria-label="返回服务商目录" onClick={onBack} disabled={importing}>
-          <ArrowLeft size={16} />
+        <button
+          type="button"
+          className="model-provider-form__back"
+          aria-label="返回列表"
+          onClick={onBack}
+          disabled={importing}
+        >
+          <ArrowLeft size={12} />
+          返回列表
         </button>
         <div>
           <h2 id="model-cc-switch-title">从 CC Switch 导入</h2>
@@ -2608,104 +2807,138 @@ function CreateProviderForm({
   template,
   busy,
   onChange,
-  onSubmit,
+  onDiscover,
+  onTest,
   onBackToCatalog,
-  onCancel,
 }: {
   draft: CreateDraft;
   template?: ProviderCatalogItem;
   busy: boolean;
   onChange: (d: CreateDraft) => void;
-  onSubmit: () => void;
+  onDiscover: () => void;
+  onTest: () => void;
   onBackToCatalog: () => void;
-  onCancel: () => void;
 }) {
   const isCustomEndpoint = template?.endpointMode === 'custom';
-  const templateLabel = template?.name;
+  const isCustomProvider = template?.id === 'custom';
+  const [apiFormatManual, setApiFormatManual] = useState(false);
+  const [connectionDetection, setConnectionDetection] = useState<ProviderConnectionDetection | null>(
+    null,
+  );
+  const title = isCustomProvider
+    ? '自定义供应商'
+    : (template?.name ?? draft.name.trim() ?? '自定义供应商');
+
   return (
-    <section className="model-provider-form" aria-labelledby="model-provider-form-title">
-      <header className="model-provider-form__header">
-        <button type="button" aria-label="返回服务商目录" onClick={onBackToCatalog} disabled={busy}>
-          <ArrowLeft size={16} />
-        </button>
-        <div className="model-provider-form__identity">
-          {template ? (
-            <ProviderBrandIcon
-              providerId={template.id}
-              providerName={template.name}
-              testIdPrefix="provider-form-icon"
-            />
-          ) : null}
-          <div>
-            <h2 id="model-provider-form-title">添加模型源</h2>
-            <p>{templateLabel ? `正在配置 ${templateLabel}` : '填写供应商连接信息'}</p>
+    <div className="model-provider-form-wrap">
+      <button
+        type="button"
+        className="model-provider-form__back"
+        aria-label="返回列表"
+        onClick={onBackToCatalog}
+        disabled={busy}
+      >
+        <ArrowLeft size={12} />
+        返回列表
+      </button>
+      <section className="model-provider-form" aria-labelledby="model-provider-form-title">
+        <header className="model-provider-form__header">
+          <div className="model-provider-form__identity">
+            {template ? (
+              <ProviderBrandIcon
+                providerId={template.id}
+                providerName={template.name}
+                testIdPrefix="provider-form-icon"
+              />
+            ) : null}
+            <h2 id="model-provider-form-title">{title}</h2>
           </div>
-        </div>
-        <button type="button" aria-label="取消添加模型源" onClick={onCancel} disabled={busy}>
-          <X size={16} />
-        </button>
-      </header>
-      <div className="model-provider-form__body">
-        <Field label="名称">
-          <input
-            className="st-field-input"
-            value={draft.name}
-            placeholder="例如 New API / OpenAI / Claude"
-            disabled={busy}
-            onChange={(e) => onChange({ ...draft, name: e.target.value })}
-          />
-        </Field>
-        {isCustomEndpoint ? (
-          <Field label="Base URL">
+        </header>
+        <div className="model-provider-form__body">
+          <Field label="供应商名称">
             <input
-              className="st-field-input font-mono text-[12.5px]"
-              data-testid="provider-base-url"
-              value={draft.baseUrl}
-              placeholder="https://api.openai.com/v1"
+              className="st-field-input"
+              value={draft.name}
+              placeholder="例如 New API / OpenAI / Claude"
               disabled={busy}
-              onChange={(e) => onChange({ ...draft, baseUrl: e.target.value })}
+              onChange={(e) => onChange({ ...draft, name: e.target.value })}
             />
           </Field>
-        ) : (
-          <div className="model-provider-form__builtin-endpoint">
-            <Server size={15} aria-hidden="true" />
-            <span>连接地址已由 {templateLabel ?? '服务商'} 模板内置</span>
+          {isCustomEndpoint ? (
+            <Field label="API 地址（自定义服务）">
+              <input
+                className="st-field-input font-mono text-[12.5px]"
+                data-testid="provider-base-url"
+                value={draft.baseUrl}
+                placeholder="https://api.example.com/v1"
+                disabled={busy}
+                onChange={(e) => {
+                  setConnectionDetection(null);
+                  onChange({ ...draft, baseUrl: e.target.value });
+                }}
+                onBlur={() => {
+                  const detection = detectProviderConnectionInput(draft.baseUrl);
+                  const nextProtocol = apiFormatManual
+                    ? draft.protocol
+                    : protocolFromDetection(draft.protocol, detection);
+                  if (detection.baseUrl !== draft.baseUrl || nextProtocol !== draft.protocol) {
+                    onChange({
+                      ...draft,
+                      baseUrl: detection.baseUrl,
+                      protocol: nextProtocol,
+                    });
+                  }
+                  setConnectionDetection(
+                    detection.apiFormat || detection.normalized ? detection : null,
+                  );
+                }}
+              />
+              <span className="model-field-helper" data-testid="custom-provider-connection-hint">
+                {connectionHintText(connectionDetection)}
+              </span>
+            </Field>
+          ) : null}
+          <Field label="API 格式">
+            <ProtocolSelector
+              protocol={draft.protocol}
+              disabled={busy}
+              onChange={(protocol) => {
+                setApiFormatManual(true);
+                setConnectionDetection(null);
+                onChange({ ...draft, protocol });
+              }}
+            />
+          </Field>
+          <Field label="API 密钥">
+            <SecretInput
+              value={draft.apiKey}
+              placeholder="输入 API 密钥"
+              disabled={busy}
+              onChange={(apiKey) => onChange({ ...draft, apiKey })}
+            />
+          </Field>
+          <div className="model-provider-form__actions">
+            <button
+              type="button"
+              className="is-primary is-full"
+              disabled={busy}
+              onClick={onDiscover}
+            >
+              {busy ? <Loader2 size={14} className="animate-spin" /> : <Zap size={14} />}
+              {busy ? '正在拉取…' : '从服务商拉取模型列表'}
+            </button>
+            <button
+              type="button"
+              className="model-provider-form__secondary-action"
+              disabled={busy}
+              onClick={onTest}
+            >
+              <Plug size={14} /> 测试连接
+            </button>
           </div>
-        )}
-        <Field label="API 格式">
-          <ProtocolSelector
-            protocol={draft.protocol}
-            disabled={busy}
-            onChange={(protocol) => onChange({ ...draft, protocol })}
-          />
-        </Field>
-        <Field label="API Key">
-          <SecretInput
-            value={draft.apiKey}
-            placeholder="sk-…"
-            disabled={busy}
-            onChange={(apiKey) => onChange({ ...draft, apiKey })}
-          />
-        </Field>
-        <label className="flex items-center gap-2 text-[12.5px] text-text-secondary">
-          <input
-            type="checkbox"
-            checked={draft.supportsDiscovery}
-            disabled={busy}
-            onChange={(e) => onChange({ ...draft, supportsDiscovery: e.target.checked })}
-          />
-          创建后自动发现模型（/models）
-        </label>
-        <div className="model-provider-form__actions">
-          <button type="button" className="is-primary" disabled={busy} onClick={onSubmit}>
-            {busy ? <Loader2 size={14} className="animate-spin" /> : '创建并保存'}
-          </button>
-          <button type="button" disabled={busy} onClick={onCancel}>
-            取消
-          </button>
         </div>
-      </div>
-    </section>
+      </section>
+    </div>
   );
 }
 
@@ -2743,6 +2976,7 @@ function SortableProviderRow({
   busy,
   onSelect,
   onDisable,
+  onRemove,
 }: {
   provider: ProviderSummary;
   index: number;
@@ -2750,8 +2984,10 @@ function SortableProviderRow({
   busy: boolean;
   onSelect(): void;
   onDisable(): void;
+  onRemove(): void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [deleteConfirm, setDeleteConfirm] = useState(false);
   useEffect(() => {
     if (!menuOpen) return;
     const handlePointerDown = (event: PointerEvent) => {
@@ -2822,7 +3058,10 @@ function SortableProviderRow({
           aria-label={`${provider.name} 更多操作`}
           aria-expanded={menuOpen}
           disabled={busy}
-          onClick={() => setMenuOpen((value) => !value)}
+          onClick={() => {
+            setMenuOpen((value) => !value);
+            setDeleteConfirm(false);
+          }}
         >
           <MoreHorizontal size={15} />
         </button>
@@ -2834,6 +3073,7 @@ function SortableProviderRow({
               if (event.key === 'Escape') {
                 event.preventDefault();
                 setMenuOpen(false);
+                setDeleteConfirm(false);
               }
             }}
           >
@@ -2842,26 +3082,122 @@ function SortableProviderRow({
               role="menuitem"
               onClick={() => {
                 setMenuOpen(false);
-                onSelect();
+                setDeleteConfirm(false);
+                onDisable();
               }}
             >
-              编辑配置
+              停用
             </button>
             <button
               type="button"
               role="menuitem"
               className="is-danger"
               onClick={() => {
-                setMenuOpen(false);
-                onDisable();
+                if (deleteConfirm) {
+                  setMenuOpen(false);
+                  setDeleteConfirm(false);
+                  onRemove();
+                  return;
+                }
+                setDeleteConfirm(true);
               }}
             >
-              停用模型源
+              {deleteConfirm ? '确认' : '移除'}
             </button>
           </div>
         ) : null}
       </div>
     </li>
+  );
+}
+
+function DisabledProviderRow({
+  provider,
+  active,
+  busy,
+  onSelect,
+  onEnable,
+  onRemove,
+}: {
+  provider: ProviderSummary;
+  active: boolean;
+  busy: boolean;
+  onSelect(): void;
+  onEnable(): void;
+  onRemove(): void;
+}) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [deleteConfirm, setDeleteConfirm] = useState(false);
+  const primaryModel = providerPrimaryModel(provider);
+  useEffect(() => {
+    if (!menuOpen) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      if (
+        !(event.target instanceof Element) ||
+        !event.target.closest('.model-disabled-row__menu-wrap')
+      ) {
+        setMenuOpen(false);
+        setDeleteConfirm(false);
+      }
+    };
+    window.addEventListener('pointerdown', handlePointerDown);
+    return () => window.removeEventListener('pointerdown', handlePointerDown);
+  }, [menuOpen]);
+  return (
+    <div className={clsx('model-disabled-row', active && 'is-active')}>
+      <button type="button" className="model-disabled-row__main" onClick={onSelect}>
+        <ProviderRowAvatar provider={provider} />
+        <span className="model-enabled-row__copy">
+          <span>{provider.name}</span>
+          <small>{primaryModel?.displayName ?? '未添加模型'}</small>
+        </span>
+      </button>
+      <div className="model-disabled-row__menu-wrap">
+        <button
+          type="button"
+          className="model-enabled-row__menu-trigger"
+          aria-label={`${provider.name} 更多操作`}
+          aria-expanded={menuOpen}
+          disabled={busy}
+          onClick={() => {
+            setMenuOpen((value) => !value);
+            setDeleteConfirm(false);
+          }}
+        >
+          <MoreHorizontal size={14} />
+        </button>
+        {menuOpen ? (
+          <div className="model-disabled-row__menu" role="menu">
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setMenuOpen(false);
+                onEnable();
+              }}
+            >
+              启用
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              className="is-danger"
+              onClick={() => {
+                if (deleteConfirm) {
+                  setMenuOpen(false);
+                  setDeleteConfirm(false);
+                  onRemove();
+                  return;
+                }
+                setDeleteConfirm(true);
+              }}
+            >
+              {deleteConfirm ? '确认' : '移除'}
+            </button>
+          </div>
+        ) : null}
+      </div>
+    </div>
   );
 }
 
@@ -2893,31 +3229,26 @@ function ProtocolSelector({
   disabled?: boolean;
   onChange(protocol: ProtocolFamily): void;
 }) {
-  const family = protocol === 'anthropic-messages' ? 'anthropic' : 'openai';
+  const family = protocolFamilyOf(protocol);
   return (
     <div className="model-protocol-control">
-      <div className="model-protocol-segment" role="radiogroup" aria-label="API 格式">
-        <button
-          type="button"
-          role="radio"
-          aria-checked={family === 'openai'}
-          className={family === 'openai' ? 'is-active' : undefined}
-          disabled={disabled}
-          onClick={() => onChange(protocol === 'openai-responses' ? protocol : 'openai-chat')}
-        >
-          OpenAI 格式
-        </button>
-        <button
-          type="button"
-          role="radio"
-          aria-checked={family === 'anthropic'}
-          className={family === 'anthropic' ? 'is-active' : undefined}
-          disabled={disabled}
-          onClick={() => onChange('anthropic-messages')}
-        >
-          Anthropic 格式
-        </button>
-      </div>
+      <DsTabBar
+        aria-label="API 格式"
+        stretch
+        value={family}
+        onChange={(next) => {
+          if (disabled) return;
+          if (next === 'anthropic') {
+            onChange('anthropic-messages');
+            return;
+          }
+          onChange(protocol === 'openai-responses' ? protocol : 'openai-chat');
+        }}
+        items={[
+          { value: 'openai', label: 'OpenAI 格式', disabled },
+          { value: 'anthropic', label: 'Anthropic 格式', disabled },
+        ]}
+      />
       <div className={clsx('model-responses-row', family !== 'openai' && 'is-hidden')}>
         <div>
           <strong>使用 Responses API</strong>
@@ -3051,6 +3382,10 @@ function ProviderDetail({
   );
   const [nameError, setNameError] = useState<string | null>(null);
   const [baseUrlError, setBaseUrlError] = useState<string | null>(null);
+  const [apiFormatManual, setApiFormatManual] = useState(false);
+  const [connectionDetection, setConnectionDetection] = useState<ProviderConnectionDetection | null>(
+    null,
+  );
   const [savingField, setSavingField] = useState<'name' | 'baseUrl' | 'protocol' | null>(null);
   const [newKey, setNewKey] = useState('');
   const [addingKey, setAddingKey] = useState(false);
@@ -3085,6 +3420,8 @@ function ProviderDetail({
   useEffect(() => {
     setNameError(null);
     setBaseUrlError(null);
+    setApiFormatManual(false);
+    setConnectionDetection(null);
     setNewKey('');
     setAddingKey(false);
     setAddingModel(false);
@@ -3101,29 +3438,56 @@ function ProviderDetail({
 
   const saveTextField = async (field: 'name' | 'baseUrl', rawValue?: string) => {
     // Prefer the live input value: blur can fire before React re-renders the draft state.
-    const value = (rawValue ?? (field === 'name' ? nameDraft : baseUrlDraft)).trim();
-    const original = field === 'name' ? provider.name : provider.baseUrl;
-    const setError = field === 'name' ? setNameError : setBaseUrlError;
-    if (field === 'name') setNameDraft(value);
-    else setBaseUrlDraft(value);
-    if (!value || (field === 'baseUrl' && value === 'https://')) {
-      setError(field === 'name' ? '供应商名称不能为空' : 'API Base URL 不能为空');
+    const raw = rawValue ?? (field === 'name' ? nameDraft : baseUrlDraft);
+    if (field === 'name') {
+      const value = raw.trim();
+      setNameDraft(value);
+      if (!value) {
+        setNameError('供应商名称不能为空');
+        return;
+      }
+      setNameError(null);
+      if (value === provider.name) return;
+      setSavingField('name');
+      const saved = await onUpdateProvider(provider.providerId, { name: value });
+      setSavingField(null);
+      if (!saved) setNameDraft(provider.name);
       return;
     }
-    setError(null);
-    if (value === original) return;
-    setSavingField(field);
-    const saved = await onUpdateProvider(provider.providerId, { [field]: value });
+
+    const detection = detectProviderConnectionInput(raw);
+    const nextUrl = detection.baseUrl;
+    const nextProtocol = apiFormatManual
+      ? protocolDraft
+      : protocolFromDetection(protocolDraft, detection);
+    setBaseUrlDraft(nextUrl);
+    setConnectionDetection(detection.apiFormat || detection.normalized ? detection : null);
+    if (!nextUrl || nextUrl === 'https://') {
+      setBaseUrlError('API Base URL 不能为空');
+      return;
+    }
+    setBaseUrlError(null);
+    const urlChanged = nextUrl !== provider.baseUrl;
+    const protocolChanged = nextProtocol !== provider.protocol;
+    if (!urlChanged && !protocolChanged) return;
+    if (protocolChanged) setProtocolDraft(nextProtocol);
+    setSavingField('baseUrl');
+    const saved = await onUpdateProvider(provider.providerId, {
+      ...(urlChanged ? { baseUrl: nextUrl } : {}),
+      ...(protocolChanged ? { protocol: nextProtocol } : {}),
+    });
     setSavingField(null);
     if (!saved) {
-      if (field === 'name') setNameDraft(original);
-      else setBaseUrlDraft(original);
+      setBaseUrlDraft(provider.baseUrl);
+      setProtocolDraft(provider.protocol as ProtocolFamily);
     }
   };
 
   const saveProtocol = async (protocol: ProtocolFamily) => {
     if (protocol === protocolDraft) return;
     const previous = protocolDraft;
+    setApiFormatManual(true);
+    setConnectionDetection(null);
     setProtocolDraft(protocol);
     setSavingField('protocol');
     const saved = await onUpdateProvider(provider.providerId, { protocol });
@@ -3163,7 +3527,10 @@ function ProviderDetail({
               value={baseUrlDraft}
               aria-invalid={Boolean(baseUrlError)}
               aria-label="API Base URL"
-              onChange={(event) => setBaseUrlDraft(event.target.value)}
+              onChange={(event) => {
+                setConnectionDetection(null);
+                setBaseUrlDraft(event.target.value);
+              }}
               onBlur={(event) => void saveTextField('baseUrl', event.currentTarget.value)}
             />
             {savingField === 'baseUrl' ? (
@@ -3171,8 +3538,8 @@ function ProviderDetail({
             ) : null}
           </div>
           {baseUrlError ? <span className="model-field-error">{baseUrlError}</span> : null}
-          <span className="model-field-helper">
-            请从服务商接入文档复制 Base URL 或完整请求地址，离开输入框后会自动识别并整理。
+          <span className="model-field-helper" data-testid="custom-provider-connection-hint">
+            {connectionHintText(connectionDetection)}
           </span>
         </Field>
         <Field label="API 格式">
@@ -5596,13 +5963,12 @@ function EmptyDetail({ onAdd }: { onAdd: () => void }) {
   return (
     <div className="flex flex-col items-center justify-center gap-3 border-b border-border px-6 py-16 text-center">
       <Server size={28} className="text-text-faint" />
-      <p className="text-[13px] text-text-secondary">选择左侧供应商，或添加新的模型源</p>
       <button
         type="button"
         className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-2 text-[12.5px] font-medium text-[var(--color-accent-fg)] hover:opacity-90"
         onClick={onAdd}
       >
-        <Plus size={14} /> 添加模型源
+        <Plus size={14} /> 添加模型
       </button>
     </div>
   );

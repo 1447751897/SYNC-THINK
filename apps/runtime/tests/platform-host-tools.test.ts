@@ -49,12 +49,15 @@ describe('host platform tool channel', () => {
       'agent_list',
       'ask_user_question',
       'describe_image',
+      'generate_image',
       'goal_manage',
       'ocr_image',
       'plan_submit',
       'platform_context',
+      'search_capability',
       'task_list',
       'task_schedule',
+      'use_capability',
     ]);
   });
 
@@ -69,6 +72,9 @@ describe('host platform tool channel', () => {
     expect(isHostAutoApprovedMcpTool('mcp__platform__agent_list')).toBe(true);
     expect(isHostAutoApprovedMcpTool('mcp__windows-ocr__ocr_image')).toBe(true);
     expect(isHostAutoApprovedMcpTool('mcp__vision-fallback__describe_image')).toBe(true);
+    expect(isHostAutoApprovedMcpTool('mcp__capability-broker__search_capability')).toBe(true);
+    expect(isHostAutoApprovedMcpTool('mcp__capability-broker__use_capability')).toBe(true);
+    expect(isHostAutoApprovedMcpTool('mcp__image-generation__generate_image')).toBe(true);
     // Side-effecting / workspace tools keep their approval cards.
     expect(isHostAutoApprovedMcpTool('mcp__platform__file_write')).toBe(false);
     expect(isHostAutoApprovedMcpTool('mcp__task-board__TaskCreate')).toBe(false);

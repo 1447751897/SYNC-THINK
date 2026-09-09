@@ -31,7 +31,7 @@ function expectInlineContract(prompt: string): void {
   expect(prompt).toContain('standalone line outside Markdown fences');
   expect(prompt).toContain('Only emit the directive when a project folder is bound and the file write succeeded');
   expect(prompt).toContain('at or below 2 MiB');
-  expect(prompt).toContain('distinct from `design-html` and `excalidraw`');
+  expect(prompt).toContain('distinct from in-message `html` fences and `excalidraw`');
   expect(prompt).not.toContain('emit `::newmax-inline-vis` before');
 }
 

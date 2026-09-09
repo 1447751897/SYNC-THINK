@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { type CommandSessionStore, type CommandSessionStart } from './command-sessions.js';
 import type { ProviderMessage, ProviderToolCall, ProviderToolSchema } from '@sync-think/adapters';
 import type {
   BrowserAutomationTaskSummary,
@@ -21,6 +22,10 @@ import {
   parseGetBrowserWorkflowPayload,
   parseListBrowserWorkflowsPayload,
 } from './validation/browser-workflow.js';
+import { DESCRIBE_IMAGE_TOOL_NAME } from './describe-image-tool.js';
+import { GENERATE_IMAGE_TOOL_NAME } from './generate-image-tool.js';
+import { SEARCH_CAPABILITY_TOOL_NAME, USE_CAPABILITY_TOOL_NAME } from './capability-broker.js';
+import { WINDOWS_OCR_TOOL_NAME } from './windows-ocr.js';
 
 export {
   CHAT_DESKTOP_MUTATING_TOOL_NAMES,
@@ -115,7 +120,7 @@ export const CHAT_BUILT_IN_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
   {
     name: 'run_command',
     description:
-      'Run one non-interactive executable without a shell in the bound project folder. Process exit does not verify a visible GUI window; use desktop_launch_app when Computer Use is enabled to open desktop applications.',
+      'Run one non-interactive executable without a shell in the bound project folder. Waits up to waitMs (default 10000), then returns a sessionId if still running. A running result is not completion or failure. Use read_command to wait and collect output; use background=true for servers/watchers and verify readiness separately. No execution deadline unless timeoutMs is supplied. Use desktop_launch_app to open GUI applications.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -124,7 +129,34 @@ export const CHAT_BUILT_IN_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
         command: { type: 'string' },
         args: { type: 'array', items: { type: 'string' }, maxItems: 128 },
         cwd: { type: 'string' },
+        waitMs: { type: 'integer', minimum: 0, maximum: 30_000, description: 'Time to wait for this response, independent of process lifetime.' },
+        timeoutMs: { type: 'integer', minimum: 1, maximum: 2_147_483_647, description: 'Optional total execution deadline; omit for no deadline.' },
+        background: { type: 'boolean', description: 'Return a session immediately for a long-lived command. Check its output/readiness before using it.' },
       },
+    },
+  },
+  {
+    name: 'read_command',
+    description: 'Wait for an existing command and collect new stdout/stderr. A running status is normal for silent work or sleep. Reuse the same sessionId; do not relaunch the command. Sessions belong to this conversation and survive turns until process exit, cancellation, or Runtime shutdown.',
+    inputSchema: {
+      type: 'object', additionalProperties: false, required: ['sessionId'],
+      properties: {
+        sessionId: { type: 'string' },
+        waitMs: { type: 'integer', minimum: 0, maximum: 30_000, description: 'Defaults to 30000. Zero reads current output without waiting.' },
+      },
+    },
+  },
+  {
+    name: 'list_commands',
+    description: 'List running and recently finished commands in this conversation, including their sessionId and status. Use after a turn boundary to find an existing server or long task.',
+    inputSchema: { type: 'object', additionalProperties: false, properties: {} },
+  },
+  {
+    name: 'stop_command',
+    description: 'Stop one command session owned by this conversation, including its child processes. Use when the command is no longer needed or the user requests cancellation.',
+    inputSchema: {
+      type: 'object', additionalProperties: false, required: ['sessionId'],
+      properties: { sessionId: { type: 'string' } },
     },
   },
   {
@@ -1638,6 +1670,12 @@ export const HOST_PLATFORM_ALWAYS_ALLOWED_TOOLS: ReadonlySet<string> = new Set([
   'goal_manage',
   'task_list',
   'agent_list',
+  'task_schedule',
+  DESCRIBE_IMAGE_TOOL_NAME,
+  GENERATE_IMAGE_TOOL_NAME,
+  SEARCH_CAPABILITY_TOOL_NAME,
+  USE_CAPABILITY_TOOL_NAME,
+  WINDOWS_OCR_TOOL_NAME,
 ]);
 
 /** Hard block (not used for ask anymore — ask waits for approval). */
@@ -2619,6 +2657,9 @@ async function captureWriteSnapshot(
 
 export async function executeChatBuiltInTool(input: {
   workspaceRoot?: string;
+  threadId?: string;
+  runId?: string;
+  commandSessions?: CommandSessionStore;
   toolCall: ProviderToolCall;
   signal?: AbortSignal;
   networkEnabled?: boolean;
@@ -2713,6 +2754,26 @@ export async function executeChatBuiltInTool(input: {
   };
 
   try {
+    if (input.commandSessions && input.threadId) {
+      const scope = { threadId: input.threadId, workspaceRoot };
+      if (input.toolCall.name === 'run_command') {
+        return JSON.stringify(await input.commandSessions.start(scope, parseCommandStart(args), {
+          runId: input.runId ?? input.threadId, callId: input.toolCall.id, signal: input.signal,
+        }));
+      }
+      if (input.toolCall.name === 'list_commands') {
+        return JSON.stringify({ ok: true, sessions: input.commandSessions.list(scope) });
+      }
+      if (input.toolCall.name === 'read_command' || input.toolCall.name === 'stop_command') {
+        if (typeof args.sessionId !== 'string' || !args.sessionId) throw new Error('sessionId is required');
+        if (input.toolCall.name === 'stop_command') {
+          const session = await input.commandSessions.stop(scope, args.sessionId);
+          return JSON.stringify({ ok: true, session });
+        }
+        if (args.waitMs !== undefined && typeof args.waitMs !== 'number') throw new Error('waitMs must be a number');
+        return JSON.stringify(await input.commandSessions.read(scope, args.sessionId, args.waitMs, input.signal));
+      }
+    }
     let events: AsyncIterable<WorkerEvent>;
     switch (input.toolCall.name) {
       case 'read_file':
@@ -2777,19 +2838,18 @@ export async function executeChatBuiltInTool(input: {
         );
         break;
       case 'run_command': {
-        const command = String(args.command ?? '');
-        const commandArgs = Array.isArray(args.args) ? args.args.map(String) : [];
+        const action = parseCommandStart(args);
+        if (action.background || action.waitMs !== undefined) {
+          throw new Error('Command session host is required for background execution or bounded waits');
+        }
+        const command = action.command;
         // Do NOT pre-block by basename (rg/fd/…). Try real execution first so
         // absolute paths and installed tools work. ENOENT is handled below with
         // a recovery hint via toolResultMeta / loop guard.
-        events = new TerminalProcessWorker().exec(
+        events = new TerminalProcessWorker({ timeoutMs: action.timeoutMs }).exec(
           {
             workingDir: workspaceRoot,
-            action: {
-              command,
-              args: commandArgs,
-              cwd: typeof args.cwd === 'string' ? args.cwd : undefined,
-            },
+            action,
           },
           { ...token, allowedCommands: [command] },
         );
@@ -2828,6 +2888,30 @@ export async function executeChatBuiltInTool(input: {
       error: error instanceof Error ? error.message : 'Tool execution failed',
     });
   }
+}
+
+function parseCommandStart(args: Record<string, unknown>): CommandSessionStart {
+  if (typeof args.command !== 'string' || !args.command.trim()) throw new Error('command is required');
+  if (args.args !== undefined && (!Array.isArray(args.args) || !args.args.every((arg) => typeof arg === 'string'))) {
+    throw new Error('args must be an array of strings');
+  }
+  if (args.cwd !== undefined && typeof args.cwd !== 'string') throw new Error('cwd must be a string');
+  if (args.background !== undefined && typeof args.background !== 'boolean') throw new Error('background must be a boolean');
+  for (const field of ['waitMs', 'timeoutMs'] as const) {
+    const value = args[field];
+    if (value !== undefined && (typeof value !== 'number' || !Number.isSafeInteger(value) ||
+      value < (field === 'waitMs' ? 0 : 1) || value > (field === 'waitMs' ? 30_000 : 2_147_483_647))) {
+      throw new Error(`Invalid ${field}`);
+    }
+  }
+  return {
+    command: args.command,
+    args: Array.isArray(args.args) ? args.args.map(String) : undefined,
+    cwd: args.cwd,
+    background: args.background,
+    waitMs: typeof args.waitMs === 'number' ? args.waitMs : undefined,
+    timeoutMs: typeof args.timeoutMs === 'number' ? args.timeoutMs : undefined,
+  };
 }
 
 const WEB_FETCH_TIMEOUT_MS = 30_000;
@@ -3219,7 +3303,7 @@ export interface ToolLoopGuardInput {
   toolLoopRound: number;
   maxToolRounds: number;
   /** JSON result strings from the just-finished tool batch. */
-  completedResults: readonly { toolCallId: string; content: string }[];
+  completedResults: readonly { toolCallId: string; content: string; pendingCommand?: boolean }[];
   /** Fingerprints already seen in earlier rounds (mutated by caller via return). */
   seenFingerprints?: ReadonlySet<string>;
   /** Consecutive no-progress rounds before this batch. */
@@ -3309,6 +3393,7 @@ export function evaluateToolLoopGuard(input: ToolLoopGuardInput): ToolLoopGuardR
   let newFingerprints = 0;
 
   for (const item of input.completedResults) {
+    if (item.pendingCommand) continue;
     const meta = toolResultMeta(item.content);
     if (!meta.ok) failedCount += 1;
     if (meta.unavailable) unavailableCount += 1;
@@ -3318,13 +3403,17 @@ export function evaluateToolLoopGuard(input: ToolLoopGuardInput): ToolLoopGuardR
     }
   }
 
-  const batchSize = input.completedResults.length;
+  const batchSize = input.completedResults.filter((item) => !item.pendingCommand).length;
   const allFailed = batchSize > 0 && failedCount === batchSize;
   const prevStagnant = Math.max(0, input.stagnantRounds ?? 0);
   // A batch with no new fingerprints (or all failures of already-seen kinds) is stagnant.
   const batchStagnant =
     batchSize > 0 && (newFingerprints === 0 || (allFailed && newFingerprints <= 1));
   const stagnantRounds = batchStagnant ? prevStagnant + 1 : 0;
+
+  if (batchSize === 0 && input.completedResults.some((item) => item.pendingCommand)) {
+    return { kind: 'continue', seenFingerprints: seen, stagnantRounds: 0, failedCount, unavailableCount };
+  }
 
   if (input.toolLoopRound >= maxToolRounds) {
     return {

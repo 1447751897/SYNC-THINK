@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
+  applyConversationStickOnScroll,
   buildMessageOffsets,
   calculateMessageWindow,
   inferNativeScrollIntent,
+  isConversationNearBottom,
   preservePrependScrollTop,
   resolveBottomPinState,
   shouldFollowConversationContentResize,
+  shouldReleaseStickOnWheel,
   shouldRestorePrependAnchor,
   MESSAGE_WINDOW_ESTIMATED_HEIGHT,
 } from './message-window.js';
@@ -131,6 +134,51 @@ describe('message windowing', () => {
     expect(
       inferNativeScrollIntent({ previousScrollTop: 420, nextScrollTop: 420.2 }),
     ).toBeNull();
+  });
+
+  it('keeps the tail pin when html/mermaid layout clamps scrollTop while still at the bottom', () => {
+    expect(
+      applyConversationStickOnScroll({
+        sticky: true,
+        programmaticPending: false,
+        previousScrollTop: 300,
+        scrollTop: 220,
+        scrollHeight: 820,
+        clientHeight: 600,
+      }),
+    ).toEqual({ sticky: true, programmaticPending: false });
+    expect(
+      isConversationNearBottom({ scrollTop: 220, scrollHeight: 820, clientHeight: 600 }),
+    ).toBe(true);
+  });
+
+  it('keeps the tail pin across a programmatic write that has not landed yet', () => {
+    expect(
+      applyConversationStickOnScroll({
+        sticky: true,
+        programmaticPending: true,
+        previousScrollTop: 300,
+        scrollTop: 40,
+        scrollHeight: 2000,
+        clientHeight: 600,
+      }),
+    ).toEqual({ sticky: true, programmaticPending: false });
+  });
+
+  it('releases the tail pin only after the reader has left the bottom', () => {
+    expect(
+      applyConversationStickOnScroll({
+        sticky: true,
+        programmaticPending: false,
+        previousScrollTop: 300,
+        scrollTop: 40,
+        scrollHeight: 2000,
+        clientHeight: 600,
+      }),
+    ).toEqual({ sticky: false, programmaticPending: false });
+    expect(shouldReleaseStickOnWheel({ deltaY: -30, nearBottom: true })).toBe(false);
+    expect(shouldReleaseStickOnWheel({ deltaY: -30, nearBottom: false })).toBe(true);
+    expect(shouldReleaseStickOnWheel({ deltaY: 40, nearBottom: false })).toBe(false);
   });
 
   it('cancels stale prepend restoration after the user keeps scrolling', () => {

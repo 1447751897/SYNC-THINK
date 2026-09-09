@@ -45,7 +45,7 @@ describe('process page controls', () => {
       .mockResolvedValueOnce({ process: second })
       .mockResolvedValueOnce({ process: first });
     render(<FileChangesCard view={first} />);
-    expect(screen.getByText('已更改 3 个文件')).toBeTruthy();
+    expect(screen.getByText('编辑了 3 个文件')).toBeTruthy();
     expect(read).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: '下一页文件' }));
     await screen.findByText('second.txt');

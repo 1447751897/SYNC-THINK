@@ -71,6 +71,11 @@ import {
 import { ProjectContentSearchRegistry, searchProjectContent } from './project-content-search.js';
 import { parseProjectTerminalCommand, resolveProjectTerminalCwd } from './project-terminal.js';
 import {
+  killAllPtys,
+  killWindowPtys,
+  registerPtyTerminalHandlers,
+} from './pty-service.js';
+import {
   ProjectTerminalRegistry,
   type ProjectTerminalReservation,
 } from './project-terminal-registry.js';
@@ -624,6 +629,24 @@ const projectContentSearchRegistry = new ProjectContentSearchRegistry();
 const localWebPageRegistries = new Map<string, LocalWebPageRegistry>();
 const DEFAULT_LOCAL_WEB_PARTITION = 'persist:browser-panel';
 
+/**
+ * Partition prefix that marks an interactive HTML / design-draft preview guest.
+ * Mirrors NewMax (`newmax-visualization-<random>`): the renderer creates a
+ * throwaway in-memory partition per preview component, and the main process is
+ * the only place that turns that name into a preload. A guest page cannot
+ * choose its own partition, so the prefix is a host-controlled capability
+ * rather than page-controlled input.
+ */
+const VISUALIZATION_PARTITION_PREFIX = 'sync-think-visualization-';
+const VISUALIZATION_PARTITION_RE = new RegExp(
+  `^${VISUALIZATION_PARTITION_PREFIX}[a-z0-9-]{1,96}$`,
+  'i',
+);
+
+function isVisualizationPartition(value: unknown): boolean {
+  return typeof value === 'string' && VISUALIZATION_PARTITION_RE.test(value);
+}
+
 function localWebPagePersistencePath(partition: string): string {
   // Partition names contain `:` on purpose, so encode them instead of using
   // them directly as Windows file names. A fixed-size digest also keeps the
@@ -960,6 +983,29 @@ function createWindow(): void {
     webPreferences.nodeIntegration = false;
     webPreferences.contextIsolation = true;
     webPreferences.sandbox = true;
+    // Interactive HTML / design-draft previews get the guest measurement
+    // preload, exactly like NewMax's `newmax-visualization-*` partition. Every
+    // other webview (embedded browser tabs, local project pages) keeps its
+    // preload deleted. Both conditions must hold: the host-chosen partition
+    // prefix and a local data: document, so the prefix alone cannot grant a
+    // preload to a remote page. The sandbox/isolation settings above still
+    // apply to the guest.
+    const attachSrc = String(params.src ?? '');
+    if (isVisualizationPartition(params.partition)) {
+      if (/^data:text\/html(;|,)/i.test(attachSrc)) {
+        (webPreferences as { preload?: string }).preload = path.join(
+          __dirname,
+          '../preload/visualization.cjs',
+        );
+      } else {
+        // Loud on purpose: a preview without the measurement preload silently
+        // stays at its initial height, which is hard to diagnose from the UI.
+        console.warn(
+          '[desktop] visualization partition without a data: document; preload not attached',
+          attachSrc.slice(0, 64),
+        );
+      }
+    }
     const src = String(params.src ?? '');
     if (new RegExp(`^${LOCAL_WEB_PAGE_SCHEME}://[^/]+/`, 'i').test(src)) {
       try {
@@ -1009,6 +1055,7 @@ function createWindow(): void {
     });
   });
   window.once('ready-to-show', () => window.show());
+  window.on('closed', () => killWindowPtys(window.id));
   const load = parsedDevServerUrl
     ? window.loadURL(parsedDevServerUrl.href)
     : window.loadFile(rendererPath);
@@ -1180,7 +1227,7 @@ async function streamProjectTerminalCommand(
   args: string[],
 ): Promise<void> {
   try {
-    const events = new TerminalProcessWorker().exec(
+    const events = new TerminalProcessWorker({ timeoutMs: null, streamAllOutput: true }).exec(
       {
         workingDir: command.root,
         action: {
@@ -3927,6 +3974,8 @@ function setupRuntimeBridge(): void {
     }
   });
 
+  registerPtyTerminalHandlers(ipcMain, { assertSource: assertRuntimeIpcSource });
+
   ipcMain.handle('desktop:start-project-terminal', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
     if (value === null || typeof value !== 'object' || Array.isArray(value)) {
@@ -4340,6 +4389,33 @@ void app
             },
           });
         }
+        if (url.hostname === 'generated') {
+          const raw = decodeURIComponent(url.pathname.replace(/^\//, ''));
+          const absolute = path.resolve(raw);
+          const normalized = absolute.split(path.sep).join('/');
+          const ext = path.extname(absolute).toLowerCase();
+          const mime =
+            ext === '.jpg' || ext === '.jpeg'
+              ? 'image/jpeg'
+              : ext === '.webp'
+                ? 'image/webp'
+                : ext === '.png'
+                  ? 'image/png'
+                  : null;
+          if (
+            !normalized.includes('/.sync-think/generated-images/') ||
+            !mime ||
+            !fs.existsSync(absolute)
+          ) {
+            return new Response('Not found', { status: 404 });
+          }
+          return new Response(new Uint8Array(fs.readFileSync(absolute)), {
+            headers: {
+              'Content-Type': mime,
+              'Cache-Control': 'private, max-age=31536000, immutable',
+            },
+          });
+        }
         if (url.hostname === 'artifact') {
           const token = decodeURIComponent(url.pathname.replace(/^\//, ''));
           if (!token || token.includes('/')) {
@@ -4444,6 +4520,7 @@ function shutdownDesktopServices(reason: DesktopShutdownReason = 'desktop-exit')
   const plan = planDesktopShutdown(reason);
   projectContentSearchRegistry.abortAll();
   abortAllProjectTerminals();
+  killAllPtys();
   for (const subscription of projectFileWatchSubscriptions.values()) subscription.dispose();
   projectFileWatchSubscriptions.clear();
   runtimeClient?.disconnect();

@@ -33,6 +33,7 @@ export * from './task-plan.js';
 export * from './plan-markdown.js';
 export * from './deferred-content.js';
 export * from './file-diff.js';
+export * from './platform.js';
 
 export * from './kernel-execution.js';
 

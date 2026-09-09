@@ -17,10 +17,12 @@ describe('provider-payloads', () => {
       baseUrl: ' https://api.example/v1 ',
       protocol: 'openai-chat',
       supportsDiscovery: true,
+      discoverOnCreate: false,
     });
     expect(payload.name).toBe('Gateway');
     expect(payload.baseUrl).toBe('https://api.example/v1');
     expect(payload).not.toHaveProperty('apiKey');
+    expect(payload.discoverOnCreate).toBe(false);
     expect(() => parseCreateProviderPayload({ ...payload, apiKey: 'not-accepted' })).toThrow(
       /Invalid create-provider/,
     );

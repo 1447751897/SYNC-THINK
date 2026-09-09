@@ -25,11 +25,14 @@
   --color-elevated: #f6f4ef;
   --color-overlay: #ffffff;
 
-  /* Stage sub-surfaces. NewMax keeps the stage and tab strip on surface-200, raises active tabs to surface-300, and reserves surface-400 for selected rows and inset sections. */
+  /* Stage sub-surfaces. NewMax keeps the stage and tab strip on surface-200, raises active tabs to surface-300, and reserves surface-400 for selected rows and inset sections. Workbench chrome follows NewMax --ds-workbench-surface / --ds-workbench-content-surface / --ds-tab-strip-surface: default themes fall back to surface-200; image and color skins write a distinct ramp. */
   --color-panel: #faf9f5;
   --color-chat: #faf9f5;
   --color-recent: #f2eee6;
   --color-stage-tabs: #f6f4ef;
+  --color-workbench: #faf9f5;
+  --color-workbench-content: #faf9f5;
+  --color-tab-strip: #faf9f5;
   --color-tab-active-border: #e7e4db;
   --color-tab-active-fill: #d5d1c6;
 
@@ -183,7 +186,7 @@
 }
 
 :root {
-  /* Public website and cloud account pages. The landscape hero retains its light palette; content and account forms follow the system theme. Generated for the standalone website by apps/website/build.mjs. */
+  /* Public website and cloud account pages always use the light palette, independent of OS theme. Desktop dark theme remains unchanged. Generated for the standalone website by apps/website/build.mjs. */
   --web-page: #ffffff;
   --web-surface: #f3f6f4;
   --web-ink: #18231e;
@@ -379,6 +382,9 @@
   --color-chat: #1e1f1f;
   --color-recent: #2a2d2b;
   --color-stage-tabs: #1e1f1f;
+  --color-workbench: #1e1f1f;
+  --color-workbench-content: #1e1f1f;
+  --color-tab-strip: #1e1f1f;
   --color-tab-active-border: rgba(255, 255, 255, 0.08);
   --color-tab-active-fill: #252726;
 

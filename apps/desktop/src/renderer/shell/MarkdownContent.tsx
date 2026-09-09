@@ -14,17 +14,17 @@ import { CodeBlock as AgentCodeBlock, type CodeBlockReadingState } from './CodeB
 import { Check, ChevronDown, Copy, FolderOpen } from 'lucide-react';
 import { MermaidChart } from './MermaidChart.js';
 import { HtmlSandbox } from './HtmlSandbox.js';
-import { DesignDraftPreview } from './DesignDraftPreview.js';
-import { UiDesignPreview } from './UiDesignPreview.js';
 import { ExcalidrawDraftPreview } from './ExcalidrawDraftPreview.js';
 import { InlineVisualizationPreview } from './InlineVisualizationPreview.js';
 import { parseInlineVisualizationSegments } from './inline-visualization.js';
-import { normalizeTaggedDesignHtmlBlocks } from './design-draft.js';
 import { IncrementalMarkdownParser } from './incremental-markdown.js';
 import type { OpenHtmlInBrowser } from './html-browser.js';
 import type { ProjectTextLocation } from '../../workspace-tools-contract.js';
 import { FileTypeIcon } from './FileTypeIcon.js';
 import { WebTextLink } from './WebTextLink.js';
+import { GeneratedImageModelsContext } from './generated-image-models-context.js';
+import { parseGeneratedImageModels, imagesFromHastParagraph } from './markdown-image-gallery.js';
+import { MarkdownImageGallery } from './MarkdownImageGallery.js';
 
 const CodeReadingContext = createContext<Map<number, CodeBlockReadingState> | undefined>(undefined);
 
@@ -333,6 +333,7 @@ function ResourceLink({
 const MarkdownRenderer = memo(function MarkdownRenderer({
   text,
   streaming,
+  parseStreaming = streaming,
   interactiveEmbeds,
   projectFolder,
   conversationId,
@@ -345,6 +346,7 @@ const MarkdownRenderer = memo(function MarkdownRenderer({
 }: {
   text: string;
   streaming: boolean;
+  parseStreaming?: boolean;
   interactiveEmbeds: boolean;
   projectFolder?: string;
   conversationId?: string;
@@ -355,10 +357,16 @@ const MarkdownRenderer = memo(function MarkdownRenderer({
   skipVisualizations?: boolean;
   sourceOffset?: number;
 }) {
-  const visualizationSegments = useMemo(() => parseInlineVisualizationSegments(text), [text]);
+  const streamingRef = useRef(streaming);
+  streamingRef.current = streaming;
+  const visualizationSegments = useMemo(
+    () => parseInlineVisualizationSegments(text, { streaming: parseStreaming }),
+    [parseStreaming, text],
+  );
   const renderCode = useMemo<Components['code']>(
     () =>
       ({ className, children, node, ...props }) => {
+        const isStreaming = streamingRef.current;
         const language = languageFromClassName(className);
         const codeOffset = node?.position?.start.offset;
         const readingOffset = codeOffset === undefined ? undefined : sourceOffset + codeOffset;
@@ -372,47 +380,12 @@ const MarkdownRenderer = memo(function MarkdownRenderer({
           );
         }
         if (language === 'mermaid' || language === 'mmd') {
-          // Streaming blocks are still being produced — keep them as code so
-          // the chart only mounts (and renders) once the block is complete.
-          if (streaming) {
-            return (
-              <CodeBlock language={language} streaming={streaming} sourceOffset={readingOffset}>
-                {children}
-              </CodeBlock>
-            );
-          }
           return <MermaidChart code={raw.replace(/\n$/, '')} />;
         }
-        if (language === 'design-html') {
-          if (streaming || !interactiveEmbeds) {
-            return (
-              <CodeBlock language={language} streaming={streaming} sourceOffset={readingOffset}>
-                {children}
-              </CodeBlock>
-            );
-          }
-          return (
-            <DesignDraftPreview
-              code={raw}
-              projectFolder={projectFolder}
-              onOpenInBrowser={onOpenHtmlInBrowser}
-            />
-          );
-        }
-        if (language === 'design-ui' || language === 'ui-design') {
-          if (streaming || !interactiveEmbeds) {
-            return (
-              <CodeBlock language={language} streaming={streaming} sourceOffset={readingOffset}>
-                {children}
-              </CodeBlock>
-            );
-          }
-          return <UiDesignPreview code={raw} />;
-        }
         if (language === 'excalidraw' || language === 'excalidraw-json') {
-          if (streaming || !interactiveEmbeds) {
+          if (isStreaming || !interactiveEmbeds) {
             return (
-              <CodeBlock language={language} streaming={streaming} sourceOffset={readingOffset}>
+              <CodeBlock language={language} streaming={isStreaming} sourceOffset={readingOffset}>
                 {children}
               </CodeBlock>
             );
@@ -426,10 +399,10 @@ const MarkdownRenderer = memo(function MarkdownRenderer({
             />
           );
         }
-        if (language === 'html' || language === 'htm') {
-          if (streaming || !interactiveEmbeds) {
+        if (language === 'html' || language === 'htm' || language === 'design-html') {
+          if (!interactiveEmbeds) {
             return (
-              <CodeBlock language={language} streaming={streaming} sourceOffset={readingOffset}>
+              <CodeBlock language={language} streaming={isStreaming} sourceOffset={readingOffset}>
                 {children}
               </CodeBlock>
             );
@@ -437,12 +410,12 @@ const MarkdownRenderer = memo(function MarkdownRenderer({
           return <HtmlSandbox code={raw} onOpenInBrowser={onOpenHtmlInBrowser} />;
         }
         return (
-          <CodeBlock language={language} streaming={streaming} sourceOffset={readingOffset}>
+          <CodeBlock language={language} streaming={isStreaming} sourceOffset={readingOffset}>
             {children}
           </CodeBlock>
         );
       },
-    [streaming, interactiveEmbeds, projectFolder, modelId, onOpenHtmlInBrowser, sourceOffset],
+    [interactiveEmbeds, projectFolder, modelId, onOpenHtmlInBrowser, sourceOffset],
   );
   if (
     !skipVisualizations &&
@@ -504,6 +477,13 @@ const MarkdownRenderer = memo(function MarkdownRenderer({
         ),
         pre: MarkdownPre,
         code: renderCode,
+        img: ({ src, alt }) =>
+          src ? <MarkdownImageGallery images={[{ src, alt: alt ?? '' }]} /> : null,
+        p: ({ children, node }) => {
+          const images = imagesFromHastParagraph(node);
+          if (images) return <MarkdownImageGallery images={images} />;
+          return <p>{children}</p>;
+        },
         table: ({ children }) => <MarkdownTable>{children}</MarkdownTable>,
         th: ({ children }) => (
           <th className={isAtomicTableCell(children) ? 'shell-md-table-cell--atomic' : undefined}>
@@ -525,6 +505,7 @@ const MarkdownRenderer = memo(function MarkdownRenderer({
 const StreamingMarkdownBlock = memo(function StreamingMarkdownBlock({
   text,
   sourceOffset,
+  streaming = true,
   projectFolder,
   conversationId,
   modelId,
@@ -534,6 +515,7 @@ const StreamingMarkdownBlock = memo(function StreamingMarkdownBlock({
 }: {
   text: string;
   sourceOffset: number;
+  streaming?: boolean;
   projectFolder?: string;
   conversationId?: string;
   modelId?: string;
@@ -545,8 +527,11 @@ const StreamingMarkdownBlock = memo(function StreamingMarkdownBlock({
     <MarkdownRenderer
       text={text}
       sourceOffset={sourceOffset}
-      streaming
-      interactiveEmbeds={false}
+      // Keep rich previews mounted while ordinary code blocks retain their
+      // writing/settled status as the stream advances.
+      streaming={streaming}
+      parseStreaming={streaming}
+      interactiveEmbeds
       projectFolder={projectFolder}
       conversationId={conversationId}
       modelId={modelId}
@@ -559,6 +544,7 @@ const StreamingMarkdownBlock = memo(function StreamingMarkdownBlock({
 
 function IncrementalStreamingMarkdown({
   text,
+  streaming = true,
   projectFolder,
   conversationId,
   modelId,
@@ -567,6 +553,7 @@ function IncrementalStreamingMarkdown({
   onOpenUrl,
 }: {
   text: string;
+  streaming?: boolean;
   projectFolder?: string;
   conversationId?: string;
   modelId?: string;
@@ -584,6 +571,7 @@ function IncrementalStreamingMarkdown({
           key={block.key}
           text={block.text}
           sourceOffset={block.start}
+          streaming={streaming}
           projectFolder={projectFolder}
           conversationId={conversationId}
           modelId={modelId}
@@ -674,25 +662,30 @@ export function MarkdownContent({
   onOpenHtmlInBrowser,
   onOpenUrl,
 }: MarkdownContentProps) {
-  const normalizedText = useMemo(() => normalizeTaggedDesignHtmlBlocks(text), [text]);
   const readingRef = useRef({
-    source: normalizedText,
+    source: text,
     states: new Map<number, CodeBlockReadingState>(),
   });
-  if (!normalizedText.startsWith(readingRef.current.source)) {
-    readingRef.current = { source: normalizedText, states: new Map() };
+  if (!text.startsWith(readingRef.current.source)) {
+    readingRef.current = { source: text, states: new Map() };
   }
-  readingRef.current.source = normalizedText;
+  readingRef.current.source = text;
+  const hadStreamingRef = useRef(false);
+  if (streaming) hadStreamingRef.current = true;
+  const useIncrementalRenderer = streaming || hadStreamingRef.current;
   const sections = useMemo(
-    () => (streaming ? [] : splitMarkdownSections(normalizedText)),
-    [normalizedText, streaming],
+    () => (streaming ? [] : splitMarkdownSections(text)),
+    [text, streaming],
   );
+  const generatedImageModels = useMemo(() => parseGeneratedImageModels(text), [text]);
   return (
     <CodeReadingContext.Provider value={readingRef.current.states}>
+      <GeneratedImageModelsContext.Provider value={generatedImageModels}>
       <div className={`shell-md ${className ?? ''}`} data-streaming={streaming ? '1' : '0'}>
-        {streaming ? (
+        {useIncrementalRenderer ? (
           <IncrementalStreamingMarkdown
-            text={normalizedText}
+            text={text}
+            streaming={streaming}
             projectFolder={projectFolder}
             conversationId={conversationId}
             modelId={modelId}
@@ -736,6 +729,7 @@ export function MarkdownContent({
         )}
         {streaming ? <span className="shell-md-cursor" aria-hidden="true" /> : null}
       </div>
+      </GeneratedImageModelsContext.Provider>
     </CodeReadingContext.Provider>
   );
 }

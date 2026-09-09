@@ -12,6 +12,7 @@ import type {
 } from '@sync-think/shared';
 import { probeKernel } from './detect.js';
 import { sanitizeKernelDiagnostic } from './kernel-diagnostics.js';
+import { commandSilenceNotice } from './persistent-terminal-command.js';
 import { startKernelProcess, type KernelProcessHandle } from './process.js';
 import { PLATFORM_MCP_SERVER_NAME } from './platform-mcp-config.js';
 
@@ -66,26 +67,21 @@ interface ActiveTurn {
   compactionInProgress: boolean;
   /** Avoid duplicate success events from item/completed + legacy thread/compacted. */
   compactionCompleted: boolean;
-  /**
-   * Zero-output watchdogs for commandExecution items. codex CLI 0.147 on
-   * Windows can hang forever after `item/started` (the spawned command never
-   * produces output nor completes — reproduced with a bare app-server run,
-   * independent of sandbox/approval settings). Without a watchdog the run sits
-   * in "长时间无输出" until recovery expiry (~30 min). Any outputDelta re-arms
-   * the timer, so long-running commands WITH output are unaffected.
-   */
-  commandWatchdogs: Map<string, ReturnType<typeof setTimeout>>;
+  /** One reminder per command; silence never interrupts the native execution. */
+  commandSilenceTimers: Map<string, ReturnType<typeof setTimeout>>;
 }
 
-/** Zero-output command timeout — generous enough for slow-but-alive commands. */
-const COMMAND_SILENCE_TIMEOUT_MS = 120_000;
-/** Keep each transient pipe frame small while preserving the newest output. */
-const MAX_TOOL_PROGRESS_CHARS = 8_192;
+/** Output reminder, independent of the native command execution deadline. */
+const COMMAND_SILENCE_REMINDER_MS = 120_000;
 
 export interface CodexAppServerAdapterDeps {
   spawn?: (args: string[], env: Record<string, string>, cwd: string) => KernelProcessHandle;
   requestTimeoutMs?: number;
+  /** Override the output reminder delay; tests inject a short interval. */
+  commandSilenceReminderMs?: number;
 }
+/** Keep each transient pipe frame small while preserving the newest output. */
+const MAX_TOOL_PROGRESS_CHARS = 8_192;
 
 function asRecord(value: unknown): JsonRecord | undefined {
   return value && typeof value === 'object' ? (value as JsonRecord) : undefined;
@@ -388,7 +384,6 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
   private approvals = new Map<string, PendingApproval>();
   private activeTurn?: ActiveTurn;
   /** Set when the zero-output command watchdog interrupted the current turn. */
-  private commandWatchdogFired = false;
   private permissionCallback?: (request: KernelPermissionRequest) => void;
   private usageCallback?: (usage: KernelUsage) => void;
   private exitCallback?: (code: number | null, stderrTail: string) => void;
@@ -452,10 +447,9 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
       submittedPlanItems: new Set(),
       compactionInProgress: false,
       compactionCompleted: false,
-      commandWatchdogs: new Map(),
+      commandSilenceTimers: new Map(),
     };
     this.activeTurn = turn;
-    this.commandWatchdogFired = false;
     const prompt =
       request.session?.mode === 'resume'
         ? [request.session.catchUp, request.userText].filter(Boolean).join('\n\n')
@@ -510,6 +504,7 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
         if (event.type === 'terminal') break;
       }
     } finally {
+      this.closeTurn(turn);
       if (this.activeTurn === turn) this.activeTurn = undefined;
       for (const [requestId, approval] of this.approvals) {
         if (approval) this.approvals.delete(requestId);
@@ -856,12 +851,10 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
       return;
     }
     if (method === 'item/commandExecution/outputDelta') {
-      // The command is alive and producing output — re-arm its watchdog.
+      // Output postpones the reminder; it never extends an execution deadline.
       const itemId = text(params.itemId) ?? text(asRecord(params.item)?.id);
-      if (itemId && turn.commandWatchdogs.has(itemId)) {
-        clearTimeout(turn.commandWatchdogs.get(itemId)!);
-        this.armCommandWatchdog(turn, itemId);
-      }
+      const reminder = itemId ? turn.commandSilenceTimers.get(itemId) : undefined;
+      if (itemId && reminder) this.armCommandSilenceReminder(turn, itemId);
       const output = commandOutputText(
         params.delta ?? params.output ?? params.text ?? asRecord(params.item)?.output,
       );
@@ -950,9 +943,7 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
             ? {
                 type: 'terminal',
                 status: 'failed',
-                error: this.commandWatchdogFired
-                  ? '命令执行无输出超时，已中断（codex CLI 0.147 Windows 已知挂起问题，建议降级 codex 或改用其他内核执行命令）'
-                  : 'Codex turn interrupted',
+                error: 'Codex turn interrupted',
               }
             : { type: 'terminal', status: 'completed' },
       );
@@ -976,14 +967,20 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
     const type = text(item.type);
     const id = text(item.id) ?? `codex-${randomUUID()}`;
     if (type === 'commandExecution') {
+      const command = text(item.command) ?? '';
       this.pushTurnEvent({
         type: 'tool-call',
         toolId: id,
         name: 'command_execution',
-        argsJson: JSON.stringify({ command: text(item.command) ?? '' }),
+        argsJson: JSON.stringify({
+          command,
+          ...(text(item.cwd) ? { cwd: text(item.cwd) } : {}),
+          ...(text(item.processId) ? { processId: text(item.processId) } : {}),
+          ...(text(item.source) ? { source: text(item.source) } : {}),
+        }),
         partial: false,
       });
-      if (turn) this.armCommandWatchdog(turn, id);
+      if (turn) this.armCommandSilenceReminder(turn, id);
     } else if (type === 'contextCompaction') {
       if (turn && !turn.compactionInProgress && !turn.compactionCompleted) {
         turn.compactionInProgress = true;
@@ -1038,10 +1035,10 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
         turn.lastReasoningItemId = id;
       }
     } else if (type === 'commandExecution') {
-      const watchdog = turn.commandWatchdogs.get(id);
-      if (watchdog) {
-        clearTimeout(watchdog);
-        turn.commandWatchdogs.delete(id);
+      const reminder = turn.commandSilenceTimers.get(id);
+      if (reminder) {
+        clearTimeout(reminder);
+        turn.commandSilenceTimers.delete(id);
       }
       this.pushTurnEvent({
         type: 'tool-result',
@@ -1109,36 +1106,22 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
     turn.reasoningAtBoundary = true;
   }
 
-  /**
-   * Arm (or re-arm) the zero-output watchdog for one commandExecution item.
-   * On expiry: surface a failed tool-result with a actionable diagnosis and
-   * interrupt the turn — codex 0.147 on Windows never completes the item, so
-   * without this the run hangs in "长时间无输出" until recovery expiry.
-   */
-  private armCommandWatchdog(turn: ActiveTurn, itemId: string): void {
-    const existing = turn.commandWatchdogs.get(itemId);
+  private armCommandSilenceReminder(turn: ActiveTurn, itemId: string): void {
+    const existing = turn.commandSilenceTimers.get(itemId);
     if (existing) clearTimeout(existing);
+    const timeoutMs = this.deps.commandSilenceReminderMs ?? COMMAND_SILENCE_REMINDER_MS;
     const timer = setTimeout(() => {
-      turn.commandWatchdogs.delete(itemId);
+      turn.commandSilenceTimers.delete(itemId);
       if (turn.closed || this.activeTurn !== turn) return;
-      this.commandWatchdogFired = true;
       this.pushTurnEvent({
-        type: 'tool-result',
+        type: 'tool-progress',
         toolId: itemId,
-        output:
-          `命令执行超过 ${Math.round(COMMAND_SILENCE_TIMEOUT_MS / 1000)} 秒无任何输出，已中断本轮。` +
-          '已知问题：codex CLI 0.147 在 Windows 上执行命令可能永久挂起（与沙箱/审批设置无关）。' +
-          '建议：降级 codex 到 0.145（npm i -g @openai/codex@0.145.0 或官方安装器旧版），或改用 claude-code / 原生内核执行命令。',
-        isError: true,
+        output: commandSilenceNotice(),
       });
-      void this.request('turn/interrupt', {
-        threadId: turn.threadId,
-        ...(turn.turnId ? { turnId: turn.turnId } : {}),
-      }).catch(() => undefined);
-    }, COMMAND_SILENCE_TIMEOUT_MS);
-    // Do not keep the process alive solely for a watchdog.
+    }, timeoutMs);
+    // A reminder does not own the app-server lifetime.
     timer.unref?.();
-    turn.commandWatchdogs.set(itemId, timer);
+    turn.commandSilenceTimers.set(itemId, timer);
   }
 
   private pushTurnEvent(event: KernelEvent): void {
@@ -1163,8 +1146,8 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
 
   private closeTurn(turn: ActiveTurn): void {
     turn.closed = true;
-    for (const timer of turn.commandWatchdogs.values()) clearTimeout(timer);
-    turn.commandWatchdogs.clear();
+    for (const reminder of turn.commandSilenceTimers.values()) clearTimeout(reminder);
+    turn.commandSilenceTimers.clear();
     if (turn.waiter && turn.queue.length === 0) {
       const resolve = turn.waiter;
       turn.waiter = undefined;

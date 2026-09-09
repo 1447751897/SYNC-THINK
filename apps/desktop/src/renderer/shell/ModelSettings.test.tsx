@@ -79,6 +79,7 @@ const runtime = {
   setModelPriorities: vi.fn(),
   setSetting: vi.fn(),
   getUsageSummary: vi.fn(),
+  removeProviderCredential: vi.fn(),
 };
 
 beforeEach(() => {
@@ -197,6 +198,7 @@ beforeEach(() => {
     models: provider.models,
   });
   runtime.setSetting.mockResolvedValue({});
+  runtime.removeProviderCredential.mockResolvedValue({ providerId: provider.providerId });
   runtime.getUsageSummary.mockResolvedValue({
     rows: [],
     requests: [
@@ -275,6 +277,36 @@ async function openProviderCatalog() {
 }
 
 describe('ModelSettings NewMax provider detail', () => {
+  it('reloads enabled models after a transient provider.list timeout', async () => {
+    runtime.listProviders
+      .mockRejectedValueOnce(new Error('Runtime request timed out: provider.list'))
+      .mockResolvedValue({ providers: [provider] });
+    render(
+      <DialogProvider>
+        <ModelSettings />
+      </DialogProvider>,
+    );
+    expect(await screen.findByDisplayValue('CODEX')).toBeTruthy();
+    expect(runtime.listProviders).toHaveBeenCalledTimes(2);
+  });
+
+  it('reloads the text list when returning from the image tab', async () => {
+    runtime.listProviders
+      .mockResolvedValueOnce({ providers: [] })
+      .mockResolvedValue({ providers: [provider] });
+    render(
+      <DialogProvider>
+        <ModelSettings />
+      </DialogProvider>,
+    );
+    expect((await screen.findAllByRole('button', { name: /添加模型/ })).length).toBeGreaterThan(0);
+    expect(screen.queryByDisplayValue('CODEX')).toBeNull();
+    fireEvent.click(screen.getByRole('tab', { name: '图像生成' }));
+    expect(await screen.findByText(/还没有配置过生图模型的提供商/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('tab', { name: '文本生成' }));
+    expect(await screen.findByDisplayValue('CODEX')).toBeTruthy();
+  });
+
   it('opens Plan & Act from a navigation request and replays only when its key changes', async () => {
     const { rerender } = render(
       <DialogProvider>
@@ -519,7 +551,7 @@ describe('ModelSettings NewMax provider detail', () => {
   it('saves protocol changes immediately without marking a transient draft', async () => {
     const onDirtyChange = await renderSettings();
 
-    fireEvent.click(screen.getByRole('radio', { name: 'Anthropic 格式' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Anthropic 格式' }));
 
     await waitFor(() => {
       expect(runtime.updateProvider).toHaveBeenCalledWith({
@@ -705,7 +737,7 @@ describe('ModelSettings NewMax provider detail', () => {
     expect(screen.queryByTestId('provider-icon-newmax-gateway')).toBeNull();
     expect(screen.getByTestId('provider-icon-custom')).toBeTruthy();
     expect(screen.getByTestId('provider-icon-cc-switch')).toBeTruthy();
-    expect(screen.queryByRole('heading', { name: '添加模型源' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: '自定义供应商' })).toBeNull();
     expect(screen.queryByDisplayValue('https://')).toBeNull();
   });
 
@@ -729,14 +761,16 @@ describe('ModelSettings NewMax provider detail', () => {
     await openProviderCatalog();
     fireEvent.click(screen.getByRole('button', { name: /自定义供应商/ }));
 
-    expect(await screen.findByRole('heading', { name: '添加模型源' })).toBeTruthy();
-    expect(screen.getByText('正在配置 自定义供应商')).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: '自定义供应商' })).toBeTruthy();
     expect(screen.getByTestId('provider-form-icon-custom')).toBeTruthy();
     expect(screen.getByTestId('provider-base-url')).toHaveProperty('value', 'https://');
+    expect(screen.getByTestId('custom-provider-connection-hint').textContent).toBe(
+      '请从服务商接入文档复制 Base URL 或完整请求地址，离开输入框后会自动识别并整理。',
+    );
 
-    fireEvent.click(screen.getByRole('button', { name: '返回服务商目录' }));
+    fireEvent.click(screen.getByRole('button', { name: '返回列表' }));
     expect(await screen.findByRole('region', { name: '添加模型' })).toBeTruthy();
-    expect(screen.queryByRole('heading', { name: '添加模型源' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: '自定义供应商' })).toBeNull();
   });
 
   it('uses built-in endpoints for OpenAI, Moonshot and Ollama without exposing URL fields', async () => {
@@ -746,25 +780,23 @@ describe('ModelSettings NewMax provider detail', () => {
     fireEvent.click(screen.getByRole('tab', { name: '海外平台' }));
     fireEvent.click(screen.getByRole('button', { name: /^OpenAI/ }));
     expect(await screen.findByDisplayValue('OpenAI')).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'OpenAI' })).toBeTruthy();
     expect(screen.getByTestId('provider-form-icon-openai')).toBeTruthy();
     expect(screen.queryByTestId('provider-base-url')).toBeNull();
-    expect(screen.getByText('连接地址已由 OpenAI 模板内置')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: '返回服务商目录' }));
+    fireEvent.click(screen.getByRole('button', { name: '返回列表' }));
 
     fireEvent.click(screen.getByRole('tab', { name: '国内服务' }));
     fireEvent.click(screen.getByRole('button', { name: /^Moonshot/ }));
     expect(await screen.findByDisplayValue('Moonshot')).toBeTruthy();
     expect(screen.getByTestId('provider-form-icon-moonshot')).toBeTruthy();
     expect(screen.queryByTestId('provider-base-url')).toBeNull();
-    expect(screen.getByText('连接地址已由 Moonshot 模板内置')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: '返回服务商目录' }));
+    fireEvent.click(screen.getByRole('button', { name: '返回列表' }));
 
     fireEvent.click(screen.getByRole('tab', { name: '本地模型' }));
     fireEvent.click(screen.getByRole('button', { name: /^Ollama/ }));
     expect(await screen.findByDisplayValue('Ollama')).toBeTruthy();
     expect(screen.getByTestId('provider-form-icon-ollama')).toBeTruthy();
     expect(screen.queryByTestId('provider-base-url')).toBeNull();
-    expect(screen.getByText('连接地址已由 Ollama 模板内置')).toBeTruthy();
     expect(screen.getByDisplayValue('ollama-local')).toBeTruthy();
   });
 
@@ -780,7 +812,7 @@ describe('ModelSettings NewMax provider detail', () => {
     );
     expect(apiKey).toBeTruthy();
     fireEvent.change(apiKey!, { target: { value: 'sk-openai-test' } });
-    fireEvent.click(screen.getByRole('button', { name: '创建并保存' }));
+    fireEvent.click(screen.getByRole('button', { name: '测试连接' }));
 
     await waitFor(() => {
       expect(runtime.createProvider).toHaveBeenCalledWith({
@@ -807,7 +839,7 @@ describe('ModelSettings NewMax provider detail', () => {
     expect(apiKey).toBeTruthy();
     fireEvent.change(name!, { target: { value: 'Custom Gateway' } });
     fireEvent.change(apiKey!, { target: { value: 'sk-custom-test' } });
-    fireEvent.click(screen.getByRole('button', { name: '创建并保存' }));
+    fireEvent.click(screen.getByRole('button', { name: '从服务商拉取模型列表' }));
 
     expect((await screen.findAllByText('请填写 Base URL')).length).toBeGreaterThan(0);
     expect(runtime.createProvider).not.toHaveBeenCalled();
@@ -856,5 +888,86 @@ describe('ModelSettings NewMax provider detail', () => {
     fireEvent.click(addModelButtons[addModelButtons.length - 1]!);
     expect(screen.getByPlaceholderText('模型 ID')).toBeTruthy();
     expect(screen.getByRole('button', { name: '从服务商拉取模型列表' })).toBeTruthy();
+  });
+
+  it('normalizes a pasted chat-completions URL on the custom provider form', async () => {
+    await renderSettings();
+    await openProviderCatalog();
+    fireEvent.click(screen.getByRole('button', { name: /自定义供应商/ }));
+
+    const url = screen.getByTestId('provider-base-url');
+    fireEvent.change(url, {
+      target: { value: 'https://www.kamenking.top/v1/chat/completions' },
+    });
+    fireEvent.blur(url);
+
+    expect(url).toHaveProperty('value', 'https://www.kamenking.top/v1');
+    expect(screen.getByTestId('custom-provider-connection-hint').textContent).toBe(
+      '已根据地址识别为 OpenAI 格式；仍可在下方手动修改。',
+    );
+  });
+
+  it('uses 停用 and two-step 移除 on the enabled provider menu', async () => {
+    await renderSettings();
+    fireEvent.click(screen.getByRole('button', { name: 'CODEX 更多操作' }));
+    expect(screen.getByRole('menuitem', { name: '停用' })).toBeTruthy();
+    expect(screen.queryByRole('menuitem', { name: '编辑配置' })).toBeNull();
+    fireEvent.click(screen.getByRole('menuitem', { name: '移除' }));
+    expect(screen.getByRole('menuitem', { name: '确认' })).toBeTruthy();
+  });
+
+  it('opens disabled providers in a popover instead of an inline list', async () => {
+    runtime.listProviders.mockResolvedValue({
+      providers: [{ ...provider, enabled: false }],
+    });
+    await renderSettings();
+
+    expect(screen.queryByTestId('model-settings-disabled-menu-list')).toBeNull();
+    fireEvent.click(screen.getByTestId('model-settings-disabled-menu-trigger'));
+    expect(screen.getByTestId('model-settings-disabled-menu-list')).toBeTruthy();
+    fireEvent.click(screen.getByTestId('model-settings-disabled-action-menu-trigger'));
+    expect(screen.getByRole('menuitem', { name: '启用全部' })).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: '清空' })).toBeTruthy();
+  });
+
+  it('shows NewMax media-tab copy instead of an invented unavailable notice', async () => {
+    await renderSettings();
+    fireEvent.click(screen.getByRole('tab', { name: '图像生成' }));
+    expect(
+      await screen.findByText(
+        '还没有配置过生图模型的提供商。可以点击「添加生图模型」，测试成功后会出现在左侧列表。',
+      ),
+    ).toBeTruthy();
+    expect(screen.getAllByRole('button', { name: '添加生图模型' }).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/尚未接入/)).toBeNull();
+    expect(screen.queryByText(/SYNC-THINK/)).toBeNull();
+  });
+
+  it('keeps openai-images providers off the text-generation list', async () => {
+    runtime.listProviders.mockResolvedValue({
+      providers: [
+        provider,
+        {
+          ...provider,
+          providerId: 'provider-image' as ProviderSummary['providerId'],
+          name: 'OpenAI Images',
+          protocol: 'openai-images',
+          sortOrder: 1,
+          models: [
+            {
+              ...provider.models[0]!,
+              modelId: 'model-image' as ProviderSummary['models'][number]['modelId'],
+              providerModelId: 'gpt-image-2',
+              displayName: 'gpt-image-2',
+              protocol: 'openai-images',
+              capabilities: ['image-generation'],
+            },
+          ],
+        },
+      ],
+    });
+    await renderSettings();
+    expect(screen.getByDisplayValue('CODEX')).toBeTruthy();
+    expect(screen.queryByText('OpenAI Images')).toBeNull();
   });
 });

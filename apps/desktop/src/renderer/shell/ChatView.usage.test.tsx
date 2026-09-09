@@ -1098,7 +1098,7 @@ describe('ChatView reply usage details', () => {
     );
 
     const answer = await screen.findByText('两个文件已完整对比完。');
-    const card = await screen.findByText(/已更改 1 个文件/);
+    const card = await screen.findByText(/编辑了 1 个文件/);
     expect(answer.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
     );

@@ -100,7 +100,6 @@ export function extractGeneratedDesignHtml(raw: string): string {
   ) {
     throw new Error('模型未返回完整 HTML 设计稿');
   }
-  if (/<\/?design-html\b/i.test(html)) throw new Error('模型返回了嵌套 design-html 标记');
   if (utf8Bytes(html) > 1_048_576) throw new Error('生成的设计稿超过 1MB');
   return html;
 }

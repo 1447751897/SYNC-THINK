@@ -1,3 +1,14 @@
+## 2026-09-09：官网内核条与分场景绘画壁纸
+
+### Changed
+
+- 首页「下载 Windows 版」下增加目前支持的执行内核条：Claude Code、Codex。演示页使用 `/demo.html`，静态文件服务与云端均可打开。
+- 工作台演示窗口移入首屏绘画中，收尾与页脚改用独立花田风景，不再复用雪山。聊天 / 内核 / 智能体 / 小队演示分别使用花田、云海、花野、草地壁纸。
+
+### Verification
+
+- 官网静态测试覆盖内核条文案、独立页脚绘画与四张演示壁纸引用。构建后需在浏览器核对首屏下载区、演示 iframe 背景和页脚。
+
 ## 2026-09-07：官网、交互演示与自建邮箱账号
 
 ### Added
@@ -5083,3 +5094,33 @@ Desktop typecheck/build：passed
 
 - Runtime daemon child/entry/manage 定向回归通过；Desktop runtime-supervisor 定向回归通过。
 - Runtime 与 Desktop typecheck 通过；后续全量测试、构建和 Electron 实窗复验在本轮验证阶段补录。
+
+## 2026-09-08：长命令分段等待与静默提醒
+
+### Changed
+
+- Codex 命令连续 120 秒无输出只显示中性提醒，保留原生执行；移除按命令文本猜测常驻进程的豁免和固定归因 Codex 0.147 的中断提示。保留真实退出、原生错误和显式取消语义。
+- 内置 `run_command` 由 Runtime 持有执行会话：默认等待 10 秒后返回运行状态和 `sessionId`，通过 `read_command` 分段等候；`background` 支持服务和 watcher，`timeoutMs` 仅在明确设置时作为总执行时限。新增 `list_commands`、`stop_command`，跨对话隔离，Runtime 关闭时收回进程树。
+- 轮询仍在运行的命令不计为重复失败，也不消耗普通工具轮次；到达普通轮次上限后仍可读取或停止已有命令。停止动作成功与命令的取消状态分开展示。
+- 桌面终端移除固定 10 分钟执行时限，保留关闭/取消清理；持续输出超过捕获上限后仍转发新日志。内置命令会话使用有界增量缓冲，进程正常退出后可读取真实结果。
+- 命令会话注册表属于当前 Runtime，不承诺进程跨 Runtime 重启存活；读取失效的会话返回明确错误，会话注册表不自动重启命令。
+
+### Verification
+
+- 新增静默命令、睡眠、明确执行时限、非零退出、会话隔离、取消、日志截断及真实 Runtime 工具循环回归。
+- `pnpm exec node scripts/selftest-command-sessions.mjs`：真实 125 秒无输出命令在 121 秒时仍为 running，约 125.26 秒正常完成，exitCode 为 0；脚本最后关闭会话并清理临时目录。
+- Workers 全量 152 项通过、3 项可选浏览器 smoke 跳过；Desktop 终端/活动提示 45 项通过；Runtime 和 Desktop 类型检查、构建，以及 Runtime/Workers lint 通过。
+- Runtime 全量首次为 1513 项通过、2 项内核路径夹具失败：本机私有 Codex 安装覆盖了夹具路径。仅为验证进程设置空的 `SYNC_THINK_MANAGED_KERNEL_ROOT` 后，路径探测、命令会话、实际工具循环、关闭清理和 Codex 适配层共 56 项通过；未修改内核探测实现或用户安装。
+
+## 2026-09-08：聊天 HTML、Mermaid 与内嵌可视化对齐 NewMax
+
+### Changed
+
+- 普通 `html` fence 使用 DOMPurify 清理后的 `srcDoc` iframe，固定 420px 预览面板，保留预览/源码、复制、下载、浏览器打开和折叠操作；脚本只在 iframe sandbox 中运行。
+- Mermaid 在流式输出期间立即渲染，加入主题同步、延迟错误、缩放/适配、放大查看、复制图片和 PNG 下载；异步旧结果不会覆盖新图。
+- `::newmax-inline-vis{file="...html"}` 使用无卡片内嵌 webview，加载骨架持续到 guest ready，支持动态高度、失败重试，并在流结束时保留 guest 状态。
+
+### Verification
+
+- `node scripts/selftest-chat-embeds.mjs`：生产 CSP Electron 全场景通过，覆盖未闭合块、混合/多块、明暗主题、窄宽窗口、流式完成状态、HTML 隔离、Mermaid 导出与缩放。
+- Desktop 定向富内容测试 `44/44`、设计稿兼容测试 `7/7`、typecheck、lint（0 error）和生产构建通过。

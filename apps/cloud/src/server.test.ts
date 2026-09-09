@@ -33,8 +33,9 @@ async function fixture(env: NodeJS.ProcessEnv = {}, options: CloudServerOptions 
   );
   await writeFile(join(config.websiteDirectory, 'styles.css'), 'body { color: black; }');
   await writeFile(join(config.websiteDirectory, 'demo.html'), '<!doctype html><title>Demo</title>');
-  await writeFile(join(config.websiteDirectory, 'demo.js'), 'document.title = "Demo";');
-  await writeFile(join(config.websiteDirectory, 'demo.css'), 'body { color: black; }');
+  await mkdir(join(config.websiteDirectory, 'assets'), { recursive: true });
+  await writeFile(join(config.websiteDirectory, 'assets/chat-app.js'), 'document.title = "Demo";');
+  await writeFile(join(config.websiteDirectory, 'assets/chat-shell.css'), 'body { color: black; }');
   await writeFile(join(config.websiteDirectory, 'private.sqlite'), 'PRIVATE_SENTINEL');
   const server = await startCloudServer(config, options);
   servers.push(server);
@@ -45,23 +46,29 @@ describe('cloud HTTP service', () => {
   it('allows only the canonical demo page to be framed by the same origin and blocks demo API connections', async () => {
     const { server } = await fixture();
     for (const method of ['GET', 'HEAD']) {
-      const demo = await fetch(`${server.url}/demo`, { method });
-      expect(demo.status).toBe(200);
-      expect(demo.headers.get('x-frame-options')).toBe('SAMEORIGIN');
-      const csp = demo.headers.get('content-security-policy');
-      expect(csp).toContain("frame-ancestors 'self'");
-      expect(csp).toContain("connect-src 'none'");
-      expect(csp).toContain("script-src 'self'");
-      expect(csp).toContain("style-src 'self'");
-      if (method === 'HEAD') expect(await demo.text()).toBe('');
+      for (const path of ['/demo', '/demo.html']) {
+        const demo = await fetch(`${server.url}${path}`, { method });
+        expect(demo.status).toBe(200);
+        expect(demo.headers.get('x-frame-options')).toBe('SAMEORIGIN');
+        const csp = demo.headers.get('content-security-policy');
+        expect(csp).toContain("frame-ancestors 'self'");
+        expect(csp).toContain("connect-src 'none'");
+        expect(csp).toContain("script-src 'self'");
+        expect(csp).toContain("style-src 'self'");
+        expect(csp).toContain("style-src 'self' 'unsafe-inline'");
+        expect(csp).not.toContain("script-src 'self' 'unsafe-inline'");
+        if (method === 'HEAD') expect(await demo.text()).toBe('');
+      }
     }
-    for (const path of ['/demo/', '/%64emo', '/demo.html']) {
+    for (const path of ['/demo/', '/%64emo']) {
       const alias = await fetch(`${server.url}${path}`, { redirect: 'manual' });
       expect(alias.status).toBe(404);
       expect(alias.headers.get('x-frame-options')).toBe('DENY');
     }
-    for (const path of ['/demo.js', '/demo.css'])
+    for (const path of ['/assets/chat-app.js', '/assets/chat-shell.css'])
       expect((await fetch(`${server.url}${path}`)).status).toBe(200);
+    for (const path of ['/demo.js', '/demo.css'])
+      expect((await fetch(`${server.url}${path}`)).status).toBe(404);
     for (const path of ['/', '/login', '/account', '/api/auth/get-session']) {
       const privatePage = await fetch(`${server.url}${path}`, { redirect: 'manual' });
       expect(privatePage.headers.get('x-frame-options')).toBe('DENY');
@@ -75,13 +82,15 @@ describe('cloud HTTP service', () => {
     const { server } = await fixture({
       CLOUD_EMBED_ORIGINS: 'https://portal.example.test,https://docs.example.test:8443',
     });
-    const demo = await fetch(`${server.url}/demo?embed=1`);
-    expect(demo.status).toBe(200);
-    expect(demo.headers.get('x-frame-options')).toBeNull();
-    expect(demo.headers.get('content-security-policy')).toContain(
-      "frame-ancestors 'self' https://portal.example.test https://docs.example.test:8443",
-    );
-    expect(demo.headers.get('content-security-policy')).toContain("connect-src 'none'");
+    for (const path of ['/demo?embed=1', '/demo.html?embed=1']) {
+      const demo = await fetch(`${server.url}${path}`);
+      expect(demo.status).toBe(200);
+      expect(demo.headers.get('x-frame-options')).toBeNull();
+      expect(demo.headers.get('content-security-policy')).toContain(
+        "frame-ancestors 'self' https://portal.example.test https://docs.example.test:8443",
+      );
+      expect(demo.headers.get('content-security-policy')).toContain("connect-src 'none'");
+    }
     const account = await fetch(`${server.url}/account`, { redirect: 'manual' });
     expect(account.headers.get('x-frame-options')).toBe('DENY');
     expect(account.headers.get('content-security-policy')).toContain("frame-ancestors 'none'");

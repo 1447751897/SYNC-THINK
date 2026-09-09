@@ -1,8 +1,9 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fileURLToPath } from 'node:url';
 import type { KernelEvent, KernelRequest } from '@sync-think/shared';
 import { startKernelProcess } from './process.js';
 import { CodexAppServerKernelAdapter } from './codex-app-server-adapter.js';
+import { commandSilenceNotice } from './persistent-terminal-command.js';
 
 const fixturePath = fileURLToPath(
   new URL('./fixtures/codex-app-server-fixture.mjs', import.meta.url),
@@ -15,7 +16,10 @@ afterEach(async () => {
   adapters.clear();
 });
 
-function createFixtureAdapter(spawns: string[][]): CodexAppServerKernelAdapter {
+function createFixtureAdapter(
+  spawns: string[][],
+  deps: { commandSilenceReminderMs?: number } = {},
+): CodexAppServerKernelAdapter {
   const adapter = new CodexAppServerKernelAdapter({
     spawn: (args, env, cwd) => {
       spawns.push(args);
@@ -26,6 +30,7 @@ function createFixtureAdapter(spawns: string[][]): CodexAppServerKernelAdapter {
         env,
       });
     },
+    commandSilenceReminderMs: deps.commandSilenceReminderMs,
   });
   adapters.add(adapter);
   return adapter;
@@ -647,5 +652,80 @@ describe('CodexAppServerKernelAdapter', () => {
       toolId: 'cmd-progress',
       output: 'progress line 1\n',
     });
+  });
+
+  it('keeps a silent server item running until explicit cancellation', async () => {
+    const adapter = createFixtureAdapter([], { commandSilenceReminderMs: 40 });
+    const events: KernelEvent[] = [];
+    const consume = (async () => {
+      for await (const event of adapter.start(
+        makeRequest({ userText: 'command hang fixture:persistent' }),
+      )) {
+        events.push(event);
+      }
+    })();
+    await vi.waitFor(
+      () => {
+        expect(events).toContainEqual(
+          expect.objectContaining({
+            type: 'tool-progress',
+            toolId: 'cmd-hang',
+            output: commandSilenceNotice(),
+          }),
+        );
+      },
+      { timeout: 1_000 },
+    );
+    expect(events.some((event) => event.type === 'terminal' && event.status === 'failed')).toBe(
+      false,
+    );
+    expect(
+      events.some(
+        (event) => event.type === 'tool-result' && event.toolId === 'cmd-hang' && event.isError,
+      ),
+    ).toBe(false);
+    await adapter.cancel();
+    await consume;
+  });
+
+  it.each(['Start-Sleep -Seconds 180', 'pnpm build', 'node custom-worker.js'])(
+    'lets a silent command finish after the reminder: %s',
+    async (command) => {
+      const adapter = createFixtureAdapter([], { commandSilenceReminderMs: 40 });
+      const events: KernelEvent[] = [];
+      for await (const event of adapter.start(
+        makeRequest({ userText: 'command silence fixture:' + command }),
+      )) events.push(event);
+      expect(events).toContainEqual({ type: 'terminal', status: 'completed' });
+      expect(events).toContainEqual(expect.objectContaining({
+        type: 'tool-result', toolId: 'cmd-silent', isError: false,
+      }));
+      expect(events.some((event) => event.type === 'tool-result' && event.isError)).toBe(false);
+      expect(events.filter((event) => event.type === 'tool-progress')).toHaveLength(1);
+      const call = events.find((event) => event.type === 'tool-call' && event.toolId === 'cmd-silent');
+      expect(call?.type === 'tool-call' && JSON.parse(call.argsJson)).toMatchObject({
+        command, processId: 'process-silent', source: 'unifiedExecStartup',
+      });
+    },
+  );
+
+  it('keeps an unrecognized silent command running until explicit cancellation', async () => {
+    const adapter = createFixtureAdapter([], { commandSilenceReminderMs: 40 });
+    const events: KernelEvent[] = [];
+    const consume = (async () => {
+      for await (const event of adapter.start(
+        makeRequest({ userText: 'command hang fixture:short' }),
+      )) events.push(event);
+    })();
+    try {
+      await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({
+        type: 'tool-progress', toolId: 'cmd-hang',
+      })));
+      expect(events.some((event) => event.type === 'terminal')).toBe(false);
+      expect(events.some((event) => event.type === 'tool-result')).toBe(false);
+    } finally {
+      await adapter.cancel();
+      await consume;
+    }
   });
 });

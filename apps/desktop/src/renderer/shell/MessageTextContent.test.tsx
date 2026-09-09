@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { afterEach, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { DeferredContent, RunId } from '@sync-think/shared';
 import { MessageTextContent } from './MessageTextContent.js';
 import { ConversationContentScope } from './DeferredToolContent.js';
@@ -16,7 +16,7 @@ afterEach(() => {
   cleanup();
   vi.resetAllMocks();
 });
-it('renders a bounded Markdown preview without fetching, then reads raw source in prose mode', async () => {
+it('auto-assembles deferred prose and renders it as Markdown, without a read-full control', async () => {
   vi.mocked(deferredContentReader.read).mockResolvedValueOnce({
     content: {
       text: '# 完整原文',
@@ -33,19 +33,15 @@ it('renders a bounded Markdown preview without fetching, then reads raw source i
     </ConversationContentScope.Provider>,
   );
   expect(screen.getByText('预览', { selector: 'strong' }).tagName).toBe('STRONG');
-  expect(deferredContentReader.read).not.toHaveBeenCalled();
-  expect(screen.getByTestId('deferred-message-text').getAttribute('data-presentation')).toBe(
-    'prose',
-  );
-  fireEvent.click(screen.getByRole('button', { name: '读取完整内容' }));
-  await screen.findByText('# 完整原文');
-  expect(screen.getByText('原文分段 · 第 1 段')).toBeTruthy();
-  expect(screen.queryByRole('heading')).toBeNull();
+  expect(screen.queryByRole('button', { name: '读取完整内容' })).toBeNull();
+  expect(screen.queryByRole('button', { name: '生成中，完成后读取完整内容' })).toBeNull();
+  await screen.findByRole('heading', { name: '完整原文' });
+  expect(screen.queryByText('预览 ·')).toBeNull();
   expect(vi.mocked(deferredContentReader.read).mock.calls[0][0].conversationId).toBe(
     'conversation-prose',
   );
 });
-it('keeps explicit source reading disabled while prose is streaming', () => {
+it('keeps the streaming preview and does not fetch until generation finishes', () => {
   render(
     <MessageTextContent
       conversationId="conversation-prose"
@@ -54,12 +50,34 @@ it('keeps explicit source reading disabled while prose is streaming', () => {
       streaming
     />,
   );
-  const read = screen.getByRole('button', {
-    name: '生成中，完成后读取完整内容',
-  }) as HTMLButtonElement;
-  expect(read.disabled).toBe(true);
-  fireEvent.click(read);
+  expect(screen.getByText('生成中')).toBeTruthy();
+  expect(screen.queryByRole('button', { name: '读取完整内容' })).toBeNull();
+  expect(screen.queryByRole('button', { name: '生成中，完成后读取完整内容' })).toBeNull();
   expect(deferredContentReader.read).not.toHaveBeenCalled();
+});
+it('retries a failed assemble without exposing a paged source reader', async () => {
+  vi.mocked(deferredContentReader.read)
+    .mockRejectedValueOnce(new Error('content.read-failed'))
+    .mockResolvedValueOnce({
+      content: {
+        text: '恢复后的全文',
+        offset: 0,
+        utf16Length: 6,
+        utf8Bytes: 18,
+        version: 'a'.repeat(64),
+        format: 'text',
+      },
+    });
+  render(
+    <ConversationContentScope.Provider value="conversation-prose">
+      <MessageTextContent text="**预览**" parts={[{ text: '**预览**', contentRef }]} />
+    </ConversationContentScope.Provider>,
+  );
+  await screen.findByRole('alert');
+  expect(screen.getByText('预览', { selector: 'strong' })).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: '重试读取' }));
+  await waitFor(() => expect(screen.getByText('恢复后的全文')).toBeTruthy());
+  expect(screen.queryByRole('button', { name: '读取完整内容' })).toBeNull();
 });
 it('preserves ordinary text and custom user previews without adding a source reader', () => {
   render(

@@ -1,66 +1,45 @@
 ﻿/**
  * @vitest-environment jsdom
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, render, screen } from '@testing-library/react';
 import { HtmlSandbox } from './HtmlSandbox.js';
 
 const executeJavaScript = vi.fn();
-const setZoomFactor = vi.fn();
-
-beforeEach(() => {
-  executeJavaScript.mockResolvedValue(412);
-  Object.defineProperty(HTMLElement.prototype, 'executeJavaScript', {
-    configurable: true,
-    value: executeJavaScript,
-  });
-  Object.defineProperty(HTMLElement.prototype, 'setZoomFactor', {
-    configurable: true,
-    value: setZoomFactor,
-  });
-});
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
   vi.clearAllMocks();
-  delete (HTMLElement.prototype as HTMLElement & { executeJavaScript?: unknown }).executeJavaScript;
-  delete (HTMLElement.prototype as HTMLElement & { setZoomFactor?: unknown }).setZoomFactor;
 });
 
 describe('HtmlSandbox', () => {
-  it('measures natural guest content without applying a second zoom correction', async () => {
+  it('uses NewMax fixed iframe srcDoc instead of guest measurement', () => {
     render(<HtmlSandbox code={'<main style="height:412px">content</main>'} />);
 
-    const webview = screen.getByTestId('html-sandbox') as HTMLElement;
-    await waitFor(() => expect(webview.style.height).toBe('412px'));
-
-    expect(executeJavaScript).toHaveBeenCalled();
-    const measureScript = String(executeJavaScript.mock.calls[0]?.[0]);
-    expect(measureScript).toContain('body.children');
-    expect(measureScript).not.toContain('bodyRect.height');
-    expect(measureScript).not.toContain('devicePixelRatio');
-    expect(setZoomFactor).not.toHaveBeenCalled();
-
-    const src = webview.getAttribute('src') ?? '';
-    const html = decodeURIComponent(src.replace(/^data:text\/html[^,]*,/, ''));
-    expect(html).toContain('min-height:0');
-    expect(html).toContain('height:auto');
+    const content = screen.getByTestId('html-sandbox-content');
+    const iframe = content.querySelector('iframe');
+    expect(iframe).toBeTruthy();
+    expect(iframe?.getAttribute('sandbox')).toBe('allow-scripts');
+    expect(iframe?.getAttribute('title')).toBe('HTML 预览');
+    expect(executeJavaScript).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('html-sandbox')).toBeNull();
+    expect(screen.queryByText('UI 设计资源格式无效，请让模型重新生成')).toBeNull();
   });
 
-  it('keeps the shell mounted when Electron rejects an early measurement synchronously', async () => {
-    executeJavaScript
-      .mockImplementationOnce(() => {
-        throw new Error('The WebView must be attached to the DOM and dom-ready first');
-      })
-      .mockResolvedValue(412);
+  it('previews unfinished HTML instead of showing a format-invalid card', () => {
+    render(<HtmlSandbox code={'<main><section>unfinished'} />);
 
-    render(<HtmlSandbox code={'<main style="height:412px">content</main>'} />);
+    const iframe = screen.getByTestId('html-sandbox-content').querySelector('iframe');
+    expect(iframe?.getAttribute('srcdoc')).toContain('unfinished');
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
 
-    const webview = screen.getByTestId('html-sandbox') as HTMLElement;
-    expect(webview.style.height).toBe('240px');
+  it('keeps the source and preview shell available for fenced HTML', () => {
+    render(<HtmlSandbox code={'<main>content</main>'} />);
 
-    webview.dispatchEvent(new Event('dom-ready'));
-    await waitFor(() => expect(webview.style.height).toBe('412px'));
-    expect(executeJavaScript.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByTestId('html-sandbox-content')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '源码' })).toBeTruthy();
+    expect(screen.getByText('HTML')).toBeTruthy();
   });
 });

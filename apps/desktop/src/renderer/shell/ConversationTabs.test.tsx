@@ -44,6 +44,9 @@ describe('ConversationTabs NewMax tab track', () => {
       />,
     );
 
+    expect(screen.getByTestId('conversation-tabs').getAttribute('data-pane-tab-bar')).toBe(
+      'true',
+    );
     expect(screen.getByTestId('conversation-tab-c1').classList.contains('shell-pane-tab')).toBe(
       true,
     );

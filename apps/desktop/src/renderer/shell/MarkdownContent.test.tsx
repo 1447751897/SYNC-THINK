@@ -116,32 +116,32 @@ describe('MarkdownContent', () => {
       }),
     );
     expect(html).toContain('shell-mermaid');
-    expect(html).toContain('shell-mermaid__bar');
+    expect(html).toContain('shell-mermaid__canvas');
     expect(html).toContain('正在渲染图表');
   });
 
-  it('offers collapse + preview/source views on the mermaid card', () => {
+  it('renders the mermaid block without card chrome (NewMax parity)', () => {
     const html = renderToStaticMarkup(
       createElement(MarkdownContent, {
         text: '```mermaid\nflowchart LR\n  A --> B\n```',
       }),
     );
-    expect(html).toContain('shell-html__collapse');
-    expect(html).toContain('预览');
-    expect(html).toContain('源码');
-    expect(html).toContain('复制源码');
-    expect(html).toContain('aria-label="放大查看图表"');
+    expect(html).toContain('data-testid="mermaid-canvas"');
+    expect(html).not.toContain('shell-mermaid__bar');
+    expect(html).not.toContain('shell-html__collapse');
+    expect(html).not.toContain('复制源码');
+    expect(html).not.toContain('预览');
   });
 
-  it('keeps a streaming mermaid block as code until the block completes', () => {
+  it('renders a streaming mermaid block immediately like NewMax', () => {
     const html = renderToStaticMarkup(
       createElement(MarkdownContent, {
         text: '```mermaid\nflowchart LR\n  A --',
         streaming: true,
       }),
     );
-    expect(html).not.toContain('shell-mermaid');
-    expect(html).toContain('shell-md-code');
+    expect(html).toContain('shell-mermaid');
+    expect(html).toContain('mermaid-canvas');
   });
 
   it('keeps syntax highlighting and distinguishes writing from settled code', () => {
@@ -159,20 +159,16 @@ describe('MarkdownContent', () => {
     expect(settledHtml).toContain('hljs-keyword');
   });
 
-  it('renders a fenced html block inside the sandbox webview', () => {
+  it('renders a fenced html block inside a fixed-height sanitized iframe', () => {
     const html = renderToStaticMarkup(
       createElement(MarkdownContent, {
         text: '```html\n<div id="app">Hello</div>\n```',
       }),
     );
     expect(html).toContain('shell-html');
-    expect(html).toContain('data:text/html');
-    expect(html).toContain('html-sandbox');
-    const src = html.match(/src="([^"]*)"/)?.[1] ?? '';
-    const decoded = decodeURIComponent(src);
-    expect(decoded).toContain('html,body{margin:0;');
-    expect(decoded).toContain('background-color:');
-    expect(decoded).not.toContain('body{min-height:100vh}');
+    expect(html).toContain('shell-html__content');
+    expect(html).toContain('srcDoc=');
+    expect(html).toContain('sandbox="allow-scripts"');
   });
 
   it('keeps fenced html passive when embedded in a local file preview', () => {
@@ -197,112 +193,100 @@ describe('MarkdownContent', () => {
     expect(html).toContain('shell-html__bar');
     expect(html).toContain('预览');
     expect(html).toContain('源码');
-    expect(html).toContain('刷新');
+    expect(html).toContain('下载');
     expect(html).toContain('复制');
     expect(html).toContain('浏览器打开');
     expect(html).toContain('shell-html__collapse');
   });
 
-  it('keeps a streaming html block as code until the block completes', () => {
+  it('renders a streaming html block immediately like NewMax', () => {
     const html = renderToStaticMarkup(
       createElement(MarkdownContent, {
         text: '```html\n<div id="app">Hello',
         streaming: true,
       }),
     );
-    expect(html).not.toContain('shell-html');
-    expect(html).toContain('shell-md-code');
+    expect(html).toContain('shell-html--fenced');
+    expect(html).toContain('shell-html__content');
   });
 
-  it('injects the viewport and canvas style into the head of a complete html document', () => {
+  it('sanitizes a complete html document before putting it into srcDoc', () => {
     const html = renderToStaticMarkup(
       createElement(MarkdownContent, {
         text: '```html\n<!DOCTYPE html>\n<html>\n<head><title>t</title></head>\n<body style="background:#222">x</body>\n</html>\n```',
       }),
     );
-    // The webview src is a percent-encoded data: URL — decode before asserting
-    // on the guest document structure.
-    const src = html.match(/src="([^"]*)"/)?.[1] ?? '';
-    const decoded = decodeURIComponent(src);
-    const headPos = decoded.indexOf('</head>');
-    const fillPos = decoded.indexOf('<style>html,body{margin:0;');
-    expect(headPos).toBeGreaterThan(-1);
-    expect(fillPos).toBeGreaterThan(-1);
-    expect(fillPos).toBeLessThan(headPos);
-    // The viewport meta keeps the guest layout width tied to the webview
-    // element so the preview layout matches a real browser tab.
-    expect(decoded).toContain('name="viewport"');
-    expect(decoded.indexOf('name="viewport"')).toBeLessThan(headPos);
+    expect(html).toContain('shell-html--fenced');
+    expect(html).toContain('srcDoc=');
+    expect(html).toContain('background:#222');
   });
 
-  it('wraps a bare html fragment with viewport and canvas styles in the head', () => {
+  it('renders a bare html fragment in srcDoc', () => {
     const html = renderToStaticMarkup(
       createElement(MarkdownContent, {
         text: '```html\n<div id="app">Hello</div>\n```',
       }),
     );
-    const src = html.match(/src="([^"]*)"/)?.[1] ?? '';
-    const decoded = decodeURIComponent(src);
-    const headPos = decoded.indexOf('<head>');
-    const fillPos = decoded.indexOf('<style>html,body{margin:0;');
-    expect(headPos).toBeGreaterThan(-1);
-    expect(fillPos).toBeGreaterThan(-1);
-    expect(fillPos).toBeGreaterThan(headPos);
-    expect(fillPos).toBeLessThan(decoded.indexOf('<body>'));
-    expect(decoded).toContain('name="viewport"');
-    expect(decoded).not.toContain('body{min-height:100vh}');
+    expect(html).toContain('shell-html--fenced');
+    expect(html).toContain('srcDoc=');
+    expect(html).toContain('Hello');
   });
 
-  it('renders only an explicit design-html fence with the design draft surface', () => {
+  it('previews design drafts as NewMax HtmlPreview html fences', () => {
     const design = renderToStaticMarkup(
       createElement(MarkdownContent, {
-        text: '```design-html\n<main>Design surface</main>\n```',
+        text: '```html\n<main>Design surface</main>\n```',
         projectFolder: 'D:/work/demo',
       }),
     );
-    const ordinary = renderToStaticMarkup(
+    const leftover = renderToStaticMarkup(
       createElement(MarkdownContent, {
-        text: '```html\n<main>Ordinary HTML</main>\n```',
+        text: '```design-html\n<main>Legacy draft</main>\n```',
         projectFolder: 'D:/work/demo',
+      }),
+    );
+    const jsonKit = renderToStaticMarkup(
+      createElement(MarkdownContent, {
+        text: '```design-ui\n{"version":1,"type":"ui-design","title":"x","nodes":[]}\n```',
       }),
     );
 
-    expect(design).toContain('shell-html--design');
-    expect(design).toContain('保存到项目');
-    expect(design).toContain('下载');
-    expect(ordinary).toContain('shell-html');
-    expect(ordinary).not.toContain('shell-html--design');
-    expect(ordinary).not.toContain('保存到项目');
+    expect(design).toContain('shell-html--fenced');
+    expect(design).toContain('srcDoc=');
+    expect(design).toContain('Design surface');
+    expect(design).not.toContain('shell-html--design');
+    expect(design).not.toContain('保存到项目');
+    expect(design).not.toContain('UI 设计资源格式无效');
+    expect(leftover).toContain('shell-html--fenced');
+    expect(leftover).toContain('Legacy draft');
+    expect(jsonKit).not.toContain('UI 设计资源格式无效');
+    expect(jsonKit).not.toContain('shell-html--fenced');
+    expect(jsonKit).toContain('shell-md-code');
   });
 
-  it('supports a strict standalone design-html tag while leaving fenced tags ordinary', () => {
+  it('leaves standalone design-html tags as ordinary markup', () => {
     const tagged = renderToStaticMarkup(
       createElement(MarkdownContent, {
         text: '<design-html>\n<main>Tagged design</main>\n</design-html>',
       }),
     );
-    const fenced = renderToStaticMarkup(
-      createElement(MarkdownContent, {
-        text: '```html\n<design-html>\n<main>Sample</main>\n</design-html>\n```',
-      }),
-    );
 
-    expect(tagged).toContain('shell-html--design');
-    expect(tagged).toContain('Tagged%20design');
-    expect(fenced).not.toContain('shell-html--design');
+    expect(tagged).not.toContain('shell-html--design');
+    expect(tagged).not.toContain('data-testid="html-sandbox"');
+    expect(tagged).not.toContain('html-sandbox-content');
   });
 
   it('renders a file-backed inline visualization between Markdown segments', () => {
     const html = renderToStaticMarkup(
       createElement(MarkdownContent, {
-        text: '可视化结果：\n\n::newmax-inline-vis{file="visualizations/overview.html"}\n\n以上为实时预览。',
+        text: '可视化结果：\n\n::newmax-inline-vis{file="overview.html"}\n\n以上为实时预览。',
         projectFolder: 'D:/work/demo',
         conversationId: 'conv-inline-vis',
       }),
     );
 
     expect(html).toContain('shell-inline-vis');
-    expect(html).toContain('data-file="visualizations/overview.html"');
+    expect(html).toContain('data-file="overview.html"');
     expect(html).toContain('可视化结果');
     expect(html).toContain('以上为实时预览');
   });
@@ -310,7 +294,7 @@ describe('MarkdownContent', () => {
   it('keeps inline visualization directives passive when interactive embeds are disabled', () => {
     const html = renderToStaticMarkup(
       createElement(MarkdownContent, {
-        text: '::codex-inline-vis{file="visualizations/overview.html"}',
+        text: '::codex-inline-vis{file="overview.html"}',
         interactiveEmbeds: false,
       }),
     );
@@ -323,7 +307,7 @@ describe('MarkdownContent', () => {
   it('does not execute a visualization directive inside a fenced code block', () => {
     const html = renderToStaticMarkup(
       createElement(MarkdownContent, {
-        text: '```md\n::newmax-inline-vis{file="visualizations/overview.html"}\n```',
+        text: '```md\n::newmax-inline-vis{file="overview.html"}\n```',
         projectFolder: 'D:/work/demo',
       }),
     );
@@ -331,5 +315,22 @@ describe('MarkdownContent', () => {
     expect(html).toContain('shell-md-code');
     expect(html).toContain('newmax-inline-vis');
     expect(html).not.toContain('shell-inline-vis');
+  });
+
+  it('renders generated images with a NewMax model caption and zoom target', () => {
+    const html = renderToStaticMarkup(
+      createElement(MarkdownContent, {
+        text: [
+          '图像已生成并保存。',
+          '模型：gpt-image-2',
+          '',
+          '![生成的图片](sync-think-image://generated/a.png)',
+        ].join('\n'),
+      }),
+    );
+    expect(html).toContain('data-testid="generated-image-frame"');
+    expect(html).toContain('生图模型 · gpt-image-2');
+    expect(html).toContain('sync-think-image://generated/a.png');
+    expect(shellCss).toMatch(/\.shell-md-image[^{]*\{[^}]*cursor:\s*zoom-in;/s);
   });
 });

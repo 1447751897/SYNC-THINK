@@ -6,6 +6,6 @@
   "scripts": {
     "build": "node build.mjs",
     "test": "node --test tests",
-    "lint": "node --check auth.js && node --check site.js && node --check auth-client.js && node --check demo.js"
+    "lint": "node --check auth.js && node --check site.js && node --check auth-client.js && node --check build.mjs && node --check ../desktop/scripts/build-website-demo.mjs"
   }
 }

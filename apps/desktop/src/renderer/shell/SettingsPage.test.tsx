@@ -3,7 +3,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { forwardRef } from 'react';
+import { createElement, forwardRef } from 'react';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { COMPUTER_USE_PLUGIN_SETTING_KEY } from '@sync-think/protocol/plugins';
@@ -14,7 +14,7 @@ import { SettingsPage } from './SettingsPage.js';
 const shellCss = readFileSync(resolve(process.cwd(), 'src/renderer/shell/shell.css'), 'utf8');
 
 vi.mock('./ModelSettings.js', () => ({
-  ModelSettings: forwardRef(() => null),
+  ModelSettings: forwardRef(() => createElement('div', { 'data-testid': 'mock-model-settings' })),
 }));
 
 const runtime = {
@@ -242,6 +242,21 @@ describe('SettingsPage layout contract', () => {
     expect(shellCss).toMatch(/\.shell-menu__scroll\s*\{[^}]*overflow-x:\s*hidden;/s);
   });
 
+  it('makes the settings viewport a flex column so KeepAlive pages can wheel-scroll', () => {
+    expect(shellCss).toMatch(
+      /\.settings-content__viewport\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*overflow:\s*hidden;/s,
+    );
+    expect(shellCss).toMatch(
+      /\.settings-content__viewport\s*>\s*\.settings-section-layer\s*\{[^}]*min-height:\s*0;[^}]*overflow:\s*hidden;/s,
+    );
+    expect(shellCss).toMatch(
+      /\.model-settings-root\s*\{[^}]*display:\s*flex;[^}]*flex:\s*1;[^}]*height:\s*100%;/s,
+    );
+    expect(shellCss).toMatch(
+      /\.model-settings-workspace\s*\{[^}]*display:\s*flex;[^}]*flex:\s*1;[^}]*min-height:\s*0;/s,
+    );
+  });
+
   it('keeps the done footer inset from the modal corner and aligned with the pane', () => {
     expect(shellCss).toMatch(
       /\.settings-content\s*\{[^}]*grid-template-rows:\s*48px minmax\(0, 1fr\) auto;/s,
@@ -326,6 +341,23 @@ describe('SettingsPage layout contract', () => {
 
     expect(screen.getByRole('heading', { name: '模型' })).toBeTruthy();
   });
+
+  it('keeps visited model settings mounted when switching sections', () => {
+    render(<SettingsPage />);
+
+    fireEvent.click(screen.getByRole('button', { name: '模型' }));
+    const models = screen.getByTestId('mock-model-settings');
+    expect(models.closest('[hidden]')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: '通用' }));
+    expect(screen.getByRole('heading', { name: '通用' })).toBeTruthy();
+    expect(screen.getByTestId('mock-model-settings')).toBe(models);
+    expect(models.closest('[hidden]')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: '模型' }));
+    expect(screen.getByTestId('mock-model-settings')).toBe(models);
+    expect(models.closest('[hidden]')).toBeNull();
+  });
 });
 
 describe('SettingsPage NewMax general tabs', () => {
@@ -368,7 +400,7 @@ describe('SettingsPage NewMax general tabs', () => {
       /@media \(prefers-reduced-motion: reduce\) \{\s*\n\s+\.shell-dock-panel\.is-active,/,
     );
     expect(shellCss).toMatch(
-      /\.shell-workspace-files-switcher__views \{\s*--sliding-tabs-inset: 3px;\s*--sliding-tabs-pill-background: var\(--color-overlay\);/s,
+      /\.shell-workspace-files-switcher__tab \{[\s\S]*?font-size:\s*13px;[\s\S]*?font-weight:\s*600;/,
     );
   });
 

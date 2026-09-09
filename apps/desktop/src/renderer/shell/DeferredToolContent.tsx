@@ -18,7 +18,7 @@ interface DeferredToolContentProps {
   preview: string;
   previewContent?: ReactNode;
   presentation?: 'code' | 'prose';
-  /** When false, keep paged “读取完整内容”. File diffs stay on-demand. */
+  /** When false, keep paged “读取完整内容”. Message bodies and file snapshots assemble. */
   assemble?: boolean;
   label?: string;
   streaming?: boolean;
@@ -52,7 +52,7 @@ function ContentSession({
   conversationId?: string;
   reference?: ContentReference;
 }) {
-  const autoAssemble = assemble ?? presentation !== 'prose';
+  const autoAssemble = assemble ?? true;
   const [content, setContent] = useState<string>();
   const [history, setHistory] = useState<number[]>([]);
   const [paged, setPaged] = useState<{

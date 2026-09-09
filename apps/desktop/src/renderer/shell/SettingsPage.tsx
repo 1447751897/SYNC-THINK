@@ -85,6 +85,7 @@ import {
 } from './ModelSettings.js';
 import { DesktopUpdatePanel } from './DesktopUpdatePanel.js';
 import { KernelUpdatePanel } from './KernelUpdatePanel.js';
+import { KeepAliveLayer } from './KeepAliveLayer.js';
 import { SlidingTabs } from './SlidingTabs.js';
 import { PreferencesSettings } from './PreferencesSettings.js';
 import { BrandLogoMark } from './BrandLogoMark.js';
@@ -309,9 +310,13 @@ export function SettingsPage({
           <h1>{current.label}</h1>
         </div>
         <div className="settings-content__viewport">
-          {section === 'general' && <GeneralSection />}
-          {section === 'theme' && <PreferencesSettings />}
-          {section === 'models' && (
+          <KeepAliveLayer active={section === 'general'} className="settings-section-layer">
+            <GeneralSection />
+          </KeepAliveLayer>
+          <KeepAliveLayer active={section === 'theme'} className="settings-section-layer">
+            <PreferencesSettings />
+          </KeepAliveLayer>
+          <KeepAliveLayer active={section === 'models'} className="settings-section-layer">
             <ModelSettings
               ref={modelSettingsRef}
               initialDetailView={initialModelDetail}
@@ -319,15 +324,35 @@ export function SettingsPage({
               onCatalogChanged={onCatalogChanged}
               onDirtyChange={reportDirty}
             />
-          )}
-          {(section === 'plugins' || section === 'computer-use') && <ComputerUsePluginSection />}
-          {section === 'connection' && (
+          </KeepAliveLayer>
+          <KeepAliveLayer
+            active={section === 'plugins' || section === 'computer-use'}
+            className="settings-section-layer"
+          >
+            <ComputerUsePluginSection />
+          </KeepAliveLayer>
+          <KeepAliveLayer active={section === 'connection'} className="settings-section-layer">
             <ConnectionSection initialTab={initialConnectionTab} navigationKey={navigationKey} />
-          )}
-          {section === 'data' && <DataDiagnosticsSection />}
-          {section === 'about' && <AboutSection />}
+          </KeepAliveLayer>
+          <KeepAliveLayer active={section === 'data'} className="settings-section-layer">
+            <DataDiagnosticsSection />
+          </KeepAliveLayer>
+          <KeepAliveLayer active={section === 'about'} className="settings-section-layer">
+            <AboutSection />
+          </KeepAliveLayer>
         </div>
         <footer className="settings-footer">
+          {section === 'models' ? (
+            <button
+              type="button"
+              className="settings-continue"
+              disabled={completing}
+              onClick={() => modelSettingsRef.current?.startCreate()}
+            >
+              <Plus size={14} aria-hidden="true" />
+              继续添加供应商
+            </button>
+          ) : null}
           <button
             type="button"
             className="settings-done"

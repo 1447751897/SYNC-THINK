@@ -10,9 +10,10 @@ import {
 } from 'react';
 import {
   Bot,
+  File,
   FileDiff,
   FilePlus2,
-  Folder,
+  Files,
   Globe,
   MessageSquare,
   MessageSquarePlus,
@@ -141,7 +142,7 @@ function WorkbenchTabIcon({
   if (tab.type === 'terminal') return <SquareTerminal size={14} aria-hidden="true" />;
   if (tab.type === 'browser') return <WorkbenchBrowserIcon tab={tab} favicon={favicon} />;
   if (tab.type === 'review') return <FileDiff size={14} aria-hidden="true" />;
-  return <Folder size={14} aria-hidden="true" />;
+  return <File size={14} aria-hidden="true" />;
 }
 
 function sizeBounds(placement: WorkbenchPlacement, host: HTMLElement | null) {
@@ -204,9 +205,13 @@ export function WorkspaceWorkbench(props: WorkspaceWorkbenchProps) {
   onFileBrowserWidthChangeRef.current = props.onFileBrowserWidthChange;
   const activeTab =
     props.scope.tabs.find((tab) => tab.id === props.scope.activeTabId) ?? props.scope.tabs.at(-1);
+  const hideEmptyFilesTab =
+    props.placement === 'right' &&
+    props.scope.fileBrowserOpen &&
+    activeTab?.type === 'file';
   const visibleTabs = props.scope.tabs.filter((tab) => {
     if (tab.type !== 'workspace-files') return true;
-    return props.placement === 'right' && !props.scope.fileBrowserOpen;
+    return !hideEmptyFilesTab;
   });
   const showingFilesTab = activeTab?.type === 'workspace-files';
   const showFilesBeside =
@@ -392,6 +397,7 @@ export function WorkspaceWorkbench(props: WorkspaceWorkbenchProps) {
       data-workspace-panel-layout="true"
       data-workspace-panel-placement={props.placement}
       data-workspace-panel-open={revealed ? 'true' : 'false'}
+      data-pane-shell="true"
       data-workspace-chrome-focus={props.focused === false ? 'false' : 'true'}
       data-resizing={resizing ? 'true' : undefined}
       onPointerDownCapture={() => props.onChromeFocus?.()}
@@ -449,6 +455,9 @@ export function WorkspaceWorkbench(props: WorkspaceWorkbenchProps) {
                 data-tab-active={active ? 'true' : undefined}
                 data-workspace-file-preview-tab={
                   tab.type === 'file' ? tab.path : tab.type === 'review' ? tab.id : undefined
+                }
+                data-workspace-empty-file-tab={
+                  tab.type === 'workspace-files' ? 'true' : undefined
                 }
                 className={clsx('shell-workbench-tab group', active && 'is-active')}
                 title={label}
@@ -513,7 +522,7 @@ export function WorkspaceWorkbench(props: WorkspaceWorkbenchProps) {
               >
                 {props.placement === 'right' ? (
                   <button type="button" role="menuitem" onClick={() => selectNewResource('files')}>
-                    <Folder size={14} /> 工作区文件
+                    <Files size={14} /> 工作区文件
                   </button>
                 ) : null}
                 <button
@@ -542,7 +551,6 @@ export function WorkspaceWorkbench(props: WorkspaceWorkbenchProps) {
                 <button
                   type="button"
                   role="menuitem"
-                  disabled={props.canOpenTerminal === false}
                   onClick={() => selectNewResource('terminal')}
                 >
                   <SquareTerminal size={14} /> 新建终端
@@ -566,7 +574,7 @@ export function WorkspaceWorkbench(props: WorkspaceWorkbenchProps) {
             onMouseDown={(event) => event.stopPropagation()}
             onClick={props.onToggleFileBrowser}
           >
-            <Folder size={15} />
+            <Files size={16} />
           </button>
         ) : null}
 
@@ -623,7 +631,7 @@ export function WorkspaceWorkbench(props: WorkspaceWorkbenchProps) {
         </div>
       </div>
       <div className="shell-workbench__divider" data-pane-tab-divider="true" />
-      <div className="shell-workbench__content">
+      <div className="shell-workbench__content" data-pane-content-area="true">
         <div className="shell-workbench__main">
           {props.scope.tabs
             .filter((tab) => tab.type === 'browser')

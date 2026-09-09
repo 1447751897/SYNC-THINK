@@ -22,6 +22,7 @@ export interface RendererCreateProviderPayload {
   baseUrl: string;
   protocol: 'openai-responses' | 'openai-chat' | 'openai-images' | 'anthropic-messages';
   supportsDiscovery?: boolean;
+  discoverOnCreate?: boolean;
   credentialGroupName?: string;
   credentialLabel?: string;
   importedFrom?: string;
@@ -91,6 +92,7 @@ export function parseCreateProviderPayload(value: unknown): RendererCreateProvid
       'baseUrl',
       'protocol',
       'supportsDiscovery',
+      'discoverOnCreate',
       'credentialGroupName',
       'credentialLabel',
       'importedFrom',
@@ -99,6 +101,9 @@ export function parseCreateProviderPayload(value: unknown): RendererCreateProvid
     throw new Error('Invalid create-provider payload');
   }
   if (value.supportsDiscovery !== undefined && typeof value.supportsDiscovery !== 'boolean') {
+    throw new Error('Invalid create-provider payload');
+  }
+  if (value.discoverOnCreate !== undefined && typeof value.discoverOnCreate !== 'boolean') {
     throw new Error('Invalid create-provider payload');
   }
   for (const field of ['credentialGroupName', 'credentialLabel', 'importedFrom'] as const) {
@@ -111,6 +116,7 @@ export function parseCreateProviderPayload(value: unknown): RendererCreateProvid
     baseUrl: value.baseUrl.trim(),
     protocol: value.protocol as RendererCreateProviderPayload['protocol'],
     supportsDiscovery: value.supportsDiscovery as boolean | undefined,
+    discoverOnCreate: value.discoverOnCreate as boolean | undefined,
     credentialGroupName: value.credentialGroupName as string | undefined,
     credentialLabel: value.credentialLabel as string | undefined,
     importedFrom: value.importedFrom as string | undefined,

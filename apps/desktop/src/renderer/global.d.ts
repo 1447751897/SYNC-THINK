@@ -290,6 +290,8 @@ import type {
   StartProjectTerminalResult,
 } from '../workspace-tools-contract.js';
 import type { OpenExternalUrlResult } from '../external-link-contract.js';
+import type { PtyTerminalBridge } from '../terminal-pty-contract.js';
+import type { PlatformContext } from '@sync-think/shared';
 
 declare global {
   interface Window {
@@ -930,6 +932,7 @@ declare global {
           path: string | null;
         }>;
       };
+      terminal?: PtyTerminalBridge;
       updates: {
         getState(): Promise<DesktopUpdateSnapshot>;
         checkForUpdates(): Promise<DesktopUpdateActionResult>;
@@ -943,17 +946,20 @@ declare global {
         openLogDirectory(): Promise<OpenDesktopDataDirectoryResponse>;
         subscribeState(listener: (snapshot: DesktopUpdateSnapshot) => void): () => void;
       };
-      platform: 'win32';
+      platform: PlatformContext;
     };
   }
 
-  // Electron <webview>（内置浏览器面板）。guest 权限在 main 侧收紧。
+  // Electron <webview>（内置浏览器面板 / 交互式预览）。guest 权限在 main 侧收紧。
   namespace JSX {
     interface IntrinsicElements {
       webview: React.DetailedHTMLProps<
         React.HTMLAttributes<HTMLElement> & {
           src?: string;
           partition?: string;
+          // Electron guest preference string, e.g.
+          // "sandbox=yes,contextIsolation=yes,nodeIntegration=no,webSecurity=yes".
+          webpreferences?: string;
         },
         HTMLElement
       >;

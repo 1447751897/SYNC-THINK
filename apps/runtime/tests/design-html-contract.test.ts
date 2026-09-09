@@ -10,15 +10,15 @@ type ContextSnapshotBuilder = {
   ) => { providerRequest: { systemPrompt: string } };
 };
 
-describe('Runtime design-html product contract', () => {
-  it('injects the parseable design, preview, save, and browser boundaries into provider context', () => {
+describe('Runtime html preview product contract', () => {
+  it('injects the NewMax html-fence design contract into provider context', () => {
     const runtime = new Runtime({
-      installId: `design-html-contract-${Date.now()}`,
+      installId: `html-preview-contract-${Date.now()}`,
       allowNoToken: true,
     });
     const run = createDemoRun(
-      'run-design-html-contract' as RunId,
-      'thread-design-html-contract',
+      'run-html-preview-contract' as RunId,
+      'thread-html-preview-contract',
       '请创建一个可保存的登录页设计稿',
     );
     const snapshot = (
@@ -29,24 +29,15 @@ describe('Runtime design-html product contract', () => {
     });
     const prompt = snapshot.providerRequest.systemPrompt;
 
-    expect(prompt).toContain('AI design draft output contract (design-html):');
-    expect(prompt).toContain('exactly one fenced block tagged `design-html`');
-    expect(prompt).toContain(
-      'complete `<!doctype html>` / `<html>` / `<head>` / `<body>` document',
-    );
+    expect(prompt).toContain('AI design draft output contract (html):');
+    expect(prompt).toContain('exactly one fenced block tagged `html`');
+    expect(prompt).toContain('` ```html `');
     expect(prompt).toContain('Put CSS and JavaScript inline');
     expect(prompt).toContain('visible page content and accessible labels/interactions');
-    expect(prompt).toContain('at or below 1 MiB');
-    expect(prompt).toContain('Preview, save, and browser-open are separate facts');
-    expect(prompt).toContain('actual `browser_open` result');
-    expect(prompt).toContain('successful `write_file` result');
-    expect(prompt).toContain('project-relative path');
-    expect(prompt).toContain('never claim that a file was saved before the tool reports success');
-    expect(prompt).toContain(
-      'do not call `write_file` and do not overwrite an existing design file',
-    );
-    expect(prompt).toContain('ordinary HTML examples should remain regular `html` code fences');
-    expect(prompt).toContain('speed-first NewMax-style preview');
+    expect(prompt).toContain('Never use `design-ui`, `ui-design`, or `design-html` fences');
+    expect(prompt).toContain('never emit a JSON UI-kit / node-tree artifact');
+    expect(prompt).not.toContain('AI design draft output contract (design-ui):');
+    expect(prompt).not.toContain('AI design draft output contract (design-html):');
     expect(prompt).not.toContain('AI editable design output contract (excalidraw):');
   });
 
@@ -98,6 +89,6 @@ describe('Runtime design-html product contract', () => {
     expect(prompt).toContain('Emit the directive as a standalone line outside Markdown fences');
     expect(prompt).toContain('Only emit the directive when a project folder is bound and the file write succeeded');
     expect(prompt).toContain('Inline preview, browser-open, and saving are separate facts');
-    expect(prompt).toContain('This contract is distinct from `design-html` and `excalidraw`');
+    expect(prompt).toContain('This contract is distinct from in-message `html` fences and `excalidraw`');
   });
 });

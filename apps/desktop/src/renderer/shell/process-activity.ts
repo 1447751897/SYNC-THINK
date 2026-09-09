@@ -26,6 +26,9 @@ const TOOL_DISPLAY_NAMES: Readonly<Record<string, string>> = {
   execute_command: '运行命令',
   exec_command: '运行命令',
   run_command: '运行命令',
+  read_command: '等待命令',
+  list_commands: '查看命令会话',
+  stop_command: '停止命令',
   command_execution: '命令执行',
   list_files: '查看目录',
   glob: '查找文件',
@@ -35,12 +38,18 @@ const TOOL_DISPLAY_NAMES: Readonly<Record<string, string>> = {
   web_fetch: '获取网页',
   open: '打开网页',
   view_image: '查看图片',
+  generate_image: '生成图片',
 };
 
 export function friendlyToolName(name: string): string {
-  // 内核经 MCP 调用时名字是 mcp__sync-think-platform__file_read，直译会变成
-  // 「Mcp Sync Think Platform File Read」——先剥前缀才能落到中文映射表上。
-  const normalized = normalizeToolName(name.trim()).toLowerCase();
+  const trimmed = name.trim();
+  const mcp = /^mcp__([a-z0-9-]+)__([a-z0-9_]+)$/i.exec(trimmed);
+  if (mcp?.[1] === 'capability-broker') {
+    return `capability-broker · ${mcp[2].replace(/_/g, ' ')}`;
+  }
+  const normalized = normalizeToolName(trimmed).toLowerCase();
+  if (normalized === 'search_capability') return 'capability-broker · search capability';
+  if (normalized === 'use_capability') return 'capability-broker · use capability';
   const exact = TOOL_DISPLAY_NAMES[normalized];
   if (exact) return exact;
   const suffix = normalized.split(/[.:/]/).at(-1) ?? normalized;
@@ -181,6 +190,45 @@ export function toolVisualKind(name: string): ProcessToolVisualKind {
   return 'other';
 }
 
+export function isGenerateImageToolName(name: string): boolean {
+  const trimmed = name.trim();
+  if (trimmed === 'generate_image') return true;
+  return /^mcp__[a-z0-9-]+__generate_image$/i.test(trimmed);
+}
+
+export function isUseCapabilityToolName(name: string): boolean {
+  const trimmed = name.trim();
+  if (trimmed === 'use_capability') return true;
+  return /^mcp__[a-z0-9-]+__use_capability$/i.test(trimmed);
+}
+
+export function isImageGenerationActivity(item: {
+  name: string;
+  argumentsJson?: string;
+  result?: string;
+}): boolean {
+  if (isGenerateImageToolName(item.name)) return true;
+  if (!isUseCapabilityToolName(item.name)) return false;
+  if (extractGeneratedImageSrc(item.result ?? '')) return true;
+  try {
+    const parsed = JSON.parse(item.argumentsJson || '{}') as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false;
+    const record = parsed as Record<string, unknown>;
+    let inner: unknown = record.arguments ?? record;
+    if (typeof inner === 'string') inner = JSON.parse(inner) as unknown;
+    if (!inner || typeof inner !== 'object' || Array.isArray(inner)) return false;
+    const prompt = (inner as Record<string, unknown>).prompt;
+    return typeof prompt === 'string' && prompt.trim().length > 0;
+  } catch {
+    return false;
+  }
+}
+
+export function extractGeneratedImageSrc(markdown: string): string | null {
+  const match = /!\[[^\]]*]\((sync-think-image:\/\/generated\/[^)\s]+)\)/.exec(markdown);
+  return match?.[1] ?? null;
+}
+
 function compactValue(value: unknown): string | undefined {
   if (typeof value === 'string') return value.trim() || undefined;
   if (typeof value === 'number' || typeof value === 'boolean') return String(value);
@@ -217,6 +265,18 @@ export function toolInputSummary(item: ToolItem): string {
     const parsed = JSON.parse(raw) as unknown;
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
       const record = parsed as Record<string, unknown>;
+      let nested = record.arguments;
+      if (typeof nested === 'string') {
+        try {
+          nested = JSON.parse(nested) as unknown;
+        } catch {
+          nested = undefined;
+        }
+      }
+      if (nested && typeof nested === 'object' && !Array.isArray(nested)) {
+        const prompt = compactValue((nested as Record<string, unknown>).prompt);
+        if (prompt) return clampToolSummary(prompt);
+      }
       for (const key of [
         'path',
         'file_path',
@@ -226,6 +286,7 @@ export function toolInputSummary(item: ToolItem): string {
         'url',
         'pattern',
         'target',
+        'prompt',
       ]) {
         const value = compactValue(record[key]);
         if (!value) continue;

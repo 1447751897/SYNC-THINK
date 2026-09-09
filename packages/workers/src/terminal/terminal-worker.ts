@@ -39,6 +39,12 @@ export interface TerminalWorker extends Worker<TerminalWorkerInput> {
   readonly kind: 'terminal';
 }
 
+export interface TerminalProcessWorkerOptions {
+  /** Omit for the token's deadline; null for a host-managed command session. */
+  timeoutMs?: number | null;
+  streamAllOutput?: boolean;
+}
+
 export class FakeTerminalWorker implements TerminalWorker {
   readonly kind = 'terminal' as const;
   async *exec(_input: TerminalWorkerInput, _token: WorkerToken): AsyncIterable<WorkerEvent> {
@@ -49,6 +55,8 @@ export class FakeTerminalWorker implements TerminalWorker {
 
 export class TerminalProcessWorker implements TerminalWorker {
   readonly kind = 'terminal' as const;
+
+  constructor(private readonly options: TerminalProcessWorkerOptions = {}) {}
 
   async *exec(input: TerminalWorkerInput, token: WorkerToken): AsyncIterable<WorkerEvent> {
     const command = String(input.action.command ?? '').trim();
@@ -113,6 +121,7 @@ export class TerminalProcessWorker implements TerminalWorker {
         onStdout: (text) => enqueue({ type: 'stdout', text }),
         onStderr: (text) => enqueue({ type: 'stderr', text }),
       },
+      this.options,
     ).finally(() => {
       finished = true;
       wake?.();

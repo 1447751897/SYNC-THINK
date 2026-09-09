@@ -36,6 +36,8 @@ import {
   formatElapsedZh,
   friendlyToolName,
   groupConsecutiveProcessTools,
+  extractGeneratedImageSrc,
+  isImageGenerationActivity,
   toolVisualKind,
   toolInputSummary,
   toolStatusOf,
@@ -45,6 +47,7 @@ import {
   type ProcessToolVisualKind,
 } from './process-activity.js';
 import { LoadingPixelGrid } from './LoadingPixelGrid.js';
+import { GridReveal } from './GridReveal.js';
 import { ConversationContentScope, DeferredToolContent } from './DeferredToolContent.js';
 import { parseDeferredContent } from '@sync-think/shared';
 
@@ -394,6 +397,10 @@ function ToolRow({
     summary && (visualKind === 'read' || visualKind === 'write' || visualKind === 'list')
       ? summary
       : undefined;
+  const imageTool = isImageGenerationActivity(item);
+  const generatedSrc =
+    status === 'completed' ? extractGeneratedImageSrc(item.result ?? '') : null;
+  const showGridReveal = imageTool && status !== 'failed';
   return (
     <div
       className={`shell-inline-process__tool is-${status}`}
@@ -476,6 +483,16 @@ function ToolRow({
           data-testid="inline-process-tool-progress"
         >
           {progressLine}
+        </div>
+      ) : null}
+      {showGridReveal ? (
+        <div className="shell-inline-process__grid-reveal" data-testid="inline-process-grid-reveal">
+          <GridReveal
+            src={generatedSrc}
+            alt={summary || '生成图片'}
+            caption={status === 'running' ? '生成中' : undefined}
+            aspect={1}
+          />
         </div>
       ) : null}
       {open ? (

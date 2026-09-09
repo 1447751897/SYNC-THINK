@@ -3,7 +3,8 @@
 // script stays cached on globalThis for the rest of the session.
 export interface MermaidVendor {
   initialize(config: Record<string, unknown>): void;
-  render(id: string, text: string): Promise<{ svg: string }>;
+  render(id: string, text: string, container?: Element): Promise<{ svg: string }>;
+  parse(text: string): Promise<unknown>;
 }
 
 declare global {

@@ -60,6 +60,7 @@ function renderSidebar(overrides: Partial<SidebarProps> = {}) {
     teams: [team],
     modelNames: new Map(),
     groups: emptyConversationGroups(),
+    activeWorkspaceId: 'ws-a',
     multiSelect: false,
     selectedIds: new Set(),
     onSelectStage: noop,
@@ -94,6 +95,23 @@ function renderSidebar(overrides: Partial<SidebarProps> = {}) {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+});
+
+describe('Sidebar NewMax conversation loading', () => {
+  it('shows the NewMax workspace list skeleton instead of 加载中', () => {
+    renderSidebar({ bootState: 'loading', conversations: [] });
+    expect(screen.getByTestId('sidebar-workspace-list-skeleton')).toBeTruthy();
+    expect(screen.queryByText('加载中…')).toBeNull();
+  });
+
+  it('keeps retained conversations visible while refresh is still loading', () => {
+    renderSidebar({
+      bootState: 'loading',
+      conversations: [conv({ id: 'c-model', track: 'model', title: '已缓存对话', targetRef: 'gpt-4o' })],
+    });
+    expect(screen.queryByTestId('sidebar-workspace-list-skeleton')).toBeNull();
+    expect(screen.getByText('已缓存对话')).toBeTruthy();
+  });
 });
 
 describe('Sidebar conversation identity marks', () => {

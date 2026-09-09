@@ -402,6 +402,12 @@ import type {
 } from '../browser-extension-contract.js';
 import type { OpenExternalUrlResult } from '../external-link-contract.js';
 import type {
+  CreatePtyRequest,
+  CreatePtyResult,
+  PtySessionInfo,
+} from '../terminal-pty-contract.js';
+import { createPlatformContext } from '@sync-think/shared';
+import type {
   ManagedKernelUpdateActionResult,
   ManagedKernelUpdateBridge,
   ManagedKernelUpdateSnapshot,
@@ -1592,7 +1598,47 @@ const api = {
       return () => ipcRenderer.removeListener(channel, handler);
     },
   } satisfies ManagedKernelUpdateBridge,
-  platform: 'win32' as const,
+  terminal: {
+    create: (params: CreatePtyRequest) =>
+      ipcRenderer.invoke('terminal:create', params) as Promise<CreatePtyResult>,
+    write: (sessionId: string, data: string) => {
+      ipcRenderer.send('terminal:write', sessionId, data);
+    },
+    resize: (sessionId: string, cols: number, rows: number) => {
+      ipcRenderer.send('terminal:resize', sessionId, cols, rows);
+    },
+    kill: (sessionId: string) => ipcRenderer.invoke('terminal:kill', sessionId) as Promise<void>,
+    exists: (sessionId: string) =>
+      ipcRenderer.invoke('terminal:exists', sessionId) as Promise<boolean>,
+    list: () => ipcRenderer.invoke('terminal:list') as Promise<PtySessionInfo[]>,
+    getBuffer: (sessionId: string) =>
+      ipcRenderer.invoke('terminal:getBuffer', sessionId) as Promise<string>,
+    onData: (listener: (sessionId: string, data: string) => void) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        sessionId: unknown,
+        data: unknown,
+      ) => {
+        if (typeof sessionId !== 'string' || typeof data !== 'string') return;
+        listener(sessionId, data);
+      };
+      ipcRenderer.on('terminal:data', handler);
+      return () => ipcRenderer.removeListener('terminal:data', handler);
+    },
+    onExit: (listener: (sessionId: string, exitCode: number) => void) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        sessionId: unknown,
+        exitCode: unknown,
+      ) => {
+        if (typeof sessionId !== 'string' || typeof exitCode !== 'number') return;
+        listener(sessionId, exitCode);
+      };
+      ipcRenderer.on('terminal:exit', handler);
+      return () => ipcRenderer.removeListener('terminal:exit', handler);
+    },
+  },
+  platform: createPlatformContext(),
 };
 
 contextBridge.exposeInMainWorld('syncThink', api);

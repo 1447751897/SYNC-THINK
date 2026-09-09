@@ -48,6 +48,8 @@
     "postrelease:installer:win": "pnpm test:installer:hooks:win",
     "release:verify:installer:win": "node scripts/windows-installer-release.mjs verify",
     "release:smoke:installer:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows-installer-smoke.ps1 -LeaveRunning",
+    "build:mac": "pnpm build && electron-builder --config apps/desktop/electron-builder.json --mac --arm64",
+    "release:mac": "pnpm build:mac",
     "test:brand:win": "node --test scripts/windows-brand-assets.test.mjs",
     "release:assets:win": "node scripts/windows-brand-assets.mjs generate",
     "release:verify:assets:win": "node scripts/windows-brand-assets.mjs verify",
@@ -83,7 +85,8 @@
     "onlyBuiltDependencies": [
       "better-sqlite3",
       "electron",
-      "esbuild"
+      "esbuild",
+      "node-pty"
     ]
   },
   "dependencies": {

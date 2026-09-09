@@ -22,11 +22,14 @@
     "start:shell": "electron ."
   },
   "dependencies": {
+    "@mermaid-js/layout-elk": "^0.2.3",
     "@sync-think/protocol": "workspace:*",
     "@sync-think/secure-store": "workspace:*",
     "@sync-think/shared": "workspace:*",
     "@sync-think/workers": "workspace:*",
-    "electron-updater": "6.8.9"
+    "dompurify": "3.4.13",
+    "electron-updater": "6.8.9",
+    "node-pty": "1.1.0"
   },
   "devDependencies": {
     "@codemirror/commands": "^6.11.0",
@@ -45,6 +48,8 @@
     "@types/node": "^20.17.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
+    "@xterm/addon-fit": "0.10.0",
+    "@xterm/addon-web-links": "0.11.0",
     "@xterm/xterm": "^5.5.0",
     "clsx": "^2.1.1",
     "electron": "^33.2.1",

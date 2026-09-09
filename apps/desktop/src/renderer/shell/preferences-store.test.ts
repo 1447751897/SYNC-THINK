@@ -112,6 +112,16 @@ describe('appearance preferences', () => {
     expect(root.getPropertyValue('--color-stage-tabs')).toBe(
       root.getPropertyValue('--color-sidebar'),
     );
+    expect(root.getPropertyValue('--color-workbench')).toMatch(/^#[0-9a-f]{6}$/);
+    expect(root.getPropertyValue('--color-workbench')).not.toBe(
+      root.getPropertyValue('--color-chat'),
+    );
+    expect(root.getPropertyValue('--color-workbench-content')).toBe(
+      root.getPropertyValue('--color-sidebar'),
+    );
+    expect(root.getPropertyValue('--color-tab-strip')).toBe(
+      root.getPropertyValue('--color-workbench'),
+    );
     expect(root.getPropertyValue('--shell-message-reading-blur')).toBe('0px');
     expect(root.getPropertyValue('--shell-message-reading-scrim')).toContain('64%');
     expect(root.getPropertyValue('--shell-wallpaper-overlay')).toContain('40%');

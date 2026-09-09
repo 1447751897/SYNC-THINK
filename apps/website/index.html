@@ -10,7 +10,7 @@
     <title>SYNC-THINK | 让思考接续，让工作向前。</title>
     <link rel="icon" href="/assets/sync-think-logo.png" />
     <link rel="stylesheet" href="/tokens.css" />
-    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/styles.css?v=embed-hero-1" />
     <link rel="preload" as="image" href="/assets/hero-alpine-painted.webp" />
     <script type="module" src="/site.js"></script>
   </head>
@@ -50,6 +50,34 @@
               >下载 Windows 版</a
             ><a class="button secondary" href="/login">登录云端账号</a>
           </div>
+          <div class="kernel-strip">
+            <p class="kernel-strip-lead" id="supported-kernels-label">支持</p>
+            <ul class="kernel-strip-list" aria-labelledby="supported-kernels-label">
+              <li>
+                <img
+                  class="kernel-mark"
+                  src="/assets/kernels/claude-code.svg"
+                  alt=""
+                  width="18"
+                  height="18"
+                />Claude Code
+              </li>
+              <li>
+                <span class="kernel-mark kernel-mark--mono kernel-mark--codex" aria-hidden="true"></span
+                >Codex
+              </li>
+            </ul>
+          </div>
+        </div>
+        <div class="hero-preview">
+          <iframe
+            class="workspace-demo"
+            src="/demo.html?embed=hero"
+            title="SYNC-THINK 工作台交互演示"
+            loading="lazy"
+            sandbox="allow-scripts allow-same-origin"
+            referrerpolicy="no-referrer"
+          ></iframe>
         </div>
       </section>
 
@@ -58,38 +86,6 @@
           <div class="section-heading">
             <h2 id="product-title">从一个想法，到一项完成的工作。</h2>
             <p>把对话、资料和行动放在一起。</p>
-          </div>
-          <div class="product-preview">
-            <div class="demo-toolbar">
-              <span>SYNC-THINK 交互演示</span
-              ><a href="/demo.html" target="_blank" rel="noopener">独立窗口体验</a>
-            </div>
-            <iframe
-              class="workspace-demo"
-              src="/demo.html"
-              title="SYNC-THINK 工作台交互演示"
-              loading="lazy"
-              sandbox="allow-scripts allow-same-origin"
-              referrerpolicy="no-referrer"
-            ></iframe>
-            <div class="demo-caption">
-              <span>真实桌面组件 · 13 个交互场景 · 仅使用示例数据</span
-              ><button
-                class="text-button"
-                type="button"
-                id="copy-embed"
-                title="用于已开通嵌入权限的网站"
-              >
-                复制嵌入代码</button
-              ><span id="embed-status" role="status"></span
-              ><textarea
-                id="embed-code"
-                class="embed-code"
-                aria-label="iframe 嵌入代码"
-                readonly
-                hidden
-              ></textarea>
-            </div>
           </div>
           <div class="feature-columns">
             <article>
@@ -119,7 +115,7 @@
               <h2 id="capability-title">
                 <span>选择执行内核，</span><span>组织你的智能体。</span>
               </h2>
-              <p>独立配置角色、模型与能力；为小队安排成员、分工和串行或并行协作。</p>
+              <p>目前支持 Claude Code 与 Codex 执行内核，也可以配置智能体与小队协作。</p>
             </div>
             <a href="/demo.html?view=kernels" target="_blank" rel="noopener">独立窗口体验</a>
           </div>
@@ -245,8 +241,7 @@
             <summary>支持哪些模型和工具？</summary>
             <p>
               支持 OpenAI-compatible 与 Anthropic-compatible 服务，可使用已配置的
-              Skill、MCP，以及项目支持的 Codex / Claude Code
-              内核。具体可用范围以当前版本和本机配置为准。
+              Skill、MCP，以及 Claude Code 与 Codex 内核。具体可用范围以当前版本和本机配置为准。
             </p>
           </details>
           <details>
@@ -264,42 +259,62 @@
           </details>
         </div>
       </section>
-      <section class="closing-section">
-        <div class="section-content closing-inner">
-          <h2>让下一次思考，有一个起点。</h2>
-          <div class="hero-actions">
-            <a class="button primary" href="/downloads/SYNC-THINK-Setup-Windows-x64.exe"
-              >下载 Windows 版</a
-            ><a class="button secondary" href="/register">创建云端账号</a>
+      <div class="site-close">
+        <section class="closing-section">
+          <div class="section-content closing-inner">
+            <h2>让下一次思考，有一个起点。</h2>
+            <div class="hero-actions">
+              <a class="button primary" href="/downloads/SYNC-THINK-Setup-Windows-x64.exe"
+                >下载 Windows 版</a
+              ><a class="button secondary" href="/register">创建云端账号</a>
+            </div>
+            <div class="kernel-strip">
+              <p class="kernel-strip-lead" id="closing-kernels-label">支持</p>
+              <ul class="kernel-strip-list" aria-labelledby="closing-kernels-label">
+                <li>
+                  <img
+                    class="kernel-mark"
+                    src="/assets/kernels/claude-code.svg"
+                    alt=""
+                    width="18"
+                    height="18"
+                  />Claude Code
+                </li>
+                <li>
+                  <span class="kernel-mark kernel-mark--mono kernel-mark--codex" aria-hidden="true"></span
+                  >Codex
+                </li>
+              </ul>
+            </div>
           </div>
-        </div>
-      </section>
-    </main>
-    <footer class="site-footer">
-      <div class="footer-glass">
-        <div class="footer-content section-content">
-          <div class="footer-brand">
-            <a class="brand" href="/"
-              ><span class="brand-mark" aria-hidden="true"></span>SYNC-THINK</a
-            >
-            <p>让思考接续，让工作向前。<br />你的模型、你的上下文、你的工作台。</p>
+        </section>
+        <footer class="site-footer">
+          <div class="footer-glass">
+            <div class="footer-content section-content">
+              <div class="footer-brand">
+                <a class="brand" href="/"
+                  ><span class="brand-mark" aria-hidden="true"></span>SYNC-THINK</a
+                >
+                <p>让思考接续，让工作向前。<br />你的模型、你的上下文、你的工作台。</p>
+              </div>
+              <nav aria-label="产品链接">
+                <span class="footer-nav-title">产品</span><a href="#product">交互演示</a
+                ><a href="https://github.com/1447751897/SYNC-THINK/releases">下载与更新</a
+                ><a href="/login">云端账号</a>
+              </nav>
+              <nav aria-label="资源链接">
+                <span class="footer-nav-title">资源</span
+                ><a href="https://github.com/1447751897/SYNC-THINK#readme">使用文档</a
+                ><a href="https://github.com/1447751897/SYNC-THINK">GitHub</a
+                ><a href="https://github.com/1447751897/SYNC-THINK/issues">问题反馈</a>
+              </nav>
+            </div>
+            <div class="footer-bottom section-content">
+              <span>© 2026 SYNC-THINK</span><span>本地优先 · MIT 开源</span>
+            </div>
           </div>
-          <nav aria-label="产品链接">
-            <span class="footer-nav-title">产品</span><a href="#product">交互演示</a
-            ><a href="https://github.com/1447751897/SYNC-THINK/releases">下载与更新</a
-            ><a href="/login">云端账号</a>
-          </nav>
-          <nav aria-label="资源链接">
-            <span class="footer-nav-title">资源</span
-            ><a href="https://github.com/1447751897/SYNC-THINK#readme">使用文档</a
-            ><a href="https://github.com/1447751897/SYNC-THINK">GitHub</a
-            ><a href="https://github.com/1447751897/SYNC-THINK/issues">问题反馈</a>
-          </nav>
-        </div>
-        <div class="footer-bottom section-content">
-          <span>© 2026 SYNC-THINK</span><span>本地优先 · MIT 开源</span>
-        </div>
+        </footer>
       </div>
-    </footer>
+    </main>
   </body>
 </html>

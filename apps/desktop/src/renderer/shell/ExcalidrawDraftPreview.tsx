@@ -603,7 +603,6 @@ export function ExcalidrawDraftPreview({
         >
           <HtmlSandbox
             code={generatedHtml}
-            appearance="design"
             onOpenInBrowser={handleOpenGeneratedInBrowser}
             actions={
               <>

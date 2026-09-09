@@ -331,7 +331,7 @@ const api = {
       lastErrorCode: null,
       connectionInfo: {
         bundledVersion: '1.1.4',
-        url: 'ws://127.0.0.1:17373/browser-extension/v1',
+        url: 'ws://127.0.0.1:17374/browser-extension/v1',
         token: 'test-token',
       },
     })),
@@ -428,7 +428,7 @@ beforeEach(() => {
     lastErrorCode: null,
     connectionInfo: {
       bundledVersion: '1.1.4',
-      url: 'ws://127.0.0.1:17373/browser-extension/v1',
+      url: 'ws://127.0.0.1:17374/browser-extension/v1',
       token: 'test-token',
     },
   });

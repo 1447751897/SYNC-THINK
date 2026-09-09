@@ -37,10 +37,6 @@
     "./tool-approval": {
       "types": "./dist/tool-approval.d.ts",
       "default": "./dist/tool-approval.js"
-    },
-    "./ui-design": {
-      "types": "./dist/ui-design.d.ts",
-      "default": "./dist/ui-design.js"
     }
   },
   "scripts": {

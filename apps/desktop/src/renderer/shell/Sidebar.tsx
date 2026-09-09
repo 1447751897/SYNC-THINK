@@ -47,6 +47,11 @@ import {
 import { AgentAvatarView } from './AgentAvatarView.js';
 import { BrandLogoMark } from './BrandLogoMark.js';
 import { resolveKernelBrandLogo } from './brand-icons.js';
+import {
+  SIDEBAR_WORKSPACE_SKELETON_ROW_WIDTHS,
+  shouldRenderRecentConversationEmptyState,
+  shouldShowSidebarWorkspaceListSkeleton,
+} from './sidebar-newmax-loading.js';
 
 const TRACK_ICONS: Record<ConversationTrack, typeof Sparkles> = {
   model: Sparkles,
@@ -70,6 +75,7 @@ export interface SidebarProps {
   groups: ConversationGroupsByTrack;
   bootState?: 'loading' | 'ready' | 'error';
   bootError?: string;
+  activeWorkspaceId?: string;
   settingsOpen?: boolean;
   multiSelect: boolean;
   selectedIds: ReadonlySet<string>;
@@ -156,6 +162,20 @@ export function Sidebar(props: SidebarProps) {
 
   const collapsed = props.collapsed === true;
   const targetWidth = collapsed ? 0 : props.width;
+  const workspaceId = props.activeWorkspaceId ?? null;
+  const isLoadingConversations = props.bootState === 'loading';
+  const sidebarWorkspaceListsLoading =
+    query.trim().length === 0 &&
+    shouldShowSidebarWorkspaceListSkeleton({
+      activeWorkspaceId: workspaceId,
+      switchContentWorkspaceId: workspaceId,
+      switchProjectsWorkspaceId: workspaceId,
+      isLoadingConversations,
+      conversationCount: active.length,
+      projectCount: 0,
+      archivedLoaded: true,
+      isLoadingArchived: false,
+    });
 
   return (
     <aside
@@ -398,6 +418,9 @@ export function Sidebar(props: SidebarProps) {
 
             <div className={clsx('shell-collapse', recentOpen && 'shell-collapse--open')}>
               <div className="shell-collapse__inner">
+                {sidebarWorkspaceListsLoading ? (
+                  <SidebarWorkspaceListSkeleton />
+                ) : (
                 <div className="shell-tree-branch">
                   {(Object.keys(TRACK_LABELS) as ConversationTrack[]).map((track) => {
                     const TrackIcon = TRACK_ICONS[track];
@@ -517,13 +540,20 @@ export function Sidebar(props: SidebarProps) {
                                     aria-hidden="true"
                                   />
                                   <div className="text-[11px] text-text-faint">
-                                    {props.bootState === 'loading'
-                                      ? '加载中…'
-                                      : props.bootState === 'error'
-                                        ? props.bootError || '连接失败'
-                                        : query.trim()
-                                          ? '无匹配'
-                                          : '暂无对话'}
+                                    {props.bootState === 'error'
+                                      ? props.bootError || '连接失败'
+                                      : query.trim()
+                                        ? '无匹配'
+                                        : shouldRenderRecentConversationEmptyState({
+                                              conversationCount: 0,
+                                              isSyncingCCHistory: false,
+                                              isLoadingConversations,
+                                              activeWorkspaceId: workspaceId,
+                                              switchContentWorkspaceId: workspaceId,
+                                              switchProjectsWorkspaceId: workspaceId,
+                                            })
+                                          ? '暂无对话'
+                                          : ''}
                                   </div>
                                 </div>
                               ) : (
@@ -566,6 +596,7 @@ export function Sidebar(props: SidebarProps) {
                     );
                   })}
                 </div>
+                )}
               </div>
             </div>
 
@@ -1101,6 +1132,40 @@ function ConversationRow(props: {
           ) : null}
         </div>
       ) : null}
+    </div>
+  );
+}
+
+function SidebarWorkspaceRowSkeleton({ width }: { width: string }) {
+  return (
+    <div className="flex min-h-[35.5px] items-center pr-1.5 pl-[10px]">
+      <div className="ds-skeleton rounded-sm" style={{ width, height: 10 }} />
+    </div>
+  );
+}
+
+function SidebarWorkspaceGroupLabelSkeleton() {
+  return (
+    <div className="py-1">
+      <div className="flex min-h-[28px] items-center pr-1 pl-2">
+        <div className="ds-skeleton rounded-sm" style={{ width: 44, height: 8 }} />
+      </div>
+    </div>
+  );
+}
+
+function SidebarWorkspaceListSkeleton() {
+  return (
+    <div
+      className="flex flex-col gap-px"
+      data-testid="sidebar-workspace-list-skeleton"
+      role="status"
+      aria-label="正在加载对话"
+    >
+      <SidebarWorkspaceGroupLabelSkeleton />
+      {SIDEBAR_WORKSPACE_SKELETON_ROW_WIDTHS.map((width) => (
+        <SidebarWorkspaceRowSkeleton key={width} width={width} />
+      ))}
     </div>
   );
 }

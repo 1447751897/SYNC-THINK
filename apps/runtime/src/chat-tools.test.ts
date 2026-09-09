@@ -332,6 +332,18 @@ describe('chat execution mode tool gating', () => {
     }
   });
 
+  it('allows host image tools on every permission mode', () => {
+    for (const mode of ['ask', 'workspace', 'full-access']) {
+      expect(isChatToolAllowed(mode, 'generate_image'), `generate_image in ${mode}`).toBe(true);
+      expect(isChatToolAllowed(mode, 'search_capability'), `search_capability in ${mode}`).toBe(
+        true,
+      );
+      expect(isChatToolAllowed(mode, 'use_capability'), `use_capability in ${mode}`).toBe(true);
+      expect(isChatToolAllowed(mode, 'describe_image'), `describe_image in ${mode}`).toBe(true);
+      expect(isChatToolAllowed(mode, 'ocr_image'), `ocr_image in ${mode}`).toBe(true);
+    }
+  });
+
   it('summarizes kernel native tools (Bash / Write / Read) so approval shows what runs', () => {
     const bash = summarizeToolCallForApproval('Bash', JSON.stringify({ command: 'git status' }));
     expect(bash.command).toBe('git status');

@@ -464,6 +464,7 @@ export function ConversationTabs(props: ConversationTabsProps) {
   return (
     <div
       data-testid="conversation-tabs"
+      data-pane-tab-bar="true"
       className="shell-conversation-tabs relative flex h-10 shrink-0 items-center gap-[3px] p-1"
     >
       {/* Tab cluster keeps the plus beside the last tab; overflow stays in the
@@ -558,7 +559,7 @@ export function ConversationTabs(props: ConversationTabsProps) {
                 'shell-pane-tab st-row-motion group relative flex shrink-0 items-center',
                 active
                   ? 'shell-conversation-tab-active font-medium text-text'
-                  : 'text-text-secondary hover:bg-hover/70 hover:text-text',
+                  : 'text-text-secondary hover:bg-hover hover:text-text',
               )}
               onDragStart={(event) =>
                 beginResourceDrag(event, resource, props.onTabDragStateChange)
@@ -621,7 +622,7 @@ export function ConversationTabs(props: ConversationTabsProps) {
                 'shell-pane-tab st-row-motion group relative flex shrink-0 items-center',
                 active
                   ? 'shell-conversation-tab-active font-medium text-text'
-                  : 'text-text-secondary hover:bg-hover/70 hover:text-text',
+                  : 'text-text-secondary hover:bg-hover hover:text-text',
               )}
               onDragStart={(event) =>
                 beginResourceDrag(event, resource, props.onTabDragStateChange)
@@ -676,7 +677,7 @@ export function ConversationTabs(props: ConversationTabsProps) {
                 'shell-pane-tab st-row-motion group relative flex shrink-0 items-center',
                 active
                   ? 'shell-conversation-tab-active font-medium text-text'
-                  : 'text-text-secondary hover:bg-hover/70 hover:text-text',
+                  : 'text-text-secondary hover:bg-hover hover:text-text',
               )}
               onDragStart={(event) =>
                 beginResourceDrag(event, resource, props.onTabDragStateChange)
@@ -741,7 +742,7 @@ export function ConversationTabs(props: ConversationTabsProps) {
                 'shell-pane-tab st-row-motion group relative flex shrink-0 items-center',
                 active
                   ? 'shell-conversation-tab-active font-medium text-text'
-                  : 'text-text-secondary hover:bg-hover/70 hover:text-text',
+                  : 'text-text-secondary hover:bg-hover hover:text-text',
               )}
               onDragStart={(event) =>
                 beginResourceDrag(event, resource, props.onTabDragStateChange)
@@ -867,8 +868,6 @@ export function ConversationTabs(props: ConversationTabsProps) {
                     role="menuitem"
                     data-testid="new-resource-terminal"
                     className="shell-new-resource-menu__item"
-                    disabled={props.canOpenTerminal === false}
-                    title={props.canOpenTerminal === false ? '先绑定项目文件夹' : undefined}
                     onClick={() => {
                       setNewResourceMenuOpen(false);
                       props.onNewTerminal?.();
@@ -1191,7 +1190,7 @@ function SortableConversationTab(props: {
         'shell-pane-tab st-row-motion group relative flex shrink-0 items-center',
         props.active
           ? 'shell-conversation-tab-active font-medium text-text'
-          : 'text-text-secondary hover:bg-hover/70 hover:text-text',
+          : 'text-text-secondary hover:bg-hover hover:text-text',
         (isDragging || props.dragging) && 'is-dragging z-50 opacity-70',
         !props.dragging && 'is-gliding',
         'cursor-grab active:cursor-grabbing',

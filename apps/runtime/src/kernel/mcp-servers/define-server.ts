@@ -39,6 +39,12 @@ export interface KernelMcpServerDefinition {
   condition?: () => boolean;
   /** True when this server must never reach an external kernel. */
   hostOnly?: boolean;
+  /**
+   * True when tools stay off the model catalog and are invoked only through
+   * `capability-broker` (`search_capability` / `use_capability`). Host still
+   * executes the underlying tool by short name.
+   */
+  deferred?: boolean;
   tools: readonly KernelMcpToolDefinition[];
 }
 
@@ -67,6 +73,7 @@ export function selectKernelMcpServers(
 ): KernelMcpServerDefinition[] {
   return servers
     .filter((server) => {
+      if (server.deferred) return false;
       if (server.alwaysLoad) return true;
       if (server.condition) {
         try {

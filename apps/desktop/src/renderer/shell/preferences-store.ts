@@ -10,6 +10,8 @@ import silverFold from './assets/preferences/silver-fold-BH71H-aC.jpg';
 import silverFoldThumb from './assets/preferences/silver-fold-thumb-Btt-O7Qd.jpg';
 import aquaCurves from './assets/preferences/aqua-curves-BAf-za5T.jpg';
 import aquaCurvesThumb from './assets/preferences/aqua-curves-thumb-aeFWoNuc.jpg';
+import { applyNewmaxSkin } from './theme/apply-newmax-appearance.js';
+import { randomColorPair as newmaxRandomColorPair } from './theme/newmax-theme-engine.js';
 
 export type ThemeMode = 'system' | 'light' | 'dark';
 export type ImageThemeEffect = 'blur' | 'overlay';
@@ -35,6 +37,7 @@ export interface AppearancePreferences {
   customContrast: number;
   randomBackground: string;
   randomAccent: string;
+  randomMood: string;
   chatFontSize: number;
   useSerifFont: boolean;
 }
@@ -219,6 +222,7 @@ const DEFAULT_APPEARANCE: AppearancePreferences = {
   customContrast: 86,
   randomBackground: '',
   randomAccent: '',
+  randomMood: 'crisp',
   chatFontSize: 14,
   useSerifFont: false,
 };
@@ -363,6 +367,10 @@ export function readAppearancePreferences(storage?: Storage): AppearancePreferen
     customContrast: boundedNumber(record.customContrast, 0, 100, DEFAULT_APPEARANCE.customContrast),
     randomBackground: validHex(record.randomBackground, randomBackground),
     randomAccent: validHex(record.randomAccent, randomAccent),
+    randomMood:
+      typeof record.randomMood === 'string' && record.randomMood.trim()
+        ? record.randomMood.trim()
+        : DEFAULT_APPEARANCE.randomMood,
     chatFontSize: boundedNumber(record.chatFontSize, 12, 18, DEFAULT_APPEARANCE.chatFontSize),
     useSerifFont: record.useSerifFont === true,
   };
@@ -443,6 +451,9 @@ const DYNAMIC_COLOR_VARIABLES = [
   '--color-sidebar',
   '--color-panel',
   '--color-chat',
+  '--color-workbench',
+  '--color-workbench-content',
+  '--color-tab-strip',
   '--color-surface',
   '--color-elevated',
   '--color-overlay',
@@ -485,188 +496,6 @@ function clearImageThemePresentation(root: HTMLElement): void {
   for (const name of IMAGE_THEME_VARIABLES) root.style.removeProperty(name);
 }
 
-function relativeLuminance(hex: string): number {
-  const [red, green, blue] = hexChannels(hex).map((channel) => {
-    const value = channel / 255;
-    return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
-  });
-  return red! * 0.2126 + green! * 0.7152 + blue! * 0.0722;
-}
-
-function contrastRatio(first: string, second: string): number {
-  const lighter = Math.max(relativeLuminance(first), relativeLuminance(second));
-  const darker = Math.min(relativeLuminance(first), relativeLuminance(second));
-  return (lighter + 0.05) / (darker + 0.05);
-}
-
-function desaturateHex(hex: string, amount: number): string {
-  const [hue, saturation, lightness] = hexToHsl(hex);
-  return hslToHex(hue, saturation * (1 - amount), lightness);
-}
-
-function imageSurfaceSource(background: string, variant: ImageThemeVariant): string {
-  const [hue, saturation, lightness] = hexToHsl(background);
-  const scale =
-    variant === 'mono' ? 0 : variant === 'neutral' ? 0.28 : variant === 'rich' ? 1.35 : 1;
-  return hslToHex(hue, Math.min(100, saturation * scale), lightness);
-}
-
-function ensureAccentContrast(accent: string, foreground: string, surfaces: string[]): string {
-  if (surfaces.every((surface) => contrastRatio(accent, surface) >= 4.5)) return accent;
-  for (let amount = 0.04; amount <= 1; amount += 0.04) {
-    const candidate = mixHex(accent, foreground, amount);
-    if (surfaces.every((surface) => contrastRatio(candidate, surface) >= 4.7)) return candidate;
-  }
-  return foreground;
-}
-
-function setImageDynamicColors(
-  root: HTMLElement,
-  background: string,
-  accent: string,
-  variant: ImageThemeVariant,
-  dark: boolean,
-): void {
-  const [backgroundHue, backgroundSaturation] = hexToHsl(background);
-  const source = imageSurfaceSource(background, variant);
-  const foreground = dark
-    ? hslToHex(backgroundHue, Math.min(7, backgroundSaturation * 0.12), 95)
-    : hslToHex(backgroundHue, Math.min(22, backgroundSaturation * 0.38), 16);
-  const surfaces = dark
-    ? {
-        surface100: mixHex(hslToHex(backgroundHue, 10, 10), '#ffffff', 0.06),
-        surface200: mixHex(hslToHex(backgroundHue, 10, 10), '#ffffff', 0.1),
-        surface300: mixHex(hslToHex(backgroundHue, 10, 10), '#ffffff', 0.15),
-        surface400: hslToHex(backgroundHue, 10, 10),
-      }
-    : {
-        surface100: '#ffffff',
-        surface200: desaturateHex(mixHex(source, '#ffffff', 0.95), 0.15),
-        surface300: desaturateHex(mixHex(source, '#ffffff', 0.86), 0.25),
-        surface400: desaturateHex(mixHex(source, '#ffffff', 0.77), 0.22),
-      };
-  const accessibleAccent = ensureAccentContrast(accent, foreground, Object.values(surfaces));
-  const accentForeground =
-    relativeLuminance(accessibleAccent) > 0.48
-      ? hslToHex(backgroundHue, Math.min(8, backgroundSaturation * 0.14), 10)
-      : '#ffffff';
-  const border = mixHex(surfaces.surface400, foreground, dark ? 0.16 : 0.08);
-  const borderStrong = mixHex(surfaces.surface400, foreground, dark ? 0.28 : 0.15);
-  const hover = `color-mix(in srgb, ${accessibleAccent} ${dark ? 8 : 5.1}%, transparent)`;
-
-  const values: Partial<Record<(typeof DYNAMIC_COLOR_VARIABLES)[number], string>> = {
-    '--color-page': surfaces.surface400,
-    '--color-page-gutter': surfaces.surface400,
-    '--color-sidebar': surfaces.surface300,
-    '--color-panel': surfaces.surface300,
-    '--color-chat': surfaces.surface200,
-    '--color-surface': surfaces.surface100,
-    '--color-elevated': surfaces.surface300,
-    '--color-overlay': surfaces.surface100,
-    '--color-active': surfaces.surface100,
-    '--color-hover': hover,
-    '--color-recent': surfaces.surface300,
-    '--color-stage-tabs': surfaces.surface300,
-    '--color-control': surfaces.surface100,
-    '--color-control-hover': hover,
-    '--color-selection': surfaces.surface100,
-    '--color-border': border,
-    '--color-border-strong': borderStrong,
-    '--color-text': foreground,
-    '--color-text-secondary': `color-mix(in srgb, ${foreground} 75%, transparent)`,
-    '--color-text-faint': `color-mix(in srgb, ${foreground} 44%, transparent)`,
-    '--color-icon': accessibleAccent,
-    '--color-accent': accessibleAccent,
-    '--color-accent-soft': `color-mix(in srgb, ${accessibleAccent} 12%, transparent)`,
-    '--color-accent-fg': accentForeground,
-    '--color-settings-action': accessibleAccent,
-    '--color-settings-action-fg': accentForeground,
-    '--color-selection-border': accessibleAccent,
-    '--color-focus-ring': accessibleAccent,
-    '--color-info': accessibleAccent,
-    '--color-success': accessibleAccent,
-  };
-  for (const [name, value] of Object.entries(values)) root.style.setProperty(name, value);
-}
-
-function setDynamicColors(
-  root: HTMLElement,
-  background: string,
-  accent: string,
-  dark: boolean,
-): void {
-  const [backgroundHue, backgroundSaturation] = hexToHsl(background);
-  const [accentHue, accentSaturation, accentLightness] = hexToHsl(accent);
-  const base = dark
-    ? hslToHex(backgroundHue, Math.min(24, backgroundSaturation * 0.55), 11.5)
-    : background;
-  const themedAccent =
-    dark && accentLightness < 35
-      ? hslToHex(accentHue, Math.min(82, Math.max(28, accentSaturation)), 48)
-      : accent;
-  const page = dark ? base : mixHex(base, '#ffffff', 0.08);
-  const panel = dark ? mixHex(base, '#ffffff', 0.035) : mixHex(base, '#ffffff', 0.5);
-  const chat = dark ? mixHex(base, '#000000', 0.08) : mixHex(base, '#ffffff', 0.68);
-  const surface = dark ? mixHex(base, '#ffffff', 0.02) : mixHex(base, '#ffffff', 0.82);
-  const overlay = dark ? mixHex(base, '#ffffff', 0.06) : '#ffffff';
-  const recent = dark ? mixHex(base, '#ffffff', 0.025) : mixHex(base, '#ffffff', 0.42);
-  const values: Partial<Record<(typeof DYNAMIC_COLOR_VARIABLES)[number], string>> = {
-    '--color-page': page,
-    '--color-sidebar': panel,
-    '--color-panel': panel,
-    '--color-chat': chat,
-    '--color-surface': surface,
-    '--color-elevated': panel,
-    '--color-overlay': overlay,
-    '--color-active': overlay,
-    '--color-hover': mixHex(panel, '#ffffff', dark ? 0.04 : 0.36),
-    '--color-recent': recent,
-    '--color-accent': themedAccent,
-    '--color-settings-action': themedAccent,
-    '--color-selection-border': themedAccent,
-    '--color-focus-ring': themedAccent,
-    '--color-info': themedAccent,
-  };
-  for (const [name, value] of Object.entries(values)) root.style.setProperty(name, value);
-}
-
-function selectedPalette(
-  preferences: AppearancePreferences,
-  dark: boolean,
-): { background: string; accent: string } {
-  if (preferences.colorTheme === 'custom') {
-    const [hue, saturation, lightness] = hexToHsl(preferences.customPrimary);
-    const accent = hslToHex(
-      hue,
-      Math.min(100, saturation * (preferences.customPurity / 79)),
-      lightness,
-    );
-    const contrast = preferences.customContrast / 100;
-    return {
-      background: dark
-        ? mixHex(accent, '#000000', 0.66 + contrast * 0.18)
-        : mixHex(accent, '#ffffff', 0.82 + contrast * 0.12),
-      accent,
-    };
-  }
-  if (preferences.colorTheme === 'random') {
-    return {
-      background: dark
-        ? mixHex(preferences.randomBackground, '#000000', 0.78)
-        : preferences.randomBackground,
-      accent: preferences.randomAccent,
-    };
-  }
-  const option =
-    COLOR_THEME_OPTIONS.find((item) => item.id === preferences.colorTheme) ??
-    COLOR_THEME_OPTIONS[1]!;
-  const palette = dark ? option.dark : option.light;
-  return {
-    background: resolvePreferenceColor(palette.background, dark ? '#000000' : '#ffffff'),
-    accent: resolvePreferenceColor(palette.accent),
-  };
-}
-
 export function isDarkTheme(mode: ThemeMode): boolean {
   if (mode === 'dark') return true;
   if (mode === 'light') return false;
@@ -688,10 +517,7 @@ export function applyAppearancePreferences(preferences: AppearancePreferences): 
   clearImageThemePresentation(root);
 
   clearDynamicColors(root);
-  if (preferences.colorTheme !== 'default') {
-    const palette = selectedPalette(preferences, dark);
-    setDynamicColors(root, palette.background, palette.accent, dark);
-  }
+  applyNewmaxSkin(root, preferences, dark);
 
   const preset = IMAGE_THEME_OPTIONS.find((item) => item.id === preferences.imageThemeId);
   const imageUrl =
@@ -707,18 +533,6 @@ export function applyAppearancePreferences(preferences: AppearancePreferences): 
         ? `${preferences.customImageFocalPoint.x}% ${preferences.customImageFocalPoint.y}%`
         : 'center',
     );
-    const imageBackground = preset
-      ? resolvePreferenceColor(preset.background, dark ? '#000000' : '#ffffff')
-      : preferences.customImageBackground;
-    const imageVariant = preferences.imageThemeVariants[preferences.imageThemeId ?? ''] ?? 'soft';
-    const imageAccent = preset
-      ? imageThemeVariantAccent(preset.background, preset.accent, imageVariant)
-      : imageThemeVariantAccent(
-          preferences.customImageBackground,
-          preferences.customImageAccent,
-          imageVariant,
-        );
-    setImageDynamicColors(root, imageBackground, imageAccent, imageVariant, dark);
     root.style.setProperty(
       '--shell-wallpaper-overlay',
       preferences.imageEffect === 'overlay'
@@ -771,11 +585,9 @@ export function applyShellTheme(mode: ThemeMode): void {
   updateAppearancePreferences({ mode });
 }
 
-export function randomColorPair(): { background: string; accent: string } {
-  const hue = Math.floor(Math.random() * 360);
-  const accent = hslToHex(hue, 42 + Math.random() * 24, 38 + Math.random() * 14);
-  const background = hslToHex(hue, 10 + Math.random() * 10, 95 + Math.random() * 3);
-  return { background, accent };
+export function randomColorPair(): { background: string; accent: string; mood: string } {
+  const pair = newmaxRandomColorPair();
+  return { background: pair.bg, accent: pair.fg, mood: pair.mood };
 }
 
 function hslToHex(hue: number, saturation: number, lightness: number): string {

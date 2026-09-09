@@ -221,6 +221,46 @@ describe('OpenAIImagesAdapter', () => {
     expect(String(error)).not.toContain('sk-secret-value');
   });
 
+  it('parses a successful image payload larger than the error-preview window', async () => {
+    const png = Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      Buffer.alloc(6_000, 7),
+    ]);
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({
+        created: 1_788_944_581,
+        data: [{ b64_json: png.toString('base64') }],
+      }),
+    );
+    const adapter = new OpenAIImagesAdapter({ fetchImpl: fetchMock as typeof fetch });
+
+    const result = await adapter.generateImages(request());
+
+    expect(JSON.stringify({ created: 1_788_944_581, data: [{ b64_json: png.toString('base64') }] }).length).toBeGreaterThan(
+      4_000,
+    );
+    expect(result.images).toHaveLength(1);
+    expect(result.images[0]!.mimeType).toBe('image/png');
+    expect(Buffer.from(result.images[0]!.bytes)).toEqual(png);
+  });
+
+  it('keeps invalid-JSON error previews short', async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(`{"created":1788944581,"data":[{"b64_json":"${'A'.repeat(8_000)}`, {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+    );
+    const adapter = new OpenAIImagesAdapter({ fetchImpl: fetchMock as typeof fetch });
+
+    const error = await adapter.generateImages(request()).catch((value: unknown) => value);
+
+    expect(error).toBeInstanceOf(ProviderImageGenerationError);
+    expect(String(error)).toMatch(/invalid JSON/);
+    expect(String(error).length).toBeLessThan(400);
+  });
+
   it('rejects non-JSON and remote-URL-only responses', async () => {
     const responses = [
       new Response('<html>bad gateway</html>', { status: 200 }),

@@ -165,9 +165,10 @@ describe('shouldAttemptFallback', () => {
     expect(shouldAttemptFallback('rate-limit')).toBe(true);
   });
 
-  it('blocks acceptance and permission', () => {
+  it('blocks acceptance, permission, and protocol', () => {
     expect(shouldAttemptFallback('acceptance')).toBe(false);
     expect(shouldAttemptFallback('permission')).toBe(false);
+    expect(shouldAttemptFallback('protocol')).toBe(false);
   });
 });
 

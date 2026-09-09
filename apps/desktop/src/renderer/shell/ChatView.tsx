@@ -227,7 +227,7 @@ import {
   type PendingAsk,
 } from './AskQuestionCard.js';
 import { PlanApprovalCard } from './PlanApprovalCard.js';
-import { persistentComputerUseAppOf } from './tool-approval.js';
+import { ToolApprovalCard, type PendingToolApproval } from './ToolApprovalCard.js';
 import { projectTodoFromEvents } from './todo-projection.js';
 import { ComposerTaskPanel } from './ComposerTaskPanel.js';
 import { InlineProcessFlow } from './InlineProcessFlow.js';
@@ -268,9 +268,10 @@ import {
   type ProviderUsageWindows,
 } from './provider-usage-summary.js';
 import {
-  inferNativeScrollIntent,
-  resolveBottomPinState,
+  applyConversationStickOnScroll,
+  isConversationNearBottom,
   shouldFollowConversationContentResize,
+  shouldReleaseStickOnWheel,
   shouldRestorePrependAnchor,
 } from './message-window.js';
 import {
@@ -1148,19 +1149,6 @@ interface CompactProgressState {
   afterTokens?: number;
 }
 
-interface PendingToolApproval {
-  approvalId: string;
-  runId?: string;
-  toolCallId?: string;
-  toolName: string;
-  title: string;
-  detail: string;
-  path?: string;
-  command?: string;
-  arguments?: Record<string, unknown>;
-  allowedScopes?: ToolApprovalScope[];
-  decided?: 'approve' | 'deny';
-}
 
 function toolApprovalArguments(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -1651,7 +1639,6 @@ export function ChatView({
     () => initialCachedPage?.ranges ?? [],
   );
   const historyRangesRef = useRef(historyRanges);
-  const [historyLoadError, setHistoryLoadError] = useState(false);
   const [loadingHistoryTarget, setLoadingHistoryTarget] = useState<string>();
   const historyTargetTokenRef = useRef<object>();
   const navigationIntentRef = useRef(0);
@@ -1936,7 +1923,6 @@ export function ChatView({
     loadingMoreRef.current = false;
     historyTargetTokenRef.current = undefined;
     setLoadingHistoryTarget(undefined);
-    setHistoryLoadError(false);
     setInitialLoaded(Boolean(cachedPage));
     setDurableTaskPlan(undefined);
     loadedMessagesConversationIdRef.current = undefined;
@@ -1948,6 +1934,8 @@ export function ChatView({
   const lastObservedScrollTopRef = useRef(0);
   /** Prevents our own one-shot scroll corrections from being treated as user input. */
   const programmaticScrollTargetRef = useRef<number | null>(null);
+  /** NewMax markProgrammaticScroll: layout/html/mermaid writes must not unpin. */
+  const programmaticScrollPendingRef = useRef(false);
   /** After switching conversations, jump to bottom instantly (no smooth scroll). */
   const stickToBottomRef = useRef(true);
   /** Last explicit scroll direction; layout-driven scroll events leave it null. */
@@ -1996,6 +1984,7 @@ export function ChatView({
     userScrollRevisionRef.current = 0;
     lastObservedScrollTopRef.current = 0;
     programmaticScrollTargetRef.current = null;
+    programmaticScrollPendingRef.current = false;
     setInput('');
     setDismissedModeHintText(null);
     setPendingRiskGoal(null);
@@ -2020,7 +2009,6 @@ export function ChatView({
     setLoadedMessages(cachedPage?.messages ?? []);
     historyRangesRef.current = cachedPage?.ranges ?? [];
     setHistoryRanges(historyRangesRef.current);
-    setHistoryLoadError(false);
     setLoadingHistoryTarget(undefined);
     historyTargetTokenRef.current = undefined;
     setDurableTaskPlan(undefined);
@@ -2282,7 +2270,6 @@ export function ChatView({
       const current = () =>
         scope === historyScopeRef.current &&
         (!latest || generation === messageLoadGenerationRef.current);
-      setHistoryLoadError(false);
       try {
         const res: ConversationListMessagesResponse = await api.listConversationMessages({
           conversationId: conversation.id,
@@ -2352,8 +2339,10 @@ export function ChatView({
         setNextCursor(next);
         if (latest) refreshNavigationDirectory();
         return true;
-      } catch {
-        if (current() && options?.accept?.() !== false) setHistoryLoadError(true);
+      } catch (error) {
+        // NewMax conversations.get / getMessages failures only log; ChatView
+        // keeps any already-rendered page and does not invent a retry banner.
+        console.error('[ChatView] Failed to load messages:', error);
         return false;
       } finally {
         if (current()) {
@@ -2446,14 +2435,14 @@ export function ChatView({
     void refreshDurableUsageSummary();
   };
 
-  // Load the durable message page only when the selected conversation changes.
-  // Context refreshes can follow model/kernel changes and must not re-read the
-  // message list, otherwise switching a kernel causes an avoidable second
-  // history request (and makes conversation navigation feel slow).
+  // Load the durable message page only when this ChatView first needs history.
+  // A keep-alive remount can reuse the recent-page cache; skip the IPC so
+  // switching back does not flash a skeleton or wait on SQLite.
   useEffect(() => {
     if (!conversation.id) return;
+    if (readRecentConversationPage(historyScopeKey)) return;
     void loadMessages();
-  }, [conversation.id, loadMessages]);
+  }, [conversation.id, historyScopeKey, loadMessages]);
 
   // Runtime-owned context is keyed by the active conversation, model, and
   // kernel. Keep this independent from durable message loading so a context
@@ -3777,9 +3766,14 @@ export function ChatView({
     available: runProcessById,
   });
 
+  const liveTail = visibleStreamingMessage ?? messages.at(-1);
   const flowTipSignature = `${conversation.id}:${messages.at(-1)?.id ?? 'empty'}:${
-    messages.at(-1)?.streaming ? 'streaming' : 'settled'
-  }:${pendingApprovals.at(-1)?.approvalId ?? 'no-approval'}`;
+    liveTail?.streaming ? 'streaming' : 'settled'
+  }:${pendingApprovals.at(-1)?.approvalId ?? 'no-approval'}:${liveTail?.reasoningText?.length ?? 0}:${
+    liveTail?.answerText?.length ?? liveTail?.text?.length ?? 0
+  }:${liveTail?.commentaryText?.length ?? 0}:${liveTail?.commentarySegments?.length ?? 0}:${
+    liveTail?.processItems?.length ?? 0
+  }`;
   const followMainContentResize = shouldFollowConversationContentResize({
     streaming: Boolean(visibleStreamingMessage?.streaming),
     hasAnswerText: Boolean(visibleStreamingMessage?.answerText?.trim()),
@@ -3790,6 +3784,7 @@ export function ChatView({
     const target = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
     if (Math.abs(scroller.scrollTop - target) > 1) {
       programmaticScrollTargetRef.current = target;
+      programmaticScrollPendingRef.current = true;
       scroller.scrollTop = target;
     }
     lastObservedScrollTopRef.current = scroller.scrollTop;
@@ -3935,6 +3930,8 @@ export function ChatView({
 
       const tempId = `temp-${Date.now()}`;
       if (isActiveConversation()) {
+        stickToBottomRef.current = true;
+        bottomPinIntentRef.current = null;
         setSending(true);
         setSendingRunId(undefined);
         setPendingUserMessages((prev) => [
@@ -6413,14 +6410,22 @@ export function ChatView({
             ref={messagesScrollRef}
             className="shell-chat-content-wrap shell-chat-message-scroller h-full overflow-y-auto py-6"
             onWheel={(event) => {
-              if (event.deltaY !== 0) {
-                userScrollRevisionRef.current += 1;
-                bottomPinIntentRef.current =
-                  event.deltaY > 0 ? 'toward-bottom' : 'away-from-bottom';
-                // Release the pin during the gesture itself. Waiting for the
-                // native scroll event lets a streaming render run first and
-                // snap the viewport back to the bottom, perceived as jitter.
-                if (event.deltaY < 0) stickToBottomRef.current = false;
+              if (event.deltaY === 0) return;
+              const scroller = event.currentTarget;
+              userScrollRevisionRef.current += 1;
+              bottomPinIntentRef.current =
+                event.deltaY > 0 ? 'toward-bottom' : 'away-from-bottom';
+              if (
+                shouldReleaseStickOnWheel({
+                  deltaY: event.deltaY,
+                  nearBottom: isConversationNearBottom({
+                    scrollTop: scroller.scrollTop,
+                    scrollHeight: scroller.scrollHeight,
+                    clientHeight: scroller.clientHeight,
+                  }),
+                })
+              ) {
+                stickToBottomRef.current = false;
               }
             }}
             onTouchStart={(event) => {
@@ -6435,7 +6440,16 @@ export function ChatView({
                   bottomPinIntentRef.current = 'toward-bottom';
                 } else if (currentClientY > previousClientY) {
                   bottomPinIntentRef.current = 'away-from-bottom';
-                  stickToBottomRef.current = false;
+                  const scroller = event.currentTarget;
+                  if (
+                    !isConversationNearBottom({
+                      scrollTop: scroller.scrollTop,
+                      scrollHeight: scroller.scrollHeight,
+                      clientHeight: scroller.clientHeight,
+                    })
+                  ) {
+                    stickToBottomRef.current = false;
+                  }
                 }
               }
               lastTouchClientYRef.current = currentClientY ?? null;
@@ -6462,38 +6476,27 @@ export function ChatView({
               const currentScrollTop = scroller.scrollTop;
               const programmaticTarget = programmaticScrollTargetRef.current;
               const isProgrammatic =
-                programmaticTarget !== null && Math.abs(currentScrollTop - programmaticTarget) <= 1;
-              if (isProgrammatic) {
+                programmaticScrollPendingRef.current ||
+                (programmaticTarget !== null &&
+                  Math.abs(currentScrollTop - programmaticTarget) <= 1);
+              if (programmaticTarget !== null) {
                 programmaticScrollTargetRef.current = null;
-              } else {
-                const nativeIntent = inferNativeScrollIntent({
-                  previousScrollTop: lastObservedScrollTopRef.current,
-                  nextScrollTop: currentScrollTop,
-                });
-                // Native scrollbar dragging does not emit wheel events. Infer its
-                // direction from scrollTop so dragging upward always releases pinning.
-                if (nativeIntent === 'away-from-bottom') {
-                  userScrollRevisionRef.current += 1;
-                  bottomPinIntentRef.current = nativeIntent;
-                  stickToBottomRef.current = false;
-                } else if (
-                  nativeIntent === 'toward-bottom' &&
-                  bottomPinIntentRef.current === null
-                ) {
-                  userScrollRevisionRef.current += 1;
-                  bottomPinIntentRef.current = nativeIntent;
-                }
               }
-              lastObservedScrollTopRef.current = currentScrollTop;
-
-              // Proximity may disable pinning, but only an explicit/native
-              // downward gesture may re-enable it after the user viewed history.
-              const distance = scroller.scrollHeight - currentScrollTop - scroller.clientHeight;
-              stickToBottomRef.current = resolveBottomPinState({
-                currentlyPinned: stickToBottomRef.current,
-                distanceFromBottom: distance,
-                userIntent: isProgrammatic ? null : bottomPinIntentRef.current,
+              const nextStick = applyConversationStickOnScroll({
+                sticky: stickToBottomRef.current,
+                programmaticPending: isProgrammatic,
+                previousScrollTop: lastObservedScrollTopRef.current,
+                scrollTop: currentScrollTop,
+                scrollHeight: scroller.scrollHeight,
+                clientHeight: scroller.clientHeight,
               });
+              if (!nextStick.sticky && stickToBottomRef.current) {
+                userScrollRevisionRef.current += 1;
+                bottomPinIntentRef.current = 'away-from-bottom';
+              }
+              stickToBottomRef.current = nextStick.sticky;
+              programmaticScrollPendingRef.current = nextStick.programmaticPending;
+              lastObservedScrollTopRef.current = currentScrollTop;
               bottomPinIntentRef.current = null;
 
               // Load older messages when scrolled near top. Capture one real DOM
@@ -6695,30 +6698,9 @@ export function ChatView({
             </div>
           </div>
 
-          {navigationDirectory.loading ||
-          navigationDirectory.error ||
-          loadingHistoryTarget ||
-          historyLoadError ? (
+          {loadingHistoryTarget ? (
             <div className="shell-history-status" role="status" aria-live="polite">
-              <span>
-                {historyLoadError
-                  ? '历史消息读取失败，请重试导航或加载操作。'
-                  : loadingHistoryTarget
-                    ? '正在读取目标附近的消息…'
-                    : navigationDirectory.error
-                      ? '历史目录尚未加载完整。'
-                      : '正在加载历史目录…'}
-              </span>
-              {navigationDirectory.error ? (
-                <button type="button" onClick={navigationDirectory.refresh}>
-                  重试目录
-                </button>
-              ) : null}
-              {historyLoadError ? (
-                <button type="button" onClick={() => void loadMessages()}>
-                  重试最新消息
-                </button>
-              ) : null}
+              <span>正在读取目标附近的消息…</span>
             </div>
           ) : null}
         </div>
@@ -8626,84 +8608,5 @@ export function AssistantProcessGroup({
         </div>
       ) : null}
     </section>
-  );
-}
-
-// ─── Tool approval card（询问批准） ───────────────────────────────────────────
-
-function ToolApprovalCard({
-  approval,
-  busy,
-  onApprove,
-  onDeny,
-}: {
-  approval: PendingToolApproval;
-  busy?: boolean;
-  onApprove(scope: ToolApprovalScope): void;
-  onDeny(): void;
-}) {
-  const persistentApp = persistentComputerUseAppOf(approval.toolName, approval.arguments);
-  const scopes = approval.allowedScopes;
-  const canAlwaysAllowApp = Boolean(persistentApp && (!scopes || scopes.includes('always-app')));
-  const canAllowSession = Boolean(!persistentApp && (!scopes || scopes.includes('session')));
-  const secondaryScope: ToolApprovalScope | undefined = canAlwaysAllowApp
-    ? 'always-app'
-    : canAllowSession
-      ? 'session'
-      : undefined;
-  const secondaryLabel = canAlwaysAllowApp ? '始终允许此应用' : '本会话允许';
-  const detail = approval.detail || approval.path || approval.command || approval.toolName;
-
-  return (
-    <div
-      className="shell-composer-tool-approval"
-      data-testid={`tool-approval-${approval.approvalId}`}
-      data-tool={approval.toolName}
-      data-persistent-app={persistentApp ? persistentApp.value : undefined}
-    >
-      <div className="shell-composer-tool-approval__main">
-        <span className="shell-composer-tool-approval__icon" aria-hidden="true">
-          <Shield size={16} />
-        </span>
-        <div className="shell-composer-tool-approval__copy">
-          <div className="shell-composer-tool-approval__title">{approval.title}</div>
-          <div className="shell-composer-tool-approval__detail">
-            <span>需要批准</span>
-            {detail ? <span aria-hidden="true"> · </span> : null}
-            {detail ? (
-              <span className="shell-composer-tool-approval__detail-text">{detail}</span>
-            ) : null}
-          </div>
-        </div>
-      </div>
-      <div className="shell-composer-tool-approval__actions">
-        <button
-          type="button"
-          className="shell-composer-tool-approval__button is-approve"
-          disabled={busy}
-          onClick={() => onApprove('once')}
-        >
-          {busy ? '处理中…' : '批准'}
-        </button>
-        {secondaryScope ? (
-          <button
-            type="button"
-            className="shell-composer-tool-approval__button is-secondary"
-            disabled={busy}
-            onClick={() => onApprove(secondaryScope)}
-          >
-            {secondaryLabel}
-          </button>
-        ) : null}
-        <button
-          type="button"
-          className="shell-composer-tool-approval__button is-deny"
-          disabled={busy}
-          onClick={onDeny}
-        >
-          拒绝
-        </button>
-      </div>
-    </div>
   );
 }

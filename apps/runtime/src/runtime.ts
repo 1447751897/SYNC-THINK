@@ -7,6 +7,8 @@ import { parseConversationListFileChangesPayload } from '@sync-think/protocol';
 import { parseConversationReadFileDiffPayload } from '@sync-think/protocol';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { DemoRunPersistenceJournal } from './demo-run-persistence.js';
+import { isCodexSilentCommandWatchdogMessage } from './kernel/persistent-terminal-command.js';
+import { CommandSessionStore, isRunningCommandResult } from './command-sessions.js';
 import {
   projectEventContent,
   projectMessageContent,
@@ -526,6 +528,23 @@ import {
   readImageDataUrl,
   resolveDescribeImagePath,
 } from './describe-image-tool.js';
+import {
+  GENERATE_IMAGE_TOOL_NAME,
+  buildGenerateImageMarkdown,
+  buildImageGenerationGuidance,
+  parseGenerateImageArgs,
+  pickImageGenerationTarget,
+  writeGeneratedImages,
+} from './generate-image-tool.js';
+import {
+  CapabilityBroker,
+  SEARCH_CAPABILITY_TOOL_NAME,
+  USE_CAPABILITY_TOOL_NAME,
+  buildImageGenerationCapability,
+  capabilityUsesGenerateImage,
+  parseSearchCapabilityArgs,
+  parseUseCapabilityArgs,
+} from './capability-broker.js';
 import { recognizeImageTextWithWindowsOcr, WINDOWS_OCR_TOOL_NAME } from './windows-ocr.js';
 import {
   discoverRemoteMcpTools,
@@ -967,37 +986,23 @@ const CODEX_STYLE_COMMENTARY_PROMPT = [
 ].join('\n');
 
 /**
- * Contract shared by native/external kernels and the regular Provider path.
- * The Renderer only mounts DesignDraftPreview for this explicit fence, so the
- * model must not rely on an ambiguous HTML code block or a prose claim.
+ * NewMax HtmlPreview contract. The renderer mounts a live iframe for ordinary
+ * `html` fences — there is no JSON UI-kit schema and no design-html / design-ui
+ * fence. Shared by native/external kernels and the regular Provider path.
  */
-const DESIGN_HTML_OUTPUT_CONTRACT = [
-  'AI design draft output contract (design-html):',
-  '- When the user asks to create a UI mockup, visual design, prototype, or design draft, return one complete, self-contained HTML document inside exactly one fenced block tagged `design-html`.',
-  '- The fence must be ` ```design-html ` followed by a complete `<!doctype html>` / `<html>` / `<head>` / `<body>` document and a matching closing fence. Put CSS and JavaScript inline when needed so the preview works without a build step; do not put Markdown or explanatory prose inside the fence.',
-  '- Include visible page content and accessible labels/interactions. Do not output a placeholder description instead of the page. Do not nest `<design-html>` tags or truncate the document.',
-  '- This is a speed-first NewMax-style preview: target the first viewport and the key interaction states, keep the UTF-8 payload compact (target at or below 160 KiB), keep the payload at or below 1 MiB, and stop once the page is usable.',
-  '- Do not embed base64 assets, large generated SVG path data, exhaustive screen variants, or hidden content that is not needed for the preview. Use CSS primitives and short inline data only when they materially improve the visible result.',
-  '- Outside the fence you may briefly summarize the draft, but the fenced document is the canonical preview/save payload.',
-  '- Preview, save, and browser-open are separate facts: a preview only means the fenced payload passed the UI parser; opening the page requires an actual `browser_open` result; saving requires an actual successful `write_file` result.',
-  '- When the user asks to save the design, call `write_file` with a project-relative path (for example `designs/<slug>.html`); never use an absolute path and never claim that a file was saved before the tool reports success.',
-  '- If the generated document is empty, malformed, truncated, or otherwise fails validation, do not call `write_file` and do not overwrite an existing design file; return a complete replacement first.',
-  '- Use this contract only for design requests; ordinary HTML examples should remain regular `html` code fences.',
-].join('\n');
-
-const DESIGN_UI_OUTPUT_CONTRACT = [
-  'AI design draft output contract (design-ui):',
-  '- For ordinary UI mockups, product screens, dashboards, and design drafts, prefer one compact JSON artifact in exactly one fenced block tagged `design-ui`.',
-  '- The JSON must be `{ "version": 1, "type": "ui-design", "title": "...", "nodes": [...] }`; optional sidebar supports `{title,items:[{label,active,badge}]}`.',
-  '- Nodes may be heading, text, metric, card, list, table, or form. Keep the artifact focused on the first viewport and key interaction states; do not emit HTML, CSS, scripts, base64 assets, or remote resources in this block.',
-  '- Keep the JSON under 180 KB and use at most 40 nodes. The desktop renders it with the shared UI kit, so preserve hierarchy, labels, states, and table/form semantics.',
-  '- Use `design-html` only when the user explicitly requests raw HTML, CSS, or a browser-ready HTML document.',
+const HTML_PREVIEW_OUTPUT_CONTRACT = [
+  'AI design draft output contract (html):',
+  '- When the user asks to create a UI mockup, visual design, prototype, landing page, or design draft, return one complete, self-contained HTML document inside exactly one fenced block tagged `html`.',
+  '- The fence must be ` ```html ` followed by the page markup and a matching closing fence. Put CSS and JavaScript inline when needed so the in-chat HtmlPreview works without a build step; do not put Markdown or explanatory prose inside the fence.',
+  '- The desktop previews `html` fences as a live page the same way NewMax HtmlPreview does. Never use `design-ui`, `ui-design`, or `design-html` fences, and never emit a JSON UI-kit / node-tree artifact for a design draft.',
+  '- Include visible page content and accessible labels/interactions. Do not output a placeholder description instead of the page.',
+  '- Outside the fence you may briefly summarize the draft. Previewing a fence is not the same as saving a file or opening a browser tab.',
 ].join('\n');
 
 /** Editable drawing contract used by NewMax's Excalidraw file preview. */
 const EXCALIDRAW_OUTPUT_CONTRACT = [
   'AI editable design output contract (excalidraw):',
-  '- Use this contract only when the user explicitly asks for Excalidraw, a `.excalidraw` file, Excalidraw JSON/source, or an editable canvas/whiteboard JSON. Ordinary UI mockups, prototypes, wireframes, and design drafts use the compact `design-html` contract instead.',
+  '- Use this contract only when the user explicitly asks for Excalidraw, a `.excalidraw` file, Excalidraw JSON/source, or an editable canvas/whiteboard JSON. Ordinary UI mockups, prototypes, wireframes, and design drafts use the in-message `html` fence preview instead.',
   '- When explicitly requested, return exactly one fenced block tagged `excalidraw` containing valid JSON.',
   '- The JSON must have `type: "excalidraw"`, `version: 2`, `elements: [...]`, `appState: { ... }`, and `files: { ... }`. Use real Excalidraw elements with stable ids, coordinates, dimensions, and visible text; do not return a prose description or HTML.',
   '- Keep the payload minimal and self-contained, preferably below 160 KiB and at or below 1 MiB. `files` may contain embedded image data only when required by the requested design.',
@@ -1015,7 +1020,7 @@ const INLINE_VISUALIZATION_OUTPUT_CONTRACT = [
   '- Only emit the directive when a project folder is bound and the file write succeeded. If there is no project folder or the write fails, explain the concrete state and do not claim that the visualization was saved or available inline.',
   '- Inline preview, browser-open, and saving are separate facts: the directive mounts the saved project file; opening the live page requires an actual successful `browser_open` result; saving requires the successful `write_file` result.',
   '- Keep the UTF-8 HTML payload at or below 2 MiB. Include visible content and working interactions, keep CSS and JavaScript self-contained when practical, and do not substitute a prose description for the page.',
-  '- This contract is distinct from `design-html` and `excalidraw`: use the fenced `design-html` contract for an in-message design draft and the fenced `excalidraw` contract for an editable drawing. Do not emit an inline visualization directive for those artifacts unless the user separately asks for a saved HTML visualization.',
+  '- This contract is distinct from in-message `html` fences and `excalidraw`: use a fenced `html` block for an in-chat design draft and the fenced `excalidraw` contract for an editable drawing. Do not emit an inline visualization directive for those artifacts unless the user separately asks for a saved HTML visualization.',
 ].join('\n');
 
 const PROMPT_ENHANCEMENT_SYSTEM_PROMPT = [
@@ -1199,7 +1204,10 @@ const HOST_AUTO_APPROVED_PLATFORM_TOOLS: ReadonlySet<string> = new Set([
   // NewMax-style vision fallback: read-only image understanding — the host
   // executor never mutates and already returns rich errors to the model.
   'describe_image',
+  GENERATE_IMAGE_TOOL_NAME,
   WINDOWS_OCR_TOOL_NAME,
+  SEARCH_CAPABILITY_TOOL_NAME,
+  USE_CAPABILITY_TOOL_NAME,
 ]);
 
 /**
@@ -2507,6 +2515,7 @@ export class Runtime {
    * so evicting an idle process never deletes conversation context.
    */
   private readonly codexSessionHost: BoundedKernelSessionHost;
+  private readonly commandSessions = new CommandSessionStore();
   /**
    * Platform MCP catalog frozen per external-kernel run. The kernel may only
    * call tools that were exposed when its broker started; a later capability or
@@ -2525,6 +2534,8 @@ export class Runtime {
     string,
     Map<string, Promise<{ ok: boolean; content?: string; error?: string }>>
   >();
+  /** Per-run NewMax capability-broker refs (`search_capability` → `use_capability`). */
+  private readonly capabilityBrokerByRun = new Map<string, CapabilityBroker>();
   /** The one formal, approval-ready plan revision submitted by each active run. */
   private readonly formalPlanRevisionByRun = new Map<string, number>();
   /** Hot cache for external-kernel sessions; app_setting remains durable authority. */
@@ -6201,7 +6212,7 @@ export class Runtime {
 
       let discoveredModelCount = 0;
       const createDiscovery = this.resolveDiscoveryAdapter(payload.protocol);
-      if (created.provider.supportsDiscovery && createDiscovery) {
+      if (created.provider.supportsDiscovery && createDiscovery && payload.discoverOnCreate !== false) {
         try {
           const discovered = await createDiscovery.discoverModels(
             payload.apiKey,
@@ -9059,6 +9070,7 @@ export class Runtime {
       platformSchemas: nativePlatformToolSchemas({
         planningMode: this.isPlanningModeForThread(input.threadId),
         visionFallbackEnabled: this.isVisionFallbackSettingEnabled(),
+        imageGenerationEnabled: this.isImageGenerationEnabled(),
         includeGoalManage: this.conversationHasActiveGoal(input.threadId),
       }),
     });
@@ -20052,6 +20064,7 @@ export class Runtime {
               platformSchemas: nativePlatformToolSchemas({
                 planningMode: initialRun.planningMode === true,
                 visionFallbackEnabled: this.isVisionFallbackSettingEnabled(),
+                imageGenerationEnabled: this.isImageGenerationEnabled(),
                 includeGoalManage: this.conversationHasActiveGoal(initialRun.threadId),
               }),
               signal: abort.signal,
@@ -20060,6 +20073,7 @@ export class Runtime {
               const schemas = nativePlatformToolSchemas({
                 planningMode: initialRun.planningMode === true,
                 visionFallbackEnabled: this.isVisionFallbackSettingEnabled(),
+                imageGenerationEnabled: this.isImageGenerationEnabled(),
                 includeGoalManage: this.conversationHasActiveGoal(initialRun.threadId),
               });
               console.log('[e2e-debug] platformSchemas:', schemas.map((s) => s.name).join(','));
@@ -20612,13 +20626,20 @@ export class Runtime {
             toolsEnabled &&
             pendingToolCalls.length > 0 &&
             this.demoRuns.has(runId) &&
-            toolLoopRound < MAX_TOOL_ROUNDS
+            (toolLoopRound < MAX_TOOL_ROUNDS ||
+              pendingToolCalls.every((call) =>
+                ['read_command', 'list_commands', 'stop_command'].includes(call.name),
+              ))
           ) {
             toolLoopRound += 1;
             const currentRun = this.demoRuns.get(runId)!;
             appendActiveRoundTranscript('complete');
 
-            const completedResults: Array<{ toolCallId: string; content: string }> = [];
+            const completedResults: Array<{
+              toolCallId: string;
+              content: string;
+              pendingCommand?: boolean;
+            }> = [];
             const writeSnapshot: import('./chat-tools.js').ChatWriteSnapshot = {};
             for (let toolIndex = 0; toolIndex < pendingToolCalls.length; toolIndex++) {
               const toolCall = pendingToolCalls[toolIndex]!;
@@ -21000,6 +21021,9 @@ export class Runtime {
               } else {
                 resultText = await executeChatBuiltInTool({
                   workspaceRoot,
+                  threadId: String(currentRun.threadId),
+                  runId: String(runId),
+                  commandSessions: this.commandSessions,
                   toolCall,
                   signal: abort.signal,
                   networkEnabled,
@@ -21022,7 +21046,13 @@ export class Runtime {
                   : undefined,
               );
               const foldedForModel = foldToolOutputText(resultText).text;
-              completedResults.push({ toolCallId: toolCall.id, content: foldedForModel });
+              completedResults.push({
+                toolCallId: toolCall.id,
+                content: foldedForModel,
+                pendingCommand:
+                  ['run_command', 'read_command'].includes(toolCall.name) &&
+                  isRunningCommandResult(resultText),
+              });
               chatMessages = [
                 ...chatMessages,
                 { role: 'tool', toolCallId: toolCall.id, content: foldedForModel },
@@ -21032,6 +21062,14 @@ export class Runtime {
             // NewMax preventive: also fold older tool outputs still in the live loop transcript.
             chatMessages = foldLongToolOutputsInMessages(chatMessages).messages;
 
+            // Waiting for a live command is not a new work attempt or a stagnant retry.
+            if (
+              completedResults.length > 0 &&
+              completedResults.every((result) => result.pendingCommand) &&
+              pendingToolCalls.every((call) => call.name === 'read_command')
+            ) {
+              toolLoopRound -= 1;
+            }
             const guard = evaluateToolLoopGuard({
               toolLoopRound,
               maxToolRounds: MAX_TOOL_ROUNDS,
@@ -21460,6 +21498,7 @@ export class Runtime {
       this.openGateway.revokeRun(runId);
       this.platformMcpCatalogByRun.delete(runId);
       this.platformMcpResultsByRun.delete(runId);
+      this.capabilityBrokerByRun.delete(runId);
       this.formalPlanRevisionByRun.delete(runId);
       this.kernelToolProgressByRun.delete(runId);
       adapterLease?.release();
@@ -22235,7 +22274,7 @@ export class Runtime {
         'Do not call `goal_manage` for checklists or exploration plans. `goal_manage` exists only after the user starts Goal mode.',
       ].join('\n'),
     );
-    parts.push(DESIGN_UI_OUTPUT_CONTRACT, DESIGN_HTML_OUTPUT_CONTRACT);
+    parts.push(HTML_PREVIEW_OUTPUT_CONTRACT);
     if (isExplicitExcalidrawRequest(run.userText)) {
       parts.push(EXCALIDRAW_OUTPUT_CONTRACT);
     }
@@ -22274,6 +22313,10 @@ export class Runtime {
         visionFallbackEnabled: this.isVisionFallbackSettingEnabled(),
         externalKernel: true,
       }),
+      ...buildImageGenerationGuidance({
+        enabled: this.isImageGenerationEnabled(),
+        externalKernel: true,
+      }),
     );
     return parts.join('\n\n');
   }
@@ -22310,6 +22353,7 @@ export class Runtime {
       networkEnabled,
       fallbackWebSearchEnabled: externalWebSearch,
       visionFallbackEnabled: this.isVisionFallbackSettingEnabled(),
+      imageGenerationEnabled: this.isImageGenerationEnabled(),
       hasActiveGoal: this.conversationHasActiveGoal(run.threadId),
     });
     const selection = selectKernelMcpRun({
@@ -22466,6 +22510,15 @@ export class Runtime {
     if (call.tool === DESCRIBE_IMAGE_TOOL_NAME) {
       return this.executeDescribeImageTool(runId, workspaceRoot, call);
     }
+    if (call.tool === SEARCH_CAPABILITY_TOOL_NAME) {
+      return this.executeSearchCapabilityTool(runId, call);
+    }
+    if (call.tool === USE_CAPABILITY_TOOL_NAME) {
+      return this.executeUseCapabilityTool(runId, workspaceRoot, call);
+    }
+    if (call.tool === GENERATE_IMAGE_TOOL_NAME) {
+      return this.executeGenerateImageTool(runId, workspaceRoot, call);
+    }
     const catalog = this.platformMcpCatalogByRun.get(runId) ?? PLATFORM_MCP_TOOL_DEFINITIONS;
     const definition = catalog.find((tool) => tool.name === call.tool);
     if (!definition) return { ok: false, error: `unknown platform tool: ${call.tool}` };
@@ -22609,6 +22662,153 @@ export class Runtime {
         }`,
       };
     }
+  }
+
+  private capabilityBrokerFor(runId: RunId): CapabilityBroker {
+    let broker = this.capabilityBrokerByRun.get(runId);
+    if (!broker) {
+      broker = new CapabilityBroker({
+        getTargets: () =>
+          this.isImageGenerationEnabled() ? [buildImageGenerationCapability()] : [],
+      });
+      this.capabilityBrokerByRun.set(runId, broker);
+    }
+    return broker;
+  }
+
+  private executeSearchCapabilityTool(
+    runId: RunId,
+    call: PlatformMcpToolCall,
+  ): { ok: boolean; content?: string; error?: string } {
+    const input =
+      call.input && typeof call.input === 'object' ? (call.input as Record<string, unknown>) : {};
+    const parsed = parseSearchCapabilityArgs(input);
+    if ('error' in parsed) return { ok: false, error: `search_capability: ${parsed.error}` };
+    const found = this.capabilityBrokerFor(runId).search(parsed.query, parsed.limit);
+    return { ok: true, content: JSON.stringify(found) };
+  }
+
+  private async executeUseCapabilityTool(
+    runId: RunId,
+    workspaceRoot: string,
+    call: PlatformMcpToolCall,
+  ): Promise<{ ok: boolean; content?: string; error?: string }> {
+    const run = this.demoRuns.get(runId);
+    if (run?.planningMode === true) {
+      return { ok: false, error: '规划模式只读：此操作需在执行模式中进行' };
+    }
+    const input =
+      call.input && typeof call.input === 'object' ? (call.input as Record<string, unknown>) : {};
+    const parsed = parseUseCapabilityArgs(input);
+    if ('error' in parsed) return { ok: false, error: `use_capability: ${parsed.error}` };
+    const resolved = this.capabilityBrokerFor(runId).resolveUse(parsed.ref, parsed.arguments);
+    if ('error' in resolved) return { ok: false, error: `use_capability: ${resolved.error}` };
+    if (capabilityUsesGenerateImage(resolved.toolName)) {
+      return this.executeGenerateImageTool(runId, workspaceRoot, {
+        ...call,
+        tool: GENERATE_IMAGE_TOOL_NAME,
+        input: resolved.arguments,
+      });
+    }
+    return {
+      ok: false,
+      error: `use_capability: 不支持的能力 ${resolved.capabilityId}（${resolved.toolName}）`,
+    };
+  }
+
+  private async executeGenerateImageTool(
+    runId: RunId,
+    workspaceRoot: string,
+    call: PlatformMcpToolCall,
+  ): Promise<{ ok: boolean; content?: string; error?: string }> {
+    const run = this.demoRuns.get(runId);
+    if (run?.planningMode === true) {
+      return { ok: false, error: '规划模式只读：此操作需在执行模式中进行' };
+    }
+    if (!this.isImageGenerationEnabled()) {
+      return {
+        ok: false,
+        error: '还没有可用的生图供应商（设置 > 模型 > 图像生成），无法生成图片',
+      };
+    }
+    const root = workspaceRoot.trim();
+    if (!root) {
+      return {
+        ok: false,
+        error: 'generate_image: 当前对话没有绑定项目文件夹，无法保存生成的图片',
+      };
+    }
+    const input =
+      call.input && typeof call.input === 'object' ? (call.input as Record<string, unknown>) : {};
+    const parsed = parseGenerateImageArgs(input);
+    if ('error' in parsed) return { ok: false, error: `generate_image: ${parsed.error}` };
+    if (call.signal.aborted || !this.demoRuns.has(runId)) {
+      return { ok: false, error: 'generate_image: 工具调用被取消' };
+    }
+    const picked = pickImageGenerationTarget(this.collectImageGenerationCatalog(), parsed.model);
+    if ('error' in picked) return { ok: false, error: `generate_image: ${picked.error}` };
+    const provider = this.providerStore?.getProvider(picked.provider.providerId as never);
+    if (!provider) return { ok: false, error: 'generate_image: 生图供应商不存在' };
+    const apiKey = await this.resolveProviderSecret(picked.provider.providerId);
+    if (!apiKey) return { ok: false, error: 'generate_image: 生图供应商凭据为空' };
+    const adapter = this.resolveDiscoveryAdapter('openai-images');
+    if (!adapter?.generateImages) {
+      return { ok: false, error: 'generate_image: 当前运行时没有图像生成适配器' };
+    }
+    try {
+      const generated = await adapter.generateImages({
+        protocol: 'openai-images',
+        baseUrl: provider.baseUrl,
+        modelId: picked.model.providerModelId,
+        apiKey,
+        idempotencyKey: `generate-image-${ulid()}`,
+        signal: call.signal,
+        prompt: parsed.prompt,
+        count: parsed.count,
+        size: parsed.size,
+        quality: parsed.quality,
+      });
+      if (call.signal.aborted || !this.demoRuns.has(runId)) {
+        return { ok: false, error: 'generate_image: 工具调用被取消' };
+      }
+      const files = writeGeneratedImages({
+        workspaceRoot: root,
+        prompt: parsed.prompt,
+        images: generated.images,
+      });
+      return {
+        ok: true,
+        content: buildGenerateImageMarkdown({
+          prompt: parsed.prompt,
+          providerName: picked.provider.name,
+          modelId: picked.model.providerModelId,
+          files,
+        }),
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        error: `generate_image: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+  }
+
+  private collectImageGenerationCatalog() {
+    if (!this.providerStore) return [];
+    return this.providerStore.listProviders().map((entry) => ({
+      providerId: entry.provider.id,
+      name: entry.provider.name,
+      protocol: entry.provider.protocol,
+      enabled: entry.provider.enabled,
+      sortOrder: entry.provider.sortOrder,
+      hasCredential: entry.credentialGroups.some((group) => group.credentials.length > 0),
+      models: entry.models.map((model) => ({
+        modelId: model.id,
+        providerModelId: model.providerModelId,
+        priority: model.priority,
+        capabilities: model.capabilities,
+      })),
+    }));
   }
 
   private async executeWindowsOcrTool(
@@ -25522,7 +25722,10 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     failureClass: FailureClass,
     errorMessage?: string,
   ): 'continued' | 'paused' | 'failed' {
-    if (!shouldAttemptFallback(failureClass)) {
+    if (
+      !shouldAttemptFallback(failureClass) ||
+      isCodexSilentCommandWatchdogMessage(errorMessage)
+    ) {
       return 'failed';
     }
 
@@ -25975,6 +26178,9 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       }
     }
     const message = error instanceof Error ? error.message : String(error ?? '');
+    if (isCodexSilentCommandWatchdogMessage(message)) {
+      return 'protocol';
+    }
     if (
       /rate[\s_-]*limit|too many requests|(?:status|http(?:\/\d(?:\.\d)?)?)\s*429|\b429\b/i.test(
         message,
@@ -30225,17 +30431,21 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       visionFallbackEnabled: this.isVisionFallbackSettingEnabled(),
       externalKernel: false,
     });
+    const imageGenerationGuidance = buildImageGenerationGuidance({
+      enabled: this.isImageGenerationEnabled(),
+      externalKernel: false,
+    });
     const productBoundaryPrompt = [
       'Product capability boundaries (SYNC-THINK / this desktop shell):',
       CODEX_STYLE_COMMENTARY_PROMPT,
-      DESIGN_UI_OUTPUT_CONTRACT,
-      DESIGN_HTML_OUTPUT_CONTRACT,
+      HTML_PREVIEW_OUTPUT_CONTRACT,
       ...(isExplicitExcalidrawRequest(run.userText) ? [EXCALIDRAW_OUTPUT_CONTRACT] : []),
       INLINE_VISUALIZATION_OUTPUT_CONTRACT,
       agentCreationPrompt,
       planToolPrompt,
       browserWorkflowPrompt,
       ...imageToolGuidance,
+      ...imageGenerationGuidance,
       '- Prefer built-in tools list_files / search_files / read_file / git_status / git_diff. search_files finds file contents by regex — do not call rg/ripgrep/fd/ag — they are often missing on Windows and will fail with ENOENT.',
       '- If a tool fails as unavailable, do not retry the same command; change approach or answer with what you already know.',
       '- Avoid long pure-exploration loops. After a few targeted looks, give the user a useful answer.',
@@ -30500,6 +30710,11 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       setting.enabled &&
       resolveVisionDescribeModel(this.visionFallbackCatalog(), setting.modelId ?? undefined),
     );
+  }
+
+  /** True when Settings > 模型 > 图像生成 has an enabled OpenAI Images provider with a key and model. */
+  private isImageGenerationEnabled(): boolean {
+    return !('error' in pickImageGenerationTarget(this.collectImageGenerationCatalog()));
   }
 
   /** Whether the model bound to this run accepts image input (catalog tags first, name heuristic fallback). */
@@ -31911,6 +32126,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     // turn queue and the bounded host lease.
     for (const controller of this.demoRunAborts.values()) controller.abort();
     for (const controller of this.promptEnhancementAborts.values()) controller.abort();
+    await this.commandSessions.stopAll();
     await this.codexSessionHost.stopAll();
     await Promise.allSettled([...this.activeKernelRuns]);
     if (this.externalKernelSessionTails.size > 0) {

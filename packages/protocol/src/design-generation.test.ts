@@ -44,8 +44,5 @@ describe('design generation protocol', () => {
     expect(() => extractGeneratedDesignHtml('<html><head></head><body>partial')).toThrow(
       '模型未返回完整 HTML 设计稿',
     );
-    expect(() => extractGeneratedDesignHtml('<html><head></head><body><design-html /></body></html>')).toThrow(
-      '嵌套 design-html',
-    );
   });
 });

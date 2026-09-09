@@ -74,6 +74,9 @@ describe('WorkspaceWorkbench', () => {
     );
 
     expect(screen.getByRole('tab', { name: '工作区文件' })).toBeTruthy();
+    expect(document.querySelector('[data-workspace-empty-file-tab="true"]')).toBeTruthy();
+    expect(document.querySelector('[data-pane-shell="true"]')).toBeTruthy();
+    expect(document.querySelector('[data-pane-content-area="true"]')).toBeTruthy();
     fireEvent.click(screen.getByRole('tab', { name: '工作区文件' }));
     expect(onActivateTab).toHaveBeenCalledWith('workspace-files');
     fireEvent.click(screen.getByRole('tab', { name: /app.ts/ }));
@@ -143,6 +146,29 @@ describe('WorkspaceWorkbench', () => {
     expect(screen.queryByRole('menu')).toBeNull();
   });
 
+  it('keeps 新建终端 enabled without a bound project folder', () => {
+    const onNewResource = vi.fn();
+    render(
+      <WorkspaceWorkbench
+        placement="bottom"
+        scope={createWorkspaceWorkbenchLayout().bottom}
+        canOpenTerminal={false}
+        renderContent={() => null}
+        onActivateTab={vi.fn()}
+        onCloseTab={vi.fn()}
+        onNewResource={onNewResource}
+        onClose={vi.fn()}
+        onSizeChange={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '添加底部工作台标签' }));
+    const terminal = screen.getByRole('menuitem', { name: /新建终端/ });
+    expect(terminal.hasAttribute('disabled')).toBe(false);
+    fireEvent.click(terminal);
+    expect(onNewResource).toHaveBeenCalledWith('terminal');
+  });
+
   it('creates a conversation from the right-side add menu', () => {
     const onNewResource = vi.fn();
     render(
@@ -184,7 +210,37 @@ describe('WorkspaceWorkbench', () => {
     );
 
     expect(screen.getByRole('tab', { name: /新对话/ })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: '工作区文件' })).toBeTruthy();
     expect(screen.getByTestId('content-conversation:draft:ws-a:1')).toBeTruthy();
+  });
+
+  it('keeps the labeled workspace-files tab when a conversation is active and the tree is open', () => {
+    const opened = openWorkbenchTab(
+      createWorkspaceWorkbenchLayout(),
+      'right',
+      conversationWorkbenchTab('draft:ws-a:1'),
+    );
+    const scope = { ...opened.right, fileBrowserOpen: true };
+    render(
+      <WorkspaceWorkbench
+        placement="right"
+        scope={scope}
+        conversationTabMeta={{ 'draft:ws-a:1': { title: '新对话', track: 'model' } }}
+        renderContent={(tab) => <div>{tab.id}</div>}
+        renderFileBrowser={() => <div>工作区文件树</div>}
+        onActivateTab={vi.fn()}
+        onCloseTab={vi.fn()}
+        onNewResource={vi.fn()}
+        onToggleFileBrowser={vi.fn()}
+        onClose={vi.fn()}
+        onSizeChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole('tab', { name: '工作区文件' })).toBeTruthy();
+    expect(document.querySelector('[data-workspace-empty-file-tab="true"]')).toBeTruthy();
+    expect(screen.getByRole('tab', { name: /新对话/ })).toBeTruthy();
+    expect(screen.getByText('工作区文件树')).toBeTruthy();
   });
 
   it('hides the add button until the workbench chrome is focused', () => {

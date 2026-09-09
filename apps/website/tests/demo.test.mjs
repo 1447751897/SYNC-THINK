@@ -29,8 +29,8 @@ test('demo imports the actual desktop cards instead of hand-drawn replicas', asy
   }
   assert.doesNotMatch(source, /TaskPlanHistoryPanel|readDemoHistory/);
   const html = await readFile(new URL('../demo.html', import.meta.url), 'utf8');
-  assert.match(html, /assets\/chat-shell\.css/);
-  assert.match(html, /assets\/chat-app\.js/);
+  assert.match(html, /assets\/chat-shell\.css\?v=embed-hero-1/);
+  assert.match(html, /assets\/chat-app\.js\?v=embed-hero-1/);
   assert.doesNotMatch(html, /id="plan-steps"|src="\/demo.js"/);
   const capability = await readFile(
     new URL('../../desktop/src/renderer/shell/WebsiteCapabilityDemo.tsx', import.meta.url),
@@ -40,7 +40,28 @@ test('demo imports the actual desktop cards instead of hand-drawn replicas', asy
     assert.match(capability, new RegExp(`from './${component}\\.js'`));
   const landing = await readFile(new URL('../index.html', import.meta.url), 'utf8');
   assert.equal((landing.match(/src="\/demo\.html\?view=(?:kernels|agents|teams)"/g) ?? []).length, 3);
+  assert.match(landing, /src="\/demo\.html\?embed=hero"/);
+  assert.match(landing, /class="kernel-strip"/);
+  assert.match(landing, /Claude Code/);
+  assert.match(landing, />Codex/);
+  assert.doesNotMatch(landing, /Gemini CLI|OpenClaw|OpenCode/);
+  assert.match(landing, /hero-preview/);
   assert.doesNotMatch(landing, /continuum-gallery|capability-card|night-lake|anime-lake/);
+  const styles = await readFile(new URL('../styles.css', import.meta.url), 'utf8');
+  assert.match(styles, /footer-meadow-painted\.webp\?v=scenery-2/);
+  assert.match(styles, /background-position:\s*22%\s+100%/);
+  assert.doesNotMatch(styles, /site-footer[^}]*hero-alpine-painted/);
+  assert.match(styles, /height:\s*820px/);
+  const demoCss = await readFile(
+    new URL('../../desktop/src/renderer/shell/website-demo.css', import.meta.url),
+    'utf8',
+  );
+  assert.match(demoCss, /demo-wallpaper-chat\.jpg\?v=scenery-1/);
+  assert.match(demoCss, /demo-wallpaper-kernels\.jpg\?v=scenery-1/);
+  assert.match(demoCss, /demo-wallpaper-agents\.jpg\?v=scenery-1/);
+  assert.match(demoCss, /demo-wallpaper-teams\.jpg\?v=scenery-1/);
+  assert.match(demoCss, /data-demo-embed=.hero./);
+  assert.match(source, /dataset\.demoEmbed = 'hero'/);
 });
 
 test(
@@ -80,10 +101,10 @@ test(
           forbiddenRequests.push(request.url());
       });
       await page.goto(process.env.SYNC_THINK_DEMO_TEST_URL);
-      const iframe = page.locator('iframe[src="/demo.html"]');
+      const iframe = page.locator('iframe.workspace-demo');
       await iframe.scrollIntoViewIfNeeded();
       assert.equal(await iframe.getAttribute('sandbox'), 'allow-scripts allow-same-origin');
-      const frame = page.frameLocator('iframe[src="/demo.html"]');
+      const frame = page.frameLocator('iframe.workspace-demo');
       await frame.getByTestId('website-chat-app').waitFor();
       const select = async (scene) => {
         await frame.getByTestId(`scene-${scene}`).click();

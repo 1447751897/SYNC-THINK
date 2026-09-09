@@ -16,6 +16,7 @@ import {
   toolInputSummary,
   toolStatusOf,
   toolVisualKind,
+  isImageGenerationActivity,
 } from './process-activity.js';
 
 const runningCommand: InlineProcessItem = {
@@ -243,6 +244,27 @@ describe('shared tool naming', () => {
   it('strips the MCP wire prefix so kernel-invoked platform tools keep their label', () => {
     expect(friendlyToolName('mcp__sync-think-platform__read_file')).toBe('读取文件');
     expect(friendlyToolName('mcp__playwright__browser_click')).toBe('Browser Click');
+    expect(friendlyToolName('generate_image')).toBe('生成图片');
+    expect(friendlyToolName('mcp__image-generation__generate_image')).toBe('生成图片');
+    expect(friendlyToolName('search_capability')).toBe('capability-broker · search capability');
+    expect(friendlyToolName('mcp__capability-broker__use_capability')).toBe(
+      'capability-broker · use capability',
+    );
+  });
+
+  it('treats use_capability with a prompt as image generation', () => {
+    expect(
+      isImageGenerationActivity({
+        name: 'mcp__capability-broker__use_capability',
+        argumentsJson: JSON.stringify({ ref: 'cap_1', arguments: { prompt: '湖边小屋' } }),
+      }),
+    ).toBe(true);
+    expect(
+      isImageGenerationActivity({
+        name: 'mcp__capability-broker__search_capability',
+        argumentsJson: JSON.stringify({ query: '图片生成' }),
+      }),
+    ).toBe(false);
   });
 
   it('classifies tool rows into stable visual kinds', () => {

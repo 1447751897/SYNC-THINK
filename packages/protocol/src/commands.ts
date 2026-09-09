@@ -908,6 +908,8 @@ export interface CreateProviderPayload {
   /** Plaintext only for the create hop; Runtime stores into secure-store and never echoes it. */
   apiKey: string;
   supportsDiscovery?: boolean;
+  /** When false, the caller performs preview-first discovery after creation. */
+  discoverOnCreate?: boolean;
   credentialGroupName?: string;
   credentialLabel?: string;
   importedFrom?: string;

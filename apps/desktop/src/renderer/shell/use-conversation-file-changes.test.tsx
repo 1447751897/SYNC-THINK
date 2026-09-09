@@ -103,7 +103,7 @@ describe('conversation scoped file pages', () => {
       .mockResolvedValueOnce({ ...first, total: 1, nextOffset: undefined });
     render(<WorkspaceFilesPanel reviewView={target} />);
     expect(read).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('tab', { name: /对话文件/ }));
+    fireEvent.click(screen.getByRole('button', { name: /对话文件/ }));
     await screen.findByRole('alert');
     fireEvent.click(screen.getByRole('button', { name: '重新读取文件' }));
     await screen.findAllByText('old.txt');
@@ -118,8 +118,9 @@ describe('conversation scoped file pages', () => {
       version: 'a'.repeat(64),
     });
     render(<WorkspaceFilesPanel reviewView={target} />);
-    fireEvent.click(screen.getByRole('tab', { name: /对话文件/ }));
+    fireEvent.click(screen.getByRole('button', { name: /^对话文件$/ }));
     expect(await screen.findByText('当前对话暂无文件变动')).toBeTruthy();
+    expect(screen.queryByText('智能体写入或改过的文件会显示在这里')).toBeNull();
     expect(screen.queryByText('暂无对话文件')).toBeNull();
     expect(screen.queryByRole('button', { name: '下一页文件' })).toBeNull();
   });

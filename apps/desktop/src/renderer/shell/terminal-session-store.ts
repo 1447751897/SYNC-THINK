@@ -325,6 +325,7 @@ export function getTerminalSessionStore(): TerminalSessionStore {
 }
 
 export async function disposeTerminalSession(terminalId: string): Promise<void> {
+  await window.syncThink?.terminal?.kill(terminalId);
   if (!sharedStore) return;
   await sharedStore.disposeSession(terminalId);
 }

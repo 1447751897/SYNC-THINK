@@ -22,6 +22,9 @@ export function parseCreateProviderPayload(value: unknown): CreateProviderPayloa
   if (value.supportsDiscovery !== undefined && typeof value.supportsDiscovery !== 'boolean') {
     return undefined;
   }
+  if (value.discoverOnCreate !== undefined && typeof value.discoverOnCreate !== 'boolean') {
+    return undefined;
+  }
   for (const field of ['credentialGroupName', 'credentialLabel', 'importedFrom'] as const) {
     if (value[field] !== undefined) {
       if (typeof value[field] !== 'string' || (value[field] as string).length > 256)

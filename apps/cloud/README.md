@@ -33,6 +33,23 @@ pnpm --filter @sync-think/cloud typecheck
 Use `CLOUD_PORT` and `CLOUD_ORIGIN` together for a different port. A browser must
 use the configured origin exactly, including `127.0.0.1` versus `localhost`.
 
+The `/demo` ChatApp imports the desktop's actual React components, shell CSS, and
+font subsets. Install workspace development dependencies before running
+`pnpm build:cloud`; the website build reads workspace source exports directly and
+does not require an Electron build or previously generated package `dist` files.
+Only static assets are deployed to `apps/website/dist`. The 13 demo scenes use an
+isolated memory-only bridge: no model, shell, filesystem, or account operations.
+The demo CSP allows inline styles for CodeMirror while still blocking connections,
+inline scripts, and form submissions. Other pages keep their existing CSP.
+
+The homepage embeds three real desktop pages: `/demo.html?view=kernels`,
+`/demo.html?view=agents`, and `/demo.html?view=teams`. Their tabs reuse
+`KernelUpdatePanel`, `ModelPickerMenu`, `AgentLibrary`, and `TeamLibrary` from
+the desktop renderer. Agent/team edits and reset operate in a separate memory-only
+session. Starting a conversation carries the selected identity, model and roster
+into ChatApp, with a return action. Kernel versions are explicitly demo fixtures;
+no detection, update downloads, or runtime execution reaches the host machine.
+
 ## HTTP Contract
 
 | Route                                    | Behavior                                                                                   |
@@ -99,8 +116,8 @@ chain must be permitted. This uses modern browser CSP enforcement.
 ```
 
 The demo's CSP permits its local scripts, styles, and images and sets
-`connect-src 'none'` and `form-action 'none'`. `HEAD /demo` uses the same headers;
-`/demo/`, `/demo.html`, and encoded route aliases return 404. Login, account,
+`connect-src 'none'` and `form-action 'none'`. `HEAD /demo` and `HEAD /demo.html`
+use the same headers; `/demo/` and encoded route aliases return 404. Login, account,
 authentication API, and all other routes retain frame denial even when an embed
 allowlist is configured. The embedding site may also need `frame-src` permission
 for this service's origin in its own CSP.

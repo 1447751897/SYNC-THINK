@@ -139,11 +139,13 @@ Windows Desktop --> 本机 Runtime --> 本机 workspace / SQLite / DPAPI vault
 
 ## 8. 交互演示与素材来源
 
-官网当前通过 `<iframe src="/demo">` 嵌入独立工作台演示，提供两组固定示例数据和可操作的完整状态流程。演示代码位于 `apps/website/demo.*`，参照桌面工作台的任务、模型选择、计划和产物表达；它不调用真实模型、Runtime 或账号接口，所有用户输入以文本渲染。该边界在 UI 中标为“交互演示 · 示例数据”。
+官网通过 `<iframe src="/demo">` 嵌入完整 ChatApp 组件演示，入口为 `apps/desktop/src/renderer/shell/WebsiteChatDemo.tsx`，内存会话模型为 `website-demo-state.ts`，静态 HTML 为 `apps/website/demo.html`。不再维护旧 `demo.js` / `demo.css` 仿制界面。任务、问询、审批、代码、差异、工作台、接管与需求队列直接导入桌面组件；样式和字体使用原始 shell 资源。左侧提供 13 个演示场景，执行过程为内存模拟，不调用真实模型、Runtime、账号或命令；手动选择的图片仅保留在页面内存，不上传。文件使用原生右侧工作台（窄屏下方停靠），保留会话区、标签、文件列表及尺寸调整。输入栏复用添加、权限、技能、身份、模型/思考强度和上下文菜单，隐藏输入面板的滚动条外观但保留滚动操作。
 
-`/demo` 单独设置 frame-ancestors；其他页面继续禁止嵌入。官网提供复制嵌入代码；部署到其他网站前先设置 `CLOUD_EMBED_ORIGINS`。演示按钮直接处理点击，适配无 `allow-forms` 的 iframe 沙箱。
+`/demo` 单独设置 frame-ancestors；其他页面继续禁止嵌入。官网提供复制嵌入代码；部署到其他网站前先设置 `CLOUD_EMBED_ORIGINS`。演示适配无 `allow-forms` 的 iframe 沙箱；保留 `connect-src 'none'`、`script-src 'self'` 和 `form-action 'none'`。仅在 `/demo` 允许内联样式，以支持原始 CodeMirror 编辑器与动态几何样式；没有放宽内联脚本或网络访问。账号页 CSP 不变。
 
-首屏与玻璃页脚使用重新生成的手绘雪山场景 `hero-alpine-painted.webp`（1536 x 1024，350,492 bytes），源 PNG 与设计参考保留在工作区。相比源 PNG 减少 85.9% 体积。采用本地 Instrument Serif 字体，OFL 许可证随产物分发，页面没有字体 CDN 请求。参考用户提供的 Multica 和 Nexeus 提示词；保留 SYNC-THINK 产品文案，没有复制 Nexeus 的业务内容。
+`pnpm --filter @sync-think/website build` 同时打包真实组件和桌面样式，通过 workspace source exports 直接构建源码，不依赖预先存在的 desktop/shared dist。构建需要仓库开发依赖，发布目录仍只是 `apps/website/dist`；无需启动 Electron 或打包安装程序。构建拒绝引入 `ChatView` / `ShellApp` / QA runtime，所有 JS 合计限制 3 MiB，并输出非公开的 `demo-build-manifest.json` 记录实际组件及字节数。官网 iframe 保持惰性加载，字体子集按需下载。
+
+首屏使用手绘雪山 `hero-alpine-painted.webp`。下载按钮下展示目前支持的 Claude Code / Codex 内核条。工作台预览叠在首屏绘画上。演示墙纸分别为花田、云海、花野、草地，页脚与收尾使用独立的 `footer-meadow-painted.webp`，不再复用雪山。采用本地 Instrument Serif 字体，OFL 许可证随产物分发，页面没有字体 CDN 请求。参考 Multica 的绘画全幅与内核条布局，保留 SYNC-THINK 文案与左对齐标题。官网嵌入 `/demo.html`，云端同时接受 `/demo`。
 
 以下实际桌面截图作为产品资料留档，已由交互演示取代官网中的静态大图：
 

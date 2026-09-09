@@ -47,7 +47,18 @@ import { disposeTerminalSession } from './terminal-session-store.js';
 import { BrowserPanel } from './BrowserPanel.js';
 import { ReviewPanel, WorkspaceFilesPanel } from './RightDock.js';
 import type { AbilityCenterInitialView } from './AbilitiesPage.js';
+import { KeepAliveLayer } from './KeepAliveLayer.js';
 import { lazyPanel } from './lazy-panel.js';
+import {
+  emptyPaneRetainedSurfaces,
+  rememberRetainedKey,
+  RETAINED_CONVERSATION_LIMIT,
+  RETAINED_FILE_LIMIT,
+  RETAINED_REVIEW_LIMIT,
+  RETAINED_TERMINAL_LIMIT,
+  shouldMountRetainedSurface,
+  type PaneRetainedSurfaces,
+} from './surface-keep-alive.js';
 import type { BrowserWorkflowAiTaskRequest } from './BrowserWorkflowPanel.js';
 import type { ConnectionTab, SettingsSection } from './SettingsPage.js';
 import type { ModelSettingsDetailView } from './ModelSettings.js';
@@ -144,6 +155,11 @@ import { canCloseSettings } from './settings-unsaved.js';
 import { NewConversationDialog, type ModelOption } from './NewConversationDialog.js';
 import { useDialog, DialogProvider } from './Dialog.js';
 import { startRuntimeConnection } from '../runtime-connection.js';
+import {
+  hasShellBootSnapshot,
+  readShellBootSnapshot,
+  writeShellBootSnapshot,
+} from './shell-boot-snapshot.js';
 import type { HtmlBrowserOpenOptions } from './html-browser.js';
 import {
   matchesShortcut,
@@ -162,7 +178,6 @@ import {
   selectStage,
   setLastTrack,
   setSidebarCollapsed,
-  STAGE_LABELS,
   targetName,
   toggleConversationGroupCollapsed,
   toggleSidebar,
@@ -258,6 +273,7 @@ import {
   fileWorkbenchTab,
   findWorkbenchBrowserByUrl,
   findWorkbenchConversation,
+  MAX_TERMINAL_SESSIONS,
   openOrFocusWorkbenchBrowser,
   openWorkbenchTab,
   replaceWorkbenchConversation,
@@ -498,7 +514,7 @@ function ShellAppInner() {
   const lastTrackRef = useRef(nav.lastTrack);
   lastTrackRef.current = nav.lastTrack;
   const ensureDefaultDraftRef = useRef<(workspaceId: string) => void>(() => {});
-  const [data, setData] = useState<ShellData>(EMPTY);
+  const [data, setData] = useState<ShellData>(() => readShellBootSnapshot() ?? EMPTY);
   const [skillCatalogRevision, setSkillCatalogRevision] = useState(0);
   const [eventHistory, setEventHistory] = useState<readonly Event[]>([]);
   const [runActivityAuthority, setRunActivityAuthority] = useState<
@@ -524,7 +540,9 @@ function ShellAppInner() {
     readActiveWorkspaceId(),
   );
   const activeWorkspaceIdRef = useRef(activeWorkspaceId);
-  const [bootState, setBootState] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [bootState, setBootState] = useState<'loading' | 'ready' | 'error'>(() =>
+    hasShellBootSnapshot(readShellBootSnapshot()) ? 'ready' : 'loading',
+  );
   const [bootError, setBootError] = useState<string | undefined>(undefined);
   const [sidebarWidth, setSidebarWidth] = useState(() => readSidebarWidth());
   const [groups, setGroups] = useState<ConversationGroupsByTrack>(() =>
@@ -610,6 +628,7 @@ function ShellAppInner() {
   );
   const lastConversationIdByPaneRef = useRef(new Map<string, string>());
   const lastBrowserIdByPaneRef = useRef(new Map<string, string>());
+  const retainedSurfacesByPaneRef = useRef(new Map<string, PaneRetainedSurfaces>());
   /**
    * 正在被拖拽的对话 tab id（NewMax 式跨屏移动）：拖动 tab 时聊天区右缘
    * 显示「拖到此处开分屏」落点，drop 后该对话进入右侧分屏。
@@ -833,19 +852,31 @@ function ShellAppInner() {
     [handleOpenReviewInWorkbench],
   );
 
+  const countOpenTerminals = useCallback(
+    (workspaceId: string) => {
+      const paneCount = Object.values(paneLayouts[workspaceId]?.panes ?? {}).reduce(
+        (count, pane) => count + pane.tabs.filter((tab) => tab.type === 'terminal').length,
+        0,
+      );
+      const workbench = workbenchLayouts[workspaceId];
+      const workbenchCount = (workbench?.right.tabs ?? [])
+        .concat(workbench?.bottom.tabs ?? [])
+        .filter((tab) => tab.type === 'terminal').length;
+      return paneCount + workbenchCount;
+    },
+    [paneLayouts, workbenchLayouts],
+  );
+
   const handleOpenTerminalInPane = useCallback(
     (paneId?: string) => {
       if (!activeWorkspaceId) return;
-      const projectFolder = data.workspaces
-        .find((workspace) => workspace.workspaceId === activeWorkspaceId)
-        ?.folderPath?.trim();
-      if (!projectFolder) return;
+      if (countOpenTerminals(activeWorkspaceId) >= MAX_TERMINAL_SESSIONS) return;
       const terminalId = createTerminalId();
       commitPaneLayout(activeWorkspaceId, (current) =>
         openTerminalInPane(current, terminalId, '', paneId ?? current.focusedPaneId),
       );
     },
-    [activeWorkspaceId, commitPaneLayout, data.workspaces],
+    [activeWorkspaceId, commitPaneLayout, countOpenTerminals],
   );
 
   const handleOpenBrowserInPane = useCallback(
@@ -1173,11 +1204,6 @@ function ShellAppInner() {
   const handleToggleWorkbench = useCallback(
     (placement: WorkbenchPlacement) => {
       if (!activeWorkspaceId) return;
-      const hasProjectFolder = Boolean(
-        data.workspaces
-          .find((workspace) => workspace.workspaceId === activeWorkspaceId)
-          ?.folderPath?.trim(),
-      );
       commitWorkbenchLayout(activeWorkspaceId, (current) => {
         const scope = current[placement];
         if (scope.open) return setWorkbenchOpen(current, placement, false);
@@ -1185,11 +1211,11 @@ function ShellAppInner() {
         if (placement === 'right') {
           return openWorkbenchTab(current, placement, workspaceFilesWorkbenchTab());
         }
-        if (!hasProjectFolder) return current;
+        if (countOpenTerminals(activeWorkspaceId) >= MAX_TERMINAL_SESSIONS) return current;
         return openWorkbenchTab(current, placement, terminalWorkbenchTab(createTerminalId()));
       });
     },
-    [activeWorkspaceId, commitWorkbenchLayout, data.workspaces],
+    [activeWorkspaceId, commitWorkbenchLayout, countOpenTerminals],
   );
 
   const handleNewWorkbenchResource = useCallback(
@@ -1203,10 +1229,7 @@ function ShellAppInner() {
         return;
       }
       if (resource === 'terminal') {
-        const projectFolder = data.workspaces
-          .find((workspace) => workspace.workspaceId === activeWorkspaceId)
-          ?.folderPath?.trim();
-        if (!projectFolder) return;
+        if (countOpenTerminals(activeWorkspaceId) >= MAX_TERMINAL_SESSIONS) return;
         commitWorkbenchLayout(activeWorkspaceId, (current) =>
           openWorkbenchTab(current, placement, terminalWorkbenchTab(createTerminalId())),
         );
@@ -1220,7 +1243,7 @@ function ShellAppInner() {
         openWorkbenchTab(current, placement, browserWorkbenchTab(createBrowserId(), 'about:blank')),
       );
     },
-    [activeWorkspaceId, commitWorkbenchLayout, data.workspaces, openUntitledProjectFile],
+    [activeWorkspaceId, commitWorkbenchLayout, countOpenTerminals, openUntitledProjectFile],
   );
 
   const handleActivateWorkbenchTab = useCallback(
@@ -1552,19 +1575,32 @@ function ShellAppInner() {
   const refresh = useCallback(async () => {
     const api = bridge();
     if (!api) return;
-    const [conversations, agents, teams, providers, workspaces, skills] = await Promise.all([
-      api.listConversations({ includeArchived: true }),
+    const conversationsPromise = api.listConversations({ includeArchived: true });
+    const extrasPromise = Promise.all([
       api.listGlobalAgents({}),
       api.listTeams(),
       api.listProviders({}),
       api.listWorkspaces({}),
       api.listSkills({}),
     ]);
+    const conversations = await conversationsPromise;
+    setData((current) => ({
+      ...current,
+      conversations: conversations.conversations,
+    }));
+    const [agents, teams, providers, workspaces, skills] = await extrasPromise;
     const modelNames = new Map<string, string>();
     const models: ModelOption[] = [];
     for (const provider of providers.providers) {
       if (provider.enabled === false) continue;
+      if (provider.protocol === 'openai-images') continue;
       for (const model of provider.models) {
+        if (
+          model.capabilities.includes('image-generation') &&
+          !model.capabilities.includes('text')
+        ) {
+          continue;
+        }
         modelNames.set(model.modelId, model.displayName);
         models.push({
           modelId: model.modelId,
@@ -1575,7 +1611,7 @@ function ShellAppInner() {
         });
       }
     }
-    setData({
+    const nextData = {
       conversations: conversations.conversations,
       agents: agents.agents,
       teams: teams.teams,
@@ -1583,7 +1619,9 @@ function ShellAppInner() {
       models,
       workspaces: workspaces.workspaces,
       skills: skills.skills,
-    });
+    };
+    setData(nextData);
+    writeShellBootSnapshot(nextData);
 
     // Drop stale tabs per workspace and collapse empty branches without ever
     // using another workspace's conversation as a valid reference.
@@ -1660,7 +1698,7 @@ function ShellAppInner() {
     }
 
     let cancelled = false;
-    setBootState('loading');
+    if (!hasShellBootSnapshot(readShellBootSnapshot())) setBootState('loading');
     setBootError(undefined);
 
     const unsub = api.onEvent?.((event: Event) => {
@@ -3238,6 +3276,8 @@ function ShellAppInner() {
           terminalId={tab.terminalId}
           projectFolder={activeProjectFolder}
           cwd={tab.cwd}
+          workspaceId={activeWorkspaceId}
+          title="Terminal"
           onCwdChange={(cwd) => {
             if (!activeWorkspaceId) return;
             commitWorkbenchLayout(activeWorkspaceId, (current) =>
@@ -3288,6 +3328,7 @@ function ShellAppInner() {
           groups={groups}
           bootState={bootState}
           bootError={bootError}
+          activeWorkspaceId={activeWorkspaceId}
           multiSelect={multiSelect}
           selectedIds={selectedIds}
           conversationActivity={conversationActivityView}
@@ -3392,7 +3433,13 @@ function ShellAppInner() {
             onToggleRightWorkbench={() => handleToggleWorkbench('right')}
             workspaceActivity={workspaceActivity}
           />
-          {nav.stage === 'talk' ? (
+          <div className="shell-stage-stack">
+          <KeepAliveLayer
+            active={nav.stage === 'talk'}
+            className="shell-stage-layer"
+            testId="stage-talk"
+            preserveLayout
+          >
             <div className="shell-workspace-content-frame" data-workspace-content-frame="true">
               <div className="shell-workspace-content-row" data-workspace-content-row="true">
                 <div
@@ -3451,6 +3498,41 @@ function ShellAppInner() {
                         if (activeTab?.type === 'browser') {
                           lastBrowserIdByPaneRef.current.set(pane.id, activeTab.browserId);
                         }
+                        const retainedSurfaces =
+                          retainedSurfacesByPaneRef.current.get(pane.id) ??
+                          emptyPaneRetainedSurfaces();
+                        if (
+                          activeTab?.type === 'conversation' &&
+                          activeTab.conversationId !== draftSession?.id
+                        ) {
+                          retainedSurfaces.conversations = rememberRetainedKey(
+                            retainedSurfaces.conversations,
+                            activeTab.conversationId,
+                            RETAINED_CONVERSATION_LIMIT,
+                          );
+                        } else if (activeTab?.type === 'file') {
+                          retainedSurfaces.files = rememberRetainedKey(
+                            retainedSurfaces.files,
+                            activeTab.path,
+                            RETAINED_FILE_LIMIT,
+                          );
+                        } else if (activeTab?.type === 'terminal') {
+                          retainedSurfaces.terminals = rememberRetainedKey(
+                            retainedSurfaces.terminals,
+                            activeTab.terminalId,
+                            RETAINED_TERMINAL_LIMIT,
+                          );
+                        } else if (activeTab?.type === 'review') {
+                          retainedSurfaces.reviews = rememberRetainedKey(
+                            retainedSurfaces.reviews,
+                            activeTab.runId,
+                            RETAINED_REVIEW_LIMIT,
+                          );
+                        }
+                        retainedSurfacesByPaneRef.current.set(pane.id, retainedSurfaces);
+                        const retainedConversationIds = retainedSurfaces.conversations.filter(
+                          (id) => localConversationIds.includes(id) && id !== draftSession?.id,
+                        );
                         const keepAliveConversationId = paneKeepAliveConversationId(
                           pane,
                           lastConversationIdByPaneRef.current.get(pane.id),
@@ -3485,6 +3567,7 @@ function ShellAppInner() {
                         return (
                           <div
                             className="shell-pane-frame relative flex min-h-0 flex-1 flex-col overflow-hidden"
+                            data-pane-shell="true"
                             onDragOver={(event) => {
                               if (!tabDragResource) return;
                               const zone = resolvePaneDropZone(
@@ -3619,65 +3702,107 @@ function ShellAppInner() {
                                 >
                                   {emptyTalk}
                                 </div>
-                              ) : conversation && shouldMountConversation ? (
-                                <div
-                                  className="shell-pane-surface"
-                                  data-surface="conversation"
-                                  data-active={conversationSurfaceActive ? 'true' : 'false'}
-                                  data-testid="pane-surface-conversation"
-                                >
-                                  <ChatView
-                                    key={conversation.id}
-                                    conversation={conversation}
-                                    modelName={resolveTargetName(conversation)}
-                                    models={data.models}
-                                    agents={data.agents}
-                                    teams={data.teams}
-                                    workspaces={data.workspaces}
-                                    eventHistory={eventHistory}
-                                    runActivityAuthority={runActivityAuthority}
-                                    runtimeConnectionRevision={runtimeConnectionRevision}
-                                    runtimeConnectionNotice={runtimeConnectionNotice}
-                                    initialSkillVersionIds={initialConversationSkillSelectionsRef.current.get(
-                                      String(conversation.id),
-                                    )}
-                                    onInitialSkillSelectionConsumed={(conversationId) => {
-                                      initialConversationSkillSelectionsRef.current.delete(
-                                        conversationId,
-                                      );
-                                    }}
-                                    seedComposerText={readSeedComposerText(String(conversation.id))}
-                                    onSeedComposerTextConsumed={(conversationId) => {
-                                      seedComposerTextRef.current.delete(conversationId);
-                                    }}
-                                    onTitleUpdated={() => void refresh()}
-                                    onConversationUpdated={handleConversationUpdated}
-                                    onLatestReviewChange={handleLatestReviewChange}
-                                    onOpenFile={(path, location) =>
-                                      handleOpenFileInSplit(pane.id, path, location)
-                                    }
-                                    onOpenHtmlInBrowser={handleOpenHtmlInBrowser}
-                                    onOpenWebUrl={(url) => handleOpenBrowserInPane(pane.id, url)}
-                                    onOpenReview={(view) => handleOpenReviewInSplit(pane.id, view)}
-                                    onOpenPlanSettings={handleOpenPlanSettings}
-                                    onOpenMcpSettings={handleOpenMcpSettings}
-                                    onCreateSkill={handleCreateSkill}
-                                  />
-                                </div>
-                              ) : conversation && conversationSurfaceActive ? (
-                                <button
-                                  type="button"
-                                  className="shell-chat-parked"
-                                  data-testid={`parked-conversation-${conversation.id}`}
-                                  onClick={() => handleFocusPane(pane.id)}
-                                >
-                                  <MessageSquare size={18} aria-hidden="true" />
-                                  <span>
-                                    <strong>{conversation.title?.trim() || '未命名对话'}</strong>
-                                    <small>此对话暂时休眠，点击加载</small>
-                                  </span>
-                                </button>
                               ) : null}
+                              {shouldMountConversation
+                                ? visibleConversations
+                                    .filter((item) => {
+                                      const id = String(item.id);
+                                      return (
+                                        id !== draftSession?.id &&
+                                        localConversationIds.includes(id) &&
+                                        shouldMountRetainedSurface(
+                                          id,
+                                          conversationSurfaceActive &&
+                                            keepAliveConversationId === id,
+                                          retainedConversationIds,
+                                        )
+                                      );
+                                    })
+                                    .sort((left, right) => {
+                                      const leftActive =
+                                        conversationSurfaceActive &&
+                                        keepAliveConversationId === left.id;
+                                      const rightActive =
+                                        conversationSurfaceActive &&
+                                        keepAliveConversationId === right.id;
+                                      if (leftActive === rightActive) return 0;
+                                      return leftActive ? 1 : -1;
+                                    })
+                                    .map((item) => {
+                                      const conversationActive =
+                                        conversationSurfaceActive &&
+                                        keepAliveConversationId === item.id;
+                                      return (
+                                        <div
+                                          key={item.id}
+                                          className="shell-pane-surface"
+                                          data-surface="conversation"
+                                          data-active={conversationActive ? 'true' : 'false'}
+                                          data-testid={
+                                            conversationActive
+                                              ? 'pane-surface-conversation'
+                                              : `pane-surface-conversation-${item.id}`
+                                          }
+                                        >
+                                          <ChatView
+                                            conversation={item}
+                                            modelName={resolveTargetName(item)}
+                                            models={data.models}
+                                            agents={data.agents}
+                                            teams={data.teams}
+                                            workspaces={data.workspaces}
+                                            eventHistory={eventHistory}
+                                            runActivityAuthority={runActivityAuthority}
+                                            runtimeConnectionRevision={runtimeConnectionRevision}
+                                            runtimeConnectionNotice={runtimeConnectionNotice}
+                                            initialSkillVersionIds={initialConversationSkillSelectionsRef.current.get(
+                                              String(item.id),
+                                            )}
+                                            onInitialSkillSelectionConsumed={(conversationId) => {
+                                              initialConversationSkillSelectionsRef.current.delete(
+                                                conversationId,
+                                              );
+                                            }}
+                                            seedComposerText={readSeedComposerText(
+                                              String(item.id),
+                                            )}
+                                            onSeedComposerTextConsumed={(conversationId) => {
+                                              seedComposerTextRef.current.delete(conversationId);
+                                            }}
+                                            onTitleUpdated={() => void refresh()}
+                                            onConversationUpdated={handleConversationUpdated}
+                                            onLatestReviewChange={handleLatestReviewChange}
+                                            onOpenFile={(path, location) =>
+                                              handleOpenFileInSplit(pane.id, path, location)
+                                            }
+                                            onOpenHtmlInBrowser={handleOpenHtmlInBrowser}
+                                            onOpenWebUrl={(url) =>
+                                              handleOpenBrowserInPane(pane.id, url)
+                                            }
+                                            onOpenReview={(view) =>
+                                              handleOpenReviewInSplit(pane.id, view)
+                                            }
+                                            onOpenPlanSettings={handleOpenPlanSettings}
+                                            onOpenMcpSettings={handleOpenMcpSettings}
+                                            onCreateSkill={handleCreateSkill}
+                                          />
+                                        </div>
+                                      );
+                                    })
+                                : conversation && conversationSurfaceActive ? (
+                                    <button
+                                      type="button"
+                                      className="shell-chat-parked"
+                                      data-testid={`parked-conversation-${conversation.id}`}
+                                      onClick={() => handleFocusPane(pane.id)}
+                                    >
+                                      <MessageSquare size={18} aria-hidden="true" />
+                                      <span>
+                                        <strong>{conversation.title?.trim() || '未命名对话'}</strong>
+                                        <small>此对话暂时休眠，点击加载</small>
+                                      </span>
+                                    </button>
+                                  ) : null}
                               {localBrowserTabs.map((tab) => {
                                 const browserActive =
                                   activeTab?.type === 'browser' &&
@@ -3717,71 +3842,118 @@ function ShellAppInner() {
                                   </div>
                                 );
                               })}
-                              {activeTab?.type === 'review' ? (
-                                <div
-                                  className="shell-pane-surface"
-                                  data-surface="review"
-                                  data-active="true"
-                                >
-                                  <ReviewPanel
-                                    view={
-                                      reviewViewsByRunId.get(activeTab.runId) ??
-                                      conversationReviewFromKey(activeTab.runId)
-                                    }
-                                    projectFolder={activeProjectFolder}
-                                    standalone
-                                    onOpenFile={(path, location) =>
-                                      handleOpenFileInPane(pane.id, path, location)
-                                    }
-                                    onOpenFileInNewTab={(path, location) =>
-                                      handleOpenFileInPane(pane.id, path, location)
-                                    }
-                                  />
-                                </div>
-                              ) : activeTab?.type === 'file' ? (
-                                <div
-                                  className="shell-pane-surface"
-                                  data-surface="file"
-                                  data-active="true"
-                                >
-                                  <WorkspaceFileView
-                                    projectFolder={activeProjectFolder}
-                                    path={activeTab.path}
-                                    revealTarget={
-                                      activeWorkspaceId
-                                        ? fileRevealTargets.get(
-                                            fileTabDirtyKey(activeWorkspaceId, activeTab.path),
-                                          )
-                                        : undefined
-                                    }
-                                    onDirtyChange={(dirty) => {
-                                      if (activeWorkspaceId) {
-                                        handleFileDirtyChange(
-                                          activeWorkspaceId,
-                                          activeTab.path,
-                                          dirty,
-                                        );
-                                      }
-                                    }}
-                                  />
-                                </div>
-                              ) : activeTab?.type === 'terminal' ? (
-                                <div
-                                  className="shell-pane-surface"
-                                  data-surface="terminal"
-                                  data-active="true"
-                                >
-                                  <TerminalPane
-                                    key={activeTab.terminalId}
-                                    terminalId={activeTab.terminalId}
-                                    projectFolder={activeProjectFolder}
-                                    cwd={activeTab.cwd}
-                                    onCwdChange={(cwd) =>
-                                      handleTerminalCwdChange(pane.id, activeTab.terminalId, cwd)
-                                    }
-                                  />
-                                </div>
-                              ) : null}
+                              {localReviewTabs
+                                .filter((tab) =>
+                                  shouldMountRetainedSurface(
+                                    tab.runId,
+                                    activeTab?.type === 'review' &&
+                                      activeTab.runId === tab.runId,
+                                    retainedSurfaces.reviews,
+                                  ),
+                                )
+                                .map((tab) => {
+                                  const reviewActive =
+                                    activeTab?.type === 'review' &&
+                                    activeTab.runId === tab.runId;
+                                  return (
+                                    <div
+                                      key={tab.runId}
+                                      className="shell-pane-surface"
+                                      data-surface="review"
+                                      data-active={reviewActive ? 'true' : 'false'}
+                                    >
+                                      <ReviewPanel
+                                        view={
+                                          reviewViewsByRunId.get(tab.runId) ??
+                                          conversationReviewFromKey(tab.runId)
+                                        }
+                                        projectFolder={activeProjectFolder}
+                                        standalone
+                                        onOpenFile={(path, location) =>
+                                          handleOpenFileInPane(pane.id, path, location)
+                                        }
+                                        onOpenFileInNewTab={(path, location) =>
+                                          handleOpenFileInPane(pane.id, path, location)
+                                        }
+                                      />
+                                    </div>
+                                  );
+                                })}
+                              {localFileTabs
+                                .filter((tab) =>
+                                  shouldMountRetainedSurface(
+                                    tab.path,
+                                    activeTab?.type === 'file' && activeTab.path === tab.path,
+                                    retainedSurfaces.files,
+                                  ),
+                                )
+                                .map((tab) => {
+                                  const fileActive =
+                                    activeTab?.type === 'file' && activeTab.path === tab.path;
+                                  return (
+                                    <div
+                                      key={tab.path}
+                                      className="shell-pane-surface"
+                                      data-surface="file"
+                                      data-active={fileActive ? 'true' : 'false'}
+                                    >
+                                      <WorkspaceFileView
+                                        projectFolder={activeProjectFolder}
+                                        path={tab.path}
+                                        revealTarget={
+                                          fileActive && activeWorkspaceId
+                                            ? fileRevealTargets.get(
+                                                fileTabDirtyKey(activeWorkspaceId, tab.path),
+                                              )
+                                            : undefined
+                                        }
+                                        onDirtyChange={(dirty) => {
+                                          if (activeWorkspaceId) {
+                                            handleFileDirtyChange(
+                                              activeWorkspaceId,
+                                              tab.path,
+                                              dirty,
+                                            );
+                                          }
+                                        }}
+                                      />
+                                    </div>
+                                  );
+                                })}
+                              {localTerminalTabs
+                                .filter((tab) =>
+                                  shouldMountRetainedSurface(
+                                    tab.terminalId,
+                                    activeTab?.type === 'terminal' &&
+                                      activeTab.terminalId === tab.terminalId,
+                                    retainedSurfaces.terminals,
+                                  ),
+                                )
+                                .map((tab) => {
+                                  const terminalActive =
+                                    activeTab?.type === 'terminal' &&
+                                    activeTab.terminalId === tab.terminalId;
+                                  return (
+                                    <div
+                                      key={tab.terminalId}
+                                      className="shell-pane-surface"
+                                      data-surface="terminal"
+                                      data-active={terminalActive ? 'true' : 'false'}
+                                    >
+                                      <TerminalPane
+                                        terminalId={tab.terminalId}
+                                        projectFolder={activeProjectFolder}
+                                        cwd={tab.cwd}
+                                        workspaceId={activeWorkspaceId}
+                                        title="Terminal"
+                                        active={terminalActive}
+                                        onCwdChange={(cwd) =>
+                                          handleTerminalCwdChange(pane.id, tab.terminalId, cwd)
+                                        }
+                                      />
+                                    </div>
+                                  );
+                                })}
                               {paneDropTarget?.paneId === pane.id ? (
                                 <div
                                   className="shell-pane-drop-overlay pointer-events-none absolute z-30"
@@ -3865,7 +4037,12 @@ function ShellAppInner() {
                 />
               ) : null}
             </div>
-          ) : nav.stage === 'agents' ? (
+          </KeepAliveLayer>
+          <KeepAliveLayer
+            active={nav.stage === 'agents'}
+            className="shell-stage-layer"
+            testId="stage-agents"
+          >
             <AgentLibrary
               agents={data.agents}
               models={data.models}
@@ -3883,7 +4060,12 @@ function ShellAppInner() {
                 void openConversationById(conversationId);
               }}
             />
-          ) : nav.stage === 'teams' ? (
+          </KeepAliveLayer>
+          <KeepAliveLayer
+            active={nav.stage === 'teams'}
+            className="shell-stage-layer"
+            testId="stage-teams"
+          >
             <TeamLibrary
               teams={data.teams}
               agents={data.agents}
@@ -3893,9 +4075,19 @@ function ShellAppInner() {
                 setNav((n) => ({ ...n, stage: 'talk' }));
               }}
             />
-          ) : nav.stage === 'browser' ? (
+          </KeepAliveLayer>
+          <KeepAliveLayer
+            active={nav.stage === 'browser'}
+            className="shell-stage-layer"
+            testId="stage-browser"
+          >
             <BrowserStage onStartAiTask={handleStartBrowserAiTask} />
-          ) : nav.stage === 'abilities' ? (
+          </KeepAliveLayer>
+          <KeepAliveLayer
+            active={nav.stage === 'abilities'}
+            className="shell-stage-layer"
+            testId="stage-abilities"
+          >
             <AbilitiesPage
               activeWorkspaceId={activeWorkspaceId}
               workspaces={data.workspaces}
@@ -3907,7 +4099,12 @@ function ShellAppInner() {
               }}
               onGoToAgents={() => setNav((n) => selectStage(n, 'agents'))}
             />
-          ) : nav.stage === 'tasks' ? (
+          </KeepAliveLayer>
+          <KeepAliveLayer
+            active={nav.stage === 'tasks'}
+            className="shell-stage-layer"
+            testId="stage-tasks"
+          >
             <TaskPanel
               agents={data.agents}
               models={data.models}
@@ -3919,7 +4116,12 @@ function ShellAppInner() {
                 setNav((n) => selectStage(n, 'talk'));
               }}
             />
-          ) : nav.stage === 'activity' ? (
+          </KeepAliveLayer>
+          <KeepAliveLayer
+            active={nav.stage === 'activity'}
+            className="shell-stage-layer"
+            testId="stage-activity"
+          >
             <ActivityCenterPage
               eventHistory={eventHistory}
               onRetryRun={({ conversationId, text }) => {
@@ -3931,9 +4133,8 @@ function ShellAppInner() {
                 setNav((n) => selectStage(n, 'talk'));
               }}
             />
-          ) : (
-            <StagePlaceholder stage={nav.stage} />
-          )}
+          </KeepAliveLayer>
+          </div>
         </main>
       </div>
 
@@ -5458,14 +5659,6 @@ export function EmptyTalk(props: {
         }}
         onContinue={() => void confirmRiskGoal()}
       />
-    </div>
-  );
-}
-
-function StagePlaceholder({ stage }: { stage: ShellNavState['stage'] }) {
-  return (
-    <div className="flex flex-1 items-center justify-center text-text-faint">
-      <div className="text-[13px]">{STAGE_LABELS[stage]} · 即将推出</div>
     </div>
   );
 }

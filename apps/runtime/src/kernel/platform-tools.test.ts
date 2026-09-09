@@ -57,6 +57,28 @@ describe('platform tools', () => {
     expect(hidden).toContain('ask_user_question');
   });
 
+  it('exposes capability-broker on native schemas and hides generate_image', () => {
+    const hidden = nativePlatformToolSchemas({ imageGenerationEnabled: false }).map(
+      (schema) => schema.name,
+    );
+    expect(hidden).not.toContain('generate_image');
+    expect(hidden).toContain('search_capability');
+    expect(hidden).toContain('use_capability');
+    const shown = nativePlatformToolSchemas({ imageGenerationEnabled: true }).map(
+      (schema) => schema.name,
+    );
+    expect(shown).not.toContain('generate_image');
+    expect(shown).toContain('search_capability');
+    expect(shown).toContain('use_capability');
+    const planning = nativePlatformToolSchemas({
+      imageGenerationEnabled: true,
+      planningMode: true,
+    }).map((schema) => schema.name);
+    expect(planning).toContain('search_capability');
+    expect(planning).not.toContain('use_capability');
+    expect(planning).not.toContain('generate_image');
+  });
+
   it('does not expose optional tools when their run capabilities are disabled', () => {
     const names = buildPlatformMcpToolDefinitions().map((definition) => definition.name);
     expect(names).toEqual(
