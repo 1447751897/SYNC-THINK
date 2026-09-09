@@ -67,6 +67,13 @@ jobs:
         run: |
           rsync -az --delete \
             --exclude downloads/ \
+            --exclude index.html \
+            --exclude styles.css \
+            --exclude tokens.css \
+            --exclude site.js \
+            --exclude auth.html \
+            --exclude auth.js \
+            --exclude auth-client.js \
             --exclude demo.html \
             --exclude demo.js \
             --exclude demo.css \
