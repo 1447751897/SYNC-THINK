@@ -79,6 +79,7 @@ jobs:
             --exclude demo.css \
             --exclude demo-build-manifest.json \
             --exclude assets/chat-* \
+            --exclude assets/demo-wallpaper-* \
             --exclude assets/files/ \
             --exclude assets/LICENSE-* \
             -e "ssh -i $HOME/.ssh/sync-think-deploy -o IdentitiesOnly=yes" \
