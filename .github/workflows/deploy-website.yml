@@ -1,0 +1,78 @@
+name: Deploy website
+
+on:
+  push:
+    branches: [main]
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: website-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      DEPLOY_HOST: ${{ secrets.SYNC_THINK_DEPLOY_HOST }}
+      DEPLOY_USER: ${{ secrets.SYNC_THINK_DEPLOY_USER }}
+      DEPLOY_PATH: /srv/sync-think/site
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Enable pnpm
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build website
+        run: pnpm --filter @sync-think/website build
+
+      - name: Stage the published Windows installer
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          mkdir -p apps/website/dist/downloads
+          gh release download "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern 'SYNC-THINK-Setup-*.exe' \
+            --dir apps/website/dist/downloads \
+            --clobber
+          installer=$(find apps/website/dist/downloads -maxdepth 1 -type f -name 'SYNC-THINK-Setup-*.exe' ! -name 'SYNC-THINK-Setup-Windows-x64.exe' -print -quit)
+          test -n "$installer"
+          cp "$installer" apps/website/dist/downloads/SYNC-THINK-Setup-Windows-x64.exe
+
+      - name: Configure SSH
+        run: |
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' '${{ secrets.SYNC_THINK_DEPLOY_KEY }}' > "$HOME/.ssh/sync-think-deploy"
+          chmod 600 "$HOME/.ssh/sync-think-deploy"
+          ssh-keyscan -H "$DEPLOY_HOST" >> "$HOME/.ssh/known_hosts"
+
+      - name: Upload website
+        run: |
+          rsync -az --delete \
+            --exclude downloads/ \
+            -e "ssh -i $HOME/.ssh/sync-think-deploy -o IdentitiesOnly=yes" \
+            apps/website/dist/ "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/"
+
+      - name: Upload the published installer
+        if: github.event_name == 'release'
+        run: |
+          rsync -az \
+            -e "ssh -i $HOME/.ssh/sync-think-deploy -o IdentitiesOnly=yes" \
+            apps/website/dist/downloads/ "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/downloads/"
