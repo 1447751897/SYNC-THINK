@@ -1,0 +1,11 @@
+{
+  "id": "2026-09-07T11-42-34-429Z-use-case-ui-mockup-asset-type-one-desktop-websit",
+  "provider": "openai-compatible",
+  "model": "gpt-image-2",
+  "prompt": "Use case: ui-mockup. Asset type: one desktop website hero section design reference, screenshot format 1536x1024. Design for Chinese AI desktop workspace SYNC-THINK. Premium restrained editorial product introduction. Full-width hero approximately 720px tall with bright photorealistic alpine coastline background, pale blue clear sky across upper 65%, lush jade green mountains low on left and right surrounding turquoise sea. Place real UI typography over image. Top navigation within 1250px centered inner width: SYNC-THINK at left, 产品 / 开始使用 / 常见问题 toward right, 登录 link far right. Main centered H1 SYNC-THINK in elegant dark forest serif 76px, y~200. Under it Chinese heading in crisp Chinese sans-serif 34px '让思考接续，让工作向前。'. Supporting copy 18px '在同一个工作台，连接模型、上下文与行动。'. Two medium-size 6px-radius buttons centered, green #247648 filled '下载 Windows 版' and white with hairline border '登录云端账号'. Plenty of sky behind text to guarantee readability. At bottom beginning at y~720 image ends into white next section, with top edge of a wide dark AI desktop workspace product screenshot and left context sidebar visible, introducing next content. UI typography modern Inter and Noto Sans SC, letter spacing zero. Neutral ink #18231e. No floating decorative cards, no gradients, no bokeh, no spheres, no blue purple gradient, no fake statistics, no testimonial or logos. One coherent section; must not create a long-page collage. All text sharp and Chinese exact.",
+  "imagePath": "docs/design-explorations/cloud-website-2026-09-07/01-hero-concept.png",
+  "metadataPath": "docs/design-explorations/cloud-website-2026-09-07/01-hero-concept.generation.json",
+  "createdAt": "2026-09-07T11:42:34.429Z",
+  "size": "1536x1024",
+  "conversationContextIncluded": false
+}

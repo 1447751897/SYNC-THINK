@@ -1,5 +1,9 @@
 # Windows Deployment
 
+## 2026-09-07：独立官网与云端账号部署
+
+新服务位于 `apps/cloud`，静态官网位于 `apps/website`，单独构建命令为 `pnpm build:cloud`。Node 20 服务使用独立账号数据库及 SMTP，不携带 Windows Runtime。环境变量、反向代理、进程自启、备份/恢复和 iframe 来源配置见 `apps/cloud/README.md` 与 `apps/cloud/.env.example`；范围和上线门禁见 `docs/engineering/17-cloud-account-launch.md`。当前完成本机验证，目标服务器、HTTPS 与真实 SMTP 待部署验收。
+
 本文是 SYNC-THINK Windows 分发、签名、更新发布与故障恢复的运维基线。正式 release 默认执行 Authenticode 与 RFC 3161 timestamp 的 fail-closed 校验；未签名包只允许作为显式 `unsigned-fixture` 测试产物。NSIS differential package 已启用，installer manifest 与 Generic feed 同时记录 installer/blockmap 的字节数和摘要。
 
 ## 1. 当前发布基线
@@ -482,7 +486,6 @@ apps/desktop/release/public/SYNC-THINK-Setup-0.1.0-beta.1-x64.exe
 - Desktop85260正常CloseMainWindow退出，Runtime68032健康/inFlight0后daemon.stop成功，旧daemon63652、监督17228与launcher85488退出已核对。普通Node20启动器81184开启Desktop90236；新监督83628/daemon12620/Runtime86068。
 - 2026-09-06T05:29:37Z hello/health成功，inFlight0、eventSequence1993662；只读业务960message/34task/31conversation及5个迁移对象保持，新业务pipe仍读出原5项历史。普通业务窗口只核对标题/响应/健康与pipe，不冒充实际Electron点击新任务。记录.data/kernel-live-restart-before.json、kernel-live-business-health.log及kernel-live-rollout-result.json。
 - 既有完整备份与独立旧存储回退源保留；完整旧Desktop/整库业务恢复、正式发布和三内核剩余门禁继续按原六方向推进。详见审查18.18和TD078。
-
 
 ### 原生审批登记与运行关闭补丁成套重启（2026-09-06）
 

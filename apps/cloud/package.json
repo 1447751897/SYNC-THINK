@@ -1,0 +1,30 @@
+{
+  "name": "@sync-think/cloud",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20.19.0 <21"
+  },
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "start": "node dist/main.js",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --testTimeout=15000 --maxWorkers=1 --minWorkers=1",
+    "lint": "eslint src --ext .ts"
+  },
+  "dependencies": {
+    "better-auth": "1.7.3",
+    "better-sqlite3": "12.8.0",
+    "nodemailer": "10.0.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^20.17.0",
+    "@types/nodemailer": "8.0.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.5.4",
+    "vitest": "^2.1.8"
+  }
+}

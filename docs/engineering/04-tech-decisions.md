@@ -1,3 +1,11 @@
+## TD-Cloud-Accounts：独立自托管账号服务与静态官网（2026-09-07）
+
+- 用户确认方案 A：Node.js + Better Auth 邮箱密码账号，SMTP 验证与重设密码；独立 SQLite 账号库。GitHub OAuth 与 Supabase 托管方案暂缓。详细比较和阶段边界见 `17-cloud-account-launch.md`。
+- 官网使用独立静态 HTML/CSS/JavaScript 包，复用现有 Node 工具链与设计 token；未引入额外前端框架。官网、账号 API 同源，服务端检查会话及 Origin，浏览器只使用 HttpOnly Cookie。
+- Better Auth 1.7.3、better-sqlite3 12.8.0、Nodemailer 10.0.0 仅属于云端包；Kysely 固定 0.28.17 以兼容工作区 Node 20。桌面端 SQLite 依赖与数据库不迁移。
+- `/demo` 提供无后端调用的确定性 iframe 演示。仅演示页可嵌入；外站来源通过 `CLOUD_EMBED_ORIGINS` 显式配置，账号页面继续禁止嵌入。
+- 首期云端管理身份，桌面 Runtime 继续本机执行；服务器执行、设备配对及同步另行推进。生产部署需要独立 HTTPS Origin、持久数据目录和真实 SMTP 投递验证。
+
 ## TD-031：Phase 3 视觉证据与 Windows 发布链采用本地门禁/外部证据分层（2026-08-02）
 
 - **决策**：本地自动化只证明可在仓库内复现的契约、构建、feed、截图和恢复证据；正式证书、真实私有服务、Provider 凭证与邀请用户结果必须作为独立外部证据，不以 fixture 结果冒充完成。
@@ -1770,7 +1778,6 @@ Computer Use built-in plugin
 - 实际原生任务门禁发现：Codex0.152.0继承本机稳定goals=true，真实上游目录只有get_goal/create_goal/update_goal，没有update_plan；三次请求都回答PLAN_READY但没有任何原生任务事件。Claude TaskCreate/TaskUpdate及Native update_task_plan正常。拟按受管会话覆盖features.goals=false，保留SYNC-THINK已有目标编排，不改用户全局Codex配置；先以创建/续接配置回归和真实上游工具目录/任务事件验证开关因果。
 
 - 排除假设：受管会话features.goals=false仅移除目标工具，并未恢复update_plan；真实目录再次证明该尝试无效，撤销该覆盖。OpenAI当前主线config/mod.rs的resolve_update_plan_enabled读取tools.update_plan.enabled，未配置默认false；tools/spec_plan.rs仅在该配置为true时注册PlanHandler。改为明确启用原生计划工具，不关闭goals、不改全局配置；最终以本机0.152.0真实运行验证，而非只依据主线源码推断兼容性。
-
 
 ## TD079：原生审批登记失败即拒绝，Runtime关闭拥有完整运行收尾（2026-09-06）
 

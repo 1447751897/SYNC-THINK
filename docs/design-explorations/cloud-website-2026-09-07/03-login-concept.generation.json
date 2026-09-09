@@ -1,0 +1,11 @@
+{
+  "id": "2026-09-07T11-43-09-884Z-use-case-ui-mockup-asset-type-desktop-login-page",
+  "provider": "openai-compatible",
+  "model": "gpt-image-2",
+  "prompt": "Use case: ui-mockup. Asset type: desktop login page design reference for Chinese AI workspace SYNC-THINK, screenshot format 1536x1024. Refined quiet white #ffffff background, charcoal #18231e text, clean Inter and Noto Sans SC UI. At top within constrained wide nav, left wordmark 'SYNC-THINK', right understated link '返回首页'. Entire primary login content is an unframed narrow 400px-wide column centered horizontally and around upper middle, no card background or card shadow, large page margins. Small pale teal product icon above H1. H1 '登录 SYNC-THINK' at 28px semibold, normal letter spacing. Beneath H1 a modest secondary line '欢迎回来'. Form vertically organized: visible label '邮箱', white rectangular outlined input with example 'you@example.com', label row '密码' with '忘记密码？' text link on right, password input with dots and eye visibility icon. Inputs 48px tall 6px corners. Green #247648 full-width 48px command button '登录' after form. Below single centered small row '还没有账号？ 创建账号', 创建账号 as green link. Bottom page footer 'SYNC-THINK' and subtle '隐私政策' / '服务条款'. No social login, no fake OAuth options, no device trust checkbox, no testimonials, no illustration, no gradients, no pattern, no floating card, no tool hints or explanatory feature text. Restrained purposeful account interface with professional spacing and readable exact Chinese text.",
+  "imagePath": "docs/design-explorations/cloud-website-2026-09-07/03-login-concept.png",
+  "metadataPath": "docs/design-explorations/cloud-website-2026-09-07/03-login-concept.generation.json",
+  "createdAt": "2026-09-07T11:43:09.884Z",
+  "size": "1536x1024",
+  "conversationContextIncluded": false
+}

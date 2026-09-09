@@ -183,6 +183,68 @@
 }
 
 :root {
+  /* Public website and cloud account pages. The landscape hero retains its light palette; content and account forms follow the system theme. Generated for the standalone website by apps/website/build.mjs. */
+  --web-page: #ffffff;
+  --web-surface: #f3f6f4;
+  --web-ink: #18231e;
+  --web-muted: #526158;
+  --web-line: #dce4df;
+  --web-accent: #247648;
+  --web-accent-hover: #195f38;
+  --web-accent-ink: #ffffff;
+  --web-error: #a72e29;
+  --web-error-bg: #fff1ef;
+  --web-success-bg: #edf7f0;
+  --web-hero-ink: #ffffff;
+  --web-hero-button: #ffffff;
+  --web-hero-button-ink: #18231e;
+  --web-hero-button-hover: #edf3f5;
+  --web-hero-white: #ffffff;
+  --web-hero-glass: rgba(12,59,99,0.56);
+  --web-hero-glass-hover: rgba(12,59,99,0.68);
+  --web-hero-hairline: rgba(255,255,255,0.36);
+  --web-hero-sky: #1d8fb8;
+  --web-footer-glass: rgba(23,39,51,0.67);
+  --web-footer-muted: rgba(255,255,255,0.76);
+  --web-font-display: 'Instrument Serif', Georgia, 'Noto Serif SC Variable', 'Noto Serif SC', 'Songti SC', serif;
+  --web-text-small: 12px;
+  --web-text-label: 13px;
+  --web-text-body: 15px;
+  --web-text-lede: 18px;
+  --web-text-subtitle: 22px;
+  --web-text-title: 30px;
+  --web-text-section: 38px;
+  --web-text-tagline: 34px;
+  --web-text-hero: 86px;
+  --web-text-hero-tablet: 68px;
+  --web-text-hero-mobile: 42px;
+  --web-text-tagline-tablet: 28px;
+  --web-text-auth-mobile: 26px;
+  --web-weight-medium: 500;
+  --web-weight-strong: 600;
+  --web-leading-body: 1.7;
+  --web-leading-title: 1.25;
+  --web-space-1: 4px;
+  --web-space-2: 8px;
+  --web-space-3: 12px;
+  --web-space-4: 16px;
+  --web-space-5: 20px;
+  --web-space-6: 24px;
+  --web-space-7: 32px;
+  --web-space-8: 40px;
+  --web-space-9: 48px;
+  --web-space-10: 64px;
+  --web-space-11: 80px;
+  --web-space-12: 112px;
+  --web-content-width: 1120px;
+  --web-form-width: 400px;
+  --web-header-height: 76px;
+  --web-control-height: 46px;
+  --web-radius: 6px;
+  --web-preview-shadow: 0 18px 64px rgba(24,35,30,0.14);
+  --web-transition: 160ms ease;
+  --web-focus-width: 3px;
+
   /* NewMax 1.1.14 tab-track primitives measured from the live client. These values drive the connected workspace SVG and the resource-tab hover/active surface without leaking component-specific effects into the global palette. */
   --shell-tab-hover: rgba(55, 61, 58, 0.06);
   --shell-tab-outline: rgba(0, 0, 0, 0.04);
@@ -294,6 +356,18 @@
 }
 
 .dark {
+  --web-page: #191a1a;
+  --web-surface: #252726;
+  --web-ink: #edf2ef;
+  --web-muted: #adb9b2;
+  --web-line: #3d4741;
+  --web-accent: #36d385;
+  --web-accent-hover: #65e3a3;
+  --web-accent-ink: #18231e;
+  --web-error: #ff9e96;
+  --web-error-bg: #3c2423;
+  --web-success-bg: #213d2b;
+
   --color-page: #1e1f1f;
   --color-page-gutter: #1e1f1f;
   --color-sidebar: #252726;

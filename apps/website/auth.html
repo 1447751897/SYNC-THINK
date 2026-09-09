@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>云端账号 | SYNC-THINK</title>
+    <link rel="icon" href="/assets/sync-think-logo.png" />
+    <link rel="stylesheet" href="/tokens.css" />
+    <link rel="stylesheet" href="/styles.css" />
+    <script type="module" src="/auth.js"></script>
+  </head>
+  <body class="account-page">
+    <header class="site-header account-header">
+      <a class="brand" href="/" aria-label="SYNC-THINK 首页"
+        ><span class="brand-mark" aria-hidden="true"></span><span>SYNC-THINK</span></a
+      >
+      <a class="quiet-link" href="/">返回首页</a>
+    </header>
+    <main class="auth-main">
+      <section class="auth-content" aria-labelledby="auth-title">
+        <span class="brand-mark auth-mark" aria-hidden="true"></span>
+        <h1 id="auth-title" tabindex="-1">云端账号</h1>
+        <p id="auth-description" class="muted">正在连接账号服务…</p>
+        <p id="auth-notice" class="notice" role="status" hidden></p>
+        <p id="auth-error" class="notice error" role="alert" hidden></p>
+        <button type="button" id="retry" class="button secondary" hidden>重新连接</button>
+        <form id="auth-form" hidden>
+          <div class="form-field" id="name-field" hidden>
+            <label for="name">称呼</label>
+            <input id="name" name="name" autocomplete="nickname" maxlength="80" />
+          </div>
+          <div class="form-field" id="email-field">
+            <label for="email">邮箱</label>
+            <input
+              id="email"
+              name="email"
+              type="email"
+              autocomplete="email"
+              placeholder="you@example.com"
+              maxlength="254"
+              required
+            />
+          </div>
+          <div class="form-field" id="password-field">
+            <label for="password" id="password-label">密码</label>
+            <input
+              id="password"
+              name="password"
+              type="password"
+              autocomplete="current-password"
+              maxlength="128"
+              required
+            />
+            <div class="field-options">
+              <label class="checkbox-label"
+                ><input type="checkbox" id="show-password" />显示密码</label
+              >
+              <a id="forgot-link" href="/forgot-password">忘记密码？</a>
+            </div>
+          </div>
+          <button class="button primary full-width" id="submit-button" type="submit">登录</button>
+        </form>
+        <button type="button" id="resend-verification" class="button secondary full-width" hidden>
+          重新发送验证邮件
+        </button>
+        <div id="account-details" hidden>
+          <dl class="account-summary">
+            <div>
+              <dt>称呼</dt>
+              <dd id="account-name"></dd>
+            </div>
+            <div>
+              <dt>邮箱</dt>
+              <dd id="account-email"></dd>
+            </div>
+            <div>
+              <dt>邮箱状态</dt>
+              <dd id="account-verified"></dd>
+            </div>
+          </dl>
+          <a
+            class="button primary full-width"
+            href="https://github.com/1447751897/SYNC-THINK/releases"
+            >下载 Windows 版</a
+          >
+          <div class="account-actions">
+            <a href="/forgot-password">重设密码</a
+            ><button id="sign-out" type="button" class="text-button">退出登录</button>
+          </div>
+          <p class="account-footnote">对话与任务保存在运行桌面端的电脑上。跨设备同步尚未开放。</p>
+        </div>
+        <p id="auth-switch" class="auth-switch" hidden>
+          <span id="switch-label"></span> <a id="switch-link"></a>
+        </p>
+      </section>
+    </main>
+    <footer class="auth-footer">
+      SYNC-THINK <span aria-hidden="true">/</span> 让思考接续，让工作向前。
+    </footer>
+    <noscript><p class="noscript-note">请启用 JavaScript 以使用云端账号。</p></noscript>
+  </body>
+</html>

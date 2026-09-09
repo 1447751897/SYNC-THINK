@@ -6,6 +6,9 @@
   "description": "SYNC-THINK local-first multi-model Agent desktop workspace",
   "packageManager": "pnpm@10.28.2",
   "scripts": {
+    "dev:cloud": "pnpm --filter @sync-think/website build && pnpm --filter @sync-think/cloud dev",
+    "build:cloud": "pnpm --filter @sync-think/website build && pnpm --filter @sync-think/cloud build",
+    "test:cloud": "pnpm --filter @sync-think/website test && pnpm --filter @sync-think/cloud test",
     "pretest": "node scripts/ensure-managed-pnpm.mjs",
     "dev:runtime": "pnpm --filter @sync-think/runtime dev",
     "dev:desktop": "node scripts/dev-desktop.mjs",
@@ -74,6 +77,9 @@
     "vitest": "^2.1.8"
   },
   "pnpm": {
+    "overrides": {
+      "kysely": "0.28.17"
+    },
     "onlyBuiltDependencies": [
       "better-sqlite3",
       "electron",

@@ -1,5 +1,9 @@
 # Requirements Clarification
 
+## 2026-09-07 新增：自托管云端账号与官网
+
+用户提供服务器用于云端，并确认 Node.js + Better Auth 邮箱密码方案。新增独立品牌官网、可在官网和配置来源中嵌入的工作台交互演示、账号注册/邮箱验证/登录/找回密码/退出和账号页。首期云端保存账号身份，桌面任务继续本机执行；桌面设备绑定、对象同步与云端执行进入后续阶段。该新增需求更新原账号 Later 的优先级，范围与验收见 `docs/engineering/17-cloud-account-launch.md`。
+
 > Source of truth for product intent: `docs/superpowers/specs/2026-07-11-sync-think-product-design.md`  
 > Status: product/system design approved; implementation not started  
 > Date: 2026-07-11  

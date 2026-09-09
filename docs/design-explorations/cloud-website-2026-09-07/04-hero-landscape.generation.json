@@ -1,0 +1,11 @@
+{
+  "id": "2026-09-07T11-38-37-268Z-use-case-stylized-concept-asset-type-full-bleed-",
+  "provider": "openai-compatible",
+  "model": "gpt-image-2",
+  "prompt": "Use case: stylized-concept. Asset type: full-bleed website hero BACKGROUND ONLY, a landscape raster image for a Chinese AI desktop workspace product named SYNC-THINK. Primary request: bright beautiful alpine coastline with lush jade and deep green mountains descending into still turquoise sea, distinctive realistic landscape photography with subtle hand-painted editorial softness. Composition: horizontal 1536x1024; upper 65 percent and the center are quiet very pale blue open sky for dark text overlay; the highest mountain remains below 55 percent height, low distant alpine ridges on lower left and lower right curve around sea at bottom center. Horizon at 68 percent. Keep central area from x=20 to 80 percent y=12 to 57 percent pale and empty. Morning clear soft sunlight, true-to-life fine grass, cliffs and water textures. Color palette pale ice blue sky #e5f3f9, clear blue water, jade green land #468b6e with natural neutral rock. Calm, intelligent, crisp and inviting, bright overall not moody. Image must bleed to all edges. Constraints: no text, no words, no logos, no buttons, no UI, no frame, no image border, no people, no buildings, no boats, no lens flare, no orbs, no particles, no bokeh, no synthetic color gradient, no purple, no orange sunset, no oversized foreground mountain covering center sky.",
+  "imagePath": "apps/website/assets/hero-landscape.png",
+  "metadataPath": "docs/design-explorations/cloud-website-2026-09-07/04-hero-landscape.generation.json",
+  "createdAt": "2026-09-07T11:38:37.268Z",
+  "size": "1536x1024",
+  "conversationContextIncluded": false
+}
