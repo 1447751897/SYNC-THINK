@@ -31,13 +31,16 @@ import { resolveProviderBrandLogo, resolveProviderBrandLogoByName } from './bran
 import {
   ArrowLeft,
   Check,
+  Cloud,
   Eye,
   EyeOff,
   GripVertical,
   Loader2,
   MoreHorizontal,
+  Plug,
   Plus,
   Settings2,
+  Trash2,
   X,
   Zap,
 } from 'lucide-react';
@@ -46,13 +49,22 @@ import clsx from 'clsx';
 import type { ProviderSummary } from '@sync-think/protocol';
 import { retryTransientRuntime } from '../runtime-connection.js';
 import {
+  IMAGE_API_PROVIDERS,
   IMAGE_CATALOG_CATEGORIES,
   IMAGE_GENERATION_COPY,
   IMAGE_GENERATION_PROTOCOL,
+  IMAGE_GENERATION_SETTING_KEY,
   IMAGE_PROVIDER_CATALOG,
   composeImageProviderOrder,
+  imageModelRowLabel,
+  inferImageApiProvider,
   isLikelyImageGenerationModelId,
   isConfiguredImageProvider,
+  isImageApiProviderId,
+  parseImageModelIds,
+  readStoredImageApiProvider,
+  withStoredImageApiProvider,
+  type ImageApiProviderId,
   type ImageCatalogCategory,
   type ImageCatalogItem,
 } from './image-generation-providers.js';
@@ -61,22 +73,32 @@ function bridge() {
   return window.syncThink?.runtime;
 }
 
+function imageModelIdsFromDiscovery(discovered: {
+  models: Array<{ providerModelId: string; capabilities: readonly string[] }>;
+}): string[] {
+  const imageCandidates = discovered.models.filter((model) =>
+    model.capabilities.includes('image-generation'),
+  );
+  const hintedIds = imageCandidates
+    .filter((model) => isLikelyImageGenerationModelId(model.providerModelId))
+    .map((model) => model.providerModelId);
+  if (hintedIds.length > 0) return hintedIds;
+  if (imageCandidates.length === 1) return [imageCandidates[0]!.providerModelId];
+  return [];
+}
+
 const EMPTY_DRAFT = {
   name: '',
   baseUrl: 'https://api.openai.com/v1',
   apiKey: '',
   models: 'gpt-image-2',
+  apiProvider: 'openai' as ImageApiProviderId,
 };
 
 type CreateDraft = typeof EMPTY_DRAFT;
 
 type Toast = { id: number; kind: 'success' | 'error'; message: string };
-type PendingImageImport = {
-  providerId: string;
-  protocol: typeof IMAGE_GENERATION_PROTOCOL;
-  models: string[];
-  selectedIds: string[];
-};
+type ImageDetailDraft = { baseUrl: string; apiKey: string };
 
 export function ImageGenerationSettings({
   onCatalogChanged,
@@ -96,7 +118,7 @@ export function ImageGenerationSettings({
   const [createTemplate, setCreateTemplate] = useState<ImageCatalogItem | null>(null);
   const [activeProviderId, setActiveProviderId] = useState<string | null>(null);
   const [disabledMenuOpen, setDisabledMenuOpen] = useState(false);
-  const [pendingImageImport, setPendingImageImport] = useState<PendingImageImport | null>(null);
+  const [imageSetting, setImageSetting] = useState<unknown>({});
   const disabledMenuTriggerRef = useRef<HTMLButtonElement>(null);
 
   const sensors = useSensors(
@@ -125,6 +147,14 @@ export function ImageGenerationSettings({
     setError(null);
     try {
       const listed = await retryTransientRuntime(() => api.listProviders({}));
+      if (api.getSettings) {
+        try {
+          const settings = await api.getSettings({ keys: [IMAGE_GENERATION_SETTING_KEY] });
+          setImageSetting(settings.settings[IMAGE_GENERATION_SETTING_KEY] ?? {});
+        } catch {
+          /* keep previous image-generation setting if settings read fails */
+        }
+      }
       const next = [...listed.providers]
         .filter(isConfiguredImageProvider)
         .sort((a, b) => a.sortOrder - b.sortOrder);
@@ -193,11 +223,12 @@ export function ImageGenerationSettings({
       baseUrl: item.draft.baseUrl,
       apiKey: '',
       models: item.draft.models,
+      apiProvider: inferImageApiProvider(item.draft.baseUrl),
     });
     setCreateStep('form');
   };
 
-  const handleCreate = (action: 'discover' | 'test' = 'discover') =>
+  const handleCreate = () =>
     void withBusy(async () => {
       const api = bridge();
       if (!api?.createProvider || !api.addModels) throw new Error('Runtime 未连接');
@@ -228,6 +259,15 @@ export function ImageGenerationSettings({
             }) as never,
           });
         }
+        if (api.setSetting) {
+          const nextSetting = withStoredImageApiProvider(
+            imageSetting,
+            result.provider.providerId,
+            createDraft.apiProvider,
+          );
+          await api.setSetting({ key: IMAGE_GENERATION_SETTING_KEY, value: nextSetting });
+          setImageSetting(nextSetting);
+        }
         setShowCreate(false);
         setCreateStep('catalog');
         setCreateDraft(EMPTY_DRAFT);
@@ -249,43 +289,17 @@ export function ImageGenerationSettings({
         await finishProviderCreation();
         throw error;
       }
-      const imageCandidates = discovered.models
-        .filter((model) => model.capabilities.includes('image-generation'));
-      const hintedIds = imageCandidates
-        .filter((model) => isLikelyImageGenerationModelId(model.providerModelId))
-        .map((model) => model.providerModelId);
-      const selectableIds = hintedIds.length > 0
-        ? hintedIds
-        : imageCandidates.length === 1
-          ? [imageCandidates[0]!.providerModelId]
-          : [];
-      if (selectableIds.length === 0) {
+      const selectableIds = imageModelIdsFromDiscovery(discovered);
+      const draftIds = parseImageModelIds(createDraft.models);
+      const idsToAdd = draftIds.length > 0 ? draftIds : selectableIds;
+      if (idsToAdd.length === 0) {
         await finishProviderCreation();
         throw new Error(IMAGE_GENERATION_COPY.emptyFetchedModels);
       }
-      if (action === 'discover') {
-        setPendingImageImport({
-          providerId: result.provider.providerId,
-          protocol: IMAGE_GENERATION_PROTOCOL,
-          models: selectableIds,
-          selectedIds: [],
-        });
-      } else {
-        showToast('success', `连接成功 · 发现 ${selectableIds.length} 个生图模型`);
-      }
-      await finishProviderCreation();
-    }, `${createDraft.name.trim()} 已创建，请选择生图模型`);
-
-  const applyPendingImageImport = () =>
-    void withBusy(async () => {
-      const api = bridge();
-      const pending = pendingImageImport;
-      if (!pending || !api?.addModels) throw new Error('Runtime 未连接');
-      if (pending.selectedIds.length === 0) throw new Error('请至少选择一个生图模型');
       const added = await api.addModels({
-        providerId: pending.providerId as never,
-        protocol: pending.protocol,
-        models: pending.selectedIds.map((id) => ({
+        providerId: result.provider.providerId as never,
+        protocol: IMAGE_GENERATION_PROTOCOL,
+        models: idsToAdd.map((id) => ({
           providerModelId: id,
           displayName: id,
           capabilities: ['image-generation'],
@@ -300,9 +314,66 @@ export function ImageGenerationSettings({
           });
         }
       }
-      setPendingImageImport(null);
-      await load();
-    }, '生图模型已添加');
+      await finishProviderCreation();
+    }, `${createDraft.name.trim()} 已创建`);
+
+  const persistProviderDraft = async (provider: ProviderSummary, draft: ImageDetailDraft) => {
+    const api = bridge();
+    if (!api) throw new Error('Runtime 未连接');
+    const baseUrl = draft.baseUrl.trim();
+    if (baseUrl && baseUrl !== provider.baseUrl) {
+      if (!api.updateProvider) throw new Error('Runtime 未连接');
+      await api.updateProvider({ providerId: provider.providerId, baseUrl });
+    }
+    const apiKey = draft.apiKey.trim();
+    if (!apiKey) return;
+    await navigator.clipboard.writeText(apiKey);
+    const credential = provider.credentials[0];
+    if (credential && api.updateProviderCredential) {
+      await api.updateProviderCredential({
+        providerId: provider.providerId,
+        credentialRefId: credential.credentialRefId,
+        rotateCredentialFromClipboard: true,
+      });
+    } else if (api.addProviderCredential) {
+      await api.addProviderCredential({ providerId: provider.providerId });
+    } else {
+      throw new Error('Runtime 未连接');
+    }
+  };
+
+  const persistApiProvider = async (providerId: string, apiProvider: ImageApiProviderId) => {
+    const api = bridge();
+    const next = withStoredImageApiProvider(imageSetting, providerId, apiProvider);
+    setImageSetting(next);
+    if (!api?.setSetting) return;
+    await api.setSetting({ key: IMAGE_GENERATION_SETTING_KEY, value: next });
+  };
+
+  const addImageModelIds = async (providerId: string, ids: string[]) => {
+    const api = bridge();
+    if (!api?.addModels) throw new Error('Runtime 未连接');
+    const unique = [...new Set(ids.map((id) => id.trim()).filter(Boolean))];
+    if (unique.length === 0) return;
+    const added = await api.addModels({
+      providerId: providerId as never,
+      protocol: IMAGE_GENERATION_PROTOCOL,
+      models: unique.map((id) => ({
+        providerModelId: id,
+        displayName: id,
+        capabilities: ['image-generation'],
+      })),
+    });
+    if (api.confirmCapabilities) {
+      for (const model of added.models) {
+        await api.confirmCapabilities({
+          modelId: model.modelId as never,
+          capabilities: ['image-generation'],
+          confirmed: true,
+        });
+      }
+    }
+  };
 
   const persistImageOrder = async (nextEnabled: ProviderSummary[]) => {
     const api = bridge();
@@ -386,7 +457,7 @@ export function ImageGenerationSettings({
   }
 
   return (
-    <div className="model-settings-tab-panel model-settings-workspace flex min-h-0 flex-1">
+    <div className="model-settings-tab-panel model-settings-workspace model-settings-workspace--image flex min-h-0 flex-1">
       <aside className="model-enabled-list">
         <div className="model-enabled-list__header">
           <div>
@@ -518,14 +589,7 @@ export function ImageGenerationSettings({
               {error}
             </p>
           ) : null}
-          {pendingImageImport ? (
-            <ImageModelImport
-              pending={pendingImageImport}
-              busy={busy}
-              onChange={setPendingImageImport}
-              onApply={applyPendingImageImport}
-            />
-          ) : showCreate && createStep === 'catalog' ? (
+          {showCreate && createStep === 'catalog' ? (
             <ImageProviderCatalog
               category={catalogCategory}
               onCategoryChange={setCatalogCategory}
@@ -537,56 +601,78 @@ export function ImageGenerationSettings({
               template={createTemplate}
               busy={busy}
               onChange={setCreateDraft}
-              onDiscover={() => handleCreate('discover')}
+              onDiscover={handleCreate}
               onBack={() => setCreateStep('catalog')}
             />
           ) : selected ? (
             <ImageProviderDetail
               provider={selected}
               busy={busy}
-              onDiscover={() =>
+              apiProvider={readStoredImageApiProvider(
+                imageSetting,
+                selected.providerId,
+                selected.baseUrl,
+              )}
+              onApiProviderChange={(next) =>
+                void withBusy(async () => {
+                  await persistApiProvider(selected.providerId, next);
+                })
+              }
+              onSaveBaseUrl={(baseUrl) => {
+                void persistProviderDraft(selected, { baseUrl, apiKey: '' })
+                  .then(() => load())
+                  .catch((caught) => {
+                    const message = caught instanceof Error ? caught.message : '操作失败';
+                    setError(message);
+                    showToast('error', message);
+                  });
+              }}
+              onAddModel={(providerModelId) =>
+                void withBusy(async () => {
+                  await addImageModelIds(selected.providerId, [providerModelId]);
+                  await load();
+                }, '生图模型已添加')
+              }
+              onReorderModels={(orderedModelIds) =>
+                void withBusy(async () => {
+                  const api = bridge();
+                  if (!api?.setModelPriorities) throw new Error('Runtime 未连接');
+                  await api.setModelPriorities({
+                    providerId: selected.providerId as never,
+                    entries: orderedModelIds.map((modelId) => ({ modelId: modelId as never })),
+                  });
+                  await load();
+                }, '模型顺序已更新')
+              }
+              onDiscover={(draft) =>
                 void withBusy(async () => {
                   const api = bridge();
                   if (!api?.discoverModels) throw new Error('Runtime 不支持模型发现');
+                  await persistProviderDraft(selected, draft);
                   const discovered = await api.discoverModels({
                     providerId: selected.providerId as never,
                     persist: false,
                   });
-                  const imageCandidates = discovered.models
-                    .filter((model) => model.capabilities.includes('image-generation'));
-                  const hintedIds = imageCandidates
-                    .filter((model) => isLikelyImageGenerationModelId(model.providerModelId))
-                    .map((model) => model.providerModelId);
-                  const models = hintedIds.length > 0
-                    ? hintedIds
-                    : imageCandidates.length === 1
-                      ? [imageCandidates[0]!.providerModelId]
-                      : [];
+                  const models = imageModelIdsFromDiscovery(discovered);
                   if (models.length === 0) throw new Error(IMAGE_GENERATION_COPY.emptyFetchedModels);
-                  setPendingImageImport({
-                    providerId: selected.providerId,
-                    protocol: IMAGE_GENERATION_PROTOCOL,
-                    models,
-                    selectedIds: selected.models
-                      .filter((model) => models.includes(model.providerModelId))
-                      .map((model) => model.providerModelId),
-                  });
+                  const existing = new Set(selected.models.map((model) => model.providerModelId));
+                  const toAdd = models.filter((id) => !existing.has(id));
+                  if (toAdd.length > 0) await addImageModelIds(selected.providerId, toAdd);
+                  await load();
                 }, '已拉取生图模型')
               }
-              onTest={() =>
+              onTest={(draft) =>
                 void withBusy(async () => {
                   const api = bridge();
                   if (!api?.discoverModels) throw new Error('Runtime 不支持连接测试');
+                  await persistProviderDraft(selected, draft);
                   const discovered = await api.discoverModels({
                     providerId: selected.providerId as never,
                     persist: false,
                   });
-                  const count = discovered.models.filter(
-                    (model) =>
-                      model.capabilities.includes('image-generation') &&
-                      isLikelyImageGenerationModelId(model.providerModelId),
-                  ).length;
+                  const count = imageModelIdsFromDiscovery(discovered).length;
                   if (count === 0) throw new Error('连接成功，但未发现可用的生图模型');
+                  await load();
                 }, '连接测试成功')
               }
               onRemoveModel={(modelId) =>
@@ -709,31 +795,59 @@ function ImageCreateForm({
           ) : (
             <p className="model-field-helper">{IMAGE_GENERATION_COPY.customTemplateDescription}</p>
           )}
-          <label className="model-field-label">供应商名称</label>
+          <label className="model-field-label" htmlFor="image-create-name">
+            {isCustom ? IMAGE_GENERATION_COPY.customProviderName : '供应商名称'}
+          </label>
           <input
+            id="image-create-name"
             className="st-field-input"
             value={draft.name}
             placeholder={IMAGE_GENERATION_COPY.namePlaceholder}
             disabled={busy}
             onChange={(event) => onChange({ ...draft, name: event.target.value })}
           />
-          <label className="model-field-label">生图 Base URL</label>
+          <ImageApiProviderSelect
+            id="image-create-api-provider"
+            value={draft.apiProvider}
+            disabled={busy}
+            onChange={(apiProvider) => onChange({ ...draft, apiProvider })}
+          />
+          <label className="model-field-label" htmlFor="image-create-base-url">
+            {IMAGE_GENERATION_COPY.baseUrl}
+          </label>
           <input
+            id="image-create-base-url"
             className="st-field-input font-mono text-[12.5px]"
             data-testid="image-provider-base-url"
+            aria-label={IMAGE_GENERATION_COPY.baseUrl}
             value={draft.baseUrl}
             placeholder="https://api.example.com/v1"
             disabled={busy}
             onChange={(event) => onChange({ ...draft, baseUrl: event.target.value })}
           />
-          <label className="model-field-label">生图 API Key</label>
+          <label className="model-field-label" htmlFor="image-create-api-key">
+            {IMAGE_GENERATION_COPY.apiKey}
+          </label>
           <SecretInput
+            id="image-create-api-key"
             value={draft.apiKey}
             placeholder={IMAGE_GENERATION_COPY.apiKeyPlaceholder}
             disabled={busy}
             onChange={(apiKey) => onChange({ ...draft, apiKey })}
           />
           <p className="model-field-helper">{IMAGE_GENERATION_COPY.missingKeyHelperText}</p>
+          <label className="model-field-label" htmlFor="image-create-models">
+            {IMAGE_GENERATION_COPY.modelId}
+          </label>
+          <input
+            id="image-create-models"
+            className="st-field-input font-mono text-[12.5px]"
+            aria-label={IMAGE_GENERATION_COPY.modelId}
+            value={draft.models}
+            placeholder={IMAGE_GENERATION_COPY.modelPlaceholder}
+            disabled={busy}
+            onChange={(event) => onChange({ ...draft, models: event.target.value })}
+          />
           <div className="model-provider-form__actions">
             <button
               type="button"
@@ -754,58 +868,220 @@ function ImageCreateForm({
 function ImageProviderDetail({
   provider,
   busy,
+  apiProvider,
+  onApiProviderChange,
+  onSaveBaseUrl,
+  onAddModel,
+  onReorderModels,
   onDiscover,
   onTest,
   onRemoveModel,
 }: {
   provider: ProviderSummary;
   busy: boolean;
-  onDiscover: () => void;
-  onTest: () => void;
+  apiProvider: ImageApiProviderId;
+  onApiProviderChange: (value: ImageApiProviderId) => void;
+  onSaveBaseUrl: (baseUrl: string) => void;
+  onAddModel: (providerModelId: string) => void;
+  onReorderModels: (orderedModelIds: string[]) => void;
+  onDiscover: (draft: ImageDetailDraft) => void;
+  onTest: (draft: ImageDetailDraft) => void;
   onRemoveModel: (modelId: string) => void;
 }) {
+  const [baseUrl, setBaseUrl] = useState(provider.baseUrl);
+  const [apiKey, setApiKey] = useState('');
+  const [addingModel, setAddingModel] = useState(false);
+  const [draftModelId, setDraftModelId] = useState('');
+  const [activeModelId, setActiveModelId] = useState<string | null>(null);
   const models = [...provider.models].sort((a, b) => a.priority - b.priority);
-  const missingKey = provider.credentials.length === 0;
+  const hasSecret = provider.credentials.some((credential) => credential.hasSecret);
+  const missingKey = provider.credentials.length === 0 && !apiKey.trim();
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
+
+  useEffect(() => {
+    setBaseUrl(provider.baseUrl);
+    setApiKey('');
+    setAddingModel(false);
+    setDraftModelId('');
+  }, [provider.providerId, provider.baseUrl]);
+
+  const draft = { baseUrl, apiKey };
+  const keyTag = missingKey
+    ? IMAGE_GENERATION_COPY.missingKey
+    : hasSecret || apiKey.trim()
+      ? IMAGE_GENERATION_COPY.dedicatedKey
+      : IMAGE_GENERATION_COPY.inheritedKey;
+  const keyHelper = missingKey
+    ? IMAGE_GENERATION_COPY.noKeyHint
+    : hasSecret || apiKey.trim()
+      ? IMAGE_GENERATION_COPY.usingDedicatedKey
+      : IMAGE_GENERATION_COPY.usingInheritedKey;
+
+  const commitDraftModel = () => {
+    const id = draftModelId.trim();
+    setAddingModel(false);
+    setDraftModelId('');
+    if (!id) return;
+    if (models.some((model) => model.providerModelId === id)) return;
+    onAddModel(id);
+  };
+
   return (
-    <section className="model-provider-form" aria-labelledby="image-provider-detail-title">
-      <header className="model-provider-form__header">
-        <div>
-          <h2 id="image-provider-detail-title">{provider.name}</h2>
-          <small>
-            {missingKey ? IMAGE_GENERATION_COPY.missingKey : provider.baseUrl}
-          </small>
+    <section className="model-provider-form image-provider-detail" aria-labelledby="image-provider-detail-title">
+      <header className="model-provider-form__header image-provider-detail__header">
+        <div className="model-provider-form__identity">
+          <ImageRowAvatar provider={provider} />
+          <div>
+            <h2 id="image-provider-detail-title">{provider.name}</h2>
+          </div>
+          <span className="image-provider-tag">{keyTag}</span>
         </div>
       </header>
       <div className="model-provider-form__body">
-        <p className="model-field-helper">{IMAGE_GENERATION_COPY.helperText}</p>
-        <label className="model-field-label">生图模型</label>
-        {models.length === 0 ? (
-          <p className="model-credential-empty">暂无生图模型</p>
-        ) : (
-          <ul className="model-priority-list">
-            {models.map((model, index) => (
-              <li key={model.modelId} className="model-priority-row">
-                <span>
-                  {model.displayName}
-                  {index === 0 ? <em>{IMAGE_GENERATION_COPY.defaultProvider}</em> : null}
-                </span>
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => onRemoveModel(model.modelId)}
+        <p className="model-field-helper">{IMAGE_GENERATION_COPY.providerCardDesc}</p>
+        <ImageApiProviderSelect
+          id={`image-api-provider-${provider.providerId}`}
+          value={apiProvider}
+          disabled={busy}
+          onChange={onApiProviderChange}
+        />
+        <label className="model-field-label" htmlFor={`image-base-url-${provider.providerId}`}>
+          {IMAGE_GENERATION_COPY.baseUrl}
+        </label>
+        <input
+          id={`image-base-url-${provider.providerId}`}
+          className="st-field-input font-mono text-[12.5px]"
+          aria-label={IMAGE_GENERATION_COPY.baseUrl}
+          value={baseUrl}
+          placeholder="https://api.example.com/v1"
+          disabled={busy}
+          onChange={(event) => setBaseUrl(event.target.value)}
+          onBlur={() => {
+            if (baseUrl.trim() !== provider.baseUrl) onSaveBaseUrl(baseUrl);
+          }}
+        />
+        <label className="model-field-label" htmlFor={`image-api-key-${provider.providerId}`}>
+          {IMAGE_GENERATION_COPY.apiKey}
+        </label>
+        <SecretInput
+          id={`image-api-key-${provider.providerId}`}
+          value={apiKey}
+          placeholder={
+            hasSecret
+              ? IMAGE_GENERATION_COPY.apiKeyInheritPlaceholder
+              : IMAGE_GENERATION_COPY.apiKeyPlaceholder
+          }
+          disabled={busy}
+          onChange={setApiKey}
+        />
+        <p className="model-field-helper">{keyHelper}</p>
+        <fieldset className="image-model-id-fieldset">
+          <legend className="model-field-label">{IMAGE_GENERATION_COPY.modelId}</legend>
+          <div className="image-model-id-list">
+            {models.length === 0 && !addingModel ? (
+              <p className="model-credential-empty">暂无生图模型</p>
+            ) : (
+              <DndContext
+                sensors={sensors}
+                collisionDetection={closestCenter}
+                onDragStart={(event: DragStartEvent) => setActiveModelId(String(event.active.id))}
+                onDragCancel={() => setActiveModelId(null)}
+                onDragEnd={(event: DragEndEvent) => {
+                  setActiveModelId(null);
+                  const activeId = String(event.active.id);
+                  const overId = event.over ? String(event.over.id) : null;
+                  if (!overId || activeId === overId || busy) return;
+                  const oldIndex = models.findIndex((model) => model.modelId === activeId);
+                  const newIndex = models.findIndex((model) => model.modelId === overId);
+                  if (oldIndex < 0 || newIndex < 0) return;
+                  onReorderModels(arrayMove(models, oldIndex, newIndex).map((model) => model.modelId));
+                }}
+              >
+                <SortableContext
+                  items={models.map((model) => model.modelId)}
+                  strategy={verticalListSortingStrategy}
                 >
-                  移除
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-        <div className="model-provider-form__actions">
-          <button type="button" className="is-primary" disabled={busy} onClick={onDiscover}>
-            <Zap size={14} /> 从服务商拉取模型列表
-          </button>
-          <button type="button" className="model-provider-form__secondary-action" disabled={busy} onClick={onTest}>
-            <Zap size={14} /> 测试连接
+                  <ul>
+                    {models.map((model, index) => (
+                      <ImageModelIdRow
+                        key={model.modelId}
+                        model={model}
+                        index={index}
+                        busy={busy}
+                        onRemove={() => onRemoveModel(model.modelId)}
+                      />
+                    ))}
+                  </ul>
+                </SortableContext>
+                {activeModelId
+                  ? createPortal(
+                      <DragOverlay>
+                        <div className="image-model-id-row is-dragging">
+                          <span>
+                            {models.find((model) => model.modelId === activeModelId)?.displayName}
+                          </span>
+                        </div>
+                      </DragOverlay>,
+                      document.body,
+                    )
+                  : null}
+              </DndContext>
+            )}
+            {addingModel ? (
+              <input
+                className="st-field-input font-mono text-[12.5px]"
+                aria-label="新的生图模型 ID"
+                autoFocus
+                value={draftModelId}
+                placeholder={IMAGE_GENERATION_COPY.modelPlaceholder}
+                disabled={busy}
+                onChange={(event) => setDraftModelId(event.target.value)}
+                onBlur={commitDraftModel}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault();
+                    event.currentTarget.blur();
+                  }
+                  if (event.key === 'Escape') {
+                    setAddingModel(false);
+                    setDraftModelId('');
+                  }
+                }}
+              />
+            ) : (
+              <button
+                type="button"
+                className="image-model-id-list__add"
+                disabled={busy}
+                onClick={() => setAddingModel(true)}
+              >
+                <Plus size={13} /> {IMAGE_GENERATION_COPY.addModel}
+              </button>
+            )}
+          </div>
+        </fieldset>
+        <p className="model-field-helper">{IMAGE_GENERATION_COPY.helperText}</p>
+        <button
+          type="button"
+          className="model-fetch-models-link"
+          disabled={busy}
+          onClick={() => onDiscover(draft)}
+        >
+          {busy ? <Loader2 size={13} className="animate-spin" /> : <Cloud size={13} />}
+          {IMAGE_GENERATION_COPY.fetchModelList}
+        </button>
+        <div className="model-test-connection">
+          <button
+            type="button"
+            className="model-test-connection__btn"
+            disabled={busy}
+            onClick={() => onTest(draft)}
+          >
+            {busy ? <Loader2 size={15} className="animate-spin" /> : <Plug size={15} />}
+            {IMAGE_GENERATION_COPY.testConnection}
           </button>
         </div>
       </div>
@@ -813,55 +1089,88 @@ function ImageProviderDetail({
   );
 }
 
-function ImageModelImport({
-  pending,
+function ImageModelIdRow({
+  model,
+  index,
   busy,
-  onChange,
-  onApply,
+  onRemove,
 }: {
-  pending: PendingImageImport;
+  model: ProviderSummary['models'][number];
+  index: number;
   busy: boolean;
-  onChange: (next: PendingImageImport) => void;
-  onApply: () => void;
+  onRemove: () => void;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: model.modelId,
+    disabled: busy,
+  });
+  return (
+    <li
+      ref={setNodeRef}
+      style={{ transform: CSS.Transform.toString(transform), transition }}
+      className={clsx('image-model-id-row', index === 0 && 'is-default', isDragging && 'is-dragging')}
+    >
+      <button
+        type="button"
+        className="model-enabled-row__grip"
+        title="拖拽排序"
+        aria-label={`拖拽 ${model.displayName} 调整顺序`}
+        disabled={busy}
+        {...attributes}
+        {...listeners}
+      >
+        <GripVertical size={14} />
+      </button>
+      <span className={clsx('image-model-id-row__badge', index === 0 && 'is-default')}>
+        {imageModelRowLabel(index)}
+      </span>
+      <span className="image-model-id-row__id">{model.displayName}</span>
+      <button
+        type="button"
+        className="image-model-id-row__remove"
+        aria-label={`删除 ${model.displayName}`}
+        disabled={busy}
+        onClick={onRemove}
+      >
+        <Trash2 size={14} />
+      </button>
+    </li>
+  );
+}
+
+function ImageApiProviderSelect({
+  id,
+  value,
+  disabled,
+  onChange,
+}: {
+  id: string;
+  value: ImageApiProviderId;
+  disabled?: boolean;
+  onChange: (value: ImageApiProviderId) => void;
 }) {
   return (
-    <section className="model-provider-form" aria-labelledby="image-model-import-title">
-      <header className="model-provider-form__header">
-        <div><h2 id="image-model-import-title">选择生图模型</h2></div>
-      </header>
-      <div className="model-provider-form__body">
-        <p className="model-field-helper">已从服务商拉取 {pending.models.length} 个模型，请选择要添加的模型。</p>
-        <div className="model-import-dialog__list">
-          {pending.models.map((id) => {
-            const checked = pending.selectedIds.includes(id);
-            return (
-              <label key={id} className={clsx('model-import-dialog__row', checked && 'is-checked')}>
-                <input
-                  type="checkbox"
-                  checked={checked}
-                  disabled={busy}
-                  onChange={() =>
-                    onChange({
-                      ...pending,
-                      selectedIds: checked
-                        ? pending.selectedIds.filter((item) => item !== id)
-                        : [...pending.selectedIds, id],
-                    })
-                  }
-                />
-                <span className="model-import-dialog__name">{id}</span>
-              </label>
-            );
-          })}
-        </div>
-        <div className="model-provider-form__actions">
-          <button type="button" className="is-primary is-full" disabled={busy} onClick={onApply}>
-            {busy ? <Loader2 size={14} className="animate-spin" /> : <Zap size={14} />}
-            {busy ? '添加中...' : `添加已选模型 (${pending.selectedIds.length})`}
-          </button>
-        </div>
-      </div>
-    </section>
+    <>
+      <label className="model-field-label" htmlFor={id}>
+        {IMAGE_GENERATION_COPY.apiProvider}
+      </label>
+      <select
+        id={id}
+        className="st-field-input image-api-provider-select"
+        aria-label={IMAGE_GENERATION_COPY.apiProvider}
+        value={value}
+        disabled={disabled}
+        onChange={(event) => {
+          if (isImageApiProviderId(event.target.value)) onChange(event.target.value);
+        }}
+      >
+        {IMAGE_API_PROVIDERS.map((item) => (
+          <option key={item.id} value={item.id}>
+            {item.label}
+          </option>
+        ))}
+      </select>
+    </>
   );
 }
 
@@ -1039,11 +1348,13 @@ function ImageRowAvatar({ provider }: { provider: ProviderSummary }) {
 }
 
 function SecretInput({
+  id,
   value,
   placeholder,
   disabled,
   onChange,
 }: {
+  id?: string;
   value: string;
   placeholder?: string;
   disabled?: boolean;
@@ -1053,9 +1364,11 @@ function SecretInput({
   return (
     <div className="model-secret-input">
       <input
+        id={id}
         className="st-field-input font-mono text-[12.5px]"
         type={visible ? 'text' : 'password'}
         autoComplete="off"
+        aria-label={IMAGE_GENERATION_COPY.apiKey}
         value={value}
         placeholder={placeholder}
         disabled={disabled}

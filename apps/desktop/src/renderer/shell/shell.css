@@ -27222,6 +27222,170 @@ body {
   color: var(--color-error);
 }
 
+.model-settings-workspace--image .model-enabled-row.is-active {
+  background: color-mix(in srgb, var(--color-accent) 16%, var(--color-overlay));
+}
+
+.image-provider-detail__header {
+  border-bottom: 0;
+  padding-bottom: 4px;
+}
+
+.image-provider-tag {
+  margin-left: auto;
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: var(--color-hover);
+  color: var(--color-text-faint);
+  font-size: 10.5px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.image-api-provider-select {
+  appearance: none;
+  cursor: pointer;
+  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%),
+    linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position:
+    calc(100% - 16px) calc(50% - 3px),
+    calc(100% - 11px) calc(50% - 3px);
+  background-size:
+    5px 5px,
+    5px 5px;
+  background-repeat: no-repeat;
+  padding-right: 28px;
+}
+
+.image-model-id-fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.image-model-id-fieldset > legend {
+  padding: 0;
+  margin-bottom: 6px;
+}
+
+.image-model-id-list {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 88%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--color-surface) 55%, var(--color-overlay));
+}
+
+.image-model-id-list > ul {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.image-model-id-row {
+  display: flex;
+  min-height: 40px;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-overlay);
+}
+
+.image-model-id-row.is-default {
+  border-color: color-mix(in srgb, var(--color-accent) 55%, var(--color-border));
+  background: color-mix(in srgb, var(--color-accent) 12%, var(--color-overlay));
+}
+
+.image-model-id-row.is-dragging {
+  opacity: 0.3;
+}
+
+.image-model-id-row__badge {
+  display: inline-flex;
+  min-width: 42px;
+  height: 22px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--color-active);
+  color: var(--color-text-faint);
+  font-size: 10.5px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.image-model-id-row__badge.is-default {
+  background: var(--color-accent-soft);
+  color: var(--color-accent-text);
+}
+
+.image-model-id-row__id {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.image-model-id-row__remove {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text-faint);
+  cursor: pointer;
+}
+
+.image-model-id-row__remove:hover:not(:disabled) {
+  background: var(--color-hover);
+  color: var(--color-error);
+}
+
+.image-model-id-row__remove:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.image-model-id-list__add {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px;
+  border: 0;
+  background: transparent;
+  color: var(--color-accent-text);
+  font-size: 12.5px;
+  font-weight: 550;
+  cursor: pointer;
+}
+
+.image-model-id-list__add:hover:not(:disabled) {
+  text-decoration: underline;
+}
+
+.image-model-id-list__add:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 /* Nested import dialog: only covers the settings content area (parent is positioned). */
 .model-import-overlay {
   position: absolute;

@@ -1,3 +1,14 @@
+## 2026-09-09：图像生成详情对齐 NewMax 1.1.15
+
+### Changed
+
+- 设置 → 模型 → 图像生成的已配置详情改为 NewMax 同款：独立 Key、生图接口、可选 Base URL / API Key、默认/备用生图模型 ID、从服务商拉取模型列表、测试连接。创建成功后直接写入模板模型 ID，不再弹出勾选导入层。仍不加入 NewMax Gateway，也不实现 Grok OAuth / Gemini / DashScope 适配。
+
+### Verification
+
+- Desktop 定向测试：`image-generation-providers.test.ts`、`ImageGenerationSettings.test.tsx`、`ModelSettings.test.tsx`。
+- 页面步骤：打开设置 → 模型 → 图像生成，配置自定义生图后核对左侧默认生图、右侧字段与测试连接（`discoverModels persist:false`），并确认该源不出现在文本生成和聊天模型菜单。
+
 ## 2026-09-09：官网内核条与分场景绘画壁纸
 
 ### Changed

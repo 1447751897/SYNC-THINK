@@ -175,6 +175,13 @@
 6. Token、App Secret、Secret 和 Client Secret 只通过 IPC 进入 Runtime 并保存到 SecureStore；Renderer 只读取 `credentialsConfigured`、公开应用 ID、Bot 身份、连接状态和脱敏错误。测试并保存执行平台真实鉴权，启用后 Runtime 持有长连接或长轮询；微信按 iLink/ClawBot 协议在原位弹层扫码并轮询确认，确认后的 Bot Token 不返回 Renderer。切换、弹层与状态使用短位移/透明度动画，`prefers-reduced-motion` 下静止。
 7. 插件页复用真实插件配置，开放网关页保留真实启停、监听端口和请求日志。搜索服务与网络在尚无产品合同期间使用明确空态。
 
+### 5.5 设置模型页 · 图像生成
+
+1. 「图像生成」以 NewMax 1.1.15 的生图供应商双栏为视觉与文案基准：左侧「生图供应商」「拖拽排序，首位为默认」，首位标记「默认生图」，底部「+ 添加生图模型」。不要加入 NewMax Gateway。
+2. 选中已配置供应商后，右侧必须是 NewMax 详情：独立 Key / 缺少 Key 标签、「可继承模型配置，也可为生图单独设置 Key 和 Base URL」、生图接口、生图 Base URL（可选）、生图 API Key（可选）、生图模型 ID（默认 / 备用 N，可拖拽，第一项为默认）、从服务商拉取模型列表、测试连接。完成按钮仍在设置外壳底栏。
+3. 目录与实际调用走本仓库已有的 `openai-images`（OpenAI Images `POST /v1/images/generations`）。生图接口下拉展示 NewMax 的五项名称，但 Grok OAuth、Gemini Imagen、DashScope 异步适配不在当前页实现。图像专用供应商不出现在「文本生成」列表和聊天模型菜单。
+4. 生图接口选择存在 `image-generation` 设置里，不得写入 API Key。密钥仍走剪贴板 hop + SecureStore。
+
 Locked 布局规则：
 
 1. 左导航从项目开始，任务嵌套在所属项目下；本地文件夹是项目的可选单一绑定，不是项目本身。

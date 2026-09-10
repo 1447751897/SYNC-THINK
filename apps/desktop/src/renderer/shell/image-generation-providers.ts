@@ -10,6 +10,8 @@ import type { ProviderSummary } from '@sync-think/protocol';
 
 export const IMAGE_GENERATION_PROTOCOL = 'openai-images' as const;
 
+export const IMAGE_GENERATION_SETTING_KEY = 'image-generation';
+
 export const IMAGE_GENERATION_COPY = {
   description:
     '这里集中配置对话中“画一张 / 生成图片”会使用的生图模型。支持 Grok 订阅登录、OpenAI/兼容接口、Google Gemini/Imagen 和 DashScope 通义万象；ChatGPT/Codex 订阅登录暂不作为生图 API Key 使用。',
@@ -18,14 +20,30 @@ export const IMAGE_GENERATION_COPY = {
   sidebarTitle: '生图供应商',
   sidebarHint: '拖拽排序，首位为默认',
   addImageProvider: '添加生图模型',
+  addModel: '添加生图模型',
   testAndActivate: '测试连接并激活',
+  testConnection: '测试连接',
+  fetchModelList: '从服务商拉取模型列表',
   customTitle: '自定义生图',
   customCardDescription: '从常见服务商目录选择，或配置自定义生图接口',
   customDialogDescription:
     '创建一个只用于图像生成的自定义配置，不会出现在聊天模型菜单里。',
   customTemplateDescription:
     '收录常见官方与聚合平台；选择后自动填写匹配的接口、Base URL 和推荐模型，API Key 不会被覆盖。',
+  providerCardDesc: '可继承模型配置，也可为生图单独设置 Key 和 Base URL',
+  dedicatedKey: '独立 Key',
+  inheritedKey: '继承 Key',
+  usingDedicatedKey: '当前生图调用会使用这里填写的独立 Key',
+  usingInheritedKey: '当前生图调用会继承模型配置里的 API Key',
+  noKeyHint: '请在这里填写用于生图的 API Key',
+  apiProvider: '生图接口',
+  baseUrl: '生图 Base URL（可选）',
+  apiKey: '生图 API Key（可选）',
+  apiKeyPlaceholder: '填写用于生图的 API Key',
+  apiKeyInheritPlaceholder: '留空则继承模型配置里的 API Key',
   defaultProvider: '默认生图',
+  defaultModel: '默认',
+  imageModelBackup: '备用 {{index}}',
   missingKey: '缺少 Key',
   missingKeyHelperText: '填写生图 API Key 后才能测试连接并用于生图调用',
   helperText:
@@ -34,9 +52,74 @@ export const IMAGE_GENERATION_COPY = {
   returnList: '返回列表',
   modelId: '生图模型 ID',
   modelPlaceholder: '例如：gpt-image-2-vip、gpt-image-2、gpt-image-1.5、flux-1.1-pro',
-  apiKeyPlaceholder: '填写用于生图的 API Key',
   namePlaceholder: '例如：我的生图接口',
+  customProviderName: '名称（可选）',
 } as const;
+
+export const IMAGE_API_PROVIDERS = [
+  { id: 'openai', label: 'OpenAI / 兼容' },
+  { id: 'google', label: 'Google Gemini / Imagen' },
+  { id: 'dashscope', label: 'DashScope 通义万象' },
+  { id: 'openrouter', label: 'OpenRouter Image API' },
+  { id: 'siliconflow', label: 'SiliconFlow Image API' },
+] as const;
+
+export type ImageApiProviderId = (typeof IMAGE_API_PROVIDERS)[number]['id'];
+
+export type ImageGenerationStoredState = {
+  overrides?: Record<string, { apiProvider?: ImageApiProviderId }>;
+};
+
+export function isImageApiProviderId(value: string): value is ImageApiProviderId {
+  return IMAGE_API_PROVIDERS.some((item) => item.id === value);
+}
+
+export function inferImageApiProvider(baseUrl: string): ImageApiProviderId {
+  const host = baseUrl.toLowerCase();
+  if (host.includes('openrouter.ai')) return 'openrouter';
+  if (host.includes('siliconflow')) return 'siliconflow';
+  if (host.includes('dashscope')) return 'dashscope';
+  if (host.includes('generativelanguage.googleapis.com')) return 'google';
+  return 'openai';
+}
+
+export function imageModelRowLabel(index: number): string {
+  if (index <= 0) return IMAGE_GENERATION_COPY.defaultModel;
+  return IMAGE_GENERATION_COPY.imageModelBackup.replace('{{index}}', String(index));
+}
+
+export function readStoredImageApiProvider(
+  stored: unknown,
+  providerId: string,
+  baseUrl: string,
+): ImageApiProviderId {
+  if (stored && typeof stored === 'object') {
+    const overrides = (stored as ImageGenerationStoredState).overrides?.[providerId];
+    if (overrides?.apiProvider && isImageApiProviderId(overrides.apiProvider)) {
+      return overrides.apiProvider;
+    }
+  }
+  return inferImageApiProvider(baseUrl);
+}
+
+export function withStoredImageApiProvider(
+  stored: unknown,
+  providerId: string,
+  apiProvider: ImageApiProviderId,
+): ImageGenerationStoredState {
+  const current =
+    stored && typeof stored === 'object' ? (stored as ImageGenerationStoredState) : {};
+  return {
+    ...current,
+    overrides: {
+      ...current.overrides,
+      [providerId]: {
+        ...current.overrides?.[providerId],
+        apiProvider,
+      },
+    },
+  };
+}
 
 export function isImageGenerationProvider(provider: { protocol: string }): boolean {
   return provider.protocol === IMAGE_GENERATION_PROTOCOL;
