@@ -4,6 +4,7 @@ import {
   computeImageLightboxFitScale,
   imagesFromHastParagraph,
   parseGeneratedImageModels,
+  repairGeneratedImageMarkdown,
   resolveGeneratedImageModel,
   resolveGalleryGeneratedImageModel,
 } from './markdown-image-gallery.js';
@@ -128,5 +129,31 @@ describe('computeImageLightboxFitScale', () => {
         { width: 1000, height: 800 },
       ),
     ).toBe(1);
+  });
+});
+
+describe('repairGeneratedImageMarkdown', () => {
+  const absolute = 'D:\\projects\\SYNC-THINK\\.sync-think\\generated-images\\card.png';
+  const encoded = `sync-think-image://generated/${encodeURIComponent(absolute)}`;
+
+  it('completes a truncated generated-image link from the tool-result map', () => {
+    const truncated = encoded.slice(0, encoded.indexOf('generated-images') + 'generated-images'.length + 2);
+    const text = `已生成角色卡\n\n![东方侠士角色设定卡](${truncated}`;
+    expect(repairGeneratedImageMarkdown(text, [encoded])).toBe(
+      `已生成角色卡\n\n![东方侠士角色设定卡](${encoded})`,
+    );
+  });
+
+  it('hides a dangling generated-image link while streaming', () => {
+    const text = '![角色卡](sync-think-image://generated/D%3A%5Cprojects';
+    expect(repairGeneratedImageMarkdown(text, [encoded], true)).toBe('');
+  });
+
+  it('drops an unrepairable truncated link after the stream ends', () => {
+    expect(
+      repairGeneratedImageMarkdown(
+        '说明\n\n![角色卡](sync-think-image://generated/D%3A%5Cmissing',
+      ),
+    ).toBe('说明\n\n');
   });
 });

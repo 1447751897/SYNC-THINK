@@ -245,6 +245,13 @@ function codexPolicies(request: KernelRequest): {
   };
 }
 
+/**
+ * Codex applies its own per-call wall clock to MCP tools. Image generation and
+ * upscaling legitimately run for minutes, so the host declares a long ceiling
+ * and keeps the real stop signal in the user's hands (cancelling the run).
+ */
+const MCP_TOOL_TIMEOUT_SEC = 3_600;
+
 function mcpConfig(broker: PlatformBrokerInfo | undefined): JsonRecord | undefined {
   if (!broker) return undefined;
   return {
@@ -264,6 +271,7 @@ function mcpConfig(broker: PlatformBrokerInfo | undefined): JsonRecord | undefin
       // only tells codex to stop double-approving at its layer.
       enabled: true,
       default_tools_approval_mode: 'auto',
+      tool_timeout_sec: MCP_TOOL_TIMEOUT_SEC,
     },
   };
 }

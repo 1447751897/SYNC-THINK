@@ -337,4 +337,47 @@ describe('OpenAIImagesAdapter', () => {
       failureClass: 'timeout',
     });
   });
+
+  it('lets a request opt out of the local timeout with timeoutMs=null', async () => {
+    const slowFetch = vi.fn(
+      async (_url: string, init?: RequestInit) =>
+        new Promise<Response>((resolve, reject) => {
+          const timer = setTimeout(
+            () => resolve(jsonResponse({ data: [{ b64_json: PNG.toString('base64') }] })),
+            60,
+          );
+          init?.signal?.addEventListener(
+            'abort',
+            () => {
+              clearTimeout(timer);
+              reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+            },
+            { once: true },
+          );
+        }),
+    ) as unknown as typeof fetch;
+
+    // Option-level 5ms budget still aborts the call.
+    const bounded = new OpenAIImagesAdapter({
+      timeoutMs: 5,
+      maxRetries: 1,
+      retryBaseDelayMs: 0,
+      fetchImpl: slowFetch,
+    });
+    await expect(bounded.generateImages(request())).rejects.toMatchObject({
+      failureClass: 'timeout',
+    });
+
+    // Request-level null disables the local abort timer entirely: the slow
+    // upstream response is awaited instead of being cut off.
+    const unbounded = new OpenAIImagesAdapter({
+      timeoutMs: 5,
+      maxRetries: 1,
+      retryBaseDelayMs: 0,
+      fetchImpl: slowFetch,
+    });
+    const result = await unbounded.generateImages(request({ timeoutMs: null }));
+    expect(result.images).toHaveLength(1);
+    expect(Buffer.from(result.images[0]!.bytes)).toEqual(PNG);
+  });
 });

@@ -156,6 +156,46 @@ export function parseGeneratedImageModels(markdown: string): Map<string, string>
   return map;
 }
 
+function knownGeneratedImageSrcs(
+  known?: ReadonlyMap<string, string> | readonly string[],
+): string[] {
+  if (!known) return [];
+  const values = Array.isArray(known) ? known : [...known.keys()];
+  return values.filter((src) => src.startsWith(GENERATED_IMAGE_PREFIX));
+}
+
+function completeGeneratedImageSrc(partial: string, known: readonly string[]): string | undefined {
+  let best: string | undefined;
+  for (const src of known) {
+    if (src.startsWith(partial) && src.length > partial.length) {
+      if (!best || src.length > best.length) best = src;
+    }
+  }
+  return best;
+}
+
+/**
+ * Stream interruptions often cut `![...](sync-think-image://generated/…)` in
+ * the middle of an encoded Windows path. Complete it from the tool-result map
+ * when possible; otherwise hide the dangling protocol text.
+ */
+export function repairGeneratedImageMarkdown(
+  text: string,
+  known?: ReadonlyMap<string, string> | readonly string[],
+  streaming = false,
+): string {
+  const srcs = knownGeneratedImageSrcs(known);
+  return text.replace(
+    /!\[([^\]]*)\]\((sync-think-image:\/\/generated\/[^)\s]*)\)?/g,
+    (match, alt: string, src: string) => {
+      if (match.endsWith(')')) return match;
+      if (streaming) return '';
+      const completed = completeGeneratedImageSrc(src, srcs);
+      return completed ? `![${alt}](${completed})` : '';
+    },
+  );
+}
+
 export function imagesFromHastParagraph(
   node: { children?: readonly unknown[] } | undefined,
 ): MarkdownGalleryImage[] | null {

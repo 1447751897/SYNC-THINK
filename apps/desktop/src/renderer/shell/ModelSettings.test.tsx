@@ -80,6 +80,7 @@ const runtime = {
   probeCapabilities: vi.fn(),
   confirmCapabilities: vi.fn(),
   removeProviderModel: vi.fn(),
+  updateModel: vi.fn(),
   setModelPriorities: vi.fn(),
   setSetting: vi.fn(),
   getUsageSummary: vi.fn(),
@@ -130,6 +131,9 @@ beforeEach(() => {
   runtime.updateProvider.mockImplementation(async (payload: Record<string, unknown>) => ({
     provider: { ...provider, ...payload },
     secretRotated: false,
+  }));
+  runtime.updateModel.mockImplementation(async (payload: { contextWindow?: number | null }) => ({
+    model: { ...provider.models[0], contextWindow: payload.contextWindow ?? null },
   }));
   runtime.addProviderCredential.mockResolvedValue({
     provider,
@@ -385,7 +389,7 @@ describe('ModelSettings NewMax provider detail', () => {
     expect(await screen.findByRole('heading', { name: '规划 & 执行模型' })).toBeTruthy();
   });
 
-  it('shows readable cache efficiency and expands one request cost breakdown on demand', async () => {
+  it('shows readable cache efficiency and token tip cache rows only when reported', async () => {
     await renderSettings();
     fireEvent.click(screen.getByRole('tab', { name: '使用统计' }));
 
@@ -405,6 +409,7 @@ describe('ModelSettings NewMax provider detail', () => {
     expect(within(requestTable).getByText('成功')).toBeTruthy();
     expect(screen.queryByText(/普通输入费 \$0\.006000/)).toBeNull();
     expect(screen.queryByText('200')).toBeNull();
+    expect(screen.queryByRole('button', { name: '查看 gpt-5 请求详情' })).toBeNull();
 
     fireEvent.click(within(requestTable).getByText('14.5k'));
     expect(screen.queryByTestId('usage-request-details-request-cache-1')).toBeNull();
@@ -417,31 +422,14 @@ describe('ModelSettings NewMax provider detail', () => {
     expect(within(tokenTip).getByText('14.0k')).toBeTruthy();
     expect(within(tokenTip).getByText('输出 Token')).toBeTruthy();
     expect(within(tokenTip).getByText('488')).toBeTruthy();
+    expect(within(tokenTip).getByText('缓存读取')).toBeTruthy();
+    expect(within(tokenTip).getByText('12.8k')).toBeTruthy();
+    expect(within(tokenTip).getByText('缓存创建')).toBeTruthy();
+    expect(within(tokenTip).getByText('0')).toBeTruthy();
     expect(within(tokenTip).getByText('总 Token')).toBeTruthy();
     expect(within(tokenTip).getByText('14.5k')).toBeTruthy();
-
-    fireEvent.click(screen.getByRole('button', { name: '查看 gpt-5 请求详情' }));
-    const details = await screen.findByTestId('usage-request-details-request-cache-1');
-    expect(within(details).getByText('请求信息')).toBeTruthy();
-    expect(within(details).getByText('请求 ID')).toBeTruthy();
-    expect(within(details).getByText('request-cache-1')).toBeTruthy();
-    expect(within(details).getByText('运行 ID')).toBeTruthy();
-    expect(within(details).getByText('run-usage-1')).toBeTruthy();
-    expect(within(details).getByText('Provider')).toBeTruthy();
-    expect(within(details).getByText('CODEX · provider-1')).toBeTruthy();
-    expect(within(details).getByText('Provider 模型')).toBeTruthy();
-    expect(within(details).getByText('gpt-5-provider')).toBeTruthy();
-    expect(within(details).getByText('Token 明细')).toBeTruthy();
-    expect(within(details).getByText('推理 Token')).toBeTruthy();
-    expect(within(details).getByText('123')).toBeTruthy();
-    expect(within(details).getByText('总 Token')).toBeTruthy();
-    expect(within(details).getByText('14.5k')).toBeTruthy();
-    expect(within(details).getByText('费用明细')).toBeTruthy();
-    expect(within(details).getByText('普通输入费')).toBeTruthy();
-    expect(within(details).getByText('$0.006000')).toBeTruthy();
-    expect(within(details).getByText('缓存读取费')).toBeTruthy();
-    expect(within(details).getByText('$0.006400')).toBeTruthy();
-    expect(screen.getByRole('button', { name: '收起 gpt-5 请求详情' })).toBeTruthy();
+    expect(screen.queryByText('请求信息')).toBeNull();
+    expect(screen.queryByText('费用明细')).toBeNull();
     expect(screen.queryByText('详情记录')).toBeNull();
   });
 
@@ -499,12 +487,14 @@ describe('ModelSettings NewMax provider detail', () => {
     expect(unreportedRow).toBeTruthy();
     expect(within(unreportedRow!).queryByText('缓存读取 未上报')).toBeNull();
     expect(within(unreportedRow!).getByText('未结束')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '查看 gpt-5 请求详情' })).toBeNull();
 
-    fireEvent.click(within(unreportedRow!).getByRole('button', { name: '查看 gpt-5 请求详情' }));
-    const details = await screen.findByTestId('usage-request-details-request-unreported');
-    const cacheRead = within(details).getByText('缓存读取').closest('div');
-    expect(cacheRead).toBeTruthy();
-    expect(within(cacheRead!).getByText('未上报')).toBeTruthy();
+    fireEvent.mouseEnter(within(unreportedRow!).getByRole('button', { name: 'Token 明细' }));
+    const tokenTip = await screen.findByRole('tooltip');
+    expect(within(tokenTip).getByText('Token 明细')).toBeTruthy();
+    expect(within(tokenTip).queryByText('缓存读取')).toBeNull();
+    expect(within(tokenTip).queryByText('缓存创建')).toBeNull();
+    expect(within(tokenTip).queryByText('未上报')).toBeNull();
   });
 
   it('shows direct-edit fields without the legacy edit and save controls', async () => {
@@ -553,8 +543,46 @@ describe('ModelSettings NewMax provider detail', () => {
         confirmed: true,
       });
     });
-    expect(await within(detail).findByText('能力配置已确认并保存')).toBeTruthy();
-    expect(within(detail).getByRole('button', { name: '已保存' })).toHaveProperty('disabled', true);
+    // Save succeeds → dialog closes immediately (no lingering "已保存" state).
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: 'gpt-5' })).toBeNull();
+    });
+  });
+
+  it('edits the context window inside the capability dialog via input and presets', async () => {
+    await renderSettings();
+
+    fireEvent.click(screen.getByRole('button', { name: '查看模型 gpt-5' }));
+    const detail = await screen.findByRole('dialog', { name: 'gpt-5' });
+
+    // Current value renders as a clickable control, not static text.
+    fireEvent.click(within(detail).getByRole('button', { name: '372k' }));
+    const input = within(detail).getByLabelText('gpt-5 上下文窗口（tokens）') as HTMLInputElement;
+    expect(input.value).toBe('372k');
+
+    // Quick-pick preset saves straight away.
+    fireEvent.click(within(detail).getByRole('button', { name: '1m' }));
+    await waitFor(() => {
+      expect(runtime.updateModel).toHaveBeenCalledWith({
+        providerId: 'provider-1',
+        modelId: 'model-1',
+        contextWindow: 1_000_000,
+      });
+    });
+
+    // Re-open and type a custom value; Enter commits it.
+    fireEvent.click(within(detail).getByRole('button', { name: '1m' }));
+    const typed = within(detail).getByLabelText('gpt-5 上下文窗口（tokens）');
+    fireEvent.change(typed, { target: { value: '272k' } });
+    fireEvent.keyDown(typed, { key: 'Enter' });
+
+    await waitFor(() => {
+      expect(runtime.updateModel).toHaveBeenLastCalledWith({
+        providerId: 'provider-1',
+        modelId: 'model-1',
+        contextWindow: 272_000,
+      });
+    });
   });
 
   it('portals the model capability dialog outside the settings frame', async () => {
@@ -697,16 +725,22 @@ describe('ModelSettings NewMax provider detail', () => {
     expect(await screen.findByRole('heading', { name: '图片识别 Fallback' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: '保存' })).toBeNull();
     fireEvent.click(screen.getByRole('switch'));
-    const picker = screen.getByRole('combobox');
-    expect(within(picker).getByRole('option', { name: /gpt-5/ })).toBeTruthy();
-    expect(within(picker).queryByRole('option', { name: /DeepSeek Chat/ })).toBeNull();
+    const picker = screen.getByRole('combobox', { name: '视觉模型' });
+    fireEvent.click(picker);
+    const list = await screen.findByRole('listbox', { name: '视觉模型' });
+    expect(within(list).getByRole('option', { name: /gpt-5/ })).toBeTruthy();
+    expect(within(list).queryByRole('option', { name: /DeepSeek Chat/ })).toBeNull();
+    expect(within(list).queryByRole('option', { name: '选择视觉模型…' })).toBeNull();
+    fireEvent.pointerDown(within(list).getByRole('option', { name: /gpt-5/ }));
 
     await waitFor(() => {
       expect(runtime.setSetting).toHaveBeenCalledWith({
         key: 'vision-fallback',
-        value: { enabled: true, modelId: null },
+        value: { enabled: true, modelId: 'model-1' },
       });
     });
+    expect(screen.queryByText('图片识别 Fallback 已更新')).toBeNull();
+    expect(screen.queryByTestId('shell-toast')).toBeNull();
   });
 
   it('opens Plan & Act as a list-backed detail panel and saves changes immediately', async () => {
@@ -716,6 +750,9 @@ describe('ModelSettings NewMax provider detail', () => {
     expect(await screen.findByRole('heading', { name: '规划 & 执行模型' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: '保存' })).toBeNull();
     fireEvent.click(screen.getByRole('switch'));
+    fireEvent.click(screen.getByRole('combobox', { name: '规划模型' }));
+    expect(screen.getByRole('listbox', { name: '规划模型' })).toBeTruthy();
+    expect(screen.getByRole('option', { name: /gpt-5/ })).toBeTruthy();
 
     await waitFor(() => {
       expect(runtime.setSetting).toHaveBeenCalledWith({
@@ -729,6 +766,8 @@ describe('ModelSettings NewMax provider detail', () => {
         },
       });
     });
+    expect(screen.queryByText('规划与执行模型已更新')).toBeNull();
+    expect(screen.queryByTestId('shell-toast')).toBeNull();
   });
 
   it('does not expose or load a separate Goal evaluator setting', async () => {
@@ -755,6 +794,8 @@ describe('ModelSettings NewMax provider detail', () => {
         value: true,
       });
     });
+    expect(screen.queryByText('模型配置云同步已开启')).toBeNull();
+    expect(screen.queryByTestId('shell-toast')).toBeNull();
   });
 
   it('reveals a saved credential through the explicit eye control without primary label', async () => {
@@ -969,6 +1010,8 @@ describe('ModelSettings NewMax provider detail', () => {
         models: [{ providerModelId: 'gpt-5', displayName: 'gpt-5' }],
       });
     });
+    expect(screen.queryByText(/已创建/)).toBeNull();
+    expect(screen.queryByTestId('shell-toast')).toBeNull();
   });
 
   it('requires Base URL only for a custom provider', async () => {
@@ -1052,6 +1095,8 @@ describe('ModelSettings NewMax provider detail', () => {
         }),
       );
     });
+    expect(screen.queryByText(/已创建/)).toBeNull();
+    expect(screen.queryByTestId('shell-toast')).toBeNull();
   });
 
   it('keeps the provider via「仍然保存」only after a failing connection test', async () => {
@@ -1098,6 +1143,7 @@ describe('ModelSettings NewMax provider detail', () => {
         }),
       );
     });
+    expect(screen.queryByTestId('shell-toast')).toBeNull();
   });
 
   it('restores the previously selected provider when its list row is selected', async () => {
@@ -1168,21 +1214,54 @@ describe('ModelSettings NewMax provider detail', () => {
     expect(screen.getByRole('menuitem', { name: '停用' })).toBeTruthy();
     expect(screen.queryByRole('menuitem', { name: '编辑配置' })).toBeNull();
     fireEvent.click(screen.getByRole('menuitem', { name: '移除' }));
-    expect(screen.getByRole('menuitem', { name: '确认' })).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: '确认移除' })).toBeTruthy();
   });
 
-  it('opens disabled providers in a popover instead of an inline list', async () => {
+  it('expands disabled providers under the section header', async () => {
     runtime.listProviders.mockResolvedValue({
-      providers: [{ ...provider, enabled: false }],
+      providers: [
+        provider,
+        {
+          ...provider,
+          providerId: 'provider-disabled' as ProviderSummary['providerId'],
+          name: 'OLD',
+          enabled: false,
+          sortOrder: 1,
+        },
+      ],
     });
     await renderSettings();
 
     expect(screen.queryByTestId('model-settings-disabled-menu-list')).toBeNull();
+    expect(screen.queryByText('OLD')).toBeNull();
     fireEvent.click(screen.getByTestId('model-settings-disabled-menu-trigger'));
-    expect(screen.getByTestId('model-settings-disabled-menu-list')).toBeTruthy();
+    const disabledList = screen.getByTestId('model-settings-disabled-menu-list');
+    expect(disabledList).toBeTruthy();
+    expect(within(disabledList).getByText('OLD')).toBeTruthy();
     fireEvent.click(screen.getByTestId('model-settings-disabled-action-menu-trigger'));
     expect(screen.getByRole('menuitem', { name: '启用全部' })).toBeTruthy();
     expect(screen.getByRole('menuitem', { name: '清空' })).toBeTruthy();
+  });
+
+  it('keeps the disabled section open after selecting a disabled provider', async () => {
+    runtime.listProviders.mockResolvedValue({
+      providers: [
+        provider,
+        {
+          ...provider,
+          providerId: 'provider-disabled' as ProviderSummary['providerId'],
+          name: 'OLD',
+          enabled: false,
+          sortOrder: 1,
+        },
+      ],
+    });
+    await renderSettings();
+
+    fireEvent.click(screen.getByTestId('model-settings-disabled-menu-trigger'));
+    fireEvent.click(screen.getByText('OLD'));
+    expect(screen.getByTestId('model-settings-disabled-menu-list')).toBeTruthy();
+    expect(screen.getByText('已停用')).toBeTruthy();
   });
 
   it('shows NewMax media-tab copy instead of an invented unavailable notice', async () => {

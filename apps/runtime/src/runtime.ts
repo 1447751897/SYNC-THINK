@@ -7036,7 +7036,7 @@ export class Runtime {
       return;
     }
     try {
-      const upserted = this.providerStore.upsertModels({
+      this.providerStore.upsertModels({
         providerId: payload.providerId as ProviderId,
         protocol: payload.protocol,
         models: payload.models.map((m) => ({
@@ -7050,9 +7050,14 @@ export class Runtime {
         })),
         capabilitiesConfirmed: false,
       });
+      // Return the provider's full model list, not just the upserted batch:
+      // callers replace their local model array with this response, so an
+      // incremental list would silently drop sibling models.
       const response: AddModelsResponse = {
         providerId: payload.providerId as ProviderId,
-        models: upserted.map((m) => this.toModelSummary(m)),
+        models: this.providerStore
+          .listModels(payload.providerId as ProviderId)
+          .map((m) => this.toModelSummary(m)),
       };
       socket.write(
         encodeFrame({
@@ -23209,6 +23214,9 @@ export class Runtime {
         apiKey,
         idempotencyKey: `generate-image-${ulid()}`,
         signal: call.signal,
+        // No host wall-clock limit: image generation (and upscaling) is a long
+        // job, so only the provider timeout or an explicit user stop ends it.
+        timeoutMs: null,
         prompt: parsed.prompt,
         count: parsed.count,
         size: parsed.size,

@@ -184,5 +184,7 @@ describe('generate image markdown and names', () => {
     expect(ready).toContain('mcp__capability-broker__search_capability');
     expect(ready).toContain('mcp__capability-broker__use_capability');
     expect(ready).not.toContain('mcp__image-generation__generate_image');
+    expect(ready).toContain('原样贴进回复正文');
+    expect(ready).not.toContain('不要再粘贴');
   });
 });

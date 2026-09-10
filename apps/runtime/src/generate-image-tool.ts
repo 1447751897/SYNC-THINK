@@ -298,7 +298,7 @@ export function buildImageGenerationGuidance(options: {
       '不要直接调用 `generate_image`。prompt 必须包含视觉风格、主体、构图和用户约束。quality 默认 2k；未指定时不要改成更低画质。',
       '只有用户在当前这条消息中明确点名已配置模型时才传入 model；未点名时省略 model，不得沿用历史轮次。',
       '宿主会使用设置 > 模型 > 图像生成里排序第一的生图供应商，并把图片写进工作区 `.sync-think/generated-images/`。',
-      '回复里用工具返回的 markdown 图片嵌入结果，不要另外用 ASCII / SVG 代替。',
+      '不要用 ASCII / SVG 假装已经出图。生成成功后，必须把工具结果里的图片 markdown（`![说明](sync-think-image://generated/…)`）原样贴进回复正文，让用户直接在聊天里看到图片；链接地址不要改写、截断或省略，生成多张时逐张贴出。',
     ].join('\n'),
   ];
 }

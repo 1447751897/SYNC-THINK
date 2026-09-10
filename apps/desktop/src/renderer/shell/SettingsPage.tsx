@@ -20,7 +20,6 @@ import {
   FolderOpen,
   Info,
   Keyboard,
-  Link2,
   LoaderCircle,
   MessageCircle,
   Mic2,
@@ -54,6 +53,7 @@ import {
   type ManagedConnectorCatalogItem,
 } from './connector-catalog.js';
 import telegramIcon from './assets/connectors/telegram.png';
+import { McpIdentityMark } from './abilities/McpIdentityMark.js';
 import { BotConversationPane } from './BotConversationPane.js';
 import { WebSearchSettings } from './WebSearchSettings.js';
 import {
@@ -1144,6 +1144,34 @@ export function ConnectionSection({ initialTab, navigationKey }: ConnectionSecti
   );
 }
 
+/** 连接器开关：直接复用 MCP 管理页的胶囊开关样式，保证全局开关观感一致。 */
+function ConnectorSwitch({
+  checked,
+  disabled,
+  label,
+  onChange,
+}: {
+  checked: boolean;
+  disabled?: boolean;
+  label: string;
+  onChange(value: boolean): void;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-label={label}
+      aria-checked={checked}
+      disabled={disabled}
+      data-enabled={checked ? '1' : '0'}
+      className="ability-enable-switch"
+      onClick={() => onChange(!checked)}
+    >
+      <span />
+    </button>
+  );
+}
+
 function ConnectorCatalog({
   providerTab,
   query,
@@ -1244,20 +1272,40 @@ function ConnectorCatalog({
           <div className="settings-connectors-grid">
             {SYNC_THINK_CONNECTOR_CATALOG.map((item) => {
               const connected = connectedNames.has(item.name.toLocaleLowerCase());
+              const managed = managedConnectorServer(servers, item);
               return (
-                <button
+                <div
                   key={item.id}
-                  type="button"
                   className="settings-connector-row"
-                  aria-label={`${connected ? '打开' : '连接'} ${item.name}`}
-                  onClick={() => onOpenManaged(item)}
+                  data-connected={connected ? '1' : '0'}
                 >
-                  <img src={item.icon} alt="" draggable={false} />
-                  <span>{item.name}</span>
-                  <small className={connected ? 'is-connected' : undefined}>
-                    {connected ? '✓ 已连接' : '连接 ›'}
-                  </small>
-                </button>
+                  <button
+                    type="button"
+                    className="settings-connector-row__main"
+                    aria-label={`${connected ? '打开' : '连接'} ${item.name}`}
+                    onClick={() => onOpenManaged(item)}
+                  >
+                    <img src={item.icon} alt="" draggable={false} />
+                    <span>{item.name}</span>
+                  </button>
+                  {managed ? (
+                    <ConnectorSwitch
+                      checked={managed.enabled !== false}
+                      label={`${item.name} 连接`}
+                      onChange={(enabled) => onToggleServer(managed, enabled)}
+                    />
+                  ) : connected ? (
+                    <small className="is-connected">✓ 已连接</small>
+                  ) : (
+                    <button
+                      type="button"
+                      className="settings-connector-row__connect"
+                      onClick={() => onOpenManaged(item)}
+                    >
+                      连接 ›
+                    </button>
+                  )}
+                </div>
               );
             })}
           </div>
@@ -1279,15 +1327,19 @@ function ConnectorCatalog({
                 <div key={server.mcpServerId} className="settings-third-party-row">
                   <button type="button" onClick={() => onOpenServer(server)}>
                     <span className="settings-third-party-row__icon">
-                      <Link2 size={15} aria-hidden="true" />
+                      <McpIdentityMark
+                        name={server.name}
+                        endpoint={server.endpoint}
+                        size={15}
+                      />
                     </span>
                     <span>
                       <strong>{server.name}</strong>
                       <small>{server.endpoint}</small>
                     </span>
                   </button>
-                  <Toggle
-                    checked={server.enabled}
+                  <ConnectorSwitch
+                    checked={server.enabled !== false}
                     label={`${server.name} 连接`}
                     onChange={(enabled) => onToggleServer(server, enabled)}
                   />

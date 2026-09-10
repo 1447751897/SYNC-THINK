@@ -13,11 +13,9 @@ import {
   CircleGauge,
   Code2,
   Copy,
-  Database,
   Edit3,
   FileCode2,
   Folder,
-  Github,
   Globe2,
   KeyRound,
   Layers3,
@@ -100,7 +98,8 @@ import {
   skillScanBadge,
   scanSkillDescription,
 } from './skill-resident-context.js';
-import { mcpAvailability, resolveMcpVisual, type McpMark } from './mcp-identity.js';
+import { mcpAvailability } from './mcp-identity.js';
+import { McpIdentityMark } from './McpIdentityMark.js';
 
 const MAX_SKILL_MD_CHARS = 512_000;
 
@@ -2318,14 +2317,15 @@ function NewMaxMcpHub(props: {
                           type="button"
                           data-testid={`mcp-row-refresh-${server.mcpServerId}`}
                           className="mcp-installed-card__refresh"
+                          title="刷新工具"
+                          aria-label="刷新工具"
                           disabled={Boolean(props.busyId)}
                           onClick={() => props.onRefresh(server)}
                         >
                           <RefreshCw
                             className={refreshBusy ? 'animate-spin' : undefined}
-                            size={12}
+                            size={13}
                           />
-                          {refreshBusy ? '刷新中' : '刷新工具'}
                         </button>
                       </article>
                     );
@@ -2365,33 +2365,6 @@ function MarketSkillGlyph(props: { icon?: string }): JSX.Element {
   if (props.icon === 'chart-no-axes-combined') return <Layers3 size={23} />;
   if (props.icon === 'send') return <Send size={23} />;
   return <PackageOpen size={23} />;
-}
-
-const MCP_MARK_ICON: Record<McpMark, typeof Server> = {
-  github: Github,
-  folder: Folder,
-  globe: Globe2,
-  database: Database,
-  server: Server,
-};
-
-function McpIdentityMark(props: { name?: string; endpoint?: string; size?: number }): JSX.Element {
-  const visual = resolveMcpVisual(props);
-  const size = props.size ?? 15;
-  if (visual.kind === 'favicon') {
-    return (
-      <img
-        src={visual.src}
-        alt=""
-        width={size}
-        height={size}
-        draggable={false}
-        data-testid={`mcp-icon-${visual.id}`}
-      />
-    );
-  }
-  const Icon = MCP_MARK_ICON[visual.mark];
-  return <Icon size={size} data-testid={`mcp-icon-${visual.id}`} />;
 }
 
 export function SkillSurface(props: {

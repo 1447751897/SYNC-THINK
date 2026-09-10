@@ -29,11 +29,33 @@ const BASE64_RE = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=
 
 export interface OpenAIImagesAdapterOptions {
   fetchImpl?: DiscoverOpenAICompatibleModelsOptions['fetchImpl'];
-  timeoutMs?: number;
+  /**
+   * Local wall-clock limit for one generation call. `null` means "no host
+   * timer": the request is bounded only by the provider, so long image or
+   * upscale jobs are never killed locally. Omit to keep the 60s default used
+   * by short probes (settings-page connectivity checks).
+   */
+  timeoutMs?: number | null;
   /** Number of additional attempts for transient, timeout, and rate-limit failures. */
   maxRetries?: number;
   /** Base delay for exponential retry backoff. Set to 0 in deterministic fixtures. */
   retryBaseDelayMs?: number;
+}
+
+const DEFAULT_IMAGE_GENERATION_TIMEOUT_MS = 60_000;
+
+/**
+ * A local host timer only exists to stop a hung probe. Chat image generation is
+ * a long job (upscaling can take minutes), so callers pass `null` and rely on
+ * the user cancelling the run instead of a wall-clock guess.
+ */
+function resolveLocalTimeoutMs(
+  requestTimeout: number | null | undefined,
+  optionTimeout: number | null | undefined,
+): number | null {
+  if (requestTimeout !== undefined) return requestTimeout;
+  if (optionTimeout !== undefined) return optionTimeout;
+  return DEFAULT_IMAGE_GENERATION_TIMEOUT_MS;
 }
 
 export class ProviderImageGenerationError extends Error {
@@ -61,7 +83,7 @@ export class OpenAIImagesAdapter implements ProviderAdapter {
       apiKey,
       baseUrl,
       fetchImpl: this.opts.fetchImpl,
-      timeoutMs: this.opts.timeoutMs,
+      timeoutMs: this.opts.timeoutMs ?? undefined,
     });
   }
 
@@ -79,10 +101,10 @@ export class OpenAIImagesAdapter implements ProviderAdapter {
     validateRequest(request);
     const fetchImpl = this.opts.fetchImpl ?? fetch;
     const timeoutController = new AbortController();
-    const timeoutMs = this.opts.timeoutMs ?? 60_000;
+    const timeoutMs = resolveLocalTimeoutMs(request.timeoutMs, this.opts.timeoutMs);
     const maxRetries = normalizeRetryCount(this.opts.maxRetries);
     const retryBaseDelayMs = normalizeRetryDelay(this.opts.retryBaseDelayMs);
-    const timer = setTimeout(() => timeoutController.abort(), timeoutMs);
+    const timer = timeoutMs === null ? null : setTimeout(() => timeoutController.abort(), timeoutMs);
     const signal = AbortSignal.any([request.signal, timeoutController.signal]);
     const url = joinImagesGenerationUrl(request.baseUrl);
     const body = {
@@ -137,7 +159,7 @@ export class OpenAIImagesAdapter implements ProviderAdapter {
         }
       }
     } finally {
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
     }
   }
 }

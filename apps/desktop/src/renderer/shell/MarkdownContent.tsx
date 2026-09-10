@@ -27,6 +27,7 @@ import {
   imagesFromHastParagraph,
   mergeGeneratedImageModels,
   parseGeneratedImageModels,
+  repairGeneratedImageMarkdown,
 } from './markdown-image-gallery.js';
 import { MarkdownImageGallery } from './MarkdownImageGallery.js';
 
@@ -680,13 +681,17 @@ export function MarkdownContent({
   const hadStreamingRef = useRef(false);
   if (streaming) hadStreamingRef.current = true;
   const useIncrementalRenderer = streaming || hadStreamingRef.current;
-  const sections = useMemo(
-    () => (streaming ? [] : splitMarkdownSections(text)),
-    [text, streaming],
-  );
   const generatedImageModels = useMemo(
     () => mergeGeneratedImageModels(imageModelBySrc, parseGeneratedImageModels(text)),
     [imageModelBySrc, text],
+  );
+  const displayText = useMemo(
+    () => repairGeneratedImageMarkdown(text, generatedImageModels, streaming),
+    [text, generatedImageModels, streaming],
+  );
+  const sections = useMemo(
+    () => (streaming ? [] : splitMarkdownSections(displayText)),
+    [displayText, streaming],
   );
   return (
     <CodeReadingContext.Provider value={readingRef.current.states}>
@@ -694,7 +699,7 @@ export function MarkdownContent({
       <div className={`shell-md ${className ?? ''}`} data-streaming={streaming ? '1' : '0'}>
         {useIncrementalRenderer ? (
           <IncrementalStreamingMarkdown
-            text={text}
+            text={displayText}
             streaming={streaming}
             projectFolder={projectFolder}
             conversationId={conversationId}

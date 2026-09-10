@@ -38,7 +38,6 @@ import {
   EyeOff,
   GripVertical,
   Loader2,
-  MoreHorizontal,
   Plug,
   Plus,
   RefreshCw,
@@ -50,11 +49,8 @@ import clsx from 'clsx';
 import type { ProviderSummary } from '@sync-think/protocol';
 import { retryTransientRuntime } from '../runtime-connection.js';
 import { formatRuntimeIpcError } from '../provider-error-copy.js';
-import {
-  AddModelInlineRow,
-  ImportModelsDialog,
-  type ImportDialogState,
-} from './model-settings-widgets.js';
+import { AddModelInlineRow, ImportModelsDialog, type ImportDialogState } from './model-settings-widgets.js';
+import { ModelOverflowMenu } from './ModelOverflowMenu.js';
 import {
   IMAGE_API_PROVIDERS,
   IMAGE_CATALOG_CATEGORIES,
@@ -135,7 +131,6 @@ export function ImageGenerationSettings({
   const [disabledMenuOpen, setDisabledMenuOpen] = useState(false);
   const [imageSetting, setImageSetting] = useState<unknown>({});
   const [importDialog, setImportDialog] = useState<ImportDialogState | null>(null);
-  const disabledMenuTriggerRef = useRef<HTMLButtonElement>(null);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
@@ -337,7 +332,10 @@ export function ImageGenerationSettings({
         })),
       });
       if (api.confirmCapabilities) {
+        const requested = new Set(idsToAdd);
         for (const model of added.models) {
+          // addModels returns the provider's full list; only confirm the seeded batch.
+          if (!requested.has(model.providerModelId)) continue;
           await api.confirmCapabilities({
             modelId: model.modelId as never,
             capabilities: ['image-generation'],
@@ -372,7 +370,7 @@ export function ImageGenerationSettings({
       setCreateTemplate(null);
       setSelectedId(result.provider.providerId);
       await load();
-    }, `${createDraft.name.trim()} 已创建`);
+    });
 
   const persistProviderDraft = async (provider: ProviderSummary, draft: ImageDetailDraft) => {
     const api = bridge();
@@ -451,7 +449,10 @@ export function ImageGenerationSettings({
       })),
     });
     if (api.confirmCapabilities) {
+      const requested = new Set(unique);
       for (const model of added.models) {
+        // addModels returns the provider's full list; only confirm the batch we just added.
+        if (!requested.has(model.providerModelId)) continue;
         await api.confirmCapabilities({
           modelId: model.modelId as never,
           capabilities: ['image-generation'],
@@ -580,17 +581,11 @@ export function ImageGenerationSettings({
   };
 
   useEffect(() => {
-    if (!disabledMenuOpen) return;
-    const onPointerDown = (event: PointerEvent) => {
-      const target = event.target as Node | null;
-      if (disabledMenuTriggerRef.current?.contains(target)) return;
-      const root = disabledMenuTriggerRef.current?.closest('.model-disabled-list');
-      if (root?.contains(target)) return;
-      setDisabledMenuOpen(false);
-    };
-    document.addEventListener('pointerdown', onPointerDown);
-    return () => document.removeEventListener('pointerdown', onPointerDown);
-  }, [disabledMenuOpen]);
+    const selected = providers.find((item) => item.providerId === selectedId);
+    if (selected && !selected.enabled && isConfiguredImageProvider(selected) && !showCreate) {
+      setDisabledMenuOpen(true);
+    }
+  }, [providers, selectedId, showCreate]);
 
   if (loading) {
     return (
@@ -681,42 +676,40 @@ export function ImageGenerationSettings({
           </button>
           {disabledProviders.length > 0 ? (
             <div className="model-disabled-list">
-              <button
-                ref={disabledMenuTriggerRef}
-                type="button"
-                className={clsx(
-                  'model-disabled-list__trigger',
-                  disabledMenuOpen && 'is-active',
-                )}
-                aria-expanded={disabledMenuOpen}
-                data-testid="image-settings-disabled-menu-trigger"
-                onClick={() => {
-                  setDisabledMenuOpen((open) => !open);
-                }}
-              >
-                <span>已停用模型</span>
-                <span className="model-disabled-list__count">{disabledProviders.length}</span>
-              </button>
+              <div className={clsx('model-disabled-list__bar', disabledMenuOpen && 'is-open')}>
+                <button
+                  type="button"
+                  className="model-disabled-list__trigger"
+                  aria-expanded={disabledMenuOpen}
+                  data-testid="image-settings-disabled-menu-trigger"
+                  onClick={() => setDisabledMenuOpen((open) => !open)}
+                >
+                  <ChevronDown size={12} className="model-disabled-list__chevron" aria-hidden="true" />
+                  <span>已停用模型</span>
+                  <span className="model-disabled-list__count">{disabledProviders.length}</span>
+                </button>
+              </div>
               {disabledMenuOpen ? (
-                <ul className="model-disabled-list__menu" data-testid="image-settings-disabled-menu-list">
+                <div
+                  className="model-disabled-list__items"
+                  data-testid="image-settings-disabled-menu-list"
+                >
                   {disabledProviders.map((provider) => (
-                    <li key={provider.providerId}>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setDisabledMenuOpen(false);
-                          setShowCreate(false);
-                          setSelectedId(provider.providerId);
-                        }}
-                      >
-                        {provider.name}
-                      </button>
-                      <button type="button" onClick={() => handleToggleEnabled(provider, true)}>
-                        启用
-                      </button>
-                    </li>
+                    <DisabledImageProviderRow
+                      key={provider.providerId}
+                      provider={provider}
+                      active={!showCreate && provider.providerId === selectedId}
+                      busy={busy}
+                      onSelect={() => {
+                        setDisabledMenuOpen(true);
+                        setShowCreate(false);
+                        setSelectedId(provider.providerId);
+                      }}
+                      onEnable={() => handleToggleEnabled(provider, true)}
+                      onRemove={() => handleRemoveProvider(provider)}
+                    />
                   ))}
-                </ul>
+                </div>
               ) : null}
             </div>
           ) : null}
@@ -783,7 +776,7 @@ export function ImageGenerationSettings({
                       ...item,
                       models: orderedModelIds
                         .map((modelId, index) => {
-                          const model = byId.get(modelId);
+                          const model = byId.get(modelId as ProviderSummary['models'][number]['modelId']);
                           return model ? { ...model, priority: index } : null;
                         })
                         .filter(
@@ -1645,20 +1638,6 @@ function ImageProviderRow({
   onRemove(): void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
-  const [deleteConfirm, setDeleteConfirm] = useState(false);
-  useEffect(() => {
-    if (!menuOpen) return;
-    const handlePointerDown = (event: PointerEvent) => {
-      if (
-        !(event.target instanceof Element) ||
-        !event.target.closest('.model-enabled-row__menu-wrap')
-      ) {
-        setMenuOpen(false);
-      }
-    };
-    window.addEventListener('pointerdown', handlePointerDown);
-    return () => window.removeEventListener('pointerdown', handlePointerDown);
-  }, [menuOpen]);
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: provider.providerId,
     disabled: busy,
@@ -1701,50 +1680,65 @@ function ImageProviderRow({
         </span>
       </button>
       <div className="model-enabled-row__menu-wrap">
-        <button
-          type="button"
-          className="model-enabled-row__menu-trigger"
-          title="更多操作"
-          aria-label={`${provider.name} 更多操作`}
+        <ModelOverflowMenu
+          ariaLabel={`${provider.name} 更多操作`}
+          triggerClassName="model-enabled-row__menu-trigger"
           disabled={busy}
-          onClick={() => {
-            setMenuOpen((value) => !value);
-            setDeleteConfirm(false);
-          }}
-        >
-          <MoreHorizontal size={15} />
-        </button>
-        {menuOpen ? (
-          <div className="model-enabled-row__menu" role="menu">
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => {
-                setMenuOpen(false);
-                onDisable();
-              }}
-            >
-              停用
-            </button>
-            <button
-              type="button"
-              role="menuitem"
-              className="is-danger"
-              onClick={() => {
-                if (deleteConfirm) {
-                  setMenuOpen(false);
-                  onRemove();
-                  return;
-                }
-                setDeleteConfirm(true);
-              }}
-            >
-              {deleteConfirm ? '确认' : '移除'}
-            </button>
-          </div>
-        ) : null}
+          onOpenChange={setMenuOpen}
+          items={[
+            { label: '停用', onSelect: onDisable },
+            { label: '移除', danger: true, confirmLabel: '确认移除', onSelect: onRemove },
+          ]}
+        />
       </div>
     </li>
+  );
+}
+
+function DisabledImageProviderRow({
+  provider,
+  active,
+  busy,
+  onSelect,
+  onEnable,
+  onRemove,
+}: {
+  provider: ProviderSummary;
+  active: boolean;
+  busy: boolean;
+  onSelect(): void;
+  onEnable(): void;
+  onRemove(): void;
+}) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const primary = [...provider.models].sort((a, b) => a.priority - b.priority)[0];
+  return (
+    <div className={clsx('model-disabled-row', active && 'is-active', menuOpen && 'has-menu-open')}>
+      <button type="button" className="model-disabled-row__main" onClick={onSelect}>
+        <ImageRowAvatar provider={provider} />
+        <span className="model-enabled-row__copy">
+          <span>{provider.name}</span>
+          <small>
+            {provider.credentials.length === 0
+              ? IMAGE_GENERATION_COPY.missingKey
+              : (primary?.displayName ?? '未添加模型')}
+          </small>
+        </span>
+      </button>
+      <div className="model-disabled-row__menu-wrap">
+        <ModelOverflowMenu
+          ariaLabel={`${provider.name} 更多操作`}
+          triggerClassName="model-enabled-row__menu-trigger"
+          triggerSize={14}
+          disabled={busy}
+          onOpenChange={setMenuOpen}
+          items={[
+            { label: '启用', onSelect: onEnable },
+            { label: '移除', danger: true, confirmLabel: '确认移除', onSelect: onRemove },
+          ]}
+        />
+      </div>
+    </div>
   );
 }
 

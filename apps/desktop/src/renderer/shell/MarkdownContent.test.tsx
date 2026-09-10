@@ -360,4 +360,18 @@ describe('MarkdownContent', () => {
     );
     expect(html).toContain('生图模型 · gpt-image-2');
   });
+
+  it('repairs a truncated generated-image link using imageModelBySrc', () => {
+    const absolute = 'D:\\work\\.sync-think\\generated-images\\card.png';
+    const encoded = `sync-think-image://generated/${encodeURIComponent(absolute)}`;
+    const truncated = encoded.slice(0, encoded.indexOf('generated-images') + 'generated-images'.length + 2);
+    const html = renderToStaticMarkup(
+      createElement(MarkdownContent, {
+        text: `![角色卡](${truncated}`,
+        imageModelBySrc: new Map([[encoded, 'gpt-image-2']]),
+      }),
+    );
+    expect(html).toContain('data-testid="generated-image-frame"');
+    expect(html).toContain(encoded);
+  });
 });

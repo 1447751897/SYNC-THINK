@@ -86,6 +86,35 @@ export function resolveMcpVisual(input: { name?: string; endpoint?: string }): M
   return { id: 'generic', kind: 'mark', mark: 'server' };
 }
 
+export interface McpLogoSources {
+  id: string;
+  mark: McpMark;
+  /** 依次尝试的远程图标地址；数组为空表示直接使用 mark 矢量图标。 */
+  sources: string[];
+}
+
+/**
+ * 统一的多级取图链：站点自身 favicon → 公共 favicon 服务 → 语义矢量图标。
+ * 调用方按索引逐档尝试，加载失败即降到下一档，因此不会出现空白/裂图。
+ */
+export function resolveMcpLogoSources(input: {
+  name?: string;
+  endpoint?: string;
+}): McpLogoSources {
+  const visual = resolveMcpVisual(input);
+  if (visual.kind === 'mark') {
+    return { id: visual.id, mark: visual.mark, sources: [] };
+  }
+  // 远程图标全部失败时，仍按名字给出有语义的矢量图标（github / 数据库 / 文件夹…）
+  const byName = resolveMcpVisual({ name: input.name });
+  const mark: McpMark = byName.kind === 'mark' ? byName.mark : 'server';
+  const host = httpHost(String(input.endpoint ?? '').trim());
+  const sources: string[] = [];
+  if (host) sources.push(`https://${host}/favicon.ico`);
+  sources.push(visual.src);
+  return { id: visual.id, mark, sources };
+}
+
 export function mcpAvailability(input: {
   enabled?: boolean;
   trusted?: boolean;

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   inspectMcpLaunch,
   mcpAvailability,
+  resolveMcpLogoSources,
   resolveMcpVisual,
 } from './mcp-identity.js';
 
@@ -16,6 +17,30 @@ describe('mcp identity', () => {
       id: 'context7',
       kind: 'favicon',
       src: 'https://www.google.com/s2/favicons?domain=context7.com&sz=64',
+    });
+  });
+
+  it('builds a multi-level logo chain: site favicon → shared favicon service → semantic mark', () => {
+    expect(
+      resolveMcpLogoSources({ name: 'context7', endpoint: 'https://mcp.context7.com/mcp' }),
+    ).toEqual({
+      id: 'context7',
+      mark: 'server',
+      sources: [
+        'https://mcp.context7.com/favicon.ico',
+        'https://www.google.com/s2/favicons?domain=context7.com&sz=64',
+      ],
+    });
+    // 纯本地服务没有站点地址：直接用语义矢量图标，不发起任何远程取图
+    expect(resolveMcpLogoSources({ name: 'filesystem' })).toEqual({
+      id: 'filesystem',
+      mark: 'folder',
+      sources: [],
+    });
+    expect(resolveMcpLogoSources({ name: 'GitHub', endpoint: 'MCP_GITHUB_COMMAND' })).toEqual({
+      id: 'github',
+      mark: 'github',
+      sources: [],
     });
   });
 

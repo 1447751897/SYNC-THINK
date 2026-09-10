@@ -445,6 +445,9 @@ M1：in progress (Providers panel observable; Agents/Manifest next)
 - `SettingsPage.tsx` 负责 192px 设置侧栏、搜索和完成动作；模型配置的数据加载、保存和脏状态仍全部归 `ModelSettings.tsx`。不要把 Provider 行为移进设置外壳。
 - 固定几何契约为：弹窗 `1060 × 720px`、标题行 48px、模型类型行 64px、底栏 72px、模型列表 240px、右侧内容 596px；详情/目录/云同步入口相对弹窗从 `x=440 / y≈119` 开始。紧凑窗口允许缩放，但必须完整留在视口内。
 - 顶部顺序固定为文本生成、图像生成、视频生成、语音生成、语音识别、使用统计；推荐服务只保留自定义供应商和 CC Switch。NewMax Gateway 已从目录移除，不要重新加入。
+- 「使用统计 → 请求日志」不再逐行展开。Token 列用空心圆悬停看明细；未上报的缓存读取/创建不要渲染成「未上报」，费用列只显示总额。不要把左侧 Chevron 或请求信息/费用明细区加回去。
+- 「已停用模型」是区块头，名单在下方展开，不要再做成选中芯片或上浮 popover。供应商三点菜单用 overlay 浮层（停用 / 确认移除），不要用贴在行上的 10.5px 小菜单。
+- 创建供应商和 Fallback / 规划执行 / 云同步成功后不要弹右上角 toast。视觉模型和规划/执行/思考强度用 overlay 列表，不要用原生 `<select>`。
 - 「图像生成」由 `ImageGenerationSettings.tsx` 渲染，文案、生图接口选项和目录来自 `image-generation-providers.ts`。已配置详情必须包含 NewMax 的生图接口 / Base URL / 独立 Key / 默认+备用模型 ID / 拉取列表 / 测试连接，不要用导入勾选层替代详情。图像专用供应商使用 `openai-images`，不会出现在文本生成列表和聊天模型菜单。不要把图像专用源加回聊天模型菜单，也不要重新加入 NewMax Gateway。
 - 生图接口写在 settings key `image-generation.overrides`，只存 `apiProvider`，禁止把 API Key 写入该设置。密钥仍走剪贴板 hop + `updateProviderCredential` / `addProviderCredential`。
 - 图片识别 Fallback、规划/执行模型、模型配置云同步位于模型列表下方；目标模式评估模型位于“已停用模型”更多菜单。这些是现有产品能力，视觉对齐时不能删除。

@@ -2,7 +2,6 @@
 // Left: ordered provider list with enable toggles.
 // Right: selected provider detail (endpoint / keys / models / priority) + global vision/plan-act.
 import {
-  Fragment,
   forwardRef,
   useCallback,
   useEffect,
@@ -54,7 +53,6 @@ import {
   GripVertical,
   Image,
   Loader2,
-  MoreHorizontal,
   Pencil,
   Plug,
   Plus,
@@ -94,6 +92,8 @@ import {
 import { REASONING_OPTIONS } from './compose-toolbar.js';
 import { retryTransientRuntime } from '../runtime-connection.js';
 import { KeepAliveLayer } from './KeepAliveLayer.js';
+import { ModelOverflowMenu } from './ModelOverflowMenu.js';
+import { ModelListSelect } from './ModelListSelect.js';
 import { ImageGenerationSettings } from './ImageGenerationSettings.js';
 import {
   AddModelInlineRow,
@@ -122,6 +122,14 @@ const MODEL_CAPABILITY_OPTIONS: ReadonlyArray<{
   { value: 'web-search', label: '联网搜索', description: '调用模型原生网页搜索' },
   { value: 'image-generation', label: '图片生成', description: '根据提示生成图片' },
   { value: 'embeddings', label: '向量嵌入', description: '生成语义向量数据' },
+];
+
+/** Quick-pick context windows offered inside the model capability dialog. */
+const CONTEXT_WINDOW_PRESETS: ReadonlyArray<number> = [
+  200_000,
+  272_000,
+  300_000,
+  1_000_000,
 ];
 
 const PROTOCOL_LABELS: Record<ProtocolFamily, string> = {
@@ -849,9 +857,6 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [lastSelectedId, setLastSelectedId] = useState<string | null>(null);
   const [disabledMenuOpen, setDisabledMenuOpen] = useState(false);
-  const [disabledActionMenuOpen, setDisabledActionMenuOpen] = useState(false);
-  const disabledMenuTriggerRef = useRef<HTMLButtonElement>(null);
-  const disabledActionTriggerRef = useRef<HTMLElement>(null);
   const [activeProviderId, setActiveProviderId] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [createStep, setCreateStep] = useState<CreateProviderStep>('catalog');
@@ -1132,7 +1137,6 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
           displayName: model.displayName || model.providerModelId,
         })),
       });
-      showToast('success', `已创建 ${name} · ${createDraft.models.length} 个模型`);
       setCreateTestResult({ status: 'idle', message: '' });
       setCreateDraft(EMPTY_CREATE);
       setShowCreate(false);
@@ -1181,7 +1185,6 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
           displayName: model.displayName || model.providerModelId,
         })),
       });
-      showToast('success', `已保存 ${name}（未验证）· ${createDraft.models.length} 个模型`);
       setCreateTestResult({ status: 'idle', message: '' });
       setCreateDraft(EMPTY_CREATE);
       setShowCreate(false);
@@ -1361,7 +1364,6 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
       setSelectedId(nextSelected);
     }
     setDisabledMenuOpen(false);
-    setDisabledActionMenuOpen(false);
     void withBusy(
       {
         kind: 'toggle-provider',
@@ -1404,7 +1406,6 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
       setSelectedId(remaining.find((item) => item.enabled)?.providerId ?? remaining[0]?.providerId ?? null);
     }
     setDisabledMenuOpen(false);
-    setDisabledActionMenuOpen(false);
     void withBusy(
       { kind: 'toggle-provider', targetId: provider.providerId, label: '正在移除…' },
       async () => {
@@ -1424,7 +1425,6 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
     const targets = providers.filter((item) => !item.enabled);
     if (targets.length === 0) return;
     setDisabledMenuOpen(false);
-    setDisabledActionMenuOpen(false);
     void withBusy({ kind: 'toggle-provider', label: '正在启用…' }, async () => {
       const api = bridge();
       if (!api?.updateProvider) throw new Error('Runtime 未连接');
@@ -1439,7 +1439,6 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
     const targets = providers.filter((item) => !item.enabled);
     if (targets.length === 0) return;
     setDisabledMenuOpen(false);
-    setDisabledActionMenuOpen(false);
     void withBusy({ kind: 'toggle-provider', label: '正在清空…' }, async () => {
       for (const provider of targets) {
         await wipeProviderCredentials(provider);
@@ -1697,7 +1696,7 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
         if (toAdd.length > 0) {
           await api.addModels({
             providerId: providerId as never,
-            protocol: dialog.protocol,
+            protocol: dialog.protocol as ProtocolFamily,
             models: toAdd.map((item) => ({
               providerModelId: item.providerModelId,
               displayName: item.displayName || item.providerModelId,
@@ -1787,7 +1786,6 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
         mergeProviderModels(providerId, result.models);
         setStatus(`已添加模型 ${providerModelId}`);
       },
-      `模型 ${providerModelId} 已添加`,
     );
 
   const handleRemoveModel = (providerId: string, modelId: string) =>
@@ -1846,7 +1844,6 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
         setStatus('上下文窗口已更新');
         onCatalogChanged?.();
       },
-      '上下文窗口已更新',
     );
 
   const handleProbeModelCapabilities = useCallback(
@@ -1874,7 +1871,6 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
           ),
         );
       }
-      showToast('success', `${suggestion.displayName} 能力检测完成`);
       onCatalogChanged?.();
       return suggestion;
     },
@@ -1904,7 +1900,6 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
             ),
           );
         }
-        showToast('success', `${result.model.displayName} 能力配置已保存`);
         onCatalogChanged?.();
         return result.model;
       } catch (error) {
@@ -1986,7 +1981,6 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
           throw error;
         }
       },
-      '图片识别 Fallback 已更新',
     );
   };
 
@@ -2005,7 +1999,6 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
           throw error;
         }
       },
-      '规划与执行模型已更新',
     );
   };
 
@@ -2024,7 +2017,6 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
           throw error;
         }
       },
-      enabled ? '模型配置云同步已开启' : '模型配置云同步已关闭',
     );
   };
 
@@ -2150,19 +2142,18 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
   );
 
   useEffect(() => {
-    if (!disabledMenuOpen && !disabledActionMenuOpen) return;
-    const onPointerDown = (event: PointerEvent) => {
-      const target = event.target as Node | null;
-      if (disabledMenuTriggerRef.current?.contains(target)) return;
-      if (disabledActionTriggerRef.current?.contains(target)) return;
-      const root = disabledMenuTriggerRef.current?.closest('.model-disabled-list');
-      if (root?.contains(target)) return;
-      setDisabledMenuOpen(false);
-      setDisabledActionMenuOpen(false);
-    };
-    document.addEventListener('pointerdown', onPointerDown);
-    return () => document.removeEventListener('pointerdown', onPointerDown);
-  }, [disabledMenuOpen, disabledActionMenuOpen]);
+    const selected = providers.find((item) => item.providerId === selectedId);
+    if (
+      selected &&
+      !selected.enabled &&
+      isConfiguredProvider(selected) &&
+      isTextGenerationProvider(selected) &&
+      detailView === 'provider' &&
+      !showCreate
+    ) {
+      setDisabledMenuOpen(true);
+    }
+  }, [detailView, providers, selectedId, showCreate]);
 
   if (loading) {
     return (
@@ -2305,61 +2296,32 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
                 </button>
                 {disabledProviders.length > 0 ? (
                   <div className="model-disabled-list">
-                    <button
-                      ref={disabledMenuTriggerRef}
-                      type="button"
-                      className={clsx(
-                        'model-disabled-list__trigger',
-                        (disabledMenuOpen || disabledActionMenuOpen) && 'is-active',
-                      )}
-                      aria-expanded={disabledMenuOpen}
-                      data-testid="model-settings-disabled-menu-trigger"
-                      onClick={() => {
-                        setDisabledMenuOpen((open) => !open);
-                        setDisabledActionMenuOpen(false);
-                      }}
-                    >
-                      <span>已停用模型</span>
-                      <span className="model-disabled-list__count">{disabledProviders.length}</span>
-                      <span className="model-disabled-list__menu-wrap">
-                        <span
-                          ref={disabledActionTriggerRef}
-                          role="button"
-                          tabIndex={0}
-                          className="model-disabled-list__menu-trigger"
-                          aria-label="已停用模型操作"
-                          data-testid="model-settings-disabled-action-menu-trigger"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            setDisabledActionMenuOpen((open) => !open);
-                            setDisabledMenuOpen(false);
-                          }}
-                          onKeyDown={(event) => {
-                            if (event.key === 'Enter' || event.key === ' ') {
-                              event.preventDefault();
-                              event.stopPropagation();
-                              setDisabledActionMenuOpen((open) => !open);
-                              setDisabledMenuOpen(false);
-                            }
-                          }}
-                        >
-                          <MoreHorizontal size={14} />
-                        </span>
-                      </span>
-                    </button>
-                    {disabledActionMenuOpen ? (
-                      <div className="model-disabled-list__menu" role="menu">
-                        <button type="button" role="menuitem" onClick={handleEnableAllDisabled}>
-                          启用全部
-                        </button>
-                        <button type="button" role="menuitem" onClick={handleClearDisabled}>
-                          清空
-                        </button>
-                      </div>
-                    ) : null}
+                    <div className={clsx('model-disabled-list__bar', disabledMenuOpen && 'is-open')}>
+                      <button
+                        type="button"
+                        className="model-disabled-list__trigger"
+                        aria-expanded={disabledMenuOpen}
+                        data-testid="model-settings-disabled-menu-trigger"
+                        onClick={() => setDisabledMenuOpen((open) => !open)}
+                      >
+                        <ChevronDown size={12} className="model-disabled-list__chevron" aria-hidden="true" />
+                        <span>已停用模型</span>
+                        <span className="model-disabled-list__count">{disabledProviders.length}</span>
+                      </button>
+                      <ModelOverflowMenu
+                        ariaLabel="已停用模型操作"
+                        triggerClassName="model-disabled-list__more"
+                        triggerTestId="model-settings-disabled-action-menu-trigger"
+                        triggerSize={14}
+                        items={[
+                          { label: '启用全部', onSelect: handleEnableAllDisabled },
+                          { label: '清空', danger: true, onSelect: handleClearDisabled },
+                        ]}
+                      />
+                    </div>
                     {disabledMenuOpen ? (
                       <div
-                        className="model-disabled-list__popover"
+                        className="model-disabled-list__items"
                         data-testid="model-settings-disabled-menu-list"
                       >
                         {disabledProviders.map((provider) => (
@@ -2373,7 +2335,7 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
                             }
                             busy={providerListBusy}
                             onSelect={() => {
-                              setDisabledMenuOpen(false);
+                              setDisabledMenuOpen(true);
                               setShowCreate(false);
                               resetCreateState();
                               setDetailView('provider');
@@ -3378,27 +3340,6 @@ function SortableProviderRow({
   onRemove(): void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
-  const [deleteConfirm, setDeleteConfirm] = useState(false);
-  useEffect(() => {
-    if (!menuOpen) return;
-    const handlePointerDown = (event: PointerEvent) => {
-      if (
-        !(event.target instanceof Element) ||
-        !event.target.closest('.model-enabled-row__menu-wrap')
-      ) {
-        setMenuOpen(false);
-      }
-    };
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setMenuOpen(false);
-    };
-    window.addEventListener('pointerdown', handlePointerDown);
-    window.addEventListener('keydown', handleKeyDown);
-    return () => {
-      window.removeEventListener('pointerdown', handlePointerDown);
-      window.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [menuOpen]);
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: provider.providerId,
     disabled: busy,
@@ -3452,61 +3393,16 @@ function SortableProviderRow({
         </span>
       </button>
       <div className="model-enabled-row__menu-wrap">
-        <button
-          type="button"
-          className="model-enabled-row__menu-trigger"
-          title="更多操作"
-          aria-label={`${provider.name} 更多操作`}
-          aria-expanded={menuOpen}
+        <ModelOverflowMenu
+          ariaLabel={`${provider.name} 更多操作`}
+          triggerClassName="model-enabled-row__menu-trigger"
           disabled={busy}
-          onClick={() => {
-            setMenuOpen((value) => !value);
-            setDeleteConfirm(false);
-          }}
-        >
-          <MoreHorizontal size={15} />
-        </button>
-        {menuOpen ? (
-          <div
-            className="model-enabled-row__menu"
-            role="menu"
-            onKeyDown={(event) => {
-              if (event.key === 'Escape') {
-                event.preventDefault();
-                setMenuOpen(false);
-                setDeleteConfirm(false);
-              }
-            }}
-          >
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => {
-                setMenuOpen(false);
-                setDeleteConfirm(false);
-                onDisable();
-              }}
-            >
-              停用
-            </button>
-            <button
-              type="button"
-              role="menuitem"
-              className="is-danger"
-              onClick={() => {
-                if (deleteConfirm) {
-                  setMenuOpen(false);
-                  setDeleteConfirm(false);
-                  onRemove();
-                  return;
-                }
-                setDeleteConfirm(true);
-              }}
-            >
-              {deleteConfirm ? '确认' : '移除'}
-            </button>
-          </div>
-        ) : null}
+          onOpenChange={setMenuOpen}
+          items={[
+            { label: '停用', onSelect: onDisable },
+            { label: '移除', danger: true, confirmLabel: '确认移除', onSelect: onRemove },
+          ]}
+        />
       </div>
     </li>
   );
@@ -3528,24 +3424,9 @@ function DisabledProviderRow({
   onRemove(): void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
-  const [deleteConfirm, setDeleteConfirm] = useState(false);
   const primaryModel = providerPrimaryModel(provider);
-  useEffect(() => {
-    if (!menuOpen) return;
-    const handlePointerDown = (event: PointerEvent) => {
-      if (
-        !(event.target instanceof Element) ||
-        !event.target.closest('.model-disabled-row__menu-wrap')
-      ) {
-        setMenuOpen(false);
-        setDeleteConfirm(false);
-      }
-    };
-    window.addEventListener('pointerdown', handlePointerDown);
-    return () => window.removeEventListener('pointerdown', handlePointerDown);
-  }, [menuOpen]);
   return (
-    <div className={clsx('model-disabled-row', active && 'is-active')}>
+    <div className={clsx('model-disabled-row', active && 'is-active', menuOpen && 'has-menu-open')}>
       <button type="button" className="model-disabled-row__main" onClick={onSelect}>
         <ProviderRowAvatar provider={provider} />
         <span className="model-enabled-row__copy">
@@ -3554,49 +3435,17 @@ function DisabledProviderRow({
         </span>
       </button>
       <div className="model-disabled-row__menu-wrap">
-        <button
-          type="button"
-          className="model-enabled-row__menu-trigger"
-          aria-label={`${provider.name} 更多操作`}
-          aria-expanded={menuOpen}
+        <ModelOverflowMenu
+          ariaLabel={`${provider.name} 更多操作`}
+          triggerClassName="model-enabled-row__menu-trigger"
+          triggerSize={14}
           disabled={busy}
-          onClick={() => {
-            setMenuOpen((value) => !value);
-            setDeleteConfirm(false);
-          }}
-        >
-          <MoreHorizontal size={14} />
-        </button>
-        {menuOpen ? (
-          <div className="model-disabled-row__menu" role="menu">
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => {
-                setMenuOpen(false);
-                onEnable();
-              }}
-            >
-              启用
-            </button>
-            <button
-              type="button"
-              role="menuitem"
-              className="is-danger"
-              onClick={() => {
-                if (deleteConfirm) {
-                  setMenuOpen(false);
-                  setDeleteConfirm(false);
-                  onRemove();
-                  return;
-                }
-                setDeleteConfirm(true);
-              }}
-            >
-              {deleteConfirm ? '确认' : '移除'}
-            </button>
-          </div>
-        ) : null}
+          onOpenChange={setMenuOpen}
+          items={[
+            { label: '启用', onSelect: onEnable },
+            { label: '移除', danger: true, confirmLabel: '确认移除', onSelect: onRemove },
+          ]}
+        />
       </div>
     </div>
   );
@@ -4180,6 +4029,11 @@ function ProviderDetail({
         onConfirm={(modelId, capabilities) =>
           onConfirmModelCapabilities(provider.providerId, modelId, capabilities)
         }
+        onSaveContext={(contextWindow) => {
+          if (selectedModelId) {
+            onUpdateModelContext(provider.providerId, selectedModelId, contextWindow);
+          }
+        }}
       />
     </div>
   );
@@ -4638,6 +4492,7 @@ function ModelCapabilityDialog({
   onClose,
   onProbe,
   onConfirm,
+  onSaveContext,
 }: {
   provider: ProviderSummary;
   model: ProviderModelSummary | null;
@@ -4647,6 +4502,7 @@ function ModelCapabilityDialog({
     modelId: string,
     capabilities: ModelCapabilityTag[],
   ) => Promise<ProviderModelSummary>;
+  onSaveContext: (contextWindow: number | null) => void;
 }) {
   const [draft, setDraft] = useState<ModelCapabilityTag[]>(() => [
     ...(model?.capabilities ?? []),
@@ -4655,6 +4511,17 @@ function ModelCapabilityDialog({
     'idle',
   );
   const [notice, setNotice] = useState<string | null>(null);
+  const [editingContext, setEditingContext] = useState(false);
+  const [contextDraft, setContextDraft] = useState('');
+
+  useEffect(() => {
+    if (!editingContext) {
+      const current = model?.contextWindow;
+      setContextDraft(
+        current && current > 0 ? (formatContext(current) ?? String(current)) : '',
+      );
+    }
+  }, [model?.contextWindow, editingContext]);
 
   if (!model) return null;
 
@@ -4702,14 +4569,38 @@ function ModelCapabilityDialog({
     setPhase('saving');
     setNotice('正在保存能力配置');
     try {
-      const updated = await onConfirm(model.modelId, draft);
-      setDraft([...updated.capabilities]);
-      setPhase('success');
-      setNotice('能力配置已确认并保存');
+      await onConfirm(model.modelId, draft);
+      // Save succeeded → close immediately. Errors keep the dialog open for retry.
+      onClose();
     } catch (error) {
       setPhase('error');
       setNotice(describeCapabilityDialogError(error, '保存失败，请重试'));
     }
+  };
+
+  const commitContextWindow = () => {
+    setEditingContext(false);
+    const raw = contextDraft.trim();
+    if (!raw) {
+      if (model.contextWindow) onSaveContext(null);
+      return;
+    }
+    const parsed = parseContextTokens(raw);
+    if (parsed === null) {
+      const current = model.contextWindow;
+      setContextDraft(
+        current && current > 0 ? (formatContext(current) ?? String(current)) : '',
+      );
+      return;
+    }
+    if (parsed === model.contextWindow) return;
+    onSaveContext(parsed);
+  };
+
+  const applyContextPreset = (tokens: number) => {
+    setEditingContext(false);
+    if (tokens === model.contextWindow) return;
+    onSaveContext(tokens);
   };
 
   return (
@@ -4764,9 +4655,68 @@ function ModelCapabilityDialog({
               <dt>API 格式</dt>
               <dd>{protocolLabel}</dd>
             </div>
-            <div>
+            <div className="model-capability-dialog__facts-context">
               <dt>上下文窗口</dt>
-              <dd>{formatContext(model.contextWindow) ?? '未设置'}</dd>
+              <dd className="model-capability-dialog__context">
+                {editingContext ? (
+                  <div className="model-capability-dialog__context-editor">
+                    <input
+                      className="st-field-input model-capability-dialog__context-input"
+                      type="text"
+                      inputMode="text"
+                      value={contextDraft}
+                      disabled={busy}
+                      autoFocus
+                      placeholder="如 200k / 1m"
+                      aria-label={`${title} 上下文窗口（tokens）`}
+                      title="上下文窗口，单位 tokens（支持 200k、272k、300k、1m）"
+                      onChange={(event) => setContextDraft(event.target.value)}
+                      onBlur={() => commitContextWindow()}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                          event.preventDefault();
+                          commitContextWindow();
+                        } else if (event.key === 'Escape') {
+                          const current = model.contextWindow;
+                          setEditingContext(false);
+                          setContextDraft(
+                            current && current > 0
+                              ? (formatContext(current) ?? String(current))
+                              : '',
+                          );
+                        }
+                      }}
+                    />
+                    <div className="model-capability-dialog__context-presets">
+                      {CONTEXT_WINDOW_PRESETS.map((preset) => (
+                        <button
+                          key={preset}
+                          type="button"
+                          disabled={busy}
+                          onMouseDown={(event) => event.preventDefault()}
+                          onClick={() => applyContextPreset(preset)}
+                        >
+                          {formatContext(preset)}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    className="model-capability-dialog__context-value"
+                    disabled={busy}
+                    title="点击设置上下文窗口（支持 200k / 272k / 300k / 1m）"
+                    onClick={() => {
+                      setContextDraft(formatContext(model.contextWindow) ?? '');
+                      setEditingContext(true);
+                    }}
+                  >
+                    <Gauge size={12} aria-hidden="true" />
+                    {formatContext(model.contextWindow) ?? '未设置'}
+                  </button>
+                )}
+              </dd>
             </div>
             <div>
               <dt>优先级</dt>
@@ -4776,12 +4726,7 @@ function ModelCapabilityDialog({
 
           <section className="model-capability-dialog__section">
             <div className="model-capability-dialog__section-head">
-              <div>
-                <h3>模型能力</h3>
-                <p>
-                  打开时的勾选来自上次保存，或按模型名和 API 格式做的本地推断。点「检测能力」会向接口发几次最小请求（文本、识图、工具、联网），用实测结果建议勾选；点选修正后保存才会生效。
-                </p>
-              </div>
+              <h3>模型能力</h3>
               <span>
                 {draft.length} / {MODEL_CAPABILITY_OPTIONS.length}
               </span>
@@ -4969,19 +4914,17 @@ function VisionFallbackPanel({
       </div>
       <div className="model-strategy-panel__fields">
         <Field label="视觉模型">
-          <select
-            className="st-field-input"
+          <ModelListSelect
+            label="视觉模型"
             value={value.modelId ?? ''}
-            disabled={busy || !value.enabled || options.length === 0}
-            onChange={(event) => onChange({ ...value, modelId: event.target.value || null })}
-          >
-            <option value="">选择视觉模型…</option>
-            {options.map((model) => (
-              <option key={model.modelId} value={model.modelId}>
-                {model.displayName} · {model.providerName}
-              </option>
-            ))}
-          </select>
+            placeholder="选择视觉模型…"
+            disabled={!value.enabled || options.length === 0}
+            options={options.map((model) => ({
+              value: model.modelId,
+              label: `${model.displayName} · ${model.providerName}`,
+            }))}
+            onChange={(modelId) => onChange({ ...value, modelId: modelId || null })}
+          />
         </Field>
         <p className="model-strategy-panel__hint">
           {options.length > 0
@@ -5075,68 +5018,62 @@ function PlanActPanel({
       </div>
       <div className="model-strategy-panel__fields">
         <Field label="规划模型">
-          <select
-            className="st-field-input"
+          <ModelListSelect
+            label="规划模型"
             value={value.planModelId ?? ''}
-            disabled={busy || !value.enabled}
-            onChange={(event) => onChange({ ...value, planModelId: event.target.value || null })}
-          >
-            <option value="">选择规划模型…</option>
-            {options.map((model) => (
-              <option key={model.modelId} value={model.modelId}>
-                {model.displayName} · {model.providerName}
-              </option>
-            ))}
-          </select>
+            placeholder="选择规划模型…"
+            disabled={!value.enabled}
+            options={options.map((model) => ({
+              value: model.modelId,
+              label: `${model.displayName} · ${model.providerName}`,
+            }))}
+            onChange={(planModelId) => onChange({ ...value, planModelId: planModelId || null })}
+          />
         </Field>
         <Field label="执行模型">
-          <select
-            className="st-field-input"
+          <ModelListSelect
+            label="执行模型"
             value={value.actModelId ?? ''}
-            disabled={busy || !value.enabled}
-            onChange={(event) => onChange({ ...value, actModelId: event.target.value || null })}
-          >
-            <option value="">选择执行模型…</option>
-            {options.map((model) => (
-              <option key={model.modelId} value={model.modelId}>
-                {model.displayName} · {model.providerName}
-              </option>
-            ))}
-          </select>
+            placeholder="选择执行模型…"
+            disabled={!value.enabled}
+            options={options.map((model) => ({
+              value: model.modelId,
+              label: `${model.displayName} · ${model.providerName}`,
+            }))}
+            onChange={(actModelId) => onChange({ ...value, actModelId: actModelId || null })}
+          />
         </Field>
         <Field label="规划思考强度">
-          <select
-            className="st-field-input"
+          <ModelListSelect
+            label="规划思考强度"
             value={value.planReasoningEffort ?? ''}
-            disabled={busy || !value.enabled}
-            onChange={(event) =>
-              onChange({ ...value, planReasoningEffort: event.target.value || null })
+            placeholder="跟随对话设置"
+            disabled={!value.enabled}
+            emptyOption={{ value: '', label: '跟随对话设置' }}
+            options={REASONING_OPTIONS.map((option) => ({
+              value: option.value,
+              label: option.title,
+            }))}
+            onChange={(planReasoningEffort) =>
+              onChange({ ...value, planReasoningEffort: planReasoningEffort || null })
             }
-          >
-            <option value="">跟随对话设置</option>
-            {REASONING_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.title}
-              </option>
-            ))}
-          </select>
+          />
         </Field>
         <Field label="执行思考强度">
-          <select
-            className="st-field-input"
+          <ModelListSelect
+            label="执行思考强度"
             value={value.actReasoningEffort ?? ''}
-            disabled={busy || !value.enabled}
-            onChange={(event) =>
-              onChange({ ...value, actReasoningEffort: event.target.value || null })
+            placeholder="跟随对话设置"
+            disabled={!value.enabled}
+            emptyOption={{ value: '', label: '跟随对话设置' }}
+            options={REASONING_OPTIONS.map((option) => ({
+              value: option.value,
+              label: option.title,
+            }))}
+            onChange={(actReasoningEffort) =>
+              onChange({ ...value, actReasoningEffort: actReasoningEffort || null })
             }
-          >
-            <option value="">跟随对话设置</option>
-            {REASONING_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.title}
-              </option>
-            ))}
-          </select>
+          />
         </Field>
         <p className="model-strategy-panel__hint">
           规划模式强制使用规划模型；批准方案后的执行轮强制执行模型（含思考强度）；普通对话消息不干预，手动选择的模型照常生效。
@@ -5427,15 +5364,25 @@ export function UsageSettings({
               placeholder="按模型筛选..."
               aria-label="按模型筛选"
             />
-            <select
-              value={statusFilter}
-              aria-label="请求状态"
-              onChange={(event) => setStatusFilter(event.target.value as typeof statusFilter)}
-            >
-              <option value="all">全部状态</option>
-              <option value="success">成功</option>
-              <option value="failed">失败</option>
-            </select>
+            <div className="usage-status-filter" role="group" aria-label="请求状态">
+              {(
+                [
+                  ['all', '全部'],
+                  ['success', '成功'],
+                  ['failed', '失败'],
+                ] as const
+              ).map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  aria-pressed={statusFilter === value}
+                  className={statusFilter === value ? 'is-active' : undefined}
+                  onClick={() => setStatusFilter(value)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
             <span className="usage-record-count">共 {visibleRequests.length} 条记录</span>
           </div>
           <UsageRequestTable rows={visibleRequests} />
@@ -5591,10 +5538,14 @@ function UsageTokenTip({
   inputTokens,
   outputTokens,
   totalTokens,
+  cacheReadTokens,
+  cacheWriteTokens,
 }: {
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
 }) {
   const buttonRef = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
@@ -5639,6 +5590,18 @@ function UsageTokenTip({
                   <dt>输出 Token</dt>
                   <dd>{formatTokenCount(outputTokens)}</dd>
                 </div>
+                {typeof cacheReadTokens === 'number' ? (
+                  <div>
+                    <dt>缓存读取</dt>
+                    <dd>{formatTokenCount(cacheReadTokens)}</dd>
+                  </div>
+                ) : null}
+                {typeof cacheWriteTokens === 'number' ? (
+                  <div>
+                    <dt>缓存创建</dt>
+                    <dd>{formatTokenCount(cacheWriteTokens)}</dd>
+                  </div>
+                ) : null}
                 <div>
                   <dt>总 Token</dt>
                   <dd className="is-total">{formatTokenCount(totalTokens)}</dd>
@@ -5653,7 +5616,6 @@ function UsageTokenTip({
 }
 
 function UsageRequestTable({ rows }: { rows: UsageSummaryResponse['requests'] }) {
-  const [expandedRequestId, setExpandedRequestId] = useState<string | null>(null);
   if (rows.length === 0) {
     return <div className="usage-table-empty">暂无符合条件的请求记录</div>;
   }
@@ -5676,218 +5638,42 @@ function UsageRequestTable({ rows }: { rows: UsageSummaryResponse['requests'] })
             const tokens = splitProviderUsageTokens(row);
             const cacheReadReported = typeof row.cachedTokensHit === 'number';
             const cacheWriteReported = typeof row.cachedTokensCreated === 'number';
-            const isExpanded = expandedRequestId === row.requestId;
             const displayName = row.displayName ?? row.modelId;
-            const detailsId = `usage-request-details-${row.requestId}`;
             return (
-              <Fragment key={row.requestId}>
-                <tr className={clsx('usage-request-row', isExpanded && 'is-expanded')}>
-                  <td className="usage-request-time">
-                    <button
-                      type="button"
-                      className={clsx('usage-request-toggle', isExpanded && 'is-expanded')}
-                      aria-expanded={isExpanded}
-                      aria-controls={detailsId}
-                      aria-label={`${isExpanded ? '收起' : '查看'} ${displayName} 请求详情`}
-                      title={isExpanded ? '收起请求详情' : '展开请求详情'}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        setExpandedRequestId(isExpanded ? null : row.requestId);
-                      }}
-                    >
-                      {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                    </button>
-                    <span>{formatTimestamp(row.occurredAt)}</span>
-                  </td>
-                  <td title={row.providerId}>{row.providerName ?? row.providerId ?? '-'}</td>
-                  <td className="usage-request-model" title={row.modelId}>
-                    {displayName}
-                  </td>
-                  <td
-                    className="usage-token-cell"
-                    onClick={(event) => event.stopPropagation()}
-                    onPointerDown={(event) => event.stopPropagation()}
-                  >
+              <tr key={row.requestId} className="usage-request-row">
+                <td className="usage-request-time">
+                  <span>{formatTimestamp(row.occurredAt)}</span>
+                </td>
+                <td title={row.providerId}>{row.providerName ?? row.providerId ?? '-'}</td>
+                <td className="usage-request-model" title={row.modelId}>
+                  {displayName}
+                </td>
+                <td className="usage-token-cell">
+                  <span className="usage-token-cell__value">
                     <span>{formatTokenCount(row.totalTokens)}</span>
                     <UsageTokenTip
                       inputTokens={tokens.totalInputTokens}
                       outputTokens={tokens.outputTokens}
                       totalTokens={row.totalTokens}
+                      cacheReadTokens={cacheReadReported ? tokens.cacheReadTokens : undefined}
+                      cacheWriteTokens={cacheWriteReported ? tokens.cacheWriteTokens : undefined}
                     />
-                  </td>
-                  <td className="usage-request-cost">
-                    {formatCurrency(row.estimatedCost, row.currency)}
-                  </td>
-                  <td>{typeof row.latencyMs === 'number' ? formatLatency(row.latencyMs) : '-'}</td>
-                  <td>
-                    <span className={`usage-status is-${row.status}`}>
-                      {row.status === 'success'
-                        ? '成功'
-                        : row.status === 'failed'
-                          ? '失败'
-                          : '未结束'}
-                    </span>
-                  </td>
-                </tr>
-                {isExpanded ? (
-                  <tr className="usage-request-details" id={detailsId}>
-                    <td colSpan={7}>
-                      <div
-                        className="usage-request-detail-sections"
-                        data-testid={`usage-request-details-${row.requestId}`}
-                      >
-                        <section className="usage-request-detail-section">
-                          <strong className="usage-request-detail-title">请求信息</strong>
-                          <dl className="usage-request-detail-list">
-                            <div>
-                              <dt>请求 ID</dt>
-                              <dd className="usage-request-detail-id" title={row.requestId}>
-                                {row.requestId}
-                              </dd>
-                            </div>
-                            {row.taskId ? (
-                              <div>
-                                <dt>任务 ID</dt>
-                                <dd className="usage-request-detail-id" title={row.taskId}>
-                                  {row.taskId}
-                                </dd>
-                              </div>
-                            ) : null}
-                            {row.runId ? (
-                              <div>
-                                <dt>运行 ID</dt>
-                                <dd className="usage-request-detail-id" title={row.runId}>
-                                  {row.runId}
-                                </dd>
-                              </div>
-                            ) : null}
-                            {row.stepId ? (
-                              <div>
-                                <dt>步骤 ID</dt>
-                                <dd className="usage-request-detail-id" title={row.stepId}>
-                                  {row.stepId}
-                                </dd>
-                              </div>
-                            ) : null}
-                            <div>
-                              <dt>Provider</dt>
-                              <dd>
-                                {row.providerName ?? row.providerId ?? '-'}
-                                {row.providerName && row.providerId ? ` · ${row.providerId}` : ''}
-                              </dd>
-                            </div>
-                            <div>
-                              <dt>Provider 模型</dt>
-                              <dd className="usage-request-detail-id">
-                                {row.providerModelId ?? row.modelId}
-                              </dd>
-                            </div>
-                            <div>
-                              <dt>请求用途</dt>
-                              <dd>{formatUsagePurpose(row.purpose)}</dd>
-                            </div>
-                          </dl>
-                        </section>
-
-                        <section className="usage-request-detail-section">
-                          <strong className="usage-request-detail-title">Token 明细</strong>
-                          <dl className="usage-request-detail-list is-token-list">
-                            <div>
-                              <dt>普通输入</dt>
-                              <dd>{formatTokenCount(tokens.inputTokens)}</dd>
-                            </div>
-                            <div>
-                              <dt>缓存读取</dt>
-                              <dd>
-                                {cacheReadReported
-                                  ? formatTokenCount(tokens.cacheReadTokens)
-                                  : '未上报'}
-                              </dd>
-                            </div>
-                            <div>
-                              <dt>缓存创建</dt>
-                              <dd>
-                                {cacheWriteReported
-                                  ? formatTokenCount(tokens.cacheWriteTokens)
-                                  : '未上报'}
-                              </dd>
-                            </div>
-                            <div>
-                              <dt>推理 Token</dt>
-                              <dd>
-                                {typeof row.reasoningTokens === 'number'
-                                  ? formatTokenCount(row.reasoningTokens)
-                                  : '未上报'}
-                              </dd>
-                            </div>
-                            <div>
-                              <dt>输出</dt>
-                              <dd>{formatTokenCount(tokens.outputTokens)}</dd>
-                            </div>
-                            <div>
-                              <dt>总 Token</dt>
-                              <dd>{formatTokenCount(row.totalTokens)}</dd>
-                            </div>
-                          </dl>
-                        </section>
-
-                        <section className="usage-request-detail-section">
-                          <strong className="usage-request-detail-title">费用明细</strong>
-                          {row.estimatedCostBreakdown ? (
-                            <dl className="usage-request-detail-list is-cost-list">
-                              <div>
-                                <dt>普通输入费</dt>
-                                <dd>
-                                  {formatCurrencyDetail(
-                                    row.estimatedCostBreakdown.input,
-                                    row.currency,
-                                  )}
-                                </dd>
-                              </div>
-                              <div>
-                                <dt>缓存读取费</dt>
-                                <dd>
-                                  {formatCurrencyDetail(
-                                    row.estimatedCostBreakdown.cacheRead,
-                                    row.currency,
-                                  )}
-                                </dd>
-                              </div>
-                              <div>
-                                <dt>缓存创建费</dt>
-                                <dd>
-                                  {formatCurrencyDetail(
-                                    row.estimatedCostBreakdown.cacheWrite,
-                                    row.currency,
-                                  )}
-                                </dd>
-                              </div>
-                              <div>
-                                <dt>输出费</dt>
-                                <dd>
-                                  {formatCurrencyDetail(
-                                    row.estimatedCostBreakdown.output,
-                                    row.currency,
-                                  )}
-                                </dd>
-                              </div>
-                            </dl>
-                          ) : (
-                            <span className="usage-request-detail-empty">供应商未返回费用拆分</span>
-                          )}
-                        </section>
-
-                        {row.errorMessage ? (
-                          <div className="usage-request-detail-error usage-error">
-                            <strong>失败原因</strong>
-                            <span>{row.errorMessage}</span>
-                          </div>
-                        ) : null}
-                      </div>
-                    </td>
-                  </tr>
-                ) : null}
-              </Fragment>
+                  </span>
+                </td>
+                <td className="usage-request-cost">
+                  {formatCurrency(row.estimatedCost, row.currency)}
+                </td>
+                <td>{typeof row.latencyMs === 'number' ? formatLatency(row.latencyMs) : '-'}</td>
+                <td>
+                  <span className={`usage-status is-${row.status}`}>
+                    {row.status === 'success'
+                      ? '成功'
+                      : row.status === 'failed'
+                        ? '失败'
+                        : '未结束'}
+                  </span>
+                </td>
+              </tr>
             );
           })}
         </tbody>
@@ -6340,22 +6126,6 @@ function formatCurrency(value: number | undefined, currency: 'USD' | 'CNY' | und
   })}`;
 }
 
-function formatCurrencyDetail(
-  value: number | undefined,
-  currency: 'USD' | 'CNY' | undefined,
-): string {
-  if (typeof value !== 'number' || !currency) return '-';
-  const symbol = currency === 'CNY' ? '¥' : '$';
-  return `${symbol}${value.toFixed(6)}`;
-}
-
-function formatCurrencyTotals(totals: Partial<Record<'USD' | 'CNY', number>>): string {
-  const values = (['CNY', 'USD'] as const).flatMap((currency) =>
-    typeof totals[currency] === 'number' ? [formatCurrency(totals[currency], currency)] : [],
-  );
-  return values.length > 0 ? values.join(' / ') : '-';
-}
-
 function formatCurrencyTotalsKpi(totals: Partial<Record<'USD' | 'CNY', number>>): string {
   const values = (['CNY', 'USD'] as const).flatMap((currency) => {
     const value = totals[currency];
@@ -6379,23 +6149,4 @@ function formatTokenCount(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
   return String(n);
-}
-
-function formatUsagePurpose(purpose: UsageSummaryResponse['requests'][number]['purpose']): string {
-  switch (purpose) {
-    case 'compaction':
-      return '上下文压缩';
-    case 'delegation':
-      return '任务委派';
-    case 'review':
-      return '结果审核';
-    case 'revision':
-      return '任务返修';
-    case 'summary':
-      return '最终总结';
-    case 'normal':
-      return '普通对话';
-    default:
-      return '未上报';
-  }
 }

@@ -5854,7 +5854,12 @@ function SettingsModal({
             event.preventDefault();
             return;
           }
-          if (target instanceof Element && target.closest('.image-api-select__menu')) {
+          if (
+            target instanceof Element &&
+            (target.closest('.image-api-select__menu') ||
+              target.closest('.model-overflow-menu') ||
+              target.closest('.model-list-select__menu'))
+          ) {
             event.preventDefault();
             return;
           }

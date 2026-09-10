@@ -7544,6 +7544,10 @@ const ReasoningContent = memo(function ReasoningContent({
   );
 });
 
+function isTransientModelOverload(error?: string): boolean {
+  return /overloaded|try again later|服务超载|服务器.*繁忙/i.test(error ?? '');
+}
+
 function HarnessTerminalNotice({
   state,
   error,
@@ -7580,18 +7584,19 @@ function HarnessTerminalNotice({
       </div>
     );
   }
+  const overloaded = isTransientModelOverload(error);
   return (
     <details className="shell-harness-terminal is-failed" data-testid="assistant-terminal-failed">
       <summary>
         <span className="shell-harness-terminal__dot" aria-hidden="true" />
-        <span className="shell-harness-terminal__title">运行失败</span>
+        <span className="shell-harness-terminal__title">{overloaded ? '回答中断' : '运行失败'}</span>
         {errorSummary ? (
           <span
             className="shell-harness-terminal__summary"
             data-testid="assistant-terminal-error"
             title={error}
           >
-            {errorSummary}
+            {overloaded ? '模型服务繁忙，回答没有写完。' : errorSummary}
           </span>
         ) : null}
         <ChevronDown size={13} className="shell-harness-terminal__chevron" aria-hidden="true" />
