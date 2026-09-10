@@ -66,8 +66,11 @@ export function projectRunIndexUpsert(
     runId: event.runId,
     workspaceId: event.workspaceId || fallbackWorkspaceId,
     ...(event.taskId ? { taskId: event.taskId } : {}),
-    ...(readString(payload, 'threadId')
-      ? { conversationId: readString(payload, 'threadId')! }
+    ...(readString(payload, 'conversationId') ?? readString(payload, 'threadId')
+      ? {
+          conversationId:
+            readString(payload, 'conversationId') ?? readString(payload, 'threadId')!,
+        }
       : {}),
     source: resolveSource(payload),
     state,

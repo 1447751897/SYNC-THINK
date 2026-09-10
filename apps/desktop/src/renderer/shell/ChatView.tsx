@@ -214,6 +214,8 @@ import {
   formatRunModelLabel,
 } from './execution-process.js';
 import { MarkdownContent } from './MarkdownContent.js';
+import { toastApi, toastTypeFromTone } from './Toast.js';
+import { classifyAppendMessageFailure } from '../append-message-error.js';
 import { MessageTextContent, type MessageTextPart } from './MessageTextContent.js';
 import { resolveMessageText } from './message-text-source.js';
 import type { OpenHtmlInBrowser } from './html-browser.js';
@@ -232,6 +234,7 @@ import { projectTodoFromEvents } from './todo-projection.js';
 import { ComposerTaskPanel } from './ComposerTaskPanel.js';
 import { InlineProcessFlow } from './InlineProcessFlow.js';
 import { reconcileProcessItemOutcomes } from './process-item-outcome.js';
+import { generatedImageModelsFromProcessItems } from './process-activity.js';
 import {
   buildAssistantTurnNavigationItems,
   ConversationMinimapRail,
@@ -1617,14 +1620,26 @@ export function ChatView({
   useEffect(() => () => clearCompactDismissTimer(), [clearCompactDismissTimer]);
   /** Optimistic user bubbles not yet present in durable event history. */
   const [pendingUserMessages, setPendingUserMessages] = useState<ChatMessage[]>([]);
-  const [localErrors, setLocalErrorsRaw] = useState<ChatMessage[]>([]);
-  // Bounded FIFO: error bubbles are transient diagnostics; cap them so a
-  // failing subsystem cannot grow state (and every downstream merge/sort) unboundedly.
+  const localErrorsRef = useRef<ChatMessage[]>([]);
+  // Transient diagnostics used to render as chat bubbles. They now go to the
+  // NewMax top-right toast host so they no longer interleave with the thread.
   const setLocalErrors = useCallback((updater: SetStateAction<ChatMessage[]>) => {
-    setLocalErrorsRaw((prev) => {
-      const next = typeof updater === 'function' ? updater(prev) : updater;
-      return next.length > MAX_LOCAL_ERRORS ? next.slice(next.length - MAX_LOCAL_ERRORS) : next;
-    });
+    const previous = localErrorsRef.current;
+    const next = typeof updater === 'function' ? updater(previous) : updater;
+    const capped =
+      next.length > MAX_LOCAL_ERRORS ? next.slice(next.length - MAX_LOCAL_ERRORS) : next;
+    const nextIds = new Set(capped.map((item) => item.id));
+    for (const item of previous) {
+      if (!nextIds.has(item.id)) toastApi.dismiss(item.id);
+    }
+    localErrorsRef.current = capped;
+    for (const item of capped) {
+      toastApi.toast({
+        id: item.id,
+        type: toastTypeFromTone(item.tone),
+        title: item.text,
+      });
+    }
   }, []);
   /** Paginated message store state. */
   const historyScopeKey = JSON.stringify([conversation.id, conversation.taskId ?? null]);
@@ -3508,7 +3523,6 @@ export function ChatView({
     // tail, in the order they must visually appear:
     //   pending user bubbles  → right after the tail (they precede the turn)
     //   streaming assistant   → after the pending bubbles
-    //   local errors          → after the streaming turn
     // Once those transients persist, loadMessages() returns them with real
     // sequences and the virtual copies are cleared, so the list converges.
     const maxDurableSeq = loadedMessages.reduce(
@@ -3544,13 +3558,9 @@ export function ChatView({
       stamped.push({ value: visibleStreamingMessage, seq: nextVirtualSeq++, tie: 20_000 });
     }
 
-    // Local diagnostics render after the live turn.
-    for (let i = 0; i < localErrors.length; i++) {
-      stamped.push({ value: localErrors[i]!, seq: nextVirtualSeq++, tie: 30_000 + i });
-    }
     stamped.sort((a, b) => (a.seq !== b.seq ? a.seq - b.seq : a.tie - b.tie));
     return stamped.map((s) => s.value);
-  }, [localErrors, loadedMessages, pendingUserMessagesForDisplay, visibleStreamingMessage]);
+  }, [loadedMessages, pendingUserMessagesForDisplay, visibleStreamingMessage]);
 
   const navigationItems = useMemo<ConversationNavigationItem[]>(() => {
     const byId = new Map<string, ChatMessage>(
@@ -3664,9 +3674,8 @@ export function ChatView({
     const result: ChatMessage[] = [];
     result.push(...pendingUserMessagesForDisplay);
     if (visibleStreamingMessage) result.push(visibleStreamingMessage);
-    result.push(...localErrors);
     return result;
-  }, [localErrors, pendingUserMessagesForDisplay, visibleStreamingMessage]);
+  }, [pendingUserMessagesForDisplay, visibleStreamingMessage]);
 
   const capturePrependAnchor = useCallback((scroller: HTMLDivElement) => {
     const viewportTop = scroller.getBoundingClientRect().top;
@@ -4097,13 +4106,14 @@ export function ChatView({
           setSending(false);
           setSendingRunId(undefined);
           setPendingUserMessages((prev) => prev.filter((message) => message.id !== tempId));
+          const text = classifyAppendMessageFailure(err).message;
           setLocalErrors((prev) => [
             ...prev,
             {
               id: `err-${Date.now()}`,
               role: 'system',
               tone: 'error',
-              text: `发送失败: ${(err as Error).message}`,
+              text,
               timestamp: new Date().toISOString(),
             },
           ]);
@@ -6247,8 +6257,12 @@ export function ChatView({
         });
         setSelectedSkillVersionIds([]);
         onConversationUpdated?.();
-      } catch {
-        // 换绑失败保持原状（无 toast 通道，静默即可，下次点击可重试）。
+      } catch (error) {
+        toastApi.toast({
+          type: 'error',
+          title: '换绑对话失败',
+          description: error instanceof Error ? error.message : String(error),
+        });
       }
     },
     [
@@ -6685,12 +6699,7 @@ export function ChatView({
                     }
                     skillNameByVersionId={skillNameByVersionId}
                     agentPreferences={agentPreferences}
-                    dismissLocalError={
-                      localErrors.some((error) => error.id === msg.id)
-                        ? (messageId) =>
-                            setLocalErrors((prev) => prev.filter((error) => error.id !== messageId))
-                        : undefined
-                    }
+                    dismissLocalError={undefined}
                   />
                 </div>
               ))}
@@ -7813,6 +7822,10 @@ const MessageBubble = memo(function MessageBubble({
       processView,
     ],
   );
+  const generatedImageModels = useMemo(
+    () => generatedImageModelsFromProcessItems(displayedProcessItems),
+    [displayedProcessItems],
+  );
 
   const metricsLabel = useMemo(() => {
     if (!processView) return undefined;
@@ -8177,6 +8190,7 @@ const MessageBubble = memo(function MessageBubble({
             streaming={Boolean(message.streaming)}
             projectFolder={projectFolder}
             conversationId={conversationId}
+            imageModelBySrc={generatedImageModels}
             onOpenFile={onOpenChange}
             onOpenHtmlInBrowser={onOpenHtmlInBrowser}
             onOpenUrl={onOpenWebUrl}

@@ -48,6 +48,10 @@ import {
 } from './process-activity.js';
 import { LoadingPixelGrid } from './LoadingPixelGrid.js';
 import { GridReveal } from './GridReveal.js';
+import {
+  extractGeneratedImageModelLine,
+  normalizeImageGenerationToolResult,
+} from './markdown-image-gallery.js';
 import { ConversationContentScope, DeferredToolContent } from './DeferredToolContent.js';
 import { parseDeferredContent } from '@sync-think/shared';
 
@@ -400,6 +404,9 @@ function ToolRow({
   const imageTool = isImageGenerationActivity(item);
   const generatedSrc =
     status === 'completed' ? extractGeneratedImageSrc(item.result ?? '') : null;
+  const generationModel = item.result
+    ? extractGeneratedImageModelLine(normalizeImageGenerationToolResult(item.result))
+    : undefined;
   const showGridReveal = imageTool && status !== 'failed';
   return (
     <div
@@ -490,7 +497,13 @@ function ToolRow({
           <GridReveal
             src={generatedSrc}
             alt={summary || '生成图片'}
-            caption={status === 'running' ? '生成中' : undefined}
+            caption={
+              status === 'running'
+                ? '生成中'
+                : generationModel
+                  ? `生图模型 · ${generationModel}`
+                  : undefined
+            }
             aspect={1}
           />
         </div>
@@ -550,10 +563,31 @@ function ToolRow({
   );
 }
 
+function describeStatusDetail(detail: string | undefined): string | undefined {
+  if (!detail) return undefined;
+  switch (detail) {
+    case 'transient':
+      return '暂时失败';
+    case 'timeout':
+      return '超时';
+    case 'rate-limit':
+      return '限流';
+    case 'auth':
+      return '认证失败';
+    case 'protocol':
+      return '协议错误';
+    case 'unknown':
+      return '未知错误';
+    default:
+      return detail;
+  }
+}
+
 function StatusRow({ item }: { item: Extract<InlineProcessItem, { kind: 'status' }> }) {
   const failed =
     item.statusType === 'connection' &&
     /失败|断开|error|failed/i.test(`${item.label} ${item.detail ?? ''}`);
+  const detail = describeStatusDetail(item.detail);
   return (
     <div
       className={`shell-inline-process__status${failed ? ' is-failed' : ''}`}
@@ -568,12 +602,12 @@ function StatusRow({ item }: { item: Extract<InlineProcessItem, { kind: 'status'
         <Check size={12} aria-hidden="true" />
       )}
       <span className="shell-inline-process__status-label">{item.label}</span>
-      {item.detail ? (
+      {detail ? (
         <>
           <span className="shell-inline-process__separator" aria-hidden="true">
             ·
           </span>
-          <span className="shell-inline-process__status-detail">{item.detail}</span>
+          <span className="shell-inline-process__status-detail">{detail}</span>
         </>
       ) : null}
     </div>

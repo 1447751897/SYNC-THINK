@@ -1,10 +1,12 @@
 /**
  * @vitest-environment jsdom
  */
+import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { ProviderSummary } from '@sync-think/protocol';
 import { DialogProvider } from './Dialog.js';
+import { ToastProvider, resetToastStoreForTests } from './Toast.js';
 import { ModelSettings } from './ModelSettings.js';
 
 const provider: ProviderSummary = {
@@ -16,6 +18,7 @@ const provider: ProviderSummary = {
   surface: 'generic',
   enabled: true,
   sortOrder: 0,
+  unverified: false,
   credentials: [
     {
       credentialRefId: 'credential-1' as ProviderSummary['credentials'][number]['credentialRefId'],
@@ -72,6 +75,7 @@ const runtime = {
   revealProviderCredential: vi.fn(),
   updateProviderCredential: vi.fn(),
   discoverModels: vi.fn(),
+  probeModels: vi.fn(),
   addModels: vi.fn(),
   probeCapabilities: vi.fn(),
   confirmCapabilities: vi.fn(),
@@ -178,8 +182,8 @@ beforeEach(() => {
           'web-search': true,
         },
         confidence: 'medium',
-        reasons: ['model family and protocol support provider-native web search'],
-        source: 'heuristic',
+        reasons: ['文本请求实测成功'],
+        source: 'live',
       },
     ],
   });
@@ -256,15 +260,20 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  resetToastStoreForTests();
   vi.clearAllMocks();
 });
 
-async function renderSettings(onDirtyChange = vi.fn()) {
-  render(
+function renderWithProviders(ui: ReactNode) {
+  return render(
     <DialogProvider>
-      <ModelSettings onDirtyChange={onDirtyChange} />
+      <ToastProvider>{ui}</ToastProvider>
     </DialogProvider>,
   );
+}
+
+async function renderSettings(onDirtyChange = vi.fn()) {
+  renderWithProviders(<ModelSettings onDirtyChange={onDirtyChange} />);
   await screen.findByDisplayValue('CODEX');
   return onDirtyChange;
 }
@@ -281,37 +290,76 @@ describe('ModelSettings NewMax provider detail', () => {
     runtime.listProviders
       .mockRejectedValueOnce(new Error('Runtime request timed out: provider.list'))
       .mockResolvedValue({ providers: [provider] });
-    render(
-      <DialogProvider>
-        <ModelSettings />
-      </DialogProvider>,
-    );
+    renderWithProviders(<ModelSettings />);
     expect(await screen.findByDisplayValue('CODEX')).toBeTruthy();
     expect(runtime.listProviders).toHaveBeenCalledTimes(2);
   });
 
-  it('reloads the text list when returning from the image tab', async () => {
-    runtime.listProviders
-      .mockResolvedValueOnce({ providers: [] })
-      .mockResolvedValue({ providers: [provider] });
-    render(
-      <DialogProvider>
-        <ModelSettings />
-      </DialogProvider>,
-    );
-    expect((await screen.findAllByRole('button', { name: /添加模型/ })).length).toBeGreaterThan(0);
-    expect(screen.queryByDisplayValue('CODEX')).toBeNull();
+  it('keeps the text list mounted when switching to image and back', async () => {
+    renderWithProviders(<ModelSettings />);
+    expect(await screen.findByDisplayValue('CODEX')).toBeTruthy();
     fireEvent.click(screen.getByRole('tab', { name: '图像生成' }));
     expect(await screen.findByText(/还没有配置过生图模型的提供商/)).toBeTruthy();
+    expect(screen.queryByText('加载模型源…')).toBeNull();
+    const listCallsOnImage = runtime.listProviders.mock.calls.length;
     fireEvent.click(screen.getByRole('tab', { name: '文本生成' }));
-    expect(await screen.findByDisplayValue('CODEX')).toBeTruthy();
+    expect(screen.getByDisplayValue('CODEX')).toBeTruthy();
+    expect(screen.queryByText('加载模型源…')).toBeNull();
+    expect(runtime.listProviders.mock.calls.length).toBe(listCallsOnImage);
+    fireEvent.click(screen.getByRole('tab', { name: '使用统计' }));
+    expect(await screen.findByText('总请求')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '近 7 天' })).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'CODEX' })).toBeNull();
+    expect(screen.queryByText('加载模型源…')).toBeNull();
+  });
+
+  it('keeps usage stats on screen when switching away and back', async () => {
+    let release!: (value: unknown) => void;
+    const pending = new Promise((resolve) => {
+      release = resolve;
+    });
+    runtime.getUsageSummary.mockReturnValueOnce(pending);
+
+    renderWithProviders(<ModelSettings />);
+    await screen.findByDisplayValue('CODEX');
+    fireEvent.click(screen.getByRole('tab', { name: '使用统计' }));
+    expect(await screen.findByText('正在加载使用统计…')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '近 7 天' })).toBeTruthy();
+
+    release({
+      rows: [],
+      requests: [],
+      tools: [],
+      toolModels: [],
+      toolFailures: [],
+      pricing: [],
+      totalRequests: 3,
+      totalTokensIn: 0,
+      totalTokensOut: 0,
+      totalCostByCurrency: { USD: 1.5 },
+      totalReasoningTokens: 0,
+      totalTokens: 0,
+    });
+
+    expect(await screen.findByText('总请求')).toBeTruthy();
+    expect(screen.getByText('3')).toBeTruthy();
+    expect(screen.getByText('$1.50')).toBeTruthy();
+    expect(screen.queryByText('¥0.00')).toBeNull();
+    expect(screen.queryByText('正在加载使用统计…')).toBeNull();
+
+    const callsAfterFirstLoad = runtime.getUsageSummary.mock.calls.length;
+    fireEvent.click(screen.getByRole('tab', { name: '文本生成' }));
+    expect(screen.getByDisplayValue('CODEX')).toBeTruthy();
+    fireEvent.click(screen.getByRole('tab', { name: '使用统计' }));
+    expect(screen.queryByText('正在加载使用统计…')).toBeNull();
+    expect(screen.getByText('总请求')).toBeTruthy();
+    expect(screen.getByText('3')).toBeTruthy();
+    expect(runtime.getUsageSummary.mock.calls.length).toBe(callsAfterFirstLoad);
   });
 
   it('opens Plan & Act from a navigation request and replays only when its key changes', async () => {
-    const { rerender } = render(
-      <DialogProvider>
-        <ModelSettings initialDetailView="plan-act" navigationKey="plan-act-1" />
-      </DialogProvider>,
+    const { rerender } = renderWithProviders(
+      <ModelSettings initialDetailView="plan-act" navigationKey="plan-act-1" />,
     );
 
     expect(await screen.findByRole('heading', { name: '规划 & 执行模型' })).toBeTruthy();
@@ -320,14 +368,18 @@ describe('ModelSettings NewMax provider detail', () => {
 
     rerender(
       <DialogProvider>
-        <ModelSettings initialDetailView="plan-act" navigationKey="plan-act-1" />
+        <ToastProvider>
+          <ModelSettings initialDetailView="plan-act" navigationKey="plan-act-1" />
+        </ToastProvider>
       </DialogProvider>,
     );
     expect(screen.getByRole('heading', { name: '图片识别 Fallback' })).toBeTruthy();
 
     rerender(
       <DialogProvider>
-        <ModelSettings initialDetailView="plan-act" navigationKey="plan-act-2" />
+        <ToastProvider>
+          <ModelSettings initialDetailView="plan-act" navigationKey="plan-act-2" />
+        </ToastProvider>
       </DialogProvider>,
     );
     expect(await screen.findByRole('heading', { name: '规划 & 执行模型' })).toBeTruthy();
@@ -339,12 +391,34 @@ describe('ModelSettings NewMax provider detail', () => {
 
     const requestTable = await screen.findByRole('table');
     expect(screen.getByText('缓存命中率')).toBeTruthy();
-    expect(within(requestTable).getByText('普通输入 1.2k')).toBeTruthy();
-    expect(within(requestTable).getByText(/缓存读取 12\.8k/)).toBeTruthy();
-    expect(within(requestTable).getByText('缓存命中 91.4%')).toBeTruthy();
-    expect(within(requestTable).getByText('输出 488')).toBeTruthy();
+    expect(screen.getByText('按 Token 91.4%')).toBeTruthy();
+    expect(screen.getByText(/按请求 100\.0% · 命中 12\.8k \/ 创建 0/)).toBeTruthy();
+    expect(screen.getByText(/输入 14\.0k \/ 输出 488/)).toBeTruthy();
+    expect(screen.getByText('授权登录使用订阅额度，不计入总费用；其他费用以供应商最终结算为准')).toBeTruthy();
+    expect(within(requestTable).getByText('供应商')).toBeTruthy();
+    expect(within(requestTable).getByText('模型')).toBeTruthy();
+    expect(within(requestTable).getByText('Token')).toBeTruthy();
+    expect(within(requestTable).getByText('CODEX')).toBeTruthy();
+    expect(within(requestTable).getByText('gpt-5')).toBeTruthy();
+    expect(within(requestTable).getByText('14.5k')).toBeTruthy();
+    expect(within(requestTable).queryByText('普通输入 1.2k')).toBeNull();
     expect(within(requestTable).getByText('成功')).toBeTruthy();
     expect(screen.queryByText(/普通输入费 \$0\.006000/)).toBeNull();
+    expect(screen.queryByText('200')).toBeNull();
+
+    fireEvent.click(within(requestTable).getByText('14.5k'));
+    expect(screen.queryByTestId('usage-request-details-request-cache-1')).toBeNull();
+    fireEvent.mouseEnter(within(requestTable).getByRole('button', { name: 'Token 明细' }));
+    fireEvent.click(within(requestTable).getByRole('button', { name: 'Token 明细' }));
+    expect(screen.queryByTestId('usage-request-details-request-cache-1')).toBeNull();
+    const tokenTip = await screen.findByRole('tooltip');
+    expect(within(tokenTip).getByText('Token 明细')).toBeTruthy();
+    expect(within(tokenTip).getByText('输入 Token')).toBeTruthy();
+    expect(within(tokenTip).getByText('14.0k')).toBeTruthy();
+    expect(within(tokenTip).getByText('输出 Token')).toBeTruthy();
+    expect(within(tokenTip).getByText('488')).toBeTruthy();
+    expect(within(tokenTip).getByText('总 Token')).toBeTruthy();
+    expect(within(tokenTip).getByText('14.5k')).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: '查看 gpt-5 请求详情' }));
     const details = await screen.findByTestId('usage-request-details-request-cache-1');
@@ -419,14 +493,18 @@ describe('ModelSettings NewMax provider detail', () => {
     await renderSettings();
     fireEvent.click(screen.getByRole('tab', { name: '使用统计' }));
 
-    expect(await screen.findByText('50.0%')).toBeTruthy();
+    expect(await screen.findByText('按 Token 50.0%')).toBeTruthy();
     const requestTable = screen.getByRole('table');
-    const unreportedRow = within(requestTable).getByText('输入 9.0k').closest('tr');
+    const unreportedRow = within(requestTable).getByText('9.0k').closest('tr');
     expect(unreportedRow).toBeTruthy();
-    expect(within(unreportedRow!).getByText('缓存读取 未上报')).toBeTruthy();
-    expect(within(unreportedRow!).getByText('缓存创建 未上报')).toBeTruthy();
-    expect(within(unreportedRow!).getByText('缓存命中 未上报')).toBeTruthy();
+    expect(within(unreportedRow!).queryByText('缓存读取 未上报')).toBeNull();
     expect(within(unreportedRow!).getByText('未结束')).toBeTruthy();
+
+    fireEvent.click(within(unreportedRow!).getByRole('button', { name: '查看 gpt-5 请求详情' }));
+    const details = await screen.findByTestId('usage-request-details-request-unreported');
+    const cacheRead = within(details).getByText('缓存读取').closest('div');
+    expect(cacheRead).toBeTruthy();
+    expect(within(cacheRead!).getByText('未上报')).toBeTruthy();
   });
 
   it('shows direct-edit fields without the legacy edit and save controls', async () => {
@@ -464,7 +542,7 @@ describe('ModelSettings NewMax provider detail', () => {
       });
     });
     expect(await within(detail).findByRole('button', { name: '联网搜索：支持' })).toBeTruthy();
-    expect(within(detail).getByText(/检测完成：按协议和模型名推断出 4 项能力/)).toBeTruthy();
+    expect(within(detail).getByText(/检测完成：已向接口实测，建议勾选 4 项/)).toBeTruthy();
 
     fireEvent.click(within(detail).getByRole('button', { name: '保存能力' }));
 
@@ -503,6 +581,27 @@ describe('ModelSettings NewMax provider detail', () => {
     fireEvent.click(within(detail).getByRole('button', { name: '检测能力' }));
 
     expect((await within(detail).findByRole('alert')).textContent).toContain('能力检测请求超时');
+    expect(within(detail).getByRole('button', { name: '检测能力' })).toHaveProperty(
+      'disabled',
+      false,
+    );
+    expect(screen.getByRole('dialog', { name: 'gpt-5' })).toBeTruthy();
+  });
+
+  it('humanizes a probeCapabilities IPC timeout inside the model dialog', async () => {
+    runtime.probeCapabilities.mockRejectedValueOnce(
+      new Error(
+        "Error invoking remote method 'runtime:provider-probe-capabilities': RuntimeTransientError: Runtime request timed out: provider.probeCapabilities",
+      ),
+    );
+    await renderSettings();
+
+    fireEvent.click(screen.getByRole('button', { name: '查看模型 gpt-5' }));
+    const detail = await screen.findByRole('dialog', { name: 'gpt-5' });
+    fireEvent.click(within(detail).getByRole('button', { name: '检测能力' }));
+
+    expect((await within(detail).findByRole('alert')).textContent).toContain('能力检测超时');
+    expect(within(detail).getByRole('alert').textContent).not.toContain('Error invoking remote method');
     expect(within(detail).getByRole('button', { name: '检测能力' })).toHaveProperty(
       'disabled',
       false,
@@ -663,29 +762,31 @@ describe('ModelSettings NewMax provider detail', () => {
     expect(screen.queryByText('primary')).toBeNull();
     expect(screen.getByLabelText('API 密钥')).toBeTruthy();
 
-    fireEvent.click(screen.getByRole('button', { name: '显示密钥' }));
-
     await waitFor(() => {
       expect(runtime.revealProviderCredential).toHaveBeenCalledWith({
         providerId: 'provider-1',
         credentialRefId: 'credential-1',
       });
     });
-    await waitFor(() => {
-      expect((screen.getByLabelText('API 密钥') as HTMLInputElement).value).toBe(
-        'sk-revealed-secret',
-      );
-    });
+
+    const eye = screen.getByRole('button', { name: '显示密钥' });
+    expect(eye.querySelector('.model-settings-spin')).toBeNull();
+    fireEvent.click(eye);
+    expect(eye.querySelector('.model-settings-spin')).toBeNull();
+    expect((screen.getByLabelText('API 密钥') as HTMLInputElement).value).toBe(
+      'sk-revealed-secret',
+    );
   });
 
   it('stages credential edits on blur without writing secure-store immediately', async () => {
     const onDirtyChange = await renderSettings();
-    fireEvent.click(screen.getByRole('button', { name: '显示密钥' }));
     await waitFor(() => {
-      expect((screen.getByLabelText('API 密钥') as HTMLInputElement).value).toBe(
-        'sk-revealed-secret',
-      );
+      expect(runtime.revealProviderCredential).toHaveBeenCalled();
     });
+    fireEvent.click(screen.getByRole('button', { name: '显示密钥' }));
+    expect((screen.getByLabelText('API 密钥') as HTMLInputElement).value).toBe(
+      'sk-revealed-secret',
+    );
 
     const input = screen.getByLabelText('API 密钥') as HTMLInputElement;
     fireEvent.change(input, { target: { value: 'sk-new-secret' } });
@@ -707,7 +808,39 @@ describe('ModelSettings NewMax provider detail', () => {
     });
     expect(await screen.findByRole('heading', { name: '导入模型' })).toBeTruthy();
     expect(screen.getByText('gpt-4.1')).toBeTruthy();
-    expect(screen.getByRole('button', { name: /更新列表/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '全选' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /应用到优先级/ })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '全选' }));
+    expect(screen.getByRole('button', { name: '清空' })).toBeTruthy();
+    expect(screen.getByText(/将新增 1/)).toBeTruthy();
+  });
+
+  it('closes the import dialog from a transparent overlay without covering the page', async () => {
+    await renderSettings();
+    fireEvent.click(screen.getByRole('button', { name: '从服务商拉取模型列表' }));
+    expect(await screen.findByRole('heading', { name: '导入模型' })).toBeTruthy();
+    const overlay = document.querySelector('.model-import-overlay');
+    expect(overlay).toBeTruthy();
+    fireEvent.pointerDown(overlay!);
+    expect(screen.queryByRole('heading', { name: '导入模型' })).toBeNull();
+    expect(screen.getByDisplayValue('CODEX')).toBeTruthy();
+  });
+
+  it('toasts a humanized discover timeout instead of a page banner', async () => {
+    runtime.discoverModels.mockRejectedValueOnce(
+      new Error(
+        "Error invoking remote method 'runtime:provider-discover': RuntimeTransientError: Runtime request timed out: provider.discoverModels",
+      ),
+    );
+    await renderSettings();
+    fireEvent.click(screen.getByRole('button', { name: '从服务商拉取模型列表' }));
+
+    const toast = await screen.findByTestId('shell-toast');
+    expect(toast.textContent).toContain('响应超时');
+    expect(toast.textContent).not.toContain('Error invoking remote method');
+    const root = document.querySelector('.model-settings-root');
+    expect(root).toBeTruthy();
+    expect(within(root as HTMLElement).queryByRole('alert')).toBeNull();
   });
 
   it('runs a connection test and shows latency under the button', async () => {
@@ -801,6 +934,11 @@ describe('ModelSettings NewMax provider detail', () => {
   });
 
   it('submits the hidden built-in endpoint for a catalog provider', async () => {
+    runtime.probeModels.mockResolvedValue({
+      discoveredIds: [],
+      protocol: 'openai-responses',
+      latencyMs: 42,
+    });
     await renderSettings();
     await openProviderCatalog();
 
@@ -812,6 +950,13 @@ describe('ModelSettings NewMax provider detail', () => {
     );
     expect(apiKey).toBeTruthy();
     fireEvent.change(apiKey!, { target: { value: 'sk-openai-test' } });
+
+    // The priority chain is authored on the form now, so at least one model is
+    // required before the provider can be activated.
+    fireEvent.click(screen.getByTestId('create-provider-add-model'));
+    fireEvent.change(screen.getByLabelText('模型 ID'), { target: { value: 'gpt-5' } });
+    fireEvent.click(screen.getByTestId('create-provider-add-model-confirm'));
+
     fireEvent.click(screen.getByRole('button', { name: '测试连接' }));
 
     await waitFor(() => {
@@ -820,6 +965,8 @@ describe('ModelSettings NewMax provider detail', () => {
         baseUrl: 'https://api.openai.com/v1',
         protocol: 'openai-responses',
         supportsDiscovery: true,
+        discoverOnCreate: false,
+        models: [{ providerModelId: 'gpt-5', displayName: 'gpt-5' }],
       });
     });
   });
@@ -843,6 +990,114 @@ describe('ModelSettings NewMax provider detail', () => {
 
     expect((await screen.findAllByText('请填写 Base URL')).length).toBeGreaterThan(0);
     expect(runtime.createProvider).not.toHaveBeenCalled();
+  });
+
+  it('fetches models into the create draft without creating the provider first', async () => {
+    runtime.probeModels.mockResolvedValue({
+      discoveredIds: ['gpt-5', 'gpt-5-mini'],
+      protocol: 'openai-chat',
+    });
+    await renderSettings();
+    await openProviderCatalog();
+    fireEvent.click(screen.getByRole('button', { name: /自定义供应商/ }));
+
+    const name = document.querySelector<HTMLInputElement>(
+      '.model-provider-form input:not([type="password"])',
+    );
+    const apiKey = document.querySelector<HTMLInputElement>(
+      '.model-provider-form input[type="password"]',
+    );
+    const baseUrl = document.querySelector<HTMLInputElement>('[data-testid="provider-base-url"]');
+    expect(name && apiKey && baseUrl).toBeTruthy();
+    fireEvent.change(name!, { target: { value: 'Custom Gateway' } });
+    fireEvent.change(baseUrl!, { target: { value: 'https://api.example.com/v1' } });
+    fireEvent.change(apiKey!, { target: { value: 'sk-custom-test' } });
+
+    fireEvent.click(screen.getByRole('button', { name: '从服务商拉取模型列表' }));
+
+    await waitFor(() => {
+      expect(runtime.probeModels).toHaveBeenCalledWith({
+        baseUrl: 'https://api.example.com/v1',
+        protocol: 'openai-chat',
+      });
+    });
+    // The probe must not persist anything — the provider does not exist yet.
+    expect(runtime.createProvider).not.toHaveBeenCalled();
+
+    const checkboxes = document.querySelectorAll<HTMLInputElement>(
+      '.model-import-dialog__row input[type="checkbox"]',
+    );
+    expect(checkboxes.length).toBeGreaterThan(0);
+    fireEvent.click(checkboxes[0]);
+    fireEvent.click(screen.getByRole('button', { name: /应用到优先级/ }));
+
+    // Checked ids land in the draft list, still without touching the runtime.
+    await waitFor(() => {
+      expect(
+        document.querySelectorAll('.model-priority-list .model-priority-row').length,
+      ).toBe(1);
+    });
+    expect(runtime.createProvider).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: '测试连接' }));
+
+    await waitFor(() => {
+      expect(runtime.createProvider).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'Custom Gateway',
+          baseUrl: 'https://api.example.com/v1',
+          protocol: 'openai-chat',
+          discoverOnCreate: false,
+          models: [{ providerModelId: 'gpt-5', displayName: 'gpt-5' }],
+        }),
+      );
+    });
+  });
+
+  it('keeps the provider via「仍然保存」only after a failing connection test', async () => {
+    // NewMax parity: a relay that rejects the capability probe can still be kept.
+    runtime.probeModels.mockRejectedValue(new Error('401 Unauthorized'));
+    await renderSettings();
+    await openProviderCatalog();
+    fireEvent.click(screen.getByRole('button', { name: /自定义供应商/ }));
+
+    const name = document.querySelector<HTMLInputElement>(
+      '.model-provider-form input:not([type="password"])',
+    );
+    const apiKey = document.querySelector<HTMLInputElement>(
+      '.model-provider-form input[type="password"]',
+    );
+    const baseUrl = document.querySelector<HTMLInputElement>('[data-testid="provider-base-url"]');
+    expect(name && apiKey && baseUrl).toBeTruthy();
+    fireEvent.change(name!, { target: { value: 'Relay Gateway' } });
+    fireEvent.change(baseUrl!, { target: { value: 'https://relay.example.com/v1' } });
+    fireEvent.change(apiKey!, { target: { value: 'sk-relay-test' } });
+
+    fireEvent.click(screen.getByTestId('create-provider-add-model'));
+    fireEvent.change(screen.getByLabelText('模型 ID'), { target: { value: 'gpt-5' } });
+    fireEvent.click(screen.getByTestId('create-provider-add-model-confirm'));
+
+    // The escape hatch is hidden until the test actually fails.
+    expect(screen.queryByTestId('model-settings-save-unverified')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: '测试连接' }));
+    const saveAnyway = await screen.findByTestId('model-settings-save-unverified');
+    // A failing probe must never persist the provider on its own.
+    expect(runtime.createProvider).not.toHaveBeenCalled();
+
+    fireEvent.click(saveAnyway);
+    await waitFor(() => {
+      expect(runtime.createProvider).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'Relay Gateway',
+          baseUrl: 'https://relay.example.com/v1',
+          protocol: 'openai-chat',
+          discoverOnCreate: false,
+          unverified: true,
+          models: [{ providerModelId: 'gpt-5', displayName: 'gpt-5' }],
+        }),
+      );
+    });
   });
 
   it('restores the previously selected provider when its list row is selected', async () => {

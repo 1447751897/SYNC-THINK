@@ -134,6 +134,11 @@ export function isConfiguredImageProvider(provider: ProviderSummary): boolean {
   return provider.credentials.length > 0 || provider.enabled !== false;
 }
 
+export type ImageDraftModel = {
+  providerModelId: string;
+  displayName: string;
+};
+
 export function parseImageModelIds(raw: string): string[] {
   const seen = new Set<string>();
   const ids: string[] = [];
@@ -144,6 +149,20 @@ export function parseImageModelIds(raw: string): string[] {
     ids.push(id);
   }
   return ids;
+}
+
+export function imageDraftModelsFromIds(ids: readonly string[]): ImageDraftModel[] {
+  return parseImageModelIds(ids.join('\n')).map((id) => ({
+    providerModelId: id,
+    displayName: id,
+  }));
+}
+
+/** Prefer image-looking ids; if none match, keep the full remote list so the user can pick. */
+export function imageModelIdsFromProbe(discoveredIds: readonly string[]): string[] {
+  const unique = parseImageModelIds(discoveredIds.join('\n'));
+  const hinted = unique.filter((id) => isLikelyImageGenerationModelId(id));
+  return hinted.length > 0 ? hinted : unique;
 }
 
 const IMAGE_MODEL_ID_HINTS = /(?:dall[-_ ]?e|gpt[-_ ]?image|image[-_ ]?gen|imagine[-_ ]?image|flux|imagen|midjourney|stable[-_ ]?diffusion|sdxl|glm[-_ ]?image|kolors|seedream|cogview|qwen[-_ ]?image|grok[-_ ]?imagine)/i;
@@ -208,7 +227,7 @@ const CUSTOM_ITEM: ImageCatalogItem = {
   draft: {
     name: IMAGE_GENERATION_COPY.customTitle,
     baseUrl: 'https://api.openai.com/v1',
-    models: 'gpt-image-2',
+    models: '',
   },
 };
 

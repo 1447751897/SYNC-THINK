@@ -17,6 +17,7 @@ import {
   toolStatusOf,
   toolVisualKind,
   isImageGenerationActivity,
+  generatedImageModelsFromProcessItems,
 } from './process-activity.js';
 
 const runningCommand: InlineProcessItem = {
@@ -250,6 +251,22 @@ describe('shared tool naming', () => {
     expect(friendlyToolName('mcp__capability-broker__use_capability')).toBe(
       'capability-broker · use capability',
     );
+  });
+
+  it('builds a NewMax imageModelBySrc map from generate_image process results', () => {
+    const models = generatedImageModelsFromProcessItems([
+      {
+        kind: 'tool',
+        toolCallId: 'tool-image',
+        name: 'generate_image',
+        argumentsJson: '{"prompt":"角色卡"}',
+        status: 'completed',
+        result: ['模型：gpt-image-2', '', '![生成的图片](sync-think-image://generated/a.png)'].join(
+          '\n',
+        ),
+      },
+    ]);
+    expect(models.get('sync-think-image://generated/a.png')).toBe('gpt-image-2');
   });
 
   it('treats use_capability with a prompt as image generation', () => {

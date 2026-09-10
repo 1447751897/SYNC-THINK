@@ -10,7 +10,8 @@ function unwrapRuntimeError(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error ?? '');
   return raw
     .replace(/^Error invoking remote method ['"][^'"]+['"]:\s*/i, '')
-    .replace(/^RuntimeResponseError:\s*/i, '')
+    .replace(/^Runtime(?:Transient|Response)Error:\s*/i, '')
+    .replace(/^Error:\s*/i, '')
     .trim();
 }
 
@@ -27,8 +28,20 @@ export function classifyAppendMessageFailure(error: unknown): AppendMessageFailu
     };
   }
 
+  const timeout = detail.match(/^Runtime request timed out:\s*(.+)$/i);
+  if (timeout) {
+    return {
+      message:
+        timeout[1].trim() === 'task.appendMessage'
+          ? '发送超时。如果这条消息带了图片，可能卡在识图上了，请稍后重试或先去掉附件。'
+          : '发送超时，请稍后重试。',
+      connectionLost: false,
+      versionMismatch: false,
+    };
+  }
+
   const connectionLost =
-    /runtime (?:connection|request).*(?:unavailable|closed|timed out)/i.test(detail) ||
+    /runtime connection.*(?:unavailable|closed)/i.test(detail) ||
     /ECONNRESET|ECONNREFUSED|EPIPE|ENOENT|IPC channel is closed|object has been destroyed/i.test(
       detail,
     );
@@ -41,7 +54,7 @@ export function classifyAppendMessageFailure(error: unknown): AppendMessageFailu
   }
 
   return {
-    message: detail ? `发送失败：${detail}` : '发送失败，请重试。',
+    message: detail ? `发送失败: ${detail}` : '发送失败，请重试。',
     connectionLost: false,
     versionMismatch: false,
   };

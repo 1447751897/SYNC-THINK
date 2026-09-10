@@ -26,6 +26,34 @@ export interface RendererCreateProviderPayload {
   credentialGroupName?: string;
   credentialLabel?: string;
   importedFrom?: string;
+  /**
+   * NewMax-style atomic create: the renderer authors the priority chain while
+   * the provider has no id yet, then ships it in the same hop. Order matters.
+   */
+  models?: Array<{
+    providerModelId: string;
+    displayName?: string;
+    contextWindow?: number;
+  }>;
+  /**
+   * NewMax-style multi-key list: when true the clipboard carries a JSON
+   * `{ keys: [...] }` payload instead of a single secret.
+   */
+  apiKeyList?: boolean;
+  /**
+   * NewMax-style「仍然保存」: keep the provider even though the connection test
+   * did not pass. The renderer only sets this from the explicit save-anyway action.
+   */
+  unverified?: boolean;
+}
+
+/**
+ * Renderer-facing probe payload: no providerId, no secret. The secret travels
+ * via the clipboard exactly like create/update do.
+ */
+export interface RendererProbeModelsPayload {
+  baseUrl: string;
+  protocol: RendererCreateProviderPayload['protocol'];
 }
 
 export interface RendererUpdateProviderPayload {
@@ -38,6 +66,8 @@ export interface RendererUpdateProviderPayload {
   rotateCredentialFromClipboard?: boolean;
   /** 0026: toggle the entry on/off. */
   enabled?: boolean;
+  /** NewMax-style「测通即摘掉未验证角标」: false clears the flag after a passing test. */
+  unverified?: boolean;
 }
 
 export interface RendererAddProviderCredentialPayload {
@@ -96,6 +126,9 @@ export function parseCreateProviderPayload(value: unknown): RendererCreateProvid
       'credentialGroupName',
       'credentialLabel',
       'importedFrom',
+      'models',
+      'apiKeyList',
+      'unverified',
     ])
   ) {
     throw new Error('Invalid create-provider payload');
@@ -111,6 +144,39 @@ export function parseCreateProviderPayload(value: unknown): RendererCreateProvid
       throw new Error('Invalid create-provider payload');
     }
   }
+  if (value.models !== undefined) {
+    if (!Array.isArray(value.models) || value.models.length > 256) {
+      throw new Error('Invalid create-provider payload');
+    }
+    for (const model of value.models) {
+      if (
+        !isRecord(model) ||
+        typeof model.providerModelId !== 'string' ||
+        model.providerModelId.trim().length === 0 ||
+        model.providerModelId.length > 256
+      ) {
+        throw new Error('Invalid create-provider payload');
+      }
+      if (model.displayName !== undefined && typeof model.displayName !== 'string') {
+        throw new Error('Invalid create-provider payload');
+      }
+      if (model.contextWindow !== undefined) {
+        if (
+          typeof model.contextWindow !== 'number' ||
+          !Number.isFinite(model.contextWindow) ||
+          model.contextWindow <= 0
+        ) {
+          throw new Error('Invalid create-provider payload');
+        }
+      }
+    }
+  }
+  if (value.apiKeyList !== undefined && typeof value.apiKeyList !== 'boolean') {
+    throw new Error('Invalid create-provider payload');
+  }
+  if (value.unverified !== undefined && typeof value.unverified !== 'boolean') {
+    throw new Error('Invalid create-provider payload');
+  }
   return {
     name: value.name.trim(),
     baseUrl: value.baseUrl.trim(),
@@ -120,6 +186,27 @@ export function parseCreateProviderPayload(value: unknown): RendererCreateProvid
     credentialGroupName: value.credentialGroupName as string | undefined,
     credentialLabel: value.credentialLabel as string | undefined,
     importedFrom: value.importedFrom as string | undefined,
+    models: value.models as RendererCreateProviderPayload['models'],
+    apiKeyList: value.apiKeyList as boolean | undefined,
+    unverified: value.unverified as boolean | undefined,
+  };
+}
+
+export function parseProbeModelsPayload(value: unknown): RendererProbeModelsPayload {
+  if (!isRecord(value)) throw new Error('Invalid probe-models payload');
+  if (
+    typeof value.baseUrl !== 'string' ||
+    value.baseUrl.trim().length === 0 ||
+    value.baseUrl.length > 2048 ||
+    typeof value.protocol !== 'string' ||
+    !PROTOCOLS.has(value.protocol) ||
+    !hasOnlyKeys(value, ['baseUrl', 'protocol'])
+  ) {
+    throw new Error('Invalid probe-models payload');
+  }
+  return {
+    baseUrl: value.baseUrl.trim(),
+    protocol: value.protocol as RendererProbeModelsPayload['protocol'],
   };
 }
 
@@ -499,7 +586,8 @@ export function parseUpdateProviderPayload(value: unknown): RendererUpdateProvid
     value.supportsDiscovery !== undefined ||
     value.credentialLabel !== undefined ||
     value.rotateCredentialFromClipboard !== undefined ||
-    value.enabled !== undefined;
+    value.enabled !== undefined ||
+    value.unverified !== undefined;
   if (!hasField) throw new Error('Invalid update-provider payload');
   if (
     !hasOnlyKeys(value, [
@@ -511,11 +599,15 @@ export function parseUpdateProviderPayload(value: unknown): RendererUpdateProvid
       'credentialLabel',
       'rotateCredentialFromClipboard',
       'enabled',
+      'unverified',
     ])
   ) {
     throw new Error('Invalid update-provider payload');
   }
   if (value.enabled !== undefined && typeof value.enabled !== 'boolean') {
+    throw new Error('Invalid update-provider payload');
+  }
+  if (value.unverified !== undefined && typeof value.unverified !== 'boolean') {
     throw new Error('Invalid update-provider payload');
   }
   if (value.name !== undefined) {
@@ -554,6 +646,7 @@ export function parseUpdateProviderPayload(value: unknown): RendererUpdateProvid
     credentialLabel: value.credentialLabel as string | undefined,
     rotateCredentialFromClipboard: value.rotateCredentialFromClipboard as boolean | undefined,
     enabled: value.enabled as boolean | undefined,
+    unverified: value.unverified as boolean | undefined,
   };
 }
 

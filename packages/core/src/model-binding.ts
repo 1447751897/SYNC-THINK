@@ -211,10 +211,14 @@ export function describeModelFallbackReason(
 ): string {
   if (/502/.test(errorMessage ?? '')) return '网关 502';
   if (/504|gateway timeout/i.test(errorMessage ?? '')) return '网关超时';
-  if (/429|rate[\s_-]*limit/i.test(errorMessage ?? '')) return '限流';
+  if (failureClass === 'rate-limit' || /429|rate[\s_-]*limit/i.test(errorMessage ?? '')) {
+    return '限流';
+  }
   if (failureClass === 'timeout') return '超时';
   if (failureClass === 'transient') return '暂时失败';
   if (failureClass === 'auth') return '认证失败';
+  if (failureClass === 'protocol') return '协议错误';
+  if (failureClass === 'unknown') return '未知错误';
   return String(failureClass);
 }
 

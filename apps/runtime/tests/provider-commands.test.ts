@@ -504,7 +504,7 @@ describe('provider commands', () => {
       expect(gpt).toBeTruthy();
       expect(gpt!.capabilitiesConfirmed).toBe(false);
       expect(gpt!.capabilities).toEqual(expect.arrayContaining(['text', 'vision', 'tool-calling']));
-      expect(gpt!.source).toBe('heuristic');
+      expect(gpt!.source).toBe('live');
       expect(JSON.stringify(probed)).not.toContain(secret);
 
       const listed = await writeAndRead(sock, reader, {

@@ -4,6 +4,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { AbilitiesPage } from './AbilitiesPage.js';
+import { ToastProvider, resetToastStoreForTests } from './Toast.js';
 import {
   SKILL_DESC_CUT,
   formatCharCount,
@@ -177,6 +178,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  resetToastStoreForTests();
   vi.restoreAllMocks();
 });
 
@@ -271,7 +273,7 @@ describe('AbilitiesPage', () => {
     });
     const changed = vi.fn();
 
-    render(<AbilitiesPage onGoToAgents={vi.fn()} onCatalogChanged={changed} />);
+    render(<ToastProvider><AbilitiesPage onGoToAgents={vi.fn()} onCatalogChanged={changed} /></ToastProvider>);
     await waitFor(() => expect(runtime.listSkills).toHaveBeenCalledWith({ limit: 500 }));
     fireEvent.click(screen.getByTestId('skill-tab-mine'));
     await waitFor(() => expect(screen.getByText('还没有 Skill')).toBeTruthy());
@@ -301,7 +303,7 @@ describe('AbilitiesPage', () => {
 
   it('shows an actionable error instead of an empty library when list fails', async () => {
     runtime.listSkills.mockRejectedValue(new Error('pipe unavailable'));
-    render(<AbilitiesPage onGoToAgents={vi.fn()} />);
+    render(<ToastProvider><AbilitiesPage onGoToAgents={vi.fn()} /></ToastProvider>);
 
     await waitFor(() => expect(screen.getByText('能力库加载失败')).toBeTruthy());
     expect(screen.getByText('pipe unavailable')).toBeTruthy();
@@ -364,19 +366,21 @@ describe('AbilitiesPage', () => {
     runtime.listSkills.mockResolvedValueOnce({ skills: [] }).mockResolvedValue({ skills: [skill] });
 
     render(
-      <AbilitiesPage
-        activeWorkspaceId="workspace-1"
-        workspaces={[
-          {
-            workspaceId: 'workspace-1' as import('@sync-think/shared').WorkspaceId,
-            name: 'SYNC-THINK',
-            folderPath: 'D:\\workspace',
-            createdAt: '2026-08-26T00:00:00.000Z',
-            updatedAt: '2026-08-26T00:00:00.000Z',
-          },
-        ]}
-        onGoToAgents={vi.fn()}
-      />,
+      <ToastProvider>
+        <AbilitiesPage
+          activeWorkspaceId="workspace-1"
+          workspaces={[
+            {
+              workspaceId: 'workspace-1' as import('@sync-think/shared').WorkspaceId,
+              name: 'SYNC-THINK',
+              folderPath: 'D:\\workspace',
+              createdAt: '2026-08-26T00:00:00.000Z',
+              updatedAt: '2026-08-26T00:00:00.000Z',
+            },
+          ]}
+          onGoToAgents={vi.fn()}
+        />
+      </ToastProvider>,
     );
     await waitFor(() => expect(runtime.listSkills).toHaveBeenCalled());
     fireEvent.click(screen.getByTestId('open-skill-import'));
@@ -461,19 +465,21 @@ describe('AbilitiesPage', () => {
     runtime.listSkills.mockResolvedValue({ skills: [skill] });
 
     render(
-      <AbilitiesPage
-        activeWorkspaceId="workspace-1"
-        workspaces={[
-          {
-            workspaceId: 'workspace-1' as import('@sync-think/shared').WorkspaceId,
-            name: 'SYNC-THINK',
-            folderPath: 'D:\\workspace',
-            createdAt: '2026-08-26T00:00:00.000Z',
-            updatedAt: '2026-08-26T00:00:00.000Z',
-          },
-        ]}
-        onGoToAgents={vi.fn()}
-      />,
+      <ToastProvider>
+        <AbilitiesPage
+          activeWorkspaceId="workspace-1"
+          workspaces={[
+            {
+              workspaceId: 'workspace-1' as import('@sync-think/shared').WorkspaceId,
+              name: 'SYNC-THINK',
+              folderPath: 'D:\\workspace',
+              createdAt: '2026-08-26T00:00:00.000Z',
+              updatedAt: '2026-08-26T00:00:00.000Z',
+            },
+          ]}
+          onGoToAgents={vi.fn()}
+        />
+      </ToastProvider>,
     );
     await waitFor(() => expect(runtime.listSkills).toHaveBeenCalled());
     fireEvent.click(screen.getByTestId('open-skill-import'));
@@ -512,7 +518,7 @@ describe('AbilitiesPage', () => {
       ),
     );
 
-    render(<AbilitiesPage onGoToAgents={vi.fn()} />);
+    render(<ToastProvider><AbilitiesPage onGoToAgents={vi.fn()} /></ToastProvider>);
     await waitFor(() => expect(runtime.listSkills).toHaveBeenCalled());
     fireEvent.click(screen.getByTestId('open-skill-import'));
     fireEvent.click(screen.getByRole('menuitem', { name: '导入' }));
@@ -526,7 +532,7 @@ describe('AbilitiesPage', () => {
   });
 
   it('keeps the Skill save action visible without relying on hover', async () => {
-    render(<AbilitiesPage onGoToAgents={vi.fn()} />);
+    render(<ToastProvider><AbilitiesPage onGoToAgents={vi.fn()} /></ToastProvider>);
     await waitFor(() => expect(runtime.listSkills).toHaveBeenCalled());
     fireEvent.click(screen.getByTestId('open-skill-import'));
     fireEvent.click(screen.getByRole('menuitem', { name: '创建 Skill' }));
@@ -538,7 +544,7 @@ describe('AbilitiesPage', () => {
   });
 
   it('rejects an oversized local Skill before reading it into Renderer memory', async () => {
-    render(<AbilitiesPage onGoToAgents={vi.fn()} />);
+    render(<ToastProvider><AbilitiesPage onGoToAgents={vi.fn()} /></ToastProvider>);
     await waitFor(() => expect(runtime.listSkills).toHaveBeenCalled());
     fireEvent.click(screen.getByTestId('open-skill-import'));
     fireEvent.click(screen.getByRole('menuitem', { name: '创建 Skill' }));
@@ -569,7 +575,7 @@ describe('AbilitiesPage', () => {
       ],
     });
 
-    render(<AbilitiesPage onGoToAgents={vi.fn()} />);
+    render(<ToastProvider><AbilitiesPage onGoToAgents={vi.fn()} /></ToastProvider>);
     fireEvent.click(screen.getByTestId('skill-tab-mine'));
 
     const description = await screen.findByText('按严重程度发现缺陷，并给出可执行的修改建议');
@@ -596,7 +602,7 @@ describe('AbilitiesPage', () => {
     runtime.listSkills.mockResolvedValue({ skills: [skill] });
     const onGoToAgents = vi.fn();
 
-    render(<AbilitiesPage onGoToAgents={onGoToAgents} />);
+    render(<ToastProvider><AbilitiesPage onGoToAgents={onGoToAgents} /></ToastProvider>);
     fireEvent.click(screen.getByTestId('skill-tab-mine'));
     await screen.findByText(skill.name);
 
@@ -640,7 +646,7 @@ describe('AbilitiesPage', () => {
       .mockResolvedValue({ servers: [server] });
     runtime.registerMcpServer.mockResolvedValue({ server, updated: false });
 
-    render(<AbilitiesPage onGoToAgents={vi.fn()} />);
+    render(<ToastProvider><AbilitiesPage onGoToAgents={vi.fn()} /></ToastProvider>);
     fireEvent.click(screen.getByTestId('abilities-section-mcp'));
     await waitFor(() => expect(runtime.listMcpServers).toHaveBeenCalledWith({ limit: 100 }));
 
@@ -701,7 +707,7 @@ describe('AbilitiesPage', () => {
     };
     runtime.listMcpServers.mockResolvedValue({ servers: [context7, github] });
 
-    render(<AbilitiesPage onGoToAgents={vi.fn()} />);
+    render(<ToastProvider><AbilitiesPage onGoToAgents={vi.fn()} /></ToastProvider>);
     fireEvent.click(screen.getByTestId('abilities-section-mcp'));
     fireEvent.click(screen.getByTestId('mcp-tab-mine'));
     await screen.findByText('context7');
@@ -715,7 +721,7 @@ describe('AbilitiesPage', () => {
   });
 
   it('does not show the Skill activation-path note in MCP management', async () => {
-    render(<AbilitiesPage onGoToAgents={vi.fn()} />);
+    render(<ToastProvider><AbilitiesPage onGoToAgents={vi.fn()} /></ToastProvider>);
     fireEvent.click(screen.getByTestId('abilities-section-mcp'));
     fireEvent.click(screen.getByTestId('mcp-tab-mine'));
 
@@ -724,7 +730,7 @@ describe('AbilitiesPage', () => {
   });
 
   it('renders MCP in the shared ability hub and provides visible Skill navigation', async () => {
-    render(<AbilitiesPage onGoToAgents={vi.fn()} />);
+    render(<ToastProvider><AbilitiesPage onGoToAgents={vi.fn()} /></ToastProvider>);
 
     fireEvent.click(screen.getByTestId('abilities-section-mcp'));
 
@@ -740,7 +746,7 @@ describe('AbilitiesPage', () => {
   });
 
   it('filters MCP market cards by category and search', async () => {
-    render(<AbilitiesPage onGoToAgents={vi.fn()} />);
+    render(<ToastProvider><AbilitiesPage onGoToAgents={vi.fn()} /></ToastProvider>);
     fireEvent.click(screen.getByTestId('abilities-section-mcp'));
 
     expect(screen.getByText('Workspace Files')).toBeTruthy();
@@ -780,7 +786,7 @@ describe('AbilitiesPage', () => {
     runtime.listMcpServers.mockResolvedValue({ servers: [server] });
     runtime.setMcpServerEnabled.mockResolvedValue({ server: { ...server, enabled: false } });
 
-    render(<AbilitiesPage onGoToAgents={vi.fn()} />);
+    render(<ToastProvider><AbilitiesPage onGoToAgents={vi.fn()} /></ToastProvider>);
     fireEvent.click(screen.getByTestId('abilities-section-mcp'));
     fireEvent.click(screen.getByTestId('mcp-tab-mine'));
     const allStatuses = screen.getByRole('button', { name: /全部状态/ });
@@ -828,7 +834,7 @@ describe('AbilitiesPage', () => {
       discovered: true,
     });
 
-    render(<AbilitiesPage onGoToAgents={vi.fn()} />);
+    render(<ToastProvider><AbilitiesPage onGoToAgents={vi.fn()} /></ToastProvider>);
     fireEvent.click(screen.getByTestId('abilities-section-mcp'));
     await waitFor(() => expect(runtime.listMcpServers).toHaveBeenCalled());
     fireEvent.click(screen.getByTestId('mcp-register-open'));
@@ -901,7 +907,7 @@ describe('AbilitiesPage', () => {
       discoveryError: '远端 MCP 请求失败：HTTP 401',
     });
 
-    render(<AbilitiesPage onGoToAgents={vi.fn()} />);
+    render(<ToastProvider><AbilitiesPage onGoToAgents={vi.fn()} /></ToastProvider>);
     fireEvent.click(screen.getByTestId('abilities-section-mcp'));
     fireEvent.click(screen.getByTestId('mcp-register-open'));
     fireEvent.change(screen.getByTestId('mcp-name-input'), { target: { value: server.name } });
@@ -930,7 +936,7 @@ describe('AbilitiesPage', () => {
         resolveImport = resolve;
       }),
     );
-    render(<AbilitiesPage onGoToAgents={vi.fn()} />);
+    render(<ToastProvider><AbilitiesPage onGoToAgents={vi.fn()} /></ToastProvider>);
     await waitFor(() => expect(runtime.listSkills).toHaveBeenCalled());
     fireEvent.click(screen.getByTestId('open-skill-import'));
     fireEvent.click(screen.getByRole('menuitem', { name: '创建 Skill' }));
@@ -987,7 +993,7 @@ describe('AbilitiesPage', () => {
       .mockResolvedValueOnce({ servers: [] })
       .mockResolvedValue({ servers: [server] });
 
-    render(<AbilitiesPage onGoToAgents={vi.fn()} />);
+    render(<ToastProvider><AbilitiesPage onGoToAgents={vi.fn()} /></ToastProvider>);
     fireEvent.click(screen.getByTestId('abilities-section-mcp'));
     fireEvent.click(screen.getByTestId('mcp-register-open'));
     fireEvent.change(screen.getByTestId('mcp-name-input'), { target: { value: server.name } });
@@ -1053,7 +1059,7 @@ describe('AbilitiesPage', () => {
       discovered: true,
     });
 
-    render(<AbilitiesPage onGoToAgents={vi.fn()} />);
+    render(<ToastProvider><AbilitiesPage onGoToAgents={vi.fn()} /></ToastProvider>);
     fireEvent.click(screen.getByTestId('abilities-section-mcp'));
     fireEvent.click(screen.getByTestId('mcp-tab-mine'));
     fireEvent.click(await screen.findByRole('button', { name: /AI Registered MCP/ }));
@@ -1109,7 +1115,7 @@ describe('AbilitiesPage', () => {
     };
     runtime.listMcpServers.mockResolvedValue({ servers: [server] });
 
-    render(<AbilitiesPage onGoToAgents={vi.fn()} />);
+    render(<ToastProvider><AbilitiesPage onGoToAgents={vi.fn()} /></ToastProvider>);
     fireEvent.click(screen.getByTestId('abilities-section-mcp'));
     fireEvent.click(screen.getByTestId('mcp-tab-mine'));
     fireEvent.click(await screen.findByRole('button', { name: /Key Echo MCP/ }));
@@ -1126,7 +1132,7 @@ describe('AbilitiesPage', () => {
   });
 
   it('keeps the activation-code entry and exposes the local channel placeholder', async () => {
-    render(<AbilitiesPage onGoToAgents={vi.fn()} />);
+    render(<ToastProvider><AbilitiesPage onGoToAgents={vi.fn()} /></ToastProvider>);
 
     fireEvent.click(screen.getByRole('button', { name: 'Skill 激活码' }));
 
@@ -1157,7 +1163,7 @@ describe('AbilitiesPage', () => {
     });
     runtime.listSkills.mockResolvedValue({ skills: [] });
 
-    render(<AbilitiesPage onGoToAgents={vi.fn()} />);
+    render(<ToastProvider><AbilitiesPage onGoToAgents={vi.fn()} /></ToastProvider>);
     const automationCard = await screen.findByRole('button', { name: /自动化工作流/ });
     fireEvent.click(
       automationCard.closest('article')!.querySelector<HTMLButtonElement>('.is-use')!,
@@ -1188,7 +1194,7 @@ describe('AbilitiesPage', () => {
     };
     runtime.listSkills.mockResolvedValue({ skills: [marketSkill] });
 
-    render(<AbilitiesPage onGoToAgents={vi.fn()} />);
+    render(<ToastProvider><AbilitiesPage onGoToAgents={vi.fn()} /></ToastProvider>);
     fireEvent.click(screen.getByTestId('skill-tab-mine'));
     fireEvent.click((await screen.findByText('market-skill')).closest('button')!);
 
@@ -1217,7 +1223,7 @@ describe('AbilitiesPage', () => {
     };
     runtime.listSkills.mockResolvedValue({ skills: [localSkill] });
 
-    render(<AbilitiesPage onGoToAgents={vi.fn()} />);
+    render(<ToastProvider><AbilitiesPage onGoToAgents={vi.fn()} /></ToastProvider>);
     fireEvent.click(screen.getByTestId('skill-tab-mine'));
     fireEvent.click((await screen.findByText('local-skill')).closest('button')!);
 
@@ -1242,7 +1248,7 @@ describe('AbilitiesPage', () => {
     };
     runtime.listSkills.mockResolvedValue({ skills: [skill] });
 
-    render(<AbilitiesPage onGoToAgents={vi.fn()} />);
+    render(<ToastProvider><AbilitiesPage onGoToAgents={vi.fn()} /></ToastProvider>);
     fireEvent.click(screen.getByTestId('skill-tab-mine'));
     fireEvent.click((await screen.findByText('path-skill')).closest('button')!);
 
@@ -1277,7 +1283,7 @@ describe('AbilitiesPage', () => {
       installedPaths: ['C:\\Users\\test\\.sync-think\\skills\\project-bootstrap'],
     });
 
-    render(<AbilitiesPage onGoToAgents={vi.fn()} />);
+    render(<ToastProvider><AbilitiesPage onGoToAgents={vi.fn()} /></ToastProvider>);
     // 市场 tab → 打开带 sourceUrl 的条目 → 安装
     fireEvent.click(screen.getByRole('tab', { name: /Skill 市场/ }));
     const card = await screen.findByRole('button', { name: /项目初始化/ });
@@ -1619,7 +1625,7 @@ describe('AbilitiesPage', () => {
       sources: [],
     });
 
-    render(<AbilitiesPage onGoToAgents={vi.fn()} />);
+    render(<ToastProvider><AbilitiesPage onGoToAgents={vi.fn()} /></ToastProvider>);
     fireEvent.click(screen.getByTestId('skill-tab-mine'));
     await screen.findByText(skill.name);
     await waitFor(() => expect(runtime.listSkills).toHaveBeenCalledTimes(2));
@@ -1858,7 +1864,7 @@ describe('AbilitiesPage', () => {
       toolCount: refreshedServer.tools.length,
     });
 
-    render(<AbilitiesPage onGoToAgents={vi.fn()} />);
+    render(<ToastProvider><AbilitiesPage onGoToAgents={vi.fn()} /></ToastProvider>);
     fireEvent.click(screen.getByTestId('abilities-section-mcp'));
     fireEvent.click(screen.getByTestId('mcp-tab-mine'));
     await screen.findByText('Refreshable MCP');
@@ -1901,7 +1907,7 @@ describe('AbilitiesPage', () => {
       refuseReason: '远端 MCP 请求失败：HTTP 401',
     });
 
-    render(<AbilitiesPage onGoToAgents={vi.fn()} />);
+    render(<ToastProvider><AbilitiesPage onGoToAgents={vi.fn()} /></ToastProvider>);
     fireEvent.click(screen.getByTestId('abilities-section-mcp'));
     fireEvent.click(screen.getByTestId('mcp-tab-mine'));
     fireEvent.click(await screen.findByRole('button', { name: /Preserved MCP/ }));
@@ -1916,7 +1922,7 @@ describe('AbilitiesPage', () => {
   });
 
   it('opens a read-only organize report with the configured context budget', async () => {
-    render(<AbilitiesPage onGoToAgents={vi.fn()} />);
+    render(<ToastProvider><AbilitiesPage onGoToAgents={vi.fn()} /></ToastProvider>);
     fireEvent.click(screen.getByTestId('skill-tab-mine'));
     fireEvent.click(screen.getByRole('button', { name: '一键整理' }));
 
@@ -1988,7 +1994,7 @@ Publish this workflow.`;
       message: '市场审核渠道暂未接入',
     });
 
-    render(<AbilitiesPage onGoToAgents={vi.fn()} />);
+    render(<ToastProvider><AbilitiesPage onGoToAgents={vi.fn()} /></ToastProvider>);
     fireEvent.click(screen.getByTestId('skill-tab-mine'));
     fireEvent.click((await screen.findByText('publishable-skill')).closest('button')!);
     fireEvent.click(screen.getByRole('button', { name: '发布' }));
@@ -2063,7 +2069,7 @@ Publish this workflow.`;
       mcpServers: [],
     });
 
-    render(<AbilitiesPage onGoToAgents={vi.fn()} />);
+    render(<ToastProvider><AbilitiesPage onGoToAgents={vi.fn()} /></ToastProvider>);
     await waitFor(() => expect(runtime.listSkills).toHaveBeenCalled());
     fireEvent.click(screen.getByTestId('skill-tab-mine'));
     await waitFor(() => expect(screen.getByText('review')).toBeTruthy());
@@ -2096,7 +2102,7 @@ Publish this workflow.`;
     };
     runtime.listMcpServers.mockResolvedValue({ servers: [server] });
 
-    render(<AbilitiesPage onGoToAgents={vi.fn()} />);
+    render(<ToastProvider><AbilitiesPage onGoToAgents={vi.fn()} /></ToastProvider>);
     fireEvent.click(screen.getByTestId('abilities-section-mcp'));
     fireEvent.click(screen.getByTestId('mcp-tab-mine'));
     fireEvent.click(await screen.findByRole('button', { name: /Conn MCP/ }));
@@ -2135,7 +2141,7 @@ Publish this workflow.`;
     };
     runtime.listMcpServers.mockResolvedValue({ servers: [server] });
 
-    render(<AbilitiesPage onGoToAgents={vi.fn()} />);
+    render(<ToastProvider><AbilitiesPage onGoToAgents={vi.fn()} /></ToastProvider>);
     fireEvent.click(screen.getByTestId('abilities-section-mcp'));
     fireEvent.click(screen.getByTestId('mcp-tab-mine'));
     fireEvent.click(await screen.findByRole('button', { name: /Tools MCP/ }));
@@ -2171,7 +2177,7 @@ Publish this workflow.`;
     };
     runtime.listMcpServers.mockResolvedValue({ servers: [server] });
 
-    render(<AbilitiesPage onGoToAgents={vi.fn()} />);
+    render(<ToastProvider><AbilitiesPage onGoToAgents={vi.fn()} /></ToastProvider>);
     fireEvent.click(screen.getByTestId('abilities-section-mcp'));
     fireEvent.click(screen.getByTestId('mcp-tab-mine'));
     fireEvent.click(await screen.findByRole('button', { name: /Delete Me MCP/ }));

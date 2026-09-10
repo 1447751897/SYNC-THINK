@@ -1,5 +1,5 @@
 // provider command payload parsers (extracted from command-validation.ts).
-import type { CreateProviderPayload, UpdateProviderPayload, ListProvidersPayload, DiscoverModelsPayload, AddModelsPayload, ReorderProvidersPayload, AddProviderCredentialPayload, RemoveProviderCredentialPayload, RevealProviderCredentialPayload, UpdateProviderCredentialPayload, SetModelPrioritiesPayload, UpdateModelPayload, RemoveModelPayload, GetSettingsPayload, SetSettingPayload, UsageSummaryPayload } from '@sync-think/protocol';
+import type { CreateProviderPayload, UpdateProviderPayload, ListProvidersPayload, DiscoverModelsPayload, ProbeModelsPayload, AddModelsPayload, ReorderProvidersPayload, AddProviderCredentialPayload, RemoveProviderCredentialPayload, RevealProviderCredentialPayload, UpdateProviderCredentialPayload, SetModelPrioritiesPayload, UpdateModelPayload, RemoveModelPayload, GetSettingsPayload, SetSettingPayload, UsageSummaryPayload } from '@sync-think/protocol';
 import { PROTOCOLS, SURFACES, isRecord } from './shared.js';
 
 export function parseCreateProviderPayload(value: unknown): CreateProviderPayload | undefined {
@@ -25,6 +25,10 @@ export function parseCreateProviderPayload(value: unknown): CreateProviderPayloa
   if (value.discoverOnCreate !== undefined && typeof value.discoverOnCreate !== 'boolean') {
     return undefined;
   }
+  // NewMax-style「仍然保存」: keep the provider even though the test did not pass.
+  if (value.unverified !== undefined && typeof value.unverified !== 'boolean') {
+    return undefined;
+  }
   for (const field of ['credentialGroupName', 'credentialLabel', 'importedFrom'] as const) {
     if (value[field] !== undefined) {
       if (typeof value[field] !== 'string' || (value[field] as string).length > 256)
@@ -33,6 +37,51 @@ export function parseCreateProviderPayload(value: unknown): CreateProviderPayloa
   }
   if (value.surface !== undefined) {
     if (typeof value.surface !== 'string' || !SURFACES.has(value.surface)) return undefined;
+  }
+  // NewMax-style multi-key list: extra credentials may ride along.
+  if (value.extraApiKeys !== undefined) {
+    if (
+      !Array.isArray(value.extraApiKeys) ||
+      value.extraApiKeys.length > 32 ||
+      !value.extraApiKeys.every(
+        (key) => typeof key === 'string' && key.trim().length > 0 && key.length <= 8192,
+      )
+    ) {
+      return undefined;
+    }
+  }
+  // NewMax-style atomic create: models may be seeded in the same hop.
+  if (value.models !== undefined) {
+    if (!Array.isArray(value.models) || value.models.length > 256) return undefined;
+    for (const model of value.models) {
+      if (
+        !isRecord(model) ||
+        typeof model.providerModelId !== 'string' ||
+        model.providerModelId.trim().length === 0 ||
+        model.providerModelId.length > 256
+      ) {
+        return undefined;
+      }
+      if (model.displayName !== undefined && typeof model.displayName !== 'string') return undefined;
+      if (model.capabilities !== undefined) {
+        if (
+          !Array.isArray(model.capabilities) ||
+          !model.capabilities.every((c) => typeof c === 'string')
+        ) {
+          return undefined;
+        }
+      }
+      if (model.contextWindow !== undefined) {
+        if (
+          typeof model.contextWindow !== 'number' ||
+          !Number.isFinite(model.contextWindow) ||
+          model.contextWindow <= 0 ||
+          model.contextWindow > 100_000_000
+        ) {
+          return undefined;
+        }
+      }
+    }
   }
   return value as unknown as CreateProviderPayload;
 }
@@ -54,9 +103,11 @@ export function parseUpdateProviderPayload(value: unknown): UpdateProviderPayloa
     value.supportsDiscovery !== undefined ||
     value.credentialLabel !== undefined ||
     value.surface !== undefined ||
-    value.enabled !== undefined;
+    value.enabled !== undefined ||
+    value.unverified !== undefined;
   if (!hasField) return undefined;
   if (value.enabled !== undefined && typeof value.enabled !== 'boolean') return undefined;
+  if (value.unverified !== undefined && typeof value.unverified !== 'boolean') return undefined;
   if (value.name !== undefined) {
     if (typeof value.name !== 'string' || value.name.trim().length === 0 || value.name.length > 256)
       return undefined;
@@ -111,6 +162,31 @@ export function parseDiscoverModelsPayload(value: unknown): DiscoverModelsPayloa
     providerId: value.providerId as DiscoverModelsPayload['providerId'],
     credentialRefId: value.credentialRefId as DiscoverModelsPayload['credentialRefId'],
     persist: value.persist as boolean | undefined,
+  };
+}
+
+/**
+ * NewMax-style probe: discover models from a base URL + ephemeral credential
+ * without a persisted provider. Nothing is written to the catalog.
+ */
+export function parseProbeModelsPayload(value: unknown): ProbeModelsPayload | undefined {
+  if (!isRecord(value)) return undefined;
+  if (
+    typeof value.baseUrl !== 'string' ||
+    value.baseUrl.trim().length === 0 ||
+    value.baseUrl.length > 2048 ||
+    typeof value.protocol !== 'string' ||
+    !PROTOCOLS.has(value.protocol) ||
+    typeof value.apiKey !== 'string' ||
+    value.apiKey.trim().length === 0 ||
+    value.apiKey.length > 8192
+  ) {
+    return undefined;
+  }
+  return {
+    baseUrl: value.baseUrl.trim(),
+    protocol: value.protocol as ProbeModelsPayload['protocol'],
+    apiKey: value.apiKey,
   };
 }
 

@@ -25,4 +25,15 @@ describe('classifyAppendMessageFailure', () => {
     expect(result).toMatchObject({ connectionLost: false, versionMismatch: false });
     expect(result.message).toContain('permission denied');
   });
+
+  it('treats append request timeouts as a send timeout, not a lost connection', () => {
+    const result = classifyAppendMessageFailure(
+      new Error(
+        "Error invoking remote method 'runtime:append-message': RuntimeTransientError: Runtime request timed out: task.appendMessage",
+      ),
+    );
+    expect(result).toMatchObject({ connectionLost: false, versionMismatch: false });
+    expect(result.message).toContain('发送超时');
+    expect(result.message).not.toContain('连接中断');
+  });
 });

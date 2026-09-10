@@ -71,6 +71,7 @@ import type {
   ListProvidersResponse,
   DiscoverModelsPayload,
   DiscoverModelsResponse,
+  ProbeModelsResponse,
   AddModelsPayload,
   AddModelsResponse,
   ProbeCapabilitiesPayload,
@@ -266,6 +267,7 @@ import type {
 } from '@sync-think/protocol';
 import type {
   RendererCreateProviderPayload,
+  RendererProbeModelsPayload,
   RendererUpdateProviderPayload,
   RendererUpdateProviderCredentialPayload,
 } from '../provider-payloads.js';
@@ -378,6 +380,7 @@ declare global {
         importCcSwitch(payload: ImportCcSwitchPayload): Promise<ImportCcSwitchResponse>;
         listProviders(payload?: ListProvidersPayload): Promise<ListProvidersResponse>;
         discoverModels(payload: DiscoverModelsPayload): Promise<DiscoverModelsResponse>;
+        probeModels(payload: RendererProbeModelsPayload): Promise<ProbeModelsResponse>;
         addModels(payload: AddModelsPayload): Promise<AddModelsResponse>;
         probeCapabilities(payload: ProbeCapabilitiesPayload): Promise<ProbeCapabilitiesResponse>;
         confirmCapabilities(

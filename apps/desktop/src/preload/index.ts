@@ -80,6 +80,7 @@ import type {
   ListProvidersResponse,
   DiscoverModelsPayload,
   DiscoverModelsResponse,
+  ProbeModelsResponse,
   AddModelsPayload,
   AddModelsResponse,
   ProbeCapabilitiesPayload,
@@ -375,6 +376,7 @@ import type {
 import type { ArtifactImagePreviewResponse } from '../artifact-image-preview-contract.js';
 import type {
   RendererCreateProviderPayload,
+  RendererProbeModelsPayload,
   RendererUpdateProviderPayload,
   RendererUpdateProviderCredentialPayload,
 } from '../provider-payloads.js';
@@ -561,6 +563,11 @@ const api = {
       ipcRenderer.invoke('runtime:provider-list', payload) as Promise<ListProvidersResponse>,
     discoverModels: (payload: DiscoverModelsPayload) =>
       ipcRenderer.invoke('runtime:provider-discover', payload) as Promise<DiscoverModelsResponse>,
+    probeModels: (payload: RendererProbeModelsPayload) =>
+      ipcRenderer.invoke(
+        'runtime:provider-probe-models',
+        payload,
+      ) as Promise<ProbeModelsResponse>,
     addModels: (payload: AddModelsPayload) =>
       ipcRenderer.invoke('runtime:provider-add-models', payload) as Promise<AddModelsResponse>,
     probeCapabilities: (payload: ProbeCapabilitiesPayload) =>

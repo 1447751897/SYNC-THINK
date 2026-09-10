@@ -331,6 +331,33 @@ describe('MarkdownContent', () => {
     expect(html).toContain('data-testid="generated-image-frame"');
     expect(html).toContain('生图模型 · gpt-image-2');
     expect(html).toContain('sync-think-image://generated/a.png');
+    expect(html).toContain('aria-label="放大查看"');
+    expect(html).toContain('aria-label="复制图片"');
+    expect(html).toContain('aria-label="下载原图"');
     expect(shellCss).toMatch(/\.shell-md-image[^{]*\{[^}]*cursor:\s*zoom-in;/s);
+    expect(shellCss).toMatch(
+      /\.shell-stage-layer\[data-active='false'\]:not\(\[hidden\]\) \*\s*\{[^}]*visibility:\s*inherit;/,
+    );
+  });
+
+  it('uses NewMax imageModelBySrc when the answer only keeps the image', () => {
+    const html = renderToStaticMarkup(
+      createElement(MarkdownContent, {
+        text: '![生成的图片](sync-think-image://generated/a.png)',
+        imageModelBySrc: new Map([['sync-think-image://generated/a.png', 'gpt-image-2']]),
+      }),
+    );
+    expect(html).toContain('生图模型 · gpt-image-2');
+  });
+
+  it('keeps the model caption when react-markdown decodes a generated-image path', () => {
+    const absolute = 'D:\\work\\.sync-think\\generated-images\\card.png';
+    const encoded = `sync-think-image://generated/${encodeURIComponent(absolute)}`;
+    const html = renderToStaticMarkup(
+      createElement(MarkdownContent, {
+        text: ['模型：gpt-image-2', '', `![生成的图片](${encoded})`].join('\n'),
+      }),
+    );
+    expect(html).toContain('生图模型 · gpt-image-2');
   });
 });

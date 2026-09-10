@@ -6,6 +6,7 @@ import {
   shouldSkipSameProviderFallback,
   isSharedProviderEndpointFailure,
   formatModelSwitchDetail,
+  describeModelFallbackReason,
   type AgentModelBinding,
 } from './model-binding.js';
 import type { AgentVersionId, ModelId } from '@sync-think/shared';
@@ -207,6 +208,11 @@ describe('shouldSkipSameProviderFallback', () => {
         'unexpected status 502 Bad Gateway: fetch failed, url: http://127.0.0.1:58677/openai/v1/responses',
       ),
     ).toBe('gpt-5.6-luna → gpt-5.6-sol · 网关 502');
+  });
+
+  it('labels rate-limit and transient by class without relying on the error snippet', () => {
+    expect(describeModelFallbackReason('rate-limit')).toBe('限流');
+    expect(describeModelFallbackReason('transient')).toBe('暂时失败');
   });
 });
 

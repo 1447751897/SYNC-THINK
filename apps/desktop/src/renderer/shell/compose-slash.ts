@@ -277,7 +277,7 @@ export function resolveSystemMessageTone(
   }
   const trimmed = text.trim();
   if (
-    /^(发送失败|上下文压缩失败|上下文压缩超时|Runtime request timed out|请求失败)/i.test(trimmed)
+    /^(发送失败|发送超时|上下文压缩失败|上下文压缩超时|Runtime request timed out|请求失败)/i.test(trimmed)
   ) {
     return 'error';
   }

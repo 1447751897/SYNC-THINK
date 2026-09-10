@@ -991,7 +991,8 @@ describe('InlineProcessFlow', () => {
     const statusRow = screen.getByTestId('inline-process-status');
     const tool = screen.getByTestId('inline-process-tool');
     expect(statusRow.textContent).toContain('正在重试当前模型（1/2）');
-    expect(statusRow.textContent).toContain('timeout');
+    expect(statusRow.textContent).toContain('超时');
+    expect(statusRow.textContent).not.toContain('timeout');
     expect(follows(commentary, statusRow)).toBe(true);
     expect(follows(statusRow, tool)).toBe(true);
   });
@@ -1271,5 +1272,30 @@ describe('approval wait presentation', () => {
     expect(screen.getByText('capability-broker · use capability')).toBeTruthy();
     expect(screen.getByText('海边灯塔')).toBeTruthy();
     expect(screen.getByTestId('inline-process-grid-reveal')).toBeTruthy();
+  });
+
+  it('shows the NewMax model caption after generate_image completes', () => {
+    cleanup();
+    render(
+      <InlineProcessFlow
+        items={[
+          {
+            kind: 'tool',
+            toolCallId: 'tool-image-done',
+            name: 'generate_image',
+            argumentsJson: '{"prompt":"角色卡"}',
+            status: 'completed',
+            result: [
+              '图像已生成并保存。',
+              '模型：gpt-image-2',
+              '',
+              '![生成的图片](sync-think-image://generated/a.png)',
+            ].join('\n'),
+          },
+        ]}
+        defaultOpen
+      />,
+    );
+    expect(screen.getByTestId('grid-reveal-caption').textContent).toBe('生图模型 · gpt-image-2');
   });
 });

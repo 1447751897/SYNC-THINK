@@ -82,6 +82,7 @@ export type CommandType =
   | 'provider.update'
   | 'provider.list'
   | 'provider.discoverModels'
+  | 'provider.probeModels'
   | 'provider.addModels'
   | 'provider.probeCapabilities'
   | 'provider.confirmCapabilities'
@@ -915,6 +916,22 @@ export interface CreateProviderPayload {
   importedFrom?: string;
   /** CC Switch-style surface; optional on create. */
   surface?: import('@sync-think/shared').ProviderSurface;
+  /**
+   * NewMax-style atomic create: seed the priority chain in the same hop as
+   * provider creation, so the renderer can author models before a providerId
+   * exists. Order matters — index 0 becomes the primary model.
+   */
+  models?: AddModelsPayload['models'];
+  /**
+   * Additional credentials attached to the same credential group in this hop
+   * (the multi-key list on the create form). Plaintext for the create hop only.
+   */
+  extraApiKeys?: string[];
+  /**
+   * 0055: NewMax-style「仍然保存」— the user chose to keep the provider even
+   * though the connection test did not pass. Cleared once a test succeeds.
+   */
+  unverified?: boolean;
 }
 
 export interface ProviderCredentialSummary {
@@ -955,6 +972,8 @@ export interface ProviderSummary {
   enabled: boolean;
   /** 0026: manual ordering; first enabled provider is the default entry. */
   sortOrder: number;
+  /** 0055: saved through「仍然保存」without a passing connection test. */
+  unverified: boolean;
   importedFrom?: string;
   credentials: ProviderCredentialSummary[];
   models: ProviderModelSummary[];
@@ -981,6 +1000,8 @@ export interface UpdateProviderPayload {
   surface?: import('@sync-think/shared').ProviderSurface;
   /** 0026: toggle the entry on/off (disabled hides from pickers). */
   enabled?: boolean;
+  /** 0055: clear (false) when a connection test passes, or set true to save anyway. */
+  unverified?: boolean;
 }
 
 export interface UpdateProviderResponse {
@@ -1069,6 +1090,25 @@ export interface DiscoverModelsResponse {
   latencyMs?: number;
 }
 
+/**
+ * NewMax-style discovery without a persisted provider: probe a base URL with an
+ * ephemeral credential so the create form can fetch its model list before the
+ * provider exists. Nothing is written to the local catalog.
+ */
+export interface ProbeModelsPayload {
+  baseUrl: string;
+  protocol: import('@sync-think/shared').ProtocolFamily;
+  /** Plaintext for this hop only; Runtime never persists nor echoes it. */
+  apiKey: string;
+}
+
+export interface ProbeModelsResponse {
+  discoveredIds: string[];
+  protocol: import('@sync-think/shared').ProtocolFamily;
+  /** Wall-clock latency of the probe in milliseconds. */
+  latencyMs?: number;
+}
+
 export interface AddModelsPayload {
   providerId: import('@sync-think/shared').ProviderId;
   protocol: import('@sync-think/shared').ProtocolFamily;
@@ -1102,7 +1142,7 @@ export interface CapabilityProbeSuggestion {
   results: Partial<Record<import('@sync-think/shared').CapabilityTag, boolean>>;
   confidence: 'low' | 'medium';
   reasons: string[];
-  source: 'heuristic';
+  source: 'heuristic' | 'live';
 }
 
 export interface ProbeCapabilitiesResponse {

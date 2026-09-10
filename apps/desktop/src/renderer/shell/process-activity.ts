@@ -7,6 +7,7 @@
  */
 import { isToolResultFailure, normalizeToolName } from '@sync-think/shared';
 import type { InlineProcessItem } from './ChatView.js';
+import { buildGeneratedImageModelBySrc } from './markdown-image-gallery.js';
 
 type ToolItem = Extract<InlineProcessItem, { kind: 'tool' }>;
 
@@ -227,6 +228,26 @@ export function isImageGenerationActivity(item: {
 export function extractGeneratedImageSrc(markdown: string): string | null {
   const match = /!\[[^\]]*]\((sync-think-image:\/\/generated\/[^)\s]+)\)/.exec(markdown);
   return match?.[1] ?? null;
+}
+
+export function collectImageGenerationToolResults(
+  items: readonly InlineProcessItem[] | undefined,
+): string[] {
+  if (!items?.length) return [];
+  const results: string[] = [];
+  for (const item of items) {
+    if (item.kind !== 'tool' || !item.result?.trim()) continue;
+    if (!isImageGenerationActivity(item)) continue;
+    results.push(item.result);
+  }
+  return results;
+}
+
+/** NewMax `buildGeneratedImageModelBySrc` from the inline process timeline. */
+export function generatedImageModelsFromProcessItems(
+  items: readonly InlineProcessItem[] | undefined,
+): Map<string, string> {
+  return buildGeneratedImageModelBySrc(collectImageGenerationToolResults(items));
 }
 
 function compactValue(value: unknown): string | undefined {

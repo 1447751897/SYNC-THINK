@@ -53,6 +53,7 @@ import {
   type ReactNode,
 } from 'react';
 import { useDialog } from '../Dialog.js';
+import { toastApi } from '../Toast.js';
 import type {
   CapabilityGovernanceListResponse,
   CapabilityOrganizeReportSummary,
@@ -321,6 +322,15 @@ export function AbilitiesPage(props: AbilitiesPageProps): JSX.Element {
   const [busyId, setBusyId] = useState<string>();
   const [createMenuOpen, setCreateMenuOpen] = useState(false);
   const loadRequestRef = useRef(0);
+
+  useEffect(() => {
+    if (!message) return;
+    toastApi.toast({ type: 'success', title: message, id: 'ability-message' });
+  }, [message]);
+  useEffect(() => {
+    if (!error || skillEditor || localSkillImportOpen) return;
+    toastApi.toast({ type: 'error', title: error, id: 'ability-error' });
+  }, [error, skillEditor, localSkillImportOpen]);
 
   useEffect(() => {
     if (props.activeWorkspaceId) setSelectedWorkspaceId(props.activeWorkspaceId);
@@ -1455,26 +1465,6 @@ function NewMaxSkillHub(props: {
               重新加载
             </button>
           </div>
-        ) : props.message ? (
-          <div className="ability-status is-success" role="status">
-            <CheckCircle2 size={14} />
-            <div>
-              <strong>{props.message}</strong>
-            </div>
-            <button type="button" aria-label="关闭提示" onClick={props.onCloseNotice}>
-              <X size={12} />
-            </button>
-          </div>
-        ) : props.error ? (
-          <div className="ability-status is-error" role="alert">
-            <AlertTriangle size={14} />
-            <div>
-              <strong>{props.error}</strong>
-            </div>
-            <button type="button" aria-label="关闭错误" onClick={props.onCloseNotice}>
-              <X size={12} />
-            </button>
-          </div>
         ) : null}
 
         {props.tab === 'market' ? (
@@ -2067,26 +2057,6 @@ function NewMaxMcpHub(props: {
             </div>
             <button type="button" onClick={props.onReload}>
               重新加载
-            </button>
-          </div>
-        ) : props.message ? (
-          <div className="ability-status is-success" role="status">
-            <CheckCircle2 size={14} />
-            <div>
-              <strong>{props.message}</strong>
-            </div>
-            <button type="button" aria-label="关闭提示" onClick={props.onCloseNotice}>
-              <X size={12} />
-            </button>
-          </div>
-        ) : props.error ? (
-          <div className="ability-status is-error" role="alert">
-            <AlertTriangle size={14} />
-            <div>
-              <strong>{props.error}</strong>
-            </div>
-            <button type="button" aria-label="关闭错误" onClick={props.onCloseNotice}>
-              <X size={12} />
             </button>
           </div>
         ) : null}

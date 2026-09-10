@@ -23,7 +23,11 @@ import type { ProjectTextLocation } from '../../workspace-tools-contract.js';
 import { FileTypeIcon } from './FileTypeIcon.js';
 import { WebTextLink } from './WebTextLink.js';
 import { GeneratedImageModelsContext } from './generated-image-models-context.js';
-import { parseGeneratedImageModels, imagesFromHastParagraph } from './markdown-image-gallery.js';
+import {
+  imagesFromHastParagraph,
+  mergeGeneratedImageModels,
+  parseGeneratedImageModels,
+} from './markdown-image-gallery.js';
 import { MarkdownImageGallery } from './MarkdownImageGallery.js';
 
 const CodeReadingContext = createContext<Map<number, CodeBlockReadingState> | undefined>(undefined);
@@ -45,6 +49,8 @@ interface MarkdownContentProps {
   onOpenFile?: (path: string, location?: ProjectTextLocation) => void;
   onOpenHtmlInBrowser?: OpenHtmlInBrowser;
   onOpenUrl?: (url: string) => void;
+  /** NewMax `imageModelBySrc` — generate_image / use_capability result map. */
+  imageModelBySrc?: ReadonlyMap<string, string>;
 }
 
 interface MarkdownSection {
@@ -661,6 +667,7 @@ export function MarkdownContent({
   onOpenFile,
   onOpenHtmlInBrowser,
   onOpenUrl,
+  imageModelBySrc,
 }: MarkdownContentProps) {
   const readingRef = useRef({
     source: text,
@@ -677,7 +684,10 @@ export function MarkdownContent({
     () => (streaming ? [] : splitMarkdownSections(text)),
     [text, streaming],
   );
-  const generatedImageModels = useMemo(() => parseGeneratedImageModels(text), [text]);
+  const generatedImageModels = useMemo(
+    () => mergeGeneratedImageModels(imageModelBySrc, parseGeneratedImageModels(text)),
+    [imageModelBySrc, text],
+  );
   return (
     <CodeReadingContext.Provider value={readingRef.current.states}>
       <GeneratedImageModelsContext.Provider value={generatedImageModels}>

@@ -19,6 +19,8 @@ export interface CreateProviderInput {
   /** CC Switch-style surface; defaults to 'generic' when omitted. */
   surface?: ProviderSurface;
   supportsDiscovery?: boolean;
+  /** 0055: save without a passing connection test (NewMax「仍然保存」). */
+  unverified?: boolean;
   importedFrom?: string;
   credentialGroupName?: string;
   credentialLabel?: string;
@@ -44,6 +46,11 @@ export interface ProviderRecord {
   enabled: boolean;
   /** 0026: manual ordering; first enabled provider is the default entry. */
   sortOrder: number;
+  /**
+   * 0055: created through NewMax-style「仍然保存」— the connection test did not
+   * pass but the user chose to keep the provider. Cleared once a test succeeds.
+   */
+  unverified: boolean;
   importedFrom?: string;
   createdAt: string;
   updatedAt: string;
@@ -121,6 +128,8 @@ export interface UpdateProviderInput {
   supportsDiscovery?: boolean;
   /** 0026: toggle the entry on/off (disabled hides from pickers). */
   enabled?: boolean;
+  /** 0055: clear (false) once a connection test passes, or set true to save anyway. */
+  unverified?: boolean;
   credentialLabel?: string;
   /** Optional new secure-store handle when rotating the secret. */
   storeHandle?: string;
@@ -143,6 +152,7 @@ interface ProviderRow {
   surface: string | null;
   enabled: number;
   sort_order: number;
+  unverified: number;
   imported_from: string | null;
   created_at: string;
   updated_at: string;
@@ -212,6 +222,7 @@ export class SqliteProviderStore {
     const credentialKind: CredentialKind = input.credentialKind ?? 'api-key';
     const supportsDiscovery = input.supportsDiscovery ?? true;
     const surface = normalizeProviderSurface(input.surface, 'generic');
+    const unverified = input.unverified ?? false;
 
     const tx = this.raw.transaction(() => {
       const maxOrder = (this.raw
@@ -219,8 +230,8 @@ export class SqliteProviderStore {
         .get() as { max_order: number }).max_order;
       this.raw
         .prepare(
-          `INSERT INTO provider (id, name, base_url, supports_discovery, protocol, surface, enabled, sort_order, imported_from, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
+          `INSERT INTO provider (id, name, base_url, supports_discovery, protocol, surface, enabled, sort_order, unverified, imported_from, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`,
         )
         .run(
           providerId,
@@ -230,6 +241,7 @@ export class SqliteProviderStore {
           input.protocol,
           surface,
           maxOrder + 1,
+          unverified ? 1 : 0,
           input.importedFrom ?? null,
           now,
           now,
@@ -261,6 +273,7 @@ export class SqliteProviderStore {
         surface,
         enabled: true,
         sortOrder: this.getProvider(providerId)?.sortOrder ?? 0,
+        unverified,
         importedFrom: input.importedFrom,
         createdAt: now,
         updatedAt: now,
@@ -287,7 +300,7 @@ export class SqliteProviderStore {
   listProviders(): ProviderCatalogEntry[] {
     const providers = this.raw
       .prepare(
-        `SELECT id, name, base_url, supports_discovery, protocol, surface, enabled, sort_order, imported_from, created_at, updated_at
+        `SELECT id, name, base_url, supports_discovery, protocol, surface, enabled, sort_order, unverified, imported_from, created_at, updated_at
          FROM provider
          ORDER BY sort_order ASC, created_at ASC, id ASC`,
       )
@@ -338,7 +351,7 @@ export class SqliteProviderStore {
   getProvider(providerId: ProviderId): ProviderRecord | undefined {
     const row = this.raw
       .prepare(
-        `SELECT id, name, base_url, supports_discovery, protocol, surface, enabled, sort_order, imported_from, created_at, updated_at
+        `SELECT id, name, base_url, supports_discovery, protocol, surface, enabled, sort_order, unverified, imported_from, created_at, updated_at
          FROM provider WHERE id = ?`,
       )
       .get(providerId) as ProviderRow | undefined;
@@ -778,6 +791,10 @@ export class SqliteProviderStore {
     if (input.enabled !== undefined) {
       enabled = input.enabled;
     }
+    let unverified = existing.unverified;
+    if (input.unverified !== undefined) {
+      unverified = input.unverified;
+    }
 
     const primary = this.getPrimaryCredentialRef(providerId);
     let previousStoreHandle: string | undefined;
@@ -787,7 +804,7 @@ export class SqliteProviderStore {
       this.raw
         .prepare(
           `UPDATE provider
-           SET name = ?, base_url = ?, supports_discovery = ?, protocol = ?, surface = ?, enabled = ?, updated_at = ?
+           SET name = ?, base_url = ?, supports_discovery = ?, protocol = ?, surface = ?, enabled = ?, unverified = ?, updated_at = ?
            WHERE id = ?`,
         )
         .run(
@@ -797,6 +814,7 @@ export class SqliteProviderStore {
           protocol,
           surface,
           enabled ? 1 : 0,
+          unverified ? 1 : 0,
           now,
           providerId,
         );
@@ -1055,6 +1073,7 @@ function mapProvider(row: ProviderRow): ProviderRecord {
     surface: normalizeProviderSurface(row.surface, 'generic'),
     enabled: row.enabled !== 0,
     sortOrder: typeof row.sort_order === 'number' ? row.sort_order : 0,
+    unverified: row.unverified === 1,
     importedFrom: row.imported_from ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,

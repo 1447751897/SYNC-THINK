@@ -261,8 +261,13 @@ import { z } from 'zod';
 import {
   ErrorCode,
   deriveTaskTitleFromPrompt,
+  extractRunIndexMessageText,
   isUntitledTaskTitle,
+  resolveRunIndexDisplayTitle,
+  resolveRunIndexHumanTitle,
+  resolveRunIndexModelLabel,
   ulid,
+  type RunIndexEntry,
   type Event,
   type EventCategory,
   type MessageId,
@@ -354,6 +359,7 @@ import {
   type SqliteAppSettingStore,
   type SqliteScheduledTaskStore,
   type SqliteRunIndexStore,
+  type RunIndexUpsert,
   type SqliteExternalEventStore,
   type SqliteAgentStore,
   type SqliteMemoryStore,
@@ -415,6 +421,7 @@ import {
   shouldSkipSameProviderFallback,
   isSharedProviderEndpointFailure,
   formatModelSwitchDetail,
+  describeModelFallbackReason,
   suggestCapabilities,
   normalizeCapabilities,
   isTextFallbackCompatibleModel,
@@ -590,6 +597,7 @@ import {
   parseImportCcSwitchPayload,
   parseListProvidersPayload,
   parseDiscoverModelsPayload,
+  parseProbeModelsPayload,
   parseAddModelsPayload,
   parseProbeCapabilitiesPayload,
   parseConfirmCapabilitiesPayload,
@@ -3118,12 +3126,16 @@ export class Runtime {
           void this.handleDiscoverModels(socket, frame);
           return;
         }
+        if (frame.type === 'provider.probeModels') {
+          void this.handleProbeModels(socket, frame);
+          return;
+        }
         if (frame.type === 'provider.addModels') {
           this.handleAddModels(socket, frame);
           return;
         }
         if (frame.type === 'provider.probeCapabilities') {
-          this.handleProbeCapabilities(socket, frame);
+          void this.handleProbeCapabilities(socket, frame);
           return;
         }
         if (frame.type === 'provider.confirmCapabilities') {
@@ -6202,6 +6214,9 @@ export class Runtime {
         protocol: payload.protocol,
         surface: payload.surface ?? defaultSurfaceForProtocol(payload.protocol),
         supportsDiscovery: payload.supportsDiscovery ?? true,
+        // NewMax-style「仍然保存」: the renderer flags a provider the user kept
+        // even though the connection test did not pass.
+        unverified: payload.unverified ?? false,
         importedFrom: payload.importedFrom,
         credentialGroupName: payload.credentialGroupName,
         credentialLabel: payload.credentialLabel,
@@ -6210,9 +6225,55 @@ export class Runtime {
       });
       providerCommitted = true;
 
+      // NewMax-style multi-key list: attach the remaining credentials to the
+      // same group in this hop so key rotation works from day one.
+      const extraApiKeys = payload.extraApiKeys ?? [];
+      if (extraApiKeys.length > 0) {
+        const group = this.providerStore
+          .listProviders()
+          .find((entry) => entry.provider.id === created.provider.id)?.credentialGroups[0];
+        if (group) {
+          for (const [index, extraKey] of extraApiKeys.entries()) {
+            const extraHandle = await this.secureStore.storeSecret(extraKey);
+            this.providerStore.addCredentialRef({
+              credentialGroupId: group.id,
+              label: `备用 ${index + 1}`,
+              storeHandle: extraHandle,
+            });
+          }
+        }
+      }
+
+      // NewMax-style atomic create: the renderer authored the priority chain
+      // before the provider existed, so seed it verbatim — order preserved,
+      // index 0 being the primary model.
+      const seededModels = payload.models ?? [];
+      if (seededModels.length > 0) {
+        this.providerStore.upsertModels({
+          providerId: created.provider.id,
+          protocol: payload.protocol,
+          models: seededModels.map((model) => ({
+            providerModelId: model.providerModelId,
+            displayName: model.displayName ?? model.providerModelId,
+            capabilities:
+              model.capabilities ??
+              suggestCapabilities({
+                providerModelId: model.providerModelId,
+                protocol: payload.protocol,
+              }).capabilities,
+          })),
+          capabilitiesConfirmed: false,
+        });
+      }
+
       let discoveredModelCount = 0;
       const createDiscovery = this.resolveDiscoveryAdapter(payload.protocol);
-      if (created.provider.supportsDiscovery && createDiscovery && payload.discoverOnCreate !== false) {
+      if (
+        seededModels.length === 0 &&
+        created.provider.supportsDiscovery &&
+        createDiscovery &&
+        payload.discoverOnCreate !== false
+      ) {
         try {
           const discovered = await createDiscovery.discoverModels(
             payload.apiKey,
@@ -6362,6 +6423,8 @@ export class Runtime {
         surface: payload.surface,
         supportsDiscovery: payload.supportsDiscovery,
         enabled: payload.enabled,
+        // NewMax-style「测通即摘掉未验证角标」: a passing test clears the flag.
+        unverified: payload.unverified,
         credentialLabel: payload.credentialLabel,
         storeHandle: newStoreHandle,
       });
@@ -6635,6 +6698,95 @@ export class Runtime {
         payload: response,
       }),
     );
+  }
+
+  /**
+   * NewMax-style discovery without a persisted provider: the create form sends
+   * an ephemeral base URL + credential so it can populate its model list before
+   * any provider row exists. Nothing is persisted and the key is never echoed.
+   */
+  private async handleProbeModels(socket: Socket, frame: Frame): Promise<void> {
+    const payload = parseProbeModelsPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+
+    const discovery = this.resolveDiscoveryAdapter(payload.protocol);
+    if (!discovery) {
+      this.recordProviderDiagnostic({
+        category: 'provider',
+        failureClass: 'protocol',
+        summary: `Probe unavailable: no adapter for protocol ${payload.protocol}`,
+        detail: {
+          baseUrl: payload.baseUrl,
+          protocol: payload.protocol,
+          phase: 'probeModels',
+        },
+      });
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'provider.probeModels',
+          payload: {},
+          error: {
+            code: ErrorCode.PROVIDER_PROTOCOL_INCOMPATIBLE,
+            message: 'No discovery adapter configured for this protocol',
+          },
+        }),
+      );
+      return;
+    }
+
+    const startedAt = Date.now();
+    try {
+      const discoveredIds = await discovery.discoverModels(payload.apiKey, payload.baseUrl);
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'provider.probeModels',
+          payload: {
+            discoveredIds,
+            protocol: payload.protocol,
+            latencyMs: Math.max(0, Date.now() - startedAt),
+          },
+        }),
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Model probe failed';
+      const failureClass =
+        error && typeof error === 'object' && 'failureClass' in error
+          ? String((error as { failureClass?: unknown }).failureClass)
+          : 'transient';
+      const scrubbed = message
+        .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, '[REDACTED]')
+        .replace(/Bearer\s+[A-Za-z0-9._~\-+/=]+/gi, 'Bearer [REDACTED]');
+      this.recordProviderDiagnostic({
+        category: 'provider',
+        failureClass,
+        summary: `Probe failed (${failureClass}): ${scrubbed}`,
+        detail: {
+          baseUrl: payload.baseUrl,
+          protocol: payload.protocol,
+          phase: 'probeModels',
+          errorMessage: scrubbed,
+        },
+      });
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'provider.probeModels',
+          payload: {},
+          error: {
+            code: ErrorCode.PROVIDER_PROTOCOL_INCOMPATIBLE,
+            message,
+          },
+        }),
+      );
+    }
   }
 
   private async handleDiscoverModels(socket: Socket, frame: Frame): Promise<void> {
@@ -6915,7 +7067,7 @@ export class Runtime {
     }
   }
 
-  private handleProbeCapabilities(socket: Socket, frame: Frame): void {
+  private async handleProbeCapabilities(socket: Socket, frame: Frame): Promise<void> {
     const payload = parseProbeCapabilitiesPayload(frame.payload);
     if (!payload) {
       this.writeMalformedPayload(socket, frame);
@@ -6944,15 +7096,17 @@ export class Runtime {
 
       const suggestions: CapabilityProbeSuggestion[] = [];
       for (const model of models) {
-        const suggestion = suggestCapabilities({
+        const heuristic = suggestCapabilities({
           modelId: model.id,
           providerModelId: model.providerModelId,
           protocol: model.protocol,
           existing: model.capabilities,
         });
+        const live = await this.probeModelCapabilitiesLive(provider, model);
+        const capabilities = live.capabilities;
         const updated = this.providerStore.updateModelCapabilities({
           modelId: model.id,
-          capabilities: suggestion.capabilities,
+          capabilities,
           capabilitiesConfirmed: false,
         });
         suggestions.push({
@@ -6961,10 +7115,10 @@ export class Runtime {
           displayName: updated.displayName,
           capabilities: updated.capabilities,
           capabilitiesConfirmed: false,
-          results: suggestion.results,
-          confidence: suggestion.confidence,
-          reasons: suggestion.reasons,
-          source: 'heuristic',
+          results: live.results,
+          confidence: live.confidence,
+          reasons: [...live.reasons, ...heuristic.reasons.filter((reason) => !live.reasons.includes(reason))],
+          source: 'live',
         });
       }
 
@@ -6979,7 +7133,7 @@ export class Runtime {
             providerId,
             modelCount: suggestions.length,
             modelIds: suggestions.map((s) => s.modelId),
-            source: 'heuristic',
+            source: 'live',
           },
         };
         try {
@@ -6998,7 +7152,7 @@ export class Runtime {
           providerId,
           modelCount: suggestions.length,
           modelIds: suggestions.map((s) => s.modelId),
-          source: 'heuristic',
+          source: 'live',
         });
         this.publishEvent(event);
       }
@@ -7019,6 +7173,200 @@ export class Runtime {
     } catch (error) {
       this.writeProviderCommandError(socket, frame, error);
     }
+  }
+
+  /**
+   * Exercise the configured endpoint with the smallest useful requests. A
+   * capability is reported only when the provider accepts the corresponding
+   * request; model-name heuristics remain visible as reasons but no longer
+   * decide the result.
+   */
+  private async probeModelCapabilitiesLive(
+    provider: { id: ProviderId; baseUrl: string; protocol: ProtocolFamily },
+    model: { id: ModelId; providerModelId: string; protocol: ProtocolFamily; credentialRefId?: string },
+  ): Promise<{
+    capabilities: CapabilityTag[];
+    results: Partial<Record<CapabilityTag, boolean>>;
+    confidence: 'low' | 'medium';
+    reasons: string[];
+  }> {
+    if (!this.secureStore || !this.providerStore) throw new Error('Runtime 未连接或安全存储不可用');
+    const catalog = this.providerStore.listProviders().find((entry) => entry.provider.id === provider.id);
+    const credential = model.credentialRefId ?? catalog?.credentialGroups.flatMap((group) => group.credentials)[0]?.id;
+    if (!credential) throw new Error(`模型 ${model.providerModelId} 缺少 API 密钥`);
+    const storeHandle = this.providerStore.getCredentialStoreHandle(credential);
+    if (!storeHandle) throw new Error(`模型 ${model.providerModelId} 的 API 密钥不可用`);
+    const apiKey = await this.secureStore.retrieveSecret(storeHandle);
+    const adapter = this.resolveDiscoveryAdapter(model.protocol) ?? this.demoProvider;
+    if (!adapter) throw new Error(`协议 ${model.protocol} 没有可用适配器`);
+    const signal = new AbortController().signal;
+    const results: Partial<Record<CapabilityTag, boolean>> = {};
+    const reasons: string[] = [];
+    const capabilities: CapabilityTag[] = [];
+
+    const runCall = async (request: import('@sync-think/adapters').ProviderCallRequest) => {
+      let text = '';
+      let tool = false;
+      let hosted = false;
+      for await (const event of adapter.call(request)) {
+        if (event.type === 'error') throw new Error(event.message);
+        if (event.type === 'text-delta' || event.type === 'assistant-message-delta') text += event.text;
+        if (event.type === 'tool-call') tool = true;
+        if (event.type === 'hosted-tool-call' || event.type === 'hosted-tool-result') hosted = true;
+      }
+      return { text: text.trim(), tool, hosted };
+    };
+    const requestBase = {
+      protocol: model.protocol,
+      baseUrl: provider.baseUrl,
+      modelId: model.providerModelId,
+      apiKey,
+      signal,
+      stream: true,
+      maxOutputTokens: 32,
+    } as const;
+    const probes: Array<Promise<void>> = [];
+
+    if (model.protocol !== 'openai-images') {
+      probes.push(
+        (async () => {
+          try {
+            const text = await runCall({
+              ...requestBase,
+              idempotencyKey: `capability-probe-text-${ulid()}`,
+              messages: [{ role: 'user', content: 'Reply with OK.' }],
+            });
+            results.text = Boolean(text.text);
+            if (results.text) capabilities.push('text');
+            reasons.push(results.text ? '文本请求实测成功' : '文本请求返回空内容');
+          } catch (error) {
+            results.text = false;
+            reasons.push(`文本请求失败：${error instanceof Error ? error.message : '未知错误'}`);
+          }
+        })(),
+      );
+      probes.push(
+        (async () => {
+          try {
+            const vision = await runCall({
+              ...requestBase,
+              idempotencyKey: `capability-probe-vision-${ulid()}`,
+              messages: [
+                {
+                  role: 'user',
+                  content: [
+                    { type: 'text', text: 'Describe this image in one word.' },
+                    {
+                      type: 'image',
+                      imageUrl:
+                        'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+                    },
+                  ],
+                },
+              ],
+            });
+            results.vision = Boolean(vision.text);
+            if (results.vision) capabilities.push('vision');
+            reasons.push(results.vision ? '图片输入请求实测成功' : '图片输入请求返回空内容');
+          } catch {
+            results.vision = false;
+            reasons.push('图片输入请求未通过');
+          }
+        })(),
+      );
+    }
+
+    if (
+      model.protocol === 'openai-chat' ||
+      model.protocol === 'openai-responses' ||
+      model.protocol === 'anthropic-messages'
+    ) {
+      probes.push(
+        (async () => {
+          try {
+            const tool = await runCall({
+              ...requestBase,
+              idempotencyKey: `capability-probe-tool-${ulid()}`,
+              toolChoice: 'auto',
+              tools: [
+                {
+                  name: 'capability_probe',
+                  description: 'Return the probe result.',
+                  inputSchema: { type: 'object', properties: {} },
+                },
+              ],
+              messages: [{ role: 'user', content: 'Use capability_probe if tools are supported, then reply.' }],
+            });
+            results['tool-calling'] = tool.tool || Boolean(tool.text);
+            if (results['tool-calling']) capabilities.push('tool-calling');
+            reasons.push(
+              results['tool-calling'] ? '工具 schema 请求实测成功' : '工具 schema 请求未返回有效结果',
+            );
+          } catch {
+            results['tool-calling'] = false;
+            reasons.push('工具调用请求未通过');
+          }
+        })(),
+      );
+    }
+
+    if (model.protocol === 'openai-responses') {
+      probes.push(
+        (async () => {
+          try {
+            const search = await runCall({
+              ...requestBase,
+              idempotencyKey: `capability-probe-search-${ulid()}`,
+              hostedTools: [{ type: 'web_search', searchContextSize: 'low' }],
+              messages: [
+                {
+                  role: 'user',
+                  content: 'Search the web for the current date and answer with the year.',
+                },
+              ],
+            });
+            results['web-search'] = search.hosted || Boolean(search.text);
+            if (results['web-search']) capabilities.push('web-search');
+            reasons.push(results['web-search'] ? '联网搜索请求实测成功' : '联网搜索请求返回空内容');
+          } catch {
+            results['web-search'] = false;
+            reasons.push('联网搜索请求未通过');
+          }
+        })(),
+      );
+    }
+
+    const generateImages = adapter.generateImages;
+    if (model.protocol === 'openai-images' && generateImages) {
+      probes.push(
+        (async () => {
+          try {
+            const generated = await generateImages({
+              protocol: 'openai-images',
+              baseUrl: provider.baseUrl,
+              modelId: model.providerModelId,
+              apiKey,
+              idempotencyKey: `capability-probe-image-${ulid()}`,
+              signal,
+              prompt: 'A single solid blue square.',
+              count: 1,
+              size: '1024x1024',
+            });
+            results['image-generation'] = generated.images.length > 0;
+            if (results['image-generation']) capabilities.push('image-generation');
+            reasons.push(results['image-generation'] ? '图像生成请求实测成功' : '图像生成请求未返回图片');
+          } catch {
+            results['image-generation'] = false;
+            reasons.push('图像生成请求未通过');
+          }
+        })(),
+      );
+    }
+
+    await Promise.all(probes);
+
+    const unique = [...new Set(capabilities)];
+    return { capabilities: unique, results, confidence: 'medium', reasons };
   }
 
   private handleConfirmCapabilities(socket: Socket, frame: Frame): void {
@@ -7937,6 +8285,7 @@ export class Runtime {
       importedFrom: entry.provider.importedFrom,
       enabled: entry.provider.enabled,
       sortOrder: entry.provider.sortOrder,
+      unverified: entry.provider.unverified,
       credentials,
       models: entry.models.map((m) => this.toModelSummary(m)),
       createdAt: entry.provider.createdAt,
@@ -17415,6 +17764,18 @@ export class Runtime {
         occurredAt: new Date().toISOString(),
         payload: {
           threadId: payload.threadId,
+          ...(boundConversation?.id ? { conversationId: boundConversation.id } : {}),
+          ...(payload.role === 'user'
+            ? {
+                title: resolveRunIndexDisplayTitle({
+                  conversationTitle: boundConversation?.title,
+                  taskTitle: generatedTaskIdentity?.title ?? persistedTask?.title,
+                  triggerText: payload.text,
+                  source: 'chat',
+                }),
+                triggerMessageId: messageId,
+              }
+            : {}),
           modelId: demoRun.modelId,
           providerModelId: demoRun.providerModelId,
           kernelId: demoRun.kernelId,
@@ -18180,6 +18541,93 @@ export class Runtime {
 
   // --- Activity centre (TD-048) --------------------------------------------
 
+  private findConversationForActivityRun(ref: {
+    taskId?: string;
+    conversationId?: string;
+  }): ConversationRecord | undefined {
+    if (!this.conversationStore) return undefined;
+    if (ref.taskId) {
+      const byTask = this.conversationStore.getByTaskId(ref.taskId);
+      if (byTask) return byTask;
+    }
+    if (!ref.conversationId) return undefined;
+    const byId = this.conversationStore.get(ref.conversationId);
+    if (byId) return byId;
+    const task = this.workspaceStore?.getTaskByThreadId(ref.conversationId as ThreadId);
+    return task ? this.conversationStore.getByTaskId(task.id) : undefined;
+  }
+
+  private resolveActivityRunContext(ref: {
+    taskId?: string;
+    conversationId?: string;
+    triggerMessageId?: string;
+    externalEventId?: string;
+  }): {
+    conversation?: ConversationRecord;
+    taskTitle?: string;
+    externalEventTitle?: string;
+    triggerText?: string;
+  } {
+    const conversation = this.findConversationForActivityRun(ref);
+    const task = ref.taskId
+      ? this.workspaceStore?.getTask(ref.taskId as TaskId)
+      : ref.conversationId
+        ? this.workspaceStore?.getTaskByThreadId(ref.conversationId as ThreadId)
+        : undefined;
+    const triggerText = ref.triggerMessageId
+      ? extractRunIndexMessageText(
+          this.messageStore?.getMessage(ref.triggerMessageId as MessageId)?.blocks,
+        )
+      : '';
+    const externalEventTitle = ref.externalEventId
+      ? this.externalEventStore?.get(ref.externalEventId)?.title
+      : undefined;
+    return {
+      ...(conversation ? { conversation } : {}),
+      ...(task?.title ? { taskTitle: task.title } : {}),
+      ...(externalEventTitle ? { externalEventTitle } : {}),
+      ...(triggerText ? { triggerText } : {}),
+    };
+  }
+
+  private decorateActivityRunEntry(entry: RunIndexEntry): RunIndexEntry {
+    const context = this.resolveActivityRunContext(entry);
+    const title = resolveRunIndexDisplayTitle({
+      storedTitle: entry.title,
+      conversationTitle: context.conversation?.title,
+      taskTitle: context.taskTitle,
+      externalEventTitle: context.externalEventTitle,
+      triggerText: context.triggerText,
+      source: entry.source,
+    });
+    const model = entry.modelId ? this.providerStore?.getModel(entry.modelId) : undefined;
+    const modelLabel = resolveRunIndexModelLabel({
+      displayName: model?.displayName,
+      providerModelId: entry.providerModelId ?? model?.providerModelId,
+      modelId: entry.modelId,
+    });
+    const conversationId = context.conversation?.id ?? entry.conversationId;
+    return {
+      ...entry,
+      title,
+      ...(conversationId ? { conversationId } : {}),
+      ...(modelLabel ? { providerModelId: modelLabel } : {}),
+    };
+  }
+
+  private withProjectedRunIndexTitle(upsert: RunIndexUpsert): RunIndexUpsert {
+    const context = this.resolveActivityRunContext(upsert);
+    const title = resolveRunIndexHumanTitle({
+      storedTitle: upsert.title,
+      conversationTitle: context.conversation?.title,
+      taskTitle: context.taskTitle,
+      externalEventTitle: context.externalEventTitle,
+      triggerText: context.triggerText,
+      source: upsert.source,
+    });
+    return title ? { ...upsert, title } : upsert;
+  }
+
   private writeActivityStoreUnavailable(socket: Socket, frame: Frame, store: string): void {
     socket.write(
       encodeFrame({
@@ -18221,7 +18669,7 @@ export class Runtime {
       typeof payload.workspaceId === 'string' ? { workspaceId: payload.workspaceId } : {},
     );
     const response: ActivityListRunsResponse = {
-      entries: page.entries,
+      entries: page.entries.map((entry) => this.decorateActivityRunEntry(entry)),
       ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
       counts,
     };
@@ -18319,7 +18767,9 @@ export class Runtime {
       });
       return;
     }
-    if (!entry.conversationId) {
+    const conversationId =
+      this.findConversationForActivityRun(entry)?.id ?? entry.conversationId ?? '';
+    if (!conversationId) {
       write({
         runId: entry.runId,
         conversationId: '',
@@ -18331,7 +18781,7 @@ export class Runtime {
     if (entry.state === 'running' || entry.state === 'paused') {
       write({
         runId: entry.runId,
-        conversationId: entry.conversationId,
+        conversationId,
         retryable: false,
         reason: '该 Run 仍在进行中',
       });
@@ -18340,15 +18790,11 @@ export class Runtime {
     const anchor = entry.triggerMessageId
       ? this.messageStore?.getMessage(entry.triggerMessageId as MessageId)
       : undefined;
-    const text = anchor?.blocks
-      ?.filter((block) => block.type === 'text')
-      .map((block) => block.text ?? '')
-      .join('')
-      .trim();
+    const text = extractRunIndexMessageText(anchor?.blocks);
     if (!text) {
       write({
         runId: entry.runId,
-        conversationId: entry.conversationId,
+        conversationId,
         retryable: false,
         reason: '原始消息已不可用，请手动重发',
       });
@@ -18356,7 +18802,7 @@ export class Runtime {
     }
     write({
       runId: entry.runId,
-      conversationId: entry.conversationId,
+      conversationId,
       ...(entry.triggerMessageId ? { messageId: entry.triggerMessageId } : {}),
       text,
       retryable: true,
@@ -19852,7 +20298,7 @@ export class Runtime {
           fallbackWorkspaceId: this.workspaceId,
           scrub: (message) => this.scrubDiagnosticMessage(message) ?? '',
         });
-        if (upsert) store.upsert(upsert);
+        if (upsert) store.upsert(this.withProjectedRunIndexTitle(upsert));
       } catch (error) {
         console.warn(
           '[runtime] run_index projection failed',
@@ -25616,7 +26062,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     const run = appendAssistantStatus(currentRun, {
       statusType: 'retry',
       label: `正在重试当前模型（${retryCount}/${maxAttempts}）`,
-      detail: failureClass,
+      detail: describeModelFallbackReason(failureClass),
       occurredAt,
     });
     this.demoRuns.set(runId, run);

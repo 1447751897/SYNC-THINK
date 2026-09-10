@@ -5,6 +5,7 @@ export {
   shouldSkipSameProviderFallback,
   isSharedProviderEndpointFailure,
   formatModelSwitchDetail,
+  describeModelFallbackReason,
   resolveProviderPriorityFallback,
   type AgentModelBinding,
   type ResolveModelBindingInput,

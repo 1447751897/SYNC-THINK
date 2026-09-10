@@ -6,6 +6,9 @@ import {
   DESIGN_GENERATION_REQUEST_TIMEOUT_MS,
   MCP_REMOTE_REQUEST_TIMEOUT_MS,
   PROMPT_ENHANCEMENT_REQUEST_TIMEOUT_MS,
+  PROVIDER_CAPABILITY_PROBE_REQUEST_TIMEOUT_MS,
+  PROVIDER_DISCOVERY_REQUEST_TIMEOUT_MS,
+  TASK_APPEND_MESSAGE_REQUEST_TIMEOUT_MS,
   USAGE_SUMMARY_REQUEST_TIMEOUT_MS,
   resolveRuntimeRequestTimeoutMs,
 } from './runtime-client.js';
@@ -70,5 +73,25 @@ describe('RuntimePipeClient request timeout policy', () => {
       expect(resolveRuntimeRequestTimeoutMs(type, 5_000)).toBe(MCP_REMOTE_REQUEST_TIMEOUT_MS);
     }
     expect(MCP_REMOTE_REQUEST_TIMEOUT_MS).toBeGreaterThan(120_000);
+  });
+
+  it('gives provider discovery, capability probes, and append enough time for slow relays', () => {
+    expect(resolveRuntimeRequestTimeoutMs('provider.discoverModels', 5_000)).toBe(
+      PROVIDER_DISCOVERY_REQUEST_TIMEOUT_MS,
+    );
+    expect(resolveRuntimeRequestTimeoutMs('provider.probeModels', 5_000)).toBe(
+      PROVIDER_DISCOVERY_REQUEST_TIMEOUT_MS,
+    );
+    expect(resolveRuntimeRequestTimeoutMs('provider.probeCapabilities', 5_000)).toBe(
+      PROVIDER_CAPABILITY_PROBE_REQUEST_TIMEOUT_MS,
+    );
+    expect(resolveRuntimeRequestTimeoutMs('task.appendMessage', 5_000)).toBe(
+      TASK_APPEND_MESSAGE_REQUEST_TIMEOUT_MS,
+    );
+    expect(PROVIDER_DISCOVERY_REQUEST_TIMEOUT_MS).toBeGreaterThan(5_000);
+    expect(PROVIDER_CAPABILITY_PROBE_REQUEST_TIMEOUT_MS).toBeGreaterThan(
+      PROVIDER_DISCOVERY_REQUEST_TIMEOUT_MS,
+    );
+    expect(TASK_APPEND_MESSAGE_REQUEST_TIMEOUT_MS).toBeGreaterThan(5_000);
   });
 });

@@ -6,6 +6,8 @@ import {
   composeTextProviderOrder,
   imageModelRowLabel,
   inferImageApiProvider,
+  imageDraftModelsFromIds,
+  imageModelIdsFromProbe,
   isLikelyImageGenerationModelId,
   parseImageModelIds,
   readStoredImageApiProvider,
@@ -46,6 +48,21 @@ describe('image generation provider helpers', () => {
     expect(isLikelyImageGenerationModelId('gpt-image-2')).toBe(true);
     expect(isLikelyImageGenerationModelId('flux-1.1-pro')).toBe(true);
     expect(isLikelyImageGenerationModelId('gpt-4o')).toBe(false);
+  });
+
+  it('filters probe ids to image models, then falls back to the full list', () => {
+    expect(imageModelIdsFromProbe(['gpt-image-2', 'gpt-4o', 'flux-1.1-pro'])).toEqual([
+      'gpt-image-2',
+      'flux-1.1-pro',
+    ]);
+    expect(imageModelIdsFromProbe(['gpt-4o', 'claude-sonnet'])).toEqual([
+      'gpt-4o',
+      'claude-sonnet',
+    ]);
+    expect(imageDraftModelsFromIds(['gpt-image-2', 'gpt-image-2', ' flux '])).toEqual([
+      { providerModelId: 'gpt-image-2', displayName: 'gpt-image-2' },
+      { providerModelId: 'flux', displayName: 'flux' },
+    ]);
   });
 
   it('uses NewMax default/backup labels and OpenAI-compatible interface names', () => {

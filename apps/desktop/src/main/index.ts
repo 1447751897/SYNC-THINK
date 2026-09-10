@@ -155,6 +155,7 @@ import {
   parseImportCcSwitchPayload,
   parseListProvidersPayload,
   parseDiscoverModelsPayload,
+  parseProbeModelsPayload,
   parseAddModelsPayload,
   parseProbeCapabilitiesPayload,
   parseConfirmCapabilitiesPayload,
@@ -172,6 +173,7 @@ import {
 } from '../provider-payloads.js';
 import {
   createProviderPayloadFromClipboard,
+  probeModelsPayloadFromClipboard,
   updateProviderPayloadFromClipboard,
 } from './provider-clipboard.js';
 import {
@@ -2034,6 +2036,14 @@ function setupRuntimeBridge(): void {
     assertRuntimeIpcSource(event);
     await ensureRuntimeConnection();
     return getRuntimeClient().request('provider.discoverModels', parseDiscoverModelsPayload(value));
+  });
+  ipcMain.handle('runtime:provider-probe-models', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'provider.probeModels',
+      probeModelsPayloadFromClipboard(parseProbeModelsPayload(value), () => clipboard.readText()),
+    );
   });
   ipcMain.handle('runtime:provider-add-models', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);

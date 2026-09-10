@@ -322,6 +322,7 @@ vi.mock('./image-compress.js', () => ({
 }));
 
 import { EmptyTalk, ShellApp } from './ShellApp.js';
+import { resetToastStoreForTests } from './Toast.js';
 import { SHELL_BOOT_SNAPSHOT_KEY } from './shell-boot-snapshot.js';
 import {
   createWorkspacePaneLayout,
@@ -421,6 +422,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  resetToastStoreForTests();
   vi.restoreAllMocks();
   completeMock.mockReset();
   completeMock.mockResolvedValue(true);
@@ -2702,7 +2704,7 @@ describe('ShellApp empty conversation compose', () => {
     );
 
     await waitFor(() => expect(input.value).toBe(''));
-    expect((await screen.findByRole('alert')).textContent).toContain('新对话还没有可压缩的上下文');
+    expect(await screen.findByText('新对话还没有可压缩的上下文')).toBeTruthy();
     expect(runtime.createConversation).not.toHaveBeenCalled();
 
     fireEvent.change(input, { target: { value: '/mcp', selectionStart: 4 } });
@@ -2952,7 +2954,7 @@ describe('ShellApp empty conversation compose', () => {
     });
     fireEvent.click(screen.getByTestId('empty-compose-send'));
 
-    expect((await screen.findByRole('alert')).textContent).toContain('goal start failed');
+    expect(await screen.findByText(/goal start failed/)).toBeTruthy();
     expect(input.value).toBe('/goal 保留这份草稿');
     expect(window.localStorage.getItem('sync-think.newConversationDraft')).toBe(
       '/goal 保留这份草稿',
@@ -2990,7 +2992,7 @@ describe('ShellApp empty conversation compose', () => {
 
     fireEvent.change(input, { target: { value: '/goal clear', selectionStart: 11 } });
     fireEvent.click(screen.getByTestId('empty-compose-send'));
-    expect((await screen.findByRole('alert')).textContent).toContain('新对话还没有可清除的目标');
+    expect(await screen.findByText('新对话还没有可清除的目标')).toBeTruthy();
     expect(runtime.createConversation).not.toHaveBeenCalled();
     expect(runtime.setGoal).not.toHaveBeenCalled();
   });
@@ -3502,7 +3504,7 @@ describe('ShellApp empty conversation compose', () => {
     });
     fireEvent.click(screen.getByTestId('empty-compose-send'));
 
-    expect((await screen.findByRole('alert')).textContent).toContain('append failed');
+    expect(await screen.findByText(/append failed/)).toBeTruthy();
     expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe('1');
   });
 

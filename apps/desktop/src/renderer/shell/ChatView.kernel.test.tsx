@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { Conversation } from '@sync-think/shared';
 import { ChatView } from './ChatView.js';
+import { ToastProvider, resetToastStoreForTests } from './Toast.js';
 import { takeFailedComposeDrafts } from './failed-compose-drafts.js';
 
 let kernelUpdateListener: ((snapshot: unknown) => void) | null = null;
@@ -182,18 +183,21 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  resetToastStoreForTests();
   Reflect.deleteProperty(window, 'syncThink');
 });
 
 function renderChat(current = conversation()) {
   return render(
-    <ChatView
-      conversation={current}
-      modelName="Model A"
-      models={[{ modelId: 'model-a', displayName: 'Model A', providerName: 'Provider' }]}
-      eventHistory={[]}
-      onTitleUpdated={vi.fn()}
-    />,
+    <ToastProvider>
+      <ChatView
+        conversation={current}
+        modelName="Model A"
+        models={[{ modelId: 'model-a', displayName: 'Model A', providerName: 'Provider' }]}
+        eventHistory={[]}
+        onTitleUpdated={vi.fn()}
+      />
+    </ToastProvider>,
   );
 }
 
@@ -388,14 +392,16 @@ describe('ChatView kernel selection', () => {
   it('does not tear down the live stream when only the kernel changes', async () => {
     const onConversationUpdated = vi.fn();
     render(
-      <ChatView
-        conversation={conversation()}
-        modelName="Model A"
-        models={[{ modelId: 'model-a', displayName: 'Model A', providerName: 'Provider' }]}
-        eventHistory={[]}
-        onTitleUpdated={vi.fn()}
-        onConversationUpdated={onConversationUpdated}
-      />,
+      <ToastProvider>
+        <ChatView
+          conversation={conversation()}
+          modelName="Model A"
+          models={[{ modelId: 'model-a', displayName: 'Model A', providerName: 'Provider' }]}
+          eventHistory={[]}
+          onTitleUpdated={vi.fn()}
+          onConversationUpdated={onConversationUpdated}
+        />
+      </ToastProvider>,
     );
     await waitFor(() =>
       expect(runtime.subscribeConversationTransientStream).toHaveBeenCalledTimes(1),
@@ -461,13 +467,15 @@ describe('ChatView kernel selection', () => {
     runtime.listConversationMessages.mockClear();
 
     view.rerender(
-      <ChatView
-        conversation={conversation('conversation-kernel-b')}
-        modelName="Model A"
-        models={[{ modelId: 'model-a', displayName: 'Model A', providerName: 'Provider' }]}
-        eventHistory={[]}
-        onTitleUpdated={vi.fn()}
-      />,
+      <ToastProvider>
+        <ChatView
+          conversation={conversation('conversation-kernel-b')}
+          modelName="Model A"
+          models={[{ modelId: 'model-a', displayName: 'Model A', providerName: 'Provider' }]}
+          eventHistory={[]}
+          onTitleUpdated={vi.fn()}
+        />
+      </ToastProvider>,
     );
 
     await waitFor(() => expect(runtime.listConversationMessages).toHaveBeenCalledTimes(1));
@@ -629,13 +637,15 @@ describe('ChatView complete prose actions', () => {
     await waitFor(() => expect(runtime.readConversationContent).toHaveBeenCalledTimes(1));
     runtime.listConversationMessages.mockResolvedValue({ messages: [], hasMore: false });
     rendered.rerender(
-      <ChatView
-        conversation={conversation('conversation-other')}
-        modelName="Model A"
-        models={[{ modelId: 'model-a', displayName: 'Model A', providerName: 'Provider' }]}
-        eventHistory={[]}
-        onTitleUpdated={vi.fn()}
-      />,
+      <ToastProvider>
+        <ChatView
+          conversation={conversation('conversation-other')}
+          modelName="Model A"
+          models={[{ modelId: 'model-a', displayName: 'Model A', providerName: 'Provider' }]}
+          eventHistory={[]}
+          onTitleUpdated={vi.fn()}
+        />
+      </ToastProvider>,
     );
     await act(async () => pending.resolve(proseChunk('旧会话原文', 0, 5)));
     expect(runtime.appendMessage).not.toHaveBeenCalled();
@@ -657,13 +667,15 @@ it('deduplicates full-text copy clicks and cancels clipboard writes after conver
   expect((copy as HTMLButtonElement).disabled).toBe(true);
   runtime.listConversationMessages.mockResolvedValue({ messages: [], hasMore: false });
   rendered.rerender(
-    <ChatView
-      conversation={conversation('conversation-other')}
-      modelName="Model A"
-      models={[{ modelId: 'model-a', displayName: 'Model A', providerName: 'Provider' }]}
-      eventHistory={[]}
-      onTitleUpdated={vi.fn()}
-    />,
+    <ToastProvider>
+      <ChatView
+        conversation={conversation('conversation-other')}
+        modelName="Model A"
+        models={[{ modelId: 'model-a', displayName: 'Model A', providerName: 'Provider' }]}
+        eventHistory={[]}
+        onTitleUpdated={vi.fn()}
+      />
+    </ToastProvider>,
   );
   await act(async () => pending.resolve(proseChunk('旧会话原文', 0, 5)));
   expect(writeText).not.toHaveBeenCalled();
@@ -710,13 +722,15 @@ describe('failed compose draft recovery', () => {
     const view = renderChat();
     await sendMessage('private original draft');
     view.rerender(
-      <ChatView
-        conversation={conversation('another-conversation')}
-        modelName="Model A"
-        models={[]}
-        eventHistory={[]}
-        onTitleUpdated={vi.fn()}
-      />,
+      <ToastProvider>
+        <ChatView
+          conversation={conversation('another-conversation')}
+          modelName="Model A"
+          models={[]}
+          eventHistory={[]}
+          onTitleUpdated={vi.fn()}
+        />
+      </ToastProvider>,
     );
     await act(async () => reject(new Error('storage write failed')));
     expect((screen.getByTestId('compose-input') as HTMLTextAreaElement).value).not.toContain(
@@ -724,13 +738,15 @@ describe('failed compose draft recovery', () => {
     );
     expect(screen.queryByRole('button', { name: '恢复未发送草稿' })).toBeNull();
     view.rerender(
-      <ChatView
-        conversation={conversation()}
-        modelName="Model A"
-        models={[]}
-        eventHistory={[]}
-        onTitleUpdated={vi.fn()}
-      />,
+      <ToastProvider>
+        <ChatView
+          conversation={conversation()}
+          modelName="Model A"
+          models={[]}
+          eventHistory={[]}
+          onTitleUpdated={vi.fn()}
+        />
+      </ToastProvider>,
     );
     fireEvent.click(await screen.findByRole('button', { name: '恢复未发送草稿' }));
     expect((screen.getByTestId('compose-input') as HTMLTextAreaElement).value).toBe(

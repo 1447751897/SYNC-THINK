@@ -55,9 +55,23 @@ const CONVERSATION_COMPACT_REQUEST_TIMEOUT_MS = 120_000;
  */
 export const BROWSER_WORKFLOW_REPLAY_REQUEST_TIMEOUT_MS = 300_000;
 export const MCP_REMOTE_REQUEST_TIMEOUT_MS = 130_000;
+/** GET /models can stall on slow relays; 5s CRUD budget is too tight. */
+export const PROVIDER_DISCOVERY_REQUEST_TIMEOUT_MS = 30_000;
+/** Live text/vision/tool/search probes issue several real model calls in parallel. */
+export const PROVIDER_CAPABILITY_PROBE_REQUEST_TIMEOUT_MS = 60_000;
+/**
+ * First-message append may OCR or describe attached images before the RPC
+ * returns; keep the renderer request open past the 5s CRUD default.
+ */
+export const TASK_APPEND_MESSAGE_REQUEST_TIMEOUT_MS = 30_000;
 
 export function resolveRuntimeRequestTimeoutMs(type: string, defaultTimeoutMs: number): number {
   if (type === 'usage.summary') return USAGE_SUMMARY_REQUEST_TIMEOUT_MS;
+  if (type === 'provider.discoverModels' || type === 'provider.probeModels') {
+    return PROVIDER_DISCOVERY_REQUEST_TIMEOUT_MS;
+  }
+  if (type === 'provider.probeCapabilities') return PROVIDER_CAPABILITY_PROBE_REQUEST_TIMEOUT_MS;
+  if (type === 'task.appendMessage') return TASK_APPEND_MESSAGE_REQUEST_TIMEOUT_MS;
   if (type === 'prompt.enhance') return PROMPT_ENHANCEMENT_REQUEST_TIMEOUT_MS;
   if (type === 'design.generate') return DESIGN_GENERATION_REQUEST_TIMEOUT_MS;
   if (type === 'conversation.compact') return CONVERSATION_COMPACT_REQUEST_TIMEOUT_MS;

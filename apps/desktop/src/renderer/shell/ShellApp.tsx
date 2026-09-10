@@ -154,6 +154,9 @@ import { keepListboxOptionVisible } from './compose-picker-scroll.js';
 import { canCloseSettings } from './settings-unsaved.js';
 import { NewConversationDialog, type ModelOption } from './NewConversationDialog.js';
 import { useDialog, DialogProvider } from './Dialog.js';
+import { ToastProvider, toastApi, toastTypeFromTone, useToast } from './Toast.js';
+import { classifyAppendMessageFailure } from '../append-message-error.js';
+import { formatRuntimeIpcError } from '../provider-error-copy.js';
 import { startRuntimeConnection } from '../runtime-connection.js';
 import {
   hasShellBootSnapshot,
@@ -500,7 +503,9 @@ export function ShellApp() {
   // to the in-app NewMax dialogs; tests that render <ShellApp /> also get it.
   return (
     <DialogProvider>
-      <ShellAppInner />
+      <ToastProvider>
+        <ShellAppInner />
+      </ToastProvider>
     </DialogProvider>
   );
 }
@@ -4111,6 +4116,9 @@ function ShellAppInner() {
               teams={data.teams}
               workspaces={data.workspaces}
               skills={data.skills}
+              onNotify={(tone, text) => {
+                toastApi.toast({ type: toastTypeFromTone(tone), title: text });
+              }}
               onOpenConversation={(conversationId) => {
                 void openConversationById(conversationId);
                 setNav((n) => selectStage(n, 'talk'));
@@ -4219,6 +4227,7 @@ export function EmptyTalk(props: {
   onOpenMcpSettings?(): void;
   onCreateSkill?(): void;
 }) {
+  const { toast } = useToast();
   const [networkEnabled, setNetworkEnabled] = useState(true);
   const [appearance, setAppearance] = useState(() => readAppearancePreferences());
   useEffect(() => {
@@ -4284,6 +4293,27 @@ export function EmptyTalk(props: {
   const [attachments, setAttachments] = useState<ComposeAttachment[]>([]);
   const [dragOver, setDragOver] = useState(false);
   const [composeNotice, setComposeNotice] = useState<string | undefined>();
+  useEffect(() => {
+    if (!props.error) return;
+    const title = /Error invoking|Runtime(?:Transient|Response)Error|Runtime request timed out/i.test(
+      props.error,
+    )
+      ? classifyAppendMessageFailure(props.error).message
+      : formatRuntimeIpcError(props.error, props.error);
+    toast({
+      type: 'error',
+      title,
+      id: 'empty-talk-error',
+    });
+  }, [props.error, toast]);
+  useEffect(() => {
+    if (!composeNotice) return;
+    toast({
+      type: /失败/.test(composeNotice) ? 'error' : 'warning',
+      title: composeNotice,
+      id: 'empty-talk-notice',
+    });
+  }, [composeNotice, toast]);
   const [slash, setSlash] = useState<SlashQuery | null>(null);
   const [slashIndex, setSlashIndex] = useState(-1);
   const [slashCategory, setSlashCategory] = useState<ComposerSkillCategory>('all');
@@ -5604,11 +5634,6 @@ export function EmptyTalk(props: {
                   />
                 </div>
               </div>
-              {props.error || composeNotice ? (
-                <div className="px-3 pb-2 text-[11.5px] text-error" role="alert">
-                  {props.error ?? composeNotice}
-                </div>
-              ) : null}
               {!props.hasWorkspace ? (
                 <button
                   type="button"
@@ -5821,10 +5846,15 @@ function SettingsModal({
         onPointerDownOutside={(event) => {
           // 应用级确认框/提示框（DialogProvider）渲染在设置弹窗之外，
           // 点击它们不应被视为“点击弹窗外部”而关闭设置。
+          const target = event.target as Node | null;
           if (
             typeof document !== 'undefined' &&
-            document.querySelector('[data-testid="app-dialog"]')?.contains(event.target as Node)
+            document.querySelector('[data-testid="app-dialog"]')?.contains(target)
           ) {
+            event.preventDefault();
+            return;
+          }
+          if (target instanceof Element && target.closest('.image-api-select__menu')) {
             event.preventDefault();
             return;
           }
