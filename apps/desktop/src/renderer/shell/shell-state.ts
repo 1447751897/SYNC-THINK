@@ -301,10 +301,33 @@ export function targetName(
   return ref;
 }
 
+/** One roster face inside a team row's stacked avatar mark. */
+export interface TeamRowMemberMark {
+  name: string;
+  avatar?: string;
+}
+
 export type ConversationRowMark =
   | { kind: 'kernel'; kernelId: string }
   | { kind: 'agent'; name: string; avatar?: string }
-  | { kind: 'team'; name: string; avatar?: string };
+  | { kind: 'team'; name: string; avatar?: string; members: readonly TeamRowMemberMark[] };
+
+/**
+ * Roster faces for a team row, ordered by `memberOrder`. Members whose agent has
+ * been deleted are skipped so the stack never renders an empty slot.
+ */
+function resolveTeamRowMembers(
+  team: Team | undefined,
+  agents: readonly GlobalAgent[],
+): TeamRowMemberMark[] {
+  if (!team?.members?.length) return [];
+  const byId = new Map(agents.map((agent) => [String(agent.id), agent]));
+  return [...team.members]
+    .sort((a, b) => a.memberOrder - b.memberOrder)
+    .map((member) => byId.get(String(member.agentId)))
+    .filter((agent): agent is GlobalAgent => Boolean(agent))
+    .map((agent) => ({ name: agent.name, avatar: agent.avatar }));
+}
 
 /**
  * Leading mark for a sidebar conversation row: kernel logo on the model track,
@@ -322,10 +345,45 @@ export function resolveConversationRowMark(
   }
   if (conversation.track === 'team') {
     const team = teams.find((item) => String(item.id) === String(conversation.targetRef));
-    return { kind: 'team', name: team?.name ?? '小队', avatar: team?.avatar };
+    return {
+      kind: 'team',
+      name: team?.name ?? '小队',
+      avatar: team?.avatar,
+      members: resolveTeamRowMembers(team, agents),
+    };
   }
   const override = kernelOverrides?.[String(conversation.id)]?.trim();
   return { kind: 'kernel', kernelId: override || 'native' };
+}
+
+const DAY_MS = 86_400_000;
+
+/**
+ * Trailing timestamp for a sidebar conversation row: `HH:mm` today, `昨天`
+ * yesterday, `M/D` beyond that. An absent or unparsable `lastMessageAt`
+ * renders nothing rather than "Invalid Date".
+ *
+ * `now` is injected so the result stays testable without faking the clock.
+ */
+export function formatConversationRowTime(
+  lastMessageAt: string | undefined,
+  now: number,
+): string {
+  if (!lastMessageAt) return '';
+  const at = Date.parse(lastMessageAt);
+  if (!Number.isFinite(at)) return '';
+  const then = new Date(at);
+  const reference = new Date(now);
+  const startOfToday = new Date(
+    reference.getFullYear(),
+    reference.getMonth(),
+    reference.getDate(),
+  ).getTime();
+  if (at >= startOfToday) {
+    return `${String(then.getHours()).padStart(2, '0')}:${String(then.getMinutes()).padStart(2, '0')}`;
+  }
+  if (at >= startOfToday - DAY_MS) return '昨天';
+  return `${then.getMonth() + 1}/${then.getDate()}`;
 }
 
 // ─── Conversation groups (local CRUD) ───────────────────────────────────────

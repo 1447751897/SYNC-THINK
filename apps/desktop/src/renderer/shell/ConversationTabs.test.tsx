@@ -58,6 +58,30 @@ describe('ConversationTabs NewMax tab track', () => {
         container.querySelector('.shell-conversation-tabs__scroller') as HTMLElement
       ).style.getPropertyValue('--shell-pane-tab-width'),
     ).toBe('172px');
+    const surface = screen.getByTestId('pane-tab-surface');
+    expect(surface.parentElement).toBe(screen.getByTestId('conversation-tabs'));
+    expect(surface.closest('.shell-pane-tab')).toBeNull();
+    expect(screen.queryByTestId('workspace-tab-shape')).toBeNull();
+    expect(within(screen.getByTestId('conversation-tab-c1')).getByRole('button', { name: '对话一' })).toBeTruthy();
+  });
+
+  it('keeps one background surface when switching from a conversation to a file', () => {
+    const props = {
+      conversations,
+      openIds: ['c1', 'c2'],
+      fileTabs: [{ id: 'readme', path: 'README.md' }],
+      onSelect: vi.fn(),
+      onClose: vi.fn(),
+      onNew: vi.fn(),
+    };
+    const { rerender } = render(<ConversationTabs {...props} activeId="c1" />);
+    const surface = screen.getByTestId('pane-tab-surface');
+    rerender(<ConversationTabs {...props} activeFilePath="README.md" />);
+    expect(screen.getByTestId('pane-tab-surface')).toBe(surface);
+    expect(screen.getAllByTestId('pane-tab-surface')).toHaveLength(1);
+    expect(screen.getByTestId('conversation-tab-c1').getAttribute('data-active')).toBe('false');
+    expect(screen.getByTestId('file-tab-README.md').getAttribute('data-active')).toBe('true');
+    expect(screen.queryByTestId('workspace-tab-shape')).toBeNull();
   });
 
   it('places the plus beside the last tab instead of the trailing chrome', () => {
@@ -352,7 +376,7 @@ describe('ConversationTabs pane actions', () => {
       getData: vi.fn((type: string) => values.get(type) ?? ''),
     };
 
-    render(
+    const { rerender } = render(
       <ConversationTabs
         conversations={conversations}
         openIds={['c1', 'c2']}
@@ -371,16 +395,29 @@ describe('ConversationTabs pane actions', () => {
 
     expect(first.classList.contains('is-dragging')).toBe(true);
     expect(second.classList.contains('is-gliding')).toBe(true);
-    expect(second.style.transform).toBe('translate3d(-175px, 0, 0)');
+    expect(second.style.transform).toBe('translate3d(0px, 0, 0)');
     expect(first.style.transform).toBe('translate3d(175px, 0, 0)');
 
     fireDrag('dragOver', first, dataTransfer, 261);
-    expect(second.style.transform).toBe('translate3d(-175px, 0, 0)');
+    expect(second.style.transform).toBe('translate3d(0px, 0, 0)');
     expect(first.style.transform).toBe('translate3d(175px, 0, 0)');
 
     fireDrag('drop', first, dataTransfer, 261);
     expect(onReorder).toHaveBeenCalledWith('c1', 'c2');
     expect(onReorder).toHaveBeenCalledOnce();
+    rerender(
+      <ConversationTabs
+        conversations={conversations}
+        openIds={['c2', 'c1']}
+        activeId="c1"
+        onSelect={vi.fn()}
+        onClose={vi.fn()}
+        onReorder={onReorder}
+        onNew={vi.fn()}
+      />,
+    );
+    expect(first.style.transform).toBe('translate3d(175px, 0, 0)');
+    expect(second.style.transform).toBe('translate3d(0px, 0, 0)');
   });
 
   it('renders terminal resources and exposes a pane-local terminal command', () => {

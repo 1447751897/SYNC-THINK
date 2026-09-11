@@ -28,6 +28,7 @@ import clsx from 'clsx';
 import type { ConversationTrack } from '@sync-think/shared';
 import { FileTypeIcon } from './FileTypeIcon.js';
 import { browserTabFaviconSrc } from './ExternalSourceIcon.js';
+import { usePaneTabSurface } from './pane-tab-surface.js';
 import type { WorkbenchPlacement, WorkbenchScope, WorkbenchTab } from './workspace-workbench.js';
 import {
   WORKBENCH_BOTTOM_DEFAULT_HEIGHT,
@@ -222,6 +223,36 @@ export function WorkspaceWorkbench(props: WorkspaceWorkbenchProps) {
     activeTab.type !== 'workspace-files';
   const showFilesFull = showingFilesTab;
   const fileBrowserPressed = showingFilesTab || showFilesBeside;
+
+  // beUI-style liquid surface: the active workbench tab grows into the content
+  // panel. Shares the glide/path maths with the conversation rail.
+  const tabbarRef = useRef<HTMLDivElement>(null);
+  const workbenchTabsRef = useRef<HTMLDivElement>(null);
+  const tabSurfacePathRef = usePaneTabSurface(
+    tabbarRef,
+    workbenchTabsRef,
+    '.shell-workbench-tab.is-active',
+  );
+
+  // beUI's content enter transition (fade + rise + blur). Replayed via a class
+  // toggle on the container so the pane subtree is never remounted — scroll
+  // offsets and editor state survive the swap.
+  const contentRef = useRef<HTMLDivElement>(null);
+  const contentSwapSeenRef = useRef(false);
+  useEffect(() => {
+    const el = contentRef.current;
+    if (!el) return;
+    if (!contentSwapSeenRef.current) {
+      contentSwapSeenRef.current = true;
+      return;
+    }
+    el.classList.remove('is-swapping');
+    void el.offsetWidth;
+    el.classList.add('is-swapping');
+    const done = () => el.classList.remove('is-swapping');
+    el.addEventListener('animationend', done, { once: true });
+    return () => el.removeEventListener('animationend', done);
+  }, [activeTab?.id]);
 
   const finishResize = useCallback((commit = true) => {
     const drag = dragRef.current;
@@ -434,12 +465,27 @@ export function WorkspaceWorkbench(props: WorkspaceWorkbenchProps) {
       />
 
       <div
+        ref={tabbarRef}
         className="shell-workbench__tabbar"
         data-workspace-inspector-tabbar="true"
         data-pane-tab-bar="true"
       >
+        {/* Liquid surface: draws the content panel's top edge plus a notch that
+            lifts around the active tab. */}
+        <svg
+          className="shell-workbench__tab-surface"
+          data-testid="workbench-tab-surface"
+          aria-hidden="true"
+        >
+          <path ref={tabSurfacePathRef} />
+        </svg>
         <div className="shell-workbench__tab-cluster">
-          <div className="shell-workbench__tabs" role="tablist" aria-label="工作台标签">
+          <div
+            ref={workbenchTabsRef}
+            className="shell-workbench__tabs"
+            role="tablist"
+            aria-label="工作台标签"
+          >
           {visibleTabs.map((tab) => {
             const active = tab.id === activeTab?.id;
             const chrome = tab.type === 'browser' ? props.browserPageMeta?.[tab.browserId] : undefined;
@@ -631,7 +677,7 @@ export function WorkspaceWorkbench(props: WorkspaceWorkbenchProps) {
         </div>
       </div>
       <div className="shell-workbench__divider" data-pane-tab-divider="true" />
-      <div className="shell-workbench__content" data-pane-content-area="true">
+      <div ref={contentRef} className="shell-workbench__content" data-pane-content-area="true">
         <div className="shell-workbench__main">
           {props.scope.tabs
             .filter((tab) => tab.type === 'browser')

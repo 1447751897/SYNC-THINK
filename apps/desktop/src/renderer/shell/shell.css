@@ -30043,30 +30043,38 @@ body {
 
 /*
  * The conversation tab strip is the top edge of the same visual panel as the
- * active chat/file/terminal/browser content. Its parent owns the outer radius
- * and clips both regions together; this row only provides a subtle internal
- * divider.
+ * active chat/file/terminal/browser content. The shared SVG surface owns the
+ * liquid shoulders while the actual labels stay above it in the tab cluster.
  */
 .shell-conversation-tabs {
+  --shell-pane-tab-surface: var(--color-chat);
+  isolation: isolate;
+  align-items: flex-end;
+  padding: 12px 4px 0;
   overflow: visible;
-  background: var(--color-tab-strip, var(--color-chat));
+  background: var(--color-stage-tabs);
   border: 0;
   border-radius: 0;
 }
 
-.shell-conversation-tabs::after {
-  content: '';
+.shell-pane-tab-surface {
   position: absolute;
   z-index: 0;
-  right: 4px;
-  bottom: -1px;
-  left: 4px;
-  height: 1px;
-  background: var(--color-hover);
+  inset: 0;
+  width: 100%;
+  height: 41px;
+  overflow: hidden;
   pointer-events: none;
 }
 
+.shell-pane-tab-surface path {
+  fill: var(--shell-pane-tab-surface);
+  transition: d var(--shell-pane-tab-glide);
+}
+
 .shell-conversation-tabs__cluster {
+  position: relative;
+  z-index: 1;
   display: flex;
   min-width: 0;
   flex: 1 1 auto;
@@ -30075,6 +30083,8 @@ body {
 }
 
 .shell-conversation-tabs__scroller {
+  position: relative;
+  height: 28px;
   flex: 0 1 auto;
   min-width: 0;
   overflow-x: auto;
@@ -30088,18 +30098,16 @@ body {
 }
 
 .shell-pane-tab {
-  position: relative;
-  z-index: 1;
   width: var(--shell-pane-tab-width, 172px);
   min-width: var(--shell-pane-tab-width, 172px);
   max-width: var(--shell-pane-tab-width, 172px);
-  height: 32px;
+  height: 28px;
   gap: 6px;
-  overflow: visible;
+  overflow: hidden;
   border: 0;
-  border-radius: 14px 14px 0 0;
+  border-radius: 12px 12px 0 0;
   padding: 0 4px 0 10px;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 500;
   letter-spacing: 0;
   transition:
@@ -30108,9 +30116,20 @@ body {
     opacity 180ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
+.shell-conversation-tab-slots {
+  flex: none;
+  height: 28px;
+}
+
+.shell-pane-tab--conversation {
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+
 .shell-pane-tab.is-gliding {
   transition:
-    transform 280ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform var(--shell-pane-tab-glide),
     background 180ms cubic-bezier(0.22, 1, 0.36, 1),
     color 180ms cubic-bezier(0.22, 1, 0.36, 1),
     opacity 180ms cubic-bezier(0.22, 1, 0.36, 1);
@@ -30129,16 +30148,23 @@ body {
   background: var(--color-hover);
 }
 
-.shell-conversation-tab-active {
-  background: var(--color-chat);
-  box-shadow:
-    0 -1px 0 color-mix(in srgb, var(--color-border) 70%, transparent),
-    inset 0 1px 0 color-mix(in srgb, var(--color-chat) 78%, white);
-  transition:
-    background 180ms cubic-bezier(0.22, 1, 0.36, 1),
-    box-shadow 180ms cubic-bezier(0.22, 1, 0.36, 1),
-    transform 280ms cubic-bezier(0.22, 1, 0.36, 1),
-    color 180ms cubic-bezier(0.22, 1, 0.36, 1);
+.shell-pane-tab:focus-within {
+  outline: 1px solid var(--color-focus-ring);
+  outline-offset: -2px;
+}
+
+.shell-pane-tab-surface:has(+ .shell-conversation-tabs__cluster .is-dragging) path {
+  will-change: d;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root:not([data-motion='full']) .shell-pane-tab-surface path {
+    transition: none;
+  }
+}
+
+[data-reduced-motion] .shell-pane-tab-surface path {
+  transition: none;
 }
 
 .shell-pane-tab__favicon {
@@ -30192,10 +30218,9 @@ body {
 }
 
 .shell-conversation-tab-active {
-  position: relative;
   z-index: 1;
   border: 0;
-  background: var(--color-chat);
+  background: transparent;
 }
 
 .shell-workspace-tab-active + .shell-workspace-tab-active,
@@ -30205,14 +30230,14 @@ body {
 
 /* ─── Sidebar tree ────────────────────────────────────────────────────────
  * Selection reads as a hole punched through the sidebar board rather than a
- * raised chip: the pill is filled with the page colour (see --color-active).
+ * raised chip: the pill uses the same quiet surface as other row hover states.
  */
 .shell-row-active {
-  background: var(--color-active);
+  background: var(--color-hover);
 }
 
 .shell-row-active:hover {
-  background: var(--color-active);
+  background: var(--color-hover);
 }
 
 /*
@@ -30231,13 +30256,107 @@ body {
   animation: st-conv-in var(--shell-motion-normal) var(--shell-ease-out) both;
 }
 
+/*
+ * Identity mark: kernel logo / agent face / team stack, 18px tall.
+ * `min-width` rather than `width` so a stacked team mark (wider than one face)
+ * simply pushes its title a few pixels right instead of squeezing the faces.
+ */
 .st-conv-row__identity {
+  position: relative;
   display: inline-flex;
   flex-shrink: 0;
   align-items: center;
   justify-content: center;
-  width: 16px;
-  height: 16px;
+  min-width: 18px;
+  height: 18px;
+}
+
+/*
+ * Agent / team rows stack the identity name over the conversation title. The
+ * model track renders the same body with a single line, so row rhythm matches.
+ */
+.st-conv-row__body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.st-conv-row__sub {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--color-text-faint);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* Team mark: roster faces overlap by 5px, tail collapses into a +N badge. Rings
+   use the recent-box colour so the overlap reads as a clean cut-out. */
+.st-conv-stack {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+}
+
+.st-conv-stack__face {
+  display: inline-flex;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1.5px var(--color-recent);
+}
+
+.st-conv-stack__face:not(:first-child) {
+  margin-left: -5px;
+}
+
+.st-conv-stack__overflow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  height: 13px;
+  margin-left: -5px;
+  border-radius: 50%;
+  font-size: 8px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  background: var(--color-active);
+  box-shadow: 0 0 0 1.5px var(--color-recent);
+}
+
+/*
+ * Trailing slot: the timestamp fades out while the hover menu fades in over the
+ * same footprint, so the title never re-truncates when the pointer enters.
+ */
+.st-conv-row__trail {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 30px;
+  height: 20px;
+}
+
+.st-conv-row__time {
+  font-size: 11px;
+  line-height: 1;
+  color: var(--color-text-faint);
+  font-variant-numeric: tabular-nums;
+  transition: opacity var(--shell-motion-fast) var(--shell-ease);
+}
+
+.st-conv-row:hover .st-conv-row__time,
+.st-conv-row:focus-within .st-conv-row__time {
+  opacity: 0;
+}
+
+.st-conv-row__menu {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
 }
 
 /* Dark palette: only the *selected* conversation row sits on the chat color;
@@ -31763,6 +31882,18 @@ body {
   }
 }
 
+/*
+ * Conversation-row variant: the dot rides the identity mark's bottom-right
+ * corner with a ring in the recent-box colour. Two classes of specificity so it
+ * wins over `.shell-activity-dot--unread`'s own box-shadow.
+ */
+.st-conv-row .st-conv-row__activity {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  box-shadow: 0 0 0 2px var(--color-recent);
+}
+
 /* 拖动对话 tab 时出现在聊天区右缘的分屏落点（NewMax 式跨屏移动）。 */
 .shell-split-dropzone {
   position: absolute;
@@ -32784,6 +32915,10 @@ body {
 
   .st-conv-row {
     animation: none;
+  }
+
+  .st-conv-row__time {
+    transition: none;
   }
 
   .st-conv-row:not(.shell-row-active):hover,
@@ -39928,27 +40063,58 @@ body {
   display: flex;
   height: 40px;
   min-height: 40px;
-  align-items: center;
+  align-items: flex-end;
   gap: 3px;
-  padding: 4px;
+  padding: 12px 4px 0;
   overflow: visible;
-  background: var(--color-tab-strip, var(--color-chat));
+  /* beUI morphing tabs: the rail sits a shade behind the content panel so the
+     active tab's liquid notch (filled with the panel colour) reads clearly. */
+  background: color-mix(
+    in srgb,
+    var(--color-tab-strip, var(--color-chat)) 92%,
+    var(--color-text)
+  );
+}
+
+/* Liquid surface rail: one continuous path — the content panel's top edge plus
+   a notch that lifts around the active tab. Painted behind the tab row. */
+.shell-workbench__tab-surface {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  width: 100%;
+  height: 41px;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.shell-workbench__tab-surface path {
+  fill: var(--color-workbench-content, var(--color-chat));
+  transition: d 260ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+:root:not([data-motion='full']) .shell-workbench__tab-surface path,
+[data-reduced-motion] .shell-workbench__tab-surface path {
+  transition: none;
 }
 
 .shell-workbench__tab-cluster {
+  position: relative;
+  z-index: 1;
   display: flex;
   min-width: 0;
   flex: 1 1 auto;
-  align-items: center;
+  align-items: flex-end;
   gap: 3px;
   overflow: visible;
 }
 
 .shell-workbench__tabs {
+  position: relative;
   display: flex;
   min-width: 0;
   flex: 0 1 auto;
-  align-items: center;
+  align-items: flex-end;
   gap: 3px;
   overflow: hidden;
 }
@@ -39965,21 +40131,27 @@ body {
   gap: 6px;
   padding: 0 4px 0 10px;
   overflow: hidden;
-  border-radius: var(--radius-card);
+  /* Only the top corners round: the tab flows into the panel below it. */
+  border-radius: 12px 12px 0 0;
   color: var(--color-text-secondary);
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
   user-select: none;
-  transition: background var(--shell-motion-fast) var(--shell-ease);
+  transition:
+    background var(--shell-motion-fast) var(--shell-ease),
+    color var(--shell-motion-fast) var(--shell-ease);
 }
 
-.shell-workbench-tab:hover,
-.shell-workbench-tab.is-active {
-  background: var(--color-hover);
+/* Inactive tabs tint on hover; the active tab stays transparent so the liquid
+   surface underneath (painted in the panel colour) shows through. */
+.shell-workbench-tab:hover:not(.is-active) {
+  background: color-mix(in srgb, var(--color-text) 6%, transparent);
+  color: var(--color-text);
 }
 
 .shell-workbench-tab.is-active {
+  background: transparent;
   color: var(--color-text);
 }
 
@@ -40118,6 +40290,12 @@ body {
   background: color-mix(in srgb, var(--color-text) 6%, transparent);
 }
 
+/* beUI morphing tabs draws no rule between rail and panel — the liquid surface
+   shape does the dividing. */
+.shell-workbench__divider[data-pane-tab-divider='true'] {
+  display: none;
+}
+
 .shell-workbench__content {
   display: flex;
   min-width: 0;
@@ -40125,6 +40303,31 @@ body {
   flex: 1;
   overflow: hidden;
   background: var(--color-workbench-content, var(--color-chat));
+}
+
+/* beUI content swap: fade + rise + blur when the active tab changes. Replayed
+   via a class toggle so the pane subtree never remounts. */
+.shell-workbench__content.is-swapping > .shell-workbench__main {
+  animation: shell-workbench-content-in 120ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes shell-workbench-content-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+    filter: blur(6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+    filter: blur(0);
+  }
+}
+
+:root:not([data-motion='full']) .shell-workbench__content.is-swapping > .shell-workbench__main,
+[data-reduced-motion] .shell-workbench__content.is-swapping > .shell-workbench__main {
+  animation: none;
 }
 
 .shell-workbench--bottom > .shell-workbench__content {
@@ -40717,17 +40920,18 @@ body {
 }
 
 :root[data-image-theme='active'] .shell-conversation-tabs {
+  --shell-pane-tab-surface: var(--color-tab-strip);
   z-index: 1;
   overflow: visible;
   border-color: transparent;
-  background: var(--color-tab-strip);
+  background: var(--color-page);
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
 }
 
 :root[data-image-theme='active'] .shell-conversation-tab-active,
 :root[data-image-theme='active'] .shell-pane-tab[data-active='true'] {
-  background: var(--color-hover);
+  background: transparent;
 }
 
 :root[data-image-theme='active'] .shell-workspace-primary-content {

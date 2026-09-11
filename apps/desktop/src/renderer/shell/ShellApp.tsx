@@ -3349,7 +3349,6 @@ function ShellAppInner() {
           onToggleSidebar={() => setNav((n) => setSidebarCollapsed(n, true))}
           onOpenConversation={(id) => focusConversation(id)}
           onNewConversation={handleNewConversation}
-          onNewCanvas={() => void handleNewCanvasInPane(activePaneLayout?.focusedPaneId)}
           onTogglePin={(id, pinned) => void handleTogglePin(id, pinned)}
           onRename={(id, currentTitle) => void handleRename(id, currentTitle)}
           onArchive={(id) => void handleArchive(id)}

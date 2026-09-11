@@ -40,7 +40,7 @@ import {
 } from '@dnd-kit/sortable';
 import { FileTypeIcon } from './FileTypeIcon.js';
 import { browserTabFaviconSrc } from './ExternalSourceIcon.js';
-import { WorkspaceTabShape } from './TopBar.js';
+import { PANE_TAB_GLIDE, usePaneTabSurface } from './pane-tab-surface.js';
 import { pointerDragLeft, tabTranslate, visualIndexFor } from './workspace-tab-morph.js';
 
 export interface ConversationTabsProps {
@@ -273,8 +273,10 @@ export function ConversationTabs(props: ConversationTabsProps) {
   const splitPickerAnchorRef = useRef<HTMLDivElement>(null);
   const splitPickerRef = useRef<HTMLDivElement>(null);
   const tabManagerAnchorRef = useRef<HTMLDivElement>(null);
+  const tabBarRef = useRef<HTMLDivElement>(null);
   const tabTrackRef = useRef<HTMLDivElement>(null);
   const tabClusterRef = useRef<HTMLDivElement>(null);
+  const tabSurfaceRef = usePaneTabSurface(tabBarRef, tabTrackRef);
   const newResourceMenuStyle = useAnchoredMenuStyle(
     newResourceMenuOpen,
     newResourceAnchorRef,
@@ -379,7 +381,7 @@ export function ConversationTabs(props: ConversationTabsProps) {
     conversationId: string,
   ) => {
     nativeConversationDragIdRef.current = conversationId;
-    const startIndex = props.openIds.indexOf(conversationId);
+    const startIndex = tabs.findIndex((tab) => String(tab.id) === conversationId);
     if (startIndex >= 0) {
       const startLeft = startIndex * (paneTabWidth + PANE_TAB_GAP);
       const next = {
@@ -408,7 +410,7 @@ export function ConversationTabs(props: ConversationTabsProps) {
         current.originX,
         current.startIndex,
         paneTabWidth,
-        props.openIds.length,
+        tabs.length,
         PANE_TAB_GAP,
       );
       if (next.dragLeft === current.dragLeft && next.targetIndex === current.targetIndex) {
@@ -440,7 +442,7 @@ export function ConversationTabs(props: ConversationTabsProps) {
     const sourceConversationId = nativeConversationDragIdRef.current;
     clearConversationMorph();
     if (!sourceConversationId || !drag || drag.targetIndex === drag.startIndex) return;
-    const targetId = props.openIds[drag.targetIndex];
+    const targetId = tabs[drag.targetIndex]?.id;
     if (targetId && targetId !== sourceConversationId) {
       props.onReorder?.(sourceConversationId, targetId);
     }
@@ -464,10 +466,15 @@ export function ConversationTabs(props: ConversationTabsProps) {
 
   return (
     <div
+      ref={tabBarRef}
       data-testid="conversation-tabs"
       data-pane-tab-bar="true"
       className="shell-conversation-tabs relative flex h-10 shrink-0 items-center gap-[3px] p-1"
+      style={{ '--shell-pane-tab-glide': PANE_TAB_GLIDE } as React.CSSProperties}
     >
+      <svg className="shell-pane-tab-surface" data-testid="pane-tab-surface" aria-hidden="true">
+        <path ref={tabSurfaceRef} />
+      </svg>
       {/* Tab cluster keeps the plus beside the last tab; overflow stays in the
           scroller so the more-menu can remain pinned to the trailing chrome. */}
       <div ref={tabClusterRef} className="shell-conversation-tabs__cluster">
@@ -494,7 +501,11 @@ export function ConversationTabs(props: ConversationTabsProps) {
             items={tabs.map((c) => String(c.id))}
             strategy={horizontalListSortingStrategy}
           >
-            {tabs.map((conversation) => {
+            {tabs.length > 0 ? <div
+              className="shell-conversation-tab-slots"
+              style={{ width: tabs.length * paneTabWidth + (tabs.length - 1) * PANE_TAB_GAP }}
+            >
+            {tabs.map((conversation, index) => {
               const id = String(conversation.id);
               const active = id === props.activeId;
               const label = conversation.title?.trim() || '新对话';
@@ -510,7 +521,7 @@ export function ConversationTabs(props: ConversationTabsProps) {
                   splitId={props.splitId}
                   running={props.conversationActivity?.get(id)?.running ?? false}
                   unread={props.conversationActivity?.get(id)?.unread ?? false}
-                  tabWidth={paneTabWidth}
+                  left={index * (paneTabWidth + PANE_TAB_GAP)}
                   onSelect={() => props.onSelect(id)}
                   onClose={() => props.onClose(id)}
                   onRename={() => props.onRename?.(id, label)}
@@ -529,11 +540,11 @@ export function ConversationTabs(props: ConversationTabsProps) {
                       ? morphDrag.id === id
                         ? morphDrag.dragLeft - morphDrag.startLeft
                         : (visualIndexFor(
-                            props.openIds.indexOf(id),
+                            index,
                             morphDrag.startIndex,
                             morphDrag.targetIndex,
                           ) -
-                            props.openIds.indexOf(id)) *
+                            index) *
                           (paneTabWidth + PANE_TAB_GAP)
                       : 0
                   }
@@ -543,6 +554,7 @@ export function ConversationTabs(props: ConversationTabsProps) {
                 />
               );
             })}
+            </div> : null}
           </SortableContext>
         </DndContext>
 
@@ -1167,7 +1179,7 @@ function SortableConversationTab(props: {
   splitId?: string;
   running: boolean;
   unread: boolean;
-  tabWidth: number;
+  left: number;
   hasSplitAction: boolean;
   onSelect(): void;
   onClose(): void;
@@ -1190,7 +1202,7 @@ function SortableConversationTab(props: {
       data-active={props.active ? 'true' : 'false'}
       draggable
       className={clsx(
-        'shell-pane-tab st-row-motion group relative flex shrink-0 items-center',
+        'shell-pane-tab shell-pane-tab--conversation st-row-motion group relative flex shrink-0 items-center',
         props.active
           ? 'shell-conversation-tab-active font-medium text-text'
           : 'text-text-secondary hover:bg-hover hover:text-text',
@@ -1200,7 +1212,7 @@ function SortableConversationTab(props: {
       )}
       style={{
         transform: tabTranslate(
-          (props.morphOffset ?? 0) + (props.dragging ? 0 : (transform?.x ?? 0)),
+          props.left + (props.morphOffset ?? 0) + (props.dragging ? 0 : (transform?.x ?? 0)),
         ),
       }}
       {...attributes}
@@ -1227,7 +1239,6 @@ function SortableConversationTab(props: {
           aria-label="已完成待查看"
         />
       ) : null}
-      {props.active ? <WorkspaceTabShape width={props.tabWidth} /> : null}
       <span
         className={clsx(
           'flex h-3.5 w-3.5 shrink-0 items-center justify-center',

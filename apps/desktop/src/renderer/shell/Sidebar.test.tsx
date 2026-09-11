@@ -149,3 +149,32 @@ describe('Sidebar conversation identity marks', () => {
     expect(teamMark.textContent).toContain('🚀');
   });
 });
+
+describe('Sidebar conversation row layout', () => {
+  it('stacks the agent name over the title, and keeps model rows single-line', () => {
+    renderSidebar({
+      conversations: [
+        conv({ id: 'c-model', track: 'model', title: '模型侧标题', targetRef: 'gpt-4o' }),
+        conv({ id: 'c-agent', track: 'agent', title: '智能体侧标题', targetRef: String(agent.id) }),
+      ],
+    });
+
+    // Agent track: identity name on top, conversation title standing in for the
+    // (not yet carried) message summary underneath.
+    expect(screen.getByTestId('conversation-c-agent').textContent).toContain(agent.name);
+    expect(screen.getByTestId('conversation-sub-c-agent').textContent).toBe('智能体侧标题');
+
+    // Model track stays single-line — its title already is the identity.
+    expect(screen.getByTestId('conversation-c-model').textContent).toContain('模型侧标题');
+    expect(screen.queryByTestId('conversation-sub-c-model')).toBeNull();
+  });
+
+  it('drops the second line when the title repeats the identity name', () => {
+    renderSidebar({
+      conversations: [
+        conv({ id: 'c-agent', track: 'agent', title: agent.name, targetRef: String(agent.id) }),
+      ],
+    });
+    expect(screen.queryByTestId('conversation-sub-c-agent')).toBeNull();
+  });
+});

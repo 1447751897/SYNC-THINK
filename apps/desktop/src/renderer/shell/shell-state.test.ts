@@ -20,6 +20,7 @@ import {
   reorderConversationTab,
   resolveWorkspaceSelection,
   selectStage,
+  formatConversationRowTime,
   resolveConversationRowMark,
   targetName,
   toggleSidebar,
@@ -313,7 +314,7 @@ describe('conversation grouping', () => {
         agents,
         teams,
       ),
-    ).toEqual({ kind: 'team', name: '交付小队', avatar: '🚀' });
+    ).toEqual({ kind: 'team', name: '交付小队', avatar: '🚀', members: [] });
     expect(
       resolveConversationRowMark(
         conv({ id: 'missing', track: 'agent', targetRef: 'gone' }),
@@ -321,5 +322,58 @@ describe('conversation grouping', () => {
         teams,
       ),
     ).toEqual({ kind: 'agent', name: '智能体', avatar: undefined });
+  });
+
+  it('resolves team roster faces in member order and skips deleted agents', () => {
+    const agents = [
+      { id: 'agent-1', name: '质保官', avatar: '🧪' },
+      { id: 'agent-3', name: '工程师', avatar: '🛠' },
+    ] as never[];
+    const teams = [
+      {
+        id: 'team-1',
+        name: '交付小队',
+        avatar: '🚀',
+        members: [
+          { agentId: 'agent-3', memberOrder: 2 },
+          { agentId: 'agent-1', memberOrder: 1 },
+          { agentId: 'agent-gone', memberOrder: 3 },
+        ],
+      },
+    ] as never[];
+
+    expect(
+      resolveConversationRowMark(
+        conv({ id: 't1', track: 'team', targetRef: 'team-1' }),
+        agents,
+        teams,
+      ),
+    ).toEqual({
+      kind: 'team',
+      name: '交付小队',
+      avatar: '🚀',
+      members: [
+        { name: '质保官', avatar: '🧪' },
+        { name: '工程师', avatar: '🛠' },
+      ],
+    });
+  });
+});
+
+describe('sidebar conversation row timestamp', () => {
+  // 2026-09-11 14:30 local — a fixed reference so the buckets stay deterministic.
+  const now = new Date(2026, 8, 11, 14, 30).getTime();
+
+  it('renders HH:mm today, 昨天 yesterday, M/D beyond that', () => {
+    expect(formatConversationRowTime(new Date(2026, 8, 11, 9, 5).toISOString(), now)).toBe('09:05');
+    expect(formatConversationRowTime(new Date(2026, 8, 10, 23, 59).toISOString(), now)).toBe(
+      '昨天',
+    );
+    expect(formatConversationRowTime(new Date(2026, 8, 8, 12, 0).toISOString(), now)).toBe('9/8');
+  });
+
+  it('renders nothing for an absent or unparsable timestamp', () => {
+    expect(formatConversationRowTime(undefined, now)).toBe('');
+    expect(formatConversationRowTime('not-a-date', now)).toBe('');
   });
 });

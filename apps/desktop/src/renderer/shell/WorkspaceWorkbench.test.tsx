@@ -86,6 +86,36 @@ describe('WorkspaceWorkbench', () => {
     expect(screen.getByText('file:src/app.ts')).toBeTruthy();
   });
 
+  it('renders the liquid tab surface for the active workbench tab', () => {
+    render(
+      <WorkspaceWorkbench
+        placement="right"
+        scope={rightScope()}
+        renderContent={(tab) => <div>{tab.id}</div>}
+        onActivateTab={vi.fn()}
+        onCloseTab={vi.fn()}
+        onNewResource={vi.fn()}
+        onClose={vi.fn()}
+        onSizeChange={vi.fn()}
+      />,
+    );
+
+    // The surface rail is painted behind the tab row and stays decorative.
+    const surface = document.querySelector('.shell-workbench__tab-surface');
+    expect(surface).toBeTruthy();
+    expect(surface?.getAttribute('aria-hidden')).toBe('true');
+    expect(surface?.querySelector('path')).toBeTruthy();
+
+    // The hook locates the notch by this exact selector.
+    const active = document.querySelector('.shell-workbench-tab.is-active');
+    expect(active).toBeTruthy();
+    expect(active?.getAttribute('aria-selected')).toBe('true');
+
+    // The rail/panel rule is still mounted (hidden by CSS, not removed) so the
+    // existing pane-tab-divider contract keeps holding.
+    expect(document.querySelector('[data-pane-tab-divider="true"]')).toBeTruthy();
+  });
+
   it('docks workspace files beside the active resource from the workbench header', () => {
     const onToggleFileBrowser = vi.fn();
     const scope = { ...rightScope(), fileBrowserOpen: true };
