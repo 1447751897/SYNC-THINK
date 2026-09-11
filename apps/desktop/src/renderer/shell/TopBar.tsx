@@ -150,7 +150,7 @@ function workspaceTabCurves(width: number, baseline: number): string {
   ].join(' ');
 }
 
-function WorkspaceTabShape({ width }: { width: number }) {
+export function WorkspaceTabShape({ width }: { width: number }) {
   const id = useId().replace(/:/g, '');
   const boundaryStart = -WORKSPACE_TAB_SHOULDER - WORKSPACE_TAB_EDGE_OVERLAP;
   const boundaryEnd = width + WORKSPACE_TAB_SHOULDER + WORKSPACE_TAB_EDGE_OVERLAP;

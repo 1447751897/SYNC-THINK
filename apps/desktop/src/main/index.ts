@@ -1133,6 +1133,11 @@ function getRuntimeClient(): RuntimePipeClient {
 }
 
 function sendRuntimeEventToRenderer(event: Event): void {
+  sendRuntimeEventsToRenderer([event]);
+}
+
+function sendRuntimeEventsToRenderer(events: readonly Event[]): void {
+  if (events.length === 0) return;
   const window = mainWindow;
   const location = trustedRendererLocation;
   if (!window || !location || window.isDestroyed()) return;
@@ -1140,7 +1145,7 @@ function sendRuntimeEventToRenderer(event: Event): void {
   if (webContents.isDestroyed() || !isTrustedRendererUrl(webContents.getURL(), location)) {
     return;
   }
-  webContents.send('runtime:event', event);
+  webContents.send('runtime:events', events);
 }
 
 function sendRuntimeTransientFrameToRenderer(
@@ -1351,6 +1356,7 @@ function getRuntimeSession(): RuntimeSession {
     new FileRuntimeActivityCursorStore(
       path.join(app.getPath('userData'), 'runtime-activity-cursor.json'),
     ),
+    sendRuntimeEventsToRenderer,
   );
   return runtimeSession;
 }

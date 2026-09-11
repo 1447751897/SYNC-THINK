@@ -40,6 +40,7 @@ import {
 } from '@dnd-kit/sortable';
 import { FileTypeIcon } from './FileTypeIcon.js';
 import { browserTabFaviconSrc } from './ExternalSourceIcon.js';
+import { WorkspaceTabShape } from './TopBar.js';
 import { pointerDragLeft, tabTranslate, visualIndexFor } from './workspace-tab-morph.js';
 
 export interface ConversationTabsProps {
@@ -509,6 +510,7 @@ export function ConversationTabs(props: ConversationTabsProps) {
                   splitId={props.splitId}
                   running={props.conversationActivity?.get(id)?.running ?? false}
                   unread={props.conversationActivity?.get(id)?.unread ?? false}
+                  tabWidth={paneTabWidth}
                   onSelect={() => props.onSelect(id)}
                   onClose={() => props.onClose(id)}
                   onRename={() => props.onRename?.(id, label)}
@@ -1165,6 +1167,7 @@ function SortableConversationTab(props: {
   splitId?: string;
   running: boolean;
   unread: boolean;
+  tabWidth: number;
   hasSplitAction: boolean;
   onSelect(): void;
   onClose(): void;
@@ -1224,6 +1227,7 @@ function SortableConversationTab(props: {
           aria-label="已完成待查看"
         />
       ) : null}
+      {props.active ? <WorkspaceTabShape width={props.tabWidth} /> : null}
       <span
         className={clsx(
           'flex h-3.5 w-3.5 shrink-0 items-center justify-center',

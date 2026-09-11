@@ -681,7 +681,7 @@ describe('InlineProcessFlow', () => {
     expect(screen.queryByTestId('process-panel')).toBeNull();
   });
 
-  it('shows elapsed time in the expanded details for one tool call', () => {
+  it('keeps the elapsed time on the tool row instead of repeating it in the expanded details', () => {
     render(
       <InlineProcessFlow
         items={[
@@ -695,8 +695,12 @@ describe('InlineProcessFlow', () => {
       />,
     );
     const tool = screen.getByTestId('inline-process-tool');
+    expect(within(tool).getByTestId('inline-process-tool-elapsed').textContent).toBe('2.0s');
     fireEvent.click(within(tool).getByRole('button'));
-    expect(tool.querySelector('.shell-inline-process__tool-body')?.textContent).toContain('2.0s');
+    const body = tool.querySelector('.shell-inline-process__tool-body')?.textContent ?? '';
+    expect(body).toContain('原始工具');
+    expect(body).not.toContain('2.0s');
+    expect(body).not.toContain('耗时');
   });
 
   it('keeps the current activity at the bottom with the 3x3 pixel mark while streaming', () => {
@@ -742,9 +746,9 @@ describe('InlineProcessFlow', () => {
     expect(screen.queryByTestId('process-panel-activity')).toBeNull();
   });
 
-  it('shows the completed tool duration on the Harness row and in expanded details', () => {
-    // 设计稿 01（Beautiful UI Tool Chips 采纳）：完成态收成行带耗时，
-    // 展开详情保留同一数字。
+  it('shows the completed tool duration on the Harness row', () => {
+    // 设计稿 01（Beautiful UI Tool Chips 采纳）：完成态收成行带耗时。
+    // 展开详情不再重复这个数字——那里只留「原始工具 / 参数 / 输出」。
     render(
       <InlineProcessFlow
         items={[
@@ -761,7 +765,7 @@ describe('InlineProcessFlow', () => {
     expect(screen.getByTestId('inline-process-tool-elapsed').textContent).toBe('2.0s');
     const tool = screen.getByTestId('inline-process-tool');
     fireEvent.click(within(tool).getByRole('button'));
-    expect(tool.querySelector('.shell-inline-process__tool-body')?.textContent).toContain('2.0s');
+    expect(tool.querySelector('.shell-inline-process__tool-body')?.textContent).not.toContain('2.0s');
   });
 
   it('names the running command on its own active Harness row', () => {
@@ -796,7 +800,7 @@ describe('InlineProcessFlow', () => {
     expect(screen.queryByTestId('process-activity-label')).toBeNull();
   });
 
-  it('counts elapsed time in expanded details and freezes when streaming settles', () => {
+  it('counts elapsed time on the tool row and freezes when streaming settles', () => {
     vi.useFakeTimers();
     try {
       const startedAt = new Date(Date.now() - 8_000).toISOString();
@@ -810,12 +814,12 @@ describe('InlineProcessFlow', () => {
       );
       const tool = screen.getByTestId('inline-process-tool');
       fireEvent.click(within(tool).getByRole('button'));
-      expect(tool.querySelector('.shell-inline-process__tool-body')?.textContent).toContain('8s');
+      expect(within(tool).getByTestId('inline-process-tool-elapsed').textContent).toBe('8s');
 
       act(() => {
         vi.advanceTimersByTime(3_000);
       });
-      expect(tool.querySelector('.shell-inline-process__tool-body')?.textContent).toContain('11s');
+      expect(within(tool).getByTestId('inline-process-tool-elapsed').textContent).toBe('11s');
 
       // Renderer terminal settlement stops the shared clock even if a stale
       // tool item has not received its own completedAt yet.
@@ -830,7 +834,7 @@ describe('InlineProcessFlow', () => {
       act(() => {
         vi.advanceTimersByTime(5_000);
       });
-      expect(tool.querySelector('.shell-inline-process__tool-body')?.textContent).toContain('11s');
+      expect(within(tool).getByTestId('inline-process-tool-elapsed').textContent).toBe('11s');
     } finally {
       vi.useRealTimers();
     }

@@ -438,6 +438,128 @@ interface CachedConversationPage {
   nextCursor?: number;
 }
 
+interface ConversationScrollPosition {
+  scrollTop: number;
+  stickToBottom: boolean;
+  anchorMessageId?: string;
+  anchorOffset: number;
+}
+
+const CONVERSATION_SCROLL_POSITIONS_KEY = 'sync-think.conversationScrollPositions';
+const CONVERSATION_SCROLL_POSITION_LIMIT = 32;
+const conversationScrollPositions = new Map<string, ConversationScrollPosition>();
+
+function readConversationScrollPositions(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const raw = JSON.parse(window.localStorage.getItem(CONVERSATION_SCROLL_POSITIONS_KEY) ?? '{}');
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return;
+    for (const [key, value] of Object.entries(raw)) {
+      if (!value || typeof value !== 'object') continue;
+      const item = value as Partial<ConversationScrollPosition>;
+      if (
+        typeof item.scrollTop === 'number' &&
+        Number.isFinite(item.scrollTop) &&
+        item.scrollTop >= 0 &&
+        typeof item.stickToBottom === 'boolean' &&
+        typeof item.anchorOffset === 'number' &&
+        Number.isFinite(item.anchorOffset)
+      ) {
+        conversationScrollPositions.set(key, {
+          scrollTop: item.scrollTop,
+          stickToBottom: item.stickToBottom,
+          anchorOffset: item.anchorOffset,
+          ...(typeof item.anchorMessageId === 'string' && item.anchorMessageId
+            ? { anchorMessageId: item.anchorMessageId }
+            : {}),
+        });
+      }
+    }
+  } catch {
+    // A malformed local snapshot should not block conversation rendering.
+  }
+}
+
+function readConversationScrollPosition(key: string): ConversationScrollPosition | undefined {
+  if (typeof window !== 'undefined') {
+    try {
+      if (!window.localStorage.getItem(CONVERSATION_SCROLL_POSITIONS_KEY)) {
+        conversationScrollPositions.clear();
+      }
+    } catch {
+      // Storage can be unavailable in private or restricted renderer contexts.
+    }
+  }
+  if (conversationScrollPositions.size === 0) readConversationScrollPositions();
+  const value = conversationScrollPositions.get(key);
+  return value ? { ...value } : undefined;
+}
+
+function writeConversationScrollPosition(key: string, value: ConversationScrollPosition): void {
+  conversationScrollPositions.delete(key);
+  conversationScrollPositions.set(key, value);
+  while (conversationScrollPositions.size > CONVERSATION_SCROLL_POSITION_LIMIT) {
+    const oldest = conversationScrollPositions.keys().next().value as string | undefined;
+    if (!oldest) break;
+    conversationScrollPositions.delete(oldest);
+  }
+  if (typeof window === 'undefined') return;
+  try {
+    const serialized = Object.fromEntries(conversationScrollPositions);
+    window.localStorage.setItem(CONVERSATION_SCROLL_POSITIONS_KEY, JSON.stringify(serialized));
+  } catch {
+    // Storage can be unavailable in private or restricted renderer contexts.
+  }
+}
+
+function captureConversationScrollPosition(
+  scroller: HTMLDivElement,
+  stickToBottom: boolean,
+): ConversationScrollPosition {
+  const viewportTop = scroller.getBoundingClientRect().top;
+  let anchorMessageId: string | undefined;
+  let anchorOffset = 0;
+  for (const node of scroller.querySelectorAll<HTMLElement>('[data-message-id]')) {
+    const rect = node.getBoundingClientRect();
+    if (rect.bottom <= viewportTop) continue;
+    anchorMessageId = node.dataset.messageId;
+    anchorOffset = rect.top - viewportTop;
+    break;
+  }
+  return {
+    scrollTop: Math.max(0, scroller.scrollTop),
+    stickToBottom,
+    anchorOffset,
+    ...(anchorMessageId ? { anchorMessageId } : {}),
+  };
+}
+
+function restoreConversationScrollPosition(
+  scroller: HTMLDivElement,
+  position: ConversationScrollPosition,
+): void {
+  const maxScrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+  if (position.stickToBottom) {
+    scroller.scrollTop = maxScrollTop;
+    return;
+  }
+  const anchor = position.anchorMessageId
+    ? Array.from(scroller.querySelectorAll<HTMLElement>('[data-message-id]')).find(
+        (node) => node.dataset.messageId === position.anchorMessageId,
+      )
+    : undefined;
+  if (anchor) {
+    const viewportTop = scroller.getBoundingClientRect().top;
+    const currentOffset = anchor.getBoundingClientRect().top - viewportTop;
+    scroller.scrollTop = Math.max(
+      0,
+      Math.min(maxScrollTop, scroller.scrollTop + currentOffset - position.anchorOffset),
+    );
+    return;
+  }
+  scroller.scrollTop = Math.max(0, Math.min(maxScrollTop, position.scrollTop));
+}
+
 const RECENT_CONVERSATION_CACHE_SIZE = 8;
 const RECENT_CONVERSATION_MESSAGE_LIMIT = 100;
 const recentConversationPages = new Map<string, CachedConversationPage>();
@@ -1151,7 +1273,6 @@ interface CompactProgressState {
   /** After-tokens estimate from a successful compact — drives the ring until next usage. */
   afterTokens?: number;
 }
-
 
 function toolApprovalArguments(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -1951,7 +2072,10 @@ export function ChatView({
   const programmaticScrollTargetRef = useRef<number | null>(null);
   /** NewMax markProgrammaticScroll: layout/html/mermaid writes must not unpin. */
   const programmaticScrollPendingRef = useRef(false);
-  /** After switching conversations, jump to bottom instantly (no smooth scroll). */
+  /** Restores a saved position once the current conversation has rendered. */
+  const restoredScrollPositionRef = useRef<string | null>(null);
+  /** Coalesces high-frequency scroll writes into one local snapshot per frame. */
+  const scrollPositionWriteFrameRef = useRef<number | null>(null);
   const stickToBottomRef = useRef(true);
   /** Last explicit scroll direction; layout-driven scroll events leave it null. */
   const bottomPinIntentRef = useRef<'toward-bottom' | 'away-from-bottom' | null>(null);
@@ -2000,6 +2124,7 @@ export function ChatView({
     lastObservedScrollTopRef.current = 0;
     programmaticScrollTargetRef.current = null;
     programmaticScrollPendingRef.current = false;
+    restoredScrollPositionRef.current = null;
     setInput('');
     setDismissedModeHintText(null);
     setPendingRiskGoal(null);
@@ -2079,8 +2204,10 @@ export function ChatView({
         readAgentPreferences().thinkingBudget,
     );
     setNetEnabled(readConversationNetworkEnabled(String(conversation.id)) ?? true);
-    // Always land at the latest message when opening a chat — no animated scroll.
-    stickToBottomRef.current = true;
+    // A saved position is restored after the current message page is mounted.
+    // New conversations without a snapshot retain the default bottom pin.
+    const savedScrollPosition = readConversationScrollPosition(historyScopeRef.current.key);
+    stickToBottomRef.current = savedScrollPosition?.stickToBottom ?? true;
     bottomPinIntentRef.current = null;
     lastTouchClientYRef.current = null;
     // 注意：不能把 conversation.executionMode 放进依赖——权限切换会经
@@ -3787,6 +3914,33 @@ export function ChatView({
     streaming: Boolean(visibleStreamingMessage?.streaming),
     hasAnswerText: Boolean(visibleStreamingMessage?.answerText?.trim()),
   });
+  const saveCurrentScrollPosition = useCallback(() => {
+    const scroller = messagesScrollRef.current;
+    if (!scroller) return;
+    writeConversationScrollPosition(
+      historyScopeKey,
+      captureConversationScrollPosition(scroller, stickToBottomRef.current),
+    );
+  }, [historyScopeKey]);
+
+  const scheduleScrollPositionSave = useCallback(() => {
+    if (scrollPositionWriteFrameRef.current !== null) return;
+    scrollPositionWriteFrameRef.current = window.requestAnimationFrame(() => {
+      scrollPositionWriteFrameRef.current = null;
+      saveCurrentScrollPosition();
+    });
+  }, [saveCurrentScrollPosition]);
+
+  useEffect(() => {
+    return () => {
+      if (scrollPositionWriteFrameRef.current !== null) {
+        window.cancelAnimationFrame(scrollPositionWriteFrameRef.current);
+        scrollPositionWriteFrameRef.current = null;
+      }
+      saveCurrentScrollPosition();
+    };
+  }, [saveCurrentScrollPosition]);
+
   const pinMessagesToBottom = useCallback(() => {
     const scroller = messagesScrollRef.current;
     if (!scroller || !stickToBottomRef.current) return;
@@ -3798,6 +3952,27 @@ export function ChatView({
     }
     lastObservedScrollTopRef.current = scroller.scrollTop;
   }, []);
+
+  useLayoutEffect(() => {
+    if (!initialLoaded || restoredScrollPositionRef.current === historyScopeKey) return;
+    const scroller = messagesScrollRef.current;
+    if (!scroller) return;
+    restoredScrollPositionRef.current = historyScopeKey;
+    const saved = readConversationScrollPosition(historyScopeKey);
+    if (saved) {
+      stickToBottomRef.current = saved.stickToBottom;
+      restoreConversationScrollPosition(scroller, saved);
+      lastObservedScrollTopRef.current = scroller.scrollTop;
+      window.requestAnimationFrame(() => {
+        if (restoredScrollPositionRef.current !== historyScopeKey) return;
+        restoreConversationScrollPosition(scroller, saved);
+        lastObservedScrollTopRef.current = scroller.scrollTop;
+      });
+    } else {
+      stickToBottomRef.current = true;
+      pinMessagesToBottom();
+    }
+  }, [historyScopeKey, initialLoaded, loadedMessages.length, pinMessagesToBottom]);
 
   // Follow the live tail while the user stays pinned. Think, commentary,
   // tools, and the final answer all grow the same content column.
@@ -6427,8 +6602,7 @@ export function ChatView({
               if (event.deltaY === 0) return;
               const scroller = event.currentTarget;
               userScrollRevisionRef.current += 1;
-              bottomPinIntentRef.current =
-                event.deltaY > 0 ? 'toward-bottom' : 'away-from-bottom';
+              bottomPinIntentRef.current = event.deltaY > 0 ? 'toward-bottom' : 'away-from-bottom';
               if (
                 shouldReleaseStickOnWheel({
                   deltaY: event.deltaY,
@@ -6529,6 +6703,7 @@ export function ChatView({
                   });
                 });
               }
+              scheduleScrollPositionSave();
             }}
           >
             {messages.length === 0 && !showTyping ? (
@@ -7589,7 +7764,9 @@ function HarnessTerminalNotice({
     <details className="shell-harness-terminal is-failed" data-testid="assistant-terminal-failed">
       <summary>
         <span className="shell-harness-terminal__dot" aria-hidden="true" />
-        <span className="shell-harness-terminal__title">{overloaded ? '回答中断' : '运行失败'}</span>
+        <span className="shell-harness-terminal__title">
+          {overloaded ? '回答中断' : '运行失败'}
+        </span>
         {errorSummary ? (
           <span
             className="shell-harness-terminal__summary"

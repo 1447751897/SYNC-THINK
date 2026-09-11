@@ -403,7 +403,7 @@ export function Sidebar(props: SidebarProps) {
             <button
               type="button"
               data-testid="recent-section-toggle"
-              className="st-press-motion st-row-motion flex h-7 w-full cursor-pointer items-center gap-1 rounded-(--radius-row) px-1.5 text-left hover:bg-hover"
+              className="st-press-motion st-row-motion flex h-8 w-full cursor-pointer items-center gap-1 rounded-(--radius-row) px-1.5 text-left hover:bg-hover"
               onClick={() => setRecentOpen((v) => !v)}
             >
               <ChevronRight
@@ -411,7 +411,7 @@ export function Sidebar(props: SidebarProps) {
                 className="st-chevron text-text-faint"
                 data-open={recentOpen}
               />
-              <span className="flex-1 text-[13px] font-semibold tracking-wide text-text-faint">
+              <span className="flex-1 text-[14px] font-semibold tracking-wide text-text-faint">
                 最近对话
               </span>
             </button>
@@ -421,7 +421,7 @@ export function Sidebar(props: SidebarProps) {
                 {sidebarWorkspaceListsLoading ? (
                   <SidebarWorkspaceListSkeleton />
                 ) : (
-                <div className="shell-tree-branch">
+                <div>
                   {(Object.keys(TRACK_LABELS) as ConversationTrack[]).map((track) => {
                     const TrackIcon = TRACK_ICONS[track];
                     const expanded = props.nav.expandedTracks[track];
@@ -430,7 +430,7 @@ export function Sidebar(props: SidebarProps) {
                     return (
                       <div key={track} className="mb-0.5">
                         <div
-                          className="st-press-motion st-row-motion group flex h-7 cursor-pointer items-center gap-1 rounded-(--radius-row) px-1.5 hover:bg-hover"
+                          className="st-press-motion st-row-motion group flex h-8 cursor-pointer items-center gap-1 rounded-(--radius-row) px-1.5 hover:bg-hover"
                           data-testid={`track-header-${track}`}
                           onClick={() => props.onToggleTrack(track)}
                         >
@@ -440,7 +440,7 @@ export function Sidebar(props: SidebarProps) {
                             data-open={expanded}
                           />
                           <TrackIcon size={13} className="text-text-secondary" />
-                          <span className="flex-1 text-[12px] text-text-secondary">
+                          <span className="flex-1 text-[13px] text-text-secondary">
                             {TRACK_LABELS[track]}
                           </span>
                           <button
@@ -743,7 +743,7 @@ function ActionRow(props: {
       type="button"
       data-testid={props.testId}
       className={clsx(
-        'st-press-motion st-nav-item flex h-8 w-full items-center gap-2 rounded-(--radius-row) px-2 text-[13px]',
+        'st-press-motion st-nav-item flex h-9 w-full items-center gap-2 rounded-(--radius-row) px-2 text-[14px]',
         props.active
           ? 'shell-row-active text-text'
           : props.accent
@@ -984,7 +984,7 @@ function ConversationRow(props: {
           </span>
         ) : null}
         <ConversationIdentityMark conversationId={String(c.id)} mark={props.mark} />
-        <span className="flex-1 truncate text-[13px] font-medium leading-5">{title}</span>
+        <span className="flex-1 truncate text-[14px] font-medium leading-5">{title}</span>
         {title.startsWith('任务 ·') ? (
           <span className="shell-task-conv-badge" title="定时任务会话">
             任务
@@ -1113,7 +1113,7 @@ function ConversationRow(props: {
         )}
       </div>
       {props.track !== 'model' ? (
-        <div className="mt-0.5 flex min-w-0 items-center gap-1 pl-0.5 text-[11px] text-text-faint">
+        <div className="mt-0.5 flex min-w-0 items-center gap-1 pl-0.5 text-[12px] text-text-faint">
           <IdentityIcon size={10.5} className="shrink-0" aria-hidden="true" />
           <span className="shrink-0">{identity.kind}</span>
           {identityName ? (

@@ -1513,6 +1513,14 @@ const api = {
       ipcRenderer.on('runtime:event', handler);
       return () => ipcRenderer.removeListener('runtime:event', handler);
     },
+    onEvents: (listener: (events: Event[]) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, runtimeEvents: Event[]) => {
+        if (!Array.isArray(runtimeEvents)) return;
+        listener(runtimeEvents);
+      };
+      ipcRenderer.on('runtime:events', handler);
+      return () => ipcRenderer.removeListener('runtime:events', handler);
+    },
     onOpenConversation: (listener: (conversationId: string) => void): (() => void) => {
       const handler = (_event: Electron.IpcRendererEvent, payload: { conversationId: string }) =>
         listener(payload.conversationId);

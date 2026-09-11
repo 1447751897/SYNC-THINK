@@ -924,6 +924,7 @@ declare global {
           created: boolean;
         }>;
         onEvent(listener: (event: Event) => void): () => void;
+        onEvents?(listener: (events: Event[]) => void): () => void;
         onOpenConversation(listener: (conversationId: string) => void): () => void;
         onBrowserNewTab?(
           listener: (payload: { openerWebContentsId: number; url: string }) => void,

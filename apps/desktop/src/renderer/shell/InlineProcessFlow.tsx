@@ -302,6 +302,15 @@ function structuredValueText(value: unknown): string {
   }
 }
 
+/**
+ * 卡内顶条的说明文字。详情区左侧已经有「参数/输出」标签，这里再写一遍语言名是噪声，
+ * 换成「类型 · 规模」，让这一行提供块外没有的信息。
+ */
+function describePayload(text: string, language: string): string {
+  const lines = text.replace(/\r\n/g, '\n').replace(/\n$/, '').split('\n').length;
+  return `${language === 'json' ? 'JSON' : '文本'} · ${lines} 行`;
+}
+
 function ToolPayload({
   text,
   testId,
@@ -331,16 +340,20 @@ function ToolPayload({
     );
   const fields = structuredFields(text);
   if (!fields) {
+    const language = ['{', '['].includes(text.trimStart().charAt(0)) ? 'json' : 'text';
     return (
       <div className={`shell-tool-result${failed ? ' is-failed' : ''}`} data-testid={testId}>
         <CodeBlock
           code={text}
-          language={['{', '['].includes(text.trimStart().charAt(0)) ? 'json' : 'text'}
+          language={language}
           streaming={streaming}
           copyLabel={`复制${label}`}
           collapsible={false}
           maxHeight={240}
           showStatus={false}
+          identity={
+            <span className="shell-tool-result__label">{describePayload(text, language)}</span>
+          }
         />
       </div>
     );
@@ -348,7 +361,7 @@ function ToolPayload({
   return (
     <div className={`shell-tool-result${failed ? ' is-failed' : ''}`} data-testid={testId}>
       <div className="shell-tool-result__bar">
-        <span>JSON</span>
+        <span className="shell-tool-result__label">JSON 对象 · {fields.length} 个字段</span>
         <CopyTextButton text={text} label={`复制${label}`} />
       </div>
       <dl className={`shell-inline-process__structured${failed ? ' is-failed' : ''}`}>
@@ -519,12 +532,6 @@ function ToolRow({
             <span>原始工具</span>
             <code>{item.name}</code>
           </div>
-          {(elapsed ?? liveElapsed) ? (
-            <div className="shell-inline-process__detail-row">
-              <span>耗时</span>
-              <code>{elapsed ?? liveElapsed}</code>
-            </div>
-          ) : null}
           {item.argumentsJson ? (
             <div className="shell-inline-process__detail-block">
               <span>参数</span>

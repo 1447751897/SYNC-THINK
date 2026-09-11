@@ -47,6 +47,7 @@ function event(sequence: number, type: string, payload: Record<string, unknown> 
 
 beforeEach(() => {
   resizeObservers.length = 0;
+  window.localStorage.removeItem('sync-think.conversationScrollPositions');
   runtime.openTask.mockReset().mockResolvedValue({
     task: { threadId: 'thread-scroll-anchor' },
   });
@@ -98,6 +99,94 @@ afterEach(() => {
 });
 
 describe('ChatView streaming scroll anchor', () => {
+  it('restores a conversation scroll position after the view is remounted', async () => {
+    let scrollTop = 0;
+    const originalScrollHeight = Object.getOwnPropertyDescriptor(
+      HTMLDivElement.prototype,
+      'scrollHeight',
+    );
+    const originalClientHeight = Object.getOwnPropertyDescriptor(
+      HTMLDivElement.prototype,
+      'clientHeight',
+    );
+    const originalScrollTop = Object.getOwnPropertyDescriptor(
+      HTMLDivElement.prototype,
+      'scrollTop',
+    );
+    Object.defineProperties(HTMLDivElement.prototype, {
+      scrollHeight: {
+        configurable: true,
+        get() {
+          return this.classList.contains('shell-chat-message-scroller') ? 1600 : 0;
+        },
+      },
+      clientHeight: {
+        configurable: true,
+        get() {
+          return this.classList.contains('shell-chat-message-scroller') ? 600 : 0;
+        },
+      },
+      scrollTop: {
+        configurable: true,
+        get() {
+          return this.classList.contains('shell-chat-message-scroller') ? scrollTop : 0;
+        },
+        set(value: number) {
+          if (this.classList.contains('shell-chat-message-scroller')) scrollTop = value;
+        },
+      },
+    });
+
+    try {
+      const first = render(
+        <ChatView
+          conversation={conversation}
+          modelName="Scroll model"
+          models={[]}
+          eventHistory={[]}
+          onTitleUpdated={vi.fn()}
+        />,
+      );
+      const scroller = await screen
+        .findByTestId('compose-input')
+        .then(() => first.container.querySelector('.shell-chat-message-scroller'));
+      expect(scroller).toBeTruthy();
+      scrollTop = 1000;
+      fireEvent.scroll(scroller!);
+      scrollTop = 500;
+      fireEvent.scroll(scroller!);
+      await waitFor(() =>
+        expect(window.localStorage.getItem('sync-think.conversationScrollPositions')).toContain(
+          '500',
+        ),
+      );
+      first.unmount();
+
+      const second = render(
+        <ChatView
+          conversation={conversation}
+          modelName="Scroll model"
+          models={[]}
+          eventHistory={[]}
+          onTitleUpdated={vi.fn()}
+        />,
+      );
+      await screen.findByTestId('compose-input');
+      expect(second.container.querySelector('.shell-chat-message-scroller')).toBeTruthy();
+      expect(scrollTop).toBe(500);
+    } finally {
+      if (originalScrollHeight)
+        Object.defineProperty(HTMLDivElement.prototype, 'scrollHeight', originalScrollHeight);
+      else delete (HTMLDivElement.prototype as { scrollHeight?: number }).scrollHeight;
+      if (originalClientHeight)
+        Object.defineProperty(HTMLDivElement.prototype, 'clientHeight', originalClientHeight);
+      else delete (HTMLDivElement.prototype as { clientHeight?: number }).clientHeight;
+      if (originalScrollTop)
+        Object.defineProperty(HTMLDivElement.prototype, 'scrollTop', originalScrollTop);
+      else delete (HTMLDivElement.prototype as { scrollTop?: number }).scrollTop;
+    }
+  });
+
   it.each([true, false])(
     'follows reasoning growth only while the reader stays pinned: %s',
     async (following) => {

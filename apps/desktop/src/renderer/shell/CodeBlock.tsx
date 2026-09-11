@@ -1,4 +1,12 @@
-import { useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import {
+  useDeferredValue,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
 import { ArrowDown, Check, ChevronDown, FileCode2, LoaderCircle } from 'lucide-react';
 import { CopyTextButton } from './CopyTextButton.js';
 import { highlightCodeLines, languageFromPath } from './code-highlight.js';
@@ -14,6 +22,8 @@ interface CodeBlockProps {
   collapsible?: boolean;
   maxHeight?: number;
   showStatus?: boolean;
+  /** 覆盖顶条左侧的身份区（默认是「文件图标 + 文件名 + 语言名」）。 */
+  identity?: ReactNode;
   readingState?: CodeBlockReadingState;
 }
 
@@ -38,6 +48,7 @@ export function CodeBlock({
   collapsible = true,
   maxHeight = 280,
   showStatus = true,
+  identity,
   readingState,
 }: CodeBlockProps) {
   const deferredCode = useDeferredValue(code);
@@ -102,15 +113,17 @@ export function CodeBlock({
       data-writing={writing ? 'true' : 'false'}
     >
       <div className="shell-md-code__bar">
-        <div className="shell-agent-code__identity">
-          <FileCode2 size={14} aria-hidden="true" />
-          {filename ? (
-            <span className="shell-agent-code__filename" title={filename}>
-              {filename}
-            </span>
-          ) : null}
-          <span className="shell-md-code__lang">{resolvedLanguage}</span>
-        </div>
+        {identity ?? (
+          <div className="shell-agent-code__identity">
+            <FileCode2 size={14} aria-hidden="true" />
+            {filename ? (
+              <span className="shell-agent-code__filename" title={filename}>
+                {filename}
+              </span>
+            ) : null}
+            <span className="shell-md-code__lang">{resolvedLanguage}</span>
+          </div>
+        )}
         <div className="shell-md-code__actions">
           {showStatus ? (
             <span className="shell-agent-code__status" role="status">

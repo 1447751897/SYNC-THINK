@@ -1706,19 +1706,26 @@ function ShellAppInner() {
     if (!hasShellBootSnapshot(readShellBootSnapshot())) setBootState('loading');
     setBootError(undefined);
 
-    const unsub = api.onEvent?.((event: Event) => {
-      setEventHistory((prev) => mergeEventHistory(prev, [event]));
+    const handleRuntimeEvents = (events: Event[]) => {
+      if (events.length === 0) return;
+      setEventHistory((prev) => mergeEventHistory(prev, events));
       // 全局智能体库随事件即时刷新：AI 通过 create_agent / update_agent /
       // archive_agent 工具变更智能体时发布 globalAgent.* 事件，不在此刷新则
       // 智能体库列表要等手动刷新/切页才更新。
       if (
-        event.type === 'globalAgent.created' ||
-        event.type === 'globalAgent.updated' ||
-        event.type === 'globalAgent.deleted'
+        events.some(
+          (event) =>
+            event.type === 'globalAgent.created' ||
+            event.type === 'globalAgent.updated' ||
+            event.type === 'globalAgent.deleted',
+        )
       ) {
         void refresh();
       }
-    });
+    };
+    const unsub = api.onEvents
+      ? api.onEvents(handleRuntimeEvents)
+      : api.onEvent?.((event: Event) => handleRuntimeEvents([event]));
 
     const stopConnect = startRuntimeConnection({
       connect: () => api.connect(),

@@ -210,6 +210,26 @@ describe('desktop main RuntimeSession', () => {
     expect(afterLive.snapshot.map((event) => event.sequence)).toEqual([1, 2, 3]);
   });
 
+  it('batches renderer forwarding within one replay turn while preserving order', async () => {
+    const client = new FakeRuntimeClient();
+    const batches: number[][] = [];
+    const session = new RuntimeSession(
+      client,
+      () => {},
+      undefined,
+      (events) => batches.push(events.map((event) => event.sequence)),
+    );
+
+    await session.connect();
+    client.emit(eventAt(1));
+    client.emit(eventAt(2));
+    client.emit(eventAt(3));
+    expect(batches).toEqual([]);
+    await Promise.resolve();
+    expect(batches).toEqual([[1, 2, 3]]);
+    client.completeReplay();
+  });
+
   it('bounds a large sequential replay without replacing the history array per event', async () => {
     const client = new FakeRuntimeClient();
     const session = new RuntimeSession(client, () => {});
@@ -283,6 +303,7 @@ describe('desktop main RuntimeSession', () => {
       await expect.poll(() => client.subscribeCount).toBe(1);
       client.emit(eventAt(1));
       client.emit(eventAt(2));
+      await vi.waitFor(() => expect(forwarded).toEqual([2]));
       expect(warning).toHaveBeenCalled();
       expect(forwarded).toEqual([2]);
       client.completeReplay();
