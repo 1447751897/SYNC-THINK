@@ -27523,6 +27523,16 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         }
         return { ok: true, avatar: trimmed };
       }
+      // Procedural avatar seed written by the desktop avatar picker, e.g.
+      // "gen:v1:blob:red". The picker owns the shape/color enums and degrades an
+      // unrecognised value to a derived face, so this only bounds the value's
+      // shape — compact, single-line, and never a remote URL.
+      if (trimmed.startsWith('gen:v1:')) {
+        if (!/^gen:v1:[a-z]+:[a-z]+$/.test(trimmed)) {
+          return { ok: false, error: 'avatar seed must look like gen:v1:<shape>:<color>' };
+        }
+        return { ok: true, avatar: trimmed };
+      }
       if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
         return {
           ok: false,

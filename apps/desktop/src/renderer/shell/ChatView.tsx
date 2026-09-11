@@ -91,6 +91,7 @@ import { normalizeAssistantTurnPhases } from '@sync-think/protocol/assistant-tur
 import { parseConversationGetContextStatusResponse } from '@sync-think/protocol/conversation-context-status';
 import type { ProjectTextLocation } from '../../workspace-tools-contract.js';
 import { AgentAvatarView } from './AgentAvatarView.js';
+import { avatarStateFrom } from './agentAvatarState.js';
 import { BrandLogoMark } from './BrandLogoMark.js';
 import { resolveKernelBrandLogo, resolveKernelDisplayName } from './brand-icons.js';
 import { useAutoDisclosure } from './auto-disclosure.js';
@@ -7910,6 +7911,18 @@ const MessageBubble = memo(function MessageBubble({
   const timelineHasLoadedPageRef = useRef(false);
   const timelineSeenCursorsRef = useRef(new Set<string>());
   const observedTimelineRunRef = useRef(message.runId);
+  // Expression layer: a turn that just finished celebrates briefly. Tracked through
+  // a ref so remounting (e.g. switching conversations) never replays a stale one.
+  const [justCompleted, setJustCompleted] = useState(false);
+  const wasStreamingRef = useRef(Boolean(message.streaming));
+  useEffect(() => {
+    const finished = wasStreamingRef.current && !message.streaming;
+    wasStreamingRef.current = Boolean(message.streaming);
+    if (!finished) return;
+    setJustCompleted(true);
+    const timer = setTimeout(() => setJustCompleted(false), 4_000);
+    return () => clearTimeout(timer);
+  }, [message.streaming]);
 
   useEffect(() => {
     if (observedTimelineRunRef.current === message.runId) return;
@@ -8268,12 +8281,34 @@ const MessageBubble = memo(function MessageBubble({
     message.globalAgentName?.trim() || runAgentIdentity?.name || avatarSource?.name;
   const avatarName = avatarSource?.name ?? visibleAgentLabel ?? '助手';
   const hasAnswerText = Boolean((message.answerText ?? message.text).trim());
+  // Expression for the procedural avatar. Every signal below comes from this
+  // conversation, which is exactly where these expressions can appear.
+  const reasoningInFlight =
+    Boolean(message.streaming) &&
+    ((displayedProcessItems ?? []).some(
+      (item) => item.kind === 'reasoning' && item.status === 'streaming',
+    ) ||
+      // Streaming snapshots carry reasoning in the message field before any
+      // answer text exists — that window is "thinking", not "working".
+      (Boolean(message.reasoningText?.trim()) && !hasAnswerText));
+  const avatarState = avatarStateFrom({
+    streaming: Boolean(message.streaming),
+    reasoning: reasoningInFlight,
+    awaitingApproval: waitingForApproval,
+    failed: Boolean(processLoadFailure),
+    justCompleted,
+  });
   const timelineTiming = assistantTimelineProcessTiming(displayedTimeline, !message.streaming);
   const showFooter = !message.streaming && (hasAnswerText || Boolean(processView));
   return (
     <div className="shell-msg shell-msg--assistant group relative flex items-start gap-2.5">
       <div className="shrink-0 pt-0.5">
-        <AgentAvatarView name={avatarName} avatar={avatarSource?.avatar} size={26} />
+        <AgentAvatarView
+          name={avatarName}
+          avatar={avatarSource?.avatar}
+          size={26}
+          state={avatarState}
+        />
       </div>
       <div className="min-w-0 flex-1 pt-0.5">
         {visibleAgentLabel ? (
