@@ -41,11 +41,11 @@ import {
 } from './detect-provider-connection.js';
 import {
   ArrowLeft,
+  Brain,
   Check,
   ChevronDown,
   ChevronRight,
   Cloud,
-  Cpu,
   Database,
   FileText,
   Gauge,
@@ -64,6 +64,7 @@ import {
   Settings2,
   Sparkles,
   Trash2,
+  Video,
   Wrench,
   X,
 } from 'lucide-react';
@@ -118,6 +119,9 @@ const MODEL_CAPABILITY_OPTIONS: ReadonlyArray<{
 }> = [
   { value: 'text', label: '文本', description: '读取并生成文本内容' },
   { value: 'vision', label: '图片理解', description: '直接读取图片内容' },
+  { value: 'document', label: '文档理解', description: '直接读取 PDF / Office 文档内容' },
+  { value: 'video', label: '视频理解', description: '直接读取视频内容' },
+  { value: 'thinking', label: '深度思考', description: '输出前进行推理思考' },
   { value: 'tool-calling', label: '工具调用', description: '调用 MCP 与本地工具' },
   { value: 'web-search', label: '联网搜索', description: '调用模型原生网页搜索' },
   { value: 'image-generation', label: '图片生成', description: '根据提示生成图片' },
@@ -2476,6 +2480,7 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
                     value={visionFallback}
                     busy={operation?.kind === 'save-preference'}
                     onChange={handleSaveVision}
+                    onProbe={handleProbeModelCapabilities}
                   />
                 ) : detailView === 'plan-act' ? (
                   <PlanActPanel
@@ -3026,9 +3031,12 @@ function CreateProviderForm({
         aria-labelledby="model-provider-form-title"
       >
         <div className="model-provider-detail__head">
-          <span className="model-provider-detail__avatar" data-testid={iconTestId}>
-            {avatarLetter}
-          </span>
+          <ProviderDetailAvatar
+            providerId={template?.id}
+            name={draft.name.trim() || template?.name || ''}
+            fallbackLetter={avatarLetter}
+            testId={iconTestId}
+          />
           <h2 id="model-provider-form-title">{title}</h2>
         </div>
 
@@ -3319,6 +3327,43 @@ function ProviderRowAvatar({ provider }: { provider: ProviderSummary }) {
   }
   return (
     <span className="model-enabled-row__avatar">{provider.name[0]?.toUpperCase() ?? '?'}</span>
+  );
+}
+
+/**
+ * Provider avatar for the detail panel / create form header. Uses the same
+ * brand resolution as ProviderRowAvatar so a provider never shows the brand
+ * mark in the list but a bare letter in its own header.
+ */
+function ProviderDetailAvatar({
+  providerId,
+  name,
+  fallbackLetter,
+  testId,
+}: {
+  providerId?: string;
+  name: string;
+  fallbackLetter?: string;
+  testId?: string;
+}) {
+  const brandLogo =
+    (providerId ? resolveProviderBrandLogo(providerId) : undefined) ??
+    resolveProviderBrandLogoByName(name);
+  if (brandLogo) {
+    return (
+      <span
+        className="model-provider-detail__avatar model-provider-detail__avatar--logo"
+        aria-hidden="true"
+        {...(testId ? { 'data-testid': testId } : {})}
+      >
+        <BrandLogoMark logo={brandLogo} size={16} />
+      </span>
+    );
+  }
+  return (
+    <span className="model-provider-detail__avatar" {...(testId ? { 'data-testid': testId } : {})}>
+      {fallbackLetter ?? name.trim()[0]?.toUpperCase() ?? '?'}
+    </span>
   );
 }
 
@@ -3741,9 +3786,7 @@ function ProviderDetail({
   return (
     <div className="model-provider-detail">
       <div className="model-provider-detail__head">
-        <span className="model-provider-detail__avatar">
-          {provider.name[0]?.toUpperCase() ?? '?'}
-        </span>
+        <ProviderDetailAvatar providerId={provider.providerId} name={provider.name} />
         <h2>{provider.name}</h2>
         {!provider.enabled ? <span className="model-provider-detail__disabled">已停用</span> : null}
       </div>
@@ -4462,6 +4505,12 @@ function ModelCapabilityIcon({ capability }: { capability: ModelCapabilityTag })
       return <FileText size={14} aria-hidden="true" />;
     case 'vision':
       return <Eye size={14} aria-hidden="true" />;
+    case 'document':
+      return <FileText size={14} aria-hidden="true" />;
+    case 'video':
+      return <Video size={14} aria-hidden="true" />;
+    case 'thinking':
+      return <Brain size={14} aria-hidden="true" />;
     case 'tool-calling':
       return <Wrench size={14} aria-hidden="true" />;
     case 'web-search':
@@ -4511,6 +4560,8 @@ function ModelCapabilityDialog({
     'idle',
   );
   const [notice, setNotice] = useState<string | null>(null);
+  /** 实测明细：runtime 返回的逐项成败（results）与原因（reasons）。 */
+  const [probeDetail, setProbeDetail] = useState<CapabilityProbeSuggestion | null>(null);
   const [editingContext, setEditingContext] = useState(false);
   const [contextDraft, setContextDraft] = useState('');
 
@@ -4543,19 +4594,25 @@ function ModelCapabilityDialog({
     );
     setPhase('idle');
     setNotice(null);
+    setProbeDetail(null);
   };
 
   const runProbe = async () => {
     setPhase('probing');
+    setProbeDetail(null);
     setNotice('正在向当前接口发送实测请求…');
     try {
       const suggestion = await onProbe(model.modelId);
       setDraft([...suggestion.capabilities]);
+      setProbeDetail(suggestion);
       setPhase('success');
       const count = suggestion.capabilities.length;
+      const passed = Object.values(suggestion.results ?? {}).filter(Boolean).length;
       setNotice(
         suggestion.source === 'live'
-          ? `检测完成：已向接口实测，建议勾选 ${count} 项。请核对后保存。`
+          ? count > 0
+            ? `检测完成：已向接口实测，建议勾选 ${count} 项。请核对后保存。`
+            : `检测完成：${passed} 项实测通过、${Object.values(suggestion.results ?? {}).length - passed} 项未通过。详见下方实测明细。`
           : `检测完成：按协议和模型名推断出 ${count} 项能力。请核对后保存。`,
       );
     } catch (error) {
@@ -4621,7 +4678,11 @@ function ModelCapabilityDialog({
         >
         <header className="model-capability-dialog__header">
           <span className="model-capability-dialog__model-icon">
-            <Cpu size={18} aria-hidden="true" />
+            <ProviderBrandIcon
+              providerId={provider.providerId}
+              providerName={provider.name}
+              testIdPrefix="model-capability-provider-icon"
+            />
           </span>
           <div className="model-capability-dialog__identity">
             <RadixDialog.Title>{title}</RadixDialog.Title>
@@ -4758,6 +4819,47 @@ function ModelCapabilityDialog({
                 );
               })}
             </div>
+            {probeDetail ? (
+              <div className="model-capability-dialog__probe-detail">
+                <div className="model-capability-dialog__section-head">
+                  <h3>实测明细</h3>
+                  <span>
+                    {Object.values(probeDetail.results ?? {}).filter(Boolean).length} /{' '}
+                    {Object.keys(probeDetail.results ?? {}).length} 项通过
+                  </span>
+                </div>
+                {Object.keys(probeDetail.results ?? {}).length > 0 ? (
+                  <ul className="model-capability-dialog__probe-results">
+                    {MODEL_CAPABILITY_OPTIONS.map((option) => {
+                      const value = probeDetail.results?.[option.value];
+                      if (value === undefined) return null;
+                      return (
+                        <li
+                          key={option.value}
+                          className={value ? 'is-pass' : 'is-fail'}
+                          title={option.description}
+                        >
+                          {value ? (
+                            <Check size={12} aria-hidden="true" />
+                          ) : (
+                            <X size={12} aria-hidden="true" />
+                          )}
+                          <span>{option.label}</span>
+                          <em>{value ? '实测通过' : '未通过'}</em>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                ) : null}
+                {probeDetail.reasons.length > 0 ? (
+                  <ul className="model-capability-dialog__probe-reasons">
+                    {probeDetail.reasons.map((reason, index) => (
+                      <li key={`${index}-${reason}`}>{reason}</li>
+                    ))}
+                  </ul>
+                ) : null}
+              </div>
+            ) : null}
             {notice ? (
               <p
                 className={clsx(
@@ -4824,7 +4926,7 @@ function ModelCapabilityDialog({
             </button>
           </div>
         </footer>
-        </RadixDialog.Content>
+      </RadixDialog.Content>
       </RadixDialog.Portal>
     </RadixDialog.Root>
   );
@@ -4878,12 +4980,14 @@ function VisionFallbackPanel({
   value,
   busy,
   onChange,
+  onProbe,
 }: {
   allModels: Array<{
     modelId: string;
     providerModelId: string;
     displayName: string;
     providerName: string;
+    providerId: string;
     enabled: boolean;
     capabilities: readonly string[];
     capabilitiesConfirmed: boolean;
@@ -4891,10 +4995,65 @@ function VisionFallbackPanel({
   value: VisionFallbackSetting;
   busy: boolean;
   onChange(value: VisionFallbackSetting): void;
+  onProbe(providerId: string, modelId: string): Promise<CapabilityProbeSuggestion>;
 }) {
   const options = allModels.filter(
     (model) => model.enabled && modelCanServeAsVisionFallback(model),
   );
+  // 与 NewMax 的 VisionFallbackPanel 同形：把「已验证的视觉模型」与「还没验证的候选」
+  // 区分开，一次扫描所有候选，结果逐行给出校验码成败与原因。
+  const [scan, setScan] = useState<{ done: number; total: number } | null>(null);
+  const [scanRows, setScanRows] = useState<
+    Array<{ modelId: string; label: string; ok: boolean | undefined; reason: string }>
+  >([]);
+
+  const runScan = useCallback(async () => {
+    if (scan || options.length === 0) return;
+    const collected: Array<{
+      modelId: string;
+      label: string;
+      ok: boolean | undefined;
+      reason: string;
+    }> = [];
+    setScanRows([]);
+    setScan({ done: 0, total: options.length });
+    let cursor = 0;
+    let done = 0;
+    // 与 NewMax 的 runVisionScan 相同的 3 worker 并发池。
+    const worker = async () => {
+      while (true) {
+        const index = cursor++;
+        if (index >= options.length) return;
+        const option = options[index]!;
+        const label = `${option.displayName} · ${option.providerName}`;
+        try {
+          const suggestion = await onProbe(option.providerId, option.modelId);
+          const visionReason =
+            suggestion.reasons.find(
+              (reason) => reason.includes('图片') || reason.includes('校验码'),
+            ) ?? '';
+          collected.push({
+            modelId: option.modelId,
+            label,
+            ok: suggestion.results?.vision,
+            reason: visionReason,
+          });
+        } catch (error) {
+          collected.push({
+            modelId: option.modelId,
+            label,
+            ok: false,
+            reason: error instanceof Error ? error.message : '检测失败',
+          });
+        }
+        done++;
+        setScan({ done, total: options.length });
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(3, options.length) }, worker));
+    setScanRows(collected);
+    setScan(null);
+  }, [onProbe, options, scan]);
   return (
     <div className="model-strategy-panel">
       <div className="model-strategy-panel__head">
@@ -4922,6 +5081,20 @@ function VisionFallbackPanel({
             options={options.map((model) => ({
               value: model.modelId,
               label: `${model.displayName} · ${model.providerName}`,
+              render: (
+                <span className="model-fallback-option">
+                  <ProviderBrandIcon
+                    providerId={model.providerId}
+                    providerName={model.providerName}
+                    testIdPrefix="fallback-provider-icon"
+                  />
+                  <span className="model-fallback-option__provider">{model.providerName}</span>
+                  <span className="model-fallback-option__model">{model.displayName}</span>
+                  {model.capabilitiesConfirmed && model.capabilities.includes('vision') ? (
+                    <span className="model-fallback-option__verified">通道已验证</span>
+                  ) : null}
+                </span>
+              ),
             }))}
             onChange={(modelId) => onChange({ ...value, modelId: modelId || null })}
           />
@@ -4931,6 +5104,42 @@ function VisionFallbackPanel({
             ? '仅显示已启用且支持图片输入的模型；更改会立即保存。'
             : '当前没有已启用且支持图片输入的模型，文本模型会自动使用 Windows OCR。'}
         </p>
+        {options.length > 0 ? (
+          <div className="model-strategy-panel__scan">
+            <div className="model-strategy-panel__scan-head">
+              <button
+                type="button"
+                className="model-strategy-panel__scan-button"
+                disabled={scan !== null}
+                onClick={() => void runScan()}
+              >
+                {scan ? `扫描中 ${scan.done}/${scan.total}` : '扫描视觉能力'}
+              </button>
+              <span className="model-strategy-panel__scan-caption">
+                逐个候选发一张带校验码的测试图，只有真读出校验码才算通过。
+              </span>
+            </div>
+            {scanRows.length > 0 ? (
+              <ul className="model-strategy-panel__scan-list">
+                {scanRows.map((row) => (
+                  <li
+                    key={row.modelId}
+                    className="model-strategy-panel__scan-row"
+                    data-ok={row.ok === true ? 'true' : 'false'}
+                  >
+                    <span className="model-strategy-panel__scan-name">{row.label}</span>
+                    <span className="model-strategy-panel__scan-state">
+                      {row.ok === true ? '✓ 已验证' : '未通过'}
+                    </span>
+                    {row.reason ? (
+                      <span className="model-strategy-panel__scan-reason">{row.reason}</span>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </div>
+        ) : null}
       </div>
     </div>
   );
@@ -4977,7 +5186,7 @@ function modelCanServeAsVisionFallback(model: {
   if (model.capabilitiesConfirmed) return model.capabilities.includes('vision');
   if (model.capabilities.includes('vision')) return true;
   const id = model.providerModelId.trim();
-  return /gpt-4o|gpt-4\.1|gpt-5|\bo[34]\b|\bo[45]-|grok|gemini|claude|-vl\b|\/vl\d|vision|pixtral|llava|internvl/i.test(
+  return /gpt-4o|gpt-4\.1|gpt-[5-9](?:[._-]|$)|\bo[34]\b|\bo[45]-|grok|gemini|claude|-vl\b|\/vl\d|vision|pixtral|llava|internvl/i.test(
     id,
   );
 }

@@ -21,7 +21,13 @@ describe('suggestCapabilities (product §7.2)', () => {
   });
 
   it('suggests vision for multimodal model ids', () => {
-    const cases = ['gpt-4o', 'gpt-4-vision-preview', 'claude-3-5-sonnet', 'gemini-1.5-pro'];
+    const cases = [
+      'gpt-4o',
+      'gpt-4-vision-preview',
+      'gpt-6-astra',
+      'claude-3-5-sonnet',
+      'gemini-1.5-pro',
+    ];
     for (const id of cases) {
       const result = suggestCapabilities({ providerModelId: id, protocol: 'openai-chat' });
       expect(result.capabilities).toEqual(
@@ -121,6 +127,9 @@ describe('normalizeCapabilities / mergeCapabilitySuggestions', () => {
     expect(CAPABILITY_TAGS).toEqual([
       'text',
       'vision',
+      'document',
+      'video',
+      'thinking',
       'tool-calling',
       'web-search',
       'image-generation',

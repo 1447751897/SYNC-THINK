@@ -4,6 +4,9 @@ import type { CapabilityTag, ModelId, ProtocolFamily } from '@sync-think/shared'
 export const CAPABILITY_TAGS: readonly CapabilityTag[] = [
   'text',
   'vision',
+  'document',
+  'video',
+  'thinking',
   'tool-calling',
   'web-search',
   'image-generation',
@@ -160,7 +163,7 @@ export function suggestCapabilities(input: CapabilitySuggestionInput): Capabilit
   const isVision =
     !isEmbedding &&
     !isImageGen &&
-    (/\bgpt-4o\b/.test(id) ||
+    (/\bgpt-(?:4o|[5-9])(?:[._-]|$)/.test(id) ||
       id.includes('vision') ||
       id.includes('gpt-4-turbo') ||
       /\bclaude-3/.test(id) ||

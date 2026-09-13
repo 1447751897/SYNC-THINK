@@ -503,7 +503,10 @@ describe('provider commands', () => {
       const gpt = probePayload.suggestions.find((s) => s.providerModelId === 'gpt-4o');
       expect(gpt).toBeTruthy();
       expect(gpt!.capabilitiesConfirmed).toBe(false);
-      expect(gpt!.capabilities).toEqual(expect.arrayContaining(['text', 'vision', 'tool-calling']));
+      // A normal text response after a schema is not a tool-call event; the
+      // live probe must leave tool-calling unmarked until the adapter emits one.
+      expect(gpt!.capabilities).toEqual(expect.arrayContaining(['text', 'vision']));
+      expect(gpt!.capabilities).not.toContain('tool-calling');
       expect(gpt!.source).toBe('live');
       expect(JSON.stringify(probed)).not.toContain(secret);
 

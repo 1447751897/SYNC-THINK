@@ -26,7 +26,7 @@ export class FakeProvider implements ProviderAdapter {
     const { chunksPerWord = 4, tickMs = 0, failAfter } = this.opts;
 
     const lastUserText = lastUserString(request);
-    const synthesized = synthesizeResponse(lastUserText, request.modelId);
+    const synthesized = synthesizeResponse(lastUserText, request.modelId, hasImagePart(request));
     const words = synthesized.split(' ');
 
     // Emit a usage record up front (Phase 0 convention).
@@ -88,8 +88,25 @@ function lastUserString(request: ProviderCallRequest): string {
     .join(' ');
 }
 
-function synthesizeResponse(userText: string, modelId: string): string {
+/**
+ * The vision probe asks the model to read a four-digit code out of a
+ * purpose-built PNG, and only counts a reply as proof of vision support when
+ * that code comes back (see vision-probe.ts). A fake provider that never
+ * "looks" at the image would therefore always be classified as text-only, so it
+ * answers with the code whenever a request carries an image part.
+ */
+const VISION_PROBE_ANSWER = '7319';
+
+function hasImagePart(request: ProviderCallRequest): boolean {
+  return [...request.messages].reverse().some((m) => {
+    if (typeof m.content === 'string') return false;
+    return m.content.some((p) => p.type === 'image');
+  });
+}
+
+function synthesizeResponse(userText: string, modelId: string, hasImage = false): string {
   const head = `[${modelId}] `;
+  if (hasImage) return `${head}${VISION_PROBE_ANSWER}`;
   if (!userText) return `${head}Hello — fake provider online.`;
   if (/^TOOL:/.test(userText)) return `${head}I will call the tool now.`;
   return `${head}Echo from fake provider: ${userText}`;

@@ -549,6 +549,38 @@ describe('ModelSettings NewMax provider detail', () => {
     });
   });
 
+  it('starts probing immediately and lists each capability result and reason', async () => {
+    runtime.probeCapabilities.mockResolvedValueOnce({
+      providerId: provider.providerId,
+      applied: true,
+      suggestions: [
+        {
+          modelId: provider.models[0]!.modelId,
+          providerModelId: provider.models[0]!.providerModelId,
+          displayName: provider.models[0]!.displayName,
+          capabilities: ['text'],
+          capabilitiesConfirmed: false,
+          results: { text: true, vision: false, 'tool-calling': true },
+          confidence: 'medium',
+          reasons: ['文本请求实测成功', '图片输入请求未通过', '工具 schema 请求实测成功'],
+          source: 'live',
+        },
+      ],
+    });
+    await renderSettings();
+
+    fireEvent.click(screen.getByRole('button', { name: '查看模型 gpt-5' }));
+    const detail = await screen.findByRole('dialog', { name: 'gpt-5' });
+
+    fireEvent.click(within(detail).getByRole('button', { name: '检测能力' }));
+
+    // 逐项实测结果与原因都要显示（此前 reasons 被丢弃 → 看起来「没有返回」）。
+    expect(await within(detail).findByText('实测明细')).toBeTruthy();
+    expect(within(detail).getByText('文本请求实测成功')).toBeTruthy();
+    expect(within(detail).getByText('图片输入请求未通过')).toBeTruthy();
+    expect(within(detail).getByText('工具 schema 请求实测成功')).toBeTruthy();
+  });
+
   it('edits the context window inside the capability dialog via input and presets', async () => {
     await renderSettings();
 
@@ -741,6 +773,41 @@ describe('ModelSettings NewMax provider detail', () => {
     });
     expect(screen.queryByText('图片识别 Fallback 已更新')).toBeNull();
     expect(screen.queryByTestId('shell-toast')).toBeNull();
+  });
+
+  it('scans every vision candidate and reports the probe marker verdict per model', async () => {
+    runtime.probeCapabilities.mockResolvedValueOnce({
+      providerId: provider.providerId,
+      applied: true,
+      suggestions: [
+        {
+          modelId: 'model-1',
+          providerModelId: 'gpt-5',
+          displayName: 'gpt-5',
+          capabilities: ['text', 'vision'],
+          capabilitiesConfirmed: false,
+          results: { text: true, vision: true },
+          confidence: 'high',
+          reasons: ['图片输入请求通过（校验码 7319 已识别）'],
+          source: 'live',
+        },
+      ],
+    });
+    await renderSettings();
+    fireEvent.click(screen.getByRole('button', { name: '图片识别 Fallback' }));
+    expect(await screen.findByRole('heading', { name: '图片识别 Fallback' })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: '扫描视觉能力' }));
+
+    // 扫描必须真的按候选逐个实测，并把校验码判定逐行回显。
+    await waitFor(() => {
+      expect(runtime.probeCapabilities).toHaveBeenCalledWith({
+        providerId: 'provider-1',
+        modelId: 'model-1',
+      });
+    });
+    expect(await screen.findByText('✓ 已验证')).toBeTruthy();
+    expect(screen.getByText('图片输入请求通过（校验码 7319 已识别）')).toBeTruthy();
   });
 
   it('opens Plan & Act as a list-backed detail panel and saves changes immediately', async () => {
