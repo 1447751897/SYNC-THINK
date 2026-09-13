@@ -10,6 +10,13 @@ import { DemoRunPersistenceJournal } from './demo-run-persistence.js';
 import { isCodexSilentCommandWatchdogMessage } from './kernel/persistent-terminal-command.js';
 import { CommandSessionStore, isRunningCommandResult } from './command-sessions.js';
 import {
+  describeVisionProbeFailure,
+  hasVisionProbeMarker,
+  VISION_PROBE_IMAGE_URL,
+  VISION_PROBE_MARKER,
+  VISION_PROBE_PROMPT,
+} from './vision-probe.js';
+import {
   projectEventContent,
   projectMessageContent,
   projectTimelineContent,
@@ -198,6 +205,8 @@ import {
   type SkillLocalImportResponse,
   type LocalSkillCandidate,
   type AssistantTurnSegment,
+  type DelegatedAgentProjection,
+  type DelegatedAgentToolEvent,
   type ConversationTransientFrame,
   type ConversationTransientSnapshot,
   type SubscribeConversationTransientStreamResponse,
@@ -305,6 +314,9 @@ import {
   type ExternalEventEnvelope,
 } from '@sync-think/shared';
 import {
+  fetchProviderBalance,
+  supportsProviderBalance,
+  ProviderBalanceError,
   textFromEvents,
   type AdapterEvent,
   type ProviderContentPart,
@@ -320,6 +332,7 @@ import {
 import type {
   ConversationGetRunProcessResponse,
   ConversationListRunTimelineResponse,
+  ProviderBalanceResponse,
 } from '@sync-think/protocol';
 import {
   buildDesignGenerationPrompt,
@@ -609,6 +622,7 @@ import {
   parseSetModelPrioritiesPayload,
   parseUpdateModelPayload,
   parseRemoveModelPayload,
+  parseProviderBalancePayload,
   parseGetSettingsPayload,
   parseSetSettingPayload,
   parseUsageSummaryPayload,
@@ -787,6 +801,17 @@ import {
   setKernelMcpServerConditions,
 } from './kernel/mcp-servers/registry.js';
 import {
+  COLLABORATION_SETTINGS_KEY,
+  normalizeCollaborationSettings,
+} from '@sync-think/protocol';
+import {
+  DELEGATED_READONLY_TOOLS,
+  evaluateDynamicDelegation,
+  isDelegatedReadOnlyTool,
+  resolveCollaborationToolDenial,
+  resolveAgentAssignment,
+} from './collaboration-policy.js';
+import {
   PLAN_ACT_SETTING_KEY,
   parsePlanActSetting,
   resolvePlanActRouteForContext,
@@ -794,6 +819,24 @@ import {
 } from './plan-act.js';
 import { ToolApprovalPolicy, toolApprovalScopesFor } from './tool-approval-policy.js';
 import { commitToolApprovalDecision } from './tool-approval-commit.js';
+
+const DEFAULT_DELEGATED_TASK_TIMEOUT_SECONDS = 300;
+const MAX_DELEGATED_TASK_TIMEOUT_SECONDS = 3_600;
+
+function delegatedToolEventsFromTimeline(
+  timeline: readonly AssistantTurnSegment[] | undefined,
+): DelegatedAgentToolEvent[] {
+  return (timeline ?? [])
+    .filter((segment): segment is Extract<AssistantTurnSegment, { kind: 'tool' }> => segment.kind === 'tool')
+    .map((segment) => ({
+      toolName: segment.name,
+      arguments: segment.argumentsJson ?? '{}',
+      status: segment.status,
+      ...(segment.output !== undefined ? { output: segment.output.slice(0, 12_000) } : {}),
+      ...(segment.startedAt ? { startedAt: segment.startedAt } : {}),
+      ...(segment.completedAt ? { completedAt: segment.completedAt } : {}),
+    }));
+}
 import { computeNextRunAt, initialNextRunAt } from './task-scheduler.js';
 import {
   enabledClaudePluginSkillSources,
@@ -2561,6 +2604,17 @@ export class Runtime {
   private readonly discoveryByProtocol: Partial<Record<ProtocolFamily, DemoProvider>>;
   private readonly discoveryAdapter?: DemoProvider;
   private readonly demoRuns = new Map<string, DemoRunState>();
+  /** Terminal child snapshots retained until agent_delegate projects them. */
+  private readonly completedDelegatedRuns = new Map<string, DemoRunState>();
+  private readonly completedDelegatedRunStates = new Map<
+    string,
+    'completed' | 'failed' | 'cancelled' | 'timed_out'
+  >();
+  /** Parent-scoped live child cards; cleared when the parent terminal frame is emitted. */
+  private readonly delegatedAgentTransientByParentRun = new Map<
+    string,
+    DelegatedAgentProjection[]
+  >();
   private readonly demoRunPersistence = new DemoRunPersistenceJournal();
   /** Abort controllers for in-flight demo chat streams (Stop button). */
   private readonly demoRunAborts = new Map<string, AbortController>();
@@ -3172,6 +3226,10 @@ export class Runtime {
         }
         if (frame.type === 'provider.removeModel') {
           this.handleRemoveModel(socket, frame);
+          return;
+        }
+        if (frame.type === 'provider.balance') {
+          void this.handleProviderBalance(socket, frame);
           return;
         }
         if (frame.type === 'settings.get') {
@@ -4269,17 +4327,37 @@ export class Runtime {
     const candidates = cursorAhead
       ? []
       : retained.filter((candidate) => candidate.streamSequence > afterStreamSequence);
-    const replayedFrames: ConversationTransientFrame[] = [];
+    const replaySelection: ConversationTransientFrame[] = [];
     let replayBytes = 0;
     for (let index = candidates.length - 1; index >= 0; index--) {
       const candidate = candidates[index]!;
       const candidateBytes = Buffer.byteLength(JSON.stringify(candidate), 'utf8');
       if (candidateBytes > MAX_TRANSIENT_REPLAY_BYTES - replayBytes) break;
-      replayedFrames.push(candidate);
+      replaySelection.push(candidate);
       replayBytes += candidateBytes;
     }
-    replayedFrames.reverse();
-    const earliestReplayedSequence = replayedFrames[0]?.streamSequence;
+    replaySelection.reverse();
+    const earliestReplayedSequence = replaySelection[0]?.streamSequence;
+    // A Run that already published its terminal frame is fully persisted (prose
+    // plus assistant timeline) and comes back through the durable message store.
+    // A fresh subscription (cursor 0) that lands on finished Runs therefore only
+    // gets their terminal boundary instead of a frame-by-frame re-stream of a
+    // reply the user finished reading long ago; the terminal frame still ships so
+    // failure/cancel state survives a reload. Catch-up subscriptions (cursor > 0)
+    // keep the full replay so a short disconnect still fills its gap. Withholding
+    // these frames is not a cursor gap — the durable store covers them — so reset
+    // detection stays on the raw candidates.
+    const sealedRunIds = new Set<string>();
+    for (const candidate of retained) {
+      if (candidate.kind === 'terminal') sealedRunIds.add(String(candidate.runId));
+    }
+    const replayedFrames =
+      sealedRunIds.size === 0 || afterStreamSequence > 0
+        ? replaySelection
+        : replaySelection.filter(
+            (candidate) =>
+              candidate.kind === 'terminal' || !sealedRunIds.has(String(candidate.runId)),
+          );
     const earliestRetainedSequence = retained[0]?.streamSequence;
     const resetRequired =
       cursorAhead ||
@@ -6789,6 +6867,125 @@ export class Runtime {
     }
   }
 
+  /**
+   * Query the provider's own account balance (e.g. DeepSeek `/user/balance`).
+   * Read-only: a single authenticated GET with the stored credential. Providers
+   * without a known public endpoint answer `supported: false` instead of failing,
+   * so the UI can hide the row without treating it as an error.
+   */
+  private async handleProviderBalance(socket: Socket, frame: Frame): Promise<void> {
+    const payload = parseProviderBalancePayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    const providerStore = this.providerStore;
+    const secureStore = this.secureStore;
+    if (!providerStore || !secureStore) {
+      this.writeProviderStoreUnavailable(socket, frame);
+      return;
+    }
+    const provider = providerStore.getProvider(payload.providerId as ProviderId);
+    if (!provider) {
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'provider.balance',
+          payload: {},
+          error: {
+            code: ErrorCode.WORKSPACE_NOT_FOUND,
+            message: `Provider not found: ${payload.providerId}`,
+          },
+        }),
+      );
+      return;
+    }
+
+    const respond = (response: ProviderBalanceResponse): void => {
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'provider.balance',
+          payload: response,
+        }),
+      );
+    };
+    const fetchedAt = new Date().toISOString();
+
+    if (!supportsProviderBalance(provider.baseUrl)) {
+      respond({
+        providerId: provider.id,
+        supported: false,
+        buckets: [],
+        fetchedAt,
+        message: '该服务商未提供公开的余额查询接口',
+      });
+      return;
+    }
+
+    const catalog = providerStore
+      .listProviders()
+      .find((entry) => entry.provider.id === provider.id);
+    const firstCred = catalog?.credentialGroups[0]?.credentials[0];
+    const credentialRefId = (payload.credentialRefId ?? firstCred?.id) as
+      | CredentialRefId
+      | undefined;
+    if (!credentialRefId) {
+      respond({
+        providerId: provider.id,
+        supported: true,
+        buckets: [],
+        fetchedAt,
+        message: 'No credential available for the balance query',
+      });
+      return;
+    }
+    const storeHandle = providerStore.getCredentialStoreHandle(credentialRefId);
+    if (!storeHandle) {
+      respond({
+        providerId: provider.id,
+        supported: true,
+        buckets: [],
+        fetchedAt,
+        message: 'Credential store handle missing',
+      });
+      return;
+    }
+
+    try {
+      const apiKey = await secureStore.retrieveSecret(storeHandle);
+      const result = await fetchProviderBalance({ apiKey, baseUrl: provider.baseUrl });
+      respond({
+        providerId: provider.id,
+        supported: true,
+        ...(result.available !== undefined ? { available: result.available } : {}),
+        buckets: result.buckets,
+        fetchedAt,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Balance query failed';
+      this.recordProviderDiagnostic({
+        category: 'provider',
+        failureClass: error instanceof ProviderBalanceError ? error.failureClass : 'transient',
+        summary: `Balance query failed: ${message}`,
+        detail: {
+          providerId: provider.id,
+          baseUrl: provider.baseUrl,
+          phase: 'balance',
+        },
+      });
+      respond({
+        providerId: provider.id,
+        supported: true,
+        buckets: [],
+        fetchedAt,
+        message,
+      });
+    }
+  }
+
   private async handleDiscoverModels(socket: Socket, frame: Frame): Promise<void> {
     const payload = parseDiscoverModelsPayload(frame.payload);
     if (!payload) {
@@ -7100,31 +7297,46 @@ export class Runtime {
       }
 
       const suggestions: CapabilityProbeSuggestion[] = [];
-      for (const model of models) {
-        const heuristic = suggestCapabilities({
-          modelId: model.id,
-          providerModelId: model.providerModelId,
-          protocol: model.protocol,
-          existing: model.capabilities,
-        });
-        const live = await this.probeModelCapabilitiesLive(provider, model);
-        const capabilities = live.capabilities;
-        const updated = this.providerStore.updateModelCapabilities({
-          modelId: model.id,
-          capabilities,
-          capabilitiesConfirmed: false,
-        });
-        suggestions.push({
-          modelId: updated.id,
-          providerModelId: updated.providerModelId,
-          displayName: updated.displayName,
-          capabilities: updated.capabilities,
-          capabilitiesConfirmed: false,
-          results: live.results,
-          confidence: live.confidence,
-          reasons: [...live.reasons, ...heuristic.reasons.filter((reason) => !live.reasons.includes(reason))],
-          source: 'live',
-        });
+      // 与 NewMax 的 `runVisionScan` 同一并发口径：固定 3 个 worker 从队列里取模型。
+      // 结果按 models 原顺序回填，避免并发导致 UI 列表顺序抖动。
+      const slots: Array<CapabilityProbeSuggestion | undefined> = new Array(models.length);
+      let cursor = 0;
+      // 嵌套函数里 TS 不会保留 `this.providerStore` 的属性窄化，先捕获成局部常量。
+      const providerStore = this.providerStore;
+      if (!providerStore) throw new Error('Provider store unavailable');
+      const probeWorker = async () => {
+        while (true) {
+          const index = cursor++;
+          if (index >= models.length) return;
+          const model = models[index]!;
+          const heuristic = suggestCapabilities({
+            modelId: model.id,
+            providerModelId: model.providerModelId,
+            protocol: model.protocol,
+            existing: model.capabilities,
+          });
+          const live = await this.probeModelCapabilitiesLive(provider, model);
+          const updated = providerStore.updateModelCapabilities({
+            modelId: model.id,
+            capabilities: live.capabilities,
+            capabilitiesConfirmed: false,
+          });
+          slots[index] = {
+            modelId: updated.id,
+            providerModelId: updated.providerModelId,
+            displayName: updated.displayName,
+            capabilities: updated.capabilities,
+            capabilitiesConfirmed: false,
+            results: live.results,
+            confidence: live.confidence,
+            reasons: [...live.reasons, ...heuristic.reasons.filter((reason) => !live.reasons.includes(reason))],
+            source: 'live',
+          };
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(3, models.length) }, probeWorker));
+      for (const slot of slots) {
+        if (slot) suggestions.push(slot);
       }
 
       if (this.stateStore) {
@@ -7204,7 +7416,12 @@ export class Runtime {
     const apiKey = await this.secureStore.retrieveSecret(storeHandle);
     const adapter = this.resolveDiscoveryAdapter(model.protocol) ?? this.demoProvider;
     if (!adapter) throw new Error(`协议 ${model.protocol} 没有可用适配器`);
-    const signal = new AbortController().signal;
+    // 上游不响应时不能无限等：与 runtime 其它出网调用保持同一超时口径。
+    // 缺这道闸时，任何一个探测请求挂起都会让 Promise.all 永不结算，
+    // 客户端连一个错误都收不到（表现为「点了检测没有任何返回」）。
+    const probeAbort = new AbortController();
+    const probeTimer = setTimeout(() => probeAbort.abort(), 90_000);
+    const signal = probeAbort.signal;
     const results: Partial<Record<CapabilityTag, boolean>> = {};
     const reasons: string[] = [];
     const capabilities: CapabilityTag[] = [];
@@ -7213,13 +7430,15 @@ export class Runtime {
       let text = '';
       let tool = false;
       let hosted = false;
+      let reasoning = false;
       for await (const event of adapter.call(request)) {
         if (event.type === 'error') throw new Error(event.message);
         if (event.type === 'text-delta' || event.type === 'assistant-message-delta') text += event.text;
         if (event.type === 'tool-call') tool = true;
         if (event.type === 'hosted-tool-call' || event.type === 'hosted-tool-result') hosted = true;
+        if (event.type === 'reasoning-delta' && event.text.trim()) reasoning = true;
       }
-      return { text: text.trim(), tool, hosted };
+      return { text: text.trim(), tool, hosted, reasoning };
     };
     const requestBase = {
       protocol: model.protocol,
@@ -7253,6 +7472,8 @@ export class Runtime {
       probes.push(
         (async () => {
           try {
+            // 与 NewMax 同源的判定：不是「回了字就算支持图片」，而是要求模型
+            // 真读出探针图里的校验码。对着无法解析的图编一句的情况会被挡掉。
             const vision = await runCall({
               ...requestBase,
               idempotencyKey: `capability-probe-vision-${ulid()}`,
@@ -7260,22 +7481,33 @@ export class Runtime {
                 {
                   role: 'user',
                   content: [
-                    { type: 'text', text: 'Describe this image in one word.' },
-                    {
-                      type: 'image',
-                      imageUrl:
-                        'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
-                    },
+                    { type: 'text', text: VISION_PROBE_PROMPT },
+                    { type: 'image', imageUrl: VISION_PROBE_IMAGE_URL },
                   ],
                 },
               ],
             });
-            results.vision = Boolean(vision.text);
+            const replied = vision.text.trim();
+            results.vision = hasVisionProbeMarker(replied);
             if (results.vision) capabilities.push('vision');
-            reasons.push(results.vision ? '图片输入请求实测成功' : '图片输入请求返回空内容');
-          } catch {
+            reasons.push(
+              results.vision
+                ? `图片输入实测成功（读出了校验码 ${VISION_PROBE_MARKER}）`
+                : `图片输入未通过：${describeVisionProbeFailure(
+                    replied
+                      ? `未识别测试图中的四位校验码（模型回复：${replied.slice(0, 80)}）`
+                      : '模型对探针图未返回任何内容',
+                  )}`,
+            );
+          } catch (error) {
             results.vision = false;
-            reasons.push('图片输入请求未通过');
+            // 统一加上「图片输入」前缀：限流/网络这类分类标签本身不含该词，
+            // 而扫描面板要按关键词把这些原因行筛出来给用户看。
+            reasons.push(
+              `图片输入未通过：${describeVisionProbeFailure(
+                error instanceof Error ? error.message : '未知错误',
+              )}`,
+            );
           }
         })(),
       );
@@ -7302,7 +7534,9 @@ export class Runtime {
               ],
               messages: [{ role: 'user', content: 'Use capability_probe if tools are supported, then reply.' }],
             });
-            results['tool-calling'] = tool.tool || Boolean(tool.text);
+            // A normal text answer after receiving a schema is not evidence of
+            // tool support; require an actual tool-call event.
+            results['tool-calling'] = tool.tool;
             if (results['tool-calling']) capabilities.push('tool-calling');
             reasons.push(
               results['tool-calling'] ? '工具 schema 请求实测成功' : '工具 schema 请求未返回有效结果',
@@ -7310,6 +7544,37 @@ export class Runtime {
           } catch {
             results['tool-calling'] = false;
             reasons.push('工具调用请求未通过');
+          }
+        })(),
+      );
+    }
+
+    // A normal answer does not prove that a model can reason. Only an actual
+    // reasoning-delta from a bounded high-effort request marks this capability.
+    if (
+      model.protocol === 'openai-chat' ||
+      model.protocol === 'openai-responses' ||
+      model.protocol === 'anthropic-messages'
+    ) {
+      probes.push(
+        (async () => {
+          try {
+            const thinking = await runCall({
+              ...requestBase,
+              idempotencyKey: `capability-probe-thinking-${ulid()}`,
+              reasoningEffort: 'high',
+              messages: [
+                { role: 'user', content: 'Think through this briefly, then answer with OK.' },
+              ],
+            });
+            results.thinking = thinking.reasoning;
+            if (results.thinking) capabilities.push('thinking');
+            reasons.push(results.thinking ? '思考通道实测成功' : '请求完成但未返回思考通道');
+          } catch (error) {
+            results.thinking = false;
+            reasons.push(
+              `思考通道请求未通过：${error instanceof Error ? error.message : '未知错误'}`,
+            );
           }
         })(),
       );
@@ -7330,7 +7595,8 @@ export class Runtime {
                 },
               ],
             });
-            results['web-search'] = search.hosted || Boolean(search.text);
+            // Ordinary prose is not evidence of provider-hosted search.
+            results['web-search'] = search.hosted;
             if (results['web-search']) capabilities.push('web-search');
             reasons.push(results['web-search'] ? '联网搜索请求实测成功' : '联网搜索请求返回空内容');
           } catch {
@@ -7369,8 +7635,17 @@ export class Runtime {
     }
 
     await Promise.all(probes);
+    clearTimeout(probeTimer);
 
-    const unique = [...new Set(capabilities)];
+    // Probe requests run concurrently; normalize back to the stable catalog
+    // order before persisting so the UI and fallback selection never flicker.
+    const unique = normalizeCapabilities(capabilities);
+    // 失败时留痕：探测全失败曾只写进 reasons，日志里查不到，排查只能靠猜。
+    if (unique.length === 0) {
+      console.warn(
+        `[runtime] capability probe found no capability for ${model.providerModelId} (${model.protocol}): ${reasons.join(' | ')}`,
+      );
+    }
     return { capabilities: unique, results, confidence: 'medium', reasons };
   }
 
@@ -20012,6 +20287,10 @@ export class Runtime {
     const projectedRuns = new Map(this.demoRuns);
     projectedRuns.delete(payload.runId);
     try {
+      if (run.delegationParentRunId) {
+        this.completedDelegatedRuns.set(payload.runId, run);
+        this.completedDelegatedRunStates.set(payload.runId, 'cancelled');
+      }
       if (this.stateStore) {
         const event = this.persistProjectedEvent(
           {
@@ -20519,6 +20798,10 @@ export class Runtime {
                 includeGoalManage: this.conversationHasActiveGoal(initialRun.threadId),
               }),
               signal: abort.signal,
+              toolAllowlist: attemptRun.delegatedToolAllowlist,
+              ...(attemptRun.delegatedReadOnly && attemptRun.delegationTokenBudget !== null
+                ? { maxOutputTokens: attemptRun.delegationTokenBudget }
+                : {}),
             });
             if (process.env.SYNC_THINK_E2E_DEBUG === '1') {
               const schemas = nativePlatformToolSchemas({
@@ -20770,6 +21053,23 @@ export class Runtime {
               finishedWithToolRequests = true;
             }
             if (adapterEvent.type === 'usage') {
+              const delegationTokenBudget = currentRun.delegationTokenBudget;
+              if (currentRun.delegatedReadOnly && delegationTokenBudget != null) {
+                const tokensUsed =
+                  (currentRun.delegationTokensUsed ?? 0) +
+                  Math.max(0, Math.floor(adapterEvent.tokensIn)) +
+                  Math.max(0, Math.floor(adapterEvent.tokensOut));
+                const budgetExceeded = tokensUsed >= delegationTokenBudget;
+                currentRun = {
+                  ...currentRun,
+                  delegationTokensUsed: tokensUsed,
+                  ...(budgetExceeded ? { delegationTerminationReason: 'budget_exceeded' as const } : {}),
+                };
+                this.demoRuns.set(runId, currentRun);
+                if (budgetExceeded) {
+                  this.demoRunAborts.get(runId)?.abort();
+                }
+              }
               this.addGoalUsageForRun(
                 runId,
                 currentRun,
@@ -20791,6 +21091,22 @@ export class Runtime {
             const projection = projectAdapterEvent(currentRun, adapterEvent, {
               requestId: providerRequestId,
             });
+            // Preserve terminal state for delegated children. Terminal
+            // projections carry an event payload but historically omitted the
+            // final in-memory Run snapshot needed by the parent coordinator.
+            if (projection.terminal && !projection.nextRun) {
+              let terminalRun: DemoRunState = {
+                ...currentRun,
+                nextAdapterEventIndex: currentRun.nextAdapterEventIndex + 1,
+              };
+              if (adapterEvent.type === 'finished' || adapterEvent.type === 'error') {
+                terminalRun = closeAssistantTimeline(
+                  closeCommentaryTimelineSegment(terminalRun, projectionOccurredAt),
+                  projectionOccurredAt,
+                );
+              }
+              projection.nextRun = terminalRun;
+            }
             if (
               adapterEvent.type === 'assistant-message-delta' &&
               adapterEvent.phase === 'commentary' &&
@@ -20934,6 +21250,10 @@ export class Runtime {
             if (projection.terminal) projectedRuns.delete(runId);
             else if (projection.nextRun) projectedRuns.set(runId, projection.nextRun);
             const payload = { ...projection.payload };
+            const terminalRunForPayload = projection.nextRun ?? currentRun;
+            if (terminalRunForPayload.delegationParentRunId) {
+              payload.delegationParentRunId = terminalRunForPayload.delegationParentRunId;
+            }
             const isGoalCompletion =
               projection.terminal &&
               projection.type === 'run.completed' &&
@@ -21013,6 +21333,17 @@ export class Runtime {
               );
 
               if (projection.terminal) {
+                if (projection.nextRun?.delegationParentRunId) {
+                  this.completedDelegatedRuns.set(runId, projection.nextRun);
+                  this.completedDelegatedRunStates.set(
+                    String(runId),
+                    projection.type === 'run.failed'
+                      ? 'failed'
+                      : projection.type === 'run.cancelled'
+                        ? 'cancelled'
+                        : 'completed',
+                  );
+                }
                 this.demoRuns.delete(runId);
                 this.transientSnapshotByThread.delete(currentRun.threadId);
               } else if (projection.nextRun) this.demoRuns.set(runId, projection.nextRun);
@@ -21092,7 +21423,31 @@ export class Runtime {
               pendingCommand?: boolean;
             }> = [];
             const writeSnapshot: import('./chat-tools.js').ChatWriteSnapshot = {};
-            for (let toolIndex = 0; toolIndex < pendingToolCalls.length; toolIndex++) {
+            const delegationBatch =
+              pendingToolCalls.length > 1 &&
+              !currentRun.delegatedReadOnly &&
+              pendingToolCalls.every((call) => call.name === 'agent_delegate');
+            const delegatedBatchResults = delegationBatch
+              ? await this.executeDelegationBatch({
+                  run: currentRun,
+                  toolCalls: pendingToolCalls,
+                  workspaceRoot: workspaceRoot ?? '',
+                  signal: abort.signal,
+                })
+              : undefined;
+            if (delegatedBatchResults) {
+              for (const item of delegatedBatchResults) {
+                if (abort.signal.aborted || !this.demoRuns.has(runId)) return;
+                this.publishToolCompleted(runId, currentRun.threadId, item.toolCall, item.resultText);
+                const foldedForModel = foldToolOutputText(item.resultText).text;
+                completedResults.push({ toolCallId: item.toolCall.id, content: foldedForModel });
+                chatMessages = [
+                  ...chatMessages,
+                  { role: 'tool', toolCallId: item.toolCall.id, content: foldedForModel },
+                ];
+              }
+            }
+            for (let toolIndex = 0; !delegatedBatchResults && toolIndex < pendingToolCalls.length; toolIndex++) {
               const toolCall = pendingToolCalls[toolIndex]!;
               if (abort.signal.aborted || !this.demoRuns.has(runId)) return;
 
@@ -21112,6 +21467,25 @@ export class Runtime {
                   }),
                 );
                 this.pushKernelTimelineSnapshot(runId, runBeforeTool.threadId, toolStartOccurredAt);
+              }
+
+              if (currentRun.delegatedReadOnly) {
+                const dispatch = (currentRun as DemoRunState & {
+                  mcpToolDispatch?: Map<string, { mcpServerId: string; toolName: string; readOnly?: boolean }>;
+                }).mcpToolDispatch?.get(toolCall.name);
+                if (!isDelegatedReadOnlyTool(toolCall.name, dispatch?.readOnly)) {
+                  const deniedText = JSON.stringify({
+                    ok: false,
+                    error: 'Delegated child Agents are limited to read-only tools.',
+                  });
+                  this.publishToolCompleted(runId, currentRun.threadId, toolCall, deniedText);
+                  completedResults.push({ toolCallId: toolCall.id, content: deniedText });
+                  chatMessages = [
+                    ...chatMessages,
+                    { role: 'tool', toolCallId: toolCall.id, content: deniedText },
+                  ];
+                  continue;
+                }
               }
 
               const desktopCapabilityEnabled = this.isComputerUsePluginEnabled();
@@ -21335,10 +21709,21 @@ export class Runtime {
               const mcpDispatch =
                 (
                   currentRun as DemoRunState & {
-                    mcpToolDispatch?: Map<string, { mcpServerId: string; toolName: string }>;
+                    mcpToolDispatch?: Map<string, { mcpServerId: string; toolName: string; readOnly?: boolean }>;
                   }
                 ).mcpToolDispatch?.get(toolCall.name) ?? parseMcpProviderToolName(toolCall.name);
-              if (CHAT_PLAN_TOOL_NAMES.has(toolCall.name)) {
+              const collaborationDenial = currentRun.track
+                ? resolveCollaborationToolDenial({
+                    track: currentRun.track,
+                    toolName: toolCall.name,
+                    settings: normalizeCollaborationSettings(
+                      this.appSettingStore?.get(COLLABORATION_SETTINGS_KEY)?.value,
+                    ),
+                  })
+                : null;
+              if (collaborationDenial) {
+                resultText = JSON.stringify({ ok: false, error: collaborationDenial.error });
+              } else if (CHAT_PLAN_TOOL_NAMES.has(toolCall.name)) {
                 if (CHAT_TASK_PLAN_TOOL_NAMES.has(toolCall.name) && this.taskPlanStore) {
                   const workspaceId = this.resolveEventWorkspaceId(currentRun.threadId);
                   if (toolCall.name === 'TaskCreate') {
@@ -21393,6 +21778,13 @@ export class Runtime {
                   workspaceRoot,
                   executionMode,
                   approval: desktopApproval,
+                  signal: abort.signal,
+                });
+              } else if (toolCall.name === 'agent_delegate') {
+                resultText = await this.executeDynamicAgentDelegation({
+                  run: currentRun,
+                  toolCall,
+                  workspaceRoot: workspaceRoot ?? '',
                   signal: abort.signal,
                 });
               } else if (CHAT_AGENT_TOOL_NAMES.has(toolCall.name)) {
@@ -22809,6 +23201,8 @@ export class Runtime {
     });
     const selection = selectKernelMcpRun({
       kernelId: request.kernelId,
+      conversationTrack: run.track,
+      collaborationSettings: this.appSettingStore?.get(COLLABORATION_SETTINGS_KEY)?.value,
       executionMode: this.resolveChatExecutionMode(run.threadId),
       networkEnabled,
       planningMode,
@@ -22818,9 +23212,16 @@ export class Runtime {
     // is the authority for what the kernel sees.
     const tools = buildPlatformMcpToolDefinitions({
       executionMode: this.resolveChatExecutionMode(run.threadId),
+      conversationTrack: run.track,
+      collaborationSettings: this.appSettingStore?.get(COLLABORATION_SETTINGS_KEY)?.value,
       networkEnabled,
       includeWebSearchTools: externalWebSearch,
       includeAgentTools: Boolean(this.globalAgentStore),
+      includeDynamicAgentTools:
+        run.track === 'model' &&
+        normalizeCollaborationSettings(
+          this.appSettingStore?.get(COLLABORATION_SETTINGS_KEY)?.value,
+        ).dynamicSubagentsEnabled,
       includeTaskTools:
         Boolean(this.taskPlanStore) &&
         request.kernelId !== 'claude-code' &&
@@ -22980,6 +23381,18 @@ export class Runtime {
     // into the catalog (second layer behind the catalog filter).
     if (run.planningMode === true && isPlanningDeniedTool(call.tool)) {
       return { ok: false, error: '规划模式只读：此操作需在执行模式中进行' };
+    }
+    if (run.track) {
+      const collaborationDenial = resolveCollaborationToolDenial({
+        track: run.track,
+        toolName: call.tool,
+        settings: normalizeCollaborationSettings(
+          this.appSettingStore?.get(COLLABORATION_SETTINGS_KEY)?.value,
+        ),
+      });
+      if (collaborationDenial) {
+        return { ok: false, error: collaborationDenial.error };
+      }
     }
     const executionMode = normalizeChatExecutionMode(this.resolveChatExecutionMode(run.threadId));
 
@@ -23740,6 +24153,9 @@ export class Runtime {
     }
     if (CHAT_PLAN_TOOL_NAMES.has(name)) {
       return executeChatPlanTool(toolCall.argumentsJson);
+    }
+    if (name === 'agent_delegate') {
+      return this.executeDynamicAgentDelegation({ run, toolCall, workspaceRoot, signal });
     }
     if (CHAT_AGENT_TOOL_NAMES.has(name)) {
       return this.executeChatAgentTool({ run, toolCall });
@@ -24984,6 +25400,9 @@ export class Runtime {
       providerModelId: terminalRun.providerModelId,
       packetId: terminalRun.packetId,
       kernelId: terminalRun.kernelId,
+      ...(terminalRun.delegationParentRunId
+        ? { delegationParentRunId: terminalRun.delegationParentRunId }
+        : {}),
     };
     try {
       const event = this.persistProjectedEvent(
@@ -25903,6 +26322,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       resolutionSource: source,
       globalAgentId: globalAgent?.id,
       globalAgentName: globalAgent?.name,
+      track,
       persona: globalAgent?.persona?.trim() ? globalAgent.persona.trim() : undefined,
       teamId: teamRecord?.id,
       teamName: teamRecord?.name,
@@ -27392,6 +27812,298 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
    * create_agent reaches here only after the permission gate passed
    * (full-access, or user approved the tool card in other modes).
    */
+  private async executeDynamicAgentDelegation(input: {
+    run: DemoRunState;
+    toolCall: import('@sync-think/adapters').ProviderToolCall;
+    workspaceRoot: string;
+    signal?: AbortSignal;
+  }): Promise<string> {
+    let args: Record<string, unknown> = {};
+    try {
+      const parsed = JSON.parse(input.toolCall.argumentsJson || '{}') as unknown;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        args = parsed as Record<string, unknown>;
+      }
+    } catch {
+      return JSON.stringify({ ok: false, error: 'agent_delegate: invalid JSON arguments.' });
+    }
+    const task = typeof args.task === 'string' ? args.task.trim() : '';
+    if (!task) return JSON.stringify({ ok: false, error: 'agent_delegate: task is required.' });
+    const parallelGroup =
+      typeof args.parallelGroup === 'string' && args.parallelGroup.trim()
+        ? args.parallelGroup.trim().slice(0, 80)
+        : undefined;
+    const parallelGroupField = parallelGroup ? { parallelGroup } : {};
+    const requestedTimeoutSeconds =
+      typeof args.timeoutSeconds === 'number' && Number.isFinite(args.timeoutSeconds)
+        ? Math.min(
+            MAX_DELEGATED_TASK_TIMEOUT_SECONDS,
+            Math.max(1, Math.trunc(args.timeoutSeconds)),
+          )
+        : DEFAULT_DELEGATED_TASK_TIMEOUT_SECONDS;
+    const settings = normalizeCollaborationSettings(
+      this.appSettingStore?.get(COLLABORATION_SETTINGS_KEY)?.value,
+    );
+    const admission = evaluateDynamicDelegation({
+      track: input.run.track ?? 'model',
+      settings,
+      state: {
+        depth: input.run.delegationDepth ?? 0,
+        childCount: input.run.delegationChildCount ?? 0,
+        autoDelegationsThisTurn: input.run.delegationAutoCount ?? 0,
+      },
+      requestedTokenBudget:
+        typeof args.tokenBudget === 'number' && Number.isFinite(args.tokenBudget)
+          ? args.tokenBudget
+          : null,
+    });
+    if (!admission.allowed) {
+      return JSON.stringify({
+        ok: false,
+        error: `agent_delegate: delegation rejected (${admission.reason}).`,
+        limits: settings,
+      });
+    }
+    const candidates = (this.globalAgentStore?.list() ?? []).map((agent) => ({
+      id: String(agent.id),
+      name: agent.name,
+      avatar: agent.avatar,
+      persona: agent.persona,
+      description: agent.description,
+      skillIds: agent.skillIds,
+      mcpServerIds: agent.mcpServerIds,
+      archived: agent.archived,
+    }));
+    const assignment = resolveAgentAssignment(
+      {
+        task,
+        preferredAgentId: typeof args.agentId === 'string' ? args.agentId : undefined,
+        requiredSkillIds: Array.isArray(args.requiredSkillIds)
+          ? args.requiredSkillIds.map(String)
+          : [],
+        requiredToolIds: Array.isArray(args.requiredToolIds)
+          ? args.requiredToolIds.map(String)
+          : [],
+      },
+      candidates,
+    );
+    const childRunId = ulid() as RunId;
+    let child: DemoRunState;
+    if (assignment.kind === 'existing' && assignment.agentId && this.globalAgentStore) {
+      // Global Agents are mutable and carry no version chain, so the child run
+      // resolves a copy of that Agent's persona / model / Skill / MCP binding at
+      // delegation time instead of freezing a stored AgentVersion pointer.
+      child = this.prepareRunBinding({
+        runId: childRunId,
+        threadId: input.run.threadId,
+        userText: task,
+        track: 'agent',
+        globalAgentId: assignment.agentId,
+        skillContextMode: 'run',
+      }).run;
+      child.track = 'model';
+    } else {
+      child = createDemoRun(childRunId, input.run.threadId, task, {
+        track: 'model',
+        modelId: input.run.modelId,
+        providerModelId: input.run.providerModelId,
+        protocol: input.run.protocol,
+        baseUrl: input.run.baseUrl,
+        providerId: input.run.providerId,
+        credentialRefId: input.run.credentialRefId,
+        credentialResolutionSource: input.run.credentialResolutionSource,
+        agentVersionId: input.run.agentVersionId,
+        resolutionSource: input.run.resolutionSource,
+        reasoningEffort: input.run.reasoningEffort,
+        useFakeProvider: input.run.useFakeProvider,
+      });
+      child.persona = assignment.temporaryProfile?.persona;
+      child.globalAgentName = assignment.temporaryProfile?.name;
+    }
+    child.delegationDepth = (input.run.delegationDepth ?? 0) + 1;
+    child.delegationParentRunId = input.run.runId;
+    child.delegationParallelGroup = parallelGroup;
+    child.delegationTokenBudget = admission.taskTokenBudget;
+    child.delegationTokensUsed = 0;
+    child.delegatedReadOnly = true;
+    child.delegatedToolAllowlist = [...DELEGATED_READONLY_TOOLS];
+    const parentBeforeChild = this.demoRuns.get(input.run.runId);
+    if (parentBeforeChild) {
+      this.demoRuns.set(input.run.runId, {
+        ...parentBeforeChild,
+        delegationChildCount: (parentBeforeChild.delegationChildCount ?? 0) + 1,
+        delegationAutoCount: (parentBeforeChild.delegationAutoCount ?? 0) + 1,
+      });
+    }
+    this.demoRuns.set(childRunId, child);
+    const cancelChild = () => this.demoRunAborts.get(String(childRunId))?.abort();
+    const timeoutTimer = setTimeout(() => {
+      const liveChild = this.demoRuns.get(String(childRunId));
+      if (!liveChild) return;
+      this.demoRuns.set(String(childRunId), {
+        ...liveChild,
+        delegationTerminationReason: 'timed_out',
+      });
+      cancelChild();
+    }, requestedTimeoutSeconds * 1_000);
+    timeoutTimer.unref?.();
+    if (input.signal) {
+      if (input.signal.aborted) cancelChild();
+      else input.signal.addEventListener('abort', cancelChild, { once: true });
+    }
+    try {
+      await this.executeDemoRun(childRunId);
+    } finally {
+      clearTimeout(timeoutTimer);
+      input.signal?.removeEventListener('abort', cancelChild);
+      if (input.signal?.aborted) {
+        this.demoRuns.delete(String(childRunId));
+        this.completedDelegatedRuns.delete(String(childRunId));
+        this.completedDelegatedRunStates.delete(String(childRunId));
+      }
+    }
+    const interruptedChild = this.demoRuns.get(String(childRunId));
+    const interruptedTerminationReason = interruptedChild?.delegationTerminationReason;
+    if (interruptedChild?.delegationTerminationReason && !input.signal?.aborted) {
+      const terminationReason = interruptedChild.delegationTerminationReason;
+      this.completedDelegatedRuns.set(String(childRunId), interruptedChild);
+      this.completedDelegatedRunStates.set(
+        String(childRunId),
+        terminationReason === 'timed_out' ? 'timed_out' : 'failed',
+      );
+      this.persistDemoRunFailure(
+        childRunId,
+        terminationReason === 'timed_out' ? 'timeout' : 'acceptance',
+        terminationReason === 'timed_out'
+          ? `Delegated child timed out after ${requestedTimeoutSeconds} seconds.`
+          : 'Delegated child exceeded its token budget.',
+      );
+    }
+    const completedChild =
+      this.completedDelegatedRuns.get(String(childRunId)) ??
+      this.demoRuns.get(String(childRunId)) ??
+      interruptedChild;
+    this.completedDelegatedRuns.delete(String(childRunId));
+    const childTerminalState =
+      this.completedDelegatedRunStates.get(String(childRunId)) ??
+      (interruptedTerminationReason === 'timed_out'
+        ? 'timed_out'
+        : interruptedTerminationReason === 'budget_exceeded'
+          ? 'failed'
+          : undefined);
+    this.completedDelegatedRunStates.delete(String(childRunId));
+    if (input.signal?.aborted) {
+      return JSON.stringify({ ok: false, ...parallelGroupField, error: 'agent_delegate: child run cancelled.', childRunId });
+    }
+    if (!completedChild) {
+      return JSON.stringify({ ok: false, ...parallelGroupField, error: 'agent_delegate: child run failed.', childRunId });
+    }
+    if (completedChild.delegationTerminationReason === 'budget_exceeded') {
+      return JSON.stringify({
+        ok: false,
+        ...parallelGroupField,
+        status: 'failed',
+        error: 'agent_delegate: child run exceeded its token budget.',
+        childRunId,
+        tokenBudget: admission.taskTokenBudget,
+        tokensUsed: completedChild.delegationTokensUsed ?? 0,
+      });
+    }
+    if (childTerminalState === 'failed') {
+      return JSON.stringify({ ok: false, ...parallelGroupField, error: 'agent_delegate: child run failed.', childRunId });
+    }
+    if (childTerminalState === 'cancelled') {
+      return JSON.stringify({ ok: false, ...parallelGroupField, error: 'agent_delegate: child run cancelled.', childRunId });
+    }
+    if (childTerminalState === 'timed_out') {
+      return JSON.stringify({
+        ok: false,
+        ...parallelGroupField,
+        status: 'timed_out',
+        error: `agent_delegate: child run timed out after ${requestedTimeoutSeconds} seconds.`,
+        childRunId,
+        tokenBudget: admission.taskTokenBudget,
+        tokensUsed: completedChild.delegationTokensUsed ?? 0,
+      });
+    }
+    const assignedCandidate =
+      assignment.kind === 'existing'
+        ? candidates.find((candidate) => candidate.id === assignment.agentId)
+        : undefined;
+    const delegatedAvatar =
+      assignedCandidate?.avatar?.trim() || assignedCandidate?.name?.slice(0, 2) || '🤖';
+    const toolEvents = (completedChild.assistantTimeline ?? [])
+      .filter((segment) => segment.kind === 'tool')
+      .map((segment) => ({
+        toolName: segment.name,
+        arguments: segment.argumentsJson ?? '{}',
+        status: segment.status,
+        ...(segment.output !== undefined ? { output: segment.output.slice(0, 12_000) } : {}),
+        ...(segment.startedAt ? { startedAt: segment.startedAt } : {}),
+        ...(segment.completedAt ? { completedAt: segment.completedAt } : {}),
+      }));
+    return JSON.stringify({
+      ok: true,
+      ...parallelGroupField,
+      childRunId,
+      assignment: {
+        kind: assignment.kind,
+        agentId: assignment.agentId ?? null,
+        name: child.globalAgentName ?? '临时任务 Agent',
+        avatar: assignment.kind === 'existing' ? delegatedAvatar : '🧩',
+      },
+      status: 'completed',
+      toolEvents,
+      result: completedChild.assistantText.trim(),
+      tokenBudget: admission.taskTokenBudget,
+      tokensUsed: completedChild.delegationTokensUsed ?? 0,
+    });
+
+  }
+
+  private async executeDelegationBatch(input: {
+    run: DemoRunState;
+    toolCalls: readonly import('@sync-think/adapters').ProviderToolCall[];
+    workspaceRoot: string;
+    signal: AbortSignal;
+  }): Promise<Array<{ toolCall: import('@sync-think/adapters').ProviderToolCall; resultText: string }>> {
+    const startedAt = new Date().toISOString();
+    for (const toolCall of input.toolCalls) {
+      if (input.signal.aborted || !this.demoRuns.has(String(input.run.runId))) return [];
+      const liveRun = this.demoRuns.get(String(input.run.runId));
+      if (!liveRun) return [];
+      this.demoRuns.set(
+        String(input.run.runId),
+        startAssistantTool(liveRun, {
+          toolCallId: toolCall.id,
+          name: toolCall.name,
+          argumentsJson: toolCall.argumentsJson,
+          occurredAt: startedAt,
+        }),
+      );
+      this.pushKernelTimelineSnapshot(input.run.runId, liveRun.threadId, startedAt);
+    }
+
+    const settled = await Promise.allSettled(
+      input.toolCalls.map((toolCall) =>
+        this.executeDynamicAgentDelegation({
+          run: input.run,
+          toolCall,
+          workspaceRoot: input.workspaceRoot,
+          signal: input.signal,
+        }),
+      ),
+    );
+    return input.toolCalls.map((toolCall, index) => {
+      const item = settled[index];
+      const resultText =
+        item?.status === 'fulfilled'
+          ? item.value
+          : JSON.stringify({ ok: false, error: 'agent_delegate: child run failed.' });
+      return { toolCall, resultText };
+    });
+  }
+
   private executeChatAgentTool(input: {
     run: DemoRunState;
     toolCall: import('@sync-think/adapters').ProviderToolCall;
@@ -30746,6 +31458,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       networkEnabled?: boolean;
       /** Host platform tool schemas (ask_user_question / plan_submit / ...). */
       platformSchemas?: import('@sync-think/adapters').ProviderToolSchema[];
+      toolAllowlist?: readonly string[];
     },
   ): ContextSnapshot {
     const executionMode = normalizeChatExecutionMode(options.executionMode);
@@ -30772,22 +31485,37 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     })();
     (
       run as DemoRunState & {
-        mcpToolDispatch?: Map<string, { mcpServerId: string; toolName: string }>;
+        mcpToolDispatch?: Map<string, { mcpServerId: string; toolName: string; readOnly?: boolean }>;
       }
     ).mcpToolDispatch = mcpExtra.dispatch;
-    const agentToolsEnabled = Boolean(options.toolsEnabled && this.globalAgentStore);
-    const desktopToolsEnabled = Boolean(options.toolsEnabled && this.isComputerUsePluginEnabled());
-    const browserWorkflowToolsEnabled = Boolean(
-      options.toolsEnabled && this.browserWorkflowService,
+    const collaborationSettings = normalizeCollaborationSettings(
+      this.appSettingStore?.get(COLLABORATION_SETTINGS_KEY)?.value,
     );
-    const mcpCatalogToolsEnabled = Boolean(options.toolsEnabled && this.mcpStore);
-    const mcpRegistryToolsEnabled = Boolean(options.toolsEnabled && this.mcpStore);
+    const delegatedReadOnly = run.delegatedReadOnly === true;
+    const agentToolsEnabled = Boolean(
+      options.toolsEnabled && this.globalAgentStore && !delegatedReadOnly,
+    );
+    const dynamicAgentToolsEnabled = Boolean(
+      options.toolsEnabled &&
+        run.track === 'model' &&
+        collaborationSettings.dynamicSubagentsEnabled &&
+        !delegatedReadOnly,
+    );
+    const desktopToolsEnabled = Boolean(
+      options.toolsEnabled && !delegatedReadOnly && this.isComputerUsePluginEnabled(),
+    );
+    const browserWorkflowToolsEnabled = Boolean(
+      options.toolsEnabled && !delegatedReadOnly && this.browserWorkflowService,
+    );
+    const mcpCatalogToolsEnabled = Boolean(options.toolsEnabled && !delegatedReadOnly && this.mcpStore);
+    const mcpRegistryToolsEnabled = Boolean(options.toolsEnabled && !delegatedReadOnly && this.mcpStore);
     const platformToolCount = options.platformSchemas?.length ?? 0;
     const tools =
       options.toolsEnabled &&
       (hasProjectTools ||
         networkEnabled ||
         agentToolsEnabled ||
+        dynamicAgentToolsEnabled ||
         desktopToolsEnabled ||
         browserWorkflowToolsEnabled ||
         mcpCatalogToolsEnabled ||
@@ -30797,6 +31525,9 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         // goal_manage / platform_context / task_list / agent_list.
         platformToolCount > 0)
         ? toolsForExecutionMode(executionMode, {
+            conversationTrack: run.track,
+            allowAgentTaskDispatch: collaborationSettings.allowAgentTaskDispatch,
+            allowDynamicSubagents: dynamicAgentToolsEnabled,
             networkEnabled,
             includeWebSearchTools: webSearchMode === 'external',
             includeProjectTools: hasProjectTools,
@@ -30808,6 +31539,16 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
             extraTools: [...mcpExtra.tools, ...(options.platformSchemas ?? [])],
           })
         : undefined;
+    const filteredTools =
+      tools && options.toolAllowlist
+        ? tools.filter((tool) => {
+            if (options.toolAllowlist!.includes(tool.name)) return true;
+            const dispatch = (run as DemoRunState & {
+              mcpToolDispatch?: Map<string, { mcpServerId: string; toolName: string; readOnly?: boolean }>;
+            }).mcpToolDispatch?.get(tool.name);
+            return run.delegatedReadOnly === true && isDelegatedReadOnlyTool(tool.name, dispatch?.readOnly);
+          })
+        : tools;
     const searchRoutePrompt =
       webSearchMode === 'native'
         ? 'Keyword search is provided by the model host. Use its native web search for current facts.'
@@ -30878,6 +31619,14 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       '- This tool only updates the progress UI — it never touches files and needs no approval.',
       '- Do not call goal_manage for a checklist. goal_manage is Goal mode only.',
     ].join('\n');
+    const dynamicDelegationPrompt = dynamicAgentToolsEnabled
+      ? [
+          'Dynamic child Agent delegation is ENABLED for this model conversation.',
+          'Only call agent_delegate when the task benefits from an independent focused context; do not delegate trivial turns.',
+          'The runtime chooses a matching existing Agent by hard capabilities and soft persona relevance, or creates a temporary run-local profile when no candidate fits.',
+          'Agent and Team conversations do not receive this tool. Never describe an ordinary TaskCreate/TaskUpdate item as a child Agent.',
+        ].join('\n')
+      : 'Dynamic child Agent delegation is unavailable for this conversation track or is disabled in settings.';
     const browserWorkflowPrompt = browserWorkflowToolsEnabled
       ? [
           'Browser Automation Workflow tools are ENABLED (browser_workflow_list, browser_workflow_get, browser_workflow_create_draft):',
@@ -30906,6 +31655,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       ...(isExplicitExcalidrawRequest(run.userText) ? [EXCALIDRAW_OUTPUT_CONTRACT] : []),
       INLINE_VISUALIZATION_OUTPUT_CONTRACT,
       agentCreationPrompt,
+      dynamicDelegationPrompt,
       planToolPrompt,
       browserWorkflowPrompt,
       ...imageToolGuidance,
@@ -30947,7 +31697,9 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       if (source.disposition !== 'included') return source;
       if (
         source.section === 'tools' &&
-        (!tools || !source.toolName || !tools.some((tool) => tool.name === source.toolName))
+        (!filteredTools ||
+          !source.toolName ||
+          !filteredTools.some((tool) => tool.name === source.toolName))
       ) {
         return { ...source, disposition: 'audit-only' as const, tokens: 0 };
       }
@@ -30980,7 +31732,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       projectContext,
       compactSummary: run.compactSummary,
       messages: options.messages,
-      tools,
+      tools: filteredTools,
       sources: actualSources,
       compactedAt: run.compactedAt,
     });
@@ -30992,6 +31744,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       messages?: import('@sync-think/adapters').ProviderMessage[];
       toolsEnabled?: boolean;
       toolChoice?: import('@sync-think/adapters').ProviderCallRequest['toolChoice'];
+      maxOutputTokens?: number;
       workspaceRoot?: string;
       executionMode?: string;
       networkEnabled?: boolean;
@@ -31000,6 +31753,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       systemPromptOverride?: string;
       /** Native 内核的平台工具 schema（ask_user_question / task_schedule 等）。 */
       platformSchemas?: import('@sync-think/adapters').ProviderToolSchema[];
+      toolAllowlist?: readonly string[];
     } = {},
   ): Promise<AsyncIterable<import('@sync-think/adapters').AdapterEvent> | undefined> {
     const signal = options.signal ?? new AbortController().signal;
@@ -31033,27 +31787,45 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     // Stash dispatch on the run for the tool loop (in-memory only).
     (
       run as DemoRunState & {
-        mcpToolDispatch?: Map<string, { mcpServerId: string; toolName: string }>;
+        mcpToolDispatch?: Map<string, { mcpServerId: string; toolName: string; readOnly?: boolean }>;
       }
     ).mcpToolDispatch = mcpExtra.dispatch;
-    const agentToolsEnabled = Boolean(options.toolsEnabled && this.globalAgentStore);
-    const desktopToolsEnabled = Boolean(options.toolsEnabled && this.isComputerUsePluginEnabled());
-    const browserWorkflowToolsEnabled = Boolean(
-      options.toolsEnabled && this.browserWorkflowService,
+    const collaborationSettings = normalizeCollaborationSettings(
+      this.appSettingStore?.get(COLLABORATION_SETTINGS_KEY)?.value,
     );
-    const mcpCatalogToolsEnabled = Boolean(options.toolsEnabled && this.mcpStore);
-    const mcpRegistryToolsEnabled = Boolean(options.toolsEnabled && this.mcpStore);
+    const delegatedReadOnly = run.delegatedReadOnly === true;
+    const agentToolsEnabled = Boolean(
+      options.toolsEnabled && this.globalAgentStore && !delegatedReadOnly,
+    );
+    const dynamicAgentToolsEnabled = Boolean(
+      options.toolsEnabled &&
+        run.track === 'model' &&
+        collaborationSettings.dynamicSubagentsEnabled &&
+        !delegatedReadOnly,
+    );
+    const desktopToolsEnabled = Boolean(
+      options.toolsEnabled && !delegatedReadOnly && this.isComputerUsePluginEnabled(),
+    );
+    const browserWorkflowToolsEnabled = Boolean(
+      options.toolsEnabled && !delegatedReadOnly && this.browserWorkflowService,
+    );
+    const mcpCatalogToolsEnabled = Boolean(options.toolsEnabled && !delegatedReadOnly && this.mcpStore);
+    const mcpRegistryToolsEnabled = Boolean(options.toolsEnabled && !delegatedReadOnly && this.mcpStore);
     const tools =
       options.toolsEnabled &&
       (hasProjectTools ||
         networkEnabled ||
         agentToolsEnabled ||
+        dynamicAgentToolsEnabled ||
         desktopToolsEnabled ||
         browserWorkflowToolsEnabled ||
         mcpCatalogToolsEnabled ||
         mcpExtra.tools.length > 0)
         ? [
             ...toolsForExecutionMode(executionMode, {
+              conversationTrack: run.track,
+              allowAgentTaskDispatch: collaborationSettings.allowAgentTaskDispatch,
+              allowDynamicSubagents: dynamicAgentToolsEnabled,
               networkEnabled,
               includeWebSearchTools: webSearchMode === 'external',
               includeProjectTools: hasProjectTools,
@@ -31066,18 +31838,30 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
             }),
           ]
         : undefined;
+    const filteredTools =
+      tools && options.toolAllowlist
+        ? tools.filter((tool) => {
+            if (options.toolAllowlist!.includes(tool.name)) return true;
+            const dispatch = (run as DemoRunState & {
+              mcpToolDispatch?: Map<string, { mcpServerId: string; toolName: string; readOnly?: boolean }>;
+            }).mcpToolDispatch?.get(tool.name);
+            return delegatedReadOnly && isDelegatedReadOnlyTool(tool.name, dispatch?.readOnly);
+          })
+        : tools;
     let requestExtras: {
       messages?: import('@sync-think/adapters').ProviderMessage[];
       tools?: import('@sync-think/adapters').ProviderToolSchema[];
       hostedTools?: import('@sync-think/adapters').ProviderCallRequest['hostedTools'];
       toolChoice?: import('@sync-think/adapters').ProviderCallRequest['toolChoice'];
+      maxOutputTokens?: number;
       systemPrompt: string;
     };
     if (typeof options.systemPromptOverride === 'string' && options.systemPromptOverride.trim()) {
       requestExtras = {
         messages: options.messages,
-        tools,
+        tools: filteredTools,
         systemPrompt: options.systemPromptOverride.trim(),
+        ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}),
       };
     } else {
       this.hydrateRunSkillContext(run);
@@ -31088,6 +31872,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         executionMode,
         networkEnabled,
         platformSchemas: options.platformSchemas,
+        toolAllowlist: options.toolAllowlist,
       });
       run.contextSnapshot = snapshot;
       this.recordProviderContextCapabilityUsage(run, snapshot);
@@ -31100,6 +31885,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         networkEnabled,
       });
       requestExtras = snapshot.providerRequest;
+      if (options.maxOutputTokens) requestExtras.maxOutputTokens = options.maxOutputTokens;
     }
     if (options.toolChoice) requestExtras.toolChoice = options.toolChoice;
     if (options.toolsEnabled && webSearchMode === 'native' && run.protocol === 'openai-responses') {
@@ -31478,6 +32264,9 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       this.persistAssistantTerminalMessage(runId, run, 'failed', scrubbedMessage);
       this.demoRuns.delete(runId);
       this.publishEvent(event);
+      if (run.delegationParentRunId) {
+        this.publishDelegatedAgentProjection(event, run, run.delegationParentRunId);
+      }
       this.recordRunDiagnostic(runId, run, {
         failureClass,
         errorMessage: scrubbedMessage,
@@ -31624,6 +32413,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       hasToolRounds: boolean;
     },
   ): void {
+    if (run.delegationParentRunId) return;
     const occurredAt = new Date().toISOString();
     const terminalRun = closeAssistantTimeline(
       closeCommentaryTimelineSegment(run, occurredAt),
@@ -31696,6 +32486,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     errorMessage?: string,
     options?: { strict: boolean },
   ): void {
+    if (run.delegationParentRunId) return;
     const occurredAt = new Date().toISOString();
     const classifiedRun = run.legacyPendingText
       ? appendAssistantTextDelta(
@@ -32174,6 +32965,24 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     occurredAt: string;
   }): void {
     const run = this.demoRuns.get(input.runId);
+    if (run?.delegationParentRunId) {
+      this.publishDelegatedAgentProjection(
+        {
+          id: ulid() as Event['id'],
+          workspaceId: this.resolveEventWorkspaceId(run.threadId),
+          taskId: this.resolveEventTaskId(run.threadId),
+          runId: input.runId,
+          category: 'run',
+          type: input.kind === 'commentary' ? 'message.commentary_delta' : 'message.delta',
+          sequence: this.eventSequence,
+          occurredAt: input.occurredAt,
+          payload: { threadId: run.threadId },
+        },
+        run,
+        run.delegationParentRunId,
+      );
+      return;
+    }
     this.publishTransientFrame({
       threadId: input.threadId,
       runId: input.runId,
@@ -32184,6 +32993,90 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         ? { assistantTimeline: this.withKernelToolProgress(input.runId, run.assistantTimeline) }
         : {}),
       occurredAt: input.occurredAt,
+    });
+  }
+
+  /** Delegated card avatar: stored Agent avatar, else name initials, else temporary mark. */
+  private resolveDelegatedAgentAvatar(childRun: DemoRunState): string {
+    if (!childRun.globalAgentId) return '🧩';
+    const stored = this.globalAgentStore?.get(childRun.globalAgentId)?.avatar?.trim();
+    if (stored) return stored;
+    const name = childRun.globalAgentName?.trim();
+    return name ? name.slice(0, 2) : '🤖';
+  }
+
+  private publishDelegatedAgentProjection(
+    event: Event,
+    childRun: DemoRunState,
+    parentRunId: RunId,
+  ): void {
+    const terminalState: DelegatedAgentProjection['status'] | undefined =
+      event.type === 'run.completed'
+        ? 'completed'
+        : event.type === 'run.failed'
+          ? childRun.delegationTerminationReason === 'timed_out'
+            ? 'timed_out'
+            : 'failed'
+          : event.type === 'run.cancelled'
+            ? 'cancelled'
+            : undefined;
+    const status = terminalState ?? 'running';
+    const toolEvents = delegatedToolEventsFromTimeline(childRun.assistantTimeline);
+    const activeTool = [...toolEvents].reverse().find((tool) => tool.status === 'running')?.toolName;
+    const projection: DelegatedAgentProjection = {
+      childRunId: childRun.runId,
+      parentRunId,
+      ...(childRun.delegationParallelGroup
+        ? { parallelGroup: childRun.delegationParallelGroup }
+        : {}),
+      name: childRun.globalAgentName?.trim() || '临时任务 Agent',
+      avatar: this.resolveDelegatedAgentAvatar(childRun),
+      kind: childRun.globalAgentId ? 'existing' : 'temporary',
+      ...(childRun.globalAgentId ? { agentId: String(childRun.globalAgentId) } : {}),
+      status,
+      ...(activeTool ? { activeTool } : {}),
+      toolEvents,
+      ...(terminalState && childRun.assistantText.trim()
+        ? { result: childRun.assistantText.trim() }
+        : {}),
+    };
+    const parentKey = String(parentRunId);
+    const current = this.delegatedAgentTransientByParentRun.get(parentKey) ?? [];
+    const nextAgents = [
+      ...current.filter((item) => String(item.childRunId) !== String(childRun.runId)),
+      projection,
+    ];
+    this.delegatedAgentTransientByParentRun.set(parentKey, nextAgents);
+
+    const parentEvents = this.stateStore?.listEventsByRun
+      ? this.stateStore.listEventsByRun(parentRunId)
+      : this.events.filter((candidate) => String(candidate.runId) === String(parentRunId));
+    const frame = this.publishTransientFrame({
+      threadId: childRun.threadId as ThreadId,
+      runId: parentRunId,
+      kind: 'process',
+      process: projectRunProcess(parentRunId, parentEvents),
+      delegatedAgent: projection,
+      occurredAt: event.occurredAt,
+    });
+    const snapshot = this.transientSnapshotByThread.get(childRun.threadId);
+    const parentSnapshot = snapshot?.runId === parentRunId ? snapshot : undefined;
+    this.transientSnapshotByThread.set(childRun.threadId, {
+      threadId: childRun.threadId as ThreadId,
+      runId: parentRunId,
+      streamSequence: frame.streamSequence,
+      text: parentSnapshot?.text ?? '',
+      ...(parentSnapshot?.commentaryText ? { commentaryText: parentSnapshot.commentaryText } : {}),
+      ...(parentSnapshot?.commentarySegments ? { commentarySegments: parentSnapshot.commentarySegments } : {}),
+      ...(parentSnapshot?.reasoningText ? { reasoningText: parentSnapshot.reasoningText } : {}),
+      ...(parentSnapshot?.reasoningSegments ? { reasoningSegments: parentSnapshot.reasoningSegments } : {}),
+      ...(parentSnapshot?.assistantTimeline ? { assistantTimeline: parentSnapshot.assistantTimeline } : {}),
+      ...(parentSnapshot?.process ? { process: parentSnapshot.process } : {}),
+      delegatedAgents: nextAgents.map((item) => ({
+        ...item,
+        toolEvents: item.toolEvents.map((tool) => ({ ...tool })),
+      })),
+      updatedAt: event.occurredAt,
     });
   }
 
@@ -32199,6 +33092,9 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     assistantTimeline?: ConversationTransientSnapshot['assistantTimeline'];
     updatedAt: string;
   }): void {
+    const inputRun =
+      this.demoRuns.get(input.runId) ?? this.completedDelegatedRuns.get(String(input.runId));
+    if (inputRun?.delegationParentRunId) return;
     const current = this.transientSnapshotByThread.get(input.threadId);
     const assistantTimeline = input.assistantTimeline?.length
       ? projectTimelineContent(
@@ -32231,6 +33127,13 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     const threadId =
       typeof event.payload.threadId === 'string' ? (event.payload.threadId as ThreadId) : undefined;
     if (!threadId || !event.runId) return;
+
+    const eventRun =
+      this.demoRuns.get(event.runId) ?? this.completedDelegatedRuns.get(String(event.runId));
+    if (eventRun?.delegationParentRunId) {
+      this.publishDelegatedAgentProjection(event, eventRun, eventRun.delegationParentRunId);
+      return;
+    }
 
     let projection:
       | Pick<
@@ -32334,6 +33237,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     });
     if (projection.kind === 'terminal') {
       this.transientSnapshotByThread.delete(threadId);
+      this.delegatedAgentTransientByParentRun.delete(String(event.runId));
     } else if (projection.process) {
       const current = this.transientSnapshotByThread.get(threadId);
       this.transientSnapshotByThread.set(threadId, {
@@ -32367,6 +33271,14 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
             ? { assistantTimeline: current.assistantTimeline.map((segment) => ({ ...segment })) }
             : {}),
         process: projection.process,
+        ...(current?.runId === event.runId && current.delegatedAgents
+          ? {
+              delegatedAgents: current.delegatedAgents.map((item) => ({
+                ...item,
+                toolEvents: item.toolEvents.map((tool) => ({ ...tool })),
+              })),
+            }
+          : {}),
         updatedAt: event.occurredAt,
       });
     }
