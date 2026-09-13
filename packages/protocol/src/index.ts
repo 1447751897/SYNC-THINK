@@ -18,5 +18,6 @@ export * from './web-search.js';
 export * from './conversation-file-diff.js';
 export * from './run-process-page.js';
 export * from './conversation-file-changes.js';
+export * from './collaboration.js';
 
 export * from './task-plan-history.js';

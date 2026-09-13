@@ -96,6 +96,7 @@ export type CommandType =
   | 'provider.setModelPriorities'
   | 'provider.updateModel'
   | 'provider.removeModel'
+  | 'provider.balance'
   | 'settings.get'
   | 'settings.set'
   | 'webSearch.providers.list'
@@ -627,6 +628,31 @@ export type ConversationTransientFrameKind =
   'text' | 'commentary' | 'reasoning' | 'process' | 'terminal';
 export type ConversationTransientTerminalState = 'completed' | 'failed' | 'cancelled';
 
+export interface DelegatedAgentToolEvent {
+  toolName: string;
+  arguments?: string;
+  status?: 'running' | 'completed' | 'failed';
+  output?: string;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+export interface DelegatedAgentProjection {
+  childRunId: RunId;
+  parentRunId: RunId;
+  /** Optional sibling batch label supplied by the parent model turn. */
+  parallelGroup?: string;
+  name: string;
+  avatar: string;
+  kind: 'existing' | 'temporary';
+  /** Reused Agent Library id; absent for a run-local temporary profile. */
+  agentId?: string;
+  status: 'running' | 'completed' | 'failed' | 'cancelled' | 'timed_out';
+  activeTool?: string;
+  toolEvents: DelegatedAgentToolEvent[];
+  result?: string;
+}
+
 /**
  * One contiguous user-visible assistant commentary fragment between durable
  * execution boundaries. `afterSequence` identifies the latest durable event
@@ -663,6 +689,8 @@ export interface ConversationTransientFrame {
   process?: RunProcessView;
   /** Exact ordered assistant turn snapshot after this frame. */
   assistantTimeline?: import('./assistant-turn.js').AssistantTurnSegment[];
+  /** Parent-scoped live projection for a delegated child Run. */
+  delegatedAgent?: DelegatedAgentProjection;
   occurredAt: string;
 }
 
@@ -680,6 +708,8 @@ export interface ConversationTransientSnapshot {
   reasoningSegments?: ReasoningTimelineSegment[];
   /** Exact ordered assistant turn snapshot; preferred by new renderers. */
   assistantTimeline?: import('./assistant-turn.js').AssistantTurnSegment[];
+  /** Reconnectable delegated child projections owned by this parent Run. */
+  delegatedAgents?: DelegatedAgentProjection[];
   process?: RunProcessView;
   updatedAt: string;
 }
@@ -979,6 +1009,34 @@ export interface ProviderSummary {
   models: ProviderModelSummary[];
   createdAt: string;
   updatedAt: string;
+}
+
+/** One currency bucket reported by a provider account-balance endpoint. */
+export interface ProviderBalanceBucket {
+  currency: string;
+  totalBalance: number;
+  /** Promotional / gifted credit, when the endpoint reports it separately. */
+  grantedBalance?: number;
+  /** Credit the user paid for, when the endpoint reports it separately. */
+  toppedUpBalance?: number;
+}
+
+export interface ProviderBalancePayload {
+  providerId: import('@sync-think/shared').ProviderId;
+  /** Explicit key to bill the query against; defaults to the first credential. */
+  credentialRefId?: import('@sync-think/shared').CredentialRefId;
+}
+
+export interface ProviderBalanceResponse {
+  providerId: import('@sync-think/shared').ProviderId;
+  /** False when this provider exposes no public balance endpoint we can call. */
+  supported: boolean;
+  /** Provider-reported availability flag, when the endpoint exposes one. */
+  available?: boolean;
+  buckets: ProviderBalanceBucket[];
+  fetchedAt: string;
+  /** Human-readable reason when unsupported, or the failure summary. */
+  message?: string;
 }
 
 export interface CreateProviderResponse {
@@ -2266,6 +2324,7 @@ export interface SetSkillEnabledResponse {
 export interface McpToolSchemaSummary {
   name: string;
   description: string;
+  readOnly?: boolean;
   inputSchemaJson?: string;
 }
 

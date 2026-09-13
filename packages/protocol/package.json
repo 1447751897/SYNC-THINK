@@ -37,6 +37,10 @@
     "./tool-approval": {
       "types": "./dist/tool-approval.d.ts",
       "default": "./dist/tool-approval.js"
+    },
+    "./collaboration": {
+      "types": "./dist/collaboration.d.ts",
+      "default": "./dist/collaboration.js"
     }
   },
   "scripts": {
