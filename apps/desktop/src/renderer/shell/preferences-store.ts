@@ -537,8 +537,8 @@ export function applyAppearancePreferences(preferences: AppearancePreferences): 
       '--shell-wallpaper-overlay',
       preferences.imageEffect === 'overlay'
         ? dark
-          ? 'linear-gradient(rgba(0,0,0,0.50), rgba(0,0,0,0.50))'
-          : 'linear-gradient(color-mix(in srgb, var(--color-overlay) 40%, transparent), color-mix(in srgb, var(--color-overlay) 40%, transparent))'
+          ? 'linear-gradient(rgba(0,0,0,0.56), rgba(0,0,0,0.56))'
+          : 'linear-gradient(color-mix(in srgb, var(--color-overlay) 50%, transparent), color-mix(in srgb, var(--color-overlay) 50%, transparent))'
         : dark
           ? 'linear-gradient(rgba(0,0,0,0.58), rgba(0,0,0,0.58))'
           : 'linear-gradient(transparent, transparent)',
@@ -552,7 +552,7 @@ export function applyAppearancePreferences(preferences: AppearancePreferences): 
       dark
         ? 'transparent'
         : preferences.imageEffect === 'overlay'
-          ? 'color-mix(in srgb, var(--color-overlay) 64%, transparent)'
+          ? 'color-mix(in srgb, var(--color-overlay) 40%, transparent)'
           : 'linear-gradient(to bottom, color-mix(in srgb, var(--color-overlay) 72%, transparent), color-mix(in srgb, var(--color-overlay) 50%, transparent))',
     );
     root.style.setProperty(

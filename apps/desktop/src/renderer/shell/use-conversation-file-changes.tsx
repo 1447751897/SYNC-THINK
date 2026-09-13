@@ -71,7 +71,7 @@ export function useConversationFileChanges(conversationId?: string, enabled = tr
   identityRef.current = identity;
   const active = useRef<{ identity: string; controller: AbortController }>();
   const load = useCallback(
-    (offset: number, previous: number[], fresh = false) => {
+    (offset: number, previous: number[], fresh = false, anchorSnapshot = true) => {
       if (!identity || active.current?.identity === identity) return;
       const snapshot = stateRef.current;
       const controller = new AbortController();
@@ -82,7 +82,11 @@ export function useConversationFileChanges(conversationId?: string, enabled = tr
           {
             conversationId: identity as ConversationId,
             offset,
-            ...(fresh || !snapshot?.page ? {} : { version: snapshot.page.version }),
+            // 自动补页不锚定快照版本：run 每产出一个事件版本就变，锚定会让补页必然失败、
+            // 列表截断在首页。自动补页要的是「当前视图的下一段」。
+            ...(fresh || !snapshot?.page || !anchorSnapshot
+              ? {}
+              : { version: snapshot.page.version }),
           },
           controller.signal,
         )
@@ -94,7 +98,7 @@ export function useConversationFileChanges(conversationId?: string, enabled = tr
           if (nextOffset !== undefined && nextOffset > page.offset) {
             queueMicrotask(() => {
               if (identityRef.current === identity && !active.current) {
-                load(nextOffset, [...previous, page.offset]);
+                load(nextOffset, [...previous, page.offset], false, false);
               }
             });
           }
@@ -137,7 +141,7 @@ export function useConversationFileChanges(conversationId?: string, enabled = tr
     const nextOffset = current?.page?.nextOffset;
     const currentOffset = current?.page?.offset ?? 0;
     if (nextOffset === undefined || nextOffset <= currentOffset) return;
-    load(nextOffset, [...(current?.previous ?? []), currentOffset]);
+    load(nextOffset, [...(current?.previous ?? []), currentOffset], false, false);
   }, [current?.busy, current?.error, current?.page?.nextOffset, current?.page?.offset, enabled, identity, load]);
   const page = current?.page;
   const reload = () => load(0, [], true);

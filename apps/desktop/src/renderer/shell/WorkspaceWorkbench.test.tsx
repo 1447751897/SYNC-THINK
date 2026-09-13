@@ -86,7 +86,7 @@ describe('WorkspaceWorkbench', () => {
     expect(screen.getByText('file:src/app.ts')).toBeTruthy();
   });
 
-  it('renders the liquid tab surface for the active workbench tab', () => {
+  it('renders a flat NewMax pane tab bar for the active workbench tab', () => {
     render(
       <WorkspaceWorkbench
         placement="right"
@@ -100,20 +100,38 @@ describe('WorkspaceWorkbench', () => {
       />,
     );
 
-    // The surface rail is painted behind the tab row and stays decorative.
-    const surface = document.querySelector('.shell-workbench__tab-surface');
-    expect(surface).toBeTruthy();
-    expect(surface?.getAttribute('aria-hidden')).toBe('true');
-    expect(surface?.querySelector('path')).toBeTruthy();
-
-    // The hook locates the notch by this exact selector.
     const active = document.querySelector('.shell-workbench-tab.is-active');
     expect(active).toBeTruthy();
     expect(active?.getAttribute('aria-selected')).toBe('true');
+    expect(active?.classList.contains('shell-workbench-tab')).toBe(true);
+    expect(document.querySelector('.shell-workbench__tab-surface')).toBeNull();
 
-    // The rail/panel rule is still mounted (hidden by CSS, not removed) so the
-    // existing pane-tab-divider contract keeps holding.
     expect(document.querySelector('[data-pane-tab-divider="true"]')).toBeTruthy();
+  });
+
+  it('numbers terminal tabs like NewMax', () => {
+    const first = openWorkbenchTab(
+      createWorkspaceWorkbenchLayout(),
+      'bottom',
+      terminalWorkbenchTab('terminal-1'),
+    );
+    const scope = openWorkbenchTab(first, 'bottom', terminalWorkbenchTab('terminal-2')).bottom;
+
+    render(
+      <WorkspaceWorkbench
+        placement="bottom"
+        scope={scope}
+        renderContent={(tab) => <div>{tab.id}</div>}
+        onActivateTab={vi.fn()}
+        onCloseTab={vi.fn()}
+        onNewResource={vi.fn()}
+        onClose={vi.fn()}
+        onSizeChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole('tab', { name: 'Terminal 1' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'Terminal 2' })).toBeTruthy();
   });
 
   it('docks workspace files beside the active resource from the workbench header', () => {
@@ -138,9 +156,11 @@ describe('WorkspaceWorkbench', () => {
     expect(screen.getByRole('tab', { name: /app.ts/ })).toBeTruthy();
     const toggle = screen.getByTestId('workspace-files-workbench-toggle');
     expect(toggle.getAttribute('aria-pressed')).toBe('true');
-    expect(document.querySelector('[data-testid="workspace-workbench-file-browser"]')?.getAttribute('data-open')).toBe(
-      'true',
-    );
+    expect(
+      document
+        .querySelector('[data-testid="workspace-workbench-file-browser"]')
+        ?.getAttribute('data-open'),
+    ).toBe('true');
     expect(screen.getByText('工作区文件树')).toBeTruthy();
     expect(screen.getByText('file:src/app.ts')).toBeTruthy();
     fireEvent.click(toggle);

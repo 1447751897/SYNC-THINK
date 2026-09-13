@@ -293,7 +293,8 @@ function ContextStageIcon({ stage }: { stage: NonNullable<TopBarProps['contextSt
             : stage === 'teams'
               ? Users
               : Wrench;
-  return <Icon size={14} aria-hidden="true" />;
+  // NewMax `TabLeadingVisual` renders workspace/context tab leading icons at 16px.
+  return <Icon size={16} aria-hidden="true" />;
 }
 
 export function TopBar(props: TopBarProps) {

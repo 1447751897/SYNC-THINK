@@ -40,7 +40,7 @@ import {
 } from '@dnd-kit/sortable';
 import { FileTypeIcon } from './FileTypeIcon.js';
 import { browserTabFaviconSrc } from './ExternalSourceIcon.js';
-import { PANE_TAB_GLIDE, usePaneTabSurface } from './pane-tab-surface.js';
+import { PANE_TAB_GLIDE } from './pane-tab-surface.js';
 import { pointerDragLeft, tabTranslate, visualIndexFor } from './workspace-tab-morph.js';
 
 export interface ConversationTabsProps {
@@ -273,10 +273,8 @@ export function ConversationTabs(props: ConversationTabsProps) {
   const splitPickerAnchorRef = useRef<HTMLDivElement>(null);
   const splitPickerRef = useRef<HTMLDivElement>(null);
   const tabManagerAnchorRef = useRef<HTMLDivElement>(null);
-  const tabBarRef = useRef<HTMLDivElement>(null);
   const tabTrackRef = useRef<HTMLDivElement>(null);
   const tabClusterRef = useRef<HTMLDivElement>(null);
-  const tabSurfaceRef = usePaneTabSurface(tabBarRef, tabTrackRef);
   const newResourceMenuStyle = useAnchoredMenuStyle(
     newResourceMenuOpen,
     newResourceAnchorRef,
@@ -466,336 +464,338 @@ export function ConversationTabs(props: ConversationTabsProps) {
 
   return (
     <div
-      ref={tabBarRef}
       data-testid="conversation-tabs"
       data-pane-tab-bar="true"
       className="shell-conversation-tabs relative flex h-10 shrink-0 items-center gap-[3px] p-1"
       style={{ '--shell-pane-tab-glide': PANE_TAB_GLIDE } as React.CSSProperties}
     >
-      <svg className="shell-pane-tab-surface" data-testid="pane-tab-surface" aria-hidden="true">
-        <path ref={tabSurfaceRef} />
-      </svg>
       {/* Tab cluster keeps the plus beside the last tab; overflow stays in the
           scroller so the more-menu can remain pinned to the trailing chrome. */}
       <div ref={tabClusterRef} className="shell-conversation-tabs__cluster">
-      <div
-        ref={tabTrackRef}
-        className="shell-conversation-tabs__scroller flex min-w-0 items-center gap-[3px] overflow-x-auto"
-        style={{ '--shell-pane-tab-width': `${paneTabWidth}px` } as React.CSSProperties}
-        onDragOver={handleConversationDragOver}
-        onDrop={handleConversationDrop}
-      >
-        <DndContext
-          sensors={sensors}
-          collisionDetection={closestCenter}
-          onDragStart={(event) =>
-            props.onTabDragStateChange?.({
-              type: 'conversation',
-              id: String(event.active.id),
-            })
-          }
-          onDragEnd={handleTabDragEnd}
-          onDragCancel={clearConversationMorph}
+        <div
+          ref={tabTrackRef}
+          className="shell-conversation-tabs__scroller flex min-w-0 items-center gap-[3px] overflow-x-auto"
+          style={{ '--shell-pane-tab-width': `${paneTabWidth}px` } as React.CSSProperties}
+          onDragOver={handleConversationDragOver}
+          onDrop={handleConversationDrop}
         >
-          <SortableContext
-            items={tabs.map((c) => String(c.id))}
-            strategy={horizontalListSortingStrategy}
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            onDragStart={(event) =>
+              props.onTabDragStateChange?.({
+                type: 'conversation',
+                id: String(event.active.id),
+              })
+            }
+            onDragEnd={handleTabDragEnd}
+            onDragCancel={clearConversationMorph}
           >
-            {tabs.length > 0 ? <div
-              className="shell-conversation-tab-slots"
-              style={{ width: tabs.length * paneTabWidth + (tabs.length - 1) * PANE_TAB_GAP }}
+            <SortableContext
+              items={tabs.map((c) => String(c.id))}
+              strategy={horizontalListSortingStrategy}
             >
-            {tabs.map((conversation, index) => {
-              const id = String(conversation.id);
-              const active = id === props.activeId;
-              const label = conversation.title?.trim() || '新对话';
-              const Icon = TRACK_TAB_ICON[conversation.track] ?? MessageSquare;
-              return (
-                <SortableConversationTab
-                  key={id}
-                  conversationId={id}
-                  label={label}
-                  icon={<Icon size={14} aria-hidden />}
-                  active={active}
-                  activeIconClass={active ? 'text-text-secondary' : 'text-text-faint'}
-                  splitId={props.splitId}
-                  running={props.conversationActivity?.get(id)?.running ?? false}
-                  unread={props.conversationActivity?.get(id)?.unread ?? false}
-                  left={index * (paneTabWidth + PANE_TAB_GAP)}
-                  onSelect={() => props.onSelect(id)}
-                  onClose={() => props.onClose(id)}
-                  onRename={() => props.onRename?.(id, label)}
-                  onContextMenu={(e) => {
-                    // Context menu lives on the whole tab (not just the title button)
-                    // so right-clicking icon/close-area works too.
-                    e.preventDefault();
-                    e.stopPropagation();
-                    setCtxMenu({ id, x: e.clientX, y: e.clientY });
+              {tabs.length > 0 ? (
+                <div
+                  className="shell-conversation-tab-slots"
+                  style={{ width: tabs.length * paneTabWidth + (tabs.length - 1) * PANE_TAB_GAP }}
+                >
+                  {tabs.map((conversation, index) => {
+                    const id = String(conversation.id);
+                    const active = id === props.activeId;
+                    const label = conversation.title?.trim() || '新对话';
+                    const Icon = TRACK_TAB_ICON[conversation.track] ?? MessageSquare;
+                    return (
+                      <SortableConversationTab
+                        key={id}
+                        conversationId={id}
+                        label={label}
+                        icon={<Icon size={14} aria-hidden />}
+                        active={active}
+                        activeIconClass={active ? 'text-text-secondary' : 'text-text-faint'}
+                        splitId={props.splitId}
+                        running={props.conversationActivity?.get(id)?.running ?? false}
+                        unread={props.conversationActivity?.get(id)?.unread ?? false}
+                        left={index * (paneTabWidth + PANE_TAB_GAP)}
+                        onSelect={() => props.onSelect(id)}
+                        onClose={() => props.onClose(id)}
+                        onRename={() => props.onRename?.(id, label)}
+                        onContextMenu={(e) => {
+                          // Context menu lives on the whole tab (not just the title button)
+                          // so right-clicking icon/close-area works too.
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setCtxMenu({ id, x: e.clientX, y: e.clientY });
+                        }}
+                        hasSplitAction={Boolean(props.onRename)}
+                        onNativeDragStart={(event) => beginConversationDrag(event, id)}
+                        onNativeDragOver={handleConversationDragOver}
+                        morphOffset={
+                          morphDrag
+                            ? morphDrag.id === id
+                              ? morphDrag.dragLeft - morphDrag.startLeft
+                              : (visualIndexFor(
+                                  index,
+                                  morphDrag.startIndex,
+                                  morphDrag.targetIndex,
+                                ) -
+                                  index) *
+                                (paneTabWidth + PANE_TAB_GAP)
+                            : 0
+                        }
+                        dragging={morphDrag?.id === id}
+                        onNativeDrop={handleConversationDrop}
+                        onNativeDragEnd={clearConversationMorph}
+                      />
+                    );
+                  })}
+                </div>
+              ) : null}
+            </SortableContext>
+          </DndContext>
+
+          {(props.fileTabs ?? []).map((file) => {
+            const active = file.path === props.activeFilePath;
+            const label = file.path.split(/[\\/]/).at(-1) || file.path;
+            const resource: PaneResourceRef = { type: 'file', id: file.path };
+            return (
+              <div
+                key={file.id}
+                data-testid={`file-tab-${file.path}`}
+                data-active={active ? 'true' : 'false'}
+                data-pane-resource-type="file"
+                draggable
+                className={clsx(
+                  'shell-pane-tab st-row-motion group relative flex shrink-0 items-center',
+                  active
+                    ? 'shell-conversation-tab-active font-medium text-text'
+                    : 'text-text-secondary hover:bg-hover hover:text-text',
+                )}
+                onDragStart={(event) =>
+                  beginResourceDrag(event, resource, props.onTabDragStateChange)
+                }
+                onDragEnd={() => props.onTabDragStateChange?.(null)}
+              >
+                <FileTypeIcon path={file.path} size={14} className="shrink-0" />
+                <button
+                  type="button"
+                  className="min-w-0 flex-1 truncate text-left"
+                  aria-label={`打开文件 ${file.path}`}
+                  title={file.path}
+                  onClick={() => props.onSelectFile?.(file.path)}
+                >
+                  {label}
+                </button>
+                <span
+                  className="flex h-3 w-3 shrink-0 items-center justify-center"
+                  aria-hidden={!file.dirty}
+                >
+                  {file.dirty ? (
+                    <span
+                      className="h-1.5 w-1.5 rounded-full bg-warning"
+                      data-testid={`file-tab-dirty-${file.path}`}
+                      aria-label="未保存"
+                    />
+                  ) : null}
+                </span>
+                <button
+                  type="button"
+                  className={clsx(
+                    'shell-pane-tab__close st-icon-motion flex h-5 shrink-0 items-center justify-center overflow-hidden rounded text-text-faint hover:bg-hover hover:text-text',
+                    active ? 'opacity-80' : 'opacity-0 group-hover:opacity-100',
+                  )}
+                  aria-label={`关闭文件 ${file.path}`}
+                  title="关闭文件标签"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    props.onCloseFile?.(file.path);
                   }}
-                  hasSplitAction={Boolean(props.onRename)}
-                  onNativeDragStart={(event) => beginConversationDrag(event, id)}
-                  onNativeDragOver={handleConversationDragOver}
-                  morphOffset={
-                    morphDrag
-                      ? morphDrag.id === id
-                        ? morphDrag.dragLeft - morphDrag.startLeft
-                        : (visualIndexFor(
-                            index,
-                            morphDrag.startIndex,
-                            morphDrag.targetIndex,
-                          ) -
-                            index) *
-                          (paneTabWidth + PANE_TAB_GAP)
-                      : 0
-                  }
-                  dragging={morphDrag?.id === id}
-                  onNativeDrop={handleConversationDrop}
-                  onNativeDragEnd={clearConversationMorph}
-                />
-              );
-            })}
-            </div> : null}
-          </SortableContext>
-        </DndContext>
+                >
+                  <X size={11} />
+                </button>
+              </div>
+            );
+          })}
 
-        {(props.fileTabs ?? []).map((file) => {
-          const active = file.path === props.activeFilePath;
-          const label = file.path.split(/[\\/]/).at(-1) || file.path;
-          const resource: PaneResourceRef = { type: 'file', id: file.path };
-          return (
-            <div
-              key={file.id}
-              data-testid={`file-tab-${file.path}`}
-              data-active={active ? 'true' : 'false'}
-              data-pane-resource-type="file"
-              draggable
-              className={clsx(
-                'shell-pane-tab st-row-motion group relative flex shrink-0 items-center',
-                active
-                  ? 'shell-conversation-tab-active font-medium text-text'
-                  : 'text-text-secondary hover:bg-hover hover:text-text',
-              )}
-              onDragStart={(event) =>
-                beginResourceDrag(event, resource, props.onTabDragStateChange)
-              }
-              onDragEnd={() => props.onTabDragStateChange?.(null)}
-            >
-              <FileTypeIcon path={file.path} size={14} className="shrink-0" />
-              <button
-                type="button"
-                className="min-w-0 flex-1 truncate text-left"
-                aria-label={`打开文件 ${file.path}`}
-                title={file.path}
-                onClick={() => props.onSelectFile?.(file.path)}
-              >
-                {label}
-              </button>
-              <span
-                className="flex h-3 w-3 shrink-0 items-center justify-center"
-                aria-hidden={!file.dirty}
-              >
-                {file.dirty ? (
-                  <span
-                    className="h-1.5 w-1.5 rounded-full bg-warning"
-                    data-testid={`file-tab-dirty-${file.path}`}
-                    aria-label="未保存"
-                  />
-                ) : null}
-              </span>
-              <button
-                type="button"
+          {(props.terminalTabs ?? []).map((terminal) => {
+            const active = terminal.terminalId === props.activeTerminalId;
+            const terminalIndex =
+              (props.terminalTabs ?? []).findIndex(
+                (candidate) => candidate.terminalId === terminal.terminalId,
+              ) + 1;
+            const label = `Terminal ${terminalIndex}`;
+            const resource: PaneResourceRef = { type: 'terminal', id: terminal.terminalId };
+            return (
+              <div
+                key={terminal.id}
+                data-testid={`terminal-tab-${terminal.terminalId}`}
+                data-active={active ? 'true' : 'false'}
+                data-pane-resource-type="terminal"
+                draggable
                 className={clsx(
-                  'shell-pane-tab__close st-icon-motion flex h-5 shrink-0 items-center justify-center overflow-hidden rounded text-text-faint hover:bg-hover hover:text-text',
-                  active ? 'opacity-80' : 'opacity-0 group-hover:opacity-100',
+                  'shell-pane-tab st-row-motion group relative flex shrink-0 items-center',
+                  active
+                    ? 'shell-conversation-tab-active font-medium text-text'
+                    : 'text-text-secondary hover:bg-hover hover:text-text',
                 )}
-                aria-label={`关闭文件 ${file.path}`}
-                title="关闭文件标签"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  props.onCloseFile?.(file.path);
-                }}
+                onDragStart={(event) =>
+                  beginResourceDrag(event, resource, props.onTabDragStateChange)
+                }
+                onDragEnd={() => props.onTabDragStateChange?.(null)}
               >
-                <X size={11} />
-              </button>
-            </div>
-          );
-        })}
-
-        {(props.terminalTabs ?? []).map((terminal) => {
-          const active = terminal.terminalId === props.activeTerminalId;
-          const label = terminal.cwd ? `终端 · ${terminal.cwd}` : '终端';
-          const resource: PaneResourceRef = { type: 'terminal', id: terminal.terminalId };
-          return (
-            <div
-              key={terminal.id}
-              data-testid={`terminal-tab-${terminal.terminalId}`}
-              data-active={active ? 'true' : 'false'}
-              data-pane-resource-type="terminal"
-              draggable
-              className={clsx(
-                'shell-pane-tab st-row-motion group relative flex shrink-0 items-center',
-                active
-                  ? 'shell-conversation-tab-active font-medium text-text'
-                  : 'text-text-secondary hover:bg-hover hover:text-text',
-              )}
-              onDragStart={(event) =>
-                beginResourceDrag(event, resource, props.onTabDragStateChange)
-              }
-              onDragEnd={() => props.onTabDragStateChange?.(null)}
-            >
-              <SquareTerminal
-                size={14}
-                className={clsx('shrink-0', active ? 'text-accent' : 'text-text-faint')}
-                aria-hidden="true"
-              />
-              <button
-                type="button"
-                className="min-w-0 flex-1 truncate text-left"
-                aria-label={`打开终端 ${terminal.terminalId}`}
-                title={terminal.cwd || '项目根目录'}
-                onClick={() => props.onSelectTerminal?.(terminal.terminalId)}
-              >
-                {label}
-              </button>
-              <button
-                type="button"
-                className={clsx(
-                  'shell-pane-tab__close st-icon-motion flex h-5 shrink-0 items-center justify-center overflow-hidden rounded text-text-faint hover:bg-hover hover:text-text',
-                  active ? 'opacity-80' : 'opacity-0 group-hover:opacity-100',
-                )}
-                aria-label={`关闭终端 ${terminal.terminalId}`}
-                title="关闭终端标签"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  props.onCloseTerminal?.(terminal.terminalId);
-                }}
-              >
-                <X size={11} />
-              </button>
-            </div>
-          );
-        })}
-
-        {(props.browserTabs ?? []).map((browser) => {
-          const active = browser.browserId === props.activeBrowserId;
-          const resource: PaneResourceRef = { type: 'browser', id: browser.browserId };
-          const faviconSrc = browserTabFaviconSrc(browser);
-          return (
-            <div
-              key={browser.id}
-              data-testid={`browser-tab-${browser.browserId}`}
-              data-active={active ? 'true' : 'false'}
-              data-pane-resource-type="browser"
-              draggable
-              className={clsx(
-                'shell-pane-tab st-row-motion group relative flex shrink-0 items-center',
-                active
-                  ? 'shell-conversation-tab-active font-medium text-text'
-                  : 'text-text-secondary hover:bg-hover hover:text-text',
-              )}
-              onDragStart={(event) =>
-                beginResourceDrag(event, resource, props.onTabDragStateChange)
-              }
-              onDragEnd={() => props.onTabDragStateChange?.(null)}
-            >
-              {faviconSrc ? (
-                <img
-                  className="shell-pane-tab__favicon"
-                  src={faviconSrc}
-                  alt=""
-                  data-testid={`browser-tab-favicon-${browser.browserId}`}
-                />
-              ) : (
-                <Globe
+                <SquareTerminal
                   size={14}
                   className={clsx('shrink-0', active ? 'text-accent' : 'text-text-faint')}
                   aria-hidden="true"
                 />
-              )}
-              <button
-                type="button"
-                className="min-w-0 flex-1 truncate text-left"
-                aria-label={`打开网页 ${browser.title || browser.url || browser.browserId}`}
-                title={browser.url}
-                onClick={() => props.onSelectBrowser?.(browser.browserId)}
-              >
-                {browser.title?.trim() ||
-                  browser.url.replace(/^https?:\/\//i, '').replace(/\/$/, '') ||
-                  '网页浏览'}
-              </button>
-              <button
-                type="button"
-                className={clsx(
-                  'shell-pane-tab__close st-icon-motion flex h-5 shrink-0 items-center justify-center overflow-hidden rounded text-text-faint hover:bg-hover hover:text-text',
-                  active ? 'opacity-80' : 'opacity-0 group-hover:opacity-100',
-                )}
-                aria-label={`关闭网页 ${browser.browserId}`}
-                title="关闭网页标签"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  props.onCloseBrowser?.(browser.browserId);
-                }}
-              >
-                <X size={11} />
-              </button>
-            </div>
-          );
-        })}
+                <button
+                  type="button"
+                  className="min-w-0 flex-1 truncate text-left"
+                  aria-label={`打开终端 ${terminal.terminalId}`}
+                  title={terminal.cwd || '项目根目录'}
+                  onClick={() => props.onSelectTerminal?.(terminal.terminalId)}
+                >
+                  {label}
+                </button>
+                <button
+                  type="button"
+                  className={clsx(
+                    'shell-pane-tab__close st-icon-motion flex h-5 shrink-0 items-center justify-center overflow-hidden rounded text-text-faint hover:bg-hover hover:text-text',
+                    active ? 'opacity-80' : 'opacity-0 group-hover:opacity-100',
+                  )}
+                  aria-label={`关闭终端 ${terminal.terminalId}`}
+                  title="关闭终端标签"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    props.onCloseTerminal?.(terminal.terminalId);
+                  }}
+                >
+                  <X size={11} />
+                </button>
+              </div>
+            );
+          })}
 
-        {(props.reviewTabs ?? []).map((review) => {
-          const active = review.runId === props.activeReviewRunId;
-          const resource: PaneResourceRef = { type: 'review', id: review.runId };
-          return (
-            <div
-              key={review.id}
-              data-testid={`review-tab-${review.runId}`}
-              data-active={active ? 'true' : 'false'}
-              data-pane-resource-type="review"
-              draggable
-              className={clsx(
-                'shell-pane-tab st-row-motion group relative flex shrink-0 items-center',
-                active
-                  ? 'shell-conversation-tab-active font-medium text-text'
-                  : 'text-text-secondary hover:bg-hover hover:text-text',
-              )}
-              onDragStart={(event) =>
-                beginResourceDrag(event, resource, props.onTabDragStateChange)
-              }
-              onDragEnd={() => props.onTabDragStateChange?.(null)}
-            >
-              <FileDiff
-                size={14}
-                className={clsx('shrink-0', active ? 'text-accent' : 'text-text-faint')}
-                aria-hidden="true"
-              />
-              <button
-                type="button"
-                className="min-w-0 flex-1 truncate text-left"
-                aria-label={`打开审阅 ${review.runId}`}
-                title="审阅本轮修改"
-                onClick={() => props.onSelectReview?.(review.runId)}
-              >
-                审阅
-              </button>
-              <button
-                type="button"
+          {(props.browserTabs ?? []).map((browser) => {
+            const active = browser.browserId === props.activeBrowserId;
+            const resource: PaneResourceRef = { type: 'browser', id: browser.browserId };
+            const faviconSrc = browserTabFaviconSrc(browser);
+            return (
+              <div
+                key={browser.id}
+                data-testid={`browser-tab-${browser.browserId}`}
+                data-active={active ? 'true' : 'false'}
+                data-pane-resource-type="browser"
+                draggable
                 className={clsx(
-                  'shell-pane-tab__close st-icon-motion flex h-5 shrink-0 items-center justify-center overflow-hidden rounded text-text-faint hover:bg-hover hover:text-text',
-                  active ? 'opacity-80' : 'opacity-0 group-hover:opacity-100',
+                  'shell-pane-tab st-row-motion group relative flex shrink-0 items-center',
+                  active
+                    ? 'shell-conversation-tab-active font-medium text-text'
+                    : 'text-text-secondary hover:bg-hover hover:text-text',
                 )}
-                aria-label={`关闭审阅 ${review.runId}`}
-                title="关闭审阅标签"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  props.onCloseReview?.(review.runId);
-                }}
+                onDragStart={(event) =>
+                  beginResourceDrag(event, resource, props.onTabDragStateChange)
+                }
+                onDragEnd={() => props.onTabDragStateChange?.(null)}
               >
-                <X size={11} />
-              </button>
-            </div>
-          );
-        })}
-      </div>
+                {faviconSrc ? (
+                  <img
+                    className="shell-pane-tab__favicon"
+                    src={faviconSrc}
+                    alt=""
+                    data-testid={`browser-tab-favicon-${browser.browserId}`}
+                  />
+                ) : (
+                  <Globe
+                    size={14}
+                    className={clsx('shrink-0', active ? 'text-accent' : 'text-text-faint')}
+                    aria-hidden="true"
+                  />
+                )}
+                <button
+                  type="button"
+                  className="min-w-0 flex-1 truncate text-left"
+                  aria-label={`打开网页 ${browser.title || browser.url || browser.browserId}`}
+                  title={browser.url}
+                  onClick={() => props.onSelectBrowser?.(browser.browserId)}
+                >
+                  {browser.title?.trim() ||
+                    browser.url.replace(/^https?:\/\//i, '').replace(/\/$/, '') ||
+                    '网页浏览'}
+                </button>
+                <button
+                  type="button"
+                  className={clsx(
+                    'shell-pane-tab__close st-icon-motion flex h-5 shrink-0 items-center justify-center overflow-hidden rounded text-text-faint hover:bg-hover hover:text-text',
+                    active ? 'opacity-80' : 'opacity-0 group-hover:opacity-100',
+                  )}
+                  aria-label={`关闭网页 ${browser.browserId}`}
+                  title="关闭网页标签"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    props.onCloseBrowser?.(browser.browserId);
+                  }}
+                >
+                  <X size={11} />
+                </button>
+              </div>
+            );
+          })}
+
+          {(props.reviewTabs ?? []).map((review) => {
+            const active = review.runId === props.activeReviewRunId;
+            const resource: PaneResourceRef = { type: 'review', id: review.runId };
+            return (
+              <div
+                key={review.id}
+                data-testid={`review-tab-${review.runId}`}
+                data-active={active ? 'true' : 'false'}
+                data-pane-resource-type="review"
+                draggable
+                className={clsx(
+                  'shell-pane-tab st-row-motion group relative flex shrink-0 items-center',
+                  active
+                    ? 'shell-conversation-tab-active font-medium text-text'
+                    : 'text-text-secondary hover:bg-hover hover:text-text',
+                )}
+                onDragStart={(event) =>
+                  beginResourceDrag(event, resource, props.onTabDragStateChange)
+                }
+                onDragEnd={() => props.onTabDragStateChange?.(null)}
+              >
+                <FileDiff
+                  size={14}
+                  className={clsx('shrink-0', active ? 'text-accent' : 'text-text-faint')}
+                  aria-hidden="true"
+                />
+                <button
+                  type="button"
+                  className="min-w-0 flex-1 truncate text-left"
+                  aria-label={`打开审阅 ${review.runId}`}
+                  title="审阅本轮修改"
+                  onClick={() => props.onSelectReview?.(review.runId)}
+                >
+                  审阅
+                </button>
+                <button
+                  type="button"
+                  className={clsx(
+                    'shell-pane-tab__close st-icon-motion flex h-5 shrink-0 items-center justify-center overflow-hidden rounded text-text-faint hover:bg-hover hover:text-text',
+                    active ? 'opacity-80' : 'opacity-0 group-hover:opacity-100',
+                  )}
+                  aria-label={`关闭审阅 ${review.runId}`}
+                  title="关闭审阅标签"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    props.onCloseReview?.(review.runId);
+                  }}
+                >
+                  <X size={11} />
+                </button>
+              </div>
+            );
+          })}
+        </div>
 
         <div
           ref={newResourceAnchorRef}
@@ -909,7 +909,7 @@ export function ConversationTabs(props: ConversationTabsProps) {
             : null}
         </div>
       </div>
-      <div className="ml-[3px] flex shrink-0 items-center gap-[3px]">
+      <div className="shell-conversation-tabs__actions ml-[3px] flex shrink-0 items-center gap-[3px]">
         {paneResourceTabCount > 0 ? (
           <div ref={tabManagerAnchorRef} className="relative shrink-0">
             <button

@@ -44,9 +44,7 @@ describe('ConversationTabs NewMax tab track', () => {
       />,
     );
 
-    expect(screen.getByTestId('conversation-tabs').getAttribute('data-pane-tab-bar')).toBe(
-      'true',
-    );
+    expect(screen.getByTestId('conversation-tabs').getAttribute('data-pane-tab-bar')).toBe('true');
     expect(screen.getByTestId('conversation-tab-c1').classList.contains('shell-pane-tab')).toBe(
       true,
     );
@@ -58,14 +56,15 @@ describe('ConversationTabs NewMax tab track', () => {
         container.querySelector('.shell-conversation-tabs__scroller') as HTMLElement
       ).style.getPropertyValue('--shell-pane-tab-width'),
     ).toBe('172px');
-    const surface = screen.getByTestId('pane-tab-surface');
-    expect(surface.parentElement).toBe(screen.getByTestId('conversation-tabs'));
-    expect(surface.closest('.shell-pane-tab')).toBeNull();
-    expect(screen.queryByTestId('workspace-tab-shape')).toBeNull();
-    expect(within(screen.getByTestId('conversation-tab-c1')).getByRole('button', { name: '对话一' })).toBeTruthy();
+    // NewMax pane tab bar has no shared SVG surface: the active tab paints its
+    // own rounded --ds-on-surface wash instead.
+    expect(screen.queryByTestId('pane-tab-surface')).toBeNull();
+    expect(
+      within(screen.getByTestId('conversation-tab-c1')).getByRole('button', { name: '对话一' }),
+    ).toBeTruthy();
   });
 
-  it('keeps one background surface when switching from a conversation to a file', () => {
+  it('moves the active state from a conversation to a file on the same tab bar', () => {
     const props = {
       conversations,
       openIds: ['c1', 'c2'],
@@ -75,13 +74,12 @@ describe('ConversationTabs NewMax tab track', () => {
       onNew: vi.fn(),
     };
     const { rerender } = render(<ConversationTabs {...props} activeId="c1" />);
-    const surface = screen.getByTestId('pane-tab-surface');
+    expect(screen.getByTestId('conversation-tab-c1').getAttribute('data-active')).toBe('true');
     rerender(<ConversationTabs {...props} activeFilePath="README.md" />);
-    expect(screen.getByTestId('pane-tab-surface')).toBe(surface);
-    expect(screen.getAllByTestId('pane-tab-surface')).toHaveLength(1);
+    expect(screen.getAllByTestId('conversation-tabs')).toHaveLength(1);
+    expect(screen.queryByTestId('pane-tab-surface')).toBeNull();
     expect(screen.getByTestId('conversation-tab-c1').getAttribute('data-active')).toBe('false');
     expect(screen.getByTestId('file-tab-README.md').getAttribute('data-active')).toBe('true');
-    expect(screen.queryByTestId('workspace-tab-shape')).toBeNull();
   });
 
   it('places the plus beside the last tab instead of the trailing chrome', () => {
@@ -114,7 +112,9 @@ describe('ConversationTabs NewMax tab track', () => {
       />,
     );
 
-    expect(screen.getByTestId('conversation-tab-new').closest('.shell-tab-add--hidden')).not.toBeNull();
+    expect(
+      screen.getByTestId('conversation-tab-new').closest('.shell-tab-add--hidden'),
+    ).not.toBeNull();
   });
 });
 
@@ -441,6 +441,7 @@ describe('ConversationTabs pane actions', () => {
     );
 
     expect(screen.getByTestId('terminal-tab-t1').getAttribute('data-active')).toBe('true');
+    expect(screen.getByRole('button', { name: '打开终端 t1' }).textContent).toBe('Terminal 1');
     fireEvent.click(screen.getByRole('button', { name: '打开终端 t1' }));
     expect(onSelectTerminal).toHaveBeenCalledWith('t1');
     fireEvent.click(screen.getByRole('button', { name: '关闭终端 t1' }));

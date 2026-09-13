@@ -4,10 +4,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CodeBlock } from './CodeBlock.js';
 import { highlightCodeLines } from './code-highlight.js';
 import { MarkdownContent } from './MarkdownContent.js';
+import { resetToolOutputWrapForTests } from './tool-output-wrap.js';
 
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  window.localStorage.clear();
+  resetToolOutputWrapForTests();
 });
 
 describe('CodeBlock', () => {
@@ -38,9 +41,8 @@ describe('CodeBlock', () => {
       expect(completed.scrollTop).toBe(120);
       expect(completed.scrollLeft).toBe(42);
       expect(container.querySelector('.shell-md-code.is-expanded')).toBeTruthy();
-      expect(screen.getByRole('button', { name: '回到代码末尾' })).toBeTruthy();
       expect(container.querySelector('[data-writing="true"]')).toBeNull();
-      if (prefix) expect(screen.getByRole('button', { name: '实现说明' })).toBeTruthy();
+      if (prefix) expect(screen.getByRole('heading', { name: '实现说明' })).toBeTruthy();
     },
   );
 
@@ -111,7 +113,7 @@ describe('CodeBlock', () => {
     expect(screen.queryByText('已复制')).toBeNull();
   });
 
-  it('pauses stream following after scrolling up and resumes only on request', async () => {
+  it('pauses stream following after scrolling up and resumes once the reader returns to the bottom', async () => {
     const { container, rerender } = render(<CodeBlock code="first" streaming />);
     const viewport = container.querySelector<HTMLElement>('[data-code-viewport]')!;
     Object.defineProperties(viewport, {
@@ -123,8 +125,8 @@ describe('CodeBlock', () => {
     rerender(<CodeBlock code={'first\nsecond'} streaming />);
     await waitFor(() => expect(container.querySelectorAll('[data-code-line]')).toHaveLength(2));
     expect(viewport.scrollTop).toBe(120);
-    fireEvent.click(screen.getByRole('button', { name: '回到代码末尾' }));
-    expect(viewport.scrollTop).toBe(500);
+    viewport.scrollTop = 400;
+    fireEvent.scroll(viewport);
     Object.defineProperty(viewport, 'scrollHeight', { configurable: true, value: 600 });
     rerender(<CodeBlock code={'first\nsecond\nlast'} />);
     await waitFor(() => expect(viewport.scrollTop).toBe(600));
@@ -147,5 +149,42 @@ describe('CodeBlock', () => {
     expect(lines[1]).toMatch(/<\/span>$/);
     expect(lines.join('\n')).not.toContain('<img');
     expect(lines.join('\n')).toContain('&lt;img');
+  });
+});
+
+describe('CodeBlock wrap control', () => {
+  it('wraps by default and shows a pressed toggle', () => {
+    const { container } = render(<CodeBlock code={'x'.repeat(400)} wrapControl />);
+    expect(container.querySelector('.shell-md-code')?.getAttribute('data-wrap')).toBe('true');
+    expect(screen.getByRole('button', { name: '切换为不换行' }).getAttribute('aria-pressed')).toBe(
+      'true',
+    );
+  });
+
+  it('switches to single-line when the toggle is clicked', () => {
+    const { container } = render(<CodeBlock code={'x'.repeat(400)} wrapControl />);
+    fireEvent.click(screen.getByRole('button', { name: '切换为不换行' }));
+    expect(container.querySelector('.shell-md-code')?.getAttribute('data-wrap')).toBe('false');
+    const toggle = screen.getByRole('button', { name: '切换为自动换行' });
+    expect(toggle.getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('applies one shared preference to every block in the window', () => {
+    const { container } = render(
+      <>
+        <CodeBlock code={'x'.repeat(400)} wrapControl />
+        <CodeBlock code={'y'.repeat(400)} wrapControl />
+      </>,
+    );
+    fireEvent.click(screen.getAllByRole('button', { name: '切换为不换行' })[0]!);
+    const blocks = container.querySelectorAll('.shell-md-code');
+    expect(blocks[0]!.getAttribute('data-wrap')).toBe('false');
+    expect(blocks[1]!.getAttribute('data-wrap')).toBe('false');
+  });
+
+  it('keeps markdown code blocks unwrapped unless the control is requested', () => {
+    const { container } = render(<MarkdownContent text={'```ts\nconst a = 1;\n```'} />);
+    expect(container.querySelector('.shell-md-code')?.getAttribute('data-wrap')).toBe('false');
+    expect(screen.queryByRole('button', { name: /换行/ })).toBeNull();
   });
 });

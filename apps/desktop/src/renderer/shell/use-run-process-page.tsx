@@ -92,6 +92,9 @@ export function useRunProcessPage(
   const currentIdentity = useRef(identity);
   currentIdentity.current = identity;
   const active = useRef<{ identity: string; controller: AbortController }>();
+  // 过程视图在补页途中可能变短（相邻同标签步骤被合并成 ×N），使下一页越界。
+  // 每个 identity 允许一次「从首页重新累积」的自愈。
+  const rangeRetryFor = useRef<string | undefined>(undefined);
   const [state, setState] = useState<PageState>();
   const current = state?.identity === identity ? state : undefined;
   const process = current?.process ?? source;
@@ -106,7 +109,7 @@ export function useRunProcessPage(
     },
     [identity],
   );
-  const load = (offset: number, previous: number[], fresh = false) => {
+  const load = (offset: number, previous: number[], fresh = false, anchorSnapshot = true) => {
     if (!source || !conversationId || active.current?.identity === identity) return;
     const controller = new AbortController();
     active.current = { identity, controller };
@@ -116,7 +119,14 @@ export function useRunProcessPage(
         {
           runId: source.runId,
           conversationId: conversationId as ConversationId,
-          page: { section, offset, ...(fresh ? {} : { version: process?.pages?.version }) },
+          page: {
+            section,
+            offset,
+            // 自动补页不锚定快照版本。运行中的 run 每产出一个事件，过程快照的哈希就变一次，
+            // 锚定会让每一次补页请求都被判为过期，步骤从此截断在首页（用户看到「请重新读取」）。
+            // 这里要的语义是「当前视图的下一段」，而不是「同一份快照的下一段」。
+            ...(fresh || !anchorSnapshot ? {} : { version: process?.pages?.version }),
+          },
         },
         controller.signal,
       )
@@ -152,12 +162,24 @@ export function useRunProcessPage(
       });
   };
   useEffect(() => {
-    if (!options?.accumulate || !source || !conversationId || current?.busy || current?.error)
+    if (!options?.accumulate || !source || !conversationId || current?.busy) return;
+    if (current?.error) {
+      // 越界（视图在补页途中变短）时从首页重新累积一次即可自愈，不把中途变更暴露成错误。
+      if (current.error === 'failed' && rangeRetryFor.current !== identity) {
+        rangeRetryFor.current = identity;
+        load(0, [], true);
+      }
       return;
+    }
     const nextOffset = process?.pages?.[section]?.nextOffset;
     const currentOffset = process?.pages?.[section]?.offset ?? 0;
     if (nextOffset === undefined || nextOffset <= currentOffset) return;
-    load(nextOffset, [...(current?.previous ?? []), process?.pages?.[section]?.offset ?? 0]);
+    load(
+      nextOffset,
+      [...(current?.previous ?? []), process?.pages?.[section]?.offset ?? 0],
+      false,
+      false,
+    );
     // Intentionally continue from the latest nextOffset after each page lands.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [

@@ -862,18 +862,9 @@ body {
   background: var(--color-overlay);
   color: var(--color-text);
   box-shadow: 0 12px 34px color-mix(in srgb, var(--color-text) 13%, transparent);
-  scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--color-border-strong) 58%, transparent) transparent;
 }
 
-:is(
-  .shell-task-status__branch-menu,
-  .shell-task-status__branch-list,
-  .shell-task-status__progress-popover
-) {
-  scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--color-border-strong) 58%, transparent) transparent;
-}
+/* 同理：任务状态面板不再声明 scrollbar-width / scrollbar-color，让下面的细胶囊规则生效。 */
 
 :is(
   .shell-task-status-panel,
@@ -9003,6 +8994,176 @@ body {
   line-height: 1.55;
 }
 
+.shell-delegated-agent-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.shell-delegated-agent-group__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 8px 2px;
+  color: var(--color-text-faint);
+  font-size: 10.5px;
+  letter-spacing: 0.01em;
+}
+
+.shell-delegated-agent-group__header span:last-child {
+  opacity: 0.78;
+}
+
+.shell-delegated-agent {
+  min-width: 0;
+  border: 1px solid color-mix(in srgb, var(--color-border) 54%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-surface) 72%, transparent);
+}
+
+.shell-delegated-agent__summary,
+.shell-delegated-agent__tool > summary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 30px;
+  padding: 5px 8px;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  list-style: none;
+  font-size: 11.5px;
+}
+
+.shell-delegated-agent__summary::-webkit-details-marker,
+.shell-delegated-agent__tool > summary::-webkit-details-marker {
+  display: none;
+}
+
+.shell-delegated-agent__avatar {
+  display: inline-grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+  font-size: 12px;
+}
+
+.shell-delegated-agent__identity {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.shell-delegated-agent__identity span,
+.shell-delegated-agent__status,
+.shell-delegated-agent__empty {
+  color: var(--color-text-faint);
+  font-size: 10.5px;
+}
+
+.shell-delegated-agent__status {
+  flex: 0 0 auto;
+}
+
+.shell-delegated-agent__origin {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+}
+
+.shell-delegated-agent__agent-id {
+  max-width: 160px;
+  overflow: hidden;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+  color: var(--color-text-faint);
+  font: 9.5px/1.5 var(--font-mono, ui-monospace, monospace);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shell-delegated-agent__details {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 8px 8px 35px;
+}
+
+.shell-delegated-agent__tools {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.shell-delegated-agent__tools-toggle {
+  align-self: flex-start;
+  margin-top: 1px;
+  padding: 3px 8px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--color-surface-raised) 70%, transparent);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  font-size: 10.5px;
+}
+
+.shell-delegated-agent__tools-toggle:hover {
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  color: var(--color-text);
+}
+
+.shell-delegated-agent__tool {
+  border-top: 1px solid color-mix(in srgb, var(--color-border) 32%, transparent);
+}
+
+.shell-delegated-agent__tool > summary {
+  min-height: 25px;
+  padding: 3px 0;
+  font-size: 11px;
+}
+
+.shell-delegated-agent__tool > summary span:first-child {
+  min-width: 0;
+  flex: 1;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+.shell-delegated-agent__tool > summary span:last-child {
+  color: var(--color-text-faint);
+  font-size: 10px;
+}
+
+.shell-delegated-agent__tool code,
+.shell-delegated-agent__tool pre {
+  display: block;
+  max-height: 20em;
+  margin: 0 0 5px;
+  overflow: auto;
+  padding: 5px 7px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--color-surface-raised) 76%, transparent);
+  color: var(--color-text-faint);
+  font: 10px/1.45 var(--font-mono, ui-monospace, monospace);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.shell-delegated-agent__result {
+  border-top: 1px solid color-mix(in srgb, var(--color-border) 32%, transparent);
+  padding-top: 6px;
+  color: var(--color-text-secondary);
+  font-size: 11.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
 .shell-process-panel__supplemental {
   min-width: 0;
 }
@@ -9729,18 +9890,106 @@ body {
   line-height: 1.58;
 }
 
+/* 整个详情面板：**只保留这一层描边**。
+   这里原本叠了三层视觉容器 —— 面板自身一层描边/底色，里面的 .shell-tool-result
+   又是一层描边/底色，再里面的 dl.shell-inline-process__structured 还带一层
+   elevated 底色，加上「52px 标签列 + 缩进内容」的错位，就成了那种笨重方块框。
+   现在合成一张面板：分区之间只用淡分隔线，标签降级为分区小标题。 */
 .shell-harness-trace .shell-inline-process__tool-body {
   display: flex;
   flex-direction: column;
-  gap: 5px;
-  max-height: min(340px, 42vh);
-  overflow: auto;
-  overscroll-behavior: contain;
-  scrollbar-gutter: stable;
-  padding: 7px 9px;
-  border: 1px solid color-mix(in srgb, var(--color-border) 62%, transparent);
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--color-elevated) 46%, transparent);
+  gap: 0;
+  /* 参数区与输出区各自成框、各自内部滚动：面板整体不设 max-height，否则两个区
+     会被塞进同一个滚动容器，必须滚动整块面板才能看到下面的输出。 */
+  margin: 0 0 8px 22px;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--color-border) 46%, transparent);
+  border-radius: 10px;
+  /* 毛玻璃：面板是半透明的，聊天壁纸会直接透上来抢正文。把背后虚化掉，
+     底色随之提到 58% —— 只虚化不提底色的话，模糊后的色块仍会让文字发灰。 */
+  background: color-mix(in srgb, var(--color-elevated) 58%, transparent);
+  backdrop-filter: blur(14px) saturate(1.12);
+  overflow: hidden;
+}
+
+/* 分区之间用一条极淡的线划分，不再各套一个框。 */
+.shell-harness-trace .shell-inline-process__tool-body > * + * {
+  margin-top: 0;
+  border-top: 1px solid color-mix(in srgb, var(--color-border) 30%, transparent);
+}
+
+/* 分区：小标题在上、内容占满整宽，取代「52px 标签列 + 缩进内容」的错位排布。
+   必须显式写 display: grid —— 下面 `:has(> .shell-tool-result)` 那条会把它设成
+   flex，只声明 grid-template-columns 会被 flex 容器整个忽略。 */
+.shell-harness-trace .shell-inline-process__tool-body .shell-inline-process__detail-block {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+  padding: 8px 10px 9px;
+}
+
+.shell-harness-trace .shell-inline-process__tool-body .shell-inline-process__detail-block > span {
+  width: auto;
+  margin-bottom: 5px;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--color-text-faint);
+}
+
+/* 「原始工具」行同样按分区处理，与参数/输出共用面板内的对齐线。 */
+.shell-harness-trace .shell-inline-process__tool-body > .shell-inline-process__detail-row {
+  padding: 8px 10px;
+}
+
+/* 分区里的卡不再自成一框：去掉描边、底色、圆角，内容直接落在面板上。 */
+.shell-harness-trace .shell-inline-process__tool-body .shell-tool-result {
+  border: 0;
+  border-radius: 0;
+  background: none;
+  overflow: visible;
+}
+
+/* 参数/输出的键值表也去掉自带底色与描边（它在卡内是第三层容器）。 */
+.shell-harness-trace
+  .shell-inline-process__tool-body
+  .shell-tool-result
+  .shell-inline-process__structured {
+  border: 0;
+  border-radius: 0;
+  background: none;
+}
+
+/* 卡内顶条压到最矮：只留一行说明和复制按钮，不出分隔线。 */
+.shell-harness-trace .shell-inline-process__tool-body .shell-tool-result .shell-md-code__bar,
+.shell-harness-trace .shell-inline-process__tool-body .shell-tool-result__bar {
+  min-height: 18px;
+  padding: 0 0 5px;
+  border-bottom: 0;
+}
+
+.shell-harness-trace .shell-inline-process__tool-body .shell-tool-result .shell-source-copy {
+  min-height: 18px;
+  padding: 0 5px;
+}
+
+/* 内容区不再自带内边距，避免与外层分区 padding 叠成双重缩进。 */
+.shell-harness-trace
+  .shell-inline-process__tool-body
+  .shell-tool-result
+  .shell-agent-code
+  .shell-agent-code__source {
+  padding: 0;
+}
+
+.shell-harness-trace .shell-inline-process__tool-body .shell-inline-process__structured-row dt,
+.shell-harness-trace .shell-inline-process__tool-body .shell-inline-process__structured-row dd {
+  padding: 3px 0;
+}
+
+/* 键列收窄、值列吃满：原先值列只有 0.32fr，长命令会被折成一堆碎行。 */
+.shell-harness-trace .shell-inline-process__tool-body .shell-inline-process__structured-row {
+  grid-template-columns: minmax(56px, auto) minmax(0, 1fr);
+  gap: 10px;
 }
 
 .shell-harness-trace .shell-inline-process__tool-body:focus-visible {
@@ -10227,11 +10476,9 @@ body {
   }
 }
 
-.shell-chat-message-scroller {
-  scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--color-border-strong) 58%, transparent) transparent;
-}
-
+/* 不声明 scrollbar-width / scrollbar-color：两者是**可继承**属性，只要有值，Chromium 就
+   整体走标准滚动条渲染并忽略 ::-webkit-scrollbar（实测占位退回 17px 原生宽度），下面的
+   细胶囊规则会形同虚设；而且它们还会继承给消息里的每个滚动容器。 */
 .shell-chat-message-scroller::-webkit-scrollbar {
   width: 4px;
 }
@@ -10456,9 +10703,14 @@ body {
 
 .shell-conversation-minimap {
   position: absolute;
-  inset: 8px auto 8px 6px;
+  /* NewMax MessageOutlineNav: vertically centered at left:16px, 26px wide,
+     and capped at min(100% - 96px, ticks * 10px). */
+  top: 50%;
+  left: 16px;
   z-index: 24;
-  width: 32px;
+  width: 26px;
+  height: min(calc(100% - 96px), var(--minimap-track-max, 100%));
+  transform: translateY(-50%);
   pointer-events: none;
 }
 
@@ -10476,9 +10728,9 @@ body {
   left: 0;
   display: flex;
   align-items: center;
-  width: 32px;
+  width: 26px;
   height: var(--minimap-tick-hit-height, 20px);
-  padding: 0 4px;
+  padding: 0;
   border: 0;
   background: transparent;
   transform: translateY(-50%);
@@ -10488,24 +10740,22 @@ body {
 
 .shell-conversation-minimap__tick > span {
   display: block;
-  width: 6px;
+  /* NewMax: width is driven by this tick's distance to the hovered rail item
+     (26 / 18 / 12 / 6 px), so the rail ripples out from the pointer. */
+  width: var(--minimap-tick-width, 6px);
   height: 2px;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--color-text-faint) 80%, transparent);
+  background: color-mix(in srgb, var(--color-text) 18%, transparent);
   transition:
-    width 120ms ease,
-    background-color 120ms ease;
+    width var(--shell-motion-fast, 110ms) ease,
+    background-color var(--shell-motion-fast, 110ms) ease;
 }
 
-.shell-conversation-minimap__tick:hover > span,
-.shell-conversation-minimap__tick:focus-visible > span,
-.shell-conversation-minimap__tick[data-hovered='true'] > span {
-  width: 14px;
-  background: color-mix(in srgb, var(--color-text) 78%, transparent);
-}
-
+/* NewMax keeps exactly one tick at full strength, never two: while the pointer is
+   on the rail that is the hovered tick, otherwise it is the turn the reader is
+   actually in. The component moves `data-active` to match, so a hover can never
+   leave a second bright tick competing with the reader's current position. */
 .shell-conversation-minimap__tick[data-active='true'] > span {
-  width: 18px;
   background: var(--color-text);
 }
 
@@ -10515,13 +10765,13 @@ body {
   border-radius: 3px;
 }
 
+/* A wallpaper leaves the rail over photography, so the resting ticks need more
+   presence than NewMax's flat 18% — but the active tick still has to win by a
+   clear margin, which the old 58% resting value did not give it. */
 :root[data-image-theme='active'] .shell-conversation-minimap__tick > span {
-  background: color-mix(in srgb, var(--color-text) 58%, transparent);
+  background: color-mix(in srgb, var(--color-text) 34%, transparent);
 }
 
-:root[data-image-theme='active'] .shell-conversation-minimap__tick:hover > span,
-:root[data-image-theme='active'] .shell-conversation-minimap__tick:focus-visible > span,
-:root[data-image-theme='active'] .shell-conversation-minimap__tick[data-hovered='true'] > span,
 :root[data-image-theme='active'] .shell-conversation-minimap__tick[data-active='true'] > span {
   background: var(--color-text);
 }
@@ -12451,6 +12701,35 @@ body {
 
 .shell-context-tab {
   margin-left: 16px;
+}
+
+/*
+ * Context tab ↔ content frame butt joint.
+ *
+ * The topbar is 32px tall (`h-8`) while the tab inside it is 31px (`h-[31px]`,
+ * matching NewMax's WORKSPACE_TAB_SHAPE_HEIGHT). That leftover 1px slot at the
+ * bottom of the topbar let `--color-page` (the wallpaper orange) show through
+ * as a hairline right under the tab's baseline — CDP-measured as two rows
+ * (#fbefe9 + #fcddcb) spanning the full tab width. It read as "tab" and
+ * "content" being two separate blocks instead of one continuous page, which is
+ * exactly how NewMax's reference tab reads (there the fill runs straight into
+ * the pane with a single 1px outline row and nothing else).
+ *
+ * So: extend the tab's own fill 2px past its box, matching the SVG fill colour,
+ * and let the pane below start flush against it. `left/right: 0` spans the tab
+ * body only (184px); the shoulders stay outside, so the wallpaper still wraps
+ * them.
+ */
+.shell-context-tab::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  bottom: -2px;
+  left: 0;
+  z-index: 2;
+  height: 2px;
+  background: var(--color-chat);
+  pointer-events: none;
 }
 
 .task-hist-backdrop {
@@ -15761,6 +16040,15 @@ body {
     color 150ms ease;
 }
 
+.shell-md-code__wrap {
+  padding: 0 5px;
+}
+
+.shell-md-code__wrap[aria-pressed='true'] {
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  color: var(--color-text);
+}
+
 .shell-md-code__action:hover {
   background: var(--color-hover);
   color: var(--color-text);
@@ -15808,6 +16096,14 @@ body {
   line-height: 1.55;
   color: var(--color-text);
   background: transparent;
+}
+
+/* 折行模式（默认开启，见 tool-output-wrap.ts）：长行不再把框撑宽，
+   框的右边界与顶条的复制/折行按钮直接可见，不必先拖横向滚动条。 */
+.shell-md-code[data-wrap='true'] .shell-md-code__pre {
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .shell-md-code__fade {
@@ -17433,7 +17729,6 @@ body {
     animation: none;
     transition: none;
   }
-
 }
 
 @media (max-width: 720px) {
@@ -18644,7 +18939,6 @@ body {
   color: var(--color-text);
 }
 .shell-source-copy:focus-visible,
-.shell-agent-code__follow:focus-visible,
 .shell-agent-code__viewport:focus-visible {
   outline: 1px solid var(--color-accent);
   outline-offset: -2px;
@@ -18705,11 +18999,62 @@ body {
 .shell-agent-code__body {
   position: relative;
 }
+/* 命令/工具输出的滚动区走细胶囊滚动条（对齐 .shell-task-status-panel 的既有先例）。
+   注意：scrollbar-width / scrollbar-color 是**可继承**属性，只要它们有值，Chromium 就
+   走标准滚动条渲染并整体忽略 ::-webkit-scrollbar。聊天滚动区
+   （.shell-chat-message-scroller）上的 scrollbar-color 会一路继承到这里的每个容器，
+   所以必须显式复位成 auto，否则下面的细胶囊规则写多少都不生效（实测占位仍是 17px 原生宽度）。 */
+:is(
+  .shell-agent-code__viewport,
+  .shell-md-code__viewport,
+  .shell-deferred-content__text,
+  .shell-inline-process__structured,
+  .shell-inline-process__tool-code
+) {
+  scrollbar-width: auto;
+  scrollbar-color: auto;
+}
 .shell-agent-code.shell-md-code .shell-agent-code__body .shell-agent-code__viewport {
   overflow: auto;
   overscroll-behavior: contain;
-  scrollbar-width: thin;
-  scrollbar-color: var(--color-border-strong) transparent;
+}
+:is(
+  .shell-agent-code__viewport,
+  .shell-md-code__viewport,
+  .shell-deferred-content__text,
+  .shell-inline-process__structured,
+  .shell-inline-process__tool-code
+)::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+:is(
+  .shell-agent-code__viewport,
+  .shell-md-code__viewport,
+  .shell-deferred-content__text,
+  .shell-inline-process__structured,
+  .shell-inline-process__tool-code
+)::-webkit-scrollbar-track {
+  background: transparent;
+}
+:is(
+  .shell-agent-code__viewport,
+  .shell-md-code__viewport,
+  .shell-deferred-content__text,
+  .shell-inline-process__structured,
+  .shell-inline-process__tool-code
+)::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-border-strong) 58%, transparent);
+}
+:is(
+  .shell-agent-code__viewport,
+  .shell-md-code__viewport,
+  .shell-deferred-content__text,
+  .shell-inline-process__structured,
+  .shell-inline-process__tool-code
+)::-webkit-scrollbar-thumb:hover {
+  background: var(--color-text-faint);
 }
 .shell-agent-code .shell-agent-code__source {
   margin: 0;
@@ -18727,6 +19072,11 @@ body {
   background: transparent;
   color: var(--color-text-secondary);
   font: inherit;
+}
+/* 折行时解绑 max-content 宽度，否则 `<code>` 仍会按最长行撑开容器。 */
+.shell-md-code[data-wrap='true'] .shell-agent-code__source > code {
+  width: auto;
+  min-width: 0;
 }
 .shell-agent-code__line {
   display: flex;
@@ -18749,20 +19099,18 @@ body {
   white-space: pre;
   tab-size: 2;
 }
-.shell-agent-code__follow {
-  position: absolute;
-  right: 10px;
-  bottom: 10px;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 5px 8px;
-  border: 1px solid var(--color-border);
-  border-radius: 6px;
-  background: var(--color-elevated);
-  color: var(--color-text-secondary);
-  font-size: 11px;
-  cursor: pointer;
+.shell-md-code[data-wrap='true'] .shell-agent-code__text {
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* `.shell-agent-code__line` 是 flex 行，行文本是它的 flex 项：默认 `min-width: auto`
+   会让最长行继续把容器撑宽，`white-space: pre-wrap` 也救不回来。 */
+.shell-md-code[data-wrap='true'] .shell-agent-code__line {
+  min-width: 0;
+}
+.shell-md-code[data-wrap='true'] .shell-agent-code__viewport {
+  overflow-x: hidden;
 }
 .shell-agent-code__limit {
   padding: 7px 12px;
@@ -18791,6 +19139,10 @@ body {
   margin: 0;
   border: 0;
   border-radius: 0;
+  /* 承载卡本身已经有底色，内层代码块再铺一层 elevated 就是「底色叠底色」。
+     更明显的是不对称：参数区走 JSON 分支没有代码块、输出区走文本分支有，
+     于是输出区多出一整块矩形底色，而参数区没有。 */
+  background: none;
 }
 /* 卡内代码块的顶部条与 __bar 统一：24px 高、淡分隔线、不显示文件图标。 */
 .shell-tool-result .shell-md-code__bar {
@@ -18854,6 +19206,11 @@ body {
   font: 12px/1.55 var(--font-mono);
   color: var(--color-text);
   tab-size: 2;
+}
+/* 折行模式：`data-wrap` 直接挂在 <pre> 上（DeferredToolContent 的 ContentSession）。 */
+.shell-deferred-content__text[data-wrap='true'] {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .shell-harness-trace .shell-inline-process__tool-body:has(.shell-deferred-content) {
   max-height: none;
@@ -19437,11 +19794,20 @@ body {
   font-weight: 500;
 }
 
+/* Usage hover card — pixel-matched to NewMax's reply-meta popover:
+   208×123 @1x, padding 6/12/8, radius 9, hairline-free with the very light
+   --ds-elevation-100-style stack. */
 .shell-usage-tip {
-  min-width: 300px;
-  max-width: none;
-  padding: 9px 10px;
-  border-radius: 8px;
+  min-width: 208px;
+  max-width: min(340px, calc(100vw - 32px));
+  padding: 6px 12px 8px;
+  border: 0;
+  border-radius: 9px;
+  box-shadow:
+    inset 0.5px 0.5px 0.5px color-mix(in srgb, #fff 90%, transparent),
+    0 0 0 0.5px color-mix(in srgb, var(--color-text) 5%, transparent),
+    0.5px 0.5px 1px color-mix(in srgb, var(--color-text) 9%, transparent);
+  font-size: 12.5px;
 }
 
 .shell-usage-tip__summary,
@@ -19452,10 +19818,15 @@ body {
   gap: 18px;
   min-height: 20px;
   color: var(--color-text-secondary);
-  font-size: 11.5px;
+  font-size: 12.5px;
   line-height: 20px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+
+/* Summary line is the most prominent row in NewMax's popover. */
+.shell-usage-tip__summary {
+  color: var(--color-text);
 }
 
 .shell-usage-tip__token-detail {
@@ -19466,16 +19837,26 @@ body {
 }
 
 .shell-usage-tip__account {
-  margin-top: 6px;
-  padding-top: 6px;
-  border-top: 1px solid var(--color-border);
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid color-mix(in srgb, var(--color-text) 5%, transparent);
 }
 
 .shell-usage-tip__account-row strong {
-  color: var(--color-text);
+  color: var(--color-text-secondary);
   font-size: inherit;
   font-weight: 500;
   text-align: right;
+}
+
+/* NewMax renders the balance value at full strength and the top-up/granted
+   row at its faintest — the other account values sit at the secondary tone. */
+.shell-usage-tip__account-row[data-testid='provider-balance'] > strong {
+  color: var(--color-text);
+}
+
+.shell-usage-tip__account-row[data-testid='provider-balance-credits'] {
+  color: var(--color-text-faint);
 }
 
 /* ─── Tool approval card (「询问批准」) ─────────────────────────────────────── */
@@ -20391,44 +20772,12 @@ body {
   padding-top: 15px;
 }
 
+/*
+ * Layout only — the segmented-control visuals come from .shell-ds-tab-bar,
+ * which carries the NewMax DsTabBar spec (pill container, sliding indicator).
+ */
 .settings-general-tabs {
-  display: inline-flex;
-  max-width: 100%;
-  align-items: center;
-  gap: 2px;
   margin-bottom: 18px;
-  padding: 3px;
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--color-text) 6%, transparent);
-}
-
-.settings-general-tabs button {
-  min-width: 58px;
-  height: 27px;
-  padding: 0 13px;
-  border: 0;
-  border-radius: 9px;
-  background: transparent;
-  color: var(--color-text-secondary);
-  font-family: var(--font-sans);
-  font-size: 12px;
-  cursor: pointer;
-  transition:
-    background 120ms ease,
-    color 120ms ease,
-    box-shadow 120ms ease;
-}
-
-.settings-general-tabs button:hover,
-.settings-general-tabs button:focus-visible {
-  color: var(--color-text);
-  outline: none;
-}
-
-.settings-general-tabs button.is-active {
-  background: var(--color-control, var(--color-surface));
-  color: var(--color-accent-text, var(--color-text));
-  box-shadow: 0 1px 2px color-mix(in srgb, var(--color-text) 8%, transparent);
 }
 
 .settings-general-panel {
@@ -20449,6 +20798,22 @@ body {
 
 .settings-general-agent {
   min-width: 0;
+}
+
+.settings-number-input {
+  width: 72px;
+  height: 34px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-page);
+  color: var(--color-text);
+  padding: 0 9px;
+  text-align: right;
+  font-size: 13px;
+}
+
+.settings-number-input--wide {
+  width: 96px;
 }
 
 .settings-general-block {
@@ -25998,6 +26363,41 @@ body {
   color: var(--color-accent-text);
 }
 
+.model-fallback-option {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+}
+
+.model-fallback-option > .model-provider-brand-icon {
+  width: 17px;
+  height: 17px;
+  flex: 0 0 17px;
+}
+
+.model-fallback-option__provider {
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+.model-fallback-option__model {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-fallback-option__verified {
+  flex: 0 0 auto;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--color-accent-text) 14%, transparent);
+  color: var(--color-accent-text);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
 .model-enabled-list__add {
   display: inline-flex;
   width: 100%;
@@ -26838,6 +27238,89 @@ body {
   font-size: 10.5px;
 }
 
+/* 视觉能力扫描 —— 对齐 NewMax 的 VisionFallbackPanel（扫描按钮 + 逐行结果）。 */
+.model-strategy-panel__scan {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.model-strategy-panel__scan-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.model-strategy-panel__scan-button {
+  flex: none;
+  height: 26px;
+  padding: 0 12px;
+  border: 0.8px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.model-strategy-panel__scan-button:hover:not(:disabled) {
+  background: var(--color-hover);
+}
+
+.model-strategy-panel__scan-button:disabled {
+  cursor: default;
+  color: var(--color-text-faint);
+}
+
+.model-strategy-panel__scan-caption {
+  min-width: 0;
+  color: var(--color-text-faint);
+  font-size: 10.5px;
+}
+
+.model-strategy-panel__scan-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.model-strategy-panel__scan-row {
+  display: grid;
+  grid-template-columns: minmax(0, auto) auto minmax(0, 1fr);
+  align-items: baseline;
+  gap: 8px;
+  font-size: 11px;
+}
+
+.model-strategy-panel__scan-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text);
+}
+
+.model-strategy-panel__scan-state {
+  color: var(--color-text-faint);
+}
+
+.model-strategy-panel__scan-row[data-ok='true'] .model-strategy-panel__scan-state {
+  color: var(--color-text);
+}
+
+.model-strategy-panel__scan-reason {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-faint);
+}
+
 .model-cloud-sync-panel {
   width: 100%;
 }
@@ -27329,6 +27812,13 @@ body {
   color: var(--color-text);
   font-size: 11px;
   font-weight: 600;
+}
+
+/* Real brand logo in the detail/form header: keep the plate, drop the letter
+   metrics so the mark is not nudged off-center. */
+.model-provider-detail__avatar--logo {
+  font-size: 0;
+  line-height: 0;
 }
 
 .model-provider-detail__head h2 {
@@ -28818,6 +29308,135 @@ body {
   cursor: default;
 }
 
+/* 实测明细：runtime 返回的逐项成败（results）与原因（reasons） */
+.model-capability-dialog__probe-detail {
+  margin-top: 14px;
+  padding: 10px 12px 11px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--color-border) 12%, transparent);
+}
+
+.model-capability-dialog__probe-detail .model-capability-dialog__section-head {
+  margin-bottom: 8px;
+}
+
+.model-capability-dialog__probe-results {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.model-capability-dialog__probe-results li {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.model-capability-dialog__probe-results li.is-pass {
+  background: color-mix(in srgb, var(--color-accent-text) 12%, transparent);
+  color: var(--color-accent-text);
+}
+
+.model-capability-dialog__probe-results li.is-fail {
+  background: color-mix(in srgb, var(--color-border) 45%, transparent);
+  color: var(--color-text-faint);
+}
+
+.model-capability-dialog__probe-results li em {
+  font-style: normal;
+  opacity: 0.85;
+}
+
+.model-capability-dialog__probe-reasons {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  color: var(--color-text-faint);
+  font-size: 11.5px;
+  line-height: 17px;
+}
+
+/* 探测确认浮层 —— 对齐 NewMax capabilityScan 的确认对话框（说明 + 费用提示 + 取消/确认） */
+.model-capability-dialog__confirm {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: color-mix(in srgb, var(--color-page) 55%, transparent);
+  backdrop-filter: blur(2px);
+}
+
+.model-capability-dialog__confirm-panel {
+  width: 100%;
+  padding: 16px 16px 12px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+  border-radius: 14px;
+  background: var(--color-overlay);
+  box-shadow: 0 16px 40px color-mix(in srgb, var(--color-page) 30%, transparent);
+}
+
+.model-capability-dialog__confirm-panel h3 {
+  margin: 0;
+  color: var(--color-text);
+  font-size: 14.5px;
+  font-weight: 600;
+}
+
+.model-capability-dialog__confirm-panel > p {
+  margin: 6px 0 0;
+  color: var(--color-text-secondary);
+  font-size: 12.5px;
+  line-height: 19px;
+}
+
+.model-capability-dialog__notice.is-warning {
+  color: var(--color-accent-text);
+}
+
+.model-capability-dialog__confirm-panel .model-capability-dialog__notice {
+  margin-top: 12px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-accent-text) 10%, transparent);
+}
+
+.model-capability-dialog__confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.model-capability-dialog__confirm-actions button {
+  display: inline-flex;
+  min-height: 30px;
+  align-items: center;
+  justify-content: center;
+  padding: 0 14px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  font-size: 12.5px;
+  cursor: pointer;
+  background: color-mix(in srgb, var(--color-border) 45%, transparent);
+  color: var(--color-text);
+}
+
+.model-capability-dialog__confirm-actions .is-primary {
+  background: var(--color-accent-text);
+  color: #fff;
+}
+
 .model-capability-dialog__notice {
   display: flex;
   min-height: 18px;
@@ -30042,34 +30661,18 @@ body {
 }
 
 /*
- * The conversation tab strip is the top edge of the same visual panel as the
- * active chat/file/terminal/browser content. The shared SVG surface owns the
- * liquid shoulders while the actual labels stay above it in the tab cluster.
+ * NewMax pane tab bar: a transparent 40px row (`flex h-10 items-center gap-[3px]
+ * p-1`) holding flat 28px tabs. The active tab is a plain rounded rect filled
+ * with the on-surface wash (mapped to --color-hover). There is no liquid
+ * SVG surface here — that belonged to the beUI morphing experiment, not NewMax.
  */
 .shell-conversation-tabs {
-  --shell-pane-tab-surface: var(--color-chat);
   isolation: isolate;
-  align-items: flex-end;
-  padding: 12px 4px 0;
+  align-items: center;
   overflow: visible;
-  background: var(--color-stage-tabs);
+  background: transparent;
   border: 0;
   border-radius: 0;
-}
-
-.shell-pane-tab-surface {
-  position: absolute;
-  z-index: 0;
-  inset: 0;
-  width: 100%;
-  height: 41px;
-  overflow: hidden;
-  pointer-events: none;
-}
-
-.shell-pane-tab-surface path {
-  fill: var(--shell-pane-tab-surface);
-  transition: d var(--shell-pane-tab-glide);
 }
 
 .shell-conversation-tabs__cluster {
@@ -30080,6 +30683,19 @@ body {
   flex: 1 1 auto;
   align-items: center;
   gap: 3px;
+}
+
+.shell-conversation-tabs__actions {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 3px;
+}
+
+.shell-conversation-tabs__actions [data-pane-more-menu='true'] {
+  flex: 0 0 38px;
 }
 
 .shell-conversation-tabs__scroller {
@@ -30105,7 +30721,8 @@ body {
   gap: 6px;
   overflow: hidden;
   border: 0;
-  border-radius: 12px 12px 0 0;
+  /* NewMax: rounded-[--ds-radius-md] (=12px) on all four corners. */
+  border-radius: 12px;
   padding: 0 4px 0 10px;
   font-size: 13px;
   font-weight: 500;
@@ -30144,27 +30761,8 @@ body {
   transition: none;
 }
 
-.shell-pane-tab:not(.shell-conversation-tab-active):hover {
+.shell-pane-tab:not([data-active='true']):hover {
   background: var(--color-hover);
-}
-
-.shell-pane-tab:focus-within {
-  outline: 1px solid var(--color-focus-ring);
-  outline-offset: -2px;
-}
-
-.shell-pane-tab-surface:has(+ .shell-conversation-tabs__cluster .is-dragging) path {
-  will-change: d;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  :root:not([data-motion='full']) .shell-pane-tab-surface path {
-    transition: none;
-  }
-}
-
-[data-reduced-motion] .shell-pane-tab-surface path {
-  transition: none;
 }
 
 .shell-pane-tab__favicon {
@@ -30217,10 +30815,12 @@ body {
   margin: 0;
 }
 
+/* NewMax active resource tab: a flat on-surface wash, no outline/highlight
+ * (those two belong to the workspace tab shape, which stays SVG). */
 .shell-conversation-tab-active {
   z-index: 1;
   border: 0;
-  background: transparent;
+  background: var(--color-hover);
 }
 
 .shell-workspace-tab-active + .shell-workspace-tab-active,
@@ -30720,13 +31320,16 @@ body {
   margin: var(--shell-pane-frame-top-gap) var(--shell-pane-frame-gutter)
     var(--shell-pane-frame-gutter);
   border-radius: var(--shell-pane-frame-radius);
+  /* The card's right end stops partway across the content frame, so its
+     top-right corner stays square while the left one keeps the shell radius. */
+  border-top-right-radius: 0;
   background: var(--color-chat);
   box-shadow: none;
   isolation: isolate;
 }
 
 .shell-pane-frame > .shell-conversation-tabs {
-  border-radius: var(--shell-pane-frame-radius) var(--shell-pane-frame-radius) 0 0;
+  border-radius: var(--shell-pane-frame-radius) 0 0 0;
 }
 
 .shell-pane-canvas {
@@ -31052,11 +31655,19 @@ body {
   line-height: 1;
 }
 
+/*
+ * Segmented control — spec copied from NewMax DsTabBar (walletStore chunk):
+ *   container  borderRadius --ds-radius-pill (64px), backgroundColor --ds-on-surface
+ *   indicator  --ds-surface-100 + --ds-elevation-100, transition left/width --ds-motion-soft
+ *   tab        h-[24|26|30px], px-3 + gap-1 when labelled, --ds-icon -> --ds-text-primary
+ *              colour transition --ds-motion-swift
+ * NewMax defines no :hover rule on a tab, so neither does this.
+ */
 .shell-ds-tab-bar {
   position: relative;
   display: inline-flex;
   align-items: center;
-  border-radius: 999px;
+  border-radius: 64px;
   background: var(--color-hover);
 }
 
@@ -31080,16 +31691,17 @@ body {
 .shell-ds-tab-bar__indicator {
   position: absolute;
   z-index: 0;
-  border-radius: 999px;
+  border-radius: 64px;
   background: var(--color-surface);
-  box-shadow: 0 1px 2px color-mix(in srgb, #000 10%, transparent);
+  box-shadow: var(--shadow-segmented-indicator);
   pointer-events: none;
 }
 
+/* NewMax: left/width var(--ds-motion-soft) = 240ms cubic-bezier(0.22, 1, 0.36, 1). */
 .shell-ds-tab-bar__indicator.is-animated {
   transition:
-    left var(--shell-motion-soft, 180ms) var(--shell-ease),
-    width var(--shell-motion-soft, 180ms) var(--shell-ease);
+    left 240ms cubic-bezier(0.22, 1, 0.36, 1),
+    width 240ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .shell-ds-tab-bar__tab {
@@ -31099,15 +31711,45 @@ body {
   height: 24px;
   align-items: center;
   justify-content: center;
+  gap: 4px;
   padding: 0 10px;
   border: 0;
-  border-radius: 999px;
+  border-radius: 64px;
   color: var(--color-icon);
   background: transparent;
+  outline: none;
+  cursor: pointer;
+  /* NewMax: color var(--ds-motion-swift) = 180ms cubic-bezier(0.33, 1, 0.68, 1). */
+  transition: color 180ms cubic-bezier(0.33, 1, 0.68, 1);
 }
 
+/* NewMax btnHeightClass: h-[24px] | h-[26px] | h-[30px]. */
 .shell-ds-tab-bar.is-small .shell-ds-tab-bar__tab {
   height: 24px;
+}
+
+.shell-ds-tab-bar.is-default .shell-ds-tab-bar__tab {
+  height: 26px;
+}
+
+.shell-ds-tab-bar.is-large .shell-ds-tab-bar__tab {
+  height: 30px;
+}
+
+/*
+ * NewMax: a labelled tab always uses px-3 (12px) plus gap-1; an icon-only tab
+ * falls back to iconPadClass (10 | 12 | 14px by size).
+ */
+.shell-ds-tab-bar__tab:has(.shell-ds-tab-bar__label) {
+  padding: 0 12px;
+}
+
+.shell-ds-tab-bar.is-default .shell-ds-tab-bar__tab:not(:has(.shell-ds-tab-bar__label)) {
+  padding: 0 12px;
+}
+
+.shell-ds-tab-bar.is-large .shell-ds-tab-bar__tab:not(:has(.shell-ds-tab-bar__label)) {
+  padding: 0 14px;
 }
 
 .shell-ds-tab-bar__tab.is-stretch {
@@ -31117,6 +31759,11 @@ body {
 
 .shell-ds-tab-bar__tab.is-active {
   color: var(--color-text);
+}
+
+.shell-ds-tab-bar__tab:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 .shell-ds-tab-bar__icon {
@@ -39881,6 +40528,14 @@ body {
   flex: 1;
   flex-direction: column;
   overflow: hidden;
+  /* The top-LEFT corner stays rounded, and now uses the same --radius-shell
+     (18px) as the pane frame / tab strip sitting flush inside it — the two
+     arcs coincide exactly, so no page colour bleeds through the seam. The
+     top-RIGHT corner is squared off: the inner card ends partway across this
+     frame, so a radius there read as a floating rounded stub. */
+  border-radius: 18px 0 18px 18px;
+  background: var(--color-page);
+  box-shadow: 0 0 0 0.5px color-mix(in srgb, var(--color-text) 8%, transparent);
 }
 
 .shell-workspace-content-row {
@@ -39929,9 +40584,7 @@ body {
     opacity 160ms var(--shell-ease-out, cubic-bezier(0.16, 1, 0.3, 1));
 }
 
-.shell-workspace-content-frame:has(
-    .shell-workbench--bottom[data-workspace-panel-open='true']
-  )
+.shell-workspace-content-frame:has(.shell-workbench--bottom[data-workspace-panel-open='true'])
   .shell-workbench--right {
   border-bottom-right-radius: 0;
 }
@@ -40063,39 +40716,11 @@ body {
   display: flex;
   height: 40px;
   min-height: 40px;
-  align-items: flex-end;
+  align-items: center;
   gap: 3px;
-  padding: 12px 4px 0;
+  padding: 4px;
   overflow: visible;
-  /* beUI morphing tabs: the rail sits a shade behind the content panel so the
-     active tab's liquid notch (filled with the panel colour) reads clearly. */
-  background: color-mix(
-    in srgb,
-    var(--color-tab-strip, var(--color-chat)) 92%,
-    var(--color-text)
-  );
-}
-
-/* Liquid surface rail: one continuous path — the content panel's top edge plus
-   a notch that lifts around the active tab. Painted behind the tab row. */
-.shell-workbench__tab-surface {
-  position: absolute;
-  z-index: 0;
-  inset: 0;
-  width: 100%;
-  height: 41px;
-  overflow: hidden;
-  pointer-events: none;
-}
-
-.shell-workbench__tab-surface path {
-  fill: var(--color-workbench-content, var(--color-chat));
-  transition: d 260ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-:root:not([data-motion='full']) .shell-workbench__tab-surface path,
-[data-reduced-motion] .shell-workbench__tab-surface path {
-  transition: none;
+  background: var(--color-tab-strip, var(--color-chat));
 }
 
 .shell-workbench__tab-cluster {
@@ -40104,7 +40729,7 @@ body {
   display: flex;
   min-width: 0;
   flex: 1 1 auto;
-  align-items: flex-end;
+  align-items: center;
   gap: 3px;
   overflow: visible;
 }
@@ -40114,7 +40739,7 @@ body {
   display: flex;
   min-width: 0;
   flex: 0 1 auto;
-  align-items: flex-end;
+  align-items: center;
   gap: 3px;
   overflow: hidden;
 }
@@ -40131,8 +40756,7 @@ body {
   gap: 6px;
   padding: 0 4px 0 10px;
   overflow: hidden;
-  /* Only the top corners round: the tab flows into the panel below it. */
-  border-radius: 12px 12px 0 0;
+  border-radius: 12px;
   color: var(--color-text-secondary);
   font-size: 13px;
   font-weight: 500;
@@ -40143,15 +40767,14 @@ body {
     color var(--shell-motion-fast) var(--shell-ease);
 }
 
-/* Inactive tabs tint on hover; the active tab stays transparent so the liquid
-   surface underneath (painted in the panel colour) shows through. */
+/* NewMax pane tabs use one flat on-surface wash for active and hover states. */
 .shell-workbench-tab:hover:not(.is-active) {
-  background: color-mix(in srgb, var(--color-text) 6%, transparent);
+  background: var(--color-hover);
   color: var(--color-text);
 }
 
 .shell-workbench-tab.is-active {
-  background: transparent;
+  background: var(--color-hover);
   color: var(--color-text);
 }
 
@@ -40290,10 +40913,12 @@ body {
   background: color-mix(in srgb, var(--color-text) 6%, transparent);
 }
 
-/* beUI morphing tabs draws no rule between rail and panel — the liquid surface
-   shape does the dividing. */
 .shell-workbench__divider[data-pane-tab-divider='true'] {
-  display: none;
+  display: block;
+  height: 1px;
+  margin: 0 4px;
+  background: var(--color-hover);
+  opacity: 1;
 }
 
 .shell-workbench__content {
@@ -40343,9 +40968,7 @@ body {
   border-bottom-right-radius: var(--radius-shell);
 }
 
-.shell-workspace-content-frame:has(
-    .shell-workbench--bottom[data-workspace-panel-open='true']
-  )
+.shell-workspace-content-frame:has(.shell-workbench--bottom[data-workspace-panel-open='true'])
   .shell-workbench--right
   > .shell-workbench__content {
   border-bottom-right-radius: 0;
@@ -40919,19 +41542,32 @@ body {
   background: transparent;
 }
 
+/* Wallpaper themes round the workspace shell's top-left corner (NewMax puts
+   border-radius 18px on the tab strip / shell). --radius-shell is that 18px;
+   the base token stays 0px so the plain themes are unaffected. The top-right
+   corner is squared off separately in the pane-frame rules, because the tab
+   strip ends partway across the content frame rather than at its edge. */
+:root[data-image-theme='active'] {
+  --shell-pane-frame-radius: var(--radius-shell);
+}
+
 :root[data-image-theme='active'] .shell-conversation-tabs {
-  --shell-pane-tab-surface: var(--color-tab-strip);
   z-index: 1;
   overflow: visible;
   border-color: transparent;
-  background: var(--color-page);
+  /* Same surface as the right workbench header — NewMax assigns both the tab
+     strip and the right pane the one tab-strip surface under wallpaper. */
+  background: var(--color-tab-strip);
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
 }
 
+/* Wallpaper themes: the active tab needs its own opaque wash now that no SVG
+   surface paints it — NewMax's workspace-tab active-surface token, which equals
+   the tab-strip surface under wallpaper. */
 :root[data-image-theme='active'] .shell-conversation-tab-active,
 :root[data-image-theme='active'] .shell-pane-tab[data-active='true'] {
-  background: transparent;
+  background: var(--color-hover);
 }
 
 :root[data-image-theme='active'] .shell-workspace-primary-content {
@@ -40945,7 +41581,9 @@ body {
 :root[data-image-theme='active'] .shell-workspace-primary-content::before {
   content: '';
   position: absolute;
-  z-index: 0;
+  /* NewMax stacks the blurred wallpaper copy below the pane content
+     (isolation + negative z-index), so chat text always reads on top of it. */
+  z-index: -2;
   inset: 0;
   background-image: var(--shell-wallpaper-overlay), var(--shell-wallpaper-image);
   background-position: center, var(--shell-wallpaper-position, center);
@@ -40960,7 +41598,9 @@ body {
 :root[data-image-theme='active'] .shell-workspace-primary-content::after {
   content: '';
   position: absolute;
-  z-index: 0;
+  /* Scrim sits directly above the wallpaper and below the content, matching
+     NewMax's -1 reading-scrim layer. */
+  z-index: -1;
   inset: 0;
   --shell-wallpaper-reading-fade-half: var(--shell-wallpaper-reading-content-half-width);
   --shell-wallpaper-reading-fade-width: var(--shell-wallpaper-reading-fade-span);
@@ -41145,7 +41785,9 @@ body {
 
 :root[data-image-theme='active'] [data-wallpaper-reading-blur-stack] {
   position: absolute;
-  z-index: 0;
+  /* Same -2 band as ::before: this is the progressive blur copy of the
+     wallpaper, painted behind the pane content. */
+  z-index: -2;
   display: block;
   inset: 0;
   pointer-events: none;
@@ -41194,7 +41836,29 @@ body {
   display: none;
 }
 
+/* Overlay mode already carries one uniform wallpaper wash. Add only a light
+   reading-column wash here: reusing the normal top + side mask union would
+   recreate the visible T-shaped band where those two axes meet. So in overlay
+   mode the scrim keeps the side-fade mask alone. The :not() mirrors the
+   upstream reading-layer-active gate — the empty composer state is the only
+   one without a reading layer, and it already clears mask-image entirely. */
+:root[data-image-theme='active'][data-image-theme-effect='overlay']
+  .shell-workspace-primary-content:not(:has(.shell-chat-column--empty-newmax))::after {
+  mask-image: var(--shell-wallpaper-reading-side-fade-mask);
+  -webkit-mask-image: var(--shell-wallpaper-reading-side-fade-mask);
+  mask-repeat: no-repeat;
+  -webkit-mask-repeat: no-repeat;
+}
+
 :root[data-image-theme='active'] .shell-conversation-tabs::before {
+  content: none;
+  display: none;
+}
+
+/* NewMax extends the tab-strip surface below every pane tab bar with the
+ * same wallpaper transition mask. This keeps the strip-to-content handoff
+ * continuous for conversations, terminals, files, and browsers. */
+:root[data-image-theme='active'] [data-pane-shell] > [data-pane-tab-bar]::after {
   content: '';
   position: absolute;
   top: 100%;
@@ -41205,6 +41869,34 @@ body {
   mask-image: var(--shell-wallpaper-top-transition-mask);
   -webkit-mask-image: var(--shell-wallpaper-top-transition-mask);
   pointer-events: none;
+}
+
+/* The transition belongs behind pane content. NewMax keeps the tab strip at
+ * z-index 1 and raises the content/divider to 2 so the wallpaper wash never
+ * composites over terminal text or other workbench content. */
+:root[data-image-theme='active'] [data-pane-shell] > [data-pane-tab-bar] {
+  z-index: 1;
+}
+
+:root[data-image-theme='active'] [data-pane-shell] > [data-pane-tab-bar][data-pane-menu-open='true'] {
+  z-index: 3;
+}
+
+:root[data-image-theme='active']
+  [data-pane-shell] > [data-pane-tab-bar][data-pane-menu-open='true']::after {
+  display: none;
+}
+
+:root[data-image-theme='active'] [data-pane-shell] > [data-pane-tab-divider],
+:root[data-image-theme='active'] [data-pane-shell] > [data-pane-content-area] {
+  position: relative;
+  z-index: 2;
+}
+
+:root[data-image-theme='active'] .shell-terminal-output {
+  position: relative;
+  z-index: 0;
+  background: var(--color-workbench-content, var(--color-tab-strip));
 }
 
 :root[data-image-theme='active'] .shell-pane-tree {
@@ -41257,7 +41949,7 @@ body {
 
 :root[data-image-theme='active']
   .shell-pane-frame:has(.shell-pane-canvas[data-surface='browser'])
-  .shell-conversation-tabs::before {
+  .shell-conversation-tabs::after {
   content: none;
   display: none;
 }
@@ -41303,6 +41995,53 @@ body {
   background: color-mix(in srgb, var(--shell-chat-composer-surface) 28%, transparent);
   -webkit-backdrop-filter: blur(20px) saturate(1.08);
   backdrop-filter: blur(20px) saturate(1.08);
+}
+
+/* 壁纸主题下消息流内的引用块、工具卡与方案卡共用同一层玻璃基底（精简自 NewMax
+   `--ds-turn-review-card-surface` / `--ds-plan-result-card-surface`）：直接复用
+   输入框的 composer surface（近纸白），不要换成带壁纸色相的面板色——压在壁纸上
+   会发灰显脏。紧凑卡片稀释到 28%，方案卡承载长篇正文需更强对比，稀释到 64%。
+   这套基底在 NewMax 中仅限壁纸主题，普通主题保持各自原有的实色卡片样式。 */
+:root[data-image-theme='active'] .shell-tool-card,
+:root[data-image-theme='active'] .shell-md blockquote {
+  border-color: transparent;
+  border-radius: var(--radius-shell);
+  background: color-mix(in srgb, var(--shell-chat-composer-surface) 28%, transparent);
+  box-shadow: 0 0 0 0.5px rgb(0 0 0 / 12%);
+}
+
+:root[data-image-theme='active'] .shell-md blockquote {
+  margin: 0.75rem 0;
+  padding: 0.5rem 1rem;
+  border-left: 0;
+  font-style: italic;
+}
+
+:root[data-image-theme='active'] .shell-plan-card {
+  border-color: transparent;
+  border-radius: var(--radius-shell);
+  background: color-mix(in srgb, var(--shell-chat-composer-surface) 64%, transparent);
+}
+
+/* 输入框上方的审批、模式与配置提示沿用 composer 的同一层玻璃（对应 NewMax
+   `[data-chat-composer-banner-surface]`）：保持近纸白半透明，只在图片主题下
+   采样并模糊其背后的壁纸。 */
+:root[data-image-theme='active'] .shell-composer-tool-approval {
+  background: var(--shell-chat-composer-surface);
+  -webkit-backdrop-filter: blur(20px) saturate(1.08);
+  backdrop-filter: blur(20px) saturate(1.08);
+}
+
+:root[data-image-theme='active'][data-image-theme-effect='overlay'] .shell-tool-card,
+:root[data-image-theme='active'][data-image-theme-effect='overlay'] .shell-md blockquote,
+:root[data-image-theme='active'][data-image-theme-effect='overlay'] .shell-plan-card {
+  -webkit-backdrop-filter: blur(20px) saturate(1.08);
+  backdrop-filter: blur(20px) saturate(1.08);
+}
+
+:root[data-image-theme='active'].dark .shell-tool-card,
+:root[data-image-theme='active'].dark .shell-md blockquote {
+  box-shadow: 0 0 0 0.5px rgb(255 255 255 / 10%);
 }
 
 :root[data-image-theme='active'] .shell-md-table-wrap {
@@ -41385,7 +42124,11 @@ body {
   :root[data-image-theme='active'] .shell-user-bubble,
   :root[data-image-theme='active'] .shell-compose,
   :root[data-image-theme='active'] .shell-run-connection-status,
-  :root[data-image-theme='active'] .shell-compact-capsule {
+  :root[data-image-theme='active'] .shell-compact-capsule,
+  :root[data-image-theme='active'] .shell-tool-card,
+  :root[data-image-theme='active'] .shell-md blockquote,
+  :root[data-image-theme='active'] .shell-plan-card,
+  :root[data-image-theme='active'] .shell-composer-tool-approval {
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
   }
@@ -41882,8 +42625,12 @@ body {
 
 /* NewMax globals skeleton shimmer. Surface overlays map onto --color-hover / --color-active. */
 @keyframes ds-skeleton-shimmer {
-  0% { transform: translateX(-100%); }
-  100% { transform: translateX(100%); }
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
 }
 
 .ds-skeleton {
@@ -41908,5 +42655,7 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .ds-skeleton::after { animation: none; }
+  .ds-skeleton::after {
+    animation: none;
+  }
 }

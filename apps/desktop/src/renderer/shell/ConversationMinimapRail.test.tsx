@@ -603,6 +603,59 @@ describe('ConversationMinimapRail', () => {
     );
   });
 
+  it('keeps exactly one tick at full strength and hands it to the pointer', async () => {
+    const scrollerRef = createRef<HTMLDivElement>();
+    render(
+      <div>
+        <div ref={scrollerRef}>
+          {sourceItems.map((item) => (
+            <div key={item.id} data-message-id={item.id}>
+              {item.text}
+            </div>
+          ))}
+        </div>
+        <ConversationMinimapRail items={items} scrollerRef={scrollerRef} onNavigate={vi.fn()} />
+      </div>,
+    );
+
+    const scroller = scrollerRef.current!;
+    const contentTops = new Map([
+      ['user-1', 20],
+      ['assistant-1', 520],
+      ['system-1', 1120],
+      ['user-2', 1220],
+      ['assistant-2', 1520],
+    ]);
+    Object.defineProperties(scroller, {
+      clientHeight: { configurable: true, value: 400 },
+      scrollHeight: { configurable: true, value: 1600 },
+      scrollTop: { configurable: true, writable: true, value: 0 },
+      getBoundingClientRect: { configurable: true, value: () => rect(100, 400) },
+    });
+    for (const node of scroller.querySelectorAll<HTMLElement>('[data-message-id]')) {
+      const contentTop = contentTops.get(node.dataset.messageId!)!;
+      node.getBoundingClientRect = () => rect(100 + contentTop - scroller.scrollTop, 100);
+    }
+    fireEvent.scroll(scroller);
+
+    const first = screen.getByTestId('conversation-minimap-assistant-1');
+    const second = screen.getByTestId('conversation-minimap-assistant-2');
+    await waitFor(() => expect(first.dataset.active).toBe('true'));
+
+    // NewMax isActive: the single bright tick follows the pointer while it is on
+    // the rail, so the reader's own turn must stop glowing rather than double up.
+    fireEvent.mouseEnter(second);
+    expect(second.dataset.active).toBe('true');
+    expect(first.dataset.active).toBeUndefined();
+    // ...but `aria-current` keeps pointing at the turn the reader is actually in.
+    expect(first.getAttribute('aria-current')).toBe('location');
+    expect(second.getAttribute('aria-current')).toBeNull();
+
+    fireEvent.mouseLeave(screen.getByRole('navigation', { name: '对话消息导航' }));
+    await waitFor(() => expect(first.dataset.active).toBe('true'));
+    expect(second.dataset.active).toBeUndefined();
+  });
+
   it('keeps the first and last navigation items active at scroll boundaries', async () => {
     const scrollerRef = createRef<HTMLDivElement>();
     render(

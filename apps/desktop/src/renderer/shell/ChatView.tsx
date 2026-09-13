@@ -82,7 +82,9 @@ import type {
   ExpiredToolApprovalSummary,
   ToolApprovalScope,
   ConversationTransientSnapshot,
+  DelegatedAgentProjection,
   RunProcessView,
+  ProviderBalancePayload,
   SkillVersionSummary,
   UsageSummaryResponse,
   WorkspaceSummary,
@@ -234,6 +236,7 @@ import { ToolApprovalCard, type PendingToolApproval } from './ToolApprovalCard.j
 import { projectTodoFromEvents } from './todo-projection.js';
 import { ComposerTaskPanel } from './ComposerTaskPanel.js';
 import { InlineProcessFlow } from './InlineProcessFlow.js';
+import { formatDisplayedToolOutput } from './tool-output-display.js';
 import { reconcileProcessItemOutcomes } from './process-item-outcome.js';
 import { generatedImageModelsFromProcessItems } from './process-activity.js';
 import {
@@ -241,6 +244,10 @@ import {
   ConversationMinimapRail,
   type ConversationNavigationItem,
 } from './ConversationMinimapRail.js';
+import {
+  navigationSlideDuration,
+  navigationSlidePosition,
+} from './conversation-navigation-slide.js';
 import { executeBrowserCommand } from './browser-commands.js';
 import { splitUserMessageLinks } from './user-message-links.js';
 import { WebTextLink } from './WebTextLink.js';
@@ -265,9 +272,11 @@ import {
 } from './chat-transient-stream.js';
 import { projectConversationUsageMetrics } from './chat-usage.js';
 import {
+  fetchProviderBalanceView,
   fetchProviderUsageSummary,
   formatProviderUsageWindow,
   summarizeProviderUsageWindows,
+  type ProviderBalanceView,
   type ProviderUsageIdentity,
   type ProviderUsageWindows,
 } from './provider-usage-summary.js';
@@ -427,6 +436,8 @@ export interface ChatMessage {
   /** Bound global agent identity for this assistant turn. */
   globalAgentId?: string;
   globalAgentName?: string;
+  /** Parent-scoped live child Agent cards. */
+  delegatedAgents?: DelegatedAgentProjection[];
   /** Exact Skill versions selected for this user turn. */
   skillVersionIds?: string[];
   skills?: Array<{ skillVersionId: string; name: string }>;
@@ -564,6 +575,15 @@ function restoreConversationScrollPosition(
 const RECENT_CONVERSATION_CACHE_SIZE = 8;
 const RECENT_CONVERSATION_MESSAGE_LIMIT = 100;
 const recentConversationPages = new Map<string, CachedConversationPage>();
+
+/**
+ * Test-only: this cache is module-level and deliberately outlives unmounts so a
+ * keep-alive remount can reuse the last page. Suites that render several
+ * conversations under one id must clear it between cases.
+ */
+export function resetRecentConversationPageCacheForTests(): void {
+  recentConversationPages.clear();
+}
 
 function readRecentConversationPage(conversationId: string): CachedConversationPage | undefined {
   const cached = recentConversationPages.get(conversationId);
@@ -1868,6 +1888,7 @@ export function ChatView({
               commentarySegments: draft.assistantTimeline ? undefined : draft.commentarySegments,
               reasoningText: projected.reasoningText ?? draft.reasoningText,
               assistantTimeline: draft.assistantTimeline,
+              delegatedAgents: draft.delegatedAgents,
               answerText: visibleAnswer,
               processItems: projected.processItems,
               timestamp: draft.timestamp,
@@ -2073,6 +2094,24 @@ export function ChatView({
   const programmaticScrollTargetRef = useRef<number | null>(null);
   /** NewMax markProgrammaticScroll: layout/html/mermaid writes must not unpin. */
   const programmaticScrollPendingRef = useRef(false);
+  /**
+   * In-flight minimap slide. The rail re-measures the landing position for a few
+   * frames after a click, so the origin and the elapsed clock live here and only
+   * `to` moves: a correction bends the remaining curve instead of restarting it.
+   */
+  const navigationSlideRef = useRef<
+    { frame: number; from: number; to: number; startedAt: number; duration: number } | undefined
+  >(undefined);
+  const stopNavigationSlide = useCallback(() => {
+    const slide = navigationSlideRef.current;
+    if (!slide) return;
+    window.cancelAnimationFrame(slide.frame);
+    navigationSlideRef.current = undefined;
+  }, []);
+  /** A conversation switch (or unmount) must not leave the old thread's slide running. */
+  useEffect(() => {
+    return () => stopNavigationSlide();
+  }, [historyScopeKey, stopNavigationSlide]);
   /** Restores a saved position once the current conversation has rendered. */
   const restoredScrollPositionRef = useRef<string | null>(null);
   /** Coalesces high-frequency scroll writes into one local snapshot per frame. */
@@ -2583,7 +2622,14 @@ export function ChatView({
   // switching back does not flash a skeleton or wait on SQLite.
   useEffect(() => {
     if (!conversation.id) return;
-    if (readRecentConversationPage(historyScopeKey)) return;
+    if (readRecentConversationPage(historyScopeKey)) {
+      // Cached messages are already renderable, so mark history as ready for
+      // this conversation. Run-process history loading gates on this marker;
+      // leaving it unset on the keep-alive path silently disabled the usage
+      // details hover (cache tokens + provider balance) after switching back.
+      loadedMessagesConversationIdRef.current = String(conversation.id);
+      return;
+    }
     void loadMessages();
   }, [conversation.id, historyScopeKey, loadMessages]);
 
@@ -3185,6 +3231,7 @@ export function ChatView({
                   commentarySegments: event.snapshot.commentarySegments,
                   reasoningText: event.snapshot.reasoningText,
                   assistantTimeline: event.snapshot.assistantTimeline,
+                  delegatedAgents: event.snapshot.delegatedAgents,
                   timestamp: event.snapshot.updatedAt,
                 },
                 streamSequence: latestStreamSequence,
@@ -3742,17 +3789,75 @@ export function ChatView({
     [loadMessages],
   );
 
-  const handleNavigateMessage = useCallback((_messageId: string, targetScrollTop: number) => {
-    const scroller = messagesScrollRef.current;
-    if (!scroller) return;
-    navigationIntentRef.current += 1;
-    stickToBottomRef.current = false;
-    bottomPinIntentRef.current = null;
-    userScrollRevisionRef.current += 1;
-    programmaticScrollTargetRef.current = targetScrollTop;
-    scroller.scrollTop = targetScrollTop;
-    lastObservedScrollTopRef.current = targetScrollTop;
-  }, []);
+  /**
+   * NewMax `scrollToMessage` slides the reader to the clicked outline tick
+   * (`container.scrollTo({ top: el.offsetTop - 16, behavior: 'smooth' })`) rather
+   * than teleporting. The rail calls this once per layout-correction frame, so an
+   * in-flight slide keeps its origin and only re-aims its endpoint, and every
+   * frame is written through the programmatic-scroll contract so the stick
+   * tracker never mistakes the slide for a reader scroll.
+   */
+  const handleNavigateMessage = useCallback(
+    (_messageId: string, targetScrollTop: number) => {
+      const scroller = messagesScrollRef.current;
+      if (!scroller) return;
+      navigationIntentRef.current += 1;
+      stickToBottomRef.current = false;
+      bottomPinIntentRef.current = null;
+      userScrollRevisionRef.current += 1;
+
+      const writeFrame = (target: HTMLDivElement, position: number) => {
+        programmaticScrollTargetRef.current = position;
+        programmaticScrollPendingRef.current = true;
+        target.scrollTop = position;
+        lastObservedScrollTopRef.current = position;
+      };
+
+      const reducedMotion =
+        window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
+      const distance = targetScrollTop - scroller.scrollTop;
+      if (reducedMotion || Math.abs(distance) < 1) {
+        stopNavigationSlide();
+        writeFrame(scroller, targetScrollTop);
+        return;
+      }
+
+      const inFlight = navigationSlideRef.current;
+      if (inFlight) {
+        inFlight.to = targetScrollTop;
+        inFlight.duration = navigationSlideDuration(targetScrollTop - inFlight.from);
+        return;
+      }
+
+      const slide = {
+        frame: 0,
+        from: scroller.scrollTop,
+        to: targetScrollTop,
+        startedAt: -1,
+        duration: navigationSlideDuration(distance),
+      };
+      navigationSlideRef.current = slide;
+      const step = (now: number) => {
+        const currentScroller = messagesScrollRef.current;
+        if (!currentScroller || navigationSlideRef.current !== slide) return;
+        if (slide.startedAt < 0) slide.startedAt = now;
+        const progress = Math.min(1, (now - slide.startedAt) / slide.duration);
+        writeFrame(
+          currentScroller,
+          progress >= 1
+            ? slide.to
+            : navigationSlidePosition({ from: slide.from, to: slide.to, progress }),
+        );
+        if (progress >= 1) {
+          navigationSlideRef.current = undefined;
+          return;
+        }
+        slide.frame = window.requestAnimationFrame(step);
+      };
+      slide.frame = window.requestAnimationFrame(step);
+    },
+    [stopNavigationSlide],
+  );
 
   // Keep every fetched durable message mounted. History is still paginated in
   // 50-message pages, but native scrolling must not compete with virtual spacer
@@ -6599,8 +6704,10 @@ export function ChatView({
           <div
             ref={messagesScrollRef}
             className="shell-chat-content-wrap shell-chat-message-scroller h-full overflow-y-auto py-6"
+            onPointerDown={() => stopNavigationSlide()}
             onWheel={(event) => {
               if (event.deltaY === 0) return;
+              stopNavigationSlide();
               const scroller = event.currentTarget;
               userScrollRevisionRef.current += 1;
               bottomPinIntentRef.current = event.deltaY > 0 ? 'toward-bottom' : 'away-from-bottom';
@@ -6618,6 +6725,7 @@ export function ChatView({
               }
             }}
             onTouchStart={(event) => {
+              stopNavigationSlide();
               lastTouchClientYRef.current = event.touches[0]?.clientY ?? null;
             }}
             onTouchMove={(event) => {
@@ -6647,6 +6755,7 @@ export function ChatView({
               lastTouchClientYRef.current = null;
             }}
             onKeyDown={(event) => {
+              stopNavigationSlide();
               if (event.key === 'ArrowDown' || event.key === 'PageDown' || event.key === 'End') {
                 userScrollRevisionRef.current += 1;
                 bottomPinIntentRef.current = 'toward-bottom';
@@ -7786,6 +7895,7 @@ function HarnessTerminalNotice({
 
 function ProviderAccountUsageSection({ identity }: { identity: ProviderUsageIdentity }) {
   const [windows, setWindows] = useState<ProviderUsageWindows | null>(null);
+  const [balance, setBalance] = useState<ProviderBalanceView | null>(null);
 
   useEffect(() => {
     const api = bridge();
@@ -7803,16 +7913,52 @@ function ProviderAccountUsageSection({ identity }: { identity: ProviderUsageIden
     };
   }, [identity]);
 
-  if (!windows?.today && !windows?.last30d) return null;
+  const providerId = identity.providerId;
+  useEffect(() => {
+    const api = bridge();
+    if (!api?.queryProviderBalance || !providerId) {
+      setBalance(null);
+      return;
+    }
+    let alive = true;
+    void fetchProviderBalanceView(providerId, () =>
+      api.queryProviderBalance({
+        providerId: providerId as ProviderBalancePayload['providerId'],
+      }),
+    )
+      .then((view) => {
+        if (alive) setBalance(view ?? null);
+      })
+      .catch(() => {
+        if (alive) setBalance(null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [providerId]);
+
+  if (!balance && !windows?.today && !windows?.last30d) return null;
   return (
     <div className="shell-usage-tip__account" data-testid="provider-usage-windows">
-      {windows.today ? (
+      {balance ? (
+        <div className="shell-usage-tip__account-row" data-testid="provider-balance">
+          <span>{identity.providerName ?? '账户'} 余额</span>
+          <strong>{balance.total}</strong>
+        </div>
+      ) : null}
+      {balance?.toppedUp || balance?.granted ? (
+        <div className="shell-usage-tip__account-row" data-testid="provider-balance-credits">
+          {balance?.toppedUp ? <span>充值 {balance.toppedUp}</span> : null}
+          {balance?.granted ? <span>赠送 {balance.granted}</span> : null}
+        </div>
+      ) : null}
+      {windows?.today ? (
         <div className="shell-usage-tip__account-row">
           <span>今日</span>
           <strong>{formatProviderUsageWindow(windows.today)}</strong>
         </div>
       ) : null}
-      {windows.last30d ? (
+      {windows?.last30d ? (
         <div className="shell-usage-tip__account-row">
           <span>近30天</span>
           <strong>{formatProviderUsageWindow(windows.last30d)}</strong>
@@ -7821,6 +7967,227 @@ function ProviderAccountUsageSection({ identity }: { identity: ProviderUsageIden
     </div>
   );
 }
+
+interface DelegatedAgentToolEventView {
+  toolName: string;
+  arguments?: string;
+  status?: string;
+  output?: string;
+}
+
+interface DelegatedAgentTaskView {
+  childRunId: string;
+  parallelGroup?: string;
+  name: string;
+  avatar: string;
+  kind: 'existing' | 'temporary';
+  /** Agent Library id when an existing Agent was reused; absent for a temporary profile. */
+  agentId?: string;
+  status: string;
+  result?: string;
+  toolEvents: DelegatedAgentToolEventView[];
+}
+
+function parseDelegatedAgentTask(item: InlineProcessItem): DelegatedAgentTaskView | undefined {
+  if (item.kind !== 'tool' || item.name !== 'agent_delegate' || !item.result) return undefined;
+  try {
+    const value = JSON.parse(item.result) as Record<string, unknown>;
+    const assignment = value.assignment as Record<string, unknown> | undefined;
+    if (typeof value.childRunId !== 'string' || !assignment) return undefined;
+    const events = Array.isArray(value.toolEvents)
+      ? value.toolEvents.flatMap((entry): DelegatedAgentToolEventView[] => {
+          if (!entry || typeof entry !== 'object') return [];
+          const record = entry as Record<string, unknown>;
+          if (typeof record.toolName !== 'string') return [];
+          return [{
+            toolName: record.toolName,
+            ...(typeof record.arguments === 'string' ? { arguments: record.arguments } : {}),
+            ...(typeof record.status === 'string' ? { status: record.status } : {}),
+            ...(typeof record.output === 'string' ? { output: record.output } : {}),
+          }];
+        })
+      : [];
+    return {
+      childRunId: value.childRunId,
+      ...(typeof value.parallelGroup === 'string' && value.parallelGroup.trim()
+        ? { parallelGroup: value.parallelGroup.trim() }
+        : {}),
+      name: typeof assignment.name === 'string' ? assignment.name : '临时任务 Agent',
+      avatar: typeof assignment.avatar === 'string' ? assignment.avatar : '🤖',
+      kind: assignment.kind === 'existing' ? 'existing' : 'temporary',
+      ...(typeof assignment.agentId === 'string' && assignment.agentId.trim()
+        ? { agentId: assignment.agentId.trim() }
+        : {}),
+      status: typeof value.status === 'string' ? value.status : value.ok === false ? 'failed' : 'completed',
+      ...(typeof value.result === 'string' && value.result.trim() ? { result: value.result } : {}),
+      toolEvents: events,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+
+/** Tool rows shown before a delegated card collapses its command log (20 rows). */
+const DELEGATED_TOOL_VISIBLE_LIMIT = 20;
+
+const DelegatedAgentToolList = memo(function DelegatedAgentToolList({
+  events,
+}: {
+  events: readonly DelegatedAgentToolEventView[];
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const hiddenCount = events.length - DELEGATED_TOOL_VISIBLE_LIMIT;
+  const visible = expanded ? events : events.slice(0, DELEGATED_TOOL_VISIBLE_LIMIT);
+  return (
+    <div className="shell-delegated-agent__tools">
+      {visible.map((event, index) => {
+        const output = event.output ? formatDisplayedToolOutput(event.output) : undefined;
+        return (
+          <details className="shell-delegated-agent__tool" key={`${event.toolName}-${index}`}>
+            <summary>
+              <span>{event.toolName}</span>
+              <span>{event.status === 'completed' ? '完成' : event.status ?? '执行中'}</span>
+            </summary>
+            {event.arguments ? <code>{event.arguments}</code> : null}
+            {output?.text ? <pre>{output.text}</pre> : null}
+          </details>
+        );
+      })}
+      {hiddenCount > 0 ? (
+        <button
+          type="button"
+          className="shell-delegated-agent__tools-toggle"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((value) => !value)}
+        >
+          {expanded
+            ? '收起工具调用'
+            : `展开全部 ${events.length} 项工具调用（还有 ${hiddenCount} 项）`}
+        </button>
+      ) : null}
+    </div>
+  );
+});
+
+export const DelegatedAgentTasks = memo(function DelegatedAgentTasks({
+  items,
+  delegatedAgents,
+  onStopChild,
+}: {
+  items: readonly InlineProcessItem[];
+  delegatedAgents?: readonly DelegatedAgentProjection[];
+  onStopChild?: (childRunId: string) => void;
+}) {
+  const parsedTasks = items.flatMap((item) => {
+    const task = parseDelegatedAgentTask(item);
+    return task ? [task] : [];
+  });
+  const taskById = new Map<string, DelegatedAgentTaskView>();
+  for (const task of delegatedAgents ?? []) {
+    taskById.set(String(task.childRunId), {
+      childRunId: String(task.childRunId),
+      ...(task.parallelGroup ? { parallelGroup: task.parallelGroup } : {}),
+      name: task.name,
+      avatar: task.avatar,
+      kind: task.kind,
+      ...(task.agentId ? { agentId: task.agentId } : {}),
+      status: task.status,
+      ...(task.result ? { result: task.result } : {}),
+      toolEvents: task.toolEvents.map((event) => ({
+        toolName: event.toolName,
+        ...(event.arguments ? { arguments: event.arguments } : {}),
+        ...(event.status ? { status: event.status } : {}),
+        ...(event.output ? { output: event.output } : {}),
+      })),
+    });
+  }
+  for (const task of parsedTasks) taskById.set(task.childRunId, task);
+  const tasks = [...taskById.values()];
+  if (tasks.length === 0) return null;
+  const runningTasks = tasks.filter((task) => task.status === 'running');
+  const parallelGroupFirst = new Set<string>();
+  for (const task of tasks) {
+    if (!task.parallelGroup) continue;
+    if (![...parallelGroupFirst].some((childRunId) =>
+      tasks.find((candidate) => candidate.childRunId === childRunId)?.parallelGroup === task.parallelGroup,
+    )) {
+      parallelGroupFirst.add(task.childRunId);
+    }
+  }
+  return (
+    <div className="shell-delegated-agent-list">
+      {runningTasks.length > 1 && onStopChild ? (
+        <button
+          type="button"
+          className="shell-delegated-agent__stop-all"
+          onClick={() => runningTasks.forEach((task) => onStopChild(task.childRunId))}
+        >
+          停止全部子任务
+        </button>
+      ) : null}
+      {tasks.map((task) => (
+        <Fragment key={task.childRunId}>
+        {task.parallelGroup && parallelGroupFirst.has(task.childRunId) ? (
+          <div className="shell-delegated-agent-group__header">
+            <span>并行任务组：{task.parallelGroup}</span>
+            <span>{tasks.filter((candidate) => candidate.parallelGroup === task.parallelGroup).length} 个任务</span>
+          </div>
+        ) : null}
+        <details className="shell-delegated-agent" key={task.childRunId}>
+          <summary className="shell-delegated-agent__summary">
+            <span className="shell-delegated-agent__avatar" aria-hidden="true">{task.avatar}</span>
+            <span className="shell-delegated-agent__identity">
+              <strong>{task.name}</strong>
+              <span className="shell-delegated-agent__origin">
+                {task.kind === 'existing' ? '已有 Agent' : '临时 Agent'}
+                {task.agentId ? (
+                  <code
+                    className="shell-delegated-agent__agent-id"
+                    title={`Agent Library id：${task.agentId}`}
+                  >
+                    {task.agentId}
+                  </code>
+                ) : null}
+              </span>
+            </span>
+            <span className="shell-delegated-agent__status">
+              {task.status === 'completed'
+                ? '已完成'
+                : task.status === 'running'
+                  ? '运行中'
+                  : task.status === 'failed'
+                    ? '失败'
+                    : task.status === 'cancelled'
+                      ? '已取消'
+                      : task.status === 'timed_out'
+                        ? '已超时'
+                        : task.status}
+            </span>
+          </summary>
+          <div className="shell-delegated-agent__details">
+            {task.toolEvents.length > 0 ? (
+              <DelegatedAgentToolList events={task.toolEvents} />
+            ) : (
+              <span className="shell-delegated-agent__empty">本次任务没有调用工具</span>
+            )}
+            {task.result ? <div className="shell-delegated-agent__result">{task.result}</div> : null}
+            {task.status === 'running' && onStopChild ? (
+              <button
+                type="button"
+                className="shell-delegated-agent__stop"
+                onClick={() => onStopChild(task.childRunId)}
+              >
+                停止当前子任务
+              </button>
+            ) : null}
+          </div>
+        </details>
+        </Fragment>
+      ))}
+    </div>
+  );
+});
 
 const MessageBubble = memo(function MessageBubble({
   message,
@@ -8021,6 +8388,21 @@ const MessageBubble = memo(function MessageBubble({
     () => generatedImageModelsFromProcessItems(displayedProcessItems),
     [displayedProcessItems],
   );
+  const delegatedAgentTaskContent = useMemo(
+    () => (
+      <DelegatedAgentTasks
+        items={displayedProcessItems ?? []}
+        delegatedAgents={message.delegatedAgents}
+        onStopChild={(childRunId) => {
+          void bridge()?.cancelRun?.({ runId: childRunId as RunId });
+        }}
+      />
+    ),
+    [displayedProcessItems, message.delegatedAgents],
+  );
+  const hasDelegatedAgentTasks = displayedProcessItems?.some(
+    (item) => item.kind === 'tool' && item.name === 'agent_delegate' && Boolean(item.result),
+  ) || Boolean(message.delegatedAgents?.length);
 
   const metricsLabel = useMemo(() => {
     if (!processView) return undefined;
@@ -8369,6 +8751,7 @@ const MessageBubble = memo(function MessageBubble({
           timelineHasMore={Boolean(timelineNextCursor)}
           onLoadMoreTimeline={loadAssistantTimelinePage}
           onRetryTimelineLoad={loadAssistantTimelinePage}
+          agentTaskContent={hasDelegatedAgentTasks ? delegatedAgentTaskContent : undefined}
           supplementalContent={
             message.processStatus || message.terminalState ? (
               <>
@@ -8488,7 +8871,7 @@ const MessageBubble = memo(function MessageBubble({
                 <MetaHover
                   className="shell-msg-meta__metrics"
                   label={metricsLabel}
-                  width={330}
+                  width="auto"
                   panel={
                     <div
                       className="shell-meta-tip shell-usage-tip"
@@ -8583,11 +8966,12 @@ function MetaHover({
   label: ReactNode;
   panel: ReactNode;
   className?: string;
-  width?: number;
+  width?: number | 'auto';
 }) {
   const [open, setOpen] = useState(false);
   const [style, setStyle] = useState<React.CSSProperties | null>(null);
   const triggerRef = useRef<HTMLSpanElement>(null);
+  const portalRef = useRef<HTMLDivElement>(null);
   const closeTimer = useRef<number | null>(null);
 
   const cancelClose = () => {
@@ -8597,19 +8981,27 @@ function MetaHover({
     }
   };
 
+  // Right-align the card to its trigger, clamped to the viewport.
+  const place = (el: HTMLElement, w: number): React.CSSProperties => {
+    const rect = el.getBoundingClientRect();
+    return {
+      position: 'fixed',
+      left: Math.max(8, Math.min(rect.right - w, window.innerWidth - w - 8)),
+      bottom: window.innerHeight - rect.top + 8,
+      zIndex: 10020,
+    };
+  };
+
   const show = () => {
     cancelClose();
     const el = triggerRef.current;
     if (!el || typeof window === 'undefined') return;
-    const rect = el.getBoundingClientRect();
-    const left = Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8));
-    setStyle({
-      position: 'fixed',
-      left,
-      bottom: window.innerHeight - rect.top + 8,
-      width,
-      zIndex: 10020,
-    });
+    // 'auto' lets the card size to its content (NewMax behaviour). We anchor
+    // from an estimate first and re-anchor once the real box is measured.
+    const w = width === 'auto' ? 260 : width;
+    const next = place(el, Math.min(w, window.innerWidth - 16));
+    if (width !== 'auto') next.width = w;
+    setStyle(next);
     setOpen(true);
   };
 
@@ -8617,6 +9009,21 @@ function MetaHover({
     cancelClose();
     closeTimer.current = window.setTimeout(() => setOpen(false), 120);
   };
+
+  // Content-sized cards only know their width after mount, so re-anchor from
+  // the measured box instead of the estimate. No-op for fixed widths.
+  useLayoutEffect(() => {
+    if (!open || width !== 'auto') return;
+    const el = triggerRef.current;
+    const portal = portalRef.current;
+    if (!el || !portal || typeof window === 'undefined') return;
+    const measured = portal.offsetWidth;
+    if (!measured) return;
+    setStyle((s) => {
+      const next = place(el, measured);
+      return s && s.left === next.left && s.bottom === next.bottom ? s : { ...(s ?? {}), ...next };
+    });
+  }, [open, width]);
 
   useEffect(() => () => cancelClose(), []);
 
@@ -8636,6 +9043,7 @@ function MetaHover({
       {open && style && typeof document !== 'undefined'
         ? createPortal(
             <div
+              ref={portalRef}
               className="shell-meta-tip-portal"
               style={style}
               role="tooltip"

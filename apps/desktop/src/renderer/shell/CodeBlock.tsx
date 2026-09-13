@@ -7,9 +7,13 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import { ArrowDown, Check, ChevronDown, FileCode2, LoaderCircle } from 'lucide-react';
+import { Check, ChevronDown, FileCode2, LoaderCircle, WrapText } from 'lucide-react';
 import { CopyTextButton } from './CopyTextButton.js';
 import { highlightCodeLines, languageFromPath } from './code-highlight.js';
+import { useToolOutputWrap } from './tool-output-wrap.js';
+
+const WRAP_LABEL = '自动换行';
+const NO_WRAP_LABEL = '不换行';
 
 interface CodeBlockProps {
   code: string;
@@ -25,6 +29,8 @@ interface CodeBlockProps {
   /** 覆盖顶条左侧的身份区（默认是「文件图标 + 文件名 + 语言名」）。 */
   identity?: ReactNode;
   readingState?: CodeBlockReadingState;
+  /** 显示顶条的折行开关。开启后跟随共享偏好，默认折行（见 tool-output-wrap.ts）。 */
+  wrapControl?: boolean;
 }
 
 export interface CodeBlockReadingState {
@@ -50,12 +56,14 @@ export function CodeBlock({
   showStatus = true,
   identity,
   readingState,
+  wrapControl = false,
 }: CodeBlockProps) {
   const deferredCode = useDeferredValue(code);
   const writing = streaming || deferredCode !== code;
   const resolvedLanguage = language || languageFromPath(filename) || 'text';
+  const [wrapPreference, toggleWrap] = useToolOutputWrap();
+  const wraps = wrapControl && wrapPreference;
   const [expanded, setExpanded] = useState(readingState?.expanded ?? false);
-  const [following, setFollowing] = useState(readingState?.following ?? true);
   const followingRef = useRef(readingState?.following ?? true);
   const previousWritingRef = useRef(writing);
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -78,7 +86,6 @@ export function CodeBlock({
   useReadingLayoutEffect(() => {
     if (!readingState) return;
     setExpanded(readingState.expanded);
-    setFollowing(readingState.following);
     followingRef.current = readingState.following;
     if (viewportRef.current) {
       viewportRef.current.scrollTop = readingState.scrollTop;
@@ -98,7 +105,6 @@ export function CodeBlock({
   const pauseFollowing = () => {
     followingRef.current = false;
     if (readingState) readingState.following = false;
-    setFollowing(false);
   };
 
   const toggleExpanded = () => {
@@ -111,6 +117,7 @@ export function CodeBlock({
       className={`shell-md-code${canExpand ? ' is-expandable' : ''} ${expanded ? 'is-expanded' : 'is-collapsed'} shell-agent-code`}
       data-language={resolvedLanguage}
       data-writing={writing ? 'true' : 'false'}
+      data-wrap={wraps ? 'true' : 'false'}
     >
       <div className="shell-md-code__bar">
         {identity ?? (
@@ -136,6 +143,18 @@ export function CodeBlock({
             </span>
           ) : null}
           <CopyTextButton text={code} label={copyLabel} />
+          {wrapControl ? (
+            <button
+              type="button"
+              className="shell-md-code__action shell-md-code__wrap"
+              aria-pressed={wraps}
+              aria-label={wraps ? `切换为${NO_WRAP_LABEL}` : `切换为${WRAP_LABEL}`}
+              title={wraps ? `切换为${NO_WRAP_LABEL}` : `切换为${WRAP_LABEL}`}
+              onClick={toggleWrap}
+            >
+              <WrapText size={13} aria-hidden="true" />
+            </button>
+          ) : null}
           {canExpand ? (
             <button
               type="button"
@@ -168,7 +187,6 @@ export function CodeBlock({
               readingState.scrollTop = viewport.scrollTop;
               readingState.scrollLeft = viewport.scrollLeft;
             }
-            setFollowing(nearBottom);
           }}
           onWheel={(event) => {
             if (event.deltaY < 0) pauseFollowing();
@@ -203,25 +221,6 @@ export function CodeBlock({
             </code>
           </pre>
         </div>
-        {!following ? (
-          <button
-            type="button"
-            className="shell-agent-code__follow"
-            onClick={() => {
-              followingRef.current = true;
-              if (readingState) readingState.following = true;
-              setFollowing(true);
-              if (viewportRef.current) {
-                viewportRef.current.scrollTop = viewportRef.current.scrollHeight;
-                if (readingState) readingState.scrollTop = viewportRef.current.scrollTop;
-              }
-            }}
-            aria-label="回到代码末尾"
-          >
-            <ArrowDown size={12} aria-hidden="true" />
-            回到末尾
-          </button>
-        ) : null}
       </div>
       {totalLines > PREVIEW_LINE_LIMIT ? (
         <div className="shell-agent-code__limit">

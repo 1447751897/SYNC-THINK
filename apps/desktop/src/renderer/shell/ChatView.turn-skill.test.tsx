@@ -11,7 +11,7 @@ import type {
   GlobalAgent,
   Team,
 } from '@sync-think/shared';
-import { ChatView } from './ChatView.js';
+import { ChatView, resetRecentConversationPageCacheForTests } from './ChatView.js';
 import { ToastProvider, resetToastStoreForTests } from './Toast.js';
 
 const runtime = {
@@ -182,6 +182,7 @@ async function waitForInitialMessages() {
 }
 
 beforeEach(() => {
+  resetRecentConversationPageCacheForTests();
   runtime.appendMessage.mockReset().mockResolvedValue({ messageId: 'message-a', taskVersion: 1 });
   runtime.compactConversation.mockReset().mockResolvedValue({
     compacted: true,

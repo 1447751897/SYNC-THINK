@@ -1,4 +1,8 @@
-import type { UsageRequestRow, UsageSummaryResponse } from '@sync-think/protocol';
+import type {
+  ProviderBalanceResponse,
+  UsageRequestRow,
+  UsageSummaryResponse,
+} from '@sync-think/protocol';
 
 export interface ProviderUsageIdentity {
   providerId?: string;
@@ -106,6 +110,77 @@ export function formatProviderUsageWindow(window: ProviderUsageWindow | undefine
   return [costs.length > 0 ? costs.join(' / ') : '—', formatTokens(window.totalTokens)].join(' · ');
 }
 
+export interface ProviderBalanceView {
+  /** Formatted primary balance, e.g. `¥33.48`. */
+  total: string;
+  /** Credit the user paid for, when the endpoint reports it separately. */
+  toppedUp?: string;
+  /** Promotional / gifted credit, when the endpoint reports it separately. */
+  granted?: string;
+}
+
+const BALANCE_TTL_MS = 60_000;
+let balanceCache: { at: number; key: string; value: ProviderBalanceView | undefined } | undefined;
+let balanceInflight:
+  | { key: string; promise: Promise<ProviderBalanceView | undefined> }
+  | undefined;
+
+function formatBalanceAmount(currency: string, amount: number): string {
+  const code = currency.trim().toUpperCase();
+  const symbol = code === 'CNY' ? '¥' : code === 'USD' ? '$' : `${code} `;
+  return `${symbol}${amount.toFixed(2)}`;
+}
+
+/**
+ * Render-ready view of a provider balance response. `undefined` means "omit the
+ * row": the provider exposes no balance endpoint, the query failed, or the
+ * endpoint reported no buckets.
+ */
+export function toProviderBalanceView(
+  response: ProviderBalanceResponse | undefined,
+): ProviderBalanceView | undefined {
+  if (!response || !response.supported) return undefined;
+  const bucket = response.buckets[0];
+  if (!bucket) return undefined;
+  return {
+    total: formatBalanceAmount(bucket.currency, bucket.totalBalance),
+    ...(bucket.toppedUpBalance !== undefined
+      ? { toppedUp: formatBalanceAmount(bucket.currency, bucket.toppedUpBalance) }
+      : {}),
+    ...(bucket.grantedBalance !== undefined
+      ? { granted: formatBalanceAmount(bucket.currency, bucket.grantedBalance) }
+      : {}),
+  };
+}
+
+/**
+ * Query the provider's account balance with a short TTL + in-flight dedupe, so
+ * hovering the usage tooltip does not re-hit the provider on every mount.
+ */
+export async function fetchProviderBalanceView(
+  cacheKey: string,
+  fetcher: () => Promise<ProviderBalanceResponse>,
+  now: number = Date.now(),
+): Promise<ProviderBalanceView | undefined> {
+  if (balanceCache && balanceCache.key === cacheKey && now - balanceCache.at < BALANCE_TTL_MS) {
+    return balanceCache.value;
+  }
+  if (balanceInflight && balanceInflight.key === cacheKey) return balanceInflight.promise;
+  const promise = fetcher()
+    .then((response) => {
+      const value = toProviderBalanceView(response);
+      balanceCache = { at: now, key: cacheKey, value };
+      balanceInflight = undefined;
+      return value;
+    })
+    .catch((error: unknown) => {
+      balanceInflight = undefined;
+      throw error;
+    });
+  balanceInflight = { key: cacheKey, promise };
+  return promise;
+}
+
 export async function fetchProviderUsageSummary(
   fetcher: () => Promise<UsageSummaryResponse>,
   now: number = Date.now(),
@@ -128,4 +203,6 @@ export async function fetchProviderUsageSummary(
 export function resetProviderUsageSummaryCacheForTests(): void {
   usageCache = undefined;
   usageInflight = undefined;
+  balanceCache = undefined;
+  balanceInflight = undefined;
 }

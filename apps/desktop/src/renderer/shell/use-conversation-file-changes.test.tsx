@@ -76,7 +76,6 @@ describe('conversation scoped file pages', () => {
     expect(read.mock.calls[1][0]).toEqual({
       conversationId: 'chat',
       offset: 1,
-      version: first.version,
     });
     expect(runRead).not.toHaveBeenCalled();
     expect(conversationReviewFromKey(reviewViewKey(target))).toEqual(target);

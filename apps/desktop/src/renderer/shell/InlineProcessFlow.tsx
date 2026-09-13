@@ -336,6 +336,7 @@ function ToolPayload({
         streaming={streaming}
         failed={failed}
         testId={testId}
+        wrapControl
       />
     );
   const fields = structuredFields(text);
@@ -351,6 +352,7 @@ function ToolPayload({
           collapsible={false}
           maxHeight={240}
           showStatus={false}
+          wrapControl
           identity={
             <span className="shell-tool-result__label">{describePayload(text, language)}</span>
           }

@@ -28,7 +28,6 @@ import clsx from 'clsx';
 import type { ConversationTrack } from '@sync-think/shared';
 import { FileTypeIcon } from './FileTypeIcon.js';
 import { browserTabFaviconSrc } from './ExternalSourceIcon.js';
-import { usePaneTabSurface } from './pane-tab-surface.js';
 import type { WorkbenchPlacement, WorkbenchScope, WorkbenchTab } from './workspace-workbench.js';
 import {
   WORKBENCH_BOTTOM_DEFAULT_HEIGHT,
@@ -83,10 +82,11 @@ function tabLabel(
   tab: WorkbenchTab,
   chrome?: { title?: string; favicon?: string },
   conversation?: { title?: string },
+  terminalIndex?: number,
 ): string {
   if (tab.type === 'conversation') return conversation?.title?.trim() || '新对话';
   if (tab.type === 'file') return tab.path.split(/[\\/]/).at(-1) || tab.path;
-  if (tab.type === 'terminal') return 'Terminal';
+  if (tab.type === 'terminal') return `Terminal ${terminalIndex ?? 1}`;
   if (tab.type === 'browser') {
     const title = chrome?.title?.trim();
     if (title) return title;
@@ -223,16 +223,6 @@ export function WorkspaceWorkbench(props: WorkspaceWorkbenchProps) {
     activeTab.type !== 'workspace-files';
   const showFilesFull = showingFilesTab;
   const fileBrowserPressed = showingFilesTab || showFilesBeside;
-
-  // beUI-style liquid surface: the active workbench tab grows into the content
-  // panel. Shares the glide/path maths with the conversation rail.
-  const tabbarRef = useRef<HTMLDivElement>(null);
-  const workbenchTabsRef = useRef<HTMLDivElement>(null);
-  const tabSurfacePathRef = usePaneTabSurface(
-    tabbarRef,
-    workbenchTabsRef,
-    '.shell-workbench-tab.is-active',
-  );
 
   // beUI's content enter transition (fade + rise + blur). Replayed via a class
   // toggle on the container so the pane subtree is never remounted — scroll
@@ -465,33 +455,30 @@ export function WorkspaceWorkbench(props: WorkspaceWorkbenchProps) {
       />
 
       <div
-        ref={tabbarRef}
         className="shell-workbench__tabbar"
         data-workspace-inspector-tabbar="true"
         data-pane-tab-bar="true"
+        data-pane-menu-open={newMenuOpen || moreMenuOpen ? 'true' : 'false'}
       >
-        {/* Liquid surface: draws the content panel's top edge plus a notch that
-            lifts around the active tab. */}
-        <svg
-          className="shell-workbench__tab-surface"
-          data-testid="workbench-tab-surface"
-          aria-hidden="true"
-        >
-          <path ref={tabSurfacePathRef} />
-        </svg>
         <div className="shell-workbench__tab-cluster">
           <div
-            ref={workbenchTabsRef}
             className="shell-workbench__tabs"
             role="tablist"
             aria-label="工作台标签"
           >
           {visibleTabs.map((tab) => {
             const active = tab.id === activeTab?.id;
-            const chrome = tab.type === 'browser' ? props.browserPageMeta?.[tab.browserId] : undefined;
+              const chrome =
+                tab.type === 'browser' ? props.browserPageMeta?.[tab.browserId] : undefined;
             const conversation =
-              tab.type === 'conversation' ? props.conversationTabMeta?.[tab.conversationId] : undefined;
-            const label = tabLabel(tab, chrome, conversation);
+                tab.type === 'conversation'
+                  ? props.conversationTabMeta?.[tab.conversationId]
+                  : undefined;
+              const terminalIndex =
+                tab.type === 'terminal'
+                  ? props.scope.tabs.filter((item) => item.type === 'terminal').indexOf(tab) + 1
+                  : undefined;
+              const label = tabLabel(tab, chrome, conversation, terminalIndex);
             return (
               <div
                 key={tab.id}
@@ -651,6 +638,10 @@ export function WorkspaceWorkbench(props: WorkspaceWorkbenchProps) {
                   tab.type === 'conversation'
                     ? props.conversationTabMeta?.[tab.conversationId]
                     : undefined;
+                const terminalIndex =
+                  tab.type === 'terminal'
+                    ? props.scope.tabs.filter((item) => item.type === 'terminal').indexOf(tab) + 1
+                    : undefined;
                 return (
                   <button
                     key={tab.id}
@@ -664,7 +655,7 @@ export function WorkspaceWorkbench(props: WorkspaceWorkbenchProps) {
                       favicon={chrome?.favicon}
                       track={conversation?.track}
                     />
-                    <span>{tabLabel(tab, chrome, conversation)}</span>
+                    <span>{tabLabel(tab, chrome, conversation, terminalIndex)}</span>
                   </button>
                 );
               })}

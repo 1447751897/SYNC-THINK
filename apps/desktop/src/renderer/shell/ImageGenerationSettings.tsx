@@ -988,7 +988,11 @@ function ImageCreateForm({
         aria-labelledby="image-provider-form-title"
       >
         <div className="model-provider-detail__head">
-          <span className="model-provider-detail__avatar">{avatarLetter}</span>
+          <ImageProviderDetailAvatar
+            providerId={template?.id}
+            name={draft.name.trim() || title}
+            fallbackLetter={avatarLetter}
+          />
           <h2 id="image-provider-form-title">{title}</h2>
         </div>
 
@@ -1792,6 +1796,35 @@ function ImageRowAvatar({ provider }: { provider: ProviderSummary }) {
   return (
     <span className="model-enabled-row__avatar">{provider.name[0]?.toUpperCase() ?? '?'}</span>
   );
+}
+
+/**
+ * Header avatar for the image-provider create form: real brand logo when the
+ * catalog template or the typed name maps to a known brand, else the letter.
+ */
+function ImageProviderDetailAvatar({
+  providerId,
+  name,
+  fallbackLetter,
+}: {
+  providerId?: string;
+  name: string;
+  fallbackLetter: string;
+}) {
+  const brandLogo =
+    (providerId ? resolveProviderBrandLogo(providerId) : undefined) ??
+    resolveProviderBrandLogoByName(name);
+  if (brandLogo) {
+    return (
+      <span
+        className="model-provider-detail__avatar model-provider-detail__avatar--logo"
+        aria-hidden="true"
+      >
+        <BrandLogoMark logo={brandLogo} size={16} />
+      </span>
+    );
+  }
+  return <span className="model-provider-detail__avatar">{fallbackLetter}</span>;
 }
 
 const IMAGE_CREDENTIAL_MASK = '••••••••••••••••••••••••';

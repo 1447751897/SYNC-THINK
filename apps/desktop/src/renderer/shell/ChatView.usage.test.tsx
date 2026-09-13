@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { Conversation, Message } from '@sync-think/shared';
 import type { RunProcessView } from '@sync-think/protocol';
-import { ChatView } from './ChatView.js';
+import { ChatView, resetRecentConversationPageCacheForTests } from './ChatView.js';
 import { resetProviderUsageSummaryCacheForTests } from './provider-usage-summary.js';
 
 const runtime = {
@@ -65,6 +65,7 @@ const processView = {
 beforeEach(() => {
   window.localStorage.clear();
   resetProviderUsageSummaryCacheForTests();
+  resetRecentConversationPageCacheForTests();
   runtime.openTask.mockReset().mockResolvedValue({ task: { threadId: 'thread-usage' } });
   runtime.getConversationContextStatus.mockReset().mockResolvedValue({
     modelId: 'model-usage',

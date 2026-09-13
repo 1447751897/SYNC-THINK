@@ -1056,7 +1056,9 @@ function ConversationRow(props: {
         />
         <span className="st-conv-row__body">
           <span className="flex min-w-0 items-center gap-2">
-            <span className="flex-1 truncate text-[14px] font-medium leading-5">{heading}</span>
+            {/* NewMax-aligned: its conversation title uses `truncate text-xs font-medium`
+                (12px / 16px line-height), not the 14px / 20px this used to be. */}
+            <span className="flex-1 truncate text-[12px] font-medium leading-4">{heading}</span>
         {title.startsWith('任务 ·') ? (
           <span className="shell-task-conv-badge" title="定时任务会话">
             任务

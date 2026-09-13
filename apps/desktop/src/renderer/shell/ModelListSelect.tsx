@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Check, ChevronDown } from 'lucide-react';
 import clsx from 'clsx';
@@ -6,6 +6,8 @@ import clsx from 'clsx';
 export interface ModelListSelectOption {
   value: string;
   label: string;
+  /** Optional rich row content, used for provider icons and status tags. */
+  render?: ReactNode;
 }
 
 export function ModelListSelect({
@@ -100,7 +102,9 @@ export function ModelListSelect({
           toggle();
         }}
       >
-        <span className={clsx(placeholderShown && 'is-placeholder')}>{display ?? placeholder}</span>
+        <span className={clsx(placeholderShown && 'is-placeholder')}>
+          {selected?.render ?? display ?? placeholder}
+        </span>
         <ChevronDown size={14} aria-hidden="true" />
       </button>
       {open
@@ -135,7 +139,7 @@ export function ModelListSelect({
                       choose(option.value);
                     }}
                   >
-                    <span>{option.label}</span>
+                    <span>{option.render ?? option.label}</span>
                     {active ? <Check size={14} aria-hidden="true" /> : null}
                   </button>
                 );

@@ -27,6 +27,20 @@ export interface NewmaxSkinPreferences {
 
 const CUSTOM_IMAGE_THEME_ID = 'custom-upload';
 
+// Wallpaper palette -> DS surface ramp note (mirrors NewMax): NewMax passes
+// `brightLightSurfaces: true` for image themes, so the ramp is repainted with
+// lightness pinned at 0.985 and chroma scaled hard toward neutral
+// (surface-200 = chroma * 0.08, 300 = *0.32, 400 = *0.58). The engine already
+// does this via resolveImageThemeColors; do NOT pin the ramp to constants.
+//
+// The alias chain NewMax writes on top of that ramp (image-wallpaper branch):
+//   app-shell-surface / workspace-content-surface -> surface-400
+//   workspace-shell-surface / sidebar-surface / workbench-surface -> surface-300
+//   workbench-content-surface / tab-strip-surface -> surface-200
+// A right-placed panel then overrides workbench-surface with tab-strip-surface
+// (surface-200). writeMappedColors() below is the SYNC-THINK equivalent, with
+// --color-page taking surface-400 and the workbench/tab-strip chrome taking
+// surface-200 because the workbench here is the right-placed panel.
 const COLOR_FROM_DS: Array<[string, string]> = [
   ['--color-text', '--ds-text-primary'],
   ['--color-text-secondary', '--ds-text-secondary'],
@@ -83,15 +97,12 @@ function writeMappedColors(root: HTMLElement, imageTheme: boolean): void {
     root.style.setProperty('--color-page-gutter', page);
   }
 
-  // NewMax workbench fallback is --ds-surface-200. Image/snow-cinnabar right
-  // pane then assigns --ds-workbench-surface: var(--ds-tab-strip-surface).
-  const workbench = imageTheme ? surface300 || surface200 : surface200;
-  const tabStrip = imageTheme ? surface300 || surface200 : surface200;
-  if (workbench) {
-    root.style.setProperty('--color-workbench', workbench);
-    root.style.setProperty('--color-workbench-content', workbench);
+  const chrome = surface200;
+  if (chrome) {
+    root.style.setProperty('--color-workbench', chrome);
+    root.style.setProperty('--color-workbench-content', chrome);
+    root.style.setProperty('--color-tab-strip', chrome);
   }
-  if (tabStrip) root.style.setProperty('--color-tab-strip', tabStrip);
 }
 
 function applyGeneratedVars(
@@ -115,10 +126,7 @@ function applyGeneratedVars(
   );
 }
 
-function customImagePalette(
-  background: string,
-  accent: string,
-): ImageThemePalette {
+function customImagePalette(background: string, accent: string): ImageThemePalette {
   return {
     background,
     foreground: deriveImageThemeForeground(background),
@@ -145,7 +153,8 @@ export function applyNewmaxSkin(
   }
   delete root.dataset.theme;
 
-  const named = NEWMAX_NAMED_THEME_VARS[preferences.colorTheme as keyof typeof NEWMAX_NAMED_THEME_VARS];
+  const named =
+    NEWMAX_NAMED_THEME_VARS[preferences.colorTheme as keyof typeof NEWMAX_NAMED_THEME_VARS];
   const preset = preferences.imageThemeId
     ? NEWMAX_IMAGE_THEME_PALETTES[preferences.imageThemeId]
     : undefined;

@@ -4,7 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { Conversation } from '@sync-think/shared';
-import { ChatView } from './ChatView.js';
+import { ChatView, resetRecentConversationPageCacheForTests } from './ChatView.js';
 import { ToastProvider, resetToastStoreForTests } from './Toast.js';
 import { takeFailedComposeDrafts } from './failed-compose-drafts.js';
 
@@ -124,6 +124,7 @@ const installedKernels = kernels.map((kernel) =>
 );
 
 beforeEach(() => {
+  resetRecentConversationPageCacheForTests();
   takeFailedComposeDrafts(JSON.stringify(['workspace-kernel', 'conversation-kernel']));
   takeFailedComposeDrafts(JSON.stringify(['workspace-kernel', 'another-conversation']));
   window.localStorage.clear();

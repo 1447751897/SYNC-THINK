@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { PendingToolApprovalSummary } from '@sync-think/protocol';
 import type { Conversation } from '@sync-think/shared';
-import { ChatView } from './ChatView.js';
+import { ChatView, resetRecentConversationPageCacheForTests } from './ChatView.js';
 
 const runtime = {
   decideToolApproval: vi.fn(),
@@ -70,6 +70,7 @@ function renderChat(runtimeConnectionRevision = 0) {
 }
 
 beforeEach(() => {
+  resetRecentConversationPageCacheForTests();
   runtime.appendMessage.mockReset();
   runtime.decideToolApproval.mockReset().mockResolvedValue({
     approvalId: 'approval-reconnect-a',
