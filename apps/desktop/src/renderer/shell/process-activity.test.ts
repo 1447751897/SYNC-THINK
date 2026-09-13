@@ -9,7 +9,9 @@ import {
   deriveCurrentActivity,
   deriveStallState,
   formatCommandLine,
+  formatCommandSummary,
   formatElapsedZh,
+  unwrapShellCommand,
   friendlyToolName,
   summarizeProcessActions,
   groupConsecutiveProcessTools,
@@ -167,6 +169,66 @@ describe('formatCommandLine', () => {
   });
 });
 
+describe('unwrapShellCommand', () => {
+  it('drops the Windows PowerShell carrier so the real command is what shows', () => {
+    expect(
+      unwrapShellCommand(
+        '"C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command \'git status --short\'',
+      ),
+    ).toBe('git status --short');
+  });
+
+  it('skips PowerShell switches sitting between the shell and -Command', () => {
+    expect(
+      unwrapShellCommand(
+        'powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "pnpm -s test"',
+      ),
+    ).toBe('pnpm -s test');
+  });
+
+  it('drops the POSIX login-shell carrier', () => {
+    expect(unwrapShellCommand('/bin/bash -lc "pnpm --filter @sync-think/desktop test"')).toBe(
+      'pnpm --filter @sync-think/desktop test',
+    );
+    expect(unwrapShellCommand("sh -c 'ls -la'")).toBe('ls -la');
+  });
+
+  it('drops the cmd.exe carrier', () => {
+    expect(unwrapShellCommand('cmd.exe /c "dir /b"')).toBe('dir /b');
+  });
+
+  it('leaves a command without a carrier untouched', () => {
+    expect(unwrapShellCommand('pnpm -s test')).toBe('pnpm -s test');
+    expect(unwrapShellCommand('rg packages/shared/src/*.ts')).toBe('rg packages/shared/src/*.ts');
+  });
+
+  it('keeps the original text when a shell name appears but carries no payload flag', () => {
+    expect(unwrapShellCommand('bash script.sh')).toBe('bash script.sh');
+    expect(unwrapShellCommand('cmd.exe /k')).toBe('cmd.exe /k');
+  });
+
+  it('unwraps doubled single quotes inside a PowerShell payload', () => {
+    expect(unwrapShellCommand("powershell.exe -Command 'Write-Output ''hi'''")).toBe(
+      "Write-Output 'hi'",
+    );
+  });
+
+  it('still truncates a payload that stays too long after unwrapping', () => {
+    const summary = formatCommandSummary(`powershell.exe -Command '${'a'.repeat(400)}'`);
+    expect(summary.length).toBeLessThanOrEqual(120);
+    expect(summary.startsWith('aaa')).toBe(true);
+    expect(summary.endsWith('…')).toBe(true);
+  });
+
+  it('collapses a multi-line script payload into a single line', () => {
+    const summary = formatCommandSummary(
+      'powershell.exe -Command "node -e \\"\nconst fs = require(\'fs\');\n  const p = 1;\n\\""',
+    );
+    expect(summary).not.toContain('\n');
+    expect(summary).toContain("const fs = require('fs'); const p = 1;");
+  });
+});
+
 describe('deriveStallState', () => {
   const base = 1_000_000;
 
@@ -299,6 +361,19 @@ describe('shared tool naming', () => {
 
   it('summarizes the key argument', () => {
     expect(toolInputSummary(runningCommand as never)).toBe('pnpm -s test');
+  });
+
+  it('shows the real command instead of the shell install path for a carried command', () => {
+    const item = {
+      kind: 'tool',
+      name: 'command_execution',
+      argumentsJson: JSON.stringify({
+        command:
+          '"C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command \'rg --files packages/shared/src\'',
+        cwd: 'D:\\projects\\SYNC-THINK',
+      }),
+    };
+    expect(toolInputSummary(item as never)).toBe('rg --files packages/shared/src');
   });
 
   it('infers status from legacy fields when status is absent', () => {
