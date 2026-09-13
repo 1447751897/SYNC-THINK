@@ -63,8 +63,23 @@ describe('SqliteMcpStore', () => {
       expect(server.trusted).toBe(false);
       expect(server.enabled).toBe(true);
       expect(server.maxOutputBytes).toBe(65536);
+      expect(server.tools[0]!.readOnly).toBeUndefined();
       expect(mcpStore.list()).toHaveLength(1);
       expect(mcpStore.get(server.id)?.id).toBe(server.id);
+    } finally {
+      close();
+    }
+  });
+
+  it('persists explicit MCP readOnly metadata', async () => {
+    const { mcpStore, close } = await openStores();
+    try {
+      const server = mcpStore.register({
+        name: 'readonly',
+        tools: [{ name: 'inspect', description: 'Inspect', readOnly: true }],
+        now: '2026-07-12T06:00:00.000Z',
+      });
+      expect(mcpStore.get(server.id)?.tools[0]).toMatchObject({ readOnly: true });
     } finally {
       close();
     }

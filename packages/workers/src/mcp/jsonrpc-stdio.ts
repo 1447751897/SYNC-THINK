@@ -35,6 +35,7 @@ export type JsonRpcMessage = JsonRpcRequest | JsonRpcNotification | JsonRpcSucce
 export interface McpDiscoveredTool {
   name: string;
   description: string;
+  readOnly?: boolean;
   /** Opaque JSON schema string; never executed. */
   inputSchemaJson?: string;
 }
@@ -177,7 +178,12 @@ export function extractToolsList(
     } else if (typeof rec.inputSchemaJson === 'string' && rec.inputSchemaJson.length <= maxSchemaBytes) {
       inputSchemaJson = rec.inputSchemaJson;
     }
-    out.push({ name, description, inputSchemaJson });
+    out.push({
+      name,
+      description,
+      ...(rec.readOnly === true ? { readOnly: true } : {}),
+      inputSchemaJson,
+    });
   }
   return out;
 }

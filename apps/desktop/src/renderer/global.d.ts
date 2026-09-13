@@ -403,6 +403,9 @@ declare global {
         setModelPriorities(payload: SetModelPrioritiesPayload): Promise<SetModelPrioritiesResponse>;
         updateModel(payload: UpdateModelPayload): Promise<UpdateModelResponse>;
         removeProviderModel(payload: RemoveModelPayload): Promise<RemoveModelResponse>;
+        queryProviderBalance(
+          payload: import('@sync-think/protocol').ProviderBalancePayload,
+        ): Promise<import('@sync-think/protocol').ProviderBalanceResponse>;
         getSettings(payload?: GetSettingsPayload): Promise<GetSettingsResponse>;
         setSetting(payload: SetSettingPayload): Promise<SetSettingResponse>;
         listWebSearchProviders(

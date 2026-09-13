@@ -651,6 +651,9 @@ export class SqliteProviderStore {
     const known = new Set<CapabilityTag>([
       'text',
       'vision',
+      'document',
+      'video',
+      'thinking',
       'tool-calling',
       'web-search',
       'image-generation',
@@ -659,6 +662,9 @@ export class SqliteProviderStore {
     const ordered: CapabilityTag[] = [
       'text',
       'vision',
+      'document',
+      'video',
+      'thinking',
       'tool-calling',
       'web-search',
       'image-generation',

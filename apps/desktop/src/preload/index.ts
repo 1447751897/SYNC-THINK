@@ -101,6 +101,8 @@ import type {
   UpdateModelResponse,
   RemoveModelPayload,
   RemoveModelResponse,
+  ProviderBalancePayload,
+  ProviderBalanceResponse,
   GetSettingsPayload,
   GetSettingsResponse,
   SetSettingPayload,
@@ -611,6 +613,8 @@ const api = {
       ipcRenderer.invoke('runtime:provider-update-model', payload) as Promise<UpdateModelResponse>,
     removeProviderModel: (payload: RemoveModelPayload) =>
       ipcRenderer.invoke('runtime:provider-remove-model', payload) as Promise<RemoveModelResponse>,
+    queryProviderBalance: (payload: ProviderBalancePayload) =>
+      ipcRenderer.invoke('runtime:provider-balance', payload) as Promise<ProviderBalanceResponse>,
     getSettings: (payload: GetSettingsPayload = {}) =>
       ipcRenderer.invoke('runtime:settings-get', payload) as Promise<GetSettingsResponse>,
     setSetting: (payload: SetSettingPayload) =>

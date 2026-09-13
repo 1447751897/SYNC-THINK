@@ -477,6 +477,28 @@ describe('streamOpenAIChatCompletions', () => {
     expect(bodyJson.temperature).toBeUndefined();
   });
 
+  it('applies the reasoning-model token shape to gpt-6 models', async () => {
+    const body = sseStream(['data: [DONE]\n\n']);
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'text/event-stream' },
+      body,
+      text: async () => '',
+    } as unknown as Response);
+
+    await collect(
+      streamOpenAIChatCompletions(
+        req({ modelId: 'gpt-6-astra', maxOutputTokens: 4096, temperature: 0.2 }),
+        { fetchImpl: fetchMock as unknown as typeof fetch },
+      ),
+    );
+    const bodyJson = JSON.parse((fetchMock.mock.calls[0]![1] as { body: string }).body);
+    expect(bodyJson.max_completion_tokens).toBe(4096);
+    expect(bodyJson.max_tokens).toBeUndefined();
+    expect(bodyJson.temperature).toBeUndefined();
+  });
+
   it('serializes tool schemas/history and assembles streamed tool calls', async () => {
     const body = sseStream([
       'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"read_file","arguments":"{\\"path\\":"}}]}}]}\n\n',

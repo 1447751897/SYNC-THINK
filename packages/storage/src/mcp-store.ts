@@ -7,6 +7,8 @@ export type McpTransport = 'local-stdio' | 'remote-http';
 export interface McpToolSchemaRecord {
   name: string;
   description: string;
+  /** Explicit child-Agent safety classification; absent means not delegated. */
+  readOnly?: boolean;
   /** Opaque JSON schema fragment; never executed. */
   inputSchemaJson?: string;
 }
@@ -72,7 +74,12 @@ function parseTools(raw: string): McpToolSchemaRecord[] {
           : rec.inputSchema !== undefined
             ? JSON.stringify(rec.inputSchema)
             : undefined;
-      out.push({ name, description, inputSchemaJson });
+      out.push({
+        name,
+        description,
+        ...(rec.readOnly === true ? { readOnly: true } : {}),
+        inputSchemaJson,
+      });
     }
     return out;
   } catch {
@@ -193,6 +200,7 @@ export class SqliteMcpStore {
       .map((t) => ({
         name: String(t.name ?? '').trim(),
         description: String(t.description ?? '').trim(),
+        ...(t.readOnly === true ? { readOnly: true } : {}),
         inputSchemaJson: t.inputSchemaJson
           ? String(t.inputSchemaJson)
           : undefined,

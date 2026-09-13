@@ -32,7 +32,7 @@ import type {
 /** Models that reject `max_tokens` and `temperature` (o-series / gpt-5+). */
 function isReasoningOnlyModel(modelId: string): boolean {
   const tail = (modelId.split('/').pop() ?? modelId).toLowerCase();
-  return /^o[1-9](\b|[-.])/.test(tail) || /^gpt-5/.test(tail);
+  return /^o[1-9](\b|[-.])/.test(tail) || /^gpt-[5-9](?:$|[-_.])/.test(tail);
 }
 
 function blocksOf(content: string | AnthropicContentBlock[]): AnthropicContentBlock[] {

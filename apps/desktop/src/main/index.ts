@@ -155,6 +155,7 @@ import {
   parseImportCcSwitchPayload,
   parseListProvidersPayload,
   parseDiscoverModelsPayload,
+  parseProviderBalancePayload,
   parseProbeModelsPayload,
   parseAddModelsPayload,
   parseProbeCapabilitiesPayload,
@@ -2042,6 +2043,11 @@ function setupRuntimeBridge(): void {
     assertRuntimeIpcSource(event);
     await ensureRuntimeConnection();
     return getRuntimeClient().request('provider.discoverModels', parseDiscoverModelsPayload(value));
+  });
+  ipcMain.handle('runtime:provider-balance', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('provider.balance', parseProviderBalancePayload(value));
   });
   ipcMain.handle('runtime:provider-probe-models', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);

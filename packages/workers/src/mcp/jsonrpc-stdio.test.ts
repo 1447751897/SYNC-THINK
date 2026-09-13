@@ -52,4 +52,12 @@ describe('jsonrpc-stdio', () => {
     expect(tools[0]!.inputSchemaJson).toMatch(/text/);
     expect(tools[1]!.name).toBe('ping');
   });
+
+  it('preserves explicit readOnly metadata from tools/list', () => {
+    const tools = extractToolsList({
+      tools: [{ name: 'inspect', description: 'Inspect', readOnly: true }, { name: 'write' }],
+    });
+    expect(tools[0]).toMatchObject({ name: 'inspect', readOnly: true });
+    expect(tools[1]).not.toHaveProperty('readOnly');
+  });
 });
