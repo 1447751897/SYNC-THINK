@@ -249,3 +249,6 @@ NSIS `apps/desktop/build/installer.nsh` 负责把每个已安装版本的 instal
 - `apps/desktop/src/main/runtime-supervisor.ts` 只负责 Desktop client 的冷启动/连接和升级时有界停止，不拥有普通窗口退出的 Runtime 生命周期。
 
 数据流：`Desktop/外部事件 -> daemon durable inbox/lease -> Runtime pipe -> Conversation/Run/Event/Message/Kernel session -> SQLite`。Desktop 断开后，Runtime 与 daemon 继续运行；重连先使用 durable cursor/replay 还原历史，再向 Runtime 查询仍 pending 的审批做当前状态对账。
+# 协作策略边界（2026-09-12）
+
+运行时协作权限由 `apps/runtime/src/collaboration-policy.ts` 负责，设置类型和默认值由 `packages/protocol/src/collaboration.ts` 负责。工具目录和执行入口都必须使用会话的 `ConversationTrack` 做过滤与硬校验，提示词只负责解释行为，不承担权限。

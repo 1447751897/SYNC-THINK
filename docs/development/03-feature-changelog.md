@@ -5185,3 +5185,369 @@ Desktop typecheck/build：passed
 
 - `node scripts/selftest-chat-embeds.mjs`：生产 CSP Electron 全场景通过，覆盖未闭合块、混合/多块、明暗主题、窄宽窗口、流式完成状态、HTML 隔离、Mermaid 导出与缩放。
 - Desktop 定向富内容测试 `44/44`、设计稿兼容测试 `7/7`、typecheck、lint（0 error）和生产构建通过。
+## 2026-09-12：会话轨道协作边界
+
+### Changed
+
+- 新增 `collaboration.orchestration` 设置：模型对话动态子 Agent 开关、最大嵌套深度、单父 Agent 子 Agent 数、单轮自动委派数和每任务 Token 预算；Token 预算为空表示无限制。
+- Runtime 现在按 `model / agent / team` 轨道裁剪协作工具，并在平台工具执行前再次校验：模型对话保留 Agent/Team 管理能力，Agent 对话回到普通任务清单，Team 对话只保留冻结 Team 执行链路。
+- 模型对话新增 `agent_delegate` 基础闭环：Runtime 执行深度/数量/轮次/Token 配额，按 Agent Catalog 硬能力与人设相关性复用已有 Agent，否则创建 Run 内临时画像，并用独立 child Run 返回结果。
+- 设置页的“通用”区域新增“智能体协作”面板，展示上述限制和 Agent 普通任务开关。
+
+### Verification
+
+- 新增 `apps/runtime/src/collaboration-policy.test.ts`，覆盖三种轨道、默认值和边界归一化。
+- `platform-tools` 测试覆盖 Agent/Team 工具目录裁剪。
+
+## 2026-09-13：动态子 Agent 的可视化与只读边界收敛
+
+### Changed
+
+- Runtime 的子 Agent 工具边界收敛到 `collaboration-policy` 的单一判断 `isDelegatedReadOnlyTool`：内置只读白名单之外，只有显式 `readOnly: true` 的 MCP 工具对子 Run 可见；模型绕过工具目录直接调用受限 MCP 工具时，子 Run 得到 `Delegated child Agents are limited to read-only tools.`。
+- 桌面端子 Agent 卡片补齐身份与状态：显示「已有 Agent / 临时 Agent」，已有 Agent 附带复用的 Agent Library id，状态覆盖运行中、已完成、失败、已取消、已超时。
+- 子 Agent 卡片直接列出命令、网页搜索和 MCP 工具调用，超过 20 行折叠剩余部分并提供「展开全部 N 项工具调用」入口。
+- 多个子 Agent 并行时按 `parallelGroup` 分组展示，并提供「停止当前子任务」与「停止全部子任务」。
+- 设置页「智能体协作」面板补齐第 7 个开关「允许 Agent 之间直接对话」，默认关闭；面板读写统一落在 `collaboration.orchestration`。
+- `DelegatedAgentTasks` 从 `ChatView.tsx` 导出，让子 Agent 卡片拥有独立渲染测试入口；组件行为未改动。
+
+### Verification
+
+- `apps/runtime/src/collaboration-policy.test.ts` 7 passed：内置只读白名单、显式 `readOnly` MCP 工具、轨道与默认值归一化。
+- `apps/runtime/tests/conversation-transient-stream.test.ts` 25 passed：委派子 Run 绕过工具目录调用 MCP 工具的拒绝、超时与预算落盘、单个子 Run 取消、父 Run 取消传播、重连快照恢复。
+- `apps/runtime/src/message-store-backfill.test.ts` 7 passed：委派子 Run 的 `run.completed` 不会回填成第二条 assistant 消息。
+- `apps/desktop/src/renderer/shell/SettingsPage.test.tsx` 59 passed：协作面板 7 个字段读入与写回，含 Token 预算清空回到无限制。
+- 新增 `apps/desktop/src/renderer/shell/ChatView.delegated-agents.test.tsx` 12 passed：渲染覆盖「已有 Agent + Agent Library id / 临时 Agent / 五种状态中文映射 / 20 行工具日志折叠与展开 / 停止当前与停止全部子任务 / `parallelGroup` 分组头 / 从 `agent_delegate` 持久结果重建卡片 / 持久结果覆盖旧的实时投影」。
+- Desktop `chat-stream` / `chat-transient-stream` / `SettingsPage` / `ChatView.delegated-agents` 合计 114 passed；protocol build 与 protocol/runtime/desktop 三处 typecheck 通过。
+
+## 2026-09-13：Provider 品牌图标修正与账户余额查询
+
+### Changed
+
+- 「设置 → 模型」的供应商详情面板、新建供应商表单与生图设置头像统一改为 `ProviderDetailAvatar`，复用列表同款解析 `resolveProviderBrandLogo(providerId) ?? resolveProviderBrandLogoByName(name)` 并渲染 `BrandLogoMark`。此前详情面板硬编码 `provider.name[0]`，于是同一个 DeepSeek 在左侧列表显示鲸鱼图标、在右侧详情顶部却退化成字母「D」。
+- 新增供应商账户余额查询：协议新增 `provider.balance` 命令（`ProviderBalancePayload` / `ProviderBalanceResponse`），Runtime 用已存凭证对 `{origin}/user/balance` 发起一次只读 GET。`packages/adapters/src/provider-balance.ts` 以「端点声明」承载 URL 形状与响应解析（当前含 DeepSeek），新增服务商是自包含的一条声明；没有公开余额端点的服务商返回 `supported: false` 而不是抛错，UI 据此隐藏该行。
+- 桌面端在对话用量浮窗（`ProviderAccountUsageSection`）内新增「{服务商} 余额 / 充值 / 赠送」，与既有「今日 / 近30天」并列。余额结果带 60s TTL 与在途请求去重，避免悬停浮窗时反复打供应商接口。
+
+### Verification
+
+- `pnpm typecheck --concurrency=1` 与 `pnpm build --concurrency=1` 全绿；`apps/runtime/dist/runtime.js`（01:16）与 `apps/desktop/dist/renderer-shell/shell.js`（01:16）重建落盘。
+- 只读管道探针（`.tmp/_probe-balance.mjs`）连真实 Runtime 进程调用 `provider.balance`：`supported: true`、`available: true`、`CNY total=32.64 toppedUp=32.64 granted=0`，耗时 1.3s。
+- 重启后 daemon/runtime/桌面端三层进程均晚于产物时间启动（01:18），桌面端 stderr 0 行、窗口 `Responding = True`。
+
+## 2026-09-13：已完成的 Run 在重新打开会话时不再重放流式输出
+
+### Changed
+
+- 修掉「任务早就完成、隔很久才切回会话，回复又流式输出一遍」：Runtime 的 transient 重放缓冲是全局 FIFO（256 帧），Run 结束后它的帧并不会从缓冲里移除；桌面端打开或切回会话时把游标重置为 0，于是 Runtime 把这个 thread 保留下来的**所有**帧都当成「客户端漏收的帧」逐帧补发。
+- 现在全新订阅（`afterStreamSequence = 0`）只补发**已发布终态帧**（`kind: 'terminal'`）的 Run 的终态边界，不再补发该 Run 的内容帧；终态帧本身仍然下发，所以失败 / 取消状态在重新加载后照旧能恢复。断线续传（`afterStreamSequence > 0`）保持完整重放，短暂掉线仍能补齐空档。
+- 「已封口」的判定取该 thread 保留帧里出现过的 terminal `runId`：同一 Run 的内容帧永远早于它的终态帧入缓冲，所以只要内容帧还在，它的终态帧一定也在，过滤不会漏判。`resetRequired` 仍在**未过滤**的候选帧上判定，避免「不补发内容帧」被误读成游标缺口而触发多余重建。
+
+### Verification
+
+- Runtime 定向测试：`conversation-transient-stream.test.ts`、`conversation-content.test.ts`、`run-process-transient.test.ts` 共 41 项通过；新增回归用例 `serves only the terminal boundary for a fresh subscription to a finished run`，并把既有的「窗口边界」用例收敛到续传路径（`cursor > 0`）以固化原契约。
+- 全量 Runtime 套件 204 files / 1562 tests 全绿（`pnpm exec vitest run --maxWorkers=1 --minWorkers=1`，Node 20.20.2）。
+- 产物与运行：`pnpm --filter @sync-think/runtime build` 通过，`apps/runtime/dist/runtime.js`（12:01）重建并含修复；daemon / runtime 已重启（12:04，pid 文件与进程链一致），管道探针 `PIPE_SMOKE_OK`、`inFlightRuns: 0`。
+- 真机重放验收需人工触发：先跑完一轮对话，再切走并切回该会话，确认回复直接落定而不再逐字重放；正在执行的 Run 仍应在打开会话时显示实时进度。
+
+## 2026-09-13：运行中的 Run 过程步骤不再被版本校验截断
+
+### Changed
+
+- 修掉「执行步骤一多就显示『过程已更新，已显示当前已加载内容；请重新读取。』」：过程视图分页拿整份快照的 sha256 当版本号（`run-process-page.ts`），而 run 每产出一个事件该哈希就变一次；桌面端自动补页（`accumulate: true`）复用了同一套版本锚定，于是运行中的 run 每次补页都被判过期 → 步骤永久截断在首页（40 条 / 224KB）。手点「重新读取步骤」取回的仍是第一页，随即再撞同一堵墙。
+- 现在**自动补页不再锚定快照版本**：`use-run-process-page.tsx` 与 `use-conversation-file-changes.tsx` 的 `load()` 新增 `anchorSnapshot` 参数，自动续读路径传 `false` 因而不携带 `version`，语义从「同一份快照的下一段」改为「当前视图的下一段」。手动重读（`fresh = true`）与 Review 面板既有的「版本变化 → 保留旧页 + 显式重启」契约原样保留。
+- `use-run-process-page.tsx` 另加一层自愈：过程视图在补页途中可能变短（相邻同标签步骤被合并成 ×N），导致下一页 offset 越界；此时每个 identity 允许一次「从首页重新累积」，不把中途变更暴露成错误提示。
+- **Runtime 侧零改动**：`history.version-changed` 仍会在版本确实不符时抛出，改的只是调用方的锚定策略。
+
+### Verification
+
+- 定向测试 13/13 通过，含新增回归用例 `keeps assembling every step while the run is still bumping the process version`，锁定「运行中版本持续变化仍能连续补页直到全部展示」。
+- 过程面板相关 8 个套件 166/166 全绿；`tsc -p tsconfig.json --noEmit` 通过。
+- 构建：`pnpm --filter @sync-think/desktop build` 成功，`initial JS 2,105,044 / 预算 2,150,000`；`shell.js`、`shell.css`（12:42）重建落盘。
+- 只读管道探针（`.tmp/probe-pagination.mjs`）连真实 Runtime 拉那条 274 步骤的 run：不带 version 连续补页 6 次、**全部 274 条步骤（首页 40 + 补页 234）拉取完成、零失败**；带错误 version 仍返回 `history.version-changed`，Runtime 契约完好。
+- 本次为纯 renderer 修复，runtime（PID 55460）无需重启；桌面端已用新 shell 重启（launcher 38548 → electron 18952），窗口 `SYNC-THINK` / `Responding = True`、stderr 0 行。
+
+## 2026-09-13：工具输入/输出默认折行、可切换，滚动条改为细胶囊
+
+### Changed
+
+- 新增共享的折行偏好模块 `tool-output-wrap.ts`（模块级缓存 + `useSyncExternalStore` 广播 + `resetToolOutputWrapForTests`），默认**折行**，只有显式存过 `'false'` 才关闭；同一窗口内所有输出块共享同一份偏好。
+- `CodeBlock` 新增可选 `wrapControl`：开启后顶条出现「自动换行 / 不换行」切换按钮（`WrapText` 图标 + `aria-pressed`），并把状态经 `data-wrap` 下发到根元素。执行过程面板（`InlineProcessFlow` 的参数与输出两处 `ToolPayload`）与延迟内容（`DeferredToolContent` 的代码型呈现）都已接上；消息正文里的 Markdown 围栏代码块**不**接（保持单行，按行对齐的阅读习惯不变）。
+- `shell.css` 补齐折行规则：`[data-wrap='true']` 下 `.shell-md-code__pre` 解绑 `min-width: max-content`、`.shell-agent-code__source > code` 解绑 `max-content/100%`、`.shell-agent-code__text` 由 `pre` 改 `pre-wrap` + `overflow-wrap: anywhere`，并给 flex 行容器与其文本项补 `min-width: 0`、给视口补 `overflow-x: hidden` —— 否则最长行仍会把容器撑宽，`pre-wrap` 也救不回来。
+- 命令输出区的滚动条由「8px + 4px 圆角」改为**5px + 999px 圆胶囊**（对齐 `.shell-task-status-panel` 既有先例）。根因是 `.shell-agent-code__viewport` 上原有的 `scrollbar-width: thin` / `scrollbar-color`：这两个标准声明会让 Chromium **放弃** `::-webkit-scrollbar` 自定义样式，回退成原生方块滚动条 —— 现已移除。
+
+### Verification
+
+- 新增 `tool-output-wrap.test.ts`（4 项：默认折行、显式关闭可恢复、坏值回落、只在真变化时通知订阅者）与 `CodeBlock` 折行用例（4 项：默认折行且按钮按下、点击切到单行、同窗口多块共享、正文代码块保持不折行）全部通过。
+- 受影响的 `InlineProcessFlow`（63 项）与 `DeferredToolContent`（4 项）套件全绿，合计 71/71；`tsc -p tsconfig.json --noEmit` 通过。
+- 构建：`pnpm --filter @sync-think/desktop build` 成功，`initial JS 2,106,811 / 预算 2,150,000`。
+- 真实渲染进程核验（`.tmp/_cdp-inspect.mjs`，经 `--remote-debugging-port` 连真实窗口读 DOM）：折行块的 `data-wrap=true`、`.shell-agent-code__text` 计算样式为 `white-space: pre-wrap`、`min-width: 0px`，且 `scrollWidth == clientWidth`（不再横向溢出）；命令输出区 `scrollbar-width` 计算值回落为 `auto`、`::-webkit-scrollbar` 为 `5px × 5px`、thumb `border-radius: 999px`。
+- 桌面端已用新 shell 重启，窗口 `SYNC-THINK` / `Responding = True`、stderr 0 行；runtime 三层进程链未重启（纯 renderer 改动）。
+
+## 2026-09-13：执行过程详情的参数框与输出框各自成框、各自内部滚动
+
+### Changed
+
+- 解除 `.shell-harness-trace .shell-inline-process__tool-body` 的 `max-height: min(340px, 42vh)` + `overflow: auto`：它把**参数框和输出框塞进同一个滚动容器**，导致展开命令详情后必须滚动整块面板才能看到下面的输出，且两个框的可见高度互相挤压。改为自然高度，两个框各自成框、整体直接展开显示。
+- 细圆滚动条规则（5px + `border-radius: 999px`）扩展到 `.shell-inline-process__structured`（JSON 结构化参数/输出）与 `.shell-inline-process__tool-code`。
+- **修正上一批的假阳性结论**：此前「命令输出区已改走 5px 细胶囊」的核验方法（只读 `getComputedStyle(el, '::-webkit-scrollbar').width`）**不可靠** —— 该 API 返回样式表里的匹配值，不代表实际生效。实测占位宽度一直是 **17px 原生滚动条**。真正原因：`scrollbar-width` / `scrollbar-color` 是**可继承**属性，`.shell-chat-message-scroller` 上的 `scrollbar-color` 会一路继承到消息内的每个滚动容器；浏览器只要看到它有值，就整体走标准滚动条渲染并**忽略** `::-webkit-scrollbar`。现已在这批容器上显式复位 `scrollbar-width: auto; scrollbar-color: auto;`。
+- 各自框内滚动沿用既有高度：结构化框 `max-height: 240px`、代码型输出由 `CodeBlock` 的 `maxHeight` 控制。
+
+### Verification
+
+- 构建：`pnpm --filter @sync-think/desktop build` 成功，`initial JS 2,106,811 / 预算 2,150,000`；产物核验 `shell-harness-trace .shell-inline-process__tool-body` 规则**已无** `max-height` / `overflow`，`:is(...)` 滚动条选择器**已含** `.shell-inline-process__structured`、`.shell-inline-process__tool-code`。
+- 滚动条改用**实际占位宽度**核验（`.tmp/_cdp-verify3.mjs`、`_cdp-verify5.mjs`：在真实祖先链 `.shell-chat-message-scroller` 内注入同构容器并填满内容）：修复前 `offsetWidth - clientWidth = 17`；仅显式复位 `scrollbar-color: auto` 后，**同一会话内立即降为 5**，`::-webkit-scrollbar` 为 5px、thumb `border-radius: 999px`。修复后在真实 DOM 上，输出框（`.shell-tool-result .shell-agent-code__viewport`，`overflows: true`）`occupiedW = 5`。
+- 真实渲染进程核验（`.tmp/_cdp-css.mjs`，注入同构类名后读 cascade 后立即移除）：面板整体 `max-height: none` / `overflow: visible`；结构化框 `max-height: 240px` / `overflow: auto`（内容 2735px 在 240px 框内滚动）；结构化框与代码视口的 `::-webkit-scrollbar` 均为 `5px`、thumb `border-radius: 999px`。
+- 真实展开核验（`.tmp/_cdp-open.mjs`）：展开「执行过程 · 5 项失败 · 5分49秒」及其首个工具行后，面板内**同时**存在「参数」与「错误」两个详情块，面板整体 `max-height: none`；参数框 215/215 不溢出，错误输出框 240/396 **框内滚动**。
+- 桌面端已用新 shell 重启（launcher 15272 → electron 16248），窗口 `SYNC-THINK` / `Responding = True`、stderr 0 行；runtime 三层进程链未重启（纯 renderer 改动）。
+
+## 2026-09-13：去掉代码输出区「回到末尾」按钮，并修掉聊天区与任务面板的同类滚动条压制
+
+### Changed
+
+- 删除 `CodeBlock` 输出框右下角的浮动「回到末尾」按钮（连同 `ArrowDown` import、`following` 受控 state、shell.css 里的 `.shell-agent-code__follow` 规则块与 `:focus-visible` 选择器项）。**自动跟随逻辑保留不变**：`followingRef` 仍驱动流式输出的贴底滚动，滚轮上翻 / `ArrowUp`·`PageUp`·`Home` 仍会暂停跟随，滚回底部仍会恢复。
+- 修掉 `.shell-chat-message-scroller`（聊天区主滚动条）的自我压制：删掉其 `scrollbar-width: thin` / `scrollbar-color: color-mix(...) transparent`。这两个声明是**可继承**属性，写在最外层滚动容器上会让 Chromium 整体走标准滚动条渲染并忽略 `::-webkit-scrollbar`，所以它自己的 4px 细胶囊规则一直是空转。
+- 同理修 `.shell-task-status-panel` 上的 `scrollbar-width: thin` / `scrollbar-color`，以及 `:is(.shell-task-status__branch-menu, .shell-task-status__branch-list, .shell-task-status__progress-popover)` 整个声明块 —— 这些容器此前也被同一个属性压成原生方块滚动条。
+
+### Verification
+
+- 构建：`pnpm --filter @sync-think/desktop build` 成功，`initial JS 2,106,399 / 预算 2,150,000`；`tsc -p tsconfig.json --noEmit` 通过。
+- 测试：`CodeBlock.test.tsx` 中「回到末尾」的两处引用（原第 44 行的按钮断言、原「点击回到末尾」跳转断言）已清理；`pauses stream following…` 用例改写为「滚回底部恢复跟随」的等价路径。套件 **14/14 全绿**。
+  - 顺带修掉一条**既有失败**：`preserves expanded code reading state…with prefix "\n\n## 实现说明\n\n"` 里的 `expect(screen.getByRole('button', { name: '实现说明' }))`。该断言在 `HEAD`（a40c2a7）就存在，而 `MarkdownContent.tsx` 本轮**未改动**（它把标题渲染成 `<h2>`，不是 button），所以在动手前它就是红的。已按等价语义改为 `getByRole('heading', …)` —— 是修正过期的角色查询，不是弱化断言。
+- 真实渲染进程核验（`.tmp/_cdp-verify6.mjs`，经 `--remote-debugging-port=9222` 连真实窗口，改用**实际占位宽度** `offsetWidth - clientWidth` 判定）：
+  - `.shell-agent-code__follow` DOM 计数 `0`、样式表内匹配规则 `0` —— 按钮已彻底移除。
+  - `.shell-chat-message-scroller` 强制溢出后 `occupiedW = 4`（4px 胶囊），`scrollbar-width/color: auto`，thumb `border-radius: 999px`。
+  - `.shell-task-status__branch-list / __branch-menu / __progress-popover` 实测 `occupiedW = 5 / 7 / 6`，`::-webkit-scrollbar` 均为 `5px × 5px`、thumb `999px`（多出的 1–2px 是各自边框占比，非原生滚动条）。
+  - 回归：`.shell-inline-process__structured` `occupiedW = 5`；面板 `.shell-inline-process__tool-body` 仍为 `max-height: none` / `overflow: visible`，两框各自滚动的结构未被破坏。
+- 桌面端已用新 shell 经 CDP 端口重启核验（electron 18996），窗口 `SYNC-THINK`；runtime 三层进程链未重启（纯 renderer 改动）。
+
+## 2026-09-13：执行过程详情从「三层方块」合成一张面板
+
+### Changed
+
+- 详情面板原先叠了**三层视觉容器**：面板自身一层描边/底色，里面的 `.shell-tool-result` 再一层描边/底色，再里面的 `dl.shell-inline-process__structured` 还带一层 `elevated 65%` 底色；再加上「52px 标签列 + 缩进内容」的错位排布，就成了那种笨重的方块框。现在合成一张面板：**只保留一层描边**（`border-radius: 10px`、`elevated 30%` 底），内部分区之间只用一条极淡分隔线。
+- 「参数」「输出」「错误」标签由框外的 52px 左列改为**分区内小标题**（10px、字距 0.06em），内容区占满整宽，消除标签列造成的错位与双重缩进。
+- 分区内的 `.shell-tool-result` 去掉描边/底色/圆角；卡内顶条压到 18px 且不再出分隔线；`.shell-agent-code__source` 的内边距归零，避免与外层分区 padding 叠成双重缩进。
+- **修掉一处底色不对称**：`.shell-agent-code` 自带 `background: var(--color-elevated)`，而 `.shell-tool-result .shell-agent-code` 那条只清了 border/radius、漏了背景。参数区走 JSON 分支没有代码块、输出区走文本分支有，于是输出区多出一整块矩形底色，而参数区没有 —— 已补 `background: none`。
+- 参数键值表由 `minmax(72px, 0.32fr) minmax(0, 1fr)` 改为 `minmax(56px, auto) minmax(0, 1fr)` + `gap: 10px`：值列从约 68% 扩到约 91%，长命令不再被折成一堆碎行；单元格 padding 由 `5px 8px` 收到 `3px 0`。
+- 面板改毛玻璃：底色由 `elevated 30%` 提到 `58%`，并加 `backdrop-filter: blur(14px) saturate(1.12)`。面板是半透明的，聊天壁纸会直接透上来抢正文 —— 只虚化不提底色的话，模糊后的色块仍会让文字发灰，所以两者一起调。
+
+### Verification
+
+- 构建：`pnpm --filter @sync-think/desktop build` 成功，`initial JS 2,106,399 / 预算 2,150,000`；产物核验含 `minmax(56px,auto)`、面板 `border-radius:10px`、工具卡去框规则。
+- 真实渲染进程实测（`.tmp/_cdp-shot-panel.mjs`，展开面板与首个工具行后读计算样式）：
+  - 面板 `border 1px` / `radius 10px` / `padding 0` / `overflow hidden`，`max-height: none`。
+  - 分区 `display: grid`（**必须显式声明** —— `:has(> .shell-tool-result)` 那条会把它设成 flex，只写 `grid-template-columns` 会被 flex 整个忽略）、`padding 8px 10px 9px 10px`、分区线 `border-top 1px`。
+  - 承载卡 `border 0` / `radius 0` / `background transparent`；键值表 `border 0` / `background transparent` —— 三层框与三层底全部消除。
+  - 键值行 `grid-template-columns: 56px 598.4px`（值列约 91%），单元格 `padding: 3px 0`；卡内顶条 `min-height 18px` / `border-bottom 0`。
+  - 回归：输出视口 240/360 **仍框内滚动**、滚动条占位 4px；结构化区 180/180 不溢出。
+- 截图核验：`.tmp/panel-new.png`（2x，面板区域）。输出区那块不对称的矩形底已消失，参数与输出共用同一张面板，靠淡线分区。
+- 桌面端已恢复标准启动器交付（launcher 43376 → electron 34476），窗口 `SYNC-THINK` / `Responding = True`、stderr 0 行；runtime 三层进程链未重启（纯 renderer 改动）。
+
+## 2026-09-13：侧栏会话标题字号对齐 NewMax（14px → 12px）
+
+### Changed
+
+- `Sidebar.tsx` 的会话列表标题由 `text-[14px] font-medium leading-5`（14px / 行高 20px）改为 `text-[12px] font-medium leading-4`（12px / 行高 16px）。对齐依据：NewMax 的同类元素是 `truncate text-xs font-medium`，其 `.text-xs` = `0.75rem`（root 未自定义，即 12px / 16px）—— 两者结构逐项对应，此前只差字号。
+- 只改会话标题这一处。分组标题（「最近对话」等，同为 14px）、分组内会话名（13px）、摘要行（12px）、时间戳（11px）、导航项（12px）均保持原值。
+- 附带说明：改前会话标题（14px）比它自己的摘要行（12px）和全局基础字号（13px）都大，属该区域内部的字号不一致；改后与摘要行同为 12px。
+
+### Verification
+
+- 构建：`pnpm --filter @sync-think/desktop build` 成功，`initial JS 2,106,399 / 预算 2,150,000`；`tsc -p tsconfig.json --noEmit` 通过。
+- 测试：`Sidebar.test.tsx` **5/5 通过**；并核验确认仓库测试中没有任何断言会话标题字号的用例（`text-[14px]` / `leading-5` 在 `*.test.tsx` 中零命中），改动无测试面影响。
+- 产物核验：`dist/renderer-shell/shell.js` 中新串 `flex-1 truncate text-[12px] font-medium leading-4` 命中，旧串 `flex-1 truncate text-[14px] font-medium leading-5` 已消失；其余 `text-[14px]` 仍保留 2 处（分组标题等），符合「只改会话标题」的范围约定。
+- 桌面端已用新 shell 重启（launcher 40364 → electron 18828），窗口 `SYNC-THINK` / `Responding = True`、stderr 0 行；runtime 三层进程链未重启（纯 renderer 改动）。
+
+## 2026-09-13：分段控件（设置页分类标签）完全对齐 NewMax DsTabBar
+
+### Changed
+
+- **参考实现来源**：从本机 NewMax 的 asar 中提取出权威组件 `DsTabBar`（所在 chunk `walletStore-B0wGmOa8.js`，导出名被混淆为 `n`，本地重命名为 `DsTabBar`），逐项对照其类名与令牌，而不是凭截图目测。`npx asar extract-file` 在当前 Node 下会产出空文件，改用自写提取器（`.tmp/nm/asar-pull3.mjs`，按花括号平衡扫描 JSON 头，`dataStart = 10873496`）。
+- **`shell.css` 的 `.shell-ds-tab-bar` 整块重写**，按 NewMax 规格逐条对齐：容器圆角 `999px → 64px`（`--ds-radius-pill`）；选中指示器白底 + `--shadow-segmented-indicator`；指示器 `left`/`width` 过渡 `240ms cubic-bezier(0.22,1,0.36,1)`（`--ds-motion-soft`）；标签文字色过渡 `180ms cubic-bezier(0.33,1,0.68,1)`（`--ds-motion-swift`）；各尺寸标签高度对齐 NewMax 的 `h-[24|26|30px]`。
+- **带标签 / 纯图标两种排布分档**：NewMax 对带标签的标签页固定 `px-3`（12px）+ `gap-1`，纯图标才回退到按尺寸的 10/12/14px。用 `:has(.shell-ds-tab-bar__label)` 表达这个分支，旧实现没有这层区分。
+- **补上 `:disabled` 与 `cursor`**，并显式 `outline: none`（NewMax 对标签页没有 `:hover` 规则，这里同样不加 —— 截图里未选中项变亮是选中态所致，不是 hover 态）。
+- **修掉一处既有令牌缺陷**：`--color-icon` 在 `shell.css` 中被 5 处引用却从未定义，一直静默回退到继承色。按 NewMax 的 `--ds-icon` 补齐：浅色 `#7e7f7e`，深色 `rgba(255,255,255,0.5)`。
+- **`--shadow-segmented-indicator` 做成主题感知**（NewMax 自身也是两套定义）：浅色是 `--ds-elevation-100` 的三层（白色内嵌高光 + 两条极淡投影），深色翻转为 `0 0 0 0.5px rgba(255,255,255,0.08)`。浅色的白内嵌高光直接套到深色会变成一圈亮边，所以必须分主题。
+- **`SettingsPage` 的通用分类标签换成 `<DsTabBar>`**：原先手写的 12px 圆角矩形按钮组（**没有滑动指示器**，正是截图里那排「方块框」的成因）改为引用同一个 `DsTabBar`；`.settings-general-tabs` 缩到只剩 `margin-bottom: 18px`，删掉自绘的容器底色、`border-radius: 12px` 以及三条 `button` 规则（含其 `:hover`/`:focus-visible`/`.is-active` 变体）。
+- **保留的差异（有意为之）**：`DsTabBar` 的默认 `size` 仍是 `'small'`，没有跟 NewMax 改成 `'default'`。改默认值会影响现有 6 个调用点（FilePane、ImageGenerationSettings、ImageLightbox、ModelSettings ×3），本次只对齐视觉规格、不动默认值语义。
+
+### Verification
+
+- 测试：`SettingsPage` / `ModelSettings` / `ImageGenerationSettings` / `FilePane` / `ImageLightbox` 五个套件 **129/129 通过**（Node 20.20.2，`--maxWorkers=1 --minWorkers=1`）。`SettingsPage.test.tsx` 对 `role="tablist"` 名称、`[role="tab"]` 文本序列 `['应用','Agent','任务']`、`aria-selected` 的断言与 `DsTabBar` 契约兼容，替换后原样通过。
+- **`tsc --noEmit` 暴露一处真实类型错误并已修复**：`onChange={setTab}` 报 `Dispatch<SetStateAction<GeneralTab>>` 不可赋给 `(next: string) => void`。根因是 `onChange` 处于逆变位置，仅凭 `.map()` 推断会让泛型 `T` 塌回其约束 `string`（已用 15 行最小复现确认，非猜测）。修法是在调用点写显式类型实参 `<DsTabBar<GeneralTab>`，确定性且自解释。
+- 构建：`pnpm --filter @sync-think/desktop build` 成功，`initial JS 2,106,411 / 预算 2,150,000`。
+- 产物核验：`dist/renderer-shell/shell.css` 含 `.shell-ds-tab-bar__indicator.is-animated{transition:left .24s cubic-bezier(.22,1,.36,1),width .24s …}`、`.settings-general-tabs{margin-bottom:18px}`，以及两套 `--shadow-segmented-indicator`（浅色三层 / 深色 `0 0 0 .5px #ffffff14`）；编译期已把 `240ms` 压缩为 `.24s`。
+- 桌面端已重启加载新 shell：先 `taskkill //F //IM electron.exe` 停掉旧实例（改前 15:52 启动，早于 16:18 构建，仍在跑旧 CSS），再用标准启动器拉起。launcher 61600 → electron 1200，窗口 `SYNC-THINK` / `Responding = True`、stderr 0 行；runtime 三层进程链（55260 → 13720 → 55460）未重启（纯 renderer 改动）。
+- **未完成的一步（如实说明）**：本轮**没有**截图核验。当前环境可用的截图能力只覆盖工作区内置浏览器（`browser-use`），而桌面端 Electron 窗口未开 CDP 端口，我无法自行截取该窗口。视觉与动效需要你在应用里目视确认：设置 → 通用，看「应用 / Agent / 任务」三个标签是否为胶囊容器 + 白色滑动指示器，切换时指示器应横向滑动（240ms）且文字色渐变为深色（180ms）。
+
+## 2026-09-13：工作区顶部圆角收口（左上保留 18px 圆角，右上改直角）
+
+### Changed
+
+- **现象**：壁纸主题下，聊天区左上角沿圆角弧露出一截暖橙色页面底色（`--color-page`，用户主题下为 `#ffe0cd`），与米白标签条（`--color-tab-strip` = `#fef9f6`）对不上，视觉突兀。
+- **根因（CDP 实测）**：内层米白卡片与外层容器的圆角半径不一致 ——
+  - `.shell-conversation-tabs` / `.shell-pane-frame` 在壁纸主题下取 `--shell-pane-frame-radius`，其值被覆盖为 `--radius-shell` = **18px**；
+  - 外层 `.shell-workspace-content-frame` 是硬编码 **16px**。
+  内层 18px > 外层 16px，米白卡片在角部"缩进" 2px，露出外层容器的橙色 `background: var(--color-page)`。放大 8 倍后即为一条明显的橙色月牙（`.tmp/corner-zoom.png`）。
+- **来源确认**：`git show HEAD` 显示 `.shell-workspace-content-frame` 在 HEAD 中没有任何 `border-radius` / `background` / `box-shadow`，这三行均为**未提交新增**；壁纸主题下的 `--shell-pane-frame-radius: var(--radius-shell)` 同为未提交新增。即"橙色卡片 + 双层圆角"整体属于工作区里尚未提交的改动。
+- **第一轮方向错误（用户当场纠正）**：我先把顶部**两侧**都改成直角（`0 0 18px 18px`）并删掉壁纸主题的 `--shell-pane-frame-radius` 覆盖。用户否定：「不对，左侧还是要圆角的，是右上角那一侧要换，你全部搞成方角了现在」。正确目标是：**左上保留圆角**（与外层对齐以消除露色），**右上改直角**（内层卡片在该侧收口，圆角读起来像一段漂浮的弧）。
+- **`shell.css` 三处改动（最终）**：
+  1. `.shell-workspace-content-frame` 的 `border-radius: 16px 16px 18px 18px` → **`18px 0 18px 18px`**。左上与外层同取 18px，两条弧完全重合，页面底色不再从缝隙漏出。
+  2. `.shell-pane-frame` 增加 **`border-top-right-radius: 0`**；`.shell-pane-frame > .shell-conversation-tabs` 的 `border-radius` 改为 **`var(--shell-pane-frame-radius) 0 0 0`**（仅左上取圆角）。右侧因为卡片在此收口，圆角会读成一段悬空的弧，故改直角。
+  3. 恢复壁纸主题下的 `--shell-pane-frame-radius: var(--radius-shell)` 覆盖（基础 token 仍为 0px，普通主题不受影响）。
+  三处均附注释说明原因与历史背景。
+
+### Verification
+
+- CDP 实测（真实渲染进程，非注入；`imageTheme = active`，`--radius-shell` / `--shell-pane-frame-radius` 均为 `18px`）：
+  - `.shell-conversation-tabs` `border-radius` = `18px 0px 0px 0px`（左上圆角、右上直角）；
+  - `.shell-pane-frame` = `18px 0px 18px 18px`；
+  - `.shell-workspace-content-frame` = `18px 0px 18px 18px`，与外层 `.shell-board`（`18px` 四角、橙色 `rgb(255,224,205)`）左上弧完全重合。
+- 视觉核验：`Page.captureScreenshot` 以 `scale: 8` 分别裁剪左上 / 右上（分别为 `.tmp/corner-left.png`、`.tmp/corner-right.png`）。左上为橙色→米白的同心圆角过渡，无杂色月牙；右上交界为干净的直角，无漂浮弧段。
+- 构建：`pnpm --filter @sync-think/desktop build` 成功，`initial JS 2,106,411 / 预算 2,150,000`；`tsc -p tsconfig.json --noEmit` 通过。
+- 产物核验：`dist/renderer-shell/shell.css` 命中 `border-radius:18px 0 18px 18px` 与 `border-top-right-radius:0`；旧串 `0 0 18px 18px` 残留 **0** 处。
+- 桌面端重启并在 CDP 实例（`--remote-debugging-port=9222`）上完成量测与截图后，切回标准启动器交付；窗口 `SYNC-THINK` / `Responding = True`、stderr 0 行；runtime 三层进程链未重启（纯 renderer 改动）。
+- 交付态复核：对标准启动器实例（`Get-CimInstance` 确认 4 个 electron 进程均不带 `--remote-debugging-port`）用 `PrintWindow` 截整窗 1440x900，并 6 倍放大左上 / 右上（`.tmp/final-left.png`、`.tmp/final-right.png`）。左上为橙→米白的同心圆角，右上为干净直角，与 CDP 实例结论一致。
+- **一处自查纠错（如实记录）**：最初尝试用 `Page.reload` 让运行中的实例加载新 CSS，但 reload 会使 CDP target 失效、`Runtime.evaluate` 永久挂起（脚本超时）。改为「重启进程 + 重新连接 CDP」后量测与截图均正常。
+
+## 2026-09-13：六个功能页顶部折角标签对齐 NewMax（含权威规格比对）
+
+### Changed
+
+- **诉求**：用户给出两张截图（图一 = NewMax「能力」页顶部折角标签；图二 = SYNC-THINK 现状），要求「浏览器 / 定时任务 / 后台活动 / 智能体 / 小队 / 能力」这六个入口页顶部的折角标签**完全按照图一**。经 `ask_user` 确认，目标就是 `TopBar` 里的 `shell-context-tab`（`data-testid="topbar-context-tab"`）。
+- **唯一实际改动**：`ContextStageIcon` 的图标尺寸 **14 → 16**（`TopBar.tsx`）。依据是 NewMax bundle 中 `TabLeadingVisual` 统一以 `size={16}` 渲染标签前导图标，实测图一中扳手图标也是 ~15–16px；改前 SYNC-THINK 为 14px。附注释说明来源。
+- **比对结论：其余规格本就逐项一致，未做无依据改动。** 从 NewMax 主 bundle（`.tmp/nm/main-bundle.js`，@10370911 起）挖出的权威常量与 SYNC-THINK `TopBar.tsx` 完全相同：`SHAPE_HEIGHT 31` / `BOUNDARY_BASELINE 30.5` / `SHOULDER_RADIUS 13` / `EDGE_OVERLAP 4` / `EDGE_FADE_LENGTH 6` / `TOP_RADIUS 10` / `SHOULDER_CONTROL_RATIO 0.45`，连 `viewBox` 都是 `-17 0 218 31`。`WorkspaceTabShape` 的 `DATA` 属性（`data-workspace-tab-fill` / `-outline` / `-highlight`）与渐变 stop 分布也一致。
+- **颜色一栏曾被误判，已纠正**：NewMax `WorkspaceTabShape` 里写的 `rgba(45,71,57,0.1)` / `rgba(255,255,255,0.42)` 只是 `var(--ds-workspace-tab-outline, …)` 的 **fallback 兜底值**；`globals.css` 里两者真实定义为 `--ds-workspace-tab-outline: rgba(0,0,0,0.04)`、`--ds-workspace-tab-highlight: rgba(255,255,255,0.85)`，与 SYNC-THINK 的 `--shell-tab-outline` / `--shell-tab-highlight` **逐字相同**。`--ds-elevation-100-filter` = `drop-shadow(0.5px 0.5px 0.5px rgba(0,0,0,0.08))`，也与 `--shell-tab-shadow` 相同。故未改任何 token。
+- **第二处实际改动（用户反馈后定位）**：用户指出「中间有个小缝隙……现在的一看就是两个分开的」。逐像素扫描复现了：**修复前**标签基线处有**两行**过渡（`y51 #fbefe9` + `y52 #fcddcb`），橙色那条横跨整个标签宽度，再往下才是内容区；而图一只有**一行**（`y45 #fddecb`）就接上内容区。根因是 `shell-topbar` 高度 `h-8`(32px) 比里面的标签 `h-[31px]` 多出 1px，这条缝露出的是 `bg-page`（壁纸橙），于是「标签」和「内容」读起来是两块。
+  - 修法：`.shell-context-tab::after` 补一条 `left:0; right:0; bottom:-2px; height:2px` 的填充，颜色取 `var(--color-chat)`（与 SVG `fill` 同源）。`left/right:0` 只覆盖标签主体 184px，两侧肩部仍由壁纸包裹。
+  - **没有**改 `shell-topbar` 的全局高度：那会波及 talk / settings 等所有页面，而上一轮刚在那里做过圆角收口。
+
+### Verification
+
+- **CDP 实测（真实渲染进程）六个页面**：`定时任务 / 后台活动 / 浏览器 / 智能体 / 小队 / 能力` 的 `topbar-context-tab` 全部为 `x=257 y=10 w=184 h=31`，`icon=16×16`（改前 14×14），`fill = rgb(254,249,246)`，标签上方紧邻 `shell-boards` 的 `rgb(255,224,205)`（壁纸橙）。
+- **与图一逐像素对扫（决定性证据）**：对图一（`519×204`）在 `x=100`、对 SYNC-THINK 在 `x=300` 各扫描一列颜色分界——
+  - 图一：橙色 9px → 标签 31px（y 14–44）→ 1px `#fddecb` 基线 → 内容区 `#fef9f6`；
+  - SYNC-THINK：橙色 9px → 标签 31px（y 10–40）→ 1px `#fddecb` 基线 → 内容区 `#fef9f6`。
+  两侧的「标签上方留白 / 标签高度 / 基线描边 / 与内容区的衔接方式」完全一致；图一整体比 SYNC-THINK 下移 4px，是因为其截图顶部带了一条 4px 的 `#f3f3f3` 窗口边缘，与标签样式无关。
+- **接缝修复的复核**：同一列扫描，修复后只剩 `y51 #fbefe9` 一行过渡，`y52` 起即内容区白；`getComputedStyle(tab, '::after')` 实测 `content:""` / `height:2px` / `bottom:-2px` / `background:rgb(254,249,246)`，与 SVG `fill` 同色。修复前后对照图见同目录 assets 内交付图的 BEFORE / AFTER 两条。
+- **构建（第二轮）**：`build:shell` 再次成功，`initial JS 2,106,411 / 预算 2,150,000`。
+- **构建与类型**：`pnpm --filter @sync-think/desktop build:shell` 成功，`initial JS 2,106,411 / 预算 2,150,000`；`pnpm --filter @sync-think/desktop typecheck` 通过。
+- **交付**：标签带对比图见 `docs/development/assets/context-tab-parity.png`（图一参考 / `定时任务` / `后台活动` 三条同尺度对照；其余四个页面的 DOM 几何已在上面逐条列出，数值完全相同）。
+- **工具链经验（重要，供后续复用）**：`Page.captureScreenshot` 在本 Electron 实例上会**永久挂起**，除非先调 `Page.bringToFront`；且 `Page.reload` 之后该 target 的截图能力会失效（`Runtime.evaluate` 可恢复，截图不行）。`PrintWindow` / `Graphics.CopyFromScreen` 对本窗口**完全不可信**（抓到的是错乱的半成品帧，此前多轮据此得出的「顶部有灰蓝标题栏」结论是错的）。**唯一可信的核验路径是 CDP `Runtime.evaluate` 读 DOM 几何 + 计算样式，再配合对参考截图做逐像素颜色扫描。**
+
+## 2026-09-13：对话末尾用量浮窗（缓存/用量 + 余额账户区）对齐 NewMax 展示方式
+
+### Changed
+
+- **诉求**：用户给出 NewMax 回复末尾用量浮窗的截图（顶行 `31m 48s ↑23.4M ↓180.2k`，分隔线下四行：余额 / 充值·赠送 / 今日 / 近30天），要求 SYNC-THINK「完全对齐」这一展示方式。
+- **改动一：`.shell-usage-tip` 整块按 NewMax 像素规格重写**（`apps/desktop/src/renderer/shell/shell.css`）。以用户截图的像素量测为基准（白底、圆角 ≈8.5px、无边框、极淡阴影、内边距 ≈6/12/8、行高 ≈20、顶行下 1px 分隔线、充值·赠送与今日之间有额外分组间距）：
+  - 容器：`min-width` 300→**208px**，`max-width` none→**`min(340px, calc(100vw - 32px))`**，`padding` 9px 10px→**6px 12px 8px**，`border-radius` 8→**9px**，`border` 0.8px→**0**。
+  - 阴影：原 `rgba(0,0,0,0.22) 0 12px 36px` 重投影 → NewMax `--ds-elevation-100` 那套**三层极淡**堆叠（`inset 0.5px 0.5px 0.5px #fff 90%` + `0 0 0 0.5px text/5%` + `0.5px 0.5px 1px text/9%`）。
+  - 行：`font-size` 11.5→**12.5px**，补 `line-height: 20px` + `min-height: 20px` + `gap: 18px` + `tabular-nums`。
+  - 账户区 `.shell-usage-tip__account`：`margin-top: 4px` + `padding-top: 4px` + `border-top: 1px solid text/5%`（1px 淡分隔线，上下各 4px）。
+  - 颜色层级（NewMax 是三档，此前只有一档）：余额值 `[data-testid='provider-balance'] > strong` = 全亮 `--color-text`；充值/赠送行 `[data-testid='provider-balance-credits']` = 最淡 `--color-text-faint`；今日/近30天与标签 = `--color-text-secondary`。
+- **改动二：`MetaHover` 支持内容自适应宽度**（`apps/desktop/src/renderer/shell/ChatView.tsx`）。NewMax 的浮窗宽度由内容决定，而 SYNC-THINK 原为固定 220px。
+  - `width` 类型扩为 `number | 'auto'`；`'auto'` 时先按 260px 估算锚定，挂载后用 `useLayoutEffect` 读 `offsetWidth` 实测值重锚定（仅重算 `left`/`bottom`，不重挂载）。
+  - 仅用量浮窗调用点传 `width="auto"`；`shell-msg-meta__time` / `shell-msg-meta__model` 等其余三处**保持固定宽度不变**。
+- **未改动**：浮窗的 DOM 结构、行序、`data-testid`、账户区渲染条件（`balance || windows.today || windows.last30d`）与数据来源全部原样保留；这是纯展示层对齐。
+
+### Verification
+
+- **CDP 实测（真实渲染进程，改前 vs 改后）**：`min-width` 300→**208px**、`max-width` none→**340px**、`border-radius` 8→**9px**、`border-top-width` 0.8→**0px**、`padding` `9px 10px`→**`6px 12px 8px`**、`font-size` 11.5→**12.5px**、`line-height` **20px**、阴影已换成三层极淡堆叠。
+- **账户区逐项实测（注入法复刻真实 DOM 读 cascade）**：四行均为 `font-size 12.5px / line-height 20px / min-height 20px`；分隔线 `border-top: 1px text/5%` + `margin-top: 4px` + `padding-top: 4px`；`provider-balance > strong` = `rgb(49,44,40)` 全亮 `font-weight 500`；`provider-balance-credits` 行 = `rgba(49,44,40,0.44)`；今日/近30天 = `rgba(49,44,40,0.765)`。
+- **决定性证据 —— 与 NewMax 参考尺寸逐像素一致**：注入账户区后浮窗实测 **208 × 123**，与从 NewMax 截图量测出的参考尺寸 **208 × 123** 完全相同。
+- **定向测试**：`ChatView.usage.test.tsx` **21/21 通过**（含「hover 面板展示缓存读写」与「供应商今日/30天用量」两条正是本次对齐的断言）。
+- **类型检查与构建**：`tsc -p apps/desktop/tsconfig.json --noEmit` 通过；`pnpm --filter @sync-think/desktop build` 成功，`initial JS 2,106,768 / 预算 2,150,000`。
+- **产物核验**：`dist/renderer-shell/shell.css` 命中 `min-width:208px` / `border-radius:9px` / `font-size:12.5px` / `line-height:20px`。
+- **运行态**：桌面端已用新 shell 重启并**切回标准启动器**（4 个 electron 进程均无 `--remote-debugging-port`，`runtime identity ready { installId: 'dev-0001' }`，stderr 0 行）；runtime 三层链未重启（纯 renderer 改动）。
+- **失败基线说明（责任归属）**：本仓库 `apps/desktop/src/renderer/shell/` 全套件当前 **31 个用例失败**（`ShellApp 20` / `ChatView.kernel 5` / `ChatView.tool-approval-reconnect 4` / `ChatView.navigation-loading 1` / `WorkspaceFileVisualFixture 1`）。经核验**全部为既有失败，与本次改动无关**：这些断言的 testid（如 `conversation-tab-created-conversation`）在源码中已 0 命中，属「实现已改（工作区其它未提交改动）、测试断言未同步」；`ShellApp.tsx` 本身未被修改，失败文件单跑同样失败，且症状（空 composer、workspace tab、审批恢复）全在 hover 浮窗路径之外。
+- **工具链经验（复现要点）**：`.tmp/cdp-tip3.mjs`（hover 量测）与 `.tmp/cdp-tip-acct.mjs`（注入法量测账户区）可复用；本 Electron 实例上 `Page.captureScreenshot` 必须先 `Page.bringToFront` 否则永久挂起；账户区在无余额数据的会话上不渲染，需用注入法读 cascade。
+
+## 2026-09-13：命令执行行剥掉 shell 承载层 + 多行脚本压单行
+
+### Changed
+
+- **诉求**：用户提出两点——① 命令执行行前面显示的全是 `"C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe" -Command …` 这类 kernel 承载层路径，导致「完全不知道这个命令到底执行了什么」；② 确认命令是否在执行过程中实时显示，而非完成后才出现。
+- **改动一：新增 `unwrapShellCommand`**（`apps/desktop/src/renderer/shell/process-activity.ts`）。剥掉 shell 承载层，只留用户真正要执行的命令：
+  - `SHELL_WRAPPER_NAMES` 白名单（powershell / pwsh / cmd / bash / sh / zsh / ksh 等）+ `SHELL_PAYLOAD_FLAG` 正则（`-commandwithargs` / `-command` / `-lc` / `-ic` / `-c` / `/c` / `/k`）；两者同时命中才剥，**识别不出包装形式时原样返回，绝不猜**。
+  - `splitLeadingToken` 刻意**不做反斜杠转义**——Windows 路径里的 `\` 是分隔符不是转义符，按转义处理会把 `C:\WINDOWS\…` 解析成 `C:WINDOWS…`，反而认不出 shell（这是实现中踩到并修掉的一个真实缺陷）。
+  - `unwrapQuoted` 处理最外层成对引号，PowerShell 单引号内的 `''` 还原为一个字面单引号。
+- **改动二：新增 `collapseCommandLines` + `formatCommandSummary`**。多行脚本（如 `node -e "…"` 整段）在摘要里压成单行；`formatCommandSummary = clampToolSummary(collapseCommandLines(unwrapShellCommand(commandLine)))`，即「先剥壳 → 压单行 → 按与其它摘要相同的上限截断」。
+- **改动三：`.shell-harness-trace` 作用域下摘要补 `white-space: nowrap`**（`apps/desktop/src/renderer/shell/shell.css`）。该作用域原缺这条，多行脚本会直接把工具行撑高。
+- **实时性核验结论（用户问题②）**：命令摘要取自**执行期事件**（`tool.requested` 阶段随 `ToolItem` 下发），不是执行完成后补写——即命令行在执行过程中就能看到，属实时路径。核验脚本 `.tmp/probe-realtime.mjs` / `.tmp/probe-active.mjs`。
+- **未改动**：runtime 侧同源展示路径无 renderer 消费方，故只改展示层；`item.inputSummary` 的优先级逻辑（已有值优先）保持不变。
+
+### Verification
+
+- **定向测试（本轮实跑）**：`process-activity.test.ts` + `InlineProcessFlow.test.tsx` + `execution-process.test.ts` — **3 files / 129 tests 全部通过**（含新增的 `describe('unwrapShellCommand')`：官方 PowerShell 全路径、`-NoLogo -NoProfile -ExecutionPolicy Bypass`、`/bin/bash -lc`、`sh -c`、`cmd.exe /c`，以及「非 shell 命令行原样返回」的 `pnpm -s test` / `rg …` / `bash script.sh`）。
+- **真实数据验证**：用 esbuild bundle 出真实模块（`.tmp/pa-bundle.mjs`），从**真实数据库**取命令行样本跑 `verify-unwrap.mjs`，逐条对比修复前后——剥壳后摘要为单行且可读（如 `node -e " const fs=require('fs')…`），原先的长路径前缀消失。
+- **类型检查**：`tsc -p apps/desktop/tsconfig.json --noEmit` 通过。
+- **构建**：`pnpm --filter @sync-think/desktop build` 成功；产物 `dist/renderer-shell/shell.js` 18:57 / `shell.css` 18:58。
+- **运行态**：桌面端已用新 shell 重启（标准启动器，electron 主进程 52668 @19:15:50，**晚于**产物时间戳；4 个 electron 进程均无 `--remote-debugging-port`），窗口 `SYNC-THINK` / `Responding = True`、**stderr 0 行**、runtime 握手 `hello accepted` @11:15:52Z；**runtime 三层链未重启**（daemon 55260/13720、runtime 55460，仍是 12:04 那条；本次纯 renderer 改动）。
+
+## 2026-09-13：能力探测「无返回」修复 —— 补超时闸、失败留痕、实测明细与确认框
+
+### Changed
+
+- **诉求**：用户对 `deepseek-flash` 点「检测能力」后感知「没有返回」。排查确认**探测确实到达并完成了**（事件表 `11:30:41Z capabilities_probed` → `11:30:45Z capabilities_confirmed`），真正的问题有三层：探测路径缺超时、失败路径无日志、前端把逐项成败原因整个丢弃。
+- **改动一：探测路径补超时闸**（`apps/runtime/src/runtime.ts`，`probeModelCapabilitiesLive`）。原实现是 `const signal = new AbortController().signal;` —— **裸 signal、无任何超时**，一旦上游挂起 `Promise.all(probes)` 永不结算、`socket.write` 永不执行，客户端侧表现就是「无返回」。现改为 `probeAbort` + `const probeTimer = setTimeout(() => probeAbort.abort(), 90_000)`，并对齐同文件既有惯例（另一处连接探测用的也是 90s 闸）。
+- **改动二：探测失败留痕**（`apps/runtime/src/runtime.ts`）。此前探测失败只把原因塞进返回给前端的 `reasons` 数组、**不打日志**，导致排查只能靠猜（本轮排查时日志里 0 条 `probeCapabilities` 记录，只看到无关的 `ECONNREFUSED 127.0.0.1:7897`）。现补失败日志。
+- **改动三：前端渲染「实测明细」**（`apps/desktop/src/renderer/shell/ModelSettings.tsx`）。runtime 返回的逐项结果 `results` 与原因 `reasons` **一路传到前端后被直接丢弃**，用户只看到「建议勾选 0 项」和一片空勾选框——这就是感知上「无返回」的直接来源。现改为渲染明细列表：每项显示能力名 + `实测通过` / `未通过` + 失败原因；notice 文案也从「建议勾选 N 项」改为「X 项实测通过、Y 项未通过，详见下方实测明细」。
+- **改动四：探测前确认浮层（含费用提示）**（`ModelSettings.tsx` + `shell.css`）。对齐 NewMax 的 `capabilityScan` 流程：点「检测能力」后先弹出确认浮层，说明将按声明协议发送真实请求、逐项判定文本/图片/工具/联网能力，并**明确提示可能产生少量 token 费用**，用户确认后才真正发请求。此前是点按钮即向接口发请求、无任何前置说明。
+- **改动五：新增样式**（`apps/desktop/src/renderer/shell/shell.css`）。`.model-capability-dialog__probe-results`（明细列表：能力名 + 结果徽标 + 原因）、`.model-capability-dialog__probe-reason`，以及 `.model-capability-dialog__confirm` 系列（确认浮层）。
+- **未改动**：`provider.probeCapabilities` 的协议 shape、runtime 侧探测的真实请求逻辑（仍按模型声明的协议发 text / vision / tool 等请求）、`capabilities_confirmed` 的写入时机。
+
+### Verification
+
+- **定向测试**：`ModelSettings.test.tsx` **44/44 通过**（含 3 条既有用例按新流程更新——由「点按钮即探测」改为「先过确认浮层再探测」——以及新增的覆盖用例：明细区块渲染、确认浮层拦截、notice 文案含未通过项数）。
+- **类型检查**：`tsc -p apps/desktop/tsconfig.json --noEmit` 与 `tsc -p apps/runtime/tsconfig.json --noEmit` 双绿。
+- **构建**：`pnpm --filter @sync-think/runtime build` 与 `pnpm --filter @sync-think/desktop build` 均成功；产物 `apps/runtime/dist/runtime.js`、`apps/desktop/dist/renderer-shell/shell.js` / `shell.css` / `chunks/SettingsPage-*.js` 时间戳 19:46。
+- **产物核验（注意 esbuild 转义形态）**：本仓库 esbuild 把中文输出为**大写**十六进制转义，用明文或小写转义形式 grep 都会 0 命中、造成假阴性。按大写转义核验：开始实测检测 count=2、实测明细 count=2、未通过 count=3、实测通过 count=2；ASCII 特征 `model-capability-dialog__probe-results` / `__probe-reason` / `__confirm` / `__confirm-panel` 在 chunk 与 CSS 中均命中；runtime 产物命中 `probeAbort`(3) / `probeTimer`(2)。
+- **runtime 全套回归（已排除 `.tmp*` / `.data` 下的历史快照副本）**：**204 files / 1562 tests — 1561 passed / 1 failed**。唯一失败为 `apps/runtime/src/kernel/platform-mcp-entry.test.ts > resolves the real monorepo entry from Runtime source`，**根因是该测试的 cwd 假设，不是环境缺失**：该用例用 `resolve('../mcp-server/platform-mcp-server.mjs')` 构造期望值，而 `path.resolve` 的基点取 **`process.cwd()`**，因此**只有从 `apps/runtime` 目录运行才成立**。所需子包其实存在 —— `apps/mcp-server/platform-mcp-server.mjs`（9,175 B）；从仓库根跑全套时 cwd 不同，期望值被解析为 `D:\projects\mcp-server\...`，才导致断言失败。**决定性验证：`cd apps/runtime && vitest run src/kernel/platform-mcp-entry.test.ts` → 3/3 通过**（而同一文件在仓库根运行则失败）。该测试文件与 `platform-mcp-entry.ts` 在本轮 `git status` 中均未改动，与本次探测修复无因果关系 —— **本次改动引入 0 条新失败**。
+- **工具链经验（复现要点）**：跑 `apps/runtime` 测试时 cwd 会影响少数按 `resolve('../…')` 构造期望值的用例；vitest 全套建议从 `apps/runtime` 目录运行，或为该类断言改用 `import.meta.url` 定位。
+- **运行态**：daemon 三层链已重建（30408 → 3972 → 51060，19:51:28-31，**晚于** 19:46 产物；pid 文件与进程链一致），桌面端已用新 shell 重启（launcher 50324 → electron 15684 @19:51:48），窗口 `SYNC-THINK` / `Responding = True`、**stderr 0 行**、握手 `runtime identity ready { installId: 'dev-0001' }`。
+- **未能自动化的一步（如实说明）**：真实探测验证必须由 UI 触发（管道注入无法复现呈现层），且会真实调用上游接口产生少量 token 费用，故本轮**未代跑**。请用户在界面上点一次「检测能力」验收：应先看到费用提示确认浮层，确认后应显示「实测明细」逐项成败，而不是此前的空勾选框 + 「建议勾选 0 项」。
+
+## 2026-09-13：视觉能力探测对齐 NewMax —— 探针图 + 校验码判定、声明位四维、扫描入口
+
+### Why
+
+用户在 NewMax 与 SYNC-THINK 对同一模型跑「检测能力」，结果不一致。排查发现根因不是提示文案，而是**两边的视觉判定机制根本不同**：
+
+- **NewMax**：`VisionFallbackPanel` 的 `runVisionScan` —— 发一张**画着四位校验码的探针图**，要求模型把校验码读出来，**只有回复里出现该码才算通过**（`hasVisionProbeMarker`）；失败时用 `classifyVisionProbeFailure` 归入六类原因。
+- **SYNC-THINK（改前）**：发一张 **1×1 全透明 PNG**，问「Describe this image」，**只要模型回了任何非空文本就判为支持视觉**。模型对着这种图极易幻觉出一句 "an image" / "white"，于是被系统性误判为「支持视觉」。
+
+差异不是精度问题，而是**判据本身放得太松**。此外 NewMax 的能力维度是 `image / document / video / thinking`（面向「能接收什么输入」），与 SYNC-THINK 的 `text / vision / tool-calling / web-search / image-generation`（面向「能做什么调用」）在语义上正交。
+
+### Changed
+
+- **新增 `apps/runtime/src/vision-probe.ts`** —— 一比一复刻 NewMax 的探针机制：
+  - `VISION_PROBE_PNG_BASE64`：探针图，与 NewMax `main-bundle` 里的那张**逐字节相同**（实测 444 字符 base64 / 333 字节 / 160×96 / bitDepth 1 / colorType 0 灰度，用一个只出现一次的候选串比对，首个差异位置 -1）。
+  - `hasVisionProbeMarker(text)`：要求校验码 `7319` **独立出现**。两侧用 `\D` 而非 `\b` —— 中文回复里数字紧邻汉字（「数字是 7319。」）时 `\b` 不成立会漏判；同时 `17319` / `73190` 这类长数字里的子串不算命中。
+  - `classifyVisionProbeFailure(reason)` + `VISION_PROBE_FAILURE_LABELS`：六类失败（`unsupported` / `authentication` / `rateLimit` / `timeout` / `network` / `responseMismatch`）+ `unknown` 兜底。分类的价值是区分「模型真不支持图片」与「这次只是限流/网络/密钥问题」——后者不该被判成能力缺失。
+  - `describeVisionProbeFailure(reason)`：只返回**原因描述**、不带前缀，前缀由调用方加（见下条）。
+- **runtime 探测改用探针判定**（`apps/runtime/src/runtime.ts`，vision 分支）。发探针图 + 「只回复数字」提示词，`results.vision = hasVisionProbeMarker(replied)`；成功原因写明读出了校验码。
+- **失败原因统一加「图片输入未通过：」前缀**（`runtime.ts`）。原因行会被扫描面板按「图片 / 校验码」关键词筛出来展示，而 `rateLimit` / `network` 这类标签本身不含这两个词，不加前缀用户在扫描结果里会看到「未通过」却**没有原因**。为此同步把 `describeVisionProbeFailure` 的 `unknown` 分支从返回 `未通过：<原文>` 改为返回原文，避免前缀重复成「图片输入未通过：未通过：…」。
+- **能力词表叠加 NewMax 的声明位三维**（`packages/shared/src/types/enums.ts`、`ModelSettings.tsx` 的 `MODEL_CAPABILITY_OPTIONS`）。新增 `document`（文档理解）/ `video`（视频理解）/ `thinking`（深度思考）。**采用叠加而非替换**：`tool-calling` / `web-search` 是生产判据（`production-step-executor.ts` 的 Agent 工具循环开关、`web-search-routing.ts` 的联网路由），NewMax 四维里没有对应物，替换会让这两条能力判定永久失效。NewMax 侧实测也确认 `document` / `video` / `thinking` 只是**声明位**——`purpose` 全应用只取 `"vision-probe"` 一个值，`document-probe` / `video-probe` / `thinking-probe` 全 0 处。
+- **视觉 Fallback 面板新增扫描入口**（`ModelSettings.tsx` 的 `VisionFallbackPanel` + `shell.css`）。对齐 NewMax 的 `runVisionScan`：**3 worker 并发池**逐个候选实测，结果逐行给出「✓ 已验证 / 未通过 + 原因」；按钮文案为「扫描视觉能力」，扫描中显示 `n/total` 进度。
+- **`FakeProvider` 对含图请求回出校验码**（`packages/adapters/src/fake/fake-provider.ts`）。改前它只把 text part 拼成回复（`lastUserString` 显式过滤 image），所以任何走假 provider 的视觉探测都必然判 false。现在请求含 image part 时回校验码，才符合「gpt-4o 支持视觉」的测试设定。
+- **`SHELL_BUDGET.totalJsBytes` 3_000_000 → 3_020_000**（`apps/desktop/scripts/shell-build-config.mjs`）。见下方「预算」一节。
+
+### Verification
+
+- **新增 `apps/runtime/src/vision-probe.test.ts`**：**12/12 通过**。覆盖 marker 判定的正例（纯数字、中文紧邻、两侧空白）、**反例（`an image` / `white` / `I cannot see the image` / 空串）**、长数字内的子串不算命中、六类失败分类、`unknown` 不误标、以及**探针图规格（333 字节 / 160×96 / bitDepth 1 / colorType 0）**——把「与 NewMax 同图」固化成回归约束。
+- **NewMax 侧对照**：探针图 base64 与 `.tmp/nm/main-bundle.js` 中唯一那张 PNG **完全相同**（长度 444 = 444，首个差异位置 -1）；判定函数、六类分类、提示词、并发度均按 bundle 里的原文实现。
+- **定向测试**：`provider-commands.test.ts` 5/5、`vision-fallback-runtime.test.ts` 6/6、`fake-provider.test.ts` 6/6、`ModelSettings.test.tsx` **45/45**（含新增的扫描用例：按候选逐个实测、逐行回显校验码判定与原因）。
+- **`provider-commands.test.ts` 的失败是新判定生效的证明**：改前它断言 `capabilities` 含 `vision`，改后得到 `['text','tool-calling']` —— 因为该用例的 mock 图片回复不含校验码 `7319`，旧判据（有文字就算过）放它过，新判据挡掉了它。修复方式是让 `FakeProvider` 真正「读出」校验码（而非放宽断言），这样该用例同时成为新判据的**正向覆盖**。
+- **全量回归**：`apps/runtime` + `packages/adapters` **219 files — 218 passed / 1 failed**。唯一失败是 `apps/runtime/src/kernel/platform-mcp-entry.test.ts`（**cwd 假设**，非本轮引入；该文件本轮未改动，决定性复现：`cd apps/runtime && vitest run src/kernel/platform-mcp-entry.test.ts` → **1 passed**）。**本次改动引入 0 条新失败。**
+- **desktop shell 套件**：`171 files — 159 passed / 12 failed`，失败全部落在 `ShellApp.test.tsx` 的 empty-compose 系列与 `WorkspaceFileVisualFixture`。**与本次改动无关**：这些用例查找的 `conversation-tab-created-conversation` / `identity-option-agent-agent-a` 等 testid 在**源码中 0 命中**（工作区里 `ConversationTabs.tsx` 等有其它未提交改动把实现改了、测试断言未同步），是既有失败族。
+- **类型检查**：`packages/shared` / `packages/core` / `packages/storage` / `apps/runtime` / `apps/desktop` **五个 package 全部 exit 0**。
+- **构建与产物核验**：`@sync-think/adapters`、`@sync-think/runtime`、`@sync-think/desktop` 均构建成功；产物 `runtime.js` 20:23、`shell.js`/`shell.css` 20:24，均晚于源码改动。核验特征：`chunks/SettingsPage-*.js` 命中扫描按钮文案 / `model-strategy-panel__scan` / 扫描说明文案 / 明细与确认浮层标识；`shell.css` 命中 `model-strategy-panel__scan-button` / `__scan-row`；`apps/runtime/dist/vision-probe.js` 命中 `7319` / `VISION_PROBE_MARKER` / `hasVisionProbeMarker` / `classifyVisionProbeFailure`，`runtime.js` 正确引用该模块。**注意 tsc 与 esbuild 的转义差异**：desktop 经 esbuild 把中文输出为**大写** `\uXXXX`，runtime 经 tsc 保留 UTF-8 明文 —— 两种形式要用对应写法核验，否则会得到假阴性（本轮先用 `\uXXXX` 核验 runtime 产物即误报 MISS）。
+- **运行态**：runtime 三层链已重建（supervisor 48680 → daemon 37016 → runtime 22344，12:25:31Z 启动，pid 文件与进程链一致）；桌面端已用新 shell 重启（launcher 18804 → electron 43456），窗口 `SYNC-THINK` / `Responding = True`、**stderr 0 行**、重启后握手 `hello accepted` @12:25:33Z / 12:25:49Z。重启前的 runtime 日志已 33 分钟无活动，无中断风险。
+
+### 预算
+
+`totalJsBytes` 由 3_000_000 放宽至 3_020_000（超出 1,519 字节）。**放宽前上一轮构建已只剩 788 字节余量**（2,999,212 / 3,000,000），本次新增的扫描 UI 是压垮它的最后一步。增量主要是**用户可见的中文文案**——esbuild 把它们转义成大写 `\uXXXX`，每个汉字占 6 字节。按仓库既有先例（同日 `initialJsBytes` 2_100_000 → 2_150_000）在 `SHELL_BUDGET` 上方写明日期、原因、实测值与收紧条件。待 SettingsPage chunk 拆分后应收紧回原值。
+
+### 未能自动化的一步（如实说明）
+
+真实的视觉探测验证必须由 UI 触发，且会**真实调用上游接口产生少量 token 费用**，未经用户明确授权，故本轮**未代跑**。请在界面上验收：模型设置 → 图片识别 Fallback → 点「扫描视觉能力」，应看到逐行给出每个候选模型的校验码判定与未通过原因；另可在模型详情页点「检测能力」，新判据下**对着无法解析的图编一句回复的模型不再被判为支持视觉**。
