@@ -11,7 +11,7 @@ import type {
   GetBrowserWorkflowResponse,
   ListBrowserWorkflowsPayload,
 } from '@sync-think/protocol';
-import { resolveBrowserClickTarget, type Event } from '@sync-think/shared';
+import { resolveBrowserClickTarget, type ConversationTrack, type Event } from '@sync-think/shared';
 import {
   CHAT_DESKTOP_MUTATING_TOOL_NAMES,
   CHAT_DESKTOP_TOOL_NAMES,
@@ -291,7 +291,40 @@ export const CHAT_AGENT_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
       },
     },
   },
+  {
+    name: 'agent_delegate',
+    description:
+      'Delegate a focused task from a model conversation to one independent child Agent. The runtime first reuses a matching existing Agent by id/capability, otherwise creates a temporary profile for this run only. This tool is unavailable in Agent and Team conversations and is subject to depth, child-count, per-turn and token-budget settings.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['task'],
+      properties: {
+        task: { type: 'string', minLength: 1, maxLength: 20_000 },
+        agentId: { type: 'string', description: 'Optional exact existing Agent id.' },
+        requiredSkillIds: { type: 'array', items: { type: 'string' }, maxItems: 16 },
+        requiredToolIds: { type: 'array', items: { type: 'string' }, maxItems: 16 },
+        tokenBudget: { type: 'integer', minimum: 1, description: 'Optional per-child token cap.' },
+        timeoutSeconds: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 3600,
+          description: 'Optional wall-clock limit for this child task; defaults to 300 seconds.',
+        },
+        parallelGroup: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 80,
+          description:
+            'Optional display and scheduling group for sibling delegated tasks from the same model turn.',
+        },
+      },
+    },
+  },
 ];
+
+export const CHAT_DYNAMIC_AGENT_TOOL_SCHEMAS: readonly ProviderToolSchema[] =
+  CHAT_AGENT_TOOL_SCHEMAS.filter((tool) => tool.name === 'agent_delegate');
 
 /**
  * Skill-management tools — let the chat model manage the Skill capability
@@ -1493,6 +1526,12 @@ export function normalizeChatExecutionMode(mode: string | undefined | null): Cha
 export function toolsForExecutionMode(
   _mode: string | undefined | null,
   options: {
+    /** Conversation authority boundary; omitted keeps legacy catalog behavior. */
+    conversationTrack?: ConversationTrack;
+    /** Persisted collaboration setting; Agent task mutation defaults to off. */
+    allowAgentTaskDispatch?: boolean;
+    /** Model-track dynamic delegation switch; defaults to false when explicit. */
+    allowDynamicSubagents?: boolean;
     networkEnabled?: boolean;
     /** False when keyword search is provided by the model host or unavailable. */
     includeWebSearchTools?: boolean;
@@ -1528,10 +1567,18 @@ export function toolsForExecutionMode(
     // pages, so it should not exist when the user has networking off.
     tools.push(...CHAT_BROWSER_TOOL_SCHEMAS);
   }
-  if (options.includeAgentTools) {
-    tools.push(...CHAT_AGENT_TOOL_SCHEMAS);
+  const canManageAgentLibrary =
+    options.conversationTrack === undefined || options.conversationTrack === 'model';
+  if (options.includeAgentTools && canManageAgentLibrary) {
+    tools.push(...CHAT_AGENT_TOOL_SCHEMAS.filter((tool) => tool.name !== 'agent_delegate'));
     tools.push(...CHAT_SKILL_TOOL_SCHEMAS);
     tools.push(...CHAT_TEAM_TOOL_SCHEMAS);
+  }
+  if (
+    options.conversationTrack === 'model' &&
+    options.allowDynamicSubagents === true
+  ) {
+    tools.push(...CHAT_DYNAMIC_AGENT_TOOL_SCHEMAS);
   }
   if (options.includeMcpCatalogTools) {
     tools.push(...CHAT_MCP_CATALOG_TOOL_SCHEMAS);
@@ -1551,6 +1598,10 @@ export function toolsForExecutionMode(
       tools.push(tool);
     }
   }
+  if (options.conversationTrack === 'agent' && options.allowAgentTaskDispatch !== true) {
+    const blocked = new Set(['TaskCreate', 'TaskUpdate']);
+    return tools.filter((tool) => !blocked.has(tool.name));
+  }
   return tools;
 }
 
@@ -1562,6 +1613,7 @@ export function mcpToolsToProviderSchemas(
     tools: readonly {
       name: string;
       description?: string;
+      readOnly?: boolean;
       inputSchemaJson?: string;
     }[];
   }[],
@@ -1569,11 +1621,11 @@ export function mcpToolsToProviderSchemas(
 ): {
   tools: ProviderToolSchema[];
   /** Map provider tool name → { mcpServerId, toolName } for dispatch. */
-  dispatch: Map<string, { mcpServerId: string; toolName: string }>;
+  dispatch: Map<string, { mcpServerId: string; toolName: string; readOnly?: boolean }>;
 } {
   const maxTools = Math.min(Math.max(options.maxTools ?? 16, 0), 32);
   const tools: ProviderToolSchema[] = [];
-  const dispatch = new Map<string, { mcpServerId: string; toolName: string }>();
+  const dispatch = new Map<string, { mcpServerId: string; toolName: string; readOnly?: boolean }>();
   const usedNames = new Set<string>();
 
   for (const server of servers) {
@@ -1614,7 +1666,11 @@ export function mcpToolsToProviderSchemas(
           `MCP tool ${toolName} from server ${server.name || server.id}`,
         inputSchema,
       });
-      dispatch.set(providerName, { mcpServerId: server.id, toolName });
+      dispatch.set(providerName, {
+        mcpServerId: server.id,
+        toolName,
+        ...(tool.readOnly === true ? { readOnly: true } : {}),
+      });
     }
   }
   return { tools, dispatch };

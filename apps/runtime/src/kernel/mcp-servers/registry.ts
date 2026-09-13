@@ -29,6 +29,8 @@ import { imageGenerationServer } from './image-generation-server.js';
 import { capabilityBrokerServer } from './capability-broker-server.js';
 import { windowsOcrServer } from './windows-ocr-server.js';
 import { jsonSchemaToZodShape, type ZodFactory } from './schema-bridge.js';
+import type { ConversationTrack } from '@sync-think/shared';
+import { isCollaborationToolAllowed, normalizeCollaborationSettings } from '../../collaboration-policy.js';
 
 export type { KernelMcpServerDefinition, KernelMcpToolDefinition } from './define-server.js';
 
@@ -150,6 +152,8 @@ export function selectKernelMcpRun(options: {
   executionMode?: string;
   networkEnabled?: boolean;
   planningMode?: boolean;
+  conversationTrack?: ConversationTrack;
+  collaborationSettings?: unknown;
 }): KernelMcpRunSelection {
   const servers: KernelMcpServerDefinition[] = [];
   const externalTools: KernelMcpToolDefinition[] = [];
@@ -173,9 +177,16 @@ export function selectKernelMcpRun(options: {
       options.planningMode
         ? server.tools.filter((tool) => !tool.planningDenied)
         : server.tools
-    ).filter((tool) => tool.name !== 'goal_manage' || currentConditions.hasActiveGoal === true);
+    ).filter((tool) =>
+      (tool.name !== 'goal_manage' || currentConditions.hasActiveGoal === true) &&
+      (!options.conversationTrack || isCollaborationToolAllowed({
+        track: options.conversationTrack,
+        toolName: tool.name,
+        settings: normalizeCollaborationSettings(options.collaborationSettings),
+      })),
+    );
     if (visibleTools.length === 0) continue;
-    servers.push(server);
+    servers.push({ ...server, tools: visibleTools });
     nativeTools.push(...visibleTools);
     if (!server.hostOnly) {
       externalTools.push(

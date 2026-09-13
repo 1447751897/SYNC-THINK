@@ -27,11 +27,13 @@ import {
   WINDOWS_OCR_TOOL_DESCRIPTION,
   WINDOWS_OCR_TOOL_NAME,
 } from '../windows-ocr.js';
-import { createPlatformContext } from '@sync-think/shared';
+import { createPlatformContext, type ConversationTrack } from '@sync-think/shared';
+import { isCollaborationToolAllowed, normalizeCollaborationSettings } from '../collaboration-policy.js';
 import {
   CHAT_AGENT_TOOL_SCHEMAS,
   CHAT_BROWSER_TOOL_SCHEMAS,
   CHAT_DESKTOP_TOOL_SCHEMAS,
+  CHAT_DYNAMIC_AGENT_TOOL_SCHEMAS,
   CHAT_MCP_CATALOG_TOOL_SCHEMAS,
   CHAT_MCP_REGISTRY_TOOL_SCHEMAS,
   CHAT_NETWORK_TOOL_SCHEMAS,
@@ -433,6 +435,8 @@ export function isPlanningDeniedTool(name: string): boolean {
 export function nativePlatformToolSchemas(
   options: {
     planningMode?: boolean;
+    conversationTrack?: ConversationTrack;
+    collaborationSettings?: unknown;
     /** 设置 > 模型 > 图片识别 Fallback 开关：把 describe_image 并入 native 目录。 */
     visionFallbackEnabled?: boolean;
     /** 设置 > 模型 > 图像生成（保留开关；模型目录走 capability-broker）。 */
@@ -444,6 +448,8 @@ export function nativePlatformToolSchemas(
   const platform = createPlatformContext();
   const definitions = buildPlatformMcpToolDefinitions({
     planningMode: options.planningMode,
+    conversationTrack: options.conversationTrack,
+    collaborationSettings: options.collaborationSettings,
     includeGoalManage: options.includeGoalManage,
   });
   const extra = [
@@ -495,6 +501,7 @@ export interface PlatformToolCatalogOptions {
   /** False when the kernel/model pair uses provider-native keyword search. */
   includeWebSearchTools?: boolean;
   includeAgentTools?: boolean;
+  includeDynamicAgentTools?: boolean;
   includeBrowserTools?: boolean;
   includeDesktopTools?: boolean;
   includeTaskTools?: boolean;
@@ -503,6 +510,10 @@ export interface PlatformToolCatalogOptions {
   includeSkillTools?: boolean;
   /** Planning mode: drop all side-effecting tools from the catalog. */
   planningMode?: boolean;
+  /** Conversation authority boundary used to hide incompatible collaboration tools. */
+  conversationTrack?: ConversationTrack;
+  /** Parsed or persisted value for the collaboration setting. */
+  collaborationSettings?: unknown;
   /** False hides Goal-mode bookkeeping. Default keeps the tool for back-compat catalogs. */
   includeGoalManage?: boolean;
 }
@@ -551,6 +562,7 @@ export function buildPlatformMcpToolDefinitions(
   };
   if (options.includeTaskTools) add(CHAT_PLAN_TOOL_SCHEMAS);
   if (options.includeAgentTools) add(CHAT_AGENT_TOOL_SCHEMAS);
+  if (options.includeDynamicAgentTools) add(CHAT_DYNAMIC_AGENT_TOOL_SCHEMAS);
   if (options.includeSkillTools) add(CHAT_SKILL_TOOL_SCHEMAS);
   if (options.includeTeamTools) add(CHAT_TEAM_TOOL_SCHEMAS);
   if (options.includeMcpTools) {
@@ -569,10 +581,20 @@ export function buildPlatformMcpToolDefinitions(
   const catalog = options.planningMode
     ? definitions.filter((definition) => !isPlanningDeniedTool(definition.name))
     : definitions;
+  const collaborationSettings = normalizeCollaborationSettings(options.collaborationSettings);
+  const scopedCatalog = options.conversationTrack
+    ? catalog.filter((definition) =>
+        isCollaborationToolAllowed({
+          track: options.conversationTrack!,
+          toolName: definition.name,
+          settings: collaborationSettings,
+        }),
+      )
+    : catalog;
   if (options.includeGoalManage === false) {
-    return catalog.filter((definition) => definition.name !== 'goal_manage');
+    return scopedCatalog.filter((definition) => definition.name !== 'goal_manage');
   }
-  return catalog;
+  return scopedCatalog;
 }
 
 /** Stores + context the executors need; supplied by the runtime. */

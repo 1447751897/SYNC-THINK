@@ -130,6 +130,26 @@ describe('platform tools', () => {
     expect(names).not.toContain('task_schedule');
   });
 
+  it('scopes Agent Library tools by conversation track', () => {
+    const agentNames = buildPlatformMcpToolDefinitions({
+      conversationTrack: 'agent',
+      includeAgentTools: true,
+      includeSkillTools: true,
+      includeTeamTools: true,
+    }).map((definition) => definition.name);
+    expect(agentNames).not.toContain('create_agent');
+    expect(agentNames).not.toContain('create_team');
+
+    const modelNames = buildPlatformMcpToolDefinitions({
+      conversationTrack: 'model',
+      includeAgentTools: true,
+      includeSkillTools: true,
+      includeTeamTools: true,
+    }).map((definition) => definition.name);
+    expect(modelNames).toContain('create_agent');
+    expect(modelNames).toContain('create_team');
+  });
+
   it('serves platform_context identity', async () => {
     const content = await executePlatformTool('platform_context', {}, {
       workspaceDir: 'C:/workspace',

@@ -23,6 +23,7 @@ describe('isModelVisionCapable', () => {
   it('marks known multimodal providers as vision', () => {
     expect(isModelVisionCapable('gpt-4o')).toBe(true);
     expect(isModelVisionCapable('gpt-5.2')).toBe(true);
+    expect(isModelVisionCapable('gpt-6-astra')).toBe(true);
     expect(isModelVisionCapable('grok-4.5')).toBe(true);
     expect(isModelVisionCapable('gemini-2.5-pro')).toBe(true);
     expect(isModelVisionCapable('claude-sonnet-4')).toBe(true);

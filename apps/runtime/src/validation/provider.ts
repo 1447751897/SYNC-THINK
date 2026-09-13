@@ -1,5 +1,5 @@
 // provider command payload parsers (extracted from command-validation.ts).
-import type { CreateProviderPayload, UpdateProviderPayload, ListProvidersPayload, DiscoverModelsPayload, ProbeModelsPayload, AddModelsPayload, ReorderProvidersPayload, AddProviderCredentialPayload, RemoveProviderCredentialPayload, RevealProviderCredentialPayload, UpdateProviderCredentialPayload, SetModelPrioritiesPayload, UpdateModelPayload, RemoveModelPayload, GetSettingsPayload, SetSettingPayload, UsageSummaryPayload } from '@sync-think/protocol';
+import type { CreateProviderPayload, UpdateProviderPayload, ListProvidersPayload, DiscoverModelsPayload, ProbeModelsPayload, AddModelsPayload, ReorderProvidersPayload, AddProviderCredentialPayload, RemoveProviderCredentialPayload, RevealProviderCredentialPayload, UpdateProviderCredentialPayload, SetModelPrioritiesPayload, UpdateModelPayload, RemoveModelPayload, GetSettingsPayload, SetSettingPayload, UsageSummaryPayload, ProviderBalancePayload } from '@sync-think/protocol';
 import { PROTOCOLS, SURFACES, isRecord } from './shared.js';
 
 export function parseCreateProviderPayload(value: unknown): CreateProviderPayload | undefined {
@@ -162,6 +162,24 @@ export function parseDiscoverModelsPayload(value: unknown): DiscoverModelsPayloa
     providerId: value.providerId as DiscoverModelsPayload['providerId'],
     credentialRefId: value.credentialRefId as DiscoverModelsPayload['credentialRefId'],
     persist: value.persist as boolean | undefined,
+  };
+}
+
+/** Account-balance query against a persisted provider's stored credential. */
+export function parseProviderBalancePayload(value: unknown): ProviderBalancePayload | undefined {
+  if (!isRecord(value)) return undefined;
+  if (
+    typeof value.providerId !== 'string' ||
+    value.providerId.length === 0 ||
+    value.providerId.length > 256
+  ) {
+    return undefined;
+  }
+  if (value.credentialRefId !== undefined && typeof value.credentialRefId !== 'string')
+    return undefined;
+  return {
+    providerId: value.providerId as ProviderBalancePayload['providerId'],
+    credentialRefId: value.credentialRefId as ProviderBalancePayload['credentialRefId'],
   };
 }
 

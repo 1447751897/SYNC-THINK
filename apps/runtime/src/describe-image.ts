@@ -95,7 +95,7 @@ const NON_VISION_MODEL_PATTERNS: RegExp[] = [
 const VISION_MODEL_PATTERNS: RegExp[] = [
   /gpt-4o/i,
   /gpt-4\.1/i,
-  /gpt-5/i,
+  /gpt-[5-9]/i,
   /\bo[34]\b/i,
   /\bo[45]-/i,
   /grok/i,
