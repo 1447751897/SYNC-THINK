@@ -19,7 +19,7 @@
  * `upload` 默认只打印计划（dry-run），必须显式传 `--apply` 才真正写线上。
  */
 import { spawnSync } from 'node:child_process';
-import { copyFile, mkdir, rm, stat } from 'node:fs/promises';
+import { copyFile, mkdir, readdir, rm, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { basename, join, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -176,7 +176,7 @@ export async function verifyWindowsReleasePublish(publishDir, options = {}) {
  * 上传后必须 `chown`：站点由 Caddy 以 `syncthink` 身份读取，
  * 若以 root 直传，文件属主会变成 root，Caddy 读不到。
  */
-export function buildWindowsReleaseUploadPlan(options) {
+export async function buildWindowsReleaseUploadPlan(options) {
   const host = options.host;
   const user = options.user;
   const keyPath = options.keyPath;
@@ -200,6 +200,12 @@ export function buildWindowsReleaseUploadPlan(options) {
   const updatesDir = join(publishDir, UPDATES_DIR_NAME);
   const downloadsDir = join(publishDir, DOWNLOADS_DIR_NAME);
 
+  // 列出真实文件再传，而不是 `scp <dir>/. <target>:<dir>/`：新版 OpenSSH 默认
+  // 走 SFTP 后端，`dir/.` 这种写法会被判为 "is not a regular file" 直接失败
+  // （CI 首次真实上传即栽在这里）。逐个文件传让本地与远端行为都不依赖协议细节。
+  const updatesFiles = await listUploadFiles(updatesDir, 'updates');
+  const downloadsFiles = await listUploadFiles(downloadsDir, 'downloads');
+
   return [
     {
       kind: 'mkdir',
@@ -207,11 +213,11 @@ export function buildWindowsReleaseUploadPlan(options) {
     },
     {
       kind: 'upload-updates',
-      argv: [...scpBase, updatesDir + '/.', target + ':' + remotePath + '/updates/'],
+      argv: [...scpBase, ...updatesFiles, target + ':' + remotePath + '/updates/'],
     },
     {
       kind: 'upload-downloads',
-      argv: [...scpBase, downloadsDir + '/.', target + ':' + remotePath + '/downloads/'],
+      argv: [...scpBase, ...downloadsFiles, target + ':' + remotePath + '/downloads/'],
     },
     {
       kind: 'chown',
@@ -221,6 +227,27 @@ export function buildWindowsReleaseUploadPlan(options) {
       ],
     },
   ];
+}
+
+/**
+ * 列出待上传的普通文件。
+ *
+ * 目录缺失或为空都视为错误：静默上传一个空出口会让线上 `/updates/` 或
+ * `/downloads/` 缺内容，而「两个出口同源」正是这条链路要保证的不变量。
+ */
+async function listUploadFiles(dir, label) {
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    throw new Error('release-publish.upload_' + label + '_dir_missing');
+  }
+  const files = entries
+    .filter((entry) => entry.isFile())
+    .map((entry) => join(dir, entry.name))
+    .sort();
+  if (files.length === 0) throw new Error('release-publish.upload_' + label + '_empty');
+  return files;
 }
 
 function runPlan(plan, { apply }) {
@@ -296,7 +323,7 @@ async function main() {
   }
 
   if (command === 'upload') {
-    const plan = buildWindowsReleaseUploadPlan({
+    const plan = await buildWindowsReleaseUploadPlan({
       publishDir: requireOption(values, 'publish-dir'),
       host: requireOption(values, 'host', 'SYNC_THINK_DEPLOY_HOST'),
       user: requireOption(values, 'user', 'SYNC_THINK_DEPLOY_USER'),

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -150,32 +150,66 @@ test('stage 拒绝与源目录重叠的输出目录（避免删掉唯一事实�
   });
 });
 
-test('upload 计划覆盖建目录、两个出口与属主修正', () => {
-  const plan = buildWindowsReleaseUploadPlan({
-    publishDir: '/tmp/publish',
-    host: 'example.test',
-    user: 'deploy',
-    keyPath: '/keys/deploy',
+test('upload 计划覆盖建目录、两个出口与属主修正', async () => {
+  await withTempDir('sync-think-release-upload-', async (root) => {
+    const publishDir = join(root, 'publish');
+    await mkdir(join(publishDir, 'updates'), { recursive: true });
+    await mkdir(join(publishDir, 'downloads'), { recursive: true });
+    await writeFile(join(publishDir, 'updates', 'latest.yml'), 'version: 0.1.0-rc.6\n');
+    await writeFile(join(publishDir, 'updates', ARTIFACT_NAME), 'x');
+    await writeFile(join(publishDir, 'downloads', WINDOWS_DOWNLOAD_ENTRY_FILE_NAME), 'x');
+
+    const plan = await buildWindowsReleaseUploadPlan({
+      publishDir,
+      host: 'example.test',
+      user: 'deploy',
+      keyPath: '/keys/deploy',
+    });
+
+    assert.deepEqual(
+      plan.map((step) => step.kind),
+      ['mkdir', 'upload-updates', 'upload-downloads', 'chown'],
+    );
+    const chown = plan.find((step) => step.kind === 'chown');
+    assert.ok(chown.argv.join(' ').includes('chown -R syncthink:syncthink'));
+    assert.ok(chown.argv.join(' ').includes('/srv/sync-think/site/updates'));
+
+    // 必须逐个列出真实文件上传，不能用 `scp <dir>/.`：新版 OpenSSH 的 SFTP
+    // 后端会把 `dir/.` 判为 "is not a regular file" 而整体失败。
+    const updates = plan.find((step) => step.kind === 'upload-updates');
+    assert.ok(updates.argv.includes(join(publishDir, 'updates', 'latest.yml')));
+    assert.ok(updates.argv.includes(join(publishDir, 'updates', ARTIFACT_NAME)));
+    assert.equal(updates.argv.at(-1), 'deploy@example.test:/srv/sync-think/site/updates/');
+
+    const uploads = plan.find((step) => step.kind === 'upload-downloads');
+    assert.equal(uploads.argv[0], 'scp');
+    assert.ok(uploads.argv.includes(join(publishDir, 'downloads', WINDOWS_DOWNLOAD_ENTRY_FILE_NAME)));
+    assert.equal(uploads.argv.at(-1), 'deploy@example.test:/srv/sync-think/site/downloads/');
+    assert.ok(!updates.argv.join(' ').includes('/.'));
+    assert.ok(!uploads.argv.join(' ').includes('/.'));
+
+    await assert.rejects(
+      () =>
+        buildWindowsReleaseUploadPlan({
+          publishDir,
+          user: 'deploy',
+          keyPath: '/keys/deploy',
+        }),
+      /upload_missing_host/,
+    );
+
+    // 空出口必须拒绝，否则线上会出现静默缺失内容的目录。
+    await rm(join(publishDir, 'updates'), { recursive: true, force: true });
+    await mkdir(join(publishDir, 'updates'), { recursive: true });
+    await assert.rejects(
+      () =>
+        buildWindowsReleaseUploadPlan({
+          publishDir,
+          host: 'example.test',
+          user: 'deploy',
+          keyPath: '/keys/deploy',
+        }),
+      /upload_updates_empty/,
+    );
   });
-
-  assert.deepEqual(
-    plan.map((step) => step.kind),
-    ['mkdir', 'upload-updates', 'upload-downloads', 'chown'],
-  );
-  const chown = plan.find((step) => step.kind === 'chown');
-  assert.ok(chown.argv.join(' ').includes('chown -R syncthink:syncthink'));
-  assert.ok(chown.argv.join(' ').includes('/srv/sync-think/site/updates'));
-  const uploads = plan.find((step) => step.kind === 'upload-downloads');
-  assert.ok(uploads.argv[0] === 'scp');
-  assert.ok(uploads.argv.join(' ').includes('deploy@example.test:/srv/sync-think/site/downloads/'));
-
-  assert.throws(
-    () =>
-      buildWindowsReleaseUploadPlan({
-        publishDir: '/tmp/publish',
-        user: 'deploy',
-        keyPath: '/keys/deploy',
-      }),
-    /upload_missing_host/,
-  );
 });

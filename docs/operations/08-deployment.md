@@ -325,6 +325,8 @@ Alpha 渠道的更新源是自建静态站点，公开只读、不带 Bearer，�
 
 `/updates/` 服务**已安装用户**的自动更新，`/downloads/` 服务**新用户**的首次下载。二者一旦分叉（例如首页仍发 rc.4、更新源已是 rc.5），新用户装到的版本体内没有内置 feed，会卡在旧版且点“检查更新”什么也发现不了。2026-09-14 曾实际发生：`/downloads/` 停留在 rc.4，`/updates/` 已是 rc.5。
 
+**网站部署不得删掉这两个目录。** `deploy-website.yml` 用 `rsync -az --delete` 同步站点根，`--delete` 会删除目标目录里不存在于 `apps/website/dist/` 的一切——`updates/` 与 `downloads/` 都是发布产物、不由网站构建产出，**必须逐条 `--exclude`**。2026-09-14 实测踩中：排除列表里只有 `downloads/`、漏了 `updates/`，于是一次 `push main` 触发网站部署后整个更新源被删光，已装用户全部检查不到新版本（表现为 `/updates/latest.yml` 返回 404）。新增任何「不由网站构建产出」的发布目录时，都要同步补一条 `--exclude`。
+
 `scripts/windows-release-publish.mjs` 以**已校验的更新源目录为唯一事实来源**铺出两个出口：
 
 ```bash
