@@ -785,6 +785,12 @@ export async function buildWindowsInstaller(options = {}) {
     '--x64',
     '--prepackaged',
     paths.portableDir,
+    // electron-builder 只要检测到 CI 环境（CI=true）就默认 `--publish always`，
+    // 会尝试把产物发成 GitHub Release 并因缺少 GH_TOKEN 而失败。我们的发布出口
+    // 是 sync-think.online（见 docs/operations/08-deployment.md §8.3），不创建
+    // GitHub Release，因此在这里显式关掉发布，保证本地与 CI 行为一致。
+    '--publish',
+    'never',
     '--config.extraMetadata.version=' + version,
     '--config.compression=' + compression,
     '--config.nsis.include=' + installerInclude,
