@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   DesktopUpdateController,
+  normalizeUpdateReleaseNotes,
   resolveDesktopUpdateConfiguration,
   type DesktopUpdaterDriver,
   type DesktopUpdaterDriverListeners,
@@ -135,6 +136,112 @@ describe('resolveDesktopUpdateConfiguration', () => {
       ),
     ).toMatchObject({ enabled: false, errorCode: 'desktop.update.token-invalid' });
   });
+
+  it('configures an installed app from the bundled feed without any environment', () => {
+    expect(
+      resolveDesktopUpdateConfiguration(
+        {},
+        {
+          isPackaged: true,
+          bundledFeed: { feedUrl: 'https://sync-think.online/updates', channel: null },
+        },
+      ),
+    ).toEqual({
+      enabled: true,
+      feedUrl: 'https://sync-think.online/updates',
+      channel: 'latest',
+      requestHeaders: null,
+      forceDevUpdateConfig: false,
+    });
+  });
+
+  it('applies the bundled channel until the environment overrides it', () => {
+    expect(
+      resolveDesktopUpdateConfiguration(
+        {},
+        {
+          isPackaged: true,
+          bundledFeed: { feedUrl: 'https://sync-think.online/updates', channel: 'beta' },
+        },
+      ),
+    ).toMatchObject({ enabled: true, channel: 'beta' });
+
+    expect(
+      resolveDesktopUpdateConfiguration(
+        { SYNC_THINK_UPDATE_CHANNEL: 'latest' },
+        {
+          isPackaged: true,
+          bundledFeed: { feedUrl: 'https://sync-think.online/updates', channel: 'beta' },
+        },
+      ),
+    ).toMatchObject({ enabled: true, channel: 'latest' });
+  });
+
+  it('lets the environment override both bundled feed and channel', () => {
+    expect(
+      resolveDesktopUpdateConfiguration(
+        {
+          SYNC_THINK_UPDATE_FEED_URL: 'https://staging.example.test/releases',
+          SYNC_THINK_UPDATE_CHANNEL: 'beta',
+        },
+        {
+          isPackaged: true,
+          bundledFeed: { feedUrl: 'https://sync-think.online/updates', channel: 'latest' },
+        },
+      ),
+    ).toEqual({
+      enabled: true,
+      feedUrl: 'https://staging.example.test/releases',
+      channel: 'beta',
+      requestHeaders: null,
+      forceDevUpdateConfig: false,
+    });
+  });
+
+  it('still validates bundled feeds against the same URL safety rules', () => {
+    for (const feedUrl of [
+      'http://sync-think.online/updates',
+      'https://user:password@sync-think.online/updates',
+      'https://sync-think.online/updates?token=leak',
+      'not-a-url',
+    ]) {
+      expect(
+        resolveDesktopUpdateConfiguration({}, { isPackaged: true, bundledFeed: { feedUrl } }),
+      ).toMatchObject({ enabled: false, errorCode: 'desktop.update.feed-invalid' });
+    }
+
+    expect(
+      resolveDesktopUpdateConfiguration(
+        {},
+        { isPackaged: true, bundledFeed: { feedUrl: 'https://sync-think.online/updates', channel: '../private' } },
+      ),
+    ).toMatchObject({ enabled: false, errorCode: 'desktop.update.channel-invalid' });
+  });
+
+  it('keeps a bundled feed inert in development unless the dev gate is open', () => {
+    const bundledFeed = { feedUrl: 'http://127.0.0.1:43123/releases', channel: null };
+
+    expect(resolveDesktopUpdateConfiguration({}, { isPackaged: false, bundledFeed })).toMatchObject({
+      enabled: false,
+      errorCode: 'desktop.update.dev-disabled',
+    });
+
+    expect(
+      resolveDesktopUpdateConfiguration(
+        { SYNC_THINK_UPDATE_ALLOW_DEV: '1' },
+        { isPackaged: false, bundledFeed },
+      ),
+    ).toMatchObject({ enabled: true, forceDevUpdateConfig: true });
+  });
+
+  it('ignores a bundled feed that carries no URL', () => {
+    expect(
+      resolveDesktopUpdateConfiguration(
+        {},
+        { isPackaged: true, bundledFeed: { feedUrl: null, channel: null } },
+      ),
+    ).toEqual({ enabled: false, channel: 'latest', errorCode: null });
+  });
 });
 
 describe('DesktopUpdateController', () => {
@@ -154,6 +261,7 @@ describe('DesktopUpdateController', () => {
       currentVersion: '0.0.1',
       channel: 'latest',
       availableVersion: null,
+      releaseNotes: null,
       progressPercent: null,
       checkedAt: null,
       downloadedAt: null,
@@ -169,6 +277,7 @@ describe('DesktopUpdateController', () => {
     expect(controller.getSnapshot()).toMatchObject({
       phase: 'available',
       availableVersion: '0.0.2',
+      releaseNotes: null,
       checkedAt: '2026-08-02T08:00:00.000Z',
     });
 
@@ -417,6 +526,42 @@ describe('DesktopUpdateController', () => {
     expect(JSON.stringify(downloadResult)).not.toContain('sha512 mismatch');
   });
 
+  it('carries feed release notes into the snapshot and clears them when no version is pending', async () => {
+    const { controller, driver } = configuredController();
+
+    await controller.checkForUpdates();
+    driver.listeners.available?.({
+      version: '0.0.2',
+      releaseNotes: '- 更新日志改为应用内展示\r\n- 修复若干问题',
+    });
+    expect(controller.getSnapshot()).toMatchObject({
+      phase: 'available',
+      availableVersion: '0.0.2',
+      releaseNotes: '- 更新日志改为应用内展示\n- 修复若干问题',
+    });
+
+    driver.listeners.notAvailable?.({ version: '0.0.1' });
+    expect(controller.getSnapshot()).toMatchObject({ phase: 'up-to-date', releaseNotes: null });
+  });
+
+  it('sanitizes release notes before they reach the renderer', async () => {
+    const { controller, driver } = configuredController();
+
+    await controller.checkForUpdates();
+    driver.listeners.available?.({
+      version: '0.0.2',
+      releaseNotes: '<img src=x onerror=alert(1)>\u001b[31m' + 'a'.repeat(9000),
+    });
+
+    const notes = controller.getSnapshot().releaseNotes;
+    expect(notes).not.toBeNull();
+    expect(notes).not.toContain('\u001b');
+    expect(notes?.endsWith('…')).toBe(true);
+    // The renderer treats the payload as opaque text, so markup stays literal
+    // rather than being stripped: that is what keeps it inert.
+    expect(notes?.startsWith('<img src=x onerror=alert(1)>')).toBe(true);
+  });
+
   it('keeps an unconfigured updater inert', async () => {
     const controller = new DesktopUpdateController({
       currentVersion: '0.0.1',
@@ -430,5 +575,43 @@ describe('DesktopUpdateController', () => {
       ok: false,
       errorCode: 'desktop.update.disabled',
     });
+  });
+});
+
+describe('normalizeUpdateReleaseNotes', () => {
+  it('passes plain text through after trimming', () => {
+    expect(normalizeUpdateReleaseNotes('  修复了若干问题  ')).toBe('修复了若干问题');
+  });
+
+  it('joins the electron-updater note array form', () => {
+    expect(
+      normalizeUpdateReleaseNotes([
+        { version: '0.1.0', note: '第一条' },
+        { version: '0.0.9', note: '第二条' },
+      ]),
+    ).toBe('第一条\n\n第二条');
+    expect(normalizeUpdateReleaseNotes(['甲', '乙'])).toBe('甲\n\n乙');
+  });
+
+  it('drops control characters but keeps tabs and line breaks', () => {
+    const raw = '第一行\r\n第二行\u0000\u0007\u001b[31m红\t色\u007f';
+    expect(normalizeUpdateReleaseNotes(raw)).toBe('第一行\n第二行[31m红\t色');
+  });
+
+  it('returns null for empty, mistyped and note-free payloads', () => {
+    expect(normalizeUpdateReleaseNotes(undefined)).toBeNull();
+    expect(normalizeUpdateReleaseNotes(null)).toBeNull();
+    expect(normalizeUpdateReleaseNotes(42)).toBeNull();
+    expect(normalizeUpdateReleaseNotes({ note: '未预期的对象' })).toBeNull();
+    expect(normalizeUpdateReleaseNotes('   \n\t  ')).toBeNull();
+    expect(normalizeUpdateReleaseNotes([])).toBeNull();
+    expect(normalizeUpdateReleaseNotes([{ version: '1.0.0' }])).toBeNull();
+  });
+
+  it('caps oversized notes with an ellipsis', () => {
+    const normalized = normalizeUpdateReleaseNotes('a'.repeat(9000));
+    expect(normalized).not.toBeNull();
+    expect(normalized?.length).toBe(8 * 1024 + 1);
+    expect(normalized?.endsWith('…')).toBe(true);
   });
 });

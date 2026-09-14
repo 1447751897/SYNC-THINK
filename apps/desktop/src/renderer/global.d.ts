@@ -10,10 +10,7 @@ import type {
   ExportDesktopDiagnosticsPayload,
   ExportDesktopDiagnosticsResponse,
 } from '../diagnostics-export-contract.js';
-import type {
-  DesktopUpdateAutoCheckPreference,
-  DesktopUpdateOpenResult,
-} from '../desktop-update-contract.js';
+import type { DesktopUpdateAutoCheckPreference } from '../desktop-update-contract.js';
 import type {
   ExportDesktopDataPayload,
   ExportDesktopDataResponse,
@@ -957,7 +954,6 @@ declare global {
         setAutoCheck(
           payload: DesktopUpdateAutoCheckPreference,
         ): Promise<DesktopUpdateAutoCheckPreference>;
-        openReleaseNotes(): Promise<DesktopUpdateOpenResult>;
         openLogDirectory(): Promise<OpenDesktopDataDirectoryResponse>;
         subscribeState(listener: (snapshot: DesktopUpdateSnapshot) => void): () => void;
       };

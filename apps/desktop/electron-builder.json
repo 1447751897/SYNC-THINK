@@ -27,10 +27,9 @@
   },
   "mac": {
     "target": ["dmg", "zip"],
-    "arch": ["arm64"],
     "category": "public.app-category.developer-tools",
-    "hardenedRuntime": true,
     "gatekeeperAssess": false,
+    "hardenedRuntime": true,
     "artifactName": "${productName}-${version}-${arch}.${ext}"
   },
   "nsis": {

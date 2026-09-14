@@ -2,7 +2,7 @@
  * @vitest-environment jsdom
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type {
   DesktopUpdateActionResult,
   DesktopUpdateSnapshot,
@@ -16,6 +16,7 @@ const baseSnapshot: DesktopUpdateSnapshot = {
   currentVersion: '0.0.1',
   channel: 'latest',
   availableVersion: null,
+  releaseNotes: null,
   progressPercent: null,
   checkedAt: null,
   downloadedAt: null,
@@ -33,7 +34,6 @@ const updates = {
   installUpdate: vi.fn(),
   getAutoCheck: vi.fn(),
   setAutoCheck: vi.fn(),
-  openReleaseNotes: vi.fn(),
   openLogDirectory: vi.fn(),
   subscribeState: vi.fn(),
 };
@@ -47,7 +47,6 @@ beforeEach(() => {
   updates.installUpdate.mockResolvedValue(actionResult({ ...baseSnapshot, phase: 'installing' }));
   updates.getAutoCheck.mockResolvedValue({ enabled: true });
   updates.setAutoCheck.mockImplementation(async (payload: { enabled: boolean }) => payload);
-  updates.openReleaseNotes.mockResolvedValue({ opened: true, error: null });
   updates.openLogDirectory.mockResolvedValue({
     opened: true,
     path: 'C:\\Users\\fixture\\sync-think',
@@ -98,7 +97,8 @@ describe('DesktopUpdatePanel', () => {
     });
 
     expect(await screen.findByText('发现新版本 0.0.2')).toBeTruthy();
-    const downloadButton = screen.getByRole('button', { name: '下载更新' });
+    // 主按钮直接说出要升到哪个版本，而不是泛泛的「下载更新」。
+    const downloadButton = screen.getByRole('button', { name: '更新到 v0.0.2' });
     expect((downloadButton as HTMLButtonElement).disabled).toBe(false);
     expect(screen.queryByRole('button', { name: '检查更新' })).toBeNull();
     expect(screen.queryByRole('button', { name: '重启并安装' })).toBeNull();
@@ -188,14 +188,120 @@ describe('DesktopUpdatePanel', () => {
     expect(toggle.getAttribute('aria-checked')).toBe('true');
   });
 
-  it('opens release notes and the local log directory through preload', async () => {
+  it('opens the local log directory through preload', async () => {
     render(<DesktopUpdatePanel />);
     await screen.findByText('版本 v0.0.1');
 
-    fireEvent.click(screen.getByRole('button', { name: '查看更新日志' }));
     fireEvent.click(screen.getByRole('button', { name: '打开日志目录' }));
 
-    await waitFor(() => expect(updates.openReleaseNotes).toHaveBeenCalledTimes(1));
-    expect(updates.openLogDirectory).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(updates.openLogDirectory).toHaveBeenCalledTimes(1));
+  });
+
+  it('renders the pending release notes in the panel instead of linking out', async () => {
+    updates.getState.mockResolvedValue({
+      ...baseSnapshot,
+      phase: 'available',
+      availableVersion: '0.1.0-rc.5',
+      releaseNotes: '# 亮点\n- 应用内查看更新日志\n- 一键重启安装',
+    });
+
+    render(<DesktopUpdatePanel />);
+
+    expect(await screen.findByText('更新内容')).toBeTruthy();
+    expect(screen.getByText('亮点')).toBeTruthy();
+    expect(screen.getByText('应用内查看更新日志')).toBeTruthy();
+    expect(screen.getByText('一键重启安装')).toBeTruthy();
+    // 面板里直接可读，不需要任何跳转。
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('opens the full release notes in an in-app dialog, never in a browser', async () => {
+    updates.getState.mockResolvedValue({
+      ...baseSnapshot,
+      phase: 'available',
+      availableVersion: '0.1.0-rc.5',
+      releaseNotes: '# 亮点\n- 应用内查看更新日志\n- 一键重启安装',
+    });
+
+    render(<DesktopUpdatePanel />);
+
+    const openButton = await screen.findByRole('button', { name: '查看更新日志' });
+    fireEvent.click(openButton);
+
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog.getAttribute('aria-label')).toBe('v0.1.0-rc.5 更新日志');
+    // 正文在弹窗里依旧是逐行纯文本。
+    expect(within(dialog).getByText('一键重启安装')).toBeTruthy();
+    expect(within(dialog).getByText('亮点')).toBeTruthy();
+  });
+
+  it('closes the release notes dialog on Escape and restores focus', async () => {
+    updates.getState.mockResolvedValue({
+      ...baseSnapshot,
+      phase: 'available',
+      availableVersion: '0.1.0-rc.5',
+      releaseNotes: '- 一条日志',
+    });
+
+    render(<DesktopUpdatePanel />);
+
+    const openButton = await screen.findByRole('button', { name: '查看更新日志' });
+    openButton.focus();
+    fireEvent.click(openButton);
+
+    const dialog = await screen.findByRole('dialog');
+    // 打开即把焦点移进弹窗，键盘用户不会留在背后的页面上。
+    expect(document.activeElement).toBe(
+      within(dialog).getByRole('button', { name: '关闭更新日志' }),
+    );
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(document.activeElement).toBe(openButton);
+  });
+
+  it('never ships release notes as markup inside the dialog either', async () => {
+    updates.getState.mockResolvedValue({
+      ...baseSnapshot,
+      phase: 'available',
+      availableVersion: '0.1.0-rc.5',
+      releaseNotes: '<img src=x onerror="alert(1)">',
+    });
+
+    render(<DesktopUpdatePanel />);
+    fireEvent.click(await screen.findByRole('button', { name: '查看更新日志' }));
+
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog.querySelector('img')).toBeNull();
+    expect(within(dialog).getByText('<img src=x onerror="alert(1)">')).toBeTruthy();
+  });
+
+  it('explains a missing release note instead of leaving the panel blank', async () => {
+    updates.getState.mockResolvedValue({
+      ...baseSnapshot,
+      phase: 'available',
+      availableVersion: '0.1.0-rc.5',
+      releaseNotes: null,
+    });
+
+    render(<DesktopUpdatePanel />);
+
+    expect(await screen.findByText('本次更新未提供更新日志。')).toBeTruthy();
+  });
+
+  it('never treats release notes as markup', async () => {
+    updates.getState.mockResolvedValue({
+      ...baseSnapshot,
+      phase: 'available',
+      availableVersion: '0.1.0-rc.5',
+      releaseNotes: '<img src=x onerror="alert(1)">',
+    });
+
+    render(<DesktopUpdatePanel />);
+
+    const line = await screen.findByText('<img src=x onerror="alert(1)">');
+    expect(line.tagName).toBe('P');
+    expect(document.querySelector('img[src="x"]')).toBeNull();
   });
 });

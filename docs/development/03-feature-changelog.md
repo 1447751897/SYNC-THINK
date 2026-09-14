@@ -1,3 +1,53 @@
+## 2026-09-14：Windows 自动发版流水线与应用内更新日志弹窗（rc.6）
+
+### Added
+
+- **共享更新状态 hook**：新增 `use-desktop-update-state.ts` 统一订阅 `window.syncThink.updates` 快照；`PENDING_UPDATE_PHASES` 与 `resolvePendingUpdateVersion` 作为「是否存在可安装版本」的单一判断，供关于面板与侧边栏共用，避免各自订阅产生重复监听与重复 `getState()`。
+- **应用内更新日志弹窗**：关于页新增常驻「查看更新日志」按钮，点击弹出 `ReleaseNotesDialog`（复用行级纯文本渲染，无 `dangerouslySetInnerHTML`）；支持 Esc 关闭、Tab 焦点锁在弹窗内、关闭后焦点还给触发按钮、点击遮罩关闭。
+- **侧边栏版本提示**：侧边栏底部设置入口在有可安装版本时显示目标版本号徽标（`data-testid="sidebar-update-badge"`），`title` 改为「设置 · 可更新到 vX」；徽标只作提示，点击仍冒泡到设置入口。
+- **关于页主按钮说出目标版本**：`available` / `downloading` 阶段的按钮文案由「下载更新」改为「更新到 vX.Y.Z」。
+- **结构化 CHANGELOG 与解析器**：`docs/releases/CHANGELOG.md` 作为用户向更新日志的唯一来源；`scripts/changelog.mjs` 严格解析（版本标题不合规即报错，避免静默丢日志），`renderChangelogReleaseNotes` 产出 feed 的 `releaseNotes`。
+- **CHANGELOG → feed 元数据 CLI**：`scripts/windows-release-feed.mjs generate` 从 CHANGELOG 取 `releaseNotes`，不再手抄。
+- **双出口发布脚本**：`scripts/windows-release-publish.mjs` 以已校验的 feed 目录为唯一事实来源，一次铺出 `updates/`（带版本号文件名）与 `downloads/`（固定名），`verify` 断言两侧 SHA-512 一致；`upload` 默认 dry-run，`--apply` 才写线上并 `chown syncthink:syncthink`。
+- **线上回归脚本**：`scripts/windows-release-online-verify.mjs` 校验 feed 元数据、安装包 `Range/206`、以及 `/downloads/` 与 `/updates/` 是否同源。
+- **Windows 发布流水线**：`.github/workflows/release-windows.yml`，`push v*` tag 或手动指定版本触发；build job 在 windows-latest 构建并产出 feed artifact，publish job 在 ubuntu-latest 铺双出口、scp 上传、跑线上回归。上传复用既有 `SYNC_THINK_DEPLOY_*` secrets。
+
+### Changed
+
+- 关于页的更新日志由「内嵌区块」扩展为「内嵌区块 + 独立弹窗」；`RELEASE_NOTES_PHASES` 改为引用 hook 导出的 `PENDING_UPDATE_PHASES`。
+
+### Verification
+
+- Desktop 定向：`DesktopUpdatePanel` 14/14、`Sidebar`（含新增 3 条徽标用例）、`use-desktop-update-state` 5/5，合计 **27/27 通过**；`tsc --noEmit` exit 0；改动文件 `eslint` exit 0。
+- Scripts：`pnpm test:release:chain:win` **31/31 通过**（feed 11 / publish 6 / changelog+publish 6 / online-verify 8），全部使用 mock fetch，不依赖外网。
+- 端到端干跑：`windows-release-feed.mjs generate --version 0.1.0-rc.6` 从 CHANGELOG 提取 `releaseNotes`（591 字）写入 `latest.yml`，`verifyWindowsGenericUpdateFeed` 返回 `ok: true`；CI 的版本段落正则 `^## 0\.1\.0-rc\.6 — ` 命中。
+- **未验证**：`release-windows.yml` 从未在 GitHub Actions 上真实运行过；`upload --apply` 从未真实写线上 —— rc.6 发布时是它俩的首次运行。
+
+### 未做（如实说明）
+
+- **无签名状态下升级前的回滚保护不生效**。链路：`verifyAuthenticode` 对未签名包返回 `NotSigned` → `registerCurrentVersionInstaller` 抛 `rollback-signature-invalid` → `markRuntimeHealthy` 失败只写日志 → 当前版本从不被登记为可回滚点 → `prepareInstall` 返回 `unavailable`（**不阻断安装**）。结论：「点一下就能更新」成立，但升级失败时不会自动退回旧版本。需启用代码签名证书才能让该保护真正工作。rc.5 的 CHANGELOG 曾表述「升级失败可回滚」，在无签名环境下不成立，已在 rc.6 的「已知限制」中澄清。
+- 「查看更新日志」弹窗目前只在**有可安装版本**时展示内容（`releaseNotes` 来自 feed 元数据）；尚无「查看当前已安装版本日志」的随包日志来源，已是最新版本时点开显示「暂无可查看的更新日志」。要做需在 sidecar 里一并固化当前版本的日志。
+
+## 2026-09-14：应用内更新与自动升级（rc.5）
+
+### Added
+
+- **更新源随包内置**：portable staging 写入 `resources/update-feed.json`（schema v1，含 `feedUrl`），Main process 在 packaged 时经 `process.resourcesPath` 读取；优先级为环境变量 > 随包配置，非 packaged 不读 sidecar。安装后开箱即为“已配置更新通道”，不再依赖 `SYNC_THINK_UPDATE_FEED_URL`。
+- **应用内更新日志**：更新面板新增 release notes 渲染（行级纯文本，支持 `#` 标题与 `-` 列表，全程无 `dangerouslySetInnerHTML`）。彻底移除 `DESKTOP_RELEASE_NOTES_URL` 的 GitHub 跳转通道（含 preload / 契约 / 面板 / 样式）。
+- **feed 支持 releaseNotes**：`writeWindowsGenericUpdateFeed` 写入并经 `normalizeWindowsUpdateReleaseNotes` 规范化（CRLF 归一、控制字符拒绝、64 KiB 上限）；verifier 校验字段存在即必须是规范化结果，篡改会被拒。
+- 更新面板展示下载进度、目标版本与失败恢复证据入口。
+
+### Changed
+
+- `mac` 段移除非法属性 `arch`（electron-builder 26 由 CLI 指定架构），恢复合法属性 `gatekeeperAssess`，Windows 安装包恢复可产出。
+- 更新相关单测与 E2E 断言跟随新增 `releaseNotes` 字段同步。
+
+### Verification
+
+- Desktop 定向：`desktop-updater`、`desktop-update-bundled-config`、`DesktopUpdatePanel`、`desktop-update-preferences` 全绿；`tsc` 与 `eslint` 通过。
+- Scripts：`windows-generic-update-feed.test.mjs` 与 `windows-portable-release.test.mjs` 新增 sidecar / releaseNotes 用例通过（唯一失败为与本次无关的既有依赖白名单断言）。
+- 线上：`feed-rc5` 经 `verifyWindowsGenericUpdateFeed` 校验 `ok === true`；HTTPS 200、`Range` 206、SHA-512 与元数据一致。
+
 ## 2026-09-14：图片输入与 NewMax 三态视觉能力语义对齐
 
 ### Changed

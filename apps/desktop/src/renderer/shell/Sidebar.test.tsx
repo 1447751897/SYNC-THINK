@@ -2,8 +2,9 @@
  * @vitest-environment jsdom
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { Conversation, GlobalAgent, Team } from '@sync-think/shared';
+import type { DesktopUpdateSnapshot } from '../../desktop-update-contract.js';
 import { DialogProvider } from './Dialog.js';
 import { Sidebar, type SidebarProps } from './Sidebar.js';
 import { emptyConversationGroups, INITIAL_NAV } from './shell-state.js';
@@ -95,6 +96,8 @@ function renderSidebar(overrides: Partial<SidebarProps> = {}) {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  // 只有更新徽标的用例会注入 preload bridge，用例之间不能互相看到。
+  Object.defineProperty(window, 'syncThink', { configurable: true, value: undefined });
 });
 
 describe('Sidebar NewMax conversation loading', () => {
@@ -176,5 +179,71 @@ describe('Sidebar conversation row layout', () => {
       ],
     });
     expect(screen.queryByTestId('conversation-sub-c-agent')).toBeNull();
+  });
+});
+
+const updateSnapshot: DesktopUpdateSnapshot = {
+  schemaVersion: 1,
+  phase: 'available',
+  configured: true,
+  currentVersion: '0.1.0-rc.5',
+  channel: 'latest',
+  availableVersion: '0.1.0-rc.6',
+  releaseNotes: null,
+  progressPercent: null,
+  checkedAt: null,
+  downloadedAt: null,
+  errorCode: null,
+};
+
+function installUpdateBridge(state: DesktopUpdateSnapshot) {
+  let listener: ((snapshot: DesktopUpdateSnapshot) => void) | undefined;
+  const updates = {
+    getState: vi.fn().mockResolvedValue(state),
+    subscribeState: vi.fn((next: (snapshot: DesktopUpdateSnapshot) => void) => {
+      listener = next;
+      return () => {
+        listener = undefined;
+      };
+    }),
+  };
+  Object.defineProperty(window, 'syncThink', { configurable: true, value: { updates } });
+  return { push: (next: DesktopUpdateSnapshot) => listener?.(next) };
+}
+
+describe('Sidebar update badge', () => {
+  it('says nothing about updates when no preload bridge is present', () => {
+    renderSidebar();
+
+    expect(screen.queryByTestId('sidebar-update-badge')).toBeNull();
+    expect(screen.getByTestId('sidebar-settings-box').getAttribute('title')).toBe('设置');
+  });
+
+  it('hangs the pending version on the settings entry without blocking it', async () => {
+    const onSelectStage = vi.fn();
+    installUpdateBridge(updateSnapshot);
+    renderSidebar({ onSelectStage });
+
+    const badge = await screen.findByTestId('sidebar-update-badge');
+    expect(badge.textContent).toBe('v0.1.0-rc.6');
+    expect(screen.getByTestId('sidebar-settings-box').getAttribute('title')).toBe(
+      '设置 · 可更新到 v0.1.0-rc.6',
+    );
+
+    // 徽标只是提示：点它应当和点设置入口一样打开设置，而不是变成另一个入口。
+    fireEvent.click(badge);
+    expect(onSelectStage).toHaveBeenCalledWith('settings');
+  });
+
+  it('withdraws the badge as soon as the feed reports the build is current', async () => {
+    const bridge = installUpdateBridge(updateSnapshot);
+    renderSidebar();
+
+    expect(await screen.findByTestId('sidebar-update-badge')).toBeTruthy();
+
+    act(() => bridge.push({ ...updateSnapshot, phase: 'up-to-date' }));
+
+    await waitFor(() => expect(screen.queryByTestId('sidebar-update-badge')).toBeNull());
+    expect(screen.getByTestId('sidebar-settings-box').getAttribute('title')).toBe('设置');
   });
 });

@@ -54,6 +54,7 @@ import {
   shouldRenderRecentConversationEmptyState,
   shouldShowSidebarWorkspaceListSkeleton,
 } from './sidebar-newmax-loading.js';
+import { resolvePendingUpdateVersion, useDesktopUpdateState } from './use-desktop-update-state.js';
 
 const TRACK_ICONS: Record<ConversationTrack, typeof Sparkles> = {
   model: Sparkles,
@@ -115,6 +116,10 @@ export function Sidebar(props: SidebarProps) {
   const [recentOpen, setRecentOpen] = useState(true);
   const [searchFocused, setSearchFocused] = useState(false);
   const dialog = useDialog();
+  // 与「设置 → 关于」共用同一份更新快照：有可安装版本时把版本号挂到设置入口上，
+  // 用户不进设置也能看见有新版本。bridge 缺失时这里是 null，不显示任何提示。
+  const { snapshot: updateSnapshot } = useDesktopUpdateState();
+  const pendingUpdateVersion = resolvePendingUpdateVersion(updateSnapshot);
 
   useEffect(() => {
     const openSearch = () => setSearchFocused(true);
@@ -668,7 +673,7 @@ export function Sidebar(props: SidebarProps) {
           )}
           role="button"
           tabIndex={0}
-          title="设置"
+          title={pendingUpdateVersion ? `设置 · 可更新到 v${pendingUpdateVersion}` : '设置'}
           data-testid="sidebar-settings-box"
           onClick={() => props.onSelectStage('settings')}
           onKeyDown={(e) => {
@@ -683,6 +688,16 @@ export function Sidebar(props: SidebarProps) {
               U
             </div>
             <span className="min-w-0 flex-1 truncate text-[12px]">本地用户</span>
+            {/* 有新版本时把目标版本号直接挂在设置入口上，和「设置 → 关于」里的按钮同源。 */}
+            {pendingUpdateVersion ? (
+              <span
+                data-testid="sidebar-update-badge"
+                title={`可更新到 v${pendingUpdateVersion}`}
+                className="shrink-0 rounded-full bg-accent/20 px-1.5 py-0.5 text-[10px] leading-none font-medium text-accent-text"
+              >
+                v{pendingUpdateVersion}
+              </span>
+            ) : null}
             <button
               type="button"
               data-testid="nav-settings"

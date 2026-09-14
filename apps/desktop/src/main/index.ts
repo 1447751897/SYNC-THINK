@@ -489,8 +489,10 @@ import type { TrustedRendererLocation } from './renderer-security.js';
 import {
   DesktopUpdateController,
   resolveDesktopUpdateConfiguration,
+  type DesktopUpdateBundledFeedOverrides,
   type DesktopUpdateConfiguration,
 } from './desktop-updater.js';
+import { readBundledDesktopUpdateFeedConfiguration } from './desktop-update-bundled-config.js';
 import { createElectronUpdaterDriver } from './electron-updater-driver.js';
 import {
   readDesktopUpdatePreferences,
@@ -622,7 +624,6 @@ let kernelUpdateService: KernelUpdateService | null = null;
 let desktopUpdateRollbackCoordinator: DesktopUpdateRollbackCoordinator | null = null;
 let desktopUpdateRollbackHealthPromise: Promise<void> | null = null;
 let desktopShutdownPromise: Promise<void> | null = null;
-const DESKTOP_RELEASE_NOTES_URL = 'https://github.com/1447751897/SYNC-THINK/releases';
 type KernelInstallResult = { ok: true } | { ok: false; error: string };
 let piKernelInstallPromise: Promise<KernelInstallResult> | null = null;
 const transientCleanupRegisteredSenders = new Set<number>();
@@ -804,6 +805,17 @@ async function bootstrapPrivateKernelsAtStartup(): Promise<void> {
   broadcastKernelUpdateState(service.getSnapshot());
 }
 
+/**
+ * Installed builds carry a feed sidecar inside their resources directory, so a
+ * double-clicked application is configured without any environment variable.
+ * Development has no sidecar and keeps using the environment only.
+ */
+function readBundledUpdateFeed(): DesktopUpdateBundledFeedOverrides | null {
+  if (!app.isPackaged) return null;
+  const resourcesPath = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
+  return readBundledDesktopUpdateFeedConfiguration(resourcesPath ?? null);
+}
+
 function initializeDesktopUpdater(): void {
   const recoveryRoot = app.isPackaged ? resolveDesktopUpdateRecoveryRoot(process.env) : null;
   if (recoveryRoot) {
@@ -825,6 +837,7 @@ function initializeDesktopUpdater(): void {
 
   const resolved = resolveDesktopUpdateConfiguration(process.env, {
     isPackaged: app.isPackaged,
+    bundledFeed: readBundledUpdateFeed(),
   });
   let configuration: DesktopUpdateConfiguration = resolved;
   let driver = null;
@@ -1713,16 +1726,6 @@ function setupRuntimeBridge(): void {
     writeDesktopUpdatePreferences(desktopUpdatePreferencesRoot(), { autoCheck: enabled });
     return { enabled };
   });
-  ipcMain.handle('desktop:update-open-release-notes', async (event) => {
-    assertRuntimeIpcSource(event);
-    try {
-      await shell.openExternal(DESKTOP_RELEASE_NOTES_URL);
-      return { opened: true, error: null };
-    } catch {
-      return { opened: false, error: 'desktop.update.release-notes-open-failed' };
-    }
-  });
-
   ipcMain.handle('desktop:open-external-url', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
     const url = normalizeExternalUrl(value);

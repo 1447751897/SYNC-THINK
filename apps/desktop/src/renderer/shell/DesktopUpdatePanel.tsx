@@ -1,11 +1,19 @@
-import { useEffect, useState } from 'react';
-import { AlertTriangle, Download, ExternalLink, Info, PackageCheck, RefreshCw } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import {
+  AlertTriangle,
+  Download,
+  ExternalLink,
+  FileText,
+  PackageCheck,
+  RefreshCw,
+  X,
+} from 'lucide-react';
 import clsx from 'clsx';
 import type {
   DesktopUpdateActionResult,
   DesktopUpdatePhase,
-  DesktopUpdateSnapshot,
 } from '../../desktop-update-contract.js';
+import { PENDING_UPDATE_PHASES, useDesktopUpdateState } from './use-desktop-update-state.js';
 import syncThinkLogo from './assets/sync-think-logo.png';
 
 const PHASE_LABELS: Record<DesktopUpdatePhase, string> = {
@@ -36,35 +44,162 @@ const ERROR_LABELS: Record<string, string> = {
   'desktop.update.action-invalid': '当前状态不允许执行该操作。',
   'desktop.update.disabled': '当前 Beta 为手动下载，未配置自动更新通道。',
   'desktop.update.initialization-failed': '更新组件初始化失败。',
-  'desktop.update.release-notes-open-failed': '打开更新日志失败。',
 };
 
 type UpdateAction = () => Promise<DesktopUpdateActionResult>;
 type UpdateActionKind = 'check' | 'download' | 'install';
 
+/** 「更新内容」区块只在存在可安装版本时出现，与侧边栏版本提示共用阶段判断。 */
+const RELEASE_NOTES_PHASES = PENDING_UPDATE_PHASES;
+
+/**
+ * Release notes are plain text: the Main process strips control characters and
+ * caps the length before sending them. Rendering line by line keeps the shape
+ * of simple lists and headings without ever passing anything to
+ * `dangerouslySetInnerHTML`, so a compromised feed cannot inject markup.
+ */
+function renderReleaseNotes(notes: string) {
+  return notes.split('\n').map((rawLine, index) => {
+    const line = rawLine.trim();
+    if (line.length === 0) return null;
+    const bullet = /^[-*•]\s+/.exec(line);
+    if (bullet) {
+      return (
+        <p key={index} className="settings-about-release-notes__item">
+          {line.slice(bullet[0].length)}
+        </p>
+      );
+    }
+    const heading = /^#{1,6}\s+/.exec(line);
+    if (heading) {
+      return (
+        <p key={index} className="settings-about-release-notes__heading">
+          {line.slice(heading[0].length)}
+        </p>
+      );
+    }
+    return (
+      <p key={index} className="settings-about-release-notes__line">
+        {line}
+      </p>
+    );
+  });
+}
+
+const DIALOG_FOCUSABLE_SELECTOR =
+  'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
+
+/**
+ * 更新日志弹窗。
+ *
+ * 纯展示：正文复用 `renderReleaseNotes` 的行级渲染，所以日志里的任何字符都只能是文本，
+ * 不会变成标记。可访问性上做三件事——Esc 关闭、Tab 焦点锁在弹窗内、关闭后把焦点还给
+ * 触发它的按钮。
+ */
+function ReleaseNotesDialog({
+  version,
+  notes,
+  onClose,
+}: {
+  version: string | null;
+  notes: string;
+  onClose: () => void;
+}) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const restoreFocusRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    restoreFocusRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    closeButtonRef.current?.focus();
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const container = dialogRef.current;
+      if (!container) return;
+      const focusable = Array.from(
+        container.querySelectorAll<HTMLElement>(DIALOG_FOCUSABLE_SELECTOR),
+      );
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+
+    document.addEventListener('keydown', handleKeyDown, true);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown, true);
+      restoreFocusRef.current?.focus();
+    };
+  }, [onClose]);
+
+  return (
+    <div
+      className="settings-about-dialog-backdrop"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label={version ? `v${version} 更新日志` : '更新日志'}
+        className="settings-about-dialog"
+      >
+        <div className="settings-about-dialog__header">
+          <div>
+            <p className="settings-about-dialog__eyebrow">更新日志</p>
+            <h3 className="settings-about-dialog__title">{version ? `v${version}` : '本次更新'}</h3>
+          </div>
+          <button
+            ref={closeButtonRef}
+            type="button"
+            className="settings-about-dialog__close"
+            aria-label="关闭更新日志"
+            onClick={onClose}
+          >
+            <X size={16} aria-hidden="true" />
+          </button>
+        </div>
+        <div className="settings-about-dialog__body">
+          {notes.trim().length > 0 ? (
+            renderReleaseNotes(notes)
+          ) : (
+            <p className="settings-about-release-notes__empty">暂无可查看的更新日志。</p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function DesktopUpdatePanel() {
-  const [snapshot, setSnapshot] = useState<DesktopUpdateSnapshot | null>(null);
+  const { snapshot, loadFailed, applySnapshot } = useDesktopUpdateState();
   const [pendingAction, setPendingAction] = useState<UpdateActionKind | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [auxiliaryError, setAuxiliaryError] = useState<string | null>(null);
   const [autoCheck, setAutoCheck] = useState(true);
   const [autoCheckBusy, setAutoCheckBusy] = useState(false);
+  const [releaseNotesOpen, setReleaseNotesOpen] = useState(false);
 
+  // 快照由共享 hook 订阅；自动检查偏好只影响本面板，就地读一次。
   useEffect(() => {
     const bridge = window.syncThink?.updates;
     if (!bridge) return;
     let active = true;
-    const unsubscribe = bridge.subscribeState((next) => {
-      if (active) setSnapshot(next);
-    });
-    void bridge
-      .getState()
-      .then((next) => {
-        if (active) setSnapshot(next);
-      })
-      .catch(() => {
-        if (active) setActionError('desktop.update.initialization-failed');
-      });
     void bridge
       .getAutoCheck()
       .then((preference) => {
@@ -73,16 +208,20 @@ export function DesktopUpdatePanel() {
       .catch(() => undefined);
     return () => {
       active = false;
-      unsubscribe();
     };
   }, []);
+
+  // 快照都读不到时，把失败翻成一个 renderer 安全的错误码，而不是继续显示「检查中」。
+  useEffect(() => {
+    if (loadFailed) setActionError('desktop.update.initialization-failed');
+  }, [loadFailed]);
 
   async function runAction(kind: UpdateActionKind, action: UpdateAction) {
     setPendingAction(kind);
     setActionError(null);
     try {
       const result = await action();
-      setSnapshot(result.state);
+      applySnapshot(result.state);
       setActionError(result.errorCode);
     } catch {
       setActionError(`desktop.update.${kind}-failed`);
@@ -103,20 +242,6 @@ export function DesktopUpdatePanel() {
       setAuxiliaryError('保存自动更新偏好失败。');
     } finally {
       setAutoCheckBusy(false);
-    }
-  }
-
-  async function openReleaseNotes() {
-    const bridge = window.syncThink?.updates;
-    if (!bridge) return;
-    setAuxiliaryError(null);
-    try {
-      const result = await bridge.openReleaseNotes();
-      if (!result.opened) {
-        setAuxiliaryError(ERROR_LABELS[result.error ?? ''] ?? '打开更新日志失败。');
-      }
-    } catch {
-      setAuxiliaryError('打开更新日志失败。');
     }
   }
 
@@ -173,7 +298,9 @@ export function DesktopUpdatePanel() {
       : primaryAction === 'download'
         ? pendingAction === 'download' || phase === 'downloading'
           ? '下载中…'
-          : '下载更新'
+          : snapshot?.availableVersion
+            ? `更新到 v${snapshot.availableVersion}`
+            : '下载更新'
         : pendingAction === 'check' || phase === 'checking'
           ? '检查中…'
           : '检查更新';
@@ -271,9 +398,22 @@ export function DesktopUpdatePanel() {
           </div>
         ) : null}
 
+        {phase !== undefined && RELEASE_NOTES_PHASES.has(phase) ? (
+          <div className="settings-about-release-notes" aria-label="更新内容">
+            <p className="settings-about-release-notes__title">更新内容</p>
+            {snapshot?.releaseNotes ? (
+              <div className="settings-about-release-notes__body">
+                {renderReleaseNotes(snapshot.releaseNotes)}
+              </div>
+            ) : (
+              <p className="settings-about-release-notes__empty">本次更新未提供更新日志。</p>
+            )}
+          </div>
+        ) : null}
+
         <div className="settings-about-links">
-          <button type="button" onClick={() => void openReleaseNotes()}>
-            <Info size={15} aria-hidden="true" />
+          <button type="button" onClick={() => setReleaseNotesOpen(true)}>
+            <FileText size={15} aria-hidden="true" />
             查看更新日志
           </button>
           <button type="button" onClick={() => void openLogDirectory()}>
@@ -288,6 +428,14 @@ export function DesktopUpdatePanel() {
           </p>
         ) : null}
       </div>
+
+      {releaseNotesOpen ? (
+        <ReleaseNotesDialog
+          version={snapshot?.availableVersion ?? snapshot?.currentVersion ?? null}
+          notes={snapshot?.releaseNotes ?? ''}
+          onClose={() => setReleaseNotesOpen(false)}
+        />
+      ) : null}
     </section>
   );
 }

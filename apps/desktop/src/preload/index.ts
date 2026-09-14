@@ -13,10 +13,7 @@ import type {
   ExportDesktopDiagnosticsPayload,
   ExportDesktopDiagnosticsResponse,
 } from '../diagnostics-export-contract.js';
-import type {
-  DesktopUpdateAutoCheckPreference,
-  DesktopUpdateOpenResult,
-} from '../desktop-update-contract.js';
+import type { DesktopUpdateAutoCheckPreference } from '../desktop-update-contract.js';
 import type {
   ExportDesktopDataPayload,
   ExportDesktopDataResponse,
@@ -1593,8 +1590,6 @@ const api = {
         'desktop:update-set-auto-check',
         payload,
       ) as Promise<DesktopUpdateAutoCheckPreference>,
-    openReleaseNotes: () =>
-      ipcRenderer.invoke('desktop:update-open-release-notes') as Promise<DesktopUpdateOpenResult>,
     openLogDirectory: () =>
       ipcRenderer.invoke(
         'desktop:data-open-directory',

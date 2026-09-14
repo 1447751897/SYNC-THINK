@@ -25460,6 +25460,151 @@ body {
   margin-top: 1px;
 }
 
+.settings-about-release-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-border) 24%, transparent);
+}
+
+.settings-about-release-notes__title,
+.settings-about-release-notes__body,
+.settings-about-release-notes__heading,
+.settings-about-release-notes__item,
+.settings-about-release-notes__line,
+.settings-about-release-notes__empty {
+  margin: 0;
+}
+
+.settings-about-release-notes__title {
+  color: var(--color-text);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 18px;
+}
+
+.settings-about-release-notes__body {
+  display: flex;
+  max-height: 168px;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+  color: var(--color-text-faint);
+  font-size: 11.5px;
+  line-height: 17px;
+}
+
+.settings-about-release-notes__heading {
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+.settings-about-release-notes__item {
+  position: relative;
+  padding-left: 12px;
+}
+
+.settings-about-release-notes__item::before {
+  content: '•';
+  position: absolute;
+  left: 2px;
+  color: var(--color-text-faint);
+}
+
+.settings-about-release-notes__empty {
+  color: var(--color-text-faint);
+  font-size: 11px;
+  line-height: 17px;
+}
+
+.settings-about-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: var(--color-overlay);
+}
+
+.settings-about-dialog {
+  display: flex;
+  width: min(480px, 100%);
+  max-height: min(560px, 100%);
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px 20px 20px;
+  border: 1px solid var(--color-border);
+  border-radius: 14px;
+  background: var(--color-surface-raised);
+}
+
+.settings-about-dialog__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.settings-about-dialog__eyebrow,
+.settings-about-dialog__title {
+  margin: 0;
+}
+
+.settings-about-dialog__eyebrow {
+  color: var(--color-text-faint);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+}
+
+.settings-about-dialog__title {
+  margin-top: 3px;
+  color: var(--color-text);
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.settings-about-dialog__close {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-text-faint);
+  cursor: pointer;
+  transition:
+    background 180ms var(--model-ease-standard, ease),
+    color 180ms var(--model-ease-standard, ease);
+}
+
+.settings-about-dialog__close:hover,
+.settings-about-dialog__close:focus-visible {
+  background: var(--color-hover);
+  color: var(--color-text);
+  outline: none;
+}
+
+.settings-about-dialog__body {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  gap: 5px;
+  overflow-y: auto;
+  color: var(--color-text-faint);
+  font-size: 12.5px;
+  line-height: 19px;
+}
+
 .settings-about-links {
   display: flex;
   align-items: center;
