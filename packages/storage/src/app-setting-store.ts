@@ -1,6 +1,6 @@
 // 0026: generic app-level KV settings store (JSON values).
 // Known keys:
-//   'vision-fallback' → { enabled: boolean, modelId: string | null }
+//   'vision-fallback' → { enabled, providerId: string | null, modelId: string | null }
 //   'plan-act'        → { enabled: boolean, planModelId: string | null, actModelId: string | null }
 import type { BetterSQLite3Raw } from './connection.js';
 

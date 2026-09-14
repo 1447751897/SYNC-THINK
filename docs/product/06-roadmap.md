@@ -13,7 +13,7 @@
 
 - 项目/工作区、对话历史、模型供应商、内核与权限选择。
 - Native、ClaudeCode、GPT/Codex 的统一 ordered timeline；正文、思考、工具、状态与最终结论边界明确，Token、缓存和耗时可追踪。
-- 图片附件按“当前模型视觉直传 -> 指定视觉模型 -> Windows OCR”确定性降级；Skill、MCP、工具审批、诊断导出、后台 Runtime、会话恢复和应用更新控制面。
+- 图片附件按 NewMax 三态规则路由：当前模型支持或未确认时原图直传；确定文本模型时使用已验证的视觉 Fallback；Fallback 失败则阻止发送并提示。Windows OCR 作为模型主动读取工作区图片文字的工具保留；Skill、MCP、工具审批、诊断导出、后台 Runtime、会话恢复和应用更新控制面。
 - 本机 DeThink `1.0.14.971` 对照确认其发布包只包含 Claude/Codex 两个 adapter；SYNC-THINK 不需要等所有远期内核和商业化入口完成后才进入首版闭测。
 
 ### P0：邀请用户前必须关闭

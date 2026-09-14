@@ -54,6 +54,7 @@ export function parseProbeCapabilitiesPayload(
       return undefined;
     }
   }
+  if (value.visionOnly !== undefined && typeof value.visionOnly !== 'boolean') return undefined;
   return value as unknown as ProbeCapabilitiesPayload;
 }
 

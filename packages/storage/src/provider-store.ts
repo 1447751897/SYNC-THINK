@@ -82,6 +82,10 @@ export interface ModelRecord {
   capabilities: CapabilityTag[];
   limitsJson?: string;
   capabilitiesConfirmed: boolean;
+  /** NewMax-style per-dimension image probe result, persisted in limits_json metadata. */
+  visionCapability?: boolean;
+  /** Raw image probe failure reason, persisted in limits_json metadata. */
+  visionProbeReason?: string;
   /** 0026: priority chain inside a provider — 0 is the primary model. */
   priority: number;
   /** 0026: optional pinned credential ref for this model (relay-station groups). */
@@ -97,6 +101,8 @@ export interface UpsertModelsInput {
     displayName?: string;
     capabilities?: CapabilityTag[];
     limitsJson?: string;
+    visionCapability?: boolean | null;
+    visionProbeReason?: string | null;
   }>;
   capabilitiesConfirmed?: boolean;
   now?: string;
@@ -187,6 +193,54 @@ interface ModelRow {
   priority: number;
   credential_ref_id: string | null;
   created_at: string;
+}
+
+function parseVisionMetadata(limitsJson: string | null | undefined): {
+  visionCapability?: boolean;
+  visionProbeReason?: string;
+} {
+  if (!limitsJson) return {};
+  try {
+    const value = JSON.parse(limitsJson) as Record<string, unknown>;
+    return {
+      ...(typeof value._visionCapability === 'boolean'
+        ? { visionCapability: value._visionCapability }
+        : {}),
+      ...(typeof value._visionProbeReason === 'string' && value._visionProbeReason.trim()
+        ? { visionProbeReason: value._visionProbeReason }
+        : {}),
+    };
+  } catch {
+    return {};
+  }
+}
+
+function withVisionMetadata(
+  limitsJson: string | undefined,
+  visionCapability: boolean | null | undefined,
+  visionProbeReason: string | null | undefined,
+): string | undefined {
+  if (visionCapability === undefined && visionProbeReason === undefined) return limitsJson;
+  let value: Record<string, unknown> = {};
+  if (limitsJson) {
+    try {
+      const parsed = JSON.parse(limitsJson) as unknown;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        value = { ...(parsed as Record<string, unknown>) };
+      }
+    } catch {
+      value = {};
+    }
+  }
+  if (visionCapability !== undefined) {
+    if (visionCapability === null) delete value._visionCapability;
+    else value._visionCapability = visionCapability;
+  }
+  if (visionProbeReason !== undefined) {
+    if (visionProbeReason) value._visionProbeReason = visionProbeReason;
+    else delete value._visionProbeReason;
+  }
+  return Object.keys(value).length > 0 ? JSON.stringify(value) : undefined;
 }
 
 const PROTOCOLS = new Set<ProtocolFamily>([
@@ -563,9 +617,9 @@ export class SqliteProviderStore {
         const capabilities = model.capabilities ?? ['text'];
         const existing = this.raw
           .prepare(
-            `SELECT id FROM model WHERE provider_id = ? AND provider_model_id = ?`,
+            `SELECT id, limits_json FROM model WHERE provider_id = ? AND provider_model_id = ?`,
           )
-          .get(input.providerId, providerModelId) as { id: string } | undefined;
+          .get(input.providerId, providerModelId) as { id: string; limits_json: string | null } | undefined;
 
         if (existing) {
           this.raw
@@ -579,7 +633,11 @@ export class SqliteProviderStore {
               displayName,
               input.protocol,
               JSON.stringify(capabilities),
-              model.limitsJson ?? null,
+              withVisionMetadata(
+                model.limitsJson ?? existing.limits_json ?? undefined,
+                model.visionCapability,
+                model.visionProbeReason,
+              ) ?? null,
               confirmed ? 1 : 0,
               existing.id,
             );
@@ -609,7 +667,7 @@ export class SqliteProviderStore {
               displayName,
               input.protocol,
               JSON.stringify(capabilities),
-              model.limitsJson ?? null,
+               withVisionMetadata(model.limitsJson, model.visionCapability, model.visionProbeReason) ?? null,
               confirmed ? 1 : 0,
               priority,
               now,
@@ -621,8 +679,15 @@ export class SqliteProviderStore {
             displayName,
             protocol: input.protocol,
             capabilities,
-            limitsJson: model.limitsJson,
+            limitsJson: withVisionMetadata(
+              model.limitsJson,
+              model.visionCapability,
+              model.visionProbeReason,
+            ),
             capabilitiesConfirmed: confirmed,
+            ...parseVisionMetadata(
+              withVisionMetadata(model.limitsJson, model.visionCapability, model.visionProbeReason),
+            ),
             priority,
             credentialRefId: undefined,
             createdAt: now,
@@ -642,6 +707,8 @@ export class SqliteProviderStore {
     modelId: ModelId | string;
     capabilities: CapabilityTag[];
     capabilitiesConfirmed: boolean;
+    visionCapability?: boolean | null;
+    visionProbeReason?: string | null;
   }): ModelRecord {
     const modelId = String(input.modelId).trim();
     if (!modelId) throw new Error('Model id must not be empty');
@@ -679,13 +746,29 @@ export class SqliteProviderStore {
     }
     const capabilities = ordered.filter((t) => seen.has(t));
 
+    const limitsJson = withVisionMetadata(
+      existing.limitsJson,
+      input.visionCapability !== undefined
+        ? input.visionCapability
+        : input.capabilitiesConfirmed
+          ? null
+          : undefined,
+      input.visionProbeReason !== undefined
+        ? input.visionProbeReason === null
+          ? ''
+          : input.visionProbeReason
+        : input.capabilitiesConfirmed
+          ? ''
+          : undefined,
+    );
+
     this.raw
       .prepare(
         `UPDATE model
-         SET capabilities_json = ?, capabilities_confirmed = ?
+         SET capabilities_json = ?, capabilities_confirmed = ?, limits_json = ?
          WHERE id = ?`,
       )
-      .run(JSON.stringify(capabilities), input.capabilitiesConfirmed ? 1 : 0, modelId);
+      .run(JSON.stringify(capabilities), input.capabilitiesConfirmed ? 1 : 0, limitsJson ?? null, modelId);
 
     const row = this.raw
       .prepare(
@@ -695,6 +778,27 @@ export class SqliteProviderStore {
       )
       .get(modelId) as ModelRow;
     return mapModel(row);
+  }
+
+  /** Persist the NewMax per-model image probe without changing user tags. */
+  updateModelVisionProbe(input: {
+    modelId: ModelId | string;
+    result?: boolean | null;
+    reason?: string | null;
+  }): ModelRecord {
+    const modelId = String(input.modelId).trim();
+    if (!modelId) throw new Error('Model id must not be empty');
+    const existing = this.getModel(modelId as ModelId);
+    if (!existing) throw new Error(`Model not found: ${modelId}`);
+    const limitsJson = withVisionMetadata(
+      existing.limitsJson,
+      input.result,
+      input.reason === undefined ? undefined : input.reason ?? '',
+    );
+    this.raw.prepare(`UPDATE model SET limits_json = ? WHERE id = ?`).run(limitsJson ?? null, modelId);
+    const updated = this.getModel(modelId as ModelId);
+    if (!updated) throw new Error(`Model not found after vision probe update: ${modelId}`);
+    return updated;
   }
 
   /**
@@ -1114,6 +1218,7 @@ function mapModel(row: ModelRow): ModelRecord {
     capabilities,
     limitsJson: row.limits_json ?? undefined,
     capabilitiesConfirmed: row.capabilities_confirmed === 1,
+    ...parseVisionMetadata(row.limits_json),
     priority: typeof row.priority === 'number' ? row.priority : 0,
     credentialRefId: (row.credential_ref_id ?? undefined) as CredentialRefId | undefined,
     createdAt: row.created_at,

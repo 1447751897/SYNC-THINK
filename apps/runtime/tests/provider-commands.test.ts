@@ -567,4 +567,126 @@ describe('provider commands', () => {
     }
   }, 20_000);
 
+  it('keeps declared capabilities when the probe never reaches the provider', async () => {
+    // 环境性失败（网络 / 鉴权 / 超时）说明不了模型有没有该能力。探测写入必须保留
+    // 原有能力集，否则一次网络抖动就会把已确认的 vision 抹掉 —— 用户看到的正是
+    // 「能力检测里显示具备图像能力，发图却提示没有图像识别能力」。
+    const dir = mkdtempSync(join(tmpdir(), 'sync-think-provider-envfail-'));
+    tempDirs.push(dir);
+    const installId = `test-prov-envfail-${Date.now()}`;
+    const session = await openPersistentRuntime({
+      dbPath: join(dir, 'sync-think.db'),
+      installId,
+      allowNoToken: true,
+      secureStoreKeyPath: join(dir, 'key.bin'),
+      demoProvider: new FakeProvider(),
+      discoveryByProtocol: {
+        // 每个探针请求都以传输层错误告终 —— 等价于用户侧本地代理不通。
+        'openai-chat': new OpenAIChatAdapter({
+          fetchImpl: async () => {
+            throw new Error('fetch failed');
+          },
+        }),
+      },
+    });
+    await session.runtime.start();
+    try {
+      const sock = await connectRuntime(installId);
+      const reader = createFrameReader(sock);
+      await hello(sock, reader, installId);
+
+      const created = await writeAndRead(sock, reader, {
+        id: 'ef-create',
+        kind: 'request',
+        type: 'provider.create',
+        payload: {
+          name: 'Unreachable Gateway',
+          baseUrl: 'https://unreachable.example/v1',
+          protocol: 'openai-chat',
+          apiKey: 'sk-ENVFAIL_NOT_A_REAL_KEY',
+          supportsDiscovery: false,
+        },
+      });
+      expect(created.error).toBeUndefined();
+      const providerId = (created.payload as { provider: { providerId: string } }).provider
+        .providerId;
+
+      const added = await writeAndRead(sock, reader, {
+        id: 'ef-add',
+        kind: 'request',
+        type: 'provider.addModels',
+        payload: {
+          providerId,
+          protocol: 'openai-chat',
+          models: [{ providerModelId: 'gpt-4o', displayName: 'GPT-4o' }],
+        },
+      });
+      expect(added.error).toBeUndefined();
+
+      const listedBefore = await writeAndRead(sock, reader, {
+        id: 'ef-list-before',
+        kind: 'request',
+        type: 'provider.list',
+        payload: {},
+      });
+      const modelId = (
+        listedBefore.payload as {
+          providers: Array<{ models: Array<{ modelId: string; providerModelId: string }> }>;
+        }
+      ).providers[0]!.models.find((m) => m.providerModelId === 'gpt-4o')!.modelId;
+
+      // 用户先确认过这个模型能读图（多模态模型被一条网络失败打回文本模型的场景）。
+      const confirmed = await writeAndRead(sock, reader, {
+        id: 'ef-confirm',
+        kind: 'request',
+        type: 'provider.confirmCapabilities',
+        payload: { modelId, capabilities: ['text', 'vision'], confirmed: true },
+      });
+      expect(confirmed.error).toBeUndefined();
+
+      const probed = await writeAndRead(sock, reader, {
+        id: 'ef-probe',
+        kind: 'request',
+        type: 'provider.probeCapabilities',
+        payload: { providerId },
+      });
+      expect(probed.error).toBeUndefined();
+      const suggestion = (
+        probed.payload as {
+          suggestions: Array<{
+            providerModelId: string;
+            capabilities: string[];
+            results: Record<string, boolean | undefined>;
+            undetermined?: string[];
+          }>;
+        }
+      ).suggestions.find((s) => s.providerModelId === 'gpt-4o')!;
+      expect(suggestion).toBeTruthy();
+
+      // 「未判定」必须与「未通过」分开：这里不能把任何一项写成 false。
+      expect(suggestion.results.text).toBeUndefined();
+      expect(suggestion.results.vision).toBeUndefined();
+      expect(suggestion.undetermined).toEqual(expect.arrayContaining(['text', 'vision']));
+      // 原有能力被原样保留 —— 这才是「有图像能力就能用图像」的前提。
+      expect(suggestion.capabilities).toEqual(expect.arrayContaining(['text', 'vision']));
+
+      const listed = await writeAndRead(sock, reader, {
+        id: 'ef-list',
+        kind: 'request',
+        type: 'provider.list',
+        payload: {},
+      });
+      const listedModel = (
+        listed.payload as {
+          providers: Array<{ models: Array<{ providerModelId: string; capabilities: string[] }> }>;
+        }
+      ).providers[0]!.models.find((m) => m.providerModelId === 'gpt-4o')!;
+      expect(listedModel.capabilities).toEqual(expect.arrayContaining(['text', 'vision']));
+
+      sock.destroy();
+    } finally {
+      await session.close();
+    }
+  }, 20_000);
+
 });

@@ -4356,7 +4356,7 @@ export function ChatView({
                 id: `vision-fail-${Date.now()}`,
                 role: 'system',
                 tone: 'warning',
-                text: '视觉模型 Fallback 与 Windows OCR 均未能处理附件，原图未发送给当前文本模型。',
+                text: '图片转写失败，已配置的视觉模型未返回可用描述，原图未发送给当前文本模型。',
                 timestamp: new Date().toISOString(),
               },
             ]);

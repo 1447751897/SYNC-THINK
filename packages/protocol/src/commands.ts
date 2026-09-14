@@ -981,6 +981,10 @@ export interface ProviderModelSummary {
   protocol: import('@sync-think/shared').ProtocolFamily;
   capabilities: import('@sync-think/shared').CapabilityTag[];
   capabilitiesConfirmed: boolean;
+  /** NewMax-style per-model image probe result, when available. */
+  visionCapability?: boolean | null;
+  /** Image probe failure/unknown reason, when available. */
+  visionProbeReason?: string | null;
   /** 0026: priority chain position inside the provider — 0 is the primary model. */
   priority: number;
   /** 0026: optional pinned credential for this model (relay-station key groups). */
@@ -1188,6 +1192,8 @@ export interface ProbeCapabilitiesPayload {
   /** Probe one model, or omit modelId to probe all models for the provider. */
   providerId: import('@sync-think/shared').ProviderId;
   modelId?: import('@sync-think/shared').ModelId;
+  /** NewMax VisionFallbackPanel scan: run only the fixed image probe. */
+  visionOnly?: boolean;
 }
 
 export interface CapabilityProbeSuggestion {
@@ -1195,9 +1201,19 @@ export interface CapabilityProbeSuggestion {
   providerModelId: string;
   displayName: string;
   capabilities: import('@sync-think/shared').CapabilityTag[];
-  /** Always false after probe 鈥?suggestions only (搂7.2). */
-  capabilitiesConfirmed: false;
+  /** Existing confirmation is preserved for vision-only scans. */
+  capabilitiesConfirmed: boolean;
+  /** NewMax-style direct image probe result, when the vision probe ran. */
+  visionCapability?: boolean | null;
+  /** Raw image probe failure/unknown reason, when present. */
+  visionProbeReason?: string | null;
   results: Partial<Record<import('@sync-think/shared').CapabilityTag, boolean>>;
+  /**
+   * Capabilities the probe could not reach a verdict on (transport / auth /
+   * quota failures). Kept apart from `results: false`, which means the model
+   * answered and refused — mixing the two downgrades capable models to OCR.
+   */
+  undetermined?: import('@sync-think/shared').CapabilityTag[];
   confidence: 'low' | 'medium';
   reasons: string[];
   source: 'heuristic' | 'live';

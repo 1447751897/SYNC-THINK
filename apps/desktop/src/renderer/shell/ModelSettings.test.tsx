@@ -518,8 +518,14 @@ describe('ModelSettings NewMax provider detail', () => {
 
     const detail = await screen.findByRole('dialog', { name: 'gpt-5' });
     expect(within(detail).getByText('CODEX / gpt-5')).toBeTruthy();
-    expect(within(detail).getByText('OpenAI Chat Completions')).toBeTruthy();
-    expect(within(detail).getByText('372k')).toBeTruthy();
+    expect(within(detail).getByText(/OpenAI Chat Completions/)).toBeTruthy();
+    // NewMax 形态：上下文窗口是常驻输入框，当前值直接可读可改。
+    const contextInput = within(detail).getByLabelText(
+      'gpt-5 上下文窗口（tokens）',
+    ) as HTMLInputElement;
+    expect(contextInput.value).toBe('372k');
+    expect(within(detail).getByText('能力支持')).toBeTruthy();
+    expect(within(detail).getByText('更多能力')).toBeTruthy();
     expect(within(detail).getByRole('button', { name: '文本：支持' })).toBeTruthy();
     expect(within(detail).getByRole('button', { name: '联网搜索：未标记' })).toBeTruthy();
 
@@ -575,10 +581,89 @@ describe('ModelSettings NewMax provider detail', () => {
     fireEvent.click(within(detail).getByRole('button', { name: '检测能力' }));
 
     // 逐项实测结果与原因都要显示（此前 reasons 被丢弃 → 看起来「没有返回」）。
-    expect(await within(detail).findByText('实测明细')).toBeTruthy();
+    expect(await within(detail).findByText('检测结果')).toBeTruthy();
     expect(within(detail).getByText('文本请求实测成功')).toBeTruthy();
     expect(within(detail).getByText('图片输入请求未通过')).toBeTruthy();
     expect(within(detail).getByText('工具 schema 请求实测成功')).toBeTruthy();
+  });
+
+  it('renders an undetermined capability apart from a failed one', async () => {
+    // 「未判定」（请求没打到模型）必须与「未通过」（模型答复了但拒绝）分开显示，
+    // 否则一次网络抖动看起来就像模型没有这个能力。
+    runtime.probeCapabilities.mockResolvedValueOnce({
+      providerId: provider.providerId,
+      applied: true,
+      suggestions: [
+        {
+          modelId: provider.models[0]!.modelId,
+          providerModelId: provider.models[0]!.providerModelId,
+          displayName: provider.models[0]!.displayName,
+          capabilities: ['text', 'vision'],
+          capabilitiesConfirmed: false,
+          results: { text: true, 'tool-calling': false },
+          undetermined: ['vision'],
+          confidence: 'medium',
+          reasons: [
+            '文本请求实测成功',
+            '图片输入未判定：Provider Responses network error: fetch failed',
+            '工具 schema 请求未返回有效结果',
+          ],
+          source: 'live',
+        },
+      ],
+    });
+    await renderSettings();
+
+    fireEvent.click(screen.getByRole('button', { name: '查看模型 gpt-5' }));
+    const detail = await screen.findByRole('dialog', { name: 'gpt-5' });
+
+    fireEvent.click(within(detail).getByRole('button', { name: '检测能力' }));
+    expect(await within(detail).findByText('检测结果')).toBeTruthy();
+
+    const rows = Array.from(
+      detail.querySelectorAll('.model-capability-dialog__probe-results li'),
+    );
+    const states = rows.map((row) => row.getAttribute('data-state'));
+    expect(states).toEqual(expect.arrayContaining(['pass', 'fail', 'unknown']));
+
+    const unknownRow = rows.find((row) => row.getAttribute('data-state') === 'unknown')!;
+    expect(unknownRow.textContent).toContain('未判定');
+    const failRow = rows.find((row) => row.getAttribute('data-state') === 'fail')!;
+    expect(failRow.textContent).toContain('未通过');
+    // 未判定项的原因也要能看到，而不是只留一个空勾选框。
+    expect(
+      within(detail).getByText('图片输入未判定：Provider Responses network error: fetch failed'),
+    ).toBeTruthy();
+  });
+
+  it('spells out the undetermined count when nothing could be measured', async () => {
+    runtime.probeCapabilities.mockResolvedValueOnce({
+      providerId: provider.providerId,
+      applied: true,
+      suggestions: [
+        {
+          modelId: provider.models[0]!.modelId,
+          providerModelId: provider.models[0]!.providerModelId,
+          displayName: provider.models[0]!.displayName,
+          capabilities: [],
+          capabilitiesConfirmed: false,
+          results: {},
+          undetermined: ['text', 'vision'],
+          confidence: 'medium',
+          reasons: ['文本请求未判定：fetch failed', '图片输入未判定：fetch failed'],
+          source: 'live',
+        },
+      ],
+    });
+    await renderSettings();
+
+    fireEvent.click(screen.getByRole('button', { name: '查看模型 gpt-5' }));
+    const detail = await screen.findByRole('dialog', { name: 'gpt-5' });
+    fireEvent.click(within(detail).getByRole('button', { name: '检测能力' }));
+
+    expect(
+      await within(detail).findByText(/2 项未判定（请求没打到模型，不代表模型没这个能力）/),
+    ).toBeTruthy();
   });
 
   it('edits the context window inside the capability dialog via input and presets', async () => {
@@ -587,12 +672,11 @@ describe('ModelSettings NewMax provider detail', () => {
     fireEvent.click(screen.getByRole('button', { name: '查看模型 gpt-5' }));
     const detail = await screen.findByRole('dialog', { name: 'gpt-5' });
 
-    // Current value renders as a clickable control, not static text.
-    fireEvent.click(within(detail).getByRole('button', { name: '372k' }));
+    // NewMax 形态：数值常驻在输入框里，不需要先点一下才展开编辑器。
     const input = within(detail).getByLabelText('gpt-5 上下文窗口（tokens）') as HTMLInputElement;
     expect(input.value).toBe('372k');
 
-    // Quick-pick preset saves straight away.
+    // Quick-pick preset saves straight away（NewMax 的 128K/200K/256K/500K/1M）。
     fireEvent.click(within(detail).getByRole('button', { name: '1m' }));
     await waitFor(() => {
       expect(runtime.updateModel).toHaveBeenCalledWith({
@@ -602,8 +686,7 @@ describe('ModelSettings NewMax provider detail', () => {
       });
     });
 
-    // Re-open and type a custom value; Enter commits it.
-    fireEvent.click(within(detail).getByRole('button', { name: '1m' }));
+    // Type a custom value; Enter commits it.
     const typed = within(detail).getByLabelText('gpt-5 上下文窗口（tokens）');
     fireEvent.change(typed, { target: { value: '272k' } });
     fireEvent.keyDown(typed, { key: 'Enter' });
@@ -756,7 +839,10 @@ describe('ModelSettings NewMax provider detail', () => {
 
     expect(await screen.findByRole('heading', { name: '图片识别 Fallback' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: '保存' })).toBeNull();
-    fireEvent.click(screen.getByRole('switch'));
+    const fallbackSwitch = screen.getByRole('switch', { name: '图片识别 Fallback' });
+    if (fallbackSwitch.getAttribute('aria-checked') !== 'true') {
+      fireEvent.click(fallbackSwitch);
+    }
     const picker = screen.getByRole('combobox', { name: '视觉模型' });
     fireEvent.click(picker);
     const list = await screen.findByRole('listbox', { name: '视觉模型' });
@@ -768,7 +854,7 @@ describe('ModelSettings NewMax provider detail', () => {
     await waitFor(() => {
       expect(runtime.setSetting).toHaveBeenCalledWith({
         key: 'vision-fallback',
-        value: { enabled: true, modelId: 'model-1' },
+        value: { enabled: true, providerId: 'provider-1', modelId: 'model-1' },
       });
     });
     expect(screen.queryByText('图片识别 Fallback 已更新')).toBeNull();
@@ -788,7 +874,7 @@ describe('ModelSettings NewMax provider detail', () => {
           capabilitiesConfirmed: false,
           results: { text: true, vision: true },
           confidence: 'high',
-          reasons: ['图片输入请求通过（校验码 7319 已识别）'],
+          reasons: ['图片输入请求通过（校验码 42 已识别）'],
           source: 'live',
         },
       ],
@@ -804,10 +890,11 @@ describe('ModelSettings NewMax provider detail', () => {
       expect(runtime.probeCapabilities).toHaveBeenCalledWith({
         providerId: 'provider-1',
         modelId: 'model-1',
+        visionOnly: true,
       });
     });
     expect(await screen.findByText('✓ 已验证')).toBeTruthy();
-    expect(screen.getByText('图片输入请求通过（校验码 7319 已识别）')).toBeTruthy();
+    expect(screen.getByText('图片输入请求通过（校验码 42 已识别）')).toBeTruthy();
   });
 
   it('opens Plan & Act as a list-backed detail panel and saves changes immediately', async () => {

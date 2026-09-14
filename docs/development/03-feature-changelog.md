@@ -1,3 +1,18 @@
+## 2026-09-14：图片输入与 NewMax 三态视觉能力语义对齐
+
+### Changed
+
+- 图片附件按当前模型的三态能力路由：`supported` 与 `unknown` 直接尝试原生图片输入，只有明确 `unsupported` 才进入已验证的视觉 Fallback。
+- Windows OCR 保留为模型主动调用的 `ocr_image` 工具，不再作为宿主自动降级链；已配置的视觉 Fallback 调用失败时记录“图片转写失败”，原图不发送给文本模型。
+- 能力检测区分模型拒绝图片与鉴权、限流、超时、网络等环境性失败；后者写入 `unknown` 并保留既有能力声明。
+- 能力提示词按三态动态注入：仅 `unsupported` 显示“当前模型不支持直接读取图片，需要时请用 OCR”，`unknown` 改为先尝试原生图片输入，`supported` 不添加图片工具提示。
+- 视觉 Fallback 候选按 provider 维度匹配，避免同名模型跨供应商套用错误的静态能力结论。
+
+### Verification
+
+- 定向通过：core vision-state、runtime describe-image、runtime vision-fallback、provider command 与 desktop ModelSettings 测试。
+- `git diff --check` 通过；完整构建与真实上游视觉探测仍需在界面中手动触发。
+
 ## 2026-09-10：出图成功后回答被截断不再显示明文协议链接
 
 ### Changed
@@ -5522,7 +5537,7 @@ Desktop typecheck/build：passed
 
 - **新增 `apps/runtime/src/vision-probe.ts`** —— 一比一复刻 NewMax 的探针机制：
   - `VISION_PROBE_PNG_BASE64`：探针图，与 NewMax `main-bundle` 里的那张**逐字节相同**（实测 444 字符 base64 / 333 字节 / 160×96 / bitDepth 1 / colorType 0 灰度，用一个只出现一次的候选串比对，首个差异位置 -1）。
-  - `hasVisionProbeMarker(text)`：要求校验码 `7319` **独立出现**。两侧用 `\D` 而非 `\b` —— 中文回复里数字紧邻汉字（「数字是 7319。」）时 `\b` 不成立会漏判；同时 `17319` / `73190` 这类长数字里的子串不算命中。
+  - `hasVisionProbeMarker(text)`：要求校验码 `42` **独立出现**。两侧用 `\D` 而非 `\b` —— 中文回复里数字紧邻汉字（「数字是 42。」）时 `\b` 不成立会漏判；同时 `142` / `420` 这类长数字里的子串不算命中。
   - `classifyVisionProbeFailure(reason)` + `VISION_PROBE_FAILURE_LABELS`：六类失败（`unsupported` / `authentication` / `rateLimit` / `timeout` / `network` / `responseMismatch`）+ `unknown` 兜底。分类的价值是区分「模型真不支持图片」与「这次只是限流/网络/密钥问题」——后者不该被判成能力缺失。
   - `describeVisionProbeFailure(reason)`：只返回**原因描述**、不带前缀，前缀由调用方加（见下条）。
 - **runtime 探测改用探针判定**（`apps/runtime/src/runtime.ts`，vision 分支）。发探针图 + 「只回复数字」提示词，`results.vision = hasVisionProbeMarker(replied)`；成功原因写明读出了校验码。
@@ -5537,11 +5552,11 @@ Desktop typecheck/build：passed
 - **新增 `apps/runtime/src/vision-probe.test.ts`**：**12/12 通过**。覆盖 marker 判定的正例（纯数字、中文紧邻、两侧空白）、**反例（`an image` / `white` / `I cannot see the image` / 空串）**、长数字内的子串不算命中、六类失败分类、`unknown` 不误标、以及**探针图规格（333 字节 / 160×96 / bitDepth 1 / colorType 0）**——把「与 NewMax 同图」固化成回归约束。
 - **NewMax 侧对照**：探针图 base64 与 `.tmp/nm/main-bundle.js` 中唯一那张 PNG **完全相同**（长度 444 = 444，首个差异位置 -1）；判定函数、六类分类、提示词、并发度均按 bundle 里的原文实现。
 - **定向测试**：`provider-commands.test.ts` 5/5、`vision-fallback-runtime.test.ts` 6/6、`fake-provider.test.ts` 6/6、`ModelSettings.test.tsx` **45/45**（含新增的扫描用例：按候选逐个实测、逐行回显校验码判定与原因）。
-- **`provider-commands.test.ts` 的失败是新判定生效的证明**：改前它断言 `capabilities` 含 `vision`，改后得到 `['text','tool-calling']` —— 因为该用例的 mock 图片回复不含校验码 `7319`，旧判据（有文字就算过）放它过，新判据挡掉了它。修复方式是让 `FakeProvider` 真正「读出」校验码（而非放宽断言），这样该用例同时成为新判据的**正向覆盖**。
+- **`provider-commands.test.ts` 的失败是新判定生效的证明**：改前它断言 `capabilities` 含 `vision`，改后得到 `['text','tool-calling']` —— 因为该用例的 mock 图片回复不含校验码 `42`，旧判据（有文字就算过）放它过，新判据挡掉了它。修复方式是让 `FakeProvider` 真正「读出」校验码（而非放宽断言），这样该用例同时成为新判据的**正向覆盖**。
 - **全量回归**：`apps/runtime` + `packages/adapters` **219 files — 218 passed / 1 failed**。唯一失败是 `apps/runtime/src/kernel/platform-mcp-entry.test.ts`（**cwd 假设**，非本轮引入；该文件本轮未改动，决定性复现：`cd apps/runtime && vitest run src/kernel/platform-mcp-entry.test.ts` → **1 passed**）。**本次改动引入 0 条新失败。**
 - **desktop shell 套件**：`171 files — 159 passed / 12 failed`，失败全部落在 `ShellApp.test.tsx` 的 empty-compose 系列与 `WorkspaceFileVisualFixture`。**与本次改动无关**：这些用例查找的 `conversation-tab-created-conversation` / `identity-option-agent-agent-a` 等 testid 在**源码中 0 命中**（工作区里 `ConversationTabs.tsx` 等有其它未提交改动把实现改了、测试断言未同步），是既有失败族。
 - **类型检查**：`packages/shared` / `packages/core` / `packages/storage` / `apps/runtime` / `apps/desktop` **五个 package 全部 exit 0**。
-- **构建与产物核验**：`@sync-think/adapters`、`@sync-think/runtime`、`@sync-think/desktop` 均构建成功；产物 `runtime.js` 20:23、`shell.js`/`shell.css` 20:24，均晚于源码改动。核验特征：`chunks/SettingsPage-*.js` 命中扫描按钮文案 / `model-strategy-panel__scan` / 扫描说明文案 / 明细与确认浮层标识；`shell.css` 命中 `model-strategy-panel__scan-button` / `__scan-row`；`apps/runtime/dist/vision-probe.js` 命中 `7319` / `VISION_PROBE_MARKER` / `hasVisionProbeMarker` / `classifyVisionProbeFailure`，`runtime.js` 正确引用该模块。**注意 tsc 与 esbuild 的转义差异**：desktop 经 esbuild 把中文输出为**大写** `\uXXXX`，runtime 经 tsc 保留 UTF-8 明文 —— 两种形式要用对应写法核验，否则会得到假阴性（本轮先用 `\uXXXX` 核验 runtime 产物即误报 MISS）。
+- **构建与产物核验**：`@sync-think/adapters`、`@sync-think/runtime`、`@sync-think/desktop` 均构建成功；产物 `runtime.js` 20:23、`shell.js`/`shell.css` 20:24，均晚于源码改动。核验特征：`chunks/SettingsPage-*.js` 命中扫描按钮文案 / `model-strategy-panel__scan` / 扫描说明文案 / 明细与确认浮层标识；`shell.css` 命中 `model-strategy-panel__scan-button` / `__scan-row`；`apps/runtime/dist/vision-probe.js` 命中 `42` / `VISION_PROBE_MARKER` / `hasVisionProbeMarker` / `classifyVisionProbeFailure`，`runtime.js` 正确引用该模块。**注意 tsc 与 esbuild 的转义差异**：desktop 经 esbuild 把中文输出为**大写** `\uXXXX`，runtime 经 tsc 保留 UTF-8 明文 —— 两种形式要用对应写法核验，否则会得到假阴性（本轮先用 `\uXXXX` 核验 runtime 产物即误报 MISS）。
 - **运行态**：runtime 三层链已重建（supervisor 48680 → daemon 37016 → runtime 22344，12:25:31Z 启动，pid 文件与进程链一致）；桌面端已用新 shell 重启（launcher 18804 → electron 43456），窗口 `SYNC-THINK` / `Responding = True`、**stderr 0 行**、重启后握手 `hello accepted` @12:25:33Z / 12:25:49Z。重启前的 runtime 日志已 33 分钟无活动，无中断风险。
 
 ### 预算
@@ -5551,3 +5566,80 @@ Desktop typecheck/build：passed
 ### 未能自动化的一步（如实说明）
 
 真实的视觉探测验证必须由 UI 触发，且会**真实调用上游接口产生少量 token 费用**，未经用户明确授权，故本轮**未代跑**。请在界面上验收：模型设置 → 图片识别 Fallback → 点「扫描视觉能力」，应看到逐行给出每个候选模型的校验码判定与未通过原因；另可在模型详情页点「检测能力」，新判据下**对着无法解析的图编一句回复的模型不再被判为支持视觉**。
+
+## 2026-09-13 —— 能力判定改为三态：unknown 不再被当成「不支持图片」
+
+承接上一条。用户仍然遇到「能力检测里显示具备图像能力，发图却提示没有图像识别能力」，且两侧检测结果不一致。深挖发现**上一轮只修了判据的松紧，没有修「判不出结论」这一档**：只要探测没得出结论，模型就被写死成文本模型，图片掉到 Windows OCR。
+
+### 根因
+
+- **探测侧**：任一维度请求抛错（网络 / 鉴权 / 限流 / 超时）就写 `results[tag] = false`。一次网络抖动 = 该能力被判「没有」。
+- **写入侧**：`updateModelCapabilities` 用探测结果整体覆盖，`['text']` 会盖掉原有 `['text','vision']` —— 已确认的多模态模型就此降级。
+- **消费侧**：`catalogEntryVisionCapable` 要求 strict `supported`，于是 `unknown` 一律排除；连用户**显式点名**的 fallback 模型也会被挡掉（`resolveVisionDescribeModel`）。
+
+对照 NewMax：它的 `resolveVisionState` 是三态，`getReliableImageCapability` 明确把「请求没打到模型」与「模型拒绝」分开，前者返回 `undefined`（不表态），绝不返回 `false`。
+
+### Changed
+
+- **core 新增三态判定层**（`packages/core/src/vision-state.ts`）：`resolveVisionState` / `getReliableImageCapability` / `isVisionProbeFailureEnvironmental` / `classifyVisionProbeFailure` / `getKnownModelVisionSupport`，含 `KNOWN_VISION_MODELS` / `KNOWN_NON_VISION_MODELS` 按 provider 分组的静态表与 `isGpt6AstraModel`（NewMax 按名字钉死 `gpt-6-astra` 为多模态，不依赖探测）。新增 provider-agnostic 别名 `isEnvironmentalProbeFailure`。
+- **runtime 探测返回「未定」一档**（`apps/runtime/src/runtime.ts`）：`probeModelCapabilitiesLive` 返回结构加 `undetermined: CapabilityTag[]`；text / vision / tool-calling / thinking / web-search / image-generation **六个维度统一**——环境性失败记入 `undetermined` 且**不写 `results = false`**，只有模型真的答复了却被拒才记 `false`。
+- **写入侧保留未定维度的原能力**（同文件）：`capabilities = normalizeCapabilities([...live.capabilities, ...undetermined ∩ 原能力集])`，未定项不参与覆盖。
+- **用户显式点名的 fallback 模型放宽**（`apps/runtime/src/describe-image.ts`）：`resolveVisionDescribeModel` 从「必须 strict supported」改为「只要不是 `unsupported`」。要求 strict 会把判不出结论的模型挡掉，配置好的回退悄悄失效、图片直接掉 OCR。
+- **协议透出未定项**（`packages/protocol/src/commands.ts`）：`CapabilityProbeSuggestion.undetermined?: CapabilityTag[]`。
+- **前端三态渲染**（`ModelSettings.tsx` + `shell.css`）：实测明细区分「实测通过 / 未通过 / **未判定**」（`data-state` + 描边胶囊，与两个实心态视觉区分）；notice 文案补「N 项未判定（请求没打到模型，不代表模型没这个能力）」；视觉 Fallback 扫描行同样三态，请求异常不再记「未通过」。
+- **`adaptRunImagesForModel` 已按新语义**：`visionState !== 'unsupported'` → `forwarded`（unknown 直发原图），只有确定不支持才走 fallback / OCR。
+
+### Verification
+
+- **core** `vision-state.test.ts` **16/16**。
+- **runtime** 新增 `keeps declared capabilities when the probe never reaches the provider`（`tests/provider-commands.test.ts`）：注入全部抛 `fetch failed` 的 adapter，断言 `results.text` / `results.vision` 均为 `undefined`、`undetermined` 含两项、**且模型能力仍为 `['text','vision']`**。实跑日志印证：四项全部记「未判定」。
+- **runtime 全量回归：205 files / 1575 tests 全绿**。
+- **修掉 3 条上一轮引入的回归**（`tests/vision-fallback-runtime.test.ts`）：`expected 'ocr' to be 'described'` 与两条 5s 超时，根因都是 `resolveVisionDescribeModel` 的 strict 判定把配置的 `gpt-4o-describe`（unknown）挡掉 → fallback 未生效 → 直接 OCR。放宽后 **6/6 通过**。
+- **前端**：`ModelSettings.test.tsx` **47/47**（含新增两条：三态明细分离、未判定计数文案）。
+- **类型检查**：core / protocol / runtime / desktop 全部 exit 0。
+- **构建**：runtime 与 desktop 成功；`initial JS 2,107,351 / 2,150,000`、`total JS 3,001,410 / 3,020,000`。产物核验：`runtime.js` 命中 `undetermined`(11) / `isEnvironmentalProbeFailure`(7)，`SettingsPage-*.js` 命中 `undetermined` 与中文「未判定」/「请求没打到模型」（esbuild 转义为**大写** `\uXXXX`），`shell.css` 命中 `is-undetermined` / `data-ok=unknown`。
+- **真实库只读判定验证**（`.tmp/vision-state-check.mjs`，不写数据）：用真实 `model` 表数据跑 `resolveVisionState`——
+  - `gpt-6-astra` @ RSGCY9Y73J，`caps=[]` → **supported**
+  - `gpt-6-astra` @ 0AQC7AY8XJ（用户报的那条，此前判 unsupported → OCR），`caps=[text]` → **supported**
+  - `deepseek-v4-flash-openai` @ FCSSR70H57，`caps=[text,tool-calling]` → unsupported（正确）
+- **运行态**：daemon 三层链已重建（30640 → 32012，23:07:29-30）、桌面端已用新 shell 重启（launcher 33520 → electron 23804，23:07:34），均晚于产物（23:01-23:04）；窗口 `SYNC-THINK` / `Responding=True`、stderr 0 行、握手 `hello accepted` @15:07:35Z。
+
+### 未能自动化的一步（如实说明）
+
+真实探测会调用上游接口产生 token 费用，未经授权未代跑。所以「探测面板显示未判定」这一条需要用户点一次确认；但**「有视觉能力 → 原图直发」这条已用真实库数据验证**：两条 `gpt-6-astra` 现在都判 `supported`，发图不会再触发 OCR 降级。
+
+## 2026-09-13 —— 模型能力对话框按 NewMax `ModelEditorDialog` 重做
+
+用户对比两侧截图后指出差距很大。上一轮改的是**判定逻辑**（三态 / `undetermined` / 环境性失败不判 false），而用户看的是**界面形态** —— 两件事被混为一谈。本轮只做形态对齐，不动判定语义。
+
+参考实现从本机 NewMax 的 renderer chunk（`providerOnboarding.js` / `globals-*.js` / `DsButton-*.js`）里提取：**权威组件是 `ModelEditorDialog`**（`data-testid="model-editor-dialog"`），能力开关是 `ModelOptionToggleButton`，配套 token 为 `--ds-on-surface: rgba(55,61,58,0.06)` / `--ds-radius-sm: 8px` / `--ds-radius-md: 12px` / DsButton `small` = `h-7 px-2.5 text-xs`。
+
+### Changed（`apps/desktop/src/renderer/shell/`）
+
+- **`ModelSettings.tsx`**
+  - 补上中断时缺失的 `restoreDraft`（NewMax `capabilityRestoreDetected`），并把能力胶囊抽成 `renderCapabilityButton`，供两个区块复用。
+  - **顶栏**新增 `header-actions`：`恢复检测结果`（仅当草稿与已保存集不同时出现，`is-tertiary`）+ `检测模型能力`（`is-secondary` 描边胶囊）。
+  - **上下文窗口**从「只读文字、点开才展开编辑器」改为 NewMax 的**常驻输入框 + 五档预设胶囊**（128K / 200K / 256K / 500K / 1M，与 NewMax `CONTEXT_WINDOW_PRESETS` 逐项相同）+ 说明行原文。
+  - **能力区块拆成两区**：`能力支持`（NewMax 四维：图片 / 文档 / 视频 / 思考，计数 `n / 4`）+ `更多能力`（文本 / 工具调用 / 联网搜索 / 图片生成 / 向量嵌入）。拆分是刻意的 —— `tool-calling` 与 `web-search` 在 SYNC-THINK 是**生产判据**（Agent 工具循环开关、原生联网路由），NewMax 四维里没有对应物，直接替换会让这两条能力永久失效，所以单列一区并写明后果。
+  - `实测明细` 标题并入 `检测结果` 区块的头部（统计保留在右上），去掉多余的一层标题。
+- **`shell.css`**
+  - **胶囊**：`height 34px → 28px`、`border-radius 999px → 8px`、内边距 `0 12px 0 10px → 0 10px`；**未选中态从浅底胶囊改为无框纯文字**（`background: transparent`，hover 才给一层 on-surface 底）；**选中态从 `--color-accent-soft` 浅橙底改为 `--color-accent` 实心 + `--color-accent-fg` 文字**（NewMax primary 的等价物，跟随主题 token，不硬编码颜色）。
+  - **区块容器化**：`__section` 加 `padding 12px` + `radius 12px` + on-surface 底，对齐 NewMax 的「一区一卡」。
+  - **实测明细**去掉自带的描边 + 底 + 圆角，改为一条 `10%` 细分隔线 —— 它现在嵌在区块容器内，保留外框会变成框套框（用户此前明确反馈过这种「方块框」）。
+  - 新增 7 个缺失类的样式：`__header-actions` / `__action`（`is-tertiary` / `is-secondary`）/ `__field` / `__field-label` / `__context-row` / `__field-helper` / `__meta`。
+- **`ModelSettings.test.tsx`**：4 条断言随结构更新 —— API 格式改用正则匹配（文本被拆进 `__meta` 的 span）、`实测明细` → `检测结果`、上下文窗口改为断言常驻输入框的值 + 预设胶囊。
+
+### Verification
+
+- `ModelSettings.test.tsx` **47/47 通过**。
+- `tsc --noEmit`（desktop）exit 0。
+- 构建：`initial JS 2,107,351 / 2,150,000`、`total JS 3,003,315 / 3,020,000`。
+- 产物核验（`.tmp/verify-dialog.mjs`）：`SettingsPage-*.js` 命中类名 `__header-actions` / `__field-helper` / `__context-row` / `__meta` 与中文「能力支持」「更多能力」「检测结果」（esbuild 大写 `\uXXXX` 转义）；`shell.css` 命中 `is-active{background:var(--color-accent);color:var(--color-accent-fg)}` 与未选态 `background:0 0;border-radius:8px;height:28px`。
+- **真实渲染进程核验**（CDP，注入式探针 `.tmp/_cdp-eval.mjs`）：对话框三个区块为 `能力支持(4) / 更多能力(5) / 检测结果`；未选胶囊实测 `background rgba(0,0,0,0)`、`radius 8px`、`height 28px`；点选「图片」后实测 **`background rgb(160,76,0)`（深橙实心）+ `color rgba(255,255,255,0.9)`（白字）**，且「恢复检测结果」按钮随之出现 —— 与用户提供的 NewMax 截图逐项一致。截图存档 `.tmp/dialog-new.png`。
+- **运行态**：切回标准启动器交付（launcher 5740 → electron 60740，无调试端口），窗口 `SYNC-THINK` / `Responding=True`、stderr 0 行；runtime 三层链未重启（纯 renderer 改动）。
+
+### 未做（如实说明）
+
+NewMax 图二里的**「深度思考」区块**（档位分段控件 + 自动/关闭）**没有实现**。原因不是没挖到规格，而是 SYNC-THINK 的模型记录里**没有对应字段**：`ProviderModelSummary` 只有 `modelId / providerModelId / displayName / protocol / capabilities / capabilitiesConfirmed / priority / credentialRefId / contextWindow`，`reasoningEffort` 只存在于**请求级 / composer 级**（`packages/protocol/src/commands.ts:4514`），不是模型级持久化字段。加一个存不住的控件等于假 UI，比不做更糟。要做需要新增：storage schema → protocol 字段 → runtime 命令 → adapter 透传 → UI，属独立一轮的改动。
+
+另：`apps/runtime` 本轮零改动，所以按仓库惯例**未重启 runtime**；`docs` 之外无其它文件被触碰。

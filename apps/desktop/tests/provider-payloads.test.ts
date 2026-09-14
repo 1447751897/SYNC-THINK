@@ -65,6 +65,9 @@ describe('provider-payloads', () => {
     expect(
       parseProbeCapabilitiesPayload({ providerId: 'p1', modelId: 'm1' }).modelId,
     ).toBe('m1');
+    expect(
+      parseProbeCapabilitiesPayload({ providerId: 'p1', modelId: 'm1', visionOnly: true }).visionOnly,
+    ).toBe(true);
     const confirmed = parseConfirmCapabilitiesPayload({
       modelId: 'm1',
       capabilities: ['text', 'vision'],

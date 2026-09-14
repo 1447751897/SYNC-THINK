@@ -57,6 +57,19 @@ export {
   type CapabilitySuggestion,
   type TextFallbackCompatibilityInput,
 } from './capability-probe.js';
+export {
+  getKnownModelVisionSupport,
+  getKnownVisionSupport,
+  getReliableImageCapability,
+  isGpt6AstraModel,
+  isVisionProbeFailureEnvironmental,
+  isEnvironmentalProbeFailure,
+  classifyVisionProbeFailure,
+  resolveVisionState,
+  type ModelVisionFacts,
+  type VisionProbeFailureKind,
+  type VisionState,
+} from './vision-state.js';
 export * from './credential-binding.js';
 
 export {

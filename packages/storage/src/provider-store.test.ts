@@ -277,6 +277,45 @@ describe('SqliteProviderStore', () => {
     }
   });
 
+  it('persists the per-model vision probe result and reason', async () => {
+    const { store, close } = await openStore();
+    try {
+      const created = store.createProvider({
+        name: 'Vision probe metadata',
+        baseUrl: 'https://vision-probe.example/v1',
+        protocol: 'openai-chat',
+        supportsDiscovery: true,
+        credentialGroupName: 'default',
+        credentialLabel: 'key',
+        credentialKind: 'api-key',
+        storeHandle: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+      });
+      const [model] = store.upsertModels({
+        providerId: created.provider.id,
+        protocol: 'openai-chat',
+        models: [{ providerModelId: 'probe-model', displayName: 'Probe model' }],
+      });
+
+      const failed = store.updateModelVisionProbe({
+        modelId: model!.id,
+        result: false,
+        reason: '未识别测试图中的四位校验码',
+      });
+      expect(failed.visionCapability).toBe(false);
+      expect(failed.visionProbeReason).toContain('未识别测试图');
+
+      const reopened = store.getModel(model!.id)!;
+      expect(reopened.visionCapability).toBe(false);
+      expect(reopened.visionProbeReason).toContain('未识别测试图');
+
+      const passed = store.updateModelVisionProbe({ modelId: model!.id, result: true, reason: null });
+      expect(passed.visionCapability).toBe(true);
+      expect(passed.visionProbeReason).toBeUndefined();
+    } finally {
+      close();
+    }
+  });
+
   it('lists credentials by group and returns first for 搂5.4 routing', async () => {
     const { store, close } = await openStore();
     try {

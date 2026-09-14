@@ -275,6 +275,7 @@ export function parseProbeCapabilitiesPayload(value: unknown): ProbeCapabilities
   return {
     providerId: value.providerId as ProbeCapabilitiesPayload['providerId'],
     modelId: value.modelId as ProbeCapabilitiesPayload['modelId'],
+    visionOnly: value.visionOnly === true,
   };
 }
 

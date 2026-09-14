@@ -22,8 +22,6 @@ import {
   projectTimelineContent,
   projectTransientProseSnapshot,
 } from './deferred-content-projection.js';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
 import { reduceTaskPlanEvents } from '@sync-think/shared';
 import {
   pipePathPortable,
@@ -453,6 +451,8 @@ import {
   resolveCapabilityAccess,
   compareTextSnapshots,
   mergeTextSnapshots,
+  isEnvironmentalProbeFailure,
+  resolveVisionState,
 } from '@sync-think/core';
 import { createHash, randomUUID } from 'node:crypto';
 // cc-switch import helpers re-exported via core
@@ -527,7 +527,6 @@ import {
 import {
   resolveAppendMessageImageDataUrl,
   resolveAppendMessageImageStagingPath,
-  resolveChatImageStagingDir,
 } from './chat-image-staging.js';
 import {
   VISION_FALLBACK_SETTING_KEY,
@@ -535,13 +534,14 @@ import {
   buildImageToolGuidance,
   buildImageHandlingFailureSuffix,
   buildImageDescriptionPrompt,
-  buildWindowsOcrSuffix,
   catalogEntryVisionCapable,
+  catalogEntryVisionState,
   isModelVisionCapable,
   parseVisionFallbackSetting,
+  resolveVisionDescribeModels,
   resolveVisionDescribeModel,
   type DescribeImageInput,
-  type WindowsOcrDescription,
+  type VisionState,
 } from './describe-image.js';
 import {
   DESCRIBE_IMAGE_TOOL_NAME,
@@ -7315,19 +7315,49 @@ export class Runtime {
             protocol: model.protocol,
             existing: model.capabilities,
           });
-          const live = await this.probeModelCapabilitiesLive(provider, model);
+          const live = await this.probeModelCapabilitiesLive(provider, model, payload.visionOnly === true);
+          // 未定维度：本次没测出来 ≠ 没有。把原有声明原样保留，否则一次网络抖动
+          // 就会把已确认的 vision / tool-calling 从模型上抹掉 —— 那正是用户报的
+          // 「有图像能力，却被提示没有图像识别能力」。
+          const carriedOver = live.undetermined.filter((tag) => model.capabilities.includes(tag));
+          const nextCapabilities = payload.visionOnly
+            ? model.capabilities
+            : normalizeCapabilities([...live.capabilities, ...carriedOver]);
           const updated = providerStore.updateModelCapabilities({
             modelId: model.id,
-            capabilities: live.capabilities,
-            capabilitiesConfirmed: false,
+            // 探测全项都「未定」时保留原能力集：写空数组会把模型能力整体抹掉，
+            // 而「没测出来」不等于「什么都没有」。
+            capabilities: nextCapabilities.length > 0 ? nextCapabilities : model.capabilities,
+            // Vision-only scans update the image dimension in isolation. Keep
+            // a user's existing confirmation for text/tools instead of
+            // downgrading the whole model back to "待确认".
+            capabilitiesConfirmed: payload.visionOnly === true ? model.capabilitiesConfirmed : false,
+            ...(live.results.vision !== undefined
+              ? { visionCapability: live.results.vision }
+              : live.undetermined.includes('vision') && model.visionCapability !== undefined
+                ? { visionCapability: model.visionCapability }
+                : {}),
+            ...(live.results.vision === true ? { visionProbeReason: null } : {}),
+            ...(live.visionProbeReason
+              ? { visionProbeReason: live.visionProbeReason }
+              : live.undetermined.includes('vision') && model.visionProbeReason
+                ? { visionProbeReason: model.visionProbeReason }
+                : {}),
           });
           slots[index] = {
             modelId: updated.id,
             providerModelId: updated.providerModelId,
             displayName: updated.displayName,
             capabilities: updated.capabilities,
-            capabilitiesConfirmed: false,
+            capabilitiesConfirmed: updated.capabilitiesConfirmed,
+            ...(live.results.vision !== undefined || live.undetermined.includes('vision')
+              ? { visionCapability: live.results.vision ?? null }
+              : {}),
+            ...(live.visionProbeReason !== undefined
+              ? { visionProbeReason: live.visionProbeReason || null }
+              : {}),
             results: live.results,
+            undetermined: live.undetermined,
             confidence: live.confidence,
             reasons: [...live.reasons, ...heuristic.reasons.filter((reason) => !live.reasons.includes(reason))],
             source: 'live',
@@ -7401,11 +7431,15 @@ export class Runtime {
   private async probeModelCapabilitiesLive(
     provider: { id: ProviderId; baseUrl: string; protocol: ProtocolFamily },
     model: { id: ModelId; providerModelId: string; protocol: ProtocolFamily; credentialRefId?: string },
+    visionOnly = false,
   ): Promise<{
     capabilities: CapabilityTag[];
     results: Partial<Record<CapabilityTag, boolean>>;
+    /** Dimensions whose probe never reached the model — see `isEnvironmentalProbeFailure`. */
+    undetermined: CapabilityTag[];
     confidence: 'low' | 'medium';
     reasons: string[];
+    visionProbeReason?: string;
   }> {
     if (!this.secureStore || !this.providerStore) throw new Error('Runtime 未连接或安全存储不可用');
     const catalog = this.providerStore.listProviders().find((entry) => entry.provider.id === provider.id);
@@ -7423,8 +7457,13 @@ export class Runtime {
     const probeTimer = setTimeout(() => probeAbort.abort(), 90_000);
     const signal = probeAbort.signal;
     const results: Partial<Record<CapabilityTag, boolean>> = {};
+    // 与 results 平行的一档：放「请求根本没打到模型」的维度（鉴权/限流/超时/网络）。
+    // 它们既不能写 true 也不能写 false —— 写 false 会让一次网络抖动把多模态模型
+    // 永久降级到 Windows OCR。NewMax 的 `getReliableImageCapability` 正是为此存在。
+    const undetermined: CapabilityTag[] = [];
     const reasons: string[] = [];
     const capabilities: CapabilityTag[] = [];
+    let visionProbeReason: string | undefined;
 
     const runCall = async (request: import('@sync-think/adapters').ProviderCallRequest) => {
       let text = '';
@@ -7451,7 +7490,7 @@ export class Runtime {
     } as const;
     const probes: Array<Promise<void>> = [];
 
-    if (model.protocol !== 'openai-images') {
+    if (model.protocol !== 'openai-images' && !visionOnly) {
       probes.push(
         (async () => {
           try {
@@ -7464,8 +7503,14 @@ export class Runtime {
             if (results.text) capabilities.push('text');
             reasons.push(results.text ? '文本请求实测成功' : '文本请求返回空内容');
           } catch (error) {
-            results.text = false;
-            reasons.push(`文本请求失败：${error instanceof Error ? error.message : '未知错误'}`);
+            const message = error instanceof Error ? error.message : '未知错误';
+            if (isEnvironmentalProbeFailure(message)) {
+              undetermined.push('text');
+              reasons.push(`文本请求未判定：${message}`);
+            } else {
+              results.text = false;
+              reasons.push(`文本请求失败：${message}`);
+            }
           }
         })(),
       );
@@ -7489,34 +7534,89 @@ export class Runtime {
             });
             const replied = vision.text.trim();
             results.vision = hasVisionProbeMarker(replied);
+            visionProbeReason = results.vision
+              ? undefined
+              : replied
+              ? `未识别测试图中的数字（模型回复：${replied.slice(0, 80)}）`
+                : '模型对探针图未返回任何内容';
             if (results.vision) capabilities.push('vision');
             reasons.push(
               results.vision
                 ? `图片输入实测成功（读出了校验码 ${VISION_PROBE_MARKER}）`
-                : `图片输入未通过：${describeVisionProbeFailure(
-                    replied
-                      ? `未识别测试图中的四位校验码（模型回复：${replied.slice(0, 80)}）`
-                      : '模型对探针图未返回任何内容',
-                  )}`,
+                : `图片输入未通过：${describeVisionProbeFailure(visionProbeReason ?? '')}`,
             );
           } catch (error) {
-            results.vision = false;
+            const message = error instanceof Error ? error.message : '未知错误';
             // 统一加上「图片输入」前缀：限流/网络这类分类标签本身不含该词，
             // 而扫描面板要按关键词把这些原因行筛出来给用户看。
+            if (isEnvironmentalProbeFailure(message)) {
+              // 与 NewMax `getReliableImageCapability` 同源：鉴权/限流/超时/网络
+              // 这类失败根本没拿到模型的能力答复，不能据此判定「不支持图片」——
+              // 否则一次网络抖动就会把多模态模型永久降级到 Windows OCR。
+              // 保留为「未定」（不写入 results.vision），交由已知支持表裁决。
+              undetermined.push('vision');
+              visionProbeReason = message;
+              reasons.push(`图片输入未判定：${describeVisionProbeFailure(message)}`);
+            } else {
+              results.vision = false;
+              visionProbeReason = message;
+              reasons.push(`图片输入未通过：${describeVisionProbeFailure(message)}`);
+            }
+          }
+        })(),
+      );
+    }
+
+    if (visionOnly) {
+      probes.push(
+        (async () => {
+          try {
+            const vision = await runCall({
+              ...requestBase,
+              idempotencyKey: `capability-probe-vision-${ulid()}`,
+              messages: [
+                {
+                  role: 'user',
+                  content: [
+                    { type: 'text', text: VISION_PROBE_PROMPT },
+                    { type: 'image', imageUrl: VISION_PROBE_IMAGE_URL },
+                  ],
+                },
+              ],
+            });
+            const replied = vision.text.trim();
+            results.vision = hasVisionProbeMarker(replied);
+            visionProbeReason = results.vision
+              ? undefined
+              : replied
+                ? `未识别测试图中的数字（模型回复：${replied.slice(0, 80)}）`
+                : '模型对探针图未返回任何内容';
+            if (results.vision) capabilities.push('vision');
             reasons.push(
-              `图片输入未通过：${describeVisionProbeFailure(
-                error instanceof Error ? error.message : '未知错误',
-              )}`,
+              results.vision
+                ? `图片输入实测成功（读出了校验码 ${VISION_PROBE_MARKER}）`
+                : `图片输入未通过：${describeVisionProbeFailure(visionProbeReason ?? '')}`,
             );
+          } catch (error) {
+            const message = error instanceof Error ? error.message : '未知错误';
+            if (isEnvironmentalProbeFailure(message)) {
+              undetermined.push('vision');
+              visionProbeReason = message;
+              reasons.push(`图片输入未判定：${describeVisionProbeFailure(message)}`);
+            } else {
+              results.vision = false;
+              visionProbeReason = message;
+              reasons.push(`图片输入未通过：${describeVisionProbeFailure(message)}`);
+            }
           }
         })(),
       );
     }
 
     if (
-      model.protocol === 'openai-chat' ||
+      !visionOnly && (model.protocol === 'openai-chat' ||
       model.protocol === 'openai-responses' ||
-      model.protocol === 'anthropic-messages'
+      model.protocol === 'anthropic-messages')
     ) {
       probes.push(
         (async () => {
@@ -7541,9 +7641,15 @@ export class Runtime {
             reasons.push(
               results['tool-calling'] ? '工具 schema 请求实测成功' : '工具 schema 请求未返回有效结果',
             );
-          } catch {
-            results['tool-calling'] = false;
-            reasons.push('工具调用请求未通过');
+          } catch (error) {
+            const message = error instanceof Error ? error.message : '未知错误';
+            if (isEnvironmentalProbeFailure(message)) {
+              undetermined.push('tool-calling');
+              reasons.push(`工具调用请求未判定：${message}`);
+            } else {
+              results['tool-calling'] = false;
+              reasons.push('工具调用请求未通过');
+            }
           }
         })(),
       );
@@ -7552,9 +7658,9 @@ export class Runtime {
     // A normal answer does not prove that a model can reason. Only an actual
     // reasoning-delta from a bounded high-effort request marks this capability.
     if (
-      model.protocol === 'openai-chat' ||
+      !visionOnly && (model.protocol === 'openai-chat' ||
       model.protocol === 'openai-responses' ||
-      model.protocol === 'anthropic-messages'
+      model.protocol === 'anthropic-messages')
     ) {
       probes.push(
         (async () => {
@@ -7571,16 +7677,20 @@ export class Runtime {
             if (results.thinking) capabilities.push('thinking');
             reasons.push(results.thinking ? '思考通道实测成功' : '请求完成但未返回思考通道');
           } catch (error) {
-            results.thinking = false;
-            reasons.push(
-              `思考通道请求未通过：${error instanceof Error ? error.message : '未知错误'}`,
-            );
+            const message = error instanceof Error ? error.message : '未知错误';
+            if (isEnvironmentalProbeFailure(message)) {
+              undetermined.push('thinking');
+              reasons.push(`思考通道请求未判定：${message}`);
+            } else {
+              results.thinking = false;
+              reasons.push(`思考通道请求未通过：${message}`);
+            }
           }
         })(),
       );
     }
 
-    if (model.protocol === 'openai-responses') {
+    if (!visionOnly && model.protocol === 'openai-responses') {
       probes.push(
         (async () => {
           try {
@@ -7599,16 +7709,22 @@ export class Runtime {
             results['web-search'] = search.hosted;
             if (results['web-search']) capabilities.push('web-search');
             reasons.push(results['web-search'] ? '联网搜索请求实测成功' : '联网搜索请求返回空内容');
-          } catch {
-            results['web-search'] = false;
-            reasons.push('联网搜索请求未通过');
+          } catch (error) {
+            const message = error instanceof Error ? error.message : '未知错误';
+            if (isEnvironmentalProbeFailure(message)) {
+              undetermined.push('web-search');
+              reasons.push(`联网搜索请求未判定：${message}`);
+            } else {
+              results['web-search'] = false;
+              reasons.push('联网搜索请求未通过');
+            }
           }
         })(),
       );
     }
 
     const generateImages = adapter.generateImages;
-    if (model.protocol === 'openai-images' && generateImages) {
+    if (!visionOnly && model.protocol === 'openai-images' && generateImages) {
       probes.push(
         (async () => {
           try {
@@ -7626,9 +7742,15 @@ export class Runtime {
             results['image-generation'] = generated.images.length > 0;
             if (results['image-generation']) capabilities.push('image-generation');
             reasons.push(results['image-generation'] ? '图像生成请求实测成功' : '图像生成请求未返回图片');
-          } catch {
-            results['image-generation'] = false;
-            reasons.push('图像生成请求未通过');
+          } catch (error) {
+            const message = error instanceof Error ? error.message : '未知错误';
+            if (isEnvironmentalProbeFailure(message)) {
+              undetermined.push('image-generation');
+              reasons.push(`图像生成请求未判定：${message}`);
+            } else {
+              results['image-generation'] = false;
+              reasons.push('图像生成请求未通过');
+            }
           }
         })(),
       );
@@ -7646,7 +7768,16 @@ export class Runtime {
         `[runtime] capability probe found no capability for ${model.providerModelId} (${model.protocol}): ${reasons.join(' | ')}`,
       );
     }
-    return { capabilities: unique, results, confidence: 'medium', reasons };
+    // 未定维度同样按目录顺序归一，避免并发探测让顺序抖动。
+    const undeterminedUnique = normalizeCapabilities(undetermined);
+    return {
+      capabilities: unique,
+      results,
+      undetermined: undeterminedUnique,
+      confidence: 'medium',
+      reasons,
+      visionProbeReason,
+    };
   }
 
   private handleConfirmCapabilities(socket: Socket, frame: Frame): void {
@@ -8612,6 +8743,8 @@ export class Runtime {
       protocol: model.protocol,
       capabilities: model.capabilities,
       capabilitiesConfirmed: model.capabilitiesConfirmed,
+      ...(model.visionCapability !== undefined ? { visionCapability: model.visionCapability } : {}),
+      ...(model.visionProbeReason ? { visionProbeReason: model.visionProbeReason } : {}),
       priority: model.priority,
       credentialRefId: model.credentialRefId,
       contextWindow,
@@ -17990,9 +18123,9 @@ export class Runtime {
         return;
       }
       demoRun = prepared.run;
-      // Vision adaptation: forwarded vs described vs failed. Blocks the append
-      // response (and thus the run start) only while the description itself is
-      // in flight; failures degrade gracefully to forwarding.
+      // Vision adaptation: forwarded vs described. As in NewMax, a failed
+      // visual fallback blocks this send before the user message/run is
+      // committed; the caller receives the actionable preprocessing error.
       try {
         await this.adaptRunImagesForModel(demoRun);
       } catch (error) {
@@ -23152,7 +23285,7 @@ export class Runtime {
     parts.push(LANGUAGE_FOLLOW_PROMPT);
     parts.push(
       ...buildImageToolGuidance({
-        visionCapable: this.isRunModelVisionCapable(run),
+        visionState: this.resolveRunModelVisionState(run),
         visionFallbackEnabled: this.isVisionFallbackSettingEnabled(),
         externalKernel: true,
       }),
@@ -23693,7 +23826,7 @@ export class Runtime {
       return { ok: false, error: 'ocr_image: 工具调用被取消' };
     }
     try {
-      const result = await recognizeImageTextWithWindowsOcr(resolved.absolutePath, {
+      const result = await this.windowsOcrRecognizer(resolved.absolutePath, {
         language,
         signal: call.signal,
       });
@@ -26568,6 +26701,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     return catalogEntryVisionCapable({
       modelId: model.id,
       providerModelId: model.providerModelId,
+      providerId: model.providerId,
       protocol: model.protocol,
       capabilities: model.capabilities,
       capabilitiesConfirmed: model.capabilitiesConfirmed,
@@ -31640,7 +31774,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         ].join('\n')
       : 'Browser Automation Workflow tools are unavailable in this Runtime.';
     const imageToolGuidance = buildImageToolGuidance({
-      visionCapable: this.isRunModelVisionCapable(run),
+      visionState: this.resolveRunModelVisionState(run),
       visionFallbackEnabled: this.isVisionFallbackSettingEnabled(),
       externalKernel: false,
     });
@@ -31945,9 +32079,12 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     return records.map((model) => ({
       modelId: model.id,
       providerModelId: model.providerModelId,
+      providerId: model.providerId,
       protocol: model.protocol,
       capabilities: model.capabilities,
       capabilitiesConfirmed: model.capabilitiesConfirmed,
+      visionCapability: model.visionCapability,
+      probeReason: model.visionProbeReason,
       enabled: this.providerStore?.getProvider(model.providerId)?.enabled ?? false,
     }));
   }
@@ -31958,7 +32095,11 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     const setting = parseVisionFallbackSetting(raw);
     return Boolean(
       setting.enabled &&
-      resolveVisionDescribeModel(this.visionFallbackCatalog(), setting.modelId ?? undefined),
+      resolveVisionDescribeModel(
+        this.visionFallbackCatalog(),
+        setting.modelId ?? undefined,
+        setting.providerId ?? undefined,
+      ),
     );
   }
 
@@ -31967,8 +32108,13 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     return !('error' in pickImageGenerationTarget(this.collectImageGenerationCatalog()));
   }
 
-  /** Whether the model bound to this run accepts image input (catalog tags first, name heuristic fallback). */
-  private isRunModelVisionCapable(run: DemoRunState): boolean {
+  /**
+   * Three-state image-input answer for the model bound to this run.
+   *
+   * `unknown` is a first-class answer: it means nobody could reach a verdict
+   * (no tag, no known-table match) — not that the model is text-only.
+   */
+  private resolveRunModelVisionState(run: DemoRunState): VisionState {
     const catalog = this.providerStore?.listAllModels() ?? [];
     const entry =
       catalog.find((model) => model.id === run.modelId) ??
@@ -31977,21 +32123,30 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
           model.providerModelId === run.providerModelId &&
           (!run.providerId || model.providerId === run.providerId),
       );
-    if (!entry) return isModelVisionCapable(run.providerModelId);
-    return catalogEntryVisionCapable({
+    if (!entry) {
+      return resolveVisionState({
+        providerId: run.providerId,
+        providerModelId: run.providerModelId,
+      });
+    }
+    return catalogEntryVisionState({
       modelId: entry.id,
       providerModelId: entry.providerModelId,
+      providerId: entry.providerId,
       protocol: entry.protocol,
       capabilities: entry.capabilities,
       capabilitiesConfirmed: entry.capabilitiesConfirmed,
+      visionCapability: entry.visionCapability,
+      probeReason: entry.visionProbeReason,
     });
   }
 
   /**
    * Vision fallback: describe each attached image with the vision model the
    * user configured in Settings (vision-fallback → modelId). The configured
-   * model is authoritative — no automatic candidate switching. The attachment
-   * pipeline catches failures and continues with Windows OCR.
+   * model is tried first, followed by NewMax's bounded chain of at most two
+   * other verified candidates. The attachment pipeline reports preprocessing
+   * failure instead of silently converting the image to OCR text.
    */
   private async describeChatImages(
     images: DescribeImageInput[],
@@ -32007,11 +32162,26 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     }
     const records = this.providerStore?.listAllModels() ?? [];
     const catalog = this.visionFallbackCatalog();
-    const describeModel = resolveVisionDescribeModel(catalog, setting.modelId);
-    if (!describeModel) {
+    const describeModels = resolveVisionDescribeModels(
+      catalog,
+      setting.modelId,
+      3,
+      setting.providerId ?? undefined,
+    );
+    if (describeModels.length === 0) {
       throw new Error(`设置的视觉模型不存在、未启用或不支持图片输入: ${setting.modelId}`);
     }
-    return this.describeWithModel(images, describeModel, records, signal);
+    const failures: string[] = [];
+    for (const describeModel of describeModels) {
+      if (signal?.aborted) throw new Error('图片描述已取消');
+      try {
+        return await this.describeWithModel(images, describeModel, records, signal);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        failures.push(`${describeModel.providerModelId}: ${message}`);
+      }
+    }
+    throw new Error(`视觉模型候选均未返回有效描述：${failures.join('；')}`);
   }
 
   /** One image-description batch against a single candidate model. */
@@ -32019,6 +32189,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     images: DescribeImageInput[],
     describeModel: {
       modelId: string;
+      providerId?: string;
       providerModelId: string;
       protocol: string;
     },
@@ -32031,8 +32202,16 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     signal?: AbortSignal,
   ): Promise<Array<{ name: string; text: string }>> {
     const record =
-      records.find((model) => model.id === describeModel.modelId) ??
-      records.find((model) => model.providerModelId === describeModel.providerModelId);
+      records.find(
+        (model) =>
+          model.id === describeModel.modelId &&
+          (!describeModel.providerId || model.providerId === describeModel.providerId),
+      ) ??
+      records.find(
+        (model) =>
+          model.providerModelId === describeModel.providerModelId &&
+          (!describeModel.providerId || model.providerId === describeModel.providerId),
+      );
     const provider =
       record && this.providerStore ? this.providerStore.getProvider(record.providerId) : undefined;
     let credentialRefId = record?.credentialRefId;
@@ -32111,16 +32290,19 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
   }
 
   /**
-   * Deterministic attachment pipeline:
-   *   1) vision-capable model -> forward the original image;
-   *   2) text-only model + valid visual fallback -> inject its description;
-   *   3) no visual fallback or visual call failed -> inject Windows OCR text.
-   * Raw images are never forwarded to a model classified as text-only.
-   * Records `run.imagesMode` for the UI + appendMessage response.
+   * NewMax-style attachment routing:
+   *   1) supported/unknown primary -> forward the original image;
+   *   2) definite text-only primary + verified visual fallback -> inject its
+   *      description and send prose only;
+   *   3) no usable fallback or a fallback error -> keep the image out of the
+   *      text-only request and mark preprocessing failed.
+   * Windows OCR remains an explicit tool for extracting text from workspace
+   * images; it is not an automatic attachment fallback.
    */
   private async adaptRunImagesForModel(run: DemoRunState): Promise<void> {
     if (!run.images || run.images.length === 0 || run.imagesMode) return;
-    if (this.isRunModelVisionCapable(run)) {
+    const visionState = this.resolveRunModelVisionState(run);
+    if (visionState !== 'unsupported') {
       run.imagesMode = 'forwarded';
       return;
     }
@@ -32142,10 +32324,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       })
       .filter((image): image is DescribeImageInput & { stagingPath?: string } => Boolean(image));
     if (inputs.length !== run.images.length) {
-      run.userText += buildImageHandlingFailureSuffix();
-      run.images = undefined;
-      run.imagesMode = 'failed';
-      return;
+      throw new Error('图片转写失败：部分附件没有可读的图片数据，原图未发送。');
     }
 
     if (this.isVisionFallbackSettingEnabled()) {
@@ -32157,76 +32336,18 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         return;
       } catch (error) {
         console.warn(
-          '[runtime] vision description failed; falling back to Windows OCR:',
+          '[runtime] vision description failed; image will not be sent to text-only model:',
           error instanceof Error ? error.message : error,
+        );
+        throw new Error(
+          `${buildImageHandlingFailureSuffix().trim()} ${error instanceof Error ? error.message : String(error)}`,
         );
       }
     }
 
-    try {
-      const descriptions = await this.recognizeChatImagesWithWindowsOcr(inputs);
-      run.userText += buildWindowsOcrSuffix(descriptions);
-      run.images = undefined;
-      run.imagesMode = 'ocr';
-    } catch (error) {
-      console.warn(
-        '[runtime] Windows OCR attachment fallback failed:',
-        error instanceof Error ? error.message : error,
-      );
-      run.userText += buildImageHandlingFailureSuffix();
-      run.images = undefined;
-      run.imagesMode = 'failed';
-    }
-  }
-
-  private async recognizeChatImagesWithWindowsOcr(
-    inputs: Array<DescribeImageInput & { stagingPath?: string }>,
-    signal?: AbortSignal,
-  ): Promise<WindowsOcrDescription[]> {
-    const temporaryPaths: string[] = [];
-    const descriptions: WindowsOcrDescription[] = [];
-    try {
-      for (const image of inputs) {
-        const imagePath =
-          image.stagingPath ?? (await this.materializeTemporaryOcrImage(image, temporaryPaths));
-        const result = await this.windowsOcrRecognizer(imagePath, { signal });
-        descriptions.push({ name: image.name, text: result.text, language: result.language });
-      }
-      return descriptions;
-    } finally {
-      await Promise.all(
-        temporaryPaths.map((path) => rm(path, { force: true }).catch(() => undefined)),
-      );
-    }
-  }
-
-  private async materializeTemporaryOcrImage(
-    image: DescribeImageInput,
-    temporaryPaths: string[],
-  ): Promise<string> {
-    const match = /^data:(image\/(?:png|jpe?g|gif|webp));base64,([A-Za-z0-9+/=\r\n]+)$/i.exec(
-      image.dataUrl,
-    );
-    if (!match) throw new Error(`图片「${image.name}」不是可识别的图片数据`);
-    const bytes = Buffer.from(match[2]!, 'base64');
-    if (bytes.length === 0 || bytes.length > 12_000_000) {
-      throw new Error(`图片「${image.name}」大小超出 OCR 限制`);
-    }
-    const mimeType = match[1]!.toLowerCase();
-    const extension =
-      mimeType === 'image/png'
-        ? 'png'
-        : mimeType === 'image/gif'
-          ? 'gif'
-          : mimeType === 'image/webp'
-            ? 'webp'
-            : 'jpg';
-    const stagingRoot = resolveChatImageStagingDir();
-    await mkdir(stagingRoot, { recursive: true });
-    const imagePath = join(stagingRoot, `runtime-ocr-${ulid()}.${extension}`);
-    await writeFile(imagePath, bytes);
-    temporaryPaths.push(imagePath);
-    return imagePath;
+    // This is the same branch as NewMax's `shouldRun === false`: with no
+    // configured fallback the caller still receives the original attachment.
+    run.imagesMode = 'forwarded';
   }
 
   private persistDemoRunFailure(

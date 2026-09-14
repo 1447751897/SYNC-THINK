@@ -95,7 +95,7 @@ function lastUserString(request: ProviderCallRequest): string {
  * "looks" at the image would therefore always be classified as text-only, so it
  * answers with the code whenever a request carries an image part.
  */
-const VISION_PROBE_ANSWER = '7319';
+const VISION_PROBE_ANSWER = '42';
 
 function hasImagePart(request: ProviderCallRequest): boolean {
   return [...request.messages].reverse().some((m) => {

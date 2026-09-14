@@ -9,6 +9,7 @@ import {
   catalogEntryVisionCapable,
   isModelVisionCapable,
   parseVisionFallbackSetting,
+  resolveVisionDescribeModels,
   resolveVisionDescribeModel,
 } from './describe-image.js';
 
@@ -93,8 +94,8 @@ describe('resolveVisionDescribeModel', () => {
       modelId: 'deepseek-vision',
       providerModelId: 'deepseek-v4-flash-vision-exp',
       protocol: 'openai-responses',
-      capabilities: ['text'],
-      capabilitiesConfirmed: false,
+      capabilities: ['text', 'vision'],
+      capabilitiesConfirmed: true,
       enabled: true,
     },
     {
@@ -154,22 +155,146 @@ describe('resolveVisionDescribeModel', () => {
       ),
     ).toBeUndefined();
   });
+
+  it('rejects an explicitly selected model with unknown vision state', () => {
+    const unknownModel = {
+      modelId: 'selected-unknown',
+      providerId: 'provider-a',
+      providerModelId: 'mystery-model-9000',
+      protocol: 'openai-chat',
+      capabilities: [],
+      capabilitiesConfirmed: false,
+      enabled: true,
+    };
+
+    expect(resolveVisionDescribeModel([unknownModel], unknownModel.modelId)).toBeUndefined();
+    expect(resolveVisionDescribeModels([unknownModel], unknownModel.modelId)).toEqual([]);
+  });
+
+  it('builds a bounded chain with the configured model first', () => {
+    const chain = resolveVisionDescribeModels(
+      [
+        {
+          modelId: 'selected',
+          providerId: 'provider-a',
+          providerModelId: 'gpt-4o',
+          protocol: 'openai-chat',
+          capabilities: ['vision'],
+          capabilitiesConfirmed: true,
+          enabled: true,
+        },
+        {
+          modelId: 'second',
+          providerId: 'provider-a',
+          providerModelId: 'claude-sonnet-4',
+          protocol: 'openai-chat',
+          capabilities: ['vision'],
+          capabilitiesConfirmed: true,
+          enabled: true,
+        },
+        {
+          modelId: 'third',
+          providerId: 'provider-b',
+          providerModelId: 'gemini-2.5-pro',
+          protocol: 'openai-chat',
+          capabilities: ['vision'],
+          capabilitiesConfirmed: true,
+          enabled: true,
+        },
+        {
+          modelId: 'fourth',
+          providerId: 'provider-c',
+          providerModelId: 'grok-4.5',
+          protocol: 'openai-chat',
+          capabilities: ['vision'],
+          capabilitiesConfirmed: true,
+          enabled: true,
+        },
+      ],
+      'selected',
+    );
+    expect(chain.map((entry) => entry.modelId)).toEqual(['selected', 'second', 'third']);
+  });
+
+  it('uses the persisted provider id to disambiguate duplicate model ids', () => {
+    const catalog = [
+      {
+        modelId: 'same-id',
+        providerId: 'wrong-provider',
+        providerModelId: 'vision-model',
+        protocol: 'openai-chat',
+        capabilities: ['vision'],
+        capabilitiesConfirmed: true,
+        enabled: true,
+      },
+      {
+        modelId: 'same-id',
+        providerId: 'right-provider',
+        providerModelId: 'vision-model',
+        protocol: 'openai-chat',
+        capabilities: ['vision'],
+        capabilitiesConfirmed: true,
+        enabled: true,
+      },
+    ];
+    expect(resolveVisionDescribeModel(catalog, 'same-id', 'right-provider')?.providerId).toBe(
+      'right-provider',
+    );
+  });
+
+  it('does not auto-append the built-in default provider to the fallback chain', () => {
+    const chain = resolveVisionDescribeModels(
+      [
+        {
+          modelId: 'selected',
+          providerId: 'provider-a',
+          providerModelId: 'gpt-4o',
+          protocol: 'openai-chat',
+          capabilities: ['vision'],
+          capabilitiesConfirmed: true,
+          enabled: true,
+        },
+        {
+          modelId: 'default-vision',
+          providerId: 'default',
+          providerModelId: 'claude-sonnet',
+          protocol: 'anthropic-messages',
+          capabilities: ['vision'],
+          capabilitiesConfirmed: true,
+          enabled: true,
+        },
+        {
+          modelId: 'other',
+          providerId: 'provider-b',
+          providerModelId: 'gemini-pro',
+          protocol: 'openai-chat',
+          capabilities: ['vision'],
+          capabilitiesConfirmed: true,
+          enabled: true,
+        },
+      ],
+      'selected',
+    );
+    expect(chain.map((entry) => entry.modelId)).toEqual(['selected', 'other']);
+  });
 });
 
 describe('parseVisionFallbackSetting', () => {
   it('reads the enabled + modelId shape from the app KV value', () => {
-    expect(parseVisionFallbackSetting({ enabled: true, modelId: 'm-1' })).toEqual({
+    expect(parseVisionFallbackSetting({ enabled: true, providerId: 'p-1', modelId: 'm-1' })).toEqual({
       enabled: true,
+      providerId: 'p-1',
       modelId: 'm-1',
     });
   });
 
-  it('defaults to disabled/null for missing or malformed values', () => {
-    expect(parseVisionFallbackSetting(undefined)).toEqual({ enabled: false, modelId: null });
-    expect(parseVisionFallbackSetting(null)).toEqual({ enabled: false, modelId: null });
-    expect(parseVisionFallbackSetting('nope')).toEqual({ enabled: false, modelId: null });
+  it('defaults the switch to enabled while leaving the model unselected', () => {
+    expect(parseVisionFallbackSetting(undefined)).toEqual({ enabled: true, providerId: null, modelId: null });
+    expect(parseVisionFallbackSetting(null)).toEqual({ enabled: true, providerId: null, modelId: null });
+    expect(parseVisionFallbackSetting('nope')).toEqual({ enabled: true, providerId: null, modelId: null });
     expect(parseVisionFallbackSetting({ enabled: true, modelId: '' })).toEqual({
       enabled: true,
+      providerId: null,
       modelId: null,
     });
   });
@@ -194,6 +319,18 @@ describe('prompt & suffix assembly', () => {
     }).join('\n');
     expect(guidance).toContain('ocr_image');
     expect(guidance).toContain('describe_image');
+  });
+
+  it('uses NewMax wording for an unconfirmed model without adding OCR guidance', () => {
+    const guidance = buildImageToolGuidance({
+      visionState: 'unknown',
+      visionFallbackEnabled: true,
+      externalKernel: false,
+    });
+    expect(guidance).toHaveLength(1);
+    expect(guidance[0]).toContain('当前模型未确认支持识图');
+    expect(guidance[0]).toContain('原生图片输入');
+    expect(guidance[0]).not.toContain('ocr_image');
   });
 
   it('builds an index-aware description prompt', () => {
@@ -238,6 +375,6 @@ describe('prompt & suffix assembly', () => {
     expect(suffix).toContain('Windows OCR');
     expect(suffix).toContain('【图片 1 · error.png · OCR en-US】Access denied');
     expect(suffix).toContain('不代表完整画面内容');
-    expect(buildImageHandlingFailureSuffix()).toContain('图片预处理失败');
+    expect(buildImageHandlingFailureSuffix()).toContain('图片转写失败');
   });
 });

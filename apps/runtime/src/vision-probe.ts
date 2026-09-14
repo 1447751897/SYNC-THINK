@@ -12,15 +12,15 @@
  * 这一层挡掉，不会被误判成支持视觉。
  */
 
-/** 探针图里画着的四位校验码。判定时要能在模型回复里原样找到它。 */
-export const VISION_PROBE_MARKER = '7319';
+/** NewMax probe marker: the image contains the number 42. */
+export const VISION_PROBE_MARKER = '42';
 
 /**
- * 探针图：160×96、1-bit 灰度 PNG，白底黑字写着 `7319`。
- * 与 NewMax 的 `VISION_PROBE_PNG_BASE64` 逐字节相同（333 字节）。
+ * NewMax's fixed 256×160 1-bit grayscale PNG probe image.
+ * Keep this byte-for-byte identical so probe results are comparable.
  */
 export const VISION_PROBE_PNG_BASE64 =
-  'iVBORw0KGgoAAAANSUhEUgAAAKAAAABgAQAAAACyXEQ0AAAAAnRSTlMAAHaTzTgAAAEGSURBVDjL7dOxcQMhEIXhn9lgw+1A14jH15YDjW/VGaVQAs4IZK2DswBLDhx77oXfwAAPgCNH/hJpII6WO1hEsQB11jbjGo46223GLTLqRMz4rgXz1FYfy+QmlcWl2kD1mmoKl6K5o10qVcM1y4TpFzylsqNL3z0vqVCxB4RnfIP0hA2kPGIFe8RUSeGYa56wfKPkUagUUmTMpdjADFH3ljpqBqmYp4iBDjTMic9xSR3Xj4H7qczRS8cF4Iw5yIRS7tj7PCFlnz7h6x3VdcJUaJhrVh8dp/qNNmNLdT97r/MMV62YS11n3KJgnuI24xoZc+I639sSYM7WfrzkfciSj0995J/nC1iWmD956+TjAAAAAElFTkSuQmCC';
+  'iVBORw0KGgoAAAANSUhEUgAAAQAAAACgAQAAAADLYo+RAAABjElEQVRYw+3VzY3DIBAF4LF88NHbQVpIB25pOzClUQolzJEDIsvYeAHpAdFaOawElxz8JSEv80OvzqEBBhhggAHeB54WeXFbDbgDeKK9AuwBmGitAD6AIpqbgMKpACPACdgx0AKsgK0BWMADAyXACFgxIAFawNIASsAMgT+APKcJAvcW8AcgCGwPsIDwMbPKokRg4wowEeyuArSAcBG5x9YAUxWoC7wqgE4wtwHXgU9AQeBuA0tnUEsN8FlJfqldklOpYWB6QNNXAjsEzwg8BqoHiL4jwPUQ3sYRWFiTGWAIHE0JoL4IhXAB0wMa9mZ4egEFgaH1Arj9E/AYaHpE4PCEUdJyS8zp0QSMp1zIPwIDQbhZnLTSgnsTKDiKw18Rgc9HVALSkydweNonYPOcEmC65l9loSRg8pwQ0HkMCCi81BIoNhIGUxP4IgYAXBEDALaIAQAuYgDAFL8SAE3lHgNgagPVA2UMECwQnOh3qW1/B+42sLcBfx6Y/wD0LWDTV+wQoDPAAAMM8DnwA/c/SrMrlhKXAAAAAElFTkSuQmCC';
 
 /** 探针图对应的 data URL，直接喂给适配层的图片输入。 */
 export const VISION_PROBE_IMAGE_URL = `data:image/png;base64,${VISION_PROBE_PNG_BASE64}`;
@@ -34,11 +34,17 @@ export const VISION_PROBE_PROMPT = '请读取这张图片中的数字，只回�
 /**
  * 模型是否真的读出了探针图里的校验码。
  *
- * 两侧用 `\D` 而不是 `\b`：中文回复里数字会紧邻汉字（"数字是 7319。"），
+ * The numeric branch accepts Chinese text adjacent to the marker ("数字是 42。"),
  * `\b` 在汉字与数字之间不成立，会漏判。这与 NewMax 的实现一致。
  */
 export function hasVisionProbeMarker(text: string): boolean {
-  return new RegExp(`(?:^|\\D)${VISION_PROBE_MARKER}(?:\\D|$)`).test(text.trim());
+  const normalized = text.trim().toLowerCase();
+  return (
+    /(?:^|\D)42(?:\D|$)/.test(normalized) ||
+    /\bforty[\s-]?two\b/.test(normalized) ||
+    /\b4(?:\s*(?:and|&)\s*|\s+)2\b/.test(normalized) ||
+    /4\s*和\s*2|四十二/.test(normalized)
+  );
 }
 
 /**
@@ -70,7 +76,7 @@ const FAILURE_PATTERNS: ReadonlyArray<[VisionProbeFailureClass, RegExp]> = [
   ['network', /network|econn|enotfound|socket|fetch failed|连接失败|连接中断|网络(?:异常|错误|不可用)/i],
   [
     'responseMismatch',
-    /未识别测试图中的(?:数字|四位校验码)|did not identify (?:the )?(?:four-digit code in the )?probe image|probe image response mismatch/i,
+    /未识别测试图中的(?:数字|校验码)|did not identify (?:the )?(?:code in the )?probe image|probe image response mismatch/i,
   ],
 ];
 
@@ -89,7 +95,7 @@ export const VISION_PROBE_FAILURE_LABELS: Record<VisionProbeFailureClass, string
   rateLimit: '被限流（429 / 请求过多）',
   timeout: '请求超时',
   network: '网络异常或连接中断',
-  responseMismatch: `未识别测试图中的校验码 ${VISION_PROBE_MARKER}（可能未真正读取图片）`,
+  responseMismatch: `未识别测试图中的数字 ${VISION_PROBE_MARKER}（可能未真正读取图片）`,
   unknown: '未通过（原因未识别）',
 };
 

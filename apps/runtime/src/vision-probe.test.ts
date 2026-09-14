@@ -16,9 +16,11 @@ describe('hasVisionProbeMarker', () => {
   });
 
   it('accepts a marker wrapped in surrounding prose or punctuation', () => {
-    expect(hasVisionProbeMarker('图中数字是 7319。')).toBe(true);
-    expect(hasVisionProbeMarker('The digits are 7319.')).toBe(true);
-    expect(hasVisionProbeMarker(' 7319 ')).toBe(true);
+    expect(hasVisionProbeMarker('图中数字是 42。')).toBe(true);
+    expect(hasVisionProbeMarker('The digits are 42.')).toBe(true);
+    expect(hasVisionProbeMarker(' 42 ')).toBe(true);
+    expect(hasVisionProbeMarker('forty-two')).toBe(true);
+    expect(hasVisionProbeMarker('四十二')).toBe(true);
   });
 
   it('rejects the hallucinated replies a broken image path produces', () => {
@@ -31,9 +33,9 @@ describe('hasVisionProbeMarker', () => {
   });
 
   it('requires the marker to stand alone rather than appear inside a longer number', () => {
-    expect(hasVisionProbeMarker('17319')).toBe(false);
-    expect(hasVisionProbeMarker('73190')).toBe(false);
-    expect(hasVisionProbeMarker('73197')).toBe(false);
+    expect(hasVisionProbeMarker('142')).toBe(false);
+    expect(hasVisionProbeMarker('420')).toBe(false);
+    expect(hasVisionProbeMarker('442')).toBe(false);
   });
 });
 
@@ -45,7 +47,7 @@ describe('classifyVisionProbeFailure', () => {
     expect(classifyVisionProbeFailure('429 too many requests')).toBe('rateLimit');
     expect(classifyVisionProbeFailure('request timed out')).toBe('timeout');
     expect(classifyVisionProbeFailure('fetch failed ECONNRESET')).toBe('network');
-    expect(classifyVisionProbeFailure('未识别测试图中的四位校验码')).toBe('responseMismatch');
+    expect(classifyVisionProbeFailure('未识别测试图中的数字')).toBe('responseMismatch');
   });
 
   it('falls back to unknown instead of mislabelling an unrecognised reason', () => {
@@ -80,14 +82,14 @@ describe('describeVisionProbeFailure', () => {
 });
 
 describe('probe image parity with NewMax', () => {
-  it('is the same 160x96 1-bit PNG NewMax ships', () => {
+  it('is the same 256x160 1-bit PNG NewMax ships', () => {
     // 与 NewMax main-bundle 里的 VISION_PROBE_PNG_BASE64 逐字节相同。
     // 改这张图会让两侧的视觉判定失去可比性，所以在这里钉死规格。
     const buf = Buffer.from(VISION_PROBE_PNG_BASE64, 'base64');
-    expect(buf.length).toBe(333);
+    expect(buf.length).toBe(453);
     expect(buf.subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a');
-    expect(buf.readUInt32BE(16)).toBe(160); // width
-    expect(buf.readUInt32BE(20)).toBe(96); // height
+    expect(buf.readUInt32BE(16)).toBe(256); // width
+    expect(buf.readUInt32BE(20)).toBe(160); // height
     expect(buf[24]).toBe(1); // bit depth
     expect(buf[25]).toBe(0); // greyscale colour type
   });

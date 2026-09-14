@@ -53,6 +53,7 @@ import {
   GripVertical,
   Image,
   Loader2,
+  Minus,
   Pencil,
   Plug,
   Plus,
@@ -60,6 +61,7 @@ import {
   EyeOff,
   Download,
   RefreshCw,
+  RotateCcw,
   Server,
   Settings2,
   Sparkles,
@@ -67,6 +69,7 @@ import {
   Video,
   Wrench,
   X,
+  Zap,
 } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import clsx from 'clsx';
@@ -118,23 +121,51 @@ const MODEL_CAPABILITY_OPTIONS: ReadonlyArray<{
   description: string;
 }> = [
   { value: 'text', label: '文本', description: '读取并生成文本内容' },
-  { value: 'vision', label: '图片理解', description: '直接读取图片内容' },
-  { value: 'document', label: '文档理解', description: '直接读取 PDF / Office 文档内容' },
-  { value: 'video', label: '视频理解', description: '直接读取视频内容' },
-  { value: 'thinking', label: '深度思考', description: '输出前进行推理思考' },
+  { value: 'vision', label: '图片', description: '直接读取图片内容' },
+  { value: 'document', label: '文档', description: '直接读取 PDF / Office 文档内容' },
+  { value: 'video', label: '视频', description: '直接读取视频内容' },
+  { value: 'thinking', label: '思考', description: '输出前进行推理思考' },
   { value: 'tool-calling', label: '工具调用', description: '调用 MCP 与本地工具' },
   { value: 'web-search', label: '联网搜索', description: '调用模型原生网页搜索' },
   { value: 'image-generation', label: '图片生成', description: '根据提示生成图片' },
   { value: 'embeddings', label: '向量嵌入', description: '生成语义向量数据' },
 ];
 
-/** Quick-pick context windows offered inside the model capability dialog. */
+/**
+ * 「能力支持」区块 —— 逐项对齐 NewMax `ModelEditorDialog` 的 capabilityButtons
+ * （image / document / video / thinking 四项输入模态，选中即深色实心胶囊）。
+ */
+const PRIMARY_CAPABILITY_VALUES: ReadonlySet<string> = new Set([
+  'vision',
+  'document',
+  'video',
+  'thinking',
+]);
+const PRIMARY_CAPABILITY_OPTIONS = MODEL_CAPABILITY_OPTIONS.filter((option) =>
+  PRIMARY_CAPABILITY_VALUES.has(option.value),
+);
+
+/**
+ * 「更多能力」区块 —— NewMax 四维之外的调用类能力。SYNC-THINK 的 tool-calling /
+ * web-search 是生产判据（Agent 工具循环开关、联网路由），不能因为 NewMax 没有
+ * 对应项就丢掉，所以单列一区继续可手动确认。
+ */
+const EXTENDED_CAPABILITY_OPTIONS = MODEL_CAPABILITY_OPTIONS.filter(
+  (option) => !PRIMARY_CAPABILITY_VALUES.has(option.value),
+);
+
+/** NewMax `CONTEXT_WINDOW_PRESETS`（逐项相同：128K / 200K / 256K / 500K / 1M）。 */
 const CONTEXT_WINDOW_PRESETS: ReadonlyArray<number> = [
+  128_000,
   200_000,
-  272_000,
-  300_000,
+  256_000,
+  500_000,
   1_000_000,
 ];
+
+/** NewMax `provider.contextWindowHelper` 原文。 */
+const CONTEXT_WINDOW_HELPER =
+  '纯数字默认按 k 处理，也支持 k、M；最大 10M，留空并关闭会回到自动识别。';
 
 const PROTOCOL_LABELS: Record<ProtocolFamily, string> = {
   'openai-chat': 'OpenAI Chat Completions',
@@ -145,6 +176,7 @@ const PROTOCOL_LABELS: Record<ProtocolFamily, string> = {
 
 interface VisionFallbackSetting {
   enabled: boolean;
+  providerId: string | null;
   modelId: string | null;
 }
 
@@ -794,10 +826,11 @@ function modelRankLabel(index: number): string {
 }
 
 function parseVisionFallback(raw: unknown): VisionFallbackSetting {
-  if (!raw || typeof raw !== 'object') return { enabled: false, modelId: null };
+  if (!raw || typeof raw !== 'object') return { enabled: true, providerId: null, modelId: null };
   const o = raw as Record<string, unknown>;
   return {
-    enabled: o.enabled === true,
+    enabled: o.enabled !== false,
+    providerId: typeof o.providerId === 'string' && o.providerId ? o.providerId : null,
     modelId: typeof o.modelId === 'string' && o.modelId ? o.modelId : null,
   };
 }
@@ -881,7 +914,8 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
     initialDetailView ?? 'provider',
   );
   const [visionFallback, setVisionFallback] = useState<VisionFallbackSetting>({
-    enabled: false,
+    enabled: true,
+    providerId: null,
     modelId: null,
   });
   const [modelConfigCloudSync, setModelConfigCloudSync] = useState(false);
@@ -939,6 +973,8 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
           enabled: p.enabled,
           capabilities: m.capabilities,
           capabilitiesConfirmed: m.capabilitiesConfirmed,
+          visionCapability: m.visionCapability,
+          visionProbeReason: m.visionProbeReason,
         })),
       ),
     [providers],
@@ -1851,12 +1887,17 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
     );
 
   const handleProbeModelCapabilities = useCallback(
-    async (providerId: string, modelId: string): Promise<CapabilityProbeSuggestion> => {
+    async (
+      providerId: string,
+      modelId: string,
+      options?: { visionOnly?: boolean },
+    ): Promise<CapabilityProbeSuggestion> => {
       const api = bridge();
       if (!api?.probeCapabilities) throw new Error('Runtime 未连接或不支持能力检测');
       const result = await api.probeCapabilities({
         providerId: providerId as never,
         modelId: modelId as never,
+        ...(options?.visionOnly ? { visionOnly: true } : {}),
       });
       const suggestion = result.suggestions.find((item) => item.modelId === modelId);
       if (!suggestion) throw new Error('没有返回该模型的能力检测结果');
@@ -1869,7 +1910,15 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
               ? {
                   ...model,
                   capabilities: [...suggestion.capabilities],
-                  capabilitiesConfirmed: false,
+                  capabilitiesConfirmed: options?.visionOnly
+                    ? model.capabilitiesConfirmed
+                    : false,
+                  ...(suggestion.visionCapability !== undefined
+                    ? { visionCapability: suggestion.visionCapability }
+                    : {}),
+                  ...(suggestion.visionProbeReason !== undefined
+                    ? { visionProbeReason: suggestion.visionProbeReason }
+                    : {}),
                 }
               : model,
           ),
@@ -4597,6 +4646,35 @@ function ModelCapabilityDialog({
     setProbeDetail(null);
   };
 
+  /** NewMax `capabilityRestoreDetected`：把草稿恢复到已保存的能力集。 */
+  const restoreDraft = () => {
+    if (busy) return;
+    setDraft([...(model.capabilities ?? [])]);
+    setPhase('idle');
+    setNotice(null);
+    setProbeDetail(null);
+  };
+
+  /** NewMax `capabilityButtons`：一个能力开关胶囊。选中=实心，未选=纯文字。 */
+  const renderCapabilityButton = (option: (typeof MODEL_CAPABILITY_OPTIONS)[number]) => {
+    const active = draft.includes(option.value);
+    return (
+      <button
+        key={option.value}
+        type="button"
+        className={clsx('model-capability-dialog__capability', active && 'is-active')}
+        aria-pressed={active}
+        aria-label={`${option.label}：${active ? '支持' : '未标记'}`}
+        title={option.description}
+        disabled={busy}
+        onClick={() => toggleCapability(option.value)}
+      >
+        <ModelCapabilityIcon capability={option.value} />
+        <span>{option.label}</span>
+      </button>
+    );
+  };
+
   const runProbe = async () => {
     setPhase('probing');
     setProbeDetail(null);
@@ -4607,12 +4685,19 @@ function ModelCapabilityDialog({
       setProbeDetail(suggestion);
       setPhase('success');
       const count = suggestion.capabilities.length;
-      const passed = Object.values(suggestion.results ?? {}).filter(Boolean).length;
+      const results = suggestion.results ?? {};
+      const passed = Object.values(results).filter(Boolean).length;
+      const failed = Object.values(results).length - passed;
+      const undeterminedCount = (suggestion.undetermined ?? []).length;
       setNotice(
         suggestion.source === 'live'
           ? count > 0
             ? `检测完成：已向接口实测，建议勾选 ${count} 项。请核对后保存。`
-            : `检测完成：${passed} 项实测通过、${Object.values(suggestion.results ?? {}).length - passed} 项未通过。详见下方实测明细。`
+            : `检测完成：${passed} 项实测通过、${failed} 项未通过${
+                undeterminedCount > 0
+                  ? `、${undeterminedCount} 项未判定（请求没打到模型，不代表模型没这个能力）`
+                  : ''
+              }。详见下方实测明细。`
           : `检测完成：按协议和模型名推断出 ${count} 项能力。请核对后保存。`,
       );
     } catch (error) {
@@ -4690,6 +4775,33 @@ function ModelCapabilityDialog({
               {provider.name} / {model.providerModelId}
             </RadixDialog.Description>
           </div>
+          {/* NewMax `model-editor-global-actions`：恢复检测结果 + 检测模型能力 */}
+          <div className="model-capability-dialog__header-actions">
+            {draftChanged ? (
+              <button
+                type="button"
+                className="model-capability-dialog__action is-tertiary"
+                disabled={busy}
+                onClick={restoreDraft}
+              >
+                <RotateCcw size={14} aria-hidden="true" />
+                恢复检测结果
+              </button>
+            ) : null}
+            <button
+              type="button"
+              className="model-capability-dialog__action is-secondary"
+              disabled={busy}
+              onClick={() => void runProbe()}
+            >
+              {phase === 'probing' ? (
+                <Loader2 size={14} className="model-settings-spin" aria-hidden="true" />
+              ) : (
+                <Zap size={14} aria-hidden="true" />
+              )}
+              检测模型能力
+            </button>
+          </div>
           <span
             className={clsx(
               'model-capability-dialog__state',
@@ -4711,141 +4823,139 @@ function ModelCapabilityDialog({
         </header>
 
         <div className="model-capability-dialog__body">
-          <dl className="model-capability-dialog__facts">
-            <div>
-              <dt>API 格式</dt>
-              <dd>{protocolLabel}</dd>
-            </div>
-            <div className="model-capability-dialog__facts-context">
-              <dt>上下文窗口</dt>
-              <dd className="model-capability-dialog__context">
-                {editingContext ? (
-                  <div className="model-capability-dialog__context-editor">
-                    <input
-                      className="st-field-input model-capability-dialog__context-input"
-                      type="text"
-                      inputMode="text"
-                      value={contextDraft}
-                      disabled={busy}
-                      autoFocus
-                      placeholder="如 200k / 1m"
-                      aria-label={`${title} 上下文窗口（tokens）`}
-                      title="上下文窗口，单位 tokens（支持 200k、272k、300k、1m）"
-                      onChange={(event) => setContextDraft(event.target.value)}
-                      onBlur={() => commitContextWindow()}
-                      onKeyDown={(event) => {
-                        if (event.key === 'Enter') {
-                          event.preventDefault();
-                          commitContextWindow();
-                        } else if (event.key === 'Escape') {
-                          const current = model.contextWindow;
-                          setEditingContext(false);
-                          setContextDraft(
-                            current && current > 0
-                              ? (formatContext(current) ?? String(current))
-                              : '',
-                          );
-                        }
-                      }}
-                    />
-                    <div className="model-capability-dialog__context-presets">
-                      {CONTEXT_WINDOW_PRESETS.map((preset) => (
-                        <button
-                          key={preset}
-                          type="button"
-                          disabled={busy}
-                          onMouseDown={(event) => event.preventDefault()}
-                          onClick={() => applyContextPreset(preset)}
-                        >
-                          {formatContext(preset)}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                ) : (
+          {/* NewMax `contextWindowTitle` 区块：常驻输入框 + 预设胶囊 + 说明行 */}
+          <section className="model-capability-dialog__field">
+            <span className="model-capability-dialog__field-label">上下文窗口</span>
+            <div className="model-capability-dialog__context-row">
+              <input
+                className="st-field-input model-capability-dialog__context-input"
+                type="text"
+                inputMode="decimal"
+                value={contextDraft}
+                disabled={busy}
+                placeholder="例如 128 / 128k / 1M"
+                aria-label={`${title} 上下文窗口（tokens）`}
+                title="上下文窗口，单位 tokens（支持 128k / 256k / 1m）"
+                onChange={(event) => setContextDraft(event.target.value)}
+                onBlur={() => commitContextWindow()}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault();
+                    commitContextWindow();
+                  } else if (event.key === 'Escape') {
+                    setContextDraft(formatContext(model.contextWindow) ?? '');
+                  }
+                }}
+              />
+              <div className="model-capability-dialog__context-presets">
+                {CONTEXT_WINDOW_PRESETS.map((preset) => (
                   <button
+                    key={preset}
                     type="button"
-                    className="model-capability-dialog__context-value"
                     disabled={busy}
-                    title="点击设置上下文窗口（支持 200k / 272k / 300k / 1m）"
-                    onClick={() => {
-                      setContextDraft(formatContext(model.contextWindow) ?? '');
-                      setEditingContext(true);
-                    }}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => applyContextPreset(preset)}
                   >
-                    <Gauge size={12} aria-hidden="true" />
-                    {formatContext(model.contextWindow) ?? '未设置'}
+                    {formatContext(preset)}
                   </button>
-                )}
-              </dd>
+                ))}
+              </div>
             </div>
-            <div>
-              <dt>优先级</dt>
-              <dd>{modelRankLabel(model.priority)}</dd>
+            <p className="model-capability-dialog__field-helper">{CONTEXT_WINDOW_HELPER}</p>
+          </section>
+
+          <p className="model-capability-dialog__meta">
+            <span>API 格式 {protocolLabel}</span>
+            <span>优先级 {modelRankLabel(model.priority)}</span>
+          </p>
+
+          {/* NewMax `capabilityTitle` 区块：四项输入模态，选中即深色实心胶囊 */}
+          <section className="model-capability-dialog__section">
+            <div className="model-capability-dialog__section-head">
+              <h3>能力支持</h3>
+              <span>
+                {PRIMARY_CAPABILITY_OPTIONS.filter((option) => draft.includes(option.value)).length}{' '}
+                / {PRIMARY_CAPABILITY_OPTIONS.length}
+              </span>
             </div>
-          </dl>
+            <div className="model-capability-dialog__chips" aria-busy={phase === 'probing'}>
+              {PRIMARY_CAPABILITY_OPTIONS.map(renderCapabilityButton)}
+            </div>
+            <p className="model-capability-dialog__field-helper">
+              勾选表示该模型能直接接收这类输入。未勾选时，发送会按运行时能力路由；需要
+              提取文字或理解画面时，可由模型主动调用对应工具 —— 不会因为这里没勾就发不出请求。
+            </p>
+          </section>
+
+          {/* NewMax 没有对应项、但 SYNC-THINK 生产链路直接消费的调用类能力 */}
+          <section className="model-capability-dialog__section">
+            <div className="model-capability-dialog__section-head">
+              <h3>更多能力</h3>
+              <span>
+                {EXTENDED_CAPABILITY_OPTIONS.filter((option) => draft.includes(option.value))
+                  .length}{' '}
+                / {EXTENDED_CAPABILITY_OPTIONS.length}
+              </span>
+            </div>
+            <div className="model-capability-dialog__chips" aria-busy={phase === 'probing'}>
+              {EXTENDED_CAPABILITY_OPTIONS.map(renderCapabilityButton)}
+            </div>
+            <p className="model-capability-dialog__field-helper">
+              工具调用与联网搜索是运行时的生产判据：取消勾选会停用 Agent 工具循环与
+              原生联网路由，所以单独列出以免与输入模态混在一起误改。
+            </p>
+          </section>
 
           <section className="model-capability-dialog__section">
             <div className="model-capability-dialog__section-head">
-              <h3>模型能力</h3>
-              <span>
-                {draft.length} / {MODEL_CAPABILITY_OPTIONS.length}
-              </span>
-            </div>
-            <div
-              className="model-capability-dialog__chips"
-              aria-busy={phase === 'probing'}
-            >
-              {MODEL_CAPABILITY_OPTIONS.map((option) => {
-                const active = draft.includes(option.value);
-                return (
-                  <button
-                    key={option.value}
-                    type="button"
-                    className={clsx(
-                      'model-capability-dialog__capability',
-                      active && 'is-active',
-                    )}
-                    aria-pressed={active}
-                    aria-label={`${option.label}：${active ? '支持' : '未标记'}`}
-                    title={option.description}
-                    disabled={busy}
-                    onClick={() => toggleCapability(option.value)}
-                  >
-                    <ModelCapabilityIcon capability={option.value} />
-                    <span>{option.label}</span>
-                    {active ? <Check size={12} aria-hidden="true" /> : null}
-                  </button>
-                );
-              })}
+              <h3>检测结果</h3>
+              {probeDetail ? (
+                <span>
+                  {Object.values(probeDetail.results ?? {}).filter(Boolean).length} /{' '}
+                  {Object.keys(probeDetail.results ?? {}).length} 项通过
+                  {(probeDetail.undetermined ?? []).length > 0
+                    ? ` · ${(probeDetail.undetermined ?? []).length} 项未判定`
+                    : ''}
+                </span>
+              ) : null}
             </div>
             {probeDetail ? (
               <div className="model-capability-dialog__probe-detail">
-                <div className="model-capability-dialog__section-head">
-                  <h3>实测明细</h3>
-                  <span>
-                    {Object.values(probeDetail.results ?? {}).filter(Boolean).length} /{' '}
-                    {Object.keys(probeDetail.results ?? {}).length} 项通过
-                  </span>
-                </div>
-                {Object.keys(probeDetail.results ?? {}).length > 0 ? (
+                {Object.keys(probeDetail.results ?? {}).length > 0 ||
+                (probeDetail.undetermined ?? []).length > 0 ? (
                   <ul className="model-capability-dialog__probe-results">
                     {MODEL_CAPABILITY_OPTIONS.map((option) => {
                       const value = probeDetail.results?.[option.value];
-                      if (value === undefined) return null;
+                      // 三态：true = 实测通过 / false = 模型答复了但拒绝 / 只在
+                      // undetermined 里 = 请求根本没打到模型。后两者必须分开显示，
+                      // 否则一次网络抖动看起来就像「模型没有这个能力」。
+                      const undetermined = (probeDetail.undetermined ?? []).includes(option.value);
+                      if (value === undefined && !undetermined) return null;
+                      const state = value === true ? 'pass' : value === false ? 'fail' : 'unknown';
                       return (
                         <li
                           key={option.value}
-                          className={value ? 'is-pass' : 'is-fail'}
+                          className={
+                            state === 'pass'
+                              ? 'is-pass'
+                              : state === 'fail'
+                                ? 'is-fail'
+                                : 'is-undetermined'
+                          }
+                          data-state={state}
                           title={option.description}
                         >
-                          {value ? (
+                          {state === 'pass' ? (
                             <Check size={12} aria-hidden="true" />
-                          ) : (
+                          ) : state === 'fail' ? (
                             <X size={12} aria-hidden="true" />
+                          ) : (
+                            <Minus size={12} aria-hidden="true" />
                           )}
                           <span>{option.label}</span>
-                          <em>{value ? '实测通过' : '未通过'}</em>
+                          <em>
+                            {state === 'pass' ? '实测通过' : state === 'fail' ? '未通过' : '未判定'}
+                          </em>
                         </li>
                       );
                     })}
@@ -4991,11 +5101,17 @@ function VisionFallbackPanel({
     enabled: boolean;
     capabilities: readonly string[];
     capabilitiesConfirmed: boolean;
+    visionCapability?: boolean | null;
+    visionProbeReason?: string | null;
   }>;
   value: VisionFallbackSetting;
   busy: boolean;
   onChange(value: VisionFallbackSetting): void;
-  onProbe(providerId: string, modelId: string): Promise<CapabilityProbeSuggestion>;
+  onProbe(
+    providerId: string,
+    modelId: string,
+    options?: { visionOnly?: boolean },
+  ): Promise<CapabilityProbeSuggestion>;
 }) {
   const options = allModels.filter(
     (model) => model.enabled && modelCanServeAsVisionFallback(model),
@@ -5027,7 +5143,7 @@ function VisionFallbackPanel({
         const option = options[index]!;
         const label = `${option.displayName} · ${option.providerName}`;
         try {
-          const suggestion = await onProbe(option.providerId, option.modelId);
+          const suggestion = await onProbe(option.providerId, option.modelId, { visionOnly: true });
           const visionReason =
             suggestion.reasons.find(
               (reason) => reason.includes('图片') || reason.includes('校验码'),
@@ -5039,10 +5155,12 @@ function VisionFallbackPanel({
             reason: visionReason,
           });
         } catch (error) {
+          // 请求本身失败（网络 / 鉴权 / 超时）说明不了模型支不支持图片，
+          // 保持「未判定」而不是打成「未通过」。
           collected.push({
             modelId: option.modelId,
             label,
-            ok: false,
+            ok: undefined,
             reason: error instanceof Error ? error.message : '检测失败',
           });
         }
@@ -5096,13 +5214,20 @@ function VisionFallbackPanel({
                 </span>
               ),
             }))}
-            onChange={(modelId) => onChange({ ...value, modelId: modelId || null })}
+            onChange={(modelId) => {
+              const selected = options.find((model) => model.modelId === modelId);
+              onChange({
+                ...value,
+                providerId: selected?.providerId ?? null,
+                modelId: modelId || null,
+              });
+            }}
           />
         </Field>
         <p className="model-strategy-panel__hint">
           {options.length > 0
             ? '仅显示已启用且支持图片输入的模型；更改会立即保存。'
-            : '当前没有已启用且支持图片输入的模型，文本模型会自动使用 Windows OCR。'}
+            : '当前没有已启用且已验证的图片模型；文本模型可在需要时主动调用 Windows OCR。'}
         </p>
         {options.length > 0 ? (
           <div className="model-strategy-panel__scan">
@@ -5125,11 +5250,11 @@ function VisionFallbackPanel({
                   <li
                     key={row.modelId}
                     className="model-strategy-panel__scan-row"
-                    data-ok={row.ok === true ? 'true' : 'false'}
+                    data-ok={row.ok === true ? 'true' : row.ok === false ? 'false' : 'unknown'}
                   >
                     <span className="model-strategy-panel__scan-name">{row.label}</span>
                     <span className="model-strategy-panel__scan-state">
-                      {row.ok === true ? '✓ 已验证' : '未通过'}
+                      {row.ok === true ? '✓ 已验证' : row.ok === false ? '未通过' : '未判定'}
                     </span>
                     {row.reason ? (
                       <span className="model-strategy-panel__scan-reason">{row.reason}</span>
@@ -5182,13 +5307,29 @@ function modelCanServeAsVisionFallback(model: {
   providerModelId: string;
   capabilities: readonly string[];
   capabilitiesConfirmed: boolean;
+  visionCapability?: boolean | null;
 }): boolean {
+  if (model.visionCapability === true) return true;
+  if (model.visionCapability === false) return false;
   if (model.capabilitiesConfirmed) return model.capabilities.includes('vision');
   if (model.capabilities.includes('vision')) return true;
   const id = model.providerModelId.trim();
-  return /gpt-4o|gpt-4\.1|gpt-[5-9](?:[._-]|$)|\bo[34]\b|\bo[45]-|grok|gemini|claude|-vl\b|\/vl\d|vision|pixtral|llava|internvl/i.test(
-    id,
-  );
+  // Match NewMax's candidate list: known text-only families are excluded,
+  // while unverified/unknown models remain selectable for a later scan.
+  if (
+    /^deepseek-/i.test(id) ||
+    /^glm-(?:5(?:$|-)|5\.[123](?:$|[-[])|4\.7(?:$|-)|4\.5-air(?:$|-))/i.test(id) ||
+    /^qwen3(?:\.6-max|[-.]max)(?:$|-)/i.test(id) ||
+    /^minimax-m2(?:$|[.-])/i.test(id) ||
+    /^step-3\.5(?:$|-)/i.test(id) ||
+    /^gpt-5\.3-codex-spark(?:$|[._-])/i.test(id) ||
+    /^gpt-5\.3-codex(?:$|[._-])/i.test(id) ||
+    /^gpt-oss(?:$|[._-])/i.test(id) ||
+    /^gemini-.*extra-low(?:$|[._-])/i.test(id)
+  ) {
+    return false;
+  }
+  return true;
 }
 
 function PlanActPanel({

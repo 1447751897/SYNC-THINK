@@ -27313,6 +27313,11 @@ body {
   color: var(--color-text);
 }
 
+/* 未判定：既不是通过也不是失败，用一个中间档的文字色。 */
+.model-strategy-panel__scan-row[data-ok='unknown'] .model-strategy-panel__scan-state {
+  color: var(--color-text-secondary);
+}
+
 .model-strategy-panel__scan-reason {
   min-width: 0;
   overflow: hidden;
@@ -29103,6 +29108,113 @@ body {
   cursor: default;
 }
 
+/* NewMax `model-editor-global-actions`：header 右侧的两个动作按钮。 */
+.model-capability-dialog__header-actions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+}
+
+/* NewMax DsButton small：h-7（28px）/ px-2.5（10px）/ text-xs / radius 8px。 */
+.model-capability-dialog__action {
+  display: inline-flex;
+  height: 28px;
+  align-items: center;
+  gap: 5px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  transition:
+    background var(--model-motion-fast) var(--model-ease-standard),
+    color var(--model-motion-fast) var(--model-ease-standard);
+}
+
+.model-capability-dialog__action svg {
+  flex: 0 0 auto;
+}
+
+/* tertiary = on-surface 底；不出现描边（对齐 NewMax 的「恢复检测结果」）。 */
+.model-capability-dialog__action.is-tertiary {
+  background: color-mix(in srgb, var(--color-text) 8%, transparent);
+  color: var(--color-text-secondary);
+}
+
+.model-capability-dialog__action.is-tertiary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-text) 12%, transparent);
+  color: var(--color-text);
+}
+
+/* secondary = 描边胶囊（对齐 NewMax 的「检测模型能力」）。 */
+.model-capability-dialog__action.is-secondary {
+  border: 1px solid color-mix(in srgb, var(--color-text) 18%, transparent);
+  background: transparent;
+  color: var(--color-text);
+}
+
+.model-capability-dialog__action.is-secondary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-text) 8%, transparent);
+}
+
+.model-capability-dialog__action:focus-visible {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent) 28%, transparent);
+}
+
+.model-capability-dialog__action:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* NewMax `contextWindowTitle` 区块：常驻输入框 + 预设胶囊 + 说明行。 */
+.model-capability-dialog__field {
+  display: grid;
+  gap: 8px;
+}
+
+.model-capability-dialog__field-label {
+  color: var(--color-text);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 18px;
+}
+
+.model-capability-dialog__context-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.model-capability-dialog__context-row .model-capability-dialog__context-input {
+  min-width: 132px;
+  flex: 0 1 180px;
+}
+
+.model-capability-dialog__field-helper {
+  margin: 0;
+  color: var(--color-text-faint);
+  font-size: 11.5px;
+  line-height: 17px;
+}
+
+/* API 格式 / 优先级一行元信息。 */
+.model-capability-dialog__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin: 10px 0 0;
+  color: var(--color-text-faint);
+  font-size: 11.5px;
+  line-height: 16px;
+}
+
 .model-capability-dialog__body {
   min-height: 0;
   overflow: auto;
@@ -29216,8 +29328,12 @@ body {
   opacity: 0.5;
 }
 
+/* NewMax 区块容器：on-surface 底 + 12px 圆角 + 12px 内边距（一个区块一张卡）。 */
 .model-capability-dialog__section {
-  margin-top: 14px;
+  margin-top: 12px;
+  padding: 12px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--color-text) 6%, transparent);
 }
 
 .model-capability-dialog__section-head {
@@ -29261,19 +29377,21 @@ body {
   gap: 8px;
 }
 
+/* NewMax `ModelOptionToggleButton`：未选中=无框纯文字，选中=深色实心+对比文字。
+   高度取 NewMax DsButton small 的 h-7（28px）、内边距 px-2.5（10px）、圆角 8px。 */
 .model-capability-dialog__capability {
   display: inline-flex;
-  height: 34px;
+  height: 28px;
   align-items: center;
   gap: 6px;
-  padding: 0 12px 0 10px;
+  padding: 0 10px;
   border: 0;
-  border-radius: 999px;
-  background: var(--shell-tab-hover);
+  border-radius: 8px;
+  background: transparent;
   color: var(--color-text-secondary);
   cursor: pointer;
   font-size: 12px;
-  font-weight: 550;
+  font-weight: 500;
   line-height: 1;
   white-space: nowrap;
   transition:
@@ -29284,10 +29402,12 @@ body {
 .model-capability-dialog__capability svg {
   flex: 0 0 auto;
   color: var(--color-text-faint);
+  transition: color var(--model-motion-fast) var(--model-ease-standard);
 }
 
+/* 未选中项的 hover 只给一层 on-surface 底（比容器深一档），不出现描边。 */
 .model-capability-dialog__capability:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--color-text) 6%, var(--shell-tab-hover));
+  background: color-mix(in srgb, var(--color-text) 8%, transparent);
   color: var(--color-text);
 }
 
@@ -29295,13 +29415,19 @@ body {
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent) 28%, transparent);
 }
 
+/* NewMax primary：主题主色实心 + --color-accent-fg 文字（浅色下为白字）。 */
 .model-capability-dialog__capability.is-active {
-  background: var(--color-accent-soft);
-  color: var(--color-accent-text);
+  background: var(--color-accent);
+  color: var(--color-accent-fg);
 }
 
 .model-capability-dialog__capability.is-active svg {
-  color: var(--color-accent-text);
+  color: var(--color-accent-fg);
+}
+
+.model-capability-dialog__capability.is-active:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-accent) 88%, var(--color-text));
+  color: var(--color-accent-fg);
 }
 
 .model-capability-dialog__capability:disabled {
@@ -29309,12 +29435,11 @@ body {
 }
 
 /* 实测明细：runtime 返回的逐项成败（results）与原因（reasons） */
+/* 实测明细跟在能力胶囊之后，只留一条细分隔线 —— 区块外已有容器，不再叠一层框。 */
 .model-capability-dialog__probe-detail {
-  margin-top: 14px;
-  padding: 10px 12px 11px;
-  border: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--color-border) 12%, transparent);
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid color-mix(in srgb, var(--color-text) 10%, transparent);
 }
 
 .model-capability-dialog__probe-detail .model-capability-dialog__section-head {
@@ -29348,6 +29473,14 @@ body {
 .model-capability-dialog__probe-results li.is-fail {
   background: color-mix(in srgb, var(--color-border) 45%, transparent);
   color: var(--color-text-faint);
+}
+
+/* 「未判定」= 请求没打到模型，不是「模型没有这个能力」。用描边胶囊与两个实心态
+   区分开，免得一次网络抖动看起来像能力缺失。 */
+.model-capability-dialog__probe-results li.is-undetermined {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-text-secondary) 35%, transparent);
+  color: var(--color-text-secondary);
 }
 
 .model-capability-dialog__probe-results li em {
