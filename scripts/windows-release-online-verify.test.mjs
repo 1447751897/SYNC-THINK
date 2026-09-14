@@ -156,3 +156,78 @@ test('拒绝非回环的 http 源（与客户端只接受 HTTPS 的策略一致�
   assert.equal(normalizeOnlineBaseUrl('http://127.0.0.1:8000/'), 'http://127.0.0.1:8000');
   assert.equal(normalizeOnlineBaseUrl('https://sync-think.online/'), 'https://sync-think.online');
 });
+
+test('网络抖动：前两次 fetch 抛错、第三次成功仍判定通过', async () => {
+  // 2026-09-14 那次发布实测：CI runner 到站点 3 秒内直接 `fetch failed`，
+  // 而同一时刻 SSH 与人工请求都正常。这类瞬时错误必须重试，不能误报发布失败。
+  const base = createMockFetch();
+  let failures = 0;
+  const flaky = async (url, init) => {
+    if (failures < 2) {
+      failures += 1;
+      throw new TypeError('fetch failed', { cause: new Error('EAI_AGAIN') });
+    }
+    return base(url, init);
+  };
+
+  const result = await verifyOnlineWindowsRelease({
+    baseUrl: BASE_URL,
+    version: VERSION,
+    fetchImpl: flaky,
+  });
+
+  assert.equal(failures, 2, '应当恰好重试两次');
+  assert.deepEqual(result.errors, []);
+});
+
+test('网络持续不可用时如实报错，不无限重试', async () => {
+  let attempts = 0;
+  const dead = async () => {
+    attempts += 1;
+    throw new TypeError('fetch failed', { cause: new Error('ENOTFOUND') });
+  };
+
+  const result = await verifyOnlineWindowsRelease({
+    baseUrl: BASE_URL,
+    version: VERSION,
+    fetchImpl: dead,
+  });
+
+  assert.equal(result.ok, false);
+  // 两个端点各重试 3 次：channel 元数据、download 全量下载。
+  // artifact 的 Range 校验在 metadata 为空时本就跳过，所以不是 9 次。
+  assert.equal(attempts, 6);
+  assert.ok(result.errors.some((e) => e.startsWith('online-verify.channel_unreachable:')));
+});
+
+test('服务器侧直算哈希：不拉回安装包也能断言两个出口一致', async () => {
+  const fetchImpl = createMockFetch();
+  const result = await verifyOnlineWindowsRelease({
+    baseUrl: BASE_URL,
+    version: VERSION,
+    fetchImpl,
+    remoteSha512: async () => createHash('sha512').update(PAYLOAD).digest('hex'),
+  });
+
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.details.downloadEntry.checkedBytes, true);
+  assert.equal(result.details.downloadEntry.hashedOnServer, true);
+  // 关键：没有发起全量下载（出口带宽只有几百 KB/s，这一步此前要跑一个多小时）
+  assert.equal(
+    fetchImpl.calls.some((call) => call.url === DOWNLOAD_URL && call.range === null),
+    false,
+  );
+});
+
+test('服务器侧直算哈希同样能检出两个出口分叉', async () => {
+  const fetchImpl = createMockFetch();
+  const result = await verifyOnlineWindowsRelease({
+    baseUrl: BASE_URL,
+    version: VERSION,
+    fetchImpl,
+    remoteSha512: async () => createHash('sha512').update('另一份字节').digest('hex'),
+  });
+
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.includes('online-verify.download_entry_not_identical_to_updates'));
+});

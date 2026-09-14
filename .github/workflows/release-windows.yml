@@ -249,10 +249,19 @@ jobs:
             --apply
 
       # 线上回归：feed 元数据可用、安装包支持 Range/206、/downloads/ 与 /updates/ 没有分叉。
+      # 哈希在服务器上直接算（--ssh-target）：站点出口带宽实测只有几百 KB/s，
+      # 把 240MB 拉回 runner 校验要一个多小时；SSH 算 sha512sum 是秒级的，
+      # 断言强度相同（sha512 相同即内容与大小都相同）。
       - name: Verify the live update feed
+        env:
+          SYNC_THINK_DEPLOY_HOST: ${{ secrets.SYNC_THINK_DEPLOY_HOST }}
+          SYNC_THINK_DEPLOY_USER: ${{ secrets.SYNC_THINK_DEPLOY_USER }}
+          SYNC_THINK_DEPLOY_KEY_PATH: ${{ github.workspace }}/.sync-think-deploy-key
         run: |
           set -euo pipefail
           node scripts/windows-release-online-verify.mjs \
             --base-url https://sync-think.online \
             --version "$VERSION" \
-            --publish-dir apps/desktop/release/publish
+            --publish-dir apps/desktop/release/publish \
+            --ssh-target "$SYNC_THINK_DEPLOY_USER@$SYNC_THINK_DEPLOY_HOST" \
+            --ssh-key "$SYNC_THINK_DEPLOY_KEY_PATH"

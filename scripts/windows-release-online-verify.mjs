@@ -16,6 +16,7 @@
  *
  * 只读，不改动线上任何东西。`--skip-download` 可跳过第 3 条的全量下载（应急用，会让断言变弱）。
  */
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -31,6 +32,9 @@ import {
 const DEFAULT_BASE_URL = 'https://sync-think.online';
 const DEFAULT_CHANNEL = 'latest';
 const DEFAULT_TIMEOUT_MS = 120_000;
+const DEFAULT_ATTEMPTS = 3;
+const RETRY_BACKOFF_MS = 1_000;
+const DEFAULT_REMOTE_PATH = '/srv/sync-think/site';
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
 
 const USAGE = `用法:
@@ -42,6 +46,11 @@ const USAGE = `用法:
   --version <版本>     期望版本；省略则跳过版本比对。
   --publish-dir <目录> 本地发布目录；提供时会断言线上元数据与本地产出同源。
   --skip-download      跳过 /downloads/ 的全量下载哈希校验（会让断言变弱）。
+  --ssh-target <user@host>
+                       在服务器上直接算 SHA-512（秒级），替代下载 240MB 安装包。
+                       需与 --ssh-key 同时提供。
+  --ssh-key <路径>     SSH 私钥路径。
+  --remote-path <路径> 站点根在服务器上的绝对路径，默认 ${DEFAULT_REMOTE_PATH}。
   --timeout-ms <毫秒>  单次请求超时，默认 ${DEFAULT_TIMEOUT_MS}。
 `;
 
@@ -65,14 +74,68 @@ export function normalizeOnlineBaseUrl(value) {
   return url.origin + path;
 }
 
-async function fetchWithTimeout(fetchImpl, url, init, timeoutMs) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetchImpl(url, { ...init, signal: controller.signal });
-  } finally {
-    clearTimeout(timer);
+function delay(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+/**
+ * 带退避重试的请求。
+ *
+ * CI runner 到站点的链路会抖：2026-09-14 那次发布实测出现过 3 秒内直接
+ * `fetch failed`（DNS／连接层瞬时错误），而同一时刻 SSH 上传与随后的人工
+ * 请求都完全正常。只对**网络层抛错**重试；非 2xx 属于业务结果，交给调用方
+ * 判断，不在这里吞掉。
+ */
+async function fetchWithTimeout(
+  fetchImpl,
+  url,
+  init,
+  timeoutMs,
+  attempts = DEFAULT_ATTEMPTS,
+) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await fetchImpl(url, { ...init, signal: controller.signal });
+    } catch (error) {
+      lastError = error;
+      if (attempt < attempts) await delay(RETRY_BACKOFF_MS * attempt);
+    } finally {
+      clearTimeout(timer);
+    }
   }
+  throw lastError;
+}
+
+/**
+ * 在服务器上直接算文件 SHA-512（hex）。
+ *
+ * 站点出口带宽实测只有几百 KB/s，把 240MB 安装包拉回 runner 校验要一个多
+ * 小时；SSH 到同一台机器上 `sha512sum` 是秒级的，断言强度相同。
+ */
+export function createRemoteSha512({ target, keyPath, remotePath }) {
+  return async (relativePath) => {
+    const remote = remotePath.replace(/\/+$/, '') + relativePath;
+    const result = spawnSync(
+      'ssh',
+      ['-i', keyPath, '-o', 'IdentitiesOnly=yes', target, 'sha512sum -- ' + remote],
+      { encoding: 'utf8' },
+    );
+    if (result.status !== 0) {
+      throw new Error(
+        'online-verify.remote_hash_failed:' + String(result.stderr ?? '').trim(),
+      );
+    }
+    const hex = String(result.stdout ?? '').trim().split(/\s+/)[0] ?? '';
+    if (!/^[0-9a-f]{128}$/i.test(hex)) {
+      throw new Error('online-verify.remote_hash_invalid:' + hex.slice(0, 16));
+    }
+    return hex.toLowerCase();
+  };
 }
 
 /** 流式读响应体并算 SHA-512，避免把 200MB+ 安装包整份读进内存。 */
@@ -111,6 +174,8 @@ export async function verifyOnlineWindowsRelease(options = {}) {
   const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : DEFAULT_TIMEOUT_MS;
   const checkDownloadHash = options.checkDownloadHash !== false;
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
+  // 若提供，则在服务器上直接算哈希，不再把安装包下载回 runner。
+  const remoteSha512 = typeof options.remoteSha512 === 'function' ? options.remoteSha512 : null;
   if (typeof fetchImpl !== 'function') throw new Error('online-verify.fetch_unavailable');
 
   const errors = [];
@@ -211,7 +276,18 @@ export async function verifyOnlineWindowsRelease(options = {}) {
   const expectedDownloadSize = Number.isInteger(entry?.size) ? entry.size : expectedSize;
   details.downloadEntry = { url: downloadUrl, checkedBytes: false };
   try {
-    if (checkDownloadHash) {
+    if (checkDownloadHash && remoteSha512) {
+      // 服务器侧直算：断言强度与下载全量一致（sha512 相同即内容相同、大小也
+      // 必然相同），但省掉一次 240MB 拉取——站点出口带宽实测只有几百 KB/s。
+      const hex = await remoteSha512('/downloads/' + WINDOWS_DOWNLOAD_ENTRY_FILE_NAME);
+      const sha512 = Buffer.from(hex, 'hex').toString('base64');
+      details.downloadEntry.sha512 = sha512;
+      details.downloadEntry.checkedBytes = true;
+      details.downloadEntry.hashedOnServer = true;
+      if (entry?.sha512 && sha512 !== entry.sha512) {
+        errors.push('online-verify.download_entry_not_identical_to_updates');
+      }
+    } else if (checkDownloadHash) {
       const response = await fetchWithTimeout(fetchImpl, downloadUrl, {}, timeoutMs);
       if (response.status !== 200) {
         errors.push('online-verify.download_entry_status:' + response.status);
@@ -275,10 +351,19 @@ async function main() {
       version: { type: 'string' },
       'publish-dir': { type: 'string' },
       'skip-download': { type: 'boolean', default: false },
+      'ssh-target': { type: 'string' },
+      'ssh-key': { type: 'string' },
+      'remote-path': { type: 'string' },
       'timeout-ms': { type: 'string' },
     },
     allowPositionals: false,
   });
+
+  const sshTarget = values['ssh-target'];
+  const sshKey = values['ssh-key'];
+  if ((sshTarget === undefined) !== (sshKey === undefined)) {
+    throw new Error('online-verify.ssh_options_incomplete:--ssh-target 与 --ssh-key 必须同时提供');
+  }
 
   const timeoutMs = values['timeout-ms'] === undefined ? undefined : Number(values['timeout-ms']);
   const result = await verifyOnlineWindowsRelease({
@@ -288,6 +373,14 @@ async function main() {
     publishDir: values['publish-dir'],
     checkDownloadHash: values['skip-download'] !== true,
     timeoutMs: Number.isFinite(timeoutMs) ? timeoutMs : undefined,
+    remoteSha512:
+      sshTarget === undefined
+        ? undefined
+        : createRemoteSha512({
+            target: sshTarget,
+            keyPath: sshKey,
+            remotePath: values['remote-path'] ?? DEFAULT_REMOTE_PATH,
+          }),
   });
   process.stdout.write(JSON.stringify(result, null, 2) + '\n');
   if (!result.ok) process.exitCode = 1;
