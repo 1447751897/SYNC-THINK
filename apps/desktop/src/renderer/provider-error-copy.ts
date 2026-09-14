@@ -55,6 +55,9 @@ export function formatRuntimeIpcError(error: unknown, fallback: string): string 
     return formatProviderDiscoveryError(error);
   }
   const detail = unwrapRuntimeError(error);
+  if (/Cannot remove the last credential of a provider/i.test(detail)) {
+    return '这是该供应商的最后一个密钥，不能单独删除。如需清空该供应商，请使用「移除」。';
+  }
   const timeout = detail.match(/^Runtime request timed out:\s*(.+)$/i);
   if (timeout) {
     const type = timeout[1].trim();

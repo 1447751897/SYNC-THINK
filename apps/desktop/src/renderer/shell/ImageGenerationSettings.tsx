@@ -552,18 +552,6 @@ export function ImageGenerationSettings({
       });
   };
 
-  const wipeProviderCredentials = async (provider: ProviderSummary) => {
-    const api = bridge();
-    if (!api?.removeProviderCredential || !api.updateProvider) throw new Error('Runtime 未连接');
-    for (const credential of provider.credentials) {
-      await api.removeProviderCredential({
-        providerId: provider.providerId as never,
-        credentialRefId: credential.credentialRefId as never,
-      });
-    }
-    await api.updateProvider({ providerId: provider.providerId, enabled: false });
-  };
-
   const handleToggleEnabled = (provider: ProviderSummary, enabled: boolean) => {
     void withBusy(async () => {
       const api = bridge();
@@ -575,7 +563,10 @@ export function ImageGenerationSettings({
 
   const handleRemoveProvider = (provider: ProviderSummary) => {
     void withBusy(async () => {
-      await wipeProviderCredentials(provider);
+      const api = bridge();
+      if (!api?.deleteProvider) throw new Error('Runtime 未连接');
+      // 移除 = 真删除（供应商、模型、密钥一起清掉）。
+      await api.deleteProvider({ providerId: provider.providerId });
       await load();
     });
   };

@@ -146,13 +146,10 @@ const PRIMARY_CAPABILITY_OPTIONS = MODEL_CAPABILITY_OPTIONS.filter((option) =>
 );
 
 /**
- * 「更多能力」区块 —— NewMax 四维之外的调用类能力。SYNC-THINK 的 tool-calling /
- * web-search 是生产判据（Agent 工具循环开关、联网路由），不能因为 NewMax 没有
- * 对应项就丢掉，所以单列一区继续可手动确认。
+ * 与 NewMax 一致：对话框只暴露这四项输入模态，不再单列「更多能力」区。
+ * 调用类能力（tool-calling / web-search）由 `suggestCapabilities` 按协议与模型族
+ * 静态判定后写入目录，对话框不干预 —— NewMax 同样不把它们做成开关。
  */
-const EXTENDED_CAPABILITY_OPTIONS = MODEL_CAPABILITY_OPTIONS.filter(
-  (option) => !PRIMARY_CAPABILITY_VALUES.has(option.value),
-);
 
 /** NewMax `CONTEXT_WINDOW_PRESETS`（逐项相同：128K / 200K / 256K / 500K / 1M）。 */
 const CONTEXT_WINDOW_PRESETS: ReadonlyArray<number> = [
@@ -1426,15 +1423,18 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
     );
   };
 
+  /**
+   * Tear a provider down: purge every credential in one hop, then disable it.
+   *
+   * Must go through clearProviderCredentials rather than looping
+   * removeProviderCredential — the latter refuses to delete a provider's last
+   * credential (a multi-key-management guard), which made removal impossible
+   * for any provider that still had exactly one key.
+   */
   const wipeProviderCredentials = async (provider: ProviderSummary) => {
     const api = bridge();
-    if (!api?.removeProviderCredential || !api.updateProvider) throw new Error('Runtime 未连接');
-    for (const credential of provider.credentials) {
-      await api.removeProviderCredential({
-        providerId: provider.providerId as never,
-        credentialRefId: credential.credentialRefId as never,
-      });
-    }
+    if (!api?.clearProviderCredentials || !api.updateProvider) throw new Error('Runtime 未连接');
+    await api.clearProviderCredentials({ providerId: provider.providerId });
     await api.updateProvider({ providerId: provider.providerId, enabled: false });
   };
 
@@ -1449,8 +1449,11 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
     void withBusy(
       { kind: 'toggle-provider', targetId: provider.providerId, label: '正在移除…' },
       async () => {
+        const api = bridge();
+        if (!api?.deleteProvider) throw new Error('Runtime 未连接');
         try {
-          await wipeProviderCredentials(provider);
+          // 移除 = 真删除（供应商、模型、密钥一起清掉）。只清密钥是「清空」的语义。
+          await api.deleteProvider({ providerId: provider.providerId });
           await load();
         } catch (error) {
           setProviders(previous);
@@ -4884,25 +4887,6 @@ function ModelCapabilityDialog({
             <p className="model-capability-dialog__field-helper">
               勾选表示该模型能直接接收这类输入。未勾选时，发送会按运行时能力路由；需要
               提取文字或理解画面时，可由模型主动调用对应工具 —— 不会因为这里没勾就发不出请求。
-            </p>
-          </section>
-
-          {/* NewMax 没有对应项、但 SYNC-THINK 生产链路直接消费的调用类能力 */}
-          <section className="model-capability-dialog__section">
-            <div className="model-capability-dialog__section-head">
-              <h3>更多能力</h3>
-              <span>
-                {EXTENDED_CAPABILITY_OPTIONS.filter((option) => draft.includes(option.value))
-                  .length}{' '}
-                / {EXTENDED_CAPABILITY_OPTIONS.length}
-              </span>
-            </div>
-            <div className="model-capability-dialog__chips" aria-busy={phase === 'probing'}>
-              {EXTENDED_CAPABILITY_OPTIONS.map(renderCapabilityButton)}
-            </div>
-            <p className="model-capability-dialog__field-helper">
-              工具调用与联网搜索是运行时的生产判据：取消勾选会停用 Agent 工具循环与
-              原生联网路由，所以单独列出以免与输入模态混在一起误改。
             </p>
           </section>
 

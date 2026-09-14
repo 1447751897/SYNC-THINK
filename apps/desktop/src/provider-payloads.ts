@@ -8,6 +8,8 @@
   ConfirmCapabilitiesPayload,
   ReorderProvidersPayload,
   RemoveProviderCredentialPayload,
+  ClearProviderCredentialsPayload,
+  DeleteProviderPayload,
   RevealProviderCredentialPayload,
   SetModelPrioritiesPayload,
   UpdateModelPayload,
@@ -355,6 +357,26 @@ export function parseRemoveProviderCredentialPayload(
     providerId: value.providerId.trim() as RemoveProviderCredentialPayload['providerId'],
     credentialRefId:
       value.credentialRefId.trim() as RemoveProviderCredentialPayload['credentialRefId'],
+  };
+}
+
+export function parseClearProviderCredentialsPayload(
+  value: unknown,
+): ClearProviderCredentialsPayload {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['providerId']) || !isBoundedId(value.providerId)) {
+    throw new Error('Invalid clear-provider-credentials payload');
+  }
+  return {
+    providerId: value.providerId.trim() as ClearProviderCredentialsPayload['providerId'],
+  };
+}
+
+export function parseDeleteProviderPayload(value: unknown): DeleteProviderPayload {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['providerId']) || !isBoundedId(value.providerId)) {
+    throw new Error('Invalid delete-provider payload');
+  }
+  return {
+    providerId: value.providerId.trim() as DeleteProviderPayload['providerId'],
   };
 }
 

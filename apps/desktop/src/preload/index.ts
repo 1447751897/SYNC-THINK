@@ -92,6 +92,10 @@ import type {
   AddProviderCredentialResponse,
   RemoveProviderCredentialPayload,
   RemoveProviderCredentialResponse,
+  ClearProviderCredentialsPayload,
+  ClearProviderCredentialsResponse,
+  DeleteProviderPayload,
+  DeleteProviderResponse,
   RevealProviderCredentialPayload,
   RevealProviderCredentialResponse,
   UpdateProviderCredentialResponse,
@@ -594,6 +598,13 @@ const api = {
         'runtime:provider-remove-credential',
         payload,
       ) as Promise<RemoveProviderCredentialResponse>,
+    clearProviderCredentials: (payload: ClearProviderCredentialsPayload) =>
+      ipcRenderer.invoke(
+        'runtime:provider-clear-credentials',
+        payload,
+      ) as Promise<ClearProviderCredentialsResponse>,
+    deleteProvider: (payload: DeleteProviderPayload) =>
+      ipcRenderer.invoke('runtime:provider-delete', payload) as Promise<DeleteProviderResponse>,
     revealProviderCredential: (payload: RevealProviderCredentialPayload) =>
       ipcRenderer.invoke(
         'runtime:provider-reveal-credential',

@@ -57,4 +57,15 @@ describe('formatRuntimeIpcError', () => {
       ),
     ).toContain('发送超时');
   });
+
+  it('maps the last-credential guard to actionable Chinese copy', () => {
+    const message = formatRuntimeIpcError(
+      new Error(
+        "Error invoking remote method 'runtime:provider-remove-credential': RuntimeResponseError: Cannot remove the last credential of a provider",
+      ),
+      '操作失败',
+    );
+    expect(message).toContain('最后一个密钥');
+    expect(message).not.toContain('Cannot remove');
+  });
 });

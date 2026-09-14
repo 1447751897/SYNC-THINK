@@ -60,6 +60,8 @@ import {
   type ReorderProvidersResponse,
   type AddProviderCredentialResponse,
   type RemoveProviderCredentialResponse,
+  type ClearProviderCredentialsResponse,
+  type DeleteProviderResponse,
   type RevealProviderCredentialResponse,
   type UpdateProviderCredentialResponse,
   type SetModelPrioritiesResponse,
@@ -617,6 +619,8 @@ import {
   parseReorderProvidersPayload,
   parseAddProviderCredentialPayload,
   parseRemoveProviderCredentialPayload,
+  parseClearProviderCredentialsPayload,
+  parseDeleteProviderPayload,
   parseRevealProviderCredentialPayload,
   parseUpdateProviderCredentialPayload,
   parseSetModelPrioritiesPayload,
@@ -3206,6 +3210,14 @@ export class Runtime {
         }
         if (frame.type === 'provider.removeCredential') {
           void this.handleRemoveProviderCredential(socket, frame);
+          return;
+        }
+        if (frame.type === 'provider.clearCredentials') {
+          void this.handleClearProviderCredentials(socket, frame);
+          return;
+        }
+        if (frame.type === 'provider.delete') {
+          void this.handleDeleteProvider(socket, frame);
           return;
         }
         if (frame.type === 'provider.revealCredential') {
@@ -7316,13 +7328,18 @@ export class Runtime {
             existing: model.capabilities,
           });
           const live = await this.probeModelCapabilitiesLive(provider, model, payload.visionOnly === true);
+          // NewMax `runVisionScan` 只探测视觉一项，探测范围之外的维度一律不动。
+          // 落到这里就是：实测结果只允许覆盖 vision，text / thinking / tool-calling /
+          // web-search 这些由 `suggestCapabilities` 静态判定的维度原样保留 ——
+          // 否则一次视觉探测会把它们整体抹掉（它们根本没有对应探针了）。
           // 未定维度：本次没测出来 ≠ 没有。把原有声明原样保留，否则一次网络抖动
-          // 就会把已确认的 vision / tool-calling 从模型上抹掉 —— 那正是用户报的
+          // 就会把已确认的 vision 从模型上抹掉 —— 那正是用户报的
           // 「有图像能力，却被提示没有图像识别能力」。
           const carriedOver = live.undetermined.filter((tag) => model.capabilities.includes(tag));
+          const untested = model.capabilities.filter((tag) => tag !== 'vision');
           const nextCapabilities = payload.visionOnly
             ? model.capabilities
-            : normalizeCapabilities([...live.capabilities, ...carriedOver]);
+            : normalizeCapabilities([...live.capabilities, ...carriedOver, ...untested]);
           const updated = providerStore.updateModelCapabilities({
             modelId: model.id,
             // 探测全项都「未定」时保留原能力集：写空数组会把模型能力整体抹掉，
@@ -7494,29 +7511,6 @@ export class Runtime {
       probes.push(
         (async () => {
           try {
-            const text = await runCall({
-              ...requestBase,
-              idempotencyKey: `capability-probe-text-${ulid()}`,
-              messages: [{ role: 'user', content: 'Reply with OK.' }],
-            });
-            results.text = Boolean(text.text);
-            if (results.text) capabilities.push('text');
-            reasons.push(results.text ? '文本请求实测成功' : '文本请求返回空内容');
-          } catch (error) {
-            const message = error instanceof Error ? error.message : '未知错误';
-            if (isEnvironmentalProbeFailure(message)) {
-              undetermined.push('text');
-              reasons.push(`文本请求未判定：${message}`);
-            } else {
-              results.text = false;
-              reasons.push(`文本请求失败：${message}`);
-            }
-          }
-        })(),
-      );
-      probes.push(
-        (async () => {
-          try {
             // 与 NewMax 同源的判定：不是「回了字就算支持图片」，而是要求模型
             // 真读出探针图里的校验码。对着无法解析的图编一句的情况会被挡掉。
             const vision = await runCall({
@@ -7613,148 +7607,10 @@ export class Runtime {
       );
     }
 
-    if (
-      !visionOnly && (model.protocol === 'openai-chat' ||
-      model.protocol === 'openai-responses' ||
-      model.protocol === 'anthropic-messages')
-    ) {
-      probes.push(
-        (async () => {
-          try {
-            const tool = await runCall({
-              ...requestBase,
-              idempotencyKey: `capability-probe-tool-${ulid()}`,
-              toolChoice: 'auto',
-              tools: [
-                {
-                  name: 'capability_probe',
-                  description: 'Return the probe result.',
-                  inputSchema: { type: 'object', properties: {} },
-                },
-              ],
-              messages: [{ role: 'user', content: 'Use capability_probe if tools are supported, then reply.' }],
-            });
-            // A normal text answer after receiving a schema is not evidence of
-            // tool support; require an actual tool-call event.
-            results['tool-calling'] = tool.tool;
-            if (results['tool-calling']) capabilities.push('tool-calling');
-            reasons.push(
-              results['tool-calling'] ? '工具 schema 请求实测成功' : '工具 schema 请求未返回有效结果',
-            );
-          } catch (error) {
-            const message = error instanceof Error ? error.message : '未知错误';
-            if (isEnvironmentalProbeFailure(message)) {
-              undetermined.push('tool-calling');
-              reasons.push(`工具调用请求未判定：${message}`);
-            } else {
-              results['tool-calling'] = false;
-              reasons.push('工具调用请求未通过');
-            }
-          }
-        })(),
-      );
-    }
-
-    // A normal answer does not prove that a model can reason. Only an actual
-    // reasoning-delta from a bounded high-effort request marks this capability.
-    if (
-      !visionOnly && (model.protocol === 'openai-chat' ||
-      model.protocol === 'openai-responses' ||
-      model.protocol === 'anthropic-messages')
-    ) {
-      probes.push(
-        (async () => {
-          try {
-            const thinking = await runCall({
-              ...requestBase,
-              idempotencyKey: `capability-probe-thinking-${ulid()}`,
-              reasoningEffort: 'high',
-              messages: [
-                { role: 'user', content: 'Think through this briefly, then answer with OK.' },
-              ],
-            });
-            results.thinking = thinking.reasoning;
-            if (results.thinking) capabilities.push('thinking');
-            reasons.push(results.thinking ? '思考通道实测成功' : '请求完成但未返回思考通道');
-          } catch (error) {
-            const message = error instanceof Error ? error.message : '未知错误';
-            if (isEnvironmentalProbeFailure(message)) {
-              undetermined.push('thinking');
-              reasons.push(`思考通道请求未判定：${message}`);
-            } else {
-              results.thinking = false;
-              reasons.push(`思考通道请求未通过：${message}`);
-            }
-          }
-        })(),
-      );
-    }
-
-    if (!visionOnly && model.protocol === 'openai-responses') {
-      probes.push(
-        (async () => {
-          try {
-            const search = await runCall({
-              ...requestBase,
-              idempotencyKey: `capability-probe-search-${ulid()}`,
-              hostedTools: [{ type: 'web_search', searchContextSize: 'low' }],
-              messages: [
-                {
-                  role: 'user',
-                  content: 'Search the web for the current date and answer with the year.',
-                },
-              ],
-            });
-            // Ordinary prose is not evidence of provider-hosted search.
-            results['web-search'] = search.hosted;
-            if (results['web-search']) capabilities.push('web-search');
-            reasons.push(results['web-search'] ? '联网搜索请求实测成功' : '联网搜索请求返回空内容');
-          } catch (error) {
-            const message = error instanceof Error ? error.message : '未知错误';
-            if (isEnvironmentalProbeFailure(message)) {
-              undetermined.push('web-search');
-              reasons.push(`联网搜索请求未判定：${message}`);
-            } else {
-              results['web-search'] = false;
-              reasons.push('联网搜索请求未通过');
-            }
-          }
-        })(),
-      );
-    }
-
-    const generateImages = adapter.generateImages;
-    if (!visionOnly && model.protocol === 'openai-images' && generateImages) {
-      probes.push(
-        (async () => {
-          try {
-            const generated = await generateImages({
-              protocol: 'openai-images',
-              baseUrl: provider.baseUrl,
-              modelId: model.providerModelId,
-              apiKey,
-              idempotencyKey: `capability-probe-image-${ulid()}`,
-              signal,
-              prompt: 'A single solid blue square.',
-              count: 1,
-              size: '1024x1024',
-            });
-            results['image-generation'] = generated.images.length > 0;
-            if (results['image-generation']) capabilities.push('image-generation');
-            reasons.push(results['image-generation'] ? '图像生成请求实测成功' : '图像生成请求未返回图片');
-          } catch (error) {
-            const message = error instanceof Error ? error.message : '未知错误';
-            if (isEnvironmentalProbeFailure(message)) {
-              undetermined.push('image-generation');
-              reasons.push(`图像生成请求未判定：${message}`);
-            } else {
-              results['image-generation'] = false;
-              reasons.push('图像生成请求未通过');
-            }
-          }
-        })(),
-      );
-    }
+    // NewMax `runVisionScan` 只探测视觉一项 —— 这里不再向接口发文本 / 工具 / 思考 /
+    // 联网 / 生图探针。这几个维度的能力由 `suggestCapabilities` 静态判定后写入目录，
+    // 与 NewMax 用 `getKnownVisionSupport` 静态表兜底是同一角色：静态给默认值，
+    // 实测只负责纠正视觉那一项。
 
     await Promise.all(probes);
     clearTimeout(probeTimer);
@@ -7983,6 +7839,80 @@ export class Runtime {
           id: frame.id,
           kind: 'response',
           type: 'provider.removeCredential',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeProviderCommandError(socket, frame, error);
+    }
+  }
+
+  private async handleClearProviderCredentials(socket: Socket, frame: Frame): Promise<void> {
+    const payload = parseClearProviderCredentialsPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.providerStore || !this.secureStore) {
+      this.writeProviderStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const { storeHandles } = this.providerStore.clearProviderCredentials(payload.providerId);
+      for (const handle of storeHandles) {
+        try {
+          await this.secureStore.removeSecret(handle);
+        } catch {
+          /* best-effort secret purge */
+        }
+      }
+      const summary = this.providerSummaryById(payload.providerId);
+      if (!summary) throw new Error(`Provider not found: ${payload.providerId}`);
+      const response: ClearProviderCredentialsResponse = {
+        provider: summary,
+        cleared: storeHandles.length,
+      };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'provider.clearCredentials',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeProviderCommandError(socket, frame, error);
+    }
+  }
+
+  private async handleDeleteProvider(socket: Socket, frame: Frame): Promise<void> {
+    const payload = parseDeleteProviderPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.providerStore || !this.secureStore) {
+      this.writeProviderStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const { storeHandles } = this.providerStore.deleteProvider(payload.providerId);
+      for (const handle of storeHandles) {
+        try {
+          await this.secureStore.removeSecret(handle);
+        } catch {
+          /* best-effort secret purge */
+        }
+      }
+      const response: DeleteProviderResponse = {
+        providerId: payload.providerId,
+        deleted: true,
+      };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'provider.delete',
           payload: response,
         }),
       );

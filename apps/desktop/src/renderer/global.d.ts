@@ -83,6 +83,10 @@ import type {
   AddProviderCredentialResponse,
   RemoveProviderCredentialPayload,
   RemoveProviderCredentialResponse,
+  ClearProviderCredentialsPayload,
+  ClearProviderCredentialsResponse,
+  DeleteProviderPayload,
+  DeleteProviderResponse,
   SetModelPrioritiesPayload,
   SetModelPrioritiesResponse,
   UpdateModelPayload,
@@ -394,6 +398,10 @@ declare global {
         removeProviderCredential(
           payload: RemoveProviderCredentialPayload,
         ): Promise<RemoveProviderCredentialResponse>;
+        clearProviderCredentials(
+          payload: ClearProviderCredentialsPayload,
+        ): Promise<ClearProviderCredentialsResponse>;
+        deleteProvider(payload: DeleteProviderPayload): Promise<DeleteProviderResponse>;
         revealProviderCredential(
           payload: import('@sync-think/protocol').RevealProviderCredentialPayload,
         ): Promise<import('@sync-think/protocol').RevealProviderCredentialResponse>;

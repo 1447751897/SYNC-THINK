@@ -163,6 +163,8 @@ import {
   parseReorderProvidersPayload,
   parseAddProviderCredentialMetadata,
   parseRemoveProviderCredentialPayload,
+  parseClearProviderCredentialsPayload,
+  parseDeleteProviderPayload,
   parseRevealProviderCredentialPayload,
   parseUpdateProviderCredentialMetadata,
   parseSetModelPrioritiesPayload,
@@ -2109,6 +2111,19 @@ function setupRuntimeBridge(): void {
       'provider.removeCredential',
       parseRemoveProviderCredentialPayload(value),
     );
+  });
+  ipcMain.handle('runtime:provider-clear-credentials', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'provider.clearCredentials',
+      parseClearProviderCredentialsPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:provider-delete', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('provider.delete', parseDeleteProviderPayload(value));
   });
   ipcMain.handle('runtime:provider-reveal-credential', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);

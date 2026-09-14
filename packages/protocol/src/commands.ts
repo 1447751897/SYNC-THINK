@@ -91,6 +91,8 @@ export type CommandType =
   | 'provider.reorder'
   | 'provider.addCredential'
   | 'provider.removeCredential'
+  | 'provider.clearCredentials'
+  | 'provider.delete'
   | 'provider.revealCredential'
   | 'provider.updateCredential'
   | 'provider.setModelPriorities'
@@ -1269,6 +1271,37 @@ export interface RemoveProviderCredentialPayload {
 export interface RemoveProviderCredentialResponse {
   provider: ProviderSummary;
   removed: boolean;
+}
+
+/**
+ * Tear down every credential of a provider in one hop.
+ *
+ * Used by the "remove provider" flow: unlike provider.removeCredential this
+ * intentionally bypasses the "last credential" guard, because the provider is
+ * being taken down rather than managed as a multi-key group.
+ */
+export interface ClearProviderCredentialsPayload {
+  providerId: import('@sync-think/shared').ProviderId;
+}
+
+export interface ClearProviderCredentialsResponse {
+  provider: ProviderSummary;
+  /** Number of credentials purged (0 when the provider had none). */
+  cleared: number;
+}
+
+/**
+ * Hard-delete a provider and everything under it (models, credential groups,
+ * refs). Unlike provider.clearCredentials the provider itself is gone, so the
+ * response cannot echo a summary.
+ */
+export interface DeleteProviderPayload {
+  providerId: import('@sync-think/shared').ProviderId;
+}
+
+export interface DeleteProviderResponse {
+  providerId: import('@sync-think/shared').ProviderId;
+  deleted: boolean;
 }
 
 /**

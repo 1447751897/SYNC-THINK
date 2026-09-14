@@ -85,6 +85,8 @@ const runtime = {
   setSetting: vi.fn(),
   getUsageSummary: vi.fn(),
   removeProviderCredential: vi.fn(),
+  clearProviderCredentials: vi.fn(),
+  deleteProvider: vi.fn(),
 };
 
 beforeEach(() => {
@@ -207,6 +209,11 @@ beforeEach(() => {
   });
   runtime.setSetting.mockResolvedValue({});
   runtime.removeProviderCredential.mockResolvedValue({ providerId: provider.providerId });
+  runtime.clearProviderCredentials.mockResolvedValue({
+    providerId: provider.providerId,
+    cleared: 1,
+  });
+  runtime.deleteProvider.mockResolvedValue({ providerId: provider.providerId, deleted: true });
   runtime.getUsageSummary.mockResolvedValue({
     rows: [],
     requests: [
@@ -525,9 +532,12 @@ describe('ModelSettings NewMax provider detail', () => {
     ) as HTMLInputElement;
     expect(contextInput.value).toBe('372k');
     expect(within(detail).getByText('能力支持')).toBeTruthy();
-    expect(within(detail).getByText('更多能力')).toBeTruthy();
-    expect(within(detail).getByRole('button', { name: '文本：支持' })).toBeTruthy();
-    expect(within(detail).getByRole('button', { name: '联网搜索：未标记' })).toBeTruthy();
+    // NewMax 形态：对话框只暴露四项输入模态（图片 / 文档 / 视频 / 思考），
+    // 不再单列「更多能力」区。调用类能力（tool-calling / web-search）由
+    // `suggestCapabilities` 按协议与模型族静态判定后写入目录，对话框不干预。
+    expect(within(detail).queryByText('更多能力')).toBeNull();
+    expect(within(detail).getByRole('button', { name: '图片：支持' })).toBeTruthy();
+    expect(within(detail).queryByRole('button', { name: '联网搜索：未标记' })).toBeNull();
 
     fireEvent.click(within(detail).getByRole('button', { name: '检测能力' }));
 
@@ -537,7 +547,12 @@ describe('ModelSettings NewMax provider detail', () => {
         modelId: 'model-1',
       });
     });
-    expect(await within(detail).findByRole('button', { name: '联网搜索：支持' })).toBeTruthy();
+    // 探测结果仍在「检测结果」区逐项列出 —— 只是改成了只读 li，不再是可点的能力按钮。
+    await waitFor(() => {
+      expect(
+        detail.querySelector('.model-capability-dialog__probe-results')?.textContent,
+      ).toContain('联网搜索');
+    });
     expect(within(detail).getByText(/检测完成：已向接口实测，建议勾选 4 项/)).toBeTruthy();
 
     fireEvent.click(within(detail).getByRole('button', { name: '保存能力' }));
@@ -762,7 +777,8 @@ describe('ModelSettings NewMax provider detail', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '查看模型 gpt-5' }));
     const detail = await screen.findByRole('dialog', { name: 'gpt-5' });
-    fireEvent.click(within(detail).getByRole('button', { name: '联网搜索：未标记' }));
+    // 点一个「能力支持」区里的未标记项让草稿变脏，保存按钮才可用。
+    fireEvent.click(within(detail).getByRole('button', { name: '文档：未标记' }));
     fireEvent.click(within(detail).getByRole('button', { name: '保存能力' }));
 
     expect((await within(detail).findByRole('alert')).textContent).toContain(
@@ -1369,6 +1385,53 @@ describe('ModelSettings NewMax provider detail', () => {
     expect(screen.queryByRole('menuitem', { name: '编辑配置' })).toBeNull();
     fireEvent.click(screen.getByRole('menuitem', { name: '移除' }));
     expect(screen.getByRole('menuitem', { name: '确认移除' })).toBeTruthy();
+  });
+
+  it('hard-deletes the provider when 移除 is confirmed, even with a single key', async () => {
+    await renderSettings();
+    fireEvent.click(screen.getByRole('button', { name: 'CODEX 更多操作' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '移除' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '确认移除' }));
+
+    await waitFor(() => {
+      expect(runtime.deleteProvider).toHaveBeenCalledWith({
+        providerId: provider.providerId,
+      });
+    });
+    // 移除不能退化成单删循环：那条路径会拒绝删掉供应商的最后一个密钥，
+    // 这正是之前「移除」永远失败的原因。
+    expect(runtime.removeProviderCredential).not.toHaveBeenCalled();
+    // 也不该把它「停用」回来 —— 硬删除后它不应再出现在列表里。
+    expect(runtime.updateProvider).not.toHaveBeenCalledWith(
+      expect.objectContaining({ providerId: provider.providerId, enabled: false }),
+    );
+  });
+
+  it('only clears credentials (keeps the provider) when 清空 is used', async () => {
+    runtime.listProviders.mockResolvedValue({
+      providers: [
+        provider,
+        {
+          ...provider,
+          providerId: 'provider-disabled' as ProviderSummary['providerId'],
+          name: 'OLD',
+          enabled: false,
+          sortOrder: 1,
+        },
+      ],
+    });
+    await renderSettings();
+
+    fireEvent.click(screen.getByTestId('model-settings-disabled-action-menu-trigger'));
+    fireEvent.click(screen.getByRole('menuitem', { name: '清空' }));
+
+    await waitFor(() => {
+      expect(runtime.clearProviderCredentials).toHaveBeenCalledWith({
+        providerId: 'provider-disabled',
+      });
+    });
+    // 「清空」只清密钥，不能顺手把供应商删掉。
+    expect(runtime.deleteProvider).not.toHaveBeenCalled();
   });
 
   it('expands disabled providers under the section header', async () => {

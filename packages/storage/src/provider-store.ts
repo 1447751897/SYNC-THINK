@@ -1148,6 +1148,99 @@ export class SqliteProviderStore {
     tx();
     return { storeHandle: ref.storeHandle };
   }
+
+  /**
+   * Remove every credential of a provider in one transaction.
+   *
+   * This backs the "remove provider" flow, which is a teardown rather than
+   * multi-key management — so it deliberately bypasses the "last credential"
+   * guard in removeCredentialRef (that guard exists to keep a live provider
+   * usable). Returns the purged store handles so the caller can evict the
+   * matching secrets from the secure store.
+   */
+  clearProviderCredentials(providerId: ProviderId | string): { storeHandles: string[] } {
+    const id = String(providerId ?? '').trim();
+    if (!id) throw new Error('Provider id must not be empty');
+    if (!this.getProvider(id as ProviderId)) throw new Error(`Provider not found: ${id}`);
+
+    const rows = this.raw
+      .prepare(
+        `SELECT cr.id AS id, cr.store_handle AS store_handle
+         FROM credential_ref cr
+         INNER JOIN credential_group cg ON cg.id = cr.credential_group_id
+         WHERE cg.provider_id = ?
+         ORDER BY cr.created_at ASC, cr.id ASC`,
+      )
+      .all(id) as Array<{ id: string; store_handle: string }>;
+    if (rows.length === 0) return { storeHandles: [] };
+
+    const tx = this.raw.transaction(() => {
+      // Unpin every model that referenced any of this provider's credentials.
+      this.raw
+        .prepare(
+          `UPDATE model SET credential_ref_id = NULL
+           WHERE credential_ref_id IN (
+             SELECT cr.id FROM credential_ref cr
+             INNER JOIN credential_group cg ON cg.id = cr.credential_group_id
+             WHERE cg.provider_id = ?
+           )`,
+        )
+        .run(id);
+      this.raw
+        .prepare(
+          `DELETE FROM credential_ref
+           WHERE credential_group_id IN (
+             SELECT id FROM credential_group WHERE provider_id = ?
+           )`,
+        )
+        .run(id);
+    });
+    tx();
+
+    return { storeHandles: rows.map((row) => row.store_handle) };
+  }
+
+  /**
+   * Hard-delete a provider and everything that hangs off it — its models, its
+   * credential groups and refs — in one transaction.
+   *
+   * Nothing in the schema declares a foreign key to `provider` (or to `model`),
+   * so this cannot orphan or cascade into unrelated rows; historical
+   * context_epoch rows keep the provider id as a plain string snapshot.
+   * Returns the purged store handles so the caller can evict the secrets.
+   */
+  deleteProvider(providerId: ProviderId | string): { storeHandles: string[] } {
+    const id = String(providerId ?? '').trim();
+    if (!id) throw new Error('Provider id must not be empty');
+    if (!this.getProvider(id as ProviderId)) throw new Error(`Provider not found: ${id}`);
+
+    const rows = this.raw
+      .prepare(
+        `SELECT cr.id AS id, cr.store_handle AS store_handle
+         FROM credential_ref cr
+         INNER JOIN credential_group cg ON cg.id = cr.credential_group_id
+         WHERE cg.provider_id = ?
+         ORDER BY cr.created_at ASC, cr.id ASC`,
+      )
+      .all(id) as Array<{ id: string; store_handle: string }>;
+
+    const tx = this.raw.transaction(() => {
+      this.raw.prepare(`DELETE FROM model WHERE provider_id = ?`).run(id);
+      this.raw
+        .prepare(
+          `DELETE FROM credential_ref
+           WHERE credential_group_id IN (
+             SELECT id FROM credential_group WHERE provider_id = ?
+           )`,
+        )
+        .run(id);
+      this.raw.prepare(`DELETE FROM credential_group WHERE provider_id = ?`).run(id);
+      this.raw.prepare(`DELETE FROM provider WHERE id = ?`).run(id);
+    });
+    tx();
+
+    return { storeHandles: rows.map((row) => row.store_handle) };
+  }
 }
 
 function canonicalizeBaseUrl(raw: string): string {

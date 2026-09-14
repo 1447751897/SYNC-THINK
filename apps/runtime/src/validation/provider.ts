@@ -1,5 +1,5 @@
 // provider command payload parsers (extracted from command-validation.ts).
-import type { CreateProviderPayload, UpdateProviderPayload, ListProvidersPayload, DiscoverModelsPayload, ProbeModelsPayload, AddModelsPayload, ReorderProvidersPayload, AddProviderCredentialPayload, RemoveProviderCredentialPayload, RevealProviderCredentialPayload, UpdateProviderCredentialPayload, SetModelPrioritiesPayload, UpdateModelPayload, RemoveModelPayload, GetSettingsPayload, SetSettingPayload, UsageSummaryPayload, ProviderBalancePayload } from '@sync-think/protocol';
+import type { CreateProviderPayload, UpdateProviderPayload, ListProvidersPayload, DiscoverModelsPayload, ProbeModelsPayload, AddModelsPayload, ReorderProvidersPayload, AddProviderCredentialPayload, RemoveProviderCredentialPayload, ClearProviderCredentialsPayload, DeleteProviderPayload, RevealProviderCredentialPayload, UpdateProviderCredentialPayload, SetModelPrioritiesPayload, UpdateModelPayload, RemoveModelPayload, GetSettingsPayload, SetSettingPayload, UsageSummaryPayload, ProviderBalancePayload } from '@sync-think/protocol';
 import { PROTOCOLS, SURFACES, isRecord } from './shared.js';
 
 export function parseCreateProviderPayload(value: unknown): CreateProviderPayload | undefined {
@@ -303,6 +303,32 @@ export function parseRemoveProviderCredentialPayload(
     return undefined;
   }
   return value as unknown as RemoveProviderCredentialPayload;
+}
+
+export function parseClearProviderCredentialsPayload(
+  value: unknown,
+): ClearProviderCredentialsPayload | undefined {
+  if (!isRecord(value)) return undefined;
+  if (
+    typeof value.providerId !== 'string' ||
+    value.providerId.length === 0 ||
+    value.providerId.length > 256
+  ) {
+    return undefined;
+  }
+  return value as unknown as ClearProviderCredentialsPayload;
+}
+
+export function parseDeleteProviderPayload(value: unknown): DeleteProviderPayload | undefined {
+  if (!isRecord(value)) return undefined;
+  if (
+    typeof value.providerId !== 'string' ||
+    value.providerId.length === 0 ||
+    value.providerId.length > 256
+  ) {
+    return undefined;
+  }
+  return value as unknown as DeleteProviderPayload;
 }
 
 export function parseRevealProviderCredentialPayload(
