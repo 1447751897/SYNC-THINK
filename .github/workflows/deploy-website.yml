@@ -65,7 +65,11 @@ jobs:
 
       - name: Upload website
         run: |
+          # `--delete` 会删掉站点目录里不在 dist/ 中的一切：`downloads/` 与
+          # `updates/` 都是发布产物、不由网站构建产出，必须显式排除。漏掉
+          # `updates/` 会把整个更新源删光，已装用户从此检查不到新版本。
           rsync -az --delete \
+            --exclude updates/ \
             --exclude downloads/ \
             --exclude index.html \
             --exclude styles.css \
