@@ -1,8 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { LoaderCircle, RefreshCw, RotateCcw, Webhook, X } from 'lucide-react';
-import type { Event, RunIndexEntry, RunIndexSource, RunIndexState } from '@sync-think/shared';
+import { LoaderCircle, RefreshCw, RotateCcw, Webhook } from 'lucide-react';
+import {
+  looksLikeOpaqueId,
+  type Event,
+  type RunIndexEntry,
+  type RunIndexSource,
+  type RunIndexState,
+} from '@sync-think/shared';
 import type { ActivityExternalEventSummary } from '@sync-think/protocol';
 import { resolveKernelDisplayName } from './brand-icons.js';
+import { toastApi } from './Toast.js';
 
 const PAGE_LIMIT = 25;
 
@@ -64,6 +71,20 @@ function formatLocal(iso?: string): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
+function activityRunTitle(entry: RunIndexEntry): string {
+  const title = entry.title?.trim();
+  if (title && !looksLikeOpaqueId(title)) return title;
+  return SOURCE_LABELS[entry.source];
+}
+
+function activityModelLabel(entry: RunIndexEntry): string | undefined {
+  for (const candidate of [entry.providerModelId, entry.modelId]) {
+    const text = candidate?.trim();
+    if (text && !looksLikeOpaqueId(text)) return text;
+  }
+  return undefined;
+}
+
 function formatDuration(entry: RunIndexEntry): string {
   if (!entry.finishedAt) return '—';
   const started = new Date(entry.startedAt).getTime();
@@ -104,12 +125,10 @@ export function ActivityCenterPage(props: ActivityCenterPageProps): JSX.Element 
   const [error, setError] = useState<string | null>(null);
   const [externalEvents, setExternalEvents] = useState<ActivityExternalEventSummary[] | null>(null);
   const [retryingId, setRetryingId] = useState<string | null>(null);
-  /**
-   * Inline banner for load-more / retry problems. The shell has no toast host,
-   * so a failure that does not blank the list is reported next to the list
-   * instead of being swallowed.
-   */
-  const [notice, setNotice] = useState<string | null>(null);
+  const reportNotice = useCallback((text: string | null) => {
+    if (!text) return;
+    toastApi.toast({ type: 'error', title: text, id: 'activity-notice' });
+  }, []);
 
   const filterPayload = useMemo(
     () => ({
@@ -150,13 +169,12 @@ export function ActivityCenterPage(props: ActivityCenterPageProps): JSX.Element 
       // concatenating cannot duplicate a row already on screen.
       setEntries((prev) => [...(prev ?? []), ...res.entries]);
       setNextCursor(res.nextCursor);
-      setNotice(null);
     } catch (cause) {
-      setNotice(cause instanceof Error ? cause.message : String(cause));
+      reportNotice(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setLoadingMore(false);
     }
-  }, [filterPayload, nextCursor]);
+  }, [filterPayload, nextCursor, reportNotice]);
 
   useEffect(() => {
     void refresh();
@@ -210,20 +228,19 @@ export function ActivityCenterPage(props: ActivityCenterPageProps): JSX.Element 
         // `retryable: false` is a normal answer (run still active, anchor
         // message gone), not a transport failure — it arrives as a payload.
         if (!anchor.retryable || !anchor.conversationId || !anchor.text) {
-          setNotice(anchor.reason ?? '该 Run 无法恢复原指令');
+          reportNotice(anchor.reason ?? '该 Run 无法恢复原指令');
           return;
         }
-        setNotice(null);
         // Seeding the composer, not sending: the user confirms in the chat.
         onRetryRun?.({ conversationId: anchor.conversationId, text: anchor.text });
         onOpenConversation?.(anchor.conversationId);
       } catch (cause) {
-        setNotice(cause instanceof Error ? cause.message : String(cause));
+        reportNotice(cause instanceof Error ? cause.message : String(cause));
       } finally {
         setRetryingId(null);
       }
     },
-    [onOpenConversation, onRetryRun],
+    [onOpenConversation, onRetryRun, reportNotice],
   );
 
   const totalCount = useMemo(
@@ -303,14 +320,6 @@ export function ActivityCenterPage(props: ActivityCenterPageProps): JSX.Element 
         </aside>
 
         <section className="task-panel__main activity-panel__main">
-          {notice ? (
-            <div className="activity-panel__notice" role="alert" data-testid="activity-notice">
-              <span>{notice}</span>
-              <button type="button" onClick={() => setNotice(null)} aria-label="关闭提示">
-                <X size={13} />
-              </button>
-            </div>
-          ) : null}
           {error ? (
             <div className="task-panel__empty" role="alert">
               {error}
@@ -325,7 +334,9 @@ export function ActivityCenterPage(props: ActivityCenterPageProps): JSX.Element 
           ) : (
             <>
               <div className="activity-panel__list" data-testid="activity-run-list">
-                {entries.map((entry) => (
+                {entries.map((entry) => {
+                  const modelLabel = activityModelLabel(entry);
+                  return (
                   <article
                     key={entry.runId}
                     className="activity-row"
@@ -337,7 +348,7 @@ export function ActivityCenterPage(props: ActivityCenterPageProps): JSX.Element 
                     </span>
                     <div className="activity-row__body">
                       <div className="activity-row__title">
-                        {entry.title ?? entry.runId}
+                        {activityRunTitle(entry)}
                         <span className="activity-row__source">{SOURCE_LABELS[entry.source]}</span>
                       </div>
                       <div className="activity-row__meta">
@@ -346,7 +357,7 @@ export function ActivityCenterPage(props: ActivityCenterPageProps): JSX.Element 
                         {entry.kernelId ? (
                           <span>{resolveKernelDisplayName(entry.kernelId)}</span>
                         ) : null}
-                        {entry.modelId ? <span>{entry.modelId}</span> : null}
+                        {modelLabel ? <span>{modelLabel}</span> : null}
                       </div>
                       {entry.errorMessage ? (
                         <div className="activity-row__error" title={entry.errorMessage}>
@@ -379,7 +390,8 @@ export function ActivityCenterPage(props: ActivityCenterPageProps): JSX.Element 
                       ) : null}
                     </div>
                   </article>
-                ))}
+                  );
+                })}
               </div>
               {nextCursor ? (
                 <button

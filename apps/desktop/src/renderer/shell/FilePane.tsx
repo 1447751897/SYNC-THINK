@@ -1,30 +1,50 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react';
-import {
-  AlertTriangle,
-  Check,
-  ChevronDown,
-  Code,
-  Copy,
-  Eye,
-  Loader2,
-  PencilLine,
-  RefreshCw,
-  Save,
-} from 'lucide-react';
+import { AlertTriangle, ChevronDown, Code, Eye, Loader2, PencilLine } from 'lucide-react';
 import type { ProjectTextLocation } from '../../workspace-tools-contract.js';
 import { isExcalidrawPath } from './excalidraw-document.js';
 import { FileContentPreview, isRenderedMarkdownPath } from './FileContentPreview.js';
 import { matchesShortcut, readShortcutPreferences } from './preferences-store.js';
-import { SlidingTabs } from './SlidingTabs.js';
+import { DsTabBar } from './DsTabBar.js';
 
 export interface FileRevealTarget extends ProjectTextLocation {
   nonce: number;
 }
 
 type FilePaneView = 'rich' | 'source' | 'preview';
+type MarkdownViewMode = 'editor' | 'source' | 'preview';
+
+const MARKDOWN_MODE_KEY = 'niuma:filepreview:md-mode';
+const MARKDOWN_MODES: readonly MarkdownViewMode[] = ['editor', 'source', 'preview'];
+
+function asMarkdownMode(view: FilePaneView): MarkdownViewMode {
+  return view === 'rich' ? 'editor' : view;
+}
+
+function fromMarkdownMode(mode: MarkdownViewMode): FilePaneView {
+  return mode === 'editor' ? 'rich' : mode;
+}
+
+function readLastMarkdownViewMode(): MarkdownViewMode {
+  try {
+    const stored = localStorage.getItem(MARKDOWN_MODE_KEY);
+    return MARKDOWN_MODES.includes(stored as MarkdownViewMode)
+      ? (stored as MarkdownViewMode)
+      : 'editor';
+  } catch {
+    return 'editor';
+  }
+}
+
+function writeLastMarkdownViewMode(mode: MarkdownViewMode): void {
+  try {
+    localStorage.setItem(MARKDOWN_MODE_KEY, mode);
+  } catch {
+    /* ignore quota / private-mode */
+  }
+}
 
 function defaultFilePaneView(path: string): FilePaneView {
-  return isRenderedMarkdownPath(path) ? 'rich' : 'preview';
+  return isRenderedMarkdownPath(path) ? fromMarkdownMode(readLastMarkdownViewMode()) : 'preview';
 }
 
 interface LoadedFile {
@@ -46,7 +66,7 @@ interface FilePaneSession {
   cleanStatus: '已同步' | '已保存';
 }
 
-const AUTO_SAVE_KEY = 'sync-think:file-pane:auto-save';
+const AUTO_SAVE_KEY = 'niuma:filepreview:md-autosave';
 const filePaneSessions = new Map<string, FilePaneSession>();
 
 function readAutoSave(): boolean {
@@ -102,24 +122,6 @@ function fileBridge() {
   return window.syncThink?.runtime;
 }
 
-async function copySourceText(text: string): Promise<void> {
-  if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(text);
-    return;
-  }
-
-  const textarea = document.createElement('textarea');
-  textarea.value = text;
-  textarea.setAttribute('readonly', '');
-  textarea.style.position = 'fixed';
-  textarea.style.inset = '-9999px auto auto -9999px';
-  document.body.appendChild(textarea);
-  textarea.select();
-  const copied = document.execCommand('copy');
-  textarea.remove();
-  if (!copied) throw new Error('copy_failed');
-}
-
 export function FilePane({
   projectFolder,
   path,
@@ -145,11 +147,11 @@ export function FilePane({
     initialSession?.cleanStatus ?? '已同步',
   );
   const [view, setView] = useState<FilePaneView>(() => defaultFilePaneView(path));
-  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle');
   const [saveMenuOpen, setSaveMenuOpen] = useState(false);
   const [autoSave, setAutoSave] = useState(readAutoSave);
   const loadedRef = useRef<LoadedFile | null>(initialSession?.loaded ?? null);
   const saveMenuRef = useRef<HTMLDivElement>(null);
+  const saveMenuBtnRef = useRef<HTMLButtonElement>(null);
   const dirtyRef = useRef(
     Boolean(initialSession && initialSession.draft !== initialSession.loaded.content),
   );
@@ -157,7 +159,6 @@ export function FilePane({
   const requestSequenceRef = useRef(0);
   const editorRef = useRef<HTMLTextAreaElement>(null);
   const revealedNonceRef = useRef<number>();
-  const copyResetTimerRef = useRef<number>();
 
   const loadFromDisk = useCallback(
     async (showLoading: boolean) => {
@@ -270,19 +271,13 @@ export function FilePane({
   }, [loadFromDisk, sessionKey, verifyCachedSession]);
 
   useEffect(() => {
-    setCopyState('idle');
     setSaveMenuOpen(false);
     setView(defaultFilePaneView(path));
-    if (copyResetTimerRef.current !== undefined) {
-      window.clearTimeout(copyResetTimerRef.current);
-      copyResetTimerRef.current = undefined;
-    }
-    return () => {
-      if (copyResetTimerRef.current !== undefined) {
-        window.clearTimeout(copyResetTimerRef.current);
-      }
-    };
   }, [path]);
+
+  useEffect(() => {
+    if (isRenderedMarkdownPath(path)) writeLastMarkdownViewMode(asMarkdownMode(view));
+  }, [path, view]);
 
   useEffect(() => {
     if (!saveMenuOpen) return;
@@ -431,6 +426,10 @@ export function FilePane({
   }, [autoSave]);
 
   useEffect(() => {
+    if (saving || (autoSave && dirty && !diskChange)) setSaveMenuOpen(false);
+  }, [autoSave, dirty, diskChange, saving]);
+
+  useEffect(() => {
     if (!autoSave || !canSave || saving || diskChange) return;
     const timer = window.setTimeout(() => {
       void saveFile(false);
@@ -446,22 +445,6 @@ export function FilePane({
     }
   };
 
-  const handleCopySource = useCallback(async () => {
-    if (copyResetTimerRef.current !== undefined) {
-      window.clearTimeout(copyResetTimerRef.current);
-    }
-    try {
-      await copySourceText(draft);
-      setCopyState('copied');
-    } catch {
-      setCopyState('error');
-    }
-    copyResetTimerRef.current = window.setTimeout(() => {
-      setCopyState('idle');
-      copyResetTimerRef.current = undefined;
-    }, 1500);
-  }, [draft]);
-
   const status = diskChange
     ? '等待选择版本'
     : autoSave
@@ -473,14 +456,11 @@ export function FilePane({
         : dirty
           ? '保存'
           : '已保存';
-  const previewLabel = isRenderedMarkdownPath(path) ? '文档预览' : '高亮预览';
-  const pending = dirty && !autoSave && !diskChange;
-  const copyLabel =
-    copyState === 'copied' ? '已复制' : copyState === 'error' ? '重试复制' : '复制源码';
-  const copyAriaLabel =
-    copyState === 'copied' ? '源码已复制' : copyState === 'error' ? '复制失败，重试' : '复制源码';
   const canvasDocument = isExcalidrawPath(path);
   const richTextDocument = isRenderedMarkdownPath(path);
+  const pending = dirty && !autoSave && !diskChange;
+  const autoSavePending = autoSave && dirty && !diskChange;
+  const saveInProgress = saving || autoSavePending;
   const updateDraft = useCallback(
     (next: string) => {
       setDraft(next);
@@ -507,61 +487,50 @@ export function FilePane({
         <div className="shell-file-pane-bar">
           {!canvasDocument ? (
             <div className="shell-file-pane-tools">
-              <SlidingTabs
-                className="shell-file-pane-view-tabs"
+              <DsTabBar
+                size="small"
                 aria-label={richTextDocument ? '文档编辑模式' : '文件查看方式'}
-              >
-                {richTextDocument ? (
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-label="富文本编辑"
-                    title="富文本编辑"
-                    aria-selected={view === 'rich'}
-                    className={view === 'rich' ? 'is-active' : undefined}
-                    onClick={() => setView('rich')}
-                  >
-                    <PencilLine size={15} aria-hidden="true" />
-                  </button>
-                ) : null}
-                {!richTextDocument ? (
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-label={previewLabel}
-                    title={previewLabel}
-                    aria-selected={view === 'preview'}
-                    className={view === 'preview' ? 'is-active' : undefined}
-                    onClick={() => setView('preview')}
-                  >
-                    <Eye size={15} aria-hidden="true" />
-                  </button>
-                ) : null}
-                <button
-                  type="button"
-                  role="tab"
-                  aria-label={richTextDocument ? '源码编辑' : '源码'}
-                  title={richTextDocument ? '源码编辑' : '源码'}
-                  aria-selected={view === 'source'}
-                  className={view === 'source' ? 'is-active' : undefined}
-                  onClick={() => setView('source')}
-                >
-                  <Code size={15} aria-hidden="true" />
-                </button>
-                {richTextDocument ? (
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-label="预览"
-                    title="预览"
-                    aria-selected={view === 'preview'}
-                    className={view === 'preview' ? 'is-active' : undefined}
-                    onClick={() => setView('preview')}
-                  >
-                    <Eye size={15} aria-hidden="true" />
-                  </button>
-                ) : null}
-              </SlidingTabs>
+                value={richTextDocument ? asMarkdownMode(view) : view === 'source' ? 'source' : 'preview'}
+                onChange={(next) => {
+                  if (richTextDocument) {
+                    setView(fromMarkdownMode(next as MarkdownViewMode));
+                    return;
+                  }
+                  setView(next === 'source' ? 'source' : 'preview');
+                }}
+                items={
+                  richTextDocument
+                    ? [
+                        {
+                          value: 'editor',
+                          icon: <PencilLine size={15} aria-hidden="true" />,
+                          tooltip: '富文本编辑',
+                        },
+                        {
+                          value: 'source',
+                          icon: <Code size={15} aria-hidden="true" />,
+                          tooltip: '源码编辑',
+                        },
+                        {
+                          value: 'preview',
+                          icon: <Eye size={15} aria-hidden="true" />,
+                          tooltip: '预览模式',
+                        },
+                      ]
+                    : [
+                        {
+                          value: 'preview',
+                          icon: <Eye size={15} aria-hidden="true" />,
+                          tooltip: '高亮预览',
+                        },
+                        {
+                          value: 'source',
+                          icon: <Code size={15} aria-hidden="true" />,
+                          tooltip: '源码',
+                        },
+                      ]
+                }
+              />
             </div>
           ) : null}
           <div className="shell-file-pane-save-wrap" ref={saveMenuRef}>
@@ -580,18 +549,18 @@ export function FilePane({
                 data-testid="file-pane-save"
                 aria-label="保存文件"
                 title={canSave ? '保存文件' : status}
-                disabled={saving || loading || autoSave || Boolean(diskChange) || !canSave}
+                disabled={Boolean(diskChange) || !pending || saving}
                 onClick={() => {
                   setSaveMenuOpen(false);
                   if (canSave && !autoSave) void saveFile(false);
                 }}
               >
-                {saving ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : null}
                 <span className="shell-file-pane-status" data-testid="file-pane-status">
                   {status}
                 </span>
               </button>
               <button
+                ref={saveMenuBtnRef}
                 type="button"
                 className="shell-file-pane-save-pill__menu"
                 data-testid="file-pane-save-menu"
@@ -599,25 +568,20 @@ export function FilePane({
                 title="更多文件操作"
                 aria-expanded={saveMenuOpen}
                 aria-haspopup="menu"
-                onClick={() => setSaveMenuOpen((open) => !open)}
+                disabled={saveInProgress}
+                onClick={() => {
+                  if (!saveInProgress) setSaveMenuOpen((open) => !open);
+                }}
               >
-                <ChevronDown size={13} aria-hidden="true" />
+                {saveInProgress ? (
+                  <Loader2 size={14} className="animate-spin" aria-hidden="true" />
+                ) : (
+                  <ChevronDown size={12} aria-hidden="true" />
+                )}
               </button>
             </div>
             {saveMenuOpen ? (
               <div className="shell-file-pane-save-menu" role="menu" aria-label="文件操作">
-                <button
-                  type="button"
-                  role="menuitem"
-                  disabled={!canSave || saving || loading || autoSave}
-                  onClick={() => {
-                    setSaveMenuOpen(false);
-                    if (canSave && !autoSave) void saveFile(false);
-                  }}
-                >
-                  <Save size={14} aria-hidden="true" />
-                  <span>保存</span>
-                </button>
                 <button
                   type="button"
                   role="menuitemcheckbox"
@@ -625,21 +589,14 @@ export function FilePane({
                   onClick={() => setAutoSave((enabled) => !enabled)}
                 >
                   <span>自动保存</span>
-                  {autoSave ? <Check size={13} aria-hidden="true" /> : null}
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  className={`is-${copyState}`}
-                  aria-label={copyAriaLabel}
-                  onClick={() => void handleCopySource()}
-                >
-                  {copyState === 'copied' ? (
-                    <Check size={14} aria-hidden="true" />
-                  ) : (
-                    <Copy size={14} aria-hidden="true" />
-                  )}
-                  <span>{copyLabel}</span>
+                  <span
+                    className={
+                      autoSave
+                        ? 'shell-file-pane-autosave-switch is-on'
+                        : 'shell-file-pane-autosave-switch'
+                    }
+                    aria-hidden="true"
+                  />
                 </button>
               </div>
             ) : null}
@@ -650,14 +607,15 @@ export function FilePane({
       {diskChange ? (
         <div className="shell-file-pane-conflict" role="alert" data-testid="file-pane-conflict">
           <AlertTriangle size={14} className="shrink-0" aria-hidden="true" />
-          <span className="min-w-0 flex-1">磁盘上的文件已变化</span>
+          <span className="min-w-0 flex-1">
+            检测到其他应用修改了此文件，而 NewMax 中还有未保存内容。载入外部修改会放弃 NewMax
+            中未保存的内容；保留 NewMax 内容会覆盖外部修改。
+          </span>
           <button type="button" onClick={() => void loadFromDisk(true)}>
-            <RefreshCw size={12} aria-hidden="true" />
-            加载磁盘版本
+            载入外部修改
           </button>
           <button type="button" onClick={() => void saveFile(true)}>
-            <Save size={12} aria-hidden="true" />
-            覆盖磁盘版本
+            保留 NewMax 内容
           </button>
         </div>
       ) : null}

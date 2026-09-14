@@ -43,25 +43,16 @@ function installBridge() {
   };
 }
 
-function installClipboard() {
-  const writeText = vi.fn(async () => undefined);
-  Object.defineProperty(navigator, 'clipboard', {
-    configurable: true,
-    value: { writeText },
-  });
-  return writeText;
-}
-
 afterEach(() => {
   cleanup();
-  localStorage.removeItem('sync-think:file-pane:auto-save');
+  localStorage.removeItem('niuma:filepreview:md-autosave');
+  localStorage.removeItem('niuma:filepreview:md-mode');
   clearFilePaneSession('C:/workspace', 'notes.txt');
   clearFilePaneSession('C:/workspace', 'src/example.ts');
   clearFilePaneSession('C:/workspace', 'README.md');
   clearFilePaneSession('C:/workspace', 'designs/draft.excalidraw');
-  clearFilePaneSession('C:/workspace', 'notes/未命名文档.md');
+  clearFilePaneSession('C:/workspace', '未命名文档.md');
   Reflect.deleteProperty(window, 'syncThink');
-  Reflect.deleteProperty(navigator, 'clipboard');
 });
 
 describe('FilePane', () => {
@@ -96,9 +87,7 @@ describe('FilePane', () => {
 
     fireEvent.click(screen.getByRole('tab', { name: '高亮预览' }));
     expect(preview.textContent).toContain('43');
-    expect(
-      document.querySelector('.shell-file-pane-view-tabs .shell-sliding-tabs__pill'),
-    ).toBeTruthy();
+    expect(document.querySelector('.shell-ds-tab-bar')).toBeTruthy();
   });
 
   it('keeps save status on the save control instead of a separate label', async () => {
@@ -148,6 +137,7 @@ describe('FilePane', () => {
     expect(screen.getByRole('toolbar', { name: '富文本编辑' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '标题 1' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '标题 2' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '粗体' })).toBeTruthy();
     expect(richEditor.querySelector('[contenteditable="true"]')).toBeTruthy();
     expect(screen.getByRole('tab', { name: '富文本编辑' }).getAttribute('aria-selected')).toBe(
       'true',
@@ -157,7 +147,7 @@ describe('FilePane', () => {
     const editor = screen.getByTestId('file-pane-editor') as HTMLTextAreaElement;
     expect(editor.value).toContain('# Preview title');
     fireEvent.change(editor, { target: { value: '# Updated title\n\nNew body' } });
-    fireEvent.click(screen.getByRole('tab', { name: '预览' }));
+    fireEvent.click(screen.getByRole('tab', { name: '预览模式' }));
     expect(preview.hidden).toBe(false);
     expect(preview.querySelector('[contenteditable="true"]')).toBeNull();
     expect(screen.getByRole('heading', { level: 1, name: 'Updated title' })).toBeTruthy();
@@ -209,9 +199,8 @@ describe('FilePane', () => {
     expect(screen.getByTestId('file-pane').getAttribute('data-kind')).toBe('canvas');
   });
 
-  it('copies the complete current source from the status menu', async () => {
+  it('keeps only NewMax auto-save in the file save menu', async () => {
     const bridge = installBridge();
-    const writeText = installClipboard();
     bridge.readProjectFile.mockResolvedValue({
       path: 'src/example.ts',
       content: 'const answer: number = 42;\nexport { answer };\n',
@@ -224,19 +213,10 @@ describe('FilePane', () => {
     render(<FilePane projectFolder="C:/workspace" path="src/example.ts" />);
 
     await screen.findByTestId('file-pane-editor');
-    expect(screen.queryByRole('menuitem', { name: '复制源码' })).toBeNull();
-    fireEvent.click(screen.getByRole('tab', { name: '源码' }));
-    const editor = screen.getByTestId('file-pane-editor') as HTMLTextAreaElement;
-    fireEvent.change(editor, {
-      target: { value: 'const answer: number = 43;\nexport { answer };\n' },
-    });
     fireEvent.click(screen.getByTestId('file-pane-save-menu'));
-    fireEvent.click(screen.getByRole('menuitem', { name: '复制源码' }));
-
-    await waitFor(() =>
-      expect(writeText).toHaveBeenCalledWith('const answer: number = 43;\nexport { answer };\n'),
-    );
-    expect(screen.getByRole('menuitem', { name: '源码已复制' }).textContent).toContain('已复制');
+    expect(screen.getByRole('menuitemcheckbox', { name: '自动保存' })).toBeTruthy();
+    expect(screen.queryByRole('menuitem', { name: '复制源码' })).toBeNull();
+    expect(screen.queryByRole('menuitem', { name: '保存' })).toBeNull();
   });
 
   it('loads metadata, tracks a dirty draft, and saves with optimistic concurrency', async () => {
@@ -346,10 +326,10 @@ describe('FilePane', () => {
     bridge.emitChange({ path: 'notes.txt', exists: true, mtimeMs: 30, size: 9 });
 
     expect((await screen.findByTestId('file-pane-conflict')).textContent).toContain(
-      '磁盘上的文件已变化',
+      '检测到其他应用修改了此文件',
     );
     expect((editor as HTMLTextAreaElement).value).toBe('local draft');
-    fireEvent.click(screen.getByRole('button', { name: '加载磁盘版本' }));
+    fireEvent.click(screen.getByRole('button', { name: '载入外部修改' }));
 
     await waitFor(() => expect((editor as HTMLTextAreaElement).value).toBe('from disk'));
     expect(screen.queryByTestId('file-pane-conflict')).toBeNull();
@@ -392,7 +372,7 @@ describe('FilePane', () => {
     fireEvent.click(screen.getByTestId('file-pane-save'));
     expect(await screen.findByTestId('file-pane-conflict')).toBeTruthy();
 
-    fireEvent.click(screen.getByRole('button', { name: '覆盖磁盘版本' }));
+    fireEvent.click(screen.getByRole('button', { name: '保留 NewMax 内容' }));
     await waitFor(() => expect(bridge.writeProjectFile).toHaveBeenCalledTimes(2));
     expect(bridge.writeProjectFile.mock.calls[1]?.[0]).toEqual({
       root: 'C:/workspace',
@@ -408,7 +388,7 @@ describe('FilePane', () => {
   it('opens a disk-created untitled document as a saved empty file', async () => {
     const bridge = installBridge();
     bridge.readProjectFile.mockResolvedValue({
-      path: 'notes/未命名文档.md',
+      path: '未命名文档.md',
       content: '',
       error: null,
       errorCode: null,
@@ -416,18 +396,18 @@ describe('FilePane', () => {
       size: 0,
     });
 
-    render(<FilePane projectFolder="C:/workspace" path="notes/未命名文档.md" />);
+    render(<FilePane projectFolder="C:/workspace" path="未命名文档.md" />);
 
     const editor = await screen.findByTestId('file-pane-editor');
     expect((editor as HTMLTextAreaElement).value).toBe('');
     expect(bridge.readProjectFile).toHaveBeenCalled();
     expect(bridge.writeProjectFile).not.toHaveBeenCalled();
-    expect(isFilePaneSessionDirty('C:/workspace', 'notes/未命名文档.md')).toBe(false);
+    expect(isFilePaneSessionDirty('C:/workspace', '未命名文档.md')).toBe(false);
     expect(screen.getByTestId('file-pane-status').textContent).toContain('已保存');
     expect(screen.getByRole('tab', { name: '富文本编辑' }).getAttribute('aria-selected')).toBe(
       'true',
     );
-    expect(screen.getByRole('button', { name: '加粗' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '粗体' })).toBeTruthy();
     expect((screen.getByTestId('file-pane-save') as HTMLButtonElement).disabled).toBe(true);
   });
 

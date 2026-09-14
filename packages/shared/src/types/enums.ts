@@ -62,6 +62,11 @@ export type ProviderSurface = 'claude' | 'codex' | 'gemini' | 'kiro' | 'generic'
 export type CapabilityTag =
   | 'text'
   | 'vision'
+  // NewMax 的四维输入模态：`vision` 即它的 `image`（只是名字不同），
+  // 另三项按 NewMax 的 `summarizeCapabilities` 作为声明位叠加。
+  | 'document'
+  | 'video'
+  | 'thinking'
   | 'tool-calling'
   | 'web-search'
   | 'image-generation'

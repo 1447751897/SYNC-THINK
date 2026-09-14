@@ -3,18 +3,19 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { forwardRef } from 'react';
+import { createElement, forwardRef } from 'react';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { COMPUTER_USE_PLUGIN_SETTING_KEY } from '@sync-think/protocol/plugins';
 import { OPEN_GATEWAY_SETTING_KEY } from '@sync-think/protocol/gateway';
 import { COMPUTER_USE_APPROVAL_POLICY_SETTING_KEY } from '@sync-think/protocol/tool-approval';
+import { COLLABORATION_SETTINGS_KEY } from '@sync-think/protocol/collaboration';
 import { SettingsPage } from './SettingsPage.js';
 
 const shellCss = readFileSync(resolve(process.cwd(), 'src/renderer/shell/shell.css'), 'utf8');
 
 vi.mock('./ModelSettings.js', () => ({
-  ModelSettings: forwardRef(() => null),
+  ModelSettings: forwardRef(() => createElement('div', { 'data-testid': 'mock-model-settings' })),
 }));
 
 const runtime = {
@@ -242,6 +243,21 @@ describe('SettingsPage layout contract', () => {
     expect(shellCss).toMatch(/\.shell-menu__scroll\s*\{[^}]*overflow-x:\s*hidden;/s);
   });
 
+  it('makes the settings viewport a flex column so KeepAlive pages can wheel-scroll', () => {
+    expect(shellCss).toMatch(
+      /\.settings-content__viewport\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*overflow:\s*hidden;/s,
+    );
+    expect(shellCss).toMatch(
+      /\.settings-content__viewport\s*>\s*\.settings-section-layer\s*\{[^}]*min-height:\s*0;[^}]*overflow:\s*hidden;/s,
+    );
+    expect(shellCss).toMatch(
+      /\.model-settings-root\s*\{[^}]*display:\s*flex;[^}]*flex:\s*1;[^}]*height:\s*100%;/s,
+    );
+    expect(shellCss).toMatch(
+      /\.model-settings-workspace\s*\{[^}]*display:\s*flex;[^}]*flex:\s*1;[^}]*min-height:\s*0;/s,
+    );
+  });
+
   it('keeps the done footer inset from the modal corner and aligned with the pane', () => {
     expect(shellCss).toMatch(
       /\.settings-content\s*\{[^}]*grid-template-rows:\s*48px minmax\(0, 1fr\) auto;/s,
@@ -326,6 +342,23 @@ describe('SettingsPage layout contract', () => {
 
     expect(screen.getByRole('heading', { name: '模型' })).toBeTruthy();
   });
+
+  it('keeps visited model settings mounted when switching sections', () => {
+    render(<SettingsPage />);
+
+    fireEvent.click(screen.getByRole('button', { name: '模型' }));
+    const models = screen.getByTestId('mock-model-settings');
+    expect(models.closest('[hidden]')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: '通用' }));
+    expect(screen.getByRole('heading', { name: '通用' })).toBeTruthy();
+    expect(screen.getByTestId('mock-model-settings')).toBe(models);
+    expect(models.closest('[hidden]')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: '模型' }));
+    expect(screen.getByTestId('mock-model-settings')).toBe(models);
+    expect(models.closest('[hidden]')).toBeNull();
+  });
 });
 
 describe('SettingsPage NewMax general tabs', () => {
@@ -368,7 +401,7 @@ describe('SettingsPage NewMax general tabs', () => {
       /@media \(prefers-reduced-motion: reduce\) \{\s*\n\s+\.shell-dock-panel\.is-active,/,
     );
     expect(shellCss).toMatch(
-      /\.shell-workspace-files-switcher__views \{\s*--sliding-tabs-inset: 3px;\s*--sliding-tabs-pill-background: var\(--color-overlay\);/s,
+      /\.shell-workspace-files-switcher__tab \{[\s\S]*?font-size:\s*13px;[\s\S]*?font-weight:\s*600;/,
     );
   });
 
@@ -427,6 +460,101 @@ describe('SettingsPage NewMax general tabs', () => {
 
     expect(screen.getByRole('heading', { name: '守护进程' })).toBeTruthy();
     expect(screen.getByText(/应用关闭后定时任务照常触发/)).toBeTruthy();
+  });
+});
+
+async function openAgentCollaboration() {
+  render(<SettingsPage initialSection="general" />);
+  fireEvent.click(screen.getByRole('tab', { name: 'Agent' }));
+  const master = await screen.findByRole('switch', { name: '允许模型对话创建子 Agent' });
+  await waitFor(() =>
+    expect(runtime.getSettings).toHaveBeenCalledWith({ keys: [COLLABORATION_SETTINGS_KEY] }),
+  );
+  return master;
+}
+
+describe('SettingsPage agent collaboration', () => {
+  it('loads the persisted orchestration settings into every control', async () => {
+    runtime.getSettings.mockResolvedValue({
+      settings: {
+        [COLLABORATION_SETTINGS_KEY]: {
+          dynamicSubagentsEnabled: true,
+          maxNestingDepth: 3,
+          maxChildrenPerParent: 6,
+          maxAutoDelegationsPerTurn: 5,
+          taskTokenBudget: 4096,
+          allowAgentTaskDispatch: true,
+          allowAgentPeerMessaging: true,
+        },
+      },
+    });
+
+    const master = await openAgentCollaboration();
+    await waitFor(() => expect(master.getAttribute('aria-checked')).toBe('true'));
+    expect((screen.getByLabelText('最大嵌套深度') as HTMLInputElement).value).toBe('3');
+    expect((screen.getByLabelText('单个父 Agent 最大子 Agent 数') as HTMLInputElement).value).toBe(
+      '6',
+    );
+    expect((screen.getByLabelText('单轮最大自动委派数') as HTMLInputElement).value).toBe('5');
+    expect((screen.getByLabelText('每个任务 Token 预算') as HTMLInputElement).value).toBe('4096');
+    expect(
+      screen
+        .getByRole('switch', { name: 'Agent 对话允许派发普通任务' })
+        .getAttribute('aria-checked'),
+    ).toBe('true');
+    expect(
+      screen.getByRole('switch', { name: '允许 Agent 之间直接对话' }).getAttribute('aria-checked'),
+    ).toBe('true');
+  });
+
+  it('writes the whole normalized settings object through the collaboration key', async () => {
+    await openAgentCollaboration();
+
+    fireEvent.click(screen.getByRole('switch', { name: '允许模型对话创建子 Agent' }));
+    await waitFor(() =>
+      expect(runtime.setSetting).toHaveBeenCalledWith({
+        key: COLLABORATION_SETTINGS_KEY,
+        value: {
+          dynamicSubagentsEnabled: true,
+          maxNestingDepth: 2,
+          maxChildrenPerParent: 4,
+          maxAutoDelegationsPerTurn: 3,
+          taskTokenBudget: null,
+          allowAgentTaskDispatch: false,
+          allowAgentPeerMessaging: false,
+        },
+      }),
+    );
+
+    fireEvent.change(screen.getByLabelText('单轮最大自动委派数'), { target: { value: '9' } });
+    await waitFor(() =>
+      expect(runtime.setSetting).toHaveBeenLastCalledWith({
+        key: COLLABORATION_SETTINGS_KEY,
+        value: expect.objectContaining({
+          dynamicSubagentsEnabled: true,
+          maxAutoDelegationsPerTurn: 9,
+        }),
+      }),
+    );
+  });
+
+  it('keeps the per-task token budget unlimited when the field is cleared', async () => {
+    runtime.getSettings.mockResolvedValue({
+      settings: { [COLLABORATION_SETTINGS_KEY]: { taskTokenBudget: 2048 } },
+    });
+
+    await openAgentCollaboration();
+    const budget = screen.getByLabelText('每个任务 Token 预算') as HTMLInputElement;
+    await waitFor(() => expect(budget.value).toBe('2048'));
+    expect(budget.getAttribute('placeholder')).toBe('无限制');
+
+    fireEvent.change(budget, { target: { value: '' } });
+    await waitFor(() =>
+      expect(runtime.setSetting).toHaveBeenLastCalledWith({
+        key: COLLABORATION_SETTINGS_KEY,
+        value: expect.objectContaining({ taskTokenBudget: null }),
+      }),
+    );
   });
 });
 

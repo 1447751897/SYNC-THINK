@@ -3,7 +3,7 @@ import { isIP } from 'node:net';
 import { getIP } from 'better-auth/api';
 import type { CloudConfig } from './config.js';
 import { createAuthService, type AuthServiceOptions } from './auth.js';
-import { readWebsiteFile } from './static.js';
+import { isDemoPath, readWebsiteFile } from './static.js';
 
 export interface CloudServer {
   url: string;
@@ -133,13 +133,13 @@ export async function startCloudServer(
     if (method === 'POST' && !pathname.startsWith('/api/auth/')) {
       throw new HttpError(405, 'METHOD_NOT_ALLOWED', 'Method is not supported.');
     }
-    if (pathname === '/demo') {
+    if (isDemoPath(pathname)) {
       const parents = ["'self'", ...config.embedOrigins].join(' ');
       if (config.embedOrigins.length) response.removeHeader('x-frame-options');
       else response.setHeader('x-frame-options', 'SAMEORIGIN');
       response.setHeader(
         'content-security-policy',
-        `default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors ${parents}`,
+        `default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors ${parents}`,
       );
     }
     if (pathname === '/api/config') {

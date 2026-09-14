@@ -75,6 +75,7 @@ function operationFromTransientFrame(
       ...(frame.assistantTimeline
         ? { assistantTimeline: frame.assistantTimeline.map((segment) => ({ ...segment })) }
         : {}),
+      ...(frame.delegatedAgent ? { delegatedAgent: { ...frame.delegatedAgent, toolEvents: frame.delegatedAgent.toolEvents.map((tool) => ({ ...tool })) } } : {}),
     };
   }
   if (frame.kind === 'terminal') {
@@ -102,6 +103,7 @@ function operationFromTransientFrame(
     ...(frame.kind === 'commentary' && frame.afterSequence !== undefined
       ? { afterSequence: frame.afterSequence }
       : {}),
+    ...(frame.delegatedAgent ? { delegatedAgent: { ...frame.delegatedAgent, toolEvents: frame.delegatedAgent.toolEvents.map((tool) => ({ ...tool })) } } : {}),
   };
 }
 
@@ -451,6 +453,7 @@ export function mergeTransientConversationDraft(
   // its explanation only here, and dropping it renders as "no reply, no reason".
   const terminalState = incoming.terminalState ?? current.terminalState;
   const terminalError = incoming.terminalError ?? current.terminalError;
+  const delegatedAgents = incoming.delegatedAgents ?? current.delegatedAgents;
   return {
     runId: incoming.runId ?? current.runId,
     text: selectMonotonicText(current.text, incoming.text),
@@ -462,6 +465,9 @@ export function mergeTransientConversationDraft(
     ...(terminal ? { terminal: true } : {}),
     ...(terminalState ? { terminalState } : {}),
     ...(terminalError ? { terminalError } : {}),
+    ...(delegatedAgents?.length
+      ? { delegatedAgents: delegatedAgents.map((item) => ({ ...item, toolEvents: item.toolEvents.map((tool) => ({ ...tool })) })) }
+      : {}),
   };
 }
 

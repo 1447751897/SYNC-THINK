@@ -494,4 +494,37 @@ describe('conversation stream event consumption', () => {
     expect(draft).toMatchObject({ runId: 'run-a', reasoningText: 'internal diagnostic summary' });
     expect(draft?.text).toBe('');
   });
+
+  it('filters delegated child events out of the parent answer stream', () => {
+    const batch = collectConversationStreamBatch({
+      afterSequence: 0,
+      threadId: 'thread-a',
+      events: [
+        event({
+          sequence: 1,
+          type: 'run.started',
+          runId: 'child-1',
+          threadId: 'thread-a',
+          payload: { run: { delegationParentRunId: 'parent-1' } },
+        }),
+        event({
+          sequence: 2,
+          type: 'message.delta',
+          runId: 'child-1',
+          threadId: 'thread-a',
+          payload: { delta: 'child answer' },
+        }),
+        event({
+          sequence: 3,
+          type: 'message.delta',
+          runId: 'parent-1',
+          threadId: 'thread-a',
+          payload: { delta: 'parent answer' },
+        }),
+      ],
+    });
+
+    expect(batch.operations).toHaveLength(1);
+    expect(batch.operations[0]).toMatchObject({ runId: 'parent-1', delta: 'parent answer' });
+  });
 });

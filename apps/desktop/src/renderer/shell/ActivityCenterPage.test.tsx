@@ -5,6 +5,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Event, RunIndexEntry } from '@sync-think/shared';
 import { ActivityCenterPage } from './ActivityCenterPage.js';
+import { ToastProvider, resetToastStoreForTests } from './Toast.js';
 
 const runtime = {
   activityListRuns: vi.fn(),
@@ -50,6 +51,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  resetToastStoreForTests();
   Reflect.deleteProperty(window, 'syncThink');
 });
 
@@ -70,6 +72,44 @@ describe('ActivityCenterPage', () => {
     expect(screen.getByText('内核退出')).toBeTruthy();
     // 全部 Run 的计数是各状态之和，不是当前页行数。
     expect(screen.getByTestId('activity-filter-all').textContent).toContain('2');
+  });
+
+  it('never presents a raw run or model id as the row title', async () => {
+    runtime.activityListRuns.mockResolvedValue({
+      entries: [
+        run({
+          runId: '1BH6F4YC5ST8SWWW10TB4QNQNVKZSRZ',
+          modelId: '1BH6F4YC5ST8SWWW10TB4QNQNVKZSRZ',
+        }),
+      ],
+      counts: { ...EMPTY_COUNTS, completed: 1 },
+    });
+
+    render(<ActivityCenterPage />);
+
+    const row = await screen.findByTestId('activity-run-row');
+    expect(row.textContent).toContain('对话');
+    expect(row.textContent).not.toContain('1BH6F4YC5ST8SWWW10TB4QNQNVKZSRZ');
+  });
+
+  it('shows a provider model name when the stored model id is opaque', async () => {
+    runtime.activityListRuns.mockResolvedValue({
+      entries: [
+        run({
+          runId: 'run-model',
+          title: '分析登录流程',
+          modelId: '1BH6F4YC5ST8SWWW10TB4QNQNVKZSRZ',
+          providerModelId: 'gpt-5.2',
+        }),
+      ],
+      counts: { ...EMPTY_COUNTS, completed: 1 },
+    });
+
+    render(<ActivityCenterPage />);
+
+    expect(await screen.findByText('分析登录流程')).toBeTruthy();
+    expect(screen.getByText('gpt-5.2')).toBeTruthy();
+    expect(screen.queryByText('1BH6F4YC5ST8SWWW10TB4QNQNVKZSRZ')).toBeNull();
   });
 
   it('uses user-facing kernel names without changing stored kernel ids', async () => {
@@ -163,12 +203,14 @@ describe('ActivityCenterPage', () => {
     });
     const onRetryRun = vi.fn();
 
-    render(<ActivityCenterPage onRetryRun={onRetryRun} />);
+    render(
+      <ToastProvider>
+        <ActivityCenterPage onRetryRun={onRetryRun} />
+      </ToastProvider>,
+    );
     fireEvent.click(await screen.findByTestId('activity-retry'));
 
-    expect((await screen.findByTestId('activity-notice')).textContent).toContain(
-      '该 Run 仍在进行中',
-    );
+    expect((await screen.findByTestId('shell-toast')).textContent).toContain('该 Run 仍在进行中');
     expect(onRetryRun).not.toHaveBeenCalled();
   });
 

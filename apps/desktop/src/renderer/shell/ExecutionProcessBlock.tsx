@@ -18,6 +18,7 @@ import {
 import { highlightCodeLines, languageFromPath } from './code-highlight.js';
 import { CopyTextButton } from './CopyTextButton.js';
 import { DeferredFileDiff, needsDeferredFileDiff } from './DeferredFileDiff.js';
+import { WordSegments, wordHighlightMap } from './word-diff.js';
 import { useRunProcessPage } from './use-run-process-page.js';
 import type {
   ExecutionProcessStep,
@@ -222,14 +223,140 @@ export function ExecutionProcessBlock({
 }
 
 function actionLabel(action: 'created' | 'edited' | 'deleted'): string {
-  if (action === 'created') return 'Created';
-  if (action === 'deleted') return 'Deleted';
-  return 'Edited';
+  if (action === 'created') return '已创建';
+  if (action === 'deleted') return '已删除';
+  return '已修改';
 }
 
 function fileName(path: string): string {
   const parts = path.split(/[\\/]/);
   return parts[parts.length - 1] || path;
+}
+
+function fileDir(path: string): string {
+  const normalized = path.replace(/[\\/]+$/, '');
+  const separator = normalized.includes('\\') ? '\\' : '/';
+  const parts = normalized.split(/[\\/]/);
+  return parts.length > 1 ? parts.slice(0, -1).join(separator) : '';
+}
+
+export function looksLikeUnifiedDiff(text: string): boolean {
+  return /(?:^|\n)@@\s+-\d/.test(text.replace(/\r\n/g, '\n'));
+}
+
+export type UnifiedDiffRowKind = 'add' | 'del' | 'ctx' | 'hunk' | 'meta';
+
+export interface UnifiedDiffRow {
+  kind: UnifiedDiffRowKind;
+  text: string;
+  oldLine?: number;
+  newLine?: number;
+}
+
+/** Turn a stored unified diff preview into numbered add/del/context rows. */
+export function parseUnifiedDiff(text: string): UnifiedDiffRow[] {
+  const raw = text.replace(/\r\n/g, '\n').split('\n');
+  const lines = raw.length > 1 && raw[raw.length - 1] === '' ? raw.slice(0, -1) : raw;
+  const rows: UnifiedDiffRow[] = [];
+  let oldLine = 0;
+  let newLine = 0;
+  for (const line of lines) {
+    const hunk = line.match(/^@@\s+-(\d+)(?:,\d+)?\s+\+(\d+)(?:,\d+)?\s*@@/);
+    if (hunk) {
+      oldLine = Number(hunk[1]);
+      newLine = Number(hunk[2]);
+      rows.push({ kind: 'hunk', text: line });
+      continue;
+    }
+    if (
+      line.startsWith('diff ') ||
+      line.startsWith('index ') ||
+      line.startsWith('---') ||
+      line.startsWith('+++') ||
+      line.startsWith('new file') ||
+      line.startsWith('deleted file') ||
+      line.startsWith('\\')
+    ) {
+      rows.push({ kind: 'meta', text: line });
+      continue;
+    }
+    if (line.startsWith('+')) {
+      rows.push({ kind: 'add', text: line.slice(1), newLine: newLine || undefined });
+      if (newLine) newLine += 1;
+      continue;
+    }
+    if (line.startsWith('-')) {
+      rows.push({ kind: 'del', text: line.slice(1), oldLine: oldLine || undefined });
+      if (oldLine) oldLine += 1;
+      continue;
+    }
+    const body = line.startsWith(' ') ? line.slice(1) : line;
+    rows.push({
+      kind: 'ctx',
+      text: body,
+      oldLine: oldLine || undefined,
+      newLine: newLine || undefined,
+    });
+    if (oldLine) oldLine += 1;
+    if (newLine) newLine += 1;
+  }
+  return rows;
+}
+
+export function UnifiedDiffPreview({
+  text,
+  path,
+}: {
+  text: string;
+  path?: string;
+}) {
+  const rows = useMemo(() => parseUnifiedDiff(text), [text]);
+  const language = languageFromPath(path);
+  const htmlLines = useMemo(() => {
+    const source = rows
+      .map((row) => (row.kind === 'add' || row.kind === 'del' || row.kind === 'ctx' ? row.text : ''))
+      .join('\n');
+    return highlightCodeLines(source, language);
+  }, [language, rows]);
+
+  return (
+    <div className="shell-changes-card__diff-body">
+      <div
+        className="shell-changes-card__diff-lines is-wrap"
+        data-path={path}
+        role="region"
+        aria-label="文件差异预览"
+      >
+        {rows.map((row, index) => (
+          <div
+            key={`${row.kind}:${row.oldLine ?? ''}:${row.newLine ?? ''}:${index}`}
+            className={`shell-changes-card__diff-line is-${row.kind}`}
+            data-kind={row.kind}
+          >
+            <span className="shell-changes-card__diff-no" data-old-line aria-hidden="true">
+              {row.oldLine ?? ''}
+            </span>
+            <span className="shell-changes-card__diff-no" data-new-line aria-hidden="true">
+              {row.newLine ?? ''}
+            </span>
+            <span className="shell-changes-card__diff-gutter" aria-hidden="true">
+              {row.kind === 'add' ? '+' : row.kind === 'del' ? '−' : row.kind === 'hunk' ? '@' : ' '}
+            </span>
+            {htmlLines && (row.kind === 'add' || row.kind === 'del' || row.kind === 'ctx') ? (
+              <code
+                className="shell-changes-card__diff-text hljs"
+                dangerouslySetInnerHTML={{
+                  __html: htmlLines[index] && htmlLines[index]!.length ? htmlLines[index]! : ' ',
+                }}
+              />
+            ) : (
+              <code className="shell-changes-card__diff-text">{row.text || ' '}</code>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 export function resolveAbsoluteProjectPath(projectFolder?: string, filePath?: string): string {
@@ -462,14 +589,22 @@ export function FileChangesCard({
               >
                 {item.action === 'created' ? 'A' : item.action === 'deleted' ? 'D' : 'M'}
               </span>
-              <span className="shell-changes-card__path">{item.path}</span>
+              <span className="shell-changes-card__name">{fileName(item.path)}</span>
+              {fileDir(item.path) ? (
+                <span className="shell-changes-card__dir">{fileDir(item.path)}</span>
+              ) : null}
               {counts ? (
                 <span className="shell-changes-card__file-lines">
                   <span className="is-add">+{counts.added}</span>
                   <span className="is-del">−{counts.removed}</span>
                 </span>
               ) : null}
-              <span className="shell-changes-card__action-label">{actionLabel(item.action)}</span>
+              <span className="shell-changes-card__action-label">
+                <span className="shell-changes-card__action-rest">{actionLabel(item.action)}</span>
+                <span className="shell-changes-card__action-hint" aria-hidden="true">
+                  预览文件
+                </span>
+              </span>
             </button>
           </div>
           {open && deferred ? (
@@ -484,8 +619,14 @@ export function FileChangesCard({
               />
             </div>
           ) : open && hasBody && item.preview ? (
-            <div className="shell-changes-card__preview">
-              <CodePreview text={item.preview} path={item.path} compact maxHeight={220} />
+            <div className="shell-changes-card__diff">
+              {looksLikeUnifiedDiff(item.preview) ? (
+                <UnifiedDiffPreview text={item.preview} path={item.path} />
+              ) : (
+                <div className="shell-changes-card__preview">
+                  <CodePreview text={item.preview} path={item.path} compact maxHeight={220} />
+                </div>
+              )}
             </div>
           ) : null}
         </li>
@@ -494,25 +635,32 @@ export function FileChangesCard({
 
   return (
     <div className={`shell-changes-card ${nested ? 'is-nested' : ''}`}>
+      {/* NewMax has no standing button: the whole header becomes 查看变动 on hover. */}
       <div className="shell-changes-card__header">
-        <span className="shell-changes-card__title">
-          已更改 {view.pages?.fileChanges.total ?? view.fileChanges.length} 个文件
-        </span>
-        {totals.countable && !totals.unknown ? (
-          <span className="shell-changes-card__lines" title="新增 / 删除行数">
-            <span className="is-add">+{totals.added}</span>
-            <span className="is-del">−{totals.removed}</span>
-          </span>
-        ) : null}
-        {totals.unknown ? <span className="shell-changes-card__lines">行数按需计算</span> : null}
         <button
           type="button"
-          className="shell-changes-card__action"
+          className="shell-changes-card__header-action"
+          disabled={!onOpenReview}
           onClick={() => onOpenReview?.(conversationId ? { ...view, conversationId } : view)}
+          aria-label="查看变动"
           title="审阅本轮文件修改"
         >
-          <FileDiff size={12} aria-hidden="true" />
-          审阅文件
+          <span className="shell-changes-card__header-rest">
+            <span className="shell-changes-card__title">
+              编辑了 {view.pages?.fileChanges.total ?? view.fileChanges.length} 个文件
+            </span>
+            {totals.countable && !totals.unknown ? (
+              <span className="shell-changes-card__lines" title="新增 / 删除行数">
+                <span className="is-add">+{totals.added}</span>
+                <span className="is-del">−{totals.removed}</span>
+              </span>
+            ) : null}
+            {totals.unknown ? <span className="shell-changes-card__lines">行数按需计算</span> : null}
+          </span>
+          <span className="shell-changes-card__header-hint" aria-hidden="true">
+            <FileDiff size={12} />
+            查看变动
+          </span>
         </button>
       </div>
       {controls}
@@ -736,6 +884,8 @@ export function LineDiffView({
   onWrapLinesChange,
   showToolbar = true,
   showWhitespace = false,
+  wordLevel = false,
+  showLineNumbers = true,
 }: {
   oldText: string | undefined;
   newText: string | undefined;
@@ -745,10 +895,16 @@ export function LineDiffView({
   onWrapLinesChange?(wrap: boolean): void;
   showToolbar?: boolean;
   showWhitespace?: boolean;
+  wordLevel?: boolean;
+  showLineNumbers?: boolean;
 }) {
   const lines = useMemo(
     () => (truncated ? undefined : computeLineDiff(oldText, newText)),
     [oldText, newText, truncated],
+  );
+  const wordHighlights = useMemo(
+    () => (wordLevel && lines ? wordHighlightMap(lines) : undefined),
+    [wordLevel, lines],
   );
   const language = languageFromPath(path);
   const oldHighlight = useMemo(
@@ -794,44 +950,60 @@ export function LineDiffView({
           <CopyTextButton text={newText ?? ''} label="复制修改后内容" />
         </div>
       ) : null}
-      <div className={`shell-changes-card__diff-lines ${wrap ? 'is-wrap' : ''}`} data-path={path}>
-        {lines.map((line, index) => (
-          <div
-            key={index}
-            className={`shell-changes-card__diff-line is-${line.kind}`}
-            data-kind={line.kind}
-          >
-            <span className="shell-changes-card__diff-no" data-old-line aria-hidden="true">
-              {line.oldLine ?? ''}
-            </span>
-            <span className="shell-changes-card__diff-no" data-new-line aria-hidden="true">
-              {line.newLine ?? ''}
-            </span>
-            <span className="shell-changes-card__diff-gutter" aria-hidden="true">
-              {line.kind === 'add' ? '+' : line.kind === 'del' ? '−' : ' '}
-            </span>
-            {!showWhitespace && (line.kind === 'del' ? oldHighlight : newHighlight) ? (
-              <code
-                className="shell-changes-card__diff-text hljs"
-                dangerouslySetInnerHTML={{
-                  __html:
-                    (line.kind === 'del'
-                      ? oldHighlight?.[(line.oldLine ?? 1) - 1]
-                      : newHighlight?.[(line.newLine ?? 1) - 1]) || ' ',
-                }}
-              />
-            ) : (
-              <code className="shell-changes-card__diff-text">
-                {showWhitespace
-                  ? (line.text || ' ').replace(/\t/g, '→\t').replace(/ /g, '·')
-                  : line.text || ' '}
-              </code>
-            )}
-          </div>
-        ))}
+      <div
+        className={`shell-changes-card__diff-lines ${wrap ? 'is-wrap' : ''}${
+          showLineNumbers ? '' : ' is-no-line-numbers'
+        }`}
+        data-path={path}
+      >
+        {lines.map((line, index) => {
+          const segments = wordHighlights?.get(index);
+          return (
+            <div
+              key={index}
+              className={`shell-changes-card__diff-line is-${line.kind}`}
+              data-kind={line.kind}
+            >
+              {showLineNumbers ? (
+                <>
+                  <span className="shell-changes-card__diff-no" data-old-line aria-hidden="true">
+                    {line.oldLine ?? ''}
+                  </span>
+                  <span className="shell-changes-card__diff-no" data-new-line aria-hidden="true">
+                    {line.newLine ?? ''}
+                  </span>
+                </>
+              ) : null}
+              <span className="shell-changes-card__diff-gutter" aria-hidden="true">
+                {line.kind === 'add' ? '+' : line.kind === 'del' ? '−' : ' '}
+              </span>
+              {segments ? (
+                <code className="shell-changes-card__diff-text">
+                  <WordSegments segments={segments} />
+                </code>
+              ) : !showWhitespace && (line.kind === 'del' ? oldHighlight : newHighlight) ? (
+                <code
+                  className="shell-changes-card__diff-text hljs"
+                  dangerouslySetInnerHTML={{
+                    __html:
+                      (line.kind === 'del'
+                        ? oldHighlight?.[(line.oldLine ?? 1) - 1]
+                        : newHighlight?.[(line.newLine ?? 1) - 1]) || ' ',
+                  }}
+                />
+              ) : (
+                <code className="shell-changes-card__diff-text">
+                  {showWhitespace
+                    ? (line.text || ' ').replace(/\t/g, '→\t').replace(/ /g, '·')
+                    : line.text || ' '}
+                </code>
+              )}
+            </div>
+          );
+        })}
       </div>
     </div>
   );
 }
 
-export { actionLabel, fileName, isStatusOnlyPreview };
+export { actionLabel, fileDir, fileName, isStatusOnlyPreview };

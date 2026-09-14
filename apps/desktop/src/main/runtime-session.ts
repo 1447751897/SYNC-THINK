@@ -127,6 +127,8 @@ export class RuntimeSession {
   /** O(1) dedupe for event sequences — avoids O(n) scans on every replay event. */
   private seenEventIds = new Set<string>();
   private runtimeSubscription: Promise<() => Promise<void>> | null = null;
+  private pendingForwardEvents: Event[] = [];
+  private forwardFlushScheduled = false;
   private readonly transientSubscriptions = new Map<
     string,
     { senderId: number; unsubscribe: () => Promise<void> }
@@ -136,6 +138,7 @@ export class RuntimeSession {
     private readonly client: RuntimeSessionClient,
     private readonly forwardEvent: (event: Event) => void,
     private readonly activityCursorStore: RuntimeActivityCursorStore = EMPTY_ACTIVITY_CURSOR_STORE,
+    private readonly forwardEvents?: (events: readonly Event[]) => void,
   ) {}
 
   /**
@@ -286,11 +289,47 @@ export class RuntimeSession {
       );
       for (const staleEvent of removed) this.seenEventIds.delete(String(staleEvent.id));
     }
-    try {
-      this.forwardEvent(sanitizedEvent);
-    } catch {
-      console.warn('[desktop] runtime event forwarding failed');
-    }
+    this.pendingForwardEvents.push(sanitizedEvent);
+    this.scheduleForwardFlush();
+  }
+
+  /**
+   * Runtime replay arrives page-by-page, but each page can contain dozens of
+   * events. Flush once per turn so the renderer receives one IPC payload per
+   * replay page instead of one IPC call and React update per event.
+   */
+  private scheduleForwardFlush(): void {
+    if (this.forwardFlushScheduled) return;
+    this.forwardFlushScheduled = true;
+    queueMicrotask(() => {
+      this.forwardFlushScheduled = false;
+      const events = this.pendingForwardEvents;
+      this.pendingForwardEvents = [];
+      if (events.length === 0) return;
+      if (!this.forwardEvents) {
+        for (const event of events) {
+          try {
+            this.forwardEvent(event);
+          } catch {
+            console.warn('[desktop] runtime event forwarding failed');
+          }
+        }
+        return;
+      }
+      try {
+        this.forwardEvents(events);
+      } catch {
+        // Preserve the old per-event failure isolation if a batch transport
+        // fails, so one broken renderer send does not close the subscription.
+        for (const event of events) {
+          try {
+            this.forwardEvent(event);
+          } catch {
+            console.warn('[desktop] runtime event forwarding failed');
+          }
+        }
+      }
+    });
   }
 
   private saveActivityCursor(cursor: EventReplayCursor): void {

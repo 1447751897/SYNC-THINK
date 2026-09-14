@@ -1,5 +1,9 @@
 import type { Event } from '@sync-think/shared';
-import type { AssistantTurnSegment, CommentaryTimelineSegment } from '@sync-think/protocol';
+import type {
+  AssistantTurnSegment,
+  CommentaryTimelineSegment,
+  DelegatedAgentProjection,
+} from '@sync-think/protocol';
 import { formatRunPauseTerminalMessage } from '@sync-think/protocol/events';
 import {
   isHistoricalOrphanRunStart,
@@ -21,6 +25,7 @@ export interface ConversationStreamDraft {
   /** Why the run ended (failed/cancelled) so the live bubble shows the error. */
   terminalState?: 'completed' | 'failed' | 'cancelled';
   terminalError?: string;
+  delegatedAgents?: DelegatedAgentProjection[];
 }
 
 /** A terminal draft is renderable only when the provider emitted user-visible content. */
@@ -38,7 +43,8 @@ export function hasConversationStreamDraftContent(
           segment.kind === 'tool' ||
           segment.kind === 'status' ||
           ((segment.kind === 'thinking' || segment.kind === 'text') && segment.text.trim()),
-      )),
+      )) ||
+      Boolean(draft?.delegatedAgents?.length),
   );
 }
 
@@ -100,7 +106,31 @@ export type ConversationStreamOperation = (
       terminalState?: 'completed' | 'failed' | 'cancelled';
       terminalError?: string;
     }
-) & { assistantTimeline?: AssistantTurnSegment[] };
+) & {
+  assistantTimeline?: AssistantTurnSegment[];
+  delegatedAgent?: DelegatedAgentProjection;
+};
+
+function eventDelegationParentRunId(event: Event): string | undefined {
+  const payload = event.payload as Record<string, unknown> | undefined;
+  if (typeof payload?.delegationParentRunId === 'string' && payload.delegationParentRunId.trim()) {
+    return payload.delegationParentRunId;
+  }
+  const run = payload?.run;
+  if (run && typeof run === 'object') {
+    const parent = (run as Record<string, unknown>).delegationParentRunId;
+    if (typeof parent === 'string' && parent.trim()) return parent;
+  }
+  return undefined;
+}
+
+function delegatedRunIds(events: readonly Event[]): ReadonlySet<string> {
+  return new Set(
+    events
+      .filter((event) => event.runId && eventDelegationParentRunId(event))
+      .map((event) => String(event.runId)),
+  );
+}
 
 export interface ConversationStreamBatch {
   maxSeenSequence: number;
@@ -166,11 +196,13 @@ export function projectRunPauseTerminals(input: {
   excludedRunIds?: ReadonlySet<string>;
 }): RunPauseTerminalProjection[] {
   const byRun = new Map<string, Event>();
+  const childRunIds = delegatedRunIds(input.events);
   for (const event of input.events) {
     if (
       event.type !== 'run.paused' ||
       !event.runId ||
       input.excludedRunIds?.has(event.runId) ||
+      childRunIds.has(String(event.runId)) ||
       !belongsToConversation(event, input.threadId, input.taskId)
     ) {
       continue;
@@ -213,8 +245,13 @@ export function projectConversationRunActivity(input: {
 }): ConversationRunActivity {
   const startedRuns = new Map<string, number>();
   const endedRuns = new Set(input.durableAssistantRunIds);
+  const childRunIds = delegatedRunIds(input.events);
   for (const event of input.events) {
-    if (!belongsToConversation(event, input.threadId, input.taskId) || !event.runId) continue;
+    if (
+      !belongsToConversation(event, input.threadId, input.taskId) ||
+      !event.runId ||
+      childRunIds.has(String(event.runId))
+    ) continue;
     if (event.type === 'run.started') {
       if (isHistoricalOrphanRunStart(event, input.authority)) continue;
       startedRuns.set(event.runId, event.sequence);
@@ -246,8 +283,13 @@ export function selectLatestRunConnectionStatus(input: {
   streamingMessage?: Pick<ConversationStreamDraft, 'runId' | 'timestamp'> | null;
 }): RunConnectionStatus | undefined {
   let status: RunConnectionStatus | undefined;
+  const childRunIds = delegatedRunIds(input.events);
   const ordered = input.events
-    .filter((event) => belongsToConversation(event, input.threadId, input.taskId))
+    .filter(
+      (event) =>
+        belongsToConversation(event, input.threadId, input.taskId) &&
+        (!event.runId || !childRunIds.has(String(event.runId))),
+    )
     .slice()
     .sort((left, right) => left.sequence - right.sequence || left.id.localeCompare(right.id));
 
@@ -349,6 +391,7 @@ export function collectConversationStreamBatch(input: {
   let maxSeenSequence = input.afterSequence;
   let sawTerminalEvent = false;
   const operations: ConversationStreamOperation[] = [];
+  const childRunIds = delegatedRunIds(input.events);
   const ordered = input.events
     .filter((event) => event.sequence > input.afterSequence)
     .sort((left, right) => left.sequence - right.sequence || left.id.localeCompare(right.id));
@@ -356,6 +399,7 @@ export function collectConversationStreamBatch(input: {
   for (const event of ordered) {
     maxSeenSequence = Math.max(maxSeenSequence, event.sequence);
     if (!belongsToConversation(event, input.threadId, input.taskId)) continue;
+    if (event.runId && childRunIds.has(String(event.runId))) continue;
 
     if (event.type === 'message.delta') {
       const delta =
@@ -473,6 +517,20 @@ export function collectConversationStreamBatch(input: {
   return { maxSeenSequence, sawTerminalEvent, operations };
 }
 
+function mergeDelegatedAgents(
+  current: readonly DelegatedAgentProjection[] | undefined,
+  incoming: DelegatedAgentProjection | undefined,
+): DelegatedAgentProjection[] | undefined {
+  if (!incoming) return current?.map((item) => ({ ...item, toolEvents: item.toolEvents.map((tool) => ({ ...tool })) }));
+  const byId = new Map<string, DelegatedAgentProjection>();
+  for (const item of current ?? []) byId.set(String(item.childRunId), item);
+  byId.set(String(incoming.childRunId), incoming);
+  return [...byId.values()].map((item) => ({
+    ...item,
+    toolEvents: item.toolEvents.map((tool) => ({ ...tool })),
+  }));
+}
+
 /** Apply operations in event order so a completed historical run cannot leak into a newer draft. */
 export function applyConversationStreamOperations(
   current: ConversationStreamDraft | null,
@@ -504,6 +562,9 @@ export function applyConversationStreamOperations(
                     })),
                   }
                 : {}),
+              ...(draft && operation.delegatedAgent
+                ? { delegatedAgents: mergeDelegatedAgents(draft.delegatedAgents, operation.delegatedAgent) }
+                : {}),
             }
           : null;
       }
@@ -533,6 +594,9 @@ export function applyConversationStreamOperations(
         ...(operation.assistantTimeline
           ? { assistantTimeline: operation.assistantTimeline.map((segment) => ({ ...segment })) }
           : {}),
+        ...(operation.delegatedAgent
+          ? { delegatedAgents: mergeDelegatedAgents(base.delegatedAgents, operation.delegatedAgent) }
+          : {}),
       };
       continue;
     }
@@ -561,6 +625,9 @@ export function applyConversationStreamOperations(
       ...(reasoningText !== undefined && reasoningText.length > 0 ? { reasoningText } : {}),
       ...(operation.assistantTimeline
         ? { assistantTimeline: operation.assistantTimeline.map((segment) => ({ ...segment })) }
+        : {}),
+      ...(operation.delegatedAgent
+        ? { delegatedAgents: mergeDelegatedAgents(activeBase.delegatedAgents, operation.delegatedAgent) }
         : {}),
       timestamp: operation.occurredAt,
     };

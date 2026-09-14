@@ -84,16 +84,30 @@ function powershellExecutable(): string {
   return join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
 }
 
-async function verifyAuthenticode(path: string): Promise<DesktopUpdateInstallerSignature> {
-  if (process.platform !== 'win32') throw new Error('desktop.update.rollback-signature-platform');
+function quotePowerShellSingleQuoted(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+/**
+ * `powershell.exe -Command <script> <extra>` folds every trailing CLI argument
+ * into the command text, so a separate positional argument never binds to
+ * `$args` and the probe fails with ParameterBindingException. The path has to be
+ * embedded in the script itself.
+ */
+export function buildAuthenticodeProbeArguments(path: string): string[] {
   const command = [
-    '$s=Get-AuthenticodeSignature -LiteralPath $args[0];',
+    `$s=Get-AuthenticodeSignature -LiteralPath ${quotePowerShellSingleQuoted(path)};`,
     '[ordered]@{status=[string]$s.Status;thumbprint=if($s.SignerCertificate){[string]$s.SignerCertificate.Thumbprint}else{$null};timestamp=if($s.TimeStamperCertificate){$true}else{$false}}',
     '| ConvertTo-Json -Compress',
   ].join(' ');
+  return ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', command];
+}
+
+async function verifyAuthenticode(path: string): Promise<DesktopUpdateInstallerSignature> {
+  if (process.platform !== 'win32') throw new Error('desktop.update.rollback-signature-platform');
   const { stdout } = await execFileAsync(
     powershellExecutable(),
-    ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', command, path],
+    buildAuthenticodeProbeArguments(path),
     { windowsHide: true, maxBuffer: 1024 * 1024 },
   );
   const result = JSON.parse(stdout.trim()) as {

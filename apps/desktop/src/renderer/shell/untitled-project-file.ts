@@ -1,11 +1,17 @@
 export const UNTITLED_DOCUMENT_CONTENT = '';
 
-export function allocateUntitledDocumentPath(openPaths: readonly string[] = []): string {
-  return allocateUntitledPath(openPaths, 'notes', '未命名文档', 'md');
+export function allocateUntitledDocumentPath(
+  openPaths: readonly string[] = [],
+  directory = '',
+): string {
+  return allocateUntitledPath(openPaths, directory, '未命名文档', 'md');
 }
 
-export function allocateUntitledCanvasPath(openPaths: readonly string[] = []): string {
-  return allocateUntitledPath(openPaths, 'designs', '未命名绘图', 'excalidraw');
+export function allocateUntitledCanvasPath(
+  openPaths: readonly string[] = [],
+  directory = '',
+): string {
+  return allocateUntitledPath(openPaths, directory, '未命名绘图', 'excalidraw');
 }
 
 function allocateUntitledPath(
@@ -15,13 +21,15 @@ function allocateUntitledPath(
   extension: string,
 ): string {
   const taken = new Set(openPaths.map((path) => path.replace(/\\/g, '/')));
-  const first = `${directory}/${stem}.${extension}`;
+  const prefix = directory.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+  const join = (name: string) => (prefix ? `${prefix}/${name}` : name);
+  const first = join(`${stem}.${extension}`);
   if (!taken.has(first)) return first;
   for (let index = 2; index < 1000; index += 1) {
-    const next = `${directory}/${stem}-${index}.${extension}`;
+    const next = join(`${stem} ${index}.${extension}`);
     if (!taken.has(next)) return next;
   }
-  return `${directory}/${stem}-${Date.now()}.${extension}`;
+  return join(`${stem} ${Date.now()}.${extension}`);
 }
 
 export interface UntitledFileWriteResult {

@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { Conversation, Message } from '@sync-think/shared';
 import type { RunProcessView } from '@sync-think/protocol';
-import { ChatView } from './ChatView.js';
+import { ChatView, resetRecentConversationPageCacheForTests } from './ChatView.js';
 import { resetProviderUsageSummaryCacheForTests } from './provider-usage-summary.js';
 
 const runtime = {
@@ -65,6 +65,7 @@ const processView = {
 beforeEach(() => {
   window.localStorage.clear();
   resetProviderUsageSummaryCacheForTests();
+  resetRecentConversationPageCacheForTests();
   runtime.openTask.mockReset().mockResolvedValue({ task: { threadId: 'thread-usage' } });
   runtime.getConversationContextStatus.mockReset().mockResolvedValue({
     modelId: 'model-usage',
@@ -1098,7 +1099,7 @@ describe('ChatView reply usage details', () => {
     );
 
     const answer = await screen.findByText('两个文件已完整对比完。');
-    const card = await screen.findByText(/已更改 1 个文件/);
+    const card = await screen.findByText(/编辑了 1 个文件/);
     expect(answer.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
     );

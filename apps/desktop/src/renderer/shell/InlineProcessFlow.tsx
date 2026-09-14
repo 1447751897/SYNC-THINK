@@ -36,6 +36,8 @@ import {
   formatElapsedZh,
   friendlyToolName,
   groupConsecutiveProcessTools,
+  extractGeneratedImageSrc,
+  isImageGenerationActivity,
   toolVisualKind,
   toolInputSummary,
   toolStatusOf,
@@ -45,6 +47,11 @@ import {
   type ProcessToolVisualKind,
 } from './process-activity.js';
 import { LoadingPixelGrid } from './LoadingPixelGrid.js';
+import { GridReveal } from './GridReveal.js';
+import {
+  extractGeneratedImageModelLine,
+  normalizeImageGenerationToolResult,
+} from './markdown-image-gallery.js';
 import { ConversationContentScope, DeferredToolContent } from './DeferredToolContent.js';
 import { parseDeferredContent } from '@sync-think/shared';
 
@@ -295,6 +302,15 @@ function structuredValueText(value: unknown): string {
   }
 }
 
+/**
+ * 卡内顶条的说明文字。详情区左侧已经有「参数/输出」标签，这里再写一遍语言名是噪声，
+ * 换成「类型 · 规模」，让这一行提供块外没有的信息。
+ */
+function describePayload(text: string, language: string): string {
+  const lines = text.replace(/\r\n/g, '\n').replace(/\n$/, '').split('\n').length;
+  return `${language === 'json' ? 'JSON' : '文本'} · ${lines} 行`;
+}
+
 function ToolPayload({
   text,
   testId,
@@ -320,20 +336,26 @@ function ToolPayload({
         streaming={streaming}
         failed={failed}
         testId={testId}
+        wrapControl
       />
     );
   const fields = structuredFields(text);
   if (!fields) {
+    const language = ['{', '['].includes(text.trimStart().charAt(0)) ? 'json' : 'text';
     return (
       <div className={`shell-tool-result${failed ? ' is-failed' : ''}`} data-testid={testId}>
         <CodeBlock
           code={text}
-          language={['{', '['].includes(text.trimStart().charAt(0)) ? 'json' : 'text'}
+          language={language}
           streaming={streaming}
           copyLabel={`复制${label}`}
           collapsible={false}
           maxHeight={240}
           showStatus={false}
+          wrapControl
+          identity={
+            <span className="shell-tool-result__label">{describePayload(text, language)}</span>
+          }
         />
       </div>
     );
@@ -341,7 +363,7 @@ function ToolPayload({
   return (
     <div className={`shell-tool-result${failed ? ' is-failed' : ''}`} data-testid={testId}>
       <div className="shell-tool-result__bar">
-        <span>JSON</span>
+        <span className="shell-tool-result__label">JSON 对象 · {fields.length} 个字段</span>
         <CopyTextButton text={text} label={`复制${label}`} />
       </div>
       <dl className={`shell-inline-process__structured${failed ? ' is-failed' : ''}`}>
@@ -394,6 +416,13 @@ function ToolRow({
     summary && (visualKind === 'read' || visualKind === 'write' || visualKind === 'list')
       ? summary
       : undefined;
+  const imageTool = isImageGenerationActivity(item);
+  const generatedSrc =
+    status === 'completed' ? extractGeneratedImageSrc(item.result ?? '') : null;
+  const generationModel = item.result
+    ? extractGeneratedImageModelLine(normalizeImageGenerationToolResult(item.result))
+    : undefined;
+  const showGridReveal = imageTool && status !== 'failed';
   return (
     <div
       className={`shell-inline-process__tool is-${status}`}
@@ -478,6 +507,22 @@ function ToolRow({
           {progressLine}
         </div>
       ) : null}
+      {showGridReveal ? (
+        <div className="shell-inline-process__grid-reveal" data-testid="inline-process-grid-reveal">
+          <GridReveal
+            src={generatedSrc}
+            alt={summary || '生成图片'}
+            caption={
+              status === 'running'
+                ? '生成中'
+                : generationModel
+                  ? `生图模型 · ${generationModel}`
+                  : undefined
+            }
+            aspect={1}
+          />
+        </div>
+      ) : null}
       {open ? (
         <div
           className="shell-inline-process__tool-body"
@@ -489,12 +534,6 @@ function ToolRow({
             <span>原始工具</span>
             <code>{item.name}</code>
           </div>
-          {(elapsed ?? liveElapsed) ? (
-            <div className="shell-inline-process__detail-row">
-              <span>耗时</span>
-              <code>{elapsed ?? liveElapsed}</code>
-            </div>
-          ) : null}
           {item.argumentsJson ? (
             <div className="shell-inline-process__detail-block">
               <span>参数</span>
@@ -533,10 +572,31 @@ function ToolRow({
   );
 }
 
+function describeStatusDetail(detail: string | undefined): string | undefined {
+  if (!detail) return undefined;
+  switch (detail) {
+    case 'transient':
+      return '暂时失败';
+    case 'timeout':
+      return '超时';
+    case 'rate-limit':
+      return '限流';
+    case 'auth':
+      return '认证失败';
+    case 'protocol':
+      return '协议错误';
+    case 'unknown':
+      return '未知错误';
+    default:
+      return detail;
+  }
+}
+
 function StatusRow({ item }: { item: Extract<InlineProcessItem, { kind: 'status' }> }) {
   const failed =
     item.statusType === 'connection' &&
     /失败|断开|error|failed/i.test(`${item.label} ${item.detail ?? ''}`);
+  const detail = describeStatusDetail(item.detail);
   return (
     <div
       className={`shell-inline-process__status${failed ? ' is-failed' : ''}`}
@@ -551,12 +611,12 @@ function StatusRow({ item }: { item: Extract<InlineProcessItem, { kind: 'status'
         <Check size={12} aria-hidden="true" />
       )}
       <span className="shell-inline-process__status-label">{item.label}</span>
-      {item.detail ? (
+      {detail ? (
         <>
           <span className="shell-inline-process__separator" aria-hidden="true">
             ·
           </span>
-          <span className="shell-inline-process__status-detail">{item.detail}</span>
+          <span className="shell-inline-process__status-detail">{detail}</span>
         </>
       ) : null}
     </div>

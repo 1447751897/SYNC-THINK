@@ -1,0 +1,73 @@
+name: Build macOS arm64 release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-macos-${{ github.event.release.tag_name || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: macos-14
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      ELECTRON_BUILDER_ALLOW_UNRESOLVED_DEPENDENCIES: 'true'
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Enable pnpm
+        run: corepack enable pnpm
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build application
+        run: pnpm build
+
+      - name: Build unsigned macOS arm64 package
+        run: pnpm exec electron-builder --config apps/desktop/electron-builder.json --mac dmg zip --arm64 --publish never
+
+      - name: Create checksums
+        run: |
+          cd apps/desktop/release/installer
+          shasum -a 256 *.dmg *.zip > SHA256SUMS-macos-arm64.txt
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sync-think-macos-arm64-${{ github.run_number }}
+          path: |
+            apps/desktop/release/installer/*.dmg
+            apps/desktop/release/installer/*.zip
+            apps/desktop/release/installer/SHA256SUMS-macos-arm64.txt
+          if-no-files-found: error
+
+      - name: Upload assets to GitHub Release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name }}
+          files: |
+            apps/desktop/release/installer/*.dmg
+            apps/desktop/release/installer/*.zip
+            apps/desktop/release/installer/SHA256SUMS-macos-arm64.txt
+          fail_on_unmatched_files: true
+          body: |
+            macOS Apple Silicon 内测包，当前为未签名版本。
+
+            首次启动：下载 DMG，拖入 Applications；如果 macOS 阻止启动，请在 Finder 中右键 SYNC-THINK，选择“打开”。
+
+            该版本仅支持 Apple Silicon（arm64），不支持 Intel Mac。安装前请使用 SHA256SUMS-macos-arm64.txt 校验文件。

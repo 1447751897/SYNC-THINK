@@ -1,281 +1,286 @@
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  useSyncExternalStore,
-  type KeyboardEvent,
-} from 'react';
-import { Eraser, Loader2, Play, Square, SquareTerminal } from 'lucide-react';
-import {
-  getTerminalSessionStore,
-  type TerminalSessionStore,
-} from './terminal-session-store.js';
+import { useCallback, useEffect, useRef, useState, type DragEvent } from 'react';
 import { loadXtermVendor, type XtermInstance } from './xterm-vendor-loader.js';
+import { extractFilePathsFromDrag, isTerminalPathDrag, shellEscapePath } from './terminal/path-drop.js';
+import { getTerminalViewportStyle, getXtermTheme } from './terminal/xterm-theme.js';
 
 export interface TerminalPaneProps {
   terminalId: string;
   projectFolder?: string;
   cwd: string;
-  store?: TerminalSessionStore;
+  workspaceId?: string;
+  title?: string;
+  active?: boolean;
   onCwdChange?(cwd: string): void;
 }
 
-function terminalDimensions(element: HTMLElement): { columns: number; rows: number } | undefined {
-  if (element.clientWidth < 20 || element.clientHeight < 20) return undefined;
-  return {
-    columns: Math.max(20, Math.floor(element.clientWidth / 7.5)),
-    rows: Math.max(4, Math.floor(element.clientHeight / 17)),
-  };
+interface FitAddonLike {
+  fit(): void;
+  proposeDimensions(): { cols: number; rows: number } | undefined;
 }
 
-function terminalTheme(element: HTMLElement): Record<string, string> {
-  const styles = getComputedStyle(element);
+function createTerminalResizeScheduler(
+  resize: (dimensions: { cols: number; rows: number }) => void,
+  delay = 80,
+) {
+  let timer: number | null = null;
+  let pending: { cols: number; rows: number } | null = null;
+  let lastSent: { cols: number; rows: number } | null = null;
   return {
-    background: styles.getPropertyValue('--color-page').trim() || styles.backgroundColor,
-    foreground: styles.getPropertyValue('--color-text').trim() || styles.color,
-    cursor: styles.getPropertyValue('--color-accent').trim() || styles.color,
-    selectionBackground:
-      styles.getPropertyValue('--color-accent-soft').trim() || styles.backgroundColor,
+    schedule(dimensions: { cols: number; rows: number }) {
+      pending = dimensions;
+      if (timer) window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        timer = null;
+        const next = pending;
+        pending = null;
+        if (!next) return;
+        if (lastSent?.cols === next.cols && lastSent.rows === next.rows) return;
+        lastSent = next;
+        resize(next);
+      }, delay);
+    },
+    dispose() {
+      if (timer) window.clearTimeout(timer);
+      timer = null;
+      pending = null;
+    },
   };
 }
 
 export function TerminalPane(props: TerminalPaneProps) {
-  const store = useMemo(() => props.store ?? getTerminalSessionStore(), [props.store]);
-  store.ensureSession(props.terminalId, props.cwd);
-  const snapshot = useSyncExternalStore(
-    useCallback((listener) => store.subscribe(props.terminalId, listener), [props.terminalId, store]),
-    useCallback(() => store.getSnapshot(props.terminalId), [props.terminalId, store]),
-    useCallback(() => store.getSnapshot(props.terminalId), [props.terminalId, store]),
-  );
-  const [commandLine, setCommandLine] = useState('');
-  const [historyIndex, setHistoryIndex] = useState<number | null>(null);
-  const [terminalReady, setTerminalReady] = useState(0);
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const xtermRef = useRef<XtermInstance | null>(null);
+  const fitAddonRef = useRef<FitAddonLike | null>(null);
+  const [termBg, setTermBg] = useState(() => getXtermTheme().background);
+  const [isPathDragOver, setIsPathDragOver] = useState(false);
   const [vendorError, setVendorError] = useState<string>();
-  const outputRef = useRef<HTMLDivElement>(null);
-  const terminalRef = useRef<XtermInstance>();
-  const lastChunkIdRef = useRef(0);
-  const clearRevisionRef = useRef(snapshot.clearRevision);
-  const historyDraftRef = useRef('');
-  const commandEditRevisionRef = useRef(0);
+  const cwd = props.projectFolder?.trim() || props.cwd || '/';
+  const isActive = props.active !== false;
+
+  const handleDragOver = useCallback((event: DragEvent<HTMLDivElement>) => {
+    if (!isTerminalPathDrag(event.dataTransfer)) {
+      setIsPathDragOver(false);
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = 'copy';
+    setIsPathDragOver(true);
+  }, []);
+
+  const handleDragLeave = useCallback((event: DragEvent<HTMLDivElement>) => {
+    const wrapper = wrapperRef.current;
+    if (wrapper && !wrapper.contains(event.relatedTarget as Node | null)) {
+      setIsPathDragOver(false);
+    }
+  }, []);
+
+  const handleDrop = useCallback(
+    (event: DragEvent<HTMLDivElement>) => {
+      setIsPathDragOver(false);
+      const paths = extractFilePathsFromDrag(event);
+      if (paths.length === 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const escaped = `${paths.map(shellEscapePath).join(' ')} `;
+      window.syncThink?.terminal?.write(props.terminalId, escaped);
+      xtermRef.current?.focus();
+    },
+    [props.terminalId],
+  );
 
   useEffect(() => {
-    const element = outputRef.current;
-    if (!element) return;
+    const container = containerRef.current;
+    const bridge = window.syncThink?.terminal;
+    if (!container || !bridge) return;
     let disposed = false;
     let resizeObserver: ResizeObserver | undefined;
-    const syncTheme = () => {
-      const terminal = terminalRef.current;
-      if (terminal?.options) terminal.options.theme = terminalTheme(element);
-    };
-    const resize = () => {
-      const dimensions = terminalDimensions(element);
-      if (dimensions) terminalRef.current?.resize(dimensions.columns, dimensions.rows);
-    };
+    let themeObserver: MutationObserver | undefined;
+    let inputDisposable: { dispose(): void } | undefined;
+    let onDataCleanup: (() => void) | undefined;
+    let onExitCleanup: (() => void) | undefined;
+    let resizeScheduler: ReturnType<typeof createTerminalResizeScheduler> | undefined;
+    let applyTheme: (() => void) | undefined;
+
     void loadXtermVendor()
-      .then(({ Terminal }) => {
-        if (disposed) return;
-        const styles = getComputedStyle(element);
-        const terminal = new Terminal({
-          convertEol: true,
-          cursorBlink: false,
-          disableStdin: true,
-          fontFamily: styles.getPropertyValue('--font-mono').trim() || 'Cascadia Code, Consolas, monospace',
-          fontSize: 12,
-          lineHeight: 1.35,
-          scrollback: 5_000,
-          theme: terminalTheme(element),
+      .then(({ Terminal, FitAddon, WebLinksAddon }) => {
+        if (disposed || !container) return;
+        const term = new Terminal({
+          fontFamily: '"SF Mono", Menlo, Monaco, "Courier New", monospace',
+          fontSize: 13,
+          lineHeight: 1.2,
+          cursorBlink: true,
+          cursorStyle: 'block',
+          theme: getXtermTheme(),
+          allowProposedApi: true,
         });
-        terminal.open(element);
-        terminalRef.current = terminal;
-        resize();
-        if (typeof ResizeObserver !== 'undefined') {
-          resizeObserver = new ResizeObserver(resize);
-          resizeObserver.observe(element);
-        } else {
-          window.addEventListener('resize', resize);
-        }
-        window.addEventListener('shell-theme-applied', syncTheme);
-        setTerminalReady((value) => value + 1);
+        const fitAddon = FitAddon ? new FitAddon() : undefined;
+        const webLinksAddon = WebLinksAddon ? new WebLinksAddon() : undefined;
+        if (fitAddon) term.loadAddon?.(fitAddon);
+        if (webLinksAddon) term.loadAddon?.(webLinksAddon);
+        term.open(container);
+        xtermRef.current = term;
+        fitAddonRef.current = fitAddon ?? null;
+        setTermBg(getXtermTheme().background);
+
+        const writeBufferedOutput = (replay: boolean) => {
+          void bridge.getBuffer(props.terminalId).then((snapshot) => {
+            if (disposed || !snapshot || !replay) return;
+            term.write(snapshot);
+          });
+        };
+
+        let ptyReadyForResize = false;
+        let deferredResize: { cols: number; rows: number } | null = null;
+        const syncPtyDimensions = ({ cols, rows }: { cols: number; rows: number }) => {
+          if (!ptyReadyForResize) {
+            deferredResize = { cols, rows };
+            return;
+          }
+          bridge.resize(props.terminalId, cols, rows);
+        };
+        const enablePtyResize = () => {
+          ptyReadyForResize = true;
+          if (deferredResize) {
+            const dimensions = deferredResize;
+            deferredResize = null;
+            syncPtyDimensions(dimensions);
+          }
+        };
+        resizeScheduler = createTerminalResizeScheduler(syncPtyDimensions);
+
+        term.attachCustomKeyEventHandler?.((event) => {
+          if (event.type === 'keydown' && event.metaKey && event.key === 'Backspace') {
+            bridge.write(props.terminalId, '\u0015');
+            return false;
+          }
+          return true;
+        });
+        inputDisposable = term.onData?.((data) => {
+          bridge.write(props.terminalId, data);
+        });
+        onDataCleanup = bridge.onData((sessionId, data) => {
+          if (sessionId !== props.terminalId) return;
+          term.write(data);
+        });
+        onExitCleanup = bridge.onExit((sessionId, exitCode) => {
+          if (sessionId !== props.terminalId) return;
+          term.writeln?.(`\r\n\u001b[90m[进程已退出，代码 ${exitCode}]\u001b[0m`);
+        });
+
+        requestAnimationFrame(() => {
+          fitAddon?.fit();
+          const dims = fitAddon?.proposeDimensions();
+          const cols = dims?.cols ?? 80;
+          const rows = dims?.rows ?? 24;
+          void bridge.exists(props.terminalId).then((alive) => {
+            if (disposed) return;
+            if (alive) {
+              writeBufferedOutput(true);
+              enablePtyResize();
+              resizeScheduler?.schedule({ cols, rows });
+              return;
+            }
+            const colorScheme = document.documentElement.classList.contains('dark')
+              ? 'dark'
+              : 'light';
+            void bridge
+              .create({
+                sessionId: props.terminalId,
+                workspaceId: props.workspaceId ?? '__unknown_workspace__',
+                cwd,
+                cols,
+                rows,
+                title: props.title,
+                colorScheme,
+              })
+              .then((result) => {
+                if (disposed) return;
+                if (!result.success) {
+                  term.writeln?.('\r\n\u001b[31m[终端创建失败]\u001b[0m');
+                  if (result.error) {
+                    for (const line of result.error.split('\n')) {
+                      term.writeln?.(`\u001b[33m${line}\u001b[0m`);
+                    }
+                  }
+                  return;
+                }
+                if (result.sessionId && result.sessionId !== props.terminalId) return;
+                enablePtyResize();
+              });
+          });
+          term.focus();
+        });
+
+        resizeObserver = new ResizeObserver(() => {
+          fitAddonRef.current?.fit();
+          const next = fitAddonRef.current?.proposeDimensions();
+          if (next) resizeScheduler?.schedule({ cols: next.cols, rows: next.rows });
+        });
+        resizeObserver.observe(container);
+
+        applyTheme = () => {
+          const theme = getXtermTheme();
+          if (xtermRef.current?.options) xtermRef.current.options.theme = theme;
+          setTermBg(theme.background);
+        };
+        themeObserver = new MutationObserver(applyTheme);
+        themeObserver.observe(document.documentElement, {
+          attributes: true,
+          attributeFilter: ['class', 'data-theme', 'data-color-theme', 'data-image-theme', 'style'],
+        });
+        window.addEventListener('shell-preferences-applied', applyTheme);
       })
       .catch((error: unknown) => {
         if (!disposed) {
           setVendorError(error instanceof Error ? error.message : '终端组件加载失败');
         }
       });
+
     return () => {
       disposed = true;
+      if (applyTheme) window.removeEventListener('shell-preferences-applied', applyTheme);
       resizeObserver?.disconnect();
-      window.removeEventListener('resize', resize);
-      window.removeEventListener('shell-theme-applied', syncTheme);
-      terminalRef.current?.dispose();
-      terminalRef.current = undefined;
-      lastChunkIdRef.current = 0;
+      themeObserver?.disconnect();
+      inputDisposable?.dispose();
+      onDataCleanup?.();
+      onExitCleanup?.();
+      resizeScheduler?.dispose();
+      xtermRef.current?.dispose();
+      xtermRef.current = null;
+      fitAddonRef.current = null;
     };
-  }, [props.terminalId]);
+  }, [cwd, props.terminalId, props.title, props.workspaceId]);
 
   useEffect(() => {
-    const terminal = terminalRef.current;
-    if (!terminal) return;
-    if (snapshot.clearRevision !== clearRevisionRef.current) {
-      terminal.reset();
-      clearRevisionRef.current = snapshot.clearRevision;
-      lastChunkIdRef.current = 0;
-    }
-    for (const chunk of snapshot.chunks) {
-      if (chunk.id <= lastChunkIdRef.current) continue;
-      terminal.write(
-        chunk.stream === 'stderr'
-          ? `\u001b[31m${chunk.text}\u001b[0m`
-          : chunk.text,
-      );
-      lastChunkIdRef.current = chunk.id;
-    }
-  }, [snapshot.chunks, snapshot.clearRevision, terminalReady]);
-
-  const runCommand = async () => {
-    if (
-      !props.projectFolder ||
-      !commandLine.trim() ||
-      snapshot.status === 'starting' ||
-      snapshot.status === 'running' ||
-      snapshot.status === 'stopping'
-    ) {
-      return;
-    }
-    const submittedRevision = commandEditRevisionRef.current;
-    try {
-      const result = await store.startCommand({
-        root: props.projectFolder,
-        terminalId: props.terminalId,
-        commandLine,
-        cwd: snapshot.cwd,
-      });
-      if (commandEditRevisionRef.current === submittedRevision) {
-        commandEditRevisionRef.current += 1;
-        setCommandLine('');
-        setHistoryIndex(null);
-        historyDraftRef.current = '';
-      }
-      if (result.cwd !== props.cwd) props.onCwdChange?.(result.cwd);
-    } catch {
-      // The store writes the actionable failure into the terminal surface.
-    }
-  };
-
-  const handleCommandKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    if (event.key === 'Enter') {
-      event.preventDefault();
-      void runCommand();
-      return;
-    }
-    if (event.ctrlKey && event.key.toLowerCase() === 'c' && snapshot.activeCommandId) {
-      event.preventDefault();
-      void store.cancelCommand(props.terminalId);
-      return;
-    }
-    if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
-    if (snapshot.history.length === 0) return;
-    event.preventDefault();
-    if (event.key === 'ArrowUp') {
-      if (historyIndex === null) historyDraftRef.current = commandLine;
-      const next = historyIndex === null ? snapshot.history.length - 1 : Math.max(0, historyIndex - 1);
-      setHistoryIndex(next);
-      commandEditRevisionRef.current += 1;
-      setCommandLine(snapshot.history[next] ?? '');
-      return;
-    }
-    if (historyIndex === null) return;
-    const next = historyIndex + 1;
-    if (next >= snapshot.history.length) {
-      setHistoryIndex(null);
-      commandEditRevisionRef.current += 1;
-      setCommandLine(historyDraftRef.current);
-    } else {
-      setHistoryIndex(next);
-      commandEditRevisionRef.current += 1;
-      setCommandLine(snapshot.history[next] ?? '');
-    }
-  };
-
-  const running = snapshot.status === 'running' || snapshot.status === 'starting';
-  const stopping = snapshot.status === 'stopping';
-  const statusLabel = stopping
-    ? '停止中'
-    : running
-      ? '运行中'
-      : snapshot.status === 'error'
-        ? '命令失败'
-        : '就绪';
+    if (!isActive) return;
+    const id = requestAnimationFrame(() => xtermRef.current?.focus());
+    return () => cancelAnimationFrame(id);
+  }, [isActive]);
 
   return (
-    <div className="shell-terminal-pane" data-testid="terminal-pane">
-      <header className="shell-terminal-header">
-        <SquareTerminal size={14} className="shrink-0 text-text-faint" aria-hidden="true" />
-        <span className="shell-terminal-cwd" title={snapshot.cwd || '/'}>
-          /{snapshot.cwd}
-        </span>
-        <span className="shell-terminal-status" data-status={snapshot.status}>
-          {statusLabel}
-        </span>
-        <button
-          type="button"
-          className="shell-file-pane-icon-button"
-          aria-label="清空终端"
-          title="清空终端"
-          onClick={() => store.clear(props.terminalId)}
-        >
-          <Eraser size={13} />
-        </button>
-      </header>
-      <div className="shell-terminal-output" ref={outputRef} data-testid="terminal-output">
+    <div
+      ref={wrapperRef}
+      className="shell-terminal-pane"
+      data-testid="terminal-pane"
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
+      <div
+        ref={containerRef}
+        className="shell-terminal-output"
+        data-testid="terminal-output"
+        style={getTerminalViewportStyle(termBg)}
+      >
         {vendorError ? <div className="shell-terminal-load-error">{vendorError}</div> : null}
       </div>
-      <div className="shell-terminal-commandbar">
-        <span className="shell-terminal-prompt" aria-hidden="true">
-          &gt;
-        </span>
-        <input
-          type="text"
-          data-testid="terminal-command-input"
-          aria-label="终端命令"
-          value={commandLine}
-          disabled={!props.projectFolder || stopping}
-          spellCheck={false}
-          autoComplete="off"
-          placeholder={props.projectFolder ? '输入命令' : '先绑定项目文件夹'}
-          onChange={(event) => {
-            commandEditRevisionRef.current += 1;
-            setCommandLine(event.currentTarget.value);
-            setHistoryIndex(null);
-          }}
-          onKeyDown={handleCommandKeyDown}
-        />
-        {running || stopping ? (
-          <button
-            type="button"
-            className="shell-terminal-run is-stop"
-            aria-label="停止命令"
-            title="停止命令"
-            disabled={stopping || !snapshot.activeCommandId}
-            onClick={() => void store.cancelCommand(props.terminalId)}
-          >
-            {stopping ? <Loader2 size={13} className="animate-spin" /> : <Square size={11} fill="currentColor" />}
-          </button>
-        ) : (
-          <button
-            type="button"
-            className="shell-terminal-run"
-            aria-label="运行命令"
-            title="运行命令"
-            disabled={!props.projectFolder || !commandLine.trim()}
-            onClick={() => void runCommand()}
-          >
-            <Play size={13} fill="currentColor" />
-          </button>
-        )}
-      </div>
+      {isPathDragOver ? (
+        <div data-terminal-path-drop-highlight="true" className="shell-terminal-drop-highlight">
+          <div className="shell-terminal-drop-highlight__fill" />
+        </div>
+      ) : null}
     </div>
   );
 }

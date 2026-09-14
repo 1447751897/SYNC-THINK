@@ -12,12 +12,12 @@ export * from './gateway.js';
 export * from './preferences.js';
 export * from './data.js';
 export * from './design-generation.js';
-export * from './ui-design.js';
 export * from './pipe.js';
 export * from './tool-approval.js';
 export * from './web-search.js';
 export * from './conversation-file-diff.js';
 export * from './run-process-page.js';
 export * from './conversation-file-changes.js';
+export * from './collaboration.js';
 
 export * from './task-plan-history.js';

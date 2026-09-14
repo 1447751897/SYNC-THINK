@@ -302,6 +302,40 @@ describe('local context compact', () => {
 });
 
 describe('chat execution mode tool gating', () => {
+  it('scopes Agent conversation task mutations by the collaboration setting', () => {
+    const disabled = toolsForExecutionMode('workspace', {
+      conversationTrack: 'agent',
+      includeAgentTools: true,
+    }).map((tool) => tool.name);
+    expect(disabled).not.toContain('TaskCreate');
+    expect(disabled).not.toContain('TaskUpdate');
+    expect(disabled).not.toContain('create_agent');
+
+    const enabled = toolsForExecutionMode('workspace', {
+      conversationTrack: 'agent',
+      allowAgentTaskDispatch: true,
+      includeAgentTools: true,
+    }).map((tool) => tool.name);
+    expect(enabled).toContain('TaskCreate');
+    expect(enabled).toContain('TaskUpdate');
+    expect(enabled).not.toContain('create_agent');
+  });
+
+  it('exposes dynamic delegation only on an enabled model conversation', () => {
+    expect(
+      toolsForExecutionMode('workspace', {
+        conversationTrack: 'model',
+        allowDynamicSubagents: true,
+      }).map((tool) => tool.name),
+    ).toContain('agent_delegate');
+    expect(
+      toolsForExecutionMode('workspace', {
+        conversationTrack: 'agent',
+        allowDynamicSubagents: true,
+      }).map((tool) => tool.name),
+    ).not.toContain('agent_delegate');
+  });
+
   it('normalizes legacy aliases to the three product modes', () => {
     expect(normalizeChatExecutionMode('read-only')).toBe('ask');
     expect(normalizeChatExecutionMode('ask')).toBe('ask');
@@ -329,6 +363,18 @@ describe('chat execution mode tool gating', () => {
       for (const tool of ['platform_context', 'ask_user_question', 'plan_submit', 'goal_manage']) {
         expect(isChatToolAllowed(mode, tool), `${tool} in ${mode}`).toBe(true);
       }
+    }
+  });
+
+  it('allows host image tools on every permission mode', () => {
+    for (const mode of ['ask', 'workspace', 'full-access']) {
+      expect(isChatToolAllowed(mode, 'generate_image'), `generate_image in ${mode}`).toBe(true);
+      expect(isChatToolAllowed(mode, 'search_capability'), `search_capability in ${mode}`).toBe(
+        true,
+      );
+      expect(isChatToolAllowed(mode, 'use_capability'), `use_capability in ${mode}`).toBe(true);
+      expect(isChatToolAllowed(mode, 'describe_image'), `describe_image in ${mode}`).toBe(true);
+      expect(isChatToolAllowed(mode, 'ocr_image'), `ocr_image in ${mode}`).toBe(true);
     }
   });
 
@@ -721,6 +767,21 @@ describe('chat execution mode tool gating', () => {
     expect(dispatch.get(tools[0]!.name)).toEqual({
       mcpServerId: 'mcp-1',
       toolName: 'search',
+    });
+  });
+
+  it('preserves explicit MCP readOnly metadata for delegated filtering', () => {
+    const { tools, dispatch } = mcpToolsToProviderSchemas([
+      {
+        id: 'mcp-2',
+        name: 'Readonly',
+        tools: [{ name: 'inspect', description: 'inspect', readOnly: true }],
+      },
+    ]);
+    expect(dispatch.get(tools[0]!.name)).toMatchObject({
+      mcpServerId: 'mcp-2',
+      toolName: 'inspect',
+      readOnly: true,
     });
   });
 });

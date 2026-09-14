@@ -89,6 +89,16 @@ describe('responsive pane layout wiring', () => {
     );
   });
 
+  it('keeps the bottom workbench chrome fixed and its content shrinkable', () => {
+    expect(shellStyles).toMatch(
+      /\.shell-workbench--bottom > \.shell-workbench__tabbar\s*\{\s*min-height:\s*40px;\s*\}/,
+    );
+    expect(shellStyles).toMatch(
+      /\.shell-workbench--bottom > \.shell-workbench__divider,[\s\S]*\.shell-workbench--bottom > \.shell-workbench__content\s*\{\s*min-height:\s*0;\s*\}/,
+    );
+    expect(shellStyles).not.toContain('min-height: var(--workbench-size, 220px);');
+  });
+
   it('lets the image-theme wallpaper show on the empty welcome pane without reading blur', () => {
     expect(shellStyles).toMatch(
       /:root\[data-image-theme='active'\][\s\S]*\.shell-pane-canvas--empty[\s\S]*background:\s*transparent;/,

@@ -6,7 +6,7 @@
  * while the host is upgraded independently.
  */
 
-export const DEFAULT_BROWSER_EXTENSION_URL = 'ws://127.0.0.1:17373/browser-extension/v1';
+export const DEFAULT_BROWSER_EXTENSION_URL = 'ws://127.0.0.1:17374/browser-extension/v1';
 
 export const BROWSER_EXTENSION_CONNECTION_STATES = [
   'disabled',

@@ -1,0 +1,258 @@
+name: Release Windows
+
+# 一次发版动作，两个出口同时更新：
+#   /updates/   老用户自动更新（latest.yml + 带版本号的安装包 + blockmap）
+#   /downloads/ 新用户首次下载（固定文件名）
+# 二者由 scripts/windows-release-publish.mjs 从同一份已校验的 feed 目录铺出，
+# 并断言两侧 SHA-512 逐字节一致，从机制上消除「首页发 rc.4、更新源已是 rc.5」的分叉。
+#
+# 触发：
+#   - 推送 v* tag    → 完整发布（构建 + 写 sync-think.online）
+#   - 推送 main 分支 → 干跑（只构建 + 跑完所有校验，publish job 被跳过），
+#                      用于合并后立刻知道构建是否通过，不会把版本推给用户
+#   - 手动 dispatch  → 指定版本号发布
+# 不需要发 GitHub Release —— 见 docs/operations/08-deployment.md §8.3：
+# 发 Release 会同时触发 deploy-website.yml 的下载页同步路径，两条路径并存即分叉风险。
+
+on:
+  push:
+    tags: ['v*']
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '要发布的版本号（例：0.1.0-rc.6）。留空则从 tag 推导；非 tag 触发时回落到 package.json 版本（干跑，不发布）。'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-windows-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  SYNC_THINK_UPDATE_FEED_URL: https://sync-think.online/updates
+  # Alpha 渠道的安装包不签名；publisherName 为 null 时 electron-updater 跳过 Authenticode 校验。
+  # 完整性由 feed 元数据中的 SHA-512 兜底（见文档 §8.3「已知代价与补偿」）。
+  WINDOWS_SIGNING_MODE: unsigned-fixture
+
+jobs:
+  build:
+    name: Build and stage Windows release
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Enable pnpm
+        run: corepack enable pnpm
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # 发布链脚本自己的回归门禁。这些脚本决定线上发出去什么，坏了就不该发版。
+      - name: Run release tooling tests
+        run: pnpm test:release:chain:win
+
+      - name: Resolve version from ref or input
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -n "${INPUT_VERSION:-}" ]; then
+            version="$INPUT_VERSION"
+          elif [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            # push main 的干跑：回落到仓库当前版本号。构建产物不会被发布
+            # （publish job 有 tag 门禁），所以这里只是让构建能跑起来。
+            version=$(node -e 'process.stdout.write(require("./package.json").version)')
+            echo "非发版触发（$GITHUB_REF_NAME），按干跑处理，使用 package.json 版本: $version"
+          fi
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'; then
+            echo "::error::版本号格式非法: $version"
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "解析出版本号: $version"
+
+      # 版本号必须进 package.json：electron-builder 的 artifactName 用的是
+      # ${productName}-Setup-${version}-${arch}.${ext}，只传 --version 不改 package.json
+      # 会产出带旧版本号的文件名，feed 与安装包对不上。
+      - name: Check changelog entry exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! grep -Eq "^## ${VERSION//./\\.} — " docs/releases/CHANGELOG.md; then
+            echo "::error::docs/releases/CHANGELOG.md 缺少 $VERSION 的版本段落。"
+            echo "先补更新日志再发版——feed 的 releaseNotes 与客户端弹窗都从这里派生。"
+            exit 1
+          fi
+
+      - name: Inject version into package manifests
+        shell: bash
+        run: |
+          set -euo pipefail
+          node -e '
+            const { readFileSync, writeFileSync } = require("node:fs");
+            const version = process.env.VERSION;
+            for (const path of ["package.json", "apps/desktop/package.json"]) {
+              const manifest = JSON.parse(readFileSync(path, "utf8"));
+              manifest.version = version;
+              writeFileSync(path, JSON.stringify(manifest, null, 2) + "\n");
+              console.log(`${path} -> ${version}`);
+            }
+          '
+
+      - name: Build application
+        run: pnpm build
+
+      - name: Generate brand assets
+        run: pnpm release:assets:win
+
+      # stage 把更新源地址（--feed-url）在内的配置固化进 win-unpacked/resources/update-feed.json。
+      # 装完即是「已配置更新通道」，用户不需要配任何环境变量。
+      - name: Stage portable layout with bundled update feed
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/windows-portable-release.mjs stage \
+            --signing-mode "$WINDOWS_SIGNING_MODE" \
+            --feed-url "$SYNC_THINK_UPDATE_FEED_URL" \
+            --channel latest \
+            --version "$VERSION"
+
+      - name: Verify portable layout
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/windows-portable-release.mjs verify --signing-mode "$WINDOWS_SIGNING_MODE"
+
+      - name: Build NSIS installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/windows-installer-release.mjs build \
+            --signing-mode "$WINDOWS_SIGNING_MODE" \
+            --version "$VERSION"
+
+      - name: Verify installer layout
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/windows-installer-release.mjs verify --allow-unsigned-fixture
+
+      # releaseNotes 从 CHANGELOG 提取，不手抄——手抄是 feed 与更新日志漂移的根源。
+      - name: Generate update feed metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/windows-release-feed.mjs generate \
+            --artifact "apps/desktop/release/installer/SYNC-THINK-Setup-$VERSION-x64.exe" \
+            --out apps/desktop/release/feed \
+            --channel latest \
+            --version "$VERSION"
+
+      - name: Upload feed directory
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-update-feed-${{ github.run_number }}
+          path: apps/desktop/release/feed/
+          # latest.yml 是发布契约，缺了它后面全部无意义，所以这里必须 fail。
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Publish to sync-think.online
+    needs: build
+    # 只有 tag 触发才写线上。push main 的干跑在这里被挡住，只留构建结论。
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      # 只需要仓库里的 scripts/ 与 CHANGELOG，不需要装依赖（发布链脚本零第三方依赖）。
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Download feed artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-update-feed-${{ github.run_number }}
+          path: apps/desktop/release/feed
+
+      # GITHUB_ENV 不跨 job 传递，所以版本号在这里从 feed 元数据重新取。
+      # 以 feed 的 version 为准则还有个好处：它就是这次真正要发出去的事实来源。
+      - name: Resolve version from the staged feed
+        run: |
+          set -euo pipefail
+          version=$(node -e '
+            const { readFileSync } = require("node:fs");
+            const metadata = JSON.parse(readFileSync("apps/desktop/release/feed/latest.yml", "utf8"));
+            if (typeof metadata.version !== "string" || metadata.version.length === 0) {
+              console.error("latest.yml 缺少 version 字段");
+              process.exit(1);
+            }
+            process.stdout.write(metadata.version);
+          ')
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "feed 版本号: $version"
+
+      # 铺出两个出口。stage 会先断言输入目录通过 verifyWindowsGenericUpdateFeed，
+      # 再 copy 出 updates/ 与 downloads/（固定名），并在 verify 里断言两侧 SHA-512 一致。
+      - name: Stage dual outputs
+        run: |
+          node scripts/windows-release-publish.mjs stage \
+            --feed-dir apps/desktop/release/feed \
+            --out apps/desktop/release/publish \
+            --channel latest
+
+      - name: Verify dual outputs
+        run: |
+          node scripts/windows-release-publish.mjs verify \
+            --publish-dir apps/desktop/release/publish \
+            --channel latest
+
+      - name: Configure SSH
+        run: |
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' '${{ secrets.SYNC_THINK_DEPLOY_KEY }}' > "$HOME/.ssh/sync-think-deploy"
+          chmod 600 "$HOME/.ssh/sync-think-deploy"
+          ssh-keyscan -H "${{ secrets.SYNC_THINK_DEPLOY_HOST }}" >> "$HOME/.ssh/known_hosts" 2>/dev/null
+
+      # upload 默认只打印计划，--apply 才真正写线上。上传后脚本会 chown syncthink:syncthink
+      # ——Caddy 以该用户读文件，root 直传会让站点读不到。
+      - name: Upload release to the site
+        env:
+          SYNC_THINK_DEPLOY_HOST: ${{ secrets.SYNC_THINK_DEPLOY_HOST }}
+          SYNC_THINK_DEPLOY_USER: ${{ secrets.SYNC_THINK_DEPLOY_USER }}
+          SYNC_THINK_DEPLOY_KEY_PATH: ${{ github.workspace }}/.sync-think-deploy-key
+        run: |
+          set -euo pipefail
+          cp "$HOME/.ssh/sync-think-deploy" "$SYNC_THINK_DEPLOY_KEY_PATH"
+          chmod 600 "$SYNC_THINK_DEPLOY_KEY_PATH"
+          node scripts/windows-release-publish.mjs upload \
+            --publish-dir apps/desktop/release/publish \
+            --key "$SYNC_THINK_DEPLOY_KEY_PATH" \
+            --apply
+
+      # 线上回归：feed 元数据可用、安装包支持 Range/206、/downloads/ 与 /updates/ 没有分叉。
+      - name: Verify the live update feed
+        run: |
+          set -euo pipefail
+          node scripts/windows-release-online-verify.mjs \
+            --base-url https://sync-think.online \
+            --version "$VERSION" \
+            --publish-dir apps/desktop/release/publish

@@ -2,7 +2,6 @@
 // Left: ordered provider list with enable toggles.
 // Right: selected provider detail (endpoint / keys / models / priority) + global vision/plan-act.
 import {
-  Fragment,
   forwardRef,
   useCallback,
   useEffect,
@@ -33,15 +32,20 @@ import {
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { SlidingTabs } from './SlidingTabs.js';
+import { DsTabBar } from './DsTabBar.js';
+import {
+  detectProviderConnectionInput,
+  isLocalUrl,
+  type DetectedApiFormat,
+  type ProviderConnectionDetection,
+} from './detect-provider-connection.js';
 import {
   ArrowLeft,
-  ArrowDown,
-  ArrowUp,
+  Brain,
   Check,
   ChevronDown,
   ChevronRight,
   Cloud,
-  Cpu,
   Database,
   FileText,
   Gauge,
@@ -49,7 +53,7 @@ import {
   GripVertical,
   Image,
   Loader2,
-  MoreHorizontal,
+  Minus,
   Pencil,
   Plug,
   Plus,
@@ -57,13 +61,15 @@ import {
   EyeOff,
   Download,
   RefreshCw,
-  Search,
+  RotateCcw,
   Server,
   Settings2,
   Sparkles,
   Trash2,
+  Video,
   Wrench,
   X,
+  Zap,
 } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import clsx from 'clsx';
@@ -82,7 +88,26 @@ import type { RendererUpdateProviderPayload } from '../../provider-payloads.js';
 import { BrandLogoMark } from './BrandLogoMark.js';
 import { resolveProviderBrandLogo, resolveProviderBrandLogoByName } from './brand-icons.js';
 import { useDialog } from './Dialog.js';
+import { toastApi } from './Toast.js';
+import {
+  formatProviderDiscoveryError,
+  formatRuntimeIpcError,
+} from '../provider-error-copy.js';
 import { REASONING_OPTIONS } from './compose-toolbar.js';
+import { retryTransientRuntime } from '../runtime-connection.js';
+import { KeepAliveLayer } from './KeepAliveLayer.js';
+import { ModelOverflowMenu } from './ModelOverflowMenu.js';
+import { ModelListSelect } from './ModelListSelect.js';
+import { ImageGenerationSettings } from './ImageGenerationSettings.js';
+import {
+  AddModelInlineRow,
+  ImportModelsDialog,
+  type ImportDialogState,
+} from './model-settings-widgets.js';
+import {
+  composeTextProviderOrder,
+  isTextGenerationProvider,
+} from './image-generation-providers.js';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -96,12 +121,48 @@ const MODEL_CAPABILITY_OPTIONS: ReadonlyArray<{
   description: string;
 }> = [
   { value: 'text', label: '文本', description: '读取并生成文本内容' },
-  { value: 'vision', label: '图片理解', description: '直接读取图片内容' },
+  { value: 'vision', label: '图片', description: '直接读取图片内容' },
+  { value: 'document', label: '文档', description: '直接读取 PDF / Office 文档内容' },
+  { value: 'video', label: '视频', description: '直接读取视频内容' },
+  { value: 'thinking', label: '思考', description: '输出前进行推理思考' },
   { value: 'tool-calling', label: '工具调用', description: '调用 MCP 与本地工具' },
   { value: 'web-search', label: '联网搜索', description: '调用模型原生网页搜索' },
   { value: 'image-generation', label: '图片生成', description: '根据提示生成图片' },
   { value: 'embeddings', label: '向量嵌入', description: '生成语义向量数据' },
 ];
+
+/**
+ * 「能力支持」区块 —— 逐项对齐 NewMax `ModelEditorDialog` 的 capabilityButtons
+ * （image / document / video / thinking 四项输入模态，选中即深色实心胶囊）。
+ */
+const PRIMARY_CAPABILITY_VALUES: ReadonlySet<string> = new Set([
+  'vision',
+  'document',
+  'video',
+  'thinking',
+]);
+const PRIMARY_CAPABILITY_OPTIONS = MODEL_CAPABILITY_OPTIONS.filter((option) =>
+  PRIMARY_CAPABILITY_VALUES.has(option.value),
+);
+
+/**
+ * 与 NewMax 一致：对话框只暴露这四项输入模态，不再单列「更多能力」区。
+ * 调用类能力（tool-calling / web-search）由 `suggestCapabilities` 按协议与模型族
+ * 静态判定后写入目录，对话框不干预 —— NewMax 同样不把它们做成开关。
+ */
+
+/** NewMax `CONTEXT_WINDOW_PRESETS`（逐项相同：128K / 200K / 256K / 500K / 1M）。 */
+const CONTEXT_WINDOW_PRESETS: ReadonlyArray<number> = [
+  128_000,
+  200_000,
+  256_000,
+  500_000,
+  1_000_000,
+];
+
+/** NewMax `provider.contextWindowHelper` 原文。 */
+const CONTEXT_WINDOW_HELPER =
+  '纯数字默认按 k 处理，也支持 k、M；最大 10M，留空并关闭会回到自动识别。';
 
 const PROTOCOL_LABELS: Record<ProtocolFamily, string> = {
   'openai-chat': 'OpenAI Chat Completions',
@@ -112,6 +173,7 @@ const PROTOCOL_LABELS: Record<ProtocolFamily, string> = {
 
 interface VisionFallbackSetting {
   enabled: boolean;
+  providerId: string | null;
   modelId: string | null;
 }
 
@@ -156,15 +218,6 @@ interface ConnectionTestState {
   testedBaseUrl?: string;
 }
 
-interface ImportDialogState {
-  providerId: string;
-  protocol: ProtocolFamily;
-  discovered: Array<{ providerModelId: string; displayName: string; alreadyAdded: boolean }>;
-  selectedIds: string[];
-  query: string;
-  applying: boolean;
-}
-
 const CREDENTIAL_REVEAL_MS = 10_000;
 const CREDENTIAL_MASK = '••••••••••••••••••••••••';
 const EMPTY_CONNECTION_TEST: ConnectionTestState = { status: 'idle' };
@@ -187,12 +240,29 @@ const EMPTY_PRICING_DRAFT: PricingDraft = {
 
 const MODEL_PRICING_SETTING_KEY = 'model-pricing';
 
+/** A model authored on the create form before the provider exists. */
+interface DraftModel {
+  providerModelId: string;
+  displayName: string;
+}
+
 interface CreateDraft {
   name: string;
   baseUrl: string;
   protocol: ProtocolFamily;
   apiKey: string;
+  /**
+   * NewMax-style multi-key list: extra credentials created in the same hop as
+   * the provider. The primary key stays in `apiKey`.
+   */
+  extraApiKeys: string[];
   supportsDiscovery: boolean;
+  /**
+   * NewMax-style: the priority chain lives in the draft until submit, so the
+   * create form is the same editable surface as the provider detail page and
+   * never needs a providerId to author models.
+   */
+  models: DraftModel[];
 }
 
 const EMPTY_CREATE: CreateDraft = {
@@ -200,8 +270,15 @@ const EMPTY_CREATE: CreateDraft = {
   baseUrl: 'https://',
   protocol: 'openai-chat',
   apiKey: '',
+  extraApiKeys: [],
   supportsDiscovery: true,
+  models: [],
 };
+
+/** NewMax-style key list → ordered, trimmed, non-empty credentials. */
+function collectCreateApiKeys(draft: CreateDraft): string[] {
+  return [draft.apiKey, ...draft.extraApiKeys].map((key) => key.trim()).filter(Boolean);
+}
 
 type ProviderCatalogCategory = 'recommended' | 'domestic' | 'aggregator' | 'overseas' | 'local';
 
@@ -229,6 +306,70 @@ const MODEL_TABS: Array<{ id: ModelTab; label: string }> = [
   { id: 'recognition', label: '语音识别' },
   { id: 'usage', label: '使用统计' },
 ];
+
+const MEDIA_TAB_EMPTY: Record<
+  Exclude<ModelTab, 'text' | 'usage'>,
+  { description: string; empty: string }
+> = {
+  image: {
+    description:
+      '这里集中配置对话中“画一张 / 生成图片”会使用的生图模型。支持 Grok 订阅登录、OpenAI/兼容接口、Google Gemini/Imagen 和 DashScope 通义万象；ChatGPT/Codex 订阅登录暂不作为生图 API Key 使用。',
+    empty: '还没有配置过生图模型的提供商。可以点击「添加生图模型」，测试成功后会出现在左侧列表。',
+  },
+  video: {
+    description:
+      '用法：在对话里描述画面，如"生成一段海边日落的 5 秒视频"。AI 会调用 generate_video 工具提交任务并等待完成（通常 1~5 分钟）。',
+    empty:
+      '还没有配置过视频生成的供应商。可以点击「添加视频模型」，配置成功后会出现在左侧列表，AI 即可在对话中调用生成视频。',
+  },
+  voice: {
+    description:
+      '用法：直接在对话里说"把这段文案生成语音"。AI 会调用 generate_speech 工具，用默认供应商与音色合成 mp3 保存到工作区。',
+    empty:
+      '还没有配置过语音生成的供应商。可以点击「添加语音模型」，配置成功后会出现在左侧列表，AI 即可在对话中调用生成语音。',
+  },
+  recognition: {
+    description: '配置转录模型、凭证和接口地址',
+    empty:
+      '还没有配置过云端转录的供应商。可以点击「添加转录模型」，配置成功后语音输入和转录会走该云端渠道。',
+  },
+};
+
+const API_FORMAT_LABELS: Record<DetectedApiFormat, string> = {
+  openai: 'OpenAI 格式',
+  anthropic: 'Anthropic 格式',
+};
+
+function protocolFamilyOf(protocol: ProtocolFamily): DetectedApiFormat {
+  return protocol === 'anthropic-messages' ? 'anthropic' : 'openai';
+}
+
+function protocolFromDetection(
+  current: ProtocolFamily,
+  detection: ProviderConnectionDetection,
+): ProtocolFamily {
+  if (!detection.apiFormat) return current;
+  if (detection.apiFormat === 'anthropic') return 'anthropic-messages';
+  if (detection.forceResponsesApi === true) return 'openai-responses';
+  if (detection.forceResponsesApi === false) return 'openai-chat';
+  return current === 'openai-responses' ? 'openai-responses' : 'openai-chat';
+}
+
+function isConfiguredProvider(provider: ProviderSummary): boolean {
+  if (provider.credentials.length > 0) return true;
+  if (isLocalUrl(provider.baseUrl)) return provider.enabled !== false;
+  return false;
+}
+
+function connectionHintText(detection: ProviderConnectionDetection | null): string {
+  if (detection?.apiFormat) {
+    return `已根据地址识别为 ${API_FORMAT_LABELS[detection.apiFormat]}；仍可在下方手动修改。`;
+  }
+  if (detection?.normalized) {
+    return '已自动整理 API Base URL，并保留当前 API 格式。';
+  }
+  return '请从服务商接入文档复制 Base URL 或完整请求地址，离开输入框后会自动识别并整理。';
+}
 
 const PROVIDER_CATALOG_CATEGORIES: Array<{
   id: ProviderCatalogCategory;
@@ -682,10 +823,11 @@ function modelRankLabel(index: number): string {
 }
 
 function parseVisionFallback(raw: unknown): VisionFallbackSetting {
-  if (!raw || typeof raw !== 'object') return { enabled: false, modelId: null };
+  if (!raw || typeof raw !== 'object') return { enabled: true, providerId: null, modelId: null };
   const o = raw as Record<string, unknown>;
   return {
-    enabled: o.enabled === true,
+    enabled: o.enabled !== false,
+    providerId: typeof o.providerId === 'string' && o.providerId ? o.providerId : null,
     modelId: typeof o.modelId === 'string' && o.modelId ? o.modelId : null,
   };
 }
@@ -720,6 +862,8 @@ function parsePlanAct(raw: unknown): PlanActSetting {
 export interface ModelSettingsHandle {
   /** Complete gate: stage secrets → test connection → true only when ready to close. */
   complete(): Promise<boolean>;
+  /** Open the provider catalog without leaving the settings page. */
+  startCreate(): void;
 }
 
 export type ModelSettingsDetailView =
@@ -743,14 +887,10 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
   const [providers, setProviders] = useState<ProviderSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [operation, setOperation] = useState<UiOperation | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [, setStatus] = useState<string | null>(null);
-  const [toast, setToast] = useState<SettingsToast | null>(null);
-  const toastSequence = useRef(0);
-  const toastTimer = useRef<number | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [lastSelectedId, setLastSelectedId] = useState<string | null>(null);
-  const [disabledOpen, setDisabledOpen] = useState(false);
+  const [disabledMenuOpen, setDisabledMenuOpen] = useState(false);
   const [activeProviderId, setActiveProviderId] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [createStep, setCreateStep] = useState<CreateProviderStep>('catalog');
@@ -764,11 +904,15 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
   const [ccSwitchLoading, setCcSwitchLoading] = useState(false);
   const [ccSwitchImporting, setCcSwitchImporting] = useState(false);
   const [modelTab, setModelTab] = useState<ModelTab>('text');
+  const [usageSinceDays, setUsageSinceDays] = useState<number | undefined>(7);
+  const [usageReloadToken, setUsageReloadToken] = useState(0);
+  const [usageRefreshing, setUsageRefreshing] = useState(false);
   const [detailView, setDetailView] = useState<ModelSettingsDetailView>(
     initialDetailView ?? 'provider',
   );
   const [visionFallback, setVisionFallback] = useState<VisionFallbackSetting>({
-    enabled: false,
+    enabled: true,
+    providerId: null,
     modelId: null,
   });
   const [modelConfigCloudSync, setModelConfigCloudSync] = useState(false);
@@ -787,7 +931,11 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
     setShowCreate(false);
     setDetailView(initialDetailView);
   }, [initialDetailView, navigationKey]);
-  const selectedProvider = providers.find((provider) => provider.providerId === selectedId) ?? null;
+  const selectedProvider =
+    providers.find(
+      (provider) =>
+        provider.providerId === selectedId && isTextGenerationProvider(provider),
+    ) ?? null;
   const selected = selectedProvider
     ? {
         ...selectedProvider,
@@ -802,17 +950,13 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
   );
 
   const showToast = useCallback((kind: SettingsToast['kind'], message: string) => {
-    if (toastTimer.current !== null) window.clearTimeout(toastTimer.current);
-    setToast({ id: ++toastSequence.current, kind, message });
-    toastTimer.current = window.setTimeout(() => setToast(null), kind === 'error' ? 5000 : 2400);
+    toastApi.toast({
+      id: `model-settings-${kind}-${message}`,
+      type: kind,
+      title: message,
+      duration: kind === 'error' ? 5000 : 2400,
+    });
   }, []);
-
-  useEffect(
-    () => () => {
-      if (toastTimer.current !== null) window.clearTimeout(toastTimer.current);
-    },
-    [],
-  );
 
   const allModels = useMemo(
     () =>
@@ -826,42 +970,48 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
           enabled: p.enabled,
           capabilities: m.capabilities,
           capabilitiesConfirmed: m.capabilitiesConfirmed,
+          visionCapability: m.visionCapability,
+          visionProbeReason: m.visionProbeReason,
         })),
       ),
     [providers],
   );
 
+  const hydratedRef = useRef(false);
   const load = useCallback(async () => {
     const api = bridge();
     if (!api?.listProviders) {
-      setError('Runtime 未连接，无法加载模型源');
+      showToast('error', 'Runtime 未连接，无法加载模型源');
       setLoading(false);
       return;
     }
-    setLoading(true);
-    setError(null);
+    if (!hydratedRef.current) setLoading(true);
     try {
-      const [listed, settings] = await Promise.all([
-        api.listProviders({}),
-        api.getSettings?.({
-          keys: ['vision-fallback', 'plan-act', 'model-config-cloud-sync'],
-        }) ?? Promise.resolve({ settings: {} as Record<string, unknown> }),
-      ]);
+      const [listed, settings] = await retryTransientRuntime(() =>
+        Promise.all([
+          api.listProviders({}),
+          api.getSettings?.({
+            keys: ['vision-fallback', 'plan-act', 'model-config-cloud-sync'],
+          }) ?? Promise.resolve({ settings: {} as Record<string, unknown> }),
+        ]),
+      );
       const next = [...listed.providers].sort((a, b) => a.sortOrder - b.sortOrder);
       setProviders(next);
       setVisionFallback(parseVisionFallback(settings.settings?.['vision-fallback']));
       setPlanAct(parsePlanAct(settings.settings?.['plan-act']));
       setModelConfigCloudSync(settings.settings?.['model-config-cloud-sync'] === true);
       setSelectedId((prev) => {
-        if (prev && next.some((p) => p.providerId === prev)) return prev;
-        return next[0]?.providerId ?? null;
+        const text = next.filter(isTextGenerationProvider);
+        if (prev && text.some((p) => p.providerId === prev)) return prev;
+        return text[0]?.providerId ?? null;
       });
+      hydratedRef.current = true;
     } catch (e) {
-      setError(e instanceof Error ? e.message : '加载模型源失败');
+      showToast('error', formatRuntimeIpcError(e, '加载模型源失败'));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [showToast]);
 
   useEffect(() => {
     void load();
@@ -874,7 +1024,6 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
       successMessage?: string | (() => string),
     ) => {
       setOperation(nextOperation);
-      setError(null);
       setStatus(nextOperation.label);
       try {
         await fn();
@@ -885,8 +1034,7 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
         }
         return true;
       } catch (e) {
-        const message = e instanceof Error ? e.message : '操作失败';
-        setError(message);
+        const message = formatRuntimeIpcError(e, '操作失败');
         setStatus(null);
         showToast('error', message);
         return false;
@@ -898,40 +1046,191 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
     [onCatalogChanged, showToast],
   );
 
-  const handleCreate = () =>
-    void withBusy({ kind: 'create-provider', label: '正在创建供应商…' }, async () => {
+  /** NewMax-style connection-test result shown on the create form. */
+  const [createTestResult, setCreateTestResult] = useState<{
+    status: 'idle' | 'testing' | 'success' | 'error';
+    message: string;
+  }>({ status: 'idle', message: '' });
+
+  /** Any edit invalidates the previous probe, exactly like markFormDirty. */
+  const updateCreateDraft = useCallback((next: CreateDraft) => {
+    setCreateTestResult({ status: 'idle', message: '' });
+    setCreateDraft(next);
+  }, []);
+
+  /** Write ids checked in the import dialog back into the create draft. */
+  const handleApplyCreateImport = useCallback(
+    (dialog: ImportDialogState) => {
+      const selected = new Set(dialog.selectedIds);
+      const kept = createDraft.models.filter((model) => selected.has(model.providerModelId));
+      const appended = dialog.discovered
+        .filter(
+          (item) =>
+            selected.has(item.providerModelId) &&
+            !kept.some((model) => model.providerModelId === item.providerModelId),
+        )
+        .map((item) => ({
+          providerModelId: item.providerModelId,
+          displayName: item.displayName || item.providerModelId,
+        }));
+      setCreateDraft((current) => ({ ...current, models: [...kept, ...appended] }));
+      setImportDialog(null);
+    },
+    [createDraft.models],
+  );
+
+  /**
+   * NewMax-style: discovery runs against the draft credentials, so the model
+   * list can be authored before the provider row exists. Nothing is persisted.
+   */
+  const handleDiscoverCreateModels = () =>
+    void withBusy({ kind: 'create-provider', label: '拉取模型列表…' }, async () => {
       const api = bridge();
-      if (!api?.createProvider) throw new Error('Runtime 未连接');
+      if (!api?.probeModels) throw new Error('Runtime 未连接');
+      const baseUrl = createDraft.baseUrl.trim();
+      const apiKey = collectCreateApiKeys(createDraft)[0];
+      const usesCustomEndpoint = createTemplate?.endpointMode === 'custom';
+      if (!baseUrl || baseUrl === 'https://') {
+        throw new Error(usesCustomEndpoint ? '请填写 Base URL' : '该服务商模板尚未配置连接地址');
+      }
+      if (!apiKey) throw new Error('请填写 API 密钥');
+      // The secret rides the clipboard, exactly like create/update.
+      await navigator.clipboard.writeText(apiKey);
+      const probe = await api.probeModels({
+        baseUrl,
+        protocol: createDraft.protocol as never,
+      });
+      const discoveredIds = probe.discoveredIds ?? [];
+      setImportDialog({
+        target: 'create',
+        protocol: probe.protocol ?? createDraft.protocol,
+        discovered: discoveredIds.map((id) => ({
+          providerModelId: id,
+          displayName: id,
+          alreadyAdded: createDraft.models.some((model) => model.providerModelId === id),
+        })),
+        selectedIds: createDraft.models
+          .map((model) => model.providerModelId)
+          .filter((id) => discoveredIds.includes(id)),
+        query: '',
+        applying: false,
+      });
+    });
+
+  /**
+   * NewMax-style: probe first, persist only when the probe passes. The whole
+   * provider — priority chain included — then lands in a single create hop.
+   */
+  const handleCreate = () =>
+    void withBusy({ kind: 'create-provider', label: '测试连接中…' }, async () => {
+      const api = bridge();
+      if (!api?.createProvider || !api?.probeModels) throw new Error('Runtime 未连接');
       const name = createDraft.name.trim();
       const baseUrl = createDraft.baseUrl.trim();
-      const apiKey = createDraft.apiKey.trim();
+      const apiKeys = collectCreateApiKeys(createDraft);
+      const apiKey = apiKeys[0];
+      const protocol = createDraft.protocol;
       const usesCustomEndpoint = createTemplate?.endpointMode === 'custom';
       if (!name) throw new Error('请填写供应商名称');
-      if (usesCustomEndpoint && (!baseUrl || baseUrl === 'https://')) {
-        throw new Error('请填写 Base URL');
+      if (!baseUrl || baseUrl === 'https://') {
+        throw new Error(usesCustomEndpoint ? '请填写 Base URL' : '该服务商模板尚未配置连接地址');
       }
-      if (!usesCustomEndpoint && (!baseUrl || baseUrl === 'https://')) {
-        throw new Error('该服务商模板尚未配置连接地址');
+      if (!apiKey) throw new Error('请填写 API 密钥');
+      if (createDraft.models.length === 0) throw new Error('请至少添加一个模型');
+      // Secrets ride the clipboard (a JSON list when there is more than one),
+      // exactly like create/update — they never enter the payload.
+      await navigator.clipboard.writeText(
+        apiKeys.length > 1 ? JSON.stringify({ keys: apiKeys }) : apiKey,
+      );
+
+      // 1) Connectivity probe — nothing is persisted at this stage.
+      setCreateTestResult({ status: 'testing', message: '正在测试连接…' });
+      const startedAt = Date.now();
+      try {
+        const probe = await api.probeModels({ baseUrl, protocol: protocol as never });
+        const latencyMs =
+          typeof probe.latencyMs === 'number'
+            ? probe.latencyMs
+            : Math.max(0, Date.now() - startedAt);
+        setCreateTestResult({ status: 'success', message: `连接成功 · ${latencyMs}ms` });
+      } catch (probeError) {
+        setCreateTestResult({
+          status: 'error',
+          message: formatProviderDiscoveryError(probeError),
+        });
+        return;
       }
-      if (!apiKey) throw new Error('请填写 API Key，并先复制到剪贴板');
-      await navigator.clipboard.writeText(apiKey);
+
+      // 2) Only a passing probe activates the provider.
       const result = await api.createProvider({
         name,
         baseUrl,
-        protocol: createDraft.protocol,
-        supportsDiscovery: createDraft.supportsDiscovery,
+        protocol,
+        supportsDiscovery: true,
+        discoverOnCreate: false,
+        ...(apiKeys.length > 1 ? { apiKeyList: true } : {}),
+        models: createDraft.models.map((model) => ({
+          providerModelId: model.providerModelId,
+          displayName: model.displayName || model.providerModelId,
+        })),
       });
+      setCreateTestResult({ status: 'idle', message: '' });
       setCreateDraft(EMPTY_CREATE);
       setShowCreate(false);
       setCreateStep('catalog');
       setCreateTemplate(null);
       setSelectedId(result.provider.providerId);
       setLastSelectedId(result.provider.providerId);
+      setDetailView('provider');
       await load();
-      showToast(
-        'success',
-        `已创建 ${result.provider.name} · 发现 ${result.discoveredModelCount} 个模型`,
+    });
+
+  /**
+   * NewMax-style「仍然保存」: skip the probe entirely and persist the provider
+   * flagged as unverified, so a relay that refuses the capability probes can
+   * still be used. Same single create hop — the priority chain rides along.
+   */
+  const handleSaveUnverified = () =>
+    void withBusy({ kind: 'create-provider', label: '保存中…' }, async () => {
+      const api = bridge();
+      if (!api?.createProvider) throw new Error('Runtime 未连接');
+      const name = createDraft.name.trim();
+      const baseUrl = createDraft.baseUrl.trim();
+      const apiKeys = collectCreateApiKeys(createDraft);
+      const apiKey = apiKeys[0];
+      const protocol = createDraft.protocol;
+      const usesCustomEndpoint = createTemplate?.endpointMode === 'custom';
+      if (!name) throw new Error('请填写供应商名称');
+      if (!baseUrl || baseUrl === 'https://') {
+        throw new Error(usesCustomEndpoint ? '请填写 Base URL' : '该服务商模板尚未配置连接地址');
+      }
+      if (!apiKey) throw new Error('请填写 API 密钥');
+      if (createDraft.models.length === 0) throw new Error('请至少添加一个模型');
+      await navigator.clipboard.writeText(
+        apiKeys.length > 1 ? JSON.stringify({ keys: apiKeys }) : apiKey,
       );
+      const result = await api.createProvider({
+        name,
+        baseUrl,
+        protocol,
+        supportsDiscovery: true,
+        discoverOnCreate: false,
+        unverified: true,
+        ...(apiKeys.length > 1 ? { apiKeyList: true } : {}),
+        models: createDraft.models.map((model) => ({
+          providerModelId: model.providerModelId,
+          displayName: model.displayName || model.providerModelId,
+        })),
+      });
+      setCreateTestResult({ status: 'idle', message: '' });
+      setCreateDraft(EMPTY_CREATE);
+      setShowCreate(false);
+      setCreateStep('catalog');
+      setCreateTemplate(null);
+      setSelectedId(result.provider.providerId);
+      setLastSelectedId(result.provider.providerId);
+      setDetailView('provider');
+      await load();
     });
 
   const restoreProviderSelection = useCallback(() => {
@@ -990,7 +1289,6 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
     setCcSwitchLoading(true);
     setCcSwitchPreview(null);
     setSelectedCcSwitchIds([]);
-    setError(null);
     try {
       if (!api?.previewCcSwitchImport) throw new Error('Runtime 未连接，无法读取 CC Switch');
       const preview = await api.previewCcSwitchImport({});
@@ -999,9 +1297,7 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
         preview.items.filter((item) => item.importable).map((item) => item.sourceId),
       );
     } catch (e) {
-      const message = e instanceof Error ? e.message : '读取 CC Switch 配置失败';
-      setError(message);
-      showToast('error', message);
+      showToast('error', formatRuntimeIpcError(e, '读取 CC Switch 配置失败'));
     } finally {
       setCcSwitchLoading(false);
     }
@@ -1011,7 +1307,6 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
     if (selectedCcSwitchIds.length === 0 || ccSwitchImporting) return;
     const api = bridge();
     setCcSwitchImporting(true);
-    setError(null);
     try {
       if (!api?.importCcSwitch) throw new Error('Runtime 未连接，无法导入 CC Switch');
       const result: ImportCcSwitchResponse = await api.importCcSwitch({
@@ -1035,9 +1330,7 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
       showToast('success', summary);
       onCatalogChanged?.();
     } catch (e) {
-      const message = e instanceof Error ? e.message : '导入 CC Switch 失败';
-      setError(message);
-      showToast('error', message);
+      showToast('error', formatRuntimeIpcError(e, '导入 CC Switch 失败'));
     } finally {
       setCcSwitchImporting(false);
     }
@@ -1047,11 +1340,11 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
     async (orderedEnabled: ProviderSummary[], previousProviders = providers) => {
       const api = bridge();
       if (!api?.reorderProviders) throw new Error('Runtime 未连接');
-      const disabled = previousProviders.filter((provider) => !provider.enabled);
       await api.reorderProviders({
-        orderedProviderIds: [...orderedEnabled, ...disabled].map(
-          (provider) => provider.providerId as never,
-        ),
+        orderedProviderIds: composeTextProviderOrder({
+          all: previousProviders,
+          nextEnabledTextIds: orderedEnabled.map((provider) => provider.providerId),
+        }) as never,
       });
     },
     [providers],
@@ -1070,12 +1363,18 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
     if (!overId || activeId === overId || providerListBusy) return;
 
     const previous = providers;
-    const enabled = previous.filter((provider) => provider.enabled);
+    const enabled = previous.filter(
+      (provider) => provider.enabled && isTextGenerationProvider(provider),
+    );
     const oldIndex = enabled.findIndex((provider) => provider.providerId === activeId);
     const newIndex = enabled.findIndex((provider) => provider.providerId === overId);
     if (oldIndex < 0 || newIndex < 0) return;
     const nextEnabled = arrayMove(enabled, oldIndex, newIndex);
-    const nextProviders = [...nextEnabled, ...previous.filter((provider) => !provider.enabled)];
+    const nextProviders = [
+      ...nextEnabled,
+      ...previous.filter((provider) => isTextGenerationProvider(provider) && !provider.enabled),
+      ...previous.filter((provider) => !isTextGenerationProvider(provider)),
+    ];
     setProviders(nextProviders);
     void withBusy(
       { kind: 'reorder-provider', targetId: activeId, label: '正在保存模型顺序…' },
@@ -1087,7 +1386,6 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
           throw error;
         }
       },
-      '模型顺序已更新',
     );
   };
 
@@ -1102,7 +1400,7 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
         nextProviders.find((item) => item.enabled)?.providerId ?? provider.providerId;
       setSelectedId(nextSelected);
     }
-    if (enabled) setDisabledOpen(true);
+    setDisabledMenuOpen(false);
     void withBusy(
       {
         kind: 'toggle-provider',
@@ -1123,6 +1421,73 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
       },
       `${provider.name} 已${enabled ? '启用' : '停用'}`,
     );
+  };
+
+  /**
+   * Tear a provider down: purge every credential in one hop, then disable it.
+   *
+   * Must go through clearProviderCredentials rather than looping
+   * removeProviderCredential — the latter refuses to delete a provider's last
+   * credential (a multi-key-management guard), which made removal impossible
+   * for any provider that still had exactly one key.
+   */
+  const wipeProviderCredentials = async (provider: ProviderSummary) => {
+    const api = bridge();
+    if (!api?.clearProviderCredentials || !api.updateProvider) throw new Error('Runtime 未连接');
+    await api.clearProviderCredentials({ providerId: provider.providerId });
+    await api.updateProvider({ providerId: provider.providerId, enabled: false });
+  };
+
+  const handleRemoveProvider = (provider: ProviderSummary) => {
+    const previous = providers;
+    const remaining = previous.filter((item) => item.providerId !== provider.providerId);
+    setProviders(remaining);
+    if (selectedId === provider.providerId) {
+      setSelectedId(remaining.find((item) => item.enabled)?.providerId ?? remaining[0]?.providerId ?? null);
+    }
+    setDisabledMenuOpen(false);
+    void withBusy(
+      { kind: 'toggle-provider', targetId: provider.providerId, label: '正在移除…' },
+      async () => {
+        const api = bridge();
+        if (!api?.deleteProvider) throw new Error('Runtime 未连接');
+        try {
+          // 移除 = 真删除（供应商、模型、密钥一起清掉）。只清密钥是「清空」的语义。
+          await api.deleteProvider({ providerId: provider.providerId });
+          await load();
+        } catch (error) {
+          setProviders(previous);
+          setSelectedId(provider.providerId);
+          throw error;
+        }
+      },
+    );
+  };
+
+  const handleEnableAllDisabled = () => {
+    const targets = providers.filter((item) => !item.enabled);
+    if (targets.length === 0) return;
+    setDisabledMenuOpen(false);
+    void withBusy({ kind: 'toggle-provider', label: '正在启用…' }, async () => {
+      const api = bridge();
+      if (!api?.updateProvider) throw new Error('Runtime 未连接');
+      for (const provider of targets) {
+        await api.updateProvider({ providerId: provider.providerId, enabled: true });
+      }
+      await load();
+    });
+  };
+
+  const handleClearDisabled = () => {
+    const targets = providers.filter((item) => !item.enabled);
+    if (targets.length === 0) return;
+    setDisabledMenuOpen(false);
+    void withBusy({ kind: 'toggle-provider', label: '正在清空…' }, async () => {
+      for (const provider of targets) {
+        await wipeProviderCredentials(provider);
+      }
+      await load();
+    });
   };
 
   const handleUpdateProvider = useCallback(
@@ -1257,19 +1622,31 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
           testedBaseUrl: baseUrlHint ?? provider?.baseUrl,
         };
         setConnectionTest(providerId, ok);
+        // NewMax「测通即摘掉未验证角标」：用「仍然保存」存下来的通道，一旦测通就清掉标记。
+        if (provider?.unverified) {
+          const updateApi = bridge();
+          if (updateApi?.updateProvider) {
+            try {
+              await updateApi.updateProvider({ providerId, unverified: false });
+              void load();
+            } catch {
+              /* best-effort: the connection itself already passed */
+            }
+          }
+        }
         return ok;
       } catch (error) {
         const latencyMs = Math.max(0, Date.now() - startedAt);
         const failed: ConnectionTestState = {
           status: 'error',
           latencyMs,
-          message: error instanceof Error ? error.message : '连接失败',
+          message: formatProviderDiscoveryError(error),
         };
         setConnectionTest(providerId, failed);
         return failed;
       }
     },
-    [providers, setConnectionTest],
+    [providers, setConnectionTest, load],
   );
 
   /** Fetch model catalog preview and open the NewMax import picker. */
@@ -1312,7 +1689,7 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
           applying: false,
         });
       } catch (error) {
-        showToast('error', error instanceof Error ? error.message : '拉取模型失败');
+        showToast('error', formatProviderDiscoveryError(error));
       } finally {
         setOperation(null);
       }
@@ -1327,14 +1704,18 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
         showToast('error', 'Runtime 未连接');
         return;
       }
-      const provider = providers.find((item) => item.providerId === dialog.providerId);
+      const providerId = dialog.providerId;
+      // The create flow has no provider yet — it is handled by
+      // handleApplyCreateImport instead.
+      if (!providerId) return;
+      const provider = providers.find((item) => item.providerId === providerId);
       if (!provider) return;
 
       setImportDialog((current) => (current ? { ...current, applying: true } : current));
       setOperation({
         kind: 'import-models',
-        targetId: dialog.providerId,
-        label: '正在更新模型列表…',
+        targetId: providerId,
+        label: '正在应用到优先级…',
       });
       try {
         const selected = new Set(dialog.selectedIds);
@@ -1351,14 +1732,14 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
 
         for (const model of toRemove) {
           await api.removeProviderModel({
-            providerId: dialog.providerId as never,
+            providerId: providerId as never,
             modelId: model.modelId as never,
           });
         }
         if (toAdd.length > 0) {
           await api.addModels({
-            providerId: dialog.providerId as never,
-            protocol: dialog.protocol,
+            providerId: providerId as never,
+            protocol: dialog.protocol as ProtocolFamily,
             models: toAdd.map((item) => ({
               providerModelId: item.providerModelId,
               displayName: item.displayName || item.providerModelId,
@@ -1369,7 +1750,7 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
         // Re-read and re-order: keep previously selected order, append new ones.
         const listed = await api.listProviders({});
         const nextProviders = [...listed.providers].sort((a, b) => a.sortOrder - b.sortOrder);
-        const refreshed = nextProviders.find((item) => item.providerId === dialog.providerId);
+        const refreshed = nextProviders.find((item) => item.providerId === providerId);
         if (refreshed) {
           const byProviderModelId = new Map(
             refreshed.models.map((model) => [model.providerModelId, model]),
@@ -1383,7 +1764,7 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
             .filter((model): model is ProviderModelSummary => Boolean(model));
           if (orderedModels.length > 0) {
             const result = await api.setModelPriorities({
-              providerId: dialog.providerId as never,
+              providerId: providerId as never,
               entries: orderedModels.map((model) => ({
                 modelId: model.modelId as never,
                 credentialRefId: (model.credentialRefId ?? undefined) as never,
@@ -1392,20 +1773,20 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
             // Apply priorities onto the freshly listed tree.
             setProviders(
               nextProviders.map((item) =>
-                item.providerId === dialog.providerId ? { ...item, models: result.models } : item,
+                item.providerId === providerId ? { ...item, models: result.models } : item,
               ),
             );
             setProviderOrders((current) => ({
               ...current,
-              [dialog.providerId]: result.models,
+              [providerId]: result.models,
             }));
           } else {
             setProviders(
               nextProviders.map((item) =>
-                item.providerId === dialog.providerId ? { ...item, models: [] } : item,
+                item.providerId === providerId ? { ...item, models: [] } : item,
               ),
             );
-            setProviderOrders((current) => ({ ...current, [dialog.providerId]: [] }));
+            setProviderOrders((current) => ({ ...current, [providerId]: [] }));
           }
         } else {
           setProviders(nextProviders);
@@ -1413,7 +1794,7 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
         setImportDialog(null);
         onCatalogChanged?.();
       } catch (error) {
-        showToast('error', error instanceof Error ? error.message : '更新模型列表失败');
+        showToast('error', error instanceof Error ? error.message : '应用到优先级失败');
         setImportDialog((current) => (current ? { ...current, applying: false } : current));
       } finally {
         setOperation(null);
@@ -1448,7 +1829,6 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
         mergeProviderModels(providerId, result.models);
         setStatus(`已添加模型 ${providerModelId}`);
       },
-      `模型 ${providerModelId} 已添加`,
     );
 
   const handleRemoveModel = (providerId: string, modelId: string) =>
@@ -1507,42 +1887,48 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
         setStatus('上下文窗口已更新');
         onCatalogChanged?.();
       },
-      '上下文窗口已更新',
     );
 
   const handleProbeModelCapabilities = useCallback(
-    async (providerId: string, modelId: string): Promise<CapabilityProbeSuggestion> => {
+    async (
+      providerId: string,
+      modelId: string,
+      options?: { visionOnly?: boolean },
+    ): Promise<CapabilityProbeSuggestion> => {
       const api = bridge();
       if (!api?.probeCapabilities) throw new Error('Runtime 未连接或不支持能力检测');
-      try {
-        const result = await api.probeCapabilities({
-          providerId: providerId as never,
-          modelId: modelId as never,
-        });
-        const suggestion = result.suggestions.find((item) => item.modelId === modelId);
-        if (!suggestion) throw new Error('没有返回该模型的能力检测结果');
-        const provider = providers.find((item) => item.providerId === providerId);
-        if (provider) {
-          mergeProviderModels(
-            providerId,
-            provider.models.map((model) =>
-              model.modelId === modelId
-                ? {
-                    ...model,
-                    capabilities: [...suggestion.capabilities],
-                    capabilitiesConfirmed: false,
-                  }
-                : model,
-            ),
-          );
-        }
-        showToast('success', `${suggestion.displayName} 能力检测完成`);
-        onCatalogChanged?.();
-        return suggestion;
-      } catch (error) {
-        showToast('error', error instanceof Error ? error.message : '能力检测失败');
-        throw error;
+      const result = await api.probeCapabilities({
+        providerId: providerId as never,
+        modelId: modelId as never,
+        ...(options?.visionOnly ? { visionOnly: true } : {}),
+      });
+      const suggestion = result.suggestions.find((item) => item.modelId === modelId);
+      if (!suggestion) throw new Error('没有返回该模型的能力检测结果');
+      const provider = providers.find((item) => item.providerId === providerId);
+      if (provider) {
+        mergeProviderModels(
+          providerId,
+          provider.models.map((model) =>
+            model.modelId === modelId
+              ? {
+                  ...model,
+                  capabilities: [...suggestion.capabilities],
+                  capabilitiesConfirmed: options?.visionOnly
+                    ? model.capabilitiesConfirmed
+                    : false,
+                  ...(suggestion.visionCapability !== undefined
+                    ? { visionCapability: suggestion.visionCapability }
+                    : {}),
+                  ...(suggestion.visionProbeReason !== undefined
+                    ? { visionProbeReason: suggestion.visionProbeReason }
+                    : {}),
+                }
+              : model,
+          ),
+        );
       }
+      onCatalogChanged?.();
+      return suggestion;
     },
     [mergeProviderModels, onCatalogChanged, providers, showToast],
   );
@@ -1570,7 +1956,6 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
             ),
           );
         }
-        showToast('success', `${result.model.displayName} 能力配置已保存`);
         onCatalogChanged?.();
         return result.model;
       } catch (error) {
@@ -1580,15 +1965,6 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
     },
     [mergeProviderModels, onCatalogChanged, providers, showToast],
   );
-
-  const handleMoveModel = (provider: ProviderSummary, modelId: string, direction: -1 | 1) => {
-    const ordered = [...provider.models].sort((a, b) => a.priority - b.priority);
-    const idx = ordered.findIndex((m) => m.modelId === modelId);
-    const target = idx + direction;
-    if (idx < 0 || target < 0 || target >= ordered.length) return;
-    const next = arrayMove(ordered, idx, target);
-    handleReorderModels(provider, next);
-  };
 
   const handleReorderModels = (provider: ProviderSummary, ordered: ProviderModelSummary[]) => {
     const previous =
@@ -1661,7 +2037,6 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
           throw error;
         }
       },
-      '图片识别 Fallback 已更新',
     );
   };
 
@@ -1680,7 +2055,6 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
           throw error;
         }
       },
-      '规划与执行模型已更新',
     );
   };
 
@@ -1699,7 +2073,6 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
           throw error;
         }
       },
-      enabled ? '模型配置云同步已开启' : '模型配置云同步已关闭',
     );
   };
 
@@ -1709,8 +2082,7 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
     (Boolean(createDraft.name.trim()) ||
       createDraft.baseUrl !== EMPTY_CREATE.baseUrl ||
       createDraft.protocol !== EMPTY_CREATE.protocol ||
-      Boolean(createDraft.apiKey.trim()) ||
-      createDraft.supportsDiscovery !== EMPTY_CREATE.supportsDiscovery);
+      Boolean(createDraft.apiKey.trim()));
   const [detailDraftDirty, setDetailDraftDirty] = useState(false);
   /** credentialRefId → staged plaintext secret (not yet written to secure-store). */
   const [stagedSecrets, setStagedSecrets] = useState<Record<string, string>>({});
@@ -1749,7 +2121,6 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
       return false;
     }
     setCompleting(true);
-    setError(null);
     try {
       // 1) Commit staged credential secrets first.
       const stagedEntries = Object.entries(stagedSecrets);
@@ -1791,7 +2162,6 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
       if (!baseUrlMatches) {
         const result = await runConnectionTest(target.providerId, target.baseUrl);
         if (result.status !== 'success') {
-          setError(result.message || '连接测试失败');
           showToast('error', result.message || '连接测试失败');
           return false;
         }
@@ -1799,9 +2169,7 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
       onCatalogChanged?.();
       return true;
     } catch (error) {
-      const message = error instanceof Error ? error.message : '连接测试失败';
-      setError(message);
-      showToast('error', message);
+      showToast('error', formatRuntimeIpcError(error, '连接测试失败'));
       return false;
     } finally {
       setCompleting(false);
@@ -1824,19 +2192,24 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
     ref,
     () => ({
       complete: completeSettings,
+      startCreate: openCreateCatalog,
     }),
-    [completeSettings],
+    [completeSettings, openCreateCatalog],
   );
 
-  const confirmDiscardChanges = useCallback(async (): Promise<boolean> => {
-    if (!hasTransientDraft) return true;
-    return dialog.confirm({
-      title: '放弃未提交的修改',
-      message: '当前有未提交的模型配置草稿，确认放弃并继续吗？',
-      confirmText: '放弃',
-      danger: false,
-    });
-  }, [hasTransientDraft, dialog]);
+  useEffect(() => {
+    const selected = providers.find((item) => item.providerId === selectedId);
+    if (
+      selected &&
+      !selected.enabled &&
+      isConfiguredProvider(selected) &&
+      isTextGenerationProvider(selected) &&
+      detailView === 'provider' &&
+      !showCreate
+    ) {
+      setDisabledMenuOpen(true);
+    }
+  }, [detailView, providers, selectedId, showCreate]);
 
   if (loading) {
     return (
@@ -1846,55 +2219,46 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
     );
   }
 
-  const enabledProviders = providers.filter((provider) => provider.enabled);
-  const disabledProviders = providers.filter((provider) => !provider.enabled);
+  const listedProviders = providers.filter(
+    (provider) => isConfiguredProvider(provider) && isTextGenerationProvider(provider),
+  );
+  const enabledProviders = listedProviders.filter((provider) => provider.enabled);
+  const disabledProviders = listedProviders.filter((provider) => !provider.enabled);
+  const mediaCopy =
+    modelTab !== 'text' && modelTab !== 'usage' && modelTab !== 'image'
+      ? MEDIA_TAB_EMPTY[modelTab]
+      : null;
 
   return (
     <div className="model-settings-root flex h-full min-h-0 flex-col">
       <div className="model-settings-tabs">
-        <SlidingTabs className="model-settings-tabs__rail" aria-label="模型类型">
-          {MODEL_TABS.map(({ id, label }) => (
-            <button
-              key={id}
-              type="button"
-              role="tab"
-              aria-selected={modelTab === id}
-              className={modelTab === id ? 'is-active' : undefined}
-              onClick={() => {
-                void confirmDiscardChanges().then((ok) => {
-                  if (ok) setModelTab(id);
-                });
-              }}
-            >
-              {label}
-            </button>
-          ))}
-        </SlidingTabs>
-        <span className="model-settings-guide">
-          如果配置遇到问题，可以查阅<span>配置指南</span>。
-        </span>
+        <DsTabBar
+          className="model-settings-tabs__rail"
+          aria-label="模型类型"
+          value={modelTab}
+          onChange={(value) => setModelTab(value as ModelTab)}
+          items={MODEL_TABS.map(({ id, label }) => ({ value: id, label }))}
+        />
+        {modelTab === 'text' || modelTab === 'image' ? (
+          <span className="model-settings-guide">
+            如果配置遇到问题，可以查阅<span>配置指南</span>。
+          </span>
+        ) : null}
+        {modelTab === 'usage' ? (
+          <UsageRangeControls
+            sinceDays={usageSinceDays}
+            refreshing={usageRefreshing}
+            onChange={setUsageSinceDays}
+            onRefresh={() => setUsageReloadToken((token) => token + 1)}
+          />
+        ) : null}
       </div>
 
-      {modelTab === 'usage' ? (
-        <UsageSettings />
-      ) : modelTab !== 'text' ? (
-        <div key={modelTab} className="model-settings-tab-panel model-settings-unavailable">
-          <p>
-            {MODEL_TABS.find((tab) => tab.id === modelTab)?.label ?? '模型'}
-            模型配置尚未接入。
-          </p>
-          <span>入口按 SYNC-THINK 的模型设置结构保留。</span>
-        </div>
-      ) : (
-        <>
-          {error ? (
-            <div className="shrink-0 border-b border-border px-5 py-2">
-              <p className="text-[12.5px] text-error" role="alert">
-                {error}
-              </p>
-            </div>
-          ) : null}
-
+      <div className="model-settings-tab-stack">
+          <KeepAliveLayer
+            active={modelTab === 'text'}
+            className="model-settings-tab-layer"
+          >
           <div className="model-settings-workspace flex min-h-0 flex-1">
             <aside className="model-enabled-list">
               <div className="model-enabled-list__header">
@@ -1907,10 +2271,7 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
                   title="添加模型"
                   disabled={operation?.kind === 'create-provider'}
                   onClick={() => {
-                    void confirmDiscardChanges().then((ok) => {
-                      if (!ok) return;
-                      openCreateCatalog();
-                    });
+                    openCreateCatalog();
                   }}
                 >
                   <Plus size={15} />
@@ -1918,13 +2279,7 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
               </div>
 
               <div className="model-enabled-list__body">
-                {providers.length === 0 ? (
-                  <div className="model-settings-empty-list">
-                    <Server size={22} />
-                    <p>尚未配置模型</p>
-                    <span>点击右上角 + 添加</span>
-                  </div>
-                ) : (
+                {enabledProviders.length === 0 ? null : (
                   <DndContext
                     sensors={sensors}
                     collisionDetection={closestCenter}
@@ -1949,15 +2304,14 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
                             }
                             busy={providerListBusy}
                             onSelect={() => {
-                              void confirmDiscardChanges().then((ok) => {
-                                if (!ok) return;
-                                setShowCreate(false);
-                                setDetailView('provider');
-                                setSelectedId(provider.providerId);
-                                setLastSelectedId(provider.providerId);
-                              });
+                              setShowCreate(false);
+                              resetCreateState();
+                              setDetailView('provider');
+                              setSelectedId(provider.providerId);
+                              setLastSelectedId(provider.providerId);
                             }}
                             onDisable={() => handleToggleEnabled(provider, false)}
+                            onRemove={() => handleRemoveProvider(provider)}
                           />
                         ))}
                       </ul>
@@ -1991,78 +2345,67 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
                   className={clsx('model-enabled-list__add', showCreate && 'is-active')}
                   disabled={operation?.kind === 'create-provider'}
                   onClick={() => {
-                    void confirmDiscardChanges().then((ok) => {
-                      if (!ok) return;
-                      openCreateCatalog();
-                    });
+                    openCreateCatalog();
                   }}
                 >
                   <Plus size={13} /> 添加模型
                 </button>
-                <div
-                  className={clsx(
-                    'model-disabled-list',
-                    disabledOpen && 'is-open',
-                    disabledProviders.length === 0 && 'is-empty',
-                  )}
-                >
-                  <div className="model-disabled-list__head">
-                    <button
-                      type="button"
-                      className="model-disabled-list__summary"
-                      onClick={() => setDisabledOpen((value) => !value)}
-                      aria-expanded={disabledOpen}
-                      disabled={disabledProviders.length === 0}
-                    >
-                      <span>已停用模型 {disabledProviders.length}</span>
-                    </button>
-                  </div>
-                  <div className="model-disabled-list__body" aria-hidden={!disabledOpen}>
-                    <ul>
-                      {disabledProviders.map((provider) => {
-                        const primaryModel = [...provider.models].sort(
-                          (a, b) => a.priority - b.priority,
-                        )[0];
-                        return (
-                          <li
+                {disabledProviders.length > 0 ? (
+                  <div className="model-disabled-list">
+                    <div className={clsx('model-disabled-list__bar', disabledMenuOpen && 'is-open')}>
+                      <button
+                        type="button"
+                        className="model-disabled-list__trigger"
+                        aria-expanded={disabledMenuOpen}
+                        data-testid="model-settings-disabled-menu-trigger"
+                        onClick={() => setDisabledMenuOpen((open) => !open)}
+                      >
+                        <ChevronDown size={12} className="model-disabled-list__chevron" aria-hidden="true" />
+                        <span>已停用模型</span>
+                        <span className="model-disabled-list__count">{disabledProviders.length}</span>
+                      </button>
+                      <ModelOverflowMenu
+                        ariaLabel="已停用模型操作"
+                        triggerClassName="model-disabled-list__more"
+                        triggerTestId="model-settings-disabled-action-menu-trigger"
+                        triggerSize={14}
+                        items={[
+                          { label: '启用全部', onSelect: handleEnableAllDisabled },
+                          { label: '清空', danger: true, onSelect: handleClearDisabled },
+                        ]}
+                      />
+                    </div>
+                    {disabledMenuOpen ? (
+                      <div
+                        className="model-disabled-list__items"
+                        data-testid="model-settings-disabled-menu-list"
+                      >
+                        {disabledProviders.map((provider) => (
+                          <DisabledProviderRow
                             key={provider.providerId}
-                            className={clsx(
-                              'model-enabled-row is-disabled',
+                            provider={provider}
+                            active={
                               detailView === 'provider' &&
-                                provider.providerId === selectedId &&
-                                !showCreate &&
-                                'is-active',
-                            )}
-                          >
-                            <ProviderRowAvatar provider={provider} />
-                            <button
-                              type="button"
-                              className="model-enabled-row__main"
-                              onClick={() => {
-                                setShowCreate(false);
-                                setSelectedId(provider.providerId);
-                                setLastSelectedId(provider.providerId);
-                              }}
-                            >
-                              <span className="model-enabled-row__copy">
-                                <span>{provider.name}</span>
-                                <small>{primaryModel?.displayName ?? '未添加模型'}</small>
-                              </span>
-                            </button>
-                            <button
-                              type="button"
-                              className="model-disabled-list__enable"
-                              disabled={providerListBusy}
-                              onClick={() => handleToggleEnabled(provider, true)}
-                            >
-                              启用
-                            </button>
-                          </li>
-                        );
-                      })}
-                    </ul>
+                              provider.providerId === selectedId &&
+                              !showCreate
+                            }
+                            busy={providerListBusy}
+                            onSelect={() => {
+                              setDisabledMenuOpen(true);
+                              setShowCreate(false);
+                              resetCreateState();
+                              setDetailView('provider');
+                              setSelectedId(provider.providerId);
+                              setLastSelectedId(provider.providerId);
+                            }}
+                            onEnable={() => handleToggleEnabled(provider, true)}
+                            onRemove={() => handleRemoveProvider(provider)}
+                          />
+                        ))}
+                      </div>
+                    ) : null}
                   </div>
-                </div>
+                ) : null}
               </div>
 
               <div className="model-enabled-list__secondary">
@@ -2071,11 +2414,9 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
                   className={detailView === 'vision' ? 'is-active' : undefined}
                   aria-pressed={detailView === 'vision'}
                   onClick={() => {
-                    void confirmDiscardChanges().then((ok) => {
-                      if (!ok) return;
-                      setShowCreate(false);
-                      setDetailView('vision');
-                    });
+                    setShowCreate(false);
+                    resetCreateState();
+                    setDetailView('vision');
                   }}
                 >
                   <Image size={13} />
@@ -2087,11 +2428,9 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
                   aria-pressed={detailView === 'plan-act'}
                   data-testid="model-strategy-plan-act"
                   onClick={() => {
-                    void confirmDiscardChanges().then((ok) => {
-                      if (!ok) return;
-                      setShowCreate(false);
-                      setDetailView('plan-act');
-                    });
+                    setShowCreate(false);
+                    resetCreateState();
+                    setDetailView('plan-act');
                   }}
                 >
                   <Sparkles size={13} />
@@ -2103,11 +2442,9 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
                   aria-pressed={detailView === 'cloud-sync'}
                   data-testid="model-strategy-cloud-sync"
                   onClick={() => {
-                    void confirmDiscardChanges().then((ok) => {
-                      if (!ok) return;
-                      setShowCreate(false);
-                      setDetailView('cloud-sync');
-                    });
+                    setShowCreate(false);
+                    resetCreateState();
+                    setDetailView('cloud-sync');
                   }}
                 >
                   <Cloud size={13} />
@@ -2151,7 +2488,6 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
                         setCreateStep('catalog');
                         setCcSwitchPreview(null);
                         setSelectedCcSwitchIds([]);
-                        setError(null);
                       }}
                       onCancel={cancelCreateFlow}
                       onRetry={() => void openCcSwitchImport()}
@@ -2178,15 +2514,16 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
                       draft={createDraft}
                       template={createTemplate ?? undefined}
                       busy={operation?.kind === 'create-provider'}
-                      onChange={setCreateDraft}
-                      onSubmit={handleCreate}
+                      onChange={updateCreateDraft}
+                      onDiscover={() => handleDiscoverCreateModels()}
+                      onTest={() => handleCreate()}
+                      onSaveUnverified={() => handleSaveUnverified()}
+                      testResult={createTestResult}
                       onBackToCatalog={() => {
                         setCreateStep('catalog');
                         setCreateDraft(EMPTY_CREATE);
                         setCreateTemplate(null);
-                        setError(null);
                       }}
-                      onCancel={cancelCreateFlow}
                     />
                   )
                 ) : detailView === 'vision' ? (
@@ -2195,6 +2532,7 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
                     value={visionFallback}
                     busy={operation?.kind === 'save-preference'}
                     onChange={handleSaveVision}
+                    onProbe={handleProbeModelCapabilities}
                   />
                 ) : detailView === 'plan-act' ? (
                   <PlanActPanel
@@ -2240,7 +2578,6 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
                     onProbeModelCapabilities={handleProbeModelCapabilities}
                     onConfirmModelCapabilities={handleConfirmModelCapabilities}
                     onReorderModels={handleReorderModels}
-                    onMoveModel={handleMoveModel}
                     onTransientDraftChange={setDetailDraftDirty}
                     onPinCredential={handlePinCredential}
                   />
@@ -2250,30 +2587,41 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
               </div>
             </div>
           </div>
-        </>
-      )}
+          </KeepAliveLayer>
+          <KeepAliveLayer
+            active={modelTab === 'image'}
+            className="model-settings-tab-layer"
+          >
+            <ImageGenerationSettings onCatalogChanged={onCatalogChanged} />
+          </KeepAliveLayer>
+          <KeepAliveLayer
+            active={modelTab === 'usage'}
+            className="model-settings-tab-layer"
+          >
+            <UsageSettings
+              sinceDays={usageSinceDays}
+              reloadToken={usageReloadToken}
+              onRefreshingChange={setUsageRefreshing}
+            />
+          </KeepAliveLayer>
+          {mediaCopy ? (
+            <div key={modelTab} className="model-settings-tab-panel model-settings-unavailable">
+              <p>{mediaCopy.description}</p>
+              <span>{mediaCopy.empty}</span>
+            </div>
+          ) : null}
+        </div>
       {importDialog ? (
         <ImportModelsDialog
           dialog={importDialog}
           onClose={() => setImportDialog(null)}
           onChange={setImportDialog}
-          onApply={() => void handleApplyImport(importDialog)}
+          onApply={() =>
+            void (importDialog.target === 'create'
+              ? handleApplyCreateImport(importDialog)
+              : handleApplyImport(importDialog))
+          }
         />
-      ) : null}
-      {toast ? (
-        <div
-          key={toast.id}
-          className={clsx('model-settings-toast', `is-${toast.kind}`)}
-          role={toast.kind === 'error' ? 'alert' : 'status'}
-        >
-          <span className="model-settings-toast__icon">
-            {toast.kind === 'success' ? <Check size={14} /> : <X size={14} />}
-          </span>
-          <span>{toast.message}</span>
-          <button type="button" aria-label="关闭提示" onClick={() => setToast(null)}>
-            <X size={13} />
-          </button>
-        </div>
       ) : null}
     </div>
   );
@@ -2291,23 +2639,17 @@ function ProviderCatalog({
   const items = PROVIDER_CATALOG[category];
   return (
     <section className="model-provider-catalog" aria-label="添加模型">
-      <SlidingTabs className="model-provider-catalog__tabs" aria-label="模型服务商分类">
-        {PROVIDER_CATALOG_CATEGORIES.map((item) => (
-          <button
-            key={item.id}
-            type="button"
-            role="tab"
-            aria-selected={category === item.id}
-            className={clsx(
-              'model-provider-catalog__tab',
-              category === item.id && 'model-provider-catalog__tab--active',
-            )}
-            onClick={() => onCategoryChange(item.id)}
-          >
-            {item.label}
-          </button>
-        ))}
-      </SlidingTabs>
+      <DsTabBar
+        className="model-provider-catalog__tabs"
+        aria-label="模型服务商分类"
+        stretch
+        value={category}
+        onChange={onCategoryChange}
+        items={PROVIDER_CATALOG_CATEGORIES.map((item) => ({
+          value: item.id,
+          label: item.label,
+        }))}
+      />
 
       <div className="model-provider-catalog__grid" role="tabpanel">
         {items.map((item) => {
@@ -2463,8 +2805,15 @@ function CcSwitchImportPanel({
   return (
     <section className="model-cc-switch" aria-labelledby="model-cc-switch-title">
       <header className="model-provider-form__header">
-        <button type="button" aria-label="返回服务商目录" onClick={onBack} disabled={importing}>
-          <ArrowLeft size={16} />
+        <button
+          type="button"
+          className="model-provider-form__back"
+          aria-label="返回列表"
+          onClick={onBack}
+          disabled={importing}
+        >
+          <ArrowLeft size={12} />
+          返回列表
         </button>
         <div>
           <h2 id="model-cc-switch-title">从 CC Switch 导入</h2>
@@ -2603,109 +2952,406 @@ function CcSwitchImportRow({
   );
 }
 
+/**
+ * Model row for the create form: same visual language as SortableModelRow on the
+ * detail page, but backed by the pure draft array — no providerId, no
+ * credentials, no persisted context window.
+ */
+function DraftModelRow({
+  model,
+  index,
+  busy,
+  onRemove,
+}: {
+  model: DraftModel;
+  index: number;
+  busy: boolean;
+  onRemove: () => void;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: model.providerModelId,
+    disabled: busy,
+  });
+  const title = model.displayName || model.providerModelId;
+  return (
+    <div
+      ref={setNodeRef}
+      style={{ transform: CSS.Transform.toString(transform), transition }}
+      className={clsx('model-priority-row', isDragging && 'is-dragging')}
+    >
+      <button
+        type="button"
+        className="model-priority-row__grip"
+        disabled={busy}
+        title="拖拽调整优先级"
+        aria-label={`拖拽 ${title} 调整优先级`}
+        {...attributes}
+        {...listeners}
+      >
+        <GripVertical size={14} />
+      </button>
+      <div className="model-priority-row__main">
+        <span className={clsx('model-priority-row__rank', index === 0 && 'is-primary')}>
+          {modelRankLabel(index)}
+        </span>
+        <span className="model-priority-row__copy">
+          <span title={title}>{title}</span>
+        </span>
+      </div>
+      <div className="model-priority-row__actions">
+        <button
+          type="button"
+          className="is-danger"
+          title="删除模型"
+          disabled={busy}
+          onClick={onRemove}
+        >
+          <Trash2 size={12} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function CreateProviderForm({
   draft,
   template,
   busy,
   onChange,
-  onSubmit,
+  onDiscover,
+  onTest,
+  onSaveUnverified,
   onBackToCatalog,
-  onCancel,
+  testResult,
 }: {
   draft: CreateDraft;
   template?: ProviderCatalogItem;
   busy: boolean;
   onChange: (d: CreateDraft) => void;
-  onSubmit: () => void;
+  onDiscover: () => void;
+  onTest: () => void;
+  onSaveUnverified: () => void;
   onBackToCatalog: () => void;
-  onCancel: () => void;
+  testResult: { status: 'idle' | 'testing' | 'success' | 'error'; message: string };
 }) {
   const isCustomEndpoint = template?.endpointMode === 'custom';
-  const templateLabel = template?.name;
+  const isCustomProvider = template?.id === 'custom';
+  const [apiFormatManual, setApiFormatManual] = useState(false);
+  const [connectionDetection, setConnectionDetection] = useState<ProviderConnectionDetection | null>(
+    null,
+  );
+  const [addingModel, setAddingModel] = useState(false);
+  const [manualId, setManualId] = useState('');
+  const draftSensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
+  const addDraftModel = () => {
+    const id = manualId.trim();
+    if (!id) return;
+    if (draft.models.some((model) => model.providerModelId === id)) {
+      setManualId('');
+      return;
+    }
+    onChange({
+      ...draft,
+      models: [...draft.models, { providerModelId: id, displayName: id }],
+    });
+    setManualId('');
+  };
+  const title = isCustomProvider
+    ? draft.name.trim() || '自定义供应商'
+    : draft.name.trim() || template?.name || '自定义供应商';
+  const avatarLetter = (draft.name.trim() || template?.name || '自').slice(0, 1).toUpperCase();
+  const iconTestId = `provider-form-icon-${template?.id ?? 'custom'}`;
+  const testing = testResult.status === 'testing';
+
   return (
-    <section className="model-provider-form" aria-labelledby="model-provider-form-title">
-      <header className="model-provider-form__header">
-        <button type="button" aria-label="返回服务商目录" onClick={onBackToCatalog} disabled={busy}>
-          <ArrowLeft size={16} />
-        </button>
-        <div className="model-provider-form__identity">
-          {template ? (
-            <ProviderBrandIcon
-              providerId={template.id}
-              providerName={template.name}
-              testIdPrefix="provider-form-icon"
-            />
-          ) : null}
-          <div>
-            <h2 id="model-provider-form-title">添加模型源</h2>
-            <p>{templateLabel ? `正在配置 ${templateLabel}` : '填写供应商连接信息'}</p>
-          </div>
-        </div>
-        <button type="button" aria-label="取消添加模型源" onClick={onCancel} disabled={busy}>
-          <X size={16} />
-        </button>
-      </header>
-      <div className="model-provider-form__body">
-        <Field label="名称">
-          <input
-            className="st-field-input"
-            value={draft.name}
-            placeholder="例如 New API / OpenAI / Claude"
-            disabled={busy}
-            onChange={(e) => onChange({ ...draft, name: e.target.value })}
+    <div className="model-provider-form-wrap">
+      <button
+        type="button"
+        className="model-provider-form__back"
+        aria-label="返回列表"
+        onClick={onBackToCatalog}
+        disabled={busy}
+      >
+        <ArrowLeft size={12} />
+        返回列表
+      </button>
+      <section
+        className="model-provider-detail model-provider-form"
+        aria-labelledby="model-provider-form-title"
+      >
+        <div className="model-provider-detail__head">
+          <ProviderDetailAvatar
+            providerId={template?.id}
+            name={draft.name.trim() || template?.name || ''}
+            fallbackLetter={avatarLetter}
+            testId={iconTestId}
           />
-        </Field>
-        {isCustomEndpoint ? (
-          <Field label="Base URL">
+          <h2 id="model-provider-form-title">{title}</h2>
+        </div>
+
+        <div className="model-provider-fields">
+          <Field label="供应商名称">
             <input
-              className="st-field-input font-mono text-[12.5px]"
-              data-testid="provider-base-url"
-              value={draft.baseUrl}
-              placeholder="https://api.openai.com/v1"
+              className="st-field-input"
+              value={draft.name}
+              placeholder="例如 New API / OpenAI / Claude"
               disabled={busy}
-              onChange={(e) => onChange({ ...draft, baseUrl: e.target.value })}
+              onChange={(e) => onChange({ ...draft, name: e.target.value })}
             />
           </Field>
-        ) : (
-          <div className="model-provider-form__builtin-endpoint">
-            <Server size={15} aria-hidden="true" />
-            <span>连接地址已由 {templateLabel ?? '服务商'} 模板内置</span>
-          </div>
-        )}
-        <Field label="API 格式">
-          <ProtocolSelector
-            protocol={draft.protocol}
-            disabled={busy}
-            onChange={(protocol) => onChange({ ...draft, protocol })}
-          />
-        </Field>
-        <Field label="API Key">
-          <SecretInput
-            value={draft.apiKey}
-            placeholder="sk-…"
-            disabled={busy}
-            onChange={(apiKey) => onChange({ ...draft, apiKey })}
-          />
-        </Field>
-        <label className="flex items-center gap-2 text-[12.5px] text-text-secondary">
-          <input
-            type="checkbox"
-            checked={draft.supportsDiscovery}
-            disabled={busy}
-            onChange={(e) => onChange({ ...draft, supportsDiscovery: e.target.checked })}
-          />
-          创建后自动发现模型（/models）
-        </label>
-        <div className="model-provider-form__actions">
-          <button type="button" className="is-primary" disabled={busy} onClick={onSubmit}>
-            {busy ? <Loader2 size={14} className="animate-spin" /> : '创建并保存'}
-          </button>
-          <button type="button" disabled={busy} onClick={onCancel}>
-            取消
-          </button>
+          {isCustomEndpoint ? (
+            <Field label="API 地址（自定义服务）">
+              <input
+                className="st-field-input font-mono text-[12.5px]"
+                data-testid="provider-base-url"
+                value={draft.baseUrl}
+                placeholder="https://api.example.com/v1"
+                disabled={busy}
+                onChange={(e) => {
+                  setConnectionDetection(null);
+                  onChange({ ...draft, baseUrl: e.target.value });
+                }}
+                onBlur={() => {
+                  const detection = detectProviderConnectionInput(draft.baseUrl);
+                  const nextProtocol = apiFormatManual
+                    ? draft.protocol
+                    : protocolFromDetection(draft.protocol, detection);
+                  if (detection.baseUrl !== draft.baseUrl || nextProtocol !== draft.protocol) {
+                    onChange({
+                      ...draft,
+                      baseUrl: detection.baseUrl,
+                      protocol: nextProtocol,
+                    });
+                  }
+                  setConnectionDetection(
+                    detection.apiFormat || detection.normalized ? detection : null,
+                  );
+                }}
+              />
+              <span className="model-field-helper" data-testid="custom-provider-connection-hint">
+                {connectionHintText(connectionDetection)}
+              </span>
+            </Field>
+          ) : null}
+          <Field label="API 格式">
+            <ProtocolSelector
+              protocol={draft.protocol}
+              disabled={busy}
+              onChange={(protocol) => {
+                setApiFormatManual(true);
+                setConnectionDetection(null);
+                onChange({ ...draft, protocol });
+              }}
+            />
+          </Field>
         </div>
+
+        <section className="model-newmax-section model-newmax-section--credentials">
+          <div className="model-newmax-section__label">API 密钥</div>
+          <div className="model-credential-list">
+            <SecretInput
+              value={draft.apiKey}
+              placeholder="输入 API 密钥"
+              disabled={busy}
+              onChange={(apiKey) => onChange({ ...draft, apiKey })}
+            />
+            {draft.extraApiKeys.map((key, index) => (
+              <div key={index} className="model-create-key-row">
+                <SecretInput
+                  value={key}
+                  placeholder={`备用密钥 ${index + 1}`}
+                  disabled={busy}
+                  onChange={(next) =>
+                    onChange({
+                      ...draft,
+                      extraApiKeys: draft.extraApiKeys.map((item, i) =>
+                        i === index ? next : item,
+                      ),
+                    })
+                  }
+                />
+                <button
+                  type="button"
+                  title="删除密钥"
+                  aria-label={`删除备用密钥 ${index + 1}`}
+                  disabled={busy}
+                  onClick={() =>
+                    onChange({
+                      ...draft,
+                      extraApiKeys: draft.extraApiKeys.filter((_, i) => i !== index),
+                    })
+                  }
+                >
+                  <Trash2 size={12} />
+                </button>
+              </div>
+            ))}
+          </div>
+          <button
+            type="button"
+            className="model-add-key-trigger"
+            data-testid="create-provider-add-api-key"
+            disabled={busy}
+            onClick={() => onChange({ ...draft, extraApiKeys: [...draft.extraApiKeys, ''] })}
+          >
+            <Plus size={13} /> 添加 API 密钥
+          </button>
+        </section>
+
+        <section className="model-newmax-section">
+          <div className="model-newmax-section__heading">
+            <div>
+              <span className="model-newmax-section__label">模型优先级（至少添加一个）</span>
+            </div>
+          </div>
+          {draft.models.length === 0 ? (
+            <p className="model-credential-empty">暂无模型，请从服务商拉取或手动添加</p>
+          ) : (
+            <DndContext
+              sensors={draftSensors}
+              collisionDetection={closestCenter}
+              onDragEnd={(event) => {
+                const activeId = String(event.active.id);
+                const overId = event.over ? String(event.over.id) : null;
+                if (!overId || activeId === overId || busy) return;
+                const oldIndex = draft.models.findIndex(
+                  (model) => model.providerModelId === activeId,
+                );
+                const newIndex = draft.models.findIndex(
+                  (model) => model.providerModelId === overId,
+                );
+                if (oldIndex < 0 || newIndex < 0) return;
+                onChange({ ...draft, models: arrayMove(draft.models, oldIndex, newIndex) });
+              }}
+            >
+              <SortableContext
+                items={draft.models.map((model) => model.providerModelId)}
+                strategy={verticalListSortingStrategy}
+              >
+                <div className="model-priority-list">
+                  {draft.models.map((model, index) => (
+                    <DraftModelRow
+                      key={model.providerModelId}
+                      model={model}
+                      index={index}
+                      busy={busy}
+                      onRemove={() =>
+                        onChange({
+                          ...draft,
+                          models: draft.models.filter(
+                            (item) => item.providerModelId !== model.providerModelId,
+                          ),
+                        })
+                      }
+                    />
+                  ))}
+                </div>
+              </SortableContext>
+            </DndContext>
+          )}
+
+          {addingModel ? (
+            <AddModelInlineRow
+              value={manualId}
+              busy={busy}
+              confirmTestId="create-provider-add-model-confirm"
+              onChange={setManualId}
+              onConfirm={addDraftModel}
+              onDismiss={() => {
+                setAddingModel(false);
+                setManualId('');
+              }}
+            />
+          ) : (
+            <button
+              type="button"
+              data-testid="create-provider-add-model"
+              className="model-add-model-btn"
+              disabled={busy}
+              onClick={() => setAddingModel(true)}
+            >
+              <Plus size={14} /> 添加模型
+            </button>
+          )}
+
+          <p className="model-priority-hint">拖拽调整优先级</p>
+
+          <button
+            type="button"
+            className="model-fetch-models-link"
+            disabled={busy}
+            onClick={onDiscover}
+          >
+            {busy && !testing ? (
+              <Loader2 size={13} className="model-settings-spin" />
+            ) : (
+              <RefreshCw size={13} />
+            )}
+            {busy && !testing ? '正在拉取模型…' : '从服务商拉取模型列表'}
+          </button>
+
+          <div className="model-test-connection">
+            <button
+              type="button"
+              className="model-test-connection__btn"
+              disabled={busy || draft.models.length === 0}
+              onClick={onTest}
+            >
+              {testing ? <Loader2 size={15} className="model-settings-spin" /> : <Plug size={15} />}
+              {testing ? '测试中…' : '测试连接'}
+            </button>
+            {testResult.status === 'success' ? (
+              <p className="model-test-connection__status is-success" role="status">
+                ✓ {testResult.message}
+              </p>
+            ) : null}
+            {testResult.status === 'error' ? (
+              <p className="model-test-connection__status is-error" role="alert">
+                × {testResult.message}
+              </p>
+            ) : null}
+          </div>
+
+          {testResult.status === 'error' ? (
+            <UnverifiedSaveAction busy={busy} onSave={onSaveUnverified} />
+          ) : null}
+        </section>
+      </section>
+    </div>
+  );
+}
+
+/**
+ * NewMax-style「仍然保存（未验证）」: shown under the primary action once the
+ * connection test fails, so a relay that rejects the capability probes can still
+ * be kept. Mirrors NewMax's UnverifiedSaveAction — one button plus a hint, which
+ * flips to a disabled「已保存，未验证」after use.
+ */
+function UnverifiedSaveAction({ busy, onSave }: { busy: boolean; onSave: () => void }) {
+  const [saved, setSaved] = useState(false);
+  return (
+    <div className="model-provider-form__unverified">
+      <div className="model-provider-form__actions">
+        <button
+          type="button"
+          className="is-full model-provider-form__secondary-action"
+          data-testid="model-settings-save-unverified"
+          disabled={busy || saved}
+          onClick={() => {
+            onSave();
+            setSaved(true);
+          }}
+        >
+          {saved ? '已保存，未验证' : '仍然保存（未验证）'}
+        </button>
       </div>
-    </section>
+      <p className="model-provider-form__unverified-hint">
+        连接测试会请求服务商的模型列表（/models）。部分中转站较慢或会拒绝该接口，但实际可以正常对话。思考、识图能力要打开模型后点「检测能力」。如果你确认配置无误，可以先保存使用。
+      </p>
+    </div>
   );
 }
 
@@ -2736,6 +3382,43 @@ function ProviderRowAvatar({ provider }: { provider: ProviderSummary }) {
   );
 }
 
+/**
+ * Provider avatar for the detail panel / create form header. Uses the same
+ * brand resolution as ProviderRowAvatar so a provider never shows the brand
+ * mark in the list but a bare letter in its own header.
+ */
+function ProviderDetailAvatar({
+  providerId,
+  name,
+  fallbackLetter,
+  testId,
+}: {
+  providerId?: string;
+  name: string;
+  fallbackLetter?: string;
+  testId?: string;
+}) {
+  const brandLogo =
+    (providerId ? resolveProviderBrandLogo(providerId) : undefined) ??
+    resolveProviderBrandLogoByName(name);
+  if (brandLogo) {
+    return (
+      <span
+        className="model-provider-detail__avatar model-provider-detail__avatar--logo"
+        aria-hidden="true"
+        {...(testId ? { 'data-testid': testId } : {})}
+      >
+        <BrandLogoMark logo={brandLogo} size={16} />
+      </span>
+    );
+  }
+  return (
+    <span className="model-provider-detail__avatar" {...(testId ? { 'data-testid': testId } : {})}>
+      {fallbackLetter ?? name.trim()[0]?.toUpperCase() ?? '?'}
+    </span>
+  );
+}
+
 function SortableProviderRow({
   provider,
   index,
@@ -2743,6 +3426,7 @@ function SortableProviderRow({
   busy,
   onSelect,
   onDisable,
+  onRemove,
 }: {
   provider: ProviderSummary;
   index: number;
@@ -2750,28 +3434,9 @@ function SortableProviderRow({
   busy: boolean;
   onSelect(): void;
   onDisable(): void;
+  onRemove(): void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
-  useEffect(() => {
-    if (!menuOpen) return;
-    const handlePointerDown = (event: PointerEvent) => {
-      if (
-        !(event.target instanceof Element) ||
-        !event.target.closest('.model-enabled-row__menu-wrap')
-      ) {
-        setMenuOpen(false);
-      }
-    };
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setMenuOpen(false);
-    };
-    window.addEventListener('pointerdown', handlePointerDown);
-    window.addEventListener('keydown', handleKeyDown);
-    return () => {
-      window.removeEventListener('pointerdown', handlePointerDown);
-      window.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [menuOpen]);
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: provider.providerId,
     disabled: busy,
@@ -2810,58 +3475,76 @@ function SortableProviderRow({
           <span>
             {provider.name}
             {index === 0 ? <em>默认</em> : null}
+            {/* NewMax: showUnverifiedTag = entry.unverified === true && !disabled */}
+            {provider.unverified && provider.enabled ? (
+              <em
+                className="is-unverified"
+                data-testid={`model-settings-unverified-tag-${provider.providerId}`}
+                title="连接测试未通过，由你选择保存使用。若对话报错，回到这里重新测试。"
+              >
+                未验证
+              </em>
+            ) : null}
           </span>
           <small>{primaryModel?.displayName ?? '未添加模型'}</small>
         </span>
       </button>
       <div className="model-enabled-row__menu-wrap">
-        <button
-          type="button"
-          className="model-enabled-row__menu-trigger"
-          title="更多操作"
-          aria-label={`${provider.name} 更多操作`}
-          aria-expanded={menuOpen}
+        <ModelOverflowMenu
+          ariaLabel={`${provider.name} 更多操作`}
+          triggerClassName="model-enabled-row__menu-trigger"
           disabled={busy}
-          onClick={() => setMenuOpen((value) => !value)}
-        >
-          <MoreHorizontal size={15} />
-        </button>
-        {menuOpen ? (
-          <div
-            className="model-enabled-row__menu"
-            role="menu"
-            onKeyDown={(event) => {
-              if (event.key === 'Escape') {
-                event.preventDefault();
-                setMenuOpen(false);
-              }
-            }}
-          >
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => {
-                setMenuOpen(false);
-                onSelect();
-              }}
-            >
-              编辑配置
-            </button>
-            <button
-              type="button"
-              role="menuitem"
-              className="is-danger"
-              onClick={() => {
-                setMenuOpen(false);
-                onDisable();
-              }}
-            >
-              停用模型源
-            </button>
-          </div>
-        ) : null}
+          onOpenChange={setMenuOpen}
+          items={[
+            { label: '停用', onSelect: onDisable },
+            { label: '移除', danger: true, confirmLabel: '确认移除', onSelect: onRemove },
+          ]}
+        />
       </div>
     </li>
+  );
+}
+
+function DisabledProviderRow({
+  provider,
+  active,
+  busy,
+  onSelect,
+  onEnable,
+  onRemove,
+}: {
+  provider: ProviderSummary;
+  active: boolean;
+  busy: boolean;
+  onSelect(): void;
+  onEnable(): void;
+  onRemove(): void;
+}) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const primaryModel = providerPrimaryModel(provider);
+  return (
+    <div className={clsx('model-disabled-row', active && 'is-active', menuOpen && 'has-menu-open')}>
+      <button type="button" className="model-disabled-row__main" onClick={onSelect}>
+        <ProviderRowAvatar provider={provider} />
+        <span className="model-enabled-row__copy">
+          <span>{provider.name}</span>
+          <small>{primaryModel?.displayName ?? '未添加模型'}</small>
+        </span>
+      </button>
+      <div className="model-disabled-row__menu-wrap">
+        <ModelOverflowMenu
+          ariaLabel={`${provider.name} 更多操作`}
+          triggerClassName="model-enabled-row__menu-trigger"
+          triggerSize={14}
+          disabled={busy}
+          onOpenChange={setMenuOpen}
+          items={[
+            { label: '启用', onSelect: onEnable },
+            { label: '移除', danger: true, confirmLabel: '确认移除', onSelect: onRemove },
+          ]}
+        />
+      </div>
+    </div>
   );
 }
 
@@ -2893,31 +3576,26 @@ function ProtocolSelector({
   disabled?: boolean;
   onChange(protocol: ProtocolFamily): void;
 }) {
-  const family = protocol === 'anthropic-messages' ? 'anthropic' : 'openai';
+  const family = protocolFamilyOf(protocol);
   return (
     <div className="model-protocol-control">
-      <div className="model-protocol-segment" role="radiogroup" aria-label="API 格式">
-        <button
-          type="button"
-          role="radio"
-          aria-checked={family === 'openai'}
-          className={family === 'openai' ? 'is-active' : undefined}
-          disabled={disabled}
-          onClick={() => onChange(protocol === 'openai-responses' ? protocol : 'openai-chat')}
-        >
-          OpenAI 格式
-        </button>
-        <button
-          type="button"
-          role="radio"
-          aria-checked={family === 'anthropic'}
-          className={family === 'anthropic' ? 'is-active' : undefined}
-          disabled={disabled}
-          onClick={() => onChange('anthropic-messages')}
-        >
-          Anthropic 格式
-        </button>
-      </div>
+      <DsTabBar
+        aria-label="API 格式"
+        stretch
+        value={family}
+        onChange={(next) => {
+          if (disabled) return;
+          if (next === 'anthropic') {
+            onChange('anthropic-messages');
+            return;
+          }
+          onChange(protocol === 'openai-responses' ? protocol : 'openai-chat');
+        }}
+        items={[
+          { value: 'openai', label: 'OpenAI 格式', disabled },
+          { value: 'anthropic', label: 'Anthropic 格式', disabled },
+        ]}
+      />
       <div className={clsx('model-responses-row', family !== 'openai' && 'is-hidden')}>
         <div>
           <strong>使用 Responses API</strong>
@@ -2995,7 +3673,6 @@ function ProviderDetail({
   onProbeModelCapabilities,
   onConfirmModelCapabilities,
   onReorderModels,
-  onMoveModel,
   onPinCredential,
   onTransientDraftChange,
 }: {
@@ -3036,7 +3713,6 @@ function ProviderDetail({
     capabilities: ModelCapabilityTag[],
   ) => Promise<ProviderModelSummary>;
   onReorderModels: (provider: ProviderSummary, models: ProviderModelSummary[]) => void;
-  onMoveModel: (provider: ProviderSummary, modelId: string, direction: -1 | 1) => void;
   onPinCredential: (
     provider: ProviderSummary,
     modelId: string,
@@ -3051,13 +3727,15 @@ function ProviderDetail({
   );
   const [nameError, setNameError] = useState<string | null>(null);
   const [baseUrlError, setBaseUrlError] = useState<string | null>(null);
+  const [apiFormatManual, setApiFormatManual] = useState(false);
+  const [connectionDetection, setConnectionDetection] = useState<ProviderConnectionDetection | null>(
+    null,
+  );
   const [savingField, setSavingField] = useState<'name' | 'baseUrl' | 'protocol' | null>(null);
   const [newKey, setNewKey] = useState('');
   const [addingKey, setAddingKey] = useState(false);
   const [addingModel, setAddingModel] = useState(false);
   const [manualId, setManualId] = useState('');
-  const [manualName, setManualName] = useState('');
-  const [manualContext, setManualContext] = useState('');
   const [activeModelId, setActiveModelId] = useState<string | null>(null);
   const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
   const modelSensors = useSensors(
@@ -3068,8 +3746,7 @@ function ProviderDetail({
   const discovering = operation?.kind === 'discover-models' && busy;
   const testing = connectionTest.status === 'testing';
   const keyDraftDirty = addingKey && Boolean(newKey.trim());
-  const manualModelDraftDirty =
-    addingModel && Boolean(manualId.trim() || manualName.trim() || manualContext.trim());
+  const manualModelDraftDirty = addingModel && Boolean(manualId.trim());
 
   useEffect(() => {
     onTransientDraftChange(keyDraftDirty || manualModelDraftDirty);
@@ -3085,12 +3762,12 @@ function ProviderDetail({
   useEffect(() => {
     setNameError(null);
     setBaseUrlError(null);
+    setApiFormatManual(false);
+    setConnectionDetection(null);
     setNewKey('');
     setAddingKey(false);
     setAddingModel(false);
     setManualId('');
-    setManualName('');
-    setManualContext('');
     setSelectedModelId(null);
   }, [provider.providerId]);
 
@@ -3101,29 +3778,56 @@ function ProviderDetail({
 
   const saveTextField = async (field: 'name' | 'baseUrl', rawValue?: string) => {
     // Prefer the live input value: blur can fire before React re-renders the draft state.
-    const value = (rawValue ?? (field === 'name' ? nameDraft : baseUrlDraft)).trim();
-    const original = field === 'name' ? provider.name : provider.baseUrl;
-    const setError = field === 'name' ? setNameError : setBaseUrlError;
-    if (field === 'name') setNameDraft(value);
-    else setBaseUrlDraft(value);
-    if (!value || (field === 'baseUrl' && value === 'https://')) {
-      setError(field === 'name' ? '供应商名称不能为空' : 'API Base URL 不能为空');
+    const raw = rawValue ?? (field === 'name' ? nameDraft : baseUrlDraft);
+    if (field === 'name') {
+      const value = raw.trim();
+      setNameDraft(value);
+      if (!value) {
+        setNameError('供应商名称不能为空');
+        return;
+      }
+      setNameError(null);
+      if (value === provider.name) return;
+      setSavingField('name');
+      const saved = await onUpdateProvider(provider.providerId, { name: value });
+      setSavingField(null);
+      if (!saved) setNameDraft(provider.name);
       return;
     }
-    setError(null);
-    if (value === original) return;
-    setSavingField(field);
-    const saved = await onUpdateProvider(provider.providerId, { [field]: value });
+
+    const detection = detectProviderConnectionInput(raw);
+    const nextUrl = detection.baseUrl;
+    const nextProtocol = apiFormatManual
+      ? protocolDraft
+      : protocolFromDetection(protocolDraft, detection);
+    setBaseUrlDraft(nextUrl);
+    setConnectionDetection(detection.apiFormat || detection.normalized ? detection : null);
+    if (!nextUrl || nextUrl === 'https://') {
+      setBaseUrlError('API Base URL 不能为空');
+      return;
+    }
+    setBaseUrlError(null);
+    const urlChanged = nextUrl !== provider.baseUrl;
+    const protocolChanged = nextProtocol !== provider.protocol;
+    if (!urlChanged && !protocolChanged) return;
+    if (protocolChanged) setProtocolDraft(nextProtocol);
+    setSavingField('baseUrl');
+    const saved = await onUpdateProvider(provider.providerId, {
+      ...(urlChanged ? { baseUrl: nextUrl } : {}),
+      ...(protocolChanged ? { protocol: nextProtocol } : {}),
+    });
     setSavingField(null);
     if (!saved) {
-      if (field === 'name') setNameDraft(original);
-      else setBaseUrlDraft(original);
+      setBaseUrlDraft(provider.baseUrl);
+      setProtocolDraft(provider.protocol as ProtocolFamily);
     }
   };
 
   const saveProtocol = async (protocol: ProtocolFamily) => {
     if (protocol === protocolDraft) return;
     const previous = protocolDraft;
+    setApiFormatManual(true);
+    setConnectionDetection(null);
     setProtocolDraft(protocol);
     setSavingField('protocol');
     const saved = await onUpdateProvider(provider.providerId, { protocol });
@@ -3134,9 +3838,7 @@ function ProviderDetail({
   return (
     <div className="model-provider-detail">
       <div className="model-provider-detail__head">
-        <span className="model-provider-detail__avatar">
-          {provider.name[0]?.toUpperCase() ?? '?'}
-        </span>
+        <ProviderDetailAvatar providerId={provider.providerId} name={provider.name} />
         <h2>{provider.name}</h2>
         {!provider.enabled ? <span className="model-provider-detail__disabled">已停用</span> : null}
       </div>
@@ -3163,7 +3865,10 @@ function ProviderDetail({
               value={baseUrlDraft}
               aria-invalid={Boolean(baseUrlError)}
               aria-label="API Base URL"
-              onChange={(event) => setBaseUrlDraft(event.target.value)}
+              onChange={(event) => {
+                setConnectionDetection(null);
+                setBaseUrlDraft(event.target.value);
+              }}
               onBlur={(event) => void saveTextField('baseUrl', event.currentTarget.value)}
             />
             {savingField === 'baseUrl' ? (
@@ -3171,8 +3876,8 @@ function ProviderDetail({
             ) : null}
           </div>
           {baseUrlError ? <span className="model-field-error">{baseUrlError}</span> : null}
-          <span className="model-field-helper">
-            请从服务商接入文档复制 Base URL 或完整请求地址，离开输入框后会自动识别并整理。
+          <span className="model-field-helper" data-testid="custom-provider-connection-hint">
+            {connectionHintText(connectionDetection)}
           </span>
         </Field>
         <Field label="API 格式">
@@ -3299,11 +4004,9 @@ function ProviderDetail({
                     key={model.modelId}
                     model={model}
                     index={index}
-                    total={models.length}
                     credentials={provider.credentials}
                     busy={busy}
                     onOpen={() => setSelectedModelId(model.modelId)}
-                    onMove={(direction) => onMoveModel(provider, model.modelId, direction)}
                     onRemove={() => {
                       void dialog
                         .confirm({
@@ -3346,73 +4049,22 @@ function ProviderDetail({
         )}
 
         {addingModel ? (
-          <div className="model-add-model-form">
-            <div className="model-add-model-form__head">
-              <span>手动添加模型</span>
-              <button
-                type="button"
-                className="model-add-model-form__close"
-                onClick={() => {
-                  setAddingModel(false);
-                  setManualId('');
-                  setManualName('');
-                  setManualContext('');
-                }}
-              >
-                收起
-              </button>
-            </div>
-            <div className="model-manual-add">
-              <input
-                className="st-field-input font-mono text-[12.5px]"
-                value={manualId}
-                placeholder="模型 ID"
-                disabled={busy}
-                aria-label="模型 ID"
-                autoFocus
-                onChange={(event) => setManualId(event.target.value)}
-              />
-              <input
-                className="st-field-input"
-                value={manualName}
-                placeholder="显示名（可选）"
-                disabled={busy}
-                aria-label="显示名（可选）"
-                onChange={(event) => setManualName(event.target.value)}
-              />
-              <input
-                className="st-field-input"
-                type="text"
-                inputMode="text"
-                value={manualContext}
-                placeholder="上下文窗口 tokens（如 200k / 1m）"
-                disabled={busy}
-                aria-label="上下文窗口（tokens，可选）"
-                title="上下文窗口，单位 tokens（支持 372000、372k、1m）"
-                onChange={(event) => setManualContext(event.target.value)}
-              />
-              <button
-                type="button"
-                disabled={busy || !manualId.trim()}
-                onClick={async () => {
-                  const ctxValue = parseContextTokens(manualContext);
-                  const saved = await onAddModel(
-                    provider.providerId,
-                    protocolDraft,
-                    manualId.trim(),
-                    manualName.trim() || undefined,
-                    ctxValue ?? undefined,
-                  );
-                  if (!saved) return;
-                  setManualId('');
-                  setManualName('');
-                  setManualContext('');
-                }}
-              >
-                <Plus size={13} /> 添加
-              </button>
-            </div>
-          </div>
+          <AddModelInlineRow
+            value={manualId}
+            busy={busy}
+            onChange={setManualId}
+            onConfirm={async () => {
+              const id = manualId.trim();
+              if (!id) return;
+              const saved = await onAddModel(provider.providerId, protocolDraft, id);
+              if (!saved) return;
+              setManualId('');
+            }}
+            onDismiss={() => {
+              setAddingModel(false);
+              setManualId('');
+            }}
+          />
         ) : (
           <button
             type="button"
@@ -3472,118 +4124,12 @@ function ProviderDetail({
         onConfirm={(modelId, capabilities) =>
           onConfirmModelCapabilities(provider.providerId, modelId, capabilities)
         }
+        onSaveContext={(contextWindow) => {
+          if (selectedModelId) {
+            onUpdateModelContext(provider.providerId, selectedModelId, contextWindow);
+          }
+        }}
       />
-    </div>
-  );
-}
-
-function ImportModelsDialog({
-  dialog,
-  onClose,
-  onChange,
-  onApply,
-}: {
-  dialog: ImportDialogState;
-  onClose: () => void;
-  onChange: (next: ImportDialogState) => void;
-  onApply: () => void;
-}) {
-  const query = dialog.query.trim().toLocaleLowerCase('zh-CN');
-  const filtered = dialog.discovered.filter((item) => {
-    if (!query) return true;
-    return (
-      item.providerModelId.toLocaleLowerCase('zh-CN').includes(query) ||
-      item.displayName.toLocaleLowerCase('zh-CN').includes(query)
-    );
-  });
-  const selectedCount = dialog.selectedIds.length;
-  const totalCount = dialog.discovered.length;
-
-  const toggleId = (id: string) => {
-    const selected = new Set(dialog.selectedIds);
-    if (selected.has(id)) selected.delete(id);
-    else selected.add(id);
-    onChange({ ...dialog, selectedIds: [...selected] });
-  };
-
-  return (
-    <div className="model-import-overlay" role="presentation">
-      <div
-        className="model-import-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="model-import-title"
-      >
-        <div className="model-import-dialog__head">
-          <h3 id="model-import-title">导入模型</h3>
-          <button type="button" aria-label="关闭" disabled={dialog.applying} onClick={onClose}>
-            <X size={16} />
-          </button>
-        </div>
-        <p className="model-import-dialog__desc">
-          从服务商拉到 {totalCount} 个模型；已添加的默认勾选；取消勾选会从当前优先级列表移除。
-        </p>
-        <label className="model-import-dialog__search">
-          <Search size={14} aria-hidden="true" />
-          <input
-            value={dialog.query}
-            placeholder="搜索模型 ID 或显示名"
-            aria-label="搜索模型"
-            disabled={dialog.applying}
-            onChange={(event) => onChange({ ...dialog, query: event.target.value })}
-          />
-        </label>
-        <div className="model-import-dialog__meta">
-          <span>已选 {selectedCount} 个</span>
-          <button
-            type="button"
-            disabled={dialog.applying || selectedCount === 0}
-            onClick={() => onChange({ ...dialog, selectedIds: [] })}
-          >
-            清空
-          </button>
-        </div>
-        <div className="model-import-dialog__list">
-          {filtered.length === 0 ? (
-            <p className="model-import-dialog__empty">没有匹配的模型</p>
-          ) : (
-            filtered.map((item) => {
-              const checked = dialog.selectedIds.includes(item.providerModelId);
-              return (
-                <label
-                  key={item.providerModelId}
-                  className={clsx('model-import-dialog__row', checked && 'is-checked')}
-                >
-                  <input
-                    type="checkbox"
-                    checked={checked}
-                    disabled={dialog.applying}
-                    onChange={() => toggleId(item.providerModelId)}
-                  />
-                  <span className="model-import-dialog__name">{item.displayName}</span>
-                  {item.alreadyAdded ? (
-                    <em className="model-import-dialog__badge">已添加</em>
-                  ) : null}
-                </label>
-              );
-            })
-          )}
-        </div>
-        <div className="model-import-dialog__footer">
-          <button type="button" disabled={dialog.applying} onClick={onClose}>
-            取消
-          </button>
-          <button type="button" className="is-primary" disabled={dialog.applying} onClick={onApply}>
-            {dialog.applying ? (
-              <>
-                <Loader2 size={14} className="model-settings-spin" /> 更新中…
-              </>
-            ) : (
-              `更新列表 (${selectedCount})`
-            )}
-          </button>
-        </div>
-      </div>
     </div>
   );
 }
@@ -3617,11 +4163,14 @@ function SavedCredentialRow({
   onRemove: () => void;
 }) {
   const [visible, setVisible] = useState(false);
-  const [revealing, setRevealing] = useState(false);
   const [value, setValue] = useState(stagedValue);
   const [baseline, setBaseline] = useState('');
   const revealTimer = useRef<number | null>(null);
   const revealGeneration = useRef(0);
+  const prefetchedRef = useRef<{ apiKey: string; expiresAt: string } | null>(null);
+  const prefetchPromiseRef = useRef<Promise<{ apiKey: string; expiresAt: string } | null> | null>(
+    null,
+  );
 
   const clearReveal = useCallback(() => {
     revealGeneration.current += 1;
@@ -3630,7 +4179,6 @@ function SavedCredentialRow({
       revealTimer.current = null;
     }
     setVisible(false);
-    setRevealing(false);
     // Keep staged draft if present; otherwise restore mask.
     setValue(stagedValue || '');
     setBaseline('');
@@ -3644,9 +4192,10 @@ function SavedCredentialRow({
       revealTimer.current = null;
     }
     setVisible(false);
-    setRevealing(false);
     setValue(stagedValue || '');
     setBaseline('');
+    prefetchedRef.current = null;
+    prefetchPromiseRef.current = null;
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional: only on identity change
   }, [credential.credentialRefId, providerId]);
 
@@ -3660,10 +4209,29 @@ function SavedCredentialRow({
   const valueRef = useRef(value);
   const baselineRef = useRef(baseline);
   const onStageRef = useRef(onStage);
+  const clearRevealRef = useRef(clearReveal);
   visibleRef.current = visible;
   valueRef.current = value;
   baselineRef.current = baseline;
   onStageRef.current = onStage;
+  clearRevealRef.current = clearReveal;
+
+  useEffect(() => {
+    if (!credential.hasSecret) {
+      prefetchedRef.current = null;
+      prefetchPromiseRef.current = null;
+      return;
+    }
+    let cancelled = false;
+    const promise = onReveal(providerId, credential.credentialRefId).then((result) => {
+      if (!cancelled && result?.apiKey) prefetchedRef.current = result;
+      return result;
+    });
+    prefetchPromiseRef.current = promise;
+    return () => {
+      cancelled = true;
+    };
+  }, [credential.credentialRefId, credential.hasSecret, onReveal, providerId]);
 
   useEffect(() => {
     const hide = () => {
@@ -3680,7 +4248,6 @@ function SavedCredentialRow({
         revealTimer.current = null;
       }
       setVisible(false);
-      setRevealing(false);
       setBaseline('');
     };
     const onVisibility = () => {
@@ -3693,6 +4260,31 @@ function SavedCredentialRow({
       document.removeEventListener('visibilitychange', onVisibility);
     };
   }, []);
+
+  const showPlaintext = (result: { apiKey: string; expiresAt: string }) => {
+    const generation = revealGeneration.current + 1;
+    revealGeneration.current = generation;
+    setValue(result.apiKey);
+    setBaseline(result.apiKey);
+    setVisible(true);
+    if (revealTimer.current !== null) window.clearTimeout(revealTimer.current);
+    const expiresMs = Date.parse(result.expiresAt);
+    const delay =
+      Number.isFinite(expiresMs) && expiresMs > Date.now()
+        ? Math.min(CREDENTIAL_REVEAL_MS, expiresMs - Date.now())
+        : CREDENTIAL_REVEAL_MS;
+    revealTimer.current = window.setTimeout(() => {
+      if (revealGeneration.current === generation) {
+        if (
+          valueRef.current.trim() &&
+          valueRef.current.trim() !== result.apiKey.trim()
+        ) {
+          onStageRef.current(valueRef.current);
+        }
+        clearRevealRef.current();
+      }
+    }, delay);
+  };
 
   const handleToggleReveal = async () => {
     if (visible) {
@@ -3713,28 +4305,15 @@ function SavedCredentialRow({
       setVisible(true);
       return;
     }
-    setRevealing(true);
-    const generation = revealGeneration.current + 1;
-    revealGeneration.current = generation;
-    const result = await onReveal(providerId, credential.credentialRefId);
-    if (revealGeneration.current !== generation) return;
-    setRevealing(false);
+    if (prefetchedRef.current?.apiKey) {
+      showPlaintext(prefetchedRef.current);
+      return;
+    }
+    const result = await (prefetchPromiseRef.current ??
+      onReveal(providerId, credential.credentialRefId));
     if (!result?.apiKey) return;
-    setValue(result.apiKey);
-    setBaseline(result.apiKey);
-    setVisible(true);
-    if (revealTimer.current !== null) window.clearTimeout(revealTimer.current);
-    const expiresMs = Date.parse(result.expiresAt);
-    const delay =
-      Number.isFinite(expiresMs) && expiresMs > Date.now()
-        ? Math.min(CREDENTIAL_REVEAL_MS, expiresMs - Date.now())
-        : CREDENTIAL_REVEAL_MS;
-    revealTimer.current = window.setTimeout(() => {
-      if (revealGeneration.current === generation) {
-        if (value.trim() && value.trim() !== result.apiKey.trim()) onStage(value);
-        clearReveal();
-      }
-    }, delay);
+    prefetchedRef.current = result;
+    showPlaintext(result);
   };
 
   const displayValue = visible
@@ -3754,7 +4333,7 @@ function SavedCredentialRow({
         spellCheck={false}
         value={displayValue}
         readOnly={!visible}
-        disabled={busy || revealing}
+        disabled={busy}
         placeholder={credential.hasSecret || stagedValue ? undefined : '未写入'}
         aria-label="API 密钥"
         onChange={(event) => {
@@ -3773,16 +4352,10 @@ function SavedCredentialRow({
         className="model-credential-row__eye"
         title={visible ? '隐藏密钥' : '显示密钥'}
         aria-label={visible ? '隐藏密钥' : '显示密钥'}
-        disabled={busy || revealing || (!credential.hasSecret && !stagedValue && !visible)}
+        disabled={busy || (!credential.hasSecret && !stagedValue && !visible)}
         onClick={() => void handleToggleReveal()}
       >
-        {revealing ? (
-          <Loader2 size={14} className="model-settings-spin" />
-        ) : visible ? (
-          <EyeOff size={14} />
-        ) : (
-          <Eye size={14} />
-        )}
+        {visible ? <EyeOff size={14} /> : <Eye size={14} />}
       </button>
       {canRemove ? (
         <button
@@ -3805,22 +4378,18 @@ function SavedCredentialRow({
 function SortableModelRow({
   model,
   index,
-  total,
   credentials,
   busy,
   onOpen,
-  onMove,
   onRemove,
   onPin,
   onSaveContext,
 }: {
   model: ProviderModelSummary;
   index: number;
-  total: number;
   credentials: ProviderSummary['credentials'];
   busy: boolean;
   onOpen: () => void;
-  onMove: (dir: -1 | 1) => void;
   onRemove: () => void;
   onPin: (credentialRefId: string | null) => void;
   onSaveContext: (contextWindow: number | null) => void;
@@ -3970,22 +4539,6 @@ function SortableModelRow({
       <div className="model-priority-row__actions">
         <button
           type="button"
-          title="提高优先级"
-          disabled={busy || index === 0}
-          onClick={() => onMove(-1)}
-        >
-          <ArrowUp size={12} />
-        </button>
-        <button
-          type="button"
-          title="降低优先级"
-          disabled={busy || index === total - 1}
-          onClick={() => onMove(1)}
-        >
-          <ArrowDown size={12} />
-        </button>
-        <button
-          type="button"
           className="is-danger"
           title="删除模型"
           disabled={busy}
@@ -4001,17 +4554,23 @@ function SortableModelRow({
 function ModelCapabilityIcon({ capability }: { capability: ModelCapabilityTag }) {
   switch (capability) {
     case 'text':
-      return <FileText size={16} aria-hidden="true" />;
+      return <FileText size={14} aria-hidden="true" />;
     case 'vision':
-      return <Eye size={16} aria-hidden="true" />;
+      return <Eye size={14} aria-hidden="true" />;
+    case 'document':
+      return <FileText size={14} aria-hidden="true" />;
+    case 'video':
+      return <Video size={14} aria-hidden="true" />;
+    case 'thinking':
+      return <Brain size={14} aria-hidden="true" />;
     case 'tool-calling':
-      return <Wrench size={16} aria-hidden="true" />;
+      return <Wrench size={14} aria-hidden="true" />;
     case 'web-search':
-      return <Globe2 size={16} aria-hidden="true" />;
+      return <Globe2 size={14} aria-hidden="true" />;
     case 'image-generation':
-      return <Image size={16} aria-hidden="true" />;
+      return <Image size={14} aria-hidden="true" />;
     case 'embeddings':
-      return <Database size={16} aria-hidden="true" />;
+      return <Database size={14} aria-hidden="true" />;
   }
 }
 
@@ -4025,9 +4584,7 @@ function describeCapabilityDialogError(error: unknown, fallback: string): string
   if (/Invalid confirm-capabilities payload/i.test(raw)) {
     return '保存失败：当前勾选的能力无法提交。请重新勾选后再保存。';
   }
-  const ipc = raw.match(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?(.*)$/u);
-  if (ipc?.[1]) return ipc[1];
-  return raw;
+  return formatRuntimeIpcError(error, fallback);
 }
 
 function ModelCapabilityDialog({
@@ -4036,6 +4593,7 @@ function ModelCapabilityDialog({
   onClose,
   onProbe,
   onConfirm,
+  onSaveContext,
 }: {
   provider: ProviderSummary;
   model: ProviderModelSummary | null;
@@ -4045,6 +4603,7 @@ function ModelCapabilityDialog({
     modelId: string,
     capabilities: ModelCapabilityTag[],
   ) => Promise<ProviderModelSummary>;
+  onSaveContext: (contextWindow: number | null) => void;
 }) {
   const [draft, setDraft] = useState<ModelCapabilityTag[]>(() => [
     ...(model?.capabilities ?? []),
@@ -4053,6 +4612,19 @@ function ModelCapabilityDialog({
     'idle',
   );
   const [notice, setNotice] = useState<string | null>(null);
+  /** 实测明细：runtime 返回的逐项成败（results）与原因（reasons）。 */
+  const [probeDetail, setProbeDetail] = useState<CapabilityProbeSuggestion | null>(null);
+  const [editingContext, setEditingContext] = useState(false);
+  const [contextDraft, setContextDraft] = useState('');
+
+  useEffect(() => {
+    if (!editingContext) {
+      const current = model?.contextWindow;
+      setContextDraft(
+        current && current > 0 ? (formatContext(current) ?? String(current)) : '',
+      );
+    }
+  }, [model?.contextWindow, editingContext]);
 
   if (!model) return null;
 
@@ -4074,17 +4646,62 @@ function ModelCapabilityDialog({
     );
     setPhase('idle');
     setNotice(null);
+    setProbeDetail(null);
+  };
+
+  /** NewMax `capabilityRestoreDetected`：把草稿恢复到已保存的能力集。 */
+  const restoreDraft = () => {
+    if (busy) return;
+    setDraft([...(model.capabilities ?? [])]);
+    setPhase('idle');
+    setNotice(null);
+    setProbeDetail(null);
+  };
+
+  /** NewMax `capabilityButtons`：一个能力开关胶囊。选中=实心，未选=纯文字。 */
+  const renderCapabilityButton = (option: (typeof MODEL_CAPABILITY_OPTIONS)[number]) => {
+    const active = draft.includes(option.value);
+    return (
+      <button
+        key={option.value}
+        type="button"
+        className={clsx('model-capability-dialog__capability', active && 'is-active')}
+        aria-pressed={active}
+        aria-label={`${option.label}：${active ? '支持' : '未标记'}`}
+        title={option.description}
+        disabled={busy}
+        onClick={() => toggleCapability(option.value)}
+      >
+        <ModelCapabilityIcon capability={option.value} />
+        <span>{option.label}</span>
+      </button>
+    );
   };
 
   const runProbe = async () => {
     setPhase('probing');
-    setNotice('正在按模型名称和 API 格式做本地推断');
+    setProbeDetail(null);
+    setNotice('正在向当前接口发送实测请求…');
     try {
       const suggestion = await onProbe(model.modelId);
       setDraft([...suggestion.capabilities]);
+      setProbeDetail(suggestion);
       setPhase('success');
+      const count = suggestion.capabilities.length;
+      const results = suggestion.results ?? {};
+      const passed = Object.values(results).filter(Boolean).length;
+      const failed = Object.values(results).length - passed;
+      const undeterminedCount = (suggestion.undetermined ?? []).length;
       setNotice(
-        `检测完成：按协议和模型名推断出 ${suggestion.capabilities.length} 项能力（本地启发式，未向接口发探测请求）。请核对后保存。`,
+        suggestion.source === 'live'
+          ? count > 0
+            ? `检测完成：已向接口实测，建议勾选 ${count} 项。请核对后保存。`
+            : `检测完成：${passed} 项实测通过、${failed} 项未通过${
+                undeterminedCount > 0
+                  ? `、${undeterminedCount} 项未判定（请求没打到模型，不代表模型没这个能力）`
+                  : ''
+              }。详见下方实测明细。`
+          : `检测完成：按协议和模型名推断出 ${count} 项能力。请核对后保存。`,
       );
     } catch (error) {
       setPhase('error');
@@ -4097,14 +4714,38 @@ function ModelCapabilityDialog({
     setPhase('saving');
     setNotice('正在保存能力配置');
     try {
-      const updated = await onConfirm(model.modelId, draft);
-      setDraft([...updated.capabilities]);
-      setPhase('success');
-      setNotice('能力配置已确认并保存');
+      await onConfirm(model.modelId, draft);
+      // Save succeeded → close immediately. Errors keep the dialog open for retry.
+      onClose();
     } catch (error) {
       setPhase('error');
       setNotice(describeCapabilityDialogError(error, '保存失败，请重试'));
     }
+  };
+
+  const commitContextWindow = () => {
+    setEditingContext(false);
+    const raw = contextDraft.trim();
+    if (!raw) {
+      if (model.contextWindow) onSaveContext(null);
+      return;
+    }
+    const parsed = parseContextTokens(raw);
+    if (parsed === null) {
+      const current = model.contextWindow;
+      setContextDraft(
+        current && current > 0 ? (formatContext(current) ?? String(current)) : '',
+      );
+      return;
+    }
+    if (parsed === model.contextWindow) return;
+    onSaveContext(parsed);
+  };
+
+  const applyContextPreset = (tokens: number) => {
+    setEditingContext(false);
+    if (tokens === model.contextWindow) return;
+    onSaveContext(tokens);
   };
 
   return (
@@ -4125,13 +4766,44 @@ function ModelCapabilityDialog({
         >
         <header className="model-capability-dialog__header">
           <span className="model-capability-dialog__model-icon">
-            <Cpu size={18} aria-hidden="true" />
+            <ProviderBrandIcon
+              providerId={provider.providerId}
+              providerName={provider.name}
+              testIdPrefix="model-capability-provider-icon"
+            />
           </span>
           <div className="model-capability-dialog__identity">
             <RadixDialog.Title>{title}</RadixDialog.Title>
             <RadixDialog.Description>
               {provider.name} / {model.providerModelId}
             </RadixDialog.Description>
+          </div>
+          {/* NewMax `model-editor-global-actions`：恢复检测结果 + 检测模型能力 */}
+          <div className="model-capability-dialog__header-actions">
+            {draftChanged ? (
+              <button
+                type="button"
+                className="model-capability-dialog__action is-tertiary"
+                disabled={busy}
+                onClick={restoreDraft}
+              >
+                <RotateCcw size={14} aria-hidden="true" />
+                恢复检测结果
+              </button>
+            ) : null}
+            <button
+              type="button"
+              className="model-capability-dialog__action is-secondary"
+              disabled={busy}
+              onClick={() => void runProbe()}
+            >
+              {phase === 'probing' ? (
+                <Loader2 size={14} className="model-settings-spin" aria-hidden="true" />
+              ) : (
+                <Zap size={14} aria-hidden="true" />
+              )}
+              检测模型能力
+            </button>
           </div>
           <span
             className={clsx(
@@ -4154,69 +4826,134 @@ function ModelCapabilityDialog({
         </header>
 
         <div className="model-capability-dialog__body">
-          <dl className="model-capability-dialog__facts">
-            <div>
-              <dt>API 格式</dt>
-              <dd>{protocolLabel}</dd>
+          {/* NewMax `contextWindowTitle` 区块：常驻输入框 + 预设胶囊 + 说明行 */}
+          <section className="model-capability-dialog__field">
+            <span className="model-capability-dialog__field-label">上下文窗口</span>
+            <div className="model-capability-dialog__context-row">
+              <input
+                className="st-field-input model-capability-dialog__context-input"
+                type="text"
+                inputMode="decimal"
+                value={contextDraft}
+                disabled={busy}
+                placeholder="例如 128 / 128k / 1M"
+                aria-label={`${title} 上下文窗口（tokens）`}
+                title="上下文窗口，单位 tokens（支持 128k / 256k / 1m）"
+                onChange={(event) => setContextDraft(event.target.value)}
+                onBlur={() => commitContextWindow()}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault();
+                    commitContextWindow();
+                  } else if (event.key === 'Escape') {
+                    setContextDraft(formatContext(model.contextWindow) ?? '');
+                  }
+                }}
+              />
+              <div className="model-capability-dialog__context-presets">
+                {CONTEXT_WINDOW_PRESETS.map((preset) => (
+                  <button
+                    key={preset}
+                    type="button"
+                    disabled={busy}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => applyContextPreset(preset)}
+                  >
+                    {formatContext(preset)}
+                  </button>
+                ))}
+              </div>
             </div>
-            <div>
-              <dt>上下文窗口</dt>
-              <dd>{formatContext(model.contextWindow) ?? '未设置'}</dd>
+            <p className="model-capability-dialog__field-helper">{CONTEXT_WINDOW_HELPER}</p>
+          </section>
+
+          <p className="model-capability-dialog__meta">
+            <span>API 格式 {protocolLabel}</span>
+            <span>优先级 {modelRankLabel(model.priority)}</span>
+          </p>
+
+          {/* NewMax `capabilityTitle` 区块：四项输入模态，选中即深色实心胶囊 */}
+          <section className="model-capability-dialog__section">
+            <div className="model-capability-dialog__section-head">
+              <h3>能力支持</h3>
+              <span>
+                {PRIMARY_CAPABILITY_OPTIONS.filter((option) => draft.includes(option.value)).length}{' '}
+                / {PRIMARY_CAPABILITY_OPTIONS.length}
+              </span>
             </div>
-            <div>
-              <dt>优先级</dt>
-              <dd>{modelRankLabel(model.priority)}</dd>
+            <div className="model-capability-dialog__chips" aria-busy={phase === 'probing'}>
+              {PRIMARY_CAPABILITY_OPTIONS.map(renderCapabilityButton)}
             </div>
-          </dl>
+            <p className="model-capability-dialog__field-helper">
+              勾选表示该模型能直接接收这类输入。未勾选时，发送会按运行时能力路由；需要
+              提取文字或理解画面时，可由模型主动调用对应工具 —— 不会因为这里没勾就发不出请求。
+            </p>
+          </section>
 
           <section className="model-capability-dialog__section">
             <div className="model-capability-dialog__section-head">
-              <div>
-                <h3>模型能力</h3>
-                <p>
-                  检测按模型名称和 API 格式做本地推断，不会向接口发真实探测请求。结果是建议值，点选修正后保存才会生效。
-                </p>
+              <h3>检测结果</h3>
+              {probeDetail ? (
+                <span>
+                  {Object.values(probeDetail.results ?? {}).filter(Boolean).length} /{' '}
+                  {Object.keys(probeDetail.results ?? {}).length} 项通过
+                  {(probeDetail.undetermined ?? []).length > 0
+                    ? ` · ${(probeDetail.undetermined ?? []).length} 项未判定`
+                    : ''}
+                </span>
+              ) : null}
+            </div>
+            {probeDetail ? (
+              <div className="model-capability-dialog__probe-detail">
+                {Object.keys(probeDetail.results ?? {}).length > 0 ||
+                (probeDetail.undetermined ?? []).length > 0 ? (
+                  <ul className="model-capability-dialog__probe-results">
+                    {MODEL_CAPABILITY_OPTIONS.map((option) => {
+                      const value = probeDetail.results?.[option.value];
+                      // 三态：true = 实测通过 / false = 模型答复了但拒绝 / 只在
+                      // undetermined 里 = 请求根本没打到模型。后两者必须分开显示，
+                      // 否则一次网络抖动看起来就像「模型没有这个能力」。
+                      const undetermined = (probeDetail.undetermined ?? []).includes(option.value);
+                      if (value === undefined && !undetermined) return null;
+                      const state = value === true ? 'pass' : value === false ? 'fail' : 'unknown';
+                      return (
+                        <li
+                          key={option.value}
+                          className={
+                            state === 'pass'
+                              ? 'is-pass'
+                              : state === 'fail'
+                                ? 'is-fail'
+                                : 'is-undetermined'
+                          }
+                          data-state={state}
+                          title={option.description}
+                        >
+                          {state === 'pass' ? (
+                            <Check size={12} aria-hidden="true" />
+                          ) : state === 'fail' ? (
+                            <X size={12} aria-hidden="true" />
+                          ) : (
+                            <Minus size={12} aria-hidden="true" />
+                          )}
+                          <span>{option.label}</span>
+                          <em>
+                            {state === 'pass' ? '实测通过' : state === 'fail' ? '未通过' : '未判定'}
+                          </em>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                ) : null}
+                {probeDetail.reasons.length > 0 ? (
+                  <ul className="model-capability-dialog__probe-reasons">
+                    {probeDetail.reasons.map((reason, index) => (
+                      <li key={`${index}-${reason}`}>{reason}</li>
+                    ))}
+                  </ul>
+                ) : null}
               </div>
-              <span>
-                {draft.length} / {MODEL_CAPABILITY_OPTIONS.length}
-              </span>
-            </div>
-            <div
-              className={clsx(
-                'model-capability-dialog__grid',
-                phase === 'probing' && 'is-probing',
-              )}
-              aria-busy={phase === 'probing'}
-            >
-              {MODEL_CAPABILITY_OPTIONS.map((option) => {
-                const active = draft.includes(option.value);
-                return (
-                  <button
-                    key={option.value}
-                    type="button"
-                    className={clsx(
-                      'model-capability-dialog__capability',
-                      active && 'is-active',
-                    )}
-                    aria-pressed={active}
-                    aria-label={`${option.label}：${active ? '支持' : '未标记'}`}
-                    disabled={busy}
-                    onClick={() => toggleCapability(option.value)}
-                  >
-                    <span className="model-capability-dialog__capability-icon">
-                      <ModelCapabilityIcon capability={option.value} />
-                    </span>
-                    <span className="model-capability-dialog__capability-copy">
-                      <strong>{option.label}</strong>
-                      <small>{option.description}</small>
-                    </span>
-                    <span className="model-capability-dialog__capability-check">
-                      {active ? <Check size={12} aria-hidden="true" /> : null}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
+            ) : null}
             {notice ? (
               <p
                 className={clsx(
@@ -4283,7 +5020,7 @@ function ModelCapabilityDialog({
             </button>
           </div>
         </footer>
-        </RadixDialog.Content>
+      </RadixDialog.Content>
       </RadixDialog.Portal>
     </RadixDialog.Root>
   );
@@ -4337,23 +5074,88 @@ function VisionFallbackPanel({
   value,
   busy,
   onChange,
+  onProbe,
 }: {
   allModels: Array<{
     modelId: string;
     providerModelId: string;
     displayName: string;
     providerName: string;
+    providerId: string;
     enabled: boolean;
     capabilities: readonly string[];
     capabilitiesConfirmed: boolean;
+    visionCapability?: boolean | null;
+    visionProbeReason?: string | null;
   }>;
   value: VisionFallbackSetting;
   busy: boolean;
   onChange(value: VisionFallbackSetting): void;
+  onProbe(
+    providerId: string,
+    modelId: string,
+    options?: { visionOnly?: boolean },
+  ): Promise<CapabilityProbeSuggestion>;
 }) {
   const options = allModels.filter(
     (model) => model.enabled && modelCanServeAsVisionFallback(model),
   );
+  // 与 NewMax 的 VisionFallbackPanel 同形：把「已验证的视觉模型」与「还没验证的候选」
+  // 区分开，一次扫描所有候选，结果逐行给出校验码成败与原因。
+  const [scan, setScan] = useState<{ done: number; total: number } | null>(null);
+  const [scanRows, setScanRows] = useState<
+    Array<{ modelId: string; label: string; ok: boolean | undefined; reason: string }>
+  >([]);
+
+  const runScan = useCallback(async () => {
+    if (scan || options.length === 0) return;
+    const collected: Array<{
+      modelId: string;
+      label: string;
+      ok: boolean | undefined;
+      reason: string;
+    }> = [];
+    setScanRows([]);
+    setScan({ done: 0, total: options.length });
+    let cursor = 0;
+    let done = 0;
+    // 与 NewMax 的 runVisionScan 相同的 3 worker 并发池。
+    const worker = async () => {
+      while (true) {
+        const index = cursor++;
+        if (index >= options.length) return;
+        const option = options[index]!;
+        const label = `${option.displayName} · ${option.providerName}`;
+        try {
+          const suggestion = await onProbe(option.providerId, option.modelId, { visionOnly: true });
+          const visionReason =
+            suggestion.reasons.find(
+              (reason) => reason.includes('图片') || reason.includes('校验码'),
+            ) ?? '';
+          collected.push({
+            modelId: option.modelId,
+            label,
+            ok: suggestion.results?.vision,
+            reason: visionReason,
+          });
+        } catch (error) {
+          // 请求本身失败（网络 / 鉴权 / 超时）说明不了模型支不支持图片，
+          // 保持「未判定」而不是打成「未通过」。
+          collected.push({
+            modelId: option.modelId,
+            label,
+            ok: undefined,
+            reason: error instanceof Error ? error.message : '检测失败',
+          });
+        }
+        done++;
+        setScan({ done, total: options.length });
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(3, options.length) }, worker));
+    setScanRows(collected);
+    setScan(null);
+  }, [onProbe, options, scan]);
   return (
     <div className="model-strategy-panel">
       <div className="model-strategy-panel__head">
@@ -4373,25 +5175,80 @@ function VisionFallbackPanel({
       </div>
       <div className="model-strategy-panel__fields">
         <Field label="视觉模型">
-          <select
-            className="st-field-input"
+          <ModelListSelect
+            label="视觉模型"
             value={value.modelId ?? ''}
-            disabled={busy || !value.enabled || options.length === 0}
-            onChange={(event) => onChange({ ...value, modelId: event.target.value || null })}
-          >
-            <option value="">选择视觉模型…</option>
-            {options.map((model) => (
-              <option key={model.modelId} value={model.modelId}>
-                {model.displayName} · {model.providerName}
-              </option>
-            ))}
-          </select>
+            placeholder="选择视觉模型…"
+            disabled={!value.enabled || options.length === 0}
+            options={options.map((model) => ({
+              value: model.modelId,
+              label: `${model.displayName} · ${model.providerName}`,
+              render: (
+                <span className="model-fallback-option">
+                  <ProviderBrandIcon
+                    providerId={model.providerId}
+                    providerName={model.providerName}
+                    testIdPrefix="fallback-provider-icon"
+                  />
+                  <span className="model-fallback-option__provider">{model.providerName}</span>
+                  <span className="model-fallback-option__model">{model.displayName}</span>
+                  {model.capabilitiesConfirmed && model.capabilities.includes('vision') ? (
+                    <span className="model-fallback-option__verified">通道已验证</span>
+                  ) : null}
+                </span>
+              ),
+            }))}
+            onChange={(modelId) => {
+              const selected = options.find((model) => model.modelId === modelId);
+              onChange({
+                ...value,
+                providerId: selected?.providerId ?? null,
+                modelId: modelId || null,
+              });
+            }}
+          />
         </Field>
         <p className="model-strategy-panel__hint">
           {options.length > 0
             ? '仅显示已启用且支持图片输入的模型；更改会立即保存。'
-            : '当前没有已启用且支持图片输入的模型，文本模型会自动使用 Windows OCR。'}
+            : '当前没有已启用且已验证的图片模型；文本模型可在需要时主动调用 Windows OCR。'}
         </p>
+        {options.length > 0 ? (
+          <div className="model-strategy-panel__scan">
+            <div className="model-strategy-panel__scan-head">
+              <button
+                type="button"
+                className="model-strategy-panel__scan-button"
+                disabled={scan !== null}
+                onClick={() => void runScan()}
+              >
+                {scan ? `扫描中 ${scan.done}/${scan.total}` : '扫描视觉能力'}
+              </button>
+              <span className="model-strategy-panel__scan-caption">
+                逐个候选发一张带校验码的测试图，只有真读出校验码才算通过。
+              </span>
+            </div>
+            {scanRows.length > 0 ? (
+              <ul className="model-strategy-panel__scan-list">
+                {scanRows.map((row) => (
+                  <li
+                    key={row.modelId}
+                    className="model-strategy-panel__scan-row"
+                    data-ok={row.ok === true ? 'true' : row.ok === false ? 'false' : 'unknown'}
+                  >
+                    <span className="model-strategy-panel__scan-name">{row.label}</span>
+                    <span className="model-strategy-panel__scan-state">
+                      {row.ok === true ? '✓ 已验证' : row.ok === false ? '未通过' : '未判定'}
+                    </span>
+                    {row.reason ? (
+                      <span className="model-strategy-panel__scan-reason">{row.reason}</span>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </div>
+        ) : null}
       </div>
     </div>
   );
@@ -4434,13 +5291,29 @@ function modelCanServeAsVisionFallback(model: {
   providerModelId: string;
   capabilities: readonly string[];
   capabilitiesConfirmed: boolean;
+  visionCapability?: boolean | null;
 }): boolean {
+  if (model.visionCapability === true) return true;
+  if (model.visionCapability === false) return false;
   if (model.capabilitiesConfirmed) return model.capabilities.includes('vision');
   if (model.capabilities.includes('vision')) return true;
   const id = model.providerModelId.trim();
-  return /gpt-4o|gpt-4\.1|gpt-5|\bo[34]\b|\bo[45]-|grok|gemini|claude|-vl\b|\/vl\d|vision|pixtral|llava|internvl/i.test(
-    id,
-  );
+  // Match NewMax's candidate list: known text-only families are excluded,
+  // while unverified/unknown models remain selectable for a later scan.
+  if (
+    /^deepseek-/i.test(id) ||
+    /^glm-(?:5(?:$|-)|5\.[123](?:$|[-[])|4\.7(?:$|-)|4\.5-air(?:$|-))/i.test(id) ||
+    /^qwen3(?:\.6-max|[-.]max)(?:$|-)/i.test(id) ||
+    /^minimax-m2(?:$|[.-])/i.test(id) ||
+    /^step-3\.5(?:$|-)/i.test(id) ||
+    /^gpt-5\.3-codex-spark(?:$|[._-])/i.test(id) ||
+    /^gpt-5\.3-codex(?:$|[._-])/i.test(id) ||
+    /^gpt-oss(?:$|[._-])/i.test(id) ||
+    /^gemini-.*extra-low(?:$|[._-])/i.test(id)
+  ) {
+    return false;
+  }
+  return true;
 }
 
 function PlanActPanel({
@@ -4479,68 +5352,62 @@ function PlanActPanel({
       </div>
       <div className="model-strategy-panel__fields">
         <Field label="规划模型">
-          <select
-            className="st-field-input"
+          <ModelListSelect
+            label="规划模型"
             value={value.planModelId ?? ''}
-            disabled={busy || !value.enabled}
-            onChange={(event) => onChange({ ...value, planModelId: event.target.value || null })}
-          >
-            <option value="">选择规划模型…</option>
-            {options.map((model) => (
-              <option key={model.modelId} value={model.modelId}>
-                {model.displayName} · {model.providerName}
-              </option>
-            ))}
-          </select>
+            placeholder="选择规划模型…"
+            disabled={!value.enabled}
+            options={options.map((model) => ({
+              value: model.modelId,
+              label: `${model.displayName} · ${model.providerName}`,
+            }))}
+            onChange={(planModelId) => onChange({ ...value, planModelId: planModelId || null })}
+          />
         </Field>
         <Field label="执行模型">
-          <select
-            className="st-field-input"
+          <ModelListSelect
+            label="执行模型"
             value={value.actModelId ?? ''}
-            disabled={busy || !value.enabled}
-            onChange={(event) => onChange({ ...value, actModelId: event.target.value || null })}
-          >
-            <option value="">选择执行模型…</option>
-            {options.map((model) => (
-              <option key={model.modelId} value={model.modelId}>
-                {model.displayName} · {model.providerName}
-              </option>
-            ))}
-          </select>
+            placeholder="选择执行模型…"
+            disabled={!value.enabled}
+            options={options.map((model) => ({
+              value: model.modelId,
+              label: `${model.displayName} · ${model.providerName}`,
+            }))}
+            onChange={(actModelId) => onChange({ ...value, actModelId: actModelId || null })}
+          />
         </Field>
         <Field label="规划思考强度">
-          <select
-            className="st-field-input"
+          <ModelListSelect
+            label="规划思考强度"
             value={value.planReasoningEffort ?? ''}
-            disabled={busy || !value.enabled}
-            onChange={(event) =>
-              onChange({ ...value, planReasoningEffort: event.target.value || null })
+            placeholder="跟随对话设置"
+            disabled={!value.enabled}
+            emptyOption={{ value: '', label: '跟随对话设置' }}
+            options={REASONING_OPTIONS.map((option) => ({
+              value: option.value,
+              label: option.title,
+            }))}
+            onChange={(planReasoningEffort) =>
+              onChange({ ...value, planReasoningEffort: planReasoningEffort || null })
             }
-          >
-            <option value="">跟随对话设置</option>
-            {REASONING_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.title}
-              </option>
-            ))}
-          </select>
+          />
         </Field>
         <Field label="执行思考强度">
-          <select
-            className="st-field-input"
+          <ModelListSelect
+            label="执行思考强度"
             value={value.actReasoningEffort ?? ''}
-            disabled={busy || !value.enabled}
-            onChange={(event) =>
-              onChange({ ...value, actReasoningEffort: event.target.value || null })
+            placeholder="跟随对话设置"
+            disabled={!value.enabled}
+            emptyOption={{ value: '', label: '跟随对话设置' }}
+            options={REASONING_OPTIONS.map((option) => ({
+              value: option.value,
+              label: option.title,
+            }))}
+            onChange={(actReasoningEffort) =>
+              onChange({ ...value, actReasoningEffort: actReasoningEffort || null })
             }
-          >
-            <option value="">跟随对话设置</option>
-            {REASONING_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.title}
-              </option>
-            ))}
-          </select>
+          />
         </Field>
         <p className="model-strategy-panel__hint">
           规划模式强制使用规划模型；批准方案后的执行轮强制执行模型（含思考强度）；普通对话消息不干预，手动选择的模型照常生效。
@@ -4552,11 +5419,64 @@ function PlanActPanel({
 
 // ─── Usage stats ─────────────────────────────────────────────────────────────
 
-export function UsageSettings() {
+function UsageRangeControls({
+  sinceDays,
+  refreshing,
+  onChange,
+  onRefresh,
+}: {
+  sinceDays: number | undefined;
+  refreshing: boolean;
+  onChange: (value: number | undefined) => void;
+  onRefresh: () => void;
+}) {
+  return (
+    <div className="usage-toolbar-actions">
+      <div className="usage-range" role="group" aria-label="统计时间范围">
+        {(
+          [
+            [1, '24h'],
+            [7, '近 7 天'],
+            [30, '近 30 天'],
+            [undefined, '全部'],
+          ] as const
+        ).map(([value, label]) => (
+          <button
+            key={String(value)}
+            type="button"
+            className={sinceDays === value ? 'is-active' : undefined}
+            onClick={() => onChange(value)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      <button
+        type="button"
+        className="usage-refresh"
+        title="刷新"
+        aria-label="刷新"
+        disabled={refreshing}
+        onClick={onRefresh}
+      >
+        <RefreshCw size={13} className={refreshing ? 'animate-spin' : undefined} />
+      </button>
+    </div>
+  );
+}
+
+export function UsageSettings({
+  sinceDays,
+  reloadToken,
+  onRefreshingChange,
+}: {
+  sinceDays: number | undefined;
+  reloadToken: number;
+  onRefreshingChange?: (busy: boolean) => void;
+}) {
   const [data, setData] = useState<UsageSummaryResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [sinceDays, setSinceDays] = useState<number | undefined>(7);
   const [usageTab, setUsageTab] = useState<
     'requests' | 'providers' | 'models' | 'tools' | 'pricing'
   >('requests');
@@ -4565,29 +5485,39 @@ export function UsageSettings() {
   const [pricingDraft, setPricingDraft] = useState<PricingDraft | null>(null);
   const [editingPricingId, setEditingPricingId] = useState<string | null>(null);
   const [savingPricing, setSavingPricing] = useState(false);
+  const hasDataRef = useRef(false);
+  const onRefreshingChangeRef = useRef(onRefreshingChange);
+  onRefreshingChangeRef.current = onRefreshingChange;
 
   const load = useCallback(async () => {
     const api = bridge();
     if (!api?.getUsageSummary) {
       setError('Runtime 未连接，无法加载用量');
       setLoading(false);
+      onRefreshingChangeRef.current?.(false);
       return;
     }
-    setLoading(true);
+    const silent = hasDataRef.current;
+    if (!silent) setLoading(true);
     setError(null);
+    onRefreshingChangeRef.current?.(silent);
     try {
       const res = await api.getUsageSummary(sinceDays ? { sinceDays } : {});
       setData(res);
+      hasDataRef.current = true;
     } catch (e) {
-      setError(e instanceof Error ? e.message : '加载用量失败');
+      if (!hasDataRef.current) {
+        setError(e instanceof Error ? e.message : '加载用量失败');
+      }
     } finally {
       setLoading(false);
+      onRefreshingChangeRef.current?.(false);
     }
   }, [sinceDays]);
 
   useEffect(() => {
     void load();
-  }, [load]);
+  }, [load, reloadToken]);
 
   const savePricing = useCallback(
     async (nextPricing: ModelPricingEntry[]) => {
@@ -4608,7 +5538,7 @@ export function UsageSettings() {
     [load],
   );
 
-  if (loading) {
+  if (loading && !data) {
     return (
       <div className="usage-settings-state">
         <Loader2 size={16} className="animate-spin" />
@@ -4617,7 +5547,7 @@ export function UsageSettings() {
     );
   }
 
-  if (error) {
+  if (error && !data) {
     return (
       <div className="usage-settings-state is-error">
         <p>{error}</p>
@@ -4663,7 +5593,19 @@ export function UsageSettings() {
     },
     { requests: 0, inputTokens: 0, readTokens: 0 },
   );
-  const totalCostLabel = formatCurrencyTotals(data?.totalCostByCurrency ?? {});
+  const totalCostLabel = formatCurrencyTotalsKpi(data?.totalCostByCurrency ?? {});
+  const cacheHitRequests = requests.filter(
+    (request) => typeof request.cachedTokensHit === 'number' && request.cachedTokensHit > 0,
+  ).length;
+  const cacheReportedRequests = requests.filter(
+    (request) => typeof request.cachedTokensHit === 'number',
+  ).length;
+  const tokenHitRate =
+    cacheReadReported.requests > 0 && cacheReadReported.inputTokens > 0
+      ? formatRate(cacheReadReported.readTokens, cacheReadReported.inputTokens)
+      : '-';
+  const requestHitRate =
+    cacheReportedRequests > 0 ? formatRate(cacheHitRequests, cacheReportedRequests) : '-';
   const totalToolCalls = tools.reduce((sum, row) => sum + row.calls, 0);
   const totalToolSuccesses = tools.reduce((sum, row) => sum + row.successes, 0);
   const totalToolFailures = tools.reduce((sum, row) => sum + row.failures, 0);
@@ -4703,60 +5645,24 @@ export function UsageSettings() {
 
   return (
     <div className="usage-settings">
-      <div className="usage-toolbar">
-        <div className="usage-toolbar-copy">
-          <span>用量概览</span>
-          <small>按时间范围查看请求、费用与缓存效率</small>
-        </div>
-        <div className="usage-toolbar-actions">
-          <div className="usage-range" role="group" aria-label="统计时间范围">
-            {[
-              [1, '24h'],
-              [7, '近 7 天'],
-              [30, '近 30 天'],
-              [undefined, '全部'],
-            ].map(([value, label]) => (
-              <button
-                key={String(value)}
-                type="button"
-                className={sinceDays === value ? 'is-active' : undefined}
-                onClick={() => setSinceDays(value as number | undefined)}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-          <button type="button" className="usage-refresh" title="刷新" onClick={() => void load()}>
-            <RefreshCw size={13} />
-          </button>
-        </div>
-      </div>
-
       <div className="usage-metrics">
         <UsageMetric label="总请求" value={formatCount(data?.totalRequests ?? 0)} />
-        <UsageMetric label="总费用" value={totalCostLabel} hint="以模型供应商最终结算为准" />
+        <UsageMetric
+          label="总费用"
+          value={totalCostLabel}
+          hint="授权登录使用订阅额度，不计入总费用；其他费用以供应商最终结算为准"
+        />
         <UsageMetric
           label="总 Token"
           value={formatTokenCount(totalUsageTokens.totalTokens)}
-          hint={
-            <span className="usage-metric-chips">
-              <span>普通输入 {formatTokenCount(totalUsageTokens.inputTokens)}</span>
-              <span>缓存读取 {formatTokenCount(totalUsageTokens.cacheReadTokens)}</span>
-              <span>缓存创建 {formatTokenCount(totalUsageTokens.cacheWriteTokens)}</span>
-              <span>输出 {formatTokenCount(totalUsageTokens.outputTokens)}</span>
-            </span>
-          }
+          hint={`输入 ${formatTokenCount(totalUsageTokens.totalInputTokens)} / 输出 ${formatTokenCount(totalUsageTokens.outputTokens)}`}
         />
         <UsageMetric
           label="缓存命中率"
-          value={
-            cacheReadReported.requests > 0 && cacheReadReported.inputTokens > 0
-              ? formatRate(cacheReadReported.readTokens, cacheReadReported.inputTokens)
-              : '-'
-          }
+          value={tokenHitRate === '-' ? '-' : `按 Token ${tokenHitRate}`}
           hint={
             hasCacheUsage
-              ? `读取 ${formatTokenCount(totalUsageTokens.cacheReadTokens)} · 创建 ${formatTokenCount(totalUsageTokens.cacheWriteTokens)} · ${cacheReadReported.requests}/${requests.length} 条已上报`
+              ? `按请求 ${requestHitRate} · 命中 ${formatTokenCount(totalUsageTokens.cacheReadTokens)} / 创建 ${formatTokenCount(totalUsageTokens.cacheWriteTokens)}`
               : '当前供应商未返回缓存用量'
           }
         />
@@ -4789,18 +5695,28 @@ export function UsageSettings() {
             <input
               value={modelQuery}
               onChange={(event) => setModelQuery(event.target.value)}
-              placeholder="按模型或供应商筛选…"
+              placeholder="按模型筛选..."
               aria-label="按模型筛选"
             />
-            <select
-              value={statusFilter}
-              aria-label="请求状态"
-              onChange={(event) => setStatusFilter(event.target.value as typeof statusFilter)}
-            >
-              <option value="all">全部状态</option>
-              <option value="success">成功</option>
-              <option value="failed">失败</option>
-            </select>
+            <div className="usage-status-filter" role="group" aria-label="请求状态">
+              {(
+                [
+                  ['all', '全部'],
+                  ['success', '成功'],
+                  ['failed', '失败'],
+                ] as const
+              ).map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  aria-pressed={statusFilter === value}
+                  className={statusFilter === value ? 'is-active' : undefined}
+                  onClick={() => setStatusFilter(value)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
             <span className="usage-record-count">共 {visibleRequests.length} 条记录</span>
           </div>
           <UsageRequestTable rows={visibleRequests} />
@@ -4952,8 +5868,88 @@ function aggregateUsageByProvider(
     .sort((left, right) => right.tokensIn + right.tokensOut - (left.tokensIn + left.tokensOut));
 }
 
+function UsageTokenTip({
+  inputTokens,
+  outputTokens,
+  totalTokens,
+  cacheReadTokens,
+  cacheWriteTokens,
+}: {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+}) {
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = useState(false);
+  const [coords, setCoords] = useState({ top: 0, left: 0 });
+
+  const show = () => {
+    const rect = buttonRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    setCoords({ top: rect.bottom + 8, left: rect.left + rect.width / 2 });
+    setOpen(true);
+  };
+
+  return (
+    <>
+      <button
+        ref={buttonRef}
+        type="button"
+        className="usage-token-tip"
+        aria-label="Token 明细"
+        aria-expanded={open}
+        onMouseEnter={show}
+        onMouseLeave={() => setOpen(false)}
+        onFocus={show}
+        onBlur={() => setOpen(false)}
+        onClick={(event) => event.stopPropagation()}
+        onPointerDown={(event) => event.stopPropagation()}
+      />
+      {open
+        ? createPortal(
+            <div
+              className="usage-token-tip__panel"
+              role="tooltip"
+              style={{ top: coords.top, left: coords.left }}
+            >
+              <strong>Token 明细</strong>
+              <dl>
+                <div>
+                  <dt>输入 Token</dt>
+                  <dd>{formatTokenCount(inputTokens)}</dd>
+                </div>
+                <div>
+                  <dt>输出 Token</dt>
+                  <dd>{formatTokenCount(outputTokens)}</dd>
+                </div>
+                {typeof cacheReadTokens === 'number' ? (
+                  <div>
+                    <dt>缓存读取</dt>
+                    <dd>{formatTokenCount(cacheReadTokens)}</dd>
+                  </div>
+                ) : null}
+                {typeof cacheWriteTokens === 'number' ? (
+                  <div>
+                    <dt>缓存创建</dt>
+                    <dd>{formatTokenCount(cacheWriteTokens)}</dd>
+                  </div>
+                ) : null}
+                <div>
+                  <dt>总 Token</dt>
+                  <dd className="is-total">{formatTokenCount(totalTokens)}</dd>
+                </div>
+              </dl>
+            </div>,
+            document.body,
+          )
+        : null}
+    </>
+  );
+}
+
 function UsageRequestTable({ rows }: { rows: UsageSummaryResponse['requests'] }) {
-  const [expandedRequestId, setExpandedRequestId] = useState<string | null>(null);
   if (rows.length === 0) {
     return <div className="usage-table-empty">暂无符合条件的请求记录</div>;
   }
@@ -4963,8 +5959,9 @@ function UsageRequestTable({ rows }: { rows: UsageSummaryResponse['requests'] })
         <thead>
           <tr>
             <th>时间</th>
-            <th>模型与供应商</th>
-            <th>Token 明细</th>
+            <th>供应商</th>
+            <th>模型</th>
+            <th>Token</th>
             <th>费用</th>
             <th>延迟</th>
             <th>状态</th>
@@ -4975,231 +5972,42 @@ function UsageRequestTable({ rows }: { rows: UsageSummaryResponse['requests'] })
             const tokens = splitProviderUsageTokens(row);
             const cacheReadReported = typeof row.cachedTokensHit === 'number';
             const cacheWriteReported = typeof row.cachedTokensCreated === 'number';
-            const isExpanded = expandedRequestId === row.requestId;
             const displayName = row.displayName ?? row.modelId;
-            const detailsId = `usage-request-details-${row.requestId}`;
             return (
-              <Fragment key={row.requestId}>
-                <tr
-                  className={clsx('usage-request-row', isExpanded && 'is-expanded')}
-                  onClick={() => setExpandedRequestId(isExpanded ? null : row.requestId)}
-                >
-                  <td>{formatTimestamp(row.occurredAt)}</td>
-                  <td className="usage-request-model" title={row.modelId}>
-                    <strong>{displayName}</strong>
-                    <span>{row.providerName ?? row.providerId ?? '-'}</span>
-                  </td>
-                  <td className="usage-token-breakdown">
-                    <div className="usage-token-totals">
-                      <strong>输入 {formatTokenCount(tokens.totalInputTokens)}</strong>
-                      <span>输出 {formatTokenCount(tokens.outputTokens)}</span>
-                    </div>
-                    <div className="usage-token-parts">
-                      <span>普通输入 {formatTokenCount(tokens.inputTokens)}</span>
-                      <span>
-                        缓存读取{' '}
-                        {cacheReadReported ? formatTokenCount(tokens.cacheReadTokens) : '未上报'}
-                      </span>
-                      <span>
-                        缓存创建{' '}
-                        {cacheWriteReported ? formatTokenCount(tokens.cacheWriteTokens) : '未上报'}
-                      </span>
-                      <span className="usage-cache-rate">
-                        缓存命中{' '}
-                        {cacheReadReported
-                          ? formatRate(tokens.cacheReadTokens, tokens.totalInputTokens)
-                          : '未上报'}
-                      </span>
-                    </div>
-                  </td>
-                  <td className="usage-request-cost">
-                    <strong>{formatCurrency(row.estimatedCost, row.currency)}</strong>
-                    <button
-                      type="button"
-                      className={clsx('usage-request-toggle', isExpanded && 'is-expanded')}
-                      aria-expanded={isExpanded}
-                      aria-controls={detailsId}
-                      aria-label={`${isExpanded ? '收起' : '查看'} ${displayName} 请求详情`}
-                      title={isExpanded ? '收起请求详情' : '展开请求详情'}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        setExpandedRequestId(isExpanded ? null : row.requestId);
-                      }}
-                    >
-                      <span>{isExpanded ? '收起' : '详情'}</span>
-                      <ChevronDown size={13} />
-                    </button>
-                  </td>
-                  <td>{typeof row.latencyMs === 'number' ? formatLatency(row.latencyMs) : '-'}</td>
-                  <td>
-                    <span className={`usage-status is-${row.status}`}>
-                      {row.status === 'success'
-                        ? '成功'
-                        : row.status === 'failed'
-                          ? '失败'
-                          : '未结束'}
-                    </span>
-                  </td>
-                </tr>
-                {isExpanded ? (
-                  <tr className="usage-request-details" id={detailsId}>
-                    <td colSpan={6}>
-                      <div
-                        className="usage-request-detail-sections"
-                        data-testid={`usage-request-details-${row.requestId}`}
-                      >
-                        <section className="usage-request-detail-section">
-                          <strong className="usage-request-detail-title">请求信息</strong>
-                          <dl className="usage-request-detail-list">
-                            <div>
-                              <dt>请求 ID</dt>
-                              <dd className="usage-request-detail-id" title={row.requestId}>
-                                {row.requestId}
-                              </dd>
-                            </div>
-                            {row.taskId ? (
-                              <div>
-                                <dt>任务 ID</dt>
-                                <dd className="usage-request-detail-id" title={row.taskId}>
-                                  {row.taskId}
-                                </dd>
-                              </div>
-                            ) : null}
-                            {row.runId ? (
-                              <div>
-                                <dt>运行 ID</dt>
-                                <dd className="usage-request-detail-id" title={row.runId}>
-                                  {row.runId}
-                                </dd>
-                              </div>
-                            ) : null}
-                            {row.stepId ? (
-                              <div>
-                                <dt>步骤 ID</dt>
-                                <dd className="usage-request-detail-id" title={row.stepId}>
-                                  {row.stepId}
-                                </dd>
-                              </div>
-                            ) : null}
-                            <div>
-                              <dt>Provider</dt>
-                              <dd>
-                                {row.providerName ?? row.providerId ?? '-'}
-                                {row.providerName && row.providerId ? ` · ${row.providerId}` : ''}
-                              </dd>
-                            </div>
-                            <div>
-                              <dt>Provider 模型</dt>
-                              <dd className="usage-request-detail-id">
-                                {row.providerModelId ?? row.modelId}
-                              </dd>
-                            </div>
-                            <div>
-                              <dt>请求用途</dt>
-                              <dd>{formatUsagePurpose(row.purpose)}</dd>
-                            </div>
-                          </dl>
-                        </section>
-
-                        <section className="usage-request-detail-section">
-                          <strong className="usage-request-detail-title">Token 明细</strong>
-                          <dl className="usage-request-detail-list is-token-list">
-                            <div>
-                              <dt>普通输入</dt>
-                              <dd>{formatTokenCount(tokens.inputTokens)}</dd>
-                            </div>
-                            <div>
-                              <dt>缓存读取</dt>
-                              <dd>
-                                {cacheReadReported
-                                  ? formatTokenCount(tokens.cacheReadTokens)
-                                  : '未上报'}
-                              </dd>
-                            </div>
-                            <div>
-                              <dt>缓存创建</dt>
-                              <dd>
-                                {cacheWriteReported
-                                  ? formatTokenCount(tokens.cacheWriteTokens)
-                                  : '未上报'}
-                              </dd>
-                            </div>
-                            <div>
-                              <dt>推理 Token</dt>
-                              <dd>
-                                {typeof row.reasoningTokens === 'number'
-                                  ? formatTokenCount(row.reasoningTokens)
-                                  : '未上报'}
-                              </dd>
-                            </div>
-                            <div>
-                              <dt>输出</dt>
-                              <dd>{formatTokenCount(tokens.outputTokens)}</dd>
-                            </div>
-                            <div>
-                              <dt>总 Token</dt>
-                              <dd>{formatTokenCount(row.totalTokens)}</dd>
-                            </div>
-                          </dl>
-                        </section>
-
-                        <section className="usage-request-detail-section">
-                          <strong className="usage-request-detail-title">费用明细</strong>
-                          {row.estimatedCostBreakdown ? (
-                            <dl className="usage-request-detail-list is-cost-list">
-                              <div>
-                                <dt>普通输入费</dt>
-                                <dd>
-                                  {formatCurrencyDetail(
-                                    row.estimatedCostBreakdown.input,
-                                    row.currency,
-                                  )}
-                                </dd>
-                              </div>
-                              <div>
-                                <dt>缓存读取费</dt>
-                                <dd>
-                                  {formatCurrencyDetail(
-                                    row.estimatedCostBreakdown.cacheRead,
-                                    row.currency,
-                                  )}
-                                </dd>
-                              </div>
-                              <div>
-                                <dt>缓存创建费</dt>
-                                <dd>
-                                  {formatCurrencyDetail(
-                                    row.estimatedCostBreakdown.cacheWrite,
-                                    row.currency,
-                                  )}
-                                </dd>
-                              </div>
-                              <div>
-                                <dt>输出费</dt>
-                                <dd>
-                                  {formatCurrencyDetail(
-                                    row.estimatedCostBreakdown.output,
-                                    row.currency,
-                                  )}
-                                </dd>
-                              </div>
-                            </dl>
-                          ) : (
-                            <span className="usage-request-detail-empty">供应商未返回费用拆分</span>
-                          )}
-                        </section>
-
-                        {row.errorMessage ? (
-                          <div className="usage-request-detail-error usage-error">
-                            <strong>失败原因</strong>
-                            <span>{row.errorMessage}</span>
-                          </div>
-                        ) : null}
-                      </div>
-                    </td>
-                  </tr>
-                ) : null}
-              </Fragment>
+              <tr key={row.requestId} className="usage-request-row">
+                <td className="usage-request-time">
+                  <span>{formatTimestamp(row.occurredAt)}</span>
+                </td>
+                <td title={row.providerId}>{row.providerName ?? row.providerId ?? '-'}</td>
+                <td className="usage-request-model" title={row.modelId}>
+                  {displayName}
+                </td>
+                <td className="usage-token-cell">
+                  <span className="usage-token-cell__value">
+                    <span>{formatTokenCount(row.totalTokens)}</span>
+                    <UsageTokenTip
+                      inputTokens={tokens.totalInputTokens}
+                      outputTokens={tokens.outputTokens}
+                      totalTokens={row.totalTokens}
+                      cacheReadTokens={cacheReadReported ? tokens.cacheReadTokens : undefined}
+                      cacheWriteTokens={cacheWriteReported ? tokens.cacheWriteTokens : undefined}
+                    />
+                  </span>
+                </td>
+                <td className="usage-request-cost">
+                  {formatCurrency(row.estimatedCost, row.currency)}
+                </td>
+                <td>{typeof row.latencyMs === 'number' ? formatLatency(row.latencyMs) : '-'}</td>
+                <td>
+                  <span className={`usage-status is-${row.status}`}>
+                    {row.status === 'success'
+                      ? '成功'
+                      : row.status === 'failed'
+                        ? '失败'
+                        : '未结束'}
+                  </span>
+                </td>
+              </tr>
             );
           })}
         </tbody>
@@ -5596,13 +6404,12 @@ function EmptyDetail({ onAdd }: { onAdd: () => void }) {
   return (
     <div className="flex flex-col items-center justify-center gap-3 border-b border-border px-6 py-16 text-center">
       <Server size={28} className="text-text-faint" />
-      <p className="text-[13px] text-text-secondary">选择左侧供应商，或添加新的模型源</p>
       <button
         type="button"
         className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-2 text-[12.5px] font-medium text-[var(--color-accent-fg)] hover:opacity-90"
         onClick={onAdd}
       >
-        <Plus size={14} /> 添加模型源
+        <Plus size={14} /> 添加模型
       </button>
     </div>
   );
@@ -5653,19 +6460,18 @@ function formatCurrency(value: number | undefined, currency: 'USD' | 'CNY' | und
   })}`;
 }
 
-function formatCurrencyDetail(
-  value: number | undefined,
-  currency: 'USD' | 'CNY' | undefined,
-): string {
-  if (typeof value !== 'number' || !currency) return '-';
-  const symbol = currency === 'CNY' ? '¥' : '$';
-  return `${symbol}${value.toFixed(6)}`;
-}
-
-function formatCurrencyTotals(totals: Partial<Record<'USD' | 'CNY', number>>): string {
-  const values = (['CNY', 'USD'] as const).flatMap((currency) =>
-    typeof totals[currency] === 'number' ? [formatCurrency(totals[currency], currency)] : [],
-  );
+function formatCurrencyTotalsKpi(totals: Partial<Record<'USD' | 'CNY', number>>): string {
+  const values = (['CNY', 'USD'] as const).flatMap((currency) => {
+    const value = totals[currency];
+    if (typeof value !== 'number') return [];
+    const symbol = currency === 'CNY' ? '¥' : '$';
+    return [
+      `${symbol}${value.toLocaleString('zh-CN', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      })}`,
+    ];
+  });
   return values.length > 0 ? values.join(' / ') : '-';
 }
 
@@ -5677,23 +6483,4 @@ function formatTokenCount(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
   return String(n);
-}
-
-function formatUsagePurpose(purpose: UsageSummaryResponse['requests'][number]['purpose']): string {
-  switch (purpose) {
-    case 'compaction':
-      return '上下文压缩';
-    case 'delegation':
-      return '任务委派';
-    case 'review':
-      return '结果审核';
-    case 'revision':
-      return '任务返修';
-    case 'summary':
-      return '最终总结';
-    case 'normal':
-      return '普通对话';
-    default:
-      return '未上报';
-  }
 }

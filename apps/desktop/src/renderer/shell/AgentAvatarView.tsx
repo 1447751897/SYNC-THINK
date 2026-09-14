@@ -1,10 +1,23 @@
 // Shared agent avatar renderer — single source of truth for the library grid,
 // team roster, and chat messages so the face you designed is the face you talk to.
-// `avatar` accepts: emoji / short text, or an imported image as a data URL.
+//
+// `avatar` accepts three shapes, checked in this order:
+//   1. `gen:v1:<shape>:<color>` — a procedural seed rendered as inline SVG
+//   2. a `data:image/…` URL     — an imported image
+//   3. anything else            — legacy emoji / short text on a hashed color
+//
+// Branches 2 and 3 are untouched by the procedural work: existing agents keep
+// rendering exactly as before until their seed is written.
 import { avatarColor } from './avatar-color.js';
+import { avatarDataUrl, parseAvatarSeed, type AvatarState } from './avatar-gen.js';
 
 export function isImageAvatar(avatar: string | undefined): boolean {
   return Boolean(avatar && avatar.startsWith('data:image/'));
+}
+
+/** True when `avatar` carries a procedural seed rather than an image or text. */
+export function isGeneratedAvatar(avatar: string | undefined): boolean {
+  return parseAvatarSeed(avatar) !== null;
 }
 
 export function AgentAvatarView({
@@ -12,11 +25,17 @@ export function AgentAvatarView({
   avatar,
   size = 40,
   title,
+  state = 'idle',
 }: {
   name: string;
   avatar?: string;
   size?: number;
   title?: string;
+  /**
+   * Expression layer for procedural avatars. Ignored by the image and text
+   * branches — only a generated face has states to change.
+   */
+  state?: AvatarState;
 }) {
   const trimmed = avatar?.trim() ?? '';
   if (isImageAvatar(trimmed)) {
@@ -31,6 +50,23 @@ export function AgentAvatarView({
       />
     );
   }
+
+  const seed = parseAvatarSeed(trimmed);
+  if (seed) {
+    // No circular clip here: the shape itself is the silhouette. Clipping to a
+    // circle (as the imported-image branch does) would cut the outline away.
+    return (
+      <img
+        src={avatarDataUrl(seed.shape, seed.color, state, size)}
+        alt={name}
+        title={title ?? name}
+        style={{ width: size, height: size }}
+        className="shrink-0 select-none"
+        draggable={false}
+      />
+    );
+  }
+
   const label = trimmed ? trimmed.slice(0, 2) : (name[0] ?? '?').toUpperCase();
   return (
     <div

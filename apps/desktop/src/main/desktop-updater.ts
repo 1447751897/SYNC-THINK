@@ -6,6 +6,7 @@ import type {
 
 const UPDATE_CHANNEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$/;
 const MAX_UPDATE_TOKEN_LENGTH = 4096;
+const MAX_UPDATE_RELEASE_NOTES_LENGTH = 8 * 1024;
 const CHECKABLE_UPDATE_PHASES = new Set<DesktopUpdatePhase>([
   'idle',
   'available',
@@ -39,7 +40,7 @@ export type DesktopUpdateConfiguration =
 
 export interface DesktopUpdaterDriverListeners {
   checking?(): void;
-  available?(info: { version: string }): void;
+  available?(info: { version: string; releaseNotes?: string | null }): void;
   notAvailable?(info: { version: string }): void;
   progress?(info: { percent: number }): void;
   downloaded?(info: { version: string; downloadedFile?: string | null }): void;
@@ -103,21 +104,89 @@ function disabledConfiguration(
   return { enabled: false, channel, errorCode };
 }
 
+/**
+ * Keeps only the characters a plain-text note can safely carry: tabs and line
+ * breaks survive, every other control character is dropped. Writing this as a
+ * code-point filter avoids embedding literal control bytes in the source.
+ */
+function stripUnsafeReleaseNoteCharacters(text: string): string {
+  let cleaned = '';
+  // Collapse CRLF first so a Windows-style feed does not turn every line break
+  // into a blank line; a lone CR then still becomes a single newline below.
+  for (const character of text.split('\r\n').join('\n')) {
+    if (character === '\n' || character === '\t') {
+      cleaned += character;
+      continue;
+    }
+    if (character === '\r') {
+      cleaned += '\n';
+      continue;
+    }
+    const codePoint = character.codePointAt(0) ?? 0;
+    if (codePoint < 0x20 || codePoint === 0x7f) continue;
+    cleaned += character;
+  }
+  return cleaned;
+}
+
+function releaseNotesText(value: unknown): string | null {
+  if (typeof value === 'string') return value;
+  if (!Array.isArray(value)) return null;
+  const notes: string[] = [];
+  for (const entry of value) {
+    if (typeof entry === 'string') {
+      notes.push(entry);
+      continue;
+    }
+    if (entry && typeof entry === 'object') {
+      const note = (entry as { note?: unknown }).note;
+      if (typeof note === 'string') notes.push(note);
+    }
+  }
+  return notes.length > 0 ? notes.join('\n\n') : null;
+}
+
+/**
+ * Release notes are remote input even though we author the feed. Normalizing
+ * here means the renderer can treat them as opaque plain text, with no markup
+ * parsing and no chance of a hostile feed smuggling control characters or an
+ * unbounded payload into the update panel.
+ */
+export function normalizeUpdateReleaseNotes(value: unknown): string | null {
+  const raw = releaseNotesText(value);
+  if (raw === null) return null;
+  const cleaned = stripUnsafeReleaseNoteCharacters(raw).trim();
+  if (cleaned.length === 0) return null;
+  if (cleaned.length <= MAX_UPDATE_RELEASE_NOTES_LENGTH) return cleaned;
+  return cleaned.slice(0, MAX_UPDATE_RELEASE_NOTES_LENGTH).trimEnd() + '…';
+}
+
 function validLoopbackHostname(hostname: string): boolean {
   const normalized = hostname.toLowerCase().replace(/^\[(.*)\]$/, '$1');
   return normalized === 'localhost' || normalized === '127.0.0.1' || normalized === '::1';
 }
 
+/**
+ * Feed values frozen into the installer at build time. They act as defaults so
+ * an installed app is configured out of the box; the environment still wins,
+ * which keeps the fixture/E2E harnesses and developer overrides working.
+ */
+export interface DesktopUpdateBundledFeedOverrides {
+  feedUrl?: string | null;
+  channel?: string | null;
+}
+
 export function resolveDesktopUpdateConfiguration(
   environment: DesktopUpdateEnvironment,
-  options: { isPackaged: boolean },
+  options: { isPackaged: boolean; bundledFeed?: DesktopUpdateBundledFeedOverrides | null },
 ): DesktopUpdateConfiguration {
-  const channel = (environment.SYNC_THINK_UPDATE_CHANNEL ?? 'latest').trim();
+  const bundledFeed = options.bundledFeed ?? null;
+  const channel = (environment.SYNC_THINK_UPDATE_CHANNEL ?? bundledFeed?.channel ?? 'latest').trim();
   if (!UPDATE_CHANNEL_PATTERN.test(channel)) {
     return disabledConfiguration('latest', 'desktop.update.channel-invalid');
   }
 
-  const rawFeedUrl = environment.SYNC_THINK_UPDATE_FEED_URL?.trim();
+  const rawFeedUrl = (environment.SYNC_THINK_UPDATE_FEED_URL ?? bundledFeed?.feedUrl)?.trim();
   if (!rawFeedUrl) return disabledConfiguration(channel, null);
   if (!options.isPackaged && environment.SYNC_THINK_UPDATE_ALLOW_DEV !== '1') {
     return disabledConfiguration(channel, 'desktop.update.dev-disabled');
@@ -198,6 +267,7 @@ export class DesktopUpdateController {
       currentVersion: options.currentVersion,
       channel: options.configuration.channel,
       availableVersion: null,
+      releaseNotes: null,
       progressPercent: null,
       checkedAt: null,
       downloadedAt: null,
@@ -220,6 +290,7 @@ export class DesktopUpdateController {
             this.updateSnapshot({
               phase: 'available',
               availableVersion: info.version,
+              releaseNotes: normalizeUpdateReleaseNotes(info.releaseNotes),
               progressPercent: null,
               checkedAt: this.timestamp(),
               downloadedAt:
@@ -233,6 +304,7 @@ export class DesktopUpdateController {
             this.updateSnapshot({
               phase: 'up-to-date',
               availableVersion: null,
+              releaseNotes: null,
               progressPercent: null,
               checkedAt: this.timestamp(),
               downloadedAt: null,

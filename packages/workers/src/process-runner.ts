@@ -33,6 +33,10 @@ export interface BoundedProcessListeners {
 
 export interface BoundedProcessOptions {
   stdin?: string;
+  /** Host-owned session deadline. Null keeps the process until exit or cancellation. */
+  timeoutMs?: number | null;
+  /** The session owner bounds streamed output separately from this capture. */
+  streamAllOutput?: boolean;
 }
 
 export function startRefusal(token: WorkerToken): 'aborted' | 'fence-rejected' | undefined {
@@ -104,6 +108,16 @@ export async function runBoundedProcess(
   listeners?: BoundedProcessListeners,
   options?: BoundedProcessOptions,
 ): Promise<BoundedProcessResult> {
+  const timeoutMs =
+    options?.timeoutMs === undefined
+      ? Math.max(1, Math.min(token.timeoutMs, 10 * 60_000))
+      : options.timeoutMs;
+  if (
+    timeoutMs !== null &&
+    (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2_147_483_647)
+  ) {
+    return spawnFailure('Invalid process execution timeout');
+  }
   const maxBytes = Math.max(
     1,
     Math.min(token.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES, 1024 * 1024),
@@ -190,16 +204,18 @@ export async function runBoundedProcess(
   child.stdout.on('data', (chunk: Buffer) => {
     const appended = append(stdout, chunk);
     stdout = appended.value;
-    if (appended.kept.length > 0) {
-      const text = stdoutDecoder.write(appended.kept);
+    const streamed = options?.streamAllOutput ? chunk : appended.kept;
+    if (streamed.length > 0) {
+      const text = stdoutDecoder.write(streamed);
       if (text) listeners?.onStdout?.(text);
     }
   });
   child.stderr.on('data', (chunk: Buffer) => {
     const appended = append(stderr, chunk);
     stderr = appended.value;
-    if (appended.kept.length > 0) {
-      const text = stderrDecoder.write(appended.kept);
+    const streamed = options?.streamAllOutput ? chunk : appended.kept;
+    if (streamed.length > 0) {
+      const text = stderrDecoder.write(streamed);
       if (text) listeners?.onStderr?.(text);
     }
   });
@@ -209,11 +225,13 @@ export async function runBoundedProcess(
     terminationPromise ??= terminateProcessTree(child);
   };
 
-  const timeoutMs = Math.max(1, Math.min(token.timeoutMs, 10 * 60_000));
-  const timer = setTimeout(() => {
-    timedOut = true;
-    terminate();
-  }, timeoutMs);
+  const timer =
+    timeoutMs === null
+      ? undefined
+      : setTimeout(() => {
+          timedOut = true;
+          terminate();
+        }, timeoutMs);
   const onAbort = () => {
     aborted = true;
     terminate();

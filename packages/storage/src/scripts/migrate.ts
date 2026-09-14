@@ -415,6 +415,12 @@ export const MIGRATIONS: { name: string; sql: string }[] = [
       WHERE type = 'run.started';
     CREATE INDEX event_run_cursor_idx ON event(run_id, sequence, id);`,
   },
+  {
+    name: '0055_provider_unverified',
+    // NewMax-style「仍然保存」：连接测试未通过但用户选择保存的通道，落一个
+    // 未验证标记；后续测试通过时清掉。
+    sql: `ALTER TABLE provider ADD COLUMN unverified INTEGER NOT NULL DEFAULT 0;`,
+  },
 ];
 
 function taskPlanDdlSql(): string {

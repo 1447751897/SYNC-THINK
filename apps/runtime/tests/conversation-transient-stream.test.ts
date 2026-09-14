@@ -11,11 +11,14 @@ import {
   type ConversationTransientFrame,
   type Frame,
 } from '@sync-think/protocol';
+import { COLLABORATION_SETTINGS_KEY } from '@sync-think/protocol/collaboration';
 import {
   openDatabaseAsync,
   runMigrations,
   SqliteConversationStore,
+  SqliteAppSettingStore,
   SqliteEventCheckpointStore,
+  SqliteGlobalAgentStore,
   SqliteMessageStore,
   SqliteWorkspaceStore,
 } from '@sync-think/storage';
@@ -99,6 +102,277 @@ class ReasoningOnlyTerminalProvider implements ProviderAdapter {
       if (request.signal.aborted) resolve();
       else request.signal.addEventListener('abort', () => resolve(), { once: true });
     });
+  }
+}
+
+class DelegationProvider implements ProviderAdapter {
+  readonly protocol = 'openai-chat' as const;
+  readonly requests: ProviderCallRequest[] = [];
+  childAborted = false;
+
+  constructor(
+    private readonly childTerminal:
+      | 'completed'
+      | 'failed'
+      | 'cancelled'
+      | 'budget'
+      | 'timeout' = 'completed',
+  ) {}
+
+  async discoverModels(): Promise<string[]> {
+    return ['fake-mini'];
+  }
+
+  async *call(request: ProviderCallRequest): AsyncIterable<AdapterEvent> {
+    this.requests.push(request);
+    const hasToolResult = request.messages.some((message) => message.role === 'tool');
+    const userText = request.messages
+      .filter((message) => message.role === 'user')
+      .map((message) => (typeof message.content === 'string' ? message.content : ''))
+      .join('\n');
+
+    if (userText.includes('child delegation task')) {
+      if (this.childTerminal === 'failed') {
+        yield { type: 'error', failureClass: 'acceptance', message: 'child fixture failure' };
+        return;
+      }
+      if (this.childTerminal === 'cancelled') {
+        yield { type: 'text-delta', text: 'child progress' };
+        await new Promise<void>((resolve) => {
+          if (request.signal.aborted) resolve();
+          else request.signal.addEventListener('abort', () => resolve(), { once: true });
+        });
+        this.childAborted = request.signal.aborted;
+        return;
+      }
+      if (this.childTerminal === 'budget') {
+        yield { type: 'usage', tokensIn: 2, tokensOut: 2 };
+        await new Promise<void>((resolve) => {
+          if (request.signal.aborted) resolve();
+          else request.signal.addEventListener('abort', () => resolve(), { once: true });
+        });
+        return;
+      }
+      if (this.childTerminal === 'timeout') {
+        await new Promise<void>((resolve) => {
+          if (request.signal.aborted) resolve();
+          else request.signal.addEventListener('abort', () => resolve(), { once: true });
+        });
+        return;
+      }
+      if (!hasToolResult) {
+        yield {
+          type: 'tool-call',
+          toolCall: {
+            id: 'child-list-files',
+            name: 'list_files',
+            argumentsJson: JSON.stringify({ path: '.', maxEntries: 5 }),
+          },
+        };
+        yield { type: 'finished', reason: 'tool-requests' };
+        return;
+      }
+      yield { type: 'text-delta', text: 'child result only' };
+      yield { type: 'finished', reason: 'stop' };
+      return;
+    }
+
+    if (hasToolResult) {
+      yield { type: 'text-delta', text: 'parent final answer' };
+      yield { type: 'finished', reason: 'stop' };
+      return;
+    }
+
+    yield {
+      type: 'tool-call',
+      toolCall: {
+        id: 'parent-delegate',
+        name: 'agent_delegate',
+      argumentsJson: JSON.stringify({
+        task: 'child delegation task',
+        ...(this.childTerminal === 'budget' ? { tokenBudget: 1 } : {}),
+        ...(this.childTerminal === 'timeout' ? { timeoutSeconds: 1 } : {}),
+      }),
+      },
+    };
+    yield { type: 'finished', reason: 'tool-requests' };
+  }
+}
+
+class ReadOnlyProbeChildProvider implements ProviderAdapter {
+  readonly protocol = 'openai-chat' as const;
+  readonly requests: ProviderCallRequest[] = [];
+
+  async discoverModels(): Promise<string[]> {
+    return ['fake-mini'];
+  }
+
+  async *call(request: ProviderCallRequest): AsyncIterable<AdapterEvent> {
+    this.requests.push(request);
+    const hasToolResult = request.messages.some((message) => message.role === 'tool');
+    const userText = request.messages
+      .filter((message) => message.role === 'user')
+      .map((message) => (typeof message.content === 'string' ? message.content : ''))
+      .join('\n');
+
+    if (userText.includes('child write probe')) {
+      if (hasToolResult) {
+        yield { type: 'text-delta', text: 'child refused' };
+        yield { type: 'finished', reason: 'stop' };
+        return;
+      }
+      yield {
+        type: 'tool-call',
+        toolCall: {
+          id: 'child-write-file',
+          name: 'write_file',
+          argumentsJson: JSON.stringify({ path: 'child-probe.txt', content: 'probe' }),
+        },
+      };
+      yield {
+        type: 'tool-call',
+        toolCall: {
+          id: 'child-run-command',
+          name: 'run_command',
+          argumentsJson: JSON.stringify({ command: 'echo probe' }),
+        },
+      };
+      yield {
+        type: 'tool-call',
+        toolCall: {
+          id: 'child-create-agent',
+          name: 'create_agent',
+          argumentsJson: JSON.stringify({ name: 'sneaky-child-agent' }),
+        },
+      };
+      yield { type: 'finished', reason: 'tool-requests' };
+      return;
+    }
+
+    if (hasToolResult) {
+      yield { type: 'text-delta', text: 'parent final answer' };
+      yield { type: 'finished', reason: 'stop' };
+      return;
+    }
+
+    yield {
+      type: 'tool-call',
+      toolCall: {
+        id: 'parent-delegate',
+        name: 'agent_delegate',
+        argumentsJson: JSON.stringify({ task: 'child write probe' }),
+      },
+    };
+    yield { type: 'finished', reason: 'tool-requests' };
+  }
+}
+
+class McpProbeChildProvider implements ProviderAdapter {
+  readonly protocol = 'openai-chat' as const;
+  readonly requests: ProviderCallRequest[] = [];
+
+  async discoverModels(): Promise<string[]> {
+    return ['fake-mini'];
+  }
+
+  async *call(request: ProviderCallRequest): AsyncIterable<AdapterEvent> {
+    this.requests.push(request);
+    const hasToolResult = request.messages.some((message) => message.role === 'tool');
+    const userText = request.messages
+      .filter((message) => message.role === 'user')
+      .map((message) => (typeof message.content === 'string' ? message.content : ''))
+      .join('\n');
+
+    if (userText.includes('child mcp probe')) {
+      if (hasToolResult) {
+        yield { type: 'text-delta', text: 'child refused the mcp tool' };
+        yield { type: 'finished', reason: 'stop' };
+        return;
+      }
+      yield {
+        type: 'tool-call',
+        toolCall: {
+          id: 'child-mcp-probe',
+          name: 'mcp__demo__deploy_probe',
+          argumentsJson: JSON.stringify({ target: 'demo-fixture' }),
+        },
+      };
+      yield { type: 'finished', reason: 'tool-requests' };
+      return;
+    }
+
+    if (hasToolResult) {
+      yield { type: 'text-delta', text: 'parent final answer' };
+      yield { type: 'finished', reason: 'stop' };
+      return;
+    }
+
+    yield {
+      type: 'tool-call',
+      toolCall: {
+        id: 'parent-delegate',
+        name: 'agent_delegate',
+        argumentsJson: JSON.stringify({ task: 'child mcp probe' }),
+      },
+    };
+    yield { type: 'finished', reason: 'tool-requests' };
+  }
+}
+
+class ParallelDelegationProvider implements ProviderAdapter {
+  readonly protocol = 'openai-chat' as const;
+  readonly requests: ProviderCallRequest[] = [];
+  activeChildren = 0;
+  maxConcurrentChildren = 0;
+
+  constructor(private readonly failureTask?: string) {}
+
+  async discoverModels(): Promise<string[]> {
+    return ['fake-mini'];
+  }
+
+  async *call(request: ProviderCallRequest): AsyncIterable<AdapterEvent> {
+    this.requests.push(request);
+    const hasToolResult = request.messages.some((message) => message.role === 'tool');
+    const userText = request.messages
+      .filter((message) => message.role === 'user')
+      .map((message) => (typeof message.content === 'string' ? message.content : ''))
+      .join('\n');
+
+    if (userText.includes('parallel child')) {
+      this.activeChildren += 1;
+      this.maxConcurrentChildren = Math.max(this.maxConcurrentChildren, this.activeChildren);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      this.activeChildren -= 1;
+      if (this.failureTask && userText.includes(this.failureTask)) {
+        yield { type: 'error', failureClass: 'acceptance', message: 'parallel child fixture failure' };
+        return;
+      }
+      yield { type: 'text-delta', text: `result for ${userText}` };
+      yield { type: 'finished', reason: 'stop' };
+      return;
+    }
+
+    if (hasToolResult) {
+      yield { type: 'text-delta', text: 'parallel parent final answer' };
+      yield { type: 'finished', reason: 'stop' };
+      return;
+    }
+
+    for (const [id, task] of [
+      ['parallel-a', 'parallel child A'],
+      ['parallel-b', 'parallel child B'],
+    ] as const) {
+      yield {
+        type: 'tool-call',
+        toolCall: {
+          id,
+          name: 'agent_delegate',
+          argumentsJson: JSON.stringify({ task, parallelGroup: 'parallel-review' }),
+        },
+      };
+    }
+    yield { type: 'finished', reason: 'tool-requests' };
   }
 }
 
@@ -186,6 +460,71 @@ async function createFixture(events: () => AdapterEvent[], tickMs: number = 1) {
   });
   await runtime.start();
   return { connection, installId, runtime, store, workspaceId };
+}
+
+async function createDelegationFixture(
+  provider: ProviderAdapter,
+  options: { existingAgent?: boolean; dynamicSubagentsEnabled?: boolean } = {},
+) {
+  const dir = mkdtempSync(join(tmpdir(), 'sync-think-delegation-'));
+  tempDirs.push(dir);
+  const dbPath = join(dir, 'sync-think.db');
+  const installId = `delegation-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const workspaceId = `workspace-delegation-${Date.now()}` as WorkspaceId;
+  await runMigrations(dbPath);
+  const connection = await openDatabaseAsync({ path: dbPath });
+  const store = new SqliteEventCheckpointStore(connection.raw);
+  const appSettingStore = new SqliteAppSettingStore(connection.raw);
+  appSettingStore.set(COLLABORATION_SETTINGS_KEY, {
+    dynamicSubagentsEnabled: options.dynamicSubagentsEnabled !== false,
+  });
+  const messageStore = new SqliteMessageStore(connection.raw);
+  const workspaceStore = new SqliteWorkspaceStore(connection.raw);
+  const globalAgentStore = new SqliteGlobalAgentStore(connection.raw);
+  workspaceStore.createWorkspace({
+    id: workspaceId,
+    name: 'Delegation fixture',
+    folderPath: dir,
+    allowedRoots: [dir],
+  });
+  const task = workspaceStore.createTask({
+    workspaceId,
+    title: 'Delegation fixture',
+    goal: 'Verify dynamic child Agent execution',
+  });
+  const existingAgent = options.existingAgent
+    ? globalAgentStore.create({
+        id: 'agent-code-reviewer' as never,
+        name: 'child delegation task reviewer',
+        defaultModelId: 'fake-mini' as ModelId,
+        persona: 'Focused child delegation task reviewer',
+        description: 'Matches child delegation task work',
+      })
+    : undefined;
+  const runtime = new Runtime({
+    installId,
+    allowNoToken: true,
+    stateStore: store,
+    messageStore,
+    workspaceStore,
+    globalAgentStore,
+    appSettingStore,
+    workspaceId,
+    checkpointRunId: `runtime-${installId}` as RunId,
+    demoProvider: provider,
+  });
+  await runtime.start();
+  return {
+    connection,
+    existingAgent,
+    globalAgentStore,
+    installId,
+    messageStore,
+    runtime,
+    store,
+    task,
+    workspaceId,
+  };
 }
 
 async function createNativePlanningFixture(events: () => AdapterEvent[]) {
@@ -909,7 +1248,9 @@ describe('conversation transient shadow stream', () => {
         id: 'subscribe-reset',
         kind: 'request',
         type: 'conversation.subscribeTransientStream',
-        payload: { threadId: 'thread-reset', afterStreamSequence: 0 },
+        // cursor > 0 keeps the full replay contract: a short disconnect still
+        // fills its gap even after the Run finished.
+        payload: { threadId: 'thread-reset', afterStreamSequence: 1 },
       });
       const payload = subscribed.payload as {
         replayedFrames: ConversationTransientFrame[];
@@ -927,6 +1268,809 @@ describe('conversation transient shadow stream', () => {
     } finally {
       producer.destroy();
       subscriber.destroy();
+      await fixture.runtime.stop();
+      fixture.connection.raw.close();
+    }
+  });
+
+  it('serves only the terminal boundary for a fresh subscription to a finished run', async () => {
+    const fixture = await createFixture(() => [
+      { type: 'reasoning-delta', text: 'r' },
+      { type: 'text-delta', text: 't' },
+      { type: 'finished', reason: 'stop' },
+    ]);
+    const producer = await connectRuntime(fixture.installId);
+    const producerInbox = createInbox(producer);
+    const subscriber = await connectRuntime(fixture.installId);
+    const subscriberInbox = createInbox(subscriber);
+    try {
+      await hello(producerInbox, fixture.installId, 'hello-finished-producer');
+      await hello(subscriberInbox, fixture.installId, 'hello-finished-subscriber');
+      await producerInbox.send({
+        id: 'append-finished-run',
+        kind: 'request',
+        type: 'task.appendMessage',
+        payload: {
+          threadId: 'thread-finished-replay',
+          expectedTaskVersion: 0,
+          role: 'user',
+          text: 'already done',
+        },
+      });
+      expect(
+        await waitFor(() =>
+          fixture.store
+            .listEvents(fixture.workspaceId, 0)
+            .some((event) => event.type === 'run.completed'),
+        ),
+      ).toBe(true);
+
+      const subscribed = await subscriberInbox.send({
+        id: 'subscribe-finished-replay',
+        kind: 'request',
+        type: 'conversation.subscribeTransientStream',
+        payload: { threadId: 'thread-finished-replay', afterStreamSequence: 0 },
+      });
+      const payload = subscribed.payload as {
+        replayedFrames: ConversationTransientFrame[];
+        resetRequired: boolean;
+      };
+      // A finished Run is restored from the durable message store, so a fresh
+      // subscription must not re-stream its prose frame by frame.
+      expect(payload.replayedFrames.map((frame) => frame.kind)).toEqual(['terminal']);
+      expect(payload.resetRequired).toBe(false);
+    } finally {
+      producer.destroy();
+      subscriber.destroy();
+      await fixture.runtime.stop();
+      fixture.connection.raw.close();
+    }
+  });
+
+  it.each([
+    { existingAgent: false, expectedKind: 'temporary' as const },
+    { existingAgent: true, expectedKind: 'existing' as const },
+  ])(
+    'runs a delegated child without promoting child text to the parent answer ($expectedKind)',
+    async ({ existingAgent, expectedKind }) => {
+      const provider = new DelegationProvider();
+      const fixture = await createDelegationFixture(provider, { existingAgent });
+      const socket = await connectRuntime(fixture.installId);
+      const inbox = createInbox(socket);
+      try {
+        await hello(inbox, fixture.installId, `hello-delegation-${expectedKind}`);
+        const subscription = await inbox.send({
+          id: `subscribe-delegation-${expectedKind}`,
+          kind: 'request',
+          type: 'conversation.subscribeTransientStream',
+          payload: { threadId: fixture.task.threadId, afterStreamSequence: 0 },
+        });
+        expect(subscription.error).toBeUndefined();
+
+        const append = await inbox.send({
+          id: `append-delegation-${expectedKind}`,
+          kind: 'request',
+          type: 'task.appendMessage',
+          payload: {
+            threadId: fixture.task.threadId,
+            expectedTaskVersion: 0,
+            role: 'user',
+            text: 'delegate child work',
+          },
+        });
+        expect(append.error).toBeUndefined();
+        const parentRunId = String((append.payload as { streamId?: string }).streamId ?? '') as RunId;
+        expect(parentRunId).not.toBe('');
+        expect(
+          await waitFor(() =>
+            fixture.store
+              .listEventsByRun(parentRunId)
+              .some((event) => event.type === 'run.completed'),
+          ),
+        ).toBe(true);
+
+        const parentEvents = fixture.store.listEventsByRun(parentRunId);
+        const delegateResultEvent = parentEvents.find(
+          (event) => event.type === 'tool.completed' && event.payload.toolName === 'agent_delegate',
+        );
+        expect(delegateResultEvent).toBeDefined();
+        const delegateResult = JSON.parse(String(delegateResultEvent?.payload.result)) as {
+          childRunId: string;
+          assignment: { kind: string; agentId: string | null };
+          result: string;
+          toolEvents: Array<{ toolName: string; status: string }>;
+        };
+        expect(delegateResult.assignment.kind).toBe(expectedKind);
+        expect(delegateResult.assignment.agentId).toBe(
+          expectedKind === 'existing' ? fixture.existingAgent?.id : null,
+        );
+        expect(delegateResult.result).toBe('child result only');
+        expect(delegateResult.toolEvents).toEqual([
+          expect.objectContaining({ toolName: 'list_files', status: 'completed' }),
+        ]);
+
+        const childEvents = fixture.store.listEventsByRun(delegateResult.childRunId as RunId);
+        expect(childEvents.map((event) => event.type)).toContain('run.completed');
+        expect(childEvents.map((event) => event.type)).toContain('tool.completed');
+
+        const delegatedFrames = transientFrames(inbox).filter((frame) => frame.delegatedAgent);
+        expect(delegatedFrames.length).toBeGreaterThan(0);
+        expect(
+          await waitFor(() =>
+            transientFrames(inbox).some(
+              (frame) =>
+                frame.delegatedAgent?.childRunId === delegateResult.childRunId &&
+                frame.delegatedAgent.status === 'completed',
+            ),
+          ),
+        ).toBe(true);
+        const completedDelegatedFrame = transientFrames(inbox).findLast(
+          (frame) =>
+            frame.delegatedAgent?.childRunId === delegateResult.childRunId &&
+            frame.delegatedAgent.status === 'completed',
+        );
+        expect(completedDelegatedFrame?.delegatedAgent).toMatchObject({
+          childRunId: delegateResult.childRunId,
+          parentRunId,
+          kind: expectedKind,
+          status: 'completed',
+          result: 'child result only',
+          toolEvents: [expect.objectContaining({ toolName: 'list_files', status: 'completed' })],
+        });
+        expect(provider.requests.length).toBeGreaterThanOrEqual(4);
+
+        const messages = fixture.messageStore.listMessages(fixture.task.threadId as never).messages;
+        const assistants = messages.filter((message: Message) => message.role === 'assistant');
+        expect(assistants).toHaveLength(1);
+        expect(assistants[0]?.runId).toBe(parentRunId);
+        expect(assistants[0]?.blocks.filter((block) => block.type === 'text')).toEqual([
+          { type: 'text', text: 'parent final answer' },
+        ]);
+        expect(
+          messages.some((message: Message) => message.runId === delegateResult.childRunId),
+        ).toBe(false);
+      } finally {
+        socket.destroy();
+        await fixture.runtime.stop();
+        fixture.connection.raw.close();
+      }
+    },
+  );
+
+  it('binds a reused Agent persona into the child run and keeps temporary profiles out of the library', async () => {
+    const reuseProvider = new DelegationProvider();
+    const reuseFixture = await createDelegationFixture(reuseProvider, { existingAgent: true });
+    const reuseSocket = await connectRuntime(reuseFixture.installId);
+    const reuseInbox = createInbox(reuseSocket);
+    try {
+      await hello(reuseInbox, reuseFixture.installId, 'hello-delegation-reused-agent');
+      const subscription = await reuseInbox.send({
+        id: 'subscribe-delegation-reused-agent',
+        kind: 'request',
+        type: 'conversation.subscribeTransientStream',
+        payload: { threadId: reuseFixture.task.threadId, afterStreamSequence: 0 },
+      });
+      expect(subscription.error).toBeUndefined();
+      const append = await reuseInbox.send({
+        id: 'append-delegation-reused-agent',
+        kind: 'request',
+        type: 'task.appendMessage',
+        payload: {
+          threadId: reuseFixture.task.threadId,
+          expectedTaskVersion: 0,
+          role: 'user',
+          text: 'delegate child work',
+        },
+      });
+      const parentRunId = String((append.payload as { streamId?: string }).streamId ?? '') as RunId;
+      expect(
+        await waitFor(() =>
+          reuseFixture.store
+            .listEventsByRun(parentRunId)
+            .some((event) => event.type === 'run.completed'),
+        ),
+      ).toBe(true);
+
+      const childRequests = reuseProvider.requests.filter((request) =>
+        request.messages
+          .filter((message) => message.role === 'user')
+          .map((message) => (typeof message.content === 'string' ? message.content : ''))
+          .join('\n')
+          .includes('child delegation task'),
+      );
+      expect(childRequests.length).toBeGreaterThan(0);
+      expect(
+        childRequests.some((request) =>
+          (request.systemPrompt ?? '').includes('Focused child delegation task reviewer'),
+        ),
+      ).toBe(true);
+      expect(
+        transientFrames(reuseInbox).some(
+          (frame) => frame.delegatedAgent?.agentId === reuseFixture.existingAgent?.id,
+        ),
+      ).toBe(true);
+      expect(reuseFixture.globalAgentStore.list()).toHaveLength(1);
+    } finally {
+      reuseSocket.destroy();
+      await reuseFixture.runtime.stop();
+      reuseFixture.connection.raw.close();
+    }
+
+    const temporaryProvider = new DelegationProvider();
+    const temporaryFixture = await createDelegationFixture(temporaryProvider);
+    const temporarySocket = await connectRuntime(temporaryFixture.installId);
+    const temporaryInbox = createInbox(temporarySocket);
+    try {
+      await hello(temporaryInbox, temporaryFixture.installId, 'hello-delegation-run-local-profile');
+      const append = await temporaryInbox.send({
+        id: 'append-delegation-run-local-profile',
+        kind: 'request',
+        type: 'task.appendMessage',
+        payload: {
+          threadId: temporaryFixture.task.threadId,
+          expectedTaskVersion: 0,
+          role: 'user',
+          text: 'delegate child work',
+        },
+      });
+      const parentRunId = String((append.payload as { streamId?: string }).streamId ?? '') as RunId;
+      expect(
+        await waitFor(() =>
+          temporaryFixture.store
+            .listEventsByRun(parentRunId)
+            .some((event) => event.type === 'run.completed'),
+        ),
+      ).toBe(true);
+      expect(temporaryFixture.globalAgentStore.list()).toHaveLength(0);
+      expect(
+        temporaryFixture.messageStore
+          .listMessages(temporaryFixture.task.threadId as never)
+          .messages.filter((message: Message) => message.role === 'assistant'),
+      ).toHaveLength(1);
+    } finally {
+      temporarySocket.destroy();
+      await temporaryFixture.runtime.stop();
+      temporaryFixture.connection.raw.close();
+    }
+  });
+
+  it('rejects agent_delegate while the model-conversation delegation switch is off', async () => {
+    const provider = new DelegationProvider();
+    const fixture = await createDelegationFixture(provider, { dynamicSubagentsEnabled: false });
+    const socket = await connectRuntime(fixture.installId);
+    const inbox = createInbox(socket);
+    try {
+      await hello(inbox, fixture.installId, 'hello-delegation-disabled');
+      const append = await inbox.send({
+        id: 'append-delegation-disabled',
+        kind: 'request',
+        type: 'task.appendMessage',
+        payload: {
+          threadId: fixture.task.threadId,
+          expectedTaskVersion: 0,
+          role: 'user',
+          text: 'delegate child work',
+        },
+      });
+      const parentRunId = String((append.payload as { streamId?: string }).streamId ?? '') as RunId;
+      expect(
+        await waitFor(() =>
+          fixture.store.listEventsByRun(parentRunId).some((event) => event.type === 'run.completed'),
+        ),
+      ).toBe(true);
+      const delegateEvent = fixture.store
+        .listEventsByRun(parentRunId)
+        .find(
+          (event) =>
+            event.type === 'tool.completed' && event.payload.toolName === 'agent_delegate',
+        );
+      expect(delegateEvent).toBeDefined();
+      const result = JSON.parse(String(delegateEvent?.payload.result)) as {
+        ok: boolean;
+        error: string;
+        childRunId?: string;
+      };
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain('delegation rejected (disabled)');
+      expect(result.error).toContain('模型对话的动态子 Agent 委派当前已关闭');
+      expect(result.childRunId).toBeUndefined();
+      expect(
+        provider.requests.filter((request) =>
+          request.messages
+            .filter((message) => message.role === 'user')
+            .map((message) => (typeof message.content === 'string' ? message.content : ''))
+            .join('\n')
+            .includes('child delegation task'),
+        ),
+      ).toHaveLength(0);
+    } finally {
+      socket.destroy();
+      await fixture.runtime.stop();
+      fixture.connection.raw.close();
+    }
+  });
+
+  it('keeps a delegated child inside the read-only tool allowlist', async () => {
+    const provider = new ReadOnlyProbeChildProvider();
+    const fixture = await createDelegationFixture(provider);
+    const socket = await connectRuntime(fixture.installId);
+    const inbox = createInbox(socket);
+    try {
+      await hello(inbox, fixture.installId, 'hello-delegation-readonly');
+      const append = await inbox.send({
+        id: 'append-delegation-readonly',
+        kind: 'request',
+        type: 'task.appendMessage',
+        payload: {
+          threadId: fixture.task.threadId,
+          expectedTaskVersion: 0,
+          role: 'user',
+          text: 'delegate child work',
+        },
+      });
+      const parentRunId = String((append.payload as { streamId?: string }).streamId ?? '') as RunId;
+      expect(
+        await waitFor(() =>
+          fixture.store.listEventsByRun(parentRunId).some((event) => event.type === 'run.completed'),
+        ),
+      ).toBe(true);
+      const delegateEvent = fixture.store
+        .listEventsByRun(parentRunId)
+        .find(
+          (event) =>
+            event.type === 'tool.completed' && event.payload.toolName === 'agent_delegate',
+        );
+      const result = JSON.parse(String(delegateEvent?.payload.result)) as {
+        ok: boolean;
+        childRunId: string;
+        result: string;
+      };
+      expect(result.ok).toBe(true);
+      expect(result.result).toBe('child refused');
+      const childToolResults = fixture.store
+        .listEventsByRun(result.childRunId as RunId)
+        .filter((event) => event.type === 'tool.completed')
+        .map((event) => JSON.parse(String(event.payload.result)) as { error?: string });
+      expect(childToolResults).toHaveLength(3);
+      for (const toolResult of childToolResults) {
+        expect(toolResult.error).toContain('Delegated child Agents are limited to read-only tools.');
+      }
+      expect(fixture.globalAgentStore.list()).toHaveLength(0);
+    } finally {
+      socket.destroy();
+      await fixture.runtime.stop();
+      fixture.connection.raw.close();
+    }
+  });
+
+  it('refuses a delegated child that bypasses the tool catalog with an MCP tool', async () => {
+    const provider = new McpProbeChildProvider();
+    const fixture = await createDelegationFixture(provider);
+    const socket = await connectRuntime(fixture.installId);
+    const inbox = createInbox(socket);
+    try {
+      await hello(inbox, fixture.installId, 'hello-delegation-mcp-readonly');
+      const append = await inbox.send({
+        id: 'append-delegation-mcp-readonly',
+        kind: 'request',
+        type: 'task.appendMessage',
+        payload: {
+          threadId: fixture.task.threadId,
+          expectedTaskVersion: 0,
+          role: 'user',
+          text: 'delegate child work',
+        },
+      });
+      const parentRunId = String((append.payload as { streamId?: string }).streamId ?? '') as RunId;
+      expect(
+        await waitFor(() =>
+          fixture.store.listEventsByRun(parentRunId).some((event) => event.type === 'run.completed'),
+        ),
+      ).toBe(true);
+      const delegateEvent = fixture.store
+        .listEventsByRun(parentRunId)
+        .find(
+          (event) =>
+            event.type === 'tool.completed' && event.payload.toolName === 'agent_delegate',
+        );
+      const result = JSON.parse(String(delegateEvent?.payload.result)) as {
+        ok: boolean;
+        childRunId: string;
+        result: string;
+      };
+      expect(result.ok).toBe(true);
+      expect(result.result).toBe('child refused the mcp tool');
+      const childToolResults = fixture.store
+        .listEventsByRun(result.childRunId as RunId)
+        .filter((event) => event.type === 'tool.completed')
+        .map((event) => JSON.parse(String(event.payload.result)) as { error?: string });
+      expect(childToolResults).toHaveLength(1);
+      expect(childToolResults[0]?.error).toContain(
+        'Delegated child Agents are limited to read-only tools.',
+      );
+    } finally {
+      socket.destroy();
+      await fixture.runtime.stop();
+      fixture.connection.raw.close();
+    }
+  });
+  it('runs same-turn delegated children concurrently and preserves tool-call order', async () => {
+    const provider = new ParallelDelegationProvider();
+    const fixture = await createDelegationFixture(provider);
+    const socket = await connectRuntime(fixture.installId);
+    const inbox = createInbox(socket);
+    try {
+      await hello(inbox, fixture.installId, 'hello-delegation-parallel');
+      await inbox.send({
+        id: 'subscribe-delegation-parallel',
+        kind: 'request',
+        type: 'conversation.subscribeTransientStream',
+        payload: { threadId: fixture.task.threadId, afterStreamSequence: 0 },
+      });
+      const append = await inbox.send({
+        id: 'append-delegation-parallel',
+        kind: 'request',
+        type: 'task.appendMessage',
+        payload: {
+          threadId: fixture.task.threadId,
+          expectedTaskVersion: 0,
+          role: 'user',
+          text: 'run two delegated reviews',
+        },
+      });
+      const parentRunId = String((append.payload as { streamId?: string }).streamId ?? '') as RunId;
+      expect(
+        await waitFor(
+          () =>
+            transientFrames(inbox).some(
+              (frame) => frame.delegatedAgent?.parallelGroup === 'parallel-review',
+            ),
+          2_000,
+        ),
+      ).toBe(true);
+      expect(
+        await waitFor(() =>
+          fixture.store.listEventsByRun(parentRunId).some((event) => event.type === 'run.completed'),
+        ),
+      ).toBe(true);
+
+      expect(provider.maxConcurrentChildren).toBe(2);
+      const delegateEvents = fixture.store
+        .listEventsByRun(parentRunId)
+        .filter((event) => event.type === 'tool.completed' && event.payload.toolName === 'agent_delegate');
+      expect(delegateEvents.map((event) => event.payload.toolCallId)).toEqual([
+        'parallel-a',
+        'parallel-b',
+      ]);
+      const results = delegateEvents.map((event) => JSON.parse(String(event.payload.result)) as {
+        childRunId: string;
+        parallelGroup?: string;
+        result: string;
+      });
+      expect(results.map((result) => result.parallelGroup)).toEqual([
+        'parallel-review',
+        'parallel-review',
+      ]);
+      expect(new Set(results.map((result) => result.childRunId)).size).toBe(2);
+      expect(results.map((result) => result.result)).toEqual([
+        expect.stringContaining('parallel child A'),
+        expect.stringContaining('parallel child B'),
+      ]);
+      expect(
+        fixture.messageStore.listMessages(fixture.task.threadId as never).messages.filter(
+          (message: Message) => message.role === 'assistant',
+        ),
+      ).toHaveLength(1);
+    } finally {
+      socket.destroy();
+      await fixture.runtime.stop();
+      fixture.connection.raw.close();
+    }
+  });
+
+  it('keeps a successful sibling running when another parallel child fails', async () => {
+    const provider = new ParallelDelegationProvider('parallel child B');
+    const fixture = await createDelegationFixture(provider);
+    const socket = await connectRuntime(fixture.installId);
+    const inbox = createInbox(socket);
+    try {
+      await hello(inbox, fixture.installId, 'hello-delegation-parallel-partial');
+      await inbox.send({
+        id: 'subscribe-delegation-parallel-partial',
+        kind: 'request',
+        type: 'conversation.subscribeTransientStream',
+        payload: { threadId: fixture.task.threadId, afterStreamSequence: 0 },
+      });
+      const append = await inbox.send({
+        id: 'append-delegation-parallel-partial',
+        kind: 'request',
+        type: 'task.appendMessage',
+        payload: {
+          threadId: fixture.task.threadId,
+          expectedTaskVersion: 0,
+          role: 'user',
+          text: 'run two delegated reviews',
+        },
+      });
+      const parentRunId = String((append.payload as { streamId?: string }).streamId ?? '') as RunId;
+      expect(
+        await waitFor(() =>
+          fixture.store.listEventsByRun(parentRunId).some((event) => event.type === 'run.completed'),
+        ),
+      ).toBe(true);
+      expect(provider.maxConcurrentChildren).toBe(2);
+      const results = fixture.store
+        .listEventsByRun(parentRunId)
+        .filter((event) => event.type === 'tool.completed' && event.payload.toolName === 'agent_delegate')
+        .map((event) => JSON.parse(String(event.payload.result)) as { ok: boolean; result?: string; error?: string });
+      expect(results).toHaveLength(2);
+      expect(results.find((result) => result.ok)?.result).toContain('parallel child A');
+      expect(results.find((result) => !result.ok)?.error).toContain('child run failed');
+    } finally {
+      socket.destroy();
+      await fixture.runtime.stop();
+      fixture.connection.raw.close();
+    }
+  });
+
+  it('returns a child failure to the parent and keeps the parent turn completable', async () => {
+    const provider = new DelegationProvider('failed');
+    const fixture = await createDelegationFixture(provider);
+    const socket = await connectRuntime(fixture.installId);
+    const inbox = createInbox(socket);
+    try {
+      await hello(inbox, fixture.installId, 'hello-delegation-failed');
+      await inbox.send({
+        id: 'subscribe-delegation-failed',
+        kind: 'request',
+        type: 'conversation.subscribeTransientStream',
+        payload: { threadId: fixture.task.threadId, afterStreamSequence: 0 },
+      });
+      const append = await inbox.send({
+        id: 'append-delegation-failed',
+        kind: 'request',
+        type: 'task.appendMessage',
+        payload: {
+          threadId: fixture.task.threadId,
+          expectedTaskVersion: 0,
+          role: 'user',
+          text: 'delegate child work after failure',
+        },
+      });
+      const parentRunId = String((append.payload as { streamId?: string }).streamId ?? '') as RunId;
+      expect(
+        await waitFor(() =>
+          fixture.store.listEventsByRun(parentRunId).some((event) => event.type === 'run.completed'),
+        ),
+      ).toBe(true);
+      const delegateEvent = fixture.store
+        .listEventsByRun(parentRunId)
+        .find((event) => event.type === 'tool.completed' && event.payload.toolName === 'agent_delegate');
+      const result = JSON.parse(String(delegateEvent?.payload.result)) as {
+        childRunId: string;
+        ok: boolean;
+        error: string;
+      };
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain('child run failed');
+      expect(fixture.store.listEventsByRun(result.childRunId as RunId).map((event) => event.type)).toContain(
+        'run.failed',
+      );
+      expect(
+        await waitFor(() =>
+          transientFrames(inbox).some(
+            (frame) =>
+              frame.delegatedAgent?.childRunId === result.childRunId &&
+              frame.delegatedAgent.status === 'failed',
+          ),
+        ),
+      ).toBe(true);
+      expect(transientFrames(inbox).findLast(
+        (frame) =>
+          frame.delegatedAgent?.childRunId === result.childRunId &&
+          frame.delegatedAgent.status === 'failed',
+      )?.delegatedAgent).toMatchObject({
+        childRunId: result.childRunId,
+        status: 'failed',
+      });
+      expect(fixture.messageStore.listMessages(fixture.task.threadId as never).messages.filter(
+        (message: Message) => message.role === 'assistant',
+      )).toHaveLength(1);
+    } finally {
+      socket.destroy();
+      await fixture.runtime.stop();
+      fixture.connection.raw.close();
+    }
+  });
+
+  it.each([
+    { mode: 'budget' as const, expectedStatus: 'failed' as const },
+    { mode: 'timeout' as const, expectedStatus: 'timed_out' as const },
+  ])('enforces the delegated child $mode limit', async ({ mode, expectedStatus }) => {
+    const provider = new DelegationProvider(mode);
+    const fixture = await createDelegationFixture(provider);
+    const socket = await connectRuntime(fixture.installId);
+    const inbox = createInbox(socket);
+    try {
+      await hello(inbox, fixture.installId, `hello-delegation-${mode}`);
+      await inbox.send({
+        id: `subscribe-delegation-${mode}`,
+        kind: 'request',
+        type: 'conversation.subscribeTransientStream',
+        payload: { threadId: fixture.task.threadId, afterStreamSequence: 0 },
+      });
+      const append = await inbox.send({
+        id: `append-delegation-${mode}`,
+        kind: 'request',
+        type: 'task.appendMessage',
+        payload: {
+          threadId: fixture.task.threadId,
+          expectedTaskVersion: 0,
+          role: 'user',
+          text: `delegate child work ${mode}`,
+        },
+      });
+      const parentRunId = String((append.payload as { streamId?: string }).streamId ?? '') as RunId;
+      expect(
+        await waitFor(
+          () => fixture.store.listEventsByRun(parentRunId).some((event) => event.type === 'run.completed'),
+          5_000,
+        ),
+      ).toBe(true);
+      const delegateEvent = fixture.store
+        .listEventsByRun(parentRunId)
+        .find((event) => event.type === 'tool.completed' && event.payload.toolName === 'agent_delegate');
+      const result = JSON.parse(String(delegateEvent?.payload.result)) as {
+        childRunId: string;
+        status?: string;
+        error?: string;
+        tokensUsed?: number;
+      };
+      expect(result.status).toBe(expectedStatus);
+      expect(result.error).toContain(mode === 'budget' ? 'token budget' : 'timed out');
+      if (mode === 'budget') expect(result.tokensUsed).toBeGreaterThan(0);
+      expect(provider.requests.some((request) => request.maxOutputTokens === 1)).toBe(mode === 'budget');
+      expect(
+        await waitFor(() =>
+          transientFrames(inbox).some(
+            (frame) => frame.delegatedAgent?.status === expectedStatus,
+          ),
+          5_000,
+        ),
+      ).toBe(true);
+    } finally {
+      socket.destroy();
+      await fixture.runtime.stop();
+      fixture.connection.raw.close();
+    }
+  });
+
+  it('cancels an individual delegated child and lets the parent finish', async () => {
+    const provider = new DelegationProvider('cancelled');
+    const fixture = await createDelegationFixture(provider);
+    const socket = await connectRuntime(fixture.installId);
+    const inbox = createInbox(socket);
+    try {
+      await hello(inbox, fixture.installId, 'hello-delegation-child-cancel');
+      await inbox.send({
+        id: 'subscribe-delegation-child-cancel',
+        kind: 'request',
+        type: 'conversation.subscribeTransientStream',
+        payload: { threadId: fixture.task.threadId, afterStreamSequence: 0 },
+      });
+      const append = await inbox.send({
+        id: 'append-delegation-child-cancel',
+        kind: 'request',
+        type: 'task.appendMessage',
+        payload: {
+          threadId: fixture.task.threadId,
+          expectedTaskVersion: 0,
+          role: 'user',
+          text: 'delegate child work and cancel child only',
+        },
+      });
+      const parentRunId = String((append.payload as { streamId?: string }).streamId ?? '') as RunId;
+      expect(await waitFor(() => provider.requests.length >= 2)).toBe(true);
+      expect(
+        await waitFor(() =>
+          transientFrames(inbox).some((frame) => frame.delegatedAgent?.status === 'running'),
+        ),
+      ).toBe(true);
+      const runningFrame = transientFrames(inbox).find(
+        (frame) => frame.delegatedAgent?.status === 'running',
+      );
+      const childRunId = runningFrame?.delegatedAgent?.childRunId;
+      expect(childRunId).toBeTruthy();
+      const cancelled = await inbox.send({
+        id: 'cancel-delegation-child-only',
+        kind: 'request',
+        type: 'run.cancel',
+        payload: { runId: childRunId },
+      });
+      expect(cancelled.error).toBeUndefined();
+      expect(
+        await waitFor(() =>
+          fixture.store.listEventsByRun(parentRunId).some((event) => event.type === 'run.completed'),
+        ),
+      ).toBe(true);
+      const delegateEvent = fixture.store
+        .listEventsByRun(parentRunId)
+        .find((event) => event.type === 'tool.completed' && event.payload.toolName === 'agent_delegate');
+      expect(String(delegateEvent?.payload.result)).toContain('child run cancelled');
+      expect(
+        await waitFor(() =>
+          transientFrames(inbox).some(
+            (frame) =>
+              frame.delegatedAgent?.childRunId === childRunId &&
+              frame.delegatedAgent.status === 'cancelled',
+          ),
+        ),
+      ).toBe(true);
+    } finally {
+      socket.destroy();
+      await fixture.runtime.stop();
+      fixture.connection.raw.close();
+    }
+  });
+
+  it('propagates parent cancellation to an in-flight child and preserves the delegated snapshot on reconnect', async () => {
+    const provider = new DelegationProvider('cancelled');
+    const fixture = await createDelegationFixture(provider);
+    const socket = await connectRuntime(fixture.installId);
+    const inbox = createInbox(socket);
+    let parentRunId = '';
+    try {
+      await hello(inbox, fixture.installId, 'hello-delegation-cancelled');
+      const append = await inbox.send({
+        id: 'append-delegation-cancelled',
+        kind: 'request',
+        type: 'task.appendMessage',
+        payload: {
+          threadId: fixture.task.threadId,
+          expectedTaskVersion: 0,
+          role: 'user',
+          text: 'delegate child work and cancel',
+        },
+      });
+      parentRunId = String((append.payload as { streamId?: string }).streamId ?? '');
+      expect(await waitFor(() => provider.requests.length >= 2)).toBe(true);
+
+      const reconnect = await connectRuntime(fixture.installId);
+      const reconnectInbox = createInbox(reconnect);
+      try {
+        await hello(reconnectInbox, fixture.installId, 'hello-delegation-reconnect');
+        const subscribed = await reconnectInbox.send({
+          id: 'subscribe-delegation-reconnect',
+          kind: 'request',
+          type: 'conversation.subscribeTransientStream',
+          payload: { threadId: fixture.task.threadId, afterStreamSequence: 0 },
+        });
+        expect(subscribed.payload).toMatchObject({
+          snapshot: expect.objectContaining({
+            runId: parentRunId,
+            delegatedAgents: [expect.objectContaining({ status: 'running' })],
+          }),
+        });
+      } finally {
+        reconnect.destroy();
+      }
+
+      const cancelled = await inbox.send({
+        id: 'cancel-delegation-parent',
+        kind: 'request',
+        type: 'run.cancel',
+        payload: { runId: parentRunId },
+      });
+      expect(cancelled.error).toBeUndefined();
+      expect(await waitFor(() => provider.childAborted)).toBe(true);
+      expect(fixture.store.listEventsByRun(parentRunId).map((event) => event.type)).toContain(
+        'run.cancelled',
+      );
+      expect(fixture.messageStore.listMessages(fixture.task.threadId as never).messages.filter(
+        (message: Message) => message.role === 'assistant' && message.runId !== parentRunId,
+      )).toHaveLength(0);
+    } finally {
+      socket.destroy();
       await fixture.runtime.stop();
       fixture.connection.raw.close();
     }

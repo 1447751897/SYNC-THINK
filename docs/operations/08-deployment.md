@@ -20,7 +20,9 @@
 - 用户状态保存在 Electron `userData` 下；升级不得删除 Install ID、safeStorage 密文或 SQLite 数据。
 - Updater 只在 Main process 中运行，使用 Generic provider、显式下载/安装、HTTPS/Bearer、`allowDowngrade=false`、`disableWebInstaller=true`，并启用 differential download。
 
-正式 installer 默认使用 `release` signing mode。证书和 timestamp server 未显式配置、签名无效或 timestamp 缺失时，构建或验证立即失败。`unsigned-fixture` 仅用于隔离测试与 **0.1.0-beta.1 公开无签名 Beta**；不得把它标成已签名正式包，也不得给它配置公开自动更新源。
+正式 installer 默认使用 `release` signing mode。证书和 timestamp server 未显式配置、签名无效或 timestamp 缺失时，构建或验证立即失败。`unsigned-fixture` 仅用于隔离测试与 **0.1.0-beta.1 / 0.1.0-rc.* 公开无签名 Alpha**；不得把它标成已签名正式包。
+
+> **决策记录（2026-09-14）**：Alpha 渠道**已**配置自建公开 HTTPS 自动更新源（`https://sync-think.online/updates`，公开只读、无 Bearer）。此前“不得给 `unsigned-fixture` 包配置公开自动更新源”的约束对 Alpha 显式放宽，理由是闭合“用户手动找安装包”的痛点；代价与补偿见 §8.3。正式 release 仍必须签名，且本条放宽不适用于 `release` signing mode。
 
 ## 2. Windows portable staging
 
@@ -302,6 +304,82 @@ pnpm test:update-feed:win
 6. 持续观察客户端 check/download/install 错误码和 recovery evidence。
 
 `allowDowngrade=false`，因此撤回不会自动把已安装客户端降级。对已安装问题版本，应发布更高版本修复包；确需回到旧版本时，使用经验证的上一正常 installer 执行人工恢复。
+
+### 8.3 Alpha 公开更新源（自建 HTTPS，无签名）
+
+Alpha 渠道的更新源是自建静态站点，公开只读、不带 Bearer，源站与证书由 Caddy 托管。
+
+| 项           | 值                                                        |
+| ------------ | --------------------------------------------------------- |
+| Feed 根 URL  | `https://sync-think.online/updates`                       |
+| channel 文件 | `/updates/latest.yml`（内容为 JSON，YAML 是 JSON 超集）    |
+| 安装包       | `/updates/SYNC-THINK-Setup-<version>-x64.exe`             |
+| 差分包       | `/updates/SYNC-THINK-Setup-<version>-x64.exe.blockmap`    |
+| 下载入口     | `/downloads/SYNC-THINK-Setup-Windows-x64.exe`（固定名，供新用户首次下载） |
+| 缓存策略     | `latest.yml` 不缓存；`.exe` / `.blockmap` 长缓存          |
+| 服务器       | `123.57.211.150`，站点根 `/srv/sync-think/site`            |
+
+客户端侧的 feed 地址在**构建期固化**进 `resources/update-feed.json`（portable staging 写入），安装后即为“已配置更新通道”；`SYNC_THINK_UPDATE_FEED_URL` 仍可覆盖，方便 fixture 与回归。
+
+#### 发布是一个动作、两个出口
+
+`/updates/` 服务**已安装用户**的自动更新，`/downloads/` 服务**新用户**的首次下载。二者一旦分叉（例如首页仍发 rc.4、更新源已是 rc.5），新用户装到的版本体内没有内置 feed，会卡在旧版且点“检查更新”什么也发现不了。2026-09-14 曾实际发生：`/downloads/` 停留在 rc.4，`/updates/` 已是 rc.5。
+
+`scripts/windows-release-publish.mjs` 以**已校验的更新源目录为唯一事实来源**铺出两个出口：
+
+```bash
+# 1) 铺出 updates/ 与 downloads/（downloads 下安装包重命名为固定名）
+node scripts/windows-release-publish.mjs stage --feed-dir <feed 目录> --out <发布目录>
+# 2) 断言下载入口与更新源逐字节一致
+node scripts/windows-release-publish.mjs verify --publish-dir <发布目录>
+# 3) 上传（默认 dry-run，--apply 才写线上；上传后 chown syncthink:syncthink）
+node scripts/windows-release-publish.mjs upload --publish-dir <发布目录> --apply
+```
+
+`stage` 会拒绝以未通过 `verifyWindowsGenericUpdateFeed` 的目录为输入，也拒绝与源目录重叠的输出目录。`verify` 的核心断言是：`downloads/SYNC-THINK-Setup-Windows-x64.exe` 的 SHA-512 **等于** channel 文件里 `files[0].sha512`。
+
+`deploy-website.yml` 中另有一条下载页同步路径，但它写死了 `if: github.event_name == 'release'`，**只在发 GitHub Release 时触发**。两条路径并存会分叉，因此：同一次发布**只走一条**——正常发版走 `release-windows.yml`（见下节），它以 tag 驱动、不需要发 Release；只有在该 workflow 不可用需要应急时，才改用本脚本手动同步。不要一半一半。
+
+#### 自动化发布（tag 驱动）
+
+推送 `v*` tag 即触发 `.github/workflows/release-windows.yml`，一次跑完全部 8 步并让两个出口同时更新：
+
+| Job | Runner | 做什么 |
+| --- | --- | --- |
+| `build` | `windows-latest` | 发布链测试 → 由 tag 解析版本号 → 校验 CHANGELOG 有该版本段落 → 版本号注入两个 `package.json` → `pnpm build` → 品牌资源 → portable stage（固化随包 feed）/ verify → installer build / verify → 从 CHANGELOG 生成 feed 元数据 → 上传 feed 目录 |
+| `publish` | `ubuntu-latest` | 下载 feed 目录 → `stage` 铺出 `updates/` 与 `downloads/` → `verify` 断言两侧逐字节一致 → 复用 `SYNC_THINK_DEPLOY_HOST` / `SYNC_THINK_DEPLOY_USER` / `SYNC_THINK_DEPLOY_KEY` 上传并 `chown syncthink` → 线上回归 |
+
+版本号来源：tag `v0.1.0-rc.6` → `0.1.0-rc.6`。`workflow_dispatch` 手动触发时必须填 `version` 输入（非 tag ref 推导不出来，CI 会直接报错退出）。
+
+CHANGELOG 缺该版本段落时，CI 在**构造之前**就失败。这是故意的：`releaseNotes` 是 feed 与客户端「更新内容」面板的共同来源，缺了它用户会点开一个空白面板。
+
+上传放在 `ubuntu-latest` 而不是 Windows runner，是为了复用 `deploy-website.yml` 已经在生产跑通的 SSH 模式（`ssh-keyscan` + 权限 `600` 的密钥文件），避开 Windows OpenSSH 对密钥 ACL 的额外要求。发布链脚本零第三方依赖，所以这个 job 不需要 `pnpm install`。
+
+**不发 GitHub Release。** `deploy-website.yml` 里有一条写死 `if: github.event_name == 'release'` 的下载页同步路径；发 Release 会同时触发它，于是同一次发版出现两条写 `downloads/` 的路径——这正是上文要消除的分叉。所以同一次发布**只走 workflow 这一条**。构建产物仍可在该次 Actions 运行的 workflow artifact 里取到。
+
+首次真实运行前请注意：`upload --apply` 与线上回归这两步此前只在 dry-run 与只读模式下验证过。第一次跑完请核对线上文件属主（应为 `syncthink`）与 `/downloads/` 的 SHA-512。
+
+#### 手动发布顺序（与 CI 等价，供本地复现与排障）
+
+1. 提升 `apps/desktop/package.json` 与根 `package.json` 版本号，`pnpm build`，生成品牌资源。
+2. `windows-portable-release.mjs stage --feed-url https://sync-think.online/updates`（写入 sidecar），再 `verify`。
+3. `windows-installer-release.mjs build --prepackaged <stage 目录>` 产出 installer、blockmap 与 manifest。
+4. `windows-release-feed.mjs generate --artifact <installer.exe> --out <feed 目录> --version <版本>` 生成 channel 文件：`releaseNotes` 自动从 `docs/releases/CHANGELOG.md` 提取，`channelPolicy` 固定为 `audience: 'public'` + `requiresAuthorization: false`，并在写完后就地跑 `verifyWindowsGenericUpdateFeed()` 自校验。
+5. `verifyWindowsGenericUpdateFeed(feedDir, { channel, expectedVersion, requireBlockmap: true })` 必须 `ok === true` 才能上传。
+6. `windows-release-publish.mjs stage --feed-dir <feed 目录>` 铺出两个出口，再 `verify --publish-dir <发布目录>` 断言两侧字节一致。
+7. `windows-release-publish.mjs upload --publish-dir <发布目录> --apply` 上传 `updates/` 与 `downloads/`，属主保持 `syncthink`（Caddy 以该用户读文件）。
+8. 线上验证：`windows-release-online-verify.mjs --base-url https://sync-think.online --version <版本> --publish-dir <发布目录>`。它断言 `latest.yml` 返回 200 且 version 匹配、`releaseNotes` 非空；`.exe` 支持 `Range` 返回 206；**`/downloads/SYNC-THINK-Setup-Windows-x64.exe` 的实测字节 SHA-512 等于 `latest.yml` 的 `files[0].sha512`**（这一步会真的把安装包拉下来算哈希，`--skip-download` 可跳过但会让断言变弱）。
+
+回归门禁：`pnpm test:release:chain:win` = changelog（11）+ feed（6）+ publish（6）+ online（8），共 31 项，覆盖 CHANGELOG 解析、releaseNotes 提取与自校验、双出口一致性、篡改检出、上传计划构造与线上分叉检出。CI 在构建前先跑这条门禁。
+
+> 2026-09-14 实测：`windows-release-online-verify.mjs` 对现网跑出了真实存在的分叉——`/updates/latest.yml` 指向 rc.5（240,349,168 字节），而 `/downloads/` 仍是 rc.4（204,511,759 字节）。这正是本文件记录的、也是该脚本存在的理由。
+
+已知代价与补偿（与 §9 的故障依赖）：
+
+- **无签名**：`publisherName` 为 null，electron-updater 跳过 Authenticode 校验（`verifySignature` 直接返回 null）。完整性由 feed 元数据中的 SHA-512 兜底，**但不能防止拿到源站写权限或 DNS/TLS 被劫持的攻击者下发伪造包**；源站凭据与证书私钥必须严格限制。
+- **首次升级需手动（仅限 rc.4 及更早的历史安装）**：这些版本体内没有内置 feed，发现不了新版本，必须手动安装一次 rc.5 或更高；此后才能自动更新。**新用户不受此限的前提是 `/downloads/` 指向带内置 feed 的版本**——这正是上文「两个出口」要保证的。
+- **下载入口分叉**：2026-09-14 发现 `/downloads/` 停留在 rc.4 而 `/updates/` 已是 rc.5，新用户会装到「点了检查更新也没反应」的旧版。已由 `windows-release-publish.mjs` 的双出口产出与一致性断言消除，并由 `release-windows.yml` 把它固化成发版流程的必经步骤；`windows-release-online-verify.mjs` 会在发布末尾从公网侧再验一次「两个出口逐字节一致」，分叉了就让这次发布失败。
+- 升级失败由 rollback watchdog 回滚，证据落在 `<userData>/diagnostics/desktop-updater-recovery.json`。
 
 ## 9. Diagnostics / recovery runbook
 

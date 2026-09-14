@@ -4,130 +4,14 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="referrer" content="no-referrer" />
-    <title>交互演示 | SYNC-THINK</title>
-    <link rel="stylesheet" href="/tokens.css" />
-    <link rel="stylesheet" href="/demo.css" />
-    <script type="module" src="/demo.js"></script>
+    <title>工作台交互演示 | SYNC-THINK</title>
+    <link rel="icon" href="/assets/sync-think-logo.png" />
+    <link rel="stylesheet" href="/assets/chat-shell.css?v=embed-hero-1" />
+    <link rel="stylesheet" href="/assets/chat-app.css?v=embed-hero-1" />
+    <script type="module" src="/assets/chat-app.js?v=embed-hero-1"></script>
   </head>
   <body>
-    <main class="workspace" id="demo-workspace" data-view="chat">
-      <aside class="sidebar" aria-label="示例工作区">
-        <div class="wordmark">
-          <span class="brand-mark" aria-hidden="true"></span><span>SYNC-THINK</span>
-        </div>
-        <p class="section-label">工作区</p>
-        <p class="workspace-name">产品实验室</p>
-        <nav class="task-list" aria-label="示例任务">
-          <button type="button" data-scenario="website">制作产品介绍页</button>
-          <button type="button" data-scenario="release">整理发布计划</button>
-        </nav>
-        <p class="section-label context-label">任务资料</p>
-        <ul id="context-files" class="context-files"></ul>
-        <div class="sidebar-footer">
-          <span class="status-dot" aria-hidden="true"></span>本地工作区
-        </div>
-      </aside>
-      <header class="workspace-header">
-        <div class="task-heading">
-          <span class="section-label">产品实验室</span>
-          <h1 id="task-title">制作产品介绍页</h1>
-        </div>
-        <span class="demo-label">交互演示 · 示例数据</span>
-        <button type="button" id="reset-demo" class="text-button">重新开始</button>
-      </header>
-      <div class="mobile-controls">
-        <label class="sr-only" for="scenario-select">示例任务</label>
-        <select id="scenario-select">
-          <option value="website">制作产品介绍页</option>
-          <option value="release">整理发布计划</option>
-        </select>
-        <div class="view-tabs" role="tablist" aria-label="工作区视图">
-          <button
-            type="button"
-            id="chat-tab"
-            role="tab"
-            aria-selected="true"
-            aria-controls="chat-pane"
-            data-view="chat"
-          >
-            对话
-          </button>
-          <button
-            type="button"
-            id="results-tab"
-            role="tab"
-            aria-selected="false"
-            aria-controls="results-pane"
-            data-view="results"
-            tabindex="-1"
-          >
-            计划与结果
-          </button>
-        </div>
-      </div>
-      <section class="chat-pane" id="chat-pane" aria-label="任务对话">
-        <div class="conversation" id="conversation" tabindex="0" aria-label="对话记录">
-          <div id="messages" class="messages"></div>
-        </div>
-        <div class="run-actions">
-          <p id="run-status" role="status" aria-live="polite"></p>
-          <button type="button" id="advance-run" class="primary-button" hidden>批准计划</button>
-        </div>
-        <form id="composer" class="composer">
-          <label class="sr-only" for="prompt">任务需求</label>
-          <textarea
-            id="prompt"
-            name="prompt"
-            maxlength="1000"
-            rows="2"
-            placeholder="描述你想完成的任务…"
-          ></textarea>
-          <div class="composer-controls">
-            <label class="model-control"
-              ><span class="sr-only">模型</span
-              ><select id="model-select" aria-label="模型">
-                <option>Sync-Think</option>
-                <option>GPT</option>
-                <option>ClaudeCode</option>
-              </select></label
-            >
-            <fieldset class="mode-control">
-              <legend class="sr-only">工作模式</legend>
-              <label><input type="radio" name="mode" value="plan" checked /><span>规划</span></label
-              ><label><input type="radio" name="mode" value="execute" /><span>执行</span></label>
-            </fieldset>
-            <button type="button" id="send-prompt" class="primary-button">发送</button>
-          </div>
-        </form>
-        <div class="composer-footer">
-          <button type="button" id="sample-prompt" class="text-button">填入示例需求</button
-          ><span id="model-caption">Sync-Think · 规划模式</span>
-        </div>
-      </section>
-      <aside class="results-pane" id="results-pane" aria-label="计划与结果">
-        <div class="panel-heading">
-          <h2>任务计划</h2>
-          <span id="step-count">0 / 3</span>
-        </div>
-        <p id="plan-state" class="plan-state">待提交</p>
-        <ol id="plan-steps" class="plan-steps"></ol>
-        <div class="artifact-section">
-          <div class="panel-heading">
-            <h2>产物</h2>
-            <span id="artifact-count">0</span>
-          </div>
-          <p id="artifact-empty" class="artifact-empty">任务完成后生成产物</p>
-          <div id="artifact-result" hidden>
-            <h3 id="artifact-name"></h3>
-            <pre id="artifact-content" tabindex="0" aria-label="示例产物正文"></pre>
-          </div>
-        </div>
-        <button type="button" id="results-advance" class="primary-button mobile-advance" hidden>
-          批准计划
-        </button>
-        <button type="button" id="back-to-chat" class="text-button mobile-back">返回对话</button>
-      </aside>
-    </main>
-    <noscript><p>请启用 JavaScript 以打开交互演示。</p></noscript>
+    <div id="root"></div>
+    <noscript>请启用 JavaScript 体验任务、提问与审批流程。</noscript>
   </body>
 </html>

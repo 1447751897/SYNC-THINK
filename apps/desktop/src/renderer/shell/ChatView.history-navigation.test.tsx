@@ -154,10 +154,18 @@ describe('ChatView complete history navigation', () => {
     expect(screen.getByRole('button', { name: '加载中间消息' }).hasAttribute('disabled')).toBe(
       false,
     );
+    const failedGapCalls = runtime.listConversationMessages.mock.calls.length;
     runtime.listConversationMessages.mockRejectedValueOnce(new Error('retry fixture'));
     fireEvent.click(screen.getByRole('button', { name: '加载中间消息' }));
-    await screen.findByRole('button', { name: '重试最新消息' });
+    await waitFor(() =>
+      expect(runtime.listConversationMessages).toHaveBeenCalledTimes(failedGapCalls + 1),
+    );
+    expect(screen.queryByRole('button', { name: '重试最新消息' })).toBeNull();
+    expect(screen.queryByText('历史消息读取失败，请重试导航或加载操作。')).toBeNull();
     expect(scroller.querySelector('.shell-history-status')).toBeNull();
+    expect(screen.getByRole('button', { name: '加载中间消息' }).hasAttribute('disabled')).toBe(
+      false,
+    );
   });
 
   it('bounds the remount cache and restores the correct older cursor after trimming', async () => {
@@ -167,9 +175,11 @@ describe('ChatView complete history navigation', () => {
     await waitFor(() => expect(view.scroller.dataset.navigationSettling).toBeUndefined());
     fireEvent.click(screen.getByRole('button', { name: '加载中间消息' }));
     await screen.findByText('历史正文 75');
+    const callsBeforeRemount = runtime.listConversationMessages.mock.calls.length;
     view.unmount();
     const restored = render(<ChatView {...view.props} />);
     await screen.findByText('历史正文 148');
+    expect(runtime.listConversationMessages).toHaveBeenCalledTimes(callsBeforeRemount);
     expect(screen.queryByText('历史正文 10')).toBeNull();
     expect(restored.container.querySelectorAll('[data-message-id]').length).toBe(100);
     const scroller = restored.container.querySelector<HTMLDivElement>(
@@ -225,20 +235,24 @@ describe('ChatView complete history navigation', () => {
     expect(screen.queryByText('正在读取目标附近的消息…')).toBeNull();
   });
 
-  it('keeps old pages and reading state after a failed read and a latest-page retry', async () => {
+  it('keeps old pages and reading state after a failed gap read and a gap retry', async () => {
     const { container } = await fixture();
     fireEvent.click(screen.getByTestId('conversation-minimap-history-message-11'));
     await screen.findByText('历史正文 10');
     const oldRow = container.querySelector('[data-message-id="history-message-10"]');
+    const failedGapCalls = runtime.listConversationMessages.mock.calls.length;
     runtime.listConversationMessages.mockRejectedValueOnce(
       new Error('read-only worker unavailable'),
     );
     fireEvent.click(screen.getByRole('button', { name: '加载中间消息' }));
-    await screen.findByRole('button', { name: '重试最新消息' });
-    fireEvent.click(screen.getByRole('button', { name: '重试最新消息' }));
-    await waitFor(() => expect(screen.queryByRole('button', { name: '重试最新消息' })).toBeNull());
+    await waitFor(() =>
+      expect(runtime.listConversationMessages).toHaveBeenCalledTimes(failedGapCalls + 1),
+    );
+    expect(screen.queryByRole('button', { name: '重试最新消息' })).toBeNull();
     expect(container.querySelector('[data-message-id="history-message-10"]')).toBe(oldRow);
     expect(screen.getByText('这两段之间的历史消息尚未加载')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '加载中间消息' }));
+    await screen.findByText('历史正文 75');
   });
 
   it('rejects an old anchor response after the same conversation is assigned a different task', async () => {

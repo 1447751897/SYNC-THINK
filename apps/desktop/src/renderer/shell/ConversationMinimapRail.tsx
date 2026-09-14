@@ -34,7 +34,9 @@ const NavigationTick = memo(function NavigationTick({
   label,
   top,
   hitHeight,
+  tickWidth,
   active,
+  emphasized,
   hovered,
   tooltipId,
   onHover,
@@ -45,7 +47,12 @@ const NavigationTick = memo(function NavigationTick({
   label: string;
   top: number;
   hitHeight: number;
+  /** NewMax-style ripple width, widened by distance to the hovered tick. */
+  tickWidth: number;
+  /** The reader's own turn. Drives `aria-current`, not the hover-following glow. */
   active: boolean;
+  /** The one tick drawn at full strength; tracks the pointer while it is on the rail. */
+  emphasized: boolean;
   hovered: boolean;
   tooltipId: string;
   onHover(id: string, hovered: boolean): void;
@@ -57,7 +64,7 @@ const NavigationTick = memo(function NavigationTick({
       className="shell-conversation-minimap__tick"
       data-testid={`conversation-minimap-${id}`}
       data-role={role}
-      data-active={active ? 'true' : undefined}
+      data-active={emphasized ? 'true' : undefined}
       data-hovered={hovered ? 'true' : undefined}
       aria-current={active ? 'location' : undefined}
       aria-label={label}
@@ -66,6 +73,7 @@ const NavigationTick = memo(function NavigationTick({
         {
           '--minimap-tick-top': `${top}px`,
           '--minimap-tick-hit-height': `${hitHeight}px`,
+          '--minimap-tick-width': `${tickWidth}px`,
         } as CSSProperties
       }
       onMouseEnter={() => onHover(id, true)}
@@ -100,6 +108,19 @@ const COMPACT_NAVIGATION_GAP_DECAY_PX = 1.75;
 const COMPACT_NAVIGATION_MAX_HIT_HEIGHT_PX = 20;
 const COMPACT_NAVIGATION_MIN_HIT_HEIGHT_PX = 1;
 const MINIMAP_TOOLTIP_SAFE_EDGE_PX = 72;
+
+/**
+ * NewMax `getOutlineTickWidth`: hovering a tick widens it and its neighbours in
+ * a stepped falloff, so the rail reads as a ripple rather than a single blip.
+ */
+const MINIMAP_TICK_WIDTH_DEFAULT_PX = 6;
+const MINIMAP_TICK_WIDTH_STEPS_PX = [26, 18, 12] as const;
+
+function minimapTickWidth(index: number, hoveredIndex: number | null): number {
+  if (hoveredIndex === null) return MINIMAP_TICK_WIDTH_DEFAULT_PX;
+  const distance = Math.abs(index - hoveredIndex);
+  return MINIMAP_TICK_WIDTH_STEPS_PX[distance] ?? MINIMAP_TICK_WIDTH_DEFAULT_PX;
+}
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value));
@@ -478,6 +499,13 @@ export function ConversationMinimapRail({
 
   if (!visible) return null;
 
+  const hoveredIndexRaw =
+    hoveredId === undefined
+      ? -1
+      : positionedItems.findIndex(({ item }) => item.id === hoveredId);
+  const hoveredIndex = hoveredIndexRaw >= 0 ? hoveredIndexRaw : null;
+  const overviewTrackMax = Math.max(10, items.length * 10);
+
   const tooltipSafeEdge = Math.min(MINIMAP_TOOLTIP_SAFE_EDGE_PX, trackHeight / 2);
   const tooltipMaximum = Math.max(tooltipSafeEdge, trackHeight - tooltipSafeEdge);
   const tooltipTop = clamp(
@@ -496,6 +524,7 @@ export function ConversationMinimapRail({
     <nav
       ref={railRef}
       className="shell-conversation-minimap"
+      style={{ '--minimap-track-max': `${overviewTrackMax}px` } as CSSProperties}
       aria-label="对话消息导航"
       onMouseMove={handleRailMouseMove}
       onMouseLeave={() => setHoveredId(undefined)}
@@ -513,7 +542,7 @@ export function ConversationMinimapRail({
         aria-hidden="true"
         style={{ top: trackTop, height: Math.max(0, trackBottom - trackTop) }}
       />
-      {positionedItems.map(({ item, top, hitHeight, label }) => (
+      {positionedItems.map(({ item, top, hitHeight, label }, index) => (
         <NavigationTick
           key={item.id}
           id={item.id}
@@ -521,7 +550,14 @@ export function ConversationMinimapRail({
           label={label}
           top={top}
           hitHeight={hitHeight}
+          tickWidth={minimapTickWidth(index, hoveredIndex)}
           active={activeId === item.id}
+          emphasized={
+            // NewMax `MessageOutlineNav` `isActive`: the one bright tick tracks the
+            // pointer while the pointer is on the rail, and marks the reader's own
+            // turn otherwise — so a hover can never leave two ticks at full strength.
+            hoveredIndex === null ? activeId === item.id : index === hoveredIndex
+          }
           hovered={hoveredId === item.id}
           tooltipId={tooltipId}
           onHover={handleTickHover}

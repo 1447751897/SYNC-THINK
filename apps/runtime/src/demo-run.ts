@@ -16,6 +16,7 @@ import type {
   ProtocolFamily,
   RunId,
 } from '@sync-think/shared';
+import type { ConversationTrack } from '@sync-think/shared';
 
 export const DEMO_RUN_RECOVERY_MAX_AGE_MS = 5 * 60 * 1_000;
 
@@ -75,6 +76,23 @@ export interface DemoRunImage {
 export interface DemoRunState {
   runId: RunId;
   threadId: string;
+  /** Conversation authority track captured when this run is created. */
+  track?: ConversationTrack;
+  delegationDepth?: number;
+  delegationChildCount?: number;
+  delegationAutoCount?: number;
+  delegationParentRunId?: RunId;
+  /** Optional sibling batch label for parent-scoped delegated task grouping. */
+  delegationParallelGroup?: string;
+  /** Effective total token cap for a delegated child; null means unlimited. */
+  delegationTokenBudget?: number | null;
+  /** Provider-reported tokens consumed by this delegated child. */
+  delegationTokensUsed?: number;
+  /** Runtime-owned reason for an interrupted delegated child. */
+  delegationTerminationReason?: 'timed_out' | 'budget_exceeded';
+  /** Child runs created by model-track delegation use a hard read-only allowlist. */
+  delegatedReadOnly?: boolean;
+  delegatedToolAllowlist?: string[];
   userText: string;
   /**
    * Kernel that executes this run. Absent = native (in-process runtime loop);
@@ -506,6 +524,17 @@ export interface CreateDemoRunInput {
   runId: RunId;
   threadId: string;
   userText: string;
+  track?: ConversationTrack;
+  delegationDepth?: number;
+  delegationChildCount?: number;
+  delegationAutoCount?: number;
+  delegationParentRunId?: RunId;
+  delegationParallelGroup?: string;
+  delegationTokenBudget?: number | null;
+  delegationTokensUsed?: number;
+  delegationTerminationReason?: 'timed_out' | 'budget_exceeded';
+  delegatedReadOnly?: boolean;
+  delegatedToolAllowlist?: string[];
   kernelId?: string;
   modelId?: string;
   providerModelId?: string;
@@ -560,6 +589,20 @@ export function createDemoRun(
     runId,
     threadId,
     userText,
+    track: extras.track,
+    delegationDepth: extras.delegationDepth,
+    delegationChildCount: extras.delegationChildCount,
+    delegationAutoCount: extras.delegationAutoCount,
+    delegationParentRunId: extras.delegationParentRunId,
+    delegationParallelGroup: extras.delegationParallelGroup,
+    delegationTokenBudget: extras.delegationTokenBudget,
+    delegationTokensUsed: extras.delegationTokensUsed,
+    delegationTerminationReason: extras.delegationTerminationReason,
+    delegatedReadOnly: extras.delegatedReadOnly === true,
+    delegatedToolAllowlist:
+      extras.delegatedToolAllowlist === undefined
+        ? undefined
+        : [...new Set(extras.delegatedToolAllowlist.map(String))],
     kernelId: extras.kernelId,
     modelId,
     providerModelId: extras.providerModelId ?? modelId,
@@ -705,6 +748,7 @@ export function createDemoProviderRequest(
     tools?: ProviderCallRequest['tools'];
     hostedTools?: ProviderCallRequest['hostedTools'];
     toolChoice?: ProviderCallRequest['toolChoice'];
+    maxOutputTokens?: number;
     systemPrompt?: string;
     reasoningEffort?: string;
   } = {},
@@ -731,6 +775,9 @@ export function createDemoProviderRequest(
       ? { hostedTools: [...extras.hostedTools] }
       : {}),
     ...(extras.toolChoice ? { toolChoice: extras.toolChoice } : {}),
+    ...(extras.maxOutputTokens && extras.maxOutputTokens > 0
+      ? { maxOutputTokens: Math.trunc(extras.maxOutputTokens) }
+      : {}),
     ...(reasoningEffort ? { reasoningEffort } : {}),
     ...(promptCache ? { promptCache } : {}),
     stream: true,

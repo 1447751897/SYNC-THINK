@@ -11,6 +11,7 @@ import {
   normalizeWindowsUpdateBlockmapName,
   normalizeWindowsUpdateChannel,
   normalizeWindowsUpdateChannelPolicy,
+  normalizeWindowsUpdateReleaseNotes,
   normalizeWindowsUpdateVersion,
   sha256Hex,
   sha512Base64,
@@ -361,5 +362,119 @@ test('verifier rejects installer, blockmap, path and withdrawal policy tampering
     const withdrawnResult = await verifyWindowsGenericUpdateFeed(feed);
     assert.equal(withdrawnResult.ok, false);
     assert.ok(withdrawnResult.errors.includes('update-feed.version_withdrawn'));
+  });
+});
+
+test('normalizes release notes and rejects missing, unsafe or oversized shapes', () => {
+  assert.equal(normalizeWindowsUpdateReleaseNotes(undefined), null);
+  assert.equal(normalizeWindowsUpdateReleaseNotes(null), null);
+  assert.equal(
+    normalizeWindowsUpdateReleaseNotes('  ## 修复\r\n\r\n- 一处问题  '),
+    '## 修复\n\n- 一处问题',
+  );
+  assert.equal(normalizeWindowsUpdateReleaseNotes('单行\r说明'), '单行\n说明');
+  assert.throws(() => normalizeWindowsUpdateReleaseNotes('   '), /release_notes_invalid/);
+  assert.throws(() => normalizeWindowsUpdateReleaseNotes('\r\n\t'), /release_notes_invalid/);
+  assert.throws(() => normalizeWindowsUpdateReleaseNotes(42), /release_notes_invalid/);
+  assert.throws(() => normalizeWindowsUpdateReleaseNotes({ notes: 'x' }), /release_notes_invalid/);
+  assert.throws(() => normalizeWindowsUpdateReleaseNotes(['x']), /release_notes_invalid/);
+  assert.throws(() => normalizeWindowsUpdateReleaseNotes('a\u0000b'), /release_notes_invalid/);
+  assert.throws(() => normalizeWindowsUpdateReleaseNotes('a\u001bb'), /release_notes_invalid/);
+  assert.throws(
+    () => normalizeWindowsUpdateReleaseNotes('a'.repeat(64 * 1024 + 1)),
+    /release_notes_too_long/,
+  );
+  assert.equal(normalizeWindowsUpdateReleaseNotes('a'.repeat(64 * 1024)).length, 64 * 1024);
+});
+
+test('writes normalized release notes into the channel feed and verifies them', async () => {
+  await withTempDir('sync-think-update-notes-', async (root) => {
+    const { artifact, blockmap } = await writeArtifactPair(root, 'source.exe');
+    const feed = join(root, 'feed');
+    const fixture = await writeWindowsGenericUpdateFeed({
+      artifactPath: artifact,
+      blockmapPath: blockmap,
+      artifactName: 'SYNC-THINK-Setup-0.0.2-x64.exe',
+      outputDir: feed,
+      version: '0.0.2',
+      channel: 'latest',
+      releaseNotes: '## 0.0.2\r\n\r\n- 修复自动更新\r\n- 新增应用内更新日志',
+    });
+
+    assert.equal(
+      fixture.metadata.releaseNotes,
+      '## 0.0.2\n\n- 修复自动更新\n- 新增应用内更新日志',
+    );
+    const onDisk = JSON.parse(await readFile(fixture.channelFile, 'utf8'));
+    assert.equal(onDisk.releaseNotes, fixture.metadata.releaseNotes);
+
+    const verification = await verifyWindowsGenericUpdateFeed(feed);
+    assert.equal(verification.ok, true);
+    assert.deepEqual(verification.errors, []);
+  });
+});
+
+test('omits release notes when absent and keeps the feed verifiable', async () => {
+  await withTempDir('sync-think-update-no-notes-', async (root) => {
+    const { artifact, blockmap } = await writeArtifactPair(root, 'source.exe');
+    const feed = join(root, 'feed');
+    const fixture = await writeWindowsGenericUpdateFeed({
+      artifactPath: artifact,
+      blockmapPath: blockmap,
+      artifactName: 'SYNC-THINK-Setup-0.0.2-x64.exe',
+      outputDir: feed,
+      version: '0.0.2',
+      channel: 'latest',
+    });
+
+    assert.equal('releaseNotes' in fixture.metadata, false);
+    const onDisk = JSON.parse(await readFile(fixture.channelFile, 'utf8'));
+    assert.equal('releaseNotes' in onDisk, false);
+    const verification = await verifyWindowsGenericUpdateFeed(feed);
+    assert.equal(verification.ok, true);
+  });
+});
+
+test('verifier rejects hand-edited or non-normalized release notes', async () => {
+  await withTempDir('sync-think-update-notes-tamper-', async (root) => {
+    const { artifact, blockmap } = await writeArtifactPair(root, 'source.exe');
+    const feed = join(root, 'feed');
+    const fixture = await writeWindowsGenericUpdateFeed({
+      artifactPath: artifact,
+      blockmapPath: blockmap,
+      artifactName: 'SYNC-THINK-Setup-0.0.2-x64.exe',
+      outputDir: feed,
+      version: '0.0.2',
+      channel: 'latest',
+      releaseNotes: '## 0.0.2\n\n- 修复自动更新',
+    });
+
+    const write = async (releaseNotes) => {
+      await writeFile(
+        fixture.channelFile,
+        JSON.stringify({ ...fixture.metadata, releaseNotes }, null, 2) + '\n',
+        'utf8',
+      );
+      return await verifyWindowsGenericUpdateFeed(feed);
+    };
+
+    const blank = await write('   ');
+    assert.equal(blank.ok, false);
+    assert.ok(blank.errors.includes('update-feed.release_notes_invalid'));
+
+    const numeric = await write(42);
+    assert.equal(numeric.ok, false);
+    assert.ok(numeric.errors.includes('update-feed.release_notes_invalid'));
+
+    const nulled = await write(null);
+    assert.equal(nulled.ok, false);
+    assert.ok(nulled.errors.includes('update-feed.release_notes_not_normalized'));
+
+    const untrimmed = await write('  ## 0.0.2\n\n- 修复自动更新  ');
+    assert.equal(untrimmed.ok, false);
+    assert.ok(untrimmed.errors.includes('update-feed.release_notes_not_normalized'));
+
+    const accepted = await write('## 0.0.2\n\n- 修复自动更新');
+    assert.equal(accepted.ok, true);
   });
 });

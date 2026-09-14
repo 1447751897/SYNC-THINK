@@ -38,15 +38,23 @@ import type { ConversationGroupPreference, ConversationGroupsByTrack } from '../
 import {
   TRACK_LABELS,
   buildTrackTree,
+  formatConversationRowTime,
   resolveConversationRowMark,
   targetName,
   type ConversationRowMark,
   type ShellNavState,
   type ShellStage,
+  type TeamRowMemberMark,
 } from './shell-state.js';
 import { AgentAvatarView } from './AgentAvatarView.js';
 import { BrandLogoMark } from './BrandLogoMark.js';
 import { resolveKernelBrandLogo } from './brand-icons.js';
+import {
+  SIDEBAR_WORKSPACE_SKELETON_ROW_WIDTHS,
+  shouldRenderRecentConversationEmptyState,
+  shouldShowSidebarWorkspaceListSkeleton,
+} from './sidebar-newmax-loading.js';
+import { resolvePendingUpdateVersion, useDesktopUpdateState } from './use-desktop-update-state.js';
 
 const TRACK_ICONS: Record<ConversationTrack, typeof Sparkles> = {
   model: Sparkles,
@@ -70,6 +78,7 @@ export interface SidebarProps {
   groups: ConversationGroupsByTrack;
   bootState?: 'loading' | 'ready' | 'error';
   bootError?: string;
+  activeWorkspaceId?: string;
   settingsOpen?: boolean;
   multiSelect: boolean;
   selectedIds: ReadonlySet<string>;
@@ -80,7 +89,6 @@ export interface SidebarProps {
   onToggleSidebar(): void;
   onOpenConversation(id: string): void;
   onNewConversation(track?: ConversationTrack): void;
-  onNewCanvas?(): void;
   onTogglePin(id: string, pinned: boolean): void;
   onRename(id: string, currentTitle: string): void;
   onArchive(id: string): void;
@@ -108,6 +116,10 @@ export function Sidebar(props: SidebarProps) {
   const [recentOpen, setRecentOpen] = useState(true);
   const [searchFocused, setSearchFocused] = useState(false);
   const dialog = useDialog();
+  // 与「设置 → 关于」共用同一份更新快照：有可安装版本时把版本号挂到设置入口上，
+  // 用户不进设置也能看见有新版本。bridge 缺失时这里是 null，不显示任何提示。
+  const { snapshot: updateSnapshot } = useDesktopUpdateState();
+  const pendingUpdateVersion = resolvePendingUpdateVersion(updateSnapshot);
 
   useEffect(() => {
     const openSearch = () => setSearchFocused(true);
@@ -156,6 +168,20 @@ export function Sidebar(props: SidebarProps) {
 
   const collapsed = props.collapsed === true;
   const targetWidth = collapsed ? 0 : props.width;
+  const workspaceId = props.activeWorkspaceId ?? null;
+  const isLoadingConversations = props.bootState === 'loading';
+  const sidebarWorkspaceListsLoading =
+    query.trim().length === 0 &&
+    shouldShowSidebarWorkspaceListSkeleton({
+      activeWorkspaceId: workspaceId,
+      switchContentWorkspaceId: workspaceId,
+      switchProjectsWorkspaceId: workspaceId,
+      isLoadingConversations,
+      conversationCount: active.length,
+      projectCount: 0,
+      archivedLoaded: true,
+      isLoadingArchived: false,
+    });
 
   return (
     <aside
@@ -212,13 +238,6 @@ export function Sidebar(props: SidebarProps) {
               label="新建对话"
               testId="nav-new-chat"
               onClick={() => props.onNewConversation()}
-            />
-            <ActionRow
-              icon={<Pencil size={15} />}
-              label="新建绘图"
-              testId="nav-new-canvas"
-              placeholder={!props.onNewCanvas}
-              onClick={() => props.onNewCanvas?.()}
             />
             <ActionRow
               icon={<Search size={15} />}
@@ -383,7 +402,7 @@ export function Sidebar(props: SidebarProps) {
             <button
               type="button"
               data-testid="recent-section-toggle"
-              className="st-press-motion st-row-motion flex h-7 w-full cursor-pointer items-center gap-1 rounded-(--radius-row) px-1.5 text-left hover:bg-hover"
+              className="st-press-motion st-row-motion flex h-8 w-full cursor-pointer items-center gap-1 rounded-(--radius-row) px-1.5 text-left hover:bg-hover"
               onClick={() => setRecentOpen((v) => !v)}
             >
               <ChevronRight
@@ -391,14 +410,17 @@ export function Sidebar(props: SidebarProps) {
                 className="st-chevron text-text-faint"
                 data-open={recentOpen}
               />
-              <span className="flex-1 text-[13px] font-semibold tracking-wide text-text-faint">
+              <span className="flex-1 text-[14px] font-semibold tracking-wide text-text-faint">
                 最近对话
               </span>
             </button>
 
             <div className={clsx('shell-collapse', recentOpen && 'shell-collapse--open')}>
               <div className="shell-collapse__inner">
-                <div className="shell-tree-branch">
+                {sidebarWorkspaceListsLoading ? (
+                  <SidebarWorkspaceListSkeleton />
+                ) : (
+                <div>
                   {(Object.keys(TRACK_LABELS) as ConversationTrack[]).map((track) => {
                     const TrackIcon = TRACK_ICONS[track];
                     const expanded = props.nav.expandedTracks[track];
@@ -407,7 +429,7 @@ export function Sidebar(props: SidebarProps) {
                     return (
                       <div key={track} className="mb-0.5">
                         <div
-                          className="st-press-motion st-row-motion group flex h-7 cursor-pointer items-center gap-1 rounded-(--radius-row) px-1.5 hover:bg-hover"
+                          className="st-press-motion st-row-motion group flex h-8 cursor-pointer items-center gap-1 rounded-(--radius-row) px-1.5 hover:bg-hover"
                           data-testid={`track-header-${track}`}
                           onClick={() => props.onToggleTrack(track)}
                         >
@@ -417,7 +439,7 @@ export function Sidebar(props: SidebarProps) {
                             data-open={expanded}
                           />
                           <TrackIcon size={13} className="text-text-secondary" />
-                          <span className="flex-1 text-[12px] text-text-secondary">
+                          <span className="flex-1 text-[13px] text-text-secondary">
                             {TRACK_LABELS[track]}
                           </span>
                           <button
@@ -517,13 +539,20 @@ export function Sidebar(props: SidebarProps) {
                                     aria-hidden="true"
                                   />
                                   <div className="text-[11px] text-text-faint">
-                                    {props.bootState === 'loading'
-                                      ? '加载中…'
-                                      : props.bootState === 'error'
-                                        ? props.bootError || '连接失败'
-                                        : query.trim()
-                                          ? '无匹配'
-                                          : '暂无对话'}
+                                    {props.bootState === 'error'
+                                      ? props.bootError || '连接失败'
+                                      : query.trim()
+                                        ? '无匹配'
+                                        : shouldRenderRecentConversationEmptyState({
+                                              conversationCount: 0,
+                                              isSyncingCCHistory: false,
+                                              isLoadingConversations,
+                                              activeWorkspaceId: workspaceId,
+                                              switchContentWorkspaceId: workspaceId,
+                                              switchProjectsWorkspaceId: workspaceId,
+                                            })
+                                          ? '暂无对话'
+                                          : ''}
                                   </div>
                                 </div>
                               ) : (
@@ -566,6 +595,7 @@ export function Sidebar(props: SidebarProps) {
                     );
                   })}
                 </div>
+                )}
               </div>
             </div>
 
@@ -643,7 +673,7 @@ export function Sidebar(props: SidebarProps) {
           )}
           role="button"
           tabIndex={0}
-          title="设置"
+          title={pendingUpdateVersion ? `设置 · 可更新到 v${pendingUpdateVersion}` : '设置'}
           data-testid="sidebar-settings-box"
           onClick={() => props.onSelectStage('settings')}
           onKeyDown={(e) => {
@@ -658,6 +688,16 @@ export function Sidebar(props: SidebarProps) {
               U
             </div>
             <span className="min-w-0 flex-1 truncate text-[12px]">本地用户</span>
+            {/* 有新版本时把目标版本号直接挂在设置入口上，和「设置 → 关于」里的按钮同源。 */}
+            {pendingUpdateVersion ? (
+              <span
+                data-testid="sidebar-update-badge"
+                title={`可更新到 v${pendingUpdateVersion}`}
+                className="shrink-0 rounded-full bg-accent/20 px-1.5 py-0.5 text-[10px] leading-none font-medium text-accent-text"
+              >
+                v{pendingUpdateVersion}
+              </span>
+            ) : null}
             <button
               type="button"
               data-testid="nav-settings"
@@ -712,7 +752,7 @@ function ActionRow(props: {
       type="button"
       data-testid={props.testId}
       className={clsx(
-        'st-press-motion st-nav-item flex h-8 w-full items-center gap-2 rounded-(--radius-row) px-2 text-[13px]',
+        'st-press-motion st-nav-item flex h-9 w-full items-center gap-2 rounded-(--radius-row) px-2 text-[12px]',
         props.active
           ? 'shell-row-active text-text'
           : props.accent
@@ -859,9 +899,75 @@ function GroupBlock(props: {
   );
 }
 
+/** Roster faces shown side by side before the tail collapses into a `+N` badge. */
+const TEAM_STACK_MAX = 3;
+/** Sidebar conversation-row identity mark (kernel logo / agent face / team stack). */
+const IDENTITY_SIZE = 18;
+/** Stacked team faces shrink with the mark so the lead face still reads as 18px. */
+const TEAM_STACK_FACE = 13;
+
+/** Running / unread indicator, pinned to the identity mark's bottom-right. */
+function RowActivityDot(props: { activity?: { running: boolean; unread: boolean } }) {
+  if (props.activity?.running) {
+    return (
+      <span
+        className="shell-activity-dot shell-activity-dot--running st-conv-row__activity"
+        title="正在运行"
+        aria-label="正在运行"
+      />
+    );
+  }
+  if (props.activity?.unread) {
+    return (
+      <span
+        className="shell-activity-dot shell-activity-dot--unread st-conv-row__activity"
+        title="已完成待查看"
+        aria-label="已完成待查看"
+      />
+    );
+  }
+  return null;
+}
+
+/**
+ * Team mark: roster faces stacked left-to-right, with everything past
+ * `TEAM_STACK_MAX` collapsed into a `+N` badge. A team whose roster is empty
+ * (or shows a single member) falls back to one plain face so the row keeps the
+ * same visual weight as the other tracks.
+ */
+function TeamAvatarStack(props: {
+  name: string;
+  fallbackAvatar?: string;
+  members: readonly TeamRowMemberMark[];
+}) {
+  const { members } = props;
+  if (members.length <= 1) {
+    return (
+      <AgentAvatarView
+        name={members[0]?.name ?? props.name}
+        avatar={members[0]?.avatar ?? props.fallbackAvatar}
+        size={IDENTITY_SIZE}
+      />
+    );
+  }
+  const shown = members.slice(0, TEAM_STACK_MAX);
+  const overflow = members.length - shown.length;
+  return (
+    <span className="st-conv-stack">
+      {shown.map((member, index) => (
+        <span key={`${member.name}-${index}`} className="st-conv-stack__face">
+          <AgentAvatarView name={member.name} avatar={member.avatar} size={TEAM_STACK_FACE} />
+        </span>
+      ))}
+      {overflow > 0 ? <span className="st-conv-stack__overflow">+{overflow}</span> : null}
+    </span>
+  );
+}
+
 function ConversationIdentityMark(props: {
   conversationId: string;
   mark: ConversationRowMark;
+  activity?: { running: boolean; unread: boolean };
 }) {
   const logo = props.mark.kind === 'kernel' ? resolveKernelBrandLogo(props.mark.kernelId) : undefined;
   return (
@@ -873,13 +979,20 @@ function ConversationIdentityMark(props: {
     >
       {props.mark.kind === 'kernel' ? (
         logo ? (
-          <BrandLogoMark logo={logo} size={16} />
+          <BrandLogoMark logo={logo} size={IDENTITY_SIZE} />
         ) : (
-          <Sparkles size={14} className="text-text-faint" aria-hidden="true" />
+          <Sparkles size={18} className="text-text-faint" aria-hidden="true" />
         )
+      ) : props.mark.kind === 'team' ? (
+        <TeamAvatarStack
+          name={props.mark.name}
+          fallbackAvatar={props.mark.avatar}
+          members={props.mark.members}
+        />
       ) : (
-        <AgentAvatarView name={props.mark.name} avatar={props.mark.avatar} size={16} />
+        <AgentAvatarView name={props.mark.name} avatar={props.mark.avatar} size={IDENTITY_SIZE} />
       )}
+      <RowActivityDot activity={props.activity} />
     </span>
   );
 }
@@ -910,24 +1023,23 @@ function ConversationRow(props: {
 }) {
   const { conversation: c } = props;
   const title = c.title || props.name;
-  const identity =
-    props.track === 'agent'
-      ? { icon: Bot, kind: '智能体', name: props.name }
-      : props.track === 'team'
-        ? { icon: Users, kind: '小队', name: props.name }
-        : { icon: MessageSquare, kind: '模型', name: props.name };
-  const IdentityIcon = identity.icon;
-  const identityName =
-    identity.name && identity.name !== title && identity.name !== identity.kind
-      ? identity.name
-      : '';
+  const time = formatConversationRowTime(c.lastMessageAt, Date.now());
+  /*
+   * Agent and team rows are two lines: the identity name on top, the conversation
+   * title underneath (standing in for the message summary we do not carry yet).
+   * The model track stays single-line — its title already *is* the identity.
+   */
+  const twoLine = props.mark.kind === 'agent' || props.mark.kind === 'team';
+  const heading = twoLine ? props.name : title;
+  const rawTitle = (c.title ?? '').trim();
+  const summary = twoLine && rawTitle && rawTitle !== props.name ? rawTitle : '';
 
   return (
     <div
       data-testid={`conversation-${c.id}`}
       data-archived={props.archived ? '1' : '0'}
       className={clsx(
-        'st-row-motion st-conv-row group relative flex cursor-pointer flex-col rounded-(--radius-row) py-1 pl-2 pr-1',
+        'st-row-motion st-conv-row group relative flex cursor-pointer items-center gap-2 rounded-(--radius-row) py-2 pl-2 pr-1',
         props.active ? 'shell-row-active text-text' : 'text-text-secondary hover:bg-hover',
         props.archived && !props.active ? 'opacity-80' : '',
       )}
@@ -939,7 +1051,7 @@ function ConversationRow(props: {
         props.onOpen();
       }}
     >
-      <div className="flex items-center gap-1">
+      <div className="flex min-w-0 flex-1 items-center gap-2">
         {props.multiSelect ? (
           <span
             className={clsx(
@@ -952,25 +1064,20 @@ function ConversationRow(props: {
             <Check size={10} />
           </span>
         ) : null}
-        <ConversationIdentityMark conversationId={String(c.id)} mark={props.mark} />
-        <span className="flex-1 truncate text-[13px] font-medium leading-5">{title}</span>
+        <ConversationIdentityMark
+          conversationId={String(c.id)}
+          mark={props.mark}
+          activity={props.activity}
+        />
+        <span className="st-conv-row__body">
+          <span className="flex min-w-0 items-center gap-2">
+            {/* NewMax-aligned: its conversation title uses `truncate text-xs font-medium`
+                (12px / 16px line-height), not the 14px / 20px this used to be. */}
+            <span className="flex-1 truncate text-[12px] font-medium leading-4">{heading}</span>
         {title.startsWith('任务 ·') ? (
           <span className="shell-task-conv-badge" title="定时任务会话">
             任务
           </span>
-        ) : null}
-        {props.activity?.running ? (
-          <span
-            className="shell-activity-dot shell-activity-dot--running mr-0.5"
-            title="正在运行"
-            aria-label="正在运行"
-          />
-        ) : props.activity?.unread ? (
-          <span
-            className="shell-activity-dot shell-activity-dot--unread mr-0.5"
-            title="已完成待查看"
-            aria-label="已完成待查看"
-          />
         ) : null}
         {c.pinnedAt && !props.archived && (
           <span
@@ -980,12 +1087,18 @@ function ConversationRow(props: {
             <Pin size={11} className="fill-current" />
           </span>
         )}
+        <span className="st-conv-row__trail">
+          {time ? (
+            <span className="st-conv-row__time" data-testid={`conversation-time-${c.id}`}>
+              {time}
+            </span>
+          ) : null}
         {!props.multiSelect && (
           <DropdownMenu.Root>
             <DropdownMenu.Trigger asChild>
               <button
                 data-testid={`conversation-menu-trigger-${c.id}`}
-                className="st-icon-motion invisible flex h-4 w-4 shrink-0 items-center justify-center rounded text-text-faint hover:bg-active hover:text-text group-hover:visible data-[state=open]:visible data-[state=open]:bg-active data-[state=open]:text-text"
+                className="st-conv-row__menu st-icon-motion invisible flex h-4 w-4 shrink-0 items-center justify-center rounded text-text-faint hover:bg-active hover:text-text group-hover:visible data-[state=open]:visible data-[state=open]:bg-active data-[state=open]:text-text"
                 title="更多操作"
                 onClick={(e) => e.stopPropagation()}
               >
@@ -1080,27 +1193,49 @@ function ConversationRow(props: {
             </DropdownMenu.Portal>
           </DropdownMenu.Root>
         )}
+            </span>
+          </span>
+          {summary ? (
+            <span className="st-conv-row__sub" data-testid={`conversation-sub-${c.id}`}>
+              {summary}
+            </span>
+          ) : null}
+        </span>
       </div>
-      {props.track !== 'model' ? (
-        <div className="mt-0.5 flex min-w-0 items-center gap-1 pl-0.5 text-[11px] text-text-faint">
-          <IdentityIcon size={10.5} className="shrink-0" aria-hidden="true" />
-          <span className="shrink-0">{identity.kind}</span>
-          {identityName ? (
-            <>
-              <span aria-hidden="true">·</span>
-              <span className="truncate" title={identity.name}>
-                {identity.name}
-              </span>
-            </>
-          ) : null}
-          {props.archived ? (
-            <>
-              <span aria-hidden="true">·</span>
-              <span className="shrink-0">已归档</span>
-            </>
-          ) : null}
-        </div>
-      ) : null}
+    </div>
+  );
+}
+
+function SidebarWorkspaceRowSkeleton({ width }: { width: string }) {
+  return (
+    <div className="flex min-h-[35.5px] items-center pr-1.5 pl-[10px]">
+      <div className="ds-skeleton rounded-sm" style={{ width, height: 10 }} />
+    </div>
+  );
+}
+
+function SidebarWorkspaceGroupLabelSkeleton() {
+  return (
+    <div className="py-1">
+      <div className="flex min-h-[28px] items-center pr-1 pl-2">
+        <div className="ds-skeleton rounded-sm" style={{ width: 44, height: 8 }} />
+      </div>
+    </div>
+  );
+}
+
+function SidebarWorkspaceListSkeleton() {
+  return (
+    <div
+      className="flex flex-col gap-px"
+      data-testid="sidebar-workspace-list-skeleton"
+      role="status"
+      aria-label="正在加载对话"
+    >
+      <SidebarWorkspaceGroupLabelSkeleton />
+      {SIDEBAR_WORKSPACE_SKELETON_ROW_WIDTHS.map((width) => (
+        <SidebarWorkspaceRowSkeleton key={width} width={width} />
+      ))}
     </div>
   );
 }

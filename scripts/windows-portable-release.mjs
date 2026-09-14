@@ -50,6 +50,8 @@ export const DEFAULT_WINDOWS_RELEASE_DIR = join(
 
 export const WINDOWS_UPDATER_CACHE_DIR_NAME = 'sync-think-updater';
 export const WINDOWS_UPDATER_SIGNING_MODES = Object.freeze(['release', 'unsigned-fixture']);
+export const WINDOWS_UPDATE_FEED_FILE_NAME = 'update-feed.json';
+export const WINDOWS_UPDATE_FEED_SCHEMA_VERSION = 1;
 
 export function normalizeWindowsPublisherName(value) {
   const normalized = String(value ?? '').trim();
@@ -102,10 +104,54 @@ export function assertWindowsUpdaterBootstrapConfig(contents, configuration) {
   return configuration;
 }
 
+/**
+ * The update feed is frozen into the installer so an installed app reports
+ * itself as configured without any environment variable. A build that supplies
+ * no feed still emits the sidecar with an empty URL: the runtime parser reads
+ * that as "no bundled feed" and falls back to the environment, which keeps the
+ * fixture and development flows working unchanged.
+ */
+export function resolveWindowsUpdateFeedConfiguration(options = {}, environment = process.env) {
+  const rawFeedUrl = options.feedUrl ?? environment.SYNC_THINK_UPDATE_FEED_URL;
+  const rawChannel = options.channel ?? environment.SYNC_THINK_UPDATE_CHANNEL;
+  const feedUrl = typeof rawFeedUrl === 'string' ? rawFeedUrl.trim() : '';
+  const channel = typeof rawChannel === 'string' ? rawChannel.trim() : '';
+  return { feedUrl, channel: channel === '' ? null : channel };
+}
+
+export function createWindowsUpdateFeedConfig(configuration = { feedUrl: '', channel: null }) {
+  const document = {
+    schemaVersion: WINDOWS_UPDATE_FEED_SCHEMA_VERSION,
+    feedUrl: configuration.feedUrl,
+  };
+  if (configuration.channel) document.channel = configuration.channel;
+  return JSON.stringify(document, null, 2) + '\n';
+}
+
+export function assertWindowsUpdateFeedConfig(contents) {
+  let parsed;
+  try {
+    parsed = JSON.parse(contents);
+  } catch {
+    throw new Error('release.update_feed_config_invalid');
+  }
+  if (
+    typeof parsed !== 'object' ||
+    parsed === null ||
+    Array.isArray(parsed) ||
+    parsed.schemaVersion !== WINDOWS_UPDATE_FEED_SCHEMA_VERSION ||
+    typeof parsed.feedUrl !== 'string'
+  ) {
+    throw new Error('release.update_feed_config_invalid');
+  }
+  return parsed;
+}
+
 const REQUIRED_LAYOUT_FILES = [
   ['SYNC-THINK.exe', 'release.desktop_executable_missing'],
   ['resources/app/package.json', 'release.desktop_package_missing'],
   ['resources/app-update.yml', 'release.updater_config_missing'],
+  ['resources/' + WINDOWS_UPDATE_FEED_FILE_NAME, 'release.update_feed_config_missing'],
   ['resources/app/build/icon.ico', 'release.desktop_brand_icon_missing'],
   ['resources/app/build/icon.png', 'release.desktop_brand_preview_missing'],
   ['resources/app/dist/main/index.js', 'release.desktop_main_missing'],
@@ -324,6 +370,14 @@ export async function verifyWindowsPortableLayout(releaseDir, options = {}) {
       );
     } catch (error) {
       errors.push(error instanceof Error ? error.message : 'release.updater_config_invalid');
+    }
+  }
+  const updateFeedPath = join(root, 'resources', WINDOWS_UPDATE_FEED_FILE_NAME);
+  if (await isNonEmptyFile(updateFeedPath)) {
+    try {
+      assertWindowsUpdateFeedConfig(await readFile(updateFeedPath, 'utf8'));
+    } catch (error) {
+      errors.push(error instanceof Error ? error.message : 'release.update_feed_config_invalid');
     }
   }
 
@@ -637,6 +691,10 @@ export async function stageWindowsPortableRelease(options = {}) {
     },
     options.environment ?? process.env,
   );
+  const updateFeedConfiguration = resolveWindowsUpdateFeedConfiguration(
+    { feedUrl: options.feedUrl, channel: options.channel },
+    options.environment ?? process.env,
+  );
 
   await rm(outputDir, RECURSIVE_REMOVE_OPTIONS);
   await mkdir(dirname(outputDir), { recursive: true });
@@ -681,6 +739,11 @@ export async function stageWindowsPortableRelease(options = {}) {
   await writeFile(
     join(outputDir, 'resources', 'app-update.yml'),
     createWindowsUpdaterBootstrapConfig(updaterConfiguration),
+    'utf8',
+  );
+  await writeFile(
+    join(outputDir, 'resources', WINDOWS_UPDATE_FEED_FILE_NAME),
+    createWindowsUpdateFeedConfig(updateFeedConfiguration),
     'utf8',
   );
   await writeFile(join(runtimeDir, 'main.js'), "import './dist/main.js';\n", 'utf8');
@@ -752,6 +815,8 @@ async function main() {
       version: readArgument(args, '--version'),
       signingMode: readArgument(args, '--signing-mode'),
       publisherName: readArgument(args, '--publisher-name'),
+      feedUrl: readArgument(args, '--feed-url'),
+      channel: readArgument(args, '--channel'),
     });
     console.log('[release] portable Windows layout ready');
     console.log(

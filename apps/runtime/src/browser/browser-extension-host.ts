@@ -10,7 +10,7 @@ import type { SqliteAppSettingStore } from '@sync-think/storage';
 /** NewMax-compatible loopback bridge contract. */
 export const BROWSER_EXTENSION_PROTOCOL_VERSION = 1;
 export const BROWSER_EXTENSION_HOST = '127.0.0.1';
-export const BROWSER_EXTENSION_PORT = 17373;
+export const BROWSER_EXTENSION_PORT = 17374;
 export const BROWSER_EXTENSION_PATH = '/browser-extension/v1';
 export const BROWSER_EXTENSION_URL = `ws://${BROWSER_EXTENSION_HOST}:${BROWSER_EXTENSION_PORT}${BROWSER_EXTENSION_PATH}`;
 export const BROWSER_EXTENSION_BUNDLED_VERSION = '1.1.4';

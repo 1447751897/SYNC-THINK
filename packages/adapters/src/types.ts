@@ -93,6 +93,12 @@ export interface ProviderImageGenerationRequest {
   /** Stable scheduler key forwarded through compatible provider headers. */
   idempotencyKey: string;
   signal: AbortSignal;
+  /**
+   * Per-call local wall-clock limit. `null` disables the host timer entirely so
+   * a long image/upscale job is bounded only by the provider and by user
+   * cancellation through `signal`; `undefined` falls back to the adapter option.
+   */
+  timeoutMs?: number | null;
   prompt: string;
   count?: ImageGenerationCount;
   size?: ImageGenerationSize;

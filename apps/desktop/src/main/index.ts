@@ -71,6 +71,11 @@ import {
 import { ProjectContentSearchRegistry, searchProjectContent } from './project-content-search.js';
 import { parseProjectTerminalCommand, resolveProjectTerminalCwd } from './project-terminal.js';
 import {
+  killAllPtys,
+  killWindowPtys,
+  registerPtyTerminalHandlers,
+} from './pty-service.js';
+import {
   ProjectTerminalRegistry,
   type ProjectTerminalReservation,
 } from './project-terminal-registry.js';
@@ -150,12 +155,16 @@ import {
   parseImportCcSwitchPayload,
   parseListProvidersPayload,
   parseDiscoverModelsPayload,
+  parseProviderBalancePayload,
+  parseProbeModelsPayload,
   parseAddModelsPayload,
   parseProbeCapabilitiesPayload,
   parseConfirmCapabilitiesPayload,
   parseReorderProvidersPayload,
   parseAddProviderCredentialMetadata,
   parseRemoveProviderCredentialPayload,
+  parseClearProviderCredentialsPayload,
+  parseDeleteProviderPayload,
   parseRevealProviderCredentialPayload,
   parseUpdateProviderCredentialMetadata,
   parseSetModelPrioritiesPayload,
@@ -167,6 +176,7 @@ import {
 } from '../provider-payloads.js';
 import {
   createProviderPayloadFromClipboard,
+  probeModelsPayloadFromClipboard,
   updateProviderPayloadFromClipboard,
 } from './provider-clipboard.js';
 import {
@@ -479,8 +489,10 @@ import type { TrustedRendererLocation } from './renderer-security.js';
 import {
   DesktopUpdateController,
   resolveDesktopUpdateConfiguration,
+  type DesktopUpdateBundledFeedOverrides,
   type DesktopUpdateConfiguration,
 } from './desktop-updater.js';
+import { readBundledDesktopUpdateFeedConfiguration } from './desktop-update-bundled-config.js';
 import { createElectronUpdaterDriver } from './electron-updater-driver.js';
 import {
   readDesktopUpdatePreferences,
@@ -612,7 +624,6 @@ let kernelUpdateService: KernelUpdateService | null = null;
 let desktopUpdateRollbackCoordinator: DesktopUpdateRollbackCoordinator | null = null;
 let desktopUpdateRollbackHealthPromise: Promise<void> | null = null;
 let desktopShutdownPromise: Promise<void> | null = null;
-const DESKTOP_RELEASE_NOTES_URL = 'https://github.com/1447751897/SYNC-THINK/releases';
 type KernelInstallResult = { ok: true } | { ok: false; error: string };
 let piKernelInstallPromise: Promise<KernelInstallResult> | null = null;
 const transientCleanupRegisteredSenders = new Set<number>();
@@ -623,6 +634,24 @@ const projectContentSearchCleanupRegisteredSenders = new Set<number>();
 const projectContentSearchRegistry = new ProjectContentSearchRegistry();
 const localWebPageRegistries = new Map<string, LocalWebPageRegistry>();
 const DEFAULT_LOCAL_WEB_PARTITION = 'persist:browser-panel';
+
+/**
+ * Partition prefix that marks an interactive HTML / design-draft preview guest.
+ * Mirrors NewMax (`newmax-visualization-<random>`): the renderer creates a
+ * throwaway in-memory partition per preview component, and the main process is
+ * the only place that turns that name into a preload. A guest page cannot
+ * choose its own partition, so the prefix is a host-controlled capability
+ * rather than page-controlled input.
+ */
+const VISUALIZATION_PARTITION_PREFIX = 'sync-think-visualization-';
+const VISUALIZATION_PARTITION_RE = new RegExp(
+  `^${VISUALIZATION_PARTITION_PREFIX}[a-z0-9-]{1,96}$`,
+  'i',
+);
+
+function isVisualizationPartition(value: unknown): boolean {
+  return typeof value === 'string' && VISUALIZATION_PARTITION_RE.test(value);
+}
 
 function localWebPagePersistencePath(partition: string): string {
   // Partition names contain `:` on purpose, so encode them instead of using
@@ -776,6 +805,17 @@ async function bootstrapPrivateKernelsAtStartup(): Promise<void> {
   broadcastKernelUpdateState(service.getSnapshot());
 }
 
+/**
+ * Installed builds carry a feed sidecar inside their resources directory, so a
+ * double-clicked application is configured without any environment variable.
+ * Development has no sidecar and keeps using the environment only.
+ */
+function readBundledUpdateFeed(): DesktopUpdateBundledFeedOverrides | null {
+  if (!app.isPackaged) return null;
+  const resourcesPath = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
+  return readBundledDesktopUpdateFeedConfiguration(resourcesPath ?? null);
+}
+
 function initializeDesktopUpdater(): void {
   const recoveryRoot = app.isPackaged ? resolveDesktopUpdateRecoveryRoot(process.env) : null;
   if (recoveryRoot) {
@@ -797,6 +837,7 @@ function initializeDesktopUpdater(): void {
 
   const resolved = resolveDesktopUpdateConfiguration(process.env, {
     isPackaged: app.isPackaged,
+    bundledFeed: readBundledUpdateFeed(),
   });
   let configuration: DesktopUpdateConfiguration = resolved;
   let driver = null;
@@ -960,6 +1001,29 @@ function createWindow(): void {
     webPreferences.nodeIntegration = false;
     webPreferences.contextIsolation = true;
     webPreferences.sandbox = true;
+    // Interactive HTML / design-draft previews get the guest measurement
+    // preload, exactly like NewMax's `newmax-visualization-*` partition. Every
+    // other webview (embedded browser tabs, local project pages) keeps its
+    // preload deleted. Both conditions must hold: the host-chosen partition
+    // prefix and a local data: document, so the prefix alone cannot grant a
+    // preload to a remote page. The sandbox/isolation settings above still
+    // apply to the guest.
+    const attachSrc = String(params.src ?? '');
+    if (isVisualizationPartition(params.partition)) {
+      if (/^data:text\/html(;|,)/i.test(attachSrc)) {
+        (webPreferences as { preload?: string }).preload = path.join(
+          __dirname,
+          '../preload/visualization.cjs',
+        );
+      } else {
+        // Loud on purpose: a preview without the measurement preload silently
+        // stays at its initial height, which is hard to diagnose from the UI.
+        console.warn(
+          '[desktop] visualization partition without a data: document; preload not attached',
+          attachSrc.slice(0, 64),
+        );
+      }
+    }
     const src = String(params.src ?? '');
     if (new RegExp(`^${LOCAL_WEB_PAGE_SCHEME}://[^/]+/`, 'i').test(src)) {
       try {
@@ -1009,6 +1073,7 @@ function createWindow(): void {
     });
   });
   window.once('ready-to-show', () => window.show());
+  window.on('closed', () => killWindowPtys(window.id));
   const load = parsedDevServerUrl
     ? window.loadURL(parsedDevServerUrl.href)
     : window.loadFile(rendererPath);
@@ -1084,6 +1149,11 @@ function getRuntimeClient(): RuntimePipeClient {
 }
 
 function sendRuntimeEventToRenderer(event: Event): void {
+  sendRuntimeEventsToRenderer([event]);
+}
+
+function sendRuntimeEventsToRenderer(events: readonly Event[]): void {
+  if (events.length === 0) return;
   const window = mainWindow;
   const location = trustedRendererLocation;
   if (!window || !location || window.isDestroyed()) return;
@@ -1091,7 +1161,7 @@ function sendRuntimeEventToRenderer(event: Event): void {
   if (webContents.isDestroyed() || !isTrustedRendererUrl(webContents.getURL(), location)) {
     return;
   }
-  webContents.send('runtime:event', event);
+  webContents.send('runtime:events', events);
 }
 
 function sendRuntimeTransientFrameToRenderer(
@@ -1180,7 +1250,7 @@ async function streamProjectTerminalCommand(
   args: string[],
 ): Promise<void> {
   try {
-    const events = new TerminalProcessWorker().exec(
+    const events = new TerminalProcessWorker({ timeoutMs: null, streamAllOutput: true }).exec(
       {
         workingDir: command.root,
         action: {
@@ -1302,6 +1372,7 @@ function getRuntimeSession(): RuntimeSession {
     new FileRuntimeActivityCursorStore(
       path.join(app.getPath('userData'), 'runtime-activity-cursor.json'),
     ),
+    sendRuntimeEventsToRenderer,
   );
   return runtimeSession;
 }
@@ -1655,16 +1726,6 @@ function setupRuntimeBridge(): void {
     writeDesktopUpdatePreferences(desktopUpdatePreferencesRoot(), { autoCheck: enabled });
     return { enabled };
   });
-  ipcMain.handle('desktop:update-open-release-notes', async (event) => {
-    assertRuntimeIpcSource(event);
-    try {
-      await shell.openExternal(DESKTOP_RELEASE_NOTES_URL);
-      return { opened: true, error: null };
-    } catch {
-      return { opened: false, error: 'desktop.update.release-notes-open-failed' };
-    }
-  });
-
   ipcMain.handle('desktop:open-external-url', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
     const url = normalizeExternalUrl(value);
@@ -1988,6 +2049,19 @@ function setupRuntimeBridge(): void {
     await ensureRuntimeConnection();
     return getRuntimeClient().request('provider.discoverModels', parseDiscoverModelsPayload(value));
   });
+  ipcMain.handle('runtime:provider-balance', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('provider.balance', parseProviderBalancePayload(value));
+  });
+  ipcMain.handle('runtime:provider-probe-models', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'provider.probeModels',
+      probeModelsPayloadFromClipboard(parseProbeModelsPayload(value), () => clipboard.readText()),
+    );
+  });
   ipcMain.handle('runtime:provider-add-models', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
     await ensureRuntimeConnection();
@@ -2040,6 +2114,19 @@ function setupRuntimeBridge(): void {
       'provider.removeCredential',
       parseRemoveProviderCredentialPayload(value),
     );
+  });
+  ipcMain.handle('runtime:provider-clear-credentials', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'provider.clearCredentials',
+      parseClearProviderCredentialsPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:provider-delete', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('provider.delete', parseDeleteProviderPayload(value));
   });
   ipcMain.handle('runtime:provider-reveal-credential', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
@@ -3927,6 +4014,8 @@ function setupRuntimeBridge(): void {
     }
   });
 
+  registerPtyTerminalHandlers(ipcMain, { assertSource: assertRuntimeIpcSource });
+
   ipcMain.handle('desktop:start-project-terminal', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
     if (value === null || typeof value !== 'object' || Array.isArray(value)) {
@@ -4340,6 +4429,33 @@ void app
             },
           });
         }
+        if (url.hostname === 'generated') {
+          const raw = decodeURIComponent(url.pathname.replace(/^\//, ''));
+          const absolute = path.resolve(raw);
+          const normalized = absolute.split(path.sep).join('/');
+          const ext = path.extname(absolute).toLowerCase();
+          const mime =
+            ext === '.jpg' || ext === '.jpeg'
+              ? 'image/jpeg'
+              : ext === '.webp'
+                ? 'image/webp'
+                : ext === '.png'
+                  ? 'image/png'
+                  : null;
+          if (
+            !normalized.includes('/.sync-think/generated-images/') ||
+            !mime ||
+            !fs.existsSync(absolute)
+          ) {
+            return new Response('Not found', { status: 404 });
+          }
+          return new Response(new Uint8Array(fs.readFileSync(absolute)), {
+            headers: {
+              'Content-Type': mime,
+              'Cache-Control': 'private, max-age=31536000, immutable',
+            },
+          });
+        }
         if (url.hostname === 'artifact') {
           const token = decodeURIComponent(url.pathname.replace(/^\//, ''));
           if (!token || token.includes('/')) {
@@ -4444,6 +4560,7 @@ function shutdownDesktopServices(reason: DesktopShutdownReason = 'desktop-exit')
   const plan = planDesktopShutdown(reason);
   projectContentSearchRegistry.abortAll();
   abortAllProjectTerminals();
+  killAllPtys();
   for (const subscription of projectFileWatchSubscriptions.values()) subscription.dispose();
   projectFileWatchSubscriptions.clear();
   runtimeClient?.disconnect();

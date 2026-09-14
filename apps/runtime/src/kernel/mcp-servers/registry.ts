@@ -25,8 +25,12 @@ import { taskBoardServer } from './task-board-server.js';
 import { webFetchServer, webSearchServer } from './web-server.js';
 import { browserServer } from './browser-server.js';
 import { visionFallbackServer } from './vision-fallback-server.js';
+import { imageGenerationServer } from './image-generation-server.js';
+import { capabilityBrokerServer } from './capability-broker-server.js';
 import { windowsOcrServer } from './windows-ocr-server.js';
 import { jsonSchemaToZodShape, type ZodFactory } from './schema-bridge.js';
+import type { ConversationTrack } from '@sync-think/shared';
+import { isCollaborationToolAllowed, normalizeCollaborationSettings } from '../../collaboration-policy.js';
 
 export type { KernelMcpServerDefinition, KernelMcpToolDefinition } from './define-server.js';
 
@@ -49,6 +53,8 @@ export interface KernelMcpServerConditions {
   fallbackWebSearchEnabled?: boolean;
   /** Settings > 模型 > 图片识别 Fallback switched on. */
   visionFallbackEnabled?: boolean;
+  /** Settings > 模型 > 图像生成 has an enabled OpenAI Images provider. */
+  imageGenerationEnabled?: boolean;
   /** True only when this conversation has an active Goal-mode objective. */
   hasActiveGoal?: boolean;
 }
@@ -73,6 +79,7 @@ const storeCondition = (key: keyof KernelMcpServerConditions) => (): boolean =>
 export const KERNEL_MCP_SERVERS: readonly KernelMcpServerDefinition[] = [
   platformServer,
   windowsOcrServer,
+  capabilityBrokerServer,
   {
     ...agentLibraryServer,
     condition: storeCondition('hasAgentStore'),
@@ -96,6 +103,10 @@ export const KERNEL_MCP_SERVERS: readonly KernelMcpServerDefinition[] = [
   {
     ...visionFallbackServer,
     condition: storeCondition('visionFallbackEnabled'),
+  },
+  {
+    ...imageGenerationServer,
+    condition: storeCondition('imageGenerationEnabled'),
   },
   {
     ...webSearchServer,
@@ -141,6 +152,8 @@ export function selectKernelMcpRun(options: {
   executionMode?: string;
   networkEnabled?: boolean;
   planningMode?: boolean;
+  conversationTrack?: ConversationTrack;
+  collaborationSettings?: unknown;
 }): KernelMcpRunSelection {
   const servers: KernelMcpServerDefinition[] = [];
   const externalTools: KernelMcpToolDefinition[] = [];
@@ -157,13 +170,23 @@ export function selectKernelMcpRun(options: {
         }
       }
     }
+    // Deferred servers stay off the model catalog; capability-broker searches
+    // them and the host executes the underlying short name.
+    if (server.deferred) continue;
     const visibleTools = (
       options.planningMode
         ? server.tools.filter((tool) => !tool.planningDenied)
         : server.tools
-    ).filter((tool) => tool.name !== 'goal_manage' || currentConditions.hasActiveGoal === true);
+    ).filter((tool) =>
+      (tool.name !== 'goal_manage' || currentConditions.hasActiveGoal === true) &&
+      (!options.conversationTrack || isCollaborationToolAllowed({
+        track: options.conversationTrack,
+        toolName: tool.name,
+        settings: normalizeCollaborationSettings(options.collaborationSettings),
+      })),
+    );
     if (visibleTools.length === 0) continue;
-    servers.push(server);
+    servers.push({ ...server, tools: visibleTools });
     nativeTools.push(...visibleTools);
     if (!server.hostOnly) {
       externalTools.push(
@@ -192,6 +215,7 @@ export function buildSdkMcpServers(
 ): Record<string, McpSdkServerConfigWithInstance> {
   const servers: Record<string, McpSdkServerConfigWithInstance> = {};
   for (const server of selection) {
+    if (server.deferred) continue;
     const tools: SdkMcpToolDefinition[] = server.tools.map((toolDef) => ({
       name: toolDef.name,
       description: toolDef.description,

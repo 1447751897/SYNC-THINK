@@ -6,17 +6,21 @@ import test from 'node:test';
 
 import {
   assertSafeReleaseOutput,
+  assertWindowsUpdateFeedConfig,
   assertWindowsUpdaterBootstrapConfig,
   collectForbiddenReleaseFiles,
   createCriticalFileManifest,
+  createWindowsUpdateFeedConfig,
   createWindowsUpdaterBootstrapConfig,
   createPnpmDeployInvocation,
   isIgnorableWindowsPnpmBinShimFailure,
   normalizeWindowsPublisherName,
   normalizeWindowsReleaseVersion,
   pruneProductionBinDirectories,
+  resolveWindowsUpdateFeedConfiguration,
   resolveWindowsUpdaterBootstrapConfiguration,
   verifyWindowsPortableLayout,
+  WINDOWS_UPDATE_FEED_SCHEMA_VERSION,
   pruneDesktopRendererModules,
   pruneElectronLocales,
   pruneOwnedPayload,
@@ -467,4 +471,95 @@ test('portable layout verifier reports missing critical resources without throwi
   assert.ok(result.errors.includes('release.npm_cli_missing'));
   assert.ok(result.errors.includes('release.node_binary_missing'));
   assert.deepEqual(result.forbiddenFiles, []);
+});
+
+test('portable layout verifier requires the bundled update feed sidecar', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'sync-think-release-feed-'));
+  const result = await verifyWindowsPortableLayout(root, { probeNode: false });
+
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.includes('release.update_feed_config_missing'));
+});
+
+test('update feed sidecar freezes the bundled feed into an installed app', () => {
+  const contents = createWindowsUpdateFeedConfig({
+    feedUrl: 'https://sync-think.online/updates',
+    channel: 'beta',
+  });
+  assert.ok(contents.endsWith('\n'));
+  assert.deepEqual(JSON.parse(contents), {
+    schemaVersion: WINDOWS_UPDATE_FEED_SCHEMA_VERSION,
+    feedUrl: 'https://sync-think.online/updates',
+    channel: 'beta',
+  });
+  // Byte-exact: the desktop runtime test parses this very literal, so changing
+  // the emitted format here has to fail there as well.
+  assert.equal(
+    contents,
+    '{\n  "schemaVersion": 1,\n  "feedUrl": "https://sync-think.online/updates",\n  "channel": "beta"\n}\n',
+  );
+
+  // Without a channel the sidecar stays minimal so the runtime default applies.
+  assert.deepEqual(
+    JSON.parse(createWindowsUpdateFeedConfig({ feedUrl: 'https://sync-think.online/updates' })),
+    { schemaVersion: WINDOWS_UPDATE_FEED_SCHEMA_VERSION, feedUrl: 'https://sync-think.online/updates' },
+  );
+
+  // A feed-less build ships this exact document, which the runtime reads as
+  // "no bundled feed" and falls back to the environment.
+  assert.equal(
+    createWindowsUpdateFeedConfig({ feedUrl: '', channel: null }),
+    '{\n  "schemaVersion": 1,\n  "feedUrl": ""\n}\n',
+  );
+});
+
+test('update feed sidecar verifier rejects malformed or foreign documents', () => {
+  assert.equal(
+    assertWindowsUpdateFeedConfig(
+      createWindowsUpdateFeedConfig({ feedUrl: 'https://sync-think.online/updates' }),
+    ).feedUrl,
+    'https://sync-think.online/updates',
+  );
+
+  for (const contents of [
+    'nope',
+    '[]',
+    'null',
+    '"https://sync-think.online/updates"',
+    JSON.stringify({ schemaVersion: 2, feedUrl: 'https://sync-think.online/updates' }),
+    JSON.stringify({ schemaVersion: 1 }),
+    JSON.stringify({ schemaVersion: 1, feedUrl: 7 }),
+  ]) {
+    assert.throws(
+      () => assertWindowsUpdateFeedConfig(contents),
+      /release\.update_feed_config_invalid/,
+    );
+  }
+});
+
+test('update feed sidecar resolution reads the build environment and tolerates its absence', () => {
+  assert.deepEqual(
+    resolveWindowsUpdateFeedConfiguration(
+      {},
+      {
+        SYNC_THINK_UPDATE_FEED_URL: '  https://sync-think.online/updates  ',
+        SYNC_THINK_UPDATE_CHANNEL: '  beta  ',
+      },
+    ),
+    { feedUrl: 'https://sync-think.online/updates', channel: 'beta' },
+  );
+
+  // A build with no explicit feed still emits a sidecar: the empty URL makes
+  // the runtime fall back to the environment rather than point at nothing.
+  const absent = resolveWindowsUpdateFeedConfiguration({}, {});
+  assert.deepEqual(absent, { feedUrl: '', channel: null });
+  assert.equal(JSON.parse(createWindowsUpdateFeedConfig(absent)).feedUrl, '');
+
+  assert.deepEqual(
+    resolveWindowsUpdateFeedConfiguration(
+      { feedUrl: 'https://explicit.example.test/releases', channel: 'alpha' },
+      {},
+    ),
+    { feedUrl: 'https://explicit.example.test/releases', channel: 'alpha' },
+  );
 });

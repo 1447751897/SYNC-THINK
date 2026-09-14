@@ -1,5 +1,6 @@
 /** NewMax 1.1.15 `formatToolOutput` display bounds. */
-export const MAX_TOOL_OUTPUT_LINES = 200;
+/** Compact execution preview; users can expand to inspect the complete output. */
+export const MAX_TOOL_OUTPUT_LINES = 20;
 export const MAX_TOOL_OUTPUT_CHARACTERS = 40_000;
 const LARGE_CONTENT_PREVIEW_HEAD_CHARS = 30_000;
 const LARGE_CONTENT_PREVIEW_TAIL_CHARS = 10_000;

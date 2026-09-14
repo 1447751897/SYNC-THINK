@@ -4,7 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import type { Conversation, Message } from '@sync-think/shared';
-import { ChatView } from './ChatView.js';
+import { ChatView, resetRecentConversationPageCacheForTests } from './ChatView.js';
 
 const runtime = {
   listConversationMessages: vi.fn(),
@@ -57,6 +57,7 @@ function chat(conversationId: string) {
 }
 
 beforeEach(() => {
+  resetRecentConversationPageCacheForTests();
   runtime.listConversationMessages.mockReset();
   runtime.openTask.mockReset().mockImplementation(({ taskId }: { taskId: string }) =>
     Promise.resolve({ task: { threadId: `thread-${taskId}` } }),

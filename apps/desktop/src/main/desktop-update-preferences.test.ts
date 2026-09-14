@@ -28,6 +28,7 @@ const idleSnapshot: DesktopUpdateSnapshot = {
   currentVersion: '0.0.1',
   channel: 'latest',
   availableVersion: null,
+  releaseNotes: null,
   progressPercent: null,
   checkedAt: null,
   downloadedAt: null,

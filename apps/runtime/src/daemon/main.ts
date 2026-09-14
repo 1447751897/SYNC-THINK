@@ -170,7 +170,9 @@ export interface DaemonOptions {
 
 function stateDir(dbPath: string): string {
   if (dbPath !== ':memory:') return dirname(dbPath);
-  const dataRoot = process.env.LOCALAPPDATA ?? join(homedir(), '.sync-think');
+  const dataRoot = process.env.LOCALAPPDATA ?? (process.platform === 'darwin'
+    ? join(homedir(), 'Library', 'Application Support')
+    : join(homedir(), '.sync-think'));
   return join(dataRoot, 'SYNC-THINK');
 }
 

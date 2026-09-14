@@ -10,10 +10,7 @@ import type {
   ExportDesktopDiagnosticsPayload,
   ExportDesktopDiagnosticsResponse,
 } from '../diagnostics-export-contract.js';
-import type {
-  DesktopUpdateAutoCheckPreference,
-  DesktopUpdateOpenResult,
-} from '../desktop-update-contract.js';
+import type { DesktopUpdateAutoCheckPreference } from '../desktop-update-contract.js';
 import type {
   ExportDesktopDataPayload,
   ExportDesktopDataResponse,
@@ -71,6 +68,7 @@ import type {
   ListProvidersResponse,
   DiscoverModelsPayload,
   DiscoverModelsResponse,
+  ProbeModelsResponse,
   AddModelsPayload,
   AddModelsResponse,
   ProbeCapabilitiesPayload,
@@ -82,6 +80,10 @@ import type {
   AddProviderCredentialResponse,
   RemoveProviderCredentialPayload,
   RemoveProviderCredentialResponse,
+  ClearProviderCredentialsPayload,
+  ClearProviderCredentialsResponse,
+  DeleteProviderPayload,
+  DeleteProviderResponse,
   SetModelPrioritiesPayload,
   SetModelPrioritiesResponse,
   UpdateModelPayload,
@@ -266,6 +268,7 @@ import type {
 } from '@sync-think/protocol';
 import type {
   RendererCreateProviderPayload,
+  RendererProbeModelsPayload,
   RendererUpdateProviderPayload,
   RendererUpdateProviderCredentialPayload,
 } from '../provider-payloads.js';
@@ -290,6 +293,8 @@ import type {
   StartProjectTerminalResult,
 } from '../workspace-tools-contract.js';
 import type { OpenExternalUrlResult } from '../external-link-contract.js';
+import type { PtyTerminalBridge } from '../terminal-pty-contract.js';
+import type { PlatformContext } from '@sync-think/shared';
 
 declare global {
   interface Window {
@@ -376,6 +381,7 @@ declare global {
         importCcSwitch(payload: ImportCcSwitchPayload): Promise<ImportCcSwitchResponse>;
         listProviders(payload?: ListProvidersPayload): Promise<ListProvidersResponse>;
         discoverModels(payload: DiscoverModelsPayload): Promise<DiscoverModelsResponse>;
+        probeModels(payload: RendererProbeModelsPayload): Promise<ProbeModelsResponse>;
         addModels(payload: AddModelsPayload): Promise<AddModelsResponse>;
         probeCapabilities(payload: ProbeCapabilitiesPayload): Promise<ProbeCapabilitiesResponse>;
         confirmCapabilities(
@@ -389,6 +395,10 @@ declare global {
         removeProviderCredential(
           payload: RemoveProviderCredentialPayload,
         ): Promise<RemoveProviderCredentialResponse>;
+        clearProviderCredentials(
+          payload: ClearProviderCredentialsPayload,
+        ): Promise<ClearProviderCredentialsResponse>;
+        deleteProvider(payload: DeleteProviderPayload): Promise<DeleteProviderResponse>;
         revealProviderCredential(
           payload: import('@sync-think/protocol').RevealProviderCredentialPayload,
         ): Promise<import('@sync-think/protocol').RevealProviderCredentialResponse>;
@@ -398,6 +408,9 @@ declare global {
         setModelPriorities(payload: SetModelPrioritiesPayload): Promise<SetModelPrioritiesResponse>;
         updateModel(payload: UpdateModelPayload): Promise<UpdateModelResponse>;
         removeProviderModel(payload: RemoveModelPayload): Promise<RemoveModelResponse>;
+        queryProviderBalance(
+          payload: import('@sync-think/protocol').ProviderBalancePayload,
+        ): Promise<import('@sync-think/protocol').ProviderBalanceResponse>;
         getSettings(payload?: GetSettingsPayload): Promise<GetSettingsResponse>;
         setSetting(payload: SetSettingPayload): Promise<SetSettingResponse>;
         listWebSearchProviders(
@@ -919,6 +932,7 @@ declare global {
           created: boolean;
         }>;
         onEvent(listener: (event: Event) => void): () => void;
+        onEvents?(listener: (events: Event[]) => void): () => void;
         onOpenConversation(listener: (conversationId: string) => void): () => void;
         onBrowserNewTab?(
           listener: (payload: { openerWebContentsId: number; url: string }) => void,
@@ -930,6 +944,7 @@ declare global {
           path: string | null;
         }>;
       };
+      terminal?: PtyTerminalBridge;
       updates: {
         getState(): Promise<DesktopUpdateSnapshot>;
         checkForUpdates(): Promise<DesktopUpdateActionResult>;
@@ -939,21 +954,23 @@ declare global {
         setAutoCheck(
           payload: DesktopUpdateAutoCheckPreference,
         ): Promise<DesktopUpdateAutoCheckPreference>;
-        openReleaseNotes(): Promise<DesktopUpdateOpenResult>;
         openLogDirectory(): Promise<OpenDesktopDataDirectoryResponse>;
         subscribeState(listener: (snapshot: DesktopUpdateSnapshot) => void): () => void;
       };
-      platform: 'win32';
+      platform: PlatformContext;
     };
   }
 
-  // Electron <webview>（内置浏览器面板）。guest 权限在 main 侧收紧。
+  // Electron <webview>（内置浏览器面板 / 交互式预览）。guest 权限在 main 侧收紧。
   namespace JSX {
     interface IntrinsicElements {
       webview: React.DetailedHTMLProps<
         React.HTMLAttributes<HTMLElement> & {
           src?: string;
           partition?: string;
+          // Electron guest preference string, e.g.
+          // "sandbox=yes,contextIsolation=yes,nodeIntegration=no,webSecurity=yes".
+          webpreferences?: string;
         },
         HTMLElement
       >;

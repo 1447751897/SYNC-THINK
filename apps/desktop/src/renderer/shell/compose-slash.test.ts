@@ -179,6 +179,7 @@ describe('resolveSystemMessageTone', () => {
 
   it('only marks narrow failure prefixes as error', () => {
     expect(resolveSystemMessageTone(undefined, '发送失败: boom')).toBe('error');
+    expect(resolveSystemMessageTone(undefined, '发送超时。请稍后重试')).toBe('error');
     expect(resolveSystemMessageTone(undefined, '上下文压缩超时：请稍后重试')).toBe('error');
     expect(resolveSystemMessageTone(undefined, '上一轮工具调用失败后已自动恢复，可继续')).toBe(
       'info',

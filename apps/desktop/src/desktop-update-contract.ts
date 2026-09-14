@@ -16,6 +16,12 @@ export interface DesktopUpdateSnapshot {
   currentVersion: string;
   channel: string;
   availableVersion: string | null;
+  /**
+   * Release notes for the pending version, taken from the update feed. Plain
+   * text only: the Main process normalizes and caps it before it reaches the
+   * renderer, which never interprets it as markup.
+   */
+  releaseNotes: string | null;
   progressPercent: number | null;
   checkedAt: string | null;
   downloadedAt: string | null;
@@ -30,9 +36,4 @@ export interface DesktopUpdateActionResult {
 
 export interface DesktopUpdateAutoCheckPreference {
   enabled: boolean;
-}
-
-export interface DesktopUpdateOpenResult {
-  opened: boolean;
-  error: string | null;
 }

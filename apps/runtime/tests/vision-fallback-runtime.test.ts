@@ -67,7 +67,7 @@ function createFrameInbox(socket: Socket) {
 class VisionRecordingAdapter implements ProviderAdapter {
   readonly protocol = 'openai-chat' as const;
   calls: ProviderCallRequest[] = [];
-  constructor(private readonly failVision = false) {}
+  constructor(private readonly failVision: boolean | ReadonlySet<string> = false) {}
   async discoverModels(): Promise<string[]> {
     return ['deepseek-v4-flash', 'gpt-4o-describe'];
   }
@@ -76,7 +76,10 @@ class VisionRecordingAdapter implements ProviderAdapter {
     const content = request.messages[0]?.content;
     const hasImagePart = Array.isArray(content) && content.some((part) => part.type === 'image');
     if (hasImagePart) {
-      if (this.failVision) {
+      const failForModel =
+        this.failVision === true ||
+        (this.failVision instanceof Set && this.failVision.has(request.modelId));
+      if (failForModel) {
         yield {
           type: 'error',
           failureClass: 'transient',
@@ -111,6 +114,8 @@ async function setupFixture(options: {
   modelId: string;
   bindWorkspace?: boolean;
   failVision?: boolean;
+  failVisionModelIds?: string[];
+  addBackupVisionModel?: boolean;
   failOcr?: boolean;
 }): Promise<Fixture> {
   const dir = mkdtempSync(join(tmpdir(), 'sync-think-vision-fallback-'));
@@ -152,21 +157,38 @@ async function setupFixture(options: {
     protocol: 'openai-chat',
     storeHandle: handle,
   });
+  const modelDefinitions = [
+    { providerModelId: 'deepseek-v4-flash', displayName: 'DeepSeek Flash' },
+    {
+      providerModelId: 'gpt-4o-describe',
+      displayName: 'GPT-4o Describe',
+      capabilities: ['text', 'vision'],
+    },
+    ...(options.addBackupVisionModel
+      ? [
+          {
+            providerModelId: 'gpt-4.1-backup',
+            displayName: 'GPT-4.1 Backup',
+            capabilities: ['text', 'vision'],
+          },
+        ]
+      : []),
+  ];
   const models = providerStore.upsertModels({
     providerId: created.provider.id,
     protocol: 'openai-chat',
-    models: [
-      { providerModelId: 'deepseek-v4-flash', displayName: 'DeepSeek Flash' },
-      { providerModelId: 'gpt-4o-describe', displayName: 'GPT-4o Describe' },
-    ],
+    models: modelDefinitions,
   });
   const deepseekModel = models.find((model) => model.providerModelId === 'deepseek-v4-flash')!;
   const visionModel = models.find((model) => model.providerModelId === 'gpt-4o-describe')!;
   appSettingStore.set('vision-fallback', {
     enabled: options.fallbackEnabled,
+    providerId: created.provider.id,
     modelId: options.modelId,
   });
-  const adapter = new VisionRecordingAdapter(options.failVision);
+  const adapter = new VisionRecordingAdapter(
+    options.failVisionModelIds ? new Set(options.failVisionModelIds) : options.failVision,
+  );
   const ocrPaths: string[] = [];
   const runtime = new Runtime({
     installId,
@@ -306,30 +328,27 @@ describe('vision fallback driven by the Settings 图片识别 Fallback option', 
     }
   });
 
-  it('runs Windows OCR automatically when the visual Fallback switch is off', async () => {
+  it('forwards raw images when the visual Fallback switch is off', async () => {
     const fixture = await setupFixture({ fallbackEnabled: false, modelId: 'gpt-4o-describe' });
     try {
       const append = await appendImage(fixture, '看图', fixture.deepseekModelId);
       expect(append.error).toBeUndefined();
-      expect((append.payload as { imagesMode?: string }).imagesMode).toBe('ocr');
+      expect((append.payload as { imagesMode?: string }).imagesMode).toBe('forwarded');
       const deadline = Date.now() + 8_000;
       while (fixture.adapter.calls.length < 1 && Date.now() < deadline) {
         await new Promise((resolve) => setTimeout(resolve, 25));
       }
       expect(fixture.adapter.calls).toHaveLength(1);
-      expect(fixture.ocrPaths).toHaveLength(1);
-      const mainCall = fixture.adapter.calls[0]!;
-      const content = mainCall.messages[0]!.content;
-      expect(typeof content).toBe('string');
-      expect(content as string).toContain('Windows OCR');
-      expect(content as string).toContain('设置 > 模型');
+      expect(fixture.ocrPaths).toHaveLength(0);
+      const content = fixture.adapter.calls[0]!.messages[0]!.content;
+      expect(Array.isArray(content)).toBe(true);
     } finally {
       await fixture.runtime.stop();
       fixture.connection.raw.close();
     }
   });
 
-  it('falls through to Windows OCR when the configured vision model fails', async () => {
+  it('blocks the send when the configured vision model fails', async () => {
     const fixture = await setupFixture({
       fallbackEnabled: true,
       modelId: 'gpt-4o-describe',
@@ -337,24 +356,54 @@ describe('vision fallback driven by the Settings 图片识别 Fallback option', 
     });
     try {
       const append = await appendImage(fixture, '请读取截图', fixture.deepseekModelId);
-      expect(append.error).toBeUndefined();
-      expect((append.payload as { imagesMode?: string }).imagesMode).toBe('ocr');
-
-      const deadline = Date.now() + 8_000;
-      while (fixture.adapter.calls.length < 2 && Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, 25));
-      }
-      expect(fixture.adapter.calls).toHaveLength(2);
+      expect(append.error).toBeDefined();
+      expect(String(append.error?.message ?? append.error)).toContain('图片转写失败');
+      expect(fixture.adapter.calls).toHaveLength(1);
       expect(fixture.adapter.calls[0]!.modelId).toBe('gpt-4o-describe');
-      expect(fixture.ocrPaths).toHaveLength(1);
-      expect(fixture.adapter.calls[1]!.messages[0]!.content).toContain('OCR 提取文字');
+      expect(fixture.ocrPaths).toHaveLength(0);
     } finally {
       await fixture.runtime.stop();
       fixture.connection.raw.close();
     }
   });
 
-  it('runs OCR in the host even when a workspace is bound instead of asking the model to call a tool', async () => {
+  it('tries the next verified vision candidate when the configured model fails', async () => {
+    const fixture = await setupFixture({
+      fallbackEnabled: true,
+      modelId: 'gpt-4o-describe',
+      addBackupVisionModel: true,
+      failVisionModelIds: ['gpt-4o-describe'],
+    });
+    try {
+      const append = await appendImage(fixture, '请读取截图', fixture.deepseekModelId);
+      expect(append.error).toBeUndefined();
+      expect((append.payload as { imagesMode?: string }).imagesMode).toBe('described');
+
+      const deadline = Date.now() + 8_000;
+      while (fixture.adapter.calls.length < 3 && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      const visionCalls = fixture.adapter.calls.filter(
+        (call) =>
+          Array.isArray(call.messages[0]?.content) &&
+          (call.messages[0]!.content as Array<{ type?: string }>).some(
+            (part) => part.type === 'image',
+          ),
+      );
+      expect(visionCalls.map((call) => call.modelId)).toEqual([
+        'gpt-4o-describe',
+        'gpt-4.1-backup',
+      ]);
+      const mainCall = fixture.adapter.calls.at(-1)!;
+      expect(typeof mainCall.messages[0]!.content).toBe('string');
+      expect(mainCall.messages[0]!.content).toContain('一只坐在窗台上的猫');
+    } finally {
+      await fixture.runtime.stop();
+      fixture.connection.raw.close();
+    }
+  });
+
+  it('forwards raw images when a workspace is bound and Fallback is off', async () => {
     const fixture = await setupFixture({
       fallbackEnabled: false,
       modelId: 'gpt-4o-describe',
@@ -363,7 +412,7 @@ describe('vision fallback driven by the Settings 图片识别 Fallback option', 
     try {
       const append = await appendImage(fixture, '请读取截图文字', fixture.deepseekModelId);
       expect(append.error).toBeUndefined();
-      expect((append.payload as { imagesMode?: string }).imagesMode).toBe('ocr');
+      expect((append.payload as { imagesMode?: string }).imagesMode).toBe('forwarded');
 
       const deadline = Date.now() + 8_000;
       while (fixture.adapter.calls.length < 1 && Date.now() < deadline) {
@@ -371,17 +420,15 @@ describe('vision fallback driven by the Settings 图片识别 Fallback option', 
       }
       expect(fixture.adapter.calls).toHaveLength(1);
       const content = fixture.adapter.calls[0]!.messages[0]!.content;
-      expect(typeof content).toBe('string');
-      expect(content as string).toContain('OCR 提取文字');
-      expect(content as string).not.toContain('ocr_image');
-      expect(fixture.ocrPaths).toHaveLength(1);
+      expect(Array.isArray(content)).toBe(true);
+      expect(fixture.ocrPaths).toHaveLength(0);
     } finally {
       await fixture.runtime.stop();
       fixture.connection.raw.close();
     }
   });
 
-  it('does not forward raw images to a text model when both visual fallback and OCR fail', async () => {
+  it('blocks the send when visual fallback fails and never forwards raw images', async () => {
     const fixture = await setupFixture({
       fallbackEnabled: true,
       modelId: 'gpt-4o-describe',
@@ -390,17 +437,10 @@ describe('vision fallback driven by the Settings 图片识别 Fallback option', 
     });
     try {
       const append = await appendImage(fixture, '请读取截图', fixture.deepseekModelId);
-      expect(append.error).toBeUndefined();
-      expect((append.payload as { imagesMode?: string }).imagesMode).toBe('failed');
-
-      const deadline = Date.now() + 8_000;
-      while (fixture.adapter.calls.length < 2 && Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, 25));
-      }
-      const mainContent = fixture.adapter.calls.at(-1)!.messages[0]!.content;
-      expect(typeof mainContent).toBe('string');
-      expect(mainContent as string).toContain('图片预处理失败');
-      expect(fixture.ocrPaths).toHaveLength(1);
+      expect(append.error).toBeDefined();
+      expect(String(append.error?.message ?? append.error)).toContain('图片转写失败');
+      expect(fixture.adapter.calls).toHaveLength(1);
+      expect(fixture.ocrPaths).toHaveLength(0);
     } finally {
       await fixture.runtime.stop();
       fixture.connection.raw.close();

@@ -45,7 +45,7 @@ describe('process page controls', () => {
       .mockResolvedValueOnce({ process: second })
       .mockResolvedValueOnce({ process: first });
     render(<FileChangesCard view={first} />);
-    expect(screen.getByText('已更改 3 个文件')).toBeTruthy();
+    expect(screen.getByText('编辑了 3 个文件')).toBeTruthy();
     expect(read).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: '下一页文件' }));
     await screen.findByText('second.txt');
@@ -106,8 +106,10 @@ describe('process page controls', () => {
     await screen.findByText('second.txt');
     expect(screen.getAllByText('first.txt').length).toBeGreaterThan(0);
     expect(read.mock.calls[0][0]).toMatchObject({
-      page: { section: 'fileChanges', offset: 1, version },
+      page: { section: 'fileChanges', offset: 1 },
     });
+    // 自动补页不锚定快照版本：运行中的 run 版本持续变化，锚定会让补页永远失败。
+    expect(read.mock.calls[0][0].page?.version).toBeUndefined();
   });
 
   it('assembles every process step without showing page controls', async () => {
@@ -126,8 +128,25 @@ describe('process page controls', () => {
     expect(screen.getByText('第三步')).toBeTruthy();
     expect(screen.getByText('执行命令')).toBeTruthy();
     expect(read.mock.calls[0][0]).toMatchObject({
-      page: { section: 'steps', offset: 1, version },
+      page: { section: 'steps', offset: 1 },
     });
+    expect(read.mock.calls[0][0].page?.version).toBeUndefined();
+  });
+
+  it('keeps assembling every step while the run is still bumping the process version', async () => {
+    // 运行中的 run 每产出一个事件，过程快照的哈希就变一次。自动补页若锚定版本，
+    // 每一页请求都会被判为过期，步骤从此永远停在首页（用户看到「请重新读取」）。
+    const live = {
+      ...first,
+      steps: [{ ...first.steps[0], id: 'live-step', zh: '运行中步骤' }],
+      pages: { ...first.pages!, steps: { offset: 1, total: 3 }, version: 'b'.repeat(64) },
+    } as RunProcessView;
+    const read = vi.spyOn(runProcessPageReader, 'read').mockResolvedValueOnce({ process: live });
+    render(<ExecutionProcessBlock view={first} />);
+    await screen.findByText('运行中步骤');
+    // 旧步骤仍在，新步骤已追加 —— 说明版本变化没有打断补页
+    expect(screen.getByText('执行命令')).toBeTruthy();
+    expect(read.mock.calls[0][0].page?.version).toBeUndefined();
   });
 });
 

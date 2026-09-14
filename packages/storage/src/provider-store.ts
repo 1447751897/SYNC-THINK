@@ -19,6 +19,8 @@ export interface CreateProviderInput {
   /** CC Switch-style surface; defaults to 'generic' when omitted. */
   surface?: ProviderSurface;
   supportsDiscovery?: boolean;
+  /** 0055: save without a passing connection test (NewMax「仍然保存」). */
+  unverified?: boolean;
   importedFrom?: string;
   credentialGroupName?: string;
   credentialLabel?: string;
@@ -44,6 +46,11 @@ export interface ProviderRecord {
   enabled: boolean;
   /** 0026: manual ordering; first enabled provider is the default entry. */
   sortOrder: number;
+  /**
+   * 0055: created through NewMax-style「仍然保存」— the connection test did not
+   * pass but the user chose to keep the provider. Cleared once a test succeeds.
+   */
+  unverified: boolean;
   importedFrom?: string;
   createdAt: string;
   updatedAt: string;
@@ -75,6 +82,10 @@ export interface ModelRecord {
   capabilities: CapabilityTag[];
   limitsJson?: string;
   capabilitiesConfirmed: boolean;
+  /** NewMax-style per-dimension image probe result, persisted in limits_json metadata. */
+  visionCapability?: boolean;
+  /** Raw image probe failure reason, persisted in limits_json metadata. */
+  visionProbeReason?: string;
   /** 0026: priority chain inside a provider — 0 is the primary model. */
   priority: number;
   /** 0026: optional pinned credential ref for this model (relay-station groups). */
@@ -90,6 +101,8 @@ export interface UpsertModelsInput {
     displayName?: string;
     capabilities?: CapabilityTag[];
     limitsJson?: string;
+    visionCapability?: boolean | null;
+    visionProbeReason?: string | null;
   }>;
   capabilitiesConfirmed?: boolean;
   now?: string;
@@ -121,6 +134,8 @@ export interface UpdateProviderInput {
   supportsDiscovery?: boolean;
   /** 0026: toggle the entry on/off (disabled hides from pickers). */
   enabled?: boolean;
+  /** 0055: clear (false) once a connection test passes, or set true to save anyway. */
+  unverified?: boolean;
   credentialLabel?: string;
   /** Optional new secure-store handle when rotating the secret. */
   storeHandle?: string;
@@ -143,6 +158,7 @@ interface ProviderRow {
   surface: string | null;
   enabled: number;
   sort_order: number;
+  unverified: number;
   imported_from: string | null;
   created_at: string;
   updated_at: string;
@@ -179,6 +195,54 @@ interface ModelRow {
   created_at: string;
 }
 
+function parseVisionMetadata(limitsJson: string | null | undefined): {
+  visionCapability?: boolean;
+  visionProbeReason?: string;
+} {
+  if (!limitsJson) return {};
+  try {
+    const value = JSON.parse(limitsJson) as Record<string, unknown>;
+    return {
+      ...(typeof value._visionCapability === 'boolean'
+        ? { visionCapability: value._visionCapability }
+        : {}),
+      ...(typeof value._visionProbeReason === 'string' && value._visionProbeReason.trim()
+        ? { visionProbeReason: value._visionProbeReason }
+        : {}),
+    };
+  } catch {
+    return {};
+  }
+}
+
+function withVisionMetadata(
+  limitsJson: string | undefined,
+  visionCapability: boolean | null | undefined,
+  visionProbeReason: string | null | undefined,
+): string | undefined {
+  if (visionCapability === undefined && visionProbeReason === undefined) return limitsJson;
+  let value: Record<string, unknown> = {};
+  if (limitsJson) {
+    try {
+      const parsed = JSON.parse(limitsJson) as unknown;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        value = { ...(parsed as Record<string, unknown>) };
+      }
+    } catch {
+      value = {};
+    }
+  }
+  if (visionCapability !== undefined) {
+    if (visionCapability === null) delete value._visionCapability;
+    else value._visionCapability = visionCapability;
+  }
+  if (visionProbeReason !== undefined) {
+    if (visionProbeReason) value._visionProbeReason = visionProbeReason;
+    else delete value._visionProbeReason;
+  }
+  return Object.keys(value).length > 0 ? JSON.stringify(value) : undefined;
+}
+
 const PROTOCOLS = new Set<ProtocolFamily>([
   'openai-responses',
   'openai-chat',
@@ -212,6 +276,7 @@ export class SqliteProviderStore {
     const credentialKind: CredentialKind = input.credentialKind ?? 'api-key';
     const supportsDiscovery = input.supportsDiscovery ?? true;
     const surface = normalizeProviderSurface(input.surface, 'generic');
+    const unverified = input.unverified ?? false;
 
     const tx = this.raw.transaction(() => {
       const maxOrder = (this.raw
@@ -219,8 +284,8 @@ export class SqliteProviderStore {
         .get() as { max_order: number }).max_order;
       this.raw
         .prepare(
-          `INSERT INTO provider (id, name, base_url, supports_discovery, protocol, surface, enabled, sort_order, imported_from, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
+          `INSERT INTO provider (id, name, base_url, supports_discovery, protocol, surface, enabled, sort_order, unverified, imported_from, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`,
         )
         .run(
           providerId,
@@ -230,6 +295,7 @@ export class SqliteProviderStore {
           input.protocol,
           surface,
           maxOrder + 1,
+          unverified ? 1 : 0,
           input.importedFrom ?? null,
           now,
           now,
@@ -261,6 +327,7 @@ export class SqliteProviderStore {
         surface,
         enabled: true,
         sortOrder: this.getProvider(providerId)?.sortOrder ?? 0,
+        unverified,
         importedFrom: input.importedFrom,
         createdAt: now,
         updatedAt: now,
@@ -287,7 +354,7 @@ export class SqliteProviderStore {
   listProviders(): ProviderCatalogEntry[] {
     const providers = this.raw
       .prepare(
-        `SELECT id, name, base_url, supports_discovery, protocol, surface, enabled, sort_order, imported_from, created_at, updated_at
+        `SELECT id, name, base_url, supports_discovery, protocol, surface, enabled, sort_order, unverified, imported_from, created_at, updated_at
          FROM provider
          ORDER BY sort_order ASC, created_at ASC, id ASC`,
       )
@@ -338,7 +405,7 @@ export class SqliteProviderStore {
   getProvider(providerId: ProviderId): ProviderRecord | undefined {
     const row = this.raw
       .prepare(
-        `SELECT id, name, base_url, supports_discovery, protocol, surface, enabled, sort_order, imported_from, created_at, updated_at
+        `SELECT id, name, base_url, supports_discovery, protocol, surface, enabled, sort_order, unverified, imported_from, created_at, updated_at
          FROM provider WHERE id = ?`,
       )
       .get(providerId) as ProviderRow | undefined;
@@ -550,9 +617,9 @@ export class SqliteProviderStore {
         const capabilities = model.capabilities ?? ['text'];
         const existing = this.raw
           .prepare(
-            `SELECT id FROM model WHERE provider_id = ? AND provider_model_id = ?`,
+            `SELECT id, limits_json FROM model WHERE provider_id = ? AND provider_model_id = ?`,
           )
-          .get(input.providerId, providerModelId) as { id: string } | undefined;
+          .get(input.providerId, providerModelId) as { id: string; limits_json: string | null } | undefined;
 
         if (existing) {
           this.raw
@@ -566,7 +633,11 @@ export class SqliteProviderStore {
               displayName,
               input.protocol,
               JSON.stringify(capabilities),
-              model.limitsJson ?? null,
+              withVisionMetadata(
+                model.limitsJson ?? existing.limits_json ?? undefined,
+                model.visionCapability,
+                model.visionProbeReason,
+              ) ?? null,
               confirmed ? 1 : 0,
               existing.id,
             );
@@ -596,7 +667,7 @@ export class SqliteProviderStore {
               displayName,
               input.protocol,
               JSON.stringify(capabilities),
-              model.limitsJson ?? null,
+               withVisionMetadata(model.limitsJson, model.visionCapability, model.visionProbeReason) ?? null,
               confirmed ? 1 : 0,
               priority,
               now,
@@ -608,8 +679,15 @@ export class SqliteProviderStore {
             displayName,
             protocol: input.protocol,
             capabilities,
-            limitsJson: model.limitsJson,
+            limitsJson: withVisionMetadata(
+              model.limitsJson,
+              model.visionCapability,
+              model.visionProbeReason,
+            ),
             capabilitiesConfirmed: confirmed,
+            ...parseVisionMetadata(
+              withVisionMetadata(model.limitsJson, model.visionCapability, model.visionProbeReason),
+            ),
             priority,
             credentialRefId: undefined,
             createdAt: now,
@@ -629,6 +707,8 @@ export class SqliteProviderStore {
     modelId: ModelId | string;
     capabilities: CapabilityTag[];
     capabilitiesConfirmed: boolean;
+    visionCapability?: boolean | null;
+    visionProbeReason?: string | null;
   }): ModelRecord {
     const modelId = String(input.modelId).trim();
     if (!modelId) throw new Error('Model id must not be empty');
@@ -638,6 +718,9 @@ export class SqliteProviderStore {
     const known = new Set<CapabilityTag>([
       'text',
       'vision',
+      'document',
+      'video',
+      'thinking',
       'tool-calling',
       'web-search',
       'image-generation',
@@ -646,6 +729,9 @@ export class SqliteProviderStore {
     const ordered: CapabilityTag[] = [
       'text',
       'vision',
+      'document',
+      'video',
+      'thinking',
       'tool-calling',
       'web-search',
       'image-generation',
@@ -660,13 +746,29 @@ export class SqliteProviderStore {
     }
     const capabilities = ordered.filter((t) => seen.has(t));
 
+    const limitsJson = withVisionMetadata(
+      existing.limitsJson,
+      input.visionCapability !== undefined
+        ? input.visionCapability
+        : input.capabilitiesConfirmed
+          ? null
+          : undefined,
+      input.visionProbeReason !== undefined
+        ? input.visionProbeReason === null
+          ? ''
+          : input.visionProbeReason
+        : input.capabilitiesConfirmed
+          ? ''
+          : undefined,
+    );
+
     this.raw
       .prepare(
         `UPDATE model
-         SET capabilities_json = ?, capabilities_confirmed = ?
+         SET capabilities_json = ?, capabilities_confirmed = ?, limits_json = ?
          WHERE id = ?`,
       )
-      .run(JSON.stringify(capabilities), input.capabilitiesConfirmed ? 1 : 0, modelId);
+      .run(JSON.stringify(capabilities), input.capabilitiesConfirmed ? 1 : 0, limitsJson ?? null, modelId);
 
     const row = this.raw
       .prepare(
@@ -676,6 +778,27 @@ export class SqliteProviderStore {
       )
       .get(modelId) as ModelRow;
     return mapModel(row);
+  }
+
+  /** Persist the NewMax per-model image probe without changing user tags. */
+  updateModelVisionProbe(input: {
+    modelId: ModelId | string;
+    result?: boolean | null;
+    reason?: string | null;
+  }): ModelRecord {
+    const modelId = String(input.modelId).trim();
+    if (!modelId) throw new Error('Model id must not be empty');
+    const existing = this.getModel(modelId as ModelId);
+    if (!existing) throw new Error(`Model not found: ${modelId}`);
+    const limitsJson = withVisionMetadata(
+      existing.limitsJson,
+      input.result,
+      input.reason === undefined ? undefined : input.reason ?? '',
+    );
+    this.raw.prepare(`UPDATE model SET limits_json = ? WHERE id = ?`).run(limitsJson ?? null, modelId);
+    const updated = this.getModel(modelId as ModelId);
+    if (!updated) throw new Error(`Model not found after vision probe update: ${modelId}`);
+    return updated;
   }
 
   /**
@@ -778,6 +901,10 @@ export class SqliteProviderStore {
     if (input.enabled !== undefined) {
       enabled = input.enabled;
     }
+    let unverified = existing.unverified;
+    if (input.unverified !== undefined) {
+      unverified = input.unverified;
+    }
 
     const primary = this.getPrimaryCredentialRef(providerId);
     let previousStoreHandle: string | undefined;
@@ -787,7 +914,7 @@ export class SqliteProviderStore {
       this.raw
         .prepare(
           `UPDATE provider
-           SET name = ?, base_url = ?, supports_discovery = ?, protocol = ?, surface = ?, enabled = ?, updated_at = ?
+           SET name = ?, base_url = ?, supports_discovery = ?, protocol = ?, surface = ?, enabled = ?, unverified = ?, updated_at = ?
            WHERE id = ?`,
         )
         .run(
@@ -797,6 +924,7 @@ export class SqliteProviderStore {
           protocol,
           surface,
           enabled ? 1 : 0,
+          unverified ? 1 : 0,
           now,
           providerId,
         );
@@ -1020,6 +1148,99 @@ export class SqliteProviderStore {
     tx();
     return { storeHandle: ref.storeHandle };
   }
+
+  /**
+   * Remove every credential of a provider in one transaction.
+   *
+   * This backs the "remove provider" flow, which is a teardown rather than
+   * multi-key management — so it deliberately bypasses the "last credential"
+   * guard in removeCredentialRef (that guard exists to keep a live provider
+   * usable). Returns the purged store handles so the caller can evict the
+   * matching secrets from the secure store.
+   */
+  clearProviderCredentials(providerId: ProviderId | string): { storeHandles: string[] } {
+    const id = String(providerId ?? '').trim();
+    if (!id) throw new Error('Provider id must not be empty');
+    if (!this.getProvider(id as ProviderId)) throw new Error(`Provider not found: ${id}`);
+
+    const rows = this.raw
+      .prepare(
+        `SELECT cr.id AS id, cr.store_handle AS store_handle
+         FROM credential_ref cr
+         INNER JOIN credential_group cg ON cg.id = cr.credential_group_id
+         WHERE cg.provider_id = ?
+         ORDER BY cr.created_at ASC, cr.id ASC`,
+      )
+      .all(id) as Array<{ id: string; store_handle: string }>;
+    if (rows.length === 0) return { storeHandles: [] };
+
+    const tx = this.raw.transaction(() => {
+      // Unpin every model that referenced any of this provider's credentials.
+      this.raw
+        .prepare(
+          `UPDATE model SET credential_ref_id = NULL
+           WHERE credential_ref_id IN (
+             SELECT cr.id FROM credential_ref cr
+             INNER JOIN credential_group cg ON cg.id = cr.credential_group_id
+             WHERE cg.provider_id = ?
+           )`,
+        )
+        .run(id);
+      this.raw
+        .prepare(
+          `DELETE FROM credential_ref
+           WHERE credential_group_id IN (
+             SELECT id FROM credential_group WHERE provider_id = ?
+           )`,
+        )
+        .run(id);
+    });
+    tx();
+
+    return { storeHandles: rows.map((row) => row.store_handle) };
+  }
+
+  /**
+   * Hard-delete a provider and everything that hangs off it — its models, its
+   * credential groups and refs — in one transaction.
+   *
+   * Nothing in the schema declares a foreign key to `provider` (or to `model`),
+   * so this cannot orphan or cascade into unrelated rows; historical
+   * context_epoch rows keep the provider id as a plain string snapshot.
+   * Returns the purged store handles so the caller can evict the secrets.
+   */
+  deleteProvider(providerId: ProviderId | string): { storeHandles: string[] } {
+    const id = String(providerId ?? '').trim();
+    if (!id) throw new Error('Provider id must not be empty');
+    if (!this.getProvider(id as ProviderId)) throw new Error(`Provider not found: ${id}`);
+
+    const rows = this.raw
+      .prepare(
+        `SELECT cr.id AS id, cr.store_handle AS store_handle
+         FROM credential_ref cr
+         INNER JOIN credential_group cg ON cg.id = cr.credential_group_id
+         WHERE cg.provider_id = ?
+         ORDER BY cr.created_at ASC, cr.id ASC`,
+      )
+      .all(id) as Array<{ id: string; store_handle: string }>;
+
+    const tx = this.raw.transaction(() => {
+      this.raw.prepare(`DELETE FROM model WHERE provider_id = ?`).run(id);
+      this.raw
+        .prepare(
+          `DELETE FROM credential_ref
+           WHERE credential_group_id IN (
+             SELECT id FROM credential_group WHERE provider_id = ?
+           )`,
+        )
+        .run(id);
+      this.raw.prepare(`DELETE FROM credential_group WHERE provider_id = ?`).run(id);
+      this.raw.prepare(`DELETE FROM provider WHERE id = ?`).run(id);
+    });
+    tx();
+
+    return { storeHandles: rows.map((row) => row.store_handle) };
+  }
 }
 
 function canonicalizeBaseUrl(raw: string): string {
@@ -1055,6 +1276,7 @@ function mapProvider(row: ProviderRow): ProviderRecord {
     surface: normalizeProviderSurface(row.surface, 'generic'),
     enabled: row.enabled !== 0,
     sortOrder: typeof row.sort_order === 'number' ? row.sort_order : 0,
+    unverified: row.unverified === 1,
     importedFrom: row.imported_from ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -1089,6 +1311,7 @@ function mapModel(row: ModelRow): ModelRecord {
     capabilities,
     limitsJson: row.limits_json ?? undefined,
     capabilitiesConfirmed: row.capabilities_confirmed === 1,
+    ...parseVisionMetadata(row.limits_json),
     priority: typeof row.priority === 'number' ? row.priority : 0,
     credentialRefId: (row.credential_ref_id ?? undefined) as CredentialRefId | undefined,
     createdAt: row.created_at,

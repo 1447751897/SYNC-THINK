@@ -20,6 +20,17 @@ function fixture(): string {
 }
 
 describe('TerminalProcessWorker', () => {
+  it('keeps a host-managed silent command alive beyond the token deadline', async () => {
+    const root = fixture();
+    const events = await collect(new TerminalProcessWorker({ timeoutMs: null }).exec({
+      workingDir: root,
+      action: { command: process.execPath, args: ['-e', 'setTimeout(() => {}, 160)'] },
+    }, {
+      token: 'session-token', allowedRoot: root, allowedCommands: [process.execPath], timeoutMs: 20,
+    }));
+    expect(events.at(-1)).toMatchObject({ type: 'completed', output: { ok: true, exitCode: 0 } });
+  });
+
   it('emits stdout before a long-running process exits', async () => {
     const root = fixture();
     const controller = new AbortController();

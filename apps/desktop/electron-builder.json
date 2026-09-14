@@ -6,6 +6,9 @@
   "directories": {
     "output": "apps/desktop/release/installer"
   },
+  "asarUnpack": [
+    "**/node_modules/node-pty/**"
+  ],
   "win": {
     "icon": "apps/desktop/build/icon.ico",
     "target": [
@@ -21,6 +24,13 @@
       "publisherName": null,
       "signingHashAlgorithms": ["sha256"]
     }
+  },
+  "mac": {
+    "target": ["dmg", "zip"],
+    "category": "public.app-category.developer-tools",
+    "gatekeeperAssess": false,
+    "hardenedRuntime": true,
+    "artifactName": "${productName}-${version}-${arch}.${ext}"
   },
   "nsis": {
     "installerIcon": "apps/desktop/build/icon.ico",

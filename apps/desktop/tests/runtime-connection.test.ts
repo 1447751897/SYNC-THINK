@@ -5,6 +5,8 @@ import type {
   RuntimeConnectResult,
 } from '../src/runtime-bridge-contract.js';
 import {
+  isTransientRuntimeError,
+  retryTransientRuntime,
   startRuntimeConnection,
   type RuntimeRetryScheduler,
 } from '../src/renderer/runtime-connection.js';
@@ -74,6 +76,34 @@ async function flushAsyncWork(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
 }
+
+describe('Transient Runtime request retries', () => {
+  it('retries a provider.list timeout and returns the later success', async () => {
+    let attempts = 0;
+    const result = await retryTransientRuntime(
+      async () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error('Runtime request timed out: provider.list');
+        return { providers: ['ok'] };
+      },
+      { delaysMs: [0], sleep: async () => undefined },
+    );
+    expect(attempts).toBe(2);
+    expect(result).toEqual({ providers: ['ok'] });
+  });
+
+  it('does not retry a non-transient validation error', async () => {
+    let attempts = 0;
+    await expect(
+      retryTransientRuntime(async () => {
+        attempts += 1;
+        throw new Error('请填写 API 密钥');
+      }),
+    ).rejects.toThrow('请填写 API 密钥');
+    expect(attempts).toBe(1);
+    expect(isTransientRuntimeError(new Error('Runtime is not connected'))).toBe(true);
+  });
+});
 
 describe('Renderer Runtime connection controller', () => {
   it('retries a transient first failure and publishes the successful snapshot', async () => {

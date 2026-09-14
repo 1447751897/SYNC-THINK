@@ -18,6 +18,7 @@ export interface RemoteMcpAuth {
 export interface RemoteMcpTool {
   name: string;
   description: string;
+  readOnly?: boolean;
   inputSchemaJson?: string;
 }
 
@@ -388,6 +389,7 @@ export async function discoverRemoteMcpTools(
         {
           name,
           description: typeof rec.description === 'string' ? rec.description.trim() : '',
+          ...(rec.readOnly === true ? { readOnly: true } : {}),
           inputSchemaJson:
             inputSchema && typeof inputSchema === 'object'
               ? JSON.stringify(inputSchema)

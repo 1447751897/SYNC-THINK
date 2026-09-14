@@ -38,9 +38,9 @@
       "types": "./dist/tool-approval.d.ts",
       "default": "./dist/tool-approval.js"
     },
-    "./ui-design": {
-      "types": "./dist/ui-design.d.ts",
-      "default": "./dist/ui-design.js"
+    "./collaboration": {
+      "types": "./dist/collaboration.d.ts",
+      "default": "./dist/collaboration.js"
     }
   },
   "scripts": {

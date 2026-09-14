@@ -36,6 +36,8 @@ const conversation = {
   updatedAt: '2026-08-07T09:00:00.000Z',
 } as unknown as Conversation;
 
+let conversationSeq = 0;
+
 const failedMessage = {
   id: 'assistant-failed',
   threadId: 'thread-terminal',
@@ -93,6 +95,8 @@ const cancelledMessage = {
 } as unknown as Message;
 
 beforeEach(() => {
+  conversationSeq += 1;
+  (conversation as { id: string }).id = `conversation-terminal-${conversationSeq}`;
   window.localStorage.clear();
   runtime.appendMessage
     .mockReset()
@@ -242,6 +246,43 @@ describe('ChatView terminal failure reason', () => {
     expect(reason.textContent).toContain('请求被网关拒绝（400）');
     expect(reason.textContent).toContain('enable_thinking');
     expect(reason.textContent).toContain('prompt_cache_key');
+  });
+
+  it('treats a provider overload after a partial answer as an interrupted reply', async () => {
+    runtime.listConversationMessages.mockResolvedValue({
+      messages: [
+        userMessage,
+        {
+          ...failedMessage,
+          blocks: [
+            { type: 'text', text: '已生成东方侠士男子角色卡' },
+            {
+              type: 'error',
+              payload: {
+                terminalState: 'failed',
+                errorMessage: 'Our servers are currently overloaded. Please try again later.',
+              },
+            },
+          ],
+        },
+      ],
+      hasMore: false,
+    });
+    render(
+      <ChatView
+        conversation={conversation}
+        modelName="gpt-5.6-luna"
+        models={[{ modelId: 'model-terminal', displayName: 'gpt-5.6-luna', providerName: 'Relay' }]}
+        eventHistory={[]}
+        onTitleUpdated={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText('回答中断')).toBeTruthy();
+    expect(screen.queryByText('运行失败')).toBeNull();
+    expect(screen.getByTestId('assistant-terminal-error').textContent).toContain(
+      '模型服务繁忙，回答没有写完。',
+    );
   });
 
   it('surfaces a spawn-time kernel failure that produced no output at all', async () => {

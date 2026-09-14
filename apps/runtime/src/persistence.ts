@@ -45,6 +45,7 @@ import {
 import {
   SecureStore,
   WindowsDpapiBackend,
+  MacKeychainBackend,
   XorDevBackend,
   type DpapiBridge,
   type SecureStoreBackend,
@@ -140,7 +141,9 @@ export function resolveRuntimeDatabasePath(
   homeDirectory: string = homedir(),
 ): string {
   if (env.SYNC_THINK_DB_PATH) return resolve(env.SYNC_THINK_DB_PATH);
-  const dataRoot = env.LOCALAPPDATA ?? join(homeDirectory, '.sync-think');
+  const dataRoot = env.LOCALAPPDATA ?? (process.platform === 'darwin'
+    ? join(homeDirectory, 'Library', 'Application Support')
+    : join(homeDirectory, '.sync-think'));
   return join(dataRoot, 'SYNC-THINK', 'sync-think.db');
 }
 
@@ -173,7 +176,9 @@ export function resolveSecureStoreKeyPath(
   homeDirectory: string = homedir(),
 ): string {
   if (env.SYNC_THINK_SECURE_KEY_PATH) return resolve(env.SYNC_THINK_SECURE_KEY_PATH);
-  const dataRoot = env.LOCALAPPDATA ?? join(homeDirectory, '.sync-think');
+  const dataRoot = env.LOCALAPPDATA ?? (process.platform === 'darwin'
+    ? join(homeDirectory, 'Library', 'Application Support')
+    : join(homeDirectory, '.sync-think'));
   return join(dataRoot, 'SYNC-THINK', 'secure-store', 'dev-key.bin');
 }
 
@@ -186,9 +191,8 @@ export function createRuntimeSecureStore(
   }
 
   const platform = options.platform ?? process.platform;
-  if (platform !== 'win32') {
-    throw new Error('OS-backed secure storage is unavailable on this platform');
-  }
+  if (platform === 'darwin') return new SecureStore(new MacKeychainBackend());
+  if (platform !== 'win32') throw new Error('OS-backed secure storage is unavailable on this platform');
   const legacyKeyPath = options.legacyKeyPath ?? resolveSecureStoreKeyPath();
   const vaultDirectory = options.vaultDirectory ?? join(dirname(legacyKeyPath), 'dpapi-vault');
   const legacyBackend = existsSync(legacyKeyPath) ? new XorDevBackend(legacyKeyPath) : undefined;

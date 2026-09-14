@@ -13,10 +13,7 @@ import type {
   ExportDesktopDiagnosticsPayload,
   ExportDesktopDiagnosticsResponse,
 } from '../diagnostics-export-contract.js';
-import type {
-  DesktopUpdateAutoCheckPreference,
-  DesktopUpdateOpenResult,
-} from '../desktop-update-contract.js';
+import type { DesktopUpdateAutoCheckPreference } from '../desktop-update-contract.js';
 import type {
   ExportDesktopDataPayload,
   ExportDesktopDataResponse,
@@ -80,6 +77,7 @@ import type {
   ListProvidersResponse,
   DiscoverModelsPayload,
   DiscoverModelsResponse,
+  ProbeModelsResponse,
   AddModelsPayload,
   AddModelsResponse,
   ProbeCapabilitiesPayload,
@@ -91,6 +89,10 @@ import type {
   AddProviderCredentialResponse,
   RemoveProviderCredentialPayload,
   RemoveProviderCredentialResponse,
+  ClearProviderCredentialsPayload,
+  ClearProviderCredentialsResponse,
+  DeleteProviderPayload,
+  DeleteProviderResponse,
   RevealProviderCredentialPayload,
   RevealProviderCredentialResponse,
   UpdateProviderCredentialResponse,
@@ -100,6 +102,8 @@ import type {
   UpdateModelResponse,
   RemoveModelPayload,
   RemoveModelResponse,
+  ProviderBalancePayload,
+  ProviderBalanceResponse,
   GetSettingsPayload,
   GetSettingsResponse,
   SetSettingPayload,
@@ -375,6 +379,7 @@ import type {
 import type { ArtifactImagePreviewResponse } from '../artifact-image-preview-contract.js';
 import type {
   RendererCreateProviderPayload,
+  RendererProbeModelsPayload,
   RendererUpdateProviderPayload,
   RendererUpdateProviderCredentialPayload,
 } from '../provider-payloads.js';
@@ -401,6 +406,12 @@ import type {
   BrowserExtensionStatus,
 } from '../browser-extension-contract.js';
 import type { OpenExternalUrlResult } from '../external-link-contract.js';
+import type {
+  CreatePtyRequest,
+  CreatePtyResult,
+  PtySessionInfo,
+} from '../terminal-pty-contract.js';
+import { createPlatformContext } from '@sync-think/shared';
 import type {
   ManagedKernelUpdateActionResult,
   ManagedKernelUpdateBridge,
@@ -555,6 +566,11 @@ const api = {
       ipcRenderer.invoke('runtime:provider-list', payload) as Promise<ListProvidersResponse>,
     discoverModels: (payload: DiscoverModelsPayload) =>
       ipcRenderer.invoke('runtime:provider-discover', payload) as Promise<DiscoverModelsResponse>,
+    probeModels: (payload: RendererProbeModelsPayload) =>
+      ipcRenderer.invoke(
+        'runtime:provider-probe-models',
+        payload,
+      ) as Promise<ProbeModelsResponse>,
     addModels: (payload: AddModelsPayload) =>
       ipcRenderer.invoke('runtime:provider-add-models', payload) as Promise<AddModelsResponse>,
     probeCapabilities: (payload: ProbeCapabilitiesPayload) =>
@@ -579,6 +595,13 @@ const api = {
         'runtime:provider-remove-credential',
         payload,
       ) as Promise<RemoveProviderCredentialResponse>,
+    clearProviderCredentials: (payload: ClearProviderCredentialsPayload) =>
+      ipcRenderer.invoke(
+        'runtime:provider-clear-credentials',
+        payload,
+      ) as Promise<ClearProviderCredentialsResponse>,
+    deleteProvider: (payload: DeleteProviderPayload) =>
+      ipcRenderer.invoke('runtime:provider-delete', payload) as Promise<DeleteProviderResponse>,
     revealProviderCredential: (payload: RevealProviderCredentialPayload) =>
       ipcRenderer.invoke(
         'runtime:provider-reveal-credential',
@@ -598,6 +621,8 @@ const api = {
       ipcRenderer.invoke('runtime:provider-update-model', payload) as Promise<UpdateModelResponse>,
     removeProviderModel: (payload: RemoveModelPayload) =>
       ipcRenderer.invoke('runtime:provider-remove-model', payload) as Promise<RemoveModelResponse>,
+    queryProviderBalance: (payload: ProviderBalancePayload) =>
+      ipcRenderer.invoke('runtime:provider-balance', payload) as Promise<ProviderBalanceResponse>,
     getSettings: (payload: GetSettingsPayload = {}) =>
       ipcRenderer.invoke('runtime:settings-get', payload) as Promise<GetSettingsResponse>,
     setSetting: (payload: SetSettingPayload) =>
@@ -1500,6 +1525,14 @@ const api = {
       ipcRenderer.on('runtime:event', handler);
       return () => ipcRenderer.removeListener('runtime:event', handler);
     },
+    onEvents: (listener: (events: Event[]) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, runtimeEvents: Event[]) => {
+        if (!Array.isArray(runtimeEvents)) return;
+        listener(runtimeEvents);
+      };
+      ipcRenderer.on('runtime:events', handler);
+      return () => ipcRenderer.removeListener('runtime:events', handler);
+    },
     onOpenConversation: (listener: (conversationId: string) => void): (() => void) => {
       const handler = (_event: Electron.IpcRendererEvent, payload: { conversationId: string }) =>
         listener(payload.conversationId);
@@ -1557,8 +1590,6 @@ const api = {
         'desktop:update-set-auto-check',
         payload,
       ) as Promise<DesktopUpdateAutoCheckPreference>,
-    openReleaseNotes: () =>
-      ipcRenderer.invoke('desktop:update-open-release-notes') as Promise<DesktopUpdateOpenResult>,
     openLogDirectory: () =>
       ipcRenderer.invoke(
         'desktop:data-open-directory',
@@ -1592,7 +1623,47 @@ const api = {
       return () => ipcRenderer.removeListener(channel, handler);
     },
   } satisfies ManagedKernelUpdateBridge,
-  platform: 'win32' as const,
+  terminal: {
+    create: (params: CreatePtyRequest) =>
+      ipcRenderer.invoke('terminal:create', params) as Promise<CreatePtyResult>,
+    write: (sessionId: string, data: string) => {
+      ipcRenderer.send('terminal:write', sessionId, data);
+    },
+    resize: (sessionId: string, cols: number, rows: number) => {
+      ipcRenderer.send('terminal:resize', sessionId, cols, rows);
+    },
+    kill: (sessionId: string) => ipcRenderer.invoke('terminal:kill', sessionId) as Promise<void>,
+    exists: (sessionId: string) =>
+      ipcRenderer.invoke('terminal:exists', sessionId) as Promise<boolean>,
+    list: () => ipcRenderer.invoke('terminal:list') as Promise<PtySessionInfo[]>,
+    getBuffer: (sessionId: string) =>
+      ipcRenderer.invoke('terminal:getBuffer', sessionId) as Promise<string>,
+    onData: (listener: (sessionId: string, data: string) => void) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        sessionId: unknown,
+        data: unknown,
+      ) => {
+        if (typeof sessionId !== 'string' || typeof data !== 'string') return;
+        listener(sessionId, data);
+      };
+      ipcRenderer.on('terminal:data', handler);
+      return () => ipcRenderer.removeListener('terminal:data', handler);
+    },
+    onExit: (listener: (sessionId: string, exitCode: number) => void) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        sessionId: unknown,
+        exitCode: unknown,
+      ) => {
+        if (typeof sessionId !== 'string' || typeof exitCode !== 'number') return;
+        listener(sessionId, exitCode);
+      };
+      ipcRenderer.on('terminal:exit', handler);
+      return () => ipcRenderer.removeListener('terminal:exit', handler);
+    },
+  },
+  platform: createPlatformContext(),
 };
 
 contextBridge.exposeInMainWorld('syncThink', api);

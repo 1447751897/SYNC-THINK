@@ -112,9 +112,23 @@ describe('appearance preferences', () => {
     expect(root.getPropertyValue('--color-stage-tabs')).toBe(
       root.getPropertyValue('--color-sidebar'),
     );
+    expect(root.getPropertyValue('--color-workbench')).toMatch(/^#[0-9a-f]{6}$/);
+    // NewMax wallpaper: --ds-tab-strip-surface is var(--ds-surface-200), and the
+    // right pane assigns both --ds-workbench-surface and
+    // --ds-workbench-content-surface to that same strip surface. Header, tab
+    // strip and right pane therefore share the chat column's surface-200.
+    expect(root.getPropertyValue('--color-workbench')).toBe(root.getPropertyValue('--color-chat'));
+    expect(root.getPropertyValue('--color-workbench-content')).toBe(
+      root.getPropertyValue('--color-chat'),
+    );
+    expect(root.getPropertyValue('--color-tab-strip')).toBe(
+      root.getPropertyValue('--color-workbench'),
+    );
     expect(root.getPropertyValue('--shell-message-reading-blur')).toBe('0px');
-    expect(root.getPropertyValue('--shell-message-reading-scrim')).toContain('64%');
-    expect(root.getPropertyValue('--shell-wallpaper-overlay')).toContain('40%');
+    // NewMax overlay branch: scrim = LIGHT_IMAGE_THEME_OVERLAY_READING_SCRIM
+    // (surface-100 40%), wallpaper overlay = LIGHT_IMAGE_THEME_OVERLAY (50%).
+    expect(root.getPropertyValue('--shell-message-reading-scrim')).toContain('40%');
+    expect(root.getPropertyValue('--shell-wallpaper-overlay')).toContain('50%');
     expect(root.getPropertyValue('--shell-chat-composer-surface')).toContain('86%');
   });
 

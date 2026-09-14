@@ -63,6 +63,13 @@ describe('anthropicRequestToOpenAIChat', () => {
     const o3 = anthropicRequestToOpenAIChat(base({ temperature: 0.7 }), { targetModel: 'o3-mini' });
     expect(o3.max_completion_tokens).toBe(2048);
     expect(o3.temperature).toBeUndefined();
+
+    const gpt6 = anthropicRequestToOpenAIChat(base({ temperature: 0.7 }), {
+      targetModel: 'gpt-6-astra',
+    });
+    expect(gpt6.max_completion_tokens).toBe(2048);
+    expect(gpt6.max_tokens).toBeUndefined();
+    expect(gpt6.temperature).toBeUndefined();
   });
 
   it('keeps temperature for ordinary chat models', () => {

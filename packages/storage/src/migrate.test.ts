@@ -98,6 +98,7 @@ async function createLegacy0013TerminalDatabase(dbPath: string) {
       '0052_tool_approval_read_indexes',
       '0053_native_task_plan_projection',
       '0054_conversation_file_directory_indexes',
+      '0055_provider_unverified',
     ]);
     await runMigrations(dbPath);
   } finally {
@@ -325,6 +326,7 @@ async function createLegacy0011Database(dbPath: string, withMatchingEvent: boole
       '0052_tool_approval_read_indexes',
       '0053_native_task_plan_projection',
       '0054_conversation_file_directory_indexes',
+      '0055_provider_unverified',
     ]);
     await runMigrations(dbPath);
   } finally {
@@ -600,6 +602,7 @@ describe('migration planner (pure)', () => {
           '0052_tool_approval_read_indexes',
           '0053_native_task_plan_projection',
           '0054_conversation_file_directory_indexes',
+          '0055_provider_unverified',
         ]);
         const after = await openDatabaseAsync({ path: dbPath });
         try {
@@ -722,6 +725,7 @@ describe('migration planner (pure)', () => {
       '0052_tool_approval_read_indexes',
       '0053_native_task_plan_projection',
       '0054_conversation_file_directory_indexes',
+      '0055_provider_unverified',
     ]);
   });
 
@@ -771,6 +775,7 @@ describe('migration planner (pure)', () => {
       '0052_tool_approval_read_indexes',
       '0053_native_task_plan_projection',
       '0054_conversation_file_directory_indexes',
+      '0055_provider_unverified',
     ]);
   });
 
@@ -828,6 +833,7 @@ describe('migration planner (pure)', () => {
       '0052_tool_approval_read_indexes',
       '0053_native_task_plan_projection',
       '0054_conversation_file_directory_indexes',
+      '0055_provider_unverified',
     ]);
   });
 
@@ -878,6 +884,7 @@ describe('migration planner (pure)', () => {
       '0052_tool_approval_read_indexes',
       '0053_native_task_plan_projection',
       '0054_conversation_file_directory_indexes',
+      '0055_provider_unverified',
     ]);
   });
 
@@ -927,6 +934,7 @@ describe('migration planner (pure)', () => {
       '0052_tool_approval_read_indexes',
       '0053_native_task_plan_projection',
       '0054_conversation_file_directory_indexes',
+      '0055_provider_unverified',
     ]);
   });
 
@@ -993,6 +1001,7 @@ describe('migration planner (pure)', () => {
       '0052_tool_approval_read_indexes',
       '0053_native_task_plan_projection',
       '0054_conversation_file_directory_indexes',
+      '0055_provider_unverified',
     ]);
     expect(plan.skipped).toEqual(['0001_baseline_v1']);
   });
@@ -1052,6 +1061,7 @@ describe('migration planner (pure)', () => {
       '0052_tool_approval_read_indexes',
       '0053_native_task_plan_projection',
       '0054_conversation_file_directory_indexes',
+      '0055_provider_unverified',
     ]);
     expect(plan.skipped).toEqual(['0001_baseline_v1', '0002_fts_messages']);
   });
@@ -1114,6 +1124,7 @@ describe('migration planner (pure)', () => {
       '0052_tool_approval_read_indexes',
       '0053_native_task_plan_projection',
       '0054_conversation_file_directory_indexes',
+      '0055_provider_unverified',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -1180,6 +1191,7 @@ describe('migration planner (pure)', () => {
       '0052_tool_approval_read_indexes',
       '0053_native_task_plan_projection',
       '0054_conversation_file_directory_indexes',
+      '0055_provider_unverified',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -1247,6 +1259,7 @@ describe('migration planner (pure)', () => {
       '0052_tool_approval_read_indexes',
       '0053_native_task_plan_projection',
       '0054_conversation_file_directory_indexes',
+      '0055_provider_unverified',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -1315,6 +1328,7 @@ describe('migration planner (pure)', () => {
       '0052_tool_approval_read_indexes',
       '0053_native_task_plan_projection',
       '0054_conversation_file_directory_indexes',
+      '0055_provider_unverified',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -1384,6 +1398,7 @@ describe('migration planner (pure)', () => {
       '0052_tool_approval_read_indexes',
       '0053_native_task_plan_projection',
       '0054_conversation_file_directory_indexes',
+      '0055_provider_unverified',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -1455,6 +1470,7 @@ describe('migration planner (pure)', () => {
       '0052_tool_approval_read_indexes',
       '0053_native_task_plan_projection',
       '0054_conversation_file_directory_indexes',
+      '0055_provider_unverified',
     ]);
     expect(plan.skipped).toEqual(prior);
   });
@@ -1518,6 +1534,7 @@ describe('migration planner (pure)', () => {
       '0052_tool_approval_read_indexes',
       '0053_native_task_plan_projection',
       '0054_conversation_file_directory_indexes',
+      '0055_provider_unverified',
     ]);
     expect(plan.skipped).toEqual(prior);
   });
@@ -1578,6 +1595,7 @@ describe('migration planner (pure)', () => {
       '0052_tool_approval_read_indexes',
       '0053_native_task_plan_projection',
       '0054_conversation_file_directory_indexes',
+      '0055_provider_unverified',
     ]);
     expect(plan.skipped).toEqual(['0002_fts_messages']);
   });
@@ -1859,6 +1877,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0052_tool_approval_read_indexes',
         '0053_native_task_plan_projection',
         '0054_conversation_file_directory_indexes',
+        '0055_provider_unverified',
       ]);
       const after = await openDatabaseAsync({ path: dbPath });
       try {
@@ -1977,6 +1996,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0052_tool_approval_read_indexes',
         '0053_native_task_plan_projection',
         '0054_conversation_file_directory_indexes',
+        '0055_provider_unverified',
       ]);
       try {
         await runMigrations(dbPath);
@@ -2052,6 +2072,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0052_tool_approval_read_indexes',
         '0053_native_task_plan_projection',
         '0054_conversation_file_directory_indexes',
+        '0055_provider_unverified',
       ]);
       const upgraded = await openDatabaseAsync({ path: dbPath });
       try {
@@ -2454,6 +2475,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0052_tool_approval_read_indexes',
         '0053_native_task_plan_projection',
         '0054_conversation_file_directory_indexes',
+        '0055_provider_unverified',
       ]);
       await runMigrations(dbPath);
     } finally {
@@ -2542,6 +2564,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0052_tool_approval_read_indexes',
         '0053_native_task_plan_projection',
         '0054_conversation_file_directory_indexes',
+        '0055_provider_unverified',
       ]);
       expect((await runMigrations(dbPath)).applied).toEqual([]);
       const after = await openDatabaseAsync({ path: dbPath });
@@ -2605,6 +2628,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0052_tool_approval_read_indexes',
         '0053_native_task_plan_projection',
         '0054_conversation_file_directory_indexes',
+        '0055_provider_unverified',
       ]);
       await runMigrations(dbPath);
     } finally {
@@ -2667,6 +2691,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0052_tool_approval_read_indexes',
         '0053_native_task_plan_projection',
         '0054_conversation_file_directory_indexes',
+        '0055_provider_unverified',
       ]);
       expect((await runMigrations(dbPath)).applied).toEqual([]);
       const after = await openDatabaseAsync({ path: dbPath });
@@ -2736,6 +2761,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0052_tool_approval_read_indexes',
         '0053_native_task_plan_projection',
         '0054_conversation_file_directory_indexes',
+        '0055_provider_unverified',
       ]);
       const { raw } = await openDatabaseAsync({ path: dbPath });
       try {
@@ -2873,6 +2899,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0052_tool_approval_read_indexes',
         '0053_native_task_plan_projection',
         '0054_conversation_file_directory_indexes',
+        '0055_provider_unverified',
       ]);
       const { raw } = await openDatabaseAsync({ path: dbPath });
       try {
@@ -2961,6 +2988,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0052_tool_approval_read_indexes',
         '0053_native_task_plan_projection',
         '0054_conversation_file_directory_indexes',
+        '0055_provider_unverified',
       ]);
       const { raw } = await openDatabaseAsync({ path: dbPath });
       try {

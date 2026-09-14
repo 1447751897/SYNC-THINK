@@ -5,7 +5,8 @@ for (const link of document.querySelectorAll('.mobile-nav a')) {
     document.querySelector('.mobile-nav').open = false;
   });
 }
-document.getElementById('copy-embed').addEventListener('click', async () => {
+const copyEmbed = document.getElementById('copy-embed');
+copyEmbed?.addEventListener('click', async () => {
   const snippet = `<iframe src="${location.origin}/demo.html" title="SYNC-THINK 工作台交互演示" width="100%" height="700" loading="lazy" sandbox="allow-scripts allow-same-origin" referrerpolicy="no-referrer" style="border:0"></iframe>`;
   const code = document.getElementById('embed-code');
   code.value = snippet;
@@ -25,7 +26,9 @@ document.getElementById('copy-embed').addEventListener('click', async () => {
 
 if (!matchMedia('(prefers-reduced-motion: reduce)').matches) {
   for (const [index, element] of [
-    ...document.querySelectorAll('.hero h1, .hero-tagline, .hero-description, .hero-actions'),
+    ...document.querySelectorAll(
+      '.hero h1, .hero-tagline, .hero-description, .hero-actions, .kernel-strip, .hero-preview',
+    ),
   ].entries()) {
     element.animate(
       [

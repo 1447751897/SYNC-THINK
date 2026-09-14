@@ -1,21 +1,24 @@
 /** @vitest-environment jsdom */
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ProjectTerminalEvent } from '../../workspace-tools-contract.js';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { PtyTerminalBridge } from '../../terminal-pty-contract.js';
 import { TerminalPane } from './TerminalPane.js';
-import { createTerminalSessionStore } from './terminal-session-store.js';
 
 class FakeTerminal {
   static instances: FakeTerminal[] = [];
+  static lastOptions: Record<string, unknown> | undefined;
   writes: string[] = [];
   clear = vi.fn();
   reset = vi.fn();
   dispose = vi.fn();
   focus = vi.fn();
   resize = vi.fn();
+  loadAddon = vi.fn();
   options: { theme?: Record<string, string> } = {};
+  private dataListener?: (data: string) => void;
 
   constructor(options?: Record<string, unknown>) {
+    FakeTerminal.lastOptions = options;
     this.options = { theme: options?.theme as Record<string, string> | undefined };
     FakeTerminal.instances.push(this);
   }
@@ -24,6 +27,21 @@ class FakeTerminal {
 
   write(text: string): void {
     this.writes.push(text);
+  }
+
+  writeln(text: string): void {
+    this.writes.push(`${text}\n`);
+  }
+
+  onData(listener: (data: string) => void): { dispose(): void } {
+    this.dataListener = listener;
+    return { dispose: vi.fn() };
+  }
+
+  attachCustomKeyEventHandler(): void {}
+
+  emitInput(data: string): void {
+    this.dataListener?.(data);
   }
 }
 
@@ -34,174 +52,127 @@ function installVendor() {
   });
 }
 
+function installTerminalBridge(overrides: Partial<PtyTerminalBridge> = {}): PtyTerminalBridge {
+  const bridge: PtyTerminalBridge = {
+    create: vi.fn(async () => ({ success: true, sessionId: 'terminal-1', created: true })),
+    write: vi.fn(),
+    resize: vi.fn(),
+    kill: vi.fn(async () => undefined),
+    exists: vi.fn(async () => false),
+    list: vi.fn(async () => []),
+    getBuffer: vi.fn(async () => ''),
+    onData: vi.fn(() => () => undefined),
+    onExit: vi.fn(() => () => undefined),
+    ...overrides,
+  };
+  Object.defineProperty(window, 'syncThink', {
+    configurable: true,
+    value: { runtime: { pathForFile: () => '' }, terminal: bridge },
+  });
+  return bridge;
+}
+
+beforeEach(() => {
+  if (typeof ResizeObserver === 'undefined') {
+    Object.defineProperty(window, 'ResizeObserver', {
+      configurable: true,
+      writable: true,
+      value: class {
+        observe(): void {}
+        disconnect(): void {}
+        unobserve(): void {}
+      },
+    });
+  }
+});
+
 afterEach(() => {
   cleanup();
   FakeTerminal.instances = [];
+  FakeTerminal.lastOptions = undefined;
   Reflect.deleteProperty(window, 'SyncThinkXterm');
+  Reflect.deleteProperty(window, 'syncThink');
 });
 
 describe('TerminalPane', () => {
-  it('runs a command, renders streaming output, clears, and recalls history', async () => {
+  it('creates an interactive NewMax PTY session and forwards stdin', async () => {
     installVendor();
-    let listener: ((event: ProjectTerminalEvent) => void) | undefined;
-    const startProjectTerminal = vi.fn(async () => ({
-      terminalId: 'terminal-1',
-      commandId: 'command-1',
-      cwd: '',
-      state: 'running' as const,
-    }));
-    const store = createTerminalSessionStore({
-      startProjectTerminal,
-      cancelProjectTerminal: vi.fn(async () => ({ cancelled: true })),
-      subscribeProjectTerminal(next) {
-        listener = next;
+    const bridge = installTerminalBridge();
+    render(
+      <TerminalPane
+        terminalId="terminal-1"
+        projectFolder="C:/workspace"
+        cwd=""
+        workspaceId="ws-1"
+        title="Terminal"
+      />,
+    );
+
+    await waitFor(() => expect(bridge.create).toHaveBeenCalledOnce());
+    expect(FakeTerminal.lastOptions).toMatchObject({
+      fontSize: 13,
+      lineHeight: 1.2,
+      cursorBlink: true,
+      cursorStyle: 'block',
+      allowProposedApi: true,
+    });
+    expect(screen.queryByTestId('terminal-command-input')).toBeNull();
+    expect(bridge.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: 'terminal-1',
+        workspaceId: 'ws-1',
+        cwd: 'C:/workspace',
+        cols: 80,
+        rows: 24,
+      }),
+    );
+
+    FakeTerminal.instances[0]?.emitInput('ls\r');
+    expect(bridge.write).toHaveBeenCalledWith('terminal-1', 'ls\r');
+  });
+
+  it('replays the PTY buffer when the session is already alive', async () => {
+    installVendor();
+    const bridge = installTerminalBridge({
+      exists: vi.fn(async () => true),
+      getBuffer: vi.fn(async () => 'cached prompt'),
+    });
+    render(<TerminalPane terminalId="terminal-1" cwd="/" />);
+    await waitFor(() => expect(FakeTerminal.instances[0]?.writes.join('')).toContain('cached prompt'));
+    expect(bridge.create).not.toHaveBeenCalled();
+  });
+
+  it('writes NewMax create-failed and process-exited lines', async () => {
+    installVendor();
+    let onExit: ((sessionId: string, exitCode: number) => void) | undefined;
+    installTerminalBridge({
+      create: vi.fn(async () => ({ success: false as const, error: 'spawn failed' })),
+      onExit: (listener) => {
+        onExit = listener;
         return () => undefined;
       },
     });
-
-    render(
-      <TerminalPane
-        terminalId="terminal-1"
-        projectFolder="C:/workspace"
-        cwd=""
-        store={store}
-      />,
-    );
-
-    const input = screen.getByTestId('terminal-command-input') as HTMLInputElement;
-    fireEvent.change(input, { target: { value: 'node script.js' } });
-    fireEvent.keyDown(input, { key: 'Enter' });
-    await waitFor(() => expect(startProjectTerminal).toHaveBeenCalledOnce());
-
-    listener?.({
-      terminalId: 'terminal-1',
-      commandId: 'command-1',
-      type: 'stdout',
-      text: 'streamed output\n',
-    });
-    listener?.({
-      terminalId: 'terminal-1',
-      commandId: 'command-1',
-      type: 'completed',
-      exitCode: 0,
-      truncated: false,
-      cwd: '',
-    });
+    render(<TerminalPane terminalId="terminal-1" cwd="/" />);
     await waitFor(() =>
-      expect(FakeTerminal.instances[0]?.writes.join('')).toContain('streamed output\n'),
+      expect(FakeTerminal.instances[0]?.writes.join('')).toContain('[终端创建失败]'),
     );
-
-    fireEvent.keyDown(input, { key: 'ArrowUp' });
-    expect(input.value).toBe('node script.js');
-    fireEvent.click(screen.getByRole('button', { name: '清空终端' }));
-    await waitFor(() => expect(FakeTerminal.instances[0]?.reset).toHaveBeenCalled());
+    onExit?.('terminal-1', 1);
+    expect(FakeTerminal.instances[0]?.writes.join('')).toContain('[进程已退出，代码 1]');
   });
 
-  it('stops the active command with the exact command identity', async () => {
+  it('drops escaped file paths into the prompt', async () => {
     installVendor();
-    const cancelProjectTerminal = vi.fn(async () => ({ cancelled: true }));
-    const store = createTerminalSessionStore({
-      startProjectTerminal: vi.fn(async () => ({
-        terminalId: 'terminal-1',
-        commandId: 'command-1',
-        cwd: 'src',
-        state: 'running' as const,
-      })),
-      cancelProjectTerminal,
-      subscribeProjectTerminal: () => () => undefined,
+    const bridge = installTerminalBridge();
+    render(<TerminalPane terminalId="terminal-1" cwd="/" />);
+    await waitFor(() => expect(bridge.create).toHaveBeenCalled());
+    const pane = screen.getByTestId('terminal-pane');
+    fireEvent.drop(pane, {
+      dataTransfer: {
+        files: [],
+        types: ['text/plain'],
+        getData: (type: string) => (type === 'text/plain' ? 'newmax-file:D:/work/a.ts' : ''),
+      },
     });
-
-    render(
-      <TerminalPane
-        terminalId="terminal-1"
-        projectFolder="C:/workspace"
-        cwd="src"
-        store={store}
-      />,
-    );
-    fireEvent.change(screen.getByTestId('terminal-command-input'), {
-      target: { value: 'pnpm test' },
-    });
-    fireEvent.click(screen.getByRole('button', { name: '运行命令' }));
-    await screen.findByRole('button', { name: '停止命令' });
-    fireEvent.click(screen.getByRole('button', { name: '停止命令' }));
-
-    await waitFor(() =>
-      expect(cancelProjectTerminal).toHaveBeenCalledWith({
-        terminalId: 'terminal-1',
-        commandId: 'command-1',
-      }),
-    );
-  });
-
-  it('does not erase a newly typed command when an older start reply arrives', async () => {
-    installVendor();
-    let resolveStart: ((result: {
-      terminalId: string;
-      commandId: string;
-      cwd: string;
-      state: 'running';
-    }) => void) | undefined;
-    const startReply = new Promise<{
-      terminalId: string;
-      commandId: string;
-      cwd: string;
-      state: 'running';
-    }>((resolve) => {
-      resolveStart = resolve;
-    });
-    const store = createTerminalSessionStore({
-      startProjectTerminal: vi.fn(() => startReply),
-      cancelProjectTerminal: vi.fn(async () => ({ cancelled: true })),
-      subscribeProjectTerminal: () => () => undefined,
-    });
-
-    render(
-      <TerminalPane
-        terminalId="terminal-1"
-        projectFolder="C:/workspace"
-        cwd=""
-        store={store}
-      />,
-    );
-    const input = screen.getByTestId('terminal-command-input') as HTMLInputElement;
-    fireEvent.change(input, { target: { value: 'node first.js' } });
-    fireEvent.keyDown(input, { key: 'Enter' });
-    fireEvent.change(input, { target: { value: 'node next.js' } });
-    resolveStart?.({
-      terminalId: 'terminal-1',
-      commandId: 'command-1',
-      cwd: '',
-      state: 'running',
-    });
-
-    await waitFor(() => expect(input.value).toBe('node next.js'));
-  });
-
-  it('synchronizes the xterm palette when the shell theme changes', async () => {
-    installVendor();
-    const store = createTerminalSessionStore({
-      startProjectTerminal: vi.fn(),
-      cancelProjectTerminal: vi.fn(),
-      subscribeProjectTerminal: () => () => undefined,
-    });
-    render(
-      <TerminalPane
-        terminalId="terminal-theme"
-        projectFolder="C:/workspace"
-        cwd=""
-        store={store}
-      />,
-    );
-    await waitFor(() => expect(FakeTerminal.instances).toHaveLength(1));
-    const output = screen.getByTestId('terminal-output');
-    output.style.setProperty('--color-page', '#101010');
-    output.style.setProperty('--color-text', '#f0f0f0');
-    window.dispatchEvent(new CustomEvent('shell-theme-applied'));
-
-    expect(FakeTerminal.instances[0]?.options.theme).toMatchObject({
-      background: '#101010',
-      foreground: '#f0f0f0',
-    });
+    expect(bridge.write).toHaveBeenCalledWith('terminal-1', 'D:/work/a.ts ');
   });
 });

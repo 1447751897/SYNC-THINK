@@ -234,6 +234,28 @@ describe('kernel mcp-servers registry', () => {
     expect(tool?.planningDenied).toBeUndefined();
   });
 
+  it('exposes capability-broker instead of generate_image', () => {
+    setKernelMcpServerConditions({});
+    const off = selectKernelMcpRun({});
+    expect(off.externalTools.map((tool) => tool.name)).toContain('search_capability');
+    expect(off.externalTools.map((tool) => tool.name)).toContain('use_capability');
+    expect(off.externalTools.map((tool) => tool.name)).not.toContain('generate_image');
+    expect(off.nativeTools.map((tool) => tool.name)).not.toContain('generate_image');
+
+    setKernelMcpServerConditions({ imageGenerationEnabled: true });
+    const on = selectKernelMcpRun({});
+    expect(on.externalTools.map((tool) => tool.name)).not.toContain('generate_image');
+    expect(on.nativeTools.map((tool) => tool.name)).not.toContain('generate_image');
+    expect(on.servers.map((server) => server.name)).toContain('capability-broker');
+    expect(on.servers.find((server) => server.name === 'image-generation')).toBeUndefined();
+
+    const planning = selectKernelMcpRun({ planningMode: true });
+    expect(planning.externalTools.map((tool) => tool.name)).toContain('search_capability');
+    expect(planning.externalTools.map((tool) => tool.name)).not.toContain('use_capability');
+    expect(planning.externalTools.map((tool) => tool.name)).not.toContain('generate_image');
+    setKernelMcpServerConditions({});
+  });
+
   it('bridges a nested JSON-Schema object into a real zod shape', () => {
     const shape = jsonSchemaToZodShape(z, {
       type: 'object',

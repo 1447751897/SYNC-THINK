@@ -5,10 +5,17 @@
  * a compact expandable row, every tool call owns one row, and commentary or
  * status events keep their original positions.
  */
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import type { InlineProcessItem } from './ChatView.js';
 import { InlineProcessFlow } from './InlineProcessFlow.js';
+
+beforeAll(() => {
+  Object.defineProperty(HTMLCanvasElement.prototype, 'getContext', {
+    configurable: true,
+    value: () => null,
+  });
+});
 
 const reasoningItem: InlineProcessItem = {
   kind: 'reasoning',
@@ -674,7 +681,7 @@ describe('InlineProcessFlow', () => {
     expect(screen.queryByTestId('process-panel')).toBeNull();
   });
 
-  it('shows elapsed time in the expanded details for one tool call', () => {
+  it('keeps the elapsed time on the tool row instead of repeating it in the expanded details', () => {
     render(
       <InlineProcessFlow
         items={[
@@ -688,8 +695,12 @@ describe('InlineProcessFlow', () => {
       />,
     );
     const tool = screen.getByTestId('inline-process-tool');
+    expect(within(tool).getByTestId('inline-process-tool-elapsed').textContent).toBe('2.0s');
     fireEvent.click(within(tool).getByRole('button'));
-    expect(tool.querySelector('.shell-inline-process__tool-body')?.textContent).toContain('2.0s');
+    const body = tool.querySelector('.shell-inline-process__tool-body')?.textContent ?? '';
+    expect(body).toContain('原始工具');
+    expect(body).not.toContain('2.0s');
+    expect(body).not.toContain('耗时');
   });
 
   it('keeps the current activity at the bottom with the 3x3 pixel mark while streaming', () => {
@@ -735,9 +746,9 @@ describe('InlineProcessFlow', () => {
     expect(screen.queryByTestId('process-panel-activity')).toBeNull();
   });
 
-  it('shows the completed tool duration on the Harness row and in expanded details', () => {
-    // 设计稿 01（Beautiful UI Tool Chips 采纳）：完成态收成行带耗时，
-    // 展开详情保留同一数字。
+  it('shows the completed tool duration on the Harness row', () => {
+    // 设计稿 01（Beautiful UI Tool Chips 采纳）：完成态收成行带耗时。
+    // 展开详情不再重复这个数字——那里只留「原始工具 / 参数 / 输出」。
     render(
       <InlineProcessFlow
         items={[
@@ -754,7 +765,7 @@ describe('InlineProcessFlow', () => {
     expect(screen.getByTestId('inline-process-tool-elapsed').textContent).toBe('2.0s');
     const tool = screen.getByTestId('inline-process-tool');
     fireEvent.click(within(tool).getByRole('button'));
-    expect(tool.querySelector('.shell-inline-process__tool-body')?.textContent).toContain('2.0s');
+    expect(tool.querySelector('.shell-inline-process__tool-body')?.textContent).not.toContain('2.0s');
   });
 
   it('names the running command on its own active Harness row', () => {
@@ -789,7 +800,7 @@ describe('InlineProcessFlow', () => {
     expect(screen.queryByTestId('process-activity-label')).toBeNull();
   });
 
-  it('counts elapsed time in expanded details and freezes when streaming settles', () => {
+  it('counts elapsed time on the tool row and freezes when streaming settles', () => {
     vi.useFakeTimers();
     try {
       const startedAt = new Date(Date.now() - 8_000).toISOString();
@@ -803,12 +814,12 @@ describe('InlineProcessFlow', () => {
       );
       const tool = screen.getByTestId('inline-process-tool');
       fireEvent.click(within(tool).getByRole('button'));
-      expect(tool.querySelector('.shell-inline-process__tool-body')?.textContent).toContain('8s');
+      expect(within(tool).getByTestId('inline-process-tool-elapsed').textContent).toBe('8s');
 
       act(() => {
         vi.advanceTimersByTime(3_000);
       });
-      expect(tool.querySelector('.shell-inline-process__tool-body')?.textContent).toContain('11s');
+      expect(within(tool).getByTestId('inline-process-tool-elapsed').textContent).toBe('11s');
 
       // Renderer terminal settlement stops the shared clock even if a stale
       // tool item has not received its own completedAt yet.
@@ -823,7 +834,7 @@ describe('InlineProcessFlow', () => {
       act(() => {
         vi.advanceTimersByTime(5_000);
       });
-      expect(tool.querySelector('.shell-inline-process__tool-body')?.textContent).toContain('11s');
+      expect(within(tool).getByTestId('inline-process-tool-elapsed').textContent).toBe('11s');
     } finally {
       vi.useRealTimers();
     }
@@ -984,7 +995,8 @@ describe('InlineProcessFlow', () => {
     const statusRow = screen.getByTestId('inline-process-status');
     const tool = screen.getByTestId('inline-process-tool');
     expect(statusRow.textContent).toContain('正在重试当前模型（1/2）');
-    expect(statusRow.textContent).toContain('timeout');
+    expect(statusRow.textContent).toContain('超时');
+    expect(statusRow.textContent).not.toContain('timeout');
     expect(follows(commentary, statusRow)).toBe(true);
     expect(follows(statusRow, tool)).toBe(true);
   });
@@ -1217,5 +1229,77 @@ describe('approval wait presentation', () => {
     } finally {
       cleanup();
     }
+  });
+
+  it('shows GridReveal while generate_image is running', () => {
+    render(
+      <InlineProcessFlow
+        items={[
+          {
+            kind: 'tool',
+            toolCallId: 'tool-image',
+            name: 'generate_image',
+            argumentsJson: '{"prompt":"湖边小屋"}',
+            status: 'running',
+          },
+        ]}
+        streaming
+        defaultOpen
+      />,
+    );
+    expect(screen.getByText('生成图片')).toBeTruthy();
+    expect(screen.getByText('湖边小屋')).toBeTruthy();
+    expect(screen.getByTestId('inline-process-grid-reveal')).toBeTruthy();
+    expect(screen.getByTestId('grid-reveal-caption').textContent).toBe('生成中');
+  });
+
+  it('shows GridReveal while capability-broker use_capability is generating an image', () => {
+    cleanup();
+    render(
+      <InlineProcessFlow
+        items={[
+          {
+            kind: 'tool',
+            toolCallId: 'tool-use-cap',
+            name: 'mcp__capability-broker__use_capability',
+            argumentsJson: JSON.stringify({
+              ref: 'cap_1',
+              arguments: { prompt: '海边灯塔' },
+            }),
+            status: 'running',
+          },
+        ]}
+        streaming
+        defaultOpen
+      />,
+    );
+    expect(screen.getByText('capability-broker · use capability')).toBeTruthy();
+    expect(screen.getByText('海边灯塔')).toBeTruthy();
+    expect(screen.getByTestId('inline-process-grid-reveal')).toBeTruthy();
+  });
+
+  it('shows the NewMax model caption after generate_image completes', () => {
+    cleanup();
+    render(
+      <InlineProcessFlow
+        items={[
+          {
+            kind: 'tool',
+            toolCallId: 'tool-image-done',
+            name: 'generate_image',
+            argumentsJson: '{"prompt":"角色卡"}',
+            status: 'completed',
+            result: [
+              '图像已生成并保存。',
+              '模型：gpt-image-2',
+              '',
+              '![生成的图片](sync-think-image://generated/a.png)',
+            ].join('\n'),
+          },
+        ]}
+        defaultOpen
+      />,
+    );
+    expect(screen.getByTestId('grid-reveal-caption').textContent).toBe('生图模型 · gpt-image-2');
   });
 });

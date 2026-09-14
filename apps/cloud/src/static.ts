@@ -1,11 +1,14 @@
 import { readFile, realpath } from 'node:fs/promises';
 import { extname, isAbsolute, relative, resolve, sep } from 'node:path';
 
+export function isDemoPath(pathname: string) {
+  return pathname === '/demo' || pathname === '/demo.html';
+}
+
 const ROUTES = new Map([
   ['/', 'index.html'],
   ['/demo', 'demo.html'],
-  ['/demo.js', 'demo.js'],
-  ['/demo.css', 'demo.css'],
+  ['/demo.html', 'demo.html'],
   ['/login', 'auth.html'],
   ['/register', 'auth.html'],
   ['/forgot-password', 'auth.html'],
@@ -32,6 +35,7 @@ const MIME_TYPES: Record<string, string> = {
   '.woff': 'font/woff',
   '.woff2': 'font/woff2',
   '.ttf': 'font/ttf',
+  '.txt': 'text/plain; charset=utf-8',
 };
 
 export async function readWebsiteFile(directory: string, pathname: string) {

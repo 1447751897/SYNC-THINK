@@ -82,6 +82,7 @@ export type CommandType =
   | 'provider.update'
   | 'provider.list'
   | 'provider.discoverModels'
+  | 'provider.probeModels'
   | 'provider.addModels'
   | 'provider.probeCapabilities'
   | 'provider.confirmCapabilities'
@@ -90,11 +91,14 @@ export type CommandType =
   | 'provider.reorder'
   | 'provider.addCredential'
   | 'provider.removeCredential'
+  | 'provider.clearCredentials'
+  | 'provider.delete'
   | 'provider.revealCredential'
   | 'provider.updateCredential'
   | 'provider.setModelPriorities'
   | 'provider.updateModel'
   | 'provider.removeModel'
+  | 'provider.balance'
   | 'settings.get'
   | 'settings.set'
   | 'webSearch.providers.list'
@@ -626,6 +630,31 @@ export type ConversationTransientFrameKind =
   'text' | 'commentary' | 'reasoning' | 'process' | 'terminal';
 export type ConversationTransientTerminalState = 'completed' | 'failed' | 'cancelled';
 
+export interface DelegatedAgentToolEvent {
+  toolName: string;
+  arguments?: string;
+  status?: 'running' | 'completed' | 'failed';
+  output?: string;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+export interface DelegatedAgentProjection {
+  childRunId: RunId;
+  parentRunId: RunId;
+  /** Optional sibling batch label supplied by the parent model turn. */
+  parallelGroup?: string;
+  name: string;
+  avatar: string;
+  kind: 'existing' | 'temporary';
+  /** Reused Agent Library id; absent for a run-local temporary profile. */
+  agentId?: string;
+  status: 'running' | 'completed' | 'failed' | 'cancelled' | 'timed_out';
+  activeTool?: string;
+  toolEvents: DelegatedAgentToolEvent[];
+  result?: string;
+}
+
 /**
  * One contiguous user-visible assistant commentary fragment between durable
  * execution boundaries. `afterSequence` identifies the latest durable event
@@ -662,6 +691,8 @@ export interface ConversationTransientFrame {
   process?: RunProcessView;
   /** Exact ordered assistant turn snapshot after this frame. */
   assistantTimeline?: import('./assistant-turn.js').AssistantTurnSegment[];
+  /** Parent-scoped live projection for a delegated child Run. */
+  delegatedAgent?: DelegatedAgentProjection;
   occurredAt: string;
 }
 
@@ -679,6 +710,8 @@ export interface ConversationTransientSnapshot {
   reasoningSegments?: ReasoningTimelineSegment[];
   /** Exact ordered assistant turn snapshot; preferred by new renderers. */
   assistantTimeline?: import('./assistant-turn.js').AssistantTurnSegment[];
+  /** Reconnectable delegated child projections owned by this parent Run. */
+  delegatedAgents?: DelegatedAgentProjection[];
   process?: RunProcessView;
   updatedAt: string;
 }
@@ -908,11 +941,29 @@ export interface CreateProviderPayload {
   /** Plaintext only for the create hop; Runtime stores into secure-store and never echoes it. */
   apiKey: string;
   supportsDiscovery?: boolean;
+  /** When false, the caller performs preview-first discovery after creation. */
+  discoverOnCreate?: boolean;
   credentialGroupName?: string;
   credentialLabel?: string;
   importedFrom?: string;
   /** CC Switch-style surface; optional on create. */
   surface?: import('@sync-think/shared').ProviderSurface;
+  /**
+   * NewMax-style atomic create: seed the priority chain in the same hop as
+   * provider creation, so the renderer can author models before a providerId
+   * exists. Order matters — index 0 becomes the primary model.
+   */
+  models?: AddModelsPayload['models'];
+  /**
+   * Additional credentials attached to the same credential group in this hop
+   * (the multi-key list on the create form). Plaintext for the create hop only.
+   */
+  extraApiKeys?: string[];
+  /**
+   * 0055: NewMax-style「仍然保存」— the user chose to keep the provider even
+   * though the connection test did not pass. Cleared once a test succeeds.
+   */
+  unverified?: boolean;
 }
 
 export interface ProviderCredentialSummary {
@@ -932,6 +983,10 @@ export interface ProviderModelSummary {
   protocol: import('@sync-think/shared').ProtocolFamily;
   capabilities: import('@sync-think/shared').CapabilityTag[];
   capabilitiesConfirmed: boolean;
+  /** NewMax-style per-model image probe result, when available. */
+  visionCapability?: boolean | null;
+  /** Image probe failure/unknown reason, when available. */
+  visionProbeReason?: string | null;
   /** 0026: priority chain position inside the provider — 0 is the primary model. */
   priority: number;
   /** 0026: optional pinned credential for this model (relay-station key groups). */
@@ -953,11 +1008,41 @@ export interface ProviderSummary {
   enabled: boolean;
   /** 0026: manual ordering; first enabled provider is the default entry. */
   sortOrder: number;
+  /** 0055: saved through「仍然保存」without a passing connection test. */
+  unverified: boolean;
   importedFrom?: string;
   credentials: ProviderCredentialSummary[];
   models: ProviderModelSummary[];
   createdAt: string;
   updatedAt: string;
+}
+
+/** One currency bucket reported by a provider account-balance endpoint. */
+export interface ProviderBalanceBucket {
+  currency: string;
+  totalBalance: number;
+  /** Promotional / gifted credit, when the endpoint reports it separately. */
+  grantedBalance?: number;
+  /** Credit the user paid for, when the endpoint reports it separately. */
+  toppedUpBalance?: number;
+}
+
+export interface ProviderBalancePayload {
+  providerId: import('@sync-think/shared').ProviderId;
+  /** Explicit key to bill the query against; defaults to the first credential. */
+  credentialRefId?: import('@sync-think/shared').CredentialRefId;
+}
+
+export interface ProviderBalanceResponse {
+  providerId: import('@sync-think/shared').ProviderId;
+  /** False when this provider exposes no public balance endpoint we can call. */
+  supported: boolean;
+  /** Provider-reported availability flag, when the endpoint exposes one. */
+  available?: boolean;
+  buckets: ProviderBalanceBucket[];
+  fetchedAt: string;
+  /** Human-readable reason when unsupported, or the failure summary. */
+  message?: string;
 }
 
 export interface CreateProviderResponse {
@@ -979,6 +1064,8 @@ export interface UpdateProviderPayload {
   surface?: import('@sync-think/shared').ProviderSurface;
   /** 0026: toggle the entry on/off (disabled hides from pickers). */
   enabled?: boolean;
+  /** 0055: clear (false) when a connection test passes, or set true to save anyway. */
+  unverified?: boolean;
 }
 
 export interface UpdateProviderResponse {
@@ -1067,6 +1154,25 @@ export interface DiscoverModelsResponse {
   latencyMs?: number;
 }
 
+/**
+ * NewMax-style discovery without a persisted provider: probe a base URL with an
+ * ephemeral credential so the create form can fetch its model list before the
+ * provider exists. Nothing is written to the local catalog.
+ */
+export interface ProbeModelsPayload {
+  baseUrl: string;
+  protocol: import('@sync-think/shared').ProtocolFamily;
+  /** Plaintext for this hop only; Runtime never persists nor echoes it. */
+  apiKey: string;
+}
+
+export interface ProbeModelsResponse {
+  discoveredIds: string[];
+  protocol: import('@sync-think/shared').ProtocolFamily;
+  /** Wall-clock latency of the probe in milliseconds. */
+  latencyMs?: number;
+}
+
 export interface AddModelsPayload {
   providerId: import('@sync-think/shared').ProviderId;
   protocol: import('@sync-think/shared').ProtocolFamily;
@@ -1088,6 +1194,8 @@ export interface ProbeCapabilitiesPayload {
   /** Probe one model, or omit modelId to probe all models for the provider. */
   providerId: import('@sync-think/shared').ProviderId;
   modelId?: import('@sync-think/shared').ModelId;
+  /** NewMax VisionFallbackPanel scan: run only the fixed image probe. */
+  visionOnly?: boolean;
 }
 
 export interface CapabilityProbeSuggestion {
@@ -1095,12 +1203,22 @@ export interface CapabilityProbeSuggestion {
   providerModelId: string;
   displayName: string;
   capabilities: import('@sync-think/shared').CapabilityTag[];
-  /** Always false after probe 鈥?suggestions only (搂7.2). */
-  capabilitiesConfirmed: false;
+  /** Existing confirmation is preserved for vision-only scans. */
+  capabilitiesConfirmed: boolean;
+  /** NewMax-style direct image probe result, when the vision probe ran. */
+  visionCapability?: boolean | null;
+  /** Raw image probe failure/unknown reason, when present. */
+  visionProbeReason?: string | null;
   results: Partial<Record<import('@sync-think/shared').CapabilityTag, boolean>>;
+  /**
+   * Capabilities the probe could not reach a verdict on (transport / auth /
+   * quota failures). Kept apart from `results: false`, which means the model
+   * answered and refused — mixing the two downgrades capable models to OCR.
+   */
+  undetermined?: import('@sync-think/shared').CapabilityTag[];
   confidence: 'low' | 'medium';
   reasons: string[];
-  source: 'heuristic';
+  source: 'heuristic' | 'live';
 }
 
 export interface ProbeCapabilitiesResponse {
@@ -1153,6 +1271,37 @@ export interface RemoveProviderCredentialPayload {
 export interface RemoveProviderCredentialResponse {
   provider: ProviderSummary;
   removed: boolean;
+}
+
+/**
+ * Tear down every credential of a provider in one hop.
+ *
+ * Used by the "remove provider" flow: unlike provider.removeCredential this
+ * intentionally bypasses the "last credential" guard, because the provider is
+ * being taken down rather than managed as a multi-key group.
+ */
+export interface ClearProviderCredentialsPayload {
+  providerId: import('@sync-think/shared').ProviderId;
+}
+
+export interface ClearProviderCredentialsResponse {
+  provider: ProviderSummary;
+  /** Number of credentials purged (0 when the provider had none). */
+  cleared: number;
+}
+
+/**
+ * Hard-delete a provider and everything under it (models, credential groups,
+ * refs). Unlike provider.clearCredentials the provider itself is gone, so the
+ * response cannot echo a summary.
+ */
+export interface DeleteProviderPayload {
+  providerId: import('@sync-think/shared').ProviderId;
+}
+
+export interface DeleteProviderResponse {
+  providerId: import('@sync-think/shared').ProviderId;
+  deleted: boolean;
 }
 
 /**
@@ -2224,6 +2373,7 @@ export interface SetSkillEnabledResponse {
 export interface McpToolSchemaSummary {
   name: string;
   description: string;
+  readOnly?: boolean;
   inputSchemaJson?: string;
 }
 

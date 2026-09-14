@@ -1,10 +1,12 @@
 /**
  * @vitest-environment jsdom
  */
+import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { ProviderSummary } from '@sync-think/protocol';
 import { DialogProvider } from './Dialog.js';
+import { ToastProvider, resetToastStoreForTests } from './Toast.js';
 import { ModelSettings } from './ModelSettings.js';
 
 const provider: ProviderSummary = {
@@ -16,6 +18,7 @@ const provider: ProviderSummary = {
   surface: 'generic',
   enabled: true,
   sortOrder: 0,
+  unverified: false,
   credentials: [
     {
       credentialRefId: 'credential-1' as ProviderSummary['credentials'][number]['credentialRefId'],
@@ -72,13 +75,18 @@ const runtime = {
   revealProviderCredential: vi.fn(),
   updateProviderCredential: vi.fn(),
   discoverModels: vi.fn(),
+  probeModels: vi.fn(),
   addModels: vi.fn(),
   probeCapabilities: vi.fn(),
   confirmCapabilities: vi.fn(),
   removeProviderModel: vi.fn(),
+  updateModel: vi.fn(),
   setModelPriorities: vi.fn(),
   setSetting: vi.fn(),
   getUsageSummary: vi.fn(),
+  removeProviderCredential: vi.fn(),
+  clearProviderCredentials: vi.fn(),
+  deleteProvider: vi.fn(),
 };
 
 beforeEach(() => {
@@ -125,6 +133,9 @@ beforeEach(() => {
   runtime.updateProvider.mockImplementation(async (payload: Record<string, unknown>) => ({
     provider: { ...provider, ...payload },
     secretRotated: false,
+  }));
+  runtime.updateModel.mockImplementation(async (payload: { contextWindow?: number | null }) => ({
+    model: { ...provider.models[0], contextWindow: payload.contextWindow ?? null },
   }));
   runtime.addProviderCredential.mockResolvedValue({
     provider,
@@ -177,8 +188,8 @@ beforeEach(() => {
           'web-search': true,
         },
         confidence: 'medium',
-        reasons: ['model family and protocol support provider-native web search'],
-        source: 'heuristic',
+        reasons: ['文本请求实测成功'],
+        source: 'live',
       },
     ],
   });
@@ -197,6 +208,12 @@ beforeEach(() => {
     models: provider.models,
   });
   runtime.setSetting.mockResolvedValue({});
+  runtime.removeProviderCredential.mockResolvedValue({ providerId: provider.providerId });
+  runtime.clearProviderCredentials.mockResolvedValue({
+    providerId: provider.providerId,
+    cleared: 1,
+  });
+  runtime.deleteProvider.mockResolvedValue({ providerId: provider.providerId, deleted: true });
   runtime.getUsageSummary.mockResolvedValue({
     rows: [],
     requests: [
@@ -254,15 +271,20 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  resetToastStoreForTests();
   vi.clearAllMocks();
 });
 
-async function renderSettings(onDirtyChange = vi.fn()) {
-  render(
+function renderWithProviders(ui: ReactNode) {
+  return render(
     <DialogProvider>
-      <ModelSettings onDirtyChange={onDirtyChange} />
+      <ToastProvider>{ui}</ToastProvider>
     </DialogProvider>,
   );
+}
+
+async function renderSettings(onDirtyChange = vi.fn()) {
+  renderWithProviders(<ModelSettings onDirtyChange={onDirtyChange} />);
   await screen.findByDisplayValue('CODEX');
   return onDirtyChange;
 }
@@ -275,11 +297,80 @@ async function openProviderCatalog() {
 }
 
 describe('ModelSettings NewMax provider detail', () => {
+  it('reloads enabled models after a transient provider.list timeout', async () => {
+    runtime.listProviders
+      .mockRejectedValueOnce(new Error('Runtime request timed out: provider.list'))
+      .mockResolvedValue({ providers: [provider] });
+    renderWithProviders(<ModelSettings />);
+    expect(await screen.findByDisplayValue('CODEX')).toBeTruthy();
+    expect(runtime.listProviders).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps the text list mounted when switching to image and back', async () => {
+    renderWithProviders(<ModelSettings />);
+    expect(await screen.findByDisplayValue('CODEX')).toBeTruthy();
+    fireEvent.click(screen.getByRole('tab', { name: '图像生成' }));
+    expect(await screen.findByText(/还没有配置过生图模型的提供商/)).toBeTruthy();
+    expect(screen.queryByText('加载模型源…')).toBeNull();
+    const listCallsOnImage = runtime.listProviders.mock.calls.length;
+    fireEvent.click(screen.getByRole('tab', { name: '文本生成' }));
+    expect(screen.getByDisplayValue('CODEX')).toBeTruthy();
+    expect(screen.queryByText('加载模型源…')).toBeNull();
+    expect(runtime.listProviders.mock.calls.length).toBe(listCallsOnImage);
+    fireEvent.click(screen.getByRole('tab', { name: '使用统计' }));
+    expect(await screen.findByText('总请求')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '近 7 天' })).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'CODEX' })).toBeNull();
+    expect(screen.queryByText('加载模型源…')).toBeNull();
+  });
+
+  it('keeps usage stats on screen when switching away and back', async () => {
+    let release!: (value: unknown) => void;
+    const pending = new Promise((resolve) => {
+      release = resolve;
+    });
+    runtime.getUsageSummary.mockReturnValueOnce(pending);
+
+    renderWithProviders(<ModelSettings />);
+    await screen.findByDisplayValue('CODEX');
+    fireEvent.click(screen.getByRole('tab', { name: '使用统计' }));
+    expect(await screen.findByText('正在加载使用统计…')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '近 7 天' })).toBeTruthy();
+
+    release({
+      rows: [],
+      requests: [],
+      tools: [],
+      toolModels: [],
+      toolFailures: [],
+      pricing: [],
+      totalRequests: 3,
+      totalTokensIn: 0,
+      totalTokensOut: 0,
+      totalCostByCurrency: { USD: 1.5 },
+      totalReasoningTokens: 0,
+      totalTokens: 0,
+    });
+
+    expect(await screen.findByText('总请求')).toBeTruthy();
+    expect(screen.getByText('3')).toBeTruthy();
+    expect(screen.getByText('$1.50')).toBeTruthy();
+    expect(screen.queryByText('¥0.00')).toBeNull();
+    expect(screen.queryByText('正在加载使用统计…')).toBeNull();
+
+    const callsAfterFirstLoad = runtime.getUsageSummary.mock.calls.length;
+    fireEvent.click(screen.getByRole('tab', { name: '文本生成' }));
+    expect(screen.getByDisplayValue('CODEX')).toBeTruthy();
+    fireEvent.click(screen.getByRole('tab', { name: '使用统计' }));
+    expect(screen.queryByText('正在加载使用统计…')).toBeNull();
+    expect(screen.getByText('总请求')).toBeTruthy();
+    expect(screen.getByText('3')).toBeTruthy();
+    expect(runtime.getUsageSummary.mock.calls.length).toBe(callsAfterFirstLoad);
+  });
+
   it('opens Plan & Act from a navigation request and replays only when its key changes', async () => {
-    const { rerender } = render(
-      <DialogProvider>
-        <ModelSettings initialDetailView="plan-act" navigationKey="plan-act-1" />
-      </DialogProvider>,
+    const { rerender } = renderWithProviders(
+      <ModelSettings initialDetailView="plan-act" navigationKey="plan-act-1" />,
     );
 
     expect(await screen.findByRole('heading', { name: '规划 & 执行模型' })).toBeTruthy();
@@ -288,54 +379,64 @@ describe('ModelSettings NewMax provider detail', () => {
 
     rerender(
       <DialogProvider>
-        <ModelSettings initialDetailView="plan-act" navigationKey="plan-act-1" />
+        <ToastProvider>
+          <ModelSettings initialDetailView="plan-act" navigationKey="plan-act-1" />
+        </ToastProvider>
       </DialogProvider>,
     );
     expect(screen.getByRole('heading', { name: '图片识别 Fallback' })).toBeTruthy();
 
     rerender(
       <DialogProvider>
-        <ModelSettings initialDetailView="plan-act" navigationKey="plan-act-2" />
+        <ToastProvider>
+          <ModelSettings initialDetailView="plan-act" navigationKey="plan-act-2" />
+        </ToastProvider>
       </DialogProvider>,
     );
     expect(await screen.findByRole('heading', { name: '规划 & 执行模型' })).toBeTruthy();
   });
 
-  it('shows readable cache efficiency and expands one request cost breakdown on demand', async () => {
+  it('shows readable cache efficiency and token tip cache rows only when reported', async () => {
     await renderSettings();
     fireEvent.click(screen.getByRole('tab', { name: '使用统计' }));
 
     const requestTable = await screen.findByRole('table');
     expect(screen.getByText('缓存命中率')).toBeTruthy();
-    expect(within(requestTable).getByText('普通输入 1.2k')).toBeTruthy();
-    expect(within(requestTable).getByText(/缓存读取 12\.8k/)).toBeTruthy();
-    expect(within(requestTable).getByText('缓存命中 91.4%')).toBeTruthy();
-    expect(within(requestTable).getByText('输出 488')).toBeTruthy();
+    expect(screen.getByText('按 Token 91.4%')).toBeTruthy();
+    expect(screen.getByText(/按请求 100\.0% · 命中 12\.8k \/ 创建 0/)).toBeTruthy();
+    expect(screen.getByText(/输入 14\.0k \/ 输出 488/)).toBeTruthy();
+    expect(screen.getByText('授权登录使用订阅额度，不计入总费用；其他费用以供应商最终结算为准')).toBeTruthy();
+    expect(within(requestTable).getByText('供应商')).toBeTruthy();
+    expect(within(requestTable).getByText('模型')).toBeTruthy();
+    expect(within(requestTable).getByText('Token')).toBeTruthy();
+    expect(within(requestTable).getByText('CODEX')).toBeTruthy();
+    expect(within(requestTable).getByText('gpt-5')).toBeTruthy();
+    expect(within(requestTable).getByText('14.5k')).toBeTruthy();
+    expect(within(requestTable).queryByText('普通输入 1.2k')).toBeNull();
     expect(within(requestTable).getByText('成功')).toBeTruthy();
     expect(screen.queryByText(/普通输入费 \$0\.006000/)).toBeNull();
+    expect(screen.queryByText('200')).toBeNull();
+    expect(screen.queryByRole('button', { name: '查看 gpt-5 请求详情' })).toBeNull();
 
-    fireEvent.click(screen.getByRole('button', { name: '查看 gpt-5 请求详情' }));
-    const details = await screen.findByTestId('usage-request-details-request-cache-1');
-    expect(within(details).getByText('请求信息')).toBeTruthy();
-    expect(within(details).getByText('请求 ID')).toBeTruthy();
-    expect(within(details).getByText('request-cache-1')).toBeTruthy();
-    expect(within(details).getByText('运行 ID')).toBeTruthy();
-    expect(within(details).getByText('run-usage-1')).toBeTruthy();
-    expect(within(details).getByText('Provider')).toBeTruthy();
-    expect(within(details).getByText('CODEX · provider-1')).toBeTruthy();
-    expect(within(details).getByText('Provider 模型')).toBeTruthy();
-    expect(within(details).getByText('gpt-5-provider')).toBeTruthy();
-    expect(within(details).getByText('Token 明细')).toBeTruthy();
-    expect(within(details).getByText('推理 Token')).toBeTruthy();
-    expect(within(details).getByText('123')).toBeTruthy();
-    expect(within(details).getByText('总 Token')).toBeTruthy();
-    expect(within(details).getByText('14.5k')).toBeTruthy();
-    expect(within(details).getByText('费用明细')).toBeTruthy();
-    expect(within(details).getByText('普通输入费')).toBeTruthy();
-    expect(within(details).getByText('$0.006000')).toBeTruthy();
-    expect(within(details).getByText('缓存读取费')).toBeTruthy();
-    expect(within(details).getByText('$0.006400')).toBeTruthy();
-    expect(screen.getByRole('button', { name: '收起 gpt-5 请求详情' })).toBeTruthy();
+    fireEvent.click(within(requestTable).getByText('14.5k'));
+    expect(screen.queryByTestId('usage-request-details-request-cache-1')).toBeNull();
+    fireEvent.mouseEnter(within(requestTable).getByRole('button', { name: 'Token 明细' }));
+    fireEvent.click(within(requestTable).getByRole('button', { name: 'Token 明细' }));
+    expect(screen.queryByTestId('usage-request-details-request-cache-1')).toBeNull();
+    const tokenTip = await screen.findByRole('tooltip');
+    expect(within(tokenTip).getByText('Token 明细')).toBeTruthy();
+    expect(within(tokenTip).getByText('输入 Token')).toBeTruthy();
+    expect(within(tokenTip).getByText('14.0k')).toBeTruthy();
+    expect(within(tokenTip).getByText('输出 Token')).toBeTruthy();
+    expect(within(tokenTip).getByText('488')).toBeTruthy();
+    expect(within(tokenTip).getByText('缓存读取')).toBeTruthy();
+    expect(within(tokenTip).getByText('12.8k')).toBeTruthy();
+    expect(within(tokenTip).getByText('缓存创建')).toBeTruthy();
+    expect(within(tokenTip).getByText('0')).toBeTruthy();
+    expect(within(tokenTip).getByText('总 Token')).toBeTruthy();
+    expect(within(tokenTip).getByText('14.5k')).toBeTruthy();
+    expect(screen.queryByText('请求信息')).toBeNull();
+    expect(screen.queryByText('费用明细')).toBeNull();
     expect(screen.queryByText('详情记录')).toBeNull();
   });
 
@@ -387,14 +488,20 @@ describe('ModelSettings NewMax provider detail', () => {
     await renderSettings();
     fireEvent.click(screen.getByRole('tab', { name: '使用统计' }));
 
-    expect(await screen.findByText('50.0%')).toBeTruthy();
+    expect(await screen.findByText('按 Token 50.0%')).toBeTruthy();
     const requestTable = screen.getByRole('table');
-    const unreportedRow = within(requestTable).getByText('输入 9.0k').closest('tr');
+    const unreportedRow = within(requestTable).getByText('9.0k').closest('tr');
     expect(unreportedRow).toBeTruthy();
-    expect(within(unreportedRow!).getByText('缓存读取 未上报')).toBeTruthy();
-    expect(within(unreportedRow!).getByText('缓存创建 未上报')).toBeTruthy();
-    expect(within(unreportedRow!).getByText('缓存命中 未上报')).toBeTruthy();
+    expect(within(unreportedRow!).queryByText('缓存读取 未上报')).toBeNull();
     expect(within(unreportedRow!).getByText('未结束')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '查看 gpt-5 请求详情' })).toBeNull();
+
+    fireEvent.mouseEnter(within(unreportedRow!).getByRole('button', { name: 'Token 明细' }));
+    const tokenTip = await screen.findByRole('tooltip');
+    expect(within(tokenTip).getByText('Token 明细')).toBeTruthy();
+    expect(within(tokenTip).queryByText('缓存读取')).toBeNull();
+    expect(within(tokenTip).queryByText('缓存创建')).toBeNull();
+    expect(within(tokenTip).queryByText('未上报')).toBeNull();
   });
 
   it('shows direct-edit fields without the legacy edit and save controls', async () => {
@@ -418,10 +525,19 @@ describe('ModelSettings NewMax provider detail', () => {
 
     const detail = await screen.findByRole('dialog', { name: 'gpt-5' });
     expect(within(detail).getByText('CODEX / gpt-5')).toBeTruthy();
-    expect(within(detail).getByText('OpenAI Chat Completions')).toBeTruthy();
-    expect(within(detail).getByText('372k')).toBeTruthy();
-    expect(within(detail).getByRole('button', { name: '文本：支持' })).toBeTruthy();
-    expect(within(detail).getByRole('button', { name: '联网搜索：未标记' })).toBeTruthy();
+    expect(within(detail).getByText(/OpenAI Chat Completions/)).toBeTruthy();
+    // NewMax 形态：上下文窗口是常驻输入框，当前值直接可读可改。
+    const contextInput = within(detail).getByLabelText(
+      'gpt-5 上下文窗口（tokens）',
+    ) as HTMLInputElement;
+    expect(contextInput.value).toBe('372k');
+    expect(within(detail).getByText('能力支持')).toBeTruthy();
+    // NewMax 形态：对话框只暴露四项输入模态（图片 / 文档 / 视频 / 思考），
+    // 不再单列「更多能力」区。调用类能力（tool-calling / web-search）由
+    // `suggestCapabilities` 按协议与模型族静态判定后写入目录，对话框不干预。
+    expect(within(detail).queryByText('更多能力')).toBeNull();
+    expect(within(detail).getByRole('button', { name: '图片：支持' })).toBeTruthy();
+    expect(within(detail).queryByRole('button', { name: '联网搜索：未标记' })).toBeNull();
 
     fireEvent.click(within(detail).getByRole('button', { name: '检测能力' }));
 
@@ -431,8 +547,13 @@ describe('ModelSettings NewMax provider detail', () => {
         modelId: 'model-1',
       });
     });
-    expect(await within(detail).findByRole('button', { name: '联网搜索：支持' })).toBeTruthy();
-    expect(within(detail).getByText(/检测完成：按协议和模型名推断出 4 项能力/)).toBeTruthy();
+    // 探测结果仍在「检测结果」区逐项列出 —— 只是改成了只读 li，不再是可点的能力按钮。
+    await waitFor(() => {
+      expect(
+        detail.querySelector('.model-capability-dialog__probe-results')?.textContent,
+      ).toContain('联网搜索');
+    });
+    expect(within(detail).getByText(/检测完成：已向接口实测，建议勾选 4 项/)).toBeTruthy();
 
     fireEvent.click(within(detail).getByRole('button', { name: '保存能力' }));
 
@@ -443,8 +564,155 @@ describe('ModelSettings NewMax provider detail', () => {
         confirmed: true,
       });
     });
-    expect(await within(detail).findByText('能力配置已确认并保存')).toBeTruthy();
-    expect(within(detail).getByRole('button', { name: '已保存' })).toHaveProperty('disabled', true);
+    // Save succeeds → dialog closes immediately (no lingering "已保存" state).
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: 'gpt-5' })).toBeNull();
+    });
+  });
+
+  it('starts probing immediately and lists each capability result and reason', async () => {
+    runtime.probeCapabilities.mockResolvedValueOnce({
+      providerId: provider.providerId,
+      applied: true,
+      suggestions: [
+        {
+          modelId: provider.models[0]!.modelId,
+          providerModelId: provider.models[0]!.providerModelId,
+          displayName: provider.models[0]!.displayName,
+          capabilities: ['text'],
+          capabilitiesConfirmed: false,
+          results: { text: true, vision: false, 'tool-calling': true },
+          confidence: 'medium',
+          reasons: ['文本请求实测成功', '图片输入请求未通过', '工具 schema 请求实测成功'],
+          source: 'live',
+        },
+      ],
+    });
+    await renderSettings();
+
+    fireEvent.click(screen.getByRole('button', { name: '查看模型 gpt-5' }));
+    const detail = await screen.findByRole('dialog', { name: 'gpt-5' });
+
+    fireEvent.click(within(detail).getByRole('button', { name: '检测能力' }));
+
+    // 逐项实测结果与原因都要显示（此前 reasons 被丢弃 → 看起来「没有返回」）。
+    expect(await within(detail).findByText('检测结果')).toBeTruthy();
+    expect(within(detail).getByText('文本请求实测成功')).toBeTruthy();
+    expect(within(detail).getByText('图片输入请求未通过')).toBeTruthy();
+    expect(within(detail).getByText('工具 schema 请求实测成功')).toBeTruthy();
+  });
+
+  it('renders an undetermined capability apart from a failed one', async () => {
+    // 「未判定」（请求没打到模型）必须与「未通过」（模型答复了但拒绝）分开显示，
+    // 否则一次网络抖动看起来就像模型没有这个能力。
+    runtime.probeCapabilities.mockResolvedValueOnce({
+      providerId: provider.providerId,
+      applied: true,
+      suggestions: [
+        {
+          modelId: provider.models[0]!.modelId,
+          providerModelId: provider.models[0]!.providerModelId,
+          displayName: provider.models[0]!.displayName,
+          capabilities: ['text', 'vision'],
+          capabilitiesConfirmed: false,
+          results: { text: true, 'tool-calling': false },
+          undetermined: ['vision'],
+          confidence: 'medium',
+          reasons: [
+            '文本请求实测成功',
+            '图片输入未判定：Provider Responses network error: fetch failed',
+            '工具 schema 请求未返回有效结果',
+          ],
+          source: 'live',
+        },
+      ],
+    });
+    await renderSettings();
+
+    fireEvent.click(screen.getByRole('button', { name: '查看模型 gpt-5' }));
+    const detail = await screen.findByRole('dialog', { name: 'gpt-5' });
+
+    fireEvent.click(within(detail).getByRole('button', { name: '检测能力' }));
+    expect(await within(detail).findByText('检测结果')).toBeTruthy();
+
+    const rows = Array.from(
+      detail.querySelectorAll('.model-capability-dialog__probe-results li'),
+    );
+    const states = rows.map((row) => row.getAttribute('data-state'));
+    expect(states).toEqual(expect.arrayContaining(['pass', 'fail', 'unknown']));
+
+    const unknownRow = rows.find((row) => row.getAttribute('data-state') === 'unknown')!;
+    expect(unknownRow.textContent).toContain('未判定');
+    const failRow = rows.find((row) => row.getAttribute('data-state') === 'fail')!;
+    expect(failRow.textContent).toContain('未通过');
+    // 未判定项的原因也要能看到，而不是只留一个空勾选框。
+    expect(
+      within(detail).getByText('图片输入未判定：Provider Responses network error: fetch failed'),
+    ).toBeTruthy();
+  });
+
+  it('spells out the undetermined count when nothing could be measured', async () => {
+    runtime.probeCapabilities.mockResolvedValueOnce({
+      providerId: provider.providerId,
+      applied: true,
+      suggestions: [
+        {
+          modelId: provider.models[0]!.modelId,
+          providerModelId: provider.models[0]!.providerModelId,
+          displayName: provider.models[0]!.displayName,
+          capabilities: [],
+          capabilitiesConfirmed: false,
+          results: {},
+          undetermined: ['text', 'vision'],
+          confidence: 'medium',
+          reasons: ['文本请求未判定：fetch failed', '图片输入未判定：fetch failed'],
+          source: 'live',
+        },
+      ],
+    });
+    await renderSettings();
+
+    fireEvent.click(screen.getByRole('button', { name: '查看模型 gpt-5' }));
+    const detail = await screen.findByRole('dialog', { name: 'gpt-5' });
+    fireEvent.click(within(detail).getByRole('button', { name: '检测能力' }));
+
+    expect(
+      await within(detail).findByText(/2 项未判定（请求没打到模型，不代表模型没这个能力）/),
+    ).toBeTruthy();
+  });
+
+  it('edits the context window inside the capability dialog via input and presets', async () => {
+    await renderSettings();
+
+    fireEvent.click(screen.getByRole('button', { name: '查看模型 gpt-5' }));
+    const detail = await screen.findByRole('dialog', { name: 'gpt-5' });
+
+    // NewMax 形态：数值常驻在输入框里，不需要先点一下才展开编辑器。
+    const input = within(detail).getByLabelText('gpt-5 上下文窗口（tokens）') as HTMLInputElement;
+    expect(input.value).toBe('372k');
+
+    // Quick-pick preset saves straight away（NewMax 的 128K/200K/256K/500K/1M）。
+    fireEvent.click(within(detail).getByRole('button', { name: '1m' }));
+    await waitFor(() => {
+      expect(runtime.updateModel).toHaveBeenCalledWith({
+        providerId: 'provider-1',
+        modelId: 'model-1',
+        contextWindow: 1_000_000,
+      });
+    });
+
+    // Type a custom value; Enter commits it.
+    const typed = within(detail).getByLabelText('gpt-5 上下文窗口（tokens）');
+    fireEvent.change(typed, { target: { value: '272k' } });
+    fireEvent.keyDown(typed, { key: 'Enter' });
+
+    await waitFor(() => {
+      expect(runtime.updateModel).toHaveBeenLastCalledWith({
+        providerId: 'provider-1',
+        modelId: 'model-1',
+        contextWindow: 272_000,
+      });
+    });
   });
 
   it('portals the model capability dialog outside the settings frame', async () => {
@@ -478,6 +746,27 @@ describe('ModelSettings NewMax provider detail', () => {
     expect(screen.getByRole('dialog', { name: 'gpt-5' })).toBeTruthy();
   });
 
+  it('humanizes a probeCapabilities IPC timeout inside the model dialog', async () => {
+    runtime.probeCapabilities.mockRejectedValueOnce(
+      new Error(
+        "Error invoking remote method 'runtime:provider-probe-capabilities': RuntimeTransientError: Runtime request timed out: provider.probeCapabilities",
+      ),
+    );
+    await renderSettings();
+
+    fireEvent.click(screen.getByRole('button', { name: '查看模型 gpt-5' }));
+    const detail = await screen.findByRole('dialog', { name: 'gpt-5' });
+    fireEvent.click(within(detail).getByRole('button', { name: '检测能力' }));
+
+    expect((await within(detail).findByRole('alert')).textContent).toContain('能力检测超时');
+    expect(within(detail).getByRole('alert').textContent).not.toContain('Error invoking remote method');
+    expect(within(detail).getByRole('button', { name: '检测能力' })).toHaveProperty(
+      'disabled',
+      false,
+    );
+    expect(screen.getByRole('dialog', { name: 'gpt-5' })).toBeTruthy();
+  });
+
   it('maps invalid confirm-capabilities IPC errors to a readable save failure', async () => {
     runtime.confirmCapabilities.mockRejectedValueOnce(
       new Error(
@@ -488,7 +777,8 @@ describe('ModelSettings NewMax provider detail', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '查看模型 gpt-5' }));
     const detail = await screen.findByRole('dialog', { name: 'gpt-5' });
-    fireEvent.click(within(detail).getByRole('button', { name: '联网搜索：未标记' }));
+    // 点一个「能力支持」区里的未标记项让草稿变脏，保存按钮才可用。
+    fireEvent.click(within(detail).getByRole('button', { name: '文档：未标记' }));
     fireEvent.click(within(detail).getByRole('button', { name: '保存能力' }));
 
     expect((await within(detail).findByRole('alert')).textContent).toContain(
@@ -519,7 +809,7 @@ describe('ModelSettings NewMax provider detail', () => {
   it('saves protocol changes immediately without marking a transient draft', async () => {
     const onDirtyChange = await renderSettings();
 
-    fireEvent.click(screen.getByRole('radio', { name: 'Anthropic 格式' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Anthropic 格式' }));
 
     await waitFor(() => {
       expect(runtime.updateProvider).toHaveBeenCalledWith({
@@ -565,17 +855,62 @@ describe('ModelSettings NewMax provider detail', () => {
 
     expect(await screen.findByRole('heading', { name: '图片识别 Fallback' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: '保存' })).toBeNull();
-    fireEvent.click(screen.getByRole('switch'));
-    const picker = screen.getByRole('combobox');
-    expect(within(picker).getByRole('option', { name: /gpt-5/ })).toBeTruthy();
-    expect(within(picker).queryByRole('option', { name: /DeepSeek Chat/ })).toBeNull();
+    const fallbackSwitch = screen.getByRole('switch', { name: '图片识别 Fallback' });
+    if (fallbackSwitch.getAttribute('aria-checked') !== 'true') {
+      fireEvent.click(fallbackSwitch);
+    }
+    const picker = screen.getByRole('combobox', { name: '视觉模型' });
+    fireEvent.click(picker);
+    const list = await screen.findByRole('listbox', { name: '视觉模型' });
+    expect(within(list).getByRole('option', { name: /gpt-5/ })).toBeTruthy();
+    expect(within(list).queryByRole('option', { name: /DeepSeek Chat/ })).toBeNull();
+    expect(within(list).queryByRole('option', { name: '选择视觉模型…' })).toBeNull();
+    fireEvent.pointerDown(within(list).getByRole('option', { name: /gpt-5/ }));
 
     await waitFor(() => {
       expect(runtime.setSetting).toHaveBeenCalledWith({
         key: 'vision-fallback',
-        value: { enabled: true, modelId: null },
+        value: { enabled: true, providerId: 'provider-1', modelId: 'model-1' },
       });
     });
+    expect(screen.queryByText('图片识别 Fallback 已更新')).toBeNull();
+    expect(screen.queryByTestId('shell-toast')).toBeNull();
+  });
+
+  it('scans every vision candidate and reports the probe marker verdict per model', async () => {
+    runtime.probeCapabilities.mockResolvedValueOnce({
+      providerId: provider.providerId,
+      applied: true,
+      suggestions: [
+        {
+          modelId: 'model-1',
+          providerModelId: 'gpt-5',
+          displayName: 'gpt-5',
+          capabilities: ['text', 'vision'],
+          capabilitiesConfirmed: false,
+          results: { text: true, vision: true },
+          confidence: 'high',
+          reasons: ['图片输入请求通过（校验码 42 已识别）'],
+          source: 'live',
+        },
+      ],
+    });
+    await renderSettings();
+    fireEvent.click(screen.getByRole('button', { name: '图片识别 Fallback' }));
+    expect(await screen.findByRole('heading', { name: '图片识别 Fallback' })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: '扫描视觉能力' }));
+
+    // 扫描必须真的按候选逐个实测，并把校验码判定逐行回显。
+    await waitFor(() => {
+      expect(runtime.probeCapabilities).toHaveBeenCalledWith({
+        providerId: 'provider-1',
+        modelId: 'model-1',
+        visionOnly: true,
+      });
+    });
+    expect(await screen.findByText('✓ 已验证')).toBeTruthy();
+    expect(screen.getByText('图片输入请求通过（校验码 42 已识别）')).toBeTruthy();
   });
 
   it('opens Plan & Act as a list-backed detail panel and saves changes immediately', async () => {
@@ -585,6 +920,9 @@ describe('ModelSettings NewMax provider detail', () => {
     expect(await screen.findByRole('heading', { name: '规划 & 执行模型' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: '保存' })).toBeNull();
     fireEvent.click(screen.getByRole('switch'));
+    fireEvent.click(screen.getByRole('combobox', { name: '规划模型' }));
+    expect(screen.getByRole('listbox', { name: '规划模型' })).toBeTruthy();
+    expect(screen.getByRole('option', { name: /gpt-5/ })).toBeTruthy();
 
     await waitFor(() => {
       expect(runtime.setSetting).toHaveBeenCalledWith({
@@ -598,6 +936,8 @@ describe('ModelSettings NewMax provider detail', () => {
         },
       });
     });
+    expect(screen.queryByText('规划与执行模型已更新')).toBeNull();
+    expect(screen.queryByTestId('shell-toast')).toBeNull();
   });
 
   it('does not expose or load a separate Goal evaluator setting', async () => {
@@ -624,6 +964,8 @@ describe('ModelSettings NewMax provider detail', () => {
         value: true,
       });
     });
+    expect(screen.queryByText('模型配置云同步已开启')).toBeNull();
+    expect(screen.queryByTestId('shell-toast')).toBeNull();
   });
 
   it('reveals a saved credential through the explicit eye control without primary label', async () => {
@@ -631,29 +973,31 @@ describe('ModelSettings NewMax provider detail', () => {
     expect(screen.queryByText('primary')).toBeNull();
     expect(screen.getByLabelText('API 密钥')).toBeTruthy();
 
-    fireEvent.click(screen.getByRole('button', { name: '显示密钥' }));
-
     await waitFor(() => {
       expect(runtime.revealProviderCredential).toHaveBeenCalledWith({
         providerId: 'provider-1',
         credentialRefId: 'credential-1',
       });
     });
-    await waitFor(() => {
-      expect((screen.getByLabelText('API 密钥') as HTMLInputElement).value).toBe(
-        'sk-revealed-secret',
-      );
-    });
+
+    const eye = screen.getByRole('button', { name: '显示密钥' });
+    expect(eye.querySelector('.model-settings-spin')).toBeNull();
+    fireEvent.click(eye);
+    expect(eye.querySelector('.model-settings-spin')).toBeNull();
+    expect((screen.getByLabelText('API 密钥') as HTMLInputElement).value).toBe(
+      'sk-revealed-secret',
+    );
   });
 
   it('stages credential edits on blur without writing secure-store immediately', async () => {
     const onDirtyChange = await renderSettings();
-    fireEvent.click(screen.getByRole('button', { name: '显示密钥' }));
     await waitFor(() => {
-      expect((screen.getByLabelText('API 密钥') as HTMLInputElement).value).toBe(
-        'sk-revealed-secret',
-      );
+      expect(runtime.revealProviderCredential).toHaveBeenCalled();
     });
+    fireEvent.click(screen.getByRole('button', { name: '显示密钥' }));
+    expect((screen.getByLabelText('API 密钥') as HTMLInputElement).value).toBe(
+      'sk-revealed-secret',
+    );
 
     const input = screen.getByLabelText('API 密钥') as HTMLInputElement;
     fireEvent.change(input, { target: { value: 'sk-new-secret' } });
@@ -675,7 +1019,39 @@ describe('ModelSettings NewMax provider detail', () => {
     });
     expect(await screen.findByRole('heading', { name: '导入模型' })).toBeTruthy();
     expect(screen.getByText('gpt-4.1')).toBeTruthy();
-    expect(screen.getByRole('button', { name: /更新列表/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '全选' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /应用到优先级/ })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '全选' }));
+    expect(screen.getByRole('button', { name: '清空' })).toBeTruthy();
+    expect(screen.getByText(/将新增 1/)).toBeTruthy();
+  });
+
+  it('closes the import dialog from a transparent overlay without covering the page', async () => {
+    await renderSettings();
+    fireEvent.click(screen.getByRole('button', { name: '从服务商拉取模型列表' }));
+    expect(await screen.findByRole('heading', { name: '导入模型' })).toBeTruthy();
+    const overlay = document.querySelector('.model-import-overlay');
+    expect(overlay).toBeTruthy();
+    fireEvent.pointerDown(overlay!);
+    expect(screen.queryByRole('heading', { name: '导入模型' })).toBeNull();
+    expect(screen.getByDisplayValue('CODEX')).toBeTruthy();
+  });
+
+  it('toasts a humanized discover timeout instead of a page banner', async () => {
+    runtime.discoverModels.mockRejectedValueOnce(
+      new Error(
+        "Error invoking remote method 'runtime:provider-discover': RuntimeTransientError: Runtime request timed out: provider.discoverModels",
+      ),
+    );
+    await renderSettings();
+    fireEvent.click(screen.getByRole('button', { name: '从服务商拉取模型列表' }));
+
+    const toast = await screen.findByTestId('shell-toast');
+    expect(toast.textContent).toContain('响应超时');
+    expect(toast.textContent).not.toContain('Error invoking remote method');
+    const root = document.querySelector('.model-settings-root');
+    expect(root).toBeTruthy();
+    expect(within(root as HTMLElement).queryByRole('alert')).toBeNull();
   });
 
   it('runs a connection test and shows latency under the button', async () => {
@@ -705,7 +1081,7 @@ describe('ModelSettings NewMax provider detail', () => {
     expect(screen.queryByTestId('provider-icon-newmax-gateway')).toBeNull();
     expect(screen.getByTestId('provider-icon-custom')).toBeTruthy();
     expect(screen.getByTestId('provider-icon-cc-switch')).toBeTruthy();
-    expect(screen.queryByRole('heading', { name: '添加模型源' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: '自定义供应商' })).toBeNull();
     expect(screen.queryByDisplayValue('https://')).toBeNull();
   });
 
@@ -729,14 +1105,16 @@ describe('ModelSettings NewMax provider detail', () => {
     await openProviderCatalog();
     fireEvent.click(screen.getByRole('button', { name: /自定义供应商/ }));
 
-    expect(await screen.findByRole('heading', { name: '添加模型源' })).toBeTruthy();
-    expect(screen.getByText('正在配置 自定义供应商')).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: '自定义供应商' })).toBeTruthy();
     expect(screen.getByTestId('provider-form-icon-custom')).toBeTruthy();
     expect(screen.getByTestId('provider-base-url')).toHaveProperty('value', 'https://');
+    expect(screen.getByTestId('custom-provider-connection-hint').textContent).toBe(
+      '请从服务商接入文档复制 Base URL 或完整请求地址，离开输入框后会自动识别并整理。',
+    );
 
-    fireEvent.click(screen.getByRole('button', { name: '返回服务商目录' }));
+    fireEvent.click(screen.getByRole('button', { name: '返回列表' }));
     expect(await screen.findByRole('region', { name: '添加模型' })).toBeTruthy();
-    expect(screen.queryByRole('heading', { name: '添加模型源' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: '自定义供应商' })).toBeNull();
   });
 
   it('uses built-in endpoints for OpenAI, Moonshot and Ollama without exposing URL fields', async () => {
@@ -746,29 +1124,32 @@ describe('ModelSettings NewMax provider detail', () => {
     fireEvent.click(screen.getByRole('tab', { name: '海外平台' }));
     fireEvent.click(screen.getByRole('button', { name: /^OpenAI/ }));
     expect(await screen.findByDisplayValue('OpenAI')).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'OpenAI' })).toBeTruthy();
     expect(screen.getByTestId('provider-form-icon-openai')).toBeTruthy();
     expect(screen.queryByTestId('provider-base-url')).toBeNull();
-    expect(screen.getByText('连接地址已由 OpenAI 模板内置')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: '返回服务商目录' }));
+    fireEvent.click(screen.getByRole('button', { name: '返回列表' }));
 
     fireEvent.click(screen.getByRole('tab', { name: '国内服务' }));
     fireEvent.click(screen.getByRole('button', { name: /^Moonshot/ }));
     expect(await screen.findByDisplayValue('Moonshot')).toBeTruthy();
     expect(screen.getByTestId('provider-form-icon-moonshot')).toBeTruthy();
     expect(screen.queryByTestId('provider-base-url')).toBeNull();
-    expect(screen.getByText('连接地址已由 Moonshot 模板内置')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: '返回服务商目录' }));
+    fireEvent.click(screen.getByRole('button', { name: '返回列表' }));
 
     fireEvent.click(screen.getByRole('tab', { name: '本地模型' }));
     fireEvent.click(screen.getByRole('button', { name: /^Ollama/ }));
     expect(await screen.findByDisplayValue('Ollama')).toBeTruthy();
     expect(screen.getByTestId('provider-form-icon-ollama')).toBeTruthy();
     expect(screen.queryByTestId('provider-base-url')).toBeNull();
-    expect(screen.getByText('连接地址已由 Ollama 模板内置')).toBeTruthy();
     expect(screen.getByDisplayValue('ollama-local')).toBeTruthy();
   });
 
   it('submits the hidden built-in endpoint for a catalog provider', async () => {
+    runtime.probeModels.mockResolvedValue({
+      discoveredIds: [],
+      protocol: 'openai-responses',
+      latencyMs: 42,
+    });
     await renderSettings();
     await openProviderCatalog();
 
@@ -780,7 +1161,14 @@ describe('ModelSettings NewMax provider detail', () => {
     );
     expect(apiKey).toBeTruthy();
     fireEvent.change(apiKey!, { target: { value: 'sk-openai-test' } });
-    fireEvent.click(screen.getByRole('button', { name: '创建并保存' }));
+
+    // The priority chain is authored on the form now, so at least one model is
+    // required before the provider can be activated.
+    fireEvent.click(screen.getByTestId('create-provider-add-model'));
+    fireEvent.change(screen.getByLabelText('模型 ID'), { target: { value: 'gpt-5' } });
+    fireEvent.click(screen.getByTestId('create-provider-add-model-confirm'));
+
+    fireEvent.click(screen.getByRole('button', { name: '测试连接' }));
 
     await waitFor(() => {
       expect(runtime.createProvider).toHaveBeenCalledWith({
@@ -788,8 +1176,12 @@ describe('ModelSettings NewMax provider detail', () => {
         baseUrl: 'https://api.openai.com/v1',
         protocol: 'openai-responses',
         supportsDiscovery: true,
+        discoverOnCreate: false,
+        models: [{ providerModelId: 'gpt-5', displayName: 'gpt-5' }],
       });
     });
+    expect(screen.queryByText(/已创建/)).toBeNull();
+    expect(screen.queryByTestId('shell-toast')).toBeNull();
   });
 
   it('requires Base URL only for a custom provider', async () => {
@@ -807,10 +1199,121 @@ describe('ModelSettings NewMax provider detail', () => {
     expect(apiKey).toBeTruthy();
     fireEvent.change(name!, { target: { value: 'Custom Gateway' } });
     fireEvent.change(apiKey!, { target: { value: 'sk-custom-test' } });
-    fireEvent.click(screen.getByRole('button', { name: '创建并保存' }));
+    fireEvent.click(screen.getByRole('button', { name: '从服务商拉取模型列表' }));
 
     expect((await screen.findAllByText('请填写 Base URL')).length).toBeGreaterThan(0);
     expect(runtime.createProvider).not.toHaveBeenCalled();
+  });
+
+  it('fetches models into the create draft without creating the provider first', async () => {
+    runtime.probeModels.mockResolvedValue({
+      discoveredIds: ['gpt-5', 'gpt-5-mini'],
+      protocol: 'openai-chat',
+    });
+    await renderSettings();
+    await openProviderCatalog();
+    fireEvent.click(screen.getByRole('button', { name: /自定义供应商/ }));
+
+    const name = document.querySelector<HTMLInputElement>(
+      '.model-provider-form input:not([type="password"])',
+    );
+    const apiKey = document.querySelector<HTMLInputElement>(
+      '.model-provider-form input[type="password"]',
+    );
+    const baseUrl = document.querySelector<HTMLInputElement>('[data-testid="provider-base-url"]');
+    expect(name && apiKey && baseUrl).toBeTruthy();
+    fireEvent.change(name!, { target: { value: 'Custom Gateway' } });
+    fireEvent.change(baseUrl!, { target: { value: 'https://api.example.com/v1' } });
+    fireEvent.change(apiKey!, { target: { value: 'sk-custom-test' } });
+
+    fireEvent.click(screen.getByRole('button', { name: '从服务商拉取模型列表' }));
+
+    await waitFor(() => {
+      expect(runtime.probeModels).toHaveBeenCalledWith({
+        baseUrl: 'https://api.example.com/v1',
+        protocol: 'openai-chat',
+      });
+    });
+    // The probe must not persist anything — the provider does not exist yet.
+    expect(runtime.createProvider).not.toHaveBeenCalled();
+
+    const checkboxes = document.querySelectorAll<HTMLInputElement>(
+      '.model-import-dialog__row input[type="checkbox"]',
+    );
+    expect(checkboxes.length).toBeGreaterThan(0);
+    fireEvent.click(checkboxes[0]);
+    fireEvent.click(screen.getByRole('button', { name: /应用到优先级/ }));
+
+    // Checked ids land in the draft list, still without touching the runtime.
+    await waitFor(() => {
+      expect(
+        document.querySelectorAll('.model-priority-list .model-priority-row').length,
+      ).toBe(1);
+    });
+    expect(runtime.createProvider).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: '测试连接' }));
+
+    await waitFor(() => {
+      expect(runtime.createProvider).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'Custom Gateway',
+          baseUrl: 'https://api.example.com/v1',
+          protocol: 'openai-chat',
+          discoverOnCreate: false,
+          models: [{ providerModelId: 'gpt-5', displayName: 'gpt-5' }],
+        }),
+      );
+    });
+    expect(screen.queryByText(/已创建/)).toBeNull();
+    expect(screen.queryByTestId('shell-toast')).toBeNull();
+  });
+
+  it('keeps the provider via「仍然保存」only after a failing connection test', async () => {
+    // NewMax parity: a relay that rejects the capability probe can still be kept.
+    runtime.probeModels.mockRejectedValue(new Error('401 Unauthorized'));
+    await renderSettings();
+    await openProviderCatalog();
+    fireEvent.click(screen.getByRole('button', { name: /自定义供应商/ }));
+
+    const name = document.querySelector<HTMLInputElement>(
+      '.model-provider-form input:not([type="password"])',
+    );
+    const apiKey = document.querySelector<HTMLInputElement>(
+      '.model-provider-form input[type="password"]',
+    );
+    const baseUrl = document.querySelector<HTMLInputElement>('[data-testid="provider-base-url"]');
+    expect(name && apiKey && baseUrl).toBeTruthy();
+    fireEvent.change(name!, { target: { value: 'Relay Gateway' } });
+    fireEvent.change(baseUrl!, { target: { value: 'https://relay.example.com/v1' } });
+    fireEvent.change(apiKey!, { target: { value: 'sk-relay-test' } });
+
+    fireEvent.click(screen.getByTestId('create-provider-add-model'));
+    fireEvent.change(screen.getByLabelText('模型 ID'), { target: { value: 'gpt-5' } });
+    fireEvent.click(screen.getByTestId('create-provider-add-model-confirm'));
+
+    // The escape hatch is hidden until the test actually fails.
+    expect(screen.queryByTestId('model-settings-save-unverified')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: '测试连接' }));
+    const saveAnyway = await screen.findByTestId('model-settings-save-unverified');
+    // A failing probe must never persist the provider on its own.
+    expect(runtime.createProvider).not.toHaveBeenCalled();
+
+    fireEvent.click(saveAnyway);
+    await waitFor(() => {
+      expect(runtime.createProvider).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'Relay Gateway',
+          baseUrl: 'https://relay.example.com/v1',
+          protocol: 'openai-chat',
+          discoverOnCreate: false,
+          unverified: true,
+          models: [{ providerModelId: 'gpt-5', displayName: 'gpt-5' }],
+        }),
+      );
+    });
+    expect(screen.queryByTestId('shell-toast')).toBeNull();
   });
 
   it('restores the previously selected provider when its list row is selected', async () => {
@@ -856,5 +1359,166 @@ describe('ModelSettings NewMax provider detail', () => {
     fireEvent.click(addModelButtons[addModelButtons.length - 1]!);
     expect(screen.getByPlaceholderText('模型 ID')).toBeTruthy();
     expect(screen.getByRole('button', { name: '从服务商拉取模型列表' })).toBeTruthy();
+  });
+
+  it('normalizes a pasted chat-completions URL on the custom provider form', async () => {
+    await renderSettings();
+    await openProviderCatalog();
+    fireEvent.click(screen.getByRole('button', { name: /自定义供应商/ }));
+
+    const url = screen.getByTestId('provider-base-url');
+    fireEvent.change(url, {
+      target: { value: 'https://www.kamenking.top/v1/chat/completions' },
+    });
+    fireEvent.blur(url);
+
+    expect(url).toHaveProperty('value', 'https://www.kamenking.top/v1');
+    expect(screen.getByTestId('custom-provider-connection-hint').textContent).toBe(
+      '已根据地址识别为 OpenAI 格式；仍可在下方手动修改。',
+    );
+  });
+
+  it('uses 停用 and two-step 移除 on the enabled provider menu', async () => {
+    await renderSettings();
+    fireEvent.click(screen.getByRole('button', { name: 'CODEX 更多操作' }));
+    expect(screen.getByRole('menuitem', { name: '停用' })).toBeTruthy();
+    expect(screen.queryByRole('menuitem', { name: '编辑配置' })).toBeNull();
+    fireEvent.click(screen.getByRole('menuitem', { name: '移除' }));
+    expect(screen.getByRole('menuitem', { name: '确认移除' })).toBeTruthy();
+  });
+
+  it('hard-deletes the provider when 移除 is confirmed, even with a single key', async () => {
+    await renderSettings();
+    fireEvent.click(screen.getByRole('button', { name: 'CODEX 更多操作' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '移除' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '确认移除' }));
+
+    await waitFor(() => {
+      expect(runtime.deleteProvider).toHaveBeenCalledWith({
+        providerId: provider.providerId,
+      });
+    });
+    // 移除不能退化成单删循环：那条路径会拒绝删掉供应商的最后一个密钥，
+    // 这正是之前「移除」永远失败的原因。
+    expect(runtime.removeProviderCredential).not.toHaveBeenCalled();
+    // 也不该把它「停用」回来 —— 硬删除后它不应再出现在列表里。
+    expect(runtime.updateProvider).not.toHaveBeenCalledWith(
+      expect.objectContaining({ providerId: provider.providerId, enabled: false }),
+    );
+  });
+
+  it('only clears credentials (keeps the provider) when 清空 is used', async () => {
+    runtime.listProviders.mockResolvedValue({
+      providers: [
+        provider,
+        {
+          ...provider,
+          providerId: 'provider-disabled' as ProviderSummary['providerId'],
+          name: 'OLD',
+          enabled: false,
+          sortOrder: 1,
+        },
+      ],
+    });
+    await renderSettings();
+
+    fireEvent.click(screen.getByTestId('model-settings-disabled-action-menu-trigger'));
+    fireEvent.click(screen.getByRole('menuitem', { name: '清空' }));
+
+    await waitFor(() => {
+      expect(runtime.clearProviderCredentials).toHaveBeenCalledWith({
+        providerId: 'provider-disabled',
+      });
+    });
+    // 「清空」只清密钥，不能顺手把供应商删掉。
+    expect(runtime.deleteProvider).not.toHaveBeenCalled();
+  });
+
+  it('expands disabled providers under the section header', async () => {
+    runtime.listProviders.mockResolvedValue({
+      providers: [
+        provider,
+        {
+          ...provider,
+          providerId: 'provider-disabled' as ProviderSummary['providerId'],
+          name: 'OLD',
+          enabled: false,
+          sortOrder: 1,
+        },
+      ],
+    });
+    await renderSettings();
+
+    expect(screen.queryByTestId('model-settings-disabled-menu-list')).toBeNull();
+    expect(screen.queryByText('OLD')).toBeNull();
+    fireEvent.click(screen.getByTestId('model-settings-disabled-menu-trigger'));
+    const disabledList = screen.getByTestId('model-settings-disabled-menu-list');
+    expect(disabledList).toBeTruthy();
+    expect(within(disabledList).getByText('OLD')).toBeTruthy();
+    fireEvent.click(screen.getByTestId('model-settings-disabled-action-menu-trigger'));
+    expect(screen.getByRole('menuitem', { name: '启用全部' })).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: '清空' })).toBeTruthy();
+  });
+
+  it('keeps the disabled section open after selecting a disabled provider', async () => {
+    runtime.listProviders.mockResolvedValue({
+      providers: [
+        provider,
+        {
+          ...provider,
+          providerId: 'provider-disabled' as ProviderSummary['providerId'],
+          name: 'OLD',
+          enabled: false,
+          sortOrder: 1,
+        },
+      ],
+    });
+    await renderSettings();
+
+    fireEvent.click(screen.getByTestId('model-settings-disabled-menu-trigger'));
+    fireEvent.click(screen.getByText('OLD'));
+    expect(screen.getByTestId('model-settings-disabled-menu-list')).toBeTruthy();
+    expect(screen.getByText('已停用')).toBeTruthy();
+  });
+
+  it('shows NewMax media-tab copy instead of an invented unavailable notice', async () => {
+    await renderSettings();
+    fireEvent.click(screen.getByRole('tab', { name: '图像生成' }));
+    expect(
+      await screen.findByText(
+        '还没有配置过生图模型的提供商。可以点击「添加生图模型」，测试成功后会出现在左侧列表。',
+      ),
+    ).toBeTruthy();
+    expect(screen.getAllByRole('button', { name: '添加生图模型' }).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/尚未接入/)).toBeNull();
+    expect(screen.queryByText(/SYNC-THINK/)).toBeNull();
+  });
+
+  it('keeps openai-images providers off the text-generation list', async () => {
+    runtime.listProviders.mockResolvedValue({
+      providers: [
+        provider,
+        {
+          ...provider,
+          providerId: 'provider-image' as ProviderSummary['providerId'],
+          name: 'OpenAI Images',
+          protocol: 'openai-images',
+          sortOrder: 1,
+          models: [
+            {
+              ...provider.models[0]!,
+              modelId: 'model-image' as ProviderSummary['models'][number]['modelId'],
+              providerModelId: 'gpt-image-2',
+              displayName: 'gpt-image-2',
+              protocol: 'openai-images',
+              capabilities: ['image-generation'],
+            },
+          ],
+        },
+      ],
+    });
+    await renderSettings();
+    expect(screen.getByDisplayValue('CODEX')).toBeTruthy();
+    expect(screen.queryByText('OpenAI Images')).toBeNull();
   });
 });

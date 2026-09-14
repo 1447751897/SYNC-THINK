@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
+import { WrapText } from 'lucide-react';
 import {
   parseContentReference,
   type ContentReference,
@@ -8,6 +9,7 @@ import {
 import { CopyTextButton } from './CopyTextButton.js';
 import { deferredContentReader } from './deferred-content-reader.js';
 import { formatDisplayedToolOutput } from './tool-output-display.js';
+import { useToolOutputWrap } from './tool-output-wrap.js';
 
 export const ConversationContentScope = createContext<string | undefined>(undefined);
 
@@ -18,7 +20,7 @@ interface DeferredToolContentProps {
   preview: string;
   previewContent?: ReactNode;
   presentation?: 'code' | 'prose';
-  /** When false, keep paged “读取完整内容”. File diffs stay on-demand. */
+  /** When false, keep paged “读取完整内容”. Message bodies and file snapshots assemble. */
   assemble?: boolean;
   label?: string;
   streaming?: boolean;
@@ -26,6 +28,8 @@ interface DeferredToolContentProps {
   testId?: string;
   initialOffset?: number;
   initialVersion?: string;
+  /** 显示顶条的折行开关。开启后跟随共享偏好，默认折行（见 tool-output-wrap.ts）。 */
+  wrapControl?: boolean;
 }
 
 function byteLabel(bytes: number): string {
@@ -44,6 +48,7 @@ function ContentSession({
   label = '输出',
   failed,
   testId,
+  wrapControl = false,
   conversationId,
   reference,
   initialOffset = 0,
@@ -52,7 +57,7 @@ function ContentSession({
   conversationId?: string;
   reference?: ContentReference;
 }) {
-  const autoAssemble = assemble ?? presentation !== 'prose';
+  const autoAssemble = assemble ?? true;
   const [content, setContent] = useState<string>();
   const [history, setHistory] = useState<number[]>([]);
   const [paged, setPaged] = useState<{
@@ -195,6 +200,9 @@ function ContentSession({
   const displayed = autoAssemble && assembled ? formatDisplayedToolOutput(assembled) : undefined;
   const visibleText = displayed?.text ?? visibleRaw;
   const reading = Boolean(assembled || paged);
+  const [wrapPreference, toggleWrap] = useToolOutputWrap();
+  // prose 呈现（消息正文）本来就按段落折行，开关只服务于代码型的原始输出。
+  const wraps = wrapControl && presentation !== 'prose' && wrapPreference;
 
   return (
     <div
@@ -218,10 +226,24 @@ function ContentSession({
           </span>{' '}
           · {byteLabel(paged?.utf8Bytes ?? deferred.utf8Bytes)}
         </span>
-        <CopyTextButton
-          text={assembled ?? paged?.text ?? preview}
-          label={reading ? (autoAssemble ? '复制全文' : '复制本段') : '复制预览'}
-        />
+        <div className="shell-md-code__actions">
+          {wrapControl && presentation !== 'prose' ? (
+            <button
+              type="button"
+              className="shell-md-code__action shell-md-code__wrap"
+              aria-pressed={wraps}
+              aria-label={wraps ? '切换为不换行' : '切换为自动换行'}
+              title={wraps ? '切换为不换行' : '切换为自动换行'}
+              onClick={toggleWrap}
+            >
+              <WrapText size={13} aria-hidden="true" />
+            </button>
+          ) : null}
+          <CopyTextButton
+            text={assembled ?? paged?.text ?? preview}
+            label={reading ? (autoAssemble ? '复制全文' : '复制本段') : '复制预览'}
+          />
+        </div>
       </div>
       {!reading && previewContent ? (
         <div className="shell-deferred-content__preview">{previewContent}</div>
@@ -231,6 +253,7 @@ function ContentSession({
           tabIndex={0}
           aria-label={`${label}内容（可滚动）`}
           data-testid="deferred-content-text"
+          data-wrap={wraps ? 'true' : 'false'}
         >
           <code>{visibleText}</code>
         </pre>

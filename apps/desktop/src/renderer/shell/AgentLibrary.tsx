@@ -25,6 +25,14 @@ import type { WorkspaceSummary } from '@sync-think/protocol';
 import type { ModelOption } from './NewConversationDialog.js';
 import { useDialog } from './Dialog.js';
 import { AgentAvatarView, isImageAvatar, readAvatarImage } from './AgentAvatarView.js';
+import {
+  AVATAR_COLORS,
+  AVATAR_SHAPES,
+  avatarDataUrl,
+  avatarSeed,
+  colorHex,
+  resolveAvatarFace,
+} from './avatar-gen.js';
 import { ModelPickerMenu, ModelTrigger } from './compose-toolbar.js';
 import { SlidingTabs } from './SlidingTabs.js';
 
@@ -172,6 +180,67 @@ export function AgentLibrary({
   );
 
   const active = useMemo(() => agents.filter((agent) => !agent.archived), [agents]);
+
+  // Current procedural face for the live preview — the stored seed when there is
+  // one, otherwise the deterministic derivation the avatar view would fall back to.
+  const avatarFace = useMemo(
+    () => resolveAvatarFace(draft.avatar, selected?.id ?? draft.name),
+    [draft.avatar, selected?.id, draft.name],
+  );
+
+  /**
+   * Bulk-backfill seeds for every agent still on a text avatar. Imported images
+   * are skipped, and agents that already carry a seed keep the face the user
+   * picked — so this is safe to run more than once.
+   */
+  const handleRegenerateAllAvatars = useCallback(async () => {
+    const api = bridge();
+    if (!api) return;
+    const targets = active.filter((agent) => !isImageAvatar(agent.avatar));
+    if (targets.length === 0) {
+      await dialog.alert({
+        title: '无需生成',
+        message: '所有智能体都已经有专属头像或已导入图片。',
+      });
+      return;
+    }
+    if (
+      !(await dialog.confirm({
+        title: '生成专属头像',
+        message: `将为 ${targets.length} 个智能体生成专属头像。已导入图片的头像会保留，继续吗？`,
+        confirmText: '生成',
+      }))
+    ) {
+      return;
+    }
+    let failed = 0;
+    for (const agent of targets) {
+      const face = resolveAvatarFace(agent.avatar, String(agent.id));
+      try {
+        await api.updateGlobalAgent({
+          agentId: agent.id,
+          name: agent.name,
+          avatar: avatarSeed(face.shape, face.color),
+          description: agent.description,
+          persona: agent.persona,
+          defaultModelId: agent.defaultModelId,
+          fallbackModelIds: agent.fallbackModelIds ?? [],
+          skillIds: agent.skillIds ?? [],
+          mcpServerIds: agent.mcpServerIds ?? [],
+          reasoningEffort: agent.reasoningEffort || 'auto',
+        });
+      } catch {
+        failed += 1;
+      }
+    }
+    onRefresh();
+    if (failed > 0) {
+      await dialog.alert({
+        title: '部分头像未生成',
+        message: `${failed} 个智能体更新失败，其余已生成。`,
+      });
+    }
+  }, [active, dialog, onRefresh]);
   const visibleAgents = useMemo(() => {
     const query = searchQuery.trim().toLocaleLowerCase();
     return active.filter((agent) => {
@@ -1071,6 +1140,74 @@ export function AgentLibrary({
                             }}
                           />
                         </div>
+                      </div>
+                    </div>
+
+                    {/* Procedural face picker — writes a `gen:v1:<shape>:<color>` seed. */}
+                    <div className="space-y-2.5 rounded-lg border border-border bg-page p-3">
+                      <div className="flex items-center justify-between">
+                        <label className="text-[11px] text-text-faint">专属头像</label>
+                        <button
+                          type="button"
+                          className="text-[11px] text-text-faint transition-colors hover:text-text"
+                          onClick={() => void handleRegenerateAllAvatars()}
+                        >
+                          给全部智能体生成
+                        </button>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {AVATAR_SHAPES.map((shape) => {
+                          const isActiveShape = avatarFace.shape === shape;
+                          return (
+                            <button
+                              key={shape}
+                              type="button"
+                              title={shape}
+                              aria-label={`形状 ${shape}`}
+                              aria-pressed={isActiveShape}
+                              className={`h-8 w-8 rounded-lg border p-0.5 transition-colors ${
+                                isActiveShape ? 'border-accent bg-hover' : 'border-border hover:bg-hover'
+                              }`}
+                              onClick={() =>
+                                setDraft((d) => ({
+                                  ...d,
+                                  avatar: avatarSeed(shape, avatarFace.color),
+                                }))
+                              }
+                            >
+                              <img
+                                src={avatarDataUrl(shape, avatarFace.color, 'idle', 24)}
+                                alt=""
+                                className="h-full w-full select-none"
+                                draggable={false}
+                              />
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {AVATAR_COLORS.map((color) => {
+                          const isActiveColor = avatarFace.color === color;
+                          return (
+                            <button
+                              key={color}
+                              type="button"
+                              title={color}
+                              aria-label={`颜色 ${color}`}
+                              aria-pressed={isActiveColor}
+                              className={`h-6 w-6 rounded-full border-2 transition-transform ${
+                                isActiveColor ? 'scale-110 border-accent' : 'border-border'
+                              }`}
+                              style={{ background: colorHex(color) }}
+                              onClick={() =>
+                                setDraft((d) => ({
+                                  ...d,
+                                  avatar: avatarSeed(avatarFace.shape, color),
+                                }))
+                              }
+                            />
+                          );
+                        })}
                       </div>
                     </div>
 

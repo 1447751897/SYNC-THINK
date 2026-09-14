@@ -340,7 +340,9 @@ function defaultDataRoot(): string {
   }
   const cwdData = join(process.cwd(), '.data', 'SYNC-THINK');
   if (existsSync(dirname(cwdData))) return cwdData;
-  const dataRoot = process.env.LOCALAPPDATA ?? join(homedir(), '.sync-think');
+  const dataRoot = process.env.LOCALAPPDATA ?? (process.platform === 'darwin'
+    ? join(homedir(), 'Library', 'Application Support')
+    : join(homedir(), '.sync-think'));
   return join(dataRoot, 'SYNC-THINK');
 }
 
@@ -774,6 +776,24 @@ type DaemonAutostartPreference = boolean | undefined;
 type DaemonAutostartStartupAction = 'enable' | 'disable' | 'none';
 const DAEMON_AUTOSTART_NAME = 'SYNC-THINK Daemon';
 const WINDOWS_RUN_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
+const MACOS_LAUNCH_AGENT_LABEL = 'com.syncthink.desktop.daemon';
+
+export function macosLaunchAgentPath(home = homedir()): string {
+  return join(home, 'Library', 'LaunchAgents', `${MACOS_LAUNCH_AGENT_LABEL}.plist`);
+}
+
+export function createMacosLaunchAgentPlist(input: {
+  nodeBin: string;
+  daemonEntry: string;
+  bootstrapPath: string;
+  stdoutPath: string;
+  stderrPath: string;
+}): string {
+  const escape = (value: string) => value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
+  const args = [input.nodeBin, input.daemonEntry, '--bootstrap', input.bootstrapPath]
+    .map((value) => `<string>${escape(resolve(value))}</string>`).join('');
+  return `<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>Label</key><string>${MACOS_LAUNCH_AGENT_LABEL}</string><key>ProgramArguments</key><array>${args}</array><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>StandardOutPath</key><string>${escape(resolve(input.stdoutPath))}</string><key>StandardErrorPath</key><string>${escape(resolve(input.stderrPath))}</string></dict></plist>`;
+}
 
 function daemonAutostartPreferencePath(): string {
   return join(daemonStateDir(), 'daemon-autostart-preference.json');
@@ -802,6 +822,8 @@ function writeDaemonAutostartPreference(enabled: boolean): void {
 }
 
 function isDaemonAutostartRegistered(): boolean {
+  if (process.platform === 'darwin') return existsSync(macosLaunchAgentPath());
+  if (process.platform !== 'win32') return false;
   try {
     const scheduled = spawnSync('schtasks.exe', ['/Query', '/TN', DAEMON_AUTOSTART_NAME], {
       shell: false,
@@ -1402,6 +1424,33 @@ export async function setDaemonAutostart(
   identity?: Pick<DesktopRuntimeIdentity, 'installId' | 'pipeSecret' | 'allowNoToken'>,
 ): Promise<{ ok: boolean }> {
   try {
+    if (process.platform === 'darwin') {
+      const agentPath = macosLaunchAgentPath();
+      if (!enabled) {
+        spawnSync('launchctl', ['bootout', `gui/${process.getuid?.() ?? 0}`, agentPath], { stdio: 'ignore' });
+        try { unlinkSync(agentPath); } catch { /* already absent */ }
+        writeDaemonAutostartPreference(false);
+        return { ok: !existsSync(agentPath) };
+      }
+      const entry = resolveDaemonEntry();
+      const nodeBin = resolveNodeBinary();
+      if (!entry || !nodeBin || !identity) return { ok: false };
+      const bootstrapPath = await writeDaemonBootstrap(identity);
+      const plistPath = macosLaunchAgentPath();
+      mkdirSync(dirname(plistPath), { recursive: true });
+      writeFileSync(plistPath, createMacosLaunchAgentPlist({
+        nodeBin,
+        daemonEntry: entry,
+        bootstrapPath,
+        stdoutPath: join(daemonStateDir(), 'daemon.stdout.log'),
+        stderrPath: join(daemonStateDir(), 'daemon.stderr.log'),
+      }), { encoding: 'utf8', mode: 0o600 });
+      const uid = process.getuid?.() ?? 0;
+      const loaded = spawnSync('launchctl', ['bootstrap', `gui/${uid}`, plistPath], { stdio: 'ignore' });
+      if (loaded.status !== 0) return { ok: false };
+      writeDaemonAutostartPreference(true);
+      return { ok: true };
+    }
     if (!enabled) {
       spawnSync('schtasks.exe', ['/Delete', '/TN', DAEMON_AUTOSTART_NAME, '/F'], {
         shell: false,

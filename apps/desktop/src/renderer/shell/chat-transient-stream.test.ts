@@ -719,4 +719,31 @@ describe('chat transient stream reducer', () => {
       terminalError: 'unexpected status 502 Bad Gateway: content is not iterable',
     });
   });
+
+  it('keeps delegated child updates on the parent draft without replacing its text', () => {
+    const result = applyTransientConversationFrame({
+      current: { runId: 'parent-1', text: 'parent text', timestamp: '2026-07-27T00:00:01.000Z' },
+      frame: frame(2, 'process', {
+        runId: 'parent-1' as ConversationTransientFrame['runId'],
+        delegatedAgent: {
+          childRunId: 'child-1' as ConversationTransientFrame['runId'],
+          parentRunId: 'parent-1' as ConversationTransientFrame['runId'],
+          name: '审阅 Agent',
+          avatar: '审阅',
+          kind: 'existing',
+          status: 'running',
+          activeTool: 'read_file',
+          toolEvents: [{ toolName: 'read_file', status: 'running' }],
+        },
+      }),
+      threadId: 'thread-a',
+      afterStreamSequence: 1,
+    });
+
+    expect(result.draft).toMatchObject({
+      runId: 'parent-1',
+      text: 'parent text',
+      delegatedAgents: [{ childRunId: 'child-1', activeTool: 'read_file' }],
+    });
+  });
 });

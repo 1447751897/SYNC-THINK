@@ -2,6 +2,7 @@ import readline from 'node:readline';
 
 let turnCount = 0;
 let threadId = 'thread-app-fixture';
+let lastTurnId;
 let threadPolicy;
 
 function write(message) {
@@ -21,6 +22,16 @@ input.on('line', (line) => {
       id: request.id,
       error: { code: -32602, message: 'codex-default is a host sentinel, not a provider model' },
     });
+    return;
+  }
+  if (request.method === 'turn/interrupt') {
+    write({ jsonrpc: '2.0', id: request.id, result: {} });
+    if (lastTurnId) {
+      write({
+        method: 'turn/completed',
+        params: { threadId, turn: { id: lastTurnId, status: 'interrupted' } },
+      });
+    }
     return;
   }
   if (request.method === 'initialize') {
@@ -49,6 +60,7 @@ input.on('line', (line) => {
   if (request.method === 'turn/start') {
     turnCount += 1;
     const turnId = `turn-${turnCount}`;
+    lastTurnId = turnId;
     write({ jsonrpc: '2.0', id: request.id, result: { turn: { id: turnId } } });
     write({ method: 'turn/started', params: { threadId, turn: { id: turnId } } });
     if (turnCount === 1) {
@@ -67,6 +79,53 @@ input.on('line', (line) => {
     const commandOutcome = request.params?.input
       ?.find?.((item) => item?.text?.startsWith('command outcome fixture:'))
       ?.text?.split(':')[1];
+    const hangKind = request.params?.input
+      ?.find?.((item) => item?.text?.startsWith('command hang fixture:'))
+      ?.text?.split(':')[1];
+    const silentCommand = request.params?.input
+      ?.find?.((item) => item?.text?.startsWith('command silence fixture:'))
+      ?.text?.slice('command silence fixture:'.length);
+    if (silentCommand) {
+      const item = {
+        id: 'cmd-silent',
+        type: 'commandExecution',
+        command: silentCommand,
+        processId: 'process-silent',
+        source: 'unifiedExecStartup',
+        cwd: process.cwd(),
+      };
+      write({ method: 'item/started', params: { threadId, turnId, item } });
+      setTimeout(() => {
+        write({
+          method: 'item/completed',
+          params: {
+            threadId,
+            turnId,
+            item: { ...item, exitCode: 0, aggregatedOutput: '', status: 'completed' },
+          },
+        });
+        write({
+          method: 'turn/completed',
+          params: { threadId, turn: { id: turnId, status: 'completed' } },
+        });
+      }, 160);
+      return;
+    }
+    if (hangKind === 'persistent' || hangKind === 'short') {
+      const command =
+        hangKind === 'persistent'
+          ? 'node .sync-think/qa/turtle-soup-authoring/server.cjs'
+          : 'git status --short';
+      write({
+        method: 'item/started',
+        params: {
+          threadId,
+          turnId,
+          item: { id: 'cmd-hang', type: 'commandExecution', command },
+        },
+      });
+      return;
+    }
     if (commandOutcome) {
       write({
         jsonrpc: '2.0',

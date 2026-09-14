@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { type CommandSessionStore, type CommandSessionStart } from './command-sessions.js';
 import type { ProviderMessage, ProviderToolCall, ProviderToolSchema } from '@sync-think/adapters';
 import type {
   BrowserAutomationTaskSummary,
@@ -10,7 +11,7 @@ import type {
   GetBrowserWorkflowResponse,
   ListBrowserWorkflowsPayload,
 } from '@sync-think/protocol';
-import { resolveBrowserClickTarget, type Event } from '@sync-think/shared';
+import { resolveBrowserClickTarget, type ConversationTrack, type Event } from '@sync-think/shared';
 import {
   CHAT_DESKTOP_MUTATING_TOOL_NAMES,
   CHAT_DESKTOP_TOOL_NAMES,
@@ -21,6 +22,10 @@ import {
   parseGetBrowserWorkflowPayload,
   parseListBrowserWorkflowsPayload,
 } from './validation/browser-workflow.js';
+import { DESCRIBE_IMAGE_TOOL_NAME } from './describe-image-tool.js';
+import { GENERATE_IMAGE_TOOL_NAME } from './generate-image-tool.js';
+import { SEARCH_CAPABILITY_TOOL_NAME, USE_CAPABILITY_TOOL_NAME } from './capability-broker.js';
+import { WINDOWS_OCR_TOOL_NAME } from './windows-ocr.js';
 
 export {
   CHAT_DESKTOP_MUTATING_TOOL_NAMES,
@@ -115,7 +120,7 @@ export const CHAT_BUILT_IN_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
   {
     name: 'run_command',
     description:
-      'Run one non-interactive executable without a shell in the bound project folder. Process exit does not verify a visible GUI window; use desktop_launch_app when Computer Use is enabled to open desktop applications.',
+      'Run one non-interactive executable without a shell in the bound project folder. Waits up to waitMs (default 10000), then returns a sessionId if still running. A running result is not completion or failure. Use read_command to wait and collect output; use background=true for servers/watchers and verify readiness separately. No execution deadline unless timeoutMs is supplied. Use desktop_launch_app to open GUI applications.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -124,7 +129,34 @@ export const CHAT_BUILT_IN_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
         command: { type: 'string' },
         args: { type: 'array', items: { type: 'string' }, maxItems: 128 },
         cwd: { type: 'string' },
+        waitMs: { type: 'integer', minimum: 0, maximum: 30_000, description: 'Time to wait for this response, independent of process lifetime.' },
+        timeoutMs: { type: 'integer', minimum: 1, maximum: 2_147_483_647, description: 'Optional total execution deadline; omit for no deadline.' },
+        background: { type: 'boolean', description: 'Return a session immediately for a long-lived command. Check its output/readiness before using it.' },
       },
+    },
+  },
+  {
+    name: 'read_command',
+    description: 'Wait for an existing command and collect new stdout/stderr. A running status is normal for silent work or sleep. Reuse the same sessionId; do not relaunch the command. Sessions belong to this conversation and survive turns until process exit, cancellation, or Runtime shutdown.',
+    inputSchema: {
+      type: 'object', additionalProperties: false, required: ['sessionId'],
+      properties: {
+        sessionId: { type: 'string' },
+        waitMs: { type: 'integer', minimum: 0, maximum: 30_000, description: 'Defaults to 30000. Zero reads current output without waiting.' },
+      },
+    },
+  },
+  {
+    name: 'list_commands',
+    description: 'List running and recently finished commands in this conversation, including their sessionId and status. Use after a turn boundary to find an existing server or long task.',
+    inputSchema: { type: 'object', additionalProperties: false, properties: {} },
+  },
+  {
+    name: 'stop_command',
+    description: 'Stop one command session owned by this conversation, including its child processes. Use when the command is no longer needed or the user requests cancellation.',
+    inputSchema: {
+      type: 'object', additionalProperties: false, required: ['sessionId'],
+      properties: { sessionId: { type: 'string' } },
     },
   },
   {
@@ -259,7 +291,40 @@ export const CHAT_AGENT_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
       },
     },
   },
+  {
+    name: 'agent_delegate',
+    description:
+      'Delegate a focused task from a model conversation to one independent child Agent. The runtime first reuses a matching existing Agent by id/capability, otherwise creates a temporary profile for this run only. This tool is unavailable in Agent and Team conversations and is subject to depth, child-count, per-turn and token-budget settings.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['task'],
+      properties: {
+        task: { type: 'string', minLength: 1, maxLength: 20_000 },
+        agentId: { type: 'string', description: 'Optional exact existing Agent id.' },
+        requiredSkillIds: { type: 'array', items: { type: 'string' }, maxItems: 16 },
+        requiredToolIds: { type: 'array', items: { type: 'string' }, maxItems: 16 },
+        tokenBudget: { type: 'integer', minimum: 1, description: 'Optional per-child token cap.' },
+        timeoutSeconds: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 3600,
+          description: 'Optional wall-clock limit for this child task; defaults to 300 seconds.',
+        },
+        parallelGroup: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 80,
+          description:
+            'Optional display and scheduling group for sibling delegated tasks from the same model turn.',
+        },
+      },
+    },
+  },
 ];
+
+export const CHAT_DYNAMIC_AGENT_TOOL_SCHEMAS: readonly ProviderToolSchema[] =
+  CHAT_AGENT_TOOL_SCHEMAS.filter((tool) => tool.name === 'agent_delegate');
 
 /**
  * Skill-management tools — let the chat model manage the Skill capability
@@ -1461,6 +1526,12 @@ export function normalizeChatExecutionMode(mode: string | undefined | null): Cha
 export function toolsForExecutionMode(
   _mode: string | undefined | null,
   options: {
+    /** Conversation authority boundary; omitted keeps legacy catalog behavior. */
+    conversationTrack?: ConversationTrack;
+    /** Persisted collaboration setting; Agent task mutation defaults to off. */
+    allowAgentTaskDispatch?: boolean;
+    /** Model-track dynamic delegation switch; defaults to false when explicit. */
+    allowDynamicSubagents?: boolean;
     networkEnabled?: boolean;
     /** False when keyword search is provided by the model host or unavailable. */
     includeWebSearchTools?: boolean;
@@ -1496,10 +1567,18 @@ export function toolsForExecutionMode(
     // pages, so it should not exist when the user has networking off.
     tools.push(...CHAT_BROWSER_TOOL_SCHEMAS);
   }
-  if (options.includeAgentTools) {
-    tools.push(...CHAT_AGENT_TOOL_SCHEMAS);
+  const canManageAgentLibrary =
+    options.conversationTrack === undefined || options.conversationTrack === 'model';
+  if (options.includeAgentTools && canManageAgentLibrary) {
+    tools.push(...CHAT_AGENT_TOOL_SCHEMAS.filter((tool) => tool.name !== 'agent_delegate'));
     tools.push(...CHAT_SKILL_TOOL_SCHEMAS);
     tools.push(...CHAT_TEAM_TOOL_SCHEMAS);
+  }
+  if (
+    options.conversationTrack === 'model' &&
+    options.allowDynamicSubagents === true
+  ) {
+    tools.push(...CHAT_DYNAMIC_AGENT_TOOL_SCHEMAS);
   }
   if (options.includeMcpCatalogTools) {
     tools.push(...CHAT_MCP_CATALOG_TOOL_SCHEMAS);
@@ -1519,6 +1598,10 @@ export function toolsForExecutionMode(
       tools.push(tool);
     }
   }
+  if (options.conversationTrack === 'agent' && options.allowAgentTaskDispatch !== true) {
+    const blocked = new Set(['TaskCreate', 'TaskUpdate']);
+    return tools.filter((tool) => !blocked.has(tool.name));
+  }
   return tools;
 }
 
@@ -1530,6 +1613,7 @@ export function mcpToolsToProviderSchemas(
     tools: readonly {
       name: string;
       description?: string;
+      readOnly?: boolean;
       inputSchemaJson?: string;
     }[];
   }[],
@@ -1537,11 +1621,11 @@ export function mcpToolsToProviderSchemas(
 ): {
   tools: ProviderToolSchema[];
   /** Map provider tool name → { mcpServerId, toolName } for dispatch. */
-  dispatch: Map<string, { mcpServerId: string; toolName: string }>;
+  dispatch: Map<string, { mcpServerId: string; toolName: string; readOnly?: boolean }>;
 } {
   const maxTools = Math.min(Math.max(options.maxTools ?? 16, 0), 32);
   const tools: ProviderToolSchema[] = [];
-  const dispatch = new Map<string, { mcpServerId: string; toolName: string }>();
+  const dispatch = new Map<string, { mcpServerId: string; toolName: string; readOnly?: boolean }>();
   const usedNames = new Set<string>();
 
   for (const server of servers) {
@@ -1582,7 +1666,11 @@ export function mcpToolsToProviderSchemas(
           `MCP tool ${toolName} from server ${server.name || server.id}`,
         inputSchema,
       });
-      dispatch.set(providerName, { mcpServerId: server.id, toolName });
+      dispatch.set(providerName, {
+        mcpServerId: server.id,
+        toolName,
+        ...(tool.readOnly === true ? { readOnly: true } : {}),
+      });
     }
   }
   return { tools, dispatch };
@@ -1638,6 +1726,12 @@ export const HOST_PLATFORM_ALWAYS_ALLOWED_TOOLS: ReadonlySet<string> = new Set([
   'goal_manage',
   'task_list',
   'agent_list',
+  'task_schedule',
+  DESCRIBE_IMAGE_TOOL_NAME,
+  GENERATE_IMAGE_TOOL_NAME,
+  SEARCH_CAPABILITY_TOOL_NAME,
+  USE_CAPABILITY_TOOL_NAME,
+  WINDOWS_OCR_TOOL_NAME,
 ]);
 
 /** Hard block (not used for ask anymore — ask waits for approval). */
@@ -2619,6 +2713,9 @@ async function captureWriteSnapshot(
 
 export async function executeChatBuiltInTool(input: {
   workspaceRoot?: string;
+  threadId?: string;
+  runId?: string;
+  commandSessions?: CommandSessionStore;
   toolCall: ProviderToolCall;
   signal?: AbortSignal;
   networkEnabled?: boolean;
@@ -2713,6 +2810,26 @@ export async function executeChatBuiltInTool(input: {
   };
 
   try {
+    if (input.commandSessions && input.threadId) {
+      const scope = { threadId: input.threadId, workspaceRoot };
+      if (input.toolCall.name === 'run_command') {
+        return JSON.stringify(await input.commandSessions.start(scope, parseCommandStart(args), {
+          runId: input.runId ?? input.threadId, callId: input.toolCall.id, signal: input.signal,
+        }));
+      }
+      if (input.toolCall.name === 'list_commands') {
+        return JSON.stringify({ ok: true, sessions: input.commandSessions.list(scope) });
+      }
+      if (input.toolCall.name === 'read_command' || input.toolCall.name === 'stop_command') {
+        if (typeof args.sessionId !== 'string' || !args.sessionId) throw new Error('sessionId is required');
+        if (input.toolCall.name === 'stop_command') {
+          const session = await input.commandSessions.stop(scope, args.sessionId);
+          return JSON.stringify({ ok: true, session });
+        }
+        if (args.waitMs !== undefined && typeof args.waitMs !== 'number') throw new Error('waitMs must be a number');
+        return JSON.stringify(await input.commandSessions.read(scope, args.sessionId, args.waitMs, input.signal));
+      }
+    }
     let events: AsyncIterable<WorkerEvent>;
     switch (input.toolCall.name) {
       case 'read_file':
@@ -2777,19 +2894,18 @@ export async function executeChatBuiltInTool(input: {
         );
         break;
       case 'run_command': {
-        const command = String(args.command ?? '');
-        const commandArgs = Array.isArray(args.args) ? args.args.map(String) : [];
+        const action = parseCommandStart(args);
+        if (action.background || action.waitMs !== undefined) {
+          throw new Error('Command session host is required for background execution or bounded waits');
+        }
+        const command = action.command;
         // Do NOT pre-block by basename (rg/fd/…). Try real execution first so
         // absolute paths and installed tools work. ENOENT is handled below with
         // a recovery hint via toolResultMeta / loop guard.
-        events = new TerminalProcessWorker().exec(
+        events = new TerminalProcessWorker({ timeoutMs: action.timeoutMs }).exec(
           {
             workingDir: workspaceRoot,
-            action: {
-              command,
-              args: commandArgs,
-              cwd: typeof args.cwd === 'string' ? args.cwd : undefined,
-            },
+            action,
           },
           { ...token, allowedCommands: [command] },
         );
@@ -2828,6 +2944,30 @@ export async function executeChatBuiltInTool(input: {
       error: error instanceof Error ? error.message : 'Tool execution failed',
     });
   }
+}
+
+function parseCommandStart(args: Record<string, unknown>): CommandSessionStart {
+  if (typeof args.command !== 'string' || !args.command.trim()) throw new Error('command is required');
+  if (args.args !== undefined && (!Array.isArray(args.args) || !args.args.every((arg) => typeof arg === 'string'))) {
+    throw new Error('args must be an array of strings');
+  }
+  if (args.cwd !== undefined && typeof args.cwd !== 'string') throw new Error('cwd must be a string');
+  if (args.background !== undefined && typeof args.background !== 'boolean') throw new Error('background must be a boolean');
+  for (const field of ['waitMs', 'timeoutMs'] as const) {
+    const value = args[field];
+    if (value !== undefined && (typeof value !== 'number' || !Number.isSafeInteger(value) ||
+      value < (field === 'waitMs' ? 0 : 1) || value > (field === 'waitMs' ? 30_000 : 2_147_483_647))) {
+      throw new Error(`Invalid ${field}`);
+    }
+  }
+  return {
+    command: args.command,
+    args: Array.isArray(args.args) ? args.args.map(String) : undefined,
+    cwd: args.cwd,
+    background: args.background,
+    waitMs: typeof args.waitMs === 'number' ? args.waitMs : undefined,
+    timeoutMs: typeof args.timeoutMs === 'number' ? args.timeoutMs : undefined,
+  };
 }
 
 const WEB_FETCH_TIMEOUT_MS = 30_000;
@@ -3219,7 +3359,7 @@ export interface ToolLoopGuardInput {
   toolLoopRound: number;
   maxToolRounds: number;
   /** JSON result strings from the just-finished tool batch. */
-  completedResults: readonly { toolCallId: string; content: string }[];
+  completedResults: readonly { toolCallId: string; content: string; pendingCommand?: boolean }[];
   /** Fingerprints already seen in earlier rounds (mutated by caller via return). */
   seenFingerprints?: ReadonlySet<string>;
   /** Consecutive no-progress rounds before this batch. */
@@ -3309,6 +3449,7 @@ export function evaluateToolLoopGuard(input: ToolLoopGuardInput): ToolLoopGuardR
   let newFingerprints = 0;
 
   for (const item of input.completedResults) {
+    if (item.pendingCommand) continue;
     const meta = toolResultMeta(item.content);
     if (!meta.ok) failedCount += 1;
     if (meta.unavailable) unavailableCount += 1;
@@ -3318,13 +3459,17 @@ export function evaluateToolLoopGuard(input: ToolLoopGuardInput): ToolLoopGuardR
     }
   }
 
-  const batchSize = input.completedResults.length;
+  const batchSize = input.completedResults.filter((item) => !item.pendingCommand).length;
   const allFailed = batchSize > 0 && failedCount === batchSize;
   const prevStagnant = Math.max(0, input.stagnantRounds ?? 0);
   // A batch with no new fingerprints (or all failures of already-seen kinds) is stagnant.
   const batchStagnant =
     batchSize > 0 && (newFingerprints === 0 || (allFailed && newFingerprints <= 1));
   const stagnantRounds = batchStagnant ? prevStagnant + 1 : 0;
+
+  if (batchSize === 0 && input.completedResults.some((item) => item.pendingCommand)) {
+    return { kind: 'continue', seenFingerprints: seen, stagnantRounds: 0, failedCount, unavailableCount };
+  }
 
   if (input.toolLoopRound >= maxToolRounds) {
     return {

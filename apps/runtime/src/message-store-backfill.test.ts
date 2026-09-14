@@ -232,6 +232,57 @@ describe('message-store-backfill', () => {
     expect(store.messages.size).toBe(0);
   });
 
+  it('never materializes a delegated child run as a second assistant turn', () => {
+    const store = new MemoryMessageStore();
+    const result = backfillMessagesFromEvents(store, [
+      event({
+        sequence: 1,
+        type: 'run.completed',
+        runId: 'run-parent' as Event['runId'],
+        payload: {
+          threadId: 'thread-1',
+          assistantText: 'parent final answer',
+          modelId: 'model-a',
+        },
+      }),
+      event({
+        sequence: 2,
+        type: 'run.completed',
+        runId: 'run-child' as Event['runId'],
+        payload: {
+          threadId: 'thread-1',
+          assistantText: 'child private answer',
+          delegationParentRunId: 'run-parent',
+          modelId: 'model-a',
+        },
+      }),
+    ]);
+
+    expect(result.writtenMessages).toBe(1);
+    expect([...store.messages.keys()]).toEqual(['asst-run-parent']);
+    expect(JSON.stringify([...store.messages.values()])).toContain('parent final answer');
+    expect(JSON.stringify([...store.messages.values()])).not.toContain('child private answer');
+  });
+
+  it('still projects a run whose delegation parent id is blank', () => {
+    const store = new MemoryMessageStore();
+    const result = backfillMessagesFromEvents(store, [
+      event({
+        sequence: 1,
+        type: 'run.completed',
+        runId: 'run-standalone' as Event['runId'],
+        payload: {
+          threadId: 'thread-1',
+          assistantText: 'standalone answer',
+          delegationParentRunId: '   ',
+        },
+      }),
+    ]);
+
+    expect(result.writtenMessages).toBe(1);
+    expect([...store.messages.keys()]).toEqual(['asst-run-standalone']);
+  });
+
   it('projects paused runs as durable failed assistant summaries and scrubs secrets', () => {
     const store = new MemoryMessageStore();
     const events: Event[] = [

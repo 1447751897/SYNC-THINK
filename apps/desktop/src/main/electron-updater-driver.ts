@@ -8,6 +8,7 @@ import {
   DESKTOP_UPDATE_RECOVERY_EVIDENCE_LIMIT,
   DesktopUpdateRecoveryStore,
 } from './desktop-update-recovery-store.js';
+import { normalizeUpdateReleaseNotes } from './desktop-updater.js';
 import type {
   DesktopUpdateConfiguration,
   DesktopUpdaterDriver,
@@ -53,7 +54,11 @@ export function createElectronUpdaterDriver(
   return {
     subscribe(listeners: DesktopUpdaterDriverListeners): () => void {
       const onChecking = () => listeners.checking?.();
-      const onAvailable = (info: UpdateInfo) => listeners.available?.({ version: info.version });
+      const onAvailable = (info: UpdateInfo) =>
+        listeners.available?.({
+          version: info.version,
+          releaseNotes: normalizeUpdateReleaseNotes(info.releaseNotes),
+        });
       const onNotAvailable = (info: UpdateInfo) =>
         listeners.notAvailable?.({ version: info.version });
       const onProgress = (info: ProgressInfo) => listeners.progress?.({ percent: info.percent });

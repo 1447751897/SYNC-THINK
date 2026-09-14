@@ -10,6 +10,7 @@ const SEMVER_CORE_PATTERN =
 const CHANNEL_AUDIENCES = new Set(['private', 'internal', 'public']);
 const gunzipAsync = promisify(gunzip);
 const MAX_WINDOWS_BLOCKMAP_JSON_BYTES = 64 * 1024 * 1024;
+const MAX_WINDOWS_RELEASE_NOTES_CHARS = 64 * 1024;
 
 function requireWindowsDifferentialBlockmap(options = {}) {
   if (options.allowLegacyFullDownload === true) {
@@ -77,6 +78,25 @@ export function normalizeWindowsUpdateBlockmapName(value) {
     throw new Error('update-feed.blockmap_name_invalid');
   }
   return name;
+}
+
+/**
+ * Release notes are authored by the publisher and rendered inside the desktop
+ * app, so they are normalized defensively: absent notes stay absent, present
+ * notes must be normalized Markdown text within a bounded size.
+ */
+export function normalizeWindowsUpdateReleaseNotes(value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'string') throw new Error('update-feed.release_notes_invalid');
+  const notes = value.replace(/\r\n?/g, '\n').trim();
+  if (notes.length === 0) throw new Error('update-feed.release_notes_invalid');
+  if (notes.length > MAX_WINDOWS_RELEASE_NOTES_CHARS) {
+    throw new Error('update-feed.release_notes_too_long');
+  }
+  if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(notes)) {
+    throw new Error('update-feed.release_notes_invalid');
+  }
+  return notes;
 }
 
 export function normalizeWindowsUpdateChannelPolicy(value = {}, context = {}) {
@@ -285,6 +305,7 @@ export async function createWindowsGenericUpdateMetadata(artifactPath, options) 
     channel,
     version,
   });
+  const releaseNotes = normalizeWindowsUpdateReleaseNotes(options?.releaseNotes);
 
   return {
     version,
@@ -292,6 +313,7 @@ export async function createWindowsGenericUpdateMetadata(artifactPath, options) 
     path: artifact.url,
     sha512: artifact.sha512,
     releaseDate: releaseDate.toISOString(),
+    ...(releaseNotes === null ? {} : { releaseNotes }),
     syncThink: {
       schemaVersion: 1,
       channel,
@@ -343,6 +365,7 @@ export async function writeWindowsGenericUpdateFeed(options) {
     requireBlockmap,
     allowLegacyFullDownload: options.allowLegacyFullDownload === true,
     releaseDate: options.releaseDate,
+    releaseNotes: options.releaseNotes,
   });
   await writeFile(channelFile, JSON.stringify(metadata, null, 2) + '\n', 'utf8');
   return {
@@ -482,6 +505,18 @@ export async function verifyWindowsGenericUpdateFeed(feedDir, options = {}) {
       Number.isNaN(Date.parse(metadata.releaseDate))
     ) {
       errors.push('update-feed.release_date_invalid');
+    }
+    if (metadata.releaseNotes !== undefined) {
+      try {
+        const releaseNotes = normalizeWindowsUpdateReleaseNotes(metadata.releaseNotes);
+        // The writer omits the field entirely instead of emitting null/blank
+        // notes, so a present-but-empty value means the feed was hand-edited.
+        if (releaseNotes === null || releaseNotes !== metadata.releaseNotes) {
+          errors.push('update-feed.release_notes_not_normalized');
+        }
+      } catch (error) {
+        errors.push(error instanceof Error ? error.message : 'update-feed.release_notes_invalid');
+      }
     }
   }
 

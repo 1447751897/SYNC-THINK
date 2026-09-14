@@ -7,14 +7,21 @@ import { parseConversationListFileChangesPayload } from '@sync-think/protocol';
 import { parseConversationReadFileDiffPayload } from '@sync-think/protocol';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { DemoRunPersistenceJournal } from './demo-run-persistence.js';
+import { isCodexSilentCommandWatchdogMessage } from './kernel/persistent-terminal-command.js';
+import { CommandSessionStore, isRunningCommandResult } from './command-sessions.js';
+import {
+  describeVisionProbeFailure,
+  hasVisionProbeMarker,
+  VISION_PROBE_IMAGE_URL,
+  VISION_PROBE_MARKER,
+  VISION_PROBE_PROMPT,
+} from './vision-probe.js';
 import {
   projectEventContent,
   projectMessageContent,
   projectTimelineContent,
   projectTransientProseSnapshot,
 } from './deferred-content-projection.js';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
 import { reduceTaskPlanEvents } from '@sync-think/shared';
 import {
   pipePathPortable,
@@ -53,6 +60,8 @@ import {
   type ReorderProvidersResponse,
   type AddProviderCredentialResponse,
   type RemoveProviderCredentialResponse,
+  type ClearProviderCredentialsResponse,
+  type DeleteProviderResponse,
   type RevealProviderCredentialResponse,
   type UpdateProviderCredentialResponse,
   type SetModelPrioritiesResponse,
@@ -196,6 +205,8 @@ import {
   type SkillLocalImportResponse,
   type LocalSkillCandidate,
   type AssistantTurnSegment,
+  type DelegatedAgentProjection,
+  type DelegatedAgentToolEvent,
   type ConversationTransientFrame,
   type ConversationTransientSnapshot,
   type SubscribeConversationTransientStreamResponse,
@@ -259,8 +270,13 @@ import { z } from 'zod';
 import {
   ErrorCode,
   deriveTaskTitleFromPrompt,
+  extractRunIndexMessageText,
   isUntitledTaskTitle,
+  resolveRunIndexDisplayTitle,
+  resolveRunIndexHumanTitle,
+  resolveRunIndexModelLabel,
   ulid,
+  type RunIndexEntry,
   type Event,
   type EventCategory,
   type MessageId,
@@ -298,6 +314,9 @@ import {
   type ExternalEventEnvelope,
 } from '@sync-think/shared';
 import {
+  fetchProviderBalance,
+  supportsProviderBalance,
+  ProviderBalanceError,
   textFromEvents,
   type AdapterEvent,
   type ProviderContentPart,
@@ -313,6 +332,7 @@ import {
 import type {
   ConversationGetRunProcessResponse,
   ConversationListRunTimelineResponse,
+  ProviderBalanceResponse,
 } from '@sync-think/protocol';
 import {
   buildDesignGenerationPrompt,
@@ -352,6 +372,7 @@ import {
   type SqliteAppSettingStore,
   type SqliteScheduledTaskStore,
   type SqliteRunIndexStore,
+  type RunIndexUpsert,
   type SqliteExternalEventStore,
   type SqliteAgentStore,
   type SqliteMemoryStore,
@@ -413,6 +434,7 @@ import {
   shouldSkipSameProviderFallback,
   isSharedProviderEndpointFailure,
   formatModelSwitchDetail,
+  describeModelFallbackReason,
   suggestCapabilities,
   normalizeCapabilities,
   isTextFallbackCompatibleModel,
@@ -431,6 +453,8 @@ import {
   resolveCapabilityAccess,
   compareTextSnapshots,
   mergeTextSnapshots,
+  isEnvironmentalProbeFailure,
+  resolveVisionState,
 } from '@sync-think/core';
 import { createHash, randomUUID } from 'node:crypto';
 // cc-switch import helpers re-exported via core
@@ -505,7 +529,6 @@ import {
 import {
   resolveAppendMessageImageDataUrl,
   resolveAppendMessageImageStagingPath,
-  resolveChatImageStagingDir,
 } from './chat-image-staging.js';
 import {
   VISION_FALLBACK_SETTING_KEY,
@@ -513,19 +536,37 @@ import {
   buildImageToolGuidance,
   buildImageHandlingFailureSuffix,
   buildImageDescriptionPrompt,
-  buildWindowsOcrSuffix,
   catalogEntryVisionCapable,
+  catalogEntryVisionState,
   isModelVisionCapable,
   parseVisionFallbackSetting,
+  resolveVisionDescribeModels,
   resolveVisionDescribeModel,
   type DescribeImageInput,
-  type WindowsOcrDescription,
+  type VisionState,
 } from './describe-image.js';
 import {
   DESCRIBE_IMAGE_TOOL_NAME,
   readImageDataUrl,
   resolveDescribeImagePath,
 } from './describe-image-tool.js';
+import {
+  GENERATE_IMAGE_TOOL_NAME,
+  buildGenerateImageMarkdown,
+  buildImageGenerationGuidance,
+  parseGenerateImageArgs,
+  pickImageGenerationTarget,
+  writeGeneratedImages,
+} from './generate-image-tool.js';
+import {
+  CapabilityBroker,
+  SEARCH_CAPABILITY_TOOL_NAME,
+  USE_CAPABILITY_TOOL_NAME,
+  buildImageGenerationCapability,
+  capabilityUsesGenerateImage,
+  parseSearchCapabilityArgs,
+  parseUseCapabilityArgs,
+} from './capability-broker.js';
 import { recognizeImageTextWithWindowsOcr, WINDOWS_OCR_TOOL_NAME } from './windows-ocr.js';
 import {
   discoverRemoteMcpTools,
@@ -571,17 +612,21 @@ import {
   parseImportCcSwitchPayload,
   parseListProvidersPayload,
   parseDiscoverModelsPayload,
+  parseProbeModelsPayload,
   parseAddModelsPayload,
   parseProbeCapabilitiesPayload,
   parseConfirmCapabilitiesPayload,
   parseReorderProvidersPayload,
   parseAddProviderCredentialPayload,
   parseRemoveProviderCredentialPayload,
+  parseClearProviderCredentialsPayload,
+  parseDeleteProviderPayload,
   parseRevealProviderCredentialPayload,
   parseUpdateProviderCredentialPayload,
   parseSetModelPrioritiesPayload,
   parseUpdateModelPayload,
   parseRemoveModelPayload,
+  parseProviderBalancePayload,
   parseGetSettingsPayload,
   parseSetSettingPayload,
   parseUsageSummaryPayload,
@@ -760,6 +805,17 @@ import {
   setKernelMcpServerConditions,
 } from './kernel/mcp-servers/registry.js';
 import {
+  COLLABORATION_SETTINGS_KEY,
+  normalizeCollaborationSettings,
+} from '@sync-think/protocol';
+import {
+  DELEGATED_READONLY_TOOLS,
+  evaluateDynamicDelegation,
+  isDelegatedReadOnlyTool,
+  resolveCollaborationToolDenial,
+  resolveAgentAssignment,
+} from './collaboration-policy.js';
+import {
   PLAN_ACT_SETTING_KEY,
   parsePlanActSetting,
   resolvePlanActRouteForContext,
@@ -767,6 +823,24 @@ import {
 } from './plan-act.js';
 import { ToolApprovalPolicy, toolApprovalScopesFor } from './tool-approval-policy.js';
 import { commitToolApprovalDecision } from './tool-approval-commit.js';
+
+const DEFAULT_DELEGATED_TASK_TIMEOUT_SECONDS = 300;
+const MAX_DELEGATED_TASK_TIMEOUT_SECONDS = 3_600;
+
+function delegatedToolEventsFromTimeline(
+  timeline: readonly AssistantTurnSegment[] | undefined,
+): DelegatedAgentToolEvent[] {
+  return (timeline ?? [])
+    .filter((segment): segment is Extract<AssistantTurnSegment, { kind: 'tool' }> => segment.kind === 'tool')
+    .map((segment) => ({
+      toolName: segment.name,
+      arguments: segment.argumentsJson ?? '{}',
+      status: segment.status,
+      ...(segment.output !== undefined ? { output: segment.output.slice(0, 12_000) } : {}),
+      ...(segment.startedAt ? { startedAt: segment.startedAt } : {}),
+      ...(segment.completedAt ? { completedAt: segment.completedAt } : {}),
+    }));
+}
 import { computeNextRunAt, initialNextRunAt } from './task-scheduler.js';
 import {
   enabledClaudePluginSkillSources,
@@ -967,37 +1041,23 @@ const CODEX_STYLE_COMMENTARY_PROMPT = [
 ].join('\n');
 
 /**
- * Contract shared by native/external kernels and the regular Provider path.
- * The Renderer only mounts DesignDraftPreview for this explicit fence, so the
- * model must not rely on an ambiguous HTML code block or a prose claim.
+ * NewMax HtmlPreview contract. The renderer mounts a live iframe for ordinary
+ * `html` fences — there is no JSON UI-kit schema and no design-html / design-ui
+ * fence. Shared by native/external kernels and the regular Provider path.
  */
-const DESIGN_HTML_OUTPUT_CONTRACT = [
-  'AI design draft output contract (design-html):',
-  '- When the user asks to create a UI mockup, visual design, prototype, or design draft, return one complete, self-contained HTML document inside exactly one fenced block tagged `design-html`.',
-  '- The fence must be ` ```design-html ` followed by a complete `<!doctype html>` / `<html>` / `<head>` / `<body>` document and a matching closing fence. Put CSS and JavaScript inline when needed so the preview works without a build step; do not put Markdown or explanatory prose inside the fence.',
-  '- Include visible page content and accessible labels/interactions. Do not output a placeholder description instead of the page. Do not nest `<design-html>` tags or truncate the document.',
-  '- This is a speed-first NewMax-style preview: target the first viewport and the key interaction states, keep the UTF-8 payload compact (target at or below 160 KiB), keep the payload at or below 1 MiB, and stop once the page is usable.',
-  '- Do not embed base64 assets, large generated SVG path data, exhaustive screen variants, or hidden content that is not needed for the preview. Use CSS primitives and short inline data only when they materially improve the visible result.',
-  '- Outside the fence you may briefly summarize the draft, but the fenced document is the canonical preview/save payload.',
-  '- Preview, save, and browser-open are separate facts: a preview only means the fenced payload passed the UI parser; opening the page requires an actual `browser_open` result; saving requires an actual successful `write_file` result.',
-  '- When the user asks to save the design, call `write_file` with a project-relative path (for example `designs/<slug>.html`); never use an absolute path and never claim that a file was saved before the tool reports success.',
-  '- If the generated document is empty, malformed, truncated, or otherwise fails validation, do not call `write_file` and do not overwrite an existing design file; return a complete replacement first.',
-  '- Use this contract only for design requests; ordinary HTML examples should remain regular `html` code fences.',
-].join('\n');
-
-const DESIGN_UI_OUTPUT_CONTRACT = [
-  'AI design draft output contract (design-ui):',
-  '- For ordinary UI mockups, product screens, dashboards, and design drafts, prefer one compact JSON artifact in exactly one fenced block tagged `design-ui`.',
-  '- The JSON must be `{ "version": 1, "type": "ui-design", "title": "...", "nodes": [...] }`; optional sidebar supports `{title,items:[{label,active,badge}]}`.',
-  '- Nodes may be heading, text, metric, card, list, table, or form. Keep the artifact focused on the first viewport and key interaction states; do not emit HTML, CSS, scripts, base64 assets, or remote resources in this block.',
-  '- Keep the JSON under 180 KB and use at most 40 nodes. The desktop renders it with the shared UI kit, so preserve hierarchy, labels, states, and table/form semantics.',
-  '- Use `design-html` only when the user explicitly requests raw HTML, CSS, or a browser-ready HTML document.',
+const HTML_PREVIEW_OUTPUT_CONTRACT = [
+  'AI design draft output contract (html):',
+  '- When the user asks to create a UI mockup, visual design, prototype, landing page, or design draft, return one complete, self-contained HTML document inside exactly one fenced block tagged `html`.',
+  '- The fence must be ` ```html ` followed by the page markup and a matching closing fence. Put CSS and JavaScript inline when needed so the in-chat HtmlPreview works without a build step; do not put Markdown or explanatory prose inside the fence.',
+  '- The desktop previews `html` fences as a live page the same way NewMax HtmlPreview does. Never use `design-ui`, `ui-design`, or `design-html` fences, and never emit a JSON UI-kit / node-tree artifact for a design draft.',
+  '- Include visible page content and accessible labels/interactions. Do not output a placeholder description instead of the page.',
+  '- Outside the fence you may briefly summarize the draft. Previewing a fence is not the same as saving a file or opening a browser tab.',
 ].join('\n');
 
 /** Editable drawing contract used by NewMax's Excalidraw file preview. */
 const EXCALIDRAW_OUTPUT_CONTRACT = [
   'AI editable design output contract (excalidraw):',
-  '- Use this contract only when the user explicitly asks for Excalidraw, a `.excalidraw` file, Excalidraw JSON/source, or an editable canvas/whiteboard JSON. Ordinary UI mockups, prototypes, wireframes, and design drafts use the compact `design-html` contract instead.',
+  '- Use this contract only when the user explicitly asks for Excalidraw, a `.excalidraw` file, Excalidraw JSON/source, or an editable canvas/whiteboard JSON. Ordinary UI mockups, prototypes, wireframes, and design drafts use the in-message `html` fence preview instead.',
   '- When explicitly requested, return exactly one fenced block tagged `excalidraw` containing valid JSON.',
   '- The JSON must have `type: "excalidraw"`, `version: 2`, `elements: [...]`, `appState: { ... }`, and `files: { ... }`. Use real Excalidraw elements with stable ids, coordinates, dimensions, and visible text; do not return a prose description or HTML.',
   '- Keep the payload minimal and self-contained, preferably below 160 KiB and at or below 1 MiB. `files` may contain embedded image data only when required by the requested design.',
@@ -1015,7 +1075,7 @@ const INLINE_VISUALIZATION_OUTPUT_CONTRACT = [
   '- Only emit the directive when a project folder is bound and the file write succeeded. If there is no project folder or the write fails, explain the concrete state and do not claim that the visualization was saved or available inline.',
   '- Inline preview, browser-open, and saving are separate facts: the directive mounts the saved project file; opening the live page requires an actual successful `browser_open` result; saving requires the successful `write_file` result.',
   '- Keep the UTF-8 HTML payload at or below 2 MiB. Include visible content and working interactions, keep CSS and JavaScript self-contained when practical, and do not substitute a prose description for the page.',
-  '- This contract is distinct from `design-html` and `excalidraw`: use the fenced `design-html` contract for an in-message design draft and the fenced `excalidraw` contract for an editable drawing. Do not emit an inline visualization directive for those artifacts unless the user separately asks for a saved HTML visualization.',
+  '- This contract is distinct from in-message `html` fences and `excalidraw`: use a fenced `html` block for an in-chat design draft and the fenced `excalidraw` contract for an editable drawing. Do not emit an inline visualization directive for those artifacts unless the user separately asks for a saved HTML visualization.',
 ].join('\n');
 
 const PROMPT_ENHANCEMENT_SYSTEM_PROMPT = [
@@ -1199,7 +1259,10 @@ const HOST_AUTO_APPROVED_PLATFORM_TOOLS: ReadonlySet<string> = new Set([
   // NewMax-style vision fallback: read-only image understanding — the host
   // executor never mutates and already returns rich errors to the model.
   'describe_image',
+  GENERATE_IMAGE_TOOL_NAME,
   WINDOWS_OCR_TOOL_NAME,
+  SEARCH_CAPABILITY_TOOL_NAME,
+  USE_CAPABILITY_TOOL_NAME,
 ]);
 
 /**
@@ -2507,6 +2570,7 @@ export class Runtime {
    * so evicting an idle process never deletes conversation context.
    */
   private readonly codexSessionHost: BoundedKernelSessionHost;
+  private readonly commandSessions = new CommandSessionStore();
   /**
    * Platform MCP catalog frozen per external-kernel run. The kernel may only
    * call tools that were exposed when its broker started; a later capability or
@@ -2525,6 +2589,8 @@ export class Runtime {
     string,
     Map<string, Promise<{ ok: boolean; content?: string; error?: string }>>
   >();
+  /** Per-run NewMax capability-broker refs (`search_capability` → `use_capability`). */
+  private readonly capabilityBrokerByRun = new Map<string, CapabilityBroker>();
   /** The one formal, approval-ready plan revision submitted by each active run. */
   private readonly formalPlanRevisionByRun = new Map<string, number>();
   /** Hot cache for external-kernel sessions; app_setting remains durable authority. */
@@ -2542,6 +2608,17 @@ export class Runtime {
   private readonly discoveryByProtocol: Partial<Record<ProtocolFamily, DemoProvider>>;
   private readonly discoveryAdapter?: DemoProvider;
   private readonly demoRuns = new Map<string, DemoRunState>();
+  /** Terminal child snapshots retained until agent_delegate projects them. */
+  private readonly completedDelegatedRuns = new Map<string, DemoRunState>();
+  private readonly completedDelegatedRunStates = new Map<
+    string,
+    'completed' | 'failed' | 'cancelled' | 'timed_out'
+  >();
+  /** Parent-scoped live child cards; cleared when the parent terminal frame is emitted. */
+  private readonly delegatedAgentTransientByParentRun = new Map<
+    string,
+    DelegatedAgentProjection[]
+  >();
   private readonly demoRunPersistence = new DemoRunPersistenceJournal();
   /** Abort controllers for in-flight demo chat streams (Stop button). */
   private readonly demoRunAborts = new Map<string, AbortController>();
@@ -3107,12 +3184,16 @@ export class Runtime {
           void this.handleDiscoverModels(socket, frame);
           return;
         }
+        if (frame.type === 'provider.probeModels') {
+          void this.handleProbeModels(socket, frame);
+          return;
+        }
         if (frame.type === 'provider.addModels') {
           this.handleAddModels(socket, frame);
           return;
         }
         if (frame.type === 'provider.probeCapabilities') {
-          this.handleProbeCapabilities(socket, frame);
+          void this.handleProbeCapabilities(socket, frame);
           return;
         }
         if (frame.type === 'provider.confirmCapabilities') {
@@ -3129,6 +3210,14 @@ export class Runtime {
         }
         if (frame.type === 'provider.removeCredential') {
           void this.handleRemoveProviderCredential(socket, frame);
+          return;
+        }
+        if (frame.type === 'provider.clearCredentials') {
+          void this.handleClearProviderCredentials(socket, frame);
+          return;
+        }
+        if (frame.type === 'provider.delete') {
+          void this.handleDeleteProvider(socket, frame);
           return;
         }
         if (frame.type === 'provider.revealCredential') {
@@ -3149,6 +3238,10 @@ export class Runtime {
         }
         if (frame.type === 'provider.removeModel') {
           this.handleRemoveModel(socket, frame);
+          return;
+        }
+        if (frame.type === 'provider.balance') {
+          void this.handleProviderBalance(socket, frame);
           return;
         }
         if (frame.type === 'settings.get') {
@@ -4246,17 +4339,37 @@ export class Runtime {
     const candidates = cursorAhead
       ? []
       : retained.filter((candidate) => candidate.streamSequence > afterStreamSequence);
-    const replayedFrames: ConversationTransientFrame[] = [];
+    const replaySelection: ConversationTransientFrame[] = [];
     let replayBytes = 0;
     for (let index = candidates.length - 1; index >= 0; index--) {
       const candidate = candidates[index]!;
       const candidateBytes = Buffer.byteLength(JSON.stringify(candidate), 'utf8');
       if (candidateBytes > MAX_TRANSIENT_REPLAY_BYTES - replayBytes) break;
-      replayedFrames.push(candidate);
+      replaySelection.push(candidate);
       replayBytes += candidateBytes;
     }
-    replayedFrames.reverse();
-    const earliestReplayedSequence = replayedFrames[0]?.streamSequence;
+    replaySelection.reverse();
+    const earliestReplayedSequence = replaySelection[0]?.streamSequence;
+    // A Run that already published its terminal frame is fully persisted (prose
+    // plus assistant timeline) and comes back through the durable message store.
+    // A fresh subscription (cursor 0) that lands on finished Runs therefore only
+    // gets their terminal boundary instead of a frame-by-frame re-stream of a
+    // reply the user finished reading long ago; the terminal frame still ships so
+    // failure/cancel state survives a reload. Catch-up subscriptions (cursor > 0)
+    // keep the full replay so a short disconnect still fills its gap. Withholding
+    // these frames is not a cursor gap — the durable store covers them — so reset
+    // detection stays on the raw candidates.
+    const sealedRunIds = new Set<string>();
+    for (const candidate of retained) {
+      if (candidate.kind === 'terminal') sealedRunIds.add(String(candidate.runId));
+    }
+    const replayedFrames =
+      sealedRunIds.size === 0 || afterStreamSequence > 0
+        ? replaySelection
+        : replaySelection.filter(
+            (candidate) =>
+              candidate.kind === 'terminal' || !sealedRunIds.has(String(candidate.runId)),
+          );
     const earliestRetainedSequence = retained[0]?.streamSequence;
     const resetRequired =
       cursorAhead ||
@@ -6191,6 +6304,9 @@ export class Runtime {
         protocol: payload.protocol,
         surface: payload.surface ?? defaultSurfaceForProtocol(payload.protocol),
         supportsDiscovery: payload.supportsDiscovery ?? true,
+        // NewMax-style「仍然保存」: the renderer flags a provider the user kept
+        // even though the connection test did not pass.
+        unverified: payload.unverified ?? false,
         importedFrom: payload.importedFrom,
         credentialGroupName: payload.credentialGroupName,
         credentialLabel: payload.credentialLabel,
@@ -6199,9 +6315,55 @@ export class Runtime {
       });
       providerCommitted = true;
 
+      // NewMax-style multi-key list: attach the remaining credentials to the
+      // same group in this hop so key rotation works from day one.
+      const extraApiKeys = payload.extraApiKeys ?? [];
+      if (extraApiKeys.length > 0) {
+        const group = this.providerStore
+          .listProviders()
+          .find((entry) => entry.provider.id === created.provider.id)?.credentialGroups[0];
+        if (group) {
+          for (const [index, extraKey] of extraApiKeys.entries()) {
+            const extraHandle = await this.secureStore.storeSecret(extraKey);
+            this.providerStore.addCredentialRef({
+              credentialGroupId: group.id,
+              label: `备用 ${index + 1}`,
+              storeHandle: extraHandle,
+            });
+          }
+        }
+      }
+
+      // NewMax-style atomic create: the renderer authored the priority chain
+      // before the provider existed, so seed it verbatim — order preserved,
+      // index 0 being the primary model.
+      const seededModels = payload.models ?? [];
+      if (seededModels.length > 0) {
+        this.providerStore.upsertModels({
+          providerId: created.provider.id,
+          protocol: payload.protocol,
+          models: seededModels.map((model) => ({
+            providerModelId: model.providerModelId,
+            displayName: model.displayName ?? model.providerModelId,
+            capabilities:
+              model.capabilities ??
+              suggestCapabilities({
+                providerModelId: model.providerModelId,
+                protocol: payload.protocol,
+              }).capabilities,
+          })),
+          capabilitiesConfirmed: false,
+        });
+      }
+
       let discoveredModelCount = 0;
       const createDiscovery = this.resolveDiscoveryAdapter(payload.protocol);
-      if (created.provider.supportsDiscovery && createDiscovery) {
+      if (
+        seededModels.length === 0 &&
+        created.provider.supportsDiscovery &&
+        createDiscovery &&
+        payload.discoverOnCreate !== false
+      ) {
         try {
           const discovered = await createDiscovery.discoverModels(
             payload.apiKey,
@@ -6351,6 +6513,8 @@ export class Runtime {
         surface: payload.surface,
         supportsDiscovery: payload.supportsDiscovery,
         enabled: payload.enabled,
+        // NewMax-style「测通即摘掉未验证角标」: a passing test clears the flag.
+        unverified: payload.unverified,
         credentialLabel: payload.credentialLabel,
         storeHandle: newStoreHandle,
       });
@@ -6626,6 +6790,214 @@ export class Runtime {
     );
   }
 
+  /**
+   * NewMax-style discovery without a persisted provider: the create form sends
+   * an ephemeral base URL + credential so it can populate its model list before
+   * any provider row exists. Nothing is persisted and the key is never echoed.
+   */
+  private async handleProbeModels(socket: Socket, frame: Frame): Promise<void> {
+    const payload = parseProbeModelsPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+
+    const discovery = this.resolveDiscoveryAdapter(payload.protocol);
+    if (!discovery) {
+      this.recordProviderDiagnostic({
+        category: 'provider',
+        failureClass: 'protocol',
+        summary: `Probe unavailable: no adapter for protocol ${payload.protocol}`,
+        detail: {
+          baseUrl: payload.baseUrl,
+          protocol: payload.protocol,
+          phase: 'probeModels',
+        },
+      });
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'provider.probeModels',
+          payload: {},
+          error: {
+            code: ErrorCode.PROVIDER_PROTOCOL_INCOMPATIBLE,
+            message: 'No discovery adapter configured for this protocol',
+          },
+        }),
+      );
+      return;
+    }
+
+    const startedAt = Date.now();
+    try {
+      const discoveredIds = await discovery.discoverModels(payload.apiKey, payload.baseUrl);
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'provider.probeModels',
+          payload: {
+            discoveredIds,
+            protocol: payload.protocol,
+            latencyMs: Math.max(0, Date.now() - startedAt),
+          },
+        }),
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Model probe failed';
+      const failureClass =
+        error && typeof error === 'object' && 'failureClass' in error
+          ? String((error as { failureClass?: unknown }).failureClass)
+          : 'transient';
+      const scrubbed = message
+        .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, '[REDACTED]')
+        .replace(/Bearer\s+[A-Za-z0-9._~\-+/=]+/gi, 'Bearer [REDACTED]');
+      this.recordProviderDiagnostic({
+        category: 'provider',
+        failureClass,
+        summary: `Probe failed (${failureClass}): ${scrubbed}`,
+        detail: {
+          baseUrl: payload.baseUrl,
+          protocol: payload.protocol,
+          phase: 'probeModels',
+          errorMessage: scrubbed,
+        },
+      });
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'provider.probeModels',
+          payload: {},
+          error: {
+            code: ErrorCode.PROVIDER_PROTOCOL_INCOMPATIBLE,
+            message,
+          },
+        }),
+      );
+    }
+  }
+
+  /**
+   * Query the provider's own account balance (e.g. DeepSeek `/user/balance`).
+   * Read-only: a single authenticated GET with the stored credential. Providers
+   * without a known public endpoint answer `supported: false` instead of failing,
+   * so the UI can hide the row without treating it as an error.
+   */
+  private async handleProviderBalance(socket: Socket, frame: Frame): Promise<void> {
+    const payload = parseProviderBalancePayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    const providerStore = this.providerStore;
+    const secureStore = this.secureStore;
+    if (!providerStore || !secureStore) {
+      this.writeProviderStoreUnavailable(socket, frame);
+      return;
+    }
+    const provider = providerStore.getProvider(payload.providerId as ProviderId);
+    if (!provider) {
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'provider.balance',
+          payload: {},
+          error: {
+            code: ErrorCode.WORKSPACE_NOT_FOUND,
+            message: `Provider not found: ${payload.providerId}`,
+          },
+        }),
+      );
+      return;
+    }
+
+    const respond = (response: ProviderBalanceResponse): void => {
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'provider.balance',
+          payload: response,
+        }),
+      );
+    };
+    const fetchedAt = new Date().toISOString();
+
+    if (!supportsProviderBalance(provider.baseUrl)) {
+      respond({
+        providerId: provider.id,
+        supported: false,
+        buckets: [],
+        fetchedAt,
+        message: '该服务商未提供公开的余额查询接口',
+      });
+      return;
+    }
+
+    const catalog = providerStore
+      .listProviders()
+      .find((entry) => entry.provider.id === provider.id);
+    const firstCred = catalog?.credentialGroups[0]?.credentials[0];
+    const credentialRefId = (payload.credentialRefId ?? firstCred?.id) as
+      | CredentialRefId
+      | undefined;
+    if (!credentialRefId) {
+      respond({
+        providerId: provider.id,
+        supported: true,
+        buckets: [],
+        fetchedAt,
+        message: 'No credential available for the balance query',
+      });
+      return;
+    }
+    const storeHandle = providerStore.getCredentialStoreHandle(credentialRefId);
+    if (!storeHandle) {
+      respond({
+        providerId: provider.id,
+        supported: true,
+        buckets: [],
+        fetchedAt,
+        message: 'Credential store handle missing',
+      });
+      return;
+    }
+
+    try {
+      const apiKey = await secureStore.retrieveSecret(storeHandle);
+      const result = await fetchProviderBalance({ apiKey, baseUrl: provider.baseUrl });
+      respond({
+        providerId: provider.id,
+        supported: true,
+        ...(result.available !== undefined ? { available: result.available } : {}),
+        buckets: result.buckets,
+        fetchedAt,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Balance query failed';
+      this.recordProviderDiagnostic({
+        category: 'provider',
+        failureClass: error instanceof ProviderBalanceError ? error.failureClass : 'transient',
+        summary: `Balance query failed: ${message}`,
+        detail: {
+          providerId: provider.id,
+          baseUrl: provider.baseUrl,
+          phase: 'balance',
+        },
+      });
+      respond({
+        providerId: provider.id,
+        supported: true,
+        buckets: [],
+        fetchedAt,
+        message,
+      });
+    }
+  }
+
   private async handleDiscoverModels(socket: Socket, frame: Frame): Promise<void> {
     const payload = parseDiscoverModelsPayload(frame.payload);
     if (!payload) {
@@ -6873,7 +7245,7 @@ export class Runtime {
       return;
     }
     try {
-      const upserted = this.providerStore.upsertModels({
+      this.providerStore.upsertModels({
         providerId: payload.providerId as ProviderId,
         protocol: payload.protocol,
         models: payload.models.map((m) => ({
@@ -6887,9 +7259,14 @@ export class Runtime {
         })),
         capabilitiesConfirmed: false,
       });
+      // Return the provider's full model list, not just the upserted batch:
+      // callers replace their local model array with this response, so an
+      // incremental list would silently drop sibling models.
       const response: AddModelsResponse = {
         providerId: payload.providerId as ProviderId,
-        models: upserted.map((m) => this.toModelSummary(m)),
+        models: this.providerStore
+          .listModels(payload.providerId as ProviderId)
+          .map((m) => this.toModelSummary(m)),
       };
       socket.write(
         encodeFrame({
@@ -6904,7 +7281,7 @@ export class Runtime {
     }
   }
 
-  private handleProbeCapabilities(socket: Socket, frame: Frame): void {
+  private async handleProbeCapabilities(socket: Socket, frame: Frame): Promise<void> {
     const payload = parseProbeCapabilitiesPayload(frame.payload);
     if (!payload) {
       this.writeMalformedPayload(socket, frame);
@@ -6932,29 +7309,81 @@ export class Runtime {
       }
 
       const suggestions: CapabilityProbeSuggestion[] = [];
-      for (const model of models) {
-        const suggestion = suggestCapabilities({
-          modelId: model.id,
-          providerModelId: model.providerModelId,
-          protocol: model.protocol,
-          existing: model.capabilities,
-        });
-        const updated = this.providerStore.updateModelCapabilities({
-          modelId: model.id,
-          capabilities: suggestion.capabilities,
-          capabilitiesConfirmed: false,
-        });
-        suggestions.push({
-          modelId: updated.id,
-          providerModelId: updated.providerModelId,
-          displayName: updated.displayName,
-          capabilities: updated.capabilities,
-          capabilitiesConfirmed: false,
-          results: suggestion.results,
-          confidence: suggestion.confidence,
-          reasons: suggestion.reasons,
-          source: 'heuristic',
-        });
+      // 与 NewMax 的 `runVisionScan` 同一并发口径：固定 3 个 worker 从队列里取模型。
+      // 结果按 models 原顺序回填，避免并发导致 UI 列表顺序抖动。
+      const slots: Array<CapabilityProbeSuggestion | undefined> = new Array(models.length);
+      let cursor = 0;
+      // 嵌套函数里 TS 不会保留 `this.providerStore` 的属性窄化，先捕获成局部常量。
+      const providerStore = this.providerStore;
+      if (!providerStore) throw new Error('Provider store unavailable');
+      const probeWorker = async () => {
+        while (true) {
+          const index = cursor++;
+          if (index >= models.length) return;
+          const model = models[index]!;
+          const heuristic = suggestCapabilities({
+            modelId: model.id,
+            providerModelId: model.providerModelId,
+            protocol: model.protocol,
+            existing: model.capabilities,
+          });
+          const live = await this.probeModelCapabilitiesLive(provider, model, payload.visionOnly === true);
+          // NewMax `runVisionScan` 只探测视觉一项，探测范围之外的维度一律不动。
+          // 落到这里就是：实测结果只允许覆盖 vision，text / thinking / tool-calling /
+          // web-search 这些由 `suggestCapabilities` 静态判定的维度原样保留 ——
+          // 否则一次视觉探测会把它们整体抹掉（它们根本没有对应探针了）。
+          // 未定维度：本次没测出来 ≠ 没有。把原有声明原样保留，否则一次网络抖动
+          // 就会把已确认的 vision 从模型上抹掉 —— 那正是用户报的
+          // 「有图像能力，却被提示没有图像识别能力」。
+          const carriedOver = live.undetermined.filter((tag) => model.capabilities.includes(tag));
+          const untested = model.capabilities.filter((tag) => tag !== 'vision');
+          const nextCapabilities = payload.visionOnly
+            ? model.capabilities
+            : normalizeCapabilities([...live.capabilities, ...carriedOver, ...untested]);
+          const updated = providerStore.updateModelCapabilities({
+            modelId: model.id,
+            // 探测全项都「未定」时保留原能力集：写空数组会把模型能力整体抹掉，
+            // 而「没测出来」不等于「什么都没有」。
+            capabilities: nextCapabilities.length > 0 ? nextCapabilities : model.capabilities,
+            // Vision-only scans update the image dimension in isolation. Keep
+            // a user's existing confirmation for text/tools instead of
+            // downgrading the whole model back to "待确认".
+            capabilitiesConfirmed: payload.visionOnly === true ? model.capabilitiesConfirmed : false,
+            ...(live.results.vision !== undefined
+              ? { visionCapability: live.results.vision }
+              : live.undetermined.includes('vision') && model.visionCapability !== undefined
+                ? { visionCapability: model.visionCapability }
+                : {}),
+            ...(live.results.vision === true ? { visionProbeReason: null } : {}),
+            ...(live.visionProbeReason
+              ? { visionProbeReason: live.visionProbeReason }
+              : live.undetermined.includes('vision') && model.visionProbeReason
+                ? { visionProbeReason: model.visionProbeReason }
+                : {}),
+          });
+          slots[index] = {
+            modelId: updated.id,
+            providerModelId: updated.providerModelId,
+            displayName: updated.displayName,
+            capabilities: updated.capabilities,
+            capabilitiesConfirmed: updated.capabilitiesConfirmed,
+            ...(live.results.vision !== undefined || live.undetermined.includes('vision')
+              ? { visionCapability: live.results.vision ?? null }
+              : {}),
+            ...(live.visionProbeReason !== undefined
+              ? { visionProbeReason: live.visionProbeReason || null }
+              : {}),
+            results: live.results,
+            undetermined: live.undetermined,
+            confidence: live.confidence,
+            reasons: [...live.reasons, ...heuristic.reasons.filter((reason) => !live.reasons.includes(reason))],
+            source: 'live',
+          };
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(3, models.length) }, probeWorker));
+      for (const slot of slots) {
+        if (slot) suggestions.push(slot);
       }
 
       if (this.stateStore) {
@@ -6968,7 +7397,7 @@ export class Runtime {
             providerId,
             modelCount: suggestions.length,
             modelIds: suggestions.map((s) => s.modelId),
-            source: 'heuristic',
+            source: 'live',
           },
         };
         try {
@@ -6987,7 +7416,7 @@ export class Runtime {
           providerId,
           modelCount: suggestions.length,
           modelIds: suggestions.map((s) => s.modelId),
-          source: 'heuristic',
+          source: 'live',
         });
         this.publishEvent(event);
       }
@@ -7008,6 +7437,203 @@ export class Runtime {
     } catch (error) {
       this.writeProviderCommandError(socket, frame, error);
     }
+  }
+
+  /**
+   * Exercise the configured endpoint with the smallest useful requests. A
+   * capability is reported only when the provider accepts the corresponding
+   * request; model-name heuristics remain visible as reasons but no longer
+   * decide the result.
+   */
+  private async probeModelCapabilitiesLive(
+    provider: { id: ProviderId; baseUrl: string; protocol: ProtocolFamily },
+    model: { id: ModelId; providerModelId: string; protocol: ProtocolFamily; credentialRefId?: string },
+    visionOnly = false,
+  ): Promise<{
+    capabilities: CapabilityTag[];
+    results: Partial<Record<CapabilityTag, boolean>>;
+    /** Dimensions whose probe never reached the model — see `isEnvironmentalProbeFailure`. */
+    undetermined: CapabilityTag[];
+    confidence: 'low' | 'medium';
+    reasons: string[];
+    visionProbeReason?: string;
+  }> {
+    if (!this.secureStore || !this.providerStore) throw new Error('Runtime 未连接或安全存储不可用');
+    const catalog = this.providerStore.listProviders().find((entry) => entry.provider.id === provider.id);
+    const credential = model.credentialRefId ?? catalog?.credentialGroups.flatMap((group) => group.credentials)[0]?.id;
+    if (!credential) throw new Error(`模型 ${model.providerModelId} 缺少 API 密钥`);
+    const storeHandle = this.providerStore.getCredentialStoreHandle(credential);
+    if (!storeHandle) throw new Error(`模型 ${model.providerModelId} 的 API 密钥不可用`);
+    const apiKey = await this.secureStore.retrieveSecret(storeHandle);
+    const adapter = this.resolveDiscoveryAdapter(model.protocol) ?? this.demoProvider;
+    if (!adapter) throw new Error(`协议 ${model.protocol} 没有可用适配器`);
+    // 上游不响应时不能无限等：与 runtime 其它出网调用保持同一超时口径。
+    // 缺这道闸时，任何一个探测请求挂起都会让 Promise.all 永不结算，
+    // 客户端连一个错误都收不到（表现为「点了检测没有任何返回」）。
+    const probeAbort = new AbortController();
+    const probeTimer = setTimeout(() => probeAbort.abort(), 90_000);
+    const signal = probeAbort.signal;
+    const results: Partial<Record<CapabilityTag, boolean>> = {};
+    // 与 results 平行的一档：放「请求根本没打到模型」的维度（鉴权/限流/超时/网络）。
+    // 它们既不能写 true 也不能写 false —— 写 false 会让一次网络抖动把多模态模型
+    // 永久降级到 Windows OCR。NewMax 的 `getReliableImageCapability` 正是为此存在。
+    const undetermined: CapabilityTag[] = [];
+    const reasons: string[] = [];
+    const capabilities: CapabilityTag[] = [];
+    let visionProbeReason: string | undefined;
+
+    const runCall = async (request: import('@sync-think/adapters').ProviderCallRequest) => {
+      let text = '';
+      let tool = false;
+      let hosted = false;
+      let reasoning = false;
+      for await (const event of adapter.call(request)) {
+        if (event.type === 'error') throw new Error(event.message);
+        if (event.type === 'text-delta' || event.type === 'assistant-message-delta') text += event.text;
+        if (event.type === 'tool-call') tool = true;
+        if (event.type === 'hosted-tool-call' || event.type === 'hosted-tool-result') hosted = true;
+        if (event.type === 'reasoning-delta' && event.text.trim()) reasoning = true;
+      }
+      return { text: text.trim(), tool, hosted, reasoning };
+    };
+    const requestBase = {
+      protocol: model.protocol,
+      baseUrl: provider.baseUrl,
+      modelId: model.providerModelId,
+      apiKey,
+      signal,
+      stream: true,
+      maxOutputTokens: 32,
+    } as const;
+    const probes: Array<Promise<void>> = [];
+
+    if (model.protocol !== 'openai-images' && !visionOnly) {
+      probes.push(
+        (async () => {
+          try {
+            // 与 NewMax 同源的判定：不是「回了字就算支持图片」，而是要求模型
+            // 真读出探针图里的校验码。对着无法解析的图编一句的情况会被挡掉。
+            const vision = await runCall({
+              ...requestBase,
+              idempotencyKey: `capability-probe-vision-${ulid()}`,
+              messages: [
+                {
+                  role: 'user',
+                  content: [
+                    { type: 'text', text: VISION_PROBE_PROMPT },
+                    { type: 'image', imageUrl: VISION_PROBE_IMAGE_URL },
+                  ],
+                },
+              ],
+            });
+            const replied = vision.text.trim();
+            results.vision = hasVisionProbeMarker(replied);
+            visionProbeReason = results.vision
+              ? undefined
+              : replied
+              ? `未识别测试图中的数字（模型回复：${replied.slice(0, 80)}）`
+                : '模型对探针图未返回任何内容';
+            if (results.vision) capabilities.push('vision');
+            reasons.push(
+              results.vision
+                ? `图片输入实测成功（读出了校验码 ${VISION_PROBE_MARKER}）`
+                : `图片输入未通过：${describeVisionProbeFailure(visionProbeReason ?? '')}`,
+            );
+          } catch (error) {
+            const message = error instanceof Error ? error.message : '未知错误';
+            // 统一加上「图片输入」前缀：限流/网络这类分类标签本身不含该词，
+            // 而扫描面板要按关键词把这些原因行筛出来给用户看。
+            if (isEnvironmentalProbeFailure(message)) {
+              // 与 NewMax `getReliableImageCapability` 同源：鉴权/限流/超时/网络
+              // 这类失败根本没拿到模型的能力答复，不能据此判定「不支持图片」——
+              // 否则一次网络抖动就会把多模态模型永久降级到 Windows OCR。
+              // 保留为「未定」（不写入 results.vision），交由已知支持表裁决。
+              undetermined.push('vision');
+              visionProbeReason = message;
+              reasons.push(`图片输入未判定：${describeVisionProbeFailure(message)}`);
+            } else {
+              results.vision = false;
+              visionProbeReason = message;
+              reasons.push(`图片输入未通过：${describeVisionProbeFailure(message)}`);
+            }
+          }
+        })(),
+      );
+    }
+
+    if (visionOnly) {
+      probes.push(
+        (async () => {
+          try {
+            const vision = await runCall({
+              ...requestBase,
+              idempotencyKey: `capability-probe-vision-${ulid()}`,
+              messages: [
+                {
+                  role: 'user',
+                  content: [
+                    { type: 'text', text: VISION_PROBE_PROMPT },
+                    { type: 'image', imageUrl: VISION_PROBE_IMAGE_URL },
+                  ],
+                },
+              ],
+            });
+            const replied = vision.text.trim();
+            results.vision = hasVisionProbeMarker(replied);
+            visionProbeReason = results.vision
+              ? undefined
+              : replied
+                ? `未识别测试图中的数字（模型回复：${replied.slice(0, 80)}）`
+                : '模型对探针图未返回任何内容';
+            if (results.vision) capabilities.push('vision');
+            reasons.push(
+              results.vision
+                ? `图片输入实测成功（读出了校验码 ${VISION_PROBE_MARKER}）`
+                : `图片输入未通过：${describeVisionProbeFailure(visionProbeReason ?? '')}`,
+            );
+          } catch (error) {
+            const message = error instanceof Error ? error.message : '未知错误';
+            if (isEnvironmentalProbeFailure(message)) {
+              undetermined.push('vision');
+              visionProbeReason = message;
+              reasons.push(`图片输入未判定：${describeVisionProbeFailure(message)}`);
+            } else {
+              results.vision = false;
+              visionProbeReason = message;
+              reasons.push(`图片输入未通过：${describeVisionProbeFailure(message)}`);
+            }
+          }
+        })(),
+      );
+    }
+
+    // NewMax `runVisionScan` 只探测视觉一项 —— 这里不再向接口发文本 / 工具 / 思考 /
+    // 联网 / 生图探针。这几个维度的能力由 `suggestCapabilities` 静态判定后写入目录，
+    // 与 NewMax 用 `getKnownVisionSupport` 静态表兜底是同一角色：静态给默认值，
+    // 实测只负责纠正视觉那一项。
+
+    await Promise.all(probes);
+    clearTimeout(probeTimer);
+
+    // Probe requests run concurrently; normalize back to the stable catalog
+    // order before persisting so the UI and fallback selection never flicker.
+    const unique = normalizeCapabilities(capabilities);
+    // 失败时留痕：探测全失败曾只写进 reasons，日志里查不到，排查只能靠猜。
+    if (unique.length === 0) {
+      console.warn(
+        `[runtime] capability probe found no capability for ${model.providerModelId} (${model.protocol}): ${reasons.join(' | ')}`,
+      );
+    }
+    // 未定维度同样按目录顺序归一，避免并发探测让顺序抖动。
+    const undeterminedUnique = normalizeCapabilities(undetermined);
+    return {
+      capabilities: unique,
+      results,
+      undetermined: undeterminedUnique,
+      confidence: 'medium',
+      reasons,
+      visionProbeReason,
+    };
   }
 
   private handleConfirmCapabilities(socket: Socket, frame: Frame): void {
@@ -7213,6 +7839,80 @@ export class Runtime {
           id: frame.id,
           kind: 'response',
           type: 'provider.removeCredential',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeProviderCommandError(socket, frame, error);
+    }
+  }
+
+  private async handleClearProviderCredentials(socket: Socket, frame: Frame): Promise<void> {
+    const payload = parseClearProviderCredentialsPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.providerStore || !this.secureStore) {
+      this.writeProviderStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const { storeHandles } = this.providerStore.clearProviderCredentials(payload.providerId);
+      for (const handle of storeHandles) {
+        try {
+          await this.secureStore.removeSecret(handle);
+        } catch {
+          /* best-effort secret purge */
+        }
+      }
+      const summary = this.providerSummaryById(payload.providerId);
+      if (!summary) throw new Error(`Provider not found: ${payload.providerId}`);
+      const response: ClearProviderCredentialsResponse = {
+        provider: summary,
+        cleared: storeHandles.length,
+      };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'provider.clearCredentials',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeProviderCommandError(socket, frame, error);
+    }
+  }
+
+  private async handleDeleteProvider(socket: Socket, frame: Frame): Promise<void> {
+    const payload = parseDeleteProviderPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.providerStore || !this.secureStore) {
+      this.writeProviderStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const { storeHandles } = this.providerStore.deleteProvider(payload.providerId);
+      for (const handle of storeHandles) {
+        try {
+          await this.secureStore.removeSecret(handle);
+        } catch {
+          /* best-effort secret purge */
+        }
+      }
+      const response: DeleteProviderResponse = {
+        providerId: payload.providerId,
+        deleted: true,
+      };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'provider.delete',
           payload: response,
         }),
       );
@@ -7926,6 +8626,7 @@ export class Runtime {
       importedFrom: entry.provider.importedFrom,
       enabled: entry.provider.enabled,
       sortOrder: entry.provider.sortOrder,
+      unverified: entry.provider.unverified,
       credentials,
       models: entry.models.map((m) => this.toModelSummary(m)),
       createdAt: entry.provider.createdAt,
@@ -7972,6 +8673,8 @@ export class Runtime {
       protocol: model.protocol,
       capabilities: model.capabilities,
       capabilitiesConfirmed: model.capabilitiesConfirmed,
+      ...(model.visionCapability !== undefined ? { visionCapability: model.visionCapability } : {}),
+      ...(model.visionProbeReason ? { visionProbeReason: model.visionProbeReason } : {}),
       priority: model.priority,
       credentialRefId: model.credentialRefId,
       contextWindow,
@@ -9059,6 +9762,7 @@ export class Runtime {
       platformSchemas: nativePlatformToolSchemas({
         planningMode: this.isPlanningModeForThread(input.threadId),
         visionFallbackEnabled: this.isVisionFallbackSettingEnabled(),
+        imageGenerationEnabled: this.isImageGenerationEnabled(),
         includeGoalManage: this.conversationHasActiveGoal(input.threadId),
       }),
     });
@@ -17349,9 +18053,9 @@ export class Runtime {
         return;
       }
       demoRun = prepared.run;
-      // Vision adaptation: forwarded vs described vs failed. Blocks the append
-      // response (and thus the run start) only while the description itself is
-      // in flight; failures degrade gracefully to forwarding.
+      // Vision adaptation: forwarded vs described. As in NewMax, a failed
+      // visual fallback blocks this send before the user message/run is
+      // committed; the caller receives the actionable preprocessing error.
       try {
         await this.adaptRunImagesForModel(demoRun);
       } catch (error) {
@@ -17403,6 +18107,18 @@ export class Runtime {
         occurredAt: new Date().toISOString(),
         payload: {
           threadId: payload.threadId,
+          ...(boundConversation?.id ? { conversationId: boundConversation.id } : {}),
+          ...(payload.role === 'user'
+            ? {
+                title: resolveRunIndexDisplayTitle({
+                  conversationTitle: boundConversation?.title,
+                  taskTitle: generatedTaskIdentity?.title ?? persistedTask?.title,
+                  triggerText: payload.text,
+                  source: 'chat',
+                }),
+                triggerMessageId: messageId,
+              }
+            : {}),
           modelId: demoRun.modelId,
           providerModelId: demoRun.providerModelId,
           kernelId: demoRun.kernelId,
@@ -18168,6 +18884,93 @@ export class Runtime {
 
   // --- Activity centre (TD-048) --------------------------------------------
 
+  private findConversationForActivityRun(ref: {
+    taskId?: string;
+    conversationId?: string;
+  }): ConversationRecord | undefined {
+    if (!this.conversationStore) return undefined;
+    if (ref.taskId) {
+      const byTask = this.conversationStore.getByTaskId(ref.taskId);
+      if (byTask) return byTask;
+    }
+    if (!ref.conversationId) return undefined;
+    const byId = this.conversationStore.get(ref.conversationId);
+    if (byId) return byId;
+    const task = this.workspaceStore?.getTaskByThreadId(ref.conversationId as ThreadId);
+    return task ? this.conversationStore.getByTaskId(task.id) : undefined;
+  }
+
+  private resolveActivityRunContext(ref: {
+    taskId?: string;
+    conversationId?: string;
+    triggerMessageId?: string;
+    externalEventId?: string;
+  }): {
+    conversation?: ConversationRecord;
+    taskTitle?: string;
+    externalEventTitle?: string;
+    triggerText?: string;
+  } {
+    const conversation = this.findConversationForActivityRun(ref);
+    const task = ref.taskId
+      ? this.workspaceStore?.getTask(ref.taskId as TaskId)
+      : ref.conversationId
+        ? this.workspaceStore?.getTaskByThreadId(ref.conversationId as ThreadId)
+        : undefined;
+    const triggerText = ref.triggerMessageId
+      ? extractRunIndexMessageText(
+          this.messageStore?.getMessage(ref.triggerMessageId as MessageId)?.blocks,
+        )
+      : '';
+    const externalEventTitle = ref.externalEventId
+      ? this.externalEventStore?.get(ref.externalEventId)?.title
+      : undefined;
+    return {
+      ...(conversation ? { conversation } : {}),
+      ...(task?.title ? { taskTitle: task.title } : {}),
+      ...(externalEventTitle ? { externalEventTitle } : {}),
+      ...(triggerText ? { triggerText } : {}),
+    };
+  }
+
+  private decorateActivityRunEntry(entry: RunIndexEntry): RunIndexEntry {
+    const context = this.resolveActivityRunContext(entry);
+    const title = resolveRunIndexDisplayTitle({
+      storedTitle: entry.title,
+      conversationTitle: context.conversation?.title,
+      taskTitle: context.taskTitle,
+      externalEventTitle: context.externalEventTitle,
+      triggerText: context.triggerText,
+      source: entry.source,
+    });
+    const model = entry.modelId ? this.providerStore?.getModel(entry.modelId) : undefined;
+    const modelLabel = resolveRunIndexModelLabel({
+      displayName: model?.displayName,
+      providerModelId: entry.providerModelId ?? model?.providerModelId,
+      modelId: entry.modelId,
+    });
+    const conversationId = context.conversation?.id ?? entry.conversationId;
+    return {
+      ...entry,
+      title,
+      ...(conversationId ? { conversationId } : {}),
+      ...(modelLabel ? { providerModelId: modelLabel } : {}),
+    };
+  }
+
+  private withProjectedRunIndexTitle(upsert: RunIndexUpsert): RunIndexUpsert {
+    const context = this.resolveActivityRunContext(upsert);
+    const title = resolveRunIndexHumanTitle({
+      storedTitle: upsert.title,
+      conversationTitle: context.conversation?.title,
+      taskTitle: context.taskTitle,
+      externalEventTitle: context.externalEventTitle,
+      triggerText: context.triggerText,
+      source: upsert.source,
+    });
+    return title ? { ...upsert, title } : upsert;
+  }
+
   private writeActivityStoreUnavailable(socket: Socket, frame: Frame, store: string): void {
     socket.write(
       encodeFrame({
@@ -18209,7 +19012,7 @@ export class Runtime {
       typeof payload.workspaceId === 'string' ? { workspaceId: payload.workspaceId } : {},
     );
     const response: ActivityListRunsResponse = {
-      entries: page.entries,
+      entries: page.entries.map((entry) => this.decorateActivityRunEntry(entry)),
       ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
       counts,
     };
@@ -18307,7 +19110,9 @@ export class Runtime {
       });
       return;
     }
-    if (!entry.conversationId) {
+    const conversationId =
+      this.findConversationForActivityRun(entry)?.id ?? entry.conversationId ?? '';
+    if (!conversationId) {
       write({
         runId: entry.runId,
         conversationId: '',
@@ -18319,7 +19124,7 @@ export class Runtime {
     if (entry.state === 'running' || entry.state === 'paused') {
       write({
         runId: entry.runId,
-        conversationId: entry.conversationId,
+        conversationId,
         retryable: false,
         reason: '该 Run 仍在进行中',
       });
@@ -18328,15 +19133,11 @@ export class Runtime {
     const anchor = entry.triggerMessageId
       ? this.messageStore?.getMessage(entry.triggerMessageId as MessageId)
       : undefined;
-    const text = anchor?.blocks
-      ?.filter((block) => block.type === 'text')
-      .map((block) => block.text ?? '')
-      .join('')
-      .trim();
+    const text = extractRunIndexMessageText(anchor?.blocks);
     if (!text) {
       write({
         runId: entry.runId,
-        conversationId: entry.conversationId,
+        conversationId,
         retryable: false,
         reason: '原始消息已不可用，请手动重发',
       });
@@ -18344,7 +19145,7 @@ export class Runtime {
     }
     write({
       runId: entry.runId,
-      conversationId: entry.conversationId,
+      conversationId,
       ...(entry.triggerMessageId ? { messageId: entry.triggerMessageId } : {}),
       text,
       retryable: true,
@@ -19549,6 +20350,10 @@ export class Runtime {
     const projectedRuns = new Map(this.demoRuns);
     projectedRuns.delete(payload.runId);
     try {
+      if (run.delegationParentRunId) {
+        this.completedDelegatedRuns.set(payload.runId, run);
+        this.completedDelegatedRunStates.set(payload.runId, 'cancelled');
+      }
       if (this.stateStore) {
         const event = this.persistProjectedEvent(
           {
@@ -19840,7 +20645,7 @@ export class Runtime {
           fallbackWorkspaceId: this.workspaceId,
           scrub: (message) => this.scrubDiagnosticMessage(message) ?? '',
         });
-        if (upsert) store.upsert(upsert);
+        if (upsert) store.upsert(this.withProjectedRunIndexTitle(upsert));
       } catch (error) {
         console.warn(
           '[runtime] run_index projection failed',
@@ -20052,14 +20857,20 @@ export class Runtime {
               platformSchemas: nativePlatformToolSchemas({
                 planningMode: initialRun.planningMode === true,
                 visionFallbackEnabled: this.isVisionFallbackSettingEnabled(),
+                imageGenerationEnabled: this.isImageGenerationEnabled(),
                 includeGoalManage: this.conversationHasActiveGoal(initialRun.threadId),
               }),
               signal: abort.signal,
+              toolAllowlist: attemptRun.delegatedToolAllowlist,
+              ...(attemptRun.delegatedReadOnly && attemptRun.delegationTokenBudget !== null
+                ? { maxOutputTokens: attemptRun.delegationTokenBudget }
+                : {}),
             });
             if (process.env.SYNC_THINK_E2E_DEBUG === '1') {
               const schemas = nativePlatformToolSchemas({
                 planningMode: initialRun.planningMode === true,
                 visionFallbackEnabled: this.isVisionFallbackSettingEnabled(),
+                imageGenerationEnabled: this.isImageGenerationEnabled(),
                 includeGoalManage: this.conversationHasActiveGoal(initialRun.threadId),
               });
               console.log('[e2e-debug] platformSchemas:', schemas.map((s) => s.name).join(','));
@@ -20305,6 +21116,23 @@ export class Runtime {
               finishedWithToolRequests = true;
             }
             if (adapterEvent.type === 'usage') {
+              const delegationTokenBudget = currentRun.delegationTokenBudget;
+              if (currentRun.delegatedReadOnly && delegationTokenBudget != null) {
+                const tokensUsed =
+                  (currentRun.delegationTokensUsed ?? 0) +
+                  Math.max(0, Math.floor(adapterEvent.tokensIn)) +
+                  Math.max(0, Math.floor(adapterEvent.tokensOut));
+                const budgetExceeded = tokensUsed >= delegationTokenBudget;
+                currentRun = {
+                  ...currentRun,
+                  delegationTokensUsed: tokensUsed,
+                  ...(budgetExceeded ? { delegationTerminationReason: 'budget_exceeded' as const } : {}),
+                };
+                this.demoRuns.set(runId, currentRun);
+                if (budgetExceeded) {
+                  this.demoRunAborts.get(runId)?.abort();
+                }
+              }
               this.addGoalUsageForRun(
                 runId,
                 currentRun,
@@ -20326,6 +21154,22 @@ export class Runtime {
             const projection = projectAdapterEvent(currentRun, adapterEvent, {
               requestId: providerRequestId,
             });
+            // Preserve terminal state for delegated children. Terminal
+            // projections carry an event payload but historically omitted the
+            // final in-memory Run snapshot needed by the parent coordinator.
+            if (projection.terminal && !projection.nextRun) {
+              let terminalRun: DemoRunState = {
+                ...currentRun,
+                nextAdapterEventIndex: currentRun.nextAdapterEventIndex + 1,
+              };
+              if (adapterEvent.type === 'finished' || adapterEvent.type === 'error') {
+                terminalRun = closeAssistantTimeline(
+                  closeCommentaryTimelineSegment(terminalRun, projectionOccurredAt),
+                  projectionOccurredAt,
+                );
+              }
+              projection.nextRun = terminalRun;
+            }
             if (
               adapterEvent.type === 'assistant-message-delta' &&
               adapterEvent.phase === 'commentary' &&
@@ -20469,6 +21313,10 @@ export class Runtime {
             if (projection.terminal) projectedRuns.delete(runId);
             else if (projection.nextRun) projectedRuns.set(runId, projection.nextRun);
             const payload = { ...projection.payload };
+            const terminalRunForPayload = projection.nextRun ?? currentRun;
+            if (terminalRunForPayload.delegationParentRunId) {
+              payload.delegationParentRunId = terminalRunForPayload.delegationParentRunId;
+            }
             const isGoalCompletion =
               projection.terminal &&
               projection.type === 'run.completed' &&
@@ -20548,6 +21396,17 @@ export class Runtime {
               );
 
               if (projection.terminal) {
+                if (projection.nextRun?.delegationParentRunId) {
+                  this.completedDelegatedRuns.set(runId, projection.nextRun);
+                  this.completedDelegatedRunStates.set(
+                    String(runId),
+                    projection.type === 'run.failed'
+                      ? 'failed'
+                      : projection.type === 'run.cancelled'
+                        ? 'cancelled'
+                        : 'completed',
+                  );
+                }
                 this.demoRuns.delete(runId);
                 this.transientSnapshotByThread.delete(currentRun.threadId);
               } else if (projection.nextRun) this.demoRuns.set(runId, projection.nextRun);
@@ -20612,15 +21471,46 @@ export class Runtime {
             toolsEnabled &&
             pendingToolCalls.length > 0 &&
             this.demoRuns.has(runId) &&
-            toolLoopRound < MAX_TOOL_ROUNDS
+            (toolLoopRound < MAX_TOOL_ROUNDS ||
+              pendingToolCalls.every((call) =>
+                ['read_command', 'list_commands', 'stop_command'].includes(call.name),
+              ))
           ) {
             toolLoopRound += 1;
             const currentRun = this.demoRuns.get(runId)!;
             appendActiveRoundTranscript('complete');
 
-            const completedResults: Array<{ toolCallId: string; content: string }> = [];
+            const completedResults: Array<{
+              toolCallId: string;
+              content: string;
+              pendingCommand?: boolean;
+            }> = [];
             const writeSnapshot: import('./chat-tools.js').ChatWriteSnapshot = {};
-            for (let toolIndex = 0; toolIndex < pendingToolCalls.length; toolIndex++) {
+            const delegationBatch =
+              pendingToolCalls.length > 1 &&
+              !currentRun.delegatedReadOnly &&
+              pendingToolCalls.every((call) => call.name === 'agent_delegate');
+            const delegatedBatchResults = delegationBatch
+              ? await this.executeDelegationBatch({
+                  run: currentRun,
+                  toolCalls: pendingToolCalls,
+                  workspaceRoot: workspaceRoot ?? '',
+                  signal: abort.signal,
+                })
+              : undefined;
+            if (delegatedBatchResults) {
+              for (const item of delegatedBatchResults) {
+                if (abort.signal.aborted || !this.demoRuns.has(runId)) return;
+                this.publishToolCompleted(runId, currentRun.threadId, item.toolCall, item.resultText);
+                const foldedForModel = foldToolOutputText(item.resultText).text;
+                completedResults.push({ toolCallId: item.toolCall.id, content: foldedForModel });
+                chatMessages = [
+                  ...chatMessages,
+                  { role: 'tool', toolCallId: item.toolCall.id, content: foldedForModel },
+                ];
+              }
+            }
+            for (let toolIndex = 0; !delegatedBatchResults && toolIndex < pendingToolCalls.length; toolIndex++) {
               const toolCall = pendingToolCalls[toolIndex]!;
               if (abort.signal.aborted || !this.demoRuns.has(runId)) return;
 
@@ -20640,6 +21530,25 @@ export class Runtime {
                   }),
                 );
                 this.pushKernelTimelineSnapshot(runId, runBeforeTool.threadId, toolStartOccurredAt);
+              }
+
+              if (currentRun.delegatedReadOnly) {
+                const dispatch = (currentRun as DemoRunState & {
+                  mcpToolDispatch?: Map<string, { mcpServerId: string; toolName: string; readOnly?: boolean }>;
+                }).mcpToolDispatch?.get(toolCall.name);
+                if (!isDelegatedReadOnlyTool(toolCall.name, dispatch?.readOnly)) {
+                  const deniedText = JSON.stringify({
+                    ok: false,
+                    error: 'Delegated child Agents are limited to read-only tools.',
+                  });
+                  this.publishToolCompleted(runId, currentRun.threadId, toolCall, deniedText);
+                  completedResults.push({ toolCallId: toolCall.id, content: deniedText });
+                  chatMessages = [
+                    ...chatMessages,
+                    { role: 'tool', toolCallId: toolCall.id, content: deniedText },
+                  ];
+                  continue;
+                }
               }
 
               const desktopCapabilityEnabled = this.isComputerUsePluginEnabled();
@@ -20863,10 +21772,21 @@ export class Runtime {
               const mcpDispatch =
                 (
                   currentRun as DemoRunState & {
-                    mcpToolDispatch?: Map<string, { mcpServerId: string; toolName: string }>;
+                    mcpToolDispatch?: Map<string, { mcpServerId: string; toolName: string; readOnly?: boolean }>;
                   }
                 ).mcpToolDispatch?.get(toolCall.name) ?? parseMcpProviderToolName(toolCall.name);
-              if (CHAT_PLAN_TOOL_NAMES.has(toolCall.name)) {
+              const collaborationDenial = currentRun.track
+                ? resolveCollaborationToolDenial({
+                    track: currentRun.track,
+                    toolName: toolCall.name,
+                    settings: normalizeCollaborationSettings(
+                      this.appSettingStore?.get(COLLABORATION_SETTINGS_KEY)?.value,
+                    ),
+                  })
+                : null;
+              if (collaborationDenial) {
+                resultText = JSON.stringify({ ok: false, error: collaborationDenial.error });
+              } else if (CHAT_PLAN_TOOL_NAMES.has(toolCall.name)) {
                 if (CHAT_TASK_PLAN_TOOL_NAMES.has(toolCall.name) && this.taskPlanStore) {
                   const workspaceId = this.resolveEventWorkspaceId(currentRun.threadId);
                   if (toolCall.name === 'TaskCreate') {
@@ -20921,6 +21841,13 @@ export class Runtime {
                   workspaceRoot,
                   executionMode,
                   approval: desktopApproval,
+                  signal: abort.signal,
+                });
+              } else if (toolCall.name === 'agent_delegate') {
+                resultText = await this.executeDynamicAgentDelegation({
+                  run: currentRun,
+                  toolCall,
+                  workspaceRoot: workspaceRoot ?? '',
                   signal: abort.signal,
                 });
               } else if (CHAT_AGENT_TOOL_NAMES.has(toolCall.name)) {
@@ -21000,6 +21927,9 @@ export class Runtime {
               } else {
                 resultText = await executeChatBuiltInTool({
                   workspaceRoot,
+                  threadId: String(currentRun.threadId),
+                  runId: String(runId),
+                  commandSessions: this.commandSessions,
                   toolCall,
                   signal: abort.signal,
                   networkEnabled,
@@ -21022,7 +21952,13 @@ export class Runtime {
                   : undefined,
               );
               const foldedForModel = foldToolOutputText(resultText).text;
-              completedResults.push({ toolCallId: toolCall.id, content: foldedForModel });
+              completedResults.push({
+                toolCallId: toolCall.id,
+                content: foldedForModel,
+                pendingCommand:
+                  ['run_command', 'read_command'].includes(toolCall.name) &&
+                  isRunningCommandResult(resultText),
+              });
               chatMessages = [
                 ...chatMessages,
                 { role: 'tool', toolCallId: toolCall.id, content: foldedForModel },
@@ -21032,6 +21968,14 @@ export class Runtime {
             // NewMax preventive: also fold older tool outputs still in the live loop transcript.
             chatMessages = foldLongToolOutputsInMessages(chatMessages).messages;
 
+            // Waiting for a live command is not a new work attempt or a stagnant retry.
+            if (
+              completedResults.length > 0 &&
+              completedResults.every((result) => result.pendingCommand) &&
+              pendingToolCalls.every((call) => call.name === 'read_command')
+            ) {
+              toolLoopRound -= 1;
+            }
             const guard = evaluateToolLoopGuard({
               toolLoopRound,
               maxToolRounds: MAX_TOOL_ROUNDS,
@@ -21460,6 +22404,7 @@ export class Runtime {
       this.openGateway.revokeRun(runId);
       this.platformMcpCatalogByRun.delete(runId);
       this.platformMcpResultsByRun.delete(runId);
+      this.capabilityBrokerByRun.delete(runId);
       this.formalPlanRevisionByRun.delete(runId);
       this.kernelToolProgressByRun.delete(runId);
       adapterLease?.release();
@@ -22235,7 +23180,7 @@ export class Runtime {
         'Do not call `goal_manage` for checklists or exploration plans. `goal_manage` exists only after the user starts Goal mode.',
       ].join('\n'),
     );
-    parts.push(DESIGN_UI_OUTPUT_CONTRACT, DESIGN_HTML_OUTPUT_CONTRACT);
+    parts.push(HTML_PREVIEW_OUTPUT_CONTRACT);
     if (isExplicitExcalidrawRequest(run.userText)) {
       parts.push(EXCALIDRAW_OUTPUT_CONTRACT);
     }
@@ -22270,8 +23215,12 @@ export class Runtime {
     parts.push(LANGUAGE_FOLLOW_PROMPT);
     parts.push(
       ...buildImageToolGuidance({
-        visionCapable: this.isRunModelVisionCapable(run),
+        visionState: this.resolveRunModelVisionState(run),
         visionFallbackEnabled: this.isVisionFallbackSettingEnabled(),
+        externalKernel: true,
+      }),
+      ...buildImageGenerationGuidance({
+        enabled: this.isImageGenerationEnabled(),
         externalKernel: true,
       }),
     );
@@ -22310,10 +23259,13 @@ export class Runtime {
       networkEnabled,
       fallbackWebSearchEnabled: externalWebSearch,
       visionFallbackEnabled: this.isVisionFallbackSettingEnabled(),
+      imageGenerationEnabled: this.isImageGenerationEnabled(),
       hasActiveGoal: this.conversationHasActiveGoal(run.threadId),
     });
     const selection = selectKernelMcpRun({
       kernelId: request.kernelId,
+      conversationTrack: run.track,
+      collaborationSettings: this.appSettingStore?.get(COLLABORATION_SETTINGS_KEY)?.value,
       executionMode: this.resolveChatExecutionMode(run.threadId),
       networkEnabled,
       planningMode,
@@ -22323,9 +23275,16 @@ export class Runtime {
     // is the authority for what the kernel sees.
     const tools = buildPlatformMcpToolDefinitions({
       executionMode: this.resolveChatExecutionMode(run.threadId),
+      conversationTrack: run.track,
+      collaborationSettings: this.appSettingStore?.get(COLLABORATION_SETTINGS_KEY)?.value,
       networkEnabled,
       includeWebSearchTools: externalWebSearch,
       includeAgentTools: Boolean(this.globalAgentStore),
+      includeDynamicAgentTools:
+        run.track === 'model' &&
+        normalizeCollaborationSettings(
+          this.appSettingStore?.get(COLLABORATION_SETTINGS_KEY)?.value,
+        ).dynamicSubagentsEnabled,
       includeTaskTools:
         Boolean(this.taskPlanStore) &&
         request.kernelId !== 'claude-code' &&
@@ -22466,6 +23425,15 @@ export class Runtime {
     if (call.tool === DESCRIBE_IMAGE_TOOL_NAME) {
       return this.executeDescribeImageTool(runId, workspaceRoot, call);
     }
+    if (call.tool === SEARCH_CAPABILITY_TOOL_NAME) {
+      return this.executeSearchCapabilityTool(runId, call);
+    }
+    if (call.tool === USE_CAPABILITY_TOOL_NAME) {
+      return this.executeUseCapabilityTool(runId, workspaceRoot, call);
+    }
+    if (call.tool === GENERATE_IMAGE_TOOL_NAME) {
+      return this.executeGenerateImageTool(runId, workspaceRoot, call);
+    }
     const catalog = this.platformMcpCatalogByRun.get(runId) ?? PLATFORM_MCP_TOOL_DEFINITIONS;
     const definition = catalog.find((tool) => tool.name === call.tool);
     if (!definition) return { ok: false, error: `unknown platform tool: ${call.tool}` };
@@ -22476,6 +23444,18 @@ export class Runtime {
     // into the catalog (second layer behind the catalog filter).
     if (run.planningMode === true && isPlanningDeniedTool(call.tool)) {
       return { ok: false, error: '规划模式只读：此操作需在执行模式中进行' };
+    }
+    if (run.track) {
+      const collaborationDenial = resolveCollaborationToolDenial({
+        track: run.track,
+        toolName: call.tool,
+        settings: normalizeCollaborationSettings(
+          this.appSettingStore?.get(COLLABORATION_SETTINGS_KEY)?.value,
+        ),
+      });
+      if (collaborationDenial) {
+        return { ok: false, error: collaborationDenial.error };
+      }
     }
     const executionMode = normalizeChatExecutionMode(this.resolveChatExecutionMode(run.threadId));
 
@@ -22611,6 +23591,156 @@ export class Runtime {
     }
   }
 
+  private capabilityBrokerFor(runId: RunId): CapabilityBroker {
+    let broker = this.capabilityBrokerByRun.get(runId);
+    if (!broker) {
+      broker = new CapabilityBroker({
+        getTargets: () =>
+          this.isImageGenerationEnabled() ? [buildImageGenerationCapability()] : [],
+      });
+      this.capabilityBrokerByRun.set(runId, broker);
+    }
+    return broker;
+  }
+
+  private executeSearchCapabilityTool(
+    runId: RunId,
+    call: PlatformMcpToolCall,
+  ): { ok: boolean; content?: string; error?: string } {
+    const input =
+      call.input && typeof call.input === 'object' ? (call.input as Record<string, unknown>) : {};
+    const parsed = parseSearchCapabilityArgs(input);
+    if ('error' in parsed) return { ok: false, error: `search_capability: ${parsed.error}` };
+    const found = this.capabilityBrokerFor(runId).search(parsed.query, parsed.limit);
+    return { ok: true, content: JSON.stringify(found) };
+  }
+
+  private async executeUseCapabilityTool(
+    runId: RunId,
+    workspaceRoot: string,
+    call: PlatformMcpToolCall,
+  ): Promise<{ ok: boolean; content?: string; error?: string }> {
+    const run = this.demoRuns.get(runId);
+    if (run?.planningMode === true) {
+      return { ok: false, error: '规划模式只读：此操作需在执行模式中进行' };
+    }
+    const input =
+      call.input && typeof call.input === 'object' ? (call.input as Record<string, unknown>) : {};
+    const parsed = parseUseCapabilityArgs(input);
+    if ('error' in parsed) return { ok: false, error: `use_capability: ${parsed.error}` };
+    const resolved = this.capabilityBrokerFor(runId).resolveUse(parsed.ref, parsed.arguments);
+    if ('error' in resolved) return { ok: false, error: `use_capability: ${resolved.error}` };
+    if (capabilityUsesGenerateImage(resolved.toolName)) {
+      return this.executeGenerateImageTool(runId, workspaceRoot, {
+        ...call,
+        tool: GENERATE_IMAGE_TOOL_NAME,
+        input: resolved.arguments,
+      });
+    }
+    return {
+      ok: false,
+      error: `use_capability: 不支持的能力 ${resolved.capabilityId}（${resolved.toolName}）`,
+    };
+  }
+
+  private async executeGenerateImageTool(
+    runId: RunId,
+    workspaceRoot: string,
+    call: PlatformMcpToolCall,
+  ): Promise<{ ok: boolean; content?: string; error?: string }> {
+    const run = this.demoRuns.get(runId);
+    if (run?.planningMode === true) {
+      return { ok: false, error: '规划模式只读：此操作需在执行模式中进行' };
+    }
+    if (!this.isImageGenerationEnabled()) {
+      return {
+        ok: false,
+        error: '还没有可用的生图供应商（设置 > 模型 > 图像生成），无法生成图片',
+      };
+    }
+    const root = workspaceRoot.trim();
+    if (!root) {
+      return {
+        ok: false,
+        error: 'generate_image: 当前对话没有绑定项目文件夹，无法保存生成的图片',
+      };
+    }
+    const input =
+      call.input && typeof call.input === 'object' ? (call.input as Record<string, unknown>) : {};
+    const parsed = parseGenerateImageArgs(input);
+    if ('error' in parsed) return { ok: false, error: `generate_image: ${parsed.error}` };
+    if (call.signal.aborted || !this.demoRuns.has(runId)) {
+      return { ok: false, error: 'generate_image: 工具调用被取消' };
+    }
+    const picked = pickImageGenerationTarget(this.collectImageGenerationCatalog(), parsed.model);
+    if ('error' in picked) return { ok: false, error: `generate_image: ${picked.error}` };
+    const provider = this.providerStore?.getProvider(picked.provider.providerId as never);
+    if (!provider) return { ok: false, error: 'generate_image: 生图供应商不存在' };
+    const apiKey = await this.resolveProviderSecret(picked.provider.providerId);
+    if (!apiKey) return { ok: false, error: 'generate_image: 生图供应商凭据为空' };
+    const adapter = this.resolveDiscoveryAdapter('openai-images');
+    if (!adapter?.generateImages) {
+      return { ok: false, error: 'generate_image: 当前运行时没有图像生成适配器' };
+    }
+    try {
+      const generated = await adapter.generateImages({
+        protocol: 'openai-images',
+        baseUrl: provider.baseUrl,
+        modelId: picked.model.providerModelId,
+        apiKey,
+        idempotencyKey: `generate-image-${ulid()}`,
+        signal: call.signal,
+        // No host wall-clock limit: image generation (and upscaling) is a long
+        // job, so only the provider timeout or an explicit user stop ends it.
+        timeoutMs: null,
+        prompt: parsed.prompt,
+        count: parsed.count,
+        size: parsed.size,
+        quality: parsed.quality,
+      });
+      if (call.signal.aborted || !this.demoRuns.has(runId)) {
+        return { ok: false, error: 'generate_image: 工具调用被取消' };
+      }
+      const files = writeGeneratedImages({
+        workspaceRoot: root,
+        prompt: parsed.prompt,
+        images: generated.images,
+      });
+      return {
+        ok: true,
+        content: buildGenerateImageMarkdown({
+          prompt: parsed.prompt,
+          providerName: picked.provider.name,
+          modelId: picked.model.providerModelId,
+          files,
+        }),
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        error: `generate_image: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+  }
+
+  private collectImageGenerationCatalog() {
+    if (!this.providerStore) return [];
+    return this.providerStore.listProviders().map((entry) => ({
+      providerId: entry.provider.id,
+      name: entry.provider.name,
+      protocol: entry.provider.protocol,
+      enabled: entry.provider.enabled,
+      sortOrder: entry.provider.sortOrder,
+      hasCredential: entry.credentialGroups.some((group) => group.credentials.length > 0),
+      models: entry.models.map((model) => ({
+        modelId: model.id,
+        providerModelId: model.providerModelId,
+        priority: model.priority,
+        capabilities: model.capabilities,
+      })),
+    }));
+  }
+
   private async executeWindowsOcrTool(
     runId: RunId,
     workspaceRoot: string,
@@ -22626,7 +23756,7 @@ export class Runtime {
       return { ok: false, error: 'ocr_image: 工具调用被取消' };
     }
     try {
-      const result = await recognizeImageTextWithWindowsOcr(resolved.absolutePath, {
+      const result = await this.windowsOcrRecognizer(resolved.absolutePath, {
         language,
         signal: call.signal,
       });
@@ -23086,6 +24216,9 @@ export class Runtime {
     }
     if (CHAT_PLAN_TOOL_NAMES.has(name)) {
       return executeChatPlanTool(toolCall.argumentsJson);
+    }
+    if (name === 'agent_delegate') {
+      return this.executeDynamicAgentDelegation({ run, toolCall, workspaceRoot, signal });
     }
     if (CHAT_AGENT_TOOL_NAMES.has(name)) {
       return this.executeChatAgentTool({ run, toolCall });
@@ -24330,6 +25463,9 @@ export class Runtime {
       providerModelId: terminalRun.providerModelId,
       packetId: terminalRun.packetId,
       kernelId: terminalRun.kernelId,
+      ...(terminalRun.delegationParentRunId
+        ? { delegationParentRunId: terminalRun.delegationParentRunId }
+        : {}),
     };
     try {
       const event = this.persistProjectedEvent(
@@ -25249,6 +26385,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       resolutionSource: source,
       globalAgentId: globalAgent?.id,
       globalAgentName: globalAgent?.name,
+      track,
       persona: globalAgent?.persona?.trim() ? globalAgent.persona.trim() : undefined,
       teamId: teamRecord?.id,
       teamName: teamRecord?.name,
@@ -25416,7 +26553,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     const run = appendAssistantStatus(currentRun, {
       statusType: 'retry',
       label: `正在重试当前模型（${retryCount}/${maxAttempts}）`,
-      detail: failureClass,
+      detail: describeModelFallbackReason(failureClass),
       occurredAt,
     });
     this.demoRuns.set(runId, run);
@@ -25494,6 +26631,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     return catalogEntryVisionCapable({
       modelId: model.id,
       providerModelId: model.providerModelId,
+      providerId: model.providerId,
       protocol: model.protocol,
       capabilities: model.capabilities,
       capabilitiesConfirmed: model.capabilitiesConfirmed,
@@ -25522,7 +26660,10 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     failureClass: FailureClass,
     errorMessage?: string,
   ): 'continued' | 'paused' | 'failed' {
-    if (!shouldAttemptFallback(failureClass)) {
+    if (
+      !shouldAttemptFallback(failureClass) ||
+      isCodexSilentCommandWatchdogMessage(errorMessage)
+    ) {
       return 'failed';
     }
 
@@ -25975,6 +27116,9 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       }
     }
     const message = error instanceof Error ? error.message : String(error ?? '');
+    if (isCodexSilentCommandWatchdogMessage(message)) {
+      return 'protocol';
+    }
     if (
       /rate[\s_-]*limit|too many requests|(?:status|http(?:\/\d(?:\.\d)?)?)\s*429|\b429\b/i.test(
         message,
@@ -26732,6 +27876,298 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
    * create_agent reaches here only after the permission gate passed
    * (full-access, or user approved the tool card in other modes).
    */
+  private async executeDynamicAgentDelegation(input: {
+    run: DemoRunState;
+    toolCall: import('@sync-think/adapters').ProviderToolCall;
+    workspaceRoot: string;
+    signal?: AbortSignal;
+  }): Promise<string> {
+    let args: Record<string, unknown> = {};
+    try {
+      const parsed = JSON.parse(input.toolCall.argumentsJson || '{}') as unknown;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        args = parsed as Record<string, unknown>;
+      }
+    } catch {
+      return JSON.stringify({ ok: false, error: 'agent_delegate: invalid JSON arguments.' });
+    }
+    const task = typeof args.task === 'string' ? args.task.trim() : '';
+    if (!task) return JSON.stringify({ ok: false, error: 'agent_delegate: task is required.' });
+    const parallelGroup =
+      typeof args.parallelGroup === 'string' && args.parallelGroup.trim()
+        ? args.parallelGroup.trim().slice(0, 80)
+        : undefined;
+    const parallelGroupField = parallelGroup ? { parallelGroup } : {};
+    const requestedTimeoutSeconds =
+      typeof args.timeoutSeconds === 'number' && Number.isFinite(args.timeoutSeconds)
+        ? Math.min(
+            MAX_DELEGATED_TASK_TIMEOUT_SECONDS,
+            Math.max(1, Math.trunc(args.timeoutSeconds)),
+          )
+        : DEFAULT_DELEGATED_TASK_TIMEOUT_SECONDS;
+    const settings = normalizeCollaborationSettings(
+      this.appSettingStore?.get(COLLABORATION_SETTINGS_KEY)?.value,
+    );
+    const admission = evaluateDynamicDelegation({
+      track: input.run.track ?? 'model',
+      settings,
+      state: {
+        depth: input.run.delegationDepth ?? 0,
+        childCount: input.run.delegationChildCount ?? 0,
+        autoDelegationsThisTurn: input.run.delegationAutoCount ?? 0,
+      },
+      requestedTokenBudget:
+        typeof args.tokenBudget === 'number' && Number.isFinite(args.tokenBudget)
+          ? args.tokenBudget
+          : null,
+    });
+    if (!admission.allowed) {
+      return JSON.stringify({
+        ok: false,
+        error: `agent_delegate: delegation rejected (${admission.reason}).`,
+        limits: settings,
+      });
+    }
+    const candidates = (this.globalAgentStore?.list() ?? []).map((agent) => ({
+      id: String(agent.id),
+      name: agent.name,
+      avatar: agent.avatar,
+      persona: agent.persona,
+      description: agent.description,
+      skillIds: agent.skillIds,
+      mcpServerIds: agent.mcpServerIds,
+      archived: agent.archived,
+    }));
+    const assignment = resolveAgentAssignment(
+      {
+        task,
+        preferredAgentId: typeof args.agentId === 'string' ? args.agentId : undefined,
+        requiredSkillIds: Array.isArray(args.requiredSkillIds)
+          ? args.requiredSkillIds.map(String)
+          : [],
+        requiredToolIds: Array.isArray(args.requiredToolIds)
+          ? args.requiredToolIds.map(String)
+          : [],
+      },
+      candidates,
+    );
+    const childRunId = ulid() as RunId;
+    let child: DemoRunState;
+    if (assignment.kind === 'existing' && assignment.agentId && this.globalAgentStore) {
+      // Global Agents are mutable and carry no version chain, so the child run
+      // resolves a copy of that Agent's persona / model / Skill / MCP binding at
+      // delegation time instead of freezing a stored AgentVersion pointer.
+      child = this.prepareRunBinding({
+        runId: childRunId,
+        threadId: input.run.threadId,
+        userText: task,
+        track: 'agent',
+        globalAgentId: assignment.agentId,
+        skillContextMode: 'run',
+      }).run;
+      child.track = 'model';
+    } else {
+      child = createDemoRun(childRunId, input.run.threadId, task, {
+        track: 'model',
+        modelId: input.run.modelId,
+        providerModelId: input.run.providerModelId,
+        protocol: input.run.protocol,
+        baseUrl: input.run.baseUrl,
+        providerId: input.run.providerId,
+        credentialRefId: input.run.credentialRefId,
+        credentialResolutionSource: input.run.credentialResolutionSource,
+        agentVersionId: input.run.agentVersionId,
+        resolutionSource: input.run.resolutionSource,
+        reasoningEffort: input.run.reasoningEffort,
+        useFakeProvider: input.run.useFakeProvider,
+      });
+      child.persona = assignment.temporaryProfile?.persona;
+      child.globalAgentName = assignment.temporaryProfile?.name;
+    }
+    child.delegationDepth = (input.run.delegationDepth ?? 0) + 1;
+    child.delegationParentRunId = input.run.runId;
+    child.delegationParallelGroup = parallelGroup;
+    child.delegationTokenBudget = admission.taskTokenBudget;
+    child.delegationTokensUsed = 0;
+    child.delegatedReadOnly = true;
+    child.delegatedToolAllowlist = [...DELEGATED_READONLY_TOOLS];
+    const parentBeforeChild = this.demoRuns.get(input.run.runId);
+    if (parentBeforeChild) {
+      this.demoRuns.set(input.run.runId, {
+        ...parentBeforeChild,
+        delegationChildCount: (parentBeforeChild.delegationChildCount ?? 0) + 1,
+        delegationAutoCount: (parentBeforeChild.delegationAutoCount ?? 0) + 1,
+      });
+    }
+    this.demoRuns.set(childRunId, child);
+    const cancelChild = () => this.demoRunAborts.get(String(childRunId))?.abort();
+    const timeoutTimer = setTimeout(() => {
+      const liveChild = this.demoRuns.get(String(childRunId));
+      if (!liveChild) return;
+      this.demoRuns.set(String(childRunId), {
+        ...liveChild,
+        delegationTerminationReason: 'timed_out',
+      });
+      cancelChild();
+    }, requestedTimeoutSeconds * 1_000);
+    timeoutTimer.unref?.();
+    if (input.signal) {
+      if (input.signal.aborted) cancelChild();
+      else input.signal.addEventListener('abort', cancelChild, { once: true });
+    }
+    try {
+      await this.executeDemoRun(childRunId);
+    } finally {
+      clearTimeout(timeoutTimer);
+      input.signal?.removeEventListener('abort', cancelChild);
+      if (input.signal?.aborted) {
+        this.demoRuns.delete(String(childRunId));
+        this.completedDelegatedRuns.delete(String(childRunId));
+        this.completedDelegatedRunStates.delete(String(childRunId));
+      }
+    }
+    const interruptedChild = this.demoRuns.get(String(childRunId));
+    const interruptedTerminationReason = interruptedChild?.delegationTerminationReason;
+    if (interruptedChild?.delegationTerminationReason && !input.signal?.aborted) {
+      const terminationReason = interruptedChild.delegationTerminationReason;
+      this.completedDelegatedRuns.set(String(childRunId), interruptedChild);
+      this.completedDelegatedRunStates.set(
+        String(childRunId),
+        terminationReason === 'timed_out' ? 'timed_out' : 'failed',
+      );
+      this.persistDemoRunFailure(
+        childRunId,
+        terminationReason === 'timed_out' ? 'timeout' : 'acceptance',
+        terminationReason === 'timed_out'
+          ? `Delegated child timed out after ${requestedTimeoutSeconds} seconds.`
+          : 'Delegated child exceeded its token budget.',
+      );
+    }
+    const completedChild =
+      this.completedDelegatedRuns.get(String(childRunId)) ??
+      this.demoRuns.get(String(childRunId)) ??
+      interruptedChild;
+    this.completedDelegatedRuns.delete(String(childRunId));
+    const childTerminalState =
+      this.completedDelegatedRunStates.get(String(childRunId)) ??
+      (interruptedTerminationReason === 'timed_out'
+        ? 'timed_out'
+        : interruptedTerminationReason === 'budget_exceeded'
+          ? 'failed'
+          : undefined);
+    this.completedDelegatedRunStates.delete(String(childRunId));
+    if (input.signal?.aborted) {
+      return JSON.stringify({ ok: false, ...parallelGroupField, error: 'agent_delegate: child run cancelled.', childRunId });
+    }
+    if (!completedChild) {
+      return JSON.stringify({ ok: false, ...parallelGroupField, error: 'agent_delegate: child run failed.', childRunId });
+    }
+    if (completedChild.delegationTerminationReason === 'budget_exceeded') {
+      return JSON.stringify({
+        ok: false,
+        ...parallelGroupField,
+        status: 'failed',
+        error: 'agent_delegate: child run exceeded its token budget.',
+        childRunId,
+        tokenBudget: admission.taskTokenBudget,
+        tokensUsed: completedChild.delegationTokensUsed ?? 0,
+      });
+    }
+    if (childTerminalState === 'failed') {
+      return JSON.stringify({ ok: false, ...parallelGroupField, error: 'agent_delegate: child run failed.', childRunId });
+    }
+    if (childTerminalState === 'cancelled') {
+      return JSON.stringify({ ok: false, ...parallelGroupField, error: 'agent_delegate: child run cancelled.', childRunId });
+    }
+    if (childTerminalState === 'timed_out') {
+      return JSON.stringify({
+        ok: false,
+        ...parallelGroupField,
+        status: 'timed_out',
+        error: `agent_delegate: child run timed out after ${requestedTimeoutSeconds} seconds.`,
+        childRunId,
+        tokenBudget: admission.taskTokenBudget,
+        tokensUsed: completedChild.delegationTokensUsed ?? 0,
+      });
+    }
+    const assignedCandidate =
+      assignment.kind === 'existing'
+        ? candidates.find((candidate) => candidate.id === assignment.agentId)
+        : undefined;
+    const delegatedAvatar =
+      assignedCandidate?.avatar?.trim() || assignedCandidate?.name?.slice(0, 2) || '🤖';
+    const toolEvents = (completedChild.assistantTimeline ?? [])
+      .filter((segment) => segment.kind === 'tool')
+      .map((segment) => ({
+        toolName: segment.name,
+        arguments: segment.argumentsJson ?? '{}',
+        status: segment.status,
+        ...(segment.output !== undefined ? { output: segment.output.slice(0, 12_000) } : {}),
+        ...(segment.startedAt ? { startedAt: segment.startedAt } : {}),
+        ...(segment.completedAt ? { completedAt: segment.completedAt } : {}),
+      }));
+    return JSON.stringify({
+      ok: true,
+      ...parallelGroupField,
+      childRunId,
+      assignment: {
+        kind: assignment.kind,
+        agentId: assignment.agentId ?? null,
+        name: child.globalAgentName ?? '临时任务 Agent',
+        avatar: assignment.kind === 'existing' ? delegatedAvatar : '🧩',
+      },
+      status: 'completed',
+      toolEvents,
+      result: completedChild.assistantText.trim(),
+      tokenBudget: admission.taskTokenBudget,
+      tokensUsed: completedChild.delegationTokensUsed ?? 0,
+    });
+
+  }
+
+  private async executeDelegationBatch(input: {
+    run: DemoRunState;
+    toolCalls: readonly import('@sync-think/adapters').ProviderToolCall[];
+    workspaceRoot: string;
+    signal: AbortSignal;
+  }): Promise<Array<{ toolCall: import('@sync-think/adapters').ProviderToolCall; resultText: string }>> {
+    const startedAt = new Date().toISOString();
+    for (const toolCall of input.toolCalls) {
+      if (input.signal.aborted || !this.demoRuns.has(String(input.run.runId))) return [];
+      const liveRun = this.demoRuns.get(String(input.run.runId));
+      if (!liveRun) return [];
+      this.demoRuns.set(
+        String(input.run.runId),
+        startAssistantTool(liveRun, {
+          toolCallId: toolCall.id,
+          name: toolCall.name,
+          argumentsJson: toolCall.argumentsJson,
+          occurredAt: startedAt,
+        }),
+      );
+      this.pushKernelTimelineSnapshot(input.run.runId, liveRun.threadId, startedAt);
+    }
+
+    const settled = await Promise.allSettled(
+      input.toolCalls.map((toolCall) =>
+        this.executeDynamicAgentDelegation({
+          run: input.run,
+          toolCall,
+          workspaceRoot: input.workspaceRoot,
+          signal: input.signal,
+        }),
+      ),
+    );
+    return input.toolCalls.map((toolCall, index) => {
+      const item = settled[index];
+      const resultText =
+        item?.status === 'fulfilled'
+          ? item.value
+          : JSON.stringify({ ok: false, error: 'agent_delegate: child run failed.' });
+      return { toolCall, resultText };
+    });
+  }
+
   private executeChatAgentTool(input: {
     run: DemoRunState;
     toolCall: import('@sync-think/adapters').ProviderToolCall;
@@ -26860,6 +28296,16 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       if (trimmed.startsWith('data:image/')) {
         if (trimmed.length > 200_000) {
           return { ok: false, error: 'avatar data URL is too large (max ~200KB)' };
+        }
+        return { ok: true, avatar: trimmed };
+      }
+      // Procedural avatar seed written by the desktop avatar picker, e.g.
+      // "gen:v1:blob:red". The picker owns the shape/color enums and degrades an
+      // unrecognised value to a derived face, so this only bounds the value's
+      // shape — compact, single-line, and never a remote URL.
+      if (trimmed.startsWith('gen:v1:')) {
+        if (!/^gen:v1:[a-z]+:[a-z]+$/.test(trimmed)) {
+          return { ok: false, error: 'avatar seed must look like gen:v1:<shape>:<color>' };
         }
         return { ok: true, avatar: trimmed };
       }
@@ -30076,6 +31522,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       networkEnabled?: boolean;
       /** Host platform tool schemas (ask_user_question / plan_submit / ...). */
       platformSchemas?: import('@sync-think/adapters').ProviderToolSchema[];
+      toolAllowlist?: readonly string[];
     },
   ): ContextSnapshot {
     const executionMode = normalizeChatExecutionMode(options.executionMode);
@@ -30102,22 +31549,37 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     })();
     (
       run as DemoRunState & {
-        mcpToolDispatch?: Map<string, { mcpServerId: string; toolName: string }>;
+        mcpToolDispatch?: Map<string, { mcpServerId: string; toolName: string; readOnly?: boolean }>;
       }
     ).mcpToolDispatch = mcpExtra.dispatch;
-    const agentToolsEnabled = Boolean(options.toolsEnabled && this.globalAgentStore);
-    const desktopToolsEnabled = Boolean(options.toolsEnabled && this.isComputerUsePluginEnabled());
-    const browserWorkflowToolsEnabled = Boolean(
-      options.toolsEnabled && this.browserWorkflowService,
+    const collaborationSettings = normalizeCollaborationSettings(
+      this.appSettingStore?.get(COLLABORATION_SETTINGS_KEY)?.value,
     );
-    const mcpCatalogToolsEnabled = Boolean(options.toolsEnabled && this.mcpStore);
-    const mcpRegistryToolsEnabled = Boolean(options.toolsEnabled && this.mcpStore);
+    const delegatedReadOnly = run.delegatedReadOnly === true;
+    const agentToolsEnabled = Boolean(
+      options.toolsEnabled && this.globalAgentStore && !delegatedReadOnly,
+    );
+    const dynamicAgentToolsEnabled = Boolean(
+      options.toolsEnabled &&
+        run.track === 'model' &&
+        collaborationSettings.dynamicSubagentsEnabled &&
+        !delegatedReadOnly,
+    );
+    const desktopToolsEnabled = Boolean(
+      options.toolsEnabled && !delegatedReadOnly && this.isComputerUsePluginEnabled(),
+    );
+    const browserWorkflowToolsEnabled = Boolean(
+      options.toolsEnabled && !delegatedReadOnly && this.browserWorkflowService,
+    );
+    const mcpCatalogToolsEnabled = Boolean(options.toolsEnabled && !delegatedReadOnly && this.mcpStore);
+    const mcpRegistryToolsEnabled = Boolean(options.toolsEnabled && !delegatedReadOnly && this.mcpStore);
     const platformToolCount = options.platformSchemas?.length ?? 0;
     const tools =
       options.toolsEnabled &&
       (hasProjectTools ||
         networkEnabled ||
         agentToolsEnabled ||
+        dynamicAgentToolsEnabled ||
         desktopToolsEnabled ||
         browserWorkflowToolsEnabled ||
         mcpCatalogToolsEnabled ||
@@ -30127,6 +31589,9 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         // goal_manage / platform_context / task_list / agent_list.
         platformToolCount > 0)
         ? toolsForExecutionMode(executionMode, {
+            conversationTrack: run.track,
+            allowAgentTaskDispatch: collaborationSettings.allowAgentTaskDispatch,
+            allowDynamicSubagents: dynamicAgentToolsEnabled,
             networkEnabled,
             includeWebSearchTools: webSearchMode === 'external',
             includeProjectTools: hasProjectTools,
@@ -30138,6 +31603,16 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
             extraTools: [...mcpExtra.tools, ...(options.platformSchemas ?? [])],
           })
         : undefined;
+    const filteredTools =
+      tools && options.toolAllowlist
+        ? tools.filter((tool) => {
+            if (options.toolAllowlist!.includes(tool.name)) return true;
+            const dispatch = (run as DemoRunState & {
+              mcpToolDispatch?: Map<string, { mcpServerId: string; toolName: string; readOnly?: boolean }>;
+            }).mcpToolDispatch?.get(tool.name);
+            return run.delegatedReadOnly === true && isDelegatedReadOnlyTool(tool.name, dispatch?.readOnly);
+          })
+        : tools;
     const searchRoutePrompt =
       webSearchMode === 'native'
         ? 'Keyword search is provided by the model host. Use its native web search for current facts.'
@@ -30208,6 +31683,14 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       '- This tool only updates the progress UI — it never touches files and needs no approval.',
       '- Do not call goal_manage for a checklist. goal_manage is Goal mode only.',
     ].join('\n');
+    const dynamicDelegationPrompt = dynamicAgentToolsEnabled
+      ? [
+          'Dynamic child Agent delegation is ENABLED for this model conversation.',
+          'Only call agent_delegate when the task benefits from an independent focused context; do not delegate trivial turns.',
+          'The runtime chooses a matching existing Agent by hard capabilities and soft persona relevance, or creates a temporary run-local profile when no candidate fits.',
+          'Agent and Team conversations do not receive this tool. Never describe an ordinary TaskCreate/TaskUpdate item as a child Agent.',
+        ].join('\n')
+      : 'Dynamic child Agent delegation is unavailable for this conversation track or is disabled in settings.';
     const browserWorkflowPrompt = browserWorkflowToolsEnabled
       ? [
           'Browser Automation Workflow tools are ENABLED (browser_workflow_list, browser_workflow_get, browser_workflow_create_draft):',
@@ -30221,21 +31704,26 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         ].join('\n')
       : 'Browser Automation Workflow tools are unavailable in this Runtime.';
     const imageToolGuidance = buildImageToolGuidance({
-      visionCapable: this.isRunModelVisionCapable(run),
+      visionState: this.resolveRunModelVisionState(run),
       visionFallbackEnabled: this.isVisionFallbackSettingEnabled(),
+      externalKernel: false,
+    });
+    const imageGenerationGuidance = buildImageGenerationGuidance({
+      enabled: this.isImageGenerationEnabled(),
       externalKernel: false,
     });
     const productBoundaryPrompt = [
       'Product capability boundaries (SYNC-THINK / this desktop shell):',
       CODEX_STYLE_COMMENTARY_PROMPT,
-      DESIGN_UI_OUTPUT_CONTRACT,
-      DESIGN_HTML_OUTPUT_CONTRACT,
+      HTML_PREVIEW_OUTPUT_CONTRACT,
       ...(isExplicitExcalidrawRequest(run.userText) ? [EXCALIDRAW_OUTPUT_CONTRACT] : []),
       INLINE_VISUALIZATION_OUTPUT_CONTRACT,
       agentCreationPrompt,
+      dynamicDelegationPrompt,
       planToolPrompt,
       browserWorkflowPrompt,
       ...imageToolGuidance,
+      ...imageGenerationGuidance,
       '- Prefer built-in tools list_files / search_files / read_file / git_status / git_diff. search_files finds file contents by regex — do not call rg/ripgrep/fd/ag — they are often missing on Windows and will fail with ENOENT.',
       '- If a tool fails as unavailable, do not retry the same command; change approach or answer with what you already know.',
       '- Avoid long pure-exploration loops. After a few targeted looks, give the user a useful answer.',
@@ -30273,7 +31761,9 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       if (source.disposition !== 'included') return source;
       if (
         source.section === 'tools' &&
-        (!tools || !source.toolName || !tools.some((tool) => tool.name === source.toolName))
+        (!filteredTools ||
+          !source.toolName ||
+          !filteredTools.some((tool) => tool.name === source.toolName))
       ) {
         return { ...source, disposition: 'audit-only' as const, tokens: 0 };
       }
@@ -30306,7 +31796,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       projectContext,
       compactSummary: run.compactSummary,
       messages: options.messages,
-      tools,
+      tools: filteredTools,
       sources: actualSources,
       compactedAt: run.compactedAt,
     });
@@ -30318,6 +31808,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       messages?: import('@sync-think/adapters').ProviderMessage[];
       toolsEnabled?: boolean;
       toolChoice?: import('@sync-think/adapters').ProviderCallRequest['toolChoice'];
+      maxOutputTokens?: number;
       workspaceRoot?: string;
       executionMode?: string;
       networkEnabled?: boolean;
@@ -30326,6 +31817,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       systemPromptOverride?: string;
       /** Native 内核的平台工具 schema（ask_user_question / task_schedule 等）。 */
       platformSchemas?: import('@sync-think/adapters').ProviderToolSchema[];
+      toolAllowlist?: readonly string[];
     } = {},
   ): Promise<AsyncIterable<import('@sync-think/adapters').AdapterEvent> | undefined> {
     const signal = options.signal ?? new AbortController().signal;
@@ -30359,27 +31851,45 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     // Stash dispatch on the run for the tool loop (in-memory only).
     (
       run as DemoRunState & {
-        mcpToolDispatch?: Map<string, { mcpServerId: string; toolName: string }>;
+        mcpToolDispatch?: Map<string, { mcpServerId: string; toolName: string; readOnly?: boolean }>;
       }
     ).mcpToolDispatch = mcpExtra.dispatch;
-    const agentToolsEnabled = Boolean(options.toolsEnabled && this.globalAgentStore);
-    const desktopToolsEnabled = Boolean(options.toolsEnabled && this.isComputerUsePluginEnabled());
-    const browserWorkflowToolsEnabled = Boolean(
-      options.toolsEnabled && this.browserWorkflowService,
+    const collaborationSettings = normalizeCollaborationSettings(
+      this.appSettingStore?.get(COLLABORATION_SETTINGS_KEY)?.value,
     );
-    const mcpCatalogToolsEnabled = Boolean(options.toolsEnabled && this.mcpStore);
-    const mcpRegistryToolsEnabled = Boolean(options.toolsEnabled && this.mcpStore);
+    const delegatedReadOnly = run.delegatedReadOnly === true;
+    const agentToolsEnabled = Boolean(
+      options.toolsEnabled && this.globalAgentStore && !delegatedReadOnly,
+    );
+    const dynamicAgentToolsEnabled = Boolean(
+      options.toolsEnabled &&
+        run.track === 'model' &&
+        collaborationSettings.dynamicSubagentsEnabled &&
+        !delegatedReadOnly,
+    );
+    const desktopToolsEnabled = Boolean(
+      options.toolsEnabled && !delegatedReadOnly && this.isComputerUsePluginEnabled(),
+    );
+    const browserWorkflowToolsEnabled = Boolean(
+      options.toolsEnabled && !delegatedReadOnly && this.browserWorkflowService,
+    );
+    const mcpCatalogToolsEnabled = Boolean(options.toolsEnabled && !delegatedReadOnly && this.mcpStore);
+    const mcpRegistryToolsEnabled = Boolean(options.toolsEnabled && !delegatedReadOnly && this.mcpStore);
     const tools =
       options.toolsEnabled &&
       (hasProjectTools ||
         networkEnabled ||
         agentToolsEnabled ||
+        dynamicAgentToolsEnabled ||
         desktopToolsEnabled ||
         browserWorkflowToolsEnabled ||
         mcpCatalogToolsEnabled ||
         mcpExtra.tools.length > 0)
         ? [
             ...toolsForExecutionMode(executionMode, {
+              conversationTrack: run.track,
+              allowAgentTaskDispatch: collaborationSettings.allowAgentTaskDispatch,
+              allowDynamicSubagents: dynamicAgentToolsEnabled,
               networkEnabled,
               includeWebSearchTools: webSearchMode === 'external',
               includeProjectTools: hasProjectTools,
@@ -30392,18 +31902,30 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
             }),
           ]
         : undefined;
+    const filteredTools =
+      tools && options.toolAllowlist
+        ? tools.filter((tool) => {
+            if (options.toolAllowlist!.includes(tool.name)) return true;
+            const dispatch = (run as DemoRunState & {
+              mcpToolDispatch?: Map<string, { mcpServerId: string; toolName: string; readOnly?: boolean }>;
+            }).mcpToolDispatch?.get(tool.name);
+            return delegatedReadOnly && isDelegatedReadOnlyTool(tool.name, dispatch?.readOnly);
+          })
+        : tools;
     let requestExtras: {
       messages?: import('@sync-think/adapters').ProviderMessage[];
       tools?: import('@sync-think/adapters').ProviderToolSchema[];
       hostedTools?: import('@sync-think/adapters').ProviderCallRequest['hostedTools'];
       toolChoice?: import('@sync-think/adapters').ProviderCallRequest['toolChoice'];
+      maxOutputTokens?: number;
       systemPrompt: string;
     };
     if (typeof options.systemPromptOverride === 'string' && options.systemPromptOverride.trim()) {
       requestExtras = {
         messages: options.messages,
-        tools,
+        tools: filteredTools,
         systemPrompt: options.systemPromptOverride.trim(),
+        ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}),
       };
     } else {
       this.hydrateRunSkillContext(run);
@@ -30414,6 +31936,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         executionMode,
         networkEnabled,
         platformSchemas: options.platformSchemas,
+        toolAllowlist: options.toolAllowlist,
       });
       run.contextSnapshot = snapshot;
       this.recordProviderContextCapabilityUsage(run, snapshot);
@@ -30426,6 +31949,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         networkEnabled,
       });
       requestExtras = snapshot.providerRequest;
+      if (options.maxOutputTokens) requestExtras.maxOutputTokens = options.maxOutputTokens;
     }
     if (options.toolChoice) requestExtras.toolChoice = options.toolChoice;
     if (options.toolsEnabled && webSearchMode === 'native' && run.protocol === 'openai-responses') {
@@ -30485,9 +32009,12 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     return records.map((model) => ({
       modelId: model.id,
       providerModelId: model.providerModelId,
+      providerId: model.providerId,
       protocol: model.protocol,
       capabilities: model.capabilities,
       capabilitiesConfirmed: model.capabilitiesConfirmed,
+      visionCapability: model.visionCapability,
+      probeReason: model.visionProbeReason,
       enabled: this.providerStore?.getProvider(model.providerId)?.enabled ?? false,
     }));
   }
@@ -30498,12 +32025,26 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     const setting = parseVisionFallbackSetting(raw);
     return Boolean(
       setting.enabled &&
-      resolveVisionDescribeModel(this.visionFallbackCatalog(), setting.modelId ?? undefined),
+      resolveVisionDescribeModel(
+        this.visionFallbackCatalog(),
+        setting.modelId ?? undefined,
+        setting.providerId ?? undefined,
+      ),
     );
   }
 
-  /** Whether the model bound to this run accepts image input (catalog tags first, name heuristic fallback). */
-  private isRunModelVisionCapable(run: DemoRunState): boolean {
+  /** True when Settings > 模型 > 图像生成 has an enabled OpenAI Images provider with a key and model. */
+  private isImageGenerationEnabled(): boolean {
+    return !('error' in pickImageGenerationTarget(this.collectImageGenerationCatalog()));
+  }
+
+  /**
+   * Three-state image-input answer for the model bound to this run.
+   *
+   * `unknown` is a first-class answer: it means nobody could reach a verdict
+   * (no tag, no known-table match) — not that the model is text-only.
+   */
+  private resolveRunModelVisionState(run: DemoRunState): VisionState {
     const catalog = this.providerStore?.listAllModels() ?? [];
     const entry =
       catalog.find((model) => model.id === run.modelId) ??
@@ -30512,21 +32053,30 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
           model.providerModelId === run.providerModelId &&
           (!run.providerId || model.providerId === run.providerId),
       );
-    if (!entry) return isModelVisionCapable(run.providerModelId);
-    return catalogEntryVisionCapable({
+    if (!entry) {
+      return resolveVisionState({
+        providerId: run.providerId,
+        providerModelId: run.providerModelId,
+      });
+    }
+    return catalogEntryVisionState({
       modelId: entry.id,
       providerModelId: entry.providerModelId,
+      providerId: entry.providerId,
       protocol: entry.protocol,
       capabilities: entry.capabilities,
       capabilitiesConfirmed: entry.capabilitiesConfirmed,
+      visionCapability: entry.visionCapability,
+      probeReason: entry.visionProbeReason,
     });
   }
 
   /**
    * Vision fallback: describe each attached image with the vision model the
    * user configured in Settings (vision-fallback → modelId). The configured
-   * model is authoritative — no automatic candidate switching. The attachment
-   * pipeline catches failures and continues with Windows OCR.
+   * model is tried first, followed by NewMax's bounded chain of at most two
+   * other verified candidates. The attachment pipeline reports preprocessing
+   * failure instead of silently converting the image to OCR text.
    */
   private async describeChatImages(
     images: DescribeImageInput[],
@@ -30542,11 +32092,26 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     }
     const records = this.providerStore?.listAllModels() ?? [];
     const catalog = this.visionFallbackCatalog();
-    const describeModel = resolveVisionDescribeModel(catalog, setting.modelId);
-    if (!describeModel) {
+    const describeModels = resolveVisionDescribeModels(
+      catalog,
+      setting.modelId,
+      3,
+      setting.providerId ?? undefined,
+    );
+    if (describeModels.length === 0) {
       throw new Error(`设置的视觉模型不存在、未启用或不支持图片输入: ${setting.modelId}`);
     }
-    return this.describeWithModel(images, describeModel, records, signal);
+    const failures: string[] = [];
+    for (const describeModel of describeModels) {
+      if (signal?.aborted) throw new Error('图片描述已取消');
+      try {
+        return await this.describeWithModel(images, describeModel, records, signal);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        failures.push(`${describeModel.providerModelId}: ${message}`);
+      }
+    }
+    throw new Error(`视觉模型候选均未返回有效描述：${failures.join('；')}`);
   }
 
   /** One image-description batch against a single candidate model. */
@@ -30554,6 +32119,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     images: DescribeImageInput[],
     describeModel: {
       modelId: string;
+      providerId?: string;
       providerModelId: string;
       protocol: string;
     },
@@ -30566,8 +32132,16 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     signal?: AbortSignal,
   ): Promise<Array<{ name: string; text: string }>> {
     const record =
-      records.find((model) => model.id === describeModel.modelId) ??
-      records.find((model) => model.providerModelId === describeModel.providerModelId);
+      records.find(
+        (model) =>
+          model.id === describeModel.modelId &&
+          (!describeModel.providerId || model.providerId === describeModel.providerId),
+      ) ??
+      records.find(
+        (model) =>
+          model.providerModelId === describeModel.providerModelId &&
+          (!describeModel.providerId || model.providerId === describeModel.providerId),
+      );
     const provider =
       record && this.providerStore ? this.providerStore.getProvider(record.providerId) : undefined;
     let credentialRefId = record?.credentialRefId;
@@ -30646,16 +32220,19 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
   }
 
   /**
-   * Deterministic attachment pipeline:
-   *   1) vision-capable model -> forward the original image;
-   *   2) text-only model + valid visual fallback -> inject its description;
-   *   3) no visual fallback or visual call failed -> inject Windows OCR text.
-   * Raw images are never forwarded to a model classified as text-only.
-   * Records `run.imagesMode` for the UI + appendMessage response.
+   * NewMax-style attachment routing:
+   *   1) supported/unknown primary -> forward the original image;
+   *   2) definite text-only primary + verified visual fallback -> inject its
+   *      description and send prose only;
+   *   3) no usable fallback or a fallback error -> keep the image out of the
+   *      text-only request and mark preprocessing failed.
+   * Windows OCR remains an explicit tool for extracting text from workspace
+   * images; it is not an automatic attachment fallback.
    */
   private async adaptRunImagesForModel(run: DemoRunState): Promise<void> {
     if (!run.images || run.images.length === 0 || run.imagesMode) return;
-    if (this.isRunModelVisionCapable(run)) {
+    const visionState = this.resolveRunModelVisionState(run);
+    if (visionState !== 'unsupported') {
       run.imagesMode = 'forwarded';
       return;
     }
@@ -30677,10 +32254,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       })
       .filter((image): image is DescribeImageInput & { stagingPath?: string } => Boolean(image));
     if (inputs.length !== run.images.length) {
-      run.userText += buildImageHandlingFailureSuffix();
-      run.images = undefined;
-      run.imagesMode = 'failed';
-      return;
+      throw new Error('图片转写失败：部分附件没有可读的图片数据，原图未发送。');
     }
 
     if (this.isVisionFallbackSettingEnabled()) {
@@ -30692,76 +32266,18 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         return;
       } catch (error) {
         console.warn(
-          '[runtime] vision description failed; falling back to Windows OCR:',
+          '[runtime] vision description failed; image will not be sent to text-only model:',
           error instanceof Error ? error.message : error,
+        );
+        throw new Error(
+          `${buildImageHandlingFailureSuffix().trim()} ${error instanceof Error ? error.message : String(error)}`,
         );
       }
     }
 
-    try {
-      const descriptions = await this.recognizeChatImagesWithWindowsOcr(inputs);
-      run.userText += buildWindowsOcrSuffix(descriptions);
-      run.images = undefined;
-      run.imagesMode = 'ocr';
-    } catch (error) {
-      console.warn(
-        '[runtime] Windows OCR attachment fallback failed:',
-        error instanceof Error ? error.message : error,
-      );
-      run.userText += buildImageHandlingFailureSuffix();
-      run.images = undefined;
-      run.imagesMode = 'failed';
-    }
-  }
-
-  private async recognizeChatImagesWithWindowsOcr(
-    inputs: Array<DescribeImageInput & { stagingPath?: string }>,
-    signal?: AbortSignal,
-  ): Promise<WindowsOcrDescription[]> {
-    const temporaryPaths: string[] = [];
-    const descriptions: WindowsOcrDescription[] = [];
-    try {
-      for (const image of inputs) {
-        const imagePath =
-          image.stagingPath ?? (await this.materializeTemporaryOcrImage(image, temporaryPaths));
-        const result = await this.windowsOcrRecognizer(imagePath, { signal });
-        descriptions.push({ name: image.name, text: result.text, language: result.language });
-      }
-      return descriptions;
-    } finally {
-      await Promise.all(
-        temporaryPaths.map((path) => rm(path, { force: true }).catch(() => undefined)),
-      );
-    }
-  }
-
-  private async materializeTemporaryOcrImage(
-    image: DescribeImageInput,
-    temporaryPaths: string[],
-  ): Promise<string> {
-    const match = /^data:(image\/(?:png|jpe?g|gif|webp));base64,([A-Za-z0-9+/=\r\n]+)$/i.exec(
-      image.dataUrl,
-    );
-    if (!match) throw new Error(`图片「${image.name}」不是可识别的图片数据`);
-    const bytes = Buffer.from(match[2]!, 'base64');
-    if (bytes.length === 0 || bytes.length > 12_000_000) {
-      throw new Error(`图片「${image.name}」大小超出 OCR 限制`);
-    }
-    const mimeType = match[1]!.toLowerCase();
-    const extension =
-      mimeType === 'image/png'
-        ? 'png'
-        : mimeType === 'image/gif'
-          ? 'gif'
-          : mimeType === 'image/webp'
-            ? 'webp'
-            : 'jpg';
-    const stagingRoot = resolveChatImageStagingDir();
-    await mkdir(stagingRoot, { recursive: true });
-    const imagePath = join(stagingRoot, `runtime-ocr-${ulid()}.${extension}`);
-    await writeFile(imagePath, bytes);
-    temporaryPaths.push(imagePath);
-    return imagePath;
+    // This is the same branch as NewMax's `shouldRun === false`: with no
+    // configured fallback the caller still receives the original attachment.
+    run.imagesMode = 'forwarded';
   }
 
   private persistDemoRunFailure(
@@ -30799,6 +32315,9 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       this.persistAssistantTerminalMessage(runId, run, 'failed', scrubbedMessage);
       this.demoRuns.delete(runId);
       this.publishEvent(event);
+      if (run.delegationParentRunId) {
+        this.publishDelegatedAgentProjection(event, run, run.delegationParentRunId);
+      }
       this.recordRunDiagnostic(runId, run, {
         failureClass,
         errorMessage: scrubbedMessage,
@@ -30945,6 +32464,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       hasToolRounds: boolean;
     },
   ): void {
+    if (run.delegationParentRunId) return;
     const occurredAt = new Date().toISOString();
     const terminalRun = closeAssistantTimeline(
       closeCommentaryTimelineSegment(run, occurredAt),
@@ -31017,6 +32537,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     errorMessage?: string,
     options?: { strict: boolean },
   ): void {
+    if (run.delegationParentRunId) return;
     const occurredAt = new Date().toISOString();
     const classifiedRun = run.legacyPendingText
       ? appendAssistantTextDelta(
@@ -31495,6 +33016,24 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     occurredAt: string;
   }): void {
     const run = this.demoRuns.get(input.runId);
+    if (run?.delegationParentRunId) {
+      this.publishDelegatedAgentProjection(
+        {
+          id: ulid() as Event['id'],
+          workspaceId: this.resolveEventWorkspaceId(run.threadId),
+          taskId: this.resolveEventTaskId(run.threadId),
+          runId: input.runId,
+          category: 'run',
+          type: input.kind === 'commentary' ? 'message.commentary_delta' : 'message.delta',
+          sequence: this.eventSequence,
+          occurredAt: input.occurredAt,
+          payload: { threadId: run.threadId },
+        },
+        run,
+        run.delegationParentRunId,
+      );
+      return;
+    }
     this.publishTransientFrame({
       threadId: input.threadId,
       runId: input.runId,
@@ -31505,6 +33044,90 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         ? { assistantTimeline: this.withKernelToolProgress(input.runId, run.assistantTimeline) }
         : {}),
       occurredAt: input.occurredAt,
+    });
+  }
+
+  /** Delegated card avatar: stored Agent avatar, else name initials, else temporary mark. */
+  private resolveDelegatedAgentAvatar(childRun: DemoRunState): string {
+    if (!childRun.globalAgentId) return '🧩';
+    const stored = this.globalAgentStore?.get(childRun.globalAgentId)?.avatar?.trim();
+    if (stored) return stored;
+    const name = childRun.globalAgentName?.trim();
+    return name ? name.slice(0, 2) : '🤖';
+  }
+
+  private publishDelegatedAgentProjection(
+    event: Event,
+    childRun: DemoRunState,
+    parentRunId: RunId,
+  ): void {
+    const terminalState: DelegatedAgentProjection['status'] | undefined =
+      event.type === 'run.completed'
+        ? 'completed'
+        : event.type === 'run.failed'
+          ? childRun.delegationTerminationReason === 'timed_out'
+            ? 'timed_out'
+            : 'failed'
+          : event.type === 'run.cancelled'
+            ? 'cancelled'
+            : undefined;
+    const status = terminalState ?? 'running';
+    const toolEvents = delegatedToolEventsFromTimeline(childRun.assistantTimeline);
+    const activeTool = [...toolEvents].reverse().find((tool) => tool.status === 'running')?.toolName;
+    const projection: DelegatedAgentProjection = {
+      childRunId: childRun.runId,
+      parentRunId,
+      ...(childRun.delegationParallelGroup
+        ? { parallelGroup: childRun.delegationParallelGroup }
+        : {}),
+      name: childRun.globalAgentName?.trim() || '临时任务 Agent',
+      avatar: this.resolveDelegatedAgentAvatar(childRun),
+      kind: childRun.globalAgentId ? 'existing' : 'temporary',
+      ...(childRun.globalAgentId ? { agentId: String(childRun.globalAgentId) } : {}),
+      status,
+      ...(activeTool ? { activeTool } : {}),
+      toolEvents,
+      ...(terminalState && childRun.assistantText.trim()
+        ? { result: childRun.assistantText.trim() }
+        : {}),
+    };
+    const parentKey = String(parentRunId);
+    const current = this.delegatedAgentTransientByParentRun.get(parentKey) ?? [];
+    const nextAgents = [
+      ...current.filter((item) => String(item.childRunId) !== String(childRun.runId)),
+      projection,
+    ];
+    this.delegatedAgentTransientByParentRun.set(parentKey, nextAgents);
+
+    const parentEvents = this.stateStore?.listEventsByRun
+      ? this.stateStore.listEventsByRun(parentRunId)
+      : this.events.filter((candidate) => String(candidate.runId) === String(parentRunId));
+    const frame = this.publishTransientFrame({
+      threadId: childRun.threadId as ThreadId,
+      runId: parentRunId,
+      kind: 'process',
+      process: projectRunProcess(parentRunId, parentEvents),
+      delegatedAgent: projection,
+      occurredAt: event.occurredAt,
+    });
+    const snapshot = this.transientSnapshotByThread.get(childRun.threadId);
+    const parentSnapshot = snapshot?.runId === parentRunId ? snapshot : undefined;
+    this.transientSnapshotByThread.set(childRun.threadId, {
+      threadId: childRun.threadId as ThreadId,
+      runId: parentRunId,
+      streamSequence: frame.streamSequence,
+      text: parentSnapshot?.text ?? '',
+      ...(parentSnapshot?.commentaryText ? { commentaryText: parentSnapshot.commentaryText } : {}),
+      ...(parentSnapshot?.commentarySegments ? { commentarySegments: parentSnapshot.commentarySegments } : {}),
+      ...(parentSnapshot?.reasoningText ? { reasoningText: parentSnapshot.reasoningText } : {}),
+      ...(parentSnapshot?.reasoningSegments ? { reasoningSegments: parentSnapshot.reasoningSegments } : {}),
+      ...(parentSnapshot?.assistantTimeline ? { assistantTimeline: parentSnapshot.assistantTimeline } : {}),
+      ...(parentSnapshot?.process ? { process: parentSnapshot.process } : {}),
+      delegatedAgents: nextAgents.map((item) => ({
+        ...item,
+        toolEvents: item.toolEvents.map((tool) => ({ ...tool })),
+      })),
+      updatedAt: event.occurredAt,
     });
   }
 
@@ -31520,6 +33143,9 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     assistantTimeline?: ConversationTransientSnapshot['assistantTimeline'];
     updatedAt: string;
   }): void {
+    const inputRun =
+      this.demoRuns.get(input.runId) ?? this.completedDelegatedRuns.get(String(input.runId));
+    if (inputRun?.delegationParentRunId) return;
     const current = this.transientSnapshotByThread.get(input.threadId);
     const assistantTimeline = input.assistantTimeline?.length
       ? projectTimelineContent(
@@ -31552,6 +33178,13 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     const threadId =
       typeof event.payload.threadId === 'string' ? (event.payload.threadId as ThreadId) : undefined;
     if (!threadId || !event.runId) return;
+
+    const eventRun =
+      this.demoRuns.get(event.runId) ?? this.completedDelegatedRuns.get(String(event.runId));
+    if (eventRun?.delegationParentRunId) {
+      this.publishDelegatedAgentProjection(event, eventRun, eventRun.delegationParentRunId);
+      return;
+    }
 
     let projection:
       | Pick<
@@ -31655,6 +33288,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     });
     if (projection.kind === 'terminal') {
       this.transientSnapshotByThread.delete(threadId);
+      this.delegatedAgentTransientByParentRun.delete(String(event.runId));
     } else if (projection.process) {
       const current = this.transientSnapshotByThread.get(threadId);
       this.transientSnapshotByThread.set(threadId, {
@@ -31688,6 +33322,14 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
             ? { assistantTimeline: current.assistantTimeline.map((segment) => ({ ...segment })) }
             : {}),
         process: projection.process,
+        ...(current?.runId === event.runId && current.delegatedAgents
+          ? {
+              delegatedAgents: current.delegatedAgents.map((item) => ({
+                ...item,
+                toolEvents: item.toolEvents.map((tool) => ({ ...tool })),
+              })),
+            }
+          : {}),
         updatedAt: event.occurredAt,
       });
     }
@@ -31911,6 +33553,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     // turn queue and the bounded host lease.
     for (const controller of this.demoRunAborts.values()) controller.abort();
     for (const controller of this.promptEnhancementAborts.values()) controller.abort();
+    await this.commandSessions.stopAll();
     await this.codexSessionHost.stopAll();
     await Promise.allSettled([...this.activeKernelRuns]);
     if (this.externalKernelSessionTails.size > 0) {

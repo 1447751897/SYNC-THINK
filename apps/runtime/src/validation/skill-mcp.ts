@@ -263,9 +263,11 @@ export function parseRegisterMcpServerPayload(
       ) {
         return undefined;
       }
+      if (t.readOnly !== undefined && typeof t.readOnly !== 'boolean') return undefined;
       cleaned.push({
         name: t.name.trim(),
         description: typeof t.description === 'string' ? t.description : '',
+        ...(t.readOnly === true ? { readOnly: true } : {}),
         inputSchemaJson: typeof t.inputSchemaJson === 'string' ? t.inputSchemaJson : undefined,
       });
     }
@@ -357,10 +359,12 @@ export function parseRegisterRemoteMcpPayload(
       if (raw.description !== undefined &&
           (typeof raw.description !== 'string' || raw.description.length > 1000)) return undefined;
       if (raw.inputSchemaJson !== undefined &&
-          (typeof raw.inputSchemaJson !== 'string' || raw.inputSchemaJson.length > 16_000)) return undefined;
+        (typeof raw.inputSchemaJson !== 'string' || raw.inputSchemaJson.length > 16_000)) return undefined;
+      if (raw.readOnly !== undefined && typeof raw.readOnly !== 'boolean') return undefined;
       tools.push({
         name: raw.name.trim(),
         description: typeof raw.description === 'string' ? raw.description : '',
+        ...(raw.readOnly === true ? { readOnly: true } : {}),
         inputSchemaJson: typeof raw.inputSchemaJson === 'string' ? raw.inputSchemaJson : undefined,
       });
     }

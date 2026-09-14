@@ -54,6 +54,66 @@ export function resolveBottomPinState(input: {
   return input.userIntent === 'toward-bottom' && input.distanceFromBottom < threshold;
 }
 
+/** Matches NewMax `STICK_TO_BOTTOM_THRESHOLD_PX`. */
+export const CONVERSATION_STICK_THRESHOLD_PX = 100;
+/** Matches NewMax `SCROLL_UP_JITTER_PX`. */
+export const CONVERSATION_SCROLL_UP_JITTER_PX = 1;
+
+export function isConversationNearBottom(
+  metrics: { scrollTop: number; scrollHeight: number; clientHeight: number },
+  threshold = CONVERSATION_STICK_THRESHOLD_PX,
+): boolean {
+  return metrics.scrollHeight - metrics.scrollTop - metrics.clientHeight < threshold;
+}
+
+/**
+ * NewMax only treats an upward wheel as "user left the tail" after the viewport
+ * is already away from the bottom. A tick while still glued to the tail must
+ * not unpin — html/mermaid layout and nested webview wheels also emit deltaY<0.
+ */
+export function shouldReleaseStickOnWheel(input: {
+  deltaY: number;
+  nearBottom: boolean;
+}): boolean {
+  return input.deltaY < 0 && !input.nearBottom;
+}
+
+/**
+ * NewMax `StickToBottomTracker.onScrollEvent`:
+ * - still at the tail → stick
+ * - our own pin/programmatic write → keep current stick
+ * - scrollTop dropped while reading history → unstick
+ *
+ * html/mermaid/content-visibility often clamp scrollTop downward while the
+ * reader is still at the tail. That must not be treated as a scrollbar drag.
+ */
+export function applyConversationStickOnScroll(input: {
+  sticky: boolean;
+  programmaticPending: boolean;
+  previousScrollTop: number | null;
+  scrollTop: number;
+  scrollHeight: number;
+  clientHeight: number;
+  threshold?: number;
+  jitter?: number;
+}): { sticky: boolean; programmaticPending: boolean } {
+  const threshold = input.threshold ?? CONVERSATION_STICK_THRESHOLD_PX;
+  const jitter = input.jitter ?? CONVERSATION_SCROLL_UP_JITTER_PX;
+  if (isConversationNearBottom(input, threshold)) {
+    return { sticky: true, programmaticPending: false };
+  }
+  if (input.programmaticPending) {
+    return { sticky: input.sticky, programmaticPending: false };
+  }
+  if (
+    input.previousScrollTop !== null &&
+    input.scrollTop < input.previousScrollTop - jitter
+  ) {
+    return { sticky: false, programmaticPending: false };
+  }
+  return { sticky: input.sticky, programmaticPending: false };
+}
+
 export function preservePrependScrollTop(input: {
   previousScrollTop: number;
   previousScrollHeight: number;

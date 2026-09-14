@@ -22,6 +22,9 @@ import {
   ChevronRight,
   ExternalLink,
   FileDiff,
+  FileMinus,
+  FilePen,
+  FilePlus,
   Folder,
   FolderOpen,
   GitBranch,
@@ -33,7 +36,6 @@ import {
   X,
 } from 'lucide-react';
 import clsx from 'clsx';
-import { SlidingTabs } from './SlidingTabs.js';
 import type { RunProcessView } from '@sync-think/protocol';
 import type {
   ProjectContentMatch,
@@ -110,6 +112,9 @@ export function WorkspaceFilesPanel(props: {
     ? (directory.page?.items ?? [])
     : (sourceReview?.fileChanges ?? []);
   const conversationCount = conversationReview ? directory.page?.total : conversationChanges.length;
+  const changesLabel = conversationReview ? '对话文件' : '变动文件';
+  const changesCount =
+    typeof conversationCount === 'number' && conversationCount > 0 ? conversationCount : 0;
 
   return (
     <div
@@ -118,23 +123,23 @@ export function WorkspaceFilesPanel(props: {
       data-workspace-compact-file-browser="true"
     >
       <div className="shell-workspace-files-switcher shrink-0">
-        <SlidingTabs className="shell-workspace-files-switcher__views" aria-label="工作区文件视图">
+        <div
+          className="shell-workspace-files-switcher__views"
+          data-workspace-file-view-tabs="true"
+        >
           <button
             type="button"
-            role="tab"
-            aria-selected={section === 'changes'}
             className={clsx(
               'shell-workspace-files-switcher__tab',
               section === 'changes' && 'is-active',
             )}
             onClick={() => setSection('changes')}
           >
-            对话文件 <span>{conversationCount ?? '…'}</span>
+            {changesLabel}
+            {changesCount > 0 ? ` ${changesCount}` : ''}
           </button>
           <button
             type="button"
-            role="tab"
-            aria-selected={section === 'all'}
             className={clsx(
               'shell-workspace-files-switcher__tab',
               section === 'all' && 'is-active',
@@ -143,7 +148,7 @@ export function WorkspaceFilesPanel(props: {
           >
             所有文件
           </button>
-        </SlidingTabs>
+        </div>
         <div className="shell-workspace-files-switcher__actions">
           <button
             type="button"
@@ -176,15 +181,6 @@ export function WorkspaceFilesPanel(props: {
           )}
         >
           {directory.controls}
-          {conversationReview && props.onOpenReview ? (
-            <button
-              type="button"
-              className="shell-conversation-files-review"
-              onClick={() => props.onOpenReview?.(props.reviewView!)}
-            >
-              审阅会话文件
-            </button>
-          ) : null}
           <ConversationFilesPanel
             changes={conversationChanges}
             projectFolder={props.projectFolder}
@@ -247,11 +243,12 @@ function ConversationFilesPanel({
 
   if (tree.length === 0) {
     return (
-      <DockEmpty
-        icon={<Folder size={22} />}
-        title="当前对话暂无文件变动"
-        subtitle="智能体写入或改过的文件会显示在这里"
-      />
+      <div className="shell-workspace-files-empty" data-empty="conversation-changes">
+        <div className="shell-workspace-files-empty__icon">
+          <FilePen size={28} />
+        </div>
+        <p className="shell-workspace-files-empty__title">当前对话暂无文件变动</p>
+      </div>
     );
   }
 
@@ -394,11 +391,6 @@ function ConversationFileTreeLevel({
 
 // ─── Review 面板（本轮文件变更 + 行级 diff） ──────────────────────────────────
 
-function reviewDirectory(path: string): string {
-  const parts = path.split(/[\\/]/);
-  return parts.length > 1 ? parts.slice(0, -1).join('/') : '项目根目录';
-}
-
 function reviewFileName(path: string): string {
   return path.split(/[\\/]/).at(-1) || path;
 }
@@ -470,6 +462,8 @@ export function ReviewPanel({
   const [reviewOptionsOpen, setReviewOptionsOpen] = useState(false);
   const [wrapLines, setWrapLines] = useState(true);
   const [showWhitespace, setShowWhitespace] = useState(false);
+  const [wordLevel, setWordLevel] = useState(false);
+  const [showLineNumbers, setShowLineNumbers] = useState(true);
   const [reviewListWidth, setReviewListWidth] = useState(DEFAULT_REVIEW_LIST_WIDTH);
   const [resizeBounds, setResizeBounds] = useState({
     min: MIN_REVIEW_LIST_WIDTH,
@@ -488,16 +482,6 @@ export function ReviewPanel({
     ? (directory.page?.total ?? 0)
     : (view?.pages?.fileChanges.total ?? changes.length);
   const selected = changes.find((item) => item.path === selectedPath) ?? changes[0];
-  const groupedChanges = useMemo(() => {
-    const groups = new Map<string, typeof changes>();
-    for (const item of changes) {
-      const directory = reviewDirectory(item.path);
-      const entries = groups.get(directory);
-      if (entries) entries.push(item);
-      else groups.set(directory, [item]);
-    }
-    return [...groups.entries()];
-  }, [changes]);
   const changeStats = useMemo(() => {
     const stats = new Map<string, { added: number; removed: number }>();
     for (const change of changes) {
@@ -666,48 +650,48 @@ export function ReviewPanel({
           <span>{totalFiles}</span>
         </div>
         {controls}
-        {groupedChanges.map(([directory, items]) => (
-          <div className="shell-review-list__group" key={directory}>
-            <div className="shell-review-list__directory" title={directory}>
-              <ChevronDown size={12} aria-hidden="true" />
-              <FolderOpen size={13} aria-hidden="true" />
-              <span>{directory}</span>
-              <small>{items.length}</small>
-            </div>
-            {items.map((item) => {
-              const stats = changeStats.get(item.path);
-              return (
-                <button
-                  key={item.path}
-                  type="button"
-                  role="listitem"
-                  className={clsx(
-                    'shell-review-list__item',
-                    selected?.path === item.path && 'is-active',
-                  )}
-                  onClick={() => setSelectedPath(item.path)}
-                  title={reviewAbsolutePath(projectFolder, item.path)}
-                >
-                  <FileTypeIcon path={item.path} size={13} className="shrink-0" />
-                  <span className="shell-review-list__path">{reviewFileName(item.path)}</span>
-                  {stats ? (
-                    <span className="shell-review-list__stats">
-                      <span>+{stats.added}</span>
-                      <span>-{stats.removed}</span>
-                    </span>
-                  ) : (
-                    <span
-                      className={`shell-changes-card__badge is-${item.action}`}
-                      data-action={item.action}
-                    >
-                      {item.action === 'created' ? 'A' : item.action === 'deleted' ? 'D' : 'M'}
-                    </span>
-                  )}
-                </button>
-              );
-            })}
-          </div>
-        ))}
+        {/* NewMax keeps this list flat: file name + status icon, no directory groups. */}
+        {changes.map((item) => {
+          const stats = changeStats.get(item.path);
+          const statusLabel =
+            item.action === 'created' ? '新增' : item.action === 'deleted' ? '删除' : '修改';
+          return (
+            <button
+              key={item.path}
+              type="button"
+              role="listitem"
+              className={clsx(
+                'shell-review-list__item',
+                selected?.path === item.path && 'is-active',
+              )}
+              onClick={() => setSelectedPath(item.path)}
+              title={reviewAbsolutePath(projectFolder, item.path)}
+            >
+              <FileTypeIcon path={item.path} size={13} className="shrink-0" />
+              <span className="shell-review-list__path">{reviewFileName(item.path)}</span>
+              {stats ? (
+                <span className="shell-review-list__stats">
+                  <span>+{stats.added}</span>
+                  <span>-{stats.removed}</span>
+                </span>
+              ) : null}
+              <span
+                className={`shell-review-list__status is-${item.action}`}
+                data-action={item.action}
+                aria-label={statusLabel}
+                title={statusLabel}
+              >
+                {item.action === 'created' ? (
+                  <FilePlus size={13} aria-hidden="true" />
+                ) : item.action === 'deleted' ? (
+                  <FileMinus size={13} aria-hidden="true" />
+                ) : (
+                  <FilePen size={13} aria-hidden="true" />
+                )}
+              </span>
+            </button>
+          );
+        })}
       </div>
       {standalone ? (
         <div
@@ -774,11 +758,29 @@ export function ReviewPanel({
                     <button
                       type="button"
                       role="menuitemcheckbox"
+                      aria-checked={wordLevel}
+                      onClick={() => setWordLevel((value) => !value)}
+                    >
+                      <span>单词级差异</span>
+                      {wordLevel ? <Check size={13} /> : null}
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitemcheckbox"
                       aria-checked={showWhitespace}
                       onClick={() => setShowWhitespace((value) => !value)}
                     >
                       <span>显示空白字符</span>
                       {showWhitespace ? <Check size={13} /> : null}
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitemcheckbox"
+                      aria-checked={showLineNumbers}
+                      onClick={() => setShowLineNumbers((value) => !value)}
+                    >
+                      <span>显示行号</span>
+                      {showLineNumbers ? <Check size={13} /> : null}
                     </button>
                   </div>
                 ) : null}
@@ -819,6 +821,8 @@ export function ReviewPanel({
                   conversationId={sourceView?.conversationId}
                   wrapLines={wrapLines}
                   showWhitespace={showWhitespace}
+                  wordLevel={wordLevel}
+                  showLineNumbers={showLineNumbers}
                 />
               ) : (
                 <LineDiffView
@@ -830,6 +834,8 @@ export function ReviewPanel({
                   onWrapLinesChange={setWrapLines}
                   showToolbar={false}
                   showWhitespace={showWhitespace}
+                  wordLevel={wordLevel}
+                  showLineNumbers={showLineNumbers}
                 />
               )}
             </div>
@@ -2061,13 +2067,13 @@ function DockEmpty({
 }: {
   icon: React.ReactNode;
   title: string;
-  subtitle: string;
+  subtitle?: string;
 }) {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-2 py-12 text-center">
       <span className="text-text-faint opacity-40">{icon}</span>
       <p className="text-[12px] text-text-faint">{title}</p>
-      <p className="px-4 text-[11px] text-text-faint opacity-70">{subtitle}</p>
+      {subtitle ? <p className="px-4 text-[11px] text-text-faint opacity-70">{subtitle}</p> : null}
     </div>
   );
 }

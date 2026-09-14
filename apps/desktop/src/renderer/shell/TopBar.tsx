@@ -150,7 +150,7 @@ function workspaceTabCurves(width: number, baseline: number): string {
   ].join(' ');
 }
 
-function WorkspaceTabShape({ width }: { width: number }) {
+export function WorkspaceTabShape({ width }: { width: number }) {
   const id = useId().replace(/:/g, '');
   const boundaryStart = -WORKSPACE_TAB_SHOULDER - WORKSPACE_TAB_EDGE_OVERLAP;
   const boundaryEnd = width + WORKSPACE_TAB_SHOULDER + WORKSPACE_TAB_EDGE_OVERLAP;
@@ -293,7 +293,8 @@ function ContextStageIcon({ stage }: { stage: NonNullable<TopBarProps['contextSt
             : stage === 'teams'
               ? Users
               : Wrench;
-  return <Icon size={14} aria-hidden="true" />;
+  // NewMax `TabLeadingVisual` renders workspace/context tab leading icons at 16px.
+  return <Icon size={16} aria-hidden="true" />;
 }
 
 export function TopBar(props: TopBarProps) {
@@ -758,12 +759,8 @@ export function TopBar(props: TopBarProps) {
         <button
           type="button"
           data-testid="topbar-open-terminal"
-          disabled={props.canOpenTerminal === false}
-          className={clsx(
-            'st-icon-motion flex h-7 w-7 shrink-0 items-center justify-center rounded-[10px] text-text-secondary hover:bg-hover hover:text-text',
-            props.canOpenTerminal === false && 'cursor-not-allowed opacity-35',
-          )}
-          title={props.canOpenTerminal === false ? '先绑定项目文件夹' : '在当前窗格打开终端'}
+          className="st-icon-motion flex h-7 w-7 shrink-0 items-center justify-center rounded-[10px] text-text-secondary hover:bg-hover hover:text-text"
+          title="在当前窗格打开终端"
           aria-label="在当前窗格打开终端"
           onClick={props.onOpenTerminal}
         >

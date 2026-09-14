@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   DesktopUpdateRollbackCoordinator,
+  buildAuthenticodeProbeArguments,
   recoveryInstallerPath,
   type DesktopUpdateInstallerVerification,
 } from './desktop-update-rollback-coordinator.js';
@@ -64,6 +65,27 @@ async function fixture(version = '0.0.1') {
     coordinator,
   };
 }
+
+describe('buildAuthenticodeProbeArguments', () => {
+  it('embeds the installer path in the command instead of passing a positional argument', () => {
+    const path = 'C:\\sync-think-updater\\recovery\\installers\\0.1.0-rc.5\\installer.exe';
+    const args = buildAuthenticodeProbeArguments(path);
+
+    expect(args.slice(0, 4)).toEqual(['-NoLogo', '-NoProfile', '-NonInteractive', '-Command']);
+    // `-Command` folds every trailing argument into the command text, so an
+    // extra positional path never reaches `$args` and the probe dies with
+    // ParameterBindingException. Exactly one value may follow `-Command`.
+    expect(args).toHaveLength(5);
+    expect(args[4]).toContain(`-LiteralPath '${path}'`);
+    expect(args[4]).not.toContain('$args');
+  });
+
+  it('escapes embedded single quotes so a crafted path cannot break out of the literal', () => {
+    const args = buildAuthenticodeProbeArguments("C:\\up'date\\installer.exe");
+
+    expect(args[4]).toContain("-LiteralPath 'C:\\up''date\\installer.exe'");
+  });
+});
 
 describe('DesktopUpdateRollbackCoordinator', () => {
   it('registers the archived installer only after bytes/hash/signature verification', async () => {

@@ -367,7 +367,7 @@ export async function* streamOpenAIChatCompletions(
   //   non-default temperature.
   const modelTail = (request.modelId.split('/').pop() ?? request.modelId).toLowerCase();
   const isOpenAiReasoningFamily =
-    /^o[1-9](\b|[-.])/.test(modelTail) || modelTail.startsWith('gpt-5');
+    /^o[1-9](\b|[-.])/.test(modelTail) || /^gpt-[5-9](?:$|[-_.])/.test(modelTail);
   const wantsEnableThinking = /qwen|glm|doubao|hunyuan/.test(modelTail);
   const effortLevel = normalizeReasoningEffort(request.reasoningEffort);
   const sendEffort = Boolean(effortLevel) && !shouldOmitReasoningEffort(effortLevel);

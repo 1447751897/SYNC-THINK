@@ -21,6 +21,7 @@ import {
   type PersonalizationSetting,
 } from '@sync-think/protocol/preferences';
 import { writeUserName } from '../ui-preferences.js';
+import { analyzeImageThemePixels } from './theme/newmax-theme-engine.js';
 import { SlidingTabs } from './SlidingTabs.js';
 import {
   COLOR_THEME_OPTIONS,
@@ -134,6 +135,7 @@ function ThemePreferences() {
         colorTheme: 'random',
         randomBackground: generated.background,
         randomAccent: generated.accent,
+        randomMood: generated.mood,
       });
       return;
     }
@@ -807,35 +809,8 @@ function extractImagePalette(
   const sample = canvas.getContext('2d', { willReadFrequently: true });
   if (!sample) return { background: '#ffffff', accent: '#000000' };
   sample.drawImage(context.canvas, 0, 0, sampleWidth, sampleHeight);
-  const pixels = sample.getImageData(0, 0, sampleWidth, sampleHeight).data;
-  let red = 0;
-  let green = 0;
-  let blue = 0;
-  let count = 0;
-  let accent: [number, number, number] = [0, 0, 0];
-  let accentScore = -1;
-  for (let index = 0; index < pixels.length; index += 4) {
-    if (pixels[index + 3]! < 128) continue;
-    const r = pixels[index]!;
-    const g = pixels[index + 1]!;
-    const b = pixels[index + 2]!;
-    red += r;
-    green += g;
-    blue += b;
-    count += 1;
-    const max = Math.max(r, g, b);
-    const min = Math.min(r, g, b);
-    const luminance = (r + g + b) / 3;
-    const score = (max - min) * (1 - Math.abs(luminance - 128) / 160);
-    if (score > accentScore) {
-      accentScore = score;
-      accent = [r, g, b];
-    }
-  }
-  const toHex = (channels: readonly number[]) =>
-    `#${channels.map((channel) => Math.round(channel).toString(16).padStart(2, '0')).join('')}`;
-  const background = count > 0 ? toHex([red / count, green / count, blue / count]) : '#ffffff';
-  return { background, accent: toHex(accent) };
+  const palette = analyzeImageThemePixels(sample.getImageData(0, 0, sampleWidth, sampleHeight).data);
+  return { background: palette.background, accent: palette.accent };
 }
 
 interface ShortcutDefinition {

@@ -25,6 +25,9 @@ export function managedKernelRoot(environment: NodeJS.ProcessEnv = process.env):
   if (environment.LOCALAPPDATA) {
     return join(environment.LOCALAPPDATA, 'SYNC-THINK', 'kernels');
   }
+  if (process.platform === 'darwin') {
+    return join(environment.HOME ?? process.env.HOME ?? process.cwd(), 'Library', 'Application Support', 'SYNC-THINK', 'kernels');
+  }
   return resolve(process.cwd(), '.data', 'SYNC-THINK', 'kernels');
 }
 

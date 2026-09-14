@@ -20,7 +20,6 @@ import {
   FolderOpen,
   Info,
   Keyboard,
-  Link2,
   LoaderCircle,
   MessageCircle,
   Mic2,
@@ -50,11 +49,19 @@ import type {
   WorkspaceSummary,
 } from '@sync-think/protocol';
 import {
+  COLLABORATION_SETTINGS_KEY,
+  DEFAULT_COLLABORATION_SETTINGS,
+  normalizeCollaborationSettings,
+  type CollaborationSettings,
+} from '@sync-think/protocol/collaboration';
+import {
   SYNC_THINK_CONNECTOR_CATALOG,
   type ManagedConnectorCatalogItem,
 } from './connector-catalog.js';
 import telegramIcon from './assets/connectors/telegram.png';
+import { McpIdentityMark } from './abilities/McpIdentityMark.js';
 import { BotConversationPane } from './BotConversationPane.js';
+import { DsTabBar } from './DsTabBar.js';
 import { WebSearchSettings } from './WebSearchSettings.js';
 import {
   COMPUTER_USE_PLUGIN_SETTING_KEY,
@@ -85,6 +92,7 @@ import {
 } from './ModelSettings.js';
 import { DesktopUpdatePanel } from './DesktopUpdatePanel.js';
 import { KernelUpdatePanel } from './KernelUpdatePanel.js';
+import { KeepAliveLayer } from './KeepAliveLayer.js';
 import { SlidingTabs } from './SlidingTabs.js';
 import { PreferencesSettings } from './PreferencesSettings.js';
 import { BrandLogoMark } from './BrandLogoMark.js';
@@ -309,9 +317,13 @@ export function SettingsPage({
           <h1>{current.label}</h1>
         </div>
         <div className="settings-content__viewport">
-          {section === 'general' && <GeneralSection />}
-          {section === 'theme' && <PreferencesSettings />}
-          {section === 'models' && (
+          <KeepAliveLayer active={section === 'general'} className="settings-section-layer">
+            <GeneralSection />
+          </KeepAliveLayer>
+          <KeepAliveLayer active={section === 'theme'} className="settings-section-layer">
+            <PreferencesSettings />
+          </KeepAliveLayer>
+          <KeepAliveLayer active={section === 'models'} className="settings-section-layer">
             <ModelSettings
               ref={modelSettingsRef}
               initialDetailView={initialModelDetail}
@@ -319,15 +331,35 @@ export function SettingsPage({
               onCatalogChanged={onCatalogChanged}
               onDirtyChange={reportDirty}
             />
-          )}
-          {(section === 'plugins' || section === 'computer-use') && <ComputerUsePluginSection />}
-          {section === 'connection' && (
+          </KeepAliveLayer>
+          <KeepAliveLayer
+            active={section === 'plugins' || section === 'computer-use'}
+            className="settings-section-layer"
+          >
+            <ComputerUsePluginSection />
+          </KeepAliveLayer>
+          <KeepAliveLayer active={section === 'connection'} className="settings-section-layer">
             <ConnectionSection initialTab={initialConnectionTab} navigationKey={navigationKey} />
-          )}
-          {section === 'data' && <DataDiagnosticsSection />}
-          {section === 'about' && <AboutSection />}
+          </KeepAliveLayer>
+          <KeepAliveLayer active={section === 'data'} className="settings-section-layer">
+            <DataDiagnosticsSection />
+          </KeepAliveLayer>
+          <KeepAliveLayer active={section === 'about'} className="settings-section-layer">
+            <AboutSection />
+          </KeepAliveLayer>
         </div>
         <footer className="settings-footer">
+          {section === 'models' ? (
+            <button
+              type="button"
+              className="settings-continue"
+              disabled={completing}
+              onClick={() => modelSettingsRef.current?.startCreate()}
+            >
+              <Plus size={14} aria-hidden="true" />
+              继续添加供应商
+            </button>
+          ) : null}
           <button
             type="button"
             className="settings-done"
@@ -339,6 +371,145 @@ export function SettingsPage({
         </footer>
       </section>
     </div>
+  );
+}
+
+function CollaborationSettingsPanel() {
+  const [settings, setSettings] = useState<CollaborationSettings>(() => ({
+    ...DEFAULT_COLLABORATION_SETTINGS,
+  }));
+
+  useEffect(() => {
+    let disposed = false;
+    const api = window.syncThink?.runtime;
+    if (!api) return () => {
+      disposed = true;
+    };
+    void api.getSettings({ keys: [COLLABORATION_SETTINGS_KEY] }).then((result) => {
+      if (!disposed) {
+        setSettings(normalizeCollaborationSettings(result.settings?.[COLLABORATION_SETTINGS_KEY]));
+      }
+    }).catch(() => undefined);
+    return () => {
+      disposed = true;
+    };
+  }, []);
+
+  const update = useCallback((patch: Partial<CollaborationSettings>) => {
+    const next = normalizeCollaborationSettings({ ...settings, ...patch });
+    setSettings(next);
+    void window.syncThink?.runtime?.setSetting({
+      key: COLLABORATION_SETTINGS_KEY,
+      value: next,
+    });
+  }, [settings]);
+
+  return (
+    <section className="settings-general-block" aria-labelledby="settings-collaboration-title">
+      <div className="settings-general-heading">
+        <h2 id="settings-collaboration-title">智能体协作</h2>
+        <p>只有模型对话可以创建动态子 Agent；Agent 对话使用普通任务，Team 对话使用冻结成员。</p>
+      </div>
+      <div className="settings-rows">
+        <SettingRow
+          title="允许模型对话创建子 Agent"
+          description="关闭后模型对话仍可正常回答，但不会出现动态委派入口。"
+          control={
+            <Toggle
+              checked={settings.dynamicSubagentsEnabled}
+              label="允许模型对话创建子 Agent"
+              onChange={(value) => update({ dynamicSubagentsEnabled: value })}
+            />
+          }
+        />
+        <SettingRow
+          title="Agent 对话允许派发普通任务"
+          description="任务进入持久化任务清单，不会创建子 Run 或嵌套 Agent。"
+          control={
+            <Toggle
+              checked={settings.allowAgentTaskDispatch}
+              label="Agent 对话允许派发普通任务"
+              onChange={(value) => update({ allowAgentTaskDispatch: value })}
+            />
+          }
+        />
+        <SettingRow
+          title="允许 Agent 之间直接对话"
+          description="默认关闭；开启后 Agent 之间只能通过显式消息协议对话，不创建子 Run，也不会嵌套派发。Team 对话始终只使用冻结的成员名单。"
+          control={
+            <Toggle
+              checked={settings.allowAgentPeerMessaging}
+              label="允许 Agent 之间直接对话"
+              onChange={(value) => update({ allowAgentPeerMessaging: value })}
+            />
+          }
+        />
+        <SettingRow
+          title="最大嵌套深度"
+          description="根模型对话为第 0 层，默认最多继续两层。"
+          control={
+            <input
+              className="settings-number-input"
+              aria-label="最大嵌套深度"
+              type="number"
+              min={0}
+              max={8}
+              value={settings.maxNestingDepth}
+              onChange={(event) => update({ maxNestingDepth: Number(event.target.value) })}
+            />
+          }
+        />
+        <SettingRow
+          title="单个父 Agent 最大子 Agent 数"
+          description="限制一个父 Run 直接创建的子 Agent 数量。"
+          control={
+            <input
+              className="settings-number-input"
+              aria-label="单个父 Agent 最大子 Agent 数"
+              type="number"
+              min={0}
+              max={32}
+              value={settings.maxChildrenPerParent}
+              onChange={(event) => update({ maxChildrenPerParent: Number(event.target.value) })}
+            />
+          }
+        />
+        <SettingRow
+          title="单轮最大自动委派数"
+          description="防止一次用户请求连续产生大量自动子任务。"
+          control={
+            <input
+              className="settings-number-input"
+              aria-label="单轮最大自动委派数"
+              type="number"
+              min={0}
+              max={32}
+              value={settings.maxAutoDelegationsPerTurn}
+              onChange={(event) => update({ maxAutoDelegationsPerTurn: Number(event.target.value) })}
+            />
+          }
+        />
+        <SettingRow
+          title="每个任务 Token 预算"
+          description="默认无限制；填入数值后，子任务达到预算会先返回摘要。"
+          control={
+            <input
+              className="settings-number-input settings-number-input--wide"
+              aria-label="每个任务 Token 预算"
+              type="number"
+              min={0}
+              placeholder="无限制"
+              value={settings.taskTokenBudget ?? ''}
+              onChange={(event) =>
+                update({
+                  taskTokenBudget: event.target.value === '' ? null : Number(event.target.value),
+                })
+              }
+            />
+          }
+        />
+      </div>
+    </section>
   );
 }
 
@@ -404,20 +575,16 @@ function GeneralSection() {
 
   return (
     <div className="settings-scroll settings-standard-pane settings-general-page">
-      <div className="settings-general-tabs" role="tablist" aria-label="通用设置分类">
-        {GENERAL_TABS.map(({ id, label }) => (
-          <button
-            key={id}
-            type="button"
-            role="tab"
-            aria-selected={tab === id}
-            className={clsx(tab === id && 'is-active')}
-            onClick={() => setTab(id)}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
+      {/* Segmented control shares the NewMax DsTabBar spec with the model-settings tabs. */}
+      {/* Explicit type argument: `onChange` sits in a contravariant position, so
+          inference from `.map()` alone collapses T to its `string` constraint. */}
+      <DsTabBar<GeneralTab>
+        className="settings-general-tabs"
+        aria-label="通用设置分类"
+        value={tab}
+        onChange={setTab}
+        items={GENERAL_TABS.map(({ id, label }) => ({ value: id, label }))}
+      />
 
       <div className="settings-general-panel" key={tab}>
         {tab === 'app' ? (
@@ -584,6 +751,7 @@ function AgentGeneralPanel({
           />
         </div>
       </section>
+      <CollaborationSettingsPanel />
     </div>
   );
 }
@@ -1119,6 +1287,34 @@ export function ConnectionSection({ initialTab, navigationKey }: ConnectionSecti
   );
 }
 
+/** 连接器开关：直接复用 MCP 管理页的胶囊开关样式，保证全局开关观感一致。 */
+function ConnectorSwitch({
+  checked,
+  disabled,
+  label,
+  onChange,
+}: {
+  checked: boolean;
+  disabled?: boolean;
+  label: string;
+  onChange(value: boolean): void;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-label={label}
+      aria-checked={checked}
+      disabled={disabled}
+      data-enabled={checked ? '1' : '0'}
+      className="ability-enable-switch"
+      onClick={() => onChange(!checked)}
+    >
+      <span />
+    </button>
+  );
+}
+
 function ConnectorCatalog({
   providerTab,
   query,
@@ -1219,20 +1415,40 @@ function ConnectorCatalog({
           <div className="settings-connectors-grid">
             {SYNC_THINK_CONNECTOR_CATALOG.map((item) => {
               const connected = connectedNames.has(item.name.toLocaleLowerCase());
+              const managed = managedConnectorServer(servers, item);
               return (
-                <button
+                <div
                   key={item.id}
-                  type="button"
                   className="settings-connector-row"
-                  aria-label={`${connected ? '打开' : '连接'} ${item.name}`}
-                  onClick={() => onOpenManaged(item)}
+                  data-connected={connected ? '1' : '0'}
                 >
-                  <img src={item.icon} alt="" draggable={false} />
-                  <span>{item.name}</span>
-                  <small className={connected ? 'is-connected' : undefined}>
-                    {connected ? '✓ 已连接' : '连接 ›'}
-                  </small>
-                </button>
+                  <button
+                    type="button"
+                    className="settings-connector-row__main"
+                    aria-label={`${connected ? '打开' : '连接'} ${item.name}`}
+                    onClick={() => onOpenManaged(item)}
+                  >
+                    <img src={item.icon} alt="" draggable={false} />
+                    <span>{item.name}</span>
+                  </button>
+                  {managed ? (
+                    <ConnectorSwitch
+                      checked={managed.enabled !== false}
+                      label={`${item.name} 连接`}
+                      onChange={(enabled) => onToggleServer(managed, enabled)}
+                    />
+                  ) : connected ? (
+                    <small className="is-connected">✓ 已连接</small>
+                  ) : (
+                    <button
+                      type="button"
+                      className="settings-connector-row__connect"
+                      onClick={() => onOpenManaged(item)}
+                    >
+                      连接 ›
+                    </button>
+                  )}
+                </div>
               );
             })}
           </div>
@@ -1254,15 +1470,19 @@ function ConnectorCatalog({
                 <div key={server.mcpServerId} className="settings-third-party-row">
                   <button type="button" onClick={() => onOpenServer(server)}>
                     <span className="settings-third-party-row__icon">
-                      <Link2 size={15} aria-hidden="true" />
+                      <McpIdentityMark
+                        name={server.name}
+                        endpoint={server.endpoint}
+                        size={15}
+                      />
                     </span>
                     <span>
                       <strong>{server.name}</strong>
                       <small>{server.endpoint}</small>
                     </span>
                   </button>
-                  <Toggle
-                    checked={server.enabled}
+                  <ConnectorSwitch
+                    checked={server.enabled !== false}
                     label={`${server.name} 连接`}
                     onChange={(enabled) => onToggleServer(server, enabled)}
                   />

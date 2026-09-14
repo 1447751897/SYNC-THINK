@@ -10,6 +10,8 @@ import {
   ExecutionProcessBlock,
   FileChangesCard,
   LineDiffView,
+  looksLikeUnifiedDiff,
+  parseUnifiedDiff,
   resolveAbsoluteProjectPath,
 } from './ExecutionProcessBlock.js';
 
@@ -230,7 +232,7 @@ describe('FileChangesCard interactions', () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: '审阅文件' }));
+    fireEvent.click(screen.getByRole('button', { name: '查看变动' }));
 
     expect(onOpenReview).toHaveBeenCalledWith(view);
   });
@@ -289,7 +291,7 @@ describe('FileChangesCard interactions', () => {
   it('shows at most four files until the overflow list is expanded', () => {
     render(<FileChangesCard view={processViewWithManyChanges(8)} />);
 
-    expect(screen.getByText('已更改 8 个文件')).toBeTruthy();
+    expect(screen.getByText('编辑了 8 个文件')).toBeTruthy();
     expect(screen.getAllByRole('button', { name: /打开文件/ })).toHaveLength(4);
     expect(screen.queryByRole('button', { name: '打开文件 file-5.ts' })).toBeNull();
 
@@ -312,6 +314,41 @@ describe('FileChangesCard interactions', () => {
     expect(screen.queryByRole('button', { name: /展开其余/ })).toBeNull();
   });
 
+  it('renders a stored unified diff with add/del backgrounds instead of a code preview', () => {
+    const preview = [
+      '@@ -5,2 +5,5 @@',
+      ' keep',
+      '+publishCustomTurtleSoupStory: vi.fn(),',
+      '+consumeSlidingWindow: vi.fn(),',
+      ' still',
+    ].join('\n');
+    render(
+      <FileChangesCard
+        view={{
+          ...processView([]),
+          fileChanges: [
+            {
+              path: 'D:\\projects\\cuitaliao\\src\\route.test.ts',
+              action: 'edited',
+              preview,
+            },
+          ],
+        }}
+      />,
+    );
+
+    expect(screen.getByText('route.test.ts')).toBeTruthy();
+    expect(screen.getByText('D:\\projects\\cuitaliao\\src')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '展开 D:\\projects\\cuitaliao\\src\\route.test.ts diff' }));
+
+    const added = screen.getByText('publishCustomTurtleSoupStory').closest('[data-kind="add"]');
+    expect(added).toBeTruthy();
+    expect(added?.querySelector('[data-new-line]')?.textContent).toBe('6');
+    expect(screen.getByText('keep').closest('[data-kind="ctx"]')).toBeTruthy();
+    expect(screen.queryByRole('region', { name: '文件内容预览' })).toBeNull();
+    expect(screen.getByRole('region', { name: '文件差异预览' })).toBeTruthy();
+  });
+
   it('resolves project-relative paths without changing absolute paths', () => {
     expect(resolveAbsoluteProjectPath('D:\\projects\\SYNC-THINK', './src/app.ts')).toBe(
       'D:\\projects\\SYNC-THINK\\src\\app.ts',
@@ -319,5 +356,18 @@ describe('FileChangesCard interactions', () => {
     expect(resolveAbsoluteProjectPath('D:\\projects\\SYNC-THINK', 'C:\\temp\\file.ts')).toBe(
       'C:\\temp\\file.ts',
     );
+  });
+});
+
+describe('unified diff preview parsing', () => {
+  it('detects hunk headers and numbers added lines from the new side', () => {
+    expect(looksLikeUnifiedDiff('const value = 1;')).toBe(false);
+    const rows = parseUnifiedDiff('@@ -5,2 +5,5 @@\n keep\n+added\n still\n');
+    expect(rows.map((row) => [row.kind, row.oldLine, row.newLine, row.text])).toEqual([
+      ['hunk', undefined, undefined, '@@ -5,2 +5,5 @@'],
+      ['ctx', 5, 5, 'keep'],
+      ['add', undefined, 6, 'added'],
+      ['ctx', 6, 7, 'still'],
+    ]);
   });
 });

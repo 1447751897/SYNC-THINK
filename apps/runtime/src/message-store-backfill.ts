@@ -204,6 +204,13 @@ export function backfillMessagesFromEvents(
     }
 
     if (event.type === 'run.completed') {
+      // Delegated child Runs have their own event/timeline history, but their
+      // assistant text is returned through the parent's agent_delegate tool.
+      // Never materialize a child as a second assistant turn on reconnect.
+      if (typeof payload.delegationParentRunId === 'string' && payload.delegationParentRunId.trim()) {
+        skippedEvents += 1;
+        continue;
+      }
       const threadId =
         typeof payload.threadId === 'string' && payload.threadId
           ? (payload.threadId as ThreadId)
@@ -242,6 +249,10 @@ export function backfillMessagesFromEvents(
     }
 
     if (event.type === 'run.paused') {
+      if (typeof payload.delegationParentRunId === 'string' && payload.delegationParentRunId.trim()) {
+        skippedEvents += 1;
+        continue;
+      }
       const threadId =
         typeof payload.threadId === 'string' && payload.threadId
           ? (payload.threadId as ThreadId)

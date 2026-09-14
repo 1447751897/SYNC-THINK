@@ -7,6 +7,7 @@
  */
 import { isToolResultFailure, normalizeToolName } from '@sync-think/shared';
 import type { InlineProcessItem } from './ChatView.js';
+import { buildGeneratedImageModelBySrc } from './markdown-image-gallery.js';
 
 type ToolItem = Extract<InlineProcessItem, { kind: 'tool' }>;
 
@@ -26,6 +27,9 @@ const TOOL_DISPLAY_NAMES: Readonly<Record<string, string>> = {
   execute_command: '运行命令',
   exec_command: '运行命令',
   run_command: '运行命令',
+  read_command: '等待命令',
+  list_commands: '查看命令会话',
+  stop_command: '停止命令',
   command_execution: '命令执行',
   list_files: '查看目录',
   glob: '查找文件',
@@ -35,12 +39,18 @@ const TOOL_DISPLAY_NAMES: Readonly<Record<string, string>> = {
   web_fetch: '获取网页',
   open: '打开网页',
   view_image: '查看图片',
+  generate_image: '生成图片',
 };
 
 export function friendlyToolName(name: string): string {
-  // 内核经 MCP 调用时名字是 mcp__sync-think-platform__file_read，直译会变成
-  // 「Mcp Sync Think Platform File Read」——先剥前缀才能落到中文映射表上。
-  const normalized = normalizeToolName(name.trim()).toLowerCase();
+  const trimmed = name.trim();
+  const mcp = /^mcp__([a-z0-9-]+)__([a-z0-9_]+)$/i.exec(trimmed);
+  if (mcp?.[1] === 'capability-broker') {
+    return `capability-broker · ${mcp[2].replace(/_/g, ' ')}`;
+  }
+  const normalized = normalizeToolName(trimmed).toLowerCase();
+  if (normalized === 'search_capability') return 'capability-broker · search capability';
+  if (normalized === 'use_capability') return 'capability-broker · use capability';
   const exact = TOOL_DISPLAY_NAMES[normalized];
   if (exact) return exact;
   const suffix = normalized.split(/[.:/]/).at(-1) ?? normalized;
@@ -181,6 +191,65 @@ export function toolVisualKind(name: string): ProcessToolVisualKind {
   return 'other';
 }
 
+export function isGenerateImageToolName(name: string): boolean {
+  const trimmed = name.trim();
+  if (trimmed === 'generate_image') return true;
+  return /^mcp__[a-z0-9-]+__generate_image$/i.test(trimmed);
+}
+
+export function isUseCapabilityToolName(name: string): boolean {
+  const trimmed = name.trim();
+  if (trimmed === 'use_capability') return true;
+  return /^mcp__[a-z0-9-]+__use_capability$/i.test(trimmed);
+}
+
+export function isImageGenerationActivity(item: {
+  name: string;
+  argumentsJson?: string;
+  result?: string;
+}): boolean {
+  if (isGenerateImageToolName(item.name)) return true;
+  if (!isUseCapabilityToolName(item.name)) return false;
+  if (extractGeneratedImageSrc(item.result ?? '')) return true;
+  try {
+    const parsed = JSON.parse(item.argumentsJson || '{}') as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false;
+    const record = parsed as Record<string, unknown>;
+    let inner: unknown = record.arguments ?? record;
+    if (typeof inner === 'string') inner = JSON.parse(inner) as unknown;
+    if (!inner || typeof inner !== 'object' || Array.isArray(inner)) return false;
+    const prompt = (inner as Record<string, unknown>).prompt;
+    return typeof prompt === 'string' && prompt.trim().length > 0;
+  } catch {
+    return false;
+  }
+}
+
+export function extractGeneratedImageSrc(markdown: string): string | null {
+  const match = /!\[[^\]]*]\((sync-think-image:\/\/generated\/[^)\s]+)\)/.exec(markdown);
+  return match?.[1] ?? null;
+}
+
+export function collectImageGenerationToolResults(
+  items: readonly InlineProcessItem[] | undefined,
+): string[] {
+  if (!items?.length) return [];
+  const results: string[] = [];
+  for (const item of items) {
+    if (item.kind !== 'tool' || !item.result?.trim()) continue;
+    if (!isImageGenerationActivity(item)) continue;
+    results.push(item.result);
+  }
+  return results;
+}
+
+/** NewMax `buildGeneratedImageModelBySrc` from the inline process timeline. */
+export function generatedImageModelsFromProcessItems(
+  items: readonly InlineProcessItem[] | undefined,
+): Map<string, string> {
+  return buildGeneratedImageModelBySrc(collectImageGenerationToolResults(items));
+}
+
 function compactValue(value: unknown): string | undefined {
   if (typeof value === 'string') return value.trim() || undefined;
   if (typeof value === 'number' || typeof value === 'boolean') return String(value);
@@ -209,6 +278,80 @@ function clampToolSummary(text: string): string {
   return text.length > SUMMARY_MAX ? `${text.slice(0, SUMMARY_MAX - 3)}…` : text;
 }
 
+/**
+ * kernel 承载命令的方式：Windows 上是
+ * `"C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe" -Command '<cmd>'`，
+ * POSIX 上是 `/bin/bash -lc '<cmd>'`。这层包装是**进程调用的事实**，但原样展示
+ * 会吃掉摘要的前 60+ 个字符——用户看到的是 powershell.exe 的安装路径，而不是
+ * 自己真正要跑的命令。展示层剥掉它。
+ */
+const SHELL_WRAPPER_NAMES: ReadonlySet<string> = new Set([
+  'powershell',
+  'powershell.exe',
+  'pwsh',
+  'pwsh.exe',
+  'cmd',
+  'cmd.exe',
+  'bash',
+  'bash.exe',
+  'sh',
+  'zsh',
+  'dash',
+  'ksh',
+]);
+
+/** shell 之后紧跟这个开关，其后的内容才是真正的命令。 */
+const SHELL_PAYLOAD_FLAG = /(?:^|\s)(?:-commandwithargs|-command|-lc|-ic|-c|\/c|\/k)(?=\s)/i;
+
+/**
+ * 取开头的第一个 token（可执行文件名或被引号包住的路径），返回 `[token, 剩余部分]`。
+ * 刻意不做反斜杠转义处理——Windows 路径里的 `\` 是分隔符而不是转义符，按转义
+ * 处理会把 `C:\WINDOWS\…` 解析成 `C:WINDOWS…`，导致认不出 shell。
+ */
+function splitLeadingToken(input: string): [string, string] {
+  const match = /^\s*(?:"([^"]*)"|'([^']*)'|(\S+))/.exec(input);
+  if (!match) return ['', ''];
+  return [match[1] ?? match[2] ?? match[3] ?? '', input.slice(match.index + match[0].length)];
+}
+
+/** 去掉最外层成对引号；PowerShell 单引号内 `''` 表示一个字面单引号。 */
+function unwrapQuoted(input: string): string {
+  const text = input.trim();
+  const quote = text[0];
+  if ((quote !== "'" && quote !== '"') || text.length < 2 || text.at(-1) !== quote) return text;
+  const inner = text.slice(1, -1);
+  return quote === "'" ? inner.replace(/''/g, "'") : inner.replace(/\\"/g, '"');
+}
+
+/**
+ * 剥掉 shell 承载层，只留用户真正要执行的命令。识别不出包装形式时原样返回，
+ * 绝不猜——宁可多显示一段路径，也不能把命令改错。
+ */
+export function unwrapShellCommand(commandLine: string): string {
+  const trimmed = commandLine.trim();
+  if (!trimmed) return trimmed;
+  const [head, rest] = splitLeadingToken(trimmed);
+  const basename = head.replace(/\\/g, '/').split('/').at(-1)?.toLowerCase() ?? '';
+  if (!SHELL_WRAPPER_NAMES.has(basename)) return trimmed;
+  const flag = SHELL_PAYLOAD_FLAG.exec(rest);
+  if (!flag) return trimmed;
+  const payload = rest.slice(flag.index + flag[0].length).trim();
+  return unwrapQuoted(payload) || trimmed;
+}
+
+/**
+ * 多行命令（`node -e "…"` 整段脚本）在行摘要里必须压成单行：详情面板作用域下的
+ * 摘要没有 `white-space: nowrap`，换行会直接把工具行撑高。
+ */
+function collapseCommandLines(text: string): string {
+  return text.replace(/\s*\n\s*/g, ' ').trim();
+}
+
+/** 工具行上的命令行摘要：先剥壳、压成单行，再按与其它摘要相同的上限截断。 */
+export function formatCommandSummary(commandLine: string): string {
+  return clampToolSummary(collapseCommandLines(unwrapShellCommand(commandLine)));
+}
+
 export function toolInputSummary(item: ToolItem): string {
   if (item.inputSummary?.trim()) return item.inputSummary.trim();
   const raw = item.argumentsJson.trim();
@@ -217,6 +360,18 @@ export function toolInputSummary(item: ToolItem): string {
     const parsed = JSON.parse(raw) as unknown;
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
       const record = parsed as Record<string, unknown>;
+      let nested = record.arguments;
+      if (typeof nested === 'string') {
+        try {
+          nested = JSON.parse(nested) as unknown;
+        } catch {
+          nested = undefined;
+        }
+      }
+      if (nested && typeof nested === 'object' && !Array.isArray(nested)) {
+        const prompt = compactValue((nested as Record<string, unknown>).prompt);
+        if (prompt) return clampToolSummary(prompt);
+      }
       for (const key of [
         'path',
         'file_path',
@@ -226,13 +381,17 @@ export function toolInputSummary(item: ToolItem): string {
         'url',
         'pattern',
         'target',
+        'prompt',
       ]) {
         const value = compactValue(record[key]);
         if (!value) continue;
-        // 命令类参数带上 argv，其余键按原样摘要。
+        // 命令类参数先剥掉 shell 承载层（powershell.exe -Command …）再带上 argv，
+        // 否则摘要会被可执行文件的完整路径占满，看不出真正跑了什么。
         const summary =
-          key === 'command' || key === 'cmd' ? formatCommandLine(value, record.args) : value;
-        return clampToolSummary(summary);
+          key === 'command' || key === 'cmd'
+            ? formatCommandSummary(formatCommandLine(value, record.args))
+            : clampToolSummary(value);
+        return summary;
       }
       const first = Object.entries(record).find(([, value]) => compactValue(value));
       if (first) {

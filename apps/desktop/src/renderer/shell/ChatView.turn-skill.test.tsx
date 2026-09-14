@@ -11,7 +11,8 @@ import type {
   GlobalAgent,
   Team,
 } from '@sync-think/shared';
-import { ChatView } from './ChatView.js';
+import { ChatView, resetRecentConversationPageCacheForTests } from './ChatView.js';
+import { ToastProvider, resetToastStoreForTests } from './Toast.js';
 
 const runtime = {
   appendMessage: vi.fn(),
@@ -150,18 +151,20 @@ function renderChat(
   seedComposerText?: string,
 ) {
   return render(
-    <ChatView
-      conversation={current}
-      modelName="Model A"
-      models={models}
-      agents={agents}
-      teams={[]}
-      eventHistory={eventHistory}
-      onTitleUpdated={vi.fn()}
-      onConversationUpdated={vi.fn()}
-      initialSkillVersionIds={initialSkillVersionIds}
-      seedComposerText={seedComposerText}
-    />,
+    <ToastProvider>
+      <ChatView
+        conversation={current}
+        modelName="Model A"
+        models={models}
+        agents={agents}
+        teams={[]}
+        eventHistory={eventHistory}
+        onTitleUpdated={vi.fn()}
+        onConversationUpdated={vi.fn()}
+        initialSkillVersionIds={initialSkillVersionIds}
+        seedComposerText={seedComposerText}
+      />
+    </ToastProvider>,
   );
 }
 
@@ -179,6 +182,7 @@ async function waitForInitialMessages() {
 }
 
 beforeEach(() => {
+  resetRecentConversationPageCacheForTests();
   runtime.appendMessage.mockReset().mockResolvedValue({ messageId: 'message-a', taskVersion: 1 });
   runtime.compactConversation.mockReset().mockResolvedValue({
     compacted: true,
@@ -227,6 +231,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  resetToastStoreForTests();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   Reflect.deleteProperty(window, 'syncThink');
@@ -959,16 +964,18 @@ describe('ChatView turn Skill draft', () => {
     expect(await screen.findByTestId('plan-approval-card')).toBeTruthy();
 
     view.rerender(
-      <ChatView
-        conversation={conversation('conversation-without-plan')}
-        modelName="Model A"
-        models={[{ modelId: 'model-a', displayName: 'Model A', providerName: 'Provider' }]}
-        agents={agents}
-        teams={[]}
-        eventHistory={[]}
-        onTitleUpdated={vi.fn()}
-        onConversationUpdated={vi.fn()}
-      />,
+      <ToastProvider>
+        <ChatView
+          conversation={conversation('conversation-without-plan')}
+          modelName="Model A"
+          models={[{ modelId: 'model-a', displayName: 'Model A', providerName: 'Provider' }]}
+          agents={agents}
+          teams={[]}
+          eventHistory={[]}
+          onTitleUpdated={vi.fn()}
+          onConversationUpdated={vi.fn()}
+        />
+      </ToastProvider>,
     );
 
     expect(
@@ -989,16 +996,18 @@ describe('ChatView turn Skill draft', () => {
     await waitFor(() => expect(runtime.conversationPlanGet).toHaveBeenCalledTimes(1));
 
     view.rerender(
-      <ChatView
-        conversation={conversation('conversation-plan-current')}
-        modelName="Model A"
-        models={[{ modelId: 'model-a', displayName: 'Model A', providerName: 'Provider' }]}
-        agents={agents}
-        teams={[]}
-        eventHistory={[]}
-        onTitleUpdated={vi.fn()}
-        onConversationUpdated={vi.fn()}
-      />,
+      <ToastProvider>
+        <ChatView
+          conversation={conversation('conversation-plan-current')}
+          modelName="Model A"
+          models={[{ modelId: 'model-a', displayName: 'Model A', providerName: 'Provider' }]}
+          agents={agents}
+          teams={[]}
+          eventHistory={[]}
+          onTitleUpdated={vi.fn()}
+          onConversationUpdated={vi.fn()}
+        />
+      </ToastProvider>,
     );
     await waitFor(() => expect(runtime.conversationPlanGet).toHaveBeenCalledTimes(2));
     await act(async () => {
@@ -1035,16 +1044,18 @@ describe('ChatView turn Skill draft', () => {
     expect(await screen.findByTestId('composer-goal-banner')).toBeTruthy();
 
     view.rerender(
-      <ChatView
-        conversation={conversation('conversation-without-goal')}
-        modelName="Model A"
+      <ToastProvider>
+        <ChatView
+          conversation={conversation('conversation-without-goal')}
+          modelName="Model A"
         models={[{ modelId: 'model-a', displayName: 'Model A', providerName: 'Provider' }]}
         agents={agents}
         teams={[]}
         eventHistory={[]}
-        onTitleUpdated={vi.fn()}
-        onConversationUpdated={vi.fn()}
-      />,
+          onTitleUpdated={vi.fn()}
+          onConversationUpdated={vi.fn()}
+        />
+      </ToastProvider>,
     );
 
     expect(
@@ -1193,16 +1204,18 @@ describe('ChatView turn Skill draft', () => {
     expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe('');
 
     view.rerender(
-      <ChatView
-        conversation={conversation('conversation-b')}
-        modelName="Model A"
-        models={[{ modelId: 'model-a', displayName: 'Model A', providerName: 'Provider' }]}
-        agents={agents}
-        teams={[]}
-        eventHistory={[]}
-        onTitleUpdated={vi.fn()}
-        onConversationUpdated={vi.fn()}
-      />,
+      <ToastProvider>
+        <ChatView
+          conversation={conversation('conversation-b')}
+          modelName="Model A"
+          models={[{ modelId: 'model-a', displayName: 'Model A', providerName: 'Provider' }]}
+          agents={agents}
+          teams={[]}
+          eventHistory={[]}
+          onTitleUpdated={vi.fn()}
+          onConversationUpdated={vi.fn()}
+        />
+      </ToastProvider>,
     );
     await waitFor(() =>
       expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe(''),
@@ -1224,30 +1237,34 @@ describe('ChatView turn Skill draft', () => {
       members: [{ agentId: 'agent-a' }, { agentId: 'agent-b' }],
     } as unknown as Team;
     const view = render(
-      <ChatView
-        conversation={current}
-        modelName="Model A"
-        models={[{ modelId: 'model-a', displayName: 'Model A', providerName: 'Provider' }]}
-        agents={sharedAgents}
-        teams={[team]}
-        eventHistory={[]}
-        onTitleUpdated={vi.fn()}
-        onConversationUpdated={vi.fn()}
-      />,
+      <ToastProvider>
+        <ChatView
+          conversation={current}
+          modelName="Model A"
+          models={[{ modelId: 'model-a', displayName: 'Model A', providerName: 'Provider' }]}
+          agents={sharedAgents}
+          teams={[team]}
+          eventHistory={[]}
+          onTitleUpdated={vi.fn()}
+          onConversationUpdated={vi.fn()}
+        />
+      </ToastProvider>,
     );
     await toggleSkill('skill-b', 1);
 
     view.rerender(
-      <ChatView
-        conversation={current}
-        modelName="Model A"
-        models={[{ modelId: 'model-a', displayName: 'Model A', providerName: 'Provider' }]}
-        agents={sharedAgents}
-        teams={[{ ...team, coordinatorAgentId: sharedAgents[1]!.id }]}
-        eventHistory={[]}
-        onTitleUpdated={vi.fn()}
-        onConversationUpdated={vi.fn()}
-      />,
+      <ToastProvider>
+        <ChatView
+          conversation={current}
+          modelName="Model A"
+          models={[{ modelId: 'model-a', displayName: 'Model A', providerName: 'Provider' }]}
+          agents={sharedAgents}
+          teams={[{ ...team, coordinatorAgentId: sharedAgents[1]!.id }]}
+          eventHistory={[]}
+          onTitleUpdated={vi.fn()}
+          onConversationUpdated={vi.fn()}
+        />
+      </ToastProvider>,
     );
 
     await waitFor(() =>

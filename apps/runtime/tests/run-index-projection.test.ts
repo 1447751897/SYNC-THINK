@@ -164,6 +164,14 @@ describe('projectRunIndexUpsert', () => {
     expect(result?.source).toBe('orchestration');
   });
 
+  it('prefers an explicit conversationId over the thread id', () => {
+    const result = project(
+      event({ payload: { threadId: 'thread-1', conversationId: 'conv-real', title: '分析登录' } }),
+    );
+    expect(result?.conversationId).toBe('conv-real');
+    expect(result?.title).toBe('分析登录');
+  });
+
   it('carries the retry anchor and task id', () => {
     const result = project(
       event({ taskId: 'task-7', payload: { threadId: 'conv-1', triggerMessageId: 'msg-3' } }),

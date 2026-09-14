@@ -38,7 +38,10 @@ export interface RunIndexEntry {
   kernelId?: string;
   modelId?: string;
   providerModelId?: string;
-  /** Bounded, human-facing label. Never carries full prompt text. */
+  /**
+   * Bounded, human-facing label. Never carries a run/event id or the full
+   * prompt. Prefer the conversation title, then a short first-message snippet.
+   */
   title?: string;
   startedAt: string;
   finishedAt?: string;

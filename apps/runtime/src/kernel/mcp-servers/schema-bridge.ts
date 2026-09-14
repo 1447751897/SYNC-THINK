@@ -61,7 +61,11 @@ function buildZodNode(z: ZodFactory, schema: JsonSchemaNode): ZodTypeAny {
           }
         }
       }
-      return z.object(shape);
+      if (schema.additionalProperties === true && Object.keys(shape).length === 0) {
+        return z.record(z.any());
+      }
+      const object = z.object(shape);
+      return schema.additionalProperties === true ? object.passthrough() : object;
     }
     case 'integer': {
       let node: ZodNumber = z.number().int();

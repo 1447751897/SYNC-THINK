@@ -13,11 +13,9 @@ import {
   CircleGauge,
   Code2,
   Copy,
-  Database,
   Edit3,
   FileCode2,
   Folder,
-  Github,
   Globe2,
   KeyRound,
   Layers3,
@@ -53,6 +51,7 @@ import {
   type ReactNode,
 } from 'react';
 import { useDialog } from '../Dialog.js';
+import { toastApi } from '../Toast.js';
 import type {
   CapabilityGovernanceListResponse,
   CapabilityOrganizeReportSummary,
@@ -99,7 +98,8 @@ import {
   skillScanBadge,
   scanSkillDescription,
 } from './skill-resident-context.js';
-import { mcpAvailability, resolveMcpVisual, type McpMark } from './mcp-identity.js';
+import { mcpAvailability } from './mcp-identity.js';
+import { McpIdentityMark } from './McpIdentityMark.js';
 
 const MAX_SKILL_MD_CHARS = 512_000;
 
@@ -321,6 +321,15 @@ export function AbilitiesPage(props: AbilitiesPageProps): JSX.Element {
   const [busyId, setBusyId] = useState<string>();
   const [createMenuOpen, setCreateMenuOpen] = useState(false);
   const loadRequestRef = useRef(0);
+
+  useEffect(() => {
+    if (!message) return;
+    toastApi.toast({ type: 'success', title: message, id: 'ability-message' });
+  }, [message]);
+  useEffect(() => {
+    if (!error || skillEditor || localSkillImportOpen) return;
+    toastApi.toast({ type: 'error', title: error, id: 'ability-error' });
+  }, [error, skillEditor, localSkillImportOpen]);
 
   useEffect(() => {
     if (props.activeWorkspaceId) setSelectedWorkspaceId(props.activeWorkspaceId);
@@ -1455,26 +1464,6 @@ function NewMaxSkillHub(props: {
               重新加载
             </button>
           </div>
-        ) : props.message ? (
-          <div className="ability-status is-success" role="status">
-            <CheckCircle2 size={14} />
-            <div>
-              <strong>{props.message}</strong>
-            </div>
-            <button type="button" aria-label="关闭提示" onClick={props.onCloseNotice}>
-              <X size={12} />
-            </button>
-          </div>
-        ) : props.error ? (
-          <div className="ability-status is-error" role="alert">
-            <AlertTriangle size={14} />
-            <div>
-              <strong>{props.error}</strong>
-            </div>
-            <button type="button" aria-label="关闭错误" onClick={props.onCloseNotice}>
-              <X size={12} />
-            </button>
-          </div>
         ) : null}
 
         {props.tab === 'market' ? (
@@ -2069,26 +2058,6 @@ function NewMaxMcpHub(props: {
               重新加载
             </button>
           </div>
-        ) : props.message ? (
-          <div className="ability-status is-success" role="status">
-            <CheckCircle2 size={14} />
-            <div>
-              <strong>{props.message}</strong>
-            </div>
-            <button type="button" aria-label="关闭提示" onClick={props.onCloseNotice}>
-              <X size={12} />
-            </button>
-          </div>
-        ) : props.error ? (
-          <div className="ability-status is-error" role="alert">
-            <AlertTriangle size={14} />
-            <div>
-              <strong>{props.error}</strong>
-            </div>
-            <button type="button" aria-label="关闭错误" onClick={props.onCloseNotice}>
-              <X size={12} />
-            </button>
-          </div>
         ) : null}
 
         {props.tab === 'market' ? (
@@ -2348,14 +2317,15 @@ function NewMaxMcpHub(props: {
                           type="button"
                           data-testid={`mcp-row-refresh-${server.mcpServerId}`}
                           className="mcp-installed-card__refresh"
+                          title="刷新工具"
+                          aria-label="刷新工具"
                           disabled={Boolean(props.busyId)}
                           onClick={() => props.onRefresh(server)}
                         >
                           <RefreshCw
                             className={refreshBusy ? 'animate-spin' : undefined}
-                            size={12}
+                            size={13}
                           />
-                          {refreshBusy ? '刷新中' : '刷新工具'}
                         </button>
                       </article>
                     );
@@ -2395,33 +2365,6 @@ function MarketSkillGlyph(props: { icon?: string }): JSX.Element {
   if (props.icon === 'chart-no-axes-combined') return <Layers3 size={23} />;
   if (props.icon === 'send') return <Send size={23} />;
   return <PackageOpen size={23} />;
-}
-
-const MCP_MARK_ICON: Record<McpMark, typeof Server> = {
-  github: Github,
-  folder: Folder,
-  globe: Globe2,
-  database: Database,
-  server: Server,
-};
-
-function McpIdentityMark(props: { name?: string; endpoint?: string; size?: number }): JSX.Element {
-  const visual = resolveMcpVisual(props);
-  const size = props.size ?? 15;
-  if (visual.kind === 'favicon') {
-    return (
-      <img
-        src={visual.src}
-        alt=""
-        width={size}
-        height={size}
-        draggable={false}
-        data-testid={`mcp-icon-${visual.id}`}
-      />
-    );
-  }
-  const Icon = MCP_MARK_ICON[visual.mark];
-  return <Icon size={size} data-testid={`mcp-icon-${visual.id}`} />;
 }
 
 export function SkillSurface(props: {

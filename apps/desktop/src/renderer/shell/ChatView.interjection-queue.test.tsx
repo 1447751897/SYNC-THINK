@@ -4,7 +4,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Conversation, Event } from '@sync-think/shared';
-import { ChatView } from './ChatView.js';
+import { ChatView, resetRecentConversationPageCacheForTests } from './ChatView.js';
 
 const runtime = {
   appendMessage: vi.fn(),
@@ -129,6 +129,7 @@ function queuedItemId(): string {
 }
 
 beforeEach(() => {
+  resetRecentConversationPageCacheForTests();
   window.localStorage.clear();
   runtime.appendMessage.mockReset().mockResolvedValue({
     messageId: 'message-queue',

@@ -82,7 +82,9 @@ import type {
   ExpiredToolApprovalSummary,
   ToolApprovalScope,
   ConversationTransientSnapshot,
+  DelegatedAgentProjection,
   RunProcessView,
+  ProviderBalancePayload,
   SkillVersionSummary,
   UsageSummaryResponse,
   WorkspaceSummary,
@@ -91,6 +93,7 @@ import { normalizeAssistantTurnPhases } from '@sync-think/protocol/assistant-tur
 import { parseConversationGetContextStatusResponse } from '@sync-think/protocol/conversation-context-status';
 import type { ProjectTextLocation } from '../../workspace-tools-contract.js';
 import { AgentAvatarView } from './AgentAvatarView.js';
+import { avatarStateFrom } from './agentAvatarState.js';
 import { BrandLogoMark } from './BrandLogoMark.js';
 import { resolveKernelBrandLogo, resolveKernelDisplayName } from './brand-icons.js';
 import { useAutoDisclosure } from './auto-disclosure.js';
@@ -214,6 +217,8 @@ import {
   formatRunModelLabel,
 } from './execution-process.js';
 import { MarkdownContent } from './MarkdownContent.js';
+import { toastApi, toastTypeFromTone } from './Toast.js';
+import { classifyAppendMessageFailure } from '../append-message-error.js';
 import { MessageTextContent, type MessageTextPart } from './MessageTextContent.js';
 import { resolveMessageText } from './message-text-source.js';
 import type { OpenHtmlInBrowser } from './html-browser.js';
@@ -227,16 +232,22 @@ import {
   type PendingAsk,
 } from './AskQuestionCard.js';
 import { PlanApprovalCard } from './PlanApprovalCard.js';
-import { persistentComputerUseAppOf } from './tool-approval.js';
+import { ToolApprovalCard, type PendingToolApproval } from './ToolApprovalCard.js';
 import { projectTodoFromEvents } from './todo-projection.js';
 import { ComposerTaskPanel } from './ComposerTaskPanel.js';
 import { InlineProcessFlow } from './InlineProcessFlow.js';
+import { formatDisplayedToolOutput } from './tool-output-display.js';
 import { reconcileProcessItemOutcomes } from './process-item-outcome.js';
+import { generatedImageModelsFromProcessItems } from './process-activity.js';
 import {
   buildAssistantTurnNavigationItems,
   ConversationMinimapRail,
   type ConversationNavigationItem,
 } from './ConversationMinimapRail.js';
+import {
+  navigationSlideDuration,
+  navigationSlidePosition,
+} from './conversation-navigation-slide.js';
 import { executeBrowserCommand } from './browser-commands.js';
 import { splitUserMessageLinks } from './user-message-links.js';
 import { WebTextLink } from './WebTextLink.js';
@@ -261,16 +272,19 @@ import {
 } from './chat-transient-stream.js';
 import { projectConversationUsageMetrics } from './chat-usage.js';
 import {
+  fetchProviderBalanceView,
   fetchProviderUsageSummary,
   formatProviderUsageWindow,
   summarizeProviderUsageWindows,
+  type ProviderBalanceView,
   type ProviderUsageIdentity,
   type ProviderUsageWindows,
 } from './provider-usage-summary.js';
 import {
-  inferNativeScrollIntent,
-  resolveBottomPinState,
+  applyConversationStickOnScroll,
+  isConversationNearBottom,
   shouldFollowConversationContentResize,
+  shouldReleaseStickOnWheel,
   shouldRestorePrependAnchor,
 } from './message-window.js';
 import {
@@ -422,6 +436,8 @@ export interface ChatMessage {
   /** Bound global agent identity for this assistant turn. */
   globalAgentId?: string;
   globalAgentName?: string;
+  /** Parent-scoped live child Agent cards. */
+  delegatedAgents?: DelegatedAgentProjection[];
   /** Exact Skill versions selected for this user turn. */
   skillVersionIds?: string[];
   skills?: Array<{ skillVersionId: string; name: string }>;
@@ -434,9 +450,140 @@ interface CachedConversationPage {
   nextCursor?: number;
 }
 
+interface ConversationScrollPosition {
+  scrollTop: number;
+  stickToBottom: boolean;
+  anchorMessageId?: string;
+  anchorOffset: number;
+}
+
+const CONVERSATION_SCROLL_POSITIONS_KEY = 'sync-think.conversationScrollPositions';
+const CONVERSATION_SCROLL_POSITION_LIMIT = 32;
+const conversationScrollPositions = new Map<string, ConversationScrollPosition>();
+
+function readConversationScrollPositions(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const raw = JSON.parse(window.localStorage.getItem(CONVERSATION_SCROLL_POSITIONS_KEY) ?? '{}');
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return;
+    for (const [key, value] of Object.entries(raw)) {
+      if (!value || typeof value !== 'object') continue;
+      const item = value as Partial<ConversationScrollPosition>;
+      if (
+        typeof item.scrollTop === 'number' &&
+        Number.isFinite(item.scrollTop) &&
+        item.scrollTop >= 0 &&
+        typeof item.stickToBottom === 'boolean' &&
+        typeof item.anchorOffset === 'number' &&
+        Number.isFinite(item.anchorOffset)
+      ) {
+        conversationScrollPositions.set(key, {
+          scrollTop: item.scrollTop,
+          stickToBottom: item.stickToBottom,
+          anchorOffset: item.anchorOffset,
+          ...(typeof item.anchorMessageId === 'string' && item.anchorMessageId
+            ? { anchorMessageId: item.anchorMessageId }
+            : {}),
+        });
+      }
+    }
+  } catch {
+    // A malformed local snapshot should not block conversation rendering.
+  }
+}
+
+function readConversationScrollPosition(key: string): ConversationScrollPosition | undefined {
+  if (typeof window !== 'undefined') {
+    try {
+      if (!window.localStorage.getItem(CONVERSATION_SCROLL_POSITIONS_KEY)) {
+        conversationScrollPositions.clear();
+      }
+    } catch {
+      // Storage can be unavailable in private or restricted renderer contexts.
+    }
+  }
+  if (conversationScrollPositions.size === 0) readConversationScrollPositions();
+  const value = conversationScrollPositions.get(key);
+  return value ? { ...value } : undefined;
+}
+
+function writeConversationScrollPosition(key: string, value: ConversationScrollPosition): void {
+  conversationScrollPositions.delete(key);
+  conversationScrollPositions.set(key, value);
+  while (conversationScrollPositions.size > CONVERSATION_SCROLL_POSITION_LIMIT) {
+    const oldest = conversationScrollPositions.keys().next().value as string | undefined;
+    if (!oldest) break;
+    conversationScrollPositions.delete(oldest);
+  }
+  if (typeof window === 'undefined') return;
+  try {
+    const serialized = Object.fromEntries(conversationScrollPositions);
+    window.localStorage.setItem(CONVERSATION_SCROLL_POSITIONS_KEY, JSON.stringify(serialized));
+  } catch {
+    // Storage can be unavailable in private or restricted renderer contexts.
+  }
+}
+
+function captureConversationScrollPosition(
+  scroller: HTMLDivElement,
+  stickToBottom: boolean,
+): ConversationScrollPosition {
+  const viewportTop = scroller.getBoundingClientRect().top;
+  let anchorMessageId: string | undefined;
+  let anchorOffset = 0;
+  for (const node of scroller.querySelectorAll<HTMLElement>('[data-message-id]')) {
+    const rect = node.getBoundingClientRect();
+    if (rect.bottom <= viewportTop) continue;
+    anchorMessageId = node.dataset.messageId;
+    anchorOffset = rect.top - viewportTop;
+    break;
+  }
+  return {
+    scrollTop: Math.max(0, scroller.scrollTop),
+    stickToBottom,
+    anchorOffset,
+    ...(anchorMessageId ? { anchorMessageId } : {}),
+  };
+}
+
+function restoreConversationScrollPosition(
+  scroller: HTMLDivElement,
+  position: ConversationScrollPosition,
+): void {
+  const maxScrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+  if (position.stickToBottom) {
+    scroller.scrollTop = maxScrollTop;
+    return;
+  }
+  const anchor = position.anchorMessageId
+    ? Array.from(scroller.querySelectorAll<HTMLElement>('[data-message-id]')).find(
+        (node) => node.dataset.messageId === position.anchorMessageId,
+      )
+    : undefined;
+  if (anchor) {
+    const viewportTop = scroller.getBoundingClientRect().top;
+    const currentOffset = anchor.getBoundingClientRect().top - viewportTop;
+    scroller.scrollTop = Math.max(
+      0,
+      Math.min(maxScrollTop, scroller.scrollTop + currentOffset - position.anchorOffset),
+    );
+    return;
+  }
+  scroller.scrollTop = Math.max(0, Math.min(maxScrollTop, position.scrollTop));
+}
+
 const RECENT_CONVERSATION_CACHE_SIZE = 8;
 const RECENT_CONVERSATION_MESSAGE_LIMIT = 100;
 const recentConversationPages = new Map<string, CachedConversationPage>();
+
+/**
+ * Test-only: this cache is module-level and deliberately outlives unmounts so a
+ * keep-alive remount can reuse the last page. Suites that render several
+ * conversations under one id must clear it between cases.
+ */
+export function resetRecentConversationPageCacheForTests(): void {
+  recentConversationPages.clear();
+}
 
 function readRecentConversationPage(conversationId: string): CachedConversationPage | undefined {
   const cached = recentConversationPages.get(conversationId);
@@ -1148,20 +1295,6 @@ interface CompactProgressState {
   afterTokens?: number;
 }
 
-interface PendingToolApproval {
-  approvalId: string;
-  runId?: string;
-  toolCallId?: string;
-  toolName: string;
-  title: string;
-  detail: string;
-  path?: string;
-  command?: string;
-  arguments?: Record<string, unknown>;
-  allowedScopes?: ToolApprovalScope[];
-  decided?: 'approve' | 'deny';
-}
-
 function toolApprovalArguments(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -1629,14 +1762,26 @@ export function ChatView({
   useEffect(() => () => clearCompactDismissTimer(), [clearCompactDismissTimer]);
   /** Optimistic user bubbles not yet present in durable event history. */
   const [pendingUserMessages, setPendingUserMessages] = useState<ChatMessage[]>([]);
-  const [localErrors, setLocalErrorsRaw] = useState<ChatMessage[]>([]);
-  // Bounded FIFO: error bubbles are transient diagnostics; cap them so a
-  // failing subsystem cannot grow state (and every downstream merge/sort) unboundedly.
+  const localErrorsRef = useRef<ChatMessage[]>([]);
+  // Transient diagnostics used to render as chat bubbles. They now go to the
+  // NewMax top-right toast host so they no longer interleave with the thread.
   const setLocalErrors = useCallback((updater: SetStateAction<ChatMessage[]>) => {
-    setLocalErrorsRaw((prev) => {
-      const next = typeof updater === 'function' ? updater(prev) : updater;
-      return next.length > MAX_LOCAL_ERRORS ? next.slice(next.length - MAX_LOCAL_ERRORS) : next;
-    });
+    const previous = localErrorsRef.current;
+    const next = typeof updater === 'function' ? updater(previous) : updater;
+    const capped =
+      next.length > MAX_LOCAL_ERRORS ? next.slice(next.length - MAX_LOCAL_ERRORS) : next;
+    const nextIds = new Set(capped.map((item) => item.id));
+    for (const item of previous) {
+      if (!nextIds.has(item.id)) toastApi.dismiss(item.id);
+    }
+    localErrorsRef.current = capped;
+    for (const item of capped) {
+      toastApi.toast({
+        id: item.id,
+        type: toastTypeFromTone(item.tone),
+        title: item.text,
+      });
+    }
   }, []);
   /** Paginated message store state. */
   const historyScopeKey = JSON.stringify([conversation.id, conversation.taskId ?? null]);
@@ -1651,7 +1796,6 @@ export function ChatView({
     () => initialCachedPage?.ranges ?? [],
   );
   const historyRangesRef = useRef(historyRanges);
-  const [historyLoadError, setHistoryLoadError] = useState(false);
   const [loadingHistoryTarget, setLoadingHistoryTarget] = useState<string>();
   const historyTargetTokenRef = useRef<object>();
   const navigationIntentRef = useRef(0);
@@ -1744,6 +1888,7 @@ export function ChatView({
               commentarySegments: draft.assistantTimeline ? undefined : draft.commentarySegments,
               reasoningText: projected.reasoningText ?? draft.reasoningText,
               assistantTimeline: draft.assistantTimeline,
+              delegatedAgents: draft.delegatedAgents,
               answerText: visibleAnswer,
               processItems: projected.processItems,
               timestamp: draft.timestamp,
@@ -1936,7 +2081,6 @@ export function ChatView({
     loadingMoreRef.current = false;
     historyTargetTokenRef.current = undefined;
     setLoadingHistoryTarget(undefined);
-    setHistoryLoadError(false);
     setInitialLoaded(Boolean(cachedPage));
     setDurableTaskPlan(undefined);
     loadedMessagesConversationIdRef.current = undefined;
@@ -1948,7 +2092,30 @@ export function ChatView({
   const lastObservedScrollTopRef = useRef(0);
   /** Prevents our own one-shot scroll corrections from being treated as user input. */
   const programmaticScrollTargetRef = useRef<number | null>(null);
-  /** After switching conversations, jump to bottom instantly (no smooth scroll). */
+  /** NewMax markProgrammaticScroll: layout/html/mermaid writes must not unpin. */
+  const programmaticScrollPendingRef = useRef(false);
+  /**
+   * In-flight minimap slide. The rail re-measures the landing position for a few
+   * frames after a click, so the origin and the elapsed clock live here and only
+   * `to` moves: a correction bends the remaining curve instead of restarting it.
+   */
+  const navigationSlideRef = useRef<
+    { frame: number; from: number; to: number; startedAt: number; duration: number } | undefined
+  >(undefined);
+  const stopNavigationSlide = useCallback(() => {
+    const slide = navigationSlideRef.current;
+    if (!slide) return;
+    window.cancelAnimationFrame(slide.frame);
+    navigationSlideRef.current = undefined;
+  }, []);
+  /** A conversation switch (or unmount) must not leave the old thread's slide running. */
+  useEffect(() => {
+    return () => stopNavigationSlide();
+  }, [historyScopeKey, stopNavigationSlide]);
+  /** Restores a saved position once the current conversation has rendered. */
+  const restoredScrollPositionRef = useRef<string | null>(null);
+  /** Coalesces high-frequency scroll writes into one local snapshot per frame. */
+  const scrollPositionWriteFrameRef = useRef<number | null>(null);
   const stickToBottomRef = useRef(true);
   /** Last explicit scroll direction; layout-driven scroll events leave it null. */
   const bottomPinIntentRef = useRef<'toward-bottom' | 'away-from-bottom' | null>(null);
@@ -1996,6 +2163,8 @@ export function ChatView({
     userScrollRevisionRef.current = 0;
     lastObservedScrollTopRef.current = 0;
     programmaticScrollTargetRef.current = null;
+    programmaticScrollPendingRef.current = false;
+    restoredScrollPositionRef.current = null;
     setInput('');
     setDismissedModeHintText(null);
     setPendingRiskGoal(null);
@@ -2020,7 +2189,6 @@ export function ChatView({
     setLoadedMessages(cachedPage?.messages ?? []);
     historyRangesRef.current = cachedPage?.ranges ?? [];
     setHistoryRanges(historyRangesRef.current);
-    setHistoryLoadError(false);
     setLoadingHistoryTarget(undefined);
     historyTargetTokenRef.current = undefined;
     setDurableTaskPlan(undefined);
@@ -2076,8 +2244,10 @@ export function ChatView({
         readAgentPreferences().thinkingBudget,
     );
     setNetEnabled(readConversationNetworkEnabled(String(conversation.id)) ?? true);
-    // Always land at the latest message when opening a chat — no animated scroll.
-    stickToBottomRef.current = true;
+    // A saved position is restored after the current message page is mounted.
+    // New conversations without a snapshot retain the default bottom pin.
+    const savedScrollPosition = readConversationScrollPosition(historyScopeRef.current.key);
+    stickToBottomRef.current = savedScrollPosition?.stickToBottom ?? true;
     bottomPinIntentRef.current = null;
     lastTouchClientYRef.current = null;
     // 注意：不能把 conversation.executionMode 放进依赖——权限切换会经
@@ -2282,7 +2452,6 @@ export function ChatView({
       const current = () =>
         scope === historyScopeRef.current &&
         (!latest || generation === messageLoadGenerationRef.current);
-      setHistoryLoadError(false);
       try {
         const res: ConversationListMessagesResponse = await api.listConversationMessages({
           conversationId: conversation.id,
@@ -2352,8 +2521,10 @@ export function ChatView({
         setNextCursor(next);
         if (latest) refreshNavigationDirectory();
         return true;
-      } catch {
-        if (current() && options?.accept?.() !== false) setHistoryLoadError(true);
+      } catch (error) {
+        // NewMax conversations.get / getMessages failures only log; ChatView
+        // keeps any already-rendered page and does not invent a retry banner.
+        console.error('[ChatView] Failed to load messages:', error);
         return false;
       } finally {
         if (current()) {
@@ -2446,14 +2617,21 @@ export function ChatView({
     void refreshDurableUsageSummary();
   };
 
-  // Load the durable message page only when the selected conversation changes.
-  // Context refreshes can follow model/kernel changes and must not re-read the
-  // message list, otherwise switching a kernel causes an avoidable second
-  // history request (and makes conversation navigation feel slow).
+  // Load the durable message page only when this ChatView first needs history.
+  // A keep-alive remount can reuse the recent-page cache; skip the IPC so
+  // switching back does not flash a skeleton or wait on SQLite.
   useEffect(() => {
     if (!conversation.id) return;
+    if (readRecentConversationPage(historyScopeKey)) {
+      // Cached messages are already renderable, so mark history as ready for
+      // this conversation. Run-process history loading gates on this marker;
+      // leaving it unset on the keep-alive path silently disabled the usage
+      // details hover (cache tokens + provider balance) after switching back.
+      loadedMessagesConversationIdRef.current = String(conversation.id);
+      return;
+    }
     void loadMessages();
-  }, [conversation.id, loadMessages]);
+  }, [conversation.id, historyScopeKey, loadMessages]);
 
   // Runtime-owned context is keyed by the active conversation, model, and
   // kernel. Keep this independent from durable message loading so a context
@@ -3053,6 +3231,7 @@ export function ChatView({
                   commentarySegments: event.snapshot.commentarySegments,
                   reasoningText: event.snapshot.reasoningText,
                   assistantTimeline: event.snapshot.assistantTimeline,
+                  delegatedAgents: event.snapshot.delegatedAgents,
                   timestamp: event.snapshot.updatedAt,
                 },
                 streamSequence: latestStreamSequence,
@@ -3519,7 +3698,6 @@ export function ChatView({
     // tail, in the order they must visually appear:
     //   pending user bubbles  → right after the tail (they precede the turn)
     //   streaming assistant   → after the pending bubbles
-    //   local errors          → after the streaming turn
     // Once those transients persist, loadMessages() returns them with real
     // sequences and the virtual copies are cleared, so the list converges.
     const maxDurableSeq = loadedMessages.reduce(
@@ -3555,13 +3733,9 @@ export function ChatView({
       stamped.push({ value: visibleStreamingMessage, seq: nextVirtualSeq++, tie: 20_000 });
     }
 
-    // Local diagnostics render after the live turn.
-    for (let i = 0; i < localErrors.length; i++) {
-      stamped.push({ value: localErrors[i]!, seq: nextVirtualSeq++, tie: 30_000 + i });
-    }
     stamped.sort((a, b) => (a.seq !== b.seq ? a.seq - b.seq : a.tie - b.tie));
     return stamped.map((s) => s.value);
-  }, [localErrors, loadedMessages, pendingUserMessagesForDisplay, visibleStreamingMessage]);
+  }, [loadedMessages, pendingUserMessagesForDisplay, visibleStreamingMessage]);
 
   const navigationItems = useMemo<ConversationNavigationItem[]>(() => {
     const byId = new Map<string, ChatMessage>(
@@ -3615,17 +3789,75 @@ export function ChatView({
     [loadMessages],
   );
 
-  const handleNavigateMessage = useCallback((_messageId: string, targetScrollTop: number) => {
-    const scroller = messagesScrollRef.current;
-    if (!scroller) return;
-    navigationIntentRef.current += 1;
-    stickToBottomRef.current = false;
-    bottomPinIntentRef.current = null;
-    userScrollRevisionRef.current += 1;
-    programmaticScrollTargetRef.current = targetScrollTop;
-    scroller.scrollTop = targetScrollTop;
-    lastObservedScrollTopRef.current = targetScrollTop;
-  }, []);
+  /**
+   * NewMax `scrollToMessage` slides the reader to the clicked outline tick
+   * (`container.scrollTo({ top: el.offsetTop - 16, behavior: 'smooth' })`) rather
+   * than teleporting. The rail calls this once per layout-correction frame, so an
+   * in-flight slide keeps its origin and only re-aims its endpoint, and every
+   * frame is written through the programmatic-scroll contract so the stick
+   * tracker never mistakes the slide for a reader scroll.
+   */
+  const handleNavigateMessage = useCallback(
+    (_messageId: string, targetScrollTop: number) => {
+      const scroller = messagesScrollRef.current;
+      if (!scroller) return;
+      navigationIntentRef.current += 1;
+      stickToBottomRef.current = false;
+      bottomPinIntentRef.current = null;
+      userScrollRevisionRef.current += 1;
+
+      const writeFrame = (target: HTMLDivElement, position: number) => {
+        programmaticScrollTargetRef.current = position;
+        programmaticScrollPendingRef.current = true;
+        target.scrollTop = position;
+        lastObservedScrollTopRef.current = position;
+      };
+
+      const reducedMotion =
+        window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
+      const distance = targetScrollTop - scroller.scrollTop;
+      if (reducedMotion || Math.abs(distance) < 1) {
+        stopNavigationSlide();
+        writeFrame(scroller, targetScrollTop);
+        return;
+      }
+
+      const inFlight = navigationSlideRef.current;
+      if (inFlight) {
+        inFlight.to = targetScrollTop;
+        inFlight.duration = navigationSlideDuration(targetScrollTop - inFlight.from);
+        return;
+      }
+
+      const slide = {
+        frame: 0,
+        from: scroller.scrollTop,
+        to: targetScrollTop,
+        startedAt: -1,
+        duration: navigationSlideDuration(distance),
+      };
+      navigationSlideRef.current = slide;
+      const step = (now: number) => {
+        const currentScroller = messagesScrollRef.current;
+        if (!currentScroller || navigationSlideRef.current !== slide) return;
+        if (slide.startedAt < 0) slide.startedAt = now;
+        const progress = Math.min(1, (now - slide.startedAt) / slide.duration);
+        writeFrame(
+          currentScroller,
+          progress >= 1
+            ? slide.to
+            : navigationSlidePosition({ from: slide.from, to: slide.to, progress }),
+        );
+        if (progress >= 1) {
+          navigationSlideRef.current = undefined;
+          return;
+        }
+        slide.frame = window.requestAnimationFrame(step);
+      };
+      slide.frame = window.requestAnimationFrame(step);
+    },
+    [stopNavigationSlide],
+  );
 
   // Keep every fetched durable message mounted. History is still paginated in
   // 50-message pages, but native scrolling must not compete with virtual spacer
@@ -3675,9 +3907,8 @@ export function ChatView({
     const result: ChatMessage[] = [];
     result.push(...pendingUserMessagesForDisplay);
     if (visibleStreamingMessage) result.push(visibleStreamingMessage);
-    result.push(...localErrors);
     return result;
-  }, [localErrors, pendingUserMessagesForDisplay, visibleStreamingMessage]);
+  }, [pendingUserMessagesForDisplay, visibleStreamingMessage]);
 
   const capturePrependAnchor = useCallback((scroller: HTMLDivElement) => {
     const viewportTop = scroller.getBoundingClientRect().top;
@@ -3777,23 +4008,77 @@ export function ChatView({
     available: runProcessById,
   });
 
+  const liveTail = visibleStreamingMessage ?? messages.at(-1);
   const flowTipSignature = `${conversation.id}:${messages.at(-1)?.id ?? 'empty'}:${
-    messages.at(-1)?.streaming ? 'streaming' : 'settled'
-  }:${pendingApprovals.at(-1)?.approvalId ?? 'no-approval'}`;
+    liveTail?.streaming ? 'streaming' : 'settled'
+  }:${pendingApprovals.at(-1)?.approvalId ?? 'no-approval'}:${liveTail?.reasoningText?.length ?? 0}:${
+    liveTail?.answerText?.length ?? liveTail?.text?.length ?? 0
+  }:${liveTail?.commentaryText?.length ?? 0}:${liveTail?.commentarySegments?.length ?? 0}:${
+    liveTail?.processItems?.length ?? 0
+  }`;
   const followMainContentResize = shouldFollowConversationContentResize({
     streaming: Boolean(visibleStreamingMessage?.streaming),
     hasAnswerText: Boolean(visibleStreamingMessage?.answerText?.trim()),
   });
+  const saveCurrentScrollPosition = useCallback(() => {
+    const scroller = messagesScrollRef.current;
+    if (!scroller) return;
+    writeConversationScrollPosition(
+      historyScopeKey,
+      captureConversationScrollPosition(scroller, stickToBottomRef.current),
+    );
+  }, [historyScopeKey]);
+
+  const scheduleScrollPositionSave = useCallback(() => {
+    if (scrollPositionWriteFrameRef.current !== null) return;
+    scrollPositionWriteFrameRef.current = window.requestAnimationFrame(() => {
+      scrollPositionWriteFrameRef.current = null;
+      saveCurrentScrollPosition();
+    });
+  }, [saveCurrentScrollPosition]);
+
+  useEffect(() => {
+    return () => {
+      if (scrollPositionWriteFrameRef.current !== null) {
+        window.cancelAnimationFrame(scrollPositionWriteFrameRef.current);
+        scrollPositionWriteFrameRef.current = null;
+      }
+      saveCurrentScrollPosition();
+    };
+  }, [saveCurrentScrollPosition]);
+
   const pinMessagesToBottom = useCallback(() => {
     const scroller = messagesScrollRef.current;
     if (!scroller || !stickToBottomRef.current) return;
     const target = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
     if (Math.abs(scroller.scrollTop - target) > 1) {
       programmaticScrollTargetRef.current = target;
+      programmaticScrollPendingRef.current = true;
       scroller.scrollTop = target;
     }
     lastObservedScrollTopRef.current = scroller.scrollTop;
   }, []);
+
+  useLayoutEffect(() => {
+    if (!initialLoaded || restoredScrollPositionRef.current === historyScopeKey) return;
+    const scroller = messagesScrollRef.current;
+    if (!scroller) return;
+    restoredScrollPositionRef.current = historyScopeKey;
+    const saved = readConversationScrollPosition(historyScopeKey);
+    if (saved) {
+      stickToBottomRef.current = saved.stickToBottom;
+      restoreConversationScrollPosition(scroller, saved);
+      lastObservedScrollTopRef.current = scroller.scrollTop;
+      window.requestAnimationFrame(() => {
+        if (restoredScrollPositionRef.current !== historyScopeKey) return;
+        restoreConversationScrollPosition(scroller, saved);
+        lastObservedScrollTopRef.current = scroller.scrollTop;
+      });
+    } else {
+      stickToBottomRef.current = true;
+      pinMessagesToBottom();
+    }
+  }, [historyScopeKey, initialLoaded, loadedMessages.length, pinMessagesToBottom]);
 
   // Follow the live tail while the user stays pinned. Think, commentary,
   // tools, and the final answer all grow the same content column.
@@ -3935,6 +4220,8 @@ export function ChatView({
 
       const tempId = `temp-${Date.now()}`;
       if (isActiveConversation()) {
+        stickToBottomRef.current = true;
+        bottomPinIntentRef.current = null;
         setSending(true);
         setSendingRunId(undefined);
         setPendingUserMessages((prev) => [
@@ -4069,7 +4356,7 @@ export function ChatView({
                 id: `vision-fail-${Date.now()}`,
                 role: 'system',
                 tone: 'warning',
-                text: '视觉模型 Fallback 与 Windows OCR 均未能处理附件，原图未发送给当前文本模型。',
+                text: '图片转写失败，已配置的视觉模型未返回可用描述，原图未发送给当前文本模型。',
                 timestamp: new Date().toISOString(),
               },
             ]);
@@ -4100,13 +4387,14 @@ export function ChatView({
           setSending(false);
           setSendingRunId(undefined);
           setPendingUserMessages((prev) => prev.filter((message) => message.id !== tempId));
+          const text = classifyAppendMessageFailure(err).message;
           setLocalErrors((prev) => [
             ...prev,
             {
               id: `err-${Date.now()}`,
               role: 'system',
               tone: 'error',
-              text: `发送失败: ${(err as Error).message}`,
+              text,
               timestamp: new Date().toISOString(),
             },
           ]);
@@ -6250,8 +6538,12 @@ export function ChatView({
         });
         setSelectedSkillVersionIds([]);
         onConversationUpdated?.();
-      } catch {
-        // 换绑失败保持原状（无 toast 通道，静默即可，下次点击可重试）。
+      } catch (error) {
+        toastApi.toast({
+          type: 'error',
+          title: '换绑对话失败',
+          description: error instanceof Error ? error.message : String(error),
+        });
       }
     },
     [
@@ -6412,18 +6704,28 @@ export function ChatView({
           <div
             ref={messagesScrollRef}
             className="shell-chat-content-wrap shell-chat-message-scroller h-full overflow-y-auto py-6"
+            onPointerDown={() => stopNavigationSlide()}
             onWheel={(event) => {
-              if (event.deltaY !== 0) {
-                userScrollRevisionRef.current += 1;
-                bottomPinIntentRef.current =
-                  event.deltaY > 0 ? 'toward-bottom' : 'away-from-bottom';
-                // Release the pin during the gesture itself. Waiting for the
-                // native scroll event lets a streaming render run first and
-                // snap the viewport back to the bottom, perceived as jitter.
-                if (event.deltaY < 0) stickToBottomRef.current = false;
+              if (event.deltaY === 0) return;
+              stopNavigationSlide();
+              const scroller = event.currentTarget;
+              userScrollRevisionRef.current += 1;
+              bottomPinIntentRef.current = event.deltaY > 0 ? 'toward-bottom' : 'away-from-bottom';
+              if (
+                shouldReleaseStickOnWheel({
+                  deltaY: event.deltaY,
+                  nearBottom: isConversationNearBottom({
+                    scrollTop: scroller.scrollTop,
+                    scrollHeight: scroller.scrollHeight,
+                    clientHeight: scroller.clientHeight,
+                  }),
+                })
+              ) {
+                stickToBottomRef.current = false;
               }
             }}
             onTouchStart={(event) => {
+              stopNavigationSlide();
               lastTouchClientYRef.current = event.touches[0]?.clientY ?? null;
             }}
             onTouchMove={(event) => {
@@ -6435,7 +6737,16 @@ export function ChatView({
                   bottomPinIntentRef.current = 'toward-bottom';
                 } else if (currentClientY > previousClientY) {
                   bottomPinIntentRef.current = 'away-from-bottom';
-                  stickToBottomRef.current = false;
+                  const scroller = event.currentTarget;
+                  if (
+                    !isConversationNearBottom({
+                      scrollTop: scroller.scrollTop,
+                      scrollHeight: scroller.scrollHeight,
+                      clientHeight: scroller.clientHeight,
+                    })
+                  ) {
+                    stickToBottomRef.current = false;
+                  }
                 }
               }
               lastTouchClientYRef.current = currentClientY ?? null;
@@ -6444,6 +6755,7 @@ export function ChatView({
               lastTouchClientYRef.current = null;
             }}
             onKeyDown={(event) => {
+              stopNavigationSlide();
               if (event.key === 'ArrowDown' || event.key === 'PageDown' || event.key === 'End') {
                 userScrollRevisionRef.current += 1;
                 bottomPinIntentRef.current = 'toward-bottom';
@@ -6462,38 +6774,27 @@ export function ChatView({
               const currentScrollTop = scroller.scrollTop;
               const programmaticTarget = programmaticScrollTargetRef.current;
               const isProgrammatic =
-                programmaticTarget !== null && Math.abs(currentScrollTop - programmaticTarget) <= 1;
-              if (isProgrammatic) {
+                programmaticScrollPendingRef.current ||
+                (programmaticTarget !== null &&
+                  Math.abs(currentScrollTop - programmaticTarget) <= 1);
+              if (programmaticTarget !== null) {
                 programmaticScrollTargetRef.current = null;
-              } else {
-                const nativeIntent = inferNativeScrollIntent({
-                  previousScrollTop: lastObservedScrollTopRef.current,
-                  nextScrollTop: currentScrollTop,
-                });
-                // Native scrollbar dragging does not emit wheel events. Infer its
-                // direction from scrollTop so dragging upward always releases pinning.
-                if (nativeIntent === 'away-from-bottom') {
-                  userScrollRevisionRef.current += 1;
-                  bottomPinIntentRef.current = nativeIntent;
-                  stickToBottomRef.current = false;
-                } else if (
-                  nativeIntent === 'toward-bottom' &&
-                  bottomPinIntentRef.current === null
-                ) {
-                  userScrollRevisionRef.current += 1;
-                  bottomPinIntentRef.current = nativeIntent;
-                }
               }
-              lastObservedScrollTopRef.current = currentScrollTop;
-
-              // Proximity may disable pinning, but only an explicit/native
-              // downward gesture may re-enable it after the user viewed history.
-              const distance = scroller.scrollHeight - currentScrollTop - scroller.clientHeight;
-              stickToBottomRef.current = resolveBottomPinState({
-                currentlyPinned: stickToBottomRef.current,
-                distanceFromBottom: distance,
-                userIntent: isProgrammatic ? null : bottomPinIntentRef.current,
+              const nextStick = applyConversationStickOnScroll({
+                sticky: stickToBottomRef.current,
+                programmaticPending: isProgrammatic,
+                previousScrollTop: lastObservedScrollTopRef.current,
+                scrollTop: currentScrollTop,
+                scrollHeight: scroller.scrollHeight,
+                clientHeight: scroller.clientHeight,
               });
+              if (!nextStick.sticky && stickToBottomRef.current) {
+                userScrollRevisionRef.current += 1;
+                bottomPinIntentRef.current = 'away-from-bottom';
+              }
+              stickToBottomRef.current = nextStick.sticky;
+              programmaticScrollPendingRef.current = nextStick.programmaticPending;
+              lastObservedScrollTopRef.current = currentScrollTop;
               bottomPinIntentRef.current = null;
 
               // Load older messages when scrolled near top. Capture one real DOM
@@ -6512,6 +6813,7 @@ export function ChatView({
                   });
                 });
               }
+              scheduleScrollPositionSave();
             }}
           >
             {messages.length === 0 && !showTyping ? (
@@ -6682,12 +6984,7 @@ export function ChatView({
                     }
                     skillNameByVersionId={skillNameByVersionId}
                     agentPreferences={agentPreferences}
-                    dismissLocalError={
-                      localErrors.some((error) => error.id === msg.id)
-                        ? (messageId) =>
-                            setLocalErrors((prev) => prev.filter((error) => error.id !== messageId))
-                        : undefined
-                    }
+                    dismissLocalError={undefined}
                   />
                 </div>
               ))}
@@ -6695,30 +6992,9 @@ export function ChatView({
             </div>
           </div>
 
-          {navigationDirectory.loading ||
-          navigationDirectory.error ||
-          loadingHistoryTarget ||
-          historyLoadError ? (
+          {loadingHistoryTarget ? (
             <div className="shell-history-status" role="status" aria-live="polite">
-              <span>
-                {historyLoadError
-                  ? '历史消息读取失败，请重试导航或加载操作。'
-                  : loadingHistoryTarget
-                    ? '正在读取目标附近的消息…'
-                    : navigationDirectory.error
-                      ? '历史目录尚未加载完整。'
-                      : '正在加载历史目录…'}
-              </span>
-              {navigationDirectory.error ? (
-                <button type="button" onClick={navigationDirectory.refresh}>
-                  重试目录
-                </button>
-              ) : null}
-              {historyLoadError ? (
-                <button type="button" onClick={() => void loadMessages()}>
-                  重试最新消息
-                </button>
-              ) : null}
+              <span>正在读取目标附近的消息…</span>
             </div>
           ) : null}
         </div>
@@ -7553,6 +7829,10 @@ const ReasoningContent = memo(function ReasoningContent({
   );
 });
 
+function isTransientModelOverload(error?: string): boolean {
+  return /overloaded|try again later|服务超载|服务器.*繁忙/i.test(error ?? '');
+}
+
 function HarnessTerminalNotice({
   state,
   error,
@@ -7589,18 +7869,21 @@ function HarnessTerminalNotice({
       </div>
     );
   }
+  const overloaded = isTransientModelOverload(error);
   return (
     <details className="shell-harness-terminal is-failed" data-testid="assistant-terminal-failed">
       <summary>
         <span className="shell-harness-terminal__dot" aria-hidden="true" />
-        <span className="shell-harness-terminal__title">运行失败</span>
+        <span className="shell-harness-terminal__title">
+          {overloaded ? '回答中断' : '运行失败'}
+        </span>
         {errorSummary ? (
           <span
             className="shell-harness-terminal__summary"
             data-testid="assistant-terminal-error"
             title={error}
           >
-            {errorSummary}
+            {overloaded ? '模型服务繁忙，回答没有写完。' : errorSummary}
           </span>
         ) : null}
         <ChevronDown size={13} className="shell-harness-terminal__chevron" aria-hidden="true" />
@@ -7612,6 +7895,7 @@ function HarnessTerminalNotice({
 
 function ProviderAccountUsageSection({ identity }: { identity: ProviderUsageIdentity }) {
   const [windows, setWindows] = useState<ProviderUsageWindows | null>(null);
+  const [balance, setBalance] = useState<ProviderBalanceView | null>(null);
 
   useEffect(() => {
     const api = bridge();
@@ -7629,16 +7913,52 @@ function ProviderAccountUsageSection({ identity }: { identity: ProviderUsageIden
     };
   }, [identity]);
 
-  if (!windows?.today && !windows?.last30d) return null;
+  const providerId = identity.providerId;
+  useEffect(() => {
+    const api = bridge();
+    if (!api?.queryProviderBalance || !providerId) {
+      setBalance(null);
+      return;
+    }
+    let alive = true;
+    void fetchProviderBalanceView(providerId, () =>
+      api.queryProviderBalance({
+        providerId: providerId as ProviderBalancePayload['providerId'],
+      }),
+    )
+      .then((view) => {
+        if (alive) setBalance(view ?? null);
+      })
+      .catch(() => {
+        if (alive) setBalance(null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [providerId]);
+
+  if (!balance && !windows?.today && !windows?.last30d) return null;
   return (
     <div className="shell-usage-tip__account" data-testid="provider-usage-windows">
-      {windows.today ? (
+      {balance ? (
+        <div className="shell-usage-tip__account-row" data-testid="provider-balance">
+          <span>{identity.providerName ?? '账户'} 余额</span>
+          <strong>{balance.total}</strong>
+        </div>
+      ) : null}
+      {balance?.toppedUp || balance?.granted ? (
+        <div className="shell-usage-tip__account-row" data-testid="provider-balance-credits">
+          {balance?.toppedUp ? <span>充值 {balance.toppedUp}</span> : null}
+          {balance?.granted ? <span>赠送 {balance.granted}</span> : null}
+        </div>
+      ) : null}
+      {windows?.today ? (
         <div className="shell-usage-tip__account-row">
           <span>今日</span>
           <strong>{formatProviderUsageWindow(windows.today)}</strong>
         </div>
       ) : null}
-      {windows.last30d ? (
+      {windows?.last30d ? (
         <div className="shell-usage-tip__account-row">
           <span>近30天</span>
           <strong>{formatProviderUsageWindow(windows.last30d)}</strong>
@@ -7647,6 +7967,227 @@ function ProviderAccountUsageSection({ identity }: { identity: ProviderUsageIden
     </div>
   );
 }
+
+interface DelegatedAgentToolEventView {
+  toolName: string;
+  arguments?: string;
+  status?: string;
+  output?: string;
+}
+
+interface DelegatedAgentTaskView {
+  childRunId: string;
+  parallelGroup?: string;
+  name: string;
+  avatar: string;
+  kind: 'existing' | 'temporary';
+  /** Agent Library id when an existing Agent was reused; absent for a temporary profile. */
+  agentId?: string;
+  status: string;
+  result?: string;
+  toolEvents: DelegatedAgentToolEventView[];
+}
+
+function parseDelegatedAgentTask(item: InlineProcessItem): DelegatedAgentTaskView | undefined {
+  if (item.kind !== 'tool' || item.name !== 'agent_delegate' || !item.result) return undefined;
+  try {
+    const value = JSON.parse(item.result) as Record<string, unknown>;
+    const assignment = value.assignment as Record<string, unknown> | undefined;
+    if (typeof value.childRunId !== 'string' || !assignment) return undefined;
+    const events = Array.isArray(value.toolEvents)
+      ? value.toolEvents.flatMap((entry): DelegatedAgentToolEventView[] => {
+          if (!entry || typeof entry !== 'object') return [];
+          const record = entry as Record<string, unknown>;
+          if (typeof record.toolName !== 'string') return [];
+          return [{
+            toolName: record.toolName,
+            ...(typeof record.arguments === 'string' ? { arguments: record.arguments } : {}),
+            ...(typeof record.status === 'string' ? { status: record.status } : {}),
+            ...(typeof record.output === 'string' ? { output: record.output } : {}),
+          }];
+        })
+      : [];
+    return {
+      childRunId: value.childRunId,
+      ...(typeof value.parallelGroup === 'string' && value.parallelGroup.trim()
+        ? { parallelGroup: value.parallelGroup.trim() }
+        : {}),
+      name: typeof assignment.name === 'string' ? assignment.name : '临时任务 Agent',
+      avatar: typeof assignment.avatar === 'string' ? assignment.avatar : '🤖',
+      kind: assignment.kind === 'existing' ? 'existing' : 'temporary',
+      ...(typeof assignment.agentId === 'string' && assignment.agentId.trim()
+        ? { agentId: assignment.agentId.trim() }
+        : {}),
+      status: typeof value.status === 'string' ? value.status : value.ok === false ? 'failed' : 'completed',
+      ...(typeof value.result === 'string' && value.result.trim() ? { result: value.result } : {}),
+      toolEvents: events,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+
+/** Tool rows shown before a delegated card collapses its command log (20 rows). */
+const DELEGATED_TOOL_VISIBLE_LIMIT = 20;
+
+const DelegatedAgentToolList = memo(function DelegatedAgentToolList({
+  events,
+}: {
+  events: readonly DelegatedAgentToolEventView[];
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const hiddenCount = events.length - DELEGATED_TOOL_VISIBLE_LIMIT;
+  const visible = expanded ? events : events.slice(0, DELEGATED_TOOL_VISIBLE_LIMIT);
+  return (
+    <div className="shell-delegated-agent__tools">
+      {visible.map((event, index) => {
+        const output = event.output ? formatDisplayedToolOutput(event.output) : undefined;
+        return (
+          <details className="shell-delegated-agent__tool" key={`${event.toolName}-${index}`}>
+            <summary>
+              <span>{event.toolName}</span>
+              <span>{event.status === 'completed' ? '完成' : event.status ?? '执行中'}</span>
+            </summary>
+            {event.arguments ? <code>{event.arguments}</code> : null}
+            {output?.text ? <pre>{output.text}</pre> : null}
+          </details>
+        );
+      })}
+      {hiddenCount > 0 ? (
+        <button
+          type="button"
+          className="shell-delegated-agent__tools-toggle"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((value) => !value)}
+        >
+          {expanded
+            ? '收起工具调用'
+            : `展开全部 ${events.length} 项工具调用（还有 ${hiddenCount} 项）`}
+        </button>
+      ) : null}
+    </div>
+  );
+});
+
+export const DelegatedAgentTasks = memo(function DelegatedAgentTasks({
+  items,
+  delegatedAgents,
+  onStopChild,
+}: {
+  items: readonly InlineProcessItem[];
+  delegatedAgents?: readonly DelegatedAgentProjection[];
+  onStopChild?: (childRunId: string) => void;
+}) {
+  const parsedTasks = items.flatMap((item) => {
+    const task = parseDelegatedAgentTask(item);
+    return task ? [task] : [];
+  });
+  const taskById = new Map<string, DelegatedAgentTaskView>();
+  for (const task of delegatedAgents ?? []) {
+    taskById.set(String(task.childRunId), {
+      childRunId: String(task.childRunId),
+      ...(task.parallelGroup ? { parallelGroup: task.parallelGroup } : {}),
+      name: task.name,
+      avatar: task.avatar,
+      kind: task.kind,
+      ...(task.agentId ? { agentId: task.agentId } : {}),
+      status: task.status,
+      ...(task.result ? { result: task.result } : {}),
+      toolEvents: task.toolEvents.map((event) => ({
+        toolName: event.toolName,
+        ...(event.arguments ? { arguments: event.arguments } : {}),
+        ...(event.status ? { status: event.status } : {}),
+        ...(event.output ? { output: event.output } : {}),
+      })),
+    });
+  }
+  for (const task of parsedTasks) taskById.set(task.childRunId, task);
+  const tasks = [...taskById.values()];
+  if (tasks.length === 0) return null;
+  const runningTasks = tasks.filter((task) => task.status === 'running');
+  const parallelGroupFirst = new Set<string>();
+  for (const task of tasks) {
+    if (!task.parallelGroup) continue;
+    if (![...parallelGroupFirst].some((childRunId) =>
+      tasks.find((candidate) => candidate.childRunId === childRunId)?.parallelGroup === task.parallelGroup,
+    )) {
+      parallelGroupFirst.add(task.childRunId);
+    }
+  }
+  return (
+    <div className="shell-delegated-agent-list">
+      {runningTasks.length > 1 && onStopChild ? (
+        <button
+          type="button"
+          className="shell-delegated-agent__stop-all"
+          onClick={() => runningTasks.forEach((task) => onStopChild(task.childRunId))}
+        >
+          停止全部子任务
+        </button>
+      ) : null}
+      {tasks.map((task) => (
+        <Fragment key={task.childRunId}>
+        {task.parallelGroup && parallelGroupFirst.has(task.childRunId) ? (
+          <div className="shell-delegated-agent-group__header">
+            <span>并行任务组：{task.parallelGroup}</span>
+            <span>{tasks.filter((candidate) => candidate.parallelGroup === task.parallelGroup).length} 个任务</span>
+          </div>
+        ) : null}
+        <details className="shell-delegated-agent" key={task.childRunId}>
+          <summary className="shell-delegated-agent__summary">
+            <span className="shell-delegated-agent__avatar" aria-hidden="true">{task.avatar}</span>
+            <span className="shell-delegated-agent__identity">
+              <strong>{task.name}</strong>
+              <span className="shell-delegated-agent__origin">
+                {task.kind === 'existing' ? '已有 Agent' : '临时 Agent'}
+                {task.agentId ? (
+                  <code
+                    className="shell-delegated-agent__agent-id"
+                    title={`Agent Library id：${task.agentId}`}
+                  >
+                    {task.agentId}
+                  </code>
+                ) : null}
+              </span>
+            </span>
+            <span className="shell-delegated-agent__status">
+              {task.status === 'completed'
+                ? '已完成'
+                : task.status === 'running'
+                  ? '运行中'
+                  : task.status === 'failed'
+                    ? '失败'
+                    : task.status === 'cancelled'
+                      ? '已取消'
+                      : task.status === 'timed_out'
+                        ? '已超时'
+                        : task.status}
+            </span>
+          </summary>
+          <div className="shell-delegated-agent__details">
+            {task.toolEvents.length > 0 ? (
+              <DelegatedAgentToolList events={task.toolEvents} />
+            ) : (
+              <span className="shell-delegated-agent__empty">本次任务没有调用工具</span>
+            )}
+            {task.result ? <div className="shell-delegated-agent__result">{task.result}</div> : null}
+            {task.status === 'running' && onStopChild ? (
+              <button
+                type="button"
+                className="shell-delegated-agent__stop"
+                onClick={() => onStopChild(task.childRunId)}
+              >
+                停止当前子任务
+              </button>
+            ) : null}
+          </div>
+        </details>
+        </Fragment>
+      ))}
+    </div>
+  );
+});
 
 const MessageBubble = memo(function MessageBubble({
   message,
@@ -7737,6 +8278,18 @@ const MessageBubble = memo(function MessageBubble({
   const timelineHasLoadedPageRef = useRef(false);
   const timelineSeenCursorsRef = useRef(new Set<string>());
   const observedTimelineRunRef = useRef(message.runId);
+  // Expression layer: a turn that just finished celebrates briefly. Tracked through
+  // a ref so remounting (e.g. switching conversations) never replays a stale one.
+  const [justCompleted, setJustCompleted] = useState(false);
+  const wasStreamingRef = useRef(Boolean(message.streaming));
+  useEffect(() => {
+    const finished = wasStreamingRef.current && !message.streaming;
+    wasStreamingRef.current = Boolean(message.streaming);
+    if (!finished) return;
+    setJustCompleted(true);
+    const timer = setTimeout(() => setJustCompleted(false), 4_000);
+    return () => clearTimeout(timer);
+  }, [message.streaming]);
 
   useEffect(() => {
     if (observedTimelineRunRef.current === message.runId) return;
@@ -7831,6 +8384,25 @@ const MessageBubble = memo(function MessageBubble({
       processView,
     ],
   );
+  const generatedImageModels = useMemo(
+    () => generatedImageModelsFromProcessItems(displayedProcessItems),
+    [displayedProcessItems],
+  );
+  const delegatedAgentTaskContent = useMemo(
+    () => (
+      <DelegatedAgentTasks
+        items={displayedProcessItems ?? []}
+        delegatedAgents={message.delegatedAgents}
+        onStopChild={(childRunId) => {
+          void bridge()?.cancelRun?.({ runId: childRunId as RunId });
+        }}
+      />
+    ),
+    [displayedProcessItems, message.delegatedAgents],
+  );
+  const hasDelegatedAgentTasks = displayedProcessItems?.some(
+    (item) => item.kind === 'tool' && item.name === 'agent_delegate' && Boolean(item.result),
+  ) || Boolean(message.delegatedAgents?.length);
 
   const metricsLabel = useMemo(() => {
     if (!processView) return undefined;
@@ -8091,12 +8663,34 @@ const MessageBubble = memo(function MessageBubble({
     message.globalAgentName?.trim() || runAgentIdentity?.name || avatarSource?.name;
   const avatarName = avatarSource?.name ?? visibleAgentLabel ?? '助手';
   const hasAnswerText = Boolean((message.answerText ?? message.text).trim());
+  // Expression for the procedural avatar. Every signal below comes from this
+  // conversation, which is exactly where these expressions can appear.
+  const reasoningInFlight =
+    Boolean(message.streaming) &&
+    ((displayedProcessItems ?? []).some(
+      (item) => item.kind === 'reasoning' && item.status === 'streaming',
+    ) ||
+      // Streaming snapshots carry reasoning in the message field before any
+      // answer text exists — that window is "thinking", not "working".
+      (Boolean(message.reasoningText?.trim()) && !hasAnswerText));
+  const avatarState = avatarStateFrom({
+    streaming: Boolean(message.streaming),
+    reasoning: reasoningInFlight,
+    awaitingApproval: waitingForApproval,
+    failed: Boolean(processLoadFailure),
+    justCompleted,
+  });
   const timelineTiming = assistantTimelineProcessTiming(displayedTimeline, !message.streaming);
   const showFooter = !message.streaming && (hasAnswerText || Boolean(processView));
   return (
     <div className="shell-msg shell-msg--assistant group relative flex items-start gap-2.5">
       <div className="shrink-0 pt-0.5">
-        <AgentAvatarView name={avatarName} avatar={avatarSource?.avatar} size={26} />
+        <AgentAvatarView
+          name={avatarName}
+          avatar={avatarSource?.avatar}
+          size={26}
+          state={avatarState}
+        />
       </div>
       <div className="min-w-0 flex-1 pt-0.5">
         {visibleAgentLabel ? (
@@ -8157,6 +8751,7 @@ const MessageBubble = memo(function MessageBubble({
           timelineHasMore={Boolean(timelineNextCursor)}
           onLoadMoreTimeline={loadAssistantTimelinePage}
           onRetryTimelineLoad={loadAssistantTimelinePage}
+          agentTaskContent={hasDelegatedAgentTasks ? delegatedAgentTaskContent : undefined}
           supplementalContent={
             message.processStatus || message.terminalState ? (
               <>
@@ -8195,6 +8790,7 @@ const MessageBubble = memo(function MessageBubble({
             streaming={Boolean(message.streaming)}
             projectFolder={projectFolder}
             conversationId={conversationId}
+            imageModelBySrc={generatedImageModels}
             onOpenFile={onOpenChange}
             onOpenHtmlInBrowser={onOpenHtmlInBrowser}
             onOpenUrl={onOpenWebUrl}
@@ -8275,7 +8871,7 @@ const MessageBubble = memo(function MessageBubble({
                 <MetaHover
                   className="shell-msg-meta__metrics"
                   label={metricsLabel}
-                  width={330}
+                  width="auto"
                   panel={
                     <div
                       className="shell-meta-tip shell-usage-tip"
@@ -8370,11 +8966,12 @@ function MetaHover({
   label: ReactNode;
   panel: ReactNode;
   className?: string;
-  width?: number;
+  width?: number | 'auto';
 }) {
   const [open, setOpen] = useState(false);
   const [style, setStyle] = useState<React.CSSProperties | null>(null);
   const triggerRef = useRef<HTMLSpanElement>(null);
+  const portalRef = useRef<HTMLDivElement>(null);
   const closeTimer = useRef<number | null>(null);
 
   const cancelClose = () => {
@@ -8384,19 +8981,27 @@ function MetaHover({
     }
   };
 
+  // Right-align the card to its trigger, clamped to the viewport.
+  const place = (el: HTMLElement, w: number): React.CSSProperties => {
+    const rect = el.getBoundingClientRect();
+    return {
+      position: 'fixed',
+      left: Math.max(8, Math.min(rect.right - w, window.innerWidth - w - 8)),
+      bottom: window.innerHeight - rect.top + 8,
+      zIndex: 10020,
+    };
+  };
+
   const show = () => {
     cancelClose();
     const el = triggerRef.current;
     if (!el || typeof window === 'undefined') return;
-    const rect = el.getBoundingClientRect();
-    const left = Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8));
-    setStyle({
-      position: 'fixed',
-      left,
-      bottom: window.innerHeight - rect.top + 8,
-      width,
-      zIndex: 10020,
-    });
+    // 'auto' lets the card size to its content (NewMax behaviour). We anchor
+    // from an estimate first and re-anchor once the real box is measured.
+    const w = width === 'auto' ? 260 : width;
+    const next = place(el, Math.min(w, window.innerWidth - 16));
+    if (width !== 'auto') next.width = w;
+    setStyle(next);
     setOpen(true);
   };
 
@@ -8404,6 +9009,21 @@ function MetaHover({
     cancelClose();
     closeTimer.current = window.setTimeout(() => setOpen(false), 120);
   };
+
+  // Content-sized cards only know their width after mount, so re-anchor from
+  // the measured box instead of the estimate. No-op for fixed widths.
+  useLayoutEffect(() => {
+    if (!open || width !== 'auto') return;
+    const el = triggerRef.current;
+    const portal = portalRef.current;
+    if (!el || !portal || typeof window === 'undefined') return;
+    const measured = portal.offsetWidth;
+    if (!measured) return;
+    setStyle((s) => {
+      const next = place(el, measured);
+      return s && s.left === next.left && s.bottom === next.bottom ? s : { ...(s ?? {}), ...next };
+    });
+  }, [open, width]);
 
   useEffect(() => () => cancelClose(), []);
 
@@ -8423,6 +9043,7 @@ function MetaHover({
       {open && style && typeof document !== 'undefined'
         ? createPortal(
             <div
+              ref={portalRef}
               className="shell-meta-tip-portal"
               style={style}
               role="tooltip"
@@ -8626,84 +9247,5 @@ export function AssistantProcessGroup({
         </div>
       ) : null}
     </section>
-  );
-}
-
-// ─── Tool approval card（询问批准） ───────────────────────────────────────────
-
-function ToolApprovalCard({
-  approval,
-  busy,
-  onApprove,
-  onDeny,
-}: {
-  approval: PendingToolApproval;
-  busy?: boolean;
-  onApprove(scope: ToolApprovalScope): void;
-  onDeny(): void;
-}) {
-  const persistentApp = persistentComputerUseAppOf(approval.toolName, approval.arguments);
-  const scopes = approval.allowedScopes;
-  const canAlwaysAllowApp = Boolean(persistentApp && (!scopes || scopes.includes('always-app')));
-  const canAllowSession = Boolean(!persistentApp && (!scopes || scopes.includes('session')));
-  const secondaryScope: ToolApprovalScope | undefined = canAlwaysAllowApp
-    ? 'always-app'
-    : canAllowSession
-      ? 'session'
-      : undefined;
-  const secondaryLabel = canAlwaysAllowApp ? '始终允许此应用' : '本会话允许';
-  const detail = approval.detail || approval.path || approval.command || approval.toolName;
-
-  return (
-    <div
-      className="shell-composer-tool-approval"
-      data-testid={`tool-approval-${approval.approvalId}`}
-      data-tool={approval.toolName}
-      data-persistent-app={persistentApp ? persistentApp.value : undefined}
-    >
-      <div className="shell-composer-tool-approval__main">
-        <span className="shell-composer-tool-approval__icon" aria-hidden="true">
-          <Shield size={16} />
-        </span>
-        <div className="shell-composer-tool-approval__copy">
-          <div className="shell-composer-tool-approval__title">{approval.title}</div>
-          <div className="shell-composer-tool-approval__detail">
-            <span>需要批准</span>
-            {detail ? <span aria-hidden="true"> · </span> : null}
-            {detail ? (
-              <span className="shell-composer-tool-approval__detail-text">{detail}</span>
-            ) : null}
-          </div>
-        </div>
-      </div>
-      <div className="shell-composer-tool-approval__actions">
-        <button
-          type="button"
-          className="shell-composer-tool-approval__button is-approve"
-          disabled={busy}
-          onClick={() => onApprove('once')}
-        >
-          {busy ? '处理中…' : '批准'}
-        </button>
-        {secondaryScope ? (
-          <button
-            type="button"
-            className="shell-composer-tool-approval__button is-secondary"
-            disabled={busy}
-            onClick={() => onApprove(secondaryScope)}
-          >
-            {secondaryLabel}
-          </button>
-        ) : null}
-        <button
-          type="button"
-          className="shell-composer-tool-approval__button is-deny"
-          disabled={busy}
-          onClick={onDeny}
-        >
-          拒绝
-        </button>
-      </div>
-    </div>
   );
 }

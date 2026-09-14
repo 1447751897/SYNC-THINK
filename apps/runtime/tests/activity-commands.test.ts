@@ -6,8 +6,18 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { decodeFrames, encodeFrame, pipePathPortable, type Frame } from '@sync-think/protocol';
 import { FakeProvider } from '@sync-think/adapters';
-import { SqliteExternalEventStore, SqliteRunIndexStore } from '@sync-think/storage';
-import type { MessageId, ThreadId } from '@sync-think/shared';
+import {
+  SqliteConversationStore,
+  SqliteExternalEventStore,
+  SqliteRunIndexStore,
+  SqliteWorkspaceStore,
+} from '@sync-think/storage';
+import {
+  deriveTaskTitleFromPrompt,
+  type MessageId,
+  type ModelId,
+  type ThreadId,
+} from '@sync-think/shared';
 import { openPersistentRuntime } from '../src/persistence.js';
 
 const tempDirs: string[] = [];
@@ -275,6 +285,93 @@ describe('activity.listRuns', () => {
       expect(
         (bySource.payload as { entries: Array<{ runId: string }> }).entries.map((e) => e.runId),
       ).toEqual(['r-c']);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('fills a human title from the conversation instead of leaving the run id', async () => {
+    const h = await openHarness('activity-titles');
+    try {
+      const internals = h.session.runtime as unknown as {
+        conversationStore: SqliteConversationStore;
+        workspaceStore: SqliteWorkspaceStore;
+      };
+      const workspace = internals.workspaceStore.createWorkspace({ name: 'activity-titles' });
+      const task = internals.workspaceStore.createTask({
+        workspaceId: workspace.id,
+        title: '新对话',
+        goal: 'first message',
+      });
+      const conversation = internals.conversationStore.create({
+        target: { track: 'model', modelId: 'gpt-5' as ModelId },
+        workspaceId: workspace.id,
+        title: '分析登录流程',
+      });
+      internals.conversationStore.bindTask(conversation.id, task.taskId);
+      seedRun(h.runIndex, {
+        runId: 'r-named',
+        taskId: task.taskId,
+        conversationId: task.threadId,
+        startedAt: '2026-08-21T00:00:04.000Z',
+      });
+
+      const resp = await h.send('activity.listRuns', {});
+      const entry = (resp.payload as { entries: Array<Record<string, string>> }).entries[0]!;
+      expect(entry.title).toBe('分析登录流程');
+      expect(entry.conversationId).toBe(conversation.id);
+      expect(entry.runId).toBe('r-named');
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('derives a title from the trigger message when the conversation is still untitled', async () => {
+    const h = await openHarness('activity-prompt-title');
+    try {
+      const prompt = '请帮我分析现有项目，然后修复登录流程并补充测试。';
+      const internals = h.session.runtime as unknown as {
+        messageStore: {
+          append: (message: unknown) => unknown;
+          nextSequence: (threadId: ThreadId) => number;
+        };
+      };
+      h.raw
+        .prepare('INSERT OR IGNORE INTO thread (id, task_id, created_at) VALUES (?, ?, ?)')
+        .run('thread-title', 'task-thread-title', '2026-08-21T00:00:00.000Z');
+      internals.messageStore.append({
+        id: 'msg-title' as MessageId,
+        threadId: 'thread-title' as ThreadId,
+        role: 'user',
+        blocks: [{ type: 'text', text: prompt }],
+        createdAt: '2026-08-21T00:00:00.000Z',
+        sequence: internals.messageStore.nextSequence('thread-title' as ThreadId),
+      });
+      seedRun(h.runIndex, {
+        runId: 'r-prompt',
+        conversationId: 'thread-title',
+        triggerMessageId: 'msg-title',
+      });
+
+      const resp = await h.send('activity.listRuns', {});
+      const entry = (resp.payload as { entries: Array<{ title: string; runId: string }> })
+        .entries[0]!;
+      expect(entry.title).toBe(deriveTaskTitleFromPrompt(prompt));
+      expect(entry.runId).toBe('r-prompt');
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('uses a source label when no human title can be resolved', async () => {
+    const h = await openHarness('activity-source-title');
+    try {
+      seedRun(h.runIndex, { runId: 'r-orphan', source: 'scheduled' });
+      const resp = await h.send('activity.listRuns', {});
+      const entry = (resp.payload as { entries: Array<{ title: string; runId: string }> })
+        .entries[0]!;
+      expect(entry.title).toBe('定时任务');
+      expect(entry.runId).toBe('r-orphan');
     } finally {
       await h.close();
     }

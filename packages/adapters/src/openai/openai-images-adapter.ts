@@ -23,15 +23,39 @@ import {
 const MAX_IMAGES = 4;
 const MAX_PROMPT_BYTES = 64 * 1024;
 const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
+const HTTP_ERROR_BODY_CHARS = 4_000;
+const INVALID_JSON_PREVIEW_CHARS = 240;
 const BASE64_RE = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 
 export interface OpenAIImagesAdapterOptions {
   fetchImpl?: DiscoverOpenAICompatibleModelsOptions['fetchImpl'];
-  timeoutMs?: number;
+  /**
+   * Local wall-clock limit for one generation call. `null` means "no host
+   * timer": the request is bounded only by the provider, so long image or
+   * upscale jobs are never killed locally. Omit to keep the 60s default used
+   * by short probes (settings-page connectivity checks).
+   */
+  timeoutMs?: number | null;
   /** Number of additional attempts for transient, timeout, and rate-limit failures. */
   maxRetries?: number;
   /** Base delay for exponential retry backoff. Set to 0 in deterministic fixtures. */
   retryBaseDelayMs?: number;
+}
+
+const DEFAULT_IMAGE_GENERATION_TIMEOUT_MS = 60_000;
+
+/**
+ * A local host timer only exists to stop a hung probe. Chat image generation is
+ * a long job (upscaling can take minutes), so callers pass `null` and rely on
+ * the user cancelling the run instead of a wall-clock guess.
+ */
+function resolveLocalTimeoutMs(
+  requestTimeout: number | null | undefined,
+  optionTimeout: number | null | undefined,
+): number | null {
+  if (requestTimeout !== undefined) return requestTimeout;
+  if (optionTimeout !== undefined) return optionTimeout;
+  return DEFAULT_IMAGE_GENERATION_TIMEOUT_MS;
 }
 
 export class ProviderImageGenerationError extends Error {
@@ -59,7 +83,7 @@ export class OpenAIImagesAdapter implements ProviderAdapter {
       apiKey,
       baseUrl,
       fetchImpl: this.opts.fetchImpl,
-      timeoutMs: this.opts.timeoutMs,
+      timeoutMs: this.opts.timeoutMs ?? undefined,
     });
   }
 
@@ -77,10 +101,10 @@ export class OpenAIImagesAdapter implements ProviderAdapter {
     validateRequest(request);
     const fetchImpl = this.opts.fetchImpl ?? fetch;
     const timeoutController = new AbortController();
-    const timeoutMs = this.opts.timeoutMs ?? 60_000;
+    const timeoutMs = resolveLocalTimeoutMs(request.timeoutMs, this.opts.timeoutMs);
     const maxRetries = normalizeRetryCount(this.opts.maxRetries);
     const retryBaseDelayMs = normalizeRetryDelay(this.opts.retryBaseDelayMs);
-    const timer = setTimeout(() => timeoutController.abort(), timeoutMs);
+    const timer = timeoutMs === null ? null : setTimeout(() => timeoutController.abort(), timeoutMs);
     const signal = AbortSignal.any([request.signal, timeoutController.signal]);
     const url = joinImagesGenerationUrl(request.baseUrl);
     const body = {
@@ -135,7 +159,7 @@ export class OpenAIImagesAdapter implements ProviderAdapter {
         }
       }
     } finally {
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
     }
   }
 }
@@ -181,12 +205,15 @@ function validateRequest(request: ProviderImageGenerationRequest): void {
 }
 
 async function parseJsonResponse(response: Response, apiKey: string): Promise<unknown> {
-  const text = await boundedResponseText(response);
+  const text = await response.text();
   try {
     return JSON.parse(text) as unknown;
   } catch {
     throw new ProviderImageGenerationError(
-      `Image generation returned invalid JSON: ${scrubSecrets(text, [apiKey])}`,
+      `Image generation returned invalid JSON: ${scrubSecrets(
+        previewResponseText(text, INVALID_JSON_PREVIEW_CHARS),
+        [apiKey],
+      )}`,
       'protocol',
       response.status,
     );
@@ -364,7 +391,12 @@ async function waitForRetry(delayMs: number, signal: AbortSignal): Promise<void>
 }
 
 async function boundedResponseText(response: Response): Promise<string> {
-  return (await response.text()).slice(0, 4_000);
+  return previewResponseText(await response.text(), HTTP_ERROR_BODY_CHARS);
+}
+
+function previewResponseText(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, maxChars)}…`;
 }
 
 function isAbortError(error: unknown): boolean {

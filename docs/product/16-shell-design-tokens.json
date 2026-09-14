@@ -8,7 +8,7 @@
       "id": "website",
       "prefix": "--web-",
       "utilities": false,
-      "_note": "Public website and cloud account pages. The landscape hero retains its light palette; content and account forms follow the system theme. Generated for the standalone website by apps/website/build.mjs.",
+      "_note": "Public website and cloud account pages always use the light palette, independent of OS theme. Desktop dark theme remains unchanged. Generated for the standalone website by apps/website/build.mjs.",
       "tokens": {
         "page": ["#ffffff", "#191a1a"],
         "surface": ["#f3f6f4", "#252726"],
@@ -103,12 +103,15 @@
       "id": "panels",
       "prefix": "--color-",
       "utilities": true,
-      "_note": "Stage sub-surfaces. NewMax keeps the stage and tab strip on surface-200, raises active tabs to surface-300, and reserves surface-400 for selected rows and inset sections.",
+      "_note": "Stage sub-surfaces. NewMax keeps the stage and tab strip on surface-200, raises active tabs to surface-300, and reserves surface-400 for selected rows and inset sections. Workbench chrome follows NewMax --ds-workbench-surface / --ds-workbench-content-surface / --ds-tab-strip-surface: default themes fall back to surface-200; image and color skins write a distinct ramp.",
       "tokens": {
         "panel": ["#faf9f5", "#1e1f1f"],
         "chat": ["#faf9f5", "#1e1f1f"],
         "recent": ["#f2eee6", "#2a2d2b"],
         "stage-tabs": ["#f6f4ef", "#1e1f1f"],
+        "workbench": ["#faf9f5", "#1e1f1f"],
+        "workbench-content": ["#faf9f5", "#1e1f1f"],
+        "tab-strip": ["#faf9f5", "#1e1f1f"],
         "tab-active-border": ["#e7e4db", "rgba(255, 255, 255, 0.08)"],
         "tab-active-fill": ["#d5d1c6", "#252726"]
       }

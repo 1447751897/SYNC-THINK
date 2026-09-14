@@ -205,18 +205,13 @@ describe('WorkspaceFilesPanel', () => {
     } as unknown as RunProcessView;
     render(<WorkspaceFilesPanel projectFolder="C:/workspace" reviewView={view} />);
 
-    expect(screen.getByRole('tab', { name: '所有文件' }).getAttribute('aria-selected')).toBe(
-      'true',
-    );
-    expect(screen.getByRole('tab', { name: '对话文件 1' }).getAttribute('aria-selected')).toBe(
-      'false',
-    );
+    expect(screen.getByRole('button', { name: '所有文件' }).className).toContain('is-active');
+    expect(screen.getByRole('button', { name: '变动文件 1' }).className).not.toContain('is-active');
     expect(screen.queryByRole('button', { name: '工作区文件更多操作' })).toBeNull();
     expect(screen.queryByText('Git 状态')).toBeNull();
-    fireEvent.click(screen.getByRole('tab', { name: '对话文件 1' }));
-    expect(screen.getByRole('tab', { name: '对话文件 1' }).getAttribute('aria-selected')).toBe(
-      'true',
-    );
+    expect(screen.queryByText('审阅会话文件')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '变动文件 1' }));
+    expect(screen.getByRole('button', { name: '变动文件 1' }).className).toContain('is-active');
     expect(screen.getByText('app.ts')).toBeTruthy();
     expect(screen.getByRole('treeitem', { name: '打开文件 src/app.ts' })).toBeTruthy();
     expect(screen.queryByRole('listitem', { name: /app\.ts/ })).toBeNull();
@@ -258,8 +253,11 @@ describe('ReviewPanel', () => {
     render(<ReviewPanel view={reviewView} projectFolder={'D:\\projects\\SYNC-THINK'} standalone />);
 
     expect(screen.getByTestId('review-panel').className).toContain('is-standalone');
-    expect(screen.getByText('src')).toBeTruthy();
-    expect(screen.getByText('scripts')).toBeTruthy();
+    // NewMax 的列表是平铺的：文件名 + 状态图标，不再按目录分组。
+    expect(screen.queryByText('src')).toBeNull();
+    expect(screen.queryByText('scripts')).toBeNull();
+    expect(document.querySelector('.shell-review-list__status.is-edited')).toBeTruthy();
+    expect(document.querySelector('.shell-review-list__status.is-created')).toBeTruthy();
     expect(document.querySelector('[data-file-type="typescript"]')).toBeTruthy();
     expect(document.querySelector('[data-file-type="python"]')).toBeTruthy();
     expect(document.querySelector('[data-path="src/app.ts"]')).toBeTruthy();
