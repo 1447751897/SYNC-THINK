@@ -1,5 +1,13 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, copyFileSync, cpSync, renameSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  copyFileSync,
+  cpSync,
+  readFileSync,
+  renameSync,
+  writeFileSync,
+} from 'node:fs';
 import { createRequire } from 'node:module';
 import { basename, dirname, join } from 'node:path';
 import { gzipSync } from 'node:zlib';
@@ -13,6 +21,7 @@ import {
   shellBuildOptions,
   summarizeShellBuild,
 } from './shell-build-config.mjs';
+import { CHANGELOG_DEFAULT_PATH, parseChangelog, renderChangelogReleaseNotes } from '../../../scripts/changelog.mjs';
 
 const require = createRequire(import.meta.url);
 const desktopRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -22,6 +31,49 @@ const { mode, optimized, outdir, outputRoot } = options;
 mkdirSync(dirname(outdir), { recursive: true });
 const staging = mkdtempSync(outdir + '.build-');
 
+/**
+ * 全部历史版本的更新日志，随 shell 产物一起固化。
+ *
+ * 更新源只在「有可安装版本」时携带 releaseNotes，而且只带当前发布的那一版，
+ * 所以光靠更新源，用户永远只看得到「即将升到的那版」或「刚装上的那版」。
+ * docs/releases/CHANGELOG.md 本来就是这份文案的唯一事实来源，构建期把它整个
+ * 解析一遍随包带走，弹窗在任何阶段（已是最新 / 待更新 / 通道未配置）都能翻历史。
+ *
+ * 顺序沿用 CHANGELOG 自身的倒序（新 → 旧）。单版渲染失败只跳过该版并告警：
+ * 日志取不全不该让整个构建失败，最坏情况是弹窗少一个版本。
+ */
+function resolveReleaseHistory() {
+  let markdown;
+  try {
+    markdown = readFileSync(join(desktopRoot, '..', '..', CHANGELOG_DEFAULT_PATH), 'utf8');
+  } catch (error) {
+    console.warn(`[build-shell] 更新日志不可用：${error.message}`);
+    return [];
+  }
+  let entries;
+  try {
+    ({ entries } = parseChangelog(markdown));
+  } catch (error) {
+    console.warn(`[build-shell] 更新日志解析失败：${error.message}`);
+    return [];
+  }
+  const history = [];
+  for (const entry of entries) {
+    try {
+      history.push({
+        version: entry.version,
+        date: entry.date,
+        notes: renderChangelogReleaseNotes(entry),
+      });
+    } catch (error) {
+      console.warn(`[build-shell] 跳过 ${entry.version} 的更新日志：${error.message}`);
+    }
+  }
+  console.log(`[build-shell] 更新日志已固化 ${history.length} 个版本`);
+  return history;
+}
+const releaseHistory = resolveReleaseHistory();
+
 try {
   const shared = {
     absWorkingDir: desktopRoot,
@@ -30,7 +82,13 @@ try {
     minify: optimized,
     sourcemap: !optimized,
     target: 'chrome120',
-    define: { 'process.env.NODE_ENV': JSON.stringify(optimized ? 'production' : 'development') },
+    define: {
+      'process.env.NODE_ENV': JSON.stringify(optimized ? 'production' : 'development'),
+      // 双 stringify：内层得到 JSON 文本，外层把它变成产物里合法的字符串字面量，
+      // 于是运行时的 __SYNC_THINK_RELEASE_HISTORY__ 是一个 JSON 字符串，
+      // 渲染层 JSON.parse 之后再逐项校验（typeof 守卫兜住测试环境没有注入的情况）。
+      __SYNC_THINK_RELEASE_HISTORY__: JSON.stringify(JSON.stringify(releaseHistory)),
+    },
     legalComments: 'external',
   };
   const shell = await esbuild.build({

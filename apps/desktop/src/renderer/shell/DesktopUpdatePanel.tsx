@@ -52,6 +52,50 @@ type UpdateActionKind = 'check' | 'download' | 'install';
 /** 「更新内容」区块只在存在可安装版本时出现，与侧边栏版本提示共用阶段判断。 */
 const RELEASE_NOTES_PHASES = PENDING_UPDATE_PHASES;
 
+interface ReleaseHistoryEntry {
+  version: string;
+  date: string;
+  notes: string;
+}
+
+/**
+ * 解析构建期固化的历史更新日志，任何异常都退回空数组 —— 日志是锦上添花，
+ * 不该因为它取不到就把整个弹窗带崩。逐项校验字段：注入内容虽然是自家构建产物，
+ * 但渲染层对日志一视同仁地只接受纯文本，不信任任何结构。
+ */
+function parseReleaseHistory(raw: string): ReleaseHistoryEntry[] {
+  if (raw.trim().length === 0) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  const history: ReleaseHistoryEntry[] = [];
+  for (const item of parsed) {
+    if (!item || typeof item !== 'object') continue;
+    const { version, date, notes } = item as Record<string, unknown>;
+    if (typeof version !== 'string' || version.length === 0) continue;
+    if (typeof notes !== 'string' || notes.trim().length === 0) continue;
+    history.push({ version, date: typeof date === 'string' ? date : '', notes });
+  }
+  return history;
+}
+
+/**
+ * 全部历史版本的更新日志，构建期由 scripts/build-shell.mjs 从
+ * docs/releases/CHANGELOG.md 解析后固化进产物，顺序沿用 CHANGELOG 的倒序（新 → 旧）。
+ *
+ * 更新源只在「有可安装版本」时携带 releaseNotes、且只带当前发布的那一版，所以光靠
+ * 更新源，用户永远只看得到「即将升到的那版」或「刚装上的那版」，翻不到历史。
+ * 这一份让弹窗在任何阶段都能回看全部版本。测试环境没有注入该常量，
+ * 故用 `typeof` 守卫取值而不是直接引用。
+ */
+const RELEASE_HISTORY: ReleaseHistoryEntry[] = parseReleaseHistory(
+  typeof __SYNC_THINK_RELEASE_HISTORY__ === 'string' ? __SYNC_THINK_RELEASE_HISTORY__ : '',
+);
+
 /**
  * Release notes are plain text: the Main process strips control characters and
  * caps the length before sending them. Rendering line by line keeps the shape
@@ -59,15 +103,36 @@ const RELEASE_NOTES_PHASES = PENDING_UPDATE_PHASES;
  * `dangerouslySetInnerHTML`, so a compromised feed cannot inject markup.
  */
 function renderReleaseNotes(notes: string) {
-  return notes.split('\n').map((rawLine, index) => {
+  const lines = notes.split('\n');
+  // 版本摘要就是第一个非空行。CHANGELOG 的约定里它排在版本标题之后、第一个
+  // `### 分段` 之前，scripts/changelog.mjs 渲染时把它当裸文本行放在最前面
+  // （不加 `>` 前缀），所以只能靠「位置 + 不带任何标记」来认出它。
+  // 认出后单独给一层样式，让「这一版在说什么」和下面的条目清单区分开。
+  const firstContentIndex = lines.findIndex((line) => line.trim().length > 0);
+  return lines.map((rawLine, index) => {
     const line = rawLine.trim();
     if (line.length === 0) return null;
+    // CHANGELOG 的「格式约定」把 `1. ` 与 `- ` 并列为一个条目
+    // （见 docs/releases/CHANGELOG.md）。两者都渲染成两列 grid：标记占第一列、
+    // 正文占第二列，折行后自动对齐文字列，而不是顶回左边缘变成一坨。
+    const ordered = /^(\d+)[.)]\s+/.exec(line);
+    if (ordered) {
+      return (
+        <div key={index} className="settings-about-release-notes__item">
+          <span className="settings-about-release-notes__marker">{ordered[1]}.</span>
+          <span>{line.slice(ordered[0].length)}</span>
+        </div>
+      );
+    }
     const bullet = /^[-*•]\s+/.exec(line);
     if (bullet) {
       return (
-        <p key={index} className="settings-about-release-notes__item">
-          {line.slice(bullet[0].length)}
-        </p>
+        <div key={index} className="settings-about-release-notes__item">
+          <span className="settings-about-release-notes__marker" aria-hidden="true">
+            •
+          </span>
+          <span>{line.slice(bullet[0].length)}</span>
+        </div>
       );
     }
     const heading = /^#{1,6}\s+/.exec(line);
@@ -77,6 +142,19 @@ function renderReleaseNotes(notes: string) {
           {line.slice(heading[0].length)}
         </p>
       );
+    }
+    // 走到这里说明这行既不是列表也不是分段标题；只有它是第一个非空行时才算摘要。
+    // 顺手兼容更新源直接给 `> 摘要` 的写法（随包日志不带这个前缀）。
+    if (index === firstContentIndex) {
+      const quoted = /^>\s?(.*)$/.exec(line);
+      const summary = (quoted ? quoted[1] : line).trim();
+      if (summary.length > 0) {
+        return (
+          <p key={index} className="settings-about-release-notes__summary">
+            {summary}
+          </p>
+        );
+      }
     }
     return (
       <p key={index} className="settings-about-release-notes__line">
@@ -98,11 +176,17 @@ const DIALOG_FOCUSABLE_SELECTOR =
  */
 function ReleaseNotesDialog({
   version,
-  notes,
+  pendingNotes,
+  history,
+  currentVersion,
   onClose,
 }: {
   version: string | null;
-  notes: string;
+  /** 更新源为「即将升到的那版」提供的日志，没有可安装版本时为 null。 */
+  pendingNotes: { version: string; notes: string } | null;
+  /** 随包固化的全部历史版本，新 → 旧。 */
+  history: ReleaseHistoryEntry[];
+  currentVersion: string | null;
   onClose: () => void;
 }) {
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -160,9 +244,18 @@ function ReleaseNotesDialog({
         className="settings-about-dialog"
       >
         <div className="settings-about-dialog__header">
-          <div>
-            <p className="settings-about-dialog__eyebrow">更新日志</p>
-            <h3 className="settings-about-dialog__title">{version ? `v${version}` : '本次更新'}</h3>
+          {/* 头部给一个视觉锚点：NewMax 的弹窗标题带一枚圆形图标，
+              原先这里只有两行纯文字（eyebrow + 版本号），开起来是空的。 */}
+          <div className="settings-about-dialog__identity">
+            <span className="settings-about-dialog__icon" aria-hidden="true">
+              <RefreshCw size={20} />
+            </span>
+            <div>
+              <h3 className="settings-about-dialog__title">更新日志</h3>
+              <span className="settings-about-dialog__version">
+                {version ? `v${version}` : '本次更新'}
+              </span>
+            </div>
           </div>
           <button
             ref={closeButtonRef}
@@ -175,11 +268,57 @@ function ReleaseNotesDialog({
           </button>
         </div>
         <div className="settings-about-dialog__body">
-          {notes.trim().length > 0 ? (
-            renderReleaseNotes(notes)
-          ) : (
+          {/*
+            待更新版本置顶：点开弹窗时用户最先想知道的是「升上去会得到什么」，
+            历史版本跟在后面按版本倒序排。两处都用同一套渲染，靠版本头右侧的
+            标记（待更新 / 当前版本）区分，而不是换一种排版。
+          */}
+          {pendingNotes ? (
+            <section className="settings-about-release-notes__entry is-pending">
+              <div className="settings-about-release-notes__entry-head">
+                <span className="settings-about-release-notes__entry-version">
+                  v{pendingNotes.version}
+                </span>
+                <span className="settings-about-release-notes__entry-badge">待更新</span>
+              </div>
+              {renderReleaseNotes(pendingNotes.notes)}
+            </section>
+          ) : null}
+
+          {history.map((entry) => (
+            <section
+              key={entry.version}
+              className={clsx(
+                'settings-about-release-notes__entry',
+                entry.version === currentVersion && 'is-current',
+              )}
+            >
+              <div className="settings-about-release-notes__entry-head">
+                <span className="settings-about-release-notes__entry-version">v{entry.version}</span>
+                {entry.date.length > 0 ? (
+                  <span className="settings-about-release-notes__entry-date">{entry.date}</span>
+                ) : null}
+                {entry.version === currentVersion ? (
+                  <span className="settings-about-release-notes__entry-badge">当前版本</span>
+                ) : null}
+              </div>
+              {renderReleaseNotes(entry.notes)}
+            </section>
+          ))}
+
+          {!pendingNotes && history.length === 0 ? (
             <p className="settings-about-release-notes__empty">暂无可查看的更新日志。</p>
-          )}
+          ) : null}
+        </div>
+        {/*
+          NewMax 的 WhatsNewDialog 在页脚放一个右对齐的主按钮（t('app.gotIt') =「知道了」），
+          而不是只靠右上角的 ×。补上它让弹窗有明确的收尾动作，交互上与 NewMax 一致。
+          注意这是纯展示按钮，不改变 aria-label 与 Esc/焦点锁行为。
+        */}
+        <div className="settings-about-dialog__footer">
+          <button type="button" className="settings-about-dialog__confirm" onClick={onClose}>
+            知道了
+          </button>
         </div>
       </div>
     </div>
@@ -311,6 +450,18 @@ export function DesktopUpdatePanel() {
         ? Download
         : RefreshCw;
 
+  // 更新源为「即将升到的那版」提供日志时，把它置顶；历史版本由随包固化的
+  // RELEASE_HISTORY 提供 —— 两者互不替代，而不是二选一。
+  const pendingReleaseNotes = (snapshot?.releaseNotes ?? '').trim();
+  const showsPendingNotes = pendingReleaseNotes.length > 0 && Boolean(snapshot?.availableVersion);
+  const dialogVersion = showsPendingNotes
+    ? (snapshot?.availableVersion ?? null)
+    : (snapshot?.currentVersion ?? null);
+  const pendingDialogNotes =
+    showsPendingNotes && dialogVersion !== null
+      ? { version: dialogVersion, notes: pendingReleaseNotes }
+      : null;
+
   const runPrimaryAction = () => {
     if (!bridge) return;
     if (primaryAction === 'install') {
@@ -431,8 +582,10 @@ export function DesktopUpdatePanel() {
 
       {releaseNotesOpen ? (
         <ReleaseNotesDialog
-          version={snapshot?.availableVersion ?? snapshot?.currentVersion ?? null}
-          notes={snapshot?.releaseNotes ?? ''}
+          version={dialogVersion}
+          pendingNotes={pendingDialogNotes}
+          history={RELEASE_HISTORY}
+          currentVersion={snapshot?.currentVersion ?? null}
           onClose={() => setReleaseNotesOpen(false)}
         />
       ) : null}

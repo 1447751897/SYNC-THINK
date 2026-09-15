@@ -11,7 +11,16 @@ import { gzipSync } from 'node:zlib';
 // （超原上限 1,519 字节）——放宽前一轮构建已只剩 788 字节余量，本次是压垮它的最后一步。
 // 增量主要是用户可见的中文文案（esbuild 转义成 \uXXXX，每字 6 字节）。
 // 待 SettingsPage chunk 拆分后应收紧回原值。
-export const SHELL_BUDGET = Object.freeze({ initialJsBytes: 2_150_000, totalJsBytes: 3_020_000 });
+//
+// totalJsBytes 于 2026-09-15 由 3_020_000 放宽至 3_050_000：
+// 「更新日志」弹窗改为展示全部历史版本，构建期把 docs/releases/CHANGELOG.md 的
+// 全量版本（当前 5 版）固化进产物，使总量达到 3,026,666 字节。
+//
+// 这次与前两次性质不同：增量是**数据**而不是代码，而且随版本数线性增长
+// （每版约 1.2KB，其中大半是中文转义开销）。放宽预算只买得到若干个版本的时间，
+// 不解决趋势。正解是让更新日志脱离 JS bundle（外置成资源 + 自定义协议或 IPC 读取，
+// file:// 下 fetch 会被 CORS 拦），届时这里应回落到 3_020_000 以下。
+export const SHELL_BUDGET = Object.freeze({ initialJsBytes: 2_150_000, totalJsBytes: 3_050_000 });
 
 export function shellBuildOptions(args, desktopRoot) {
   let mode = 'production';

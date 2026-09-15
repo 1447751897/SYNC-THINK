@@ -25498,21 +25498,130 @@ body {
   line-height: 17px;
 }
 
+/*
+ * 分段标题（CHANGELOG 的 `### 新功能` / `### 修复`）在一段日志里承担分节作用，
+ * 需要比条目明显更大的上间距；否则它和上一条正文粘在一起，看不出是新的一节。
+ * 字号反而比正文小、加字距 —— 用「小而重」而不是「大而重」来分节，
+ * 避免和弹窗标题抢层级。
+ */
 .settings-about-release-notes__heading {
+  margin: 16px 0 8px;
   color: var(--color-text);
+  font-size: 12px;
   font-weight: 600;
+  letter-spacing: 0.02em;
 }
 
+.settings-about-release-notes__heading:first-child {
+  margin-top: 0;
+}
+
+/*
+ * 条目（`1. ` / `- `）用两列 grid：标记一列、正文一列。
+ *
+ * 之前是 `padding-left: 12px` + `::before` 伪元素画圆点，长条目折行后会顶回左边缘，
+ * 整段读起来是一坨。换成 grid 后折行自动对齐正文列（悬挂缩进）；
+ * 序号用 tabular-nums 等宽数字，`9.` 与 `10.` 的正文起始位置才不会左右跳。
+ */
 .settings-about-release-notes__item {
-  position: relative;
-  padding-left: 12px;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 9px;
+  margin-bottom: 7px;
+  color: var(--color-text-secondary);
 }
 
-.settings-about-release-notes__item::before {
-  content: '•';
-  position: absolute;
-  left: 2px;
+.settings-about-release-notes__marker {
+  min-width: 1.05em;
   color: var(--color-text-faint);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.settings-about-release-notes__line {
+  margin: 0 0 7px;
+  color: var(--color-text-secondary);
+}
+
+/*
+ * 版本摘要（「这一版在说什么」）。内容来自 CHANGELOG 版本段的第一行，
+ * scripts/changelog.mjs 渲染成裸文本行，所以渲染层按「第一个非空行」识别它。
+ * 用一条左侧强调的浅底引用块，把它和下面的条目清单区分开 —— 摘要是一句话结论，
+ * 不该和 `1. 2. 3.` 的条目长成同一个样子。
+ */
+.settings-about-release-notes__summary {
+  margin: 0 0 14px;
+  padding: 10px 14px;
+  border-left: 2px solid var(--color-accent);
+  border-radius: 0 8px 8px 0;
+  background: var(--color-accent-soft);
+  color: var(--color-accent-text);
+  /* 字号/行高跟着所在容器走：弹窗正文 13.5/21、设置页内嵌卡片 11.5/17，
+     摘要块在两处都该和同屏正文一个尺寸，靠底色和左侧竖线区分层次就够了。 */
+  font-size: inherit;
+  line-height: inherit;
+}
+
+/*
+ * 一条版本记录。弹窗正文现在由多条记录组成（待更新的那版置顶 + 随包的全量历史），
+ * 记录之间用一条细线断开，让「哪几行属于哪一版」一眼可辨 ——
+ * 只有分段标题的话，跨版本边界时会读成一整段连续的分节。
+ * 用相邻兄弟选择器加间距，首条记录不会被顶上多余的空白。
+ */
+.settings-about-release-notes__entry + .settings-about-release-notes__entry {
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 1px solid var(--color-border);
+}
+
+.settings-about-release-notes__entry-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.settings-about-release-notes__entry-version {
+  color: var(--color-text);
+  font-size: 12.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+}
+
+.settings-about-release-notes__entry-date {
+  color: var(--color-text-faint);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+ * 标记 pill：默认走中性描边（「当前版本」是个定位信息，不需要抢眼），
+ * 只有置顶的「待更新」那版转成品牌色 —— 它是唯一带行动含义的标记。
+ */
+.settings-about-release-notes__entry-badge {
+  padding: 1px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-surface);
+  color: var(--color-text-faint);
+  font-size: 10.5px;
+  font-weight: 500;
+  line-height: 16px;
+}
+
+.settings-about-release-notes__entry.is-pending .settings-about-release-notes__entry-badge {
+  border-color: transparent;
+  background: var(--color-accent-soft);
+  color: var(--color-accent-text);
+}
+
+/*
+ * 分段标题紧跟在版本头后面出现时，用的是给「跨条目分节」准备的 16px 上间距，
+ * 叠在版本头 10px 下间距上会空出一大块。版本内的第一个分段收回到 10px。
+ */
+.settings-about-release-notes__entry-head + .settings-about-release-notes__heading {
+  margin-top: 10px;
 }
 
 .settings-about-release-notes__empty {
@@ -25521,6 +25630,18 @@ body {
   line-height: 17px;
 }
 
+/*
+ * 遮罩必须是半透明浮层，不能拿不透明的表面色来当遮罩。
+ *
+ * 原先这里是 `background: var(--color-overlay)`，而 --color-overlay 在浅色主题是
+ * #ffffff、深色是 #2a2d2b —— 等于把整屏刷成一块不透明底色，设置页内容全被盖掉，
+ * 只剩中间一张卡片。这就是「点开更新日志铺满整个页面」的根因。
+ *
+ * 对齐 NewMax 的 --ds-overlay（浅色 rgba(0,0,0,0.3) / 深色 rgba(0,0,0,0.6)），
+ * 并沿用本仓已有的 NewMax 对齐范式（见 .settings-modal-backdrop）：主题色 56%
+ * 透出 + 6px 背景模糊 + 150ms 淡入。用 color-mix 而不是硬编码黑色，是为了让
+ * 遮罩跟随主题（tokens.css 由 16-shell-design-tokens.json 生成，组件不得写裸色值）。
+ */
 .settings-about-dialog-backdrop {
   position: fixed;
   inset: 0;
@@ -25529,45 +25650,94 @@ body {
   align-items: center;
   justify-content: center;
   padding: 24px;
-  background: var(--color-overlay);
+  background: color-mix(in srgb, var(--color-page) 56%, transparent);
+  backdrop-filter: blur(6px);
+  animation: settings-backdrop-in 0.15s ease-out both;
 }
 
+/*
+ * 尺寸与入场对齐 NewMax 的 DsDialog / WhatsNewDialog：
+ *   width 520、max-height min(600px, calc(100vh - 4rem))
+ *   （对应 NewMax RELEASE_NOTES_DIALOG_WIDTH = 520、
+ *     RELEASE_NOTES_DIALOG_MAX_HEIGHT = 'min(600px, calc(100vh - 4rem))'）
+ * 面板从 scale 0.985 微放大 + 150ms easeOut 入场，
+ * 对应 NewMax 的 DIALOG_PANEL_INITIAL_SCALE / DIALOG_MOTION_TRANSITION。
+ * 阴影沿用 .settings-modal-content 的多层 color-mix 范式（NewMax elevation 风格）。
+ */
 .settings-about-dialog {
   display: flex;
-  width: min(480px, 100%);
-  max-height: min(560px, 100%);
+  width: min(520px, 100%);
+  max-height: min(600px, calc(100vh - 4rem));
   flex-direction: column;
-  gap: 14px;
-  padding: 18px 20px 20px;
+  /* 无 gap、无内边距：分区留白交给 header / body / footer 自己带，
+     这样页脚的分隔线可以整宽贴边（NewMax DsDialog 的做法）。 */
+  gap: 0;
+  padding: 0;
   border: 1px solid var(--color-border);
   border-radius: 14px;
-  background: var(--color-surface-raised);
+  background: var(--color-surface-raised, var(--color-surface));
+  box-shadow:
+    0 0 0.5px 0.5px color-mix(in srgb, var(--color-text) 4%, transparent),
+    0 3px 6px color-mix(in srgb, var(--color-text) 4%, transparent),
+    0 11px 11px color-mix(in srgb, var(--color-text) 3%, transparent);
+  animation: settings-about-dialog-in 0.15s ease-out both;
 }
 
+/*
+ * 头部：左侧「圆形图标 + 标题 + 版本 pill」的身份块，右侧关闭按钮。
+ *
+ * 原先这里是两行纯文字（eyebrow「更新日志」+ 标题「v0.1.0-rc.6」），打开弹窗
+ * 第一眼是一片没有层次的灰字。NewMax 的 DsDialog 标题栏带一枚圆形图标作视觉锚点，
+ * 这里对齐：图标给品牌色的柔和底（accent-soft / accent-text），版本号降级成一枚
+ * 描边 pill —— 版本是元信息，不该和标题抢同一档字重。
+ */
 .settings-about-dialog__header {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
+  gap: 14px;
+  padding: 18px 20px 14px;
+}
+
+.settings-about-dialog__identity {
+  display: flex;
+  min-width: 0;
+  align-items: center;
   gap: 12px;
 }
 
-.settings-about-dialog__eyebrow,
-.settings-about-dialog__title {
-  margin: 0;
+.settings-about-dialog__icon {
+  display: inline-flex;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--color-accent-soft);
+  color: var(--color-accent-text);
 }
 
-.settings-about-dialog__eyebrow {
+.settings-about-dialog__title {
+  margin: 0;
+  color: var(--color-text);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 20px;
+}
+
+.settings-about-dialog__version {
+  display: inline-block;
+  margin-top: 3px;
+  padding: 1px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-surface);
   color: var(--color-text-faint);
   font-size: 11px;
   font-weight: 500;
-  letter-spacing: 0.08em;
-}
-
-.settings-about-dialog__title {
-  margin-top: 3px;
-  color: var(--color-text);
-  font-size: 16px;
-  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 16px;
 }
 
 .settings-about-dialog__close {
@@ -25594,15 +25764,76 @@ body {
   outline: none;
 }
 
+/*
+ * 正文：弹窗里唯一的滚动区，只有它会吃掉剩余高度。
+ *
+ * gap 归零 —— 段间留白改由每类块自己的 margin 表达（标题 16px、条目 7px），
+ * 因为 CHANGELOG 的分段标题需要比条目更大的间距，统一 gap 做不到。
+ * 颜色从 text-faint 提到 text-secondary：更新日志是要被读的内容，
+ * 不该用最弱的一档灰。左右 20px 与头部对齐，底部留 4px 让滚动内容不贴页脚分隔线。
+ */
 .settings-about-dialog__body {
   display: flex;
   min-height: 0;
   flex-direction: column;
-  gap: 5px;
+  gap: 0;
+  padding: 0 20px 4px;
   overflow-y: auto;
-  color: var(--color-text-faint);
-  font-size: 12.5px;
-  line-height: 19px;
+  color: var(--color-text-secondary);
+  font-size: 13.5px;
+  line-height: 21px;
+  scrollbar-gutter: stable;
+}
+
+/*
+ * 页脚右对齐主按钮。对应 NewMax WhatsNewDialog 的
+ * footer = <div className="flex justify-end"><DsButton variant="primary">知道了</DsButton></div>。
+ * 配色用本仓的 --color-accent（品牌绿）而不是 NewMax 的蓝色 brand-primary，
+ * 结构/位置/尺寸对齐 NewMax，品牌色保持本产品一致。
+ */
+/*
+ * 页脚用一条整宽分隔线与滚动区分开（NewMax DsDialog 的 footer 就是这样划出来的）。
+ * 容器已经 padding: 0，所以这里自己带 20px 左右内边距，分隔线才能贴到弹窗两侧边缘。
+ */
+.settings-about-dialog__footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 14px 20px 16px;
+  border-top: 1px solid var(--color-border);
+}
+
+.settings-about-dialog__confirm {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  justify-content: center;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 7px;
+  background: var(--color-accent);
+  color: var(--color-accent-fg);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: opacity 180ms var(--model-ease-standard, ease);
+}
+
+.settings-about-dialog__confirm:hover,
+.settings-about-dialog__confirm:focus-visible {
+  opacity: 0.88;
+  outline: none;
+}
+
+/* NewMax 的 DsDialog 在 reduceMotion 时把入场整体跳过（initial/animate 都置为 no-op），
+   这里做等价处理：只保留最终态，不播动画。 */
+@media (prefers-reduced-motion: reduce) {
+  .settings-about-dialog-backdrop,
+  .settings-about-dialog {
+    animation: none;
+  }
 }
 
 .settings-about-links {

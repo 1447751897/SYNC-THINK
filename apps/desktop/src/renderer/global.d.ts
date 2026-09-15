@@ -297,6 +297,16 @@ import type { PtyTerminalBridge } from '../terminal-pty-contract.js';
 import type { PlatformContext } from '@sync-think/shared';
 
 declare global {
+  /**
+   * 全部历史版本的更新日志，构建期由 apps/desktop/scripts/build-shell.mjs 从
+   * docs/releases/CHANGELOG.md 解析后注入，值是 JSON 字符串：
+   * `[{ version, date, notes }]`，顺序沿用 CHANGELOG 的倒序（新 → 旧）。
+   *
+   * 更新源只在「有可安装版本」时带日志、且只带当前发布的那一版，所以历史版本
+   * 必须随包走。单测环境没有注入，故读取处用 `typeof` 守卫而不是直接引用。
+   */
+  const __SYNC_THINK_RELEASE_HISTORY__: string;
+
   interface Window {
     syncThink?: {
       kernelUpdates: import('../kernel-update-contract.js').ManagedKernelUpdateBridge;
