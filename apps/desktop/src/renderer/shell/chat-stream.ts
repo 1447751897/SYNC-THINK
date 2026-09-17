@@ -22,8 +22,8 @@ export interface ConversationStreamDraft {
   timestamp: string;
   /** Terminal drafts stay mounted until the same Run is visible durably. */
   terminal?: boolean;
-  /** Why the run ended (failed/cancelled) so the live bubble shows the error. */
-  terminalState?: 'completed' | 'failed' | 'cancelled';
+  /** Why the run ended (failed/cancelled/paused) so the live bubble shows it. */
+  terminalState?: 'completed' | 'failed' | 'cancelled' | 'paused';
   terminalError?: string;
   delegatedAgents?: DelegatedAgentProjection[];
 }
@@ -60,7 +60,7 @@ export function hasConversationStreamDraftContent(
  */
 export function shouldRetainTerminalDraft(
   draft: ConversationStreamDraft | null | undefined,
-  terminalState: 'completed' | 'failed' | 'cancelled' | undefined,
+  terminalState: 'completed' | 'failed' | 'cancelled' | 'paused' | undefined,
   terminalError: string | undefined,
 ): boolean {
   if (!draft) return false;
@@ -103,7 +103,7 @@ export type ConversationStreamOperation = (
       runId?: string;
       sequence: number;
       occurredAt?: string;
-      terminalState?: 'completed' | 'failed' | 'cancelled';
+      terminalState?: 'completed' | 'failed' | 'cancelled' | 'paused';
       terminalError?: string;
     }
 ) & {
@@ -232,6 +232,14 @@ export function projectRunPauseTerminals(input: {
             : undefined,
         errorMessage:
           typeof event.payload.errorMessage === 'string' ? event.payload.errorMessage : undefined,
+        resolutionSource:
+          typeof event.payload.resolutionSource === 'string'
+            ? event.payload.resolutionSource
+            : undefined,
+        fallbackModelCount:
+          typeof event.payload.fallbackModelCount === 'number'
+            ? event.payload.fallbackModelCount
+            : undefined,
       }),
     }));
 }
@@ -485,7 +493,11 @@ export function collectConversationStreamBatch(input: {
           ? 'completed'
           : event.type === 'run.cancelled'
             ? 'cancelled'
-            : 'failed';
+            : // A pause keeps its own state so the live turn reads as resumable
+              // instead of failed, matching what the runtime persists.
+              event.type === 'run.paused'
+              ? 'paused'
+              : 'failed';
       const payloadError =
         typeof event.payload.errorMessage === 'string' ? event.payload.errorMessage : undefined;
       const terminalError =
@@ -501,6 +513,14 @@ export function collectConversationStreamBatch(input: {
                   ? event.payload.providerModelId
                   : undefined,
               errorMessage: payloadError,
+              resolutionSource:
+                typeof event.payload.resolutionSource === 'string'
+                  ? event.payload.resolutionSource
+                  : undefined,
+              fallbackModelCount:
+                typeof event.payload.fallbackModelCount === 'number'
+                  ? event.payload.fallbackModelCount
+                  : undefined,
             })
           : payloadError;
       operations.push({

@@ -173,6 +173,14 @@ class DelegationProvider implements ProviderAdapter {
         return;
       }
       yield { type: 'text-delta', text: 'child result only' };
+      // A real child bills; the card reads its spend from these usage events.
+      yield {
+        type: 'usage',
+        tokensIn: 1_200,
+        tokensOut: 300,
+        cachedTokensHit: 400,
+        cachedTokensCreated: 100,
+      };
       yield { type: 'finished', reason: 'stop' };
       return;
     }
@@ -190,6 +198,7 @@ class DelegationProvider implements ProviderAdapter {
         name: 'agent_delegate',
       argumentsJson: JSON.stringify({
         task: 'child delegation task',
+        agentId: 'agent-code-reviewer',
         ...(this.childTerminal === 'budget' ? { tokenBudget: 1 } : {}),
         ...(this.childTerminal === 'timeout' ? { timeoutSeconds: 1 } : {}),
       }),
@@ -260,7 +269,7 @@ class ReadOnlyProbeChildProvider implements ProviderAdapter {
       toolCall: {
         id: 'parent-delegate',
         name: 'agent_delegate',
-        argumentsJson: JSON.stringify({ task: 'child write probe' }),
+        argumentsJson: JSON.stringify({ task: 'child write probe', agentId: 'agent-code-reviewer' }),
       },
     };
     yield { type: 'finished', reason: 'tool-requests' };
@@ -312,7 +321,7 @@ class McpProbeChildProvider implements ProviderAdapter {
       toolCall: {
         id: 'parent-delegate',
         name: 'agent_delegate',
-        argumentsJson: JSON.stringify({ task: 'child mcp probe' }),
+        argumentsJson: JSON.stringify({ task: 'child mcp probe', agentId: 'agent-code-reviewer' }),
       },
     };
     yield { type: 'finished', reason: 'tool-requests' };
@@ -368,7 +377,11 @@ class ParallelDelegationProvider implements ProviderAdapter {
         toolCall: {
           id,
           name: 'agent_delegate',
-          argumentsJson: JSON.stringify({ task, parallelGroup: 'parallel-review' }),
+          argumentsJson: JSON.stringify({
+            task,
+            agentId: 'agent-code-reviewer',
+            parallelGroup: 'parallel-review',
+          }),
         },
       };
     }
@@ -492,7 +505,7 @@ async function createDelegationFixture(
     title: 'Delegation fixture',
     goal: 'Verify dynamic child Agent execution',
   });
-  const existingAgent = options.existingAgent
+  const existingAgent = options.existingAgent !== false
     ? globalAgentStore.create({
         id: 'agent-code-reviewer' as never,
         name: 'child delegation task reviewer',
@@ -1327,20 +1340,17 @@ describe('conversation transient shadow stream', () => {
     }
   });
 
-  it.each([
-    { existingAgent: false, expectedKind: 'temporary' as const },
-    { existingAgent: true, expectedKind: 'existing' as const },
-  ])(
-    'runs a delegated child without promoting child text to the parent answer ($expectedKind)',
-    async ({ existingAgent, expectedKind }) => {
+  it('runs a delegated child through an existing Agent without promoting child text to the parent answer', async () => {
+      const existingAgent = true;
+      const expectedKind = 'existing' as const;
       const provider = new DelegationProvider();
       const fixture = await createDelegationFixture(provider, { existingAgent });
       const socket = await connectRuntime(fixture.installId);
       const inbox = createInbox(socket);
       try {
-        await hello(inbox, fixture.installId, `hello-delegation-${expectedKind}`);
+        await hello(inbox, fixture.installId, 'hello-delegation-existing');
         const subscription = await inbox.send({
-          id: `subscribe-delegation-${expectedKind}`,
+          id: 'subscribe-delegation-existing',
           kind: 'request',
           type: 'conversation.subscribeTransientStream',
           payload: { threadId: fixture.task.threadId, afterStreamSequence: 0 },
@@ -1348,7 +1358,7 @@ describe('conversation transient shadow stream', () => {
         expect(subscription.error).toBeUndefined();
 
         const append = await inbox.send({
-          id: `append-delegation-${expectedKind}`,
+          id: 'append-delegation-existing',
           kind: 'request',
           type: 'task.appendMessage',
           payload: {
@@ -1374,6 +1384,8 @@ describe('conversation transient shadow stream', () => {
           (event) => event.type === 'tool.completed' && event.payload.toolName === 'agent_delegate',
         );
         expect(delegateResultEvent).toBeDefined();
+        const delegateToolCallId = String(delegateResultEvent?.payload.toolCallId ?? '');
+        expect(delegateToolCallId).not.toBe('');
         const delegateResult = JSON.parse(String(delegateResultEvent?.payload.result)) as {
           childRunId: string;
           assignment: { kind: string; agentId: string | null };
@@ -1415,6 +1427,18 @@ describe('conversation transient shadow stream', () => {
           kind: expectedKind,
           status: 'completed',
           result: 'child result only',
+          // Anchored to the parent's own tool row, so the card can sit under its
+          // `agent_delegate` row from the first frame instead of waiting for the
+          // durable result to reveal childRunId.
+          parentToolCallId: delegateToolCallId,
+          // The child bills separately from its parent, so its spend rides the
+          // projection for the card to show.
+          usage: {
+            tokensIn: 1_200,
+            tokensOut: 300,
+            cachedTokensHit: 400,
+            cachedTokensCreated: 100,
+          },
           toolEvents: [expect.objectContaining({ toolName: 'list_files', status: 'completed' })],
         });
         expect(provider.requests.length).toBeGreaterThanOrEqual(4);
@@ -1434,10 +1458,9 @@ describe('conversation transient shadow stream', () => {
         await fixture.runtime.stop();
         fixture.connection.raw.close();
       }
-    },
-  );
+    });
 
-  it('binds a reused Agent persona into the child run and keeps temporary profiles out of the library', async () => {
+  it('binds a reused Agent persona into the child run', async () => {
     const reuseProvider = new DelegationProvider();
     const reuseFixture = await createDelegationFixture(reuseProvider, { existingAgent: true });
     const reuseSocket = await connectRuntime(reuseFixture.installId);
@@ -1496,18 +1519,21 @@ describe('conversation transient shadow stream', () => {
       reuseFixture.connection.raw.close();
     }
 
-    const temporaryProvider = new DelegationProvider();
-    const temporaryFixture = await createDelegationFixture(temporaryProvider);
-    const temporarySocket = await connectRuntime(temporaryFixture.installId);
-    const temporaryInbox = createInbox(temporarySocket);
+  });
+
+  it('rejects delegation when the requested Agent is not active', async () => {
+    const provider = new DelegationProvider();
+    const fixture = await createDelegationFixture(provider, { existingAgent: false });
+    const socket = await connectRuntime(fixture.installId);
+    const inbox = createInbox(socket);
     try {
-      await hello(temporaryInbox, temporaryFixture.installId, 'hello-delegation-run-local-profile');
-      const append = await temporaryInbox.send({
-        id: 'append-delegation-run-local-profile',
+      await hello(inbox, fixture.installId, 'hello-delegation-no-agent');
+      const append = await inbox.send({
+        id: 'append-delegation-no-agent',
         kind: 'request',
         type: 'task.appendMessage',
         payload: {
-          threadId: temporaryFixture.task.threadId,
+          threadId: fixture.task.threadId,
           expectedTaskVersion: 0,
           role: 'user',
           text: 'delegate child work',
@@ -1516,21 +1542,26 @@ describe('conversation transient shadow stream', () => {
       const parentRunId = String((append.payload as { streamId?: string }).streamId ?? '') as RunId;
       expect(
         await waitFor(() =>
-          temporaryFixture.store
-            .listEventsByRun(parentRunId)
-            .some((event) => event.type === 'run.completed'),
+          fixture.store.listEventsByRun(parentRunId).some((event) => event.type === 'run.completed'),
         ),
       ).toBe(true);
-      expect(temporaryFixture.globalAgentStore.list()).toHaveLength(0);
-      expect(
-        temporaryFixture.messageStore
-          .listMessages(temporaryFixture.task.threadId as never)
-          .messages.filter((message: Message) => message.role === 'assistant'),
-      ).toHaveLength(1);
+      const delegateEvent = fixture.store
+        .listEventsByRun(parentRunId)
+        .find((event) => event.type === 'tool.completed' && event.payload.toolName === 'agent_delegate');
+      const result = JSON.parse(String(delegateEvent?.payload.result)) as {
+        ok: boolean;
+        code?: string;
+        error?: string;
+        childRunId?: string;
+      };
+      expect(result.ok).toBe(false);
+      expect(result.code).toBe('AGENT_UNAVAILABLE');
+      expect(result.error).toContain('not active in workspace');
+      expect(result.childRunId).toBeUndefined();
     } finally {
-      temporarySocket.destroy();
-      await temporaryFixture.runtime.stop();
-      temporaryFixture.connection.raw.close();
+      socket.destroy();
+      await fixture.runtime.stop();
+      fixture.connection.raw.close();
     }
   });
 
@@ -1572,7 +1603,7 @@ describe('conversation transient shadow stream', () => {
       };
       expect(result.ok).toBe(false);
       expect(result.error).toContain('delegation rejected (disabled)');
-      expect(result.error).toContain('模型对话的动态子 Agent 委派当前已关闭');
+      expect(result.error).toContain('模型对话向已有智能体的并发委派当前已关闭');
       expect(result.childRunId).toBeUndefined();
       expect(
         provider.requests.filter((request) =>
@@ -1635,7 +1666,7 @@ describe('conversation transient shadow stream', () => {
       for (const toolResult of childToolResults) {
         expect(toolResult.error).toContain('Delegated child Agents are limited to read-only tools.');
       }
-      expect(fixture.globalAgentStore.list()).toHaveLength(0);
+      expect(fixture.globalAgentStore.list()).toHaveLength(1);
     } finally {
       socket.destroy();
       await fixture.runtime.stop();

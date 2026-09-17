@@ -24,7 +24,7 @@ export interface ConversationNavigationItem {
   commentaryText?: string;
   processStatus?: string;
   streaming?: boolean;
-  terminalState?: 'failed' | 'cancelled';
+  terminalState?: 'failed' | 'cancelled' | 'paused';
   timestamp: string;
 }
 
@@ -101,12 +101,18 @@ const READING_FOCUS_RATIO = 0.25;
 const NAVIGATION_LAYOUT_WARMUP_FRAMES = 2;
 const NAVIGATION_CORRECTION_FRAMES = 12;
 const NAVIGATION_STABLE_FRAMES = 2;
+/** Largest inset kept between the first/last tick and the rail edge. */
 const COMPACT_NAVIGATION_EDGE_PX = 16;
-const COMPACT_NAVIGATION_MAX_GAP_PX = 18;
-const COMPACT_NAVIGATION_MIN_GAP_PX = 6;
-const COMPACT_NAVIGATION_GAP_DECAY_PX = 1.75;
+/** A short rail shrinks its inset rather than letting it eat the whole track. */
+const COMPACT_NAVIGATION_MIN_EDGE_PX = 6;
+const COMPACT_NAVIGATION_EDGE_RATIO = 0.15;
+/** One turn owns a fixed 10px slot, so a longer thread never squeezes the rest. */
+const COMPACT_NAVIGATION_MAX_GAP_PX = 10;
 const COMPACT_NAVIGATION_MAX_HIT_HEIGHT_PX = 20;
 const COMPACT_NAVIGATION_MIN_HIT_HEIGHT_PX = 1;
+/** The rail never renders shorter than this, even for a 2-3 turn thread. */
+const MINIMAP_TRACK_MIN_PX = 72;
+const MINIMAP_TICK_SLOT_PX = 10;
 const MINIMAP_TOOLTIP_SAFE_EDGE_PX = 72;
 
 /**
@@ -141,6 +147,7 @@ function primarySummary(item: ConversationNavigationItem): string {
   if (compactText(item.text)) return summarizeText(item.text, 220);
   if (item.terminalState === 'failed') return '回复失败';
   if (item.terminalState === 'cancelled') return '本轮已停止';
+  if (item.terminalState === 'paused') return '本轮已暂停，可继续';
   return summarizeText(item.processStatus, 120) || '暂无回答摘要';
 }
 
@@ -184,32 +191,37 @@ export function buildAssistantTurnNavigationItems(
 }
 
 /**
- * Center turn markers independently from reply height. Sparse threads use a
- * relaxed rhythm; each additional turn gradually tightens the gap. If the
- * preferred rhythm no longer fits, the entire group compresses symmetrically
- * inside the safe track edges.
+ * Center turn markers independently from reply height. Every turn owns the same
+ * 10px slot, so one more turn never squeezes the ticks already on the rail — the
+ * rail itself grows with the tick count (see `MINIMAP_TRACK_MIN_PX`) and only
+ * compresses once a very long thread exceeds the viewport.
+ *
+ * The edge inset scales with the rail height instead of being a flat 16px: a
+ * short rail that always subtracted 32px left almost no room inside, which
+ * collapsed 2-3 turn threads onto a single point.
  */
 export function buildCompactNavigationTops(itemCount: number, trackHeight: number): number[] {
   if (itemCount <= 0) return [];
   if (trackHeight > 0 && itemCount === 1) return [trackHeight / 2];
 
-  const preferredGap = clamp(
-    COMPACT_NAVIGATION_MAX_GAP_PX -
-      Math.log2(Math.max(1, itemCount)) * COMPACT_NAVIGATION_GAP_DECAY_PX,
-    COMPACT_NAVIGATION_MIN_GAP_PX,
-    COMPACT_NAVIGATION_MAX_GAP_PX,
-  );
+  const edge =
+    trackHeight > 0
+      ? clamp(
+          trackHeight * COMPACT_NAVIGATION_EDGE_RATIO,
+          COMPACT_NAVIGATION_MIN_EDGE_PX,
+          COMPACT_NAVIGATION_EDGE_PX,
+        )
+      : COMPACT_NAVIGATION_EDGE_PX;
   const usableHeight =
     trackHeight > 0
-      ? Math.max(0, trackHeight - COMPACT_NAVIGATION_EDGE_PX * 2)
-      : Math.max(0, itemCount - 1) * preferredGap;
+      ? Math.max(0, trackHeight - edge * 2)
+      : Math.max(0, itemCount - 1) * COMPACT_NAVIGATION_MAX_GAP_PX;
   const gap =
-    itemCount <= 1 ? 0 : Math.min(preferredGap, usableHeight / Math.max(1, itemCount - 1));
+    itemCount <= 1
+      ? 0
+      : Math.min(COMPACT_NAVIGATION_MAX_GAP_PX, usableHeight / Math.max(1, itemCount - 1));
   const groupHeight = Math.max(0, itemCount - 1) * gap;
-  const groupTop =
-    trackHeight > 0
-      ? Math.max(COMPACT_NAVIGATION_EDGE_PX, (trackHeight - groupHeight) / 2)
-      : COMPACT_NAVIGATION_EDGE_PX;
+  const groupTop = trackHeight > 0 ? Math.max(edge, (trackHeight - groupHeight) / 2) : edge;
 
   return Array.from({ length: itemCount }, (_unused, index) => groupTop + index * gap);
 }
@@ -504,7 +516,7 @@ export function ConversationMinimapRail({
       ? -1
       : positionedItems.findIndex(({ item }) => item.id === hoveredId);
   const hoveredIndex = hoveredIndexRaw >= 0 ? hoveredIndexRaw : null;
-  const overviewTrackMax = Math.max(10, items.length * 10);
+  const overviewTrackMax = Math.max(MINIMAP_TRACK_MIN_PX, items.length * MINIMAP_TICK_SLOT_PX);
 
   const tooltipSafeEdge = Math.min(MINIMAP_TOOLTIP_SAFE_EDGE_PX, trackHeight / 2);
   const tooltipMaximum = Math.max(tooltipSafeEdge, trackHeight - tooltipSafeEdge);

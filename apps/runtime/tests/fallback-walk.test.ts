@@ -928,6 +928,27 @@ describe('runtime fallback walk on model failure (design §5.3)', () => {
       (model) => model.providerModelId === 'gpt-4.1-vision-fallback',
     )!;
 
+    // 视觉能力只能由实测结论或用户手写答案认定：`entryModelCapabilities` 刻意
+    // 忽略 `capabilities` 标签表。这里用能力面板的手动答案（NewMax
+    // `manualOverrides.image`），免得依赖一次真实的探针图往返。
+    //
+    // 这条同时是回退链的回归护栏：如果 `isFallbackModelCompatibleWithRun` 的
+    // 投影漏掉手写答案，`gpt-4.1-vision-fallback` 会被判成不可识图而被剔出备用链，
+    // 于是 `run.fallback.selected` 永远不来、下面的 waitForEvent 直接超时。
+    for (const model of [primary, visionFallback]) {
+      await writeAndRead(sock, reader, {
+        id: `confirm-${model.providerModelId}`,
+        kind: 'request',
+        type: 'provider.confirmCapabilities',
+        payload: {
+          modelId: model.modelId,
+          capabilities: ['text', 'vision'],
+          confirmed: true,
+          visionCapabilityOverride: true,
+        },
+      });
+    }
+
     await writeAndRead(sock, reader, {
       id: 'agent-forwarded-image',
       kind: 'request',
@@ -1076,6 +1097,20 @@ describe('runtime fallback walk on model failure (design §5.3)', () => {
     const primary = models.find((model) => model.providerModelId === 'gpt-4o-primary')!;
     const textFallback = models.find((model) => model.providerModelId === 'deepseek-text')!;
 
+    // 主模型必须被认定为能收图，否则 `imagesMode` 会走 materialized 分支而不是
+    // 转发原图，这条用例就测不到「转发图时纯文本副模型被跳过」的路径了。
+    await writeAndRead(sock, reader, {
+      id: 'confirm-gpt-4o-primary',
+      kind: 'request',
+      type: 'provider.confirmCapabilities',
+      payload: {
+        modelId: primary.modelId,
+        capabilities: ['text', 'vision'],
+        confirmed: true,
+        visionCapabilityOverride: true,
+      },
+    });
+
     await writeAndRead(sock, reader, {
       id: 'agent-forwarded-image-exhausted',
       kind: 'request',
@@ -1152,10 +1187,19 @@ describe('runtime fallback walk on model failure (design §5.3)', () => {
         .listMessages(taskPayload.threadId as never)
         .messages.find((message) => message.role === 'assistant');
       const errorBlock = assistant?.blocks.find((block) => block.type === 'error');
+      // 这条 run 用的是本对话手选的模型（`resolutionSource: 'runOverride'`），而
+      // 智能体确实配了备用链（只有纯文本的 deepseek-text）。所以 `run.paused`
+      // 的 reason 是 `no_fallback_configured`，但文案必须走
+      // `formatRunPauseTerminalMessage` 的 overrideSkippedChain 分支——说「没有配置
+      // 备用模型」是错的，会把用户引向错误的排查方向。这里按该分支的实际契约断言。
       expect(errorBlock?.payload).toMatchObject({
-        terminalState: 'failed',
-        errorMessage: expect.stringContaining('当前模型不可用'),
+        // 暂停是可继续状态，不再冒充 `failed`：桌面据此渲染「已暂停 + 继续」。
+        terminalState: 'paused',
+        errorMessage: expect.stringContaining('本对话手选的模型不可用'),
       });
+      expect(
+        (errorBlock?.payload as { errorMessage?: string } | undefined)?.errorMessage,
+      ).toContain('备用模型链');
     } finally {
       audit.raw.close();
     }

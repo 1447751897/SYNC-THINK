@@ -38,9 +38,11 @@ import {
   randomColorPair,
   readAppearancePreferences,
   readShortcutPreferences,
+  readTrayPreferences,
   updateShortcutPreference,
   writeAppearancePreferences,
   writeShortcutPreferences,
+  writeTrayPreferences,
   type AppearancePreferences,
   type ShortcutId,
   type ShortcutPreferences,
@@ -895,6 +897,15 @@ function ShortcutPreferencesPanel() {
     readShortcutPreferences(),
   );
   const [registrationError, setRegistrationError] = useState<string>();
+  const [trayVisible, setTrayVisible] = useState<boolean>(() => readTrayPreferences().visible);
+
+  const commitTrayVisible = (visible: boolean) => {
+    setTrayVisible(visible);
+    writeTrayPreferences({ visible });
+    // The main process cannot read renderer storage, so mirror the change the
+    // same way the quick-window shortcut does.
+    void window.syncThink?.runtime?.setTrayVisible?.(visible);
+  };
 
   const commit = (id: ShortcutId, update: Partial<ShortcutPreferences[ShortcutId]>) => {
     const next = updateShortcutPreference(id, update);
@@ -920,6 +931,20 @@ function ShortcutPreferencesPanel() {
 
   return (
     <div className="settings-shortcuts">
+      <div className="settings-shortcut-row">
+        <div className="settings-shortcut-row__copy">
+          <strong>在托盘区显示图标</strong>
+          <span>关闭窗口时隐藏到托盘，单击图标显示或隐藏窗口</span>
+        </div>
+        <div className="settings-shortcut-row__control">
+          <PreferenceToggle
+            checked={trayVisible}
+            label="在托盘区显示图标"
+            onChange={commitTrayVisible}
+          />
+        </div>
+      </div>
+      <div className="settings-shortcuts__group-divider" />
       <ShortcutGroup
         title="系统快捷键"
         definitions={SYSTEM_SHORTCUTS}

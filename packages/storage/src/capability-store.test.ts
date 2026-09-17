@@ -446,6 +446,7 @@ describe('0040 capability governance migration', () => {
       '0052_tool_approval_read_indexes',
       '0053_native_task_plan_projection',
       '0054_conversation_file_directory_indexes',
+      '0055_provider_unverified',
     ]);
     const after = await openDatabaseAsync({ path: dbPath });
     try {

@@ -491,6 +491,75 @@ describe('chat execution mode tool gating', () => {
     ]);
   });
 
+  it('update_task_plan carries step descriptions forward when a later call omits them', async () => {
+    const { executeChatPlanTool } = await import('./chat-tools.js');
+    // First call publishes the wording. Later calls report progress only: once
+    // the context is compacted the model cannot resend what it no longer holds.
+    const first = JSON.parse(
+      executeChatPlanTool(
+        JSON.stringify({
+          items: [
+            {
+              id: 'audit',
+              title: '审计架构',
+              description: '找出 runtime/desktop 中的重复实现',
+              status: 'in_progress',
+            },
+            { title: '兼容旧清单', description: '保留旧字段', status: 'pending' },
+          ],
+        }),
+      ),
+    );
+    const second = JSON.parse(
+      executeChatPlanTool(
+        JSON.stringify({
+          items: [
+            { id: 'audit', title: '审计架构', status: 'completed' },
+            { title: '兼容旧清单', description: '   ', status: 'in_progress' },
+            { title: '新增步骤', status: 'pending' },
+          ],
+        }),
+        first.plan.items,
+      ),
+    );
+    expect(second.plan.items).toEqual([
+      {
+        id: 'audit',
+        title: '审计架构',
+        description: '找出 runtime/desktop 中的重复实现',
+        status: 'completed',
+      },
+      { title: '兼容旧清单', description: '保留旧字段', status: 'in_progress' },
+      { title: '新增步骤', status: 'pending' },
+    ]);
+  });
+
+  it('update_task_plan matches a carried description by id when the title is rewritten', async () => {
+    const { executeChatPlanTool } = await import('./chat-tools.js');
+    const result = JSON.parse(
+      executeChatPlanTool(
+        JSON.stringify({
+          items: [{ id: 'step-1', title: '改写后的标题', status: 'in_progress' }],
+        }),
+        [{ id: 'step-1', title: '原标题', description: '稳定描述' }],
+      ),
+    );
+    expect(result.plan.items).toEqual([
+      {
+        id: 'step-1',
+        title: '改写后的标题',
+        description: '稳定描述',
+        status: 'in_progress',
+      },
+    ]);
+  });
+
+  it('update_task_plan schema exposes a stable per-step id', async () => {
+    const { CHAT_PLAN_TOOL_SCHEMAS } = await import('./chat-tools.js');
+    const schema = CHAT_PLAN_TOOL_SCHEMAS.find((tool) => tool.name === 'update_task_plan');
+    expect(JSON.stringify(schema?.inputSchema)).toContain('"id":{"type":"string"');
+  });
+
   it('TaskCreate/TaskUpdate/TaskList: persisted NewMax-style checklist tools', async () => {
     const {
       executeTaskCreateTool,
@@ -1254,6 +1323,8 @@ describe('chatToolRequiresApproval', () => {
     }
     // read-only agent tool never needs approval
     expect(chatToolRequiresApproval('ask', 'list_agent_resources')).toBe(false);
+    expect(chatToolRequiresApproval('ask', 'list_available_agents')).toBe(false);
+    expect(chatToolRequiresApproval('ask', 'agent_run')).toBe(false);
   });
 });
 
@@ -1266,6 +1337,10 @@ describe('agent tool schemas', () => {
     expect(names).toContain('update_agent');
     expect(names).toContain('archive_agent');
     expect(names).toContain('list_agent_resources');
+    const directoryNames = (await import('./chat-tools.js')).CHAT_AGENT_DIRECTORY_TOOL_SCHEMAS.map(
+      (tool) => tool.name,
+    );
+    expect(directoryNames).toEqual(['list_available_agents', 'get_agent', 'agent_run']);
     expect(CHAT_AGENT_TOOL_NAMES.has('update_agent')).toBe(true);
     expect(CHAT_AGENT_TOOL_NAMES.has('archive_agent')).toBe(true);
     expect(CHAT_AGENT_MUTATING_TOOL_NAMES.has('update_agent')).toBe(true);

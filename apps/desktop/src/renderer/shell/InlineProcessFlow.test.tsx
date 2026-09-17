@@ -470,6 +470,58 @@ describe('InlineProcessFlow', () => {
     ).toBe('true');
   });
 
+  it('keeps Think rows folded by default even when tool rows open themselves', () => {
+    // A long run must stay readable: Think rows show their one-line summary and
+    // only open on demand. `toolCallExpandedByDefault` is a tool preference and
+    // must not leak into the Think rows.
+    render(
+      <InlineProcessFlow
+        items={[
+          {
+            kind: 'reasoning',
+            text: '第一行摘要\n正文细节只有点开才看得到',
+            status: 'streaming',
+            startedAt: '2026-08-16T10:00:00.000Z',
+          },
+        ]}
+        defaultOpen
+        streaming
+        toolCallExpandedByDefault
+      />,
+    );
+
+    // While streaming the row tracks the newest line for a sense of progress…
+    expect(screen.getByTestId('think-row-summary').textContent).toContain(
+      '正文细节只有点开才看得到',
+    );
+    // …and the body stays folded regardless of the tool preference.
+    expect(screen.queryByTestId('think-row-body')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('think-row-toggle'));
+    expect(screen.getByTestId('think-row-body').textContent).toContain('正文细节');
+  });
+
+  it('renders the terminal notice above the step list, not buried under it', () => {
+    // A four-minute run with a dozen tool rows used to put "why it stopped" at
+    // the very bottom of the panel, so a provider outage read as a silent stop.
+    const { container } = render(
+      <InlineProcessFlow
+        items={[
+          toolItem,
+          { ...toolItem, toolCallId: 'tool-read-c', argumentsJson: '{"path":"c.txt"}' },
+        ]}
+        supplementalContent={<div data-testid="terminal-notice">已暂停</div>}
+        defaultOpen
+        collapseExecutionProcess={false}
+      />,
+    );
+
+    const notice = screen.getByTestId('terminal-notice');
+    const firstEntry = container.querySelector('[data-testid="process-entry"]');
+    expect(firstEntry).toBeTruthy();
+    expect(follows(notice, firstEntry!)).toBe(true);
+  });
+
   it('folds a completed command stretch even before the next narrative starts', () => {
     render(
       <InlineProcessFlow
@@ -1069,6 +1121,145 @@ describe('InlineProcessFlow', () => {
     const tool = screen.getByTestId('inline-process-tool');
     expect(commentary.textContent).toContain('我先检查运行环境。');
     expect(follows(commentary, tool)).toBe(true);
+  });
+
+  it('interleaves Think rows with live tool steps instead of hoisting them', () => {
+    // Streaming shape: tool rows arrive as paged steps, Think rows from the
+    // assistant timeline. Appending the tool stream wholesale used to hoist
+    // every Think row above every tool row, so a long run read as "all commands
+    // and tools, no thinking".
+    render(
+      <InlineProcessFlow
+        items={[
+          {
+            kind: 'reasoning',
+            text: '先看代码结构',
+            status: 'completed',
+            startedAt: '2026-08-16T10:00:00.000Z',
+          },
+          {
+            kind: 'reasoning',
+            text: '再确认调用方',
+            status: 'completed',
+            startedAt: '2026-08-16T10:00:20.000Z',
+          },
+        ]}
+        steps={[
+          {
+            id: 'step-1',
+            label: 'read_file',
+            verb: 'Read',
+            zh: '读取文件',
+            toolName: 'read_file',
+            kind: 'read',
+            status: 'done',
+            preview: 'a',
+            sequence: 1,
+            startedAt: '2026-08-16T10:00:10.000Z',
+            completedAt: '2026-08-16T10:00:11.000Z',
+          } as never,
+        ]}
+        commentarySegments={[
+          {
+            id: 'seg-1',
+            text: '先读取入口文件。',
+            startedAt: '2026-08-16T10:00:05.000Z',
+          },
+        ]}
+        defaultOpen
+        streaming
+      />,
+    );
+
+    const thinks = screen.getAllByTestId('inline-process-reasoning');
+    const commentary = screen.getByTestId('inline-process-commentary');
+    const tool = screen.getByTestId('inline-process-tool');
+    expect(thinks).toHaveLength(2);
+    // Think(00) → commentary(05) → tool(10) → Think(20)
+    expect(follows(thinks[0]!, commentary)).toBe(true);
+    expect(follows(commentary, tool)).toBe(true);
+    expect(follows(tool, thinks[1]!)).toBe(true);
+  });
+
+  it('points a delegation row at its card instead of dumping the raw payload', () => {
+    // The `agent_run` result is the delegation payload (child run id, tool log,
+    // usage) — unreadable in a tool row. The card below is the readable form.
+    render(
+      <InlineProcessFlow
+        items={[
+          {
+            kind: 'tool',
+            toolCallId: 'toolu_delegate',
+            name: 'agent_run',
+            argumentsJson: '{"agentId":"builtin-code-reviewer"}',
+            result: '{"ok":true,"childRunId":"child-1","toolEvents":[]}',
+            status: 'completed',
+            delegationAnchor: true,
+          },
+        ]}
+        defaultOpen
+        toolCallExpandedByDefault
+      />,
+    );
+
+    expect(screen.getByTestId('delegation-anchor-note')).toBeTruthy();
+    expect(screen.queryByTestId('inline-process-tool-result')).toBeNull();
+    // Arguments stay: they say which Agent was dispatched.
+    expect(screen.getByTestId('inline-process-tool-arguments')).toBeTruthy();
+  });
+
+  it('still surfaces a failed delegation error', () => {
+    render(
+      <InlineProcessFlow
+        items={[
+          {
+            kind: 'tool',
+            toolCallId: 'toolu_delegate_failed',
+            name: 'agent_run',
+            argumentsJson: '{}',
+            result: 'MCP error -32602: Invalid arguments for tool agent_run',
+            status: 'failed',
+            failed: true,
+            delegationAnchor: true,
+          },
+        ]}
+        defaultOpen
+        toolCallExpandedByDefault
+      />,
+    );
+
+    expect(screen.queryByTestId('delegation-anchor-note')).toBeNull();
+    expect(screen.getByTestId('inline-process-tool-result').textContent).toContain('-32602');
+  });
+
+  it('keeps item commentary when the panel has no commentary segments', () => {
+    // The durable `commentary` block never carried `payload.commentarySegments`,
+    // so the live panel must fall back to the commentary items it was given
+    // instead of stripping them and waiting for segments that never arrive.
+    render(
+      <InlineProcessFlow
+        items={[{ kind: 'commentary', text: '我先看一下目录。' }]}
+        steps={
+          [
+            {
+              id: 'step-1',
+              label: 'read_file',
+              verb: 'Read',
+              zh: '读取文件',
+              toolName: 'read_file',
+              kind: 'read',
+              status: 'done',
+              preview: 'a',
+            },
+          ] as never
+        }
+        defaultOpen
+      />,
+    );
+
+    expect(screen.getByTestId('inline-process-commentary').textContent).toContain(
+      '我先看一下目录。',
+    );
   });
 
   it('restores missing commentary at its durable tool boundary without dropping repeated text', () => {

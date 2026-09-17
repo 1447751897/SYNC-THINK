@@ -147,12 +147,20 @@ export function getConversationDisplayQueueBatchOptions(
   };
 }
 
-/** Preserve the word-by-word feel while preventing a long provider burst from lagging behind. */
+/**
+ * Preserve the word-by-word feel while preventing a long provider burst from
+ * lagging behind.
+ *
+ * The floor is one 60 Hz frame (~16 ms): flushing faster than the display can
+ * present only adds render+commit work to the main thread without any visible
+ * benefit, and it competes with the clicks and keystrokes the user is making
+ * while output streams.
+ */
 export function getConversationDisplayQueueFlushDelay(
   queued: readonly ConversationDisplayQueueItem[],
 ): number {
   const pendingCharacters = pendingDisplayTextCharacters(queued);
-  if (pendingCharacters > 3_000) return 14;
+  if (pendingCharacters > 3_000) return 16;
   if (pendingCharacters > 1_200) return 22;
   if (pendingCharacters > 240) return 35;
   return DISPLAY_FLUSH_DELAY_MS;

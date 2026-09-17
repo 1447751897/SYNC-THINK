@@ -280,6 +280,10 @@ export function backfillMessagesFromEvents(
         providerModelId:
           typeof payload.providerModelId === 'string' ? payload.providerModelId : undefined,
         errorMessage: scrubDiagnosticMessage(payload.errorMessage),
+        resolutionSource:
+          typeof payload.resolutionSource === 'string' ? payload.resolutionSource : undefined,
+        fallbackModelCount:
+          typeof payload.fallbackModelCount === 'number' ? payload.fallbackModelCount : undefined,
       });
       const result = writeMessage(store, {
         id: messageId,

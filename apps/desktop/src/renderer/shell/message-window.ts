@@ -17,10 +17,7 @@ export function shouldRestorePrependAnchor(input: {
   currentUserScrollRevision: number;
   hasAnchor: boolean;
 }): boolean {
-  return (
-    input.hasAnchor &&
-    input.capturedUserScrollRevision === input.currentUserScrollRevision
-  );
+  return input.hasAnchor && input.capturedUserScrollRevision === input.currentUserScrollRevision;
 }
 
 /**
@@ -71,10 +68,7 @@ export function isConversationNearBottom(
  * is already away from the bottom. A tick while still glued to the tail must
  * not unpin — html/mermaid layout and nested webview wheels also emit deltaY<0.
  */
-export function shouldReleaseStickOnWheel(input: {
-  deltaY: number;
-  nearBottom: boolean;
-}): boolean {
+export function shouldReleaseStickOnWheel(input: { deltaY: number; nearBottom: boolean }): boolean {
   return input.deltaY < 0 && !input.nearBottom;
 }
 
@@ -105,10 +99,7 @@ export function applyConversationStickOnScroll(input: {
   if (input.programmaticPending) {
     return { sticky: input.sticky, programmaticPending: false };
   }
-  if (
-    input.previousScrollTop !== null &&
-    input.scrollTop < input.previousScrollTop - jitter
-  ) {
+  if (input.previousScrollTop !== null && input.scrollTop < input.previousScrollTop - jitter) {
     return { sticky: false, programmaticPending: false };
   }
   return { sticky: input.sticky, programmaticPending: false };
@@ -130,6 +121,21 @@ export function visualAnchorScrollAdjustment(input: {
   nextViewportOffset: number;
 }): number {
   return input.nextViewportOffset - input.previousViewportOffset;
+}
+
+/** Matches NewMax 1.1.17's durable-message tail window. */
+export const MESSAGE_INITIAL_RENDER_THRESHOLD = 12;
+export const MESSAGE_INITIAL_RENDER_LIMIT = 12;
+export const MESSAGE_LOAD_EARLIER_BATCH = 40;
+
+export function getInitialMessageRenderStart(messageCount: number): number {
+  const count = Math.max(0, Math.floor(messageCount));
+  if (count <= MESSAGE_INITIAL_RENDER_THRESHOLD) return 0;
+  return Math.max(0, count - MESSAGE_INITIAL_RENDER_LIMIT);
+}
+
+export function expandMessageRenderStart(currentStart: number, requestedStart: number): number {
+  return Math.max(0, Math.min(Math.floor(currentStart), Math.floor(requestedStart)));
 }
 
 export const MESSAGE_WINDOW_ESTIMATED_HEIGHT = 220;
@@ -190,11 +196,7 @@ export function calculateMessageWindow(input: {
   estimatedHeight?: number;
   overscanPx?: number;
 }): MessageWindowRange {
-  const offsets = buildMessageOffsets(
-    input.ids,
-    input.measuredHeights,
-    input.estimatedHeight,
-  );
+  const offsets = buildMessageOffsets(input.ids, input.measuredHeights, input.estimatedHeight);
   const itemCount = input.ids.length;
   const totalHeight = offsets[itemCount] ?? 0;
   if (itemCount === 0) {
@@ -207,15 +209,15 @@ export function calculateMessageWindow(input: {
     Math.max(0, input.scrollTop) + Math.max(0, input.viewportHeight) + overscan,
   );
   const startIndex = firstItemEndingAfter(offsets, visibleTop);
-  const endIndex = Math.max(
-    startIndex + 1,
-    firstItemStartingAtOrAfter(offsets, visibleBottom),
-  );
+  const endIndex = Math.max(startIndex + 1, firstItemStartingAtOrAfter(offsets, visibleBottom));
   return {
     startIndex,
     endIndex: Math.min(itemCount, endIndex),
     topSpacer: offsets[startIndex] ?? 0,
-    bottomSpacer: Math.max(0, totalHeight - (offsets[Math.min(itemCount, endIndex)] ?? totalHeight)),
+    bottomSpacer: Math.max(
+      0,
+      totalHeight - (offsets[Math.min(itemCount, endIndex)] ?? totalHeight),
+    ),
     totalHeight,
   };
 }

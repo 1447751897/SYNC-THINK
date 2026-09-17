@@ -70,10 +70,12 @@ function normalizeItem(
   const text = string(item.title ?? item.subject ?? item.content ?? item.step) ?? previous?.title;
   if (!text) return undefined;
   const [title = '', ...details] = text.split(/\r?\n/);
+  // A blank description means "unchanged", not "erase it": once the context is
+  // compacted the model cannot resend wording it no longer holds.
+  const explicitDescription =
+    typeof item.description === 'string' ? item.description.trim() : undefined;
   const description =
-    typeof item.description === 'string'
-      ? item.description.trim()
-      : details.join('\n').trim() || previous?.description;
+    explicitDescription || details.join('\n').trim() || previous?.description;
   const rawStatus = item.status ?? previous?.status;
   const status =
     rawStatus === 'completed'
@@ -96,17 +98,26 @@ function normalizeItems(
 ): NativeTaskPlanItem[] | undefined {
   if (!Array.isArray(raw)) return undefined;
   return raw.flatMap((entry) => {
-    const id = string(record(entry)?.id);
-    const item = normalizeItem(
-      entry,
-      id ? previous?.find((candidate) => candidate.id === id) : undefined,
-    );
+    const entryRecord = record(entry);
+    const id = string(entryRecord?.id);
+    // update_task_plan carries no `id`, so a step is identified by its title.
+    // Matching on both keeps `previous` reachable when ids are absent.
+    const title = string(
+      entryRecord?.title ?? entryRecord?.subject ?? entryRecord?.content ?? entryRecord?.step,
+    )
+      ?.split(/\r?\n/)[0]
+      ?.trim();
+    const match =
+      (id ? previous?.find((candidate) => candidate.id === id) : undefined) ??
+      (title ? previous?.find((candidate) => candidate.title === title) : undefined);
+    const item = normalizeItem(entry, match);
     return item ? [item] : [];
   });
 }
 
 export function extractTaskPlanSnapshot(
   payload: Record<string, unknown>,
+  previous: NativeTaskPlanItem[] | null = null,
 ): Omit<TaskPlanProjection, 'running'> | undefined {
   const output = record(payload.structuredResult ?? payload.result ?? payload.output);
   if (payload.failed === true || output?.ok === false || output?.success === false)
@@ -119,7 +130,10 @@ export function extractTaskPlanSnapshot(
       toolCall?.argumentsJson ??
       toolCall?.arguments,
   );
-  const items = normalizeItems(record(output?.plan)?.items ?? args?.items ?? args?.plan);
+  const items = normalizeItems(
+    record(output?.plan)?.items ?? args?.items ?? args?.plan,
+    previous,
+  );
   return items
     ? {
         items,
@@ -210,7 +224,7 @@ export function reduceTaskPlanEvents(
       if (payload.partial === true) continue;
       if (callId) state.pending[callKey] = { name: rawName, args, previousItems: state.items };
       if (!options?.confirmedOnly && (name === 'update_plan' || name === 'update_task_plan')) {
-        const snapshot = extractTaskPlanSnapshot(payload);
+        const snapshot = extractTaskPlanSnapshot(payload, state.items);
         if (snapshot) {
           state.items = snapshot.items;
           state.source = 'plan';
@@ -241,7 +255,7 @@ export function reduceTaskPlanEvents(
         state.items = pending.previousItems ?? null;
       continue;
     }
-    const snapshot = extractTaskPlanSnapshot({ ...payload, arguments: args });
+    const snapshot = extractTaskPlanSnapshot({ ...payload, arguments: args }, state.items);
     if (snapshot) {
       state.items = snapshot.items;
       state.source = 'plan';
@@ -250,7 +264,7 @@ export function reduceTaskPlanEvents(
     }
     if (rawName.startsWith('mcp__')) continue;
     if (name === 'TodoWrite') {
-      const items = normalizeItems(output?.newTodos ?? args.todos);
+      const items = normalizeItems(output?.newTodos ?? args.todos, state.items);
       if (items) {
         state.items = items;
         state.source = 'claude';

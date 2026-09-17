@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { collect, textFromEvents } from '../events.js';
 import { OpenAIResponsesAdapter } from '../openai-responses-adapter.js';
-import type { ProviderCallRequest } from '../types.js';
+import type { ProviderCallRequest, ProviderContentPart } from '../types.js';
 import { scrubSecrets } from './discover-models.js';
 import { joinResponsesUrl, streamOpenAIResponses } from './stream-responses.js';
 
@@ -746,5 +746,77 @@ describe('streamOpenAIResponses', () => {
     });
     const events = await collect(adapter.call(req()));
     expect(textFromEvents(events)).toBe('via adapter');
+  });
+});
+
+// NewMax `probeCapabilities` 会向 responses 端点发文档 / 视频探针块，
+// 这两维在移植里曾整体缺失。这里钉死它们的线上形状。
+describe('capability probe media blocks', () => {
+  const fetchMock = vi.fn<(...args: unknown[]) => Promise<Response>>();
+
+  afterEach(() => fetchMock.mockReset());
+
+  function okResponse(): Response {
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: () => 'text/event-stream' },
+      body: sseStream(['data: {"type":"response.completed","response":{"status":"completed"}}\n\n']),
+      text: async () => '',
+    } as unknown as Response;
+  }
+
+  async function requestBody(
+    content: ProviderContentPart[],
+  ): Promise<Array<Record<string, unknown>>> {
+    fetchMock.mockResolvedValue(okResponse());
+    await collect(
+      streamOpenAIResponses(
+        req({ messages: [{ role: 'user', content }] }),
+        { fetchImpl: fetchMock as unknown as typeof fetch },
+      ),
+    );
+    const init = fetchMock.mock.calls[0]![1] as { body: string };
+    const body = JSON.parse(init.body) as { input: Array<{ content: Array<Record<string, unknown>> }> };
+    return body.input[0]!.content;
+  }
+
+  it('serializes document and video probes as input_file / input_video', async () => {
+    const content = await requestBody([
+      { type: 'text', text: 'summarize' },
+      { type: 'document', mediaUrl: 'data:application/pdf;base64,JVBERi0=' },
+      { type: 'text', text: 'describe' },
+      { type: 'video', mediaUrl: 'data:video/mp4;base64,AAAA' },
+    ]);
+    expect(content).toEqual([
+      { type: 'input_text', text: 'summarize' },
+      {
+        type: 'input_file',
+        filename: 'attachment',
+        file_data: 'data:application/pdf;base64,JVBERi0=',
+      },
+      { type: 'input_text', text: 'describe' },
+      { type: 'input_video', video_url: 'data:video/mp4;base64,AAAA' },
+    ]);
+  });
+
+  it('carries detail only when the caller asks for it', async () => {
+    const content = await requestBody([
+      { type: 'image', imageUrl: 'data:image/png;base64,AAAA', imageDetail: 'low' },
+      { type: 'image', imageUrl: 'data:image/png;base64,BBBB' },
+    ]);
+    expect(content).toEqual([
+      { type: 'input_image', image_url: 'data:image/png;base64,AAAA', detail: 'low' },
+      { type: 'input_image', image_url: 'data:image/png;base64,BBBB' },
+    ]);
+  });
+
+  it('skips media parts that carry no payload', async () => {
+    const content = await requestBody([
+      { type: 'text', text: 'summarize' },
+      { type: 'document' },
+      { type: 'video' },
+    ]);
+    expect(content).toEqual([{ type: 'input_text', text: 'summarize' }]);
   });
 });

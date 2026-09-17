@@ -47,3 +47,25 @@ sync-think-arch.html
 /.playwright-mcp/
 /.desktop-governance-*.meta.json
 /scripts/tmp-*.mjs
+
+# ---------------------------------------------------------------------------
+# 本机产物，禁止入库（多为大体积二进制 / 用户数据）
+# ---------------------------------------------------------------------------
+# 安装包与分发归档（单个约 195MB，误提交会永久写进历史）
+/SYNC-THINK-rc2-public.zip
+*.exe
+*.msi
+*.dmg
+*.AppImage
+*.blockmap
+# Electron 用户数据备份（Cache / Partitions 等）
+/userdata-backup-*/
+# 本地工具与智能体数据目录
+/.ua/
+/.newmax/
+/.yanagent/
+/.workbuddy-ai/
+# 根目录生成的图片与 Windows「未命名」临时草稿
+/*.png
+/未命名*
+/notes/未命名*

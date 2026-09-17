@@ -666,7 +666,14 @@ describe('provider commands', () => {
       // 「未判定」必须与「未通过」分开：这里不能把任何一项写成 false。
       expect(suggestion.results.text).toBeUndefined();
       expect(suggestion.results.vision).toBeUndefined();
-      expect(suggestion.undetermined).toEqual(expect.arrayContaining(['text', 'vision']));
+      // `undetermined` 的口径是**探针请求根本没打到模型**，所以它只覆盖真的发过
+      // 探针的维度（vision / document / video）。text 从不发探针 —— 它由
+      // `suggestCapabilities` 静态判定后原样保留（见 `probeModelCapabilitiesLive`
+      // 里「其余静态维度」那段注释与 `untested` 分支），属于「未探测」而不是
+      // 「未判定」。把它并进来会让面板渲染出「文本 · 未判定」，而那一行的解释
+      // 文案明说原因是「请求没打到模型」—— 对从未发出过请求的维度说这句话是错的。
+      expect(suggestion.undetermined).toEqual(['vision', 'document', 'video']);
+      expect(suggestion.undetermined).not.toContain('text');
       // 原有能力被原样保留 —— 这才是「有图像能力就能用图像」的前提。
       expect(suggestion.capabilities).toEqual(expect.arrayContaining(['text', 'vision']));
 

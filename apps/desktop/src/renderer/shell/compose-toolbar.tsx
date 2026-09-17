@@ -11,6 +11,7 @@ import {
   type MutableRefObject,
 } from 'react';
 import { createPortal } from 'react-dom';
+import { listenForFrameCoalescedViewportChange } from './viewport-frame.js';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import {
   ArrowUp,
@@ -46,6 +47,7 @@ import { BrandLogoMark } from './BrandLogoMark.js';
 import { resolveKernelBrandLogo, resolveKernelDisplayName } from './brand-icons.js';
 import type { ModelOption } from './NewConversationDialog.js';
 import { ComposerMenuHighlight } from './ComposerMenuHighlight.js';
+import { OverlayScrollArea } from './OverlayScrollArea.js';
 
 export type PermissionMode = 'ask' | 'workspace' | 'full-access';
 /** Fixed NewMax-style effort ladder (full set always shown). */
@@ -392,12 +394,7 @@ function MenuShell(props: {
     }
     const update = () => setAnchor(rectFromEl(props.anchorEl));
     update();
-    window.addEventListener('resize', update);
-    window.addEventListener('scroll', update, true);
-    return () => {
-      window.removeEventListener('resize', update);
-      window.removeEventListener('scroll', update, true);
-    };
+    return listenForFrameCoalescedViewportChange(update);
   }, [props.open, props.anchorEl]);
 
   useEffect(() => {
@@ -923,12 +920,7 @@ export function ModelPickerMenu(props: {
     }
     const update = () => setTriggerRect(rectFromEl(props.anchorEl));
     update();
-    window.addEventListener('resize', update);
-    window.addEventListener('scroll', update, true);
-    return () => {
-      window.removeEventListener('resize', update);
-      window.removeEventListener('scroll', update, true);
-    };
+    return listenForFrameCoalescedViewportChange(update);
   }, [props.open, props.anchorEl]);
 
   const selectedProviderOfModel = props.models.find(
@@ -996,7 +988,11 @@ export function ModelPickerMenu(props: {
           onFocusOutside={(event) => event.preventDefault()}
           onEscapeKeyDown={props.onClose}
         >
-          <div className="shell-menu__scroll">
+          <OverlayScrollArea
+            className="shell-menu__scroll-frame"
+            innerClassName="shell-menu__scroll"
+            fadeColor="var(--composer-surface)"
+          >
             {props.kernels && props.kernels.length > 0 ? (
               <>
                 <div className="shell-menu__group-label">内核</div>
@@ -1140,7 +1136,11 @@ export function ModelPickerMenu(props: {
                         collisionPadding={8}
                         avoidCollisions
                       >
-                        <div className="shell-menu__scroll">
+                        <OverlayScrollArea
+                          className="shell-menu__scroll-frame"
+                          innerClassName="shell-menu__scroll"
+                          fadeColor="var(--composer-surface)"
+                        >
                           {models.length === 0 ? (
                             <div className="shell-menu__empty">该供应商暂无模型</div>
                           ) : (
@@ -1172,14 +1172,14 @@ export function ModelPickerMenu(props: {
                               );
                             })
                           )}
-                        </div>
+                        </OverlayScrollArea>
                       </DropdownMenu.SubContent>
                     </DropdownMenu.Portal>
                   </DropdownMenu.Sub>
                 );
               })
             )}
-          </div>
+          </OverlayScrollArea>
           {props.reasoningEffort && props.onReasoningChange ? (
             <div className="shell-menu__model-footer">
               <DropdownMenu.Sub
@@ -1209,7 +1209,11 @@ export function ModelPickerMenu(props: {
                     collisionPadding={8}
                     avoidCollisions
                   >
-                    <div className="shell-menu__scroll">
+                    <OverlayScrollArea
+                      className="shell-menu__scroll-frame"
+                      innerClassName="shell-menu__scroll"
+                      fadeColor="var(--composer-surface)"
+                    >
                       {REASONING_OPTIONS.filter((option) =>
                         reasoningLevelsForModel(props.selectedModelId).includes(option.value),
                       ).map((option) => {
@@ -1237,7 +1241,7 @@ export function ModelPickerMenu(props: {
                           </DropdownMenu.Item>
                         );
                       })}
-                    </div>
+                    </OverlayScrollArea>
                   </DropdownMenu.SubContent>
                 </DropdownMenu.Portal>
               </DropdownMenu.Sub>

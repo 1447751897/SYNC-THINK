@@ -1,4 +1,4 @@
-import type { ConversationTrack } from '@sync-think/shared';
+import type { AgentWritePolicy, ConversationTrack } from '@sync-think/shared';
 import {
   capabilitiesForConversationTrack,
   DEFAULT_COLLABORATION_SETTINGS,
@@ -25,6 +25,11 @@ export interface AgentCatalogCandidate {
   skillIds?: readonly string[];
   mcpServerIds?: readonly string[];
   archived?: boolean;
+  enabled?: boolean;
+  source?: 'builtin' | 'user';
+  availabilityScope?: 'global' | 'workspace';
+  /** Whether this Agent may write when delegated to (docs/adr/0001). */
+  writePolicy?: AgentWritePolicy;
 }
 
 export interface AgentAssignmentRequest {
@@ -35,23 +40,23 @@ export interface AgentAssignmentRequest {
 }
 
 export interface AgentAssignment {
-  kind: 'existing' | 'temporary';
-  agentId?: string;
+  kind: 'existing';
+  agentId: string;
   score: number;
   reason: string;
-  temporaryProfile?: { name: string; persona: string; task: string };
 }
 
-/** Pick a frozen existing Agent from catalog summaries, or produce a run-local profile. */
+/** Pick an existing Agent from the workspace-scoped catalog. */
 export function resolveAgentAssignment(
   request: AgentAssignmentRequest,
   candidates: readonly AgentCatalogCandidate[],
-): AgentAssignment {
+): AgentAssignment | undefined {
   const task = request.task.trim().toLocaleLowerCase();
   const requiredSkills = new Set((request.requiredSkillIds ?? []).map(String));
   const requiredTools = new Set((request.requiredToolIds ?? []).map(String));
   const eligible = candidates.filter((candidate) => {
-    if (candidate.archived) return false;
+    if (candidate.archived || candidate.enabled === false) return false;
+    if (request.preferredAgentId && candidate.id !== request.preferredAgentId) return false;
     const skills = new Set(candidate.skillIds ?? []);
     const tools = new Set(candidate.mcpServerIds ?? []);
     return [...requiredSkills].every((skill) => skills.has(skill)) &&
@@ -76,16 +81,7 @@ export function resolveAgentAssignment(
       reason: '命中已存在 Agent 的硬能力条件，并按任务文本完成候选排序。',
     };
   }
-  return {
-    kind: 'temporary',
-    score: 0,
-    reason: '没有同时满足硬能力条件的现有 Agent，只创建当前 Run 有效的临时配置。',
-    temporaryProfile: {
-      name: '临时任务 Agent',
-      persona: '只围绕当前任务工作，完成后返回结构化结果，不写入全局 Agent Library。',
-      task: request.task.trim(),
-    },
-  };
+  return undefined;
 }
 
 const AGENT_LIBRARY_TOOLS = new Set([
@@ -135,12 +131,20 @@ export function resolveCollaborationToolDenial(input: {
           : 'Agent 对话只允许通过普通任务清单派发任务，不能创建或管理动态协作 Agent。',
     };
   }
+  if (input.toolName === 'agent_run') {
+    return input.track === 'model'
+      ? null
+      : {
+          reason: 'track',
+          error: 'agent_run: 只有模型对话可以调用已激活的智能体。',
+        };
+  }
   if (DELEGATE_TOOL_NAMES.has(input.toolName) && !capabilities.canCreateDynamicSubagent) {
     return input.track === 'model'
       ? {
           reason: 'disabled',
           error:
-            'agent_delegate: delegation rejected (disabled). 模型对话的动态子 Agent 委派当前已关闭，可在「设置 > 智能体协作」中开启。',
+            'agent_delegate: delegation rejected (disabled). 模型对话向已有智能体的并发委派当前已关闭，可在「设置 > 智能体协作」中开启。',
         }
       : {
           reason: 'track',

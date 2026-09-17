@@ -210,6 +210,26 @@ describe('shouldSkipSameProviderFallback', () => {
     ).toBe('gpt-5.6-luna → gpt-5.6-sol · 网关 502');
   });
 
+  it('recognises dropped streams as local-gateway transport failures', () => {
+    // Node's fetch reports a dropped response stream as "terminated" and keeps
+    // the transport reason in `cause` ("other side closed", code UND_ERR_*).
+    // These spellings must be recognised, or a gateway blip is misread as a
+    // model-level failure and the fallback walk is skipped.
+    const url = ', url: http://127.0.0.1:58677/openai/v1/responses';
+    expect(isSharedProviderEndpointFailure(`terminated${url}`)).toBe(true);
+    expect(isSharedProviderEndpointFailure(`TypeError: terminated | UND_ERR_SOCKET${url}`)).toBe(
+      true,
+    );
+    expect(isSharedProviderEndpointFailure(`SocketError: other side closed${url}`)).toBe(true);
+    expect(isSharedProviderEndpointFailure(`premature close${url}`)).toBe(true);
+    expect(isSharedProviderEndpointFailure(`ECONNABORTED${url}`)).toBe(true);
+    // A direct provider call is not a shared local endpoint, whatever the reason.
+    expect(isSharedProviderEndpointFailure('terminated')).toBe(false);
+    expect(isSharedProviderEndpointFailure('fetch failed, url: https://api.example.com')).toBe(
+      false,
+    );
+  });
+
   it('labels rate-limit and transient by class without relying on the error snippet', () => {
     expect(describeModelFallbackReason('rate-limit')).toBe('限流');
     expect(describeModelFallbackReason('transient')).toBe('暂时失败');

@@ -41,6 +41,7 @@ import {
 import { FileTypeIcon } from './FileTypeIcon.js';
 import { browserTabFaviconSrc } from './ExternalSourceIcon.js';
 import { PANE_TAB_GLIDE } from './pane-tab-surface.js';
+import { listenForFrameCoalescedViewportChange } from './viewport-frame.js';
 import { pointerDragLeft, tabTranslate, visualIndexFor } from './workspace-tab-morph.js';
 
 export interface ConversationTabsProps {
@@ -233,12 +234,7 @@ function useAnchoredMenuStyle(
     };
 
     update();
-    window.addEventListener('resize', update);
-    window.addEventListener('scroll', update, true);
-    return () => {
-      window.removeEventListener('resize', update);
-      window.removeEventListener('scroll', update, true);
-    };
+    return listenForFrameCoalescedViewportChange(update);
   }, [anchorRef, config, open]);
 
   return style;

@@ -14,6 +14,7 @@ import {
   type Event,
   type RunId,
 } from '@sync-think/shared';
+import { formatRunPauseTerminalMessage } from '@sync-think/protocol/events';
 import { projectEventContent } from './deferred-content-projection.js';
 import { projectFileChangeContent } from './file-change-content.js';
 import { paginateRunProcess } from './run-process-page.js';
@@ -22,6 +23,10 @@ import type { DeferredContent } from '@sync-think/shared';
 
 const TOOL_META: Record<string, { verb: string; kind: ProcessToolKind; zh: string }> = {
   read_file: { verb: 'Read', kind: 'read', zh: '读取文件' },
+  // Codex 内核自带的读图工具（不是本项目定义的工具，也不会出现在 MCP 命名空间下）。
+  // 缺这条会走 `{ verb: name, zh: name }` 兜底，执行过程面板里直接显示英文
+  // `view_image`，而它旁边的 `read_file` 显示「读取文件」—— 同一个动作两套文案。
+  view_image: { verb: 'View', kind: 'read', zh: '查看图片' },
   write_file: { verb: 'Edit', kind: 'write', zh: '写入文件' },
   edit_file: { verb: 'Edit', kind: 'write', zh: '编辑文件' },
   file_write: { verb: 'Edit', kind: 'write', zh: '写入文件' },
@@ -642,12 +647,38 @@ export function projectRunProcessSnapshot(runId: RunId, events: readonly Event[]
       )
         continue;
       completedAt = event.occurredAt;
+      // A paused run has to say WHY it stopped. The generic "工具未报告完成"
+      // hid provider outages and fallback decisions completely, which is what
+      // left the user staring at a stalled conversation with no idea what had
+      // happened.
       terminalStepError =
         event.type === 'run.cancelled'
           ? '运行已取消，工具未报告完成'
           : event.type === 'run.completed'
             ? '运行已结束，工具未报告执行结果'
-            : '运行已停止，工具未报告完成';
+            : event.type === 'run.paused'
+              ? formatRunPauseTerminalMessage({
+                  reason:
+                    typeof event.payload.reason === 'string' ? event.payload.reason : undefined,
+                  failureClass:
+                    typeof event.payload.failureClass === 'string'
+                      ? event.payload.failureClass
+                      : undefined,
+                  providerModelId: eventProviderModelId(event),
+                  errorMessage:
+                    typeof event.payload.errorMessage === 'string'
+                      ? event.payload.errorMessage
+                      : undefined,
+                  resolutionSource:
+                    typeof event.payload.resolutionSource === 'string'
+                      ? event.payload.resolutionSource
+                      : undefined,
+                  fallbackModelCount:
+                    typeof event.payload.fallbackModelCount === 'number'
+                      ? event.payload.fallbackModelCount
+                      : undefined,
+                })
+              : '运行已停止，工具未报告完成';
       providerModelId = eventProviderModelId(event) ?? providerModelId;
       modelId = eventModelId(event) ?? modelId;
       continue;

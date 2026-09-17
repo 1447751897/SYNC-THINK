@@ -32,8 +32,11 @@ import {
   Bot,
   Brain,
   Check,
+  CheckCircle2,
   ChevronDown,
   ChevronUp,
+  CircleSlash,
+  Clock,
   Copy,
   Info,
   Lock,
@@ -47,6 +50,7 @@ import {
   ThumbsUp,
   Users,
   X,
+  XCircle,
   Zap,
 } from 'lucide-react';
 import {
@@ -83,6 +87,7 @@ import type {
   ToolApprovalScope,
   ConversationTransientSnapshot,
   DelegatedAgentProjection,
+  DelegatedAgentUsage,
   RunProcessView,
   ProviderBalancePayload,
   SkillVersionSummary,
@@ -93,6 +98,7 @@ import { normalizeAssistantTurnPhases } from '@sync-think/protocol/assistant-tur
 import { parseConversationGetContextStatusResponse } from '@sync-think/protocol/conversation-context-status';
 import type { ProjectTextLocation } from '../../workspace-tools-contract.js';
 import { AgentAvatarView } from './AgentAvatarView.js';
+import { avatarSeed, resolveAvatarFace } from './avatar-gen.js';
 import { avatarStateFrom } from './agentAvatarState.js';
 import { BrandLogoMark } from './BrandLogoMark.js';
 import { resolveKernelBrandLogo, resolveKernelDisplayName } from './brand-icons.js';
@@ -235,8 +241,7 @@ import { PlanApprovalCard } from './PlanApprovalCard.js';
 import { ToolApprovalCard, type PendingToolApproval } from './ToolApprovalCard.js';
 import { projectTodoFromEvents } from './todo-projection.js';
 import { ComposerTaskPanel } from './ComposerTaskPanel.js';
-import { InlineProcessFlow } from './InlineProcessFlow.js';
-import { formatDisplayedToolOutput } from './tool-output-display.js';
+import { DelegatedAgentToolRow, InlineProcessFlow } from './InlineProcessFlow.js';
 import { reconcileProcessItemOutcomes } from './process-item-outcome.js';
 import { generatedImageModelsFromProcessItems } from './process-activity.js';
 import {
@@ -244,6 +249,7 @@ import {
   ConversationMinimapRail,
   type ConversationNavigationItem,
 } from './ConversationMinimapRail.js';
+import { ScrollToBottomButton } from './ScrollToBottomButton.js';
 import {
   navigationSlideDuration,
   navigationSlidePosition,
@@ -282,11 +288,15 @@ import {
 } from './provider-usage-summary.js';
 import {
   applyConversationStickOnScroll,
+  expandMessageRenderStart,
+  getInitialMessageRenderStart,
   isConversationNearBottom,
+  MESSAGE_LOAD_EARLIER_BATCH,
   shouldFollowConversationContentResize,
   shouldReleaseStickOnWheel,
   shouldRestorePrependAnchor,
 } from './message-window.js';
+import { listenForFrameCoalescedViewportChange } from './viewport-frame.js';
 import {
   projectRunTerminalEvents,
   reconcileStreamingMessageProcessTerminal,
@@ -351,6 +361,14 @@ export type InlineProcessItem =
       id?: string;
       sequence?: number;
       status?: 'streaming' | 'completed';
+      /**
+       * Clock of the originating timeline segment. The live panel merges Think
+       * rows (from the assistant timeline) with tool rows (from the paged
+       * process view); sharing `startedAt` is what lets the two be interleaved
+       * instead of one whole stream being hoisted above the other.
+       */
+      startedAt?: string;
+      completedAt?: string;
     }
   | {
       kind: 'text' | 'commentary';
@@ -359,6 +377,8 @@ export type InlineProcessItem =
       id?: string;
       sequence?: number;
       status?: 'streaming' | 'completed';
+      startedAt?: string;
+      completedAt?: string;
     }
   | {
       kind: 'tool';
@@ -375,6 +395,14 @@ export type InlineProcessItem =
       detailsRef?: import('@sync-think/shared').DeferredContent;
       failed?: boolean;
       status?: 'running' | 'completed' | 'failed';
+      /**
+       * This row is the anchor of a delegated child Agent (`agent_delegate` /
+       * `agent_run`). Its raw result is the delegation payload — an internal
+       * envelope the reader cannot use — so the row points at the card below
+       * instead of dumping it. `result` still carries the payload verbatim for
+       * the card parser.
+       */
+      delegationAnchor?: boolean;
       /** First observed tool boundary (native steps carry these). */
       startedAt?: string;
       /** Terminal tool boundary, when reported. */
@@ -429,7 +457,7 @@ export interface ChatMessage {
   runId?: string;
   /** Kernel that produced this run (persisted on the message; survives restarts). */
   kernelId?: string;
-  terminalState?: 'failed' | 'cancelled';
+  terminalState?: 'failed' | 'cancelled' | 'paused';
   terminalError?: string;
   /** Historical terminal event materialized after newer durable rows already existed. */
   legacyTerminalBackfill?: boolean;
@@ -573,6 +601,8 @@ function restoreConversationScrollPosition(
 }
 
 const RECENT_CONVERSATION_CACHE_SIZE = 8;
+/** 首屏 durable 消息拉取失败后的自动重试次数（1.2s / 2.4s 退避）。 */
+const MAX_MESSAGE_RELOAD_ATTEMPTS = 2;
 const RECENT_CONVERSATION_MESSAGE_LIMIT = 100;
 const recentConversationPages = new Map<string, CachedConversationPage>();
 
@@ -592,6 +622,21 @@ function readRecentConversationPage(conversationId: string): CachedConversationP
   recentConversationPages.delete(conversationId);
   recentConversationPages.set(conversationId, cached);
   return cached;
+}
+
+/**
+ * 「可用」的缓存页：**空页不算已加载**。
+ *
+ * 一次空结果（请求抢在 runtime 就绪之前、或上游给了空页）会把 `messages: []`
+ * 写进缓存，而所有加载路径都拿「缓存命中」当「已经加载过」——于是这个会话
+ * 在界面上永远空白（库里明明有消息）。这里的语义改成：有内容才算数，
+ * 空页一律当作需要重新拉取。
+ */
+function readUsableRecentConversationPage(
+  conversationId: string,
+): CachedConversationPage | undefined {
+  const page = readRecentConversationPage(conversationId);
+  return page && page.messages.length > 0 ? page : undefined;
 }
 
 function cacheRecentConversationPage(conversationId: string, page: CachedConversationPage): void {
@@ -779,6 +824,7 @@ function assistantTimelineToChatFields(timeline: readonly AssistantTurnSegment[]
   answerText?: string;
   answerParts?: MessageTextPart[];
   commentaryText?: string;
+  commentarySegments?: CommentaryTimelineSegment[];
   reasoningText?: string;
   processItems?: InlineProcessItem[];
 } {
@@ -803,6 +849,28 @@ function assistantTimelineToChatFields(timeline: readonly AssistantTurnSegment[]
     )
     .map((segment) => segment.text)
     .join('');
+  /**
+   * Commentary as *segments*, so the execution process can interleave each
+   * fragment with the tool steps it preceded.
+   *
+   * The durable `commentary` block only ever carries `payload.assistantTimeline`
+   * — `payload.commentarySegments` is never written by any producer, so reading
+   * it left this list permanently empty and the live panel silently dropped
+   * every summary line. The timeline already holds the same fragments with their
+   * clocks, so derive them here instead of trusting that dead field.
+   */
+  const commentarySegments = ordered.flatMap((segment): CommentaryTimelineSegment[] =>
+    segment.kind === 'text' && segment.phase === 'commentary' && segment.text.trim()
+      ? [
+          {
+            id: segment.id,
+            text: segment.text,
+            startedAt: segment.startedAt ?? segment.completedAt ?? '',
+            ...(segment.completedAt ? { completedAt: segment.completedAt } : {}),
+          },
+        ]
+      : [],
+  );
   const reasoningText = ordered
     .filter(
       (segment): segment is Extract<AssistantTurnSegment, { kind: 'thinking' }> =>
@@ -822,6 +890,8 @@ function assistantTimelineToChatFields(timeline: readonly AssistantTurnSegment[]
               text: segment.text,
               ...(segment.textRef ? { contentRef: segment.textRef } : {}),
               status: segment.status,
+              ...(segment.startedAt ? { startedAt: segment.startedAt } : {}),
+              ...(segment.completedAt ? { completedAt: segment.completedAt } : {}),
             },
           ]
         : [];
@@ -836,6 +906,8 @@ function assistantTimelineToChatFields(timeline: readonly AssistantTurnSegment[]
           text: segment.text,
           ...(segment.textRef ? { contentRef: segment.textRef } : {}),
           status: segment.status,
+          ...(segment.startedAt ? { startedAt: segment.startedAt } : {}),
+          ...(segment.completedAt ? { completedAt: segment.completedAt } : {}),
         },
       ];
     }
@@ -852,6 +924,7 @@ function assistantTimelineToChatFields(timeline: readonly AssistantTurnSegment[]
           ...(segment.inputSummary ? { inputSummary: segment.inputSummary } : {}),
           argumentsJson: segment.argumentsJson ?? '',
           ...(segment.output !== undefined ? { result: segment.output } : {}),
+          ...(DELEGATION_TOOL_NAMES.has(segment.name) ? { delegationAnchor: true } : {}),
           ...(segment.argumentsRef ? { argumentsRef: segment.argumentsRef } : {}),
           ...(segment.outputRef ? { resultRef: segment.outputRef } : {}),
           ...(segment.isError || segment.status === 'failed' ? { failed: true } : {}),
@@ -877,6 +950,7 @@ function assistantTimelineToChatFields(timeline: readonly AssistantTurnSegment[]
       ? { answerText, ...(answerParts.some((part) => part.contentRef) ? { answerParts } : {}) }
       : {}),
     ...(commentaryText ? { commentaryText } : {}),
+    ...(commentarySegments.length > 0 ? { commentarySegments } : {}),
     ...(reasoningText ? { reasoningText } : {}),
     ...(processItems.length > 0 ? { processItems } : {}),
   };
@@ -1142,7 +1216,9 @@ export function messageToChat(msg: Message): ChatMessage {
   const terminalPayload = (msg.blocks.find((block: MessageBlock) => block.type === 'error')
     ?.payload ?? {}) as Record<string, unknown>;
   const terminalState =
-    terminalPayload.terminalState === 'failed' || terminalPayload.terminalState === 'cancelled'
+    terminalPayload.terminalState === 'failed' ||
+    terminalPayload.terminalState === 'cancelled' ||
+    terminalPayload.terminalState === 'paused'
       ? terminalPayload.terminalState
       : undefined;
   const skillVersionIds = msg.blocks.flatMap((block: MessageBlock) => {
@@ -1204,11 +1280,9 @@ export function messageToChat(msg: Message): ChatMessage {
         ? { answerParts: [{ text: answerBlock.text ?? '', contentRef: answerBlock.contentRef }] }
         : {}),
     commentaryText: timelineFields.commentaryText ?? (commentaryText || undefined),
-    commentarySegments: assistantTimeline
-      ? undefined
-      : commentarySegments.length > 0
-        ? commentarySegments
-        : undefined,
+    commentarySegments:
+      timelineFields.commentarySegments ??
+      (!assistantTimeline && commentarySegments.length > 0 ? commentarySegments : undefined),
     reasoningText: timelineFields.reasoningText ?? (reasoningText || undefined),
     assistantTimeline,
     answerText: timelineFields.answerText ?? (answerBlock?.text || undefined),
@@ -1342,6 +1416,11 @@ interface ChatViewProps {
   runActivityAuthority?: RunActivityAuthority;
   /** Increments after every Runtime connect/reconnect so durable UI state is re-queried. */
   runtimeConnectionRevision?: number;
+  /**
+   * 该会话面是否处于激活（可见）状态。保活面在后台时仍然是挂载的，靠这个标记做
+   * 「重新激活即重新同步」——见下方 durable 消息加载的补偿 effect。
+   */
+  active?: boolean;
   /** Shell transport state; intentionally transient and never persisted as a message. */
   runtimeConnectionNotice?: RuntimeConnectionNotice;
   onTitleUpdated: (title: string) => void;
@@ -1371,6 +1450,13 @@ interface ChatViewProps {
   onCreateSkill?: () => void;
   /** Opens Settings -> Connection -> MCP from the real status panel. */
   onOpenMcpSettings?: () => void;
+  /**
+   * Reports that the first durable message page is ready to render (loaded or
+   * served from cache). The shell uses it as NewMax uses `activationReady`: a
+   * freshly-activated surface shows the initializing placeholder until this
+   * fires, instead of flashing an empty message column.
+   */
+  onMessagesReady?: () => void;
 }
 
 function bridge() {
@@ -1403,6 +1489,7 @@ export function ChatView({
   runActivityAuthority,
   runtimeConnectionRevision = 0,
   runtimeConnectionNotice,
+  active = true,
   onTitleUpdated,
   onConversationUpdated,
   initialSkillVersionIds,
@@ -1417,6 +1504,7 @@ export function ChatView({
   onOpenPlanSettings,
   onCreateSkill,
   onOpenMcpSettings,
+  onMessagesReady,
 }: ChatViewProps) {
   const activeConversationIdRef = useRef(String(conversation.id));
   activeConversationIdRef.current = String(conversation.id);
@@ -1788,7 +1876,7 @@ export function ChatView({
   const historyScopeRef = useRef({ key: historyScopeKey });
   if (historyScopeRef.current.key !== historyScopeKey)
     historyScopeRef.current = { key: historyScopeKey };
-  const initialCachedPage = readRecentConversationPage(historyScopeKey);
+  const initialCachedPage = readUsableRecentConversationPage(historyScopeKey);
   const [loadedMessages, setLoadedMessages] = useState<ChatMessage[]>(
     () => initialCachedPage?.messages ?? [],
   );
@@ -1797,6 +1885,7 @@ export function ChatView({
   );
   const historyRangesRef = useRef(historyRanges);
   const [loadingHistoryTarget, setLoadingHistoryTarget] = useState<string>();
+  const [renderWindowTargetId, setRenderWindowTargetId] = useState<string>();
   const historyTargetTokenRef = useRef<object>();
   const navigationIntentRef = useRef(0);
   const navigationDirectory = useConversationNavigation(
@@ -1816,6 +1905,26 @@ export function ChatView({
     setRunProcessById((previous) => updateRunProcessMap(previous, process));
   });
   const loadedMessagesConversationIdRef = useRef<string | undefined>(undefined);
+  /** 当前 durable 列表的条数（供「要不要补拉」判断读取最新值，不进依赖）。 */
+  const loadedMessagesCountRef = useRef(0);
+  const loadedMessagesScopeKeyRef = useRef(historyScopeKey);
+  /** 首屏/补拉是否在飞行中，避免同一瞬间重复发请求。 */
+  const messageLoadInFlightScopeRef = useRef<string | null>(null);
+  /** 已处理过的「重新同步键」，保证每个触发点只发一次物理请求。 */
+  const messageResyncKeyRef = useRef('');
+  /** 每次 active false→true 自增一次，作为重新同步键的一部分。 */
+  const activeNonceRef = useRef(0);
+  const wasActiveForResyncRef = useRef(active);
+  if (active && !wasActiveForResyncRef.current) activeNonceRef.current += 1;
+  wasActiveForResyncRef.current = active;
+  const historyScopeChangedForLoad = loadedMessagesScopeKeyRef.current !== historyScopeKey;
+  if (historyScopeChangedForLoad) loadedMessagesScopeKeyRef.current = historyScopeKey;
+  loadedMessagesCountRef.current = historyScopeChangedForLoad ? 0 : loadedMessages.length;
+  /**
+   * 首屏/补拉失败的自动重试计数（成功即清零）。
+   * 失败本身不弹提示（对齐 NewMax 的静默），但也不能就此永久空白。
+   */
+  const messageReloadAttemptRef = useRef(0);
   const updateRunProcess = useCallback(
     (process: RunProcessView | null | undefined) => {
       if (process) runProcessLoader.accept(String(process.runId));
@@ -1830,6 +1939,14 @@ export function ChatView({
   const [loadingMore, setLoadingMore] = useState(false);
   /** Whether the initial page load has completed (success or failure). */
   const [initialLoaded, setInitialLoaded] = useState(Boolean(initialCachedPage));
+  // Report first-page readiness to the shell (NewMax `activationReady`). A
+  // cached page reports immediately; a cold load reports when the page lands.
+  const onMessagesReadyRef = useRef(onMessagesReady);
+  onMessagesReadyRef.current = onMessagesReady;
+  useEffect(() => {
+    if (initialLoaded) onMessagesReadyRef.current?.();
+  }, [initialLoaded]);
+  const [loadedMessagesScopeKey, setLoadedMessagesScopeKey] = useState(historyScopeKey);
   const [durableTaskPlan, setDurableTaskPlan] = useState<{
     conversationId: string;
     state: NonNullable<ConversationListMessagesResponse['taskPlan']>;
@@ -2073,6 +2190,7 @@ export function ChatView({
     previousHistoryScopeRef.current = historyScopeKey;
     const cachedPage = readRecentConversationPage(historyScopeKey);
     setLoadedMessages(cachedPage?.messages ?? []);
+    setLoadedMessagesScopeKey(historyScopeKey);
     historyRangesRef.current = cachedPage?.ranges ?? [];
     setHistoryRanges(historyRangesRef.current);
     setHasMore(cachedPage?.hasMore ?? false);
@@ -2081,7 +2199,8 @@ export function ChatView({
     loadingMoreRef.current = false;
     historyTargetTokenRef.current = undefined;
     setLoadingHistoryTarget(undefined);
-    setInitialLoaded(Boolean(cachedPage));
+    setRenderWindowTargetId(undefined);
+    setInitialLoaded(Boolean(readUsableRecentConversationPage(historyScopeRef.current.key)));
     setDurableTaskPlan(undefined);
     loadedMessagesConversationIdRef.current = undefined;
     messageLoadGenerationRef.current += 1;
@@ -2117,6 +2236,10 @@ export function ChatView({
   /** Coalesces high-frequency scroll writes into one local snapshot per frame. */
   const scrollPositionWriteFrameRef = useRef<number | null>(null);
   const stickToBottomRef = useRef(true);
+  /** Floating "jump to latest" affordance; shown only once the reader is away. */
+  const [jumpToLatestVisible, setJumpToLatestVisible] = useState(false);
+  /** Assistant output landed while the reader was away from the tail. */
+  const [jumpToLatestUnread, setJumpToLatestUnread] = useState(false);
   /** Last explicit scroll direction; layout-driven scroll events leave it null. */
   const bottomPinIntentRef = useRef<'toward-bottom' | 'away-from-bottom' | null>(null);
   const lastTouchClientYRef = useRef<number | null>(null);
@@ -2199,7 +2322,7 @@ export function ChatView({
     setNextCursor(cachedPage?.nextCursor);
     setLoadingMore(false);
     loadingMoreRef.current = false;
-    setInitialLoaded(Boolean(cachedPage));
+    setInitialLoaded(Boolean(readUsableRecentConversationPage(historyScopeRef.current.key)));
     contextStatusLoadGenerationRef.current += 1;
     setContextStatus(null);
     usageSummaryLoadGenerationRef.current += 1;
@@ -2430,7 +2553,11 @@ export function ChatView({
   const loadMessages = useCallback(
     async (
       cursor?: number,
-      options?: { aroundMessageId?: string; accept?: () => boolean },
+      options?: {
+        aroundMessageId?: string;
+        accept?: () => boolean;
+        revealLoadedPage?: boolean;
+      },
     ): Promise<boolean> => {
       const latest = cursor === undefined && !options?.aroundMessageId;
       const api = bridge();
@@ -2441,6 +2568,7 @@ export function ChatView({
       const conversationId = String(conversation.id);
       const scope = historyScopeRef.current;
       if (scope.key !== historyScopeKey) return false;
+      if (latest) messageLoadInFlightScopeRef.current = historyScopeKey;
       const generation = latest
         ? ++messageLoadGenerationRef.current
         : messageLoadGenerationRef.current;
@@ -2465,10 +2593,14 @@ export function ChatView({
           return false;
         }
         loadedMessagesConversationIdRef.current = conversationId;
+        messageReloadAttemptRef.current = 0;
         if (latest && res.taskPlan) {
           setDurableTaskPlan({ conversationId, state: res.taskPlan });
         }
         const converted = res.messages.map(messageToChat).filter(shouldDisplayChatMessage);
+        if (options?.revealLoadedPage && converted[0]) {
+          setRenderWindowTargetId(converted[0].id);
+        }
         const durableAssistantRunIds = converted
           .filter((message) => message.role === 'assistant' && Boolean(message.runId))
           .map((message) => message.runId as string);
@@ -2525,8 +2657,15 @@ export function ChatView({
         // NewMax conversations.get / getMessages failures only log; ChatView
         // keeps any already-rendered page and does not invent a retry banner.
         console.error('[ChatView] Failed to load messages:', error);
+        // 但「静默」不等于「永久空白」：首屏这一次很可能只是 runtime 还没就绪
+        // （窗口比 runtime 先起来）。走有界退避，成功即清零；保活之后实例不再重挂，
+        // 没有这段补偿就会一直空着。
+        if (latest) scheduleMessageResyncRetry();
         return false;
       } finally {
+        if (latest && messageLoadInFlightScopeRef.current === historyScopeKey) {
+          messageLoadInFlightScopeRef.current = null;
+        }
         if (current()) {
           if (cursor !== undefined) {
             loadingMoreRef.current = false;
@@ -2617,21 +2756,68 @@ export function ChatView({
     void refreshDurableUsageSummary();
   };
 
-  // Load the durable message page only when this ChatView first needs history.
-  // A keep-alive remount can reuse the recent-page cache; skip the IPC so
-  // switching back does not flash a skeleton or wait on SQLite.
+  /**
+   * durable 消息页的加载 / 重新同步（唯一入口）。
+   *
+   * 语义对齐 NewMax：**渲染读到的消息永远来自「当前真相」，激活即同步**。
+   * NewMax 的消息在按会话索引的 store 里，天然如此；SYNC-THINK 的消息在组件
+   * state + 一个模块级 LRU 缓存里，原来的写法是「挂载时拉一次，命中缓存就跳过」，
+   * 在会话面保活之后这会把一次失败（或一次空结果）**永久固化**：库里明明有 6 条
+   * 消息，界面一条都不显示，切走切回也不会再拉。
+   *
+   * 所以规则与 NewMax 一样分成两步：缓存有内容就直接首帧渲染；只要这个面重新
+   * 激活，仍在后台读取一次最新页并合并。后台同步不清空当前 DOM、不闪骨架，旧响应
+   * 继续由 scope/generation 丢弃。触发点是挂载、重新激活(active false→true)、
+   * runtime 重连(connectionRevision)，以及首屏失败后的退避重试。
+   */
+  /**
+   * 补拉的有界退避（成功即清零，见上面的重新同步 effect）。
+   * 抛错与被判过期都走这里，避免「失败一次 = 永远空白」。
+   */
+  const scheduleMessageResyncRetry = useCallback(() => {
+    const attempt = messageReloadAttemptRef.current + 1;
+    messageReloadAttemptRef.current = attempt;
+    if (attempt > MAX_MESSAGE_RELOAD_ATTEMPTS) return;
+    window.setTimeout(
+      () => {
+        if (loadedMessagesCountRef.current > 0) return;
+        // 只补消息本身：transient 包还会刷新 context / usage，那些会让不相干的
+        // 请求计数（用量悬浮的「过期响应不得覆盖新会话」保护）多出一次调用。
+        void loadMessages();
+      },
+      attempt === 1 ? 0 : 1_200 * attempt,
+    );
+  }, [loadMessages]);
+
   useEffect(() => {
-    if (!conversation.id) return;
-    if (readRecentConversationPage(historyScopeKey)) {
-      // Cached messages are already renderable, so mark history as ready for
-      // this conversation. Run-process history loading gates on this marker;
-      // leaving it unset on the keep-alive path silently disabled the usage
-      // details hover (cache tokens + provider balance) after switching back.
+    if (!active || !conversation.id) return;
+    // 去重键 = 「哪个会话 + 哪个 scope + 第几次连接 + 第几次被激活」。
+    // 没有它，任何一次无关的重渲染（loadMessages 的 identity 变化、effect 重放）
+    // 都会在「列表还空着」时再发一次物理请求 —— 那正是 process-history 用例
+    // 断言的「不得重复请求」。失败重试由 catch 里的退避负责，不靠重复触发。
+    const resyncKey = `${conversation.id}|${historyScopeKey}|${runtimeConnectionRevision}|${activeNonceRef.current}`;
+    if (messageResyncKeyRef.current === resyncKey) return;
+    if (messageLoadInFlightScopeRef.current === historyScopeKey) return;
+    const cached = readUsableRecentConversationPage(historyScopeKey);
+    if (loadedMessagesCountRef.current === 0 && cached) {
+      // 缓存里有内容：直接补水到 state（可能是本会话里另一个实例加载的），
+      // 并标记 history-ready —— run-process 的历史加载与用量悬浮都依赖这个标记。
       loadedMessagesConversationIdRef.current = String(conversation.id);
-      return;
+      setLoadedMessages((previous) => (previous.length > 0 ? previous : cached.messages));
     }
-    void loadMessages();
-  }, [conversation.id, historyScopeKey, loadMessages]);
+    messageResyncKeyRef.current = resyncKey;
+    void loadMessages().then((ok) => {
+      if (ok) {
+        messageReloadAttemptRef.current = 0;
+        return;
+      }
+      // 没成功（抛错，或响应被判过期 —— 例如 effect 重放期间 generation 变了：
+      // 那一次响应会被丢弃，界面依旧空白）。解除去重键并立刻补一次，
+      // 仍然有界，不会变成请求风暴。
+      if (messageResyncKeyRef.current === resyncKey) messageResyncKeyRef.current = '';
+      scheduleMessageResyncRetry();
+    });
+  }, [active, conversation.id, historyScopeKey, loadMessages, runtimeConnectionRevision]);
 
   // Runtime-owned context is keyed by the active conversation, model, and
   // kernel. Keep this independent from durable message loading so a context
@@ -3770,6 +3956,8 @@ export function ChatView({
 
   const loadNavigationTarget = useCallback(
     async (messageId: string, isCurrent: () => boolean) => {
+      setRenderWindowTargetId(messageId);
+      if (loadedMessages.some((message) => message.id === messageId)) return true;
       const token = {};
       historyTargetTokenRef.current = token;
       navigationIntentRef.current += 1;
@@ -3778,7 +3966,12 @@ export function ChatView({
       bottomPinIntentRef.current = null;
       userScrollRevisionRef.current += 1;
       try {
-        return await loadMessages(undefined, { aroundMessageId: messageId, accept: isCurrent });
+        const loaded = await loadMessages(undefined, {
+          aroundMessageId: messageId,
+          accept: isCurrent,
+        });
+        if (!loaded) setRenderWindowTargetId(undefined);
+        return loaded;
       } finally {
         if (historyTargetTokenRef.current === token) {
           historyTargetTokenRef.current = undefined;
@@ -3786,7 +3979,7 @@ export function ChatView({
         }
       }
     },
-    [loadMessages],
+    [loadMessages, loadedMessages],
   );
 
   /**
@@ -3859,9 +4052,6 @@ export function ChatView({
     [stopNavigationSlide],
   );
 
-  // Keep every fetched durable message mounted. History is still paginated in
-  // 50-message pages, but native scrolling must not compete with virtual spacer
-  // refinement or persistent visual-anchor restoration.
   const visibleDurableMessages = useMemo(() => {
     if (!threadId) return loadedMessages;
     const excludedRunIds = new Set(durableAssistantRunIds);
@@ -3877,7 +4067,9 @@ export function ChatView({
       text: '',
       timestamp: terminal.timestamp,
       runId: terminal.runId,
-      terminalState: 'failed',
+      // A pause is resumable; labelling it `failed` made a provider outage read
+      // as a hard error and hid that the turn can simply be continued.
+      terminalState: 'paused',
       terminalError: terminal.error,
     }));
     if (recovered.length === 0) return loadedMessages;
@@ -3903,6 +4095,37 @@ export function ChatView({
     threadId,
     visibleStreamingMessage?.runId,
   ]);
+  const initialDurableRenderStart = getInitialMessageRenderStart(visibleDurableMessages.length);
+  const durableRenderWindowResetKey = `${historyScopeKey}:${visibleDurableMessages.length}:${visibleDurableMessages[0]?.id ?? ''}:${visibleDurableMessages.at(-1)?.id ?? ''}`;
+  const [durableRenderWindow, setDurableRenderWindow] = useState(() => ({
+    resetKey: durableRenderWindowResetKey,
+    startIndex: initialDurableRenderStart,
+  }));
+  const requestedRenderTargetIndex = renderWindowTargetId
+    ? visibleDurableMessages.findIndex((message) => message.id === renderWindowTargetId)
+    : -1;
+  const durableRenderStartIndex = Math.min(
+    durableRenderWindow.resetKey === durableRenderWindowResetKey
+      ? durableRenderWindow.startIndex
+      : initialDurableRenderStart,
+    requestedRenderTargetIndex >= 0 ? requestedRenderTargetIndex : initialDurableRenderStart,
+  );
+  const renderedDurableMessages = useMemo(
+    () => visibleDurableMessages.slice(durableRenderStartIndex),
+    [durableRenderStartIndex, visibleDurableMessages],
+  );
+  const hiddenDurableMessageCount = durableRenderStartIndex;
+  useEffect(() => {
+    setDurableRenderWindow((previous) =>
+      previous.resetKey === durableRenderWindowResetKey &&
+      previous.startIndex === initialDurableRenderStart
+        ? previous
+        : {
+            resetKey: durableRenderWindowResetKey,
+            startIndex: initialDurableRenderStart,
+          },
+    );
+  }, [durableRenderWindowResetKey, initialDurableRenderStart]);
   const liveMessages = useMemo(() => {
     const result: ChatMessage[] = [];
     result.push(...pendingUserMessagesForDisplay);
@@ -3965,13 +4188,15 @@ export function ChatView({
     return result;
   }, [historyRanges, visibleDurableMessages]);
   const loadHistoryGap = useCallback(
-    async (cursor: number) => {
+    async (cursor: number, options?: { revealLoadedPage?: boolean }) => {
       const scroller = messagesScrollRef.current;
       const anchor = scroller ? capturePrependAnchor(scroller) : null;
+      if (anchor) setRenderWindowTargetId(anchor.id);
       const revision = userScrollRevisionRef.current;
       const intent = navigationIntentRef.current;
       const applied = await loadMessages(cursor, {
         accept: () => navigationIntentRef.current === intent,
+        revealLoadedPage: options?.revealLoadedPage,
       });
       if (applied && scroller && anchor)
         window.requestAnimationFrame(() => {
@@ -3982,12 +4207,54 @@ export function ChatView({
     [capturePrependAnchor, loadMessages, restorePrependAnchor],
   );
 
+  const expandDurableRenderWindowTo = useCallback(
+    (startIndex: number) => {
+      const scroller = messagesScrollRef.current;
+      const previousScrollHeight = scroller?.scrollHeight ?? 0;
+      setDurableRenderWindow((previous) => {
+        const currentStart =
+          previous.resetKey === durableRenderWindowResetKey
+            ? previous.startIndex
+            : initialDurableRenderStart;
+        return {
+          resetKey: durableRenderWindowResetKey,
+          startIndex: expandMessageRenderStart(currentStart, startIndex),
+        };
+      });
+      window.requestAnimationFrame(() => {
+        if (!scroller || messagesScrollRef.current !== scroller) return;
+        const target = scroller.scrollTop + (scroller.scrollHeight - previousScrollHeight);
+        programmaticScrollPendingRef.current = true;
+        programmaticScrollTargetRef.current = target;
+        scroller.scrollTop = target;
+        lastObservedScrollTopRef.current = target;
+      });
+    },
+    [durableRenderWindowResetKey, initialDurableRenderStart],
+  );
+
+  const handleLoadEarlierMessages = useCallback(() => {
+    if (durableRenderStartIndex > 0) {
+      expandDurableRenderWindowTo(durableRenderStartIndex - MESSAGE_LOAD_EARLIER_BATCH);
+      return;
+    }
+    if (!hasMore || loadingMore || loadingMoreRef.current || nextCursor === undefined) return;
+    void loadHistoryGap(nextCursor, { revealLoadedPage: true });
+  }, [
+    durableRenderStartIndex,
+    expandDurableRenderWindowTo,
+    hasMore,
+    loadHistoryGap,
+    loadingMore,
+    nextCursor,
+  ]);
+
   const durableProcessRunIds = useMemo(
     () =>
-      visibleDurableMessages
+      renderedDurableMessages
         .filter((message) => message.role === 'assistant' && Boolean(message.runId))
         .map((message) => String(message.runId)),
-    [visibleDurableMessages],
+    [renderedDurableMessages],
   );
   const activeProcessRunIds = useMemo(
     () =>
@@ -4059,32 +4326,138 @@ export function ChatView({
     lastObservedScrollTopRef.current = scroller.scrollTop;
   }, []);
 
+  /**
+   * The jump-to-latest button mirrors the scroller's own distance from the tail
+   * instead of a timer or the stick flag, so it appears exactly when the reader
+   * has scrolled past `CONVERSATION_STICK_THRESHOLD_PX` into history.
+   */
+  const syncJumpToLatest = useCallback(() => {
+    const scroller = messagesScrollRef.current;
+    if (!scroller) return;
+    const awayFromTail =
+      scroller.scrollHeight > scroller.clientHeight &&
+      !isConversationNearBottom({
+        scrollTop: scroller.scrollTop,
+        scrollHeight: scroller.scrollHeight,
+        clientHeight: scroller.clientHeight,
+      });
+    setJumpToLatestVisible(awayFromTail);
+    // Back at the tail: there is nothing left to catch up on.
+    if (!awayFromTail) setJumpToLatestUnread(false);
+  }, []);
+
+  const handleJumpToLatest = useCallback(() => {
+    const scroller = messagesScrollRef.current;
+    if (!scroller) return;
+    const target = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+    // Re-arm the pin first, so streaming output keeps following the tail after
+    // the reader lands instead of stranding them again.
+    stickToBottomRef.current = true;
+    bottomPinIntentRef.current = 'toward-bottom';
+    programmaticScrollPendingRef.current = true;
+    programmaticScrollTargetRef.current = target;
+    setJumpToLatestUnread(false);
+    const reduceMotion =
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (typeof scroller.scrollTo === 'function') {
+      scroller.scrollTo({ top: target, behavior: reduceMotion ? 'auto' : 'smooth' });
+    } else {
+      scroller.scrollTop = target;
+    }
+    syncJumpToLatest();
+  }, [syncJumpToLatest]);
+
   useLayoutEffect(() => {
-    if (!initialLoaded || restoredScrollPositionRef.current === historyScopeKey) return;
+    if (
+      loadedMessagesScopeKey !== historyScopeKey ||
+      !initialLoaded ||
+      restoredScrollPositionRef.current === historyScopeKey
+    )
+      return;
     const scroller = messagesScrollRef.current;
     if (!scroller) return;
     restoredScrollPositionRef.current = historyScopeKey;
     const saved = readConversationScrollPosition(historyScopeKey);
-    if (saved) {
-      stickToBottomRef.current = saved.stickToBottom;
-      restoreConversationScrollPosition(scroller, saved);
-      lastObservedScrollTopRef.current = scroller.scrollTop;
-      window.requestAnimationFrame(() => {
-        if (restoredScrollPositionRef.current !== historyScopeKey) return;
-        restoreConversationScrollPosition(scroller, saved);
-        lastObservedScrollTopRef.current = scroller.scrollTop;
-      });
-    } else {
+    if (!saved) {
       stickToBottomRef.current = true;
       pinMessagesToBottom();
+      return;
     }
-  }, [historyScopeKey, initialLoaded, loadedMessages.length, pinMessagesToBottom]);
+    stickToBottomRef.current = saved.stickToBottom;
+    restoreConversationScrollPosition(scroller, saved);
+    lastObservedScrollTopRef.current = scroller.scrollTop;
+    // 快照只重放一次是不够的：消息页刷新、图片解码、折叠面板展开都会在随后的若干帧
+    // 里继续撑高锚点以上的内容，读者刚回到会话就发现位置漂走了。这里用一段有界的
+    // settle 循环盯住锚点，直到「锚点对齐 + 高度连续稳定」或超时；一旦用户自己滚动
+    // （userScrollRevision 变化）立刻放手，位置归用户。
+    const expectedUserScrollRevision = userScrollRevisionRef.current;
+    const deadline = performance.now() + 2_500;
+    // 帧数上限兜底：测试环境用假定时器时 performance.now() 可能不前进，
+    // 只靠 deadline 会让循环停不下来。
+    const maxFrames = 90;
+    let frames = 0;
+    let stableFrames = 0;
+    let lastHeight = -1;
+    const settle = () => {
+      // 判活用滚动容器节点本身，而不是 restoredScrollPositionRef：会话切换时的
+      // 重置 effect 是 passive 的，会在本 layout effect 之后把那个 ref 清成 null，
+      // 循环会在第一帧就误判「已过期」而退出（快照只重放一次，位置照样漂）。
+      // 换会话 = 换容器节点，这个判据既准确又不受 effect 顺序影响。
+      if (messagesScrollRef.current !== scroller) return;
+      if (userScrollRevisionRef.current !== expectedUserScrollRevision) return;
+      if (frames >= maxFrames) return;
+      frames += 1;
+      restoreConversationScrollPosition(scroller, saved);
+      lastObservedScrollTopRef.current = scroller.scrollTop;
+      const viewportTop = scroller.getBoundingClientRect().top;
+      const anchorNode = saved.anchorMessageId
+        ? Array.from(scroller.querySelectorAll<HTMLElement>('[data-message-id]')).find(
+            (node) => node.dataset.messageId === saved.anchorMessageId,
+          )
+        : undefined;
+      const aligned = saved.stickToBottom
+        ? Math.abs(scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop) <= 1
+        : Boolean(anchorNode) &&
+          Math.abs(anchorNode!.getBoundingClientRect().top - viewportTop - saved.anchorOffset) <= 1;
+      const height = scroller.scrollHeight;
+      const heightStable = height === lastHeight;
+      lastHeight = height;
+      stableFrames = aligned && heightStable ? stableFrames + 1 : 0;
+      if (stableFrames >= 2 || performance.now() >= deadline) return;
+      window.requestAnimationFrame(settle);
+    };
+    window.requestAnimationFrame(settle);
+  }, [
+    historyScopeKey,
+    initialLoaded,
+    loadedMessages.length,
+    loadedMessagesScopeKey,
+    pinMessagesToBottom,
+  ]);
 
   // Follow the live tail while the user stays pinned. Think, commentary,
   // tools, and the final answer all grow the same content column.
   useLayoutEffect(() => {
     pinMessagesToBottom();
   }, [flowTipSignature, followMainContentResize, pinMessagesToBottom]);
+  // Content that lands while the reader is away from the tail stays "unread"
+  // until they jump back down — this drives the dot on the jump-to-latest
+  // button. Runs after `pinMessagesToBottom`, so a pinned reader is already at
+  // the tail and keeps the dot off.
+  useLayoutEffect(() => {
+    const scroller = messagesScrollRef.current;
+    if (!scroller) return;
+    if (
+      isConversationNearBottom({
+        scrollTop: scroller.scrollTop,
+        scrollHeight: scroller.scrollHeight,
+        clientHeight: scroller.clientHeight,
+      })
+    )
+      return;
+    setJumpToLatestUnread(true);
+  }, [flowTipSignature]);
   useEffect(() => {
     const content = messagesContentRef.current;
     if (!content || typeof ResizeObserver === 'undefined') return;
@@ -5135,12 +5508,7 @@ export function ChatView({
       });
     };
     update();
-    window.addEventListener('resize', update);
-    window.addEventListener('scroll', update, true);
-    return () => {
-      window.removeEventListener('resize', update);
-      window.removeEventListener('scroll', update, true);
-    };
+    return listenForFrameCoalescedViewportChange(update);
   }, [slashMenuOpen]);
 
   useLayoutEffect(() => {
@@ -5162,12 +5530,7 @@ export function ChatView({
       });
     };
     update();
-    window.addEventListener('resize', update);
-    window.addEventListener('scroll', update, true);
-    return () => {
-      window.removeEventListener('resize', update);
-      window.removeEventListener('scroll', update, true);
-    };
+    return listenForFrameCoalescedViewportChange(update);
   }, [mcpMenuOpen]);
 
   useEffect(() => {
@@ -6797,23 +7160,8 @@ export function ChatView({
               lastObservedScrollTopRef.current = currentScrollTop;
               bottomPinIntentRef.current = null;
 
-              // Load older messages when scrolled near top. Capture one real DOM
-              // row and restore it only if the user did not keep scrolling while
-              // the async history request was pending.
-              if (currentScrollTop < 50 && hasMore && !loadingMore && !loadingMoreRef.current) {
-                const anchor = capturePrependAnchor(scroller);
-                const expectedUserScrollRevision = userScrollRevisionRef.current;
-                const expectedNavigationIntent = navigationIntentRef.current;
-                void loadMessages(nextCursor, {
-                  accept: () => navigationIntentRef.current === expectedNavigationIntent,
-                }).then((applied) => {
-                  if (!applied || !anchor) return;
-                  requestAnimationFrame(() => {
-                    restorePrependAnchor(scroller, anchor, expectedUserScrollRevision);
-                  });
-                });
-              }
               scheduleScrollPositionSave();
+              syncJumpToLatest();
             }}
           >
             {messages.length === 0 && !showTyping ? (
@@ -6827,10 +7175,20 @@ export function ChatView({
             ) : null}
             {/* Keep message column and compose at the same content width. */}
             <div ref={messagesContentRef} className="shell-chat-content mx-auto flex flex-col">
-              {loadingMore && (
-                <div className="flex items-center justify-center py-3">
-                  <LoaderCircle className="h-4 w-4 animate-spin text-text-faint" />
-                  <span className="ml-2 text-[12px] text-text-faint">加载更早消息…</span>
+              {(hiddenDurableMessageCount > 0 || hasMore) && (
+                <div className="flex items-center justify-center py-2">
+                  <button
+                    type="button"
+                    className="shell-history-load-earlier"
+                    disabled={loadingMore}
+                    onClick={handleLoadEarlierMessages}
+                  >
+                    {loadingMore
+                      ? '正在加载…'
+                      : hiddenDurableMessageCount > 0
+                        ? `加载更早消息（${hiddenDurableMessageCount}）`
+                        : '加载更早消息'}
+                  </button>
                 </div>
               )}
               {kernelCompactionEvents.length > 0
@@ -6871,7 +7229,7 @@ export function ChatView({
                     );
                   })()
                 : null}
-              {visibleDurableMessages.map((msg) => (
+              {renderedDurableMessages.map((msg) => (
                 <Fragment key={msg.id}>
                   {gapBeforeMessage.has(msg.id) ? (
                     <div
@@ -6997,6 +7355,12 @@ export function ChatView({
               <span>正在读取目标附近的消息…</span>
             </div>
           ) : null}
+
+          <ScrollToBottomButton
+            visible={jumpToLatestVisible}
+            unread={jumpToLatestUnread}
+            onScrollToBottom={handleJumpToLatest}
+          />
         </div>
 
         <ConversationMinimapRail
@@ -7840,7 +8204,7 @@ function HarnessTerminalNotice({
   onContinue,
   onRetry,
 }: {
-  state: 'failed' | 'cancelled';
+  state: 'failed' | 'cancelled' | 'paused';
   error?: string;
   busy?: boolean;
   onContinue?(): void;
@@ -7867,6 +8231,46 @@ function HarnessTerminalNotice({
           <span>重试</span>
         </button>
       </div>
+    );
+  }
+  if (state === 'paused') {
+    // A pause is recoverable, so it must not read like a hard failure — and it
+    // must be visible: the reason used to live only on a tool step that was
+    // still running, so a pause between calls showed nothing at all.
+    return (
+      <details className="shell-harness-terminal is-paused" data-testid="assistant-terminal-paused">
+        <summary>
+          <span className="shell-harness-terminal__dot" aria-hidden="true" />
+          <span className="shell-harness-terminal__title">已暂停</span>
+          {errorSummary ? (
+            <span
+              className="shell-harness-terminal__summary"
+              data-testid="assistant-terminal-error"
+              title={error}
+            >
+              {errorSummary}
+            </span>
+          ) : null}
+          <ChevronDown size={13} className="shell-harness-terminal__chevron" aria-hidden="true" />
+        </summary>
+        {error ? <pre className="shell-harness-terminal__detail">{error}</pre> : null}
+        {onContinue || onRetry ? (
+          <div className="shell-harness-terminal__actions">
+            {onContinue ? (
+              <button type="button" disabled={busy} onClick={onContinue} aria-label="继续回答">
+                <SendHorizonal size={12} aria-hidden="true" />
+                <span>继续</span>
+              </button>
+            ) : null}
+            {onRetry ? (
+              <button type="button" disabled={busy} onClick={onRetry} aria-label="重试回答">
+                <RefreshCw size={12} aria-hidden="true" />
+                <span>重试</span>
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+      </details>
     );
   }
   const overloaded = isTransientModelOverload(error);
@@ -7968,11 +8372,17 @@ function ProviderAccountUsageSection({ identity }: { identity: ProviderUsageIden
   );
 }
 
-interface DelegatedAgentToolEventView {
+export interface DelegatedAgentToolEventView {
   toolName: string;
   arguments?: string;
   status?: string;
   output?: string;
+  startedAt?: string;
+  completedAt?: string;
+  /** `arguments`/`output` were clipped to keep the delegation payload bounded. */
+  truncated?: boolean;
+  /** Untrimmed output length, so the card can say how much was left out. */
+  outputCharacters?: number;
 }
 
 interface DelegatedAgentTaskView {
@@ -7980,46 +8390,140 @@ interface DelegatedAgentTaskView {
   parallelGroup?: string;
   name: string;
   avatar: string;
-  kind: 'existing' | 'temporary';
-  /** Agent Library id when an existing Agent was reused; absent for a temporary profile. */
-  agentId?: string;
+  kind: 'existing';
+  /** Agent Library id reused for this child run. */
+  agentId: string;
   status: string;
   result?: string;
   toolEvents: DelegatedAgentToolEventView[];
+  /** Tokens this child billed, summed over its own provider requests. */
+  usage?: DelegatedAgentUsage;
+  /** Wall-clock milliseconds this child has run. */
+  durationMs?: number;
+}
+
+/** Read the usage block a child run reports, ignoring malformed fields. */
+function parseDelegatedAgentUsage(value: unknown): DelegatedAgentUsage | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const usage: DelegatedAgentUsage = {
+    ...(typeof record.tokensIn === 'number' ? { tokensIn: record.tokensIn } : {}),
+    ...(typeof record.tokensOut === 'number' ? { tokensOut: record.tokensOut } : {}),
+    ...(typeof record.cachedTokensHit === 'number'
+      ? { cachedTokensHit: record.cachedTokensHit }
+      : {}),
+    ...(typeof record.cachedTokensCreated === 'number'
+      ? { cachedTokensCreated: record.cachedTokensCreated }
+      : {}),
+  };
+  return Object.keys(usage).length > 0 ? usage : undefined;
+}
+
+/**
+ * Chat tools that delegate one focused task to an Agent that already exists in
+ * the Agent Library.
+ *
+ * The runtime executes both names through the same child-run path
+ * (`executeDynamicAgentDelegation`) and returns the same payload — `childRunId`,
+ * `assignment.kind === 'existing'`, `agentId`, `toolEvents`, `result` — so the
+ * card must accept either. `agent_run` (the `agent-library` MCP tool) previously
+ * fell through this gate: its card appeared only while the live transient
+ * projection existed, and vanished as soon as the run settled, because the
+ * durable process item was rejected here.
+ */
+const DELEGATION_TOOL_NAMES: ReadonlySet<string> = new Set(['agent_delegate', 'agent_run']);
+
+/**
+ * Read a delegation payload out of a tool result.
+ *
+ * The payload reaches the desktop in one of two shapes: the raw result JSON, or
+ * the MCP content-block array (`[{ "type": "text", "text": "<json>" }]`) that the
+ * kernel returns for a platform MCP tool — where the real payload sits inside
+ * `text` as an escaped string. Unwrap the block form so the card works on either
+ * path instead of silently rendering nothing.
+ */
+function readDelegationPayload(result: string): Record<string, unknown> | undefined {
+  let value: unknown;
+  try {
+    value = JSON.parse(result);
+  } catch {
+    return undefined;
+  }
+  if (Array.isArray(value)) {
+    const text = value
+      .flatMap((block) =>
+        block && typeof block === 'object' && typeof (block as { text?: unknown }).text === 'string'
+          ? [(block as { text: string }).text]
+          : [],
+      )
+      .join('');
+    if (!text.trim()) return undefined;
+    try {
+      value = JSON.parse(text);
+    } catch {
+      return undefined;
+    }
+  }
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
 }
 
 function parseDelegatedAgentTask(item: InlineProcessItem): DelegatedAgentTaskView | undefined {
-  if (item.kind !== 'tool' || item.name !== 'agent_delegate' || !item.result) return undefined;
+  if (item.kind !== 'tool' || !DELEGATION_TOOL_NAMES.has(item.name) || !item.result) {
+    return undefined;
+  }
   try {
-    const value = JSON.parse(item.result) as Record<string, unknown>;
+    const value = readDelegationPayload(item.result);
+    if (!value) return undefined;
     const assignment = value.assignment as Record<string, unknown> | undefined;
     if (typeof value.childRunId !== 'string' || !assignment) return undefined;
+    if (assignment.kind !== 'existing') return undefined;
     const events = Array.isArray(value.toolEvents)
       ? value.toolEvents.flatMap((entry): DelegatedAgentToolEventView[] => {
           if (!entry || typeof entry !== 'object') return [];
           const record = entry as Record<string, unknown>;
           if (typeof record.toolName !== 'string') return [];
-          return [{
-            toolName: record.toolName,
-            ...(typeof record.arguments === 'string' ? { arguments: record.arguments } : {}),
-            ...(typeof record.status === 'string' ? { status: record.status } : {}),
-            ...(typeof record.output === 'string' ? { output: record.output } : {}),
-          }];
+          return [
+            {
+              toolName: record.toolName,
+              ...(typeof record.arguments === 'string' ? { arguments: record.arguments } : {}),
+              ...(typeof record.status === 'string' ? { status: record.status } : {}),
+              ...(typeof record.output === 'string' ? { output: record.output } : {}),
+              ...(typeof record.startedAt === 'string' ? { startedAt: record.startedAt } : {}),
+              ...(typeof record.completedAt === 'string' ? { completedAt: record.completedAt } : {}),
+              ...(record.truncated === true ? { truncated: true } : {}),
+              ...(typeof record.outputCharacters === 'number'
+                ? { outputCharacters: record.outputCharacters }
+                : {}),
+            },
+          ];
         })
       : [];
+    const agentId = typeof assignment.agentId === 'string' ? assignment.agentId.trim() : '';
+    if (!agentId) return undefined;
     return {
       childRunId: value.childRunId,
       ...(typeof value.parallelGroup === 'string' && value.parallelGroup.trim()
         ? { parallelGroup: value.parallelGroup.trim() }
         : {}),
-      name: typeof assignment.name === 'string' ? assignment.name : '临时任务 Agent',
+      name: typeof assignment.name === 'string' ? assignment.name : '已配置智能体',
       avatar: typeof assignment.avatar === 'string' ? assignment.avatar : '🤖',
-      kind: assignment.kind === 'existing' ? 'existing' : 'temporary',
-      ...(typeof assignment.agentId === 'string' && assignment.agentId.trim()
-        ? { agentId: assignment.agentId.trim() }
-        : {}),
-      status: typeof value.status === 'string' ? value.status : value.ok === false ? 'failed' : 'completed',
+      kind: 'existing',
+      agentId,
+      status:
+        typeof value.status === 'string'
+          ? value.status
+          : value.ok === false
+            ? 'failed'
+            : 'completed',
       ...(typeof value.result === 'string' && value.result.trim() ? { result: value.result } : {}),
+      ...(parseDelegatedAgentUsage(value.usage)
+        ? { usage: parseDelegatedAgentUsage(value.usage)! }
+        : {}),
+      ...(typeof value.durationMs === 'number' && Number.isFinite(value.durationMs)
+        ? { durationMs: value.durationMs }
+        : {}),
       toolEvents: events,
     };
   } catch {
@@ -8027,9 +8531,63 @@ function parseDelegatedAgentTask(item: InlineProcessItem): DelegatedAgentTaskVie
   }
 }
 
-
 /** Tool rows shown before a delegated card collapses its command log (20 rows). */
 const DELEGATED_TOOL_VISIBLE_LIMIT = 20;
+
+/** Child-run status → the Chinese label shown on the card. */
+function delegatedAgentStatusLabel(status: string): string {
+  return status === 'completed'
+    ? '已完成'
+    : status === 'running'
+      ? '运行中'
+      : status === 'failed'
+        ? '失败'
+        : status === 'cancelled'
+          ? '已取消'
+          : status === 'timed_out'
+            ? '已超时'
+            : status;
+}
+
+/**
+ * 智能体头像值的解析。
+ *
+ * 运行时的兜底是「名字前两个字」（`resolveDelegatedAgentAvatar`），那只是没有头像时
+ * 的占位符，不是头像——卡片上直接把它当文字渲染，看起来就是一块「代码」。
+ * 凡是占位（空串或恰好等于名字前两字）就按 Agent 身份派生一张程序化脸，
+ * 与 Agent Library 建库时的回填（`avatarSeed`）保持同一套外观。
+ */
+function delegatedAgentAvatarValue(task: DelegatedAgentTaskView): string {
+  const trimmed = (task.avatar ?? '').trim();
+  const initials = task.name.trim().slice(0, 2);
+  if (trimmed && trimmed !== initials) return trimmed;
+  const face = resolveAvatarFace(trimmed, task.agentId);
+  return avatarSeed(face.shape, face.color);
+}
+
+/** Live projection → card view (used when there is no durable item yet). */
+function delegatedTaskViewFromProjection(
+  projection: DelegatedAgentProjection,
+): DelegatedAgentTaskView {
+  return {
+    childRunId: String(projection.childRunId),
+    ...(projection.parallelGroup ? { parallelGroup: projection.parallelGroup } : {}),
+    name: projection.name,
+    avatar: projection.avatar,
+    kind: 'existing',
+    agentId: projection.agentId,
+    status: projection.status,
+    ...(projection.result ? { result: projection.result } : {}),
+    ...(projection.usage ? { usage: projection.usage } : {}),
+    ...(projection.durationMs !== undefined ? { durationMs: projection.durationMs } : {}),
+    toolEvents: projection.toolEvents.map((event) => ({
+      toolName: event.toolName,
+      ...(event.arguments ? { arguments: event.arguments } : {}),
+      ...(event.status ? { status: event.status } : {}),
+      ...(event.output ? { output: event.output } : {}),
+    })),
+  };
+}
 
 const DelegatedAgentToolList = memo(function DelegatedAgentToolList({
   events,
@@ -8041,19 +8599,9 @@ const DelegatedAgentToolList = memo(function DelegatedAgentToolList({
   const visible = expanded ? events : events.slice(0, DELEGATED_TOOL_VISIBLE_LIMIT);
   return (
     <div className="shell-delegated-agent__tools">
-      {visible.map((event, index) => {
-        const output = event.output ? formatDisplayedToolOutput(event.output) : undefined;
-        return (
-          <details className="shell-delegated-agent__tool" key={`${event.toolName}-${index}`}>
-            <summary>
-              <span>{event.toolName}</span>
-              <span>{event.status === 'completed' ? '完成' : event.status ?? '执行中'}</span>
-            </summary>
-            {event.arguments ? <code>{event.arguments}</code> : null}
-            {output?.text ? <pre>{output.text}</pre> : null}
-          </details>
-        );
-      })}
+      {visible.map((event, index) => (
+        <DelegatedAgentToolRow key={`${event.toolName}-${index}`} event={event} />
+      ))}
       {hiddenCount > 0 ? (
         <button
           type="button"
@@ -8070,14 +8618,159 @@ const DelegatedAgentToolList = memo(function DelegatedAgentToolList({
   );
 });
 
+/**
+ * Child-run status as an icon, matching `ExecutionProcessBlock`'s status glyphs
+ * so the panel shows one visual language. The Chinese label survives in
+ * `aria-label`/`title` for screen readers and hover instead of taking a column.
+ */
+function DelegatedAgentStatusIcon({ status }: { status: string }) {
+  const label = delegatedAgentStatusLabel(status);
+  const icon =
+    status === 'completed' ? (
+      <CheckCircle2 size={13} className="text-[var(--color-success)]" />
+    ) : status === 'failed' ? (
+      <XCircle size={13} className="text-[var(--color-error)]" />
+    ) : status === 'cancelled' ? (
+      <CircleSlash size={13} className="text-text-faint" />
+    ) : status === 'timed_out' ? (
+      <Clock size={13} className="text-[var(--color-warning)]" />
+    ) : (
+      <LoaderCircle size={13} className="shell-process-spin text-accent" />
+    );
+  return (
+    <span className="shell-delegated-agent__status" role="img" aria-label={label} title={label}>
+      {icon}
+    </span>
+  );
+}
+
+/**
+ * Tokens this child billed, shown on the card itself (no expansion needed).
+ * Cumulative sums keep the parent and child on one billing semantic; cache
+ * read/write are the two numbers a delegated run is usually judged by.
+ */
+function delegatedAgentUsageLabel(task: DelegatedAgentTaskView): string | undefined {
+  const usage = task.usage;
+  const tokens =
+    usage && (usage.tokensIn !== undefined || usage.tokensOut !== undefined)
+      ? (usage.tokensIn ?? 0) + (usage.tokensOut ?? 0)
+      : undefined;
+  const parts = [
+    ...(tokens !== undefined ? [`${formatCompactCount(tokens)} tokens`] : []),
+    ...(usage?.cachedTokensHit ? [`缓存读 ${formatCompactCount(usage.cachedTokensHit)}`] : []),
+    ...(usage?.cachedTokensCreated
+      ? [`缓存写 ${formatCompactCount(usage.cachedTokensCreated)}`]
+      : []),
+    ...(task.durationMs !== undefined
+      ? [formatCompactDuration(task.durationMs)].filter((value): value is string => Boolean(value))
+      : []),
+  ];
+  return parts.length > 0 ? parts.join(' · ') : undefined;
+}
+
+/**
+ * 单个子智能体卡片。抽出来是为了让同一张卡既能出现在「执行过程」里
+ * 委派发生的那一刻（内联锚点），也能作为兜底列表的一项。
+ */
+const DelegatedAgentTaskCard = memo(function DelegatedAgentTaskCard({
+  task,
+  onStopChild,
+}: {
+  task: DelegatedAgentTaskView;
+  onStopChild?: (childRunId: string) => void;
+}) {
+  const usageLabel = delegatedAgentUsageLabel(task);
+  return (
+    <details className="shell-delegated-agent">
+      <summary className="shell-delegated-agent__summary">
+        <span className="shell-delegated-agent__avatar">
+          <AgentAvatarView name={task.name} avatar={delegatedAgentAvatarValue(task)} size={22} />
+        </span>
+        <span className="shell-delegated-agent__identity">
+          <strong>{task.name}</strong>
+          <code
+            className="shell-delegated-agent__agent-id"
+            title={`Agent Library id：${task.agentId}`}
+          >
+            {task.agentId}
+          </code>
+        </span>
+        {usageLabel ? (
+          <span className="shell-delegated-agent__usage" data-testid="delegated-agent-usage">
+            {usageLabel}
+          </span>
+        ) : null}
+        <DelegatedAgentStatusIcon status={task.status} />
+      </summary>
+      <div className="shell-delegated-agent__details">
+        {task.toolEvents.length > 0 ? (
+          <DelegatedAgentToolList events={task.toolEvents} />
+        ) : (
+          <span className="shell-delegated-agent__empty">本次任务没有调用工具</span>
+        )}
+        {task.result ? <div className="shell-delegated-agent__result">{task.result}</div> : null}
+        {task.status === 'running' && onStopChild ? (
+          <button
+            type="button"
+            className="shell-delegated-agent__stop"
+            onClick={() => onStopChild(task.childRunId)}
+          >
+            停止当前子任务
+          </button>
+        ) : null}
+      </div>
+    </details>
+  );
+});
+
+/**
+ * 执行过程时间线里的子智能体卡片。
+ *
+ * 委派发生时那条 `agent_delegate` 工具项就长在时间线上，因此卡片应该留在那一刻，
+ * 而不是被抽出来钉在整个面板顶部。返回 `undefined` 表示这一项不是委派，交回给
+ * 普通工具行渲染。
+ */
+export const InlineDelegatedAgentTask = memo(function InlineDelegatedAgentTask({
+  item,
+  delegatedAgents,
+  onStopChild,
+}: {
+  item: InlineProcessItem;
+  delegatedAgents?: readonly DelegatedAgentProjection[];
+  onStopChild?: (childRunId: string) => void;
+}) {
+  const parsed = parseDelegatedAgentTask(item);
+  const toolCallId = item.kind === 'tool' ? item.toolCallId : undefined;
+  // A durable result wins: it is the authoritative card (final status, result
+  // text, tool list). While the delegation is still running there is no result
+  // yet, so anchor the live projection by the tool row that spawned it — that is
+  // what keeps the card under its own `agent_run` row instead of leaving it in
+  // the panel's fallback list until the child finishes.
+  if (parsed?.result) return <DelegatedAgentTaskCard task={parsed} onStopChild={onStopChild} />;
+  const live = delegatedAgents?.find((candidate) =>
+    parsed
+      ? String(candidate.childRunId) === parsed.childRunId
+      : Boolean(toolCallId) && candidate.parentToolCallId === toolCallId,
+  );
+  const task = live ? delegatedTaskViewFromProjection(live) : parsed;
+  if (!task) return null;
+  return <DelegatedAgentTaskCard task={task} onStopChild={onStopChild} />;
+});
+
 export const DelegatedAgentTasks = memo(function DelegatedAgentTasks({
   items,
   delegatedAgents,
   onStopChild,
+  inlineChildRunIds,
 }: {
   items: readonly InlineProcessItem[];
   delegatedAgents?: readonly DelegatedAgentProjection[];
   onStopChild?: (childRunId: string) => void;
+  /**
+   * 已经作为内联卡片挂在执行过程里的子任务。它们不再出现在这份兜底列表里，
+   * 否则同一张卡会被渲染两次。
+   */
+  inlineChildRunIds?: ReadonlySet<string>;
 }) {
   const parsedTasks = items.flatMap((item) => {
     const task = parseDelegatedAgentTask(item);
@@ -8085,33 +8778,24 @@ export const DelegatedAgentTasks = memo(function DelegatedAgentTasks({
   });
   const taskById = new Map<string, DelegatedAgentTaskView>();
   for (const task of delegatedAgents ?? []) {
-    taskById.set(String(task.childRunId), {
-      childRunId: String(task.childRunId),
-      ...(task.parallelGroup ? { parallelGroup: task.parallelGroup } : {}),
-      name: task.name,
-      avatar: task.avatar,
-      kind: task.kind,
-      ...(task.agentId ? { agentId: task.agentId } : {}),
-      status: task.status,
-      ...(task.result ? { result: task.result } : {}),
-      toolEvents: task.toolEvents.map((event) => ({
-        toolName: event.toolName,
-        ...(event.arguments ? { arguments: event.arguments } : {}),
-        ...(event.status ? { status: event.status } : {}),
-        ...(event.output ? { output: event.output } : {}),
-      })),
-    });
+    taskById.set(String(task.childRunId), delegatedTaskViewFromProjection(task));
   }
   for (const task of parsedTasks) taskById.set(task.childRunId, task);
-  const tasks = [...taskById.values()];
+  const tasks = [...taskById.values()].filter(
+    (task) => !inlineChildRunIds?.has(String(task.childRunId)),
+  );
   if (tasks.length === 0) return null;
   const runningTasks = tasks.filter((task) => task.status === 'running');
   const parallelGroupFirst = new Set<string>();
   for (const task of tasks) {
     if (!task.parallelGroup) continue;
-    if (![...parallelGroupFirst].some((childRunId) =>
-      tasks.find((candidate) => candidate.childRunId === childRunId)?.parallelGroup === task.parallelGroup,
-    )) {
+    if (
+      ![...parallelGroupFirst].some(
+        (childRunId) =>
+          tasks.find((candidate) => candidate.childRunId === childRunId)?.parallelGroup ===
+          task.parallelGroup,
+      )
+    ) {
       parallelGroupFirst.add(task.childRunId);
     }
   }
@@ -8128,61 +8812,60 @@ export const DelegatedAgentTasks = memo(function DelegatedAgentTasks({
       ) : null}
       {tasks.map((task) => (
         <Fragment key={task.childRunId}>
-        {task.parallelGroup && parallelGroupFirst.has(task.childRunId) ? (
-          <div className="shell-delegated-agent-group__header">
-            <span>并行任务组：{task.parallelGroup}</span>
-            <span>{tasks.filter((candidate) => candidate.parallelGroup === task.parallelGroup).length} 个任务</span>
-          </div>
-        ) : null}
-        <details className="shell-delegated-agent" key={task.childRunId}>
-          <summary className="shell-delegated-agent__summary">
-            <span className="shell-delegated-agent__avatar" aria-hidden="true">{task.avatar}</span>
-            <span className="shell-delegated-agent__identity">
-              <strong>{task.name}</strong>
-              <span className="shell-delegated-agent__origin">
-                {task.kind === 'existing' ? '已有 Agent' : '临时 Agent'}
-                {task.agentId ? (
-                  <code
-                    className="shell-delegated-agent__agent-id"
-                    title={`Agent Library id：${task.agentId}`}
-                  >
-                    {task.agentId}
-                  </code>
-                ) : null}
+          {task.parallelGroup && parallelGroupFirst.has(task.childRunId) ? (
+            <div className="shell-delegated-agent-group__header">
+              <span>并行任务组：{task.parallelGroup}</span>
+              <span>
+                {tasks.filter((candidate) => candidate.parallelGroup === task.parallelGroup).length}{' '}
+                个任务
               </span>
-            </span>
-            <span className="shell-delegated-agent__status">
-              {task.status === 'completed'
-                ? '已完成'
-                : task.status === 'running'
-                  ? '运行中'
-                  : task.status === 'failed'
-                    ? '失败'
-                    : task.status === 'cancelled'
-                      ? '已取消'
-                      : task.status === 'timed_out'
-                        ? '已超时'
-                        : task.status}
-            </span>
-          </summary>
-          <div className="shell-delegated-agent__details">
-            {task.toolEvents.length > 0 ? (
-              <DelegatedAgentToolList events={task.toolEvents} />
-            ) : (
-              <span className="shell-delegated-agent__empty">本次任务没有调用工具</span>
-            )}
-            {task.result ? <div className="shell-delegated-agent__result">{task.result}</div> : null}
-            {task.status === 'running' && onStopChild ? (
-              <button
-                type="button"
-                className="shell-delegated-agent__stop"
-                onClick={() => onStopChild(task.childRunId)}
-              >
-                停止当前子任务
-              </button>
-            ) : null}
-          </div>
-        </details>
+            </div>
+          ) : null}
+          <details className="shell-delegated-agent" key={task.childRunId}>
+            <summary className="shell-delegated-agent__summary">
+              <span className="shell-delegated-agent__avatar">
+                <AgentAvatarView
+                  name={task.name}
+                  avatar={delegatedAgentAvatarValue(task)}
+                  size={22}
+                />
+              </span>
+              <span className="shell-delegated-agent__identity">
+                <strong>{task.name}</strong>
+                <code
+                  className="shell-delegated-agent__agent-id"
+                  title={`Agent Library id：${task.agentId}`}
+                >
+                  {task.agentId}
+                </code>
+              </span>
+              {delegatedAgentUsageLabel(task) ? (
+                <span className="shell-delegated-agent__usage" data-testid="delegated-agent-usage">
+                  {delegatedAgentUsageLabel(task)}
+                </span>
+              ) : null}
+              <DelegatedAgentStatusIcon status={task.status} />
+            </summary>
+            <div className="shell-delegated-agent__details">
+              {task.toolEvents.length > 0 ? (
+                <DelegatedAgentToolList events={task.toolEvents} />
+              ) : (
+                <span className="shell-delegated-agent__empty">本次任务没有调用工具</span>
+              )}
+              {task.result ? (
+                <div className="shell-delegated-agent__result">{task.result}</div>
+              ) : null}
+              {task.status === 'running' && onStopChild ? (
+                <button
+                  type="button"
+                  className="shell-delegated-agent__stop"
+                  onClick={() => onStopChild(task.childRunId)}
+                >
+                  停止当前子任务
+                </button>
+              ) : null}
+            </div>
+          </details>
         </Fragment>
       ))}
     </div>
@@ -8388,21 +9071,67 @@ const MessageBubble = memo(function MessageBubble({
     () => generatedImageModelsFromProcessItems(displayedProcessItems),
     [displayedProcessItems],
   );
+  /** 已经以内联卡片挂在时间线上的子任务 id。兜底列表跳过它们，避免重复渲染。 */
+  const inlineDelegatedChildRunIds = useMemo(() => {
+    const ids = new Set<string>();
+    // Running delegations have no durable result yet, so their tool row cannot
+    // yield a childRunId — resolve it from the live projection instead. Without
+    // this the fallback list keeps rendering the same card at the panel top.
+    const byParentToolCallId = new Map<string, string>();
+    for (const agent of message.delegatedAgents ?? []) {
+      if (agent.parentToolCallId) {
+        byParentToolCallId.set(String(agent.parentToolCallId), String(agent.childRunId));
+      }
+    }
+    for (const item of displayedProcessItems ?? []) {
+      const task = parseDelegatedAgentTask(item);
+      if (task) {
+        ids.add(task.childRunId);
+        continue;
+      }
+      if (item.kind !== 'tool' || !item.toolCallId || !DELEGATION_TOOL_NAMES.has(item.name)) continue;
+      const childRunId = byParentToolCallId.get(String(item.toolCallId));
+      if (childRunId) ids.add(childRunId);
+    }
+    return ids;
+  }, [displayedProcessItems, message.delegatedAgents]);
+  const stopDelegatedChild = useCallback((childRunId: string) => {
+    void bridge()?.cancelRun?.({ runId: childRunId as RunId });
+  }, []);
+  const renderInlineAgentTask = useCallback(
+    (item: InlineProcessItem) =>
+      item.kind === 'tool' && DELEGATION_TOOL_NAMES.has(item.name) ? (
+        <InlineDelegatedAgentTask
+          item={item}
+          delegatedAgents={message.delegatedAgents}
+          onStopChild={stopDelegatedChild}
+        />
+      ) : undefined,
+    [message.delegatedAgents, stopDelegatedChild],
+  );
   const delegatedAgentTaskContent = useMemo(
     () => (
       <DelegatedAgentTasks
         items={displayedProcessItems ?? []}
         delegatedAgents={message.delegatedAgents}
-        onStopChild={(childRunId) => {
-          void bridge()?.cancelRun?.({ runId: childRunId as RunId });
-        }}
+        inlineChildRunIds={inlineDelegatedChildRunIds}
+        onStopChild={stopDelegatedChild}
       />
     ),
-    [displayedProcessItems, message.delegatedAgents],
+    [
+      displayedProcessItems,
+      inlineDelegatedChildRunIds,
+      message.delegatedAgents,
+      stopDelegatedChild,
+    ],
   );
-  const hasDelegatedAgentTasks = displayedProcessItems?.some(
-    (item) => item.kind === 'tool' && item.name === 'agent_delegate' && Boolean(item.result),
-  ) || Boolean(message.delegatedAgents?.length);
+  /**
+   * 兜底列表只保留「没有内联锚点」的委派（例如只有 live 投影、时间线上还没有
+   * `agent_delegate` 条目的时候）。其余都在委派发生的那一刻就地显示。
+   */
+  const hasDelegatedAgentTasks = (message.delegatedAgents ?? []).some(
+    (task) => !inlineDelegatedChildRunIds.has(String(task.childRunId)),
+  );
 
   const metricsLabel = useMemo(() => {
     if (!processView) return undefined;
@@ -8752,6 +9481,7 @@ const MessageBubble = memo(function MessageBubble({
           onLoadMoreTimeline={loadAssistantTimelinePage}
           onRetryTimelineLoad={loadAssistantTimelinePage}
           agentTaskContent={hasDelegatedAgentTasks ? delegatedAgentTaskContent : undefined}
+          renderInlineAgentTask={renderInlineAgentTask}
           supplementalContent={
             message.processStatus || message.terminalState ? (
               <>

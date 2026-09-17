@@ -82,6 +82,8 @@ export interface DemoRunState {
   delegationChildCount?: number;
   delegationAutoCount?: number;
   delegationParentRunId?: RunId;
+  /** Parent's `toolCallId` for the delegation call that spawned this child. */
+  delegationParentToolCallId?: string;
   /** Optional sibling batch label for parent-scoped delegated task grouping. */
   delegationParallelGroup?: string;
   /** Effective total token cap for a delegated child; null means unlimited. */
@@ -529,6 +531,7 @@ export interface CreateDemoRunInput {
   delegationChildCount?: number;
   delegationAutoCount?: number;
   delegationParentRunId?: RunId;
+  /** Optional sibling batch label for parent-scoped delegated task grouping. */
   delegationParallelGroup?: string;
   delegationTokenBudget?: number | null;
   delegationTokensUsed?: number;

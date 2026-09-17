@@ -2,7 +2,7 @@
 // If the binary is missing (likely because VS Build Tools aren't installed),
 // emits an actionable message and exits with code 2 (NOT a crash).
 
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -55,7 +55,31 @@ if (developmentRenderer && !process.env.VITE_DEV_SERVER_URL) {
   });
 }
 
-const child = spawn(electronPath, ['.'], {
+// Development builds deliberately skip the bundled feed sidecar: `readBundledUpdateFeed`
+// in src/main/index.ts starts with `if (!app.isPackaged) return null`. Without a feed URL
+// the updater reports itself as unconfigured, so 「设置 → 关于 → 检查更新」 sits permanently
+// disabled and the check → download → install path can never be exercised locally. Point
+// dev at the published feed and open the dev gate (desktop-updater.ts requires
+// SYNC_THINK_UPDATE_ALLOW_DEV=1 whenever !isPackaged) so the button does real work.
+//
+// Both stay overridable: export either variable yourself to use a different feed, or set
+// SYNC_THINK_UPDATE_FEED_URL to an empty string to put the channel back to "unconfigured".
+const DEV_UPDATE_FEED_URL = 'https://sync-think.online/updates';
+
+// Dev must not share Chromium's userData directory with an installed build.
+// Both ship `name: "@sync-think/desktop"`, so both default to
+// %APPDATA%\@sync-think\desktop and the installed app's `lockfile` wins: the dev
+// instance still starts, but Chromium cannot take the profile over and dies with
+//     Unable to move the cache: 拒绝访问 (0x5)
+//     Gpu Cache Creation failed: -2
+//     renderer failed to load ERR_FAILED (-2)
+// which reads like a broken build and is not one. A per-checkout directory keeps
+// the two side by side. Override SYNC_THINK_DEV_USER_DATA_DIR to move it.
+const devUserDataDir =
+  process.env.SYNC_THINK_DEV_USER_DATA_DIR ?? join(rootDir, '.data', 'desktop-userdata-dev');
+mkdirSync(devUserDataDir, { recursive: true });
+
+const child = spawn(electronPath, ['.', `--user-data-dir=${devUserDataDir}`], {
   cwd: desktopDir,
   stdio: 'inherit',
   env: {
@@ -64,6 +88,8 @@ const child = spawn(electronPath, ['.'], {
     SYNC_THINK_DEV_NO_TOKEN: process.env.SYNC_THINK_DEV_NO_TOKEN ?? '1',
     VITE_DEV_SERVER_URL: process.env.VITE_DEV_SERVER_URL,
     SYNC_THINK_RENDERER_MODE: developmentRenderer ? 'development' : 'production',
+    SYNC_THINK_UPDATE_FEED_URL: process.env.SYNC_THINK_UPDATE_FEED_URL ?? DEV_UPDATE_FEED_URL,
+    SYNC_THINK_UPDATE_ALLOW_DEV: process.env.SYNC_THINK_UPDATE_ALLOW_DEV ?? '1',
   },
 });
 child.on('exit', (code) => process.exit(code ?? 0));

@@ -8,6 +8,17 @@ import type { InteractionMode } from './chat-plan.js';
 export type TeamStrategy = 'serial' | 'parallel';
 export type TeamRunStatus = 'running' | 'completed' | 'failed' | 'cancelled';
 export type ConversationTrack = 'model' | 'agent' | 'team';
+export type AgentSource = 'builtin' | 'user';
+export type AgentAvailabilityScope = 'global' | 'workspace';
+/**
+ * Whether this Agent may write when another conversation delegates to it.
+ *
+ * Delegated children run headless, so a write has no approval card to answer.
+ * `read-only` (the default) keeps the Agent read-only everywhere; `inherit`
+ * follows the delegating conversation's permission mode, except in `ask`, where
+ * a headless child still cannot be approved. See docs/adr/0001.
+ */
+export type AgentWritePolicy = 'read-only' | 'inherit';
 
 export interface GlobalAgent {
   id: AgentId;
@@ -20,6 +31,10 @@ export interface GlobalAgent {
   skillIds: string[];
   mcpServerIds: string[];
   reasoningEffort: string;
+  enabled?: boolean;
+  source?: AgentSource;
+  availabilityScope?: AgentAvailabilityScope;
+  writePolicy?: AgentWritePolicy;
   archived: boolean;
   createdAt: string;
   updatedAt: string;

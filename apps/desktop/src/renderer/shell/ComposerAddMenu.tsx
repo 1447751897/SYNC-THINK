@@ -9,6 +9,7 @@ import {
   type RefObject,
 } from 'react';
 import { createPortal } from 'react-dom';
+import { listenForFrameCoalescedViewportChange } from './viewport-frame.js';
 import {
   Check,
   FileCode2,
@@ -296,12 +297,7 @@ export function ComposerAddControl({
       });
     };
     update();
-    window.addEventListener('resize', update);
-    window.addEventListener('scroll', update, true);
-    return () => {
-      window.removeEventListener('resize', update);
-      window.removeEventListener('scroll', update, true);
-    };
+    return listenForFrameCoalescedViewportChange(update);
   }, [composerRef, open, variant]);
 
   const consumeSearchFragment = useCallback(() => {

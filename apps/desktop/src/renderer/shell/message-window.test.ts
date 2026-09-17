@@ -3,6 +3,8 @@ import {
   applyConversationStickOnScroll,
   buildMessageOffsets,
   calculateMessageWindow,
+  expandMessageRenderStart,
+  getInitialMessageRenderStart,
   inferNativeScrollIntent,
   isConversationNearBottom,
   preservePrependScrollTop,
@@ -10,10 +12,26 @@ import {
   shouldFollowConversationContentResize,
   shouldReleaseStickOnWheel,
   shouldRestorePrependAnchor,
+  MESSAGE_INITIAL_RENDER_LIMIT,
+  MESSAGE_LOAD_EARLIER_BATCH,
   MESSAGE_WINDOW_ESTIMATED_HEIGHT,
 } from './message-window.js';
 
 describe('message windowing', () => {
+  it('matches NewMax tail-window thresholds and expansion direction', () => {
+    expect(getInitialMessageRenderStart(12)).toBe(0);
+    expect(getInitialMessageRenderStart(13)).toBe(1);
+    expect(getInitialMessageRenderStart(50)).toBe(50 - MESSAGE_INITIAL_RENDER_LIMIT);
+    expect(
+      expandMessageRenderStart(
+        getInitialMessageRenderStart(100),
+        getInitialMessageRenderStart(100) - MESSAGE_LOAD_EARLIER_BATCH,
+      ),
+    ).toBe(48);
+    expect(expandMessageRenderStart(8, 20)).toBe(8);
+    expect(expandMessageRenderStart(8, -50)).toBe(0);
+  });
+
   it('keeps a thousand-message conversation to a bounded render range', () => {
     const ids = Array.from({ length: 1_000 }, (_, index) => `message-${index}`);
     const range = calculateMessageWindow({
@@ -105,12 +123,12 @@ describe('message windowing', () => {
   });
 
   it('follows process and Think growth while streaming before the final answer', () => {
-    expect(
-      shouldFollowConversationContentResize({ streaming: true, hasAnswerText: false }),
-    ).toBe(true);
-    expect(
-      shouldFollowConversationContentResize({ streaming: true, hasAnswerText: true }),
-    ).toBe(true);
+    expect(shouldFollowConversationContentResize({ streaming: true, hasAnswerText: false })).toBe(
+      true,
+    );
+    expect(shouldFollowConversationContentResize({ streaming: true, hasAnswerText: true })).toBe(
+      true,
+    );
     expect(shouldFollowConversationContentResize({ streaming: false })).toBe(true);
   });
 
@@ -125,15 +143,13 @@ describe('message windowing', () => {
   });
 
   it('infers native scrollbar direction without requiring wheel events', () => {
-    expect(
-      inferNativeScrollIntent({ previousScrollTop: 600, nextScrollTop: 420 }),
-    ).toBe('away-from-bottom');
-    expect(
-      inferNativeScrollIntent({ previousScrollTop: 420, nextScrollTop: 600 }),
-    ).toBe('toward-bottom');
-    expect(
-      inferNativeScrollIntent({ previousScrollTop: 420, nextScrollTop: 420.2 }),
-    ).toBeNull();
+    expect(inferNativeScrollIntent({ previousScrollTop: 600, nextScrollTop: 420 })).toBe(
+      'away-from-bottom',
+    );
+    expect(inferNativeScrollIntent({ previousScrollTop: 420, nextScrollTop: 600 })).toBe(
+      'toward-bottom',
+    );
+    expect(inferNativeScrollIntent({ previousScrollTop: 420, nextScrollTop: 420.2 })).toBeNull();
   });
 
   it('keeps the tail pin when html/mermaid layout clamps scrollTop while still at the bottom', () => {
@@ -147,9 +163,9 @@ describe('message windowing', () => {
         clientHeight: 600,
       }),
     ).toEqual({ sticky: true, programmaticPending: false });
-    expect(
-      isConversationNearBottom({ scrollTop: 220, scrollHeight: 820, clientHeight: 600 }),
-    ).toBe(true);
+    expect(isConversationNearBottom({ scrollTop: 220, scrollHeight: 820, clientHeight: 600 })).toBe(
+      true,
+    );
   });
 
   it('keeps the tail pin across a programmatic write that has not landed yet', () => {

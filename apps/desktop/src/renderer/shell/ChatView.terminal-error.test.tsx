@@ -307,7 +307,7 @@ describe('ChatView terminal failure reason', () => {
     );
   });
 
-  it('keeps a paused-run failure inside its assistant process panel without a duplicate bubble', async () => {
+  it('keeps a paused run inside its assistant process panel as a resume notice', async () => {
     runtime.listConversationMessages.mockResolvedValue({
       messages: [userMessage],
       hasMore: false,
@@ -348,7 +348,12 @@ describe('ChatView terminal failure reason', () => {
       />,
     );
 
-    expect(await screen.findByTestId('assistant-terminal-failed')).toBeTruthy();
+    // A pause is resumable, so it reports itself as paused (with its reason)
+    // rather than borrowing the failure notice.
+    expect(await screen.findByTestId('assistant-terminal-paused')).toBeTruthy();
+    expect(screen.getByTestId('assistant-terminal-error').textContent).toContain(
+      '当前模型不可用',
+    );
     expect(view.container.querySelector('.shell-error-bubble')).toBeNull();
   });
 

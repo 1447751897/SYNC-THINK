@@ -2,7 +2,15 @@
 // Sidebar top actions + three tracks with groups · workspace tabs (no 全部) ·
 // welcome empty state · settings modal.
 import { reviewViewKey, conversationReviewFromKey, type ReviewView } from './review-view.js';
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { Bot, MessageSquare, Users, Zap, X } from 'lucide-react';
 import { isKernelExecutionSupported, kernelExecutionUnavailableReason } from '@sync-think/shared';
@@ -59,6 +67,7 @@ import {
   shouldMountRetainedSurface,
   type PaneRetainedSurfaces,
 } from './surface-keep-alive.js';
+import { EditorInitializingState } from './EditorInitializingState.js';
 import type { BrowserWorkflowAiTaskRequest } from './BrowserWorkflowPanel.js';
 import type { ConnectionTab, SettingsSection } from './SettingsPage.js';
 import type { ModelSettingsDetailView } from './ModelSettings.js';
@@ -335,6 +344,14 @@ const SettingsPage = lazyPanel(
   '设置',
   'SettingsPage',
 );
+/**
+ * The sidebar is a click-heavy surface whose entire prop set is rebuilt by
+ * ShellApp on every render. `memo` keeps updates that have nothing to do with
+ * it — streaming output, panel/layout churn — from re-rendering the whole
+ * conversation list. This only pays off because every callback it receives is
+ * memoised; see `sidebarCallbacks` below.
+ */
+const SidebarSurface = memo(Sidebar);
 
 interface ShellData {
   conversations: Conversation[];
@@ -393,8 +410,6 @@ const EMPTY: ShellData = {
   workspaces: [],
   skills: [],
 };
-
-const MAX_MOUNTED_CHAT_VIEWS = 2;
 
 type PaneDropZone = 'center' | 'left' | 'right' | 'top' | 'bottom';
 
@@ -550,6 +565,10 @@ function ShellAppInner() {
   );
   const [bootError, setBootError] = useState<string | undefined>(undefined);
   const [sidebarWidth, setSidebarWidth] = useState(() => readSidebarWidth());
+  // Mirror for event-time reads: the drag effect below binds once, so it must
+  // not close over a stale width when committing and persisting the final value.
+  const sidebarWidthRef = useRef(sidebarWidth);
+  sidebarWidthRef.current = sidebarWidth;
   const [groups, setGroups] = useState<ConversationGroupsByTrack>(() =>
     readConversationGroups(readActiveWorkspaceId()),
   );
@@ -703,14 +722,21 @@ function ShellAppInner() {
 
   const commitPaneLayout = useCallback(
     (workspaceId: string, update: (currentLayout: WorkspacePaneLayout) => WorkspacePaneLayout) => {
-      setPaneLayouts((current) => {
-        const currentLayout = current[workspaceId] ?? createWorkspacePaneLayout(workspaceId);
-        const layout = update(currentLayout);
-        if (layout === currentLayout && Object.hasOwn(current, workspaceId)) return current;
-        const next = { ...current, [workspaceId]: layout };
-        persistPaneLayouts(next);
-        return next;
-      });
+      // Compute the next layout from the mirror BEFORE calling setState so the
+      // persistence side effect lives OUTSIDE the state updater. React requires
+      // updaters to be pure: StrictMode invokes them twice, and
+      // persistPaneLayouts is 3 JSON.stringify + 3 synchronous localStorage
+      // writes, so every layout commit used to pay that cost twice — on the
+      // click path. The mirror is kept authoritative here so back-to-back
+      // commits in one batch accumulate instead of clobbering each other.
+      const current = paneLayoutsRef.current;
+      const currentLayout = current[workspaceId] ?? createWorkspacePaneLayout(workspaceId);
+      const layout = update(currentLayout);
+      if (layout === currentLayout && Object.hasOwn(current, workspaceId)) return;
+      const next = { ...current, [workspaceId]: layout };
+      paneLayoutsRef.current = next;
+      setPaneLayouts(next);
+      persistPaneLayouts(next);
     },
     [],
   );
@@ -721,15 +747,16 @@ function ShellAppInner() {
       update: (currentLayout: WorkspaceWorkbenchLayout) => WorkspaceWorkbenchLayout,
       persist = true,
     ) => {
-      setWorkbenchLayouts((current) => {
-        const currentLayout = current[workspaceId] ?? createWorkspaceWorkbenchLayout();
-        const layout = update(currentLayout);
-        if (layout === currentLayout) return current;
-        const next = { ...current, [workspaceId]: layout };
-        workbenchLayoutsRef.current = next;
-        if (persist) persistWorkbenchLayouts(next);
-        return next;
-      });
+      // Same reasoning as commitPaneLayout: keep the updater pure and the
+      // localStorage write on the caller's side, exactly once.
+      const current = workbenchLayoutsRef.current;
+      const currentLayout = current[workspaceId] ?? createWorkspaceWorkbenchLayout();
+      const layout = update(currentLayout);
+      if (layout === currentLayout) return;
+      const next = { ...current, [workspaceId]: layout };
+      workbenchLayoutsRef.current = next;
+      setWorkbenchLayouts(next);
+      if (persist) persistWorkbenchLayouts(next);
     },
     [],
   );
@@ -1517,16 +1544,17 @@ function ShellAppInner() {
     (workspaceId: string) => {
       const draft = draftSessionRef.current;
       if (draft && draft.workspaceId !== workspaceId) {
-        setPaneLayouts((current) => {
-          const layout = current[draft.workspaceId];
-          if (!layout) return current;
+        const currentLayouts = paneLayoutsRef.current;
+        const layout = currentLayouts[draft.workspaceId];
+        if (layout) {
           const next = {
-            ...current,
+            ...currentLayouts,
             [draft.workspaceId]: closeConversationInLayout(layout, draft.id),
           };
+          paneLayoutsRef.current = next;
+          setPaneLayouts(next);
           persistPaneLayouts(next);
-          return next;
-        });
+        }
         pendingFirstMessageRef.current = null;
         setDraftSession(null);
         setNewConversationDraft('');
@@ -1562,13 +1590,15 @@ function ShellAppInner() {
   const handleSplitRatioChange = useCallback(
     (splitNodeId: string, ratio: number, commit: boolean) => {
       if (!activeWorkspaceId) return;
-      setPaneLayouts((current) => {
-        const layout = current[activeWorkspaceId] ?? createWorkspacePaneLayout(activeWorkspaceId);
-        const nextLayout = setSplitRatio(layout, splitNodeId, ratio);
-        const next = { ...current, [activeWorkspaceId]: nextLayout };
-        if (commit) persistPaneLayouts(next);
-        return next;
-      });
+      const current = paneLayoutsRef.current;
+      const layout = current[activeWorkspaceId] ?? createWorkspacePaneLayout(activeWorkspaceId);
+      const nextLayout = setSplitRatio(layout, splitNodeId, ratio);
+      const next = { ...current, [activeWorkspaceId]: nextLayout };
+      paneLayoutsRef.current = next;
+      setPaneLayouts(next);
+      // Divider drags pass commit=false for intermediate frames; only the final
+      // committed ratio reaches localStorage (unchanged behaviour).
+      if (commit) persistPaneLayouts(next);
     },
     [activeWorkspaceId],
   );
@@ -1630,31 +1660,31 @@ function ShellAppInner() {
 
     // Drop stale tabs per workspace and collapse empty branches without ever
     // using another workspace's conversation as a valid reference.
-    setPaneLayouts((current) => {
-      const next: WorkspacePaneLayouts = {};
-      for (const [workspaceId, layout] of Object.entries(current)) {
-        const validIds = new Set(
-          conversations.conversations
-            .filter((conversation) => conversation.workspaceId === workspaceId)
-            .map((conversation) => String(conversation.id)),
-        );
-        const draft = draftSessionRef.current;
-        if (draft?.workspaceId === workspaceId) validIds.add(draft.id);
-        next[workspaceId] = pruneWorkspacePaneLayout(layout, validIds);
-      }
-      persistPaneLayouts(next);
-      return next;
-    });
-    setWorkbenchLayouts((current) => {
-      const validWorkspaceIds = new Set<string>(
-        workspaces.workspaces.map((workspace) => String(workspace.workspaceId)),
+    const prunedLayouts: WorkspacePaneLayouts = {};
+    for (const [workspaceId, layout] of Object.entries(paneLayoutsRef.current)) {
+      const validIds = new Set(
+        conversations.conversations
+          .filter((conversation) => conversation.workspaceId === workspaceId)
+          .map((conversation) => String(conversation.id)),
       );
-      const next = Object.fromEntries(
-        Object.entries(current).filter(([workspaceId]) => validWorkspaceIds.has(workspaceId)),
-      );
-      persistWorkbenchLayouts(next);
-      return next;
-    });
+      const draft = draftSessionRef.current;
+      if (draft?.workspaceId === workspaceId) validIds.add(draft.id);
+      prunedLayouts[workspaceId] = pruneWorkspacePaneLayout(layout, validIds);
+    }
+    paneLayoutsRef.current = prunedLayouts;
+    setPaneLayouts(prunedLayouts);
+    persistPaneLayouts(prunedLayouts);
+    const validWorkspaceIds = new Set<string>(
+      workspaces.workspaces.map((workspace) => String(workspace.workspaceId)),
+    );
+    const prunedWorkbench: WorkspaceWorkbenchLayouts = Object.fromEntries(
+      Object.entries(workbenchLayoutsRef.current).filter(([workspaceId]) =>
+        validWorkspaceIds.has(workspaceId),
+      ),
+    );
+    workbenchLayoutsRef.current = prunedWorkbench;
+    setWorkbenchLayouts(prunedWorkbench);
+    persistWorkbenchLayouts(prunedWorkbench);
 
     // No「全部」: always land on a concrete workspace when possible.
     setActiveWorkspaceId((current) => {
@@ -1706,14 +1736,24 @@ function ShellAppInner() {
     if (!hasShellBootSnapshot(readShellBootSnapshot())) setBootState('loading');
     setBootError(undefined);
 
-    const handleRuntimeEvents = (events: Event[]) => {
-      if (events.length === 0) return;
-      setEventHistory((prev) => mergeEventHistory(prev, events));
+    // Coalesce event batches into at most one commit per frame. Runtime publishes
+    // step/tool/stream boundaries as separate IPC messages, and every commit
+    // re-renders the whole shell plus the conversation view. Committing per
+    // message is what makes the interface stall while a run is producing output;
+    // merging per frame keeps the same information with one commit.
+    let eventsFrame: number | null = null;
+    let pendingEvents: Event[] = [];
+    const commitRuntimeEvents = () => {
+      eventsFrame = null;
+      const batch = pendingEvents;
+      pendingEvents = [];
+      if (batch.length === 0 || cancelled) return;
+      setEventHistory((prev) => mergeEventHistory(prev, batch));
       // 全局智能体库随事件即时刷新：AI 通过 create_agent / update_agent /
       // archive_agent 工具变更智能体时发布 globalAgent.* 事件，不在此刷新则
       // 智能体库列表要等手动刷新/切页才更新。
       if (
-        events.some(
+        batch.some(
           (event) =>
             event.type === 'globalAgent.created' ||
             event.type === 'globalAgent.updated' ||
@@ -1722,6 +1762,12 @@ function ShellAppInner() {
       ) {
         void refresh();
       }
+    };
+    const handleRuntimeEvents = (events: Event[]) => {
+      if (events.length === 0) return;
+      pendingEvents.push(...events);
+      if (eventsFrame !== null) return;
+      eventsFrame = window.requestAnimationFrame(commitRuntimeEvents);
     };
     const unsub = api.onEvents
       ? api.onEvents(handleRuntimeEvents)
@@ -1783,6 +1829,11 @@ function ShellAppInner() {
 
     return () => {
       cancelled = true;
+      if (eventsFrame !== null) {
+        window.cancelAnimationFrame(eventsFrame);
+        eventsFrame = null;
+      }
+      pendingEvents = [];
       stopConnect();
       unsub?.();
     };
@@ -1830,6 +1881,15 @@ function ShellAppInner() {
 
   // Sidebar drag resize.
   useEffect(() => {
+    let frame: number | null = null;
+    let pending: number | null = null;
+    const commitPending = () => {
+      frame = null;
+      if (pending === null) return;
+      const next = pending;
+      pending = null;
+      setSidebarWidth(next);
+    };
     const onMove = (e: MouseEvent) => {
       const drag = resizeRef.current;
       if (!drag) return;
@@ -1837,15 +1897,28 @@ function ShellAppInner() {
         SIDEBAR_WIDTH_MAX,
         Math.max(SIDEBAR_WIDTH_MIN, drag.startWidth + (e.clientX - drag.startX)),
       );
-      setSidebarWidth(next);
+      // Coalesce to at most one commit per frame. A high-rate pointer emits
+      // mousemove at 500-1000 Hz, and every commit re-renders the whole shell
+      // and re-runs flex layout for the chat column, so committing per event is
+      // what makes the panel visibly lag behind the cursor.
+      pending = next;
+      if (frame === null) frame = window.requestAnimationFrame(commitPending);
     };
     const onUp = () => {
       if (!resizeRef.current) return;
       resizeRef.current = null;
-      setSidebarWidth((w) => {
-        writeSidebarWidth(w);
-        return w;
-      });
+      if (frame !== null) {
+        window.cancelAnimationFrame(frame);
+        frame = null;
+      }
+      const finalWidth = pending ?? sidebarWidthRef.current;
+      pending = null;
+      if (finalWidth !== sidebarWidthRef.current) setSidebarWidth(finalWidth);
+      // Persist outside the state updater: a side effect inside an updater runs
+      // twice under StrictMode and pays a synchronous localStorage write on
+      // every commit.
+      writeSidebarWidth(finalWidth);
+      delete document.documentElement.dataset.sidebarResizing;
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
     };
@@ -2004,6 +2077,16 @@ function ShellAppInner() {
           >[0]['modelId'],
         });
         const skillVersionIds = resolveAppendSkillVersionIds(track, firstMessage.skillVersionIds);
+        // Bind the turn to the workspace folder so Desktop materializes the
+        // attachments beside the conversation instead of dropping them in the
+        // shared chat-image-staging directory. That staging path is outside the
+        // workspace the model is fenced to, so a text-only model handed it can
+        // only fail — it reads the absolute path, decides the file is out of
+        // bounds, and burns a turn on `ocr_image` (which then rejects it too).
+        // The ChatView send path passes the same context; this one must match.
+        const workspaceFolderPath = data.workspaces
+          .find((workspace) => workspace.workspaceId === workspaceId)
+          ?.folderPath?.trim();
         await api.appendMessage({
           threadId: prep.threadId,
           expectedTaskVersion: prep.taskVersion,
@@ -2015,6 +2098,10 @@ function ShellAppInner() {
           networkEnabled: firstMessage.networkEnabled || undefined,
           helpMode: firstMessage.helpMode === true ? true : undefined,
           skillVersionIds,
+          attachmentContext:
+            firstMessage.images.length > 0 && workspaceFolderPath
+              ? { conversationId: created.conversation.id, workspacePath: workspaceFolderPath }
+              : undefined,
           images:
             firstMessage.images.length > 0
               ? firstMessage.images.map((image) => ({
@@ -2057,6 +2144,7 @@ function ShellAppInner() {
       activeWorkspaceId,
       commitPaneLayout,
       commitWorkbenchLayout,
+      data.workspaces,
       focusConversation,
       refresh,
       rememberTrack,
@@ -2294,12 +2382,11 @@ function ShellAppInner() {
           .filter((tab) => tab.type === 'terminal')
           .map((tab) => tab.terminalId);
         await Promise.all(terminalIds.map((terminalId) => disposeTerminalSession(terminalId)));
-        setPaneLayouts((current) => {
-          const next = { ...current };
-          delete next[workspaceId];
-          persistPaneLayouts(next);
-          return next;
-        });
+        const nextLayouts = { ...paneLayoutsRef.current };
+        delete nextLayouts[workspaceId];
+        paneLayoutsRef.current = nextLayouts;
+        setPaneLayouts(nextLayouts);
+        persistPaneLayouts(nextLayouts);
         if (activeWorkspaceIdRef.current === workspaceId) {
           const remaining = data.workspaces.filter((w) => w.workspaceId !== workspaceId);
           if (remaining[0]) selectWorkspace(remaining[0].workspaceId);
@@ -2836,6 +2923,11 @@ function ShellAppInner() {
     ),
   );
   const shouldRenderWallpaperReadingLayers = !hasOpenPaneTabs || hasActiveConversationPane;
+  // Panes whose conversation surface is actually mounted. NewMax has no
+  // per-pane chat mount cap — `TabContent` keeps every activated conversation
+  // alive — so this set is only used to decide which panes clear unread state,
+  // never to park (unload) a conversation. Focused pane first is retained so the
+  // visible conversation is the first to be considered watched.
   const mountedConversationPaneIds = useMemo(() => {
     if (!activePaneLayout) return new Set<string>();
     const candidates = Object.values(activePaneLayout.panes)
@@ -2847,10 +2939,24 @@ function ShellAppInner() {
           ...candidates.filter((paneId) => paneId !== activePaneLayout.focusedPaneId),
         ]
       : candidates;
-    return new Set(
-      ordered.filter((paneId) => candidates.includes(paneId)).slice(0, MAX_MOUNTED_CHAT_VIEWS),
-    );
+    return new Set(ordered.filter((paneId) => candidates.includes(paneId)));
   }, [activePaneLayout]);
+
+  // NewMax `activationReady`: a freshly-activated conversation surface shows the
+  // initializing placeholder (120ms delayed) until ChatView reports its first
+  // message page is ready. Cached pages report immediately, so fast switches
+  // never flash the placeholder. Once ready, a conversation stays ready.
+  const [conversationReadyIds, setConversationReadyIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const markConversationReady = useCallback((conversationId: string) => {
+    setConversationReadyIds((current) => {
+      if (current.has(conversationId)) return current;
+      const next = new Set(current);
+      next.add(conversationId);
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     if (nav.stage !== 'talk') return;
@@ -3322,11 +3428,91 @@ function ShellAppInner() {
     );
   };
 
+  // Stable callback bag for <SidebarSurface>. Every entry is memoised (or a
+  // module-level function), so the sidebar can bail out of re-renders that have
+  // nothing to do with it. The dependency list below is the complete set of
+  // values these callbacks close over.
+  const sidebarCallbacks = useMemo(
+    () => ({
+      onSelectStage: handleSelectStage,
+      onToggleTrack: (track: ConversationTrack) => setNav((n) => toggleTrack(n, track)),
+      onToggleSidebar: () => setNav((n) => setSidebarCollapsed(n, true)),
+      onOpenConversation: (id: string) => focusConversation(id),
+      onNewConversation: handleNewConversation,
+      onTogglePin: (id: string, pinned: boolean) => void handleTogglePin(id, pinned),
+      onRename: (id: string, currentTitle: string) => void handleRename(id, currentTitle),
+      onArchive: (id: string) => void handleArchive(id),
+      onUnarchive: (id: string) => void handleUnarchive(id),
+      onDelete: (id: string) => void handleDelete(id),
+      onDuplicate: (id: string) => void handleDuplicate(id),
+      onCopyLink: (id: string) => void handleCopyLink(id),
+      onCreateGroup: (track: ConversationTrack, name: string) => {
+        persistGroups(createConversationGroup(groups, track, name));
+      },
+      onRenameGroup: (track: ConversationTrack, groupId: string, name: string) => {
+        persistGroups(renameConversationGroup(groups, track, groupId, name));
+      },
+      onDeleteGroup: (track: ConversationTrack, groupId: string) => {
+        persistGroups(deleteConversationGroup(groups, track, groupId));
+      },
+      onToggleGroupCollapsed: (track: ConversationTrack, groupId: string) => {
+        persistGroups(toggleConversationGroupCollapsed(groups, track, groupId));
+      },
+      onMoveToGroup: (track: ConversationTrack, conversationId: string, groupId: string | null) => {
+        persistGroups(moveConversationToGroup(groups, track, conversationId, groupId));
+      },
+      onToggleMultiSelect: () => {
+        setMultiSelect((v) => !v);
+        setSelectedIds(new Set<string>());
+      },
+      onToggleSelected: (id: string) => {
+        setSelectedIds((prev) => {
+          const next = new Set(prev);
+          if (next.has(id)) next.delete(id);
+          else next.add(id);
+          return next;
+        });
+      },
+      onBulkArchive: () => void handleBulkArchive(),
+      onBulkDelete: () => void handleBulkDelete(),
+      onBulkMoveToGroup: handleBulkMoveToGroup,
+      onResizeStart: (clientX: number) => {
+        if (nav.sidebarCollapsed) return;
+        resizeRef.current = { startX: clientX, startWidth: sidebarWidth };
+        // Drop the width transition for the duration of the drag so the panel
+        // tracks the pointer 1:1 (the pattern .shell-workbench--* already uses
+        // via data-resizing). Set on <html> so toggling it costs no re-render.
+        document.documentElement.dataset.sidebarResizing = 'true';
+        document.body.style.cursor = 'col-resize';
+        document.body.style.userSelect = 'none';
+      },
+    }),
+    [
+      focusConversation,
+      groups,
+      handleArchive,
+      handleBulkArchive,
+      handleBulkDelete,
+      handleBulkMoveToGroup,
+      handleCopyLink,
+      handleDelete,
+      handleDuplicate,
+      handleNewConversation,
+      handleRename,
+      handleSelectStage,
+      handleTogglePin,
+      handleUnarchive,
+      nav.sidebarCollapsed,
+      persistGroups,
+      sidebarWidth,
+    ],
+  );
+
   return (
     <div className="shell-app-root flex h-full flex-col bg-page">
       <div className="shell-boards flex min-h-0 flex-1 bg-page">
         {/* Keep sidebar mounted so width can animate on collapse/expand. */}
-        <Sidebar
+        <SidebarSurface
           nav={nav}
           width={sidebarWidth || SIDEBAR_WIDTH_DEFAULT}
           collapsed={nav.sidebarCollapsed}
@@ -3344,54 +3530,7 @@ function ShellAppInner() {
           multiSelect={multiSelect}
           selectedIds={selectedIds}
           conversationActivity={conversationActivityView}
-          onSelectStage={handleSelectStage}
-          onToggleTrack={(track) => setNav((n) => toggleTrack(n, track))}
-          onToggleSidebar={() => setNav((n) => setSidebarCollapsed(n, true))}
-          onOpenConversation={(id) => focusConversation(id)}
-          onNewConversation={handleNewConversation}
-          onTogglePin={(id, pinned) => void handleTogglePin(id, pinned)}
-          onRename={(id, currentTitle) => void handleRename(id, currentTitle)}
-          onArchive={(id) => void handleArchive(id)}
-          onUnarchive={(id) => void handleUnarchive(id)}
-          onDelete={(id) => void handleDelete(id)}
-          onDuplicate={(id) => void handleDuplicate(id)}
-          onCopyLink={(id) => void handleCopyLink(id)}
-          onCreateGroup={(track, name) => {
-            persistGroups(createConversationGroup(groups, track, name));
-          }}
-          onRenameGroup={(track, groupId, name) => {
-            persistGroups(renameConversationGroup(groups, track, groupId, name));
-          }}
-          onDeleteGroup={(track, groupId) => {
-            persistGroups(deleteConversationGroup(groups, track, groupId));
-          }}
-          onToggleGroupCollapsed={(track, groupId) => {
-            persistGroups(toggleConversationGroupCollapsed(groups, track, groupId));
-          }}
-          onMoveToGroup={(track, conversationId, groupId) => {
-            persistGroups(moveConversationToGroup(groups, track, conversationId, groupId));
-          }}
-          onToggleMultiSelect={() => {
-            setMultiSelect((v) => !v);
-            setSelectedIds(new Set());
-          }}
-          onToggleSelected={(id) => {
-            setSelectedIds((prev) => {
-              const next = new Set(prev);
-              if (next.has(id)) next.delete(id);
-              else next.add(id);
-              return next;
-            });
-          }}
-          onBulkArchive={() => void handleBulkArchive()}
-          onBulkDelete={() => void handleBulkDelete()}
-          onBulkMoveToGroup={handleBulkMoveToGroup}
-          onResizeStart={(clientX) => {
-            if (nav.sidebarCollapsed) return;
-            resizeRef.current = { startX: clientX, startWidth: sidebarWidth };
-            document.body.style.cursor = 'col-resize';
-            document.body.style.userSelect = 'none';
-          }}
+          {...sidebarCallbacks}
         />
 
         {pickerTrack && (
@@ -3540,7 +3679,19 @@ function ShellAppInner() {
                             RETAINED_REVIEW_LIMIT,
                           );
                         }
+                        // conversation 保活对齐 NewMax：激活过即常驻、无上限
+                        // （`shouldMountTabContent` 只看 `hasBeenActive`，不看数量）。
+                        // 无上限下 LRU 数组本身不再淘汰已关闭的会话，这里按本 pane
+                        // 当前仍打开的会话 tab 裁剪存储集合，让它与挂载集合保持一致，
+                        // 避免数组无限增长。
+                        retainedSurfaces.conversations = retainedSurfaces.conversations.filter(
+                          (id) => localConversationIds.includes(id) && id !== draftSession?.id,
+                        );
                         retainedSurfacesByPaneRef.current.set(pane.id, retainedSurfaces);
+                        // 已在**本会话激活过**的会话面全部保持挂载（对齐 NewMax
+                        // `TabContent.hasBeenActiveRef`：激活过就常驻，切走只是隐藏，
+                        // DOM 与滚动位置都不重建）。conversation 无上限，只要本 pane
+                        // 的会话 tab 还开着，切回去就还是原来的 DOM。
                         const retainedConversationIds = retainedSurfaces.conversations.filter(
                           (id) => localConversationIds.includes(id) && id !== draftSession?.id,
                         );
@@ -3563,13 +3714,9 @@ function ShellAppInner() {
                             localConversationIds.includes(String(item.id)) ||
                             !openIdsForWorkspace.includes(String(item.id)),
                         );
-                        const activeConversationPaneCount = Object.values(
-                          activePaneLayout.panes,
-                        ).filter(
-                          (item) =>
-                            item.tabs.find((tab) => tab.id === item.activeTabId)?.type ===
-                            'conversation',
-                        ).length;
+                        // NewMax has no chat-view mount cap: every pane that has a
+                        // conversation tab keeps its conversation surface mounted, so
+                        // splitting is always offered instead of parking the surplus.
                         const shouldMountConversation = mountedConversationPaneIds.has(pane.id);
                         const draggingFromThisPane = Boolean(
                           tabDragResource &&
@@ -3654,7 +3801,7 @@ function ShellAppInner() {
                               activeBrowserId={activeBrowserId}
                               reviewTabs={localReviewTabs}
                               activeReviewRunId={activeReviewRunId}
-                              canSplit={activeConversationPaneCount < MAX_MOUNTED_CHAT_VIEWS}
+                              canSplit
                               onSelect={(id) => handleActivatePaneTab(pane.id, id)}
                               onClose={(id) => handleCloseConversationTab(pane.id, id)}
                               onSelectFile={(path) => handleActivateFileTab(pane.id, path)}
@@ -3755,6 +3902,15 @@ function ShellAppInner() {
                                               : `pane-surface-conversation-${item.id}`
                                           }
                                         >
+                                          {conversationActive &&
+                                          !conversationReadyIds.has(String(item.id)) ? (
+                                            <div className="absolute inset-0 z-10 overflow-hidden bg-chat">
+                                              <EditorInitializingState
+                                                label="正在准备对话"
+                                                delayMs={120}
+                                              />
+                                            </div>
+                                          ) : null}
                                           <ChatView
                                             conversation={item}
                                             modelName={resolveTargetName(item)}
@@ -3764,8 +3920,12 @@ function ShellAppInner() {
                                             workspaces={data.workspaces}
                                             eventHistory={eventHistory}
                                             runActivityAuthority={runActivityAuthority}
+                                            onMessagesReady={() =>
+                                              markConversationReady(String(item.id))
+                                            }
                                             runtimeConnectionRevision={runtimeConnectionRevision}
                                             runtimeConnectionNotice={runtimeConnectionNotice}
+                                            active={conversationActive}
                                             initialSkillVersionIds={initialConversationSkillSelectionsRef.current.get(
                                               String(item.id),
                                             )}
@@ -3800,20 +3960,7 @@ function ShellAppInner() {
                                         </div>
                                       );
                                     })
-                                : conversation && conversationSurfaceActive ? (
-                                    <button
-                                      type="button"
-                                      className="shell-chat-parked"
-                                      data-testid={`parked-conversation-${conversation.id}`}
-                                      onClick={() => handleFocusPane(pane.id)}
-                                    >
-                                      <MessageSquare size={18} aria-hidden="true" />
-                                      <span>
-                                        <strong>{conversation.title?.trim() || '未命名对话'}</strong>
-                                        <small>此对话暂时休眠，点击加载</small>
-                                      </span>
-                                    </button>
-                                  ) : null}
+                                : null}
                               {localBrowserTabs.map((tab) => {
                                 const browserActive =
                                   activeTab?.type === 'browser' &&

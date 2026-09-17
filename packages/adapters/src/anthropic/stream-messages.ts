@@ -1,5 +1,6 @@
 import type { AdapterEvent, ProviderCallRequest, ProviderMessage } from '../types.js';
 import { scrubSecrets } from '../openai/discover-models.js';
+import { isUpstreamFailureSnippet } from '../http-failure.js';
 import { anthropicReasoningBodyFields } from '../reasoning.js';
 import type { FailureClass } from '@sync-think/shared';
 import {
@@ -140,6 +141,27 @@ function toAnthropicMessages(request: ProviderCallRequest): AnthropicWireMessage
               source: { type: 'url', url },
             });
           }
+        } else if (part.type === 'document' || part.type === 'video') {
+          // NewMax `buildDocumentContent` / `buildVideoContent` 的 Anthropic 分支：
+          // `document` / `video` + base64 source（MediaBlock 形状与 image 相同）。
+          const url = part.mediaUrl || '';
+          if (!url) continue;
+          const parsed = parseDataUrl(url);
+          if (parsed) {
+            blocks.push({
+              type: part.type,
+              source: {
+                type: 'base64',
+                media_type: part.mediaType || parsed.mediaType,
+                data: parsed.data,
+              },
+            });
+          } else if (url.startsWith('http://') || url.startsWith('https://')) {
+            blocks.push({
+              type: part.type,
+              source: { type: 'url', url },
+            });
+          }
         }
       }
       if (blocks.length > 0) {
@@ -189,6 +211,15 @@ function classifyHttpFailure(status: number, snippet: string): AnthropicCallErro
     return new AnthropicCallError(
       `Provider rate limited (${status})${snippet}`,
       'rate-limit',
+      status,
+    );
+  }
+  if (status >= 400 && status < 500 && isUpstreamFailureSnippet(snippet)) {
+    // 中转站把它自己的上游故障塞进 4xx（Atria 就是 400 + `upstream_error`）。
+    // 归到 protocol 会让调用方直接暂停/要求换模型；这是服务端的可重试失败。
+    return new AnthropicCallError(
+      `Provider call rejected (${status})${snippet}`,
+      'transient',
       status,
     );
   }
@@ -262,9 +293,15 @@ export async function* streamAnthropicMessages(
   // 默认输出上限不能太小:之前的 1024 会让长回复以 stop_reason=max_tokens 截断
   // (表现为回复为空/工具调用被拦腰截断),这里默认 8192 并保证高于 thinking budget。
   const defaultMaxTokens = Math.max(8_192, thinkingBudget + 4_096);
+  const maxTokens = request.maxOutputTokens ?? defaultMaxTokens;
+  // Anthropic 要求 `budget_tokens` 严格小于 `max_tokens`。调用方钉死一个较小的输出
+  // 上限时（能力探针 256、委派的 token 预算），再带上 thinking 就是非法组合：严格的
+  // 网关会把它变成一句含糊的 `upstream_error`/400，看起来像模型坏了。宁可丢掉思考
+  // 通道，也不要发出非法请求。
+  const thinkingFits = thinkingBudget > 0 && thinkingBudget < maxTokens;
   const body: Record<string, unknown> = {
     model: request.modelId,
-    max_tokens: request.maxOutputTokens ?? defaultMaxTokens,
+    max_tokens: maxTokens,
     messages: toAnthropicMessages(request),
     stream: true,
   };
@@ -291,7 +328,7 @@ export async function* streamAnthropicMessages(
       : systemPrompt;
   }
   if (request.temperature !== undefined) body.temperature = request.temperature;
-  Object.assign(body, reasoningFields);
+  if (thinkingFits) Object.assign(body, reasoningFields);
   if (request.tools?.length) {
     body.tools = request.tools.map((tool) => ({
       name: tool.name,

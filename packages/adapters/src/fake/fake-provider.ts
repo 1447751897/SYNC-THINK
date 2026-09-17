@@ -94,8 +94,14 @@ function lastUserString(request: ProviderCallRequest): string {
  * that code comes back (see vision-probe.ts). A fake provider that never
  * "looks" at the image would therefore always be classified as text-only, so it
  * answers with the code whenever a request carries an image part.
+ *
+ * 必须与 `apps/runtime/src/vision-probe.ts` 的 `VISION_PROBE_MARKER` 保持一致。
+ * 两者曾漂移（这里留 `42`、那边已改成 `7319`），结果是所有走 FakeProvider 的
+ * 能力探测都落到「未判定」，`vision: true` 再也测不出来 —— 测试套件对视觉探测
+ * 失去验证能力，而生产代码看起来「没坏」。`vision-probe.test.ts` 里有一条
+ * 防漂移断言会挡住同类问题。
  */
-const VISION_PROBE_ANSWER = '42';
+const VISION_PROBE_ANSWER = '7319';
 
 function hasImagePart(request: ProviderCallRequest): boolean {
   return [...request.messages].reverse().some((m) => {

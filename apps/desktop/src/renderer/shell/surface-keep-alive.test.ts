@@ -15,12 +15,21 @@ describe('surface keep-alive', () => {
     expect(shouldMountRetainedSurface('c2', false, ['c1'])).toBe(false);
   });
 
+  it('leaves the production cap wide enough to keep opened tabs alive', () => {
+    // NewMax 对「已激活过的会话标签」没有数量上限；SYNC-THINK 的上限只是病态兜底，
+    // 必须不低于一个 pane 实际能开出的标签数，否则又会出现「开第 9 个就把第 1 个卸掉」。
+    expect(RETAINED_CONVERSATION_LIMIT).toBeGreaterThanOrEqual(24);
+  });
+
   it('bounds retained conversation keys like a small LRU', () => {
+    // 用显式 limit：这条测的是 `rememberRetainedKey` 的语义，不该跟着生产上限走
+    // （生产上限已经按 NewMax 语义放到「标签能开多少就保活多少」）。
+    const limit = 8;
     let retained: string[] = [];
-    for (let index = 1; index <= RETAINED_CONVERSATION_LIMIT + 2; index += 1) {
-      retained = rememberRetainedKey(retained, `c${index}`, RETAINED_CONVERSATION_LIMIT);
+    for (let index = 1; index <= limit + 2; index += 1) {
+      retained = rememberRetainedKey(retained, `c${index}`, limit);
     }
-    expect(retained).toHaveLength(RETAINED_CONVERSATION_LIMIT);
+    expect(retained).toHaveLength(limit);
     expect(retained[0]).toBe('c3');
     expect(retained.at(-1)).toBe('c10');
     expect(retained.includes('c1')).toBe(false);

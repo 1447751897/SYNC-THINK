@@ -23,7 +23,7 @@ This note records the implemented child-Agent boundary for the model conversatio
 
 ## Desktop
 
-- The parent assistant process area renders existing or temporary Agent identity, status, active tool, arguments, and bounded tool output.
+- The parent assistant process area renders the reused existing Agent identity, status, active tool, arguments, and bounded tool output.
 - The card updates while the child is running and keeps the existing 20-line expandable output convention.
 - Running child cards expose controls for stopping the current child or all currently running children.
 - Durable fallback event consumption filters known delegated child Run ids so a reconnect cannot replace the parent draft with child text.
@@ -31,7 +31,7 @@ This note records the implemented child-Agent boundary for the model conversatio
 
 ## Verification
 
-- Runtime collaboration and transient-stream coverage: 32 tests passed (`collaboration-policy` 7 + `conversation-transient-stream` 25), including existing/temporary assignment, provider failure, budget exhaustion, timeout, direct child cancellation, parent cancellation, reconnect snapshots, and the read-only tool boundary.
+- Runtime collaboration and transient-stream coverage includes existing-Agent assignment, unavailable-Agent rejection, provider failure, budget exhaustion, timeout, direct child cancellation, parent cancellation, reconnect snapshots, and the read-only tool boundary.
 - `message-store-backfill` coverage: 7 tests passed; a delegated child `run.completed` never materializes as a second assistant message.
 - Desktop transient-stream, chat-stream, settings and delegated-card render coverage: 114 tests passed combined
   (`chat-transient-stream` 29 + `chat-stream` 14 + `SettingsPage` 59 + `ChatView.delegated-agents` 12);

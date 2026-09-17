@@ -1,5 +1,5 @@
 // agent command payload parsers (extracted from command-validation.ts).
-import type { GetAgentPayload, UpdateAgentBindingPayload, ListAgentsPayload, CreateAgentPayload, ListAgentVersionsPayload, CreateAgentVersionPayload, ListGlobalAgentsPayload, CreateGlobalAgentPayload, UpdateGlobalAgentPayload, DeleteGlobalAgentPayload } from '@sync-think/protocol';
+import type { GetAgentPayload, UpdateAgentBindingPayload, ListAgentsPayload, CreateAgentPayload, ListAgentVersionsPayload, CreateAgentVersionPayload, ListGlobalAgentsPayload, CreateGlobalAgentPayload, UpdateGlobalAgentPayload, DeleteGlobalAgentPayload, ListGlobalAgentWorkspaceActivationsPayload, SetGlobalAgentWorkspaceActivationPayload } from '@sync-think/protocol';
 import { hasOnlyKeys, isRecord, AGENT_DEFINITION_KEYS, boundedAgentText, validAgentDefinition, GLOBAL_AGENT_KEYS, validGlobalAgentFields } from './shared.js';
 
 export function parseGetAgentPayload(value: unknown): GetAgentPayload | undefined {
@@ -155,6 +155,32 @@ export function parseListGlobalAgentsPayload(
   if (value.includeArchived !== undefined && typeof value.includeArchived !== 'boolean')
     return undefined;
   return { includeArchived: value.includeArchived };
+}
+
+export function parseListGlobalAgentWorkspaceActivationsPayload(
+  value: unknown,
+): ListGlobalAgentWorkspaceActivationsPayload | undefined {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['workspaceId']) || !boundedAgentText(value.workspaceId, 256))
+    return undefined;
+  return { workspaceId: value.workspaceId as ListGlobalAgentWorkspaceActivationsPayload['workspaceId'] };
+}
+
+export function parseSetGlobalAgentWorkspaceActivationPayload(
+  value: unknown,
+): SetGlobalAgentWorkspaceActivationPayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['agentId', 'workspaceId', 'active']) ||
+    !boundedAgentText(value.agentId, 128) ||
+    !boundedAgentText(value.workspaceId, 256) ||
+    typeof value.active !== 'boolean'
+  )
+    return undefined;
+  return {
+    agentId: value.agentId as SetGlobalAgentWorkspaceActivationPayload['agentId'],
+    workspaceId: value.workspaceId as SetGlobalAgentWorkspaceActivationPayload['workspaceId'],
+    active: value.active,
+  };
 }
 
 export function parseCreateGlobalAgentPayload(

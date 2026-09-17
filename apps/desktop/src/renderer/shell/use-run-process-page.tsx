@@ -194,22 +194,20 @@ export function useRunProcessPage(
     section === 'taskPlan'
       ? (process?.taskPlan?.items.length ?? 0)
       : (process?.[section].length ?? 0);
+  // 自动补页是后台行为：后续页到了就静默接上，不再插一行「正在读取全部步骤…」。
+  // 那一行在长跑里会反复出现又消失，读者只会觉得面板一直在抖（NewMax 没有这个入口）。
+  // 只有真的读失败时才露面，并给出一次重取的机会。
   const controls = options?.accumulate ? (
-    current?.busy || current?.error ? (
+    current?.error ? (
       <div className="shell-process-pages" aria-label={`${label}加载`}>
-        {current.busy ? <span role="status">正在读取全部{label}…</span> : null}
-        {current.error ? (
-          <span role="alert">
-            {current.error === 'changed'
-              ? '过程已更新，已显示当前已加载内容；请重新读取。'
-              : '后续步骤读取失败，已显示已加载内容。'}
-          </span>
-        ) : null}
-        {current.error ? (
-          <button type="button" disabled={!conversationId || current.busy} onClick={() => load(0, [], true)}>
-            重新读取{label}
-          </button>
-        ) : null}
+        <span role="alert">
+          {current.error === 'changed'
+            ? '过程已更新，已显示当前已加载内容；请重新读取。'
+            : '后续步骤读取失败，已显示已加载内容。'}
+        </span>
+        <button type="button" disabled={!conversationId} onClick={() => load(0, [], true)}>
+          重新读取{label}
+        </button>
       </div>
     ) : null
   ) : page && (page.total > count || page.offset > 0 || current?.error) ? (

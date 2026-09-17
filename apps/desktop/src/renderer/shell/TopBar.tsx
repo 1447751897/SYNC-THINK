@@ -25,6 +25,7 @@ import clsx from 'clsx';
 import type { WorkspaceSummary } from '@sync-think/protocol';
 import { STAGE_LABELS, type ShellStage } from './shell-state.js';
 import { tabTranslate, useMorphingWorkspaceTabs } from './workspace-tab-morph.js';
+import { listenForFrameCoalescedViewportChange } from './viewport-frame.js';
 
 const WORKSPACE_ICON_PRESETS = ['📁', '💼', '🧠', '🚀', '📦', '🛠', '📚', '🧪', '🏠', '⭐'] as const;
 
@@ -371,12 +372,7 @@ export function TopBar(props: TopBarProps) {
       });
     };
     update();
-    window.addEventListener('resize', update);
-    window.addEventListener('scroll', update, true);
-    return () => {
-      window.removeEventListener('resize', update);
-      window.removeEventListener('scroll', update, true);
-    };
+    return listenForFrameCoalescedViewportChange(update);
   }, [menuAnchor, menuOpen]);
 
   useEffect(() => {

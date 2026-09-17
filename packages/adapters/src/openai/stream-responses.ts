@@ -5,6 +5,7 @@ import type {
   VisibleAssistantMessagePhase,
 } from '../types.js';
 import { normalizeOpenAICompatibleBaseUrl, scrubSecrets } from './discover-models.js';
+import { isUpstreamFailureSnippet } from '../http-failure.js';
 import {
   normalizeReasoningEffort,
   shouldOmitReasoningEffort,
@@ -97,7 +98,26 @@ function toResponsesInput(request: ProviderCallRequest): Array<Record<string, un
           parts.push({ type: 'input_text', text: part.text });
         } else if (part.type === 'image') {
           const imageUrl = part.imageUrl || part.imageRef;
-          if (imageUrl) parts.push({ type: 'input_image', image_url: imageUrl });
+          if (imageUrl) {
+            parts.push({
+              type: 'input_image',
+              image_url: imageUrl,
+              ...(part.imageDetail ? { detail: part.imageDetail } : {}),
+            });
+          }
+        } else if (part.type === 'document') {
+          // NewMax `buildDocumentContent` 的 openai 分支（Responses 走 input_file）。
+          const url = part.mediaUrl || '';
+          if (!url) continue;
+          parts.push(
+            /^https?:\/\//i.test(url)
+              ? { type: 'input_file', filename: 'attachment', file_url: url }
+              : { type: 'input_file', filename: 'attachment', file_data: url },
+          );
+        } else if (part.type === 'video') {
+          // NewMax `buildVideoContent` 的 openai 分支：`video_url`。
+          const url = part.mediaUrl || '';
+          if (url) parts.push({ type: 'input_video', video_url: url });
         }
       }
       if (parts.length > 0) {
@@ -142,6 +162,15 @@ function classifyHttpFailure(
       type: 'error',
       failureClass: 'rate-limit',
       message: `Provider rate limited (${status})${snippet}`,
+    };
+  }
+  if (status >= 400 && status < 500 && isUpstreamFailureSnippet(snippet)) {
+    // Relay-side upstream failure wrapped in a 4xx (Atria: 400 + `upstream_error`).
+    // Classifying it as protocol makes the caller pause instead of retrying.
+    return {
+      type: 'error',
+      failureClass: 'transient',
+      message: `Provider Responses call rejected (${status})${snippet}`,
     };
   }
   if (status >= 400 && status < 500) {

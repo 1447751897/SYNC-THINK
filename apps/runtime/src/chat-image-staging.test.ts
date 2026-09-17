@@ -7,6 +7,7 @@ import {
   resolveAppendMessageImageDataUrl,
   resolveAppendMessageImageStagingPath,
   resolveChatImageStagingDir,
+  resolveStagedImageWorkspaceRelativePath,
 } from './chat-image-staging.js';
 
 describe('chat-image-staging', () => {
@@ -72,6 +73,43 @@ describe('chat-image-staging', () => {
       ).toBeUndefined();
     } finally {
       rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('derives a workspace-relative path only for attachments inside the workspace', () => {
+    const workspace = join(tmpdir(), `sync-think-materialized-${Date.now()}`);
+    const conversationId = 'conv-materialized';
+    const imageDir = join(workspace, '.sync-think', 'conversations', conversationId, 'images');
+    const file = join(imageDir, 'attachment-9.png');
+    mkdirSync(imageDir, { recursive: true });
+    writeFileSync(file, Buffer.from([0x89, 0x50, 0x4e, 0x47, 9]));
+
+    // App-managed but outside the workspace: a path relative to the workspace
+    // root would be meaningless to the model, so it must be rejected.
+    const sharedStaging = join(tmpdir(), `sync-think-shared-staging-${Date.now()}`);
+    mkdirSync(sharedStaging, { recursive: true });
+    const sharedFile = join(sharedStaging, 'shared.png');
+    writeFileSync(sharedFile, Buffer.from([0x89, 0x50, 0x4e, 0x47, 8]));
+
+    try {
+      expect(
+        resolveStagedImageWorkspaceRelativePath(file, { workspaceRoot: workspace, conversationId }),
+      ).toBe(`.sync-think/conversations/${conversationId}/images/attachment-9.png`);
+      // No bound workspace -> nothing to hand the model.
+      expect(resolveStagedImageWorkspaceRelativePath(file, { conversationId })).toBeUndefined();
+
+      process.env.SYNC_THINK_CHAT_IMAGE_STAGING = sharedStaging;
+      expect(resolveAppendMessageImageStagingPath({ stagingPath: sharedFile })).toBe(sharedFile);
+      expect(
+        resolveStagedImageWorkspaceRelativePath(sharedFile, { workspaceRoot: workspace }),
+      ).toBeUndefined();
+      expect(
+        resolveStagedImageWorkspaceRelativePath(sharedFile, { workspaceRoot: sharedStaging }),
+      ).toBe('shared.png');
+    } finally {
+      delete process.env.SYNC_THINK_CHAT_IMAGE_STAGING;
+      rmSync(workspace, { recursive: true, force: true });
+      rmSync(sharedStaging, { recursive: true, force: true });
     }
   });
 });

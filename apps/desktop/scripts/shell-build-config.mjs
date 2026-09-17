@@ -20,7 +20,14 @@ import { gzipSync } from 'node:zlib';
 // （每版约 1.2KB，其中大半是中文转义开销）。放宽预算只买得到若干个版本的时间，
 // 不解决趋势。正解是让更新日志脱离 JS bundle（外置成资源 + 自定义协议或 IPC 读取，
 // file:// 下 fetch 会被 CORS 拦），届时这里应回落到 3_020_000 以下。
-export const SHELL_BUDGET = Object.freeze({ initialJsBytes: 2_150_000, totalJsBytes: 3_050_000 });
+//
+// totalJsBytes 于 2026-09-17 由 3_050_000 放宽至 3_060_000：
+// 「委派子智能体的写权限」新增了一个用户可见开关（Agent 设置页的只读/继承会话
+// 选择及其语义说明），总量达到 3,050,855 字节——上一轮构建的余量本就只剩 13 字节，
+// 任何用户可见改动都会触顶。已先把新增文案压到最简（再删就会丢掉「逐次询问下仍
+// 只读」这一用户无法自行推断的语义）。**趋势警告依然成立**：真正该做的是把更新日志
+// 外置、并拆分 SettingsPage chunk，做完后此处应回落到 3_020_000 以下。
+export const SHELL_BUDGET = Object.freeze({ initialJsBytes: 2_150_000, totalJsBytes: 3_060_000 });
 
 export function shellBuildOptions(args, desktopRoot) {
   let mode = 'production';

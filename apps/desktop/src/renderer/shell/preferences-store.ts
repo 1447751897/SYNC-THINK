@@ -651,6 +651,39 @@ export const DEFAULT_SHORTCUT_PREFERENCES: ShortcutPreferences = {
   sidebarRight: { accelerator: 'CommandOrControl+Right', enabled: true },
 };
 
+export interface TrayPreferences {
+  /** Show the desktop tray icon (Windows notification area / macOS menu bar). */
+  visible: boolean;
+}
+
+export const TRAY_PREFERENCE_KEY = 'sync-think.preferences.tray.v1';
+
+export const DEFAULT_TRAY_PREFERENCES: TrayPreferences = { visible: true };
+
+export function readTrayPreferences(storage?: Storage): TrayPreferences {
+  const target = storageOrDefault(storage);
+  let raw: unknown;
+  try {
+    raw = JSON.parse(target?.getItem(TRAY_PREFERENCE_KEY) ?? 'null');
+  } catch {
+    raw = null;
+  }
+  const record =
+    raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+  return {
+    visible:
+      typeof record.visible === 'boolean' ? record.visible : DEFAULT_TRAY_PREFERENCES.visible,
+  };
+}
+
+export function writeTrayPreferences(preferences: TrayPreferences, storage?: Storage): void {
+  try {
+    storageOrDefault(storage)?.setItem(TRAY_PREFERENCE_KEY, JSON.stringify(preferences));
+  } catch {
+    // UI preferences remain best-effort when browser storage is unavailable.
+  }
+}
+
 export function readShortcutPreferences(storage?: Storage): ShortcutPreferences {
   const target = storageOrDefault(storage);
   let raw: unknown;

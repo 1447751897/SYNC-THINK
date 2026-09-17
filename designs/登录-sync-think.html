@@ -1,0 +1,1084 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>登录 | SYNC-THINK</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #151717;
+      --panel: #1b1d1d;
+      --surface: #222525;
+      --surface-2: #292c2c;
+      --line: #3a3e3d;
+      --line-soft: #2d3130;
+      --text: #f2f1eb;
+      --muted: #a7aaa4;
+      --muted-2: #737873;
+      --accent: #ff7356;
+      --accent-strong: #ee6048;
+      --accent-soft: #3b2622;
+      --radius: 12px;
+      --shadow: 0 24px 70px rgba(6, 8, 8, .38);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      min-height: 100%;
+      margin: 0;
+      background: var(--bg);
+    }
+
+    body {
+      min-width: 320px;
+      min-height: 100dvh;
+      color: var(--text);
+      font-family: "Avenir Next", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    button,
+    input {
+      font: inherit;
+    }
+
+    button {
+      cursor: pointer;
+    }
+
+    a {
+      color: inherit;
+    }
+
+    .page-shell {
+      display: grid;
+      grid-template-columns: minmax(0, 1.08fr) minmax(420px, .92fr);
+      min-height: 100dvh;
+      overflow: hidden;
+    }
+
+    .brand-side {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      min-height: 100dvh;
+      padding: clamp(28px, 5vw, 68px);
+      isolation: isolate;
+      background-color: var(--bg);
+      background-image:
+        linear-gradient(rgba(255, 255, 255, .035) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, .035) 1px, transparent 1px);
+      background-size: 48px 48px;
+    }
+
+    .brand-side::after {
+      position: absolute;
+      right: -70px;
+      bottom: 13%;
+      width: 220px;
+      height: 220px;
+      border: 1px solid rgba(255, 115, 86, .32);
+      content: "";
+      transform: rotate(45deg);
+      z-index: -1;
+    }
+
+    .brand-header {
+      display: flex;
+      align-items: center;
+      gap: 13px;
+    }
+
+    .mark {
+      position: relative;
+      width: 42px;
+      height: 42px;
+      flex: 0 0 auto;
+      overflow: hidden;
+      border: 1px solid rgba(255, 255, 255, .44);
+      border-radius: 12px;
+      background: var(--accent);
+      box-shadow: 0 0 0 5px rgba(255, 115, 86, .08);
+    }
+
+    .mark::before,
+    .mark::after {
+      position: absolute;
+      display: block;
+      background: var(--bg);
+      content: "";
+    }
+
+    .mark::before {
+      top: 8px;
+      left: 19px;
+      width: 6px;
+      height: 27px;
+    }
+
+    .mark::after {
+      top: 18px;
+      left: 8px;
+      width: 28px;
+      height: 6px;
+    }
+
+    .wordmark {
+      display: grid;
+      gap: 2px;
+    }
+
+    .wordmark strong {
+      font-size: 14px;
+      font-weight: 720;
+      letter-spacing: .08em;
+    }
+
+    .wordmark span {
+      color: var(--muted-2);
+      font-size: 10px;
+      letter-spacing: .17em;
+      text-transform: uppercase;
+    }
+
+    .brand-copy {
+      max-width: 580px;
+      margin-top: clamp(62px, 9vh, 102px);
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      margin: 0 0 18px;
+      color: var(--accent);
+      font-size: 11px;
+      font-weight: 720;
+      letter-spacing: .16em;
+      text-transform: uppercase;
+    }
+
+    .eyebrow::before {
+      width: 22px;
+      height: 1px;
+      background: var(--accent);
+      content: "";
+    }
+
+    .brand-copy h1 {
+      max-width: 560px;
+      margin: 0;
+      font-size: 4rem;
+      font-weight: 650;
+      letter-spacing: -.045em;
+      line-height: 1.04;
+    }
+
+    .brand-copy p {
+      max-width: 470px;
+      margin: 24px 0 0;
+      color: var(--muted);
+      font-size: 16px;
+      line-height: 1.72;
+    }
+
+    .workspace-window {
+      width: min(100%, 650px);
+      margin-top: clamp(42px, 7vh, 76px);
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface);
+      box-shadow: var(--shadow);
+      transform: rotate(-1.1deg);
+      transform-origin: 30% 80%;
+    }
+
+    .window-chrome {
+      display: grid;
+      grid-template-columns: 78px 1fr 78px;
+      align-items: center;
+      height: 46px;
+      padding: 0 16px;
+      border-bottom: 1px solid var(--line-soft);
+      color: var(--muted-2);
+      font-size: 11px;
+      letter-spacing: .05em;
+    }
+
+    .chrome-dots {
+      display: flex;
+      gap: 6px;
+    }
+
+    .chrome-dots i {
+      width: 7px;
+      height: 7px;
+      border: 1px solid var(--muted-2);
+      border-radius: 50%;
+    }
+
+    .window-chrome > span {
+      justify-self: center;
+    }
+
+    .chrome-icon {
+      justify-self: end;
+      width: 16px;
+      height: 16px;
+    }
+
+    .workspace-body {
+      display: grid;
+      grid-template-columns: 146px minmax(0, 1fr);
+      min-height: 310px;
+    }
+
+    .workspace-nav {
+      padding: 18px 12px;
+      border-right: 1px solid var(--line-soft);
+      background: rgba(0, 0, 0, .09);
+    }
+
+    .nav-title {
+      margin: 0 8px 14px;
+      color: var(--muted-2);
+      font-size: 10px;
+      font-weight: 720;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+    }
+
+    .nav-item {
+      display: grid;
+      grid-template-columns: 16px 1fr auto;
+      align-items: center;
+      gap: 8px;
+      min-height: 36px;
+      padding: 0 8px;
+      border-radius: 8px;
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .nav-item + .nav-item {
+      margin-top: 4px;
+    }
+
+    .nav-item.is-active {
+      color: var(--text);
+      background: var(--accent-soft);
+    }
+
+    .nav-glyph {
+      width: 14px;
+      height: 14px;
+      border: 1px solid currentColor;
+      border-radius: 4px;
+      opacity: .75;
+    }
+
+    .nav-count {
+      color: var(--accent);
+      font-size: 10px;
+    }
+
+    .workspace-main {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      padding: 20px 22px 18px;
+    }
+
+    .conversation-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding-bottom: 17px;
+      border-bottom: 1px solid var(--line-soft);
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .conversation-title {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--text);
+      font-weight: 650;
+    }
+
+    .live-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 0 4px rgba(255, 115, 86, .12);
+    }
+
+    .conversation-head .icon {
+      width: 15px;
+      height: 15px;
+    }
+
+    .message-stack {
+      display: grid;
+      gap: 15px;
+      padding: 26px 0 20px;
+    }
+
+    .message {
+      max-width: 82%;
+      padding: 13px 15px;
+      border: 1px solid var(--line-soft);
+      border-radius: 10px;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.65;
+    }
+
+    .message.user {
+      justify-self: end;
+      border-color: rgba(255, 115, 86, .3);
+      color: var(--text);
+      background: var(--accent-soft);
+    }
+
+    .message.agent {
+      position: relative;
+      padding-left: 31px;
+    }
+
+    .message.agent::before {
+      position: absolute;
+      top: 16px;
+      left: 14px;
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--accent);
+      content: "";
+    }
+
+    .compose-bar {
+      display: grid;
+      grid-template-columns: 1fr 30px;
+      align-items: center;
+      gap: 10px;
+      min-height: 42px;
+      margin-top: auto;
+      padding: 0 8px 0 14px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      color: var(--muted-2);
+      font-size: 11px;
+    }
+
+    .send-chip {
+      display: grid;
+      width: 28px;
+      height: 28px;
+      place-items: center;
+      padding: 0;
+      border: 0;
+      border-radius: 8px;
+      color: var(--bg);
+      background: var(--accent);
+    }
+
+    .send-chip:hover {
+      background: var(--accent-strong);
+    }
+
+    .send-chip .icon {
+      width: 15px;
+      height: 15px;
+    }
+
+    .brand-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      width: min(100%, 650px);
+      margin-top: 30px;
+      color: var(--muted-2);
+      font-size: 10px;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+
+    .brand-footer span:last-child {
+      color: var(--muted);
+    }
+
+    .auth-side {
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100dvh;
+      padding: clamp(28px, 5vw, 68px);
+      border-left: 1px solid var(--line);
+      background: var(--panel);
+    }
+
+    .auth-meta {
+      position: absolute;
+      top: clamp(28px, 5vw, 68px);
+      right: clamp(28px, 5vw, 68px);
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted-2);
+      font-size: 11px;
+    }
+
+    .auth-meta .icon {
+      width: 15px;
+      height: 15px;
+      color: var(--accent);
+    }
+
+    .auth-inner {
+      width: 100%;
+      max-width: 398px;
+    }
+
+    .auth-heading {
+      margin-bottom: 30px;
+    }
+
+    .auth-kicker {
+      margin: 0 0 13px;
+      color: var(--accent);
+      font-size: 11px;
+      font-weight: 720;
+      letter-spacing: .13em;
+      text-transform: uppercase;
+    }
+
+    .auth-heading h2 {
+      margin: 0;
+      font-size: 2.75rem;
+      font-weight: 650;
+      letter-spacing: -.04em;
+      line-height: 1.08;
+    }
+
+    .auth-heading p:last-child {
+      margin: 14px 0 0;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.65;
+    }
+
+    .provider-stack {
+      display: grid;
+      gap: 10px;
+    }
+
+    .provider-button {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      width: 100%;
+      height: 48px;
+      padding: 0 18px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      color: var(--text);
+      background: transparent;
+      font-size: 13px;
+      font-weight: 620;
+      transition: border-color .2s ease, background .2s ease, transform .2s ease;
+    }
+
+    .provider-button:hover {
+      border-color: #5a5e5c;
+      background: var(--surface);
+    }
+
+    .provider-button:active,
+    .primary-button:active,
+    .send-chip:active {
+      transform: translateY(1px) scale(.985);
+    }
+
+    .provider-button .icon {
+      width: 17px;
+      height: 17px;
+      color: var(--muted);
+    }
+
+    .divider {
+      display: flex;
+      align-items: center;
+      gap: 13px;
+      margin: 27px 0 23px;
+      color: var(--muted-2);
+      font-size: 11px;
+    }
+
+    .divider::before,
+    .divider::after {
+      height: 1px;
+      flex: 1;
+      background: var(--line-soft);
+      content: "";
+    }
+
+    .field + .field {
+      margin-top: 18px;
+    }
+
+    .field label {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--text);
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .input-wrap {
+      position: relative;
+    }
+
+    .input-wrap input {
+      width: 100%;
+      height: 50px;
+      padding: 0 15px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      outline: 0;
+      color: var(--text);
+      background: var(--surface);
+      font-size: 14px;
+      transition: border-color .2s ease, box-shadow .2s ease, background .2s ease;
+    }
+
+    .input-wrap input::placeholder {
+      color: var(--muted-2);
+    }
+
+    .input-wrap input:hover {
+      border-color: #555a57;
+    }
+
+    .input-wrap input:focus {
+      border-color: var(--accent);
+      background: var(--surface-2);
+      box-shadow: 0 0 0 3px rgba(255, 115, 86, .13);
+    }
+
+    .password-input {
+      padding-right: 50px !important;
+    }
+
+    .password-toggle {
+      position: absolute;
+      top: 50%;
+      right: 11px;
+      display: grid;
+      width: 30px;
+      height: 30px;
+      place-items: center;
+      padding: 0;
+      border: 0;
+      border-radius: 8px;
+      color: var(--muted);
+      background: transparent;
+      transform: translateY(-50%);
+    }
+
+    .password-toggle:hover {
+      color: var(--text);
+      background: rgba(255, 255, 255, .06);
+    }
+
+    .password-toggle .icon {
+      width: 17px;
+      height: 17px;
+    }
+
+    .form-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin: 20px 0 24px;
+    }
+
+    .remember {
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      color: var(--muted);
+      font-size: 12px;
+      cursor: pointer;
+    }
+
+    .remember input {
+      width: 16px;
+      height: 16px;
+      margin: 0;
+      accent-color: var(--accent);
+    }
+
+    .text-link {
+      color: var(--accent);
+      font-size: 12px;
+      text-decoration: none;
+    }
+
+    .text-link:hover {
+      text-decoration: underline;
+      text-underline-offset: 4px;
+    }
+
+    .primary-button {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      width: 100%;
+      height: 51px;
+      border: 1px solid var(--accent);
+      border-radius: var(--radius);
+      color: var(--bg);
+      background: var(--accent);
+      font-size: 13px;
+      font-weight: 750;
+      transition: background .2s ease, border-color .2s ease, transform .2s ease;
+    }
+
+    .primary-button:hover:not(:disabled) {
+      border-color: var(--accent-strong);
+      background: var(--accent-strong);
+    }
+
+    .primary-button:disabled {
+      border-color: var(--line);
+      color: var(--muted-2);
+      background: var(--surface-2);
+      cursor: not-allowed;
+    }
+
+    .primary-button .icon {
+      width: 17px;
+      height: 17px;
+    }
+
+    .loading-bars {
+      display: none;
+      align-items: center;
+      gap: 3px;
+      height: 17px;
+    }
+
+    .loading-bars i {
+      display: block;
+      width: 3px;
+      height: 11px;
+      border-radius: 2px;
+      background: currentColor;
+      animation: pulse-bar .9s ease-in-out infinite;
+    }
+
+    .loading-bars i:nth-child(2) {
+      animation-delay: .12s;
+    }
+
+    .loading-bars i:nth-child(3) {
+      animation-delay: .24s;
+    }
+
+    .primary-button.is-loading .button-icon {
+      display: none;
+    }
+
+    .primary-button.is-loading .loading-bars {
+      display: inline-flex;
+    }
+
+    .form-message {
+      min-height: 20px;
+      margin: 14px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .form-message.error {
+      color: var(--accent);
+    }
+
+    .signup {
+      margin: 28px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+      text-align: center;
+    }
+
+    .signup .text-link {
+      margin-left: 4px;
+      font-weight: 650;
+    }
+
+    :focus-visible {
+      outline: 3px solid rgba(255, 115, 86, .65);
+      outline-offset: 3px;
+    }
+
+    @keyframes pulse-bar {
+      0%, 100% {
+        height: 7px;
+        opacity: .45;
+      }
+      50% {
+        height: 15px;
+        opacity: 1;
+      }
+    }
+
+    @media (max-width: 940px) {
+      .page-shell {
+        grid-template-columns: minmax(0, 1fr) minmax(380px, .9fr);
+      }
+
+      .brand-copy h1 {
+        font-size: 3.35rem;
+      }
+
+      .workspace-body {
+        grid-template-columns: 126px minmax(0, 1fr);
+      }
+    }
+
+    @media (max-width: 820px) {
+      .page-shell {
+        grid-template-columns: 1fr;
+      }
+
+      .brand-side {
+        min-height: auto;
+        padding-bottom: 48px;
+      }
+
+      .auth-side {
+        min-height: auto;
+        padding-top: 72px;
+        padding-bottom: 64px;
+        border-top: 1px solid var(--line);
+        border-left: 0;
+      }
+
+      .auth-meta {
+        top: 28px;
+        right: 28px;
+      }
+
+      .brand-copy {
+        margin-top: 58px;
+      }
+    }
+
+    @media (max-width: 520px) {
+      .brand-side,
+      .auth-side {
+        padding-right: 20px;
+        padding-left: 20px;
+      }
+
+      .brand-copy h1 {
+        font-size: 2.55rem;
+      }
+
+      .brand-copy p {
+        font-size: 14px;
+      }
+
+      .workspace-window {
+        margin-top: 38px;
+        transform: none;
+      }
+
+      .workspace-body {
+        grid-template-columns: 1fr;
+      }
+
+      .workspace-nav {
+        display: none;
+      }
+
+      .workspace-main {
+        min-height: 280px;
+      }
+
+      .brand-footer {
+        font-size: 9px;
+      }
+
+      .auth-heading h2 {
+        font-size: 2.35rem;
+      }
+
+      .auth-meta {
+        right: 20px;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *,
+      *::before,
+      *::after {
+        scroll-behavior: auto !important;
+        transition-duration: .01ms !important;
+        animation-duration: .01ms !important;
+        animation-iteration-count: 1 !important;
+      }
+
+      .workspace-window {
+        transform: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page-shell">
+    <section class="brand-side" aria-label="SYNC-THINK 产品介绍">
+      <header class="brand-header">
+        <div class="mark" aria-hidden="true"></div>
+        <div class="wordmark">
+          <strong>SYNC-THINK</strong>
+          <span>Workspace OS</span>
+        </div>
+      </header>
+
+      <div class="brand-copy">
+        <p class="eyebrow">Local-first workspace</p>
+        <h1>把思路带回工作区。</h1>
+        <p>登录 SYNC-THINK，继续处理对话、项目文件与 Agent 任务。</p>
+      </div>
+
+      <div class="workspace-window" aria-label="工作区界面预览">
+        <div class="window-chrome">
+          <div class="chrome-dots" aria-hidden="true">
+            <i></i><i></i><i></i>
+          </div>
+          <span>workspace.sync-think</span>
+          <i class="chrome-icon" data-lucide="more-horizontal" aria-hidden="true">...</i>
+        </div>
+
+        <div class="workspace-body">
+          <nav class="workspace-nav" aria-label="工作区预览导航">
+            <p class="nav-title">工作区</p>
+            <div class="nav-item is-active">
+              <span class="nav-glyph" aria-hidden="true"></span>
+              <span>今日对话</span>
+              <span class="nav-count">03</span>
+            </div>
+            <div class="nav-item">
+              <span class="nav-glyph" aria-hidden="true"></span>
+              <span>项目文件</span>
+              <span></span>
+            </div>
+            <div class="nav-item">
+              <span class="nav-glyph" aria-hidden="true"></span>
+              <span>Agent</span>
+              <span></span>
+            </div>
+          </nav>
+
+          <div class="workspace-main">
+            <div class="conversation-head">
+              <span class="conversation-title">
+                <i class="live-dot" aria-hidden="true"></i>
+                研究工作区
+              </span>
+              <i class="icon" data-lucide="panel-right" aria-hidden="true">+</i>
+            </div>
+
+            <div class="message-stack">
+              <div class="message user">整理本周的产品反馈，并标记需要跟进的事项。</div>
+              <div class="message agent">已读取 4 个相关文件，正在合并重复观点。</div>
+            </div>
+
+            <div class="compose-bar">
+              <span>继续输入...</span>
+              <button class="send-chip" type="button" aria-label="发送消息" title="发送消息">
+                <i class="icon" data-lucide="arrow-up" aria-hidden="true">↗</i>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <footer class="brand-footer">
+        <span>Private by default</span>
+        <span>Focus / Context / Flow</span>
+      </footer>
+    </section>
+
+    <section class="auth-side" aria-label="登录区域">
+      <div class="auth-meta">
+        <i class="icon" data-lucide="shield-check" aria-hidden="true">+</i>
+        <span>安全连接</span>
+      </div>
+
+      <div class="auth-inner">
+        <div class="auth-heading">
+          <p class="auth-kicker">登录账号</p>
+          <h2>欢迎回来</h2>
+          <p>回到你的工作区，继续未完成的思考。</p>
+        </div>
+
+        <div class="provider-stack">
+          <button class="provider-button" type="button" data-provider="企业 SSO">
+            <i class="icon" data-lucide="building-2" aria-hidden="true">+</i>
+            <span>使用企业 SSO</span>
+          </button>
+          <button class="provider-button" type="button" data-provider="GitHub">
+            <i class="icon" data-lucide="github" aria-hidden="true">GH</i>
+            <span>使用 GitHub 登录</span>
+          </button>
+        </div>
+
+        <div class="divider"><span>或使用邮箱</span></div>
+
+        <form id="login-form" novalidate>
+          <div class="field">
+            <label for="email">邮箱地址</label>
+            <div class="input-wrap">
+              <input id="email" name="email" type="email" autocomplete="username" placeholder="name@company.com" required>
+            </div>
+          </div>
+
+          <div class="field">
+            <label for="password">密码</label>
+            <div class="input-wrap">
+              <input id="password" class="password-input" name="password" type="password" autocomplete="current-password" placeholder="输入你的密码" required>
+              <button class="password-toggle" id="password-toggle" type="button" aria-label="显示密码" title="显示或隐藏密码">
+                <i class="icon" data-lucide="eye" aria-hidden="true">◌</i>
+              </button>
+            </div>
+          </div>
+
+          <div class="form-row">
+            <label class="remember">
+              <input id="remember" name="remember" type="checkbox">
+              <span>记住此设备</span>
+            </label>
+            <a class="text-link" href="#reset">忘记密码？</a>
+          </div>
+
+          <button class="primary-button" id="submit-button" type="submit" disabled>
+            <span class="button-label">进入工作区</span>
+            <i class="button-icon icon" data-lucide="arrow-up-right" aria-hidden="true">↗</i>
+            <span class="loading-bars" aria-hidden="true"><i></i><i></i><i></i></span>
+          </button>
+
+          <p class="form-message error" id="error-message" role="alert" hidden></p>
+          <p class="form-message" id="status-message" role="status" aria-live="polite"></p>
+        </form>
+
+        <p class="signup">
+          还没有工作区账号？
+          <a class="text-link" href="#signup">创建账号</a>
+        </p>
+      </div>
+    </section>
+  </main>
+
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <script>
+    const form = document.getElementById("login-form");
+    const email = document.getElementById("email");
+    const password = document.getElementById("password");
+    const submitButton = document.getElementById("submit-button");
+    const submitLabel = submitButton.querySelector(".button-label");
+    const toggle = document.getElementById("password-toggle");
+    const errorMessage = document.getElementById("error-message");
+    const statusMessage = document.getElementById("status-message");
+    const requiredInputs = [email, password];
+
+    function paintIcons() {
+      if (window.lucide) {
+        window.lucide.createIcons({
+          attrs: {
+            "stroke-width": 1.8
+          }
+        });
+      }
+    }
+
+    function syncSubmitState() {
+      submitButton.disabled = requiredInputs.some((input) => !input.value.trim());
+    }
+
+    requiredInputs.forEach((input) => {
+      input.addEventListener("input", () => {
+        errorMessage.hidden = true;
+        statusMessage.textContent = "";
+        syncSubmitState();
+      });
+    });
+
+    toggle.addEventListener("click", () => {
+      const visible = password.type === "text";
+      password.type = visible ? "password" : "text";
+      toggle.setAttribute("aria-label", visible ? "显示密码" : "隐藏密码");
+      const icon = toggle.querySelector(".icon");
+      icon.setAttribute("data-lucide", visible ? "eye" : "eye-off");
+      paintIcons();
+    });
+
+    document.querySelectorAll("[data-provider]").forEach((button) => {
+      button.addEventListener("click", () => {
+        errorMessage.hidden = true;
+        statusMessage.textContent = `已选择 ${button.dataset.provider} 登录`;
+      });
+    });
+
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      errorMessage.hidden = true;
+      statusMessage.textContent = "";
+
+      if (!form.checkValidity()) {
+        errorMessage.textContent = email.validity.valid ? "请输入密码。" : "请输入有效的邮箱地址。";
+        errorMessage.hidden = false;
+        return;
+      }
+
+      submitButton.classList.add("is-loading");
+      submitButton.disabled = true;
+      submitLabel.textContent = "正在验证";
+      statusMessage.textContent = "正在检查登录信息";
+
+      window.setTimeout(() => {
+        submitButton.classList.remove("is-loading");
+        submitLabel.textContent = "已登录";
+        statusMessage.textContent = "验证通过，正在打开工作区";
+      }, 1200);
+    });
+
+    document.querySelectorAll('a[href^="#"]').forEach((link) => {
+      link.addEventListener("click", (event) => {
+        event.preventDefault();
+        statusMessage.textContent = link.getAttribute("href") === "#reset"
+          ? "密码重置入口已准备好"
+          : "账号创建入口已准备好";
+      });
+    });
+
+    paintIcons();
+    window.addEventListener("load", paintIcons, { once: true });
+  </script>
+</body>
+</html>

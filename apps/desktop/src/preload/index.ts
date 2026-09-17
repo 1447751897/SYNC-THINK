@@ -297,6 +297,10 @@ import type {
   UpdateGlobalAgentPayload,
   DeleteGlobalAgentPayload,
   GlobalAgentResponse,
+  ListGlobalAgentWorkspaceActivationsPayload,
+  ListGlobalAgentWorkspaceActivationsResponse,
+  SetGlobalAgentWorkspaceActivationPayload,
+  SetGlobalAgentWorkspaceActivationResponse,
   ListTeamsResponse,
   CreateTeamPayload,
   UpdateTeamPayload,
@@ -703,6 +707,10 @@ const api = {
       ipcRenderer.invoke('runtime:global-agent-update', payload) as Promise<GlobalAgentResponse>,
     deleteGlobalAgent: (payload: DeleteGlobalAgentPayload) =>
       ipcRenderer.invoke('runtime:global-agent-delete', payload) as Promise<Record<string, never>>,
+    listGlobalAgentWorkspaceActivations: (payload: ListGlobalAgentWorkspaceActivationsPayload) =>
+      ipcRenderer.invoke('runtime:global-agent-list-workspace-activations', payload) as Promise<ListGlobalAgentWorkspaceActivationsResponse>,
+    setGlobalAgentWorkspaceActivation: (payload: SetGlobalAgentWorkspaceActivationPayload) =>
+      ipcRenderer.invoke('runtime:global-agent-set-workspace-activation', payload) as Promise<SetGlobalAgentWorkspaceActivationResponse>,
     listTeams: () => ipcRenderer.invoke('runtime:team-list') as Promise<ListTeamsResponse>,
     createTeam: (payload: CreateTeamPayload) =>
       ipcRenderer.invoke('runtime:team-create', payload) as Promise<TeamResponse>,
@@ -1347,6 +1355,9 @@ const api = {
         registered: boolean;
         error: string | null;
       }>,
+    /** Show or hide the desktop tray icon to match the renderer preference. */
+    setTrayVisible: (visible: boolean) =>
+      ipcRenderer.invoke('desktop:set-tray-visible', visible) as Promise<{ visible: boolean }>,
     listProjectFiles: (payload: { root: string; query?: string; maxEntries?: number }) =>
       ipcRenderer.invoke('desktop:list-project-files', payload) as Promise<{
         root: string;

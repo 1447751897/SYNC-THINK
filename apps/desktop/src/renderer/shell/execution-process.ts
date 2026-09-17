@@ -7,6 +7,7 @@ import {
   type Event,
 } from '@sync-think/shared';
 import type { DeferredContent } from '@sync-think/shared';
+import { formatRunPauseTerminalMessage } from '@sync-think/protocol/events';
 
 export type ProcessStepStatus = 'running' | 'done' | 'error';
 export type ProcessToolKind =
@@ -638,12 +639,38 @@ export function projectExecutionProcess(
       )
         continue;
       completedAt = event.occurredAt;
+      // A paused run has to say WHY it stopped. The generic "工具未报告完成"
+      // hid provider outages and fallback decisions completely, which is what
+      // left the user staring at a stalled conversation with no idea what had
+      // happened.
       terminalStepError =
         event.type === 'run.cancelled'
           ? '运行已取消，工具未报告完成'
           : event.type === 'run.completed'
             ? '运行已结束，工具未报告执行结果'
-            : '运行已停止，工具未报告完成';
+            : event.type === 'run.paused'
+              ? formatRunPauseTerminalMessage({
+                  reason:
+                    typeof event.payload.reason === 'string' ? event.payload.reason : undefined,
+                  failureClass:
+                    typeof event.payload.failureClass === 'string'
+                      ? event.payload.failureClass
+                      : undefined,
+                  providerModelId: eventProviderModelId(event),
+                  errorMessage:
+                    typeof event.payload.errorMessage === 'string'
+                      ? event.payload.errorMessage
+                      : undefined,
+                  resolutionSource:
+                    typeof event.payload.resolutionSource === 'string'
+                      ? event.payload.resolutionSource
+                      : undefined,
+                  fallbackModelCount:
+                    typeof event.payload.fallbackModelCount === 'number'
+                      ? event.payload.fallbackModelCount
+                      : undefined,
+                })
+              : '运行已停止，工具未报告完成';
       providerModelId = eventProviderModelId(event) ?? providerModelId;
       modelId = eventModelId(event) ?? modelId;
       continue;

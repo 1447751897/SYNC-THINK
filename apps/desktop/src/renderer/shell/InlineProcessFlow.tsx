@@ -3,7 +3,7 @@
  * Think, commentary and status stay on their own rows in document order.
  * Consecutive tool calls fold into a local action summary that expands in place.
  */
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   Atom,
   Check,
@@ -23,7 +23,7 @@ import {
   Wrench,
 } from 'lucide-react';
 import type { CommentaryTimelineSegment, ExecutionProcessStep } from '@sync-think/protocol';
-import type { InlineProcessItem } from './ChatView.js';
+import type { InlineProcessItem, DelegatedAgentToolEventView } from './ChatView.js';
 import { useAutoDisclosure } from './auto-disclosure.js';
 import { MessageTextContent } from './MessageTextContent.js';
 import { CodeBlock } from './CodeBlock.js';
@@ -381,6 +381,61 @@ function ToolPayload({
   );
 }
 
+/**
+ * One tool row of a delegated child Agent.
+ *
+ * A child's tool calls are shown with exactly the parent's row surface (kind
+ * icon, friendly name, input summary, 参数/输出 with structured JSON fields and
+ * copy buttons) instead of a bespoke `<code>`/`<pre>` dump, so the same call
+ * reads the same way wherever it came from.
+ */
+export function DelegatedAgentToolRow({ event }: { event: DelegatedAgentToolEventView }) {
+  const [open, setOpen] = useState(false);
+  const item = useMemo(() => delegatedToolEventToProcessItem(event), [event]);
+  return (
+    // The wrapper keeps the child log's own row divider; every other pixel of the
+    // row is the shared ToolRow surface.
+    <div className="shell-delegated-agent__tool" data-testid="delegated-agent-tool">
+      <ToolRow
+        item={item}
+        // Child tool events carry no live progress frames, and a settled history
+        // must never tick against a stale clock.
+        liveClock={false}
+        now={0}
+        open={open}
+        onToggle={() => setOpen((value) => !value)}
+      />
+    </div>
+  );
+}
+
+function delegatedToolEventToProcessItem(
+  event: DelegatedAgentToolEventView,
+): Extract<InlineProcessItem, { kind: 'tool' }> {
+  const status: 'running' | 'completed' | 'failed' =
+    event.status === 'failed'
+      ? 'failed'
+      : event.status === 'running'
+        ? 'running'
+        : 'completed';
+  // A bounded log must not look complete: say how much output was left out.
+  const result =
+    event.output === undefined
+      ? undefined
+      : event.truncated
+        ? `${event.output}\n\n…输出已截断，原文 ${event.outputCharacters ?? '更多'} 字符（为保持委派结果可解析）`
+        : event.output;
+  return {
+    kind: 'tool',
+    name: event.toolName,
+    argumentsJson: event.arguments ?? '{}',
+    ...(result !== undefined ? { result } : {}),
+    status,
+    ...(event.startedAt ? { startedAt: event.startedAt } : {}),
+    ...(event.completedAt ? { completedAt: event.completedAt } : {}),
+  };
+}
+
 function ToolRow({
   item,
   liveClock,
@@ -553,7 +608,7 @@ function ToolRow({
               testId="inline-process-event-details"
             />
           ) : null}
-          {detailResult !== undefined ? (
+          {detailResult !== undefined && (!item.delegationAnchor || status === 'failed') ? (
             <div className="shell-inline-process__detail-block">
               <span>{status === 'failed' ? '错误' : '输出'}</span>
               <ToolPayload
@@ -564,6 +619,20 @@ function ToolRow({
                 label={status === 'failed' ? '错误' : '输出'}
                 deferred={item.resultRef}
               />
+            </div>
+          ) : null}
+          {/*
+            A delegation's raw result is its internal payload (child run id, tool
+            log, usage) — the reader cannot use it, and the card right below is
+            the readable form. Point there instead of dumping the payload; a
+            failed delegation still shows its own error text.
+          */}
+          {item.delegationAnchor && status !== 'failed' ? (
+            <div className="shell-inline-process__detail-block">
+              <span>结果</span>
+              <p className="shell-inline-process__delegation-note" data-testid="delegation-anchor-note">
+                结果见下方智能体卡片。
+              </p>
             </div>
           ) : null}
         </div>
@@ -958,6 +1027,48 @@ function sameStringSet(left: ReadonlySet<string>, right: ReadonlySet<string>): b
   return true;
 }
 
+/**
+ * Interleave two already-ordered streams on their shared wall clock.
+ *
+ * While a run streams the panel merges two sources: Think rows come from the
+ * run's assistant timeline, tool/commentary rows from the paged process view.
+ * Each row carries the clock of the segment it came from, so a stable merge on
+ * `startedAt` reconstructs the real `Think → tool → Think → tool` order.
+ *
+ * Appending the tail wholesale instead (the previous behaviour) hoisted every
+ * Think row above every tool row, which is what made a long run look like "all
+ * commands and tools, no thinking". Rows with no usable clock keep their
+ * relative position at the head of the stream they came from.
+ */
+function interleaveByStartedAt(
+  leading: readonly InlineProcessItem[],
+  trailing: readonly InlineProcessItem[],
+): InlineProcessItem[] {
+  const clockOf = (item: InlineProcessItem): number | undefined => {
+    const value = 'startedAt' in item ? item.startedAt : undefined;
+    const parsed = Date.parse(value ?? '');
+    return Number.isFinite(parsed) ? parsed : undefined;
+  };
+  const out: InlineProcessItem[] = [];
+  const rest = [...trailing];
+  for (const item of leading) {
+    const clock = clockOf(item);
+    if (clock === undefined) {
+      out.push(item);
+      continue;
+    }
+    while (rest.length > 0) {
+      const nextClock = clockOf(rest[0]!);
+      // An untimed trailing row cannot be compared, so emit it in place rather
+      // than letting it stall the merge for every later row.
+      if (nextClock !== undefined && nextClock > clock) break;
+      out.push(rest.shift()!);
+    }
+    out.push(item);
+  }
+  return [...out, ...rest];
+}
+
 function ThinkVisibilitySwitch({
   checked,
   onChange,
@@ -1008,12 +1119,11 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
   onShowThinkingChange,
   toolCallExpandedByDefault = false,
   agentTaskContent,
+  renderInlineAgentTask,
   supplementalContent,
   onOpenChange,
   onPanelOpen,
   timelineLoadState = 'idle',
-  timelineLoadedCount,
-  timelineTotalSegments,
   timelineHasMore = false,
   onLoadMoreTimeline,
   onRetryTimelineLoad,
@@ -1044,11 +1154,17 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
   toolCallExpandedByDefault?: boolean;
   /** Reserved for real delegated task projections; omitted when no tasks exist. */
   agentTaskContent?: ReactNode;
+  /**
+   * 让某一项在时间线上换成专属卡片（子智能体委派就是这样：卡片留在委派发生的那
+   * 一刻，而不是被抽到面板顶部）。返回 `undefined` 表示按普通条目渲染。
+   */
+  renderInlineAgentTask?: (item: InlineProcessItem) => ReactNode;
   supplementalContent?: ReactNode;
   onOpenChange?: (path: string) => void;
   /** Lazy detail seam: invoked once when this run's folded panel first opens. */
   onPanelOpen?: () => void;
   timelineLoadState?: 'idle' | 'loading' | 'loaded' | 'error';
+  /** 保留给调用方与测试；面板不再展示补页进度（补页是静默后台行为）。 */
   timelineLoadedCount?: number;
   timelineTotalSegments?: number;
   timelineHasMore?: boolean;
@@ -1090,13 +1206,22 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
     const merged: InlineProcessItem[] = [];
     for (const item of buildExecutionTimeline({ steps: visibleSteps, commentarySegments })) {
       if (item.type === 'commentary') {
-        if (item.text.trim()) merged.push({ kind: 'commentary', text: item.text });
+        if (item.text.trim())
+          merged.push({
+            kind: 'commentary',
+            text: item.text,
+            // Keep the segment clock so the summary can be interleaved against
+            // the Think rows sharing the same timeline.
+            ...(item.startedAt ? { startedAt: item.startedAt } : {}),
+            ...(item.completedAt ? { completedAt: item.completedAt } : {}),
+          });
         continue;
       }
       for (const step of item.steps) {
         merged.push({
           kind: 'tool',
           toolCallId: step.id,
+          sequence: step.sequence,
           name: step.toolName ?? step.label ?? '工具',
           argumentsJson: step.command ?? step.url ?? step.path ?? '',
           result: step.preview ?? step.error ?? '',
@@ -1110,7 +1235,16 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
         });
       }
     }
-    return [...visibleItems.filter((item) => item.kind !== 'commentary'), ...merged];
+    return interleaveByStartedAt(
+      // Commentary is re-added by `buildExecutionTimeline` from the segments
+      // (which carry the durable boundary it must be placed against), so drop
+      // the item copies to avoid rendering each summary twice. When there are no
+      // segments the items are the only carrier — keep them.
+      commentarySegments?.length
+        ? visibleItems.filter((item) => item.kind !== 'commentary')
+        : [...visibleItems],
+      merged,
+    );
   }, [commentarySegments, items, showThinking, showToolUse, steps]);
   const timelineBlocks = useMemo(() => groupConsecutiveProcessTools(orderedItems), [orderedItems]);
 
@@ -1287,19 +1421,27 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
         ) : null}
       </>
     ) : null;
-  const renderProcessEntry = (item: InlineProcessItem, index: number) => (
-    <ProcessEntry
-      key={processItemKey(item, index)}
-      item={item}
-      index={index}
-      streaming={streaming}
-      liveClock={liveClock}
-      now={clockNow}
-      expandedItemKeys={expandedItemKeys}
-      toggleItem={toggleItem}
-      onOpenChange={onOpenChange}
-    />
-  );
+  const renderProcessEntry = (item: InlineProcessItem, index: number) => {
+    // A delegated child Agent keeps its card at the exact point of the timeline
+    // where the delegation happened instead of floating above the whole panel.
+    const inlineAgentTask = renderInlineAgentTask?.(item);
+    if (inlineAgentTask) {
+      return <Fragment key={processItemKey(item, index)}>{inlineAgentTask}</Fragment>;
+    }
+    return (
+      <ProcessEntry
+        key={processItemKey(item, index)}
+        item={item}
+        index={index}
+        streaming={streaming}
+        liveClock={liveClock}
+        now={clockNow}
+        expandedItemKeys={expandedItemKeys}
+        toggleItem={toggleItem}
+        onOpenChange={onOpenChange}
+      />
+    );
+  };
   return (
     <ConversationContentScope.Provider value={conversationId}>
       <section
@@ -1333,6 +1475,15 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
           )}
           <ThinkVisibilitySwitch checked={showThinking} onChange={onShowThinkingChange} />
         </div>
+        {/*
+          Terminal / pause notice sits ABOVE the step list. It used to render
+          after the body, which buried it under every tool row — a 4-minute run
+          with a dozen commands put "why it stopped" far below the fold, so a
+          provider outage looked like a silent stop.
+        */}
+        {supplementalContent ? (
+          <div className="shell-process-panel__supplemental">{supplementalContent}</div>
+        ) : null}
         {panelOpen ? (
           <div className="shell-process-panel__body" data-testid="process-panel-body">
             {pageControls}
@@ -1365,18 +1516,9 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
                 })}
               </div>
             ) : null}
-            {timelineLoadState === 'loading' ? (
-              <div className="shell-process-panel__lazy-state" role="status">
-                <RotateCw size={12} className="shell-process-spin" aria-hidden="true" />
-                <span>
-                  {timelineLoadedCount
-                    ? timelineTotalSegments
-                      ? `继续加载执行过程…（${timelineLoadedCount}/${timelineTotalSegments}）`
-                      : '继续加载执行过程…'
-                    : '加载完整执行过程…'}
-                </span>
-              </div>
-            ) : timelineLoadState === 'error' ? (
+            {/* 补页是后台行为：过程中不插任何「正在读取 / 继续加载」提示（NewMax 从
+                不暴露这一步，读者只该看到步骤本身）。只有真的读失败才给一次重试。 */}
+            {timelineLoadState === 'error' ? (
               <button
                 type="button"
                 className="shell-process-panel__lazy-retry"
@@ -1387,9 +1529,6 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
               </button>
             ) : null}
           </div>
-        ) : null}
-        {supplementalContent ? (
-          <div className="shell-process-panel__supplemental">{supplementalContent}</div>
         ) : null}
         {activity ? (
           <ProcessActivityRow activity={activity} stall={stall} elapsed={durationLabel} />

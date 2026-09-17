@@ -41,10 +41,12 @@ describe('platform tools', () => {
       includeTeamTools: true,
     });
     const byName = new Map(definitions.map((definition) => [definition.name, definition]));
-    expect(byName.has('create_agent')).toBe(true);
+    expect(byName.has('list_available_agents')).toBe(true);
+    expect(byName.has('get_agent')).toBe(true);
+    expect(byName.has('agent_run')).toBe(true);
     expect(byName.has('browser_open')).toBe(true);
     expect(byName.has('desktop_list_windows')).toBe(true);
-    expect(byName.get('create_agent')?.approval).toBe('outside-full-access');
+    expect(byName.get('agent_run')?.approval).toBe('never');
     expect(byName.get('file_write')?.approval).toBe('ask-mode');
     expect(byName.get('list_skills')?.inputSchema).toBeDefined();
   });
@@ -146,7 +148,8 @@ describe('platform tools', () => {
       includeSkillTools: true,
       includeTeamTools: true,
     }).map((definition) => definition.name);
-    expect(modelNames).toContain('create_agent');
+    expect(modelNames).toContain('list_available_agents');
+    expect(modelNames).toContain('agent_run');
     expect(modelNames).toContain('create_team');
   });
 

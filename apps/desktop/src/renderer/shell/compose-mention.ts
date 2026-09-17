@@ -170,8 +170,24 @@ export function computeTextareaHeight(
   minPx = 56,
   maxPx = 220,
 ): number {
+  // Fast path: while the content overflows the box, `scrollHeight` already
+  // reports the true content height, so it can be read without touching the
+  // element first. This runs from a layout effect (before paint), so the old
+  // unconditional `height = '0px'` → read → write cycle forced an extra
+  // synchronous reflow on every keystroke; reading first keeps the common
+  // "typing makes the box grow" case at read-only.
+  const boxHeight = el.clientHeight;
+  const overflowHeight = el.scrollHeight;
+  if (overflowHeight > boxHeight + 1) {
+    const next = Math.min(maxPx, Math.max(minPx, overflowHeight));
+    el.style.height = `${next}px`;
+    return next;
+  }
+  // Slow path: the content shrank (or already fits), so the element has to be
+  // collapsed before it can report its natural height.
   el.style.height = '0px';
-  const next = Math.min(maxPx, Math.max(minPx, el.scrollHeight));
+  const contentHeight = el.scrollHeight;
+  const next = Math.min(maxPx, Math.max(minPx, contentHeight));
   el.style.height = `${next}px`;
   return next;
 }

@@ -106,7 +106,7 @@ function openDrawer() {
       />
     </DialogProvider>,
   );
-  fireEvent.click(screen.getByText('Agent Alpha').closest('.shell-library-card')!);
+  fireEvent.click(screen.getByText('Agent Alpha').closest('.agent-card')!);
 }
 
 describe('AgentLibrary default model picker (real Radix menu)', () => {

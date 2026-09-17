@@ -316,6 +316,124 @@ describe('SqliteProviderStore', () => {
     }
   });
 
+  it('keeps the vision probe result when the user confirms capability tags', async () => {
+    const { store, close } = await openStore();
+    try {
+      const created = store.createProvider({
+        name: 'Vision probe survives confirmation',
+        baseUrl: 'https://vision-confirm.example/v1',
+        protocol: 'openai-chat',
+        supportsDiscovery: true,
+        credentialGroupName: 'default',
+        credentialLabel: 'key',
+        credentialKind: 'api-key',
+        storeHandle: '01ARZ3NDEKTSV4RRFFQ69G5FAW',
+      });
+      const [model] = store.upsertModels({
+        providerId: created.provider.id,
+        protocol: 'openai-chat',
+        models: [{ providerModelId: 'vision-ok-model', displayName: 'Vision ok model' }],
+      });
+
+      store.updateModelVisionProbe({ modelId: model!.id, result: true, reason: null });
+
+      // 用户认可标签集 —— 这一步曾经把实测结论一并清掉，导致视觉 fallback
+      // 永远拿不到 `image === true`，整条副模型转写链路失效。
+      const confirmed = store.updateModelCapabilities({
+        modelId: model!.id,
+        capabilities: ['text', 'vision', 'tool-calling'],
+        capabilitiesConfirmed: true,
+      });
+      expect(confirmed.capabilitiesConfirmed).toBe(true);
+      expect(confirmed.visionCapability).toBe(true);
+
+      const reopened = store.getModel(model!.id)!;
+      expect(reopened.visionCapability).toBe(true);
+
+      // 显式 null 仍然可以清除 —— 只有调用方主动要求时才清。
+      const cleared = store.updateModelCapabilities({
+        modelId: model!.id,
+        capabilities: ['text', 'vision'],
+        capabilitiesConfirmed: true,
+        visionCapability: null,
+      });
+      expect(cleared.visionCapability).toBeUndefined();
+    } finally {
+      close();
+    }
+  });
+
+  it('persists the user manual image answer and keeps it across probes and rescans', async () => {
+    const { store, close } = await openStore();
+    try {
+      const created = store.createProvider({
+        name: 'Manual vision override',
+        baseUrl: 'https://manual-vision.example/v1',
+        protocol: 'openai-chat',
+        supportsDiscovery: true,
+        credentialGroupName: 'default',
+        credentialLabel: 'key',
+        credentialKind: 'api-key',
+        storeHandle: '01ARZ3NDEKTSV4RRFFQ69G5FAX',
+      });
+      const [model] = store.upsertModels({
+        providerId: created.provider.id,
+        protocol: 'openai-chat',
+        models: [{ providerModelId: 'manual-vision-model', displayName: 'Manual vision model' }],
+      });
+
+      // 探针在中转站上跑不通（这张探针图根本没被读到）—— 用户手写的答案
+      // 必须能在这种情形下把模型认定为有视觉能力。
+      store.updateModelVisionProbe({
+        modelId: model!.id,
+        result: false,
+        reason: '探测请求被拒绝 (HTTP 400)',
+      });
+
+      const manual = store.updateModelCapabilities({
+        modelId: model!.id,
+        capabilities: ['text', 'vision'],
+        capabilitiesConfirmed: true,
+        visionManualOverride: true,
+      });
+      expect(manual.visionManualOverride).toBe(true);
+      // 手动答案与探针结论是两件独立的事实，互不覆盖。
+      expect(manual.visionCapability).toBe(false);
+
+      // 后续再保存能力、或探测再写一次，都不该冲掉它。
+      const resaved = store.updateModelCapabilities({
+        modelId: model!.id,
+        capabilities: ['text', 'vision', 'tool-calling'],
+        capabilitiesConfirmed: true,
+      });
+      expect(resaved.visionManualOverride).toBe(true);
+      store.updateModelVisionProbe({ modelId: model!.id, result: true, reason: null });
+      const reopened = store.getModel(model!.id)!;
+      expect(reopened.visionManualOverride).toBe(true);
+      expect(reopened.visionCapability).toBe(true);
+
+      // 重新扫描（upsertModels）也不能冲掉手动答案。
+      store.upsertModels({
+        providerId: created.provider.id,
+        protocol: 'openai-chat',
+        models: [{ providerModelId: 'manual-vision-model', displayName: 'Manual vision model' }],
+      });
+      expect(store.getModel(model!.id)!.visionManualOverride).toBe(true);
+
+      // 显式 null 才清除，回到探针 / 已知表裁决。
+      const cleared = store.updateModelCapabilities({
+        modelId: model!.id,
+        capabilities: ['text', 'vision'],
+        capabilitiesConfirmed: true,
+        visionManualOverride: null,
+      });
+      expect(cleared.visionManualOverride).toBeUndefined();
+      expect(cleared.visionCapability).toBe(true);
+    } finally {
+      close();
+    }
+  });
+
   it('lists credentials by group and returns first for 搂5.4 routing', async () => {
     const { store, close } = await openStore();
     try {

@@ -39,6 +39,18 @@ import {
   WORKBENCH_RIGHT_MAX_WIDTH,
   WORKBENCH_RIGHT_MIN_WIDTH,
 } from './workspace-workbench.js';
+import { rememberRetainedKey } from './surface-keep-alive.js';
+
+/**
+ * NewMax `WORKSPACE_PANEL_RETAINED_CONVERSATION_LIMIT = 2`.
+ *
+ * The workspace panel renders conversation previews inline, and keeps the most
+ * recently activated ones mounted (hidden via `display: none`, not unmounted)
+ * so switching back restores scroll offsets and composer state. Only the
+ * newest two stay — older ones unmount, bounding how many heavy ChatView
+ * instances live inside the panel at once.
+ */
+const WORKBENCH_RETAINED_CONVERSATION_LIMIT = 2;
 
 export type WorkbenchNewResource =
   | 'files'
@@ -223,6 +235,34 @@ export function WorkspaceWorkbench(props: WorkspaceWorkbenchProps) {
     activeTab.type !== 'workspace-files';
   const showFilesFull = showingFilesTab;
   const fileBrowserPressed = showingFilesTab || showFilesBeside;
+
+  // NewMax `WORKSPACE_PANEL_RETAINED_CONVERSATION_LIMIT`: the workspace panel
+  // keeps recently-activated conversation previews mounted inline (hidden, not
+  // unmounted) so switching back restores scroll and composer state. Only the
+  // newest two are kept — older ones unmount to bound the number of heavy
+  // ChatView instances living in the panel. Non-conversation tabs render only
+  // while active, exactly as before.
+  const retainedConversationTabsRef = useRef<string[]>([]);
+  const retainedScopeKeyRef = useRef<WorkbenchScope | null>(null);
+  if (retainedScopeKeyRef.current !== props.scope) {
+    // NewMax resets `mountedPreviewPathsRef` when `previewScopeKey` changes:
+    // retention is per panel instance, never shared across scopes.
+    retainedScopeKeyRef.current = props.scope;
+    retainedConversationTabsRef.current = [];
+  }
+  if (activeTab?.type === 'conversation') {
+    retainedConversationTabsRef.current = rememberRetainedKey(
+      retainedConversationTabsRef.current,
+      activeTab.id,
+      WORKBENCH_RETAINED_CONVERSATION_LIMIT,
+    );
+  }
+  const retainedConversations = props.scope.tabs.filter(
+    (tab): tab is Extract<WorkbenchTab, { type: 'conversation' }> =>
+      tab.type === 'conversation' &&
+      retainedConversationTabsRef.current.includes(tab.id) &&
+      tab.id !== activeTab?.id,
+  );
 
   // beUI's content enter transition (fade + rise + blur). Replayed via a class
   // toggle on the container so the pane subtree is never remounted — scroll
@@ -691,9 +731,23 @@ export function WorkspaceWorkbench(props: WorkspaceWorkbenchProps) {
               {props.renderFileBrowser?.() ?? (activeTab ? props.renderContent(activeTab) : null)}
             </div>
           ) : activeTab && activeTab.type !== 'browser' ? (
-            <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-              {props.renderContent(activeTab)}
-            </div>
+            <>
+              {retainedConversations.map((tab) => (
+                <div
+                  key={tab.id}
+                  className="shell-pane-surface"
+                  data-surface="conversation"
+                  data-active="false"
+                  aria-hidden="true"
+                  data-testid={`workbench-surface-conversation-${tab.conversationId}`}
+                >
+                  {props.renderContent(tab)}
+                </div>
+              ))}
+              <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+                {props.renderContent(activeTab)}
+              </div>
+            </>
           ) : null}
         </div>
         {props.placement === 'right' && props.renderFileBrowser && visibleTabs.length > 0 ? (

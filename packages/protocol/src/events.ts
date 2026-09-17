@@ -56,16 +56,28 @@ export interface RunPauseTerminalMessageInput {
   failureClass?: string;
   providerModelId?: string;
   errorMessage?: string;
+  /** How the failed model was picked; 'runOverride' means the user chose it for this conversation. */
+  resolutionSource?: string;
+  /** Size of the agent's configured fallback chain. */
+  fallbackModelCount?: number;
 }
 
 /** User-facing terminal reason shared by live projection and durable messages. */
 export function formatRunPauseTerminalMessage(input: RunPauseTerminalMessageInput): string {
   const reason = input.reason?.trim() || 'paused';
+  // A hand-picked (runOverride) model that is absent from the agent's fallback
+  // chain pauses with reason 'no_fallback_configured' even though backups do
+  // exist. Claiming "没有配置备用模型" there is simply wrong and leaves the user
+  // with no idea what to do next, so say what actually happened instead.
+  const overrideSkippedChain =
+    input.resolutionSource === 'runOverride' && (input.fallbackModelCount ?? 0) > 0;
   const headline =
     reason === 'fallback_exhausted'
       ? '备用模型已全部尝试，任务已暂停。'
       : reason === 'no_fallback_configured'
-        ? '当前模型不可用，且没有配置备用模型。'
+        ? overrideSkippedChain
+          ? '本对话手选的模型不可用，且它不在该智能体的备用模型链中，因此没有自动切换。'
+          : '当前模型不可用，且没有配置备用模型。'
         : reason === 'recovery_expired'
           ? '历史请求已过期，未自动重新执行。'
           : `任务已暂停（${reason}）。`;
@@ -75,10 +87,14 @@ export function formatRunPauseTerminalMessage(input: RunPauseTerminalMessageInpu
     input.errorMessage?.trim() ? `详情：${input.errorMessage.trim()}` : '',
   ].filter(Boolean);
   const retryHint =
-    reason === 'fallback_exhausted' || reason === 'no_fallback_configured'
+    reason === 'fallback_exhausted'
       ? '请切换 Provider、模型或检查连接后重试。'
-      : reason === 'recovery_expired'
-        ? '请重新发送请求。'
-        : '';
+      : reason === 'no_fallback_configured'
+        ? overrideSkippedChain
+          ? '请重新选择模型后重试，或把该模型加入智能体的备用模型链。'
+          : '请切换 Provider、模型或检查连接后重试。'
+        : reason === 'recovery_expired'
+          ? '请重新发送请求。'
+          : '';
   return [headline, details.join('；'), retryHint].filter(Boolean).join(' ');
 }

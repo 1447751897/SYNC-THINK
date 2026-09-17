@@ -1231,7 +1231,7 @@ describe('ShellApp workspace context', () => {
     await waitFor(() => expect(screen.getAllByTestId('mock-chat-view')).toHaveLength(2));
   });
 
-  it('shows a loadable parked surface instead of a blank third conversation pane', async () => {
+  it('keeps every conversation pane mounted without a parked surface (NewMax has no chat mount cap)', async () => {
     installRuntime();
     runtime.listWorkspaces.mockResolvedValue({
       workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }],
@@ -1256,16 +1256,14 @@ describe('ShellApp workspace context', () => {
 
     render(<ShellApp />);
 
-    await waitFor(() => expect(screen.getAllByTestId('mock-chat-view')).toHaveLength(2));
-    const parked = screen.getByTestId('parked-conversation-c2');
-    expect(parked.textContent).toContain('点击加载');
-    fireEvent.click(parked);
-    await waitFor(() => {
-      expect(screen.getAllByTestId('mock-chat-view')).toHaveLength(2);
-      expect(document.querySelector('[data-conversation-id="c2"]')).toBeTruthy();
-      expect(screen.queryByTestId('parked-conversation-c2')).toBeNull();
-      expect(screen.getAllByTestId(/^parked-conversation-/)).toHaveLength(1);
-    });
+    // NewMax keeps every activated conversation mounted (no MAX_MOUNTED_CHAT_VIEWS
+    // cap, no parked/unloaded surface), so all three panes render their chat view
+    // and no parked button exists.
+    await waitFor(() => expect(screen.getAllByTestId('mock-chat-view')).toHaveLength(3));
+    expect(screen.queryByTestId(/^parked-conversation-/)).toBeNull();
+    expect(document.querySelector('[data-conversation-id="c1"]')).toBeTruthy();
+    expect(document.querySelector('[data-conversation-id="c2"]')).toBeTruthy();
+    expect(document.querySelector('[data-conversation-id="c3"]')).toBeTruthy();
     const stored = JSON.parse(
       window.localStorage.getItem('sync-think.workspacePaneLayouts') ?? '{}',
     );
@@ -2413,6 +2411,11 @@ describe('ShellApp empty conversation compose', () => {
     expect(runtime.appendMessage).toHaveBeenCalledWith(
       expect.objectContaining({
         text: '[图片] diagram.png',
+        // Regression: without this the main process falls back to the shared
+        // chat-image-staging directory, whose absolute path sits outside the
+        // workspace — the model then reads a path it is fenced out of and
+        // burns a turn on `ocr_image` (which rejects it too).
+        attachmentContext: { conversationId: 'created-conversation', workspacePath: 'D:\\a' },
         images: [
           expect.objectContaining({
             name: 'diagram.png',

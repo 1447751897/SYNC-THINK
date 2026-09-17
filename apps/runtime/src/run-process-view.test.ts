@@ -228,6 +228,53 @@ describe('projectRunProcess', () => {
     expect(view.steps[0]?.status).toBe('error');
   });
 
+  it('says why a paused run stopped instead of the generic notice', () => {
+    const runId = 'run-paused-reason' as RunId;
+    const view = projectRunProcess(runId, [
+      event({
+        id: 'event-run-started' as EventId,
+        sequence: 1,
+        runId,
+        type: 'run.started',
+        occurredAt: '2026-08-08T10:00:00.000Z',
+        payload: {},
+      }),
+      event({
+        id: 'event-tool-requested' as EventId,
+        sequence: 2,
+        runId,
+        type: 'tool.requested',
+        occurredAt: '2026-08-08T10:00:02.000Z',
+        payload: {
+          toolCallId: 'call-paused-reason',
+          toolName: 'read_file',
+          arguments: { path: 'paused.ts' },
+        },
+      }),
+      event({
+        id: 'event-run-paused-reason' as EventId,
+        sequence: 3,
+        runId,
+        type: 'run.paused',
+        occurredAt: '2026-08-08T10:00:08.000Z',
+        payload: {
+          reason: 'no_fallback_configured',
+          failureClass: 'transient',
+          providerModelId: 'deepseek-flash',
+          errorMessage: 'terminated',
+          resolutionSource: 'runOverride',
+          fallbackModelCount: 1,
+        },
+      }),
+    ]);
+
+    // The collapsed view used to read "运行已停止，工具未报告完成", which told
+    // the user nothing about the provider outage that actually stopped the run.
+    expect(view.steps[0]?.status).toBe('error');
+    expect(view.steps[0]?.error).toContain('本对话手选的模型不可用');
+    expect(view.steps[0]?.error).not.toContain('工具未报告完成');
+  });
+
   it('projects cache usage separately from total provider input', () => {
     const runId = 'run-cache-usage' as RunId;
     const view = projectRunProcess(runId, [
@@ -435,6 +482,40 @@ describe('projectRunProcess', () => {
         kind: 'mcp',
         status: 'done',
         preview: '2',
+      }),
+    );
+  });
+
+  it('labels the Codex built-in view_image tool instead of falling back to its raw name', () => {
+    // `view_image` 是 Codex 内核自带的读图工具，不走 MCP 命名空间，因此不会命中
+    // `mcp.` / `__` 那条兜底分支。缺 TOOL_META 条目时会走
+    // `{ verb: name, zh: name }`，执行过程面板里就显示英文 `view_image`，
+    // 而它旁边的 `read_file` 显示「读取文件」—— 同一类动作两套文案。
+    const runId = 'run-view-image' as RunId;
+    const view = projectRunProcess(runId, [
+      event({
+        id: 'view-image-request' as EventId,
+        sequence: 1,
+        runId,
+        type: 'tool.requested',
+        payload: {
+          toolCall: {
+            id: 'item_view_image',
+            name: 'view_image',
+            argumentsJson: JSON.stringify({ path: 'assets/preview.png' }),
+          },
+        },
+      }),
+    ]);
+
+    expect(view.steps).toHaveLength(1);
+    expect(view.steps[0]).toEqual(
+      expect.objectContaining({
+        id: 'item_view_image',
+        verb: 'View',
+        zh: '查看图片',
+        toolName: 'view_image',
+        kind: 'read',
       }),
     );
   });

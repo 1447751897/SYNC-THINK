@@ -365,7 +365,7 @@ describe('CodexAppServerKernelAdapter', () => {
     });
   });
 
-  it('omits the host auto reasoning sentinel and maps off to the app-server none value', async () => {
+  it('resolves the host auto sentinel to an explicit effort and maps off to none', async () => {
     const automatic = createFixtureAdapter([]);
     const automaticEvents: KernelEvent[] = [];
     for await (const event of automatic.start(
@@ -373,9 +373,11 @@ describe('CodexAppServerKernelAdapter', () => {
     )) {
       automaticEvents.push(event);
     }
+    // 'auto' must not fall through to `null`: the app-server would then read the
+    // user's global ~/.codex/config.toml effort (tuned for another vendor).
     expect(automaticEvents).toContainEqual({
       type: 'delta',
-      text: JSON.stringify({ hasEffort: false }),
+      text: JSON.stringify({ hasEffort: true, effort: 'medium' }),
     });
 
     const disabled = createFixtureAdapter([]);
@@ -430,7 +432,9 @@ describe('CodexAppServerKernelAdapter', () => {
         mode: 'default',
         settings: {
           model: 'gpt-5',
-          reasoning_effort: null,
+          // No host effort ⇒ the adapter sends its own explicit default instead of
+          // `null`, which would let the app-server read the user's global config.
+          reasoning_effort: 'medium',
           developer_instructions: null,
         },
       }),

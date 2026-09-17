@@ -73,6 +73,13 @@ export function parseConfirmCapabilitiesPayload(
     return undefined;
   }
   if (value.confirmed !== undefined && typeof value.confirmed !== 'boolean') return undefined;
+  if (
+    value.visionCapabilityOverride !== undefined &&
+    value.visionCapabilityOverride !== null &&
+    typeof value.visionCapabilityOverride !== 'boolean'
+  ) {
+    return undefined;
+  }
   return value as unknown as ConfirmCapabilitiesPayload;
 }
 

@@ -229,4 +229,46 @@ describe('native task projection', () => {
       ),
     ).toBeNull();
   });
+
+  it('carries step descriptions across a compacted full-list update', () => {
+    // The model is told to resend the full list with descriptions. After a
+    // context compaction it no longer holds the wording, so the follow-up call
+    // repeats ids/titles and statuses only — the description must survive.
+    const events = [
+      call(1, 'update_task_plan', {
+        items: [
+          { title: '审计架构', description: '找出重复实现', status: 'in_progress' },
+          { title: '补测试', description: '覆盖兜底分支', status: 'pending' },
+        ],
+      }),
+      result(2, 1, {
+        ok: true,
+        plan: {
+          items: [
+            { title: '审计架构', description: '找出重复实现', status: 'completed' },
+            { title: '补测试', description: '覆盖兜底分支', status: 'pending' },
+          ],
+        },
+      }),
+      call(3, 'update_task_plan', {
+        items: [
+          { title: '审计架构', status: 'completed' },
+          { title: '补测试', description: '   ', status: 'in_progress' },
+        ],
+      }),
+      result(4, 3, {
+        ok: true,
+        plan: {
+          items: [
+            { title: '审计架构', status: 'completed' },
+            { title: '补测试', description: '   ', status: 'in_progress' },
+          ],
+        },
+      }),
+    ];
+    expect(projectTaskPlan(reduceTaskPlanEvents(events))?.items).toEqual([
+      { title: '审计架构', description: '找出重复实现', status: 'completed' },
+      { title: '补测试', description: '覆盖兜底分支', status: 'in_progress' },
+    ]);
+  });
 });

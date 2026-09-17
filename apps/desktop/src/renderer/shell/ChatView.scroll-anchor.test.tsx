@@ -2,9 +2,10 @@
  * @vitest-environment jsdom
  */
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import type { Conversation, Event } from '@sync-think/shared';
+import type { Conversation, Event, Message } from '@sync-think/shared';
+import type { ConversationListMessagesResponse } from '@sync-think/protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ChatView } from './ChatView.js';
+import { ChatView, resetRecentConversationPageCacheForTests } from './ChatView.js';
 
 interface ResizeObserverProbe {
   callback: ResizeObserverCallback;
@@ -31,6 +32,31 @@ const conversation = {
   updatedAt: '2026-09-04T00:00:00.000Z',
 } as unknown as Conversation;
 
+function conversationFixture(id: string): Conversation {
+  return {
+    id,
+    workspaceId: 'workspace-scroll-anchor',
+    taskId: `task-${id}`,
+    track: 'model',
+    targetRef: 'model-scroll-anchor',
+    title: id,
+    executionMode: 'full-access',
+    createdAt: '2026-09-04T00:00:00.000Z',
+    updatedAt: '2026-09-04T00:00:00.000Z',
+  } as unknown as Conversation;
+}
+
+function durableMessage(conversationId: string, sequence: number, text: string): Message {
+  return {
+    id: `${conversationId}-message-${sequence}` as Message['id'],
+    threadId: `thread-${conversationId}` as Message['threadId'],
+    role: sequence % 2 === 0 ? 'user' : 'assistant',
+    sequence,
+    createdAt: `2026-09-04T00:00:${String(sequence).padStart(2, '0')}.000Z`,
+    blocks: [{ type: 'text', text }],
+  };
+}
+
 function event(sequence: number, type: string, payload: Record<string, unknown> = {}): Event {
   return {
     id: `event-${sequence}`,
@@ -46,6 +72,7 @@ function event(sequence: number, type: string, payload: Record<string, unknown> 
 }
 
 beforeEach(() => {
+  resetRecentConversationPageCacheForTests();
   resizeObservers.length = 0;
   window.localStorage.removeItem('sync-think.conversationScrollPositions');
   runtime.openTask.mockReset().mockResolvedValue({
@@ -99,6 +126,133 @@ afterEach(() => {
 });
 
 describe('ChatView streaming scroll anchor', () => {
+  it('restores messages and the saved position when switching A -> B -> A in one view', async () => {
+    const conversationA = conversationFixture('conversation-switch-a');
+    const conversationB = conversationFixture('conversation-switch-b');
+    runtime.listConversationMessages.mockImplementation(
+      async ({ conversationId }: { conversationId: string }): Promise<ConversationListMessagesResponse> => {
+        const id = String(conversationId);
+        const message = durableMessage(id, 1, `消息来自 ${id}`);
+        return { messages: [message], hasMore: false };
+      },
+    );
+
+    const { container, rerender } = render(
+      <ChatView
+        conversation={conversationA}
+        modelName="Scroll model"
+        models={[]}
+        eventHistory={[]}
+        onTitleUpdated={vi.fn()}
+      />,
+    );
+    await screen.findByText('消息来自 conversation-switch-a');
+
+    const scroller = container.querySelector('.shell-chat-message-scroller') as HTMLDivElement;
+    let scrollTop = 1_400;
+    Object.defineProperties(scroller, {
+      clientHeight: { configurable: true, get: () => 600 },
+      scrollHeight: { configurable: true, get: () => 2_000 },
+      scrollTop: {
+        configurable: true,
+        get: () => scrollTop,
+        set: (value: number) => {
+          scrollTop = value;
+        },
+      },
+    });
+    fireEvent.scroll(scroller);
+    scrollTop = 800;
+    fireEvent.scroll(scroller);
+    await waitFor(() =>
+      expect(window.localStorage.getItem('sync-think.conversationScrollPositions')).toContain(
+        'conversation-switch-a',
+      ),
+    );
+    expect(window.localStorage.getItem('sync-think.conversationScrollPositions')).toContain(
+      '"stickToBottom":false',
+    );
+
+    rerender(
+      <ChatView
+        conversation={conversationB}
+        modelName="Scroll model"
+        models={[]}
+        eventHistory={[]}
+        onTitleUpdated={vi.fn()}
+      />,
+    );
+    await waitFor(() => expect(runtime.listConversationMessages).toHaveBeenCalledTimes(2));
+    await screen.findByText('消息来自 conversation-switch-b');
+
+    rerender(
+      <ChatView
+        conversation={conversationA}
+        modelName="Scroll model"
+        models={[]}
+        eventHistory={[]}
+        onTitleUpdated={vi.fn()}
+      />,
+    );
+    await screen.findByText('消息来自 conversation-switch-a');
+
+    await waitFor(() => expect(runtime.listConversationMessages).toHaveBeenCalledTimes(3));
+    expect(scrollTop).toBe(800);
+  });
+
+  it('does not let an older conversation response replace the active conversation', async () => {
+    const conversationA = conversationFixture('conversation-race-a');
+    const conversationB = conversationFixture('conversation-race-b');
+    let releaseA!: (response: ConversationListMessagesResponse) => void;
+    let releaseB!: (response: ConversationListMessagesResponse) => void;
+    runtime.listConversationMessages.mockImplementation(
+      ({ conversationId }: { conversationId: string }) =>
+        new Promise<ConversationListMessagesResponse>((resolve) => {
+          if (conversationId === conversationA.id) releaseA = resolve;
+          else releaseB = resolve;
+        }),
+    );
+
+    const { rerender } = render(
+      <ChatView
+        conversation={conversationA}
+        modelName="Scroll model"
+        models={[]}
+        eventHistory={[]}
+        onTitleUpdated={vi.fn()}
+      />,
+    );
+    await waitFor(() => expect(releaseA).toBeTypeOf('function'));
+
+    rerender(
+      <ChatView
+        conversation={conversationB}
+        modelName="Scroll model"
+        models={[]}
+        eventHistory={[]}
+        onTitleUpdated={vi.fn()}
+      />,
+    );
+    await waitFor(() => expect(releaseB).toBeTypeOf('function'));
+
+    await act(async () => {
+      releaseA({
+        messages: [durableMessage(String(conversationA.id), 1, '旧会话响应')],
+        hasMore: false,
+      });
+    });
+    expect(screen.queryByText('旧会话响应')).toBeNull();
+
+    await act(async () => {
+      releaseB({
+        messages: [durableMessage(String(conversationB.id), 1, '当前会话响应')],
+        hasMore: false,
+      });
+    });
+    expect(await screen.findByText('当前会话响应')).toBeTruthy();
+    expect(screen.queryByText('旧会话响应')).toBeNull();
+  });
+
   it('restores a conversation scroll position after the view is remounted', async () => {
     let scrollTop = 0;
     const originalScrollHeight = Object.getOwnPropertyDescriptor(

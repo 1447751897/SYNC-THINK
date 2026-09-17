@@ -86,6 +86,13 @@ export interface ModelRecord {
   visionCapability?: boolean;
   /** Raw image probe failure reason, persisted in limits_json metadata. */
   visionProbeReason?: string;
+  /**
+   * 用户手动给出的图片能力答案（NewMax `manualOverrides.image`），持久化在
+   * limits_json 的 `_visionManualOverride`。它**优先于任何探针结论**：探针只是
+   * 建议（TD-010「能力探测结果仅建议，用户确认后入库」），而中转站往往不支持
+   * 探针那张 PNG，此时这是唯一能把模型认定为「能看图」的通道。
+   */
+  visionManualOverride?: boolean;
   /** 0026: priority chain inside a provider — 0 is the primary model. */
   priority: number;
   /** 0026: optional pinned credential ref for this model (relay-station groups). */
@@ -198,6 +205,7 @@ interface ModelRow {
 function parseVisionMetadata(limitsJson: string | null | undefined): {
   visionCapability?: boolean;
   visionProbeReason?: string;
+  visionManualOverride?: boolean;
 } {
   if (!limitsJson) return {};
   try {
@@ -209,6 +217,9 @@ function parseVisionMetadata(limitsJson: string | null | undefined): {
       ...(typeof value._visionProbeReason === 'string' && value._visionProbeReason.trim()
         ? { visionProbeReason: value._visionProbeReason }
         : {}),
+      ...(typeof value._visionManualOverride === 'boolean'
+        ? { visionManualOverride: value._visionManualOverride }
+        : {}),
     };
   } catch {
     return {};
@@ -219,8 +230,15 @@ function withVisionMetadata(
   limitsJson: string | undefined,
   visionCapability: boolean | null | undefined,
   visionProbeReason: string | null | undefined,
+  visionManualOverride?: boolean | null,
 ): string | undefined {
-  if (visionCapability === undefined && visionProbeReason === undefined) return limitsJson;
+  if (
+    visionCapability === undefined &&
+    visionProbeReason === undefined &&
+    visionManualOverride === undefined
+  ) {
+    return limitsJson;
+  }
   let value: Record<string, unknown> = {};
   if (limitsJson) {
     try {
@@ -239,6 +257,10 @@ function withVisionMetadata(
   if (visionProbeReason !== undefined) {
     if (visionProbeReason) value._visionProbeReason = visionProbeReason;
     else delete value._visionProbeReason;
+  }
+  if (visionManualOverride !== undefined) {
+    if (visionManualOverride === null) delete value._visionManualOverride;
+    else value._visionManualOverride = visionManualOverride;
   }
   return Object.keys(value).length > 0 ? JSON.stringify(value) : undefined;
 }
@@ -702,6 +724,12 @@ export class SqliteProviderStore {
   /**
    * Update capability tags for a model. When confirmed=true, user has accepted
    * or edited the suggestion (§7.2). Never auto-confirms from probes alone.
+   *
+   * `capabilitiesConfirmed` 只表达「用户认可了这份标签集」，它与图片输入探测
+   * 结论（`_visionCapability` / `_visionProbeReason`）是两件独立的事实。曾经在
+   * confirmed=true 时把两者一并清空，后果是每保存一次模型能力就抹掉一次实测
+   * 结论：`catalogEntryVisionVerified` 再也拿不到 `image === true`，视觉 fallback
+   * 整条链路恒不可用。只有调用方**显式**传 null / '' 才清除。
    */
   updateModelCapabilities(input: {
     modelId: ModelId | string;
@@ -709,6 +737,12 @@ export class SqliteProviderStore {
     capabilitiesConfirmed: boolean;
     visionCapability?: boolean | null;
     visionProbeReason?: string | null;
+    /**
+     * 用户在能力面板里对「视觉」的最终答案，与探针结论分开存放。传 `true`
+     * 表示用户断言该模型能收图（优先于探针）；传 `null` 清除手动答案，回到
+     * 探针 / 已知表裁决；`undefined` 表示本次保存不改动它。
+     */
+    visionManualOverride?: boolean | null;
   }): ModelRecord {
     const modelId = String(input.modelId).trim();
     if (!modelId) throw new Error('Model id must not be empty');
@@ -748,18 +782,14 @@ export class SqliteProviderStore {
 
     const limitsJson = withVisionMetadata(
       existing.limitsJson,
-      input.visionCapability !== undefined
-        ? input.visionCapability
-        : input.capabilitiesConfirmed
-          ? null
-          : undefined,
+      // undefined = 保留既有探测结论；只有显式 null 才清除。
+      input.visionCapability !== undefined ? input.visionCapability : undefined,
       input.visionProbeReason !== undefined
         ? input.visionProbeReason === null
           ? ''
           : input.visionProbeReason
-        : input.capabilitiesConfirmed
-          ? ''
-          : undefined,
+        : undefined,
+      input.visionManualOverride,
     );
 
     this.raw

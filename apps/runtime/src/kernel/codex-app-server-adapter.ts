@@ -230,6 +230,9 @@ function codexPolicies(request: KernelRequest): {
       sandboxPolicy: { type: 'readOnly' },
     };
   }
+  // A host-enforced read-only child (delegated Agent without a write grant) runs
+  // in codex's own read-only sandbox. `approvalPolicy: 'never'` would otherwise
+  // let it write inside the workspace on a full-access parent.
   return {
     approvalPolicy: approvalPolicy(request.permissionMode),
     sandboxPolicy:
@@ -364,10 +367,32 @@ function requestedModel(request: KernelRequest): string | undefined {
   return model && model !== 'codex-default' ? model : undefined;
 }
 
+/** Codex app-server 认识的推理力度值（`model_reasoning_effort` 词表）。 */
+const CODEX_EFFORT_VALUES = new Set([
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+  'ultra',
+  'none',
+]);
+
+/**
+ * 「自动」曾经映射成 `undefined`，让 Codex app-server 自己去定。实际后果是它会读
+ * 用户全局 `~/.codex/config.toml` 的 `model_reasoning_effort`——那是为别的厂商模型
+ * （例如 gpt-5.6-sol + ultra）调的，落到第三方网关上是陌生值，会换来一句含糊的
+ * 400/upstream_error。这里改成给一个显式的线内默认值：Codex 自己遇到未知模型时
+ * 也回落到 medium（实测 CLI 抓包），所以语义一致、且不再依赖全局配置。
+ */
+const DEFAULT_CODEX_REASONING_EFFORT = 'medium';
+
 function requestedReasoningEffort(request: KernelRequest): string | undefined {
-  const effort = request.reasoningEffort;
-  if (!effort || effort === 'auto') return undefined;
-  return effort === 'off' ? 'none' : effort;
+  const effort = request.reasoningEffort?.trim().toLowerCase();
+  if (!effort || effort === 'auto') return DEFAULT_CODEX_REASONING_EFFORT;
+  if (effort === 'off' || effort === 'disabled' || effort === 'none') return 'none';
+  return CODEX_EFFORT_VALUES.has(effort) ? effort : DEFAULT_CODEX_REASONING_EFFORT;
 }
 
 export class CodexAppServerKernelAdapter implements KernelAdapter {

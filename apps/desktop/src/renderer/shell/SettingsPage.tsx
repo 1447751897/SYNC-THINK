@@ -408,16 +408,16 @@ function CollaborationSettingsPanel() {
     <section className="settings-general-block" aria-labelledby="settings-collaboration-title">
       <div className="settings-general-heading">
         <h2 id="settings-collaboration-title">智能体协作</h2>
-        <p>只有模型对话可以创建动态子 Agent；Agent 对话使用普通任务，Team 对话使用冻结成员。</p>
+        <p>模型对话只能委派给 Agent Library 中已存在的智能体；内核原生子 Agent 始终禁用，不受任何设置影响。</p>
       </div>
       <div className="settings-rows">
         <SettingRow
-          title="允许模型对话创建子 Agent"
-          description="关闭后模型对话仍可正常回答，但不会出现动态委派入口。"
+          title="允许模型对话并发委派给已有智能体"
+          description="开启后模型可把任务并发交给 Agent Library 里已激活的智能体（每次都必须指定已有智能体 id），并在对话里以子智能体卡片展示其工具调用。关闭后模型仍可正常回答，只是不再下发委派工具。内核自建子 Agent 在任何情况下都不会发生。"
           control={
             <Toggle
               checked={settings.dynamicSubagentsEnabled}
-              label="允许模型对话创建子 Agent"
+              label="允许模型对话并发委派给已有智能体"
               onChange={(value) => update({ dynamicSubagentsEnabled: value })}
             />
           }

@@ -334,6 +334,7 @@ export const GLOBAL_AGENT_KEYS = [
   'skillIds',
   'mcpServerIds',
   'reasoningEffort',
+  'availabilityScope',
 ] as const;
 
 export function validGlobalAgentFields(
@@ -374,6 +375,8 @@ export function validGlobalAgentFields(
   if (value.skillIds !== undefined && !validAgentIdList(value.skillIds)) return false;
   if (value.mcpServerIds !== undefined && !validAgentIdList(value.mcpServerIds)) return false;
   if (value.reasoningEffort !== undefined && !boundedAgentText(value.reasoningEffort, 64))
+    return false;
+  if (value.availabilityScope !== undefined && value.availabilityScope !== 'global' && value.availabilityScope !== 'workspace')
     return false;
   return true;
 }

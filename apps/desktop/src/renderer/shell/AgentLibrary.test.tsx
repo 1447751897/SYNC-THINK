@@ -2,7 +2,7 @@
  * @vitest-environment jsdom
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { ComponentProps } from 'react';
 import type { Conversation, GlobalAgent, Team, TeamMember } from '@sync-think/shared';
 import { AgentLibrary } from './AgentLibrary.js';
@@ -61,6 +61,7 @@ function renderLibrary(
 
 afterEach(() => {
   cleanup();
+  Reflect.deleteProperty(window, 'syncThink');
   vi.clearAllMocks();
 });
 
@@ -68,32 +69,32 @@ describe('AgentLibrary shared visual structure', () => {
   it('keeps an empty description in the card layout and selects the card when editing', () => {
     renderLibrary();
 
-    const card = screen.getByText('Agent Alpha').closest('.shell-library-card');
+    const card = screen.getByText('Agent Alpha').closest('.agent-card');
     expect(card).toBeTruthy();
     expect(
-      card?.querySelector('.shell-library-card__description')?.getAttribute('data-empty'),
+      card?.querySelector('.agent-card__description')?.getAttribute('data-empty'),
     ).toBe('1');
-    expect(card?.classList.contains('shell-library-card--selected')).toBe(false);
+    expect(card?.classList.contains('agent-card--selected')).toBe(false);
 
     fireEvent.click(card!);
 
-    expect(card?.classList.contains('shell-library-card--selected')).toBe(true);
-    expect(document.querySelector('.shell-library-drawer--agent')).toBeTruthy();
+    expect(card?.classList.contains('agent-card--selected')).toBe(true);
+    expect(document.querySelector('.agent-dialog')).toBeTruthy();
     expect(document.querySelector('[data-testid="agent-detail-drawer"]')).toBeTruthy();
-    expect(document.querySelector('.shell-library-drawer__body')).toBeTruthy();
-    expect(document.querySelectorAll('.shell-library-field').length).toBeGreaterThan(0);
+    expect(document.querySelector('.agent-dialog__body')).toBeTruthy();
+    expect(document.querySelector('.agent-meta-grid')).toBeTruthy();
   });
 
   it('starts a conversation without opening the edit dialog', () => {
     const onStartConversation = vi.fn();
     renderLibrary(onStartConversation);
 
-    const action = document.querySelector<HTMLButtonElement>('.shell-library-card__action');
+    const action = document.querySelector<HTMLButtonElement>('.agent-card__action');
     expect(action).toBeTruthy();
     fireEvent.click(action!);
 
     expect(onStartConversation).toHaveBeenCalledWith('agent-alpha');
-    expect(document.querySelector('.shell-library-drawer--agent')).toBeNull();
+    expect(document.querySelector('.agent-dialog')).toBeNull();
   });
 
   it('searches and filters agents and offers a compact list view', () => {
@@ -123,14 +124,19 @@ describe('AgentLibrary shared visual structure', () => {
     fireEvent.change(screen.getByRole('searchbox', { name: '搜索智能体' }), {
       target: { value: '' },
     });
-    fireEvent.change(screen.getByRole('combobox', { name: '按模型筛选' }), {
-      target: { value: 'model-alpha' },
-    });
-    expect(screen.getByText('Agent Alpha')).toBeTruthy();
+    // The scope segmented filter replaces the old model dropdown: the seeded
+    // agents have no availabilityScope (defaults to global), so filtering to
+    // 指定工作区 hides both, and 全部 brings them back.
+    fireEvent.click(screen.getByRole('button', { name: /指定工作区/ }));
+    expect(screen.queryByText('Agent Alpha')).toBeNull();
     expect(screen.queryByText('Agent Beta')).toBeNull();
 
+    fireEvent.click(screen.getByRole('button', { name: /全部/ }));
+    expect(screen.getByText('Agent Alpha')).toBeTruthy();
+    expect(screen.getByText('Agent Beta')).toBeTruthy();
+
     fireEvent.click(screen.getByRole('button', { name: '列表视图' }));
-    expect(document.querySelector('.shell-library-grid')?.getAttribute('data-view')).toBe('list');
+    expect(document.querySelector('.agent-grid')?.getAttribute('data-view')).toBe('list');
     expect(screen.getByRole('button', { name: '列表视图' }).getAttribute('aria-pressed')).toBe(
       'true',
     );
@@ -146,14 +152,14 @@ describe('AgentLibrary shared visual structure', () => {
     expect(screen.getByText('模型不可用')).toBeTruthy();
     expect(screen.queryByText('model-removed-from-catalog')).toBeNull();
 
-    fireEvent.click(screen.getByText('Agent Alpha').closest('.shell-library-card')!);
+    fireEvent.click(screen.getByText('Agent Alpha').closest('.agent-card')!);
     expect(screen.getAllByText('模型不可用').length).toBeGreaterThan(1);
     expect(screen.queryByText('model-removed-from-catalog')).toBeNull();
   });
 
   it('closes the agent drawer with Escape', () => {
     renderLibrary();
-    fireEvent.click(screen.getByText('Agent Alpha').closest('.shell-library-card')!);
+    fireEvent.click(screen.getByText('Agent Alpha').closest('.agent-card')!);
 
     expect(screen.getByTestId('agent-detail-drawer')).toBeTruthy();
     fireEvent.keyDown(window, { key: 'Escape' });
@@ -194,7 +200,7 @@ describe('AgentLibrary tabbed detail drawer', () => {
   } as unknown as Conversation;
 
   function openDrawer() {
-    fireEvent.click(screen.getByText('Agent Alpha').closest('.shell-library-card')!);
+    fireEvent.click(screen.getByText('Agent Alpha').closest('.agent-card')!);
     expect(screen.getByTestId('agent-detail-drawer')).toBeTruthy();
   }
 
@@ -205,13 +211,26 @@ describe('AgentLibrary tabbed detail drawer', () => {
     const overview = screen.getByTestId('agent-drawer-overview');
     expect(overview).toBeTruthy();
     expect(within(overview).getByText('所在小队')).toBeTruthy();
+    expect(within(overview).getByText('未加入小队')).toBeTruthy();
     expect(within(overview).getByText('使用模型')).toBeTruthy();
     expect(within(overview).getByText('Model Alpha')).toBeTruthy();
     expect(within(overview).getByText('Keep the interface consistent.')).toBeTruthy();
-    expect(within(overview).getByText('包含 Skill（0）')).toBeTruthy();
+    expect(within(overview).getByRole('button', { name: '复制 ID' })).toBeTruthy();
+    expect(within(overview).getByRole('button', { name: '未绑定 · 去能力' })).toBeTruthy();
     // 概览不出现可编辑控件
     expect(overview.querySelector('input')).toBeNull();
     expect(overview.querySelector('textarea')).toBeNull();
+  });
+
+  it('jumps from the overview empty skill state into the abilities tab', () => {
+    renderLibrary();
+    openDrawer();
+
+    fireEvent.click(screen.getByRole('button', { name: '未绑定 · 去能力' }));
+    expect(screen.getByTestId('agent-drawer-abilities')).toBeTruthy();
+    expect(screen.getByTestId('agent-ability-subtab-skills').getAttribute('aria-selected')).toBe(
+      'true',
+    );
   });
 
   it('switches to the work tab and opens an assigned conversation', () => {
@@ -231,8 +250,8 @@ describe('AgentLibrary tabbed detail drawer', () => {
     });
     openDrawer();
 
-    // 概览展示所属小队（teams 已传入）
-    expect(screen.getByText(/Team Alpha/)).toBeTruthy();
+    // 概览展示所属小队（teams 已传入）；弹窗头部副标题也会显示小队名，故限定在概览面板内断言
+    expect(within(screen.getByTestId('agent-drawer-overview')).getByText(/Team Alpha/)).toBeTruthy();
 
     fireEvent.click(screen.getByTestId('agent-drawer-tab-work'));
     expect(screen.getByTestId('agent-drawer-work')).toBeTruthy();
@@ -300,11 +319,63 @@ describe('AgentLibrary tabbed detail drawer', () => {
     fireEvent.click(screen.getByTestId('agent-drawer-tab-settings'));
     const settings = screen.getByTestId('agent-drawer-settings');
     expect(settings.querySelector('input')).toBeTruthy();
-    expect(settings.querySelector('select')).toBeTruthy();
+    expect(settings.querySelector('select')).toBeNull();
     expect(settings.querySelector('textarea')).toBeNull();
 
     const nameInput = settings.querySelector('input[placeholder="前端小张"]') as HTMLInputElement;
     fireEvent.change(nameInput, { target: { value: '新名称' } });
     expect(nameInput.value).toBe('新名称');
+
+    const reasoning = within(settings).getByRole('group', { name: '推理强度' });
+    expect(within(reasoning).getByRole('button', { name: '自动' }).getAttribute('aria-pressed')).toBe(
+      'true',
+    );
+    fireEvent.click(within(reasoning).getByRole('button', { name: '高' }));
+    expect(within(reasoning).getByRole('button', { name: '高' }).getAttribute('aria-pressed')).toBe(
+      'true',
+    );
+  });
+
+  it('filters skills with a capsule search and toggles a custom checkbox', async () => {
+    Object.defineProperty(window, 'syncThink', {
+      configurable: true,
+      value: {
+        runtime: {
+          listSkills: vi.fn().mockResolvedValue({
+            skills: [
+              {
+                skillVersionId: 'sv-1',
+                name: 'Frontend',
+                description: 'UI work',
+                version: '1.0',
+              },
+              {
+                skillVersionId: 'sv-2',
+                name: 'Backend',
+                description: 'API work',
+                version: '2.0',
+              },
+            ],
+          }),
+          listMcpServers: vi.fn().mockResolvedValue({ servers: [] }),
+        },
+      },
+    });
+    renderLibrary();
+    openDrawer();
+    fireEvent.click(screen.getByTestId('agent-drawer-tab-abilities'));
+
+    const frontend = await screen.findByRole('checkbox', { name: /Frontend/ });
+    expect(frontend.getAttribute('aria-checked')).toBe('false');
+    fireEvent.change(screen.getByRole('searchbox', { name: '搜索 Skill' }), {
+      target: { value: 'Back' },
+    });
+    expect(screen.queryByRole('checkbox', { name: /Frontend/ })).toBeNull();
+    const backend = screen.getByRole('checkbox', { name: /Backend/ });
+    fireEvent.click(backend);
+    expect(backend.getAttribute('aria-checked')).toBe('true');
+    await waitFor(() => {
+      expect(screen.queryByRole('checkbox', { name: /Frontend/ })).toBeNull();
+    });
   });
 });

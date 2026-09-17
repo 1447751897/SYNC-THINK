@@ -1,26 +1,47 @@
 // P2 · Global Agent Library
-// NewMax-style card grid + tabbed detail drawer: 概览 (read-only), 工作
-// (assigned conversations), 能力 (editable skills/MCP/persona) and
-// 设置 (editable identity/models/reasoning).
+// Redesigned as a hub workbench that shares the Ability Center's visual
+// language: branded topbar, segmented scope filter, a stat strip and a
+// card grid, with details in a centered overlay dialog (概览 / 工作 /
+// 能力 / 设置) instead of the old right-hand drawer.
+import * as Dialog from '@radix-ui/react-dialog';
 import {
   ArrowUpRight,
   Bot,
+  Check,
   ChevronDown,
   ChevronRight,
+  Copy,
   Folder,
   ImagePlus,
   LayoutGrid,
   List as ListIcon,
+  MessageSquare,
   Plus,
+  Plug,
   Search,
-  Trash2,
-  X,
-  Wrench,
   Sparkles,
+  Trash2,
+  Users,
+  WandSparkles,
+  Wrench,
+  X,
 } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from 'react';
 import clsx from 'clsx';
-import type { Conversation, GlobalAgent, ModelId, Team } from '@sync-think/shared';
+import type {
+  AgentWritePolicy,
+  Conversation,
+  GlobalAgent,
+  ModelId,
+  Team,
+} from '@sync-think/shared';
 import type { WorkspaceSummary } from '@sync-think/protocol';
 import type { ModelOption } from './NewConversationDialog.js';
 import { useDialog } from './Dialog.js';
@@ -33,8 +54,8 @@ import {
   colorHex,
   resolveAvatarFace,
 } from './avatar-gen.js';
+import { avatarColor } from './avatar-color.js';
 import { ModelPickerMenu, ModelTrigger } from './compose-toolbar.js';
-import { SlidingTabs } from './SlidingTabs.js';
 
 interface Props {
   agents: readonly GlobalAgent[];
@@ -58,6 +79,7 @@ interface Props {
 type DrawerTab = 'overview' | 'work' | 'abilities' | 'settings';
 type AbilitySubTab = 'skills' | 'mcp' | 'persona';
 type LibraryView = 'grid' | 'list';
+type ScopeFilter = 'all' | 'global' | 'workspace';
 
 type DraftAgent = {
   name: string;
@@ -69,6 +91,9 @@ type DraftAgent = {
   skillIds: string[];
   mcpServerIds: string[];
   reasoningEffort: string;
+  availabilityScope: 'global' | 'workspace';
+  /** Whether this Agent may write when another conversation delegates to it. */
+  writePolicy: AgentWritePolicy;
 };
 
 type SkillOption = {
@@ -95,21 +120,30 @@ const EMPTY_DRAFT: DraftAgent = {
   skillIds: [],
   mcpServerIds: [],
   reasoningEffort: 'auto',
+  availabilityScope: 'global',
+  // 默认只读：委派出去的子智能体无人值守，写入没有审批入口。
+  writePolicy: 'read-only',
 };
 
 const REASONING_OPTIONS = [
-  { value: 'auto', label: '自动（默认开启思考）' },
-  { value: 'off', label: '关闭' },
-  { value: 'low', label: '低' },
-  { value: 'medium', label: '中' },
-  { value: 'high', label: '高' },
-];
+  { value: 'auto', label: '自动', title: '自动（默认开启思考）' },
+  { value: 'off', label: '关', title: '关闭' },
+  { value: 'low', label: '低', title: '低' },
+  { value: 'medium', label: '中', title: '中' },
+  { value: 'high', label: '高', title: '高' },
+] as const;
 
 const AGENT_DRAWER_TABS: Array<{ id: DrawerTab; label: string }> = [
   { id: 'overview', label: '概览' },
   { id: 'work', label: '工作' },
   { id: 'abilities', label: '能力' },
   { id: 'settings', label: '设置' },
+];
+
+const SCOPE_OPTIONS: Array<{ id: ScopeFilter; label: string }> = [
+  { id: 'all', label: '全部' },
+  { id: 'global', label: '全局可用' },
+  { id: 'workspace', label: '指定工作区' },
 ];
 
 function bridge() {
@@ -129,6 +163,21 @@ function modelDisplayName(
   return models.find((model) => model.modelId === modelId)?.displayName ?? '模型不可用';
 }
 
+/**
+ * Soft radial glow behind an avatar. Generated faces use their own color;
+ * imported images and legacy text avatars fall back to the name-hash color so
+ * every card gets a halo, never a bare edge.
+ */
+function avatarGlowStyle(
+  avatar: string | undefined,
+  name: string,
+  id: string,
+): CSSProperties {
+  const face = resolveAvatarFace(avatar, id);
+  const glow = isImageAvatar(avatar) ? avatarColor(name) : colorHex(face.color);
+  return { ['--avatar-glow' as string]: glow } as CSSProperties;
+}
+
 export function AgentLibrary({
   agents,
   models,
@@ -146,12 +195,13 @@ export function AgentLibrary({
   const [isNew, setIsNew] = useState(false);
   const [drawerTab, setDrawerTab] = useState<DrawerTab>('overview');
   const [abilitySubTab, setAbilitySubTab] = useState<AbilitySubTab>('skills');
+  const [abilityQuery, setAbilityQuery] = useState('');
   const [expandedWorkspaces, setExpandedWorkspaces] = useState<Set<string>>(() => new Set());
   const [draft, setDraft] = useState<DraftAgent>(EMPTY_DRAFT);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [modelFilter, setModelFilter] = useState('');
+  const [scopeFilter, setScopeFilter] = useState<ScopeFilter>('all');
   const [libraryView, setLibraryView] = useState<LibraryView>('grid');
   const [skills, setSkills] = useState<SkillOption[]>([]);
   const [mcpServers, setMcpServers] = useState<McpOption[]>([]);
@@ -162,6 +212,8 @@ export function AgentLibrary({
   // Two-level provider → model picker for the default model field.
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [modelAnchorEl, setModelAnchorEl] = useState<HTMLButtonElement | null>(null);
+  const [workspaceActivations, setWorkspaceActivations] = useState<Record<string, boolean>>({});
+  const [activationSaving, setActivationSaving] = useState(false);
 
   const handleAvatarFile = useCallback(
     async (file: File | undefined) => {
@@ -180,6 +232,30 @@ export function AgentLibrary({
   );
 
   const active = useMemo(() => agents.filter((agent) => !agent.archived), [agents]);
+
+  const reloadWorkspaceActivations = useCallback(async () => {
+    const api = bridge();
+    if (!api?.listGlobalAgentWorkspaceActivations || workspaces.length === 0) return;
+    const results = await Promise.all(
+      workspaces.map(async (workspace) => {
+        const response = await api.listGlobalAgentWorkspaceActivations({
+          workspaceId: workspace.workspaceId,
+        });
+        return response.activations;
+      }),
+    );
+    const next: Record<string, boolean> = {};
+    for (const activations of results) {
+      for (const activation of activations) {
+        next[`${activation.agentId}:${activation.workspaceId}`] = activation.active;
+      }
+    }
+    setWorkspaceActivations(next);
+  }, [workspaces]);
+
+  useEffect(() => {
+    void reloadWorkspaceActivations();
+  }, [reloadWorkspaceActivations]);
 
   // Current procedural face for the live preview — the stored seed when there is
   // one, otherwise the deterministic derivation the avatar view would fall back to.
@@ -241,17 +317,28 @@ export function AgentLibrary({
       });
     }
   }, [active, dialog, onRefresh]);
+
   const visibleAgents = useMemo(() => {
     const query = searchQuery.trim().toLocaleLowerCase();
     return active.filter((agent) => {
-      if (modelFilter && agent.defaultModelId !== modelFilter) return false;
+      if (scopeFilter !== 'all' && (agent.availabilityScope ?? 'global') !== scopeFilter)
+        return false;
       if (!query) return true;
       const modelName = models.find((model) => model.modelId === agent.defaultModelId)?.displayName;
       return [agent.name, agent.description, agent.persona, modelName]
         .filter((value): value is string => Boolean(value))
         .some((value) => value.toLocaleLowerCase().includes(query));
     });
-  }, [active, modelFilter, models, searchQuery]);
+  }, [active, models, scopeFilter, searchQuery]);
+
+  const stats = useMemo(() => {
+    const skillTotal = active.reduce((n, agent) => n + (agent.skillIds?.length ?? 0), 0);
+    const mcpTotal = active.reduce((n, agent) => n + (agent.mcpServerIds?.length ?? 0), 0);
+    const conversationTotal = conversations.filter(
+      (conversation) => conversation.track === 'agent' && !conversation.archivedAt,
+    ).length;
+    return { agentCount: active.length, skillTotal, mcpTotal, conversationTotal };
+  }, [active, conversations]);
 
   // Reload when the central ability catalog changes or this library remounts.
   useEffect(() => {
@@ -324,7 +411,9 @@ export function AgentLibrary({
   const openNew = useCallback(() => {
     setIsNew(true);
     setSelected(null);
-    setDrawerTab('overview');
+    setDrawerTab('settings');
+    setAbilitySubTab('skills');
+    setAbilityQuery('');
     setDraft({ ...EMPTY_DRAFT, defaultModelId: models[0]?.modelId ?? '' });
     setTimeout(() => nameRef.current?.focus(), 50);
   }, [models]);
@@ -333,6 +422,8 @@ export function AgentLibrary({
     setIsNew(false);
     setSelected(agent);
     setDrawerTab('overview');
+    setAbilitySubTab('skills');
+    setAbilityQuery('');
     setDraft({
       name: agent.name,
       avatar: agent.avatar,
@@ -343,16 +434,20 @@ export function AgentLibrary({
       skillIds: [...(agent.skillIds ?? [])],
       mcpServerIds: [...(agent.mcpServerIds ?? [])],
       reasoningEffort: agent.reasoningEffort || 'auto',
+      availabilityScope: agent.availabilityScope || 'global',
+      writePolicy: agent.writePolicy === 'inherit' ? 'inherit' : 'read-only',
     });
     setTimeout(() => nameRef.current?.focus(), 50);
   }, []);
 
-  const closeDrawer = () => {
+  const closeDialog = useCallback(() => {
     setSelected(null);
     setIsNew(false);
     setDrawerTab('overview');
+    setAbilitySubTab('skills');
+    setAbilityQuery('');
     setModelMenuOpen(false);
-  };
+  }, []);
 
   const handleSave = useCallback(async () => {
     if (!draft.name.trim()) return;
@@ -380,6 +475,8 @@ export function AgentLibrary({
       skillIds: draft.skillIds,
       mcpServerIds: draft.mcpServerIds,
       reasoningEffort: draft.reasoningEffort,
+      availabilityScope: draft.availabilityScope,
+      writePolicy: draft.writePolicy,
     };
     try {
       if (isNew) {
@@ -391,7 +488,7 @@ export function AgentLibrary({
         });
       }
       onRefresh();
-      closeDrawer();
+      closeDialog();
     } catch (error) {
       await dialog.alert({
         title: '保存失败',
@@ -400,7 +497,35 @@ export function AgentLibrary({
     } finally {
       setSaving(false);
     }
-  }, [dialog, draft, isNew, selected, onRefresh]);
+  }, [closeDialog, dialog, draft, isNew, onRefresh, selected]);
+
+  const handleWorkspaceActivation = useCallback(
+    async (workspaceId: string, active: boolean) => {
+      if (!selected) return;
+      const key = `${selected.id}:${workspaceId}`;
+      const previous = workspaceActivations[key] ?? false;
+      setWorkspaceActivations((current) => ({ ...current, [key]: active }));
+      setActivationSaving(true);
+      try {
+        const api = bridge();
+        if (!api?.setGlobalAgentWorkspaceActivation) throw new Error('运行时未连接');
+        await api.setGlobalAgentWorkspaceActivation({
+          agentId: selected.id,
+          workspaceId: workspaceId as import('@sync-think/shared').WorkspaceId,
+          active,
+        });
+      } catch (error) {
+        setWorkspaceActivations((current) => ({ ...current, [key]: previous }));
+        await dialog.alert({
+          title: '更新激活状态失败',
+          message: error instanceof Error ? error.message : '无法更新工作区激活状态',
+        });
+      } finally {
+        setActivationSaving(false);
+      }
+    },
+    [dialog, selected, workspaceActivations],
+  );
 
   const handleDelete = useCallback(async () => {
     if (!selected) return;
@@ -425,7 +550,7 @@ export function AgentLibrary({
         message?: string;
       } | void;
       onRefresh();
-      closeDrawer();
+      closeDialog();
       if (result && result.archived && result.message) {
         await dialog.alert({
           title: '已归档智能体',
@@ -444,27 +569,28 @@ export function AgentLibrary({
     } finally {
       setDeleting(false);
     }
-  }, [dialog, selected, onRefresh]);
+  }, [closeDialog, dialog, onRefresh, selected]);
 
-  const drawerOpen = isNew || selected !== null;
+  const dialogOpen = isNew || selected !== null;
 
   // Escape dismisses the topmost layer first. When the model picker is open,
   // keep the agent draft intact and only close that picker; a second Escape
-  // closes the drawer itself.
+  // closes the dialog itself. (Radix's dismissable-layer stack covers the same
+  // ordering for real keyboard input; this handler keeps jsdom-driven Escapes
+  // working too.)
   useEffect(() => {
-    if (!drawerOpen) return;
+    if (!dialogOpen) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
       if (modelMenuOpen) {
         setModelMenuOpen(false);
         return;
       }
-      setSelected(null);
-      setIsNew(false);
+      closeDialog();
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [drawerOpen, modelMenuOpen]);
+  }, [closeDialog, dialogOpen, modelMenuOpen]);
 
   const fallbackCandidates = models.filter((m) => m.modelId !== draft.defaultModelId);
   // Fallback checkboxes grouped by provider, mirroring the two-level picker.
@@ -478,6 +604,26 @@ export function AgentLibrary({
     return [...byProvider.entries()].sort((a, b) => a[0].localeCompare(b[0]));
   }, [fallbackCandidates]);
   const defaultModelLabel = modelDisplayName(models, draft.defaultModelId, '请选择模型');
+  const modelUnavailable = defaultModelLabel === '模型不可用';
+  const filteredSkills = useMemo(() => {
+    const query = abilityQuery.trim().toLocaleLowerCase();
+    if (!query) return skills;
+    return skills.filter((skill) =>
+      [skill.name, skill.description, skill.version].some((value) =>
+        value.toLocaleLowerCase().includes(query),
+      ),
+    );
+  }, [abilityQuery, skills]);
+  const filteredMcpServers = useMemo(() => {
+    const query = abilityQuery.trim().toLocaleLowerCase();
+    if (!query) return mcpServers;
+    return mcpServers.filter((server) => server.name.toLocaleLowerCase().includes(query));
+  }, [abilityQuery, mcpServers]);
+
+  const openAbilitySubTab = useCallback((tab: AbilitySubTab) => {
+    setAbilitySubTab(tab);
+    setAbilityQuery('');
+  }, []);
 
   // Teams this agent belongs to (overview tab, read-only).
   const memberTeams = useMemo(
@@ -536,162 +682,238 @@ export function AgentLibrary({
     });
   }, []);
 
+  const assignedConversationTotal = groupedByWorkspace.reduce(
+    (n, group) => n + group.conversations.length,
+    0,
+  );
+
   return (
-    <div className="shell-library-page">
-      {/* ── Library panel ─────────────────────────────────────────── */}
-      <div className="shell-library-panel">
-        {/* Header */}
-        <div className="shell-library-header">
-          <span className="text-[14px] font-semibold text-text">智能体库</span>
-          <div className="shell-library-header__controls">
-            <label className="shell-library-search">
-              <Search size={13} aria-hidden="true" />
-              <input
-                type="search"
-                aria-label="搜索智能体"
-                placeholder="搜索智能体"
-                value={searchQuery}
-                onChange={(event) => setSearchQuery(event.target.value)}
-              />
-            </label>
-            <select
-              className="shell-library-filter"
-              aria-label="按模型筛选"
-              value={modelFilter}
-              onChange={(event) => setModelFilter(event.target.value)}
+    <main className="agent-hub" data-testid="agent-library-page">
+      {/* ── Topbar ─────────────────────────────────────────────────────── */}
+      <header className="agent-hub__topbar">
+        <div className="agent-hub__title-block">
+          <span className="agent-hub__brand" aria-hidden="true">
+            <Bot size={18} />
+          </span>
+          <div>
+            <h1>智能体库</h1>
+            <p>管理专属 AI 助手 · 绑定 Skill 与 MCP · 编排小队</p>
+          </div>
+        </div>
+        <div className="agent-hub__actions">
+          <button
+            type="button"
+            className="agent-hub__action"
+            title="为未生成头像的智能体批量生成专属头像"
+            onClick={() => void handleRegenerateAllAvatars()}
+          >
+            <WandSparkles size={14} /> 生成专属头像
+          </button>
+          <button
+            type="button"
+            className="agent-hub__action agent-hub__action--primary"
+            onClick={openNew}
+          >
+            <Plus size={14} /> 新建智能体
+          </button>
+        </div>
+      </header>
+
+      {/* ── Controls: scope segmented filter + search + view switch ─────── */}
+      <section className="agent-hub__controls">
+        <div className="agent-segmented" role="group" aria-label="范围筛选">
+          {SCOPE_OPTIONS.map((option) => (
+            <button
+              key={option.id}
+              type="button"
+              aria-pressed={scopeFilter === option.id}
+              className={scopeFilter === option.id ? 'is-active' : undefined}
+              onClick={() => setScopeFilter(option.id)}
             >
-              <option value="">全部模型</option>
-              {models.map((model) => (
-                <option key={model.modelId} value={model.modelId}>
-                  {model.displayName}
-                </option>
-              ))}
-            </select>
-            <div className="shell-library-view-switch" role="group" aria-label="显示方式">
+              {option.label}
+              <span>
+                {option.id === 'all'
+                  ? active.length
+                  : active.filter((a) => (a.availabilityScope ?? 'global') === option.id).length}
+              </span>
+            </button>
+          ))}
+        </div>
+        <div className="agent-hub__controls-right">
+          <label className="agent-hub__search">
+            <Search size={14} aria-hidden="true" />
+            <input
+              type="search"
+              aria-label="搜索智能体"
+              placeholder="搜索智能体"
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+            />
+            {searchQuery ? (
               <button
                 type="button"
-                title="网格视图"
-                aria-label="网格视图"
-                aria-pressed={libraryView === 'grid'}
-                onClick={() => setLibraryView('grid')}
+                aria-label="清除搜索"
+                title="清除搜索"
+                onClick={() => setSearchQuery('')}
               >
-                <LayoutGrid size={14} />
+                <X size={12} />
               </button>
-              <button
-                type="button"
-                title="列表视图"
-                aria-label="列表视图"
-                aria-pressed={libraryView === 'list'}
-                onClick={() => setLibraryView('list')}
-              >
-                <ListIcon size={14} />
-              </button>
-            </div>
-            <button className="shell-library-primary-action" onClick={openNew}>
-              <Plus size={13} /> 新建智能体
+            ) : null}
+          </label>
+          <div className="agent-view-switch" role="group" aria-label="显示方式">
+            <button
+              type="button"
+              title="网格视图"
+              aria-label="网格视图"
+              aria-pressed={libraryView === 'grid'}
+              onClick={() => setLibraryView('grid')}
+            >
+              <LayoutGrid size={14} />
+            </button>
+            <button
+              type="button"
+              title="列表视图"
+              aria-label="列表视图"
+              aria-pressed={libraryView === 'list'}
+              onClick={() => setLibraryView('list')}
+            >
+              <ListIcon size={14} />
             </button>
           </div>
         </div>
+      </section>
 
-        {/* Cards */}
-        <div className="shell-library-content">
-          {active.length === 0 ? (
-            <EmptyAgents onNew={openNew} />
-          ) : visibleAgents.length === 0 ? (
-            <div className="shell-library-filter-empty">
-              <Search size={20} />
-              <span>没有匹配的智能体</span>
-              <button
-                type="button"
-                onClick={() => {
-                  setSearchQuery('');
-                  setModelFilter('');
-                }}
-              >
-                清除筛选
-              </button>
+      {/* ── Stat strip ─────────────────────────────────────────────────── */}
+      <section className="agent-stats" aria-label="智能体统计">
+        <StatCard label="智能体总数" value={stats.agentCount} icon={<Bot size={15} />} />
+        <StatCard
+          label="绑定 Skill"
+          value={stats.skillTotal}
+          icon={<Sparkles size={15} />}
+          tone="is-info"
+        />
+        <StatCard
+          label="绑定 MCP"
+          value={stats.mcpTotal}
+          icon={<Plug size={15} />}
+          tone="is-violet"
+        />
+        <StatCard
+          label="已分配对话"
+          value={stats.conversationTotal}
+          icon={<MessageSquare size={15} />}
+          tone="is-warn"
+        />
+      </section>
+
+      {/* ── Card grid ──────────────────────────────────────────────────── */}
+      <div className="agent-hub__scroll">
+        {active.length === 0 ? (
+          <EmptyAgents onNew={openNew} />
+        ) : visibleAgents.length === 0 ? (
+          <div className="agent-empty">
+            <div className="agent-empty__glyph">
+              <Search size={22} />
             </div>
-          ) : (
-            <div className="shell-library-grid" data-view={libraryView}>
-              {visibleAgents.map((agent) => (
-                <AgentCard
-                  key={agent.id}
-                  agent={agent}
-                  models={models}
-                  selected={selected?.id === agent.id}
-                  onClick={() => openEdit(agent)}
-                  onStartConversation={onStartConversation}
-                />
-              ))}
-            </div>
-          )}
-        </div>
+            <p className="agent-empty__title">没有匹配的智能体</p>
+            <p className="agent-empty__hint">换个关键词，或清除筛选条件</p>
+            <button
+              type="button"
+              className="agent-btn"
+              onClick={() => {
+                setSearchQuery('');
+                setScopeFilter('all');
+              }}
+            >
+              清除筛选
+            </button>
+          </div>
+        ) : (
+          <div className="agent-grid" data-view={libraryView}>
+            {visibleAgents.map((agent) => (
+              <AgentCard
+                key={agent.id}
+                agent={agent}
+                models={models}
+                selected={selected?.id === agent.id}
+                onClick={() => openEdit(agent)}
+                onStartConversation={onStartConversation}
+              />
+            ))}
+          </div>
+        )}
       </div>
 
-      {/* ── Edit drawer. Left: identity & persona. Right: model & bindings. ── */}
-      {drawerOpen && (
-        <div
-          className="shell-library-drawer-backdrop"
-          onMouseDown={(e) => {
-            if (e.target === e.currentTarget) closeDrawer();
-          }}
+      {/* ── Detail dialog (centered overlay) ───────────────────────────── */}
+      <Dialog.Root open={dialogOpen} onOpenChange={(open) => !open && closeDialog()}>
+        {/*
+         * Deliberately rendered without Dialog.Portal: this stage lives inside a
+         * KeepAliveLayer that hides it with the `hidden` attribute (display:
+         * none) when another stage is active. A body-level portal would remain
+         * visible over the new stage; staying in the tree makes the dialog hide
+         * together with the stage. Fixed positioning still escapes the shell's
+         * overflow clip (no ancestor owns a transform/filter containing block)
+         * and `.agent-hub` establishes no stacking context, so the dialog's
+         * z-index keeps winning globally.
+         */}
+        <Dialog.Overlay className="agent-dialog-overlay" />
+        <Dialog.Content
+          className="agent-dialog"
+          data-testid="agent-detail-drawer"
+          aria-label={isNew ? '新建智能体' : `编辑智能体${draft.name ? ` · ${draft.name}` : ''}`}
         >
-          {/* The Radix model picker portals to <body> with z-index auto, which
-              would paint below this z-50 backdrop. Radix popper mirrors the
-              content's computed z-index onto its wrapper, so lift the menu
-              panels above the backdrop while this dialog is open. */}
-          <style>{'.shell-menu--model-providers,.shell-menu--model-flyout{z-index:60}'}</style>
-          <div
-            className="shell-library-drawer shell-library-drawer--agent"
-            data-testid="agent-detail-drawer"
-            role="dialog"
-            aria-modal="true"
-            aria-label={isNew ? '新建智能体' : `编辑智能体${draft.name ? ` · ${draft.name}` : ''}`}
-          >
-            {/* 身份卡：头像 + 名称 + 简介 + 关闭，常驻 tab 之上（替代旧 header） */}
-            {!isNew ? (
-              <div className="shell-agent-identity" data-testid="agent-identity-card">
-                <AgentAvatarView name={draft.name || '?'} avatar={draft.avatar} size={52} />
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-[15px] font-semibold text-text">
-                    {draft.name || '未命名智能体'}
-                  </div>
-                  {draft.description ? (
-                    <p className="mt-0.5 line-clamp-2 text-[12px] leading-relaxed text-text-secondary">
-                      {draft.description}
-                    </p>
-                  ) : (
-                    <p className="mt-0.5 text-[12px] text-text-faint">暂无简介</p>
-                  )}
+            {/* The Radix model picker portals to <body> with z-index auto, which
+                would paint below this z-51 dialog. Radix popper mirrors the
+                content's computed z-index onto its wrapper, so lift the menu
+                panels above the dialog while it is open. */}
+            <style>{'.shell-menu--model-providers,.shell-menu--model-flyout{z-index:60}'}</style>
+
+            <header className="agent-dialog__header">
+              <div className="agent-dialog__identity" data-testid="agent-identity-card">
+                <span
+                  className="agent-dialog__avatar"
+                  style={avatarGlowStyle(draft.avatar, draft.name || '?', selected?.id ?? draft.name)}
+                >
+                  <AgentAvatarView name={draft.name || '?'} avatar={draft.avatar} size={46} />
+                </span>
+                <div className="agent-dialog__text">
+                  <Dialog.Title className="agent-dialog__title">
+                    {isNew ? '新建智能体' : draft.name || '未命名智能体'}
+                  </Dialog.Title>
+                  <Dialog.Description asChild>
+                    <div className="agent-dialog__subtitle">
+                      {isNew ? (
+                        <span>填写基本信息与能力绑定后保存</span>
+                      ) : (
+                        <>
+                          <span>{defaultModelLabel === '请选择模型' ? '未设置模型' : defaultModelLabel}</span>
+                          <span className="agent-dialog__sep" aria-hidden="true">
+                            ·
+                          </span>
+                          <span>
+                            {memberTeams.length > 0
+                              ? memberTeams.map((t) => t.name).join('、')
+                              : '未加入小队'}
+                          </span>
+                          <span className="agent-dialog__sep" aria-hidden="true">
+                            ·
+                          </span>
+                          <span>{assignedConversationTotal} 个已分配对话</span>
+                        </>
+                      )}
+                    </div>
+                  </Dialog.Description>
                 </div>
-                <button
-                  type="button"
-                  className="shell-agent-identity__close"
-                  onClick={closeDrawer}
-                  title="关闭"
-                  aria-label="关闭"
-                >
-                  <X size={15} />
-                </button>
               </div>
-            ) : (
-              /* 新建态无身份卡,顶端仅放关闭条 */
-              <div className="shell-agent-identity shell-agent-identity--bare">
-                <span className="text-[13px] font-medium text-text">新建智能体</span>
-                <button
-                  type="button"
-                  className="shell-agent-identity__close"
-                  onClick={closeDrawer}
-                  title="关闭"
-                  aria-label="关闭"
-                >
-                  <X size={15} />
+              <Dialog.Close asChild>
+                <button type="button" className="agent-icon-button" aria-label="关闭" title="关闭">
+                  <X size={17} />
                 </button>
-              </div>
-            )}
+              </Dialog.Close>
+            </header>
 
             {/* Tab row */}
-            <SlidingTabs className="shell-agent-tabs" aria-label="智能体详情">
+            <nav className="agent-dialog__tabs" aria-label="智能体详情">
               {AGENT_DRAWER_TABS.map((tab) => (
                 <button
                   key={tab.id}
@@ -699,45 +921,55 @@ export function AgentLibrary({
                   role="tab"
                   aria-selected={drawerTab === tab.id}
                   data-testid={`agent-drawer-tab-${tab.id}`}
-                  className={clsx('shell-agent-tab', drawerTab === tab.id && 'is-active')}
+                  className={clsx('agent-dialog__tab', drawerTab === tab.id && 'is-active')}
                   onClick={() => setDrawerTab(tab.id)}
                 >
                   {tab.label}
+                  {tab.id === 'work' ? <span>{assignedConversationTotal}</span> : null}
+                  {tab.id === 'abilities' ? (
+                    <span>{draft.skillIds.length + draft.mcpServerIds.length}</span>
+                  ) : null}
                 </button>
               ))}
-            </SlidingTabs>
+            </nav>
 
             {/* ── 概览：只读基本信息 ── */}
             {drawerTab === 'overview' && (
-              <div className="shell-library-drawer__body" data-testid="agent-drawer-overview">
-                <div className="shell-library-pane">
-                  <div className="space-y-5">
-                    <Field label="ID">
-                      <p className="font-mono text-[11.5px] text-text-faint">
-                        {selected?.id ?? '-'}
-                      </p>
-                    </Field>
-
-                    <Field label="所在小队">
+              <div className="agent-dialog__body" data-testid="agent-drawer-overview">
+                <div className="agent-pane">
+                  {draft.description ? (
+                    <p className="agent-dialog__lede">{draft.description}</p>
+                  ) : (
+                    <p className="agent-dialog__lede is-empty">暂无简介</p>
+                  )}
+                  <div className="agent-meta-grid">
+                    <div className="agent-meta">
+                      <span className="agent-meta__label">ID</span>
+                      <AgentCopyChip value={selected?.id ? String(selected.id) : '-'} />
+                    </div>
+                    <div className="agent-meta">
+                      <span className="agent-meta__label">所在小队</span>
                       {memberTeams.length > 0 ? (
-                        <div className="flex flex-wrap gap-1.5">
+                        <div className="agent-pill-row">
                           {memberTeams.map((t) => (
-                            <span
-                              key={t.id}
-                              className="rounded-md border border-border bg-surface px-2 py-0.5 text-[11.5px] text-text-secondary"
-                            >
-                              {t.avatar} {t.name}
+                            <span key={t.id} className="agent-pill">
+                              <Users size={11} aria-hidden="true" /> {t.name}
                             </span>
                           ))}
                         </div>
                       ) : (
-                        <p className="text-[12.5px] text-text-faint">无</p>
+                        <p className="agent-meta__empty">未加入小队</p>
                       )}
-                    </Field>
-
-                    <Field label="使用模型">
-                      <div className="flex items-center gap-2">
-                        <p className="text-[12.5px] text-text">
+                    </div>
+                    <div className="agent-meta">
+                      <span className="agent-meta__label">使用模型</span>
+                      <div className="agent-meta__model">
+                        <p
+                          className={clsx(
+                            'agent-meta__value',
+                            modelUnavailable && 'is-unavailable',
+                          )}
+                        >
                           {defaultModelLabel === '请选择模型' && !draft.defaultModelId
                             ? '未设置'
                             : defaultModelLabel}
@@ -745,45 +977,52 @@ export function AgentLibrary({
                         <button
                           type="button"
                           data-testid="agent-overview-edit-model"
-                          className="rounded-md px-2 py-0.5 text-[11px] text-text-faint hover:bg-hover hover:text-text"
+                          className="agent-text-link"
                           onClick={() => setDrawerTab('settings')}
                         >
                           修改
                         </button>
                       </div>
-                    </Field>
-
-                    <Field label={`包含 Skill（${draft.skillIds.length}）`}>
+                    </div>
+                    <div className="agent-meta">
+                      <span className="agent-meta__label">Skill</span>
                       {draft.skillIds.length === 0 ? (
-                        <p className="text-[12.5px] text-text-faint">无</p>
+                        <button
+                          type="button"
+                          className="agent-text-link"
+                          onClick={() => {
+                            setDrawerTab('abilities');
+                            openAbilitySubTab('skills');
+                          }}
+                        >
+                          未绑定 · 去能力
+                        </button>
                       ) : (
-                        <div className="flex flex-wrap gap-1.5">
+                        <div className="agent-pill-row">
                           {draft.skillIds.map((id) => {
                             const skill = skills.find((s) => s.id === id);
                             return (
                               <span
                                 key={id}
-                                className="rounded-md border border-border bg-surface px-2 py-0.5 text-[11.5px] text-text-secondary"
+                                className="agent-pill"
                                 title={skill?.description}
                               >
                                 {skill ? skill.name : id}
                                 {skill?.version ? (
-                                  <span className="ml-1 text-[10.5px] text-text-faint">
-                                    @{skill.version}
-                                  </span>
+                                  <span className="agent-pill__meta">@{skill.version}</span>
                                 ) : null}
                               </span>
                             );
                           })}
                         </div>
                       )}
-                    </Field>
-
-                    <Field label="系统 / 人设指令">
-                      <pre className="max-h-56 overflow-y-auto whitespace-pre-wrap rounded-lg border border-border bg-page p-3 font-mono text-[12px] leading-relaxed text-text">
-                        {draft.persona || '—'}
-                      </pre>
-                    </Field>
+                    </div>
+                  </div>
+                  <div>
+                    <div className="agent-meta__label" style={{ marginBottom: 6 }}>
+                      系统 / 人设指令
+                    </div>
+                    <div className="agent-persona-card">{draft.persona || '—'}</div>
                   </div>
                 </div>
               </div>
@@ -791,94 +1030,87 @@ export function AgentLibrary({
 
             {/* ── 工作：按工作区分组的手风琴 ── */}
             {drawerTab === 'work' && (
-              <div className="shell-library-drawer__body" data-testid="agent-drawer-work">
-                <div className="shell-library-pane">
+              <div className="agent-dialog__body" data-testid="agent-drawer-work">
+                <div className="agent-pane">
                   {groupedByWorkspace.length === 0 ? (
-                    <div className="rounded-lg border border-dashed border-border px-4 py-6 text-center">
-                      <p className="m-0 text-[12px] text-text-faint">
-                        暂无已分配对话。在对话中切换对象为该智能体后，对话会出现在这里。
-                      </p>
+                    <div className="agent-work-empty">
+                      <p>暂无已分配对话。在对话中切换对象为该智能体后，对话会出现在这里。</p>
                     </div>
                   ) : (
-                    <div className="space-y-2" data-testid="agent-work-workspace-list">
-                      {groupedByWorkspace.map((group) => {
-                        const isOpen = expandedWorkspaces.has(group.workspaceId);
-                        return (
-                          <div
-                            key={group.workspaceId}
-                            className={clsx('shell-agent-workspace', isOpen && 'is-open')}
+                    groupedByWorkspace.map((group) => {
+                      const isOpen = expandedWorkspaces.has(group.workspaceId);
+                      return (
+                        <div
+                          key={group.workspaceId}
+                          className={clsx('agent-workspace', isOpen && 'is-open')}
+                        >
+                          <button
+                            type="button"
+                            className="agent-workspace__head"
+                            aria-expanded={isOpen}
+                            data-testid={`agent-work-workspace-${group.workspaceId}`}
+                            onClick={() => toggleWorkspace(group.workspaceId)}
                           >
-                            <button
-                              type="button"
-                              className="shell-agent-workspace__head"
-                              aria-expanded={isOpen}
-                              data-testid={`agent-work-workspace-${group.workspaceId}`}
-                              onClick={() => toggleWorkspace(group.workspaceId)}
-                            >
-                              <span className="shell-agent-workspace__icon">
-                                {group.icon ? (
-                                  <span className="text-[14px] leading-none">{group.icon}</span>
-                                ) : (
-                                  <Folder size={14} className="text-accent" />
-                                )}
-                              </span>
-                              <span
-                                className="min-w-0 flex-1 truncate text-[13px] font-medium text-text"
-                                title={group.name}
-                              >
-                                {group.name}
-                              </span>
-                              <span className="shell-agent-workspace__count">
-                                {group.conversations.length}
-                              </span>
-                              <ChevronDown
-                                size={14}
-                                className={clsx(
-                                  'shell-agent-workspace__chevron shrink-0 text-text-faint',
-                                )}
-                              />
-                            </button>
-                            <div className="shell-agent-workspace__body" aria-hidden={!isOpen}>
-                              {isOpen && (
-                                <div
-                                  className="space-y-1.5 shell-agent-sub-enter"
-                                  data-testid={`agent-work-conversations-${group.workspaceId}`}
-                                >
-                                  {group.conversations.map((c) => (
-                                    <div
-                                      key={c.id}
-                                      className="flex items-center gap-3 rounded-lg border border-border bg-surface px-3 py-2 transition-colors hover:border-border-strong"
-                                    >
-                                      <div className="min-w-0 flex-1">
-                                        <div className="truncate text-[12.5px] text-text">
-                                          {c.title || '未命名对话'}
-                                        </div>
-                                        <div className="text-[11px] text-text-faint">
-                                          {c.lastMessageAt
-                                            ? new Date(c.lastMessageAt).toLocaleString()
-                                            : '尚无消息'}
-                                        </div>
-                                      </div>
-                                      {onOpenConversation ? (
-                                        <button
-                                          type="button"
-                                          data-testid={`agent-work-open-${c.id}`}
-                                          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-text-faint transition-colors hover:bg-hover hover:text-text"
-                                          title="打开该对话"
-                                          onClick={() => onOpenConversation(String(c.id))}
-                                        >
-                                          <ArrowUpRight size={15} />
-                                        </button>
-                                      ) : null}
-                                    </div>
-                                  ))}
-                                </div>
+                            <span className="agent-workspace__icon">
+                              {group.icon ? (
+                                <span className="text-[14px] leading-none">{group.icon}</span>
+                              ) : (
+                                <Folder size={14} />
                               )}
-                            </div>
+                            </span>
+                            <span
+                              className="agent-workspace__name"
+                              title={group.name}
+                            >
+                              {group.name}
+                            </span>
+                            <span className="agent-workspace__count">
+                              {group.conversations.length}
+                            </span>
+                            <ChevronDown
+                              size={14}
+                              className="agent-workspace__chevron"
+                              aria-hidden="true"
+                            />
+                          </button>
+                          <div className="agent-workspace__body" aria-hidden={!isOpen}>
+                            {isOpen && (
+                              <div
+                                className="agent-workspace__list"
+                                data-testid={`agent-work-conversations-${group.workspaceId}`}
+                              >
+                                {group.conversations.map((c) => (
+                                  <div key={c.id} className="agent-conv-row">
+                                    <div className="agent-conv-row__main">
+                                      <div className="agent-conv-row__title">
+                                        {c.title || '未命名对话'}
+                                      </div>
+                                      <div className="agent-conv-row__meta">
+                                        {c.lastMessageAt
+                                          ? new Date(c.lastMessageAt).toLocaleString()
+                                          : '尚无消息'}
+                                      </div>
+                                    </div>
+                                    {onOpenConversation ? (
+                                      <button
+                                        type="button"
+                                        data-testid={`agent-work-open-${c.id}`}
+                                        className="agent-conv-row__open"
+                                        title="打开该对话"
+                                        aria-label="打开该对话"
+                                        onClick={() => onOpenConversation(String(c.id))}
+                                      >
+                                        <ArrowUpRight size={15} />
+                                      </button>
+                                    ) : null}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
                           </div>
-                        );
-                      })}
-                    </div>
+                        </div>
+                      );
+                    })
                   )}
                 </div>
               </div>
@@ -886,33 +1118,33 @@ export function AgentLibrary({
 
             {/* ── 能力：子 tab 切换 Skill / MCP / 人设 ── */}
             {drawerTab === 'abilities' && (
-              <div className="shell-library-drawer__body" data-testid="agent-drawer-abilities">
-                <div className="shell-library-pane">
-                  <SlidingTabs className="shell-agent-subtabs" aria-label="能力子分类">
+              <div className="agent-dialog__body" data-testid="agent-drawer-abilities">
+                <div className="agent-pane">
+                  <div className="agent-subtabs" role="group" aria-label="能力子分类">
                     <button
                       type="button"
                       role="tab"
                       aria-selected={abilitySubTab === 'skills'}
                       data-testid="agent-ability-subtab-skills"
                       className={clsx(
-                        'shell-agent-subtab',
+                        'agent-subtab',
                         abilitySubTab === 'skills' && 'is-active',
                       )}
-                      onClick={() => setAbilitySubTab('skills')}
+                      onClick={() => openAbilitySubTab('skills')}
                     >
                       <Sparkles size={12} /> Skill
-                      <span className="shell-agent-subtab__count">{draft.skillIds.length}</span>
+                      <span className="agent-subtab__count">{draft.skillIds.length}</span>
                     </button>
                     <button
                       type="button"
                       role="tab"
                       aria-selected={abilitySubTab === 'mcp'}
                       data-testid="agent-ability-subtab-mcp"
-                      className={clsx('shell-agent-subtab', abilitySubTab === 'mcp' && 'is-active')}
-                      onClick={() => setAbilitySubTab('mcp')}
+                      className={clsx('agent-subtab', abilitySubTab === 'mcp' && 'is-active')}
+                      onClick={() => openAbilitySubTab('mcp')}
                     >
                       <Wrench size={12} /> MCP
-                      <span className="shell-agent-subtab__count">{draft.mcpServerIds.length}</span>
+                      <span className="agent-subtab__count">{draft.mcpServerIds.length}</span>
                     </button>
                     <button
                       type="button"
@@ -920,169 +1152,144 @@ export function AgentLibrary({
                       aria-selected={abilitySubTab === 'persona'}
                       data-testid="agent-ability-subtab-persona"
                       className={clsx(
-                        'shell-agent-subtab',
+                        'agent-subtab',
                         abilitySubTab === 'persona' && 'is-active',
                       )}
-                      onClick={() => setAbilitySubTab('persona')}
+                      onClick={() => openAbilitySubTab('persona')}
                     >
                       人设指令
                     </button>
-                  </SlidingTabs>
+                  </div>
 
-                  <div className="shell-agent-subpanel" data-testid="agent-ability-content">
-                    {/* ── Skill 绑定 ── */}
+                  <div data-testid="agent-ability-content">
                     {abilitySubTab === 'skills' && (
-                      <div className="space-y-3 shell-agent-sub-enter" role="tabpanel">
-                        <SectionTitle>
-                          <span className="inline-flex items-center gap-1">
-                            <Sparkles size={12} /> Skill 绑定
-                          </span>
-                        </SectionTitle>
-                        <Field
-                          label={catalogLoading ? '加载中…' : `已选 ${draft.skillIds.length} 个`}
-                        >
-                          {skillCatalogError ? (
-                            <div className="flex items-center justify-between gap-2 rounded-lg bg-error/10 px-3 py-2 text-[11.5px] text-error">
-                              <span className="min-w-0 truncate">
-                                Skill 加载失败：{skillCatalogError}
-                              </span>
-                              {onManageSkills ? (
-                                <button
-                                  type="button"
-                                  className="shrink-0 underline"
-                                  onClick={onManageSkills}
-                                >
-                                  打开能力中心
-                                </button>
-                              ) : null}
-                            </div>
-                          ) : skills.length === 0 ? (
-                            <div className="rounded-lg border border-dashed border-border px-3 py-3 text-center">
-                              <p className="m-0 text-[11.5px] text-text-faint">暂无已导入 Skill</p>
-                              {onManageSkills ? (
-                                <button
-                                  type="button"
-                                  data-testid="manage-skills-from-agent"
-                                  className="shell-library-secondary-action mt-2"
-                                  onClick={onManageSkills}
-                                >
-                                  去能力中心导入
-                                </button>
-                              ) : null}
-                            </div>
-                          ) : (
-                            <div className="shell-library-subpanel max-h-[420px] space-y-1 overflow-y-auto p-2">
-                              {skills.map((s) => {
-                                const checked = draft.skillIds.includes(s.id);
-                                return (
-                                  <label
+                      <div role="tabpanel">
+                        {catalogLoading ? (
+                          <p className="agent-meta__empty">加载中…</p>
+                        ) : skillCatalogError ? (
+                          <div className="agent-empty-state">
+                            <p>Skill 加载失败：{skillCatalogError}</p>
+                            {onManageSkills ? (
+                              <button
+                                type="button"
+                                className="agent-capsule-btn"
+                                onClick={onManageSkills}
+                              >
+                                打开能力中心
+                              </button>
+                            ) : null}
+                          </div>
+                        ) : skills.length === 0 ? (
+                          <AgentEmptyState
+                            actionLabel={onManageSkills ? '去能力中心' : undefined}
+                            actionTestId="manage-skills-from-agent"
+                            onAction={onManageSkills}
+                          >
+                            暂无已导入 Skill
+                          </AgentEmptyState>
+                        ) : (
+                          <div className="agent-bind">
+                            <label className="agent-bind-search">
+                              <Search size={13} aria-hidden="true" />
+                              <input
+                                type="search"
+                                aria-label="搜索 Skill"
+                                placeholder="搜索 Skill"
+                                value={abilityQuery}
+                                onChange={(event) => setAbilityQuery(event.target.value)}
+                              />
+                            </label>
+                            <div className="agent-check-list">
+                              {filteredSkills.length === 0 ? (
+                                <p className="agent-meta__empty">没有匹配的 Skill</p>
+                              ) : (
+                                filteredSkills.map((s) => (
+                                  <AgentCheckRow
                                     key={s.id}
-                                    className="flex cursor-pointer items-start gap-2 rounded-md px-1.5 py-1.5 hover:bg-hover"
-                                    title={s.description || s.id}
-                                  >
-                                    <input
-                                      type="checkbox"
-                                      className="mt-0.5 accent-[var(--color-accent)]"
-                                      checked={checked}
-                                      onChange={() =>
-                                        setDraft((d) => ({
-                                          ...d,
-                                          skillIds: toggleId(d.skillIds, s.id),
-                                        }))
-                                      }
-                                    />
-                                    <span className="min-w-0 flex-1">
-                                      <span className="block truncate text-[12.5px] text-text">
+                                    checked={draft.skillIds.includes(s.id)}
+                                    title={
+                                      <>
                                         {s.name}
                                         {s.version ? (
-                                          <span className="ml-1 text-[11px] text-text-faint">
-                                            @{s.version}
-                                          </span>
+                                          <span className="agent-pill__meta">@{s.version}</span>
                                         ) : null}
-                                      </span>
-                                      {s.description ? (
-                                        <span className="block truncate text-[11px] text-text-faint">
-                                          {s.description}
-                                        </span>
-                                      ) : null}
-                                    </span>
-                                  </label>
-                                );
-                              })}
+                                      </>
+                                    }
+                                    description={s.description || undefined}
+                                    onToggle={() =>
+                                      setDraft((d) => ({
+                                        ...d,
+                                        skillIds: toggleId(d.skillIds, s.id),
+                                      }))
+                                    }
+                                  />
+                                ))
+                              )}
                             </div>
-                          )}
-                        </Field>
+                          </div>
+                        )}
                       </div>
                     )}
 
-                    {/* ── MCP 绑定 ── */}
                     {abilitySubTab === 'mcp' && (
-                      <div className="space-y-3 shell-agent-sub-enter" role="tabpanel">
-                        <SectionTitle>
-                          <span className="inline-flex items-center gap-1">
-                            <Wrench size={12} /> MCP 绑定
-                          </span>
-                        </SectionTitle>
-                        <Field
-                          label={
-                            catalogLoading ? '加载中…' : `已选 ${draft.mcpServerIds.length} 个`
-                          }
-                        >
-                          {mcpServers.length === 0 ? (
-                            <p className="text-[11.5px] text-text-faint">
-                              暂无已注册 MCP 服务器。注册后可在此绑定，对话内可调用其工具。
-                            </p>
-                          ) : (
-                            <div className="shell-library-subpanel max-h-[420px] space-y-1 overflow-y-auto p-2">
-                              {mcpServers.map((s) => {
-                                const checked = draft.mcpServerIds.includes(s.id);
-                                return (
-                                  <label
+                      <div role="tabpanel">
+                        {mcpServers.length === 0 ? (
+                          <AgentEmptyState
+                            actionLabel={onManageSkills ? '去能力中心' : undefined}
+                            onAction={onManageSkills}
+                          >
+                            暂无已注册 MCP 服务器。注册后可在此绑定，对话内可调用其工具。
+                          </AgentEmptyState>
+                        ) : (
+                          <div className="agent-bind">
+                            <label className="agent-bind-search">
+                              <Search size={13} aria-hidden="true" />
+                              <input
+                                type="search"
+                                aria-label="搜索 MCP"
+                                placeholder="搜索 MCP"
+                                value={abilityQuery}
+                                onChange={(event) => setAbilityQuery(event.target.value)}
+                              />
+                            </label>
+                            <div className="agent-check-list">
+                              {filteredMcpServers.length === 0 ? (
+                                <p className="agent-meta__empty">没有匹配的 MCP</p>
+                              ) : (
+                                filteredMcpServers.map((s) => (
+                                  <AgentCheckRow
                                     key={s.id}
-                                    className="flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1.5 hover:bg-hover"
-                                  >
-                                    <input
-                                      type="checkbox"
-                                      className="accent-[var(--color-accent)]"
-                                      checked={checked}
-                                      onChange={() =>
-                                        setDraft((d) => ({
-                                          ...d,
-                                          mcpServerIds: toggleId(d.mcpServerIds, s.id),
-                                        }))
-                                      }
-                                    />
-                                    <span className="min-w-0 flex-1 truncate text-[12.5px] text-text">
-                                      {s.name}
-                                    </span>
-                                    <span className="shrink-0 text-[11px] text-text-faint">
-                                      {s.toolCount} 工具{s.trusted ? ' · 信任' : ''}
-                                    </span>
-                                  </label>
-                                );
-                              })}
+                                    checked={draft.mcpServerIds.includes(s.id)}
+                                    title={s.name}
+                                    description={`${s.toolCount} 工具${s.trusted ? ' · 信任' : ''}`}
+                                    onToggle={() =>
+                                      setDraft((d) => ({
+                                        ...d,
+                                        mcpServerIds: toggleId(d.mcpServerIds, s.id),
+                                      }))
+                                    }
+                                  />
+                                ))
+                              )}
                             </div>
-                          )}
-                        </Field>
+                          </div>
+                        )}
                       </div>
                     )}
 
-                    {/* ── 人设 / 系统指令 ── */}
                     {abilitySubTab === 'persona' && (
-                      <div className="space-y-3 shell-agent-sub-enter" role="tabpanel">
-                        <SectionTitle>系统 / 人设指令</SectionTitle>
-                        <Field label="人设 / 系统指令">
+                      <div role="tabpanel">
+                        <div className="agent-persona-editor-wrap">
                           <textarea
-                            className="w-full resize-y rounded-lg border border-border bg-page px-3 py-2 font-mono text-[12.5px] leading-relaxed text-text focus:border-accent focus:outline-none"
-                            rows={16}
+                            className="agent-persona-editor"
                             placeholder="你是一名经验丰富的前端工程师，专注于 React 和 TypeScript…"
                             value={draft.persona}
                             onChange={(e) => setDraft((d) => ({ ...d, persona: e.target.value }))}
                           />
-                        </Field>
-                        {draft.persona.trim() ? (
-                          <p className="text-[11px] text-text-faint">{draft.persona.length} 字符</p>
-                        ) : null}
+                          <span className="agent-persona-count">
+                            {draft.persona.length} 字符
+                          </span>
+                        </div>
                       </div>
                     )}
                   </div>
@@ -1092,30 +1299,36 @@ export function AgentLibrary({
 
             {/* ── 设置：单列分组卡片 —— 身份 / 模型 ── */}
             {drawerTab === 'settings' && (
-              <div className="shell-library-drawer__body" data-testid="agent-drawer-settings">
-                <div className="shell-library-pane">
-                  {/* 身份 */}
-                  <div className="shell-agent-setting-group space-y-5">
-                    <SectionTitle>基本信息</SectionTitle>
+              <div className="agent-dialog__body" data-testid="agent-drawer-settings">
+                <div className="agent-pane">
+                  <div className="agent-settings-group">
+                    <SectionTitle hint="头像、名称、简介与人设指令会一起进入每次对话的上下文。">
+                      基本信息
+                    </SectionTitle>
 
-                    {/* Avatar picker: live preview + emoji input + image import */}
-                    <div className="flex items-center gap-4">
-                      <AgentAvatarView name={draft.name || '?'} avatar={draft.avatar} size={56} />
-                      <div className="flex flex-1 flex-col gap-1.5">
-                        <label className="text-[11px] text-text-faint">头像</label>
-                        <div className="flex items-center gap-2">
+                    <div className="agent-avatar-editor">
+                      <span
+                        className="agent-dialog__avatar agent-dialog__avatar--lg"
+                        style={avatarGlowStyle(draft.avatar, draft.name || '?', selected?.id ?? draft.name)}
+                      >
+                        <AgentAvatarView name={draft.name || '?'} avatar={draft.avatar} size={56} />
+                      </span>
+                      <div className="agent-avatar-editor__main">
+                        <label className="agent-meta__label">头像</label>
+                        <div className="agent-avatar-editor__row">
                           {!isImageAvatar(draft.avatar) && (
                             <input
-                              className="h-9 w-16 rounded-lg border border-border bg-page text-center text-[18px] focus:border-accent focus:outline-none"
+                              className="agent-emoji-input"
                               value={draft.avatar}
                               onChange={(e) => setDraft((d) => ({ ...d, avatar: e.target.value }))}
                               maxLength={2}
                               title="输入一个 emoji 或字母"
+                              placeholder="🤖"
                             />
                           )}
                           <button
                             type="button"
-                            className="flex h-9 items-center gap-1.5 rounded-lg border border-border px-3 text-[12px] text-text-secondary hover:bg-hover"
+                            className="agent-capsule-btn"
                             onClick={() => avatarFileRef.current?.click()}
                           >
                             <ImagePlus size={13} /> 导入图片
@@ -1123,7 +1336,7 @@ export function AgentLibrary({
                           {isImageAvatar(draft.avatar) && (
                             <button
                               type="button"
-                              className="h-9 rounded-lg px-2 text-[12px] text-text-faint hover:bg-hover hover:text-text"
+                              className="agent-text-link"
                               onClick={() => setDraft((d) => ({ ...d, avatar: '🤖' }))}
                             >
                               恢复 emoji
@@ -1143,19 +1356,18 @@ export function AgentLibrary({
                       </div>
                     </div>
 
-                    {/* Procedural face picker — writes a `gen:v1:<shape>:<color>` seed. */}
-                    <div className="space-y-2.5 rounded-lg border border-border bg-page p-3">
-                      <div className="flex items-center justify-between">
-                        <label className="text-[11px] text-text-faint">专属头像</label>
+                    <div className="agent-avatar-picker-block">
+                      <div className="agent-avatar-picker-head">
+                        <label className="agent-meta__label">专属头像</label>
                         <button
                           type="button"
-                          className="text-[11px] text-text-faint transition-colors hover:text-text"
+                          className="agent-text-link"
                           onClick={() => void handleRegenerateAllAvatars()}
                         >
                           给全部智能体生成
                         </button>
                       </div>
-                      <div className="flex flex-wrap gap-1.5">
+                      <div className="avatar-picker">
                         {AVATAR_SHAPES.map((shape) => {
                           const isActiveShape = avatarFace.shape === shape;
                           return (
@@ -1165,9 +1377,7 @@ export function AgentLibrary({
                               title={shape}
                               aria-label={`形状 ${shape}`}
                               aria-pressed={isActiveShape}
-                              className={`h-8 w-8 rounded-lg border p-0.5 transition-colors ${
-                                isActiveShape ? 'border-accent bg-hover' : 'border-border hover:bg-hover'
-                              }`}
+                              className={clsx('avatar-shape', isActiveShape && 'is-active')}
                               onClick={() =>
                                 setDraft((d) => ({
                                   ...d,
@@ -1178,14 +1388,13 @@ export function AgentLibrary({
                               <img
                                 src={avatarDataUrl(shape, avatarFace.color, 'idle', 24)}
                                 alt=""
-                                className="h-full w-full select-none"
                                 draggable={false}
                               />
                             </button>
                           );
                         })}
                       </div>
-                      <div className="flex flex-wrap gap-1.5">
+                      <div className="avatar-picker">
                         {AVATAR_COLORS.map((color) => {
                           const isActiveColor = avatarFace.color === color;
                           return (
@@ -1195,9 +1404,7 @@ export function AgentLibrary({
                               title={color}
                               aria-label={`颜色 ${color}`}
                               aria-pressed={isActiveColor}
-                              className={`h-6 w-6 rounded-full border-2 transition-transform ${
-                                isActiveColor ? 'scale-110 border-accent' : 'border-border'
-                              }`}
+                              className={clsx('avatar-swatch', isActiveColor && 'is-active')}
                               style={{ background: colorHex(color) }}
                               onClick={() =>
                                 setDraft((d) => ({
@@ -1214,7 +1421,7 @@ export function AgentLibrary({
                     <Field label="名称 *">
                       <input
                         ref={nameRef}
-                        className="h-9 w-full rounded-lg border border-border bg-page px-3 text-[13px] text-text focus:border-accent focus:outline-none"
+                        className="agent-input"
                         placeholder="前端小张"
                         value={draft.name}
                         onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
@@ -1223,7 +1430,7 @@ export function AgentLibrary({
 
                     <Field label="简介">
                       <input
-                        className="h-9 w-full rounded-lg border border-border bg-page px-3 text-[13px] text-text focus:border-accent focus:outline-none"
+                        className="agent-input"
                         placeholder="擅长前端开发与调试"
                         value={draft.description}
                         onChange={(e) => setDraft((d) => ({ ...d, description: e.target.value }))}
@@ -1231,20 +1438,15 @@ export function AgentLibrary({
                     </Field>
                   </div>
 
-                  {/* 模型 */}
-                  <div className="shell-agent-setting-group space-y-5">
-                    <SectionTitle>模型</SectionTitle>
+                  <div className="agent-settings-group">
+                    <SectionTitle hint="主模型失败时按备用顺序依次尝试。">
+                      模型
+                    </SectionTitle>
 
-                    {/* Default model — required; empty value is rejected by protocol.
-                        Two-level provider → model picker (same widget as the compose bar).
-                        Both the label and the control open the picker so pressing
-                        the field text is never a silent no-op. */}
                     <Field label="默认模型 *" onLabelClick={() => setModelMenuOpen((o) => !o)}>
                       <div
-                        className="shell-library-control flex h-9 cursor-pointer items-center px-1.5"
+                        className="agent-select"
                         onClick={(e) => {
-                          // The trigger button handles its own click; only open
-                          // when pressing elsewhere in the control area.
                           if ((e.target as HTMLElement).closest('button')) return;
                           setModelMenuOpen((o) => !o);
                         }}
@@ -1275,76 +1477,145 @@ export function AgentLibrary({
 
                     <Field label="备用模型（主模型失败后按顺序尝试）">
                       {fallbackCandidates.length === 0 ? (
-                        <p className="text-[11.5px] text-text-faint">
+                        <p className="agent-meta__empty">
                           没有其它可选模型。请先在设置里导入更多模型。
                         </p>
                       ) : (
-                        <div className="shell-library-subpanel max-h-40 space-y-2 overflow-y-auto p-2">
+                        <div className="agent-check-list">
                           {fallbackGroups.map(([providerName, providerModels]) => (
-                            <div key={providerName}>
-                              <div className="px-1.5 pb-0.5 text-[10.5px] font-medium text-text-faint">
-                                {providerName}
-                              </div>
-                              {providerModels.map((m) => {
-                                const checked = draft.fallbackModelIds.includes(m.modelId);
-                                return (
-                                  <label
-                                    key={m.modelId}
-                                    className="flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1 hover:bg-hover"
-                                  >
-                                    <input
-                                      type="checkbox"
-                                      className="accent-[var(--color-accent)]"
-                                      checked={checked}
-                                      onChange={() =>
-                                        setDraft((d) => ({
-                                          ...d,
-                                          fallbackModelIds: toggleId(d.fallbackModelIds, m.modelId),
-                                        }))
-                                      }
-                                    />
-                                    <span className="truncate text-[12.5px] text-text">
-                                      {m.displayName}
-                                    </span>
-                                  </label>
-                                );
-                              })}
+                            <div key={providerName} className="agent-check-group">
+                              <div className="agent-check-group__label">{providerName}</div>
+                              {providerModels.map((m) => (
+                                <AgentCheckRow
+                                  key={m.modelId}
+                                  checked={draft.fallbackModelIds.includes(m.modelId)}
+                                  title={m.displayName}
+                                  onToggle={() =>
+                                    setDraft((d) => ({
+                                      ...d,
+                                      fallbackModelIds: toggleId(d.fallbackModelIds, m.modelId),
+                                    }))
+                                  }
+                                />
+                              ))}
                             </div>
                           ))}
                         </div>
                       )}
                       {draft.fallbackModelIds.length > 0 && (
-                        <p className="mt-1 text-[11px] text-text-faint">
-                          已选 {draft.fallbackModelIds.length} 个备用
-                        </p>
+                        <p className="agent-meta__empty">已选 {draft.fallbackModelIds.length} 个备用</p>
                       )}
                     </Field>
 
                     <Field label="推理强度">
-                      <select
-                        className="h-9 w-full rounded-lg border border-border bg-page px-3 text-[13px] text-text focus:border-accent focus:outline-none"
+                      <AgentSegmented
+                        ariaLabel="推理强度"
                         value={draft.reasoningEffort}
-                        onChange={(e) =>
-                          setDraft((d) => ({ ...d, reasoningEffort: e.target.value }))
+                        options={REASONING_OPTIONS}
+                        onChange={(reasoningEffort) =>
+                          setDraft((d) => ({ ...d, reasoningEffort }))
                         }
-                      >
-                        {REASONING_OPTIONS.map((o) => (
-                          <option key={o.value} value={o.value}>
-                            {o.label}
-                          </option>
-                        ))}
-                      </select>
+                      />
                     </Field>
+                  </div>
+
+                  <div className="agent-settings-group">
+                    <SectionTitle hint="只在被其他对话委派时生效；「逐次询问」下仍只读。">
+                      委派写入
+                    </SectionTitle>
+                    <Field label="被委派时">
+                      <AgentSegmented
+                        ariaLabel="委派写入权限"
+                        value={draft.writePolicy}
+                        options={[
+                          { value: 'read-only', label: '只读', title: '被委派时永远只读' },
+                          {
+                            value: 'inherit',
+                            label: '继承会话',
+                            title: '跟随对话权限；逐次询问下仍只读',
+                          },
+                        ]}
+                        onChange={(writePolicy) =>
+                          setDraft((current) => ({
+                            ...current,
+                            writePolicy: writePolicy as DraftAgent['writePolicy'],
+                          }))
+                        }
+                      />
+                    </Field>
+                    <p className="agent-meta__empty">
+                      {draft.writePolicy === 'inherit'
+                        ? '跟随对话权限；逐次询问下仍只读（子智能体没有审批入口）。'
+                        : '被委派时只能读取，不能写入或执行命令。'}
+                    </p>
+                  </div>
+
+                  <div className="agent-settings-group">
+                    <SectionTitle hint="决定哪些工作区的模型对话可以委派这个智能体。">
+                      可用范围
+                    </SectionTitle>
+                    <Field label="激活范围">
+                      <AgentSegmented
+                        ariaLabel="激活范围"
+                        value={draft.availabilityScope}
+                        options={[
+                          { value: 'global', label: '全局', title: '所有工作区可用' },
+                          {
+                            value: 'workspace',
+                            label: '指定工作区',
+                            title: '仅在选中的工作区可用',
+                          },
+                        ]}
+                        onChange={(availabilityScope) =>
+                          setDraft((current) => ({
+                            ...current,
+                            availabilityScope: availabilityScope as DraftAgent['availabilityScope'],
+                          }))
+                        }
+                      />
+                    </Field>
+                    {draft.availabilityScope === 'global' ? (
+                      <p className="agent-meta__empty">全局激活：所有工作区都可以调用这个智能体。</p>
+                    ) : isNew ? (
+                      <p className="agent-meta__empty">保存后重新打开该智能体，即可选择具体工作区。</p>
+                    ) : workspaces.length === 0 ? (
+                      <p className="agent-meta__empty">当前还没有可配置的工作区。</p>
+                    ) : (
+                      <div
+                        className="agent-check-list"
+                        data-testid="agent-workspace-activation-list"
+                      >
+                        {workspaces.map((workspace) => {
+                          const key = `${selected?.id}:${workspace.workspaceId}`;
+                          return (
+                            <AgentCheckRow
+                              key={workspace.workspaceId}
+                              checked={workspaceActivations[key] === true}
+                              title={workspace.name}
+                              description={workspace.folderPath || String(workspace.workspaceId)}
+                              disabled={activationSaving}
+                              onToggle={() =>
+                                void handleWorkspaceActivation(
+                                  String(workspace.workspaceId),
+                                  workspaceActivations[key] !== true,
+                                )
+                              }
+                            />
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
             )}
 
             {/* Footer actions */}
-            <div className="shell-library-drawer__footer">
+            <footer className="agent-dialog__footer">
               {!isNew ? (
                 <button
-                  className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12px] text-error hover:bg-error/10 disabled:opacity-40"
+                  type="button"
+                  className="agent-dialog__danger"
                   onClick={() => void handleDelete()}
                   disabled={deleting}
                 >
@@ -1353,33 +1624,64 @@ export function AgentLibrary({
               ) : (
                 <span />
               )}
-              <div className="flex gap-2">
+              <div className="agent-dialog__footer-right">
+                <Dialog.Close asChild>
+                  <button type="button" className="agent-btn">
+                    取消
+                  </button>
+                </Dialog.Close>
                 <button
-                  className="rounded-lg border border-border px-3 py-1.5 text-[12.5px] text-text-secondary hover:bg-hover"
-                  onClick={closeDrawer}
-                >
-                  取消
-                </button>
-                <button
-                  className="rounded-lg bg-accent px-4 py-1.5 text-[12.5px] font-medium text-[var(--color-accent-fg)] hover:opacity-90 disabled:opacity-40"
+                  type="button"
+                  className="agent-btn agent-btn--primary"
                   onClick={() => void handleSave()}
                   disabled={saving || !draft.name.trim() || !draft.defaultModelId.trim()}
                 >
                   {saving ? '保存中…' : '保存'}
                 </button>
               </div>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
+            </footer>
+        </Dialog.Content>
+      </Dialog.Root>
+    </main>
   );
 }
 
 // ── Sub-components ──────────────────────────────────────────────────────────
 
-function SectionTitle({ children }: { children: React.ReactNode }) {
-  return <div className="shell-library-section-title">{children}</div>;
+function StatCard({
+  label,
+  value,
+  icon,
+  tone,
+}: {
+  label: string;
+  value: number;
+  icon: React.ReactNode;
+  tone?: string;
+}) {
+  return (
+    <div className="agent-stat">
+      <span className={clsx('agent-stat__icon', tone)}>{icon}</span>
+      <div>
+        <div className="agent-stat__label">{label}</div>
+        <div className="agent-stat__value">{value}</div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 区块头，对齐能力弹窗的 section-head：一行标题（12px/680）+ 一行说明
+ * （11px faint）。以前只有标题、而且被压成 10px 带字距的小字，中文看起来
+ * 又小又散，也不解释这一组字段是干什么的。
+ */
+function SectionTitle({ children, hint }: { children: React.ReactNode; hint?: React.ReactNode }) {
+  return (
+    <div className="agent-section-head">
+      <div className="agent-section-title">{children}</div>
+      {hint ? <p className="agent-section-hint">{hint}</p> : null}
+    </div>
+  );
 }
 
 function AgentCard({
@@ -1399,86 +1701,101 @@ function AgentCard({
   const skillN = agent.skillIds?.length ?? 0;
   const mcpN = agent.mcpServerIds?.length ?? 0;
   const fallbackN = agent.fallbackModelIds?.length ?? 0;
+  const modelMissing = modelName === '模型不可用';
+  const modelLabel = !agent.defaultModelId ? '未指定模型' : modelName;
 
   return (
     <div
-      className={clsx('shell-library-card group', selected && 'shell-library-card--selected')}
+      className={clsx('agent-card group', selected && 'agent-card--selected')}
+      role="button"
+      tabIndex={0}
+      aria-label={`查看 ${agent.name} 详情`}
       onClick={onClick}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          onClick();
+        }
+      }}
     >
       {/* Card header */}
-      <div className="flex items-center gap-3">
-        <AgentAvatarView name={agent.name} avatar={agent.avatar} size={40} />
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-[13.5px] font-medium text-text">{agent.name}</div>
-          <div
-            className="truncate text-[11.5px] text-text-faint"
-            data-model-state={modelName === '模型不可用' ? 'unavailable' : 'available'}
+      <div className="agent-card__main">
+        <span
+          className="agent-card__avatar"
+          style={avatarGlowStyle(agent.avatar, agent.name, String(agent.id))}
+        >
+          <AgentAvatarView name={agent.name} avatar={agent.avatar} size={56} />
+        </span>
+        <div className="agent-card__copy">
+          <div className="agent-card__title-row">
+            <span className="agent-card__name">{agent.name}</span>
+            <ChevronRight
+              size={14}
+              className="agent-card__chevron"
+              aria-hidden="true"
+            />
+          </div>
+          <span
+            className={clsx('agent-card__model', modelMissing && 'is-unavailable')}
+            data-model-state={modelMissing ? 'unavailable' : 'available'}
             title={
-              modelName === '模型不可用' ? '已配置模型当前不可用，请进入设置重新选择' : modelName
+              modelMissing ? '已配置模型当前不可用，请进入设置重新选择' : modelLabel
             }
           >
-            {modelName}
-          </div>
-        </div>
-        <ChevronRight
-          size={14}
-          className="text-text-faint opacity-0 transition-opacity group-hover:opacity-100"
-        />
-      </div>
-
-      {/* Description */}
-      <p
-        className="shell-library-card__description"
-        data-empty={agent.description ? undefined : '1'}
-      >
-        {agent.description || '暂无简介'}
-      </p>
-
-      {/* Binding badges */}
-      <div className="shell-library-card__meta">
-        {fallbackN > 0 && (
-          <span className="rounded-md bg-page px-1.5 py-0.5 text-[10.5px] text-text-faint">
-            备用 {fallbackN}
+            <span className="agent-card__model-dot" aria-hidden="true" />
+            {modelLabel}
           </span>
-        )}
-        <span className="rounded-md bg-page px-1.5 py-0.5 text-[10.5px] text-text-faint">
-          Skill {skillN}
-        </span>
-        <span className="rounded-md bg-page px-1.5 py-0.5 text-[10.5px] text-text-faint">
-          MCP {mcpN}
-        </span>
+          <p
+            className="agent-card__description"
+            data-empty={agent.description ? undefined : '1'}
+          >
+            {agent.description || '暂无简介'}
+          </p>
+        </div>
       </div>
 
-      {/* Footer */}
-      {onStartConversation && (
-        <button
-          className="shell-library-card__action"
-          onClick={(e) => {
-            e.stopPropagation();
-            onStartConversation(agent.id);
-          }}
-        >
-          <Bot size={12} /> 开始对话
-        </button>
-      )}
+      {/* Binding badges + action */}
+      <footer className="agent-card__footer">
+        <div className="agent-card__badges">
+          <span className="agent-badge is-accent">
+            <Sparkles size={10} aria-hidden="true" /> Skill {skillN}
+          </span>
+          <span className="agent-badge">
+            <Wrench size={10} aria-hidden="true" /> MCP {mcpN}
+          </span>
+          {fallbackN > 0 ? <span className="agent-badge">备用 {fallbackN}</span> : null}
+          <span className="agent-badge">
+            {(agent.availabilityScope ?? 'global') === 'workspace' ? '指定工作区' : '全局'}
+          </span>
+        </div>
+        {onStartConversation ? (
+          <button
+            type="button"
+            className="agent-card__action"
+            onClick={(e) => {
+              e.stopPropagation();
+              onStartConversation(agent.id);
+            }}
+          >
+            <MessageSquare size={11} aria-hidden="true" /> 开始对话
+          </button>
+        ) : null}
+      </footer>
     </div>
   );
 }
 
 function EmptyAgents({ onNew }: { onNew(): void }) {
   return (
-    <div className="flex h-full flex-col items-center justify-center gap-4 py-20 text-center">
-      <div className="flex h-14 w-14 items-center justify-center rounded-full bg-accent-soft">
-        <Bot size={24} className="text-accent-text" />
+    <div className="agent-empty">
+      <div className="agent-empty__glyph">
+        <Bot size={24} />
       </div>
       <div>
-        <p className="text-[14px] font-medium text-text">还没有智能体</p>
-        <p className="mt-1 text-[12px] text-text-faint">创建一个专属于你的 AI 助手</p>
+        <p className="agent-empty__title">还没有智能体</p>
+        <p className="agent-empty__hint">创建一个专属于你的 AI 助手</p>
       </div>
-      <button
-        className="flex items-center gap-1.5 rounded-lg bg-accent px-4 py-2 text-[12.5px] font-medium text-[var(--color-accent-fg)] hover:opacity-90"
-        onClick={onNew}
-      >
+      <button type="button" className="agent-btn agent-btn--primary" onClick={onNew}>
         <Plus size={13} /> 新建第一个智能体
       </button>
     </div>
@@ -1496,9 +1813,9 @@ function Field({
   onLabelClick?: () => void;
 }) {
   return (
-    <div className="shell-library-field">
+    <div className="agent-field">
       <label
-        className="text-[11px] text-text-faint"
+        className="agent-field__label"
         onClick={onLabelClick}
         style={onLabelClick ? { cursor: 'pointer' } : undefined}
         title={onLabelClick ? '点击打开选择器' : undefined}
@@ -1506,6 +1823,127 @@ function Field({
         {label}
       </label>
       {children}
+    </div>
+  );
+}
+
+function AgentCopyChip({ value }: { value: string }) {
+  const [copied, setCopied] = useState(false);
+  const copyable = Boolean(value) && value !== '-';
+  return (
+    <button
+      type="button"
+      className="agent-id-chip"
+      aria-label={copied ? '已复制 ID' : '复制 ID'}
+      title={copied ? '已复制' : '复制 ID'}
+      disabled={!copyable}
+      onClick={() => {
+        if (!copyable) return;
+        void (async () => {
+          try {
+            await navigator.clipboard.writeText(value);
+            setCopied(true);
+            window.setTimeout(() => setCopied(false), 1200);
+          } catch {
+            /* ignore missing clipboard in tests / restricted contexts */
+          }
+        })();
+      }}
+    >
+      <span className="agent-id-chip__value">{value}</span>
+      {copied ? <Check size={12} aria-hidden="true" /> : <Copy size={12} aria-hidden="true" />}
+    </button>
+  );
+}
+
+function AgentEmptyState({
+  children,
+  actionLabel,
+  actionTestId,
+  onAction,
+}: {
+  children: React.ReactNode;
+  actionLabel?: string;
+  actionTestId?: string;
+  onAction?: () => void;
+}) {
+  return (
+    <div className="agent-empty-state">
+      <p>{children}</p>
+      {onAction && actionLabel ? (
+        <button
+          type="button"
+          data-testid={actionTestId}
+          className="agent-capsule-btn"
+          onClick={onAction}
+        >
+          {actionLabel}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+function AgentCheckRow({
+  checked,
+  title,
+  description,
+  disabled = false,
+  onToggle,
+}: {
+  checked: boolean;
+  title: React.ReactNode;
+  description?: string;
+  disabled?: boolean;
+  onToggle(): void;
+}) {
+  return (
+    <button
+      type="button"
+      role="checkbox"
+      aria-checked={checked}
+      aria-disabled={disabled}
+      disabled={disabled}
+      className={clsx('agent-check-row', checked && 'is-checked')}
+      title={description}
+      onClick={onToggle}
+    >
+      <span className="agent-check-row__box" aria-hidden="true">
+        {checked ? <Check size={11} strokeWidth={3} /> : null}
+      </span>
+      <span className="agent-check-row__copy">
+        <span className="agent-check-row__name">{title}</span>
+        {description ? <span className="agent-check-row__desc">{description}</span> : null}
+      </span>
+    </button>
+  );
+}
+
+function AgentSegmented({
+  ariaLabel,
+  value,
+  options,
+  onChange,
+}: {
+  ariaLabel: string;
+  value: string;
+  options: readonly { value: string; label: string; title?: string }[];
+  onChange(value: string): void;
+}) {
+  return (
+    <div className="agent-seg" role="group" aria-label={ariaLabel}>
+      {options.map((option) => (
+        <button
+          key={option.value}
+          type="button"
+          className={value === option.value ? 'is-active' : undefined}
+          aria-pressed={value === option.value}
+          title={option.title ?? option.label}
+          onClick={() => onChange(option.value)}
+        >
+          {option.label}
+        </button>
+      ))}
     </div>
   );
 }

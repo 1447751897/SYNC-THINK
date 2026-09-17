@@ -39,6 +39,7 @@ import type {
   ProjectGitInfo,
 } from '../../project-git-contract.js';
 import type { TodoProjection } from './todo-projection.js';
+import { listenForFrameCoalescedViewportChange } from './viewport-frame.js';
 
 function statusBridge() {
   return window.syncThink?.runtime;
@@ -303,12 +304,7 @@ function GitToolsSection({
   useLayoutEffect(() => {
     if (!branchMenuOpen) return;
     positionBranchMenu();
-    window.addEventListener('resize', positionBranchMenu);
-    window.addEventListener('scroll', positionBranchMenu, true);
-    return () => {
-      window.removeEventListener('resize', positionBranchMenu);
-      window.removeEventListener('scroll', positionBranchMenu, true);
-    };
+    return listenForFrameCoalescedViewportChange(positionBranchMenu);
   }, [branchMenuOpen, positionBranchMenu]);
 
   useEffect(() => {

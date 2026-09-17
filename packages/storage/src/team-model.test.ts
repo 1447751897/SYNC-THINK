@@ -8,6 +8,7 @@ import { runMigrations } from './scripts/migrate.js';
 import { SqliteGlobalAgentStore } from './global-agent-store.js';
 import { SqliteTeamStore } from './team-store.js';
 import { SqliteConversationStore } from './conversation-store.js';
+import { SqliteWorkspaceStore } from './workspace-store.js';
 
 const tempDirs: string[] = [];
 
@@ -31,6 +32,7 @@ async function openStores() {
     agents: new SqliteGlobalAgentStore(connection.raw),
     teams: new SqliteTeamStore(connection.raw),
     conversations: new SqliteConversationStore(connection.raw),
+    workspaces: new SqliteWorkspaceStore(connection.raw),
     raw: connection.raw,
     close: () => connection.raw.close(),
   };
@@ -55,6 +57,27 @@ describe('SqliteGlobalAgentStore (mutable model)', () => {
     }
   });
 
+  it('defaults a new Agent to read-only and round-trips an inherited write policy', async () => {
+    const { agents, close } = await openStores();
+    try {
+      // Default matters: every pre-existing Agent keeps behaving exactly as it
+      // did before the policy existed (docs/adr/0001).
+      const created = agents.create({ name: '审查员', defaultModelId: MODEL });
+      expect(created.writePolicy).toBe('read-only');
+
+      const inherited = agents.update({ agentId: created.id, writePolicy: 'inherit' });
+      expect(inherited.writePolicy).toBe('inherit');
+      // Survives a re-read rather than only living in the returned record.
+      expect(agents.get(created.id)?.writePolicy).toBe('inherit');
+
+      // An unrelated update must not reset it.
+      const renamed = agents.update({ agentId: created.id, name: '审查员二号' });
+      expect(renamed.writePolicy).toBe('inherit');
+    } finally {
+      close();
+    }
+  });
+
   it('hides archived agents from the default list', async () => {
     const { agents, close } = await openStores();
     try {
@@ -74,6 +97,32 @@ describe('SqliteGlobalAgentStore (mutable model)', () => {
       const a = agents.create({ name: 'A', defaultModelId: MODEL });
       teams.create({ name: '交付小队', members: [{ agentId: a.id }] });
       expect(() => agents.delete(a.id)).toThrow(/member of team/);
+    } finally {
+      close();
+    }
+  });
+
+  it('resolves effective agents by global or workspace activation scope', async () => {
+    const { agents, workspaces, close } = await openStores();
+    try {
+      const workspace = workspaces.createWorkspace({ name: '项目工作区' });
+      const global = agents.create({ name: '全局', defaultModelId: MODEL });
+      const scoped = agents.create({
+        name: '限定工作区',
+        defaultModelId: MODEL,
+        availabilityScope: 'workspace',
+      });
+
+      expect(agents.listEffective(workspace.id).map((agent) => agent.id)).toEqual([global.id]);
+      agents.setWorkspaceActivation({ agentId: scoped.id, workspaceId: workspace.id, active: true });
+      expect(agents.listEffective(workspace.id).map((agent) => agent.id)).toEqual(
+        expect.arrayContaining([global.id, scoped.id]),
+      );
+
+      agents.setWorkspaceActivation({ agentId: scoped.id, workspaceId: workspace.id, active: false });
+      expect(agents.isEffective(scoped.id, workspace.id)).toBe(false);
+      agents.update({ agentId: global.id, enabled: false });
+      expect(agents.isEffective(global.id, workspace.id)).toBe(false);
     } finally {
       close();
     }

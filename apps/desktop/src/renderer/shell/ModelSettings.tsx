@@ -1946,6 +1946,12 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
           modelId: modelId as never,
           capabilities,
           confirmed: true,
+          // 勾选「视觉」= 用户手写的答案，优先级高于任何探针结论（NewMax
+          // `manualOverrides.image`）。这是中转站跑不通探针图时唯一能把模型认定为
+          // 有视觉能力的通道。取消勾选只清除手动答案（null），不写成 false ——
+          // 「没有手动意见」不等于「确认不能看图」，否则一次误操作就会把模型
+          // 永久钉成纯文本，与 resolveVisionState「unknown 永不塌缩」同一条原则。
+          visionCapabilityOverride: capabilities.includes('vision') ? true : null,
         });
         const provider = providers.find((item) => item.providerId === providerId);
         if (provider) {
@@ -6441,6 +6447,7 @@ function Toggle({
       role="switch"
       aria-label={label}
       aria-checked={checked}
+      data-state={checked ? 'checked' : 'unchecked'}
       disabled={disabled}
       onClick={() => onChange(!checked)}
       className={clsx('model-toggle', checked && 'is-checked')}

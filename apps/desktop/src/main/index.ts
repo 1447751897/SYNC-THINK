@@ -51,6 +51,12 @@ import type {
   ManagedKernelUpdateId,
   ManagedKernelUpdateSnapshot,
 } from '../kernel-update-contract.js';
+import {
+  createDesktopTray,
+  destroyDesktopTray,
+  isDesktopTrayActive,
+  type DesktopTrayConversation,
+} from './desktop-tray.js';
 import { FileRuntimeActivityCursorStore } from './runtime-activity-cursor-store.js';
 import {
   isAllowedM1OpenDocId,
@@ -439,6 +445,8 @@ import {
   parseSubscribeConversationTransientStreamPayload,
   parseUnsubscribeConversationTransientStreamPayload,
   parseListGlobalAgentsPayload,
+  parseListGlobalAgentWorkspaceActivationsPayload,
+  parseSetGlobalAgentWorkspaceActivationPayload,
   parseRenameConversationPayload,
   parseSetConversationArchivedPayload,
   parseSetConversationExecutionModePayload,
@@ -612,6 +620,12 @@ const desktopCrashJournal = new DesktopCrashJournal({
 
 let mainWindow: BrowserWindow | null = null;
 let registeredQuickWindowShortcut: string | null = null;
+/**
+ * Set once a real quit is under way, so `close` stops diverting the window to
+ * the tray. Without it the tray 退出 entry would be swallowed by the
+ * close-to-tray interception and the app could never exit.
+ */
+let isQuitting = false;
 let trustedRendererLocation: TrustedRendererLocation | null = null;
 let runtimeClient: RuntimePipeClient | null = null;
 let desktopRuntimeIdentity: DesktopRuntimeIdentity | null = null;
@@ -940,6 +954,134 @@ async function maybeRunDesktopUpdateInstallProbe(): Promise<void> {
   });
 }
 
+/**
+ * Show/hide the main window. Shared by the global quick-window shortcut and the
+ * tray icon so both paths behave identically: hide when the window is already
+ * focused, otherwise restore + show + focus. Extracted from the shortcut
+ * handler so the tray does not have to duplicate (and drift from) this logic.
+ */
+function toggleMainWindowVisibility(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) createWindow();
+  const window = mainWindow;
+  if (!window || window.isDestroyed()) return;
+  if (window.isVisible() && window.isFocused()) {
+    window.hide();
+    return;
+  }
+  if (window.isMinimized()) window.restore();
+  window.show();
+  window.focus();
+}
+
+/**
+ * Bring the window back without toggling it off. The tray uses this for actions
+ * whose result is only visible in the UI (检查更新), where hiding the window
+ * would defeat the point.
+ */
+function revealMainWindow(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) createWindow();
+  const window = mainWindow;
+  if (!window || window.isDestroyed()) return;
+  if (window.isMinimized()) window.restore();
+  window.show();
+  window.focus();
+}
+
+function trayIconPath(): string {
+  // __dirname is dist/main at runtime; the icon ships in apps/desktop/build.
+  // The .ico carries 16/20/24/32px frames, so Windows picks a crisp tray size.
+  return path.join(__dirname, '../../build/icon.ico');
+}
+
+/**
+ * Conversations for the tray submenu, newest first. Degrades to an empty list on
+ * any failure — a tray menu must never throw or hang on the Runtime.
+ */
+async function listTrayRecentConversations(): Promise<DesktopTrayConversation[]> {
+  try {
+    await ensureRuntimeConnection();
+    const response = await getRuntimeClient().request<{
+      conversations: Array<{
+        id: string;
+        title: string;
+        updatedAt?: string;
+        lastMessageAt?: string;
+      }>;
+    }>('conversation.list', { includeArchived: false });
+    return response.conversations
+      .slice()
+      .sort((a, b) =>
+        (b.lastMessageAt ?? b.updatedAt ?? '').localeCompare(
+          a.lastMessageAt ?? a.updatedAt ?? '',
+        ),
+      )
+      .map((conversation) => ({ id: conversation.id, title: conversation.title }));
+  } catch (error) {
+    console.warn('[desktop] tray: could not list recent conversations', error);
+    return [];
+  }
+}
+
+async function openDataDirectoryFromTray(): Promise<void> {
+  try {
+    await ensureRuntimeConnection();
+    const stats = await getRuntimeClient().request<DataStorageStatsResponse>(
+      'data.storageStats',
+      {},
+    );
+    const error = await shell.openPath(stats.dataDirectory);
+    if (error) console.warn('[desktop] tray: could not open data directory', error);
+  } catch (error) {
+    console.warn('[desktop] tray: could not open data directory', error);
+  }
+}
+
+/** Creates the tray icon, wiring its menu to the current window/Runtime state. */
+function setupDesktopTray(): void {
+  createDesktopTray(
+    {
+      isWindowVisible: () =>
+        Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()),
+      toggleWindow: () => toggleMainWindowVisibility(),
+      listRecentConversations: () => listTrayRecentConversations(),
+      openConversation: (conversationId: string) => {
+        // The conversation lives in the renderer, so surface the window first —
+        // otherwise the navigation would happen invisibly.
+        revealMainWindow();
+        sendOpenConversationToRenderer(conversationId);
+      },
+      isRuntimeRunning: async () => {
+        try {
+          return await probeRuntimePipe(getDesktopRuntimeIdentity().installId, 500);
+        } catch {
+          return false;
+        }
+      },
+      checkForUpdates: () => {
+        // Show the window: update progress and errors are rendered in the UI, and
+        // hiding the window would leave the user with no feedback at all.
+        revealMainWindow();
+        try {
+          void getDesktopUpdateController()
+            .checkForUpdates()
+            .catch((error: unknown) => {
+              console.warn('[desktop] tray: update check failed', error);
+            });
+        } catch (error) {
+          console.warn('[desktop] tray: update controller unavailable', error);
+        }
+      },
+      openDataDirectory: () => openDataDirectoryFromTray(),
+      quit: () => {
+        // Bypass close-to-tray so the app actually exits.
+        isQuitting = true;
+        app.quit();
+      },
+    },
+    trayIconPath(),
+  );
+}
+
 function getDesktopUpdateController(): DesktopUpdateController {
   if (!desktopUpdateController) throw new Error('desktop.update.not-initialized');
   return desktopUpdateController;
@@ -1073,6 +1215,16 @@ function createWindow(): void {
     });
   });
   window.once('ready-to-show', () => window.show());
+  // Close-to-tray: hide and keep the window alive instead of destroying it, so
+  // the app stays one click away in the notification area. Two guards matter —
+  // a real quit sets isQuitting, and a disabled tray must fall through to a real
+  // close (a hidden window with no tray icon would be unreachable).
+  window.on('close', (event) => {
+    if (isQuitting) return;
+    if (!isDesktopTrayActive()) return;
+    event.preventDefault();
+    window.hide();
+  });
   window.on('closed', () => killWindowPtys(window.id));
   const load = parsedDevServerUrl
     ? window.loadURL(parsedDevServerUrl.href)
@@ -2480,6 +2632,22 @@ function setupRuntimeBridge(): void {
     await ensureRuntimeConnection();
     return getRuntimeClient().request('globalAgent.delete', parseDeleteGlobalAgentPayload(value));
   });
+  ipcMain.handle('runtime:global-agent-list-workspace-activations', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'globalAgent.listWorkspaceActivations',
+      parseListGlobalAgentWorkspaceActivationsPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:global-agent-set-workspace-activation', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'globalAgent.setWorkspaceActivation',
+      parseSetGlobalAgentWorkspaceActivationPayload(value),
+    );
+  });
   ipcMain.handle('runtime:team-list', async (event) => {
     assertRuntimeIpcSource(event);
     await ensureRuntimeConnection();
@@ -3843,22 +4011,25 @@ function setupRuntimeBridge(): void {
     if (!record.enabled) return { registered: false, error: null };
 
     const registered = globalShortcut.register(accelerator, () => {
-      if (!mainWindow || mainWindow.isDestroyed()) createWindow();
-      const window = mainWindow;
-      if (!window || window.isDestroyed()) return;
-      if (window.isVisible() && window.isFocused()) {
-        window.hide();
-        return;
-      }
-      if (window.isMinimized()) window.restore();
-      window.show();
-      window.focus();
+      toggleMainWindowVisibility();
     });
     if (registered) registeredQuickWindowShortcut = accelerator;
     return {
       registered,
       error: registered ? null : '快捷键已被其他应用占用',
     };
+  });
+
+  // Tray visibility is a renderer preference (renderer localStorage), pushed on
+  // startup and whenever the user toggles it — the same pattern as the
+  // quick-window shortcut above, since the main process cannot read renderer
+  // storage. Turning the tray off also re-arms plain close-to-quit behaviour.
+  ipcMain.handle('desktop:set-tray-visible', (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    const visible = Boolean(value);
+    if (visible) setupDesktopTray();
+    else destroyDesktopTray();
+    return { visible };
   });
 
   ipcMain.handle('desktop:pick-folder', async (event, value: unknown) => {
@@ -4492,6 +4663,7 @@ void app
     app.setAsDefaultProtocolClient('syncthink');
     setupRuntimeBridge();
     createWindow();
+    setupDesktopTray();
     void maybeCheckForDesktopUpdatesAtStartup().catch(() => undefined);
     void bootstrapPrivateKernelsAtStartup().catch((error: unknown) => {
       console.warn(
@@ -4581,6 +4753,8 @@ function shutdownDesktopServices(reason: DesktopShutdownReason = 'desktop-exit')
 }
 
 app.on('before-quit', (event) => {
+  // Mark the quit as real before anything can re-enter the close handler.
+  isQuitting = true;
   if (registeredQuickWindowShortcut) {
     globalShortcut.unregister(registeredQuickWindowShortcut);
     registeredQuickWindowShortcut = null;
@@ -4592,7 +4766,12 @@ app.on('before-quit', (event) => {
 });
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
+  if (process.platform === 'darwin') return;
+  // With close-to-tray active the window is hidden rather than destroyed, so
+  // this fires only when the tray is off — and then quitting is correct, since
+  // an app with neither window nor tray icon would be unreachable.
+  if (isDesktopTrayActive()) return;
+  app.quit();
 });
 
 // Exposed for integration probes; Renderer uses only the fixed preload bridge.

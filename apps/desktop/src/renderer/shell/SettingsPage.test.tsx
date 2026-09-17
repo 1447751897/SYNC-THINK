@@ -466,7 +466,9 @@ describe('SettingsPage NewMax general tabs', () => {
 async function openAgentCollaboration() {
   render(<SettingsPage initialSection="general" />);
   fireEvent.click(screen.getByRole('tab', { name: 'Agent' }));
-  const master = await screen.findByRole('switch', { name: '允许模型对话创建子 Agent' });
+  const master = await screen.findByRole('switch', {
+    name: '允许模型对话并发委派给已有智能体',
+  });
   await waitFor(() =>
     expect(runtime.getSettings).toHaveBeenCalledWith({ keys: [COLLABORATION_SETTINGS_KEY] }),
   );
@@ -510,7 +512,9 @@ describe('SettingsPage agent collaboration', () => {
   it('writes the whole normalized settings object through the collaboration key', async () => {
     await openAgentCollaboration();
 
-    fireEvent.click(screen.getByRole('switch', { name: '允许模型对话创建子 Agent' }));
+    fireEvent.click(
+      screen.getByRole('switch', { name: '允许模型对话并发委派给已有智能体' }),
+    );
     await waitFor(() =>
       expect(runtime.setSetting).toHaveBeenCalledWith({
         key: COLLABORATION_SETTINGS_KEY,

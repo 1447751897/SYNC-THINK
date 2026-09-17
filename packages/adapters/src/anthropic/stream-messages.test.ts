@@ -3,7 +3,7 @@ import { AnthropicMessagesAdapter } from './anthropic-messages-adapter.js';
 import { joinMessagesUrl, streamAnthropicMessages } from './stream-messages.js';
 import { joinAnthropicModelsUrl, discoverAnthropicModels } from './discover-models.js';
 import { collect, textFromEvents } from '../events.js';
-import type { ProviderCallRequest } from '../types.js';
+import type { ProviderCallRequest, ProviderContentPart } from '../types.js';
 import { scrubSecrets } from '../openai/discover-models.js';
 
 function req(overrides: Partial<ProviderCallRequest> = {}): ProviderCallRequest {
@@ -422,5 +422,69 @@ describe('discoverAnthropicModels', () => {
     const headers = (init as { headers: Record<string, string> }).headers;
     expect(headers['x-api-key']).toBe('sk-ant-TEST_KEY_FOR_DISCOVERY_001');
     expect(headers['anthropic-version']).toBe('2023-06-01');
+  });
+});
+
+// NewMax `buildDocumentContent` / `buildVideoContent` 的 Anthropic 分支形状：
+// `document` / `video` 块 + base64 source（MediaBlock 与 image 同形）。
+describe('capability probe media blocks', () => {
+  const fetchMock = vi.fn<(...args: unknown[]) => Promise<Response>>();
+
+  afterEach(() => fetchMock.mockReset());
+
+  async function requestBlocks(
+    content: ProviderContentPart[],
+  ): Promise<Array<Record<string, unknown>>> {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'text/event-stream' },
+      body: sseStream(['event: message_stop\ndata: {"type":"message_stop"}\n\n']),
+      text: async () => '',
+    } as unknown as Response);
+    await collect(
+      streamAnthropicMessages(req({ messages: [{ role: 'user', content }] }), {
+        fetchImpl: fetchMock as unknown as typeof fetch,
+      }),
+    );
+    const init = fetchMock.mock.calls[0]![1] as { body: string };
+    const body = JSON.parse(init.body) as {
+      messages: Array<{ content: Array<Record<string, unknown>> }>;
+    };
+    return body.messages[0]!.content;
+  }
+
+  it('serializes document and video probes as base64 media blocks', async () => {
+    const blocks = await requestBlocks([
+      { type: 'text', text: 'summarize' },
+      { type: 'document', mediaUrl: 'data:application/pdf;base64,JVBERi0=' },
+      { type: 'text', text: 'describe' },
+      { type: 'video', mediaUrl: 'data:video/mp4;base64,AAAA' },
+    ]);
+    expect(blocks).toEqual([
+      { type: 'text', text: 'summarize' },
+      {
+        type: 'document',
+        source: { type: 'base64', media_type: 'application/pdf', data: 'JVBERi0=' },
+      },
+      { type: 'text', text: 'describe' },
+      { type: 'video', source: { type: 'base64', media_type: 'video/mp4', data: 'AAAA' } },
+    ]);
+  });
+
+  it('lets an explicit media type override the one inside the data URL', async () => {
+    const blocks = await requestBlocks([
+      {
+        type: 'document',
+        mediaUrl: 'data:application/octet-stream;base64,JVBERi0=',
+        mediaType: 'application/pdf',
+      },
+    ]);
+    expect(blocks).toEqual([
+      {
+        type: 'document',
+        source: { type: 'base64', media_type: 'application/pdf', data: 'JVBERi0=' },
+      },
+    ]);
   });
 });

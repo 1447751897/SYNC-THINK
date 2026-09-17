@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>上下文窗口 · 改前 / 改后</title>
+    <style>
+      :root {
+        --color-text: #1c1c1c;
+        --color-text-secondary: #5c5c5c;
+        --color-text-faint: #8a8a8a;
+        --color-border: #e6e6e6;
+        --color-surface: #fff;
+        --color-elevated: #fff;
+        --color-accent: #3b82f6;
+        --color-accent-text: #2563eb;
+        --removed: #f43f5e;
+        --kept-note: #059669;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        padding: 28px 32px 48px;
+        color: var(--color-text);
+        background: #f4f1ea;
+        font: 14px/1.45 ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+      }
+      h1 { margin: 0 0 8px; font-size: 22px; }
+      .lead { margin: 0 0 22px; max-width: 880px; color: #5a554c; }
+      .pair { margin-bottom: 36px; }
+      .pair h2 { margin: 0 0 12px; font-size: 16px; }
+      .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: start; }
+      .col-label {
+        display: flex; align-items: center; gap: 8px;
+        margin-bottom: 8px; font-size: 12px; font-weight: 700; letter-spacing: 0.04em;
+      }
+      .tag { padding: 2px 8px; border-radius: 999px; font-size: 10px; }
+      .tag-before { background: #ffe4e6; color: #be123c; }
+      .tag-after { background: #d1fae5; color: #047857; }
+      .card {
+        width: 292px;
+        padding: 12px 14px;
+        border: 1px solid var(--color-border);
+        border-radius: 12px;
+        background: #fff;
+        box-shadow: 0 10px 32px rgb(0 0 0 / 12%);
+      }
+      .header { display: flex; justify-content: space-between; gap: 12px; }
+      .title { font-size: 12.5px; font-weight: 650; }
+      .title-row { display: flex; align-items: center; gap: 6px; }
+      .kernel {
+        padding: 2px 6px;
+        border: 1px solid color-mix(in srgb, var(--color-accent) 28%, transparent);
+        border-radius: 999px;
+        background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+        color: var(--color-accent-text);
+        font-size: 10px; font-weight: 600;
+      }
+      .sub { margin-top: 2px; color: var(--color-text-faint); font-size: 10.5px; }
+      .headline { font-size: 13px; white-space: nowrap; }
+      .headline span { color: var(--color-text-faint); font-size: 10.5px; font-weight: 550; }
+      .bar { position: relative; height: 5px; margin-top: 11px; border-radius: 999px; background: var(--color-border); }
+      .fill { height: 100%; width: 16%; border-radius: 999px; background: var(--color-accent); }
+      .threshold { position: absolute; top: -3px; left: 70%; width: 1px; height: 11px; background: #94a3b8; }
+      .status {
+        display: flex; gap: 6px; margin: 8px 0 9px; padding: 6px 8px;
+        border: 1px solid color-mix(in srgb, var(--color-accent) 20%, var(--color-border));
+        border-radius: 7px;
+        background: color-mix(in srgb, var(--color-accent) 7%, var(--color-surface));
+        color: var(--color-text-secondary); font-size: 10.5px;
+      }
+      .status i { width: 6px; height: 6px; margin-top: 4px; border-radius: 99px; background: var(--color-accent); flex: none; }
+      .row { display: flex; justify-content: space-between; gap: 14px; margin-top: 5px; font-size: 12px; color: var(--color-text-secondary); }
+      .row strong { color: var(--color-text); font-size: 12px; }
+      .pct { color: var(--color-text-faint); font-weight: 500; }
+      .muted { margin-top: 7px; padding-top: 5px; border-top: 1px dashed var(--color-border); }
+      .hint { margin-top: 8px; font-size: 11px; line-height: 1.5; color: var(--color-text-faint); }
+      .section { margin-top: 10px; margin-bottom: 3px; font-size: 11px; color: var(--color-text-secondary); font-weight: 650; }
+      .divider { margin-top: 10px; border-top: 1px solid var(--color-border); }
+      .gone { outline: 1.5px dashed var(--removed); background: #fff1f2; border-radius: 6px; padding: 4px 6px; }
+      .note { margin-top: 10px; font-size: 12px; color: #5a554c; max-width: 292px; }
+      .note b { color: var(--kept-note); }
+      .note.drop b { color: var(--removed); }
+      @media (max-width: 700px) { .cols { grid-template-columns: 1fr; } }
+    </style>
+  </head>
+  <body>
+    <h1>上下文窗口面板 · 改前 / 改后</h1>
+    <p class="lead">
+      红色虚线框是准备删掉或不再出现的内容。数字行（占用、上限、构成、会话累计）保留。
+      70% 只留在 SYNC-THINK 原生内核；切到 GPT / ClaudeCode 后立刻换成内核自管。
+    </p>
+
+    <section class="pair">
+      <h2>1. SYNC-THINK 原生内核（你设了 400k）</h2>
+      <div class="cols">
+        <div>
+          <div class="col-label"><span class="tag tag-before">改前</span> 现在的样子</div>
+          <article class="card">
+            <div class="header">
+              <div>
+                <div class="title">当前上下文窗口</div>
+                <div class="sub">当前模型实际可见的完整上下文窗口</div>
+              </div>
+              <strong class="headline">63.4k <span>/ 400k</span></strong>
+            </div>
+            <div class="bar"><div class="fill"></div><span class="threshold"></span></div>
+            <div class="status"><i></i>达到 70% 时，在发送下一条消息前自动压缩</div>
+            <div class="row"><span>当前占用</span><strong>63.4k <span class="pct">· 16%</span></strong></div>
+            <div class="row"><span>容量上限</span><strong>400k</strong></div>
+            <div class="row"><span>模型配置</span><strong>400k</strong></div>
+            <div class="row"><span>窗口剩余</span><strong>336.6k</strong></div>
+            <div class="row"><span>自动压缩</span><strong>280k <span class="pct">· 70%</span></strong></div>
+            <div class="row"><span>距离压缩</span><strong>216.6k</strong></div>
+            <div class="row"><span>最近压缩</span><strong>尚未发生</strong></div>
+            <p class="hint gone">当前占用来自 Runtime 将发送给模型的完整对话上下文，不是单条回复的 Token。</p>
+            <div class="divider"></div>
+            <div class="section">当前对话上下文构成</div>
+            <div class="row"><span>系统指令</span><strong>3.1k</strong></div>
+            <div class="row"><span>智能体 / 小队</span><strong>42</strong></div>
+            <div class="row"><span>项目上下文</span><strong>76</strong></div>
+            <div class="row"><span>已保存摘要</span><strong>0</strong></div>
+            <div class="row"><span>消息历史</span><strong>53.4k</strong></div>
+            <div class="row"><span>工具定义</span><strong>6.8k</strong></div>
+            <div class="row muted"><span>构成合计</span><strong>63.4k</strong></div>
+            <p class="hint gone">各构成按字节估算，四舍五入后合计与「当前占用」一致；工具定义与消息同样为估算值。</p>
+            <div class="divider"></div>
+            <div class="section">会话累计</div>
+            <div class="row"><span>累计 Token 消耗</span><strong>2.4M</strong></div>
+            <div class="row"><span>会话时长</span><strong>1 分钟</strong></div>
+            <p class="hint gone">会话累计 = 全部轮次输入与输出的总和，可大于窗口上限；与「当前窗口占用」是两个独立口径，不参与自动压缩判定。</p>
+          </article>
+          <p class="note drop">红框三段说明 <b>删掉</b>。70% 蓝条和自动压缩行留下，因为这是原生内核规则。</p>
+        </div>
+        <div>
+          <div class="col-label"><span class="tag tag-after">改后</span> SYNC-THINK 仍按容量 × 70%</div>
+          <article class="card">
+            <div class="header">
+              <div>
+                <div class="title">当前上下文窗口</div>
+                <div class="sub">当前模型实际可见的完整上下文窗口</div>
+              </div>
+              <strong class="headline">63.4k <span>/ 400k</span></strong>
+            </div>
+            <div class="bar"><div class="fill"></div><span class="threshold"></span></div>
+            <div class="status"><i></i>达到 70% 时，在发送下一条消息前自动压缩</div>
+            <div class="row"><span>当前占用</span><strong>63.4k <span class="pct">· 16%</span></strong></div>
+            <div class="row"><span>容量上限</span><strong>400k</strong></div>
+            <div class="row"><span>模型配置</span><strong>400k</strong></div>
+            <div class="row"><span>窗口剩余</span><strong>336.6k</strong></div>
+            <div class="row"><span>自动压缩</span><strong>280k <span class="pct">· 70%</span></strong></div>
+            <div class="row"><span>距离压缩</span><strong>216.6k</strong></div>
+            <div class="row"><span>最近压缩</span><strong>尚未发生</strong></div>
+            <div class="divider"></div>
+            <div class="section">当前对话上下文构成</div>
+            <div class="row"><span>系统指令</span><strong>3.1k</strong></div>
+            <div class="row"><span>智能体 / 小队</span><strong>42</strong></div>
+            <div class="row"><span>项目上下文</span><strong>76</strong></div>
+            <div class="row"><span>已保存摘要</span><strong>0</strong></div>
+            <div class="row"><span>消息历史</span><strong>53.4k</strong></div>
+            <div class="row"><span>工具定义</span><strong>6.8k</strong></div>
+            <div class="row muted"><span>构成合计</span><strong>63.4k</strong></div>
+            <div class="divider"></div>
+            <div class="section">会话累计</div>
+            <div class="row"><span>累计 Token 消耗</span><strong>2.4M</strong></div>
+            <div class="row"><span>会话时长</span><strong>1 分钟</strong></div>
+          </article>
+          <p class="note">面板更短。<b>400k × 70% = 280k</b> 还在，说明文字没了。</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="pair">
+      <h2>2. 切到 GPT 内核（Codex）</h2>
+      <div class="cols">
+        <div>
+          <div class="col-label"><span class="tag tag-before">改前</span> 现在的问题：还在说 70%</div>
+          <article class="card">
+            <div class="header">
+              <div>
+                <div class="title-row">
+                  <div class="title">当前上下文窗口</div>
+                  <span class="kernel">GPT</span>
+                </div>
+                <div class="sub">当前模型实际可见的完整上下文窗口</div>
+              </div>
+              <strong class="headline">63.4k <span>/ 400k</span></strong>
+            </div>
+            <div class="bar"><div class="fill"></div><span class="threshold"></span></div>
+            <div class="status gone"><i></i>达到 70% 时，在发送下一条消息前自动压缩</div>
+            <div class="row"><span>当前占用</span><strong>63.4k <span class="pct">· 16%</span></strong></div>
+            <div class="row"><span>容量上限</span><strong>400k</strong></div>
+            <div class="row"><span>模型配置</span><strong>400k</strong></div>
+            <div class="row"><span>窗口剩余</span><strong>336.6k</strong></div>
+            <div class="row gone"><span>自动压缩</span><strong>280k <span class="pct">· 70%</span></strong></div>
+            <div class="row gone"><span>距离压缩</span><strong>216.6k</strong></div>
+            <div class="row gone"><span>最近压缩</span><strong>尚未发生</strong></div>
+            <p class="hint gone">当前占用来自 Runtime 将发送给模型的完整对话上下文，不是单条回复的 Token。</p>
+            <div class="divider"></div>
+            <div class="section">当前对话上下文构成</div>
+            <div class="row"><span>系统指令</span><strong>3.1k</strong></div>
+            <div class="row"><span>消息历史</span><strong>53.4k</strong></div>
+            <div class="row"><span>工具定义</span><strong>6.8k</strong></div>
+            <div class="row muted"><span>构成合计</span><strong>63.4k</strong></div>
+            <p class="hint gone">各构成按字节估算……</p>
+            <div class="divider"></div>
+            <div class="section">会话累计</div>
+            <div class="row"><span>累计 Token 消耗</span><strong>2.4M</strong></div>
+            <p class="hint gone">会话累计 = 全部轮次……不参与自动压缩判定。</p>
+          </article>
+          <p class="note drop">红框这些 <b>不该在 GPT 上出现</b>：宿主 70% 规则 + 三段说明。</p>
+        </div>
+        <div>
+          <div class="col-label"><span class="tag tag-after">改后</span> 一切内核就换成自管</div>
+          <article class="card">
+            <div class="header">
+              <div>
+                <div class="title-row">
+                  <div class="title">当前上下文窗口</div>
+                  <span class="kernel">GPT</span>
+                </div>
+                <div class="sub">当前模型实际可见的完整上下文窗口</div>
+              </div>
+              <strong class="headline">63.4k <span>/ 400k</span></strong>
+            </div>
+            <div class="bar"><div class="fill"></div></div>
+            <div class="status"><i></i>上下文压缩由 GPT 内核自行管理</div>
+            <div class="row"><span>当前占用</span><strong>63.4k <span class="pct">· 16%</span></strong></div>
+            <div class="row"><span>容量上限</span><strong>400k</strong></div>
+            <div class="row"><span>模型配置</span><strong>400k</strong></div>
+            <div class="row"><span>窗口剩余</span><strong>336.6k</strong></div>
+            <div class="divider"></div>
+            <div class="section">会话累计</div>
+            <div class="row"><span>累计 Token 消耗</span><strong>2.4M</strong></div>
+            <div class="row"><span>会话时长</span><strong>1 分钟</strong></div>
+          </article>
+          <p class="note">没有 70%、没有自动压缩行、没有灰字。<b>切内核立刻换这套</b>，不用等跑完一轮。</p>
+        </div>
+      </div>
+    </section>
+  </body>
+</html>

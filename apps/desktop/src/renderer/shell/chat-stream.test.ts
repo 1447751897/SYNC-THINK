@@ -272,7 +272,8 @@ describe('conversation stream event consumption', () => {
       commentaryText: '正在分析失败原因。',
       timestamp: new Date(1_000).toISOString(),
       terminal: true,
-      terminalState: 'failed',
+      // A pause is resumable: the live draft reports `paused`, not `failed`.
+      terminalState: 'paused',
     });
     expect(draft?.terminalError).toContain('备用模型已全部尝试');
     expect(draft?.terminalError).toContain('503');

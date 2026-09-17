@@ -121,6 +121,8 @@ export type CommandType =
   | 'globalAgent.create'
   | 'globalAgent.update'
   | 'globalAgent.delete'
+  | 'globalAgent.listWorkspaceActivations'
+  | 'globalAgent.setWorkspaceActivation'
   | 'team.list'
   | 'team.create'
   | 'team.update'
@@ -637,22 +639,63 @@ export interface DelegatedAgentToolEvent {
   output?: string;
   startedAt?: string;
   completedAt?: string;
+  /**
+   * `arguments`/`output` were clipped to keep the child's log inside its size
+   * budget. `outputCharacters` is the untrimmed length, so the card can say how
+   * much was left out instead of silently showing a short log.
+   */
+  truncated?: boolean;
+  outputCharacters?: number;
+  /** Row standing in for tool calls that did not fit the budget at all. */
+  omitted?: boolean;
+}
+
+/**
+ * Billed usage of one delegated child run, summed over its own provider requests
+ * with the same per-request dedupe the parent's process panel uses.
+ *
+ * A child's spend is not part of the parent's totals, so it travels on the
+ * projection (for a running delegation) and in the tool result (for a finished
+ * one) to stay readable on the card either way.
+ */
+export interface DelegatedAgentUsage {
+  tokensIn?: number;
+  tokensOut?: number;
+  /** Provider-reported input tokens served from a prompt cache. */
+  cachedTokensHit?: number;
+  /** Provider-reported input tokens written into a prompt cache. */
+  cachedTokensCreated?: number;
 }
 
 export interface DelegatedAgentProjection {
   childRunId: RunId;
   parentRunId: RunId;
+  /**
+   * `toolCallId` of the parent's `agent_delegate` / `agent_run` call that
+   * spawned this child.
+   *
+   * Published from the moment the delegation starts so the parent can anchor
+   * the card under its own tool row immediately. Without it the card could only
+   * be placed once the durable tool result arrived (the result is what carries
+   * `childRunId`), so a running delegation piled up in the panel's fallback
+   * 「智能体任务」area at the top and only moved inline after it finished.
+   */
+  parentToolCallId?: string;
   /** Optional sibling batch label supplied by the parent model turn. */
   parallelGroup?: string;
   name: string;
   avatar: string;
-  kind: 'existing' | 'temporary';
-  /** Reused Agent Library id; absent for a run-local temporary profile. */
-  agentId?: string;
+  kind: 'existing';
+  /** Existing Agent Library id reused for this child run. */
+  agentId: string;
   status: 'running' | 'completed' | 'failed' | 'cancelled' | 'timed_out';
   activeTool?: string;
   toolEvents: DelegatedAgentToolEvent[];
   result?: string;
+  /** Tokens this child has billed so far (running) or in total (settled). */
+  usage?: DelegatedAgentUsage;
+  /** Wall-clock milliseconds this child has run. */
+  durationMs?: number;
 }
 
 /**
@@ -987,6 +1030,8 @@ export interface ProviderModelSummary {
   visionCapability?: boolean | null;
   /** Image probe failure/unknown reason, when available. */
   visionProbeReason?: string | null;
+  /** 用户手写的图片能力答案（优先于探针），未设置时为 null。 */
+  visionManualOverride?: boolean | null;
   /** 0026: priority chain position inside the provider — 0 is the primary model. */
   priority: number;
   /** 0026: optional pinned credential for this model (relay-station key groups). */
@@ -1234,6 +1279,16 @@ export interface ConfirmCapabilitiesPayload {
   capabilities: import('@sync-think/shared').CapabilityTag[];
   /** true = user confirms; false = keep as unconfirmed after edit. Default true. */
   confirmed?: boolean;
+  /**
+   * 用户对「这个模型能收图吗」的最终答案，与探针结论分开存放，且**优先于探针**
+   * （NewMax `manualOverrides.image`）。`true` 断言能收图，`false` 断言不能，
+   * `null` 清除手动答案并回到探针 / 已知表裁决，`undefined` 表示本次保存不改动。
+   *
+   * 这是探针跑不通（中转站不支持探针 PNG）时唯一能让模型被认定为有视觉能力的
+   * 通道，所以取消勾选应当传 `null` 而不是 `false` —— 「没有手动意见」不等于
+   * 「确认不能看图」。
+   */
+  visionCapabilityOverride?: boolean | null;
 }
 
 export interface ConfirmCapabilitiesResponse {
@@ -3440,6 +3495,32 @@ export interface ListGlobalAgentsResponse {
   agents: import('@sync-think/shared').GlobalAgent[];
 }
 
+export interface ListGlobalAgentWorkspaceActivationsPayload {
+  workspaceId: WorkspaceId;
+}
+
+export interface GlobalAgentWorkspaceActivationSummary {
+  agentId: import('@sync-think/shared').AgentId;
+  workspaceId: WorkspaceId;
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ListGlobalAgentWorkspaceActivationsResponse {
+  activations: GlobalAgentWorkspaceActivationSummary[];
+}
+
+export interface SetGlobalAgentWorkspaceActivationPayload {
+  agentId: import('@sync-think/shared').AgentId;
+  workspaceId: WorkspaceId;
+  active: boolean;
+}
+
+export interface SetGlobalAgentWorkspaceActivationResponse {
+  activation: GlobalAgentWorkspaceActivationSummary;
+}
+
 export interface CreateGlobalAgentPayload {
   name: string;
   defaultModelId: ModelId;
@@ -3450,6 +3531,9 @@ export interface CreateGlobalAgentPayload {
   skillIds?: string[];
   mcpServerIds?: string[];
   reasoningEffort?: string;
+  availabilityScope?: import('@sync-think/shared').AgentAvailabilityScope;
+  /** Whether this Agent may write when delegated to (docs/adr/0001). */
+  writePolicy?: import('@sync-think/shared').AgentWritePolicy;
 }
 export interface UpdateGlobalAgentPayload extends Partial<CreateGlobalAgentPayload> {
   agentId: import('@sync-think/shared').AgentId;

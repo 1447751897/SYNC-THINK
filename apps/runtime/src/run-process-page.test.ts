@@ -50,7 +50,10 @@ describe('bounded process pages', () => {
     const snapshot = projectRunProcessSnapshot('run' as RunId, events);
     expect(paginateRunProcess(snapshot)).toEqual(first);
     expect(first.pages?.steps.total).toBe(5000);
-    expect(first.steps.length).toBeLessThanOrEqual(40);
+    // 内嵌快照一次给足（上限 400 条，真正约束是 224KB 字节预算），这样常规长度的
+    // run 打开面板时不会有「正在读取全部步骤…」反复出现；只有超长 run 才需要翻页。
+    expect(first.steps.length).toBeGreaterThan(40);
+    expect(first.steps.length).toBeLessThanOrEqual(400);
     expect(first.latestStep?.id).toBe('call-4999');
     const ids = first.steps.map((step) => step.id);
     let next = first.pages?.steps.nextOffset;

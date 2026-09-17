@@ -1,7 +1,7 @@
 // Read Desktop-staged chat images for multimodal provider calls.
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, normalize, resolve } from 'node:path';
+import { isAbsolute, join, normalize, relative, resolve } from 'node:path';
 
 export function resolveChatImageStagingDir(
   env: NodeJS.ProcessEnv = process.env,
@@ -123,6 +123,46 @@ export function resolveAppendMessageImageStagingPath(image: {
   return typeof image.stagingPath === 'string'
     ? resolveStagedImagePath(image.stagingPath, trust)
     : undefined;
+}
+
+/**
+ * `resolveStagedImagePath` answers with a `realpathSync`-canonicalised path, so
+ * the workspace root has to be canonicalised the same way before the two are
+ * compared. Otherwise a symlinked root (macOS `/var` → `/private/var`, a Windows
+ * junction) makes every attachment look like it lives outside the workspace and
+ * silently downgrades the turn.
+ */
+function canonicalizeForComparison(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
+/**
+ * Workspace-relative path of a validated staged image, with forward slashes so
+ * the guidance injected into the user message reads identically on every
+ * platform.
+ *
+ * Returns undefined unless the image is both app-managed (checked by
+ * {@link resolveStagedImagePath}) and genuinely inside the bound workspace. The
+ * shared staging directory is deliberately rejected: a relative path computed
+ * from a different root would be meaningless to the model. This is the input
+ * `imagesMode: 'materialized'` needs — Desktop writes attachments to
+ * `<workspace>/.sync-think/conversations/<id>/images/` before dispatch, so the
+ * runtime only has to hand the model a path it can actually read.
+ */
+export function resolveStagedImageWorkspaceRelativePath(
+  stagingPath: string,
+  trust?: AppendMessageImageTrustContext,
+): string | undefined {
+  const absolute = resolveStagedImagePath(stagingPath, trust);
+  const workspaceRoot = trust?.workspaceRoot?.trim();
+  if (!absolute || !workspaceRoot) return undefined;
+  const relativePath = relative(canonicalizeForComparison(workspaceRoot), absolute);
+  if (!relativePath || isAbsolute(relativePath) || relativePath.startsWith('..')) return undefined;
+  return relativePath.replace(/\\/g, '/');
 }
 
 export function resolveAppendMessageImageDataUrl(image: {

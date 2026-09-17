@@ -145,22 +145,18 @@ export function useConversationFileChanges(conversationId?: string, enabled = tr
   }, [current?.busy, current?.error, current?.page?.nextOffset, current?.page?.offset, enabled, identity, load]);
   const page = current?.page;
   const reload = () => load(0, [], true);
+  // 与执行过程同一口径：后台补页静默进行，只有失败时才出现提示与重取按钮。
   const controls =
-    identity && enabled && (current?.busy || current?.error) ? (
+    identity && enabled && current?.error ? (
       <div className="shell-process-pages" aria-label="会话文件加载">
-        {current.busy ? <span role="status">正在读取全部文件…</span> : null}
-        {current.error ? (
-          <span role="alert">
-            {current.error === 'changed'
-              ? '会话文件已更新，已显示当前已加载内容；请重新读取。'
-              : '后续文件读取失败，已显示已加载内容。'}
-          </span>
-        ) : null}
-        {current.error ? (
-          <button type="button" disabled={current.busy} onClick={reload}>
-            重新读取文件
-          </button>
-        ) : null}
+        <span role="alert">
+          {current.error === 'changed'
+            ? '会话文件已更新，已显示当前已加载内容；请重新读取。'
+            : '后续文件读取失败，已显示已加载内容。'}
+        </span>
+        <button type="button" disabled={current.busy} onClick={reload}>
+          重新读取文件
+        </button>
       </div>
     ) : null;
   return { page, controls, reload };

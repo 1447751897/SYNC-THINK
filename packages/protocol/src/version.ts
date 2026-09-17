@@ -60,6 +60,8 @@ export type Feature =
   | 'globalAgent.create'
   | 'globalAgent.update'
   | 'globalAgent.delete'
+  | 'globalAgent.listWorkspaceActivations'
+  | 'globalAgent.setWorkspaceActivation'
   | 'team.list'
   | 'team.create'
   | 'team.update'
@@ -205,6 +207,8 @@ export const DEFAULT_FEATURES: Feature[] = [
   'globalAgent.create',
   'globalAgent.update',
   'globalAgent.delete',
+  'globalAgent.listWorkspaceActivations',
+  'globalAgent.setWorkspaceActivation',
   'team.list',
   'team.create',
   'team.update',

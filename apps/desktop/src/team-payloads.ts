@@ -98,6 +98,37 @@ export function parseListGlobalAgentsPayload(value: unknown): ListGlobalAgentsPa
   return { includeArchived: value.includeArchived as boolean | undefined };
 }
 
+export function parseListGlobalAgentWorkspaceActivationsPayload(
+  value: unknown,
+): import('@sync-think/protocol').ListGlobalAgentWorkspaceActivationsPayload {
+  const label = 'Invalid list-global-agent-workspace-activations payload';
+  if (!isRecord(value)) throw new Error(label);
+  return {
+    workspaceId: requiredString(
+      value.workspaceId,
+      label,
+    ) as import('@sync-think/protocol').ListGlobalAgentWorkspaceActivationsPayload['workspaceId'],
+  };
+}
+
+export function parseSetGlobalAgentWorkspaceActivationPayload(
+  value: unknown,
+): import('@sync-think/protocol').SetGlobalAgentWorkspaceActivationPayload {
+  const label = 'Invalid set-global-agent-workspace-activation payload';
+  if (!isRecord(value) || typeof value.active !== 'boolean') throw new Error(label);
+  return {
+    agentId: requiredString(
+      value.agentId,
+      label,
+    ) as import('@sync-think/protocol').SetGlobalAgentWorkspaceActivationPayload['agentId'],
+    workspaceId: requiredString(
+      value.workspaceId,
+      label,
+    ) as import('@sync-think/protocol').SetGlobalAgentWorkspaceActivationPayload['workspaceId'],
+    active: value.active,
+  };
+}
+
 export function parseCreateGlobalAgentPayload(value: unknown): CreateGlobalAgentPayload {
   const label = 'Invalid create-global-agent payload';
   if (!isRecord(value)) throw new Error(label);
@@ -117,6 +148,14 @@ export function parseCreateGlobalAgentPayload(value: unknown): CreateGlobalAgent
     skillIds: optionalStringArray(value.skillIds, label),
     mcpServerIds: optionalStringArray(value.mcpServerIds, label),
     reasoningEffort: optionalString(value.reasoningEffort, label),
+    availabilityScope:
+      value.availabilityScope === undefined
+        ? undefined
+        : value.availabilityScope === 'global' || value.availabilityScope === 'workspace'
+          ? value.availabilityScope
+          : (() => {
+              throw new Error(label);
+            })(),
   };
 }
 
@@ -146,6 +185,14 @@ export function parseUpdateGlobalAgentPayload(value: unknown): UpdateGlobalAgent
     skillIds: optionalStringArray(value.skillIds, label),
     mcpServerIds: optionalStringArray(value.mcpServerIds, label),
     reasoningEffort: optionalString(value.reasoningEffort, label),
+    availabilityScope:
+      value.availabilityScope === undefined
+        ? undefined
+        : value.availabilityScope === 'global' || value.availabilityScope === 'workspace'
+          ? value.availabilityScope
+          : (() => {
+              throw new Error(label);
+            })(),
     archived: value.archived as boolean | undefined,
   };
 }

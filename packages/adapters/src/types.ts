@@ -64,10 +64,27 @@ export interface ProviderMessage {
 }
 
 export interface ProviderContentPart {
-  type: 'text' | 'image' | 'tool-call' | 'tool-result';
+  type: 'text' | 'image' | 'document' | 'video' | 'tool-call' | 'tool-result';
   text?: string;
   imageUrl?: string;
   imageRef?: string;
+  /**
+   * Vision detail hint. Only the capability probe sets this (`'low'`, mirroring
+   * NewMax `probeImageForProtocol`); regular image turns leave it undefined so
+   * the provider keeps its default fidelity.
+   */
+  imageDetail?: 'low' | 'high' | 'auto';
+  /**
+   * Document / video payload as a data URL (`data:application/pdf;base64,…`) or
+   * a plain https URL. Mirrors NewMax `buildDocumentContent` /
+   * `buildVideoContent`, which send the capability-probe assets inline.
+   */
+  mediaUrl?: string;
+  /**
+   * Optional explicit MIME type for `mediaUrl` when the data URL carries none
+   * (e.g. `application/pdf`, `video/mp4`).
+   */
+  mediaType?: string;
   toolCall?: ProviderToolCall;
   toolResult?: string;
 }

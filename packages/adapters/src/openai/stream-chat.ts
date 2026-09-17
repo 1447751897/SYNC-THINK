@@ -1,5 +1,6 @@
-﻿import type { AdapterEvent, ProviderCallRequest, ProviderMessage } from '../types.js';
+import type { AdapterEvent, ProviderCallRequest, ProviderMessage } from '../types.js';
 import { scrubSecrets, normalizeOpenAICompatibleBaseUrl } from './discover-models.js';
+import { isUpstreamFailureSnippet } from '../http-failure.js';
 import {
   normalizeReasoningEffort,
   shouldOmitReasoningEffort,
@@ -113,6 +114,21 @@ function toOpenAIMessages(request: ProviderCallRequest): Array<Record<string, un
           if (url) {
             parts.push({ type: 'image_url', image_url: { url } });
           }
+        } else if (part.type === 'document') {
+          // NewMax `buildDocumentContent` 的 openai 分支：`file` + `file_data`。
+          // 探针资产是 data URL，直接内联；外部 URL 走 `file_url`。
+          const url = part.mediaUrl || '';
+          if (!url) continue;
+          parts.push({
+            type: 'file',
+            file: /^https?:\/\//i.test(url)
+              ? { filename: 'attachment', file_url: url }
+              : { filename: 'attachment', file_data: url },
+          });
+        } else if (part.type === 'video') {
+          // NewMax `buildVideoContent` 的 openai 分支：`video_url`。
+          const url = part.mediaUrl || '';
+          if (url) parts.push({ type: 'video_url', video_url: { url } });
         }
       }
       if (parts.length > 0) {
@@ -274,6 +290,15 @@ function classifyHttpFailure(status: number, snippet: string): ProviderCallError
     return new ProviderCallError(
       `请求被限流（${status}）：可能已达账户额度或并发上限，请稍后重试。${snippet}`,
       'rate-limit',
+      status,
+    );
+  }
+  if (status >= 400 && status < 500 && isUpstreamFailureSnippet(snippet)) {
+    // 中转站把上游故障包进 4xx（例如 400 + `upstream_error`）。这是服务端抖动，
+    // 不是请求非法，按 transient 处理才能让运行时重试/切备用模型。
+    return new ProviderCallError(
+      `网关上游调用失败（${status}）：${extractGatewayMessage(snippet) ?? '上游服务暂时不可用，请稍后重试。'}${snippet}`,
+      'transient',
       status,
     );
   }

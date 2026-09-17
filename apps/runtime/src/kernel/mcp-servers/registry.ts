@@ -53,6 +53,13 @@ export interface KernelMcpServerConditions {
   fallbackWebSearchEnabled?: boolean;
   /** Settings > 模型 > 图片识别 Fallback switched on. */
   visionFallbackEnabled?: boolean;
+  /**
+   * This run's primary model is *definitely* text-only AND no usable vision
+   * fallback exists, so `ocr_image` is the only route to the attachment's
+   * content. False for every vision-capable / undetermined model, and for the
+   * `described` path where the fallback already transcribed the image.
+   */
+  imageOcrFallbackEnabled?: boolean;
   /** Settings > 模型 > 图像生成 has an enabled OpenAI Images provider. */
   imageGenerationEnabled?: boolean;
   /** True only when this conversation has an active Goal-mode objective. */
@@ -78,8 +85,12 @@ const storeCondition = (key: keyof KernelMcpServerConditions) => (): boolean =>
 /** Registered servers, in load order (alwaysLoad first, then capability-gated). */
 export const KERNEL_MCP_SERVERS: readonly KernelMcpServerDefinition[] = [
   platformServer,
-  windowsOcrServer,
   capabilityBrokerServer,
+  {
+    ...windowsOcrServer,
+    // Degraded path only — see `imageOcrFallbackEnabled`.
+    condition: storeCondition('imageOcrFallbackEnabled'),
+  },
   {
     ...agentLibraryServer,
     condition: storeCondition('hasAgentStore'),

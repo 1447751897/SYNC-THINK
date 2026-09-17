@@ -294,14 +294,14 @@ export const CHAT_AGENT_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
   {
     name: 'agent_delegate',
     description:
-      'Delegate a focused task from a model conversation to one independent child Agent. The runtime first reuses a matching existing Agent by id/capability, otherwise creates a temporary profile for this run only. This tool is unavailable in Agent and Team conversations and is subject to depth, child-count, per-turn and token-budget settings.',
+      'Delegate a focused task to one existing Agent that is active in the current workspace. agentId is required; this tool never creates a temporary Agent. This tool is unavailable in Agent and Team conversations and is subject to depth, child-count, per-turn and token-budget settings.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
-      required: ['task'],
+      required: ['agentId', 'task'],
       properties: {
         task: { type: 'string', minLength: 1, maxLength: 20_000 },
-        agentId: { type: 'string', description: 'Optional exact existing Agent id.' },
+        agentId: { type: 'string', description: 'Exact existing Agent id from list_available_agents.' },
         requiredSkillIds: { type: 'array', items: { type: 'string' }, maxItems: 16 },
         requiredToolIds: { type: 'array', items: { type: 'string' }, maxItems: 16 },
         tokenBudget: { type: 'integer', minimum: 1, description: 'Optional per-child token cap.' },
@@ -325,6 +325,31 @@ export const CHAT_AGENT_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
 
 export const CHAT_DYNAMIC_AGENT_TOOL_SCHEMAS: readonly ProviderToolSchema[] =
   CHAT_AGENT_TOOL_SCHEMAS.filter((tool) => tool.name === 'agent_delegate');
+
+export const CHAT_AGENT_DIRECTORY_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
+  {
+    name: 'list_available_agents',
+    description:
+      'List existing, enabled Agents active in the current workspace. Use the returned exact agentId with agent_run.',
+    inputSchema: { type: 'object', additionalProperties: false, properties: {} },
+  },
+  {
+    name: 'get_agent',
+    description: 'Read one existing active Agent configuration by exact agentId.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['agentId'],
+      properties: { agentId: { type: 'string' } },
+    },
+  },
+  {
+    ...CHAT_AGENT_TOOL_SCHEMAS.find((tool) => tool.name === 'agent_delegate')!,
+    name: 'agent_run',
+    description:
+      'Run one existing Agent active in the current workspace. Never creates or modifies Agents.',
+  },
+];
 
 /**
  * Skill-management tools — let the chat model manage the Skill capability
@@ -599,7 +624,7 @@ export const CHAT_PLAN_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
   {
     name: 'update_task_plan',
     description:
-      'Maintain the user-visible task checklist for THIS run. Call it when a request needs 2+ distinct steps: once at the start with all steps (first step in_progress), then again whenever a step completes or plans change (send the FULL list each time, including descriptions, not a diff). Give each step a short imperative title (≤40 chars) AND a concrete description of its scope, target files/modules, checks or expected output. Avoid vague steps such as "test functionality" without saying what to test. Do NOT use it for single-step answers.',
+      'Maintain the user-visible task checklist for THIS run. Call it when a request needs 2+ distinct steps: once at the start with all steps (first step in_progress), then again whenever a step completes or plans change (send the FULL list each time, not a diff; repeat each step\'s id and description while they still apply — an omitted description is carried over from your previous call). Give each step a short imperative title (≤40 chars) AND a concrete description of its scope, target files/modules, checks or expected output. Avoid vague steps such as "test functionality" without saying what to test. Do NOT use it for single-step answers.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -614,6 +639,11 @@ export const CHAT_PLAN_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
             additionalProperties: false,
             required: ['title', 'status'],
             properties: {
+              id: {
+                type: 'string',
+                description:
+                  'Stable id you assign to this step; repeat it so the host can match updates back to the same step.',
+              },
               title: { type: 'string', description: 'Short imperative step title' },
               description: {
                 type: 'string',
@@ -1346,17 +1376,35 @@ export function executeChatBrowserTool(argumentsJson: string): string {
 }
 
 export interface ChatPlanItem {
+  id?: string;
   title: string;
   description?: string;
   status: 'pending' | 'in_progress' | 'completed';
+}
+
+/** Last-known checklist entry used to carry `description` across calls. */
+export interface ChatPlanCarryItem {
+  id?: string;
+  title: string;
+  description?: string;
 }
 
 /**
  * Execute update_task_plan: validate + normalize the checklist. The result is
  * echoed back through tool.completed so the renderer can project the latest
  * plan into the composer capsule. No side effects beyond the event stream.
+ *
+ * `previous` is the plan this thread published last time. The tool contract
+ * asks the model to resend the full list with descriptions, but once the
+ * conversation is compacted the original wording is gone from its context and
+ * later calls come back without it. Carrying the last known description
+ * forward keeps the checklist readable without changing the full-replace
+ * semantics of the list itself.
  */
-export function executeChatPlanTool(argumentsJson: string): string {
+export function executeChatPlanTool(
+  argumentsJson: string,
+  previous?: readonly ChatPlanCarryItem[],
+): string {
   let parsed: unknown;
   try {
     parsed = JSON.parse(argumentsJson || '{}');
@@ -1370,16 +1418,46 @@ export function executeChatPlanTool(argumentsJson: string): string {
       error: 'update_task_plan: items must be a non-empty array.',
     });
   }
+  // Keyed by id and by title: a step is matched on its id when the model sends
+  // one, and on its title otherwise (the schema does not require an id).
+  const carriedDescriptions = new Map<string, string>();
+  for (const item of previous ?? []) {
+    const previousDescription =
+      typeof item?.description === 'string' ? item.description.trim() : '';
+    if (!previousDescription) continue;
+    const previousId = typeof item?.id === 'string' ? item.id.trim() : '';
+    if (previousId && !carriedDescriptions.has(`id:${previousId}`)) {
+      carriedDescriptions.set(`id:${previousId}`, previousDescription);
+    }
+    const previousTitle = typeof item?.title === 'string' ? item.title.trim() : '';
+    if (previousTitle && !carriedDescriptions.has(`title:${previousTitle}`)) {
+      carriedDescriptions.set(`title:${previousTitle}`, previousDescription);
+    }
+  }
+
   const items: ChatPlanItem[] = [];
   for (const raw of rawItems.slice(0, 20)) {
-    const rec = raw as { title?: unknown; description?: unknown; status?: unknown };
+    const rec = raw as {
+      id?: unknown;
+      title?: unknown;
+      description?: unknown;
+      status?: unknown;
+    };
     const title = typeof rec?.title === 'string' ? rec.title.trim().slice(0, 80) : '';
     if (!title) continue;
     const status =
       rec.status === 'in_progress' || rec.status === 'completed' ? rec.status : 'pending';
+    const id = typeof rec.id === 'string' ? rec.id.trim().slice(0, 64) : '';
+    // An omitted or blanked description means "unchanged", not "erase it": the
+    // model cannot resend wording its compacted context no longer holds.
+    const carried =
+      (id ? carriedDescriptions.get(`id:${id}`) : undefined) ??
+      carriedDescriptions.get(`title:${title}`);
     const description =
-      typeof rec.description === 'string' ? rec.description.trim().slice(0, 400) : '';
-    items.push({ title, ...(description ? { description } : {}), status });
+      (typeof rec.description === 'string' ? rec.description.trim().slice(0, 400) : '') ||
+      carried ||
+      '';
+    items.push({ ...(id ? { id } : {}), title, ...(description ? { description } : {}), status });
   }
   if (items.length === 0) {
     return JSON.stringify({ ok: false, error: 'update_task_plan: no valid items.' });
@@ -1390,7 +1468,10 @@ export function executeChatPlanTool(argumentsJson: string): string {
 
 export const CHAT_SKILL_TOOL_NAMES = new Set(CHAT_SKILL_TOOL_SCHEMAS.map((tool) => tool.name));
 
-export const CHAT_AGENT_TOOL_NAMES = new Set(CHAT_AGENT_TOOL_SCHEMAS.map((tool) => tool.name));
+export const CHAT_AGENT_TOOL_NAMES = new Set([
+  ...CHAT_AGENT_TOOL_SCHEMAS.map((tool) => tool.name),
+  ...CHAT_AGENT_DIRECTORY_TOOL_SCHEMAS.map((tool) => tool.name),
+]);
 
 /** Agent tools that mutate the Agent Library (approval-gated outside full-access). */
 export const CHAT_AGENT_MUTATING_TOOL_NAMES = new Set([
@@ -1480,6 +1561,9 @@ export const CHAT_READ_ONLY_TOOL_NAMES = new Set([
   'web_search',
   'web_fetch',
   'list_agent_resources',
+  'list_available_agents',
+  'get_agent',
+  'agent_run',
   'list_skills',
   'read_skill',
   'list_mcp_tools',
@@ -1571,6 +1655,11 @@ export function toolsForExecutionMode(
     options.conversationTrack === undefined || options.conversationTrack === 'model';
   if (options.includeAgentTools && canManageAgentLibrary) {
     tools.push(...CHAT_AGENT_TOOL_SCHEMAS.filter((tool) => tool.name !== 'agent_delegate'));
+    tools.push(
+      ...CHAT_AGENT_DIRECTORY_TOOL_SCHEMAS.filter((tool) =>
+        ['list_available_agents', 'get_agent', 'agent_run'].includes(tool.name),
+      ),
+    );
     tools.push(...CHAT_SKILL_TOOL_SCHEMAS);
     tools.push(...CHAT_TEAM_TOOL_SCHEMAS);
   }

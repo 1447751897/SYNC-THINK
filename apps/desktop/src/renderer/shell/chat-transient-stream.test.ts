@@ -731,6 +731,7 @@ describe('chat transient stream reducer', () => {
           name: '审阅 Agent',
           avatar: '审阅',
           kind: 'existing',
+          agentId: 'agent-reviewer',
           status: 'running',
           activeTool: 'read_file',
           toolEvents: [{ toolName: 'read_file', status: 'running' }],

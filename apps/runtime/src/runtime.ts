@@ -10,11 +10,17 @@ import { DemoRunPersistenceJournal } from './demo-run-persistence.js';
 import { isCodexSilentCommandWatchdogMessage } from './kernel/persistent-terminal-command.js';
 import { CommandSessionStore, isRunningCommandResult } from './command-sessions.js';
 import {
+  CAPABILITY_PROBE_TEXT_PROMPT,
   describeVisionProbeFailure,
-  hasVisionProbeMarker,
+  interpretImageProbeResponse,
+  isExplicitMediaUnsupported,
+  VISION_PROBE_DOCUMENT_PROMPT,
   VISION_PROBE_IMAGE_URL,
   VISION_PROBE_MARKER,
+  VISION_PROBE_MP4_URL,
+  VISION_PROBE_PDF_URL,
   VISION_PROBE_PROMPT,
+  VISION_PROBE_VIDEO_PROMPT,
 } from './vision-probe.js';
 import {
   projectEventContent,
@@ -165,6 +171,8 @@ import {
   type ResolveArtifactMergeConflictResponse,
   type ListGlobalAgentsResponse,
   type GlobalAgentResponse,
+  type ListGlobalAgentWorkspaceActivationsResponse,
+  type SetGlobalAgentWorkspaceActivationResponse,
   type ListTeamsResponse,
   type TeamResponse,
   type TeamRunResponse,
@@ -206,6 +214,7 @@ import {
   type LocalSkillCandidate,
   type AssistantTurnSegment,
   type DelegatedAgentProjection,
+  type DelegatedAgentUsage,
   type DelegatedAgentToolEvent,
   type ConversationTransientFrame,
   type ConversationTransientSnapshot,
@@ -312,6 +321,7 @@ import {
   type ScheduledTaskRunStatus,
   type TaskRule,
   type ExternalEventEnvelope,
+  type AgentWritePolicy,
 } from '@sync-think/shared';
 import {
   fetchProviderBalance,
@@ -453,7 +463,6 @@ import {
   resolveCapabilityAccess,
   compareTextSnapshots,
   mergeTextSnapshots,
-  isEnvironmentalProbeFailure,
   resolveVisionState,
 } from '@sync-think/core';
 import { createHash, randomUUID } from 'node:crypto';
@@ -529,20 +538,30 @@ import {
 import {
   resolveAppendMessageImageDataUrl,
   resolveAppendMessageImageStagingPath,
+  resolveStagedImageWorkspaceRelativePath,
+  type AppendMessageImageTrustContext,
 } from './chat-image-staging.js';
 import {
   VISION_FALLBACK_SETTING_KEY,
-  buildDescriptionSuffix,
+  assertNotRefusal,
+  buildAttachmentGuidance,
   buildImageToolGuidance,
   buildImageHandlingFailureSuffix,
   buildImageDescriptionPrompt,
   catalogEntryVisionCapable,
   catalogEntryVisionState,
+  decideCatalogVisionFallback,
+  getFallbackLabel,
+  getImageDescribeText,
+  injectDescriptionsIntoContent,
   isModelVisionCapable,
   parseVisionFallbackSetting,
   resolveVisionDescribeModels,
   resolveVisionDescribeModel,
+  toCatalogModelEntry,
+  type CatalogModelEntry,
   type DescribeImageInput,
+  type VisionFallbackDecision,
   type VisionState,
 } from './describe-image.js';
 import {
@@ -689,6 +708,8 @@ import {
   parseListArtifactMergeConflictsPayload,
   parseResolveArtifactMergeConflictPayload,
   parseListGlobalAgentsPayload,
+  parseListGlobalAgentWorkspaceActivationsPayload,
+  parseSetGlobalAgentWorkspaceActivationPayload,
   parseCreateGlobalAgentPayload,
   parseUpdateGlobalAgentPayload,
   parseDeleteGlobalAgentPayload,
@@ -827,19 +848,106 @@ import { commitToolApprovalDecision } from './tool-approval-commit.js';
 const DEFAULT_DELEGATED_TASK_TIMEOUT_SECONDS = 300;
 const MAX_DELEGATED_TASK_TIMEOUT_SECONDS = 3_600;
 
-function delegatedToolEventsFromTimeline(
+/**
+ * Flatten an error and its `cause` chain into one searchable string.
+ *
+ * undici (Node's built-in fetch) reports a dropped response stream as
+ * `TypeError: terminated` and keeps the real transport reason in `cause`
+ * (`SocketError: other side closed`, `code: 'UND_ERR_SOCKET'`). Matching only
+ * `error.message` classified these provider-side network blips as `unknown`,
+ * which skips both same-model retry and the fallback walk — the run then paused
+ * with a misleading "no fallback configured" notice.
+ */
+function errorChainText(error: unknown): string {
+  const parts: string[] = [];
+  const visit = (value: unknown, depth: number): void => {
+    if (depth > 4 || value === undefined || value === null) return;
+    if (value instanceof Error) {
+      if (value.message) parts.push(value.message);
+      const code = (value as { code?: unknown }).code;
+      if (typeof code === 'string' && code) parts.push(code);
+      visit((value as { cause?: unknown }).cause, depth + 1);
+      return;
+    }
+    parts.push(String(value));
+  };
+  visit(error, 0);
+  return parts.join(' | ');
+}
+
+/**
+ * Bounded tool-event log for one delegated child.
+ *
+ * Used by both paths on purpose. The durable result must stay parseable — a
+ * child can call dozens of tools, and the old unbounded 12 KB-per-output log
+ * produced an 86 KB result that tripped the kernel's MCP tool-result limit and
+ * came back as a `<persisted-output>` envelope the desktop cannot parse (which
+ * is why the Agent card vanished the moment a delegation finished). The live
+ * transient projection shares the budget so one frame cannot grow to hundreds
+ * of kilobytes either. Every row keeps its name/status/timestamps; `arguments`
+ * and `output` share a single budget, and anything dropped is reported.
+ */
+const DELEGATED_TOOL_EVENT_BUDGET = 12_000;
+/** Upper bound on returned tool rows; the rest is reported as an omitted count. */
+const DELEGATED_TOOL_EVENT_LIMIT = 80;
+
+export function delegatedToolEventsFromTimeline(
   timeline: readonly AssistantTurnSegment[] | undefined,
 ): DelegatedAgentToolEvent[] {
-  return (timeline ?? [])
-    .filter((segment): segment is Extract<AssistantTurnSegment, { kind: 'tool' }> => segment.kind === 'tool')
-    .map((segment) => ({
+  const segments = (timeline ?? []).filter(
+    (segment): segment is Extract<AssistantTurnSegment, { kind: 'tool' }> =>
+      segment.kind === 'tool',
+  );
+  const events: DelegatedAgentToolEvent[] = [];
+  let budget = DELEGATED_TOOL_EVENT_BUDGET;
+  let omitted = Math.max(0, segments.length - DELEGATED_TOOL_EVENT_LIMIT);
+  for (const segment of segments.slice(0, DELEGATED_TOOL_EVENT_LIMIT)) {
+    if (budget <= 0) {
+      omitted += 1;
+      continue;
+    }
+    const args = segment.argumentsJson ?? '{}';
+    const output = segment.output;
+    const wanted = args.length + (output?.length ?? 0);
+    let renderedArgs = args;
+    let renderedOutput = output;
+    let truncated = false;
+    if (wanted > budget) {
+      // Split what remains so a huge output cannot starve the arguments, which
+      // are what make a tool row identifiable in the card.
+      const argsShare = Math.min(args.length, Math.ceil(budget / 2));
+      renderedArgs = args.slice(0, argsShare);
+      renderedOutput = output?.slice(0, Math.max(0, budget - argsShare));
+      truncated = true;
+      budget = 0;
+    } else {
+      budget -= wanted;
+    }
+    events.push({
       toolName: segment.name,
-      arguments: segment.argumentsJson ?? '{}',
+      arguments: renderedArgs,
       status: segment.status,
-      ...(segment.output !== undefined ? { output: segment.output.slice(0, 12_000) } : {}),
+      ...(renderedOutput !== undefined ? { output: renderedOutput } : {}),
+      ...(truncated
+        ? {
+            truncated: true,
+            ...(output !== undefined ? { outputCharacters: output.length } : {}),
+          }
+        : {}),
       ...(segment.startedAt ? { startedAt: segment.startedAt } : {}),
       ...(segment.completedAt ? { completedAt: segment.completedAt } : {}),
-    }));
+    });
+  }
+  if (omitted > 0) {
+    // Tell the card why its log stops early instead of silently looking complete.
+    events.push({
+      toolName: `…另有 ${omitted} 项工具调用未返回`,
+      arguments: '{}',
+      status: 'completed',
+      omitted: true,
+    });
+  }
+  return events;
 }
 import { computeNextRunAt, initialNextRunAt } from './task-scheduler.js';
 import {
@@ -1695,6 +1803,89 @@ function isProtectedAssistantTimelineSegment(segment: AssistantTurnSegment): boo
   return segment.kind === 'thinking' || segment.kind === 'text';
 }
 
+/**
+ * Chat tools that delegate a task to an Agent that already exists in the Agent
+ * Library. Both are executed by `executeDynamicAgentDelegation`; this is the
+ * single source for the dispatch check and for finding the parent's own tool
+ * row when anchoring a child's card.
+ */
+const DELEGATION_TOOL_NAMES: ReadonlySet<string> = new Set(['agent_delegate', 'agent_run']);
+
+/**
+ * May a delegated child of this Agent write?
+ *
+ * The child runs headless — no approval card exists — so the rule is the most
+ * restrictive of two inputs (docs/adr/0001):
+ *
+ *   - the Agent's own `writePolicy`: `read-only` never writes, `inherit` defers
+ *     to the conversation;
+ *   - the conversation's permission mode: `ask` denies, because a headless child
+ *     cannot ask anyone.
+ *
+ * `workspace` and `full-access` therefore write only for an `inherit` Agent, and
+ * the default (`read-only`) keeps every existing Agent exactly as it behaved
+ * before the policy existed.
+ */
+export function delegationMayWrite(input: {
+  writePolicy?: AgentWritePolicy;
+  executionMode: string;
+}): boolean {
+  if (input.writePolicy !== 'inherit') return false;
+  const mode = normalizeChatExecutionMode(input.executionMode);
+  return mode === 'workspace' || mode === 'full-access';
+}
+
+/**
+ * Resolve which parent tool row a delegation belongs to.
+ *
+ * The child's card must sit under its own `agent_delegate` / `agent_run` row,
+ * and that row is identified by the `toolCallId` the renderer already holds. The
+ * durable tool result also carries `childRunId`, but it only exists once the
+ * child finishes — too late to anchor a running delegation.
+ *
+ * Resolution happens when a projection is published rather than when the child
+ * is created: the executor receives a *snapshot* of the parent run taken before
+ * the delegation row was written back, so the live parent state is the first
+ * place that actually holds the row.
+ *
+ * The child run is created from the delegation's `task` text, which is exactly
+ * what the parent row's arguments carry, so task text is the deterministic key.
+ * Rows already used by a sibling projection are skipped, which keeps parallel
+ * siblings and repeated delegations of the same Agent on their own rows.
+ */
+function resolveParentDelegationToolCallId(input: {
+  parent: DemoRunState;
+  task: string;
+  /** parentToolCallId values already bound to a sibling child run. */
+  claimed: ReadonlySet<string>;
+}): string | undefined {
+  const rows = (input.parent.assistantTimeline ?? []).filter(
+    (segment): segment is Extract<AssistantTurnSegment, { kind: 'tool' }> =>
+      segment.kind === 'tool' && DELEGATION_TOOL_NAMES.has(segment.name),
+  );
+  const unclaimed = rows.filter((row) => !input.claimed.has(row.toolCallId));
+  const taskOf = (row: Extract<AssistantTurnSegment, { kind: 'tool' }>): string => {
+    try {
+      const args = JSON.parse(row.argumentsJson ?? '{}') as { task?: unknown };
+      return typeof args.task === 'string' ? args.task.trim() : '';
+    } catch {
+      return '';
+    }
+  };
+  const wanted = input.task.trim();
+  if (wanted) {
+    const exact = unclaimed.filter((row) => taskOf(row) === wanted);
+    // A still-running row is the live delegation; a settled one is a replay.
+    const live = exact.find((row) => row.status === 'running') ?? exact[0];
+    if (live) return live.toolCallId;
+  }
+  const running = unclaimed.filter((row) => row.status === 'running');
+  // One unclaimed running row is unambiguous even if its arguments were
+  // compacted away; with several candidates, guessing would mis-anchor cards.
+  if (running.length === 1) return running[0]!.toolCallId;
+  return unclaimed.length === 1 ? unclaimed[0]!.toolCallId : undefined;
+}
+
 function selectAssistantTimelineForBudget(
   ordered: readonly AssistantTurnSegment[],
   maxSegments: number,
@@ -2041,6 +2232,7 @@ function cursorForEvent(event: Event): EventReplayCursor {
 
 /** One checklist item as maintained by the model via update_task_plan. */
 export interface ModelTaskPlanItem {
+  id?: string;
   title: string;
   description?: string;
   status: 'pending' | 'in_progress' | 'completed';
@@ -2112,7 +2304,8 @@ function normalizeModelTaskPlan(raw: unknown): ModelTaskPlan | undefined {
     const status =
       rec.status === 'in_progress' || rec.status === 'completed' ? rec.status : 'pending';
     const description = typeof rec.description === 'string' ? rec.description.trim() : '';
-    items.push({ title, ...(description ? { description } : {}), status });
+    const id = typeof rec.id === 'string' ? rec.id.trim() : '';
+    items.push({ ...(id ? { id } : {}), title, ...(description ? { description } : {}), status });
   }
   if (items.length === 0) return undefined;
   const completed = items.filter((item) => item.status === 'completed').length;
@@ -3342,6 +3535,14 @@ export class Runtime {
         }
         if (frame.type === 'globalAgent.delete') {
           this.handleDeleteGlobalAgent(socket, frame);
+          return;
+        }
+        if (frame.type === 'globalAgent.listWorkspaceActivations') {
+          this.handleListGlobalAgentWorkspaceActivations(socket, frame);
+          return;
+        }
+        if (frame.type === 'globalAgent.setWorkspaceActivation') {
+          this.handleSetGlobalAgentWorkspaceActivation(socket, frame);
           return;
         }
         if (frame.type === 'team.list') {
@@ -7328,15 +7529,26 @@ export class Runtime {
             existing: model.capabilities,
           });
           const live = await this.probeModelCapabilitiesLive(provider, model, payload.visionOnly === true);
-          // NewMax `runVisionScan` 只探测视觉一项，探测范围之外的维度一律不动。
-          // 落到这里就是：实测结果只允许覆盖 vision，text / thinking / tool-calling /
-          // web-search 这些由 `suggestCapabilities` 静态判定的维度原样保留 ——
-          // 否则一次视觉探测会把它们整体抹掉（它们根本没有对应探针了）。
+          // 实测覆盖面与 `probeModelCapabilitiesLive` 的协议分流保持一致：
+          // vision（所有非 openai-images 协议）+ document / video（除 responses 系协议外）
+          // + thinking（仅 anthropic-messages，见 `probeThinkingOnce`）。
+          // 落在覆盖面之外的维度（text / tool-calling / web-search / image-generation）由
+          // `suggestCapabilities` 静态判定后原样保留 —— 实测只补不抹，否则一次扫描
+          // 会把静态声明的维度整体清掉。
           // 未定维度：本次没测出来 ≠ 没有。把原有声明原样保留，否则一次网络抖动
           // 就会把已确认的 vision 从模型上抹掉 —— 那正是用户报的
           // 「有图像能力，却被提示没有图像识别能力」。
+          const probedTags: CapabilityTag[] = payload.visionOnly
+            ? ['vision']
+            : model.protocol === 'openai-images'
+              ? []
+              : model.protocol === 'openai-responses'
+                ? ['vision']
+                : model.protocol === 'anthropic-messages'
+                  ? ['vision', 'document', 'video', 'thinking']
+                  : ['vision', 'document', 'video'];
           const carriedOver = live.undetermined.filter((tag) => model.capabilities.includes(tag));
-          const untested = model.capabilities.filter((tag) => tag !== 'vision');
+          const untested = model.capabilities.filter((tag) => !probedTags.includes(tag));
           const nextCapabilities = payload.visionOnly
             ? model.capabilities
             : normalizeCapabilities([...live.capabilities, ...carriedOver, ...untested]);
@@ -7470,8 +7682,10 @@ export class Runtime {
     // 上游不响应时不能无限等：与 runtime 其它出网调用保持同一超时口径。
     // 缺这道闸时，任何一个探测请求挂起都会让 Promise.all 永不结算，
     // 客户端连一个错误都收不到（表现为「点了检测没有任何返回」）。
+    // NewMax `PROBE_TIMEOUT_MS`（原文 0x7530）——探测请求 30 秒不响应即判超时。
+    const PROBE_TIMEOUT_MS = 30_000;
     const probeAbort = new AbortController();
-    const probeTimer = setTimeout(() => probeAbort.abort(), 90_000);
+    const probeTimer = setTimeout(() => probeAbort.abort(), PROBE_TIMEOUT_MS);
     const signal = probeAbort.signal;
     const results: Partial<Record<CapabilityTag, boolean>> = {};
     // 与 results 平行的一档：放「请求根本没打到模型」的维度（鉴权/限流/超时/网络）。
@@ -7482,7 +7696,7 @@ export class Runtime {
     const capabilities: CapabilityTag[] = [];
     let visionProbeReason: string | undefined;
 
-    const runCall = async (request: import('@sync-think/adapters').ProviderCallRequest) => {
+    const runCallOnce = async (request: import('@sync-think/adapters').ProviderCallRequest) => {
       let text = '';
       let tool = false;
       let hosted = false;
@@ -7496,121 +7710,198 @@ export class Runtime {
       }
       return { text: text.trim(), tool, hosted, reasoning };
     };
+    // NewMax `sendCapabilityProbe`：结果是超时时重跑一次再下结论，
+    // 避免一次网络抖动就把可用的通道记成「未判定」。
+    const runCall = async (request: import('@sync-think/adapters').ProviderCallRequest) => {
+      try {
+        return await runCallOnce(request);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (!/timeout|timed out|超时|aborted/i.test(message)) throw error;
+        return await runCallOnce({ ...request, idempotencyKey: `${request.idempotencyKey}-retry` });
+      }
+    };
+    // 与 NewMax 探针请求体一致：**非流式**、`max_tokens: 256`。
+    // 流式请求下不少中转站不会在首个 chunk 之前暴露能力类错误，非流式才拿得到判定依据。
     const requestBase = {
       protocol: model.protocol,
       baseUrl: provider.baseUrl,
       modelId: model.providerModelId,
       apiKey,
       signal,
-      stream: true,
-      maxOutputTokens: 32,
+      stream: false,
+      maxOutputTokens: 256,
     } as const;
     const probes: Array<Promise<void>> = [];
 
+    /**
+     * 视觉探针 —— NewMax `probeCapabilities` 的 image 维，判定链逐字对齐。
+     *
+     * 三态出口：读出校验码 → true；明确拒答 / 裸 none → false；答非所问 → 未定。
+     * 「答非所问」在 NewMax 里是 unknown 而非 false —— 写 false 会让一个只是
+     * 没读出这张探针图的多模态模型被永久降级到视觉 fallback / OCR。
+     */
+    const probeVisionOnce = async (): Promise<void> => {
+      try {
+        const vision = await runCall({
+          ...requestBase,
+          idempotencyKey: `capability-probe-vision-${ulid()}`,
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: VISION_PROBE_PROMPT },
+                {
+                  type: 'image',
+                  imageUrl: VISION_PROBE_IMAGE_URL,
+                  // NewMax `probeImageForProtocol` 的 responses 分支带 `detail:'low'`；
+                  // 其它协议的 `buildImageContent` 不带。只影响探针请求。
+                  ...(model.protocol === 'openai-responses' ? { imageDetail: 'low' as const } : {}),
+                },
+              ],
+            },
+          ],
+        });
+        const verdict = interpretImageProbeResponse(vision.text);
+        if (verdict.supported === true) {
+          results.vision = true;
+          capabilities.push('vision');
+          reasons.push(`图片输入实测成功（读出了校验码 ${VISION_PROBE_MARKER}）`);
+          return;
+        }
+        if (verdict.supported === false) {
+          results.vision = false;
+          visionProbeReason = verdict.reason;
+          // 统一加「图片输入」前缀：限流/网络这类分类标签本身不含该词，
+          // 而扫描面板要按关键词把这些原因行筛出来给用户看。
+          reasons.push(`图片输入未通过：${describeVisionProbeFailure(verdict.reason ?? '')}`);
+          return;
+        }
+        undetermined.push('vision');
+        visionProbeReason = verdict.reason;
+        reasons.push(`图片输入未判定：${describeVisionProbeFailure(verdict.reason ?? '')}`);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : '未知错误';
+        // NewMax `isExplicitMediaUnsupported`：只有上游**明确**表示不接受图片才判负。
+        // 模糊 400（参数名 / 余额 / 路由问题）一律留作未定，交由已知支持表裁决 ——
+        // 一次协议抖动不该把多模态模型永久降级到 Windows OCR。
+        if (isExplicitMediaUnsupported(message, 'image')) {
+          results.vision = false;
+          visionProbeReason = message;
+          reasons.push(`图片输入未通过：${describeVisionProbeFailure(message)}`);
+          return;
+        }
+        undetermined.push('vision');
+        visionProbeReason = message;
+        reasons.push(`图片输入未判定：${describeVisionProbeFailure(message)}`);
+      }
+    };
+
+    /**
+     * 文档 / 视频探针 —— NewMax `probeCapabilities` 的 document / video 维。
+     *
+     * 这两维没有校验码可对，判定退化为「上游是否接受了该媒体类型的请求」：
+     *   请求被接受        → supported: true
+     *   明确说不支持该媒体 → supported: false（`isExplicitMediaUnsupported`）
+     *   其它任何失败       → 未定（鉴权 / 限流 / 网络 / 模糊 4xx）
+     *
+     * 与 NewMax 的 `probeContentType(..., { capability })` 同一语义：不传 interpret，
+     * 因此只有 `isExplicitMediaUnsupported` 命中时才写 false。
+     */
+    const probeMediaOnce = async (
+      capability: 'document' | 'video',
+      prompt: string,
+      mediaUrl: string,
+    ): Promise<void> => {
+      const label = capability === 'document' ? '文档' : '视频';
+      try {
+        await runCall({
+          ...requestBase,
+          idempotencyKey: `capability-probe-${capability}-${ulid()}`,
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: prompt },
+                { type: capability, mediaUrl },
+              ],
+            },
+          ],
+        });
+        results[capability] = true;
+        capabilities.push(capability);
+        reasons.push(`${label}输入实测成功`);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : '未知错误';
+        if (isExplicitMediaUnsupported(message, capability)) {
+          results[capability] = false;
+          reasons.push(`${label}输入未通过：${describeVisionProbeFailure(message)}`);
+          return;
+        }
+        undetermined.push(capability);
+        reasons.push(`${label}输入未判定：${describeVisionProbeFailure(message)}`);
+      }
+    };
+
+    // NewMax `probeCapabilities` 的协议分流：`responses` 系协议只走 image 专用通道
+    // （`probeImageForProtocol`），不像其它协议那样并发探 document / video ——
+    // responses 端点不接受 chat 形状的媒体块。
+    const responsesFamily = model.protocol === 'openai-responses';
+
+    /**
+     * 思考维探针 —— NewMax 只在 anthropic 协议上发这一维：一条纯文本请求 +
+     * `{ thinking: { type: 'enabled', budget_tokens: 0x400 } }`。
+     *
+     * SYNC-THINK 的 thinking 由 adapter 从 `reasoningEffort` 生成，所以这里给「低」
+     * 档（预算 2048）并把输出上限放到 8192 —— 必须严格大于预算，否则适配器会按
+     * Anthropic 不变式把 thinking 丢掉（等于没探）。
+     *
+     * 判定与 NewMax 同口径，是**二态**：请求被接受 → 支持；其余（4xx / 超时 / 网络）
+     * → 未定。永不写 false：写 false 会把一个只是没回推理摘要的模型永久降级。
+     */
+    const probeThinkingOnce = async (): Promise<void> => {
+      try {
+        const result = await runCall({
+          ...requestBase,
+          idempotencyKey: `capability-probe-thinking-${ulid()}`,
+          reasoningEffort: 'low',
+          maxOutputTokens: 8_192,
+          messages: [
+            {
+              role: 'user',
+              content: [{ type: 'text', text: CAPABILITY_PROBE_TEXT_PROMPT }],
+            },
+          ],
+        });
+        results.thinking = true;
+        capabilities.push('thinking');
+        reasons.push(result.reasoning ? '思考维实测返回推理内容' : '思考维请求被接受');
+      } catch (error) {
+        const message = error instanceof Error ? error.message : '未知错误';
+        undetermined.push('thinking');
+        reasons.push(`思考未判定：${describeVisionProbeFailure(message)}`);
+      }
+    };
+
     if (model.protocol !== 'openai-images' && !visionOnly) {
-      probes.push(
-        (async () => {
-          try {
-            // 与 NewMax 同源的判定：不是「回了字就算支持图片」，而是要求模型
-            // 真读出探针图里的校验码。对着无法解析的图编一句的情况会被挡掉。
-            const vision = await runCall({
-              ...requestBase,
-              idempotencyKey: `capability-probe-vision-${ulid()}`,
-              messages: [
-                {
-                  role: 'user',
-                  content: [
-                    { type: 'text', text: VISION_PROBE_PROMPT },
-                    { type: 'image', imageUrl: VISION_PROBE_IMAGE_URL },
-                  ],
-                },
-              ],
-            });
-            const replied = vision.text.trim();
-            results.vision = hasVisionProbeMarker(replied);
-            visionProbeReason = results.vision
-              ? undefined
-              : replied
-              ? `未识别测试图中的数字（模型回复：${replied.slice(0, 80)}）`
-                : '模型对探针图未返回任何内容';
-            if (results.vision) capabilities.push('vision');
-            reasons.push(
-              results.vision
-                ? `图片输入实测成功（读出了校验码 ${VISION_PROBE_MARKER}）`
-                : `图片输入未通过：${describeVisionProbeFailure(visionProbeReason ?? '')}`,
-            );
-          } catch (error) {
-            const message = error instanceof Error ? error.message : '未知错误';
-            // 统一加上「图片输入」前缀：限流/网络这类分类标签本身不含该词，
-            // 而扫描面板要按关键词把这些原因行筛出来给用户看。
-            if (isEnvironmentalProbeFailure(message)) {
-              // 与 NewMax `getReliableImageCapability` 同源：鉴权/限流/超时/网络
-              // 这类失败根本没拿到模型的能力答复，不能据此判定「不支持图片」——
-              // 否则一次网络抖动就会把多模态模型永久降级到 Windows OCR。
-              // 保留为「未定」（不写入 results.vision），交由已知支持表裁决。
-              undetermined.push('vision');
-              visionProbeReason = message;
-              reasons.push(`图片输入未判定：${describeVisionProbeFailure(message)}`);
-            } else {
-              results.vision = false;
-              visionProbeReason = message;
-              reasons.push(`图片输入未通过：${describeVisionProbeFailure(message)}`);
-            }
-          }
-        })(),
-      );
+      probes.push(probeVisionOnce());
+      if (!responsesFamily) {
+        probes.push(probeMediaOnce('document', VISION_PROBE_DOCUMENT_PROMPT, VISION_PROBE_PDF_URL));
+        probes.push(probeMediaOnce('video', VISION_PROBE_VIDEO_PROMPT, VISION_PROBE_MP4_URL));
+      }
+      if (model.protocol === 'anthropic-messages') {
+        probes.push(probeThinkingOnce());
+      }
     }
 
+    // 渲染层的 `runVisionScan` 只探视觉一项（NewMax 同名函数亦然），
+    // 走 `visionOnly` 通道时保持单维。
     if (visionOnly) {
-      probes.push(
-        (async () => {
-          try {
-            const vision = await runCall({
-              ...requestBase,
-              idempotencyKey: `capability-probe-vision-${ulid()}`,
-              messages: [
-                {
-                  role: 'user',
-                  content: [
-                    { type: 'text', text: VISION_PROBE_PROMPT },
-                    { type: 'image', imageUrl: VISION_PROBE_IMAGE_URL },
-                  ],
-                },
-              ],
-            });
-            const replied = vision.text.trim();
-            results.vision = hasVisionProbeMarker(replied);
-            visionProbeReason = results.vision
-              ? undefined
-              : replied
-                ? `未识别测试图中的数字（模型回复：${replied.slice(0, 80)}）`
-                : '模型对探针图未返回任何内容';
-            if (results.vision) capabilities.push('vision');
-            reasons.push(
-              results.vision
-                ? `图片输入实测成功（读出了校验码 ${VISION_PROBE_MARKER}）`
-                : `图片输入未通过：${describeVisionProbeFailure(visionProbeReason ?? '')}`,
-            );
-          } catch (error) {
-            const message = error instanceof Error ? error.message : '未知错误';
-            if (isEnvironmentalProbeFailure(message)) {
-              undetermined.push('vision');
-              visionProbeReason = message;
-              reasons.push(`图片输入未判定：${describeVisionProbeFailure(message)}`);
-            } else {
-              results.vision = false;
-              visionProbeReason = message;
-              reasons.push(`图片输入未通过：${describeVisionProbeFailure(message)}`);
-            }
-          }
-        })(),
-      );
+      probes.push(probeVisionOnce());
     }
 
-    // NewMax `runVisionScan` 只探测视觉一项 —— 这里不再向接口发文本 / 工具 / 思考 /
-    // 联网 / 生图探针。这几个维度的能力由 `suggestCapabilities` 静态判定后写入目录，
-    // 与 NewMax 用 `getKnownVisionSupport` 静态表兜底是同一角色：静态给默认值，
-    // 实测只负责纠正视觉那一项。
+    // 其余静态维度（文本 / 工具 / 联网 / 生图）由 `suggestCapabilities` 判定后写入
+    // 目录，与 NewMax 用 `getKnownVisionSupport` 静态表兜底是同一角色。
 
     await Promise.all(probes);
     clearTimeout(probeTimer);
@@ -7654,6 +7945,9 @@ export class Runtime {
         modelId: payload.modelId as ModelId,
         capabilities,
         capabilitiesConfirmed: confirmed,
+        ...(payload.visionCapabilityOverride !== undefined
+          ? { visionManualOverride: payload.visionCapabilityOverride }
+          : {}),
       });
 
       if (this.stateStore) {
@@ -8675,6 +8969,7 @@ export class Runtime {
       capabilitiesConfirmed: model.capabilitiesConfirmed,
       ...(model.visionCapability !== undefined ? { visionCapability: model.visionCapability } : {}),
       ...(model.visionProbeReason ? { visionProbeReason: model.visionProbeReason } : {}),
+      visionManualOverride: model.visionManualOverride ?? null,
       priority: model.priority,
       credentialRefId: model.credentialRefId,
       contextWindow,
@@ -9017,6 +9312,8 @@ export class Runtime {
         skillIds: payload.skillIds,
         mcpServerIds: payload.mcpServerIds,
         reasoningEffort: payload.reasoningEffort,
+        availabilityScope: payload.availabilityScope,
+        writePolicy: payload.writePolicy,
       });
       const agent = this.toGlobalAgentSummary(created);
       const event = this.appendEvent('system', 'globalAgent.created', {
@@ -9061,6 +9358,8 @@ export class Runtime {
         skillIds: payload.skillIds,
         mcpServerIds: payload.mcpServerIds,
         reasoningEffort: payload.reasoningEffort,
+        availabilityScope: payload.availabilityScope,
+        writePolicy: payload.writePolicy,
         archived: payload.archived,
       });
       const agent = this.toGlobalAgentSummary(updated);
@@ -9076,6 +9375,89 @@ export class Runtime {
           id: frame.id,
           kind: 'response',
           type: 'globalAgent.update',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeTeamModelCommandError(socket, frame, error);
+    }
+  }
+
+  private handleListGlobalAgentWorkspaceActivations(socket: Socket, frame: Frame): void {
+    const payload = parseListGlobalAgentWorkspaceActivationsPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.globalAgentStore || !this.workspaceStore) {
+      this.writeTeamModelStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      if (!this.workspaceStore.getWorkspace(payload.workspaceId)) {
+        throw new Error(`Workspace not found: ${payload.workspaceId}`);
+      }
+      const response: ListGlobalAgentWorkspaceActivationsResponse = {
+        activations: this.globalAgentStore
+          .listWorkspaceActivations(payload.workspaceId)
+          .map((activation) => ({
+            agentId: activation.agentId,
+            workspaceId: activation.workspaceId as typeof payload.workspaceId,
+            active: activation.active,
+            createdAt: activation.createdAt,
+            updatedAt: activation.updatedAt,
+          })),
+      };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'globalAgent.listWorkspaceActivations',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeTeamModelCommandError(socket, frame, error);
+    }
+  }
+
+  private handleSetGlobalAgentWorkspaceActivation(socket: Socket, frame: Frame): void {
+    const payload = parseSetGlobalAgentWorkspaceActivationPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.globalAgentStore || !this.workspaceStore) {
+      this.writeTeamModelStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      if (!this.workspaceStore.getWorkspace(payload.workspaceId)) {
+        throw new Error(`Workspace not found: ${payload.workspaceId}`);
+      }
+      this.globalAgentStore.setWorkspaceActivation(payload);
+      const activation = this.globalAgentStore
+        .listWorkspaceActivations(payload.workspaceId)
+        .find((item) => item.agentId === payload.agentId);
+      if (!activation) throw new Error('Agent workspace activation was not persisted');
+      const response: SetGlobalAgentWorkspaceActivationResponse = {
+        activation: {
+          agentId: activation.agentId,
+          workspaceId: activation.workspaceId as typeof payload.workspaceId,
+          active: activation.active,
+          createdAt: activation.createdAt,
+          updatedAt: activation.updatedAt,
+        },
+      };
+      const event = this.appendEvent('system', 'globalAgent.activationChanged', {
+        ...response.activation,
+      });
+      this.publishEvent(event);
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'globalAgent.setWorkspaceActivation',
           payload: response,
         }),
       );
@@ -9762,6 +10144,7 @@ export class Runtime {
       platformSchemas: nativePlatformToolSchemas({
         planningMode: this.isPlanningModeForThread(input.threadId),
         visionFallbackEnabled: this.isVisionFallbackSettingEnabled(),
+        imageOcrFallbackEnabled: this.shouldExposeWindowsOcrForRun(prepared.run),
         imageGenerationEnabled: this.isImageGenerationEnabled(),
         includeGoalManage: this.conversationHasActiveGoal(input.threadId),
       }),
@@ -11655,6 +12038,10 @@ export class Runtime {
       skillIds: [...record.skillIds],
       mcpServerIds: [...record.mcpServerIds],
       reasoningEffort: record.reasoningEffort,
+      enabled: record.enabled,
+      source: record.source,
+      availabilityScope: record.availabilityScope,
+      writePolicy: record.writePolicy,
       archived: record.archived,
       createdAt: record.createdAt,
       updatedAt: record.updatedAt,
@@ -20802,6 +21189,29 @@ export class Runtime {
         if (abort.signal.aborted) return;
         const attemptRun = this.demoRuns.get(runId);
         if (!attemptRun) return;
+        // Snapshot this round's output so a retry decision can tell "this round
+        // has not streamed anything yet" apart from "earlier rounds already
+        // produced text". Reading the run-level accumulators directly made every
+        // round after the first look like it had output, which silently disabled
+        // same-model retry inside multi-round tool loops.
+        const roundOutputLengths = {
+          assistantText: attemptRun.assistantText.length,
+          commentaryText: attemptRun.commentaryText.length,
+          reasoningText: attemptRun.reasoningText.length,
+          legacyPendingText: attemptRun.legacyPendingText.length,
+          assistantTimeline: attemptRun.assistantTimeline.length,
+        };
+        const producedOutputThisRound = (): boolean => {
+          const current = this.demoRuns.get(runId);
+          if (!current) return false;
+          return (
+            current.assistantText.length !== roundOutputLengths.assistantText ||
+            current.commentaryText.length !== roundOutputLengths.commentaryText ||
+            current.reasoningText.length !== roundOutputLengths.reasoningText ||
+            current.legacyPendingText.length !== roundOutputLengths.legacyPendingText ||
+            current.assistantTimeline.length !== roundOutputLengths.assistantTimeline
+          );
+        };
         const unavailableReason = this.runModelUnavailableReason(attemptRun);
         if (unavailableReason) {
           const outcome = this.tryContinueWithFallback(
@@ -20857,6 +21267,7 @@ export class Runtime {
               platformSchemas: nativePlatformToolSchemas({
                 planningMode: initialRun.planningMode === true,
                 visionFallbackEnabled: this.isVisionFallbackSettingEnabled(),
+                imageOcrFallbackEnabled: this.shouldExposeWindowsOcrForRun(attemptRun),
                 imageGenerationEnabled: this.isImageGenerationEnabled(),
                 includeGoalManage: this.conversationHasActiveGoal(initialRun.threadId),
               }),
@@ -20870,6 +21281,7 @@ export class Runtime {
               const schemas = nativePlatformToolSchemas({
                 planningMode: initialRun.planningMode === true,
                 visionFallbackEnabled: this.isVisionFallbackSettingEnabled(),
+                imageOcrFallbackEnabled: this.shouldExposeWindowsOcrForRun(attemptRun),
                 imageGenerationEnabled: this.isImageGenerationEnabled(),
                 includeGoalManage: this.conversationHasActiveGoal(initialRun.threadId),
               });
@@ -20902,13 +21314,7 @@ export class Runtime {
               shouldRetrySameModel({
                 failureClass,
                 retryCount: this.demoRuns.get(runId)?.retryCount ?? 0,
-                hasOutput:
-                  Boolean(
-                    this.demoRuns.get(runId)?.assistantText ||
-                    this.demoRuns.get(runId)?.commentaryText ||
-                    this.demoRuns.get(runId)?.legacyPendingText ||
-                    this.demoRuns.get(runId)?.reasoningText,
-                  ) && !isSharedProviderEndpointFailure(message),
+                hasOutput: producedOutputThisRound() && !isSharedProviderEndpointFailure(message),
               })
             ) {
               const retryCount = (this.demoRuns.get(runId)?.retryCount ?? 0) + 1;
@@ -21073,13 +21479,7 @@ export class Runtime {
                 shouldRetrySameModel({
                   failureClass,
                   retryCount: currentRun.retryCount ?? 0,
-                  hasOutput:
-                    Boolean(
-                      currentRun.assistantText ||
-                      currentRun.commentaryText ||
-                      currentRun.legacyPendingText ||
-                      currentRun.reasoningText,
-                    ) && !isSharedProviderEndpointFailure(message),
+                  hasOutput: producedOutputThisRound() && !isSharedProviderEndpointFailure(message),
                 })
               ) {
                 const retryCount = (currentRun.retryCount ?? 0) + 1;
@@ -21805,7 +22205,13 @@ export class Runtime {
                     );
                   }
                 } else {
-                  resultText = executeChatPlanTool(toolCall.argumentsJson);
+                  // Carry the last published checklist forward so a compacted
+                  // context that lost the original wording cannot blank out
+                  // step descriptions on the next full-list call.
+                  resultText = executeChatPlanTool(
+                    toolCall.argumentsJson,
+                    extractLatestTaskPlanFromEvents(this.events, currentRun.threadId)?.items,
+                  );
                 }
               } else if (CHAT_BROWSER_TOOL_NAMES.has(toolCall.name)) {
                 resultText = await this.executeChatBrowserWorkerTool({
@@ -21843,8 +22249,8 @@ export class Runtime {
                   approval: desktopApproval,
                   signal: abort.signal,
                 });
-              } else if (toolCall.name === 'agent_delegate') {
-                resultText = await this.executeDynamicAgentDelegation({
+      } else if (toolCall.name === 'agent_delegate' || toolCall.name === 'agent_run') {
+        resultText = await this.executeDynamicAgentDelegation({
                   run: currentRun,
                   toolCall,
                   workspaceRoot: workspaceRoot ?? '',
@@ -23260,6 +23666,7 @@ export class Runtime {
       fallbackWebSearchEnabled: externalWebSearch,
       visionFallbackEnabled: this.isVisionFallbackSettingEnabled(),
       imageGenerationEnabled: this.isImageGenerationEnabled(),
+      imageOcrFallbackEnabled: this.shouldExposeWindowsOcrForRun(run),
       hasActiveGoal: this.conversationHasActiveGoal(run.threadId),
     });
     const selection = selectKernelMcpRun({
@@ -24215,9 +24622,14 @@ export class Runtime {
       return executeTaskListTool(toolCall.argumentsJson, workspaceId, this.taskPlanStore);
     }
     if (CHAT_PLAN_TOOL_NAMES.has(name)) {
-      return executeChatPlanTool(toolCall.argumentsJson);
+      // Same carry-forward as the streaming path: descriptions survive a
+      // compacted context instead of being blanked by the next full-list call.
+      return executeChatPlanTool(
+        toolCall.argumentsJson,
+        extractLatestTaskPlanFromEvents(this.events, run.threadId)?.items,
+      );
     }
-    if (name === 'agent_delegate') {
+    if (DELEGATION_TOOL_NAMES.has(name)) {
       return this.executeDynamicAgentDelegation({ run, toolCall, workspaceRoot, signal });
     }
     if (CHAT_AGENT_TOOL_NAMES.has(name)) {
@@ -26628,14 +27040,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     if (run.imagesMode !== 'forwarded' || !run.images || run.images.length === 0) {
       return true;
     }
-    return catalogEntryVisionCapable({
-      modelId: model.id,
-      providerModelId: model.providerModelId,
-      providerId: model.providerId,
-      protocol: model.protocol,
-      capabilities: model.capabilities,
-      capabilitiesConfirmed: model.capabilitiesConfirmed,
-    });
+    return catalogEntryVisionCapable(toCatalogModelEntry(model));
   }
 
   private runModelUnavailableReason(run: DemoRunState): string | undefined {
@@ -27057,6 +27462,8 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         failureClass: details.failureClass,
         providerModelId: run.providerModelId,
         errorMessage: details.errorMessage,
+        resolutionSource: run.resolutionSource,
+        fallbackModelCount: run.fallbackModelIds?.length ?? 0,
       });
       const event = this.persistProjectedEvent(
         {
@@ -27071,6 +27478,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
             reason: details.reason,
             failedModelId: details.failedModelId,
             failureClass: details.failureClass,
+            fallbackModelCount: run.fallbackModelIds?.length ?? 0,
             ...(details.errorMessage ? { errorMessage: details.errorMessage } : {}),
             modelId: run.modelId,
             providerModelId: run.providerModelId,
@@ -27083,7 +27491,10 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         },
         projectedRuns,
       );
-      this.persistAssistantTerminalMessage(runId, run, 'failed', terminalError);
+      // A pause is not a failure: it is resumable and says so in the notice the
+      // desktop renders. Persisting it as `failed` made a recoverable provider
+      // outage read as a hard error.
+      this.persistAssistantTerminalMessage(runId, run, 'paused', terminalError);
       this.demoRuns.delete(runId);
       this.publishEvent(event);
       this.recordRunDiagnostic(runId, run, {
@@ -27115,7 +27526,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         return fc;
       }
     }
-    const message = error instanceof Error ? error.message : String(error ?? '');
+    const message = errorChainText(error);
     if (isCodexSilentCommandWatchdogMessage(message)) {
       return 'protocol';
     }
@@ -27141,7 +27552,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       return 'auth';
     }
     if (
-      /(?:status|http(?:\/\d(?:\.\d)?)?)\s*5\d\d|\b5(?:00|01|02|03)\b|service (?:temporarily )?unavailable|bad gateway|ECONNRESET|ECONNREFUSED|EAI_AGAIN|ENOTFOUND|socket hang up|network error|fetch failed/i.test(
+      /(?:status|http(?:\/\d(?:\.\d)?)?)\s*5\d\d|\b5(?:00|01|02|03)\b|service (?:temporarily )?unavailable|bad gateway|ECONNRESET|ECONNREFUSED|ECONNABORTED|EAI_AGAIN|ENOTFOUND|EPIPE|socket hang up|other side closed|premature close|\bterminated\b|UND_ERR_SOCKET|UND_ERR_CONNECT_TIMEOUT|UND_ERR_HEADERS_TIMEOUT|UND_ERR_BODY_TIMEOUT|network error|fetch failed/i.test(
         message,
       )
     ) {
@@ -27908,9 +28319,10 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     const settings = normalizeCollaborationSettings(
       this.appSettingStore?.get(COLLABORATION_SETTINGS_KEY)?.value,
     );
+    const isExistingAgentRun = input.toolCall.name === 'agent_run';
     const admission = evaluateDynamicDelegation({
       track: input.run.track ?? 'model',
-      settings,
+      settings: isExistingAgentRun ? { ...settings, dynamicSubagentsEnabled: true } : settings,
       state: {
         depth: input.run.delegationDepth ?? 0,
         childCount: input.run.delegationChildCount ?? 0,
@@ -27928,7 +28340,16 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         limits: settings,
       });
     }
-    const candidates = (this.globalAgentStore?.list() ?? []).map((agent) => ({
+    const requestedAgentId = typeof args.agentId === 'string' ? args.agentId.trim() : '';
+    if (!requestedAgentId) {
+      return JSON.stringify({
+        ok: false,
+        code: 'AGENT_ID_REQUIRED',
+        error: 'agent_delegate: agentId is required. Call list_available_agents first and choose an existing Agent.',
+      });
+    }
+    const workspaceId = this.resolveEventWorkspaceId(input.run.threadId);
+    const candidates = (this.globalAgentStore?.listEffective(workspaceId) ?? []).map((agent) => ({
       id: String(agent.id),
       name: agent.name,
       avatar: agent.avatar,
@@ -27937,11 +28358,32 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       skillIds: agent.skillIds,
       mcpServerIds: agent.mcpServerIds,
       archived: agent.archived,
+      enabled: agent.enabled,
+      source: agent.source,
+      availabilityScope: agent.availabilityScope,
+      writePolicy: agent.writePolicy,
     }));
+    if (!candidates.some((candidate) => candidate.id === requestedAgentId)) {
+      return JSON.stringify({
+        ok: false,
+        code: 'AGENT_UNAVAILABLE',
+        error: `agent_delegate: Agent ${requestedAgentId} is not active in workspace ${workspaceId}.`,
+        workspaceId,
+        availableAgents: candidates.map((candidate) => ({
+          id: candidate.id,
+          name: candidate.name,
+          source: candidate.source,
+        })),
+        suggestedDraft: {
+          task,
+          reason: '没有找到当前工作区已激活的指定 Agent；请先创建或激活一个已有 Agent。',
+        },
+      });
+    }
     const assignment = resolveAgentAssignment(
       {
         task,
-        preferredAgentId: typeof args.agentId === 'string' ? args.agentId : undefined,
+        preferredAgentId: requestedAgentId,
         requiredSkillIds: Array.isArray(args.requiredSkillIds)
           ? args.requiredSkillIds.map(String)
           : [],
@@ -27951,46 +28393,41 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       },
       candidates,
     );
-    const childRunId = ulid() as RunId;
-    let child: DemoRunState;
-    if (assignment.kind === 'existing' && assignment.agentId && this.globalAgentStore) {
-      // Global Agents are mutable and carry no version chain, so the child run
-      // resolves a copy of that Agent's persona / model / Skill / MCP binding at
-      // delegation time instead of freezing a stored AgentVersion pointer.
-      child = this.prepareRunBinding({
-        runId: childRunId,
-        threadId: input.run.threadId,
-        userText: task,
-        track: 'agent',
-        globalAgentId: assignment.agentId,
-        skillContextMode: 'run',
-      }).run;
-      child.track = 'model';
-    } else {
-      child = createDemoRun(childRunId, input.run.threadId, task, {
-        track: 'model',
-        modelId: input.run.modelId,
-        providerModelId: input.run.providerModelId,
-        protocol: input.run.protocol,
-        baseUrl: input.run.baseUrl,
-        providerId: input.run.providerId,
-        credentialRefId: input.run.credentialRefId,
-        credentialResolutionSource: input.run.credentialResolutionSource,
-        agentVersionId: input.run.agentVersionId,
-        resolutionSource: input.run.resolutionSource,
-        reasoningEffort: input.run.reasoningEffort,
-        useFakeProvider: input.run.useFakeProvider,
+    if (!assignment) {
+      return JSON.stringify({
+        ok: false,
+        code: 'AGENT_CAPABILITY_MISMATCH',
+        error: 'agent_delegate: the selected Agent does not satisfy the requested capabilities.',
+        agentId: requestedAgentId,
+        availableAgents: candidates.map((candidate) => ({
+          id: candidate.id,
+          name: candidate.name,
+        })),
       });
-      child.persona = assignment.temporaryProfile?.persona;
-      child.globalAgentName = assignment.temporaryProfile?.name;
     }
+    const childRunId = ulid() as RunId;
+    // Global Agents are mutable and carry no version chain, so the child run
+    // resolves a copy of that Agent's persona / model / Skill / MCP binding at
+    // delegation time instead of freezing a stored AgentVersion pointer.
+    const child = this.prepareRunBinding({
+      runId: childRunId,
+      threadId: input.run.threadId,
+      userText: task,
+      track: 'agent',
+      globalAgentId: assignment.agentId,
+      skillContextMode: 'run',
+    }).run;
+    child.track = 'model';
     child.delegationDepth = (input.run.delegationDepth ?? 0) + 1;
     child.delegationParentRunId = input.run.runId;
     child.delegationParallelGroup = parallelGroup;
     child.delegationTokenBudget = admission.taskTokenBudget;
     child.delegationTokensUsed = 0;
-    child.delegatedReadOnly = true;
-    child.delegatedToolAllowlist = [...DELEGATED_READONLY_TOOLS];
+    child.delegatedReadOnly = !delegationMayWrite({
+      writePolicy: candidates.find((candidate) => candidate.id === assignment.agentId)?.writePolicy,
+      executionMode: this.resolveChatExecutionMode(input.run.threadId),
+    });
+    if (child.delegatedReadOnly) child.delegatedToolAllowlist = [...DELEGATED_READONLY_TOOLS];
     const parentBeforeChild = this.demoRuns.get(input.run.runId);
     if (parentBeforeChild) {
       this.demoRuns.set(input.run.runId, {
@@ -28090,34 +28527,27 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         tokensUsed: completedChild.delegationTokensUsed ?? 0,
       });
     }
-    const assignedCandidate =
-      assignment.kind === 'existing'
-        ? candidates.find((candidate) => candidate.id === assignment.agentId)
-        : undefined;
+    const assignedCandidate = candidates.find((candidate) => candidate.id === assignment.agentId);
     const delegatedAvatar =
       assignedCandidate?.avatar?.trim() || assignedCandidate?.name?.slice(0, 2) || '🤖';
-    const toolEvents = (completedChild.assistantTimeline ?? [])
-      .filter((segment) => segment.kind === 'tool')
-      .map((segment) => ({
-        toolName: segment.name,
-        arguments: segment.argumentsJson ?? '{}',
-        status: segment.status,
-        ...(segment.output !== undefined ? { output: segment.output.slice(0, 12_000) } : {}),
-        ...(segment.startedAt ? { startedAt: segment.startedAt } : {}),
-        ...(segment.completedAt ? { completedAt: segment.completedAt } : {}),
-      }));
+    const toolEvents = delegatedToolEventsFromTimeline(completedChild.assistantTimeline);
+    const completedUsage = this.projectChildUsage(completedChild);
     return JSON.stringify({
       ok: true,
       ...parallelGroupField,
       childRunId,
       assignment: {
         kind: assignment.kind,
-        agentId: assignment.agentId ?? null,
-        name: child.globalAgentName ?? '临时任务 Agent',
-        avatar: assignment.kind === 'existing' ? delegatedAvatar : '🧩',
+        agentId: assignment.agentId,
+        name: child.globalAgentName ?? '已配置智能体',
+        avatar: delegatedAvatar,
       },
       status: 'completed',
       toolEvents,
+      // Carried in the durable result too, so a finished card keeps showing what
+      // the child spent after the live projection is gone.
+      ...(completedUsage.usage ? { usage: completedUsage.usage } : {}),
+      ...(completedUsage.durationMs !== undefined ? { durationMs: completedUsage.durationMs } : {}),
       result: completedChild.assistantText.trim(),
       tokenBudget: admission.taskTokenBudget,
       tokensUsed: completedChild.delegationTokensUsed ?? 0,
@@ -28211,6 +28641,55 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         approvedSkills,
         existingAgents,
         note: 'Use these ids in create_agent. skillIds must be approved skillVersionId values.',
+      });
+    }
+
+    if (input.toolCall.name === 'list_available_agents') {
+      const workspaceId = this.resolveEventWorkspaceId(input.run.threadId);
+      const agents = this.globalAgentStore.listEffective(workspaceId).map((agent) => ({
+        id: agent.id,
+        name: agent.name,
+        avatar: agent.avatar,
+        description: agent.description,
+        source: agent.source,
+        availabilityScope: agent.availabilityScope,
+        defaultModelId: agent.defaultModelId,
+        skillIds: [...agent.skillIds],
+        mcpServerIds: [...agent.mcpServerIds],
+      }));
+      return JSON.stringify({ ok: true, workspaceId, agents });
+    }
+
+    if (input.toolCall.name === 'get_agent') {
+      const agentId = typeof args.agentId === 'string' ? args.agentId.trim() : '';
+      const workspaceId = this.resolveEventWorkspaceId(input.run.threadId);
+      if (!agentId) return JSON.stringify({ ok: false, error: 'agentId is required.' });
+      const agent = this.globalAgentStore.listEffective(workspaceId).find((item) => item.id === agentId);
+      if (!agent) {
+        return JSON.stringify({
+          ok: false,
+          code: 'AGENT_UNAVAILABLE',
+          error: `Agent not found or inactive in workspace: ${agentId}`,
+          workspaceId,
+        });
+      }
+      return JSON.stringify({
+        ok: true,
+        workspaceId,
+        agent: {
+          id: agent.id,
+          name: agent.name,
+          avatar: agent.avatar,
+          persona: agent.persona,
+          description: agent.description,
+          defaultModelId: agent.defaultModelId,
+          fallbackModelIds: [...agent.fallbackModelIds],
+          skillIds: [...agent.skillIds],
+          mcpServerIds: [...agent.mcpServerIds],
+          reasoningEffort: agent.reasoningEffort,
+          source: agent.source,
+          availabilityScope: agent.availabilityScope,
+        },
       });
     }
 
@@ -31643,7 +32122,8 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       : undefined;
     const agentCreationPrompt = agentToolsEnabled
       ? [
-          'Agent Library tools are ENABLED (list_agent_resources, create_agent, update_agent, archive_agent):',
+          'Agent Library tools are ENABLED: list_available_agents / get_agent / agent_run 可运行已有智能体；list_agent_resources / create_agent / update_agent / archive_agent 仅用于受控管理。',
+          '- 模型需要协作时，FIRST call list_available_agents，再用返回的 exact agentId 调用 agent_run。agent_run 只允许复用当前工作区已激活的已有智能体，绝不创建临时智能体。',
           '- When the user asks to 创建智能体 / 新建智能体 / 入库, FIRST call list_agent_resources to get valid model ids and approved skill versions, THEN call create_agent with a complete draft (name, persona, description, defaultModelId, skillIds).',
           '- When the user asks to 修改/调整某个智能体, FIRST call list_agent_resources to confirm the target agent id, THEN call update_agent with ONLY the fields to change. skillIds is full-replace: include the complete final set.',
           '- When the user asks to 删除/归档某个智能体, use archive_agent (soft-delete, restorable in the Agent Library). There is NO hard-delete tool; never claim you deleted permanently. The agent of the CURRENT conversation cannot be archived.',
@@ -31687,10 +32167,10 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       ? [
           'Dynamic child Agent delegation is ENABLED for this model conversation.',
           'Only call agent_delegate when the task benefits from an independent focused context; do not delegate trivial turns.',
-          'The runtime chooses a matching existing Agent by hard capabilities and soft persona relevance, or creates a temporary run-local profile when no candidate fits.',
+          'agent_delegate 也只能绑定当前工作区已激活的已有 Agent；如果没有匹配项，运行时会返回结构化错误，不会创建临时 Agent。',
           'Agent and Team conversations do not receive this tool. Never describe an ordinary TaskCreate/TaskUpdate item as a child Agent.',
         ].join('\n')
-      : 'Dynamic child Agent delegation is unavailable for this conversation track or is disabled in settings.';
+      : '动态 Agent 委派开关未开启；如需调用已有智能体，请使用 list_available_agents 后调用 agent_run。';
     const browserWorkflowPrompt = browserWorkflowToolsEnabled
       ? [
           'Browser Automation Workflow tools are ENABLED (browser_workflow_list, browser_workflow_get, browser_workflow_create_draft):',
@@ -32004,19 +32484,18 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     return adapter.call(createDemoProviderRequest(run, apiKey, signal, requestExtras));
   }
 
+  /**
+   * The catalog the vision helpers read, projected through the single shared
+   * `toCatalogModelEntry` so no vision-bearing field — notably the user's manual
+   * image answer — can be dropped at an individual call site.
+   */
   private visionFallbackCatalog() {
     const records = this.providerStore?.listAllModels() ?? [];
-    return records.map((model) => ({
-      modelId: model.id,
-      providerModelId: model.providerModelId,
-      providerId: model.providerId,
-      protocol: model.protocol,
-      capabilities: model.capabilities,
-      capabilitiesConfirmed: model.capabilitiesConfirmed,
-      visionCapability: model.visionCapability,
-      probeReason: model.visionProbeReason,
-      enabled: this.providerStore?.getProvider(model.providerId)?.enabled ?? false,
-    }));
+    return records.map((model) =>
+      toCatalogModelEntry(model, {
+        enabled: this.providerStore?.getProvider(model.providerId)?.enabled ?? false,
+      }),
+    );
   }
 
   /** True only when the switch and its selected vision model are both usable. */
@@ -32044,31 +32523,69 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
    * `unknown` is a first-class answer: it means nobody could reach a verdict
    * (no tag, no known-table match) — not that the model is text-only.
    */
-  private resolveRunModelVisionState(run: DemoRunState): VisionState {
-    const catalog = this.providerStore?.listAllModels() ?? [];
-    const entry =
-      catalog.find((model) => model.id === run.modelId) ??
+  /**
+   * The catalog entry that answers for a run's model. A run may carry a host
+   * model id (a conversation-level override) or only the provider-facing pair;
+   * both shapes resolve to the same entry so capability answers never split.
+   */
+  private findRunCatalogEntry(
+    catalog: readonly CatalogModelEntry[],
+    run: DemoRunState,
+  ): CatalogModelEntry | undefined {
+    return (
+      catalog.find((entry) => entry.modelId === run.modelId) ??
       catalog.find(
-        (model) =>
-          model.providerModelId === run.providerModelId &&
-          (!run.providerId || model.providerId === run.providerId),
-      );
+        (entry) =>
+          entry.providerModelId === run.providerModelId &&
+          (!run.providerId || entry.providerId === run.providerId),
+      )
+    );
+  }
+
+  private resolveRunModelVisionState(run: DemoRunState): VisionState {
+    const entry = this.findRunCatalogEntry(this.visionFallbackCatalog(), run);
     if (!entry) {
-      return resolveVisionState({
-        providerId: run.providerId,
-        providerModelId: run.providerModelId,
-      });
+      return resolveVisionState(undefined, run.providerId ?? '', run.providerModelId);
     }
-    return catalogEntryVisionState({
-      modelId: entry.id,
-      providerModelId: entry.providerModelId,
-      providerId: entry.providerId,
-      protocol: entry.protocol,
-      capabilities: entry.capabilities,
-      capabilitiesConfirmed: entry.capabilitiesConfirmed,
-      visionCapability: entry.visionCapability,
-      probeReason: entry.visionProbeReason,
-    });
+    return catalogEntryVisionState(entry);
+  }
+
+  /**
+   * Windows OCR is the last resort for a turn whose model definitely cannot
+   * receive image pixels and whose vision fallback is unusable — the exact
+   * case that also produces `imagesMode === 'materialized'` and the
+   * `buildAttachmentGuidance` hint telling the model to call `ocr_image`.
+   *
+   * Every other shape answers `false` on purpose:
+   *   · supported / unknown primary → the pixels are forwarded, so the model
+   *     should look at the image rather than spend a turn OCR-ing text it can
+   *     already read;
+   *   · text-only primary with a verified fallback (`shouldRun`) → the fallback
+   *     already transcribed the attachment into the prompt.
+   *
+   * Kept deliberately identical to the branch in `adaptRunImagesForModel` so
+   * the tool catalog and the attachment payload cannot disagree: if this said
+   * `false` while the router chose `materialized`, the model would be handed a
+   * workspace path with no tool able to read it.
+   */
+  private shouldExposeWindowsOcrForRun(run: DemoRunState): boolean {
+    const decision = this.resolveRunVisionFallbackDecision(run);
+    return decision.state === 'unsupported' && !decision.shouldRun;
+  }
+
+  /**
+   * NewMax's single vision-fallback gate, resolved against this run's model.
+   *
+   * This replaces the older pair of checks ("is the primary text-only" plus
+   * "is the switch on"): `shouldRun` additionally demands a fallback that is
+   * positively verified and is not the primary model describing to itself.
+   */
+  private resolveRunVisionFallbackDecision(run: DemoRunState): VisionFallbackDecision {
+    const setting = parseVisionFallbackSetting(
+      this.appSettingStore?.get(VISION_FALLBACK_SETTING_KEY)?.value,
+    );
+    const catalog = this.visionFallbackCatalog();
+    return decideCatalogVisionFallback(this.findRunCatalogEntry(catalog, run), setting, catalog);
   }
 
   /**
@@ -32163,10 +32680,10 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     if (!adapter) throw new Error('视觉模型无可用适配器');
     const abort = signal ?? new AbortController().signal;
     const descriptions: Array<{ name: string; text: string }> = [];
-    let index = 0;
     for (const image of images) {
-      index += 1;
-      const prompt = buildImageDescriptionPrompt(image, index, images.length);
+      // NewMax builds the description request from the purpose alone: one
+      // request per image, with no index and no filename in the prompt.
+      const prompt = buildImageDescriptionPrompt('describe');
       let collected = '';
       let reasoningChars = 0;
       let finishedReason = '';
@@ -32178,7 +32695,6 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         apiKey,
         idempotencyKey: `vision-describe-${ulid()}`,
         signal: abort,
-        systemPrompt: '你是图像描述助手，用中文简洁、准确地描述用户提供的图片。',
         messages: [
           {
             role: 'user',
@@ -32189,11 +32705,12 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
           },
         ],
         stream: true,
-        // Reasoning-capable vision models (e.g. deepseek vision-exp) spend their
-        // thinking tokens INSIDE this budget. 1024 was routinely exhausted by the
-        // reasoning channel alone on real screenshots, ending the stream with
-        // reason=length and an empty answer ("未生成有效描述"). Give ample headroom.
-        maxOutputTokens: 8192,
+        // NewMax issues the description request with `max_tokens: 0x400` (1024).
+        // Caveat: NewMax's own fallback path is Anthropic-only, while this
+        // adapter is generic — a reasoning-capable vision model can spend this
+        // whole budget on its thinking channel and end with reason=length.
+        // Kept aligned with NewMax deliberately.
+        maxOutputTokens: 1024,
       })) {
         if (event.type === 'text-delta') collected += event.text;
         else if (event.type === 'assistant-message-delta') collected += event.text;
@@ -32214,6 +32731,10 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
             : `视觉模型返回了空内容（finish=${finishedReason || 'unknown'}，reasoning ${reasoningChars} 字符）`;
         throw new Error(`图片「${image.name}」未生成有效描述：${diagnosis}`);
       }
+      // NewMax asserts the fallback did not answer with an apology instead of a
+      // description — otherwise the primary model would read "我看不到图片" as
+      // if it were the image content.
+      assertNotRefusal(collected);
       descriptions.push({ name: image.name, text: collected });
     }
     return descriptions;
@@ -32224,15 +32745,19 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
    *   1) supported/unknown primary -> forward the original image;
    *   2) definite text-only primary + verified visual fallback -> inject its
    *      description and send prose only;
-   *   3) no usable fallback or a fallback error -> keep the image out of the
-   *      text-only request and mark preprocessing failed.
+   *   3) definite text-only primary, no usable fallback, attachments inside the
+   *      bound workspace -> materialize them as workspace-relative paths and
+   *      send prose only, so the model chooses `ocr_image` / `describe_image`
+   *      instead of being handed pixels it is told it cannot read;
+   *   4) anything else (no workspace, attachments only in the shared staging
+   *      directory) -> forward the original image as the last resort.
    * Windows OCR remains an explicit tool for extracting text from workspace
    * images; it is not an automatic attachment fallback.
    */
   private async adaptRunImagesForModel(run: DemoRunState): Promise<void> {
     if (!run.images || run.images.length === 0 || run.imagesMode) return;
-    const visionState = this.resolveRunModelVisionState(run);
-    if (visionState !== 'unsupported') {
+    const decision = this.resolveRunVisionFallbackDecision(run);
+    if (decision.state !== 'unsupported') {
       run.imagesMode = 'forwarded';
       return;
     }
@@ -32257,10 +32782,25 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       throw new Error('图片转写失败：部分附件没有可读的图片数据，原图未发送。');
     }
 
-    if (this.isVisionFallbackSettingEnabled()) {
+    if (decision.shouldRun) {
       try {
         const descriptions = await this.describeChatImages(inputs);
-        run.userText += buildDescriptionSuffix(descriptions, true);
+        // NewMax `injectDescriptionsIntoContent`: replace the attachment-path
+        // block with the fallback model's descriptions, framed by its label.
+        // NewMax picks the wording table by locale; the runtime has no locale
+        // channel yet, so this resolves to the zh-CN table.
+        const label = getFallbackLabel({
+          visionFallback: {
+            providerId: parseVisionFallbackSetting(
+              this.appSettingStore?.get(VISION_FALLBACK_SETTING_KEY)?.value,
+            ).providerId,
+          },
+          providers: this.providerStore?.listProviders().map((entry) => ({
+            id: entry.provider.id,
+            name: entry.provider.name,
+          })),
+        });
+        run.userText = injectDescriptionsIntoContent(run.userText, descriptions, label);
         run.images = undefined;
         run.imagesMode = 'described';
         return;
@@ -32275,9 +32815,77 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       }
     }
 
-    // This is the same branch as NewMax's `shouldRun === false`: with no
-    // configured fallback the caller still receives the original attachment.
+    // NewMax's `shouldRun === false` branch: the primary model is *definitely*
+    // text-only and no verified fallback is usable, so the raw image must not be
+    // forwarded. The system prompt already tells this model it cannot read
+    // images; shipping the pixels anyway is what made models reach for Windows
+    // OCR on their own. Materialize instead: Desktop already wrote the
+    // attachments into the workspace, so hand over workspace-relative paths and
+    // let the model call `ocr_image` / `describe_image` deliberately.
+    if (!decision.shouldRun) {
+      const text = getImageDescribeText();
+      const setting = parseVisionFallbackSetting(
+        this.appSettingStore?.get(VISION_FALLBACK_SETTING_KEY)?.value,
+      );
+      const providerKnown = Boolean(
+        setting.providerId &&
+          this.providerStore
+            ?.listProviders()
+            .some((entry) => entry.provider.id === setting.providerId),
+      );
+      const detail = !decision.hasFallback
+        ? text.fallbackNotConfigured
+        : setting.providerId && !providerKnown
+          ? text.fallbackProviderNotFound(setting.providerId)
+          : `备用模型无法确认支持图片输入（识别结果：${decision.fallbackState}）`;
+
+      const materialized = this.materializeRunImages(run, imageTrust);
+      if (materialized) {
+        console.warn('[runtime] vision fallback not used; attachments materialized:', detail);
+        run.userText = `${run.userText}${buildAttachmentGuidance(materialized, {
+          visionFallbackEnabled: this.isVisionFallbackSettingEnabled(),
+        })}`;
+        run.images = undefined;
+        run.imagesMode = 'materialized';
+        return;
+      }
+
+      // No bound workspace (or the attachments live in the shared staging
+      // directory), so there is no path we could hand the model. Forwarding is
+      // still the least-bad option — but say so, because the model is about to
+      // receive pixels its own prompt claims it cannot read.
+      console.warn(
+        '[runtime] vision fallback not used and attachments are not addressable in the workspace; forwarding the original image:',
+        detail,
+      );
+    }
     run.imagesMode = 'forwarded';
+  }
+
+  /**
+   * Workspace-relative paths for the run's attachments, or undefined when even
+   * one of them cannot be addressed that way (no bound workspace, or the file
+   * lives in the shared staging directory).
+   *
+   * Partial materialization is refused on purpose: a model handed paths for some
+   * attachments and silence for the others cannot tell what it is missing, so it
+   * is better to fall back to the previous behavior for the whole turn.
+   */
+  private materializeRunImages(
+    run: DemoRunState,
+    imageTrust: AppendMessageImageTrustContext,
+  ): Array<{ name: string; relativePath: string }> | undefined {
+    if (!run.images || run.images.length === 0) return undefined;
+    const written: Array<{ name: string; relativePath: string }> = [];
+    for (const image of run.images) {
+      const stagingPath = resolveAppendMessageImageStagingPath(image, imageTrust);
+      const relativePath = stagingPath
+        ? resolveStagedImageWorkspaceRelativePath(stagingPath, imageTrust)
+        : undefined;
+      if (!relativePath) return undefined;
+      written.push({ name: image.name, relativePath });
+    }
+    return written;
   }
 
   private persistDemoRunFailure(
@@ -32533,7 +33141,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
   private persistAssistantTerminalMessage(
     runId: RunId,
     run: DemoRunState,
-    terminalState: 'failed' | 'cancelled',
+    terminalState: 'failed' | 'cancelled' | 'paused',
     errorMessage?: string,
     options?: { strict: boolean },
   ): void {
@@ -32591,11 +33199,12 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
             toolBlocks,
             reasoningFirst: terminalRun.kernelId === 'native' || !terminalRun.kernelId,
           });
-    // Failed runs with no generated content must still persist an error
-    // placeholder: the error echo currently only lives in the transient
-    // stream frame, so a follow-up message would make it disappear forever.
-    // Cancelled runs with no content stay dropped (nothing to answer for).
-    if (contentBlocks.length === 0 && terminalState !== 'failed') return;
+    // Failed and paused runs with no generated content must still persist an
+    // error placeholder: the reason only lives in the transient stream frame, so
+    // a follow-up message would erase it. A pause is an outage the user has to be
+    // told about — it is not silence. Cancelled runs with no content stay dropped
+    // (nothing to answer for).
+    if (contentBlocks.length === 0 && terminalState === 'cancelled') return;
     const errorBlock = {
       type: 'error',
       payload: {
@@ -33047,9 +33656,44 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     });
   }
 
-  /** Delegated card avatar: stored Agent avatar, else name initials, else temporary mark. */
+  /**
+   * Billed usage of one delegated child run, read from its own events.
+   *
+   * Reuses the process projection so the child's numbers follow exactly the same
+   * per-request dedupe (and therefore the same totals) the parent's panel shows,
+   * instead of accumulating a second way that could drift.
+   */
+  private projectChildUsage(childRun: DemoRunState): {
+    usage?: DelegatedAgentUsage;
+    durationMs?: number;
+  } {
+    let events: readonly Event[] = [];
+    try {
+      events = this.stateStore?.listEventsByRun
+        ? this.stateStore.listEventsByRun(childRun.runId)
+        : this.events.filter((candidate) => String(candidate.runId) === String(childRun.runId));
+    } catch {
+      // A failure here must never break the delegation stream.
+      return {};
+    }
+    const view = projectRunProcess(childRun.runId, events);
+    const usage: DelegatedAgentUsage = {
+      ...(view.tokensIn !== undefined ? { tokensIn: view.tokensIn } : {}),
+      ...(view.tokensOut !== undefined ? { tokensOut: view.tokensOut } : {}),
+      ...(view.cachedTokensHit !== undefined ? { cachedTokensHit: view.cachedTokensHit } : {}),
+      ...(view.cachedTokensCreated !== undefined
+        ? { cachedTokensCreated: view.cachedTokensCreated }
+        : {}),
+    };
+    return {
+      ...(Object.keys(usage).length > 0 ? { usage } : {}),
+      ...(view.durationMs !== undefined ? { durationMs: view.durationMs } : {}),
+    };
+  }
+
+  /** Delegated card avatar from the reused Agent profile. */
   private resolveDelegatedAgentAvatar(childRun: DemoRunState): string {
-    if (!childRun.globalAgentId) return '🧩';
+    if (!childRun.globalAgentId) return '🤖';
     const stored = this.globalAgentStore?.get(childRun.globalAgentId)?.avatar?.trim();
     if (stored) return stored;
     const name = childRun.globalAgentName?.trim();
@@ -33072,21 +33716,50 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
             ? 'cancelled'
             : undefined;
     const status = terminalState ?? 'running';
+    const agentId = childRun.globalAgentId;
+    if (!agentId) return;
     const toolEvents = delegatedToolEventsFromTimeline(childRun.assistantTimeline);
     const activeTool = [...toolEvents].reverse().find((tool) => tool.status === 'running')?.toolName;
+    // Which parent tool row spawned this child. Resolved here (not at creation)
+    // because the executor's parent snapshot predates the delegation row. Sibling
+    // projections already bound to a row are excluded so parallel delegations and
+    // repeats of the same Agent each keep their own row.
+    const parentRun = this.demoRuns.get(String(parentRunId));
+    const claimedBySiblings = new Set(
+      (this.delegatedAgentTransientByParentRun.get(String(parentRunId)) ?? [])
+        .filter((sibling) => String(sibling.childRunId) !== String(childRun.runId))
+        .flatMap((sibling) => (sibling.parentToolCallId ? [sibling.parentToolCallId] : [])),
+    );
+    const parentToolCallId =
+      childRun.delegationParentToolCallId ??
+      (parentRun
+        ? resolveParentDelegationToolCallId({
+            parent: parentRun,
+            task: childRun.userText,
+            claimed: claimedBySiblings,
+          })
+        : undefined);
+    // A child's spend is invisible in the parent's totals, so project it from the
+    // child's own events. Reusing the process projection keeps one billing
+    // semantic (per-request dedupe) for the parent panel and the child card, and
+    // covers the native loop and every external kernel in one place.
+    const childProcess = this.projectChildUsage(childRun);
     const projection: DelegatedAgentProjection = {
       childRunId: childRun.runId,
       parentRunId,
+      ...(parentToolCallId ? { parentToolCallId } : {}),
       ...(childRun.delegationParallelGroup
         ? { parallelGroup: childRun.delegationParallelGroup }
         : {}),
-      name: childRun.globalAgentName?.trim() || '临时任务 Agent',
+      name: childRun.globalAgentName?.trim() || '已配置智能体',
       avatar: this.resolveDelegatedAgentAvatar(childRun),
-      kind: childRun.globalAgentId ? 'existing' : 'temporary',
-      ...(childRun.globalAgentId ? { agentId: String(childRun.globalAgentId) } : {}),
+      kind: 'existing',
+      agentId: String(agentId),
       status,
       ...(activeTool ? { activeTool } : {}),
       toolEvents,
+      ...(childProcess.usage ? { usage: childProcess.usage } : {}),
+      ...(childProcess.durationMs !== undefined ? { durationMs: childProcess.durationMs } : {}),
       ...(terminalState && childRun.assistantText.trim()
         ? { result: childRun.assistantText.trim() }
         : {}),
@@ -33479,6 +34152,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       void this.startedAt; // 保持 startedAt 引用（健康检查依赖启动时间）
       return Promise.resolve();
     }
+    this.seedBuiltinGlobalAgents();
     return new Promise((resolve, reject) => {
       this.server = createPipeServer(this.handlers, this.installId);
       const path = pipePathPortable(this.installId);
@@ -33524,6 +34198,58 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       });
       this.server.on('error', (e) => reject(e));
     });
+  }
+
+  private seedBuiltinGlobalAgents(): void {
+    if (!this.globalAgentStore || !this.providerStore) return;
+    const defaultModelId = this.providerStore.listAllModels()[0]?.id;
+    if (!defaultModelId) return;
+    const builtins = [
+      {
+        id: 'builtin-code-explorer',
+        name: '代码探索员',
+        description: '只读梳理代码结构、调用链和实现线索。',
+        persona: '你是代码探索员。优先快速定位入口、依赖和关键数据流，结论必须引用实际文件和代码证据。不要修改文件。',
+      },
+      {
+        id: 'builtin-code-reviewer',
+        name: '代码审查员',
+        description: '聚焦缺陷、回归风险、边界条件和测试缺口。',
+        persona: '你是代码审查员。按严重程度检查行为回归、错误处理、兼容性和测试覆盖，只报告可验证的问题，不修改文件。',
+      },
+      {
+        id: 'builtin-test-designer',
+        name: '测试设计员',
+        description: '根据需求和代码契约设计可执行测试方案。',
+        persona: '你是测试设计员。识别输入边界、状态转换、失败路径和回归风险，输出明确的测试用例与验收条件，不修改文件。',
+      },
+      {
+        id: 'builtin-technical-researcher',
+        name: '技术调研员',
+        description: '基于高可信资料和仓库证据整理技术结论。',
+        persona: '你是技术调研员。优先使用官方文档、标准和仓库现状，区分事实、推断与待验证项，输出可追溯的结论，不修改文件。',
+      },
+    ] as const;
+    for (const builtin of builtins) {
+      if (this.globalAgentStore.get(builtin.id)) continue;
+      try {
+        this.globalAgentStore.create({
+          id: builtin.id as AgentId,
+          name: builtin.name,
+          description: builtin.description,
+          persona: builtin.persona,
+          defaultModelId,
+          source: 'builtin',
+          enabled: true,
+          availabilityScope: 'global',
+        });
+      } catch (error) {
+        console.warn(
+          `[runtime] builtin Agent seed failed: ${builtin.id}`,
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    }
   }
 
   async stop(): Promise<void> {

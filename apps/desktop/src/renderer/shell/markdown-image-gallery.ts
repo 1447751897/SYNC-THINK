@@ -138,6 +138,12 @@ export function buildGeneratedImageModelBySrc(toolResults: readonly string[]): M
 
 export function parseGeneratedImageModels(markdown: string): Map<string, string> {
   const map = new Map<string, string>();
+  // Fast path: every entry this scanner can emit comes from an `![alt](src)` on a
+  // line following a model marker, so a body with no image syntax at all cannot
+  // produce one. Streaming prose is the common case, and this runs over the whole
+  // accumulated answer on every display flush — skipping the split plus the
+  // per-line regex sweep is what keeps that sweep from being O(lines) per frame.
+  if (!markdown.includes('![')) return map;
   let pendingModel: string | undefined;
   for (const line of markdown.split(/\r?\n/)) {
     const model = /^(?:模型|Model)\s*[：:]\s*(.+)$/i.exec(line.trim());
@@ -184,6 +190,11 @@ export function repairGeneratedImageMarkdown(
   known?: ReadonlyMap<string, string> | readonly string[],
   streaming = false,
 ): string {
+  // Fast path: the replacement below can only fire on the generated-image
+  // protocol, so returning the input unchanged is exactly equivalent when the
+  // protocol never appears. This runs per flush over the entire answer, so the
+  // skipped scan is O(body) on a path that fires many times per second.
+  if (!text.includes(GENERATED_IMAGE_PREFIX)) return text;
   const srcs = knownGeneratedImageSrcs(known);
   return text.replace(
     /!\[([^\]]*)\]\((sync-think-image:\/\/generated\/[^)\s]*)\)?/g,

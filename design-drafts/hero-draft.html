@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>SYNC-THINK · 介绍页设计稿</title>
+<style>
+  :root{
+    --bg:#08090a;
+    --panel:#0e110f;
+    --panel-2:#121614;
+    --line:rgba(255,255,255,.08);
+    --line-strong:rgba(255,255,255,.14);
+    --text:#e9eeea;
+    --muted:#8b938d;
+    --faint:#5c625d;
+    --brand:#3fa06a;
+    --brand-bright:#4fd68f;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+    --radius:16px;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0;background:var(--bg);color:var(--text);line-height:1.6;
+    font-family:system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  a{color:inherit;text-decoration:none}
+  .wrap{width:min(1140px,calc(100% - 48px));margin:0 auto}
+  .mono{font-family:var(--mono)}
+  .eyebrow{
+    font-family:var(--mono);font-size:12px;letter-spacing:.14em;
+    text-transform:uppercase;color:var(--brand-bright);margin:0 0 20px;
+  }
+
+  /* ---------- nav ---------- */
+  .nav{position:sticky;top:0;z-index:20;backdrop-filter:blur(12px);
+    background:rgba(8,9,10,.72);border-bottom:1px solid var(--line-soft,var(--line))}
+  .nav-inner{display:flex;align-items:center;gap:32px;height:64px}
+  .brand{display:flex;align-items:center;gap:10px;font-weight:600;letter-spacing:-.01em}
+  .brand-mark{width:14px;height:14px;border-radius:4px;
+    background:linear-gradient(135deg,var(--brand-bright),var(--brand))}
+  .nav-links{display:flex;gap:26px;margin-left:auto;font-size:14px;color:var(--muted)}
+  .nav-links a:hover{color:var(--text)}
+
+  /* ---------- buttons ---------- */
+  .btn{
+    display:inline-flex;align-items:center;justify-content:center;
+    height:44px;padding:0 20px;border-radius:10px;font-size:14.5px;font-weight:500;
+    border:1px solid transparent;transition:transform .15s ease,background .15s ease;
+  }
+  .btn:active{transform:translateY(1px)}
+  .btn-primary{background:var(--brand);color:#04170d;font-weight:600}
+  .btn-primary:hover{background:var(--brand-bright)}
+  .btn-ghost{border-color:var(--line-strong);color:var(--text)}
+  .btn-ghost:hover{background:rgba(255,255,255,.05)}
+  .btn-sm{height:36px;padding:0 14px;font-size:13px}
+
+  /* ---------- hero ---------- */
+  .hero{position:relative;overflow:hidden;padding:96px 0 72px;text-align:center}
+  .hero::before{
+    content:"";position:absolute;inset:-40% 0 auto 0;height:760px;pointer-events:none;
+    background:radial-gradient(760px 380px at 50% 42%,rgba(63,160,106,.20),transparent 72%);
+  }
+  .hero::after{
+    content:"";position:absolute;inset:0;pointer-events:none;opacity:.35;
+    background-image:linear-gradient(var(--line) 1px,transparent 1px),
+      linear-gradient(90deg,var(--line) 1px,transparent 1px);
+    background-size:64px 64px;
+    mask-image:radial-gradient(700px 420px at 50% 30%,#000,transparent 78%);
+  }
+  .hero .wrap{position:relative;z-index:1}
+  h1{
+    margin:0;font-size:clamp(42px,7.2vw,88px);line-height:1.04;
+    letter-spacing:-.035em;font-weight:600;
+  }
+  h1 .accent{
+    background:linear-gradient(180deg,var(--brand-bright),var(--brand));
+    -webkit-background-clip:text;background-clip:text;color:transparent;
+  }
+  .lede{
+    max-width:620px;margin:26px auto 0;font-size:17px;color:var(--muted);
+  }
+  .cta-row{display:flex;gap:12px;justify-content:center;margin-top:34px}
+  .hero-meta{
+    margin:22px 0 0;font-size:12.5px;color:var(--faint);letter-spacing:.02em;
+  }
+
+  /* ---------- stage / app mock ---------- */
+  .stage{padding:56px 0 24px}
+  .stage-head{text-align:center;margin-bottom:36px}
+  .stage-head h2{margin:0;font-size:clamp(26px,3.4vw,38px);letter-spacing:-.02em;font-weight:600}
+  .stage-head p.eyebrow{margin-bottom:14px}
+
+  .app{
+    border:1px solid var(--line-strong);border-radius:var(--radius);overflow:hidden;
+    background:var(--panel);box-shadow:0 40px 120px -40px rgba(0,0,0,.9),
+      0 0 0 1px rgba(255,255,255,.02) inset;
+  }
+  .app-top{
+    display:flex;align-items:center;gap:14px;height:48px;padding:0 16px;
+    background:var(--panel-2);border-bottom:1px solid var(--line);
+  }
+  .traffic{display:flex;gap:6px}
+  .traffic i{width:10px;height:10px;border-radius:50%;background:#2b302d;display:block}
+  .app-top-title{font-size:13px;color:var(--muted)}
+  .kernel-chip{
+    margin-left:auto;display:flex;align-items:center;gap:8px;
+    font-family:var(--mono);font-size:12px;color:var(--text);
+    border:1px solid var(--line-strong);border-radius:8px;padding:5px 10px;
+    background:rgba(255,255,255,.03);
+  }
+  .kernel-dot{width:7px;height:7px;border-radius:50%;background:var(--brand-bright)}
+  .caret{color:var(--faint)}
+
+  .app-body{display:grid;grid-template-columns:190px 1fr 210px;min-height:420px}
+  .app-side,.app-right{padding:18px 14px;background:rgba(255,255,255,.015)}
+  .app-side{border-right:1px solid var(--line)}
+  .app-right{border-left:1px solid var(--line)}
+  .side-label{
+    font-size:11px;letter-spacing:.12em;text-transform:uppercase;
+    color:var(--faint);margin-bottom:12px;
+  }
+  .side-item{
+    font-size:13px;color:var(--muted);padding:8px 10px;border-radius:8px;margin-bottom:2px;
+  }
+  .side-item.active{background:rgba(63,160,106,.12);color:var(--text)}
+
+  .app-main{padding:24px 26px;display:flex;flex-direction:column;gap:18px}
+  .bubble{
+    align-self:flex-end;max-width:72%;font-size:13.5px;line-height:1.62;
+    background:rgba(255,255,255,.05);border:1px solid var(--line-strong);
+    border-radius:16px;padding:11px 14px;
+  }
+  .turn-head{
+    display:flex;align-items:center;gap:10px;font-size:11.5px;color:var(--faint);
+    margin-bottom:10px;
+  }
+  .turn-badge{
+    font-family:var(--mono);font-size:11px;color:var(--brand-bright);
+    border:1px solid rgba(79,214,143,.32);border-radius:6px;padding:2px 7px;
+    background:rgba(79,214,143,.08);
+  }
+  .trace{
+    border-left:1px solid var(--line-strong);padding-left:14px;
+    display:flex;flex-direction:column;gap:8px;
+  }
+  .trace-row{font-size:12.5px;color:var(--muted)}
+  .t-key{
+    display:inline-block;width:44px;font-size:11px;color:var(--faint);
+  }
+  .switch-row{
+    margin-top:auto;font-size:12px;color:var(--brand-bright);
+    border:1px dashed rgba(79,214,143,.28);border-radius:10px;
+    padding:9px 12px;background:rgba(79,214,143,.05);
+  }
+
+  .task{
+    font-size:13px;color:var(--muted);padding:9px 10px;border-radius:8px;
+    margin-bottom:6px;display:flex;align-items:center;gap:9px;
+  }
+  .task::before{
+    content:"";width:13px;height:13px;border-radius:4px;flex:none;
+    border:1px solid var(--line-strong);
+  }
+  .task.done{color:var(--faint);text-decoration:line-through}
+  .task.done::before{background:var(--brand);border-color:var(--brand)}
+  .task.doing{color:var(--text)}
+  .task.doing::before{border-color:var(--brand-bright);box-shadow:0 0 0 3px rgba(79,214,143,.12)}
+
+  /* ---------- features ---------- */
+  .features{padding:72px 0 88px}
+  .cards{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+  .card{
+    border:1px solid var(--line);border-radius:14px;padding:24px 22px;
+    background:linear-gradient(180deg,rgba(255,255,255,.025),transparent);
+  }
+  .card-num{font-size:12px;color:var(--brand-bright);margin:0 0 14px;letter-spacing:.1em}
+  .card h3{margin:0 0 10px;font-size:17px;letter-spacing:-.01em;font-weight:600}
+  .card p{margin:0;font-size:14px;color:var(--muted)}
+
+  /* ---------- footer ---------- */
+  .foot{border-top:1px solid var(--line);padding:30px 0;font-size:13px;color:var(--faint)}
+  .foot-inner{display:flex;align-items:center;justify-content:space-between;gap:20px}
+  .foot-links{display:flex;gap:22px}
+
+  @media (max-width:900px){
+    .app-body{grid-template-columns:1fr}
+    .app-side,.app-right{display:none}
+    .cards{grid-template-columns:1fr}
+    .nav-links{display:none}
+    .cta-row{flex-direction:column;align-items:stretch}
+  }
+</style>
+</head>
+<body>
+
+<header class="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="#"><span class="brand-mark"></span>SYNC-THINK</a>
+    <nav class="nav-links">
+      <a href="#demo">工作台</a>
+      <a href="#features">功能</a>
+      <a href="#">文档</a>
+      <a href="#">GitHub</a>
+    </nav>
+    <a class="btn btn-ghost btn-sm mono" href="#">下载 Windows 版</a>
+  </div>
+</header>
+
+<section class="hero">
+  <div class="wrap">
+    <p class="eyebrow">Local-first · Multi-model agent workbench</p>
+    <h1>换内核，<br /><span class="accent">不换上下文。</span></h1>
+    <p class="lede">
+      本地优先的多模型 Agent 工作台。同一条任务里自由切换执行内核与模型，
+      把智能体编成小队协作；上下文、文件与密钥都留在你自己的机器上。
+    </p>
+    <div class="cta-row">
+      <a class="btn btn-primary" href="#">下载 Windows 版</a>
+      <a class="btn btn-ghost" href="#demo">看看交互演示</a>
+    </div>
+    <p class="hero-meta mono">Windows x64 · 数据留在本机 · 无需账号也能用</p>
+  </div>
+</section>
+
+<section class="stage" id="demo">
+  <div class="wrap">
+    <div class="stage-head">
+      <p class="eyebrow">工作台实录</p>
+      <h2>界面本身就是证据</h2>
+    </div>
+
+    <div class="app">
+      <div class="app-top">
+        <div class="traffic"><i></i><i></i><i></i></div>
+        <div class="app-top-title">重构认证模块</div>
+        <div class="kernel-chip">
+          <span class="kernel-dot"></span>Claude Code<span class="caret">▾</span>
+        </div>
+      </div>
+
+      <div class="app-body">
+        <aside class="app-side">
+          <div class="side-label mono">会话</div>
+          <div class="side-item active">重构认证模块</div>
+          <div class="side-item">迁移日志管道</div>
+          <div class="side-item">排查构建失败</div>
+        </aside>
+
+        <main class="app-main">
+          <div class="bubble">把 auth 模块拆成独立 service，保持现有测试通过。</div>
+
+          <div>
+            <div class="turn-head">
+              <span class="turn-badge">Claude Code</span>
+              <span>已读取 6 个文件</span>
+            </div>
+            <div class="trace">
+              <div class="trace-row mono"><span class="t-key">思考</span>先确认 auth 与 session 的耦合点</div>
+              <div class="trace-row mono"><span class="t-key">工具</span>Read src/auth/session.ts</div>
+              <div class="trace-row mono"><span class="t-key">变更</span>新增 src/auth/service.ts</div>
+            </div>
+          </div>
+
+          <div class="switch-row mono">已切换到 Codex · 上下文与任务清单保留</div>
+        </main>
+
+        <aside class="app-right">
+          <div class="side-label mono">任务</div>
+          <div class="task done">抽取 AuthService</div>
+          <div class="task done">迁移调用点</div>
+          <div class="task doing">跑通集成测试</div>
+        </aside>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="features" id="features">
+  <div class="wrap">
+    <div class="cards">
+      <article class="card">
+        <p class="card-num mono">01</p>
+        <h3>换内核，不换上下文</h3>
+        <p>同一条任务里切换 Codex / Claude Code 或换模型，会话上下文与任务清单接着走。</p>
+      </article>
+      <article class="card">
+        <p class="card-num mono">02</p>
+        <h3>智能体绑定，不静默换模型</h3>
+        <p>每个智能体固定自己的模型、Skill 与 MCP；系统不会在背后替你换掉。</p>
+      </article>
+      <article class="card">
+        <p class="card-num mono">03</p>
+        <h3>本地优先，密钥不出机器</h3>
+        <p>对话在本机、密钥走本机安全存储；要不要连云，由你决定。</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<footer class="foot">
+  <div class="wrap foot-inner">
+    <span>© SYNC-THINK · 设计稿 v1</span>
+    <div class="foot-links">
+      <a href="#">发行版本</a>
+      <a href="#">提交反馈</a>
+      <a href="#">GitHub</a>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

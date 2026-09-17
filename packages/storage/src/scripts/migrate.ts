@@ -421,6 +421,32 @@ export const MIGRATIONS: { name: string; sql: string }[] = [
     // 未验证标记；后续测试通过时清掉。
     sql: `ALTER TABLE provider ADD COLUMN unverified INTEGER NOT NULL DEFAULT 0;`,
   },
+  {
+    name: '0056_agent_workspace_activation',
+    sql: `ALTER TABLE agent ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1;
+    ALTER TABLE agent ADD COLUMN source TEXT NOT NULL DEFAULT 'user';
+    ALTER TABLE agent ADD COLUMN availability_scope TEXT NOT NULL DEFAULT 'global';
+    CREATE TABLE agent_workspace_activation (
+      agent_id TEXT NOT NULL,
+      workspace_id TEXT NOT NULL,
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (agent_id, workspace_id),
+      FOREIGN KEY (agent_id) REFERENCES agent(id) ON DELETE CASCADE,
+      FOREIGN KEY (workspace_id) REFERENCES workspace(id) ON DELETE CASCADE
+    );
+    CREATE INDEX agent_workspace_activation_workspace_idx
+      ON agent_workspace_activation(workspace_id, active, updated_at);`,
+  },
+  {
+    name: '0057_agent_write_policy',
+    // 委派写权限（2026-09-17 决定，见 docs/adr/0001-委派子智能体写权限.md）。
+    // 原来 agent 表刻意不带任何权限字段，但委派出去的子智能体是无人值守的：
+    // 对话级三档模式无法区分「这个智能体本来就该只读」和「它只是在 ask 会话里」。
+    // 这里只加「这个智能体是否继承对话权限」，默认 read-only 保持现有安全默认。
+    sql: `ALTER TABLE agent ADD COLUMN write_policy TEXT NOT NULL DEFAULT 'read-only';`,
+  },
 ];
 
 function taskPlanDdlSql(): string {

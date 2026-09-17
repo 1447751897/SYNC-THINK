@@ -39,16 +39,28 @@ describe('kernel mcp-servers registry', () => {
     );
   });
 
-  it('registers Windows OCR as an always-loaded read-only tool on every channel', () => {
+  it('exposes Windows OCR only on the degraded path (text-only model, no usable fallback)', () => {
     const server = KERNEL_MCP_SERVERS.find((entry) => entry.name === 'windows-ocr');
-    expect(server?.alwaysLoad).toBe(true);
+    // Not alwaysLoad any more: `ocr_image` must not be advertised to a model
+    // that can already see the attachment.
+    expect(server?.alwaysLoad).toBeUndefined();
+    expect(server?.condition).toBeTypeOf('function');
     expect(server?.tools.map((tool) => tool.name)).toEqual(['ocr_image']);
     expect(server?.tools[0]?.approval).toBe('never');
 
+    // Vision-capable / undetermined model, or a verified fallback: no OCR tool.
     setKernelMcpServerConditions({});
-    const selection = selectKernelMcpRun({ planningMode: true });
-    expect(selection.externalTools.map((tool) => tool.name)).toContain('ocr_image');
-    expect(selection.nativeTools.map((tool) => tool.name)).toContain('ocr_image');
+    const hidden = selectKernelMcpRun({ planningMode: true });
+    expect(hidden.externalTools.map((tool) => tool.name)).not.toContain('ocr_image');
+    expect(hidden.nativeTools.map((tool) => tool.name)).not.toContain('ocr_image');
+
+    // The materialized path (text-only model, no usable fallback): OCR is the
+    // only route to the attachment, so it appears on every channel.
+    setKernelMcpServerConditions({ imageOcrFallbackEnabled: true });
+    const shown = selectKernelMcpRun({ planningMode: true });
+    expect(shown.externalTools.map((tool) => tool.name)).toContain('ocr_image');
+    expect(shown.nativeTools.map((tool) => tool.name)).toContain('ocr_image');
+    setKernelMcpServerConditions({});
   });
 
   it('exposes the platform tools on every channel', () => {
@@ -94,8 +106,9 @@ describe('kernel mcp-servers registry', () => {
     const namesAll = all.externalTools.map((tool) => tool.name);
     expect(namesAll).toEqual(
       expect.arrayContaining([
-        'create_agent',
-        'update_agent',
+        'list_available_agents',
+        'get_agent',
+        'agent_run',
         'list_teams',
         'list_skills',
         'list_mcp_tools',
@@ -132,7 +145,9 @@ describe('kernel mcp-servers registry', () => {
       'ask_user_question',
       'plan_submit',
       'update_task_plan',
-      'list_agent_resources',
+      'list_available_agents',
+      'get_agent',
+      'agent_run',
       'list_skills',
       'list_mcp_tools',
       'web_search',
@@ -142,9 +157,6 @@ describe('kernel mcp-servers registry', () => {
     }
     // Every mutating tool is hidden from the model.
     for (const mutating of [
-      'create_agent',
-      'update_agent',
-      'archive_agent',
       'create_team',
       'update_team',
       'delete_team',
@@ -174,7 +186,8 @@ describe('kernel mcp-servers registry', () => {
     // selection exactly — one registry, one catalog across channels.
     expect(brokerCatalog.length).toBeGreaterThan(0);
     expect(brokerCatalog).toContain('web_search');
-    expect(brokerCatalog).toContain('create_agent');
+    expect(brokerCatalog).toContain('list_available_agents');
+    expect(brokerCatalog).not.toContain('create_agent');
     // Every external tool must also be present in the in-process selection
     // (the same array feeds both channels).
     expect(selection.servers.every((server) => server.tools.length > 0)).toBe(true);

@@ -257,14 +257,28 @@ export function parseAddModelsPayload(value: unknown): AddModelsPayload {
 }
 
 
-const CAPABILITY_TAGS = new Set([
-  'text',
-  'vision',
-  'tool-calling',
-  'web-search',
-  'image-generation',
-  'embeddings',
-]);
+/**
+ * IPC 边界的能力标签白名单。
+ *
+ * 权威标签集直接取自 payload 契约（`ConfirmCapabilitiesPayload.capabilities`），
+ * 并用 `satisfies Record<..., true>` 做**穷尽性**编译期检查：契约新增标签时这里会
+ * 立刻编译失败，避免再出现「界面勾得上、payload 被拒」的漂移
+ * —— 「能力支持」区的 document / video / thinking 三项就曾漏在这里，
+ * 导致勾选「思考」保存时报 Invalid confirm-capabilities payload。
+ */
+const CAPABILITY_TAG_MAP = {
+  text: true,
+  vision: true,
+  document: true,
+  video: true,
+  thinking: true,
+  'tool-calling': true,
+  'web-search': true,
+  'image-generation': true,
+  embeddings: true,
+} satisfies Record<ConfirmCapabilitiesPayload['capabilities'][number], true>;
+
+const CAPABILITY_TAGS: ReadonlySet<string> = new Set(Object.keys(CAPABILITY_TAG_MAP));
 
 export function parseProbeCapabilitiesPayload(value: unknown): ProbeCapabilitiesPayload {
   if (!isRecord(value)) throw new Error('Invalid probe-capabilities payload');
@@ -298,10 +312,18 @@ export function parseConfirmCapabilitiesPayload(value: unknown): ConfirmCapabili
   if (value.confirmed !== undefined && typeof value.confirmed !== 'boolean') {
     throw new Error('Invalid confirm-capabilities payload');
   }
+  if (
+    value.visionCapabilityOverride !== undefined &&
+    value.visionCapabilityOverride !== null &&
+    typeof value.visionCapabilityOverride !== 'boolean'
+  ) {
+    throw new Error('Invalid confirm-capabilities payload');
+  }
   return {
     modelId: value.modelId as ConfirmCapabilitiesPayload['modelId'],
     capabilities: value.capabilities as ConfirmCapabilitiesPayload['capabilities'],
     confirmed: value.confirmed as boolean | undefined,
+    visionCapabilityOverride: value.visionCapabilityOverride as boolean | null | undefined,
   };
 }
 

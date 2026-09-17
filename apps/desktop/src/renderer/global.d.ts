@@ -464,6 +464,12 @@ declare global {
         deleteGlobalAgent(
           payload: import('@sync-think/protocol').DeleteGlobalAgentPayload,
         ): Promise<Record<string, never>>;
+        listGlobalAgentWorkspaceActivations(
+          payload: import('@sync-think/protocol').ListGlobalAgentWorkspaceActivationsPayload,
+        ): Promise<import('@sync-think/protocol').ListGlobalAgentWorkspaceActivationsResponse>;
+        setGlobalAgentWorkspaceActivation(
+          payload: import('@sync-think/protocol').SetGlobalAgentWorkspaceActivationPayload,
+        ): Promise<import('@sync-think/protocol').SetGlobalAgentWorkspaceActivationResponse>;
         listTeams(): Promise<import('@sync-think/protocol').ListTeamsResponse>;
         createTeam(
           payload: import('@sync-think/protocol').CreateTeamPayload,
@@ -838,6 +844,7 @@ declare global {
           registered: boolean;
           error: string | null;
         }>;
+        setTrayVisible?(visible: boolean): Promise<{ visible: boolean }>;
         listProjectFiles(payload: { root: string; query?: string; maxEntries?: number }): Promise<{
           root: string;
           files: Array<{ path: string; name: string; kind: 'file' | 'dir' }>;

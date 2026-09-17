@@ -740,7 +740,8 @@ describe('ClaudeSdkKernelAdapter', () => {
     expect(options.permissionMode).toBe('plan');
     expect(options.allowDangerouslySkipPermissions).toBeUndefined();
     expect(options.allowedTools).toBeUndefined();
-    expect(options.disallowedTools).toBeUndefined();
+    // Only the unconditional sub-Agent block; no web-search policy was requested.
+    expect(options.disallowedTools).toEqual(['Agent', 'Workflow']);
   });
 
   it('acknowledges the dangerous skip flag only for a real full-access run', async () => {
@@ -755,7 +756,33 @@ describe('ClaudeSdkKernelAdapter', () => {
 
     expect(captures[0].options.permissionMode).toBe('bypassPermissions');
     expect(captures[0].options.allowDangerouslySkipPermissions).toBe(true);
-    expect(captures[0].options.disallowedTools).toBeUndefined();
+    // bypassPermissions skips canUseTool, so this list is the only thing keeping
+    // host-invisible sub-Agents out of a full-access run.
+    expect(captures[0].options.disallowedTools).toEqual(['Agent', 'Workflow']);
+  });
+
+  it('refuses kernel-native sub-Agent tools in every permission mode', async () => {
+    const captures: QueryCapture[] = [];
+    const adapter = new ClaudeSdkKernelAdapter({
+      query: fakeQuery(async function* () {
+        yield resultSuccess();
+      }, captures),
+    });
+
+    await collect(adapter, makeRequest({ permissionMode: 'ask' }));
+    await collect(adapter, makeRequest({ permissionMode: 'workspace' }));
+    await collect(adapter, makeRequest({ permissionMode: 'full-access' }));
+
+    for (const capture of captures) {
+      expect(capture.options.disallowedTools).toContain('Agent');
+      expect(capture.options.disallowedTools).toContain('Workflow');
+      // Checklist tools share the Task prefix and must stay usable.
+      expect(capture.options.disallowedTools).not.toContain('TaskCreate');
+      expect(capture.options.disallowedTools).not.toContain('TaskUpdate');
+      expect(capture.options.disallowedTools).not.toContain('TaskList');
+      expect(capture.options.disallowedTools).not.toContain('TaskGet');
+      expect(capture.options.disallowedTools).not.toContain('TodoWrite');
+    }
   });
 
   it('uses Claude native search only for native-search routes', async () => {
@@ -770,9 +797,14 @@ describe('ClaudeSdkKernelAdapter', () => {
     await collect(adapter, makeRequest({ webSearchMode: 'external' }));
     await collect(adapter, makeRequest({ webSearchMode: 'disabled' }));
 
-    expect(captures[0].options.disallowedTools).toBeUndefined();
-    expect(captures[1].options.disallowedTools).toEqual(['WebSearch']);
-    expect(captures[2].options.disallowedTools).toEqual(['WebSearch', 'WebFetch']);
+    expect(captures[0].options.disallowedTools).toEqual(['Agent', 'Workflow']);
+    expect(captures[1].options.disallowedTools).toEqual(['Agent', 'Workflow', 'WebSearch']);
+    expect(captures[2].options.disallowedTools).toEqual([
+      'Agent',
+      'Workflow',
+      'WebSearch',
+      'WebFetch',
+    ]);
   });
 
   it('runs the SDK transport against the atomically activated private Claude CLI', async () => {

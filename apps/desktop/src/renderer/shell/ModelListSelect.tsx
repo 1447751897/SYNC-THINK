@@ -10,6 +10,70 @@ export interface ModelListSelectOption {
   render?: ReactNode;
 }
 
+/** 选项行距：min-height 32px 的行加 2px 行间 gap。 */
+const ROW_STEP = 34;
+/** 菜单内边距（4px×2）加边框（1px×2），用于换算 border-box 高度。 */
+const MENU_CHROME = 10;
+/** 菜单与触发器、与视口边缘的间距。 */
+const MENU_GAP = 4;
+const VIEWPORT_MARGIN = 8;
+/** 空间再紧也至少露出这么多行，否则菜单会退化成一条看不见内容的缝。 */
+const MIN_VISIBLE_ROWS = 4;
+
+/** 完整装下 itemCount 行所需的 border-box 高度。 */
+export function menuNaturalHeight(itemCount: number): number {
+  if (itemCount <= 0) return MENU_CHROME;
+  return itemCount * ROW_STEP - 2 + MENU_CHROME;
+}
+
+export interface MenuLayout {
+  top: number;
+  left: number;
+  width: number;
+  maxHeight: number;
+}
+
+/**
+ * 按触发器的当前位置与视口高度算出菜单几何。
+ *
+ * 高度绝不能写死：一旦上限和内容高度只差几像素（例如 7 项内容 246px、上限 240px），
+ * 可滚区间就只剩十几像素 —— 滚轮推一下几乎不位移，用户看到的是最后一行被切掉
+ * 而且"滚不动"。这里改成按可用空间自适应：放得下就完整展开不出现滚动条，
+ * 放不下才收缩，并且滚动区间有实际意义。
+ */
+export function computeMenuLayout(input: {
+  itemCount: number;
+  triggerTop: number;
+  triggerBottom: number;
+  triggerLeft: number;
+  triggerWidth: number;
+  viewportHeight: number;
+}): MenuLayout {
+  const natural = menuNaturalHeight(input.itemCount);
+  // 扣掉与触发器和视口边缘的间距，得到上下两侧真实可用的高度。
+  const below = input.viewportHeight - input.triggerBottom - MENU_GAP - VIEWPORT_MARGIN;
+  const above = input.triggerTop - MENU_GAP - VIEWPORT_MARGIN;
+  const floor = Math.min(natural, MIN_VISIBLE_ROWS * ROW_STEP + MENU_CHROME);
+  // 下方放不下最低要求、且上方更宽裕时向上翻转，避免菜单被视口底边裁掉。
+  const openUp = below < floor && above > below;
+  const available = Math.max(0, openUp ? above : below);
+  const maxHeight = Math.max(floor, Math.min(natural, available));
+  const preferredTop = openUp
+    ? input.triggerTop - MENU_GAP - maxHeight
+    : input.triggerBottom + MENU_GAP;
+  // 贴边保护：翻转后仍越界时（视口极矮）把菜单压回可视区内。
+  const top = Math.max(
+    VIEWPORT_MARGIN,
+    Math.min(preferredTop, input.viewportHeight - VIEWPORT_MARGIN - maxHeight),
+  );
+  return {
+    top,
+    left: input.triggerLeft,
+    width: Math.max(input.triggerWidth, 160),
+    maxHeight,
+  };
+}
+
 export function ModelListSelect({
   id,
   label,
@@ -32,7 +96,7 @@ export function ModelListSelect({
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
-  const [coords, setCoords] = useState({ top: 0, left: 0, width: 0 });
+  const [coords, setCoords] = useState<MenuLayout>({ top: 0, left: 0, width: 0, maxHeight: 0 });
   const selected = options.find((option) => option.value === value);
   const display = selected?.label ?? (value === (emptyOption?.value ?? '') ? emptyOption?.label : undefined);
   const placeholderShown = !display;
@@ -47,14 +111,16 @@ export function ModelListSelect({
     }
     const rect = triggerRef.current?.getBoundingClientRect();
     if (rect) {
-      const itemCount = options.length + (emptyOption ? 1 : 0);
-      const menuHeight = Math.min(itemCount * 32 + 8, 240);
-      const spaceBelow = window.innerHeight - rect.bottom;
-      const top =
-        spaceBelow < menuHeight && rect.top > menuHeight
-          ? rect.top - menuHeight - 4
-          : rect.bottom + 4;
-      setCoords({ top, left: rect.left, width: Math.max(rect.width, 160) });
+      setCoords(
+        computeMenuLayout({
+          itemCount: options.length + (emptyOption ? 1 : 0),
+          triggerTop: rect.top,
+          triggerBottom: rect.bottom,
+          triggerLeft: rect.left,
+          triggerWidth: rect.width,
+          viewportHeight: window.innerHeight,
+        }),
+      );
     }
     setOpen(true);
   };
@@ -114,7 +180,12 @@ export function ModelListSelect({
               className="model-list-select__menu"
               role="listbox"
               aria-label={label}
-              style={{ top: coords.top, left: coords.left, width: coords.width }}
+              style={{
+                top: coords.top,
+                left: coords.left,
+                width: coords.width,
+                maxHeight: coords.maxHeight,
+              }}
               onPointerDown={(event) => event.stopPropagation()}
             >
               {rows.map((option) => {

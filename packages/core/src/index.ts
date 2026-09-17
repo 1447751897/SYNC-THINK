@@ -58,16 +58,17 @@ export {
   type TextFallbackCompatibilityInput,
 } from './capability-probe.js';
 export {
+  applyProviderCapabilityManualOverrides,
   getKnownModelVisionSupport,
   getKnownVisionSupport,
+  getModelCapabilities,
   getReliableImageCapability,
   isGpt6AstraModel,
-  isVisionProbeFailureEnvironmental,
-  isEnvironmentalProbeFailure,
-  classifyVisionProbeFailure,
+  resolveVerifiedFallbackVisionState,
   resolveVisionState,
-  type ModelVisionFacts,
-  type VisionProbeFailureKind,
+  type CapabilityProviderLike,
+  type ModelCapabilities,
+  type ModelCapabilityOverrides,
   type VisionState,
 } from './vision-state.js';
 export * from './credential-binding.js';

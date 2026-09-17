@@ -743,16 +743,32 @@ function FilePathTooltip({
     };
 
     updatePosition();
-    window.addEventListener('resize', updatePosition);
-    window.visualViewport?.addEventListener('resize', updatePosition);
-    window.visualViewport?.addEventListener('scroll', updatePosition);
-    document.addEventListener('scroll', updatePosition, true);
+    // Coalesced to one measurement per frame: this tooltip anchors to a path
+    // inside the streaming tool output, so it re-measures while the message list
+    // scrolls. Binding visualViewport as well means zoom/on-screen-keyboard
+    // changes go through the same single scheduled read.
+    let frame: number | null = null;
+    const scheduledUpdate = () => {
+      if (frame !== null) return;
+      frame = window.requestAnimationFrame(() => {
+        frame = null;
+        updatePosition();
+      });
+    };
+    window.addEventListener('resize', scheduledUpdate);
+    window.visualViewport?.addEventListener('resize', scheduledUpdate);
+    window.visualViewport?.addEventListener('scroll', scheduledUpdate);
+    document.addEventListener('scroll', scheduledUpdate, true);
 
     return () => {
-      window.removeEventListener('resize', updatePosition);
-      window.visualViewport?.removeEventListener('resize', updatePosition);
-      window.visualViewport?.removeEventListener('scroll', updatePosition);
-      document.removeEventListener('scroll', updatePosition, true);
+      if (frame !== null) {
+        window.cancelAnimationFrame(frame);
+        frame = null;
+      }
+      window.removeEventListener('resize', scheduledUpdate);
+      window.visualViewport?.removeEventListener('resize', scheduledUpdate);
+      window.visualViewport?.removeEventListener('scroll', scheduledUpdate);
+      document.removeEventListener('scroll', scheduledUpdate, true);
     };
   }, [absolutePath, anchor]);
 

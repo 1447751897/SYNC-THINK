@@ -39,6 +39,10 @@ describe('conversation collaboration policy', () => {
   });
 
   it('explains why a collaboration tool is denied instead of one generic refusal', () => {
+    expect(resolveCollaborationToolDenial({ track: 'model', toolName: 'agent_run' })).toBeNull();
+    expect(resolveCollaborationToolDenial({ track: 'agent', toolName: 'agent_run' })).toMatchObject({
+      reason: 'track',
+    });
     const enabled = { ...DEFAULT_COLLABORATION_SETTINGS, dynamicSubagentsEnabled: true };
     expect(
       resolveCollaborationToolDenial({ track: 'model', toolName: 'agent_delegate', settings: enabled }),
@@ -104,7 +108,7 @@ describe('conversation collaboration policy', () => {
     ).toMatchObject({ allowed: false, reason: 'track' });
   });
 
-  it('reuses a matching catalog agent and otherwise creates a run-local profile', () => {
+  it('reuses a matching catalog agent and fails closed when no agent matches', () => {
     const existing = resolveAgentAssignment(
       { task: '审查登录模块异常处理', requiredSkillIds: ['review'] },
       [
@@ -114,12 +118,11 @@ describe('conversation collaboration policy', () => {
     );
     expect(existing).toMatchObject({ kind: 'existing', agentId: 'agent-reviewer' });
 
-    const temporary = resolveAgentAssignment(
+    const missing = resolveAgentAssignment(
       { task: '分析供应链合同', requiredSkillIds: ['contract'] },
       [{ id: 'agent-reviewer', name: '代码审查员', skillIds: ['review'] }],
     );
-    expect(temporary.kind).toBe('temporary');
-    expect(temporary.temporaryProfile?.task).toBe('分析供应链合同');
+    expect(missing).toBeUndefined();
   });
   it('lets a delegated child run only built-in read-only tools or explicit readOnly MCP tools', () => {
     expect(isDelegatedReadOnlyTool('read_file')).toBe(true);

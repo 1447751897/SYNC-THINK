@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { OpenAIChatAdapter } from './openai-chat-adapter.js';
 import { joinChatCompletionsUrl, streamOpenAIChatCompletions } from './stream-chat.js';
 import { collect, textFromEvents } from '../events.js';
-import type { ProviderCallRequest } from '../types.js';
+import type { ProviderCallRequest, ProviderContentPart } from '../types.js';
 import { scrubSecrets } from './discover-models.js';
 
 function req(overrides: Partial<ProviderCallRequest> = {}): ProviderCallRequest {
@@ -1022,5 +1022,61 @@ describe('streamOpenAIChatCompletions', () => {
       expect(message).toContain('上游服务暂不可用（502）');
       expect(message).toContain('请稍后重试或联系网关管理员');
     });
+  });
+});
+
+// NewMax `buildDocumentContent` / `buildVideoContent` 的 openai 分支形状。
+describe('capability probe media blocks', () => {
+  const fetchMock = vi.fn<(...args: unknown[]) => Promise<Response>>();
+
+  afterEach(() => fetchMock.mockReset());
+
+  async function requestMessages(
+    content: ProviderContentPart[],
+  ): Promise<Array<Record<string, unknown>>> {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'text/event-stream' },
+      body: sseStream(['data: [DONE]\n\n']),
+      text: async () => '',
+    } as unknown as Response);
+    await collect(
+      streamOpenAIChatCompletions(req({ messages: [{ role: 'user', content }] }), {
+        fetchImpl: fetchMock as unknown as typeof fetch,
+      }),
+    );
+    const init = fetchMock.mock.calls[0]![1] as { body: string };
+    const body = JSON.parse(init.body) as {
+      messages: Array<{ content: Array<Record<string, unknown>> }>;
+    };
+    return body.messages[0]!.content;
+  }
+
+  it('serializes document and video probes as file / video_url', async () => {
+    const content = await requestMessages([
+      { type: 'text', text: 'summarize' },
+      { type: 'document', mediaUrl: 'data:application/pdf;base64,JVBERi0=' },
+      { type: 'text', text: 'describe' },
+      { type: 'video', mediaUrl: 'data:video/mp4;base64,AAAA' },
+    ]);
+    expect(content).toEqual([
+      { type: 'text', text: 'summarize' },
+      {
+        type: 'file',
+        file: { filename: 'attachment', file_data: 'data:application/pdf;base64,JVBERi0=' },
+      },
+      { type: 'text', text: 'describe' },
+      { type: 'video_url', video_url: { url: 'data:video/mp4;base64,AAAA' } },
+    ]);
+  });
+
+  it('routes https media through file_url instead of inlining it', async () => {
+    const content = await requestMessages([
+      { type: 'document', mediaUrl: 'https://example.test/doc.pdf' },
+    ]);
+    expect(content).toEqual([
+      { type: 'file', file: { filename: 'attachment', file_url: 'https://example.test/doc.pdf' } },
+    ]);
   });
 });

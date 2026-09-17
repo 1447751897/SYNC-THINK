@@ -20,6 +20,7 @@ import {
   shouldSkipSameProviderFallback,
   type AgentModelBinding,
 } from '@sync-think/core';
+import { catalogEntryVisionState, toCatalogModelEntry } from '../describe-image.js';
 import {
   DEFAULT_IMAGE_GENERATION_CONFIG,
   MAX_INLINE_ARTIFACT_CONTENT_BYTES,
@@ -346,7 +347,21 @@ async function executeProviderStep(
     }
 
     const reviewerImages = reviewerImageArtifactVersions(context);
-    if (reviewerImages.length > 0 && !model.capabilities.includes('vision')) {
+    // Route the gate through the same three-state answer the chat path uses.
+    // Only a definite "this model refuses images" blocks the Step; `unknown`
+    // stays executable because NewMax forwards the image and lets the provider
+    // answer. The legacy `capabilities` tag list would have rejected models the
+    // known-support table positively recognises.
+    //
+    // The projection must go through `toCatalogModelEntry`: a hand-built partial
+    // entry drops the user's manual image answer, and then a model the user
+    // explicitly marked as text-only answers `unknown` here instead of
+    // `unsupported` — so the Step would ship an image to a model that cannot
+    // read it.
+    if (
+      reviewerImages.length > 0 &&
+      catalogEntryVisionState(toCatalogModelEntry(model)) === 'unsupported'
+    ) {
       throw new StepExecutionError(
         'Image Reviewer Steps require a model with the vision capability',
         'acceptance',

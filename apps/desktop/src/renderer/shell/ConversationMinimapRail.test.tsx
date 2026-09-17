@@ -211,7 +211,9 @@ describe('ConversationMinimapRail', () => {
     const { rail, onNavigate } = renderRailFixture();
     const tick = screen.getByTestId('conversation-minimap-assistant-1');
     await waitFor(() => expect(tick.style.getPropertyValue('--minimap-tick-top')).not.toBe('16px'));
-    const clientY = 100 + Number.parseFloat(tick.style.getPropertyValue('--minimap-tick-top')) + 6;
+    // Probe just below the tick, inside its own hit band (the band is derived
+    // from the 10px slot, so an offset past half of it belongs to the next turn).
+    const clientY = 100 + Number.parseFloat(tick.style.getPropertyValue('--minimap-tick-top')) + 3;
     fireEvent.mouseMove(rail, { clientX: 35, clientY });
     expect(within(await screen.findByRole('tooltip')).getByText('请修复流式输出')).toBeTruthy();
     expect(onNavigate).not.toHaveBeenCalled();
@@ -275,22 +277,27 @@ describe('ConversationMinimapRail', () => {
     expect(items.map((item) => item.id)).not.toContain('system-1');
   });
 
-  it('centers assistant turns and progressively tightens their spacing as the thread grows', () => {
-    const sparse = buildCompactNavigationTops(4, 600);
-    const medium = buildCompactNavigationTops(12, 600);
-    const dense = buildCompactNavigationTops(40, 600);
+  it('gives every turn the same slot, so a short thread never collapses', () => {
+    const sparse = buildCompactNavigationTops(4, 72);
+    const medium = buildCompactNavigationTops(8, 80);
+    const dense = buildCompactNavigationTops(40, 400);
 
     const midpoint = (tops: number[]) => ((tops[0] ?? 0) + (tops.at(-1) ?? 0)) / 2;
     const firstGap = (tops: number[]) => (tops[1] ?? 0) - (tops[0] ?? 0);
 
     expect(buildCompactNavigationTops(1, 600)).toEqual([300]);
-    expect(midpoint(sparse)).toBeCloseTo(300);
-    expect(midpoint(medium)).toBeCloseTo(300);
-    expect(midpoint(dense)).toBeCloseTo(300);
-    expect(firstGap(sparse)).toBeGreaterThan(firstGap(medium));
-    expect(firstGap(medium)).toBeGreaterThan(firstGap(dense));
-    expect(sparse[0]).toBeGreaterThan(16);
-    expect(dense.at(-1)).toBeLessThan(584);
+    // A 2-3 turn thread used to collapse onto a single point: a 20-30px rail
+    // minus a flat 32px edge inset left nothing to distribute between the ticks.
+    expect(firstGap(buildCompactNavigationTops(2, 72))).toBe(10);
+    expect(firstGap(buildCompactNavigationTops(3, 72))).toBe(10);
+    expect(firstGap(sparse)).toBe(10);
+    expect(firstGap(medium)).toBe(8);
+    expect(firstGap(dense)).toBeCloseTo(368 / 39);
+    expect(midpoint(sparse)).toBeCloseTo(36);
+    expect(midpoint(medium)).toBeCloseTo(40);
+    expect(midpoint(dense)).toBeCloseTo(200);
+    expect(sparse.at(-1)).toBeLessThan(72 - 10.8);
+    expect(dense.at(-1)).toBeCloseTo(384);
   });
 
   it('compresses oversized threads to the available centered track without overflowing', () => {

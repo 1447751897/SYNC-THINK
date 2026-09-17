@@ -1,0 +1,477 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>SYNC-THINK · 模型设置 · 重新设计稿</title>
+<style>
+/* ─────────────────────────────────────────────────────────────
+   变量全部取自 apps/desktop/src/renderer/shell/tokens.css
+   （深色取 .dark 段，浅色取 :root 段），不引入任何新色值。
+   ───────────────────────────────────────────────────────────── */
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --font-sans:Inter,'Noto Sans SC',system-ui,-apple-system,sans-serif;
+  --font-mono:'Cascadia Code','JetBrains Mono',Consolas,monospace;
+  --radius-shell:18px;--radius-row:8px;
+  --motion:180ms cubic-bezier(.33,1,.68,1);
+}
+.t-dark{
+  --page:#1e1f1f;--surface:#252726;--overlay:#2a2d2b;--elevated:#191a1a;
+  --border:rgba(255,255,255,.08);--border-strong:rgba(255,255,255,.14);
+  --text:rgba(255,255,255,.9);--text-2:rgba(255,255,255,.5);--text-3:rgba(255,255,255,.38);
+  --accent:#36d385;--accent-text:#36d385;--accent-fg:rgba(0,0,0,.9);--accent-soft:rgba(54,211,133,.08);
+  --error:#e56555;--warning:#e0a830;
+  --hairline:rgba(255,255,255,.04);
+  --sel:rgba(168,184,176,.08);
+}
+.t-light{
+  --page:#f2eee6;--surface:#faf9f5;--overlay:#ffffff;--elevated:#f6f4ef;
+  --border:#e7e4db;--border-strong:#d5d1c6;
+  --text:#181b19;--text-2:#666763;--text-3:#8c8c87;
+  --accent:#2f9b5b;--accent-text:#1f6b3f;--accent-fg:#ffffff;--accent-soft:#e6f5ec;
+  --error:#c4453d;--warning:#b07d2a;
+  --hairline:rgba(255,255,255,.9);
+  --sel:#efece3;
+}
+body{
+  display:flex;flex-direction:column;align-items:center;gap:30px;
+  padding:32px 20px 48px;background:#0b0c0c;
+  font-family:var(--font-sans);-webkit-font-smoothing:antialiased;
+}
+.legend{width:880px;color:#8c8c87;font-size:12.5px;line-height:1.7}
+.legend b{color:#e7e4db;font-weight:600}
+.legend code{font-family:var(--font-mono);font-size:11.5px;color:#36d385}
+
+/* ── 窗口 ───────────────────────────────────────────────── */
+.frame{
+  width:880px;border-radius:var(--radius-shell);overflow:hidden;
+  background:var(--page);color:var(--text);border:1px solid var(--border);
+  box-shadow:0 28px 64px rgba(0,0,0,.5);
+  font-size:13px;line-height:1.5;
+}
+.t-light.frame{box-shadow:0 28px 64px rgba(0,0,0,.28)}
+
+/* ── 顶部标签 ───────────────────────────────────────────── */
+.tabs{display:flex;align-items:center;gap:10px;min-height:64px;padding:16px 24px}
+.tab{
+  display:inline-flex;align-items:center;height:32px;padding:0 13px;border-radius:9px;
+  font-size:12.5px;color:var(--text-2);transition:var(--motion);
+}
+.tab.is-active{
+  background:var(--overlay);color:var(--text);font-weight:550;
+  box-shadow:inset 0 0 0 .5px var(--border-strong);
+}
+.guide{margin-left:auto;color:var(--text-3);font-size:11.5px}
+.guide span{color:var(--accent-text);text-decoration:underline;text-underline-offset:2px}
+
+/* ── 两栏工作区 ─────────────────────────────────────────── */
+.workspace{display:grid;grid-template-columns:240px minmax(0,1fr);min-height:596px}
+
+/* 左侧供应商栏 */
+.rail{display:flex;flex-direction:column;border-right:1px solid var(--border);padding-bottom:10px}
+.rail__head{display:flex;align-items:center;justify-content:space-between;padding:11px 14px 9px 16px}
+.rail__head b{font-size:12.5px;font-weight:600}
+.rail__count{font-size:11px;color:var(--text-3)}
+.search{
+  display:flex;align-items:center;gap:7px;height:30px;margin:0 12px 8px;padding:0 10px;
+  border:1px solid var(--border);border-radius:var(--radius-row);
+  background:var(--elevated);color:var(--text-3);font-size:11.5px;
+}
+.prow{
+  display:flex;align-items:center;gap:9px;margin:1px 8px;padding:8px 9px;border-radius:var(--radius-row);
+  transition:var(--motion);
+}
+.prow.is-active{background:var(--sel);box-shadow:inset 0 0 0 .5px var(--border-strong)}
+.prow__mark{
+  display:grid;place-items:center;width:22px;height:22px;flex:0 0 22px;border-radius:6px;
+  color:#fff;font-size:10.5px;font-weight:700;
+}
+.prow__id{min-width:0;flex:1}
+.prow__id b{display:block;font-size:12px;font-weight:550;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.prow__id small{display:block;font-size:10.5px;color:var(--text-3)}
+.dot{width:6px;height:6px;flex:0 0 6px;border-radius:50%;background:var(--accent)}
+.dot.is-off{background:var(--text-3)}
+.badge{
+  flex:0 0 auto;padding:1.5px 5px;border-radius:5px;font-size:9.5px;font-weight:600;
+  background:var(--accent-soft);color:var(--accent-text);
+}
+.badge.is-warn{background:color-mix(in srgb,var(--warning) 16%,transparent);color:var(--warning)}
+.rail__foot{
+  display:flex;align-items:center;gap:6px;margin:auto 12px 0;padding-top:10px;
+  border-top:1px solid var(--border);color:var(--text-2);font-size:11.5px;font-weight:550;
+}
+
+/* 右侧表单 */
+.detail{display:flex;flex-direction:column;padding:2px 26px 16px 10px}
+.card{
+  flex:1;padding:16px;border-radius:var(--radius-shell);background:var(--overlay);
+  box-shadow:inset .5px .5px .5px var(--hairline),0 0 0 .5px var(--border);
+}
+.card__head{display:flex;align-items:center;gap:10px;padding-bottom:16px;border-bottom:1px solid var(--border)}
+.avatar{display:grid;place-items:center;width:34px;height:34px;flex:0 0 34px;border-radius:9px;color:#fff;font-size:13px;font-weight:700}
+.card__id{min-width:0;flex:1}
+.card__id b{display:block;font-size:13px;font-weight:600}
+.card__id small{display:block;font-size:11px;color:var(--text-3)}
+.card__tools{display:flex;align-items:center;gap:4px}
+
+.icon{
+  display:inline-grid;place-items:center;width:25px;height:25px;flex:0 0 25px;
+  border:0;border-radius:5px;background:transparent;color:var(--text-3);
+  font-family:var(--font-sans);font-size:11px;cursor:pointer;transition:var(--motion);
+}
+.icon:hover{background:var(--sel);color:var(--text)}
+
+.body{display:grid;gap:14px;padding-top:18px}
+.label{display:block;margin-bottom:7px;font-size:12px;color:var(--text-3)}
+.head{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.link{color:var(--accent-text);font-size:11.5px;font-weight:550}
+.muted{color:var(--text-3);font-size:10.5px}
+
+.input{
+  display:flex;align-items:center;height:34px;padding:0 10px;font-size:12.5px;
+  border:1px solid var(--border);border-radius:var(--radius-row);background:var(--elevated);
+}
+.input.mono{font-family:var(--font-mono);font-size:12px;letter-spacing:.3px}
+
+.row{display:flex;align-items:center;gap:14px}
+.seg{display:inline-flex;padding:2px;border:1px solid var(--border);border-radius:9px;background:var(--elevated)}
+.seg span{display:inline-flex;align-items:center;height:26px;padding:0 12px;border-radius:7px;font-size:12px;color:var(--text-2)}
+.seg span.is-on{background:var(--overlay);color:var(--text);font-weight:600;box-shadow:inset 0 0 0 .5px var(--border-strong)}
+.toggle-row{display:flex;align-items:center;gap:7px;color:var(--text-2);font-size:11.5px}
+.switch{position:relative;width:32px;height:18px;flex:0 0 32px;border-radius:9px;background:var(--border-strong)}
+.switch.is-on{background:var(--accent)}
+.switch::after{content:'';position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:var(--surface)}
+.switch.is-on::after{left:16px;background:var(--accent-fg)}
+
+/* 密钥 pill 行 —— 与 .model-credential-row 1:1 */
+.keys{display:grid;gap:5px}
+.key{
+  display:flex;align-items:center;height:34px;padding-right:4px;
+  border:1px solid var(--border);border-radius:17px;background:var(--overlay);
+}
+.key.is-revealed{border-color:color-mix(in srgb,var(--accent) 35%,var(--border))}
+.key code{
+  min-width:0;flex:1;padding:0 12px;font-family:var(--font-mono);font-size:12px;
+  letter-spacing:1px;color:var(--text-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+
+/* 模型优先级 */
+.section{margin-top:4px}
+.models{display:grid;gap:6px;margin-top:9px}
+.mrow{
+  display:flex;align-items:center;gap:9px;padding:8px 9px;
+  border:1px solid var(--border);border-radius:10px;
+  background:color-mix(in srgb,var(--elevated) 62%,var(--overlay));
+}
+.grip{color:var(--text-3);font-size:12px;cursor:grab}
+.rank{
+  display:grid;place-items:center;width:18px;height:18px;flex:0 0 18px;border-radius:5px;
+  background:var(--border);color:var(--text-2);font-size:9.5px;font-weight:600;
+}
+.mrow.is-main .rank{background:var(--accent-soft);color:var(--accent-text)}
+.mid{min-width:0;flex:1;font-family:var(--font-mono);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chip{
+  flex:0 0 auto;padding:1.5px 6px;border-radius:5px;
+  background:var(--border);color:var(--text-2);font-size:10px;
+}
+.actions{display:flex;align-items:center;gap:2px}
+.add-model{
+  display:flex;align-items:center;justify-content:center;gap:6px;width:100%;height:36px;
+  margin-top:10px;border:1px solid var(--border);border-radius:var(--radius-row);
+  background:color-mix(in srgb,var(--surface) 70%,var(--elevated));
+  color:var(--text-2);font-family:var(--font-sans);font-size:12px;font-weight:550;cursor:pointer;transition:var(--motion);
+}
+.add-model:hover{border-color:var(--border-strong);background:var(--sel);color:var(--text)}
+.fetch{
+  display:flex;align-items:center;justify-content:center;gap:6px;width:100%;
+  margin-top:10px;padding:4px 0;color:var(--accent-text);font-size:12px;font-weight:550;
+}
+
+/* 连接测试 */
+.test{display:grid;gap:6px;margin-top:12px}
+.status{font-size:11.5px;line-height:1.4;text-align:center}
+.status.is-error{color:var(--error)}
+.status.is-success{color:var(--accent-text)}
+.btn-test{
+  display:flex;align-items:center;justify-content:center;width:100%;height:38px;
+  border:1px solid color-mix(in srgb,var(--accent) 55%,var(--border));border-radius:9px;
+  background:transparent;color:var(--accent-text);
+  font-family:var(--font-sans);font-size:12.5px;font-weight:600;cursor:pointer;transition:var(--motion);
+}
+.btn-test:hover{background:color-mix(in srgb,var(--accent) 12%,transparent)}
+.btn-unverified{
+  display:flex;align-items:center;justify-content:center;width:100%;height:33px;
+  border:1px solid var(--border);border-radius:var(--radius-row);
+  background:transparent;color:var(--text-2);
+  font-family:var(--font-sans);font-size:12px;font-weight:550;cursor:pointer;transition:var(--motion);
+}
+.btn-unverified:hover{border-color:var(--border-strong);background:var(--sel);color:var(--text)}
+.hint{color:var(--text-3);font-size:11px;line-height:1.65}
+</style>
+</head>
+<body>
+
+<p class="legend">
+  <b>SYNC-THINK · 设置 → 模型 → 自定义供应商</b>｜重新设计稿<br />
+  配色、圆角、间距全部取自 <code>tokens.css</code> 与现有 <code>shell.css</code> 的模型设置样式，未新增任何色值。<br />
+  上：深色主题 &nbsp;·&nbsp; 下：浅色主题（同一套 token 契约）
+</p>
+
+<!-- ═══════════ 深色 ═══════════ -->
+<section class="frame t-dark">
+  <div class="tabs">
+    <span class="tab is-active">对话模型</span>
+    <span class="tab">生图模型</span>
+    <span class="tab">语音模型</span>
+    <span class="guide">不清楚怎么配置？<span>查看指南</span></span>
+  </div>
+
+  <div class="workspace">
+    <aside class="rail">
+      <div class="rail__head"><b>已启用供应商</b><span class="rail__count">4 个</span></div>
+      <div class="search">⌕ 搜索供应商</div>
+
+      <div class="prow is-active">
+        <span class="prow__mark" style="background:#6f78ff">D</span>
+        <span class="prow__id"><b>DeepSeek 中转</b><small>3 个模型</small></span>
+        <span class="dot"></span>
+      </div>
+      <div class="prow">
+        <span class="prow__mark" style="background:#74aa9c">O</span>
+        <span class="prow__id"><b>OpenAI 官方</b><small>7 个模型</small></span>
+        <span class="dot"></span>
+      </div>
+      <div class="prow">
+        <span class="prow__mark" style="background:#d4a27f">A</span>
+        <span class="prow__id"><b>Anthropic 直连</b><small>5 个模型</small></span>
+        <span class="badge is-warn">未验证</span>
+        <span class="dot"></span>
+      </div>
+      <div class="prow">
+        <span class="prow__mark" style="background:#8c8c87">L</span>
+        <span class="prow__id"><b>本地 Ollama</b><small>已停用</small></span>
+        <span class="dot is-off"></span>
+      </div>
+
+      <div class="rail__foot">＋ 添加供应商</div>
+    </aside>
+
+    <div class="detail">
+      <div class="card">
+        <div class="card__head">
+          <button class="icon">←</button>
+          <span class="avatar" style="background:#6f78ff">D</span>
+          <div class="card__id">
+            <b>DeepSeek 中转</b>
+            <small>自定义端点 · OpenAI 兼容</small>
+          </div>
+          <div class="card__tools">
+            <span class="switch is-on"></span>
+            <button class="icon">⋯</button>
+          </div>
+        </div>
+
+        <div class="body">
+          <div>
+            <span class="label">供应商名称</span>
+            <div class="input">DeepSeek 中转</div>
+          </div>
+
+          <div>
+            <span class="label">API 地址</span>
+            <div class="input mono">https://api.deepseek.com/v1</div>
+          </div>
+
+          <div>
+            <span class="label">API 格式</span>
+            <div class="row">
+              <div class="seg"><span class="is-on">OpenAI</span><span>Anthropic</span></div>
+              <div class="toggle-row"><span class="switch"></span><span>Responses API</span></div>
+            </div>
+          </div>
+
+          <div>
+            <div class="head">
+              <span class="label" style="margin:0">API 密钥</span>
+              <span class="link">＋ 添加 API 密钥</span>
+            </div>
+            <div class="keys">
+              <div class="key"><code>sk-••••••••••••••••••••c4f2</code><i class="icon">👁</i><i class="icon">✎</i><i class="icon">✕</i></div>
+              <div class="key"><code>sk-••••••••••••••••••••9a17</code><i class="icon">👁</i><i class="icon">✎</i><i class="icon">✕</i></div>
+            </div>
+            <div class="toggle-row" style="margin-top:8px">
+              <span class="switch is-on"></span><span>密钥轮换 · 请求失败时自动切到下一个</span>
+            </div>
+          </div>
+
+          <div class="section">
+            <div class="head">
+              <span class="label" style="margin:0">模型优先级（至少添加一个）</span>
+              <span class="muted">按顺序尝试</span>
+            </div>
+            <div class="models">
+              <div class="mrow is-main">
+                <span class="grip">⠿</span><span class="rank">主</span>
+                <span class="mid">deepseek-chat</span>
+                <span class="chip">思考</span><span class="chip">128K</span>
+                <span class="actions"><i class="icon">↑</i><i class="icon">↓</i><i class="icon">✕</i></span>
+              </div>
+              <div class="mrow">
+                <span class="grip">⠿</span><span class="rank">2</span>
+                <span class="mid">deepseek-reasoner</span>
+                <span class="chip">思考</span><span class="chip">64K</span>
+                <span class="actions"><i class="icon">↑</i><i class="icon">↓</i><i class="icon">✕</i></span>
+              </div>
+              <div class="mrow">
+                <span class="grip">⠿</span><span class="rank">3</span>
+                <span class="mid">deepseek-vl</span>
+                <span class="chip">识图</span><span class="chip">32K</span>
+                <span class="actions"><i class="icon">↑</i><i class="icon">↓</i><i class="icon">✕</i></span>
+              </div>
+            </div>
+            <button class="add-model">＋ 添加模型</button>
+            <div class="fetch">↻ 从服务商拉取模型列表</div>
+          </div>
+
+          <div class="test">
+            <p class="status is-error">✕ 连接失败 · 401 Unauthorized（密钥无效或已过期）</p>
+            <button class="btn-test">重新测试</button>
+            <button class="btn-unverified">仍然保存（未验证）</button>
+            <p class="hint">连接测试会额外探测思考、识图等能力，部分中转站会因此拒绝请求但实际可以正常对话。如果你确认配置无误，可以先保存使用。</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════ 浅色 ═══════════ -->
+<section class="frame t-light">
+  <div class="tabs">
+    <span class="tab is-active">对话模型</span>
+    <span class="tab">生图模型</span>
+    <span class="tab">语音模型</span>
+    <span class="guide">不清楚怎么配置？<span>查看指南</span></span>
+  </div>
+
+  <div class="workspace">
+    <aside class="rail">
+      <div class="rail__head"><b>已启用供应商</b><span class="rail__count">4 个</span></div>
+      <div class="search">⌕ 搜索供应商</div>
+
+      <div class="prow is-active">
+        <span class="prow__mark" style="background:#6f78ff">D</span>
+        <span class="prow__id"><b>DeepSeek 中转</b><small>3 个模型</small></span>
+        <span class="dot"></span>
+      </div>
+      <div class="prow">
+        <span class="prow__mark" style="background:#74aa9c">O</span>
+        <span class="prow__id"><b>OpenAI 官方</b><small>7 个模型</small></span>
+        <span class="dot"></span>
+      </div>
+      <div class="prow">
+        <span class="prow__mark" style="background:#d4a27f">A</span>
+        <span class="prow__id"><b>Anthropic 直连</b><small>5 个模型</small></span>
+        <span class="badge is-warn">未验证</span>
+        <span class="dot"></span>
+      </div>
+      <div class="prow">
+        <span class="prow__mark" style="background:#8c8c87">L</span>
+        <span class="prow__id"><b>本地 Ollama</b><small>已停用</small></span>
+        <span class="dot is-off"></span>
+      </div>
+
+      <div class="rail__foot">＋ 添加供应商</div>
+    </aside>
+
+    <div class="detail">
+      <div class="card">
+        <div class="card__head">
+          <button class="icon">←</button>
+          <span class="avatar" style="background:#6f78ff">D</span>
+          <div class="card__id">
+            <b>DeepSeek 中转</b>
+            <small>自定义端点 · OpenAI 兼容</small>
+          </div>
+          <div class="card__tools">
+            <span class="switch is-on"></span>
+            <button class="icon">⋯</button>
+          </div>
+        </div>
+
+        <div class="body">
+          <div>
+            <span class="label">供应商名称</span>
+            <div class="input">DeepSeek 中转</div>
+          </div>
+
+          <div>
+            <span class="label">API 地址</span>
+            <div class="input mono">https://api.deepseek.com/v1</div>
+          </div>
+
+          <div>
+            <span class="label">API 格式</span>
+            <div class="row">
+              <div class="seg"><span class="is-on">OpenAI</span><span>Anthropic</span></div>
+              <div class="toggle-row"><span class="switch"></span><span>Responses API</span></div>
+            </div>
+          </div>
+
+          <div>
+            <div class="head">
+              <span class="label" style="margin:0">API 密钥</span>
+              <span class="link">＋ 添加 API 密钥</span>
+            </div>
+            <div class="keys">
+              <div class="key"><code>sk-••••••••••••••••••••c4f2</code><i class="icon">👁</i><i class="icon">✎</i><i class="icon">✕</i></div>
+              <div class="key"><code>sk-••••••••••••••••••••9a17</code><i class="icon">👁</i><i class="icon">✎</i><i class="icon">✕</i></div>
+            </div>
+            <div class="toggle-row" style="margin-top:8px">
+              <span class="switch is-on"></span><span>密钥轮换 · 请求失败时自动切到下一个</span>
+            </div>
+          </div>
+
+          <div class="section">
+            <div class="head">
+              <span class="label" style="margin:0">模型优先级（至少添加一个）</span>
+              <span class="muted">按顺序尝试</span>
+            </div>
+            <div class="models">
+              <div class="mrow is-main">
+                <span class="grip">⠿</span><span class="rank">主</span>
+                <span class="mid">deepseek-chat</span>
+                <span class="chip">思考</span><span class="chip">128K</span>
+                <span class="actions"><i class="icon">↑</i><i class="icon">↓</i><i class="icon">✕</i></span>
+              </div>
+              <div class="mrow">
+                <span class="grip">⠿</span><span class="rank">2</span>
+                <span class="mid">deepseek-reasoner</span>
+                <span class="chip">思考</span><span class="chip">64K</span>
+                <span class="actions"><i class="icon">↑</i><i class="icon">↓</i><i class="icon">✕</i></span>
+              </div>
+              <div class="mrow">
+                <span class="grip">⠿</span><span class="rank">3</span>
+                <span class="mid">deepseek-vl</span>
+                <span class="chip">识图</span><span class="chip">32K</span>
+                <span class="actions"><i class="icon">↑</i><i class="icon">↓</i><i class="icon">✕</i></span>
+              </div>
+            </div>
+            <button class="add-model">＋ 添加模型</button>
+            <div class="fetch">↻ 从服务商拉取模型列表</div>
+          </div>
+
+          <div class="test">
+            <p class="status is-error">✕ 连接失败 · 401 Unauthorized（密钥无效或已过期）</p>
+            <button class="btn-test">重新测试</button>
+            <button class="btn-unverified">仍然保存（未验证）</button>
+            <p class="hint">连接测试会额外探测思考、识图等能力，部分中转站会因此拒绝请求但实际可以正常对话。如果你确认配置无误，可以先保存使用。</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+</body>
+</html>

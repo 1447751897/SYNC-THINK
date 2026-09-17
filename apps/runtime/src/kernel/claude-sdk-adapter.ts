@@ -83,6 +83,34 @@ function mapPermissionMode(mode: KernelRequest['permissionMode']): PermissionMod
   }
 }
 
+/**
+ * Kernel-native multi-Agent tools that are refused unconditionally.
+ *
+ * Product rule: a model conversation may delegate only to an Agent that already
+ * exists in the Agent Library — `agent_delegate` and `agent_run` both require an
+ * existing `agentId` and never mint an agent of their own. A kernel-native
+ * sub-Agent is an ephemeral agent the host never sees: no Agent Library identity,
+ * no authorization grant, no collaboration-budget accounting (depth, child count,
+ * per-turn cap). It must therefore not be reachable at all.
+ *
+ * This is an invariant, not a user setting, and it cannot ride on `canUseTool`:
+ * full-access maps to `bypassPermissions`, which skips the permission callback
+ * entirely. `disallowedTools` is enforced by the SDK itself in every mode, so it
+ * is the only gate that holds for a full-access run.
+ *
+ *   - `Agent`    spawns one sub-Agent (`subagent_type`, `run_in_background`,
+ *                optional worktree isolation). Observed spawning 19 parallel
+ *                sub-Agents in a single turn, invisible to Sync-Think.
+ *   - `Workflow` runs a script whose body calls `agent()` / `parallel()` /
+ *                `pipeline()` and therefore fans out sub-Agents the same way.
+ *
+ * `TaskCreate` / `TaskGet` / `TaskUpdate` / `TaskList` / `TodoWrite` are the
+ * checklist tools and stay available — `disallowedTools` matches exact tool
+ * names, so `Task`-prefixed helpers are unaffected. The list is versioned
+ * against @anthropic-ai/claude-agent-sdk 0.3.238's `ToolInputSchemas`.
+ */
+const NATIVE_SUBAGENT_TOOLS: readonly string[] = ['Agent', 'Workflow'];
+
 function finiteNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
@@ -355,11 +383,16 @@ export class ClaudeSdkKernelAdapter implements KernelAdapter {
 
     if (request.providerModelId) options.model = request.providerModelId;
 
+    // Always applied, before any mode-dependent addition: the sub-Agent tools
+    // must be gone from the model's context in every permission and planning
+    // mode (see NATIVE_SUBAGENT_TOOLS).
+    const disallowedTools = [...NATIVE_SUBAGENT_TOOLS];
     if (request.webSearchMode === 'disabled') {
-      options.disallowedTools = ['WebSearch', 'WebFetch'];
+      disallowedTools.push('WebSearch', 'WebFetch');
     } else if (request.webSearchMode === 'external' || request.webSearchMode === 'fetch-only') {
-      options.disallowedTools = ['WebSearch'];
+      disallowedTools.push('WebSearch');
     }
+    options.disallowedTools = disallowedTools;
 
     if (request.platformBroker) {
       // In-process SDK MCP servers (design Phase 1/5): the SDK owns an

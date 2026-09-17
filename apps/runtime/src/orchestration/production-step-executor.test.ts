@@ -411,6 +411,18 @@ describe('production Step execution reservations', () => {
 
   it('fails an image Reviewer before Provider reservation when the model lacks vision', async () => {
     const f = await seedProductionRun('sync-think-production-image-reviewer-no-vision-');
+    // The gate now reads NewMax's three-state answer, so the model has to be a
+    // *definite* negative: a probe that the model itself answered with a
+    // refusal. A model that was simply never probed is `unknown`, which NewMax
+    // keeps executable (the image is forwarded and the provider decides), so an
+    // untagged fixture would no longer block the Step.
+    f.providerStore.updateModelCapabilities({
+      modelId: f.agent.defaultModelId,
+      capabilities: ['text'],
+      capabilitiesConfirmed: true,
+      visionCapability: false,
+      visionProbeReason: '未识别测试图中的数字',
+    });
     const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 31, 32, 33]);
     const generatedImageStore = new GeneratedImageStore(
       join(f.dir, 'runtime-data', 'artifacts', 'generated-images'),

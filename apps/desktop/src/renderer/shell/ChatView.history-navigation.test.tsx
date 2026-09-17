@@ -86,6 +86,7 @@ async function fixture() {
     scrollTop: { configurable: true, writable: true, value: 1000 },
   });
   fireEvent.scroll(scroller);
+  expect(scroller.querySelectorAll('[data-message-id]')).toHaveLength(12);
   return { ...view, scroller, props };
 }
 
@@ -168,7 +169,7 @@ describe('ChatView complete history navigation', () => {
     );
   });
 
-  it('bounds the remount cache and restores the correct older cursor after trimming', async () => {
+  it('renders the bounded remount cache immediately, refreshes it, and keeps the older cursor', async () => {
     const view = await fixture();
     fireEvent.click(screen.getByTestId('conversation-minimap-history-message-11'));
     await screen.findByText('历史正文 10');
@@ -179,13 +180,24 @@ describe('ChatView complete history navigation', () => {
     view.unmount();
     const restored = render(<ChatView {...view.props} />);
     await screen.findByText('历史正文 148');
-    expect(runtime.listConversationMessages).toHaveBeenCalledTimes(callsBeforeRemount);
+    await waitFor(() =>
+      expect(runtime.listConversationMessages).toHaveBeenCalledTimes(callsBeforeRemount + 1),
+    );
     expect(screen.queryByText('历史正文 10')).toBeNull();
-    expect(restored.container.querySelectorAll('[data-message-id]').length).toBe(100);
-    const scroller = restored.container.querySelector<HTMLDivElement>(
-      '.shell-chat-message-scroller',
-    )!;
-    fireEvent.scroll(scroller);
+    expect(restored.container.querySelectorAll('[data-message-id]').length).toBe(12);
+    fireEvent.click(screen.getByRole('button', { name: '加载更早消息（88）' }));
+    await waitFor(() =>
+      expect(restored.container.querySelectorAll('[data-message-id]').length).toBe(52),
+    );
+    fireEvent.click(screen.getByRole('button', { name: '加载更早消息（48）' }));
+    await waitFor(() =>
+      expect(restored.container.querySelectorAll('[data-message-id]').length).toBe(92),
+    );
+    fireEvent.click(screen.getByRole('button', { name: '加载更早消息（8）' }));
+    await waitFor(() =>
+      expect(restored.container.querySelectorAll('[data-message-id]').length).toBe(100),
+    );
+    fireEvent.click(screen.getByRole('button', { name: '加载更早消息' }));
     await screen.findByText('历史正文 10');
     expect(runtime.listConversationMessages.mock.lastCall?.[0]).toMatchObject({
       beforeSequence: 50,

@@ -198,7 +198,7 @@ export function shouldAttemptFallback(failureClass: FailureClass | undefined): b
 export function isSharedProviderEndpointFailure(errorMessage?: string): boolean {
   if (!errorMessage) return false;
   const transport =
-    /unexpected status 50[234]|bad gateway|gateway timeout|fetch failed|econnreset|econnrefused|socket hang up/i.test(
+    /unexpected status 50[234]|bad gateway|gateway timeout|fetch failed|econnreset|econnrefused|econnaborted|epipe|socket hang up|other side closed|premature close|\bterminated\b|und_err_socket/i.test(
       errorMessage,
     );
   const localGateway = /127\.0\.0\.1|localhost/i.test(errorMessage);

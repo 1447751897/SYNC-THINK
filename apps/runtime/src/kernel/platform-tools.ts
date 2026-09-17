@@ -30,7 +30,7 @@ import {
 import { createPlatformContext, type ConversationTrack } from '@sync-think/shared';
 import { isCollaborationToolAllowed, normalizeCollaborationSettings } from '../collaboration-policy.js';
 import {
-  CHAT_AGENT_TOOL_SCHEMAS,
+  CHAT_AGENT_DIRECTORY_TOOL_SCHEMAS,
   CHAT_BROWSER_TOOL_SCHEMAS,
   CHAT_DESKTOP_TOOL_SCHEMAS,
   CHAT_DYNAMIC_AGENT_TOOL_SCHEMAS,
@@ -439,6 +439,12 @@ export function nativePlatformToolSchemas(
     collaborationSettings?: unknown;
     /** 设置 > 模型 > 图片识别 Fallback 开关：把 describe_image 并入 native 目录。 */
     visionFallbackEnabled?: boolean;
+    /**
+     * 本轮主模型确定不支持图片输入、且没有可用视觉 Fallback —— 只有这种情况才把
+     * `ocr_image` 并入 native 目录。模型能自己看图时暴露 OCR 只会诱导它浪费一轮
+     * 去提取眼前的文字。与 registry 的 `imageOcrFallbackEnabled` 同一判据。
+     */
+    imageOcrFallbackEnabled?: boolean;
     /** 设置 > 模型 > 图像生成（保留开关；模型目录走 capability-broker）。 */
     imageGenerationEnabled?: boolean;
     /** False when this conversation has no active Goal. */
@@ -453,11 +459,13 @@ export function nativePlatformToolSchemas(
     includeGoalManage: options.includeGoalManage,
   });
   const extra = [
-    ...(platform.capabilities.ocr ? [{
-      name: WINDOWS_OCR_TOOL_NAME,
-      description: WINDOWS_OCR_TOOL_DESCRIPTION,
-      inputSchema: WINDOWS_OCR_INPUT_SCHEMA,
-    }] : []),
+    ...(platform.capabilities.ocr && options.imageOcrFallbackEnabled
+      ? [{
+          name: WINDOWS_OCR_TOOL_NAME,
+          description: WINDOWS_OCR_TOOL_DESCRIPTION,
+          inputSchema: WINDOWS_OCR_INPUT_SCHEMA,
+        }]
+      : []),
     ...(options.visionFallbackEnabled
       ? [
           {
@@ -561,7 +569,10 @@ export function buildPlatformMcpToolDefinitions(
     }
   };
   if (options.includeTaskTools) add(CHAT_PLAN_TOOL_SCHEMAS);
-  if (options.includeAgentTools) add(CHAT_AGENT_TOOL_SCHEMAS);
+  // External kernels use the shared Sync-Think Agent directory. Agent CRUD
+  // remains available only to the native model track, where the host can
+  // present the normal approval flow.
+  if (options.includeAgentTools) add(CHAT_AGENT_DIRECTORY_TOOL_SCHEMAS);
   if (options.includeDynamicAgentTools) add(CHAT_DYNAMIC_AGENT_TOOL_SCHEMAS);
   if (options.includeSkillTools) add(CHAT_SKILL_TOOL_SCHEMAS);
   if (options.includeTeamTools) add(CHAT_TEAM_TOOL_SCHEMAS);
