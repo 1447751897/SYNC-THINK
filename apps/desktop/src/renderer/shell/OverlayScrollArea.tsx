@@ -62,6 +62,8 @@ export interface OverlayScrollAreaProps {
   /** 需要直接操作滚动元素时传入。 */
   scrollRef?: MutableRefObject<HTMLDivElement | null>;
   style?: CSSProperties;
+  /** Optional test hook applied to the outer clipping container. */
+  dataTestId?: string;
 }
 
 interface ThumbMetrics {
@@ -90,6 +92,7 @@ export function OverlayScrollArea(props: OverlayScrollAreaProps) {
     fadeHeight = 24,
     scrollRef,
     style,
+    dataTestId,
   } = props;
 
   const localScrollRef = useRef<HTMLDivElement | null>(null);
@@ -326,6 +329,7 @@ export function OverlayScrollArea(props: OverlayScrollAreaProps) {
     <div
       className={className ? `shell-overlay-scroll ${className}` : 'shell-overlay-scroll'}
       style={mergedStyle}
+      {...(dataTestId ? { 'data-testid': dataTestId } : {})}
       onMouseEnter={handlePointerEnter}
       onMouseLeave={handlePointerLeave}
     >

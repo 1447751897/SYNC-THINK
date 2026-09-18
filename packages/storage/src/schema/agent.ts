@@ -37,11 +37,11 @@ export const agent = sqliteTable('agent', {
   availabilityScope: text('availability_scope').notNull().default('global'),
   /**
    * Delegated write policy.
-   * - `read-only` (default): the Agent never writes when delegated.
-   * - `inherit`: the child follows the conversation's permission mode, except in
+   * - `read-only`: the Agent never writes when delegated.
+   * - `inherit` (default): the child follows the conversation's permission mode, except in
    *   `ask`, where a headless child has no approval card to answer.
    */
-  writePolicy: text('write_policy').notNull().default('read-only'),
+  writePolicy: text('write_policy').notNull().default('inherit'),
   archived: integer('archived', { mode: 'boolean' }).notNull().default(false),
   ...tsColumns(),
 });

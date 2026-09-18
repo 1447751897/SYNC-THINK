@@ -4,7 +4,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { ComponentProps } from 'react';
-import type { Conversation, GlobalAgent, Team, TeamMember } from '@sync-think/shared';
+import type { GlobalAgent, Team, TeamMember } from '@sync-think/shared';
 import { AgentLibrary } from './AgentLibrary.js';
 import { DialogProvider } from './Dialog.js';
 
@@ -28,10 +28,26 @@ const agent: GlobalAgent = {
   skillIds: [],
   mcpServerIds: [],
   reasoningEffort: 'auto',
+  writePolicy: 'read-only',
   archived: false,
   createdAt: '2026-08-08T00:00:00.000Z',
   updatedAt: '2026-08-08T00:00:00.000Z',
 };
+
+/**
+ * The library renders exactly one layout per `data-view`: dense rows in list
+ * view (the default) and cards in grid view. Both carry `.agent-card`, so a
+ * single lookup helper covers the two.
+ */
+function cardByName(name: string): HTMLElement {
+  const card = screen.getByText(name).closest('.agent-card');
+  expect(card).toBeTruthy();
+  return card as HTMLElement;
+}
+
+function switchView(label: '列表视图' | '网格视图') {
+  fireEvent.click(screen.getByRole('button', { name: label }));
+}
 
 function renderLibrary(
   onStartConversation = vi.fn(),
@@ -69,16 +85,13 @@ describe('AgentLibrary shared visual structure', () => {
   it('keeps an empty description in the card layout and selects the card when editing', () => {
     renderLibrary();
 
-    const card = screen.getByText('Agent Alpha').closest('.agent-card');
-    expect(card).toBeTruthy();
-    expect(
-      card?.querySelector('.agent-card__description')?.getAttribute('data-empty'),
-    ).toBe('1');
-    expect(card?.classList.contains('agent-card--selected')).toBe(false);
+    const card = cardByName('Agent Alpha');
+    expect(card.querySelector('.agent-card__description')?.getAttribute('data-empty')).toBe('1');
+    expect(card.classList.contains('agent-card--selected')).toBe(false);
 
-    fireEvent.click(card!);
+    fireEvent.click(card);
 
-    expect(card?.classList.contains('agent-card--selected')).toBe(true);
+    expect(card.classList.contains('agent-card--selected')).toBe(true);
     expect(document.querySelector('.agent-dialog')).toBeTruthy();
     expect(document.querySelector('[data-testid="agent-detail-drawer"]')).toBeTruthy();
     expect(document.querySelector('.agent-dialog__body')).toBeTruthy();
@@ -89,7 +102,8 @@ describe('AgentLibrary shared visual structure', () => {
     const onStartConversation = vi.fn();
     renderLibrary(onStartConversation);
 
-    const action = document.querySelector<HTMLButtonElement>('.agent-card__action');
+    // The dense row exposes the primary action as an icon button.
+    const action = document.querySelector<HTMLButtonElement>('.agent-card__row-action--primary');
     expect(action).toBeTruthy();
     fireEvent.click(action!);
 
@@ -113,7 +127,7 @@ describe('AgentLibrary shared visual structure', () => {
       ],
     });
 
-    expect(screen.getAllByRole('button', { name: '开始对话' })).toHaveLength(2);
+    expect(screen.getAllByRole('button', { name: /开始对话/ })).toHaveLength(2);
 
     fireEvent.change(screen.getByRole('searchbox', { name: '搜索智能体' }), {
       target: { value: 'release' },
@@ -124,22 +138,88 @@ describe('AgentLibrary shared visual structure', () => {
     fireEvent.change(screen.getByRole('searchbox', { name: '搜索智能体' }), {
       target: { value: '' },
     });
-    // The scope segmented filter replaces the old model dropdown: the seeded
-    // agents have no availabilityScope (defaults to global), so filtering to
+    // The sliding scope tabs replace the old model dropdown: the seeded agents
+    // have no availabilityScope (defaults to global), so filtering to
     // 指定工作区 hides both, and 全部 brings them back.
     fireEvent.click(screen.getByRole('button', { name: /指定工作区/ }));
     expect(screen.queryByText('Agent Alpha')).toBeNull();
     expect(screen.queryByText('Agent Beta')).toBeNull();
 
-    fireEvent.click(screen.getByRole('button', { name: /全部/ }));
+    fireEvent.click(within(screen.getByRole('group', { name: '范围筛选' })).getByRole('button', { name: /全部/ }));
     expect(screen.getByText('Agent Alpha')).toBeTruthy();
     expect(screen.getByText('Agent Beta')).toBeTruthy();
 
-    fireEvent.click(screen.getByRole('button', { name: '列表视图' }));
+    // List is the default; switching to grid swaps the mounted layout.
+    expect(document.querySelector('.agent-grid')?.getAttribute('data-view')).toBe('list');
+    expect(document.querySelector('.agent-card__row')).toBeTruthy();
+    expect(document.querySelector('.agent-card__main')).toBeNull();
+
+    switchView('网格视图');
+    expect(document.querySelector('.agent-grid')?.getAttribute('data-view')).toBe('grid');
+    expect(document.querySelector('.agent-card__main')).toBeTruthy();
+    expect(document.querySelector('.agent-card__row')).toBeNull();
+
+    switchView('列表视图');
     expect(document.querySelector('.agent-grid')?.getAttribute('data-view')).toBe('list');
     expect(screen.getByRole('button', { name: '列表视图' }).getAttribute('aria-pressed')).toBe(
       'true',
     );
+  });
+
+  it('filters by write policy and by status from the filter row', () => {
+    const writable = {
+      ...agent,
+      id: 'agent-beta' as GlobalAgent['id'],
+      name: 'Agent Beta',
+      writePolicy: 'inherit' as const,
+    };
+    renderLibrary(undefined, { agents: [agent, writable] });
+
+    // Both filter groups contain a 「全部」 chip, so scope every query to the
+    // group under test.
+    const policy = within(screen.getByRole('group', { name: '写入策略筛选' }));
+    const status = within(screen.getByRole('group', { name: '状态筛选' }));
+
+    // agent-alpha defaults to read-only, agent-beta inherits.
+    fireEvent.click(policy.getByRole('button', { name: /继承当前会话/ }));
+    expect(screen.queryByText('Agent Alpha')).toBeNull();
+    expect(screen.getByText('Agent Beta')).toBeTruthy();
+
+    fireEvent.click(policy.getByRole('button', { name: /^只读/ }));
+    expect(screen.getByText('Agent Alpha')).toBeTruthy();
+    expect(screen.queryByText('Agent Beta')).toBeNull();
+
+    fireEvent.click(policy.getByRole('button', { name: /^全部/ }));
+    expect(screen.getByText('Agent Alpha')).toBeTruthy();
+    expect(screen.getByText('Agent Beta')).toBeTruthy();
+
+    // The seeded model catalog resolves, so 可用 keeps both and 不可用 drops both.
+    fireEvent.click(status.getByRole('button', { name: /^不可用/ }));
+    expect(screen.queryByText('Agent Alpha')).toBeNull();
+    expect(screen.queryByText('Agent Beta')).toBeNull();
+
+    fireEvent.click(status.getByRole('button', { name: /^可用/ }));
+    expect(screen.getByText('Agent Alpha')).toBeTruthy();
+    expect(screen.getByText('Agent Beta')).toBeTruthy();
+  });
+
+  it('sorts the library from the sort menu', () => {
+    const beta = {
+      ...agent,
+      id: 'agent-beta' as GlobalAgent['id'],
+      name: 'Agent Beta',
+      updatedAt: '2026-08-09T00:00:00.000Z',
+    };
+    renderLibrary(undefined, { agents: [agent, beta] });
+
+    // Default is 按最近活跃: beta's updatedAt is newer, so it leads.
+    const names = () =>
+      [...document.querySelectorAll('.agent-card__name')].map((n) => n.textContent);
+    expect(names()).toEqual(['Agent Beta', 'Agent Alpha']);
+
+    fireEvent.click(screen.getByRole('button', { name: /按最近活跃/ }));
+    fireEvent.click(screen.getByRole('menuitemradio', { name: '按名称' }));
+    expect(names()).toEqual(['Agent Alpha', 'Agent Beta']);
   });
 
   it('labels a missing model without exposing its internal id as the model name', () => {
@@ -152,14 +232,14 @@ describe('AgentLibrary shared visual structure', () => {
     expect(screen.getByText('模型不可用')).toBeTruthy();
     expect(screen.queryByText('model-removed-from-catalog')).toBeNull();
 
-    fireEvent.click(screen.getByText('Agent Alpha').closest('.agent-card')!);
+    fireEvent.click(cardByName('Agent Alpha'));
     expect(screen.getAllByText('模型不可用').length).toBeGreaterThan(1);
     expect(screen.queryByText('model-removed-from-catalog')).toBeNull();
   });
 
   it('closes the agent drawer with Escape', () => {
     renderLibrary();
-    fireEvent.click(screen.getByText('Agent Alpha').closest('.agent-card')!);
+    fireEvent.click(cardByName('Agent Alpha'));
 
     expect(screen.getByTestId('agent-detail-drawer')).toBeTruthy();
     fireEvent.keyDown(window, { key: 'Escape' });
@@ -188,19 +268,10 @@ describe('AgentLibrary tabbed detail drawer', () => {
     updatedAt: '2026-08-08T00:00:00.000Z',
   };
 
-  const assignedConversation = {
-    id: 'conversation-1',
-    track: 'agent',
-    targetRef: 'agent-alpha',
-    workspaceId: 'workspace-1',
-    title: 'Agent Alpha 的对话',
-    executionMode: 'full-access',
-    createdAt: '2026-08-08T00:00:00.000Z',
-    updatedAt: '2026-08-08T00:00:00.000Z',
-  } as unknown as Conversation;
+
 
   function openDrawer() {
-    fireEvent.click(screen.getByText('Agent Alpha').closest('.agent-card')!);
+    fireEvent.click(cardByName('Agent Alpha'));
     expect(screen.getByTestId('agent-detail-drawer')).toBeTruthy();
   }
 
@@ -233,68 +304,90 @@ describe('AgentLibrary tabbed detail drawer', () => {
     );
   });
 
-  it('switches to the work tab and opens an assigned conversation', () => {
-    const onOpenConversation = vi.fn();
+  it('configures workspace activation from the main library row', async () => {
+    const setGlobalAgentWorkspaceActivation = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(window, 'syncThink', {
+      configurable: true,
+      value: {
+        runtime: {
+          listSkills: vi.fn().mockResolvedValue({ skills: [] }),
+          listMcpServers: vi.fn().mockResolvedValue({ servers: [] }),
+          listGlobalAgentWorkspaceActivations: vi.fn().mockResolvedValue({ activations: [] }),
+          setGlobalAgentWorkspaceActivation,
+        },
+      },
+    });
     renderLibrary(undefined, {
+      agents: [{ ...agent, availabilityScope: 'workspace' }],
       teams: [team],
-      conversations: [assignedConversation],
       workspaces: [
         {
           workspaceId: 'workspace-1' as never,
           name: '工作区 一',
+          folderPath: 'D:/workspace-one',
           createdAt: '',
           updatedAt: '',
         } as never,
       ],
-      onOpenConversation,
     });
-    openDrawer();
 
-    // 概览展示所属小队（teams 已传入）；弹窗头部副标题也会显示小队名，故限定在概览面板内断言
-    expect(within(screen.getByTestId('agent-drawer-overview')).getByText(/Team Alpha/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '配置 Agent Alpha 的激活工作区' }));
+    expect(screen.getByTestId('agent-workspace-menu-agent-alpha')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /工作区 一/ }));
 
-    fireEvent.click(screen.getByTestId('agent-drawer-tab-work'));
-    expect(screen.getByTestId('agent-drawer-work')).toBeTruthy();
-    // 工作区行存在,初始折叠 → 对话尚未渲染
-    const wsRow = screen.getByTestId('agent-work-workspace-workspace-1');
-    expect(wsRow).toBeTruthy();
-
-    // 展开工作区 → 对话行出现
-    fireEvent.click(wsRow);
-    expect(screen.getByTestId('agent-work-open-conversation-1')).toBeTruthy();
-
-    fireEvent.click(screen.getByTestId('agent-work-open-conversation-1'));
-    expect(onOpenConversation).toHaveBeenCalledWith('conversation-1');
+    await waitFor(() => {
+      expect(setGlobalAgentWorkspaceActivation).toHaveBeenCalledWith({
+        agentId: 'agent-alpha',
+        workspaceId: 'workspace-1',
+        active: true,
+      });
+    });
+    expect(screen.getByTestId('agent-workspace-menu-agent-alpha')).toBeTruthy();
   });
 
-  it('shows the empty state in the work tab when no conversations are assigned', () => {
+  it('removes the legacy work tab and effect path from the detail drawer', () => {
     renderLibrary();
     openDrawer();
 
-    fireEvent.click(screen.getByTestId('agent-drawer-tab-work'));
-    expect(screen.getByTestId('agent-drawer-work')).toBeTruthy();
-    expect(screen.getByText(/暂无已分配对话/)).toBeTruthy();
+    expect(screen.queryByTestId('agent-drawer-tab-work')).toBeNull();
+    expect(screen.queryByText('生效路径')).toBeNull();
   });
 
-  it('hides orphan conversations without a workspace from the work tab', () => {
-    // conv-orphan has no workspaceId — the stage cannot locate it, so it must
-    // not be listed (it would show an unopenable "未命名对话" row).
-    const orphan = {
-      id: 'conv-orphan',
-      track: 'agent',
-      targetRef: 'agent-alpha',
-      title: '',
-      executionMode: 'full-access',
-      createdAt: '2026-08-08T00:00:00.000Z',
-      updatedAt: '2026-08-08T00:00:00.000Z',
-    } as unknown as Conversation;
-    renderLibrary(undefined, { conversations: [orphan] });
+  it('shows shared MCP identity logos in the binding catalog', async () => {
+    Object.defineProperty(window, 'syncThink', {
+      configurable: true,
+      value: {
+        runtime: {
+          listSkills: vi.fn().mockResolvedValue({ skills: [] }),
+          listMcpServers: vi.fn().mockResolvedValue({
+            servers: [
+              {
+                mcpServerId: 'mcp-context7',
+                name: 'context7',
+                endpoint: 'https://mcp.context7.com/mcp',
+                tools: [{ name: 'resolve-library-id' }],
+                trusted: true,
+              },
+              {
+                mcpServerId: 'mcp-postgres',
+                name: 'PostgreSQL',
+                endpoint: 'npx -y @modelcontextprotocol/server-postgres',
+                tools: [],
+                trusted: true,
+              },
+            ],
+          }),
+        },
+      },
+    });
+    renderLibrary();
     openDrawer();
 
-    fireEvent.click(screen.getByTestId('agent-drawer-tab-work'));
-    expect(screen.getByTestId('agent-drawer-work')).toBeTruthy();
-    expect(screen.getByText(/暂无已分配对话/)).toBeTruthy();
-    expect(screen.queryByText(/未命名对话/)).toBeNull();
+    fireEvent.click(screen.getByTestId('agent-drawer-tab-abilities'));
+    fireEvent.click(screen.getByTestId('agent-ability-subtab-mcp'));
+
+    expect(await screen.findByTestId('mcp-icon-context7')).toBeTruthy();
+    expect(screen.getByTestId('mcp-icon-postgres')).toBeTruthy();
   });
 
   it('edits skills, MCP servers and persona in the abilities tab', () => {
@@ -312,6 +405,17 @@ describe('AgentLibrary tabbed detail drawer', () => {
     expect(persona.value).toBe('新的人设指令');
   });
 
+  it('defaults a new agent to inheriting the current conversation', () => {
+    renderLibrary();
+    fireEvent.click(screen.getByRole('button', { name: /新建智能体/ }));
+    fireEvent.click(screen.getByRole('menuitem', { name: /新建空白智能体/ }));
+
+    const policy = screen.getByRole('group', { name: '委派写入权限' });
+    expect(
+      within(policy).getByRole('button', { name: /继承当前会话/ }).getAttribute('aria-pressed'),
+    ).toBe('true');
+  });
+
   it('edits avatar, name, description, models and reasoning in the settings tab', () => {
     renderLibrary();
     openDrawer();
@@ -327,9 +431,9 @@ describe('AgentLibrary tabbed detail drawer', () => {
     expect(nameInput.value).toBe('新名称');
 
     const reasoning = within(settings).getByRole('group', { name: '推理强度' });
-    expect(within(reasoning).getByRole('button', { name: '自动' }).getAttribute('aria-pressed')).toBe(
-      'true',
-    );
+    expect(
+      within(reasoning).getByRole('button', { name: '自动' }).getAttribute('aria-pressed'),
+    ).toBe('true');
     fireEvent.click(within(reasoning).getByRole('button', { name: '高' }));
     expect(within(reasoning).getByRole('button', { name: '高' }).getAttribute('aria-pressed')).toBe(
       'true',

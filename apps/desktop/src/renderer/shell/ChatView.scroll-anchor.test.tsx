@@ -595,4 +595,93 @@ describe('ChatView streaming scroll anchor', () => {
     expect(writes).toEqual([330]);
     expect(scrollTop).toBe(330);
   });
+
+  it('restores the saved position after the view unmounts and remounts (DSH route: no DOM keep-alive)', async () => {
+    // DeepSeek Harness keeps no conversation DOM alive: switching sessions
+    // unmounts the old ChatView and remounts a fresh one, and the reading
+    // position survives purely via the unbounded conversationScrollPositions
+    // map. This test exercises exactly that — full unmount, then a brand-new
+    // mount whose restoredScrollPositionRef starts at null.
+    const conversationA = conversationFixture('conversation-remount-a');
+    runtime.listConversationMessages.mockImplementation(
+      async ({
+        conversationId,
+      }: {
+        conversationId: string;
+      }): Promise<ConversationListMessagesResponse> => {
+        const id = String(conversationId);
+        return { messages: [durableMessage(id, 1, `消息来自 ${id}`)], hasMore: false };
+      },
+    );
+
+    const { container, unmount } = render(
+      <ChatView
+        conversation={conversationA}
+        modelName="Scroll model"
+        models={[]}
+        eventHistory={[]}
+        onTitleUpdated={vi.fn()}
+      />,
+    );
+    await screen.findByText('消息来自 conversation-remount-a');
+
+    const scroller = container.querySelector(
+      '.shell-chat-message-scroller',
+    ) as HTMLDivElement;
+    let scrollTop = 1_400;
+    Object.defineProperties(scroller, {
+      clientHeight: { configurable: true, get: () => 600 },
+      scrollHeight: { configurable: true, get: () => 2_000 },
+      scrollTop: {
+        configurable: true,
+        get: () => scrollTop,
+        set: (value: number) => {
+          scrollTop = value;
+        },
+      },
+    });
+    fireEvent.scroll(scroller);
+    scrollTop = 750;
+    fireEvent.scroll(scroller);
+    await waitFor(() =>
+      expect(window.localStorage.getItem('sync-think.conversationScrollPositions')).toContain(
+        'conversation-remount-a',
+      ),
+    );
+
+    // DSH route: the surface unmounts on switch. The cleanup effect must flush
+    // the position to the map before the DOM node is gone.
+    unmount();
+
+    // A fresh mount later — a brand-new ChatView instance with a reset
+    // restoredScrollPositionRef, exactly like switching back to this session.
+    const second = render(
+      <ChatView
+        conversation={conversationA}
+        modelName="Scroll model"
+        models={[]}
+        eventHistory={[]}
+        onTitleUpdated={vi.fn()}
+      />,
+    );
+    await screen.findByText('消息来自 conversation-remount-a');
+
+    const scroller2 = second.container.querySelector(
+      '.shell-chat-message-scroller',
+    ) as HTMLDivElement;
+    let scrollTop2 = 0;
+    Object.defineProperties(scroller2, {
+      clientHeight: { configurable: true, get: () => 600 },
+      scrollHeight: { configurable: true, get: () => 2_000 },
+      scrollTop: {
+        configurable: true,
+        get: () => scrollTop2,
+        set: (value: number) => {
+          scrollTop2 = value;
+        },
+      },
+    });
+    // The saved anchor must be replayed onto the fresh DOM node.
+    await waitFor(() => expect(scrollTop2).toBe(750));
+  });
 });

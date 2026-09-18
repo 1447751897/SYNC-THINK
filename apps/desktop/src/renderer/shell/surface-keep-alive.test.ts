@@ -15,10 +15,12 @@ describe('surface keep-alive', () => {
     expect(shouldMountRetainedSurface('c2', false, ['c1'])).toBe(false);
   });
 
-  it('leaves the production cap wide enough to keep opened tabs alive', () => {
-    // NewMax 对「已激活过的会话标签」没有数量上限；SYNC-THINK 的上限只是病态兜底，
-    // 必须不低于一个 pane 实际能开出的标签数，否则又会出现「开第 9 个就把第 1 个卸掉」。
-    expect(RETAINED_CONVERSATION_LIMIT).toBeGreaterThanOrEqual(24);
+  it('keeps no conversation DOM alive (DSH route)', () => {
+    // DeepSeek Harness 不保活会话 DOM：切换即卸载，位置由无上限的
+    // conversationScrollPositions map 在重挂载时恢复。会话面上限必须是 0
+    // ——任何大于 0 的值都会让旧 DOM 常驻，重新引入「隐藏容器 scrollTop 被钳位」
+    // 的位置漂移问题。
+    expect(RETAINED_CONVERSATION_LIMIT).toBe(0);
   });
 
   it('bounds retained conversation keys like a small LRU', () => {
@@ -44,5 +46,13 @@ describe('surface keep-alive', () => {
     const next = retainPaneSurface(emptyPaneRetainedSurfaces(), 'conversations', 'c1', 8);
     expect(next.conversations).toEqual(['c1']);
     expect(next.files).toEqual([]);
+  });
+
+  it('retains nothing when the limit is zero (DSH conversation route)', () => {
+    // The conversation limit is 0: rememberRetainedKey never adds a key under
+    // a non-positive limit, so the retained set can only stay empty in
+    // practice — only the currently active conversation ever mounts.
+    expect(rememberRetainedKey([], 'c1', 0)).toEqual([]);
+    expect(rememberRetainedKey([], 'c1', RETAINED_CONVERSATION_LIMIT)).toEqual([]);
   });
 });

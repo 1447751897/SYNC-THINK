@@ -164,7 +164,7 @@ export class SqliteGlobalAgentStore {
         input.enabled === false ? 0 : 1,
         input.source ?? 'user',
         input.availabilityScope ?? 'global',
-        input.writePolicy ?? 'read-only',
+        input.writePolicy ?? 'inherit',
         now,
         now,
       );
@@ -222,7 +222,7 @@ export class SqliteGlobalAgentStore {
         input.enabled === undefined ? (current.enabled ? 1 : 0) : input.enabled ? 1 : 0,
         input.source ?? current.source,
         input.availabilityScope ?? current.availabilityScope,
-        input.writePolicy ?? current.writePolicy ?? 'read-only',
+        input.writePolicy ?? current.writePolicy ?? 'inherit',
         (input.archived ?? current.archived) ? 1 : 0,
         now,
         input.agentId,

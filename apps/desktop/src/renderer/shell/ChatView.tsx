@@ -486,7 +486,12 @@ interface ConversationScrollPosition {
 }
 
 const CONVERSATION_SCROLL_POSITIONS_KEY = 'sync-think.conversationScrollPositions';
-const CONVERSATION_SCROLL_POSITION_LIMIT = 32;
+/**
+ * DeepSeek Harness 的 `chatScrollPositions` 是一个**无上限**的 module 级 Map
+ * （`dsh-client-ui-chat/lib/client.js:8274`）——它只按 sessionId 存取，不做数量淘汰。
+ * 会话 DOM 不保活、切换即重挂载，所以这个 Map 是唯一的位置载体，一旦淘汰就永久丢失。
+ * 这里严格对齐：不做数量淘汰。
+ */
 const conversationScrollPositions = new Map<string, ConversationScrollPosition>();
 
 function readConversationScrollPositions(): void {
@@ -538,11 +543,6 @@ function readConversationScrollPosition(key: string): ConversationScrollPosition
 function writeConversationScrollPosition(key: string, value: ConversationScrollPosition): void {
   conversationScrollPositions.delete(key);
   conversationScrollPositions.set(key, value);
-  while (conversationScrollPositions.size > CONVERSATION_SCROLL_POSITION_LIMIT) {
-    const oldest = conversationScrollPositions.keys().next().value as string | undefined;
-    if (!oldest) break;
-    conversationScrollPositions.delete(oldest);
-  }
   if (typeof window === 'undefined') return;
   try {
     const serialized = Object.fromEntries(conversationScrollPositions);
@@ -1450,13 +1450,6 @@ interface ChatViewProps {
   onCreateSkill?: () => void;
   /** Opens Settings -> Connection -> MCP from the real status panel. */
   onOpenMcpSettings?: () => void;
-  /**
-   * Reports that the first durable message page is ready to render (loaded or
-   * served from cache). The shell uses it as NewMax uses `activationReady`: a
-   * freshly-activated surface shows the initializing placeholder until this
-   * fires, instead of flashing an empty message column.
-   */
-  onMessagesReady?: () => void;
 }
 
 function bridge() {
@@ -1504,7 +1497,6 @@ export function ChatView({
   onOpenPlanSettings,
   onCreateSkill,
   onOpenMcpSettings,
-  onMessagesReady,
 }: ChatViewProps) {
   const activeConversationIdRef = useRef(String(conversation.id));
   activeConversationIdRef.current = String(conversation.id);
@@ -1939,13 +1931,6 @@ export function ChatView({
   const [loadingMore, setLoadingMore] = useState(false);
   /** Whether the initial page load has completed (success or failure). */
   const [initialLoaded, setInitialLoaded] = useState(Boolean(initialCachedPage));
-  // Report first-page readiness to the shell (NewMax `activationReady`). A
-  // cached page reports immediately; a cold load reports when the page lands.
-  const onMessagesReadyRef = useRef(onMessagesReady);
-  onMessagesReadyRef.current = onMessagesReady;
-  useEffect(() => {
-    if (initialLoaded) onMessagesReadyRef.current?.();
-  }, [initialLoaded]);
   const [loadedMessagesScopeKey, setLoadedMessagesScopeKey] = useState(historyScopeKey);
   const [durableTaskPlan, setDurableTaskPlan] = useState<{
     conversationId: string;

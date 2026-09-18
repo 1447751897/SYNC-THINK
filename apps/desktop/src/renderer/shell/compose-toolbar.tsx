@@ -44,7 +44,12 @@ import {
 } from '@sync-think/shared';
 import { AgentAvatarView } from './AgentAvatarView.js';
 import { BrandLogoMark } from './BrandLogoMark.js';
-import { resolveKernelBrandLogo, resolveKernelDisplayName } from './brand-icons.js';
+import {
+  resolveKernelBrandLogo,
+  resolveKernelDisplayName,
+  resolveProviderBrandLogo,
+  resolveProviderBrandLogoByName,
+} from './brand-icons.js';
 import type { ModelOption } from './NewConversationDialog.js';
 import { ComposerMenuHighlight } from './ComposerMenuHighlight.js';
 import { OverlayScrollArea } from './OverlayScrollArea.js';
@@ -1100,6 +1105,11 @@ export function ModelPickerMenu(props: {
               providers.map(([providerName, models]) => {
                 const ownsSelected = selectedProviderOfModel === providerName;
                 const submenuKey = `provider:${providerName}`;
+                const providerModel = models[0];
+                const providerLogo =
+                  (providerModel?.providerId
+                    ? resolveProviderBrandLogo(providerModel.providerId)
+                    : undefined) ?? resolveProviderBrandLogoByName(providerName);
                 return (
                   <DropdownMenu.Sub
                     key={providerName}
@@ -1121,6 +1131,13 @@ export function ModelPickerMenu(props: {
                     >
                       <span className="shell-menu__selection-slot" aria-hidden="true">
                         {ownsSelected ? <Check size={14} /> : null}
+                      </span>
+                      <span className="shell-menu__provider-logo" title={providerName}>
+                        {providerLogo ? (
+                          <BrandLogoMark logo={providerLogo} size={16} />
+                        ) : (
+                          providerName.trim().slice(0, 1).toLocaleUpperCase()
+                        )}
                       </span>
                       <div className="shell-menu__item-text">
                         <div className="shell-menu__item-title">{providerName}</div>

@@ -67,7 +67,6 @@ import {
   shouldMountRetainedSurface,
   type PaneRetainedSurfaces,
 } from './surface-keep-alive.js';
-import { EditorInitializingState } from './EditorInitializingState.js';
 import type { BrowserWorkflowAiTaskRequest } from './BrowserWorkflowPanel.js';
 import type { ConnectionTab, SettingsSection } from './SettingsPage.js';
 import type { ModelSettingsDetailView } from './ModelSettings.js';
@@ -2942,22 +2941,6 @@ function ShellAppInner() {
     return new Set(ordered.filter((paneId) => candidates.includes(paneId)));
   }, [activePaneLayout]);
 
-  // NewMax `activationReady`: a freshly-activated conversation surface shows the
-  // initializing placeholder (120ms delayed) until ChatView reports its first
-  // message page is ready. Cached pages report immediately, so fast switches
-  // never flash the placeholder. Once ready, a conversation stays ready.
-  const [conversationReadyIds, setConversationReadyIds] = useState<Set<string>>(
-    () => new Set(),
-  );
-  const markConversationReady = useCallback((conversationId: string) => {
-    setConversationReadyIds((current) => {
-      if (current.has(conversationId)) return current;
-      const next = new Set(current);
-      next.add(conversationId);
-      return next;
-    });
-  }, []);
-
   useEffect(() => {
     if (nav.stage !== 'talk') return;
     const selectedConversationId = activePaneLayout
@@ -3289,7 +3272,8 @@ function ShellAppInner() {
 
   const renderWorkbenchContent = (placement: WorkbenchPlacement, tab: WorkbenchTab) => {
     if (tab.type === 'conversation') {
-      const isDraft = tab.conversationId === draftSession?.id;
+      const isDraft =
+        tab.conversationId === draftSession?.id || tab.conversationId.startsWith('draft:');
       const conversation = visibleConversations.find((item) => item.id === tab.conversationId);
       if (isDraft) {
         return (
@@ -3651,10 +3635,9 @@ function ShellAppInner() {
                         const retainedSurfaces =
                           retainedSurfacesByPaneRef.current.get(pane.id) ??
                           emptyPaneRetainedSurfaces();
-                        if (
-                          activeTab?.type === 'conversation' &&
-                          activeTab.conversationId !== draftSession?.id
-                        ) {
+                        if (activeTab?.type === 'conversation') {
+                          // DSH 路线：会话面不保活（RETAINED_CONVERSATION_LIMIT = 0），
+                          // rememberRetainedKey 返回空数组，只有当前激活会话挂载。
                           retainedSurfaces.conversations = rememberRetainedKey(
                             retainedSurfaces.conversations,
                             activeTab.conversationId,
@@ -3679,19 +3662,14 @@ function ShellAppInner() {
                             RETAINED_REVIEW_LIMIT,
                           );
                         }
-                        // conversation 保活对齐 NewMax：激活过即常驻、无上限
-                        // （`shouldMountTabContent` 只看 `hasBeenActive`，不看数量）。
-                        // 无上限下 LRU 数组本身不再淘汰已关闭的会话，这里按本 pane
-                        // 当前仍打开的会话 tab 裁剪存储集合，让它与挂载集合保持一致，
-                        // 避免数组无限增长。
+                        // DSH 路线：会话面不保活，retained 集合恒为空，这里只保留对
+                        // 已关闭会话 tab 的清理（防御性，保持存储集合与打开的 tab 一致）。
                         retainedSurfaces.conversations = retainedSurfaces.conversations.filter(
                           (id) => localConversationIds.includes(id) && id !== draftSession?.id,
                         );
                         retainedSurfacesByPaneRef.current.set(pane.id, retainedSurfaces);
-                        // 已在**本会话激活过**的会话面全部保持挂载（对齐 NewMax
-                        // `TabContent.hasBeenActiveRef`：激活过就常驻，切走只是隐藏，
-                        // DOM 与滚动位置都不重建）。conversation 无上限，只要本 pane
-                        // 的会话 tab 还开着，切回去就还是原来的 DOM。
+                        // DSH 路线：只有当前激活的会话面挂载，其余靠
+                        // `conversationScrollPositions`（无上限锚点 Map）在重挂载时恢复。
                         const retainedConversationIds = retainedSurfaces.conversations.filter(
                           (id) => localConversationIds.includes(id) && id !== draftSession?.id,
                         );
@@ -3714,9 +3692,8 @@ function ShellAppInner() {
                             localConversationIds.includes(String(item.id)) ||
                             !openIdsForWorkspace.includes(String(item.id)),
                         );
-                        // NewMax has no chat-view mount cap: every pane that has a
-                        // conversation tab keeps its conversation surface mounted, so
-                        // splitting is always offered instead of parking the surplus.
+                        // Every pane that has a conversation tab keeps a conversation
+                        // surface mounted (the active one); splitting is always offered.
                         const shouldMountConversation = mountedConversationPaneIds.has(pane.id);
                         const draggingFromThisPane = Boolean(
                           tabDragResource &&
@@ -3902,15 +3879,6 @@ function ShellAppInner() {
                                               : `pane-surface-conversation-${item.id}`
                                           }
                                         >
-                                          {conversationActive &&
-                                          !conversationReadyIds.has(String(item.id)) ? (
-                                            <div className="absolute inset-0 z-10 overflow-hidden bg-chat">
-                                              <EditorInitializingState
-                                                label="正在准备对话"
-                                                delayMs={120}
-                                              />
-                                            </div>
-                                          ) : null}
                                           <ChatView
                                             conversation={item}
                                             modelName={resolveTargetName(item)}
@@ -3920,9 +3888,6 @@ function ShellAppInner() {
                                             workspaces={data.workspaces}
                                             eventHistory={eventHistory}
                                             runActivityAuthority={runActivityAuthority}
-                                            onMessagesReady={() =>
-                                              markConversationReady(String(item.id))
-                                            }
                                             runtimeConnectionRevision={runtimeConnectionRevision}
                                             runtimeConnectionNotice={runtimeConnectionNotice}
                                             active={conversationActive}
@@ -4205,17 +4170,15 @@ function ShellAppInner() {
               agents={data.agents}
               models={data.models}
               teams={data.teams}
-              conversations={data.conversations}
               workspaces={data.workspaces}
               onRefresh={() => void refresh()}
               onManageSkills={() => setNav((n) => selectStage(n, 'abilities'))}
+              onGoToAbilities={() => setNav((n) => selectStage(n, 'abilities'))}
+              onBack={() => setNav((n) => ({ ...n, stage: 'talk' }))}
               skillCatalogRevision={skillCatalogRevision}
               onStartConversation={(agentId) => {
                 void handlePickTarget('agent', agentId);
                 setNav((n) => ({ ...n, stage: 'talk' }));
-              }}
-              onOpenConversation={(conversationId) => {
-                void openConversationById(conversationId);
               }}
             />
           </KeepAliveLayer>

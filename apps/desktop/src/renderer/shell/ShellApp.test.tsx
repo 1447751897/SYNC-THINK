@@ -500,7 +500,7 @@ describe('ShellApp abilities navigation', () => {
 });
 
 describe('ShellApp surface keep-alive', () => {
-  it('keeps opened conversation views mounted when switching tabs in the same pane', async () => {
+  it('mounts only the active conversation when switching tabs in the same pane (DSH keeps no chat DOM alive)', async () => {
     installRuntime();
     runtime.listWorkspaces.mockResolvedValue({
       workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }],
@@ -537,26 +537,25 @@ describe('ShellApp surface keep-alive', () => {
 
     render(<ShellApp />);
     await waitFor(() => expect(screen.getAllByTestId('mock-chat-view')).toHaveLength(1));
-    const first = screen.getByTestId('mock-chat-view');
-    expect(first.getAttribute('data-conversation-id')).toBe('conv-a');
+    expect(screen.getByTestId('mock-chat-view').getAttribute('data-conversation-id')).toBe(
+      'conv-a',
+    );
 
     fireEvent.click(
       within(screen.getByTestId('conversation-tab-conv-b')).getByRole('button', { name: '对话 B' }),
     );
-    await waitFor(() => expect(screen.getAllByTestId('mock-chat-view')).toHaveLength(2));
-    expect(screen.getByTestId('pane-surface-conversation').getAttribute('data-active')).toBe(
-      'true',
+    // DSH route: switching tabs unmounts the previous conversation DOM and
+    // mounts the newly active one — only one chat view stays in the pane. The
+    // reading position is carried by the unbounded conversationScrollPositions
+    // map and replayed on remount, not by a kept-alive DOM node.
+    await waitFor(() =>
+      expect(screen.getByTestId('mock-chat-view').getAttribute('data-conversation-id')).toBe(
+        'conv-b',
+      ),
     );
-    expect(
-      screen
-        .getByTestId('pane-surface-conversation')
-        .querySelector('[data-conversation-id]')
-        ?.getAttribute('data-conversation-id'),
-    ).toBe('conv-b');
-    expect(
-      screen.getByTestId('pane-surface-conversation-conv-a').getAttribute('data-active'),
-    ).toBe('false');
-    expect(document.querySelector('[data-conversation-id="conv-a"]')).toBe(first);
+    expect(screen.getAllByTestId('mock-chat-view')).toHaveLength(1);
+    expect(screen.queryByTestId('pane-surface-conversation-conv-a')).toBeNull();
+    expect(document.querySelector('[data-conversation-id="conv-a"]')).toBeNull();
   });
 
   it('keeps the talk stage mounted while visiting abilities', async () => {
@@ -1130,6 +1129,103 @@ describe('ShellApp workspace context', () => {
     expect(screen.getByTestId('conversation-tab-conv-a')).toBeTruthy();
   });
 
+  it('renders a new conversation inside the bottom workbench', async () => {
+    installRuntime();
+    runtime.listWorkspaces.mockResolvedValue({
+      workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }],
+    });
+    runtime.listConversations.mockResolvedValue({
+      conversations: [
+        {
+          id: 'conv-a',
+          workspaceId: 'ws-a',
+          track: 'model',
+          targetRef: 'model-a',
+          title: 'hi',
+          executionMode: 'full-access',
+        },
+      ],
+    });
+    window.localStorage.setItem('sync-think.activeWorkspaceId', 'ws-a');
+    window.localStorage.setItem(
+      'sync-think.openConversationTabs',
+      JSON.stringify({ 'ws-a': ['conv-a'] }),
+    );
+    window.localStorage.setItem(
+      'sync-think.selectedConversationByWorkspace',
+      JSON.stringify({ 'ws-a': 'conv-a' }),
+    );
+
+    render(<ShellApp />);
+    await screen.findByTestId('conversation-tab-new');
+
+    act(() => (topBarProps.current?.onToggleBottomWorkbench as (() => void) | undefined)?.());
+    const workbenchPlus = await screen.findByTestId('workbench-tab-new');
+    expect(workbenchPlus.closest('.shell-workbench--bottom')).not.toBeNull();
+
+    fireEvent.pointerDown(workbenchPlus.closest('.shell-workbench') as HTMLElement);
+    await waitFor(() => {
+      expect(screen.getByTestId('workbench-tab-new').closest('.shell-tab-add--hidden')).toBeNull();
+    });
+
+    fireEvent.click(screen.getByTestId('workbench-tab-new'));
+    fireEvent.click(screen.getByRole('menuitem', { name: /新建对话/ }));
+
+    await waitFor(() => expect(screen.getByTestId('workbench-surface-conversation')).toBeTruthy());
+    const bottomWorkbench = screen.getByTestId('workbench-surface-conversation').closest('.shell-workbench--bottom');
+    expect(bottomWorkbench).not.toBeNull();
+    expect(within(bottomWorkbench as HTMLElement).getByTestId('empty-compose')).toBeTruthy();
+  });
+  it('restores a persisted draft conversation in the bottom workbench after reload', async () => {
+    installRuntime();
+    runtime.listWorkspaces.mockResolvedValue({
+      workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }],
+    });
+    runtime.listConversations.mockResolvedValue({ conversations: [] });
+    window.localStorage.setItem('sync-think.activeWorkspaceId', 'ws-a');
+    window.localStorage.setItem(
+      'sync-think.workspaceWorkbenchLayouts',
+      JSON.stringify({
+        version: 1,
+        workspaces: {
+          'ws-a': {
+            version: 1,
+            right: {
+              open: false,
+              size: 330,
+              tabs: [],
+              activeTabId: undefined,
+              fileBrowserOpen: false,
+              fileBrowserWidth: 288,
+            },
+            bottom: {
+              open: true,
+              size: 280,
+              tabs: [
+                {
+                  id: 'conversation:draft:ws-a:1',
+                  type: 'conversation',
+                  conversationId: 'draft:ws-a:1',
+                },
+              ],
+              activeTabId: 'conversation:draft:ws-a:1',
+              fileBrowserOpen: false,
+              fileBrowserWidth: 288,
+            },
+          },
+        },
+      }),
+    );
+
+    render(<ShellApp />);
+    await waitFor(() => expect(screen.getByTestId('workbench-tab-new')).toBeTruthy());
+    expect(screen.getByTestId('workbench-surface-conversation')).toBeTruthy();
+    const bottomWorkbench = screen
+      .getByTestId('workbench-surface-conversation')
+      .closest('.shell-workbench--bottom');
+    expect(bottomWorkbench).not.toBeNull();
+    expect(within(bottomWorkbench as HTMLElement).getByTestId('empty-compose')).toBeTruthy();
+  });
   it('keeps same-path file drafts and dirty markers isolated by workspace', async () => {
     installRuntime();
     runtime.listWorkspaces.mockResolvedValue({
@@ -1231,7 +1327,7 @@ describe('ShellApp workspace context', () => {
     await waitFor(() => expect(screen.getAllByTestId('mock-chat-view')).toHaveLength(2));
   });
 
-  it('keeps every conversation pane mounted without a parked surface (NewMax has no chat mount cap)', async () => {
+  it('mounts each pane active conversation without a parked surface (DSH keeps no chat DOM alive)', async () => {
     installRuntime();
     runtime.listWorkspaces.mockResolvedValue({
       workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }],
@@ -1256,9 +1352,9 @@ describe('ShellApp workspace context', () => {
 
     render(<ShellApp />);
 
-    // NewMax keeps every activated conversation mounted (no MAX_MOUNTED_CHAT_VIEWS
-    // cap, no parked/unloaded surface), so all three panes render their chat view
-    // and no parked button exists.
+    // DSH route: no conversation DOM is kept alive across switches, but each
+    // pane still mounts its own active conversation — so all three split panes
+    // render their chat view and no parked button exists.
     await waitFor(() => expect(screen.getAllByTestId('mock-chat-view')).toHaveLength(3));
     expect(screen.queryByTestId(/^parked-conversation-/)).toBeNull();
     expect(document.querySelector('[data-conversation-id="c1"]')).toBeTruthy();

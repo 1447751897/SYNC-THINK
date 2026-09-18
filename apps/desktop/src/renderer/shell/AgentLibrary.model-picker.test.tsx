@@ -70,6 +70,7 @@ const agent: GlobalAgent = {
   skillIds: [],
   mcpServerIds: [],
   reasoningEffort: 'auto',
+  writePolicy: 'read-only',
   archived: false,
   createdAt: '2026-08-08T00:00:00.000Z',
   updatedAt: '2026-08-08T00:00:00.000Z',

@@ -63,7 +63,7 @@ describe('SqliteGlobalAgentStore (mutable model)', () => {
       // Default matters: every pre-existing Agent keeps behaving exactly as it
       // did before the policy existed (docs/adr/0001).
       const created = agents.create({ name: '审查员', defaultModelId: MODEL });
-      expect(created.writePolicy).toBe('read-only');
+      expect(created.writePolicy).toBe('inherit');
 
       const inherited = agents.update({ agentId: created.id, writePolicy: 'inherit' });
       expect(inherited.writePolicy).toBe('inherit');
