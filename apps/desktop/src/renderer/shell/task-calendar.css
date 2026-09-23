@@ -487,11 +487,14 @@
   z-index: 2000;
   width: 270px;
   max-width: calc(100vw - 24px);
-  max-height: var(--radix-dropdown-menu-content-available-height);
-  overflow-y: auto;
+  max-height: min(420px, var(--radix-dropdown-menu-content-available-height));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  --composer-text: var(--color-text);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-card);
-  padding: 6px;
+  padding: 0;
   background: var(--color-overlay);
   color: var(--color-text);
   box-shadow: 0 10px 35px var(--color-modal-shadow);
@@ -1041,3 +1044,6 @@
   font-size: 15px;
   margin: 0 0 12px;
 }
+
+.task-cal__scope-menu-viewport { min-height: 0; }
+.task-cal__scope-menu-scroll { padding: 6px; }

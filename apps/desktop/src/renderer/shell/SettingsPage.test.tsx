@@ -493,6 +493,9 @@ describe('SettingsPage NewMax general tabs', () => {
 
     expect(screen.getByRole('heading', { name: '守护进程' })).toBeTruthy();
     expect(screen.getByText(/应用关闭后定时任务照常触发/)).toBeTruthy();
+    const autostart = screen.getByRole('switch', { name: '开机自启' });
+    expect(autostart.tagName).toBe('BUTTON');
+    expect(autostart.classList.contains('settings-toggle')).toBe(true);
   });
 });
 
@@ -1331,5 +1334,208 @@ describe('SettingsPage open gateway', () => {
 
     expect((await screen.findByRole('alert')).textContent).toContain('gateway save failed');
     expect(toggle.getAttribute('aria-checked')).toBe('false');
+  });
+});
+
+describe('Agentation settings feedback regressions', () => {
+  it('opens the add Provider form as a dialog over the existing catalog and closes without navigation', async () => {
+    render(<SettingsPage initialSection="connection" />);
+    fireEvent.click(await screen.findByRole('tab', { name: '第三方 Provider' }));
+    const catalog = document.querySelector('.settings-connector-catalog');
+    expect(catalog).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '添加 Provider' }));
+    const dialog = await screen.findByRole('dialog', { name: '添加第三方 Provider' });
+    expect(catalog?.isConnected).toBe(true);
+    expect(within(dialog).getByRole('textbox', { name: '连接器名称' })).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole('button', { name: '取消' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: '添加第三方 Provider' })).toBeNull(),
+    );
+    expect(document.querySelector('.settings-connector-catalog')).toBe(catalog);
+  });
+
+  it('saves a new Provider from the dialog and returns to the current list', async () => {
+    render(<SettingsPage initialSection="connection" initialConnectionTab="mcp" />);
+    fireEvent.click(await screen.findByRole('button', { name: '添加 MCP' }));
+    const dialog = await screen.findByRole('dialog', { name: '添加第三方 Provider' });
+    fireEvent.change(within(dialog).getByRole('textbox', { name: '连接器名称' }), {
+      target: { value: 'My MCP' },
+    });
+    fireEvent.change(within(dialog).getByRole('textbox', { name: 'MCP 服务地址' }), {
+      target: { value: 'https://example.com/mcp' },
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: '保存并连接' }));
+    await waitFor(() =>
+      expect(runtime.registerRemoteMcpServer).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'My MCP', endpoint: 'https://example.com/mcp' }),
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: '添加第三方 Provider' })).toBeNull(),
+    );
+    expect(screen.getByRole('tab', { name: 'MCP' }).getAttribute('aria-selected')).toBe('true');
+  });
+
+  it('uses the designed model picker and persists the chosen optimization model', async () => {
+    runtime.listProviders.mockResolvedValue({
+      providers: [
+        {
+          name: 'Example',
+          models: [
+            { modelId: 'fast-model', providerModelId: 'fast-model', displayName: 'Fast Model' },
+          ],
+        },
+      ],
+    });
+    render(<SettingsPage initialSection="general" />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Agent' }));
+    const picker = screen.getByRole('combobox', { name: '优化模型' });
+    expect(picker.tagName).toBe('BUTTON');
+    expect(picker.classList.contains('model-list-select__trigger')).toBe(true);
+    fireEvent.click(picker);
+    const model = await screen.findByRole('option', { name: /Fast Model/ });
+    fireEvent.click(model);
+    expect(picker.textContent).toContain('Fast Model');
+    expect(
+      JSON.parse(window.localStorage.getItem('sync-think.agentPreferences') ?? '{}'),
+    ).toMatchObject({ promptEnhancementModelId: 'fast-model' });
+  });
+
+  it('uses the compact MCP switch for third-party connectors', async () => {
+    runtime.listMcpServers.mockResolvedValue({
+      servers: [
+        {
+          mcpServerId: 'mcp-postgres',
+          notes: '',
+          name: 'PostgreSQL',
+          endpoint: 'https://postgres.example/mcp',
+          transport: 'remote-http',
+          enabled: false,
+          trusted: true,
+          tools: [],
+        },
+      ],
+    });
+    render(<SettingsPage initialSection="connection" />);
+    fireEvent.click(await screen.findByRole('tab', { name: '第三方 Provider' }));
+    const toggle = await screen.findByRole('switch', { name: 'PostgreSQL 连接' });
+    expect(toggle.classList.contains('settings-toggle')).toBe(true);
+    expect(toggle.closest('.settings-third-party-row')?.lastElementChild).toBe(toggle);
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
+    fireEvent.click(toggle);
+    await waitFor(() =>
+      expect(runtime.setMcpServerEnabled).toHaveBeenCalledWith({
+        mcpServerId: 'mcp-postgres',
+        enabled: true,
+      }),
+    );
+  });
+
+  it('opens third-party details in a modal without leaving the connector catalog', async () => {
+    runtime.listMcpServers.mockResolvedValue({
+      servers: [
+        {
+          mcpServerId: 'mcp-context7',
+          name: 'context7',
+          notes: '',
+          endpoint: 'https://mcp.context7.com/mcp',
+          transport: 'remote-http',
+          enabled: true,
+          trusted: true,
+          tools: [],
+        },
+      ],
+    });
+    render(<SettingsPage initialSection="connection" />);
+    fireEvent.click(await screen.findByRole('tab', { name: '第三方 Provider' }));
+    const row = await screen.findByTestId('mcp-icon-context7');
+    fireEvent.click(
+      row.closest('.settings-third-party-row')!.querySelector('button:not(.settings-toggle)')!,
+    );
+    const dialog = await screen.findByRole('dialog', { name: 'context7' });
+    expect(within(dialog).getByRole('textbox', { name: '连接器名称' }).getAttribute('value')).toBe(
+      'context7',
+    );
+    expect(
+      screen
+        .getByRole('tab', { name: '第三方 Provider', hidden: true })
+        .getAttribute('aria-selected'),
+    ).toBe('true');
+    expect(document.querySelector('.settings-connector-back')).toBeNull();
+    fireEvent.click(within(dialog).getByRole('button', { name: '关闭 Provider 弹窗' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'context7' })).toBeNull());
+    expect(screen.getByRole('switch', { name: 'context7 连接' })).toBeTruthy();
+  });
+
+  it('keeps the Provider switcher around its tabs, with a separate rounded search field', async () => {
+    render(<SettingsPage initialSection="connection" />);
+    fireEvent.click(await screen.findByRole('tab', { name: '第三方 Provider' }));
+    const switcher = document.querySelector('.settings-provider-switcher');
+    const tabs = switcher?.querySelector('.settings-provider-switcher__tabs');
+    const search = switcher?.querySelector('.settings-provider-search');
+    expect(tabs).toBeTruthy();
+    expect(search).toBeTruthy();
+    expect(shellCss).toMatch(
+      /\.settings-provider-switcher__tabs\s*\{[^}]*border-radius: 21px;[^}]*background: var\(--color-overlay\);/s,
+    );
+    expect(shellCss).not.toMatch(/\.settings-provider-switcher\s*\{[^}]*background:/s);
+    expect(shellCss).toMatch(/\.settings-provider-search\s*\{[^}]*border-radius: 14px;/s);
+  });
+
+  it('scopes row growth to the detail button, not the switch or its thumb', () => {
+    expect(shellCss).not.toContain('.settings-third-party-row > button {');
+    expect(shellCss).toMatch(
+      /\.settings-third-party-row > button:not\(\.settings-toggle\)\s*\{[^}]*flex: 1;/s,
+    );
+    expect(shellCss).toMatch(
+      /\.settings-third-party-row > \.settings-toggle\s*\{[^}]*flex: 0 0 34px;[^}]*margin-left: auto;/s,
+    );
+    expect(shellCss).toMatch(
+      /\.settings-third-party-row > \.settings-toggle:not\(\.is-checked\)\s*\{[^}]*background: var\(--color-text-faint\);/s,
+    );
+  });
+
+  it('matches the text model row background in normal, default and hover states', () => {
+    const backgroundOf = (selector: string) => {
+      const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const block = shellCss.match(new RegExp(`${escaped}\\s*\\{([^}]*)\\}`))?.[1];
+      return block?.match(/background:\s*([^;]+);/)?.[1];
+    };
+    expect(backgroundOf('.image-model-id-row')).toBe(backgroundOf('.model-priority-row'));
+    expect(backgroundOf('.image-model-id-row:hover')).toBe(
+      backgroundOf('.model-priority-row:hover'),
+    );
+    expect(backgroundOf('.image-model-id-row.is-default')).toBeUndefined();
+  });
+
+  it('shows the MCP identity logo and preserves the trailing toggle action', async () => {
+    runtime.listMcpServers.mockResolvedValue({
+      servers: [
+        {
+          mcpServerId: 'mcp-context7',
+          name: 'context7',
+          endpoint: 'https://mcp.context7.com/mcp',
+          transport: 'remote-http',
+          enabled: false,
+          trusted: true,
+          tools: [],
+        },
+      ],
+    });
+    render(<SettingsPage initialSection="connection" initialConnectionTab="mcp" />);
+    const logo = await screen.findByTestId('mcp-icon-context7');
+    expect(logo.tagName).toBe('IMG');
+    expect(logo.getAttribute('src')).toMatch(/(?:context7\.png|^data:image\/png)/);
+    const row = logo.closest('.settings-third-party-row');
+    const toggle = screen.getByRole('switch', { name: 'context7 MCP' });
+    expect(row?.lastElementChild).toBe(toggle);
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
+    fireEvent.click(toggle);
+    await waitFor(() =>
+      expect(runtime.setMcpServerEnabled).toHaveBeenCalledWith({
+        mcpServerId: 'mcp-context7',
+        enabled: true,
+      }),
+    );
   });
 });

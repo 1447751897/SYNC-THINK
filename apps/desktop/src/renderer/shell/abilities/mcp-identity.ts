@@ -1,3 +1,7 @@
+import context7Icon from '../assets/mcp/context7.png';
+import postgresIcon from '../assets/mcp/postgresql.png';
+import playwrightIcon from '../assets/mcp/playwright.svg';
+import { SYNC_THINK_CONNECTOR_CATALOG } from '../connector-catalog.js';
 import { siteFaviconUrl } from '../ExternalSourceIcon.js';
 
 export type McpMark = 'github' | 'folder' | 'globe' | 'database' | 'server';
@@ -94,14 +98,31 @@ export interface McpLogoSources {
 }
 
 /**
- * 统一的多级取图链：站点自身 favicon → 公共 favicon 服务 → 语义矢量图标。
+ * 内置身份图标直接使用本地资源；未知站点依次尝试 favicon → 公共服务 → 语义图标。
  * 调用方按索引逐档尝试，加载失败即降到下一档，因此不会出现空白/裂图。
  */
 export function resolveMcpLogoSources(input: {
   name?: string;
   endpoint?: string;
 }): McpLogoSources {
+  const managed = SYNC_THINK_CONNECTOR_CATALOG.find(
+    (item) => item.name.toLocaleLowerCase() === String(input.name ?? '').trim().toLocaleLowerCase(),
+  );
+  if (managed) return { id: managed.id, mark: 'server', sources: [managed.icon] };
   const visual = resolveMcpVisual(input);
+  if (visual.id === 'context7') {
+    return { id: 'context7', mark: 'server', sources: [context7Icon] };
+  }
+  if (visual.id === 'playwright') {
+    return { id: 'playwright', mark: 'globe', sources: [playwrightIcon] };
+  }
+  if (visual.id === 'postgres') {
+    return {
+      id: 'postgres',
+      mark: 'database',
+      sources: [postgresIcon],
+    };
+  }
   if (visual.kind === 'mark') {
     return { id: visual.id, mark: visual.mark, sources: [] };
   }

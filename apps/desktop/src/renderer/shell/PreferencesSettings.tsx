@@ -1,15 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import {
-  Check,
-  Monitor,
-  Moon,
-  PenLine,
-  RefreshCw,
-  Sun,
-  Trash2,
-  Upload,
-  X,
-} from 'lucide-react';
+import { Check, Monitor, Moon, PenLine, RefreshCw, Sun, Trash2, Upload, X } from 'lucide-react';
 import clsx from 'clsx';
 import {
   PERSONALIZATION_LIMITS,
@@ -798,7 +788,9 @@ function extractImagePalette(
   const sample = canvas.getContext('2d', { willReadFrequently: true });
   if (!sample) return { background: '#ffffff', accent: '#000000' };
   sample.drawImage(context.canvas, 0, 0, sampleWidth, sampleHeight);
-  const palette = analyzeImageThemePixels(sample.getImageData(0, 0, sampleWidth, sampleHeight).data);
+  const palette = analyzeImageThemePixels(
+    sample.getImageData(0, 0, sampleWidth, sampleHeight).data,
+  );
   return { background: palette.background, accent: palette.accent };
 }
 
@@ -931,7 +923,6 @@ function ShortcutPreferencesPanel() {
           />
         </div>
       </div>
-      <div className="settings-shortcuts__group-divider" />
       <ShortcutGroup
         title="系统快捷键"
         definitions={SYSTEM_SHORTCUTS}
@@ -943,7 +934,6 @@ function ShortcutPreferencesPanel() {
           {registrationError}
         </p>
       ) : null}
-      <div className="settings-shortcuts__group-divider" />
       <ShortcutGroup
         title="应用快捷键"
         definitions={APP_SHORTCUTS}

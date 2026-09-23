@@ -221,10 +221,18 @@ describe('TaskPanel', () => {
     ] as WorkspaceSummary[]);
     await screen.findByText('工作区任务');
     fireEvent.keyDown(screen.getByRole('button', { name: '按任务归属筛选' }), { key: 'ArrowDown' });
-    expect(await screen.findByRole('menuitemradio', { name: 'cuitaliao 工作区 0' })).toBeTruthy();
-    fireEvent.click(screen.getByRole('menuitemradio', { name: 'SYNC-THINK 工作区 1' }));
+    expect(await screen.findByRole('menuitemcheckbox', { name: 'cuitaliao 工作区 0' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'SYNC-THINK 工作区 1' }));
     expect(screen.queryByText('每日代码巡检')).toBeNull();
-    expect(screen.queryByRole('menu')).toBeNull();
+    // Checkbox menu stays open so another workspace can be included.
+    expect(screen.getByRole('menu')).toBeTruthy();
+    // Multi-select another scope while keeping the dropdown open.
+    fireEvent.click(screen.getByRole('menuitemcheckbox', { name: '全局任务 不隶属工作区 1' }));
+    expect(screen.getByRole('button', { name: '按任务归属筛选' }).textContent).toContain('已选 2 项');
+    expect(screen.getByText('每日代码巡检')).toBeTruthy();
+    fireEvent.click(screen.getByRole('menuitemcheckbox', { name: '全局任务 不隶属工作区 1' }));
+    expect(screen.queryByText('每日代码巡检')).toBeNull();
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' });
     fireEvent.click(screen.getByTestId('task-create'));
     expect(screen.getByRole('button', { name: '任务归属' }).textContent).toContain('SYNC-THINK');
     fireEvent.change(screen.getByPlaceholderText('如：每日代码巡检'), {

@@ -738,7 +738,7 @@ describe('AbilitiesPage', () => {
     fireEvent.click(screen.getByTestId('mcp-tab-mine'));
     await screen.findByText('context7');
 
-    expect(screen.getByTestId('mcp-icon-context7').getAttribute('src')).toContain('context7.com');
+    expect(screen.getByTestId('mcp-icon-context7').getAttribute('src')).toContain('context7.png');
     expect(screen.getByTestId('mcp-icon-github')).toBeTruthy();
     expect(screen.getByText('2 个工具')).toBeTruthy();
     expect(screen.getByText('命令未配置')).toBeTruthy();

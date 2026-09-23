@@ -247,3 +247,25 @@ describe('Sidebar update badge', () => {
     expect(screen.getByTestId('sidebar-settings-box').getAttribute('title')).toBe('设置');
   });
 });
+
+it('keeps primary navigation readable and search presented as an available action', () => {
+  renderSidebar();
+  for (const id of [
+    'nav-new-chat',
+    'nav-search',
+    'nav-scheduled',
+    'nav-activity',
+    'nav-browser',
+    'nav-agents',
+    'nav-teams',
+    'nav-abilities',
+  ]) {
+    const button = screen.getByTestId(id);
+    expect(button.classList.contains('text-text')).toBe(true);
+    expect(button.classList.contains('opacity-70')).toBe(false);
+  }
+  const search = screen.getByTestId('nav-search');
+  expect(search.title).toBe('搜索');
+  fireEvent.click(search);
+  expect(screen.getByPlaceholderText('搜索对话…')).toBeTruthy();
+});

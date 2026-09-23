@@ -25,6 +25,7 @@ import {
 import type { SkillVersionSummary } from '@sync-think/protocol';
 import { BUILTIN_SLASH_COMMANDS, filterSlashCommands, type SlashCommand } from './compose-slash.js';
 import { ComposerMenuHighlight } from './ComposerMenuHighlight.js';
+import { OverlayScrollArea } from './OverlayScrollArea.js';
 import { useNewMaxPopoverPresence } from '@sync-think/ui-kit';
 
 export const COMPOSER_SKILL_CATEGORIES = [
@@ -547,11 +548,13 @@ export function ComposerSlashMenu({
         if (event.target === event.currentTarget) menuPresence.completeMotion();
       }}
     >
-      <div
-        ref={setScroller}
-        className="shell-composer-slash-menu__scroll"
-        data-testid="composer-slash-scroll"
+      <OverlayScrollArea
+        className="shell-composer-slash-menu__viewport"
+        innerClassName="shell-composer-slash-menu__scroll"
+        scrollRef={setScroller}
         onScroll={onScroll}
+        fadeColor="var(--color-overlay)"
+        innerDataTestId="composer-slash-scroll"
       >
         <ComposerMenuHighlight containerRef={scrollRef} activeIndex={activeIndex} />
         {visibleCommands.map((command, index) => (
@@ -737,7 +740,7 @@ export function ComposerSlashMenu({
             </div>
           );
         })}
-      </div>
+      </OverlayScrollArea>
 
       {placement === 'above' ? categoryTabs : null}
     </div>

@@ -36,3 +36,12 @@ window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () 
 const container = document.getElementById('root');
 if (!container) throw new Error('missing #root');
 createRoot(container).render(<ShellApp />);
+
+// Keep Agentation in the unoptimized development shell only. The build script
+// replaces NODE_ENV at bundle time, so production and QA builds tree-shake this
+// dynamic import and do not ship the PolyForm Shield package.
+if (process.env.NODE_ENV === 'development') {
+  void import('./AgentationDevOverlay.js').then(({ mountAgentation }) => {
+    mountAgentation();
+  });
+}

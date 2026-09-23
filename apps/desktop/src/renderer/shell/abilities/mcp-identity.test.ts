@@ -1,3 +1,6 @@
+import playwrightIcon from '../assets/mcp/playwright.svg';
+import context7Icon from '../assets/mcp/context7.png';
+import postgresIcon from '../assets/mcp/postgresql.png';
 import { describe, expect, it } from 'vitest';
 import {
   inspectMcpLaunch,
@@ -20,16 +23,13 @@ describe('mcp identity', () => {
     });
   });
 
-  it('builds a multi-level logo chain: site favicon → shared favicon service → semantic mark', () => {
+  it('bundles known MCP logos and falls back to semantic marks for local tools', () => {
     expect(
       resolveMcpLogoSources({ name: 'context7', endpoint: 'https://mcp.context7.com/mcp' }),
     ).toEqual({
       id: 'context7',
       mark: 'server',
-      sources: [
-        'https://mcp.context7.com/favicon.ico',
-        'https://www.google.com/s2/favicons?domain=context7.com&sz=64',
-      ],
+      sources: [context7Icon],
     });
     // 纯本地服务没有站点地址：直接用语义矢量图标，不发起任何远程取图
     expect(resolveMcpLogoSources({ name: 'filesystem' })).toEqual({
@@ -80,5 +80,29 @@ describe('mcp identity', () => {
       problemCount: 0,
     });
     expect(context7).toEqual({ callable: true, issue: false, label: '2 个工具' });
+  });
+});
+
+it('uses PostgreSQL branding with a database fallback for local MCP commands', () => {
+  expect(
+    resolveMcpLogoSources({ name: 'PostgreSQL MCP', endpoint: 'MCP_POSTGRES_COMMAND' }),
+  ).toEqual({
+    id: 'postgres',
+    mark: 'database',
+    sources: [postgresIcon],
+  });
+});
+
+
+it('uses bundled connector artwork instead of requesting a site favicon', () => {
+  const logo = resolveMcpLogoSources({ name: '抖音', endpoint: 'https://example.com/mcp' });
+  expect(logo.id).toBe('douyin');
+  expect(logo.sources).toHaveLength(1);
+  expect(logo.sources[0]).not.toMatch(/^https?:/);
+});
+
+it('bundles the Playwright MCP logo instead of a generic globe', () => {
+  expect(resolveMcpLogoSources({ name: 'Playwright', endpoint: 'npx playwright-mcp' })).toEqual({
+    id: 'playwright', mark: 'globe', sources: [playwrightIcon],
   });
 });

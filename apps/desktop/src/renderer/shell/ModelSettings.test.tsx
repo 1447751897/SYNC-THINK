@@ -617,7 +617,7 @@ describe('ModelSettings NewMax provider detail', () => {
     await waitFor(() => {
       expect(
         detail.querySelector('.model-capability-dialog__probe-results')?.textContent,
-      ).toContain('联网搜索');
+      ).not.toContain('联网搜索');
     });
     expect(within(detail).getByText(/检测完成：已向接口实测，建议勾选 4 项/)).toBeTruthy();
 
@@ -706,7 +706,8 @@ describe('ModelSettings NewMax provider detail', () => {
       detail.querySelectorAll('.model-capability-dialog__probe-results li'),
     );
     const states = rows.map((row) => row.getAttribute('data-state'));
-    expect(states).toEqual(expect.arrayContaining(['pass', 'fail', 'unknown']));
+    expect(states).toEqual(expect.arrayContaining(['fail', 'unknown']));
+    expect(states).not.toContain('pass');
 
     const unknownRow = rows.find((row) => row.getAttribute('data-state') === 'unknown')!;
     expect(unknownRow.textContent).toContain('未判定');
@@ -1525,6 +1526,28 @@ describe('ModelSettings NewMax provider detail', () => {
     fireEvent.click(screen.getByTestId('model-settings-disabled-action-menu-trigger'));
     expect(screen.getByRole('menuitem', { name: '启用全部' })).toBeTruthy();
     expect(screen.getByRole('menuitem', { name: '清空' })).toBeTruthy();
+  });
+
+  it('keeps the remaining disabled rows expanded after enabling or removing one', async () => {
+    runtime.listProviders.mockResolvedValue({
+      providers: [
+        provider,
+        { ...provider, providerId: 'provider-old-1' as ProviderSummary['providerId'], name: 'OLD 1', enabled: false, sortOrder: 1 },
+        { ...provider, providerId: 'provider-old-2' as ProviderSummary['providerId'], name: 'OLD 2', enabled: false, sortOrder: 2 },
+      ],
+    });
+    await renderSettings();
+    fireEvent.click(screen.getByTestId('model-settings-disabled-menu-trigger'));
+    fireEvent.click(screen.getByRole('button', { name: 'OLD 1 更多操作' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '启用' }));
+    expect(screen.getByTestId('model-settings-disabled-menu-trigger').getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByTestId('model-settings-disabled-menu-list')).toBeTruthy();
+    await waitFor(() => expect(runtime.updateProvider).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: 'OLD 2 更多操作' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '移除' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '确认移除' }));
+    expect(screen.getByTestId('model-settings-disabled-menu-trigger').getAttribute('aria-expanded')).toBe('true');
+    await waitFor(() => expect(runtime.deleteProvider).toHaveBeenCalledWith({ providerId: 'provider-old-2' }));
   });
 
   it('keeps the disabled section open after selecting a disabled provider', async () => {

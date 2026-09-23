@@ -67,6 +67,33 @@ afterEach(() => {
 });
 
 describe('OverlayScrollArea', () => {
+  it('scrolls on wheel inside a popover even when an outer scroll lock owns the page', () => {
+    stubScrollMetrics({ clientSize: 120, scrollSize: 440 });
+    render(
+      <OverlayScrollArea>
+        <div>many rows</div>
+      </OverlayScrollArea>,
+    );
+    const inner = screen.getByTestId('overlay-scroll-inner');
+    fireEvent.wheel(inner, { deltaY: 90 });
+    expect(inner.scrollTop).toBe(90);
+    // The thumb is a sibling of the inner scroll element: wheel still works there.
+    fireEvent.wheel(inner.parentElement!, { deltaY: 35 });
+    expect(inner.scrollTop).toBe(125);
+  });
+
+  it('uses live theme colors for slash and model/reasoning popovers', () => {
+    expect(shellCss).toMatch(
+      /\.shell-mention-pop\.shell-slash-pop\.shell-composer-slash-menu\s*\{[^}]*--composer-surface: var\(--color-overlay\);[^}]*--composer-hover: var\(--color-hover\);/s,
+    );
+    expect(shellCss).toMatch(
+      /\.shell-menu--reasoning-flyout\s*\{[^}]*--composer-surface: var\(--color-overlay\);/s,
+    );
+    expect(shellCss).toMatch(/\.shell-composer-slash-menu__viewport\s*\{[^}]*flex: 1 1 auto;/s);
+    expect(shellCss).toMatch(/\.ability-hub__scroll\s*\{[^}]*overflow: hidden;/s);
+    expect(shellCss).toMatch(/\.model-list-select__menu\s*\{[^}]*overflow: hidden;/s);
+  });
+
   it('keeps the native scrollbar off on both Chromium rendering paths', () => {
     // 只关一条会漏出系统滚动条：scrollbar-width 管标准路径，::-webkit-scrollbar 管 webkit 路径。
     expect(shellCss).toMatch(/\.shell-overlay-scroll__inner\s*\{[^}]*scrollbar-width:\s*none;/s);

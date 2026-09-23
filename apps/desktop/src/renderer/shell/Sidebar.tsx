@@ -243,7 +243,6 @@ export function Sidebar(props: SidebarProps) {
               icon={<Search size={15} />}
               label="搜索"
               testId="nav-search"
-              placeholder
               onClick={() => setSearchFocused(true)}
             />
             <ActionRow
@@ -757,7 +756,7 @@ function ActionRow(props: {
           ? 'shell-row-active text-text'
           : props.accent
             ? 'text-text hover:bg-hover'
-            : 'text-text-secondary hover:bg-hover hover:text-text',
+            : 'text-text hover:bg-hover',
         props.placeholder ? 'opacity-70' : '',
       )}
       onClick={() => {

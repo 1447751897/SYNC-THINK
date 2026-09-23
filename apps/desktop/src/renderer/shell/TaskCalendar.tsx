@@ -80,8 +80,8 @@ export interface TaskCalendarProps {
   tasks: readonly ScheduledTask[];
   allTasks: readonly ScheduledTask[];
   workspaces: readonly WorkspaceSummary[];
-  scope: string;
-  onScopeChange(value: string): void;
+  scopes: readonly string[];
+  onScopesChange(values: string[]): void;
   targets: ReadonlySet<ScheduledTask['target']['kind']>;
   onTargetToggle(kind: ScheduledTask['target']['kind']): void;
   statusFilters: ReactNode;
@@ -97,8 +97,8 @@ export function TaskCalendar({
   tasks,
   allTasks,
   workspaces,
-  scope,
-  onScopeChange,
+  scopes,
+  onScopesChange,
   targets,
   onTargetToggle,
   statusFilters,
@@ -250,8 +250,10 @@ export function TaskCalendar({
         <div className="task-cal__filter-label">归属</div>
         <TaskScopePicker
           layout="sidebar"
-          value={scope}
-          onChange={onScopeChange}
+          value={scopes[0] ?? 'all'}
+          onChange={(value) => onScopesChange([value])}
+          selectedScopes={scopes}
+          onSelectedScopesChange={onScopesChange}
           workspaces={workspaces}
           tasks={allTasks}
         />
@@ -270,7 +272,7 @@ export function TaskCalendar({
                   allTasks.filter(
                     (task) =>
                       task.target.kind === kind &&
-                      (scope === 'all' || (task.workspaceId ?? 'global') === scope),
+                      (scopes.includes('all') || scopes.includes(task.workspaceId ?? 'global')),
                   ).length
                 }
               </small>

@@ -23,6 +23,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type MutableRefObject,
   type PointerEvent as ReactPointerEvent,
+  type UIEvent as ReactUIEvent,
   type ReactNode,
 } from 'react';
 
@@ -60,10 +61,12 @@ export interface OverlayScrollAreaProps {
   /** 渐隐遮罩高度，默认 24px。 */
   fadeHeight?: number;
   /** 需要直接操作滚动元素时传入。 */
-  scrollRef?: MutableRefObject<HTMLDivElement | null>;
+  scrollRef?: MutableRefObject<HTMLDivElement | null> | ((node: HTMLDivElement | null) => void);
+  onScroll?: (event: ReactUIEvent<HTMLDivElement>) => void;
   style?: CSSProperties;
   /** Optional test hook applied to the outer clipping container. */
   dataTestId?: string;
+  innerDataTestId?: string;
 }
 
 interface ThumbMetrics {
@@ -91,10 +94,13 @@ export function OverlayScrollArea(props: OverlayScrollAreaProps) {
     fadeDisabled = false,
     fadeHeight = 24,
     scrollRef,
+    onScroll,
     style,
     dataTestId,
+    innerDataTestId,
   } = props;
 
+  const outerRef = useRef<HTMLDivElement | null>(null);
   const localScrollRef = useRef<HTMLDivElement | null>(null);
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pointerInsideRef = useRef(false);
@@ -109,7 +115,8 @@ export function OverlayScrollArea(props: OverlayScrollAreaProps) {
   const assignScrollRef = useCallback(
     (node: HTMLDivElement | null) => {
       localScrollRef.current = node;
-      if (scrollRef) scrollRef.current = node;
+      if (typeof scrollRef === 'function') scrollRef(node);
+      else if (scrollRef) scrollRef.current = node;
     },
     [scrollRef],
   );
@@ -181,6 +188,30 @@ export function OverlayScrollArea(props: OverlayScrollAreaProps) {
     setThumb((prev) => (prev.canScroll ? { ...prev, visible: true } : prev));
     if (!pointerInsideRef.current) hideSoon(SCROLL_HIDE_DELAY_MS);
   }, [clearHideTimer, hideSoon, updateThumb]);
+
+  useEffect(() => {
+    const outer = outerRef.current;
+    const inner = localScrollRef.current;
+    if (!outer || !inner) return;
+    const onWheel = (event: WheelEvent) => {
+      if (inner.scrollHeight <= inner.clientHeight) return;
+      const unit =
+        event.deltaMode === WheelEvent.DOM_DELTA_LINE
+          ? 16
+          : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
+            ? inner.clientHeight
+            : 1;
+      inner.scrollTop = Math.max(
+        0,
+        Math.min(inner.scrollHeight - inner.clientHeight, inner.scrollTop + event.deltaY * unit),
+      );
+      event.preventDefault();
+      event.stopPropagation();
+      // The browser emits scroll for the thumb and lazy-loading listeners.
+    };
+    outer.addEventListener('wheel', onWheel, { passive: false });
+    return () => outer.removeEventListener('wheel', onWheel);
+  }, []);
 
   const handleScroll = useCallback(() => {
     checkFade();
@@ -327,6 +358,7 @@ export function OverlayScrollArea(props: OverlayScrollAreaProps) {
 
   return (
     <div
+      ref={outerRef}
       className={className ? `shell-overlay-scroll ${className}` : 'shell-overlay-scroll'}
       style={mergedStyle}
       {...(dataTestId ? { 'data-testid': dataTestId } : {})}
@@ -335,14 +367,17 @@ export function OverlayScrollArea(props: OverlayScrollAreaProps) {
     >
       <div
         ref={assignScrollRef}
-        data-testid="overlay-scroll-inner"
+        data-testid={innerDataTestId ?? 'overlay-scroll-inner'}
         className={
           innerClassName
             ? `shell-overlay-scroll__inner ${innerClassName}`
             : 'shell-overlay-scroll__inner'
         }
         style={innerStyle}
-        onScroll={handleScroll}
+        onScroll={(event) => {
+          handleScroll();
+          onScroll?.(event);
+        }}
       >
         {children}
       </div>

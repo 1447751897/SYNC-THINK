@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Check, ChevronDown } from 'lucide-react';
 import clsx from 'clsx';
+import { OverlayScrollArea } from './OverlayScrollArea.js';
 
 export interface ModelListSelectOption {
   value: string;
@@ -98,7 +99,8 @@ export function ModelListSelect({
   const [open, setOpen] = useState(false);
   const [coords, setCoords] = useState<MenuLayout>({ top: 0, left: 0, width: 0, maxHeight: 0 });
   const selected = options.find((option) => option.value === value);
-  const display = selected?.label ?? (value === (emptyOption?.value ?? '') ? emptyOption?.label : undefined);
+  const display =
+    selected?.label ?? (value === (emptyOption?.value ?? '') ? emptyOption?.label : undefined);
   const placeholderShown = !display;
 
   const close = () => setOpen(false);
@@ -188,33 +190,39 @@ export function ModelListSelect({
               }}
               onPointerDown={(event) => event.stopPropagation()}
             >
-              {rows.map((option) => {
-                const active = option.value === value || (!value && option.value === '');
-                return (
-                  <button
-                    key={option.value || 'empty'}
-                    type="button"
-                    role="option"
-                    tabIndex={-1}
-                    aria-selected={active}
-                    className={clsx('model-list-select__option', active && 'is-active')}
-                    onPointerDown={(event) => {
-                      if (event.button > 0) return;
-                      event.preventDefault();
-                      event.stopPropagation();
-                      choose(option.value);
-                    }}
-                    onClick={(event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      choose(option.value);
-                    }}
-                  >
-                    <span>{option.render ?? option.label}</span>
-                    {active ? <Check size={14} aria-hidden="true" /> : null}
-                  </button>
-                );
-              })}
+              <OverlayScrollArea
+                className="model-list-select__viewport"
+                innerClassName="model-list-select__scroll"
+                fadeColor="var(--color-overlay)"
+              >
+                {rows.map((option) => {
+                  const active = option.value === value || (!value && option.value === '');
+                  return (
+                    <button
+                      key={option.value || 'empty'}
+                      type="button"
+                      role="option"
+                      tabIndex={-1}
+                      aria-selected={active}
+                      className={clsx('model-list-select__option', active && 'is-active')}
+                      onPointerDown={(event) => {
+                        if (event.button > 0) return;
+                        event.preventDefault();
+                        event.stopPropagation();
+                        choose(option.value);
+                      }}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        choose(option.value);
+                      }}
+                    >
+                      <span>{option.render ?? option.label}</span>
+                      {active ? <Check size={14} aria-hidden="true" /> : null}
+                    </button>
+                  );
+                })}
+              </OverlayScrollArea>
             </div>,
             document.body,
           )

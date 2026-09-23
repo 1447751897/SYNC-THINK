@@ -4596,6 +4596,10 @@ body {
 }
 
 .shell-mention-pop.shell-slash-pop.shell-composer-slash-menu {
+  --composer-surface: var(--color-overlay);
+  --composer-text: var(--color-text);
+  --composer-text-secondary: var(--color-text-secondary);
+  --composer-hover: var(--color-hover);
   display: flex;
   max-height: min(var(--composer-menu-max-height), calc(100vh - 32px));
   min-height: 0;
@@ -4629,7 +4633,12 @@ body {
   overflow-y: auto;
   padding: 2px;
   overscroll-behavior: contain;
-  scrollbar-width: thin;
+}
+
+.shell-composer-slash-menu__viewport {
+  flex: 1 1 auto;
+  min-height: 0;
+  --composer-text: var(--color-text);
 }
 
 .shell-composer-slash-menu .shell-composer-menu__highlight {
@@ -14075,6 +14084,10 @@ body {
 .shell-menu--model-providers,
 .shell-menu--model-flyout,
 .shell-menu--reasoning-flyout {
+  --composer-surface: var(--color-overlay);
+  --composer-text: var(--color-text);
+  --composer-text-secondary: var(--color-text-secondary);
+  --composer-hover: var(--color-hover);
   padding: 0;
   border: 0;
   border-radius: var(--composer-menu-radius);
@@ -20382,22 +20395,16 @@ body {
   line-height: 16px;
 }
 
-.settings-general-select {
+.settings-general-model-picker {
   width: min(270px, 42%);
   min-width: 150px;
-  height: 30px;
-  padding: 0 10px;
-  border: 0;
-  border-radius: 12px;
-  outline: 0;
-  background: var(--color-control, var(--color-surface));
-  color: var(--color-text);
-  font-size: 12px;
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-text) 7%, transparent);
+  flex: 0 0 auto;
 }
 
-.settings-general-select:focus-visible {
-  box-shadow: 0 0 0 2px var(--color-focus-ring);
+.settings-general-model-picker .model-list-select__trigger {
+  height: 32px;
+  border-radius: 12px;
+  background: var(--color-control, var(--color-surface));
 }
 
 .settings-thinking-options {
@@ -20474,7 +20481,7 @@ body {
     gap: 9px;
   }
 
-  .settings-general-select {
+  .settings-general-model-picker {
     width: 100%;
     min-width: 0;
   }
@@ -21496,8 +21503,8 @@ body {
   text-transform: uppercase;
 }
 
-.settings-shortcuts__rows {
-  border-top: 1px solid var(--color-border);
+.settings-shortcuts__group {
+  margin-top: 24px;
 }
 
 .settings-shortcut-row {
@@ -21567,12 +21574,6 @@ body {
   border-color: var(--color-selection-border);
   outline: none;
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-focus-ring) 16%, transparent);
-}
-
-.settings-shortcuts__group-divider {
-  height: 1px;
-  margin: 24px 0;
-  background: var(--color-border);
 }
 
 .settings-personalization {
@@ -22240,11 +22241,7 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 6px;
   margin-bottom: 4px;
-  border-radius: 21px;
-  background: var(--color-overlay);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-text) 5%, transparent);
 }
 
 .settings-provider-switcher__tabs {
@@ -22252,9 +22249,13 @@ body {
   --sliding-tabs-pill-background: var(--color-settings-action);
   --sliding-tabs-pill-radius: 15px;
   display: flex;
-  height: 30px;
+  height: 42px;
   align-items: center;
   gap: 8px;
+  padding: 6px;
+  border-radius: 21px;
+  background: var(--color-overlay);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-text) 5%, transparent);
 }
 
 .settings-provider-switcher__tabs > button {
@@ -22284,8 +22285,9 @@ body {
   align-items: center;
   gap: 6px;
   padding: 0 9px;
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--color-text) 5%, transparent);
+  border: 1px solid var(--color-border);
+  border-radius: 14px;
+  background: var(--color-overlay);
   color: var(--color-text-faint);
 }
 
@@ -23375,7 +23377,7 @@ body {
   border-bottom: 1px solid var(--color-border);
 }
 
-.settings-third-party-row > button {
+.settings-third-party-row > button:not(.settings-toggle) {
   display: flex;
   min-width: 0;
   flex: 1;
@@ -23391,8 +23393,18 @@ body {
   cursor: pointer;
 }
 
-.settings-third-party-row > button:hover {
+.settings-third-party-row > button:not(.settings-toggle):hover {
   background: color-mix(in srgb, var(--color-text) 5%, transparent);
+}
+
+/* Only the detail button grows; the switch stays at the trailing edge. */
+.settings-third-party-row > .settings-toggle {
+  flex: 0 0 34px;
+  margin-left: auto;
+}
+
+.settings-third-party-row > .settings-toggle:not(.is-checked) {
+  background: var(--color-text-faint);
 }
 
 .settings-third-party-row__icon,
@@ -23415,7 +23427,7 @@ body {
   object-fit: contain;
 }
 
-.settings-third-party-row > button > span:last-child {
+.settings-third-party-row > button:not(.settings-toggle) > span:last-child {
   min-width: 0;
   flex: 1;
 }
@@ -26142,23 +26154,33 @@ body {
 }
 
 .model-list-select__menu {
+  --composer-text: var(--color-text);
   position: fixed;
   z-index: 9100;
   pointer-events: auto;
-  display: grid;
-  gap: 2px;
+  display: flex;
+  flex-direction: column;
   /* 实际高度由 ModelListSelect 按视口可用空间内联下发；这里只做兜底上限。
      写死一个小值会让"内容刚好比上限多几像素"的列表只留下十几像素的可滚区间。 */
   max-height: min(60vh, 440px);
-  padding: 4px;
-  overflow: auto;
-  /* 滚到列表边界后不要把滚轮交给 body（body 是 overflow:hidden），否则滚轮会"打滑"。 */
-  overscroll-behavior: contain;
+  padding: 0;
+  overflow: hidden;
   border: 1px solid var(--color-border);
   border-radius: 12px;
   background: var(--color-overlay);
   box-shadow: 0 12px 40px color-mix(in srgb, #000 22%, transparent);
   animation: model-settings-menu-in var(--model-motion-fast) var(--model-ease-standard) both;
+}
+
+.model-list-select__viewport {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.model-list-select__scroll {
+  display: grid;
+  gap: 2px;
+  padding: 4px;
 }
 
 .model-list-select__option {
@@ -28283,8 +28305,8 @@ body {
     transform var(--model-motion-layout) var(--model-ease-emphasized);
 }
 
-.image-model-id-row.is-default {
-  background: color-mix(in srgb, var(--color-accent) 14%, var(--shell-tab-hover));
+.image-model-id-row:hover {
+  background: color-mix(in srgb, var(--color-text) 6%, var(--shell-tab-hover));
 }
 
 .image-model-id-row.is-dragging {
@@ -37856,9 +37878,9 @@ html[data-app-hidden='true'] .animate-spin {
 .ability-hub__scroll {
   min-height: 0;
   flex: 1;
-  overflow: auto;
-  padding: 14px 20px 22px;
-  scrollbar-width: thin;
+  overflow: hidden;
+  padding: 0;
+  --composer-text: var(--color-text);
 }
 
 .ability-hub__market-grid {
@@ -39390,7 +39412,7 @@ html[data-app-hidden='true'] .animate-spin {
   line-height: 19.5px;
 }
 
-.ability-hub__scroll {
+.ability-hub__scroll-inner {
   padding: 4px 24px 24px;
 }
 
@@ -39675,11 +39697,11 @@ html[data-app-hidden='true'] .animate-spin {
   background: var(--color-hover);
 }
 
-.ability-hub__scroll--installed {
+.ability-hub__scroll--installed .ability-hub__scroll-inner {
   padding: 0 8px 24px;
 }
 
-.ability-hub__scroll--mcp {
+.ability-hub__scroll--mcp .ability-hub__scroll-inner {
   padding: 12px 24px 24px;
 }
 
@@ -45858,4 +45880,206 @@ html[data-app-hidden='true'] .animate-spin {
   min-height: 30px;
   padding: 0 11px;
   font-size: 13px;
+}
+.settings-add-provider-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9100;
+  background: color-mix(in srgb, #000 45%, transparent);
+  backdrop-filter: blur(3px);
+}
+
+.settings-add-provider-dialog {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  z-index: 9101;
+  width: min(540px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+  transform: translate(-50%, -50%);
+  border: 1px solid var(--color-border);
+  border-radius: 14px;
+  background: var(--color-elevated);
+  box-shadow: 0 24px 72px color-mix(in srgb, #000 30%, transparent);
+}
+
+.settings-add-provider-dialog__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.settings-add-provider-dialog__head h2,
+.settings-add-provider-dialog__head p {
+  margin: 0;
+}
+
+.settings-add-provider-dialog__head h2 {
+  color: var(--color-text);
+  font-size: 15px;
+}
+
+.settings-add-provider-dialog__head p {
+  margin-top: 5px;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+}
+
+.settings-add-provider-dialog__close {
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.settings-add-provider-dialog__close:hover {
+  background: var(--color-hover);
+  color: var(--color-text);
+}
+
+.settings-add-provider-dialog .settings-connector-detail {
+  display: block;
+  width: auto;
+  min-height: 0;
+  padding: 0;
+}
+
+.settings-add-provider-dialog .settings-connector-form {
+  max-width: none;
+  padding: 18px 20px 20px;
+}
+
+.ability-hub__workspace-row {
+  position: relative;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.ability-hub__scope-row > .ability-hub__workspace-row {
+  flex: 1 1 auto;
+  padding: 0;
+}
+
+.ability-hub__workspace-row .ability-hub__scope-pill {
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+.ability-hub__workspace-row .ability-hub__scope-pill.is-measure-only {
+  position: absolute;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.ability-hub__scope-more {
+  flex: 0 0 auto;
+  padding: 0 10px;
+  border: 1px solid var(--color-border);
+  cursor: pointer;
+}
+
+.ability-hub__scope-menu {
+  z-index: 10040;
+  min-width: 170px;
+  max-height: min(320px, 60vh);
+  padding: 5px;
+  overflow-y: auto;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: var(--color-overlay);
+  box-shadow: 0 12px 35px color-mix(in srgb, #000 20%, transparent);
+}
+
+.ability-hub__scope-menu-item {
+  display: flex;
+  min-height: 32px;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 9px;
+  border-radius: 8px;
+  color: var(--color-text);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.ability-hub__scope-menu-item > span { flex: 1; }
+.ability-hub__scope-menu-item > small { color: var(--color-text-faint); }
+.ability-hub__scope-menu-item[data-highlighted] { background: var(--color-hover); outline: 0; }
+
+.ability-hub__scope-menu {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+  --composer-text: var(--color-text);
+}
+.ability-hub__scope-menu-viewport { min-height: 0; }
+.ability-hub__scope-menu-scroll { padding: 5px; }
+
+/* A run of commands is one translucent surface, not separate bordered pills. */
+.shell-harness-trace .shell-process-actions {
+  overflow: hidden;
+  margin: 5px 0 8px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 58%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--color-elevated) 62%, transparent);
+  box-shadow: 0 8px 24px color-mix(in srgb, #000 8%, transparent), inset 0 1px 0 color-mix(in srgb, #fff 12%, transparent);
+  backdrop-filter: blur(16px) saturate(1.18);
+}
+
+.shell-harness-trace .shell-process-actions__toggle {
+  padding: 4px 12px;
+  color: var(--color-text-secondary);
+}
+
+.shell-harness-trace .shell-process-actions__body {
+  padding: 3px 12px 7px;
+  border-top: 1px solid color-mix(in srgb, var(--color-border) 35%, transparent);
+}
+
+.shell-harness-trace .shell-process-actions__body > .shell-inline-process + .shell-inline-process {
+  border-top: 1px solid color-mix(in srgb, var(--color-border) 24%, transparent);
+}
+
+.shell-harness-trace .shell-inline-process__tool-description {
+  min-width: 0;
+  overflow: hidden;
+  flex: 0 1 45%;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Think details sit under the label, with deliberately quieter typography. */
+.shell-harness-trace .shell-inline-process__think-body {
+  margin-left: 28px;
+  padding: 4px 0 6px 10px;
+  border-left: 1px solid color-mix(in srgb, var(--color-border) 55%, transparent);
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.shell-harness-trace .shell-inline-process__think-body .shell-md,
+.shell-harness-trace .shell-inline-process__think-body .shell-md :is(h1, h2, h3, h4) {
+  color: inherit;
+  font-size: inherit;
+  line-height: inherit;
+}
+
+.settings-daemon-switch {
+  flex: 0 0 34px;
+  margin-left: auto;
 }

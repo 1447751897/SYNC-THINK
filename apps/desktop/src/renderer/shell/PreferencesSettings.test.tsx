@@ -113,6 +113,13 @@ describe('PreferencesSettings', () => {
     expect(runtime.setTheme).toHaveBeenCalledWith('dark');
   });
 
+  it('uses shortcut row dividers without stacking extra group dividers', () => {
+    render(<PreferencesSettings />);
+    fireEvent.click(screen.getByRole('tab', { name: '快捷键' }));
+    expect(document.querySelectorAll('.settings-shortcuts__group-divider')).toHaveLength(0);
+    expect(document.querySelectorAll('.settings-shortcuts__rows')).toHaveLength(2);
+  });
+
   it('persists application shortcut switches', () => {
     render(<PreferencesSettings />);
     fireEvent.click(screen.getByRole('tab', { name: '快捷键' }));
@@ -138,7 +145,9 @@ describe('PreferencesSettings', () => {
 
     fireEvent.click(toggle);
     expect(toggle.getAttribute('aria-checked')).toBe('true');
-    expect(screen.getByRole('button', { name: '修改优化提示词快捷键' }).textContent).toMatch(/Tab/i);
+    expect(screen.getByRole('button', { name: '修改优化提示词快捷键' }).textContent).toMatch(
+      /Tab/i,
+    );
 
     const saved = JSON.parse(localStorage.getItem(SHORTCUT_PREFERENCE_KEY) ?? '{}');
     expect(saved.promptEnhancement.enabled).toBe(true);
@@ -146,9 +155,9 @@ describe('PreferencesSettings', () => {
 
     fireEvent.click(toggle);
     expect(toggle.getAttribute('aria-checked')).toBe('false');
-    expect(JSON.parse(localStorage.getItem(SHORTCUT_PREFERENCE_KEY) ?? '{}').promptEnhancement.enabled).toBe(
-      false,
-    );
+    expect(
+      JSON.parse(localStorage.getItem(SHORTCUT_PREFERENCE_KEY) ?? '{}').promptEnhancement.enabled,
+    ).toBe(false);
   });
 
   it('resets the shared viewport when switching tabs', async () => {

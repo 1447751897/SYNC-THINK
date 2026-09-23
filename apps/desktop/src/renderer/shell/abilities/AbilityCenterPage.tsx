@@ -40,6 +40,8 @@ import {
   X,
 } from 'lucide-react';
 import { SlidingTabs } from '../SlidingTabs.js';
+import { OverlayScrollArea } from '../OverlayScrollArea.js';
+import { WorkspaceScopeRow } from '../WorkspaceScopeRow.js';
 import {
   useCallback,
   useEffect,
@@ -1518,7 +1520,7 @@ function NewMaxSkillHub(props: {
                 </button>
               ))}
             </div>
-            <div className="ability-hub__scroll">
+            <OverlayScrollArea className="ability-hub__scroll" innerClassName="ability-hub__scroll-inner" fadeColor="var(--color-elevated)">
               <div className="ability-hub__market-grid">
                 {marketItems.map((item) => {
                   const installed = marketSkillInstalled(item, props.families);
@@ -1589,7 +1591,7 @@ function NewMaxSkillHub(props: {
                 })}
               </div>
               {marketItems.length === 0 ? <EmptyState title="没有匹配的 Skill" compact /> : null}
-            </div>
+            </OverlayScrollArea>
           </>
         ) : (
           <>
@@ -1628,34 +1630,20 @@ function NewMaxSkillHub(props: {
                 </p>
               </div>
             </div>
-            <div className="ability-hub__workspace-row" aria-label="工作区范围">
-              <button
-                type="button"
-                className={`ability-hub__scope-pill${props.selectedScope === 'global' ? ' is-active' : ''}`}
-                data-testid="skill-scope-global"
-                onClick={() => props.onScopeChange('global')}
-              >
-                <Folder size={11} />
-                全局
-              </button>
-              {props.workspaces.slice(0, 4).map((workspace) => (
-                <button
-                  key={workspace.workspaceId}
-                  type="button"
-                  className={`ability-hub__scope-pill${
-                    workspace.workspaceId === props.selectedScope ? ' is-active' : ''
-                  }`}
-                  data-testid={`skill-scope-${workspace.workspaceId}`}
-                  onClick={() => props.onScopeChange(workspace.workspaceId)}
-                >
-                  <Folder size={11} />
-                  {workspace.name}
-                </button>
-              ))}
-              {props.workspaces.length > 4 ? (
-                <span className="ability-hub__scope-more">+{props.workspaces.length - 4}</span>
-              ) : null}
-            </div>
+            <WorkspaceScopeRow
+              label="工作区范围"
+              fixedCount={1}
+              options={[
+                { id: 'global', label: '全局', testId: 'skill-scope-global' },
+                ...props.workspaces.map((workspace) => ({
+                  id: workspace.workspaceId,
+                  label: workspace.name,
+                  testId: `skill-scope-${workspace.workspaceId}`,
+                })),
+              ]}
+              value={props.selectedScope}
+              onChange={props.onScopeChange}
+            />
             <div className="ability-hub__filter-row">
               <div className="ability-hub__security-filter" aria-label="来源筛选">
                 {(
@@ -1753,7 +1741,7 @@ function NewMaxSkillHub(props: {
                 ) : null}
               </div>
             </div>
-            <div className="ability-hub__scroll ability-hub__scroll--installed">
+            <OverlayScrollArea className="ability-hub__scroll ability-hub__scroll--installed" innerClassName="ability-hub__scroll-inner" fadeColor="var(--color-elevated)">
               {props.loading ? (
                 <LoadingState label="正在读取 Skill..." />
               ) : rows.length === 0 ? (
@@ -1892,7 +1880,7 @@ function NewMaxSkillHub(props: {
                   )}
                 </div>
               )}
-            </div>
+            </OverlayScrollArea>
           </>
         )}
       </div>
@@ -2107,7 +2095,7 @@ function NewMaxMcpHub(props: {
                 </button>
               ))}
             </div>
-            <div className="ability-hub__scroll">
+            <OverlayScrollArea className="ability-hub__scroll" innerClassName="ability-hub__scroll-inner" fadeColor="var(--color-elevated)">
               <div className="ability-hub__market-grid">
                 {marketItems.map((item) => {
                   const installed = marketMcpInstalled(item, props.servers);
@@ -2167,7 +2155,7 @@ function NewMaxMcpHub(props: {
                 })}
               </div>
               {marketItems.length === 0 ? <EmptyState title="没有匹配的 MCP" compact /> : null}
-            </div>
+            </OverlayScrollArea>
           </>
         ) : (
           <>
@@ -2262,7 +2250,7 @@ function NewMaxMcpHub(props: {
                 ) : null}
               </div>
             </div>
-            <div className="ability-hub__scroll ability-hub__scroll--mcp">
+            <OverlayScrollArea className="ability-hub__scroll ability-hub__scroll--mcp" innerClassName="ability-hub__scroll-inner" fadeColor="var(--color-elevated)">
               {props.loading ? (
                 <LoadingState label="正在读取 MCP..." />
               ) : rows.length === 0 ? (
@@ -2359,7 +2347,7 @@ function NewMaxMcpHub(props: {
                   })}
                 </div>
               )}
-            </div>
+            </OverlayScrollArea>
           </>
         )}
       </div>

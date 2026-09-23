@@ -128,7 +128,7 @@ export function TaskPanel({
   const [editing, setEditing] = useState<ScheduledTask | 'new' | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
-  const [scope, setScope] = useState('all');
+  const [scopes, setScopes] = useState<string[]>(['all']);
   const [statusSel, setStatusSel] = useState<Set<StatusKey>>(new Set());
   const [targets, setTargets] = useState<Set<ScheduledTask['target']['kind']>>(
     new Set(['agent', 'model', 'team']),
@@ -238,7 +238,7 @@ export function TaskPanel({
   const counts = useMemo(() => {
     const scoped = tasks.filter(
       (task) =>
-        (scope === 'all' || scope === (task.workspaceId ?? 'global')) &&
+        (scopes.includes('all') || scopes.includes(task.workspaceId ?? 'global')) &&
         targets.has(task.target.kind),
     );
     const enabled = scoped.filter((task) => task.enabled).length;
@@ -247,12 +247,12 @@ export function TaskPanel({
       disabled: scoped.length - enabled,
       lastFail: scoped.filter((task) => task.lastResult?.status === 'failed').length,
     };
-  }, [tasks, scope, targets]);
+  }, [tasks, scopes, targets]);
 
   const shown = useMemo(
     () =>
       sorted.filter((task) => {
-        const scopeOk = scope === 'all' || scope === (task.workspaceId ?? 'global');
+        const scopeOk = scopes.includes('all') || scopes.includes(task.workspaceId ?? 'global');
         const statusOk =
           statusSel.size === 0 ||
           (statusSel.has('enabled') && task.enabled) ||
@@ -260,7 +260,7 @@ export function TaskPanel({
           (statusSel.has('last-fail') && task.lastResult?.status === 'failed');
         return scopeOk && statusOk && targets.has(task.target.kind);
       }),
-    [sorted, scope, statusSel, targets],
+    [sorted, scopes, statusSel, targets],
   );
 
   const toggleStatus = (key: StatusKey) => {
@@ -493,8 +493,8 @@ export function TaskPanel({
         tasks={shown}
         allTasks={tasks}
         workspaces={workspaces}
-        scope={scope}
-        onScopeChange={setScope}
+        scopes={scopes}
+        onScopesChange={setScopes}
         targets={targets}
         onTargetToggle={(kind) =>
           setTargets((previous) => {
@@ -671,7 +671,7 @@ export function TaskPanel({
           key={editing === 'new' ? 'new' : editing.id}
           task={editing === 'new' ? null : editing}
           initialDate={createAt}
-          initialWorkspaceId={scope === 'all' || scope === 'global' ? undefined : scope}
+          initialWorkspaceId={scopes.length === 1 && scopes[0] !== 'all' && scopes[0] !== 'global' ? scopes[0] : undefined}
           agents={agents}
           models={models}
           teams={teams}

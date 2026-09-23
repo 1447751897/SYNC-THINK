@@ -7,6 +7,7 @@
 
 import { useCallback, useState } from 'react';
 import { useVisiblePolling } from './use-visible-polling.js';
+import { ToggleControl } from './ToggleControl.js';
 
 export interface DaemonStatusPayload {
   running: boolean;
@@ -114,18 +115,18 @@ export function DaemonCard() {
       </div>
 
       <div className="settings-daemon-controls">
-        <label className="settings-daemon-row">
+        <div className="settings-daemon-row">
           <span>
             开机自启
             <small>默认开启；手动关闭后将保持关闭</small>
           </span>
-          <input
-            type="checkbox"
-            role="switch"
+          <ToggleControl
             checked={status?.autostart ?? false}
-            onChange={(event) => handleAutostart(event.target.checked)}
+            label="开机自启"
+            className="settings-toggle settings-daemon-switch"
+            onChange={(enabled) => void handleAutostart(enabled)}
           />
-        </label>
+        </div>
 
         <label className="settings-daemon-row">
           <span>

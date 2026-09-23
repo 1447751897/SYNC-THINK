@@ -330,6 +330,54 @@ describe('InlineProcessFlow', () => {
     expect(screen.getByTestId('inline-process-tool-result').textContent).toContain('a.txt: 1 line');
   });
 
+  it('puts command descriptions beside the command and removes them from detail arguments', () => {
+    render(
+      <InlineProcessFlow
+        items={[
+          {
+            ...runningTool,
+            argumentsJson: JSON.stringify({
+              command: 'git diff HEAD --stat',
+              description: '检查提交差异',
+            }),
+            status: 'completed',
+          },
+        ]}
+        defaultOpen
+      />,
+    );
+    const tool = screen.getByTestId('inline-process-tool');
+    expect(within(tool).getByRole('button').textContent).toContain('git diff HEAD --stat');
+    expect(within(tool).getByRole('button').textContent).toContain('检查提交差异');
+    fireEvent.click(within(tool).getByRole('button'));
+    expect(screen.getByTestId('inline-process-tool-arguments').textContent).not.toContain(
+      '检查提交差异',
+    );
+    expect(screen.getByTestId('inline-process-tool-arguments').textContent).toContain(
+      'git diff HEAD --stat',
+    );
+  });
+
+  it('keeps the full read path actionable while shortening the visible label', () => {
+    const onOpenChange = vi.fn();
+    render(
+      <InlineProcessFlow
+        items={[
+          {
+            ...toolItem,
+            argumentsJson: JSON.stringify({ path: 'D:\\projects\\src\\renderer\\view.tsx' }),
+          },
+        ]}
+        onOpenChange={onOpenChange}
+        defaultOpen
+      />,
+    );
+    const link = screen.getByRole('link', { name: 'renderer/view.tsx' });
+    expect(link.getAttribute('title')).toBe('D:\\projects\\src\\renderer\\view.tsx');
+    fireEvent.click(link);
+    expect(onOpenChange).toHaveBeenCalledWith('D:\\projects\\src\\renderer\\view.tsx');
+  });
+
   it('can hide tool calls while preserving reasoning and commentary', () => {
     render(
       <InlineProcessFlow
@@ -817,7 +865,9 @@ describe('InlineProcessFlow', () => {
     expect(screen.getByTestId('inline-process-tool-elapsed').textContent).toBe('2.0s');
     const tool = screen.getByTestId('inline-process-tool');
     fireEvent.click(within(tool).getByRole('button'));
-    expect(tool.querySelector('.shell-inline-process__tool-body')?.textContent).not.toContain('2.0s');
+    expect(tool.querySelector('.shell-inline-process__tool-body')?.textContent).not.toContain(
+      '2.0s',
+    );
   });
 
   it('names the running command on its own active Harness row', () => {
@@ -980,7 +1030,9 @@ describe('InlineProcessFlow', () => {
     render(<InlineProcessFlow items={[{ ...failedToolItem, result: '' }]} defaultOpen />);
 
     fireEvent.click(
-      screen.getByTestId('inline-process-tool').querySelector('.shell-inline-process__tool-toggle')!,
+      screen
+        .getByTestId('inline-process-tool')
+        .querySelector('.shell-inline-process__tool-toggle')!,
     );
     expect(screen.getByTestId('inline-process-tool-result').textContent).toContain(
       '工具未返回错误详情',

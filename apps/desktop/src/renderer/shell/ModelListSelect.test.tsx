@@ -88,6 +88,31 @@ describe('computeMenuLayout', () => {
 });
 
 describe('ModelListSelect', () => {
+  it('consumes wheel input inside a portal menu without relying on body scrolling', () => {
+    Object.defineProperty(window, 'innerHeight', { value: 360, configurable: true });
+    render(
+      <ModelListSelect
+        label="优化模型"
+        value=""
+        placeholder="自动选择"
+        options={OPTIONS}
+        onChange={() => {}}
+      />,
+    );
+    const trigger = screen.getByRole('combobox');
+    trigger.getBoundingClientRect = () => rect(100, 134);
+    fireEvent.click(trigger);
+    const menu = screen.getByRole('listbox');
+    const inner = menu.querySelector('.shell-overlay-scroll__inner') as HTMLElement;
+    expect(inner).toBeTruthy();
+    Object.defineProperties(inner, {
+      clientHeight: { configurable: true, value: 150 },
+      scrollHeight: { configurable: true, value: 300 },
+    });
+    fireEvent.wheel(inner, { deltaY: 60 });
+    expect(inner.scrollTop).toBe(60);
+  });
+
   it('展开时按可用空间下发内联 maxHeight，而不是固定 240px', () => {
     Object.defineProperty(window, 'innerHeight', { value: 900, configurable: true });
     render(

@@ -41,6 +41,7 @@ import {
   WalletCards,
 } from 'lucide-react';
 import clsx from 'clsx';
+import * as Dialog from '@radix-ui/react-dialog';
 import type {
   DataStorageStatsResponse,
   McpServerSummary,
@@ -57,6 +58,7 @@ import {
   type ManagedConnectorCatalogItem,
 } from './connector-catalog.js';
 import { McpIdentityMark } from './abilities/McpIdentityMark.js';
+import { ModelListSelect } from './ModelListSelect.js';
 import { BotConversationPane } from './BotConversationPane.js';
 import { invalidateMcpCatalog, loadMcpCatalog } from './mcp-catalog-loader.js';
 import { SettingsSectionTabs } from './SettingsSectionTabs.js';
@@ -868,22 +870,20 @@ function AgentModelSelect({
   }, []);
 
   return (
-    <select
-      className="settings-general-select"
-      aria-label="优化模型"
-      value={value ?? ''}
-      onChange={(event) => onChange(event.target.value || null)}
-    >
-      <option value="">自动选择</option>
-      {value && !options.some((option) => option.value === value) ? (
-        <option value={value}>{value}</option>
-      ) : null}
-      {options.map((option) => (
-        <option key={option.value} value={option.value}>
-          {option.label}
-        </option>
-      ))}
-    </select>
+    <div className="settings-general-model-picker">
+      <ModelListSelect
+        label="优化模型"
+        value={value ?? ''}
+        placeholder="自动选择"
+        emptyOption={{ value: '', label: '自动选择' }}
+        options={
+          value && !options.some((option) => option.value === value)
+            ? [{ value, label: value }, ...options]
+            : options
+        }
+        onChange={(next) => onChange(next || null)}
+      />
+    </div>
   );
 }
 
@@ -1242,61 +1242,42 @@ export function ConnectionSection({ initialTab, navigationKey }: ConnectionSecti
 
       <div className="settings-connection-body">
         {tab === 'connectors' ? (
-          selection ? (
-            selection.kind === 'managed' ? (
-              <>
-                <ManagedConnectorDetail
-                  item={selection.item}
-                  server={managedConnectorServer(servers, selection.item)}
-                  busy={Boolean(busyId)}
-                  notice={notice}
-                  error={error}
-                  onBack={() => {
-                    setSelection(undefined);
-                    setManagedSetup(undefined);
-                    setError(undefined);
-                  }}
-                  onConfigure={() => setManagedSetup(selection.item)}
-                  onToggle={(server, enabled) => void setServerEnabled(server, enabled)}
-                  onRefresh={(server) => void refreshServerTools(server)}
-                />
-                {managedSetup ? (
-                  <ManagedConnectorSetupDialog
-                    item={managedSetup}
-                    busy={busyId === 'save'}
-                    error={error}
-                    onClose={() => {
-                      setManagedSetup(undefined);
-                      setError(undefined);
-                    }}
-                    onSave={(payload) =>
-                      void saveConnection({
-                        ...payload,
-                        notes: `SYNC-THINK connector: ${managedSetup.id}`,
-                        managedItem: managedSetup,
-                      })
-                    }
-                  />
-                ) : null}
-              </>
-            ) : (
-              <RemoteMcpConnectionForm
-                key={selection.kind === 'server' ? selection.server.mcpServerId : 'new'}
-                selection={selection}
-                busy={busyId === 'save'}
+          selection?.kind === 'managed' ? (
+            <>
+              <ManagedConnectorDetail
+                item={selection.item}
+                server={managedConnectorServer(servers, selection.item)}
+                busy={Boolean(busyId)}
+                notice={notice}
                 error={error}
                 onBack={() => {
                   setSelection(undefined);
+                  setManagedSetup(undefined);
                   setError(undefined);
                 }}
-                onDelete={
-                  selection.kind === 'server'
-                    ? () => void deleteServer(selection.server)
-                    : undefined
-                }
-                onSave={(payload) => void saveConnection(payload)}
+                onConfigure={() => setManagedSetup(selection.item)}
+                onToggle={(server, enabled) => void setServerEnabled(server, enabled)}
+                onRefresh={(server) => void refreshServerTools(server)}
               />
-            )
+              {managedSetup ? (
+                <ManagedConnectorSetupDialog
+                  item={managedSetup}
+                  busy={busyId === 'save'}
+                  error={error}
+                  onClose={() => {
+                    setManagedSetup(undefined);
+                    setError(undefined);
+                  }}
+                  onSave={(payload) =>
+                    void saveConnection({
+                      ...payload,
+                      notes: `SYNC-THINK connector: ${managedSetup.id}`,
+                      managedItem: managedSetup,
+                    })
+                  }
+                />
+              ) : null}
+            </>
           ) : (
             <ConnectorCatalog
               providerTab={providerTab}
@@ -1315,6 +1296,55 @@ export function ConnectionSection({ initialTab, navigationKey }: ConnectionSecti
             />
           )
         ) : null}
+        <Dialog.Root
+          open={selection?.kind === 'new' || selection?.kind === 'server'}
+          onOpenChange={(open) => {
+            if (!open && busyId !== 'save') {
+              setSelection(undefined);
+              setError(undefined);
+            }
+          }}
+        >
+          <Dialog.Portal>
+            <Dialog.Overlay className="settings-add-provider-overlay" />
+            <Dialog.Content className="settings-add-provider-dialog">
+              <div className="settings-add-provider-dialog__head">
+                <div>
+                  <Dialog.Title>
+                    {selection?.kind === 'server' ? selection.server.name : '添加第三方 Provider'}
+                  </Dialog.Title>
+                  <Dialog.Description>
+                    配置远程 MCP 服务，连接后即可在列表中管理。
+                  </Dialog.Description>
+                </div>
+                <Dialog.Close
+                  className="settings-add-provider-dialog__close"
+                  aria-label="关闭 Provider 弹窗"
+                  disabled={busyId === 'save'}
+                >
+                  ×
+                </Dialog.Close>
+              </div>
+              {selection?.kind === 'new' || selection?.kind === 'server' ? (
+                <RemoteMcpConnectionForm
+                  selection={selection}
+                  busy={busyId === 'save'}
+                  error={error}
+                  onBack={() => {
+                    setSelection(undefined);
+                    setError(undefined);
+                  }}
+                  onDelete={
+                    selection.kind === 'server'
+                      ? () => void deleteServer(selection.server)
+                      : undefined
+                  }
+                  onSave={(payload) => void saveConnection(payload)}
+                />
+              ) : null}
+            </Dialog.Content>
+          </Dialog.Portal>
+        </Dialog.Root>
         {tab === 'mcp' ? (
           <McpManagementPane
             servers={servers}
@@ -1322,14 +1352,8 @@ export function ConnectionSection({ initialTab, navigationKey }: ConnectionSecti
             busyId={busyId}
             notice={notice}
             error={error}
-            onAdd={() => {
-              setTab('connectors');
-              setProviderTab('third-party');
-              setSelection({ kind: 'new' });
-            }}
+            onAdd={() => setSelection({ kind: 'new' })}
             onOpen={(server) => {
-              setTab('connectors');
-              setProviderTab('third-party');
               setSelection({ kind: 'server', server });
             }}
             onToggle={(server, enabled) => void setServerEnabled(server, enabled)}
@@ -1352,7 +1376,7 @@ export function ConnectionSection({ initialTab, navigationKey }: ConnectionSecti
   );
 }
 
-/** 连接器开关：直接复用 MCP 管理页的胶囊开关样式，保证全局开关观感一致。 */
+/** 连接器开关与 MCP 管理页共用同一紧凑开关样式。 */
 function ConnectorSwitch({
   checked,
   disabled,
@@ -1370,7 +1394,7 @@ function ConnectorSwitch({
       disabled={disabled}
       label={label}
       onChange={onChange}
-      className="ability-enable-switch"
+      className="settings-toggle"
     />
   );
 }
@@ -1831,23 +1855,9 @@ function RemoteMcpConnectionForm({
   const [apiKey, setApiKey] = useState('');
   const [authScheme, setAuthScheme] = useState<'bearer' | 'api-key'>('bearer');
   const [showKey, setShowKey] = useState(false);
-  const title = server?.name ?? '添加第三方 Provider';
 
   return (
     <div className="settings-connector-detail">
-      <button type="button" className="settings-connector-back" onClick={onBack}>
-        <ArrowLeft size={14} aria-hidden="true" />
-        返回连接器
-      </button>
-      <div className="settings-connector-detail__head">
-        <span className="settings-connector-detail__icon">
-          <Server size={20} aria-hidden="true" />
-        </span>
-        <div>
-          <h2>{title}</h2>
-          <p>远程 MCP Provider</p>
-        </div>
-      </div>
       <form
         className="settings-connector-form"
         onSubmit={(event) => {
@@ -1866,6 +1876,7 @@ function RemoteMcpConnectionForm({
           <span>名称</span>
           <input
             aria-label="连接器名称"
+            autoFocus
             value={name}
             onChange={(event) => setName(event.target.value)}
           />
@@ -1924,7 +1935,9 @@ function RemoteMcpConnectionForm({
               删除连接
             </button>
           ) : (
-            <span />
+            <button type="button" disabled={busy} onClick={onBack}>
+              取消
+            </button>
           )}
           <button
             type="submit"
@@ -2001,7 +2014,7 @@ function McpManagementPane({
             <div key={server.mcpServerId} className="settings-third-party-row">
               <button type="button" onClick={() => onOpen(server)}>
                 <span className="settings-third-party-row__icon">
-                  <Server size={15} aria-hidden="true" />
+                  <McpIdentityMark name={server.name} endpoint={server.endpoint} size={15} />
                 </span>
                 <span>
                   <strong>{server.name}</strong>

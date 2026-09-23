@@ -3,7 +3,16 @@
  * Think, commentary and status stay on their own rows in document order.
  * Consecutive tool calls fold into a local action summary that expands in place.
  */
-import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import {
+  Fragment,
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
 import {
   Atom,
   Check,
@@ -413,18 +422,14 @@ function delegatedToolEventToProcessItem(
   event: DelegatedAgentToolEventView,
 ): Extract<InlineProcessItem, { kind: 'tool' }> {
   const status: 'running' | 'completed' | 'failed' =
-    event.status === 'failed'
-      ? 'failed'
-      : event.status === 'running'
-        ? 'running'
-        : 'completed';
+    event.status === 'failed' ? 'failed' : event.status === 'running' ? 'running' : 'completed';
   // A bounded log must not look complete: say how much output was left out.
   const result =
     event.output === undefined
       ? event.argumentsTruncated
         ? `…输入已截断，原文 ${event.argumentsCharacters ?? '更多'} 字符（其余调用仍保留）`
         : undefined
-      : event.outputTruncated ?? (event.truncated && !event.argumentsTruncated)
+      : (event.outputTruncated ?? (event.truncated && !event.argumentsTruncated))
         ? `${event.output}\n\n…输出已截断，原文 ${event.outputCharacters ?? '更多'} 字符（为保持委派结果可解析）`
         : event.argumentsTruncated
           ? `${event.output}\n\n…输入已截断，原文 ${event.argumentsCharacters ?? '更多'} 字符（其余调用仍保留）`
@@ -438,6 +443,22 @@ function delegatedToolEventToProcessItem(
     ...(event.startedAt ? { startedAt: event.startedAt } : {}),
     ...(event.completedAt ? { completedAt: event.completedAt } : {}),
   };
+}
+
+/** Keep the full path as the click target while showing just its parent and file. */
+function resourceLabel(path: string): string {
+  const segments = path.replace(/\\/g, '/').split('/').filter(Boolean);
+  return segments.slice(-2).join('/') || path;
+}
+
+function fullReadPath(argumentsJson: string): string | undefined {
+  try {
+    const fields = JSON.parse(argumentsJson) as Record<string, unknown>;
+    const path = fields.path ?? fields.file_path;
+    return typeof path === 'string' && path.trim() ? path.trim() : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function ToolRow({
@@ -459,11 +480,29 @@ function ToolRow({
 }) {
   const status = toolStatusOf(item);
   const summary = toolInputSummary(item);
+  const visualKind = toolVisualKind(item.name);
+  let commandDescription: string | undefined;
+  let visibleArguments = item.argumentsJson;
+  if (visualKind === 'command') {
+    try {
+      const parsed = JSON.parse(item.argumentsJson) as unknown;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        const fields = parsed as Record<string, unknown>;
+        if (typeof fields.description === 'string' && fields.description.trim()) {
+          commandDescription = fields.description.trim();
+          const argumentsWithoutDescription = { ...fields };
+          delete argumentsWithoutDescription.description;
+          visibleArguments = JSON.stringify(argumentsWithoutDescription);
+        }
+      }
+    } catch {
+      // Non-JSON tool arguments are rendered unchanged.
+    }
+  }
   const elapsed = elapsedLabel(item.startedAt, item.completedAt);
   const liveElapsed =
     status === 'running' && liveClock ? runningElapsedLabel(item.startedAt, now) : undefined;
   const displayName = item.displayName?.trim() || friendlyToolName(item.name);
-  const visualKind = toolVisualKind(item.name);
   const statusText = TOOL_STATUS_TEXT[status];
   const progressLine = status === 'running' ? item.progressLine?.trim() : undefined;
   const errorSummary =
@@ -473,11 +512,12 @@ function ToolRow({
   const visibleSummary = errorSummary || summary;
   const resourcePath =
     summary && (visualKind === 'read' || visualKind === 'write' || visualKind === 'list')
-      ? summary
+      ? visualKind === 'read'
+        ? (fullReadPath(item.argumentsJson) ?? summary)
+        : summary
       : undefined;
   const imageTool = isImageGenerationActivity(item);
-  const generatedSrc =
-    status === 'completed' ? extractGeneratedImageSrc(item.result ?? '') : null;
+  const generatedSrc = status === 'completed' ? extractGeneratedImageSrc(item.result ?? '') : null;
   const generationModel = item.result
     ? extractGeneratedImageModelLine(normalizeImageGenerationToolResult(item.result))
     : undefined;
@@ -521,6 +561,7 @@ function ToolRow({
         {visibleSummary ? (
           <span
             className={`shell-inline-process__tool-summary${status === 'failed' ? ' is-failed' : ''}${resourcePath ? ' is-resource' : ''}`}
+            title={resourcePath && visualKind === 'read' ? resourcePath : undefined}
             data-testid={status === 'failed' ? 'inline-process-tool-error-summary' : undefined}
             {...(resourcePath && onOpenChange
               ? {
@@ -539,7 +580,17 @@ function ToolRow({
                 }
               : {})}
           >
-            {visibleSummary}
+            {resourcePath && visualKind === 'read' ? resourceLabel(resourcePath) : visibleSummary}
+          </span>
+        ) : null}
+        {commandDescription && visibleSummary ? (
+          <span className="shell-inline-process__separator" aria-hidden="true">
+            ·
+          </span>
+        ) : null}
+        {commandDescription ? (
+          <span className="shell-inline-process__tool-description" title={commandDescription}>
+            {commandDescription}
           </span>
         ) : null}
         {(status === 'running' ? liveElapsed : elapsed) ? (
@@ -597,7 +648,7 @@ function ToolRow({
             <div className="shell-inline-process__detail-block">
               <span>参数</span>
               <ToolPayload
-                text={item.argumentsJson}
+                text={visibleArguments}
                 testId="inline-process-tool-arguments"
                 label="参数"
                 deferred={item.argumentsRef}
@@ -634,7 +685,10 @@ function ToolRow({
           {item.delegationAnchor && status !== 'failed' ? (
             <div className="shell-inline-process__detail-block">
               <span>结果</span>
-              <p className="shell-inline-process__delegation-note" data-testid="delegation-anchor-note">
+              <p
+                className="shell-inline-process__delegation-note"
+                data-testid="delegation-anchor-note"
+              >
                 结果见下方智能体卡片。
               </p>
             </div>
@@ -714,7 +768,11 @@ function ProcessActivityRow({
       role="status"
       aria-live="polite"
     >
-      {activity.kind === 'approval' ? <Shield size={16} aria-hidden="true" /> : <LoadingPixelGrid />}
+      {activity.kind === 'approval' ? (
+        <Shield size={16} aria-hidden="true" />
+      ) : (
+        <LoadingPixelGrid />
+      )}
       <span
         className="shell-process-panel__activity-label"
         data-label={activity.label}
@@ -1267,10 +1325,7 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
         if (item.kind !== 'tool') continue;
         const itemKey = processItemKey(item, index);
         if (userToggledItemKeysRef.current.has(itemKey)) continue;
-        if (
-          toolCallExpandedByDefault ||
-          (toolStatusOf(item) === 'running' && Boolean(item.result))
-        )
+        if (toolCallExpandedByDefault || (toolStatusOf(item) === 'running' && Boolean(item.result)))
           next.add(itemKey);
         else next.delete(itemKey);
       }
@@ -1305,9 +1360,7 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
   // A completed turn only folds when it has a real final answer beside the
   // trace. Commentary-only and terminal-only turns stay open so the entire
   // assistant response never collapses into an empty-looking header.
-  const automaticPanelOpen =
-    defaultOpen ??
-    Boolean(streaming || !answerStarted);
+  const automaticPanelOpen = defaultOpen ?? Boolean(streaming || !answerStarted);
   const { open: disclosedPanelOpen, toggle: togglePanel } = useAutoDisclosure({
     autoOpen: automaticPanelOpen,
     resetKey: runId,

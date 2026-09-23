@@ -46,6 +46,7 @@ import {
   X,
 } from 'lucide-react';
 import { SlidingTabs } from './SlidingTabs.js';
+import { WorkspaceScopeRow } from './WorkspaceScopeRow.js';
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import clsx from 'clsx';
 import type {
@@ -1110,23 +1111,17 @@ export function AgentLibrary({
         <div className="ability-hub__filter-stack">
           <div className="ability-hub__scope-row">
             <span className="ability-hub__filter-label">可用范围</span>
-            <SlidingTabs
-              className="ability-hub__security-filter ability-hub__scope-filter"
-              rootRole="group"
-              aria-label="范围筛选"
-            >
-              {scopeOptions.map((option) => (
-                <button
-                  key={option.id}
-                  type="button"
-                  aria-pressed={scopeFilter === option.id}
-                  onClick={() => setScopeFilter(option.id)}
-                >
-                  {option.label}
-                  <small>{scopeCounts[option.id] ?? 0}</small>
-                </button>
-              ))}
-            </SlidingTabs>
+            <WorkspaceScopeRow
+              label="范围筛选"
+              fixedCount={workspaces.length > 0 ? 2 : 3}
+              options={scopeOptions.map((option) => ({
+                id: option.id,
+                label: option.label,
+                count: scopeCounts[option.id] ?? 0,
+              }))}
+              value={scopeFilter}
+              onChange={(next) => setScopeFilter(next as ScopeFilter)}
+            />
             <div className="ability-hub__controls-right">
               <label className="ability-hub__search">
                 <Search size={14} aria-hidden="true" />

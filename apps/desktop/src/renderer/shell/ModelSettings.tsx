@@ -1410,7 +1410,6 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
         nextProviders.find((item) => item.enabled)?.providerId ?? provider.providerId;
       setSelectedId(nextSelected);
     }
-    setDisabledMenuOpen(false);
     void withBusy(
       {
         kind: 'toggle-provider',
@@ -1455,7 +1454,6 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
     if (selectedId === provider.providerId) {
       setSelectedId(remaining.find((item) => item.enabled)?.providerId ?? remaining[0]?.providerId ?? null);
     }
-    setDisabledMenuOpen(false);
     void withBusy(
       { kind: 'toggle-provider', targetId: provider.providerId, label: '正在移除…' },
       async () => {
@@ -1477,7 +1475,6 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
   const handleEnableAllDisabled = () => {
     const targets = providers.filter((item) => !item.enabled);
     if (targets.length === 0) return;
-    setDisabledMenuOpen(false);
     void withBusy({ kind: 'toggle-provider', label: '正在启用…' }, async () => {
       const api = bridge();
       if (!api?.updateProvider) throw new Error('Runtime 未连接');
@@ -1491,7 +1488,6 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
   const handleClearDisabled = () => {
     const targets = providers.filter((item) => !item.enabled);
     if (targets.length === 0) return;
-    setDisabledMenuOpen(false);
     void withBusy({ kind: 'toggle-provider', label: '正在清空…' }, async () => {
       for (const provider of targets) {
         await wipeProviderCredentials(provider);
@@ -4928,31 +4924,25 @@ function ModelCapabilityDialog({
                       // undetermined 里 = 请求根本没打到模型。后两者必须分开显示，
                       // 否则一次网络抖动看起来就像「模型没有这个能力」。
                       const undetermined = (probeDetail.undetermined ?? []).includes(option.value);
-                      if (value === undefined && !undetermined) return null;
-                      const state = value === true ? 'pass' : value === false ? 'fail' : 'unknown';
+                      if (value === true || (value === undefined && !undetermined)) return null;
+                      const state = value === false ? 'fail' : 'unknown';
                       return (
                         <li
                           key={option.value}
                           className={
-                            state === 'pass'
-                              ? 'is-pass'
-                              : state === 'fail'
-                                ? 'is-fail'
-                                : 'is-undetermined'
+                            state === 'fail' ? 'is-fail' : 'is-undetermined'
                           }
                           data-state={state}
                           title={option.description}
                         >
-                          {state === 'pass' ? (
-                            <Check size={12} aria-hidden="true" />
-                          ) : state === 'fail' ? (
+                          {state === 'fail' ? (
                             <X size={12} aria-hidden="true" />
                           ) : (
                             <Minus size={12} aria-hidden="true" />
                           )}
                           <span>{option.label}</span>
                           <em>
-                            {state === 'pass' ? '实测通过' : state === 'fail' ? '未通过' : '未判定'}
+                            {state === 'fail' ? '未通过' : '未判定'}
                           </em>
                         </li>
                       );

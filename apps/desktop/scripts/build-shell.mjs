@@ -21,7 +21,11 @@ import {
   shellBuildOptions,
   summarizeShellBuild,
 } from './shell-build-config.mjs';
-import { CHANGELOG_DEFAULT_PATH, parseChangelog, renderChangelogReleaseNotes } from '../../../scripts/changelog.mjs';
+import {
+  CHANGELOG_DEFAULT_PATH,
+  parseChangelog,
+  renderChangelogReleaseNotes,
+} from '../../../scripts/changelog.mjs';
 
 const require = createRequire(import.meta.url);
 const desktopRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -125,6 +129,9 @@ try {
   summary.initialGzipBytes += bootstrapGzipBytes;
   summary.totalJsBytes += bootstrapBytes;
   if (mode === 'production') {
+    if (summary.inputs.some((input) => /(?:^|[\\/])agentation(?:@[^\\/]+)?[\\/]/i.test(input))) {
+      throw new Error('shell.build.forbidden_production_input:agentation');
+    }
     assertShellBudget(summary);
     if (
       summary.inputs.some((input) =>
