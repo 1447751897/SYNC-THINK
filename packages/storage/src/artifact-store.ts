@@ -23,6 +23,7 @@ import {
   type TaskId,
   type WorkspaceId,
 } from '@sync-think/shared';
+import { isRecord } from '@sync-think/shared/value-validation';
 import type { BetterSQLite3Raw } from './connection.js';
 import { isLocalContentRef, MAX_LOCAL_CONTENT_REF_LENGTH } from './local-content-ref.js';
 
@@ -287,10 +288,6 @@ const CONFLICT_RESOLUTION_COLUMNS = `
   id, operation_id, conflict_id, resolution_version_id, strategy,
   expected_task_version, resulting_task_version, created_at
 `;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
 
 function requireText(value: unknown, path: string, maxLength = MAX_ID_LENGTH): string {
   if (typeof value !== 'string' || !value.trim() || value.length > maxLength) {

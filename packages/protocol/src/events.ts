@@ -1,6 +1,29 @@
 import type { Event } from '@sync-think/shared';
 import type { ConversationTransientFrame } from './commands.js';
 
+/** One terminal policy for durable projection and reconnect-time UI repair. */
+export function unresolvedToolTerminalError(
+  event: Pick<Event, 'type' | 'payload'>,
+  providerModelId?: string,
+): string | undefined {
+  if (event.type === 'run.completed') return '运行已结束，工具未报告执行结果';
+  if (event.type === 'run.cancelled') return '运行已取消，工具未报告完成';
+  if (event.type === 'run.failed') return '运行已停止，工具未报告完成';
+  const payload = event.payload ?? {};
+  if (
+    event.type !== 'run.paused' ||
+    !['no_fallback_configured', 'fallback_exhausted', 'recovery_expired'].includes(String(payload.reason))
+  ) return undefined;
+  return formatRunPauseTerminalMessage({
+    reason: String(payload.reason),
+    failureClass: typeof payload.failureClass === 'string' ? payload.failureClass : undefined,
+    providerModelId: providerModelId ?? (typeof payload.providerModelId === 'string' ? payload.providerModelId : undefined),
+    errorMessage: typeof payload.errorMessage === 'string' ? payload.errorMessage : undefined,
+    resolutionSource: typeof payload.resolutionSource === 'string' ? payload.resolutionSource : undefined,
+    fallbackModelCount: typeof payload.fallbackModelCount === 'number' ? payload.fallbackModelCount : undefined,
+  });
+}
+
 // Server-pushed event stream (embodied as Frame kind='event'). Subscriptions
 // carry a cursor and atomically return durable catch-up events before live
 // delivery begins, so reconnecting clients cannot miss the handoff boundary.

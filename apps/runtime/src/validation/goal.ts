@@ -5,10 +5,7 @@ import type {
   GoalResumePayload,
   GoalSetPayload,
 } from '@sync-think/protocol';
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
+import { isRecord } from '@sync-think/shared/value-validation';
 
 export const GOAL_CONDITION_MAX_LENGTH = 4_000;
 

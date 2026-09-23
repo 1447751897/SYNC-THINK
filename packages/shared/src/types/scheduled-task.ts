@@ -47,7 +47,21 @@ export interface TaskRuleCron {
   expression: string;
 }
 
-export type TaskRule = TaskRuleAt | TaskRuleEvery | TaskRuleRandom | TaskRuleCron;
+/** ISO weekday numbers: Monday=1, Sunday=7. Ranges include both ends and may wrap. */
+export type WeeklyDaySelection =
+  { mode: 'days'; days: number[] } | { mode: 'range'; start: number; end: number };
+
+/** Once on each selected weekday, at a wall-clock time in the task timezone. */
+export interface TaskRuleWeekly {
+  kind: 'weekly';
+  selection: WeeklyDaySelection;
+  /** HH:mm, interpreted in ScheduledTask.timeZone. */
+  time: string;
+  /** Inclusive YYYY-MM-DD in ScheduledTask.timeZone. */
+  startDate: string;
+}
+
+export type TaskRule = TaskRuleAt | TaskRuleEvery | TaskRuleWeekly | TaskRuleRandom | TaskRuleCron;
 
 export type ScheduledTaskRunStatus = 'success' | 'failed' | 'skipped' | 'cancelled';
 

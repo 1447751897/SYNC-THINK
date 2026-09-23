@@ -197,6 +197,10 @@ import type {
   StartBrowserRecordingResponse,
   StopBrowserRecordingPayload,
   StopBrowserRecordingResponse,
+  PauseBrowserRecordingPayload,
+  PauseBrowserRecordingResponse,
+  ResumeBrowserRecordingPayload,
+  ResumeBrowserRecordingResponse,
   ListBrowserWorkflowsPayload,
   ListBrowserWorkflowsResponse,
   GetBrowserWorkflowPayload,
@@ -207,11 +211,20 @@ import type {
   CreateBrowserWorkflowRevisionDraftResponse,
   SubmitBrowserWorkflowDraftPayload,
   SubmitBrowserWorkflowDraftResponse,
+  SaveBrowserWorkflowDraftPayload,
+  SaveBrowserWorkflowDraftResponse,
+  PublishBrowserWorkflowDraftPayload,
+  PublishBrowserWorkflowDraftResponse,
+  ImportChatBrowserWorkflowPayload,
+  ImportChatBrowserWorkflowResponse,
   ReviewBrowserWorkflowDraftPayload,
   ReviewBrowserWorkflowDraftResponse,
   ApproveExecuteBrowserWorkflowPayload,
   ExecuteBrowserWorkflowPayload,
+  ExecuteBrowserWorkflowDraftPayload,
   ExecuteBrowserWorkflowResponse,
+  UpdateBrowserWorkflowSchedulePayload,
+  UpdateBrowserWorkflowScheduleResponse,
   PeekContextPacketPayload,
   PeekContextPacketResponse,
   AmendContextPacketPayload,
@@ -266,12 +279,15 @@ import type {
   ConversationTransientFrame,
   ConversationTransientSnapshot,
 } from '@sync-think/protocol';
+import type { RendererProbeModelsPayload } from '../provider-discovery-payloads.js';
+import type {
+  RendererAddProviderCredentialPayload,
+  RendererUpdateProviderCredentialPayload,
+} from '../provider-credential-payloads.js';
 import type {
   RendererCreateProviderPayload,
-  RendererProbeModelsPayload,
   RendererUpdateProviderPayload,
-  RendererUpdateProviderCredentialPayload,
-} from '../provider-payloads.js';
+} from '../provider-catalog-payloads.js';
 import type { Event } from '@sync-think/shared';
 import type { ArtifactImagePreviewResponse } from '../artifact-image-preview-contract.js';
 import type { RuntimeConnectOutcome } from '../runtime-bridge-contract.js';
@@ -313,6 +329,9 @@ declare global {
       runtime: {
         connect(): Promise<RuntimeConnectOutcome>;
         appendMessage(payload: AppendMessagePayload): Promise<AppendMessageResponse>;
+        collaboration(
+          command: import('@sync-think/shared').CollaborationCommand,
+        ): Promise<import('@sync-think/shared').CollaborationResponse>;
         openExternalUrl?(url: string): Promise<OpenExternalUrlResult>;
         detectKernels(): Promise<import('@sync-think/protocol').KernelDetectResponse>;
         getGatewayStatus?(): Promise<import('@sync-think/protocol').OpenGatewayStatusResponse>;
@@ -398,10 +417,9 @@ declare global {
           payload: ConfirmCapabilitiesPayload,
         ): Promise<ConfirmCapabilitiesResponse>;
         reorderProviders(payload: ReorderProvidersPayload): Promise<ReorderProvidersResponse>;
-        addProviderCredential(payload: {
-          providerId: string;
-          label?: string;
-        }): Promise<AddProviderCredentialResponse>;
+        addProviderCredential(
+          payload: RendererAddProviderCredentialPayload,
+        ): Promise<AddProviderCredentialResponse>;
         removeProviderCredential(
           payload: RemoveProviderCredentialPayload,
         ): Promise<RemoveProviderCredentialResponse>;
@@ -463,7 +481,7 @@ declare global {
         ): Promise<import('@sync-think/protocol').GlobalAgentResponse>;
         deleteGlobalAgent(
           payload: import('@sync-think/protocol').DeleteGlobalAgentPayload,
-        ): Promise<Record<string, never>>;
+        ): Promise<import('@sync-think/protocol').DeleteGlobalAgentResponse>;
         listGlobalAgentWorkspaceActivations(
           payload: import('@sync-think/protocol').ListGlobalAgentWorkspaceActivationsPayload,
         ): Promise<import('@sync-think/protocol').ListGlobalAgentWorkspaceActivationsResponse>;
@@ -589,16 +607,16 @@ declare global {
         ): Promise<import('@sync-think/protocol').ConversationAskPendingResponse>;
         createScheduledTask(
           payload: import('@sync-think/protocol').CreateScheduledTaskPayload,
-        ): Promise<{ task: import('@sync-think/shared').ScheduledTask }>;
+        ): Promise<import('@sync-think/protocol').CreateScheduledTaskResponse>;
         listScheduledTasks(
           payload?: import('@sync-think/protocol').ListScheduledTasksPayload,
         ): Promise<import('@sync-think/protocol').ListScheduledTasksResponse>;
         updateScheduledTask(
           payload: import('@sync-think/protocol').UpdateScheduledTaskPayload,
-        ): Promise<{ task: import('@sync-think/shared').ScheduledTask }>;
+        ): Promise<import('@sync-think/protocol').UpdateScheduledTaskResponse>;
         deleteScheduledTask(
           payload: import('@sync-think/protocol').DeleteScheduledTaskPayload,
-        ): Promise<{ deleted: boolean }>;
+        ): Promise<import('@sync-think/protocol').DeleteScheduledTaskResponse>;
         triggerScheduledTask(
           payload: import('@sync-think/protocol').TriggerScheduledTaskPayload,
         ): Promise<import('@sync-think/protocol').TriggerScheduledTaskResponse>;
@@ -616,7 +634,7 @@ declare global {
         ): Promise<import('@sync-think/protocol').ActivityRetryAnchorResponse>;
         goalPause(
           payload: import('@sync-think/protocol').GoalPausePayload,
-        ): Promise<{ goal?: import('@sync-think/protocol').GoalStatus }>;
+        ): Promise<import('@sync-think/protocol').GoalPauseResponse>;
         goalResume(
           payload: import('@sync-think/protocol').GoalResumePayload,
         ): Promise<import('@sync-think/protocol').GoalResumeResponse>;
@@ -649,6 +667,7 @@ declare global {
         submitBrowserResult(
           payload: import('@sync-think/protocol').ConversationSubmitBrowserResultPayload,
         ): Promise<import('@sync-think/protocol').ConversationSubmitBrowserResultResponse>;
+        captureBrowserPreview(payload: { webContentsId: number }): Promise<{ imageDataUrl: string; url: string; capturedAt: string }>;
         saveBrowserScreenshot(payload: { root: string; webContentsId: number }): Promise<{
           ok: boolean;
           path?: string;
@@ -784,8 +803,11 @@ declare global {
           get(payload: GetBrowserRecordingPayload): Promise<GetBrowserRecordingResponse>;
           start(payload: StartBrowserRecordingPayload): Promise<StartBrowserRecordingResponse>;
           stop(payload: StopBrowserRecordingPayload): Promise<StopBrowserRecordingResponse>;
+          pause(payload: PauseBrowserRecordingPayload): Promise<PauseBrowserRecordingResponse>;
+          resume(payload: ResumeBrowserRecordingPayload): Promise<ResumeBrowserRecordingResponse>;
         };
         browserWorkflow: {
+          assignWorkspace(payload: import('@sync-think/protocol').AssignBrowserWorkflowWorkspacePayload): Promise<{ task: import('@sync-think/protocol').BrowserAutomationTaskSummary }>;
           list(payload?: ListBrowserWorkflowsPayload): Promise<ListBrowserWorkflowsResponse>;
           get(payload: GetBrowserWorkflowPayload): Promise<GetBrowserWorkflowResponse>;
           createDraft(
@@ -797,13 +819,26 @@ declare global {
           submit(
             payload: SubmitBrowserWorkflowDraftPayload,
           ): Promise<SubmitBrowserWorkflowDraftResponse>;
+          save(payload: SaveBrowserWorkflowDraftPayload): Promise<SaveBrowserWorkflowDraftResponse>;
+          publish(
+            payload: PublishBrowserWorkflowDraftPayload,
+          ): Promise<PublishBrowserWorkflowDraftResponse>;
+          importChat(
+            payload: ImportChatBrowserWorkflowPayload,
+          ): Promise<ImportChatBrowserWorkflowResponse>;
           review(
             payload: ReviewBrowserWorkflowDraftPayload,
           ): Promise<ReviewBrowserWorkflowDraftResponse>;
           execute(payload: ExecuteBrowserWorkflowPayload): Promise<ExecuteBrowserWorkflowResponse>;
+          executeDraft(
+            payload: ExecuteBrowserWorkflowDraftPayload,
+          ): Promise<ExecuteBrowserWorkflowResponse>;
           approveAndExecute(
             payload: ApproveExecuteBrowserWorkflowPayload,
           ): Promise<ExecuteBrowserWorkflowResponse>;
+          updateSchedule(
+            payload: UpdateBrowserWorkflowSchedulePayload,
+          ): Promise<UpdateBrowserWorkflowScheduleResponse>;
         };
         browserExtension: {
           status(): Promise<BrowserExtensionStatus>;

@@ -80,6 +80,7 @@ try {
     bundle: true,
     platform: 'browser',
     minify: optimized,
+    charset: options.charset,
     sourcemap: !optimized,
     target: 'chrome120',
     define: {

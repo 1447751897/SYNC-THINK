@@ -1,7 +1,7 @@
 /**
  * @vitest-environment jsdom
  */
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Event, RunIndexEntry } from '@sync-think/shared';
 import { ActivityCenterPage } from './ActivityCenterPage.js';
@@ -11,6 +11,7 @@ const runtime = {
   activityListRuns: vi.fn(),
   activityListExternalEvents: vi.fn(),
   activityRetryAnchor: vi.fn(),
+  collaboration: vi.fn(),
 };
 
 function run(overrides: Partial<RunIndexEntry> & { runId: string }): RunIndexEntry {
@@ -24,6 +25,14 @@ function run(overrides: Partial<RunIndexEntry> & { runId: string }): RunIndexEnt
 }
 
 const EMPTY_COUNTS = { running: 0, completed: 0, failed: 0, cancelled: 0, paused: 0 };
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
 
 function lifecycleEvent(id: string, type: string): Event {
   return {
@@ -46,6 +55,7 @@ beforeEach(() => {
   });
   runtime.activityListExternalEvents.mockReset().mockResolvedValue({ entries: [] });
   runtime.activityRetryAnchor.mockReset();
+  runtime.collaboration.mockReset().mockResolvedValue({ activities: [] });
   Object.defineProperty(window, 'syncThink', { configurable: true, value: { runtime } });
 });
 
@@ -56,6 +66,23 @@ afterEach(() => {
 });
 
 describe('ActivityCenterPage', () => {
+  it('shows collaboration tasks across conversations and opens the owning chat', async () => {
+    const onOpenConversation = vi.fn();
+    runtime.collaboration.mockResolvedValue({
+      activities: [{
+        conversationId: 'collaboration-1', conversationTitle: '发布协作',
+        taskId: 'task-1', taskTitle: '验证发布', assigneeName: '验证员',
+        status: 'running', updatedAt: '2026-08-21T01:00:00.000Z',
+      }],
+    });
+
+    render(<ActivityCenterPage onOpenConversation={onOpenConversation} />);
+
+    expect(await screen.findByText('验证发布')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '打开协作' }));
+    expect(onOpenConversation).toHaveBeenCalledWith('collaboration-1');
+  });
+
   it('renders runs from the read model and shows per-state counts', async () => {
     runtime.activityListRuns.mockResolvedValue({
       entries: [
@@ -135,6 +162,51 @@ describe('ActivityCenterPage', () => {
         expect.objectContaining({ states: ['failed'] }),
       );
     });
+  });
+
+  it('keeps the latest filter result when refresh responses finish out of order', async () => {
+    const failed = deferred<{
+      entries: RunIndexEntry[];
+      counts: typeof EMPTY_COUNTS;
+    }>();
+    const completed = deferred<{
+      entries: RunIndexEntry[];
+      counts: typeof EMPTY_COUNTS;
+    }>();
+    runtime.activityListRuns.mockImplementation(
+      (payload: { states?: string[] }) => {
+        if (payload.states?.[0] === 'failed') return failed.promise;
+        if (payload.states?.[0] === 'completed') return completed.promise;
+        return Promise.resolve({
+          entries: [run({ runId: 'run-initial', title: '初始结果' })],
+          counts: { ...EMPTY_COUNTS, completed: 1 },
+        });
+      },
+    );
+
+    render(<ActivityCenterPage />);
+    await screen.findByText('初始结果');
+    fireEvent.click(screen.getByTestId('activity-filter-failed'));
+    fireEvent.click(screen.getByTestId('activity-filter-completed'));
+
+    await act(async () => {
+      completed.resolve({
+        entries: [run({ runId: 'run-current', title: '最新完成结果' })],
+        counts: { ...EMPTY_COUNTS, completed: 1 },
+      });
+      await completed.promise;
+    });
+    expect(await screen.findByText('最新完成结果')).toBeTruthy();
+
+    await act(async () => {
+      failed.resolve({
+        entries: [run({ runId: 'run-stale', title: '过期失败结果', state: 'failed' })],
+        counts: { ...EMPTY_COUNTS, failed: 1 },
+      });
+      await failed.promise;
+    });
+    expect(screen.queryByText('过期失败结果')).toBeNull();
+    expect(screen.getByText('最新完成结果')).toBeTruthy();
   });
 
   it('appends the next page instead of replacing the current one', async () => {

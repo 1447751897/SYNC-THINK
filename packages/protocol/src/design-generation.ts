@@ -1,4 +1,5 @@
 import type { DesignGeneratePayload } from './commands.js';
+import { isRecord } from '@sync-think/shared/value-validation';
 
 /** Keep one-shot scene requests bounded before they reach a provider. */
 export const MAX_DESIGN_GENERATION_BYTES = 1_500_000;
@@ -14,10 +15,6 @@ export function isExplicitExcalidrawRequest(userText: string): boolean {
   return /(?:excalidraw|\.excalidraw\b|excalidraw\s*(?:源文件|json|文件)|可编辑(?:的)?(?:画布|白板)\s*(?:json|源文件)?)/i.test(
     userText,
   );
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
 
 function utf8Bytes(value: string): number {

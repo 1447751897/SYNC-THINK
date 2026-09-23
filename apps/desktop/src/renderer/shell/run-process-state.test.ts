@@ -30,6 +30,21 @@ function processView(runId: string, stepCount: number): RunProcessView {
 }
 
 describe('run process state', () => {
+  it('does not mark an unanswered tool as successful when its run completes', () => {
+    const current = processView('run-complete', 2);
+    const settled = reconcileRunProcessTerminal(current, {
+      runId: current.runId,
+      type: 'run.completed',
+      occurredAt: '2026-09-19T00:00:01Z',
+      payload: {},
+    } as Event);
+    expect(settled.steps.at(-1)).toMatchObject({
+      status: 'error',
+      error: '运行已结束，工具未报告执行结果',
+    });
+    expect(settled.doneCount).toBe(1);
+    expect(settled.errorCount).toBe(1);
+  });
   it('settles a paged process without replacing full totals with the current page count', () => {
     const current = processView('paged', 2);
     current.doneCount = 98;
@@ -114,7 +129,7 @@ describe('run process state', () => {
   });
 
   it.each([
-    ['run.paused', 'done'],
+    ['run.paused', 'error'],
     ['run.failed', 'error'],
     ['run.cancelled', 'error'],
   ] as const)(
@@ -133,7 +148,7 @@ describe('run process state', () => {
         type,
         sequence: 4,
         occurredAt: '2026-08-08T10:00:08.000Z',
-        payload: { threadId: 'thread-a' },
+        payload: { threadId: 'thread-a', reason: 'fallback_exhausted' },
       } as unknown as Event;
 
       const terminals = projectRunTerminalEvents([terminal]);

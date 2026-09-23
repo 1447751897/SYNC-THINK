@@ -1,4 +1,5 @@
 // provider command payload parsers (extracted from command-validation.ts).
+import { USAGE_REQUEST_LIMIT_MAX } from '@sync-think/protocol';
 import type { CreateProviderPayload, UpdateProviderPayload, ListProvidersPayload, DiscoverModelsPayload, ProbeModelsPayload, AddModelsPayload, ReorderProvidersPayload, AddProviderCredentialPayload, RemoveProviderCredentialPayload, ClearProviderCredentialsPayload, DeleteProviderPayload, RevealProviderCredentialPayload, UpdateProviderCredentialPayload, SetModelPrioritiesPayload, UpdateModelPayload, RemoveModelPayload, GetSettingsPayload, SetSettingPayload, UsageSummaryPayload, ProviderBalancePayload } from '@sync-think/protocol';
 import { PROTOCOLS, SURFACES, isRecord } from './shared.js';
 
@@ -508,7 +509,15 @@ export function parseSetSettingPayload(value: unknown): SetSettingPayload | unde
 export function parseUsageSummaryPayload(value: unknown): UsageSummaryPayload | undefined {
   if (value === undefined || value === null) return {};
   if (!isRecord(value)) return undefined;
-  if (Object.keys(value).some((key) => key !== 'sinceDays' && key !== 'taskId')) {
+  if (
+    Object.keys(value).some(
+      (key) =>
+        key !== 'sinceDays' &&
+        key !== 'taskId' &&
+        key !== 'includeRequests' &&
+        key !== 'requestLimit',
+    )
+  ) {
     return undefined;
   }
   if (value.sinceDays !== undefined) {
@@ -529,8 +538,24 @@ export function parseUsageSummaryPayload(value: unknown): UsageSummaryPayload | 
   ) {
     return undefined;
   }
+  if (value.includeRequests !== undefined && typeof value.includeRequests !== 'boolean') {
+    return undefined;
+  }
+  if (
+    value.requestLimit !== undefined &&
+    (typeof value.requestLimit !== 'number' ||
+      !Number.isInteger(value.requestLimit) ||
+      value.requestLimit < 1 ||
+      value.requestLimit > USAGE_REQUEST_LIMIT_MAX)
+  ) {
+    return undefined;
+  }
   return {
     ...(value.sinceDays !== undefined ? { sinceDays: value.sinceDays } : {}),
     ...(typeof value.taskId === 'string' ? { taskId: value.taskId.trim() } : {}),
+    ...(typeof value.includeRequests === 'boolean'
+      ? { includeRequests: value.includeRequests }
+      : {}),
+    ...(typeof value.requestLimit === 'number' ? { requestLimit: value.requestLimit } : {}),
   };
 }

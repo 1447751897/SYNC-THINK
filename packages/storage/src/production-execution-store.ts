@@ -1,9 +1,12 @@
 import { createHash } from 'node:crypto';
 import type {
   AgentVersionId,
-  ArtifactVersionStatus,
   JsonValue,
+  McpActionExecutionIntent,
+  ProductionExecutionFence,
+  ProductionExecutionResult,
   ProviderRequestUsage,
+  ProviderExecutionReservation,
   RunId,
   StepId,
 } from '@sync-think/shared';
@@ -14,52 +17,13 @@ const MAX_RESULT_BYTES = 256 * 1024;
 const ID_RE = /^\S{1,256}$/;
 const DIGEST_RE = /^[a-f0-9]{64}$/;
 
-interface ProductionArtifactOutputBase {
-  artifactName: string;
-  mimeType: string;
-  status: ArtifactVersionStatus;
-  metadata?: Record<string, JsonValue>;
-}
-
-export type ProductionArtifactOutput = ProductionArtifactOutputBase &
-  (
-    | { content: string; contentRef?: never; contentHash?: string }
-    | { content?: never; contentRef: string; contentHash: string }
-  );
-
-export interface ProductionExecutionResult {
-  outputVersions: ProductionArtifactOutput[];
-  providerUsages?: ProviderRequestUsage[];
-}
-
-export interface ProductionExecutionFence {
-  runId: RunId;
-  stepId: StepId;
-  agentVersionId: AgentVersionId;
-  ownerId: string;
-  executionAttempt: number;
-}
-
-export interface ProviderExecutionReservation extends ProductionExecutionFence {
-  idempotencyKey: string;
-  executionOwnerId: string;
-  state: 'started' | 'released' | 'completed';
-  result?: ProductionExecutionResult;
-  checkpoint?: JsonValue;
-  createdAt: string;
-  updatedAt: string;
-  completedAt?: string;
-}
-
-export interface McpActionExecutionIntent extends ProductionExecutionFence {
-  executionOwnerId: string;
-  actionDigest: string;
-  state: 'intent' | 'started' | 'completed';
-  createdAt: string;
-  updatedAt: string;
-  startedAt?: string;
-  completedAt?: string;
-}
+export type {
+  McpActionExecutionIntent,
+  ProductionArtifactOutput,
+  ProductionExecutionFence,
+  ProductionExecutionResult,
+  ProviderExecutionReservation,
+} from '@sync-think/shared';
 
 interface ProviderRow {
   idempotency_key: string;

@@ -853,6 +853,148 @@ describe('open gateway server', () => {
     expect(firstBody.prompt_cache_options).toEqual({ mode: 'implicit', ttl: '30m' });
   });
 
+  it('restores namespace calls from a same-dialect Responses stream', async () => {
+    const upstream = sseFetch([
+      'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_workflow","call_id":"call_workflow","name":"browser_workflow_create_draft","arguments":""}}\n\n',
+      'data: {"type":"response.function_call_arguments.delta","item_id":"fc_workflow","output_index":0,"delta":"{\\"name\\":\\"test\\"}"}\n\n',
+      'data: {"type":"response.function_call_arguments.done","item_id":"fc_workflow","output_index":0,"arguments":"{\\"name\\":\\"test\\"}"}\n\n',
+      'data: {"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_workflow","call_id":"call_workflow","name":"browser_workflow_create_draft","arguments":"{\\"name\\":\\"test\\"}"}}\n\n',
+      'data: {"type":"response.completed","response":{"status":"completed","output":[{"type":"function_call","id":"fc_workflow","call_id":"call_workflow","name":"browser_workflow_create_draft","arguments":"{\\"name\\":\\"test\\"}"}]}}\n\n',
+    ]);
+    const { server } = await startServer({
+      resolveTicket: () => ({ runId: 'run-direct-namespace', route: responsesRoute, kernelId: 'codex' }),
+      fetchImpl: upstream.impl,
+    });
+
+    const response = await fetch(urlFor(server, '/openai/v1/responses'), {
+      method: 'POST',
+      headers: { authorization: 'Bearer ticket-direct-namespace' },
+      body: JSON.stringify({
+        model: 'deepseek-flash',
+        input: [{ role: 'user', content: 'create a draft' }],
+        tools: [
+          {
+            type: 'namespace',
+            name: 'mcp__sync_think_platform',
+            tools: [
+              {
+                type: 'function',
+                name: 'browser_workflow_create_draft',
+                parameters: { type: 'object', properties: {} },
+              },
+            ],
+          },
+        ],
+        stream: true,
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    const text = await response.text();
+    expect(text).toContain('"type":"function_call"');
+    expect(text).toContain('"namespace":"mcp__sync_think_platform"');
+    expect(text).toContain('"name":"browser_workflow_create_draft"');
+    expect(text).toContain('"type":"response.function_call_arguments.delta"');
+    expect(text).toContain('response.function_call_arguments.done');
+    expect(text).not.toContain('custom_tool_call');
+  });
+
+  it('leaves ambiguous bare namespace tool calls unchanged', async () => {
+    const upstream = sseFetch([
+      'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_shared","call_id":"call_shared","name":"shared_tool","arguments":""}}\n\n',
+      'data: {"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_shared","call_id":"call_shared","name":"shared_tool","arguments":"{}"}}\n\n',
+    ]);
+    const { server } = await startServer({
+      resolveTicket: () => ({ runId: 'run-direct-ambiguous', route: responsesRoute, kernelId: 'codex' }),
+      fetchImpl: upstream.impl,
+    });
+
+    const response = await fetch(urlFor(server, '/openai/v1/responses'), {
+      method: 'POST',
+      headers: { authorization: 'Bearer ticket-direct-ambiguous' },
+      body: JSON.stringify({
+        model: 'deepseek-flash',
+        input: [{ role: 'user', content: 'call a tool' }],
+        tools: [
+          { type: 'namespace', name: 'mcp__one', tools: [{ type: 'function', name: 'shared_tool' }] },
+          { type: 'namespace', name: 'mcp__two', tools: [{ type: 'function', name: 'shared_tool' }] },
+        ],
+        stream: true,
+      }),
+    });
+
+    const text = await response.text();
+    expect(text).toContain('"type":"function_call"');
+    expect(text).not.toContain('custom_tool_call');
+  });
+
+  it.each(['stream', 'json'] as const)(
+    'repairs qualified namespace calls while preserving root and already namespaced calls (%s)',
+    async (mode) => {
+      const toolName = 'browser_workflow_create_draft';
+      const namespace = 'mcp__sync_think_platform';
+      const input = JSON.stringify({ name: 'Draft', startUrl: 'https://example.com/' });
+      const calls = [
+        { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: `${namespace}__${toolName}`, arguments: input },
+        { type: 'function_call', id: 'fc_2', call_id: 'call_2', name: toolName, arguments: input },
+        { type: 'function_call', id: 'fc_3', call_id: 'call_3', name: toolName, namespace: 'mcp__other', arguments: input },
+        { type: 'custom_tool_call', id: 'fc_4', call_id: 'call_4', name: toolName, namespace, input },
+      ];
+      const responseBody = { id: 'resp_namespace', status: 'completed', output: calls };
+      const event = (type: string, payload: object) =>
+        `event: ${type}\r\ndata: ${JSON.stringify({ type, ...payload })}\r\n\r\n`;
+      const stream = [
+        event('response.output_item.added', { output_index: 0, item: { ...calls[0], arguments: '' } }),
+        event('response.function_call_arguments.delta', { item_id: 'fc_1', output_index: 0, delta: input }),
+        event('response.function_call_arguments.done', { item_id: 'fc_1', output_index: 0, arguments: input }),
+        event('response.output_item.done', { output_index: 0, item: calls[0] }),
+        event('response.completed', { response: responseBody }),
+        'data: [DONE]',
+      ].join('');
+      // Split inside event names, JSON and CRLF; finish without a blank line.
+      const chunks = stream.match(/[\s\S]{1,13}/g) ?? [];
+      const upstream = sseFetch(chunks);
+      const { server } = await startServer({
+        resolveTicket: () => ({ runId: 'run-direct-boundaries', route: responsesRoute, kernelId: 'codex' }),
+        fetchImpl: mode === 'stream'
+          ? upstream.impl
+          : (async () => new Response(JSON.stringify(responseBody), {
+              headers: { 'Content-Type': 'application/json' },
+            })) as typeof fetch,
+      });
+      const response = await fetch(urlFor(server, '/openai/v1/responses'), {
+        method: 'POST',
+        headers: { authorization: 'Bearer ticket-direct-boundaries' },
+        body: JSON.stringify({
+          model: 'deepseek-flash', input: [], stream: mode === 'stream',
+          tools: [
+            { type: 'namespace', name: namespace, tools: [{ type: 'function', name: toolName }] },
+            { type: 'function', name: toolName },
+          ],
+        }),
+      });
+      expect(response.status).toBe(200);
+      let output: unknown[];
+      if (mode === 'stream') {
+        const text = await response.text();
+        expect(text).toContain('event: response.function_call_arguments.delta');
+        expect(text).toContain('data: [DONE]\n\n');
+        expect(text).toContain('response.function_call_arguments.done');
+        const events = text.split('\n').filter((line) => line.startsWith('data: {'))
+          .map((line) => JSON.parse(line.slice(6)));
+        expect(events.find((entry) => entry.type === 'response.function_call_arguments.delta'))
+          .toMatchObject({ item_id: 'fc_1', delta: input });
+        output = events.find((entry) => entry.type === 'response.completed').response.output;
+      } else {
+        output = ((await response.json()) as { output: unknown[] }).output;
+      }
+      expect(output[0]).toEqual({
+        type: 'function_call', id: 'fc_1', call_id: 'call_1', name: toolName, namespace, arguments: input,
+      });
+      expect(output.slice(1)).toEqual(calls.slice(1));
+    },
+  );
+
   it('retries Codex Responses once when the upstream rejects prompt-cache fields', async () => {
     const calls: Array<Record<string, unknown>> = [];
     const fetchImpl = (async (_url: string | URL | Request, options?: RequestInit) => {

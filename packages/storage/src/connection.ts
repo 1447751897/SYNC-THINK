@@ -24,33 +24,42 @@ async function openInternal(opts: OpenDbOptions): Promise<{ db: Database; raw: B
     readonly: opts.readonly ?? false,
     fileMustExist: opts.fileMustExist ?? false,
   });
-  // Page cache + memory-mapped I/O. These apply to both the read-write and the
-  // read-only handle, because the read-only path is the one that does full
-  // Event replay on startup.
-  //
-  // better-sqlite3 defaults to `cache_size = -16000` (15.6 MiB) and
-  // `mmap_size = 0`. The live database is ~284 MiB while real conversation data
-  // is only ~1 MiB — the rest is Event/Checkpoint history. With a 15.6 MiB
-  // cache that is ~6% coverage, so every cold replay read hit the disk
-  // (measured: 691 ms full Event replay, 458 ms worst Checkpoint read).
-  // 64 MiB cache + 256 MiB mmap keeps the hot pages resident and lets SQLite
-  // read through the mapping instead of issuing read() syscalls per page.
-  raw.pragma('cache_size = -64000');
-  raw.pragma('mmap_size = 268435456');
-  if (opts.readonly) {
-    raw.pragma('query_only = ON');
-    // Read-only connections can still hit SQLITE_BUSY when a writer holds the
-    // lock; wait instead of failing immediately (audit #6).
-    raw.pragma('busy_timeout = 5000');
-  } else {
-    raw.pragma('journal_mode = WAL');
-    // Concurrent writers (e.g. two Runtime instances migrating/opening the same
-    // database) wait up to 5s for a busy lock instead of failing immediately
-    // with SQLITE_BUSY (audit #6).
-    raw.pragma('busy_timeout = 5000');
+  try {
+    // Page cache + memory-mapped I/O. These apply to both the read-write and the
+    // read-only handle, because the read-only path is the one that does full
+    // Event replay on startup.
+    //
+    // better-sqlite3 defaults to `cache_size = -16000` (15.6 MiB) and
+    // `mmap_size = 0`. The live database is ~284 MiB while real conversation data
+    // is only ~1 MiB — the rest is Event/Checkpoint history. With a 15.6 MiB
+    // cache that is ~6% coverage, so every cold replay read hit the disk
+    // (measured: 691 ms full Event replay, 458 ms worst Checkpoint read).
+    // 64 MiB cache + 256 MiB mmap keeps the hot pages resident and lets SQLite
+    // read through the mapping instead of issuing read() syscalls per page.
+    raw.pragma('cache_size = -64000');
+    raw.pragma('mmap_size = 268435456');
+    if (opts.readonly) {
+      raw.pragma('query_only = ON');
+      // Read-only connections can still hit SQLITE_BUSY when a writer holds the
+      // lock; wait instead of failing immediately (audit #6).
+      raw.pragma('busy_timeout = 5000');
+    } else {
+      raw.pragma('journal_mode = WAL');
+      // Concurrent writers (e.g. two Runtime instances migrating/opening the same
+      // database) wait up to 5s for a busy lock instead of failing immediately
+      // with SQLITE_BUSY (audit #6).
+      raw.pragma('busy_timeout = 5000');
+    }
+    raw.pragma('foreign_keys = ON');
+    return { db: drizzle(raw, { schema }), raw };
+  } catch (error) {
+    try {
+      raw.close();
+    } catch {
+      // Preserve the original initialization error if SQLite also rejects close.
+    }
+    throw error;
   }
-  raw.pragma('foreign_keys = ON');
-  return { db: drizzle(raw, { schema }), raw };
 }
 
 // Public async opener for tests + Runtime bootstrap.

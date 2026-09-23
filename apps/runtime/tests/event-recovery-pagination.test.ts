@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { MAX_FRAME_BYTES } from '@sync-think/protocol';
 import type { Frame } from '@sync-think/protocol';
 import type { Checkpoint, Event, EventCategory, WorkspaceId } from '@sync-think/shared';
+import type { DurableToolApprovalLedger } from '../src/durable-tool-approval-ledger.js';
 import { Runtime, type RuntimeStateStore } from '../src/runtime.js';
 
 function eventAt(sequence: number): Event {
@@ -216,12 +217,10 @@ describe('S3 durable event recovery', () => {
     });
 
     const internal = runtime as unknown as {
-      durableChatToolApprovalStates(scope: {
-        threadId: string;
-      }): Map<string, { requested: Event; decided?: Event }>;
+      durableToolApprovals: DurableToolApprovalLedger;
     };
     fixture.pageCalls.length = 0;
-    const states = internal.durableChatToolApprovalStates({ threadId: 'thread-paged-approvals' });
+    const states = internal.durableToolApprovals.list({ threadId: 'thread-paged-approvals' });
 
     expect(states.get('approval-paged-1')?.requested.id).toBe(approval.id);
     expect(fixture.listAllCalls).toBe(0);

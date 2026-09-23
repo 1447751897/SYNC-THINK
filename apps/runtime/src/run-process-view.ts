@@ -14,7 +14,7 @@ import {
   type Event,
   type RunId,
 } from '@sync-think/shared';
-import { formatRunPauseTerminalMessage } from '@sync-think/protocol/events';
+import { unresolvedToolTerminalError } from '@sync-think/protocol/events';
 import { projectEventContent } from './deferred-content-projection.js';
 import { projectFileChangeContent } from './file-change-content.js';
 import { paginateRunProcess } from './run-process-page.js';
@@ -639,48 +639,53 @@ export function projectRunProcessSnapshot(runId: RunId, events: readonly Event[]
       event.type === 'run.cancelled' ||
       event.type === 'run.paused'
     ) {
-      if (
-        event.type === 'run.paused' &&
-        !['no_fallback_configured', 'fallback_exhausted', 'recovery_expired'].includes(
-          String(event.payload.reason),
-        )
-      )
-        continue;
+      const error = unresolvedToolTerminalError(event, eventProviderModelId(event));
+      if (!error) continue;
       completedAt = event.occurredAt;
       // A paused run has to say WHY it stopped. The generic "工具未报告完成"
       // hid provider outages and fallback decisions completely, which is what
       // left the user staring at a stalled conversation with no idea what had
       // happened.
-      terminalStepError =
-        event.type === 'run.cancelled'
-          ? '运行已取消，工具未报告完成'
-          : event.type === 'run.completed'
-            ? '运行已结束，工具未报告执行结果'
-            : event.type === 'run.paused'
-              ? formatRunPauseTerminalMessage({
-                  reason:
-                    typeof event.payload.reason === 'string' ? event.payload.reason : undefined,
-                  failureClass:
-                    typeof event.payload.failureClass === 'string'
-                      ? event.payload.failureClass
-                      : undefined,
-                  providerModelId: eventProviderModelId(event),
-                  errorMessage:
-                    typeof event.payload.errorMessage === 'string'
-                      ? event.payload.errorMessage
-                      : undefined,
-                  resolutionSource:
-                    typeof event.payload.resolutionSource === 'string'
-                      ? event.payload.resolutionSource
-                      : undefined,
-                  fallbackModelCount:
-                    typeof event.payload.fallbackModelCount === 'number'
-                      ? event.payload.fallbackModelCount
-                      : undefined,
-                })
-              : '运行已停止，工具未报告完成';
+      terminalStepError = error;
       providerModelId = eventProviderModelId(event) ?? providerModelId;
       modelId = eventModelId(event) ?? modelId;
+      continue;
+    }
+
+    if (event.type === 'context.image.prepared') {
+      const route =
+        typeof event.payload.route === 'string' ? event.payload.route : 'forwarded';
+      const path =
+        typeof event.payload.path === 'string' && event.payload.path.trim()
+          ? event.payload.path.trim()
+          : typeof event.payload.imageName === 'string'
+            ? event.payload.imageName
+            : undefined;
+      const preview =
+        typeof event.payload.preview === 'string' ? event.payload.preview.trim() : undefined;
+      const zh =
+        route === 'described' || route === 'ocr'
+          ? '识别图片'
+          : route === 'materialized'
+            ? '准备图片附件'
+            : '读取图片附件';
+      order.push(event.id);
+      byId.set(event.id, {
+        id: event.id,
+        label: path ? `Image · ${shortText(path, 52)}` : 'Image',
+        verb: 'Image',
+        zh,
+        toolName: 'image_input',
+        kind: 'read',
+        status: route === 'failed' ? 'error' : 'done',
+        path,
+        preview,
+        ...(route === 'failed' ? { error: preview ?? '图片处理失败' } : {}),
+        sequence: event.sequence,
+        startedAt: event.occurredAt,
+        completedAt: event.occurredAt,
+        occurredAt: event.occurredAt,
+      });
       continue;
     }
 

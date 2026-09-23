@@ -4,7 +4,7 @@
 // corresponding library stage.
 import { useMemo, useState } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
-import { Bot, ChevronRight, Search, Sparkles, Users, X } from 'lucide-react';
+import { Bot, ChevronRight, Search, Sparkles, Users, X, Network } from 'lucide-react';
 import clsx from 'clsx';
 import type { ConversationTrack, GlobalAgent, Team } from '@sync-think/shared';
 import { TRACK_LABELS } from './shell-state.js';
@@ -25,13 +25,19 @@ export interface NewConversationDialogProps {
   teams: readonly Team[];
   draft?: string;
   onPick(targetRef: string): void;
+  onPickCollaboration?(kind: 'direct' | 'group', targetRef: string, memberIds?: string[]): void;
   onGoToLibrary(stage: 'agents' | 'teams'): void;
   onClose(): void;
 }
 
 export function NewConversationDialog(props: NewConversationDialogProps) {
   const [query, setQuery] = useState('');
+  const [collaborationKind, setCollaborationKind] = useState<'direct' | 'group'>();
+  const [selectedMembers, setSelectedMembers] = useState<string[]>([]);
   const q = query.trim().toLowerCase();
+  const collaborationItems = props.agents
+    .filter((agent) => !agent.archived && agent.enabled !== false)
+    .filter((agent) => !q || agent.name.toLowerCase().includes(q));
 
   return (
     <Dialog.Root open onOpenChange={(open) => !open && props.onClose()}>
@@ -71,10 +77,33 @@ export function NewConversationDialog(props: NewConversationDialogProps) {
             />
           </div>
           <div className="flex-1 overflow-y-auto p-2">
-            {props.track === 'model' && (
+            {props.onPickCollaboration && (props.track === 'agent' || props.track === 'team') && !collaborationKind && (
+              <div className="mb-2 grid grid-cols-2 gap-2 border-b border-border pb-2">
+                <button className="flex h-9 items-center justify-center gap-1 rounded-(--radius-row) border border-border text-[11px] hover:bg-hover" onClick={() => setCollaborationKind('direct')}>
+                  <Bot size={13} /> 智能体单聊
+                </button>
+                <button className="flex h-9 items-center justify-center gap-1 rounded-(--radius-row) border border-border text-[11px] hover:bg-hover" onClick={() => setCollaborationKind('group')}>
+                  <Network size={13} /> 智能体群聊
+                </button>
+              </div>
+            )}
+            {collaborationKind && props.onPickCollaboration && (
+              <div className="mb-2 border-b border-border pb-2">
+                <button className="mb-2 flex items-center gap-1 text-[11px] text-text-faint hover:text-text" onClick={() => { setCollaborationKind(undefined); setSelectedMembers([]); }}><ChevronRight className="rotate-180" size={12} />返回会话类型</button>
+                <div className="mb-2 text-[11px] text-text-faint">选择{collaborationKind === 'direct' ? '一个' : '至少两个'}智能体</div>
+                <div className="space-y-1">
+                  {collaborationItems.map((agent) => {
+                    const selected = selectedMembers.includes(agent.id);
+                    return <button type="button" key={agent.id} className={clsx('flex h-9 w-full items-center gap-2 rounded-(--radius-row) px-2 text-left text-[12px]', selected ? 'bg-accent-soft text-accent-text' : 'hover:bg-hover')} onClick={() => setSelectedMembers((current) => collaborationKind === 'direct' ? [agent.id] : selected ? current.filter((id) => id !== agent.id) : [...current, agent.id])}><span className="flex h-6 w-6 items-center justify-center rounded-full bg-accent-soft"><Bot size={13} /></span><span className="min-w-0 flex-1 truncate">{agent.name}</span>{selected && <span>✓</span>}</button>;
+                  })}
+                </div>
+                <button type="button" className="mt-2 h-8 w-full rounded-(--radius-row) bg-accent-soft text-[11px] text-accent-text disabled:opacity-50" disabled={selectedMembers.length < (collaborationKind === 'direct' ? 1 : 2)} onClick={() => props.onPickCollaboration?.(collaborationKind, '', selectedMembers)}>继续</button>
+              </div>
+            )}
+            {!collaborationKind && props.track === 'model' && (
               <ModelList models={props.models} query={q} onPick={props.onPick} />
             )}
-            {props.track === 'agent' && (
+            {!collaborationKind && props.track === 'agent' && (
               <TargetList
                 kind="agent"
                 query={q}
@@ -85,7 +114,7 @@ export function NewConversationDialog(props: NewConversationDialogProps) {
                 onEmptyAction={() => props.onGoToLibrary('agents')}
               />
             )}
-            {props.track === 'team' && (
+            {!collaborationKind && props.track === 'team' && (
               <TargetList
                 kind="team"
                 query={q}

@@ -1,13 +1,19 @@
 import type {
+  AddProviderCredentialPayload,
   CreateProviderPayload,
   ProbeModelsPayload,
+  UpdateProviderCredentialPayload,
   UpdateProviderPayload,
 } from '@sync-think/protocol';
 import type {
+  RendererAddProviderCredentialPayload,
+  RendererUpdateProviderCredentialPayload,
+} from '../provider-credential-payloads.js';
+import type { RendererProbeModelsPayload } from '../provider-discovery-payloads.js';
+import type {
   RendererCreateProviderPayload,
-  RendererProbeModelsPayload,
   RendererUpdateProviderPayload,
-} from '../provider-payloads.js';
+} from '../provider-catalog-payloads.js';
 
 const MAX_CLIPBOARD_CREDENTIAL_LENGTH = 8192;
 
@@ -78,4 +84,30 @@ export function updateProviderPayloadFromClipboard(
   return rotateCredentialFromClipboard === true
     ? { ...internalUpdate, apiKey: readCredential(readClipboard) }
     : internalUpdate;
+}
+
+export function addProviderCredentialPayloadFromClipboard(
+  metadata: RendererAddProviderCredentialPayload,
+  readClipboard: () => string,
+): AddProviderCredentialPayload {
+  return {
+    providerId: metadata.providerId as AddProviderCredentialPayload['providerId'],
+    label: metadata.label,
+    apiKey: readCredential(readClipboard),
+  };
+}
+
+export function updateProviderCredentialPayloadFromClipboard(
+  metadata: RendererUpdateProviderCredentialPayload,
+  readClipboard: () => string,
+): UpdateProviderCredentialPayload {
+  const { rotateCredentialFromClipboard, ...update } = metadata;
+  const payload = {
+    ...update,
+    providerId: update.providerId as UpdateProviderCredentialPayload['providerId'],
+    credentialRefId: update.credentialRefId as UpdateProviderCredentialPayload['credentialRefId'],
+  };
+  return rotateCredentialFromClipboard === true
+    ? { ...payload, apiKey: readCredential(readClipboard) }
+    : payload;
 }

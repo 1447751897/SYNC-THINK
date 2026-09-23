@@ -1,3 +1,5 @@
+import { createVendorScriptLoader, ensureVendorStylesheet } from './vendor-script-loader.js';
+
 export interface ExcalidrawVendorDocument {
   elements: unknown[];
   appState: Record<string, unknown>;
@@ -44,57 +46,24 @@ declare global {
   }
 }
 
-let vendorPromise: Promise<ExcalidrawVendor> | undefined;
-
 function ensureExcalidrawStylesheet(): void {
-  if (document.querySelector('link[data-sync-think-excalidraw-style]')) return;
-  const link = document.createElement('link');
-  link.rel = 'stylesheet';
-  link.href = new URL('./excalidraw-vendor.css', window.location.href).href;
-  link.dataset.syncThinkExcalidrawStyle = 'true';
-  document.head.append(link);
+  ensureVendorStylesheet({
+    selector: 'link[data-sync-think-excalidraw-style]',
+    source: './excalidraw-vendor.css',
+    markerAttribute: 'data-sync-think-excalidraw-style',
+  });
 }
 
+const loadVendorScript = createVendorScriptLoader<ExcalidrawVendor>({
+  scriptSelector: 'script[data-sync-think-excalidraw]',
+  scriptSource: './excalidraw-vendor.js',
+  markerAttribute: 'data-sync-think-excalidraw',
+  readVendor: () => window.SyncThinkExcalidraw,
+  missingExportMessage: 'Excalidraw vendor loaded without an export',
+  loadErrorMessage: 'Excalidraw vendor failed to load',
+  beforeStart: ensureExcalidrawStylesheet,
+});
+
 export function loadExcalidrawVendor(): Promise<ExcalidrawVendor> {
-  if (window.SyncThinkExcalidraw) return Promise.resolve(window.SyncThinkExcalidraw);
-  if (vendorPromise) return vendorPromise;
-  vendorPromise = new Promise<ExcalidrawVendor>((resolve, reject) => {
-    // The vendor CSS is copied beside the lazy JS bundle by build-shell.mjs.
-    // Load it before mounting the editor so the first painted frame uses the
-    // same controls, typography, and canvas sizing as the upstream editor.
-    ensureExcalidrawStylesheet();
-    const existing = document.querySelector<HTMLScriptElement>(
-      'script[data-sync-think-excalidraw]',
-    );
-    const script = existing ?? document.createElement('script');
-    const cleanupListeners = () => {
-      script.removeEventListener('load', onLoad);
-      script.removeEventListener('error', onError);
-    };
-    const onLoad = () => {
-      cleanupListeners();
-      if (window.SyncThinkExcalidraw) resolve(window.SyncThinkExcalidraw);
-      else {
-        script.remove();
-        reject(new Error('Excalidraw vendor loaded without an export'));
-      }
-    };
-    const onError = () => {
-      cleanupListeners();
-      script.remove();
-      reject(new Error('Excalidraw vendor failed to load'));
-    };
-    script.addEventListener('load', onLoad, { once: true });
-    script.addEventListener('error', onError, { once: true });
-    if (!existing) {
-      script.src = new URL('./excalidraw-vendor.js', window.location.href).href;
-      script.async = true;
-      script.dataset.syncThinkExcalidraw = 'true';
-      document.head.append(script);
-    }
-  }).catch((error) => {
-    vendorPromise = undefined;
-    throw error;
-  });
-  return vendorPromise;
+  return loadVendorScript();
 }

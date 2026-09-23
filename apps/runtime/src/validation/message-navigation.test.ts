@@ -1,10 +1,38 @@
 import { describe, expect, it } from 'vitest';
 import {
+  parseListConversationsPayload,
   parseConversationListMessagesPayload,
   parseConversationListNavigationPayload,
 } from './team-conversation.js';
 
 describe('conversation history cursors', () => {
+  it('accepts bounded conversation catalog pages', () => {
+    expect(
+      parseListConversationsPayload({
+        workspaceId: 'workspace-a',
+        includeArchived: true,
+        cursor: 'cursor-a',
+        limit: 200,
+      }),
+    ).toEqual({
+      workspaceId: 'workspace-a',
+      includeArchived: true,
+      cursor: 'cursor-a',
+      limit: 200,
+    });
+  });
+
+  it.each([
+    { cursor: '' },
+    { cursor: 'x'.repeat(2_049) },
+    { limit: 0 },
+    { limit: 201 },
+    { limit: 1.5 },
+    { unexpected: true },
+  ])('rejects an invalid conversation catalog page: %j', (values) => {
+    expect(parseListConversationsPayload(values)).toBeUndefined();
+  });
+
   it('accepts a scoped anchor and bounded directory cursors', () => {
     expect(
       parseConversationListMessagesPayload({

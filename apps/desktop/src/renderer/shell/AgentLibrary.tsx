@@ -5,8 +5,20 @@
 // in a right-hand drawer (概览 / 工作 / 能力 / 设置).
 import * as Dialog from '@radix-ui/react-dialog';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
-import { closestCenter, DndContext, PointerSensor, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core';
-import { arrayMove, SortableContext, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
+import {
+  closestCenter,
+  DndContext,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from '@dnd-kit/core';
+import {
+  arrayMove,
+  SortableContext,
+  useSortable,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import {
   ArrowLeft,
@@ -34,14 +46,7 @@ import {
   X,
 } from 'lucide-react';
 import { SlidingTabs } from './SlidingTabs.js';
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type CSSProperties,
-} from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import clsx from 'clsx';
 import type {
   AgentWritePolicy,
@@ -68,6 +73,8 @@ import { OverlayScrollArea } from './OverlayScrollArea.js';
 import { McpIdentityMark } from './abilities/McpIdentityMark.js';
 import { BrandLogoMark } from './BrandLogoMark.js';
 import { resolveProviderBrandLogo, resolveProviderBrandLogoByName } from './brand-icons.js';
+import { loadMcpCatalog } from './mcp-catalog-loader.js';
+import { loadSkillCatalog } from './skill-catalog-loader.js';
 
 interface Props {
   agents: readonly GlobalAgent[];
@@ -93,7 +100,8 @@ interface Props {
 type DrawerTab = 'overview' | 'abilities' | 'settings';
 type AbilitySubTab = 'skills' | 'mcp' | 'persona';
 type LibraryView = 'grid' | 'list';
-type ScopeFilter = 'all' | 'global' | 'workspace';
+type ScopeFilter = 'all' | 'global' | 'workspace' | `workspace:${string}`;
+type ScopeOption = { id: ScopeFilter; label: string };
 type PolicyFilter = 'all' | 'read-only' | 'inherit';
 type StatusFilter = 'all' | 'ok' | 'unavailable' | 'active';
 type SortMode = 'recent' | 'name' | 'binding';
@@ -157,9 +165,9 @@ const AGENT_DRAWER_TABS: Array<{ id: DrawerTab; label: string }> = [
   { id: 'settings', label: '设置' },
 ];
 
-const SCOPE_OPTIONS: Array<{ id: ScopeFilter; label: string }> = [
+const SCOPE_OPTIONS: ScopeOption[] = [
   { id: 'all', label: '全部' },
-  { id: 'global', label: '全局可用' },
+  { id: 'global', label: '全局' },
   { id: 'workspace', label: '指定工作区' },
 ];
 
@@ -326,6 +334,20 @@ export function AgentLibrary({
 
   const active = useMemo(() => agents.filter((agent) => !agent.archived), [agents]);
 
+  const scopeOptions = useMemo<ScopeOption[]>(
+    () => [
+      SCOPE_OPTIONS[0],
+      SCOPE_OPTIONS[1],
+      ...(workspaces.length > 0
+        ? workspaces.map((workspace) => ({
+            id: `workspace:${workspace.workspaceId}` as ScopeFilter,
+            label: workspace.name,
+          }))
+        : [SCOPE_OPTIONS[2]]),
+    ],
+    [workspaces],
+  );
+
   const reloadWorkspaceActivations = useCallback(async () => {
     const api = bridge();
     if (!api?.listGlobalAgentWorkspaceActivations || workspaces.length === 0) return;
@@ -414,10 +436,20 @@ export function AgentLibrary({
   const visibleAgents = useMemo(() => {
     const query = searchQuery.trim().toLocaleLowerCase();
     const matches = active.filter((agent) => {
-      if (scopeFilter !== 'all' && (agent.availabilityScope ?? 'global') !== scopeFilter)
+      if (scopeFilter === 'global' && (agent.availabilityScope ?? 'global') !== 'global') {
         return false;
-      if (policyFilter !== 'all' && (agent.writePolicy ?? 'inherit') !== policyFilter)
+      }
+      if (scopeFilter === 'workspace' && (agent.availabilityScope ?? 'global') !== 'workspace') {
         return false;
+      }
+      if (scopeFilter.startsWith('workspace:')) {
+        const workspaceId = scopeFilter.slice('workspace:'.length);
+        const availableInWorkspace =
+          (agent.availabilityScope ?? 'global') === 'global' ||
+          workspaceActivations[`${agent.id}:${workspaceId}`] === true;
+        if (!availableInWorkspace) return false;
+      }
+      if (policyFilter !== 'all' && (agent.writePolicy ?? 'inherit') !== policyFilter) return false;
       const modelName = models.find((model) => model.modelId === agent.defaultModelId)?.displayName;
       const modelOk = modelName !== undefined && modelName !== '模型不可用';
       const activated =
@@ -487,6 +519,23 @@ export function AgentLibrary({
     [active],
   );
 
+  const scopeCounts = useMemo(() => {
+    const counts: Record<string, number> = {
+      all: active.length,
+      global: active.filter((agent) => (agent.availabilityScope ?? 'global') === 'global').length,
+      workspace: active.filter((agent) => (agent.availabilityScope ?? 'global') === 'workspace')
+        .length,
+    };
+    for (const workspace of workspaces) {
+      counts[`workspace:${workspace.workspaceId}`] = active.filter(
+        (agent) =>
+          (agent.availabilityScope ?? 'global') === 'global' ||
+          workspaceActivations[`${agent.id}:${workspace.workspaceId}`] === true,
+      ).length;
+    }
+    return counts;
+  }, [active, workspaceActivations, workspaces]);
+
   const statusCounts = useMemo(() => {
     const count = (predicate: (agent: GlobalAgent) => boolean) => active.filter(predicate).length;
     return {
@@ -522,8 +571,8 @@ export function AgentLibrary({
     void (async () => {
       try {
         const [skillResult, mcpResult] = await Promise.allSettled([
-          api.listSkills?.({ limit: 500 }),
-          api.listMcpServers?.({ limit: 100 }),
+          loadSkillCatalog(api),
+          loadMcpCatalog(api),
         ]);
         if (cancelled) return;
         if (skillResult.status === 'fulfilled') {
@@ -718,7 +767,9 @@ export function AgentLibrary({
         }
         if (selected?.id === agent.id) {
           const nextScope = activeInAllWorkspaces ? 'global' : 'workspace';
-          setSelected((current) => (current ? { ...current, availabilityScope: nextScope } : current));
+          setSelected((current) =>
+            current ? { ...current, availabilityScope: nextScope } : current,
+          );
           setDraft((current) => ({ ...current, availabilityScope: nextScope }));
         }
         onRefresh();
@@ -726,7 +777,8 @@ export function AgentLibrary({
         setWorkspaceActivations((current) => {
           const next = { ...current };
           for (const workspace of workspaces) {
-            next[`${agentId}:${workspace.workspaceId}`] = previous[String(workspace.workspaceId)] ?? false;
+            next[`${agentId}:${workspace.workspaceId}`] =
+              previous[String(workspace.workspaceId)] ?? false;
           }
           return next;
         });
@@ -799,11 +851,7 @@ export function AgentLibrary({
     try {
       // Runtime may hard-delete or soft-archive when conversations still reference
       // the agent. Soft-archive returns { archived, message } without throwing.
-      const result = (await api.deleteGlobalAgent({ agentId: selected.id })) as {
-        archived?: boolean;
-        conversationCount?: number;
-        message?: string;
-      } | void;
+      const result = await api.deleteGlobalAgent({ agentId: selected.id });
       onRefresh();
       closeDialog();
       if (result && result.archived && result.message) {
@@ -1008,52 +1056,6 @@ export function AgentLibrary({
       </header>
 
       <div className="ability-hub__body">
-        {/* ── Controls: search + view switch. Scope belongs with filters below stats. ── */}
-        <section className="ability-hub__controls agent-hub__controls--search-only">
-          <div className="ability-hub__controls-right">
-            <label className="ability-hub__search">
-              <Search size={14} aria-hidden="true" />
-              <input
-                type="search"
-                aria-label="搜索智能体"
-                placeholder="搜索智能体"
-                value={searchQuery}
-                onChange={(event) => setSearchQuery(event.target.value)}
-              />
-              {searchQuery ? (
-                <button
-                  type="button"
-                  aria-label="清除搜索"
-                  title="清除搜索"
-                  onClick={() => setSearchQuery('')}
-                >
-                  <X size={12} />
-                </button>
-              ) : null}
-            </label>
-            <div className="agent-view-switch" role="group" aria-label="显示方式">
-              <button
-                type="button"
-                title="网格视图"
-                aria-label="网格视图"
-                aria-pressed={libraryView === 'grid'}
-                onClick={() => setLibraryView('grid')}
-              >
-                <LayoutGrid size={14} />
-              </button>
-              <button
-                type="button"
-                title="列表视图"
-                aria-label="列表视图"
-                aria-pressed={libraryView === 'list'}
-                onClick={() => setLibraryView('list')}
-              >
-                <ListIcon size={14} />
-              </button>
-            </div>
-          </div>
-        </section>
-
         {/* ── Stat strip — NewMaxStat cards + write-policy meter ─────────── */}
         <section className="ability-hub__stats" aria-label="智能体统计">
           <div className="ability-stat">
@@ -1104,92 +1106,141 @@ export function AgentLibrary({
           </div>
         </section>
 
-        {/* ── Filter row — scope + write-policy + status + sort ─────────── */}
-        <div className="ability-hub__filter-row">
-          <span className="ability-hub__filter-label">可用范围</span>
-          <div className="ability-hub__security-filter" role="group" aria-label="范围筛选">
-            {SCOPE_OPTIONS.map((option) => (
-              <button
-                key={option.id}
-                type="button"
-                aria-pressed={scopeFilter === option.id}
-                className={scopeFilter === option.id ? 'is-active' : undefined}
-                onClick={() => setScopeFilter(option.id)}
-              >
-                {option.label}
-                <small>
-                  {option.id === 'all'
-                    ? active.length
-                    : active.filter((agent) =>
-                        (agent.availabilityScope ?? 'global') === option.id,
-                      ).length}
-                </small>
-              </button>
-            ))}
-          </div>
-          <span className="ability-hub__filter-label">写入策略</span>
-          <div className="ability-hub__security-filter" role="group" aria-label="写入策略筛选">
-            {POLICY_OPTIONS.map((option) => (
-              <button
-                key={option.id}
-                type="button"
-                aria-pressed={policyFilter === option.id}
-                className={policyFilter === option.id ? 'is-active' : undefined}
-                onClick={() => setPolicyFilter(option.id)}
-              >
-                {option.label}
-                <small>{policyCounts[option.id]}</small>
-              </button>
-            ))}
-          </div>
-          <span className="ability-hub__filter-label">状态</span>
-          <div className="ability-hub__security-filter" role="group" aria-label="状态筛选">
-            {STATUS_OPTIONS.map((option) => (
-              <button
-                key={option.id}
-                type="button"
-                aria-pressed={statusFilter === option.id}
-                className={statusFilter === option.id ? 'is-active' : undefined}
-                onClick={() => setStatusFilter(option.id)}
-              >
-                {option.label}
-                <small>{statusCounts[option.id]}</small>
-              </button>
-            ))}
-          </div>
-          <div className="ability-hub__sort-wrap">
-            <button
-              type="button"
-              className="ability-hub__sort"
-              aria-expanded={sortMenuOpen}
-              aria-haspopup="menu"
-              onClick={() => {
-                setSortMenuOpen((open) => !open);
-                setCreateMenuOpen(false);
-              }}
+        {/* ── Scope row (scope chips + search / view switch) + filter row ── */}
+        <div className="ability-hub__filter-stack">
+          <div className="ability-hub__scope-row">
+            <span className="ability-hub__filter-label">可用范围</span>
+            <SlidingTabs
+              className="ability-hub__security-filter ability-hub__scope-filter"
+              rootRole="group"
+              aria-label="范围筛选"
             >
-              {sortLabel}
-              <ChevronDown size={12} />
-            </button>
-            {sortMenuOpen ? (
-              <div className="ability-hub__sort-menu" role="menu" data-testid="agent-sort-menu">
-                {SORT_OPTIONS.map((option) => (
+              {scopeOptions.map((option) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  aria-pressed={scopeFilter === option.id}
+                  onClick={() => setScopeFilter(option.id)}
+                >
+                  {option.label}
+                  <small>{scopeCounts[option.id] ?? 0}</small>
+                </button>
+              ))}
+            </SlidingTabs>
+            <div className="ability-hub__controls-right">
+              <label className="ability-hub__search">
+                <Search size={14} aria-hidden="true" />
+                <input
+                  type="search"
+                  aria-label="搜索智能体"
+                  placeholder="搜索智能体"
+                  value={searchQuery}
+                  onChange={(event) => setSearchQuery(event.target.value)}
+                />
+                {searchQuery ? (
                   <button
-                    key={option.id}
                     type="button"
-                    role="menuitemradio"
-                    aria-checked={sortMode === option.id}
-                    onClick={() => {
-                      setSortMode(option.id);
-                      setSortMenuOpen(false);
-                    }}
+                    aria-label="清除搜索"
+                    title="清除搜索"
+                    onClick={() => setSearchQuery('')}
                   >
-                    {option.label}
-                    {sortMode === option.id ? <Check size={13} /> : null}
+                    <X size={12} />
                   </button>
-                ))}
+                ) : null}
+              </label>
+              <div className="agent-view-switch" role="group" aria-label="显示方式">
+                <button
+                  type="button"
+                  title="网格视图"
+                  aria-label="网格视图"
+                  aria-pressed={libraryView === 'grid'}
+                  onClick={() => setLibraryView('grid')}
+                >
+                  <LayoutGrid size={14} />
+                </button>
+                <button
+                  type="button"
+                  title="列表视图"
+                  aria-label="列表视图"
+                  aria-pressed={libraryView === 'list'}
+                  onClick={() => setLibraryView('list')}
+                >
+                  <ListIcon size={14} />
+                </button>
               </div>
-            ) : null}
+            </div>
+          </div>
+          <div className="ability-hub__filter-row">
+            <span className="ability-hub__filter-label">写入策略</span>
+            <SlidingTabs
+              className="ability-hub__security-filter"
+              rootRole="group"
+              aria-label="写入策略筛选"
+            >
+              {POLICY_OPTIONS.map((option) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  aria-pressed={policyFilter === option.id}
+                  onClick={() => setPolicyFilter(option.id)}
+                >
+                  {option.label}
+                  <small>{policyCounts[option.id]}</small>
+                </button>
+              ))}
+            </SlidingTabs>
+            <span className="ability-hub__filter-label">状态</span>
+            <SlidingTabs
+              className="ability-hub__security-filter"
+              rootRole="group"
+              aria-label="状态筛选"
+            >
+              {STATUS_OPTIONS.map((option) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  aria-pressed={statusFilter === option.id}
+                  onClick={() => setStatusFilter(option.id)}
+                >
+                  {option.label}
+                  <small>{statusCounts[option.id]}</small>
+                </button>
+              ))}
+            </SlidingTabs>
+            <div className="ability-hub__sort-wrap">
+              <button
+                type="button"
+                className="ability-hub__sort"
+                aria-expanded={sortMenuOpen}
+                aria-haspopup="menu"
+                onClick={() => {
+                  setSortMenuOpen((open) => !open);
+                  setCreateMenuOpen(false);
+                }}
+              >
+                {sortLabel}
+                <ChevronDown size={12} />
+              </button>
+              {sortMenuOpen ? (
+                <div className="ability-hub__sort-menu" role="menu" data-testid="agent-sort-menu">
+                  {SORT_OPTIONS.map((option) => (
+                    <button
+                      key={option.id}
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={sortMode === option.id}
+                      onClick={() => {
+                        setSortMode(option.id);
+                        setSortMenuOpen(false);
+                      }}
+                    >
+                      {option.label}
+                      {sortMode === option.id ? <Check size={13} /> : null}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
           </div>
         </div>
 
@@ -1346,7 +1397,12 @@ export function AgentLibrary({
 
           {/* ── 概览：只读基本信息 ── */}
           {drawerTab === 'overview' && (
-            <OverlayScrollArea className="agent-dialog__body" innerClassName="agent-dialog__body-inner" fadeColor="var(--color-cap-surface)" dataTestId="agent-drawer-overview">
+            <OverlayScrollArea
+              className="agent-dialog__body"
+              innerClassName="agent-dialog__body-inner"
+              fadeColor="var(--color-cap-surface)"
+              dataTestId="agent-drawer-overview"
+            >
               <div className="agent-pane">
                 {draft.description ? (
                   <p className="agent-dialog__lede">{draft.description}</p>
@@ -1426,7 +1482,6 @@ export function AgentLibrary({
                   </div>
                 </div>
 
-
                 <div>
                   <div className="agent-meta__label" style={{ marginBottom: 6 }}>
                     系统 / 人设指令
@@ -1437,10 +1492,14 @@ export function AgentLibrary({
             </OverlayScrollArea>
           )}
 
-
           {/* ── 能力：子 tab 切换 Skill / MCP / 人设 ── */}
           {drawerTab === 'abilities' && (
-            <OverlayScrollArea className="agent-dialog__body" innerClassName="agent-dialog__body-inner" fadeColor="var(--color-cap-surface)" dataTestId="agent-drawer-abilities">
+            <OverlayScrollArea
+              className="agent-dialog__body"
+              innerClassName="agent-dialog__body-inner"
+              fadeColor="var(--color-cap-surface)"
+              dataTestId="agent-drawer-abilities"
+            >
               <div className="agent-pane">
                 <div className="agent-subtabs" role="group" aria-label="能力子分类">
                   <button
@@ -1597,7 +1656,13 @@ export function AgentLibrary({
                                   key={s.id}
                                   checked={draft.mcpServerIds.includes(s.id)}
                                   title={s.name}
-                                  leading={<McpIdentityMark name={s.name} endpoint={s.endpoint} size={20} />}
+                                  leading={
+                                    <McpIdentityMark
+                                      name={s.name}
+                                      endpoint={s.endpoint}
+                                      size={20}
+                                    />
+                                  }
                                   description={`${s.toolCount} 工具${s.trusted ? ' · 信任' : ''}`}
                                   onToggle={() =>
                                     setDraft((d) => ({
@@ -1634,7 +1699,12 @@ export function AgentLibrary({
 
           {/* ── 设置：单列分组卡片 —— 身份 / 模型 ── */}
           {drawerTab === 'settings' && (
-            <OverlayScrollArea className="agent-dialog__body" innerClassName="agent-dialog__body-inner" fadeColor="var(--color-cap-surface)" dataTestId="agent-drawer-settings">
+            <OverlayScrollArea
+              className="agent-dialog__body"
+              innerClassName="agent-dialog__body-inner"
+              fadeColor="var(--color-cap-surface)"
+              dataTestId="agent-drawer-settings"
+            >
               <div className="agent-pane">
                 <div className="agent-settings-group">
                   <SectionTitle hint="头像、名称、简介与人设指令会一起进入每次对话的上下文。">
@@ -1837,7 +1907,11 @@ export function AgentLibrary({
                               if (oldIndex < 0 || newIndex < 0) return current;
                               return {
                                 ...current,
-                                fallbackModelIds: arrayMove(current.fallbackModelIds, oldIndex, newIndex),
+                                fallbackModelIds: arrayMove(
+                                  current.fallbackModelIds,
+                                  oldIndex,
+                                  newIndex,
+                                ),
                               };
                             });
                           }}
@@ -1967,7 +2041,9 @@ export function AgentLibrary({
                           type="button"
                           aria-label={option.label}
                           aria-pressed={draft.reasoningEffort === option.value}
-                          className={draft.reasoningEffort === option.value ? 'is-active' : undefined}
+                          className={
+                            draft.reasoningEffort === option.value ? 'is-active' : undefined
+                          }
                           title={option.title}
                           onClick={() =>
                             setDraft((current) => ({
@@ -1993,9 +2069,13 @@ export function AgentLibrary({
                       type="button"
                       aria-pressed={draft.writePolicy === 'inherit'}
                       className={draft.writePolicy === 'inherit' ? 'is-active' : undefined}
-                      onClick={() => setDraft((current) => ({ ...current, writePolicy: 'inherit' }))}
+                      onClick={() =>
+                        setDraft((current) => ({ ...current, writePolicy: 'inherit' }))
+                      }
                     >
-                      <span className="agent-policy-cards__icon"><ShieldCheck size={16} /></span>
+                      <span className="agent-policy-cards__icon">
+                        <ShieldCheck size={16} />
+                      </span>
                       <span>
                         <strong>继承当前会话</strong>
                         <small>跟随发起对话的权限；逐次询问模式下仍保持只读。</small>
@@ -2006,9 +2086,13 @@ export function AgentLibrary({
                       type="button"
                       aria-pressed={draft.writePolicy === 'read-only'}
                       className={draft.writePolicy === 'read-only' ? 'is-active' : undefined}
-                      onClick={() => setDraft((current) => ({ ...current, writePolicy: 'read-only' }))}
+                      onClick={() =>
+                        setDraft((current) => ({ ...current, writePolicy: 'read-only' }))
+                      }
                     >
-                      <span className="agent-policy-cards__icon"><Lock size={16} /></span>
+                      <span className="agent-policy-cards__icon">
+                        <Lock size={16} />
+                      </span>
                       <span>
                         <strong>始终只读</strong>
                         <small>仅允许读取与分析，不执行命令或修改文件。</small>
@@ -2017,7 +2101,6 @@ export function AgentLibrary({
                     </button>
                   </div>
                 </div>
-
               </div>
             </OverlayScrollArea>
           )}
@@ -2375,14 +2458,16 @@ function AgentWorkspacePicker({
               </span>
             </button>
             <DropdownMenu.Separator className="skill-workspace-menu__separator" />
-            <div className="skill-workspace-menu__list" data-testid={`agent-workspace-menu-${agent.id}`}>
+            <div
+              className="skill-workspace-menu__list"
+              data-testid={`agent-workspace-menu-${agent.id}`}
+            >
               {workspaces.length === 0 ? (
                 <p className="agent-workspace-menu__empty">当前没有工作区</p>
               ) : (
                 workspaces.map((workspace) => {
                   const active =
-                    global ||
-                    workspaceActivations[`${agent.id}:${workspace.workspaceId}`] === true;
+                    global || workspaceActivations[`${agent.id}:${workspace.workspaceId}`] === true;
                   return (
                     <button
                       key={workspace.workspaceId}
@@ -2407,7 +2492,11 @@ function AgentWorkspacePicker({
               )}
             </div>
             <DropdownMenu.Separator className="skill-workspace-menu__separator" />
-            <button type="button" className="skill-workspace-menu__done" onClick={() => onOpenChange(false)}>
+            <button
+              type="button"
+              className="skill-workspace-menu__done"
+              onClick={() => onOpenChange(false)}
+            >
               完成
             </button>
           </DropdownMenu.Content>
@@ -2557,11 +2646,7 @@ function SortableFallbackRow({
         <small>{model.providerName}</small>
       </span>
       <span className="agent-fallback-row__actions">
-        <button
-          type="button"
-          aria-label={`移除备用模型 ${model.displayName}`}
-          onClick={onRemove}
-        >
+        <button type="button" aria-label={`移除备用模型 ${model.displayName}`} onClick={onRemove}>
           <X size={13} aria-hidden="true" />
         </button>
       </span>

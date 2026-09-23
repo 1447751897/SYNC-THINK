@@ -158,6 +158,7 @@ export const browserRecordingStep = sqliteTable(
 export const browserAutomationTask = sqliteTable(
   'browser_automation_task',
   {
+    workspaceId: text('workspace_id'),
     id: text('id').primaryKey(),
     profileId: text('profile_id')
       .notNull()
@@ -278,6 +279,106 @@ export const browserWorkflowReview = sqliteTable(
       'browser_workflow_review_decision_check',
       sql`${t.decision} IN ('approve', 'reject')`,
     ),
+  }),
+);
+
+export const browserWorkflowRun = sqliteTable(
+  'browser_workflow_run',
+  {
+    id: text('id').primaryKey(),
+    taskId: text('task_id')
+      .notNull()
+      .references(() => browserAutomationTask.id, { onDelete: 'restrict' }),
+    versionId: text('version_id')
+      .notNull()
+      .references(() => browserWorkflowVersion.id, { onDelete: 'restrict' }),
+    trigger: text('trigger').notNull(),
+    status: text('status').notNull(),
+    stepCount: integer('step_count').notNull(),
+    executedStepCount: integer('executed_step_count').notNull().default(0),
+    failedStepSequence: integer('failed_step_sequence'),
+    errorCode: text('error_code'),
+    error: text('error'),
+    startedAt: text('started_at').notNull(),
+    completedAt: text('completed_at'),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (t) => ({
+    byTask: index('browser_workflow_run_task_started_idx').on(t.taskId, t.startedAt),
+    byStatus: index('browser_workflow_run_status_idx').on(t.status, t.updatedAt),
+    triggerCheck: check(
+      'browser_workflow_run_trigger_check',
+      sql`${t.trigger} IN ('manual', 'schedule', 'chat')`,
+    ),
+    statusCheck: check(
+      'browser_workflow_run_status_check',
+      sql`${t.status} IN ('running', 'succeeded', 'failed', 'cancelled')`,
+    ),
+    stepCountCheck: check(
+      'browser_workflow_run_step_count_check',
+      sql`${t.stepCount} BETWEEN 1 AND 200`,
+    ),
+    executedCountCheck: check(
+      'browser_workflow_run_executed_count_check',
+      sql`${t.executedStepCount} BETWEEN 0 AND 200`,
+    ),
+  }),
+);
+
+export const browserWorkflowRunStep = sqliteTable(
+  'browser_workflow_run_step',
+  {
+    runId: text('run_id')
+      .notNull()
+      .references(() => browserWorkflowRun.id, { onDelete: 'restrict' }),
+    sequence: integer('sequence').notNull(),
+    actionKind: text('action_kind').notNull(),
+    status: text('status').notNull(),
+    outputUrl: text('output_url'),
+    outputTitle: text('output_title'),
+    screenshotRelativePath: text('screenshot_relative_path'),
+    screenshotEmbedUrl: text('screenshot_embed_url'),
+    screenshotErrorCode: text('screenshot_error_code'),
+    errorCode: text('error_code'),
+    error: text('error'),
+    startedAt: text('started_at').notNull(),
+    completedAt: text('completed_at').notNull(),
+  },
+  (t) => ({
+    primaryKey: primaryKey({ columns: [t.runId, t.sequence] }),
+    sequenceCheck: check(
+      'browser_workflow_run_step_sequence_check',
+      sql`${t.sequence} BETWEEN 1 AND 200`,
+    ),
+    statusCheck: check(
+      'browser_workflow_run_step_status_check',
+      sql`${t.status} IN ('succeeded', 'failed')`,
+    ),
+  }),
+);
+
+export const browserWorkflowSchedule = sqliteTable(
+  'browser_workflow_schedule',
+  {
+    taskId: text('task_id')
+      .primaryKey()
+      .references(() => browserAutomationTask.id, { onDelete: 'restrict' }),
+    enabled: integer('enabled', { mode: 'boolean' }).notNull().default(false),
+    intervalMinutes: integer('interval_minutes').notNull(),
+    nextRunAt: text('next_run_at'),
+    lastRunAt: text('last_run_at'),
+    revision: integer('revision').notNull().default(1),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (t) => ({
+    due: index('browser_workflow_schedule_due_idx').on(t.enabled, t.nextRunAt),
+    enabledCheck: check('browser_workflow_schedule_enabled_check', sql`${t.enabled} IN (0, 1)`),
+    intervalCheck: check(
+      'browser_workflow_schedule_interval_check',
+      sql`${t.intervalMinutes} BETWEEN 5 AND 10080`,
+    ),
+    revisionCheck: check('browser_workflow_schedule_revision_check', sql`${t.revision} >= 1`),
   }),
 );
 

@@ -17,6 +17,13 @@ import {
   statSync,
   watch,
 } from 'node:fs';
+import {
+  access as accessAsync,
+  readFile as readFileAsync,
+  readdir as readdirAsync,
+  realpath as realpathAsync,
+  stat as statAsync,
+} from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path';
 import extractZip from 'extract-zip';
@@ -58,8 +65,28 @@ function readJsonObject(path: string): JsonObject | undefined {
   }
 }
 
+async function readJsonObjectAsync(path: string): Promise<JsonObject | undefined> {
+  try {
+    const value: unknown = JSON.parse(await readFileAsync(path, 'utf8'));
+    return isJsonObject(value) ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function mergeEnabledPlugins(target: Map<string, boolean>, settingsPath: string): void {
   const enabledPlugins = readJsonObject(settingsPath)?.enabledPlugins;
+  if (!isJsonObject(enabledPlugins)) return;
+  for (const [pluginId, enabled] of Object.entries(enabledPlugins)) {
+    if (typeof enabled === 'boolean') target.set(pluginId, enabled);
+  }
+}
+
+async function mergeEnabledPluginsAsync(
+  target: Map<string, boolean>,
+  settingsPath: string,
+): Promise<void> {
+  const enabledPlugins = (await readJsonObjectAsync(settingsPath))?.enabledPlugins;
   if (!isJsonObject(enabledPlugins)) return;
   for (const [pluginId, enabled] of Object.entries(enabledPlugins)) {
     if (typeof enabled === 'boolean') target.set(pluginId, enabled);
@@ -112,6 +139,45 @@ function discoverClaudePluginRoots(cacheRoot: string): ClaudePluginRoot[] {
   return roots;
 }
 
+async function discoverClaudePluginRootsAsync(cacheRoot: string): Promise<ClaudePluginRoot[]> {
+  if (!(await pathExists(cacheRoot))) return [];
+  const roots: ClaudePluginRoot[] = [];
+  const seen = new Set<string>();
+
+  const walk = async (directory: string, depth: number): Promise<void> => {
+    if (depth > 4) return;
+    const relativePath = relative(cacheRoot, directory);
+    const parts = relativePath && relativePath !== '.' ? relativePath.split(/[\\/]/) : [];
+    const skillsDirectory = join(directory, 'skills');
+    if (parts.length >= 2 && (await pathExists(skillsDirectory))) {
+      const manifest = await readJsonObjectAsync(join(directory, '.claude-plugin', 'plugin.json'));
+      const manifestName = typeof manifest?.name === 'string' ? manifest.name.trim() : '';
+      const canonical = await canonicalSourcePathAsync(directory);
+      if (!seen.has(canonical)) {
+        seen.add(canonical);
+        roots.push({
+          root: directory,
+          pluginName: manifestName || parts[1]!,
+          marketplaceName: parts[0]!,
+          modifiedAt: (await statAsync(directory)).mtimeMs,
+        });
+      }
+      return;
+    }
+    for (const entry of await safeDirectoryEntriesAsync(directory)) {
+      const child = join(directory, entry);
+      try {
+        if ((await statAsync(child)).isDirectory()) await walk(child, depth + 1);
+      } catch {
+        // Ignore cache entries removed during discovery.
+      }
+    }
+  };
+
+  await walk(cacheRoot, 0);
+  return roots;
+}
+
 export interface EnabledClaudePluginSkillSourceOptions {
   claudeDirectory?: string;
   workspaceFolder?: string;
@@ -140,6 +206,50 @@ export function enabledClaudePluginSkillSources(
   if (enabledIds.length === 0) return [];
 
   const roots = discoverClaudePluginRoots(join(claudeDirectory, 'plugins', 'cache'));
+  const result: LocalSkillSourceInput[] = [];
+  for (const pluginId of enabledIds) {
+    const at = pluginId.lastIndexOf('@');
+    const pluginName = at > 0 ? pluginId.slice(0, at) : pluginId;
+    const marketplaceName = at > 0 ? pluginId.slice(at + 1) : '';
+    const root = roots
+      .filter(
+        (candidate) =>
+          candidate.pluginName === pluginName &&
+          (!marketplaceName || candidate.marketplaceName === marketplaceName),
+      )
+      .sort((left, right) => right.modifiedAt - left.modifiedAt)[0];
+    if (!root) continue;
+    result.push({
+      directory: join(root.root, 'skills'),
+      type: 'plugin',
+      label: `插件 · ${pluginName}`,
+      ...(options.workspaceId ? { workspaceId: options.workspaceId } : {}),
+    });
+  }
+  return result;
+}
+
+/** Resolve enabled Claude plugin sources without blocking Runtime request dispatch. */
+export async function enabledClaudePluginSkillSourcesAsync(
+  options: EnabledClaudePluginSkillSourceOptions = {},
+): Promise<LocalSkillSourceInput[]> {
+  const claudeDirectory = options.claudeDirectory ?? join(homedir(), '.claude');
+  const enabled = new Map<string, boolean>();
+  if (options.includeUserSettings !== false) {
+    await mergeEnabledPluginsAsync(enabled, join(claudeDirectory, 'settings.json'));
+  }
+  if (options.workspaceFolder) {
+    const workspaceClaude = join(options.workspaceFolder, '.claude');
+    await mergeEnabledPluginsAsync(enabled, join(workspaceClaude, 'settings.json'));
+    await mergeEnabledPluginsAsync(enabled, join(workspaceClaude, 'settings.local.json'));
+  }
+
+  const enabledIds = [...enabled.entries()]
+    .filter(([, active]) => active)
+    .map(([pluginId]) => pluginId);
+  if (enabledIds.length === 0) return [];
+
+  const roots = await discoverClaudePluginRootsAsync(join(claudeDirectory, 'plugins', 'cache'));
   const result: LocalSkillSourceInput[] = [];
   for (const pluginId of enabledIds) {
     const at = pluginId.lastIndexOf('@');
@@ -416,30 +526,54 @@ export function installLocalSkillFolders(
   return { installed, conflictNames: [] };
 }
 
-/** Recursively scan a single Skill source directory. */
-export function scanLocalSkills(directory: string): LocalSkillCandidate[] {
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await accessAsync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function safeDirectoryEntriesAsync(directory: string): Promise<string[]> {
+  try {
+    return await readdirAsync(directory);
+  } catch {
+    return [];
+  }
+}
+
+function canonicalSourcePath(path: string): string {
+  try {
+    return realpathSync.native(path).toLocaleLowerCase();
+  } catch {
+    return resolve(path).toLocaleLowerCase();
+  }
+}
+
+/** Recursively scan a single Skill source directory without blocking the Runtime event loop. */
+export async function scanLocalSkills(directory: string): Promise<LocalSkillCandidate[]> {
   const candidates: LocalSkillCandidate[] = [];
-  if (!existsSync(directory)) return candidates;
-  const walk = (dir: string, depth: number): void => {
+  if (!(await pathExists(directory))) return candidates;
+  const walk = async (dir: string, depth: number): Promise<void> => {
     if (depth > MAX_DEPTH || candidates.length >= MAX_FILES) return;
-    for (const name of safeDirectoryEntries(dir)) {
+    for (const name of await safeDirectoryEntriesAsync(dir)) {
       if (candidates.length >= MAX_FILES) return;
       const full = join(dir, name);
       let isDirectory: boolean;
       try {
-        isDirectory = statSync(full).isDirectory();
+        isDirectory = (await statAsync(full)).isDirectory();
       } catch {
         continue;
       }
       if (isDirectory) {
-        if (!SKIP_DIRS.has(name)) walk(full, depth + 1);
+        if (!SKIP_DIRS.has(name)) await walk(full, depth + 1);
         continue;
       }
       if (name.toLocaleLowerCase() !== 'skill.md') continue;
       try {
-        const content = readFileSync(full, 'utf8');
+        const [content, stat] = await Promise.all([readFileAsync(full, 'utf8'), statAsync(full)]);
         const meta = frontmatterOf(content);
-        const stat = statSync(full);
         candidates.push({
           path: full,
           skillDirectory: dir,
@@ -456,27 +590,27 @@ export function scanLocalSkills(directory: string): LocalSkillCandidate[] {
       }
     }
   };
-  walk(resolve(directory), 0);
+  await walk(resolve(directory), 0);
   return candidates;
 }
 
-function canonicalSourcePath(path: string): string {
+async function canonicalSourcePathAsync(path: string): Promise<string> {
   try {
-    return realpathSync.native(path).toLocaleLowerCase();
+    return (await realpathAsync(path)).toLocaleLowerCase();
   } catch {
     return resolve(path).toLocaleLowerCase();
   }
 }
 
 /** Scan sources in precedence order and de-duplicate junctions/overlapping roots. */
-export function scanLocalSkillSources(
+export async function scanLocalSkillSources(
   sources: readonly LocalSkillSourceInput[],
-): LocalSkillCandidate[] {
+): Promise<LocalSkillCandidate[]> {
   const seenFiles = new Map<string, number>();
   const result: LocalSkillCandidate[] = [];
   for (const source of sources) {
-    for (const candidate of scanLocalSkills(source.directory)) {
-      const key = canonicalSourcePath(candidate.path);
+    for (const candidate of await scanLocalSkills(source.directory)) {
+      const key = await canonicalSourcePathAsync(candidate.path);
       const existingIndex = seenFiles.get(key);
       if (existingIndex !== undefined) {
         if (source.workspaceId) {

@@ -129,6 +129,19 @@ class FakeRuntimeClient implements RuntimeSessionClient {
 }
 
 describe('desktop main RuntimeSession', () => {
+  it('forwards a live browser command but excludes it from reconnect snapshots', async () => {
+    const client = new FakeRuntimeClient();
+    const forwarded: Event[] = [];
+    const session = new RuntimeSession(client, (event) => forwarded.push(event));
+    await session.connect();
+    client.completeReplay();
+    const command = { ...eventAt(1), category: 'tool', type: 'browser.command_requested', payload: { requestId: 'live' } } as Event;
+    client.emit(command);
+    await Promise.resolve();
+    expect(forwarded).toEqual([command]);
+    expect((await session.connect()).snapshot).toEqual([]);
+  });
+
   it('resumes the lightweight activity stream from a persisted cursor and saves progress', async () => {
     const client = new FakeRuntimeClient();
     const saved: EventReplayCursor[] = [];

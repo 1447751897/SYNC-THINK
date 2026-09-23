@@ -7,11 +7,20 @@ import {
   type ReactNode,
 } from 'react';
 
-export interface SlidingTabsProps extends Omit<HTMLAttributes<HTMLDivElement>, 'children'> {
+export interface SlidingTabsProps extends Omit<
+  HTMLAttributes<HTMLDivElement>,
+  'children' | 'role'
+> {
   children: ReactNode;
+  rootRole?: 'tablist' | 'group';
 }
 
-export function SlidingTabs({ children, className, ...props }: SlidingTabsProps) {
+export function SlidingTabs({
+  children,
+  className,
+  rootRole = 'tablist',
+  ...props
+}: SlidingTabsProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const measuredRef = useRef(false);
 
@@ -19,7 +28,9 @@ export function SlidingTabs({ children, className, ...props }: SlidingTabsProps)
     const root = rootRef.current;
     if (!root) return;
     const pill = root.querySelector<HTMLElement>('.shell-sliding-tabs__pill');
-    const active = root.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]');
+    const active = root.querySelector<HTMLElement>(
+      '[role="tab"][aria-selected="true"], [aria-pressed="true"]',
+    );
     if (!pill || !active) return;
     if (!animate) pill.style.transition = 'none';
     pill.style.transform = `translateX(${active.offsetLeft}px)`;
@@ -45,7 +56,7 @@ export function SlidingTabs({ children, className, ...props }: SlidingTabsProps)
     <div
       {...props}
       ref={rootRef}
-      role="tablist"
+      role={rootRole}
       className={['shell-sliding-tabs', className].filter(Boolean).join(' ')}
     >
       <span className="shell-sliding-tabs__pill" aria-hidden="true" />

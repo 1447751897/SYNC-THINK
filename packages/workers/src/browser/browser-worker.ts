@@ -1,7 +1,7 @@
 import { resolve } from 'node:path';
+import { isPathWithinRoot } from '@sync-think/shared/node-paths';
 import { isRealPathInside, startRefusal } from '../process-runner.js';
 import type { Worker, WorkerEvent, WorkerJobInput, WorkerJobOutput, WorkerToken } from '../types.js';
-import { isPathInside } from '../types.js';
 import {
   BrowserHostError,
   type BrowserAction,
@@ -52,7 +52,7 @@ export class PersistentBrowserWorker implements BrowserWorker {
   async *exec(input: BrowserWorkerInput, token: WorkerToken): AsyncIterable<WorkerEvent> {
     const workingDir = resolve(input.workingDir);
     const allowedRoot = resolve(token.allowedRoot);
-    if (!isPathInside(workingDir, allowedRoot)) {
+    if (!isPathWithinRoot(allowedRoot, workingDir)) {
       yield failure(
         'security.path_traversal',
         'Browser workingDir escapes allowedRoot',

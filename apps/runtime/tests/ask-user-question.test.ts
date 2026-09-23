@@ -16,6 +16,7 @@ import type { ModelId, RunId, WorkspaceId } from '@sync-think/shared';
 import { createDemoRun, type DemoRunState } from '../src/demo-run.js';
 import type { PlatformMcpToolCall } from '../src/kernel/mcp-broker.js';
 import { buildPlatformMcpToolDefinitions } from '../src/kernel/platform-tools.js';
+import type { PendingAskRegistry } from '../src/pending-ask-registry.js';
 import { Runtime } from '../src/runtime.js';
 
 const tempDirs: string[] = [];
@@ -26,11 +27,8 @@ afterEach(() => {
 
 interface AskHarness {
   demoRuns: Map<string, DemoRunState>;
-  platformMcpCatalogByRun: Map<string, unknown>;
-  pendingAsks: Map<
-    string,
-    { resolve(result: { ok: boolean; content?: string; error?: string }): void; onAbort(): void }
-  >;
+  platformMcpRuns: { setCatalog(runId: string, catalog: readonly unknown[]): void };
+  pendingAskRegistry: PendingAskRegistry;
   handlePlatformMcpToolCall(
     runId: RunId,
     run: DemoRunState,
@@ -91,7 +89,7 @@ async function createFixture() {
   });
   const harness = runtime as unknown as AskHarness;
   harness.demoRuns.set(runId, run);
-  harness.platformMcpCatalogByRun.set(runId, buildPlatformMcpToolDefinitions({}));
+  harness.platformMcpRuns.setCatalog(runId, buildPlatformMcpToolDefinitions({}));
 
   const callTool = (call: Omit<PlatformMcpToolCall, 'signal'> & { signal?: AbortSignal }) =>
     harness.handlePlatformMcpToolCall(runId, run, root, {
@@ -101,14 +99,14 @@ async function createFixture() {
 
   const waitForAsk = async (): Promise<string> => {
     for (let attempt = 0; attempt < 200; attempt++) {
-      const askId = [...harness.pendingAsks.keys()][0];
-      if (askId) return askId;
+      const pending = harness.pendingAskRegistry.latestForThread(task.threadId);
+      if (pending) return pending.askId;
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
     throw new Error('no pending ask was raised');
   };
 
-  return { callTool, connection, harness, root, runId, waitForAsk };
+  return { callTool, connection, harness, root, runId, threadId: task.threadId, waitForAsk };
 }
 
 describe('ask_user_question platform tool', () => {
@@ -140,16 +138,18 @@ describe('ask_user_question platform tool', () => {
         },
       });
       const askId = await fixture.waitForAsk();
-      const entry = fixture.harness.pendingAsks.get(askId);
+      const entry = fixture.harness.pendingAskRegistry.take(askId);
       expect(entry).toBeTruthy();
       const result = pending.then((value) => value);
-      // 模拟 conversation.ask.answer 命令 handler：先删注册表，再 resolve 回填。
-      fixture.harness.pendingAsks.delete(askId);
-      entry!.resolve({ ok: true, content: JSON.stringify({ answers: [{ id: 'q1', selected: ['继续'] }] }) });
+      // 模拟 conversation.ask.answer 命令 handler：领取后 resolve 回填。
+      entry!.resolve({
+        ok: true,
+        content: JSON.stringify({ answers: [{ id: 'q1', selected: ['继续'] }] }),
+      });
       const settled = await result;
       expect(settled.ok).toBe(true);
       expect(settled.content).toContain('"selected":["继续"]');
-      expect(fixture.harness.pendingAsks.has(askId)).toBe(false);
+      expect(fixture.harness.pendingAskRegistry.take(askId)).toBeUndefined();
     } finally {
       fixture.connection.raw.close();
     }
@@ -170,7 +170,7 @@ describe('ask_user_question platform tool', () => {
       const settled = await pending;
       expect(settled.ok).toBe(false);
       expect(settled.error).toContain('cancelled');
-      expect(fixture.harness.pendingAsks.has(askId)).toBe(false);
+      expect(fixture.harness.pendingAskRegistry.take(askId)).toBeUndefined();
     } finally {
       fixture.connection.raw.close();
     }
@@ -186,7 +186,7 @@ describe('ask_user_question platform tool', () => {
       });
       expect(settled.ok).toBe(false);
       expect(settled.error).toContain('invalid questions');
-      expect(fixture.harness.pendingAsks.size).toBe(0);
+      expect(fixture.harness.pendingAskRegistry.latestForThread(fixture.threadId)).toBeUndefined();
     } finally {
       fixture.connection.raw.close();
     }

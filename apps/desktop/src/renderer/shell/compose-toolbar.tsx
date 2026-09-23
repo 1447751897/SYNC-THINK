@@ -20,8 +20,6 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
-  Globe,
-  ImagePlus,
   Lock,
   LoaderCircle,
   MessageSquare,
@@ -51,7 +49,6 @@ import {
   resolveProviderBrandLogoByName,
 } from './brand-icons.js';
 import type { ModelOption } from './NewConversationDialog.js';
-import { ComposerMenuHighlight } from './ComposerMenuHighlight.js';
 import { OverlayScrollArea } from './OverlayScrollArea.js';
 
 export type PermissionMode = 'ask' | 'workspace' | 'full-access';
@@ -230,14 +227,6 @@ export const REASONING_LABELS: Record<ReasoningEffort, string> = {
 /** Full fixed ladder — always show every rung (no per-model filtering). */
 export function reasoningLevelsForModel(_modelId?: string): readonly ReasoningEffort[] {
   return REASONING_OPTIONS.map((o) => o.value);
-}
-
-/** @deprecated kept for tests — selection is always valid on the fixed ladder. */
-export function coerceReasoningEffort(
-  value: ReasoningEffort,
-  allowed: readonly ReasoningEffort[] = reasoningLevelsForModel(),
-): ReasoningEffort {
-  return allowed.includes(value) ? value : 'auto';
 }
 
 /**
@@ -599,160 +588,6 @@ export function IdentityPickerMenu(props: {
             </div>
           ),
         )}
-      </div>
-    </MenuShell>
-  );
-}
-
-export function ReasoningMenu(props: {
-  open: boolean;
-  value: ReasoningEffort;
-  anchorEl: HTMLElement | null;
-  onClose(): void;
-  onChange(value: ReasoningEffort): void;
-}) {
-  return (
-    <MenuShell open={props.open} onClose={props.onClose} anchorEl={props.anchorEl} width={160}>
-      <div className="shell-menu__heading">思考强度</div>
-      <div className="shell-menu__scroll">
-        {REASONING_OPTIONS.map((opt) => {
-          const active = opt.value === props.value;
-          return (
-            <button
-              key={opt.value}
-              type="button"
-              role="menuitemradio"
-              aria-checked={active}
-              className={`shell-menu__item shell-menu__item--compact ${active ? 'is-active' : ''}`}
-              onClick={() => {
-                props.onChange(opt.value);
-                props.onClose();
-              }}
-            >
-              <div className="shell-menu__item-text">
-                <div className="shell-menu__item-title">{opt.title}</div>
-              </div>
-              {active ? <Check size={14} className="shell-menu__check" /> : null}
-            </button>
-          );
-        })}
-      </div>
-    </MenuShell>
-  );
-}
-
-export function NetworkSearchSetting(props: {
-  enabled: boolean;
-  rootRef?: React.Ref<HTMLDivElement>;
-  onDismiss?(): void;
-  onChange(enabled: boolean): void;
-}) {
-  return (
-    <div
-      ref={props.rootRef}
-      className="shell-mention-setting"
-      data-testid="compose-network-setting"
-      onKeyDown={(event) => {
-        if (!props.onDismiss) return;
-        const firstSegment = event.currentTarget.querySelector<HTMLButtonElement>(
-          '.shell-mention-setting__segment',
-        );
-        const returnToInput =
-          event.key === 'Escape' ||
-          (event.key === 'Tab' && event.shiftKey && event.target === firstSegment);
-        if (!returnToInput) return;
-        event.preventDefault();
-        event.stopPropagation();
-        props.onDismiss();
-      }}
-    >
-      <div className="shell-mention-setting__identity">
-        <span className="shell-mention-setting__icon" aria-hidden="true">
-          <Globe size={15} />
-        </span>
-        <span className="shell-mention-setting__label">联网搜索</span>
-      </div>
-      <div className="shell-mention-setting__segments" role="group" aria-label="联网搜索">
-        <button
-          type="button"
-          className="shell-mention-setting__segment"
-          data-active={props.enabled ? '1' : '0'}
-          aria-pressed={props.enabled}
-          aria-label="开启联网搜索"
-          onMouseDown={(event) => event.preventDefault()}
-          onClick={() => props.onChange(true)}
-        >
-          开启
-        </button>
-        <button
-          type="button"
-          className="shell-mention-setting__segment"
-          data-active={!props.enabled ? '1' : '0'}
-          aria-pressed={!props.enabled}
-          aria-label="关闭联网搜索"
-          onMouseDown={(event) => event.preventDefault()}
-          onClick={() => props.onChange(false)}
-        >
-          关闭
-        </button>
-      </div>
-    </div>
-  );
-}
-
-export function ComposeAtSettingsMenu(props: {
-  open: boolean;
-  enabled: boolean;
-  anchorEl: HTMLElement | null;
-  networkSettingRef?: React.Ref<HTMLDivElement>;
-  onClose(): void;
-  onDismiss(): void;
-  onChange(enabled: boolean): void;
-  onUpload?(): void;
-}) {
-  const menuRef = useRef<HTMLDivElement>(null);
-  const [activeIndex, setActiveIndex] = useState(0);
-  return (
-    <MenuShell
-      open={props.open}
-      onClose={props.onClose}
-      anchorEl={props.anchorEl}
-      width={Math.max(320, props.anchorEl?.getBoundingClientRect().width ?? 320)}
-      role="dialog"
-      ariaLabel="添加上下文和设置"
-    >
-      <div ref={menuRef} className="shell-mention-pop--context shell-compose-at-menu">
-        <ComposerMenuHighlight containerRef={menuRef} activeIndex={activeIndex} />
-        <div className="shell-mention-pop__section-label">来源与上下文</div>
-        {props.onUpload ? (
-          <button
-            type="button"
-            className="shell-mention-pop__upload"
-            data-composer-menu-index={0}
-            onMouseEnter={() => setActiveIndex(0)}
-            onClick={() => {
-              props.onClose();
-              props.onUpload?.();
-            }}
-          >
-            <ImagePlus size={13} aria-hidden="true" />
-            <span>上传图片</span>
-            <span className="shell-mention-pop__upload-hint">PNG / JPG</span>
-          </button>
-        ) : null}
-        <div
-          className="shell-mention-pop__settings"
-          data-composer-menu-index={props.onUpload ? 1 : 0}
-          onMouseEnter={() => setActiveIndex(props.onUpload ? 1 : 0)}
-        >
-          <NetworkSearchSetting
-            enabled={props.enabled}
-            rootRef={props.networkSettingRef}
-            onDismiss={props.onDismiss}
-            onChange={props.onChange}
-          />
-        </div>
-        <div className="shell-composer-menu__hint">输入以添加来源和上下文</div>
       </div>
     </MenuShell>
   );

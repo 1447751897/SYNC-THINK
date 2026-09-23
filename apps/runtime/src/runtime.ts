@@ -1,4 +1,58 @@
 import { parseTaskPlanHistoryPayload } from '@sync-think/protocol';
+import {
+  DEFAULT_GOAL_MAX_ROUNDS,
+  DEFAULT_GOAL_MAX_TOKENS,
+  formatGoalTurnModelPrompt,
+  formatGoalTurnUserMessage,
+  parseGoalTurnStatus,
+  stripGoalStatus,
+} from './goal-turn.js';
+import { GoalExecutionStateRegistry } from './goal-execution-state-registry.js';
+import {
+  extractLatestTaskPlanFromEvents,
+  formatTaskPlanForModel,
+  type ModelTaskPlan,
+} from './task-plan-context.js';
+import {
+  computeKernelGapFromMessages,
+  durableMessagesToGapProviderMessages,
+  formatBoundedPortableKernelTranscript,
+  formatKernelBootstrapTranscript,
+  isCurrentKernelUserMessage,
+} from './kernel-session-transcript.js';
+import {
+  KernelConversationSessionRepository,
+  type PersistedKernelConversationSession,
+} from './kernel-conversation-session-repository.js';
+export {
+  formatGoalTurnModelPrompt,
+  formatGoalTurnUserMessage,
+  parseGoalTurnStatus,
+  stripGoalStatus,
+} from './goal-turn.js';
+export type { GoalTurnStatus } from './goal-turn.js';
+export { extractLatestTaskPlanFromEvents, formatTaskPlanForModel } from './task-plan-context.js';
+export type { ModelTaskPlan, ModelTaskPlanItem } from './task-plan-context.js';
+export {
+  computeKernelGapFromMessages,
+  durableMessagesToGapProviderMessages,
+  formatKernelBootstrapTranscript,
+  formatKernelGapTranscript,
+  providerContentToKernelTranscript,
+} from './kernel-session-transcript.js';
+import { DelegationService } from './delegation-service.js';
+import {
+  delegatedUsageFromProcess,
+  projectDelegatedAgentCard,
+  projectDelegationSnapshot,
+} from './delegation-projection.js';
+import { DelegationExecutionController } from './delegation-execution.js';
+import { DelegationAdmissionService } from './delegation-admission.js';
+import { BACKGROUND_DELEGATION_IDLE_SECONDS } from './delegation-timeout-policy.js';
+import { withDelegatedRunSnapshot, reconcileDelegatedRecord } from './delegation-event.js';
+import { delegatedRunFromEvent, RefreshCoordinator } from '@sync-think/shared';
+import { formatDelegatedRunContext } from './delegation-context.js';
+import type { DelegatedRunRecord, DelegatedRunRepository } from '@sync-think/shared';
 import { DURABLE_TRUNCATION_MARKER, sanitizeDurableText } from '@sync-think/shared';
 // Runtime - long-lived Agent Runtime process entry. UI lifecycle independent:
 // killing the UI must not terminate active Runs (design �?6 / �?).
@@ -6,8 +60,23 @@ import { DURABLE_TRUNCATION_MARKER, sanitizeDurableText } from '@sync-think/shar
 import { parseConversationListFileChangesPayload } from '@sync-think/protocol';
 import { parseConversationReadFileDiffPayload } from '@sync-think/protocol';
 import { existsSync, readFileSync, statSync } from 'node:fs';
+import { readFile as readFileAsync } from 'node:fs/promises';
 import { DemoRunPersistenceJournal } from './demo-run-persistence.js';
 import { isCodexSilentCommandWatchdogMessage } from './kernel/persistent-terminal-command.js';
+import { selectModelFallback } from './model-fallback-selection.js';
+import { resolveInactiveToolApproval } from './inactive-tool-approval.js';
+import { pendingToolApprovalSummaryFromEvent } from './tool-approval-read-model.js';
+import { resolveConversationModelId } from './conversation-model-routing.js';
+import { RendererBrowserCommandBridge } from './renderer-browser-command-bridge.js';
+import {
+  parseDesktopWaitingResult,
+  projectDesktopWaitingCommandSummary,
+} from './desktop-waiting-projection.js';
+import {
+  resolveInitialRunModelBinding,
+  resolveRunCredentialBinding,
+  type RunBindingCatalog,
+} from './initial-run-model-binding.js';
 import { CommandSessionStore, isRunningCommandResult } from './command-sessions.js';
 import {
   CAPABILITY_PROBE_TEXT_PROMPT,
@@ -36,6 +105,9 @@ import {
   HEADER_BYTES,
   MAX_FRAME_BYTES,
   parseConversationReadContentPayload,
+  parseCollaborationCommand,
+  tryParsePromptEnhanceCancelPayload,
+  tryParsePromptEnhancePayload,
   type AppendMessageResponse,
   type BindWorkspaceFolderResponse,
   type ArchiveTaskResponse,
@@ -50,9 +122,7 @@ import {
   type SetParticipationModeResponse,
   type UnarchiveTaskResponse,
   type SavePolicyResponse,
-  type SavePolicyPayload,
   type ListPoliciesResponse,
-  type ListPoliciesPayload,
   type PolicyScopeRef,
   type CreateProviderResponse,
   type UpdateProviderResponse,
@@ -78,14 +148,11 @@ import {
   type UsageSummaryResponse,
   type UsageSummaryRow,
   DEFAULT_MODEL_PRICING,
+  USAGE_REQUEST_LIMIT_DEFAULT,
   type CapabilityProbeSuggestion,
-  type ProviderSummary,
   type ProviderModelSummary,
-  type ProviderCredentialSummary,
   type GetAgentResponse,
   type UpdateAgentBindingResponse,
-  type AgentBindingSummary,
-  type AgentDefinitionSummary,
   type ListAgentsResponse,
   type CreateAgentResponse,
   type ListAgentVersionsResponse,
@@ -99,7 +166,6 @@ import {
   type SkillPermissionDiffSummary,
   type DeleteSkillResponse,
   type SetSkillEnabledResponse,
-  type SkillVersionSummary,
   type RegisterMcpServerResponse,
   type RegisterRemoteMcpResponse,
   type SetMcpServerEnabledResponse,
@@ -122,10 +188,6 @@ import {
   type SubmitSkillPublishDraftResponse,
   type PreviewCapabilityOrganizeResponse,
   type GetLatestCapabilityOrganizeResponse,
-  type CapabilityWorkspaceActivationSummary,
-  type CapabilityUsageSummary,
-  type SkillPublishDraftSummary,
-  type CapabilityOrganizeReportSummary,
   type ProbeMcpPolicyResponse,
   type RequestMcpToolResponse,
   type ProbeMcpSpawnResponse,
@@ -143,15 +205,11 @@ import {
   type ApprovalRequestSummary,
   type PeekContextPacketResponse,
   type AmendContextPacketResponse,
-  type MemoryChangeSummary,
-  type DurableMemoryEntrySummary,
-  type DiagnosticSummary,
   type GoalSetResponse,
   type GoalGetResponse,
   type GoalClearResponse,
   type GoalResumeResponse,
   type GoalStatus,
-  type PromptEnhancePayload,
   type PromptEnhanceResponse,
   type PromptEnhanceCancelResponse,
   type DesignGenerateResponse,
@@ -215,17 +273,14 @@ import {
   type AssistantTurnSegment,
   type DelegatedAgentProjection,
   type DelegatedAgentUsage,
-  type DelegatedAgentToolEvent,
   type ConversationTransientFrame,
   type ConversationTransientSnapshot,
   type SubscribeConversationTransientStreamResponse,
   type UnsubscribeConversationTransientStreamResponse,
   type ListWaitingBrowserHandoffsResponse,
   type ListPendingToolApprovalsResponse,
-  type PendingToolApprovalSummary,
   type ToolApprovalRiskSummary,
   type ToolApprovalScope,
-  type DesktopWaitingCommandSummary,
   type ListWaitingDesktopCommandsResponse,
   type ContinueDesktopCommandResponse,
   type CancelDesktopCommandResponse,
@@ -241,13 +296,19 @@ import {
   type GetBrowserRecordingResponse,
   type StartBrowserRecordingResponse,
   type StopBrowserRecordingResponse,
+  type PauseBrowserRecordingResponse,
+  type ResumeBrowserRecordingResponse,
   type ListBrowserWorkflowsResponse,
   type GetBrowserWorkflowResponse,
   type CreateBrowserWorkflowDraftResponse,
   type CreateBrowserWorkflowRevisionDraftResponse,
   type SubmitBrowserWorkflowDraftResponse,
   type ReviewBrowserWorkflowDraftResponse,
+  type SaveBrowserWorkflowDraftResponse,
+  type PublishBrowserWorkflowDraftResponse,
+  type ImportChatBrowserWorkflowResponse,
   type ExecuteBrowserWorkflowResponse,
+  type UpdateBrowserWorkflowScheduleResponse,
   type KernelDetectResponse,
   COMPUTER_USE_PLUGIN_SETTING_KEY,
   PERSONALIZATION_SETTING_KEY,
@@ -309,10 +370,6 @@ import {
   type ArtifactVersion,
   type AcceptanceGateId,
   type TeamId,
-  type GlobalAgent,
-  type Team,
-  type TeamRun,
-  type Conversation,
   type Message,
   type MessageBlock,
   type ConversationId,
@@ -322,6 +379,7 @@ import {
   type TaskRule,
   type ExternalEventEnvelope,
   type AgentWritePolicy,
+  type CollaborationCommand,
 } from '@sync-think/shared';
 import {
   fetchProviderBalance,
@@ -329,16 +387,11 @@ import {
   ProviderBalanceError,
   textFromEvents,
   type AdapterEvent,
-  type ProviderContentPart,
   type ProviderMessage,
   type ProviderToolCall,
   type VisibleAssistantMessagePhase,
 } from '@sync-think/adapters';
-import {
-  defaultSurfaceForProtocol,
-  inferProviderSurface,
-  parsePlanMarkdown,
-} from '@sync-think/shared';
+import { defaultSurfaceForProtocol, parsePlanMarkdown } from '@sync-think/shared';
 import type {
   ConversationGetRunProcessResponse,
   ConversationListRunTimelineResponse,
@@ -351,12 +404,46 @@ import {
   parseDesignGeneratePayload,
 } from '@sync-think/protocol';
 import { projectRunProcess } from './run-process-view.js';
-import {
-  projectToolApprovalStates,
-  expiredToolApprovalSummary,
-  rememberToolApprovalEvent,
-} from './tool-approval-read-model.js';
+import { expiredToolApprovalSummary } from './tool-approval-read-model.js';
+import { DurableToolApprovalLedger } from './durable-tool-approval-ledger.js';
+import { CapabilityUsageRecorder } from './capability-usage-recorder.js';
+import { AssistantTimelineChangeTracker } from './assistant-timeline-change-tracker.js';
+import { PlatformMcpRunRegistry } from './platform-mcp-run-registry.js';
+import { InFlightPromiseRegistry } from './in-flight-promise-registry.js';
+import { ExternalEventExecutionRegistry } from './external-event-execution-registry.js';
+import { AbortControllerRegistry } from './abort-controller-registry.js';
+import { KernelToolProgressRegistry } from './kernel-tool-progress-registry.js';
+import { KeyedTurnQueue } from './keyed-turn-queue.js';
+import { ActiveRunRegistry } from './active-run-registry.js';
+import { CompletedDelegatedRunRegistry } from './completed-delegated-run-registry.js';
+import { ConversationTransientStateRegistry } from './conversation-transient-state-registry.js';
+import { CollaborationChatHost } from './collaboration-chat-host.js';
+import { LocalSkillWatchRegistry } from './local-skill-watch-registry.js';
+import { McpAuthConfigRepository } from './mcp-auth-config-repository.js';
+import { OwnedSubscriptionRegistry } from './owned-subscription-registry.js';
 import { projectRunIndexUpsert } from './run-index-projection.js';
+import { ThreadVersionProjection } from './thread-version-projection.js';
+import {
+  projectProviderModelSummary,
+  projectProviderSummary,
+  projectProviderSummaryById,
+} from './provider-catalog-projection.js';
+import {
+  resolveProviderDiscoveryAdapter,
+  type DiscoveryAdapterCatalog,
+} from './provider-discovery-routing.js';
+import { resolvePromptEnhancementModelId } from './prompt-enhancement-model-selection.js';
+import { isMergeableTextArtifactMime } from './artifact-content-policy.js';
+import { resolveCcSwitchImportPath } from './cc-switch-import-path.js';
+import { ConversationContextSnapshotCache } from './conversation-context-snapshot-cache.js';
+import { RunKernelRegistry } from './run-kernel-registry.js';
+import { PolicyScopeService } from './policy-scope-service.js';
+import { PendingAskRegistry, type PendingAskEntry } from './pending-ask-registry.js';
+import { FormalPlanRevisionRegistry } from './formal-plan-revision-registry.js';
+import { ScheduledTaskDispatchRegistry } from './scheduled-task-dispatch-registry.js';
+import { ScheduledTaskRunRegistry } from './scheduled-task-run-registry.js';
+import { ConversationContextAmendmentRegistry } from './conversation-context-amendment-registry.js';
+import { ConversationCompactBoundaryCache } from './conversation-compact-boundary-cache.js';
 import {
   backfillMessagesFromEvents,
   MESSAGE_STORE_BACKFILL_SETTING_KEY,
@@ -377,7 +464,6 @@ import {
   type SqliteWorkspaceStore,
   type TaskRecord,
   type SqliteProviderStore,
-  type ProviderCatalogEntry,
   type ModelRecord,
   type SqliteAppSettingStore,
   type SqliteScheduledTaskStore,
@@ -406,24 +492,14 @@ import {
   type SqliteMessageStore,
   type SqliteAssistantTimelineStore,
   type SqliteAgentContextStore,
-  type GlobalAgentRecord,
-  type TeamRecord,
-  type TeamRunRecord,
   type ConversationRecord,
-  type SkillVersionMetadataRecord,
   type SkillVersionRecord,
-  type MemoryChangeRecord,
-  type DurableMemoryEntry,
-  type DiagnosticRecord,
   type ToolApprovalEventScope,
   DEFAULT_ASSISTANT_TIMELINE_PAGE_LIMIT,
   DEFAULT_CONVERSATION_AGENT_ID,
   toModelBinding,
   defaultCcSwitchDbPath,
   loadCcSwitchProviderRows,
-  workspaceIconFromPrefs,
-  workspaceSortOrderFromPrefs,
-  workspaceHiddenFromPrefs,
 } from '@sync-think/storage';
 import { mapCcSwitchProviderRow, toCcSwitchPreviewItem } from '@sync-think/core';
 import type { SecureStore } from '@sync-think/secure-store';
@@ -436,12 +512,8 @@ import {
   resolveAllowedMcpToolSources,
   applyUserContextAmendments,
   isProtectedSourceKind,
-  resolveModelBinding,
-  resolveProviderPriorityFallback,
-  resolveCredentialRef,
   resolveRunSkillSelection,
   shouldAttemptFallback,
-  shouldSkipSameProviderFallback,
   isSharedProviderEndpointFailure,
   formatModelSwitchDetail,
   describeModelFallbackReason,
@@ -541,6 +613,7 @@ import {
   resolveStagedImageWorkspaceRelativePath,
   type AppendMessageImageTrustContext,
 } from './chat-image-staging.js';
+import { buildImageProcessEntries } from './image-process-events.js';
 import {
   VISION_FALLBACK_SETTING_KEY,
   assertNotRefusal,
@@ -756,14 +829,22 @@ import {
   parseGetBrowserRecordingPayload,
   parseStartBrowserRecordingPayload,
   parseStopBrowserRecordingPayload,
+  parsePauseBrowserRecordingPayload,
+  parseResumeBrowserRecordingPayload,
+  parseAssignBrowserWorkflowWorkspacePayload,
   parseListBrowserWorkflowsPayload,
   parseGetBrowserWorkflowPayload,
   parseCreateBrowserWorkflowDraftPayload,
   parseCreateBrowserWorkflowRevisionDraftPayload,
   parseSubmitBrowserWorkflowDraftPayload,
+  parseSaveBrowserWorkflowDraftPayload,
+  parsePublishBrowserWorkflowDraftPayload,
+  parseImportChatBrowserWorkflowPayload,
   parseReviewBrowserWorkflowDraftPayload,
   parseExecuteBrowserWorkflowPayload,
+  parseExecuteBrowserWorkflowDraftPayload,
   parseApproveExecuteBrowserWorkflowPayload,
+  parseUpdateBrowserWorkflowSchedulePayload,
   parseListWaitingBrowserHandoffsPayload,
   parseContinueBrowserHandoffPayload,
   parseCancelBrowserHandoffPayload,
@@ -809,7 +890,6 @@ import {
 } from './kernel/mcp-broker.js';
 import {
   executePlatformTool,
-  buildPlatformMcpToolDefinitions,
   isPlatformFileToolName,
   isPlanningDeniedTool,
   nativePlatformToolSchemas,
@@ -818,6 +898,7 @@ import {
   PLATFORM_MCP_TOOL_DEFINITIONS,
   type PlatformToolContext,
 } from './kernel/platform-tools.js';
+import { createPlatformAgentStoreAdapter } from './kernel/platform-agent-store.js';
 import { describeWorkspaceVersionControl } from './kernel/workspace-context.js';
 import { resolvePlatformMcpServerEntry } from './kernel/platform-mcp-entry.js';
 import {
@@ -825,16 +906,12 @@ import {
   selectKernelMcpRun,
   setKernelMcpServerConditions,
 } from './kernel/mcp-servers/registry.js';
-import {
-  COLLABORATION_SETTINGS_KEY,
-  normalizeCollaborationSettings,
-} from '@sync-think/protocol';
+import { COLLABORATION_SETTINGS_KEY, normalizeCollaborationSettings } from '@sync-think/protocol';
 import {
   DELEGATED_READONLY_TOOLS,
-  evaluateDynamicDelegation,
+  DELEGATION_TOOL_NAMES,
   isDelegatedReadOnlyTool,
   resolveCollaborationToolDenial,
-  resolveAgentAssignment,
 } from './collaboration-policy.js';
 import {
   PLAN_ACT_SETTING_KEY,
@@ -844,9 +921,11 @@ import {
 } from './plan-act.js';
 import { ToolApprovalPolicy, toolApprovalScopesFor } from './tool-approval-policy.js';
 import { commitToolApprovalDecision } from './tool-approval-commit.js';
-
-const DEFAULT_DELEGATED_TASK_TIMEOUT_SECONDS = 300;
-const MAX_DELEGATED_TASK_TIMEOUT_SECONDS = 3_600;
+import {
+  ActiveToolApprovalLifecycle,
+  decideActiveToolApproval,
+  type ActiveToolApproval,
+} from './active-tool-approval.js';
 
 /**
  * Flatten an error and its `cause` chain into one searchable string.
@@ -875,83 +954,12 @@ function errorChainText(error: unknown): string {
   return parts.join(' | ');
 }
 
-/**
- * Bounded tool-event log for one delegated child.
- *
- * Used by both paths on purpose. The durable result must stay parseable — a
- * child can call dozens of tools, and the old unbounded 12 KB-per-output log
- * produced an 86 KB result that tripped the kernel's MCP tool-result limit and
- * came back as a `<persisted-output>` envelope the desktop cannot parse (which
- * is why the Agent card vanished the moment a delegation finished). The live
- * transient projection shares the budget so one frame cannot grow to hundreds
- * of kilobytes either. Every row keeps its name/status/timestamps; `arguments`
- * and `output` share a single budget, and anything dropped is reported.
- */
-const DELEGATED_TOOL_EVENT_BUDGET = 12_000;
-/** Upper bound on returned tool rows; the rest is reported as an omitted count. */
-const DELEGATED_TOOL_EVENT_LIMIT = 80;
-
-export function delegatedToolEventsFromTimeline(
-  timeline: readonly AssistantTurnSegment[] | undefined,
-): DelegatedAgentToolEvent[] {
-  const segments = (timeline ?? []).filter(
-    (segment): segment is Extract<AssistantTurnSegment, { kind: 'tool' }> =>
-      segment.kind === 'tool',
-  );
-  const events: DelegatedAgentToolEvent[] = [];
-  let budget = DELEGATED_TOOL_EVENT_BUDGET;
-  let omitted = Math.max(0, segments.length - DELEGATED_TOOL_EVENT_LIMIT);
-  for (const segment of segments.slice(0, DELEGATED_TOOL_EVENT_LIMIT)) {
-    if (budget <= 0) {
-      omitted += 1;
-      continue;
-    }
-    const args = segment.argumentsJson ?? '{}';
-    const output = segment.output;
-    const wanted = args.length + (output?.length ?? 0);
-    let renderedArgs = args;
-    let renderedOutput = output;
-    let truncated = false;
-    if (wanted > budget) {
-      // Split what remains so a huge output cannot starve the arguments, which
-      // are what make a tool row identifiable in the card.
-      const argsShare = Math.min(args.length, Math.ceil(budget / 2));
-      renderedArgs = args.slice(0, argsShare);
-      renderedOutput = output?.slice(0, Math.max(0, budget - argsShare));
-      truncated = true;
-      budget = 0;
-    } else {
-      budget -= wanted;
-    }
-    events.push({
-      toolName: segment.name,
-      arguments: renderedArgs,
-      status: segment.status,
-      ...(renderedOutput !== undefined ? { output: renderedOutput } : {}),
-      ...(truncated
-        ? {
-            truncated: true,
-            ...(output !== undefined ? { outputCharacters: output.length } : {}),
-          }
-        : {}),
-      ...(segment.startedAt ? { startedAt: segment.startedAt } : {}),
-      ...(segment.completedAt ? { completedAt: segment.completedAt } : {}),
-    });
-  }
-  if (omitted > 0) {
-    // Tell the card why its log stops early instead of silently looking complete.
-    events.push({
-      toolName: `…另有 ${omitted} 项工具调用未返回`,
-      arguments: '{}',
-      status: 'completed',
-      omitted: true,
-    });
-  }
-  return events;
-}
-import { computeNextRunAt, initialNextRunAt } from './task-scheduler.js';
+import { delegatedToolEventsFromTimeline } from './delegation-tool-events.js';
+export { delegatedToolEventsFromTimeline } from './delegation-tool-events.js';
+import { computeNextRunAt, initialNextRunAt, parseWeeklyRule } from './task-scheduler.js';
+import { selectScheduledTaskHistorySummary } from './scheduled-task-history-summary.js';
 import {
-  enabledClaudePluginSkillSources,
+  enabledClaudePluginSkillSourcesAsync,
   installLocalSkillFolders,
   localSkillsDirectory,
   resolveLocalSkillPackage,
@@ -986,6 +994,7 @@ import {
   enforceMcpOutputLimit,
   normalizeMcpProcessPolicy,
   previewMcpOutput,
+  collectStepOrigins,
   type BrowserHostLike,
   type DesktopUserInputMonitor,
   type DesktopWorker,
@@ -1041,11 +1050,32 @@ import {
   PlanReviewerLineageError,
   PolicyScopeBoundaryError,
 } from './errors.js';
-import { toArtifactVersionSummary, toPolicyVersionSummary, toTaskSummary } from './summaries.js';
+import {
+  toAgentBindingSummary,
+  toAgentDefinitionSummary,
+  toApprovalRequestSummary,
+  toArtifactVersionSummary,
+  toCapabilityOrganizeReportSummary,
+  toCapabilityUsageSummary,
+  toCapabilityWorkspaceActivationSummary,
+  toConversationSummary,
+  toDiagnosticSummary,
+  toDurableMemoryEntrySummary,
+  toGlobalAgentSummary,
+  toPolicyVersionSummary,
+  toMemoryChangeSummary,
+  toTaskSummary,
+  toTeamRunSummary,
+  toTeamSummary,
+  toSkillPublishDraftSummary,
+  toWorkspaceSummary,
+} from './summaries.js';
 import * as queries from './commands/queries.js';
 import type { QueryContext } from './commands/query-context.js';
 import * as skillQueries from './commands/skill-queries.js';
 import type { SkillQueryContext } from './commands/skill-query-context.js';
+import { toSkillVersionSummary } from './skill-version-summary.js';
+import { toMcpServerSummary } from './mcp-server-summary.js';
 import type { UsageSummaryRawResult } from './usage-summary-cache.js';
 import type { ConversationHistoryReader } from './conversation-history-read-service.js';
 import { decideSchedulerHeartbeat, probeDaemonPipe } from './daemon/yield.js';
@@ -1069,23 +1099,9 @@ import { DingTalkGateway } from './bot-channels/dingtalk-gateway.js';
 import { QQGateway } from './bot-channels/qq-gateway.js';
 import { WechatGateway } from './bot-channels/wechat-gateway.js';
 import type { NormalizedBotMessage } from './bot-channels/types.js';
-import { TelegramBotClient, type TelegramIncomingMessage } from './telegram-bot-client.js';
 import { WebSearchConfigStore } from './web-search-config-store.js';
 import { searchWebWithProviders, type RuntimeWebSearchProviderId } from './web-search-service.js';
 import { resolveWebSearchMode, type WebSearchMode } from './web-search-routing.js';
-
-const TELEGRAM_BOT_SETTING_KEY = 'bot.channel.telegram';
-
-interface PersistedTelegramBotConfig {
-  enabled: boolean;
-  tokenHandle?: string;
-  proxyUrl: string;
-  updateOffset?: number;
-  botUsername?: string;
-  botDisplayName?: string;
-  lastError?: string;
-  updatedAt?: string;
-}
 
 function botSecretReplacements(
   payload: SaveBotChannelConfigPayload | TestBotChannelPayload,
@@ -1213,6 +1229,7 @@ export interface RuntimeOptions {
   teamStore?: SqliteTeamStore;
   conversationStore?: SqliteConversationStore;
   messageStore?: SqliteMessageStore;
+  delegatedRunRepository?: DelegatedRunRepository;
   assistantTimelineStore?: SqliteAssistantTimelineStore;
   memoryStore?: SqliteMemoryStore;
   approvalStore?: SqliteApprovalStore;
@@ -1257,7 +1274,7 @@ export interface RuntimeOptions {
    * Protocol-family discovery adapters (OpenAI-compatible live adapters, etc.).
    * Preferred over the single discoveryAdapter when a protocol key matches.
    */
-  discoveryByProtocol?: Partial<Record<ProtocolFamily, DemoProvider>>;
+  discoveryByProtocol?: DiscoveryAdapterCatalog;
   /** Fallback discovery adapter; defaults to demoProvider when present (tests / Fake). */
   discoveryAdapter?: DemoProvider;
   /** 0026: app-level KV settings (vision fallback, plan & act). */
@@ -1275,6 +1292,7 @@ export interface RuntimeOptions {
    * 所以这里直接读表，不必新开 daemon 桥接。写入路径仍然只属于 daemon。
    */
   externalEventStore?: SqliteExternalEventStore;
+  collaborationChatHost?: CollaborationChatHost;
   /** 0026+: usage rows, request log, and tool aggregates from durable runtime events. */
   queryUsageSummary?: (sinceIso?: string) => Promise<UsageSummaryRawResult>;
   conversationHistory?: ConversationHistoryReader;
@@ -1385,31 +1403,6 @@ export function isHostAutoApprovedMcpTool(toolName: string): boolean {
   return HOST_AUTO_APPROVED_PLATFORM_TOOLS.has(match[2]!);
 }
 
-interface PersistedKernelConversationSession {
-  version: 1;
-  sessionId: string;
-  fingerprint: string;
-  updatedAt: string;
-  responseContinuationScopeId?: string;
-  /** Stable workspace identity owned by the native Codex/Claude session. */
-  workspaceRoot?: string;
-  /** Last host context appended to the native session. */
-  contextHash?: string;
-  /** Provider/model route owning response-id continuations for this session. */
-  routingHash?: string;
-  /**
-   * Host-message watermark (last `message.sequence` this kernel session saw).
-   * Used to detect cross-kernel gaps when another kernel handled turns after
-   * this session's last run. Absent on legacy records → treated as in sync.
-   */
-  lastMessageSequence?: number;
-  lastMessageAt?: string;
-}
-
-const PORTABLE_KERNEL_CONTEXT_MESSAGE_LIMIT = 20;
-const PORTABLE_KERNEL_CONTEXT_TURN_BYTES = 8 * 1024;
-const PORTABLE_KERNEL_CONTEXT_TOTAL_BYTES = 64 * 1024;
-
 const KERNEL_SESSION_SETTING_PREFIX = 'kernel.session';
 const GATEWAY_RESPONSE_CONTINUATION_SETTING_PREFIX = 'gateway.response-continuation';
 const TERMINAL_RUN_EVENT_TYPES = new Set([
@@ -1418,49 +1411,6 @@ const TERMINAL_RUN_EVENT_TYPES = new Set([
   'run.cancelled',
   'run.paused',
 ]);
-
-function parsePersistedKernelConversationSession(
-  value: unknown,
-): PersistedKernelConversationSession | undefined {
-  const record = runtimeRecord(value);
-  if (
-    record?.version !== 1 ||
-    typeof record.sessionId !== 'string' ||
-    !record.sessionId.trim() ||
-    typeof record.fingerprint !== 'string' ||
-    !record.fingerprint.trim() ||
-    typeof record.updatedAt !== 'string'
-  ) {
-    return undefined;
-  }
-  return {
-    version: 1,
-    sessionId: record.sessionId,
-    fingerprint: record.fingerprint,
-    updatedAt: record.updatedAt,
-    ...(typeof record.responseContinuationScopeId === 'string' &&
-    record.responseContinuationScopeId.trim()
-      ? { responseContinuationScopeId: record.responseContinuationScopeId.trim() }
-      : {}),
-    ...(typeof record.workspaceRoot === 'string' && record.workspaceRoot.trim()
-      ? { workspaceRoot: record.workspaceRoot.trim() }
-      : {}),
-    ...(typeof record.contextHash === 'string' && record.contextHash.trim()
-      ? { contextHash: record.contextHash.trim() }
-      : {}),
-    ...(typeof record.routingHash === 'string' && record.routingHash.trim()
-      ? { routingHash: record.routingHash.trim() }
-      : {}),
-    ...(typeof record.lastMessageSequence === 'number' &&
-    Number.isSafeInteger(record.lastMessageSequence) &&
-    record.lastMessageSequence >= 0
-      ? { lastMessageSequence: record.lastMessageSequence }
-      : {}),
-    ...(typeof record.lastMessageAt === 'string' && record.lastMessageAt.trim()
-      ? { lastMessageAt: record.lastMessageAt.trim() }
-      : {}),
-  };
-}
 
 function parsePersistedGatewayResponseContinuations(
   value: unknown,
@@ -1497,103 +1447,6 @@ function isInvalidKernelSessionError(error: string | undefined): boolean {
   ].some((pattern) => pattern.test(message));
 }
 
-const TOOL_ARGUMENTS_TRANSCRIPT_LIMIT = 300;
-const TOOL_RESULT_TRANSCRIPT_LIMIT = 800;
-
-function truncateTranscriptText(text: string, limit: number): { text: string; truncated: boolean } {
-  if (text.length <= limit) return { text, truncated: false };
-  return { text: `${text.slice(0, limit)}…`, truncated: true };
-}
-
-export function providerContentToKernelTranscript(content: ProviderMessage['content']): string {
-  if (typeof content === 'string') return content;
-  return content
-    .map((part) => {
-      if (part.type === 'text') return part.text ?? '';
-      if (part.type === 'image') return '[Image attached in this conversation]';
-      if (part.type === 'tool-call') {
-        const tool = part.toolCall;
-        if (!tool) return '[Tool call]';
-        if (!tool.argumentsJson) return `[Tool call: ${tool.name}]`;
-        const { text, truncated } = truncateTranscriptText(
-          tool.argumentsJson,
-          TOOL_ARGUMENTS_TRANSCRIPT_LIMIT,
-        );
-        return `[Tool call: ${tool.name} 参数: ${text}${truncated ? ' (参数截断)' : ''}]`;
-      }
-      if (part.type === 'tool-result') {
-        const { text, truncated } = truncateTranscriptText(
-          part.toolResult ?? '',
-          TOOL_RESULT_TRANSCRIPT_LIMIT,
-        );
-        return `[Tool result: ${text}${truncated ? ' (结果截断)' : ''}]`;
-      }
-      return '';
-    })
-    .filter(Boolean)
-    .join('\n');
-}
-
-function kernelTranscriptTurnLabel(message: ProviderMessage): string {
-  return message.role === 'assistant'
-    ? message.phase === 'commentary'
-      ? 'Assistant commentary'
-      : 'Assistant'
-    : message.role === 'user'
-      ? 'User'
-      : message.role === 'tool'
-        ? 'Tool'
-        : 'System';
-}
-
-function formatKernelTranscriptTurns(messages: readonly ProviderMessage[]): string[] {
-  return messages
-    .map((message) => {
-      const content = providerContentToKernelTranscript(message.content).trim();
-      if (!content) return undefined;
-      return `### ${kernelTranscriptTurnLabel(message)}\n${content}`;
-    })
-    .filter((turn): turn is string => Boolean(turn));
-}
-
-export function formatKernelBootstrapTranscript(
-  messages: readonly ProviderMessage[],
-  omittedCount = 0,
-): string {
-  const turns = formatKernelTranscriptTurns(messages);
-  if (turns.length === 0) return '';
-  return [
-    '## Restored conversation context',
-    'The following transcript is prior conversation state restored from history. It is NOT the current user input — treat every turn below as already-happened context. Continue from it without repeating it.',
-    ...(omittedCount > 0
-      ? [`[${omittedCount} earlier portable turns omitted from this restored context]`]
-      : []),
-    ...turns,
-  ].join('\n\n');
-}
-
-export function formatKernelGapTranscript(
-  messages: readonly ProviderMessage[],
-  omittedCount = 0,
-): string {
-  const turns = formatKernelTranscriptTurns(messages);
-  if (turns.length === 0) return '';
-  return [
-    '## Cross-kernel session gap',
-    'The turns below were handled by another kernel/session while this one was idle. They are prior context, NOT the current user input — treat them as already-happened conversation state.',
-    ...(omittedCount > 0
-      ? [`[${omittedCount} earlier portable turns omitted from this cross-kernel handoff]`]
-      : []),
-    ...turns,
-  ].join('\n\n');
-}
-
-/**
- * Portable durable→provider projection for native-session handoff. Only user
- * text and final assistant text/code are transferable; process commentary,
- * reasoning and tool projections remain UI state owned by the originating
- * native session.
- */
 /**
  * Convert a run's external-kernel tool history into durable MessageBlocks.
  * These blocks belong to the UI/audit projection. Native-session handoff does
@@ -1804,14 +1657,6 @@ function isProtectedAssistantTimelineSegment(segment: AssistantTurnSegment): boo
 }
 
 /**
- * Chat tools that delegate a task to an Agent that already exists in the Agent
- * Library. Both are executed by `executeDynamicAgentDelegation`; this is the
- * single source for the dispatch check and for finding the parent's own tool
- * row when anchoring a child's card.
- */
-const DELEGATION_TOOL_NAMES: ReadonlySet<string> = new Set(['agent_delegate', 'agent_run']);
-
-/**
  * May a delegated child of this Agent write?
  *
  * The child runs headless — no approval card exists — so the rule is the most
@@ -1833,57 +1678,6 @@ export function delegationMayWrite(input: {
   if (input.writePolicy !== 'inherit') return false;
   const mode = normalizeChatExecutionMode(input.executionMode);
   return mode === 'workspace' || mode === 'full-access';
-}
-
-/**
- * Resolve which parent tool row a delegation belongs to.
- *
- * The child's card must sit under its own `agent_delegate` / `agent_run` row,
- * and that row is identified by the `toolCallId` the renderer already holds. The
- * durable tool result also carries `childRunId`, but it only exists once the
- * child finishes — too late to anchor a running delegation.
- *
- * Resolution happens when a projection is published rather than when the child
- * is created: the executor receives a *snapshot* of the parent run taken before
- * the delegation row was written back, so the live parent state is the first
- * place that actually holds the row.
- *
- * The child run is created from the delegation's `task` text, which is exactly
- * what the parent row's arguments carry, so task text is the deterministic key.
- * Rows already used by a sibling projection are skipped, which keeps parallel
- * siblings and repeated delegations of the same Agent on their own rows.
- */
-function resolveParentDelegationToolCallId(input: {
-  parent: DemoRunState;
-  task: string;
-  /** parentToolCallId values already bound to a sibling child run. */
-  claimed: ReadonlySet<string>;
-}): string | undefined {
-  const rows = (input.parent.assistantTimeline ?? []).filter(
-    (segment): segment is Extract<AssistantTurnSegment, { kind: 'tool' }> =>
-      segment.kind === 'tool' && DELEGATION_TOOL_NAMES.has(segment.name),
-  );
-  const unclaimed = rows.filter((row) => !input.claimed.has(row.toolCallId));
-  const taskOf = (row: Extract<AssistantTurnSegment, { kind: 'tool' }>): string => {
-    try {
-      const args = JSON.parse(row.argumentsJson ?? '{}') as { task?: unknown };
-      return typeof args.task === 'string' ? args.task.trim() : '';
-    } catch {
-      return '';
-    }
-  };
-  const wanted = input.task.trim();
-  if (wanted) {
-    const exact = unclaimed.filter((row) => taskOf(row) === wanted);
-    // A still-running row is the live delegation; a settled one is a replay.
-    const live = exact.find((row) => row.status === 'running') ?? exact[0];
-    if (live) return live.toolCallId;
-  }
-  const running = unclaimed.filter((row) => row.status === 'running');
-  // One unclaimed running row is unambiguous even if its arguments were
-  // compacted away; with several candidates, guessing would mis-anchor cards.
-  if (running.length === 1) return running[0]!.toolCallId;
-  return unclaimed.length === 1 ? unclaimed[0]!.toolCallId : undefined;
 }
 
 function selectAssistantTimelineForBudget(
@@ -2142,222 +1936,8 @@ export function buildRoundMessageBlocks(input: {
   return blocks;
 }
 
-export function durableMessagesToGapProviderMessages(
-  messages: readonly Message[],
-): ProviderMessage[] {
-  const result: ProviderMessage[] = [];
-  for (const message of messages) {
-    if (message.role !== 'user' && message.role !== 'assistant') continue;
-    const parts: ProviderContentPart[] = [];
-    for (const block of message.blocks) {
-      switch (block.type) {
-        case 'text':
-        case 'code':
-          if (block.text) parts.push({ type: 'text', text: block.text });
-          break;
-        default:
-          break;
-      }
-    }
-    if (parts.length === 0) continue;
-    const text = parts
-      .map((part) => (part.type === 'text' ? (part.text ?? '') : ''))
-      .filter(Boolean)
-      .join('\n')
-      .trim();
-    if (!text) continue;
-    const marker = '\n[portable turn truncated]';
-    const bytes = Buffer.byteLength(text, 'utf8');
-    const portableText =
-      bytes <= PORTABLE_KERNEL_CONTEXT_TURN_BYTES
-        ? text
-        : `${Buffer.from(text, 'utf8')
-            .subarray(0, PORTABLE_KERNEL_CONTEXT_TURN_BYTES - Buffer.byteLength(marker, 'utf8'))
-            .toString('utf8')
-            .replace(/\uFFFD$/u, '')}${marker}`;
-    result.push({ role: message.role, content: portableText });
-  }
-  return result;
-}
-
-function formatBoundedPortableKernelTranscript(
-  messages: readonly ProviderMessage[],
-  formatter: (messages: readonly ProviderMessage[], omittedCount?: number) => string,
-): string {
-  let omittedCount = Math.max(0, messages.length - PORTABLE_KERNEL_CONTEXT_MESSAGE_LIMIT);
-  const selected = messages.slice(-PORTABLE_KERNEL_CONTEXT_MESSAGE_LIMIT);
-  let transcript = formatter(selected, omittedCount);
-  while (
-    selected.length > 1 &&
-    Buffer.byteLength(transcript, 'utf8') > PORTABLE_KERNEL_CONTEXT_TOTAL_BYTES
-  ) {
-    selected.shift();
-    omittedCount += 1;
-    transcript = formatter(selected, omittedCount);
-  }
-  return transcript;
-}
-
-/**
- * Build the bounded portable tail appended to a resumed native session. The
- * legacy `oversized` field remains false for wire/test compatibility: native
- * session lifetime is never derived from host message or token estimates.
- */
-export function computeKernelGapFromMessages(
-  messages: readonly Message[],
-  _effectiveWindow: number,
-): { count: number; catchUp?: string; oversized: boolean } {
-  if (messages.length === 0) return { count: 0, oversized: false };
-  const portableMessages = durableMessagesToGapProviderMessages(messages);
-  const catchUp = formatBoundedPortableKernelTranscript(
-    portableMessages,
-    formatKernelGapTranscript,
-  );
-  return { count: messages.length, oversized: false, ...(catchUp ? { catchUp } : {}) };
-}
-
-function isCurrentKernelUserMessage(
-  message: ProviderMessage | undefined,
-  userText: string,
-): boolean {
-  if (!message || message.role !== 'user') return false;
-  const normalizedUserText = userText.trim();
-  if (!normalizedUserText) return false;
-  return providerContentToKernelTranscript(message.content).trim() === normalizedUserText;
-}
-
 function cursorForEvent(event: Event): EventReplayCursor {
   return { sequence: event.sequence, eventId: String(event.id) };
-}
-
-/** One checklist item as maintained by the model via update_task_plan. */
-export interface ModelTaskPlanItem {
-  id?: string;
-  title: string;
-  description?: string;
-  status: 'pending' | 'in_progress' | 'completed';
-}
-
-/** Latest task checklist snapshot for a thread (NewMax-style todo list). */
-export interface ModelTaskPlan {
-  items: ModelTaskPlanItem[];
-  total: number;
-  completed: number;
-}
-
-function parseJsonObjectText(raw: unknown): Record<string, unknown> | undefined {
-  if (typeof raw !== 'string' || !raw.trim()) return undefined;
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * Extract the latest update_task_plan checklist for a thread from the recent
- * event buffer. Prefers the executed result ({ok:true, plan:{items}}) from
- * tool.completed; falls back to the request arguments so the model can read
- * back the checklist as soon as the call is streamed. NewMax-style: the
- * checklist is part of the model context, not just a UI signal.
- */
-export function extractLatestTaskPlanFromEvents(
-  events: readonly Event[],
-  threadId: string,
-): ModelTaskPlan | undefined {
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const event = events[index]!;
-    if (event.category !== 'tool') continue;
-    const payload = (event.payload ?? {}) as Record<string, unknown>;
-    if (payload.threadId !== threadId || payload.toolName !== 'update_task_plan') continue;
-    let rawItems: unknown;
-    if (event.type === 'tool.completed' || event.type === 'tool.failed') {
-      const result = parseJsonObjectText(payload.result ?? payload.output);
-      if (result?.ok === true) {
-        const plan = result.plan;
-        rawItems =
-          plan && typeof plan === 'object' ? (plan as Record<string, unknown>).items : undefined;
-      }
-    } else if (event.type === 'tool.requested') {
-      rawItems =
-        payload.arguments && typeof payload.arguments === 'object'
-          ? (payload.arguments as Record<string, unknown>).items
-          : undefined;
-    }
-    if (rawItems === undefined) continue;
-    return normalizeModelTaskPlan(rawItems);
-  }
-  return undefined;
-}
-
-function normalizeModelTaskPlan(raw: unknown): ModelTaskPlan | undefined {
-  if (!Array.isArray(raw) || raw.length === 0) return undefined;
-  const items: ModelTaskPlanItem[] = [];
-  for (const entry of raw.slice(0, 20)) {
-    if (!entry || typeof entry !== 'object') continue;
-    const rec = entry as Record<string, unknown>;
-    const title = typeof rec.title === 'string' ? rec.title.trim() : '';
-    if (!title) continue;
-    const status =
-      rec.status === 'in_progress' || rec.status === 'completed' ? rec.status : 'pending';
-    const description = typeof rec.description === 'string' ? rec.description.trim() : '';
-    const id = typeof rec.id === 'string' ? rec.id.trim() : '';
-    items.push({ ...(id ? { id } : {}), title, ...(description ? { description } : {}), status });
-  }
-  if (items.length === 0) return undefined;
-  const completed = items.filter((item) => item.status === 'completed').length;
-  return { items, total: items.length, completed };
-}
-
-export type GoalTurnStatus = 'complete' | 'continue' | 'blocked';
-
-const GOAL_STATUS_PATTERN = /GOAL_STATUS\s*[：:]\s*(complete|blocked|continue)/gi;
-const GOAL_STATUS_LINE_PATTERN =
-  /^[ \t`*#>-]*GOAL_STATUS\s*[：:]\s*(?:complete|blocked|continue)[ \t`*]*$/gim;
-
-/** NewMax Goal protocol: the last status marker in the work model's final answer wins. */
-export function parseGoalTurnStatus(text: string): GoalTurnStatus | undefined {
-  let status: GoalTurnStatus | undefined;
-  for (const match of text.matchAll(GOAL_STATUS_PATTERN)) {
-    status = match[1]?.toLowerCase() as GoalTurnStatus | undefined;
-  }
-  return status;
-}
-
-/** Remove standalone Goal control lines from user-visible final answer text. */
-export function stripGoalStatus(text: string): string {
-  const stripped = text.replace(GOAL_STATUS_LINE_PATTERN, '');
-  return stripped === text ? text : stripped.replace(/\s+$/, '');
-}
-
-function goalStatusInstruction(chinese: boolean): string {
-  return chinese
-    ? '本轮结束时，最后单独一行输出状态标记 `GOAL_STATUS: complete` / `GOAL_STATUS: continue` / `GOAL_STATUS: blocked`：仅当目标每条要求都有证据证明已满足、且要求的内容已完整写在你的回复正文里、经得起逐条核对时才用 complete；只有确实需要人工介入、或必须修改实现方案、自己无法继续推进时才用 blocked，不要第一次遇到困难就用 blocked；其余情况一律用 continue 继续工作，不要因为想停下或预算将尽就声称完成或受阻。'
-    : 'At the end of this turn, output one final standalone status line: `GOAL_STATUS: complete` / `GOAL_STATUS: continue` / `GOAL_STATUS: blocked`. Use complete only when every requirement has evidence, the required content is fully present in your reply body, and it can survive item-by-item review. Use blocked only when human intervention is truly required, the approach must change, or you cannot continue on your own; do not mark blocked at the first difficulty. Use continue in all other cases, and never report complete or blocked just because you want to stop or the budget is running low.';
-}
-
-/** Work-model prompt for each Goal round, including the optional stopping condition. */
-export function formatGoalTurnModelPrompt(goal: GoalStatus): string {
-  const round = (goal.roundsStarted ?? 0) + 1;
-  const maxRounds = goal.maxGoalRounds ?? DEFAULT_GOAL_MAX_ROUNDS;
-  const tokenBudget = goal.maxGoalTokens ?? DEFAULT_GOAL_MAX_TOKENS;
-  const chinese = /[\u3400-\u9fff]/u.test(`${goal.condition}${goal.stopCondition ?? ''}`);
-  const stopping = goal.stopCondition
-    ? chinese
-      ? `停止条件：${goal.stopCondition}。`
-      : `Stopping condition: ${goal.stopCondition}. `
-    : '';
-  if (round === 1) {
-    return chinese
-      ? `[Goal 模式] 目标：${goal.condition}。${stopping}最多 ${maxRounds} 轮，token 预算 ${tokenBudget}。请从本轮起，直接在回复正文中按顺序逐步产出目标要求的实际内容、边做边推进；不要把整轮时间花在创建或更新任务清单等管理动作上，完成与否以正文是否实际覆盖目标为准。${goalStatusInstruction(true)}`
-      : `[Goal mode] Goal: ${goal.condition}. ${stopping}Maximum ${maxRounds} iterations, token budget ${tokenBudget}. Starting this turn, produce the actual content required by the goal directly in the reply body, step by step and in order. Do not spend the whole turn creating or updating task lists or other management artifacts. Completion is judged by whether the reply body actually covers the goal. ${goalStatusInstruction(false)}`;
-  }
-  return chinese
-    ? `[Goal 第 ${round} 轮] 目标：${goal.condition}。${stopping}请核对你在本对话中已输出的回复正文，逐条对照目标的全部要求：仍有未覆盖的部分，就在本轮正文按顺序继续产出，不要跳步、不要重复已讲过的内容；只有当正文确已完整覆盖目标每一项要求时，才输出 GOAL_STATUS: complete。${goalStatusInstruction(true)}`
-    : `[Goal round ${round}] Goal: ${goal.condition}. ${stopping}Review the reply body already produced in this conversation against every requirement. Continue with only the uncovered work, without skipping steps or repeating completed content. Use GOAL_STATUS: complete only after the reply body fully covers the goal. ${goalStatusInstruction(false)}`;
 }
 
 function stripGoalStatusFromRun(run: DemoRunState): DemoRunState {
@@ -2371,27 +1951,6 @@ function stripGoalStatusFromRun(run: DemoRunState): DemoRunState {
         : segment,
     ),
   };
-}
-
-/** User-facing message persisted for each automatic goal round. */
-export function formatGoalTurnUserMessage(goal: GoalStatus): string {
-  const round = (goal.roundsStarted ?? 0) + 1;
-  const maxRounds = goal.maxGoalRounds ?? DEFAULT_GOAL_MAX_ROUNDS;
-  return round === 1
-    ? goal.condition
-    : `继续目标（第 ${round}/${maxRounds} 轮）：${
-        goal.lastReason ? `处理上一轮未完成项：${goal.lastReason}` : goal.condition
-      }`;
-}
-
-/** NewMax-style checkbox checklist text injected into the model context. */
-export function formatTaskPlanForModel(plan: ModelTaskPlan): string {
-  const lines = plan.items.map((item) => {
-    const mark =
-      item.status === 'completed' ? '[x]' : item.status === 'in_progress' ? '[~]' : '[ ]';
-    return `- ${mark} ${item.title}${item.description ? `\n  ${item.description}` : ''}`;
-  });
-  return `当前任务清单（${plan.completed}/${plan.total} 已完成）：\n${lines.join('\n')}`;
 }
 
 function compareCursor(left: EventReplayCursor, right: EventReplayCursor): number {
@@ -2559,21 +2118,6 @@ function providerVisibleMessagesFromRoundTranscript(
   );
 }
 
-/** 一个挂起的 ask_user_question 等待（模型问询 → 用户作答 → 回填工具结果）。 */
-interface PendingAskEntry {
-  askId: string;
-  runId: RunId;
-  threadId: string;
-  questions: AskQuestion[];
-  createdAt: string;
-  resolve(result: { ok: boolean; content?: string; error?: string }): void;
-  onAbort(): void;
-}
-
-/** NewMax goal defaults; both limits prevent an unbounded autonomous loop. */
-const DEFAULT_GOAL_MAX_ROUNDS = 10;
-const DEFAULT_GOAL_MAX_TOKENS = 1_000_000;
-
 /**
  * Build the durable usage payload shared by Codex/Claude native reports and
  * gateway-observed reports. `modelId` is the SYNC-THINK catalog identity used
@@ -2622,26 +2166,31 @@ export class Runtime {
   readonly installId: string;
   private readonly handlers: PipeServerHandlers;
   private server: ReturnType<typeof createPipeServer> | null = null;
-  private readonly inFlight = new Set<string>();
+  private readonly activeRuns = new ActiveRunRegistry();
   private readonly daemonWorker: boolean;
   private readonly onShutdownRequested?: () => void;
-  /** 投递来且尚未完成的任务 id（T8：stop() 时向其发 abort）。 */
-  private readonly dispatchedTasks = new Set<string>();
-  /** runId → taskId（投递任务终态时从 dispatchedTasks 移除）。 */
-  private readonly taskIdByRun = new Map<string, string>();
-  private readonly threadVersions = new Map<string, number>();
-  private readonly events: Event[] = [];
-  private readonly subscriptions = new Map<string, RuntimeEventSubscription>();
-  private readonly transientSubscriptions = new Map<string, ConversationTransientSubscription>();
-  private readonly transientReplay: ConversationTransientFrame[] = [];
-  /** Current transient snapshot per thread; survives replay eviction for active runs. */
-  private readonly transientSnapshotByThread = new Map<string, ConversationTransientSnapshot>();
-  private readonly transientSequenceByThread = new Map<string, number>();
-  /** External-kernel tool output that is visible only in transient snapshots. */
-  private readonly kernelToolProgressByRun = new Map<
-    string,
-    Map<string, { line: string; bytes: number; at: string }>
+  private readonly scheduledTaskDispatches = new ScheduledTaskDispatchRegistry();
+  private readonly scheduledTaskRunRegistry = new ScheduledTaskRunRegistry<
+    ScheduledTask,
+    DemoRunState
   >();
+  private readonly threadVersionProjection = new ThreadVersionProjection<string>();
+  private readonly events: Event[] = [];
+  private readonly eventSubscriptions = new OwnedSubscriptionRegistry<
+    Socket,
+    RuntimeEventSubscription
+  >();
+  private readonly conversationTransientSubscriptions = new OwnedSubscriptionRegistry<
+    Socket,
+    ConversationTransientSubscription
+  >();
+  private readonly transientReplay: ConversationTransientFrame[] = [];
+  private readonly conversationTransientState = new ConversationTransientStateRegistry<
+    string,
+    ConversationTransientSnapshot
+  >();
+  /** External-kernel tool output that is visible only in transient snapshots. */
+  private readonly kernelToolProgressRegistry = new KernelToolProgressRegistry();
   private readonly stateStore?: RuntimeStateStore;
   private readonly workspaceStore?: SqliteWorkspaceStore;
   private readonly workspaceId: WorkspaceId;
@@ -2660,29 +2209,18 @@ export class Runtime {
   private readonly externalEventStore?: SqliteExternalEventStore;
   private taskSchedulerTimer?: ReturnType<typeof setInterval>;
   private taskSchedulerTicking = false;
-  /** 当前由定时任务触发的 run（并发上限统计）。 */
-  private readonly taskRuns = new Set<string>();
-  /** runId → 定时任务元数据；历史只在 run 终态时写入。 */
-  private readonly scheduledTaskRuns = new Map<
-    string,
-    { task: ScheduledTask; firedAt: string; run: DemoRunState }
-  >();
+  private browserWorkflowSchedulerTimer?: ReturnType<typeof setInterval>;
+  private browserWorkflowSchedulerTicking = false;
   /** Completion frames in flight; shutdown waits so daemon does not retry a finished run. */
-  private readonly daemonCompletionPromises = new Set<Promise<boolean>>();
-  /** Active durable external-event lease per event id. */
-  private readonly externalEventExecutions = new Map<
-    string,
-    { leaseToken: string; runId: string }
-  >();
-  private readonly externalEventIdByRun = new Map<string, string>();
-  private readonly externalEventCleanupRuns = new Set<string>();
+  private readonly daemonCompletionRegistry = new InFlightPromiseRegistry();
+  /** Active durable external-event leases and their run cleanup ownership. */
+  private readonly externalEventExecutionRegistry = new ExternalEventExecutionRegistry();
   private externalEventHeartbeatTimer?: ReturnType<typeof setInterval>;
   private runtimeStopped = false;
   /** Persisted runId → kernelId, so message-stream kernel badges survive restarts. */
-  private readonly runKernelIds: Map<string, string> = new Map();
-  private runKernelIdsLoaded = false;
+  private readonly runKernelRegistry: RunKernelRegistry;
   /** 挂起的 ask_user_question（模型问询等待用户作答）。 */
-  private readonly pendingAsks = new Map<string, PendingAskEntry>();
+  private readonly pendingAskRegistry = new PendingAskRegistry();
   /**
    * Open gateway (开放网关): loopback protocol bridge that lets a kernel speak
    * its native dialect against an upstream that speaks the other one.
@@ -2695,12 +2233,17 @@ export class Runtime {
   private readonly globalAgentStore?: SqliteGlobalAgentStore;
   private readonly teamStore?: SqliteTeamStore;
   private readonly conversationStore?: SqliteConversationStore;
+  private readonly collaborationChatHost?: CollaborationChatHost;
+  private readonly collaborationTaskRuns = new Map<string, string>();
+  /** Final assistant text retained briefly for collaboration callers after run cleanup. */
+  private readonly collaborationRunResults = new Map<string, string>();
   private readonly messageStore?: SqliteMessageStore;
   private readonly assistantTimelineStore?: SqliteAssistantTimelineStore;
-  private readonly assistantTimelineFingerprintsByRun = new Map<string, Map<string, string>>();
+  private readonly assistantTimelineChanges = new AssistantTimelineChangeTracker();
   private readonly memoryStore?: SqliteMemoryStore;
   private readonly approvalStore?: SqliteApprovalStore;
   private readonly policyStore?: SqlitePolicyStore;
+  private readonly policyScope: PolicyScopeService;
   private readonly authorizationStore?: SqliteAuthorizationStore;
   private readonly orchestrationStore?: SqliteOrchestrationStore;
   private readonly artifactStore?: SqliteArtifactStore;
@@ -2711,19 +2254,10 @@ export class Runtime {
   private readonly mcpStore?: SqliteMcpStore;
   private readonly taskPlanStore?: SqliteTaskPlanStore;
   private readonly capabilityStore?: SqliteCapabilityStore;
-  private readonly recordedCapabilityUsageKeys = new Set<string>();
+  private readonly capabilityUsageRecorder: CapabilityUsageRecorder;
   private readonly secureStore?: SecureStore;
   private readonly webSearchConfigStore?: WebSearchConfigStore;
-  /**
-   * Remote MCP auth. Key is stored as plaintext in app settings (product
-   * requirement: the key is echoed back into the register dialog), so the
-   * in-memory cache mirrors `{ key, authScheme }`. Legacy SecureStore handles
-   * (storeHandle) are still readable for backwards compatibility.
-   */
-  private readonly mcpAuthHandles = new Map<
-    string,
-    { key?: string; storeHandle?: string; authScheme: string }
-  >();
+  private readonly mcpAuthConfigs: McpAuthConfigRepository;
   private readonly wechatBotGateway = new WechatGateway();
   private readonly botGatewayManager = new BotChannelGatewayManager([
     new TelegramGateway(),
@@ -2735,28 +2269,25 @@ export class Runtime {
     new QQGateway(),
   ]);
   private readonly botChannelConfigStore?: BotChannelConfigStore;
-  /** Legacy polling client kept only for reading/migrating existing Telegram settings. */
-  private readonly telegramBotClient = new TelegramBotClient();
-  private telegramBotAbort?: AbortController;
-  private telegramBotLoop?: Promise<void>;
   private readonly browserHost?: BrowserHostLike;
+  private livePreviewSequence = 0;
+  private readonly liveChatBrowserPages = new Map<RunId, import('@sync-think/protocol').BrowserWorkflowLivePage>();
+  private readonly browserStore?: SqliteBrowserStore;
   private readonly browserController?: RuntimeBrowserController;
   private readonly browserExtensionHost?: BrowserExtensionHostLike;
   private readonly useEmbeddedBrowser: boolean;
-  private readonly pendingRendererBrowserCommands = new Map<
-    string,
-    {
-      resolve: (result: RendererBrowserCommandResult) => void;
-      runId: string;
-      threadId: string;
-      toolCallId: string;
-    }
-  >();
+  private readonly rendererBrowserCommands = new RendererBrowserCommandBridge();
   private readonly browserProfileService?: RuntimeBrowserProfileService;
   private readonly browserRecordingService?: RuntimeBrowserRecordingService;
   private readonly browserWorkflowService?: RuntimeBrowserWorkflowService;
   private readonly browserWorkflowRunner?: BrowserWorkflowRunner;
   private readonly desktopController?: RuntimeDesktopController;
+  private readonly desktopWaitingProjectionPorts = {
+    findTaskByThreadId: (threadId: string) =>
+      this.workspaceStore?.getTaskByThreadId(threadId as ThreadId),
+    findRun: (runId: string) => this.orchestrationStore?.getRun(runId as RunId),
+    findTask: (taskId: string) => this.workspaceStore?.getTask(taskId as TaskId),
+  };
   private readonly kernelAdapterResolver: (kernelId?: string) => KernelAdapter | undefined;
   /**
    * Bounded resident Codex processes. Durable thread ids remain in app_setting,
@@ -2764,109 +2295,49 @@ export class Runtime {
    */
   private readonly codexSessionHost: BoundedKernelSessionHost;
   private readonly commandSessions = new CommandSessionStore();
-  /**
-   * Platform MCP catalog frozen per external-kernel run. The kernel may only
-   * call tools that were exposed when its broker started; a later capability or
-   * permission-mode change must not widen an in-flight run.
-   */
-  private readonly platformMcpCatalogByRun = new Map<
-    string,
-    readonly PlatformMcpToolDefinition[]
+  /** Frozen tool catalogs, replay results, and capability brokers share the external-run lifecycle. */
+  private readonly platformMcpRuns = new PlatformMcpRunRegistry<
+    PlatformMcpToolDefinition,
+    CapabilityBroker,
+    { ok: boolean; content?: string; error?: string }
   >();
-  /**
-   * Per-run platform MCP results keyed by `<callId>:<argsHash>`. A kernel retry
-   * of the same call replays the first result instead of creating a second
-   * agent/task (design §6.4 idempotency).
-   */
-  private readonly platformMcpResultsByRun = new Map<
-    string,
-    Map<string, Promise<{ ok: boolean; content?: string; error?: string }>>
-  >();
-  /** Per-run NewMax capability-broker refs (`search_capability` → `use_capability`). */
-  private readonly capabilityBrokerByRun = new Map<string, CapabilityBroker>();
-  /** The one formal, approval-ready plan revision submitted by each active run. */
-  private readonly formalPlanRevisionByRun = new Map<string, number>();
-  /** Hot cache for external-kernel sessions; app_setting remains durable authority. */
-  private readonly kernelConversationSessions = new Map<
-    string,
-    PersistedKernelConversationSession
-  >();
-  /**
-   * Promise tails serialize one external kernel session without blocking
-   * unrelated conversations. The durable app_setting entry remains the
-   * authority for the actual session id.
-   */
-  private readonly externalKernelSessionTails = new Map<string, Promise<void>>();
+  private readonly formalPlanRevisions: FormalPlanRevisionRegistry;
+  private readonly kernelConversationSessionRepository: KernelConversationSessionRepository;
+  /** Serializes one external kernel session without blocking unrelated conversations. */
+  private readonly externalKernelSessionQueue = new KeyedTurnQueue();
   private readonly hasApprovedPlan?: (taskId: TaskId) => boolean;
-  private readonly discoveryByProtocol: Partial<Record<ProtocolFamily, DemoProvider>>;
+  private readonly discoveryByProtocol: DiscoveryAdapterCatalog;
   private readonly discoveryAdapter?: DemoProvider;
   private readonly demoRuns = new Map<string, DemoRunState>();
   /** Terminal child snapshots retained until agent_delegate projects them. */
-  private readonly completedDelegatedRuns = new Map<string, DemoRunState>();
-  private readonly completedDelegatedRunStates = new Map<
-    string,
+  private readonly completedDelegatedRuns = new CompletedDelegatedRunRegistry<
+    DemoRunState,
     'completed' | 'failed' | 'cancelled' | 'timed_out'
   >();
-  /** Parent-scoped live child cards; cleared when the parent terminal frame is emitted. */
-  private readonly delegatedAgentTransientByParentRun = new Map<
+  private readonly delegationService: DelegationService;
+  private readonly delegationExecution: DelegationExecutionController;
+  private readonly delegationAdmission: DelegationAdmissionService;
+  /** Last push/query observation for each live child; intentionally transient. */
+  private readonly delegationStatusObservations = new Map<
     string,
-    DelegatedAgentProjection[]
+    NonNullable<DelegatedAgentProjection['statusObservation']>
   >();
   private readonly demoRunPersistence = new DemoRunPersistenceJournal();
   /** Abort controllers for in-flight demo chat streams (Stop button). */
-  private readonly demoRunAborts = new Map<string, AbortController>();
+  private readonly demoRunAbortRegistry = new AbortControllerRegistry();
   /** Draft-only provider calls, isolated from conversation runs and durable history. */
-  private readonly promptEnhancementAborts = new Map<string, AbortController>();
+  private readonly promptEnhancementAbortRegistry = new AbortControllerRegistry();
   /**
    * Chat tool approvals under「询问批准�?
    * mutating tools pause here until conversation.decideToolApproval.
    */
-  private readonly pendingToolApprovals = new Map<
-    string,
-    {
-      approvalId: string;
-      runId: RunId;
-      threadId: string;
-      workspaceRoot: string;
-      executionMode: string;
-      chatMessages: import('@sync-think/adapters').ProviderMessage[];
-      pendingToolCalls: import('@sync-think/adapters').ProviderToolCall[];
-      /** Index of the tool currently waiting for approval. */
-      currentIndex: number;
-      /** Results for tools already executed in this round. */
-      completedResults: Array<{ toolCallId: string; content: string }>;
-      toolLoopRound: number;
-      approvalSummary: { title: string; detail: string; path?: string; command?: string };
-      approvalArguments: Record<string, unknown>;
-      approvalRisk?: ToolApprovalRiskSummary;
-      allowedScopes: ToolApprovalScope[];
-      resolve: (decision: 'approve' | 'deny') => void;
-      createdAt: string;
-    }
-  >();
-  private readonly durableChatToolApprovalStateById = new Map<
-    string,
-    { requested: Event; decided?: Event }
-  >();
-  private readonly backgroundTasks = new Set<Promise<void>>();
-  private readonly activeKernelRuns = new Set<Promise<void>>();
-  /** Thread-scoped Manifest amendments (force-exclude source ids). In-memory for M1. */
-  private readonly threadContextAmendments = new Map<string, { excludeSourceIds: string[] }>();
-  private readonly contextSnapshotByThread = new Map<string, Map<string, ContextSnapshot>>();
-  private readonly contextRunByThread = new Map<
-    string,
-    {
-      run: DemoRunState;
-      workspaceRoot?: string;
-      executionMode: string;
-      toolsEnabled: boolean;
-      networkEnabled: boolean;
-    }
-  >();
-  private readonly latestCompactByThread = new Map<
-    string,
-    { summaryText: string; compactedAt: string }
-  >();
+  private readonly activeToolApprovals = new ActiveToolApprovalLifecycle();
+  private readonly durableToolApprovals: DurableToolApprovalLedger;
+  private readonly backgroundTaskRegistry = new InFlightPromiseRegistry();
+  private readonly kernelExecutionRegistry = new InFlightPromiseRegistry();
+  private readonly contextAmendments = new ConversationContextAmendmentRegistry();
+  private readonly contextSnapshotCache = new ConversationContextSnapshotCache();
+  private readonly compactBoundaryCache: ConversationCompactBoundaryCache;
   private eventSequence = 0;
   private lastCheckpointEventSequence = 0;
 
@@ -2881,13 +2352,41 @@ export class Runtime {
       createAdapter: () => this.kernelAdapterResolver('codex'),
     });
     this.stateStore = opts.stateStore;
+    this.durableToolApprovals = new DurableToolApprovalLedger(
+      opts.stateStore?.listToolApprovalEvents
+        ? {
+            listEvents: (scope) => opts.stateStore!.listToolApprovalEvents!(scope),
+          }
+        : undefined,
+    );
+    this.formalPlanRevisions = new FormalPlanRevisionRegistry(
+      opts.stateStore?.listEventsByRun
+        ? { listEventsByRun: (runId) => opts.stateStore!.listEventsByRun!(runId) }
+        : undefined,
+    );
     this.workspaceStore = opts.workspaceStore;
     this.workspaceId = opts.workspaceId ?? ('workspace-dev' as WorkspaceId);
+    this.compactBoundaryCache = new ConversationCompactBoundaryCache({
+      loadEvents: (threadId) => {
+        if (!opts.stateStore) return [];
+        const task = opts.workspaceStore?.getTaskByThreadId(threadId as ThreadId);
+        return task && opts.stateStore.listEventsByTask
+          ? opts.stateStore.listEventsByTask(task.id)
+          : opts.stateStore.listAllEvents
+            ? opts.stateStore.listAllEvents(0)
+            : opts.stateStore.listEvents(this.workspaceId, 0);
+      },
+    });
     this.checkpointRunId = opts.checkpointRunId ?? (`runtime-${opts.installId}` as RunId);
     this.demoProvider = opts.demoProvider;
     this.modelRetryBaseDelayMs = Math.max(0, opts.modelRetryBaseDelayMs ?? 500);
     this.providerStore = opts.providerStore;
     this.appSettingStore = opts.appSettingStore;
+    this.kernelConversationSessionRepository = new KernelConversationSessionRepository(
+      opts.appSettingStore,
+    );
+    this.mcpAuthConfigs = new McpAuthConfigRepository(opts.appSettingStore);
+    this.runKernelRegistry = new RunKernelRegistry(opts.appSettingStore);
     this.toolApprovalPolicy = new ToolApprovalPolicy(opts.appSettingStore);
     this.windowsOcrRecognizer = opts.windowsOcrRecognizer ?? recognizeImageTextWithWindowsOcr;
     this.scheduledTaskStore = opts.scheduledTaskStore;
@@ -2912,11 +2411,91 @@ export class Runtime {
     this.globalAgentStore = opts.globalAgentStore;
     this.teamStore = opts.teamStore;
     this.conversationStore = opts.conversationStore;
+    this.collaborationChatHost = opts.collaborationChatHost;
     this.messageStore = opts.messageStore;
+    this.delegationService = new DelegationService(
+      opts.messageStore,
+      opts.delegatedRunRepository,
+      (record) => this.reconcileDelegatedRun(record),
+    );
+    this.delegationAdmission = new DelegationAdmissionService({
+      getSettings: () => this.appSettingStore?.get(COLLABORATION_SETTINGS_KEY)?.value,
+      getCatalog: (threadId) => {
+        const workspaceId = this.resolveEventWorkspaceId(threadId);
+        const candidates = (this.globalAgentStore?.listEffective(workspaceId) ?? []).map(
+          (agent) => ({
+            id: String(agent.id),
+            name: agent.name,
+            avatar: agent.avatar,
+            persona: agent.persona,
+            description: agent.description,
+            skillIds: agent.skillIds,
+            mcpServerIds: agent.mcpServerIds,
+            archived: agent.archived,
+            enabled: agent.enabled,
+            source: agent.source,
+            availabilityScope: agent.availabilityScope,
+            writePolicy: agent.writePolicy,
+          }),
+        );
+        return { workspaceId, candidates };
+      },
+    });
+    this.delegationExecution = new DelegationExecutionController({
+      execute: (id) => this.executeDemoRun(id),
+      abort: (id) => this.demoRunAbortRegistry.abort(id),
+      markTimedOut: (id) => {
+        const child = this.demoRuns.get(id);
+        if (!child) return;
+        this.demoRuns.set(id, { ...child, delegationTerminationReason: 'timed_out' });
+        this.completedDelegatedRuns.markState(id, 'timed_out');
+      },
+      failBackground: (id, error, timeoutSeconds) => {
+        const timedOut = this.demoRuns.get(id)?.delegationTerminationReason === 'timed_out';
+        this.persistDemoRunFailure(
+          id,
+          timedOut ? 'timeout' : 'unknown',
+          timedOut
+            ? `Background Agent exceeded its ${timeoutSeconds}-second absolute limit or 1800-second no-progress limit.`
+            : error instanceof Error
+              ? error.message
+              : String(error),
+        );
+        console.warn(
+          '[runtime] background Agent run failed:',
+          error instanceof Error ? error.message : error,
+        );
+      },
+      releaseBackground: (id) => {
+        this.completedDelegatedRuns.delete(id);
+      },
+      probeStatus: (id) => this.probeDelegatedRunStatus(id),
+      reportError: (error) => console.warn('[runtime] delegated execution cleanup failed:', error),
+    });
     this.assistantTimelineStore = opts.assistantTimelineStore;
     this.memoryStore = opts.memoryStore;
     this.approvalStore = opts.approvalStore;
     this.policyStore = opts.policyStore;
+    this.policyScope = new PolicyScopeService({
+      installId: this.installId,
+      ...(opts.workspaceStore
+        ? {
+            getWorkspace: (workspaceId) => opts.workspaceStore!.getWorkspace(workspaceId),
+            getTask: (taskId) => opts.workspaceStore!.getTask(taskId),
+          }
+        : {}),
+      ...(opts.agentStore
+        ? {
+            getLatestAgentVersion: (agentId) => opts.agentStore!.getLatestVersion(agentId),
+            getAgentVersion: (agentVersionId) => opts.agentStore!.getVersion(agentVersionId),
+          }
+        : {}),
+      ...(opts.policyStore
+        ? {
+            hasApplicablePolicies: (scopes) => opts.policyStore!.listApplicable(scopes).length > 0,
+          }
+        : {}),
+    });
     this.authorizationStore = opts.authorizationStore;
     this.orchestrationStore = opts.orchestrationStore;
     this.artifactStore = opts.artifactStore;
@@ -2988,6 +2567,7 @@ export class Runtime {
     this.mcpStore = opts.mcpStore;
     this.taskPlanStore = opts.taskPlanStore;
     this.capabilityStore = opts.capabilityStore;
+    this.capabilityUsageRecorder = new CapabilityUsageRecorder(opts.capabilityStore);
     this.secureStore = opts.secureStore;
     this.webSearchConfigStore =
       opts.appSettingStore && opts.secureStore
@@ -2998,6 +2578,7 @@ export class Runtime {
         ? new BotChannelConfigStore(opts.appSettingStore, opts.secureStore)
         : undefined;
     this.browserHost = opts.browserHost;
+    this.browserStore = opts.browserStore;
     this.browserExtensionHost = opts.browserExtensionHost;
     this.useEmbeddedBrowser = opts.useEmbeddedBrowser === true && !this.daemonWorker;
     const browserProfileGate =
@@ -3084,12 +2665,8 @@ export class Runtime {
         }
       },
       onClientGone: (socket) => {
-        for (const [streamId, subscription] of this.subscriptions) {
-          if (subscription.socket === socket) this.subscriptions.delete(streamId);
-        }
-        for (const [streamId, subscription] of this.transientSubscriptions) {
-          if (subscription.socket === socket) this.transientSubscriptions.delete(streamId);
-        }
+        this.eventSubscriptions.removeOwnedBy(socket);
+        this.conversationTransientSubscriptions.removeOwnedBy(socket);
         if (!socket.destroyed) socket.destroy();
       },
       onFrame: (socket, frame: Frame) => {
@@ -3115,6 +2692,10 @@ export class Runtime {
               payload: hc,
             }),
           );
+          return;
+        }
+        if (frame.type === 'collaboration.command') {
+          this.handleCollaborationCommand(socket, frame);
           return;
         }
         if (frame.type === 'runtime.subscribeEvents') {
@@ -3764,8 +3345,24 @@ export class Runtime {
           this.trackBackgroundTask(this.handleStopBrowserRecording(socket, frame));
           return;
         }
+        if (frame.type === 'browser.recording.pause') {
+          this.handlePauseBrowserRecording(socket, frame);
+          return;
+        }
+        if (frame.type === 'browser.recording.resume') {
+          this.handleResumeBrowserRecording(socket, frame);
+          return;
+        }
+        if (frame.type === 'browser.workflow.assignWorkspace') {
+          const payload = parseAssignBrowserWorkflowWorkspacePayload(frame.payload);
+          if (!payload) { this.writeMalformedPayload(socket, frame); return; }
+          if (!this.browserWorkflowService) { this.writeBrowserWorkflowUnavailable(socket, frame); return; }
+          try { this.writeBrowserWorkflowResponse(socket, frame, this.browserWorkflowService.assignWorkspace(payload)); }
+          catch (error) { this.writeBrowserWorkflowCommandError(socket, frame, error); }
+          return;
+        }
         if (frame.type === 'browser.workflow.list') {
-          this.handleListBrowserWorkflows(socket, frame);
+          void this.handleListBrowserWorkflows(socket, frame);
           return;
         }
         if (frame.type === 'browser.workflow.get') {
@@ -3784,6 +3381,18 @@ export class Runtime {
           this.handleSubmitBrowserWorkflowDraft(socket, frame);
           return;
         }
+        if (frame.type === 'browser.workflow.save') {
+          this.handleSaveBrowserWorkflowDraft(socket, frame);
+          return;
+        }
+        if (frame.type === 'browser.workflow.publish') {
+          this.handlePublishBrowserWorkflowDraft(socket, frame);
+          return;
+        }
+        if (frame.type === 'browser.workflow.importChat') {
+          this.handleImportChatBrowserWorkflow(socket, frame);
+          return;
+        }
         if (frame.type === 'browser.workflow.review') {
           this.handleReviewBrowserWorkflowDraft(socket, frame);
           return;
@@ -3792,8 +3401,16 @@ export class Runtime {
           this.trackBackgroundTask(this.handleExecuteBrowserWorkflow(socket, frame));
           return;
         }
+        if (frame.type === 'browser.workflow.executeDraft') {
+          this.trackBackgroundTask(this.handleExecuteBrowserWorkflowDraft(socket, frame));
+          return;
+        }
         if (frame.type === 'browser.workflow.approveAndExecute') {
           this.trackBackgroundTask(this.handleApproveExecuteBrowserWorkflow(socket, frame));
+          return;
+        }
+        if (frame.type === 'browser.workflow.updateSchedule') {
+          this.handleUpdateBrowserWorkflowSchedule(socket, frame);
           return;
         }
         if (frame.type === 'desktop.command.listWaiting') {
@@ -3841,7 +3458,7 @@ export class Runtime {
           return;
         }
         if (frame.type === 'skill.local.scan') {
-          this.handleSkillLocalScan(socket, frame);
+          this.trackBackgroundTask(this.handleSkillLocalScan(socket, frame));
           return;
         }
         if (frame.type === 'skill.local.import') {
@@ -4011,23 +3628,16 @@ export class Runtime {
 
   currentHealthcheck(): HealthcheckResult | HealthcheckError {
     return healthcheck(this.startedAt, {
-      inFlightRuns: this.inFlight.size,
-      inFlightRunIds: [...this.inFlight],
+      inFlightRuns: this.activeRuns.count(),
+      inFlightRunIds: this.activeRuns.ids(),
       eventSequence: this.eventSequence,
     });
-  }
-
-  recordInFlight(id: string): void {
-    this.inFlight.add(id);
-  }
-  forgetInFlight(id: string): void {
-    this.inFlight.delete(id);
   }
 
   createCheckpoint(): RuntimeCheckpointSnapshot {
     return {
       eventSequence: this.eventSequence,
-      threadVersions: Array.from(this.threadVersions.entries()),
+      threadVersions: this.threadVersionProjection.entries(),
       events: this.events.map((event) => ({ ...event, payload: { ...event.payload } })),
       createdAt: new Date().toISOString(),
     };
@@ -4035,10 +3645,7 @@ export class Runtime {
 
   private restoreCheckpoint(checkpoint: RuntimeCheckpointSnapshot): void {
     this.eventSequence = checkpoint.eventSequence;
-    this.threadVersions.clear();
-    for (const [threadId, version] of checkpoint.threadVersions) {
-      this.threadVersions.set(threadId, version);
-    }
+    this.threadVersionProjection.replace(checkpoint.threadVersions);
     this.events.length = 0;
     this.rememberRecentEvents(
       checkpoint.events.map((event) => ({ ...event, payload: { ...event.payload } })),
@@ -4200,7 +3807,7 @@ export class Runtime {
     if (!Array.isArray(entries)) {
       throw new Error('Runtime checkpoint is missing threadVersions');
     }
-    this.threadVersions.clear();
+    const restoredVersions: Array<[string, number]> = [];
     for (const entry of entries) {
       if (
         !Array.isArray(entry) ||
@@ -4210,8 +3817,9 @@ export class Runtime {
       ) {
         throw new Error('Runtime checkpoint contains an invalid thread version');
       }
-      this.threadVersions.set(entry[0], entry[1]);
+      restoredVersions.push([entry[0], entry[1]]);
     }
+    this.threadVersionProjection.replace(restoredVersions);
     this.demoRuns.clear();
     for (const run of parseDemoRuns(state.demoRuns)) {
       this.demoRuns.set(run.runId, run);
@@ -4223,8 +3831,7 @@ export class Runtime {
       const threadId = event.payload.threadId;
       const taskVersion = event.payload.taskVersion;
       if (typeof threadId === 'string' && typeof taskVersion === 'number') {
-        const current = this.threadVersions.get(threadId) ?? 0;
-        this.threadVersions.set(threadId, Math.max(current, taskVersion));
+        this.threadVersionProjection.recordLatest(threadId, taskVersion);
       }
     }
     applyDemoRunEvent(this.demoRuns, event);
@@ -4263,7 +3870,7 @@ export class Runtime {
       replayCursor: afterCursor,
       liveCursor: highWatermark,
     };
-    this.subscriptions.set(streamId, subscription);
+    this.eventSubscriptions.register(streamId, subscription);
     this.writeReplayPage(
       socket,
       frame,
@@ -4279,7 +3886,7 @@ export class Runtime {
       this.writeMalformedPayload(socket, frame);
       return;
     }
-    const subscription = this.subscriptions.get(payload.streamId);
+    const subscription = this.eventSubscriptions.find(payload.streamId);
     if (
       !subscription ||
       subscription.socket !== socket ||
@@ -4303,7 +3910,7 @@ export class Runtime {
   ): void {
     const page = this.buildReplayPage(requestFrame, streamId, subscription, startingSequence);
     if (!page) {
-      this.subscriptions.delete(streamId);
+      this.eventSubscriptions.remove(streamId);
       socket.write(
         encodeFrame({
           id: requestFrame.id,
@@ -4513,7 +4120,7 @@ export class Runtime {
       this.writeMalformedPayload(socket, frame);
       return;
     }
-    this.subscriptions.delete(payload.streamId);
+    this.eventSubscriptions.remove(payload.streamId);
     socket.write(
       encodeFrame({
         id: frame.id,
@@ -4531,7 +4138,7 @@ export class Runtime {
       return;
     }
     const afterStreamSequence = payload.afterStreamSequence ?? 0;
-    const latestStreamSequence = this.transientSequenceByThread.get(payload.threadId) ?? 0;
+    const latestStreamSequence = this.conversationTransientState.latestSequence(payload.threadId);
     const cursorAhead = afterStreamSequence > latestStreamSequence;
 
     const retained = this.transientReplay.filter(
@@ -4580,12 +4187,12 @@ export class Runtime {
           earliestReplayedSequence === undefined ||
           afterStreamSequence < earliestReplayedSequence - 1));
     const streamId = `transient_${ulid()}`;
-    this.transientSubscriptions.set(streamId, {
+    this.conversationTransientSubscriptions.register(streamId, {
       socket,
       threadId: payload.threadId,
       liveCursor: latestStreamSequence,
     });
-    const activeSnapshot = this.transientSnapshotByThread.get(payload.threadId);
+    const activeSnapshot = this.conversationTransientState.getSnapshot(payload.threadId);
     const response: SubscribeConversationTransientStreamResponse = {
       streamId,
       threadId: payload.threadId,
@@ -4610,12 +4217,12 @@ export class Runtime {
       this.writeMalformedPayload(socket, frame);
       return;
     }
-    const subscription = this.transientSubscriptions.get(payload.streamId);
+    const subscription = this.conversationTransientSubscriptions.find(payload.streamId);
     if (!subscription || subscription.socket !== socket) {
       this.writeUnexpectedRequest(socket, frame, 'Transient stream subscription is not valid');
       return;
     }
-    this.transientSubscriptions.delete(payload.streamId);
+    this.conversationTransientSubscriptions.remove(payload.streamId);
     const response: UnsubscribeConversationTransientStreamResponse = {
       streamId: payload.streamId,
     };
@@ -4711,7 +4318,6 @@ export class Runtime {
         this.writeWorkspaceStoreUnavailable(socket, frame),
       writeWorkspaceCommandError: (socket, frame, error) =>
         this.writeWorkspaceCommandError(socket, frame, error),
-      toWorkspaceSummary: (workspace) => this.toWorkspaceSummary(workspace),
     };
   }
 
@@ -4740,7 +4346,7 @@ export class Runtime {
         allowedRoots: undefined,
       });
       const response: UpdateWorkspaceResponse = {
-        workspace: this.toWorkspaceSummary(updated),
+        workspace: toWorkspaceSummary(updated),
       };
       socket.write(
         encodeFrame({
@@ -4802,7 +4408,7 @@ export class Runtime {
         parentTaskId: payload.parentTaskId,
         acceptanceCriteria: payload.acceptanceCriteria,
       });
-      this.threadVersions.set(created.threadId, created.taskVersion);
+      this.threadVersionProjection.record(created.threadId, created.taskVersion);
       const response: CreateTaskResponse = {
         taskId: created.taskId,
         threadId: created.threadId,
@@ -4864,7 +4470,7 @@ export class Runtime {
     if (previousMode !== payload.mode && payload.mode === 'automatic') {
       try {
         approvedPlan = this.hasApprovedPlan?.(payload.taskId) === true;
-        applicablePolicy = this.hasApplicablePolicyForTask(task);
+        applicablePolicy = this.policyScope.hasApplicablePolicyForTask(task);
       } catch {
         approvedPlan = false;
         applicablePolicy = false;
@@ -4896,8 +4502,10 @@ export class Runtime {
           payload.expectedTaskVersion,
           occurredAt,
         );
-        const projectedThreadVersions = new Map(this.threadVersions);
-        projectedThreadVersions.set(updated.threadId, updated.version);
+        const projectedThreadVersions = this.threadVersionProjection.snapshotWith(
+          updated.threadId,
+          updated.version,
+        );
         const eventPayload = {
           taskId: updated.id,
           threadId: updated.threadId,
@@ -4943,7 +4551,7 @@ export class Runtime {
       });
 
       if (result.needsProjection) this.recordCommittedEvents(result.committedEvents);
-      this.threadVersions.set(result.updated.threadId, result.updated.version);
+      this.threadVersionProjection.record(result.updated.threadId, result.updated.version);
       const response: SetParticipationModeResponse = {
         task: toTaskSummary(result.updated),
       };
@@ -4978,7 +4586,7 @@ export class Runtime {
         payload.expectedTaskVersion,
         { cascade: payload.cascade !== false },
       );
-      this.threadVersions.set(result.task.threadId, result.task.version);
+      this.threadVersionProjection.record(result.task.threadId, result.task.version);
       const response: ArchiveTaskResponse = {
         task: toTaskSummary(result.task),
         archivedTaskIds: result.affectedTaskIds,
@@ -5013,7 +4621,7 @@ export class Runtime {
         payload.expectedTaskVersion,
         { cascade: payload.cascade !== false },
       );
-      this.threadVersions.set(result.task.threadId, result.task.version);
+      this.threadVersionProjection.record(result.task.threadId, result.task.version);
       const response: UnarchiveTaskResponse = {
         task: toTaskSummary(result.task),
         unarchivedTaskIds: result.affectedTaskIds,
@@ -5059,8 +4667,10 @@ export class Runtime {
           steps: payload.steps,
           now: occurredAt,
         });
-        const projectedThreadVersions = new Map(this.threadVersions);
-        projectedThreadVersions.set(updatedTask.threadId, updatedTask.version);
+        const projectedThreadVersions = this.threadVersionProjection.snapshotWith(
+          updatedTask.threadId,
+          updatedTask.version,
+        );
         const committedEvents = this.commitProjectedEvents(
           [
             {
@@ -5086,7 +4696,7 @@ export class Runtime {
         return { revision, updatedTask, committedEvents };
       });
       this.recordCommittedEvents(result.committedEvents);
-      this.threadVersions.set(result.updatedTask.threadId, result.updatedTask.version);
+      this.threadVersionProjection.record(result.updatedTask.threadId, result.updatedTask.version);
       const response: PlanDraftResponse = {
         ...result.revision,
         taskVersion: result.updatedTask.version,
@@ -5150,7 +4760,7 @@ export class Runtime {
               },
             },
           ],
-          this.threadVersions,
+          this.threadVersionProjection.view(),
           this.demoRuns,
         );
         return { revision, committedEvents };
@@ -5290,7 +4900,7 @@ export class Runtime {
         }
         const committedEvents = this.commitProjectedEvents(
           eventDrafts,
-          this.threadVersions,
+          this.threadVersionProjection.view(),
           this.demoRuns,
         );
         this.createPlanAcceptanceGates({
@@ -5573,7 +5183,7 @@ export class Runtime {
         left.content !== undefined &&
         right.content !== undefined &&
         left.mimeType === right.mimeType &&
-        this.isTextArtifactMime(left.mimeType)
+        isMergeableTextArtifactMime(left.mimeType)
           ? compareTextSnapshots({ left: left.content, right: right.content })
           : this.artifactStore!.compareReferences(left, right);
       const response: CompareArtifactVersionsResponse = {
@@ -5643,8 +5253,10 @@ export class Runtime {
           resultingTaskVersion: updatedTask.version,
           now: occurredAt,
         }).selection;
-        const projectedThreadVersions = new Map(this.threadVersions);
-        projectedThreadVersions.set(updatedTask.threadId, updatedTask.version);
+        const projectedThreadVersions = this.threadVersionProjection.snapshotWith(
+          updatedTask.threadId,
+          updatedTask.version,
+        );
         const committedEvents = this.commitProjectedEvents(
           [
             {
@@ -5675,7 +5287,10 @@ export class Runtime {
         for (const event of result.committedEvents) this.publishEvent(event);
       }
       if (result.updatedTask) {
-        this.threadVersions.set(result.updatedTask.threadId, result.updatedTask.version);
+        this.threadVersionProjection.record(
+          result.updatedTask.threadId,
+          result.updatedTask.version,
+        );
       }
       const response: SelectArtifactVersionResponse = {
         selection: result.selection,
@@ -5791,7 +5406,7 @@ export class Runtime {
         if (
           base.mimeType !== left.mimeType ||
           base.mimeType !== right.mimeType ||
-          !this.isTextArtifactMime(base.mimeType) ||
+          !isMergeableTextArtifactMime(base.mimeType) ||
           base.content === undefined ||
           left.content === undefined ||
           right.content === undefined
@@ -5809,8 +5424,10 @@ export class Runtime {
           payload.expectedTaskVersion,
           occurredAt,
         );
-        const projectedThreadVersions = new Map(this.threadVersions);
-        projectedThreadVersions.set(updatedTask.threadId, updatedTask.version);
+        const projectedThreadVersions = this.threadVersionProjection.snapshotWith(
+          updatedTask.threadId,
+          updatedTask.version,
+        );
 
         if (merge.status === 'clean') {
           const version = this.artifactStore!.createMergedVersion({
@@ -5938,7 +5555,10 @@ export class Runtime {
         for (const event of result.committedEvents) this.publishEvent(event);
       }
       if (result.updatedTask) {
-        this.threadVersions.set(result.updatedTask.threadId, result.updatedTask.version);
+        this.threadVersionProjection.record(
+          result.updatedTask.threadId,
+          result.updatedTask.version,
+        );
       }
       this.syncOrchestrationEvents();
       socket.write(
@@ -6064,8 +5684,10 @@ export class Runtime {
           resultingTaskVersion: updatedTask.version,
           now: occurredAt,
         });
-        const projectedThreadVersions = new Map(this.threadVersions);
-        projectedThreadVersions.set(updatedTask.threadId, updatedTask.version);
+        const projectedThreadVersions = this.threadVersionProjection.snapshotWith(
+          updatedTask.threadId,
+          updatedTask.version,
+        );
         const committedEvents = this.commitProjectedEvents(
           [
             {
@@ -6109,7 +5731,10 @@ export class Runtime {
         for (const event of result.committedEvents) this.publishEvent(event);
       }
       if (result.updatedTask) {
-        this.threadVersions.set(result.updatedTask.threadId, result.updatedTask.version);
+        this.threadVersionProjection.record(
+          result.updatedTask.threadId,
+          result.updatedTask.version,
+        );
       }
       this.syncOrchestrationEvents();
       socket.write(
@@ -6175,15 +5800,6 @@ export class Runtime {
     if (!commonMatches) {
       throw new Error('Artifact operation ID was reused with different merge input');
     }
-  }
-
-  private isTextArtifactMime(mimeType: string): boolean {
-    return (
-      mimeType.startsWith('text/') ||
-      mimeType === 'application/json' ||
-      mimeType === 'application/xml' ||
-      mimeType === 'application/javascript'
-    );
   }
 
   private hasPlanTransitionStores(): boolean {
@@ -6280,7 +5896,7 @@ export class Runtime {
     }
 
     try {
-      this.validatePolicySaveScope(payload);
+      this.policyScope.validateSaveScope(payload);
       const result = this.runInUnitOfWork(() => {
         const policy = toPolicyVersionSummary(this.policyStore!.save(payload));
         const eventPayload = {
@@ -6342,7 +5958,7 @@ export class Runtime {
     }
 
     try {
-      const scopes = this.buildApplicablePolicyScopes(payload);
+      const scopes = this.policyScope.buildApplicableScopes(payload);
       const policies = this.policyStore.listApplicable(scopes).map(toPolicyVersionSummary);
       const resolved = resolveScopedPolicy(
         policies.map((policy) => ({
@@ -6365,122 +5981,6 @@ export class Runtime {
       );
     } catch (error) {
       this.writePolicyCommandError(socket, frame, error);
-    }
-  }
-
-  private validatePolicySaveScope(payload: SavePolicyPayload): void {
-    this.requirePolicyWorkspace(payload.workspaceId);
-    for (const rule of payload.rules ?? []) {
-      if (!rule.delegateAgentVersionId) continue;
-      const delegate = this.agentStore?.getVersion(rule.delegateAgentVersionId);
-      if (!delegate || delegate.role.trim().toLowerCase() !== 'approval') {
-        throw new PolicyScopeBoundaryError(
-          ErrorCode.PROTOCOL_UNEXPECTED_REQUEST,
-          'Policy delegate AgentVersion is not an exact approval Agent version',
-        );
-      }
-    }
-
-    switch (payload.scopeType) {
-      case 'user':
-        if (payload.scopeId !== this.installId) {
-          throw new PolicyScopeBoundaryError(
-            ErrorCode.PROTOCOL_UNEXPECTED_REQUEST,
-            'User policy scope must match the Runtime install',
-          );
-        }
-        return;
-      case 'workspace':
-      case 'project':
-        if (payload.scopeId !== payload.workspaceId) {
-          throw new PolicyScopeBoundaryError(
-            ErrorCode.PROTOCOL_UNEXPECTED_REQUEST,
-            'Workspace policy scope must match the workspace context',
-          );
-        }
-        return;
-      case 'task':
-        this.requirePolicyTask(payload.workspaceId, payload.scopeId as TaskId);
-        return;
-      case 'agent':
-        this.requirePolicyAgent(payload.scopeId as AgentId);
-        return;
-      case 'workflow':
-      case 'run':
-        throw new PolicyScopeBoundaryError(
-          ErrorCode.PROTOCOL_UNEXPECTED_REQUEST,
-          `Policy scope is not supported yet: ${payload.scopeType}`,
-        );
-    }
-  }
-
-  private buildApplicablePolicyScopes(payload: ListPoliciesPayload): PolicyScopeRef[] {
-    this.requirePolicyWorkspace(payload.workspaceId);
-
-    const scopes: PolicyScopeRef[] = [
-      { scopeType: 'user', scopeId: this.installId },
-      { scopeType: 'workspace', scopeId: payload.workspaceId },
-      { scopeType: 'project', scopeId: payload.workspaceId },
-    ];
-    if (payload.taskId) {
-      this.requirePolicyTask(payload.workspaceId, payload.taskId);
-      scopes.push({ scopeType: 'task', scopeId: payload.taskId });
-    }
-    if (payload.agentId) {
-      this.requirePolicyAgent(payload.agentId);
-      scopes.push({ scopeType: 'agent', scopeId: payload.agentId });
-    }
-    return scopes;
-  }
-
-  private hasApplicablePolicyForTask(task: TaskRecord): boolean {
-    if (!this.policyStore) return false;
-    const scopes: PolicyScopeRef[] = [
-      { scopeType: 'user', scopeId: this.installId },
-      { scopeType: 'workspace', scopeId: task.workspaceId },
-      { scopeType: 'project', scopeId: task.workspaceId },
-      { scopeType: 'task', scopeId: task.id },
-    ];
-    return this.policyStore.listApplicable(scopes).length > 0;
-  }
-
-  private requirePolicyWorkspace(workspaceId: WorkspaceId): void {
-    if (!this.workspaceStore) {
-      throw new PolicyScopeBoundaryError(
-        ErrorCode.STORAGE_WRITE_FAILED,
-        'Workspace store is not configured on this Runtime',
-      );
-    }
-    if (!this.workspaceStore.getWorkspace(workspaceId)) {
-      throw new PolicyScopeBoundaryError(
-        ErrorCode.WORKSPACE_NOT_FOUND,
-        `Workspace not found: ${workspaceId}`,
-      );
-    }
-  }
-
-  private requirePolicyTask(workspaceId: WorkspaceId, taskId: TaskId): void {
-    const task = this.workspaceStore?.getTask(taskId);
-    if (!task || task.workspaceId !== workspaceId) {
-      throw new PolicyScopeBoundaryError(
-        ErrorCode.TASK_NOT_FOUND,
-        `Task not found in workspace ${workspaceId}: ${taskId}`,
-      );
-    }
-  }
-
-  private requirePolicyAgent(agentId: AgentId): void {
-    if (!this.agentStore) {
-      throw new PolicyScopeBoundaryError(
-        ErrorCode.STORAGE_WRITE_FAILED,
-        'Agent store is not configured on this Runtime',
-      );
-    }
-    if (!this.agentStore.getLatestVersion(agentId)) {
-      throw new PolicyScopeBoundaryError(
-        ErrorCode.PROTOCOL_UNEXPECTED_REQUEST,
-        `Agent not found: ${agentId}`,
-      );
     }
   }
 
@@ -6558,7 +6058,11 @@ export class Runtime {
       }
 
       let discoveredModelCount = 0;
-      const createDiscovery = this.resolveDiscoveryAdapter(payload.protocol);
+      const createDiscovery = resolveProviderDiscoveryAdapter(
+        payload.protocol,
+        this.discoveryByProtocol,
+        this.discoveryAdapter,
+      );
       if (
         seededModels.length === 0 &&
         created.provider.supportsDiscovery &&
@@ -6611,7 +6115,7 @@ export class Runtime {
         }
       }
 
-      const summary = this.toProviderSummary(
+      const summary = projectProviderSummary(
         this.providerStore
           .listProviders()
           .find((entry) => entry.provider.id === created.provider.id)!,
@@ -6735,7 +6239,7 @@ export class Runtime {
       if (!entry) {
         throw new Error(`Provider not found after update: ${payload.providerId}`);
       }
-      const summary = this.toProviderSummary(entry);
+      const summary = projectProviderSummary(entry);
       const response: UpdateProviderResponse = {
         provider: summary,
         secretRotated: Boolean(newStoreHandle),
@@ -6800,14 +6304,6 @@ export class Runtime {
     }
   }
 
-  private resolveCcSwitchDbPath(dbPath?: string): string {
-    const resolved = (dbPath && dbPath.trim()) || defaultCcSwitchDbPath();
-    if (!resolved) {
-      throw new Error('无法解析 CC Switch 数据库路径（缺少用户主目录）');
-    }
-    return resolved;
-  }
-
   private handlePreviewCcSwitchImport(socket: Socket, frame: Frame): void {
     const payload = parsePreviewCcSwitchImportPayload(frame.payload ?? {});
     if (!payload) {
@@ -6815,7 +6311,7 @@ export class Runtime {
       return;
     }
     try {
-      const dbPath = this.resolveCcSwitchDbPath(payload.dbPath);
+      const dbPath = resolveCcSwitchImportPath(payload.dbPath, defaultCcSwitchDbPath());
       const loaded = loadCcSwitchProviderRows(dbPath);
       const mapped = loaded.rows.map((row) => mapCcSwitchProviderRow(row));
       const items = mapped.map((m) => toCcSwitchPreviewItem(m));
@@ -6852,7 +6348,7 @@ export class Runtime {
 
     const results: ImportCcSwitchResponse['results'] = [];
     try {
-      const dbPath = this.resolveCcSwitchDbPath(payload.dbPath);
+      const dbPath = resolveCcSwitchImportPath(payload.dbPath, defaultCcSwitchDbPath());
       const loaded = loadCcSwitchProviderRows(dbPath);
       const byId = new Map(loaded.rows.map((row) => [row.id, mapCcSwitchProviderRow(row)]));
 
@@ -6912,7 +6408,7 @@ export class Runtime {
             .listProviders()
             .find((item) => item.provider.id === created.provider.id);
           if (entry) {
-            const summary = this.toProviderSummary(entry);
+            const summary = projectProviderSummary(entry);
             const event = this.appendEvent('provider', 'provider.created', {
               providerId: summary.providerId,
               name: summary.name,
@@ -6979,7 +6475,7 @@ export class Runtime {
       return;
     }
     const response: ListProvidersResponse = {
-      providers: this.providerStore.listProviders().map((entry) => this.toProviderSummary(entry)),
+      providers: this.providerStore.listProviders().map(projectProviderSummary),
     };
     socket.write(
       encodeFrame({
@@ -7003,7 +6499,11 @@ export class Runtime {
       return;
     }
 
-    const discovery = this.resolveDiscoveryAdapter(payload.protocol);
+    const discovery = resolveProviderDiscoveryAdapter(
+      payload.protocol,
+      this.discoveryByProtocol,
+      this.discoveryAdapter,
+    );
     if (!discovery) {
       this.recordProviderDiagnostic({
         category: 'provider',
@@ -7143,8 +6643,7 @@ export class Runtime {
       .find((entry) => entry.provider.id === provider.id);
     const firstCred = catalog?.credentialGroups[0]?.credentials[0];
     const credentialRefId = (payload.credentialRefId ?? firstCred?.id) as
-      | CredentialRefId
-      | undefined;
+      CredentialRefId | undefined;
     if (!credentialRefId) {
       respond({
         providerId: provider.id,
@@ -7272,7 +6771,11 @@ export class Runtime {
     const protocol = (provider.protocol ??
       existingForProtocol[0]?.protocol ??
       'openai-chat') as ProtocolFamily;
-    const discovery = this.resolveDiscoveryAdapter(protocol);
+    const discovery = resolveProviderDiscoveryAdapter(
+      protocol,
+      this.discoveryByProtocol,
+      this.discoveryAdapter,
+    );
     if (!discovery) {
       this.recordProviderDiagnostic({
         category: 'provider',
@@ -7313,7 +6816,7 @@ export class Runtime {
       if (!shouldPersist) {
         const previewModels: ProviderModelSummary[] = discoveredIds.map((id, index) => {
           const existing = existingForProtocol.find((m) => m.providerModelId === id);
-          if (existing) return this.toModelSummary(existing);
+          if (existing) return projectProviderModelSummary(existing);
           return {
             modelId: id as ModelId,
             providerModelId: id,
@@ -7388,7 +6891,7 @@ export class Runtime {
         }
       }
 
-      const models = this.providerStore.listModels(provider.id).map((m) => this.toModelSummary(m));
+      const models = this.providerStore.listModels(provider.id).map(projectProviderModelSummary);
       const response: DiscoverModelsResponse = {
         providerId: provider.id,
         models,
@@ -7467,7 +6970,7 @@ export class Runtime {
         providerId: payload.providerId as ProviderId,
         models: this.providerStore
           .listModels(payload.providerId as ProviderId)
-          .map((m) => this.toModelSummary(m)),
+          .map(projectProviderModelSummary),
       };
       socket.write(
         encodeFrame({
@@ -7528,7 +7031,11 @@ export class Runtime {
             protocol: model.protocol,
             existing: model.capabilities,
           });
-          const live = await this.probeModelCapabilitiesLive(provider, model, payload.visionOnly === true);
+          const live = await this.probeModelCapabilitiesLive(
+            provider,
+            model,
+            payload.visionOnly === true,
+          );
           // 实测覆盖面与 `probeModelCapabilitiesLive` 的协议分流保持一致：
           // vision（所有非 openai-images 协议）+ document / video（除 responses 系协议外）
           // + thinking（仅 anthropic-messages，见 `probeThinkingOnce`）。
@@ -7560,7 +7067,8 @@ export class Runtime {
             // Vision-only scans update the image dimension in isolation. Keep
             // a user's existing confirmation for text/tools instead of
             // downgrading the whole model back to "待确认".
-            capabilitiesConfirmed: payload.visionOnly === true ? model.capabilitiesConfirmed : false,
+            capabilitiesConfirmed:
+              payload.visionOnly === true ? model.capabilitiesConfirmed : false,
             ...(live.results.vision !== undefined
               ? { visionCapability: live.results.vision }
               : live.undetermined.includes('vision') && model.visionCapability !== undefined
@@ -7588,7 +7096,10 @@ export class Runtime {
             results: live.results,
             undetermined: live.undetermined,
             confidence: live.confidence,
-            reasons: [...live.reasons, ...heuristic.reasons.filter((reason) => !live.reasons.includes(reason))],
+            reasons: [
+              ...live.reasons,
+              ...heuristic.reasons.filter((reason) => !live.reasons.includes(reason)),
+            ],
             source: 'live',
           };
         }
@@ -7659,7 +7170,12 @@ export class Runtime {
    */
   private async probeModelCapabilitiesLive(
     provider: { id: ProviderId; baseUrl: string; protocol: ProtocolFamily },
-    model: { id: ModelId; providerModelId: string; protocol: ProtocolFamily; credentialRefId?: string },
+    model: {
+      id: ModelId;
+      providerModelId: string;
+      protocol: ProtocolFamily;
+      credentialRefId?: string;
+    },
     visionOnly = false,
   ): Promise<{
     capabilities: CapabilityTag[];
@@ -7671,13 +7187,22 @@ export class Runtime {
     visionProbeReason?: string;
   }> {
     if (!this.secureStore || !this.providerStore) throw new Error('Runtime 未连接或安全存储不可用');
-    const catalog = this.providerStore.listProviders().find((entry) => entry.provider.id === provider.id);
-    const credential = model.credentialRefId ?? catalog?.credentialGroups.flatMap((group) => group.credentials)[0]?.id;
+    const catalog = this.providerStore
+      .listProviders()
+      .find((entry) => entry.provider.id === provider.id);
+    const credential =
+      model.credentialRefId ??
+      catalog?.credentialGroups.flatMap((group) => group.credentials)[0]?.id;
     if (!credential) throw new Error(`模型 ${model.providerModelId} 缺少 API 密钥`);
     const storeHandle = this.providerStore.getCredentialStoreHandle(credential);
     if (!storeHandle) throw new Error(`模型 ${model.providerModelId} 的 API 密钥不可用`);
     const apiKey = await this.secureStore.retrieveSecret(storeHandle);
-    const adapter = this.resolveDiscoveryAdapter(model.protocol) ?? this.demoProvider;
+    const adapter =
+      resolveProviderDiscoveryAdapter(
+        model.protocol,
+        this.discoveryByProtocol,
+        this.discoveryAdapter,
+      ) ?? this.demoProvider;
     if (!adapter) throw new Error(`协议 ${model.protocol} 没有可用适配器`);
     // 上游不响应时不能无限等：与 runtime 其它出网调用保持同一超时口径。
     // 缺这道闸时，任何一个探测请求挂起都会让 Promise.all 永不结算，
@@ -7703,7 +7228,8 @@ export class Runtime {
       let reasoning = false;
       for await (const event of adapter.call(request)) {
         if (event.type === 'error') throw new Error(event.message);
-        if (event.type === 'text-delta' || event.type === 'assistant-message-delta') text += event.text;
+        if (event.type === 'text-delta' || event.type === 'assistant-message-delta')
+          text += event.text;
         if (event.type === 'tool-call') tool = true;
         if (event.type === 'hosted-tool-call' || event.type === 'hosted-tool-result') hosted = true;
         if (event.type === 'reasoning-delta' && event.text.trim()) reasoning = true;
@@ -7992,7 +7518,7 @@ export class Runtime {
       }
 
       const response: ConfirmCapabilitiesResponse = {
-        model: this.toModelSummary(updated),
+        model: projectProviderModelSummary(updated),
       };
       socket.write(
         encodeFrame({
@@ -8009,13 +7535,6 @@ export class Runtime {
 
   // --- 0026: model-source config handlers ---
 
-  private providerSummaryById(providerId: string): ProviderSummary | undefined {
-    const entry = this.providerStore
-      ?.listProviders()
-      .find((item) => item.provider.id === providerId);
-    return entry ? this.toProviderSummary(entry) : undefined;
-  }
-
   private handleReorderProviders(socket: Socket, frame: Frame): void {
     const payload = parseReorderProvidersPayload(frame.payload);
     if (!payload) {
@@ -8029,7 +7548,7 @@ export class Runtime {
     try {
       this.providerStore.reorderProviders(payload.orderedProviderIds);
       const response: ReorderProvidersResponse = {
-        providers: this.providerStore.listProviders().map((entry) => this.toProviderSummary(entry)),
+        providers: this.providerStore.listProviders().map(projectProviderSummary),
       };
       socket.write(
         encodeFrame({
@@ -8074,7 +7593,10 @@ export class Runtime {
         storeHandle,
       });
       committed = true;
-      const summary = this.providerSummaryById(payload.providerId);
+      const summary = projectProviderSummaryById(
+        this.providerStore.listProviders(),
+        payload.providerId,
+      );
       if (!summary)
         throw new Error(`Provider not found after credential add: ${payload.providerId}`);
       const response: AddProviderCredentialResponse = {
@@ -8125,7 +7647,10 @@ export class Runtime {
       } catch {
         /* best-effort secret purge */
       }
-      const summary = this.providerSummaryById(payload.providerId);
+      const summary = projectProviderSummaryById(
+        this.providerStore.listProviders(),
+        payload.providerId,
+      );
       if (!summary) throw new Error(`Provider not found: ${payload.providerId}`);
       const response: RemoveProviderCredentialResponse = { provider: summary, removed: true };
       socket.write(
@@ -8160,7 +7685,10 @@ export class Runtime {
           /* best-effort secret purge */
         }
       }
-      const summary = this.providerSummaryById(payload.providerId);
+      const summary = projectProviderSummaryById(
+        this.providerStore.listProviders(),
+        payload.providerId,
+      );
       if (!summary) throw new Error(`Provider not found: ${payload.providerId}`);
       const response: ClearProviderCredentialsResponse = {
         provider: summary,
@@ -8339,7 +7867,10 @@ export class Runtime {
           /* best-effort old handle cleanup */
         }
       }
-      const summary = this.providerSummaryById(payload.providerId);
+      const summary = projectProviderSummaryById(
+        this.providerStore.listProviders(),
+        payload.providerId,
+      );
       if (!summary) throw new Error(`Provider not found: ${payload.providerId}`);
       const response: UpdateProviderCredentialResponse = {
         provider: summary,
@@ -8422,7 +7953,7 @@ export class Runtime {
       });
       const response: SetModelPrioritiesResponse = {
         providerId: payload.providerId,
-        models: models.map((m) => this.toModelSummary(m)),
+        models: models.map(projectProviderModelSummary),
       };
       socket.write(
         encodeFrame({
@@ -8455,12 +7986,11 @@ export class Runtime {
         contextWindow: payload.contextWindow,
       });
       if (payload.contextWindow !== undefined) {
-        this.contextSnapshotByThread.clear();
-        this.contextRunByThread.clear();
+        this.contextSnapshotCache.clear();
       }
       const response: UpdateModelResponse = {
         providerId: payload.providerId,
-        model: this.toModelSummary(model),
+        model: projectProviderModelSummary(model),
       };
       socket.write(
         encodeFrame({
@@ -8800,12 +8330,30 @@ export class Runtime {
         if (modelPricing?.displayName) return modelPricing.displayName;
         return catalogName || providerModelId || modelId;
       };
-      const requests = scopedRawRequests.map((row) => {
+      const requests: UsageSummaryResponse['requests'] = [];
+      const rowCosts = new Map<
+        string,
+        {
+          total: number;
+          pricedRequests: number;
+          currencies: Set<'USD' | 'CNY'>;
+        }
+      >();
+      const totalCostByCurrency: UsageSummaryResponse['totalCostByCurrency'] = {};
+      let totalTokensIn = 0;
+      let totalTokensOut = 0;
+      let totalCachedTokensHit = 0;
+      let hasCachedTokensHit = false;
+      let totalCachedTokensCreated = 0;
+      let hasCachedTokensCreated = false;
+      let totalReasoningTokens = 0;
+      let totalTokens = 0;
+      for (const row of scopedRawRequests) {
         const modelPricing = resolvePricing(row.modelId);
         const estimatedCostBreakdown = modelPricing
           ? estimateUsageCostBreakdown(row, modelPricing)
           : undefined;
-        return {
+        const request: UsageSummaryResponse['requests'][number] = {
           ...row,
           displayName: resolveDisplayName(row.modelId),
           providerName: row.providerId ? providerNameById.get(row.providerId) : undefined,
@@ -8813,27 +8361,47 @@ export class Runtime {
           estimatedCostBreakdown,
           currency: modelPricing?.currency,
         };
-      });
+        requests.push(request);
+        totalTokensIn += request.tokensIn;
+        totalTokensOut += request.tokensOut;
+        totalReasoningTokens += request.reasoningTokens ?? 0;
+        totalTokens += request.totalTokens;
+        if (typeof request.cachedTokensHit === 'number') {
+          hasCachedTokensHit = true;
+          totalCachedTokensHit += request.cachedTokensHit;
+        }
+        if (typeof request.cachedTokensCreated === 'number') {
+          hasCachedTokensCreated = true;
+          totalCachedTokensCreated += request.cachedTokensCreated;
+        }
+        if (typeof request.estimatedCost === 'number' && request.currency) {
+          totalCostByCurrency[request.currency] =
+            (totalCostByCurrency[request.currency] ?? 0) + request.estimatedCost;
+          const key = `${request.providerId ?? ''}|${request.modelId}`;
+          const rowCost = rowCosts.get(key) ?? {
+            total: 0,
+            pricedRequests: 0,
+            currencies: new Set<'USD' | 'CNY'>(),
+          };
+          rowCost.total += request.estimatedCost;
+          rowCost.pricedRequests += 1;
+          rowCost.currencies.add(request.currency);
+          rowCosts.set(key, rowCost);
+        }
+      }
       const rows: UsageSummaryRow[] = scopedRawRows.map((row) => {
-        const matchingRequests = requests.filter(
-          (request) => request.modelId === row.modelId && request.providerId === row.providerId,
-        );
-        const pricedRequests = matchingRequests.filter(
-          (request) => typeof request.estimatedCost === 'number' && request.currency !== undefined,
-        );
-        const currencies = new Set(pricedRequests.map((request) => request.currency));
+        const rowCost = rowCosts.get(`${row.providerId ?? ''}|${row.modelId}`);
+        const currency =
+          rowCost?.currencies.size === 1 ? rowCost.currencies.values().next().value : undefined;
         return {
           ...row,
           displayName: resolveDisplayName(row.modelId),
           providerName: row.providerId ? providerNameById.get(row.providerId) : undefined,
           totalCost:
-            pricedRequests.length > 0 && currencies.size === 1
-              ? pricedRequests.reduce((sum, request) => sum + (request.estimatedCost ?? 0), 0)
+            rowCost && rowCost.pricedRequests > 0 && rowCost.currencies.size === 1
+              ? rowCost.total
               : undefined,
-          currency:
-            currencies.size === 1
-              ? (pricedRequests[0]?.currency as 'USD' | 'CNY' | undefined)
-              : undefined,
+          currency,
         };
       });
       const scopedTools = payload.taskId ? [] : raw.tools;
@@ -8847,40 +8415,22 @@ export class Runtime {
         ...row,
         displayName: row.modelId ? resolveDisplayName(row.modelId) : undefined,
       }));
-      const cachedHits = requests
-        .map((row) => row.cachedTokensHit)
-        .filter((v): v is number => typeof v === 'number');
-      const cachedCreated = requests
-        .map((row) => row.cachedTokensCreated)
-        .filter((v): v is number => typeof v === 'number');
-      const totalReasoningTokens = requests.reduce(
-        (sum, row) => sum + (row.reasoningTokens ?? 0),
-        0,
-      );
-      const totalTokens = requests.reduce((sum, row) => sum + row.totalTokens, 0);
-      const totalCostByCurrency: UsageSummaryResponse['totalCostByCurrency'] = {};
-      for (const request of requests) {
-        if (typeof request.estimatedCost !== 'number' || !request.currency) continue;
-        totalCostByCurrency[request.currency] =
-          (totalCostByCurrency[request.currency] ?? 0) + request.estimatedCost;
-      }
       const response: UsageSummaryResponse = {
         rows,
-        requests,
+        requests:
+          payload.includeRequests === false
+            ? []
+            : requests.slice(0, payload.requestLimit ?? USAGE_REQUEST_LIMIT_DEFAULT),
         tools: scopedTools,
         toolModels,
         toolFailures,
         pricing,
         totalRequests: requests.length,
-        totalTokensIn: requests.reduce((sum, row) => sum + row.tokensIn, 0),
-        totalTokensOut: requests.reduce((sum, row) => sum + row.tokensOut, 0),
+        totalTokensIn,
+        totalTokensOut,
         totalCostByCurrency,
-        totalCachedTokensHit:
-          cachedHits.length > 0 ? cachedHits.reduce((sum, value) => sum + value, 0) : undefined,
-        totalCachedTokensCreated:
-          cachedCreated.length > 0
-            ? cachedCreated.reduce((sum, value) => sum + value, 0)
-            : undefined,
+        totalCachedTokensHit: hasCachedTokensHit ? totalCachedTokensHit : undefined,
+        totalCachedTokensCreated: hasCachedTokensCreated ? totalCachedTokensCreated : undefined,
         totalReasoningTokens,
         totalTokens,
       };
@@ -8890,94 +8440,6 @@ export class Runtime {
     } catch (error) {
       this.writeProviderCommandError(socket, frame, error);
     }
-  }
-
-  private toProviderSummary(entry: ProviderCatalogEntry): ProviderSummary {
-    const credentials: ProviderCredentialSummary[] = [];
-    for (const group of entry.credentialGroups) {
-      for (const cred of group.credentials) {
-        credentials.push({
-          credentialRefId: cred.id,
-          credentialGroupId: cred.credentialGroupId,
-          groupName: group.name,
-          label: cred.label,
-          kind: cred.kind,
-          hasSecret: true,
-        });
-      }
-    }
-    return {
-      providerId: entry.provider.id,
-      name: entry.provider.name,
-      baseUrl: entry.provider.baseUrl,
-      protocol: entry.provider.protocol,
-      supportsDiscovery: entry.provider.supportsDiscovery,
-      surface: inferProviderSurface({
-        surface: entry.provider.surface,
-        protocol: entry.provider.protocol,
-        name: entry.provider.name,
-      }),
-      importedFrom: entry.provider.importedFrom,
-      enabled: entry.provider.enabled,
-      sortOrder: entry.provider.sortOrder,
-      unverified: entry.provider.unverified,
-      credentials,
-      models: entry.models.map((m) => this.toModelSummary(m)),
-      createdAt: entry.provider.createdAt,
-      updatedAt: entry.provider.updatedAt,
-    };
-  }
-
-  private toWorkspaceSummary(workspace: {
-    id: import('@sync-think/shared').WorkspaceId;
-    folderPath?: string;
-    name: string;
-    uiPrefsJson?: string;
-    createdAt: string;
-    updatedAt: string;
-  }): import('@sync-think/protocol').WorkspaceSummary {
-    return {
-      workspaceId: workspace.id,
-      folderPath: workspace.folderPath,
-      name: workspace.name,
-      icon: workspaceIconFromPrefs(workspace.uiPrefsJson),
-      sortOrder: workspaceSortOrderFromPrefs(workspace.uiPrefsJson),
-      hidden: workspaceHiddenFromPrefs(workspace.uiPrefsJson),
-      createdAt: workspace.createdAt,
-      updatedAt: workspace.updatedAt,
-    };
-  }
-
-  private toModelSummary(model: ModelRecord): ProviderModelSummary {
-    let contextWindow: number | undefined;
-    if (model.limitsJson) {
-      try {
-        const limits = JSON.parse(model.limitsJson) as { contextWindow?: unknown };
-        if (typeof limits?.contextWindow === 'number' && limits.contextWindow > 0) {
-          contextWindow = limits.contextWindow;
-        }
-      } catch {
-        contextWindow = undefined;
-      }
-    }
-    return {
-      modelId: model.id,
-      providerModelId: model.providerModelId,
-      displayName: model.displayName,
-      protocol: model.protocol,
-      capabilities: model.capabilities,
-      capabilitiesConfirmed: model.capabilitiesConfirmed,
-      ...(model.visionCapability !== undefined ? { visionCapability: model.visionCapability } : {}),
-      ...(model.visionProbeReason ? { visionProbeReason: model.visionProbeReason } : {}),
-      visionManualOverride: model.visionManualOverride ?? null,
-      priority: model.priority,
-      credentialRefId: model.credentialRefId,
-      contextWindow,
-    };
-  }
-
-  private resolveDiscoveryAdapter(protocol: ProtocolFamily): DemoProvider | undefined {
-    return this.discoveryByProtocol[protocol] ?? this.discoveryAdapter;
   }
 
   private handleGetAgent(socket: Socket, frame: Frame): void {
@@ -8993,7 +8455,7 @@ export class Runtime {
     try {
       const agentId = (payload.agentId ?? DEFAULT_CONVERSATION_AGENT_ID) as AgentId;
       const record = this.ensureAgentRecord(agentId);
-      const response: GetAgentResponse = { agent: this.toAgentBindingSummary(record) };
+      const response: GetAgentResponse = { agent: toAgentBindingSummary(record) };
       socket.write(
         encodeFrame({
           id: frame.id,
@@ -9031,7 +8493,7 @@ export class Runtime {
         skillVersionIds: payload.skillVersionIds,
         mcpServerIds: payload.mcpServerIds,
       });
-      const summary = this.toAgentBindingSummary(updated);
+      const summary = toAgentBindingSummary(updated);
       const event = this.appendEvent('provider', 'agent.binding_updated', {
         agentId: summary.agentId,
         agentVersionId: summary.agentVersionId,
@@ -9072,7 +8534,7 @@ export class Runtime {
       const response: ListAgentsResponse = {
         agents: this.agentStore
           .listLatestVersions()
-          .map((record) => this.toAgentDefinitionSummary(record)),
+          .map((record) => toAgentDefinitionSummary(record)),
       };
       socket.write(
         encodeFrame({
@@ -9122,7 +8584,7 @@ export class Runtime {
         reviewBehavior: payload.reviewBehavior,
         artifactRules: payload.artifactRules,
       });
-      const agent = this.toAgentDefinitionSummary(created);
+      const agent = toAgentDefinitionSummary(created);
       const event = this.appendEvent('system', 'agent.created', {
         agentId: agent.agentId,
         agentVersionId: agent.agentVersionId,
@@ -9159,7 +8621,7 @@ export class Runtime {
       const versions = this.agentStore.listAgentVersions(payload.agentId);
       if (versions.length === 0) throw new Error(`Agent not found: ${payload.agentId}`);
       const response: ListAgentVersionsResponse = {
-        versions: versions.map((record) => this.toAgentDefinitionSummary(record)),
+        versions: versions.map((record) => toAgentDefinitionSummary(record)),
       };
       socket.write(
         encodeFrame({
@@ -9216,7 +8678,7 @@ export class Runtime {
         reviewBehavior: payload.reviewBehavior,
         artifactRules: payload.artifactRules,
       });
-      const agent = this.toAgentDefinitionSummary(updated);
+      const agent = toAgentDefinitionSummary(updated);
       const event = this.appendEvent('system', 'agent.version-created', {
         agentId: agent.agentId,
         agentVersionId: agent.agentVersionId,
@@ -9254,7 +8716,7 @@ export class Runtime {
       const response: ListGlobalAgentsResponse = {
         agents: this.globalAgentStore
           .list({ includeArchived: payload.includeArchived })
-          .map((record) => this.toGlobalAgentSummary(record)),
+          .map(toGlobalAgentSummary),
       };
       socket.write(
         encodeFrame({
@@ -9315,7 +8777,7 @@ export class Runtime {
         availabilityScope: payload.availabilityScope,
         writePolicy: payload.writePolicy,
       });
-      const agent = this.toGlobalAgentSummary(created);
+      const agent = toGlobalAgentSummary(created);
       const event = this.appendEvent('system', 'globalAgent.created', {
         agentId: agent.id,
         name: agent.name,
@@ -9362,7 +8824,7 @@ export class Runtime {
         writePolicy: payload.writePolicy,
         archived: payload.archived,
       });
-      const agent = this.toGlobalAgentSummary(updated);
+      const agent = toGlobalAgentSummary(updated);
       const event = this.appendEvent('system', 'globalAgent.updated', {
         agentId: agent.id,
         name: agent.name,
@@ -9540,7 +9002,7 @@ export class Runtime {
     }
     try {
       const response: ListTeamsResponse = {
-        teams: this.teamStore.list().map((record) => this.toTeamSummary(record)),
+        teams: this.teamStore.list().map(toTeamSummary),
       };
       socket.write(
         encodeFrame({
@@ -9574,7 +9036,7 @@ export class Runtime {
         coordinatorAgentId: payload.coordinatorAgentId,
         members: payload.members,
       });
-      const team = this.toTeamSummary(created);
+      const team = toTeamSummary(created);
       const event = this.appendEvent('system', 'team.created', {
         teamId: team.id,
         name: team.name,
@@ -9615,7 +9077,7 @@ export class Runtime {
         coordinatorAgentId: payload.coordinatorAgentId,
         members: payload.members,
       });
-      const team = this.toTeamSummary(updated);
+      const team = toTeamSummary(updated);
       const event = this.appendEvent('system', 'team.updated', {
         teamId: team.id,
         name: team.name,
@@ -9691,7 +9153,7 @@ export class Runtime {
         teamId: payload.teamId,
         conversationId: payload.conversationId,
       });
-      const run = this.toTeamRunSummary(started);
+      const run = toTeamRunSummary(started);
       const event = this.appendEvent('run', 'team.run_started', {
         teamRunId: run.id,
         teamId: run.teamId,
@@ -9724,7 +9186,7 @@ export class Runtime {
     }
     try {
       const updated = this.teamStore.setRunStatus(payload.runId, payload.status);
-      const run = this.toTeamRunSummary(updated);
+      const run = toTeamRunSummary(updated);
       const event = this.appendEvent('run', 'team.run_status_changed', {
         teamRunId: run.id,
         teamId: run.teamId,
@@ -9756,14 +9218,22 @@ export class Runtime {
       return;
     }
     try {
+      const options = {
+        track: payload.track,
+        workspaceId: payload.workspaceId as WorkspaceId | undefined,
+        includeArchived: payload.includeArchived,
+      };
+      const page =
+        payload.limit !== undefined || payload.cursor !== undefined
+          ? this.conversationStore.listPage({
+              ...options,
+              cursor: payload.cursor,
+              limit: payload.limit,
+            })
+          : { conversations: this.conversationStore.list(options) };
       const response: ListConversationsResponse = {
-        conversations: this.conversationStore
-          .list({
-            track: payload.track,
-            workspaceId: payload.workspaceId as WorkspaceId | undefined,
-            includeArchived: payload.includeArchived,
-          })
-          .map((record) => this.toConversationSummary(record)),
+        conversations: page.conversations.map(toConversationSummary),
+        ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
       };
       socket.write(
         encodeFrame({
@@ -9775,39 +9245,6 @@ export class Runtime {
       );
     } catch (error) {
       this.writeTeamModelCommandError(socket, frame, error);
-    }
-  }
-
-  /** Lazily hydrate the persisted runId → kernelId map. */
-  private ensureRunKernelIdsLoaded(): void {
-    if (this.runKernelIdsLoaded) return;
-    this.runKernelIdsLoaded = true;
-    const record = this.appSettingStore?.get('kernel.runKernelIds');
-    if (!record || typeof record.value !== 'object' || record.value === null) return;
-    try {
-      const parsed = record.value as Record<string, unknown>;
-      for (const [runId, kernelId] of Object.entries(parsed)) {
-        if (runId && typeof kernelId === 'string' && kernelId) {
-          this.runKernelIds.set(runId, kernelId);
-        }
-      }
-    } catch {
-      // Corrupt map — ignore and rebuild from future runs.
-    }
-  }
-
-  /** Persist runId → kernelId so message badges survive process restarts. */
-  private recordRunKernel(runId: string, kernelId: string | undefined): void {
-    if (!runId || !kernelId) return;
-    this.ensureRunKernelIdsLoaded();
-    if (this.runKernelIds.get(runId) === kernelId) return;
-    this.runKernelIds.set(runId, kernelId);
-    try {
-      const snapshot: Record<string, string> = {};
-      for (const [key, value] of this.runKernelIds) snapshot[key] = value;
-      this.appSettingStore?.set('kernel.runKernelIds', snapshot);
-    } catch {
-      // Best-effort persistence; the in-memory map still serves this session.
     }
   }
 
@@ -9940,7 +9377,6 @@ export class Runtime {
       }
       assertCurrentThread();
       if (response.messages.length > 0) {
-        this.ensureRunKernelIdsLoaded();
         // Backfill any runId missing from the persisted map from the event log
         // (run.started carries kernelId) so badges survive restarts even for
         // runs recorded before kernel tracking existed.
@@ -9949,13 +9385,11 @@ export class Runtime {
           .map((message) => String(message.runId));
         if (missingRunIds.length > 0) {
           const fromEvent = this.messageStore.resolveRunKernelIds(missingRunIds);
-          for (const [runId, kernelId] of fromEvent) {
-            this.runKernelIds.set(runId, kernelId);
-          }
+          this.runKernelRegistry.merge(fromEvent);
         }
         for (const message of response.messages) {
           if (message.runId && !message.kernelId) {
-            const kernelId = this.runKernelIds.get(String(message.runId));
+            const kernelId = this.runKernelRegistry.get(String(message.runId));
             if (kernelId) message.kernelId = kernelId;
           }
         }
@@ -10108,11 +9542,7 @@ export class Runtime {
     globalAgentId?: string;
     teamId?: string;
   }): ContextSnapshot {
-    const cached = input.modelId
-      ? this.contextSnapshotByThread
-          .get(input.threadId)
-          ?.get(this.contextSnapshotCacheKey(input.modelId, input.kernelId))
-      : undefined;
+    const cached = this.contextSnapshotCache.get(input.threadId, input.modelId, input.kernelId);
     if (cached) return cached;
 
     const prepared = this.prepareRunBinding({
@@ -10149,20 +9579,8 @@ export class Runtime {
         includeGoalManage: this.conversationHasActiveGoal(input.threadId),
       }),
     });
-    this.setConversationContextSnapshot(input.threadId, snapshot);
+    this.contextSnapshotCache.set(input.threadId, snapshot);
     return snapshot;
-  }
-
-  private setConversationContextSnapshot(threadId: string, snapshot: ContextSnapshot): void {
-    let snapshotsByModel = this.contextSnapshotByThread.get(threadId);
-    if (!snapshotsByModel) {
-      snapshotsByModel = new Map<string, ContextSnapshot>();
-      this.contextSnapshotByThread.set(threadId, snapshotsByModel);
-    }
-    snapshotsByModel.set(
-      this.contextSnapshotCacheKey(snapshot.status.modelId, snapshot.status.kernelId),
-      snapshot,
-    );
   }
 
   /**
@@ -10171,12 +9589,7 @@ export class Runtime {
    * an occupancy snapshot from before that message.
    */
   private invalidateConversationContextSnapshot(threadId: string): void {
-    this.contextSnapshotByThread.delete(threadId);
-    this.contextRunByThread.delete(threadId);
-  }
-
-  private contextSnapshotCacheKey(modelId: string, kernelId?: string): string {
-    return `${modelId}\u0000${kernelId?.trim() || 'native'}`;
+    this.contextSnapshotCache.deleteThread(threadId);
   }
 
   private handleGetConversationContextStatus(socket: Socket, frame: Frame): void {
@@ -10274,7 +9687,7 @@ export class Runtime {
       for (const scopeId of scopeIds) {
         this.invalidateConversationContextSnapshot(scopeId);
       }
-      const response: ConversationResponse = { conversation: this.toConversationSummary(updated) };
+      const response: ConversationResponse = { conversation: toConversationSummary(updated) };
       socket.write(
         encodeFrame({
           id: frame.id,
@@ -10552,7 +9965,7 @@ export class Runtime {
         title: payload.title,
         executionMode: payload.executionMode,
       });
-      const conversation = this.toConversationSummary(created);
+      const conversation = toConversationSummary(created);
       const event = this.appendEvent('system', 'conversation.created', {
         conversationId: conversation.id,
         track: conversation.track,
@@ -10585,7 +9998,7 @@ export class Runtime {
     }
     try {
       const updated = this.conversationStore.rename(payload.conversationId, payload.title);
-      const response: ConversationResponse = { conversation: this.toConversationSummary(updated) };
+      const response: ConversationResponse = { conversation: toConversationSummary(updated) };
       socket.write(
         encodeFrame({
           id: frame.id,
@@ -10611,7 +10024,7 @@ export class Runtime {
     }
     try {
       const updated = this.conversationStore.setPinned(payload.conversationId, payload.pinned);
-      const response: ConversationResponse = { conversation: this.toConversationSummary(updated) };
+      const response: ConversationResponse = { conversation: toConversationSummary(updated) };
       socket.write(
         encodeFrame({
           id: frame.id,
@@ -10637,7 +10050,7 @@ export class Runtime {
     }
     try {
       const updated = this.conversationStore.setArchived(payload.conversationId, payload.archived);
-      const response: ConversationResponse = { conversation: this.toConversationSummary(updated) };
+      const response: ConversationResponse = { conversation: toConversationSummary(updated) };
       socket.write(
         encodeFrame({
           id: frame.id,
@@ -10666,7 +10079,7 @@ export class Runtime {
         payload.conversationId,
         payload.executionMode,
       );
-      const conversation = this.toConversationSummary(updated);
+      const conversation = toConversationSummary(updated);
       const event = this.appendEvent('system', 'conversation.execution_mode_changed', {
         conversationId: conversation.id,
         executionMode: conversation.executionMode,
@@ -10709,10 +10122,10 @@ export class Runtime {
             status: 'paused',
             pausedAt: new Date().toISOString(),
           });
-          this.pendingGoalTurns.delete(payload.conversationId);
+          this.goalExecutionState.clearPending(payload.conversationId);
         }
       }
-      const conversation = this.toConversationSummary(updated);
+      const conversation = toConversationSummary(updated);
       const event = this.appendEvent('system', 'conversation.interaction_mode_changed', {
         conversationId: conversation.id,
         interactionMode: conversation.interactionMode,
@@ -10752,7 +10165,7 @@ export class Runtime {
       const conversation = this.conversationStore.get(payload.conversationId);
       if (!conversation) throw new Error('conversation not found');
       const response: ConversationPlanResponse = {
-        conversation: this.toConversationSummary(conversation),
+        conversation: toConversationSummary(conversation),
         plan,
       };
       const event = this.appendEvent('system', 'conversation.plan_submitted', {
@@ -10788,7 +10201,7 @@ export class Runtime {
       const conversation = this.conversationStore.get(payload.conversationId);
       if (!conversation) throw new Error('conversation not found');
       const response: ConversationPlanResponse = {
-        conversation: this.toConversationSummary(conversation),
+        conversation: toConversationSummary(conversation),
         plan,
       };
       socket.write(
@@ -10819,20 +10232,30 @@ export class Runtime {
         payload.conversationId,
         payload.revision,
       );
-      // Approving the plan exits planning mode: the follow-up execution run
-      // must run with full tools. The desktop immediately starts it through the
-      // normal message flow (appendMessage) after this command returns.
       this.conversationStore.setInteractionMode(payload.conversationId, 'execute');
       const conversation = this.conversationStore.get(payload.conversationId);
       if (!conversation) throw new Error('conversation not found');
+      const approvedRevision = plan.revisions.find(
+        (revision) => revision.revision === payload.revision,
+      );
+      if (!approvedRevision) throw new Error('approved plan revision not found');
+      const collaborationTaskIds =
+        conversation.collaborationKind && this.collaborationChatHost
+          ? this.collaborationChatHost.dispatchApprovedPlan(
+              payload.conversationId,
+              plan.planId,
+              approvedRevision,
+            ).taskIds
+          : undefined;
       const response: ConversationPlanApproveResponse = {
-        conversation: this.toConversationSummary(conversation),
+        conversation: toConversationSummary(conversation),
         plan,
         createdRun: false,
+        ...(collaborationTaskIds ? { collaborationTaskIds } : {}),
       };
       const event = this.appendEvent('system', 'conversation.plan_approved', {
         conversationId: payload.conversationId,
-        revision: plan.currentRevision,
+        revision: payload.revision,
       });
       this.publishEvent(event);
       socket.write(
@@ -10867,7 +10290,7 @@ export class Runtime {
       const conversation = this.conversationStore.get(payload.conversationId);
       if (!conversation) throw new Error('conversation not found');
       const response: ConversationPlanResponse = {
-        conversation: this.toConversationSummary(conversation),
+        conversation: toConversationSummary(conversation),
         plan,
       };
       const event = this.appendEvent('system', 'conversation.plan_revised', {
@@ -10903,7 +10326,7 @@ export class Runtime {
       const conversation = this.conversationStore.get(payload.conversationId);
       if (!conversation) throw new Error('conversation not found');
       const response: ConversationPlanResponse = {
-        conversation: this.toConversationSummary(conversation),
+        conversation: toConversationSummary(conversation),
         plan,
       };
       const event = this.appendEvent('system', 'conversation.plan_cancelled', {
@@ -10931,7 +10354,7 @@ export class Runtime {
       this.writeMalformedPayload(socket, frame);
       return;
     }
-    const entry = this.pendingAsks.get(payload.askId);
+    const entry = this.pendingAskRegistry.take(payload.askId);
     if (!entry) {
       socket.write(
         encodeFrame({
@@ -10947,7 +10370,6 @@ export class Runtime {
       );
       return;
     }
-    this.pendingAsks.delete(payload.askId);
     entry.resolve({ ok: true, content: JSON.stringify({ answers: payload.answers }) });
     this.publishEvent(
       this.appendEvent('system', 'conversation.ask_answered', {
@@ -10974,7 +10396,7 @@ export class Runtime {
       this.writeMalformedPayload(socket, frame);
       return;
     }
-    const entry = this.pendingAsks.get(payload.askId);
+    const entry = this.pendingAskRegistry.take(payload.askId);
     if (!entry) {
       socket.write(
         encodeFrame({
@@ -10990,7 +10412,6 @@ export class Runtime {
       );
       return;
     }
-    this.pendingAsks.delete(payload.askId);
     entry.resolve({ ok: false, error: 'ask_user_question cancelled' });
     this.publishEvent(
       this.appendEvent('system', 'conversation.ask_cancelled', {
@@ -11016,10 +10437,7 @@ export class Runtime {
       this.writeMalformedPayload(socket, frame);
       return;
     }
-    const entries = [...this.pendingAsks.values()].filter(
-      (entry) => entry.threadId === payload.threadId,
-    );
-    const latest = entries.sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
+    const latest = this.pendingAskRegistry.latestForThread(payload.threadId);
     const response: ConversationAskPendingResponse = latest
       ? {
           ask: {
@@ -11057,7 +10475,7 @@ export class Runtime {
           ? { track: 'agent' as const, agentId: payload.targetRef as AgentId }
           : { track: 'team' as const, teamId: payload.targetRef as TeamId };
       const updated = this.conversationStore.upgradeTrack(payload.conversationId, target);
-      const conversation = this.toConversationSummary(updated);
+      const conversation = toConversationSummary(updated);
       const event = this.appendEvent('system', 'conversation.track_upgraded', {
         conversationId: conversation.id,
         track: conversation.track,
@@ -11099,7 +10517,7 @@ export class Runtime {
         payload.track,
         payload.targetRef,
       );
-      const conversation = this.toConversationSummary(updated);
+      const conversation = toConversationSummary(updated);
       const event = this.appendEvent('system', 'conversation.target_rebound', {
         conversationId: conversation.id,
         track: conversation.track,
@@ -11428,7 +10846,7 @@ export class Runtime {
       const compactMessageId = ulid() as MessageId;
       const markerMessageId = ulid() as MessageId;
       // Prefer durable task.version �?same source appendMessage uses for OCC.
-      const currentVersion = task.version ?? this.threadVersions.get(threadId) ?? 0;
+      const currentVersion = task.version ?? this.threadVersionProjection.current(threadId) ?? 0;
       const nextVersion = currentVersion + 1;
       const compactDurationMs = Date.now() - startedAt;
 
@@ -11486,12 +10904,12 @@ export class Runtime {
             markerEvent.occurredAt,
           );
         }
-        this.threadVersions.set(threadId, nextVersion);
+        this.threadVersionProjection.record(threadId, nextVersion);
         return { compactEvent, markerEvent };
       };
 
       const written = this.runInUnitOfWork(writeCompact);
-      this.latestCompactByThread.set(threadId, {
+      this.compactBoundaryCache.record(threadId, {
         summaryText,
         compactedAt: written.compactEvent.occurredAt,
       });
@@ -11557,45 +10975,10 @@ export class Runtime {
     track?: string;
     targetRef?: string | null;
   }): string | undefined {
-    const track = conversation.track;
-    const targetRef =
-      typeof conversation.targetRef === 'string' ? conversation.targetRef.trim() : '';
-    if (!targetRef) return undefined;
-    if (track === 'model' || !track) return targetRef;
-    if (track === 'agent') {
-      const agent = this.globalAgentStore?.get(targetRef as AgentId);
-      const modelId =
-        agent && typeof agent.defaultModelId === 'string'
-          ? String(agent.defaultModelId).trim()
-          : '';
-      return modelId || undefined;
-    }
-    if (track === 'team') {
-      const team = this.teamStore?.get(targetRef as TeamId);
-      const coordinatorId =
-        team && typeof team.coordinatorAgentId === 'string' ? team.coordinatorAgentId : undefined;
-      if (coordinatorId) {
-        const agent = this.globalAgentStore?.get(coordinatorId as AgentId);
-        const modelId =
-          agent && typeof agent.defaultModelId === 'string'
-            ? String(agent.defaultModelId).trim()
-            : '';
-        if (modelId) return modelId;
-      }
-      // Fall back to first member's default model when coordinator is missing.
-      const firstMember = team?.members?.[0];
-      const memberAgentId =
-        firstMember && typeof firstMember.agentId === 'string' ? firstMember.agentId : undefined;
-      if (memberAgentId) {
-        const agent = this.globalAgentStore?.get(memberAgentId as AgentId);
-        const modelId =
-          agent && typeof agent.defaultModelId === 'string'
-            ? String(agent.defaultModelId).trim()
-            : '';
-        if (modelId) return modelId;
-      }
-    }
-    return undefined;
+    return resolveConversationModelId(conversation, {
+      getAgent: (id) => this.globalAgentStore?.get(id as AgentId),
+      getTeam: (id) => this.teamStore?.get(id as TeamId),
+    });
   }
 
   /**
@@ -11733,7 +11116,7 @@ export class Runtime {
           title: '新对话',
           goal: text.slice(0, 200),
         });
-        this.threadVersions.set(created.threadId, created.taskVersion);
+        this.threadVersionProjection.record(created.threadId, created.taskVersion);
         // Bind task to conversation
         this.conversationStore.bindTask(conversation.id, created.taskId);
         threadId = created.threadId;
@@ -11777,55 +11160,24 @@ export class Runtime {
     }
   }
 
-  private parsePromptEnhancePayload(value: unknown): PromptEnhancePayload | undefined {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
-    const payload = value as Record<string, unknown>;
-    if (typeof payload.requestId !== 'string' || typeof payload.text !== 'string') {
-      return undefined;
-    }
-    const requestId = payload.requestId.trim();
-    const text = payload.text.trim();
-    if (!requestId || requestId.length > 160 || !text || text.length > 100_000) return undefined;
-    if (payload.modelId !== undefined && typeof payload.modelId !== 'string') return undefined;
-    const modelId = typeof payload.modelId === 'string' ? payload.modelId.trim() : '';
-    return {
-      requestId,
-      text,
-      ...(modelId ? { modelId: modelId as ModelId } : {}),
-    };
-  }
-
-  private resolvePromptEnhancementModelId(requested?: ModelId): ModelId {
-    const requestedText = String(requested ?? '').trim();
-    const providers = this.providerStore?.listProviders() ?? [];
-    const enabledModels = providers
-      .filter((entry) => entry.provider.enabled !== false)
-      .flatMap((entry) => entry.models);
-    if (requestedText) {
-      const configured = enabledModels.find(
-        (model) => model.id === requestedText || model.providerModelId === requestedText,
-      );
-      if (configured) return configured.id;
-      if (!this.providerStore && this.demoProvider) return requestedText as ModelId;
-    }
-    const fallback = enabledModels[0];
-    if (fallback) return fallback.id;
-    if (this.demoProvider) return (requestedText || 'fake-mini') as ModelId;
-    throw new Error('没有可用于提示词优化的已启用模型');
-  }
-
   private async handlePromptEnhance(socket: Socket, frame: Frame): Promise<void> {
-    const payload = this.parsePromptEnhancePayload(frame.payload);
+    const payload = tryParsePromptEnhancePayload(frame.payload);
     if (!payload) {
       this.writeMalformedPayload(socket, frame);
       return;
     }
 
-    const controller = new AbortController();
-    this.promptEnhancementAborts.get(payload.requestId)?.abort();
-    this.promptEnhancementAborts.set(payload.requestId, controller);
+    const controller = this.promptEnhancementAbortRegistry.start(payload.requestId, {
+      abortPrevious: true,
+    });
     try {
-      const modelId = this.resolvePromptEnhancementModelId(payload.modelId);
+      const modelId = resolvePromptEnhancementModelId({
+        requested: payload.modelId,
+        providers: this.providerStore?.listProviders() ?? [],
+        catalogConfigured: Boolean(this.providerStore),
+        fallbackAvailable: Boolean(this.demoProvider),
+      });
+      if (!modelId) throw new Error('没有可用于提示词优化的已启用模型');
       const prepared = this.prepareRunBinding({
         runId: ulid() as RunId,
         threadId: `prompt-enhancement:${payload.requestId}`,
@@ -11893,9 +11245,7 @@ export class Runtime {
         }),
       );
     } finally {
-      if (this.promptEnhancementAborts.get(payload.requestId) === controller) {
-        this.promptEnhancementAborts.delete(payload.requestId);
-      }
+      this.promptEnhancementAbortRegistry.deleteIf(payload.requestId, controller);
     }
   }
 
@@ -11912,7 +11262,13 @@ export class Runtime {
       return;
     }
     try {
-      const modelId = this.resolvePromptEnhancementModelId(payload.modelId);
+      const modelId = resolvePromptEnhancementModelId({
+        requested: payload.modelId,
+        providers: this.providerStore?.listProviders() ?? [],
+        catalogConfigured: Boolean(this.providerStore),
+        fallbackAvailable: Boolean(this.demoProvider),
+      });
+      if (!modelId) throw new Error('没有可用于提示词优化的已启用模型');
       const prepared = this.prepareRunBinding({
         runId: ulid() as RunId,
         threadId: `design-generation:${payload.requestId}`,
@@ -11982,21 +11338,15 @@ export class Runtime {
   }
 
   private handlePromptEnhanceCancel(socket: Socket, frame: Frame): void {
-    const value = frame.payload;
-    const requestId =
-      value && typeof value === 'object' && !Array.isArray(value)
-        ? (value as Record<string, unknown>).requestId
-        : undefined;
-    if (typeof requestId !== 'string' || !requestId.trim() || requestId.trim().length > 160) {
+    const payload = tryParsePromptEnhanceCancelPayload(frame.payload);
+    if (!payload) {
       this.writeMalformedPayload(socket, frame);
       return;
     }
-    const normalizedRequestId = requestId.trim();
-    const controller = this.promptEnhancementAborts.get(normalizedRequestId);
-    controller?.abort();
+    const cancelled = this.promptEnhancementAbortRegistry.abort(payload.requestId);
     const response: PromptEnhanceCancelResponse = {
-      requestId: normalizedRequestId,
-      cancelled: Boolean(controller),
+      requestId: payload.requestId,
+      cancelled,
     };
     socket.write(
       encodeFrame({
@@ -12024,91 +11374,6 @@ export class Runtime {
     if (track === 'model') return { track, modelId: targetRef as ModelId };
     if (track === 'agent') return { track, agentId: targetRef as AgentId };
     return { track, teamId: targetRef as TeamId };
-  }
-
-  private toGlobalAgentSummary(record: GlobalAgentRecord): GlobalAgent {
-    return {
-      id: record.id,
-      name: record.name,
-      avatar: record.avatar,
-      persona: record.persona,
-      description: record.description,
-      defaultModelId: record.defaultModelId,
-      fallbackModelIds: [...record.fallbackModelIds],
-      skillIds: [...record.skillIds],
-      mcpServerIds: [...record.mcpServerIds],
-      reasoningEffort: record.reasoningEffort,
-      enabled: record.enabled,
-      source: record.source,
-      availabilityScope: record.availabilityScope,
-      writePolicy: record.writePolicy,
-      archived: record.archived,
-      createdAt: record.createdAt,
-      updatedAt: record.updatedAt,
-    };
-  }
-
-  private toTeamSummary(record: TeamRecord): Team {
-    return {
-      id: record.id,
-      name: record.name,
-      avatar: record.avatar,
-      mission: record.mission,
-      strategy: record.strategy,
-      coordinatorAgentId: record.coordinatorAgentId,
-      members: record.members.map((member) => ({
-        agentId: member.agentId,
-        memberOrder: member.memberOrder,
-        role: member.role,
-        title: member.title,
-        dependsOn: [...member.dependsOn],
-      })),
-      createdAt: record.createdAt,
-      updatedAt: record.updatedAt,
-    };
-  }
-
-  private toTeamRunSummary(record: TeamRunRecord): TeamRun {
-    return {
-      id: record.id,
-      teamId: record.teamId,
-      conversationId: record.conversationId,
-      status: record.status,
-      rosterSnapshot: {
-        name: record.rosterSnapshot.name,
-        mission: record.rosterSnapshot.mission,
-        strategy: record.rosterSnapshot.strategy,
-        coordinatorAgentId: record.rosterSnapshot.coordinatorAgentId,
-        members: record.rosterSnapshot.members.map((member) => ({
-          agentId: member.agentId,
-          memberOrder: member.memberOrder,
-          role: member.role,
-          title: member.title,
-          dependsOn: [...member.dependsOn],
-        })),
-      },
-      createdAt: record.createdAt,
-      updatedAt: record.updatedAt,
-    };
-  }
-
-  private toConversationSummary(record: ConversationRecord): Conversation {
-    return {
-      id: record.id,
-      track: record.track,
-      targetRef: record.targetRef,
-      workspaceId: record.workspaceId,
-      title: record.title,
-      pinnedAt: record.pinnedAt,
-      archivedAt: record.archivedAt,
-      executionMode: record.executionMode,
-      interactionMode: record.interactionMode,
-      contextWindowOverride: record.contextWindowOverride,
-      lastMessageAt: record.lastMessageAt,
-      taskId: record.taskId,
-      createdAt: record.createdAt,
-      updatedAt: record.updatedAt,
-    };
   }
 
   private writeTeamModelStoreUnavailable(socket: Socket, frame: Frame): void {
@@ -12184,8 +11449,8 @@ export class Runtime {
         limit: payload.limit,
       });
       const response: ListMemoryResponse = {
-        changes: changes.map((c) => this.toMemoryChangeSummary(c)),
-        entries: entries.map((e) => this.toDurableMemoryEntrySummary(e)),
+        changes: changes.map((c) => toMemoryChangeSummary(c)),
+        entries: entries.map((e) => toDurableMemoryEntrySummary(e)),
       };
       socket.write(
         encodeFrame({
@@ -12224,7 +11489,7 @@ export class Runtime {
         proposedByRunId: payload.proposedByRunId,
         autoApprove: payload.autoApprove,
       });
-      const summary = this.toMemoryChangeSummary(change);
+      const summary = toMemoryChangeSummary(change);
       const event = this.appendEvent('memory', 'memory.change.proposed', {
         changeId: summary.id,
         taskId: summary.taskId,
@@ -12267,7 +11532,7 @@ export class Runtime {
                 source: 'memory.propose',
               },
             });
-            approvalRequest = this.toApprovalRequestSummary(record);
+            approvalRequest = toApprovalRequestSummary(record);
             const approvalEvent = this.appendEvent(
               'approval',
               'approval.requested',
@@ -12328,7 +11593,7 @@ export class Runtime {
         changeId: payload.changeId as MemoryChangeId,
         decision: payload.decision,
       });
-      const summary = this.toMemoryChangeSummary(change);
+      const summary = toMemoryChangeSummary(change);
       this.mirrorApprovalDecisionFromMemory(summary.id, payload.decision);
       const event = this.appendEvent('memory', 'memory.change.decided', {
         changeId: summary.id,
@@ -12365,7 +11630,7 @@ export class Runtime {
       const change = this.memoryStore.rollbackChange({
         changeId: payload.changeId,
       });
-      const summary = this.toMemoryChangeSummary(change);
+      const summary = toMemoryChangeSummary(change);
       const event = this.appendEvent('memory', 'memory.change.rolled_back', {
         changeId: summary.id,
         taskId: summary.taskId,
@@ -12408,7 +11673,7 @@ export class Runtime {
       const threadId = payload.threadId;
       const now = new Date().toISOString();
       if (payload.clearAll) {
-        this.threadContextAmendments.delete(threadId);
+        this.contextAmendments.clear(threadId);
         const response: AmendContextPacketResponse = {
           threadId,
           excludeSourceIds: [],
@@ -12456,7 +11721,7 @@ export class Runtime {
         applied.push(id);
       }
 
-      this.threadContextAmendments.set(threadId, { excludeSourceIds: applied });
+      this.contextAmendments.replace(threadId, applied);
       const response: AmendContextPacketResponse = {
         threadId,
         excludeSourceIds: applied,
@@ -12563,7 +11828,7 @@ export class Runtime {
         limit: payload.limit,
       });
       const response: ListDiagnosticsResponse = {
-        diagnostics: diagnostics.map((d) => this.toDiagnosticSummary(d)),
+        diagnostics: diagnostics.map((d) => toDiagnosticSummary(d)),
       };
       socket.write(
         encodeFrame({
@@ -12599,7 +11864,7 @@ export class Runtime {
       });
       const pendingCount = this.approvalStore.countPending(workspaceId);
       const response: ListApprovalsResponse = {
-        items: items.map((item) => this.toApprovalRequestSummary(item)),
+        items: items.map((item) => toApprovalRequestSummary(item)),
         pendingCount,
         humanOnlyActions: [...listHumanOnlyActions()],
         modes: ['request', 'delegate', 'full', 'custom'],
@@ -12647,10 +11912,10 @@ export class Runtime {
         'Approval scope requires workspaceId',
       );
     }
-    if (workspaceId) this.requirePolicyWorkspace(workspaceId);
+    if (workspaceId) this.policyScope.requireWorkspace(workspaceId);
     if (taskId) {
       if (!workspaceId) throw new Error('Approval task scope requires workspaceId');
-      this.requirePolicyTask(workspaceId, taskId);
+      this.policyScope.requireTask(workspaceId, taskId);
     }
     if (runId && !taskId) {
       throw new PolicyScopeBoundaryError(
@@ -12943,7 +12208,7 @@ export class Runtime {
           delegateAgentVersionId: evaluation.delegateAgentVersionId ?? null,
         },
       });
-      const summary = this.toApprovalRequestSummary(record);
+      const summary = toApprovalRequestSummary(record);
       const event = this.appendEvent(
         'approval',
         'approval.requested',
@@ -13017,7 +12282,7 @@ export class Runtime {
           decisionNote: payload.decisionNote,
         });
       if (schedulerDecision) this.syncOrchestrationEvents();
-      const summary = this.toApprovalRequestSummary(record);
+      const summary = toApprovalRequestSummary(record);
       this.mirrorMemoryDecisionFromApproval(summary, payload.decision);
       const skillAllowlist = this.mirrorSkillAllowlistFromApproval(
         summary,
@@ -13141,7 +12406,7 @@ export class Runtime {
   }
 
   private assertApprovalDecisionActor(
-    existing: import('@sync-think/storage').ApprovalRequestRecord | null,
+    existing: import('@sync-think/shared').ApprovalRequestRecord | null,
     decidedBy: 'human' | 'delegate',
     requestedDelegateAgentVersionId: AgentVersionId | undefined,
   ): void {
@@ -13259,7 +12524,7 @@ export class Runtime {
         skillVersionIds: deduped,
         mcpServerIds: current.mcpServerIds,
       });
-      const agentSummary = this.toAgentBindingSummary(updated);
+      const agentSummary = toAgentBindingSummary(updated);
       const bindEvent = this.appendEvent('provider', 'agent.binding_updated', {
         agentId: agentSummary.agentId,
         agentVersionId: agentSummary.agentVersionId,
@@ -13319,7 +12584,7 @@ export class Runtime {
         decidedBy: 'human',
         decisionNote: 'mirrored from memory.decide',
       });
-      const summary = this.toApprovalRequestSummary(record);
+      const summary = toApprovalRequestSummary(record);
       const event = this.appendEvent(
         'approval',
         'approval.decided',
@@ -13363,7 +12628,7 @@ export class Runtime {
         changeId: memoryChangeId as MemoryChangeId,
         decision,
       });
-      const memSummary = this.toMemoryChangeSummary(change);
+      const memSummary = toMemoryChangeSummary(change);
       const event = this.appendEvent('memory', 'memory.change.decided', {
         changeId: memSummary.id,
         decision,
@@ -13395,35 +12660,6 @@ export class Runtime {
     );
   }
 
-  private toApprovalRequestSummary(
-    item: import('@sync-think/storage').ApprovalRequestRecord,
-  ): ApprovalRequestSummary {
-    return {
-      id: item.id,
-      workspaceId: item.workspaceId,
-      taskId: item.taskId,
-      runId: item.runId,
-      stepId: item.stepId,
-      kind: item.kind,
-      action: item.action,
-      summary: item.summary,
-      humanOnly: item.humanOnly,
-      humanOnlyAction: item.humanOnlyAction,
-      mode: item.mode,
-      gate: item.gate,
-      state: item.state,
-      decidedBy: item.decidedBy,
-      delegateAgentVersionId:
-        typeof item.metadata.delegateAgentVersionId === 'string' &&
-        item.metadata.delegateAgentVersionId.trim().length > 0
-          ? (item.metadata.delegateAgentVersionId as AgentVersionId)
-          : undefined,
-      decisionNote: item.decisionNote,
-      createdAt: item.createdAt,
-      decidedAt: item.decidedAt,
-    };
-  }
-
   private writeSkillStoreUnavailable(socket: Socket, frame: Frame): void {
     socket.write(
       encodeFrame({
@@ -13437,41 +12673,6 @@ export class Runtime {
         },
       }),
     );
-  }
-
-  private toSkillVersionSummary(
-    record: SkillVersionRecord | SkillVersionMetadataRecord,
-  ): SkillVersionSummary {
-    let description = record.description;
-    // Older imports stored YAML block-scalar markers (for example `>`)
-    // literally. Repair those rows lazily from their durable source document.
-    if (/^[>|](?:[+-])?$/.test(description.trim()) && this.skillStore) {
-      const sourceMd =
-        'sourceMd' in record ? record.sourceMd : this.skillStore.getVersion(record.id)?.sourceMd;
-      if (sourceMd) {
-        try {
-          description = parseSkillMd(sourceMd).description;
-        } catch {
-          // Keep the persisted value when the legacy source cannot be parsed.
-        }
-      }
-    }
-    return {
-      skillVersionId: record.id,
-      skillId: record.skillId,
-      name: record.name,
-      description,
-      version: record.version,
-      allowedTools: [...record.allowedTools],
-      contentFingerprint: record.contentFingerprint,
-      hasScripts: record.hasScripts,
-      warnings: [...record.warnings],
-      enabled: record.enabled,
-      originType: record.originType,
-      originRef: record.originRef,
-      derivedFromSkillVersionId: record.derivedFromSkillVersionId,
-      createdAt: record.createdAt,
-    };
   }
 
   /**
@@ -13664,8 +12865,8 @@ export class Runtime {
           originRef: `market://skills/${item.id}`,
         });
 
-        this.refreshLocalSkillCache();
-        this.restartLocalSkillWatch();
+        await this.refreshLocalSkillCache();
+        await this.restartLocalSkillWatch();
         this.publishEvent(
           this.appendEvent('system', 'skill.market_installed', {
             marketSkillId: item.id,
@@ -13696,11 +12897,15 @@ export class Runtime {
 
   // ── 本地 Skill library（NewMax-compatible source discovery/import） ──────
 
-  private localSkillWatchCleanup?: () => void;
-  private readonly localSkillWatchedDirectories = new Set<string>();
+  private readonly localSkillWatches = new LocalSkillWatchRegistry();
+  private readonly localSkillRefreshes = new RefreshCoordinator(
+    () => this.performLocalSkillCacheRefresh(),
+    { deferStart: false, rejectPendingOnFailure: true },
+  );
   private localSkillCache: LocalSkillCandidate[] = [];
+  private localSkillSourceCache: LocalSkillSourceInput[] = [];
 
-  private localSkillSources(): LocalSkillSourceInput[] {
+  private async localSkillSourcesAsync(): Promise<LocalSkillSourceInput[]> {
     const workspaces = (this.workspaceStore?.listWorkspaces() ?? [])
       .filter((workspace) => Boolean(workspace.folderPath))
       .sort((left, right) => {
@@ -13716,13 +12921,17 @@ export class Runtime {
     }));
     const pluginSources =
       workspaces.length > 0
-        ? workspaces.flatMap((workspace) =>
-            enabledClaudePluginSkillSources({
-              workspaceFolder: workspace.folderPath!,
-              workspaceId: workspace.id,
-            }),
-          )
-        : enabledClaudePluginSkillSources();
+        ? (
+            await Promise.all(
+              workspaces.map((workspace) =>
+                enabledClaudePluginSkillSourcesAsync({
+                  workspaceFolder: workspace.folderPath!,
+                  workspaceId: workspace.id,
+                }),
+              ),
+            )
+          ).flat()
+        : await enabledClaudePluginSkillSourcesAsync();
     return [
       ...workspaceSources,
       ...pluginSources,
@@ -13739,31 +12948,32 @@ export class Runtime {
     ];
   }
 
-  private handleSkillLocalScan(socket: Socket, frame: Frame): void {
+  private async handleSkillLocalScan(socket: Socket, frame: Frame): Promise<void> {
     const payload = (frame.payload ?? {}) as SkillLocalScanPayload;
-    if (payload.refresh === true || this.localSkillCache.length === 0) {
-      this.refreshLocalSkillCache();
-    }
-    const response: SkillLocalScanResponse = {
-      directory: localSkillsDirectory(),
-      candidates: this.localSkillCache,
-      exists: existsSync(localSkillsDirectory()),
-      watching: Boolean(this.localSkillWatchCleanup),
-      sources: this.localSkillSources().map((source) =>
-        summarizeLocalSkillSource(
-          source,
-          this.localSkillWatchedDirectories.has(source.directory.toLocaleLowerCase()),
+    try {
+      if (payload.refresh === true || this.localSkillCache.length === 0) {
+        await this.refreshLocalSkillCache();
+      }
+      const response: SkillLocalScanResponse = {
+        directory: localSkillsDirectory(),
+        candidates: this.localSkillCache,
+        exists: existsSync(localSkillsDirectory()),
+        watching: this.localSkillWatches.isActive(),
+        sources: this.localSkillSourceCache.map((source) =>
+          summarizeLocalSkillSource(source, this.localSkillWatches.isWatching(source.directory)),
         ),
-      ),
-    };
-    socket.write(
-      encodeFrame({
-        id: frame.id,
-        kind: 'response',
-        type: 'skill.local.scan',
-        payload: response,
-      }),
-    );
+      };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'skill.local.scan',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeTeamModelCommandError(socket, frame, error);
+    }
   }
 
   private async handleSkillLocalInspect(socket: Socket, frame: Frame): Promise<void> {
@@ -13864,8 +13074,8 @@ export class Runtime {
           }
         }
 
-        this.refreshLocalSkillCache();
-        this.restartLocalSkillWatch();
+        await this.refreshLocalSkillCache();
+        await this.restartLocalSkillWatch();
         this.publishEvent(
           this.appendEvent('system', 'skill.local_changed', {
             action: 'import',
@@ -13909,13 +13119,22 @@ export class Runtime {
     }
   }
 
-  private refreshLocalSkillCache(): void {
+  private async refreshLocalSkillCache(): Promise<void> {
+    if (!this.skillStore) {
+      this.localSkillSourceCache = await this.localSkillSourcesAsync();
+      return;
+    }
+    await this.localSkillRefreshes.request();
+  }
+
+  private async performLocalSkillCacheRefresh(): Promise<void> {
     if (!this.skillStore) return;
-    const candidates = scanLocalSkillSources(this.localSkillSources());
+    const sources = await this.localSkillSourcesAsync();
+    const candidates = await scanLocalSkillSources(sources);
     for (const candidate of candidates) {
       let existing: SkillVersionRecord | undefined;
       try {
-        const skillMd = readFileSync(candidate.path, 'utf8');
+        const skillMd = await readFileAsync(candidate.path, 'utf8');
         const parsed = parseSkillMd(skillMd);
         const fingerprint = skillContentFingerprint({
           name: parsed.name,
@@ -13951,41 +13170,39 @@ export class Runtime {
       candidate.imported = Boolean(existing);
       candidate.skillId = existing?.skillId;
     }
+    this.localSkillSourceCache = sources;
     this.localSkillCache = candidates;
   }
 
-  private startLocalSkillWatch(): void {
-    if (this.localSkillWatchCleanup || !this.skillStore) return;
-    const cleanups: Array<() => void> = [];
-    this.localSkillWatchedDirectories.clear();
-    for (const source of this.localSkillSources()) {
+  private async startLocalSkillWatch(): Promise<void> {
+    if (this.localSkillWatches.isActive() || !this.skillStore) return;
+    const sources =
+      this.localSkillSourceCache.length > 0
+        ? this.localSkillSourceCache
+        : await this.localSkillSourcesAsync();
+    for (const source of sources) {
       if (!existsSync(source.directory)) continue;
-      const watchKey = source.directory.toLocaleLowerCase();
-      if (this.localSkillWatchedDirectories.has(watchKey)) continue;
-      cleanups.push(
-        watchLocalSkills(source.directory, () => {
-          this.refreshLocalSkillCache();
-          this.publishEvent(
-            this.appendEvent('system', 'skill.local_changed', {
-              action: 'scan',
-              directory: source.directory,
-            }),
-          );
-        }),
-      );
-      this.localSkillWatchedDirectories.add(watchKey);
+      if (this.localSkillWatches.isWatching(source.directory)) continue;
+      const cleanup = watchLocalSkills(source.directory, () => {
+        const refresh = this.refreshLocalSkillCache()
+          .then(() => {
+            this.publishEvent(
+              this.appendEvent('system', 'skill.local_changed', {
+                action: 'scan',
+                directory: source.directory,
+              }),
+            );
+          })
+          .catch((error) => console.warn('[runtime] local Skill refresh failed', error));
+        this.trackBackgroundTask(refresh);
+      });
+      this.localSkillWatches.add(source.directory, cleanup);
     }
-    if (cleanups.length === 0) return;
-    this.localSkillWatchCleanup = () => {
-      for (const cleanup of cleanups) cleanup();
-      this.localSkillWatchedDirectories.clear();
-    };
   }
 
-  private restartLocalSkillWatch(): void {
-    this.localSkillWatchCleanup?.();
-    this.localSkillWatchCleanup = undefined;
-    this.startLocalSkillWatch();
+  private async restartLocalSkillWatch(): Promise<void> {
+    this.localSkillWatches.stopAll();
+    await this.startLocalSkillWatch();
   }
 
   /** Fingerprint + persist + permission diff + events for a parsed SKILL.md. */
@@ -14025,7 +13242,7 @@ export class Runtime {
         derivedFromSkillVersionId: lineage.derivedFromSkillVersionId,
         skillId: lineage.skillId as import('@sync-think/shared').SkillId | undefined,
       });
-      const summary = this.toSkillVersionSummary(record);
+      const summary = toSkillVersionSummary(record);
       const rawDiff = diffSkillPermissions(
         previous
           ? {
@@ -14099,7 +13316,7 @@ export class Runtime {
                 source: 'skill.import',
               },
             });
-            reapprovalRequest = this.toApprovalRequestSummary(record);
+            reapprovalRequest = toApprovalRequestSummary(record);
             const approvalEvent = this.appendEvent('approval', 'approval.requested', {
               approvalId: reapprovalRequest.id,
               action: reapprovalRequest.action,
@@ -14248,7 +13465,7 @@ export class Runtime {
         );
         return;
       }
-      const skill = this.toSkillVersionSummary(updated);
+      const skill = toSkillVersionSummary(updated);
       const event = this.appendEvent('provider', 'skill.enabledChanged', {
         skillVersionId: skill.skillVersionId,
         skillId: skill.skillId,
@@ -14280,8 +13497,7 @@ export class Runtime {
       writeMcpStoreUnavailable: (socket, frame) => this.writeMcpStoreUnavailable(socket, frame),
       writeProviderCommandError: (socket, frame, error) =>
         this.writeProviderCommandError(socket, frame, error),
-      toSkillVersionSummary: (record) => this.toSkillVersionSummary(record),
-      toMcpServerSummary: (record) => this.toMcpServerSummary(record),
+      readMcpAuthConfig: (mcpServerId) => this.mcpAuthConfigs.get(mcpServerId),
     };
   }
 
@@ -14292,55 +13508,6 @@ export class Runtime {
 
   private handleListSkills(socket: Socket, frame: Frame): void {
     skillQueries.handleListSkills(this.skillQueryContext(), socket, frame);
-  }
-
-  private mcpAuthSettingKey(mcpServerId: string): string {
-    return `mcp.auth.${String(mcpServerId).trim()}`;
-  }
-
-  private readMcpAuthConfig(
-    mcpServerId: string,
-  ): { key?: string; storeHandle?: string; authScheme: string } | undefined {
-    const id = String(mcpServerId ?? '').trim();
-    if (!id) return undefined;
-    const memory = this.mcpAuthHandles.get(id);
-    if (memory) return memory;
-    const stored = this.appSettingStore?.get(this.mcpAuthSettingKey(id))?.value;
-    if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return undefined;
-    const rec = stored as Record<string, unknown>;
-    const authScheme =
-      typeof rec.authScheme === 'string' && rec.authScheme.trim()
-        ? rec.authScheme.trim()
-        : 'bearer';
-    // Plaintext key (current format) takes precedence; legacy SecureStore
-    // handle remains readable for previously stored keys.
-    const plainKey = typeof rec.key === 'string' ? rec.key.trim() : '';
-    const handle = typeof rec.storeHandle === 'string' ? rec.storeHandle.trim() : '';
-    if (!plainKey && !handle) return undefined;
-    const config = plainKey ? { key: plainKey, authScheme } : { storeHandle: handle, authScheme };
-    this.mcpAuthHandles.set(id, config);
-    return config;
-  }
-
-  private async persistMcpAuth(
-    mcpServerId: string,
-    key: string | undefined,
-    authScheme: string | undefined,
-  ): Promise<{ configured: boolean; authScheme: string }> {
-    const previous = this.readMcpAuthConfig(mcpServerId);
-    if (!key || !key.trim()) {
-      return {
-        configured: Boolean(previous),
-        authScheme: previous?.authScheme ?? (String(authScheme ?? 'bearer').trim() || 'bearer'),
-      };
-    }
-    const scheme = String(authScheme ?? previous?.authScheme ?? 'bearer').trim() || 'bearer';
-    // Plaintext storage: the product echoes the latest key back into the
-    // register dialog, so SecureStore handles no longer apply to new writes.
-    const config = { key: key.trim(), authScheme: scheme };
-    this.appSettingStore?.set(this.mcpAuthSettingKey(mcpServerId), config);
-    this.mcpAuthHandles.set(String(mcpServerId), config);
-    return { configured: true, authScheme: scheme };
   }
 
   private rollbackMcpRegistration(
@@ -14369,7 +13536,7 @@ export class Runtime {
   private async retrieveMcpAuth(
     mcpServerId: string,
   ): Promise<{ key: string; authScheme: string } | undefined> {
-    const config = this.readMcpAuthConfig(mcpServerId);
+    const config = this.mcpAuthConfigs.get(mcpServerId);
     if (!config) return undefined;
     // Plaintext key (current format).
     if (config.key) {
@@ -14442,13 +13609,13 @@ export class Runtime {
       });
       let storedAuth: { configured: boolean; authScheme: string };
       try {
-        storedAuth = await this.persistMcpAuth(record.id, key, payload.authScheme);
+        storedAuth = this.mcpAuthConfigs.savePlaintext(record.id, key, payload.authScheme);
       } catch (error) {
         this.rollbackMcpRegistration(record, existing);
         void error;
         throw new Error('MCP credential could not be stored securely');
       }
-      const summary = this.toMcpServerSummary(record);
+      const summary = toMcpServerSummary(record, this.mcpAuthConfigs.get(record.id));
       const event = this.appendEvent('provider', 'mcp.registered', {
         mcpServerId: summary.mcpServerId,
         name: summary.name,
@@ -14526,13 +13693,13 @@ export class Runtime {
       const key = payload.key?.trim() || payload.apiKey?.trim() || undefined;
       let auth: { configured: boolean; authScheme: string };
       try {
-        auth = await this.persistMcpAuth(record.id, key, payload.authScheme);
+        auth = this.mcpAuthConfigs.savePlaintext(record.id, key, payload.authScheme);
       } catch (error) {
         this.rollbackMcpRegistration(record, existing);
         void error;
         throw new Error('MCP credential could not be stored securely');
       }
-      const summary = this.toMcpServerSummary(record);
+      const summary = toMcpServerSummary(record, this.mcpAuthConfigs.get(record.id));
       const event = this.appendEvent('provider', 'mcp.registered', {
         mcpServerId: summary.mcpServerId,
         name: summary.name,
@@ -14566,18 +13733,12 @@ export class Runtime {
   private async hydrateLegacyMcpAuthKeys(): Promise<void> {
     if (!this.mcpStore || !this.secureStore) return;
     for (const server of this.mcpStore.list(500)) {
-      const auth = this.readMcpAuthConfig(server.id);
+      const auth = this.mcpAuthConfigs.get(server.id);
       if (!auth?.storeHandle || auth.key) continue;
       try {
         const key = (await this.secureStore.retrieveSecret(auth.storeHandle)).trim();
         if (!key) continue;
-        const migrated = { key, authScheme: auth.authScheme };
-        this.mcpAuthHandles.set(String(server.id), migrated);
-        try {
-          this.appSettingStore?.set(this.mcpAuthSettingKey(server.id), migrated);
-        } catch {
-          // The in-memory value still lets this session display and use the key.
-        }
+        this.mcpAuthConfigs.promoteLegacy(server.id, key, auth.authScheme);
       } catch {
         // Keep legacy auth status when its stored secret is no longer readable.
       }
@@ -14616,7 +13777,7 @@ export class Runtime {
         );
         return;
       }
-      const server = this.toMcpServerSummary(updated);
+      const server = toMcpServerSummary(updated, this.mcpAuthConfigs.get(updated.id));
       const event = this.appendEvent('provider', 'mcp.enabledChanged', {
         mcpServerId: server.mcpServerId,
         name: server.name,
@@ -14673,14 +13834,7 @@ export class Runtime {
           });
         }
       }
-      // Clear persisted auth config (plaintext key / legacy handle). The
-      // settings store has no delete; an empty record makes readMcpAuthConfig
-      // return undefined, which matches "no key configured".
-      this.appSettingStore?.set(this.mcpAuthSettingKey(payload.mcpServerId), {
-        key: '',
-        authScheme: '',
-      });
-      this.mcpAuthHandles.delete(payload.mcpServerId);
+      this.mcpAuthConfigs.clear(payload.mcpServerId);
 
       const deleted = this.mcpStore.delete(payload.mcpServerId);
       const event = this.appendEvent('provider', 'mcp.deleted', {
@@ -15040,7 +14194,7 @@ export class Runtime {
       goal: `通过 ${label} 与 SYNC-THINK 对话`,
       now,
     });
-    this.threadVersions.set(task.threadId, task.taskVersion);
+    this.threadVersionProjection.record(task.threadId, task.taskVersion);
     this.conversationStore.bindTask(conversation.id, task.taskId, now);
     this.appSettingStore.set(settingKey, { conversationId: conversation.id }, now);
     return { conversationId: conversation.id, threadId: task.threadId };
@@ -15105,7 +14259,7 @@ export class Runtime {
           },
         },
       ] as [EventDraft, EventDraft],
-      new Map(this.threadVersions),
+      this.threadVersionProjection.snapshot(),
       new Map(this.demoRuns).set(runId, prepared.run),
     );
     this.recordCommittedEvents(events);
@@ -15125,460 +14279,6 @@ export class Runtime {
     return text;
   }
 
-  private readTelegramBotConfig(): PersistedTelegramBotConfig {
-    const value = this.appSettingStore?.get(TELEGRAM_BOT_SETTING_KEY)?.value;
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-      return { enabled: false, proxyUrl: '' };
-    }
-    const record = value as Record<string, unknown>;
-    return {
-      enabled: record.enabled === true,
-      proxyUrl: typeof record.proxyUrl === 'string' ? record.proxyUrl.trim() : '',
-      ...(typeof record.tokenHandle === 'string' && record.tokenHandle.trim()
-        ? { tokenHandle: record.tokenHandle.trim() }
-        : {}),
-      ...(typeof record.updateOffset === 'number' && Number.isSafeInteger(record.updateOffset)
-        ? { updateOffset: record.updateOffset }
-        : {}),
-      ...(typeof record.botUsername === 'string' && record.botUsername.trim()
-        ? { botUsername: record.botUsername.trim() }
-        : {}),
-      ...(typeof record.botDisplayName === 'string' && record.botDisplayName.trim()
-        ? { botDisplayName: record.botDisplayName.trim() }
-        : {}),
-      ...(typeof record.lastError === 'string' && record.lastError.trim()
-        ? { lastError: record.lastError.trim() }
-        : {}),
-      ...(typeof record.updatedAt === 'string' ? { updatedAt: record.updatedAt } : {}),
-    };
-  }
-
-  private writeTelegramBotConfig(config: PersistedTelegramBotConfig): void {
-    this.appSettingStore?.set(TELEGRAM_BOT_SETTING_KEY, config);
-  }
-
-  private telegramBotConfigSummary(config = this.readTelegramBotConfig()): BotChannelConfigSummary {
-    return {
-      platform: 'telegram',
-      enabled: config.enabled,
-      credentialsConfigured: Boolean(config.tokenHandle),
-      proxyUrl: config.proxyUrl,
-      connected: Boolean(config.tokenHandle && config.botUsername && !config.lastError),
-      state:
-        config.tokenHandle && config.botUsername && !config.lastError
-          ? 'connected'
-          : config.lastError
-            ? 'error'
-            : 'disconnected',
-      ...(config.botUsername ? { botUsername: config.botUsername } : {}),
-      ...(config.botDisplayName ? { botDisplayName: config.botDisplayName } : {}),
-      ...(config.lastError ? { lastError: config.lastError } : {}),
-      ...(config.updatedAt ? { updatedAt: config.updatedAt } : {}),
-    };
-  }
-
-  private async telegramBotToken(
-    config: PersistedTelegramBotConfig,
-    replacement?: string,
-  ): Promise<string | undefined> {
-    const supplied = replacement?.trim();
-    if (supplied) return supplied;
-    if (!config.tokenHandle || !this.secureStore) return undefined;
-    const stored = (await this.secureStore.retrieveSecret(config.tokenHandle)).trim();
-    return stored || undefined;
-  }
-
-  /** @deprecated Kept for binary-compatible tests while Telegram settings migrate. */
-  handleGetBotChannelConfig(socket: Socket, frame: Frame): void {
-    const payload = parseGetBotChannelConfigPayload(frame.payload);
-    if (!payload || payload.platform !== 'telegram') {
-      this.writeMalformedPayload(socket, frame);
-      return;
-    }
-    const response: GetBotChannelConfigResponse = this.telegramBotConfigSummary();
-    socket.write(
-      encodeFrame({ id: frame.id, kind: 'response', type: 'bot.channel.get', payload: response }),
-    );
-  }
-
-  /** @deprecated Kept for binary-compatible tests while Telegram settings migrate. */
-  async handleTestBotChannel(socket: Socket, frame: Frame): Promise<void> {
-    const payload = parseTestBotChannelPayload(frame.payload);
-    if (!payload || payload.platform !== 'telegram') {
-      this.writeMalformedPayload(socket, frame);
-      return;
-    }
-    try {
-      const current = this.readTelegramBotConfig();
-      const token = await this.telegramBotToken(current, payload.token);
-      if (!token) throw new Error('请先填写 Bot Token。');
-      const identity = await this.telegramBotClient.testConnection(
-        token,
-        payload.proxyUrl ?? current.proxyUrl,
-      );
-      const response: TestBotChannelResponse = {
-        platform: 'telegram',
-        connected: true,
-        overall: 'pass',
-        checks: [{ id: 'connection', label: '连接与鉴权', verdict: 'pass' }],
-        ...(identity.username ? { botUsername: identity.username } : {}),
-        ...(identity.displayName ? { botDisplayName: identity.displayName } : {}),
-      };
-      socket.write(
-        encodeFrame({
-          id: frame.id,
-          kind: 'response',
-          type: 'bot.channel.test',
-          payload: response,
-        }),
-      );
-    } catch (error) {
-      this.writeProviderCommandError(socket, frame, error);
-    }
-  }
-
-  /** @deprecated Kept for binary-compatible tests while Telegram settings migrate. */
-  async handleSaveBotChannelConfig(socket: Socket, frame: Frame): Promise<void> {
-    const payload = parseSaveBotChannelConfigPayload(frame.payload);
-    if (!payload || payload.platform !== 'telegram') {
-      this.writeMalformedPayload(socket, frame);
-      return;
-    }
-    if (!this.appSettingStore || !this.secureStore) {
-      this.writeProviderCommandError(socket, frame, new Error('机器人设置存储尚未就绪。'));
-      return;
-    }
-    try {
-      const previous = this.readTelegramBotConfig();
-      const proxyUrl = payload.proxyUrl ?? previous.proxyUrl;
-      const replacementToken = payload.token?.trim();
-      const shouldTest =
-        payload.testConnection === true || payload.enabled || Boolean(replacementToken);
-      const token = shouldTest
-        ? await this.telegramBotToken(previous, replacementToken)
-        : undefined;
-      if (shouldTest && !token) throw new Error('请先填写 Bot Token。');
-      const identity = token
-        ? await this.telegramBotClient.testConnection(token, proxyUrl)
-        : {
-            username: previous.botUsername,
-            displayName: previous.botDisplayName,
-          };
-      let tokenHandle = previous.tokenHandle;
-      if (replacementToken && token) {
-        tokenHandle = await this.secureStore.storeSecret(token);
-      }
-      const now = new Date().toISOString();
-      const next: PersistedTelegramBotConfig = {
-        enabled: payload.enabled,
-        tokenHandle,
-        proxyUrl,
-        updateOffset: previous.updateOffset,
-        botUsername: identity.username,
-        botDisplayName: identity.displayName,
-        updatedAt: now,
-      };
-      this.writeTelegramBotConfig(next);
-      if (replacementToken && previous.tokenHandle && previous.tokenHandle !== tokenHandle) {
-        await this.secureStore.removeSecret(previous.tokenHandle).catch(() => undefined);
-      }
-      await this.restartTelegramBotLoop();
-      const response: SaveBotChannelConfigResponse = {
-        config: this.telegramBotConfigSummary(next),
-      };
-      socket.write(
-        encodeFrame({
-          id: frame.id,
-          kind: 'response',
-          type: 'bot.channel.save',
-          payload: response,
-        }),
-      );
-    } catch (error) {
-      this.writeProviderCommandError(socket, frame, error);
-    }
-  }
-
-  private async restartTelegramBotLoop(): Promise<void> {
-    this.telegramBotAbort?.abort();
-    if (this.telegramBotLoop) await this.telegramBotLoop.catch(() => undefined);
-    this.telegramBotAbort = undefined;
-    this.telegramBotLoop = undefined;
-    if (this.runtimeStopped) return;
-    const config = this.readTelegramBotConfig();
-    if (!config.enabled || !config.tokenHandle) return;
-    const token = await this.telegramBotToken(config);
-    if (!token) return;
-    const controller = new AbortController();
-    this.telegramBotAbort = controller;
-    const loop = this.runTelegramBotLoop(token, controller.signal).catch((error) => {
-      if (!controller.signal.aborted) console.warn('[runtime] Telegram bot loop stopped', error);
-    });
-    this.telegramBotLoop = loop;
-    void loop.finally(() => {
-      if (this.telegramBotLoop === loop) this.telegramBotLoop = undefined;
-      if (this.telegramBotAbort === controller) this.telegramBotAbort = undefined;
-    });
-  }
-
-  private async runTelegramBotLoop(token: string, signal: AbortSignal): Promise<void> {
-    while (!signal.aborted && !this.runtimeStopped) {
-      const current = this.readTelegramBotConfig();
-      if (!current.enabled) return;
-      try {
-        const batch = await this.telegramBotClient.getUpdates({
-          token,
-          offset: current.updateOffset,
-          proxyUrl: current.proxyUrl,
-          signal,
-        });
-        for (const message of batch.messages) {
-          if (signal.aborted) return;
-          await this.processTelegramMessage(token, current.proxyUrl, message);
-        }
-        if (batch.nextOffset !== undefined) {
-          this.writeTelegramBotConfig({
-            ...this.readTelegramBotConfig(),
-            updateOffset: batch.nextOffset,
-            lastError: undefined,
-          });
-        } else if (current.lastError) {
-          this.writeTelegramBotConfig({ ...current, lastError: undefined });
-        }
-      } catch (error) {
-        if (signal.aborted) return;
-        const message = error instanceof Error ? error.message : 'Telegram 长轮询失败。';
-        this.writeTelegramBotConfig({ ...this.readTelegramBotConfig(), lastError: message });
-        await new Promise<void>((resolve) => {
-          const finish = () => {
-            clearTimeout(timer);
-            signal.removeEventListener('abort', finish);
-            resolve();
-          };
-          const timer = setTimeout(finish, 2_000);
-          signal.addEventListener('abort', finish, { once: true });
-          if (signal.aborted) finish();
-        });
-      }
-    }
-  }
-
-  private async processTelegramMessage(
-    token: string,
-    proxyUrl: string,
-    message: TelegramIncomingMessage,
-  ): Promise<void> {
-    await this.telegramBotClient.sendTyping(token, message.chatId, proxyUrl).catch(() => undefined);
-    const typingTimer = setInterval(() => {
-      void this.telegramBotClient
-        .sendTyping(token, message.chatId, proxyUrl)
-        .catch(() => undefined);
-    }, 4_000);
-    typingTimer.unref?.();
-    try {
-      const reply = await this.executeTelegramConversationTurn(message);
-      await this.telegramBotClient.sendMessage(token, message.chatId, reply, proxyUrl);
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : '处理消息时出现错误。';
-      await this.telegramBotClient
-        .sendMessage(token, message.chatId, `SYNC-THINK 处理失败：${detail}`, proxyUrl)
-        .catch(() => undefined);
-    } finally {
-      clearInterval(typingTimer);
-    }
-  }
-
-  private getOrCreateTelegramConversation(message: TelegramIncomingMessage): {
-    conversationId: string;
-    threadId: string;
-  } {
-    if (!this.conversationStore || !this.workspaceStore || !this.appSettingStore) {
-      throw new Error('持久化会话尚未就绪。');
-    }
-    const identity = `telegram:${message.chatId}`;
-    const settingKey = this.externalEventSettingKey('conversation', identity);
-    const persisted = this.appSettingStore.get(settingKey)?.value as
-      { conversationId?: unknown } | undefined;
-    if (typeof persisted?.conversationId === 'string') {
-      const existing = this.conversationStore.get(persisted.conversationId as ConversationId);
-      const threadId = existing ? this.resolveConversationThreadId(existing.id) : undefined;
-      if (existing && threadId) return { conversationId: existing.id, threadId };
-    }
-
-    const defaultModelId = this.resolveAgentModelBinding().defaultModelId;
-    const now = new Date().toISOString();
-    const workspaceId = this.getOrCreateInboxWorkspace();
-    const title = `Telegram · ${message.senderName ?? message.chatId}`;
-    const conversation = this.conversationStore.create({
-      target: { track: 'model', modelId: defaultModelId },
-      workspaceId,
-      title,
-      now,
-    });
-    const task = this.workspaceStore.createTask({
-      workspaceId,
-      title,
-      goal: '通过 Telegram 与 SYNC-THINK 对话',
-      now,
-    });
-    this.threadVersions.set(task.threadId, task.taskVersion);
-    this.conversationStore.bindTask(conversation.id, task.taskId, now);
-    this.appSettingStore.set(settingKey, { conversationId: conversation.id }, now);
-    return { conversationId: conversation.id, threadId: task.threadId };
-  }
-
-  private async executeTelegramConversationTurn(message: TelegramIncomingMessage): Promise<string> {
-    if (
-      !this.stateStore ||
-      !this.workspaceStore ||
-      !this.messageStore ||
-      !this.canStartModelRun()
-    ) {
-      throw new Error('当前没有可执行的模型。');
-    }
-    const { threadId } = this.getOrCreateTelegramConversation(message);
-    const runId = ulid() as RunId;
-    const prepared = this.prepareRunBinding({
-      runId,
-      threadId: threadId as ThreadId,
-      userText: message.text,
-    });
-    const occurredAt = new Date().toISOString();
-    const workspaceTask = this.workspaceStore.getTaskByThreadId(threadId as ThreadId);
-    const eventDrafts: [EventDraft, EventDraft] = [
-      {
-        id: ulid() as Event['id'],
-        workspaceId: workspaceTask?.workspaceId ?? this.workspaceId,
-        taskId: workspaceTask?.id,
-        runId,
-        category: 'message',
-        type: 'message.appended',
-        occurredAt,
-        payload: {
-          threadId,
-          role: 'user',
-          text: message.text,
-          botPlatform: 'telegram',
-          botChatId: message.chatId,
-          botMessageId: message.messageId,
-        },
-      },
-      {
-        id: ulid() as Event['id'],
-        workspaceId: workspaceTask?.workspaceId ?? this.workspaceId,
-        taskId: workspaceTask?.id,
-        runId,
-        category: 'context',
-        type: 'context.packet.built',
-        occurredAt,
-        payload: {
-          threadId,
-          packetId: prepared.packetId,
-          proofHash: prepared.proofHash,
-          modelId: prepared.run.modelId,
-          providerModelId: prepared.run.providerModelId,
-          resolutionSource: prepared.run.resolutionSource,
-          credentialRefId: prepared.run.credentialRefId,
-          skillVersionIds: prepared.skillVersionIds,
-          mcpServerIds: prepared.mcpServerIds,
-          externalEventSource: 'bot',
-        },
-      },
-    ];
-    const projectedRuns = new Map(this.demoRuns);
-    projectedRuns.set(runId, prepared.run);
-    const events = this.persistProjectedEvents(
-      eventDrafts,
-      new Map(this.threadVersions),
-      projectedRuns,
-    );
-    this.recordCommittedEvents(events);
-    this.demoRuns.set(runId, prepared.run);
-    for (const event of events) this.publishEvent(event);
-    await this.executeKernelRun(runId);
-
-    const page = this.messageStore.listMessages(threadId as ThreadId, { limit: 100 });
-    const reply = [...page.messages]
-      .reverse()
-      .find((item) => item.role === 'assistant' && item.runId === runId);
-    const text = reply?.blocks
-      .map((block) => (typeof block.text === 'string' ? block.text : ''))
-      .join('\n')
-      .trim();
-    if (!text) throw new Error('本次执行没有生成文本回复。');
-    return text;
-  }
-
-  private toCapabilityWorkspaceActivationSummary(
-    record: import('@sync-think/storage').CapabilityWorkspaceActivationRecord,
-  ): CapabilityWorkspaceActivationSummary {
-    return {
-      capabilityType: record.capabilityType,
-      capabilityId: record.capabilityId,
-      workspaceId: record.workspaceId,
-      active: record.active,
-      createdAt: record.createdAt,
-      updatedAt: record.updatedAt,
-    };
-  }
-
-  private toCapabilityUsageSummary(
-    record: import('@sync-think/storage').CapabilityUsageSummary,
-  ): CapabilityUsageSummary {
-    return {
-      capabilityType: record.capabilityType,
-      capabilityId: record.capabilityId,
-      callCount: record.callCount,
-      successCount: record.successCount,
-      failedCount: record.failedCount,
-      cancelledCount: record.cancelledCount,
-      problemCount: record.problemCount,
-      contextTokens: record.contextTokens,
-      lastUsedAt: record.lastUsedAt,
-    };
-  }
-
-  private toSkillPublishDraftSummary(
-    record: import('@sync-think/storage').SkillPublishDraftRecord,
-  ): SkillPublishDraftSummary {
-    return {
-      id: record.id,
-      skillVersionId: record.skillVersionId,
-      skillId: record.skillId,
-      displayName: record.displayName,
-      description: record.description,
-      skillMd: record.skillMd,
-      category: record.category,
-      version: record.version,
-      icon: record.icon,
-      attachments: record.attachments.map((attachment) => ({
-        name: attachment.name,
-        size: attachment.size,
-      })),
-      createdAt: record.createdAt,
-      updatedAt: record.updatedAt,
-    };
-  }
-
-  private toCapabilityOrganizeReportSummary(
-    record: import('@sync-think/storage').CapabilityOrganizeReportRecord,
-  ): CapabilityOrganizeReportSummary {
-    return {
-      id: record.id,
-      workspaceId: record.workspaceId,
-      contextBudgetTokens: record.contextBudgetTokens,
-      categories: {
-        unused: [...record.categories.unused],
-        inactive: [...record.categories.inactive],
-        problematic: [...record.categories.problematic],
-        contextWarning: [...record.categories.contextWarning],
-        highContext: [...record.categories.highContext],
-      },
-      summary: { ...record.summary },
-      createdAt: record.createdAt,
-    };
-  }
-
   private handleListCapabilityWorkspaceActivations(socket: Socket, frame: Frame): void {
     const payload = parseCapabilityWorkspaceListPayload(frame.payload);
     if (!payload) {
@@ -15593,7 +14293,7 @@ export class Runtime {
       const response: CapabilityWorkspaceListResponse = {
         activations: this.capabilityStore
           .listWorkspaceActivations(payload.workspaceId, payload.capabilityType)
-          .map((record) => this.toCapabilityWorkspaceActivationSummary(record)),
+          .map((record) => toCapabilityWorkspaceActivationSummary(record)),
       };
       socket.write(
         encodeFrame({
@@ -15640,7 +14340,7 @@ export class Runtime {
       }
       const activation = this.capabilityStore.setWorkspaceActivation(payload);
       const response: CapabilityWorkspaceSetActiveResponse = {
-        activation: this.toCapabilityWorkspaceActivationSummary(activation),
+        activation: toCapabilityWorkspaceActivationSummary(activation),
       };
       const event = this.appendEvent('provider', 'capability.workspaceActivationChanged', {
         ...response.activation,
@@ -15699,7 +14399,7 @@ export class Runtime {
             now: payload.now,
             windowDays: 45,
           })
-          .map((usage) => [usage.capabilityId, this.toCapabilityUsageSummary(usage)] as const),
+          .map((usage) => [usage.capabilityId, toCapabilityUsageSummary(usage)] as const),
       );
       const mcpUsage = new Map(
         this.capabilityStore
@@ -15710,19 +14410,22 @@ export class Runtime {
             now: payload.now,
             windowDays: 45,
           })
-          .map((usage) => [usage.capabilityId, this.toCapabilityUsageSummary(usage)] as const),
+          .map((usage) => [usage.capabilityId, toCapabilityUsageSummary(usage)] as const),
       );
       const response: CapabilityGovernanceListResponse = {
         workspaceId: payload.workspaceId,
         windowDays: 45,
         skills: skills.map((skill) => ({
-          skill: this.toSkillVersionSummary(skill),
+          skill: toSkillVersionSummary(
+            skill,
+            (skillVersionId) => this.skillStore?.getVersion(skillVersionId)?.sourceMd,
+          ),
           workspaceActive: activeIds.has(`skill:${skill.id}`),
           activeWorkspaceNames: activeWorkspaceNamesByCapability.get(`skill:${skill.id}`) ?? [],
           usage: skillUsage.get(skill.id)!,
         })),
         mcpServers: mcpServers.map((server) => ({
-          server: this.toMcpServerSummary(server),
+          server: toMcpServerSummary(server, this.mcpAuthConfigs.get(server.id)),
           workspaceActive: activeIds.has(`mcp:${server.id}`),
           activeWorkspaceNames: activeWorkspaceNamesByCapability.get(`mcp:${server.id}`) ?? [],
           usage: mcpUsage.get(server.id)!,
@@ -15776,7 +14479,7 @@ export class Runtime {
         })),
       });
       const response: SaveSkillPublishDraftResponse = {
-        draft: this.toSkillPublishDraftSummary(draft),
+        draft: toSkillPublishDraftSummary(draft),
       };
       socket.write(
         encodeFrame({
@@ -15805,7 +14508,7 @@ export class Runtime {
       const response: ListSkillPublishDraftsResponse = {
         drafts: this.capabilityStore
           .listSkillPublishDrafts(payload.skillId, payload.limit ?? 100)
-          .map((draft) => this.toSkillPublishDraftSummary(draft)),
+          .map((draft) => toSkillPublishDraftSummary(draft)),
       };
       socket.write(
         encodeFrame({
@@ -15848,7 +14551,7 @@ export class Runtime {
         return;
       }
       const response: GetSkillPublishDraftResponse = {
-        draft: this.toSkillPublishDraftSummary(draft),
+        draft: toSkillPublishDraftSummary(draft),
       };
       socket.write(
         encodeFrame({
@@ -15893,7 +14596,7 @@ export class Runtime {
       const result = this.capabilityStore.submitSkillPublishDraft(payload.id);
       const response: SubmitSkillPublishDraftResponse = {
         ...result,
-        draft: this.toSkillPublishDraftSummary(draft),
+        draft: toSkillPublishDraftSummary(draft),
       };
       socket.write(
         encodeFrame({
@@ -15921,7 +14624,7 @@ export class Runtime {
     try {
       const report = this.capabilityStore.generateOrganizeReport(payload);
       const response: PreviewCapabilityOrganizeResponse = {
-        report: this.toCapabilityOrganizeReportSummary(report),
+        report: toCapabilityOrganizeReportSummary(report),
         readOnly: true,
       };
       socket.write(
@@ -15950,7 +14653,7 @@ export class Runtime {
     try {
       const report = this.capabilityStore.getLatestOrganizeReport(payload.workspaceId);
       const response: GetLatestCapabilityOrganizeResponse = {
-        report: report ? this.toCapabilityOrganizeReportSummary(report) : undefined,
+        report: report ? toCapabilityOrganizeReportSummary(report) : undefined,
       };
       socket.write(
         encodeFrame({
@@ -16345,7 +15048,7 @@ export class Runtime {
               actionDigest: evaluationResponse.actionDigest ?? null,
             },
           });
-          approvalRequest = this.toApprovalRequestSummary(record);
+          approvalRequest = toApprovalRequestSummary(record);
           enqueued = true;
           const approvalEvent = this.appendEvent('approval', 'approval.requested', {
             approvalId: approvalRequest.id,
@@ -17037,9 +15740,7 @@ export class Runtime {
     }
 
     evaluationResponse = { ...evaluationResponse, actionDigest: gate.actionDigest };
-    const approvalRequest = gate.approval
-      ? this.toApprovalRequestSummary(gate.approval)
-      : undefined;
+    const approvalRequest = gate.approval ? toApprovalRequestSummary(gate.approval) : undefined;
     const priorOk = gate.approval?.state === 'approved';
     const autoApproved = gate.approval === null;
     if (!gate.allowed) {
@@ -17562,7 +16263,7 @@ export class Runtime {
           timeoutMs: row.timeoutMs,
           notes: row.notes,
         });
-        serverSummary = this.toMcpServerSummary(updated);
+        serverSummary = toMcpServerSummary(updated, this.mcpAuthConfigs.get(updated.id));
         const newNames = new Set(updated.tools.map((t) => t.name));
         addedToolNames = updated.tools.map((t) => t.name).filter((n) => !previousNames.has(n));
         removedToolNames = [...previousNames].filter((n) => !newNames.has(n));
@@ -17675,7 +16376,7 @@ export class Runtime {
         timeoutMs: row.timeoutMs,
         notes: row.notes,
       });
-      const server = this.toMcpServerSummary(updated);
+      const server = toMcpServerSummary(updated, this.mcpAuthConfigs.get(updated.id));
       const names = new Set(updated.tools.map((tool) => tool.name));
       const addedToolNames = updated.tools
         .map((tool) => tool.name)
@@ -17723,7 +16424,7 @@ export class Runtime {
         serverName: row.name,
         endpoint: row.endpoint,
         transport: row.transport,
-        tools: this.toMcpServerSummary(row).tools,
+        tools: toMcpServerSummary(row, this.mcpAuthConfigs.get(row.id)).tools,
         previousToolCount,
         toolCount: previousToolCount,
         addedToolNames: [],
@@ -17794,40 +16495,6 @@ export class Runtime {
     );
   }
 
-  private toMcpServerSummary(
-    record: import('@sync-think/storage').McpServerRecord,
-  ): import('@sync-think/protocol').McpServerSummary {
-    return {
-      mcpServerId: record.id,
-      name: record.name,
-      transport: record.transport,
-      endpoint: record.endpoint,
-      tools: record.tools.map((t) => ({
-        name: t.name,
-        description: t.description,
-        inputSchemaJson: t.inputSchemaJson,
-      })),
-      trusted: record.trusted,
-      enabled: record.enabled,
-      maxOutputBytes: record.maxOutputBytes,
-      timeoutMs: record.timeoutMs,
-      notes: record.notes,
-      ...(this.readMcpAuthConfig(record.id)
-        ? {
-            authConfigured: true,
-            authScheme: this.readMcpAuthConfig(record.id)!.authScheme,
-            // Plaintext echo for the register dialog; only meaningful for
-            // remote-http servers (local-stdio carries no auth key).
-            ...(record.transport === 'remote-http' && this.readMcpAuthConfig(record.id)!.key
-              ? { authKey: this.readMcpAuthConfig(record.id)!.key }
-              : {}),
-          }
-        : {}),
-      createdAt: record.createdAt,
-      updatedAt: record.updatedAt,
-    };
-  }
-
   private writeMemoryStoreUnavailable(socket: Socket, frame: Frame): void {
     socket.write(
       encodeFrame({
@@ -17841,54 +16508,6 @@ export class Runtime {
         },
       }),
     );
-  }
-
-  private toMemoryChangeSummary(change: MemoryChangeRecord): MemoryChangeSummary {
-    return {
-      id: change.id,
-      workspaceId: change.workspaceId,
-      taskId: change.taskId,
-      targetScope: change.targetScope,
-      additions: change.additions,
-      modifications: change.modifications,
-      deprecations: change.deprecations,
-      evidenceRefs: change.evidenceRefs,
-      confidence: change.confidence,
-      unresolvedAmbiguity: change.unresolvedAmbiguity,
-      approvalState: change.approvalState,
-      proposedByRunId: change.proposedByRunId,
-      createdAt: change.createdAt,
-      decidedAt: change.decidedAt,
-    };
-  }
-
-  private toDurableMemoryEntrySummary(entry: DurableMemoryEntry): DurableMemoryEntrySummary {
-    return {
-      id: entry.id,
-      workspaceId: entry.workspaceId,
-      taskId: entry.taskId,
-      scope: entry.scope,
-      key: entry.key,
-      value: entry.value,
-      sourceChangeId: entry.sourceChangeId,
-      active: entry.active,
-      createdAt: entry.createdAt,
-      updatedAt: entry.updatedAt,
-    };
-  }
-
-  private toDiagnosticSummary(rec: DiagnosticRecord): DiagnosticSummary {
-    return {
-      id: rec.id,
-      workspaceId: rec.workspaceId,
-      taskId: rec.taskId,
-      runId: rec.runId,
-      category: rec.category,
-      failureClass: rec.failureClass ? String(rec.failureClass) : undefined,
-      summary: rec.summary,
-      detail: rec.detail,
-      createdAt: rec.createdAt,
-    };
   }
 
   private writeAgentStoreUnavailable(socket: Socket, frame: Frame): void {
@@ -17939,52 +16558,6 @@ export class Runtime {
       fallbackModelIds,
       pauseOnFailure: true,
     });
-  }
-
-  private toAgentBindingSummary(
-    record: import('@sync-think/storage').AgentVersionRecord,
-  ): AgentBindingSummary {
-    return {
-      agentId: record.agentId,
-      agentVersionId: record.id,
-      version: record.version,
-      name: record.name,
-      role: record.role,
-      defaultModelId: record.defaultModelId,
-      fallbackModelIds: [...record.fallbackModelIds],
-      pauseOnFailure: record.pauseOnFailure,
-      defaultCredentialGroupId: record.defaultCredentialGroupId,
-      pinnedCredentialRefId: record.pinnedCredentialRefId,
-      skillVersionIds: [...(record.skillVersionIds ?? [])],
-      mcpServerIds: [...(record.mcpServerIds ?? [])],
-      createdAt: record.createdAt,
-    };
-  }
-
-  private toAgentDefinitionSummary(
-    record: import('@sync-think/storage').AgentVersionRecord,
-  ): AgentDefinitionSummary {
-    return {
-      ...this.toAgentBindingSummary(record),
-      description: record.description,
-      visualIdentity: { ...record.visualIdentity },
-      developerInstructions: record.developerInstructions,
-      inputContract: record.inputContract,
-      outputContract: record.outputContract,
-      memoryScope: record.memoryScope,
-      mcpToolAllowlist: [...record.mcpToolAllowlist],
-      permissions: {
-        file: [...record.permissions.file],
-        command: [...record.permissions.command],
-        browser: [...record.permissions.browser],
-        desktop: [...record.permissions.desktop],
-        network: [...record.permissions.network],
-      },
-      policyId: record.policyId,
-      approvalMode: record.approvalMode,
-      reviewBehavior: { ...record.reviewBehavior },
-      artifactRules: { ...record.artifactRules },
-    };
   }
 
   private writeProviderStoreUnavailable(socket: Socket, frame: Frame): void {
@@ -18205,7 +16778,7 @@ export class Runtime {
         payload: { threadId, messageId, images },
       };
       const committed = this.stateStore
-        ? this.persistProjectedEvents([draft], this.threadVersions, this.demoRuns)
+        ? this.persistProjectedEvents([draft], this.threadVersionProjection.view(), this.demoRuns)
         : [this.appendEvent('message', draft.type, draft.payload, messageId as MessageId)];
       for (const event of committed) this.publishEvent(event);
       socket.write(
@@ -18257,7 +16830,8 @@ export class Runtime {
         return;
       }
     }
-    const currentVersion = persistedTask?.version ?? this.threadVersions.get(payload.threadId) ?? 0;
+    const currentVersion =
+      persistedTask?.version ?? this.threadVersionProjection.current(payload.threadId) ?? 0;
     if (payload.expectedTaskVersion !== currentVersion) {
       socket.write(
         encodeFrame({
@@ -18540,11 +17114,38 @@ export class Runtime {
           run: serializeDemoRun(demoRun),
         },
       });
+      if (demoRun.imagesMode && Array.isArray(payload.images) && payload.images.length > 0) {
+        const imageEntries = buildImageProcessEntries({
+          images: payload.images,
+          mode: demoRun.imagesMode,
+          trust: {
+            workspaceRoot: this.resolveChatWorkspaceRoot(payload.threadId),
+            conversationId: this.resolveConversationIdForThread(payload.threadId),
+          },
+          kernelId: demoRun.kernelId,
+          providerModelId: demoRun.providerModelId,
+        });
+        for (const entry of imageEntries) {
+          eventDrafts.push({
+            id: ulid() as Event['id'],
+            workspaceId: persistedTask?.workspaceId ?? this.workspaceId,
+            taskId: persistedTask?.id,
+            runId: demoRunId,
+            category: 'context',
+            type: 'context.image.prepared',
+            occurredAt: new Date().toISOString(),
+            payload: {
+              threadId: payload.threadId,
+              ...entry,
+            },
+          });
+        }
+      }
     }
 
     const actualVersion = persistedTask
       ? this.workspaceStore!.getTaskByThreadId(payload.threadId as ThreadId)?.version
-      : (this.threadVersions.get(payload.threadId) ?? 0);
+      : (this.threadVersionProjection.current(payload.threadId) ?? 0);
     if (actualVersion === undefined) {
       socket.write(
         encodeFrame({
@@ -18569,27 +17170,30 @@ export class Runtime {
       );
       return;
     }
-    const projectedThreadVersions = new Map(this.threadVersions);
-    projectedThreadVersions.set(payload.threadId, nextVersion);
+    const projectedThreadVersions = this.threadVersionProjection.snapshotWith(
+      payload.threadId,
+      nextVersion,
+    );
     const projectedRuns = new Map(this.demoRuns);
     const superseded = demoRun
       ? [...this.demoRuns.entries()].filter(
-          ([runId, run]) => run.threadId === payload.threadId && this.inFlight.has(runId),
+          ([runId, run]) =>
+            run.threadId === payload.threadId &&
+            this.activeRuns.has(runId) &&
+            !this.collaborationTaskRunsHasRun(runId as RunId),
         )
       : [];
     const supersededRunIds = new Set(superseded.map(([runId]) => runId));
-    const supersededApprovals = [...this.pendingToolApprovals.entries()].filter(([, pending]) =>
-      supersededRunIds.has(pending.runId),
-    );
-    const supersededEvents: EventDraft[] = supersededApprovals.map(([approvalId, pending]) =>
+    const supersededApprovals = this.activeToolApprovals.matchingRunIds(supersededRunIds);
+    const supersededEvents: EventDraft[] = supersededApprovals.map((pending) =>
       this.createToolApprovalDecisionDraft({
-        approvalId,
+        approvalId: pending.approvalId,
         threadId: pending.threadId,
         runId: pending.runId,
         decision: 'deny',
         reason: 'superseded-by-new-message',
-        toolCallId: pending.pendingToolCalls[pending.currentIndex]?.id,
-        toolName: pending.pendingToolCalls[pending.currentIndex]?.name,
+        toolCallId: pending.toolCall.id,
+        toolName: pending.toolCall.name,
       }),
     );
     for (const [runId, run] of superseded) {
@@ -18700,21 +17304,15 @@ export class Runtime {
       );
       return;
     }
-    this.threadVersions.set(payload.threadId, nextVersion);
+    this.threadVersionProjection.record(payload.threadId, nextVersion);
     for (const [runId] of superseded) this.demoRuns.delete(runId);
     if (demoRunId && demoRun) {
       this.demoRuns.set(demoRunId, demoRun);
-      this.recordRunKernel(demoRunId, demoRun.kernelId);
+      this.runKernelRegistry.record(demoRunId, demoRun.kernelId);
     }
-    for (const [approvalId, pending] of supersededApprovals) {
-      this.pendingToolApprovals.delete(approvalId);
-      pending.resolve('deny');
-    }
-    for (const [runId] of superseded) {
-      const abort = this.demoRunAborts.get(runId);
-      this.demoRunAborts.delete(runId);
-      abort?.abort();
-    }
+    for (const pending of supersededApprovals)
+      this.activeToolApprovals.settle(pending.approvalId, 'deny');
+    for (const [runId] of superseded) this.demoRunAbortRegistry.abortAndDelete(runId);
 
     const response: AppendMessageResponse = {
       messageId,
@@ -18742,9 +17340,11 @@ export class Runtime {
 
   // ===== Goal mode (NewMax-style /goal) =====
 
-  private readonly activeGoals = new Map<string, GoalStatus>();
-  private readonly goalRunRevisions = new Map<string, string>();
-  private readonly pendingGoalTurns = new Set<string>();
+  private readonly goalExecutionState = new GoalExecutionStateRegistry<
+    string,
+    string,
+    GoalStatus
+  >();
 
   private goalRevision(goal: GoalStatus): string {
     return [
@@ -18763,18 +17363,18 @@ export class Runtime {
   }
 
   private loadGoal(conversationId: string): GoalStatus | undefined {
-    const inMemory = this.activeGoals.get(conversationId);
+    const inMemory = this.goalExecutionState.cachedGoal(conversationId);
     if (inMemory) return inMemory;
     const record = this.appSettingStore?.get(`goal.${conversationId}`);
     if (!record) return undefined;
     const goal = record.value as GoalStatus | undefined;
     if (!goal || typeof goal !== 'object' || typeof goal.condition !== 'string') return undefined;
-    this.activeGoals.set(conversationId, goal);
+    this.goalExecutionState.cacheGoal(conversationId, goal);
     return goal;
   }
 
   private saveGoal(goal: GoalStatus): void {
-    this.activeGoals.set(goal.conversationId, goal);
+    this.goalExecutionState.cacheGoal(goal.conversationId, goal);
     this.appSettingStore?.set(`goal.${goal.conversationId}`, goal);
   }
 
@@ -18802,7 +17402,7 @@ export class Runtime {
     tokensIn: number,
     tokensOut: number,
   ): void {
-    const revision = this.goalRunRevisions.get(runId);
+    const revision = this.goalExecutionState.revisionForRun(runId);
     if (!revision) return;
     const conversationId = this.resolveConversationIdForThread(run.threadId);
     if (!conversationId) return;
@@ -18819,7 +17419,7 @@ export class Runtime {
       blockedReason: `已达 Token 上限（${limit}）`,
     };
     this.saveGoal(blocked);
-    this.pendingGoalTurns.delete(goal.conversationId);
+    this.goalExecutionState.clearPending(goal.conversationId);
     return blocked;
   }
 
@@ -18896,7 +17496,7 @@ export class Runtime {
     const goal = this.loadGoal(payload.conversationId);
     if (goal && goal.status === 'active') {
       this.saveGoal({ ...goal, status: 'paused', pausedAt: new Date().toISOString() });
-      this.pendingGoalTurns.delete(payload.conversationId);
+      this.goalExecutionState.clearPending(payload.conversationId);
     }
     socket.write(
       encodeFrame({
@@ -19009,7 +17609,7 @@ export class Runtime {
     if (goal && goal.status !== 'cleared') {
       responseGoal = { ...goal, status: 'cleared' };
       this.saveGoal(responseGoal);
-      this.pendingGoalTurns.delete(payload.conversationId);
+      this.goalExecutionState.clearPending(payload.conversationId);
       cleared = true;
     }
     const response: GoalClearResponse = { cleared, goal: responseGoal };
@@ -19026,6 +17626,8 @@ export class Runtime {
   // ── 定时任务命令（scheduledTask.*） ───────────────────────────────────────
 
   private validateTaskRule(rule: TaskRule): string | undefined {
+    if (!rule) return '缺少任务规则';
+    if (rule.kind === 'weekly' && !parseWeeklyRule(rule)) return '每周规则的星期、时间或生效日期无效';
     if (
       rule.kind === 'every' &&
       (!Number.isInteger(rule.intervalMinutes) || rule.intervalMinutes < 5)
@@ -19630,10 +18232,10 @@ export class Runtime {
       }
       // Register before starting the run so a very fast provider completion
       // cannot race the tracker update.
-      this.dispatchedTasks.add(taskId);
+      this.scheduledTaskDispatches.start(taskId);
       const result = await this.fireScheduledTask(task);
       if (!result.fired) {
-        this.dispatchedTasks.delete(taskId);
+        this.scheduledTaskDispatches.cancelStart(taskId);
         console.warn(`[runtime] task.dispatch: ${taskId} not fired: ${result.reason ?? 'unknown'}`);
         return;
       }
@@ -19642,14 +18244,14 @@ export class Runtime {
 
   private scheduledTaskDispatchRejection(task: ScheduledTask): string | undefined {
     if (!task.enabled) return '任务已停用';
-    if (this.taskRuns.size >= this.taskMaxConcurrent()) return '并发上限';
+    if (this.scheduledTaskRunRegistry.activeCount() >= this.taskMaxConcurrent()) return '并发上限';
     const threadId = task.conversationId
       ? this.resolveConversationThreadId(task.conversationId)
       : undefined;
     if (
       threadId &&
       [...this.demoRuns.values()].some(
-        (run) => run.threadId === threadId && this.inFlight.has(String(run.runId)),
+        (run) => run.threadId === threadId && this.activeRuns.has(String(run.runId)),
       )
     ) {
       return '会话忙';
@@ -19745,7 +18347,7 @@ export class Runtime {
       projectedRuns.set(runId, prepared.run);
       const events = this.persistProjectedEvents(
         eventDrafts,
-        new Map(this.threadVersions),
+        this.threadVersionProjection.snapshot(),
         projectedRuns,
       );
       this.recordCommittedEvents(events);
@@ -19771,7 +18373,9 @@ export class Runtime {
       return '持久化存储不可用';
     }
     if (!this.canStartModelRun()) return '无可用模型供应商';
-    if (this.externalEventExecutions.size >= this.taskMaxConcurrent()) return '并发上限';
+    if (this.externalEventExecutionRegistry.activeCount() >= this.taskMaxConcurrent()) {
+      return '并发上限';
+    }
     return undefined;
   }
 
@@ -19857,7 +18461,7 @@ export class Runtime {
       goal: event.instruction.slice(0, 200),
       now,
     });
-    this.threadVersions.set(task.threadId, task.taskVersion);
+    this.threadVersionProjection.record(task.threadId, task.taskVersion);
     this.conversationStore.bindTask(conversation.id, task.taskId, now);
     this.appSettingStore.set(settingKey, { conversationId: conversation.id }, now);
     return conversation.id;
@@ -19882,20 +18486,20 @@ export class Runtime {
   }
 
   private registerExternalEventExecution(eventId: string, leaseToken: string, runId: string): void {
-    this.externalEventExecutions.set(eventId, { leaseToken, runId });
-    this.externalEventIdByRun.set(runId, eventId);
+    const { shouldAttachCleanup } = this.externalEventExecutionRegistry.register({
+      eventId,
+      leaseToken,
+      runId,
+    });
     this.startExternalEventHeartbeat();
-    if (!this.externalEventCleanupRuns.has(runId)) {
-      this.externalEventCleanupRuns.add(runId);
-      this.attachExternalEventRunCleanup(runId);
-    }
+    if (shouldAttachCleanup) this.attachExternalEventRunCleanup(runId);
     this.sendExternalEventHeartbeat(eventId);
   }
 
   private startExternalEventHeartbeat(): void {
     if (this.externalEventHeartbeatTimer) return;
     this.externalEventHeartbeatTimer = setInterval(() => {
-      for (const eventId of this.externalEventExecutions.keys()) {
+      for (const eventId of this.externalEventExecutionRegistry.eventIds()) {
         this.sendExternalEventHeartbeat(eventId);
       }
     }, 10_000);
@@ -19903,7 +18507,7 @@ export class Runtime {
   }
 
   private sendExternalEventHeartbeat(eventId: string): void {
-    const execution = this.externalEventExecutions.get(eventId);
+    const execution = this.externalEventExecutionRegistry.getByEvent(eventId);
     if (!execution || this.runtimeStopped) return;
     void sendExternalEventHeartbeatToDaemon(
       {
@@ -19924,22 +18528,23 @@ export class Runtime {
     const check = (): void => {
       if (this.runtimeStopped) return;
       const run = this.demoRuns.get(runId as RunId);
-      if (run && this.inFlight.has(runId)) {
+      if (run && this.activeRuns.has(runId)) {
         setTimeout(check, 50);
         return;
       }
-      const eventId = this.externalEventIdByRun.get(runId);
-      const execution = eventId ? this.externalEventExecutions.get(eventId) : undefined;
-      if (!eventId || !execution || execution.runId !== runId) return;
+      const execution = this.externalEventExecutionRegistry.getByRun(runId);
+      if (!execution) return;
       const result = this.externalEventRunResult(runId);
       if (!result) {
         setTimeout(check, 50);
         return;
       }
-      this.externalEventCleanupRuns.delete(runId);
-      this.externalEventIdByRun.delete(runId);
-      this.externalEventExecutions.delete(eventId);
-      if (this.externalEventExecutions.size === 0 && this.externalEventHeartbeatTimer) {
+      const completed = this.externalEventExecutionRegistry.completeRun(runId);
+      if (!completed) return;
+      if (
+        this.externalEventExecutionRegistry.activeCount() === 0 &&
+        this.externalEventHeartbeatTimer
+      ) {
         clearInterval(this.externalEventHeartbeatTimer);
         this.externalEventHeartbeatTimer = undefined;
       }
@@ -19951,15 +18556,14 @@ export class Runtime {
           handshakeTimeoutMs: 2_000,
         },
         {
-          eventId,
-          leaseToken: execution.leaseToken,
+          eventId: completed.eventId,
+          leaseToken: completed.leaseToken,
           runId,
           status: result.status,
           ...(result.reason ? { reason: result.reason } : {}),
         },
       );
-      this.daemonCompletionPromises.add(completion);
-      void completion.finally(() => this.daemonCompletionPromises.delete(completion));
+      this.daemonCompletionRegistry.track(completion);
     };
     setTimeout(check, 50);
   }
@@ -20007,6 +18611,13 @@ export class Runtime {
     return conversation ? String(conversation.id) : undefined;
   }
 
+  /** Structured collaboration tools are scoped to collaboration conversations. */
+  private isCollaborationConversationForThread(threadId: string): boolean {
+    const conversationId = this.resolveConversationIdForThread(threadId);
+    if (!conversationId || !this.conversationStore) return false;
+    return Boolean(this.conversationStore.get(conversationId as ConversationId)?.collaborationKind);
+  }
+
   private resolveConversationForThread(
     threadId: string,
   ): import('@sync-think/storage').ConversationRecord | undefined {
@@ -20049,13 +18660,12 @@ export class Runtime {
   ): void {
     const conversationId = this.resolveConversationIdForThread(threadId);
     if (!conversationId) return;
-    const runRevision = this.goalRunRevisions.get(runId);
-    this.goalRunRevisions.delete(runId);
+    const runRevision = this.goalExecutionState.takeRunRevision(runId);
     const goal = this.loadGoal(conversationId);
     if (!goal || goal.status !== 'active') return;
     if (this.blockGoalAtTokenLimit(goal)) return;
     if (!runRevision || runRevision !== this.goalRevision(goal)) {
-      this.pendingGoalTurns.add(conversationId);
+      this.goalExecutionState.markPending(conversationId);
       return;
     }
     const completionText =
@@ -20141,10 +18751,10 @@ export class Runtime {
     const threadId = this.resolveConversationThreadId(conversationId);
     if (!threadId || !this.stateStore || !this.canStartModelRun()) return;
     const alreadyActive = [...this.demoRuns.values()].some(
-      (run) => run.threadId === threadId && this.inFlight.has(String(run.runId)),
+      (run) => run.threadId === threadId && this.activeRuns.has(String(run.runId)),
     );
     if (alreadyActive) {
-      this.pendingGoalTurns.add(conversationId);
+      this.goalExecutionState.markPending(conversationId);
       return;
     }
     const runId = ulid() as RunId;
@@ -20204,14 +18814,14 @@ export class Runtime {
       };
       const events = this.persistProjectedEvents(
         [messageEventDraft, packetEvent],
-        new Map(this.threadVersions),
+        this.threadVersionProjection.snapshot(),
         projectedRuns,
       );
       this.recordCommittedEvents(events);
       this.demoRuns.set(runId, demoRun);
-      this.goalRunRevisions.set(runId, this.goalRevision(goal));
-      this.pendingGoalTurns.delete(conversationId);
-      this.recordRunKernel(runId, demoRun.kernelId);
+      this.goalExecutionState.bindRunRevision(runId, this.goalRevision(goal));
+      this.goalExecutionState.clearPending(conversationId);
+      this.runKernelRegistry.record(runId, demoRun.kernelId);
       this.persistFinalChatMessage({
         id: messageId,
         threadId: threadId as ThreadId,
@@ -20230,10 +18840,10 @@ export class Runtime {
   private maybeStartPendingGoalTurn(threadId: string): void {
     if (this.runtimeStopped) return;
     const conversationId = this.resolveConversationIdForThread(threadId);
-    if (!conversationId || !this.pendingGoalTurns.has(conversationId)) return;
+    if (!conversationId || !this.goalExecutionState.isPending(conversationId)) return;
     const goal = this.loadGoal(conversationId);
     if (!goal || goal.status !== 'active') {
-      this.pendingGoalTurns.delete(conversationId);
+      this.goalExecutionState.clearPending(conversationId);
       return;
     }
     this.triggerGoalTurn(conversationId, goal);
@@ -20251,6 +18861,10 @@ export class Runtime {
       this.startTaskSchedulerHeartbeat();
       console.log(`[runtime] daemon not detected (probe=${daemonAlive}); own tick active`);
     } else {
+      // The managed Runtime is the only process that owns a browser host. Keep
+      // its workflow scheduler active even when generic task scheduling belongs
+      // to the daemon process.
+      this.startBrowserWorkflowSchedulerHeartbeat();
       console.log(
         daemonAlive
           ? '[runtime] daemon detected; own tick disabled (unique scheduler)'
@@ -20260,7 +18874,7 @@ export class Runtime {
   }
 
   private startTaskSchedulerHeartbeat(): void {
-    if (this.taskSchedulerTimer || !this.scheduledTaskStore) return;
+    if (this.taskSchedulerTimer || (!this.scheduledTaskStore && !this.browserStore)) return;
     this.taskSchedulerTimer = setInterval(() => {
       void (async () => {
         // A daemon may come online after Runtime's initial probe. Re-check
@@ -20271,6 +18885,7 @@ export class Runtime {
           return;
         }
         await this.taskSchedulerTick();
+        await this.browserWorkflowSchedulerTick();
       })().catch((error) => console.warn('[runtime] scheduled task tick failed', error));
     }, 30_000);
   }
@@ -20280,6 +18895,25 @@ export class Runtime {
       clearInterval(this.taskSchedulerTimer);
       this.taskSchedulerTimer = undefined;
     }
+  }
+
+  private startBrowserWorkflowSchedulerHeartbeat(): void {
+    if (this.browserWorkflowSchedulerTimer || !this.browserStore || !this.browserWorkflowRunner) {
+      return;
+    }
+    this.browserWorkflowSchedulerTimer = setInterval(() => {
+      void this.browserWorkflowSchedulerTick().catch((error) =>
+        console.warn('[runtime] browser workflow schedule tick failed', error),
+      );
+    }, 30_000);
+    this.browserWorkflowSchedulerTimer.unref?.();
+    console.log('[runtime] browser workflow scheduler active');
+  }
+
+  private stopBrowserWorkflowSchedulerHeartbeat(): void {
+    if (!this.browserWorkflowSchedulerTimer) return;
+    clearInterval(this.browserWorkflowSchedulerTimer);
+    this.browserWorkflowSchedulerTimer = undefined;
   }
 
   /** 任务并发上限（app-setting 'task-scheduler' → {maxConcurrent}，默认 2）。 */
@@ -20314,6 +18948,58 @@ export class Runtime {
     }
   }
 
+  private async browserWorkflowSchedulerTick(): Promise<void> {
+    if (
+      this.browserWorkflowSchedulerTicking ||
+      !this.browserStore ||
+      !this.browserWorkflowService ||
+      !this.browserWorkflowRunner
+    ) {
+      return;
+    }
+    this.browserWorkflowSchedulerTicking = true;
+    try {
+      const now = new Date().toISOString();
+      for (const schedule of this.browserStore.listDueWorkflowSchedules(now)) {
+        // Advance before execution so a Runtime crash cannot spin the same due row.
+        this.browserStore.advanceWorkflowSchedule(schedule.taskId, now);
+        try {
+          const workflow = this.browserWorkflowService.getWorkflow({ taskId: schedule.taskId });
+          if (!workflow.version || workflow.task.status !== 'enabled') continue;
+          const permission = this.browserWorkflowRunner.checkPermissions(
+            workflow.version.id,
+            workflow.task.id,
+          );
+          if (!permission.allowed) {
+            console.warn(
+              `[runtime] scheduled browser workflow ${workflow.task.id} needs origin approval`,
+            );
+            continue;
+          }
+          const result = await this.browserWorkflowRunner.replay({
+            workflowVersionId: workflow.version.id,
+            taskId: workflow.task.id,
+            profileId: workflow.task.profileId,
+            workspaceId: this.workspaceId,
+            ownerId: `workflow-schedule:${workflow.task.id}`,
+            capabilityToken: `workflow-schedule:${workflow.task.id}:${now}`,
+            signal: new AbortController().signal,
+            trigger: 'schedule',
+          });
+          if (!result.ok) {
+            console.warn(
+              `[runtime] scheduled browser workflow ${workflow.task.id} failed: ${result.errorCode ?? 'unknown'}`,
+            );
+          }
+        } catch (error) {
+          console.warn(`[runtime] scheduled browser workflow ${schedule.taskId} failed`, error);
+        }
+      }
+    } finally {
+      this.browserWorkflowSchedulerTicking = false;
+    }
+  }
+
   /**
    * 触发一个任务：并发/忙检查 → 创建/复用任务会话 → 注入指令启动 run →
    * 更新 nextRunAt（错过 ≤24h 补跑，否则顺延）。返回是否已触发。
@@ -20330,7 +19016,7 @@ export class Runtime {
     const missedHours = Math.max(0, missedMs / 3_600_000);
 
     // 并发上限：任务 run 计数（内存近似）。
-    if (this.taskRuns.size >= this.taskMaxConcurrent()) {
+    if (this.scheduledTaskRunRegistry.activeCount() >= this.taskMaxConcurrent()) {
       this.recordTaskSkipped(task, firedAt, '并发上限');
       this.recordTaskHistory(task, 'skipped', firedAt, undefined, '并发上限');
       return { fired: false, reason: '并发上限' };
@@ -20342,7 +19028,7 @@ export class Runtime {
     const threadId = this.resolveConversationThreadId(conversationId);
     if (threadId) {
       const busy = [...this.demoRuns.values()].some(
-        (run) => run.threadId === threadId && this.inFlight.has(String(run.runId)),
+        (run) => run.threadId === threadId && this.activeRuns.has(String(run.runId)),
       );
       if (busy) {
         this.recordTaskSkipped(task, firedAt, '会话忙');
@@ -20374,6 +19060,7 @@ export class Runtime {
           threadId: threadId as ThreadId,
           userText: task.instruction,
           skillVersionIds: task.skillVersionIds ?? [],
+          ...(task.target.kind === 'model' ? { modelId: task.target.modelId } : {}),
           ...(task.target.kind === 'agent'
             ? { globalAgentId: task.target.agentId }
             : task.target.kind === 'team'
@@ -20421,14 +19108,13 @@ export class Runtime {
         };
         const events = this.persistProjectedEvents(
           [messageEventDraft, packetEvent],
-          new Map(this.threadVersions),
+          this.threadVersionProjection.snapshot(),
           projectedRuns,
         );
         this.recordCommittedEvents(events);
         this.demoRuns.set(runId, demoRun);
-        this.taskRuns.add(String(runId));
-        this.taskIdByRun.set(String(runId), task.id);
-        this.scheduledTaskRuns.set(String(runId), { task, firedAt, run: demoRun });
+        this.scheduledTaskDispatches.bindRun(String(runId), task.id);
+        this.scheduledTaskRunRegistry.register(String(runId), { task, firedAt, run: demoRun });
         this.attachTaskRunCleanup(runId);
         for (const event of events) this.publishEvent(event);
         void this.executeKernelRun(runId);
@@ -20463,7 +19149,7 @@ export class Runtime {
 
   /**
    * worker 模式执行单个定时任务（守护进程自拉路径）。
-   * 触发任务（fireScheduledTask）→ 等 run 进入终态（taskRuns 清空）→ 返回结果。
+   * 触发任务（fireScheduledTask）→ 等所有定时任务 run 退出活动计数 → 返回结果。
    * 返回 { ok, reason }：ok=false 时 reason 为未触发的失败原因。
    */
   async runDaemonTask(taskId: string): Promise<{ ok: boolean; reason?: string }> {
@@ -20472,8 +19158,8 @@ export class Runtime {
     if (!task) return { ok: false, reason: '任务不存在' };
     const result = await this.fireScheduledTask(task);
     if (!result.fired) return { ok: false, reason: result.reason };
-    // 等待该任务的所有 run 结束（taskRuns 为空 = 无 in-flight 执行）。
-    while (this.taskRuns.size > 0) {
+    // 等待所有定时任务 run 结束（活动计数为零 = 无 in-flight 执行）。
+    while (this.scheduledTaskRunRegistry.activeCount() > 0) {
       await new Promise((resolve) => setTimeout(resolve, 1_000));
     }
     return { ok: true };
@@ -20484,15 +19170,9 @@ export class Runtime {
     const check = (): void => {
       if (this.runtimeStopped) return;
       const run = this.demoRuns.get(runId as RunId);
-      if (!run || !this.inFlight.has(runId)) {
-        this.taskRuns.delete(runId);
-        // 投递任务 run 终态：从 dispatchedTasks 移除（完成，无需 abort）。
-        const taskId = this.taskIdByRun.get(runId);
-        const wasDispatched = taskId ? this.dispatchedTasks.has(taskId) : false;
-        if (taskId) {
-          this.taskIdByRun.delete(runId);
-          this.dispatchedTasks.delete(taskId);
-        }
+      if (!run || !this.activeRuns.has(runId)) {
+        this.scheduledTaskRunRegistry.finishExecution(runId);
+        const { taskId, wasDispatched } = this.scheduledTaskDispatches.completeRun(runId);
         const result = this.finalizeScheduledTaskRun(runId);
         if (wasDispatched && taskId && result) {
           const completion = sendTaskCompletionToDaemon(
@@ -20509,11 +19189,7 @@ export class Runtime {
               ...(result.reason ? { reason: result.reason } : {}),
             },
           );
-          this.daemonCompletionPromises.add(completion);
-          void completion.then(
-            () => this.daemonCompletionPromises.delete(completion),
-            () => this.daemonCompletionPromises.delete(completion),
-          );
+          this.daemonCompletionRegistry.track(completion);
         }
         return;
       }
@@ -20555,31 +19231,13 @@ export class Runtime {
     return entryId;
   }
 
-  /** run 终态后回填历史 summary：任务会话最后一条非空助手消息前 200 字。 */
-  private fillTaskHistorySummary(entryId: string, run: DemoRunState): void {
-    if (!this.scheduledTaskStore || !this.messageStore) return;
-    // listMessages 按 sequence 倒序，第一页即最新消息。
-    const page = this.messageStore.listMessages(run.threadId as ThreadId, { limit: 50 });
-    for (const message of page.messages) {
-      if (message.role !== 'assistant') continue;
-      const text = message.blocks
-        .filter((block) => block.type === 'text' && block.text?.trim())
-        .map((block) => block.text!.trim())
-        .join('\n')
-        .trim();
-      if (!text) continue;
-      this.scheduledTaskStore.updateHistorySummary(entryId, text);
-      return;
-    }
-  }
-
   /** 将定时任务 run 的终态统一写入任务结果与唯一历史条目。 */
   private finalizeScheduledTaskRun(
     runId: string,
   ): { status: 'success' | 'failed' | 'cancelled'; reason?: string } | undefined {
-    const metadata = this.scheduledTaskRuns.get(runId);
-    if (!metadata || !this.scheduledTaskStore) return undefined;
-    this.scheduledTaskRuns.delete(runId);
+    if (!this.scheduledTaskStore) return undefined;
+    const metadata = this.scheduledTaskRunRegistry.takeMetadata(runId);
+    if (!metadata) return undefined;
 
     let events: Event[];
     try {
@@ -20617,7 +19275,11 @@ export class Runtime {
         ...(reason ? { reason } : {}),
       },
     });
-    if (entryId) this.fillTaskHistorySummary(entryId, metadata.run);
+    if (entryId && this.messageStore) {
+      const page = this.messageStore.listMessages(metadata.run.threadId as ThreadId, { limit: 50 });
+      const summary = selectScheduledTaskHistorySummary(page.messages);
+      if (summary) this.scheduledTaskStore.updateHistorySummary(entryId, summary);
+    }
     return { status, ...(reason ? { reason } : {}) };
   }
 
@@ -20663,7 +19325,7 @@ export class Runtime {
         title: `任务 · ${task.name}`,
         goal: task.instruction.slice(0, 200),
       });
-      this.threadVersions.set(created.threadId, created.taskVersion);
+      this.threadVersionProjection.record(created.threadId, created.taskVersion);
       this.conversationStore.bindTask(conversation.id, created.taskId);
     }
     return conversation.id;
@@ -20714,32 +19376,29 @@ export class Runtime {
     }
 
     // Abort the live provider stream / tool loop first so executeDemoRun exits.
-    this.demoRunAborts.get(payload.runId)?.abort();
-    this.demoRunAborts.delete(payload.runId);
+    if (!this.delegationExecution.cancel(run.runId)) this.demoRunAbortRegistry.abort(payload.runId);
+    this.demoRunAbortRegistry.delete(payload.runId);
     // Drop any in-flight tool approvals for this run. Emit a decided event so
     // the shell card collapses instead of lingering as an orphan.
-    for (const [approvalId, pending] of this.pendingToolApprovals) {
-      if (pending.runId === payload.runId) {
-        this.pendingToolApprovals.delete(approvalId);
+    for (const pending of this.activeToolApprovals.matchingRun(payload.runId)) {
+      this.activeToolApprovals.settle(pending.approvalId, 'deny', () => {
         this.emitToolApprovalDecided({
-          approvalId,
+          approvalId: pending.approvalId,
           threadId: pending.threadId,
           runId: pending.runId,
           decision: 'deny',
           reason: 'run-cancelled',
-          toolCallId: pending.pendingToolCalls[pending.currentIndex]?.id,
-          toolName: pending.pendingToolCalls[pending.currentIndex]?.name,
+          toolCallId: pending.toolCall.id,
+          toolName: pending.toolCall.name,
         });
-        pending.resolve('deny');
-      }
+      });
     }
 
     const projectedRuns = new Map(this.demoRuns);
     projectedRuns.delete(payload.runId);
     try {
       if (run.delegationParentRunId) {
-        this.completedDelegatedRuns.set(payload.runId, run);
-        this.completedDelegatedRunStates.set(payload.runId, 'cancelled');
+        this.completedDelegatedRuns.remember(payload.runId, run, 'cancelled');
       }
       if (this.stateStore) {
         const event = this.persistProjectedEvent(
@@ -20819,6 +19478,51 @@ export class Runtime {
         },
       }),
     );
+  }
+
+  private handleCollaborationCommand(socket: Socket, frame: Frame): void {
+    if (!this.collaborationChatHost) {
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: frame.type,
+          payload: {},
+          error: {
+            code: ErrorCode.STORAGE_WRITE_FAILED,
+            message: 'Collaboration chat is not configured',
+          },
+        }),
+      );
+      return;
+    }
+    const command = parseCollaborationCommand(frame.payload);
+    if (!command) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    try {
+      // Renderer requests are user-scoped. Agent-originated collaboration
+      // commands use the runtime-owned service path and provide their member
+      // identity through the execution adapter rather than the pipe payload.
+      const response = this.collaborationChatHost.command(command);
+      socket.write(
+        encodeFrame({ id: frame.id, kind: 'response', type: frame.type, payload: response }),
+      );
+    } catch (error) {
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: frame.type,
+          payload: {},
+          error: {
+            code: ErrorCode.STORAGE_WRITE_FAILED,
+            message: error instanceof Error ? error.message : String(error),
+          },
+        }),
+      );
+    }
   }
 
   private writeDataManagementUnavailable(socket: Socket, frame: Frame): void {
@@ -21001,6 +19705,8 @@ export class Runtime {
   private recordCommittedEvents(events: readonly Event[]): void {
     if (events.length === 0) throw new Error('Cannot project an empty event transition');
     for (const event of events) {
+      const delegation = delegatedRunFromEvent(event);
+      if (delegation) this.delegationService.acceptCommittedState(delegation);
       if (
         event.runId &&
         ['run.completed', 'run.failed', 'run.cancelled', 'run.paused'].includes(event.type)
@@ -21045,7 +19751,7 @@ export class Runtime {
 
   private rememberRecentEvents(events: readonly Event[]): void {
     if (events.length === 0) return;
-    for (const event of events) this.rememberDurableChatToolApprovalEvent(event);
+    for (const event of events) this.durableToolApprovals.remember(event);
     this.events.push(...events);
     if (this.events.length > MAX_RECENT_RUNTIME_EVENTS) {
       this.events.splice(0, this.events.length - MAX_RECENT_RUNTIME_EVENTS);
@@ -21081,18 +19787,18 @@ export class Runtime {
   }
 
   private trackBackgroundTask(task: Promise<void>): void {
-    this.backgroundTasks.add(task);
-    void task.then(
-      () => this.backgroundTasks.delete(task),
-      () => this.backgroundTasks.delete(task),
-    );
+    this.backgroundTaskRegistry.track(task);
   }
 
   private persistProjectedEvent(
     event: EventDraft,
     projectedRuns: ReadonlyMap<string, DemoRunState>,
   ): Event {
-    return this.persistProjectedEvents([event], this.threadVersions, projectedRuns)[0];
+    return this.persistProjectedEvents(
+      [event],
+      this.threadVersionProjection.view(),
+      projectedRuns,
+    )[0];
   }
 
   private persistProjectedEvents(
@@ -21138,7 +19844,17 @@ export class Runtime {
           createdAt: events[events.length - 1].occurredAt,
         }
       : undefined;
-    const staged = this.demoRunPersistence.stage(events);
+    const withDelegation = (event: EventDraft): EventDraft =>
+      withDelegatedRunSnapshot(
+        event,
+        event.runId
+          ? (projectedRuns.get(event.runId) ?? this.demoRuns.get(event.runId))
+          : undefined,
+      );
+    const staged = this.demoRunPersistence.stage([
+      withDelegation(events[0]),
+      ...events.slice(1).map(withDelegation),
+    ]);
     const committed = this.stateStore.commitTransition({
       events: staged.events,
       ...(checkpoint ? { checkpoint } : {}),
@@ -21155,10 +19871,8 @@ export class Runtime {
 
   private async executeDemoRun(runId: RunId): Promise<void> {
     const initialRun = this.demoRuns.get(runId);
-    if (!initialRun || this.inFlight.has(runId)) return;
-    this.recordInFlight(runId);
-    const abort = new AbortController();
-    this.demoRunAborts.set(runId, abort);
+    if (!initialRun || !this.activeRuns.start(runId)) return;
+    const abort = this.demoRunAbortRegistry.start(runId);
     try {
       // Multi-turn chat history + optional bound workspace for file tools.
       // Network tools can run without a project folder when Compose 联网 is on.
@@ -21526,11 +20240,13 @@ export class Runtime {
                 currentRun = {
                   ...currentRun,
                   delegationTokensUsed: tokensUsed,
-                  ...(budgetExceeded ? { delegationTerminationReason: 'budget_exceeded' as const } : {}),
+                  ...(budgetExceeded
+                    ? { delegationTerminationReason: 'budget_exceeded' as const }
+                    : {}),
                 };
                 this.demoRuns.set(runId, currentRun);
                 if (budgetExceeded) {
-                  this.demoRunAborts.get(runId)?.abort();
+                  this.demoRunAbortRegistry.abort(runId);
                 }
               }
               this.addGoalUsageForRun(
@@ -21720,7 +20436,7 @@ export class Runtime {
             const isGoalCompletion =
               projection.terminal &&
               projection.type === 'run.completed' &&
-              this.goalRunRevisions.has(String(runId));
+              this.goalExecutionState.hasRunRevision(String(runId));
             if (isGoalCompletion && typeof payload.assistantText === 'string') {
               payload.assistantText = stripGoalStatus(payload.assistantText);
             }
@@ -21768,7 +20484,10 @@ export class Runtime {
               this.updateTransientTextSnapshot({
                 threadId: currentRun.threadId as ThreadId,
                 runId,
-                streamSequence: this.transientSequenceByThread.get(currentRun.threadId) ?? 0,
+                streamSequence: this.conversationTransientState.latestSequence(
+                  currentRun.threadId,
+                  String(currentRun.runId),
+                ),
                 text: projection.nextRun.assistantText,
                 commentaryText: projection.nextRun.commentaryText,
                 commentarySegments: projection.nextRun.commentarySegments,
@@ -21797,18 +20516,23 @@ export class Runtime {
 
               if (projection.terminal) {
                 if (projection.nextRun?.delegationParentRunId) {
-                  this.completedDelegatedRuns.set(runId, projection.nextRun);
-                  this.completedDelegatedRunStates.set(
+                  this.completedDelegatedRuns.remember(
                     String(runId),
-                    projection.type === 'run.failed'
-                      ? 'failed'
-                      : projection.type === 'run.cancelled'
-                        ? 'cancelled'
-                        : 'completed',
+                    projection.nextRun,
+                    projection.nextRun.delegationTerminationReason === 'timed_out'
+                      ? 'timed_out'
+                      : projection.type === 'run.failed'
+                        ? 'failed'
+                        : projection.type === 'run.cancelled'
+                          ? 'cancelled'
+                          : 'completed',
                   );
                 }
                 this.demoRuns.delete(runId);
-                this.transientSnapshotByThread.delete(currentRun.threadId);
+                this.conversationTransientState.deleteSnapshot(
+                  currentRun.threadId,
+                  String(currentRun.runId),
+                );
               } else if (projection.nextRun) this.demoRuns.set(runId, projection.nextRun);
               // Make the durable final visible before consumers observe run.completed.
               // ChatView can then refresh the message page immediately on the terminal event
@@ -21901,7 +20625,12 @@ export class Runtime {
             if (delegatedBatchResults) {
               for (const item of delegatedBatchResults) {
                 if (abort.signal.aborted || !this.demoRuns.has(runId)) return;
-                this.publishToolCompleted(runId, currentRun.threadId, item.toolCall, item.resultText);
+                this.publishToolCompleted(
+                  runId,
+                  currentRun.threadId,
+                  item.toolCall,
+                  item.resultText,
+                );
                 const foldedForModel = foldToolOutputText(item.resultText).text;
                 completedResults.push({ toolCallId: item.toolCall.id, content: foldedForModel });
                 chatMessages = [
@@ -21910,7 +20639,11 @@ export class Runtime {
                 ];
               }
             }
-            for (let toolIndex = 0; !delegatedBatchResults && toolIndex < pendingToolCalls.length; toolIndex++) {
+            for (
+              let toolIndex = 0;
+              !delegatedBatchResults && toolIndex < pendingToolCalls.length;
+              toolIndex++
+            ) {
               const toolCall = pendingToolCalls[toolIndex]!;
               if (abort.signal.aborted || !this.demoRuns.has(runId)) return;
 
@@ -21933,9 +20666,14 @@ export class Runtime {
               }
 
               if (currentRun.delegatedReadOnly) {
-                const dispatch = (currentRun as DemoRunState & {
-                  mcpToolDispatch?: Map<string, { mcpServerId: string; toolName: string; readOnly?: boolean }>;
-                }).mcpToolDispatch?.get(toolCall.name);
+                const dispatch = (
+                  currentRun as DemoRunState & {
+                    mcpToolDispatch?: Map<
+                      string,
+                      { mcpServerId: string; toolName: string; readOnly?: boolean }
+                    >;
+                  }
+                ).mcpToolDispatch?.get(toolCall.name);
                 if (!isDelegatedReadOnlyTool(toolCall.name, dispatch?.readOnly)) {
                   const deniedText = JSON.stringify({
                     ok: false,
@@ -22003,13 +20741,7 @@ export class Runtime {
                     const approval = await this.requestChatToolApproval({
                       runId,
                       threadId: currentRun.threadId,
-                      workspaceRoot: workspaceRoot ?? '',
                       executionMode,
-                      chatMessages,
-                      pendingToolCalls: [...pendingToolCalls],
-                      currentIndex: toolIndex,
-                      completedResults: [...completedResults],
-                      toolLoopRound,
                       toolCall,
                       signal: abort.signal,
                     });
@@ -22057,13 +20789,7 @@ export class Runtime {
                   const approval = await this.requestChatToolApproval({
                     runId,
                     threadId: currentRun.threadId,
-                    workspaceRoot: workspaceRoot ?? '',
                     executionMode,
-                    chatMessages,
-                    pendingToolCalls: [...pendingToolCalls],
-                    currentIndex: toolIndex,
-                    completedResults: [...completedResults],
-                    toolLoopRound,
                     toolCall,
                     approvalArguments: permission.risk.approvalArguments,
                     approvalRisk: {
@@ -22118,13 +20844,7 @@ export class Runtime {
                 const approval = await this.requestChatToolApproval({
                   runId,
                   threadId: currentRun.threadId,
-                  workspaceRoot: workspaceRoot ?? '',
                   executionMode,
-                  chatMessages,
-                  pendingToolCalls: [...pendingToolCalls],
-                  currentIndex: toolIndex,
-                  completedResults: [...completedResults],
-                  toolLoopRound,
                   toolCall,
                   signal: abort.signal,
                 });
@@ -22172,7 +20892,10 @@ export class Runtime {
               const mcpDispatch =
                 (
                   currentRun as DemoRunState & {
-                    mcpToolDispatch?: Map<string, { mcpServerId: string; toolName: string; readOnly?: boolean }>;
+                    mcpToolDispatch?: Map<
+                      string,
+                      { mcpServerId: string; toolName: string; readOnly?: boolean }
+                    >;
                   }
                 ).mcpToolDispatch?.get(toolCall.name) ?? parseMcpProviderToolName(toolCall.name);
               const collaborationDenial = currentRun.track
@@ -22234,6 +20957,7 @@ export class Runtime {
                   });
                 } else {
                   resultText = executeChatBrowserWorkflowTool({
+                    workspaceId: this.resolveEventWorkspaceId(currentRun.threadId),
                     toolName: toolCall.name,
                     argumentsJson: toolCall.argumentsJson,
                     service: this.browserWorkflowService!,
@@ -22249,8 +20973,8 @@ export class Runtime {
                   approval: desktopApproval,
                   signal: abort.signal,
                 });
-      } else if (toolCall.name === 'agent_delegate' || toolCall.name === 'agent_run') {
-        resultText = await this.executeDynamicAgentDelegation({
+              } else if (toolCall.name === 'agent_delegate' || toolCall.name === 'agent_run') {
+                resultText = await this.executeDynamicAgentDelegation({
                   run: currentRun,
                   toolCall,
                   workspaceRoot: workspaceRoot ?? '',
@@ -22454,9 +21178,9 @@ export class Runtime {
         }
       }
     } finally {
-      this.demoRunAborts.delete(runId);
-      this.formalPlanRevisionByRun.delete(runId);
-      this.forgetInFlight(runId);
+      this.demoRunAbortRegistry.delete(runId);
+      this.formalPlanRevisions.delete(runId);
+      this.activeRuns.finish(runId);
       this.maybeStartPendingGoalTurn(String(initialRun.threadId));
     }
   }
@@ -22473,12 +21197,79 @@ export class Runtime {
       !kernelId || kernelId === 'native'
         ? this.executeDemoRun(runId)
         : this.executeExternalKernelRun(runId);
-    this.activeKernelRuns.add(execution);
-    void execution.then(
-      () => this.activeKernelRuns.delete(execution),
-      () => this.activeKernelRuns.delete(execution),
-    );
+    this.kernelExecutionRegistry.track(execution);
     return execution;
+  }
+
+  async executeCollaborationTaskForHost(
+    input: import('./collaboration-chat-service.js').CollaborationExecutionInput,
+  ): Promise<import('./collaboration-chat-service.js').CollaborationExecutionResult> {
+    const threadId = input.attempt.threadId ?? `${input.snapshot.conversation.id}:${input.task.id}`;
+    const runId = ulid() as RunId;
+    const member = input.snapshot.members.find((item) => item.id === input.task.assigneeMemberId);
+    const modelConversation = input.snapshot.conversation.kind === 'model';
+    const prepared = this.prepareRunBinding({
+      runId,
+      threadId,
+      userText: input.task.instructions,
+      track: modelConversation ? 'model' : 'agent',
+      modelId: modelConversation ? input.snapshot.conversation.modelId : undefined,
+      globalAgentId: modelConversation ? undefined : member?.agentId,
+      skillContextMode: 'run',
+    });
+    this.demoRuns.set(runId, prepared.run);
+    this.collaborationTaskRuns.set(input.attempt.id, String(runId));
+    input.onProgress({ runId: String(runId), threadId, status: 'running', output: '' });
+    const execution = this.executeKernelRun(runId);
+    const abort = () => {
+      this.demoRunAbortRegistry.abort(runId);
+      this.collaborationRunResults.delete(String(runId));
+    };
+    input.signal.addEventListener('abort', abort, { once: true });
+    try {
+      await execution;
+      const completed = this.demoRuns.get(runId);
+      const output =
+        this.collaborationRunResults.get(String(runId)) ??
+        completed?.assistantText ??
+        completed?.legacyPendingText ??
+        '';
+      this.collaborationRunResults.delete(String(runId));
+      return { output, runId: String(runId), threadId };
+    } catch (error) {
+      return {
+        output: '',
+        runId: String(runId),
+        threadId,
+        error: {
+          code: 'collaboration.execution_failed',
+          category: 'execution',
+          message: error instanceof Error ? error.message : String(error),
+          retryable: true,
+          traceId: String(runId),
+        },
+      };
+    } finally {
+      input.signal.removeEventListener('abort', abort);
+      this.collaborationTaskRuns.delete(input.attempt.id);
+      this.collaborationRunResults.delete(String(runId));
+    }
+  }
+
+  publishCollaborationSnapshot(snapshot: import('@sync-think/shared').CollaborationSnapshot): void {
+    const event = this.appendEvent(
+      'message',
+      'collaboration.updated',
+      {
+        conversationId: snapshot.conversation.id,
+        revision: snapshot.revision,
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+    );
+    this.publishEvent(event);
   }
 
   /**
@@ -22489,12 +21280,10 @@ export class Runtime {
    */
   private async executeExternalKernelRun(runId: RunId): Promise<void> {
     const initialRun = this.demoRuns.get(runId);
-    if (!initialRun || this.inFlight.has(runId)) return;
-    this.recordInFlight(runId);
-    const abort = new AbortController();
-    this.demoRunAborts.set(runId, abort);
+    if (!initialRun || !this.activeRuns.start(runId)) return;
+    const abort = this.demoRunAbortRegistry.start(runId);
     const kernelId = initialRun.kernelId ?? 'native';
-    const sessionLease = this.enqueueExternalKernelSession(
+    const sessionLease = this.externalKernelSessionQueue.enqueue(
       this.kernelConversationSessionKey(kernelId, initialRun),
     );
     let adapter: KernelAdapter | undefined;
@@ -22808,15 +21597,13 @@ export class Runtime {
       // Revoke the gateway ticket with the run: a leaked ticket id stops working
       // the moment the run it was issued for ends.
       this.openGateway.revokeRun(runId);
-      this.platformMcpCatalogByRun.delete(runId);
-      this.platformMcpResultsByRun.delete(runId);
-      this.capabilityBrokerByRun.delete(runId);
-      this.formalPlanRevisionByRun.delete(runId);
-      this.kernelToolProgressByRun.delete(runId);
+      this.platformMcpRuns.deleteRun(runId);
+      this.formalPlanRevisions.delete(runId);
+      this.kernelToolProgressRegistry.deleteRun(runId);
       adapterLease?.release();
       sessionLease.release();
-      this.demoRunAborts.delete(runId);
-      this.forgetInFlight(runId);
+      this.demoRunAbortRegistry.delete(runId);
+      this.activeRuns.finish(runId);
       this.maybeStartPendingGoalTurn(String(initialRun.threadId));
     }
   }
@@ -22980,34 +21767,6 @@ export class Runtime {
     return `${KERNEL_SESSION_SETTING_PREFIX}.${kernelId}.${scopeId}`;
   }
 
-  private enqueueExternalKernelSession(key: string): {
-    waitForTurn: Promise<void>;
-    release: () => void;
-  } {
-    const previousTail = this.externalKernelSessionTails.get(key) ?? Promise.resolve();
-    const waitForTurn = previousTail.catch(() => undefined);
-    let resolveTurn!: () => void;
-    const turnCompleted = new Promise<void>((resolve) => {
-      resolveTurn = resolve;
-    });
-    const nextTail = waitForTurn.then(() => turnCompleted);
-    this.externalKernelSessionTails.set(key, nextTail);
-    let released = false;
-    return {
-      waitForTurn,
-      release: () => {
-        if (released) return;
-        released = true;
-        resolveTurn();
-        void nextTail.finally(() => {
-          if (this.externalKernelSessionTails.get(key) === nextTail) {
-            this.externalKernelSessionTails.delete(key);
-          }
-        });
-      },
-    };
-  }
-
   private async waitForExternalKernelSessionTurn(
     waitForTurn: Promise<void>,
     signal: AbortSignal,
@@ -23028,28 +21787,20 @@ export class Runtime {
   private loadKernelConversationSession(
     key: string,
   ): PersistedKernelConversationSession | undefined {
-    const cached = this.kernelConversationSessions.get(key);
-    if (cached) return cached;
-    const persisted = parsePersistedKernelConversationSession(
-      this.appSettingStore?.get(key)?.value,
-    );
-    if (persisted) this.kernelConversationSessions.set(key, persisted);
-    return persisted;
+    return this.kernelConversationSessionRepository.load(key);
   }
 
   private saveKernelConversationSession(
     key: string,
     session: PersistedKernelConversationSession,
   ): void {
-    const existing = this.loadKernelConversationSession(key);
+    const existing = this.kernelConversationSessionRepository.save(key, session);
     if (
       existing?.responseContinuationScopeId &&
       existing.responseContinuationScopeId !== session.responseContinuationScopeId
     ) {
       this.openGateway.clearResponseContinuationScope(existing.responseContinuationScopeId);
     }
-    this.kernelConversationSessions.set(key, session);
-    this.appSettingStore?.set(key, session);
   }
 
   private clearKernelConversationSession(run: DemoRunState, expectedSessionId?: string): void {
@@ -23065,16 +21816,12 @@ export class Runtime {
     key: string,
     expectedSessionId?: string,
   ): void {
-    const existing = this.loadKernelConversationSession(key);
-    if (!existing || (expectedSessionId && existing.sessionId !== expectedSessionId)) {
-      return;
-    }
+    const existing = this.kernelConversationSessionRepository.remove(key, expectedSessionId);
+    if (!existing) return;
     this.openGateway.clearResponseContinuationScope(
       existing.responseContinuationScopeId ??
         this.kernelResponseContinuationScopeId(kernelId, existing.sessionId),
     );
-    this.kernelConversationSessions.delete(key);
-    this.appSettingStore?.set(key, null);
   }
 
   private clearKernelConversationSessionsForScopeIds(scopeIds: readonly string[]): void {
@@ -23533,6 +22280,16 @@ export class Runtime {
       if (facts.block) parts.push(facts.block);
     }
     parts.push(...this.buildRunAgentInstructions(run, workspaceRoot));
+    if (this.messageStore) {
+      try {
+        const delegatedAgentContext = formatDelegatedRunContext(
+          this.delegationService.listByThread(run.threadId),
+        );
+        if (delegatedAgentContext) parts.push(delegatedAgentContext);
+      } catch {
+        // Optional context enrichment must not block a native kernel run.
+      }
+    }
     parts.push(
       [
         '## Workspace context',
@@ -23541,6 +22298,15 @@ export class Runtime {
           : 'No project folder is bound for this conversation.',
         ...(run.projectContextPromptBlocks ?? []),
       ].join('\n\n'),
+    );
+    parts.push(
+      [
+        '## Agent Library',
+        'Workspace Agent activation is live SYNC-THINK runtime state, not project configuration.',
+        'When the user asks which Agents are active, activated, available, or usable in the current workspace, call `list_available_agents` (preferred) or `agent_list` and answer from that tool result.',
+        'Never inspect AGENTS.md, .agent directories, repository files, logs, or session folders to infer Agent activation.',
+        'If the returned list is empty, report that the current workspace has no active usable Agents; do not substitute the current model or Codex itself.',
+      ].join('\n'),
     );
     parts.push(
       [
@@ -23668,6 +22434,7 @@ export class Runtime {
       imageGenerationEnabled: this.isImageGenerationEnabled(),
       imageOcrFallbackEnabled: this.shouldExposeWindowsOcrForRun(run),
       hasActiveGoal: this.conversationHasActiveGoal(run.threadId),
+      collaborationEnabled: this.isCollaborationConversationForThread(run.threadId),
     });
     const selection = selectKernelMcpRun({
       kernelId: request.kernelId,
@@ -23677,33 +22444,13 @@ export class Runtime {
       networkEnabled,
       planningMode,
     });
-    // Back-compat: keep the legacy catalog for tool-call handling so the
-    // existing executor paths keep working unchanged; the registry selection
-    // is the authority for what the kernel sees.
-    const tools = buildPlatformMcpToolDefinitions({
-      executionMode: this.resolveChatExecutionMode(run.threadId),
-      conversationTrack: run.track,
-      collaborationSettings: this.appSettingStore?.get(COLLABORATION_SETTINGS_KEY)?.value,
-      networkEnabled,
-      includeWebSearchTools: externalWebSearch,
-      includeAgentTools: Boolean(this.globalAgentStore),
-      includeDynamicAgentTools:
-        run.track === 'model' &&
-        normalizeCollaborationSettings(
-          this.appSettingStore?.get(COLLABORATION_SETTINGS_KEY)?.value,
-        ).dynamicSubagentsEnabled,
-      includeTaskTools:
-        Boolean(this.taskPlanStore) &&
-        request.kernelId !== 'claude-code' &&
-        request.kernelId !== 'codex',
-      includeMcpTools: Boolean(this.mcpStore),
-      includeSkillTools: Boolean(this.skillStore),
-      includeTeamTools: Boolean(this.teamStore && this.globalAgentStore),
-      includeBrowserTools: networkEnabled,
-      planningMode,
-      includeGoalManage: this.conversationHasActiveGoal(run.threadId),
-    });
-    this.platformMcpCatalogByRun.set(runId, tools);
+    const tools: PlatformMcpToolDefinition[] = selection.externalTools.map((tool) => ({
+      name: tool.name,
+      description: tool.description,
+      inputSchema: tool.inputSchema,
+      approval: tool.approval,
+    }));
+    this.platformMcpRuns.setCatalog(runId, tools);
 
     if (request.kernelId === 'claude-code') {
       // Channel A — in-process SDK MCP servers. No broker, no stdio spawn.
@@ -23801,19 +22548,12 @@ export class Runtime {
     // kernel retry cannot create a second agent/task/team.
     const argumentsJson = JSON.stringify(call.input ?? {});
     const replayKey = `${call.id}:${createHash('sha256').update(`${call.tool}\n${argumentsJson}`).digest('hex')}`;
-    let replayCache = this.platformMcpResultsByRun.get(runId);
-    if (!replayCache) {
-      replayCache = new Map();
-      this.platformMcpResultsByRun.set(runId, replayCache);
-    }
-    const replayed = replayCache.get(replayKey);
-    if (replayed) return replayed;
-    const pending = this.executePlatformMcpToolCall(runId, run, workspaceRoot, call, argumentsJson);
-    replayCache.set(replayKey, pending);
-    const result = await pending;
-    // Only successful side effects stay cached; a failure may be retried.
-    if (!result.ok) replayCache.delete(replayKey);
-    return result;
+    return this.platformMcpRuns.executeOnce(
+      runId,
+      replayKey,
+      () => this.executePlatformMcpToolCall(runId, run, workspaceRoot, call, argumentsJson),
+      (result) => result.ok,
+    );
   }
 
   private async executePlatformMcpToolCall(
@@ -23841,7 +22581,7 @@ export class Runtime {
     if (call.tool === GENERATE_IMAGE_TOOL_NAME) {
       return this.executeGenerateImageTool(runId, workspaceRoot, call);
     }
-    const catalog = this.platformMcpCatalogByRun.get(runId) ?? PLATFORM_MCP_TOOL_DEFINITIONS;
+    const catalog = this.platformMcpRuns.getCatalog(runId) ?? PLATFORM_MCP_TOOL_DEFINITIONS;
     const definition = catalog.find((tool) => tool.name === call.tool);
     if (!definition) return { ok: false, error: `unknown platform tool: ${call.tool}` };
     if (call.signal.aborted) {
@@ -23999,15 +22739,14 @@ export class Runtime {
   }
 
   private capabilityBrokerFor(runId: RunId): CapabilityBroker {
-    let broker = this.capabilityBrokerByRun.get(runId);
-    if (!broker) {
-      broker = new CapabilityBroker({
-        getTargets: () =>
-          this.isImageGenerationEnabled() ? [buildImageGenerationCapability()] : [],
-      });
-      this.capabilityBrokerByRun.set(runId, broker);
-    }
-    return broker;
+    return this.platformMcpRuns.getOrCreateBroker(
+      runId,
+      () =>
+        new CapabilityBroker({
+          getTargets: () =>
+            this.isImageGenerationEnabled() ? [buildImageGenerationCapability()] : [],
+        }),
+    );
   }
 
   private executeSearchCapabilityTool(
@@ -24085,7 +22824,11 @@ export class Runtime {
     if (!provider) return { ok: false, error: 'generate_image: 生图供应商不存在' };
     const apiKey = await this.resolveProviderSecret(picked.provider.providerId);
     if (!apiKey) return { ok: false, error: 'generate_image: 生图供应商凭据为空' };
-    const adapter = this.resolveDiscoveryAdapter('openai-images');
+    const adapter = resolveProviderDiscoveryAdapter(
+      'openai-images',
+      this.discoveryByProtocol,
+      this.discoveryAdapter,
+    );
     if (!adapter?.generateImages) {
       return { ok: false, error: 'generate_image: 当前运行时没有图像生成适配器' };
     }
@@ -24249,7 +22992,7 @@ export class Runtime {
         createdAt: new Date().toISOString(),
         resolve,
         onAbort: () => {
-          if (this.pendingAsks.delete(askId)) {
+          if (this.pendingAskRegistry.delete(askId)) {
             this.publishEvent(
               this.appendEvent('system', 'conversation.ask_cancelled', {
                 askId,
@@ -24262,7 +23005,7 @@ export class Runtime {
           }
         },
       };
-      this.pendingAsks.set(askId, entry);
+      this.pendingAskRegistry.register(entry);
       if (call.signal.aborted) {
         entry.onAbort();
         return;
@@ -24305,7 +23048,7 @@ export class Runtime {
     if (run.planningMode !== true) {
       return { ok: false, error: 'plan_submit is only available during a planning run' };
     }
-    const existingRevision = this.formalPlanRevisionForRun(runId);
+    const existingRevision = this.formalPlanRevisions.get(runId);
     if (existingRevision !== undefined) {
       return {
         ok: true,
@@ -24348,7 +23091,7 @@ export class Runtime {
         runId,
       );
       this.publishEvent(event);
-      this.formalPlanRevisionByRun.set(runId, plan.currentRevision);
+      this.formalPlanRevisions.record(runId, plan.currentRevision);
       return {
         ok: true,
         content: JSON.stringify({
@@ -24473,6 +23216,8 @@ export class Runtime {
           minTimes: Math.max(1, Math.floor(ruleRaw.minTimes)),
           maxTimes: Math.max(1, Math.floor(ruleRaw.maxTimes)),
         };
+      } else if (ruleKind === 'weekly') {
+        rule = parseWeeklyRule(ruleRaw);
       } else if (ruleKind === 'cron' && typeof ruleRaw.expression === 'string') {
         rule = { kind: 'cron', expression: ruleRaw.expression };
       }
@@ -24647,6 +23392,30 @@ export class Runtime {
     if (CHAT_MCP_CATALOG_TOOL_NAMES.has(name)) {
       return this.executeChatMcpCatalogTool(run);
     }
+    if (CHAT_BROWSER_WORKFLOW_TOOL_NAMES.has(name)) {
+      if (!this.browserWorkflowService) {
+        return JSON.stringify({
+          ok: false,
+          error: 'Browser Automation Workflow service is unavailable.',
+        });
+      }
+      if (name === 'browser_workflow_execute') {
+        return this.executeChatBrowserWorkflowReplay({
+          runId: run.runId as RunId,
+          threadId: run.threadId,
+          toolCall,
+          workspaceRoot,
+          executionMode: this.resolveChatExecutionMode(run.threadId),
+          signal: signal ?? new AbortController().signal,
+        });
+      }
+      return executeChatBrowserWorkflowTool({
+        workspaceId: this.resolveEventWorkspaceId(run.threadId),
+        toolName: name,
+        argumentsJson: toolCall.argumentsJson,
+        service: this.browserWorkflowService,
+      });
+    }
     if (CHAT_NETWORK_TOOL_NAMES.has(name)) {
       return executeChatBuiltInTool({
         workspaceRoot,
@@ -24662,8 +23431,11 @@ export class Runtime {
       threadId: run.threadId,
       kernelId: run.kernelId,
       taskPlanStore: this.taskPlanStore ?? undefined,
-      agentStore: this.agentStore ? this.toPlatformAgentStore(this.agentStore) : undefined,
+      agentStore: this.globalAgentStore
+        ? createPlatformAgentStoreAdapter(this.globalAgentStore)
+        : undefined,
       resolveWorkspaceId: () => this.resolveEventWorkspaceId(run.threadId),
+      catalog: this.platformMcpRuns.getCatalog(run.runId as RunId),
     };
     let input: Record<string, unknown> = {};
     try {
@@ -24742,7 +23514,7 @@ export class Runtime {
         // A failed approval persistence must not fail the tool call outright.
       }
       const onAbort = () => {
-        if (this.pendingToolApprovals.delete(approvalId)) {
+        const settled = this.activeToolApprovals.settle(approvalId, 'deny', () => {
           this.emitToolApprovalDecided({
             approvalId,
             threadId,
@@ -24752,27 +23524,21 @@ export class Runtime {
             toolCallId: call.id,
             toolName: call.tool,
           });
-        }
-        resolve('deny');
+        });
+        if (!settled) resolve('deny');
       };
       if (call.signal.aborted) {
         onAbort();
         return;
       }
       call.signal.addEventListener('abort', onAbort, { once: true });
-      this.pendingToolApprovals.set(approvalId, {
+      this.activeToolApprovals.register({
         approvalId,
         runId,
         threadId,
-        workspaceRoot: '',
-        executionMode: '',
-        chatMessages: [],
-        pendingToolCalls: [toolCall],
-        currentIndex: 0,
-        completedResults: [],
-        toolLoopRound: 0,
-        approvalSummary: summary,
-        approvalArguments,
+        toolCall,
+        summary,
+        arguments: approvalArguments,
         allowedScopes,
         resolve: (decision) => {
           call.signal.removeEventListener('abort', onAbort);
@@ -24781,17 +23547,6 @@ export class Runtime {
         createdAt: new Date().toISOString(),
       });
     });
-  }
-
-  private toPlatformAgentStore(agentStore: SqliteAgentStore): PlatformToolContext['agentStore'] {
-    return {
-      listLatestVersions: () =>
-        agentStore.listLatestVersions().map((record) => ({
-          agentId: record.agentId,
-          name: record.name,
-          version: String(record.version),
-        })),
-    };
   }
 
   /**
@@ -24957,19 +23712,13 @@ export class Runtime {
         });
         return;
       }
-      this.pendingToolApprovals.set(approvalId, {
+      this.activeToolApprovals.register({
         approvalId,
         runId,
         threadId,
-        workspaceRoot: '',
-        executionMode: '',
-        chatMessages: [],
-        pendingToolCalls: [toolCall],
-        currentIndex: 0,
-        completedResults: [],
-        toolLoopRound: 0,
-        approvalSummary: summary,
-        approvalArguments,
+        toolCall,
+        summary,
+        arguments: approvalArguments,
         allowedScopes,
         resolve: (decision) => {
           adapter.respondPermission(
@@ -25030,7 +23779,7 @@ export class Runtime {
     threadId: string,
     planMarkdown: string,
   ): { ok: true; revision: number } | { ok: false; error: string } {
-    const existingRevision = this.formalPlanRevisionForRun(runId);
+    const existingRevision = this.formalPlanRevisions.get(runId);
     if (existingRevision !== undefined) {
       return { ok: true, revision: existingRevision };
     }
@@ -25063,7 +23812,7 @@ export class Runtime {
         runId,
       );
       this.publishEvent(event);
-      this.formalPlanRevisionByRun.set(runId, plan.currentRevision);
+      this.formalPlanRevisions.record(runId, plan.currentRevision);
       return { ok: true, revision: plan.currentRevision };
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) };
@@ -25178,7 +23927,7 @@ export class Runtime {
         });
       },
       onAbort: () => {
-        if (this.pendingAsks.delete(askId)) {
+        if (this.pendingAskRegistry.delete(askId)) {
           this.publishEvent(
             this.appendEvent('system', 'conversation.ask_cancelled', {
               askId,
@@ -25191,7 +23940,7 @@ export class Runtime {
         }
       },
     };
-    this.pendingAsks.set(askId, entry);
+    this.pendingAskRegistry.register(entry);
     this.publishEvent(
       this.persistProjectedEvent(
         {
@@ -25259,7 +24008,7 @@ export class Runtime {
       this.updateTransientTextSnapshot({
         threadId: threadId as ThreadId,
         runId,
-        streamSequence: this.transientSequenceByThread.get(threadId) ?? 0,
+        streamSequence: this.conversationTransientState.latestSequence(threadId),
         text: nextRun.assistantText,
         commentaryText: nextRun.commentaryText,
         commentarySegments: nextRun.commentarySegments,
@@ -25353,7 +24102,7 @@ export class Runtime {
           nextRun = { ...nextRun, pendingKernelToolCalls: pending };
         } else {
           const toolCallId = (event as { toolId: string }).toolId;
-          this.kernelToolProgressByRun.get(runId)?.delete(toolCallId);
+          this.kernelToolProgressRegistry.completeTool(runId, toolCallId);
           const pending = run.pendingKernelToolCalls ?? [];
           const pendingIndex = pending.findIndex((entry) => entry.toolCallId === toolCallId);
           let pendingAfter = pending;
@@ -25484,11 +24233,14 @@ export class Runtime {
   private pushKernelTimelineSnapshot(runId: RunId, threadId: string, occurredAt: string): void {
     const run = this.demoRuns.get(runId);
     if (!run) return;
-    const assistantTimeline = this.withKernelToolProgress(runId, run.assistantTimeline);
+    const assistantTimeline = this.kernelToolProgressRegistry.projectTimeline(
+      runId,
+      run.assistantTimeline,
+    );
     this.updateTransientTextSnapshot({
       threadId: threadId as ThreadId,
       runId,
-      streamSequence: this.transientSequenceByThread.get(threadId) ?? 0,
+      streamSequence: this.conversationTransientState.latestSequence(threadId),
       text: run.assistantText,
       commentaryText: run.commentaryText,
       commentarySegments: run.commentarySegments,
@@ -25511,27 +24263,16 @@ export class Runtime {
   ): void {
     const run = this.demoRuns.get(runId);
     if (!run) return;
-    let byTool = this.kernelToolProgressByRun.get(runId);
-    if (!byTool) {
-      byTool = new Map();
-      this.kernelToolProgressByRun.set(runId, byTool);
-    }
-    const previous = byTool.get(event.toolId);
-    const line =
-      event.output
-        .split(/\r?\n/)
-        .map((value) => value.trim())
-        .filter(Boolean)
-        .at(-1) ??
-      previous?.line ??
-      '';
-    const progress = {
-      line,
-      bytes: (previous?.bytes ?? 0) + Buffer.byteLength(event.output, 'utf8'),
-      at: new Date().toISOString(),
-    };
-    byTool.set(event.toolId, progress);
-    const assistantTimeline = this.withKernelToolProgress(runId, run.assistantTimeline);
+    const progress = this.kernelToolProgressRegistry.append(
+      runId,
+      event.toolId,
+      event.output,
+      new Date().toISOString(),
+    );
+    const assistantTimeline = this.kernelToolProgressRegistry.projectTimeline(
+      runId,
+      run.assistantTimeline,
+    );
     const transientFrame = this.publishTransientFrame({
       threadId: threadId as ThreadId,
       runId,
@@ -25550,28 +24291,6 @@ export class Runtime {
       reasoningSegments: run.reasoningSegments,
       ...(assistantTimeline?.length ? { assistantTimeline } : {}),
       updatedAt: progress.at,
-    });
-  }
-
-  private withKernelToolProgress(
-    runId: string,
-    timeline: readonly AssistantTurnSegment[] | undefined,
-  ): AssistantTurnSegment[] | undefined {
-    if (!timeline?.length) return undefined;
-    const byTool = this.kernelToolProgressByRun.get(runId);
-    return timeline.map((segment) => {
-      if (segment.kind !== 'tool' || segment.status !== 'running' || !byTool) {
-        return { ...segment };
-      }
-      const progress = byTool.get(segment.toolCallId);
-      return progress
-        ? {
-            ...segment,
-            progressLine: progress.line,
-            progressBytes: progress.bytes,
-            progressAt: progress.at,
-          }
-        : { ...segment };
     });
   }
 
@@ -25609,7 +24328,7 @@ export class Runtime {
       this.updateTransientTextSnapshot({
         threadId: threadId as ThreadId,
         runId,
-        streamSequence: this.transientSequenceByThread.get(threadId) ?? 0,
+        streamSequence: this.conversationTransientState.latestSequence(threadId),
         text: next.assistantText,
         reasoningText: next.reasoningText,
         assistantTimeline: next.assistantTimeline,
@@ -25634,7 +24353,7 @@ export class Runtime {
     this.updateTransientTextSnapshot({
       threadId: threadId as ThreadId,
       runId,
-      streamSequence: this.transientSequenceByThread.get(threadId) ?? 0,
+      streamSequence: this.conversationTransientState.latestSequence(threadId),
       text: next.assistantText,
       reasoningText: next.reasoningText,
       assistantTimeline: next.assistantTimeline,
@@ -25805,7 +24524,7 @@ export class Runtime {
   ):
     | { status: 'completed'; run: DemoRunState; error?: undefined; failureClass?: undefined }
     | { status: 'failed'; run: DemoRunState; error: string; failureClass: 'protocol' } {
-    if (run.planningMode !== true || this.formalPlanRevisionForRun(runId) !== undefined) {
+    if (run.planningMode !== true || this.formalPlanRevisions.get(runId) !== undefined) {
       return { status: 'completed', run };
     }
     return {
@@ -25823,21 +24542,6 @@ export class Runtime {
     };
   }
 
-  private formalPlanRevisionForRun(runId: RunId): number | undefined {
-    const cached = this.formalPlanRevisionByRun.get(runId);
-    if (cached !== undefined) return cached;
-    const events = this.stateStore?.listEventsByRun?.(runId) ?? [];
-    for (let index = events.length - 1; index >= 0; index -= 1) {
-      const event = events[index];
-      if (event?.type !== 'conversation.plan_submitted') continue;
-      const revision = event.payload?.revision;
-      if (typeof revision !== 'number' || !Number.isInteger(revision) || revision < 1) continue;
-      this.formalPlanRevisionByRun.set(runId, revision);
-      return revision;
-    }
-    return undefined;
-  }
-
   private finalizeKernelRun(
     runId: RunId,
     run: DemoRunState,
@@ -25847,9 +24551,7 @@ export class Runtime {
   ): void {
     // A terminated run must not leave a pending ask card behind (native
     // AskUserQuestion has no MCP abort signal; platform asks are idempotent).
-    for (const entry of [...this.pendingAsks.values()]) {
-      if (entry.runId === runId) entry.onAbort();
-    }
+    this.pendingAskRegistry.abortRun(runId);
     const occurredAt = new Date().toISOString();
     // §12.17.18: at the terminal boundary the remaining buffered kernel text
     // is the final answer — flush it into a final_answer timeline segment so
@@ -25862,8 +24564,14 @@ export class Runtime {
       occurredAt,
     );
     this.demoRuns.set(runId, terminalRun);
+    if (this.collaborationTaskRunsHasRun(runId)) {
+      this.collaborationRunResults.set(
+        String(runId),
+        terminalRun.assistantText || terminalRun.legacyPendingText || '',
+      );
+    }
     const failed = status === 'failed';
-    const isGoalCompletion = !failed && this.goalRunRevisions.has(String(runId));
+    const isGoalCompletion = !failed && this.goalExecutionState.hasRunRevision(String(runId));
     const durableTerminalRun = isGoalCompletion ? stripGoalStatusFromRun(terminalRun) : terminalRun;
     const payload: Record<string, unknown> = {
       threadId: terminalRun.threadId,
@@ -25916,14 +24624,27 @@ export class Runtime {
         this.maybeProposeRunMemory(runId, durableTerminalRun, payload);
       }
       this.demoRuns.delete(runId);
-      this.transientSnapshotByThread.delete(terminalRun.threadId as ThreadId);
+      this.conversationTransientState.deleteSnapshot(
+        terminalRun.threadId as ThreadId,
+        String(terminalRun.runId),
+      );
     } catch {
       // Finalization must not throw into the run loop.
       // 终态发布失败（如 transient 帧超限）也不能让 run 残留在活动表——
       // 否则 healthcheck inFlightRunIds 会把对话永远标记为「执行中」。
       this.demoRuns.delete(runId);
-      this.transientSnapshotByThread.delete(terminalRun.threadId as ThreadId);
+      this.conversationTransientState.deleteSnapshot(
+        terminalRun.threadId as ThreadId,
+        String(terminalRun.runId),
+      );
     }
+  }
+
+  private collaborationTaskRunsHasRun(runId: RunId): boolean {
+    for (const activeRunId of this.collaborationTaskRuns.values()) {
+      if (activeRunId === String(runId)) return true;
+    }
+    return false;
   }
 
   private canLiveStream(): boolean {
@@ -26040,39 +24761,19 @@ export class Runtime {
     };
   }
 
-  /**
-   * Product �?.4: run > pin > agent group first > provider primary.
-   * Never returns secrets; only CredentialRef metadata + storeHandle in store layer.
-   */
-  private resolveRunCredentialRef(input: {
-    runCredentialRefId?: string;
-    agent: import('@sync-think/core').AgentModelBinding;
-    providerId?: string;
-  }): {
-    credential?: import('@sync-think/storage').CredentialRefRecord;
-    source: import('@sync-think/core').CredentialResolutionSource;
-    credentialGroupId?: string;
-  } {
-    if (!this.providerStore) {
-      return { source: 'none' };
-    }
-    const resolution = resolveCredentialRef({
-      runCredentialRefId: input.runCredentialRefId,
-      pinnedCredentialRefId: input.agent.pinnedCredentialRefId,
-      defaultCredentialGroupId: input.agent.defaultCredentialGroupId,
-      providerId: input.providerId,
-      getCredentialRef: (id) => this.providerStore?.getCredentialRef(id),
-      getFirstCredentialInGroup: (groupId) =>
-        this.providerStore?.getFirstCredentialInGroup(groupId),
-      getPrimaryCredentialRef: (providerId) =>
-        this.providerStore?.getPrimaryCredentialRef(providerId),
-      getProviderIdForCredentialGroup: (groupId) =>
-        this.providerStore?.getProviderIdForCredentialGroup(groupId),
-    });
+  private runBindingCatalog(): RunBindingCatalog | undefined {
+    const store = this.providerStore;
+    if (!store) return undefined;
     return {
-      credential: resolution.credential,
-      source: resolution.source,
-      credentialGroupId: resolution.credentialGroupId,
+      getModel: (id) => store.getModel(id),
+      listProviderIds: () => store.listProviders().map((entry) => entry.provider.id),
+      findModelByProviderModelId: (providerId, providerModelId) =>
+        store.findModelByProviderModelId(providerId, providerModelId),
+      getProvider: (id) => store.getProvider(id),
+      getCredentialRef: (id) => store.getCredentialRef(id),
+      getFirstCredentialInGroup: (id) => store.getFirstCredentialInGroup(id),
+      getPrimaryCredentialRef: (providerId) => store.getPrimaryCredentialRef(providerId),
+      getProviderIdForCredentialGroup: (groupId) => store.getProviderIdForCredentialGroup(groupId),
     };
   }
 
@@ -26573,73 +25274,30 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       globalAgent ? globalAgent.mcpServerIds : agentMeta.mcpServerIds,
     );
 
-    const resolution = resolveModelBinding({
-      agent: effectiveAgentBinding,
-      runModelId: input.modelId ? (input.modelId as ModelId) : undefined,
-    });
-
-    let resolvedModelId =
-      resolution.status === 'resolved' ? resolution.modelId : effectiveAgentBinding.defaultModelId;
-    let source: ModelResolutionSource =
-      resolution.status === 'resolved' ? resolution.source : 'agentDefault';
-
-    // If payload modelId is a providerModelId string (UI may send either), map it.
-    let modelRecord = this.providerStore?.getModel(resolvedModelId);
-    if (!modelRecord && input.modelId && this.providerStore) {
-      for (const entry of this.providerStore.listProviders()) {
-        const found = this.providerStore.findModelByProviderModelId(
-          entry.provider.id,
-          input.modelId,
-        );
-        if (found) {
-          modelRecord = found;
-          resolvedModelId = found.id as ModelId;
-          source = 'runOverride';
-          break;
-        }
-      }
-    }
-    if (!modelRecord && resolvedModelId !== 'fake-mini' && this.providerStore) {
-      modelRecord = this.providerStore.getModel(resolvedModelId);
-    }
-
-    // plan/exec 双模型路由：规划模式 → 规划模型；执行已批准方案的轮次
-    // （planExecuting 标志）→ 执行模型（+ 对应思考强度）。普通 execute 消息
-    // 不干预，手动覆盖 / Agent 默认照常生效。路由后同样允许
-    // providerModelId 字符串 → catalog modelId 的映射。
     const planActRoute = this.resolvePlanActRouteForThread(
       input.threadId,
       input.planExecuting === true,
     );
-    if (planActRoute.applied && planActRoute.modelId) {
-      resolvedModelId = planActRoute.modelId as ModelId;
-      source = 'planAct';
-      modelRecord = this.providerStore?.getModel(resolvedModelId);
-      if (!modelRecord && this.providerStore) {
-        for (const entry of this.providerStore.listProviders()) {
-          const found = this.providerStore.findModelByProviderModelId(
-            entry.provider.id,
-            resolvedModelId,
-          );
-          if (found) {
-            modelRecord = found;
-            resolvedModelId = found.id as ModelId;
-            break;
-          }
-        }
-      }
-    }
-
-    const useFake = !modelRecord || !this.providerStore || !this.secureStore;
-    const provider = modelRecord
-      ? this.providerStore?.getProvider(modelRecord.providerId)
-      : undefined;
-    const credentialResolution = this.resolveRunCredentialRef({
-      runCredentialRefId: input.credentialRefId,
-      agent: effectiveAgentBinding,
-      providerId: provider?.id,
-    });
-    const credential = credentialResolution.credential;
+    const initialBinding = resolveInitialRunModelBinding(
+      {
+        agent: effectiveAgentBinding,
+        requestedModelId: input.modelId,
+        runCredentialRefId: input.credentialRefId,
+        planActRoute,
+      },
+      {
+        catalog: this.runBindingCatalog(),
+        secureStoreAvailable: Boolean(this.secureStore),
+      },
+    );
+    const resolvedModelId = initialBinding.modelId;
+    const source = initialBinding.resolutionSource;
+    const modelRecord = initialBinding.model;
+    const provider = initialBinding.provider;
+    const credential = initialBinding.credential;
+    const credentialResolution = { source: initialBinding.credentialResolutionSource };
+    const useFake = initialBinding.useFakeProvider;
+    const { modelContextWindow, contextWindowEstimated } = initialBinding;
 
     const packetId = ulid();
     const {
@@ -26658,7 +25316,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       skillVersionIds: effectiveSkillIds,
       mcpServerIds: effectiveMcpIds,
     });
-    const forceExclude = this.threadContextAmendments.get(input.threadId)?.excludeSourceIds ?? [];
+    const forceExclude = this.contextAmendments.getExcludedSourceIds(input.threadId);
     const amended = applyUserContextAmendments({
       included: selected.included,
       excluded: selected.excluded,
@@ -26714,23 +25372,6 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       appliedSkills.map((skill) => [skill.sourceId, this.formatSkillPromptBlock(skill)] as const),
     );
 
-    let modelContextWindow = 128_000;
-    let contextWindowEstimated = true;
-    if (modelRecord?.limitsJson) {
-      try {
-        const limits = JSON.parse(modelRecord.limitsJson) as { contextWindow?: unknown };
-        if (
-          typeof limits.contextWindow === 'number' &&
-          Number.isFinite(limits.contextWindow) &&
-          limits.contextWindow > 0
-        ) {
-          modelContextWindow = Math.round(limits.contextWindow);
-          contextWindowEstimated = false;
-        }
-      } catch {
-        // Keep the stable Runtime fallback when provider metadata is malformed.
-      }
-    }
     // Capacity is owned by the selected provider model. Legacy conversation
     // overrides remain readable for import compatibility but no longer affect
     // new runs or the context UI.
@@ -27007,7 +25648,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       this.modelRetryBaseDelayMs <= 0
         ? 0
         : Math.min(8_000, this.modelRetryBaseDelayMs * 2 ** retryIndex);
-    const abort = this.demoRunAborts.get(runId);
+    const abort = this.demoRunAbortRegistry.get(runId);
     return new Promise((resolve) => {
       if (abort?.signal.aborted) {
         resolve();
@@ -27065,128 +25706,60 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     failureClass: FailureClass,
     errorMessage?: string,
   ): 'continued' | 'paused' | 'failed' {
-    if (
-      !shouldAttemptFallback(failureClass) ||
-      isCodexSilentCommandWatchdogMessage(errorMessage)
-    ) {
+    if (!shouldAttemptFallback(failureClass) || isCodexSilentCommandWatchdogMessage(errorMessage)) {
       return 'failed';
     }
 
     const scrubbedMessage = this.scrubDiagnosticMessage(errorMessage);
-    const failedModelId = run.modelId as ModelId;
-    const failedRecord = this.providerStore?.getModel(failedModelId);
-    const providerFailureCounts = { ...(run.providerFailureCounts ?? {}) };
-    const providerFailureCount = failedRecord
-      ? (providerFailureCounts[failedRecord.providerId] ?? 0) + 1
-      : 1;
-    if (failedRecord) providerFailureCounts[failedRecord.providerId] = providerFailureCount;
-    const failedRun: DemoRunState = {
-      ...run,
-      providerFailureCounts,
-    };
-    const attemptedModelIds = Array.from(
-      new Set([...(failedRun.attemptedModelIds ?? []), failedRun.modelId]),
-    ) as ModelId[];
-    const skipSameProvider = shouldSkipSameProviderFallback(
-      failureClass,
-      providerFailureCount,
-      scrubbedMessage,
-    );
-
-    // Layer 1: same-provider priority chain (forward-only from current model).
-    if (this.providerStore && !skipSameProvider) {
-      if (failedRecord) {
-        const ordered = this.providerStore
-          .listModels(failedRecord.providerId)
-          .filter((model) => this.isFallbackModelCompatibleWithRun(failedRun, model))
-          .slice()
-          .sort((a, b) => a.priority - b.priority);
-        const providerNext = resolveProviderPriorityFallback({
-          orderedModelIds: ordered.map((m) => m.id as ModelId),
-          failedModelId,
-          attemptedModelIds,
-        });
-        if (providerNext) {
-          const nextRun = this.rebindRunToModel(
-            failedRun,
-            providerNext.modelId,
-            'providerFallback',
-          );
-          return this.persistFallbackContinuation(runId, failedRun, nextRun, {
-            failureClass,
-            scrubbedMessage,
-            fallbackIndex: providerNext.fallbackIndex,
-            resolutionSource: 'providerFallback',
-          });
-        }
-      }
-    }
-
-    // Layer 2: Agent-configured fallback chain.
-    // Prefer the snapshot captured at run start (global agent fallbacks), then
-    // fall back to the legacy agent_version binding.
-    const legacyAgent = this.resolveAgentModelBinding(run.agentVersionId);
-    const agent =
-      run.fallbackModelIds && run.fallbackModelIds.length > 0
-        ? {
-            ...legacyAgent,
-            // The run snapshot is an explicit fallback contract. A manually
-            // selected model becomes this run's starting point, then the
-            // configured chain walks forward from there.
-            defaultModelId: failedRun.modelId as ModelId,
-            fallbackModelIds: run.fallbackModelIds.map((id) => id as ModelId),
-          }
-        : legacyAgent;
-    const textCompatibleAgent = {
-      ...agent,
-      fallbackModelIds: agent.fallbackModelIds.filter((modelId) => {
-        if (!this.providerStore) {
-          return (
-            failedRun.imagesMode !== 'forwarded' ||
-            !failedRun.images?.length ||
-            isModelVisionCapable(String(modelId))
-          );
-        }
-        const model = this.providerStore.getModel(modelId);
-        return Boolean(
-          model &&
-          (!skipSameProvider || model.providerId !== failedRecord?.providerId) &&
-          this.isFallbackModelCompatibleWithRun(failedRun, model),
-        );
-      }),
-    };
-    const resolution = resolveModelBinding({
-      agent: textCompatibleAgent,
-      failedModelId,
-      failureClass,
-      attemptedModelIds,
+    const candidate = (model: ModelRecord) => ({
+      id: model.id,
+      providerId: model.providerId,
+      priority: model.priority,
+      compatible: this.isFallbackModelCompatibleWithRun(run, model),
     });
-
-    // Do NOT call recordRunDiagnostic here: it uses appendEvent and advances
-    // liveCursor outside the state-store sequence, which can hide later
-    // durable events (run.paused / run.fallback.selected) from subscribers.
-    // Diagnostics are recorded on terminal pause/failure only.
-
-    if (resolution.status === 'paused') {
+    const selection = selectModelFallback(
+      {
+        modelId: run.modelId as ModelId,
+        failureClass,
+        errorMessage: scrubbedMessage,
+        providerFailureCounts: run.providerFailureCounts,
+        attemptedModelIds: run.attemptedModelIds,
+        fallbackModelIds: run.fallbackModelIds,
+      },
+      {
+        catalog: this.providerStore
+          ? {
+              getModel: (id) => {
+                const model = this.providerStore!.getModel(id);
+                return model ? candidate(model) : undefined;
+              },
+              listModels: (providerId) =>
+                this.providerStore!.listModels(providerId as ProviderId).map(candidate),
+            }
+          : undefined,
+        getAgentBinding: () => this.resolveAgentModelBinding(run.agentVersionId),
+        allowsUncataloguedModel: (id) =>
+          run.imagesMode !== 'forwarded' || !run.images?.length || isModelVisionCapable(String(id)),
+      },
+    );
+    // Keep diagnostics and the live cursor inside the existing persistence path.
+    if (selection.status === 'paused') {
       this.persistDemoRunPaused(runId, {
-        reason: resolution.reason,
-        failedModelId: resolution.failedModelId,
+        reason: selection.reason,
+        failedModelId: selection.failedModelId,
         failureClass,
         errorMessage: scrubbedMessage,
       });
       return 'paused';
     }
-
-    if (resolution.status !== 'resolved' || resolution.source !== 'agentFallback') {
-      return 'failed';
-    }
-
-    const nextRun = this.rebindRunToModel(failedRun, resolution.modelId, resolution.source);
+    if (selection.status !== 'selected') return 'failed';
+    const failedRun = { ...run, providerFailureCounts: selection.providerFailureCounts };
+    const nextRun = this.rebindRunToModel(failedRun, selection.modelId, selection.source);
     return this.persistFallbackContinuation(runId, failedRun, nextRun, {
       failureClass,
       scrubbedMessage,
-      fallbackIndex: resolution.fallbackIndex,
-      resolutionSource: resolution.source,
+      fallbackIndex: selection.fallbackIndex,
+      resolutionSource: selection.source,
     });
   }
 
@@ -27247,8 +25820,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         skillVersionIds: nextRun.skillVersionIds ?? [],
         mcpServerIds: nextRun.mcpServerIds ?? [],
       });
-      const fallbackForce =
-        this.threadContextAmendments.get(nextRun.threadId)?.excludeSourceIds ?? [];
+      const fallbackForce = this.contextAmendments.getExcludedSourceIds(nextRun.threadId);
       const fallbackAmended = applyUserContextAmendments({
         included: fallbackContextSelection.selected.included,
         excluded: fallbackContextSelection.selected.excluded,
@@ -27332,7 +25904,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
             },
           },
         ],
-        this.threadVersions,
+        this.threadVersionProjection.view(),
         projectedRuns,
       );
       this.demoRuns.set(runId, nextRun);
@@ -27368,11 +25940,14 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       ? this.providerStore?.getProvider(modelRecord.providerId)
       : undefined;
     const agentBinding = this.resolveAgentModelBinding(run.agentVersionId);
-    const credentialResolution = this.resolveRunCredentialRef({
-      runCredentialRefId: run.credentialRefId,
-      agent: agentBinding,
-      providerId: provider?.id,
-    });
+    const credentialResolution = resolveRunCredentialBinding(
+      {
+        runCredentialRefId: run.credentialRefId,
+        agent: agentBinding,
+        providerId: provider?.id,
+      },
+      this.runBindingCatalog(),
+    );
     const credential = credentialResolution.credential;
 
     const packetId = ulid();
@@ -27561,33 +26136,6 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     return 'unknown';
   }
 
-  private resolveLatestCompactBoundary(
-    threadId: string,
-  ): { summaryText: string; compactedAt: string } | undefined {
-    const cached = this.latestCompactByThread.get(threadId);
-    if (cached) return cached;
-    if (!this.stateStore) return undefined;
-    const task = this.workspaceStore?.getTaskByThreadId(threadId as ThreadId);
-    const events =
-      task && this.stateStore.listEventsByTask
-        ? this.stateStore.listEventsByTask(task.id)
-        : this.stateStore.listAllEvents
-          ? this.stateStore.listAllEvents(0)
-          : this.stateStore.listEvents(this.workspaceId, 0);
-    let latest: { summaryText: string; compactedAt: string; sequence: number } | undefined;
-    for (const event of events) {
-      if (event.type !== 'context.compacted' || event.payload.threadId !== threadId) continue;
-      const summaryText =
-        typeof event.payload.summaryText === 'string' ? event.payload.summaryText.trim() : '';
-      if (!summaryText || (latest && latest.sequence >= event.sequence)) continue;
-      latest = { summaryText, compactedAt: event.occurredAt, sequence: event.sequence };
-    }
-    if (!latest) return undefined;
-    const value = { summaryText: latest.summaryText, compactedAt: latest.compactedAt };
-    this.latestCompactByThread.set(threadId, value);
-    return value;
-  }
-
   private listDurableContextMessages(
     threadId: string,
     contextWindow: number,
@@ -27621,7 +26169,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
   private buildChatProviderMessages(
     run: DemoRunState,
   ): import('@sync-think/adapters').ProviderMessage[] {
-    const compact = this.resolveLatestCompactBoundary(run.threadId);
+    const compact = this.compactBoundaryCache.get(run.threadId);
     const resolvedImages = run.images
       ?.map((image) => {
         const dataUrl = resolveAppendMessageImageDataUrl(image);
@@ -27640,6 +26188,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       resolveImageDataUrl: (storageRef, mimeType) =>
         resolveHistoricalMessageImageDataUrl(storageRef, mimeType),
       toolTracesByRunId: this.collectInterruptedRunToolTraces(durableMessages),
+      delegatedRuns: this.delegationService.listByThread(run.threadId),
     });
     // NewMax-style: the persisted task checklist is part of the model context
     // so the model can read back its own plan every turn (not just a UI
@@ -27982,7 +26531,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     outcome: 'success' | 'failed' | 'cancelled',
   ): void {
     const usageKey = `${input.run.runId}:mcp:${input.mcpServerId}:mcp-call:${input.toolCallId}`;
-    this.appendCapabilityUsageOnce(usageKey, {
+    this.recordCapabilityUsage(usageKey, {
       capabilityType: 'mcp',
       capabilityId: input.mcpServerId,
       run: input.run,
@@ -27990,7 +26539,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     });
   }
 
-  private appendCapabilityUsageOnce(
+  private recordCapabilityUsage(
     usageKey: string,
     input: {
       capabilityType: 'skill' | 'mcp';
@@ -28000,8 +26549,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       contextTokens?: number;
     },
   ): void {
-    if (!this.capabilityStore || this.recordedCapabilityUsageKeys.has(usageKey)) return;
-    this.capabilityStore.appendUsageEvent({
+    this.capabilityUsageRecorder.record({
       id: usageKey,
       capabilityType: input.capabilityType,
       capabilityId: input.capabilityId,
@@ -28012,7 +26560,6 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       outcome: input.outcome,
       contextTokens: input.contextTokens,
     });
-    this.recordedCapabilityUsageKeys.add(usageKey);
   }
 
   private recordProviderContextCapabilityUsage(run: DemoRunState, snapshot: ContextSnapshot): void {
@@ -28023,7 +26570,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
           candidate.kind === 'skill-definition' && candidate.id === `skill:${skillVersionId}`,
       );
       if (!source) continue;
-      this.appendCapabilityUsageOnce(`${run.runId}:skill:${skillVersionId}:skill-context`, {
+      this.recordCapabilityUsage(`${run.runId}:skill:${skillVersionId}:skill-context`, {
         capabilityType: 'skill',
         capabilityId: skillVersionId,
         run,
@@ -28040,7 +26587,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         0,
       );
       if (contextTokens <= 0) continue;
-      this.appendCapabilityUsageOnce(`${run.runId}:mcp:${mcpServerId}:mcp-schema`, {
+      this.recordCapabilityUsage(`${run.runId}:mcp:${mcpServerId}:mcp-schema`, {
         capabilityType: 'mcp',
         capabilityId: mcpServerId,
         run,
@@ -28293,118 +26840,30 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     workspaceRoot: string;
     signal?: AbortSignal;
   }): Promise<string> {
-    let args: Record<string, unknown> = {};
-    try {
-      const parsed = JSON.parse(input.toolCall.argumentsJson || '{}') as unknown;
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        args = parsed as Record<string, unknown>;
-      }
-    } catch {
-      return JSON.stringify({ ok: false, error: 'agent_delegate: invalid JSON arguments.' });
+    if (this.runtimeStopped) {
+      return JSON.stringify({ ok: false, error: 'agent_delegate: Runtime is shutting down.' });
     }
-    const task = typeof args.task === 'string' ? args.task.trim() : '';
-    if (!task) return JSON.stringify({ ok: false, error: 'agent_delegate: task is required.' });
-    const parallelGroup =
-      typeof args.parallelGroup === 'string' && args.parallelGroup.trim()
-        ? args.parallelGroup.trim().slice(0, 80)
-        : undefined;
-    const parallelGroupField = parallelGroup ? { parallelGroup } : {};
-    const requestedTimeoutSeconds =
-      typeof args.timeoutSeconds === 'number' && Number.isFinite(args.timeoutSeconds)
-        ? Math.min(
-            MAX_DELEGATED_TASK_TIMEOUT_SECONDS,
-            Math.max(1, Math.trunc(args.timeoutSeconds)),
-          )
-        : DEFAULT_DELEGATED_TASK_TIMEOUT_SECONDS;
-    const settings = normalizeCollaborationSettings(
-      this.appSettingStore?.get(COLLABORATION_SETTINGS_KEY)?.value,
-    );
-    const isExistingAgentRun = input.toolCall.name === 'agent_run';
-    const admission = evaluateDynamicDelegation({
-      track: input.run.track ?? 'model',
-      settings: isExistingAgentRun ? { ...settings, dynamicSubagentsEnabled: true } : settings,
-      state: {
-        depth: input.run.delegationDepth ?? 0,
-        childCount: input.run.delegationChildCount ?? 0,
-        autoDelegationsThisTurn: input.run.delegationAutoCount ?? 0,
-      },
-      requestedTokenBudget:
-        typeof args.tokenBudget === 'number' && Number.isFinite(args.tokenBudget)
-          ? args.tokenBudget
-          : null,
+    const admission = this.delegationAdmission.prepare({
+      threadId: input.run.threadId,
+      toolName: input.toolCall.name,
+      argumentsJson: input.toolCall.argumentsJson,
+      track: input.run.track,
+      depth: input.run.delegationDepth,
+      childCount: input.run.delegationChildCount,
+      autoDelegationsThisTurn: input.run.delegationAutoCount,
     });
-    if (!admission.allowed) {
-      return JSON.stringify({
-        ok: false,
-        error: `agent_delegate: delegation rejected (${admission.reason}).`,
-        limits: settings,
-      });
-    }
-    const requestedAgentId = typeof args.agentId === 'string' ? args.agentId.trim() : '';
-    if (!requestedAgentId) {
-      return JSON.stringify({
-        ok: false,
-        code: 'AGENT_ID_REQUIRED',
-        error: 'agent_delegate: agentId is required. Call list_available_agents first and choose an existing Agent.',
-      });
-    }
-    const workspaceId = this.resolveEventWorkspaceId(input.run.threadId);
-    const candidates = (this.globalAgentStore?.listEffective(workspaceId) ?? []).map((agent) => ({
-      id: String(agent.id),
-      name: agent.name,
-      avatar: agent.avatar,
-      persona: agent.persona,
-      description: agent.description,
-      skillIds: agent.skillIds,
-      mcpServerIds: agent.mcpServerIds,
-      archived: agent.archived,
-      enabled: agent.enabled,
-      source: agent.source,
-      availabilityScope: agent.availabilityScope,
-      writePolicy: agent.writePolicy,
-    }));
-    if (!candidates.some((candidate) => candidate.id === requestedAgentId)) {
-      return JSON.stringify({
-        ok: false,
-        code: 'AGENT_UNAVAILABLE',
-        error: `agent_delegate: Agent ${requestedAgentId} is not active in workspace ${workspaceId}.`,
-        workspaceId,
-        availableAgents: candidates.map((candidate) => ({
-          id: candidate.id,
-          name: candidate.name,
-          source: candidate.source,
-        })),
-        suggestedDraft: {
-          task,
-          reason: '没有找到当前工作区已激活的指定 Agent；请先创建或激活一个已有 Agent。',
-        },
-      });
-    }
-    const assignment = resolveAgentAssignment(
-      {
-        task,
-        preferredAgentId: requestedAgentId,
-        requiredSkillIds: Array.isArray(args.requiredSkillIds)
-          ? args.requiredSkillIds.map(String)
-          : [],
-        requiredToolIds: Array.isArray(args.requiredToolIds)
-          ? args.requiredToolIds.map(String)
-          : [],
-      },
-      candidates,
-    );
-    if (!assignment) {
-      return JSON.stringify({
-        ok: false,
-        code: 'AGENT_CAPABILITY_MISMATCH',
-        error: 'agent_delegate: the selected Agent does not satisfy the requested capabilities.',
-        agentId: requestedAgentId,
-        availableAgents: candidates.map((candidate) => ({
-          id: candidate.id,
-          name: candidate.name,
-        })),
-      });
-    }
+    if (!admission.ok) return JSON.stringify(admission.response);
+    const {
+      task,
+      parallelGroup,
+      workspaceId,
+      assignment,
+      candidate: assignedCandidate,
+      background: isExistingAgentRun,
+      timeoutSeconds: requestedTimeoutSeconds,
+      statusNotificationTimeoutSeconds,
+    } = admission;
+    const parallelGroupField = parallelGroup ? { parallelGroup } : {};
     const childRunId = ulid() as RunId;
     // Global Agents are mutable and carry no version chain, so the child run
     // resolves a copy of that Agent's persona / model / Skill / MCP binding at
@@ -28420,56 +26879,93 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     child.track = 'model';
     child.delegationDepth = (input.run.delegationDepth ?? 0) + 1;
     child.delegationParentRunId = input.run.runId;
+    child.delegationParentToolCallId = input.toolCall.id;
     child.delegationParallelGroup = parallelGroup;
     child.delegationTokenBudget = admission.taskTokenBudget;
     child.delegationTokensUsed = 0;
     child.delegatedReadOnly = !delegationMayWrite({
-      writePolicy: candidates.find((candidate) => candidate.id === assignment.agentId)?.writePolicy,
+      writePolicy: assignedCandidate.writePolicy,
       executionMode: this.resolveChatExecutionMode(input.run.threadId),
     });
     if (child.delegatedReadOnly) child.delegatedToolAllowlist = [...DELEGATED_READONLY_TOOLS];
+    const projectedRuns = new Map(this.demoRuns);
     const parentBeforeChild = this.demoRuns.get(input.run.runId);
     if (parentBeforeChild) {
-      this.demoRuns.set(input.run.runId, {
+      projectedRuns.set(input.run.runId, {
         ...parentBeforeChild,
         delegationChildCount: (parentBeforeChild.delegationChildCount ?? 0) + 1,
         delegationAutoCount: (parentBeforeChild.delegationAutoCount ?? 0) + 1,
       });
     }
+    projectedRuns.set(childRunId, child);
+    // Admission must be durable before the child executes or the parent reports success.
+    const startedPayload = { threadId: child.threadId, run: serializeDemoRun(child) };
+    const started = this.stateStore
+      ? this.persistProjectedEvent(
+          {
+            id: ulid() as Event['id'],
+            workspaceId,
+            taskId: this.resolveEventTaskId(child.threadId),
+            runId: childRunId,
+            category: 'run',
+            type: 'run.started',
+            occurredAt: new Date().toISOString(),
+            payload: startedPayload,
+          },
+          projectedRuns,
+        )
+      : this.appendEvent('run', 'run.started', startedPayload, undefined, childRunId);
+    if (parentBeforeChild) this.demoRuns.set(input.run.runId, projectedRuns.get(input.run.runId)!);
     this.demoRuns.set(childRunId, child);
-    const cancelChild = () => this.demoRunAborts.get(String(childRunId))?.abort();
-    const timeoutTimer = setTimeout(() => {
-      const liveChild = this.demoRuns.get(String(childRunId));
-      if (!liveChild) return;
-      this.demoRuns.set(String(childRunId), {
-        ...liveChild,
-        delegationTerminationReason: 'timed_out',
+    this.publishEvent(started);
+    const delegatedAvatar =
+      assignedCandidate?.avatar?.trim() || assignedCandidate?.name?.slice(0, 2) || '🤖';
+    if (isExistingAgentRun) {
+      this.delegationExecution.startBackground(
+        childRunId,
+        requestedTimeoutSeconds,
+        statusNotificationTimeoutSeconds,
+      );
+      return JSON.stringify({
+        ok: true,
+        ...parallelGroupField,
+        childRunId,
+        assignment: {
+          kind: assignment.kind,
+          agentId: assignment.agentId,
+          name: child.globalAgentName ?? '已配置智能体',
+          avatar: delegatedAvatar,
+        },
+        status: 'running',
+        toolEvents: [],
+        tokenBudget: admission.taskTokenBudget,
+        tokensUsed: 0,
+        timeoutPolicy: {
+          idleSeconds: BACKGROUND_DELEGATION_IDLE_SECONDS,
+          absoluteSeconds: requestedTimeoutSeconds,
+          statusNotificationSeconds: statusNotificationTimeoutSeconds,
+        },
       });
-      cancelChild();
-    }, requestedTimeoutSeconds * 1_000);
-    timeoutTimer.unref?.();
-    if (input.signal) {
-      if (input.signal.aborted) cancelChild();
-      else input.signal.addEventListener('abort', cancelChild, { once: true });
     }
     try {
-      await this.executeDemoRun(childRunId);
+      await this.delegationExecution.runForeground(
+        childRunId,
+        requestedTimeoutSeconds,
+        input.signal,
+      );
     } finally {
-      clearTimeout(timeoutTimer);
-      input.signal?.removeEventListener('abort', cancelChild);
       if (input.signal?.aborted) {
         this.demoRuns.delete(String(childRunId));
         this.completedDelegatedRuns.delete(String(childRunId));
-        this.completedDelegatedRunStates.delete(String(childRunId));
       }
     }
     const interruptedChild = this.demoRuns.get(String(childRunId));
     const interruptedTerminationReason = interruptedChild?.delegationTerminationReason;
     if (interruptedChild?.delegationTerminationReason && !input.signal?.aborted) {
       const terminationReason = interruptedChild.delegationTerminationReason;
-      this.completedDelegatedRuns.set(String(childRunId), interruptedChild);
-      this.completedDelegatedRunStates.set(
+      this.completedDelegatedRuns.remember(
         String(childRunId),
+        interruptedChild,
         terminationReason === 'timed_out' ? 'timed_out' : 'failed',
       );
       this.persistDemoRunFailure(
@@ -28480,24 +26976,31 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
           : 'Delegated child exceeded its token budget.',
       );
     }
+    const completedRecord = this.completedDelegatedRuns.take(String(childRunId));
     const completedChild =
-      this.completedDelegatedRuns.get(String(childRunId)) ??
-      this.demoRuns.get(String(childRunId)) ??
-      interruptedChild;
-    this.completedDelegatedRuns.delete(String(childRunId));
+      completedRecord?.run ?? this.demoRuns.get(String(childRunId)) ?? interruptedChild;
     const childTerminalState =
-      this.completedDelegatedRunStates.get(String(childRunId)) ??
+      completedRecord?.state ??
       (interruptedTerminationReason === 'timed_out'
         ? 'timed_out'
         : interruptedTerminationReason === 'budget_exceeded'
           ? 'failed'
           : undefined);
-    this.completedDelegatedRunStates.delete(String(childRunId));
     if (input.signal?.aborted) {
-      return JSON.stringify({ ok: false, ...parallelGroupField, error: 'agent_delegate: child run cancelled.', childRunId });
+      return JSON.stringify({
+        ok: false,
+        ...parallelGroupField,
+        error: 'agent_delegate: child run cancelled.',
+        childRunId,
+      });
     }
     if (!completedChild) {
-      return JSON.stringify({ ok: false, ...parallelGroupField, error: 'agent_delegate: child run failed.', childRunId });
+      return JSON.stringify({
+        ok: false,
+        ...parallelGroupField,
+        error: 'agent_delegate: child run failed.',
+        childRunId,
+      });
     }
     if (completedChild.delegationTerminationReason === 'budget_exceeded') {
       return JSON.stringify({
@@ -28511,10 +27014,20 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       });
     }
     if (childTerminalState === 'failed') {
-      return JSON.stringify({ ok: false, ...parallelGroupField, error: 'agent_delegate: child run failed.', childRunId });
+      return JSON.stringify({
+        ok: false,
+        ...parallelGroupField,
+        error: 'agent_delegate: child run failed.',
+        childRunId,
+      });
     }
     if (childTerminalState === 'cancelled') {
-      return JSON.stringify({ ok: false, ...parallelGroupField, error: 'agent_delegate: child run cancelled.', childRunId });
+      return JSON.stringify({
+        ok: false,
+        ...parallelGroupField,
+        error: 'agent_delegate: child run cancelled.',
+        childRunId,
+      });
     }
     if (childTerminalState === 'timed_out') {
       return JSON.stringify({
@@ -28527,9 +27040,6 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         tokensUsed: completedChild.delegationTokensUsed ?? 0,
       });
     }
-    const assignedCandidate = candidates.find((candidate) => candidate.id === assignment.agentId);
-    const delegatedAvatar =
-      assignedCandidate?.avatar?.trim() || assignedCandidate?.name?.slice(0, 2) || '🤖';
     const toolEvents = delegatedToolEventsFromTimeline(completedChild.assistantTimeline);
     const completedUsage = this.projectChildUsage(completedChild);
     return JSON.stringify({
@@ -28552,7 +27062,6 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       tokenBudget: admission.taskTokenBudget,
       tokensUsed: completedChild.delegationTokensUsed ?? 0,
     });
-
   }
 
   private async executeDelegationBatch(input: {
@@ -28560,7 +27069,9 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     toolCalls: readonly import('@sync-think/adapters').ProviderToolCall[];
     workspaceRoot: string;
     signal: AbortSignal;
-  }): Promise<Array<{ toolCall: import('@sync-think/adapters').ProviderToolCall; resultText: string }>> {
+  }): Promise<
+    Array<{ toolCall: import('@sync-think/adapters').ProviderToolCall; resultText: string }>
+  > {
     const startedAt = new Date().toISOString();
     for (const toolCall of input.toolCalls) {
       if (input.signal.aborted || !this.demoRuns.has(String(input.run.runId))) return [];
@@ -28598,6 +27109,120 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     });
   }
 
+  /** Repair a read-model lag from durable events after a crash between writes. */
+  private reconcileDelegatedRun(record: DelegatedRunRecord): DelegatedRunRecord {
+    const events = this.stateStore?.listEventsByRun
+      ? this.stateStore.listEventsByRun(record.childRunId as RunId)
+      : this.events.filter((event) => String(event.runId) === record.childRunId);
+    return reconcileDelegatedRecord(record, events, this.demoRuns.has(record.childRunId));
+  }
+
+  private executeChatCollaborationTool(input: {
+    run: DemoRunState;
+    toolCall: import('@sync-think/adapters').ProviderToolCall;
+    args: Record<string, unknown>;
+  }): string {
+    const host = this.collaborationChatHost;
+    const conversationId = this.resolveConversationIdForThread(input.run.threadId);
+    if (!host || !conversationId) {
+      return JSON.stringify({ ok: false, error: '当前运行不在协作会话中。' });
+    }
+    const actorMemberId =
+      input.run.track === 'model'
+        ? 'assistant:main'
+        : input.run.globalAgentId
+          ? `agent:${input.run.globalAgentId}`
+          : undefined;
+    if (!actorMemberId) {
+      return JSON.stringify({ ok: false, error: '协作运行缺少发送者身份。' });
+    }
+    const requestId = `tool:${input.run.runId}:${input.toolCall.id}`;
+    try {
+      let command: CollaborationCommand;
+      if (input.toolCall.name === 'collaboration_send_message') {
+        const text = typeof input.args.text === 'string' ? input.args.text.trim() : '';
+        if (!text) return JSON.stringify({ ok: false, error: 'text is required.' });
+        command = {
+          action: 'send',
+          conversationId,
+          clientRequestId: requestId,
+          text,
+          ...(Array.isArray(input.args.recipientMemberIds)
+            ? {
+                recipientMemberIds: input.args.recipientMemberIds.filter(
+                  (id): id is string => typeof id === 'string',
+                ),
+              }
+            : {}),
+          ...(typeof input.args.replyToMessageId === 'string'
+            ? { replyToMessageId: input.args.replyToMessageId }
+            : {}),
+          ...(typeof input.args.expectsResponse === 'boolean'
+            ? { expectsResponse: input.args.expectsResponse }
+            : {}),
+        };
+      } else if (input.toolCall.name === 'collaboration_send_direct_message') {
+        const recipientMemberId =
+          typeof input.args.recipientMemberId === 'string'
+            ? input.args.recipientMemberId.trim()
+            : '';
+        const originMessageId =
+          typeof input.args.originMessageId === 'string' ? input.args.originMessageId.trim() : '';
+        const text = typeof input.args.text === 'string' ? input.args.text.trim() : '';
+        if (!recipientMemberId || !originMessageId || !text) {
+          return JSON.stringify({
+            ok: false,
+            error: 'recipientMemberId, originMessageId and text are required.',
+          });
+        }
+        const snapshot = host.sendPeerDirectMessage({
+          conversationId,
+          clientRequestId: requestId,
+          actorMemberId,
+          recipientMemberId,
+          originMessageId,
+          text,
+          ...(typeof input.args.expectsResponse === 'boolean'
+            ? { expectsResponse: input.args.expectsResponse }
+            : {}),
+        });
+        return JSON.stringify({
+          ok: true,
+          conversationId: snapshot.conversation.id,
+          revision: snapshot.revision,
+          response: { snapshot },
+        });
+      } else {
+        const tasks = Array.isArray(input.args.tasks) ? input.args.tasks : [];
+        if (tasks.length === 0) return JSON.stringify({ ok: false, error: 'tasks is required.' });
+        command = {
+          action: 'dispatch',
+          conversationId,
+          clientRequestId: requestId,
+          tasks: tasks as import('@sync-think/shared').CollaborationTaskDraft[],
+          ...(typeof input.args.originMessageId === 'string'
+            ? { originMessageId: input.args.originMessageId }
+            : {}),
+          ...(typeof input.args.parentTaskId === 'string'
+            ? { parentTaskId: input.args.parentTaskId }
+            : {}),
+        };
+      }
+      const response = host.command(command, actorMemberId);
+      return JSON.stringify({
+        ok: true,
+        conversationId,
+        revision: response.snapshot?.revision,
+        response,
+      });
+    } catch (error) {
+      return JSON.stringify({
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   private executeChatAgentTool(input: {
     run: DemoRunState;
     toolCall: import('@sync-think/adapters').ProviderToolCall;
@@ -28609,6 +27234,37 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       return JSON.stringify({ ok: false, error: 'Invalid tool arguments JSON' });
     }
 
+    if (
+      input.toolCall.name === 'collaboration_send_message' ||
+      input.toolCall.name === 'collaboration_send_direct_message' ||
+      input.toolCall.name === 'collaboration_dispatch_tasks'
+    ) {
+      return this.executeChatCollaborationTool({ ...input, args });
+    }
+
+    if (input.toolCall.name === 'agent_run_status') {
+      const result = this.delegationService.query(input.run.threadId, args);
+      const childRunId = typeof args.childRunId === 'string' ? args.childRunId : undefined;
+      const observation = childRunId
+        ? this.delegationStatusObservations.get(childRunId)
+        : undefined;
+      const tasks = Array.isArray(result.tasks)
+        ? result.tasks.map((task) => {
+            if (!task || typeof task !== 'object') return task;
+            const item = task as { childRunId?: unknown };
+            const itemObservation =
+              typeof item.childRunId === 'string'
+                ? this.delegationStatusObservations.get(item.childRunId)
+                : undefined;
+            return itemObservation ? { ...task, statusObservation: itemObservation } : task;
+          })
+        : undefined;
+      return JSON.stringify({
+        ...result,
+        ...(observation ? { statusObservation: observation } : {}),
+        ...(tasks ? { tasks } : {}),
+      });
+    }
     if (!this.globalAgentStore) {
       return JSON.stringify({
         ok: false,
@@ -28664,7 +27320,9 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       const agentId = typeof args.agentId === 'string' ? args.agentId.trim() : '';
       const workspaceId = this.resolveEventWorkspaceId(input.run.threadId);
       if (!agentId) return JSON.stringify({ ok: false, error: 'agentId is required.' });
-      const agent = this.globalAgentStore.listEffective(workspaceId).find((item) => item.id === agentId);
+      const agent = this.globalAgentStore
+        .listEffective(workspaceId)
+        .find((item) => item.id === agentId);
       if (!agent) {
         return JSON.stringify({
           ok: false,
@@ -28863,7 +27521,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
           skillIds: resolvedSkillIds,
           reasoningEffort,
         });
-        const agent = this.toGlobalAgentSummary(created);
+        const agent = toGlobalAgentSummary(created);
         const event = this.appendEvent('system', 'globalAgent.created', {
           agentId: agent.id,
           name: agent.name,
@@ -28993,7 +27651,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
           skillIds: nextSkillIds,
           reasoningEffort: nextReasoningEffort,
         });
-        const agent = this.toGlobalAgentSummary(updated);
+        const agent = toGlobalAgentSummary(updated);
         const event = this.appendEvent('system', 'globalAgent.updated', {
           agentId: agent.id,
           name: agent.name,
@@ -29045,7 +27703,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
           agentId: current.id,
           archived: true,
         });
-        const agent = this.toGlobalAgentSummary(updated);
+        const agent = toGlobalAgentSummary(updated);
         const event = this.appendEvent('system', 'globalAgent.updated', {
           agentId: agent.id,
           name: agent.name,
@@ -29308,12 +27966,12 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       timeoutMs: existing?.timeoutMs,
       notes: existing?.notes,
     });
-    const authConfig = this.readMcpAuthConfig(record.id);
+    const authConfig = this.mcpAuthConfigs.get(record.id);
     const auth = {
       configured: Boolean(authConfig),
       authScheme: authConfig?.authScheme ?? 'bearer',
     };
-    const summary = this.toMcpServerSummary(record);
+    const summary = toMcpServerSummary(record, this.mcpAuthConfigs.get(record.id));
     this.publishEvent(
       this.appendEvent('provider', 'mcp.registered', {
         mcpServerId: record.id,
@@ -29536,7 +28194,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
           coordinatorAgentId,
           members: resolved.members,
         });
-        const team = this.toTeamSummary(created);
+        const team = toTeamSummary(created);
         const event = this.appendEvent('system', 'team.created', {
           teamId: team.id,
           name: team.name,
@@ -29655,7 +28313,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
           coordinatorAgentId: nextCoordinator,
           members: nextMembers,
         });
-        const team = this.toTeamSummary(updated);
+        const team = toTeamSummary(updated);
         const event = this.appendEvent('system', 'team.updated', {
           teamId: team.id,
           name: team.name,
@@ -29800,14 +28458,8 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
   private requestChatToolApproval(input: {
     runId: RunId;
     threadId: string;
-    workspaceRoot: string;
     executionMode: string;
     approvalId?: string;
-    chatMessages: import('@sync-think/adapters').ProviderMessage[];
-    pendingToolCalls: import('@sync-think/adapters').ProviderToolCall[];
-    currentIndex: number;
-    completedResults: Array<{ toolCallId: string; content: string }>;
-    toolLoopRound: number;
     toolCall: import('@sync-think/adapters').ProviderToolCall;
     approvalArguments?: Record<string, unknown>;
     approvalRisk?: ToolApprovalRiskSummary;
@@ -29871,7 +28523,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       const onAbort = () => {
         // Only emit decided if the pending entry is still ours �?run.cancel
         // already removed + emitted for its own runs.
-        if (this.pendingToolApprovals.delete(approvalId)) {
+        const settled = this.activeToolApprovals.settle(approvalId, 'deny', () => {
           this.emitToolApprovalDecided({
             approvalId,
             threadId: input.threadId,
@@ -29881,8 +28533,8 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
             toolCallId: input.toolCall.id,
             toolName: input.toolCall.name,
           });
-        }
-        resolve({ decision: 'deny', approvalId });
+        });
+        if (!settled) resolve({ decision: 'deny', approvalId });
       };
       if (input.signal.aborted) {
         this.emitToolApprovalDecided({
@@ -29898,20 +28550,14 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         return;
       }
       input.signal.addEventListener('abort', onAbort, { once: true });
-      this.pendingToolApprovals.set(approvalId, {
+      this.activeToolApprovals.register({
         approvalId,
         runId: input.runId,
         threadId: input.threadId,
-        workspaceRoot: input.workspaceRoot,
-        executionMode: input.executionMode,
-        chatMessages: input.chatMessages,
-        pendingToolCalls: input.pendingToolCalls,
-        currentIndex: input.currentIndex,
-        completedResults: input.completedResults,
-        toolLoopRound: input.toolLoopRound,
-        approvalSummary: summary,
-        approvalArguments,
-        approvalRisk: input.approvalRisk,
+        toolCall: input.toolCall,
+        summary,
+        arguments: approvalArguments,
+        risk: input.approvalRisk,
         allowedScopes,
         resolve: (decision) => {
           input.signal.removeEventListener('abort', onAbort);
@@ -29928,94 +28574,26 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       this.writeMalformedPayload(socket, frame);
       return;
     }
-    const pending = this.pendingToolApprovals.get(payload.approvalId);
+    const pending = this.activeToolApprovals.get(payload.approvalId);
     if (!pending) {
-      // Not in the in-memory map: idempotent replay or an orphan card left by a
-      // runtime restart / cancelled run. Resolve gracefully instead of erroring.
-      let priorDecision: 'approve' | 'deny' | undefined;
-      let priorScope: ToolApprovalScope = 'once';
-      let orphanRequested:
-        { threadId: string; runId: RunId; toolCallId?: string; toolName?: string } | undefined;
-      let durableState: { requested: Event; decided?: Event } | undefined;
+      let response:
+        import('@sync-think/protocol').ConversationDecideToolApprovalResponse | undefined;
       try {
-        durableState = this.durableChatToolApprovalStates({
-          approvalId: payload.approvalId,
-        }).get(payload.approvalId);
+        response = resolveInactiveToolApproval(payload.approvalId, {
+          read: (approvalId) => this.durableToolApprovals.list({ approvalId }).get(approvalId),
+          expire: (request) => Boolean(this.emitToolApprovalDecided(request)),
+        });
       } catch (error) {
         this.writeTeamModelCommandError(socket, frame, error);
         return;
       }
-      if (durableState?.decided) {
-        const d = durableState.decided.payload?.decision;
-        priorDecision = d === 'approve' || d === 'deny' ? d : 'deny';
-        priorScope = parseToolApprovalScope(durableState.decided.payload?.scope);
-      } else if (durableState) {
-        const requested = pendingToolApprovalSummaryFromEvent(durableState.requested);
-        if (requested) {
-          orphanRequested = {
-            threadId: requested.threadId,
-            runId: requested.runId,
-            ...(requested.toolCallId ? { toolCallId: requested.toolCallId } : {}),
-            toolName: requested.toolName,
-          };
-        }
-      }
-      if (priorDecision) {
-        // Already decided �?idempotent success so double-clicks don't error.
+      if (response) {
         socket.write(
           encodeFrame({
             id: frame.id,
             kind: 'response',
             type: 'conversation.decideToolApproval',
-            payload: {
-              approvalId: payload.approvalId,
-              decision: priorDecision,
-              scope: priorScope,
-              ...(durableState && expiredToolApprovalSummary(durableState)
-                ? {
-                    outcome: 'expired',
-                    reason: 'stale-approval',
-                    runId: durableState.requested.runId ?? durableState.requested.payload.runId,
-                  }
-                : {}),
-            },
-          }),
-        );
-        return;
-      }
-      if (orphanRequested) {
-        // Requested but the waiting loop is gone (restart / cancel). Emit a
-        // deny-decided so the stale card collapses, then acknowledge.
-        const persisted = this.emitToolApprovalDecided({
-          approvalId: payload.approvalId,
-          threadId: orphanRequested.threadId,
-          runId: orphanRequested.runId,
-          decision: 'deny',
-          reason: 'stale-approval',
-          toolCallId: orphanRequested.toolCallId,
-          toolName: orphanRequested.toolName,
-        });
-        if (!persisted) {
-          this.writeTeamModelCommandError(
-            socket,
-            frame,
-            new Error('Tool approval expiry persistence failed'),
-          );
-          return;
-        }
-        socket.write(
-          encodeFrame({
-            id: frame.id,
-            kind: 'response',
-            type: 'conversation.decideToolApproval',
-            payload: {
-              approvalId: payload.approvalId,
-              decision: 'deny',
-              scope: 'once',
-              outcome: 'expired',
-              reason: 'stale-approval',
-              runId: orphanRequested.runId,
-            },
+            payload: response,
           }),
         );
         return;
@@ -30036,8 +28614,57 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     }
 
     const scope = payload.scope ?? 'once';
-    const toolCall = pending.pendingToolCalls[pending.currentIndex];
-    if (payload.decision === 'approve' && !pending.allowedScopes.includes(scope)) {
+    let result: ReturnType<typeof decideActiveToolApproval>;
+    try {
+      result = decideActiveToolApproval({
+        lifecycle: this.activeToolApprovals,
+        approvalId: payload.approvalId,
+        decision: payload.decision,
+        scope,
+        commit: (approval: ActiveToolApproval) =>
+          commitToolApprovalDecision({
+            policy: this.toolApprovalPolicy,
+            request: {
+              conversationId:
+                this.resolveConversationIdForThread(approval.threadId) ?? approval.threadId,
+              toolName: approval.toolCall.name,
+              arguments: parseToolApprovalArguments(approval.toolCall.argumentsJson),
+              risk: approval.risk,
+            },
+            decision: payload.decision,
+            scope,
+            ...(this.unitOfWork
+              ? { runTransaction: (work: () => Event) => this.unitOfWork!.run(work) }
+              : {}),
+            persistDecision: () =>
+              this.commitEvents([
+                {
+                  id: ulid() as Event['id'],
+                  workspaceId: this.resolveEventWorkspaceId(approval.threadId),
+                  runId: approval.runId,
+                  category: 'approval',
+                  type: 'tool.approval_decided',
+                  occurredAt: new Date().toISOString(),
+                  payload: {
+                    approvalId: payload.approvalId,
+                    threadId: approval.threadId,
+                    runId: approval.runId,
+                    decision: payload.decision,
+                    scope,
+                    toolCallId: approval.toolCall.id,
+                    toolName: approval.toolCall.name,
+                  },
+                },
+              ])[0]!,
+          }),
+        record: (event) => this.recordCommittedEvents([event]),
+        publish: (event) => this.publishEvent(event),
+      });
+    } catch (error) {
+      this.writeTeamModelCommandError(socket, frame, error);
+      return;
+    }
+    if (result.status === 'unsupported-scope') {
       socket.write(
         encodeFrame({
           id: frame.id,
@@ -30046,64 +28673,18 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
           payload: {},
           error: {
             code: ErrorCode.PROTOCOL_UNEXPECTED_REQUEST,
-            message:
-              pending.approvalRisk?.level === 'human-only'
-                ? 'Human-only 工具每次都需要真人批准，仅支持单次批准'
-                : `当前审批不支持 ${scope} 授权`,
+            message: result.humanOnly
+              ? 'Human-only 工具每次都需要真人批准，仅支持单次批准'
+              : `当前审批不支持 ${scope} 授权`,
           },
         }),
       );
       return;
     }
-    if (!toolCall) {
+    if (result.status !== 'decided') {
       this.writeMalformedPayload(socket, frame);
       return;
     }
-
-    let decidedEvent: Event;
-    try {
-      decidedEvent = commitToolApprovalDecision({
-        policy: this.toolApprovalPolicy,
-        request: {
-          conversationId: this.resolveConversationIdForThread(pending.threadId) ?? pending.threadId,
-          toolName: toolCall.name,
-          arguments: parseToolApprovalArguments(toolCall.argumentsJson),
-          risk: pending.approvalRisk,
-        },
-        decision: payload.decision,
-        scope,
-        ...(this.unitOfWork
-          ? { runTransaction: (work: () => Event) => this.unitOfWork!.run(work) }
-          : {}),
-        persistDecision: () =>
-          this.commitEvents([
-            {
-              id: ulid() as Event['id'],
-              workspaceId: this.resolveEventWorkspaceId(pending.threadId),
-              runId: pending.runId,
-              category: 'approval',
-              type: 'tool.approval_decided',
-              occurredAt: new Date().toISOString(),
-              payload: {
-                approvalId: payload.approvalId,
-                threadId: pending.threadId,
-                runId: pending.runId,
-                decision: payload.decision,
-                scope,
-                toolCallId: toolCall.id,
-                toolName: toolCall.name,
-              },
-            },
-          ])[0]!,
-      });
-    } catch (error) {
-      this.writeTeamModelCommandError(socket, frame, error);
-      return;
-    }
-    this.recordCommittedEvents([decidedEvent]);
-    this.pendingToolApprovals.delete(payload.approvalId);
-    pending.resolve(payload.decision);
-    this.publishEvent(decidedEvent);
 
     socket.write(
       encodeFrame({
@@ -30114,32 +28695,10 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
           approvalId: payload.approvalId,
           decision: payload.decision,
           scope,
-          runId: pending.runId,
+          runId: result.approval.runId,
         },
       }),
     );
-  }
-
-  private durableChatToolApprovalStates(
-    scope: ToolApprovalEventScope,
-  ): Map<string, { requested: Event; decided?: Event }> {
-    const events = this.stateStore?.listToolApprovalEvents?.(scope);
-    if (events) return projectToolApprovalStates(events);
-    return new Map(
-      [...this.durableChatToolApprovalStateById].filter(([approvalId, state]) => {
-        if ('approvalId' in scope) return approvalId === scope.approvalId;
-        return (
-          state.requested.payload.threadId === scope.threadId &&
-          (!scope.runId || (state.requested.runId ?? state.requested.payload.runId) === scope.runId)
-        );
-      }),
-    );
-  }
-
-  private rememberDurableChatToolApprovalEvent(event: Event): void {
-    if (!this.stateStore?.listToolApprovalEvents) {
-      rememberToolApprovalEvent(this.durableChatToolApprovalStateById, event);
-    }
   }
 
   private handleListPendingToolApprovals(socket: Socket, frame: Frame): void {
@@ -30148,33 +28707,14 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       this.writeMalformedPayload(socket, frame);
       return;
     }
-    const approvalsById = new Map<string, PendingToolApprovalSummary>();
-    for (const pending of this.pendingToolApprovals.values()) {
-      if (pending.threadId !== payload.threadId) continue;
-      if (payload.runId && pending.runId !== payload.runId) continue;
-      const toolCall = pending.pendingToolCalls[pending.currentIndex];
-      if (!toolCall) continue;
-      const summary = pending.approvalSummary;
-      approvalsById.set(pending.approvalId, {
-        approvalId: pending.approvalId,
-        threadId: pending.threadId as PendingToolApprovalSummary['threadId'],
-        runId: pending.runId,
-        toolCallId: toolCall.id,
-        toolName: toolCall.name,
-        arguments: pending.approvalArguments,
-        title: summary.title,
-        detail: summary.detail,
-        ...(summary.path ? { path: summary.path } : {}),
-        ...(summary.command ? { command: summary.command } : {}),
-        ...(pending.approvalRisk ? { risk: pending.approvalRisk } : {}),
-        allowedScopes: pending.allowedScopes,
-        status: 'pending',
-        createdAt: pending.createdAt,
-      });
-    }
+    const approvalsById = new Map(
+      this.activeToolApprovals
+        .list(payload)
+        .map((approval) => [approval.approvalId, approval] as const),
+    );
     const expiredStates: import('./tool-approval-read-model.js').DurableToolApprovalState[] = [];
     try {
-      for (const state of this.durableChatToolApprovalStates(payload).values()) {
+      for (const state of this.durableToolApprovals.list(payload).values()) {
         const summary = pendingToolApprovalSummaryFromEvent(state.requested);
         if (!summary || summary.threadId !== payload.threadId) continue;
         if (payload.runId && summary.runId !== payload.runId) continue;
@@ -30415,7 +28955,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         ok: false,
         code: 'browser.workflow-no-published-version',
         error:
-          'This Browser Automation task has no published Version yet. Record it, submit for review, and approve it before executing.',
+          'This Browser Automation task has no published Version yet. Record it, then save the draft or publish it before executing.',
         failureClass: 'acceptance',
       });
     }
@@ -30523,6 +29063,19 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       approval: input.approval,
       beforeStart: () => !input.signal.aborted && this.demoRuns.has(input.runId),
       beforeExecute: (intent) => {
+        const previous = this.liveChatBrowserPages.get(input.runId);
+        for (const runId of this.liveChatBrowserPages.keys()) {
+          if (!this.demoRuns.has(runId)) this.liveChatBrowserPages.delete(runId);
+        }
+        this.liveChatBrowserPages.set(input.runId, {
+          runId: String(input.runId), taskId: input.threadId, ownerId: input.threadId,
+          embedded: this.useEmbeddedBrowser, profileId: intent.profileId,
+          workspaceId: this.resolveEventWorkspaceId(input.threadId),
+          name: this.conversationStore?.get(input.threadId)?.title || `AI 浏览器任务 · ${input.threadId.slice(-6)}`,
+          startedAt: previous?.startedAt ?? new Date().toISOString(),
+          currentStep: (previous?.currentStep ?? 0) + 1, stepCount: 0,
+          actionKind: intent.action.kind,
+        });
         const event = this.persistProjectedEvent(
           {
             id: ulid() as Event['id'],
@@ -30554,14 +29107,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
   private requestEmbeddedBrowserCommand(
     request: RendererBrowserCommandRequest,
   ): Promise<RendererBrowserCommandResult> {
-    return new Promise<RendererBrowserCommandResult>((resolve) => {
-      this.pendingRendererBrowserCommands.set(request.requestId, {
-        resolve,
-        runId: request.runId,
-        threadId: request.threadId,
-        toolCallId: request.toolCallId,
-      });
-
+    return this.rendererBrowserCommands.request(request.requestId, () => {
       // This is an interactive bridge event, not a durable audit record. The
       // validated/sanitized command intent is persisted separately by the
       // controller; keeping the live action ephemeral prevents passwords and
@@ -30573,7 +29119,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         category: 'tool',
         type: 'browser.command_requested',
         occurredAt: new Date().toISOString(),
-        sequence: ++this.eventSequence,
+        sequence: this.eventSequence,
         payload: {
           requestId: request.requestId,
           threadId: request.threadId,
@@ -30609,7 +29155,9 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       const response: ListWaitingDesktopCommandsResponse = {
         commands: this.desktopController
           .listWaitingCommands(payload)
-          .map((command) => this.toDesktopWaitingCommandSummary(command)),
+          .map((command) =>
+            projectDesktopWaitingCommandSummary(command, this.desktopWaitingProjectionPorts),
+          ),
       };
       socket.write(
         encodeFrame({
@@ -30705,7 +29253,10 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     command: DesktopCommandRecord,
     payload: Record<string, unknown>,
   ): void {
-    const summary = this.toDesktopWaitingCommandSummary(command);
+    const summary = projectDesktopWaitingCommandSummary(
+      command,
+      this.desktopWaitingProjectionPorts,
+    );
     const event = this.persistProjectedEvent(
       {
         id: ulid() as Event['id'],
@@ -30725,43 +29276,6 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       new Map(this.demoRuns),
     );
     this.publishEvent(event);
-  }
-
-  private toDesktopWaitingCommandSummary(
-    command: DesktopCommandRecord,
-  ): DesktopWaitingCommandSummary {
-    const ownerTask = this.workspaceStore?.getTaskByThreadId(command.ownerId as ThreadId);
-    const run = ownerTask ? undefined : this.orchestrationStore?.getRun(command.runId as RunId);
-    const runTask = run ? this.workspaceStore?.getTask(run.taskId) : undefined;
-    const taskId =
-      ownerTask?.workspaceId === command.workspaceId
-        ? ownerTask.id
-        : runTask?.workspaceId === command.workspaceId
-          ? run?.taskId
-          : undefined;
-    const target = projectDesktopWaitingTarget(command.sanitizedArgs);
-    const errorCode = command.errorCode ?? ErrorCode.DESKTOP_COMMAND_INSPECTION_REQUIRED;
-    return {
-      commandId: command.id,
-      workspaceId: command.workspaceId as WorkspaceId,
-      ...(taskId ? { taskId } : {}),
-      runId: command.runId as RunId,
-      toolName: command.toolName,
-      action: command.action,
-      ...(target ? { target } : {}),
-      reason:
-        errorCode === ErrorCode.DESKTOP_USER_INPUT_DETECTED
-          ? 'user-input-detected'
-          : errorCode === ErrorCode.DESKTOP_COMMAND_INSPECTION_REQUIRED
-            ? 'restart-inspection'
-            : 'attention-required',
-      errorCode,
-      status: 'waiting_user',
-      canContinue: true,
-      canCancel: true,
-      createdAt: command.createdAt,
-      updatedAt: command.updatedAt,
-    };
   }
 
   private handleBrowserExtensionStatus(socket: Socket, frame: Frame): void {
@@ -31139,6 +29653,40 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     }
   }
 
+  private handlePauseBrowserRecording(socket: Socket, frame: Frame): void {
+    const payload = parsePauseBrowserRecordingPayload(frame.payload);
+    if (!payload || !this.browserRecordingService) {
+      if (!payload) this.writeMalformedPayload(socket, frame);
+      else this.writeBrowserRecordingUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const response: PauseBrowserRecordingResponse = {
+        recording: this.browserRecordingService.pauseRecording(payload),
+      };
+      this.writeBrowserRecordingResponse(socket, frame, response);
+    } catch (error) {
+      this.writeBrowserRecordingCommandError(socket, frame, error);
+    }
+  }
+
+  private handleResumeBrowserRecording(socket: Socket, frame: Frame): void {
+    const payload = parseResumeBrowserRecordingPayload(frame.payload);
+    if (!payload || !this.browserRecordingService) {
+      if (!payload) this.writeMalformedPayload(socket, frame);
+      else this.writeBrowserRecordingUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const response: ResumeBrowserRecordingResponse = {
+        recording: this.browserRecordingService.resumeRecording(payload),
+      };
+      this.writeBrowserRecordingResponse(socket, frame, response);
+    } catch (error) {
+      this.writeBrowserRecordingCommandError(socket, frame, error);
+    }
+  }
+
   private writeBrowserRecordingResponse(socket: Socket, frame: Frame, payload: unknown): void {
     socket.write(
       encodeFrame({
@@ -31199,7 +29747,22 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     );
   }
 
-  private handleListBrowserWorkflows(socket: Socket, frame: Frame): void {
+  private async listLiveChatBrowserPages(): Promise<import('@sync-think/protocol').BrowserWorkflowLivePage[]> {
+    const leases = this.browserHost?.listLeases?.() ?? [];
+    const pages: import('@sync-think/protocol').BrowserWorkflowLivePage[] = [];
+    for (const [runId, page] of this.liveChatBrowserPages) {
+      if (!this.demoRuns.has(runId)) { this.liveChatBrowserPages.delete(runId); continue; }
+      if (page.embedded) { pages.push({ ...page }); continue; }
+      const lease = leases.find(lease => lease.ownerId === page.ownerId && lease.profileId === page.profileId);
+      try {
+        const preview = lease && await this.browserHost?.capturePreview?.(lease.leaseId);
+        if (this.demoRuns.has(runId)) pages.push({ ...page, ...(preview || {}) });
+      } catch { if (this.demoRuns.has(runId)) pages.push({ ...page, previewError: '页面切换中，正在重试预览' }); }
+    }
+    return pages;
+  }
+
+  private async handleListBrowserWorkflows(socket: Socket, frame: Frame): Promise<void> {
     const payload = parseListBrowserWorkflowsPayload(frame.payload);
     if (!payload) {
       this.writeMalformedPayload(socket, frame);
@@ -31212,7 +29775,24 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     try {
       const response: ListBrowserWorkflowsResponse = {
         tasks: this.browserWorkflowService.listWorkflows(payload),
+        ...(payload.includeLive ? { livePages: [...(await this.browserWorkflowRunner?.listLivePages() ?? []), ...await this.listLiveChatBrowserPages()] } : {}),
       };
+      // Pipe frames are capped at 1 MiB. Rotate image priority when many pages
+      // run at once, retaining metadata for every page. The renderer keeps the last frame.
+      if (response.livePages?.length) {
+        const pages = response.livePages;
+        const images = pages.map(page => page.imageDataUrl);
+        pages.forEach(page => { delete page.imageDataUrl; });
+        let budget = 900_000 - Buffer.byteLength(JSON.stringify(response), 'utf8');
+        const start = this.livePreviewSequence++ % pages.length;
+        for (let i = 0; i < pages.length; i++) {
+          const index = (start + i) % pages.length;
+          const image = images[index];
+          if (!image) continue;
+          if (image.length + 32 <= budget) { pages[index].imageDataUrl = image; budget -= image.length + 32; }
+          else pages[index].previewError = '画面轮流刷新中';
+        }
+      }
       this.writeBrowserWorkflowResponse(socket, frame, response);
     } catch (error) {
       this.writeBrowserWorkflowCommandError(socket, frame, error);
@@ -31294,6 +29874,63 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     }
   }
 
+  private handleSaveBrowserWorkflowDraft(socket: Socket, frame: Frame): void {
+    const payload = parseSaveBrowserWorkflowDraftPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.browserWorkflowService) {
+      this.writeBrowserWorkflowUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const response: SaveBrowserWorkflowDraftResponse =
+        this.browserWorkflowService.saveDraft(payload);
+      this.writeBrowserWorkflowResponse(socket, frame, response);
+    } catch (error) {
+      this.writeBrowserWorkflowCommandError(socket, frame, error);
+    }
+  }
+
+  private handlePublishBrowserWorkflowDraft(socket: Socket, frame: Frame): void {
+    const payload = parsePublishBrowserWorkflowDraftPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.browserWorkflowService) {
+      this.writeBrowserWorkflowUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const response: PublishBrowserWorkflowDraftResponse =
+        this.browserWorkflowService.publishDraft(payload);
+      this.writeBrowserWorkflowResponse(socket, frame, response);
+    } catch (error) {
+      this.writeBrowserWorkflowCommandError(socket, frame, error);
+    }
+  }
+
+  private handleImportChatBrowserWorkflow(socket: Socket, frame: Frame): void {
+    const payload = parseImportChatBrowserWorkflowPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.browserWorkflowService) {
+      this.writeBrowserWorkflowUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const response: ImportChatBrowserWorkflowResponse =
+        this.browserWorkflowService.importChatWorkflow(payload);
+      this.writeBrowserWorkflowResponse(socket, frame, response);
+    } catch (error) {
+      this.writeBrowserWorkflowCommandError(socket, frame, error);
+    }
+  }
+
   private handleReviewBrowserWorkflowDraft(socket: Socket, frame: Frame): void {
     const payload = parseReviewBrowserWorkflowDraftPayload(frame.payload);
     if (!payload) {
@@ -31348,7 +29985,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
           steps: [],
           errorCode: 'browser.workflow-no-published-version',
           error:
-            'This Browser Automation task has no published Version yet. Record it, submit for review, and approve it before executing.',
+            'This Browser Automation task has no published Version yet. Record it, then save the draft or publish it before executing.',
         } satisfies ExecuteBrowserWorkflowResponse);
         return;
       }
@@ -31388,6 +30025,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         });
         this.writeBrowserWorkflowResponse(socket, frame, {
           ok: result.ok,
+          runId: result.runId,
           taskId,
           ...(result.ok ? { versionId, profileId } : {}),
           stepCount: result.stepCount,
@@ -31398,6 +30036,11 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
             ...(step.actionKind ? { actionKind: step.actionKind } : {}),
             ...(step.outputUrl ? { outputUrl: step.outputUrl } : {}),
             ...(step.outputTitle ? { outputTitle: step.outputTitle } : {}),
+            ...(step.screenshotRelativePath
+              ? { screenshotRelativePath: step.screenshotRelativePath }
+              : {}),
+            ...(step.screenshotEmbedUrl ? { screenshotEmbedUrl: step.screenshotEmbedUrl } : {}),
+            ...(step.screenshotErrorCode ? { screenshotErrorCode: step.screenshotErrorCode } : {}),
             ...(step.errorCode ? { errorCode: step.errorCode } : {}),
             ...(step.error ? { error: step.error } : {}),
           })),
@@ -31424,6 +30067,89 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       }
     } catch (error) {
       this.writeBrowserWorkflowCommandError(socket, frame, error);
+    }
+  }
+
+  private async handleExecuteBrowserWorkflowDraft(socket: Socket, frame: Frame): Promise<void> {
+    const payload = parseExecuteBrowserWorkflowDraftPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.browserWorkflowService || !this.browserWorkflowRunner) {
+      this.writeBrowserWorkflowUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const workflow = this.browserWorkflowService.getWorkflow({ taskId: payload.taskId });
+      const draft = workflow.draft;
+      if (!draft || draft.steps.length === 0) {
+        this.writeBrowserWorkflowResponse(socket, frame, {
+          ok: false,
+          taskId: payload.taskId,
+          stepCount: 0,
+          executedStepCount: 0,
+          steps: [],
+          errorCode: 'browser.workflow-draft-steps-empty',
+          error: 'The Browser Automation draft has no recorded steps.',
+        } satisfies ExecuteBrowserWorkflowResponse);
+        return;
+      }
+      const taskId = workflow.task.id;
+      const origins = collectStepOrigins(draft.steps);
+      this.browserWorkflowRunner.recordApproval(taskId, origins, `draft-trial:${frame.id}`);
+      const result = await this.browserWorkflowRunner.replayDraft({
+        workflowVersionId: draft.id,
+        draftId: draft.id,
+        taskId,
+        profileId: workflow.task.profileId,
+        workspaceId: this.workspaceId,
+        ownerId: `workflow-draft-trial:${taskId}`,
+        capabilityToken: `workflow-draft-trial:${taskId}:${frame.id}`,
+        signal: new AbortController().signal,
+        ...(payload.variables ? { variables: payload.variables } : {}),
+      });
+      this.writeBrowserWorkflowResponse(socket, frame, {
+        ok: result.ok,
+        runId: result.runId,
+        taskId,
+        profileId: workflow.task.profileId,
+        stepCount: result.stepCount,
+        executedStepCount: result.executedStepCount,
+        steps: result.steps.map((step) => ({
+          sequence: step.sequence,
+          ok: step.ok,
+          ...(step.actionKind ? { actionKind: step.actionKind } : {}),
+          ...(step.outputUrl ? { outputUrl: step.outputUrl } : {}),
+          ...(step.outputTitle ? { outputTitle: step.outputTitle } : {}),
+          ...(step.screenshotRelativePath
+            ? { screenshotRelativePath: step.screenshotRelativePath }
+            : {}),
+          ...(step.screenshotEmbedUrl ? { screenshotEmbedUrl: step.screenshotEmbedUrl } : {}),
+          ...(step.screenshotErrorCode ? { screenshotErrorCode: step.screenshotErrorCode } : {}),
+          ...(step.errorCode ? { errorCode: step.errorCode } : {}),
+          ...(step.error ? { error: step.error } : {}),
+        })),
+        ...(result.errorCode ? { errorCode: result.errorCode } : {}),
+        ...(result.error ? { error: result.error } : {}),
+      } satisfies ExecuteBrowserWorkflowResponse);
+    } catch (error) {
+      const isVariables =
+        error instanceof BrowserWorkflowRunnerError &&
+        error.code === 'browser.workflow-variables-required';
+      this.writeBrowserWorkflowResponse(socket, frame, {
+        ok: false,
+        taskId: payload.taskId,
+        stepCount: 0,
+        executedStepCount: 0,
+        steps: [],
+        ...(isVariables ? { missingVariables: extractMissingVariables(error) } : {}),
+        errorCode:
+          error instanceof BrowserWorkflowRunnerError
+            ? error.code
+            : 'browser.workflow-draft-replay-failed',
+        error: error instanceof Error ? error.message : 'Browser Workflow draft trial failed.',
+      } satisfies ExecuteBrowserWorkflowResponse);
     }
   }
 
@@ -31468,7 +30194,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
           steps: [],
           errorCode: 'browser.workflow-no-published-version',
           error:
-            'This Browser Automation task has no published Version yet. Record it, submit for review, and approve it before executing.',
+            'This Browser Automation task has no published Version yet. Record it, then save the draft or publish it before executing.',
         } satisfies ExecuteBrowserWorkflowResponse);
         return;
       }
@@ -31504,6 +30230,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         });
         this.writeBrowserWorkflowResponse(socket, frame, {
           ok: result.ok,
+          runId: result.runId,
           taskId,
           ...(result.ok ? { versionId, profileId } : {}),
           stepCount: result.stepCount,
@@ -31514,6 +30241,11 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
             ...(step.actionKind ? { actionKind: step.actionKind } : {}),
             ...(step.outputUrl ? { outputUrl: step.outputUrl } : {}),
             ...(step.outputTitle ? { outputTitle: step.outputTitle } : {}),
+            ...(step.screenshotRelativePath
+              ? { screenshotRelativePath: step.screenshotRelativePath }
+              : {}),
+            ...(step.screenshotEmbedUrl ? { screenshotEmbedUrl: step.screenshotEmbedUrl } : {}),
+            ...(step.screenshotErrorCode ? { screenshotErrorCode: step.screenshotErrorCode } : {}),
             ...(step.errorCode ? { errorCode: step.errorCode } : {}),
             ...(step.error ? { error: step.error } : {}),
           })),
@@ -31538,6 +30270,25 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
           error: error instanceof Error ? error.message : 'Browser Workflow replay failed.',
         } satisfies ExecuteBrowserWorkflowResponse);
       }
+    } catch (error) {
+      this.writeBrowserWorkflowCommandError(socket, frame, error);
+    }
+  }
+
+  private handleUpdateBrowserWorkflowSchedule(socket: Socket, frame: Frame): void {
+    const payload = parseUpdateBrowserWorkflowSchedulePayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.browserWorkflowService) {
+      this.writeBrowserWorkflowUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const response: UpdateBrowserWorkflowScheduleResponse =
+        this.browserWorkflowService.updateSchedule(payload);
+      this.writeBrowserWorkflowResponse(socket, frame, response);
     } catch (error) {
       this.writeBrowserWorkflowCommandError(socket, frame, error);
     }
@@ -31762,7 +30513,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     decision: 'approved' | 'rejected',
   ): {
     handoff: RuntimeBrowserHandoffContext & { stepId: string; agentVersionId: string };
-    approval: import('@sync-think/storage').ApprovalRequestRecord;
+    approval: import('@sync-think/shared').ApprovalRequestRecord;
   } {
     if (
       !this.browserController ||
@@ -31972,21 +30723,13 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       this.writeMalformedPayload(socket, frame);
       return;
     }
-    const pending = this.pendingRendererBrowserCommands.get(payload.requestId);
-    if (pending) {
-      this.pendingRendererBrowserCommands.delete(payload.requestId);
-      pending.resolve({
-        ok: payload.ok,
-        ...(payload.resultJson !== undefined ? { resultJson: payload.resultJson } : {}),
-        ...(payload.error !== undefined ? { error: payload.error } : {}),
-      });
-    }
+    const accepted = this.rendererBrowserCommands.settle(payload);
     socket.write(
       encodeFrame({
         id: frame.id,
         kind: 'response',
         type: 'conversation.submitBrowserResult',
-        payload: { requestId: payload.requestId, accepted: Boolean(pending) },
+        payload: { requestId: payload.requestId, accepted },
       }),
     );
   }
@@ -32028,7 +30771,10 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     })();
     (
       run as DemoRunState & {
-        mcpToolDispatch?: Map<string, { mcpServerId: string; toolName: string; readOnly?: boolean }>;
+        mcpToolDispatch?: Map<
+          string,
+          { mcpServerId: string; toolName: string; readOnly?: boolean }
+        >;
       }
     ).mcpToolDispatch = mcpExtra.dispatch;
     const collaborationSettings = normalizeCollaborationSettings(
@@ -32040,9 +30786,9 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     );
     const dynamicAgentToolsEnabled = Boolean(
       options.toolsEnabled &&
-        run.track === 'model' &&
-        collaborationSettings.dynamicSubagentsEnabled &&
-        !delegatedReadOnly,
+      run.track === 'model' &&
+      collaborationSettings.dynamicSubagentsEnabled &&
+      !delegatedReadOnly,
     );
     const desktopToolsEnabled = Boolean(
       options.toolsEnabled && !delegatedReadOnly && this.isComputerUsePluginEnabled(),
@@ -32050,8 +30796,12 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     const browserWorkflowToolsEnabled = Boolean(
       options.toolsEnabled && !delegatedReadOnly && this.browserWorkflowService,
     );
-    const mcpCatalogToolsEnabled = Boolean(options.toolsEnabled && !delegatedReadOnly && this.mcpStore);
-    const mcpRegistryToolsEnabled = Boolean(options.toolsEnabled && !delegatedReadOnly && this.mcpStore);
+    const mcpCatalogToolsEnabled = Boolean(
+      options.toolsEnabled && !delegatedReadOnly && this.mcpStore,
+    );
+    const mcpRegistryToolsEnabled = Boolean(
+      options.toolsEnabled && !delegatedReadOnly && this.mcpStore,
+    );
     const platformToolCount = options.platformSchemas?.length ?? 0;
     const tools =
       options.toolsEnabled &&
@@ -32075,6 +30825,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
             includeWebSearchTools: webSearchMode === 'external',
             includeProjectTools: hasProjectTools,
             includeAgentTools: agentToolsEnabled,
+            collaborationEnabled: this.isCollaborationConversationForThread(run.threadId),
             includeDesktopTools: desktopToolsEnabled,
             includeBrowserWorkflowTools: browserWorkflowToolsEnabled,
             includeMcpCatalogTools: mcpCatalogToolsEnabled,
@@ -32086,10 +30837,18 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       tools && options.toolAllowlist
         ? tools.filter((tool) => {
             if (options.toolAllowlist!.includes(tool.name)) return true;
-            const dispatch = (run as DemoRunState & {
-              mcpToolDispatch?: Map<string, { mcpServerId: string; toolName: string; readOnly?: boolean }>;
-            }).mcpToolDispatch?.get(tool.name);
-            return run.delegatedReadOnly === true && isDelegatedReadOnlyTool(tool.name, dispatch?.readOnly);
+            const dispatch = (
+              run as DemoRunState & {
+                mcpToolDispatch?: Map<
+                  string,
+                  { mcpServerId: string; toolName: string; readOnly?: boolean }
+                >;
+              }
+            ).mcpToolDispatch?.get(tool.name);
+            return (
+              run.delegatedReadOnly === true &&
+              isDelegatedReadOnlyTool(tool.name, dispatch?.readOnly)
+            );
           })
         : tools;
     const searchRoutePrompt =
@@ -32123,7 +30882,8 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     const agentCreationPrompt = agentToolsEnabled
       ? [
           'Agent Library tools are ENABLED: list_available_agents / get_agent / agent_run 可运行已有智能体；list_agent_resources / create_agent / update_agent / archive_agent 仅用于受控管理。',
-          '- 模型需要协作时，FIRST call list_available_agents，再用返回的 exact agentId 调用 agent_run。agent_run 只允许复用当前工作区已激活的已有智能体，绝不创建临时智能体。',
+          '- 当用户询问当前工作区已激活/可用/可调用的智能体时，MUST call list_available_agents and answer from its live runtime result. Never search AGENTS.md, repository files, logs, or session directories for activation state.',
+          '- 模型需要协作时，FIRST call list_available_agents，再用返回的 exact agentId 调用 agent_run。agent_run 会立即返回 childRunId，子智能体在后台继续执行，进度和最终结果会回写当前对话；不要同步轮询或重复启动同一任务。agent_run 只允许复用当前工作区已激活的已有智能体，绝不创建临时智能体。',
           '- When the user asks to 创建智能体 / 新建智能体 / 入库, FIRST call list_agent_resources to get valid model ids and approved skill versions, THEN call create_agent with a complete draft (name, persona, description, defaultModelId, skillIds).',
           '- When the user asks to 修改/调整某个智能体, FIRST call list_agent_resources to confirm the target agent id, THEN call update_agent with ONLY the fields to change. skillIds is full-replace: include the complete final set.',
           '- When the user asks to 删除/归档某个智能体, use archive_agent (soft-delete, restorable in the Agent Library). There is NO hard-delete tool; never claim you deleted permanently. The agent of the CURRENT conversation cannot be archived.',
@@ -32175,12 +30935,12 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       ? [
           'Browser Automation Workflow tools are ENABLED (browser_workflow_list, browser_workflow_get, browser_workflow_create_draft):',
           '- When the user asks which browser tasks/workflows exist, call browser_workflow_list. Automation tasks are stored Workflows, not open browser windows and not Browser Recording sessions.',
-          '- browser_workflow_create_draft creates only an AI-source Draft. It does not operate the browser, record steps, submit review, approve, or publish.',
-          '- After creating a Draft, tell the user to open「浏览器自动化」, record the workflow, submit it for review, and approve it before an immutable WorkflowVersion is published.',
-          '- Never bypass the review flow or claim a Draft is recorded/published.',
+          '- browser_workflow_create_draft creates only an AI-source Draft. It does not operate the browser, record steps, save, or publish.',
+          '- After creating a Draft, tell the user to open「浏览器自动化」and record the workflow. When recording ends, the user can save it as a Draft or publish it directly.',
+          '- Never claim a Draft is recorded or published until the corresponding user action succeeds.',
           executionMode === 'ask'
             ? '- Permission mode is ask: creating a Draft pauses for user approval; list/get remain read-only.'
-            : '- Permission mode is workspace/full-access: creating a Draft executes directly, while recording and publish review remain separate product gates.',
+            : '- Permission mode is workspace/full-access: creating a Draft executes directly; recording and the final save/publish choice remain separate user actions.',
         ].join('\n')
       : 'Browser Automation Workflow tools are unavailable in this Runtime.';
     const imageToolGuidance = buildImageToolGuidance({
@@ -32331,7 +31091,10 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     // Stash dispatch on the run for the tool loop (in-memory only).
     (
       run as DemoRunState & {
-        mcpToolDispatch?: Map<string, { mcpServerId: string; toolName: string; readOnly?: boolean }>;
+        mcpToolDispatch?: Map<
+          string,
+          { mcpServerId: string; toolName: string; readOnly?: boolean }
+        >;
       }
     ).mcpToolDispatch = mcpExtra.dispatch;
     const collaborationSettings = normalizeCollaborationSettings(
@@ -32343,9 +31106,9 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     );
     const dynamicAgentToolsEnabled = Boolean(
       options.toolsEnabled &&
-        run.track === 'model' &&
-        collaborationSettings.dynamicSubagentsEnabled &&
-        !delegatedReadOnly,
+      run.track === 'model' &&
+      collaborationSettings.dynamicSubagentsEnabled &&
+      !delegatedReadOnly,
     );
     const desktopToolsEnabled = Boolean(
       options.toolsEnabled && !delegatedReadOnly && this.isComputerUsePluginEnabled(),
@@ -32353,8 +31116,12 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     const browserWorkflowToolsEnabled = Boolean(
       options.toolsEnabled && !delegatedReadOnly && this.browserWorkflowService,
     );
-    const mcpCatalogToolsEnabled = Boolean(options.toolsEnabled && !delegatedReadOnly && this.mcpStore);
-    const mcpRegistryToolsEnabled = Boolean(options.toolsEnabled && !delegatedReadOnly && this.mcpStore);
+    const mcpCatalogToolsEnabled = Boolean(
+      options.toolsEnabled && !delegatedReadOnly && this.mcpStore,
+    );
+    const mcpRegistryToolsEnabled = Boolean(
+      options.toolsEnabled && !delegatedReadOnly && this.mcpStore,
+    );
     const tools =
       options.toolsEnabled &&
       (hasProjectTools ||
@@ -32374,6 +31141,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
               includeWebSearchTools: webSearchMode === 'external',
               includeProjectTools: hasProjectTools,
               includeAgentTools: agentToolsEnabled,
+              collaborationEnabled: this.isCollaborationConversationForThread(run.threadId),
               includeDesktopTools: desktopToolsEnabled,
               includeBrowserWorkflowTools: browserWorkflowToolsEnabled,
               includeMcpCatalogTools: mcpCatalogToolsEnabled,
@@ -32386,9 +31154,14 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       tools && options.toolAllowlist
         ? tools.filter((tool) => {
             if (options.toolAllowlist!.includes(tool.name)) return true;
-            const dispatch = (run as DemoRunState & {
-              mcpToolDispatch?: Map<string, { mcpServerId: string; toolName: string; readOnly?: boolean }>;
-            }).mcpToolDispatch?.get(tool.name);
+            const dispatch = (
+              run as DemoRunState & {
+                mcpToolDispatch?: Map<
+                  string,
+                  { mcpServerId: string; toolName: string; readOnly?: boolean }
+                >;
+              }
+            ).mcpToolDispatch?.get(tool.name);
             return delegatedReadOnly && isDelegatedReadOnlyTool(tool.name, dispatch?.readOnly);
           })
         : tools;
@@ -32420,14 +31193,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       });
       run.contextSnapshot = snapshot;
       this.recordProviderContextCapabilityUsage(run, snapshot);
-      this.setConversationContextSnapshot(run.threadId, snapshot);
-      this.contextRunByThread.set(run.threadId, {
-        run,
-        workspaceRoot: options.workspaceRoot,
-        executionMode,
-        toolsEnabled: options.toolsEnabled === true,
-        networkEnabled,
-      });
+      this.contextSnapshotCache.set(run.threadId, snapshot);
       requestExtras = snapshot.providerRequest;
       if (options.maxOutputTokens) requestExtras.maxOutputTokens = options.maxOutputTokens;
     }
@@ -32470,7 +31236,12 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       }
       return undefined;
     }
-    const adapter = this.resolveDiscoveryAdapter(run.protocol) ?? this.demoProvider;
+    const adapter =
+      resolveProviderDiscoveryAdapter(
+        run.protocol,
+        this.discoveryByProtocol,
+        this.discoveryAdapter,
+      ) ?? this.demoProvider;
     if (!adapter) return undefined;
 
     const storeHandle = this.providerStore.getCredentialStoreHandle(run.credentialRefId);
@@ -32676,7 +31447,12 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       apiKey = await this.secureStore.retrieveSecret(storeHandle);
     }
     if (!apiKey) throw new Error('视觉模型凭据为空，无法生成图片描述');
-    const adapter = this.resolveDiscoveryAdapter(provider.protocol) ?? this.demoProvider;
+    const adapter =
+      resolveProviderDiscoveryAdapter(
+        provider.protocol,
+        this.discoveryByProtocol,
+        this.discoveryAdapter,
+      ) ?? this.demoProvider;
     if (!adapter) throw new Error('视觉模型无可用适配器');
     const abort = signal ?? new AbortController().signal;
     const descriptions: Array<{ name: string; text: string }> = [];
@@ -32829,9 +31605,9 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       );
       const providerKnown = Boolean(
         setting.providerId &&
-          this.providerStore
-            ?.listProviders()
-            .some((entry) => entry.provider.id === setting.providerId),
+        this.providerStore
+          ?.listProviders()
+          .some((entry) => entry.provider.id === setting.providerId),
       );
       const detail = !decision.hasFallback
         ? text.fallbackNotConfigured
@@ -33062,6 +31838,24 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     }
   }
 
+  private withDelegatedAgentMetadata(
+    blocks: readonly MessageBlock[],
+    delegatedAgents: readonly DelegatedAgentProjection[] | undefined,
+  ): MessageBlock[] {
+    return this.delegationService.withMetadata(blocks, delegatedAgents ?? []);
+  }
+
+  private persistDelegatedAgentsOnParentMessage(parentRunId: RunId): void {
+    try {
+      this.delegationService.persistParent(parentRunId);
+    } catch (error) {
+      console.warn(
+        '[runtime] delegated Agent result could not be attached to parent message:',
+        error instanceof Error ? error.message : error,
+      );
+    }
+  }
+
   private persistAssistantFinalMessage(
     runId: RunId,
     run: DemoRunState,
@@ -33105,7 +31899,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       segment.text.trim(),
     );
     const toolBlocks = externalKernelToolEventsToMessageBlocks(terminalRun.kernelToolEvents);
-    const blocks =
+    const contentBlocks =
       timeline.length > 0
         ? assistantTimelineToMessageBlocks(
             timeline,
@@ -33120,6 +31914,10 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
             toolBlocks,
             reasoningFirst: terminalRun.kernelId === 'native' || !terminalRun.kernelId,
           });
+    const blocks = this.withDelegatedAgentMetadata(
+      contentBlocks,
+      this.delegationService.listByParent(runId),
+    );
     if (blocks.length === 0) return;
     this.persistFinalChatMessage({
       id: `asst-${runId}` as MessageId,
@@ -33204,7 +32002,9 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     // a follow-up message would erase it. A pause is an outage the user has to be
     // told about — it is not silence. Cancelled runs with no content stay dropped
     // (nothing to answer for).
-    if (contentBlocks.length === 0 && terminalState === 'cancelled') return;
+    const delegatedAgents = this.delegationService.listByParent(runId);
+    if (contentBlocks.length === 0 && terminalState === 'cancelled' && delegatedAgents.length === 0)
+      return;
     const errorBlock = {
       type: 'error',
       payload: {
@@ -33218,7 +32018,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       role: 'assistant',
       strict: options?.strict,
       text: assistantText,
-      blocks: contentBlocks.length > 0 ? [...contentBlocks, errorBlock] : [errorBlock],
+      blocks: this.withDelegatedAgentMetadata([...contentBlocks, errorBlock], delegatedAgents),
       runId,
       modelId: terminalRun.modelId ? (terminalRun.modelId as ModelId) : undefined,
       credentialRefId: terminalRun.credentialRefId
@@ -33521,19 +32321,27 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
   }
 
   private publishEvent(event: Event): void {
-    for (const [streamId, sub] of this.subscriptions) {
+    this.eventSubscriptions.visit((streamId, sub) => {
+      // Live browser requests are not in the durable event log. They must not
+      // advance its cursor: the next committed event may reuse this sequence.
+      if (event.type === 'browser.command_requested') {
+        if (!sub.socket.destroyed && this.subscriptionMatches(sub, event)) {
+          this.writeLiveEvent(sub.socket, streamId, event);
+        }
+        return;
+      }
       const eventCursor = cursorForEvent(event);
       if (
         sub.socket.destroyed ||
         sub.phase === 'catching-up' ||
         compareCursor(eventCursor, sub.liveCursor) <= 0
       ) {
-        continue;
+        return;
       }
       sub.liveCursor = eventCursor;
-      if (!this.subscriptionMatches(sub, event)) continue;
+      if (!this.subscriptionMatches(sub, event)) return;
       this.writeLiveEvent(sub.socket, streamId, event);
-    }
+    });
     this.publishTransientProjection(event);
   }
 
@@ -33604,7 +32412,10 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     this.updateTransientTextSnapshot({
       threadId: nextRun.threadId as ThreadId,
       runId: input.runId,
-      streamSequence: this.transientSequenceByThread.get(nextRun.threadId) ?? 0,
+      streamSequence: this.conversationTransientState.latestSequence(
+        nextRun.threadId,
+        String(nextRun.runId),
+      ),
       text: nextRun.assistantText,
       commentaryText: nextRun.commentaryText,
       commentarySegments: nextRun.commentarySegments,
@@ -33650,7 +32461,12 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       textDelta: input.textDelta,
       ...(input.afterSequence !== undefined ? { afterSequence: input.afterSequence } : {}),
       ...(run?.assistantTimeline?.length
-        ? { assistantTimeline: this.withKernelToolProgress(input.runId, run.assistantTimeline) }
+        ? {
+            assistantTimeline: this.kernelToolProgressRegistry.projectTimeline(
+              input.runId,
+              run.assistantTimeline,
+            ),
+          }
         : {}),
       occurredAt: input.occurredAt,
     });
@@ -33676,28 +32492,116 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       // A failure here must never break the delegation stream.
       return {};
     }
-    const view = projectRunProcess(childRun.runId, events);
-    const usage: DelegatedAgentUsage = {
-      ...(view.tokensIn !== undefined ? { tokensIn: view.tokensIn } : {}),
-      ...(view.tokensOut !== undefined ? { tokensOut: view.tokensOut } : {}),
-      ...(view.cachedTokensHit !== undefined ? { cachedTokensHit: view.cachedTokensHit } : {}),
-      ...(view.cachedTokensCreated !== undefined
-        ? { cachedTokensCreated: view.cachedTokensCreated }
-        : {}),
-    };
-    return {
-      ...(Object.keys(usage).length > 0 ? { usage } : {}),
-      ...(view.durationMs !== undefined ? { durationMs: view.durationMs } : {}),
-    };
+    return delegatedUsageFromProcess(projectRunProcess(childRun.runId, events));
   }
 
-  /** Delegated card avatar from the reused Agent profile. */
-  private resolveDelegatedAgentAvatar(childRun: DemoRunState): string {
-    if (!childRun.globalAgentId) return '🤖';
-    const stored = this.globalAgentStore?.get(childRun.globalAgentId)?.avatar?.trim();
-    if (stored) return stored;
-    const name = childRun.globalAgentName?.trim();
-    return name ? name.slice(0, 2) : '🤖';
+  /** Probe the authoritative record when a child's push stream is quiet. */
+  private async probeDelegatedRunStatus(childRunId: RunId): Promise<void> {
+    const child = this.demoRuns.get(String(childRunId));
+    const fallbackRecord = child ? undefined : this.delegationService.getState(childRunId);
+    const threadId = child?.threadId ?? fallbackRecord?.threadId;
+    if (!threadId) return;
+    const observedAt = new Date().toISOString();
+    const previous = this.delegationStatusObservations.get(String(childRunId));
+    const probeCount = (previous?.probeCount ?? 0) + 1;
+    let result: Record<string, unknown>;
+    try {
+      result = this.delegationService.query(threadId, { childRunId });
+    } catch (error) {
+      const observation = {
+        source: 'query' as const,
+        diagnostic: 'communication_failed' as const,
+        observedAt,
+        probeCount,
+        detail: error instanceof Error ? error.message : String(error),
+      };
+      this.delegationStatusObservations.set(String(childRunId), observation);
+      this.publishDelegatedStatusObservation(
+        childRunId,
+        observation,
+        child?.delegationParentRunId ?? (fallbackRecord?.parentRunId as RunId | undefined),
+        threadId,
+      );
+      return;
+    }
+    const recordStatus = typeof result.status === 'string' ? result.status : undefined;
+    const diagnostic =
+      result.ok !== true
+        ? 'communication_failed'
+        : recordStatus === 'completed'
+          ? 'completed_unnotified'
+          : recordStatus === 'timed_out'
+            ? 'timed_out'
+            : recordStatus === 'failed' || recordStatus === 'cancelled'
+              ? 'abnormal_exit'
+              : probeCount > 1
+                ? 'stalled'
+                : 'running';
+    const observation = {
+      source: 'query' as const,
+      diagnostic: diagnostic as NonNullable<
+        DelegatedAgentProjection['statusObservation']
+      >['diagnostic'],
+      observedAt,
+      probeCount,
+      ...(result.ok !== true && typeof result.error === 'string' ? { detail: result.error } : {}),
+    };
+    this.delegationStatusObservations.set(String(childRunId), observation);
+    this.publishDelegatedStatusObservation(
+      childRunId,
+      observation,
+      child?.delegationParentRunId ??
+        (typeof result.parentRunId === 'string'
+          ? (result.parentRunId as RunId)
+          : (fallbackRecord?.parentRunId as RunId | undefined)),
+      threadId,
+      recordStatus,
+    );
+  }
+
+  private publishDelegatedStatusObservation(
+    childRunId: RunId,
+    observation: NonNullable<DelegatedAgentProjection['statusObservation']>,
+    parentRunId: RunId | undefined,
+    threadId: string,
+    recordStatus?: string,
+  ): void {
+    if (!parentRunId) return;
+    const current = this.delegationService
+      .listByParent(parentRunId)
+      .find((item) => String(item.childRunId) === String(childRunId));
+    if (!current) return;
+    const terminalStatus = ['completed', 'failed', 'cancelled', 'timed_out'].includes(
+      recordStatus ?? '',
+    )
+      ? (recordStatus as DelegatedAgentProjection['status'])
+      : current.status;
+    const projection: DelegatedAgentProjection = {
+      ...current,
+      status: terminalStatus,
+      statusObservation: observation,
+    };
+    const nextAgents = this.delegationService.upsert(projection);
+    const parentEvents = this.stateStore?.listEventsByRun
+      ? this.stateStore.listEventsByRun(parentRunId)
+      : this.events.filter((event) => String(event.runId) === String(parentRunId));
+    const frame = this.publishTransientFrame({
+      threadId: threadId as ThreadId,
+      runId: parentRunId,
+      kind: 'process',
+      process: projectRunProcess(parentRunId, parentEvents),
+      delegatedAgent: projection,
+      occurredAt: observation.observedAt,
+    });
+    const snapshot = projectDelegationSnapshot({
+      current: this.conversationTransientState.getSnapshot(threadId),
+      threadId: threadId as ThreadId,
+      parentRunId,
+      streamSequence: frame.streamSequence,
+      occurredAt: observation.observedAt,
+      agents: nextAgents,
+    });
+    if (snapshot) this.conversationTransientState.setSnapshot(threadId, snapshot);
   }
 
   private publishDelegatedAgentProjection(
@@ -33705,72 +32609,54 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     childRun: DemoRunState,
     parentRunId: RunId,
   ): void {
-    const terminalState: DelegatedAgentProjection['status'] | undefined =
-      event.type === 'run.completed'
-        ? 'completed'
-        : event.type === 'run.failed'
-          ? childRun.delegationTerminationReason === 'timed_out'
-            ? 'timed_out'
-            : 'failed'
-          : event.type === 'run.cancelled'
-            ? 'cancelled'
-            : undefined;
-    const status = terminalState ?? 'running';
     const agentId = childRun.globalAgentId;
     if (!agentId) return;
-    const toolEvents = delegatedToolEventsFromTimeline(childRun.assistantTimeline);
-    const activeTool = [...toolEvents].reverse().find((tool) => tool.status === 'running')?.toolName;
-    // Which parent tool row spawned this child. Resolved here (not at creation)
-    // because the executor's parent snapshot predates the delegation row. Sibling
-    // projections already bound to a row are excluded so parallel delegations and
-    // repeats of the same Agent each keep their own row.
     const parentRun = this.demoRuns.get(String(parentRunId));
-    const claimedBySiblings = new Set(
-      (this.delegatedAgentTransientByParentRun.get(String(parentRunId)) ?? [])
-        .filter((sibling) => String(sibling.childRunId) !== String(childRun.runId))
-        .flatMap((sibling) => (sibling.parentToolCallId ? [sibling.parentToolCallId] : [])),
-    );
-    const parentToolCallId =
-      childRun.delegationParentToolCallId ??
-      (parentRun
-        ? resolveParentDelegationToolCallId({
-            parent: parentRun,
-            task: childRun.userText,
-            claimed: claimedBySiblings,
-          })
-        : undefined);
-    // A child's spend is invisible in the parent's totals, so project it from the
-    // child's own events. Reusing the process projection keeps one billing
-    // semantic (per-request dedupe) for the parent panel and the child card, and
-    // covers the native loop and every external kernel in one place.
-    const childProcess = this.projectChildUsage(childRun);
-    const projection: DelegatedAgentProjection = {
-      childRunId: childRun.runId,
-      parentRunId,
-      ...(parentToolCallId ? { parentToolCallId } : {}),
-      ...(childRun.delegationParallelGroup
-        ? { parallelGroup: childRun.delegationParallelGroup }
-        : {}),
-      name: childRun.globalAgentName?.trim() || '已配置智能体',
-      avatar: this.resolveDelegatedAgentAvatar(childRun),
-      kind: 'existing',
+    const { projection, terminalState } = projectDelegatedAgentCard({
+      child: childRun,
       agentId: String(agentId),
-      status,
-      ...(activeTool ? { activeTool } : {}),
-      toolEvents,
-      ...(childProcess.usage ? { usage: childProcess.usage } : {}),
-      ...(childProcess.durationMs !== undefined ? { durationMs: childProcess.durationMs } : {}),
-      ...(terminalState && childRun.assistantText.trim()
-        ? { result: childRun.assistantText.trim() }
-        : {}),
+      parentRunId,
+      eventType: event.type,
+      parentTimeline: parentRun?.assistantTimeline,
+      siblings: this.delegationService.listByParent(parentRunId),
+      childUsage: this.projectChildUsage(childRun),
+      storedAvatar: this.globalAgentStore?.get(agentId)?.avatar,
+    });
+    const notificationObservation = {
+      source: 'notification' as const,
+      diagnostic:
+        terminalState === 'completed'
+          ? ('completed' as const)
+          : terminalState === 'timed_out'
+            ? ('timed_out' as const)
+            : terminalState
+              ? ('abnormal_exit' as const)
+              : ('running' as const),
+      observedAt: event.occurredAt,
     };
-    const parentKey = String(parentRunId);
-    const current = this.delegatedAgentTransientByParentRun.get(parentKey) ?? [];
-    const nextAgents = [
-      ...current.filter((item) => String(item.childRunId) !== String(childRun.runId)),
-      projection,
-    ];
-    this.delegatedAgentTransientByParentRun.set(parentKey, nextAgents);
+    this.delegationStatusObservations.set(String(childRun.runId), notificationObservation);
+    projection.statusObservation = notificationObservation;
+    const record = this.stateStore
+      ? this.delegationService.getState(childRun.runId)
+      : this.delegationService.recordState({
+          childRunId: childRun.runId,
+          parentRunId,
+          threadId: childRun.threadId,
+          agentId: String(agentId),
+          name: projection.name,
+          status: projection.status,
+          toolCount: (childRun.assistantTimeline ?? []).filter((segment) => segment.kind === 'tool')
+            .length,
+          ...(projection.result ? { result: projection.result } : {}),
+          updatedAt: event.occurredAt,
+          sequence: event.sequence,
+        });
+    if (record) projection.status = record.status;
+    if (record?.result) projection.result = record.result;
+    const nextAgents = this.delegationService.upsert(projection);
+    if (!terminalState) this.delegationExecution.progress(childRun.runId);
+    else this.delegationExecution.finish(childRun.runId);
+    if (terminalState) this.persistDelegatedAgentsOnParentMessage(parentRunId);
 
     const parentEvents = this.stateStore?.listEventsByRun
       ? this.stateStore.listEventsByRun(parentRunId)
@@ -33783,25 +32669,15 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       delegatedAgent: projection,
       occurredAt: event.occurredAt,
     });
-    const snapshot = this.transientSnapshotByThread.get(childRun.threadId);
-    const parentSnapshot = snapshot?.runId === parentRunId ? snapshot : undefined;
-    this.transientSnapshotByThread.set(childRun.threadId, {
+    const snapshot = projectDelegationSnapshot({
+      current: this.conversationTransientState.getSnapshot(childRun.threadId),
       threadId: childRun.threadId as ThreadId,
-      runId: parentRunId,
+      parentRunId,
       streamSequence: frame.streamSequence,
-      text: parentSnapshot?.text ?? '',
-      ...(parentSnapshot?.commentaryText ? { commentaryText: parentSnapshot.commentaryText } : {}),
-      ...(parentSnapshot?.commentarySegments ? { commentarySegments: parentSnapshot.commentarySegments } : {}),
-      ...(parentSnapshot?.reasoningText ? { reasoningText: parentSnapshot.reasoningText } : {}),
-      ...(parentSnapshot?.reasoningSegments ? { reasoningSegments: parentSnapshot.reasoningSegments } : {}),
-      ...(parentSnapshot?.assistantTimeline ? { assistantTimeline: parentSnapshot.assistantTimeline } : {}),
-      ...(parentSnapshot?.process ? { process: parentSnapshot.process } : {}),
-      delegatedAgents: nextAgents.map((item) => ({
-        ...item,
-        toolEvents: item.toolEvents.map((tool) => ({ ...tool })),
-      })),
-      updatedAt: event.occurredAt,
+      occurredAt: event.occurredAt,
+      agents: nextAgents,
     });
+    if (snapshot) this.conversationTransientState.setSnapshot(childRun.threadId, snapshot);
   }
 
   private updateTransientTextSnapshot(input: {
@@ -33817,18 +32693,19 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     updatedAt: string;
   }): void {
     const inputRun =
-      this.demoRuns.get(input.runId) ?? this.completedDelegatedRuns.get(String(input.runId));
+      this.demoRuns.get(input.runId) ?? this.completedDelegatedRuns.getRun(String(input.runId));
     if (inputRun?.delegationParentRunId) return;
-    const current = this.transientSnapshotByThread.get(input.threadId);
+    const current = this.conversationTransientState.getSnapshot(input.threadId);
     const assistantTimeline = input.assistantTimeline?.length
       ? projectTimelineContent(
-          (this.withKernelToolProgress(input.runId, input.assistantTimeline) ?? []).map(
-            sanitizeAssistantTimelineSegment,
-          ),
+          (
+            this.kernelToolProgressRegistry.projectTimeline(input.runId, input.assistantTimeline) ??
+            []
+          ).map(sanitizeAssistantTimelineSegment),
           input.runId,
         )
       : undefined;
-    this.transientSnapshotByThread.set(input.threadId, {
+    this.conversationTransientState.setSnapshot(input.threadId, {
       threadId: input.threadId,
       runId: input.runId,
       streamSequence: input.streamSequence,
@@ -33853,7 +32730,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     if (!threadId || !event.runId) return;
 
     const eventRun =
-      this.demoRuns.get(event.runId) ?? this.completedDelegatedRuns.get(String(event.runId));
+      this.demoRuns.get(event.runId) ?? this.completedDelegatedRuns.getRun(String(event.runId));
     if (eventRun?.delegationParentRunId) {
       this.publishDelegatedAgentProjection(event, eventRun, eventRun.delegationParentRunId);
       return;
@@ -33929,6 +32806,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       projection = { kind: 'terminal', terminalState: 'cancelled', process: runProcess() };
     } else if (
       event.type === 'run.started' ||
+      event.type === 'context.image.prepared' ||
       event.type === 'run.retrying' ||
       event.type === 'run.fallback.selected' ||
       event.type === 'kernel.context_compacted' ||
@@ -33950,7 +32828,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
 
     const liveRun = this.demoRuns.get(event.runId);
     const liveAssistantTimeline = liveRun?.assistantTimeline?.length
-      ? this.withKernelToolProgress(event.runId, liveRun.assistantTimeline)
+      ? this.kernelToolProgressRegistry.projectTimeline(event.runId, liveRun.assistantTimeline)
       : undefined;
     const transientFrame = this.publishTransientFrame({
       threadId,
@@ -33960,11 +32838,16 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       ...(liveAssistantTimeline?.length ? { assistantTimeline: liveAssistantTimeline } : {}),
     });
     if (projection.kind === 'terminal') {
-      this.transientSnapshotByThread.delete(threadId);
-      this.delegatedAgentTransientByParentRun.delete(String(event.runId));
+      this.conversationTransientState.deleteSnapshot(threadId);
+      try {
+        this.delegationService.releaseParent(event.runId);
+      } catch (error) {
+        // Keep the live copy if the durable compatibility write failed.
+        console.warn('[runtime] delegated Agent history flush failed:', error);
+      }
     } else if (projection.process) {
-      const current = this.transientSnapshotByThread.get(threadId);
-      this.transientSnapshotByThread.set(threadId, {
+      const current = this.conversationTransientState.getSnapshot(threadId);
+      this.conversationTransientState.setSnapshot(threadId, {
         threadId,
         runId: event.runId,
         streamSequence: transientFrame.streamSequence,
@@ -34015,10 +32898,12 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       this.persistAssistantTimelineSegments(input.runId, input.assistantTimeline);
     }
     if (input.kind === 'terminal') {
-      this.assistantTimelineFingerprintsByRun.delete(String(input.runId));
+      this.assistantTimelineChanges.deleteRun(String(input.runId));
     }
-    const streamSequence = (this.transientSequenceByThread.get(input.threadId) ?? 0) + 1;
-    this.transientSequenceByThread.set(input.threadId, streamSequence);
+    const streamSequence = this.conversationTransientState.advanceSequence(
+      input.threadId,
+      String(input.runId),
+    );
     const displayTimeline = input.assistantTimeline?.length
       ? projectTimelineContent(
           input.assistantTimeline.map(sanitizeAssistantTimelineSegment),
@@ -34042,13 +32927,13 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       this.transientReplay.splice(0, this.transientReplay.length - MAX_TRANSIENT_REPLAY_FRAMES);
     }
 
-    for (const [streamId, subscription] of this.transientSubscriptions) {
+    this.conversationTransientSubscriptions.visit((streamId, subscription) => {
       if (
         subscription.socket.destroyed ||
         subscription.threadId !== input.threadId ||
         transientFrame.streamSequence <= subscription.liveCursor
       ) {
-        continue;
+        return;
       }
       subscription.liveCursor = transientFrame.streamSequence;
       const writeFrame = (candidate: ConversationTransientFrame): boolean => {
@@ -34067,7 +32952,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
           return false;
         }
       };
-      if (writeFrame(transientFrame)) continue;
+      if (writeFrame(transientFrame)) return;
       // 超限降级：compact timeline 后重试一次；仍失败则跳过该订阅者
       // （live 终态事件 run.completed/failed 独立发送，不会因此丢失）。
       const degraded: ConversationTransientFrame = {
@@ -34082,7 +32967,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
           : {}),
       };
       writeFrame(degraded);
-    }
+    });
     return transientFrame;
   }
 
@@ -34093,29 +32978,28 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
   ): void {
     const store = this.assistantTimelineStore;
     if (!store || timeline.length === 0) return;
-    const fingerprints = this.assistantTimelineFingerprintsByRun.get(String(runId));
-    const changedFingerprints: Array<[string, string]> = [];
-    const changed: Array<{ id: string; sequence: number; value: Record<string, unknown> }> = [];
-    for (const segment of timeline) {
+    const candidates = timeline.map((segment) => {
       const sanitized = sanitizeAssistantTimelineSegment(segment);
-      const fingerprint = JSON.stringify(sanitized);
-      if (!strict && fingerprints?.get(sanitized.id) === fingerprint) continue;
-      changedFingerprints.push([sanitized.id, fingerprint]);
-      changed.push({
+      return {
         id: sanitized.id,
-        sequence: sanitized.sequence,
-        value: sanitized as unknown as Record<string, unknown>,
-      });
-    }
+        fingerprint: JSON.stringify(sanitized),
+        value: sanitized,
+      };
+    });
+    const changedCandidates = this.assistantTimelineChanges.selectChanged(
+      String(runId),
+      candidates,
+      strict,
+    );
+    const changed = changedCandidates.map((candidate) => ({
+      id: candidate.id,
+      sequence: candidate.value.sequence,
+      value: candidate.value as unknown as Record<string, unknown>,
+    }));
     if (changed.length === 0) return;
     try {
       store.upsertSegments(String(runId), changed);
-      if (!strict) {
-        const committedFingerprints = fingerprints ?? new Map<string, string>();
-        for (const [segmentId, fingerprint] of changedFingerprints)
-          committedFingerprints.set(segmentId, fingerprint);
-        this.assistantTimelineFingerprintsByRun.set(String(runId), committedFingerprints);
-      }
+      if (!strict) this.assistantTimelineChanges.commit(String(runId), changedCandidates);
     } catch (error) {
       if (strict) throw error;
       console.warn(
@@ -34192,7 +33076,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
           void this.probeDaemonAndStartScheduler().catch((error) =>
             console.warn('[runtime] daemon probe failed, falling back to own tick', error),
           );
-          this.startLocalSkillWatch();
+          this.trackBackgroundTask(this.startLocalSkillWatch());
           resolve();
         });
       });
@@ -34209,25 +33093,29 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         id: 'builtin-code-explorer',
         name: '代码探索员',
         description: '只读梳理代码结构、调用链和实现线索。',
-        persona: '你是代码探索员。优先快速定位入口、依赖和关键数据流，结论必须引用实际文件和代码证据。不要修改文件。',
+        persona:
+          '你是代码探索员。优先快速定位入口、依赖和关键数据流，结论必须引用实际文件和代码证据。不要修改文件。',
       },
       {
         id: 'builtin-code-reviewer',
         name: '代码审查员',
         description: '聚焦缺陷、回归风险、边界条件和测试缺口。',
-        persona: '你是代码审查员。按严重程度检查行为回归、错误处理、兼容性和测试覆盖，只报告可验证的问题，不修改文件。',
+        persona:
+          '你是代码审查员。按严重程度检查行为回归、错误处理、兼容性和测试覆盖，只报告可验证的问题，不修改文件。',
       },
       {
         id: 'builtin-test-designer',
         name: '测试设计员',
         description: '根据需求和代码契约设计可执行测试方案。',
-        persona: '你是测试设计员。识别输入边界、状态转换、失败路径和回归风险，输出明确的测试用例与验收条件，不修改文件。',
+        persona:
+          '你是测试设计员。识别输入边界、状态转换、失败路径和回归风险，输出明确的测试用例与验收条件，不修改文件。',
       },
       {
         id: 'builtin-technical-researcher',
         name: '技术调研员',
         description: '基于高可信资料和仓库证据整理技术结论。',
-        persona: '你是技术调研员。优先使用官方文档、标准和仓库现状，区分事实、推断与待验证项，输出可追溯的结论，不修改文件。',
+        persona:
+          '你是技术调研员。优先使用官方文档、标准和仓库现状，区分事实、推断与待验证项，输出可追溯的结论，不修改文件。',
       },
     ] as const;
     for (const builtin of builtins) {
@@ -34255,21 +33143,15 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
   async stop(): Promise<void> {
     this.runtimeStopped = true;
     await this.conversationHistory?.close();
-    for (const [requestId, pending] of this.pendingRendererBrowserCommands) {
-      this.pendingRendererBrowserCommands.delete(requestId);
-      pending.resolve({ ok: false, error: 'Runtime 正在关闭，内置浏览器命令已取消' });
-    }
+    this.rendererBrowserCommands.cancelAll('Runtime 正在关闭，内置浏览器命令已取消');
     await this.botGatewayManager.stopAll();
-    this.telegramBotAbort?.abort();
-    if (this.telegramBotLoop) await this.telegramBotLoop.catch(() => undefined);
-    await this.telegramBotClient.close();
     this.stopTaskSchedulerHeartbeat();
+    this.stopBrowserWorkflowSchedulerHeartbeat();
     if (this.externalEventHeartbeatTimer) {
       clearInterval(this.externalEventHeartbeatTimer);
       this.externalEventHeartbeatTimer = undefined;
     }
-    this.localSkillWatchCleanup?.();
-    this.localSkillWatchCleanup = undefined;
+    this.localSkillWatches.stopAll();
     // Explicit Runtime/daemon shutdown owns the Kernel process lifecycle. A
     // normal Desktop window close never calls Runtime.stop(), so active turns
     // remain alive across UI disconnects. Durable thread ids remain persisted;
@@ -34277,17 +33159,17 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     // Explicit shutdown cancels active/queued runs before stopping resident
     // app-server processes. Their finally blocks release both the per-session
     // turn queue and the bounded host lease.
-    for (const controller of this.demoRunAborts.values()) controller.abort();
-    for (const controller of this.promptEnhancementAborts.values()) controller.abort();
+    const delegatedExecutionsStopped = this.delegationExecution.stop();
+    this.demoRunAbortRegistry.abortAll();
+    this.promptEnhancementAbortRegistry.abortAll();
     await this.commandSessions.stopAll();
     await this.codexSessionHost.stopAll();
-    await Promise.allSettled([...this.activeKernelRuns]);
-    if (this.externalKernelSessionTails.size > 0) {
-      await Promise.allSettled([...this.externalKernelSessionTails.values()]);
-    }
+    await this.kernelExecutionRegistry.waitForAll();
+    await delegatedExecutionsStopped;
+    await this.externalKernelSessionQueue.waitForAll();
     // 投递任务尚未完成 → 向守护进程发 abort（用户主动关闭，app-closed）。
-    if (this.dispatchedTasks.size > 0 && !this.daemonWorker) {
-      const taskIds = [...this.dispatchedTasks];
+    const dispatchedTaskIds = this.scheduledTaskDispatches.pendingTaskIds();
+    if (dispatchedTaskIds.length > 0 && !this.daemonWorker) {
       try {
         await sendAbortToDaemon(
           {
@@ -34296,15 +33178,13 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
             appVersion: 'sync-think-runtime',
             handshakeTimeoutMs: 2_000,
           },
-          taskIds,
+          dispatchedTaskIds,
         );
       } catch {
         /* 尽力而为；连接超时由客户端内部有界返回。 */
       }
     }
-    if (this.daemonCompletionPromises.size > 0) {
-      await Promise.allSettled([...this.daemonCompletionPromises]);
-    }
+    await this.daemonCompletionRegistry.waitForAll();
     await new Promise<void>((resolve) => {
       if (!this.server) {
         resolve();
@@ -34312,14 +33192,14 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       }
       const server = this.server;
       this.server = null;
-      this.subscriptions.clear();
-      this.transientSubscriptions.clear();
+      this.eventSubscriptions.clear();
+      this.conversationTransientSubscriptions.clear();
       server.destroyConnections();
       server.close(() => resolve());
     });
     await this.scheduler?.shutdown();
     await this.openGateway.dispose();
-    await Promise.allSettled([...this.backgroundTasks]);
+    await this.backgroundTaskRegistry.waitForAll();
     await this.browserExtensionHost?.stop();
     const preserveBrowserSessions = (this.browserController?.listWaitingHandoffs().length ?? 0) > 0;
     await this.browserHost?.shutdown({ preserveSessions: preserveBrowserSessions });
@@ -34390,54 +33270,6 @@ function isEmptyPayload(value: unknown): boolean {
   );
 }
 
-function parseToolApprovalScope(value: unknown): ToolApprovalScope {
-  return value === 'session' || value === 'always-app' ? value : 'once';
-}
-
-function pendingToolApprovalSummaryFromEvent(event: Event): PendingToolApprovalSummary | undefined {
-  const payload = event.payload ?? {};
-  const approvalId = typeof payload.approvalId === 'string' ? payload.approvalId : undefined;
-  const threadId = typeof payload.threadId === 'string' ? payload.threadId : undefined;
-  const runId = (typeof payload.runId === 'string' ? payload.runId : event.runId) ?? undefined;
-  const toolName = typeof payload.toolName === 'string' ? payload.toolName : undefined;
-  if (!approvalId || !threadId || !runId || !toolName) return undefined;
-
-  const argumentsValue = payload.arguments;
-  const argumentsObject = isPlainRecord(argumentsValue) ? argumentsValue : undefined;
-  const riskValue = payload.risk;
-  const risk = isPlainRecord(riskValue)
-    ? {
-        level: typeof riskValue.level === 'string' ? riskValue.level : 'unknown',
-        reasonCodes: Array.isArray(riskValue.reasonCodes)
-          ? riskValue.reasonCodes.filter((item): item is string => typeof item === 'string')
-          : [],
-        ...(typeof riskValue.humanOnlyAction === 'string'
-          ? { humanOnlyAction: riskValue.humanOnlyAction }
-          : {}),
-      }
-    : undefined;
-  const allowedScopes: ToolApprovalScope[] = Array.isArray(payload.allowedScopes)
-    ? [...new Set(payload.allowedScopes.map(parseToolApprovalScope))]
-    : ['once'];
-
-  return {
-    approvalId,
-    threadId: threadId as PendingToolApprovalSummary['threadId'],
-    runId: runId as RunId,
-    ...(typeof payload.toolCallId === 'string' ? { toolCallId: payload.toolCallId } : {}),
-    toolName,
-    ...(argumentsObject ? { arguments: argumentsObject } : {}),
-    title: typeof payload.title === 'string' && payload.title ? payload.title : toolName,
-    detail: typeof payload.detail === 'string' && payload.detail ? payload.detail : '需要你的批准',
-    ...(typeof payload.path === 'string' ? { path: payload.path } : {}),
-    ...(typeof payload.command === 'string' ? { command: payload.command } : {}),
-    ...(risk ? { risk } : {}),
-    allowedScopes,
-    status: 'pending',
-    createdAt: event.occurredAt,
-  };
-}
-
 function browserWorkflowErrorCode(error: unknown): string | undefined {
   if (error instanceof RuntimeBrowserWorkflowError) return error.code;
   if (error && typeof error === 'object' && 'code' in error) {
@@ -34449,54 +33281,6 @@ function browserWorkflowErrorCode(error: unknown): string | undefined {
     return match?.[1];
   }
   return undefined;
-}
-
-function parseDesktopWaitingResult(value: string): { commandId: string; code: string } | undefined {
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
-    const record = parsed as Record<string, unknown>;
-    if (
-      typeof record.commandId !== 'string' ||
-      (record.code !== ErrorCode.DESKTOP_USER_INPUT_DETECTED &&
-        record.code !== ErrorCode.DESKTOP_COMMAND_INSPECTION_REQUIRED)
-    ) {
-      return undefined;
-    }
-    return { commandId: record.commandId, code: record.code };
-  } catch {
-    return undefined;
-  }
-}
-
-function projectDesktopWaitingTarget(
-  sanitizedArgs: Record<string, unknown>,
-): DesktopWaitingCommandSummary['target'] | undefined {
-  const target = sanitizedArgs.target;
-  if (!target || typeof target !== 'object' || Array.isArray(target)) return undefined;
-  const window = (target as Record<string, unknown>).window;
-  if (!window || typeof window !== 'object' || Array.isArray(window)) return undefined;
-  const record = window as Record<string, unknown>;
-  const processId =
-    typeof record.processId === 'number' &&
-    Number.isSafeInteger(record.processId) &&
-    record.processId > 0
-      ? record.processId
-      : undefined;
-  const title =
-    typeof record.title === 'string' && record.title.trim()
-      ? record.title.trim().slice(0, 512)
-      : undefined;
-  const appId =
-    typeof record.appId === 'string' && record.appId.trim()
-      ? record.appId.trim().slice(0, 256)
-      : undefined;
-  if (processId === undefined && title === undefined && appId === undefined) return undefined;
-  return {
-    ...(processId !== undefined ? { processId } : {}),
-    ...(title ? { title } : {}),
-    ...(appId ? { appId } : {}),
-  };
 }
 
 function browserFailureMessage(code: unknown, failureClass: unknown): string {

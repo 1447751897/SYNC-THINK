@@ -17,6 +17,7 @@ import type {
   WebSearchProviderId,
   WebSearchProviderSummary,
 } from '@sync-think/protocol';
+import { ToggleControl } from './ToggleControl.js';
 
 export function WebSearchSettings() {
   const [providers, setProviders] = useState<WebSearchProviderSummary[]>([]);
@@ -49,8 +50,8 @@ export function WebSearchSettings() {
     void load();
   }, [load]);
 
-  const toggle = async (provider: WebSearchProviderSummary) => {
-    if (!provider.configured && !provider.enabled) {
+  const toggle = async (provider: WebSearchProviderSummary, enabled: boolean) => {
+    if (!provider.configured && enabled) {
       setExpandedId(provider.id);
       setNotice(`先为 ${provider.name} 填写密钥，保存后即可启用。`);
       return;
@@ -58,7 +59,6 @@ export function WebSearchSettings() {
     const api = window.syncThink?.runtime;
     if (!api?.saveWebSearchProvider || busyId) return;
     const previous = providers;
-    const enabled = !provider.enabled;
     setProviders((current) =>
       current.map((entry) => (entry.id === provider.id ? { ...entry, enabled } : entry)),
     );
@@ -199,11 +199,12 @@ export function WebSearchSettings() {
                       <ArrowDown size={13} aria-hidden="true" />
                     </button>
                   </div>
-                  <SearchToggle
+                  <ToggleControl
                     checked={provider.enabled}
                     disabled={busyId === provider.id}
                     label={`${provider.name} 搜索`}
-                    onChange={() => void toggle(provider)}
+                    onChange={(enabled) => void toggle(provider, enabled)}
+                    className="settings-toggle"
                   />
                 </div>
                 {expanded ? (
@@ -395,31 +396,5 @@ function WebSearchProviderEditor({
         </button>
       </div>
     </div>
-  );
-}
-
-function SearchToggle({
-  checked,
-  disabled,
-  label,
-  onChange,
-}: {
-  checked: boolean;
-  disabled?: boolean;
-  label: string;
-  onChange(): void;
-}) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-label={label}
-      aria-checked={checked}
-      disabled={disabled}
-      className={clsx('settings-toggle', checked && 'is-checked')}
-      onClick={onChange}
-    >
-      <span />
-    </button>
   );
 }

@@ -1,13 +1,12 @@
 import type {
   BrowserGrantScope,
   BrowserOriginGrantRecord,
+  BrowserWorkflowRunTrigger,
   SqliteBrowserStore,
 } from '@sync-think/storage';
-import type {
-  BrowserAction,
-  BrowserHostLike,
-  BrowserLeaseInfo,
-} from '@sync-think/workers';
+import { randomUUID } from 'node:crypto';
+import type { BrowserWorkflowLivePage } from '@sync-think/protocol';
+import type { BrowserAction, BrowserHostLike, BrowserLeaseInfo } from '@sync-think/workers';
 import type { BrowserRecordingStepInput } from '@sync-think/shared';
 import {
   collectStepOrigins,
@@ -16,14 +15,11 @@ import {
 } from '@sync-think/workers';
 
 export type BrowserWorkflowReplayFailureClass =
-  | 'timeout'
-  | 'crashed'
-  | 'permission'
-  | 'acceptance'
-  | 'unknown';
+  'timeout' | 'crashed' | 'permission' | 'acceptance' | 'unknown';
 
 export interface BrowserWorkflowReplayResult {
   ok: boolean;
+  runId: string;
   workflowVersionId: string;
   taskId: string;
   profileId: string;
@@ -42,6 +38,9 @@ export interface BrowserWorkflowReplayStepResult {
   actionKind?: string;
   outputUrl?: string;
   outputTitle?: string;
+  screenshotRelativePath?: string;
+  screenshotEmbedUrl?: string;
+  screenshotErrorCode?: string;
   errorCode?: string;
   error?: string;
 }
@@ -59,6 +58,7 @@ export interface BrowserWorkflowReplayInput {
   variables?: Readonly<Record<string, string>>;
   /** Approved origin grants to evaluate. scopeType must be 'workflow'. */
   approvalGrant?: BrowserOriginGrantRecord;
+  trigger?: BrowserWorkflowRunTrigger;
 }
 
 export interface BrowserWorkflowRunnerOptions {
@@ -85,6 +85,25 @@ export class BrowserWorkflowRunnerError extends Error {
  * lease, matching how a human would operate one browser tab.
  */
 export class BrowserWorkflowRunner {
+  private readonly liveRuns = new Map<string, { page: BrowserWorkflowLivePage; leaseId?: string }>();
+
+  async listLivePages(): Promise<BrowserWorkflowLivePage[]> {
+    const runs = [...this.liveRuns.values()];
+    const pages: BrowserWorkflowLivePage[] = [];
+    for (let offset = 0; offset < runs.length; offset += 4) {
+      const batch = await Promise.all(runs.slice(offset, offset + 4).map(async run => {
+        const page = { ...run.page };
+        if (!run.leaseId) return page;
+        try {
+          const preview = await this.host.capturePreview?.(run.leaseId);
+          return preview ? { ...page, ...preview } : { ...page, previewError: '预览暂未就绪' };
+        } catch { return { ...page, previewError: '页面切换中，正在重试预览' }; }
+      }));
+      pages.push(...batch.filter(page => this.liveRuns.has(page.runId)));
+    }
+    return pages;
+  }
+
   private readonly store: SqliteBrowserStore;
   private readonly host: BrowserHostLike;
   private readonly fallbackWorkingDir: string;
@@ -125,11 +144,7 @@ export class BrowserWorkflowRunner {
   }
 
   /** Record a workflow-scope approval grant for a set of origins. */
-  recordApproval(
-    taskId: string,
-    origins: readonly string[],
-    approvalId: string,
-  ): void {
+  recordApproval(taskId: string, origins: readonly string[], approvalId: string): void {
     for (const origin of origins) {
       this.store.upsertOriginGrant({
         scopeType: 'workflow',
@@ -151,7 +166,27 @@ export class BrowserWorkflowRunner {
       );
     }
 
-    const steps = version.steps;
+    return this.replaySteps(input, version.steps, true);
+  }
+
+  async replayDraft(
+    input: BrowserWorkflowReplayInput & { draftId: string },
+  ): Promise<BrowserWorkflowReplayResult> {
+    const draft = this.store.getWorkflowDraft(input.draftId);
+    if (!draft || draft.taskId !== input.taskId) {
+      throw new BrowserWorkflowRunnerError(
+        'browser.workflow-draft-not-found',
+        'The Browser Workflow Draft does not exist.',
+      );
+    }
+    return this.replaySteps({ ...input, workflowVersionId: input.draftId }, draft.steps, false);
+  }
+
+  private async replaySteps(
+    input: BrowserWorkflowReplayInput,
+    steps: BrowserRecordingStepInput[],
+    persistRun: boolean,
+  ): Promise<BrowserWorkflowReplayResult> {
     if (steps.length === 0) {
       throw new BrowserWorkflowRunnerError(
         'browser.workflow-steps-empty',
@@ -204,11 +239,7 @@ export class BrowserWorkflowRunner {
             'acceptance',
           );
         }
-        throw new BrowserWorkflowRunnerError(
-          playback.code,
-          playback.error,
-          'acceptance',
-        );
+        throw new BrowserWorkflowRunnerError(playback.code, playback.error, 'acceptance');
       }
       translated.push({ step, action: playback.action });
     }
@@ -224,9 +255,26 @@ export class BrowserWorkflowRunner {
     const ownerId = input.ownerId.trim();
 
     const stepResults: BrowserWorkflowReplayStepResult[] = [];
+    const workflowRun = persistRun
+      ? this.store.startWorkflowRun({
+          taskId: input.taskId,
+          versionId: input.workflowVersionId,
+          trigger: input.trigger ?? 'manual',
+          stepCount: steps.length,
+        })
+      : { id: input.runId ?? `browser-workflow-trial-${randomUUID()}` };
+    const task = this.store.getAutomationTask(input.taskId);
+    const live = { page: {
+      runId: workflowRun.id, taskId: input.taskId, profileId,
+      workspaceId: task?.workspaceId ?? input.workspaceId, name: task?.name ?? input.taskId,
+      startedAt: new Date().toISOString(), currentStep: 0, stepCount: steps.length,
+      url: task?.startUrl,
+    } as BrowserWorkflowLivePage, leaseId: undefined as string | undefined };
+    this.liveRuns.set(workflowRun.id, live);
     let lease: BrowserLeaseInfo | undefined;
     try {
       lease = await this.host.acquireLease({ profileId, ownerId, mode: 'command' });
+      live.leaseId = lease.leaseId;
 
       for (let index = 0; index < translated.length; index += 1) {
         if (input.signal.aborted) {
@@ -237,6 +285,9 @@ export class BrowserWorkflowRunner {
           );
         }
         const { step, action } = translated[index];
+        live.page.currentStep = index + 1;
+        live.page.actionKind = action.kind;
+        const startedAt = new Date().toISOString();
         try {
           const result = await this.host.execute({
             leaseId: lease.leaseId,
@@ -246,16 +297,62 @@ export class BrowserWorkflowRunner {
             projectRoot: this.fallbackWorkingDir,
             signal: input.signal,
           });
-          stepResults.push({
+          let screenshot:
+            { relativePath?: string; embedUrl?: string; errorCode?: string } | undefined;
+          try {
+            const capture = await this.host.execute({
+              leaseId: lease.leaseId,
+              action: {
+                kind: 'screenshot',
+                fileName: `${workflowRun.id}-step-${String(index + 1).padStart(3, '0')}.png`,
+                fullPage: true,
+              },
+              allowedSites: origins,
+              timeoutMs: 30_000,
+              projectRoot: this.fallbackWorkingDir,
+              signal: input.signal,
+            });
+            screenshot = {
+              ...(capture.relativePath ? { relativePath: capture.relativePath } : {}),
+              ...(capture.embedUrl ? { embedUrl: capture.embedUrl } : {}),
+            };
+          } catch (error) {
+            screenshot = { errorCode: normalizeReplayError(error, input.signal).code };
+          }
+          const completedAt = new Date().toISOString();
+          const stepResult: BrowserWorkflowReplayStepResult = {
             sequence: index + 1,
             ok: true,
             step,
             actionKind: action.kind,
             outputUrl: result.url,
             outputTitle: result.title,
-          });
+            ...(screenshot?.relativePath
+              ? { screenshotRelativePath: screenshot.relativePath }
+              : {}),
+            ...(screenshot?.embedUrl ? { screenshotEmbedUrl: screenshot.embedUrl } : {}),
+            ...(screenshot?.errorCode ? { screenshotErrorCode: screenshot.errorCode } : {}),
+          };
+          stepResults.push(stepResult);
+          if (persistRun)
+            this.store.appendWorkflowRunStep({
+              runId: workflowRun.id,
+              sequence: index + 1,
+              actionKind: action.kind,
+              status: 'succeeded',
+              outputUrl: result.url,
+              outputTitle: result.title,
+              ...(screenshot?.relativePath
+                ? { screenshotRelativePath: screenshot.relativePath }
+                : {}),
+              ...(screenshot?.embedUrl ? { screenshotEmbedUrl: screenshot.embedUrl } : {}),
+              ...(screenshot?.errorCode ? { screenshotErrorCode: screenshot.errorCode } : {}),
+              startedAt,
+              completedAt,
+            });
         } catch (error) {
           const failure = normalizeReplayError(error, input.signal);
+          const completedAt = new Date().toISOString();
           stepResults.push({
             sequence: index + 1,
             ok: false,
@@ -264,8 +361,29 @@ export class BrowserWorkflowRunner {
             errorCode: failure.code,
             error: failure.message,
           });
+          if (persistRun)
+            this.store.appendWorkflowRunStep({
+              runId: workflowRun.id,
+              sequence: index + 1,
+              actionKind: action.kind,
+              status: 'failed',
+              errorCode: failure.code,
+              error: failure.message,
+              startedAt,
+              completedAt,
+            });
+          if (persistRun)
+            this.store.completeWorkflowRun({
+              runId: workflowRun.id,
+              status: 'failed',
+              executedStepCount: index + 1,
+              failedStepSequence: index + 1,
+              errorCode: failure.code,
+              error: failure.message,
+            });
           return {
             ok: false,
+            runId: workflowRun.id,
             workflowVersionId: input.workflowVersionId,
             taskId: input.taskId,
             profileId,
@@ -279,8 +397,15 @@ export class BrowserWorkflowRunner {
         }
       }
 
+      if (persistRun)
+        this.store.completeWorkflowRun({
+          runId: workflowRun.id,
+          status: 'succeeded',
+          executedStepCount: steps.length,
+        });
       return {
         ok: true,
+        runId: workflowRun.id,
         workflowVersionId: input.workflowVersionId,
         taskId: input.taskId,
         profileId,
@@ -290,8 +415,17 @@ export class BrowserWorkflowRunner {
       };
     } catch (error) {
       const failure = normalizeReplayError(error, input.signal);
+      if (persistRun)
+        this.store.completeWorkflowRun({
+          runId: workflowRun.id,
+          status: failure.code === 'browser.workflow-aborted' ? 'cancelled' : 'failed',
+          executedStepCount: stepResults.length,
+          errorCode: failure.code,
+          error: failure.message,
+        });
       return {
         ok: false,
+        runId: workflowRun.id,
         workflowVersionId: input.workflowVersionId,
         taskId: input.taskId,
         profileId,
@@ -303,6 +437,7 @@ export class BrowserWorkflowRunner {
         failureClass: failure.failureClass,
       };
     } finally {
+      this.liveRuns.delete(workflowRun.id);
       if (lease) {
         await this.host.releaseLease(lease.leaseId, { closePage: false }).catch(() => undefined);
       }
@@ -315,7 +450,11 @@ function normalizeReplayError(
   signal?: AbortSignal,
 ): { code: string; message: string; failureClass: BrowserWorkflowReplayFailureClass } {
   if (signal?.aborted) {
-    return { code: 'browser.workflow-aborted', message: 'Browser Workflow replay was cancelled.', failureClass: 'acceptance' };
+    return {
+      code: 'browser.workflow-aborted',
+      message: 'Browser Workflow replay was cancelled.',
+      failureClass: 'acceptance',
+    };
   }
   const candidate = error as { code?: unknown; message?: unknown; failureClass?: unknown };
   if (candidate && typeof candidate === 'object') {
@@ -324,7 +463,9 @@ function normalizeReplayError(
     if (code && message) {
       const failureClass: BrowserWorkflowReplayFailureClass =
         typeof candidate.failureClass === 'string' &&
-        ['timeout', 'crashed', 'permission', 'acceptance', 'unknown'].includes(candidate.failureClass)
+        ['timeout', 'crashed', 'permission', 'acceptance', 'unknown'].includes(
+          candidate.failureClass,
+        )
           ? (candidate.failureClass as BrowserWorkflowReplayFailureClass)
           : 'unknown';
       return { code, message, failureClass };

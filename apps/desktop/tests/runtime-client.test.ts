@@ -27,6 +27,31 @@ function eventAt(sequence: number, eventId = `event-${sequence}`): Event {
 }
 
 describe('RuntimePipeClient', () => {
+  it('delivers browser requests without skipping the following durable completion or advancing the replay cursor', async () => {
+    const installId = `desktop-browser-cursor-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const runtime = new Runtime({ installId, allowNoToken: true });
+    await runtime.start();
+    const client = new RuntimePipeClient({ installId, appVersion: '0.0.1' });
+    const events: Event[] = [];
+    const cursors: number[] = [];
+    try {
+      await client.subscribeEvents(0, (event) => events.push(event), undefined, (cursor) => cursors.push(cursor.sequence));
+      const publish = (event: Event) => (runtime as unknown as { publishEvent(event: Event): void }).publishEvent(event);
+      publish(eventAt(1));
+      // Older runtimes assigned an independent, higher sequence to ephemeral requests.
+      publish({ ...eventAt(100, 'browser-live'), category: 'tool', type: 'browser.command_requested' });
+      publish({ ...eventAt(2), category: 'tool', type: 'tool.completed' });
+      // A command at/below the current durable cursor must still reach the renderer.
+      publish({ ...eventAt(2, 'browser-next'), category: 'tool', type: 'browser.command_requested' });
+      expect(await waitFor(() => events.length === 4)).toBe(true);
+      expect(events.map((event) => event.type)).toEqual(['message.appended', 'browser.command_requested', 'tool.completed', 'browser.command_requested']);
+      expect(cursors).toEqual([0, 1, 2]);
+    } finally {
+      client.disconnect();
+      await runtime.stop();
+    }
+  });
+
   it('does not carry a partial frame into a new manual connection', async () => {
     const installId = `desktop-client-partial-reconnect-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     let connectionCount = 0;
@@ -1037,7 +1062,7 @@ describe('RuntimePipeClient', () => {
       expect(
         await waitFor(
           () =>
-            (runtime as unknown as { subscriptions: Map<string, unknown> }).subscriptions.size ===
+            (runtime as unknown as { eventSubscriptions: { count(): number } }).eventSubscriptions.count() ===
             0,
         ),
       ).toBe(true);

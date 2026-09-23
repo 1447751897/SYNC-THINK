@@ -1,4 +1,5 @@
 ﻿import { createHash, randomUUID } from 'node:crypto';
+import { isRecord } from '@sync-think/shared/value-validation';
 import type { BetterSQLite3Raw } from './connection.js';
 
 const MAX_JSON_BYTES = 256 * 1024;
@@ -450,10 +451,6 @@ function nextTimestamp(value: string | undefined, previous: string): string {
   const requested = normalizeNow(value);
   if (requested > previous) return requested;
   return new Date(Date.parse(previous) + 1).toISOString();
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 function boundedJson(value: unknown, tooLargeCode: string): string {

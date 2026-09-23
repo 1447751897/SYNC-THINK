@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { SkillVersionSummary } from '@sync-think/protocol';
 import { TurnSkillControl } from './TurnSkillControl.js';
+import { invalidateSkillCatalog } from './skill-catalog-loader.js';
 
 const runtime = {
   listSkills: vi.fn(),
@@ -54,6 +55,7 @@ function Harness(props: { workspaceId?: string }) {
 }
 
 beforeEach(() => {
+  invalidateSkillCatalog();
   runtime.listSkills.mockReset();
   runtime.getSkill.mockReset();
   Object.defineProperty(window, 'syncThink', {

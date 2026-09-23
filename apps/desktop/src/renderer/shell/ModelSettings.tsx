@@ -33,6 +33,7 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import { SlidingTabs } from './SlidingTabs.js';
 import { DsTabBar } from './DsTabBar.js';
+import { SettingsSectionTabs } from './SettingsSectionTabs.js';
 import {
   detectProviderConnectionInput,
   isLocalUrl,
@@ -73,19 +74,21 @@ import {
 } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import clsx from 'clsx';
-import type {
-  CapabilityProbeSuggestion,
-  CcSwitchImportPreviewItem,
-  ImportCcSwitchResponse,
-  ModelPricingEntry,
-  PreviewCcSwitchImportResponse,
-  ProviderModelSummary,
-  ProviderSummary,
-  UsageSummaryResponse,
+import {
+  type CapabilityProbeSuggestion,
+  type CcSwitchImportPreviewItem,
+  type ImportCcSwitchResponse,
+  type ModelPricingEntry,
+  type PreviewCcSwitchImportResponse,
+  type ProviderModelSummary,
+  type ProviderSummary,
+  type UsageSummaryResponse,
 } from '@sync-think/protocol';
 import { splitProviderUsageTokens } from '@sync-think/shared';
-import type { RendererUpdateProviderPayload } from '../../provider-payloads.js';
+import type { RendererUpdateProviderPayload } from '../../provider-catalog-payloads.js';
 import { BrandLogoMark } from './BrandLogoMark.js';
+import { SecretInputControl } from './SecretInputControl.js';
+import { ToggleControl, type ToggleControlProps } from './ToggleControl.js';
 import { resolveProviderBrandLogo, resolveProviderBrandLogoByName } from './brand-icons.js';
 import { useDialog } from './Dialog.js';
 import { toastApi } from './Toast.js';
@@ -108,6 +111,13 @@ import {
   composeTextProviderOrder,
   isTextGenerationProvider,
 } from './image-generation-providers.js';
+import {
+  fetchUsageSummary,
+  readUsageSummaryCache,
+  usageSummaryRangeKey,
+} from './provider-usage-summary.js';
+
+const USAGE_REQUEST_DETAIL_LIMIT = 500;
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -2238,11 +2248,11 @@ export const ModelSettings = forwardRef<ModelSettingsHandle, ModelSettingsProps>
   return (
     <div className="model-settings-root flex h-full min-h-0 flex-col">
       <div className="model-settings-tabs">
-        <DsTabBar
+        <SettingsSectionTabs<ModelTab>
           className="model-settings-tabs__rail"
           aria-label="模型类型"
           value={modelTab}
-          onChange={(value) => setModelTab(value as ModelTab)}
+          onChange={setModelTab}
           items={MODEL_TABS.map(({ id, label }) => ({ value: id, label }))}
         />
         {modelTab === 'text' || modelTab === 'image' ? (
@@ -3158,7 +3168,7 @@ function CreateProviderForm({
         <section className="model-newmax-section model-newmax-section--credentials">
           <div className="model-newmax-section__label">API 密钥</div>
           <div className="model-credential-list">
-            <SecretInput
+            <ModelSecretInput
               value={draft.apiKey}
               placeholder="输入 API 密钥"
               disabled={busy}
@@ -3166,7 +3176,7 @@ function CreateProviderForm({
             />
             {draft.extraApiKeys.map((key, index) => (
               <div key={index} className="model-create-key-row">
-                <SecretInput
+                <ModelSecretInput
                   value={key}
                   placeholder={`备用密钥 ${index + 1}`}
                   disabled={busy}
@@ -3621,7 +3631,7 @@ function ProtocolSelector({
   );
 }
 
-function SecretInput({
+function ModelSecretInput({
   value,
   placeholder,
   disabled,
@@ -3637,26 +3647,18 @@ function SecretInput({
     if (!value) setVisible(false);
   }, [value]);
   return (
-    <div className="model-secret-input">
-      <input
-        className="st-field-input font-mono text-[12.5px]"
-        type={visible ? 'text' : 'password'}
-        autoComplete="off"
-        value={value}
-        placeholder={placeholder}
-        disabled={disabled}
-        onChange={(event) => onChange(event.target.value)}
-      />
-      <button
-        type="button"
-        title={visible ? '隐藏密钥' : '显示密钥'}
-        aria-label={visible ? '隐藏密钥' : '显示密钥'}
-        disabled={disabled || !value}
-        onClick={() => setVisible((current) => !current)}
-      >
-        {visible ? <EyeOff size={14} /> : <Eye size={14} />}
-      </button>
-    </div>
+    <SecretInputControl
+      containerClassName="model-secret-input"
+      visible={visible}
+      toggleDisabled={disabled || !value}
+      onToggle={() => setVisible((current) => !current)}
+      className="st-field-input font-mono text-[12.5px]"
+      autoComplete="off"
+      value={value}
+      placeholder={placeholder}
+      disabled={disabled}
+      onChange={(event) => onChange(event.target.value)}
+    />
   );
 }
 
@@ -3935,7 +3937,12 @@ function ProviderDetail({
           <div className="model-add-key-form">
             <div>
               <label>API Key</label>
-              <SecretInput value={newKey} placeholder="sk-…" disabled={busy} onChange={setNewKey} />
+              <ModelSecretInput
+                value={newKey}
+                placeholder="sk-…"
+                disabled={busy}
+                onChange={setNewKey}
+              />
             </div>
             <div className="model-add-key-form__actions">
               <button
@@ -4045,6 +4052,7 @@ function ProviderDetail({
                     {activeModelId ? (
                       <ModelRowPreview
                         model={models.find((model) => model.modelId === activeModelId) ?? null}
+                        index={models.findIndex((model) => model.modelId === activeModelId)}
                       />
                     ) : null}
                   </DragOverlay>,
@@ -5032,16 +5040,24 @@ function ModelCapabilityDialog({
   );
 }
 
-function ModelRowPreview({ model }: { model: ProviderModelSummary | null }) {
+function ModelRowPreview({
+  model,
+  index,
+}: {
+  model: ProviderModelSummary | null;
+  index: number;
+}) {
   if (!model) return null;
   const title = modelPrimaryLabel(model);
   const ctx = formatContext(model.contextWindow);
   return (
-    <div className="model-priority-row model-priority-row--overlay">
+    <div className="model-priority-row model-priority-row--overlay" data-testid="text-model-drag-overlay">
       <span className="model-priority-row__grip">
         <GripVertical size={14} />
       </span>
-      <span className="model-priority-row__rank">·</span>
+      <span className={clsx('model-priority-row__rank', index === 0 && 'is-primary')}>
+        {modelRankLabel(Math.max(0, index))}
+      </span>
       <div className="model-priority-row__copy">
         <p title={title}>{title}</p>
       </div>
@@ -5480,8 +5496,10 @@ export function UsageSettings({
   reloadToken: number;
   onRefreshingChange?: (busy: boolean) => void;
 }) {
-  const [data, setData] = useState<UsageSummaryResponse | null>(null);
-  const [loading, setLoading] = useState(true);
+  const initialCacheKey = usageSummaryRangeKey(sinceDays);
+  const initialData = readUsageSummaryCache(initialCacheKey);
+  const [data, setData] = useState<UsageSummaryResponse | null>(initialData ?? null);
+  const [loading, setLoading] = useState(initialData === undefined);
   const [error, setError] = useState<string | null>(null);
   const [usageTab, setUsageTab] = useState<
     'requests' | 'providers' | 'models' | 'tools' | 'pricing'
@@ -5491,11 +5509,12 @@ export function UsageSettings({
   const [pricingDraft, setPricingDraft] = useState<PricingDraft | null>(null);
   const [editingPricingId, setEditingPricingId] = useState<string | null>(null);
   const [savingPricing, setSavingPricing] = useState(false);
-  const hasDataRef = useRef(false);
+  const hasDataRef = useRef(initialData !== undefined);
+  const previousReloadTokenRef = useRef(reloadToken);
   const onRefreshingChangeRef = useRef(onRefreshingChange);
   onRefreshingChangeRef.current = onRefreshingChange;
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (refresh = false) => {
     const api = bridge();
     if (!api?.getUsageSummary) {
       setError('Runtime 未连接，无法加载用量');
@@ -5508,7 +5527,16 @@ export function UsageSettings({
     setError(null);
     onRefreshingChangeRef.current?.(silent);
     try {
-      const res = await api.getUsageSummary(sinceDays ? { sinceDays } : {});
+      const cacheKey = usageSummaryRangeKey(sinceDays);
+      const res = await fetchUsageSummary(
+        cacheKey,
+        () =>
+          api.getUsageSummary({
+            ...(sinceDays ? { sinceDays } : {}),
+            requestLimit: USAGE_REQUEST_DETAIL_LIMIT,
+          }),
+        { refresh },
+      );
       setData(res);
       hasDataRef.current = true;
     } catch (e) {
@@ -5522,7 +5550,9 @@ export function UsageSettings({
   }, [sinceDays]);
 
   useEffect(() => {
-    void load();
+    const refresh = previousReloadTokenRef.current !== reloadToken;
+    previousReloadTokenRef.current = reloadToken;
+    void load(refresh);
   }, [load, reloadToken]);
 
   const savePricing = useCallback(
@@ -5534,7 +5564,7 @@ export function UsageSettings({
         await api.setSetting({ key: MODEL_PRICING_SETTING_KEY, value: nextPricing });
         setPricingDraft(null);
         setEditingPricingId(null);
-        await load();
+        await load(true);
       } catch (e) {
         setError(e instanceof Error ? e.message : '保存定价失败');
       } finally {
@@ -5557,7 +5587,7 @@ export function UsageSettings({
     return (
       <div className="usage-settings-state is-error">
         <p>{error}</p>
-        <button type="button" className="usage-retry" onClick={() => void load()}>
+        <button type="button" className="usage-retry" onClick={() => void load(true)}>
           重新加载
         </button>
       </div>
@@ -5723,7 +5753,11 @@ export function UsageSettings({
                 </button>
               ))}
             </div>
-            <span className="usage-record-count">共 {visibleRequests.length} 条记录</span>
+            <span className="usage-record-count">
+              {requests.length < (data?.totalRequests ?? 0)
+                ? `已加载最近 ${requests.length} 条，共 ${formatCount(data?.totalRequests ?? 0)} 条`
+                : `共 ${visibleRequests.length} 条记录`}
+            </span>
           </div>
           <UsageRequestTable rows={visibleRequests} />
         </section>
@@ -6435,25 +6469,16 @@ function Toggle({
   disabled,
   label,
   onChange,
-}: {
-  checked: boolean;
-  disabled?: boolean;
-  label: string;
-  onChange: (v: boolean) => void;
-}) {
+}: Omit<ToggleControlProps, 'className' | 'thumbClassName'>) {
   return (
-    <button
-      type="button"
-      role="switch"
-      aria-label={label}
-      aria-checked={checked}
-      data-state={checked ? 'checked' : 'unchecked'}
+    <ToggleControl
+      checked={checked}
       disabled={disabled}
-      onClick={() => onChange(!checked)}
-      className={clsx('model-toggle', checked && 'is-checked')}
-    >
-      <span className="model-toggle__thumb" />
-    </button>
+      label={label}
+      onChange={onChange}
+      className="model-toggle"
+      thumbClassName="model-toggle__thumb"
+    />
   );
 }
 

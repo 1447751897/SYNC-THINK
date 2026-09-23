@@ -12,6 +12,8 @@ import {
   parseListMcpServersPayload,
   parseListSkillsPayload,
 } from '../command-validation.js';
+import { toMcpServerSummary } from '../mcp-server-summary.js';
+import { toSkillVersionSummary } from '../skill-version-summary.js';
 import type { SkillQueryContext } from './skill-query-context.js';
 
 /** Read one Skill version's full SKILL.md source for display (never executed). */
@@ -44,7 +46,7 @@ export function handleGetSkill(ctx: SkillQueryContext, socket: Socket, frame: Fr
       return;
     }
     const response: GetSkillResponse = {
-      skill: ctx.toSkillVersionSummary(record),
+      skill: toSkillVersionSummary(record),
       sourceMd: record.sourceMd,
       body: record.body,
     };
@@ -83,8 +85,12 @@ export function handleListSkills(ctx: SkillQueryContext, socket: Socket, frame: 
             ),
           )
         : ctx.skillStore.listVersionMetadata(payload.limit ?? 100);
-    const skills = records
-      .map((r) => ctx.toSkillVersionSummary(r));
+    const skills = records.map((record) =>
+      toSkillVersionSummary(
+        record,
+        (skillVersionId) => ctx.skillStore?.getVersion(skillVersionId)?.sourceMd,
+      ),
+    );
     const response: ListSkillsResponse = { skills };
     socket.write(
       encodeFrame({
@@ -112,7 +118,7 @@ export function handleListMcpServers(ctx: SkillQueryContext, socket: Socket, fra
   try {
     const servers = ctx.mcpStore
       .list(payload.limit ?? 100)
-      .map((r) => ctx.toMcpServerSummary(r));
+      .map((record) => toMcpServerSummary(record, ctx.readMcpAuthConfig(record.id)));
     const response: ListMcpServersResponse = { servers };
     socket.write(
       encodeFrame({

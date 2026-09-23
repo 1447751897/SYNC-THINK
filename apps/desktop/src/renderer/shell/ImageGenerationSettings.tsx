@@ -34,8 +34,6 @@ import {
   Check,
   ChevronDown,
   Cloud,
-  Eye,
-  EyeOff,
   GripVertical,
   Loader2,
   Plug,
@@ -51,6 +49,7 @@ import { retryTransientRuntime } from '../runtime-connection.js';
 import { formatRuntimeIpcError } from '../provider-error-copy.js';
 import { AddModelInlineRow, ImportModelsDialog, type ImportDialogState } from './model-settings-widgets.js';
 import { ModelOverflowMenu } from './ModelOverflowMenu.js';
+import { SecretInputControl } from './SecretInputControl.js';
 import {
   IMAGE_API_PROVIDERS,
   IMAGE_CATALOG_CATEGORIES,
@@ -635,21 +634,23 @@ export function ImageGenerationSettings({
                   ))}
                 </ul>
               </SortableContext>
-              {activeProviderId
+              {typeof document !== 'undefined'
                 ? createPortal(
-                    <DragOverlay>
-                      {enabledProviders.some((provider) => provider.providerId === activeProviderId) ? (
-                        <div className="model-enabled-row is-dragging">
-                          <span className="model-enabled-row__copy">
-                            <span>
-                              {
-                                enabledProviders.find(
-                                  (provider) => provider.providerId === activeProviderId,
-                                )?.name
-                              }
-                            </span>
-                          </span>
-                        </div>
+                    <DragOverlay
+                      dropAnimation={{
+                        duration: 180,
+                        easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)',
+                      }}
+                      zIndex={10050}
+                    >
+                      {activeProviderId ? (
+                        <ImageProviderRowPreview
+                          provider={
+                            enabledProviders.find(
+                              (provider) => provider.providerId === activeProviderId,
+                            ) ?? null
+                          }
+                        />
                       ) : null}
                     </DragOverlay>,
                     document.body,
@@ -1027,7 +1028,7 @@ function ImageCreateForm({
         <section className="model-newmax-section model-newmax-section--credentials">
           <div className="model-newmax-section__label">API 密钥</div>
           <div className="model-credential-list">
-            <SecretInput
+            <ImageSecretInput
               id="image-create-api-key"
               value={draft.apiKey}
               placeholder="输入 API 密钥"
@@ -1321,7 +1322,7 @@ function ImageProviderDetail({
           htmlFor={`image-api-key-${provider.providerId}`}
           helper={keyHelper}
         >
-          <SecretInput
+          <ImageSecretInput
             id={`image-api-key-${provider.providerId}`}
             value={apiKey}
             placeholder={
@@ -1373,14 +1374,23 @@ function ImageProviderDetail({
                     ))}
                   </ul>
                 </SortableContext>
-                {activeModelId
+                {typeof document !== 'undefined'
                   ? createPortal(
-                      <DragOverlay>
-                        <div className="image-model-id-row is-dragging">
-                          <span>
-                            {models.find((model) => model.modelId === activeModelId)?.displayName}
-                          </span>
-                        </div>
+                      <DragOverlay
+                        dropAnimation={{
+                          duration: 180,
+                          easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)',
+                        }}
+                        zIndex={10050}
+                      >
+                        {activeModelId ? (
+                          <ImageModelRowPreview
+                            model={
+                              models.find((model) => model.modelId === activeModelId) ?? null
+                            }
+                            index={models.findIndex((model) => model.modelId === activeModelId)}
+                          />
+                        ) : null}
                       </DragOverlay>,
                       document.body,
                     )
@@ -1461,7 +1471,7 @@ function ImageModelIdRow({
     >
       <button
         type="button"
-        className="model-enabled-row__grip"
+        className="model-priority-row__grip"
         title="拖拽排序"
         aria-label={`拖拽 ${model.displayName} 调整顺序`}
         disabled={busy}
@@ -1484,6 +1494,32 @@ function ImageModelIdRow({
         <Trash2 size={14} />
       </button>
     </li>
+  );
+}
+
+function ImageModelRowPreview({
+  model,
+  index,
+}: {
+  model: ProviderSummary['models'][number] | null;
+  index: number;
+}) {
+  if (!model) return null;
+  return (
+    <div
+      className="model-priority-row model-priority-row--overlay"
+      data-testid="image-model-drag-overlay"
+    >
+      <span className="model-priority-row__grip">
+        <GripVertical size={14} />
+      </span>
+      <span className={clsx('model-priority-row__rank', index === 0 && 'is-primary')}>
+        {imageModelRowLabel(Math.max(0, index))}
+      </span>
+      <span className="model-priority-row__copy">
+        <span title={model.displayName}>{model.displayName}</span>
+      </span>
+    </div>
   );
 }
 
@@ -1690,6 +1726,30 @@ function ImageProviderRow({
   );
 }
 
+function ImageProviderRowPreview({ provider }: { provider: ProviderSummary | null }) {
+  if (!provider) return null;
+  const primary = [...provider.models].sort((a, b) => a.priority - b.priority)[0];
+  return (
+    <div
+      className="model-enabled-row model-enabled-row--overlay"
+      data-testid="image-provider-drag-overlay"
+    >
+      <span className="model-enabled-row__grip is-static">
+        <GripVertical size={14} />
+      </span>
+      <ImageRowAvatar provider={provider} />
+      <span className="model-enabled-row__copy">
+        <span>{provider.name}</span>
+        <small>
+          {provider.credentials.length === 0
+            ? IMAGE_GENERATION_COPY.missingKey
+            : (primary?.displayName ?? '未添加模型')}
+        </small>
+      </span>
+    </div>
+  );
+}
+
 function DisabledImageProviderRow({
   provider,
   active,
@@ -1820,7 +1880,7 @@ function ImageProviderDetailAvatar({
 
 const IMAGE_CREDENTIAL_MASK = '••••••••••••••••••••••••';
 
-function SecretInput({
+function ImageSecretInput({
   id,
   value,
   placeholder,
@@ -1880,32 +1940,24 @@ function SecretInput({
   };
 
   return (
-    <div className="model-secret-input">
-      <input
-        id={id}
-        className="st-field-input font-mono text-[12.5px]"
-        type={visible ? 'text' : 'password'}
-        autoComplete="off"
-        spellCheck={false}
-        aria-label={IMAGE_GENERATION_COPY.apiKey}
-        value={visible ? plaintext : masked ? value || IMAGE_CREDENTIAL_MASK : ''}
-        placeholder={masked ? undefined : placeholder}
-        readOnly={!visible && Boolean(hasStoredSecret) && !value}
-        disabled={disabled}
-        onChange={(event) => {
-          setRevealed('');
-          onChange(event.target.value);
-        }}
-      />
-      <button
-        type="button"
-        title={visible ? '隐藏密钥' : '显示密钥'}
-        aria-label={visible ? '隐藏密钥' : '显示密钥'}
-        disabled={disabled || (!masked && !visible)}
-        onClick={handleToggle}
-      >
-        {visible ? <EyeOff size={14} /> : <Eye size={14} />}
-      </button>
-    </div>
+    <SecretInputControl
+      containerClassName="model-secret-input"
+      visible={visible}
+      toggleDisabled={disabled || (!masked && !visible)}
+      onToggle={handleToggle}
+      id={id}
+      className="st-field-input font-mono text-[12.5px]"
+      autoComplete="off"
+      spellCheck={false}
+      aria-label={IMAGE_GENERATION_COPY.apiKey}
+      value={visible ? plaintext : masked ? value || IMAGE_CREDENTIAL_MASK : ''}
+      placeholder={masked ? undefined : placeholder}
+      readOnly={!visible && Boolean(hasStoredSecret) && !value}
+      disabled={disabled}
+      onChange={(event) => {
+        setRevealed('');
+        onChange(event.target.value);
+      }}
+    />
   );
 }

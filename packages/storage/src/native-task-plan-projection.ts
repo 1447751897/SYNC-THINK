@@ -7,6 +7,7 @@ import {
 import type { BetterSQLite3Raw } from './connection.js';
 
 interface ProjectionRow {
+  runId: string | null;
   threadId: string | null;
   sequence: number;
   eventId: string;
@@ -47,7 +48,7 @@ export class SqliteNativeTaskPlanProjection {
   private row(taskId: TaskId): ProjectionRow | undefined {
     return this.raw
       .prepare(
-        `SELECT thread_id AS threadId, last_event_sequence AS sequence,
+        `SELECT run_id AS runId, thread_id AS threadId, last_event_sequence AS sequence,
       last_event_id AS eventId, state_json AS stateJson
       FROM native_task_plan_projection WHERE task_id = ?`,
       )
@@ -68,30 +69,32 @@ export class SqliteNativeTaskPlanProjection {
     );
   }
 
-  private matches(row: ProjectionRow, cursor: SourceCursor, threadId?: string): boolean {
+  private matches(row: ProjectionRow, cursor: SourceCursor, threadId?: string, runId?: string): boolean {
     return (
       row.sequence === cursor.sequence &&
       row.eventId === cursor.eventId &&
-      row.threadId === (threadId ?? null)
+      row.threadId === (threadId ?? null) &&
+      (runId === undefined || row.runId === runId)
     );
   }
 
   private save(
     taskId: TaskId,
     threadId: string | undefined,
+    runId: string | undefined,
     cursor: SourceCursor,
     state: TaskPlanState,
   ): void {
     this.raw
       .prepare(
         `INSERT INTO native_task_plan_projection
-      (task_id, thread_id, last_event_sequence, last_event_id, state_json)
-      VALUES (?, ?, ?, ?, ?)
-      ON CONFLICT(task_id) DO UPDATE SET thread_id = excluded.thread_id,
+      (task_id, thread_id, run_id, last_event_sequence, last_event_id, state_json)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(task_id) DO UPDATE SET thread_id = excluded.thread_id, run_id = excluded.run_id,
         last_event_sequence = excluded.last_event_sequence, last_event_id = excluded.last_event_id,
         state_json = excluded.state_json`,
       )
-      .run(taskId, threadId ?? null, cursor.sequence, cursor.eventId, JSON.stringify(state));
+      .run(taskId, threadId ?? null, runId ?? null, cursor.sequence, cursor.eventId, JSON.stringify(state));
   }
 
   readCached(taskId: TaskId, threadId?: string): TaskPlanState | undefined {
@@ -123,7 +126,7 @@ export class SqliteNativeTaskPlanProjection {
           cursor.eventId !== snapshot.cursor.eventId
         )
           return false;
-        this.save(snapshot.taskId, snapshot.threadId, cursor, snapshot.state);
+        this.save(snapshot.taskId, snapshot.threadId, snapshot.state.runId, cursor, snapshot.state);
         return true;
       })
       .immediate();
@@ -151,7 +154,8 @@ export class SqliteNativeTaskPlanProjection {
       if (!cached) continue;
       const previous = this.cursor(taskId, taskEvents[0]!.sequence);
       const threadId = cached.threadId ?? undefined;
-      if (!this.matches(cached, previous, threadId)) {
+      const runId = cached.runId ?? undefined;
+      if (!this.matches(cached, previous, threadId, runId)) {
         this.raw.prepare('DELETE FROM native_task_plan_projection WHERE task_id = ?').run(taskId);
         continue;
       }
@@ -161,7 +165,7 @@ export class SqliteNativeTaskPlanProjection {
         JSON.parse(cached.stateJson) as TaskPlanState,
       );
       const last = taskEvents[taskEvents.length - 1]!;
-      this.save(taskId, threadId, { sequence: last.sequence, eventId: last.id }, state);
+        this.save(taskId, threadId, state.runId ?? runId, { sequence: last.sequence, eventId: last.id }, state);
     }
   }
 }

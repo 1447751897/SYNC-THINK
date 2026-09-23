@@ -1,5 +1,7 @@
 ﻿import type { ProviderMessage } from '@sync-think/adapters';
-import type { Message } from '@sync-think/shared';
+import type { DelegatedRunRecord, Message } from '@sync-think/shared';
+import { formatDelegatedRunContext } from './delegation-context.js';
+import { legacyDelegatedRunRecords } from './delegation-message-projection.js';
 
 export interface CompactContextBoundary {
   summaryText: string;
@@ -21,6 +23,7 @@ export interface InterruptedRunToolTrace {
 }
 
 export interface BuildProviderMessagesInput {
+  delegatedRuns?: readonly DelegatedRunRecord[];
   messages: readonly Message[];
   compact?: CompactContextBoundary;
   currentUserText: string;
@@ -101,6 +104,15 @@ function assistantProviderMessagesFromMessage(message: Message): ProviderMessage
   return messages;
 }
 
+/** Legacy message compatibility; new runs use the independent delegation read model. */
+export function formatDelegatedAgentRuntimeContext(messages: readonly Message[]): string | undefined {
+  return formatDelegatedRunContext(legacyDelegatedRunRecords(messages));
+}
+
+function delegatedAgentContextFromMessage(message: Message): string | undefined {
+  return formatDelegatedAgentRuntimeContext([message]);
+}
+
 function isCancelledAssistantMessage(message: Message): boolean {
   return message.blocks.some((block) => {
     if (block.type !== 'error' || !block.payload || typeof block.payload !== 'object') {
@@ -178,6 +190,10 @@ export function buildProviderMessagesFromDurableMessages(
         }
       }
       messages.push(...restored);
+      const delegatedAgentContext = input.delegatedRuns ? undefined : delegatedAgentContextFromMessage(message);
+      if (delegatedAgentContext) {
+        messages.push({ role: 'system', content: delegatedAgentContext });
+      }
       continue;
     }
     const content = providerContentFromMessage(message, input.resolveImageDataUrl);
@@ -185,6 +201,8 @@ export function buildProviderMessagesFromDurableMessages(
     messages.push({ role: message.role, content });
   }
 
+  const context = input.delegatedRuns ? formatDelegatedRunContext(input.delegatedRuns) : undefined;
+  if (context) messages.unshift({ role: 'system', content: context });
   const current = currentUserContent(input.currentUserText, input.currentImages);
   if (current !== undefined) {
     const last = messages[messages.length - 1];

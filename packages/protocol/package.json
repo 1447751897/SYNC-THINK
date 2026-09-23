@@ -41,6 +41,14 @@
     "./collaboration": {
       "types": "./dist/collaboration.d.ts",
       "default": "./dist/collaboration.js"
+    },
+    "./browser-payloads": {
+      "types": "./dist/browser-payloads.d.ts",
+      "default": "./dist/browser-payloads.js"
+    },
+    "./skill-market-catalog": {
+      "types": "./dist/skill-market-catalog.d.ts",
+      "default": "./dist/skill-market-catalog.js"
     }
   },
   "scripts": {

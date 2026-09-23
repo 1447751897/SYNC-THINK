@@ -185,14 +185,26 @@ describe('team & conversation commands', () => {
     const updated = await request('globalAgent.update', {
       agentId: researcherId,
       persona: 'Digs into sources and cites them.',
+      writePolicy: 'read-only',
     });
     expect(updated.error).toBeUndefined();
     expect((updated.payload as { agent: { persona: string } }).agent.persona).toBe(
       'Digs into sources and cites them.',
     );
+    // The editor's 「继承当前会话 / 只读」 choice must survive the command
+    // whitelist — a silently dropped field here reads as "保存没成功".
+    expect((updated.payload as { agent: { writePolicy?: string } }).agent.writePolicy).toBe(
+      'read-only',
+    );
 
     const malformed = await request('globalAgent.create', { name: '', defaultModelId: 'fake-mini' });
     expect(malformed.error).toMatchObject({ code: 'protocol.frame_malformed' });
+
+    const badPolicy = await request('globalAgent.update', {
+      agentId: researcherId,
+      writePolicy: 'writable',
+    });
+    expect(badPolicy.error).toMatchObject({ code: 'protocol.frame_malformed' });
   });
 
   it('creates a team with members and refuses deleting a rostered agent', async () => {
@@ -340,6 +352,36 @@ describe('team & conversation commands', () => {
     expect(
       (all.payload as { conversations: Array<{ id: string }> }).conversations,
     ).toHaveLength(2);
+  });
+
+  it('pages conversations with an opaque cursor and bounded response size', async () => {
+    const first = await request('conversation.list', {
+      track: 'model',
+      includeArchived: true,
+      limit: 1,
+    });
+    expect(first.error).toBeUndefined();
+    const firstPage = first.payload as {
+      conversations: Array<{ id: string }>;
+      nextCursor?: string;
+    };
+    expect(firstPage.conversations).toHaveLength(1);
+    expect(firstPage.nextCursor).toEqual(expect.any(String));
+
+    const second = await request('conversation.list', {
+      track: 'model',
+      includeArchived: true,
+      cursor: firstPage.nextCursor,
+      limit: 1,
+    });
+    expect(second.error).toBeUndefined();
+    const secondPage = second.payload as {
+      conversations: Array<{ id: string }>;
+      nextCursor?: string;
+    };
+    expect(secondPage.conversations).toHaveLength(1);
+    expect(secondPage.conversations[0]?.id).not.toBe(firstPage.conversations[0]?.id);
+    expect(secondPage.nextCursor).toBeUndefined();
   });
 
   it('upgrades only model-direct conversations, once', async () => {

@@ -21,6 +21,8 @@ import {
   type DemoRunState,
 } from './demo-run.js';
 import type { Event, RunId } from '@sync-think/shared';
+import type { AbortControllerRegistry } from './abort-controller-registry.js';
+import type { ActiveRunRegistry } from './active-run-registry.js';
 
 async function fixture() {
   const directory = mkdtempSync(join(tmpdir(), 'sync-think-append-boundary-'));
@@ -51,7 +53,17 @@ async function fixture() {
     handleAppendMessage(socket: object, frame: Frame): Promise<void>;
     canStartModelRun(): boolean;
     executeKernelRun(runId: string): Promise<void>;
-    prepareRunBinding(input: { runId: RunId; threadId: string; userText: string }): {
+    prepareRunBinding(input: {
+      runId: RunId;
+      threadId: string;
+      userText: string;
+      images?: Array<{
+        name: string;
+        mimeType: string;
+        stagingPath?: string;
+        dataUrl?: string;
+      }>;
+    }): {
       run: DemoRunState;
       packetId: string;
       proofHash: string;
@@ -60,13 +72,13 @@ async function fixture() {
     publishEvent(event: Event): void;
     requestChatToolApproval(input: object): Promise<{ decision: string; approvalId: string }>;
     demoRuns: Map<string, DemoRunState>;
-    demoRunAborts: Map<string, AbortController>;
-    inFlight: Set<string>;
-    pendingToolApprovals: Map<string, object>;
-    runKernelIds: Map<string, string>;
+    demoRunAbortRegistry: AbortControllerRegistry;
+    activeRuns: ActiveRunRegistry;
+    activeToolApprovals: { has(approvalId: string): boolean };
+    runKernelRegistry: { count(): number };
     lastCheckpointEventSequence: number;
     checkpointRunId: RunId;
-    threadVersions: Map<string, number>;
+    threadVersionProjection: { record(threadId: string, version: number): void };
     persistAssistantTimelineSegments(
       runId: RunId,
       timeline: DemoRunState['assistantTimeline'],
@@ -75,7 +87,7 @@ async function fixture() {
   };
   const canStart = vi.spyOn(internal, 'canStartModelRun').mockReturnValue(false);
   const execute = vi.spyOn(internal, 'executeKernelRun').mockResolvedValue();
-  const append = async (text: string) => {
+  const append = async (text: string, extraPayload: Record<string, unknown> = {}) => {
     const frames: Frame[] = [];
     await internal.handleAppendMessage(
       {
@@ -88,7 +100,13 @@ async function fixture() {
         id: 'append',
         kind: 'request',
         type: 'task.appendMessage',
-        payload: { threadId: task.threadId, expectedTaskVersion: 0, role: 'user', text },
+        payload: {
+          threadId: task.threadId,
+          expectedTaskVersion: 0,
+          role: 'user',
+          text,
+          ...extraPayload,
+        },
       },
     );
     return frames[0];
@@ -101,8 +119,8 @@ async function fixture() {
     ).count,
   });
   const close = async () => {
-    for (const abort of internal.demoRunAborts.values()) abort.abort();
-    internal.inFlight.clear();
+    internal.demoRunAbortRegistry.abortAll();
+    internal.activeRuns.clear();
     await runtime.stop();
     connection.raw.close();
     if (
@@ -140,9 +158,8 @@ async function fixture() {
       ],
     });
     internal.demoRuns.set(active.runId, active);
-    internal.inFlight.add(active.runId);
-    const abort = new AbortController();
-    internal.demoRunAborts.set(active.runId, abort);
+    internal.activeRuns.start(active.runId);
+    const abort = internal.demoRunAbortRegistry.start(active.runId);
     const toolCall = {
       id: 'old-call',
       name: 'write_file',
@@ -196,6 +213,54 @@ async function fixture() {
 }
 
 describe('append message durable boundary', () => {
+  it('persists native image preparation after the run starts', async () => {
+    const context = await fixture();
+    try {
+      context.canStart.mockReturnValue(true);
+      vi.spyOn(context.internal, 'prepareRunBinding').mockImplementation((input) => ({
+        run: createDemoRun(input.runId, input.threadId, input.userText, {
+          kernelId: 'codex',
+          modelId: 'vision-model',
+          providerModelId: 'gpt-5.6-sol',
+          images: input.images,
+        }),
+        packetId: 'image-packet',
+        proofHash: 'image-proof',
+      }));
+      vi.spyOn(context.internal, 'adaptRunImagesForModel').mockImplementation(async (run) => {
+        run.imagesMode = 'forwarded';
+      });
+
+      const response = await context.append('请读取这张图', {
+        kernelId: 'codex',
+        images: [
+          {
+            name: 'reference.png',
+            mimeType: 'image/png',
+            dataUrl: 'data:image/png;base64,iVBORw0KGgo=',
+          },
+        ],
+      });
+
+      expect(response.error).toBeUndefined();
+      const events = context.events();
+      const startedIndex = events.findIndex((event) => event.type === 'run.started');
+      const imageIndex = events.findIndex((event) => event.type === 'context.image.prepared');
+      expect(startedIndex).toBeGreaterThanOrEqual(0);
+      expect(imageIndex).toBeGreaterThan(startedIndex);
+      expect(JSON.parse(events[imageIndex]!.payload_json)).toMatchObject({
+        imageName: 'reference.png',
+        mimeType: 'image/png',
+        path: 'reference.png',
+        route: 'forwarded',
+        preview: expect.stringContaining('Codex localImage'),
+      });
+      expect(context.execute).toHaveBeenCalledTimes(1);
+    } finally {
+      await context.close();
+    }
+  });
+
   it.each([
     ['UTF-16 escaping', '\ud800'.repeat(50_000)],
     ['UTF-8', '汉'.repeat(100_000)],
@@ -320,10 +385,10 @@ describe('superseding an active run', () => {
       expect(active.abort.signal.aborted).toBe(false);
       expect(active.resolved).not.toHaveBeenCalled();
       expect(context.internal.demoRuns.get(active.active.runId)).toBe(active.active);
-      expect(context.internal.pendingToolApprovals.has('old-approval')).toBe(true);
+      expect(context.internal.activeToolApprovals.has('old-approval')).toBe(true);
       expect(context.state()).toEqual(before);
       expect(context.internal.lastCheckpointEventSequence).toBe(checkpointBefore);
-      expect(context.internal.runKernelIds.size).toBe(0);
+      expect(context.internal.runKernelRegistry.count()).toBe(0);
       expect(active.publish).not.toHaveBeenCalled();
       expect(context.execute).not.toHaveBeenCalled();
     } finally {
@@ -343,7 +408,7 @@ describe('superseding an active run', () => {
       );
       const pending = context.append('new prompt');
       expect(active.abort.signal.aborted).toBe(false);
-      expect(context.internal.pendingToolApprovals.has('old-approval')).toBe(true);
+      expect(context.internal.activeToolApprovals.has('old-approval')).toBe(true);
       release();
       expect((await pending).error).toBeUndefined();
       expect(active.abort.signal.aborted).toBe(true);
@@ -402,7 +467,7 @@ it('checkpoints fresh maps after async preparation and never restores the supers
     const pending = context.append('new prompt');
     const concurrent = createDemoRun('other-run' as RunId, 'other-thread', 'concurrent prompt');
     context.internal.demoRuns.set(concurrent.runId, concurrent);
-    context.internal.threadVersions.set(concurrent.threadId, 7);
+    context.internal.threadVersionProjection.record(concurrent.threadId, 7);
     release();
     const response = await pending;
     expect(response.error).toBeUndefined();
@@ -443,7 +508,7 @@ it('rejects a version changed during preparation without cancelling the active r
     const response = await pending;
     expect(response.error).toMatchObject({ code: 'task.version_mismatch' });
     expect(active.abort.signal.aborted).toBe(false);
-    expect(context.internal.pendingToolApprovals.has('old-approval')).toBe(true);
+    expect(context.internal.activeToolApprovals.has('old-approval')).toBe(true);
     expect(context.state()).toEqual(before);
     expect(context.execute).not.toHaveBeenCalled();
   } finally {
@@ -493,14 +558,8 @@ it('does not let a failed ordinary timeline write suppress an identical retry', 
       .mockImplementationOnce(() => {
         throw new Error('fixture timeline write failed');
       });
-    context.internal.persistAssistantTimelineSegments(
-      active.active.runId,
-      pendingTimeline,
-    );
-    context.internal.persistAssistantTimelineSegments(
-      active.active.runId,
-      pendingTimeline,
-    );
+    context.internal.persistAssistantTimelineSegments(active.active.runId, pendingTimeline);
+    context.internal.persistAssistantTimelineSegments(active.active.runId, pendingTimeline);
     expect(write).toHaveBeenCalledTimes(2);
     expect(JSON.stringify(context.assistantTimelineStore.listSegments('old-run'))).toContain(
       'partial answer after approval',

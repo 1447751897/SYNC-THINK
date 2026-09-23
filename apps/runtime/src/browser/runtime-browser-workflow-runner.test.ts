@@ -8,6 +8,33 @@ import { BrowserWorkflowRunner } from './runtime-browser-workflow-runner.js';
 
 const tempDirs: string[] = [];
 
+it('previews the active lease during a blocked action and removes it after replay', async () => {
+  const f = await fixture();
+  let release!: () => void;
+  let started!: () => void;
+  const executing = new Promise<void>(resolve => { started = resolve; });
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  try {
+    const workflow = await publishWorkflow(f.store);
+    const host = makeFakeHost([]);
+    const execute = host.execute.bind(host);
+    host.execute = async input => { if (input.action.kind === 'navigate') { started(); await blocked; } return execute(input); };
+    host.capturePreview = async leaseId => ({ imageDataUrl: `data:image/jpeg;base64,${leaseId}`, url: 'https://example.test', capturedAt: new Date().toISOString() });
+    const runner = new BrowserWorkflowRunner({ store: f.store, host });
+    runner.recordApproval(workflow.taskId, ['https://example.test'], 'approval-preview');
+    const replay = runner.replay({ ...workflow, workflowVersionId: workflow.versionId, workspaceId: 'workspace-a', ownerId: 'preview-owner', capabilityToken: 'preview-token', signal: new AbortController().signal });
+    await executing;
+    const pages = await runner.listLivePages();
+    expect(pages).toHaveLength(1);
+    expect(pages[0]).toMatchObject({ taskId: workflow.taskId, workspaceId: 'workspace-a', currentStep: 1, imageDataUrl: 'data:image/jpeg;base64,lease:preview-owner' });
+    host.capturePreview = async () => { throw new Error('navigating'); };
+    expect((await runner.listLivePages())[0].previewError).toBeTruthy();
+    release();
+    expect((await replay).ok).toBe(true);
+    expect(await runner.listLivePages()).toEqual([]);
+  } finally { release?.(); f.connection.raw.close(); }
+});
+
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
@@ -63,7 +90,10 @@ async function publishWorkflow(
     source: 'manual',
   });
   createStoppedRecording(store, 'workflow-recording', extraSteps);
-  store.attachWorkflowDraftRecording({ draftId: draft.draft.id, recordingId: 'workflow-recording' });
+  store.attachWorkflowDraftRecording({
+    draftId: draft.draft.id,
+    recordingId: 'workflow-recording',
+  });
   store.submitWorkflowDraft({ draftId: draft.draft.id, recordingId: 'workflow-recording' });
   const reviewed = store.reviewWorkflowDraft({
     draftId: draft.draft.id,
@@ -103,12 +133,12 @@ function makeFakeHost(executed: BrowserAction[]): BrowserHostLike {
       pageId: string;
       profileId: string;
       ownerId: string;
+      relativePath?: string;
+      embedUrl?: string;
     }> {
       executed.push(input.action);
       const url =
-        input.action.kind === 'navigate'
-          ? input.action.url
-          : 'https://example.test/reports';
+        input.action.kind === 'navigate' ? input.action.url : 'https://example.test/reports';
       return {
         ok: true,
         message: `${input.action.kind} completed`,
@@ -118,6 +148,12 @@ function makeFakeHost(executed: BrowserAction[]): BrowserHostLike {
         pageId: `page:${input.leaseId}`,
         profileId: 'default',
         ownerId: 'owner',
+        ...(input.action.kind === 'screenshot'
+          ? {
+              relativePath: `.sync-think/screenshots/${input.action.fileName}`,
+              embedUrl: `sync-think-image://screenshot/${input.action.fileName}`,
+            }
+          : {}),
       };
     },
     async releaseLease(leaseId: string): Promise<void> {
@@ -130,6 +166,44 @@ function makeFakeHost(executed: BrowserAction[]): BrowserHostLike {
 }
 
 describe('BrowserWorkflowRunner', () => {
+  it('trial-runs draft steps without creating a published version or run history', async () => {
+    const f = await fixture();
+    const created = f.store.importChatAutomationTask({
+      profileId: 'default',
+      name: 'Draft trial',
+      instruction: 'Try the saved draft.',
+      startUrl: 'https://example.test/reports',
+      steps: [
+        { kind: 'navigate', url: 'https://example.test/reports' },
+        { kind: 'click', locator: { strategy: 'css', value: 'button.export' } },
+      ],
+      publish: false,
+    });
+    const executed: BrowserAction[] = [];
+    const runner = new BrowserWorkflowRunner({ store: f.store, host: makeFakeHost(executed) });
+    runner.recordApproval(created.task.id, ['https://example.test'], 'draft-trial-test');
+    const result = await runner.replayDraft({
+      workflowVersionId: created.draft.id,
+      draftId: created.draft.id,
+      taskId: created.task.id,
+      profileId: created.task.profileId,
+      workspaceId: 'ws',
+      ownerId: 'draft-trial-owner',
+      capabilityToken: 'draft-trial-token',
+      signal: new AbortController().signal,
+    });
+    expect(result).toMatchObject({ ok: true, stepCount: 2, executedStepCount: 2 });
+    expect(executed.map((action) => action.kind)).toEqual([
+      'navigate',
+      'screenshot',
+      'click',
+      'screenshot',
+    ]);
+    expect(f.store.getAutomationTask(created.task.id)?.publishedVersionId).toBeUndefined();
+    expect(f.store.listWorkflowRuns(created.task.id)).toEqual([]);
+    f.connection.raw.close();
+  });
+
   it('rejects a missing version', async () => {
     const f = await fixture();
     const runner = new BrowserWorkflowRunner({ store: f.store, host: makeFakeHost([]) });
@@ -199,9 +273,31 @@ describe('BrowserWorkflowRunner', () => {
     expect(result.stepCount).toBe(2);
     expect(result.executedStepCount).toBe(2);
     expect(result.steps.map((step) => step.ok)).toEqual([true, true]);
-    expect(executed).toHaveLength(2);
-    expect(executed[0]).toMatchObject({ kind: 'navigate', url: 'https://example.test/reports' });
-    expect(executed[1]).toMatchObject({ kind: 'click', selector: 'button.export' });
+    const replayActions = executed.filter((action) => action.kind !== 'screenshot');
+    expect(executed.filter((action) => action.kind === 'screenshot')).toHaveLength(2);
+    expect(replayActions).toHaveLength(2);
+    expect(replayActions[0]).toMatchObject({
+      kind: 'navigate',
+      url: 'https://example.test/reports',
+    });
+    expect(replayActions[1]).toMatchObject({ kind: 'click', selector: 'button.export' });
+    expect(result.runId).toMatch(/^browser-workflow-run-/);
+    expect(result.steps[0]?.screenshotRelativePath).toContain(result.runId);
+    expect(f.store.listWorkflowRuns(workflow.taskId)).toMatchObject([
+      {
+        id: result.runId,
+        status: 'succeeded',
+        executedStepCount: 2,
+        steps: [
+          { sequence: 1, status: 'succeeded' },
+          { sequence: 2, status: 'succeeded' },
+        ],
+      },
+    ]);
+    expect(f.store.getAutomationTask(workflow.taskId)).toMatchObject({
+      successCount: 1,
+      failureCount: 0,
+    });
     f.connection.raw.close();
   });
 
@@ -287,8 +383,9 @@ describe('BrowserWorkflowRunner', () => {
     });
     expect(result.ok).toBe(true);
     expect(result.steps).toHaveLength(3);
-    expect(executed).toHaveLength(3);
-    expect(executed[2]).toMatchObject({
+    const replayActions = executed.filter((action) => action.kind !== 'screenshot');
+    expect(replayActions).toHaveLength(3);
+    expect(replayActions[2]).toMatchObject({
       kind: 'fill',
       selector: '[placeholder="Search"]',
       text: 'cat names',

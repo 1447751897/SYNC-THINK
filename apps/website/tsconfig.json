@@ -1,0 +1,21 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "../..",
+    "jsx": "react-jsx",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["node", "vitest/globals"],
+    "baseUrl": "../..",
+    "paths": {
+      "@sync-think/desktop-demo-surface": [
+        "apps/desktop/src/renderer/shell/website-demo-surface.ts"
+      ]
+    }
+  },
+  "include": [
+    "src/**/*",
+    "../desktop/src/renderer/global.d.ts",
+    "../desktop/src/renderer/shell/assets.d.ts"
+  ]
+}

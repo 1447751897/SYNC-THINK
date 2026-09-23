@@ -4,13 +4,15 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ComposerMcpMenu } from './ComposerMcpMenu.js';
-import { NEWMAX_POPOVER_TRANSITION_MS } from './NewMaxComposerFrame.js';
+import { invalidateMcpCatalog } from './mcp-catalog-loader.js';
+import { NEWMAX_POPOVER_TRANSITION_MS } from '@sync-think/ui-kit';
 
 const runtime = {
   listMcpServers: vi.fn(),
 };
 
 beforeEach(() => {
+  invalidateMcpCatalog();
   runtime.listMcpServers.mockReset().mockResolvedValue({
     servers: [
       {

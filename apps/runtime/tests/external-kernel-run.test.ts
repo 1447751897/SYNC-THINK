@@ -130,6 +130,7 @@ class ExitDiagnosticKernelAdapter implements KernelAdapter {
     this.exitCallbacks.forEach((callback) =>
       callback(23, 'fixture kernel stderr: api_key=[REDACTED]'),
     );
+    yield* [] as KernelEvent[];
   }
 
   async stop(): Promise<void> {}
@@ -303,7 +304,7 @@ class DeferredKernelAdapter implements KernelAdapter {
 
 interface RuntimeExternalKernelHarness {
   demoRuns: Map<string, DemoRunState>;
-  demoRunAborts: Map<string, AbortController>;
+  demoRunAbortRegistry: import('../src/abort-controller-registry.js').AbortControllerRegistry;
   transientReplay: Array<{ kind: string; textDelta?: string }>;
   openGateway: {
     tickets: {
@@ -530,7 +531,9 @@ describe('Runtime external kernel finalization', () => {
       await fixture.harness.executeExternalKernelRun(fixture.runId);
 
       const events = fixture.stateStore.listEventsByRun(fixture.runId);
-      expect(events.filter((event) => event.type === 'conversation.plan_submitted')).toHaveLength(1);
+      expect(events.filter((event) => event.type === 'conversation.plan_submitted')).toHaveLength(
+        1,
+      );
       expect(events.at(-1)?.type).toBe('run.completed');
       expect(fixture.conversationStore.getConversationPlan(fixture.conversation.id)).toMatchObject({
         currentRevision: 1,
@@ -566,7 +569,9 @@ describe('Runtime external kernel finalization', () => {
       await fixture.harness.executeExternalKernelRun(fixture.runId);
 
       const events = fixture.stateStore.listEventsByRun(fixture.runId);
-      expect(events.filter((event) => event.type === 'conversation.plan_submitted')).toHaveLength(0);
+      expect(events.filter((event) => event.type === 'conversation.plan_submitted')).toHaveLength(
+        0,
+      );
       expect(events.filter((event) => event.type === 'run.completed')).toHaveLength(0);
       expect(events.at(-1)).toMatchObject({
         type: 'run.failed',
@@ -580,7 +585,9 @@ describe('Runtime external kernel finalization', () => {
         fixture.messageStore.listMessages(fixture.run.threadId as never).messages,
       );
       expect(assistant?.blocks).not.toContainEqual({ type: 'text', text: '方案已经创建完成。' });
-      expect(fixture.conversationStore.getConversationPlan(fixture.conversation.id)).toBeUndefined();
+      expect(
+        fixture.conversationStore.getConversationPlan(fixture.conversation.id),
+      ).toBeUndefined();
       expect(fixture.conversationStore.get(fixture.conversation.id)?.interactionMode).toBe('plan');
     } finally {
       fixture.connection.raw.close();
@@ -625,7 +632,9 @@ describe('Runtime external kernel finalization', () => {
       await fixture.harness.executeExternalKernelRun(fixture.runId);
 
       const events = fixture.stateStore.listEventsByRun(fixture.runId);
-      expect(events.filter((event) => event.type === 'conversation.plan_submitted')).toHaveLength(1);
+      expect(events.filter((event) => event.type === 'conversation.plan_submitted')).toHaveLength(
+        1,
+      );
       expect(events.at(-1)?.type).toBe('run.completed');
       expect(fixture.conversationStore.getConversationPlan(fixture.conversation.id)).toMatchObject({
         currentRevision: 1,
@@ -687,7 +696,9 @@ describe('Runtime external kernel finalization', () => {
       await recoveredHarness.executeExternalKernelRun(fixture.runId);
 
       const events = fixture.stateStore.listEventsByRun(fixture.runId);
-      expect(events.filter((event) => event.type === 'conversation.plan_submitted')).toHaveLength(1);
+      expect(events.filter((event) => event.type === 'conversation.plan_submitted')).toHaveLength(
+        1,
+      );
       expect(events.at(-1)?.type).toBe('run.completed');
       expect(fixture.conversationStore.getConversationPlan(fixture.conversation.id)).toMatchObject({
         currentRevision: 1,
@@ -726,7 +737,9 @@ describe('Runtime external kernel finalization', () => {
           .listEventsByRun(fixture.runId)
           .filter((event) => event.type === 'conversation.plan_submitted'),
       ).toHaveLength(0);
-      expect(fixture.conversationStore.getConversationPlan(fixture.conversation.id)).toBeUndefined();
+      expect(
+        fixture.conversationStore.getConversationPlan(fixture.conversation.id),
+      ).toBeUndefined();
     } finally {
       fixture.connection.raw.close();
     }
@@ -781,7 +794,9 @@ describe('Runtime external kernel finalization', () => {
       expect(adapter.requests[0]?.systemContext).not.toContain(
         'mcp__sync-think-platform__update_task_plan',
       );
-      expect(adapter.requests[0]?.systemContext).toContain('Use Claude Code native task tools for multi-step work');
+      expect(adapter.requests[0]?.systemContext).toContain(
+        'Use Claude Code native task tools for multi-step work',
+      );
       expect(adapter.requests[0]?.systemContext).toContain('TaskCreate (subject, description)');
     } finally {
       connection.raw.close();
@@ -1494,6 +1509,41 @@ describe('Runtime external kernel finalization', () => {
         mode: 'resume',
       });
 
+      // Cancelling a background Agent updates the existing parent message in
+      // place. Its sequence does not move past the native session watermark, so
+      // the host-context hash must still deliver the confirmed state.
+      messageStore.updateBlocks('message-session-assistant' as MessageId, [
+        {
+          type: 'text',
+          text: 'context remembered',
+          payload: {
+            delegatedAgents: [
+              {
+                childRunId: 'child-cancelled',
+                parentRunId: 'parent-run',
+                name: '代码审查员',
+                avatar: '代码',
+                kind: 'existing',
+                agentId: 'builtin-code-reviewer',
+                status: 'cancelled',
+                toolEvents: [{ toolName: 'read_file', status: 'completed' }],
+              },
+            ],
+          },
+        },
+      ]);
+      const cancelledAgentRequest = await resumedRuntime.buildKernelRequestForRun(
+        makeRun('run-session-agent-cancelled' as RunId, 'SKILL-V1'),
+        'run-session-agent-cancelled' as RunId,
+      );
+      expect(cancelledAgentRequest.session).toMatchObject({
+        id: establishedSessionId,
+        mode: 'resume',
+      });
+      expect(cancelledAgentRequest.session?.catchUp).toContain('## Host context update');
+      expect(cancelledAgentRequest.session?.catchUp).toContain('代码审查员：已由用户停止');
+      expect(cancelledAgentRequest.session?.catchUp).toContain('child-cancelled');
+
       const changedRequest = await resumedRuntime.buildKernelRequestForRun(
         makeRun('run-session-changed' as RunId, 'SKILL-V2'),
         'run-session-changed' as RunId,
@@ -1975,7 +2025,7 @@ describe('Runtime external kernel finalization', () => {
       await new Promise((resolve) => setTimeout(resolve, 25));
       expect(firstAdapter.requests).toHaveLength(1);
 
-      fixture.runtime.demoRunAborts.get(firstRunId)?.abort();
+      fixture.runtime.demoRunAbortRegistry.abort(firstRunId);
       await waitForPromise(firstAdapter.cancelled);
       await firstRun;
       await waitForCondition(() => firstAdapter.requests.length === 2);
@@ -2009,7 +2059,7 @@ describe('Runtime external kernel finalization', () => {
       const firstRun = fixture.runtime.executeExternalKernelRun(firstRunId);
       await waitForPromise(firstAdapter.started);
       const cancelledRun = fixture.runtime.executeExternalKernelRun(cancelledRunId);
-      fixture.runtime.demoRunAborts.get(cancelledRunId)?.abort();
+      fixture.runtime.demoRunAbortRegistry.abort(cancelledRunId);
       await waitForPromise(cancelledRun);
 
       const nextRun = fixture.runtime.executeExternalKernelRun(nextRunId);

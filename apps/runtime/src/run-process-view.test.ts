@@ -14,6 +14,43 @@ function event(input: Partial<Event> & Pick<Event, 'id' | 'sequence' | 'type' | 
 }
 
 describe('projectRunProcess', () => {
+  it.each([
+    ['forwarded', '读取图片附件', 'Codex localImage'],
+    ['described', '识别图片', '备用视觉模型'],
+    ['materialized', '准备图片附件', 'describe_image'],
+  ] as const)('projects the %s image route into the execution process', (route, zh, preview) => {
+    const runId = `run-image-${route}` as RunId;
+    const view = projectRunProcess(runId, [
+      event({
+        id: `event-image-${route}` as EventId,
+        sequence: 2,
+        runId,
+        category: 'context',
+        type: 'context.image.prepared',
+        payload: {
+          threadId: 'thread-image',
+          imageName: 'reference.png',
+          mimeType: 'image/png',
+          path: '.sync-think/conversations/conversation-1/images/reference.png',
+          route,
+          preview: `MIME：image/png；${preview}`,
+        },
+      }),
+    ]);
+
+    expect(view.steps).toEqual([
+      expect.objectContaining({
+        id: `event-image-${route}`,
+        zh,
+        toolName: 'image_input',
+        kind: 'read',
+        status: 'done',
+        path: '.sync-think/conversations/conversation-1/images/reference.png',
+        preview: expect.stringContaining(preview),
+      }),
+    ]);
+  });
+
   it('links a nameless plan completion to its request without creating a generic Tool step', () => {
     const runId = 'run-codex-plan' as RunId;
     const view = projectRunProcess(runId, [

@@ -27,7 +27,10 @@ import { gzipSync } from 'node:zlib';
 // 任何用户可见改动都会触顶。已先把新增文案压到最简（再删就会丢掉「逐次询问下仍
 // 只读」这一用户无法自行推断的语义）。**趋势警告依然成立**：真正该做的是把更新日志
 // 外置、并拆分 SettingsPage chunk，做完后此处应回落到 3_020_000 以下。
-export const SHELL_BUDGET = Object.freeze({ initialJsBytes: 2_150_000, totalJsBytes: 3_060_000 });
+// 2026-09-22: browser task dashboard adds workspace controls and live preview UI in a lazy chunk.
+// Includes the readonly task drawer and direct execution input/permission flow (3,094,418 bytes measured).
+// Keep the initial-load limit unchanged; allow 40 KB for this additional surface.
+export const SHELL_BUDGET = Object.freeze({ initialJsBytes: 2_150_000, totalJsBytes: 3_100_000 });
 
 export function shellBuildOptions(args, desktopRoot) {
   let mode = 'production';
@@ -52,7 +55,15 @@ export function shellBuildOptions(args, desktopRoot) {
       ? resolve(outputRoot, 'renderer-shell')
       : resolve(outputRoot, mode);
   assertGeneratedPath(outdir, outputRoot);
-  return { mode, outdir, outputRoot, workspaceRoot, optimized: mode !== 'development' };
+  // Renderer HTML declares UTF-8; literal Chinese avoids six-byte ASCII escapes.
+  return {
+    mode,
+    outdir,
+    outputRoot,
+    workspaceRoot,
+    optimized: mode !== 'development',
+    charset: 'utf8',
+  };
 }
 
 export function assertGeneratedPath(target, root) {

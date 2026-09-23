@@ -38,7 +38,6 @@ describe('desktop renderer build assets', () => {
     const rendererGlobalPath = join(desktopRoot, 'src/renderer/global.d.ts');
     const rendererSourcePath = join(desktopRoot, 'src/renderer/shell/ShellApp.tsx');
     const runtimeConnectionSourcePath = join(desktopRoot, 'src/renderer/runtime-connection.ts');
-    const runtimeViewStateSourcePath = join(desktopRoot, 'src/renderer/runtime-view-state.ts');
 
     expect(existsSync(htmlPath)).toBe(true);
     expect(existsSync(jsPath)).toBe(true);
@@ -89,7 +88,6 @@ describe('desktop renderer build assets', () => {
     const rendererGlobal = readFileSync(rendererGlobalPath, 'utf8');
     const rendererSource = readFileSync(rendererSourcePath, 'utf8');
     const runtimeConnectionSource = readFileSync(runtimeConnectionSourcePath, 'utf8');
-    const runtimeViewStateSource = readFileSync(runtimeViewStateSourcePath, 'utf8');
     expect(main).toContain("path.join(__dirname, '../preload/index.cjs')");
     expect(main).toContain("path.join(__dirname, '../renderer-shell/index.html')");
     expect(main).toContain(
@@ -132,9 +130,6 @@ describe('desktop renderer build assets', () => {
     expect(rendererSource.indexOf('api.onEvent?.(')).toBeLessThan(
       rendererSource.indexOf('startRuntimeConnection({'),
     );
-    expect(runtimeViewStateSource).toContain('mergeEventHistory');
-    expect(runtimeViewStateSource).toContain('projectM0EventHistory');
-    expect(runtimeViewStateSource).toContain('result.snapshot');
     expect(runtimeConnectionSource).toContain('if (!active) return');
     expect(runtimeConnectionSource).toContain('active = false');
     expect(runtimeConnectionSource).toContain('error.retryable');

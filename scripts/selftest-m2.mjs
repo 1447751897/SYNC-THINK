@@ -25,15 +25,24 @@ const expectedExitSummary = {
   restartStable: true,
 };
 
+const ANSI_ESCAPE_PATTERN = new RegExp(
+  `${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`,
+  'g',
+);
+
 const suites = [
   {
-    label: 'focused core (plan/dag/artifact/rework/policy/authorization)',
+    label: 'focused shared review policy',
+    filter: '@sync-think/shared',
+    files: ['src/review-limits.test.ts', 'src/review-transition.test.ts'],
+  },
+  {
+    label: 'focused core (plan/dag/artifact/policy/authorization)',
     filter: '@sync-think/core',
     files: [
       'src/plan-revision.test.ts',
       'src/dag.test.ts',
       'src/artifact-merge.test.ts',
-      'src/rework-policy.test.ts',
       'src/participation-policy.test.ts',
       'src/scoped-policy.test.ts',
       'src/approval-policy.test.ts',
@@ -70,14 +79,14 @@ const suites = [
     ],
   },
   {
-    label: 'Desktop orchestration payloads + M2 workspace',
+    label: 'Desktop orchestration payloads',
     filter: '@sync-think/desktop',
-    files: ['tests/orchestration-payloads.test.ts', 'tests/m2-workspace.test.ts'],
+    files: ['tests/orchestration-payloads.test.ts'],
   },
 ];
 
 function stripAnsi(value) {
-  return value.replace(/\u001B\[[0-?]*[ -/]*[@-~]/g, '');
+  return value.replace(ANSI_ESCAPE_PATTERN, '');
 }
 
 function parseSuiteTimeoutMs(env = process.env) {
@@ -759,7 +768,7 @@ async function runControlledSelfTests() {
     },
     log: () => {},
   });
-  assert.equal(controlledSuites.length, 5);
+  assert.equal(controlledSuites.length, 6);
   assert.deepEqual(workflowOrder, [
     'harness',
     'controlled suite 1',
@@ -767,6 +776,7 @@ async function runControlledSelfTests() {
     'controlled suite 3',
     'controlled suite 4',
     'controlled suite 5',
+    'controlled suite 6',
   ]);
   console.log('[M2 selftest] controlled failure/timeout paths PASS');
 }

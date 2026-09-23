@@ -1,9 +1,9 @@
-import type { InlineProcessItem } from './ChatView.js';
-import type { ExecutionProcessView } from './execution-process.js';
+import type { InlineProcessItem } from './conversation-types.js';
+import type { RunProcessView } from '@sync-think/protocol';
 
 export function reconcileProcessItemOutcomes(
   items: InlineProcessItem[] | undefined,
-  process: Pick<ExecutionProcessView, 'steps' | 'completedAt'> | undefined,
+  process: Pick<RunProcessView, 'steps' | 'completedAt'> | undefined,
 ): InlineProcessItem[] | undefined {
   if (!items || !process) return items;
   const steps = new Map(process.steps.map((step) => [step.id, step]));

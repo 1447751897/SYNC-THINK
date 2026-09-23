@@ -139,8 +139,8 @@ export const COLOR_THEME_OPTIONS: readonly ColorThemeOption[] = [
   },
   {
     id: 'default',
-    name: '墨绿',
-    description: '经典深绿，温暖米色背景',
+    name: 'Be UI',
+    description: '中性黑白界面，蓝色操作强调',
     light: {
       background: 'var(--preference-color-default-light-background)',
       accent: 'var(--preference-color-default-light-accent)',

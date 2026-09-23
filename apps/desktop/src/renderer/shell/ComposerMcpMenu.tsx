@@ -1,7 +1,8 @@
 import { useEffect, useState, type CSSProperties } from 'react';
 import { ArrowUpRight } from 'lucide-react';
 import type { McpServerSummary } from '@sync-think/protocol';
-import { useNewMaxPopoverPresence } from './NewMaxComposerFrame.js';
+import { useNewMaxPopoverPresence } from '@sync-think/ui-kit';
+import { loadMcpCatalog } from './mcp-catalog-loader.js';
 
 type ComposerMcpServer = McpServerSummary & {
   description?: string;
@@ -55,8 +56,7 @@ export function ComposerMcpMenu({
       setError('当前桌面版本未提供 MCP 状态');
       return;
     }
-    void runtime
-      .listMcpServers({ limit: 100 })
+    void loadMcpCatalog(runtime)
       .then((response) => {
         if (!cancelled) setServers(response.servers);
       })

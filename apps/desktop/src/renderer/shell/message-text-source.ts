@@ -1,5 +1,5 @@
 import type { ConversationId } from '@sync-think/shared';
-import type { MessageTextPart } from './MessageTextContent.js';
+import type { MessageTextPart } from './message-text-types.js';
 import { deferredContentReader } from './deferred-content-reader.js';
 
 export async function resolveMessageText(

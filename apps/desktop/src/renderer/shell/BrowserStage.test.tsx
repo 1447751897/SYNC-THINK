@@ -14,7 +14,7 @@ import type {
   ReviewBrowserWorkflowDraftResponse,
 } from '@sync-think/protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { BrowserStage } from './BrowserStage.js';
+import { BrowserProfileManager as BrowserStage } from './BrowserStage.js';
 
 const defaultProfile: BrowserProfileSummary = {
   id: 'default',
@@ -285,6 +285,8 @@ const api = {
     ),
     start: vi.fn(async () => ({ recording: activeRecording })),
     stop: vi.fn(async () => ({ recording: stoppedRecording })),
+    pause: vi.fn(async () => ({ recording: activeRecording })),
+    resume: vi.fn(async () => ({ recording: activeRecording })),
   },
   browserWorkflow: {
     list: vi.fn(async () => ({ tasks: [] as BrowserAutomationTaskSummary[] })),
@@ -296,6 +298,19 @@ const api = {
     createDraft: vi.fn(async () => ({ task: draftTask, draft: workflowDraft })),
     createRevisionDraft: vi.fn(async () => ({ task: revisionTask, draft: revisionDraft })),
     submit: vi.fn(async () => ({ task: pendingTask, draft: pendingDraft })),
+    save: vi.fn(async () => ({ task: draftTask, draft: workflowDraft })),
+    publish: vi.fn(async () => ({
+      task: enabledTask,
+      draft: { ...workflowDraft, status: 'approved' as const },
+      version: publishedVersion,
+    })),
+    importChat: vi.fn(async ({ publish }: { publish: boolean }) => ({
+      task: publish ? enabledTask : draftTask,
+      draft: publish
+        ? { ...workflowDraft, status: 'approved' as const }
+        : { ...workflowDraft, status: 'editing' as const },
+      ...(publish ? { version: publishedVersion } : {}),
+    })),
     review: vi.fn(async (): Promise<ReviewBrowserWorkflowDraftResponse> => ({
       task: enabledTask,
       draft: { ...pendingDraft, status: 'approved' as const },
@@ -310,6 +325,14 @@ const api = {
       executedStepCount: 1,
       steps: [{ sequence: 1, ok: true, actionKind: 'navigate' }],
     })),
+    executeDraft: vi.fn(async () => ({
+      ok: true as const,
+      taskId: draftTask.id,
+      profileId: draftTask.profileId,
+      stepCount: 1,
+      executedStepCount: 1,
+      steps: [{ sequence: 1, ok: true, actionKind: 'navigate' }],
+    })),
     approveAndExecute: vi.fn(async () => ({
       ok: true as const,
       taskId: enabledTask.id,
@@ -318,6 +341,16 @@ const api = {
       stepCount: 1,
       executedStepCount: 1,
       steps: [{ sequence: 1, ok: true, actionKind: 'navigate' }],
+    })),
+    updateSchedule: vi.fn(async () => ({
+      schedule: {
+        taskId: enabledTask.id,
+        enabled: true,
+        intervalMinutes: 30,
+        nextRunAt: '2026-08-05T05:00:00.000Z',
+        revision: 1,
+        updatedAt: '2026-08-05T04:30:00.000Z',
+      },
     })),
   },
   browserExtension: {
@@ -380,6 +413,8 @@ beforeEach(() => {
   });
   api.browserRecording.start.mockReset().mockResolvedValue({ recording: activeRecording });
   api.browserRecording.stop.mockReset().mockResolvedValue({ recording: stoppedRecording });
+  api.browserRecording.pause.mockReset().mockResolvedValue({ recording: activeRecording });
+  api.browserRecording.resume.mockReset().mockResolvedValue({ recording: activeRecording });
   api.browserWorkflow.list.mockReset().mockResolvedValue({ tasks: [] });
   api.browserWorkflow.get.mockReset().mockResolvedValue({
     task: draftTask,
@@ -395,6 +430,19 @@ beforeEach(() => {
   api.browserWorkflow.submit
     .mockReset()
     .mockResolvedValue({ task: pendingTask, draft: pendingDraft });
+  api.browserWorkflow.save.mockReset().mockResolvedValue({ task: draftTask, draft: workflowDraft });
+  api.browserWorkflow.publish.mockReset().mockResolvedValue({
+    task: enabledTask,
+    draft: { ...workflowDraft, status: 'approved' },
+    version: publishedVersion,
+  });
+  api.browserWorkflow.importChat.mockReset().mockImplementation(async ({ publish }) => ({
+    task: publish ? enabledTask : draftTask,
+    draft: publish
+      ? { ...workflowDraft, status: 'approved' as const }
+      : { ...workflowDraft, status: 'editing' as const },
+    ...(publish ? { version: publishedVersion } : {}),
+  }));
   api.browserWorkflow.review.mockReset().mockResolvedValue({
     task: enabledTask,
     draft: { ...pendingDraft, status: 'approved' },
@@ -409,6 +457,14 @@ beforeEach(() => {
     executedStepCount: 1,
     steps: [{ sequence: 1, ok: true, actionKind: 'navigate' }],
   });
+  api.browserWorkflow.executeDraft.mockReset().mockResolvedValue({
+    ok: true,
+    taskId: draftTask.id,
+    profileId: draftTask.profileId,
+    stepCount: 1,
+    executedStepCount: 1,
+    steps: [{ sequence: 1, ok: true, actionKind: 'navigate' }],
+  });
   api.browserWorkflow.approveAndExecute.mockReset().mockResolvedValue({
     ok: true,
     taskId: enabledTask.id,
@@ -417,6 +473,16 @@ beforeEach(() => {
     stepCount: 1,
     executedStepCount: 1,
     steps: [{ sequence: 1, ok: true, actionKind: 'navigate' }],
+  });
+  api.browserWorkflow.updateSchedule.mockReset().mockResolvedValue({
+    schedule: {
+      taskId: enabledTask.id,
+      enabled: true,
+      intervalMinutes: 30,
+      nextRunAt: '2026-08-05T05:00:00.000Z',
+      revision: 1,
+      updatedAt: '2026-08-05T04:30:00.000Z',
+    },
   });
   api.browserExtension.status.mockReset().mockResolvedValue({
     state: 'disconnected',
@@ -470,7 +536,9 @@ describe('BrowserStage Runtime Profiles', () => {
     await waitFor(() => expect(screen.getAllByText('默认浏览器').length).toBeGreaterThan(0));
     expect(screen.getByText('自动化任务')).toBeTruthy();
     expect(screen.getByText('内置浏览器')).toBeTruthy();
-    expect(screen.getByTestId('browser-execution-host-status').textContent).toContain('当前执行宿主');
+    expect(screen.getByTestId('browser-execution-host-status').textContent).toContain(
+      '当前执行宿主',
+    );
     expect(screen.getByTestId('chrome-extension-bridge-card')).toBeTruthy();
     await waitFor(() =>
       expect(screen.getByTestId('chrome-extension-status').textContent).toContain('未连接'),
@@ -549,6 +617,7 @@ describe('BrowserStage Runtime Profiles', () => {
     await waitFor(() => expect(screen.getByText('example.com')).toBeTruthy());
     expect(screen.getByText('已验证登录')).toBeTruthy();
     expect(screen.getByText(/2 Cookie/)).toBeTruthy();
+    expect(screen.getByText(/1\.0 KB/)).toBeTruthy();
     expect(api.listBrowserSiteSessions).toHaveBeenCalledWith({
       profileId: 'default',
       refresh: false,
@@ -716,7 +785,7 @@ describe('BrowserStage Runtime Profiles', () => {
     expect(screen.queryByTestId('browser-workflow-submit')).toBeNull();
   });
 
-  it('submits the final durable recording steps for workflow review', async () => {
+  it('saves the final durable recording steps as a workflow draft', async () => {
     render(<BrowserStage />);
     await waitFor(() => expect(screen.getByText('还没有自动化任务')).toBeTruthy());
     fireEvent.click(screen.getByTestId('browser-workflow-create-manual'));
@@ -750,9 +819,10 @@ describe('BrowserStage Runtime Profiles', () => {
       }),
     );
     fireEvent.click(await screen.findByTestId('browser-workflow-submit'));
+    fireEvent.click(await screen.findByTestId('browser-workflow-save-draft'));
 
     await waitFor(() =>
-      expect(api.browserWorkflow.submit).toHaveBeenCalledWith({
+      expect(api.browserWorkflow.save).toHaveBeenCalledWith({
         draftId: workflowDraft.id,
         recordingId: activeRecording.id,
       }),
@@ -838,9 +908,10 @@ describe('BrowserStage Runtime Profiles', () => {
     );
     fireEvent.click(await screen.findByTestId('browser-recording-stop'));
     fireEvent.click(await screen.findByTestId('browser-workflow-submit'));
+    fireEvent.click(await screen.findByTestId('browser-workflow-save-draft'));
 
     await waitFor(() =>
-      expect(api.browserWorkflow.submit).toHaveBeenCalledWith({
+      expect(api.browserWorkflow.save).toHaveBeenCalledWith({
         draftId: rejectedDraft.id,
         recordingId: newRecording.id,
       }),
@@ -1024,6 +1095,93 @@ describe('BrowserStage Runtime Profiles', () => {
       expect(api.browserWorkflow.execute).toHaveBeenCalledWith({ taskId: enabledTask.id }),
     );
     expect(await screen.findByText(/执行完成/)).toBeTruthy();
+  });
+
+  it('trial-runs a saved draft without publishing it', async () => {
+    const savedDraft: BrowserWorkflowDraftSummary = {
+      ...workflowDraft,
+      steps: [{ kind: 'navigate', url: draftTask.startUrl }],
+      stepCount: 1,
+      revision: 2,
+    };
+    api.browserWorkflow.list.mockResolvedValue({ tasks: [draftTask] });
+    api.browserWorkflow.get.mockResolvedValue({
+      task: draftTask,
+      draft: savedDraft,
+      ...emptyWorkflowReviews,
+    });
+    render(<BrowserStage />);
+
+    fireEvent.click(await screen.findByTestId(`browser-workflow-execute-${draftTask.id}`));
+    expect(await screen.findByText('试运行自动化草稿')).toBeTruthy();
+    fireEvent.click(screen.getByTestId('browser-workflow-run'));
+
+    await waitFor(() =>
+      expect(api.browserWorkflow.executeDraft).toHaveBeenCalledWith({ taskId: draftTask.id }),
+    );
+    expect(api.browserWorkflow.execute).not.toHaveBeenCalled();
+  });
+
+  it('renders persisted run evidence and enables a fixed-interval schedule', async () => {
+    api.browserWorkflow.list.mockResolvedValue({ tasks: [enabledTask] });
+    api.browserWorkflow.get.mockResolvedValue({
+      task: enabledTask,
+      draft: approvedDraft,
+      version: publishedVersion,
+      reviews: [approvedReview],
+      reviewsTruncated: false,
+      recentRuns: [
+        {
+          id: 'browser-run-weekly-report-1',
+          taskId: enabledTask.id,
+          versionId: publishedVersion.id,
+          trigger: 'manual',
+          status: 'succeeded',
+          stepCount: 1,
+          executedStepCount: 1,
+          startedAt: '2026-08-05T04:20:00.000Z',
+          completedAt: '2026-08-05T04:20:03.000Z',
+          steps: [
+            {
+              sequence: 1,
+              ok: true,
+              actionKind: 'navigate',
+              screenshotEmbedUrl: 'sync-think-image://browser-run-weekly-report-1/step-1',
+            },
+          ],
+        },
+      ],
+      schedule: {
+        taskId: enabledTask.id,
+        enabled: false,
+        intervalMinutes: 60,
+        revision: 0,
+        updatedAt: '2026-08-05T04:15:00.000Z',
+      },
+    });
+    render(<BrowserStage />);
+
+    const taskRow = await screen.findByTestId(`browser-workflow-task-${enabledTask.id}`);
+    expect(within(taskRow).getByText('最近运行')).toBeTruthy();
+    expect(within(taskRow).getByText(/成功 · 1\/1 步/)).toBeTruthy();
+    expect(within(taskRow).getByAltText(`任务 ${enabledTask.name} 的运行截图`)).toBeTruthy();
+
+    const interval = within(taskRow).getByTestId(
+      `browser-workflow-schedule-interval-${enabledTask.id}`,
+    );
+    fireEvent.change(interval, { target: { value: '30' } });
+    fireEvent.click(
+      within(taskRow).getByTestId(`browser-workflow-schedule-toggle-${enabledTask.id}`),
+    );
+
+    await waitFor(() =>
+      expect(api.browserWorkflow.updateSchedule).toHaveBeenCalledWith({
+        taskId: enabledTask.id,
+        enabled: true,
+        intervalMinutes: 30,
+        expectedRevision: 0,
+      }),
+    );
   });
 
   it('reviews V2 from the current draft steps instead of the published V1 steps', async () => {
@@ -1335,9 +1493,43 @@ describe('BrowserStage Runtime Profiles', () => {
       }),
     );
     await waitFor(() => expect(screen.getByText('已停止')).toBeTruthy());
+    fireEvent.click(await screen.findByTestId('browser-workflow-save-dialog-close'));
     expect(
       (screen.getByRole('button', { name: '选择 Profile 工作号' }) as HTMLButtonElement).disabled,
     ).toBe(false);
+  });
+
+  it('offers save and publish after a standalone recording and imports it as manual', async () => {
+    render(<BrowserStage />);
+    await waitFor(() => expect(screen.getAllByText('默认浏览器')).toHaveLength(2));
+    fireEvent.click(screen.getByRole('button', { name: '录制记录' }));
+    fireEvent.click(screen.getByTestId('browser-recording-start'));
+    fireEvent.click(await screen.findByTestId('browser-recording-stop'));
+
+    expect(await screen.findByTestId('browser-workflow-save-dialog')).toBeTruthy();
+    expect(screen.getByTestId('browser-workflow-save-draft')).toBeTruthy();
+    fireEvent.click(screen.getByTestId('browser-workflow-publish'));
+
+    await waitFor(() =>
+      expect(api.browserWorkflow.importChat).toHaveBeenCalledWith({
+        profileId: defaultProfile.id,
+        name: expect.stringContaining('浏览器录制'),
+        instruction: `复现从 ${activeRecording.startUrl} 开始的已录制浏览器操作。`,
+        startUrl: activeRecording.startUrl,
+        steps: [
+          {
+            kind: 'fill',
+            locator: { strategy: 'label', value: '登录密码' },
+            value: { kind: 'secret' },
+          },
+        ],
+        publish: true,
+        source: 'manual',
+      }),
+    );
+    expect(screen.getByRole('button', { name: '自动化任务' }).getAttribute('aria-pressed')).toBe(
+      'true',
+    );
   });
 
   it('reloads the final durable steps after stop drains pending mutations', async () => {

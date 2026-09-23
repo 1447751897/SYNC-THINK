@@ -3,6 +3,7 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  type KeyboardEvent,
   type ReactNode,
 } from 'react';
 import clsx from 'clsx';
@@ -51,6 +52,36 @@ export function DsTabBar<T extends string>({
   });
   const pad = SIZE[size].pad;
   const iconPx = SIZE[size].icon;
+  const firstEnabledIndex = items.findIndex((item) => !item.disabled);
+
+  const activateTab = (index: number) => {
+    const item = items[index];
+    if (!item || item.disabled) return;
+    onChange(item.value);
+    btnRefs.current[index]?.focus();
+  };
+
+  const handleKeyDown = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
+    const enabledIndexes = items.flatMap((item, itemIndex) => (item.disabled ? [] : [itemIndex]));
+    if (enabledIndexes.length === 0) return;
+
+    const currentPosition = Math.max(0, enabledIndexes.indexOf(index));
+    let nextIndex: number | undefined;
+    if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
+      nextIndex = enabledIndexes[(currentPosition + 1) % enabledIndexes.length];
+    } else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+      nextIndex =
+        enabledIndexes[(currentPosition - 1 + enabledIndexes.length) % enabledIndexes.length];
+    } else if (event.key === 'Home') {
+      nextIndex = enabledIndexes[0];
+    } else if (event.key === 'End') {
+      nextIndex = enabledIndexes[enabledIndexes.length - 1];
+    }
+
+    if (nextIndex === undefined) return;
+    event.preventDefault();
+    activateTab(nextIndex);
+  };
 
   useLayoutEffect(() => {
     if (selectedIndex < 0) {
@@ -104,10 +135,7 @@ export function DsTabBar<T extends string>({
       {indicator.width > 0 ? (
         <div
           aria-hidden="true"
-          className={clsx(
-            'shell-ds-tab-bar__indicator',
-            indicator.animated && 'is-animated',
-          )}
+          className={clsx('shell-ds-tab-bar__indicator', indicator.animated && 'is-animated')}
           style={{
             top: pad,
             left: indicator.left,
@@ -130,6 +158,7 @@ export function DsTabBar<T extends string>({
             aria-label={item.tooltip ?? item.label}
             title={item.tooltip ?? item.label}
             aria-selected={selected}
+            tabIndex={selected || (selectedIndex < 0 && index === firstEnabledIndex) ? 0 : -1}
             className={clsx(
               'shell-ds-tab-bar__tab',
               selected && 'is-active',
@@ -138,6 +167,7 @@ export function DsTabBar<T extends string>({
             onClick={() => {
               if (!item.disabled) onChange(item.value);
             }}
+            onKeyDown={(event) => handleKeyDown(event, index)}
           >
             {item.icon ? (
               <span className="shell-ds-tab-bar__icon" style={{ width: iconPx, height: iconPx }}>

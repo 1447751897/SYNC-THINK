@@ -17,6 +17,7 @@ import {
   ChevronDown,
   ChevronRight,
   CircleAlert,
+  Clock3,
   FileCheck2,
   Globe2,
   History,
@@ -36,7 +37,7 @@ import {
   Workflow,
   X,
 } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import clsx from 'clsx';
 import { ChromeExtensionBridgeCard } from './ChromeExtensionBridgeCard.js';
 
@@ -51,6 +52,7 @@ export interface BrowserWorkflowDraftContext {
 }
 
 export interface BrowserWorkflowAiTaskRequest {
+  workspaceId?: string;
   profileId: string;
   profileName: string;
   name: string;
@@ -60,6 +62,8 @@ export interface BrowserWorkflowAiTaskRequest {
 }
 
 interface BrowserWorkflowPanelProps {
+  workspaceId?: string;
+  taskId?: string;
   profile: BrowserProfileSummary;
   refreshToken: number;
   onStartAiTask?(request: BrowserWorkflowAiTaskRequest): void;
@@ -94,6 +98,7 @@ export function BrowserWorkflowPanel(props: BrowserWorkflowPanelProps): JSX.Elem
           ...(nextQuery ? { query: nextQuery } : {}),
           limit: 100,
         });
+        if (props.taskId) response.tasks = response.tasks.filter(task => task.id === props.taskId);
         setTasks(response.tasks);
         setExpandedTaskId((current) =>
           current && response.tasks.some((task) => task.id === current)
@@ -121,7 +126,7 @@ export function BrowserWorkflowPanel(props: BrowserWorkflowPanelProps): JSX.Elem
         setLoading(false);
       }
     },
-    [profile.id],
+    [profile.id, props.taskId],
   );
 
   useEffect(() => {
@@ -146,10 +151,10 @@ export function BrowserWorkflowPanel(props: BrowserWorkflowPanelProps): JSX.Elem
             (await workflowRuntime().browserWorkflow.get({ taskId: task.id })),
         );
         setDetailsByTaskId((current) => ({ ...current, [task.id]: detail }));
-        if (!detail.version) {
+        if (!detail.version && !detail.draft?.steps.length) {
           setFeedback({
             kind: 'error',
-            text: '此任务还没有可执行的已发布版本。请先录制并审核发布。',
+            text: '此任务还没有可试运行的录制步骤。',
           });
           return;
         }
@@ -209,6 +214,33 @@ export function BrowserWorkflowPanel(props: BrowserWorkflowPanelProps): JSX.Elem
       }
     },
     [detailsByTaskId, onRecordWorkflow],
+  );
+
+  const updateSchedule = useCallback(
+    async (task: BrowserAutomationTaskSummary, enabled: boolean, intervalMinutes: number) => {
+      const detail = detailsByTaskId[task.id];
+      setBusyAction(`schedule:${task.id}`);
+      try {
+        await workflowRuntime().browserWorkflow.updateSchedule({
+          taskId: task.id,
+          enabled,
+          intervalMinutes,
+          ...(detail?.schedule ? { expectedRevision: detail.schedule.revision } : {}),
+        });
+        setFeedback({
+          kind: 'success',
+          text: enabled
+            ? `任务「${task.name}」已启用，每 ${intervalMinutes} 分钟运行一次。`
+            : `任务「${task.name}」的定时运行已暂停。`,
+        });
+        await loadTasks(appliedQuery, true);
+      } catch (error) {
+        setFeedback({ kind: 'error', text: workflowErrorMessage(error) });
+      } finally {
+        setBusyAction(undefined);
+      }
+    },
+    [appliedQuery, detailsByTaskId, loadTasks],
   );
 
   const reviewDraft = useCallback(
@@ -315,9 +347,7 @@ export function BrowserWorkflowPanel(props: BrowserWorkflowPanelProps): JSX.Elem
             data-testid="browser-workflow-feedback"
             className={clsx(
               'browser-workflow__feedback',
-              feedback.kind === 'error'
-                ? 'is-error'
-                : 'is-success',
+              feedback.kind === 'error' ? 'is-error' : 'is-success',
             )}
           >
             <span>{feedback.text}</span>
@@ -340,7 +370,7 @@ export function BrowserWorkflowPanel(props: BrowserWorkflowPanelProps): JSX.Elem
           </span>
           <div className="min-w-0 flex-1">
             <strong>描述任务后，在对话中由 AI 创建可编辑草稿。</strong>
-            <span>草稿保存后会回到这里继续录制、审核和发布。</span>
+            <span>草稿保存后会回到这里继续录制、试运行或发布。</span>
           </div>
           <button
             type="button"
@@ -363,7 +393,7 @@ export function BrowserWorkflowPanel(props: BrowserWorkflowPanelProps): JSX.Elem
               {appliedQuery ? '没有匹配的自动化任务' : '还没有自动化任务'}
             </div>
             <div className="mt-1 max-w-[390px] text-[11.5px] leading-5 text-text-faint">
-              创建草稿后录制浏览器操作，确认步骤并提交审核。审核通过会发布一个不可变的工作流版本。
+              创建草稿后录制浏览器操作，确认步骤后可保存草稿或直接发布正式任务。
             </div>
             {!appliedQuery ? (
               <div className="mt-4 flex items-center gap-2">
@@ -394,12 +424,16 @@ export function BrowserWorkflowPanel(props: BrowserWorkflowPanelProps): JSX.Elem
                 task={task}
                 detail={detailsByTaskId[task.id]}
                 busy={busyAction === `task:${task.id}`}
+                scheduleBusy={busyAction === `schedule:${task.id}`}
                 expanded={expandedTaskId === task.id}
                 onToggle={() =>
                   setExpandedTaskId((current) => (current === task.id ? undefined : task.id))
                 }
                 onOpen={(intent) => void openTask(task, intent)}
                 onExecute={(target) => void openExecute(target)}
+                onSchedule={(enabled, intervalMinutes) =>
+                  void updateSchedule(task, enabled, intervalMinutes)
+                }
               />
             ))}
           </div>
@@ -407,6 +441,7 @@ export function BrowserWorkflowPanel(props: BrowserWorkflowPanelProps): JSX.Elem
       </div>
 
       <WorkflowCreateDialog
+        workspaceId={props.workspaceId}
         profile={profile}
         source={createSource}
         onOpenChange={(open) => {
@@ -481,12 +516,19 @@ function WorkflowTaskRow(props: {
   task: BrowserAutomationTaskSummary;
   detail?: GetBrowserWorkflowResponse;
   busy: boolean;
+  scheduleBusy: boolean;
   expanded: boolean;
   onToggle(): void;
   onOpen(intent: 'view' | 'record' | 'revision'): void;
   onExecute(task: BrowserAutomationTaskSummary): void;
+  onSchedule(enabled: boolean, intervalMinutes: number): void;
 }): JSX.Element {
-  const { task, detail, busy, expanded, onToggle, onOpen, onExecute } = props;
+  const { task, detail, busy, scheduleBusy, expanded, onToggle, onOpen, onExecute, onSchedule } =
+    props;
+  const [intervalMinutes, setIntervalMinutes] = useState(detail?.schedule?.intervalMinutes ?? 60);
+  useEffect(() => {
+    setIntervalMinutes(detail?.schedule?.intervalMinutes ?? 60);
+  }, [detail?.schedule?.intervalMinutes]);
   const state = workflowTaskState(task, detail?.draft, detail?.version);
   const StateIcon = state.icon;
   const canRecord = task.status === 'draft' && Boolean(detail?.draft);
@@ -527,9 +569,7 @@ function WorkflowTaskRow(props: {
               </span>
             </span>
             {!expanded ? (
-              <span className="browser-workflow-card__collapsed-summary">
-                {task.instruction}
-              </span>
+              <span className="browser-workflow-card__collapsed-summary">{task.instruction}</span>
             ) : null}
           </span>
         </button>
@@ -539,7 +579,8 @@ function WorkflowTaskRow(props: {
             {state.label}
           </span>
           <span className="browser-workflow-card__success">
-            成功率 {task.successCount + task.failureCount > 0
+            成功率{' '}
+            {task.successCount + task.failureCount > 0
               ? `${Math.round((task.successCount / (task.successCount + task.failureCount)) * 100)}%`
               : '—'}
           </span>
@@ -560,9 +601,9 @@ function WorkflowTaskRow(props: {
             <span>执行策略</span>
             <p>
               {detail?.version
-                ? `运行已审核发布的 V${detail.version.versionNumber}，共 ${detail.version.stepCount} 个浏览器动作。`
+                ? `运行已发布的 V${detail.version.versionNumber}，共 ${detail.version.stepCount} 个浏览器动作。`
                 : detail?.draft
-                  ? `当前草稿包含 ${detail.draft.stepCount} 个录制动作，完成后提交审核。`
+                  ? `当前草稿包含 ${detail.draft.stepCount} 个录制动作，可继续编辑或手动试运行。`
                   : '打开任务详情，检查目标、录制步骤和审核状态。'}
             </p>
           </div>
@@ -577,9 +618,101 @@ function WorkflowTaskRow(props: {
             </span>
             <span>{state.detail}</span>
           </div>
+          {task.status === 'enabled' ? (
+            <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-border pt-3">
+              <span className="flex items-center gap-1 text-[10.5px] font-medium text-text-secondary">
+                <Clock3 size={12} />
+                定时运行
+              </span>
+              <input
+                data-testid={`browser-workflow-schedule-interval-${task.id}`}
+                type="number"
+                min={5}
+                max={10080}
+                className="h-7 w-20 rounded-md border border-border bg-elevated px-2 text-[11px] text-text"
+                value={intervalMinutes}
+                disabled={scheduleBusy}
+                onChange={(event) => setIntervalMinutes(Number(event.target.value))}
+              />
+              <span className="text-[10.5px] text-text-faint">分钟</span>
+              <button
+                type="button"
+                data-testid={`browser-workflow-schedule-toggle-${task.id}`}
+                className={clsx(
+                  'browser-workflow__button',
+                  detail?.schedule?.enabled && 'browser-workflow__button--warning',
+                )}
+                disabled={scheduleBusy || intervalMinutes < 5 || intervalMinutes > 10080}
+                onClick={() => onSchedule(!detail?.schedule?.enabled, intervalMinutes)}
+              >
+                {scheduleBusy ? (
+                  <LoaderCircle className="animate-spin" size={11} />
+                ) : (
+                  <Clock3 size={11} />
+                )}
+                {detail?.schedule?.enabled ? '暂停定时' : '启用定时'}
+              </button>
+              {detail?.schedule?.nextRunAt ? (
+                <span className="text-[10.5px] text-text-faint">
+                  下次 {new Date(detail.schedule.nextRunAt).toLocaleString()}
+                </span>
+              ) : null}
+            </div>
+          ) : null}
+          {detail?.recentRuns?.length ? (
+            <div
+              className="mt-3 border-t border-border pt-3"
+              data-testid={`browser-workflow-history-${task.id}`}
+            >
+              <div className="mb-2 flex items-center gap-1 text-[10.5px] font-medium text-text-secondary">
+                <History size={12} /> 最近运行
+              </div>
+              <div className="space-y-2">
+                {detail.recentRuns.slice(0, 5).map((run) => (
+                  <div
+                    key={run.id}
+                    className="flex items-start justify-between gap-3 text-[10.5px]"
+                  >
+                    <div className="min-w-0">
+                      <div
+                        className={
+                          run.status === 'succeeded'
+                            ? 'text-success'
+                            : run.status === 'running'
+                              ? 'text-warning'
+                              : 'text-error'
+                        }
+                      >
+                        {workflowRunStatusLabel(run.status)} · {run.executedStepCount}/
+                        {run.stepCount} 步
+                        {run.failedStepSequence ? ` · 第 ${run.failedStepSequence} 步失败` : ''}
+                      </div>
+                      <div className="truncate text-text-faint">
+                        {new Date(run.startedAt).toLocaleString()}
+                        {run.trigger === 'schedule'
+                          ? ' · 定时'
+                          : run.trigger === 'chat'
+                            ? ' · 对话'
+                            : ' · 手动'}
+                      </div>
+                      {run.error ? <div className="truncate text-error">{run.error}</div> : null}
+                    </div>
+                    {run.steps.find((step) => step.screenshotEmbedUrl)?.screenshotEmbedUrl ? (
+                      <img
+                        className="h-10 w-16 shrink-0 rounded border border-border object-cover"
+                        src={run.steps.find((step) => step.screenshotEmbedUrl)!.screenshotEmbedUrl}
+                        alt={`任务 ${task.name} 的运行截图`}
+                      />
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
           <div className="browser-workflow-card__actions">
             <div className="flex items-center gap-2">
-              {task.status === 'enabled' ? (
+              {task.status === 'enabled' ||
+              (task.status === 'draft' && (detail?.draft?.stepCount ?? 0) > 0) ? (
                 <button
                   type="button"
                   data-testid={`browser-workflow-execute-${task.id}`}
@@ -588,7 +721,7 @@ function WorkflowTaskRow(props: {
                   onClick={() => onExecute(task)}
                 >
                   {busy ? <LoaderCircle className="animate-spin" size={11} /> : <Play size={11} />}
-                  执行任务
+                  {task.status === 'draft' ? '试运行草稿' : '执行任务'}
                 </button>
               ) : null}
               <button
@@ -618,7 +751,9 @@ function WorkflowTaskRow(props: {
   );
 }
 
-function WorkflowCreateDialog(props: {
+export function WorkflowCreateDialog(props: {
+  contextControls?: ReactNode;
+  workspaceId?: string;
   profile: BrowserProfileSummary;
   source?: BrowserAutomationSource;
   onOpenChange(open: boolean): void;
@@ -660,6 +795,7 @@ function WorkflowCreateDialog(props: {
           return;
         }
         const request = {
+          ...(props.workspaceId ? { workspaceId: props.workspaceId } : {}),
           profileId: profile.id,
           profileName: profile.name,
           name: name.trim(),
@@ -669,11 +805,12 @@ function WorkflowCreateDialog(props: {
         onOpenChange(false);
         onAiRequested({
           ...request,
-          prompt: buildBrowserWorkflowAiPrompt(request),
+          prompt: buildBrowserWorkflowAiPrompt(request) + (props.workspaceId ? `\n任务所属 workspaceId：${props.workspaceId}，创建草稿时请传入该字段。` : ''),
         });
         return;
       }
       const response = await workflowRuntime().browserWorkflow.createDraft({
+        ...(props.workspaceId ? { workspaceId: props.workspaceId } : {}),
         profileId: profile.id,
         name: name.trim(),
         instruction: instruction.trim(),
@@ -703,6 +840,7 @@ function WorkflowCreateDialog(props: {
     onOpenChange,
     profile.id,
     profile.name,
+    props.workspaceId,
     source,
     startUrl,
     submitting,
@@ -735,6 +873,7 @@ function WorkflowCreateDialog(props: {
             </Dialog.Close>
           </div>
           <div className="space-y-4 px-5 py-4">
+            {props.contextControls}
             <label className="block">
               <span className="mb-1.5 block text-[11px] font-medium text-text-secondary">
                 任务名称
@@ -996,7 +1135,8 @@ function WorkflowExecuteDialog(props: {
 }): JSX.Element {
   const { detail, busy, onOpenChange, onResult } = props;
   const version = detail?.version;
-  const steps = useMemo(() => version?.steps ?? [], [version?.steps]);
+  const draft = detail?.draft;
+  const steps = useMemo(() => version?.steps ?? draft?.steps ?? [], [draft?.steps, version?.steps]);
   const variables = useMemo(() => {
     const names: string[] = [];
     const seen = new Set<string>();
@@ -1021,21 +1161,24 @@ function WorkflowExecuteDialog(props: {
     setRunning(false);
     setResult(undefined);
     setPendingOrigins(undefined);
-  }, [detail?.task.id, version?.id]);
+  }, [detail?.task.id, draft?.id, version?.id]);
 
   const missing = variables.filter((name) => !(values[name] ?? '').trim());
   const canStart = !running && variables.every((name) => (values[name] ?? '').trim().length > 0);
   const needsApproval = Boolean(pendingOrigins && pendingOrigins.length > 0);
 
   const run = useCallback(async () => {
-    if (!detail || !version) return;
+    if (!detail || steps.length === 0) return;
     setRunning(true);
     setResult(undefined);
     try {
-      const response = await workflowRuntime().browserWorkflow.execute({
+      const payload = {
         taskId: detail.task.id,
         ...(variables.length > 0 ? { variables: values } : {}),
-      });
+      };
+      const response = version
+        ? await workflowRuntime().browserWorkflow.execute(payload)
+        : await workflowRuntime().browserWorkflow.executeDraft(payload);
       if (response.ok) {
         setResult(response);
         setPendingOrigins(undefined);
@@ -1062,7 +1205,7 @@ function WorkflowExecuteDialog(props: {
     } finally {
       setRunning(false);
     }
-  }, [detail, version, variables, values, onResult]);
+  }, [detail, onResult, steps.length, values, variables, version]);
 
   const approveRun = useCallback(async () => {
     if (!detail || !version) return;
@@ -1103,11 +1246,15 @@ function WorkflowExecuteDialog(props: {
           <div className="flex shrink-0 items-start justify-between gap-4 border-b border-border px-5 py-4">
             <div className="min-w-0">
               <Dialog.Title className="truncate text-[14px] font-semibold text-text">
-                执行自动化任务
+                {version ? '执行自动化任务' : '试运行自动化草稿'}
               </Dialog.Title>
               <Dialog.Description className="mt-1 truncate text-[11.5px] text-text-faint">
                 {detail?.task.name}
-                {version ? ` · V${version.versionNumber} · ${version.stepCount} 步` : ''}
+                {version
+                  ? ` · V${version.versionNumber} · ${version.stepCount} 步`
+                  : draft
+                    ? ` · 草稿 · ${draft.stepCount} 步`
+                    : ''}
               </Dialog.Description>
             </div>
             <Dialog.Close asChild>
@@ -1163,10 +1310,7 @@ function WorkflowExecuteDialog(props: {
                 </div>
                 <div className="mt-2 space-y-1">
                   {pendingOrigins?.map((origin) => (
-                    <div
-                      key={origin}
-                      className="flex items-center gap-1.5 text-text-secondary"
-                    >
+                    <div key={origin} className="flex items-center gap-1.5 text-text-secondary">
                       <Globe2 size={12} className="shrink-0 text-warning" />
                       <span className="truncate">{origin}</span>
                     </div>
@@ -1202,7 +1346,7 @@ function WorkflowExecuteDialog(props: {
                 <div className="font-medium">
                   {result.ok
                     ? `执行完成：${result.executedStepCount}/${result.stepCount} 步`
-                    : result.error ?? '执行失败'}
+                    : (result.error ?? '执行失败')}
                 </div>
                 {result.steps.some((step) => !step.ok) ? (
                   <div className="mt-2 space-y-1">
@@ -1212,6 +1356,20 @@ function WorkflowExecuteDialog(props: {
                         <div key={step.sequence} className="text-[10.5px] opacity-90">
                           第 {step.sequence} 步：{step.error ?? '失败'}
                         </div>
+                      ))}
+                  </div>
+                ) : null}
+                {result.steps.some((step) => step.screenshotEmbedUrl) ? (
+                  <div className="mt-2 grid grid-cols-2 gap-2">
+                    {result.steps
+                      .filter((step) => step.screenshotEmbedUrl)
+                      .map((step) => (
+                        <img
+                          key={step.sequence}
+                          className="w-full rounded border border-border object-cover"
+                          src={step.screenshotEmbedUrl}
+                          alt={`第 ${step.sequence} 步截图`}
+                        />
                       ))}
                   </div>
                 ) : null}
@@ -1235,7 +1393,9 @@ function WorkflowExecuteDialog(props: {
               </Dialog.Close>
               <button
                 type="button"
-                data-testid={needsApproval ? 'browser-workflow-approve-run' : 'browser-workflow-run'}
+                data-testid={
+                  needsApproval ? 'browser-workflow-approve-run' : 'browser-workflow-run'
+                }
                 className="flex h-8 items-center gap-1.5 rounded-md bg-accent px-3 text-[11.5px] font-medium text-accent-fg hover:opacity-90 disabled:opacity-45"
                 disabled={!canStart || busy}
                 onClick={() => void (needsApproval ? approveRun() : run())}
@@ -1261,6 +1421,13 @@ function WorkflowExecuteDialog(props: {
       </Dialog.Portal>
     </Dialog.Root>
   );
+}
+
+function workflowRunStatusLabel(status: 'running' | 'succeeded' | 'failed' | 'cancelled'): string {
+  if (status === 'succeeded') return '成功';
+  if (status === 'running') return '运行中';
+  if (status === 'cancelled') return '已取消';
+  return '失败';
 }
 
 function WorkflowStepRow(props: { index: number; step: BrowserRecordingStepInput }): JSX.Element {

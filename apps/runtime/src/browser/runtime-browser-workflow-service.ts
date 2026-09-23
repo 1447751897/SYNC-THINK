@@ -2,6 +2,8 @@ import type {
   BrowserAutomationTaskRecord,
   BrowserWorkflowDraftRecord,
   BrowserWorkflowReviewRecord,
+  BrowserWorkflowRunRecord,
+  BrowserWorkflowScheduleRecord,
   BrowserWorkflowVersionRecord,
   SqliteBrowserStore,
 } from '@sync-think/storage';
@@ -19,8 +21,16 @@ import type {
   ListBrowserWorkflowsPayload,
   ReviewBrowserWorkflowDraftPayload,
   ReviewBrowserWorkflowDraftResponse,
+  SaveBrowserWorkflowDraftPayload,
+  SaveBrowserWorkflowDraftResponse,
+  PublishBrowserWorkflowDraftPayload,
+  PublishBrowserWorkflowDraftResponse,
+  ImportChatBrowserWorkflowPayload,
+  ImportChatBrowserWorkflowResponse,
   SubmitBrowserWorkflowDraftPayload,
   SubmitBrowserWorkflowDraftResponse,
+  UpdateBrowserWorkflowSchedulePayload,
+  UpdateBrowserWorkflowScheduleResponse,
 } from '@sync-think/protocol';
 
 export interface RuntimeBrowserWorkflowServiceOptions {
@@ -65,6 +75,10 @@ export class RuntimeBrowserWorkflowService {
     }));
   }
 
+  assignWorkspace(input: import('@sync-think/protocol').AssignBrowserWorkflowWorkspacePayload): { task: BrowserAutomationTaskSummary } {
+    return this.translateErrors(() => ({ task: toPublicTask(this.store.assignAutomationTaskWorkspace(input)) }));
+  }
+
   listWorkflows(input: ListBrowserWorkflowsPayload): BrowserAutomationTaskSummary[] {
     return this.translateErrors(() => this.store.listAutomationTasks(input).map(toPublicTask));
   }
@@ -85,12 +99,15 @@ export class RuntimeBrowserWorkflowService {
         ? this.store.getWorkflowVersion(task.publishedVersionId)
         : undefined;
       const reviewPage = this.store.listWorkflowReviewsForTask(task.id);
+      const schedule = this.store.getWorkflowSchedule(task.id);
       return {
         task: toPublicTask(task),
         ...(draft ? { draft: toPublicDraft(draft) } : {}),
         ...(version ? { version: toPublicVersion(version) } : {}),
         reviews: reviewPage.reviews.map(toPublicReview),
         reviewsTruncated: reviewPage.truncated,
+        recentRuns: this.store.listWorkflowRuns(task.id, 10).map(toPublicRun),
+        ...(schedule ? { schedule: toPublicSchedule(schedule) } : {}),
       };
     });
   }
@@ -127,6 +144,38 @@ export class RuntimeBrowserWorkflowService {
     });
   }
 
+  saveDraft(input: SaveBrowserWorkflowDraftPayload): SaveBrowserWorkflowDraftResponse {
+    return this.translateErrors(() => {
+      const result = this.store.saveWorkflowDraft(input);
+      return {
+        task: toPublicTask(result.task),
+        draft: toPublicDraft(result.draft),
+      };
+    });
+  }
+
+  publishDraft(input: PublishBrowserWorkflowDraftPayload): PublishBrowserWorkflowDraftResponse {
+    return this.translateErrors(() => {
+      const result = this.store.publishWorkflowDraft(input);
+      return {
+        task: toPublicTask(result.task),
+        draft: toPublicDraft(result.draft),
+        version: toPublicVersion(result.version),
+      };
+    });
+  }
+
+  importChatWorkflow(input: ImportChatBrowserWorkflowPayload): ImportChatBrowserWorkflowResponse {
+    return this.translateErrors(() => {
+      const result = this.store.importChatAutomationTask(input);
+      return {
+        task: toPublicTask(result.task),
+        draft: toPublicDraft(result.draft),
+        ...(result.version ? { version: toPublicVersion(result.version) } : {}),
+      };
+    });
+  }
+
   reviewDraft(input: ReviewBrowserWorkflowDraftPayload): ReviewBrowserWorkflowDraftResponse {
     return this.translateErrors(() => {
       const result = this.store.reviewWorkflowDraft(input);
@@ -134,6 +183,33 @@ export class RuntimeBrowserWorkflowService {
         task: toPublicTask(result.task),
         draft: toPublicDraft(result.draft),
         ...(result.version ? { version: toPublicVersion(result.version) } : {}),
+      };
+    });
+  }
+
+  updateSchedule(
+    input: UpdateBrowserWorkflowSchedulePayload,
+  ): UpdateBrowserWorkflowScheduleResponse {
+    return this.translateErrors(() => {
+      const task = this.store.getAutomationTask(input.taskId);
+      if (!task?.publishedVersionId) {
+        throw new RuntimeBrowserWorkflowError(
+          'browser.workflow-not-ready',
+          'Publish a Browser Workflow Version before enabling its schedule.',
+        );
+      }
+      const version = this.store.getWorkflowVersion(task.publishedVersionId);
+      const needsRuntimeInput = version?.steps.some(
+        (step) => (step.kind === 'fill' || step.kind === 'select') && step.value.kind !== 'literal',
+      );
+      if (input.enabled && needsRuntimeInput) {
+        throw new RuntimeBrowserWorkflowError(
+          'browser.workflow-schedule-input-required',
+          'Scheduled workflows cannot contain variable or secret inputs.',
+        );
+      }
+      return {
+        schedule: toPublicSchedule(this.store.upsertWorkflowSchedule(input)),
       };
     });
   }
@@ -177,6 +253,8 @@ export class RuntimeBrowserWorkflowService {
 
 function toPublicTask(task: BrowserAutomationTaskRecord): BrowserAutomationTaskSummary {
   return {
+    ...(task.workspaceId ? { workspaceId: task.workspaceId } : {}),
+    ...(task.workspaceId ? { workspaceId: task.workspaceId } : {}),
     id: task.id,
     profileId: task.profileId,
     name: task.name,
@@ -231,6 +309,49 @@ function toPublicReview(review: BrowserWorkflowReviewRecord): BrowserWorkflowRev
     decision: review.decision,
     ...(review.note ? { note: review.note } : {}),
     createdAt: review.createdAt,
+  };
+}
+
+function toPublicRun(run: BrowserWorkflowRunRecord) {
+  return {
+    id: run.id,
+    taskId: run.taskId,
+    versionId: run.versionId,
+    trigger: run.trigger,
+    status: run.status,
+    stepCount: run.stepCount,
+    executedStepCount: run.executedStepCount,
+    ...(run.failedStepSequence ? { failedStepSequence: run.failedStepSequence } : {}),
+    ...(run.errorCode ? { errorCode: run.errorCode } : {}),
+    ...(run.error ? { error: run.error } : {}),
+    startedAt: run.startedAt,
+    ...(run.completedAt ? { completedAt: run.completedAt } : {}),
+    steps: run.steps.map((step) => ({
+      sequence: step.sequence,
+      ok: step.status === 'succeeded',
+      actionKind: step.actionKind,
+      ...(step.outputUrl ? { outputUrl: step.outputUrl } : {}),
+      ...(step.outputTitle ? { outputTitle: step.outputTitle } : {}),
+      ...(step.screenshotRelativePath
+        ? { screenshotRelativePath: step.screenshotRelativePath }
+        : {}),
+      ...(step.screenshotEmbedUrl ? { screenshotEmbedUrl: step.screenshotEmbedUrl } : {}),
+      ...(step.screenshotErrorCode ? { screenshotErrorCode: step.screenshotErrorCode } : {}),
+      ...(step.errorCode ? { errorCode: step.errorCode } : {}),
+      ...(step.error ? { error: step.error } : {}),
+    })),
+  };
+}
+
+function toPublicSchedule(schedule: BrowserWorkflowScheduleRecord) {
+  return {
+    taskId: schedule.taskId,
+    enabled: schedule.enabled,
+    intervalMinutes: schedule.intervalMinutes,
+    ...(schedule.nextRunAt ? { nextRunAt: schedule.nextRunAt } : {}),
+    ...(schedule.lastRunAt ? { lastRunAt: schedule.lastRunAt } : {}),
+    revision: schedule.revision,
+    updatedAt: schedule.updatedAt,
   };
 }
 

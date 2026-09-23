@@ -25,7 +25,7 @@ import {
 import type { SkillVersionSummary } from '@sync-think/protocol';
 import { BUILTIN_SLASH_COMMANDS, filterSlashCommands, type SlashCommand } from './compose-slash.js';
 import { ComposerMenuHighlight } from './ComposerMenuHighlight.js';
-import { useNewMaxPopoverPresence } from './NewMaxComposerFrame.js';
+import { useNewMaxPopoverPresence } from '@sync-think/ui-kit';
 
 export const COMPOSER_SKILL_CATEGORIES = [
   'all',

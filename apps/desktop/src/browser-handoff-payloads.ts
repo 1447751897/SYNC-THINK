@@ -3,10 +3,7 @@ import type {
   ContinueBrowserHandoffPayload,
   ListWaitingBrowserHandoffsPayload,
 } from '@sync-think/protocol';
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
+import { isRecord } from '@sync-think/shared/value-validation';
 
 function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
   return Object.keys(value).every((key) => allowed.includes(key));

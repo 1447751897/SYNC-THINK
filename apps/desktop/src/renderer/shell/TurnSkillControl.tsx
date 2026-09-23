@@ -3,6 +3,7 @@ import { Puzzle } from 'lucide-react';
 import type { GlobalAgent } from '@sync-think/shared';
 import type { SkillVersionSummary } from '@sync-think/protocol';
 import { resolveAppendSkillVersionIds } from './compose-skill-selection.js';
+import { loadSkillCatalog } from './skill-catalog-loader.js';
 import { SkillPickerMenu } from './compose-toolbar.js';
 
 type CatalogStatus = 'idle' | 'loading' | 'loaded' | 'error';
@@ -76,10 +77,7 @@ export function TurnSkillControl(props: TurnSkillControlProps) {
       });
       return;
     }
-    void api
-      .listSkills(
-        props.workspaceId ? { limit: 500, workspaceId: props.workspaceId } : { limit: 500 },
-      )
+    void loadSkillCatalog(api, { workspaceId: props.workspaceId })
       .then((response) => {
         if (
           requestGenerationRef.current !== generation ||

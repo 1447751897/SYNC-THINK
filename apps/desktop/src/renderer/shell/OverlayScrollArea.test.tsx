@@ -78,6 +78,21 @@ describe('OverlayScrollArea', () => {
     expect(shellCss).not.toMatch(/shell-menu--model[\s\S]{0,200}scrollbar-width:\s*thin/s);
   });
 
+  it('uses a rounded composer scrollbar instead of the native Windows track', () => {
+    expect(shellCss).toMatch(
+      /\.shell-composer-editor__surface \.cm-scroller\s*\{[^}]*scrollbar-width:\s*auto;[^}]*scrollbar-color:\s*auto;/s,
+    );
+    expect(shellCss).toMatch(
+      /\.shell-composer-editor__surface \.cm-scroller::-webkit-scrollbar-thumb\s*\{[^}]*border-radius:\s*999px;/s,
+    );
+    expect(shellCss).toMatch(
+      /\.shell-composer-editor__surface \.cm-scroller::-webkit-scrollbar-thumb:hover\s*\{/s,
+    );
+    expect(shellCss).toMatch(
+      /\.shell-newmax-composer \.shell-compose__input\s*\{[^}]*scrollbar-width:\s*auto;[^}]*scrollbar-color:\s*auto;/s,
+    );
+  });
+
   it('sizes and places the thumb with NewMax geometry', async () => {
     stubScrollMetrics({ clientSize: 200, scrollSize: 800 });
     render(

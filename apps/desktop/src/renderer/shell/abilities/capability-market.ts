@@ -1,16 +1,7 @@
 import type { SkillMarketItemSummary } from '@sync-think/protocol';
+import { AUTHOR_SKILL_MARKET_ITEMS } from '@sync-think/protocol/skill-market-catalog';
 
-/** Compatibility shape for older Desktop/Runtime pairs. Current data comes from Runtime. */
-export type SkillMarketItem = SkillMarketItemSummary & {
-  /** Inline SKILL.md template used when no remote source is configured. */
-  source?: string;
-  /**
-   * Optional remote SKILL.md URL (NewMax-style remote install). When present,
-   * installing fetches the document over HTTP(S) instead of using `source`;
-   * GitHub blob URLs are normalized by the runtime importer.
-   */
-  sourceUrl?: string;
-};
+export type SkillMarketItem = SkillMarketItemSummary;
 
 export type McpMarketItem = {
   id: string;
@@ -21,25 +12,6 @@ export type McpMarketItem = {
   endpoint: string;
   notes: string;
 };
-
-function makeSkillSource(input: {
-  name: string;
-  description: string;
-  body: string;
-  tools?: string[];
-}): string {
-  const tools = input.tools?.length
-    ? `\nallowed-tools: [${input.tools.map((tool) => JSON.stringify(tool)).join(', ')}]`
-    : '';
-  return `---
-name: ${input.name}
-description: ${input.description}
-version: 1.0.0${tools}
----
-
-${input.body}
-`;
-}
 
 export const SKILL_CATEGORIES = [
   '全部',
@@ -53,96 +25,10 @@ export const SKILL_CATEGORIES = [
 
 export const MCP_CATEGORIES = ['全部', '开发工具', '文件系统', '数据库', '浏览器', '协作'] as const;
 
-export const SKILL_MARKET: SkillMarketItem[] = [
-  {
-    id: 'project-bootstrap',
-    slug: 'project-bootstrap',
-    name: '项目初始化',
-    category: '开发工具',
-    description: '从需求拆解到目录、规范、测试入口和里程碑，建立可执行的项目起点。',
-    author: 'SYNC-THINK',
-    version: '1.0.0',
-    source: makeSkillSource({
-      name: '项目初始化',
-      description: '将产品需求整理为可执行的项目初始化方案。',
-      body: '先确认目标与边界，再建立目录、开发规则、里程碑、测试入口和验收清单。',
-      tools: ['read-file'],
-    }),
-  },
-  {
-    id: 'automation-workflow',
-    slug: 'automation-workflow',
-    name: '自动化工作流',
-    category: '自动化',
-    description: '编排 CI/CD、脚本生成、定时任务与 Git Hooks 等重复工作。',
-    author: 'SYNC-THINK',
-    version: '1.0.0',
-    source: makeSkillSource({
-      name: '自动化工作流',
-      description: '设计和维护可复用的自动化工作流。',
-      body: '标注触发条件、输入输出和失败恢复，再生成最小可验证的自动化步骤。',
-      tools: ['read-file'],
-    }),
-  },
-  {
-    id: 'frontend-design',
-    slug: 'frontend-design',
-    name: '前端设计',
-    category: '设计创意',
-    description: '为页面、组件和产品工作台建立清晰、统一、可落地的视觉规范。',
-    author: 'SYNC-THINK',
-    version: '1.0.0',
-    source: makeSkillSource({
-      name: '前端设计',
-      description: '设计高质量且可实现的前端界面。',
-      body: '从信息层级、排版、颜色、间距和交互状态出发，输出可实现的设计与验证清单。',
-    }),
-  },
-  {
-    id: 'web-to-markdown',
-    slug: 'web-to-markdown',
-    name: '网页转 Markdown',
-    category: '文档助手',
-    description: '提取网页正文并整理为干净的 Markdown，保留标题、链接和关键结构。',
-    author: 'SYNC-THINK',
-    version: '1.0.0',
-    source: makeSkillSource({
-      name: '网页转 Markdown',
-      description: '把网页正文整理成结构清晰的 Markdown。',
-      body: '提取正文层级、列表、链接与代码块，去除导航、广告和重复内容。',
-      tools: ['browser'],
-    }),
-  },
-  {
-    id: 'data-insight',
-    slug: 'data-insight',
-    name: '数据洞察',
-    category: '数据分析',
-    description: '从表格与结构化数据中提取趋势、异常、结论和后续行动。',
-    author: 'SYNC-THINK',
-    version: '1.0.0',
-    source: makeSkillSource({
-      name: '数据洞察',
-      description: '分析结构化数据并生成清晰的结论。',
-      body: '先检查数据质量和统计口径，再分析趋势、异常、关联和可执行建议。',
-    }),
-  },
-  {
-    id: 'publish-x',
-    slug: 'publish-x',
-    name: '发布到 X/Twitter',
-    category: '内容发布',
-    description: '准备文案、媒体清单和发布前确认步骤，形成可审核的发布流程。',
-    author: 'SYNC-THINK',
-    version: '1.0.0',
-    source: makeSkillSource({
-      name: '发布到 X/Twitter',
-      description: '生成可审核的 X/Twitter 发布计划。',
-      body: '先输出最终文案和媒体清单，得到确认后再进入发布步骤。',
-      tools: ['browser'],
-    }),
-  },
-];
+/** Compatibility fallback for older Runtime bridges; current data comes from Runtime. */
+export const SKILL_MARKET: SkillMarketItem[] = AUTHOR_SKILL_MARKET_ITEMS.map((item) => ({
+  ...item,
+}));
 
 export const MCP_MARKET: McpMarketItem[] = [
   {

@@ -47,6 +47,7 @@ describe('platform tools', () => {
     expect(byName.has('browser_open')).toBe(true);
     expect(byName.has('desktop_list_windows')).toBe(true);
     expect(byName.get('agent_run')?.approval).toBe('never');
+    expect(byName.get('agent_run_status')?.approval).toBe('never');
     expect(byName.get('file_write')?.approval).toBe('ask-mode');
     expect(byName.get('list_skills')?.inputSchema).toBeDefined();
   });
@@ -153,17 +154,100 @@ describe('platform tools', () => {
     expect(modelNames).toContain('create_team');
   });
 
+  it('exposes collaboration tools only inside a bound collaboration conversation', () => {
+    const off = buildPlatformMcpToolDefinitions({
+      conversationTrack: 'model',
+      includeAgentTools: true,
+    }).map((definition) => definition.name);
+    expect(off).not.toContain('collaboration_send_message');
+    expect(off).not.toContain('collaboration_send_direct_message');
+    expect(off).not.toContain('collaboration_dispatch_tasks');
+
+    const on = buildPlatformMcpToolDefinitions({
+      conversationTrack: 'model',
+      includeAgentTools: true,
+      collaborationEnabled: true,
+    }).map((definition) => definition.name);
+    expect(on).toContain('collaboration_send_message');
+    expect(on).toContain('collaboration_send_direct_message');
+    expect(on).toContain('collaboration_dispatch_tasks');
+
+    // Without a conversation track the authority filter cannot apply, so the
+    // tools stay out — native parity (toolsForExecutionMode gates identically).
+    const noTrack = buildPlatformMcpToolDefinitions({
+      includeAgentTools: true,
+      collaborationEnabled: true,
+    }).map((definition) => definition.name);
+    expect(noTrack).not.toContain('collaboration_send_message');
+    expect(noTrack).not.toContain('collaboration_send_direct_message');
+  });
+
   it('serves platform_context identity', async () => {
+    const catalog = [
+      {
+        name: 'platform_context',
+        description: 'Current platform context',
+        inputSchema: { type: 'object' },
+        approval: 'never' as const,
+      },
+      {
+        name: 'browser_workflow_create_draft',
+        description: 'Create workflow draft',
+        inputSchema: { type: 'object' },
+        approval: 'outside-full-access' as const,
+      },
+    ];
     const content = await executePlatformTool('platform_context', {}, {
       workspaceDir: 'C:/workspace',
       kernelId: 'codex',
       runId: 'run-1',
       threadId: 'thread-1',
+      catalog,
     });
     const parsed = JSON.parse(content);
     expect(parsed.platform).toBe('sync-think');
     expect(parsed.kernelId).toBe('codex');
-    expect(parsed.tools).toContain('file_write');
+    expect(parsed.tools).toEqual(['platform_context', 'browser_workflow_create_draft']);
+  });
+
+  it('lists live agents effective in the current workspace', async () => {
+    const requestedWorkspaces: string[] = [];
+    const content = await executePlatformTool('agent_list', {}, {
+      workspaceDir: 'C:/workspace',
+      resolveWorkspaceId: () => 'workspace-live',
+      agentStore: {
+        listEffective: (workspaceId) => {
+          requestedWorkspaces.push(workspaceId);
+          return [
+            {
+              id: 'agent-reviewer',
+              name: 'Reviewer',
+              avatar: '',
+              description: 'Reviews changes',
+              source: 'user',
+              availabilityScope: 'workspace',
+              defaultModelId: 'model-1',
+              skillIds: ['skill-review'],
+              mcpServerIds: [],
+            },
+          ];
+        },
+      },
+    });
+    const parsed = JSON.parse(content);
+    expect(requestedWorkspaces).toEqual(['workspace-live']);
+    expect(parsed).toMatchObject({
+      ok: true,
+      workspaceId: 'workspace-live',
+      agents: [
+        {
+          agentId: 'agent-reviewer',
+          name: 'Reviewer',
+          active: true,
+          availabilityScope: 'workspace',
+        },
+      ],
+    });
   });
 
   it('reads, lists and searches workspace files', async () => {

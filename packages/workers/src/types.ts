@@ -1,4 +1,3 @@
-import { isAbsolute, relative, resolve, win32 } from 'node:path';
 import type { ErrorCode } from '@sync-think/shared';
 
 // Workers are short-lived isolated processes per design §14. They receive a
@@ -68,19 +67,4 @@ export type WorkerEvent =
 export interface AppErrorLite {
   code: ErrorCode | string;
   message: string;
-}
-
-// Canonicalize a path and confirm it equals or lies under allowedRoot (§19 / §13).
-export function isPathInside(candidate: string, allowedRoot: string): boolean {
-  if (typeof candidate !== 'string' || typeof allowedRoot !== 'string') return false;
-  const useWindowsPath = /^[A-Za-z]:[\\/]/.test(candidate) || /^[A-Za-z]:[\\/]/.test(allowedRoot);
-  const pathApi = useWindowsPath ? win32 : { isAbsolute, relative, resolve };
-  if (!pathApi.isAbsolute(candidate) || !pathApi.isAbsolute(allowedRoot)) return false;
-  const scoped = pathApi.relative(pathApi.resolve(allowedRoot), pathApi.resolve(candidate));
-  return (
-    scoped === '' ||
-    (!scoped.startsWith(`..${useWindowsPath ? '\\' : '/'}`) &&
-      scoped !== '..' &&
-      !pathApi.isAbsolute(scoped))
-  );
 }

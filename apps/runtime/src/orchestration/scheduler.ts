@@ -1,4 +1,10 @@
 import { createHash } from 'node:crypto';
+import type {
+  SchedulingRepository,
+  SchedulingApprovals,
+  SchedulingTransaction,
+  SchedulingAgentContexts,
+} from './scheduler-ports.js';
 import { asHumanOnlyAction, getReadyStepIds, validateDag } from '@sync-think/core';
 import {
   ulid,
@@ -19,12 +25,8 @@ import {
   isStepFenceMismatchError,
   scrubDiagnosticText,
   type RunGraph,
-  type SqliteApprovalStore,
-  SqliteOrchestrationStore,
-  SqliteAgentContextStore,
-  type SqliteUnitOfWork,
   type StoredStep,
-} from '@sync-think/storage';
+} from '@sync-think/shared';
 import {
   StepAwaitingApprovalError,
   StepExecutionError,
@@ -55,19 +57,20 @@ export interface SchedulerApprovalPolicy {
   validateDelegateAgentVersion?(agentVersionId: AgentVersionId): boolean;
 }
 
+
 export interface SchedulerOptions {
-  store: SqliteOrchestrationStore;
+  store: SchedulingRepository;
   executor: StepExecutor;
   now?: () => string;
   ownerId?: string;
   leaseDurationMs?: number;
   heartbeatIntervalMs?: number;
   wait?: (delayMs: number, signal: AbortSignal) => Promise<void>;
-  approvalStore?: SqliteApprovalStore;
-  unitOfWork?: SqliteUnitOfWork;
+  approvalStore?: SchedulingApprovals;
+  unitOfWork?: SchedulingTransaction;
   approvalPolicy?: SchedulerApprovalPolicy;
   onProviderUsage?: (usage: Readonly<ProviderRequestUsage>) => void;
-  agentContextStore?: SqliteAgentContextStore;
+  agentContextStore?: SchedulingAgentContexts;
 }
 
 const DEFAULT_LEASE_DURATION_MS = 30_000;
@@ -170,7 +173,7 @@ export interface GateSchedulerStepActionInput {
 export interface GateSchedulerStepActionResult {
   allowed: boolean;
   actionDigest: string;
-  approval: import('@sync-think/storage').ApprovalRequestRecord | null;
+  approval: import('@sync-think/shared').ApprovalRequestRecord | null;
   graph: RunGraph;
   ownerId: string;
   executionAttempt: number;
@@ -502,7 +505,7 @@ export class Scheduler {
   }
 
   decideApproval(input: DecideSchedulerApprovalInput): {
-    approval: import('@sync-think/storage').ApprovalRequestRecord;
+    approval: import('@sync-think/shared').ApprovalRequestRecord;
     graph: RunGraph;
     replayed: boolean;
   } {

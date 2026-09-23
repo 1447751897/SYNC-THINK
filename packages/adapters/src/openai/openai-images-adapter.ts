@@ -13,6 +13,7 @@ import {
   type ImageGenerationQuality,
   type ImageGenerationSize,
 } from '@sync-think/shared';
+import { detectSupportedImageMimeType } from '@sync-think/shared/node-image-validation';
 import {
   discoverOpenAICompatibleModels,
   joinModelsUrl,
@@ -276,7 +277,7 @@ function parseImages(payload: unknown, apiKey: string): ProviderGeneratedImage[]
         'protocol',
       );
     }
-    const mimeType = detectImageMimeType(bytes);
+    const mimeType = detectSupportedImageMimeType(bytes);
     if (!mimeType) {
       throw new ProviderImageGenerationError(
         `Image generation item ${index} has an unsupported format`,
@@ -289,31 +290,6 @@ function parseImages(payload: unknown, apiKey: string): ProviderGeneratedImage[]
         : undefined;
     return { bytes, mimeType, ...(revisedPrompt ? { revisedPrompt } : {}) };
   });
-}
-
-function detectImageMimeType(bytes: Uint8Array): ProviderGeneratedImage['mimeType'] | undefined {
-  if (
-    bytes.length >= 8 &&
-    bytes[0] === 0x89 &&
-    bytes[1] === 0x50 &&
-    bytes[2] === 0x4e &&
-    bytes[3] === 0x47 &&
-    bytes[4] === 0x0d &&
-    bytes[5] === 0x0a &&
-    bytes[6] === 0x1a &&
-    bytes[7] === 0x0a
-  )
-    return 'image/png';
-  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
-    return 'image/jpeg';
-  }
-  if (
-    bytes.length >= 12 &&
-    Buffer.from(bytes.subarray(0, 4)).toString('ascii') === 'RIFF' &&
-    Buffer.from(bytes.subarray(8, 12)).toString('ascii') === 'WEBP'
-  )
-    return 'image/webp';
-  return undefined;
 }
 
 function failureClassForStatus(status: number): FailureClass {

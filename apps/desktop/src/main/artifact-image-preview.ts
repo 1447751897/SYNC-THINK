@@ -1,12 +1,18 @@
 ﻿import { createHash, randomBytes } from 'node:crypto';
 import { readFile, realpath, stat } from 'node:fs/promises';
-import { extname, isAbsolute, relative, resolve } from 'node:path';
+import { isAbsolute, relative, resolve } from 'node:path';
+import {
+  imageBytesMatchMime,
+  imageFileExtensionMatchesMime,
+  parseSupportedImageMimeType,
+  type SupportedImageMimeType,
+} from '@sync-think/shared/node-image-validation';
 
 export const MAX_ARTIFACT_IMAGE_PREVIEW_BYTES = 25 * 1024 * 1024;
 export const DEFAULT_ARTIFACT_IMAGE_PREVIEW_CAPACITY = 256;
 export const DEFAULT_ARTIFACT_IMAGE_PREVIEW_TTL_MS = 5 * 60 * 1000;
 
-export type ArtifactImageMimeType = 'image/png' | 'image/jpeg' | 'image/webp';
+export type ArtifactImageMimeType = SupportedImageMimeType;
 
 export interface ArtifactImagePreviewSource {
   artifactVersionId: string;
@@ -149,7 +155,8 @@ export class ArtifactImagePreviewRegistry {
     if (!source.contentRef || !isAbsolute(source.contentRef)) {
       throw new Error('artifact_image_preview.path_invalid');
     }
-    const mimeType = allowedMimeType(source.mimeType);
+    const mimeType = parseSupportedImageMimeType(source.mimeType);
+    if (!mimeType) throw new Error('artifact_image_preview.mime_invalid');
     if (!/^[a-f0-9]{64}$/i.test(source.contentHash)) {
       throw new Error('artifact_image_preview.hash_invalid');
     }
@@ -162,7 +169,7 @@ export class ArtifactImagePreviewRegistry {
     if (!rel || rel.startsWith('..') || isAbsolute(rel)) {
       throw new Error('artifact_image_preview.path_escape');
     }
-    if (!extensionMatchesMime(candidatePath, mimeType)) {
+    if (!imageFileExtensionMatchesMime(candidatePath, mimeType)) {
       throw new Error('artifact_image_preview.extension_mismatch');
     }
 
@@ -176,7 +183,7 @@ export class ArtifactImagePreviewRegistry {
     if (data.byteLength !== info.size || data.byteLength > MAX_ARTIFACT_IMAGE_PREVIEW_BYTES) {
       throw new Error('artifact_image_preview.size_changed');
     }
-    if (!magicMatchesMime(data, mimeType)) {
+    if (!imageBytesMatchMime(data, mimeType)) {
       throw new Error('artifact_image_preview.magic_mismatch');
     }
     const contentHash = createHash('sha256').update(data).digest('hex');
@@ -193,35 +200,6 @@ export class ArtifactImagePreviewRegistry {
       if (grant.expiresAt <= now) this.grants.delete(token);
     }
   }
-}
-
-function allowedMimeType(value: string): ArtifactImageMimeType {
-  if (value === 'image/png' || value === 'image/jpeg' || value === 'image/webp') return value;
-  throw new Error('artifact_image_preview.mime_invalid');
-}
-
-function extensionMatchesMime(path: string, mimeType: ArtifactImageMimeType): boolean {
-  const extension = extname(path).toLowerCase();
-  if (mimeType === 'image/png') return extension === '.png';
-  if (mimeType === 'image/jpeg') return extension === '.jpg' || extension === '.jpeg';
-  return extension === '.webp';
-}
-
-function magicMatchesMime(data: Buffer, mimeType: ArtifactImageMimeType): boolean {
-  if (mimeType === 'image/png') {
-    return (
-      data.byteLength >= 8 &&
-      data.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
-    );
-  }
-  if (mimeType === 'image/jpeg') {
-    return data.byteLength >= 3 && data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff;
-  }
-  return (
-    data.byteLength >= 12 &&
-    data.subarray(0, 4).toString('ascii') === 'RIFF' &&
-    data.subarray(8, 12).toString('ascii') === 'WEBP'
-  );
 }
 
 function positiveInteger(value: number, code: string): number {

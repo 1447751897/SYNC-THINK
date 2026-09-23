@@ -1,29 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { isPathInside } from './types.js';
 import { FakeDesktopWorker } from './desktop/desktop-worker.js';
 import { FakeBrowserWorker } from './browser/browser-worker.js';
 import { FakeFileWorker } from './file/file-worker.js';
 import { collect } from './support.js';
-
-describe('path traversal guard', () => {
-  it('allows paths strictly inside the root', () => {
-    expect(isPathInside('D:/proj/a/b.txt', 'D:/proj')).toBe(true);
-  });
-  it('rejects paths outside the root', () => {
-    expect(isPathInside('D:/other/x', 'D:/proj')).toBe(false);
-  });
-  it('refuses ../ that would escape the root', () => {
-    expect(isPathInside('D:/proj/../escape', 'D:/proj')).toBe(false);
-  });
-  it('handles Windows-style backslashes via template literal', () => {
-    const cand = String.raw`D:\proj\file`;
-    const root = String.raw`D:\proj`;
-    expect(isPathInside(cand, root)).toBe(true);
-  });
-  it('accepts the root itself as a scoped working directory', () => {
-    expect(isPathInside('D:/proj', 'D:/proj')).toBe(true);
-  });
-});
 
 describe('FakeDesktopWorker', () => {
   it('emits stderr + completed-not-ok', async () => {

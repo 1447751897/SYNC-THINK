@@ -9,6 +9,7 @@ import type {
   TeamId,
   WorkspaceId,
 } from '@sync-think/shared';
+import type { CollaborationKind } from '@sync-think/shared';
 import { ulid } from '@sync-think/shared';
 import type { BetterSQLite3Raw } from './connection.js';
 
@@ -26,6 +27,7 @@ export type ConversationTrack = 'model' | 'agent' | 'team';
 export interface ConversationRecord {
   id: ConversationId;
   track: ConversationTrack;
+  collaborationKind?: CollaborationKind;
   targetRef: string;
   workspaceId?: WorkspaceId;
   title: string;
@@ -50,6 +52,7 @@ export type ConversationTarget =
 
 export interface CreateConversationInput {
   target: ConversationTarget;
+  collaborationKind?: CollaborationKind;
   workspaceId?: WorkspaceId;
   title?: string;
   executionMode?: string;
@@ -65,9 +68,27 @@ export interface ListConversationsOptions {
   includeArchived?: boolean;
 }
 
+export interface ListConversationsPageOptions extends ListConversationsOptions {
+  cursor?: string;
+  limit?: number;
+}
+
+export interface ConversationRecordPage {
+  conversations: ConversationRecord[];
+  nextCursor?: string;
+}
+
+interface ConversationPageCursor {
+  pinnedRank: 0 | 1;
+  pinnedAt: string;
+  recencyAt: string;
+  id: string;
+}
+
 interface ConversationDbRow {
   id: string;
   track: string;
+  collaboration_kind: string | null;
   target_ref: string;
   workspace_id: string | null;
   title: string;
@@ -86,6 +107,7 @@ function mapRow(row: ConversationDbRow): ConversationRecord {
   return {
     id: row.id as ConversationId,
     track: row.track as ConversationTrack,
+    collaborationKind: row.collaboration_kind ? (row.collaboration_kind as CollaborationKind) : undefined,
     targetRef: row.target_ref,
     workspaceId: row.workspace_id ? (row.workspace_id as WorkspaceId) : undefined,
     title: row.title,
@@ -114,7 +136,7 @@ function targetRefOf(target: ConversationTarget): string {
 
 const SELECT_COLUMNS = `id, track, target_ref, workspace_id, title, pinned_at,
   archived_at, execution_mode, interaction_mode, context_window_override,
-  last_message_at, task_id, created_at, updated_at`;
+  last_message_at, task_id, collaboration_kind, created_at, updated_at`;
 
 function normalizeContextWindowOverride(value: number | null | undefined): number | null {
   if (value === null || value === undefined) return null;
@@ -123,6 +145,65 @@ function normalizeContextWindowOverride(value: number | null | undefined): numbe
   }
   return value;
 }
+
+const DEFAULT_CONVERSATION_PAGE_SIZE = 100;
+const MAX_CONVERSATION_PAGE_SIZE = 200;
+
+function encodeConversationPageCursor(record: ConversationRecord): string {
+  return JSON.stringify({
+    pinnedRank: record.pinnedAt ? 0 : 1,
+    pinnedAt: record.pinnedAt ?? '',
+    recencyAt: record.lastMessageAt ?? record.createdAt,
+    id: record.id,
+  } satisfies ConversationPageCursor);
+}
+
+function decodeConversationPageCursor(value: string): ConversationPageCursor {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new Error('invalid conversation page cursor');
+  }
+  if (
+    typeof parsed !== 'object' ||
+    parsed === null ||
+    !('pinnedRank' in parsed) ||
+    (parsed.pinnedRank !== 0 && parsed.pinnedRank !== 1) ||
+    !('pinnedAt' in parsed) ||
+    typeof parsed.pinnedAt !== 'string' ||
+    !('recencyAt' in parsed) ||
+    typeof parsed.recencyAt !== 'string' ||
+    !parsed.recencyAt ||
+    !('id' in parsed) ||
+    typeof parsed.id !== 'string' ||
+    !parsed.id
+  ) {
+    throw new Error('invalid conversation page cursor');
+  }
+  return parsed as ConversationPageCursor;
+}
+
+function conversationListClauses(options?: ListConversationsOptions): {
+  clauses: string[];
+  params: unknown[];
+} {
+  const clauses: string[] = [];
+  const params: unknown[] = [];
+  if (options?.track) {
+    clauses.push('track = ?');
+    params.push(options.track);
+  }
+  if (options?.workspaceId) {
+    clauses.push('workspace_id = ?');
+    params.push(options.workspaceId);
+  }
+  if (!options?.includeArchived) clauses.push('archived_at IS NULL');
+  return { clauses, params };
+}
+
+const CONVERSATION_ORDER = `(pinned_at IS NULL), COALESCE(pinned_at, '') DESC,
+  COALESCE(last_message_at, created_at) DESC, id DESC`;
 
 export class SqliteConversationStore {
   constructor(private readonly raw: BetterSQLite3Raw) {}
@@ -134,8 +215,8 @@ export class SqliteConversationStore {
       .prepare(
         `INSERT INTO conversation (
            id, track, target_ref, workspace_id, title, execution_mode, interaction_mode,
-           context_window_override, last_message_at, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+           context_window_override, last_message_at, collaboration_kind, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)`,
       )
       .run(
         id,
@@ -146,6 +227,7 @@ export class SqliteConversationStore {
         input.executionMode ?? 'full-access',
         input.interactionMode ?? 'execute',
         normalizeContextWindowOverride(input.contextWindowOverride),
+        input.collaborationKind ?? null,
         now,
         now,
       );
@@ -174,26 +256,60 @@ export class SqliteConversationStore {
    * (last message, falling back to creation time).
    */
   list(options?: ListConversationsOptions): ConversationRecord[] {
-    const clauses: string[] = [];
-    const params: unknown[] = [];
-    if (options?.track) {
-      clauses.push('track = ?');
-      params.push(options.track);
-    }
-    if (options?.workspaceId) {
-      clauses.push('workspace_id = ?');
-      params.push(options.workspaceId);
-    }
-    if (!options?.includeArchived) clauses.push('archived_at IS NULL');
+    const { clauses, params } = conversationListClauses(options);
     const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
     const rows = this.raw
       .prepare(
         `SELECT ${SELECT_COLUMNS} FROM conversation ${where}
-         ORDER BY (pinned_at IS NULL), pinned_at DESC,
-                  COALESCE(last_message_at, created_at) DESC`,
+         ORDER BY ${CONVERSATION_ORDER}`,
       )
       .all(...params) as ConversationDbRow[];
     return rows.map(mapRow);
+  }
+
+  listPage(options: ListConversationsPageOptions = {}): ConversationRecordPage {
+    const limit = options.limit ?? DEFAULT_CONVERSATION_PAGE_SIZE;
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_CONVERSATION_PAGE_SIZE) {
+      throw new Error(`conversation page limit must be between 1 and ${MAX_CONVERSATION_PAGE_SIZE}`);
+    }
+    const { clauses, params } = conversationListClauses(options);
+    if (options.cursor) {
+      const cursor = decodeConversationPageCursor(options.cursor);
+      clauses.push(`(
+        (pinned_at IS NULL) > ? OR
+        ((pinned_at IS NULL) = ? AND (
+          COALESCE(pinned_at, '') < ? OR
+          (COALESCE(pinned_at, '') = ? AND (
+            COALESCE(last_message_at, created_at) < ? OR
+            (COALESCE(last_message_at, created_at) = ? AND id < ?)
+          ))
+        ))
+      )`);
+      params.push(
+        cursor.pinnedRank,
+        cursor.pinnedRank,
+        cursor.pinnedAt,
+        cursor.pinnedAt,
+        cursor.recencyAt,
+        cursor.recencyAt,
+        cursor.id,
+      );
+    }
+    const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
+    const rows = this.raw
+      .prepare(
+        `SELECT ${SELECT_COLUMNS} FROM conversation ${where}
+         ORDER BY ${CONVERSATION_ORDER}
+         LIMIT ?`,
+      )
+      .all(...params, limit + 1) as ConversationDbRow[];
+    const page = rows.slice(0, limit).map(mapRow);
+    return {
+      conversations: page,
+      ...(rows.length > limit && page.length > 0
+        ? { nextCursor: encodeConversationPageCursor(page[page.length - 1]!) }
+        : {}),
+    };
   }
 
   rename(conversationId: ConversationId, title: string, now?: string): ConversationRecord {

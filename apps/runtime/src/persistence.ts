@@ -21,6 +21,7 @@ import {
   SqliteConversationStore,
   SqliteTaskPlanStore,
   SqliteMessageStore,
+  SqliteDelegatedRunStore,
   SqliteMemoryStore,
   SqliteSkillStore,
   SqliteMcpStore,
@@ -41,6 +42,7 @@ import {
   SqliteAssistantTimelineStore,
   SqliteConversationContentStore,
   SqliteExternalEventStore,
+  SqliteCollaborationStore,
 } from '@sync-think/storage';
 import {
   SecureStore,
@@ -51,6 +53,7 @@ import {
   type SecureStoreBackend,
 } from '@sync-think/secure-store';
 import { Runtime, type RuntimeOptions } from './runtime.js';
+import { CollaborationChatHost } from './collaboration-chat-host.js';
 import { ConversationHistoryReadService } from './conversation-history-read-service.js';
 import {
   UsageSummaryQueryService,
@@ -243,6 +246,34 @@ export async function openPersistentRuntime(
     const skillStore = new SqliteSkillStore(connection.raw);
     const capabilityStore = new SqliteCapabilityStore(connection.raw);
     const appSettingStore = new SqliteAppSettingStore(connection.raw);
+    const delegatedRunStore = new SqliteDelegatedRunStore(connection.raw);
+    const collaborationStore = new SqliteCollaborationStore(connection.raw);
+    let runtimeForCollaboration: Runtime | undefined;
+    let collaborationRunner: ((input: import('./collaboration-chat-service.js').CollaborationExecutionInput) => Promise<import('./collaboration-chat-service.js').CollaborationExecutionResult>) | undefined;
+    const collaborationChatHost = new CollaborationChatHost(collaborationStore, {
+      ownerId: options.installId,
+      conversations: conversationStore,
+      agents: globalAgentStore,
+      teams: teamStore,
+      workspaces: workspaceStore,
+      execute: async ({ task, attempt, signal, onProgress }) => {
+        if (signal.aborted) return { output: '', error: { code: 'cancelled', category: 'execution' as const, message: '任务已取消', retryable: true, traceId: attempt.id } };
+        onProgress({ status: 'running', output: `正在执行：${task.title}` });
+        return { output: `协作任务已受理：${task.title}`, threadId: attempt.threadId };
+      },
+      onChanged: (snapshot) => {
+        // Collaboration snapshots are durable state; expose a lightweight event
+        // so the desktop view can reconcile without polling the full runtime log.
+        if (runtimeForCollaboration?.publishCollaborationSnapshot) {
+          runtimeForCollaboration.publishCollaborationSnapshot(snapshot);
+        }
+      },
+    }, {
+      start: (input) => collaborationRunner
+        ? collaborationRunner(input)
+        : Promise.reject(new Error('collaboration.runtime_not_ready')),
+    });
+    collaborationChatHost.service.recover();
     // Usage aggregation runs in an isolated Worker for file-backed databases so a
     // first-time scan cannot block the Runtime pipe or its healthcheck.
     let inMemoryUsageSnapshot:
@@ -332,6 +363,7 @@ export async function openPersistentRuntime(
             project: (event) => buildEventPayloadBackfillProjection(event.type, event.payload),
           }
         : undefined,
+      delegatedRunStore,
     );
     // 0049: activity-centre read model. Any run still marked `running` belongs
     // to a Runtime that no longer exists, so it is closed out before the new
@@ -376,6 +408,7 @@ export async function openPersistentRuntime(
       taskPlanStore: runtimeOptions.taskPlanStore ?? new SqliteTaskPlanStore(connection.raw),
       messageStore,
       assistantTimelineStore: new SqliteAssistantTimelineStore(connection.raw),
+      delegatedRunRepository: runtimeOptions.delegatedRunRepository ?? delegatedRunStore,
       memoryStore: new SqliteMemoryStore(connection.raw),
       skillStore,
       mcpStore: new SqliteMcpStore(connection.raw),
@@ -404,6 +437,7 @@ export async function openPersistentRuntime(
       externalEventStore: new SqliteExternalEventStore(connection.raw),
       queryUsageSummary,
       conversationHistory,
+      collaborationChatHost,
       browserHost,
       browserExtensionHost:
         runtimeOptions.browserExtensionHost ??
@@ -420,6 +454,8 @@ export async function openPersistentRuntime(
       browserProfileGate,
       browserFallbackWorkingDir: runtimeOptions.browserFallbackWorkingDir ?? runtimeDataRoot,
     });
+    runtimeForCollaboration = runtime;
+    collaborationRunner = (input) => runtime.executeCollaborationTaskForHost(input);
   } catch (error) {
     await conversationHistory?.close();
     if (!runtimeOptions.browserHost) await browserHost?.shutdown();

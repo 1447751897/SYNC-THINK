@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { mkdir, stat, writeFile } from 'node:fs/promises';
-import { dirname, isAbsolute, join, normalize, relative, resolve } from 'node:path';
+import { dirname, join, normalize, resolve } from 'node:path';
+import { isPathWithinRoot } from '@sync-think/shared/node-paths';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 
@@ -56,11 +57,6 @@ function assertVersion(version: string): string {
 function normalizedPath(path: string): string {
   const value = normalize(resolve(path));
   return process.platform === 'win32' ? value.toLowerCase() : value;
-}
-
-function isWithin(root: string, candidate: string): boolean {
-  const pathFromRoot = relative(normalizedPath(root), normalizedPath(candidate));
-  return pathFromRoot === '' || (!pathFromRoot.startsWith('..') && !isAbsolute(pathFromRoot));
 }
 
 function normalizeThumbprint(value: string | null | undefined): string | null {
@@ -284,7 +280,10 @@ export class DesktopUpdateRollbackCoordinator {
     if (
       release.version !== this.options.currentVersion ||
       normalizedPath(release.installer.path) !== normalizedPath(expected) ||
-      !isWithin(join(this.options.recoveryRoot, 'installers'), release.installer.path)
+      !isPathWithinRoot(
+        normalizedPath(join(this.options.recoveryRoot, 'installers')),
+        normalizedPath(release.installer.path),
+      )
     ) {
       throw new Error('desktop.update.rollback-prior-installer-path-invalid');
     }

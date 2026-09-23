@@ -2,6 +2,10 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 const mainSource = readFileSync(new URL('./main/index.ts', import.meta.url), 'utf8');
+const handlerSource = readFileSync(
+  new URL('./main/browser-recording-handlers.ts', import.meta.url),
+  'utf8',
+);
 const preloadSource = readFileSync(new URL('./preload/index.ts', import.meta.url), 'utf8');
 
 const recordingCommands = [
@@ -35,9 +39,9 @@ describe('Desktop Browser recording wiring', () => {
   it.each(recordingCommands)(
     'routes $channel through its strict parser to $command',
     ({ channel, command, parser }) => {
-      expect(mainSource).toMatch(
+      expect(handlerSource).toMatch(
         new RegExp(
-          `ipcMain\\.handle\\('${escapeRegExp(channel)}'[\\s\\S]+?getRuntimeClient\\(\\)\\.request\\([\\s\\S]+?'${escapeRegExp(command)}'[\\s\\S]+?${parser}\\(value\\)`,
+          `host\\.handle\\('${escapeRegExp(channel)}'[\\s\\S]+?host\\.requestBrowserRecording\\([\\s\\S]+?'${escapeRegExp(command)}'[\\s\\S]+?${parser}\\(value\\)`,
         ),
       );
     },
@@ -53,6 +57,11 @@ describe('Desktop Browser recording wiring', () => {
       );
     },
   );
+
+  it('registers the Recording boundary from the Main composition root', () => {
+    expect(mainSource).toMatch(/registerBrowserRecordingHandlers\(\{/);
+    expect(mainSource).toMatch(/getRuntimeClient\(\)\.requestBrowserRecording/);
+  });
 });
 
 function escapeRegExp(value: string): string {

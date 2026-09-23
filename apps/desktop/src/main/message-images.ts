@@ -11,7 +11,6 @@ import {
 } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, extname, isAbsolute, join, normalize, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
 
 export interface StoredMessageImage {
   id: string;
@@ -126,9 +125,4 @@ export function readMessageImage(
 export function messageImageUrl(storageRef: string): string | undefined {
   const safeRef = safeStorageRef(storageRef);
   return safeRef ? `sync-think-image://media/${encodeURIComponent(safeRef)}` : undefined;
-}
-
-export function messageImageFileUrl(storageRef: string): string | undefined {
-  const absolute = resolveMessageImagePath(storageRef);
-  return absolute ? pathToFileURL(absolute).href : undefined;
 }

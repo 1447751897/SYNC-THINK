@@ -17,6 +17,7 @@ import type {
   WorkspaceId,
 } from '@sync-think/shared';
 import type { BetterSQLite3Raw } from './connection.js';
+import { SqliteDelegatedRunStore } from './delegated-run-store.js';
 import { TASK_PLAN_TOOL_NAMES, PUBLIC_RUN_FIELDS, publicEventPayload } from '@sync-think/shared';
 import { EventPayloadSidecarStore, parseStoredEventPayload } from './event-payload-sidecar.js';
 import {
@@ -60,6 +61,11 @@ export interface EventPayloadExternalizationOptions {
   minimumBytes?: number;
   shouldExternalize?: (event: Event) => boolean;
   project?: (event: Event) => Record<string, unknown>;
+}
+
+export interface DelegatedRunEventProjection {
+  /** Runs inside the event/checkpoint transaction and must not start a new transaction. */
+  projectEventsInTransaction(events: readonly Event[]): void;
 }
 
 interface EventDatabaseRow {
@@ -113,10 +119,12 @@ function mapEventRow(row: EventDatabaseRow, sidecar?: EventPayloadSidecarStore):
 export class SqliteEventCheckpointStore {
   private readonly taskPlanHistory: SqliteNativeTaskPlanHistory;
   private readonly taskPlanProjection: SqliteNativeTaskPlanProjection;
+  private readonly delegatedRunProjection: DelegatedRunEventProjection;
 
   constructor(
     private readonly raw: BetterSQLite3Raw,
     private readonly payloadExternalization?: EventPayloadExternalizationOptions,
+    delegatedRunProjection?: DelegatedRunEventProjection,
   ) {
     this.taskPlanHistory = new SqliteNativeTaskPlanHistory(raw, (taskId) =>
       this.listTaskPlanEvents(taskId),
@@ -124,6 +132,7 @@ export class SqliteEventCheckpointStore {
     this.taskPlanProjection = new SqliteNativeTaskPlanProjection(raw, (taskId) =>
       this.listTaskPlanEvents(taskId),
     );
+    this.delegatedRunProjection = delegatedRunProjection ?? new SqliteDelegatedRunStore(raw);
   }
 
   getTaskPlanHistory(
@@ -278,6 +287,8 @@ export class SqliteEventCheckpointStore {
       }
 
       this.taskPlanProjection.updateExisting(events);
+      // Same transaction as events and checkpoint; failed projection rolls back all three.
+      this.delegatedRunProjection.projectEventsInTransaction(events);
       if (!transition.checkpoint) return { events };
 
       const checkpoint: Checkpoint = {

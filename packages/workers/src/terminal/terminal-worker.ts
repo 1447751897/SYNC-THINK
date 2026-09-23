@@ -6,7 +6,7 @@ import type {
   WorkerToken,
 } from '../types.js';
 import { isAbsolute, resolve, win32 } from 'node:path';
-import { isPathInside } from '../types.js';
+import { isPathWithinRoot } from '@sync-think/shared/node-paths';
 import {
   isCommandAllowed,
   isRealPathInside,
@@ -69,8 +69,8 @@ export class TerminalProcessWorker implements TerminalWorker {
         : resolve(workingDir, requestedCwd);
     if (
       !command ||
-      !isPathInside(workingDir, resolve(token.allowedRoot)) ||
-      !isPathInside(cwd, resolve(token.allowedRoot)) ||
+      !isPathWithinRoot(resolve(token.allowedRoot), workingDir) ||
+      !isPathWithinRoot(resolve(token.allowedRoot), cwd) ||
       !(await isRealPathInside(workingDir, token.allowedRoot)) ||
       !(await isRealPathInside(cwd, token.allowedRoot))
     ) {

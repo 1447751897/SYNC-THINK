@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   discoverSkillFolders,
   enabledClaudePluginSkillSources,
+  enabledClaudePluginSkillSourcesAsync,
   installLocalSkillFolders,
   resolveLocalSkillPackage,
   scanLocalSkillSources,
@@ -41,9 +42,9 @@ function makeTree(): string {
 }
 
 describe('scanLocalSkills', () => {
-  it('finds nested SKILL.md files with parsed frontmatter and summaries', () => {
+  it('finds nested SKILL.md files with parsed frontmatter and summaries', async () => {
     const root = makeTree();
-    const candidates = scanLocalSkills(root);
+    const candidates = await scanLocalSkills(root);
     expect(candidates).toHaveLength(2);
     const reviewer = candidates.find((c) => c.name === 'code-reviewer');
     expect(reviewer).toBeTruthy();
@@ -56,18 +57,44 @@ describe('scanLocalSkills', () => {
     expect(formatter?.folderName).toBe('formatter');
   });
 
-  it('returns empty for a missing directory', () => {
-    expect(scanLocalSkills(join(tmpdir(), 'does-not-exist-xyz'))).toEqual([]);
+  it('returns empty for a missing directory', async () => {
+    await expect(scanLocalSkills(join(tmpdir(), 'does-not-exist-xyz'))).resolves.toEqual([]);
   });
 
-  it('skips unreadable or malformed skill files without failing the scan', () => {
+  it('skips unreadable or malformed skill files without failing the scan', async () => {
     const root = mkdtempSync(join(tmpdir(), 'sync-think-local-skill-bad-'));
     tempDirs.push(root);
     mkdirSync(join(root, 'bad'));
     writeFileSync(join(root, 'bad', 'SKILL.md'), '');
-    const candidates = scanLocalSkills(root);
+    const candidates = await scanLocalSkills(root);
     expect(candidates).toHaveLength(1);
     expect(candidates[0]!.name).toBeUndefined();
+  });
+
+  it('yields the event loop while traversing Skill files', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'sync-think-local-skill-async-'));
+    tempDirs.push(root);
+    for (let index = 0; index < 40; index += 1) {
+      const directory = join(root, `skill-${index}`);
+      mkdirSync(directory);
+      writeFileSync(join(directory, 'SKILL.md'), `---\nname: skill-${index}\n---\nSkill ${index}`);
+    }
+
+    const completionOrder: string[] = [];
+    const scan = scanLocalSkills(root).then((candidates) => {
+      completionOrder.push('scan');
+      return candidates;
+    });
+    const timer = new Promise<void>((resolveTimer) => {
+      setTimeout(() => {
+        completionOrder.push('timer');
+        resolveTimer();
+      }, 0);
+    });
+
+    const [candidates] = await Promise.all([scan, timer]);
+    expect(candidates).toHaveLength(40);
+    expect(completionOrder[0]).toBe('timer');
   });
 
   it('recognizes direct Skill folders and plugin-style skills bundles', () => {
@@ -153,9 +180,9 @@ describe('scanLocalSkills', () => {
     }
   });
 
-  it('merges NewMax-style sources in precedence order and records their labels', () => {
+  it('merges NewMax-style sources in precedence order and records their labels', async () => {
     const root = makeTree();
-    const candidates = scanLocalSkillSources([
+    const candidates = await scanLocalSkillSources([
       { directory: root, type: 'workspace', label: 'SYNC-THINK', workspaceId: 'workspace-1' },
       { directory: root, type: 'plugin', label: '插件 · test', workspaceId: 'workspace-2' },
       { directory: join(root, 'missing'), type: 'global', label: '全局' },
@@ -169,7 +196,7 @@ describe('scanLocalSkills', () => {
     });
   });
 
-  it('loads only explicitly enabled Claude plugin Skill directories from the cache', () => {
+  it('loads only explicitly enabled Claude plugin Skill directories from the cache', async () => {
     const root = mkdtempSync(join(tmpdir(), 'sync-think-claude-plugins-'));
     tempDirs.push(root);
     const claudeDirectory = join(root, '.claude');
@@ -209,14 +236,17 @@ describe('scanLocalSkills', () => {
         label: '插件 · formatter',
       },
     ]);
-    expect(scanLocalSkillSources(sources)[0]).toMatchObject({
+    await expect(enabledClaudePluginSkillSourcesAsync({ claudeDirectory })).resolves.toEqual(
+      sources,
+    );
+    expect((await scanLocalSkillSources(sources))[0]).toMatchObject({
       name: 'format-code',
       sourceType: 'plugin',
       sourceLabel: '插件 · formatter',
     });
   });
 
-  it('honors workspace-local plugin disable overrides', () => {
+  it('honors workspace-local plugin disable overrides', async () => {
     const root = mkdtempSync(join(tmpdir(), 'sync-think-claude-plugin-override-'));
     tempDirs.push(root);
     const claudeDirectory = join(root, '.claude-home');
@@ -239,5 +269,13 @@ describe('scanLocalSkills', () => {
         includeUserSettings: false,
       }),
     ).toEqual([]);
+    await expect(
+      enabledClaudePluginSkillSourcesAsync({
+        claudeDirectory,
+        workspaceFolder: workspace,
+        workspaceId: 'workspace-1',
+        includeUserSettings: false,
+      }),
+    ).resolves.toEqual([]);
   });
 });

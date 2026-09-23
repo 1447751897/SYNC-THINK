@@ -56,3 +56,47 @@ describe('SqliteConversationStore context window override', () => {
     }
   });
 });
+
+describe('SqliteConversationStore catalog pagination', () => {
+  it('pages the complete pinned-first order without duplicates', async () => {
+    const { store, close } = await openStore();
+    try {
+      const created = Array.from({ length: 6 }, (_, index) =>
+        store.create({
+          target: { track: 'model', modelId: 'model-gpt' as ModelId },
+          title: `conversation-${index}`,
+          now: `2026-08-23T00:0${index}:00.000Z`,
+        }),
+      );
+      store.setPinned(created[1]!.id, true, '2026-08-23T01:00:00.000Z');
+      store.setPinned(created[3]!.id, true, '2026-08-23T02:00:00.000Z');
+
+      const expected = store.list({ track: 'model' }).map((item) => item.id);
+      const actual: string[] = [];
+      let cursor: string | undefined;
+      do {
+        const page = store.listPage({ track: 'model', limit: 2, cursor });
+        actual.push(...page.conversations.map((item) => item.id));
+        cursor = page.nextCursor;
+      } while (cursor);
+
+      expect(actual).toEqual(expected);
+      expect(new Set(actual).size).toBe(expected.length);
+    } finally {
+      close();
+    }
+  });
+
+  it('rejects malformed cursors and out-of-range page sizes', async () => {
+    const { store, close } = await openStore();
+    try {
+      expect(() => store.listPage({ cursor: 'not-json' })).toThrow(
+        'invalid conversation page cursor',
+      );
+      expect(() => store.listPage({ limit: 0 })).toThrow('conversation page limit');
+      expect(() => store.listPage({ limit: 201 })).toThrow('conversation page limit');
+    } finally {
+      close();
+    }
+  });
+});

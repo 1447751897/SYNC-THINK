@@ -48,10 +48,13 @@ import {
   useState,
   type ChangeEvent,
   type DragEvent,
-  type ReactNode,
 } from 'react';
 import { useDialog } from '../Dialog.js';
 import { toastApi } from '../Toast.js';
+import { useKeepAliveActive } from '../KeepAliveLayer.js';
+import { invalidateSkillCatalog, loadSkillCatalog } from '../skill-catalog-loader.js';
+import { invalidateMcpCatalog, loadMcpCatalog } from '../mcp-catalog-loader.js';
+import { ToggleControl } from '../ToggleControl.js';
 import type {
   CapabilityGovernanceListResponse,
   CapabilityOrganizeReportSummary,
@@ -79,7 +82,6 @@ import {
 import {
   formatDate,
   formatRelativeDate,
-  formatTokens,
   groupSkillVersions,
   marketMcpInstalled,
   marketSkillInstalled,
@@ -89,6 +91,7 @@ import {
   skillOriginLabel,
   type SkillFamily,
 } from './capability-utils.js';
+import { formatCapabilityMetric } from '../compact-number.js';
 import {
   SKILL_BUDGET_CHARS,
   computeContextBudget,
@@ -278,6 +281,7 @@ export interface AbilitiesPageProps {
 
 export function AbilitiesPage(props: AbilitiesPageProps): JSX.Element {
   const dialog = useDialog();
+  const active = useKeepAliveActive();
   const workspaces = useMemo(() => props.workspaces ?? [], [props.workspaces]);
   const onCatalogChanged = props.onCatalogChanged;
   const fallbackWorkspaceId =
@@ -320,6 +324,7 @@ export function AbilitiesPage(props: AbilitiesPageProps): JSX.Element {
   const [organizeReport, setOrganizeReport] = useState<CapabilityOrganizeReportSummary>();
   const [busyId, setBusyId] = useState<string>();
   const [createMenuOpen, setCreateMenuOpen] = useState(false);
+  const [localSkillScanError, setLocalSkillScanError] = useState<string>();
   const loadRequestRef = useRef(0);
 
   useEffect(() => {
@@ -343,7 +348,11 @@ export function AbilitiesPage(props: AbilitiesPageProps): JSX.Element {
   }, [props.initialView, props.navigationKey]);
 
   const loadCatalog = useCallback(
-    async (options?: { background?: boolean }) => {
+    async (options?: {
+      background?: boolean;
+      refreshSkills?: boolean;
+      refreshMcp?: boolean;
+    }) => {
       const requestId = ++loadRequestRef.current;
       const api = runtimeBridge();
       if (!api?.listSkills || !api.listMcpServers) {
@@ -356,9 +365,9 @@ export function AbilitiesPage(props: AbilitiesPageProps): JSX.Element {
       try {
         const [skillsResponse, marketResponse, mcpResponse, governanceResponse] = await Promise.all(
           [
-            api.listSkills({ limit: 500 }),
+            loadSkillCatalog(api, { refresh: options?.refreshSkills }),
             api.listSkillMarket ? api.listSkillMarket() : Promise.resolve({ items: SKILL_MARKET }),
-            api.listMcpServers({ limit: 100 }),
+            loadMcpCatalog(api, { refresh: options?.refreshMcp }),
             api.listCapabilityGovernance
               ? api.listCapabilityGovernance({ workspaceId: selectedWorkspaceId })
               : Promise.resolve(undefined),
@@ -389,17 +398,17 @@ export function AbilitiesPage(props: AbilitiesPageProps): JSX.Element {
     try {
       const res = await api.skillLocalScan({ refresh: true });
       setLocalCandidates(res.candidates);
-      await loadCatalog({ background: true });
-    } catch {
-      // 扫描失败保持现状。
+      setLocalSkillScanError(undefined);
+      await loadCatalog({ background: true, refreshSkills: true });
+    } catch (cause) {
+      setLocalSkillScanError(capabilityErrorMessage(cause, '本地 Skill 扫描失败'));
     }
   }, [loadCatalog]);
 
   useEffect(() => {
+    if (!active) return;
     void loadLocalSkills();
-    const timer = window.setInterval(() => void loadLocalSkills(), 30_000);
-    return () => window.clearInterval(timer);
-  }, [loadLocalSkills]);
+  }, [active, loadLocalSkills]);
 
   const importLocalSkill = useCallback(
     async (request: LocalSkillInstallRequest): Promise<boolean> => {
@@ -468,6 +477,7 @@ export function AbilitiesPage(props: AbilitiesPageProps): JSX.Element {
             ...(request.icon ? { icon: request.icon } : {}),
           }),
         );
+        invalidateSkillCatalog();
         await loadLocalSkills();
         onCatalogChanged?.();
         const locationSuffix =
@@ -543,13 +553,19 @@ export function AbilitiesPage(props: AbilitiesPageProps): JSX.Element {
   const selectedMarketMcp = MCP_MARKET.find((item) => item.id === detailMarketMcpId);
 
   const notifyCatalogChanged = useCallback(() => {
-    props.onCatalogChanged?.();
-  }, [props]);
+    invalidateSkillCatalog();
+    onCatalogChanged?.();
+  }, [onCatalogChanged]);
 
-  const refreshAfterMutation = useCallback(async () => {
-    await loadCatalog();
-    notifyCatalogChanged();
-  }, [loadCatalog, notifyCatalogChanged]);
+  const refreshAfterMutation = useCallback(
+    async (catalog: 'skill' | 'mcp') => {
+      if (catalog === 'skill') invalidateSkillCatalog();
+      else invalidateMcpCatalog();
+      await loadCatalog();
+      onCatalogChanged?.();
+    },
+    [loadCatalog, onCatalogChanged],
+  );
 
   const installMarketSkill = useCallback(
     async (item: SkillMarketItem) => {
@@ -621,7 +637,7 @@ export function AbilitiesPage(props: AbilitiesPageProps): JSX.Element {
         setSkillEditor(undefined);
         setDetailSkillVersionId(result.skill.skillVersionId);
         setTab('mine');
-        await refreshAfterMutation();
+        await refreshAfterMutation('skill');
       } catch (cause) {
         setError(capabilityErrorMessage(cause, '保存 Skill 失败'));
       } finally {
@@ -673,7 +689,7 @@ export function AbilitiesPage(props: AbilitiesPageProps): JSX.Element {
         await api.deleteSkill({ skillVersionId: skill.skillVersionId });
         setDetailSkillVersionId(undefined);
         setMessage(`已删除：${skill.name} v${skill.version}`);
-        await refreshAfterMutation();
+        await refreshAfterMutation('skill');
       } catch (cause) {
         setError(capabilityErrorMessage(cause, '删除 Skill 失败'));
       } finally {
@@ -737,7 +753,7 @@ export function AbilitiesPage(props: AbilitiesPageProps): JSX.Element {
       setError(undefined);
       try {
         await api.setMcpServerEnabled({ mcpServerId: server.mcpServerId, enabled });
-        await refreshAfterMutation();
+        await refreshAfterMutation('mcp');
       } catch (cause) {
         setError(capabilityErrorMessage(cause, '更新 MCP 全局状态失败'));
       } finally {
@@ -765,7 +781,7 @@ export function AbilitiesPage(props: AbilitiesPageProps): JSX.Element {
         setDetailMcpServerId(undefined);
         setDetailMarketMcpId(undefined);
         setMessage(`已删除 MCP：${server.name}`);
-        await refreshAfterMutation();
+        await refreshAfterMutation('mcp');
       } catch (cause) {
         setError(capabilityErrorMessage(cause, '删除 MCP 失败'));
       } finally {
@@ -884,7 +900,7 @@ export function AbilitiesPage(props: AbilitiesPageProps): JSX.Element {
         }
         setDetailMcpServerId(result.server.mcpServerId);
         setTab('mine');
-        await refreshAfterMutation();
+        await refreshAfterMutation('mcp');
       } catch (cause) {
         setError(capabilityErrorMessage(cause, '注册 MCP 失败'));
       } finally {
@@ -907,11 +923,11 @@ export function AbilitiesPage(props: AbilitiesPageProps): JSX.Element {
           setError(
             `刷新 MCP 工具失败：${result.refuseReason || result.auditNote || '远端服务未返回有效工具目录'}`,
           );
-          await refreshAfterMutation();
+          await refreshAfterMutation('mcp');
           return;
         }
         setMessage(`已发现 ${result.toolCount} 个 MCP 工具`);
-        await refreshAfterMutation();
+        await refreshAfterMutation('mcp');
       } catch (cause) {
         setError(capabilityErrorMessage(cause, '刷新 MCP 工具失败'));
       } finally {
@@ -960,6 +976,7 @@ export function AbilitiesPage(props: AbilitiesPageProps): JSX.Element {
           localMetadata={localSkillMetadata}
           loading={loading}
           loadError={loadError}
+          localScanError={localSkillScanError}
           message={message}
           error={error}
           workspaces={workspaces}
@@ -993,7 +1010,8 @@ export function AbilitiesPage(props: AbilitiesPageProps): JSX.Element {
             setLocalSkillImportOpen(true);
           }}
           onCreate={() => void openSkillEditor()}
-          onReload={() => void loadCatalog()}
+          onReload={() => void loadCatalog({ refreshSkills: true })}
+          onRetryLocalScan={() => void loadLocalSkills()}
           onCloseNotice={closeNotices}
           onOpenMarket={setDetailMarketSkillId}
           onOpenSkill={setDetailSkillVersionId}
@@ -1124,7 +1142,7 @@ export function AbilitiesPage(props: AbilitiesPageProps): JSX.Element {
         onQueryChange={setQuery}
         onCategoryChange={setMcpCategory}
         onStatusFilterChange={setStatusFilter}
-        onReload={() => void loadCatalog()}
+        onReload={() => void loadCatalog({ refreshMcp: true })}
         onCloseNotice={closeNotices}
         onOpenMarket={setDetailMarketMcpId}
         onOpenServer={setDetailMcpServerId}
@@ -1197,6 +1215,7 @@ function NewMaxSkillHub(props: {
   localMetadata: Record<string, LocalSkillDisplayMetadata>;
   loading: boolean;
   loadError?: string;
+  localScanError?: string;
   message?: string;
   error?: string;
   workspaces: WorkspaceSummary[];
@@ -1218,6 +1237,7 @@ function NewMaxSkillHub(props: {
   onImport(): void;
   onCreate(): void;
   onReload(): void;
+  onRetryLocalScan(): void;
   onCloseNotice(): void;
   onOpenMarket(id: string): void;
   onOpenSkill(id: string): void;
@@ -1462,6 +1482,23 @@ function NewMaxSkillHub(props: {
             </div>
             <button type="button" onClick={props.onReload}>
               重新加载
+            </button>
+          </div>
+        ) : null}
+
+        {props.tab === 'mine' && props.localScanError ? (
+          <div className="ability-status is-error" role="alert">
+            <AlertTriangle size={14} />
+            <div>
+              <strong>本地 Skill 扫描失败</strong>
+              <span>{props.localScanError}</span>
+            </div>
+            <button
+              type="button"
+              data-testid="ability-local-scan-retry"
+              onClick={props.onRetryLocalScan}
+            >
+              重新扫描
             </button>
           </div>
         ) : null}
@@ -1842,18 +1879,13 @@ function NewMaxSkillHub(props: {
                               </button>
                             ) : null}
                           </div>
-                          <button
-                            type="button"
-                            className="ability-enable-switch"
-                            role="switch"
-                            aria-checked={skill.enabled !== false}
-                            aria-label={`${skill.enabled === false ? '启用' : '停用'} ${display.name}`}
-                            data-enabled={skill.enabled !== false ? '1' : '0'}
+                          <ToggleControl
+                            checked={skill.enabled !== false}
                             disabled={Boolean(props.busyId)}
-                            onClick={() => props.onGlobalEnabled(skill, skill.enabled === false)}
-                          >
-                            <span />
-                          </button>
+                            label={`${skill.enabled === false ? '启用' : '停用'} ${display.name}`}
+                            onChange={(enabled) => props.onGlobalEnabled(skill, enabled)}
+                            className="ability-enable-switch"
+                          />
                         </article>
                       );
                     },
@@ -2286,18 +2318,13 @@ function NewMaxMcpHub(props: {
                           </span>
                         </button>
                         {/* TD-041: MCP is global. Workspace activation records are audit-only. */}
-                        <button
-                          type="button"
-                          className="ability-enable-switch"
-                          role="switch"
-                          aria-checked={server.enabled !== false}
-                          aria-label={`${server.enabled === false ? '启用' : '停用'} ${server.name}`}
-                          data-enabled={server.enabled !== false ? '1' : '0'}
+                        <ToggleControl
+                          checked={server.enabled !== false}
                           disabled={Boolean(props.busyId)}
-                          onClick={() => props.onGlobalEnabled(server, server.enabled === false)}
-                        >
-                          <span />
-                        </button>
+                          label={`${server.enabled === false ? '启用' : '停用'} ${server.name}`}
+                          onChange={(enabled) => props.onGlobalEnabled(server, enabled)}
+                          className="ability-enable-switch"
+                        />
                         <div className="mcp-installed-card__facts">
                           <span>
                             <Link2 size={12} />
@@ -2365,591 +2392,6 @@ function MarketSkillGlyph(props: { icon?: string }): JSX.Element {
   if (props.icon === 'chart-no-axes-combined') return <Layers3 size={23} />;
   if (props.icon === 'send') return <Send size={23} />;
   return <PackageOpen size={23} />;
-}
-
-export function SkillSurface(props: {
-  tab: CatalogTab;
-  query: string;
-  category: (typeof SKILL_CATEGORIES)[number];
-  statusFilter: StatusFilter;
-  sourceFilter: SourceFilter;
-  families: SkillFamily[];
-  governanceMap: Map<string, GovernedSkillSummary>;
-  loading: boolean;
-  workspaces: WorkspaceSummary[];
-  selectedWorkspaceId: string;
-  workspaceName: string;
-  busyId?: string;
-  onCategoryChange(value: (typeof SKILL_CATEGORIES)[number]): void;
-  onStatusFilterChange(value: StatusFilter): void;
-  onSourceFilterChange(value: SourceFilter): void;
-  onWorkspaceChange(value: string): void;
-  onOpenMarket(id: string): void;
-  onOpenSkill(id: string): void;
-  onInstallMarket(item: SkillMarketItem): void;
-  onCreate(): void;
-  onGlobalEnabled(skill: SkillVersionSummary, enabled: boolean): void;
-  onWorkspaceActive(
-    skill: SkillVersionSummary,
-    active: boolean,
-    workspaceId?: string,
-  ): Promise<boolean | void> | boolean | void;
-  onDelete(skill: SkillVersionSummary): void;
-  onOrganize(): void;
-  localCandidates: import('@sync-think/protocol').LocalSkillCandidate[];
-  localDirectory: string;
-  localWatching: boolean;
-  localExists: boolean;
-  onLocalImport(path: string): void;
-}): JSX.Element {
-  const needle = props.query.trim().toLocaleLowerCase();
-  if (props.tab === 'local') {
-    const visible = props.localCandidates.filter((candidate) => {
-      if (!needle) return true;
-      return [
-        candidate.name ?? candidate.folderName,
-        candidate.description ?? '',
-        candidate.summary ?? '',
-        candidate.path,
-      ]
-        .join('\n')
-        .toLocaleLowerCase()
-        .includes(needle);
-    });
-    return (
-      <section className="capability-center__content" data-testid="skill-local-surface">
-        <div className="capability-local__banner">
-          <span className="capability-local__banner-dot" aria-hidden="true" />
-          本地 Skill 目录：<code>{props.localDirectory}</code>
-          {props.localWatching
-            ? '（自动监听中）'
-            : props.localExists
-              ? '（未监听）'
-              : '（目录不存在，创建后自动发现）'}
-        </div>
-        {visible.length === 0 ? (
-          <div className="capability-center__empty">
-            {props.localCandidates.length === 0
-              ? '未在本地目录发现 SKILL.md。把 skill 文件放入约定目录（任意子目录下的 SKILL.md）即可被自动发现。'
-              : '没有匹配的本地 skill。'}
-          </div>
-        ) : (
-          <div className="capability-local__list">
-            {visible.map((candidate) => (
-              <div
-                key={candidate.path}
-                className="capability-local__card"
-                data-imported={candidate.imported ? '1' : '0'}
-              >
-                <div className="capability-local__card-main">
-                  <div className="capability-local__card-title">
-                    <span>{candidate.name ?? candidate.folderName}</span>
-                    {candidate.imported ? (
-                      <span className="capability-local__badge">已导入</span>
-                    ) : null}
-                  </div>
-                  {candidate.description ? (
-                    <div className="capability-local__desc">{candidate.description}</div>
-                  ) : null}
-                  {candidate.summary ? (
-                    <div className="capability-local__summary">{candidate.summary}</div>
-                  ) : null}
-                  <div className="capability-local__meta">
-                    <code>{candidate.path}</code>
-                    <span>· {(candidate.sizeBytes / 1024).toFixed(1)} KB</span>
-                  </div>
-                </div>
-                {!candidate.imported ? (
-                  <button
-                    type="button"
-                    className="capability-local__import"
-                    onClick={() => props.onLocalImport(candidate.path)}
-                  >
-                    导入
-                  </button>
-                ) : null}
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
-    );
-  }
-  const marketItems = SKILL_MARKET.filter((item) => {
-    const categoryMatches = props.category === '全部' || item.category === props.category;
-    const searchMatches =
-      !needle ||
-      [item.name, item.slug, item.category, item.description]
-        .join('\n')
-        .toLocaleLowerCase()
-        .includes(needle);
-    return categoryMatches && searchMatches;
-  });
-
-  const visibleFamilies = props.families.filter((family) => {
-    const skill = family.latest;
-    const row = props.governanceMap.get(skill.skillVersionId);
-    const usage = row?.usage ?? defaultUsage('skill', skill.skillVersionId);
-    const workspaceActive = row?.workspaceActive ?? false;
-    const enabled = skill.enabled !== false;
-    const searchMatches =
-      !needle ||
-      [skill.name, skill.description, skill.skillId, skill.version]
-        .join('\n')
-        .toLocaleLowerCase()
-        .includes(needle);
-    const origin = skill.originType ?? 'local';
-    const sourceMatches = props.sourceFilter === 'all' || origin === props.sourceFilter;
-    const statusMatches =
-      props.statusFilter === 'all' ||
-      (props.statusFilter === 'active' && usage.callCount > 0) ||
-      (props.statusFilter === 'enabled' && enabled && workspaceActive) ||
-      (props.statusFilter === 'inactive' && !workspaceActive) ||
-      (props.statusFilter === 'unused' && usage.callCount === 0) ||
-      (props.statusFilter === 'problem' &&
-        (scanSkillDescription(skill.description).issues.length > 0 ||
-          usage.problemCount > 0 ||
-          skill.hasScripts ||
-          skill.warnings.length > 0));
-    return searchMatches && sourceMatches && statusMatches;
-  });
-
-  if (props.tab === 'market') {
-    return (
-      <section className="capability-center__content">
-        <CategoryRail
-          items={SKILL_CATEGORIES}
-          value={props.category}
-          onChange={props.onCategoryChange}
-        />
-        <div className="capability-market-grid">
-          {marketItems.map((item) => {
-            const installed = marketSkillInstalled(item, props.families);
-            const busy = props.busyId === `market-skill:${item.id}`;
-            return (
-              <article key={item.id} className="capability-market-card">
-                <button
-                  type="button"
-                  className="capability-market-card__body"
-                  onClick={() =>
-                    installed
-                      ? props.onOpenSkill(installed.skillVersionId)
-                      : props.onOpenMarket(item.id)
-                  }
-                >
-                  <span className="capability-market-card__icon">
-                    <PackageOpen size={20} />
-                  </span>
-                  <span className="capability-market-card__copy">
-                    <span>
-                      <strong>{item.name}</strong>
-                      {installed ? <em>已安装</em> : null}
-                    </span>
-                    <small>{item.description}</small>
-                  </span>
-                </button>
-                <footer>
-                  <span>{item.category}</span>
-                  {installed ? (
-                    <button
-                      type="button"
-                      className="capability-link-button"
-                      onClick={() => props.onOpenSkill(installed.skillVersionId)}
-                    >
-                      管理
-                      <ArrowRight size={12} />
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      className="capability-install-button"
-                      disabled={Boolean(props.busyId)}
-                      onClick={() => props.onInstallMarket(item)}
-                    >
-                      {busy ? <Loader2 className="animate-spin" size={12} /> : <Plus size={12} />}
-                      {busy ? '安装中' : '安装'}
-                    </button>
-                  )}
-                </footer>
-              </article>
-            );
-          })}
-        </div>
-        {marketItems.length === 0 ? <EmptyState title="没有匹配的 Skill" compact /> : null}
-      </section>
-    );
-  }
-
-  const rows = props.families.map((family) => {
-    const governance = props.governanceMap.get(family.latest.skillVersionId);
-    return {
-      family,
-      usage: governance?.usage ?? defaultUsage('skill', family.latest.skillVersionId),
-      workspaceActive: governance?.workspaceActive ?? false,
-    };
-  });
-  const recentCount = rows.filter((row) => row.usage.callCount > 0).length;
-  const unusedCount = rows.filter((row) => row.usage.callCount === 0).length;
-  const problemCount = rows.filter(
-    (row) =>
-      scanSkillDescription(row.family.latest.description).issues.length > 0 ||
-      row.usage.problemCount > 0 ||
-      row.family.latest.hasScripts ||
-      row.family.latest.warnings.length > 0,
-  ).length;
-  const residentBudget = computeContextBudget(
-    rows
-      .filter((row) =>
-        skillCountsTowardResidentBudget({
-          enabled: row.family.latest.enabled !== false,
-          workspaceActive: row.workspaceActive,
-          scope: 'global',
-        }),
-      )
-      .map((row) => residentDescriptionChars(row.family.latest.description)),
-  );
-
-  return (
-    <section className="capability-center__content capability-center__content--mine">
-      <CapabilityStats
-        total={props.families.length}
-        recent={recentCount}
-        unused={unusedCount}
-        problems={problemCount}
-        contextChars={residentBudget.totalChars}
-      />
-      <GovernanceFilters
-        workspaces={props.workspaces}
-        selectedWorkspaceId={props.selectedWorkspaceId}
-        workspaceName={props.workspaceName}
-        statusFilter={props.statusFilter}
-        sourceFilter={props.sourceFilter}
-        showSource
-        organizing={props.busyId === 'organize'}
-        onWorkspaceChange={props.onWorkspaceChange}
-        onStatusFilterChange={props.onStatusFilterChange}
-        onSourceFilterChange={props.onSourceFilterChange}
-        onOrganize={props.onOrganize}
-      />
-      <GovernanceRuleNote />
-      <div className="capability-list-shell">
-        {props.loading ? (
-          <LoadingState label="正在读取 Skill..." />
-        ) : props.families.length === 0 ? (
-          <EmptyState
-            title="能力库还是空的"
-            description="创建或导入一份 SKILL.md，把固定工作流程变成可复用能力。"
-            actionLabel="创建 Skill"
-            onAction={props.onCreate}
-          />
-        ) : visibleFamilies.length === 0 ? (
-          <EmptyState title="没有匹配的已安装 Skill" compact />
-        ) : (
-          <div className="capability-governance-list" role="table" aria-label="Skill 治理列表">
-            <div className="capability-governance-list__header" role="row">
-              <span>Skill</span>
-              <span>来源</span>
-              <span>工作区激活</span>
-              <span>45 天触发</span>
-              <span>最后触发</span>
-              <span>操作</span>
-              <span>全局启用</span>
-            </div>
-            {visibleFamilies.map((family) => {
-              const skill = family.latest;
-              const governance = props.governanceMap.get(skill.skillVersionId);
-              const usage = governance?.usage ?? defaultUsage('skill', skill.skillVersionId);
-              const workspaceActive = governance?.workspaceActive ?? false;
-              const issue = usage.problemCount > 0 || skill.hasScripts || skill.warnings.length > 0;
-              return (
-                <article key={family.skillId} className="capability-governance-row" role="row">
-                  <button
-                    type="button"
-                    className="capability-governance-row__identity"
-                    onClick={() => props.onOpenSkill(skill.skillVersionId)}
-                  >
-                    <span className="capability-row-icon">
-                      <Sparkles size={15} />
-                    </span>
-                    <span className="ability-installed-row__copy">
-                      <span>
-                        <strong>{skill.name}</strong>
-                        <em className={issue ? 'is-warning' : undefined}>
-                          {issue ? `${usage.problemCount || skill.warnings.length} 个问题` : '正常'}
-                        </em>
-                      </span>
-                      <small>{skill.description || '未提供说明'}</small>
-                    </span>
-                  </button>
-                  <span className="capability-origin">
-                    {skillOriginLabel(skill)}
-                    <small>v{skill.version}</small>
-                  </span>
-                  <WorkspaceActivationControl
-                    active={workspaceActive}
-                    globallyEnabled={skill.enabled !== false}
-                    currentWorkspaceId={props.selectedWorkspaceId}
-                    workspaceName={props.workspaceName}
-                    workspaces={props.workspaces}
-                    capabilityType="skill"
-                    capabilityId={skill.skillVersionId}
-                    testId={`skill-workspace-activation-${skill.skillVersionId}`}
-                    busy={
-                      props.busyId === `workspace:skill:${skill.skillVersionId}` ||
-                      Boolean(props.busyId?.startsWith(`workspace:skill:${skill.skillVersionId}:`))
-                    }
-                    disabled={
-                      Boolean(props.busyId) &&
-                      !props.busyId?.startsWith(`workspace:skill:${skill.skillVersionId}:`)
-                    }
-                    onWorkspaceChange={(workspaceId, active) =>
-                      props.onWorkspaceActive(skill, active, workspaceId)
-                    }
-                  />
-                  <strong className="capability-governance-row__metric">
-                    {usage.callCount.toLocaleString('zh-CN')}
-                  </strong>
-                  <span>{formatRelativeDate(usage.lastUsedAt)}</span>
-                  <div className="capability-row-actions">
-                    <button
-                      type="button"
-                      title="查看详情"
-                      onClick={() => props.onOpenSkill(skill.skillVersionId)}
-                    >
-                      <BookOpen size={13} />
-                    </button>
-                    {skill.originType !== 'market' ? (
-                      <button
-                        type="button"
-                        title="删除 Skill"
-                        className="capability-row-actions__danger"
-                        disabled={Boolean(props.busyId)}
-                        onClick={() => props.onDelete(skill)}
-                      >
-                        <Trash2 size={13} />
-                      </button>
-                    ) : null}
-                  </div>
-                  <ToggleSwitch
-                    label={`${skill.enabled === false ? '启用' : '停用'} ${skill.name}`}
-                    checked={skill.enabled !== false}
-                    disabled={Boolean(props.busyId)}
-                    onChange={(enabled) => props.onGlobalEnabled(skill, enabled)}
-                  />
-                </article>
-              );
-            })}
-          </div>
-        )}
-      </div>
-    </section>
-  );
-}
-
-function CategoryRail<T extends string>(props: {
-  items: readonly T[];
-  value: T;
-  onChange(value: T): void;
-}): JSX.Element {
-  return (
-    <div className="capability-category-rail" aria-label="分类筛选">
-      {props.items.map((item) => (
-        <button
-          key={item}
-          type="button"
-          className={props.value === item ? 'is-active' : undefined}
-          onClick={() => props.onChange(item)}
-        >
-          {item}
-        </button>
-      ))}
-    </div>
-  );
-}
-
-function CapabilityStats(props: {
-  total: number;
-  recent: number;
-  unused: number;
-  problems: number;
-  contextChars: number;
-}): JSX.Element {
-  const contextPercent = Math.min(
-    100,
-    Math.round((props.contextChars / SKILL_BUDGET_CHARS) * 100),
-  );
-  return (
-    <div className="capability-stats">
-      <StatCard
-        value={props.total}
-        label="全部"
-        detail="当前目录中的能力"
-        icon={<Layers3 size={13} />}
-      />
-      <StatCard
-        value={props.recent}
-        label="近期活跃"
-        detail="45 天内有触发记录"
-        icon={<CircleGauge size={13} />}
-      />
-      <StatCard
-        value={props.unused}
-        label="在吃灰"
-        detail="45 天内没有触发"
-        icon={<Boxes size={13} />}
-      />
-      <StatCard
-        value={props.problems}
-        label="有问题"
-        detail="失败、告警或待发现"
-        tone={props.problems > 0 ? 'warning' : 'normal'}
-        icon={<AlertTriangle size={13} />}
-      />
-      <article
-        className={
-          contextPercent >= 100
-            ? 'capability-stat capability-stat--context is-warning'
-            : 'capability-stat capability-stat--context'
-        }
-      >
-        <div>
-          <span>常驻上下文占用</span>
-          <strong>
-            {contextPercent >= 100
-              ? `≈ 超限 ${(props.contextChars / SKILL_BUDGET_CHARS).toFixed(1)}x`
-              : `${contextPercent}%`}
-          </strong>
-        </div>
-        <div className="capability-context-meter">
-          <span style={{ width: `${contextPercent}%` }} />
-        </div>
-        <p>
-          {formatCharCount(props.contextChars)} 字符 / 建议上限约{' '}
-          {formatCharCount(SKILL_BUDGET_CHARS)}
-        </p>
-      </article>
-    </div>
-  );
-}
-
-function GovernanceFilters(props: {
-  workspaces: WorkspaceSummary[];
-  selectedWorkspaceId: string;
-  workspaceName: string;
-  statusFilter: StatusFilter;
-  sourceFilter: SourceFilter;
-  showSource?: boolean;
-  organizing: boolean;
-  onWorkspaceChange(value: string): void;
-  onStatusFilterChange(value: StatusFilter): void;
-  onSourceFilterChange(value: SourceFilter): void;
-  onOrganize(): void;
-}): JSX.Element {
-  const statusItems: Array<[StatusFilter, string]> = [
-    ['all', '全部状态'],
-    ['active', '活跃'],
-    ['enabled', '已生效'],
-    ['inactive', '未激活'],
-    ['unused', '未触发'],
-    ['problem', '有问题'],
-  ];
-  const sourceItems: Array<[SourceFilter, string]> = [
-    ['all', '全部来源'],
-    ['market', '市场安装'],
-    ['local', '本地创建'],
-    ['derived', '本地派生'],
-  ];
-
-  return (
-    <div className="capability-governance-toolbar">
-      <div className="capability-workspace-filter">
-        <Folder size={13} />
-        {props.workspaces.length > 0 ? (
-          <select
-            value={props.selectedWorkspaceId}
-            aria-label="选择治理工作区"
-            onChange={(event) => props.onWorkspaceChange(event.target.value)}
-          >
-            {props.workspaces.map((workspace) => (
-              <option key={workspace.workspaceId} value={workspace.workspaceId}>
-                {workspace.name}
-              </option>
-            ))}
-          </select>
-        ) : (
-          <span>{props.workspaceName}</span>
-        )}
-      </div>
-      <div className="capability-filter-group" role="group" aria-label="状态筛选">
-        {statusItems.map(([value, label]) => (
-          <button
-            key={value}
-            type="button"
-            className={props.statusFilter === value ? 'is-active' : undefined}
-            onClick={() => props.onStatusFilterChange(value)}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
-      {props.showSource ? (
-        <label className="capability-source-select">
-          <span>来源</span>
-          <select
-            value={props.sourceFilter}
-            onChange={(event) => props.onSourceFilterChange(event.target.value as SourceFilter)}
-          >
-            {sourceItems.map(([value, label]) => (
-              <option key={value} value={value}>
-                {label}
-              </option>
-            ))}
-          </select>
-        </label>
-      ) : null}
-      <button
-        type="button"
-        className="capability-organize-button"
-        disabled={props.organizing}
-        onClick={props.onOrganize}
-      >
-        {props.organizing ? (
-          <Loader2 className="animate-spin" size={13} />
-        ) : (
-          <WandSparkles size={13} />
-        )}
-        一键整理
-      </button>
-    </div>
-  );
-}
-
-function GovernanceRuleNote(): JSX.Element {
-  return (
-    <div className="capability-governance-rule">
-      <ShieldCheck size={13} />
-      <div className="capability-governance-rule__copy">
-        <strong>Skill 有两条生效路径</strong>
-        <span>
-          <b>Compose</b>
-          <i>全局启用</i>
-          <ArrowRight size={11} />
-          <i>当前工作区激活</i>
-          <ArrowRight size={11} />
-          <i>进入本轮选择</i>
-        </span>
-        <span>
-          <b>Agent / Team</b>
-          <i>全局启用</i>
-          <ArrowRight size={11} />
-          <i>Agent 自身绑定</i>
-          <ArrowRight size={11} />
-          <i>默认注入上下文</i>
-          <em>工作区激活不参与此路径</em>
-        </span>
-      </div>
-    </div>
-  );
 }
 
 function WorkspaceActivationControl(props: {
@@ -3244,51 +2686,6 @@ function WorkspaceActivationControl(props: {
   );
 }
 
-function ToggleSwitch(props: {
-  label: string;
-  checked: boolean;
-  disabled?: boolean;
-  onChange(checked: boolean): void;
-}): JSX.Element {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-label={props.label}
-      aria-checked={props.checked}
-      className="capability-toggle"
-      data-enabled={props.checked ? '1' : '0'}
-      disabled={props.disabled}
-      onClick={() => props.onChange(!props.checked)}
-    >
-      <span />
-    </button>
-  );
-}
-
-function StatCard(props: {
-  value: number;
-  label: string;
-  detail: string;
-  tone?: 'normal' | 'warning';
-  icon: ReactNode;
-}): JSX.Element {
-  return (
-    <article
-      className={props.tone === 'warning' ? 'capability-stat is-warning' : 'capability-stat'}
-    >
-      <div>
-        <strong>{props.value}</strong>
-        <span>
-          {props.icon}
-          {props.label}
-        </span>
-      </div>
-      <p>{props.detail}</p>
-    </article>
-  );
-}
-
 function LoadingState(props: { label: string }): JSX.Element {
   return (
     <div className="capability-loading-state">
@@ -3407,7 +2804,7 @@ function SkillDetailDrawer(props: {
                   />
                   <DetailMetric
                     label="上下文"
-                    value={`${formatTokens(usage?.contextTokens ?? 0)} tokens`}
+                    value={`${formatCapabilityMetric(usage?.contextTokens ?? 0)} tokens`}
                   />
                 </div>
                 <section className="capability-detail-section">
@@ -3718,7 +3115,7 @@ function McpDetailDrawer(props: {
                   />
                   <DetailMetric
                     label="上下文"
-                    value={`${formatTokens(usage?.contextTokens ?? 0)} tokens`}
+                    value={`${formatCapabilityMetric(usage?.contextTokens ?? 0)} tokens`}
                   />
                   <DetailMetric label="归属" value="全局" tone="muted" />
                 </div>
@@ -3771,7 +3168,7 @@ function McpDetailDrawer(props: {
                     </div>
                     <div className="capability-detail-card">
                       <dt>输出上限</dt>
-                      <dd>{formatTokens(server.maxOutputBytes)} bytes</dd>
+                      <dd>{formatCapabilityMetric(server.maxOutputBytes)} bytes</dd>
                     </div>
                   </dl>
                 </section>
@@ -5332,7 +4729,7 @@ function OrganizeReportDialog(props: {
                   />
                   <DetailMetric
                     label="上下文预算"
-                    value={`${formatTokens(report.contextBudgetTokens)} tokens`}
+                    value={`${formatCapabilityMetric(report.contextBudgetTokens)} tokens`}
                   />
                 </div>
                 <div className="capability-organize-sections">

@@ -14,7 +14,7 @@ import {
   parseOpenTaskPayload,
   parseSearchTasksPayload,
 } from '../command-validation.js';
-import { toTaskSummary } from '../summaries.js';
+import { toTaskSummary, toWorkspaceSummary } from '../summaries.js';
 import type { QueryContext } from './query-context.js';
 
 /**
@@ -36,9 +36,7 @@ export function handleListWorkspaces(ctx: QueryContext, socket: Socket, frame: F
     return;
   }
   const response: ListWorkspacesResponse = {
-    workspaces: ctx.workspaceStore.listWorkspaces().map((workspace) =>
-      ctx.toWorkspaceSummary(workspace),
-    ),
+    workspaces: ctx.workspaceStore.listWorkspaces().map(toWorkspaceSummary),
   };
   socket.write(
     encodeFrame({

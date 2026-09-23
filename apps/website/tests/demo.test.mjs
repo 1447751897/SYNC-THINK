@@ -1,45 +1,57 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { readFile } from 'node:fs/promises';
+import { access, readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 
 test('demo imports the actual desktop cards instead of hand-drawn replicas', async () => {
   const source = await readFile(
-    new URL('../../desktop/src/renderer/shell/WebsiteChatDemo.tsx', import.meta.url),
+    new URL('../src/demo/WebsiteChatDemo.tsx', import.meta.url),
+    'utf8',
+  );
+  const surface = await readFile(
+    new URL('../../desktop/src/renderer/shell/website-demo-surface.ts', import.meta.url),
     'utf8',
   );
   for (const component of [
-    'ComposerTaskPanel',
     'AskQuestionCard',
     'PlanApprovalCard',
     'ToolApprovalCard',
     'ComposerApprovalStack',
-    'NewMaxComposerFrame',
     'ComposerEditor',
     'InlineProcessFlow',
     'CodeBlock',
     'DeferredFileDiff',
     'ComposeRequestQueue',
-    'WebsiteDemoWorkbench',
-    'WebsiteDemoToolbar',
     'BrowserHandoffCard',
     'DesktopWaitingCard',
   ]) {
-    assert.match(source, new RegExp(`from './${component}\\.js'`));
+    assert.match(surface, new RegExp(`export \\{[^}]*${component}[^}]*\\} from`));
   }
+  assert.match(source, /from '@sync-think\/desktop-demo-surface'/);
+  for (const component of ['ComposerModeBanner', 'ComposerTaskPanel', 'NewMaxComposerFrame']) {
+    assert.match(source, new RegExp(`${component}[\\s\\S]*from '@sync-think/ui-kit'`));
+    assert.doesNotMatch(surface, new RegExp(component));
+  }
+  assert.match(source, /from '.\/WebsiteDemoWorkbench\.js'/);
+  assert.match(source, /from '.\/WebsiteDemoToolbar\.js'/);
   assert.doesNotMatch(source, /TaskPlanHistoryPanel|readDemoHistory/);
   const html = await readFile(new URL('../demo.html', import.meta.url), 'utf8');
   assert.match(html, /assets\/chat-shell\.css\?v=embed-hero-1/);
   assert.match(html, /assets\/chat-app\.js\?v=embed-hero-1/);
   assert.doesNotMatch(html, /id="plan-steps"|src="\/demo.js"/);
   const capability = await readFile(
-    new URL('../../desktop/src/renderer/shell/WebsiteCapabilityDemo.tsx', import.meta.url),
+    new URL('../src/demo/WebsiteCapabilityDemo.tsx', import.meta.url),
     'utf8',
   );
   for (const component of ['AgentLibrary', 'TeamLibrary', 'KernelUpdatePanel'])
-    assert.match(capability, new RegExp(`from './${component}\\.js'`));
+    assert.match(surface, new RegExp(`export \\{[^}]*${component}[^}]*\\} from`));
+  assert.match(capability, /from '@sync-think\/desktop-demo-surface'/);
+  assert.match(capability, /import \{ NewMaxComposerFrame \} from '@sync-think\/ui-kit'/);
   const landing = await readFile(new URL('../index.html', import.meta.url), 'utf8');
-  assert.equal((landing.match(/src="\/demo\.html\?view=(?:kernels|agents|teams)"/g) ?? []).length, 3);
+  assert.equal(
+    (landing.match(/src="\/demo\.html\?view=(?:kernels|agents|teams)"/g) ?? []).length,
+    3,
+  );
   assert.match(landing, /src="\/demo\.html\?embed=hero"/);
   assert.match(landing, /class="kernel-strip"/);
   assert.match(landing, /Claude Code/);
@@ -52,16 +64,31 @@ test('demo imports the actual desktop cards instead of hand-drawn replicas', asy
   assert.match(styles, /background-position:\s*22%\s+100%/);
   assert.doesNotMatch(styles, /site-footer[^}]*hero-alpine-painted/);
   assert.match(styles, /height:\s*820px/);
-  const demoCss = await readFile(
-    new URL('../../desktop/src/renderer/shell/website-demo.css', import.meta.url),
-    'utf8',
-  );
+  const demoCss = await readFile(new URL('../src/demo/website-demo.css', import.meta.url), 'utf8');
   assert.match(demoCss, /demo-wallpaper-chat\.jpg\?v=scenery-1/);
   assert.match(demoCss, /demo-wallpaper-kernels\.jpg\?v=scenery-1/);
   assert.match(demoCss, /demo-wallpaper-agents\.jpg\?v=scenery-1/);
   assert.match(demoCss, /demo-wallpaper-teams\.jpg\?v=scenery-1/);
   assert.match(demoCss, /data-demo-embed=.hero./);
   assert.match(source, /dataset\.demoEmbed = 'hero'/);
+});
+
+test('Website owns its demo entry, state, styling and build pipeline', async () => {
+  for (const path of [
+    '../src/demo/WebsiteChatDemo.tsx',
+    '../src/demo/WebsiteCapabilityDemo.tsx',
+    '../src/demo/website-demo-state.ts',
+    '../src/demo/website-capability-state.ts',
+    '../src/demo/website-demo.css',
+    '../scripts/build-demo.mjs',
+  ])
+    await access(new URL(path, import.meta.url));
+  await assert.rejects(
+    access(new URL('../../desktop/scripts/build-website-demo.mjs', import.meta.url)),
+  );
+  await assert.rejects(
+    access(new URL('../../desktop/src/renderer/shell/WebsiteChatDemo.tsx', import.meta.url)),
+  );
 });
 
 test(

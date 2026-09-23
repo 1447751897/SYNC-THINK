@@ -24,6 +24,11 @@ export interface ShellBootData {
   skills: SkillVersionSummary[];
 }
 
+export interface ShellBootSnapshotWriter {
+  schedule(data: ShellBootData): void;
+  flush(): void;
+}
+
 const EMPTY: ShellBootData = {
   conversations: [],
   agents: [],
@@ -77,6 +82,33 @@ export function writeShellBootSnapshot(data: ShellBootData): void {
   } catch {
     // Quota or private-mode — next cold start just waits for runtime.
   }
+}
+
+export function createShellBootSnapshotWriter(
+  delayMs = 250,
+  write: (data: ShellBootData) => void = writeShellBootSnapshot,
+): ShellBootSnapshotWriter {
+  let pending: ShellBootData | null = null;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+
+  const flush = () => {
+    if (timer !== null) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    const data = pending;
+    pending = null;
+    if (data) write(data);
+  };
+
+  return {
+    schedule(data) {
+      pending = data;
+      if (timer !== null) clearTimeout(timer);
+      timer = setTimeout(flush, delayMs);
+    },
+    flush,
+  };
 }
 
 export function emptyShellBootData(): ShellBootData {

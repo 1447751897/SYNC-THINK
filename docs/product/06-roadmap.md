@@ -317,9 +317,13 @@ M1 完成日期：2026-07-15（用户将 dogfood 门槛改为 1 天；有效 1/1
   - [ ] P1.3：WorkflowVersion、固定值/运行变量/秘密引用、编辑和确定性回放。
     - [x] 第一切片：自动化 Task、手动/AI Draft、录制提交、人类审核、驳回重录与不可变 WorkflowVersion；Browser 默认任务页、Chrome-first 和网页录制浮层同步完成。
     - [x] 第一切片收口：严格 contentRef 合同、Profile 引用保护、已发布 Task 的 V2 Draft、审核历史、URL 搜索与 V2 审核 UI。
-    - [ ] 后续切片：步骤编辑、固定值/运行变量/秘密引用绑定，以及已发布 WorkflowVersion 的确定性回放。
+    - [x] 已发布 WorkflowVersion 的确定性回放、固定值和运行变量绑定；执行前一次性校验站点授权与缺失变量。
+    - [ ] 后续切片：步骤编辑与秘密值运行时注入。
   - [ ] P1.4：运行历史、逐步日志/截图、失败定位与登录 handoff。
-  - [ ] P1.5：手动启停的定时任务；条件、循环与 AI 自修复留在 P2。
+    - [x] 持久运行历史、逐步结果、逐步全页截图、失败步骤与失败原因；Runtime 重启后仍可查看。
+    - [ ] 后续切片：Workflow 执行中遇到登录时进入可恢复 handoff。
+  - [x] P1.5：手动启停的固定间隔定时任务；条件、循环与 AI 自修复留在 P2。
+    - 仅允许无运行变量、无秘密值的已发布任务启用定时执行；最短间隔 5 分钟，受管 Runtime 每 30 秒扫描到期任务并先推进下次执行时间再回放。
 
 - [x] NewMax 浏览器与设计稿工作区对齐。
   - [x] A1：单实例内嵌浏览器作为 AI/用户共同 Page，补齐 NewMax 工具栏、同页 AI 动作和状态反馈。
@@ -420,6 +424,7 @@ MVP 边界（闭测）：Windows 单机 local-first 多模型 Agent 工作台
 | 2026-08-05 | Browser Automation Studio P1.1 完成              | Runtime Profile 真源、脱敏站点会话清单、实时刷新、按站点清除与完整 Profile 删除已通过自动化门禁；下一步进入 P1.2 语义动作录制                        |
 | 2026-08-05 | Browser Automation Studio P1.2 完成              | 单 Page 主 Frame 语义录制、SQLite durable 草稿、实时步骤、敏感值占位、Profile 独占与冷启动中断恢复完成；下一步进入 P1.3 WorkflowVersion 与确定性回放 |
 | 2026-08-06 | Browser Automation Studio P1.3 第一切片收口      | 修复 contentRef 放宽，补齐 Profile 引用保护、V2 Draft、审核历史、URL 搜索与 Desktop V2 审核路径；确定性执行仍属后续切片                              |
+| 2026-09-22 | Browser Automation Studio 执行闭环               | 确定性回放、运行变量、逐步截图、持久运行历史与固定间隔调度完成；秘密值注入、步骤编辑和 Workflow 中途登录 handoff 留在后续切片                        |
 
 ### Image P0.3（2026-08-01 更新）
 

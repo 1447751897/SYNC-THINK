@@ -1,21 +1,26 @@
 import { readFileSync } from 'node:fs';
 import { performance } from 'node:perf_hooks';
 import { describe, expect, it } from 'vitest';
-import {
-  calculateMessageWindow,
-  MESSAGE_WINDOW_ESTIMATED_HEIGHT,
-} from './message-window.js';
+import { calculateMessageWindow, MESSAGE_WINDOW_ESTIMATED_HEIGHT } from './message-window.js';
 
 const chatSource = readFileSync(new URL('./ChatView.tsx', import.meta.url), 'utf8');
+const virtualWindowSource = readFileSync(
+  new URL('./use-message-virtual-window.ts', import.meta.url),
+  'utf8',
+);
 const shellCss = readFileSync(new URL('./shell.css', import.meta.url), 'utf8');
 
 describe('long-thread performance budget', () => {
-  it('keeps durable history I/O paged and lets Chromium skip offscreen message layout', () => {
+  it('keeps durable history I/O paged and mounts only the active DOM window', () => {
     expect(chatSource).toMatch(/limit:\s*50/);
+    expect(chatSource).toContain('useMessageVirtualWindow({');
+    expect(chatSource).toContain('windowedDurableMessages.map');
+    expect(chatSource).toContain('data-message-window-spacer="top"');
+    expect(chatSource).not.toContain('{renderedDurableMessages.map');
+    expect(virtualWindowSource).toContain('MESSAGE_VIRTUALIZATION_THRESHOLD = 80');
+    expect(virtualWindowSource).toContain('calculateMessageWindow({');
     expect(chatSource).toContain('shell-message-window-item pb-6');
-    expect(shellCss).toMatch(
-      /\.shell-message-window-item\s*\{[^}]*content-visibility:\s*auto;/s,
-    );
+    expect(shellCss).toMatch(/\.shell-message-window-item\s*\{[^}]*content-visibility:\s*auto;/s);
     expect(shellCss).toContain(
       'contain-intrinsic-size: auto ' + MESSAGE_WINDOW_ESTIMATED_HEIGHT + 'px',
     );

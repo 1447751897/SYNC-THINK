@@ -1,3 +1,4 @@
+import { parseWeeklyRule } from '@sync-think/shared/task-schedule';
 // Payload validation for the mutable global Agent / Team / Conversation
 // commands (2026-07-22 model). Same strict style as agent-payloads.ts: reject
 // wrong shapes at the IPC boundary before frames reach the Runtime.
@@ -10,6 +11,7 @@ import type {
   DeleteGlobalAgentPayload,
   DeleteTeamPayload,
   ConversationCompactPayload,
+  ConversationSendMessagePayload,
   ListConversationsPayload,
   ConversationListMessagesPayload,
   ConversationListNavigationPayload,
@@ -40,10 +42,6 @@ import type {
   UpdateScheduledTaskPayload,
   DeleteScheduledTaskPayload,
   TriggerScheduledTaskPayload,
-  SkillLocalInspectPayload,
-  SkillLocalScanPayload,
-  SkillLocalImportPayload,
-  InstallSkillMarketPayload,
   SetConversationPinnedPayload,
   SetTeamRunStatusPayload,
   StartTeamRunPayload,
@@ -62,14 +60,25 @@ import type {
   RunIndexSource,
   ExternalEventState,
 } from '@sync-think/shared';
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
+import { isRecord } from '@sync-think/shared/value-validation';
 
 function optionalString(value: unknown, label: string): string | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== 'string') throw new Error(label);
+  return value;
+}
+
+/**
+ * The Agent's write policy is a closed vocabulary, so an unknown value must be
+ * rejected rather than forwarded — the Runtime's field whitelist would discard
+ * the whole command otherwise (leaving the user's edit silently unsaved).
+ */
+function optionalWritePolicy(
+  value: unknown,
+  label: string,
+): CreateGlobalAgentPayload['writePolicy'] {
+  if (value === undefined) return undefined;
+  if (value !== 'inherit' && value !== 'read-only') throw new Error(label);
   return value;
 }
 
@@ -156,6 +165,7 @@ export function parseCreateGlobalAgentPayload(value: unknown): CreateGlobalAgent
           : (() => {
               throw new Error(label);
             })(),
+    writePolicy: optionalWritePolicy(value.writePolicy, label),
   };
 }
 
@@ -194,6 +204,7 @@ export function parseUpdateGlobalAgentPayload(value: unknown): UpdateGlobalAgent
               throw new Error(label);
             })(),
     archived: value.archived as boolean | undefined,
+    writePolicy: optionalWritePolicy(value.writePolicy, label),
   };
 }
 
@@ -305,10 +316,24 @@ export function parseListConversationsPayload(value: unknown): ListConversations
   if (value === undefined || value === null) return {};
   const label = 'Invalid list-conversations payload';
   if (!isRecord(value)) throw new Error(label);
+  const allowed = new Set(['track', 'workspaceId', 'includeArchived', 'cursor', 'limit']);
+  if (Object.keys(value).some((key) => !allowed.has(key))) throw new Error(label);
   if (value.track !== undefined && !CONVERSATION_TRACKS.has(value.track as string)) {
     throw new Error(label);
   }
   if (value.includeArchived !== undefined && typeof value.includeArchived !== 'boolean') {
+    throw new Error(label);
+  }
+  if (
+    value.cursor !== undefined &&
+    (typeof value.cursor !== 'string' || !value.cursor.trim() || value.cursor.length > 2_048)
+  ) {
+    throw new Error(label);
+  }
+  if (
+    value.limit !== undefined &&
+    (!Number.isSafeInteger(value.limit) || Number(value.limit) < 1 || Number(value.limit) > 200)
+  ) {
     throw new Error(label);
   }
   return {
@@ -318,6 +343,8 @@ export function parseListConversationsPayload(value: unknown): ListConversations
         ? undefined
         : (requiredString(value.workspaceId, label) as ListConversationsPayload['workspaceId']),
     includeArchived: value.includeArchived as boolean | undefined,
+    cursor: value.cursor as string | undefined,
+    limit: value.limit as number | undefined,
   };
 }
 
@@ -727,6 +754,11 @@ function parseTaskRule(value: unknown, label: string): TaskRule {
         maxTimes: Math.max(1, Math.floor(value.maxTimes)),
       };
     }
+    case 'weekly': {
+      const weekly = parseWeeklyRule(value);
+      if (!weekly) throw new Error(label);
+      return weekly;
+    }
     case 'cron':
       if (typeof value.expression !== 'string') throw new Error(label);
       return { kind: 'cron', expression: value.expression };
@@ -921,48 +953,6 @@ export function parseActivityRetryAnchorPayload(value: unknown): ActivityRetryAn
   return { runId: requiredString(value.runId, label) };
 }
 
-export function parseSkillLocalScanPayload(value: unknown): SkillLocalScanPayload {
-  if (!isRecord(value)) return {};
-  return {
-    ...(typeof value.refresh === 'boolean' ? { refresh: value.refresh } : {}),
-  };
-}
-
-export function parseSkillLocalInspectPayload(value: unknown): SkillLocalInspectPayload {
-  const label = 'Invalid skill-local-inspect payload';
-  if (!isRecord(value)) throw new Error(label);
-  return { path: requiredString(value.path, label) };
-}
-
-export function parseSkillLocalImportPayload(value: unknown): SkillLocalImportPayload {
-  const label = 'Invalid skill-local-import payload';
-  if (!isRecord(value)) throw new Error(label);
-  let scope: SkillLocalImportPayload['scope'];
-  if (isRecord(value.scope)) {
-    if (value.scope.type === 'global') {
-      scope = { type: 'global' };
-    } else if (value.scope.type === 'workspace') {
-      scope = {
-        type: 'workspace',
-        workspaceId: requiredString(value.scope.workspaceId, label),
-      };
-    } else {
-      throw new Error(label);
-    }
-  }
-  return {
-    path: requiredString(value.path, label),
-    ...(scope ? { scope } : {}),
-    ...(typeof value.overwrite === 'boolean' ? { overwrite: value.overwrite } : {}),
-  };
-}
-
-export function parseInstallSkillMarketPayload(value: unknown): InstallSkillMarketPayload {
-  const label = 'Invalid skill-market-install payload';
-  if (!isRecord(value)) throw new Error(label);
-  return { marketSkillId: requiredString(value.marketSkillId, label) };
-}
-
 export function parseConversationDecideToolApprovalPayload(
   value: unknown,
 ): ConversationDecideToolApprovalPayload {
@@ -1041,6 +1031,25 @@ export function parseDeleteConversationPayload(value: unknown): DeleteConversati
       value.conversationId,
       label,
     ) as DeleteConversationPayload['conversationId'],
+  };
+}
+
+export function parseConversationSendMessagePayload(
+  value: unknown,
+): ConversationSendMessagePayload {
+  const label = 'Invalid conversation-send-message payload';
+  if (
+    !isRecord(value) ||
+    typeof value.conversationId !== 'string' ||
+    typeof value.text !== 'string'
+  ) {
+    throw new Error(label);
+  }
+  // Preserve whitespace and image-only drafts; Runtime owns conversation lookup.
+  return {
+    conversationId: value.conversationId as ConversationSendMessagePayload['conversationId'],
+    text: value.text,
+    modelId: optionalString(value.modelId, label) as ConversationSendMessagePayload['modelId'],
   };
 }
 

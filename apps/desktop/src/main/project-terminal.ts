@@ -1,5 +1,6 @@
 import { realpath, stat } from 'node:fs/promises';
 import * as path from 'node:path';
+import { isPathWithinRoot } from '@sync-think/shared/node-paths';
 
 const MAX_COMMAND_LINE_LENGTH = 16_384;
 const MAX_ARGUMENTS = 128;
@@ -77,14 +78,6 @@ export function parseProjectTerminalCommand(commandLine: string): ParsedProjectT
   return { kind: 'exec', command, args };
 }
 
-function isPathInside(candidate: string, root: string): boolean {
-  const relative = path.relative(root, candidate);
-  return (
-    relative === '' ||
-    (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))
-  );
-}
-
 export async function resolveProjectTerminalCwd(
   projectRoot: string,
   currentCwd: string,
@@ -102,9 +95,9 @@ export async function resolveProjectTerminalCwd(
     throw new Error('Terminal cwd must be project-relative');
   }
   const candidate = path.resolve(root, current, requested);
-  if (!isPathInside(candidate, root)) throw new Error('Terminal cd path escapes project root');
+  if (!isPathWithinRoot(root, candidate)) throw new Error('Terminal cd path escapes project root');
   const target = await realpath(candidate);
-  if (!isPathInside(target, root)) throw new Error('Terminal cd path escapes project root');
+  if (!isPathWithinRoot(root, target)) throw new Error('Terminal cd path escapes project root');
   const targetInfo = await stat(target);
   if (!targetInfo.isDirectory()) throw new Error('Terminal cd target is not a directory');
   const cwd = path.relative(root, target).replace(/\\/g, '/');

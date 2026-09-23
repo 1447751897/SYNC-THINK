@@ -290,9 +290,11 @@ export function PlanApprovalCard({
     setAction('approve');
     try {
       const rev = latest.revision;
-      await api.conversationPlanApprove({ conversationId, revision: rev });
+      const approved = await api.conversationPlanApprove({ conversationId, revision: rev });
       await onSwitchMode('execute');
-      await onExecute(buildPlanExecutionInstruction(latest, rev));
+      if (!approved.collaborationTaskIds?.length) {
+        await onExecute(buildPlanExecutionInstruction(latest, rev));
+      }
       onPlanUpdated(undefined);
     } catch (error) {
       notifyError(error, '批准计划失败');

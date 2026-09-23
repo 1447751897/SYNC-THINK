@@ -1,12 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
   addAttachment,
-  applyMention,
   buildMessageWithAttachments,
   detectMentionQuery,
-  extractMentionPaths,
   fileNameFromPath,
   removeAttachment,
+  splitMessageFileReferences,
   stripMentionToken,
 } from './compose-mention.js';
 
@@ -40,15 +39,6 @@ describe('stripMentionToken', () => {
   });
 });
 
-describe('applyMention (legacy inline)', () => {
-  it('replaces the active query and places caret after path', () => {
-    const mention = detectMentionQuery('看 @Ap', 5)!;
-    const result = applyMention('看 @Ap', mention, 'src/App.tsx');
-    expect(result.text).toBe('看 @src/App.tsx ');
-    expect(result.caret).toBe('看 @src/App.tsx '.length);
-  });
-});
-
 describe('attachments helpers', () => {
   it('adds unique attachments and removes by path', () => {
     const a = { path: 'a.ts', name: 'a.ts', kind: 'file' as const };
@@ -68,6 +58,21 @@ describe('attachments helpers', () => {
     expect(fileNameFromPath('src/components/Button.tsx')).toBe('Button.tsx');
   });
 
+  it('splits the generated file footer for attachment rendering', () => {
+    expect(
+      splitMessageFileReferences('请读取它\n\n引用文件：\n- .codex-logs/next-dev.err.log'),
+    ).toEqual({
+      body: '请读取它',
+      files: [
+        {
+          path: '.codex-logs/next-dev.err.log',
+          name: 'next-dev.err.log',
+          kind: 'file',
+        },
+      ],
+    });
+  });
+
   it('does not invent a fake image path footer (images go via multimodal payload)', () => {
     const images = [
       {
@@ -79,14 +84,5 @@ describe('attachments helpers', () => {
     ];
     // Text body only — image binary is sent separately as appendMessage.images.
     expect(buildMessageWithAttachments('看图', images)).toBe('看图');
-  });
-});
-
-describe('extractMentionPaths', () => {
-  it('collects unique path tokens', () => {
-    expect(extractMentionPaths('见 @src/a.ts 和 @src/a.ts 与 @docs/r.md')).toEqual([
-      'src/a.ts',
-      'docs/r.md',
-    ]);
   });
 });

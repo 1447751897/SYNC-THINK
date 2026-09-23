@@ -12,15 +12,18 @@ import {
 import { jsonSchemaToZodShape } from './schema-bridge.js';
 
 describe('kernel mcp-servers registry', () => {
-  it.each(['claude-code', 'codex'])('leaves task ownership with the %s native kernel', (kernelId) => {
-    setKernelMcpServerConditions({ hasTaskStore: true });
-    const selection = selectKernelMcpRun({ kernelId });
-    expect(selection.servers.map((server) => server.name)).not.toContain('task-board');
-    for (const name of ['update_task_plan', 'TaskCreate', 'TaskUpdate', 'TaskList']) {
-      expect(selection.externalTools.map((tool) => tool.name)).not.toContain(name);
-    }
-    expect(selection.externalTools.map((tool) => tool.name)).toContain('platform_context');
-  });
+  it.each(['claude-code', 'codex'])(
+    'leaves task ownership with the %s native kernel',
+    (kernelId) => {
+      setKernelMcpServerConditions({ hasTaskStore: true });
+      const selection = selectKernelMcpRun({ kernelId });
+      expect(selection.servers.map((server) => server.name)).not.toContain('task-board');
+      for (const name of ['update_task_plan', 'TaskCreate', 'TaskUpdate', 'TaskList']) {
+        expect(selection.externalTools.map((tool) => tool.name)).not.toContain(name);
+      }
+      expect(selection.externalTools.map((tool) => tool.name)).toContain('platform_context');
+    },
+  );
 
   it('registers the platform server with alwaysLoad', () => {
     const names = KERNEL_MCP_SERVERS.map((server) => server.name);
@@ -73,6 +76,23 @@ describe('kernel mcp-servers registry', () => {
     expect(selection.servers.length).toBeGreaterThanOrEqual(1);
   });
 
+  it('exposes Browser Workflow tools even when live networking is off', () => {
+    setKernelMcpServerConditions({ networkEnabled: false });
+    const selection = selectKernelMcpRun({ kernelId: 'codex' });
+    const names = selection.externalTools.map((tool) => tool.name);
+    expect(selection.servers.map((server) => server.name)).toContain('browser-workflow');
+    expect(names).toEqual(
+      expect.arrayContaining([
+        'browser_workflow_list',
+        'browser_workflow_get',
+        'browser_workflow_create_draft',
+        'browser_workflow_execute',
+      ]),
+    );
+    expect(names).not.toContain('browser_open');
+    setKernelMcpServerConditions({});
+  });
+
   it('hides goal_manage unless the conversation has an active Goal', () => {
     setKernelMcpServerConditions({});
     const hidden = selectKernelMcpRun({});
@@ -117,6 +137,32 @@ describe('kernel mcp-servers registry', () => {
         'browser_open',
       ]),
     );
+    // Reset so later tests are unaffected.
+    setKernelMcpServerConditions({});
+  });
+
+  it('loads the collaboration server only for a bound collaboration conversation', () => {
+    setKernelMcpServerConditions({});
+    const off = selectKernelMcpRun({ conversationTrack: 'model' });
+    expect(off.servers.map((server) => server.name)).not.toContain('collaboration');
+    expect(off.externalTools.map((tool) => tool.name)).not.toContain('collaboration_send_message');
+
+    setKernelMcpServerConditions({ collaborationEnabled: true });
+    const on = selectKernelMcpRun({ conversationTrack: 'model' });
+    expect(on.servers.map((server) => server.name)).toContain('collaboration');
+    for (const name of [
+      'collaboration_send_message',
+      'collaboration_send_direct_message',
+      'collaboration_dispatch_tasks',
+    ]) {
+      expect(on.externalTools.map((tool) => tool.name)).toContain(name);
+      expect(on.nativeTools.map((tool) => tool.name)).toContain(name);
+    }
+    // The nested `tasks` schema must survive the JSON-Schema → zod bridge the
+    // claude-code channel runs at SDK-server build time.
+    const servers = buildSdkMcpServers(on.servers, async () => '{}', z);
+    expect(servers['collaboration']).toBeDefined();
+    expect(servers['collaboration'].type).toBe('sdk');
     // Reset so later tests are unaffected.
     setKernelMcpServerConditions({});
   });

@@ -1,10 +1,28 @@
 import { createHash } from 'node:crypto';
 import {
+  type OrchestrationDataErrorCode,
+  OrchestrationDataError,
+  StepSnapshotLimitError,
+  isStepSnapshotLimitError,
+  StepFenceMismatchError,
+} from '@sync-think/shared';
+import { isRecord } from '@sync-think/shared/value-validation';
+import {
   MAX_REVIEW_ITERATIONS,
+  resolveOrchestrationCompletion,
   isImageGenerationConfig,
-  isReviewOutcomeConsistent,
+  normalizeReviewOutcome,
+  bindReviewOutcomeToArtifacts,
+  reviewEvidenceMatches,
+  assertValidReworkOutputs,
+  reviewerArtifactsAfterRework,
+  resolveReviewLimit,
+  resolveAcceptedReviewRunState,
   nextReviewAction,
   normalizeAcceptanceCriteria,
+  changedPlanStepFields,
+  diffPlanSteps,
+  findPlanStepGraphIssue,
   ulid,
   type AcceptanceCriterion,
   type AcceptanceGate,
@@ -15,9 +33,7 @@ import {
   type ArtifactVersionId,
   type ArtifactVersionStatus,
   type Event,
-  type FailureClass,
   type ImageGenerationConfig,
-  type JsonValue,
   type ModelId,
   type PlanDiff,
   type PlanId,
@@ -31,10 +47,8 @@ import {
   type RunId,
   type RunState,
   type ReviewEvidence,
-  type ReviewLimitAction,
   type ReviewOutcome,
   type ReviewStepExecutionContext,
-  type Step,
   type StepId,
   type StepState,
   type TaskId,
@@ -50,191 +64,56 @@ import {
   type EventDraftBatch,
 } from './runtime-state-store.js';
 
-export interface CreatePlanDraftInput {
-  taskId: TaskId;
-  title: string;
-  steps: readonly PlanStepDraft[];
-  now?: string;
-}
-
-export interface RevisePlanInput {
-  planId: PlanId;
-  expectedRevision: number;
-  title?: string;
-  steps: readonly PlanStepDraft[];
-  now?: string;
-}
-
-export interface ApprovePlanInput {
-  planId: PlanId;
-  revision: number;
-  now?: string;
-}
-
-export interface StoredStep extends Step {
-  planOrder: number;
-  title: string;
-  instructions: string;
-  modelOverrideId?: ModelId;
-  executionOwnerId?: string;
-  leaseExpiresAt?: string;
-  executionAttempt: number;
-}
-
-export interface StepDependencyRecord {
-  runId: RunId;
-  stepId: StepId;
-  dependsOnStepId: StepId;
-}
-
-export interface RunGraph {
-  run: Run;
-  steps: StoredStep[];
-  dependencies: StepDependencyRecord[];
-}
-
-export interface ClaimReadyStepsInput {
-  runId: RunId;
-  stepIds: readonly StepId[];
-  ownerId: string;
-  leaseExpiresAt: string;
-  now?: string;
-}
-
-export interface ClaimReadyStepsResult {
-  graph: RunGraph;
-  claimedSteps: StoredStep[];
-  artifactVersionsByStep: ReadonlyMap<StepId, ArtifactVersion[]>;
-}
-
-export type PrepareReviewStepForExecutionResult =
-  | { status: 'ready'; graph: RunGraph; context?: ReviewStepExecutionContext }
-  | {
-      status: 'image-selection-required';
-      graph: RunGraph;
-      artifactIds: ArtifactId[];
-      candidateVersionIds: ArtifactVersionId[];
-    };
+import type {
+  CreatePlanDraftInput,
+  RevisePlanInput,
+  ApprovePlanInput,
+  StoredStep,
+  StepDependencyRecord,
+  RunGraph,
+  ClaimReadyStepsInput,
+  ClaimReadyStepsResult,
+  PrepareReviewStepForExecutionResult,
+  RefreshStepLeaseInput,
+  StepArtifactVersionOutput,
+  CompleteStepInput,
+  CompleteStepResult,
+  CompleteMergeStepInput,
+  CreateAcceptanceGateInput,
+  CompleteReviewStepInput,
+  CompleteReviewStepResult,
+  FailStepInput,
+  FailStepResult,
+  AwaitStepApprovalInput,
+  ResolveStepApprovalInput,
+} from '@sync-think/shared';
+export type {
+  CreatePlanDraftInput,
+  RevisePlanInput,
+  ApprovePlanInput,
+  StoredStep,
+  StepDependencyRecord,
+  RunGraph,
+  ClaimReadyStepsInput,
+  ClaimReadyStepsResult,
+  PrepareReviewStepForExecutionResult,
+  RefreshStepLeaseInput,
+  StepArtifactVersionOutput,
+  CompleteStepInput,
+  CompleteStepResult,
+  CompleteMergeStepInput,
+  CreateAcceptanceGateInput,
+  CompleteReviewStepInput,
+  CompleteReviewStepResult,
+  FailStepInput,
+  FailStepResult,
+  AwaitStepApprovalInput,
+  ResolveStepApprovalInput,
+} from '@sync-think/shared';
 
 export const MAX_STEP_SNAPSHOT_VERSIONS = 32;
 export const MAX_STEP_SNAPSHOT_INLINE_BYTES = 256 * 1024;
 const LEGACY_TERMINAL_EXECUTION_OWNER = 'migration:0014:legacy-terminal';
-
-export interface RefreshStepLeaseInput {
-  runId: RunId;
-  stepId: StepId;
-  ownerId: string;
-  executionAttempt: number;
-  leaseExpiresAt: string;
-  now?: string;
-}
-
-interface StepArtifactVersionOutputBase {
-  content?: string;
-  contentRef?: string;
-  contentHash?: string;
-  mimeType: string;
-  status: ArtifactVersionStatus;
-  parentVersionIds?: readonly import('@sync-think/shared').ArtifactVersionId[];
-  metadata?: Record<string, JsonValue>;
-  /** Groups multiple outputs into immutable versions of one newly-created Artifact. */
-  artifactGroupKey?: string;
-}
-
-export type StepArtifactVersionOutput = StepArtifactVersionOutputBase &
-  ({ artifactId: ArtifactId; artifactName?: never } | { artifactName: string; artifactId?: never });
-
-export interface CompleteStepInput {
-  runId: RunId;
-  stepId: StepId;
-  idempotencyKey: string;
-  ownerId: string;
-  executionAttempt: number;
-  outputVersions?: readonly StepArtifactVersionOutput[];
-  now?: string;
-}
-
-export interface CompleteStepResult {
-  graph: RunGraph;
-  outputVersions: ArtifactVersion[];
-  replayed: boolean;
-}
-
-export interface CompleteMergeStepInput {
-  runId: RunId;
-  stepId: StepId;
-  now?: string;
-}
-
-export interface CreateAcceptanceGateInput {
-  id: AcceptanceGateId;
-  runId: RunId;
-  targetStepId: StepId;
-  reviewerAgentVersionId: AgentVersionId;
-  initialReviewerStepId?: StepId;
-  backupAgentVersionId?: AgentVersionId;
-  maxIterations: number;
-  onLimitReached: ReviewLimitAction;
-  criteria: ReadonlyArray<{ id: string; description: string }>;
-  now?: string;
-}
-
-export interface CompleteReviewStepInput {
-  runId: RunId;
-  stepId: StepId;
-  idempotencyKey: string;
-  ownerId: string;
-  executionAttempt: number;
-  reviewerAgentVersionId: AgentVersionId;
-  outcome: ReviewOutcome;
-  now?: string;
-}
-
-export interface CompleteReviewStepResult {
-  graph: RunGraph;
-  evidence: ReviewEvidence;
-  replayed: boolean;
-}
-
-export interface FailStepInput {
-  runId: RunId;
-  stepId: StepId;
-  idempotencyKey: string;
-  ownerId: string;
-  executionAttempt: number;
-  failureClass: FailureClass;
-  failureCode: string;
-  summary: string;
-  partialOutputVersions?: readonly StepArtifactVersionOutput[];
-  now?: string;
-}
-
-export interface FailStepResult {
-  graph: RunGraph;
-  partialOutputVersions: ArtifactVersion[];
-  replayed: boolean;
-}
-
-export interface AwaitStepApprovalInput {
-  runId: RunId;
-  stepId: StepId;
-  approvalId: string;
-  actionDigest: string;
-  ownerId?: string;
-  executionAttempt?: number;
-  now?: string;
-}
-
-export interface ResolveStepApprovalInput {
-  runId: RunId;
-  stepId: StepId;
-  approvalId: string;
-  actionDigest: string;
-  decision: 'approved' | 'rejected';
-  decidedBy: 'human' | 'delegate';
-  delegateAgentVersionId?: AgentVersionId;
-  now?: string;
-}
 
 interface PlanRevisionDbRow {
   id: string;
@@ -333,80 +212,17 @@ const STEP_COLUMNS = `
   lease_expires_at, execution_attempt, created_at, updated_at
 `;
 
-export type OrchestrationDataErrorCode =
-  | 'plan.invalid_input'
-  | 'plan.invalid_steps_json'
-  | 'plan.invalid_diff_json'
-  | 'plan.invalid_revision_state'
-  | 'run.invalid_state'
-  | 'step.invalid_state'
-  | 'step.invalid_image_generation_config'
-  | 'step.invalid_idempotency_key';
-
-export class OrchestrationDataError extends Error {
-  override readonly name = 'OrchestrationDataError';
-
-  constructor(
-    readonly code: OrchestrationDataErrorCode,
-    readonly path: string,
-    detail?: string,
-  ) {
-    super(`${code}: ${path}${detail ? ` (${detail})` : ''}`);
-  }
-}
-
-export type OrchestrationDomainErrorCode =
-  | 'review.verdict_invalid'
-  | 'review.explanation_invalid'
-  | 'review.criteria_mismatch'
-  | 'review.criterion_id_invalid'
-  | 'review.criterion_verdict_invalid'
-  | 'review.criterion_explanation_invalid'
-  | 'review.verdict_criteria_mismatch'
-  | 'review.artifact_scope_mismatch';
-
-export class OrchestrationDomainError extends Error {
-  override readonly name = 'OrchestrationDomainError';
-  readonly failureClass = 'acceptance' as const;
-
-  constructor(readonly code: OrchestrationDomainErrorCode) {
-    super(code);
-  }
-}
-
-export function isOrchestrationDomainError(error: unknown): error is OrchestrationDomainError {
-  return error instanceof OrchestrationDomainError;
-}
-
-export class StepSnapshotLimitError extends Error {
-  override readonly name = 'StepSnapshotLimitError';
-  readonly code = 'step.snapshot_limit_exceeded';
-  readonly failureClass = 'acceptance' as const;
-
-  constructor(
-    readonly stepId: StepId,
-    readonly limit: 'versions' | 'inline_bytes',
-  ) {
-    super(`step.snapshot_limit_exceeded: ${stepId}:${limit}`);
-  }
-}
-
-export function isStepSnapshotLimitError(error: unknown): error is StepSnapshotLimitError {
-  return error instanceof StepSnapshotLimitError;
-}
-
-export class StepFenceMismatchError extends Error {
-  override readonly name = 'StepFenceMismatchError';
-  readonly code = 'step.fence_mismatch';
-
-  constructor(readonly stepId: StepId) {
-    super(`step.fence_mismatch: ${stepId}`);
-  }
-}
-
-export function isStepFenceMismatchError(error: unknown): error is StepFenceMismatchError {
-  return error instanceof StepFenceMismatchError;
-}
+export {
+  type OrchestrationDataErrorCode,
+  OrchestrationDataError,
+  type OrchestrationDomainErrorCode,
+  OrchestrationDomainError,
+  isOrchestrationDomainError,
+  StepSnapshotLimitError,
+  isStepSnapshotLimitError,
+  StepFenceMismatchError,
+  isStepFenceMismatchError,
+} from '@sync-think/shared';
 
 const PLAN_STEP_CHANGED_FIELDS = new Set<PlanStepChangedField>([
   'kind',
@@ -457,18 +273,6 @@ function requireRevision(value: number, field: string): number {
   return value;
 }
 
-function cloneStep(step: PlanStepDraft): PlanStepDraft {
-  return {
-    ...step,
-    ...(step.imageGeneration ? { imageGeneration: { ...step.imageGeneration } } : {}),
-    dependsOn: [...step.dependsOn],
-  };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
 function persistedString(value: unknown, code: OrchestrationDataErrorCode, path: string): string {
   if (typeof value !== 'string' || !value.trim()) {
     throw new OrchestrationDataError(code, path, 'expected non-empty string');
@@ -510,16 +314,6 @@ function stableDerivedReviewStepId(
 function reviewText(value: unknown, code: string, maxLength = 4_000): string {
   const text = typeof value === 'string' ? value.trim() : '';
   if (!text || text.length > maxLength) throw new Error(code);
-  return text;
-}
-
-function reviewOutcomeText(
-  value: unknown,
-  code: OrchestrationDomainErrorCode,
-  maxLength = 4_000,
-): string {
-  const text = typeof value === 'string' ? value.trim() : '';
-  if (!text || text.length > maxLength) throw new OrchestrationDomainError(code);
   return text;
 }
 
@@ -665,74 +459,39 @@ function assertStepGraph(
   steps: readonly PlanStepDraft[],
   persistedCode?: OrchestrationDataErrorCode,
 ): void {
-  const ids = new Set<StepId>();
-  const indexById = new Map<StepId, number>();
-  for (const [index, step] of steps.entries()) {
-    if (ids.has(step.id)) {
-      if (persistedCode) {
-        throw new OrchestrationDataError(persistedCode, `steps[${index}].id`, 'duplicate step id');
-      }
-      throw new Error(`plan.duplicate_step_id: ${step.id}`);
-    }
-    ids.add(step.id);
-    indexById.set(step.id, index);
+  const issue = findPlanStepGraphIssue(steps);
+  if (!issue) return;
+  if (persistedCode) {
+    const detail =
+      issue.code === 'duplicate_step_id'
+        ? 'duplicate step id'
+        : issue.code === 'merge_dependencies_required'
+          ? 'merge Step requires at least two producer dependencies'
+          : issue.code === 'self_dependency'
+            ? 'self dependency'
+            : issue.code === 'duplicate_dependency'
+              ? 'duplicate dependency'
+              : issue.code === 'missing_dependency'
+                ? 'missing dependency'
+                : 'cycle';
+    throw new OrchestrationDataError(persistedCode, issue.path, detail);
   }
-  for (const [stepIndex, step] of steps.entries()) {
-    if (step.kind === 'merge' && step.dependsOn.length < 2) {
-      const path = `steps[${stepIndex}].dependsOn`;
-      if (persistedCode) {
-        throw new OrchestrationDataError(
-          persistedCode,
-          path,
-          'merge Step requires at least two producer dependencies',
-        );
-      }
-      throw new Error(`plan.merge_dependencies_required: ${step.id}`);
-    }
-    const dependencies = new Set<StepId>();
-    for (const [dependencyIndex, dependencyId] of step.dependsOn.entries()) {
-      const path = `steps[${stepIndex}].dependsOn[${dependencyIndex}]`;
-      if (dependencyId === step.id) {
-        if (persistedCode) throw new OrchestrationDataError(persistedCode, path, 'self dependency');
-        throw new Error(`plan.self_dependency: ${step.id}`);
-      }
-      if (dependencies.has(dependencyId)) {
-        if (persistedCode) {
-          throw new OrchestrationDataError(persistedCode, path, 'duplicate dependency');
-        }
-        throw new Error(`plan.duplicate_dependency: ${step.id} -> ${dependencyId}`);
-      }
-      if (!ids.has(dependencyId)) {
-        if (persistedCode) {
-          throw new OrchestrationDataError(persistedCode, path, 'missing dependency');
-        }
-        throw new Error(`plan.missing_dependency: ${step.id} -> ${dependencyId}`);
-      }
-      dependencies.add(dependencyId);
-    }
+  if (issue.code === 'duplicate_step_id') {
+    throw new Error(`plan.duplicate_step_id: ${issue.stepId}`);
   }
-
-  const dependenciesById = new Map(steps.map((step) => [step.id, step.dependsOn]));
-  const visiting = new Set<StepId>();
-  const visited = new Set<StepId>();
-  const visit = (stepId: StepId): void => {
-    if (visiting.has(stepId)) {
-      if (persistedCode) {
-        throw new OrchestrationDataError(
-          persistedCode,
-          `steps[${indexById.get(stepId) ?? 0}].dependsOn`,
-          'cycle',
-        );
-      }
-      throw new Error(`plan.cycle: ${stepId}`);
-    }
-    if (visited.has(stepId)) return;
-    visiting.add(stepId);
-    for (const dependencyId of dependenciesById.get(stepId) ?? []) visit(dependencyId);
-    visiting.delete(stepId);
-    visited.add(stepId);
-  };
-  for (const step of steps) visit(step.id);
+  if (issue.code === 'merge_dependencies_required') {
+    throw new Error(`plan.merge_dependencies_required: ${issue.stepId}`);
+  }
+  if (issue.code === 'self_dependency') {
+    throw new Error(`plan.self_dependency: ${issue.stepId}`);
+  }
+  if (issue.code === 'duplicate_dependency') {
+    throw new Error(`plan.duplicate_dependency: ${issue.stepId} -> ${issue.dependencyId}`);
+  }
+  if (issue.code === 'missing_dependency') {
+    throw new Error(`plan.missing_dependency: ${issue.stepId} -> ${issue.dependencyId}`);
+  }
+  throw new Error(`plan.cycle: ${issue.stepId}`);
 }
 
 function assertValidSteps(steps: readonly PlanStepDraft[]): PlanStepDraft[] {
@@ -745,63 +504,6 @@ function assertValidSteps(steps: readonly PlanStepDraft[]): PlanStepDraft[] {
   );
   assertStepGraph(cloned);
   return cloned;
-}
-
-function sameDependencies(left: readonly StepId[], right: readonly StepId[]): boolean {
-  if (left.length !== right.length) return false;
-  const sortedLeft = [...left].sort();
-  const sortedRight = [...right].sort();
-  return sortedLeft.every((id, index) => id === sortedRight[index]);
-}
-
-function getChangedFields(
-  before: PlanStepDraft,
-  after: PlanStepDraft,
-  beforePlanOrder: number,
-  afterPlanOrder: number,
-): PlanStepChangedField[] {
-  const fields: PlanStepChangedField[] = [];
-  if ((before.kind ?? 'execution') !== (after.kind ?? 'execution')) fields.push('kind');
-  if (before.title !== after.title) fields.push('title');
-  if (before.instructions !== after.instructions) fields.push('instructions');
-  if (before.agentVersionId !== after.agentVersionId) fields.push('agentVersionId');
-  if (before.modelOverrideId !== after.modelOverrideId) fields.push('modelOverrideId');
-  if (
-    JSON.stringify(before.imageGeneration ?? null) !== JSON.stringify(after.imageGeneration ?? null)
-  ) {
-    fields.push('imageGeneration');
-  }
-  if (!sameDependencies(before.dependsOn, after.dependsOn)) fields.push('dependsOn');
-  if (beforePlanOrder !== afterPlanOrder) fields.push('planOrder');
-  return fields;
-}
-
-function diffPlanSteps(
-  previous: readonly PlanStepDraft[],
-  next: readonly PlanStepDraft[],
-): PlanDiff {
-  const previousById = new Map(previous.map((step, index) => [step.id, { step, index }]));
-  const nextById = new Map(next.map((step, index) => [step.id, { step, index }]));
-  const added = next.filter((step) => !previousById.has(step.id)).map(cloneStep);
-  const removed = previous.filter((step) => !nextById.has(step.id)).map(cloneStep);
-  const changed: PlanStepChange[] = [];
-
-  for (const [afterPlanOrder, after] of next.entries()) {
-    const prior = previousById.get(after.id);
-    if (!prior) continue;
-    const fields = getChangedFields(prior.step, after, prior.index, afterPlanOrder);
-    if (fields.length > 0) {
-      changed.push({
-        id: after.id,
-        before: cloneStep(prior.step),
-        after: cloneStep(after),
-        changedFields: fields,
-        beforePlanOrder: prior.index,
-        afterPlanOrder,
-      });
-    }
-  }
-  return { added, removed, changed };
 }
 
 function parseJson(raw: string, code: OrchestrationDataErrorCode, path: string): unknown {
@@ -885,7 +587,7 @@ function parseDiff(raw: string): PlanDiff {
       `${path}.beforePlanOrder`,
     );
     const afterPlanOrder = persistedPlanOrder(value.afterPlanOrder, code, `${path}.afterPlanOrder`);
-    const actualFields = getChangedFields(before, after, beforePlanOrder, afterPlanOrder);
+    const actualFields = changedPlanStepFields(before, after, beforePlanOrder, afterPlanOrder);
     if (
       actualFields.length !== changedFields.length ||
       actualFields.some((field) => !changedFields.includes(field))
@@ -2157,13 +1859,12 @@ export class SqliteOrchestrationStore {
         this.releaseEligiblePendingSteps(input.runId, events, now, 'dependencies-completed');
 
         const afterReady = this.getRequiredGraph(input.runId);
-        if (
-          afterReady.run.state !== 'paused' &&
-          !this.hasUnresolvedAcceptanceGate(input.runId) &&
-          afterReady.steps.every(
-            (entry) => entry.state === 'completed' || entry.state === 'skipped',
-          )
-        ) {
+        const completion = resolveOrchestrationCompletion({
+          state: afterReady.run.state,
+          stepStates: afterReady.steps.map((entry) => entry.state),
+          hasUnresolvedGate: this.hasUnresolvedAcceptanceGate(input.runId),
+        });
+        if (completion === 'completed') {
           this.raw
             .prepare(
               "UPDATE run SET state = 'completed', updated_at = ? WHERE id = ? AND state NOT IN ('completed', 'failed', 'cancelled')",
@@ -2175,16 +1876,7 @@ export class SqliteOrchestrationStore {
               to: 'completed',
             }),
           );
-        } else if (
-          afterReady.run.state !== 'paused' &&
-          afterReady.steps.some((entry) => entry.state === 'failed') &&
-          afterReady.steps.every(
-            (entry) =>
-              entry.state !== 'running' &&
-              entry.state !== 'ready' &&
-              entry.state !== 'awaitingApproval',
-          )
-        ) {
+        } else if (completion === 'failed') {
           this.raw
             .prepare(
               "UPDATE run SET state = 'failed', updated_at = ? WHERE id = ? AND state NOT IN ('completed', 'failed', 'cancelled')",
@@ -2325,7 +2017,7 @@ export class SqliteOrchestrationStore {
         const existing = this.getReviewEvidenceForStep(input.runId, input.stepId);
         if (existing) {
           const outcome = this.normalizeReviewOutcome(gate, mapping, input.outcome);
-          if (step.state !== 'completed' || !this.reviewEvidenceMatches(existing, outcome)) {
+          if (step.state !== 'completed' || !reviewEvidenceMatches(existing, outcome)) {
             throw new Error('review.verdict_conflict');
           }
           return { graph, evidence: existing, replayed: true };
@@ -3266,81 +2958,13 @@ export class SqliteOrchestrationStore {
     mapping: AcceptanceGateStepDbRow,
     value: ReviewOutcome,
   ): ReviewOutcome {
-    if (!value || (value.verdict !== 'accept' && value.verdict !== 'reject')) {
-      throw new OrchestrationDomainError('review.verdict_invalid');
-    }
-    const explanation = reviewOutcomeText(value.explanation, 'review.explanation_invalid');
-    if (!Array.isArray(value.criteria) || value.criteria.length !== gate.criteria.length) {
-      throw new OrchestrationDomainError('review.criteria_mismatch');
-    }
-    const outcomesById = new Map<string, ReviewOutcome['criteria'][number]>();
-    for (const criterion of value.criteria) {
-      const criterionId = reviewOutcomeText(
-        criterion?.criterionId,
-        'review.criterion_id_invalid',
-        256,
-      );
-      if (outcomesById.has(criterionId)) {
-        throw new OrchestrationDomainError('review.criteria_mismatch');
-      }
-      if (criterion.verdict !== 'pass' && criterion.verdict !== 'fail') {
-        throw new OrchestrationDomainError('review.criterion_verdict_invalid');
-      }
-      outcomesById.set(criterionId, {
-        criterionId,
-        verdict: criterion.verdict,
-        explanation: reviewOutcomeText(
-          criterion.explanation,
-          'review.criterion_explanation_invalid',
-        ),
-      });
-    }
-    const criteria = gate.criteria.map((criterion) => {
-      const outcome = outcomesById.get(criterion.id);
-      if (!outcome) throw new OrchestrationDomainError('review.criteria_mismatch');
-      return outcome;
-    });
-    if (!isReviewOutcomeConsistent({ verdict: value.verdict, criteria })) {
-      throw new OrchestrationDomainError('review.verdict_criteria_mismatch');
-    }
-
-    if (!Array.isArray(value.reviewedArtifactVersionIds)) {
-      throw new OrchestrationDomainError('review.artifact_scope_mismatch');
-    }
-    const requestedIds = value.reviewedArtifactVersionIds.map(
-      (id) => reviewOutcomeText(id, 'review.artifact_scope_mismatch', 256) as ArtifactVersionId,
-    );
-    if (new Set(requestedIds).size !== requestedIds.length) {
-      throw new OrchestrationDomainError('review.artifact_scope_mismatch');
-    }
+    const outcome = normalizeReviewOutcome(gate.criteria, value);
     const assignedIds = this.listEffectiveReviewerArtifactVersionIds(
       mapping.gate_id,
       mapping.run_id as RunId,
       mapping.step_id as StepId,
     );
-    if (
-      assignedIds.length === 0 ||
-      assignedIds.length !== requestedIds.length ||
-      assignedIds.some((id) => !requestedIds.includes(id))
-    ) {
-      throw new OrchestrationDomainError('review.artifact_scope_mismatch');
-    }
-    return {
-      verdict: value.verdict,
-      explanation,
-      criteria,
-      reviewedArtifactVersionIds: assignedIds,
-    };
-  }
-
-  private reviewEvidenceMatches(evidence: ReviewEvidence, outcome: ReviewOutcome): boolean {
-    return (
-      evidence.verdict === outcome.verdict &&
-      evidence.explanation === outcome.explanation &&
-      JSON.stringify(evidence.criteria) === JSON.stringify(outcome.criteria) &&
-      JSON.stringify(evidence.reviewedArtifactVersionIds) ===
-        JSON.stringify(outcome.reviewedArtifactVersionIds)
-    );
+    return bindReviewOutcomeToArtifacts(outcome, assignedIds);
   }
 
   private hasUnresolvedAcceptanceGate(runId: RunId): boolean {
@@ -3359,43 +2983,12 @@ export class SqliteOrchestrationStore {
       throw new Error('review.rework_output_required');
     }
     const evidence = this.getRequiredReviewEvidence(mapping.source_evidence_id);
-    const reviewedByArtifact = new Map<ArtifactId, Set<ArtifactVersionId>>();
-    for (const versionId of evidence.reviewedArtifactVersionIds) {
+    const reviewedVersions = evidence.reviewedArtifactVersionIds.map((versionId) => {
       const version = this.artifactStore.getVersion(versionId);
       if (!version) throw new Error(`ArtifactVersion not found: ${versionId}`);
-      const versions = reviewedByArtifact.get(version.artifactId) ?? new Set<ArtifactVersionId>();
-      versions.add(version.id);
-      reviewedByArtifact.set(version.artifactId, versions);
-    }
-    const outputArtifacts = new Set<ArtifactId>();
-    for (const output of outputs) {
-      if (!('artifactId' in output) || !output.artifactId) {
-        throw new Error('review.rework_output_scope_mismatch');
-      }
-      const parents = reviewedByArtifact.get(output.artifactId);
-      const generatedImageCandidate =
-        'contentRef' in output &&
-        output.mimeType.startsWith('image/') &&
-        output.metadata?.executionKind === 'image-generation' &&
-        output.metadata?.generationKind === 'image';
-      if (!parents || (outputArtifacts.has(output.artifactId) && !generatedImageCandidate)) {
-        throw new Error('review.rework_output_scope_mismatch');
-      }
-      if (
-        output.status !== 'candidate' &&
-        output.status !== 'selected' &&
-        output.status !== 'merged'
-      ) {
-        throw new Error('review.rework_output_status_invalid');
-      }
-      if (
-        !output.parentVersionIds?.length ||
-        output.parentVersionIds.some((parentId) => !parents.has(parentId))
-      ) {
-        throw new Error('review.rework_parent_required');
-      }
-      outputArtifacts.add(output.artifactId);
-    }
+      return version;
+    });
+    assertValidReworkOutputs(reviewedVersions, outputs);
   }
 
   private reviewerArtifactsAfterRework(
@@ -3404,15 +2997,7 @@ export class SqliteOrchestrationStore {
   ): ArtifactVersionId[] {
     if (!mapping.source_evidence_id) throw new Error('review.rework_output_required');
     const evidence = this.getRequiredReviewEvidence(mapping.source_evidence_id);
-    const replacedParentIds = new Set(
-      outputVersions.flatMap((version) => version.parentVersionIds),
-    );
-    return [
-      ...evidence.reviewedArtifactVersionIds.filter(
-        (versionId) => !replacedParentIds.has(versionId),
-      ),
-      ...outputVersions.map((version) => version.id),
-    ];
+    return reviewerArtifactsAfterRework(evidence.reviewedArtifactVersionIds, outputVersions);
   }
 
   private nextPlanOrder(runId: RunId): number {
@@ -3812,23 +3397,16 @@ export class SqliteOrchestrationStore {
     if (this.hasUnresolvedAcceptanceGate(runId)) return;
     const graph = this.getRequiredGraph(runId);
     const stateById = new Map(graph.steps.map((step) => [step.id, step.state]));
-    const allCompleted = graph.steps.every(
-      (step) => step.state === 'completed' || step.state === 'skipped',
-    );
-    const hasAwaiting = graph.steps.some((step) => step.state === 'awaitingApproval');
     const hasRunnable = graph.steps.some(
       (step) =>
         step.state === 'running' ||
         step.state === 'ready' ||
         (step.state === 'pending' && this.isStepEligibleForReady(runId, step, stateById, graph)),
     );
-    const target: RunState = allCompleted
-      ? 'completed'
-      : hasAwaiting
-        ? 'awaitingToolApproval'
-        : hasRunnable
-          ? 'running'
-          : 'failed';
+    const target = resolveAcceptedReviewRunState({
+      stepStates: graph.steps.map((step) => step.state),
+      hasRunnable,
+    });
     this.transitionRunState(runId, target, 'review-accepted', events, now, {
       gateId: gate.id,
       targetStepId: gate.targetStepId,
@@ -3866,7 +3444,8 @@ export class SqliteOrchestrationStore {
       );
     }
 
-    if (gate.onLimitReached === 'reassign' && !gate.reassigned && gate.backupAgentVersionId) {
+    const decision = resolveReviewLimit(gate);
+    if (decision.action === 'reassign') {
       const reassigned = this.raw
         .prepare(
           `UPDATE acceptance_gate SET reassigned = 1
@@ -3916,13 +3495,13 @@ export class SqliteOrchestrationStore {
       )
       .run(now, gate.id);
     if (limited.changes !== 1) throw new Error(`review.gate_conflict: ${gate.id}`);
-    if (gate.onLimitReached === 'reassign') {
+    if (decision.action === 'pause' && decision.failClosed) {
       events.push(
         this.createTransitionEvent(
           scope,
           gate.runId,
           'review',
-          gate.backupAgentVersionId ? 'review.reassign-exhausted' : 'review.reassign-unavailable',
+          decision.event,
           now,
           {
             gateId: gate.id,
@@ -3933,7 +3512,7 @@ export class SqliteOrchestrationStore {
         ),
       );
     }
-    if (gate.onLimitReached === 'abort') {
+    if (decision.action === 'abort') {
       this.cancelUnfinishedStepsForReviewAbort(gate.runId, gate.id, events, now);
       this.transitionRunState(
         gate.runId,
@@ -3952,7 +3531,7 @@ export class SqliteOrchestrationStore {
     this.transitionRunState(gate.runId, 'paused', 'review-limit-reached', events, now, {
       gateId: gate.id,
       evidenceId: evidence.id,
-      failClosed: gate.onLimitReached === 'reassign',
+      failClosed: decision.failClosed,
     });
   }
 

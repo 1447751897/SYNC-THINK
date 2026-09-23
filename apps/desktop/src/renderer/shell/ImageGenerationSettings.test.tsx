@@ -290,6 +290,45 @@ describe('ImageGenerationSettings', () => {
     expect(screen.queryByRole('button', { name: /添加已选模型/ })).toBeNull();
   });
 
+  it('keeps the complete provider content visible in the drag overlay', async () => {
+    runtime.listProviders.mockResolvedValue({ providers: [openaiCatalogProvider] });
+    render(<ImageGenerationSettings />);
+
+    const grip = await screen.findByRole('button', { name: '拖拽 OpenAI 调整顺序' });
+    grip.focus();
+    fireEvent.keyDown(grip, { code: 'Space', key: ' ' });
+
+    const overlay = await screen.findByTestId('image-provider-drag-overlay');
+    expect(overlay.classList.contains('model-enabled-row--overlay')).toBe(true);
+    expect(overlay.classList.contains('is-dragging')).toBe(false);
+    expect(overlay.textContent).toContain('OpenAI');
+    expect(overlay.textContent).toContain('gpt-image-2');
+    expect(overlay.querySelector('.model-enabled-row__avatar')).toBeTruthy();
+
+    fireEvent.keyDown(grip, { code: 'Space', key: ' ' });
+    await waitFor(() => expect(screen.queryByTestId('image-provider-drag-overlay')).toBeNull());
+  });
+
+  it('uses the text-generation drag surface for image model priorities', async () => {
+    runtime.listProviders.mockResolvedValue({ providers: [imageProvider] });
+    render(<ImageGenerationSettings />);
+
+    const grip = await screen.findByRole('button', { name: '拖拽 gpt-image-2 调整顺序' });
+    grip.focus();
+    fireEvent.keyDown(grip, { code: 'Space', key: ' ' });
+
+    const overlay = await screen.findByTestId('image-model-drag-overlay');
+    expect(overlay.classList.contains('model-priority-row--overlay')).toBe(true);
+    expect(overlay.classList.contains('is-dragging')).toBe(false);
+    expect(overlay.textContent).toContain(IMAGE_GENERATION_COPY.defaultModel);
+    expect(overlay.textContent).toContain('gpt-image-2');
+
+    fireEvent.keyDown(grip, { code: 'ArrowDown', key: 'ArrowDown' });
+    expect(screen.getByTestId('image-model-drag-overlay').textContent).toContain('gpt-image-2');
+    fireEvent.keyDown(grip, { code: 'Space', key: ' ' });
+    await waitFor(() => expect(screen.queryByTestId('image-model-drag-overlay')).toBeNull());
+  });
+
   it('tests connection after saving the detail form, without persisting discovered models', async () => {
     runtime.listProviders.mockResolvedValue({ providers: [imageProvider] });
     runtime.discoverModels.mockResolvedValue({

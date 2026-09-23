@@ -11,7 +11,7 @@ import {
   type RefObject,
   type WheelEvent as ReactWheelEvent,
 } from 'react';
-import { formatMessageAbsoluteTime, formatMessageClock } from './execution-process.js';
+import { formatMessageAbsoluteTime, formatMessageClock } from './run-display-format.js';
 import { ConversationNavigationGeometry } from './conversation-navigation-geometry.js';
 
 export interface ConversationNavigationItem {

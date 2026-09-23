@@ -1,5 +1,7 @@
 ﻿import { isAbsolute, normalize, resolve, sep } from 'node:path';
 
+import { isPathWithinRoot } from '@sync-think/shared/node-paths';
+
 export class WorkspacePathError extends Error {
   readonly code = 'security.path_traversal' as const;
 
@@ -44,12 +46,7 @@ export function canonicalizeWorkspacePath(input: string): string {
 export function isPathInsideRoot(rootPath: string, candidatePath: string): boolean {
   const root = canonicalizeWorkspacePath(rootPath);
   const candidate = canonicalizeWorkspacePath(candidatePath);
-  if (pathsEqual(root, candidate)) return true;
-
-  const rootWithSep = root.endsWith(sep) ? root : root + sep;
-  const candidateLower = candidate.toLowerCase();
-  const rootWithSepLower = rootWithSep.toLowerCase();
-  return candidateLower.startsWith(rootWithSepLower);
+  return isPathWithinRoot(root, candidate);
 }
 
 /**
@@ -66,8 +63,4 @@ export function assertAllowedWorkspacePath(input: string, allowedRoots: readonly
     throw new WorkspacePathError('Workspace path is outside the allowlisted roots');
   }
   return canonical;
-}
-
-function pathsEqual(left: string, right: string): boolean {
-  return left.toLowerCase() === right.toLowerCase();
 }

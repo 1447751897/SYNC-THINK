@@ -2,11 +2,6 @@ import { describe, expect, it } from 'vitest';
 import type { Event } from '@sync-think/shared';
 import { EVENT_HISTORY_LIMIT, mergeEventHistory } from '../src/event-history.js';
 import { projectConversation, projectM0EventHistory } from '../src/renderer/m0-projection.js';
-import {
-  canSendRuntimeMessage,
-  createInitialRuntimeViewState,
-  runtimeViewReducer,
-} from '../src/renderer/runtime-view-state.js';
 
 function eventAt(sequence: number, overrides: Partial<Event> = {}): Event {
   return {
@@ -1091,35 +1086,14 @@ describe('conversation projection', () => {
       }),
     ];
 
-    // Fresh renderer process: empty state + connect-succeeded snapshot (cold start).
-    let state = createInitialRuntimeViewState(true);
-    expect(state.connectionState).toBe('connecting');
-    expect(canSendRuntimeMessage(state.connectionState)).toBe(false);
+    const eventHistory = mergeEventHistory([], snapshot);
+    const hydration = projectM0EventHistory(eventHistory, threadId);
+    expect(hydration.taskVersion).toBe(2);
+    expect(eventHistory.map((event) => event.sequence)).toEqual([
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+    ]);
 
-    state = runtimeViewReducer(state, {
-      type: 'connect-succeeded',
-      result: {
-        health: {
-          ok: true,
-          runtimePid: 42,
-          uptimeMs: 10,
-          protocolVersion: 2,
-          features: [],
-          inFlightRuns: 0,
-          inFlightRunIds: [],
-          eventSequence: 0,
-        },
-        snapshot,
-      },
-      threadId,
-    });
-
-    expect(state.connectionState).toBe('online');
-    expect(canSendRuntimeMessage(state.connectionState)).toBe(true);
-    expect(state.taskVersion).toBe(2);
-    expect(state.eventHistory.map((e) => e.sequence)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
-
-    const projection = projectConversation(state.eventHistory, threadId);
+    const projection = projectConversation(eventHistory, threadId);
     expect(projection.messages.map((m) => ({ role: m.role, text: m.text }))).toEqual([
       { role: 'user', text: 'first durable question' },
       { role: 'assistant', text: 'answer-one' },

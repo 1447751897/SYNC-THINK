@@ -2,6 +2,8 @@
 // Used by the per-domain parser modules in this directory.
 import type { OrchestrationRunMutationPayload, TeamMemberDraft } from '@sync-think/protocol';
 import { MAX_REVIEW_ITERATIONS, ULID_REGEX, type EventCategory, type PlanStepDraft } from '@sync-think/shared';
+import { isRecord } from '@sync-think/shared/value-validation';
+export { isRecord } from '@sync-think/shared/value-validation';
 export const MESSAGE_ROLES = new Set(['user', 'assistant', 'system', 'tool']);
 
 export const PARTICIPATION_MODES = new Set(['conversation', 'collaboration', 'automatic']);
@@ -142,10 +144,6 @@ export const PROTOCOLS = new Set([
 ]);
 
 export const SURFACES = new Set(['claude', 'codex', 'gemini', 'kiro', 'generic']);
-
-export function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
 
 export const AGENT_DEFINITION_KEYS = [
   'agentId',
@@ -335,6 +333,7 @@ export const GLOBAL_AGENT_KEYS = [
   'mcpServerIds',
   'reasoningEffort',
   'availabilityScope',
+  'writePolicy',
 ] as const;
 
 export function validGlobalAgentFields(
@@ -377,6 +376,14 @@ export function validGlobalAgentFields(
   if (value.reasoningEffort !== undefined && !boundedAgentText(value.reasoningEffort, 64))
     return false;
   if (value.availabilityScope !== undefined && value.availabilityScope !== 'global' && value.availabilityScope !== 'workspace')
+    return false;
+  // Closed vocabulary (shared AgentWritePolicy): a delegated Agent either
+  // inherits the conversation's write mode or stays read-only.
+  if (
+    value.writePolicy !== undefined &&
+    value.writePolicy !== 'inherit' &&
+    value.writePolicy !== 'read-only'
+  )
     return false;
   return true;
 }

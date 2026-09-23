@@ -15,6 +15,9 @@ export {
 };
 export type { CollaborationSettings };
 
+/** Shared by tool dispatch and delegated-card parent-row matching. */
+export const DELEGATION_TOOL_NAMES: ReadonlySet<string> = new Set(['agent_delegate', 'agent_run']);
+
 export interface AgentCatalogCandidate {
   id: string;
   name: string;

@@ -14,6 +14,8 @@ export * from './types/chat-plan.js';
 export * from './types/scheduled-task.js';
 export * from './types/external-event.js';
 export * from './types/run-index.js';
+export * from './types/delegated-run.js';
+export * from './delegation-state.js';
 export * from './types/context.js';
 export * from './types/usage.js';
 export * from './types/artifact.js';
@@ -25,6 +27,9 @@ export * from './types/kernel.js';
 export * from './provider-surface.js';
 export * from './acceptance-criteria.js';
 export * from './review-policy.js';
+export * from './review-outcome.js';
+export * from './review-transition.js';
+export * from './rework-artifacts.js';
 export * from './image-generation.js';
 export * from './task-title.js';
 export * from './run-index-title.js';
@@ -35,9 +40,27 @@ export * from './plan-markdown.js';
 export * from './deferred-content.js';
 export * from './file-diff.js';
 export * from './platform.js';
+export * from './string-validation.js';
+export * from './value-validation.js';
+export * from './byte-scaling.js';
+export * from './refresh-coordinator.js';
 
 export * from './kernel-execution.js';
 
 export * from './durable-text.js';
 
 export * from './task-plan-history.js';
+export { resolveOrchestrationCompletion } from './orchestration-completion.js';
+export { changedPlanStepFields, diffPlanSteps } from './orchestration-plan-diff.js';
+export {
+  findPlanStepGraphIssue,
+  type PlanStepGraphIssue,
+  type PlanStepGraphIssueCode,
+} from './orchestration-plan-graph.js';
+export * from './types/orchestration-contracts.js';
+export * from './types/approval-contracts.js';
+export * from './types/agent-context-contracts.js';
+export * from './types/production-execution.js';
+export * from './orchestration-errors.js';
+export { scrubDiagnosticText } from './diagnostic-text.js';
+export * from './types/collaboration-chat.js';

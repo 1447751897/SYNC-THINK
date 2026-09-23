@@ -5,9 +5,62 @@
 // Visual Studio Build Tools. Once installed and `pnpm rebuild electron` runs,
 // `pnpm dev:desktop` launches this module.
 
-import { parseTaskPlanHistoryPayload } from '@sync-think/protocol';
-import { parseConversationListFileChangesPayload } from '@sync-think/protocol';
-import { parseConversationReadFileDiffPayload } from '@sync-think/protocol';
+import { registerConversationQueryHandlers } from './conversation-query-handlers.js';
+import {
+  registerConversationWriteHandlers,
+  type StagedAppendMessagePayload,
+} from './conversation-write-handlers.js';
+import { registerConversationTransientHandlers } from './conversation-transient-handlers.js';
+import { registerConversationApprovalHandlers } from './conversation-approval-handlers.js';
+import { registerConversationBrowserHandlers } from './conversation-browser-handlers.js';
+import { registerConversationManagementHandlers } from './conversation-management-handlers.js';
+import { registerConversationRoutingHandlers } from './conversation-routing-handlers.js';
+import { registerConversationPlanHandlers } from './conversation-plan-handlers.js';
+import { registerConversationAskHandlers } from './conversation-ask-handlers.js';
+import { registerScheduledTaskHandlers } from './scheduled-task-handlers.js';
+import { registerActivityHandlers } from './activity-handlers.js';
+import { registerGoalHandlers } from './goal-handlers.js';
+import { registerSkillLocalHandlers } from './skill-local-handlers.js';
+import { registerSkillMarketHandlers } from './skill-market-handlers.js';
+import { registerSkillHandlers } from './skill-handlers.js';
+import { registerMcpRegistryHandlers } from './mcp-registry-handlers.js';
+import { registerMcpToolHandlers } from './mcp-tool-handlers.js';
+import { registerBotChannelHandlers } from './bot-channel-handlers.js';
+import { registerCapabilityGovernanceHandlers } from './capability-governance-handlers.js';
+import { registerPromptDesignHandlers } from './prompt-design-handlers.js';
+import { registerWorkspaceHandlers } from './workspace-handlers.js';
+import { registerTaskHandlers } from './task-handlers.js';
+import { registerParticipationModeHandlers } from './participation-mode-handlers.js';
+import { registerPlanHandlers } from './plan-handlers.js';
+import { registerRunControlHandlers } from './run-control-handlers.js';
+import { registerArtifactHandlers } from './artifact-handlers.js';
+import { registerProviderCatalogHandlers } from './provider-catalog-handlers.js';
+import { registerProviderCredentialHandlers } from './provider-credential-handlers.js';
+import { registerProviderModelHandlers } from './provider-model-handlers.js';
+import { registerProviderDiscoveryHandlers } from './provider-discovery-handlers.js';
+import { registerProviderBalanceHandlers } from './provider-balance-handlers.js';
+import { registerProviderCcSwitchHandlers } from './provider-cc-switch-handlers.js';
+import { registerWebSearchProviderHandlers } from './web-search-provider-handlers.js';
+import { registerDataManagementHandlers } from './data-management-handlers.js';
+import { registerBrowserProfileHandlers } from './browser-profile-handlers.js';
+import { registerBrowserRecordingHandlers } from './browser-recording-handlers.js';
+import { registerBrowserWorkflowHandlers } from './browser-workflow-handlers.js';
+import { registerBrowserHandoffHandlers } from './browser-handoff-handlers.js';
+import { registerDesktopCommandHandlers } from './desktop-command-handlers.js';
+import { registerBrowserExtensionHandlers } from './browser-extension-handlers.js';
+import { registerApprovalHandlers } from './approval-handlers.js';
+import { registerMemoryHandlers } from './memory-handlers.js';
+import { registerContextPacketHandlers } from './context-packet-handlers.js';
+import { registerDiagnosticsHandlers } from './diagnostics-handlers.js';
+import { registerGatewayHandlers } from './gateway-handlers.js';
+import { registerKernelHandlers } from './kernel-handlers.js';
+import { registerSettingsHandlers } from './settings-handlers.js';
+import { registerPolicyHandlers } from './policy-handlers.js';
+import { registerUsageHandlers } from './usage-handlers.js';
+import { registerAgentHandlers } from './agent-handlers.js';
+import { registerGlobalAgentHandlers } from './global-agent-handlers.js';
+import { registerTeamHandlers } from './team-handlers.js';
+
 import {
   app,
   BrowserWindow,
@@ -39,15 +92,6 @@ import {
   type ExportDesktopDiagnosticsResponse,
 } from '../diagnostics-export-contract.js';
 import type {
-  ExportDesktopDataResponse,
-  ImportDesktopDataResponse,
-  OpenDesktopDataDirectoryResponse,
-} from '../data-management-contract.js';
-import type {
-  BrowserExtensionOpenFolderResult,
-  BrowserExtensionStatus,
-} from '../browser-extension-contract.js';
-import type {
   ManagedKernelUpdateId,
   ManagedKernelUpdateSnapshot,
 } from '../kernel-update-contract.js';
@@ -76,11 +120,7 @@ import {
 } from './project-git.js';
 import { ProjectContentSearchRegistry, searchProjectContent } from './project-content-search.js';
 import { parseProjectTerminalCommand, resolveProjectTerminalCwd } from './project-terminal.js';
-import {
-  killAllPtys,
-  killWindowPtys,
-  registerPtyTerminalHandlers,
-} from './pty-service.js';
+import { killAllPtys, killWindowPtys, registerPtyTerminalHandlers } from './pty-service.js';
 import {
   ProjectTerminalRegistry,
   type ProjectTerminalReservation,
@@ -101,388 +141,7 @@ import { findDeepLinkInArgv, parseDeepLinkUrl } from './deep-link.js';
 import { listDogfoodDayReports } from './m1-exit-evidence-load.js';
 import { parseHandtestDocMarkdown } from '../m1-handtest-doc-parse.js';
 import { fileURLToPath } from 'node:url';
-import {
-  encodeFrame,
-  decodeFrames,
-  normalizeSelectedSkillVersionIds,
-  parseDesignGeneratePayload,
-  type ConversationTransientFrame,
-  type ConversationTransientSnapshot,
-  type GatewayLogsResponse,
-  type KernelDetectResponse,
-  type OpenGatewayStatusResponse,
-  parseListWebSearchProvidersPayload,
-  parseSaveWebSearchProviderPayload,
-  parseReorderWebSearchProvidersPayload,
-  parseTestWebSearchProviderPayload,
-} from '@sync-think/protocol';
-import type {
-  AppendMessagePayload,
-  AppendMessageResponse,
-  CancelRunPayload,
-  Frame,
-  GetArtifactVersionResponse,
-  PromptEnhanceCancelPayload,
-  PromptEnhanceCancelResponse,
-  PromptEnhancePayload,
-  PromptEnhanceResponse,
-  DesignGeneratePayload,
-  DesignGenerateResponse,
-} from '@sync-think/protocol';
-import {
-  parseDataBackupPayload,
-  parseDataCleanConversationsPayload,
-  parseEmptyDataPayload,
-  type DataBackupResponse,
-  type DataCleanConversationsResponse,
-  type DataCleanEmptyAttachmentDirectoriesResponse,
-  type DataCompactStorageResponse,
-  type DataExportResponse,
-  type DataImportResponse,
-  type DataStorageStatsResponse,
-} from '@sync-think/protocol';
-import {
-  parseArchiveTaskPayload,
-  parseBindWorkspaceFolderPayload,
-  parseCreateTaskPayload,
-  parseCreateWorkspacePayload,
-  parseUpdateWorkspacePayload,
-  parseDeleteWorkspacePayload,
-  parseListTasksPayload,
-  parseListWorkspacesPayload,
-  parseOpenTaskPayload,
-  parseSearchTasksPayload,
-  parseUnarchiveTaskPayload,
-} from '../workspace-payloads.js';
-import {
-  parseCreateProviderPayload,
-  parseUpdateProviderPayload,
-  parsePreviewCcSwitchImportPayload,
-  parseImportCcSwitchPayload,
-  parseListProvidersPayload,
-  parseDiscoverModelsPayload,
-  parseProviderBalancePayload,
-  parseProbeModelsPayload,
-  parseAddModelsPayload,
-  parseProbeCapabilitiesPayload,
-  parseConfirmCapabilitiesPayload,
-  parseReorderProvidersPayload,
-  parseAddProviderCredentialMetadata,
-  parseRemoveProviderCredentialPayload,
-  parseClearProviderCredentialsPayload,
-  parseDeleteProviderPayload,
-  parseRevealProviderCredentialPayload,
-  parseUpdateProviderCredentialMetadata,
-  parseSetModelPrioritiesPayload,
-  parseUpdateModelPayload,
-  parseRemoveModelPayload,
-  parseGetSettingsPayload,
-  parseSetSettingPayload,
-  parseUsageSummaryPayload,
-} from '../provider-payloads.js';
-import {
-  createProviderPayloadFromClipboard,
-  probeModelsPayloadFromClipboard,
-  updateProviderPayloadFromClipboard,
-} from './provider-clipboard.js';
-import {
-  parseGetAgentPayload,
-  parseUpdateAgentBindingPayload,
-  parseImportSkillPayload,
-  parseImportRemoteSkillPayload,
-  parseListSkillsPayload,
-  parseDeleteSkillPayload,
-  parseGetSkillPayload,
-  parseSetSkillEnabledPayload,
-  parseRegisterMcpServerPayload,
-  parseRegisterRemoteMcpPayload,
-  parseListMcpServersPayload,
-  parseSetMcpServerEnabledPayload,
-  parseDeleteMcpServerPayload,
-  parseProbeMcpPolicyPayload,
-  parseRequestMcpToolPayload,
-  parseProbeMcpSpawnPayload,
-  parseCallMcpToolPayload,
-  parseRefreshMcpToolsPayload,
-  parseGetBotChannelConfigPayload,
-  parseSaveBotChannelConfigPayload,
-  parseTestBotChannelPayload,
-  parseRequestWechatBotQrPayload,
-  parseCheckWechatBotQrPayload,
-} from '../agent-payloads.js';
-
-function goalConversationId(value: unknown): string | undefined {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
-  const record = value as Record<string, unknown>;
-  if (typeof record.conversationId !== 'string' || !record.conversationId.trim()) return undefined;
-  return record.conversationId.trim();
-}
-
-function parseGoalSetPayloadLocal(
-  value: unknown,
-): import('@sync-think/protocol').GoalSetPayload | undefined {
-  const conversationId = goalConversationId(value);
-  if (!conversationId || !value || typeof value !== 'object' || Array.isArray(value))
-    return undefined;
-  const record = value as Record<string, unknown>;
-  const condition = typeof record.condition === 'string' ? record.condition.trim() : '';
-  if (!condition || condition.length > 4000) return undefined;
-  if (record.stopCondition !== undefined && typeof record.stopCondition !== 'string') {
-    return undefined;
-  }
-  const stopConditionText =
-    typeof record.stopCondition === 'string' ? record.stopCondition.trim() : '';
-  if (stopConditionText.length > 4000) return undefined;
-  const stopCondition = stopConditionText || undefined;
-  if (
-    record.maxGoalRounds !== undefined &&
-    (typeof record.maxGoalRounds !== 'number' ||
-      !Number.isSafeInteger(record.maxGoalRounds) ||
-      record.maxGoalRounds < 1 ||
-      record.maxGoalRounds > 50)
-  ) {
-    return undefined;
-  }
-  const maxGoalRounds = typeof record.maxGoalRounds === 'number' ? record.maxGoalRounds : undefined;
-  if (
-    record.maxGoalTokens !== undefined &&
-    (typeof record.maxGoalTokens !== 'number' ||
-      !Number.isSafeInteger(record.maxGoalTokens) ||
-      record.maxGoalTokens < 10_000)
-  ) {
-    return undefined;
-  }
-  const maxGoalTokens = typeof record.maxGoalTokens === 'number' ? record.maxGoalTokens : undefined;
-  const modelId =
-    typeof record.modelId === 'string' && record.modelId.trim() && record.modelId.length <= 256
-      ? record.modelId.trim()
-      : undefined;
-  const kernelId =
-    typeof record.kernelId === 'string' && record.kernelId.trim() && record.kernelId.length <= 128
-      ? record.kernelId.trim()
-      : undefined;
-  const reasoningEffort =
-    typeof record.reasoningEffort === 'string' &&
-    record.reasoningEffort.trim() &&
-    record.reasoningEffort.length <= 64
-      ? record.reasoningEffort.trim()
-      : undefined;
-  return {
-    conversationId,
-    condition,
-    ...(stopCondition === undefined ? {} : { stopCondition }),
-    ...(maxGoalRounds === undefined ? {} : { maxGoalRounds }),
-    ...(maxGoalTokens === undefined ? {} : { maxGoalTokens }),
-    ...(modelId === undefined
-      ? {}
-      : { modelId: modelId as import('@sync-think/protocol').GoalSetPayload['modelId'] }),
-    ...(kernelId === undefined
-      ? {}
-      : { kernelId: kernelId as import('@sync-think/protocol').GoalSetPayload['kernelId'] }),
-    ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
-    ...(typeof record.networkEnabled === 'boolean'
-      ? { networkEnabled: record.networkEnabled }
-      : {}),
-  };
-}
-
-function parseGoalGetPayloadLocal(
-  value: unknown,
-): import('@sync-think/protocol').GoalGetPayload | undefined {
-  const conversationId = goalConversationId(value);
-  return conversationId ? { conversationId } : undefined;
-}
-
-function parseGoalClearPayloadLocal(
-  value: unknown,
-): import('@sync-think/protocol').GoalClearPayload | undefined {
-  const conversationId = goalConversationId(value);
-  return conversationId ? { conversationId } : undefined;
-}
-
-function parseGoalPausePayloadLocal(
-  value: unknown,
-): import('@sync-think/protocol').GoalPausePayload | undefined {
-  const conversationId = goalConversationId(value);
-  return conversationId ? { conversationId } : undefined;
-}
-
-function parseGoalResumePayloadLocal(
-  value: unknown,
-): import('@sync-think/protocol').GoalResumePayload | undefined {
-  const conversationId = goalConversationId(value);
-  if (!conversationId || !value || typeof value !== 'object' || Array.isArray(value)) {
-    return undefined;
-  }
-  const record = value as Record<string, unknown>;
-  const modelId =
-    typeof record.modelId === 'string' && record.modelId.trim() && record.modelId.length <= 256
-      ? record.modelId.trim()
-      : undefined;
-  const kernelId =
-    typeof record.kernelId === 'string' && record.kernelId.trim() && record.kernelId.length <= 128
-      ? record.kernelId.trim()
-      : undefined;
-  const reasoningEffort =
-    typeof record.reasoningEffort === 'string' &&
-    record.reasoningEffort.trim() &&
-    record.reasoningEffort.length <= 64
-      ? record.reasoningEffort.trim()
-      : undefined;
-  return {
-    conversationId,
-    ...(modelId === undefined
-      ? {}
-      : { modelId: modelId as import('@sync-think/protocol').GoalResumePayload['modelId'] }),
-    ...(kernelId === undefined
-      ? {}
-      : { kernelId: kernelId as import('@sync-think/protocol').GoalResumePayload['kernelId'] }),
-    ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
-    ...(typeof record.networkEnabled === 'boolean'
-      ? { networkEnabled: record.networkEnabled }
-      : {}),
-  };
-}
-import {
-  parseCapabilityGovernanceListPayload,
-  parseCapabilityWorkspaceListPayload,
-  parseCapabilityWorkspaceSetActivePayload,
-  parseGetLatestCapabilityOrganizePayload,
-  parseGetSkillPublishDraftPayload,
-  parseListSkillPublishDraftsPayload,
-  parsePreviewCapabilityOrganizePayload,
-  parseSaveSkillPublishDraftPayload,
-  parseSubmitSkillPublishDraftPayload,
-} from '../capability-payloads.js';
-import {
-  parseDecideMemoryPayload,
-  parseRollbackMemoryPayload,
-  parseListDiagnosticsPayload,
-  parseListMemoryPayload,
-} from '../memory-payloads.js';
-import {
-  parseListApprovalsPayload,
-  parseEvaluateApprovalPayload,
-  parseEnqueueApprovalPayload,
-  parseDecideApprovalPayload,
-  parseListPendingToolApprovalsPayload,
-} from '../approval-payloads.js';
-import {
-  parseCancelBrowserHandoffPayload,
-  parseContinueBrowserHandoffPayload,
-  parseListWaitingBrowserHandoffsPayload,
-} from '../browser-handoff-payloads.js';
-import {
-  parseClearBrowserSiteSessionPayload,
-  parseCreateBrowserProfilePayload,
-  parseDeleteBrowserProfilePayload,
-  parseListBrowserProfilesPayload,
-  parseListBrowserSiteSessionsPayload,
-  parseRenameBrowserProfilePayload,
-} from '../browser-profile-payloads.js';
-import {
-  parseGetBrowserRecordingPayload,
-  parseListBrowserRecordingsPayload,
-  parseStartBrowserRecordingPayload,
-  parseStopBrowserRecordingPayload,
-} from '../browser-recording-payloads.js';
-import {
-  parseCreateBrowserWorkflowDraftPayload,
-  parseCreateBrowserWorkflowRevisionDraftPayload,
-  parseExecuteBrowserWorkflowPayload,
-  parseGetBrowserWorkflowPayload,
-  parseListBrowserWorkflowsPayload,
-  parseApproveExecuteBrowserWorkflowPayload,
-  parseReviewBrowserWorkflowDraftPayload,
-  parseSubmitBrowserWorkflowDraftPayload,
-} from '../browser-workflow-payloads.js';
-import {
-  parseCancelDesktopCommandPayload,
-  parseContinueDesktopCommandPayload,
-  parseListWaitingDesktopCommandsPayload,
-} from '../desktop-command-payloads.js';
-import {
-  parsePeekContextPacketPayload,
-  parseAmendContextPacketPayload,
-} from '../context-payloads.js';
-import {
-  parseArtifactComparePayload,
-  parseArtifactImagePreviewPayload,
-  parseArtifactConflictListPayload,
-  parseArtifactConflictResolutionPayload,
-  parseArtifactListPayload,
-  parseArtifactMergePayload,
-  parseArtifactSelectPayload,
-  parseModeSetPayload,
-  parsePlanApprovePayload,
-  parsePlanCreatePayload,
-  parsePlanListPayload,
-  parsePlanRevisePayload,
-  parsePolicyListPayload,
-  parsePolicySavePayload,
-  parseRunGraphPayload,
-  parseRunMutationPayload,
-  parseAgentCreatePayload,
-  parseAgentCreateVersionPayload,
-  parseAgentListPayload,
-  parseAgentVersionsPayload,
-} from '../orchestration-payloads.js';
-import { parseConversationReadContentPayload } from '@sync-think/protocol';
-import {
-  parseCreateConversationPayload,
-  parseCreateGlobalAgentPayload,
-  parseCreateTeamPayload,
-  parseDeleteConversationPayload,
-  parseConversationCompactPayload,
-  parseDeleteGlobalAgentPayload,
-  parseDeleteTeamPayload,
-  parseListConversationsPayload,
-  parseConversationListMessagesPayload,
-  parseConversationListNavigationPayload,
-  parseConversationGetContextStatusPayload,
-  parseConversationGetRunProcessPayload,
-  parseConversationListRunTimelinePayload,
-  parseSubscribeConversationTransientStreamPayload,
-  parseUnsubscribeConversationTransientStreamPayload,
-  parseListGlobalAgentsPayload,
-  parseListGlobalAgentWorkspaceActivationsPayload,
-  parseSetGlobalAgentWorkspaceActivationPayload,
-  parseRenameConversationPayload,
-  parseSetConversationArchivedPayload,
-  parseSetConversationExecutionModePayload,
-  parseSetConversationInteractionModePayload,
-  parseSetConversationContextWindowOverridePayload,
-  parseConversationPlanSubmitPayload,
-  parseConversationPlanGetPayload,
-  parseConversationPlanApprovePayload,
-  parseConversationPlanRevisePayload,
-  parseConversationPlanCancelPayload,
-  parseConversationAskAnswerPayload,
-  parseConversationAskCancelPayload,
-  parseConversationAskPendingPayload,
-  parseCreateScheduledTaskPayload,
-  parseListScheduledTasksPayload,
-  parseUpdateScheduledTaskPayload,
-  parseDeleteScheduledTaskPayload,
-  parseTriggerScheduledTaskPayload,
-  parseListScheduledTaskHistoryPayload,
-  parseActivityListRunsPayload,
-  parseActivityListExternalEventsPayload,
-  parseActivityRetryAnchorPayload,
-  parseSkillLocalInspectPayload,
-  parseSkillLocalScanPayload,
-  parseSkillLocalImportPayload,
-  parseInstallSkillMarketPayload,
-  parseSetConversationPinnedPayload,
-  parseSetTeamRunStatusPayload,
-  parseStartTeamRunPayload,
-  parseUpdateGlobalAgentPayload,
-  parseUpdateTeamPayload,
-  parseUpgradeConversationTrackPayload,
-  parseRebindConversationTargetPayload,
-  parseConversationDecideToolApprovalPayload,
-  parseConversationSubmitBrowserResultPayload,
-} from '../team-payloads.js';
+import { parseListDiagnosticsPayload } from '../memory-payloads.js';
 import type { Event } from '@sync-think/shared';
 import { ElectronSafeStorageBackend, SecureStore } from '@sync-think/secure-store';
 import {
@@ -550,7 +209,6 @@ import { materializeChatImageDataUrl, stageChatImageDataUrl } from './image-stag
 import { messageImageUrl, persistMessageImages, readMessageImage } from './message-images.js';
 import { readApprovalRequestImage } from './approval-request-images.js';
 import {
-  CAPABILITY_RUNTIME_IPC_CHANNELS,
   type RuntimeConnectOutcome,
   type RuntimeConnectResult,
 } from '../runtime-bridge-contract.js';
@@ -640,7 +298,6 @@ let desktopUpdateRollbackHealthPromise: Promise<void> | null = null;
 let desktopShutdownPromise: Promise<void> | null = null;
 type KernelInstallResult = { ok: true } | { ok: false; error: string };
 let piKernelInstallPromise: Promise<KernelInstallResult> | null = null;
-const transientCleanupRegisteredSenders = new Set<number>();
 const projectFileWatchCleanupRegisteredSenders = new Set<number>();
 const projectFileWatchSubscriptions = new Map<string, { senderId: number; dispose: () => void }>();
 const projectTerminalCleanupRegisteredSenders = new Set<number>();
@@ -781,7 +438,7 @@ async function recyclePrivateKernel(kernelId: ManagedKernelUpdateId): Promise<vo
   if (kernelId !== 'codex' && kernelId !== 'claude-code') return;
   try {
     await ensureRuntimeConnection();
-    await getRuntimeClient().request('kernel.recycle', { kernelId });
+    await getRuntimeClient().requestKernel('kernel.recycle', { kernelId });
   } catch (error) {
     console.warn('[desktop] private kernel installed but resident recycle failed', error);
   }
@@ -791,9 +448,7 @@ async function bootstrapPrivateKernelsAtStartup(): Promise<void> {
   const service = getKernelUpdateService();
   const snapshot = service.getSnapshot();
   if (!snapshot.installerAvailable) return;
-  const missing = snapshot.items.filter(
-    (item) => !item.managedVersion && item.kernelId !== 'pi',
-  );
+  const missing = snapshot.items.filter((item) => !item.managedVersion && item.kernelId !== 'pi');
   const results = await Promise.allSettled(
     missing.map(async (item) => {
       const result = await service.installUpdate(item.kernelId);
@@ -927,18 +582,11 @@ async function maybeRunDesktopUpdateInstallProbe(): Promise<void> {
       await ensureRuntimeConnection();
     },
     createMarker: async (name) => {
-      const created = await getRuntimeClient().request<{ workspaceId: string }>(
-        'workspace.create',
-        {
-          name,
-        },
-      );
+      const created = await getRuntimeClient().requestWorkspace('workspace.create', { name });
       return created.workspaceId;
     },
     markerExists: async (name, markerId) => {
-      const listed = await getRuntimeClient().request<{
-        workspaces: Array<{ workspaceId: string; name: string }>;
-      }>('workspace.list', {});
+      const listed = await getRuntimeClient().requestWorkspace('workspace.list', {});
       return listed.workspaces.some(
         (workspace) => workspace.name === name && (!markerId || workspace.workspaceId === markerId),
       );
@@ -1000,20 +648,13 @@ function trayIconPath(): string {
 async function listTrayRecentConversations(): Promise<DesktopTrayConversation[]> {
   try {
     await ensureRuntimeConnection();
-    const response = await getRuntimeClient().request<{
-      conversations: Array<{
-        id: string;
-        title: string;
-        updatedAt?: string;
-        lastMessageAt?: string;
-      }>;
-    }>('conversation.list', { includeArchived: false });
+    const response = await getRuntimeClient().requestConversation('conversation.list', {
+      includeArchived: false,
+    });
     return response.conversations
       .slice()
       .sort((a, b) =>
-        (b.lastMessageAt ?? b.updatedAt ?? '').localeCompare(
-          a.lastMessageAt ?? a.updatedAt ?? '',
-        ),
+        (b.lastMessageAt ?? b.updatedAt ?? '').localeCompare(a.lastMessageAt ?? a.updatedAt ?? ''),
       )
       .map((conversation) => ({ id: conversation.id, title: conversation.title }));
   } catch (error) {
@@ -1025,10 +666,7 @@ async function listTrayRecentConversations(): Promise<DesktopTrayConversation[]>
 async function openDataDirectoryFromTray(): Promise<void> {
   try {
     await ensureRuntimeConnection();
-    const stats = await getRuntimeClient().request<DataStorageStatsResponse>(
-      'data.storageStats',
-      {},
-    );
+    const stats = await getRuntimeClient().requestDataManagement('data.storageStats', {});
     const error = await shell.openPath(stats.dataDirectory);
     if (error) console.warn('[desktop] tray: could not open data directory', error);
   } catch (error) {
@@ -1316,24 +954,6 @@ function sendRuntimeEventsToRenderer(events: readonly Event[]): void {
   webContents.send('runtime:events', events);
 }
 
-function sendRuntimeTransientFrameToRenderer(
-  sender: IpcMainInvokeEvent['sender'],
-  subscriptionId: string,
-  payload:
-    | { type: 'frame'; frame: ConversationTransientFrame }
-    | {
-        type: 'reset';
-        latestStreamSequence: number;
-        snapshot?: ConversationTransientSnapshot;
-      },
-): void {
-  const location = trustedRendererLocation;
-  if (!location || sender.isDestroyed() || !isTrustedRendererUrl(sender.getURL(), location)) {
-    return;
-  }
-  sender.send('runtime:conversation-transient', { subscriptionId, ...payload });
-}
-
 function projectFileWatchKey(senderId: number, subscriptionId: string): string {
   return `${senderId}:${subscriptionId}`;
 }
@@ -1599,11 +1219,6 @@ async function connectRendererToRuntime(): Promise<RuntimeConnectOutcome> {
  * Convert renderer data-URL images into staging paths so task.appendMessage
  * stays under the protocol 1 MiB frame limit.
  */
-interface StagedAppendMessagePayload {
-  payload: unknown;
-  images: Array<{ name: string; mimeType: string; stagingPath: string }>;
-}
-
 function appendAttachmentContext(
   value: unknown,
 ): { conversationId: string; workspacePath: string } | undefined {
@@ -1686,124 +1301,6 @@ function stageAppendMessageImages(value: unknown): StagedAppendMessagePayload {
     return raw;
   });
   return { payload: { ...runtimePayload, images }, images: durableImages };
-}
-
-function parseAppendMessagePayload(value: unknown): AppendMessagePayload {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error('Invalid append-message payload');
-  }
-  const payload = value as Partial<AppendMessagePayload>;
-  const validRoles = new Set(['user', 'assistant', 'system', 'tool']);
-  const hasImages = Array.isArray(payload.images) && payload.images.length > 0;
-  if (
-    typeof payload.threadId !== 'string' ||
-    payload.threadId.length === 0 ||
-    !Number.isInteger(payload.expectedTaskVersion) ||
-    (payload.expectedTaskVersion ?? -1) < 0 ||
-    typeof payload.role !== 'string' ||
-    !validRoles.has(payload.role) ||
-    typeof payload.text !== 'string' ||
-    payload.text.length > 100_000 ||
-    (!hasImages && payload.text.trim().length === 0)
-  ) {
-    throw new Error('Invalid append-message payload');
-  }
-  if (payload.images !== undefined) {
-    if (!Array.isArray(payload.images) || payload.images.length > 8) {
-      throw new Error('Invalid append-message images');
-    }
-    for (const image of payload.images) {
-      if (
-        !image ||
-        typeof image !== 'object' ||
-        typeof image.name !== 'string' ||
-        typeof image.mimeType !== 'string' ||
-        !image.mimeType.startsWith('image/')
-      ) {
-        throw new Error('Invalid append-message image item');
-      }
-      const hasDataUrl =
-        typeof image.dataUrl === 'string' &&
-        image.dataUrl.startsWith('data:image/') &&
-        image.dataUrl.length <= 700_000;
-      const hasStagingPath = typeof image.stagingPath === 'string' && image.stagingPath.length > 0;
-      if (!hasDataUrl && !hasStagingPath) {
-        throw new Error('Invalid append-message image item');
-      }
-    }
-  }
-  if (payload.networkEnabled !== undefined && typeof payload.networkEnabled !== 'boolean') {
-    throw new Error('Invalid append-message networkEnabled');
-  }
-  const skillVersionIds = normalizeSelectedSkillVersionIds(payload.skillVersionIds);
-  return {
-    ...payload,
-    ...(skillVersionIds === undefined ? {} : { skillVersionIds }),
-  } as AppendMessagePayload;
-}
-
-function parseCancelRunPayload(value: unknown): CancelRunPayload {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error('Invalid cancel-run payload');
-  }
-  const payload = value as Partial<CancelRunPayload>;
-  if (
-    typeof payload.runId !== 'string' ||
-    payload.runId.length === 0 ||
-    payload.runId.length > 256
-  ) {
-    throw new Error('Invalid cancel-run payload');
-  }
-  return payload as CancelRunPayload;
-}
-
-function parsePromptEnhancePayload(value: unknown): PromptEnhancePayload {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error('Invalid prompt-enhance payload');
-  }
-  const payload = value as Partial<PromptEnhancePayload>;
-  if (
-    typeof payload.requestId !== 'string' ||
-    payload.requestId.trim().length === 0 ||
-    payload.requestId.length > 160 ||
-    typeof payload.text !== 'string' ||
-    payload.text.trim().length === 0 ||
-    payload.text.length > 100_000
-  ) {
-    throw new Error('Invalid prompt-enhance payload');
-  }
-  if (payload.modelId !== undefined && typeof payload.modelId !== 'string') {
-    throw new Error('Invalid prompt-enhance model');
-  }
-  const requestId = payload.requestId.trim();
-  const text = payload.text.trim();
-  const modelId = typeof payload.modelId === 'string' ? payload.modelId.trim() : '';
-  return {
-    requestId,
-    text,
-    ...(modelId ? { modelId: modelId as PromptEnhancePayload['modelId'] } : {}),
-  };
-}
-
-function parsePromptEnhanceCancelPayload(value: unknown): PromptEnhanceCancelPayload {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error('Invalid prompt-enhance-cancel payload');
-  }
-  const payload = value as Partial<PromptEnhanceCancelPayload>;
-  if (
-    typeof payload.requestId !== 'string' ||
-    payload.requestId.trim().length === 0 ||
-    payload.requestId.length > 160
-  ) {
-    throw new Error('Invalid prompt-enhance-cancel payload');
-  }
-  return { requestId: payload.requestId.trim() };
-}
-
-function parseDesignGeneratePayloadLocal(value: unknown): DesignGeneratePayload {
-  const payload = parseDesignGeneratePayload(value);
-  if (!payload) throw new Error('Invalid design-generate payload');
-  return payload;
 }
 
 function assertRuntimeIpcSource(event: IpcMainInvokeEvent): void {
@@ -1940,591 +1437,107 @@ function setupRuntimeBridge(): void {
     assertRuntimeIpcSource(event);
     return connectRendererToRuntime();
   });
-  ipcMain.handle('runtime:append-message', async (event, value: unknown) => {
+  ipcMain.handle('runtime:collaboration-command', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
     await ensureRuntimeConnection();
-    // Stage large images on disk first — named pipe frames are capped at 1 MiB.
-    const staged = stageAppendMessageImages(value);
-    const response = await getRuntimeClient().request<AppendMessageResponse>(
-      'task.appendMessage',
-      parseAppendMessagePayload(staged.payload),
-    );
-    if (staged.images.length === 0) return response;
-
-    const images = persistMessageImages(String(response.messageId), staged.images).map((image) => ({
-      id: image.id,
-      name: image.name,
-      mimeType: image.mimeType,
-      storageRef: image.storageRef,
-      url: messageImageUrl(image.storageRef),
-    }));
-    if (images.length > 0) {
-      const eventDraft = {
-        type: 'message.images-attached',
-        threadId: (staged.payload as AppendMessagePayload).threadId,
-        messageId: response.messageId,
-        images: images.map(({ url: _url, ...image }) => image),
+    return getRuntimeClient().requestCollaboration(value as import('@sync-think/shared').CollaborationCommand);
+  });
+  registerPolicyHandlers({
+    handle: (channel, listener) => ipcMain.handle(channel, listener),
+    assertSource: assertRuntimeIpcSource,
+    ensureConnection: ensureRuntimeConnection,
+    requestPolicy: (command, payload, options) =>
+      getRuntimeClient().requestPolicy(command, payload, options),
+  });
+  registerSettingsHandlers({
+    handle: (channel, listener) => ipcMain.handle(channel, listener),
+    assertSource: assertRuntimeIpcSource,
+    ensureConnection: ensureRuntimeConnection,
+    requestSettings: (command, payload, options) =>
+      getRuntimeClient().requestSettings(command, payload, options),
+  });
+  registerWebSearchProviderHandlers({
+    handle: (channel, listener) => ipcMain.handle(channel, listener),
+    assertSource: assertRuntimeIpcSource,
+    ensureConnection: ensureRuntimeConnection,
+    requestWebSearchProvider: (command, payload, options) =>
+      getRuntimeClient().requestWebSearchProvider(command, payload, options),
+  });
+  registerDataManagementHandlers({
+    handle: (channel, listener) => ipcMain.handle(channel, listener),
+    assertSource: assertRuntimeIpcSource,
+    ensureConnection: ensureRuntimeConnection,
+    requestDataManagement: (command, payload, options) =>
+      getRuntimeClient().requestDataManagement(command, payload, options),
+    defaultExportFileName: () =>
+      `sync-think-export-${new Date().toISOString().slice(0, 10)}.json`,
+    selectExportFile: async (event, defaultFileName) => {
+      const win = BrowserWindow.fromWebContents(event.sender);
+      const options = {
+        title: '导出数据',
+        defaultPath: defaultFileName,
+        filters: [{ name: 'JSON 文件', extensions: ['json'] }],
       };
-      // The Runtime persists the lightweight attachment refs as a separate event.
-      await getRuntimeClient().request('message.attachImages', eventDraft);
-    }
-    return { ...response, images };
-  });
-  ipcMain.handle('runtime:prompt-enhance', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request<PromptEnhanceResponse>(
-      'prompt.enhance',
-      parsePromptEnhancePayload(value),
-    );
-  });
-  ipcMain.handle('runtime:prompt-enhance-cancel', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request<PromptEnhanceCancelResponse>(
-      'prompt.enhance.cancel',
-      parsePromptEnhanceCancelPayload(value),
-    );
-  });
-  ipcMain.handle('runtime:design-generate', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request<DesignGenerateResponse>(
-      'design.generate',
-      parseDesignGeneratePayloadLocal(value),
-    );
-  });
-  ipcMain.handle('runtime:workspace-create', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('workspace.create', parseCreateWorkspacePayload(value));
-  });
-  ipcMain.handle('runtime:workspace-bind-folder', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'workspace.bindFolder',
-      parseBindWorkspaceFolderPayload(value),
-    );
-  });
-  ipcMain.handle('runtime:workspace-list', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('workspace.list', parseListWorkspacesPayload(value));
-  });
-  ipcMain.handle('runtime:workspace-update', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('workspace.update', parseUpdateWorkspacePayload(value));
-  });
-  ipcMain.handle('runtime:workspace-delete', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('workspace.delete', parseDeleteWorkspacePayload(value));
-  });
-  ipcMain.handle('runtime:task-create', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('task.create', parseCreateTaskPayload(value));
-  });
-  ipcMain.handle('runtime:task-list', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('task.list', parseListTasksPayload(value));
-  });
-  ipcMain.handle('runtime:task-open', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('task.open', parseOpenTaskPayload(value));
-  });
-  ipcMain.handle('runtime:task-search', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('task.search', parseSearchTasksPayload(value));
-  });
-  ipcMain.handle('runtime:mode-set', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('task.setParticipationMode', parseModeSetPayload(value));
-  });
-  ipcMain.handle('runtime:task-archive', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('task.archive', parseArchiveTaskPayload(value));
-  });
-  ipcMain.handle('runtime:task-unarchive', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('task.unarchive', parseUnarchiveTaskPayload(value));
-  });
-  ipcMain.handle('runtime:plan-create', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('plan.draft', parsePlanCreatePayload(value));
-  });
-  ipcMain.handle('runtime:plan-revise', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('plan.revise', parsePlanRevisePayload(value));
-  });
-  ipcMain.handle('runtime:plan-list', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('plan.listRevisions', parsePlanListPayload(value));
-  });
-  ipcMain.handle('runtime:plan-approve', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('plan.approve', parsePlanApprovePayload(value));
-  });
-  ipcMain.handle('runtime:run-graph', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('run.getGraph', parseRunGraphPayload(value));
-  });
-  ipcMain.handle('runtime:orchestration-run-pause', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('run.pause', parseRunMutationPayload(value));
-  });
-  ipcMain.handle('runtime:orchestration-run-resume', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('run.resume', parseRunMutationPayload(value));
-  });
-  ipcMain.handle('runtime:orchestration-run-cancel', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('run.cancel', parseRunMutationPayload(value));
-  });
-  ipcMain.handle('runtime:policy-save', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('policy.save', parsePolicySavePayload(value));
-  });
-  ipcMain.handle('runtime:policy-list', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('policy.list', parsePolicyListPayload(value));
-  });
-  ipcMain.handle('runtime:artifact-list', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('artifact.list', parseArtifactListPayload(value));
-  });
-  ipcMain.handle('runtime:artifact-image-preview', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    const payload = parseArtifactImagePreviewPayload(value);
-    const response = await getRuntimeClient().request<GetArtifactVersionResponse>(
-      'artifact.getVersion',
-      payload,
-    );
-    return artifactImagePreviewRegistry.register({
-      artifactVersionId: String(response.version.id),
-      contentRef: response.version.contentRef,
-      contentHash: response.version.contentHash,
-      mimeType: response.version.mimeType,
-    });
-  });
-  ipcMain.handle('runtime:artifact-compare', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('artifact.compare', parseArtifactComparePayload(value));
-  });
-  ipcMain.handle('runtime:artifact-select', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('artifact.selectVersion', parseArtifactSelectPayload(value));
-  });
-  ipcMain.handle('runtime:artifact-merge', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('artifact.merge', parseArtifactMergePayload(value));
-  });
-  ipcMain.handle('runtime:artifact-conflict-list', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'artifact.listConflicts',
-      parseArtifactConflictListPayload(value),
-    );
-  });
-  ipcMain.handle('runtime:artifact-conflict-resolve', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'artifact.resolveConflict',
-      parseArtifactConflictResolutionPayload(value),
-    );
-  });
-  ipcMain.handle('runtime:provider-create', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'provider.create',
-      createProviderPayloadFromClipboard(parseCreateProviderPayload(value), () =>
-        clipboard.readText(),
-      ),
-    );
-  });
-  ipcMain.handle('runtime:provider-update', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'provider.update',
-      updateProviderPayloadFromClipboard(parseUpdateProviderPayload(value), () =>
-        clipboard.readText(),
-      ),
-    );
-  });
-  ipcMain.handle('runtime:provider-preview-cc-switch', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'provider.previewCcSwitchImport',
-      parsePreviewCcSwitchImportPayload(value),
-    );
-  });
-  ipcMain.handle('runtime:provider-import-cc-switch', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('provider.importCcSwitch', parseImportCcSwitchPayload(value));
-  });
-  ipcMain.handle('runtime:provider-list', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('provider.list', parseListProvidersPayload(value));
-  });
-  ipcMain.handle('runtime:provider-discover', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('provider.discoverModels', parseDiscoverModelsPayload(value));
-  });
-  ipcMain.handle('runtime:provider-balance', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('provider.balance', parseProviderBalancePayload(value));
-  });
-  ipcMain.handle('runtime:provider-probe-models', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'provider.probeModels',
-      probeModelsPayloadFromClipboard(parseProbeModelsPayload(value), () => clipboard.readText()),
-    );
-  });
-  ipcMain.handle('runtime:provider-add-models', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('provider.addModels', parseAddModelsPayload(value));
-  });
-  ipcMain.handle('runtime:provider-probe-capabilities', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'provider.probeCapabilities',
-      parseProbeCapabilitiesPayload(value),
-    );
-  });
-  ipcMain.handle('runtime:provider-confirm-capabilities', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'provider.confirmCapabilities',
-      parseConfirmCapabilitiesPayload(value),
-    );
-  });
-  ipcMain.handle('runtime:provider-reorder', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('provider.reorder', parseReorderProvidersPayload(value));
-  });
-  ipcMain.handle('runtime:provider-add-credential', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'provider.addCredential',
-      (() => {
-        const metadata = parseAddProviderCredentialMetadata(value);
-        const apiKey = clipboard.readText();
-        if (!apiKey.trim() || apiKey.length > 8192) {
-          throw new Error('Provider credential unavailable');
-        }
-        return {
-          providerId: metadata.providerId,
-          label: metadata.label,
-          apiKey,
-        };
-      })(),
-    );
-  });
-  ipcMain.handle('runtime:provider-remove-credential', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'provider.removeCredential',
-      parseRemoveProviderCredentialPayload(value),
-    );
-  });
-  ipcMain.handle('runtime:provider-clear-credentials', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'provider.clearCredentials',
-      parseClearProviderCredentialsPayload(value),
-    );
-  });
-  ipcMain.handle('runtime:provider-delete', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('provider.delete', parseDeleteProviderPayload(value));
-  });
-  ipcMain.handle('runtime:provider-reveal-credential', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'provider.revealCredential',
-      parseRevealProviderCredentialPayload(value),
-    );
-  });
-  ipcMain.handle('runtime:provider-update-credential', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    const metadata = parseUpdateProviderCredentialMetadata(value);
-    let apiKey: string | undefined;
-    if (metadata.rotateCredentialFromClipboard) {
-      const clipboardValue = clipboard.readText();
-      if (!clipboardValue.trim() || clipboardValue.length > 8192) {
-        throw new Error('Provider credential unavailable');
-      }
-      apiKey = clipboardValue;
-    }
-    return getRuntimeClient().request('provider.updateCredential', {
-      providerId: metadata.providerId,
-      credentialRefId: metadata.credentialRefId,
-      label: metadata.label,
-      apiKey,
-    });
-  });
-  ipcMain.handle('runtime:provider-set-model-priorities', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'provider.setModelPriorities',
-      parseSetModelPrioritiesPayload(value),
-    );
-  });
-  ipcMain.handle('runtime:provider-update-model', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('provider.updateModel', parseUpdateModelPayload(value));
-  });
-  ipcMain.handle('runtime:provider-remove-model', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('provider.removeModel', parseRemoveModelPayload(value));
-  });
-  ipcMain.handle('runtime:settings-get', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('settings.get', parseGetSettingsPayload(value));
-  });
-  ipcMain.handle('runtime:settings-set', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('settings.set', parseSetSettingPayload(value));
-  });
-  ipcMain.handle('runtime:web-search-providers-list', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    const payload = parseListWebSearchProvidersPayload(value ?? {});
-    if (!payload) throw new Error('Invalid web search providers list payload');
-    return getRuntimeClient().request('webSearch.providers.list', payload);
-  });
-  ipcMain.handle('runtime:web-search-provider-save', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    const payload = parseSaveWebSearchProviderPayload(value);
-    if (!payload) throw new Error('Invalid web search provider save payload');
-    return getRuntimeClient().request('webSearch.providers.save', payload);
-  });
-  ipcMain.handle('runtime:web-search-providers-reorder', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    const payload = parseReorderWebSearchProvidersPayload(value);
-    if (!payload) throw new Error('Invalid web search provider reorder payload');
-    return getRuntimeClient().request('webSearch.providers.reorder', payload);
-  });
-  ipcMain.handle('runtime:web-search-provider-test', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    const payload = parseTestWebSearchProviderPayload(value);
-    if (!payload) throw new Error('Invalid web search provider test payload');
-    return getRuntimeClient().request('webSearch.providers.test', payload);
-  });
-  ipcMain.handle('runtime:data-storage-stats', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    const payload = parseEmptyDataPayload(value ?? {});
-    if (!payload) throw new Error('Invalid data storage stats payload');
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request<DataStorageStatsResponse>('data.storageStats', payload);
-  });
-  ipcMain.handle('desktop:data-export', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    const record =
-      value && typeof value === 'object' && !Array.isArray(value)
-        ? (value as Record<string, unknown>)
-        : {};
-    if (
-      Object.keys(record).some((key) => key !== 'workspaceId') ||
-      (record.workspaceId !== undefined &&
-        (typeof record.workspaceId !== 'string' || record.workspaceId.trim().length === 0))
-    ) {
-      throw new Error('Invalid data export payload');
-    }
-    const win = BrowserWindow.fromWebContents(event.sender);
-    const options = {
-      title: '导出数据',
-      defaultPath: `sync-think-export-${new Date().toISOString().slice(0, 10)}.json`,
-      filters: [{ name: 'JSON 文件', extensions: ['json'] }],
-    };
-    const selected = win
-      ? await dialog.showSaveDialog(win, options)
-      : await dialog.showSaveDialog(options);
-    if (selected.canceled || !selected.filePath) {
-      return { status: 'cancelled' } satisfies ExportDesktopDataResponse;
-    }
-    await ensureRuntimeConnection();
-    const response = await getRuntimeClient().request<DataExportResponse>('data.export', {
-      filePath: selected.filePath,
-      ...(typeof record.workspaceId === 'string' ? { workspaceId: record.workspaceId.trim() } : {}),
-    });
-    return { status: 'saved', ...response } satisfies ExportDesktopDataResponse;
-  });
-  ipcMain.handle('desktop:data-import', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    const record =
-      value && typeof value === 'object' && !Array.isArray(value)
-        ? (value as Record<string, unknown>)
-        : undefined;
-    if (
-      !record ||
-      Object.keys(record).some((key) => key !== 'conflictStrategy') ||
-      (record.conflictStrategy !== 'skip' && record.conflictStrategy !== 'overwrite')
-    ) {
-      throw new Error('Invalid data import payload');
-    }
-    const win = BrowserWindow.fromWebContents(event.sender);
-    const options = {
-      title: '导入数据',
-      properties: ['openFile'] as Array<'openFile'>,
-      filters: [{ name: 'JSON 文件', extensions: ['json'] }],
-    };
-    const selected = win
-      ? await dialog.showOpenDialog(win, options)
-      : await dialog.showOpenDialog(options);
-    if (selected.canceled || selected.filePaths.length === 0) {
-      return { status: 'cancelled' } satisfies ImportDesktopDataResponse;
-    }
-    await ensureRuntimeConnection();
-    const response = await getRuntimeClient().request<DataImportResponse>('data.import', {
-      filePath: selected.filePaths[0]!,
-      conflictStrategy: record.conflictStrategy,
-    });
-    return { status: 'imported', ...response } satisfies ImportDesktopDataResponse;
-  });
-  ipcMain.handle('runtime:data-backup', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    const payload = parseDataBackupPayload(value);
-    if (!payload) throw new Error('Invalid data backup payload');
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request<DataBackupResponse>('data.backup', payload);
-  });
-  ipcMain.handle('runtime:data-compact-storage', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    const payload = parseEmptyDataPayload(value ?? {});
-    if (!payload) throw new Error('Invalid data compact payload');
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request<DataCompactStorageResponse>('data.compactStorage', payload);
-  });
-  ipcMain.handle('runtime:data-clean-conversations', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    const payload = parseDataCleanConversationsPayload(value ?? {});
-    if (!payload) throw new Error('Invalid data cleanup payload');
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request<DataCleanConversationsResponse>(
-      'data.cleanConversations',
-      payload,
-    );
-  });
-  ipcMain.handle(
-    'runtime:data-clean-empty-attachment-directories',
-    async (event, value: unknown) => {
-      assertRuntimeIpcSource(event);
-      const payload = parseEmptyDataPayload(value ?? {});
-      if (!payload) throw new Error('Invalid empty attachment directory cleanup payload');
-      await ensureRuntimeConnection();
-      return getRuntimeClient().request<DataCleanEmptyAttachmentDirectoriesResponse>(
-        'data.cleanEmptyAttachmentDirectories',
-        payload,
-      );
+      const selected = win
+        ? await dialog.showSaveDialog(win, options)
+        : await dialog.showSaveDialog(options);
+      return selected.canceled ? undefined : selected.filePath;
     },
-  );
-  ipcMain.handle('desktop:data-open-directory', async (event) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    const stats = await getRuntimeClient().request<DataStorageStatsResponse>(
-      'data.storageStats',
-      {},
-    );
-    const error = await shell.openPath(stats.dataDirectory);
-    return {
-      opened: error.length === 0,
-      path: stats.dataDirectory,
-      ...(error ? { error } : {}),
-    } satisfies OpenDesktopDataDirectoryResponse;
+    selectImportFile: async (event) => {
+      const win = BrowserWindow.fromWebContents(event.sender);
+      const options = {
+        title: '导入数据',
+        properties: ['openFile'] as Array<'openFile'>,
+        filters: [{ name: 'JSON 文件', extensions: ['json'] }],
+      };
+      const selected = win
+        ? await dialog.showOpenDialog(win, options)
+        : await dialog.showOpenDialog(options);
+      return selected.canceled ? undefined : selected.filePaths[0];
+    },
+    openPath: (targetPath) => shell.openPath(targetPath),
   });
-  ipcMain.handle('runtime:usage-summary', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('usage.summary', parseUsageSummaryPayload(value));
+  registerUsageHandlers({
+    handle: (channel, listener) => ipcMain.handle(channel, listener),
+    assertSource: assertRuntimeIpcSource,
+    ensureConnection: ensureRuntimeConnection,
+    requestUsage: (command, payload, options) =>
+      getRuntimeClient().requestUsage(command, payload, options),
   });
-  ipcMain.handle('runtime:agent-get', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('agent.get', parseGetAgentPayload(value));
+  registerAgentHandlers({
+    handle: (channel, listener) => ipcMain.handle(channel, listener),
+    assertSource: assertRuntimeIpcSource,
+    ensureConnection: ensureRuntimeConnection,
+    requestAgent: (command, payload, options) =>
+      getRuntimeClient().requestAgent(command, payload, options),
   });
-  ipcMain.handle('runtime:agent-update-binding', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('agent.updateBinding', parseUpdateAgentBindingPayload(value));
+  registerGlobalAgentHandlers({
+    handle: (channel, listener) => ipcMain.handle(channel, listener),
+    assertSource: assertRuntimeIpcSource,
+    ensureConnection: ensureRuntimeConnection,
+    requestGlobalAgent: (command, payload, options) =>
+      getRuntimeClient().requestGlobalAgent(command, payload, options),
   });
-  ipcMain.handle('runtime:agent-list', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('agent.list', parseAgentListPayload(value));
+  registerTeamHandlers({
+    handle: (channel, listener) => ipcMain.handle(channel, listener),
+    assertSource: assertRuntimeIpcSource,
+    ensureConnection: ensureRuntimeConnection,
+    requestTeam: (command, payload, options) =>
+      getRuntimeClient().requestTeam(command, payload, options),
   });
-  ipcMain.handle('runtime:kernel-detect', async (event) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request<KernelDetectResponse>('kernel.detect', {});
+  registerKernelHandlers({
+    handle: (channel, listener) => ipcMain.handle(channel, listener),
+    assertSource: assertRuntimeIpcSource,
+    ensureConnection: ensureRuntimeConnection,
+    requestKernel: (command, payload, options) =>
+      getRuntimeClient().requestKernel(command, payload, options),
   });
-  ipcMain.handle('runtime:gateway-status', async (event) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request<OpenGatewayStatusResponse>('gateway.status', {});
-  });
-  ipcMain.handle('runtime:gateway-logs', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    const query = (value ?? {}) as { offset?: number; limit?: number };
-    return getRuntimeClient().request<GatewayLogsResponse>('gateway.logs', query);
-  });
-  ipcMain.handle('runtime:gateway-logs-clear', async (event) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('gateway.logs.clear', {});
+  registerGatewayHandlers({
+    handle: (channel, listener) => ipcMain.handle(channel, listener),
+    assertSource: assertRuntimeIpcSource,
+    ensureConnection: ensureRuntimeConnection,
+    requestGateway: (command, payload, options) =>
+      getRuntimeClient().requestGateway(command, payload, options),
   });
   ipcMain.handle('desktop:kernel-install', (event, value: unknown) => {
     assertRuntimeIpcSource(event);
@@ -2595,381 +1608,110 @@ function setupRuntimeBridge(): void {
       return result;
     }
   });
-  ipcMain.handle('runtime:agent-create', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('agent.create', parseAgentCreatePayload(value));
+  // Mutable Conversation commands (2026-07-22 model).
+  registerConversationManagementHandlers({
+    handle: (channel, listener) => ipcMain.handle(channel, listener),
+    assertSource: assertRuntimeIpcSource,
+    ensureConnection: ensureRuntimeConnection,
+    requestConversation: (command, payload) =>
+      getRuntimeClient().requestConversation(command, payload),
   });
-  ipcMain.handle('runtime:agent-list-versions', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('agent.listVersions', parseAgentVersionsPayload(value));
+  registerConversationRoutingHandlers({
+    handle: (channel, listener) => ipcMain.handle(channel, listener),
+    assertSource: assertRuntimeIpcSource,
+    ensureConnection: ensureRuntimeConnection,
+    requestConversation: (command, payload) =>
+      getRuntimeClient().requestConversation(command, payload),
   });
-  ipcMain.handle('runtime:agent-create-version', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('agent.createVersion', parseAgentCreateVersionPayload(value));
+  registerConversationPlanHandlers({
+    handle: (channel, listener) => ipcMain.handle(channel, listener),
+    assertSource: assertRuntimeIpcSource,
+    ensureConnection: ensureRuntimeConnection,
+    requestConversation: (command, payload) =>
+      getRuntimeClient().requestConversation(command, payload),
   });
-
-  // Mutable global Agent / Team / Conversation commands (2026-07-22 model).
-  ipcMain.handle('runtime:global-agent-list', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('globalAgent.list', parseListGlobalAgentsPayload(value));
+  registerConversationAskHandlers({
+    handle: (channel, listener) => ipcMain.handle(channel, listener),
+    assertSource: assertRuntimeIpcSource,
+    ensureConnection: ensureRuntimeConnection,
+    requestConversation: (command, payload) =>
+      getRuntimeClient().requestConversation(command, payload),
   });
-  ipcMain.handle('runtime:global-agent-create', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('globalAgent.create', parseCreateGlobalAgentPayload(value));
+  registerScheduledTaskHandlers({
+    handle: (channel, listener) => ipcMain.handle(channel, listener),
+    assertSource: assertRuntimeIpcSource,
+    ensureConnection: ensureRuntimeConnection,
+    requestScheduledTask: (command, payload) =>
+      getRuntimeClient().requestScheduledTask(command, payload),
   });
-  ipcMain.handle('runtime:global-agent-update', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('globalAgent.update', parseUpdateGlobalAgentPayload(value));
+  registerActivityHandlers({
+    handle: (channel, listener) => ipcMain.handle(channel, listener),
+    assertSource: assertRuntimeIpcSource,
+    ensureConnection: ensureRuntimeConnection,
+    requestActivity: (command, payload) => getRuntimeClient().requestActivity(command, payload),
   });
-  ipcMain.handle('runtime:global-agent-delete', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('globalAgent.delete', parseDeleteGlobalAgentPayload(value));
+  registerGoalHandlers({
+    handle: (channel, listener) => ipcMain.handle(channel, listener),
+    assertSource: assertRuntimeIpcSource,
+    ensureConnection: ensureRuntimeConnection,
+    requestGoal: (command, payload) => getRuntimeClient().requestGoal(command, payload),
   });
-  ipcMain.handle('runtime:global-agent-list-workspace-activations', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'globalAgent.listWorkspaceActivations',
-      parseListGlobalAgentWorkspaceActivationsPayload(value),
-    );
+  registerConversationQueryHandlers({
+    handle: (channel, listener) => ipcMain.handle(channel, listener),
+    assertSource: assertRuntimeIpcSource,
+    ensureConnection: ensureRuntimeConnection,
+    requestConversation: (command, payload) =>
+      getRuntimeClient().requestConversation(command, payload),
   });
-  ipcMain.handle('runtime:global-agent-set-workspace-activation', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'globalAgent.setWorkspaceActivation',
-      parseSetGlobalAgentWorkspaceActivationPayload(value),
-    );
+  registerConversationWriteHandlers({
+    handle: (channel, listener) => ipcMain.handle(channel, listener),
+    assertSource: assertRuntimeIpcSource,
+    ensureConnection: ensureRuntimeConnection,
+    stageAppendMessageImages,
+    persistMessageImages: (messageId, images) =>
+      persistMessageImages(messageId, images).map((image) => ({
+        id: image.id,
+        name: image.name,
+        mimeType: image.mimeType,
+        storageRef: image.storageRef,
+        url: messageImageUrl(image.storageRef),
+      })),
+    requestConversation: (command, payload, options) =>
+      getRuntimeClient().requestConversation(command, payload, options),
   });
-  ipcMain.handle('runtime:team-list', async (event) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('team.list', {});
+  registerConversationApprovalHandlers({
+    handle: (channel, listener) => ipcMain.handle(channel, listener),
+    assertSource: assertRuntimeIpcSource,
+    ensureConnection: ensureRuntimeConnection,
+    requestConversation: (command, payload) =>
+      getRuntimeClient().requestConversation(command, payload),
   });
-  ipcMain.handle('runtime:team-create', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('team.create', parseCreateTeamPayload(value));
+  registerConversationBrowserHandlers({
+    handle: (channel, listener) => ipcMain.handle(channel, listener),
+    assertSource: assertRuntimeIpcSource,
+    ensureConnection: ensureRuntimeConnection,
+    requestConversation: (command, payload) =>
+      getRuntimeClient().requestConversation(command, payload),
   });
-  ipcMain.handle('runtime:team-update', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('team.update', parseUpdateTeamPayload(value));
-  });
-  ipcMain.handle('runtime:team-delete', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('team.delete', parseDeleteTeamPayload(value));
-  });
-  ipcMain.handle('runtime:team-start-run', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('team.startRun', parseStartTeamRunPayload(value));
-  });
-  ipcMain.handle('runtime:team-set-run-status', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('team.setRunStatus', parseSetTeamRunStatusPayload(value));
-  });
-  ipcMain.handle('runtime:conversation-list', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('conversation.list', parseListConversationsPayload(value));
-  });
-  ipcMain.handle('runtime:conversation-list-messages', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'conversation.listMessages',
-      parseConversationListMessagesPayload(value),
-    );
-  });
-  ipcMain.handle('runtime:conversation-list-navigation', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'conversation.listNavigation',
-      parseConversationListNavigationPayload(value),
-    );
-  });
-  ipcMain.handle('runtime:conversation-get-context-status', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'conversation.getContextStatus',
-      parseConversationGetContextStatusPayload(value),
-    );
-  });
-  ipcMain.handle('runtime:conversation-get-run-process', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    const payload = parseConversationGetRunProcessPayload(value);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('conversation.getRunProcess', payload);
-  });
-  ipcMain.handle('runtime:conversation-task-plan-history', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    const payload = parseTaskPlanHistoryPayload(value);
-    if (!payload) throw new Error('Invalid conversation task history request');
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('conversation.taskPlanHistory', payload);
-  });
-  ipcMain.handle('runtime:conversation-list-file-changes', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    const payload = parseConversationListFileChangesPayload(value);
-    if (!payload) throw new Error('Invalid conversation file directory request');
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('conversation.listFileChanges', payload);
-  });
-  ipcMain.handle('runtime:conversation-read-content', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    const payload = parseConversationReadContentPayload(value);
-    if (!payload) throw new Error('Invalid conversation content request');
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('conversation.readContent', payload);
-  });
-  ipcMain.handle('runtime:conversation-read-file-diff', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    const payload = parseConversationReadFileDiffPayload(value);
-    if (!payload) throw new Error('Invalid conversation file diff request');
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('conversation.readFileDiff', payload);
-  });
-  ipcMain.handle('runtime:conversation-list-run-timeline', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'conversation.listRunTimeline',
-      parseConversationListRunTimelinePayload(value),
-    );
-  });
-  ipcMain.handle('runtime:conversation-subscribe-transient', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    const payload = parseSubscribeConversationTransientStreamPayload(value);
-    await ensureRuntimeConnection();
-    await getRuntimeSession().subscribeConversationTransientStream({
-      senderId: event.sender.id,
-      subscriptionId: payload.subscriptionId,
-      threadId: payload.threadId,
-      afterStreamSequence: payload.afterStreamSequence,
-      listener: (frame) =>
-        sendRuntimeTransientFrameToRenderer(event.sender, payload.subscriptionId, {
-          type: 'frame',
-          frame,
-        }),
-      snapshotListener: (latestStreamSequence, snapshot) =>
-        sendRuntimeTransientFrameToRenderer(event.sender, payload.subscriptionId, {
-          type: 'reset',
-          latestStreamSequence,
-          ...(snapshot ? { snapshot } : {}),
-        }),
-    });
-    if (!transientCleanupRegisteredSenders.has(event.sender.id)) {
-      transientCleanupRegisteredSenders.add(event.sender.id);
-      event.sender.once('destroyed', () => {
-        transientCleanupRegisteredSenders.delete(event.sender.id);
-        void getRuntimeSession().unsubscribeConversationTransientStreamsForSender(event.sender.id);
-      });
-    }
-    return { subscriptionId: payload.subscriptionId };
-  });
-  ipcMain.handle('runtime:conversation-unsubscribe-transient', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    const payload = parseUnsubscribeConversationTransientStreamPayload(value);
-    await getRuntimeSession().unsubscribeConversationTransientStream(
-      event.sender.id,
-      payload.subscriptionId,
-    );
-    return { subscriptionId: payload.subscriptionId };
-  });
-  ipcMain.handle('runtime:conversation-create', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('conversation.create', parseCreateConversationPayload(value));
-  });
-  ipcMain.handle('runtime:conversation-rename', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('conversation.rename', parseRenameConversationPayload(value));
-  });
-  ipcMain.handle('runtime:conversation-set-pinned', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'conversation.setPinned',
-      parseSetConversationPinnedPayload(value),
-    );
-  });
-  ipcMain.handle('runtime:conversation-set-archived', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'conversation.setArchived',
-      parseSetConversationArchivedPayload(value),
-    );
-  });
-  ipcMain.handle('runtime:conversation-set-execution-mode', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'conversation.setExecutionMode',
-      parseSetConversationExecutionModePayload(value),
-    );
-  });
-  ipcMain.handle('runtime:conversation-set-interaction-mode', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'conversation.setInteractionMode',
-      parseSetConversationInteractionModePayload(value),
-    );
-  });
-  ipcMain.handle(
-    'runtime:conversation-set-context-window-override',
-    async (event, value: unknown) => {
-      assertRuntimeIpcSource(event);
-      await ensureRuntimeConnection();
-      return getRuntimeClient().request(
-        'conversation.setContextWindowOverride',
-        parseSetConversationContextWindowOverridePayload(value),
-      );
+  registerConversationTransientHandlers({
+    handle: (channel, listener) => ipcMain.handle(channel, listener),
+    assertSource: assertRuntimeIpcSource,
+    senderId: (event) => event.sender.id,
+    ensureConnection: ensureRuntimeConnection,
+    subscribe: (input) => getRuntimeSession().subscribeConversationTransientStream(input),
+    unsubscribe: (senderId, subscriptionId) =>
+      getRuntimeSession().unsubscribeConversationTransientStream(senderId, subscriptionId),
+    unsubscribeForSender: (senderId) =>
+      getRuntimeSession().unsubscribeConversationTransientStreamsForSender(senderId),
+    onSenderDestroyed: (event, listener) => event.sender.once('destroyed', listener),
+    sendToSender: (event, subscriptionId, payload) => {
+      const location = trustedRendererLocation;
+      const sender = event.sender;
+      if (!location || sender.isDestroyed() || !isTrustedRendererUrl(sender.getURL(), location)) {
+        return;
+      }
+      sender.send('runtime:conversation-transient', { subscriptionId, ...payload });
     },
-  );
-  ipcMain.handle('runtime:conversation-plan-submit', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'conversation.plan.submit',
-      parseConversationPlanSubmitPayload(value),
-    );
-  });
-  ipcMain.handle('runtime:conversation-plan-get', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'conversation.plan.get',
-      parseConversationPlanGetPayload(value),
-    );
-  });
-  ipcMain.handle('runtime:conversation-plan-approve', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'conversation.plan.approve',
-      parseConversationPlanApprovePayload(value),
-    );
-  });
-  ipcMain.handle('runtime:conversation-plan-revise', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'conversation.plan.revise',
-      parseConversationPlanRevisePayload(value),
-    );
-  });
-  ipcMain.handle('runtime:conversation-plan-cancel', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'conversation.plan.cancel',
-      parseConversationPlanCancelPayload(value),
-    );
-  });
-  ipcMain.handle('runtime:conversation-ask-answer', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'conversation.ask.answer',
-      parseConversationAskAnswerPayload(value),
-    );
-  });
-  ipcMain.handle('runtime:conversation-ask-cancel', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'conversation.ask.cancel',
-      parseConversationAskCancelPayload(value),
-    );
-  });
-  ipcMain.handle('runtime:conversation-ask-pending', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'conversation.ask.pending',
-      parseConversationAskPendingPayload(value),
-    );
-  });
-  ipcMain.handle('runtime:scheduled-task-create', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'scheduledTask.create',
-      parseCreateScheduledTaskPayload(value),
-    );
-  });
-  ipcMain.handle('runtime:scheduled-task-list', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('scheduledTask.list', parseListScheduledTasksPayload(value));
-  });
-  ipcMain.handle('runtime:scheduled-task-update', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'scheduledTask.update',
-      parseUpdateScheduledTaskPayload(value),
-    );
-  });
-  ipcMain.handle('runtime:scheduled-task-delete', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'scheduledTask.delete',
-      parseDeleteScheduledTaskPayload(value),
-    );
-  });
-  ipcMain.handle('runtime:scheduled-task-trigger', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'scheduledTask.trigger',
-      parseTriggerScheduledTaskPayload(value),
-    );
-  });
-  ipcMain.handle('runtime:scheduled-task-history', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'scheduledTask.history',
-      parseListScheduledTaskHistoryPayload(value),
-    );
-  });
-  ipcMain.handle('runtime:activity-list-runs', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('activity.listRuns', parseActivityListRunsPayload(value));
-  });
-  ipcMain.handle('runtime:activity-list-external-events', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'activity.listExternalEvents',
-      parseActivityListExternalEventsPayload(value),
-    );
-  });
-  ipcMain.handle('runtime:activity-retry-anchor', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'activity.retryAnchor',
-      parseActivityRetryAnchorPayload(value),
-    );
   });
   // ── 守护进程管理（T11）：走 daemon 独立管道，不经过 runtime。 ──────────
   ipcMain.handle('daemon:get-status', async (event) => {
@@ -3022,43 +1764,18 @@ function setupRuntimeBridge(): void {
     );
     return { ok: true, maxConcurrent: clamped };
   });
-  ipcMain.handle('runtime:goal-pause', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('goal.pause', parseGoalPausePayloadLocal(value));
+  registerSkillLocalHandlers({
+    handle: (channel, listener) => ipcMain.handle(channel, listener),
+    assertSource: assertRuntimeIpcSource,
+    ensureConnection: ensureRuntimeConnection,
+    requestSkillLocal: (command, payload) => getRuntimeClient().requestSkillLocal(command, payload),
   });
-  ipcMain.handle('runtime:goal-resume', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('goal.resume', parseGoalResumePayloadLocal(value));
-  });
-  ipcMain.handle('runtime:skill-local-scan', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('skill.local.scan', parseSkillLocalScanPayload(value));
-  });
-  ipcMain.handle('runtime:skill-local-inspect', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('skill.local.inspect', parseSkillLocalInspectPayload(value));
-  });
-  ipcMain.handle('runtime:skill-local-import', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('skill.local.import', parseSkillLocalImportPayload(value));
-  });
-  ipcMain.handle('runtime:skill-market-list', async (event) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('skill.market.list', {});
-  });
-  ipcMain.handle('runtime:skill-market-install', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'skill.market.install',
-      parseInstallSkillMarketPayload(value),
-    );
+  registerSkillMarketHandlers({
+    handle: (channel, listener) => ipcMain.handle(channel, listener),
+    assertSource: assertRuntimeIpcSource,
+    ensureConnection: ensureRuntimeConnection,
+    requestSkillMarket: (command, payload) =>
+      getRuntimeClient().requestSkillMarket(command, payload),
   });
   ipcMain.handle(
     'runtime:conversation-read-approval-request-image',
@@ -3067,43 +1784,40 @@ function setupRuntimeBridge(): void {
       await ensureRuntimeConnection();
       return readApprovalRequestImage(value, {
         listMessages: (payload) =>
-          getRuntimeClient().request<
-            import('@sync-think/protocol').ConversationListMessagesResponse
-          >('conversation.listMessages', payload),
+          getRuntimeClient().requestConversation('conversation.listMessages', payload),
         readImage: readMessageImage,
       });
     },
   );
-  ipcMain.handle('runtime:conversation-decide-tool-approval', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'conversation.decideToolApproval',
-      parseConversationDecideToolApprovalPayload(value),
-    );
-  });
-  ipcMain.handle(
-    'runtime:conversation-list-pending-tool-approvals',
-    async (event, value: unknown) => {
-      assertRuntimeIpcSource(event);
-      await ensureRuntimeConnection();
-      return getRuntimeClient().request(
-        'conversation.listPendingToolApprovals',
-        parseListPendingToolApprovalsPayload(value),
-      );
-    },
-  );
-  // Renderer-to-Runtime result channel for browser commands.
-  ipcMain.handle('runtime:conversation-submit-browser-result', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'conversation.submitBrowserResult',
-      parseConversationSubmitBrowserResultPayload(value),
-    );
-  });
   // AI browser_screenshot：主进程对 webview guest 执行 capturePage，并把 PNG 写入
   // Capture the current embedded browser page into the project screenshot directory.
+  const browserPreviewCaptures = new Map<number, Promise<{ imageDataUrl: string; url: string; capturedAt: string }>>();
+  ipcMain.handle('desktop:browser-preview', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    const id = (value as { webContentsId?: unknown } | null)?.webContentsId;
+    if (typeof id !== 'number' || !Number.isSafeInteger(id)) throw new Error('Invalid browser preview id');
+    const { webContents: webContentsModule } = await import('electron');
+    const guest = webContentsModule.fromId(id);
+    if (!guest || guest.isDestroyed() || guest.getType() !== 'webview' ||
+        guest.hostWebContents !== event.sender || !/^https?:\/\//i.test(guest.getURL())) {
+      throw new Error('Browser preview page is closed or belongs to another window');
+    }
+    let pending = browserPreviewCaptures.get(id);
+    if (!pending) {
+      pending = (async () => {
+    const image = await guest.capturePage();
+    if (image.isEmpty()) throw new Error('Browser preview is empty');
+    const resized = image.resize({ width: Math.min(960, image.getSize().width) });
+    return { imageDataUrl: `data:image/jpeg;base64,${resized.toJPEG(45).toString('base64')}`,
+      url: guest.getURL(), capturedAt: new Date().toISOString() };
+      })().finally(() => { browserPreviewCaptures.delete(id); });
+      browserPreviewCaptures.set(id, pending);
+    }
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([pending, new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error('Browser preview timed out')), 1800); })]);
+    } finally { if (timeout) clearTimeout(timeout); }
+  });
   ipcMain.handle('desktop:save-browser-screenshot', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
     if (value === null || typeof value !== 'object' || Array.isArray(value)) {
@@ -3206,541 +1920,213 @@ function setupRuntimeBridge(): void {
       };
     }
   });
-  ipcMain.handle('runtime:conversation-upgrade-track', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'conversation.upgradeTrack',
-      parseUpgradeConversationTrackPayload(value),
-    );
+  registerSkillHandlers({
+    handle: (channel, listener) => ipcMain.handle(channel, listener),
+    assertSource: assertRuntimeIpcSource,
+    ensureConnection: ensureRuntimeConnection,
+    requestSkill: (command, payload, options) =>
+      getRuntimeClient().requestSkill(command, payload, options),
   });
-  ipcMain.handle('runtime:conversation-rebind-target', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'conversation.rebindTarget',
-      parseRebindConversationTargetPayload(value),
-    );
+  registerMcpRegistryHandlers({
+    handle: (channel, listener) => ipcMain.handle(channel, listener),
+    assertSource: assertRuntimeIpcSource,
+    ensureConnection: ensureRuntimeConnection,
+    requestMcpRegistry: (command, payload, options) =>
+      getRuntimeClient().requestMcpRegistry(command, payload, options),
   });
-  ipcMain.handle('runtime:conversation-delete', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('conversation.delete', parseDeleteConversationPayload(value));
+  registerMcpToolHandlers({
+    handle: (channel, listener) => ipcMain.handle(channel, listener),
+    assertSource: assertRuntimeIpcSource,
+    ensureConnection: ensureRuntimeConnection,
+    requestMcpTool: (command, payload, options) =>
+      getRuntimeClient().requestMcpTool(command, payload, options),
   });
-  ipcMain.handle('runtime:conversation-send-message', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('conversation.sendMessage', value);
+  registerBotChannelHandlers({
+    handle: (channel, listener) => ipcMain.handle(channel, listener),
+    assertSource: assertRuntimeIpcSource,
+    ensureConnection: ensureRuntimeConnection,
+    requestBotChannel: (command, payload, options) =>
+      getRuntimeClient().requestBotChannel(command, payload, options),
   });
-  ipcMain.handle('runtime:conversation-compact', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    // Model-backed compact can take tens of seconds; client defaults to 120s for this type.
-    return getRuntimeClient().request(
-      'conversation.compact',
-      parseConversationCompactPayload(value),
-      { timeoutMs: 120_000 },
-    );
+  registerCapabilityGovernanceHandlers({
+    handle: (channel, listener) => ipcMain.handle(channel, listener),
+    assertSource: assertRuntimeIpcSource,
+    ensureConnection: ensureRuntimeConnection,
+    requestCapabilityGovernance: (command, payload, options) =>
+      getRuntimeClient().requestCapabilityGovernance(command, payload, options),
   });
-
-  ipcMain.handle('runtime:skill-import', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('skill.import', parseImportSkillPayload(value));
+  registerPromptDesignHandlers({
+    handle: (channel, listener) => ipcMain.handle(channel, listener),
+    assertSource: assertRuntimeIpcSource,
+    ensureConnection: ensureRuntimeConnection,
+    requestPromptDesign: (command, payload, options) =>
+      getRuntimeClient().requestPromptDesign(command, payload, options),
   });
-  ipcMain.handle('runtime:skill-import-remote', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('skill.importRemote', parseImportRemoteSkillPayload(value), {
-      timeoutMs: 30_000,
-    });
+  registerWorkspaceHandlers({
+    handle: (channel, listener) => ipcMain.handle(channel, listener),
+    assertSource: assertRuntimeIpcSource,
+    ensureConnection: ensureRuntimeConnection,
+    requestWorkspace: (command, payload, options) =>
+      getRuntimeClient().requestWorkspace(command, payload, options),
   });
-  ipcMain.handle('runtime:goal-set', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('goal.set', parseGoalSetPayloadLocal(value));
+  registerTaskHandlers({
+    handle: (channel, listener) => ipcMain.handle(channel, listener),
+    assertSource: assertRuntimeIpcSource,
+    ensureConnection: ensureRuntimeConnection,
+    requestTask: (command, payload, options) =>
+      getRuntimeClient().requestTask(command, payload, options),
   });
-  ipcMain.handle('runtime:goal-get', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('goal.get', parseGoalGetPayloadLocal(value));
+  registerParticipationModeHandlers({
+    handle: (channel, listener) => ipcMain.handle(channel, listener),
+    assertSource: assertRuntimeIpcSource,
+    ensureConnection: ensureRuntimeConnection,
+    requestParticipationMode: (command, payload, options) =>
+      getRuntimeClient().requestParticipationMode(command, payload, options),
   });
-  ipcMain.handle('runtime:goal-clear', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('goal.clear', parseGoalClearPayloadLocal(value));
+  registerPlanHandlers({
+    handle: (channel, listener) => ipcMain.handle(channel, listener),
+    assertSource: assertRuntimeIpcSource,
+    ensureConnection: ensureRuntimeConnection,
+    requestPlan: (command, payload, options) =>
+      getRuntimeClient().requestPlan(command, payload, options),
   });
-  ipcMain.handle('runtime:skill-list', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('skill.list', parseListSkillsPayload(value));
+  registerRunControlHandlers({
+    handle: (channel, listener) => ipcMain.handle(channel, listener),
+    assertSource: assertRuntimeIpcSource,
+    ensureConnection: ensureRuntimeConnection,
+    requestRunControl: (command, payload, options) =>
+      getRuntimeClient().requestRunControl(command, payload, options),
   });
-  ipcMain.handle('runtime:skill-delete', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('skill.delete', parseDeleteSkillPayload(value));
+  registerArtifactHandlers({
+    handle: (channel, listener) => ipcMain.handle(channel, listener),
+    assertSource: assertRuntimeIpcSource,
+    ensureConnection: ensureRuntimeConnection,
+    requestArtifact: (command, payload, options) =>
+      getRuntimeClient().requestArtifact(command, payload, options),
+    registerImagePreview: (version) =>
+      artifactImagePreviewRegistry.register({
+        artifactVersionId: String(version.id),
+        contentRef: version.contentRef,
+        contentHash: version.contentHash,
+        mimeType: version.mimeType,
+      }),
   });
-  ipcMain.handle('runtime:skill-get', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('skill.get', parseGetSkillPayload(value));
+  registerProviderCatalogHandlers({
+    handle: (channel, listener) => ipcMain.handle(channel, listener),
+    assertSource: assertRuntimeIpcSource,
+    ensureConnection: ensureRuntimeConnection,
+    readClipboardText: () => clipboard.readText(),
+    requestProviderCatalog: (command, payload, options) =>
+      getRuntimeClient().requestProviderCatalog(command, payload, options),
   });
-  ipcMain.handle('runtime:skill-set-enabled', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('skill.setEnabled', parseSetSkillEnabledPayload(value));
+  registerProviderCredentialHandlers({
+    handle: (channel, listener) => ipcMain.handle(channel, listener),
+    assertSource: assertRuntimeIpcSource,
+    ensureConnection: ensureRuntimeConnection,
+    readClipboardText: () => clipboard.readText(),
+    requestProviderCredential: (command, payload, options) =>
+      getRuntimeClient().requestProviderCredential(command, payload, options),
   });
-
-  ipcMain.handle('runtime:mcp-register', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('mcp.register', parseRegisterMcpServerPayload(value));
+  registerProviderModelHandlers({
+    handle: (channel, listener) => ipcMain.handle(channel, listener),
+    assertSource: assertRuntimeIpcSource,
+    ensureConnection: ensureRuntimeConnection,
+    requestProviderModel: (command, payload, options) =>
+      getRuntimeClient().requestProviderModel(command, payload, options),
   });
-  ipcMain.handle('runtime:mcp-register-remote', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('mcp.registerRemote', parseRegisterRemoteMcpPayload(value));
+  registerProviderDiscoveryHandlers({
+    handle: (channel, listener) => ipcMain.handle(channel, listener),
+    assertSource: assertRuntimeIpcSource,
+    ensureConnection: ensureRuntimeConnection,
+    readClipboardText: () => clipboard.readText(),
+    requestProviderDiscovery: (command, payload, options) =>
+      getRuntimeClient().requestProviderDiscovery(command, payload, options),
   });
-  ipcMain.handle('runtime:mcp-list', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('mcp.list', parseListMcpServersPayload(value));
+  registerProviderBalanceHandlers({
+    handle: (channel, listener) => ipcMain.handle(channel, listener),
+    assertSource: assertRuntimeIpcSource,
+    ensureConnection: ensureRuntimeConnection,
+    requestProviderBalance: (command, payload, options) =>
+      getRuntimeClient().requestProviderBalance(command, payload, options),
   });
-  ipcMain.handle('runtime:mcp-set-enabled', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('mcp.setEnabled', parseSetMcpServerEnabledPayload(value));
-  });
-  ipcMain.handle('runtime:mcp-delete', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('mcp.delete', parseDeleteMcpServerPayload(value));
-  });
-  ipcMain.handle('runtime:mcp-policy-probe', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('mcp.policy.probe', parseProbeMcpPolicyPayload(value));
-  });
-
-  ipcMain.handle('runtime:mcp-tool-request', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('mcp.tool.request', parseRequestMcpToolPayload(value));
-  });
-
-  ipcMain.handle('runtime:mcp-spawn-probe', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('mcp.spawn.probe', parseProbeMcpSpawnPayload(value));
-  });
-
-  ipcMain.handle('runtime:mcp-tool-call', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('mcp.tool.call', parseCallMcpToolPayload(value));
-  });
-
-  ipcMain.handle('runtime:mcp-tools-refresh', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('mcp.tools.refresh', parseRefreshMcpToolsPayload(value));
+  registerProviderCcSwitchHandlers({
+    handle: (channel, listener) => ipcMain.handle(channel, listener),
+    assertSource: assertRuntimeIpcSource,
+    ensureConnection: ensureRuntimeConnection,
+    requestProviderCcSwitch: (command, payload, options) =>
+      getRuntimeClient().requestProviderCcSwitch(command, payload, options),
   });
 
-  ipcMain.handle('runtime:bot-channel-get', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('bot.channel.get', parseGetBotChannelConfigPayload(value));
+  registerDesktopCommandHandlers({
+    handle: (channel, listener) => ipcMain.handle(channel, listener),
+    assertSource: assertRuntimeIpcSource,
+    ensureConnection: ensureRuntimeConnection,
+    requestDesktopCommand: (command, payload, options) =>
+      getRuntimeClient().requestDesktopCommand(command, payload, options),
   });
-  ipcMain.handle('runtime:bot-channel-save', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('bot.channel.save', parseSaveBotChannelConfigPayload(value));
+  registerMemoryHandlers({
+    handle: (channel, listener) => ipcMain.handle(channel, listener),
+    assertSource: assertRuntimeIpcSource,
+    ensureConnection: ensureRuntimeConnection,
+    requestMemory: (command, payload, options) =>
+      getRuntimeClient().requestMemory(command, payload, options),
   });
-  ipcMain.handle('runtime:bot-channel-test', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('bot.channel.test', parseTestBotChannelPayload(value));
+  registerBrowserExtensionHandlers({
+    handle: (channel, listener) => ipcMain.handle(channel, listener),
+    assertSource: assertRuntimeIpcSource,
+    ensureConnection: ensureRuntimeConnection,
+    requestBrowserExtension: (command, payload, options) =>
+      getRuntimeClient().requestBrowserExtension(command, payload, options),
   });
-  ipcMain.handle('runtime:bot-channel-wechat-qr-request', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'bot.channel.wechat.qr.request',
-      parseRequestWechatBotQrPayload(value),
-    );
+  registerBrowserProfileHandlers({
+    handle: (channel, listener) => ipcMain.handle(channel, listener),
+    assertSource: assertRuntimeIpcSource,
+    ensureConnection: ensureRuntimeConnection,
+    requestBrowserProfile: (command, payload, options) =>
+      getRuntimeClient().requestBrowserProfile(command, payload, options),
   });
-  ipcMain.handle('runtime:bot-channel-wechat-qr-check', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'bot.channel.wechat.qr.check',
-      parseCheckWechatBotQrPayload(value),
-    );
+  registerBrowserRecordingHandlers({
+    handle: (channel, listener) => ipcMain.handle(channel, listener),
+    assertSource: assertRuntimeIpcSource,
+    ensureConnection: ensureRuntimeConnection,
+    requestBrowserRecording: (command, payload, options) =>
+      getRuntimeClient().requestBrowserRecording(command, payload, options),
   });
-
-  ipcMain.handle(
-    CAPABILITY_RUNTIME_IPC_CHANNELS.listWorkspaceActivations,
-    async (event, value: unknown) => {
-      assertRuntimeIpcSource(event);
-      await ensureRuntimeConnection();
-      return getRuntimeClient().request(
-        'capability.workspace.list',
-        parseCapabilityWorkspaceListPayload(value),
-      );
-    },
-  );
-  ipcMain.handle(
-    CAPABILITY_RUNTIME_IPC_CHANNELS.setWorkspaceActive,
-    async (event, value: unknown) => {
-      assertRuntimeIpcSource(event);
-      await ensureRuntimeConnection();
-      return getRuntimeClient().request(
-        'capability.workspace.setActive',
-        parseCapabilityWorkspaceSetActivePayload(value),
-      );
-    },
-  );
-  ipcMain.handle(CAPABILITY_RUNTIME_IPC_CHANNELS.listGovernance, async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'capability.governance.list',
-      parseCapabilityGovernanceListPayload(value),
-    );
+  registerBrowserWorkflowHandlers({
+    handle: (channel, listener) => ipcMain.handle(channel, listener),
+    assertSource: assertRuntimeIpcSource,
+    ensureConnection: ensureRuntimeConnection,
+    requestBrowserWorkflow: (command, payload, options) =>
+      getRuntimeClient().requestBrowserWorkflow(command, payload, options),
   });
-  ipcMain.handle(
-    CAPABILITY_RUNTIME_IPC_CHANNELS.savePublishDraft,
-    async (event, value: unknown) => {
-      assertRuntimeIpcSource(event);
-      await ensureRuntimeConnection();
-      return getRuntimeClient().request(
-        'capability.publishDraft.save',
-        parseSaveSkillPublishDraftPayload(value),
-      );
-    },
-  );
-  ipcMain.handle(
-    CAPABILITY_RUNTIME_IPC_CHANNELS.listPublishDrafts,
-    async (event, value: unknown) => {
-      assertRuntimeIpcSource(event);
-      await ensureRuntimeConnection();
-      return getRuntimeClient().request(
-        'capability.publishDraft.list',
-        parseListSkillPublishDraftsPayload(value),
-      );
-    },
-  );
-  ipcMain.handle(CAPABILITY_RUNTIME_IPC_CHANNELS.getPublishDraft, async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'capability.publishDraft.get',
-      parseGetSkillPublishDraftPayload(value),
-    );
-  });
-  ipcMain.handle(
-    CAPABILITY_RUNTIME_IPC_CHANNELS.submitPublishDraft,
-    async (event, value: unknown) => {
-      assertRuntimeIpcSource(event);
-      await ensureRuntimeConnection();
-      return getRuntimeClient().request(
-        'capability.publishDraft.submit',
-        parseSubmitSkillPublishDraftPayload(value),
-      );
-    },
-  );
-  ipcMain.handle(CAPABILITY_RUNTIME_IPC_CHANNELS.previewOrganize, async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'capability.organize.preview',
-      parsePreviewCapabilityOrganizePayload(value),
-    );
-  });
-  ipcMain.handle(
-    CAPABILITY_RUNTIME_IPC_CHANNELS.getLatestOrganize,
-    async (event, value: unknown) => {
-      assertRuntimeIpcSource(event);
-      await ensureRuntimeConnection();
-      return getRuntimeClient().request(
-        'capability.organize.getLatest',
-        parseGetLatestCapabilityOrganizePayload(value),
-      );
-    },
-  );
-
-  ipcMain.handle('runtime:memory-list', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('memory.list', parseListMemoryPayload(value));
-  });
-  ipcMain.handle('runtime:memory-decide', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('memory.decide', parseDecideMemoryPayload(value));
+  registerBrowserHandoffHandlers({
+    handle: (channel, listener) => ipcMain.handle(channel, listener),
+    assertSource: assertRuntimeIpcSource,
+    ensureConnection: ensureRuntimeConnection,
+    requestBrowserHandoff: (command, payload, options) =>
+      getRuntimeClient().requestBrowserHandoff(command, payload, options),
   });
 
-  ipcMain.handle('runtime:desktop-command-list-waiting', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'desktop.command.listWaiting',
-      parseListWaitingDesktopCommandsPayload(value),
-    );
+  registerApprovalHandlers({
+    handle: (channel, listener) => ipcMain.handle(channel, listener),
+    assertSource: assertRuntimeIpcSource,
+    ensureConnection: ensureRuntimeConnection,
+    requestApproval: (command, payload, options) =>
+      getRuntimeClient().requestApproval(command, payload, options),
   });
-  ipcMain.handle('runtime:desktop-command-continue', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'desktop.command.continue',
-      parseContinueDesktopCommandPayload(value),
-    );
+  registerContextPacketHandlers({
+    handle: (channel, listener) => ipcMain.handle(channel, listener),
+    assertSource: assertRuntimeIpcSource,
+    ensureConnection: ensureRuntimeConnection,
+    requestContextPacket: (command, payload, options) =>
+      getRuntimeClient().requestContextPacket(command, payload, options),
   });
-  ipcMain.handle('runtime:desktop-command-cancel', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'desktop.command.cancel',
-      parseCancelDesktopCommandPayload(value),
-    );
-  });
-  ipcMain.handle('runtime:browser-extension-status', async (event) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request<BrowserExtensionStatus>('browser.extension.status', {});
-  });
-  ipcMain.handle('runtime:browser-extension-restart', async (event) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request<BrowserExtensionStatus>('browser.extension.restart', {});
-  });
-  ipcMain.handle('runtime:browser-extension-reset-pairing', async (event) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request<BrowserExtensionStatus>('browser.extension.resetPairing', {});
-  });
-  ipcMain.handle('runtime:browser-extension-open-folder', async (event) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request<BrowserExtensionOpenFolderResult>(
-      'browser.extension.openFolder',
-      {},
-    );
-  });
-  ipcMain.handle('runtime:browser-profile-list', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'browser.profile.list',
-      parseListBrowserProfilesPayload(value),
-    );
-  });
-  ipcMain.handle('runtime:browser-profile-create', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'browser.profile.create',
-      parseCreateBrowserProfilePayload(value),
-    );
-  });
-  ipcMain.handle('runtime:browser-profile-rename', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'browser.profile.rename',
-      parseRenameBrowserProfilePayload(value),
-    );
-  });
-  ipcMain.handle('runtime:browser-profile-delete', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'browser.profile.delete',
-      parseDeleteBrowserProfilePayload(value),
-    );
-  });
-  ipcMain.handle('runtime:browser-profile-list-site-sessions', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'browser.profile.listSiteSessions',
-      parseListBrowserSiteSessionsPayload(value),
-    );
-  });
-  ipcMain.handle('runtime:browser-profile-clear-site-session', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'browser.profile.clearSiteSession',
-      parseClearBrowserSiteSessionPayload(value),
-    );
-  });
-  ipcMain.handle('runtime:browser-recording-list', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'browser.recording.list',
-      parseListBrowserRecordingsPayload(value),
-    );
-  });
-  ipcMain.handle('runtime:browser-recording-get', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'browser.recording.get',
-      parseGetBrowserRecordingPayload(value),
-    );
-  });
-  ipcMain.handle('runtime:browser-recording-start', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'browser.recording.start',
-      parseStartBrowserRecordingPayload(value),
-    );
-  });
-  ipcMain.handle('runtime:browser-recording-stop', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'browser.recording.stop',
-      parseStopBrowserRecordingPayload(value),
-    );
-  });
-  ipcMain.handle('runtime:browser-workflow-list', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'browser.workflow.list',
-      parseListBrowserWorkflowsPayload(value),
-    );
-  });
-  ipcMain.handle('runtime:browser-workflow-get', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'browser.workflow.get',
-      parseGetBrowserWorkflowPayload(value),
-    );
-  });
-  ipcMain.handle('runtime:browser-workflow-create-draft', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'browser.workflow.createDraft',
-      parseCreateBrowserWorkflowDraftPayload(value),
-    );
-  });
-  ipcMain.handle(
-    'runtime:browser-workflow-create-revision-draft',
-    async (event, value: unknown) => {
-      assertRuntimeIpcSource(event);
-      await ensureRuntimeConnection();
-      return getRuntimeClient().request(
-        'browser.workflow.createRevisionDraft',
-        parseCreateBrowserWorkflowRevisionDraftPayload(value),
-      );
-    },
-  );
-  ipcMain.handle('runtime:browser-workflow-submit', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'browser.workflow.submit',
-      parseSubmitBrowserWorkflowDraftPayload(value),
-    );
-  });
-  ipcMain.handle('runtime:browser-workflow-review', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'browser.workflow.review',
-      parseReviewBrowserWorkflowDraftPayload(value),
-    );
-  });
-  ipcMain.handle('runtime:browser-workflow-execute', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'browser.workflow.execute',
-      parseExecuteBrowserWorkflowPayload(value),
-    );
-  });
-  ipcMain.handle('runtime:browser-workflow-approve-execute', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'browser.workflow.approveAndExecute',
-      parseApproveExecuteBrowserWorkflowPayload(value),
-    );
-  });
-  ipcMain.handle('runtime:browser-handoff-list-waiting', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'browser.handoff.listWaiting',
-      parseListWaitingBrowserHandoffsPayload(value),
-    );
-  });
-  ipcMain.handle('runtime:browser-handoff-continue', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'browser.handoff.continue',
-      parseContinueBrowserHandoffPayload(value),
-    );
-  });
-  ipcMain.handle('runtime:browser-handoff-cancel', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'browser.handoff.cancel',
-      parseCancelBrowserHandoffPayload(value),
-    );
-  });
-
-  ipcMain.handle('runtime:approval-list', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('approval.list', parseListApprovalsPayload(value));
-  });
-  ipcMain.handle('runtime:approval-evaluate', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('approval.evaluate', parseEvaluateApprovalPayload(value));
-  });
-  ipcMain.handle('runtime:approval-enqueue', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('approval.enqueue', parseEnqueueApprovalPayload(value));
-  });
-  ipcMain.handle('runtime:approval-decide', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('approval.decide', parseDecideApprovalPayload(value));
-  });
-  ipcMain.handle('runtime:memory-rollback', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('memory.rollback', parseRollbackMemoryPayload(value));
-  });
-  ipcMain.handle('runtime:context-packet-peek', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('context.packet.peek', parsePeekContextPacketPayload(value));
-  });
-  ipcMain.handle('runtime:context-packet-amend', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'context.packet.amend',
-      parseAmendContextPacketPayload(value),
-    );
-  });
-  ipcMain.handle('runtime:diagnostics-list', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('diagnostics.list', parseListDiagnosticsPayload(value));
+  registerDiagnosticsHandlers({
+    handle: (channel, listener) => ipcMain.handle(channel, listener),
+    assertSource: assertRuntimeIpcSource,
+    ensureConnection: ensureRuntimeConnection,
+    requestDiagnostics: (command, payload, options) =>
+      getRuntimeClient().requestDiagnostics(command, payload, options),
   });
   ipcMain.handle(
     'desktop:diagnostics-export',
@@ -3753,7 +2139,7 @@ function setupRuntimeBridge(): void {
         await ensureRuntimeConnection();
         const client = getRuntimeClient();
         const health = await client.request<Record<string, unknown>>('runtime.healthcheck', {});
-        const listed = await client.request<{ diagnostics?: unknown[] }>(
+        const listed = await client.requestDiagnostics(
           'diagnostics.list',
           parseListDiagnosticsPayload({ taskId: payload.taskId, runId: payload.runId, limit: 200 }),
         );
@@ -4293,12 +2679,6 @@ function setupRuntimeBridge(): void {
     };
   });
 
-  ipcMain.handle('runtime:run-cancel', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    await ensureRuntimeConnection();
-    return getRuntimeClient().request('run.cancel', parseCancelRunPayload(value));
-  });
-
   // Read a project file through the canonical project-root boundary.
   ipcMain.handle('desktop:read-project-file', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
@@ -4773,16 +3153,3 @@ app.on('window-all-closed', () => {
   if (isDesktopTrayActive()) return;
   app.quit();
 });
-
-// Exposed for integration probes; Renderer uses only the fixed preload bridge.
-export async function connectToRuntime(): Promise<RuntimePipeClient> {
-  await ensureRuntimeConnection();
-  return getRuntimeClient();
-}
-
-// Frame-level decoder correctness probe (used by smoke tests / demos).
-export function probeFrameRoundtrip(payload: Frame): Frame | null {
-  const enc = encodeFrame(payload);
-  const { frames } = decodeFrames(enc);
-  return frames[0] ?? null;
-}

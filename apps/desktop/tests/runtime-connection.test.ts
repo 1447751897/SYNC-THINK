@@ -10,11 +10,6 @@ import {
   startRuntimeConnection,
   type RuntimeRetryScheduler,
 } from '../src/renderer/runtime-connection.js';
-import {
-  canSendRuntimeMessage,
-  createInitialRuntimeViewState,
-  runtimeViewReducer,
-} from '../src/renderer/runtime-view-state.js';
 
 function eventAt(sequence: number, payload: Record<string, unknown> = {}): Event {
   return {
@@ -240,80 +235,5 @@ describe('Renderer Runtime connection controller', () => {
     expect(attempts).toBe(1);
     expect(connected).toEqual([]);
     expect(failed).toEqual([]);
-  });
-});
-
-describe('Renderer Runtime hydration state', () => {
-  it('keeps Compose gated until snapshot and taskVersion are hydrated atomically', () => {
-    const threadId = 'thread-desktop-main';
-    const initial = createInitialRuntimeViewState(true);
-    expect(initial.connectionState).toBe('connecting');
-    expect(canSendRuntimeMessage(initial.connectionState)).toBe(false);
-
-    const withLive = runtimeViewReducer(initial, {
-      type: 'event-received',
-      event: eventAt(1, { threadId, role: 'user', text: 'live', taskVersion: 1 }),
-      threadId,
-    });
-    expect(withLive.taskVersion).toBe(1);
-    expect(withLive.connectionState).toBe('connecting');
-    expect(canSendRuntimeMessage(withLive.connectionState)).toBe(false);
-
-    const hydrated = runtimeViewReducer(withLive, {
-      type: 'connect-succeeded',
-      result: connectResult([
-        eventAt(2, { threadId, role: 'user', text: 'snapshot', taskVersion: 2 }),
-      ]),
-      threadId,
-    });
-    expect(hydrated.eventHistory.map((event) => event.sequence)).toEqual([1, 2]);
-    expect(hydrated.taskVersion).toBe(2);
-    expect(hydrated.connectionState).toBe('online');
-    expect(canSendRuntimeMessage(hydrated.connectionState)).toBe(true);
-
-    const offline = runtimeViewReducer(hydrated, { type: 'connect-failed' });
-    expect(canSendRuntimeMessage(offline.connectionState)).toBe(false);
-    expect(canSendRuntimeMessage(createInitialRuntimeViewState(false).connectionState)).toBe(true);
-  });
-});
-
-
-describe('Renderer Runtime reconnect state', () => {
-  it('records lastConnectFailure and clears it after reconnect success', () => {
-    const threadId = 'thread-desktop-main';
-    let state = createInitialRuntimeViewState(true);
-    state = runtimeViewReducer(state, {
-      type: 'connect-failed',
-      error: { code: 'runtime.unavailable', retryable: true },
-    });
-    expect(state.connectionState).toBe('offline');
-    expect(state.lastConnectFailure).toEqual({
-      code: 'runtime.unavailable',
-      retryable: true,
-    });
-
-    state = runtimeViewReducer(state, { type: 'reconnect-requested' });
-    expect(state.connectionState).toBe('connecting');
-    expect(state.lastConnectFailure?.code).toBe('runtime.unavailable');
-
-    state = runtimeViewReducer(state, {
-      type: 'connect-succeeded',
-      result: {
-        health: {
-          ok: true,
-          runtimePid: 1,
-          uptimeMs: 1,
-          protocolVersion: 2,
-          features: [],
-          inFlightRuns: 0,
-          inFlightRunIds: [],
-          eventSequence: 0,
-        },
-        snapshot: [],
-      },
-      threadId,
-    });
-    expect(state.connectionState).toBe('online');
-    expect(state.lastConnectFailure).toBeNull();
   });
 });

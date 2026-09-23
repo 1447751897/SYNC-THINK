@@ -5,7 +5,7 @@ import {
   formatKernelBootstrapTranscript,
   formatKernelGapTranscript,
   providerContentToKernelTranscript,
-} from './runtime.js';
+} from './kernel-session-transcript.js';
 import type { ProviderMessage } from '@sync-think/adapters';
 
 function makeMessage(sequence: number, text: string): Message {

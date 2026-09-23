@@ -2,6 +2,10 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 const mainSource = readFileSync(new URL('../src/main/index.ts', import.meta.url), 'utf8');
+const handlerSource = readFileSync(
+  new URL('../src/main/gateway-handlers.ts', import.meta.url),
+  'utf8',
+);
 const preloadSource = readFileSync(new URL('../src/preload/index.ts', import.meta.url), 'utf8');
 const globalSource = readFileSync(new URL('../src/renderer/global.d.ts', import.meta.url), 'utf8');
 const settingsSource = readFileSync(
@@ -12,19 +16,21 @@ const shellCss = readFileSync(new URL('../src/renderer/shell/shell.css', import.
 
 describe('open gateway status IPC wiring', () => {
   it('reads status through trusted Main IPC with no renderer-supplied payload', () => {
-    const handlerStart = mainSource.indexOf("ipcMain.handle('runtime:gateway-status'");
+    const handlerStart = handlerSource.indexOf("host.handle('runtime:gateway-status'");
     expect(handlerStart).toBeGreaterThan(-1);
-    const nextHandler = mainSource.indexOf('ipcMain.handle(', handlerStart + 1);
-    const handlerSource = mainSource.slice(
+    const nextHandler = handlerSource.indexOf('host.handle(', handlerStart + 1);
+    const statusHandlerSource = handlerSource.slice(
       handlerStart,
-      nextHandler === -1 ? mainSource.length : nextHandler,
+      nextHandler === -1 ? handlerSource.length : nextHandler,
     );
 
-    expect(handlerSource).toContain('assertRuntimeIpcSource(event)');
-    expect(handlerSource).toContain('ensureRuntimeConnection()');
-    expect(handlerSource).toContain("request<OpenGatewayStatusResponse>('gateway.status', {})");
+    expect(statusHandlerSource).toContain('host.assertSource(event)');
+    expect(statusHandlerSource).toContain('host.ensureConnection()');
+    expect(statusHandlerSource).toContain("host.requestGateway('gateway.status', {})");
     // Status is read-only: the renderer must not be able to steer the command.
-    expect(handlerSource).not.toContain('value');
+    expect(statusHandlerSource).not.toContain('value');
+    expect(mainSource).toContain('registerGatewayHandlers({');
+    expect(mainSource).toContain('requestGateway:');
   });
 
   it('exposes a read-only bridge method and declares its type', () => {
@@ -39,8 +45,11 @@ describe('open gateway settings section', () => {
   it('registers the connection section that the search box can find', () => {
     expect(settingsSource).toMatch(/id:\s*'connection',\s*\n\s*label:\s*'连接'/);
     expect(settingsSource).toContain("keywords: 'AI 模型网关 协议转换");
-    expect(settingsSource).toMatch(
-      /\{section === 'connection' && \(\s*<ConnectionSection\s+initialTab=\{initialConnectionTab\}\s+navigationKey=\{navigationKey\}\s*\/>\s*\)\}/,
+    expect(settingsSource).toContain(
+      `<KeepAliveLayer active={section === 'connection'} className="settings-section-layer">`,
+    );
+    expect(settingsSource).toContain(
+      '<ConnectionSection initialTab={initialConnectionTab} navigationKey={navigationKey} />',
     );
     // Connector availability is driven by real MCP discovery. A wallet or
     // balance callback must not recreate an unimplemented billing surface.

@@ -1,8 +1,5 @@
 import type { AmendContextPacketPayload, PeekContextPacketPayload } from '@sync-think/protocol';
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
+import { isRecord } from '@sync-think/shared/value-validation';
 
 export function parsePeekContextPacketPayload(value: unknown): PeekContextPacketPayload {
   if (!isRecord(value)) throw new Error('Invalid peek-context-packet payload');

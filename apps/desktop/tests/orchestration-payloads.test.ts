@@ -5,23 +5,25 @@ import {
   parseAgentCreateVersionPayload,
   parseAgentListPayload,
   parseAgentVersionsPayload,
+  parsePolicyListPayload,
+  parsePolicySavePayload,
+} from '../src/orchestration-payloads.js';
+import {
   parseArtifactComparePayload,
-  parseArtifactImagePreviewPayload,
   parseArtifactConflictListPayload,
   parseArtifactConflictResolutionPayload,
+  parseArtifactImagePreviewPayload,
   parseArtifactListPayload,
   parseArtifactMergePayload,
   parseArtifactSelectPayload,
-  parseModeSetPayload,
+} from '../src/artifact-payloads.js';
+import {
   parsePlanApprovePayload,
   parsePlanCreatePayload,
   parsePlanListPayload,
   parsePlanRevisePayload,
-  parsePolicyListPayload,
-  parsePolicySavePayload,
-  parseRunGraphPayload,
-  parseRunMutationPayload,
-} from '../src/orchestration-payloads.js';
+} from '../src/plan-payloads.js';
+import { parseRunGraphPayload, parseRunMutationPayload } from '../src/run-control-payloads.js';
 
 const ids = {
   workspaceId: '01J00000000000000000000001',
@@ -49,15 +51,7 @@ const step = {
 };
 
 describe('orchestration payload validation', () => {
-  it('accepts exact typed mode and plan commands', () => {
-    expect(
-      parseModeSetPayload({
-        taskId: ids.taskId,
-        mode: 'collaboration',
-        expectedTaskVersion: 4,
-      }),
-    ).toEqual({ taskId: ids.taskId, mode: 'collaboration', expectedTaskVersion: 4 });
-
+  it('accepts exact typed plan commands', () => {
     expect(
       parsePlanCreatePayload({
         taskId: ids.taskId,
@@ -175,15 +169,6 @@ describe('orchestration payload validation', () => {
   });
 
   it('rejects renderer authority claims, unknown keys and secret-like fields', () => {
-    expect(() =>
-      parseModeSetPayload({
-        taskId: ids.taskId,
-        mode: 'automatic',
-        expectedTaskVersion: 4,
-        approvedPlan: true,
-      }),
-    ).toThrow(/Invalid mode-set payload/);
-
     expect(() =>
       parsePlanCreatePayload({
         taskId: ids.taskId,

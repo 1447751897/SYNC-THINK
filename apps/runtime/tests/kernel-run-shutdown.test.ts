@@ -6,6 +6,7 @@ import { openDatabaseAsync, runMigrations, SqliteEventCheckpointStore } from '@s
 import type { RunId, WorkspaceId } from '@sync-think/shared';
 import { createDemoRun, type DemoRunState } from '../src/demo-run.js';
 import { Runtime } from '../src/runtime.js';
+import type { AbortControllerRegistry } from '../src/abort-controller-registry.js';
 
 const tempDirs: string[] = [];
 
@@ -25,7 +26,7 @@ afterEach(() => {
 
 interface ShutdownHarness {
   demoRuns: Map<string, DemoRunState>;
-  demoRunAborts: Map<string, AbortController>;
+  demoRunAbortRegistry: AbortControllerRegistry;
   runtimeStopped: boolean;
   executeKernelRun(runId: RunId): Promise<void>;
   executeDemoRun(runId: RunId): Promise<void>;
@@ -67,7 +68,7 @@ describe('kernel run shutdown ownership', () => {
       const runId = 'shutdown-run' as RunId;
       const cleanupGate = deferred();
       const entered = deferred();
-      const controller = new AbortController();
+      const controller = fixture.harness.demoRunAbortRegistry.start(runId);
       fixture.harness.demoRuns.set(
         runId,
         createDemoRun(runId, 'shutdown-thread', 'fixture request', { kernelId }),
@@ -75,7 +76,6 @@ describe('kernel run shutdown ownership', () => {
       const method = kernelId === 'native' ? 'executeDemoRun' : 'executeExternalKernelRun';
       let cleanupRead = false;
       const execute = vi.spyOn(fixture.harness, method).mockImplementation(async () => {
-        fixture.harness.demoRunAborts.set(runId, controller);
         entered.resolve();
         await new Promise<void>((resolve) =>
           controller.signal.addEventListener('abort', () => resolve(), { once: true }),
@@ -83,7 +83,7 @@ describe('kernel run shutdown ownership', () => {
         await cleanupGate.promise;
         fixture.connection.raw.prepare('SELECT 1').get();
         cleanupRead = true;
-        fixture.harness.demoRunAborts.delete(runId);
+        fixture.harness.demoRunAbortRegistry.delete(runId);
       });
       const execution = fixture.harness.executeKernelRun(runId);
       await entered.promise;

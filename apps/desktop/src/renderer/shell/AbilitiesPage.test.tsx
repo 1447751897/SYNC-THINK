@@ -3,7 +3,10 @@
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { AbilitiesPage } from './AbilitiesPage.js';
+import { AbilitiesPage } from './abilities/AbilityCenterPage.js';
+import { KeepAliveLayer } from './KeepAliveLayer.js';
+import { invalidateMcpCatalog } from './mcp-catalog-loader.js';
+import { invalidateSkillCatalog } from './skill-catalog-loader.js';
 import { ToastProvider, resetToastStoreForTests } from './Toast.js';
 import {
   SKILL_DESC_CUT,
@@ -115,6 +118,8 @@ function deferred<T>() {
 }
 
 beforeEach(() => {
+  invalidateMcpCatalog();
+  invalidateSkillCatalog();
   window.localStorage.clear();
   runtime.listSkills.mockReset().mockResolvedValue({ skills: [] });
   runtime.listSkillMarket.mockReset().mockResolvedValue({ items: marketSkills });
@@ -307,6 +312,27 @@ describe('AbilitiesPage', () => {
 
     await waitFor(() => expect(screen.getByText('能力库加载失败')).toBeTruthy());
     expect(screen.getByText('pipe unavailable')).toBeTruthy();
+  });
+
+  it('shows a local Skill scan error and clears it after a successful retry', async () => {
+    runtime.skillLocalScan
+      .mockRejectedValueOnce(new Error('scan unavailable'))
+      .mockResolvedValue({
+        directory: 'C:\\Users\\test\\.sync-think\\skills',
+        candidates: [],
+        exists: true,
+        watching: true,
+        sources: [],
+      });
+
+    render(<AbilitiesPage onGoToAgents={vi.fn()} />);
+    fireEvent.click(await screen.findByTestId('skill-tab-mine'));
+    expect(await screen.findByText('本地 Skill 扫描失败')).toBeTruthy();
+    expect(screen.getByText('scan unavailable')).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId('ability-local-scan-retry'));
+    await waitFor(() => expect(runtime.skillLocalScan).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByText('本地 Skill 扫描失败')).toBeNull());
   });
 
   it('imports a Skill ZIP into the selected workspace', async () => {
@@ -1201,9 +1227,8 @@ describe('AbilitiesPage', () => {
     // 详情抽屉：市场 skill 无「编辑」按钮，也无危险删除按钮（只读安装）
     expect(screen.queryByRole('button', { name: '编辑' })).toBeNull();
     expect(screen.queryByRole('button', { name: /删除/ })).toBeNull();
-    // 列表行操作区也无删除按钮（title=删除 Skill）
+    // 当前列表和详情抽屉都不暴露市场 Skill 删除入口。
     expect(screen.queryByTitle('删除 Skill')).toBeNull();
-    expect(document.querySelector('.capability-row-actions__danger')).toBeNull();
   });
 
   it('keeps edit and delete actions for user-created Skills', async () => {
@@ -1601,7 +1626,7 @@ describe('AbilitiesPage', () => {
     }
   });
 
-  it('keeps the installed Skill list mounted during a background catalog refresh', async () => {
+  it('refreshes local Skills on re-entry without polling or remounting the installed list', async () => {
     const skill = {
       skillVersionId: 'sv-scroll-stable',
       skillId: 'skill-scroll-stable',
@@ -1625,21 +1650,39 @@ describe('AbilitiesPage', () => {
       sources: [],
     });
 
-    render(<ToastProvider><AbilitiesPage onGoToAgents={vi.fn()} /></ToastProvider>);
+    const onGoToAgents = vi.fn();
+    const view = render(
+      <ToastProvider>
+        <KeepAliveLayer active>
+          <AbilitiesPage onGoToAgents={onGoToAgents} />
+        </KeepAliveLayer>
+      </ToastProvider>,
+    );
     fireEvent.click(screen.getByTestId('skill-tab-mine'));
     await screen.findByText(skill.name);
     await waitFor(() => expect(runtime.listSkills).toHaveBeenCalledTimes(2));
-    const intervalTick = intervalSpy.mock.calls.find(([, timeout]) => timeout === 30_000)?.[0];
-    expect(intervalTick).toBeTypeOf('function');
+    expect(intervalSpy.mock.calls.some(([, timeout]) => timeout === 30_000)).toBe(false);
 
     const scroll = document.querySelector<HTMLElement>('.ability-hub__scroll--installed')!;
     scroll.scrollTop = 240;
     const delayedCatalog = deferred<{ skills: (typeof skill)[] }>();
     runtime.listSkills.mockReturnValueOnce(delayedCatalog.promise);
 
-    act(() => {
-      if (typeof intervalTick === 'function') intervalTick();
-    });
+    view.rerender(
+      <ToastProvider>
+        <KeepAliveLayer active={false}>
+          <AbilitiesPage onGoToAgents={onGoToAgents} />
+        </KeepAliveLayer>
+      </ToastProvider>,
+    );
+    expect(runtime.skillLocalScan).toHaveBeenCalledTimes(1);
+    view.rerender(
+      <ToastProvider>
+        <KeepAliveLayer active>
+          <AbilitiesPage onGoToAgents={onGoToAgents} />
+        </KeepAliveLayer>
+      </ToastProvider>,
+    );
     await waitFor(() => expect(runtime.listSkills).toHaveBeenCalledTimes(3));
 
     expect(screen.getByText(skill.name)).toBeTruthy();

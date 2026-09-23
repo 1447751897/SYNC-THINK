@@ -199,6 +199,26 @@ describe('PlanApprovalCard', () => {
     expect(onPlanUpdated).toHaveBeenCalledWith(undefined);
   });
 
+  it('does not start a duplicate execution turn when approval creates collaboration tasks', async () => {
+    mockBridge({
+      conversationPlanApprove: vi.fn(async () => ({
+        plan: { ...summary, state: 'approved' },
+        createdRun: false,
+        collaborationTaskIds: ['task-1'],
+      })),
+    });
+    const { onExecute, onSwitchMode, onPlanUpdated } = renderCard();
+
+    fireEvent.click(screen.getByTestId('plan-approve'));
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(onSwitchMode).toHaveBeenCalledWith('execute');
+    expect(onExecute).not.toHaveBeenCalled();
+    expect(onPlanUpdated).toHaveBeenCalledWith(undefined);
+  });
+
   it('shows a read-only history revision and returns to editing', () => {
     const older: ChatPlanRevision = {
       ...revision,

@@ -3,7 +3,12 @@
  */
 import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
-import { KeepAliveLayer } from './KeepAliveLayer.js';
+import { KeepAliveLayer, useKeepAliveActive } from './KeepAliveLayer.js';
+
+function ActiveProbe() {
+  const active = useKeepAliveActive();
+  return <span data-testid="active-probe">{active ? 'active' : 'inactive'}</span>;
+}
 
 afterEach(() => {
   cleanup();
@@ -49,6 +54,22 @@ describe('KeepAliveLayer', () => {
     expect(screen.getByTestId('talk-marker')).toBeTruthy();
     expect(screen.getByTestId('layer-talk').hasAttribute('hidden')).toBe(false);
     expect(screen.getByTestId('layer-talk').getAttribute('data-active')).toBe('false');
+  });
+
+  it('publishes visibility changes to effects inside a frozen child tree', () => {
+    const { rerender } = render(
+      <KeepAliveLayer active testId="layer-context">
+        <ActiveProbe />
+      </KeepAliveLayer>,
+    );
+    expect(screen.getByTestId('active-probe').textContent).toBe('active');
+
+    rerender(
+      <KeepAliveLayer active={false} testId="layer-context">
+        <ActiveProbe />
+      </KeepAliveLayer>,
+    );
+    expect(screen.getByTestId('active-probe').textContent).toBe('inactive');
   });
 
   it('does not mount a layer until it has been active once', () => {

@@ -1,19 +1,27 @@
 // AI 操控内置浏览器：请求-响应桥的桌面端接线测试。
 // runtime 发 browser.command_requested → ChatView 执行 → submitBrowserResult 回传。
 import { readFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   activateBrowserWebview,
   BROWSER_READ_TEXT_MAX_CHARS,
   BROWSER_RESULT_MAX_CHARS,
   executeBrowserCommand,
   getActiveBrowserWebview,
+  navigateOwnedBrowserWebview,
   registerBrowserWebview,
   unregisterBrowserWebview,
   type BrowserWebviewElement,
 } from '../src/renderer/shell/browser-commands.js';
 
-const mainSource = readFileSync(new URL('../src/main/index.ts', import.meta.url), 'utf8');
+const mainSource = [
+  'index.ts',
+  'conversation-query-handlers.ts',
+  'conversation-transient-handlers.ts',
+  'conversation-browser-handlers.ts',
+]
+  .map((file) => readFileSync(new URL(`../src/main/${file}`, import.meta.url), 'utf8'))
+  .join('\n');
 const preloadSource = readFileSync(new URL('../src/preload/index.ts', import.meta.url), 'utf8');
 const globalSource = readFileSync(new URL('../src/renderer/global.d.ts', import.meta.url), 'utf8');
 const chatViewSource = readFileSync(
@@ -40,7 +48,7 @@ function fakeWebview(overrides: Partial<BrowserWebviewElement> = {}): BrowserWeb
 
 describe('browser command bridge wiring', () => {
   it('bridges listConversationMessages through main / preload / global.d.ts', () => {
-    expect(mainSource).toContain("ipcMain.handle('runtime:conversation-list-messages'");
+    expect(mainSource).toContain("'runtime:conversation-list-messages'");
     expect(mainSource).toContain("'conversation.listMessages'");
     expect(preloadSource).toContain('listConversationMessages:');
     expect(preloadSource).toContain("'runtime:conversation-list-messages'");
@@ -48,7 +56,7 @@ describe('browser command bridge wiring', () => {
   });
 
   it('bridges getConversationContextStatus through main / preload / global.d.ts', () => {
-    expect(mainSource).toContain("ipcMain.handle('runtime:conversation-get-context-status'");
+    expect(mainSource).toContain("'runtime:conversation-get-context-status'");
     expect(mainSource).toContain("'conversation.getContextStatus'");
     expect(preloadSource).toContain('getConversationContextStatus:');
     expect(preloadSource).toContain("'runtime:conversation-get-context-status'");
@@ -56,7 +64,7 @@ describe('browser command bridge wiring', () => {
   });
 
   it('bridges getConversationRunProcess through main / preload / global.d.ts', () => {
-    expect(mainSource).toContain("ipcMain.handle('runtime:conversation-get-run-process'");
+    expect(mainSource).toContain("'runtime:conversation-get-run-process'");
     expect(mainSource).toContain("'conversation.getRunProcess'");
     expect(preloadSource).toContain('getConversationRunProcess:');
     expect(preloadSource).toContain("'runtime:conversation-get-run-process'");
@@ -64,8 +72,8 @@ describe('browser command bridge wiring', () => {
   });
 
   it('bridges conversation transient subscriptions through main / preload / global.d.ts', () => {
-    expect(mainSource).toContain("ipcMain.handle('runtime:conversation-subscribe-transient'");
-    expect(mainSource).toContain('subscribeConversationTransientStream({');
+    expect(mainSource).toContain("'runtime:conversation-subscribe-transient'");
+    expect(mainSource).toContain('getRuntimeSession().subscribeConversationTransientStream(input)');
     expect(mainSource).toContain("'runtime:conversation-transient'");
     expect(preloadSource).toContain('subscribeConversationTransientStream:');
     expect(preloadSource).toContain("'runtime:conversation-subscribe-transient'");
@@ -74,7 +82,7 @@ describe('browser command bridge wiring', () => {
   });
 
   it('bridges submitBrowserResult and screenshot IPC through main / preload / global.d.ts', () => {
-    expect(mainSource).toContain("ipcMain.handle('runtime:conversation-submit-browser-result'");
+    expect(mainSource).toContain("'runtime:conversation-submit-browser-result'");
     expect(mainSource).toContain("'conversation.submitBrowserResult'");
     expect(mainSource).toContain("ipcMain.handle('desktop:save-browser-screenshot'");
     expect(mainSource).toContain("'.sync-think', 'screenshots'");
@@ -102,12 +110,14 @@ describe('browser command bridge wiring', () => {
     expect(markdownSource).toContain('defaultUrlTransform');
   });
 
-  it('ChatView listens for browser.command_requested and replies via submitBrowserResult', () => {
-    expect(chatViewSource).toContain("'browser.command_requested'");
-    expect(chatViewSource).toContain('executeBrowserCommand');
-    expect(chatViewSource).toContain('submitBrowserResult');
-    // History replay must not re-run stale commands (runtime side already timed out).
-    expect(chatViewSource).toContain('browserCommandPrimedRef');
+  it('executes live browser commands in the persistent shell, not chat history', () => {
+    const shell = readFileSync(
+      new URL('../src/renderer/shell/ShellApp.tsx', import.meta.url),
+      'utf8',
+    );
+    expect(shell).toContain('createBrowserCommandDispatcher');
+    expect(shell).toContain('dispatchBrowserCommand(event)');
+    expect(chatViewSource).not.toContain('executeBrowserCommand');
   });
 
   it('BrowserPanel registers its webview for AI commands and unregisters on unmount', () => {
@@ -117,6 +127,28 @@ describe('browser command bridge wiring', () => {
 });
 
 describe('executeBrowserCommand', () => {
+  it('reuses the task guest for navigation so its cookie partition is preserved', async () => {
+    const view = fakeWebview({ src: 'https://example.com/index' });
+    view.getURL = () => view.src;
+    registerBrowserWebview(view);
+    try {
+      await executeBrowserCommand({ action: 'browser_read', args: {}, ownerId: 'signed-in-task' });
+      expect(navigateOwnedBrowserWebview('signed-in-task', 'https://example.com/checkin')).toBe(
+        true,
+      );
+      const opened = await executeBrowserCommand({
+        action: 'browser_open',
+        args: { url: 'https://example.com/checkin' },
+        ownerId: 'signed-in-task',
+      });
+      expect(opened.ok).toBe(true);
+      expect(getActiveBrowserWebview()).toBe(view);
+      expect(JSON.parse(opened.resultJson!).url).toBe('https://example.com/checkin');
+    } finally {
+      registerBrowserWebview(null);
+    }
+  });
+
   it('keeps commands on the explicitly active webview across multi-pane cleanup', () => {
     const first = fakeWebview({ getURL: () => 'https://first.test/' });
     const second = fakeWebview({ getURL: () => 'https://second.test/' });
@@ -133,27 +165,69 @@ describe('executeBrowserCommand', () => {
     expect(getActiveBrowserWebview()).toBeNull();
   });
 
-  it('does not navigate an existing GitHub guest when browser_open asks for another site', async () => {
+  it('waits for the requested guest instead of reporting success on the old page', async () => {
+    vi.useFakeTimers();
     const github = fakeWebview({
       src: 'https://github.com/sync-think',
       getURL: () => 'https://github.com/sync-think',
     });
     registerBrowserWebview(github, true, 'https://github.com/sync-think');
+    let loaded = false;
+    const target = fakeWebview({
+      getURL: () => (loaded ? 'https://example.com/game' : 'about:blank'),
+      isLoading: () => !loaded,
+    });
     try {
-      const outcome = await executeBrowserCommand({
+      let completed = false;
+      const opening = executeBrowserCommand({
         action: 'browser_open',
-        args: { url: 'https://www.4399.com/' },
+        args: { url: 'https://example.com/game' },
+        ownerId: 'task-a',
+      }).then((result) => {
+        completed = true;
+        return result;
       });
-      expect(outcome.ok).toBe(true);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(completed).toBe(false);
+      registerBrowserWebview(target, false, 'https://example.com/game');
+      await vi.advanceTimersByTimeAsync(100);
+      expect(completed).toBe(false);
+      loaded = true;
+      await vi.advanceTimersByTimeAsync(50);
+      expect((await opening).ok).toBe(true);
       expect(github.src).toBe('https://github.com/sync-think');
-      expect(getActiveBrowserWebview()).toBeNull();
+      expect(getActiveBrowserWebview()).toBe(target);
+      activateBrowserWebview(github);
+      target.executeJavaScript = vi.fn(async () => ({ url: 'https://example.com/game' }));
+      await executeBrowserCommand({ action: 'browser_read', args: {}, ownerId: 'task-a' });
+      expect(target.executeJavaScript).toHaveBeenCalledOnce();
+      unregisterBrowserWebview(target);
+      expect(
+        (await executeBrowserCommand({ action: 'browser_read', args: {}, ownerId: 'task-a' })).ok,
+      ).toBe(false);
     } finally {
       registerBrowserWebview(null);
+      vi.useRealTimers();
+    }
+  });
+
+  it('reports a missing target rather than claiming browser_open succeeded', async () => {
+    vi.useFakeTimers();
+    try {
+      const opening = executeBrowserCommand({
+        action: 'browser_open',
+        args: { url: 'https://missing.test/' },
+      });
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect((await opening).ok).toBe(false);
+    } finally {
+      registerBrowserWebview(null);
+      vi.useRealTimers();
     }
   });
 
   it('bridges the readonly history navigation directory through main, preload and renderer types', () => {
-    expect(mainSource).toContain("ipcMain.handle('runtime:conversation-list-navigation'");
+    expect(mainSource).toContain("'runtime:conversation-list-navigation'");
     expect(mainSource).toContain("'conversation.listNavigation'");
     expect(preloadSource).toContain('listConversationNavigation:');
     expect(preloadSource).toContain("'runtime:conversation-list-navigation'");
@@ -198,9 +272,9 @@ describe('executeBrowserCommand', () => {
       expect(executed[0]).toContain(String(BROWSER_READ_TEXT_MAX_CHARS));
 
       await executeBrowserCommand({ action: 'browser_click', args: { selector: '#go' } });
-      expect(executed.some((code) => code.includes('querySelectorAll') && code.includes('#go'))).toBe(
-        true,
-      );
+      expect(
+        executed.some((code) => code.includes('querySelectorAll') && code.includes('#go')),
+      ).toBe(true);
       await executeBrowserCommand({ action: 'browser_click', args: { x: 5, y: 6 } });
       expect(executed.some((code) => code.includes('elementFromPoint'))).toBe(true);
 

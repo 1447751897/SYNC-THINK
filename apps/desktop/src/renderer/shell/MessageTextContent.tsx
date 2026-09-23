@@ -1,13 +1,9 @@
 import { useContext, useEffect, useState, type ComponentProps, type ReactNode } from 'react';
-import type { DeferredContent } from '@sync-think/shared';
+import type { MessageTextPart } from './message-text-types.js';
+export type { MessageTextPart } from './message-text-types.js';
 import { ConversationContentScope } from './DeferredToolContent.js';
 import { MarkdownContent } from './MarkdownContent.js';
 import { resolveMessageText } from './message-text-source.js';
-
-export interface MessageTextPart {
-  text: string;
-  contentRef?: DeferredContent;
-}
 
 export function MessageTextContent({
   parts,
@@ -29,32 +25,34 @@ export function MessageTextContent({
     props.text,
     streaming,
   ]);
-  const [assembled, setAssembled] = useState<string>();
-  const [error, setError] = useState(false);
-  const [busy, setBusy] = useState(false);
+  const [readState, setReadState] = useState<{
+    identity: string;
+    status: 'loading' | 'loaded' | 'error';
+    text?: string;
+  }>();
   const [retryTick, setRetryTick] = useState(0);
+  // Props can change before effect cleanup. Never render a result from another source,
+  // including while the replacement is loading or when that read fails.
+  const currentRead = readState?.identity === identity ? readState : undefined;
+  const assembled = currentRead?.text;
+  const error = currentRead?.status === 'error';
+  const busy = currentRead?.status === 'loading';
 
   useEffect(() => {
     if (!hasDeferred || streaming || !conversationId || !parts) {
-      setAssembled(undefined);
-      setError(false);
-      setBusy(false);
+      setReadState(undefined);
       return;
     }
     const controller = new AbortController();
-    setBusy(true);
-    setError(false);
+    setReadState({ identity, status: 'loading' });
     void resolveMessageText(parts, props.text, conversationId, controller.signal)
       .then((text) => {
-        if (!controller.signal.aborted) setAssembled(text);
+        if (!controller.signal.aborted) setReadState({ identity, status: 'loaded', text });
       })
       .catch((failure: unknown) => {
         if (controller.signal.aborted) return;
         if (failure instanceof Error && failure.message === 'content.cancelled') return;
-        setError(true);
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setBusy(false);
+        setReadState({ identity, status: 'error' });
       });
     return () => controller.abort();
     // Identity already captures conversation, parts, preview text, and streaming.

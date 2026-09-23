@@ -1,5 +1,5 @@
 import type { Socket } from 'node:net';
-import type { Frame, WorkspaceSummary } from '@sync-think/protocol';
+import type { Frame } from '@sync-think/protocol';
 import type { SqliteWorkspaceStore } from '@sync-think/storage';
 
 /**
@@ -18,13 +18,4 @@ export interface QueryContext {
   writeWorkspaceStoreUnavailable(socket: Socket, frame: Frame): void;
   /** Map a workspace-domain error to the canonical error response. */
   writeWorkspaceCommandError(socket: Socket, frame: Frame, error: unknown): void;
-  /** Project a workspace record to its protocol summary. */
-  toWorkspaceSummary(workspace: {
-    id: import('@sync-think/shared').WorkspaceId;
-    folderPath?: string;
-    name: string;
-    uiPrefsJson?: string;
-    createdAt: string;
-    updatedAt: string;
-  }): WorkspaceSummary;
 }

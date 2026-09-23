@@ -7,7 +7,8 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import type { ProviderSummary } from '@sync-think/protocol';
 import { DialogProvider } from './Dialog.js';
 import { ToastProvider, resetToastStoreForTests } from './Toast.js';
-import { ModelSettings } from './ModelSettings.js';
+import { ModelSettings, UsageSettings } from './ModelSettings.js';
+import { resetProviderUsageSummaryCacheForTests } from './provider-usage-summary.js';
 
 const provider: ProviderSummary = {
   providerId: 'provider-1' as ProviderSummary['providerId'],
@@ -90,6 +91,7 @@ const runtime = {
 };
 
 beforeEach(() => {
+  resetProviderUsageSummaryCacheForTests();
   runtime.listProviders.mockResolvedValue({ providers: [provider] });
   runtime.getSettings.mockResolvedValue({ settings: {} });
   runtime.createProvider.mockResolvedValue({
@@ -306,6 +308,22 @@ describe('ModelSettings NewMax provider detail', () => {
     expect(runtime.listProviders).toHaveBeenCalledTimes(2);
   });
 
+  it('keeps the text model rank and content visible while dragging', async () => {
+    await renderSettings();
+    const grip = screen.getByRole('button', { name: '拖拽 gpt-5 调整优先级' });
+    grip.focus();
+    fireEvent.keyDown(grip, { code: 'Space', key: ' ' });
+
+    const overlay = await screen.findByTestId('text-model-drag-overlay');
+    expect(overlay.classList.contains('model-priority-row--overlay')).toBe(true);
+    expect(overlay.classList.contains('is-dragging')).toBe(false);
+    expect(overlay.textContent).toContain('主模型');
+    expect(overlay.textContent).toContain('gpt-5');
+
+    fireEvent.keyDown(grip, { code: 'Space', key: ' ' });
+    await waitFor(() => expect(screen.queryByTestId('text-model-drag-overlay')).toBeNull());
+  });
+
   it('keeps the text list mounted when switching to image and back', async () => {
     renderWithProviders(<ModelSettings />);
     expect(await screen.findByDisplayValue('CODEX')).toBeTruthy();
@@ -366,6 +384,54 @@ describe('ModelSettings NewMax provider detail', () => {
     expect(screen.getByText('总请求')).toBeTruthy();
     expect(screen.getByText('3')).toBeTruthy();
     expect(runtime.getUsageSummary.mock.calls.length).toBe(callsAfterFirstLoad);
+  });
+
+  it('restores a fresh usage snapshot immediately after the settings tree remounts', async () => {
+    const first = renderWithProviders(<UsageSettings sinceDays={7} reloadToken={0} />);
+    expect(await screen.findByText('总请求')).toBeTruthy();
+    expect(runtime.getUsageSummary).toHaveBeenCalledTimes(1);
+
+    first.unmount();
+    renderWithProviders(<UsageSettings sinceDays={7} reloadToken={0} />);
+
+    expect(screen.queryByText('正在加载使用统计…')).toBeNull();
+    expect(screen.getByText('总请求')).toBeTruthy();
+    await waitFor(() => expect(runtime.getUsageSummary).toHaveBeenCalledTimes(1));
+  });
+
+  it('shows that request details are capped while aggregate totals remain complete', async () => {
+    runtime.getUsageSummary.mockResolvedValueOnce({
+      rows: [],
+      requests: [
+        {
+          requestId: 'request-recent',
+          occurredAt: '2026-08-04T09:30:00.000Z',
+          modelId: 'model-1',
+          providerId: 'provider-1',
+          displayName: 'gpt-5',
+          providerName: 'CODEX',
+          tokensIn: 10,
+          tokensOut: 5,
+          totalTokens: 15,
+          status: 'success',
+        },
+      ],
+      tools: [],
+      toolModels: [],
+      toolFailures: [],
+      pricing: [],
+      totalRequests: 900,
+      totalTokensIn: 10,
+      totalTokensOut: 5,
+      totalCostByCurrency: {},
+      totalReasoningTokens: 0,
+      totalTokens: 15,
+    });
+
+    renderWithProviders(<UsageSettings sinceDays={7} reloadToken={0} />);
+
+    expect(await screen.findByText('已加载最近 1 条，共 900 条')).toBeTruthy();
+    expect(runtime.getUsageSummary).toHaveBeenCalledWith({ sinceDays: 7, requestLimit: 500 });
   });
 
   it('opens Plan & Act from a navigation request and replays only when its key changes', async () => {
@@ -562,6 +628,7 @@ describe('ModelSettings NewMax provider detail', () => {
         modelId: 'model-1',
         capabilities: ['text', 'vision', 'tool-calling', 'web-search'],
         confirmed: true,
+        visionCapabilityOverride: true,
       });
     });
     // Save succeeds → dialog closes immediately (no lingering "已保存" state).

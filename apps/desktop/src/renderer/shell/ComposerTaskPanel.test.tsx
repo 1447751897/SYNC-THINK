@@ -3,7 +3,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { TodoProjection } from './todo-projection.js';
-import { ComposerTaskPanel } from './ComposerTaskPanel.js';
+import { ComposerTaskPanel } from '@sync-think/ui-kit';
 
 const todo: TodoProjection = {
   running: true,
@@ -89,7 +89,12 @@ describe('ComposerTaskPanel', () => {
 
     fireEvent.click(toggle);
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
-    expect(screen.queryByTestId('composer-task-list')).toBeNull();
+    expect(screen.getByTestId('composer-task-list').getAttribute('aria-hidden')).toBe('true');
+    expect(
+      screen
+        .getByTestId('composer-task-panel')
+        .querySelector('.shell-composer-task-panel__reveal[data-expanded="false"]'),
+    ).toBeTruthy();
   });
 
   it('reflects even one native task and keeps dismissal scoped to one snapshot', () => {

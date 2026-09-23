@@ -1,4 +1,4 @@
-import type { ConversationGetRunProcessPayload } from './commands.js';
+import type { ConversationId, RunId } from '@sync-think/shared';
 export type RunProcessSection = 'steps' | 'fileChanges' | 'taskPlan';
 
 export interface RunProcessPageRequest {
@@ -19,6 +19,12 @@ export interface RunProcessPages {
   steps: RunProcessCollectionPage;
   fileChanges: RunProcessCollectionPage;
   taskPlan: RunProcessCollectionPage;
+}
+
+export interface ConversationGetRunProcessPayload {
+  runId: RunId;
+  conversationId?: ConversationId;
+  page?: RunProcessPageRequest;
 }
 
 export function parseRunProcessPageRequest(value: unknown): RunProcessPageRequest | undefined {
@@ -72,12 +78,11 @@ export function parseRunProcessPayload(
   )
     return undefined;
   return {
-    runId: input.runId as ConversationGetRunProcessPayload['runId'],
+    runId: input.runId as RunId,
     ...(input.conversationId === undefined
       ? {}
       : {
-          conversationId:
-            input.conversationId as ConversationGetRunProcessPayload['conversationId'],
+          conversationId: input.conversationId as ConversationId,
         }),
     ...(page ? { page } : {}),
   };

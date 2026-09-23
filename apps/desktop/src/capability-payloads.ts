@@ -9,12 +9,9 @@ import type {
   SaveSkillPublishDraftPayload,
   SubmitSkillPublishDraftPayload,
 } from '@sync-think/protocol';
+import { isRecord } from '@sync-think/shared/value-validation';
 
 type UnknownRecord = Record<string, unknown>;
-
-function isRecord(value: unknown): value is UnknownRecord {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
 
 function hasOnlyKeys(value: UnknownRecord, allowed: readonly string[]): boolean {
   const keys = new Set(allowed);

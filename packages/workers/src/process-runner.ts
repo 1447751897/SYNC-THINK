@@ -4,7 +4,7 @@ import { realpath } from 'node:fs/promises';
 import { basename, delimiter, dirname, extname, join, resolve } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import type { WorkerToken } from './types.js';
-import { isPathInside } from './types.js';
+import { isPathWithinRoot } from '@sync-think/shared/node-paths';
 
 export const DEFAULT_MAX_OUTPUT_BYTES = 64 * 1024;
 const PROCESS_TREE_TERMINATION_TIMEOUT_MS = 5_000;
@@ -78,7 +78,7 @@ export async function isRealPathInside(
 ): Promise<boolean> {
   const resolvedCandidate = resolve(candidate);
   const resolvedRoot = resolve(root);
-  if (!isPathInside(resolvedCandidate, resolvedRoot)) return false;
+  if (!isPathWithinRoot(resolvedRoot, resolvedCandidate)) return false;
 
   let realRoot: string;
   try {
@@ -90,7 +90,7 @@ export async function isRealPathInside(
   let existing = resolvedCandidate;
   while (true) {
     try {
-      return isPathInside(await realpath(existing), realRoot);
+      return isPathWithinRoot(realRoot, await realpath(existing));
     } catch {
       if (!allowMissing) return false;
       const parent = dirname(existing);

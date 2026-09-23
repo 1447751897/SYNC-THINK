@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
-import type {
-  ArtifactComparison,
-  ArtifactMergeConflictResolutionStrategy,
+import {
+  scaleBinaryBytes,
+  type ArtifactComparison,
+  type ArtifactMergeConflictResolutionStrategy,
 } from '@sync-think/shared';
 import {
   AlertTriangle,
@@ -128,10 +129,10 @@ function safeArtifactPreviewUrl(value: string): boolean {
   }
 }
 
-function formatBytes(value: number): string {
-  if (value < 1024) return `${value} B`;
-  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KiB`;
-  return `${(value / (1024 * 1024)).toFixed(1)} MiB`;
+function formatArtifactBytes(value: number): string {
+  const scaled = scaleBinaryBytes(value, 2);
+  if (scaled.unitIndex === 0) return `${scaled.value} B`;
+  return `${scaled.value.toFixed(1)} ${scaled.unitIndex === 1 ? 'KiB' : 'MiB'}`;
 }
 
 function ArtifactImagePreview({ version }: { version: ArtifactVersionView }) {
@@ -164,7 +165,7 @@ function ArtifactImagePreview({ version }: { version: ArtifactVersionView }) {
       />
       <figcaption>
         <span>{preview.mimeType}</span>
-        <span>{formatBytes(preview.byteLength)}</span>
+        <span>{formatArtifactBytes(preview.byteLength)}</span>
         {dimensions ? <span>{dimensions}</span> : null}
       </figcaption>
     </figure>

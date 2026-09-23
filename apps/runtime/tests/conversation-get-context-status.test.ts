@@ -679,10 +679,10 @@ describe('conversation.getContextStatus runtime integration', () => {
 
       const snapshotsByThread = (
         harness.runtime as unknown as {
-          contextSnapshotByThread: Map<string, Map<string, unknown>>;
+          contextSnapshotCache: { countForThread(threadId: string): number };
         }
-      ).contextSnapshotByThread;
-      expect(snapshotsByThread.get(String(harness.threadId))?.size).toBe(2);
+      ).contextSnapshotCache;
+      expect(snapshotsByThread.countForThread(String(harness.threadId))).toBe(2);
     } finally {
       await closeHarness(harness);
     }
@@ -824,7 +824,7 @@ describe('conversation.getContextStatus runtime integration', () => {
   it('invalidates cached context status when a durable message is written', async () => {
     const harness = await createHarness(1_000_000, { target: 'model' });
     const internals = harness.runtime as unknown as {
-      contextSnapshotByThread: Map<string, Map<string, unknown>>;
+      contextSnapshotCache: { hasThread(threadId: string): boolean };
       persistFinalChatMessage(input: {
         id: string;
         threadId: string;
@@ -835,7 +835,7 @@ describe('conversation.getContextStatus runtime integration', () => {
     };
     try {
       const before = await getContextStatus(harness, 'cache-invalidation-before');
-      expect(internals.contextSnapshotByThread.has(String(harness.threadId))).toBe(true);
+      expect(internals.contextSnapshotCache.hasThread(String(harness.threadId))).toBe(true);
 
       internals.persistFinalChatMessage({
         id: 'cache-invalidation-message',
@@ -844,7 +844,7 @@ describe('conversation.getContextStatus runtime integration', () => {
         text: 'A durable message written after the cached snapshot.',
         createdAt: '2026-08-14T00:00:00.000Z',
       });
-      expect(internals.contextSnapshotByThread.has(String(harness.threadId))).toBe(false);
+      expect(internals.contextSnapshotCache.hasThread(String(harness.threadId))).toBe(false);
 
       const after = await getContextStatus(harness, 'cache-invalidation-after');
       expect(after.sections.find((section) => section.type === 'messages')?.tokens).toBeGreaterThan(
@@ -858,13 +858,13 @@ describe('conversation.getContextStatus runtime integration', () => {
   it('rebuilds context capacity after the model window is updated', async () => {
     const harness = await createHarness(128_000, { target: 'model' });
     const internals = harness.runtime as unknown as {
-      contextSnapshotByThread: Map<string, Map<string, unknown>>;
+      contextSnapshotCache: { hasThread(threadId: string): boolean };
     };
     try {
       const before = await getContextStatus(harness, 'update-model-window-before');
       expect(before.contextWindow).toBe(128_000);
       expect(before.contextWindowEstimated).toBeUndefined();
-      expect(internals.contextSnapshotByThread.has(String(harness.threadId))).toBe(true);
+      expect(internals.contextSnapshotCache.hasThread(String(harness.threadId))).toBe(true);
 
       const updated = await harness.inbox.send({
         id: 'update-model-window',
@@ -877,7 +877,7 @@ describe('conversation.getContextStatus runtime integration', () => {
         },
       });
       expect(updated.error).toBeUndefined();
-      expect(internals.contextSnapshotByThread.has(String(harness.threadId))).toBe(false);
+      expect(internals.contextSnapshotCache.hasThread(String(harness.threadId))).toBe(false);
 
       const after = await getContextStatus(harness, 'update-model-window-after');
       expect(after.contextWindow).toBe(372_000);
@@ -924,7 +924,9 @@ describe('conversation.getContextStatus runtime integration', () => {
       expect(actualRequest.systemPrompt).toContain(SKILL_BODY);
       expect(actualRequest.systemPrompt).toContain('AI design draft output contract (html)');
       expect(actualRequest.systemPrompt).toContain('exactly one fenced block tagged `html`');
-      expect(actualRequest.systemPrompt).not.toContain('AI design draft output contract (design-ui)');
+      expect(actualRequest.systemPrompt).not.toContain(
+        'AI design draft output contract (design-ui)',
+      );
       expect(JSON.stringify(actualRequest)).not.toContain(HIDDEN_REASONING);
 
       const mcpTool = actualRequest.tools?.find((tool) =>

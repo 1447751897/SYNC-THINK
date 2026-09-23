@@ -21,7 +21,6 @@ import {
   Info,
   Keyboard,
   LoaderCircle,
-  MessageCircle,
   Mic2,
   Monitor,
   Network,
@@ -43,7 +42,6 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import type {
-  BotChannelConfigSummary,
   DataStorageStatsResponse,
   McpServerSummary,
   WorkspaceSummary,
@@ -58,10 +56,11 @@ import {
   SYNC_THINK_CONNECTOR_CATALOG,
   type ManagedConnectorCatalogItem,
 } from './connector-catalog.js';
-import telegramIcon from './assets/connectors/telegram.png';
 import { McpIdentityMark } from './abilities/McpIdentityMark.js';
 import { BotConversationPane } from './BotConversationPane.js';
-import { DsTabBar } from './DsTabBar.js';
+import { invalidateMcpCatalog, loadMcpCatalog } from './mcp-catalog-loader.js';
+import { SettingsSectionTabs } from './SettingsSectionTabs.js';
+import { ToggleControl, type ToggleControlProps } from './ToggleControl.js';
 import { WebSearchSettings } from './WebSearchSettings.js';
 import {
   COMPUTER_USE_PLUGIN_SETTING_KEY,
@@ -188,13 +187,13 @@ const SECTIONS: Array<{
 ];
 
 const AVAILABLE_SECTIONS = SECTIONS.filter((item) => item.ready && item.visible !== false);
+const CHAT_BROWSER_AUTOMATION_SAVE_KEY = 'browser.chat-automation-save';
 
 function resolveSettingsSection(section?: SettingsSection): SettingsSection {
   if (section === 'plugins') return 'computer-use';
   if (section === 'shortcuts') return 'theme';
   return AVAILABLE_SECTIONS.some((item) => item.id === section) ? section! : 'general';
 }
-
 export interface SettingsPageProps {
   initialSection?: SettingsSection;
   initialModelDetail?: ModelSettingsDetailView;
@@ -214,7 +213,9 @@ export function SettingsPage({
   onCatalogChanged,
   onDirtyChange,
 }: SettingsPageProps) {
-  const [section, setSection] = useState<SettingsSection>(() => resolveSettingsSection(initialSection));
+  const [section, setSection] = useState<SettingsSection>(() =>
+    resolveSettingsSection(initialSection),
+  );
   const [query, setQuery] = useState('');
   const [modelDirty, setModelDirty] = useState(false);
   const [completing, setCompleting] = useState(false);
@@ -256,8 +257,7 @@ export function SettingsPage({
     );
   }, [query]);
 
-  const current =
-    AVAILABLE_SECTIONS.find((item) => item.id === section)!;
+  const current = AVAILABLE_SECTIONS.find((item) => item.id === section)!;
   const fullBleed = section === 'models';
 
   return (
@@ -382,33 +382,45 @@ function CollaborationSettingsPanel() {
   useEffect(() => {
     let disposed = false;
     const api = window.syncThink?.runtime;
-    if (!api) return () => {
-      disposed = true;
-    };
-    void api.getSettings({ keys: [COLLABORATION_SETTINGS_KEY] }).then((result) => {
-      if (!disposed) {
-        setSettings(normalizeCollaborationSettings(result.settings?.[COLLABORATION_SETTINGS_KEY]));
-      }
-    }).catch(() => undefined);
+    if (!api)
+      return () => {
+        disposed = true;
+      };
+    void api
+      .getSettings({ keys: [COLLABORATION_SETTINGS_KEY] })
+      .then((result) => {
+        if (!disposed) {
+          setSettings(
+            normalizeCollaborationSettings(result.settings?.[COLLABORATION_SETTINGS_KEY]),
+          );
+        }
+      })
+      .catch(() => undefined);
     return () => {
       disposed = true;
     };
   }, []);
 
-  const update = useCallback((patch: Partial<CollaborationSettings>) => {
-    const next = normalizeCollaborationSettings({ ...settings, ...patch });
-    setSettings(next);
-    void window.syncThink?.runtime?.setSetting({
-      key: COLLABORATION_SETTINGS_KEY,
-      value: next,
-    });
-  }, [settings]);
+  const update = useCallback(
+    (patch: Partial<CollaborationSettings>) => {
+      const next = normalizeCollaborationSettings({ ...settings, ...patch });
+      setSettings(next);
+      void window.syncThink?.runtime?.setSetting({
+        key: COLLABORATION_SETTINGS_KEY,
+        value: next,
+      });
+    },
+    [settings],
+  );
 
   return (
     <section className="settings-general-block" aria-labelledby="settings-collaboration-title">
       <div className="settings-general-heading">
         <h2 id="settings-collaboration-title">智能体协作</h2>
-        <p>模型对话只能委派给 Agent Library 中已存在的智能体；内核原生子 Agent 始终禁用，不受任何设置影响。</p>
+        <p>
+          模型对话只能委派给 Agent Library 中已存在的智能体；内核原生子 Agent
+          始终禁用，不受任何设置影响。
+        </p>
       </div>
       <div className="settings-rows">
         <SettingRow
@@ -485,7 +497,9 @@ function CollaborationSettingsPanel() {
               min={0}
               max={32}
               value={settings.maxAutoDelegationsPerTurn}
-              onChange={(event) => update({ maxAutoDelegationsPerTurn: Number(event.target.value) })}
+              onChange={(event) =>
+                update({ maxAutoDelegationsPerTurn: Number(event.target.value) })
+              }
             />
           }
         />
@@ -575,10 +589,7 @@ function GeneralSection() {
 
   return (
     <div className="settings-scroll settings-standard-pane settings-general-page">
-      {/* Segmented control shares the NewMax DsTabBar spec with the model-settings tabs. */}
-      {/* Explicit type argument: `onChange` sits in a contravariant position, so
-          inference from `.map()` alone collapses T to its `string` constraint. */}
-      <DsTabBar<GeneralTab>
+      <SettingsSectionTabs<GeneralTab>
         className="settings-general-tabs"
         aria-label="通用设置分类"
         value={tab}
@@ -628,6 +639,43 @@ function AgentGeneralPanel({
     value: AgentPreferences[K],
   ): void;
 }) {
+  const [chatBrowserAutomationSave, setChatBrowserAutomationSave] = useState(false);
+  const [chatBrowserAutomationSavePending, setChatBrowserAutomationSavePending] = useState(false);
+
+  useEffect(() => {
+    let disposed = false;
+    void window.syncThink?.runtime
+      ?.getSettings({ keys: [CHAT_BROWSER_AUTOMATION_SAVE_KEY] })
+      .then((response) => {
+        if (!disposed) {
+          const value = response.settings[CHAT_BROWSER_AUTOMATION_SAVE_KEY];
+          setChatBrowserAutomationSave(
+            value === true || (value as { enabled?: unknown })?.enabled === true,
+          );
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      disposed = true;
+    };
+  }, []);
+
+  const updateChatBrowserAutomationSave = async (next: boolean) => {
+    const previous = chatBrowserAutomationSave;
+    setChatBrowserAutomationSave(next);
+    setChatBrowserAutomationSavePending(true);
+    try {
+      await window.syncThink?.runtime?.setSetting({
+        key: CHAT_BROWSER_AUTOMATION_SAVE_KEY,
+        value: { enabled: next },
+      });
+    } catch {
+      setChatBrowserAutomationSave(previous);
+    } finally {
+      setChatBrowserAutomationSavePending(false);
+    }
+  };
+
   return (
     <div className="settings-general-agent">
       <section className="settings-general-block" aria-labelledby="settings-permission-title">
@@ -697,6 +745,24 @@ function AgentGeneralPanel({
             </button>
           ))}
         </div>
+      </section>
+
+      <section
+        className="settings-general-block"
+        aria-labelledby="settings-browser-automation-title"
+      >
+        <SettingRow
+          title="对话中的浏览器操作保存"
+          description="仅控制普通对话里 AI 自行执行的浏览器操作；特意创建浏览器自动化任务时不受影响。设置在任务开始时读取，执行中的任务不受切换影响。"
+          control={
+            <Toggle
+              checked={chatBrowserAutomationSave}
+              label="对话中的浏览器操作保存"
+              disabled={chatBrowserAutomationSavePending}
+              onChange={(value) => void updateChatBrowserAutomationSave(value)}
+            />
+          }
+        />
       </section>
 
       <section
@@ -1035,7 +1101,7 @@ export function ConnectionSection({ initialTab, navigationKey }: ConnectionSecti
     }
     setServersLoading(true);
     try {
-      const response = await runtime.listMcpServers({ limit: 100 });
+      const response = await loadMcpCatalog(runtime);
       setServers(response.servers);
       setError(undefined);
     } catch (reason) {
@@ -1044,6 +1110,11 @@ export function ConnectionSection({ initialTab, navigationKey }: ConnectionSecti
       setServersLoading(false);
     }
   }, []);
+
+  const refreshServers = useCallback(async () => {
+    invalidateMcpCatalog();
+    await loadServers();
+  }, [loadServers]);
 
   useEffect(() => {
     void loadServers();
@@ -1086,7 +1157,7 @@ export function ConnectionSection({ initialTab, navigationKey }: ConnectionSecti
       } else {
         setSelection(undefined);
       }
-      await loadServers();
+      await refreshServers();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '连接失败。');
     } finally {
@@ -1101,6 +1172,7 @@ export function ConnectionSection({ initialTab, navigationKey }: ConnectionSecti
     setError(undefined);
     try {
       await runtime.setMcpServerEnabled({ mcpServerId: server.mcpServerId, enabled });
+      invalidateMcpCatalog();
       setServers((current) =>
         current.map((item) =>
           item.mcpServerId === server.mcpServerId ? { ...item, enabled } : item,
@@ -1123,7 +1195,7 @@ export function ConnectionSection({ initialTab, navigationKey }: ConnectionSecti
       await runtime.deleteMcpServer({ mcpServerId: server.mcpServerId });
       setSelection(undefined);
       setNotice(`已删除 ${server.name}。`);
-      await loadServers();
+      await refreshServers();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '删除连接失败。');
     } finally {
@@ -1139,7 +1211,7 @@ export function ConnectionSection({ initialTab, navigationKey }: ConnectionSecti
     try {
       await runtime.refreshMcpTools({ mcpServerId: server.mcpServerId, maxTools: 200 });
       setNotice(`已刷新 ${server.name} 的可调用动作。`);
-      await loadServers();
+      await refreshServers();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '刷新连接器动作失败。');
     } finally {
@@ -1154,26 +1226,19 @@ export function ConnectionSection({ initialTab, navigationKey }: ConnectionSecti
 
   return (
     <div className="settings-connection-page">
-      <SlidingTabs className="settings-connection-tabs" aria-label="连接设置分类">
-        {CONNECTION_TABS.map((item) => (
-          <button
-            key={item.id}
-            type="button"
-            role="tab"
-            aria-selected={tab === item.id}
-            className={tab === item.id ? 'is-active' : undefined}
-            onClick={() => {
-              setTab(item.id);
-              setSelection(undefined);
-              setManagedSetup(undefined);
-              setError(undefined);
-              setNotice(undefined);
-            }}
-          >
-            {item.label}
-          </button>
-        ))}
-      </SlidingTabs>
+      <SettingsSectionTabs<ConnectionTab>
+        className="settings-connection-tabs"
+        aria-label="连接设置分类"
+        items={CONNECTION_TABS.map(({ id, label }) => ({ value: id, label }))}
+        value={tab}
+        onChange={(nextTab) => {
+          setTab(nextTab);
+          setSelection(undefined);
+          setManagedSetup(undefined);
+          setError(undefined);
+          setNotice(undefined);
+        }}
+      />
 
       <div className="settings-connection-body">
         {tab === 'connectors' ? (
@@ -1300,18 +1365,13 @@ function ConnectorSwitch({
   onChange(value: boolean): void;
 }) {
   return (
-    <button
-      type="button"
-      role="switch"
-      aria-label={label}
-      aria-checked={checked}
+    <ToggleControl
+      checked={checked}
       disabled={disabled}
-      data-enabled={checked ? '1' : '0'}
+      label={label}
+      onChange={onChange}
       className="ability-enable-switch"
-      onClick={() => onChange(!checked)}
-    >
-      <span />
-    </button>
+    />
   );
 }
 
@@ -1470,11 +1530,7 @@ function ConnectorCatalog({
                 <div key={server.mcpServerId} className="settings-third-party-row">
                   <button type="button" onClick={() => onOpenServer(server)}>
                     <span className="settings-third-party-row__icon">
-                      <McpIdentityMark
-                        name={server.name}
-                        endpoint={server.endpoint}
-                        size={15}
-                      />
+                      <McpIdentityMark name={server.name} endpoint={server.endpoint} size={15} />
                     </span>
                     <span>
                       <strong>{server.name}</strong>
@@ -1745,226 +1801,6 @@ function ManagedConnectorSetupDialog({
         </form>
       </section>
     </div>
-  );
-}
-
-const BOT_CHANNELS = [
-  { id: 'telegram', label: 'Telegram', badge: 'TG', available: true },
-  { id: 'feishu', label: '飞书', badge: '飞', available: false },
-  { id: 'wecom', label: '企业微信', badge: '企', available: false },
-  { id: 'wechat', label: '微信', badge: '微', available: false },
-  { id: 'discord', label: 'Discord', badge: 'D', available: false },
-  { id: 'dingtalk', label: '钉钉', badge: '钉', available: false },
-  { id: 'qq', label: 'QQ', badge: 'Q', available: false },
-] as const;
-
-const EMPTY_TELEGRAM_CONFIG: BotChannelConfigSummary = {
-  platform: 'telegram',
-  enabled: false,
-  credentialsConfigured: false,
-  proxyUrl: '',
-  connected: false,
-  state: 'disconnected',
-};
-
-export function LegacyBotConversationPane() {
-  const [config, setConfig] = useState<BotChannelConfigSummary>(EMPTY_TELEGRAM_CONFIG);
-  const [token, setToken] = useState('');
-  const [proxyUrl, setProxyUrl] = useState('');
-  const [showToken, setShowToken] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState<string>();
-  const [error, setError] = useState<string>();
-  const tokenInputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    let active = true;
-    const load = async () => {
-      try {
-        const runtime = window.syncThink?.runtime;
-        if (!runtime?.getBotChannelConfig) throw new Error('Runtime 连接不可用。');
-        const response = await runtime.getBotChannelConfig({ platform: 'telegram' });
-        if (!active) return;
-        setConfig(response);
-        setProxyUrl(response.proxyUrl ?? '');
-      } catch (reason) {
-        if (active) setError(reason instanceof Error ? reason.message : '读取机器人设置失败。');
-      } finally {
-        if (active) setLoading(false);
-      }
-    };
-    void load();
-    return () => {
-      active = false;
-    };
-  }, []);
-
-  const save = async (enabled: boolean, verifyFirst: boolean) => {
-    const runtime = window.syncThink?.runtime;
-    if (!runtime?.saveBotChannelConfig) {
-      setError('Runtime 连接不可用。');
-      return;
-    }
-    setBusy(true);
-    setError(undefined);
-    setNotice(undefined);
-    try {
-      const response = await runtime.saveBotChannelConfig({
-        platform: 'telegram',
-        ...(token.trim() ? { token: token.trim() } : {}),
-        proxyUrl: proxyUrl.trim(),
-        enabled,
-        testConnection: verifyFirst,
-      });
-      setConfig(response.config);
-      setToken('');
-      setNotice(
-        enabled
-          ? `Telegram 已启用${response.config.botUsername ? `：@${response.config.botUsername}` : ''}`
-          : verifyFirst
-            ? '连接测试通过，设置已保存。'
-            : 'Telegram 已停用。',
-      );
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'Telegram 设置保存失败。');
-      if (enabled && !config.credentialsConfigured && !token.trim()) {
-        tokenInputRef.current?.focus();
-      }
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <section className="settings-bot-pane" aria-label="机器人对话设置">
-      <aside className="settings-bot-channels" aria-label="机器人通道">
-        {BOT_CHANNELS.map((channel) => (
-          <button
-            key={channel.id}
-            type="button"
-            className={channel.id === 'telegram' ? 'is-active' : undefined}
-            disabled={!channel.available}
-            aria-label={channel.available ? channel.label : `${channel.label}，尚未接入`}
-          >
-            {channel.id === 'telegram' ? (
-              <img src={telegramIcon} alt="" draggable={false} />
-            ) : (
-              <span className={`settings-bot-channel-badge is-${channel.id}`}>{channel.badge}</span>
-            )}
-            <span>{channel.label}</span>
-            {!channel.available ? <small>待接入</small> : null}
-          </button>
-        ))}
-      </aside>
-
-      <div className="settings-bot-config">
-        <div className="settings-bot-config__hero">
-          <div>
-            <img src={telegramIcon} alt="" draggable={false} />
-            <div>
-              <h2>Telegram</h2>
-              <p>
-                {loading
-                  ? '正在读取设置…'
-                  : config.connected
-                    ? `已连接${config.botUsername ? ` · @${config.botUsername}` : ''}`
-                    : '未连接'}
-              </p>
-            </div>
-          </div>
-          <Toggle
-            checked={config.enabled}
-            disabled={loading || busy}
-            label="启用 Telegram 机器人"
-            onChange={(enabled) => {
-              if (enabled && !config.credentialsConfigured && !token.trim()) {
-                setNotice(undefined);
-                setError('请先填写 Bot Token，再启用 Telegram 机器人。');
-                tokenInputRef.current?.focus();
-                return;
-              }
-              void save(enabled, false);
-            }}
-          />
-        </div>
-
-        <button
-          type="button"
-          className="settings-bot-docs"
-          onClick={() =>
-            void window.syncThink?.runtime?.openExternalUrl?.(
-              'https://core.telegram.org/bots/tutorial#obtain-your-bot-token',
-            )
-          }
-        >
-          通过 @BotFather 创建 Bot 并获取 Token
-          <ArrowRight size={13} aria-hidden="true" />
-        </button>
-
-        <div className="settings-bot-form">
-          <label>
-            <span>Bot Token</span>
-            <div className="settings-bot-secret">
-              <input
-                ref={tokenInputRef}
-                type={showToken ? 'text' : 'password'}
-                aria-label="Bot Token"
-                value={token}
-                placeholder={
-                  config.credentialsConfigured ? '已安全保存，留空保持不变' : '123456:ABC-DEF…'
-                }
-                autoComplete="off"
-                onChange={(event) => {
-                  setToken(event.target.value);
-                  if (error?.includes('Bot Token')) setError(undefined);
-                }}
-              />
-              <button
-                type="button"
-                aria-label={showToken ? '隐藏 Bot Token' : '显示 Bot Token'}
-                onClick={() => setShowToken((current) => !current)}
-              >
-                {showToken ? <EyeOff size={14} /> : <Eye size={14} />}
-              </button>
-            </div>
-          </label>
-          <label>
-            <span>代理地址</span>
-            <input
-              aria-label="代理地址"
-              value={proxyUrl}
-              placeholder="http://127.0.0.1:7890"
-              onChange={(event) => setProxyUrl(event.target.value)}
-            />
-            <small>网络受限时可填写 HTTP/HTTPS 代理；直连环境留空。</small>
-          </label>
-        </div>
-
-        {notice ? (
-          <p className="settings-connectors-notice" role="status">
-            <Check size={13} aria-hidden="true" />
-            {notice}
-          </p>
-        ) : null}
-        {error || config.lastError ? (
-          <p className="settings-connectors-notice is-error" role="alert">
-            <AlertCircle size={13} aria-hidden="true" />
-            {error ?? config.lastError}
-          </p>
-        ) : null}
-
-        <button
-          type="button"
-          className="settings-bot-test"
-          disabled={busy || loading || (!token.trim() && !config.credentialsConfigured)}
-          onClick={() => void save(config.enabled, true)}
-        >
-          {busy ? <LoaderCircle size={14} className="is-spinning" /> : <MessageCircle size={14} />}
-          {busy ? '正在测试' : '测试并保存'}
-        </button>
-      </div>
-    </section>
   );
 }
 
@@ -3428,23 +3264,14 @@ function Toggle({
   disabled,
   label,
   onChange,
-}: {
-  checked: boolean;
-  disabled?: boolean;
-  label: string;
-  onChange(value: boolean): void;
-}) {
+}: Omit<ToggleControlProps, 'className' | 'thumbClassName'>) {
   return (
-    <button
-      type="button"
-      role="switch"
-      aria-label={label}
-      aria-checked={checked}
+    <ToggleControl
+      checked={checked}
       disabled={disabled}
-      onClick={() => onChange(!checked)}
-      className={clsx('settings-toggle', checked && 'is-checked')}
-    >
-      <span />
-    </button>
+      label={label}
+      onChange={onChange}
+      className="settings-toggle"
+    />
   );
 }

@@ -6,7 +6,7 @@ import {
   type DecorationSet,
 } from '@codemirror/view';
 import type { ComposeAttachment } from './compose-mention.js';
-import type { ComposerEditorPastedReference, ComposerEditorSkill } from './ComposerEditor.js';
+import type { ComposerEditorPastedReference, ComposerEditorSkill } from './composer-editor-types.js';
 
 export type ComposerEditorInlineTokenKind = 'skill' | 'file' | 'folder' | 'pasted';
 

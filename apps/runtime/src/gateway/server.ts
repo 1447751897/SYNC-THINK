@@ -648,7 +648,7 @@ function codexPromptCacheFields(context: TranslateContext): Record<string, unkno
   };
 }
 
-/** Same dialect on both sides: only the model + credentials are rewritten. */
+/** Same dialect proxy with namespace repair for Responses-compatible relays. */
 async function proxyDirect(
   response: ServerResponse,
   body: Record<string, unknown>,
@@ -680,8 +680,11 @@ async function proxyDirect(
       }
     }
     if (!upstream.ok || !upstream.body || !context.streamRequested) {
-      const text = preReadErrorText ?? (await upstream.text());
-      if (upstream.ok) captureDirectJsonUsage(text, context);
+      let text = preReadErrorText ?? (await upstream.text());
+      if (upstream.ok) {
+        captureDirectJsonUsage(text, context);
+        text = normalizeDirectResponsesJson(text, upstreamBody, context);
+      }
       response.writeHead(upstream.status, {
         'Content-Type': upstream.headers.get('content-type') ?? 'application/json',
       });
@@ -692,23 +695,177 @@ async function proxyDirect(
     const reader = upstream.body.getReader();
     const decoder = new TextDecoder();
     const usageReader = new SseLineReader();
+    const namespaceNormalizer = createDirectResponsesNamespaceNormalizer(upstreamBody, context);
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
       const text = decoder.decode(value, { stream: true });
       captureDirectSseUsage(usageReader.push(text), context);
-      response.write(text);
+      response.write(namespaceNormalizer ? namespaceNormalizer.push(text) : text);
     }
     const tail = decoder.decode();
     if (tail) {
       captureDirectSseUsage(usageReader.push(tail), context);
-      response.write(tail);
+      response.write(namespaceNormalizer ? namespaceNormalizer.push(tail) : tail);
     }
     captureDirectSseUsage(usageReader.flush(), context);
+    if (namespaceNormalizer) response.write(namespaceNormalizer.flush());
     response.end();
   } finally {
     abort.dispose();
   }
+}
+
+interface DirectNamespaceTarget {
+  namespace: string;
+  name: string;
+}
+
+interface DirectNamespaceLookup {
+  exact: ReadonlyMap<string, DirectNamespaceTarget>;
+  bare: ReadonlyMap<string, DirectNamespaceTarget | null>;
+  rootNames: ReadonlySet<string>;
+}
+
+/**
+ * Some Responses-compatible relays accept Codex namespace declarations but
+ * return a bare `function_call`. Codex cannot route that item to an MCP server;
+ * restore the namespace only when the sub-tool name identifies one declaration.
+ */
+function directNamespaceLookup(body: Record<string, unknown>): DirectNamespaceLookup | undefined {
+  if (!Array.isArray(body.tools)) return undefined;
+  const exact = new Map<string, DirectNamespaceTarget>();
+  const bare = new Map<string, DirectNamespaceTarget | null>();
+  const rootNames = new Set<string>();
+  for (const candidate of body.tools) {
+    const tool = recordValue(candidate);
+    if (tool && tool.type !== 'namespace' && typeof tool.name === 'string') {
+      rootNames.add(tool.name);
+    }
+    if (tool?.type !== 'namespace' || typeof tool.name !== 'string' || !Array.isArray(tool.tools)) {
+      continue;
+    }
+    const namespace = tool.name.trim();
+    if (namespace === '') continue;
+    for (const nestedCandidate of tool.tools) {
+      const nested = recordValue(nestedCandidate);
+      if (!nested || typeof nested.name !== 'string' || nested.name.trim() === '') continue;
+      const name = nested.name.trim();
+      const target = { namespace, name };
+      exact.set(`${namespace}__${name}`, target);
+      exact.set(`${namespace}.${name}`, target);
+      const previous = bare.get(name);
+      bare.set(name, previous === undefined ? target : null);
+    }
+  }
+  return exact.size === 0 ? undefined : { exact, bare, rootNames };
+}
+
+function resolveDirectNamespaceTarget(
+  lookup: DirectNamespaceLookup,
+  name: unknown,
+): DirectNamespaceTarget | undefined {
+  if (typeof name !== 'string' || name === '' || lookup.rootNames.has(name)) return undefined;
+  return lookup.exact.get(name) ?? lookup.bare.get(name) ?? undefined;
+}
+
+function restoreDirectToolNamespace(
+  item: Record<string, unknown>,
+  target: DirectNamespaceTarget,
+): Record<string, unknown> {
+  // MCP JSON tools remain function_call items. Changing them to custom_tool_call
+  // selects Codex's freeform-input handler and can abort before broker dispatch.
+  return {
+    ...item,
+    name: target.name,
+    namespace: target.namespace,
+  };
+}
+
+function normalizeDirectResponseBody(
+  responseBody: Record<string, unknown>,
+  lookup: DirectNamespaceLookup,
+): Record<string, unknown> {
+  if (!Array.isArray(responseBody.output)) return responseBody;
+  let changed = false;
+  const output = responseBody.output.map((candidate) => {
+    const item = recordValue(candidate);
+    if (item?.type !== 'function_call' || stringValue(item.namespace)) return candidate;
+    const target = resolveDirectNamespaceTarget(lookup, item.name);
+    if (!target) return candidate;
+    changed = true;
+    return restoreDirectToolNamespace(item, target);
+  });
+  return changed ? { ...responseBody, output } : responseBody;
+}
+
+function normalizeDirectResponsesJson(
+  text: string,
+  body: Record<string, unknown>,
+  context: TranslateContext,
+): string {
+  if (context.route.protocol !== 'openai-responses') return text;
+  const lookup = directNamespaceLookup(body);
+  if (!lookup) return text;
+  try {
+    const payload = JSON.parse(text) as Record<string, unknown>;
+    return JSON.stringify(normalizeDirectResponseBody(payload, lookup));
+  } catch {
+    return text;
+  }
+}
+
+class DirectResponsesNamespaceNormalizer {
+  private readonly reader = new SseLineReader();
+
+  constructor(private readonly lookup: DirectNamespaceLookup) {}
+
+  push(text: string): string {
+    return this.normalizeFrames(this.reader.push(text));
+  }
+
+  flush(): string {
+    return this.normalizeFrames(this.reader.flush());
+  }
+
+  private normalizeFrames(frames: SseFrame[]): string {
+    const normalized: SseFrame[] = [];
+    for (const frame of frames) normalized.push(...this.normalizeFrame(frame));
+    return normalized.map((frame) => encodeSseFrame(frame)).join('');
+  }
+
+  private normalizeFrame(frame: SseFrame): SseFrame[] {
+    const event = parseSseJson<Record<string, unknown>>(frame.data);
+    if (!event) return [frame];
+    const type = stringValue(event.type) ?? frame.event;
+    let normalized: Record<string, unknown> = event;
+
+    if (type === 'response.output_item.added' || type === 'response.output_item.done') {
+      const item = recordValue(event.item);
+      if (item?.type === 'function_call' && !stringValue(item.namespace)) {
+        const target = resolveDirectNamespaceTarget(this.lookup, item.name);
+        if (target) {
+          normalized = { ...event, item: restoreDirectToolNamespace(item, target) };
+        }
+      }
+    } else if (type === 'response.completed' || type === 'response.in_progress') {
+      const responseBody = recordValue(event.response);
+      if (responseBody) {
+        normalized = { ...event, response: normalizeDirectResponseBody(responseBody, this.lookup) };
+      }
+    }
+
+    return [{ ...frame, data: JSON.stringify(normalized) }];
+  }
+}
+
+function createDirectResponsesNamespaceNormalizer(
+  body: Record<string, unknown>,
+  context: TranslateContext,
+): DirectResponsesNamespaceNormalizer | undefined {
+  if (context.route.protocol !== 'openai-responses') return undefined;
+  const lookup = directNamespaceLookup(body);
+  return lookup ? new DirectResponsesNamespaceNormalizer(lookup) : undefined;
 }
 
 interface TranslateContext {

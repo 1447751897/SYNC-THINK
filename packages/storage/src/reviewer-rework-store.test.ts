@@ -82,7 +82,11 @@ function seed(raw: BetterSQLite3Raw): void {
   );
 }
 
-async function fixture(onLimitReached: 'pause' | 'abort' | 'reassign' = 'pause') {
+async function fixture(
+  onLimitReached: 'pause' | 'abort' | 'reassign' = 'pause',
+  maxIterations = 1,
+  withBackup = true,
+) {
   const dir = mkdtempSync(join(tmpdir(), 'sync-think-review-store-'));
   dirs.push(dir);
   const path = join(dir, 'sync-think.db');
@@ -115,8 +119,8 @@ async function fixture(onLimitReached: 'pause' | 'abort' | 'reassign' = 'pause')
       runId: graph.run.id,
       targetStepId: 'target-step' as StepId,
       reviewerAgentVersionId: reviewerAgent,
-      ...(onLimitReached === 'reassign' ? { backupAgentVersionId: backupAgent } : {}),
-      maxIterations: 1,
+      ...(onLimitReached === 'reassign' && withBackup ? { backupAgentVersionId: backupAgent } : {}),
+      maxIterations,
       onLimitReached,
       criteria: [
         { id: 'criterion-one', description: 'First criterion' },
@@ -263,6 +267,135 @@ function rejectInitialReview(f: Awaited<ReturnType<typeof fixture>>): {
 }
 
 describe('SqliteOrchestrationStore reviewer/rework', () => {
+  it.each(['abort', 'reassign'] as const)(
+    'commits %s at the limit and replays without duplicate events',
+    async (action) => {
+      const f = await fixture(action, 0, false);
+      try {
+        const version = completeTarget(f);
+        const reviewer = claim(
+          f.store,
+          f.graph.run.id,
+          reviewerStep(f, 0).id,
+          'owner-limit',
+          '2026-07-14T00:00:05.000Z',
+        );
+        const input = {
+          runId: f.graph.run.id,
+          stepId: reviewer.id,
+          idempotencyKey: reviewer.idempotencyKey!,
+          ownerId: 'owner-limit',
+          executionAttempt: reviewer.executionAttempt,
+          reviewerAgentVersionId: reviewerAgent,
+          outcome: reviewOutcome('reject', version),
+          now: '2026-07-14T00:00:06.000Z',
+        };
+        const result = f.store.completeReviewStep(input);
+        expect(result.graph.run.state).toBe(action === 'abort' ? 'failed' : 'paused');
+        expect(f.store.getAcceptanceGate(f.gate.id)?.state).toBe('limit-reached');
+        const before = f.raw.prepare('SELECT COUNT(*) AS count FROM event').get();
+        expect(f.store.completeReviewStep(input).replayed).toBe(true);
+        expect(f.raw.prepare('SELECT COUNT(*) AS count FROM event').get()).toEqual(before);
+        expect(
+          f.raw
+            .prepare("SELECT COUNT(*) AS count FROM event WHERE type = 'review.limit-reached'")
+            .get(),
+        ).toEqual({ count: 1 });
+        if (action === 'reassign') {
+          expect(
+            f.raw
+              .prepare(
+                "SELECT COUNT(*) AS count FROM event WHERE type = 'review.reassign-unavailable'",
+              )
+              .get(),
+          ).toEqual({ count: 1 });
+        }
+      } finally {
+        f.raw.close();
+      }
+    },
+  );
+
+  it.each(['accept', 'reject'] as const)(
+    'reassigns only once and handles the backup verdict %s',
+    async (verdict) => {
+      const f = await fixture('reassign', 0);
+      try {
+        const version = completeTarget(f);
+        const reviewer = claim(
+          f.store,
+          f.graph.run.id,
+          reviewerStep(f, 0).id,
+          'owner-primary',
+          '2026-07-14T00:00:05.000Z',
+        );
+        const input = {
+          runId: f.graph.run.id,
+          stepId: reviewer.id,
+          idempotencyKey: reviewer.idempotencyKey!,
+          ownerId: 'owner-primary',
+          executionAttempt: reviewer.executionAttempt,
+          reviewerAgentVersionId: reviewerAgent,
+          outcome: reviewOutcome('reject', version),
+          now: '2026-07-14T00:00:06.000Z',
+        };
+        // A failed event append must also roll back evidence and the reassignment flag.
+        f.raw.exec(`
+          CREATE TRIGGER fail_reassigned_event BEFORE INSERT ON event
+          WHEN NEW.type = 'review.reassigned'
+          BEGIN SELECT RAISE(ABORT, 'injected reassignment failure'); END;
+        `);
+        expect(() => f.store.completeReviewStep(input)).toThrow('injected reassignment failure');
+        expect(f.store.getAcceptanceGate(f.gate.id)?.reassigned).toBe(false);
+        expect(f.store.listReviewEvidence(f.gate.id)).toEqual([]);
+        expect(f.store.getGraph(f.graph.run.id)?.steps).toHaveLength(2);
+        f.raw.exec('DROP TRIGGER fail_reassigned_event');
+        const reassigned = f.store.completeReviewStep(input);
+        expect(reassigned.graph.run.state).toBe('reviewing');
+        expect(f.store.getAcceptanceGate(f.gate.id)?.reassigned).toBe(true);
+        const backup = reassigned.graph.steps.find((step) => step.agentVersionId === backupAgent)!;
+        expect(backup.state).toBe('ready');
+        expect(f.store.completeReviewStep(input).replayed).toBe(true);
+        const running = claim(
+          f.store,
+          f.graph.run.id,
+          backup.id,
+          'owner-backup',
+          '2026-07-14T00:00:07.000Z',
+        );
+        const completed = f.store.completeReviewStep({
+          runId: f.graph.run.id,
+          stepId: running.id,
+          idempotencyKey: running.idempotencyKey!,
+          ownerId: 'owner-backup',
+          executionAttempt: running.executionAttempt,
+          reviewerAgentVersionId: backupAgent,
+          outcome: reviewOutcome(verdict, version),
+          now: '2026-07-14T00:00:08.000Z',
+        });
+        expect(completed.graph.run.state).toBe(verdict === 'accept' ? 'completed' : 'paused');
+        expect(completed.graph.steps).toHaveLength(3);
+        expect(
+          f.raw
+            .prepare("SELECT COUNT(*) AS count FROM event WHERE type = 'review.limit-reached'")
+            .get(),
+        ).toEqual({ count: 1 });
+        expect(
+          f.raw
+            .prepare("SELECT COUNT(*) AS count FROM event WHERE type = 'review.reassigned'")
+            .get(),
+        ).toEqual({ count: 1 });
+        expect(
+          f.raw
+            .prepare("SELECT COUNT(*) AS count FROM event WHERE type = 'review.reassign-exhausted'")
+            .get(),
+        ).toEqual({ count: verdict === 'reject' ? 1 : 0 });
+      } finally {
+        f.raw.close();
+      }
+    },
+  );
+
   it('pauses before claiming a multi-candidate image Reviewer until one assigned version is selected', async () => {
     const f = await fixture();
     try {

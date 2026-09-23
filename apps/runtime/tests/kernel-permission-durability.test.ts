@@ -37,7 +37,12 @@ afterEach(() => {
 
 interface PermissionHarness {
   demoRuns: Map<string, DemoRunState>;
-  pendingToolApprovals: Map<string, { resolve(decision: 'approve' | 'deny'): void }>;
+  activeToolApprovals: {
+    readonly size: number;
+    firstId(): string | undefined;
+    settle(approvalId: string, decision: 'approve' | 'deny'): unknown;
+    settleAll(decision: 'approve' | 'deny'): void;
+  };
   wireKernelPermissionBridge(
     runId: RunId,
     threadId: string,
@@ -132,7 +137,7 @@ describe('kernel permission durable registration', () => {
           allow: false,
           message: '审批请求登记失败，本次操作未获批准。',
         });
-        expect(fixture.harness.pendingToolApprovals.size).toBe(0);
+        expect(fixture.harness.activeToolApprovals.size).toBe(0);
         expect(
           fixture.connection.raw
             .prepare("SELECT count(*) AS count FROM event WHERE type = 'tool.approval_requested'")
@@ -141,7 +146,7 @@ describe('kernel permission durable registration', () => {
         fixture.connection.raw.exec('DROP TRIGGER reject_approval_insert');
         fixture.request({ requestId: 'fresh-request', toolName, toolInput });
         expect(fixture.respondPermission).toHaveBeenCalledTimes(1);
-        expect(fixture.harness.pendingToolApprovals.size).toBe(1);
+        expect(fixture.harness.activeToolApprovals.size).toBe(1);
         const saved = fixture.connection.raw
           .prepare("SELECT payload_json FROM event WHERE type = 'tool.approval_requested'")
           .get() as { payload_json: string };
@@ -150,12 +155,13 @@ describe('kernel permission durable registration', () => {
           toolName,
           arguments: toolInput,
         });
-        fixture.harness.pendingToolApprovals.values().next().value!.resolve('approve');
+        const approvalId = fixture.harness.activeToolApprovals.firstId()!;
+        fixture.harness.activeToolApprovals.settle(approvalId, 'approve');
         expect(fixture.respondPermission).toHaveBeenLastCalledWith('fresh-request', {
           allow: true,
         });
       } finally {
-        fixture.harness.pendingToolApprovals.clear();
+        fixture.harness.activeToolApprovals.settleAll('deny');
         fixture.harness.demoRuns.clear();
         await fixture.runtime.stop();
         fixture.connection.raw.close();

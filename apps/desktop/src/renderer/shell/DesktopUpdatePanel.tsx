@@ -13,6 +13,7 @@ import type {
   DesktopUpdateActionResult,
   DesktopUpdatePhase,
 } from '../../desktop-update-contract.js';
+import { ToggleControl } from './ToggleControl.js';
 import { PENDING_UPDATE_PHASES, useDesktopUpdateState } from './use-desktop-update-state.js';
 import syncThinkLogo from './assets/sync-think-logo.png';
 
@@ -496,17 +497,13 @@ export function DesktopUpdatePanel() {
             <strong>自动检查更新</strong>
             <span>{configured ? '启动时自动检查新版本' : '当前 Beta 为手动下载，不会自动检查更新'}</span>
           </div>
-          <button
-            type="button"
-            role="switch"
-            aria-label="自动检查更新"
-            aria-checked={autoCheck}
+          <ToggleControl
+            checked={autoCheck}
             disabled={!bridge || autoCheckBusy}
-            className={clsx('settings-about-toggle', autoCheck && 'is-checked')}
-            onClick={() => void changeAutoCheck(!autoCheck)}
-          >
-            <span />
-          </button>
+            label="自动检查更新"
+            onChange={(enabled) => void changeAutoCheck(enabled)}
+            className="settings-about-toggle"
+          />
         </div>
 
         <button

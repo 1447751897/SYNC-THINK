@@ -396,6 +396,35 @@ export class SqliteMessageStore {
     return row ? mapMessageRow(row) : undefined;
   }
 
+  /** Compatibility read for delegation backfill, independent of chat pagination. */
+  listDelegatedMessages(threadId: ThreadId): Message[] {
+    return this.raw.prepare(`${MESSAGE_SELECT} WHERE thread_id = ?
+      AND EXISTS (SELECT 1 FROM json_each(message.blocks_json) AS block
+        WHERE json_type(block.value, '$.payload.delegatedAgents') = 'array')
+      ORDER BY sequence`).all(threadId).map((row) => mapMessageRow(row as MessageDatabaseRow));
+  }
+
+  /** Exact compatibility read for one legacy delegated task report. */
+  findDelegatedMessage(threadId: ThreadId, childRunId: string): Message | undefined {
+    const normalizedChildRunId = childRunId.trim();
+    if (!normalizedChildRunId) return undefined;
+    const row = this.raw
+      .prepare(
+        `${MESSAGE_SELECT} WHERE thread_id = ?
+         AND EXISTS (
+           SELECT 1
+           FROM json_each(message.blocks_json) AS block
+           JOIN json_each(block.value, '$.payload.delegatedAgents') AS delegated_agent
+           WHERE json_type(block.value, '$.payload.delegatedAgents') = 'array'
+             AND json_extract(delegated_agent.value, '$.childRunId') = ?
+         )
+         ORDER BY sequence DESC
+         LIMIT 1`,
+      )
+      .get(threadId, normalizedChildRunId) as MessageDatabaseRow | undefined;
+    return row ? mapMessageRow(row) : undefined;
+  }
+
   listMessages(threadId: ThreadId, options: ListMessagesOptions = {}): MessagePage {
     const limit = options.limit ?? DEFAULT_MESSAGE_PAGE_LIMIT;
     if (!Number.isInteger(limit) || limit < 1 || limit > MAX_MESSAGE_PAGE_LIMIT) {

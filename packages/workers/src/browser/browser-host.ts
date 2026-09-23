@@ -27,8 +27,9 @@ import {
   type BrowserRecordingLocator,
   type BrowserRecordingStepInput,
 } from '@sync-think/shared';
+import { isPathWithinRoot } from '@sync-think/shared/node-paths';
 import { DEFAULT_MAX_OUTPUT_BYTES } from '../process-runner.js';
-import { isPathInside, type WorkerJobOutput } from '../types.js';
+import type { WorkerJobOutput } from '../types.js';
 
 export type SystemBrowserKind = 'edge' | 'chrome';
 
@@ -138,7 +139,14 @@ export interface BrowserPageRecordingOptions {
   onTerminated(reason: BrowserRecordingTerminationReason): void | Promise<void>;
 }
 
+export interface BrowserPagePreview {
+  imageDataUrl: string;
+  url: string;
+  capturedAt: string;
+}
+
 export interface BrowserDriverPage {
+  capturePreview?(): Promise<BrowserPagePreview>;
   readonly pageId?: string;
   isClosed(): boolean;
   execute(
@@ -204,6 +212,8 @@ export interface BrowserHostExecuteInput {
 }
 
 export interface BrowserHostLike {
+  listLeases?(): BrowserLeaseInfo[];
+  capturePreview?(leaseId: string): Promise<BrowserPagePreview>;
   acquireLease(input: {
     profileId: string;
     ownerId: string;
@@ -393,6 +403,19 @@ export class BrowserHost implements BrowserHostLike {
         throw error;
       }
     }
+  }
+
+  listLeases(): BrowserLeaseInfo[] {
+    return [...this.leases.values()].filter(lease => !lease.page.isClosed() && lease.mode === 'command').map(leaseInfo);
+  }
+
+  async capturePreview(leaseId: string): Promise<BrowserPagePreview> {
+    const lease = this.leases.get(leaseId);
+    if (!lease || lease.page.isClosed() || !lease.page.capturePreview) {
+      throw new BrowserHostError('browser.preview-unavailable', 'Page preview is unavailable');
+    }
+    // Read the leased page directly; do not enqueue behind a long-running click.
+    return lease.page.capturePreview();
   }
 
   async inspectLease(leaseId: string): Promise<BrowserLeaseInfo> {
@@ -779,7 +802,7 @@ export class BrowserHost implements BrowserHostLike {
         realpath(this.profileRoot),
         realpath(profileDirectory),
       ]);
-      if (!isPathInside(realProfile, realRoot)) {
+      if (!isPathWithinRoot(realRoot, realProfile)) {
         throw new BrowserHostError(
           'browser.profile-path-invalid',
           'Browser Profile directory escaped its configured root',
@@ -1263,7 +1286,7 @@ export function resolveBrowserProfileDirectory(profileRoot: string, profileId: s
   const normalized = normalizeIdentifier(profileId, 'profileId');
   const root = resolve(profileRoot);
   const target = resolve(root, normalized);
-  if (!isPathInside(target, root)) {
+  if (!isPathWithinRoot(root, target)) {
     throw new BrowserHostError(
       'browser.profile-path-invalid',
       'Browser Profile path escapes the configured root',
@@ -1318,7 +1341,7 @@ async function ensureSafeBrowserProfileDirectory(
 
 async function isRealProfilePathInside(target: string, root: string): Promise<boolean> {
   const [realRoot, realTarget] = await Promise.all([realpath(root), realpath(target)]);
-  return isPathInside(realTarget, realRoot);
+  return isPathWithinRoot(realRoot, realTarget);
 }
 
 export function resolveBrowserScreenshotPath(
@@ -1340,7 +1363,7 @@ export function resolveBrowserScreenshotPath(
   const root = resolve(projectRoot);
   const directory = resolve(root, '.sync-think', 'screenshots');
   const absolutePath = resolve(directory, fileName);
-  if (!isPathInside(directory, root) || !isPathInside(absolutePath, directory)) {
+  if (!isPathWithinRoot(root, directory) || !isPathWithinRoot(directory, absolutePath)) {
     throw new BrowserHostError(
       'browser.screenshot-path-invalid',
       'Screenshot path escapes the bound project root',
@@ -2729,6 +2752,26 @@ export function browserRecordingInstallScript(bindingName: string, captureToken:
 }
 
 export class PlaywrightDriverPage implements BrowserDriverPage {
+  private previewPending?: Promise<BrowserPagePreview>;
+  private lastPreview?: BrowserPagePreview;
+
+  capturePreview(): Promise<BrowserPagePreview> {
+    if (this.previewPending) return this.previewPending;
+    if (this.lastPreview && Date.now() - Date.parse(this.lastPreview.capturedAt) < 1_000) {
+      return Promise.resolve(this.lastPreview);
+    }
+    const pending = this.page.screenshot({ type: 'jpeg', quality: 45, fullPage: false,
+      scale: 'css', timeout: 1_500, animations: 'allow', caret: 'initial' }).then(bytes => {
+      if (bytes.length > 700_000) throw new Error('Preview exceeds size limit');
+      const preview = { imageDataUrl: `data:image/jpeg;base64,${bytes.toString('base64')}`,
+        url: this.page.url(), capturedAt: new Date().toISOString() };
+      this.lastPreview = preview;
+      return preview;
+    }).finally(() => { this.previewPending = undefined; });
+    this.previewPending = pending;
+    return pending;
+  }
+
   private allowedOrigins: ReadonlySet<string> = new Set();
   private navigationViolation: BrowserHostError | undefined;
   private readonly policyTasks = new Set<Promise<void>>();
@@ -3098,7 +3141,7 @@ export class PlaywrightDriverPage implements BrowserDriverPage {
           realpath(resolve(options.projectRoot)),
           realpath(dirname(target.absolutePath)),
         ]);
-        if (!isPathInside(realScreenshotDirectory, realProjectRoot)) {
+        if (!isPathWithinRoot(realProjectRoot, realScreenshotDirectory)) {
           throw new BrowserHostError(
             'browser.screenshot-path-invalid',
             'Screenshot directory resolves outside the bound project root',

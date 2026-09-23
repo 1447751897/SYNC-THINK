@@ -12,6 +12,7 @@ let kernelUpdateListener: ((snapshot: unknown) => void) | null = null;
 
 const runtime = {
   appendMessage: vi.fn(),
+  compactConversation: vi.fn(),
   detectKernels: vi.fn(),
   getConversationContextStatus: vi.fn(),
   installKernel: vi.fn(),
@@ -130,6 +131,12 @@ beforeEach(() => {
   window.localStorage.clear();
   kernelUpdateListener = null;
   runtime.readConversationContent.mockReset();
+  runtime.compactConversation.mockReset().mockResolvedValue({
+    compacted: true,
+    beforeTokens: 320000,
+    afterTokens: 100000,
+    foldedCount: 4,
+  });
   runtime.openTask.mockReset().mockResolvedValue({ task: { threadId: 'thread-kernel' } });
   runtime.listConversationMessages.mockReset().mockResolvedValue({ messages: [], hasMore: false });
   runtime.sendConversationMessage.mockReset().mockResolvedValue({
@@ -558,25 +565,82 @@ function proseChunk(text: string, offset: number, total: number, nextOffset?: nu
   };
 }
 
+// Rendering and actions may read concurrently. Serve each source/range by identity,
+// not by global call order (which used to send prompt chunks to the answer reader).
+function mockProseContent() {
+  runtime.readConversationContent.mockImplementation(async (payload) => {
+    if (
+      payload.conversationId !== 'conversation-kernel' ||
+      !['prose-user', 'prose-assistant'].includes(payload.reference.id)
+    ) {
+      throw new Error('Unexpected prose scope');
+    }
+    const text = payload.reference.id === 'prose-user' ? '完整提示🙂结尾' : '完整回答🙂结尾';
+    const offset = payload.offset ?? 0;
+    if (offset === 0) return proseChunk(text.slice(0, 6), 0, text.length, 6);
+    if (offset === 6) return proseChunk(text.slice(6), 6, text.length);
+    throw new Error('Unexpected prose offset: ' + offset);
+  });
+}
+
+async function waitForProseDisplay() {
+  await screen.findByText('完整提示🙂结尾');
+  await screen.findByText('完整回答🙂结尾');
+}
+
 describe('ChatView complete prose actions', () => {
-  it('does not fetch source automatically and copies every answer chunk, not the preview', async () => {
+  it('copies the correct source while automatic display reading is still pending', async () => {
+    const pending = deferred<ReturnType<typeof proseChunk>>();
     runtime.listConversationMessages.mockResolvedValue({
       messages: proseMessages(),
       hasMore: false,
     });
-    runtime.readConversationContent
-      .mockResolvedValueOnce(proseChunk('完整回答🙂', 0, 8, 6))
-      .mockResolvedValueOnce(proseChunk('结尾', 6, 8));
+    mockProseContent();
+    const source = runtime.readConversationContent.getMockImplementation()!;
+    runtime.readConversationContent.mockImplementation((payload) =>
+      payload.reference.id === 'prose-assistant' && (payload.offset ?? 0) === 0
+        ? pending.promise
+        : source(payload),
+    );
     const writeText = vi.fn(async () => undefined);
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
     renderChat();
-    await screen.findByText('答案预览');
-    expect(runtime.readConversationContent).not.toHaveBeenCalled();
+    await screen.findByText('完整提示🙂结尾');
+    expect(screen.getByText('答案预览')).toBeTruthy();
+    const copy = screen.getByRole('button', { name: '复制' });
+    fireEvent.click(copy);
+    fireEvent.click(copy);
+    const answerStarts = () =>
+      runtime.readConversationContent.mock.calls.filter(
+        ([payload]) => payload.reference.id === 'prose-assistant' && payload.offset === 0,
+      );
+    // Display and copy have independent cancellation; the second click adds no request.
+    await waitFor(() => expect(answerStarts()).toHaveLength(2));
+    expect(writeText).not.toHaveBeenCalled();
+    await act(async () => pending.resolve(proseChunk('完整回答🙂', 0, 8, 6)));
+    await screen.findByText('完整回答🙂结尾');
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('完整回答🙂结尾'));
+    expect(writeText).toHaveBeenCalledTimes(1);
+  });
+
+  it('auto-loads prose and copies every answer chunk, not the preview', async () => {
+    runtime.listConversationMessages.mockResolvedValue({
+      messages: proseMessages(),
+      hasMore: false,
+    });
+    mockProseContent();
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    renderChat();
+    await waitForProseDisplay();
+    expect(runtime.readConversationContent).toHaveBeenCalledTimes(4);
+    runtime.readConversationContent.mockClear();
     fireEvent.click(screen.getByRole('button', { name: '复制' }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith('完整回答🙂结尾'));
     expect(runtime.readConversationContent).toHaveBeenCalledTimes(2);
     expect(runtime.readConversationContent.mock.calls[1][0]).toMatchObject({
       conversationId: 'conversation-kernel',
+      reference: expect.objectContaining({ id: 'prose-assistant' }),
       offset: 6,
       version: 'a'.repeat(64),
     });
@@ -586,10 +650,10 @@ describe('ChatView complete prose actions', () => {
       messages: proseMessages(),
       hasMore: false,
     });
-    runtime.readConversationContent
-      .mockResolvedValueOnce(proseChunk('完整提示🙂', 0, 8, 6))
-      .mockResolvedValueOnce(proseChunk('结尾', 6, 8));
+    mockProseContent();
     renderChat();
+    await waitForProseDisplay();
+    runtime.readConversationContent.mockClear();
     fireEvent.click(await screen.findByRole('button', { name: '重新生成' }));
     await waitFor(() =>
       expect(runtime.appendMessage).toHaveBeenCalledWith(
@@ -603,25 +667,30 @@ describe('ChatView complete prose actions', () => {
       messages: proseMessages(),
       hasMore: false,
     });
-    runtime.readConversationContent
-      .mockRejectedValueOnce(new Error('content.version-changed'))
-      .mockResolvedValueOnce(proseChunk('完整回答', 0, 4));
+    mockProseContent();
     const writeText = vi.fn(async () => undefined);
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
     renderChat();
+    await waitForProseDisplay();
+    // Failure occurs after one valid chunk; no partial text should reach the clipboard.
+    runtime.readConversationContent
+      .mockResolvedValueOnce(proseChunk('部分', 0, 4, 2))
+      .mockRejectedValueOnce(new Error('content.version-changed'));
     fireEvent.click(await screen.findByRole('button', { name: '复制' }));
     await screen.findByText('读取或复制失败，请重试');
     expect(writeText).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: '复制' }));
-    await waitFor(() => expect(writeText).toHaveBeenCalledWith('完整回答'));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('完整回答🙂结尾'));
   });
   it('does not resend the preview when original prompt reading fails', async () => {
     runtime.listConversationMessages.mockResolvedValue({
       messages: proseMessages(),
       hasMore: false,
     });
-    runtime.readConversationContent.mockRejectedValueOnce(new Error('content.version-changed'));
+    mockProseContent();
     renderChat();
+    await waitForProseDisplay();
+    runtime.readConversationContent.mockRejectedValueOnce(new Error('content.version-changed'));
     fireEvent.click(await screen.findByRole('button', { name: '重新生成' }));
     await screen.findByText(/读取原始提示失败，未重新发送/);
     expect(runtime.appendMessage).not.toHaveBeenCalled();
@@ -632,8 +701,10 @@ describe('ChatView complete prose actions', () => {
       messages: proseMessages(),
       hasMore: false,
     });
-    runtime.readConversationContent.mockReturnValueOnce(pending.promise);
+    mockProseContent();
     const rendered = renderChat();
+    await waitForProseDisplay();
+    runtime.readConversationContent.mockClear().mockReturnValueOnce(pending.promise);
     fireEvent.click(await screen.findByRole('button', { name: '重新生成' }));
     await waitFor(() => expect(runtime.readConversationContent).toHaveBeenCalledTimes(1));
     runtime.listConversationMessages.mockResolvedValue({ messages: [], hasMore: false });
@@ -651,16 +722,19 @@ describe('ChatView complete prose actions', () => {
     await act(async () => pending.resolve(proseChunk('旧会话原文', 0, 5)));
     expect(runtime.appendMessage).not.toHaveBeenCalled();
     expect(screen.queryByText('旧会话原文')).toBeNull();
+    expect(runtime.readConversationContent).toHaveBeenCalledTimes(1);
   });
 });
 
 it('deduplicates full-text copy clicks and cancels clipboard writes after conversation change', async () => {
   const pending = deferred<ReturnType<typeof proseChunk>>();
   runtime.listConversationMessages.mockResolvedValue({ messages: proseMessages(), hasMore: false });
-  runtime.readConversationContent.mockReturnValueOnce(pending.promise);
+  mockProseContent();
   const writeText = vi.fn(async () => undefined);
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
   const rendered = renderChat();
+  await waitForProseDisplay();
+  runtime.readConversationContent.mockClear().mockReturnValueOnce(pending.promise);
   const copy = await screen.findByRole('button', { name: '复制' });
   fireEvent.click(copy);
   fireEvent.click(copy);
@@ -681,6 +755,126 @@ it('deduplicates full-text copy clicks and cancels clipboard writes after conver
   await act(async () => pending.resolve(proseChunk('旧会话原文', 0, 5)));
   expect(writeText).not.toHaveBeenCalled();
   expect(runtime.readConversationContent).toHaveBeenCalledTimes(1);
+});
+
+describe('compaction before sending', () => {
+  async function highOccupancy() {
+    const status = await runtime.getConversationContextStatus();
+    runtime.getConversationContextStatus.mockClear().mockResolvedValue({
+      ...status,
+      estimatedUsedTokens: 320000,
+      usageRatio: 0.8,
+      sections: status.sections.map((section: { type: string; tokens: number }) => ({
+        ...section,
+        tokens: section.type === 'messages' ? 320000 : 0,
+      })),
+    });
+  }
+
+  it('waits for compaction before preparing the append and freezes the selected kernel', async () => {
+    await highOccupancy();
+    const compact = deferred<{
+      compacted: boolean;
+      beforeTokens: number;
+      afterTokens: number;
+      foldedCount: number;
+    }>();
+    runtime.compactConversation.mockReturnValueOnce(compact.promise);
+    renderChat();
+    await act(async () => Promise.resolve());
+    fireEvent.change(screen.getByTestId('compose-input'), { target: { value: 'frozen turn' } });
+    fireEvent.click(screen.getByTestId('compose-send'));
+    await waitFor(() => expect(runtime.compactConversation).toHaveBeenCalledTimes(1));
+    expect(runtime.sendConversationMessage).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTitle(/切换模型/));
+    fireEvent.click(await screen.findByTestId('kernel-option-codex'));
+    await act(async () =>
+      compact.resolve({
+        compacted: true,
+        beforeTokens: 320000,
+        afterTokens: 100000,
+        foldedCount: 4,
+      }),
+    );
+    await waitFor(() =>
+      expect(runtime.appendMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ text: 'frozen turn', kernelId: 'native' }),
+      ),
+    );
+    expect(runtime.compactConversation).toHaveBeenCalledWith({
+      conversationId: 'conversation-kernel',
+      mode: 'auto',
+      onlyIfNeeded: true,
+    });
+  });
+
+  it('still submits after an automatic compact failure and restores a rejected draft', async () => {
+    await highOccupancy();
+    runtime.compactConversation.mockRejectedValueOnce(new Error('summary failed'));
+    runtime.appendMessage.mockRejectedValueOnce(new Error('append failed'));
+    renderChat();
+    await act(async () => Promise.resolve());
+    fireEvent.change(screen.getByTestId('compose-input'), {
+      target: { value: 'recover after compact' },
+    });
+    fireEvent.click(screen.getByTestId('compose-send'));
+    await screen.findByText(/发送失败.*append failed/);
+    expect(runtime.compactConversation).toHaveBeenCalledTimes(1);
+    expect(runtime.appendMessage).toHaveBeenCalledTimes(1);
+    expect((screen.getByTestId('compose-input') as HTMLTextAreaElement).value).toBe(
+      'recover after compact',
+    );
+    await sendMessage('retry after compact');
+    expect(runtime.compactConversation).toHaveBeenCalledTimes(2);
+    expect(runtime.appendMessage).toHaveBeenCalledTimes(2);
+  });
+
+  it('finishes the original send after navigation without changing the new conversation draft', async () => {
+    await highOccupancy();
+    const compact = deferred<{
+      compacted: boolean;
+      beforeTokens: number;
+      afterTokens: number;
+      foldedCount: number;
+    }>();
+    runtime.compactConversation.mockReturnValueOnce(compact.promise);
+    const view = renderChat();
+    await act(async () => Promise.resolve());
+    fireEvent.change(screen.getByTestId('compose-input'), {
+      target: { value: 'original request' },
+    });
+    fireEvent.click(screen.getByTestId('compose-send'));
+    await waitFor(() => expect(runtime.compactConversation).toHaveBeenCalledTimes(1));
+    view.rerender(
+      <ToastProvider>
+        <ChatView
+          conversation={conversation('conversation-next')}
+          modelName="Model A"
+          models={[{ modelId: 'model-a', displayName: 'Model A', providerName: 'Provider' }]}
+          eventHistory={[]}
+          onTitleUpdated={vi.fn()}
+        />
+      </ToastProvider>,
+    );
+    fireEvent.change(screen.getByTestId('compose-input'), { target: { value: 'new draft' } });
+    await act(async () =>
+      compact.resolve({
+        compacted: true,
+        beforeTokens: 320000,
+        afterTokens: 100000,
+        foldedCount: 4,
+      }),
+    );
+    await waitFor(() =>
+      expect(runtime.sendConversationMessage).toHaveBeenCalledWith({
+        conversationId: 'conversation-kernel',
+        text: 'original request',
+      }),
+    );
+    await waitFor(() => expect(runtime.appendMessage).toHaveBeenCalledTimes(1));
+    expect((screen.getByTestId('compose-input') as HTMLTextAreaElement).value).toBe('new draft');
+    expect(screen.queryByText(/上下文已自动压缩/)).toBeNull();
+  });
 });
 
 describe('failed compose draft recovery', () => {

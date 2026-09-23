@@ -19,10 +19,30 @@ const protocolSource = readFileSync(
   'utf8',
 );
 const mainSource = readFileSync(new URL('../src/main/index.ts', import.meta.url), 'utf8');
+const artifactHandlerSource = readFileSync(
+  new URL('../src/main/artifact-handlers.ts', import.meta.url),
+  'utf8',
+);
+const providerCatalogHandlerSource = readFileSync(
+  new URL('../src/main/provider-catalog-handlers.ts', import.meta.url),
+  'utf8',
+);
+const providerCredentialHandlerSource = readFileSync(
+  new URL('../src/main/provider-credential-handlers.ts', import.meta.url),
+  'utf8',
+);
+const providerClipboardSource = readFileSync(
+  new URL('../src/main/provider-clipboard.ts', import.meta.url),
+  'utf8',
+);
 const preloadSource = readFileSync(new URL('../src/preload/index.ts', import.meta.url), 'utf8');
 const globalSource = readFileSync(new URL('../src/renderer/global.d.ts', import.meta.url), 'utf8');
 const providerPayloadSource = readFileSync(
   new URL('../src/provider-payloads.ts', import.meta.url),
+  'utf8',
+);
+const providerCredentialPayloadSource = readFileSync(
+  new URL('../src/provider-credential-payloads.ts', import.meta.url),
   'utf8',
 );
 const shellSource = readFileSync(
@@ -39,7 +59,7 @@ describe('M2 bridge wiring', () => {
     expect(protocolSource).toContain("'provider.revealCredential'");
     expect(protocolSource).toContain('RevealProviderCredentialResponse');
     expect(protocolSource).toContain('/** Plaintext only for this reveal hop. */');
-    expect(mainSource).toContain('runtime:provider-reveal-credential');
+    expect(providerCredentialHandlerSource).toContain("'provider.revealCredential'");
     expect(preloadSource).toContain('revealProviderCredential');
     expect(globalSource).toContain('revealProviderCredential');
     // The shell may ask for plaintext, but only through that one explicit hop.
@@ -47,19 +67,24 @@ describe('M2 bridge wiring', () => {
     // The invariant that matters: the *list* payload the renderer routinely holds
     // carries no secret, so a leak needs a deliberate reveal call, not a re-render.
     expect(providerPayloadSource).not.toContain('apiKey');
+    expect(providerCredentialPayloadSource).not.toContain('apiKey');
   });
 
   it('keeps create/update clipboard ownership in main', () => {
     expect(providerPayloadSource).not.toContain('apiKey');
     expect(mainSource).toContain('clipboard.readText()');
-    expect(mainSource).toContain('createProviderPayloadFromClipboard');
-    expect(mainSource).toContain('updateProviderPayloadFromClipboard');
-    expect(mainSource).toContain('runtime:provider-update-credential');
+    expect(providerCatalogHandlerSource).toContain('createProviderPayloadFromClipboard');
+    expect(providerCatalogHandlerSource).toContain('updateProviderPayloadFromClipboard');
+    expect(providerCredentialHandlerSource).toContain('addProviderCredentialPayloadFromClipboard');
+    expect(providerCredentialHandlerSource).toContain(
+      'updateProviderCredentialPayloadFromClipboard',
+    );
+    expect(providerClipboardSource).toContain('readCredential(readClipboard)');
   });
 
   it('bridges append-only merge conflict listing and resolution', () => {
-    expect(mainSource).toContain("'artifact.listConflicts'");
-    expect(mainSource).toContain("'artifact.resolveConflict'");
+    expect(artifactHandlerSource).toContain("'artifact.listConflicts'");
+    expect(artifactHandlerSource).toContain("'artifact.resolveConflict'");
     expect(preloadSource).toContain('listArtifactMergeConflicts');
     expect(preloadSource).toContain('resolveArtifactMergeConflict');
     expect(globalSource).toContain('listArtifactMergeConflicts');

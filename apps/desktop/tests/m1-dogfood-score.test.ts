@@ -4,48 +4,24 @@ import {
   looksLikeDogfoodPasteAssist,
   scoreDogfoodDiary,
 } from '../src/m1-dogfood-score.js';
-import { formatM1DogfoodDayDraft } from '../src/renderer/m1-dogfood-draft.js';
 import {
   listDogfoodDayReports,
   scoreDogfoodDiary as scoreMain,
 } from '../src/main/m1-exit-evidence-load.js';
-import {
-  projectDogfoodDayBoard,
-  projectM1ExitEvidenceProgress,
-} from '../src/renderer/m1-exit-evidence.js';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-const PASTE_DRAFT_SOFT_GREEN = formatM1DogfoodDayDraft({
-  date: '2026-07-12',
-  generatedAt: '2026-07-12T12:00:00Z',
-  connectionState: 'online',
-  hasActiveTask: true,
-  taskTitle: 'demo',
-  providerCount: 2,
-  modelCount: 3,
-  secretCount: 2,
-  providersReadySoft: true,
-  agentDefaultSet: true,
-  agentFallbackCount: 1,
-  sessionLevel: 'ready',
-  handtestLivePass: 10,
-  handtestLiveTotal: 18,
-  handtestDocChecked: 0,
-  handtestDocTotal: 18,
-  handtestExternalPending: 8,
-  dogfoodRealDays: 0,
-  dogfoodRequired: 3,
-  dogfoodFileCount: 1,
-  dualAutomatedOk: true,
-  hardGatesMet: false,
-  exitLevel: 'soft-only',
-  distinctMessageModelCount: 3,
-  manifestCount: 2,
-  hasTraceEvents: true,
-  softCraftRound: 42,
-}).markdown;
+const PASTE_DRAFT_SOFT_GREEN = [
+  '# Dogfood · 2026-07-12',
+  '> 由桌面「复制 dogfood 草稿」生成；不能仅凭本草稿计入有效日。',
+  '- [x] Runtime 在线',
+  '- Provider A：待你确认',
+  '- Provider B：待你确认',
+  '- 模型切换：待你确认',
+  '- 重启恢复：待你确认',
+  '- 最终结论：M1 仍 open',
+].join('\n');
 
 describe('countDogfoodPendingMarkers', () => {
   it('counts 待填 and 待你确认 without double-count', () => {
@@ -125,7 +101,7 @@ describe('scoreDogfoodDiary (hardening #43)', () => {
   });
 });
 
-describe('listDogfoodDayReports + board projection', () => {
+describe('listDogfoodDayReports', () => {
   it('classifies paste draft as scaffold with paste flag', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-dogfood-score-'));
     fs.writeFileSync(path.join(dir, '2026-07-12.md'), PASTE_DRAFT_SOFT_GREEN, 'utf8');
@@ -141,24 +117,6 @@ describe('listDogfoodDayReports + board projection', () => {
     expect(r.days[0]!.isPasteAssist).toBe(true);
     expect(r.days[1]!.kind).toBe('real');
 
-    const board = projectDogfoodDayBoard(r.days);
-    expect(board[0]!.boardKind).toBe('draft');
-    expect(board[0]!.statusLabel).toMatch(/草稿|脚手架|待/);
-    expect(board[1]!.boardKind).toBe('real');
-
-    const progress = projectM1ExitEvidenceProgress({
-      handtestChecked: 0,
-      handtestTotal: 18,
-      dogfoodFileCount: r.dogfoodFileCount,
-      dogfoodRealDays: r.dogfoodRealDays,
-      sessionLevel: 'ready',
-      dualAutomatedOk: true,
-      dogfoodDays: r.days,
-    });
-    expect(progress.dogfoodDraftDays).toBe(1);
-    expect(progress.hardGatesMet).toBe(false);
-    expect(progress.note).toMatch(/草稿/);
-    expect(progress.chips.find((c) => c.id === 'dogfood')?.detail).toMatch(/草稿1/);
   });
 
   it('main re-export score matches pure module on draft', () => {

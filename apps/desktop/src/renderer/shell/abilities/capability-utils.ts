@@ -66,11 +66,6 @@ export function formatRelativeDate(value?: string): string {
   return formatDate(value);
 }
 
-export function formatTokens(value: number): string {
-  if (value < 1_000) return value.toLocaleString('zh-CN');
-  return `${(value / 1_000).toFixed(value >= 10_000 ? 0 : 1)}k`;
-}
-
 export function skillOriginLabel(skill: SkillVersionSummary): string {
   if (skill.originType === 'market') return '市场安装';
   if (skill.originType === 'derived') return '本地派生';

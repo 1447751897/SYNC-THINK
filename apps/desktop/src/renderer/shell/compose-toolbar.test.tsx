@@ -4,6 +4,8 @@
 import { applyManagedKernelSnapshotToInstallStates } from './managed-kernel-sync.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import {
   ComposerActionSlot,
   ContextRing,
@@ -517,6 +519,14 @@ describe('ContextRing', () => {
 });
 
 describe('ModelPickerMenu', () => {
+  it('keeps model menus above the bottom composer and other shell surfaces', () => {
+    const shellCss = readFileSync(resolve(process.cwd(), 'src/renderer/shell/shell.css'), 'utf8');
+    const menuRule = shellCss.match(
+      /\.shell-menu--model-providers,[\s\S]*?\.shell-menu--reasoning-flyout\s*\{([\s\S]*?)\}/,
+    );
+    expect(menuRule?.[1]).toMatch(/z-index:\s*10030/);
+  });
+
   it('keeps the virtual Radix anchor in body coordinates', async () => {
     const anchor = document.createElement('button');
     document.body.appendChild(anchor);

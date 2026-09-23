@@ -117,6 +117,38 @@ afterEach(() => {
 });
 
 describe('ExecutionProcessBlock step collapse', () => {
+  it('renders native image input with its durable path and routing details', () => {
+    render(
+      <ExecutionProcessBlock
+        view={processView([
+          step({
+            id: 'image-input-1',
+            label: 'Image',
+            verb: 'Image',
+            zh: '读取图片附件',
+            toolName: 'image_input',
+            kind: 'read',
+            status: 'done',
+            command: undefined,
+            path: '.sync-think/conversations/conversation-1/images/reference.png',
+            preview: 'MIME：image/png；通过 Codex localImage 发送，目标模型：gpt-5.6-sol',
+          }),
+        ])}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByText(
+        '读取图片附件 · .sync-think/conversations/conversation-1/images/reference.png',
+      ),
+    );
+
+    expect(screen.getByText('.sync-think/conversations/conversation-1/images/reference.png'))
+      .toBeTruthy();
+    expect(screen.getByText(/Codex localImage/)).toBeTruthy();
+    expect(screen.getByText(/MIME：image\/png/)).toBeTruthy();
+  });
+
   it('renders a running step folded by default while streaming', () => {
     render(<ExecutionProcessBlock view={processView([step()])} />);
 

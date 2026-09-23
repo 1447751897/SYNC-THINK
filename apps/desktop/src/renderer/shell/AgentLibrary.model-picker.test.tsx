@@ -14,6 +14,8 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import type { GlobalAgent } from '@sync-think/shared';
 import { AgentLibrary } from './AgentLibrary.js';
 import { DialogProvider } from './Dialog.js';
+import { invalidateMcpCatalog } from './mcp-catalog-loader.js';
+import { invalidateSkillCatalog } from './skill-catalog-loader.js';
 
 // ── jsdom polyfills for Radix popper ────────────────────────────────────────
 class ResizeObserverMock {
@@ -82,6 +84,8 @@ const runtime = {
 };
 
 beforeEach(() => {
+  invalidateMcpCatalog();
+  invalidateSkillCatalog();
   Object.defineProperty(window, 'syncThink', {
     configurable: true,
     value: { runtime },

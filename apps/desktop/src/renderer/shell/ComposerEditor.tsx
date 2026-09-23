@@ -24,7 +24,7 @@ import {
 } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 import { File, FileText, Folder, Puzzle, X } from 'lucide-react';
-import type { SkillVersionSummary } from '@sync-think/protocol';
+
 import type { ComposeAttachment } from './compose-mention.js';
 import {
   composerEditorTokenExtension,
@@ -39,17 +39,8 @@ export interface ComposerEditorSelection {
   end: number;
 }
 
-export type ComposerEditorSkill = Pick<
-  SkillVersionSummary,
-  'skillVersionId' | 'name' | 'version' | 'description'
->;
-
-/** View data for an existing pasted-text attachment/reference. */
-export interface ComposerEditorPastedReference {
-  id: string;
-  label: string;
-  preview?: string;
-}
+import type { ComposerEditorSkill, ComposerEditorPastedReference } from './composer-editor-types.js';
+export type { ComposerEditorSkill, ComposerEditorPastedReference } from './composer-editor-types.js';
 
 export interface ComposerEditorHandle {
   focus: (options?: FocusOptions) => void;

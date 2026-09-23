@@ -6,6 +6,19 @@
  * while the host is upgraded independently.
  */
 
+import type {
+  BrowserExtensionConnectionInfo,
+  BrowserExtensionConnectionState,
+  BrowserExtensionStatus,
+} from '@sync-think/protocol';
+
+export type {
+  BrowserExtensionConnectionInfo,
+  BrowserExtensionConnectionState,
+  BrowserExtensionOpenFolderResult,
+  BrowserExtensionStatus,
+} from '@sync-think/protocol';
+
 export const DEFAULT_BROWSER_EXTENSION_URL = 'ws://127.0.0.1:17374/browser-extension/v1';
 
 export const BROWSER_EXTENSION_CONNECTION_STATES = [
@@ -17,31 +30,6 @@ export const BROWSER_EXTENSION_CONNECTION_STATES = [
   'authentication-failed',
   'protocol-mismatch',
 ] as const;
-
-export type BrowserExtensionConnectionState = (typeof BROWSER_EXTENSION_CONNECTION_STATES)[number];
-
-export interface BrowserExtensionConnectionInfo {
-  readonly bundledVersion: string;
-  readonly url: string;
-  readonly token: string;
-}
-
-export interface BrowserExtensionStatus {
-  readonly state: BrowserExtensionConnectionState;
-  readonly hostAvailable: boolean;
-  readonly connected: boolean;
-  readonly installedVersion: string | null;
-  readonly versionMismatch: boolean;
-  readonly busy: boolean;
-  readonly lastErrorCode: string | null;
-  readonly connectionInfo: BrowserExtensionConnectionInfo | null;
-}
-
-export interface BrowserExtensionOpenFolderResult {
-  readonly success: boolean;
-  readonly path?: string | null;
-  readonly message?: string;
-}
 
 export const DEFAULT_BROWSER_EXTENSION_STATUS: BrowserExtensionStatus = {
   state: 'disconnected',

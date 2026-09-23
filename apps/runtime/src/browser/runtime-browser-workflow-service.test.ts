@@ -116,6 +116,18 @@ describe('RuntimeBrowserWorkflowService', () => {
         draft: { status: 'approved' },
         version: { versionNumber: 1, stepCount: 2 },
       });
+      const scheduled = f.service.updateSchedule({
+        taskId: created.task.id,
+        enabled: true,
+        intervalMinutes: 30,
+      });
+      expect(scheduled.schedule).toMatchObject({
+        taskId: created.task.id,
+        enabled: true,
+        intervalMinutes: 30,
+        revision: 1,
+        nextRunAt: expect.any(String),
+      });
       expect(f.service.getWorkflow({ taskId: created.task.id })).toMatchObject({
         ...reviewed,
         reviews: [
@@ -126,6 +138,8 @@ describe('RuntimeBrowserWorkflowService', () => {
           },
         ],
         reviewsTruncated: false,
+        schedule: scheduled.schedule,
+        recentRuns: [],
       });
 
       const revision = f.service.createRevisionDraft({

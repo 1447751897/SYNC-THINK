@@ -3,12 +3,12 @@
  */
 import { act, cleanup, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ComposerModeBanner } from './ComposerModeBanner.js';
 import {
+  ComposerModeBanner,
   NEWMAX_GOAL_BANNER_TRANSITION_MS,
   NEWMAX_PLAN_BANNER_TRANSITION_MS,
   NewMaxComposerFrame,
-} from './NewMaxComposerFrame.js';
+} from '@sync-think/ui-kit';
 
 afterEach(() => {
   cleanup();

@@ -1,5 +1,6 @@
 ﻿import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { existsSync } from 'node:fs';
 
 const chatViewSource = readFileSync(
   new URL('../src/renderer/shell/ChatView.tsx', import.meta.url),
@@ -9,11 +10,6 @@ const processBlockSource = readFileSync(
   new URL('../src/renderer/shell/ExecutionProcessBlock.tsx', import.meta.url),
   'utf8',
 );
-const rightRailSource = readFileSync(
-  new URL('../src/renderer/shell/RightRail.tsx', import.meta.url),
-  'utf8',
-);
-
 const historyHookSource = readFileSync(
   new URL('../src/renderer/shell/use-run-process-history.ts', import.meta.url),
   'utf8',
@@ -54,9 +50,11 @@ describe('run process renderer wiring', () => {
   });
 
   it('does not project raw events inside production renderer components', () => {
+    expect(
+      existsSync(new URL('../src/renderer/shell/execution-process.ts', import.meta.url)),
+    ).toBe(false);
     expect(chatViewSource).not.toContain('projectExecutionProcess');
     expect(processBlockSource).not.toContain('projectExecutionProcess');
-    expect(rightRailSource).not.toContain('projectExecutionProcess');
     expect(processBlockSource).toContain('view: RunProcessView');
     expect(processBlockSource).toContain('<ExecutionProcessStepCard');
     expect(processBlockSource).toContain(

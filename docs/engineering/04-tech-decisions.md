@@ -1,3 +1,262 @@
+## TD-Cohesion：按用例边界渐进重构（2026-09-19）
+
+- 第一百二十八批：密钥输入只共享无状态的 DOM/可访问性表现，不共享凭据生命周期。基础组件接收受控 `visible`、输入属性和切换命令；Model、Image、Bot 分别拥有复位、掩码/异步 reveal、通道级显隐状态。这样既统一 Eye 按钮合同，又不以大量模式分支制造新的跨业务密钥状态机。
+
+- 第一百二十七批：tree-shaking 只用于控制异步包体，不作为保留零消费者 React 表面的理由。确认 `SkillSurface` 无调用后，删除其组件闭包、独占样式和类名自测；仍由 NewMax Hub 使用的通用加载/空状态、详情抽屉和工作区激活控件按真实调用保留。窄 lazy entry 与旧导出禁回流门禁分别保护分包和源码边界。
+
+- 第一百二十六批：字节格式化只共享稳定的二进制缩放事实，不共享单位文案、精度或最大展示单位。Shared 返回数值与单位索引；BrowserStage、Artifact UI、数据库 CLI 分别保留 KB/MB、KiB/MiB、KiB 至 TiB 的既有呈现。该边界避免算法漂移，也避免把基础数值函数耦合到特定界面或 CLI 文案。
+
+- 第一百二十五批：删除 Shell 根目录能力页兼容别名，但保留位于能力域内的窄 lazy entry。类型和测试应直接依赖实现；运行时动态导入只应暴露真正挂载的页面组件。实测直接导入包含其它 legacy 导出的实现模块会增加约 12.7 KiB，因此分包入口不是兼容 API，而是有包体证据支撑的 tree-shaking 端口；门禁按这一职责保护它。
+
+- 第一百二十四批：紧凑数字抽取只共享稳定的缩放/舍入机制，同时保留“能力详情”和“Provider token”两个具名展示策略。它们的 M 档和小数位本来就是界面选择，强制统一会改变业务呈现；语义化入口既消除同名隐式依赖，也让字节指标不再调用名为 token 的函数。该边界留在 Renderer，不把本地化展示规则推入 Shared 或 Protocol。
+
+- 第一百二十三批：作者技能市场的可传输摘要放入 Protocol 浏览器安全子路径，Runtime 以 id 组合摘要和完整安装文件，Renderer 兼容回退只派生摘要。选择共享稳定合同而非移动完整包内容，既消除六份元数据和内联模板副本，也避免把安装物化、文件内容或 Runtime 查询职责耦合进 Protocol/Renderer；正常运行仍由 Runtime RPC 提供权威目录。
+
+- 第一百二十二批：Renderer vendor 加载采用闭包工厂统一脚本生命周期，而不引入全局资源管理器。工厂拥有单个 vendor 的 in-flight Promise、DOM 监听和失败重试；适配器注入资源/导出/错误配置并继续决定 CSS 时机。这样既消除三份状态机，也不把 Mermaid、终端和画布的业务类型或初始化策略耦合在一起。
+
+- 第一百二十一批：生成图像格式规则放入 Shared 的 Node 专用子路径，因为扩展名判定依赖 `node:path`，且三个生产消费者均运行在 Node 环境。共享 API 返回类型、布尔值或 `undefined`，不抛 Runtime/Desktop 错误；文件系统读取、真实路径、大小、哈希和竞态校验仍属于各宿主用例。Adapters 同时复用文件头检测，避免只关闭两份逐字副本却留下第三套格式事实。
+
+- 第一百二十批：通用对象守卫放入浏览器安全的 Shared 独立子路径，由 Protocol、Desktop、Runtime、Storage、Workers 共享；共享层只回答“是否为非空非数组对象”，不接管字段规则和失败协议。返回 `Record<string, JsonValue>` 的专用递归 JSON 守卫明确命名为 `isJsonRecord` 并留在生产步骤执行器，避免表面去重造成不真实的类型承诺。
+
+- 第一百一十九批：ASCII 控制字符判断属于无宿主依赖的字符分类，放入 Shared 浏览器安全根入口；Protocol 负责请求字段组合校验，Storage 负责持久化规范化和错误。只共享稳定的最小原语，并用门禁保证唯一所有者，不把 Browser payload 整体规则反向耦合到 Storage。
+
+- 第一百一十八批：路径包含采用 Shared 的 Node 专用子路径，而不进入浏览器共享根入口。共享函数只接受完整绝对路径并负责跨平台纯词法判断；真实路径、符号链接、junction、缺失文件和业务错误仍归各基础设施用例。统一 root/candidate 参数顺序并用 AST 门禁防止副本回流，避免为复用算法制造文件系统或表现层耦合。
+
+- 第一百一十七批：Browser payload 使用 Protocol 的独立浏览器安全子路径作为唯一规则边界。共享函数返回 `T | undefined`，Runtime 直接消费，Desktop 薄层转换为既有命令错误；这样统一白名单和边界而不耦合宿主错误协议。子路径不经 Protocol 根入口，避免 Renderer 构建加载 Node-only 模块。Workflow 变量采用原 Runtime 的较严格上限，使两次校验一致。
+
+- 第一百一十六批：执行事件只允许 Runtime 投影为 Protocol `RunProcessView`；Renderer 不保留可从原始 Event 重建过程的兼容实现。仍在使用的格式函数按纯展示职责迁入独立模块，过程结果协调直接依赖协议类型。与其迁移 836 行旧副本测试，保留 Runtime 生产真源的 57 项回归并增加旧模块不存在的接线门禁。
+
+- 第一百一十五批：`usage.summary` 将完整范围聚合与请求明细传输分开。服务端 totals/rows 永远基于完整结果，明细默认限 500、协议最大 1000；纯聚合消费者显式关闭明细。该方案在不改变现有统计含义和设置页交互的前提下消除平方级投影与无界 Frame，暂不引入请求日志分页状态机。Renderer 的限制常量不从 Protocol 根入口做运行时导入，防止浏览器 bundle 跨入 Node-only 实现。
+
+- 第一百一十四批：Renderer 周期读取使用共享可见性轮询 hook，而不是由各业务组件自行维护 `setInterval`。hook 只拥有调度策略：一个 document visibility 订阅、KeepAlive 激活信号、串行执行、指数退避和资源切换重启；组件仍拥有业务周期、响应投影和错误文案。用户主动的微信扫码轮询保持独立，避免后台策略干扰有明确时限的交互流程。
+
+- 第一百一十三批：会话目录采用向后兼容的 keyset 分页合同，而不是给现有 Shell 直接加固定 limit。Storage 拥有完整排序游标，传输层只校验不透明 cursor；Renderer 独立加载器以 100 条页汇总完整目录。该选择为单个 Frame/IPC 载荷设上限，同时保留侧栏搜索、归档、跨工作区活动、深链和布局裁剪的完整数据语义；按需 UI 加载等行为变化留给有真实指标支持的后续设计。
+
+- 第一百一十二批：Shell 刷新采用独立代次协调器，而不是在二十余个调用点各自防抖。同步同批请求共享读取，活动读取期间的新请求进入唯一尾随代次，因此既减少六目录重复 IPC，也不会用修改前的结果满足修改后的调用者。启动快照写入频率归持久化辅助边界所有，Shell 只提交最新业务数据；250ms 尾随写和卸载冲刷保持冷启动可靠性。
+
+- 第一百一十一批：本地 Skill 读取采用异步文件 API，并由 Runtime 后台任务协调，而不是把同步扫描简单包在一个 `async` 函数中。刷新代次与单一 in-flight Promise 保证并发请求复用、扫描期间的新变更追加一轮；来源快照供响应和 watcher 共用。安装复制与持久化继续保留原事务边界，避免把只读性能修复扩成写模型重构。
+
+- 第一百一十批：设置页用量统计采用按范围分区的共享 TTL / in-flight 数据缓存，而不是 `forceMount` 整个设置弹窗。前者把复用限定在只读统计查询，保留页面展示状态和手动刷新语义；后者会让隐藏模态、焦点管理和所有设置子页一并常驻，扩大生命周期耦合。缓存失败不落盘，手动刷新与价格变更显式强制读取。
+
+- 第一百零九批：Skill 目录共享边界采用按 bridge 身份与 workspace scope 分区的请求缓存，而不是把展示状态提升成新的全局 React store。加载器只拥有请求规范化、成功快照、in-flight 合并和代次失效；页面仍拥有 loading/error/选择状态，写用例显式失效，强制刷新保持可见。架构门禁禁止绕过该边界。
+
+- 第一百零八批：保活页面的可见性由通用 `KeepAliveLayer` 上下文提供，避免业务页依赖 Shell 的具体导航状态，也避免冻结 children 阻断激活信号。能力页以进入事件代替固定轮询；本批不把 Runtime 同步扫描、目录共享缓存或文件监听合并进同一改动。
+
+- 第一百零七批：昂贵的 Git 工作区快照不由 Renderer 固定时钟驱动，而由挂载、重新聚焦和已知 Git Mutation 这些实际需要最新数据的边界驱动。保留 Main Git 能力与 QA 视觉面板，不为解决定时耦合扩大到 Git 命令协议重写。
+
+- 第一百零六批：Shell 导航所需的会话、智能体、团队、Provider、工作区与 Skill 是一个目录快照，只在全部读取成功时原子替换。刷新边界返回显式结果并统一呈现错误，调用页不依赖 Promise rejection 表达后台刷新失败；分页、in-flight 合并与快照写盘降频作为独立后续变化点。
+
+- 第一百零五批：异步页面读取采用“最后一次请求获胜”的本地代次边界，不把取消语义下推到 Runtime；全量刷新拥有代次，分页继承当前代次。本地 Skill 扫描错误独立于目录加载和编辑错误，失败保留旧数据并提供同用例重试，避免共享错误状态耦合无关交互。
+
+- 第一百零四批：生产源码不保留只由同名测试证明自身存在的旧 Renderer 投影。删除封闭自测环时，跨当前行为的冷启动断言下沉到实际所有者 `mergeEventHistory` / `projectM0EventHistory`；连接重试和 Shell 构建继续由现有生产模块测试覆盖，避免把历史 reducer 当作架构接口。
+
+- 第一百零三批：已结束里程碑的 Renderer 验收投影不作为生产架构继续编译。M1/M2 纯脚手架模块与专属测试一并退役，而仍有 Main/IPC 消费的文档打开、解析和证据评分能力按真实调用图保留；M2 自检继续覆盖当前生产边界，不用零消费者工作区投影维持名义覆盖。
+
+- 第一百零二批：机器人设置只由独立 `BotConversationPane` 拥有，`SettingsPage` 只负责页签组合，不保留第二套 Telegram 凭据、连接和通道列表状态机。删除旧实现及其资源导入，避免同一业务表面在父页和专用组件中并行演进。
+
+- 第一百零一批：RightDock 只保留当前文件浏览与 Review 职责，不维护未挂载的第二套 Git 工作区状态机。删除旧面板时同时删除其私有提交树闭环，但保留独立且仍有消费者的 Git 宿主能力和 Task Status 展示，按真实调用边界而非功能名称裁剪。
+
+- 第一百批：右侧工作台只保留 `RightDock`/`WorkspaceWorkbench`，不维护未挂载的平行 `RightRail`；任务展示只保留当前 Composer/Task/Status 面板，不让仅由自身测试维持的历史组件形成第二套读取和分页状态机。进程 wiring 覆盖跟随当前生产组件，而非通过读取死文件证明隔离。
+
+- 第九十九批：Main 不公开无消费者的连接/Frame 探针，正式 IPC 只通过既有连接生命周期和类型化客户端；消息图片只暴露受控自定义协议；Capability 与 Chat Tool 准入只保留实际执行路径消费的窄判断/集合，避免未连接的平行策略看似权威。
+
+- 第九十八批：自启注册/移除副作用只由 Desktop supervisor 拥有，Runtime daemon 仅保留状态读取和纯命令构造；Terminal Session Store 采用显式实例注入，不维持无消费者的 Renderer 全局单例；Composer 只保留当前模式/溢出/添加菜单路径，不为旧 UI 维护并行实现。
+
+- 第九十七批：审核次数和返工转换规则只由 Shared `review-policy` 拥有，Core 不保留纯重导出兼容入口或重复测试。M2 自检直接运行 Shared review 套件，架构门禁阻止旧 Core 路径恢复；移除的是无生产调用的内部兼容层，不建立替代转发层。
+
+- 第九十六批：Desktop Waiting 工具结果识别与公开目标裁剪是纯安全投影，不应依赖 Runtime 生命周期。新模块只接受结果字符串或已脱敏参数，Runtime 保留持久化、任务归属和事件发布；Browser 错误语义不与 Desktop Waiting 合并。
+
+- 第九十五批：会话滚动位置是独立的 Renderer 状态与 DOM 几何边界，不属于聊天业务编排。新模块拥有内存/localStorage 快照和锚点算法，ChatView 只决定何时保存或恢复；缓存保留既有无淘汰语义，避免会话 DOM 重挂载后丢失阅读位置。
+
+- 第九十四批：计划步骤图合法性是纯领域规则，但错误传输属于调用边界。Shared 验证器只返回带稳定路径的结构化首个问题；Storage 将其映射为既有业务错误或 `OrchestrationDataError`，从而复用规则而不让 Shared 依赖持久化错误语义。
+
+- 第九十三批：计划版本差异是确定性的领域转换，应由 Shared 纯模块拥有，而不是隐藏在 SQLite 仓储中。Storage 仍负责可信边界校验、持久格式解码和原子提交，并复用同一字段比较规则验证落盘 diff，避免写入与读取语义漂移。
+
+- 第九十二批：运行的 Agent 身份与 Kernel 都来自同一 `run.started` 不可变事实，应由同一纯投影一次生成。ChatView 只缓存投影结果并用于消息展示；两个旧函数保留为兼容包装，避免把事件字段解析继续散落在渲染组件或调用方。
+
+- 第九十一批：跨 Kernel transcript 是纯兼容投影，不应持有原生会话状态或完整 Adapter 合同。新模块以本地最小消息结构接收结构兼容输入，集中拥有文本化和字节边界；Runtime 只决定何时恢复/追赶并继续拥有路由、凭据与失效处理。
+
+- 第九十批：Goal 的文本协议和任务清单事件投影是无状态转换，不应依附 Runtime 生命周期。`goal-turn` 只依赖 Protocol 的 `GoalStatus`，`task-plan-context` 只依赖 Shared `Event`；Runtime 保留状态机、持久化和调度，并用兼容重导出避免一次性修改外部调用方。
+
+- 第八十九批：委派旧消息兼容读取、消息块投影解析与实时卡片持久化是三个独立变化点。纯投影模块不持有存储，兼容读取器只依赖旧消息查询端口，实时卡片历史只依赖卡片读写端口；服务门面在组合层协调两者，避免兼容路径继续扩张实时写模型。
+
+- 第八十八批：生产执行 reservation/fence DTO 属于跨 Runtime 与 Storage 的稳定领域契约，因此迁入 Shared；Storage 只拥有 SQLite 事务实现。Runtime 的预留端口仅暴露执行器使用的五项生命周期操作，不包含 MCP intent 管理或底层查询，生产执行器由此完全脱离 Storage 包类型。
+
+- 第八十七批：生产执行的 Agent Context 依赖只表达 `getOrCreateEpoch` 生命周期能力，并复用 Shared 的稳定契约。执行器不感知线程/epoch 的其他查询、关闭或持久化方法，模型切换策略继续由具体 Store 原子实现。
+
+- 第八十六批：生产执行的 Skill 依赖按准入元数据、提示词正文和权限批准三项能力表达。端口保留 Skill 选择的两阶段读取，避免为准入判断加载正文，也避免把安装、更新、删除等管理职责带入执行器。
+
+- 第八十五批：生产执行的 Provider 端口按模型目录、Provider 连接和凭据路由三个最小投影表达，不复用完整存储记录。视觉目录转换同步接受中立 `CatalogModelSource`，使图片能力判定保持纯领域投影并与 Provider 持久化实现分离。
+
+- 第八十四批：生产执行所需 AgentVersion 由 Runtime 自有最小投影表达，不复用存储记录类型。该投影聚合模型绑定、工具权限、Skill 选择与提示词所需的不可变字段，使执行辅助函数围绕用例数据协作，而不是围绕 `SqliteAgentStore` API 协作。
+
+- 第八十三批：生产步骤执行器的 Workspace 依赖采用最小投影端口，不复用完整 `TaskRecord` / `WorkspaceRecord`。Task 只提供 `workspaceId`，Workspace 只提供可选 `folderPath`，使执行用例不感知存储层的版本、UI 偏好和生命周期字段。
+
+- 第八十二批：生产步骤执行器的 Run/Graph 读取改为依赖 Runtime 自有的 `ProductionStepExecutionRuns` 端口，而不是 `SqliteOrchestrationStore`。端口只表达执行期读取需求，具体 SQLite 实现留在持久化组合根；暂不合并其他存储能力，避免形成新的宽仓储接口。
+
+- 第八十一批：ChatView 的持久/乐观/流式消息合并迁入纯 `conversation-message-merge`。该模块拥有展示顺序和 durable ID 收敛规则，但不拥有 React 状态、分页覆盖或宿主调用；历史页覆盖仍由 `conversation-history-pages` 负责，避免把网络分页与渲染期乐观状态重新耦合。
+
+- 第八十批：架构门禁增加生产源码依赖图和强连通分量检测，不引入第三方图工具。解析器覆盖静态、类型和字面量动态导入，并将工作区包根映射到源码入口；首次发现的 Protocol 双向依赖通过把 Run Process 请求契约下沉到其解析所有者解除，而非建立循环白名单。
+
+- 第七十九批：Desktop Composer 不再通过本地兼容重导出消费共享 UI，ChatView、ShellApp、菜单与测试统一直接依赖 `@sync-think/ui-kit`。删除三个转发文件，并用架构规则禁止旧路径回流；UI Kit 保持组件实现和公开 API 的唯一所有者。
+
+- 第七十八批：Message Image Attachment 归入 Conversation Write 合同，因为它是 `task.appendMessage` 后续的持久消息写入步骤，而非独立宿主能力。Desktop 保留暂存与文件落盘端口，Runtime 保留消息块合并和事件持久化；Main 只通过 `requestConversation` 协调。业务命令的通用 transport 旁路至此清零，`runtime.healthcheck` 继续作为连接基础设施探测。
+
+- 第七十七批：Kernel Recycle 扩展既有 `kernel-command-contract`，因为它属于内核运行生命周期而非新的 Renderer 用例。Main 私有内核安装/更新后的回收调用改走 `requestKernel`；安装、探测、重启及 Runtime 的活跃租约延迟回收状态机保持原职责与行为。下一批收口消息图片附件。
+
+- 第七十六批：Data Management 使用独立 `data-management-command-contract`、纯 `data-management-payloads` 和 `data-management-handlers`，统一数据检查、迁移、备份、压缩与清理的应用用例。保存/打开对话框、系统路径打开和日期文件名通过 Main 注入端口保留宿主所有权；SQLite/文件内容、在线备份、导入冲突和清理事务仍归 Runtime。托盘复用相同类型化请求，不保留旁路。
+
+- 第七十五批：Web Search Provider Management 使用独立 `web-search-provider-command-contract` 和 `web-search-provider-handlers`，列表、保存、排序和连接测试共享外部搜索配置边界。既有 Protocol 解析器继续作为唯一校验源；注册层只负责可信来源、连接、解析和类型化传输，配置/密钥持久化、路由、网络执行和错误脱敏仍归 Runtime。数据管理不并入。
+
+- 第七十四批：Provider CC Switch 使用独立 `provider-cc-switch-command-contract`、纯 `provider-cc-switch-payloads` 和 `provider-cc-switch-handlers`，把外部数据库预览与选定来源导入和 Provider Catalog/Credentials 等日常生命周期分离。注册层只负责可信来源、连接、解析和类型化传输；SQLite 读取、映射、安全存储、补偿与事件持久化仍归 Runtime。下一批转向 Web Search Provider 管理。
+
+- 第七十三批：Provider Balance 使用独立 `provider-balance-command-contract`、纯 `provider-balance-payloads` 和 `provider-balance-handlers`，把只读账户余额查询与目录、凭据、模型及发现边界分离。注册层只负责可信来源、连接、严格解析和类型化传输；供应商端点判断、凭据解密、网络访问、诊断和响应归一化仍归 Runtime。CC Switch 不并入。
+
+- 第七十二批：Provider Discovery 与 Capability Probing 使用独立 `provider-discovery-command-contract`、纯 `provider-discovery-payloads` 和 `provider-discovery-handlers`，目录发现、创建前临时模型探测、能力探测和能力确认共享外部能力验证边界。临时密钥通过注入的剪贴板窄端口进入 Main，探测执行、建议和确认状态仍归 Runtime；模型目录变更、余额与 CC Switch 不并入。
+
+- 第七十一批：Provider Model Management 使用独立 `provider-model-command-contract`、纯 `provider-model-payloads` 和 `provider-model-handlers`，新增、优先级排序、元数据更新和删除共享模型目录变更边界。注册层只负责可信来源、连接、严格解析和类型化传输；持久化、模型归属校验及上下文缓存失效仍归 Runtime。Discovery、Capability Probing、余额与 CC Switch 不并入。
+
+- 第七十批：Provider Credentials 使用独立 `provider-credential-command-contract`、纯 `provider-credential-payloads` 和 `provider-credential-handlers`，新增、移除、清空、查看和更新共享凭据生命周期边界。新增/轮换通过注入的 `readClipboardText` 窄端口进入 Main，统一 helper 校验并构造内部请求；显式查看仍是唯一返回明文的短生命周期命令，安全存储和补偿仍归 Runtime。Catalog、模型与发现不并入。
+
+- 第六十九批：Provider Catalog 使用独立 `provider-catalog-command-contract`、纯 `provider-catalog-payloads` 和 `provider-catalog-handlers`，创建、更新、列表、排序和删除共享目录生命周期边界。注册层通过 `readClipboardText` 窄端口保留密钥交接，不依赖 Electron clipboard；凭据生命周期、模型管理和发现/探测不并入，目录持久化和安全存储补偿仍归 Runtime。
+
+- 第六十八批：Participation Mode 使用独立 `participation-mode-command-contract`、纯 `participation-mode-payloads` 和 `participation-mode-handlers`。它改变任务执行策略而非目录元数据，因此不并入 Task 目录边界；注册层只负责可信来源、连接、严格解析和类型化传输，自动模式的批准计划/策略门禁、OCC、事务和事件仍归 Runtime。
+
+- 第六十七批：Artifact 使用独立 `artifact-command-contract`、纯 `artifact-payloads` 和 `artifact-handlers`，查询、版本选择、合并与冲突解决共享 Artifact 生命周期边界。版本内容和冲突状态仍归 Runtime；图片预览 URL 是桌面宿主能力，通过 `registerImagePreview` 窄端口后处理 `artifact.getVersion` 响应，不让应用 handler 依赖 Electron 或具体 registry。
+
+- 第六十六批：Run Control 使用独立 `run-control-command-contract`、纯 `run-control-payloads` 和 `run-control-handlers`，Graph 查询、pause/resume/cancel 共享运行控制边界。`run.cancel` 是按载荷形状分流的既有线协议，同一类型化合同覆盖普通会话取消和带 scope/OCC 的编排取消；执行器、状态机、原子事件与幂等回放仍归 Runtime。
+
+- 第六十五批：Plan 使用独立 `plan-command-contract`、纯 `plan-payloads` 和 `plan-handlers`，草稿、修订、revision 列表和批准共享不可变计划生命周期边界。注册层只负责严格解析与类型化传输；revision、批准前置条件、Run/Graph 创建和原子事务仍归 Runtime。Run 控制及参与模式不并入 Plan。
+
+- 第六十四批：Task 目录生命周期使用独立 `task-command-contract`、纯 `task-payloads` 和 `task-handlers`，创建、列表、打开、搜索、归档和取消归档共享任务目录边界。注册层只负责严格解析与类型化传输；Task 持久化、搜索、树级归档及乐观版本围栏仍归 Runtime。`task.setParticipationMode` 属于执行策略，不并入目录生命周期。
+
+- 第六十三批：Workspace 使用独立 `workspace-command-contract`、纯 `workspace-lifecycle-payloads` 和 `workspace-handlers`，创建、文件夹绑定、列表、更新和删除共享项目目录生命周期。注册层只负责严格解析与类型化传输；目录持久化、路径安全和 UI 偏好仍归 Runtime。Task 目录与执行参与模式不并入，避免 Workspace 元数据再次吸收任务运行职责。
+
+- 第六十二批：Prompt Enhancement 与 Design Generation 使用独立 `prompt-design-command-contract`、纯 `prompt-design-payloads` 和 `prompt-design-handlers`，共享“一次性内容变换、不写会话历史”的应用边界。注册层只负责严格解析、取消关联和类型化传输；模型选择、流输出筛选和生成执行仍归 Runtime。Workspace 生命周期不并入，避免内容辅助与项目目录耦合。
+
+- 第六十一批：Capability Governance 使用独立 `capability-governance-command-contract` 和 `capability-governance-handlers`，工作区激活、治理读取、发布草稿和整理报告共享能力治理生命周期边界。既有 `capability-payloads` 已是无宿主依赖的纯解析器，因此保留原位并纳入架构叶约束；激活状态、治理规则、草稿持久化和报告生成仍归 Runtime，避免 Main 承担治理业务。
+
+- 第六十批：Bot Channel 使用独立 `bot-channel-command-contract`、纯 `bot-channel-payloads` 和 `bot-channel-handlers`，配置、连通性测试和微信登录共享渠道生命周期边界。注册层只负责平台特定输入解析与类型化传输；配置存储、凭据保护、网关连接和消息处理仍归 Runtime，能力治理不并入，避免外部渠道与能力目录耦合。
+
+- 第五十九批：MCP 工具操作使用独立 `mcp-tool-command-contract`、纯 `mcp-tool-payloads` 和 `mcp-tool-handlers`，策略预检、软请求、进程探测、实际调用和目录刷新共享工具运行边界。注册层只负责解析与类型化传输，实际调用和刷新继续复用集中式 130 秒超时；授权、审批、执行和目录持久化仍归 Runtime，避免 Main 持有工具安全策略。
+
+- 第五十八批：MCP 注册表使用独立 `mcp-registry-command-contract`、纯 `mcp-registry-payloads` 和 `mcp-registry-handlers`，本地/远程注册、列表、启停和删除共享连接配置生命周期边界。注册层只负责解析与类型化传输，远程注册继续复用集中式 130 秒超时；策略探测、工具请求/调用和刷新保持独立，避免配置生命周期与执行授权耦合。
+
+- 第五十七批：已安装 Skill 使用独立 `skill-command-contract`、纯 `skill-payloads` 和 `skill-handlers`，导入、远程导入、查询、删除与启用共享不可变 Skill 库生命周期边界。注册层只负责解析、30 秒远程超时与传输；内容寻址、权限重审批、引用约束和工作区激活仍归 Runtime。MCP 不并入，避免能力内容与工具连接配置耦合。
+
+- 第五十六批：Skill Market 使用独立 `skill-market-command-contract`、纯 `skill-market-payloads` 和 `skill-market-handlers`，目录读取与市场安装共享策展来源边界。注册层只负责 ID 解析与传输；市场目录、完整包物化、冲突处理、导入和事件发布仍归 Runtime。已安装 Skill 生命周期不并入，避免市场来源与本地目录管理耦合。
+
+- 第五十五批：Skill Local 使用独立 `skill-local-command-contract`、纯 `skill-local-payloads` 和 `skill-local-handlers`，扫描、外部包检查和本地导入共享文件系统发现边界。注册层只负责解析与传输；目录发现、ZIP 解包、安装、缓存/watch 和事件发布仍归 Runtime。Skill Market 与已安装 Skill 管理不并入，避免来源发现和目录生命周期耦合。
+
+- 第五十四批：Goal 使用独立 `goal-command-contract`、纯 `goal-payloads` 和 `goal-handlers`，设置、读取、清除、暂停与恢复共享目标生命周期边界。注册层只负责可信来源、连接、严格解析和类型化传输；轮次、预算、连续阻塞与自动续跑仍归 Runtime。Skill Local 不并入，避免长期目标状态与本地能力发现耦合。
+
+- 第五十三批：Activity Center 使用独立 `activity-command-contract` 和 `activity-handlers`，运行/外部事件查询与重试锚点解析共享活动读模型边界。注册层只负责过滤解析与传输；分页、标题装饰、敏感 lease 隔离和重试资格仍归 Runtime。Goal 生命周期不并入，避免后台活动投影与长期目标状态耦合。
+
+- 第五十二批：Scheduled Task 使用独立命令合同和 `scheduled-task-handlers`，目录写入、手动触发与历史读取共享调度任务生命周期边界。注册层只负责严格解析与传输；规则计算、持久化、执行和历史记录仍归 Runtime。Activity Center 不并入，避免任务定义与跨来源活动投影耦合。
+
+- 第五十一批：Conversation Ask 使用独立 `conversation-ask-handlers`，回答、取消和待处理查询共享问询生命周期边界。注册层复用 Conversation 类型合同；待处理问询注册表、回答结算和持久事件仍归 Runtime。Scheduled Task 不并入 Ask，避免交互结算与后台调度耦合。
+
+- 第五十批：Conversation Plan 使用独立 `conversation-plan-handlers`，提交、读取、批准、修订和取消共享计划生命周期边界。注册层复用 Conversation 类型合同；revision、批准前置条件和 Run/Graph 原子创建仍归 Runtime。Ask 不并入 Plan，避免两个交互状态机相互依赖。
+
+- 第四十九批：Conversation 路由使用独立 `conversation-routing-handlers`，只包含执行/交互模式、上下文窗口覆盖、轨道升级和目标重绑。注册层复用 Conversation 类型合同；目标兼容性和持久化仍归 Runtime。Plan 与 Ask 不并入路由边界，避免运行控制与交互状态机耦合。
+
+- 第四十八批：Conversation 目录生命周期使用独立 `conversation-management-handlers`，只包含列表、创建、重命名、置顶、归档和删除。它复用既有 Conversation 类型合同与传输入口；运行模式、目标绑定、计划和问答不并入，避免目录元数据与执行生命周期耦合。托盘查询作为同域消费者同步使用类型化入口。
+
+- 第四十七批：Team 使用独立命令合同与注册模块，目录写入和 Team Run 控制共享团队领域边界。注册层只负责传输与解析；成员图、协调者约束、运行创建和状态机继续由 Runtime 拥有。Conversation 不并入 Team 注册，避免团队配置与对话生命周期再次耦合。
+
+- 第四十六批：Global Agent 使用独立命令合同与注册模块，列表、写入、删除和工作区激活共享可变全局智能体边界。注册层只负责传输与解析；实体引用约束、软删除/归档决策、激活持久化和事件发布继续由 Runtime 拥有。删除响应显式建模软归档详情，替代 Renderer 临时断言；Team 保持独立领域。
+
+- 第四十五批：沿用既有 Agent 命令合同和注册模块，补入 create/listVersions/createVersion，使读取、绑定、创建和版本管理共享一个领域边界。注册层只负责传输与解析；定义验证、不可变版本持久化、乐观并发和事件语义继续由 Runtime 拥有。Global Agent 与 Team 不并入 Agent 边界，避免扩大职责。
+
+- 第四十四批：Agent Catalog 使用可扩展的 Agent 命令合同和独立注册模块，当前只纳入 get/updateBinding/list。Runtime 继续拥有默认 Agent 解析、绑定验证和版本存储；Agent 创建/版本写入留作后续批次，Global Agent 与 Team 保持独立领域。
+
+- 第四十三批：Usage 使用单命令合同与独立注册模块，只拥有统计查询过滤和传输顺序。RuntimeClient 继续按命令名提供首次缓存构建的长超时，Runtime 继续拥有 durable event 聚合与缓存，Renderer 继续拥有展示缓存，避免注册层承担统计计算。
+
+- 第四十二批：Policy 使用独立命令合同与注册模块，保存和适用策略列表共享作用域策略边界。注册模块拥有严格解析与调用顺序；Runtime 继续拥有作用域授权、不可变版本、事件事务和最终策略解析，避免 Main 承担审批业务规则。
+
+- 第四十一批：Settings 使用独立命令合同与注册模块，读取和写入共享应用配置边界。注册模块拥有严格解析与调用顺序；Runtime 继续拥有配置存储、更新时间及设置触发的后台重绑定，Policy 等业务策略不并入通用设置模块。
+
+- 第四十批：Kernel Discovery 使用单命令合同与独立注册模块，仅覆盖只读 `kernel.detect`。Runtime 继续拥有注册表扫描和探测语义；桌面安装/更新属于宿主基础设施，`kernel.recycle` 属于运行生命周期，三者不合并为宽泛内核服务。
+
+- 第三十九批：Open Gateway 使用独立命令合同与注册模块，状态、日志查询和清空日志不与设置、内核或 Bot Gateway 合并。注册模块只拥有 IPC 名称和调用顺序；Runtime 继续拥有宽松日志查询归一化、OpenGatewayManager、状态聚合与日志缓冲，避免 Main 复制网关业务规则。
+
+- 第三十八批：Diagnostics 使用单命令合同与独立注册模块；页面查询和桌面诊断导出复用同一类型化 RuntimeClient 入口。注册模块只拥有 IPC 名称、解析和调用顺序，导出组合仍留在 Main 的桌面基础设施边界，Runtime 继续拥有诊断生成与脱敏后的协议结果。
+
+- 第三十七批：Context Packet 使用独立命令合同与注册模块，peek 与 amend 不与 Memory 或诊断查询合并。注册模块只拥有 IPC 名称、严格解析和调用顺序；上下文包生成、线程范围覆盖和受保护来源策略仍由 Runtime 拥有，避免 Main 承担上下文选择规则。
+
+- 第三十六批：Memory 使用独立命令合同与注册模块，列表、决定和回滚不与 Approval Center 或 Context Packet 合并。注册模块只拥有 IPC 名称、严格解析和调用顺序；Memory 策略、持久化和回滚状态仍由 Runtime 拥有，避免主进程承担记忆业务规则。
+
+- 第三十五批：Approval Center 使用独立命令合同与注册模块，列表、评估、入队和决定不与会话工具审批合并。注册模块只拥有 IPC 名称、严格解析和调用顺序；Runtime 继续拥有审批策略、持久化事务、授权和状态机。这样 UI/Preload 的审批中心变更不会牵连 Runtime 审批实现，也避免 Main 组合根持有业务策略。
+
+- 第三十四批：Browser Extension 使用独立命令合同与注册模块，四项无参数命令不与 Profile、Workflow 或浏览器回执合并。扩展连接状态是跨进程线协议，归 Protocol 所有；Desktop 保留默认值与旧宿主归一化，Runtime 保留 WebSocket、配对文件和宿主生命周期。注册层只负责 IPC 名称与来源校验 → 连接 → 请求顺序，避免状态展示或扩展基础设施反向进入 Main 组合根。
+
+- 第三十三批：Desktop Waiting Commands 使用独立命令合同与注册模块，等待列表、继续和取消不与 Browser Handoff 或其他桌面控制命令合并。注册模块只拥有 IPC 名称、严格解析和调用顺序；`expectedUpdatedAt` 继续作为 Runtime 状态变更的乐观并发围栏。这样让等待任务控制可以独立演进，同时避免 Main 组合根直接持有传输细节。
+
+- 第三十二批：Browser Handoff 使用独立命令合同与注册模块，等待列表、继续和取消不与 Workflow 回放或 Recording 生命周期合并。注册模块只拥有 IPC 名称、严格解析和调用顺序；revision 与 lease disposition 仍由协议/Runtime 共同约束。这样保留人工接管的状态边界，避免 UI 组合根直接依赖 Runtime 传输。
+
+- 第三十一批：Browser Workflow 使用独立命令合同与注册模块，8 项草稿/审查/回放命令不并入 Profile 或 Recording。注册模块只拥有 IPC 名称、严格解析和调用顺序；执行与批准执行的长超时仍由 RuntimeClient 命令策略集中决定。该边界让 Workflow 审批和回放演进不牵连 Profile 生命周期或 Recording 采集。
+
+- 第三十批：Browser Recording 使用独立命令合同与注册模块，不复用 Profile 合同，也不提前并入 Workflow。四项命令逐项关联请求/响应；注册模块只拥有 IPC 名称、解析和调用顺序，start/stop 的 30 秒预算继续由 RuntimeClient 命令策略集中决定。该边界允许后续改变录制生命周期而不牵连 Profile 管理或 Workflow 回放。
+
+- 第二十九批：Browser Profile 以独立命令合同和注册模块为边界，不与 Recording/Workflow 合并成通用 Browser RPC barrel。Profile 合同提供六项命令的请求/响应关联；Main 注册模块只拥有 IPC 名称、解析与调用顺序，超时继续由 RuntimeClient 的命令策略集中决定。这样保留域内类型安全，同时避免注册层复制维护超时或持有 Electron/传输实现。
+
+- 第二十八批：共享 Composer 展示组件通过最小 view model 接收数据，不直接依赖 Protocol `GoalStatus` 或 Desktop `TodoProjection`。现有领域/协议对象依靠 TypeScript 结构兼容传入，组件只声明实际读取字段；这样让 `ui-kit` 保持应用无关，同时不增加运行时适配器。Desktop 继续使用薄兼容入口，Website 直接依赖共享导出，架构门禁以显式迁移清单约束三项组件的所有权。
+
+- 第二十七批：共享 UI 采用“稳定无宿主组件先迁移、应用编排留在宿主”的增量策略。`NewMaxComposerFrame` 只包含 React 布局、插槽和动效存在状态，因此进入 `ui-kit`；Desktop 保留薄兼容入口，Website 直接依赖共享包，过渡展示 barrel 不再转发它。样式暂继续由 Shell CSS 提供，避免首批同时迁移主题所有权；架构规则限制兼容入口只能重导出 `ui-kit`，后续按相同标准逐簇收缩 Desktop 源码输入。
+
+- 第二十六批：内置浏览器回执使用一个进程内 rendezvous 对象拥有等待者身份、一次结算和停机取消，不拥有 Event、Socket、持久化或 Worker 动作。Runtime 先登记后发布瞬时事件，Desktop Main 通过单项类型化注册转发回执；未知/重复回执继续显式返回未接受。未把该桥扩成通用事件总线，Profile/Recording/Workflow 仍按各自业务边界处理。
+
+- 第二十五批：首发 Run 绑定以一个纯用例返回模型、Provider、凭据引用、解析来源和上下文窗口事实；Runtime 保留 Agent/Team/Skill、上下文包和 Run 生命周期编排。模块通过目录端口读取元数据，不接触 Storage 实现或 secret；凭据 helper 复用 Core 的既有优先级与 Provider 亲和规则，并供 fallback 重绑定复用，避免首发与重绑定产生两套密钥选择语义。
+
+- 第二十四批：工具审批 IPC 按业务用例独立注册，只通过 `handle/assertSource/ensureConnection/requestConversation` 四个宿主端口装配。解析继续发生在连接之后，以保持已有错误时序；审批状态机、持久授权和过期恢复不下沉到 Main。两项审批命令进入协议关联映射和 AST 门禁，不引入通用 IPC 框架。
+
+- 第二十三批：Renderer transient Hook 只拥有外部订阅资源与 scope generation，不拥有帧投影和消息状态。订阅 effect 依赖 primitive scope/thread/enabled 与稳定 transport port；游标及事件处理器通过 ref 读取最新值，避免展示回调身份变化造成退订/重订阅。ChatView 继续拥有批处理和 durable fallback，因为它们依赖消息、进程与委派展示状态，留待独立展示管线边界处理。
+
+- 第二十二批：活跃审批控制器拥有瞬时等待状态和结算顺序，但不拥有授权策略、SQLite 事务或协议传输。采用单一当前工具记录替代整轮聊天/工具快照；决策通过 commit/record/publish 窄端口装配，提交失败不消费等待者。取消路径由 settle 在回调前删除身份，防止 Abort、Run 取消和替换竞态重复唤醒；授权范围与持久 grant 继续复用既有策略及原子提交 helper。
+
+- 第二十一批：导航目录数据、导航交互和 ChatView 消息所有权保持三层。交互 Hook 只通过回调读取目标存在性、加载锚点页、更新 render window 和写 programmatic scroll；不接触消息合并、缓存或宿主 API。高频滑动状态使用 ref，scope-keyed loading 直接派生而非等待 effect 清空；用户交互继续停留在事件处理器，不引入新的全局状态或 effect 驱动导航。
+
+- 第二十批：transient IPC 模块拥有订阅注册、帧路由和 sender 生命周期状态，但不拥有可信 URL 判断或 RuntimeSession 的订阅实现。选择按 sender ID 的局部集合和宿主回调，而不是引入全局事件总线；保持订阅成功后才绑定销毁清理、取消订阅不连接、销毁清理异步触发的现有顺序。该模块与 query/write 注册共同受基础设施反向依赖门禁约束。
+
+- 第十九批：会话写操作注册通过窄宿主端口从 Main 入口拆出，但图片暂存/存储和 Runtime 传输仍归基础设施装配。写模块拥有运行时解析、调用顺序和附件补写用例，不引入通用 IPC 框架。append 的分阶段提交语义、compact 的 120 秒等待和错误身份保持；架构门禁同时约束读写注册模块不得直接依赖 Electron、RuntimePipeClient 或 Storage。
+
+- 第十八批：委派任务列表与单报告是两个读取用例。单报告先通过读模型主键读取，只有缺失才查询旧消息；旧消息定位下推到 SQLite，MessageHistory 保留卡片格式解析，HistoryQuery 不依赖 SQL 或消息实现。没有为旧 JSON 建表达式索引或批量回填，因为当前目标是避免不必要的对象物化且不增加迁移风险；列表路径仍负责完整兼容合并，后续有量化瓶颈再单独分页下推。
+
+- 第十七批：事件/checkpoint Store 是委派事件投影的事务所有者；投影 Store 提供不再开启事务的参与者入口，同时保留独立历史修复所需的原子批量入口。选择窄投影接口和显式生产装配，而不是引入通用 Unit of Work/事件总线；这样保留 SQLite 同连接原子性，也避免在事务内部临时构造 Store 或嵌套事务。默认构造仅用于现有直接调用兼容，生产路径复用同一个委派 Store 实例。
+
+- 第十六批：官网演示的应用状态、入口和构建归 Website；Desktop 用一个显式展示接口提供真实组件。这里选择源代码适配层而非立即复制 50 余个组件或建立过大的共享包，以保持官网与桌面交互一致并控制单批风险。Website 禁止直连 Desktop 内部，相应适配层禁止反向导入 Website。构建仍追踪 Desktop 源码，后续按稳定组件簇迁入共享 UI 包；展示接口是过渡边界，不作为通用 UI barrel。遵循 React 包体实践，能力页面保持 lazy 加载，打包预算和代码分割不变。
+
+- 第十四、十五批：模型回退用例只选择候选并返回失败计数，不持有 DemoRunState 或具体目录存储。Runtime 把模型投影为包含 compatible 的窄候选，继续复用完整视觉能力判定（含用户覆盖），并拥有重绑定及 fallback/context 事件事务。默认会话模型解析通过 Agent/Team 目录端口读取，不增加缓存。审批恢复用例限定于没有活动等待者的请求，通过读状态与持久化过期决定两个端口工作；只有持久化成功才回执。活跃审批的授权准备/提交/激活事务不迁移，本轮不改变权限模型。
+
+- 第十二、十三批：草稿恢复由独立 Hook 管理，继续复用现有按工作区/会话隔离的失败草稿存储；请求失败后的空输入恢复、较新输入保护与附件合并属于同一职责。消息提交用例只依赖 prepare/append 两个端口，返回回执和图片提示描述，乐观消息与 UI 焦点留在 ChatView。按 React 实践保持事件触发与函数式状态更新，不把发送搬进 effect。
+- Main 的 9 个只读会话查询注册独立成组，通过注册、来源校验、连接和类型化请求四个宿主端口装配。保留现有解析器、校验/连接顺序与错误传播，不引入通用 IPC 框架。聊天命令契约从 3 项扩展到 12 项；sendMessage 增加 IPC 形状解析，保留原文本空白及图片独立发送的空正文，非法 modelId 类型提前拒绝。Runtime 仍负责业务校验；compact 的 120 秒传输等待设置保留。
+
+- 第十一批：压缩的三个入口共享独立 Hook，由每会话请求标识与宿主 operationId 分别管理本地调用和宿主活动，替代跨入口布尔锁。宿主事件优先于迟到 RPC 回显；消失计时器绑定具体进度及截止时间，以支持新操作覆盖和 StrictMode 重放。Runtime 继续拥有实际压缩/摘要/持久化，Renderer 不引入新超时或全局压缩缓存；事件处理不会自行发起压缩请求，用户动作和发送前检查仍是请求入口。
+
+- 第十批：正文展示的异步状态携带来源身份，在渲染阶段匹配后消费；历史页在派生渲染窗口前校验会话/任务范围。副作用取消负责阻止迟到结果，来源匹配负责阻止清理前的错误显示和读取，两者各有职责。保持展示与复制/重新生成的独立取消生命周期，不引入共享全文缓存；并发读取测试按协议引用和 offset 路由，避免依赖全局调用顺序。
+
+- 第九批：聊天队列以独立 Hook 管理每会话草稿与发送尝试，通过窄回调接入发送；协议请求组装使用纯函数。保留现有 localStorage 格式与实例内会话锁，不引入全局队列或新的跨进程保证。压缩、附件落盘和乐观 UI 仍留在 ChatView，后续按独立生命周期迁移；新模块由架构规则约束，不反向导入 ChatView、宿主通信或基础设施实现。
+
+- 第八批：委派展示采用窄输入的纯投影函数，执行事实读取与广播副作用继续由 Runtime 编排，避免通过新的大宿主接口转移耦合。用量转换消费已有 process 去重结果，不引入第二套计费累计；重连快照函数仅返回归属当前父任务的更新。派发与父工具行匹配共用协作策略中的工具名集合。
+
+- 第七批：DelegationService 作为状态所有者和兼容门面，消息表示与缓存由 DelegationMessageHistory 管理，列表/报告查询由 DelegationHistoryQuery 管理。查询只消费领域记录端口，历史模块不反向依赖门面或执行用例。已有事件支撑的修复才持久化，临时存活观察仍只影响查询结果；不增加异步队列或新的事务边界。
+
+- 第六批：委派准入服务通过 getSettings/getCatalog 两个只读端口获取事实，复用既有协作和时限策略，不接收 Runtime、DemoRunState 或存储对象。校验和读取顺序保留，返回带判别字段的准入结果；写权限和子任务启动事务继续由 Runtime 管理。有效工作区目录每次读取，避免把激活状态缓存成过期事实。
+
+- 第五批：委派执行控制器拥有计时器、取消监听与执行清理，仅依赖 RunId 和六个宿主端口；Runtime 保留事务和领域状态。时限策略独立，避免后台与同步委派的默认/上限散落在编排代码中。架构门禁禁止控制器反向依赖 Runtime、DemoRunState 和基础设施。
+
+- 第四批：Runtime 在事件压缩前生成委派事实，Shared 校验领域快照，Storage 原子提交事件/状态/checkpoint。事件保存重放所需数据，恢复不依赖活跃执行器或卡片截断文本；保留旧事件兼容，不新增框架、后台投影队列或数据库迁移。
+
+- 第三批：review-outcome、rework-artifacts、review-transition 沿用 Shared 的纯策略边界，不引入新的包依赖。存储层在事务内读取事实、调用策略并执行 SQL；持久数据完整性、租约与事件提交继续由存储负责。结论结构校验与产物绑定分开，保留原错误优先级。
+
+- 第二批：调度/审批/上下文 DTO、错误类型和无状态诊断清理归 Shared 所有，Storage 仅保留兼容重导出；调度器通过 Runtime 定义的窄端口访问实现。生产装配与 SQLite 原子事务继续留在基础设施层。
+
+- 用户批准架构审查后的渐进方案，优先修复委派状态丢失和双端终态口径，再建立服务、仓库、数据类型与 RPC 契约接缝。
+- 独立 delegated_run 读模型保存任务事实，旧消息卡片继续兼容；取消/终态由 Runtime 负责，UI 和模型消费同一来源。
+- 维持模块化单体和 SQLite 事务边界；纯完成策略沿用 shared 的既有 review-policy 放置方式。本批未新增框架或依赖。
+- Website 先显式声明跨包构建输入，再逐步抽取共享演示包；原性能预算保留。Desktop 使用已声明的 UTF-8 编码减少转义冗余。
+- 接缝、风险与剩余范围见 [重构落地记录](cohesion-refactor-2026-09-19.md)。
+
 ## TD-Cloud-Accounts：独立自托管账号服务与静态官网（2026-09-07）
 
 - 用户确认方案 A：Node.js + Better Auth 邮箱密码账号，SMTP 验证与重设密码；独立 SQLite 账号库。GitHub OAuth 与 Supabase 托管方案暂缓。详细比较和阶段边界见 `17-cloud-account-launch.md`。
@@ -1796,3 +2055,17 @@ Computer Use built-in plugin
 - 决策：Renderer允许Runtime已验证的无runId旧行恢复，仍拒绝明确的其它run；合并保留用户草稿，不自动发送或继承旧批准。检查、安装、验证独立表达，已安装内核checking时保持可选。
 - 证据：18项新增回归、三包4059项全量、12个实际三内核Electron场景；同一个真实失败旧数据库升级后原文恢复与NULL行不变通过。EXPLAIN约束无SCAN；最终构建/Runtime/Renderer指纹一致，见审查18.20。
 - 边界：不同旧事件布局不做不确定匹配。初始QA的Main/Runtime内核目录不一致引发真正安装，用复制真实版本修正夹具后重跑，不把installing假装成checking。文件变更必须有执行事实和失效过程终态仍待统一；图片/其它模型及原六方向不因此自动完成。
+
+## TD081：Renderer 能力目录缓存与页面交互状态分离（2026-09-20）
+
+- 决策：Skill 与 MCP 使用各自的 Renderer 目录加载器；加载器只负责请求规范、Runtime bridge 身份隔离、in-flight 合并、成功快照、失败重试和代次失效，不持有组件 loading/error、筛选、选择或编辑状态。
+- 刷新：普通消费者复用成功快照；用户显式刷新与目录 Mutation 由拥有该动作的宿主触发失效。失效前仍在途的响应不得重新写入旧快照，必须按当前代次重读。
+- 隔离：Skill 按 workspace scope 分区，MCP 当前为 bridge 级全局目录；两者不合并成通用多模式缓存。Agent Library 继续独立结算两类目录失败，避免一个源失败阻断另一个源。
+- 约束：生产 Renderer Shell 只有对应加载器可直接调用 `listSkills` / `listMcpServers`，由 AST 门禁和消费者回归保护；本决策不改变 Runtime 合同、MCP 注册数据或页面交互行为。
+
+## TD082：机器人平台各保留一个 Gateway 生命周期（2026-09-20）
+
+- 决策：Telegram 与其它平台一样，只由 `BotChannelGatewayManager` 调度一个 `TelegramGateway`；Runtime 只提供规范化消息到持久 Conversation/Run 的业务回调，不再持有平台专属 HTTP client、轮询 Abort、offset 或 reply 流程。
+- 兼容：旧 Telegram 配置形状由 `BotChannelConfigStore` 在读取时迁移到统一 secret handles/settings/identity 投影。历史数据兼容属于配置解析，不构成保留第二套网络运行时的理由。
+- 生命周期：保存配置后重启对应 Gateway，Runtime 启动恢复所有已启用平台，关闭时统一 `stopAll()`；平台锁继续保证同一通道启停/测试串行。
+- 约束：旧 `telegram-bot-client.ts` 和 Runtime 的 Telegram-only handler/loop/会话成员不得恢复。该决策不改变 Telegram 消息、模型运行、持久会话或回复文本语义。

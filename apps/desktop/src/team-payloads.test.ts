@@ -1,11 +1,96 @@
 ﻿import { describe, expect, it } from 'vitest';
 import {
   parseConversationDecideToolApprovalPayload,
+  parseConversationSendMessagePayload,
   parseConversationGetContextStatusPayload,
   parseConversationGetRunProcessPayload,
   parseConversationListRunTimelinePayload,
+  parseListConversationsPayload,
   parseSetConversationContextWindowOverridePayload,
+  parseCreateGlobalAgentPayload,
+  parseUpdateGlobalAgentPayload,
 } from './team-payloads.js';
+
+describe('global Agent write policy', () => {
+  it('preserves an explicit policy on create', () => {
+    const parsed = parseCreateGlobalAgentPayload({
+      name: 'Researcher',
+      defaultModelId: 'model-1',
+      writePolicy: 'read-only',
+    });
+    expect(parsed.writePolicy).toBe('read-only');
+  });
+
+  it('preserves an explicit policy on update', () => {
+    const parsed = parseUpdateGlobalAgentPayload({ agentId: 'agent-1', writePolicy: 'inherit' });
+    expect(parsed.writePolicy).toBe('inherit');
+  });
+
+  it('leaves the policy undefined when the editor omits it', () => {
+    expect(parseUpdateGlobalAgentPayload({ agentId: 'agent-1' }).writePolicy).toBeUndefined();
+  });
+
+  it.each([{ writePolicy: 'writable' }, { writePolicy: '' }, { writePolicy: null }, { writePolicy: 1 }])(
+    'rejects an unknown policy %#',
+    (policy) => {
+      expect(() => parseUpdateGlobalAgentPayload({ agentId: 'agent-1', ...policy })).toThrow(
+        'Invalid update-global-agent payload',
+      );
+      expect(() =>
+        parseCreateGlobalAgentPayload({
+          name: 'Researcher',
+          defaultModelId: 'model-1',
+          ...policy,
+        }),
+      ).toThrow('Invalid create-global-agent payload');
+    },
+  );
+});
+
+describe('parseListConversationsPayload', () => {
+  it('preserves a bounded catalog cursor and page size', () => {
+    expect(
+      parseListConversationsPayload({
+        workspaceId: 'workspace-a',
+        includeArchived: true,
+        cursor: 'cursor-a',
+        limit: 100,
+      }),
+    ).toEqual({
+      track: undefined,
+      workspaceId: 'workspace-a',
+      includeArchived: true,
+      cursor: 'cursor-a',
+      limit: 100,
+    });
+  });
+
+  it.each([
+    { cursor: '' },
+    { cursor: 'x'.repeat(2_049) },
+    { limit: 0 },
+    { limit: 201 },
+    { limit: 1.5 },
+    { unexpected: true },
+  ])('rejects malformed catalog pagination %#', (payload) => {
+    expect(() => parseListConversationsPayload(payload)).toThrow(
+      'Invalid list-conversations payload',
+    );
+  });
+});
+
+describe('parseConversationSendMessagePayload', () => {
+  it('preserves draft whitespace, empty image-only text and the optional model override', () => {
+    for (const text of ['', '  read this\n']) {
+      const payload = { conversationId: 'conversation', text, modelId: 'model' };
+      expect(parseConversationSendMessagePayload(payload)).toEqual(payload);
+    }
+    expect(parseConversationSendMessagePayload({ conversationId: 'conversation', text: '' })).toMatchObject({ conversationId: 'conversation', text: '' });
+  });
+  it.each([null, [], {}, { conversationId: 1, text: '' }, { conversationId: 'c', text: 1 }, { conversationId: 'c', text: '', modelId: 1 }])('rejects malformed send payload %j', (payload) => {
+    expect(() => parseConversationSendMessagePayload(payload)).toThrow('Invalid conversation-send-message payload');
+  });
+});
 
 describe('parseConversationDecideToolApprovalPayload', () => {
   it('preserves the real approval scope and defaults legacy calls to once', () => {

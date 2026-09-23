@@ -12,6 +12,7 @@ const runtime = {
   getConversationRunProcess: vi.fn(),
   listConversationMessages: vi.fn(),
   openTask: vi.fn(),
+  readApprovalRequestImage: vi.fn(),
   sendConversationMessage: vi.fn(),
 };
 
@@ -108,6 +109,9 @@ beforeEach(() => {
     hasMore: false,
   });
   runtime.getConversationRunProcess.mockReset().mockResolvedValue({ process: null });
+  runtime.readApprovalRequestImage
+    .mockReset()
+    .mockResolvedValue({ dataUrl: 'data:image/png;base64,AAAA', mimeType: 'image/png' });
   runtime.sendConversationMessage.mockReset().mockResolvedValue({
     threadId: 'thread-terminal',
     taskVersion: 1,
@@ -124,6 +128,66 @@ afterEach(() => {
 });
 
 describe('ChatView terminal failure reason', () => {
+  it('replays the interrupted request images when continuing an answer', async () => {
+    const imageUserMessage = {
+      ...userMessage,
+      runId: 'run-cancelled',
+      blocks: [
+        {
+          type: 'text',
+          text: '请读图并说明画面内容',
+          payload: { skillVersionIds: ['skill-review-v1'] },
+        },
+        {
+          type: 'image',
+          payload: {
+            id: 'image-read-1',
+            name: '截图.png',
+            mimeType: 'image/png',
+            storageRef: 'user-before-failure-1.png',
+          },
+        },
+      ],
+    } as unknown as Message;
+    runtime.listConversationMessages.mockResolvedValue({
+      messages: [imageUserMessage, cancelledMessage],
+      hasMore: false,
+    });
+
+    render(
+      <ChatView
+        conversation={conversation}
+        modelName="gpt-5.6-luna"
+        models={[{ modelId: 'model-terminal', displayName: 'gpt-5.6-luna', providerName: 'Relay' }]}
+        eventHistory={[]}
+        onTitleUpdated={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText('回答已中断')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '继续回答' }));
+    await waitFor(() =>
+      expect(runtime.appendMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: '继续上一条未完成的回答。',
+          images: [
+            expect.objectContaining({
+              name: '截图.png',
+              mimeType: 'image/png',
+              dataUrl: 'data:image/png;base64,AAAA',
+            }),
+          ],
+        }),
+      ),
+    );
+    expect(runtime.readApprovalRequestImage).toHaveBeenCalledWith({
+      conversationId: conversation.id,
+      messageId: imageUserMessage.id,
+      runId: imageUserMessage.runId,
+      imageId: 'image-read-1',
+    });
+  });
+
   it('offers working continue and retry actions for an interrupted answer', async () => {
     runtime.listConversationMessages.mockResolvedValue({
       messages: [

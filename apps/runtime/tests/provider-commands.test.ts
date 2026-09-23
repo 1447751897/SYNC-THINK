@@ -99,7 +99,15 @@ async function hello(
       appVersion: '0.0.1',
       installId,
       nonce: randomBytes(8).toString('hex'),
-      features: ['provider.create', 'provider.list', 'provider.discoverModels', 'provider.addModels', 'provider.probeCapabilities', 'provider.confirmCapabilities'],
+      features: [
+        'provider.create',
+        'provider.list',
+        'provider.discoverModels',
+        'provider.addModels',
+        'provider.probeCapabilities',
+        'provider.confirmCapabilities',
+        'provider.balance',
+      ],
     },
   });
   expect(resp.payload).toMatchObject({ ok: true });
@@ -116,6 +124,113 @@ function walkFiles(root: string): string[] {
 }
 
 describe('provider commands', () => {
+  it('manages provider credentials without exposing secrets outside explicit reveal', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sync-think-provider-credential-'));
+    tempDirs.push(dir);
+    const installId = `test-prov-credential-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const primarySecret = 'sk-PRIMARY_SECRET_001';
+    const secondarySecret = 'sk-SECONDARY_SECRET_002';
+    const rotatedSecret = 'sk-ROTATED_SECRET_003';
+    const session = await openPersistentRuntime({
+      dbPath: join(dir, 'sync-think.db'),
+      installId,
+      allowNoToken: true,
+      secureStoreKeyPath: join(dir, 'secure', 'key.bin'),
+      demoProvider: new FakeProvider(),
+    });
+    await session.runtime.start();
+
+    try {
+      const sock = await connectRuntime(installId);
+      const reader = createFrameReader(sock);
+      await hello(sock, reader, installId);
+
+      const created = await writeAndRead(sock, reader, {
+        id: 'credential-create',
+        kind: 'request',
+        type: 'provider.create',
+        payload: {
+          name: 'Credential Gateway',
+          baseUrl: 'https://credential.example/v1',
+          protocol: 'openai-chat',
+          apiKey: primarySecret,
+          supportsDiscovery: false,
+        },
+      });
+      expect(created.error).toBeUndefined();
+      const providerId = (created.payload as { provider: { providerId: string } }).provider
+        .providerId;
+
+      const added = await writeAndRead(sock, reader, {
+        id: 'credential-add',
+        kind: 'request',
+        type: 'provider.addCredential',
+        payload: { providerId, apiKey: secondarySecret, label: 'secondary' },
+      });
+      expect(added.error).toBeUndefined();
+      expect(JSON.stringify(added)).not.toContain(secondarySecret);
+      const credentialRefId = (added.payload as { credentialRefId: string }).credentialRefId;
+
+      const revealed = await writeAndRead(sock, reader, {
+        id: 'credential-reveal',
+        kind: 'request',
+        type: 'provider.revealCredential',
+        payload: { providerId, credentialRefId },
+      });
+      expect(revealed.error).toBeUndefined();
+      expect(revealed.payload).toMatchObject({
+        providerId,
+        credentialRefId,
+        label: 'secondary',
+        apiKey: secondarySecret,
+      });
+
+      const updated = await writeAndRead(sock, reader, {
+        id: 'credential-update',
+        kind: 'request',
+        type: 'provider.updateCredential',
+        payload: { providerId, credentialRefId, label: 'rotated', apiKey: rotatedSecret },
+      });
+      expect(updated.error).toBeUndefined();
+      expect(updated.payload).toMatchObject({ credentialRefId, secretRotated: true });
+      expect(JSON.stringify(updated)).not.toContain(rotatedSecret);
+
+      const revealedAfterRotation = await writeAndRead(sock, reader, {
+        id: 'credential-reveal-rotated',
+        kind: 'request',
+        type: 'provider.revealCredential',
+        payload: { providerId, credentialRefId },
+      });
+      expect(revealedAfterRotation.payload).toMatchObject({
+        label: 'rotated',
+        apiKey: rotatedSecret,
+      });
+
+      const removed = await writeAndRead(sock, reader, {
+        id: 'credential-remove',
+        kind: 'request',
+        type: 'provider.removeCredential',
+        payload: { providerId, credentialRefId },
+      });
+      expect(removed.error).toBeUndefined();
+      expect(removed.payload).toMatchObject({ removed: true });
+
+      const cleared = await writeAndRead(sock, reader, {
+        id: 'credential-clear',
+        kind: 'request',
+        type: 'provider.clearCredentials',
+        payload: { providerId },
+      });
+      expect(cleared.error).toBeUndefined();
+      expect(cleared.payload).toMatchObject({ cleared: 1 });
+      expect(JSON.stringify(cleared)).not.toContain(primarySecret);
+
+      sock.destroy();
+    } finally {
+      await session.close();
+    }
+  }, 20_000);
+
   it('creates provider with secure key, discovers fake models, lists without secrets', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'sync-think-provider-cmd-'));
     tempDirs.push(dir);
@@ -190,6 +305,20 @@ describe('provider commands', () => {
       expect(listPayload.providers).toHaveLength(1);
       expect(JSON.stringify(listed)).not.toContain(secret);
 
+      const balance = await writeAndRead(sock, reader, {
+        id: 'prov-balance-unsupported',
+        kind: 'request',
+        type: 'provider.balance',
+        payload: { providerId: createPayload.provider.providerId },
+      });
+      expect(balance.error).toBeUndefined();
+      expect(balance.payload).toMatchObject({
+        providerId: createPayload.provider.providerId,
+        supported: false,
+        buckets: [],
+      });
+      expect(JSON.stringify(balance)).not.toContain(secret);
+
       // SQLite and vault directory must not contain plaintext key in clear form on DB files
       for (const file of walkFiles(dir)) {
         if (!existsSync(file) || statSync(file).isDirectory()) continue;
@@ -212,8 +341,64 @@ describe('provider commands', () => {
         },
       });
       expect(added.error).toBeUndefined();
-      const addPayload = added.payload as { models: Array<{ providerModelId: string }> };
-      expect(addPayload.models.some((m) => m.providerModelId === 'manual-extra')).toBe(true);
+      const addPayload = added.payload as {
+        models: Array<{ modelId: string; providerModelId: string; priority: number }>;
+      };
+      const manualModel = addPayload.models.find((m) => m.providerModelId === 'manual-extra');
+      expect(manualModel).toBeDefined();
+
+      const prioritized = await writeAndRead(sock, reader, {
+        id: 'prov-prioritize',
+        kind: 'request',
+        type: 'provider.setModelPriorities',
+        payload: {
+          providerId: createPayload.provider.providerId,
+          entries: [{ modelId: manualModel!.modelId }],
+        },
+      });
+      expect(prioritized.error).toBeUndefined();
+      const priorityPayload = prioritized.payload as {
+        models: Array<{ modelId: string; priority: number }>;
+      };
+      expect(priorityPayload.models.find((m) => m.modelId === manualModel!.modelId)?.priority).toBe(
+        0,
+      );
+
+      const updatedModel = await writeAndRead(sock, reader, {
+        id: 'prov-model-update',
+        kind: 'request',
+        type: 'provider.updateModel',
+        payload: {
+          providerId: createPayload.provider.providerId,
+          modelId: manualModel!.modelId,
+          displayName: 'Manual Extra Renamed',
+          contextWindow: 32768.4,
+        },
+      });
+      expect(updatedModel.error).toBeUndefined();
+      expect(updatedModel.payload).toMatchObject({
+        providerId: createPayload.provider.providerId,
+        model: {
+          modelId: manualModel!.modelId,
+          displayName: 'Manual Extra Renamed',
+          contextWindow: 32768,
+        },
+      });
+
+      const removedModel = await writeAndRead(sock, reader, {
+        id: 'prov-model-remove',
+        kind: 'request',
+        type: 'provider.removeModel',
+        payload: {
+          providerId: createPayload.provider.providerId,
+          modelId: manualModel!.modelId,
+        },
+      });
+      expect(removedModel.error).toBeUndefined();
+      expect(removedModel.payload).toEqual({
+        providerId: createPayload.provider.providerId,
+        removed: true,
+      });
 
       sock.destroy();
     } finally {
@@ -294,6 +479,23 @@ describe('provider commands', () => {
       const sock = await connectRuntime(installId);
       const reader = createFrameReader(sock);
       await hello(sock, reader, installId);
+
+      const ephemeralProbe = await writeAndRead(sock, reader, {
+        id: 'prov-probe-real',
+        kind: 'request',
+        type: 'provider.probeModels',
+        payload: {
+          baseUrl: 'https://gateway.example/v1',
+          protocol: 'openai-chat',
+          apiKey: secret,
+        },
+      });
+      expect(ephemeralProbe.error).toBeUndefined();
+      expect(ephemeralProbe.payload).toMatchObject({
+        discoveredIds: expect.arrayContaining(['gpt-4o-mini', 'gpt-4o', 'deepseek-chat']),
+        protocol: 'openai-chat',
+      });
+      expect(JSON.stringify(ephemeralProbe)).not.toContain(secret);
 
       const created = await writeAndRead(sock, reader, {
         id: 'prov-create-real',
@@ -417,7 +619,11 @@ describe('provider commands', () => {
       });
       expect(diags.error).toBeUndefined();
       const diagPayload = diags.payload as {
-        diagnostics: Array<{ summary: string; failureClass?: string; detail: Record<string, unknown> }>;
+        diagnostics: Array<{
+          summary: string;
+          failureClass?: string;
+          detail: Record<string, unknown>;
+        }>;
       };
       const discoveryDiag = diagPayload.diagnostics.find((d) =>
         /Discovery failed/i.test(d.summary),
@@ -432,7 +638,6 @@ describe('provider commands', () => {
       await session.close();
     }
   }, 20_000);
-
 
   it('probes capabilities as suggestions then confirms user edits', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'sync-think-provider-caps-'));
@@ -467,7 +672,10 @@ describe('provider commands', () => {
       });
       expect(created.error).toBeUndefined();
       const createPayload = created.payload as {
-        provider: { providerId: string; models: Array<{ modelId: string; providerModelId: string }> };
+        provider: {
+          providerId: string;
+          models: Array<{ modelId: string; providerModelId: string }>;
+        };
       };
       const providerId = createPayload.provider.providerId;
 
@@ -526,7 +734,9 @@ describe('provider commands', () => {
           }>;
         }>;
       };
-      const listedGpt = listPayload.providers[0]!.models.find((m) => m.providerModelId === 'gpt-4o')!;
+      const listedGpt = listPayload.providers[0]!.models.find(
+        (m) => m.providerModelId === 'gpt-4o',
+      )!;
       expect(listedGpt.capabilitiesConfirmed).toBe(false);
       expect(listedGpt.capabilities).toEqual(expect.arrayContaining(['text', 'vision']));
 
@@ -555,7 +765,13 @@ describe('provider commands', () => {
         payload: {},
       });
       const list2 = listed2.payload as {
-        providers: Array<{ models: Array<{ providerModelId: string; capabilitiesConfirmed: boolean; capabilities: string[] }> }>;
+        providers: Array<{
+          models: Array<{
+            providerModelId: string;
+            capabilitiesConfirmed: boolean;
+            capabilities: string[];
+          }>;
+        }>;
       };
       const gpt2 = list2.providers[0]!.models.find((m) => m.providerModelId === 'gpt-4o')!;
       expect(gpt2.capabilitiesConfirmed).toBe(true);
@@ -695,5 +911,4 @@ describe('provider commands', () => {
       await session.close();
     }
   }, 20_000);
-
 });

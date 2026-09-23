@@ -233,6 +233,7 @@ export function ruleScheduleShape(
     case 'at':
       return { shape: 'once', at: Date.parse(rule.runAt) };
     case 'every':
+    case 'weekly':
     case 'cron':
       return { shape: 'recurring' };
     case 'random': {

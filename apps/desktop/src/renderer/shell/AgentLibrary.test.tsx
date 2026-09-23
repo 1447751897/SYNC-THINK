@@ -1,12 +1,14 @@
 /**
  * @vitest-environment jsdom
  */
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { ComponentProps } from 'react';
 import type { GlobalAgent, Team, TeamMember } from '@sync-think/shared';
 import { AgentLibrary } from './AgentLibrary.js';
 import { DialogProvider } from './Dialog.js';
+import { invalidateMcpCatalog } from './mcp-catalog-loader.js';
+import { invalidateSkillCatalog } from './skill-catalog-loader.js';
 
 vi.mock('./compose-toolbar.js', () => ({
   ModelPickerMenu: () => null,
@@ -74,6 +76,11 @@ function renderLibrary(
     ),
   };
 }
+
+beforeEach(() => {
+  invalidateMcpCatalog();
+  invalidateSkillCatalog();
+});
 
 afterEach(() => {
   cleanup();
@@ -145,7 +152,9 @@ describe('AgentLibrary shared visual structure', () => {
     expect(screen.queryByText('Agent Alpha')).toBeNull();
     expect(screen.queryByText('Agent Beta')).toBeNull();
 
-    fireEvent.click(within(screen.getByRole('group', { name: '范围筛选' })).getByRole('button', { name: /全部/ }));
+    fireEvent.click(
+      within(screen.getByRole('group', { name: '范围筛选' })).getByRole('button', { name: /全部/ }),
+    );
     expect(screen.getByText('Agent Alpha')).toBeTruthy();
     expect(screen.getByText('Agent Beta')).toBeTruthy();
 
@@ -177,8 +186,14 @@ describe('AgentLibrary shared visual structure', () => {
 
     // Both filter groups contain a 「全部」 chip, so scope every query to the
     // group under test.
-    const policy = within(screen.getByRole('group', { name: '写入策略筛选' }));
-    const status = within(screen.getByRole('group', { name: '状态筛选' }));
+    const policyGroup = screen.getByRole('group', { name: '写入策略筛选' });
+    const statusGroup = screen.getByRole('group', { name: '状态筛选' });
+    const policy = within(policyGroup);
+    const status = within(statusGroup);
+
+    expect(policyGroup.classList.contains('shell-sliding-tabs')).toBe(true);
+    expect(policyGroup.querySelector('.shell-sliding-tabs__pill')).toBeTruthy();
+    expect(statusGroup.classList.contains('shell-sliding-tabs')).toBe(true);
 
     // agent-alpha defaults to read-only, agent-beta inherits.
     fireEvent.click(policy.getByRole('button', { name: /继承当前会话/ }));
@@ -268,8 +283,6 @@ describe('AgentLibrary tabbed detail drawer', () => {
     updatedAt: '2026-08-08T00:00:00.000Z',
   };
 
-
-
   function openDrawer() {
     fireEvent.click(cardByName('Agent Alpha'));
     expect(screen.getByTestId('agent-detail-drawer')).toBeTruthy();
@@ -331,9 +344,12 @@ describe('AgentLibrary tabbed detail drawer', () => {
       ],
     });
 
+    const scopeGroup = screen.getByRole('group', { name: '范围筛选' });
+    expect(within(scopeGroup).getByRole('button', { name: /工作区 一/ })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '配置 Agent Alpha 的激活工作区' }));
-    expect(screen.getByTestId('agent-workspace-menu-agent-alpha')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: /工作区 一/ }));
+    const workspaceMenu = screen.getByTestId('agent-workspace-menu-agent-alpha');
+    expect(workspaceMenu).toBeTruthy();
+    fireEvent.click(within(workspaceMenu).getByRole('button', { name: /工作区 一/ }));
 
     await waitFor(() => {
       expect(setGlobalAgentWorkspaceActivation).toHaveBeenCalledWith({
@@ -412,7 +428,9 @@ describe('AgentLibrary tabbed detail drawer', () => {
 
     const policy = screen.getByRole('group', { name: '委派写入权限' });
     expect(
-      within(policy).getByRole('button', { name: /继承当前会话/ }).getAttribute('aria-pressed'),
+      within(policy)
+        .getByRole('button', { name: /继承当前会话/ })
+        .getAttribute('aria-pressed'),
     ).toBe('true');
   });
 

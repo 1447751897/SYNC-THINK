@@ -5,7 +5,8 @@
  * 数据源：daemon:* IPC（daemon 独立管道）。
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
+import { useVisiblePolling } from './use-visible-polling.js';
 
 export interface DaemonStatusPayload {
   running: boolean;
@@ -24,25 +25,30 @@ const POLL_MS = 3_000;
 function useDaemonStatus(): {
   status: DaemonStatusPayload | null;
   refresh: () => void;
+  error?: string;
 } {
   const [status, setStatus] = useState<DaemonStatusPayload | null>(null);
-  const refresh = useCallback(() => {
-    void window.syncThink?.runtime?.requestDaemonStatus?.().then((result) => {
-      if (result && typeof result === 'object' && 'payload' in result) {
-        setStatus((result.payload as DaemonStatusPayload) ?? null);
-      }
-    });
+  const [error, setError] = useState<string>();
+  const load = useCallback(async (): Promise<void> => {
+    const requestStatus = window.syncThink?.runtime?.requestDaemonStatus;
+    if (!requestStatus) return;
+    const result = await requestStatus();
+    if (!result.ok) throw new Error(result.error || '守护进程状态刷新失败。');
+    setStatus((result.payload as DaemonStatusPayload | undefined) ?? null);
+    setError(undefined);
   }, []);
-  useEffect(() => {
-    refresh();
-    const timer = setInterval(refresh, POLL_MS);
-    return () => clearInterval(timer);
-  }, [refresh]);
-  return { status, refresh };
+  const handleError = useCallback((reason: unknown) => {
+    setError(reason instanceof Error ? reason.message : '守护进程状态刷新失败。');
+  }, []);
+  useVisiblePolling(load, { intervalMs: POLL_MS, onError: handleError });
+  const refresh = useCallback(() => {
+    void load().catch(handleError);
+  }, [handleError, load]);
+  return { status, refresh, error };
 }
 
 export function DaemonCard() {
-  const { status, refresh } = useDaemonStatus();
+  const { status, refresh, error } = useDaemonStatus();
 
   const handleStop = async (): Promise<void> => {
     await window.syncThink?.runtime?.daemonStop?.();
@@ -86,6 +92,11 @@ export function DaemonCard() {
           </span>
         ) : null}
       </div>
+      {error ? (
+        <p className="settings-connectors-notice is-error" role="alert">
+          {error}
+        </p>
+      ) : null}
 
       <div className="settings-daemon-metrics">
         <div className="settings-daemon-metric">

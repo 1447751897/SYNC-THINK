@@ -10,7 +10,7 @@ import {
   formatGoalTurnUserMessage,
   parseGoalTurnStatus,
   stripGoalStatus,
-} from '../runtime.js';
+} from '../goal-turn.js';
 
 describe('parseGoalSetPayload', () => {
   it('accepts a valid condition', () => {

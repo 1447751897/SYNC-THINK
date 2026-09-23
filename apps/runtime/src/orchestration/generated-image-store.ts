@@ -1,7 +1,12 @@
 ﻿import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
-import { extname, isAbsolute, join, relative, resolve } from 'node:path';
+import { isAbsolute, join, relative, resolve } from 'node:path';
 import type { ProviderGeneratedImage } from '@sync-think/adapters';
+import {
+  imageBytesMatchMime,
+  imageFileExtensionMatchesMime,
+  parseSupportedImageMimeType,
+} from '@sync-think/shared/node-image-validation';
 
 const MAX_IMAGES = 4;
 const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
@@ -98,7 +103,8 @@ export class GeneratedImageStore {
     if (!input.contentRef || !isAbsolute(input.contentRef)) {
       throw new Error('generated_image.path_invalid');
     }
-    const mimeType = allowedMimeType(input.mimeType);
+    const mimeType = parseSupportedImageMimeType(input.mimeType);
+    if (!mimeType) throw new Error('generated_image.mime_invalid');
     if (!input.contentHash || !/^[a-f0-9]{64}$/i.test(input.contentHash)) {
       throw new Error('generated_image.hash_invalid');
     }
@@ -108,7 +114,7 @@ export class GeneratedImageStore {
       realpath(input.contentRef),
     ]);
     assertRealPathContained(rootPath, candidatePath);
-    if (!extensionMatchesMime(candidatePath, mimeType)) {
+    if (!imageFileExtensionMatchesMime(candidatePath, mimeType)) {
       throw new Error('generated_image.extension_mismatch');
     }
 
@@ -124,7 +130,7 @@ export class GeneratedImageStore {
     if (finalCandidatePath !== candidatePath || bytes.byteLength !== info.size) {
       throw new Error('generated_image.source_changed');
     }
-    if (!magicMatchesMime(bytes, mimeType)) {
+    if (!imageBytesMatchMime(bytes, mimeType)) {
       throw new Error('generated_image.magic_mismatch');
     }
     const contentHash = createHash('sha256').update(bytes).digest('hex');
@@ -191,35 +197,6 @@ function extensionFor(mimeType: ProviderGeneratedImage['mimeType']): string {
   if (mimeType === 'image/jpeg') return 'jpg';
   if (mimeType === 'image/webp') return 'webp';
   throw new Error('generated_image.mime_invalid');
-}
-
-function allowedMimeType(value: string): ProviderGeneratedImage['mimeType'] {
-  if (value === 'image/png' || value === 'image/jpeg' || value === 'image/webp') return value;
-  throw new Error('generated_image.mime_invalid');
-}
-
-function extensionMatchesMime(path: string, mimeType: ProviderGeneratedImage['mimeType']): boolean {
-  const extension = extname(path).toLowerCase();
-  if (mimeType === 'image/png') return extension === '.png';
-  if (mimeType === 'image/jpeg') return extension === '.jpg' || extension === '.jpeg';
-  return extension === '.webp';
-}
-
-function magicMatchesMime(data: Buffer, mimeType: ProviderGeneratedImage['mimeType']): boolean {
-  if (mimeType === 'image/png') {
-    return (
-      data.byteLength >= 8 &&
-      data.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
-    );
-  }
-  if (mimeType === 'image/jpeg') {
-    return data.byteLength >= 3 && data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff;
-  }
-  return (
-    data.byteLength >= 12 &&
-    data.subarray(0, 4).toString('ascii') === 'RIFF' &&
-    data.subarray(8, 12).toString('ascii') === 'WEBP'
-  );
 }
 
 function assertRealPathContained(rootPath: string, candidatePath: string): void {

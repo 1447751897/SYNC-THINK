@@ -19,13 +19,15 @@ import { Runtime, type RuntimeStateStore } from '../src/runtime.js';
 class RecordingProvider implements ProviderAdapter {
   readonly protocol = 'openai-chat' as const;
   callCount = 0;
+  requests: ProviderCallRequest[] = [];
 
   async discoverModels(): Promise<string[]> {
     return ['fake-mini'];
   }
 
-  async *call(_request: ProviderCallRequest): AsyncIterable<AdapterEvent> {
+  async *call(request: ProviderCallRequest): AsyncIterable<AdapterEvent> {
     this.callCount++;
+    this.requests.push(request);
     yield { type: 'finished', reason: 'stop' };
   }
 }
@@ -193,7 +195,7 @@ describe('runtime commands', () => {
       id: taskId,
       name: 'Regression task',
       instruction: 'run the regression task',
-      target: { kind: 'model', modelId: 'fake-mini' },
+      target: { kind: 'model', modelId: 'scheduled-selected-model' },
       rule: { kind: 'every', intervalMinutes: 30 },
       timeZone: 'UTC',
       enabled: true,
@@ -225,6 +227,20 @@ describe('runtime commands', () => {
       expect(stored?.lastResult?.status).toBe('success');
       expect(taskStore.listHistory(taskId)).toHaveLength(1);
       expect(taskStore.listHistory(taskId)[0]?.status).toBe('success');
+      expect(provider.requests[0]?.modelId).toBe('scheduled-selected-model');
+
+      // Editing the task must take effect even when its conversation is reused.
+      taskStore.update(taskId, { target: { kind: 'model', modelId: 'scheduled-updated-model' } });
+      const rerun = await writeAndRead(socket, reader, {
+        id: 'scheduled-trigger-updated-model',
+        kind: 'request',
+        type: 'scheduledTask.trigger',
+        payload: { taskId },
+      });
+      expect(rerun.payload).toMatchObject({ fired: true });
+      expect(await waitFor(() => taskStore.listHistory(taskId).length === 2, 2_000)).toBe(true);
+      expect(provider.requests[1]?.modelId).toBe('scheduled-updated-model');
+      expect(taskStore.get(taskId)?.conversationId).toBe(stored?.conversationId);
     } finally {
       socket.destroy();
       await session.close();

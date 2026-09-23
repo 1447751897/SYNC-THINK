@@ -1,8 +1,9 @@
 import type {
   ProviderBalanceResponse,
-  UsageRequestRow,
+  UsageSummaryRow,
   UsageSummaryResponse,
 } from '@sync-think/protocol';
+import { formatUsageTokenCount } from './compact-number.js';
 
 export interface ProviderUsageIdentity {
   providerId?: string;
@@ -22,82 +23,123 @@ export interface ProviderUsageWindows {
 }
 
 const USAGE_TTL_MS = 5 * 60_000;
-let usageCache: { at: number; value: UsageSummaryResponse } | undefined;
-let usageInflight: Promise<UsageSummaryResponse> | undefined;
+const usageCache = new Map<string, { at: number; value: UsageSummaryResponse }>();
+const usageInflight = new Map<string, Promise<UsageSummaryResponse>>();
+
+export function usageSummaryRangeKey(sinceDays?: number): string {
+  return sinceDays === undefined ? 'usage-range:all' : `usage-range:${sinceDays}`;
+}
+
+export function readUsageSummaryCache(
+  cacheKey: string,
+  now: number = Date.now(),
+): UsageSummaryResponse | undefined {
+  const cached = usageCache.get(cacheKey);
+  if (!cached || now - cached.at >= USAGE_TTL_MS) return undefined;
+  return cached.value;
+}
+
+export function fetchUsageSummary(
+  cacheKey: string,
+  fetcher: () => Promise<UsageSummaryResponse>,
+  options: { now?: number; refresh?: boolean } = {},
+): Promise<UsageSummaryResponse> {
+  const now = options.now ?? Date.now();
+  if (!options.refresh) {
+    const cached = readUsageSummaryCache(cacheKey, now);
+    if (cached) return Promise.resolve(cached);
+  }
+  const active = usageInflight.get(cacheKey);
+  if (active) return active;
+  const request = fetcher().then(
+    (value) => {
+      usageCache.set(cacheKey, { at: now, value });
+      usageInflight.delete(cacheKey);
+      return value;
+    },
+    (cause: unknown) => {
+      usageInflight.delete(cacheKey);
+      throw cause;
+    },
+  );
+  usageInflight.set(cacheKey, request);
+  return request;
+}
+
+export function invalidateUsageSummaryCache(cacheKey?: string): void {
+  if (cacheKey) {
+    usageCache.delete(cacheKey);
+    return;
+  }
+  usageCache.clear();
+}
 
 function same(left: string | undefined, right: string | undefined): boolean {
   return Boolean(left && right && left.toLowerCase() === right.toLowerCase());
 }
 
-function requestMatchesProvider(
-  request: UsageRequestRow,
+function rowMatchesProvider(
+  row: UsageSummaryRow,
   identity: ProviderUsageIdentity,
 ): boolean {
-  if (identity.providerId && request.providerId) return same(identity.providerId, request.providerId);
-  if (identity.providerName && request.providerName) {
-    return same(identity.providerName, request.providerName);
+  if (identity.providerId && row.providerId) return same(identity.providerId, row.providerId);
+  if (identity.providerName && row.providerName) {
+    return same(identity.providerName, row.providerName);
   }
   return (
-    same(identity.modelId, request.modelId) ||
-    same(identity.modelId, request.providerModelId) ||
-    same(identity.providerModelId, request.modelId) ||
-    same(identity.providerModelId, request.providerModelId)
+    same(identity.modelId, row.modelId) ||
+    same(identity.modelId, row.providerModelId) ||
+    same(identity.providerModelId, row.modelId) ||
+    same(identity.providerModelId, row.providerModelId)
   );
 }
 
-function aggregate(requests: readonly UsageRequestRow[]): ProviderUsageWindow | undefined {
-  if (requests.length === 0) return undefined;
+function aggregateRows(
+  rows: readonly UsageSummaryRow[],
+  identity: ProviderUsageIdentity,
+): ProviderUsageWindow | undefined {
   const costs: ProviderUsageWindow['costs'] = {};
   let totalTokens = 0;
-  for (const request of requests) {
-    totalTokens += Math.max(0, request.totalTokens);
+  let matched = false;
+  for (const row of rows) {
+    if (!rowMatchesProvider(row, identity)) continue;
+    matched = true;
+    totalTokens += Math.max(0, row.totalTokens);
     if (
-      request.currency &&
-      typeof request.estimatedCost === 'number' &&
-      Number.isFinite(request.estimatedCost)
+      row.currency &&
+      typeof row.totalCost === 'number' &&
+      Number.isFinite(row.totalCost)
     ) {
-      costs[request.currency] = (costs[request.currency] ?? 0) + request.estimatedCost;
+      costs[row.currency] = (costs[row.currency] ?? 0) + row.totalCost;
     }
   }
-  return { totalTokens, costs };
+  return matched ? { totalTokens, costs } : undefined;
 }
 
-export function summarizeProviderUsageWindows(
-  summary: UsageSummaryResponse,
+export async function fetchProviderUsageWindows(
+  fetcher: (sinceDays: number) => Promise<UsageSummaryResponse>,
   identity: ProviderUsageIdentity,
   now: number = Date.now(),
-): ProviderUsageWindows {
+): Promise<ProviderUsageWindows> {
   const today = new Date(now);
   const todayStart = new Date(
     today.getFullYear(),
     today.getMonth(),
     today.getDate(),
   ).getTime();
-  const last30dStart = now - 30 * 24 * 60 * 60_000;
-  const matching = summary.requests.filter((request) => {
-    const occurredAt = Date.parse(request.occurredAt);
-    return (
-      Number.isFinite(occurredAt) &&
-      occurredAt >= last30dStart &&
-      occurredAt <= now &&
-      requestMatchesProvider(request, identity)
-    );
-  });
+  const dayMs = 24 * 60 * 60_000;
+  const todaySinceDays = Math.max(1 / dayMs, (now - todayStart) / dayMs);
+  const localDateKey = `${today.getFullYear()}-${today.getMonth() + 1}-${today.getDate()}`;
+  const [todaySummary, last30dSummary] = await Promise.all([
+    fetchUsageSummary(`usage-provider-today:${localDateKey}`, () => fetcher(todaySinceDays), {
+      now,
+    }),
+    fetchUsageSummary('usage-provider-range:30', () => fetcher(30), { now }),
+  ]);
   return {
-    today: aggregate(
-      matching.filter((request) => {
-        const occurredAt = Date.parse(request.occurredAt);
-        return occurredAt >= todayStart;
-      }),
-    ),
-    last30d: aggregate(matching),
+    today: aggregateRows(todaySummary.rows, identity),
+    last30d: aggregateRows(last30dSummary.rows, identity),
   };
-}
-
-function formatTokens(value: number): string {
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
-  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
-  return String(value);
 }
 
 export function formatProviderUsageWindow(window: ProviderUsageWindow | undefined): string {
@@ -107,7 +149,10 @@ export function formatProviderUsageWindow(window: ProviderUsageWindow | undefine
     if (typeof value !== 'number') return [];
     return [`${currency === 'CNY' ? '¥' : '$'}${value.toFixed(2)}`];
   });
-  return [costs.length > 0 ? costs.join(' / ') : '—', formatTokens(window.totalTokens)].join(' · ');
+  return [
+    costs.length > 0 ? costs.join(' / ') : '—',
+    formatUsageTokenCount(window.totalTokens),
+  ].join(' · ');
 }
 
 export interface ProviderBalanceView {
@@ -181,28 +226,9 @@ export async function fetchProviderBalanceView(
   return promise;
 }
 
-export async function fetchProviderUsageSummary(
-  fetcher: () => Promise<UsageSummaryResponse>,
-  now: number = Date.now(),
-): Promise<UsageSummaryResponse> {
-  if (usageCache && now - usageCache.at < USAGE_TTL_MS) return usageCache.value;
-  if (usageInflight) return usageInflight;
-  usageInflight = fetcher()
-    .then((value) => {
-      usageCache = { at: now, value };
-      usageInflight = undefined;
-      return value;
-    })
-    .catch((error: unknown) => {
-      usageInflight = undefined;
-      throw error;
-    });
-  return usageInflight;
-}
-
 export function resetProviderUsageSummaryCacheForTests(): void {
-  usageCache = undefined;
-  usageInflight = undefined;
+  usageCache.clear();
+  usageInflight.clear();
   balanceCache = undefined;
   balanceInflight = undefined;
 }

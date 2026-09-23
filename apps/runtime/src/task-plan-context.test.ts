@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   extractLatestTaskPlanFromEvents,
   formatTaskPlanForModel,
-} from './runtime.js';
+} from './task-plan-context.js';
 
 function toolEvent(
   sequence: number,

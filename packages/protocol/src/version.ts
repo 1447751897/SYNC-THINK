@@ -7,6 +7,7 @@ export const PROTOCOL_VERSION = 2;
 // Optional capability flags advertised by Runtime and respected by UI.
 // New features should extend this list (delta from prior version).
 export type Feature =
+  | 'collaboration.chat'
   | 'workspace.bindFolder'
   | 'workspace.update'
   | 'workspace.delete'
@@ -147,6 +148,7 @@ export type Feature =
   | 'data.management';
 
 export const DEFAULT_FEATURES: Feature[] = [
+  'collaboration.chat',
   'workspace.bindFolder',
   'workspace.update',
   'workspace.delete',

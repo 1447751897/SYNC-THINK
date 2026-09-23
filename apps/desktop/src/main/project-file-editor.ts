@@ -10,7 +10,8 @@ import {
   stat,
   writeFile,
 } from 'node:fs/promises';
-import { basename, dirname, isAbsolute, relative, resolve, sep, win32 } from 'node:path';
+import { basename, dirname, isAbsolute, resolve, win32 } from 'node:path';
+import { isPathWithinRoot } from '@sync-think/shared/node-paths';
 
 const MAX_READ_BYTES = 512 * 1024;
 const MAX_WRITE_BYTES = 1024 * 1024;
@@ -84,17 +85,6 @@ function isSecurityError(error: unknown): boolean {
   return error instanceof Error && error.message.startsWith('security.path_traversal:');
 }
 
-function isPathInside(target: string, root: string): boolean {
-  const pathFromRoot = relative(root, target);
-  return (
-    pathFromRoot === '' ||
-    (pathFromRoot !== '..' &&
-      !pathFromRoot.startsWith(`..${sep}`) &&
-      !isAbsolute(pathFromRoot) &&
-      !win32.isAbsolute(pathFromRoot))
-  );
-}
-
 function normalizeProjectPath(value: string): string {
   const trimmed = value.trim();
   if (!trimmed) throw securityError('file path is required');
@@ -111,7 +101,7 @@ async function resolveProjectTarget(
   const normalizedPath = normalizeProjectPath(request.path);
   const root = resolve(request.root);
   const target = resolve(root, ...normalizedPath.split('/'));
-  if (!isPathInside(target, root)) throw securityError('file path escapes the project root');
+  if (!isPathWithinRoot(root, target)) throw securityError('file path escapes the project root');
 
   const realRoot = await realpath(root);
   let existing = target;
@@ -121,7 +111,7 @@ async function resolveProjectTarget(
       break;
     } catch {
       const parent = dirname(existing);
-      if (parent === existing || !isPathInside(parent, root)) {
+      if (parent === existing || !isPathWithinRoot(root, parent)) {
         if (allowMissing) throw new Error('file_not_found');
         throw new Error('file_not_found');
       }
@@ -130,7 +120,7 @@ async function resolveProjectTarget(
   }
 
   const realExisting = await realpath(existing);
-  if (!isPathInside(realExisting, realRoot)) {
+  if (!isPathWithinRoot(realRoot, realExisting)) {
     throw securityError('symbolic link or junction escapes the project root');
   }
   if (!allowMissing && existing !== target) throw new Error('file_not_found');

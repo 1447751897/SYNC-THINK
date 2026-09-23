@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { LoaderCircle, RefreshCw, RotateCcw, Webhook } from 'lucide-react';
 import {
   looksLikeOpaqueId,
+  type CollaborationActivitySummary,
+  type CollaborationAttemptStatus,
   type Event,
   type RunIndexEntry,
   type RunIndexSource,
@@ -49,6 +51,17 @@ const EXTERNAL_STATE_LABELS: Record<string, string> = {
   completed: '已完成',
   failed: '失败',
   cancelled: '已取消',
+};
+
+const COLLABORATION_STATE_LABELS: Record<CollaborationAttemptStatus, string> = {
+  queued: '排队中',
+  running: '执行中',
+  waiting_input: '等待输入',
+  stopping: '停止中',
+  succeeded: '已完成',
+  failed: '失败',
+  cancelled: '已取消',
+  interrupted: '已中断',
 };
 
 const STATE_ORDER: readonly RunIndexState[] = [
@@ -124,7 +137,9 @@ export function ActivityCenterPage(props: ActivityCenterPageProps): JSX.Element 
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [externalEvents, setExternalEvents] = useState<ActivityExternalEventSummary[] | null>(null);
+  const [collaborationActivities, setCollaborationActivities] = useState<CollaborationActivitySummary[]>([]);
   const [retryingId, setRetryingId] = useState<string | null>(null);
+  const refreshRequestRef = useRef(0);
   const reportNotice = useCallback((text: string | null) => {
     if (!text) return;
     toastApi.toast({ type: 'error', title: text, id: 'activity-notice' });
@@ -140,41 +155,58 @@ export function ActivityCenterPage(props: ActivityCenterPageProps): JSX.Element 
   );
 
   const refresh = useCallback(async () => {
+    const requestId = ++refreshRequestRef.current;
     const api = bridge();
     if (!api?.activityListRuns) {
-      setError('Runtime 未连接');
+      if (requestId === refreshRequestRef.current) setError('Runtime 未连接');
       return;
     }
     setLoading(true);
     try {
-      const res = await api.activityListRuns(filterPayload);
+      const [res, collaboration] = await Promise.all([
+        api.activityListRuns(filterPayload),
+        api.collaboration?.({ action: 'activity' }).catch(() => ({ activities: [] })),
+      ]);
+      if (requestId !== refreshRequestRef.current) return;
       setEntries(res.entries);
       setCounts(res.counts);
       setNextCursor(res.nextCursor);
+      setCollaborationActivities(collaboration?.activities ?? []);
       setError(null);
     } catch (cause) {
+      if (requestId !== refreshRequestRef.current) return;
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
-      setLoading(false);
+      if (requestId === refreshRequestRef.current) setLoading(false);
     }
   }, [filterPayload]);
 
   const loadMore = useCallback(async () => {
     const api = bridge();
     if (!api?.activityListRuns || !nextCursor) return;
+    const requestId = refreshRequestRef.current;
     setLoadingMore(true);
     try {
       const res = await api.activityListRuns({ ...filterPayload, cursor: nextCursor });
+      if (requestId !== refreshRequestRef.current) return;
       // Appended rather than replaced: the cursor walks strictly older rows, so
       // concatenating cannot duplicate a row already on screen.
       setEntries((prev) => [...(prev ?? []), ...res.entries]);
       setNextCursor(res.nextCursor);
     } catch (cause) {
+      if (requestId !== refreshRequestRef.current) return;
       reportNotice(cause instanceof Error ? cause.message : String(cause));
     } finally {
-      setLoadingMore(false);
+      if (requestId === refreshRequestRef.current) setLoadingMore(false);
     }
   }, [filterPayload, nextCursor, reportNotice]);
+
+  useEffect(
+    () => () => {
+      refreshRequestRef.current += 1;
+    },
+    [],
+  );
 
   useEffect(() => {
     void refresh();
@@ -207,7 +239,7 @@ export function ActivityCenterPage(props: ActivityCenterPageProps): JSX.Element 
     if (!eventHistory) return;
     let fresh = false;
     for (const event of eventHistory) {
-      if (!RUN_LIFECYCLE_TYPES.has(event.type)) continue;
+      if (!RUN_LIFECYCLE_TYPES.has(event.type) && event.type !== 'collaboration.updated') continue;
       if (seenRef.current.has(event.id)) continue;
       seenRef.current.add(event.id);
       if (primedRef.current) fresh = true;
@@ -320,6 +352,37 @@ export function ActivityCenterPage(props: ActivityCenterPageProps): JSX.Element 
         </aside>
 
         <section className="task-panel__main activity-panel__main">
+          {collaborationActivities.length > 0 ? (
+            <section className="activity-panel__events" data-testid="activity-collaboration-tasks">
+              <h2 className="activity-panel__events-title">协作任务</h2>
+              {collaborationActivities.map((activity) => (
+                <article key={`${activity.conversationId}:${activity.taskId}`} className="activity-row" data-state={activity.status}>
+                  <span className={`activity-badge is-${activity.status}`}>
+                    {COLLABORATION_STATE_LABELS[activity.status]}
+                  </span>
+                  <div className="activity-row__body">
+                    <div className="activity-row__title">
+                      {activity.taskTitle}
+                      <span className="activity-row__source">{activity.conversationTitle}</span>
+                    </div>
+                    <div className="activity-row__meta">
+                      <span>{activity.assigneeName}</span>
+                      <span>{formatLocal(activity.updatedAt)}</span>
+                      {activity.planRef ? <span>计划 v{activity.planRef.revision}</span> : null}
+                    </div>
+                    {activity.errorMessage ? <div className="activity-row__error">{activity.errorMessage}</div> : null}
+                  </div>
+                  {onOpenConversation ? (
+                    <div className="activity-row__actions">
+                      <button type="button" className="task-hist__open-conv" onClick={() => onOpenConversation(activity.conversationId)}>
+                        打开协作
+                      </button>
+                    </div>
+                  ) : null}
+                </article>
+              ))}
+            </section>
+          ) : null}
           {error ? (
             <div className="task-panel__empty" role="alert">
               {error}

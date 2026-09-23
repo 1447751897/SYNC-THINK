@@ -81,6 +81,8 @@ export interface TeamRun {
 
 export interface Conversation {
   id: ConversationId;
+  /** Present only for real multi-participant collaboration conversations. */
+  collaborationKind?: import('./collaboration-chat.js').CollaborationKind;
   track: ConversationTrack;
   targetRef: string;
   workspaceId?: WorkspaceId;

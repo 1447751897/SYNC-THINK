@@ -24,7 +24,7 @@ import {
   Zap,
 } from 'lucide-react';
 import { AssistantProcessGroup } from './ChatView.js';
-import type { InlineProcessItem } from './ChatView.js';
+import type { InlineProcessItem } from './conversation-types.js';
 import { AnswerSources } from './AnswerSources.js';
 import type { AnswerSource } from './answer-sources.js';
 import { BrandLogoMark } from './BrandLogoMark.js';

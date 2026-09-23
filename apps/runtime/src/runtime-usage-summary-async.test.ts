@@ -332,4 +332,59 @@ describe('Runtime usage summary dispatch', () => {
       totalTokens: 330,
     });
   });
+
+  it('bounds request details without truncating aggregate totals', async () => {
+    const raw = emptySummary();
+    raw.requests = Array.from({ length: 501 }, (_, index) => ({
+      requestId: `request-${String(index).padStart(3, '0')}`,
+      occurredAt: new Date(Date.UTC(2026, 7, 8, 10, 0, index)).toISOString(),
+      modelId: 'gpt-5.6-luna',
+      providerId: 'provider-a',
+      tokensIn: 10,
+      tokensOut: 2,
+      totalTokens: 12,
+      status: 'success' as const,
+    }));
+    raw.rows = [
+      {
+        modelId: 'gpt-5.6-luna',
+        providerId: 'provider-a',
+        requests: 501,
+        succeededRequests: 501,
+        failedRequests: 0,
+        tokensIn: 5_010,
+        tokensOut: 1_002,
+        reasoningTokens: 0,
+        totalTokens: 6_012,
+      },
+    ];
+    const runtime = new Runtime({
+      installId: 'usage-summary-request-limit',
+      allowNoToken: true,
+      queryUsageSummary: async () => raw,
+    });
+
+    const bounded = await dispatch(runtime, {
+      id: 'usage-bounded',
+      kind: 'request',
+      type: 'usage.summary',
+      payload: {},
+    });
+    expect((bounded.payload as { requests: unknown[] }).requests).toHaveLength(500);
+    expect(bounded.payload).toMatchObject({
+      totalRequests: 501,
+      totalTokensIn: 5_010,
+      totalTokensOut: 1_002,
+      totalTokens: 6_012,
+    });
+
+    const aggregateOnly = await dispatch(runtime, {
+      id: 'usage-aggregate-only',
+      kind: 'request',
+      type: 'usage.summary',
+      payload: { includeRequests: false, requestLimit: 1 },
+    });
+    expect((aggregateOnly.payload as { requests: unknown[] }).requests).toEqual([]);
+    expect(aggregateOnly.payload).toMatchObject({ totalRequests: 501, totalTokens: 6_012 });
+  });
 });

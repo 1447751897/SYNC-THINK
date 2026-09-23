@@ -4,11 +4,16 @@ import {
   parseApproveExecuteBrowserWorkflowPayload,
   parseCreateBrowserWorkflowDraftPayload,
   parseCreateBrowserWorkflowRevisionDraftPayload,
+  parseExecuteBrowserWorkflowDraftPayload,
   parseExecuteBrowserWorkflowPayload,
   parseGetBrowserWorkflowPayload,
+  parseImportChatBrowserWorkflowPayload,
   parseListBrowserWorkflowsPayload,
+  parsePublishBrowserWorkflowDraftPayload,
   parseReviewBrowserWorkflowDraftPayload,
+  parseSaveBrowserWorkflowDraftPayload,
   parseSubmitBrowserWorkflowDraftPayload,
+  parseUpdateBrowserWorkflowSchedulePayload,
 } from './browser-workflow-payloads.js';
 
 describe('Desktop Browser Workflow IPC payloads', () => {
@@ -57,6 +62,51 @@ describe('Desktop Browser Workflow IPC payloads', () => {
       }),
     ).toEqual({ draftId: 'draft-1', recordingId: 'recording-1' });
     expect(
+      parseSaveBrowserWorkflowDraftPayload({
+        draftId: 'draft-1',
+        recordingId: 'recording-1',
+      }),
+    ).toEqual({ draftId: 'draft-1', recordingId: 'recording-1' });
+    expect(
+      parsePublishBrowserWorkflowDraftPayload({
+        draftId: 'draft-1',
+        recordingId: 'recording-1',
+      }),
+    ).toEqual({ draftId: 'draft-1', recordingId: 'recording-1' });
+    expect(
+      parseImportChatBrowserWorkflowPayload({
+        profileId: 'profile-1',
+        name: ' Search task ',
+        instruction: ' Search for the supplied value. ',
+        startUrl: ' https://example.test/search ',
+        steps: [
+          { kind: 'navigate', url: 'https://example.test/search' },
+          {
+            kind: 'fill',
+            locator: { strategy: 'label', value: 'Query' },
+            value: { kind: 'variable', name: '输入值1' },
+          },
+        ],
+        publish: false,
+        source: 'manual',
+      }),
+    ).toEqual({
+      profileId: 'profile-1',
+      name: 'Search task',
+      instruction: 'Search for the supplied value.',
+      startUrl: 'https://example.test/search',
+      steps: [
+        { kind: 'navigate', url: 'https://example.test/search' },
+        {
+          kind: 'fill',
+          locator: { strategy: 'label', value: 'Query' },
+          value: { kind: 'variable', name: '输入值1' },
+        },
+      ],
+      publish: false,
+      source: 'manual',
+    });
+    expect(
       parseReviewBrowserWorkflowDraftPayload({
         draftId: 'draft-1',
         decision: 'reject',
@@ -68,6 +118,9 @@ describe('Desktop Browser Workflow IPC payloads', () => {
       note: 'Please record the final confirmation step.',
     });
     expect(parseExecuteBrowserWorkflowPayload({ taskId: 'task-1' })).toEqual({
+      taskId: 'task-1',
+    });
+    expect(parseExecuteBrowserWorkflowDraftPayload({ taskId: 'task-1' })).toEqual({
       taskId: 'task-1',
     });
     expect(
@@ -96,6 +149,14 @@ describe('Desktop Browser Workflow IPC payloads', () => {
       origins: ['https://yucoder.cn'],
       variables: { keyword: 'cat' },
     });
+    expect(
+      parseUpdateBrowserWorkflowSchedulePayload({
+        taskId: 'task-1',
+        enabled: true,
+        intervalMinutes: 15,
+        expectedRevision: 2,
+      }),
+    ).toEqual({ taskId: 'task-1', enabled: true, intervalMinutes: 15, expectedRevision: 2 });
   });
 
   it('accepts exact boundaries and optional list filters', () => {
@@ -153,6 +214,26 @@ describe('Desktop Browser Workflow IPC payloads', () => {
         extra: true,
       }),
     ).toThrow();
+    expect(() =>
+      parseImportChatBrowserWorkflowPayload({
+        profileId: 'profile-1',
+        name: 'Task',
+        instruction: 'Do something',
+        startUrl: 'https://example.test',
+        steps: [],
+        publish: false,
+      }),
+    ).toThrow();
+    expect(() =>
+      parseImportChatBrowserWorkflowPayload({
+        profileId: 'profile-1',
+        name: 'Task',
+        instruction: 'Do something',
+        startUrl: 'https://example.test',
+        steps: [{ kind: 'script', source: 'unexpected' }],
+        publish: true,
+      }),
+    ).toThrow();
     expect(() => parseExecuteBrowserWorkflowPayload(undefined)).toThrow();
     expect(() => parseExecuteBrowserWorkflowPayload({ taskId: 'task 1' })).toThrow();
     expect(() =>
@@ -176,6 +257,13 @@ describe('Desktop Browser Workflow IPC payloads', () => {
         taskId: 'task-1',
         origins: ['https://yucoder.cn'],
         extra: true,
+      }),
+    ).toThrow();
+    expect(() =>
+      parseUpdateBrowserWorkflowSchedulePayload({
+        taskId: 'task-1',
+        enabled: true,
+        intervalMinutes: 4,
       }),
     ).toThrow();
   });

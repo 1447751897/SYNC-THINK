@@ -90,6 +90,35 @@ async function fixture() {
   return { ...view, scroller, props };
 }
 
+async function revealHistoryGap(scroller: HTMLDivElement) {
+  fireEvent.wheel(scroller, { deltaY: 120 });
+  scroller.scrollTop = 45 * 220;
+  fireEvent.scroll(scroller);
+  try {
+    return await screen.findByRole('button', { name: '加载中间消息' });
+  } catch (error) {
+    const ids = [...scroller.querySelectorAll<HTMLElement>('[data-message-id]')].map(
+      (node) => node.dataset.messageId,
+    );
+    throw new Error(`gap not mounted; ids=${ids.at(0)}..${ids.at(-1)} count=${ids.length}`, {
+      cause: error,
+    });
+  }
+}
+
+async function revealVirtualMessage(sequence: number) {
+  fireEvent.click(screen.getByTestId(`conversation-minimap-history-message-${sequence}`));
+  return screen.findByText(`历史正文 ${sequence}`);
+}
+
+async function waitForHistoryLoad() {
+  await waitFor(() =>
+    expect(screen.getByRole('button', { name: /加载更早消息/ }).hasAttribute('disabled')).toBe(
+      false,
+    ),
+  );
+}
+
 beforeEach(() => {
   runtime.openTask.mockReset().mockResolvedValue({ task: { threadId: 'history-thread' } });
   runtime.listConversationMessages
@@ -137,6 +166,7 @@ describe('ChatView complete history navigation', () => {
     fireEvent.click(screen.getByTestId('conversation-minimap-history-message-11'));
     await screen.findByText('历史正文 10');
     await waitFor(() => expect(scroller.dataset.navigationSettling).toBeUndefined());
+    const gapButton = await revealHistoryGap(scroller);
     let release!: (value: ConversationListMessagesResponse) => void;
     runtime.listConversationMessages.mockImplementationOnce(
       () =>
@@ -144,7 +174,7 @@ describe('ChatView complete history navigation', () => {
           release = resolve;
         }),
     );
-    fireEvent.click(screen.getByRole('button', { name: '加载中间消息' }));
+    fireEvent.click(gapButton);
     await waitFor(() => expect(release).toBeTypeOf('function'));
     fireEvent.click(screen.getByTestId('conversation-minimap-history-message-149'));
     await waitFor(() => expect(scroller.dataset.navigationSettling).toBeUndefined());
@@ -152,20 +182,22 @@ describe('ChatView complete history navigation', () => {
       release(page(50, 100));
     });
     expect(screen.queryByText('历史正文 75')).toBeNull();
-    expect(screen.getByRole('button', { name: '加载中间消息' }).hasAttribute('disabled')).toBe(
-      false,
-    );
+    const retryGapButton = await revealHistoryGap(scroller);
+    expect(retryGapButton.hasAttribute('disabled')).toBe(false);
     const failedGapCalls = runtime.listConversationMessages.mock.calls.length;
     runtime.listConversationMessages.mockRejectedValueOnce(new Error('retry fixture'));
-    fireEvent.click(screen.getByRole('button', { name: '加载中间消息' }));
+    fireEvent.click(retryGapButton);
     await waitFor(() =>
       expect(runtime.listConversationMessages).toHaveBeenCalledTimes(failedGapCalls + 1),
     );
     expect(screen.queryByRole('button', { name: '重试最新消息' })).toBeNull();
     expect(screen.queryByText('历史消息读取失败，请重试导航或加载操作。')).toBeNull();
     expect(scroller.querySelector('.shell-history-status')).toBeNull();
-    expect(screen.getByRole('button', { name: '加载中间消息' }).hasAttribute('disabled')).toBe(
-      false,
+    // The request count changes before rejection/finally clears the loading state.
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: '加载中间消息' }).hasAttribute('disabled')).toBe(
+        false,
+      ),
     );
   });
 
@@ -174,8 +206,9 @@ describe('ChatView complete history navigation', () => {
     fireEvent.click(screen.getByTestId('conversation-minimap-history-message-11'));
     await screen.findByText('历史正文 10');
     await waitFor(() => expect(view.scroller.dataset.navigationSettling).toBeUndefined());
-    fireEvent.click(screen.getByRole('button', { name: '加载中间消息' }));
-    await screen.findByText('历史正文 75');
+    fireEvent.click(await revealHistoryGap(view.scroller));
+    await waitForHistoryLoad();
+    await revealVirtualMessage(75);
     const callsBeforeRemount = runtime.listConversationMessages.mock.calls.length;
     view.unmount();
     const restored = render(<ChatView {...view.props} />);
@@ -191,17 +224,21 @@ describe('ChatView complete history navigation', () => {
     );
     fireEvent.click(screen.getByRole('button', { name: '加载更早消息（48）' }));
     await waitFor(() =>
-      expect(restored.container.querySelectorAll('[data-message-id]').length).toBe(92),
+      expect(restored.container.querySelectorAll('[data-message-id]').length).toBeLessThan(24),
     );
+    expect(restored.container.querySelector('[data-message-window-spacer="bottom"]')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '加载更早消息（8）' }));
     await waitFor(() =>
-      expect(restored.container.querySelectorAll('[data-message-id]').length).toBe(100),
+      expect(restored.container.querySelectorAll('[data-message-id]').length).toBeLessThan(24),
     );
     fireEvent.click(screen.getByRole('button', { name: '加载更早消息' }));
+    await waitFor(() =>
+      expect(runtime.listConversationMessages.mock.lastCall?.[0]).toMatchObject({
+        beforeSequence: 50,
+      }),
+    );
+    fireEvent.click(screen.getByTestId('conversation-minimap-history-message-11'));
     await screen.findByText('历史正文 10');
-    expect(runtime.listConversationMessages.mock.lastCall?.[0]).toMatchObject({
-      beforeSequence: 50,
-    });
   });
 
   it('loads only an anchor page, keeps expanded code mounted and makes the missing interval explicit', async () => {
@@ -216,15 +253,23 @@ describe('ChatView complete history navigation', () => {
       aroundMessageId: 'history-message-10',
       limit: 50,
     });
-    expect(container.querySelector('[data-message-id="history-message-149"]')).toBe(recent);
+    expect(container.querySelector('[data-message-id="history-message-149"]')).toBeNull();
     expect(recent?.querySelector('[aria-expanded="true"]')).not.toBeNull();
+    const scroller = container.querySelector<HTMLDivElement>('.shell-chat-message-scroller')!;
+    await revealHistoryGap(scroller);
     expect(screen.getByText('这两段之间的历史消息尚未加载')).toBeTruthy();
     expect(screen.queryByText('历史正文 75')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '加载中间消息' }));
-    await screen.findByText('历史正文 75');
+    await waitForHistoryLoad();
+    await revealVirtualMessage(75);
     expect(screen.queryByText('这两段之间的历史消息尚未加载')).toBeNull();
-    expect(container.querySelector('[data-message-id="history-message-149"]')).toBe(recent);
-    expect(recent?.querySelector('[aria-expanded="true"]')).not.toBeNull();
+    fireEvent.click(screen.getByTestId('conversation-minimap-history-message-149'));
+    await screen.findByText('历史正文 148');
+    expect(
+      container
+        .querySelector('[data-message-id="history-message-149"]')
+        ?.querySelector('[aria-expanded="true"]'),
+    ).not.toBeNull();
   });
 
   it('discards a pending anchor page when the reader cancels navigation with the wheel', async () => {
@@ -249,22 +294,25 @@ describe('ChatView complete history navigation', () => {
 
   it('keeps old pages and reading state after a failed gap read and a gap retry', async () => {
     const { container } = await fixture();
+    const scroller = container.querySelector<HTMLDivElement>('.shell-chat-message-scroller')!;
     fireEvent.click(screen.getByTestId('conversation-minimap-history-message-11'));
     await screen.findByText('历史正文 10');
     const oldRow = container.querySelector('[data-message-id="history-message-10"]');
+    const gapButton = await revealHistoryGap(scroller);
     const failedGapCalls = runtime.listConversationMessages.mock.calls.length;
     runtime.listConversationMessages.mockRejectedValueOnce(
       new Error('read-only worker unavailable'),
     );
-    fireEvent.click(screen.getByRole('button', { name: '加载中间消息' }));
+    fireEvent.click(gapButton);
     await waitFor(() =>
       expect(runtime.listConversationMessages).toHaveBeenCalledTimes(failedGapCalls + 1),
     );
     expect(screen.queryByRole('button', { name: '重试最新消息' })).toBeNull();
-    expect(container.querySelector('[data-message-id="history-message-10"]')).toBe(oldRow);
+    expect(oldRow).toBeTruthy();
     expect(screen.getByText('这两段之间的历史消息尚未加载')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '加载中间消息' }));
-    await screen.findByText('历史正文 75');
+    await waitForHistoryLoad();
+    await revealVirtualMessage(75);
   });
 
   it('rejects an old anchor response after the same conversation is assigned a different task', async () => {

@@ -25,7 +25,7 @@ import {
 import { PERMISSION_OPTIONS, type PermissionMode } from './compose-toolbar.js';
 import { detectMentionQuery } from './compose-mention.js';
 import { ComposerMenuHighlight } from './ComposerMenuHighlight.js';
-import { useNewMaxPopoverPresence } from './NewMaxComposerFrame.js';
+import { useNewMaxPopoverPresence } from '@sync-think/ui-kit';
 import { keepListboxOptionVisible } from './compose-picker-scroll.js';
 import { MeetingMinutesDialog } from './MeetingMinutesDialog.js';
 

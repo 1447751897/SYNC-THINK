@@ -1,6 +1,5 @@
 import type {
   DeferredContent,
-  ConversationId,
   MessageId,
   ThreadId,
   WorkspaceId,
@@ -35,11 +34,13 @@ import type {
 } from '@sync-think/shared';
 import { ulid } from '@sync-think/shared';
 import type { Feature } from './version.js';
+export type { ConversationGetRunProcessPayload } from './run-process-page.js';
 
 // Command/query separation. Commands carry an `expectedTaskVersion` for
 // optimistic concurrency on the shared task state.
 
 export type CommandType =
+  | 'collaboration.command'
   | 'runtime.healthcheck'
   | 'runtime.shutdown'
   | 'workspace.create'
@@ -179,14 +180,22 @@ export type CommandType =
   | 'browser.recording.get'
   | 'browser.recording.start'
   | 'browser.recording.stop'
+  | 'browser.recording.pause'
+  | 'browser.recording.resume'
+  | 'browser.workflow.assignWorkspace'
   | 'browser.workflow.list'
   | 'browser.workflow.get'
   | 'browser.workflow.createDraft'
   | 'browser.workflow.createRevisionDraft'
   | 'browser.workflow.submit'
+  | 'browser.workflow.save'
+  | 'browser.workflow.publish'
+  | 'browser.workflow.importChat'
   | 'browser.workflow.review'
   | 'browser.workflow.execute'
+  | 'browser.workflow.executeDraft'
   | 'browser.workflow.approveAndExecute'
+  | 'browser.workflow.updateSchedule'
   | 'browser.handoff.listWaiting'
   | 'browser.handoff.continue'
   | 'browser.handoff.cancel'
@@ -577,6 +586,10 @@ export interface KernelDetectResponse {
   kernels: import('@sync-think/shared').KernelDetectionResult[];
 }
 
+export interface KernelRecyclePayload {
+  kernelId: 'codex' | 'claude-code';
+}
+
 export interface KernelRecycleResponse {
   kernelId: 'codex' | 'claude-code';
   recycled: number;
@@ -641,10 +654,13 @@ export interface DelegatedAgentToolEvent {
   completedAt?: string;
   /**
    * `arguments`/`output` were clipped to keep the child's log inside its size
-   * budget. `outputCharacters` is the untrimmed length, so the card can say how
-   * much was left out instead of silently showing a short log.
+   * budget. The per-field flags and original lengths let the card explain what
+   * was shortened without confusing a complete input with a complete output.
    */
   truncated?: boolean;
+  argumentsTruncated?: boolean;
+  argumentsCharacters?: number;
+  outputTruncated?: boolean;
   outputCharacters?: number;
   /** Row standing in for tool calls that did not fit the budget at all. */
   omitted?: boolean;
@@ -689,6 +705,21 @@ export interface DelegatedAgentProjection {
   /** Existing Agent Library id reused for this child run. */
   agentId: string;
   status: 'running' | 'completed' | 'failed' | 'cancelled' | 'timed_out';
+  /** Runtime observation used when a push notification was delayed or lost. */
+  statusObservation?: {
+    source: 'notification' | 'query' | 'reconcile';
+    diagnostic:
+      | 'running'
+      | 'completed'
+      | 'completed_unnotified'
+      | 'stalled'
+      | 'abnormal_exit'
+      | 'communication_failed'
+      | 'timed_out';
+    observedAt: string;
+    probeCount?: number;
+    detail?: string;
+  };
   activeTool?: string;
   toolEvents: DelegatedAgentToolEvent[];
   result?: string;
@@ -1462,11 +1493,18 @@ export interface SetSettingResponse {
 
 // --- 0026: usage statistics (aggregated from durable runtime events) ---
 
+export const USAGE_REQUEST_LIMIT_DEFAULT = 500;
+export const USAGE_REQUEST_LIMIT_MAX = 1_000;
+
 export interface UsageSummaryPayload {
   /** Restrict to the trailing N days; omit for all time. */
   sinceDays?: number;
   /** Restrict provider request usage to one durable Task. */
   taskId?: string;
+  /** Omit request details when the caller only needs aggregate totals. */
+  includeRequests?: boolean;
+  /** Maximum recent request details returned; aggregate totals always cover the full scope. */
+  requestLimit?: number;
 }
 
 export interface UsageSummaryRow {
@@ -3545,6 +3583,12 @@ export interface GlobalAgentResponse {
 export interface DeleteGlobalAgentPayload {
   agentId: import('@sync-think/shared').AgentId;
 }
+export interface DeleteGlobalAgentResponse {
+  /** True when references require the Agent to be archived instead of deleted. */
+  archived?: boolean;
+  conversationCount?: number;
+  message?: string;
+}
 
 export interface TeamMemberDraft {
   agentId: import('@sync-think/shared').AgentId;
@@ -3588,9 +3632,14 @@ export interface ListConversationsPayload {
   track?: import('@sync-think/shared').ConversationTrack;
   workspaceId?: WorkspaceId;
   includeArchived?: boolean;
+  /** Opaque keyset cursor returned by a previous paged response. */
+  cursor?: string;
+  /** Enables paged responses; valid range is 1..200. Omit for legacy full-list reads. */
+  limit?: number;
 }
 export interface ListConversationsResponse {
   conversations: import('@sync-think/shared').Conversation[];
+  nextCursor?: string;
 }
 
 /** Wire-safe aliases of the shared durable message model. */
@@ -3795,12 +3844,6 @@ export interface RunProcessView {
   completedAt?: string;
 }
 
-export interface ConversationGetRunProcessPayload {
-  runId: RunId;
-  conversationId?: ConversationId;
-  page?: import('./run-process-page.js').RunProcessPageRequest;
-}
-
 export interface ConversationGetRunProcessResponse {
   process: RunProcessView;
 }
@@ -3897,6 +3940,8 @@ export interface ConversationPlanApproveResponse {
   runId?: import('@sync-think/shared').RunId;
   /** True when a new execution run was created; false when it already existed. */
   createdRun: boolean;
+  /** Collaboration tasks generated from the approved revision, when applicable. */
+  collaborationTaskIds?: string[];
 }
 
 // --- Conversation-level ask (模型主动问询, ask_user_question 工具) ---
@@ -4324,6 +4369,22 @@ export interface StopBrowserRecordingResponse {
   recording: BrowserRecordingSummary;
 }
 
+export interface PauseBrowserRecordingPayload {
+  recordingId: string;
+}
+
+export interface PauseBrowserRecordingResponse {
+  recording: BrowserRecordingSummary;
+}
+
+export interface ResumeBrowserRecordingPayload {
+  recordingId: string;
+}
+
+export interface ResumeBrowserRecordingResponse {
+  recording: BrowserRecordingSummary;
+}
+
 export type BrowserAutomationSource = 'manual' | 'ai';
 
 export type BrowserAutomationTaskStatus =
@@ -4332,6 +4393,7 @@ export type BrowserAutomationTaskStatus =
 export type BrowserWorkflowDraftStatus = 'editing' | 'pending_review' | 'approved' | 'rejected';
 
 export interface BrowserAutomationTaskSummary {
+  workspaceId?: string;
   id: string;
   profileId: string;
   name: string;
@@ -4382,15 +4444,42 @@ export interface BrowserWorkflowReviewSummary {
   createdAt: string;
 }
 
+export interface AssignBrowserWorkflowWorkspacePayload {
+  taskId: string;
+  workspaceId: string | null;
+  expectedRevision: number;
+}
+
 export interface ListBrowserWorkflowsPayload {
+  workspaceId?: string;
+  includeLive?: boolean;
   profileId?: string;
   status?: BrowserAutomationTaskStatus;
   query?: string;
   limit?: number;
 }
 
+export interface BrowserWorkflowLivePage {
+  ownerId?: string;
+  embedded?: boolean;
+  runId: string;
+  taskId: string;
+  profileId: string;
+  workspaceId?: string;
+  name: string;
+  startedAt: string;
+  stepCount: number;
+  currentStep: number;
+  actionKind?: string;
+  url?: string;
+  imageDataUrl?: string;
+  capturedAt?: string;
+  previewError?: string;
+}
+
 export interface ListBrowserWorkflowsResponse {
   tasks: BrowserAutomationTaskSummary[];
+  livePages?: BrowserWorkflowLivePage[];
 }
 
 export interface GetBrowserWorkflowPayload {
@@ -4403,9 +4492,12 @@ export interface GetBrowserWorkflowResponse {
   version?: BrowserWorkflowVersionSummary;
   reviews: BrowserWorkflowReviewSummary[];
   reviewsTruncated: boolean;
+  recentRuns?: BrowserWorkflowRunSummary[];
+  schedule?: BrowserWorkflowScheduleSummary;
 }
 
 export interface CreateBrowserWorkflowDraftPayload {
+  workspaceId?: string;
   profileId: string;
   name: string;
   instruction: string;
@@ -4438,6 +4530,45 @@ export interface SubmitBrowserWorkflowDraftResponse {
   draft: BrowserWorkflowDraftSummary;
 }
 
+export interface SaveBrowserWorkflowDraftPayload {
+  draftId: string;
+  recordingId: string;
+}
+
+export interface SaveBrowserWorkflowDraftResponse {
+  task: BrowserAutomationTaskSummary;
+  draft: BrowserWorkflowDraftSummary;
+}
+
+export interface PublishBrowserWorkflowDraftPayload {
+  draftId: string;
+  recordingId: string;
+}
+
+export interface PublishBrowserWorkflowDraftResponse {
+  task: BrowserAutomationTaskSummary;
+  draft: BrowserWorkflowDraftSummary;
+  version: BrowserWorkflowVersionSummary;
+}
+
+export interface ImportChatBrowserWorkflowPayload {
+  workspaceId?: string;
+  profileId: string;
+  name: string;
+  instruction: string;
+  startUrl: string;
+  steps: BrowserRecordingStepInput[];
+  publish: boolean;
+  /** Defaults to AI for chat imports; direct Browser recordings use manual. */
+  source?: BrowserAutomationSource;
+}
+
+export interface ImportChatBrowserWorkflowResponse {
+  task: BrowserAutomationTaskSummary;
+  draft: BrowserWorkflowDraftSummary;
+  version?: BrowserWorkflowVersionSummary;
+}
+
 export interface ReviewBrowserWorkflowDraftPayload {
   draftId: string;
   decision: 'approve' | 'reject';
@@ -4455,18 +4586,27 @@ export interface ExecuteBrowserWorkflowPayload {
   variables?: Record<string, string>;
 }
 
+export interface ExecuteBrowserWorkflowDraftPayload {
+  taskId: string;
+  variables?: Record<string, string>;
+}
+
 export interface BrowserWorkflowReplayStepSummary {
   sequence: number;
   ok: boolean;
   actionKind?: string;
   outputUrl?: string;
   outputTitle?: string;
+  screenshotRelativePath?: string;
+  screenshotEmbedUrl?: string;
+  screenshotErrorCode?: string;
   errorCode?: string;
   error?: string;
 }
 
 export interface ExecuteBrowserWorkflowResponse {
   ok: boolean;
+  runId?: string;
   taskId: string;
   versionId?: string;
   profileId?: string;
@@ -4478,6 +4618,43 @@ export interface ExecuteBrowserWorkflowResponse {
   missingOrigins?: string[];
   errorCode?: string;
   error?: string;
+}
+
+export interface BrowserWorkflowRunSummary {
+  id: string;
+  taskId: string;
+  versionId: string;
+  trigger: 'manual' | 'schedule' | 'chat';
+  status: 'running' | 'succeeded' | 'failed' | 'cancelled';
+  stepCount: number;
+  executedStepCount: number;
+  failedStepSequence?: number;
+  errorCode?: string;
+  error?: string;
+  startedAt: string;
+  completedAt?: string;
+  steps: BrowserWorkflowReplayStepSummary[];
+}
+
+export interface BrowserWorkflowScheduleSummary {
+  taskId: string;
+  enabled: boolean;
+  intervalMinutes: number;
+  nextRunAt?: string;
+  lastRunAt?: string;
+  revision: number;
+  updatedAt: string;
+}
+
+export interface UpdateBrowserWorkflowSchedulePayload {
+  taskId: string;
+  enabled: boolean;
+  intervalMinutes: number;
+  expectedRevision?: number;
+}
+
+export interface UpdateBrowserWorkflowScheduleResponse {
+  schedule: BrowserWorkflowScheduleSummary;
 }
 
 export interface ApproveExecuteBrowserWorkflowPayload {
@@ -4692,6 +4869,10 @@ export interface GoalPausePayload {
   conversationId: string;
 }
 
+export interface GoalPauseResponse {
+  goal?: GoalStatus;
+}
+
 export interface GoalResumePayload extends Pick<
   GoalSetPayload,
   'modelId' | 'kernelId' | 'reasoningEffort' | 'networkEnabled'
@@ -4727,6 +4908,10 @@ export interface CreateScheduledTaskPayload {
   nextRunAt?: string;
 }
 
+export interface CreateScheduledTaskResponse {
+  task: import('@sync-think/shared').ScheduledTask;
+}
+
 export interface ListScheduledTasksPayload {
   includeDisabled?: boolean;
 }
@@ -4752,8 +4937,16 @@ export interface UpdateScheduledTaskPayload {
   }>;
 }
 
+export interface UpdateScheduledTaskResponse {
+  task: import('@sync-think/shared').ScheduledTask;
+}
+
 export interface DeleteScheduledTaskPayload {
   taskId: string;
+}
+
+export interface DeleteScheduledTaskResponse {
+  deleted: boolean;
 }
 
 /** 立即触发一次（手动测试，独立于规则）。 */

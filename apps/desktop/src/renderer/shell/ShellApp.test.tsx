@@ -66,8 +66,14 @@ const runtime = {
   listTeams: vi.fn().mockResolvedValue({ teams: [] }),
   listProviders: vi.fn().mockResolvedValue({ providers: [] }),
   listWorkspaces: vi.fn().mockResolvedValue({ workspaces: [] }),
+  collaboration: vi
+    .fn()
+    .mockResolvedValue({ snapshot: { conversation: { id: 'collaboration-1' } } }),
   getSettings: vi.fn().mockResolvedValue({ settings: {} }),
   setSetting: vi.fn().mockResolvedValue({}),
+  browserWorkflow: {
+    importChat: vi.fn().mockResolvedValue({}),
+  },
   readProjectFile: vi.fn().mockResolvedValue({
     path: 'notes.txt',
     content: 'before',
@@ -244,7 +250,7 @@ vi.mock('./Sidebar.js', () => ({
   },
 }));
 vi.mock('./AgentLibrary.js', () => ({ AgentLibrary: () => null }));
-vi.mock('./AbilitiesPage.js', () => ({
+vi.mock('./abilities/AbilityCenterPage.lazy.js', () => ({
   AbilitiesPage: (props: Record<string, unknown>) => {
     abilitiesPageProps.current = props;
     return createElement(
@@ -259,6 +265,14 @@ vi.mock('./AbilitiesPage.js', () => ({
   },
 }));
 vi.mock('./TeamLibrary.js', () => ({ TeamLibrary: () => null }));
+vi.mock('./ActivityCenterPage.js', () => ({
+  ActivityCenterPage: (props: { onOpenConversation(id: string): void }) =>
+    createElement(
+      'button',
+      { onClick: () => props.onOpenConversation('conv-scheduled') },
+      '打开任务对话',
+    ),
+}));
 vi.mock('./BrowserStage.js', () => ({
   BrowserStage: (props: Record<string, unknown>) => {
     browserStageProps.current = props;
@@ -322,6 +336,8 @@ vi.mock('./image-compress.js', () => ({
 }));
 
 import { EmptyTalk, ShellApp } from './ShellApp.js';
+import { invalidateMcpCatalog } from './mcp-catalog-loader.js';
+import { invalidateSkillCatalog } from './skill-catalog-loader.js';
 import { resetToastStoreForTests } from './Toast.js';
 import { SHELL_BOOT_SNAPSHOT_KEY } from './shell-boot-snapshot.js';
 import {
@@ -335,6 +351,8 @@ import {
 import { clearFilePaneSession } from './FilePane.js';
 
 beforeEach(() => {
+  invalidateMcpCatalog();
+  invalidateSkillCatalog();
   topBarProps.current = undefined;
   chatViewProps.current = undefined;
   terminalPaneProps.current = undefined;
@@ -354,6 +372,9 @@ beforeEach(() => {
     conversationTitle: '首条消息',
   });
   runtime.appendMessage.mockResolvedValue({ messageId: 'message-a', taskVersion: 1 });
+  runtime.collaboration
+    .mockReset()
+    .mockResolvedValue({ snapshot: { conversation: { id: 'collaboration-1' } } });
   runtime.detectKernels.mockReset().mockResolvedValue({ kernels: [] });
   runtime.installKernel.mockReset().mockResolvedValue({ ok: true });
   runtime.listSkills.mockReset().mockResolvedValue({ skills: [] });
@@ -396,13 +417,14 @@ beforeEach(() => {
       updatedAt: '2026-07-25T00:00:00.000Z',
     },
   });
-  runtime.listConversations.mockResolvedValue({ conversations: [] });
-  runtime.listGlobalAgents.mockResolvedValue({ agents: [] });
-  runtime.listTeams.mockResolvedValue({ teams: [] });
-  runtime.listProviders.mockResolvedValue({ providers: [] });
-  runtime.listWorkspaces.mockResolvedValue({ workspaces: [] });
+  runtime.listConversations.mockReset().mockResolvedValue({ conversations: [] });
+  runtime.listGlobalAgents.mockReset().mockResolvedValue({ agents: [] });
+  runtime.listTeams.mockReset().mockResolvedValue({ teams: [] });
+  runtime.listProviders.mockReset().mockResolvedValue({ providers: [] });
+  runtime.listWorkspaces.mockReset().mockResolvedValue({ workspaces: [] });
   runtime.getSettings.mockReset().mockResolvedValue({ settings: {} });
   runtime.setSetting.mockReset().mockResolvedValue({});
+  runtime.browserWorkflow.importChat.mockReset().mockResolvedValue({});
   runtime.readProjectFile.mockResolvedValue({
     path: 'notes.txt',
     content: 'before',
@@ -497,6 +519,63 @@ describe('ShellApp abilities navigation', () => {
     await waitFor(() => expect(screen.getByTestId('mock-abilities-page')).toBeTruthy());
     expect(screen.queryByText('能力 · 即将推出')).toBeNull();
   });
+
+  it('keeps the current catalog and reports a background refresh failure', async () => {
+    installRuntime();
+    runtime.listConversations.mockResolvedValue({
+      conversations: [
+        {
+          id: 'conv-kept',
+          workspaceId: 'ws-a',
+          track: 'model',
+          targetRef: 'model-a',
+          title: '保留的对话',
+          executionMode: 'full-access',
+        },
+      ],
+    });
+    runtime.listWorkspaces.mockResolvedValue({
+      workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }],
+    });
+
+    render(<ShellApp />);
+    await screen.findByText('保留的对话');
+    fireEvent.click(screen.getByTestId('nav-abilities'));
+    await waitFor(() => expect(abilitiesPageProps.current).toBeTruthy());
+
+    runtime.listConversations.mockResolvedValueOnce({ conversations: [] });
+    runtime.listTeams.mockRejectedValueOnce(new Error('teams unavailable'));
+    await act(async () => {
+      (abilitiesPageProps.current?.onCatalogChanged as (() => void) | undefined)?.();
+      await Promise.resolve();
+    });
+
+    expect(await screen.findByText('刷新工作区数据失败')).toBeTruthy();
+    expect(screen.getByText('teams unavailable')).toBeTruthy();
+    expect(screen.getByText('保留的对话')).toBeTruthy();
+  });
+
+  it('coalesces simultaneous catalog change refreshes', async () => {
+    installRuntime();
+    render(<ShellApp />);
+    await waitFor(() => expect(runtime.listConversations).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByTestId('nav-abilities'));
+    await waitFor(() => expect(abilitiesPageProps.current).toBeTruthy());
+
+    await act(async () => {
+      const notifyChanged = abilitiesPageProps.current?.onCatalogChanged as
+        (() => void) | undefined;
+      notifyChanged?.();
+      notifyChanged?.();
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(runtime.listConversations).toHaveBeenCalledTimes(2));
+    expect(runtime.listGlobalAgents).toHaveBeenCalledTimes(2);
+    expect(runtime.listTeams).toHaveBeenCalledTimes(2);
+    expect(runtime.listProviders).toHaveBeenCalledTimes(2);
+    expect(runtime.listWorkspaces).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe('ShellApp surface keep-alive', () => {
@@ -590,7 +669,9 @@ describe('ShellApp surface keep-alive', () => {
     expect(screen.getByTestId('stage-talk').getAttribute('data-active')).toBe('false');
     expect(screen.getByTestId('mock-chat-view')).toBe(chat);
 
-    act(() => (sidebarProps.current?.onSelectStage as ((stage: string) => void) | undefined)?.('talk'));
+    act(() =>
+      (sidebarProps.current?.onSelectStage as ((stage: string) => void) | undefined)?.('talk'),
+    );
     await waitFor(() =>
       expect(screen.getByTestId('stage-talk').getAttribute('data-active')).toBe('true'),
     );
@@ -830,6 +911,86 @@ describe('ShellApp workspace context', () => {
     ]);
   });
 
+  it('offers to save successful chat browser operations and imports them as a draft', async () => {
+    installRuntime();
+    let onEvent: ((event: Event) => void) | undefined;
+    runtime.onEvent.mockImplementation((listener: (event: Event) => void) => {
+      onEvent = listener;
+      return vi.fn();
+    });
+    runtime.getSettings.mockResolvedValue({
+      settings: { 'browser.chat-automation-save': { enabled: true } },
+    });
+    runtime.listWorkspaces.mockResolvedValue({
+      workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }],
+    });
+    window.localStorage.setItem('sync-think.activeWorkspaceId', 'ws-a');
+    render(<ShellApp />);
+    await waitFor(() => expect(topBarProps.current?.activeWorkspaceId).toBe('ws-a'));
+
+    const base = {
+      workspaceId: 'ws-a' as Event['workspaceId'],
+      runId: 'run-browser-save' as Event['runId'],
+      sequence: 1,
+      occurredAt: '2026-08-31T08:00:00.000Z',
+    };
+    await act(async () => {
+      onEvent?.({
+        ...base,
+        id: 'event-run-started' as Event['id'],
+        category: 'run',
+        type: 'run.started',
+        payload: {},
+      });
+      onEvent?.({
+        ...base,
+        id: 'event-browser-started' as Event['id'],
+        sequence: 2,
+        category: 'tool',
+        type: 'browser.command.started',
+        payload: {
+          toolName: 'browser_open',
+          toolCallId: 'tool-browser-save',
+          profileId: 'default',
+          args: { url: 'https://example.com/dashboard' },
+        },
+      });
+      onEvent?.({
+        ...base,
+        id: 'event-browser-completed' as Event['id'],
+        sequence: 3,
+        category: 'tool',
+        type: 'tool.completed',
+        payload: {
+          toolName: 'browser_open',
+          toolCallId: 'tool-browser-save',
+          result: JSON.stringify({ ok: true, url: 'https://example.com/dashboard' }),
+        },
+      });
+      onEvent?.({
+        ...base,
+        id: 'event-run-completed' as Event['id'],
+        sequence: 4,
+        category: 'run',
+        type: 'run.completed',
+        payload: {},
+      });
+    });
+
+    await screen.findByTestId('chat-browser-workflow-save-dialog');
+    fireEvent.click(screen.getByTestId('chat-browser-workflow-save-draft'));
+    await waitFor(() =>
+      expect(runtime.browserWorkflow.importChat).toHaveBeenCalledWith(
+        expect.objectContaining({
+          profileId: 'default',
+          startUrl: 'https://example.com/dashboard',
+          publish: false,
+          steps: [{ kind: 'navigate', url: 'https://example.com/dashboard' }],
+        }),
+      ),
+    );
+  });
+
   it('opens a new website beside an existing GitHub tab without docking workspace files', async () => {
     installRuntime();
     let onEvent: ((event: Event) => void) | undefined;
@@ -882,8 +1043,12 @@ describe('ShellApp workspace context', () => {
     const storedPanes = JSON.parse(
       window.localStorage.getItem('sync-think.workspacePaneLayouts') ?? '{}',
     );
-    const paneTabs = Object.values(storedPanes.workspaces['ws-a'].panes as Record<string, { tabs: Array<{ type: string; url?: string }> }>)
-      .flatMap((item) => item.tabs);
+    const paneTabs = Object.values(
+      storedPanes.workspaces['ws-a'].panes as Record<
+        string,
+        { tabs: Array<{ type: string; url?: string }> }
+      >,
+    ).flatMap((item) => item.tabs);
     expect(paneTabs).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ type: 'browser', url: 'https://github.com/sync-think' }),
@@ -1172,7 +1337,9 @@ describe('ShellApp workspace context', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: /新建对话/ }));
 
     await waitFor(() => expect(screen.getByTestId('workbench-surface-conversation')).toBeTruthy());
-    const bottomWorkbench = screen.getByTestId('workbench-surface-conversation').closest('.shell-workbench--bottom');
+    const bottomWorkbench = screen
+      .getByTestId('workbench-surface-conversation')
+      .closest('.shell-workbench--bottom');
     expect(bottomWorkbench).not.toBeNull();
     expect(within(bottomWorkbench as HTMLElement).getByTestId('empty-compose')).toBeTruthy();
   });
@@ -1565,8 +1732,13 @@ describe('ShellApp workspace context', () => {
     await waitFor(() => expect(screen.getByTestId('mock-terminal-pane')).toBeTruthy());
     act(() => (topBarProps.current?.onToggleBottomWorkbench as (() => void) | undefined)?.());
     await waitFor(() => {
-      const stored = JSON.parse(window.localStorage.getItem('sync-think.workspaceWorkbenchLayouts') ?? '{}');
-      const bottom = stored.workspaces?.['ws-a']?.bottom as { open?: boolean; tabs?: Array<{ type?: string }> };
+      const stored = JSON.parse(
+        window.localStorage.getItem('sync-think.workspaceWorkbenchLayouts') ?? '{}',
+      );
+      const bottom = stored.workspaces?.['ws-a']?.bottom as {
+        open?: boolean;
+        tabs?: Array<{ type?: string }>;
+      };
       expect(bottom?.open).toBe(true);
       expect(bottom?.tabs?.some((tab) => tab.type === 'terminal')).toBe(true);
     });
@@ -2828,7 +3000,7 @@ describe('ShellApp empty conversation compose', () => {
 
     await waitFor(() => expect(input.value).toBe(''));
     expect(await screen.findByTestId('composer-mcp-menu')).toBeTruthy();
-    expect(runtime.listMcpServers).toHaveBeenCalledTimes(2);
+    expect(runtime.listMcpServers).toHaveBeenCalledTimes(1);
     expect(runtime.createConversation).not.toHaveBeenCalled();
   });
 
@@ -4060,6 +4232,55 @@ describe('ShellApp deep links', () => {
     expect(() => dispatch('conv-missing')).not.toThrow();
     expect(screen.queryByTestId('mock-chat-view')).toBeNull();
     expect(window.localStorage.getItem('sync-think.activeWorkspaceId')).toBe('ws-a');
+  });
+
+  it('loads a newly created task conversation when opening it from activity', async () => {
+    installRuntime();
+    runtime.listWorkspaces.mockResolvedValue({
+      workspaces: [
+        { workspaceId: 'ws-a', name: 'A', folderPath: 'D:/a' },
+        { workspaceId: 'ws-b', name: 'B', folderPath: 'D:/b' },
+      ],
+    });
+    window.localStorage.setItem('sync-think.activeWorkspaceId', 'ws-a');
+    render(<ShellApp />);
+    await screen.findByTestId('empty-compose-input');
+    const callsBefore = runtime.listConversations.mock.calls.length;
+    runtime.listConversations.mockResolvedValue({
+      conversations: [
+        {
+          id: 'conv-scheduled',
+          workspaceId: 'ws-b',
+          track: 'model',
+          targetRef: 'model-b',
+          title: '任务 · 定时审查',
+          executionMode: 'full-access',
+          createdAt: '2026-09-22T10:00:00.000Z',
+          updatedAt: '2026-09-22T10:00:00.000Z',
+        },
+      ],
+    });
+    act(() => (sidebarProps.current?.onSelectStage as (stage: string) => void)('activity'));
+    fireEvent.click(await screen.findByRole('button', { name: '打开任务对话' }));
+    await waitFor(() =>
+      expect(chatViewProps.current?.conversation).toMatchObject({ id: 'conv-scheduled' }),
+    );
+    expect(runtime.listConversations.mock.calls.length).toBeGreaterThan(callsBefore);
+    expect(window.localStorage.getItem('sync-think.activeWorkspaceId')).toBe('ws-b');
+  });
+
+  it('reports a missing conversation after one refresh instead of waiting forever', async () => {
+    installRuntime();
+    runtime.listWorkspaces.mockResolvedValue({
+      workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:/a' }],
+    });
+    render(<ShellApp />);
+    await screen.findByTestId('empty-compose-input');
+    const callsBefore = runtime.listConversations.mock.calls.length;
+    act(() => (sidebarProps.current?.onSelectStage as (stage: string) => void)('activity'));
+    fireEvent.click(await screen.findByRole('button', { name: '打开任务对话' }));
+    expect(await screen.findByText('对话未找到，可能已被删除')).toBeTruthy();
+    expect(runtime.listConversations).toHaveBeenCalledTimes(callsBefore + 1);
   });
 });
 

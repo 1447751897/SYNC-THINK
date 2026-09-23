@@ -29,6 +29,7 @@ export class RuntimeBrowserRecordingService {
   private readonly host: BrowserHostLike;
   private readonly mutationTails = new Map<string, Promise<void>>();
   private readonly stopOperations = new Map<string, Promise<BrowserRecordingSummary>>();
+  private readonly pausedRecordings = new Set<string>();
 
   constructor(options: RuntimeBrowserRecordingServiceOptions) {
     this.store = options.store;
@@ -100,7 +101,10 @@ export class RuntimeBrowserRecordingService {
         leaseId: lease.leaseId,
         ...(started.startUrl ? { startUrl: started.startUrl } : {}),
         maxSteps: BROWSER_RECORDING_MAX_STEPS,
-        onMutation: (mutation) => this.enqueueMutation(started.id, mutation),
+        onMutation: (mutation) =>
+          this.pausedRecordings.has(started.id)
+            ? Promise.resolve()
+            : this.enqueueMutation(started.id, mutation),
         onStopRequested: () => {
           void this.runStop(started.id, {
             status: 'stopped',
@@ -143,6 +147,30 @@ export class RuntimeBrowserRecordingService {
       status: 'stopped',
       stopReason: 'user',
     });
+  }
+
+  pauseRecording(input: { recordingId: string }): BrowserRecordingSummary {
+    const recording = this.requireRecording(input.recordingId);
+    if (!isActiveRecordingStatus(recording.status)) {
+      throw new RuntimeBrowserRecordingError(
+        'browser.recording-not-active',
+        'The recording is not active.',
+      );
+    }
+    this.pausedRecordings.add(recording.id);
+    return toPublicRecording(recording);
+  }
+
+  resumeRecording(input: { recordingId: string }): BrowserRecordingSummary {
+    const recording = this.requireRecording(input.recordingId);
+    if (!isActiveRecordingStatus(recording.status)) {
+      throw new RuntimeBrowserRecordingError(
+        'browser.recording-not-active',
+        'The recording is not active.',
+      );
+    }
+    this.pausedRecordings.delete(recording.id);
+    return toPublicRecording(recording);
   }
 
   async recoverInterruptedRecordings(): Promise<{
@@ -228,6 +256,7 @@ export class RuntimeBrowserRecordingService {
     await this.cleanupRecordingResources(recording, false);
     await this.mutationTails.get(recording.id);
     const finished = this.store.finishRecording(recording.id, terminal);
+    this.pausedRecordings.delete(recordingId);
     return toPublicRecording(finished);
   }
 
@@ -310,6 +339,10 @@ function toPublicRecording(recording: BrowserRecordingRecord): BrowserRecordingS
 
 function isTerminal(status: BrowserRecordingRecord['status']): boolean {
   return status === 'stopped' || status === 'failed' || status === 'interrupted';
+}
+
+function isActiveRecordingStatus(status: BrowserRecordingRecord['status']): boolean {
+  return status === 'starting' || status === 'recording' || status === 'stopping';
 }
 
 function errorCode(error: unknown, fallback: string): string {

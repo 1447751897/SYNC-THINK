@@ -1,11 +1,11 @@
 import type { ReviewView } from './review-view.js';
-import {
-  readFailedComposeDrafts,
-  rememberFailedComposeDraft,
-  subscribeFailedComposeDrafts,
-  takeFailedComposeDrafts,
-} from './failed-compose-drafts.js';
+import { useComposeDraftRecovery } from './use-compose-draft-recovery.js';
+import { submitConversationMessage } from './submit-conversation-message.js';
 import { useRunProcessPage } from './use-run-process-page.js';
+import { useComposeRequestQueue } from './use-compose-request-queue.js';
+import { useConversationCompaction } from './use-conversation-compaction.js';
+import { useVisiblePolling } from './use-visible-polling.js';
+import type { ComposeSendOptions } from './compose-send-request.js';
 import {
   Fragment,
   useCallback,
@@ -15,7 +15,6 @@ import {
   useMemo,
   useRef,
   useState,
-  useSyncExternalStore,
   type ReactNode,
   type SetStateAction,
 } from 'react';
@@ -26,7 +25,21 @@ import {
   mergeHistoryRanges,
   type HistoryRange,
 } from './conversation-history-pages.js';
+import {
+  filterPendingUserMessagesForDisplay,
+  mergeConversationMessagesForDisplay,
+  orderDurableMessagesForDisplay,
+} from './conversation-message-merge.js';
+import { projectRunIdentities, type RunAgentIdentity } from './run-identity-projection.js';
+export { projectRunAgentIdentities, projectRunKernels } from './run-identity-projection.js';
 import { useConversationNavigation } from './use-conversation-navigation.js';
+import { useConversationNavigationController } from './use-conversation-navigation-controller.js';
+import { useMessageVirtualWindow } from './use-message-virtual-window.js';
+import {
+  useConversationTransientSubscription,
+  type ConversationTransientSubscriptionEvent,
+  type ConversationTransientSubscriptionPort,
+} from './use-conversation-transient-subscription.js';
 import {
   AlertCircle,
   Bot,
@@ -38,6 +51,8 @@ import {
   CircleSlash,
   Clock,
   Copy,
+  FileText,
+  Folder,
   Info,
   Lock,
   LoaderCircle,
@@ -78,14 +93,12 @@ import type {
   ConversationGetContextStatusResponse,
   ConversationListRunTimelineResponse,
   ConversationListMessagesResponse,
-  ConversationTransientFrame,
   BrowserHandoffSummary,
   CommentaryTimelineSegment,
   DesktopWaitingCommandSummary,
   PendingToolApprovalSummary,
   ExpiredToolApprovalSummary,
   ToolApprovalScope,
-  ConversationTransientSnapshot,
   DelegatedAgentProjection,
   DelegatedAgentUsage,
   RunProcessView,
@@ -101,6 +114,7 @@ import { AgentAvatarView } from './AgentAvatarView.js';
 import { avatarSeed, resolveAvatarFace } from './avatar-gen.js';
 import { avatarStateFrom } from './agentAvatarState.js';
 import { BrandLogoMark } from './BrandLogoMark.js';
+import { loadSkillCatalog } from './skill-catalog-loader.js';
 import { resolveKernelBrandLogo, resolveKernelDisplayName } from './brand-icons.js';
 import { useAutoDisclosure } from './auto-disclosure.js';
 import { BrowserHandoffCard, BrowserHandoffQueryError } from './BrowserHandoffCard.js';
@@ -108,25 +122,20 @@ import { DesktopWaitingCard, DesktopWaitingQueryError } from './DesktopWaitingCa
 import type { ModelOption } from './NewConversationDialog.js';
 import {
   addAttachment,
-  buildMessageWithAttachments,
   computeTextareaHeight,
   detectMentionQuery,
   fileNameFromPath,
   isImageFile,
-  messageImagesFromAttachments,
   readFileAsDataUrl,
   removeAttachment,
+  splitMessageFileReferences,
   type ComposeAttachment,
+  messageImagesFromAttachments,
   type MessageImage,
 } from './compose-mention.js';
 import {
   createQueuedComposeRequest,
   enqueueQueuedComposeRequest,
-  readQueuedComposeRequests,
-  removeQueuedComposeRequest,
-  updateQueuedComposeRequest,
-  writeQueuedComposeRequests,
-  type QueuedComposeRequest,
 } from './compose-request-queue.js';
 import {
   detectSlashQuery,
@@ -151,7 +160,7 @@ import {
 } from './compose-skill-selection.js';
 import { ComposeRequestQueue } from './ComposeRequestQueue.js';
 import { ComposerMcpMenu } from './ComposerMcpMenu.js';
-import { ComposerModeBanner } from './ComposerModeBanner.js';
+import { ComposerModeBanner, ComposerTaskPanel, NewMaxComposerFrame } from '@sync-think/ui-kit';
 import { ComposerActiveModePill, ComposerModeKeywordHint } from './ComposerModeControls.js';
 import { ComposerApprovalStack } from './ComposerApprovalStack.js';
 import { ExpiredToolApprovalNotice } from './ExpiredToolApprovalNotice.js';
@@ -176,7 +185,6 @@ import {
   goalRequiresRiskConfirmation,
   type GoalSettingsValues,
 } from './GoalSettingsDialog.js';
-import { NewMaxComposerFrame } from './NewMaxComposerFrame.js';
 import { ComposerAddControl } from './ComposerAddMenu.js';
 import {
   parseComposerPlanActSetting,
@@ -221,11 +229,12 @@ import {
   formatMessageAbsoluteTime,
   formatMessageClock,
   formatRunModelLabel,
-} from './execution-process.js';
+} from './run-display-format.js';
 import { MarkdownContent } from './MarkdownContent.js';
 import { toastApi, toastTypeFromTone } from './Toast.js';
 import { classifyAppendMessageFailure } from '../append-message-error.js';
 import { MessageTextContent, type MessageTextPart } from './MessageTextContent.js';
+import { ImageLightbox } from './ImageLightbox.js';
 import { resolveMessageText } from './message-text-source.js';
 import type { OpenHtmlInBrowser } from './html-browser.js';
 import { AnswerSources } from './AnswerSources.js';
@@ -240,7 +249,6 @@ import {
 import { PlanApprovalCard } from './PlanApprovalCard.js';
 import { ToolApprovalCard, type PendingToolApproval } from './ToolApprovalCard.js';
 import { projectTodoFromEvents } from './todo-projection.js';
-import { ComposerTaskPanel } from './ComposerTaskPanel.js';
 import { DelegatedAgentToolRow, InlineProcessFlow } from './InlineProcessFlow.js';
 import { reconcileProcessItemOutcomes } from './process-item-outcome.js';
 import { generatedImageModelsFromProcessItems } from './process-activity.js';
@@ -250,11 +258,6 @@ import {
   type ConversationNavigationItem,
 } from './ConversationMinimapRail.js';
 import { ScrollToBottomButton } from './ScrollToBottomButton.js';
-import {
-  navigationSlideDuration,
-  navigationSlidePosition,
-} from './conversation-navigation-slide.js';
-import { executeBrowserCommand } from './browser-commands.js';
 import { splitUserMessageLinks } from './user-message-links.js';
 import { WebTextLink } from './WebTextLink.js';
 import { loadRunTimelinePage, mergeRunTimelineSegments } from './run-timeline-loader.js';
@@ -279,9 +282,8 @@ import {
 import { projectConversationUsageMetrics } from './chat-usage.js';
 import {
   fetchProviderBalanceView,
-  fetchProviderUsageSummary,
+  fetchProviderUsageWindows,
   formatProviderUsageWindow,
-  summarizeProviderUsageWindows,
   type ProviderBalanceView,
   type ProviderUsageIdentity,
   type ProviderUsageWindows,
@@ -353,323 +355,39 @@ type BrowserSpeechRecognitionConstructor = new () => BrowserSpeechRecognition;
  * view): reasoning rows, intermediate commentary/text, and paired tool
  * cards, in durable block order. The final answer is NOT part of this list.
  */
-export type InlineProcessItem =
-  | {
-      kind: 'reasoning';
-      text: string;
-      contentRef?: import('@sync-think/shared').DeferredContent;
-      id?: string;
-      sequence?: number;
-      status?: 'streaming' | 'completed';
-      /**
-       * Clock of the originating timeline segment. The live panel merges Think
-       * rows (from the assistant timeline) with tool rows (from the paged
-       * process view); sharing `startedAt` is what lets the two be interleaved
-       * instead of one whole stream being hoisted above the other.
-       */
-      startedAt?: string;
-      completedAt?: string;
-    }
-  | {
-      kind: 'text' | 'commentary';
-      text: string;
-      contentRef?: import('@sync-think/shared').DeferredContent;
-      id?: string;
-      sequence?: number;
-      status?: 'streaming' | 'completed';
-      startedAt?: string;
-      completedAt?: string;
-    }
-  | {
-      kind: 'tool';
-      id?: string;
-      sequence?: number;
-      toolCallId?: string;
-      name: string;
-      displayName?: string;
-      inputSummary?: string;
-      argumentsJson: string;
-      result?: string;
-      argumentsRef?: import('@sync-think/shared').DeferredContent;
-      resultRef?: import('@sync-think/shared').DeferredContent;
-      detailsRef?: import('@sync-think/shared').DeferredContent;
-      failed?: boolean;
-      status?: 'running' | 'completed' | 'failed';
-      /**
-       * This row is the anchor of a delegated child Agent (`agent_delegate` /
-       * `agent_run`). Its raw result is the delegation payload — an internal
-       * envelope the reader cannot use — so the row points at the card below
-       * instead of dumping it. `result` still carries the payload verbatim for
-       * the card parser.
-       */
-      delegationAnchor?: boolean;
-      /** First observed tool boundary (native steps carry these). */
-      startedAt?: string;
-      /** Terminal tool boundary, when reported. */
-      completedAt?: string;
-      /**
-       * Live progress of a still-running tool, from ephemeral `tool_progress`
-       * transient frames. Never persisted and never replayed — a reconnecting
-       * client falls back to the elapsed clock until the next frame arrives.
-       */
-      progressLine?: string;
-      progressBytes?: number;
-      progressAt?: string;
-    }
-  | {
-      kind: 'status';
-      id?: string;
-      sequence?: number;
-      statusType: Extract<AssistantTurnSegment, { kind: 'status' }>['statusType'];
-      label: string;
-      detail?: string;
-    };
+import type {
+  ChatMessage,
+  InlineProcessItem,
+  RuntimeConnectionNotice,
+  DelegatedAgentToolEventView,
+} from './conversation-types.js';
+export type {
+  ChatMessage,
+  InlineProcessItem,
+  RuntimeConnectionNotice,
+  DelegatedAgentToolEventView,
+} from './conversation-types.js';
 
-export interface ChatMessage {
-  id: string;
-  role: 'user' | 'assistant' | 'system';
-  text: string;
-  textParts?: MessageTextPart[];
-  answerParts?: MessageTextPart[];
-  /** User-visible assistant progress, separate from the final answer. */
-  commentaryText?: string;
-  /** Ordered commentary fragments interleaved with durable tool boundaries. */
-  commentarySegments?: CommentaryTimelineSegment[];
-  /** Provider reasoning summary — shown as a collapsible thinking region. */
-  reasoningText?: string;
-  /** Exact ordered assistant turn emitted by Runtime. */
-  assistantTimeline?: AssistantTurnSegment[];
-  /** Final formal answer: the last non-empty text block of the message. */
-  answerText?: string;
-  /** Ordered execution-process items before the final answer (DSH-style inline view). */
-  processItems?: InlineProcessItem[];
-  /** Transient reconnect or fallback transition shown with the live assistant turn. */
-  processStatus?: string;
-  processStatusState?: NonNullable<RuntimeConnectionNotice>['state'];
-  /** Local image previews attached to this bubble (optimistic / UI only). */
-  images?: MessageImage[];
-  /** Visual tone for system notices — never treat all system as error. */
-  tone?: SystemMessageTone;
-  timestamp: string;
-  /** Durable thread-local order; present for messages loaded from the store. */
-  sequence?: number;
-  streaming?: boolean;
-  runId?: string;
-  /** Kernel that produced this run (persisted on the message; survives restarts). */
-  kernelId?: string;
-  terminalState?: 'failed' | 'cancelled' | 'paused';
-  terminalError?: string;
-  /** Historical terminal event materialized after newer durable rows already existed. */
-  legacyTerminalBackfill?: boolean;
-  /** Bound global agent identity for this assistant turn. */
-  globalAgentId?: string;
-  globalAgentName?: string;
-  /** Parent-scoped live child Agent cards. */
-  delegatedAgents?: DelegatedAgentProjection[];
-  /** Exact Skill versions selected for this user turn. */
-  skillVersionIds?: string[];
-  skills?: Array<{ skillVersionId: string; name: string }>;
-}
+import { recentConversationPageCache } from './conversation-page-cache.js';
+import {
+  captureConversationScrollPosition,
+  readConversationScrollPosition,
+  restoreConversationScrollPosition,
+  writeConversationScrollPosition,
+} from './conversation-scroll-position.js';
 
-interface CachedConversationPage {
-  messages: ChatMessage[];
-  ranges: HistoryRange[];
-  hasMore: boolean;
-  nextCursor?: number;
-}
-
-interface ConversationScrollPosition {
-  scrollTop: number;
-  stickToBottom: boolean;
-  anchorMessageId?: string;
-  anchorOffset: number;
-}
-
-const CONVERSATION_SCROLL_POSITIONS_KEY = 'sync-think.conversationScrollPositions';
-/**
- * DeepSeek Harness 的 `chatScrollPositions` 是一个**无上限**的 module 级 Map
- * （`dsh-client-ui-chat/lib/client.js:8274`）——它只按 sessionId 存取，不做数量淘汰。
- * 会话 DOM 不保活、切换即重挂载，所以这个 Map 是唯一的位置载体，一旦淘汰就永久丢失。
- * 这里严格对齐：不做数量淘汰。
- */
-const conversationScrollPositions = new Map<string, ConversationScrollPosition>();
-
-function readConversationScrollPositions(): void {
-  if (typeof window === 'undefined') return;
-  try {
-    const raw = JSON.parse(window.localStorage.getItem(CONVERSATION_SCROLL_POSITIONS_KEY) ?? '{}');
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return;
-    for (const [key, value] of Object.entries(raw)) {
-      if (!value || typeof value !== 'object') continue;
-      const item = value as Partial<ConversationScrollPosition>;
-      if (
-        typeof item.scrollTop === 'number' &&
-        Number.isFinite(item.scrollTop) &&
-        item.scrollTop >= 0 &&
-        typeof item.stickToBottom === 'boolean' &&
-        typeof item.anchorOffset === 'number' &&
-        Number.isFinite(item.anchorOffset)
-      ) {
-        conversationScrollPositions.set(key, {
-          scrollTop: item.scrollTop,
-          stickToBottom: item.stickToBottom,
-          anchorOffset: item.anchorOffset,
-          ...(typeof item.anchorMessageId === 'string' && item.anchorMessageId
-            ? { anchorMessageId: item.anchorMessageId }
-            : {}),
-        });
-      }
-    }
-  } catch {
-    // A malformed local snapshot should not block conversation rendering.
-  }
-}
-
-function readConversationScrollPosition(key: string): ConversationScrollPosition | undefined {
-  if (typeof window !== 'undefined') {
-    try {
-      if (!window.localStorage.getItem(CONVERSATION_SCROLL_POSITIONS_KEY)) {
-        conversationScrollPositions.clear();
-      }
-    } catch {
-      // Storage can be unavailable in private or restricted renderer contexts.
-    }
-  }
-  if (conversationScrollPositions.size === 0) readConversationScrollPositions();
-  const value = conversationScrollPositions.get(key);
-  return value ? { ...value } : undefined;
-}
-
-function writeConversationScrollPosition(key: string, value: ConversationScrollPosition): void {
-  conversationScrollPositions.delete(key);
-  conversationScrollPositions.set(key, value);
-  if (typeof window === 'undefined') return;
-  try {
-    const serialized = Object.fromEntries(conversationScrollPositions);
-    window.localStorage.setItem(CONVERSATION_SCROLL_POSITIONS_KEY, JSON.stringify(serialized));
-  } catch {
-    // Storage can be unavailable in private or restricted renderer contexts.
-  }
-}
-
-function captureConversationScrollPosition(
-  scroller: HTMLDivElement,
-  stickToBottom: boolean,
-): ConversationScrollPosition {
-  const viewportTop = scroller.getBoundingClientRect().top;
-  let anchorMessageId: string | undefined;
-  let anchorOffset = 0;
-  for (const node of scroller.querySelectorAll<HTMLElement>('[data-message-id]')) {
-    const rect = node.getBoundingClientRect();
-    if (rect.bottom <= viewportTop) continue;
-    anchorMessageId = node.dataset.messageId;
-    anchorOffset = rect.top - viewportTop;
-    break;
-  }
-  return {
-    scrollTop: Math.max(0, scroller.scrollTop),
-    stickToBottom,
-    anchorOffset,
-    ...(anchorMessageId ? { anchorMessageId } : {}),
-  };
-}
-
-function restoreConversationScrollPosition(
-  scroller: HTMLDivElement,
-  position: ConversationScrollPosition,
-): void {
-  const maxScrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
-  if (position.stickToBottom) {
-    scroller.scrollTop = maxScrollTop;
-    return;
-  }
-  const anchor = position.anchorMessageId
-    ? Array.from(scroller.querySelectorAll<HTMLElement>('[data-message-id]')).find(
-        (node) => node.dataset.messageId === position.anchorMessageId,
-      )
-    : undefined;
-  if (anchor) {
-    const viewportTop = scroller.getBoundingClientRect().top;
-    const currentOffset = anchor.getBoundingClientRect().top - viewportTop;
-    scroller.scrollTop = Math.max(
-      0,
-      Math.min(maxScrollTop, scroller.scrollTop + currentOffset - position.anchorOffset),
-    );
-    return;
-  }
-  scroller.scrollTop = Math.max(0, Math.min(maxScrollTop, position.scrollTop));
-}
-
-const RECENT_CONVERSATION_CACHE_SIZE = 8;
-/** 首屏 durable 消息拉取失败后的自动重试次数（1.2s / 2.4s 退避）。 */
+/** Initial durable message retries (1.2s / 2.4s backoff). */
 const MAX_MESSAGE_RELOAD_ATTEMPTS = 2;
-const RECENT_CONVERSATION_MESSAGE_LIMIT = 100;
-const recentConversationPages = new Map<string, CachedConversationPage>();
-
-/**
- * Test-only: this cache is module-level and deliberately outlives unmounts so a
- * keep-alive remount can reuse the last page. Suites that render several
- * conversations under one id must clear it between cases.
- */
 export function resetRecentConversationPageCacheForTests(): void {
-  recentConversationPages.clear();
+  recentConversationPageCache.clear();
 }
-
-function readRecentConversationPage(conversationId: string): CachedConversationPage | undefined {
-  const cached = recentConversationPages.get(conversationId);
-  if (!cached) return undefined;
-  // Refresh insertion order so the bounded map behaves as a small LRU cache.
-  recentConversationPages.delete(conversationId);
-  recentConversationPages.set(conversationId, cached);
-  return cached;
-}
-
-/**
- * 「可用」的缓存页：**空页不算已加载**。
- *
- * 一次空结果（请求抢在 runtime 就绪之前、或上游给了空页）会把 `messages: []`
- * 写进缓存，而所有加载路径都拿「缓存命中」当「已经加载过」——于是这个会话
- * 在界面上永远空白（库里明明有消息）。这里的语义改成：有内容才算数，
- * 空页一律当作需要重新拉取。
- */
-function readUsableRecentConversationPage(
-  conversationId: string,
-): CachedConversationPage | undefined {
-  const page = readRecentConversationPage(conversationId);
-  return page && page.messages.length > 0 ? page : undefined;
-}
-
-function cacheRecentConversationPage(conversationId: string, page: CachedConversationPage): void {
-  const retainedIds = new Set(
-    [...page.messages]
-      .sort((left, right) => (left.sequence ?? 0) - (right.sequence ?? 0))
-      .slice(-RECENT_CONVERSATION_MESSAGE_LIMIT)
-      .map((message) => message.id),
-  );
-  const messages = page.messages.filter((message) => retainedIds.has(message.id));
-  const trimmed = messages.length < page.messages.length;
-  const firstSequence = Math.min(
-    ...messages.map((message) => message.sequence ?? Number.MAX_SAFE_INTEGER),
-  );
-  const ranges = trimmed
-    ? page.ranges
-        .filter((range) => range.end >= firstSequence)
-        .map((range) => ({ ...range, start: Math.max(range.start, firstSequence) }))
-    : page.ranges;
-  recentConversationPages.delete(conversationId);
-  recentConversationPages.set(conversationId, {
-    ...page,
-    messages,
-    ranges,
-    hasMore: trimmed || page.hasMore,
-    nextCursor: trimmed && Number.isSafeInteger(firstSequence) ? firstSequence : page.nextCursor,
-  });
-  while (recentConversationPages.size > RECENT_CONVERSATION_CACHE_SIZE) {
-    const oldest = recentConversationPages.keys().next().value as string | undefined;
-    if (!oldest) break;
-    recentConversationPages.delete(oldest);
-  }
-}
+const readRecentConversationPage = (key: string) => recentConversationPageCache.read(key);
+const readUsableRecentConversationPage = (key: string) =>
+  recentConversationPageCache.readUsable(key);
+const cacheRecentConversationPage = (
+  key: string,
+  page: import('./conversation-page-cache.js').CachedConversationPage,
+) => recentConversationPageCache.write(key, page);
 
 function ConversationLoadingSkeleton() {
   return (
@@ -694,64 +412,9 @@ function ConversationLoadingSkeleton() {
   );
 }
 
-interface RunAgentIdentity {
-  id?: string;
-  name?: string;
-}
-
 function nonEmptyString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
-
-/** Recover the immutable agent binding stamped on each Run. */
-export function projectRunAgentIdentities(events: readonly Event[]): Map<string, RunAgentIdentity> {
-  const identities = new Map<string, RunAgentIdentity>();
-  for (const event of events) {
-    if (event.type !== 'run.started') continue;
-    const payloadRun =
-      event.payload.run && typeof event.payload.run === 'object'
-        ? (event.payload.run as Record<string, unknown>)
-        : undefined;
-    const runId =
-      (event.runId ? String(event.runId) : undefined) ??
-      nonEmptyString(event.payload.runId) ??
-      nonEmptyString(payloadRun?.id);
-    if (!runId) continue;
-    const id =
-      nonEmptyString(event.payload.globalAgentId) ?? nonEmptyString(payloadRun?.globalAgentId);
-    const name =
-      nonEmptyString(event.payload.globalAgentName) ?? nonEmptyString(payloadRun?.globalAgentName);
-    if (id || name) identities.set(runId, { id, name });
-  }
-  return identities;
-}
-
-/**
- * runId → kernelId for every run this conversation has started. Message bubbles
- * use it to badge each turn with the kernel logo that actually produced it
- * (visible across kernel switches: CC → Codex → CC shows the logo per turn).
- */
-export function projectRunKernels(events: readonly Event[]): Map<string, string> {
-  const kernels = new Map<string, string>();
-  for (const event of events) {
-    if (event.type !== 'run.started') continue;
-    const payloadRun =
-      event.payload.run && typeof event.payload.run === 'object'
-        ? (event.payload.run as Record<string, unknown>)
-        : undefined;
-    const runId =
-      (event.runId ? String(event.runId) : undefined) ??
-      nonEmptyString(event.payload.runId) ??
-      nonEmptyString(payloadRun?.id);
-    if (!runId) continue;
-    const kernelId = nonEmptyString(event.payload.kernelId) ?? nonEmptyString(payloadRun?.kernelId);
-    if (kernelId) kernels.set(runId, kernelId);
-  }
-  return kernels;
-}
-
-export type RuntimeConnectionNotice =
-  { state: 'retrying'; text: string } | { state: 'failed'; text: string } | null;
 
 /** Convert a durable Message from the store into the UI ChatMessage shape. */
 function parseAssistantTimeline(
@@ -818,6 +481,110 @@ function parseAssistantTimeline(
     }
   }
   return undefined;
+}
+
+/** Restore background Agent cards persisted on the parent assistant message. */
+function parseDelegatedAgentProjections(
+  blocks: readonly MessageBlock[],
+): DelegatedAgentProjection[] | undefined {
+  const statuses = new Set<DelegatedAgentProjection['status']>([
+    'running',
+    'completed',
+    'failed',
+    'cancelled',
+    'timed_out',
+  ]);
+  const byChildRunId = new Map<string, DelegatedAgentProjection>();
+  for (const block of blocks) {
+    const payload =
+      block.payload && typeof block.payload === 'object' && !Array.isArray(block.payload)
+        ? (block.payload as Record<string, unknown>)
+        : undefined;
+    if (!Array.isArray(payload?.delegatedAgents)) continue;
+    for (const candidate of payload.delegatedAgents) {
+      if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) continue;
+      const record = candidate as Record<string, unknown>;
+      if (
+        typeof record.childRunId !== 'string' ||
+        typeof record.parentRunId !== 'string' ||
+        typeof record.name !== 'string' ||
+        typeof record.avatar !== 'string' ||
+        typeof record.agentId !== 'string' ||
+        record.kind !== 'existing' ||
+        typeof record.status !== 'string' ||
+        !statuses.has(record.status as DelegatedAgentProjection['status'])
+      ) {
+        continue;
+      }
+      const toolEvents = Array.isArray(record.toolEvents)
+        ? record.toolEvents.flatMap((entry) => {
+            if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return [];
+            const tool = entry as Record<string, unknown>;
+            if (typeof tool.toolName !== 'string') return [];
+            const status: DelegatedAgentProjection['toolEvents'][number]['status'] =
+              tool.status === 'running' || tool.status === 'completed' || tool.status === 'failed'
+                ? tool.status
+                : undefined;
+            return [
+              {
+                toolName: tool.toolName,
+                ...(typeof tool.arguments === 'string' ? { arguments: tool.arguments } : {}),
+                ...(status ? { status } : {}),
+                ...(typeof tool.output === 'string' ? { output: tool.output } : {}),
+                ...(tool.truncated === true ? { truncated: true } : {}),
+                ...(tool.argumentsTruncated === true ? { argumentsTruncated: true } : {}),
+                ...(typeof tool.argumentsCharacters === 'number'
+                  ? { argumentsCharacters: tool.argumentsCharacters }
+                  : {}),
+                ...(tool.outputTruncated === true ? { outputTruncated: true } : {}),
+                ...(typeof tool.outputCharacters === 'number'
+                  ? { outputCharacters: tool.outputCharacters }
+                  : {}),
+              },
+            ];
+          })
+        : [];
+      const usage = parseDelegatedAgentUsage(record.usage);
+      byChildRunId.set(record.childRunId, {
+        childRunId: record.childRunId as RunId,
+        parentRunId: record.parentRunId as RunId,
+        ...(typeof record.parentToolCallId === 'string'
+          ? { parentToolCallId: record.parentToolCallId }
+          : {}),
+        ...(typeof record.parallelGroup === 'string'
+          ? { parallelGroup: record.parallelGroup }
+          : {}),
+        name: record.name,
+        avatar: record.avatar,
+        kind: 'existing',
+        agentId: record.agentId,
+        status: record.status as DelegatedAgentProjection['status'],
+        ...(typeof record.activeTool === 'string' ? { activeTool: record.activeTool } : {}),
+        toolEvents,
+        ...(typeof record.result === 'string' ? { result: record.result } : {}),
+        ...(usage ? { usage } : {}),
+        ...(typeof record.durationMs === 'number' && Number.isFinite(record.durationMs)
+          ? { durationMs: record.durationMs }
+          : {}),
+      });
+    }
+  }
+  return byChildRunId.size > 0 ? [...byChildRunId.values()] : undefined;
+}
+
+function mergeDelegatedAgentProjection(
+  current: readonly DelegatedAgentProjection[] | undefined,
+  incoming: DelegatedAgentProjection,
+): DelegatedAgentProjection[] {
+  const byChildRunId = new Map(
+    (current ?? []).map((item) => [String(item.childRunId), item] as const),
+  );
+  byChildRunId.set(String(incoming.childRunId), incoming);
+  return [...byChildRunId.values()].map((item) => ({
+    ...item,
+    toolEvents: item.toolEvents.map((tool) => ({ ...tool })),
+    ...(item.usage ? { usage: { ...item.usage } } : {}),
+  }));
 }
 
 function assistantTimelineToChatFields(timeline: readonly AssistantTurnSegment[] | undefined): {
@@ -924,7 +691,7 @@ function assistantTimelineToChatFields(timeline: readonly AssistantTurnSegment[]
           ...(segment.inputSummary ? { inputSummary: segment.inputSummary } : {}),
           argumentsJson: segment.argumentsJson ?? '',
           ...(segment.output !== undefined ? { result: segment.output } : {}),
-          ...(DELEGATION_TOOL_NAMES.has(segment.name) ? { delegationAnchor: true } : {}),
+          ...(isDelegationToolName(segment.name) ? { delegationAnchor: true } : {}),
           ...(segment.argumentsRef ? { argumentsRef: segment.argumentsRef } : {}),
           ...(segment.outputRef ? { resultRef: segment.outputRef } : {}),
           ...(segment.isError || segment.status === 'failed' ? { failed: true } : {}),
@@ -1066,6 +833,7 @@ export function projectTransientAssistantDisplay(
 
 export function messageToChat(msg: Message): ChatMessage {
   const assistantTimeline = parseAssistantTimeline(msg.blocks);
+  const delegatedAgents = parseDelegatedAgentProjections(msg.blocks);
   const timelineFields = assistantTimelineToChatFields(assistantTimeline);
   const textBlocks = msg.blocks.filter((b: MessageBlock) => b.type === 'text');
   const legacyText = textBlocks.map((b: MessageBlock) => b.text ?? '').join('\n');
@@ -1285,6 +1053,7 @@ export function messageToChat(msg: Message): ChatMessage {
       (!assistantTimeline && commentarySegments.length > 0 ? commentarySegments : undefined),
     reasoningText: timelineFields.reasoningText ?? (reasoningText || undefined),
     assistantTimeline,
+    delegatedAgents,
     answerText: timelineFields.answerText ?? (answerBlock?.text || undefined),
     processItems: timelineFields.processItems ?? processItems,
     images,
@@ -1306,29 +1075,6 @@ export function messageToChat(msg: Message): ChatMessage {
   };
 }
 
-/**
- * A v2 backfill appends missing legacy terminal rows without rewriting durable
- * sequence cursors. Only pages containing such a row use event time to restore
- * the original visual turn order; normal pages retain canonical sequence order.
- */
-export function orderDurableMessagesForDisplay(messages: readonly ChatMessage[]): ChatMessage[] {
-  const ordered = [...messages];
-  if (!ordered.some((message) => message.legacyTerminalBackfill)) {
-    return ordered.sort(
-      (left, right) =>
-        (left.sequence ?? Number.MAX_SAFE_INTEGER) - (right.sequence ?? Number.MAX_SAFE_INTEGER),
-    );
-  }
-  return ordered.sort((left, right) => {
-    const leftAt = Date.parse(left.timestamp);
-    const rightAt = Date.parse(right.timestamp);
-    if (Number.isFinite(leftAt) && Number.isFinite(rightAt) && leftAt !== rightAt) {
-      return leftAt - rightAt;
-    }
-    return (left.sequence ?? Number.MAX_SAFE_INTEGER) - (right.sequence ?? Number.MAX_SAFE_INTEGER);
-  });
-}
-
 export function shouldDisplayChatMessage(message: ChatMessage): boolean {
   return (
     message.text.trim().length > 0 ||
@@ -1339,34 +1085,6 @@ export function shouldDisplayChatMessage(message: ChatMessage): boolean {
     Boolean(message.images?.length) ||
     Boolean(message.terminalState)
   );
-}
-
-/**
- * Hide an optimistic user bubble in the same render that its durable copy
- * arrives. The cleanup effect still removes it from state afterwards, but
- * rendering must not wait one extra commit or the message rail briefly sees
- * duplicate ids and the conversation height jumps.
- */
-export function filterPendingUserMessagesForDisplay(
-  pendingMessages: readonly ChatMessage[],
-  durableMessages: readonly ChatMessage[],
-): ChatMessage[] {
-  if (pendingMessages.length === 0 || durableMessages.length === 0) {
-    return [...pendingMessages];
-  }
-  const durableIds = new Set(durableMessages.map((message) => message.id));
-  return pendingMessages.filter((message) => !durableIds.has(message.id));
-}
-
-type CompactProgressStatus = 'running' | 'success' | 'noop' | 'failure';
-
-interface CompactProgressState {
-  status: CompactProgressStatus;
-  mode: 'manual' | 'auto';
-  startedAt: number;
-  message: string;
-  /** After-tokens estimate from a successful compact — drives the ring until next usage. */
-  afterTokens?: number;
 }
 
 function toolApprovalArguments(value: unknown): Record<string, unknown> | undefined {
@@ -1382,21 +1100,6 @@ function toolApprovalScopes(value: unknown): ToolApprovalScope[] | undefined {
       scope === 'once' || scope === 'session' || scope === 'always-app',
   );
   return scopes.length > 0 ? scopes : undefined;
-}
-
-interface QueueDispatchAttempt {
-  requestId: string;
-  token: symbol;
-}
-
-interface QueueBlockedRequest {
-  requestId: string;
-  error: string;
-}
-
-interface QueueDispatchState {
-  dispatching?: QueueDispatchAttempt;
-  blocked?: QueueBlockedRequest;
 }
 
 export type { PermissionMode, ReasoningEffort };
@@ -1728,42 +1431,38 @@ export function ChatView({
   const [goalSettingsInitial, setGoalSettingsInitial] = useState<
     Partial<GoalSettingsValues> | undefined
   >();
-  const refreshGoal = useCallback(() => {
+  const refreshGoal = useCallback(async (): Promise<boolean> => {
     const api = bridge();
     const conversationId = String(conversation.id);
     const generation = (goalLoadGenerationRef.current += 1);
     if (!api?.getGoal) {
       setGoalState(undefined);
-      return;
+      return true;
     }
-    void api
-      .getGoal({ conversationId })
-      .then((res) => {
-        if (
-          activeConversationIdRef.current !== conversationId ||
-          goalLoadGenerationRef.current !== generation
-        )
-          return;
-        setGoalState(res);
-      })
-      .catch(() => {
-        if (
-          activeConversationIdRef.current !== conversationId ||
-          goalLoadGenerationRef.current !== generation
-        )
-          return;
-        setGoalState(undefined);
-      });
+    try {
+      const response = await api.getGoal({ conversationId });
+      if (
+        activeConversationIdRef.current !== conversationId ||
+        goalLoadGenerationRef.current !== generation
+      )
+        return true;
+      setGoalState(response);
+      return true;
+    } catch {
+      if (
+        activeConversationIdRef.current !== conversationId ||
+        goalLoadGenerationRef.current !== generation
+      )
+        return false;
+      setGoalState(undefined);
+      return false;
+    }
   }, [conversation.id]);
-  useEffect(() => {
-    refreshGoal();
-    // Active goals are evaluated after each run, so keep round/status feedback live.
-    const timer = window.setInterval(
-      refreshGoal,
-      activeGoalState?.goal?.status === 'active' ? 2_000 : 30_000,
-    );
-    return () => window.clearInterval(timer);
-  }, [activeGoalState?.goal?.status, refreshGoal]);
+  // Active goals are evaluated after each run, so keep round/status feedback live.
+  useVisiblePolling(refreshGoal, {
+    intervalMs: activeGoalState?.goal?.status === 'active' ? 2_000 : 30_000,
+    refreshKey: conversation.id,
+  });
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(
     (conversation.executionMode as PermissionMode) || 'full-access',
   );
@@ -1814,32 +1513,6 @@ export function ChatView({
   const [netEnabled, setNetEnabled] = useState(
     () => readConversationNetworkEnabled(String(conversation.id)) ?? true,
   );
-  /** NewMax-style context compact progress capsule. */
-  const [compactProgress, setCompactProgress] = useState<CompactProgressState | null>(null);
-  /** In-flight compact lock — blocks concurrent compact / command swallow. */
-  const compactingRef = useRef(false);
-  /**
-   * Single dismiss timer for the compact capsule.
-   * Without this, an older success/noop timeout can clear a newer running state.
-   */
-  const compactDismissTimerRef = useRef<number | null>(null);
-  const clearCompactDismissTimer = useCallback(() => {
-    if (compactDismissTimerRef.current !== null) {
-      window.clearTimeout(compactDismissTimerRef.current);
-      compactDismissTimerRef.current = null;
-    }
-  }, []);
-  const scheduleCompactDismiss = useCallback(
-    (delayMs: number) => {
-      clearCompactDismissTimer();
-      compactDismissTimerRef.current = window.setTimeout(() => {
-        compactDismissTimerRef.current = null;
-        setCompactProgress(null);
-      }, delayMs);
-    },
-    [clearCompactDismissTimer],
-  );
-  useEffect(() => () => clearCompactDismissTimer(), [clearCompactDismissTimer]);
   /** Optimistic user bubbles not yet present in durable event history. */
   const [pendingUserMessages, setPendingUserMessages] = useState<ChatMessage[]>([]);
   const localErrorsRef = useRef<ChatMessage[]>([]);
@@ -1869,17 +1542,23 @@ export function ChatView({
   if (historyScopeRef.current.key !== historyScopeKey)
     historyScopeRef.current = { key: historyScopeKey };
   const initialCachedPage = readUsableRecentConversationPage(historyScopeKey);
-  const [loadedMessages, setLoadedMessages] = useState<ChatMessage[]>(
+  const [storedLoadedMessages, setLoadedMessages] = useState<ChatMessage[]>(
     () => initialCachedPage?.messages ?? [],
   );
+  const [loadedMessagesScopeKey, setLoadedMessagesScopeKey] = useState(historyScopeKey);
+  // Scope the page before deriving render windows, navigation, or source reads.
+  // The layout-effect reset alone is too late to prevent child read effects.
+  const loadedMessages = useMemo(
+    () => (loadedMessagesScopeKey === historyScopeKey ? storedLoadedMessages : []),
+    [historyScopeKey, loadedMessagesScopeKey, storedLoadedMessages],
+  );
+  const loadedMessagesRef = useRef(loadedMessages);
+  loadedMessagesRef.current = loadedMessages;
   const [historyRanges, setHistoryRanges] = useState<HistoryRange[]>(
     () => initialCachedPage?.ranges ?? [],
   );
   const historyRangesRef = useRef(historyRanges);
-  const [loadingHistoryTarget, setLoadingHistoryTarget] = useState<string>();
   const [renderWindowTargetId, setRenderWindowTargetId] = useState<string>();
-  const historyTargetTokenRef = useRef<object>();
-  const navigationIntentRef = useRef(0);
   const navigationDirectory = useConversationNavigation(
     String(conversation.id),
     Boolean(conversation.taskId),
@@ -1931,7 +1610,6 @@ export function ChatView({
   const [loadingMore, setLoadingMore] = useState(false);
   /** Whether the initial page load has completed (success or failure). */
   const [initialLoaded, setInitialLoaded] = useState(Boolean(initialCachedPage));
-  const [loadedMessagesScopeKey, setLoadedMessagesScopeKey] = useState(historyScopeKey);
   const [durableTaskPlan, setDurableTaskPlan] = useState<{
     conversationId: string;
     state: NonNullable<ConversationListMessagesResponse['taskPlan']>;
@@ -1962,8 +1640,6 @@ export function ChatView({
   const transientFallbackOnlyRef = useRef(false);
   /** Forces fallback replay after a reset/subscribe failure even if no new durable event arrived. */
   const [transientFallbackEpoch, setTransientFallbackEpoch] = useState(0);
-  /** resetRequired means the bounded replay had a gap; rebuild the current draft from durable deltas. */
-  const transientResetGenerationRef = useRef(0);
   /** Guards against processing events with a stale threadId after switching chats. */
   const threadConversationIdRef = useRef<string | undefined>(undefined);
   /** Invalidates in-flight durable message reads after a refresh or conversation switch. */
@@ -2086,6 +1762,13 @@ export function ChatView({
     },
     [flushTransientFrames],
   );
+  const clearTransientDisplayQueue = useCallback(() => {
+    transientFrameQueueRef.current.length = 0;
+    if (transientFrameFlushRef.current !== null) {
+      window.clearTimeout(transientFrameFlushRef.current);
+      transientFrameFlushRef.current = null;
+    }
+  }, []);
   /** Active / slash-command query (null = menu closed). Mutually exclusive with @. */
   const [slash, setSlash] = useState<SlashQuery | null>(null);
   const [slashIndex, setSlashIndex] = useState(-1);
@@ -2104,48 +1787,6 @@ export function ChatView({
   const [mcpMenuStyle, setMcpMenuStyle] = useState<React.CSSProperties | null>(null);
   /** Selected @-files / images shown as chips (NewMax style). */
   const [attachments, setAttachments] = useState<ComposeAttachment[]>([]);
-  const failedComposeDraftScope = JSON.stringify([
-    conversation.workspaceId ?? '',
-    String(conversation.id),
-  ]);
-  const subscribeFailedDrafts = useCallback(
-    (listener: () => void) => subscribeFailedComposeDrafts(failedComposeDraftScope, listener),
-    [failedComposeDraftScope],
-  );
-  const getFailedDrafts = useCallback(
-    () => readFailedComposeDrafts(failedComposeDraftScope),
-    [failedComposeDraftScope],
-  );
-  const failedComposeDrafts = useSyncExternalStore(
-    subscribeFailedDrafts,
-    getFailedDrafts,
-    getFailedDrafts,
-  );
-  const composeMountedRef = useRef(true);
-  useEffect(() => {
-    composeMountedRef.current = true;
-    return () => {
-      composeMountedRef.current = false;
-    };
-  }, []);
-  /** Composer-only drafts. They do not become messages or Provider context until dispatched. */
-  const [queuedComposeRequests, setQueuedComposeRequests] = useState<QueuedComposeRequest[]>(() =>
-    readQueuedComposeRequests(String(conversation.id)),
-  );
-  const [dispatchingQueuedRequestId, setDispatchingQueuedRequestId] = useState<
-    string | undefined
-  >();
-  const [blockedQueuedRequestId, setBlockedQueuedRequestId] = useState<string | undefined>();
-  const [queuedRequestDispatchError, setQueuedRequestDispatchError] = useState<
-    string | undefined
-  >();
-  /**
-   * Queue dispatch ownership is conversation-scoped. A single boolean lock is
-   * insufficient because this ChatView instance survives conversation switches:
-   * clearing that lock on navigation lets the same persisted draft dispatch twice
-   * when the user returns before appendMessage settles.
-   */
-  const queuedDispatchByConversationRef = useRef(new Map<string, QueueDispatchState>());
   /** Exact immutable Skill versions used by normal Composer sends in this conversation. */
   const [selectedSkillVersionIds, setSelectedSkillVersionIds] = useState<string[]>(() =>
     resolveAppendSkillVersionIds(
@@ -2159,8 +1800,21 @@ export function ChatView({
     permissionMenuOpen: menu === 'permission',
     onPermissionMenuOpenChange: (open) => setMenu(open ? 'permission' : null),
   });
-  /** Click-to-preview lightbox for message / chip images. */
-  const [lightbox, setLightbox] = useState<MessageImage | null>(null);
+  /** Shared image gallery for message attachments and composer previews. */
+  const [lightbox, setLightbox] = useState<{
+    images: MessageImage[];
+    activeIndex: number;
+  } | null>(null);
+  const openImageLightbox = useCallback((image: MessageImage, group?: readonly MessageImage[]) => {
+    const images = (group && group.length > 0 ? [...group] : [image]).filter((candidate) =>
+      Boolean(candidate.url),
+    );
+    const activeIndex = Math.max(
+      0,
+      images.findIndex((candidate) => candidate.id === image.id),
+    );
+    setLightbox({ images, activeIndex });
+  }, []);
   const [dragOver, setDragOver] = useState(false);
   /** Live tick so compact capsule can show elapsed seconds. */
   const [compactNow, setCompactNow] = useState(() => Date.now());
@@ -2182,8 +1836,6 @@ export function ChatView({
     setNextCursor(cachedPage?.nextCursor);
     setLoadingMore(false);
     loadingMoreRef.current = false;
-    historyTargetTokenRef.current = undefined;
-    setLoadingHistoryTarget(undefined);
     setRenderWindowTargetId(undefined);
     setInitialLoaded(Boolean(readUsableRecentConversationPage(historyScopeRef.current.key)));
     setDurableTaskPlan(undefined);
@@ -2198,24 +1850,6 @@ export function ChatView({
   const programmaticScrollTargetRef = useRef<number | null>(null);
   /** NewMax markProgrammaticScroll: layout/html/mermaid writes must not unpin. */
   const programmaticScrollPendingRef = useRef(false);
-  /**
-   * In-flight minimap slide. The rail re-measures the landing position for a few
-   * frames after a click, so the origin and the elapsed clock live here and only
-   * `to` moves: a correction bends the remaining curve instead of restarting it.
-   */
-  const navigationSlideRef = useRef<
-    { frame: number; from: number; to: number; startedAt: number; duration: number } | undefined
-  >(undefined);
-  const stopNavigationSlide = useCallback(() => {
-    const slide = navigationSlideRef.current;
-    if (!slide) return;
-    window.cancelAnimationFrame(slide.frame);
-    navigationSlideRef.current = undefined;
-  }, []);
-  /** A conversation switch (or unmount) must not leave the old thread's slide running. */
-  useEffect(() => {
-    return () => stopNavigationSlide();
-  }, [historyScopeKey, stopNavigationSlide]);
   /** Restores a saved position once the current conversation has rendered. */
   const restoredScrollPositionRef = useRef<string | null>(null);
   /** Coalesces high-frequency scroll writes into one local snapshot per frame. */
@@ -2229,6 +1863,12 @@ export function ChatView({
   const bottomPinIntentRef = useRef<'toward-bottom' | 'away-from-bottom' | null>(null);
   const lastTouchClientYRef = useRef<number | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const { failedComposeDrafts, sendDraft, restoreFailedDrafts } = useComposeDraftRecovery({
+    scope: JSON.stringify([conversation.workspaceId ?? '', String(conversation.id)]),
+    inputRef,
+    setInput,
+    setAttachments,
+  });
   const inputValueRef = useRef(input);
   inputValueRef.current = input;
   const speechRecognitionRef = useRef<BrowserSpeechRecognition | null>(null);
@@ -2242,17 +1882,6 @@ export function ChatView({
   const modelBtnRef = useRef<HTMLButtonElement>(null);
   const identityBtnRef = useRef<HTMLButtonElement>(null);
   const [slashPopStyle, setSlashPopStyle] = useState<React.CSSProperties | null>(null);
-  const commitQueuedComposeRequests = useCallback(
-    (update: (current: readonly QueuedComposeRequest[]) => QueuedComposeRequest[]): void => {
-      const conversationId = String(conversation.id);
-      setQueuedComposeRequests((current) => {
-        const next = update(current);
-        writeQueuedComposeRequests(conversationId, next);
-        return next;
-      });
-    },
-    [conversation.id],
-  );
   useEffect(() => {
     if (initialSkillVersionIds !== undefined) {
       onInitialSkillSelectionConsumed?.(String(conversation.id));
@@ -2292,13 +1921,10 @@ export function ChatView({
     setDesktopWaitingStatus('idle');
     setDesktopWaitingError(undefined);
     setBusyDesktopCommandId(undefined);
-    const conversationId = String(conversation.id);
     const cachedPage = readRecentConversationPage(historyScopeRef.current.key);
     setLoadedMessages(cachedPage?.messages ?? []);
     historyRangesRef.current = cachedPage?.ranges ?? [];
     setHistoryRanges(historyRangesRef.current);
-    setLoadingHistoryTarget(undefined);
-    historyTargetTokenRef.current = undefined;
     setDurableTaskPlan(undefined);
     setRunProcessById(new Map());
     runProcessLoader.suspend();
@@ -2313,17 +1939,12 @@ export function ChatView({
     usageSummaryLoadGenerationRef.current += 1;
     setDurableUsageSummary(null);
     transientDraftRef.current = null;
-    transientFrameQueueRef.current.length = 0;
-    if (transientFrameFlushRef.current !== null) {
-      window.clearTimeout(transientFrameFlushRef.current);
-      transientFrameFlushRef.current = null;
-    }
+    clearTransientDisplayQueue();
     setStreamingMessage(null);
     lastConsumedEventSequenceRef.current = 0;
     lastTransientSequenceRef.current = 0;
     transientStreamHealthyRef.current = false;
     transientFallbackOnlyRef.current = false;
-    transientResetGenerationRef.current += 1;
     threadConversationIdRef.current = undefined;
     messageLoadGenerationRef.current += 1;
     setComposerAddOpen(false);
@@ -2335,13 +1956,6 @@ export function ChatView({
     setMcpMenuOpen(false);
     setMcpMenuStyle(null);
     setAttachments([]);
-    const queuedDispatchState = queuedDispatchByConversationRef.current.get(conversationId);
-    setQueuedComposeRequests(readQueuedComposeRequests(conversationId));
-    setDispatchingQueuedRequestId(queuedDispatchState?.dispatching?.requestId);
-    setBlockedQueuedRequestId(queuedDispatchState?.blocked?.requestId);
-    setQueuedRequestDispatchError(queuedDispatchState?.blocked?.error);
-    clearCompactDismissTimer();
-    setCompactProgress(null);
     setMenu(null);
     setPermissionMode((conversation.executionMode as PermissionMode) || 'full-access');
     setModelOverride(readConversationModelOverride(String(conversation.id)) ?? '');
@@ -2362,7 +1976,7 @@ export function ChatView({
     // onConversationUpdated → refresh 更新该字段，导致此「切换对话」重置
     // effect 被误触发：消息被清空而 loadMessages 不重跑，聊天区永远停在
     // 「加载中…」。权限模式由 setPermission 自行同步，这里只需跟随 id。
-  }, [clearCompactDismissTimer, conversation.id, runProcessLoader]);
+  }, [clearTransientDisplayQueue, conversation.id, runProcessLoader]);
 
   // A provider can be disabled while a conversation still has its old local
   // override. Repair that hidden stale selection as soon as the available
@@ -2717,7 +2331,7 @@ export function ChatView({
       return;
     }
     try {
-      const response = await api.getUsageSummary({ taskId });
+      const response = await api.getUsageSummary({ taskId, includeRequests: false });
       if (
         activeConversationIdRef.current === conversationId &&
         usageSummaryLoadGenerationRef.current === generation
@@ -2953,11 +2567,10 @@ export function ChatView({
   useEffect(() => {
     onLatestReviewChange?.(latestReviewView);
   }, [latestReviewView, onLatestReviewChange, conversation.id]);
-  const runAgentIdentityById = useMemo(
-    () => projectRunAgentIdentities(eventHistory),
+  const { agentIdentities: runAgentIdentityById, kernels: runKernelById } = useMemo(
+    () => projectRunIdentities(eventHistory),
     [eventHistory],
   );
-  const runKernelById = useMemo(() => projectRunKernels(eventHistory), [eventHistory]);
   /**
    * External-kernel self-compaction notices. Codex exposes a real item
    * lifecycle; Claude currently exposes only the completed compact boundary.
@@ -2994,85 +2607,36 @@ export function ChatView({
           nonEmptyString(event.payload.conversationId) === conversationId,
       );
   }, [conversation.id, eventHistory]);
-  const lastHostCompactionSignatureRef = useRef('');
-  useEffect(() => {
-    const event = latestHostCompactionEvent;
-    if (!event) return;
-    const signature = `${event.id}:${event.type}`;
-    if (lastHostCompactionSignatureRef.current === signature) return;
-    lastHostCompactionSignatureRef.current = signature;
-
-    const mode = event.payload.mode === 'auto' ? 'auto' : 'manual';
-    const eventStartedAt = Date.parse(nonEmptyString(event.payload.startedAt) ?? event.occurredAt);
-    const startedAt = Number.isFinite(eventStartedAt) ? eventStartedAt : Date.now();
-    const numberPayload = (key: string): number | undefined => {
-      const value = event.payload[key];
-      return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
-    };
-    if (event.type !== 'context.compaction_started' && Date.now() - startedAt > 15_000) {
-      return;
-    }
-
-    clearCompactDismissTimer();
-    if (event.type === 'context.compaction_started') {
-      compactingRef.current = true;
-      setCompactProgress({
-        status: 'running',
-        mode,
-        startedAt,
-        message: mode === 'auto' ? '正在自动压缩上下文…' : '正在手动压缩上下文…',
-      });
-      return;
-    }
-
-    compactingRef.current = false;
-    const beforeTokens = numberPayload('beforeTokens');
-    const afterTokens = numberPayload('afterTokens');
-    const foldedCount = numberPayload('foldedCount') ?? 0;
-    const durationMs = numberPayload('durationMs');
-    const elapsed =
-      durationMs !== undefined
-        ? formatCompactElapsed(Date.now() - durationMs, Date.now())
-        : formatCompactElapsed(startedAt);
-    if (event.type === 'context.compacted') {
-      const saved =
-        beforeTokens !== undefined && afterTokens !== undefined
-          ? `（${beforeTokens} → ${afterTokens}）`
-          : '';
-      setCompactProgress({
-        status: 'success',
-        mode,
-        startedAt,
-        message: `上下文已${mode === 'auto' ? '自动' : ''}压缩${saved} · 折叠 ${foldedCount} 条 · ${elapsed}`,
-        afterTokens,
-      });
-      scheduleCompactDismiss(2400);
-      void refreshContextStatus();
-      return;
-    }
-    if (event.type === 'context.compaction_failed') {
-      setCompactProgress({
-        status: 'failure',
-        mode,
-        startedAt,
-        message: `上下文${mode === 'auto' ? '自动' : ''}压缩失败 · ${elapsed}`,
-      });
-      scheduleCompactDismiss(2400);
-      return;
-    }
-    setCompactProgress({
-      status: 'noop',
-      mode,
-      startedAt,
-      message: `当前上下文无需压缩 · ${elapsed}`,
+  const reportManualCompactError = useCallback(
+    (message: string) => {
+      setLocalErrors((errors) => [
+        ...errors,
+        {
+          id: `err-compact-${Date.now()}`,
+          role: 'system',
+          tone: 'error',
+          text: message,
+          timestamp: new Date().toISOString(),
+        },
+      ]);
+    },
+    [setLocalErrors],
+  );
+  const getCompact = useCallback(() => {
+    const api = bridge();
+    return api?.compactConversation
+      ? (payload: import('@sync-think/protocol').ConversationCompactPayload) =>
+          api.compactConversation!(payload)
+      : undefined;
+  }, []);
+  const { compactProgress, isCompacting, runAutoCompact, runManualCompact } =
+    useConversationCompaction({
+      conversationId: String(conversation.id),
+      getCompact,
+      refreshContextStatus,
+      onManualError: reportManualCompactError,
+      hostEvent: latestHostCompactionEvent,
     });
-    scheduleCompactDismiss(1600);
-  }, [
-    clearCompactDismissTimer,
-    latestHostCompactionEvent,
-    refreshContextStatus,
-    scheduleCompactDismiss,
-  ]);
   const conversationAgent = useMemo(
     () =>
       conversation.track === 'agent'
@@ -3361,121 +2925,153 @@ export function ChatView({
     [busyBrowserHandoffId, refreshBrowserHandoffs],
   );
 
-  // Primary S2 streaming path: subscribe only to the currently opened thread.
-  // Replay/live frames use a thread-local cursor and never enter global eventHistory.
-  useEffect(() => {
-    if (!threadId) return;
-    if (threadConversationIdRef.current !== String(conversation.id)) return;
-    const api = bridge();
-    if (!api?.subscribeConversationTransientStream) return;
-
-    const generation = transientResetGenerationRef.current;
-    const frameQueue = transientFrameQueueRef.current;
-    let disposed = false;
-    transientStreamHealthyRef.current = true;
-    const subscription = api.subscribeConversationTransientStream(
-      { threadId, afterStreamSequence: lastTransientSequenceRef.current },
-      (event: {
-        type: 'frame' | 'reset';
-        frame?: ConversationTransientFrame;
-        latestStreamSequence?: number;
-        snapshot?: ConversationTransientSnapshot;
-      }) => {
-        if (disposed || transientResetGenerationRef.current !== generation) return;
-        if (event.type === 'reset') {
-          frameQueue.length = 0;
-          if (transientFrameFlushRef.current !== null) {
-            window.clearTimeout(transientFrameFlushRef.current);
-            transientFrameFlushRef.current = null;
+  const mergeTransientAgentsIntoDurableParent = useCallback(
+    (runId: string, projections: readonly DelegatedAgentProjection[]): boolean => {
+      if (!loadedMessagesRef.current.some((message) => message.runId === runId)) return false;
+      setLoadedMessages((previous) =>
+        previous.map((message) => {
+          if (message.runId !== runId) return message;
+          let delegatedAgents = message.delegatedAgents;
+          for (const projection of projections) {
+            delegatedAgents = mergeDelegatedAgentProjection(delegatedAgents, projection);
           }
-          const latestStreamSequence = event.latestStreamSequence ?? 0;
-          if (event.snapshot && event.snapshot.threadId === threadId) {
-            transientFallbackOnlyRef.current = false;
-            transientStreamHealthyRef.current = true;
-            frameQueue.push(
-              ...buildConversationSnapshotDisplayQueue({
-                current: transientDraftRef.current,
-                incoming: {
-                  runId: event.snapshot.runId,
-                  text: event.snapshot.text,
-                  commentaryText: event.snapshot.commentaryText,
-                  commentarySegments: event.snapshot.commentarySegments,
-                  reasoningText: event.snapshot.reasoningText,
-                  assistantTimeline: event.snapshot.assistantTimeline,
-                  delegatedAgents: event.snapshot.delegatedAgents,
-                  timestamp: event.snapshot.updatedAt,
-                },
-                streamSequence: latestStreamSequence,
-                process: event.snapshot.process,
-              }),
+          return { ...message, delegatedAgents };
+        }),
+      );
+      return true;
+    },
+    [],
+  );
+  const handleTransientSubscriptionEvent = useCallback(
+    (event: ConversationTransientSubscriptionEvent) => {
+      if (!threadId) return;
+      const frameQueue = transientFrameQueueRef.current;
+      if (event.type === 'reset') {
+        clearTransientDisplayQueue();
+        const latestStreamSequence = event.latestStreamSequence;
+        if (event.snapshot && event.snapshot.threadId === threadId) {
+          transientFallbackOnlyRef.current = false;
+          transientStreamHealthyRef.current = true;
+          if (
+            event.snapshot.delegatedAgents?.length &&
+            mergeTransientAgentsIntoDurableParent(
+              String(event.snapshot.runId),
+              event.snapshot.delegatedAgents,
+            )
+          ) {
+            lastTransientSequenceRef.current = Math.max(
+              lastTransientSequenceRef.current,
+              latestStreamSequence,
             );
-          } else {
-            transientFallbackOnlyRef.current = false;
-            transientStreamHealthyRef.current = true;
-            frameQueue.push(
-              ...buildConversationSnapshotDisplayQueue({
-                current: transientDraftRef.current,
-                incoming: null,
-                streamSequence: latestStreamSequence,
-                refreshDurable: true,
-              }),
-            );
+            return;
           }
-          scheduleTransientFrameFlush('immediate');
-          return;
-        }
-        const frame = event.frame;
-        if (!frame) return;
-        if (transientFallbackOnlyRef.current) {
-          lastTransientSequenceRef.current = Math.max(
-            lastTransientSequenceRef.current,
-            frame.streamSequence,
+          frameQueue.push(
+            ...buildConversationSnapshotDisplayQueue({
+              current: transientDraftRef.current,
+              incoming: {
+                runId: event.snapshot.runId,
+                text: event.snapshot.text,
+                commentaryText: event.snapshot.commentaryText,
+                commentarySegments: event.snapshot.commentarySegments,
+                reasoningText: event.snapshot.reasoningText,
+                assistantTimeline: event.snapshot.assistantTimeline,
+                delegatedAgents: event.snapshot.delegatedAgents,
+                timestamp: event.snapshot.updatedAt,
+              },
+              streamSequence: latestStreamSequence,
+              process: event.snapshot.process,
+            }),
           );
-          if (frame.kind === 'terminal') {
-            if (frame.process) {
-              updateRunProcess(frame.process);
-            } else {
-              runProcessLoader.invalidate(String(frame.runId));
-              setRunProcessById((previous) => {
-                if (!previous.has(frame.runId)) return previous;
-                const next = new Map(previous);
-                next.delete(frame.runId);
-                return next;
-              });
-            }
-            transientTerminalEffectsRef.current(String(frame.runId));
-          }
-          return;
+        } else {
+          transientFallbackOnlyRef.current = false;
+          transientStreamHealthyRef.current = true;
+          frameQueue.push(
+            ...buildConversationSnapshotDisplayQueue({
+              current: transientDraftRef.current,
+              incoming: null,
+              streamSequence: latestStreamSequence,
+              refreshDurable: true,
+            }),
+          );
         }
-        transientStreamHealthyRef.current = true;
-        frameQueue.push({ source: 'transient', frame, offset: 0 });
-        scheduleTransientFrameFlush(
-          frame.kind === 'process' || frame.kind === 'terminal' ? 'immediate' : 'animation-frame',
+        scheduleTransientFrameFlush('immediate');
+        return;
+      }
+      const frame = event.frame;
+      if (
+        frame.delegatedAgent &&
+        mergeTransientAgentsIntoDurableParent(String(frame.runId), [frame.delegatedAgent])
+      ) {
+        lastTransientSequenceRef.current = Math.max(
+          lastTransientSequenceRef.current,
+          frame.streamSequence,
         );
-      },
-    );
-    void subscription.ready.catch(() => {
-      if (!disposed && transientResetGenerationRef.current === generation) {
-        transientFallbackOnlyRef.current = true;
-        transientStreamHealthyRef.current = false;
-        lastConsumedEventSequenceRef.current = 0;
-        setTransientFallbackEpoch((value) => value + 1);
+        if (frame.delegatedAgent.status !== 'running') {
+          transientTerminalEffectsRef.current(String(frame.runId));
+        }
+        return;
       }
-    });
-
-    return () => {
-      disposed = true;
-      frameQueue.length = 0;
-      if (transientFrameFlushRef.current !== null) {
-        window.clearTimeout(transientFrameFlushRef.current);
-        transientFrameFlushRef.current = null;
+      if (transientFallbackOnlyRef.current) {
+        lastTransientSequenceRef.current = Math.max(
+          lastTransientSequenceRef.current,
+          frame.streamSequence,
+        );
+        if (frame.kind === 'terminal') {
+          if (frame.process) {
+            updateRunProcess(frame.process);
+          } else {
+            runProcessLoader.invalidate(String(frame.runId));
+            setRunProcessById((previous) => {
+              if (!previous.has(frame.runId)) return previous;
+              const next = new Map(previous);
+              next.delete(frame.runId);
+              return next;
+            });
+          }
+          transientTerminalEffectsRef.current(String(frame.runId));
+        }
+        return;
       }
-      void subscription.unsubscribe();
-    };
-    // Kernel/model context refreshes must not resubscribe: tearing down the
-    // live stream on a picker click races the 5s IPC budget and makes the
-    // shell look frozen while conversation.subscribeTransientStream times out.
-  }, [conversation.id, runProcessLoader, scheduleTransientFrameFlush, threadId, updateRunProcess]);
+      transientStreamHealthyRef.current = true;
+      frameQueue.push({ source: 'transient', frame, offset: 0 });
+      scheduleTransientFrameFlush(
+        frame.kind === 'process' || frame.kind === 'terminal' ? 'immediate' : 'animation-frame',
+      );
+    },
+    [
+      clearTransientDisplayQueue,
+      mergeTransientAgentsIntoDurableParent,
+      runProcessLoader,
+      scheduleTransientFrameFlush,
+      threadId,
+      updateRunProcess,
+    ],
+  );
+  const openTransientSubscription = useCallback<ConversationTransientSubscriptionPort>(
+    (payload, listener) => bridge()?.subscribeConversationTransientStream?.(payload, listener),
+    [],
+  );
+  const getTransientSequence = useCallback(() => lastTransientSequenceRef.current, []);
+  const markTransientSubscriptionStarted = useCallback(() => {
+    transientStreamHealthyRef.current = true;
+  }, []);
+  const handleTransientSubscriptionFailure = useCallback(() => {
+    transientFallbackOnlyRef.current = true;
+    transientStreamHealthyRef.current = false;
+    lastConsumedEventSequenceRef.current = 0;
+    setTransientFallbackEpoch((value) => value + 1);
+  }, []);
+  useConversationTransientSubscription({
+    scopeKey: String(conversation.id),
+    threadId,
+    enabled: Boolean(threadId) && threadConversationIdRef.current === String(conversation.id),
+    subscribe: openTransientSubscription,
+    getAfterStreamSequence: getTransientSequence,
+    onStarted: markTransientSubscriptionStarted,
+    onEvent: handleTransientSubscriptionEvent,
+    onFailure: handleTransientSubscriptionFailure,
+    onDispose: clearTransientDisplayQueue,
+  });
 
   // Streaming via durable events is now a compatibility/failure fallback.
   // While transient is healthy it owns the complete visible order, including
@@ -3855,58 +3451,22 @@ export function ChatView({
   }, [pendingUserMessages.length, projected.streaming, sending, stopping]);
 
   const messages = useMemo(() => {
-    // Global sequence merge: the four sources (loadedMessages,
-    // pendingUserMessages, streamingMessage, localErrors) used to be
-    // concatenated in a hard-coded order, which let the streaming thought
-    // panel render above a just-sent user bubble whenever React state
-    // settled in the wrong order (run reused on an existing thread, or the
-    // optimistic pending bubble cleared a frame before the durable message
-    // arrived). Instead, merge by a monotonic sequence so every item finds
-    // its stable slot regardless of which state committed first.
-    //
-    // Durable messages carry a real store sequence. Transient items don't,
-    // so they are stamped with virtual sequences past the current durable
-    // tail, in the order they must visually appear:
-    //   pending user bubbles  → right after the tail (they precede the turn)
-    //   streaming assistant   → after the pending bubbles
-    // Once those transients persist, loadMessages() returns them with real
-    // sequences and the virtual copies are cleared, so the list converges.
-    const maxDurableSeq = loadedMessages.reduce(
-      (max, m) =>
-        Number.isFinite(m.sequence) ? Math.max(max, (m.sequence as number) ?? max) : max,
-      Number.MIN_SAFE_INTEGER,
-    );
-    let nextVirtualSeq = maxDurableSeq === Number.MIN_SAFE_INTEGER ? 0 : maxDurableSeq + 1;
-
-    type SeqItem = { value: ChatMessage; seq: number; tie: number };
-    const stamped: SeqItem[] = [];
-
-    // Durable messages keep their real sequence; tie-break by array order.
-    for (let i = 0; i < loadedMessages.length; i++) {
-      const m = loadedMessages[i]!;
-      stamped.push({ value: m, seq: m.sequence ?? nextVirtualSeq, tie: i });
-    }
-
-    // Pending user bubbles: virtual sequence before the streaming turn so a
-    // just-sent prompt is always visually followed by the thinking panel.
-    for (let i = 0; i < pendingUserMessagesForDisplay.length; i++) {
-      stamped.push({
-        value: pendingUserMessagesForDisplay[i]!,
-        seq: nextVirtualSeq++,
-        tie: 10_000 + i,
-      });
-    }
-
-    // Streaming assistant turn: virtual sequence after the pending bubbles.
-    if (visibleStreamingMessage) {
-      // Keep the streaming slot's sequence stable across re-merges by hashing
-      // on its runId so older-arriving frames don't reshuffle it.
-      stamped.push({ value: visibleStreamingMessage, seq: nextVirtualSeq++, tie: 20_000 });
-    }
-
-    stamped.sort((a, b) => (a.seq !== b.seq ? a.seq - b.seq : a.tie - b.tie));
-    return stamped.map((s) => s.value);
-  }, [loadedMessages, pendingUserMessagesForDisplay, visibleStreamingMessage]);
+    // Navigation changes props before the history reset commits. Do not mount
+    // old messages under the new content scope, even for that intermediate render:
+    // their automatic source reads would otherwise use the wrong conversation.
+    if (loadedMessagesScopeKey !== historyScopeKey) return [];
+    return mergeConversationMessagesForDisplay({
+      durableMessages: loadedMessages,
+      pendingMessages: pendingUserMessagesForDisplay,
+      streamingMessage: visibleStreamingMessage ?? undefined,
+    });
+  }, [
+    historyScopeKey,
+    loadedMessagesScopeKey,
+    loadedMessages,
+    pendingUserMessagesForDisplay,
+    visibleStreamingMessage,
+  ]);
 
   const navigationItems = useMemo<ConversationNavigationItem[]>(() => {
     const byId = new Map<string, ChatMessage>(
@@ -3939,103 +3499,42 @@ export function ChatView({
     );
   }, [messages, navigationDirectory.entries]);
 
-  const loadNavigationTarget = useCallback(
-    async (messageId: string, isCurrent: () => boolean) => {
-      setRenderWindowTargetId(messageId);
-      if (loadedMessages.some((message) => message.id === messageId)) return true;
-      const token = {};
-      historyTargetTokenRef.current = token;
-      navigationIntentRef.current += 1;
-      setLoadingHistoryTarget(messageId);
-      stickToBottomRef.current = false;
-      bottomPinIntentRef.current = null;
-      userScrollRevisionRef.current += 1;
-      try {
-        const loaded = await loadMessages(undefined, {
-          aroundMessageId: messageId,
-          accept: isCurrent,
-        });
-        if (!loaded) setRenderWindowTargetId(undefined);
-        return loaded;
-      } finally {
-        if (historyTargetTokenRef.current === token) {
-          historyTargetTokenRef.current = undefined;
-          setLoadingHistoryTarget(undefined);
-        }
-      }
-    },
-    [loadMessages, loadedMessages],
+  const isNavigationTargetLoaded = useCallback(
+    (messageId: string) => loadedMessagesRef.current.some((message) => message.id === messageId),
+    [],
   );
-
-  /**
-   * NewMax `scrollToMessage` slides the reader to the clicked outline tick
-   * (`container.scrollTo({ top: el.offsetTop - 16, behavior: 'smooth' })`) rather
-   * than teleporting. The rail calls this once per layout-correction frame, so an
-   * in-flight slide keeps its origin and only re-aims its endpoint, and every
-   * frame is written through the programmatic-scroll contract so the stick
-   * tracker never mistakes the slide for a reader scroll.
-   */
-  const handleNavigateMessage = useCallback(
-    (_messageId: string, targetScrollTop: number) => {
-      const scroller = messagesScrollRef.current;
-      if (!scroller) return;
-      navigationIntentRef.current += 1;
-      stickToBottomRef.current = false;
-      bottomPinIntentRef.current = null;
-      userScrollRevisionRef.current += 1;
-
-      const writeFrame = (target: HTMLDivElement, position: number) => {
-        programmaticScrollTargetRef.current = position;
-        programmaticScrollPendingRef.current = true;
-        target.scrollTop = position;
-        lastObservedScrollTopRef.current = position;
-      };
-
-      const reducedMotion =
-        window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
-      const distance = targetScrollTop - scroller.scrollTop;
-      if (reducedMotion || Math.abs(distance) < 1) {
-        stopNavigationSlide();
-        writeFrame(scroller, targetScrollTop);
-        return;
-      }
-
-      const inFlight = navigationSlideRef.current;
-      if (inFlight) {
-        inFlight.to = targetScrollTop;
-        inFlight.duration = navigationSlideDuration(targetScrollTop - inFlight.from);
-        return;
-      }
-
-      const slide = {
-        frame: 0,
-        from: scroller.scrollTop,
-        to: targetScrollTop,
-        startedAt: -1,
-        duration: navigationSlideDuration(distance),
-      };
-      navigationSlideRef.current = slide;
-      const step = (now: number) => {
-        const currentScroller = messagesScrollRef.current;
-        if (!currentScroller || navigationSlideRef.current !== slide) return;
-        if (slide.startedAt < 0) slide.startedAt = now;
-        const progress = Math.min(1, (now - slide.startedAt) / slide.duration);
-        writeFrame(
-          currentScroller,
-          progress >= 1
-            ? slide.to
-            : navigationSlidePosition({ from: slide.from, to: slide.to, progress }),
-        );
-        if (progress >= 1) {
-          navigationSlideRef.current = undefined;
-          return;
-        }
-        slide.frame = window.requestAnimationFrame(step);
-      };
-      slide.frame = window.requestAnimationFrame(step);
-    },
-    [stopNavigationSlide],
+  const loadNavigationTargetPage = useCallback(
+    (messageId: string, isCurrent: () => boolean) =>
+      loadMessages(undefined, { aroundMessageId: messageId, accept: isCurrent }),
+    [loadMessages],
   );
+  const markNavigationStart = useCallback(() => {
+    stickToBottomRef.current = false;
+    bottomPinIntentRef.current = null;
+    userScrollRevisionRef.current += 1;
+  }, []);
+  const writeNavigationScroll = useCallback((scroller: HTMLDivElement, scrollTop: number) => {
+    programmaticScrollTargetRef.current = scrollTop;
+    programmaticScrollPendingRef.current = true;
+    scroller.scrollTop = scrollTop;
+    lastObservedScrollTopRef.current = scrollTop;
+  }, []);
+  const {
+    loadingTarget: loadingHistoryTarget,
+    loadTarget: loadNavigationTarget,
+    navigate: handleNavigateMessage,
+    stop: stopNavigationSlide,
+    captureIntent: captureNavigationIntent,
+    isIntentCurrent: isNavigationIntentCurrent,
+  } = useConversationNavigationController({
+    scopeKey: historyScopeKey,
+    scrollerRef: messagesScrollRef,
+    isMessageLoaded: isNavigationTargetLoaded,
+    loadAround: loadNavigationTargetPage,
+    onRenderTarget: setRenderWindowTargetId,
+    onNavigationStart: markNavigationStart,
+    writeProgrammaticScroll: writeNavigationScroll,
+  });
 
   const visibleDurableMessages = useMemo(() => {
     if (!threadId) return loadedMessages;
@@ -4095,22 +3594,50 @@ export function ChatView({
       : initialDurableRenderStart,
     requestedRenderTargetIndex >= 0 ? requestedRenderTargetIndex : initialDurableRenderStart,
   );
+  useEffect(() => {
+    if (requestedRenderTargetIndex < 0) return;
+    setDurableRenderWindow((previous) => {
+      const currentStart =
+        previous.resetKey === durableRenderWindowResetKey
+          ? previous.startIndex
+          : initialDurableRenderStart;
+      const startIndex = Math.min(currentStart, requestedRenderTargetIndex);
+      return previous.resetKey === durableRenderWindowResetKey && previous.startIndex === startIndex
+        ? previous
+        : { resetKey: durableRenderWindowResetKey, startIndex };
+    });
+  }, [durableRenderWindowResetKey, initialDurableRenderStart, requestedRenderTargetIndex]);
   const renderedDurableMessages = useMemo(
     () => visibleDurableMessages.slice(durableRenderStartIndex),
     [durableRenderStartIndex, visibleDurableMessages],
   );
+  const renderedDurableMessageIds = useMemo(
+    () => renderedDurableMessages.map((message) => message.id),
+    [renderedDurableMessages],
+  );
+  const durableMessageWindow = useMessageVirtualWindow({
+    ids: renderedDurableMessageIds,
+    scrollerRef: messagesScrollRef,
+    forcedTargetId: renderWindowTargetId,
+  });
+  const windowedDurableMessages = useMemo(
+    () =>
+      renderedDurableMessages.slice(durableMessageWindow.startIndex, durableMessageWindow.endIndex),
+    [durableMessageWindow.endIndex, durableMessageWindow.startIndex, renderedDurableMessages],
+  );
   const hiddenDurableMessageCount = durableRenderStartIndex;
   useEffect(() => {
-    setDurableRenderWindow((previous) =>
-      previous.resetKey === durableRenderWindowResetKey &&
-      previous.startIndex === initialDurableRenderStart
-        ? previous
-        : {
-            resetKey: durableRenderWindowResetKey,
-            startIndex: initialDurableRenderStart,
-          },
-    );
-  }, [durableRenderWindowResetKey, initialDurableRenderStart]);
+    setDurableRenderWindow((previous) => {
+      if (previous.resetKey === durableRenderWindowResetKey) return previous;
+      return {
+        resetKey: durableRenderWindowResetKey,
+        startIndex:
+          requestedRenderTargetIndex >= 0
+            ? Math.min(initialDurableRenderStart, requestedRenderTargetIndex)
+            : initialDurableRenderStart,
+      };
+    });
+  }, [durableRenderWindowResetKey, initialDurableRenderStart, requestedRenderTargetIndex]);
   const liveMessages = useMemo(() => {
     const result: ChatMessage[] = [];
     result.push(...pendingUserMessagesForDisplay);
@@ -4178,18 +3705,26 @@ export function ChatView({
       const anchor = scroller ? capturePrependAnchor(scroller) : null;
       if (anchor) setRenderWindowTargetId(anchor.id);
       const revision = userScrollRevisionRef.current;
-      const intent = navigationIntentRef.current;
+      const intent = captureNavigationIntent();
       const applied = await loadMessages(cursor, {
-        accept: () => navigationIntentRef.current === intent,
+        accept: () => isNavigationIntentCurrent(intent),
         revealLoadedPage: options?.revealLoadedPage,
       });
       if (applied && scroller && anchor)
         window.requestAnimationFrame(() => {
-          if (messagesScrollRef.current === scroller)
+          if (messagesScrollRef.current === scroller) {
             restorePrependAnchor(scroller, anchor, revision);
+            setRenderWindowTargetId(undefined);
+          }
         });
     },
-    [capturePrependAnchor, loadMessages, restorePrependAnchor],
+    [
+      captureNavigationIntent,
+      capturePrependAnchor,
+      isNavigationIntentCurrent,
+      loadMessages,
+      restorePrependAnchor,
+    ],
   );
 
   const expandDurableRenderWindowTo = useCallback(
@@ -4236,10 +3771,10 @@ export function ChatView({
 
   const durableProcessRunIds = useMemo(
     () =>
-      renderedDurableMessages
+      windowedDurableMessages
         .filter((message) => message.role === 'assistant' && Boolean(message.runId))
         .map((message) => String(message.runId)),
-    [renderedDurableMessages],
+    [windowedDurableMessages],
   );
   const activeProcessRunIds = useMemo(
     () =>
@@ -4476,21 +4011,7 @@ export function ChatView({
   );
 
   const sendUserText = useCallback(
-    async (
-      text: string,
-      images: MessageImage[] = [],
-      options?: {
-        skillVersionIds?: readonly string[];
-        modelOverride?: string;
-        kernelOverride?: string;
-        reasoningEffort?: ReasoningEffort;
-        networkEnabled?: boolean;
-        /** 批准方案后的执行轮：runtime 据此强制 plan-act 的执行模型。 */
-        planExecuting?: boolean;
-        /** NewMax 内置帮助轮：runtime 注入产品帮助合同，不改变会话模式。 */
-        helpMode?: boolean;
-      },
-    ) => {
+    async (text: string, images: MessageImage[] = [], options?: ComposeSendOptions) => {
       const api = bridge();
       if (!api || (!text.trim() && images.length === 0)) return;
       if (!ensureKernelExecution(options?.kernelOverride ?? kernelOverride)) {
@@ -4507,74 +4028,8 @@ export function ChatView({
       const selectedReasoningEffort = options?.reasoningEffort ?? reasoningEffort;
       const selectedNetworkEnabled = options?.networkEnabled ?? netEnabled;
 
-      // Auto-compact when context occupancy is near the window limit (~70%).
-      // Failures are non-fatal — the user message still goes out.
-      const status = contextStatusRef.current;
-      if (
-        api.compactConversation &&
-        !compactingRef.current &&
-        kernelOverride === 'native' &&
-        status &&
-        status.usageRatio >= status.compactThreshold
-      ) {
-        // NewMax: "Automatically compacting context" / 自动压缩上下文
-        const startedAt = Date.now();
-        compactingRef.current = true;
-        clearCompactDismissTimer();
-        setCompactProgress({
-          status: 'running',
-          mode: 'auto',
-          startedAt,
-          message: '正在自动压缩上下文…',
-        });
-        try {
-          const compactResult = await api.compactConversation({
-            conversationId: conversation.id,
-            mode: 'auto',
-            onlyIfNeeded: true,
-          });
-          if (compactResult.compacted) {
-            const saved =
-              compactResult.beforeTokens > compactResult.afterTokens
-                ? `（${compactResult.beforeTokens} → ${compactResult.afterTokens}）`
-                : '';
-            const elapsed = formatCompactElapsed(startedAt);
-            if (isActiveConversation()) {
-              setCompactProgress({
-                status: 'success',
-                mode: 'auto',
-                startedAt,
-                // NewMax: "Context automatically compacted"
-                message: `上下文已自动压缩${saved} · 折叠 ${compactResult.foldedCount} 条 · ${elapsed}`,
-                afterTokens: compactResult.afterTokens,
-              });
-              scheduleCompactDismiss(2400);
-            }
-          } else if (isActiveConversation()) {
-            setCompactProgress({
-              status: 'noop',
-              mode: 'auto',
-              startedAt,
-              message: `当前上下文无需压缩 · ${formatCompactElapsed(startedAt)}`,
-            });
-            scheduleCompactDismiss(1600);
-          }
-        } catch {
-          // Auto compact remains non-blocking, but its failure is visible.
-          if (isActiveConversation()) {
-            setCompactProgress({
-              status: 'failure',
-              mode: 'auto',
-              startedAt,
-              message: `上下文自动压缩失败 · ${formatCompactElapsed(startedAt)}`,
-            });
-            scheduleCompactDismiss(2400);
-          }
-        } finally {
-          await refreshContextStatus();
-          compactingRef.current = false;
-        }
-      }
+      // Use the frozen kernel choice, including queued drafts and explicit overrides.
+      await runAutoCompact(options?.kernelOverride ?? kernelOverride, contextStatusRef.current);
 
       const tempId = `temp-${Date.now()}`;
       if (isActiveConversation()) {
@@ -4596,129 +4051,50 @@ export function ChatView({
       }
 
       try {
-        const prep = await api.sendConversationMessage({
-          conversationId: conversation.id,
-          text,
-        });
-        if (
-          isActiveConversation() &&
-          typeof prep.threadId === 'string' &&
-          prep.threadId.length > 0
-        ) {
-          setThreadId(prep.threadId);
-        }
-        const response = await api.appendMessage({
-          threadId: prep.threadId,
-          expectedTaskVersion: prep.taskVersion,
-          role: 'user',
-          text: text.trim()
-            ? text
-            : images.length > 0
-              ? images.map((img) => `[图片] ${img.name}`).join('\n')
-              : text,
-          // Prefer explicit override; only fall back to targetRef when it is a real
-          // catalog model id. Agent/team tracks store agent/team ids in targetRef.
-          modelId: resolveSendModelId({
+        const {
+          preparation: prep,
+          response,
+          durableImages,
+          imageNotice,
+        } = await submitConversationMessage(
+          {
+            conversationId,
+            text,
+            images,
             modelOverride: selectedModelOverride,
             track: conversation.track,
             targetRef: conversation.targetRef,
             catalogModelIds: models.map((model) => model.modelId),
-          }),
-          // Multi-kernel: this turn runs on the selected kernel (default native).
-          kernelId: options?.kernelOverride ?? kernelOverride,
-          // 'auto' 原样透传：runtime 透传后由 adapters 映射为默认思考档（auto=开启思考）。
-          reasoningEffort: selectedReasoningEffort,
-          networkEnabled: selectedNetworkEnabled || undefined,
-          planExecuting: options?.planExecuting === true ? true : undefined,
-          helpMode: options?.helpMode === true ? true : undefined,
-          skillVersionIds,
-          attachmentContext:
-            images.length > 0
-              ? {
-                  conversationId,
-                  workspacePath: conversation.workspaceId
-                    ? workspaces
-                        .find((workspace) => workspace.workspaceId === conversation.workspaceId)
-                        ?.folderPath?.trim() || undefined
-                    : undefined,
-                }
+            kernelOverride: options?.kernelOverride ?? kernelOverride,
+            reasoningEffort: selectedReasoningEffort,
+            networkEnabled: selectedNetworkEnabled,
+            planExecuting: options?.planExecuting,
+            helpMode: options?.helpMode,
+            skillVersionIds,
+            workspacePath: conversation.workspaceId
+              ? workspaces.find((workspace) => workspace.workspaceId === conversation.workspaceId)
+                  ?.folderPath
               : undefined,
-          images:
-            images.length > 0
-              ? images.map((img) => ({
-                  id: img.id,
-                  name: img.name || 'image',
-                  mimeType: img.mimeType || 'image/png',
-                  dataUrl: img.url,
-                }))
-              : undefined,
-        });
-        const durableImages = Array.isArray(response.images)
-          ? (
-              response.images as Array<{
-                id: string;
-                name: string;
-                mimeType?: string;
-                url?: string;
-              }>
-            )
-              .filter((image) => typeof image.url === 'string' && image.url.length > 0)
-              .map((image) => ({
-                id: image.id,
-                name: image.name,
-                mimeType: image.mimeType,
-                url: image.url!,
-              }))
-          : images;
-        // Vision fallback echoes: if the runtime replaced the images with a
-        // description (or failed to), tell the user so the turn is not a
-        // silent "the model cannot see this" surprise.
-        if (images.length > 0 && isActiveConversation()) {
-          if (response.imagesMode === 'materialized') {
-            setLocalErrors((prev) => [
-              ...prev,
-              {
-                id: `vision-mat-${Date.now()}`,
-                role: 'system',
-                tone: 'info',
-                text: '当前模型不支持图片输入，附件已保存到工作区；模型会调用 ocr_image 提取文字，并可在已启用视觉 Fallback 时调用 describe_image。',
-                timestamp: new Date().toISOString(),
-              },
-            ]);
-          } else if (response.imagesMode === 'described') {
-            setLocalErrors((prev) => [
-              ...prev,
-              {
-                id: `vision-desc-${Date.now()}`,
-                role: 'system',
-                tone: 'info',
-                text: '当前模型不支持图片输入，附件已由视觉模型生成文字描述替代。',
-                timestamp: new Date().toISOString(),
-              },
-            ]);
-          } else if (response.imagesMode === 'ocr') {
-            setLocalErrors((prev) => [
-              ...prev,
-              {
-                id: `vision-ocr-${Date.now()}`,
-                role: 'system',
-                tone: 'info',
-                text: '当前模型不支持图片输入，已由 Windows OCR 自动提取附件文字；OCR 不包含画面中无法识别为文字的内容。',
-                timestamp: new Date().toISOString(),
-              },
-            ]);
-          } else if (response.imagesMode === 'failed') {
-            setLocalErrors((prev) => [
-              ...prev,
-              {
-                id: `vision-fail-${Date.now()}`,
-                role: 'system',
-                tone: 'warning',
-                text: '图片转写失败，已配置的视觉模型未返回可用描述，原图未发送给当前文本模型。',
-                timestamp: new Date().toISOString(),
-              },
-            ]);
-          }
+          },
+          {
+            prepare: (payload) => api.sendConversationMessage(payload),
+            append: (payload) => api.appendMessage(payload),
+          },
+          (preparedThreadId) => {
+            if (isActiveConversation()) setThreadId(preparedThreadId);
+          },
+        );
+        if (imageNotice && isActiveConversation()) {
+          setLocalErrors((prev) => [
+            ...prev,
+            {
+              id: `${imageNotice.prefix}-${Date.now()}`,
+              role: 'system',
+              tone: imageNotice.tone,
+              text: imageNotice.text,
+              timestamp: new Date().toISOString(),
+            },
+          ]);
         }
         if (isActiveConversation()) {
           setSendingRunId(
@@ -4763,7 +4139,6 @@ export function ChatView({
       }
     },
     [
-      clearCompactDismissTimer,
       ensureKernelExecution,
       conversation.id,
       conversation.workspaceId,
@@ -4776,8 +4151,7 @@ export function ChatView({
       netEnabled,
       onTitleUpdated,
       reasoningEffort,
-      refreshContextStatus,
-      scheduleCompactDismiss,
+      runAutoCompact,
       selectedSkillVersionIds,
       workspaces,
     ],
@@ -5061,173 +4435,22 @@ export function ChatView({
     executeApprovedPlanReview(questions as AskQuestion[], answers as AskQuestionAnswer[]);
   }, [eventHistory, executeApprovedPlanReview]);
 
-  const dispatchQueuedComposeRequest = useCallback(
-    async (request: QueuedComposeRequest, mode: 'auto' | 'interject') => {
-      const conversationId = String(conversation.id);
-      if (request.conversationId !== conversationId) return;
-      if (mode === 'auto' && activeConversationIdRef.current !== conversationId) return;
-
-      const currentDispatchState =
-        queuedDispatchByConversationRef.current.get(conversationId) ?? {};
-      if (currentDispatchState.dispatching) return;
-
-      const token = Symbol(`queued-compose:${conversationId}:${request.id}`);
-      const nextDispatchState: QueueDispatchState = {
-        ...currentDispatchState,
-        dispatching: { requestId: request.id, token },
-        blocked:
-          currentDispatchState.blocked?.requestId === request.id
-            ? undefined
-            : currentDispatchState.blocked,
-      };
-      queuedDispatchByConversationRef.current.set(conversationId, nextDispatchState);
-      if (activeConversationIdRef.current === conversationId) {
-        setDispatchingQueuedRequestId(request.id);
-      }
-      if (
-        activeConversationIdRef.current === conversationId &&
-        currentDispatchState.blocked?.requestId === request.id
-      ) {
-        setBlockedQueuedRequestId(undefined);
-        setQueuedRequestDispatchError(undefined);
-      }
-
-      const outbound = buildMessageWithAttachments(request.text, request.attachments);
-      const images = messageImagesFromAttachments(request.attachments);
-      try {
-        const sent = await sendUserText(outbound, images, {
-          modelOverride,
-          reasoningEffort: request.reasoningEffort,
-          networkEnabled: request.networkEnabled,
-          skillVersionIds: request.skillVersionIds,
-          kernelOverride: request.kernelOverride,
-        });
-        if (!sent) throw new Error('发送接口未返回成功结果');
-
-        const latestDispatchState = queuedDispatchByConversationRef.current.get(conversationId);
-        if (latestDispatchState?.dispatching?.token !== token) return;
-        const settledDispatchState: QueueDispatchState = {
-          ...latestDispatchState,
-          dispatching: undefined,
-        };
-        if (settledDispatchState.blocked) {
-          queuedDispatchByConversationRef.current.set(conversationId, settledDispatchState);
-        } else {
-          queuedDispatchByConversationRef.current.delete(conversationId);
-        }
-
-        if (activeConversationIdRef.current === conversationId) {
-          commitQueuedComposeRequests((current) => removeQueuedComposeRequest(current, request.id));
-          setDispatchingQueuedRequestId(undefined);
-          setBlockedQueuedRequestId(settledDispatchState.blocked?.requestId);
-          setQueuedRequestDispatchError(settledDispatchState.blocked?.error);
-        } else {
-          const stored = readQueuedComposeRequests(conversationId);
-          writeQueuedComposeRequests(
-            conversationId,
-            removeQueuedComposeRequest(stored, request.id),
-          );
-        }
-      } catch (error) {
-        const latestDispatchState = queuedDispatchByConversationRef.current.get(conversationId);
-        if (latestDispatchState?.dispatching?.token !== token) return;
-        const dispatchError =
-          mode === 'auto'
-            ? '自动执行失败，需求已保留，可点击重试'
-            : `插话发送失败，需求已保留：${error instanceof Error ? error.message : String(error)}`;
-        const failedDispatchState: QueueDispatchState = {
-          ...latestDispatchState,
-          dispatching: undefined,
-          blocked: { requestId: request.id, error: dispatchError },
-        };
-        queuedDispatchByConversationRef.current.set(conversationId, failedDispatchState);
-        if (activeConversationIdRef.current === conversationId) {
-          setDispatchingQueuedRequestId(undefined);
-          setBlockedQueuedRequestId(request.id);
-          setQueuedRequestDispatchError(dispatchError);
-        }
-      }
-    },
-    [commitQueuedComposeRequests, conversation.id, modelOverride, sendUserText],
-  );
-
-  const handleEditQueuedComposeRequest = useCallback(
-    (requestId: string, text: string) => {
-      const request = queuedComposeRequests.find((item) => item.id === requestId);
-      if (!request || (!text.trim() && request.attachments.length === 0)) return;
-      commitQueuedComposeRequests((current) =>
-        updateQueuedComposeRequest(current, requestId, { text }),
-      );
-    },
-    [commitQueuedComposeRequests, queuedComposeRequests],
-  );
-
-  const handleDeleteQueuedComposeRequest = useCallback(
-    (requestId: string) => {
-      if (dispatchingQueuedRequestId === requestId) return;
-      commitQueuedComposeRequests((current) => removeQueuedComposeRequest(current, requestId));
-      if (blockedQueuedRequestId === requestId) {
-        const conversationId = String(conversation.id);
-        const dispatchState = queuedDispatchByConversationRef.current.get(conversationId);
-        if (dispatchState?.blocked?.requestId === requestId) {
-          if (dispatchState.dispatching) {
-            queuedDispatchByConversationRef.current.set(conversationId, {
-              dispatching: dispatchState.dispatching,
-            });
-          } else {
-            queuedDispatchByConversationRef.current.delete(conversationId);
-          }
-        }
-        setBlockedQueuedRequestId(undefined);
-        setQueuedRequestDispatchError(undefined);
-      }
-    },
-    [
-      blockedQueuedRequestId,
-      commitQueuedComposeRequests,
-      conversation.id,
-      dispatchingQueuedRequestId,
-    ],
-  );
-
-  const handleInterjectQueuedComposeRequest = useCallback(
-    (requestId: string) => {
-      const request = queuedComposeRequests.find((item) => item.id === requestId);
-      if (!request) return;
-      void dispatchQueuedComposeRequest(request, 'interject');
-    },
-    [dispatchQueuedComposeRequest, queuedComposeRequests],
-  );
-
-  useEffect(() => {
-    const next = queuedComposeRequests[0];
-    const dispatchState = queuedDispatchByConversationRef.current.get(String(conversation.id));
-    // Only dispatch after the current Run is actually inactive. A delayed
-    // "ghost run" timer used to fire while a long Run was still live and
-    // cancelled it as soon as the user queued a follow-up.
-    if (
-      !next ||
-      next.conversationId !== String(conversation.id) ||
-      runIsActive ||
-      Boolean(dispatchState?.dispatching) ||
-      dispatchState?.blocked?.requestId === next.id ||
-      (conversation.taskId && !threadId)
-    ) {
-      return;
-    }
-    const timer = window.setTimeout(() => {
-      void dispatchQueuedComposeRequest(next, 'auto');
-    }, 0);
-    return () => window.clearTimeout(timer);
-  }, [
-    blockedQueuedRequestId,
-    conversation.taskId,
-    dispatchQueuedComposeRequest,
+  const {
     queuedComposeRequests,
-    reconciledSending,
+    dispatchingQueuedRequestId,
+    blockedQueuedRequestId,
+    queuedRequestDispatchError,
+    commitQueuedComposeRequests,
+    handleEditQueuedComposeRequest,
+    handleDeleteQueuedComposeRequest,
+    handleInterjectQueuedComposeRequest,
+  } = useComposeRequestQueue({
+    conversationId: String(conversation.id),
+    modelOverride,
     runIsActive,
-    threadId,
-  ]);
+    waitingForThread: Boolean(conversation.taskId && !threadId),
+    sendUserText,
+  });
 
   const regenerationRead = useRef<AbortController>();
   useEffect(
@@ -5296,11 +4519,55 @@ export function ChatView({
         idx > 0
           ? [...messages.slice(0, idx)].reverse().find((message) => message.role === 'user')
           : undefined;
-      await sendUserText('继续上一条未完成的回答。', [], {
-        skillVersionIds: previousUser?.skillVersionIds ?? [],
+      // A user may attach the image after the interrupted assistant row has
+      // already been rendered (the common “读图 → 继续回答” flow). Prefer
+      // that newer image request over the older coding/task prompt that
+      // originally produced the interruption.
+      const laterImageUser =
+        idx >= 0
+          ? [...messages.slice(idx + 1)]
+              .reverse()
+              .find((message) => message.role === 'user' && (message.images?.length ?? 0) > 0)
+          : undefined;
+      const continuationSource = laterImageUser ?? previousUser;
+      let continuationImages = continuationSource?.images ?? [];
+      if (continuationImages.length > 0) {
+        const inlineImages = continuationImages.every((image) =>
+          /^data:image\/[A-Za-z0-9.+-]+;base64,/.test(image.url),
+        );
+        if (!inlineImages) {
+          const api = bridge();
+          const controller = new AbortController();
+          try {
+            const draft = await prepareApprovalRequestDraft(
+              continuationSource!,
+              String(conversation.id),
+              controller.signal,
+              api?.readApprovalRequestImage,
+            );
+            continuationImages = messageImagesFromAttachments(draft.attachments);
+          } catch (error) {
+            setLocalErrors((previous) => [
+              ...previous,
+              {
+                id: `continue-image-recovery-${Date.now()}`,
+                role: 'system',
+                tone: 'error',
+                text:
+                  '继续回答时读取原图片失败，未发送空的续答请求：' +
+                  (error instanceof Error ? error.message : String(error)),
+                timestamp: new Date().toISOString(),
+              },
+            ]);
+            return;
+          }
+        }
+      }
+      await sendUserText('继续上一条未完成的回答。', continuationImages, {
+        skillVersionIds: continuationSource?.skillVersionIds ?? [],
       });
     },
-    [messages, sendUserText, sending],
+    [conversation.id, messages, sendUserText, sending, setLocalErrors],
   );
 
   const handleChooseModelAndRetry = useCallback((assistantMessageId: string) => {
@@ -5428,12 +4695,7 @@ export function ChatView({
     }
     let cancelled = false;
     setSlashSkillsLoading(true);
-    void api
-      .listSkills(
-        conversation.workspaceId
-          ? { limit: 500, workspaceId: conversation.workspaceId }
-          : { limit: 500 },
-      )
+    void loadSkillCatalog(api, { workspaceId: conversation.workspaceId })
       .then((response) => {
         if (!cancelled) {
           // Older Runtime payloads omit `enabled`; treat omission as enabled
@@ -5552,77 +4814,6 @@ export function ChatView({
     },
     [conversation.id],
   );
-
-  /** NewMax: manual /compact — model summary path, no chat turn. */
-  const runManualCompact = useCallback(async () => {
-    const api = bridge();
-    if (!api?.compactConversation) return;
-    if (compactingRef.current) return;
-    compactingRef.current = true;
-    const startedAt = Date.now();
-    clearCompactDismissTimer();
-    setCompactProgress({
-      status: 'running',
-      mode: 'manual',
-      startedAt,
-      message: '正在手动压缩上下文…',
-    });
-    try {
-      const result = await api.compactConversation({
-        conversationId: conversation.id,
-        mode: 'manual',
-        onlyIfNeeded: false,
-      });
-      const elapsed = formatCompactElapsed(startedAt);
-      const saved =
-        result.compacted && result.beforeTokens > result.afterTokens
-          ? `（${result.beforeTokens} → ${result.afterTokens}）`
-          : '';
-      if (result.compacted) {
-        setCompactProgress({
-          status: 'success',
-          mode: 'manual',
-          startedAt,
-          message: `上下文已压缩${saved} · 折叠 ${result.foldedCount} 条 · ${elapsed}`,
-          afterTokens: result.afterTokens,
-        });
-        scheduleCompactDismiss(2400);
-      } else {
-        setCompactProgress({
-          status: 'noop',
-          mode: 'manual',
-          startedAt,
-          message: `当前上下文仍充足，无需压缩 · ${elapsed}`,
-        });
-        scheduleCompactDismiss(1600);
-      }
-    } catch (error) {
-      setCompactProgress({
-        status: 'failure',
-        mode: 'manual',
-        startedAt,
-        message: '上下文压缩失败',
-      });
-      scheduleCompactDismiss(1600);
-      const raw = error instanceof Error ? error.message : String(error);
-      const friendly = /timed out|timeout/i.test(raw)
-        ? '上下文压缩超时：模型摘要耗时过长，请稍后重试，或先缩短对话后再压缩'
-        : `上下文压缩失败: ${raw}`;
-      setLocalErrors((errs) => [
-        ...errs,
-        {
-          id: `err-compact-${Date.now()}`,
-          role: 'system',
-          tone: 'error',
-          text: friendly,
-          timestamp: new Date().toISOString(),
-        },
-      ]);
-    } finally {
-      await refreshContextStatus();
-      compactingRef.current = false;
-    }
-  }, [clearCompactDismissTimer, conversation.id, refreshContextStatus, scheduleCompactDismiss]);
 
   const selectSlashCommand = useCallback(
     (cmd: SlashCommand) => {
@@ -5789,7 +4980,7 @@ export function ChatView({
 
   const handleSend = useCallback(async () => {
     const text = input.trim();
-    if ((!text && attachments.length === 0) || compactingRef.current) return;
+    if ((!text && attachments.length === 0) || isCompacting()) return;
 
     const slashCmd = parseSlashCommand(text);
     const isGoalTransitionCommand =
@@ -5870,7 +5061,7 @@ export function ChatView({
         ]);
         return;
       }
-      if (compactingRef.current) {
+      if (isCompacting()) {
         setLocalErrors((errs) => [
           ...errs,
           {
@@ -6077,48 +5268,21 @@ export function ChatView({
       return;
     }
 
-    const draftText = input;
-    const draftConversationId = String(conversation.id);
-    const outbound = buildMessageWithAttachments(draftText, snapshot);
-    const images = messageImagesFromAttachments(snapshot);
+    const draft = { text: input, attachments: snapshot };
     setInput('');
     closeComposePickers();
     window.requestAnimationFrame(() => resizeComposeInput());
-    try {
-      await sendUserText(outbound, images);
-      if (composeMountedRef.current && activeConversationIdRef.current === draftConversationId) {
-        setAttachments((current) =>
-          current.filter((attachment) => !snapshot.some((sent) => sent.path === attachment.path)),
-        );
-      }
-    } catch {
-      if (
-        composeMountedRef.current &&
-        activeConversationIdRef.current === draftConversationId &&
-        inputRef.current?.value === ''
-      ) {
-        setInput(draftText);
-        setAttachments((current) => [
-          ...new Map(
-            [...snapshot, ...current].map((attachment) => [attachment.path, attachment]),
-          ).values(),
-        ]);
-      } else {
-        rememberFailedComposeDraft(failedComposeDraftScope, {
-          text: draftText,
-          attachments: snapshot,
-        });
-      }
-    }
+    await sendDraft(draft, sendUserText);
   }, [
     attachments,
     closeComposePickers,
     commitQueuedComposeRequests,
     ensureKernelExecution,
     conversation.id,
-    failedComposeDraftScope,
+    sendDraft,
     activeGoalState,
     input,
+    isCompacting,
     kernelOverride,
     modelOverride,
     netEnabled,
@@ -6951,71 +6115,6 @@ export function ChatView({
           : '终止内核进程'
     : '暂停任务';
 
-  // 迁移期兼容桥：新 Runtime 已由 Browser Worker 执行真实命令，不再发此事件。
-  // 保留旧 Runtime 的 browser.command_requested 回传，历史事件仍只登记、不重放。
-  const seenBrowserCommandIdsRef = useRef<Set<string>>(new Set());
-  const browserCommandPrimedRef = useRef(false);
-  useEffect(() => {
-    const priming = !browserCommandPrimedRef.current;
-    browserCommandPrimedRef.current = true;
-    const fresh: Array<{
-      requestId: string;
-      action: string;
-      args: Record<string, unknown>;
-    }> = [];
-    for (const event of eventHistory) {
-      if (event.type !== 'browser.command_requested') continue;
-      const payload = event.payload as {
-        requestId?: unknown;
-        action?: unknown;
-        args?: unknown;
-        threadId?: unknown;
-      };
-      const requestId = typeof payload.requestId === 'string' ? payload.requestId : '';
-      if (!requestId || seenBrowserCommandIdsRef.current.has(requestId)) continue;
-      seenBrowserCommandIdsRef.current.add(requestId);
-      if (priming) continue;
-      if (threadId && typeof payload.threadId === 'string' && payload.threadId !== threadId) {
-        continue;
-      }
-      fresh.push({
-        requestId,
-        action: typeof payload.action === 'string' ? payload.action : '',
-        args:
-          payload.args && typeof payload.args === 'object' && !Array.isArray(payload.args)
-            ? (payload.args as Record<string, unknown>)
-            : {},
-      });
-    }
-    if (fresh.length === 0) return;
-    const api = bridge();
-    for (const command of fresh) {
-      void (async () => {
-        const outcome = await executeBrowserCommand({
-          action: command.action,
-          args: command.args,
-          projectFolder,
-          saveScreenshot: api?.saveBrowserScreenshot
-            ? (payload) => api.saveBrowserScreenshot(payload)
-            : undefined,
-          sendTrustedClick: api?.sendBrowserTrustedClick
-            ? (payload) => api.sendBrowserTrustedClick(payload)
-            : undefined,
-        });
-        try {
-          await api?.submitBrowserResult?.({
-            requestId: command.requestId,
-            ok: outcome.ok,
-            resultJson: outcome.resultJson,
-            error: outcome.error,
-          });
-        } catch {
-          /* runtime 侧超时兜底会接管 */
-        }
-      })();
-    }
-  }, [eventHistory, projectFolder, threadId]);
-
   // 任务清单投影（对齐 DSH todo projection）：持久化事件流 → 常驻面板。
   const todoProjection = useMemo(
     () =>
@@ -7119,12 +6218,14 @@ export function ChatView({
             }}
             onScroll={(event) => {
               const scroller = event.currentTarget;
+              durableMessageWindow.syncViewport();
               const currentScrollTop = scroller.scrollTop;
               const programmaticTarget = programmaticScrollTargetRef.current;
               const isProgrammatic =
                 programmaticScrollPendingRef.current ||
                 (programmaticTarget !== null &&
                   Math.abs(currentScrollTop - programmaticTarget) <= 1);
+              if (!isProgrammatic) stopNavigationSlide();
               if (programmaticTarget !== null) {
                 programmaticScrollTargetRef.current = null;
               }
@@ -7214,8 +6315,23 @@ export function ChatView({
                     );
                   })()
                 : null}
-              {renderedDurableMessages.map((msg) => (
-                <Fragment key={msg.id}>
+              {durableMessageWindow.topSpacer > 0 ? (
+                <div
+                  aria-hidden="true"
+                  data-message-window-spacer="top"
+                  style={{ height: durableMessageWindow.topSpacer }}
+                />
+              ) : null}
+              {windowedDurableMessages.map((msg) => (
+                <div
+                  key={msg.id}
+                  ref={durableMessageWindow.rowRef(msg.id)}
+                  data-virtual-message-id={msg.id}
+                  data-message-id={msg.id}
+                  data-process-run-id={msg.role === 'assistant' ? msg.runId : undefined}
+                  className="shell-message-window-item pb-6"
+                  data-message-role={msg.role}
+                >
                   {gapBeforeMessage.has(msg.id) ? (
                     <div
                       className="shell-history-gap"
@@ -7231,48 +6347,46 @@ export function ChatView({
                       </button>
                     </div>
                   ) : null}
-                  <div
-                    data-message-id={msg.id}
-                    data-process-run-id={msg.role === 'assistant' ? msg.runId : undefined}
-                    className="shell-message-window-item pb-6"
-                  >
-                    <MessageBubble
-                      message={msg}
-                      waitingForApproval={Boolean(
-                        msg.runId && approvalWaitingRunIds.has(msg.runId),
-                      )}
-                      processView={msg.runId ? displayRunProcessById.get(msg.runId) : undefined}
-                      processLoadFailure={
-                        msg.runId ? runProcessLoadFailures.get(msg.runId) : undefined
-                      }
-                      onRetryProcess={retryRunProcess}
-                      models={models}
-                      agents={agents}
-                      runAgentIdentity={
-                        msg.runId ? runAgentIdentityById.get(String(msg.runId)) : undefined
-                      }
-                      fallbackAgent={conversationAgent}
-                      regenerating={sending}
-                      onRegenerate={handleRegenerate}
-                      onContinue={handleContinueInterrupted}
-                      onChooseModelAndRetry={handleChooseModelAndRetry}
-                      onOpenChange={onOpenFile}
-                      conversationId={String(conversation.id)}
-                      onOpenHtmlInBrowser={onOpenHtmlInBrowser}
-                      onOpenWebUrl={onOpenWebUrl}
-                      onOpenReview={onOpenReview}
-                      projectFolder={projectFolder}
-                      onOpenImage={setLightbox}
-                      kernelId={
-                        msg.kernelId ??
-                        (msg.runId ? runKernelById.get(String(msg.runId)) : undefined)
-                      }
-                      skillNameByVersionId={skillNameByVersionId}
-                      agentPreferences={agentPreferences}
-                    />
-                  </div>
-                </Fragment>
+                  <MessageBubble
+                    message={msg}
+                    waitingForApproval={Boolean(msg.runId && approvalWaitingRunIds.has(msg.runId))}
+                    processView={msg.runId ? displayRunProcessById.get(msg.runId) : undefined}
+                    processLoadFailure={
+                      msg.runId ? runProcessLoadFailures.get(msg.runId) : undefined
+                    }
+                    onRetryProcess={retryRunProcess}
+                    models={models}
+                    agents={agents}
+                    runAgentIdentity={
+                      msg.runId ? runAgentIdentityById.get(String(msg.runId)) : undefined
+                    }
+                    fallbackAgent={conversationAgent}
+                    regenerating={sending}
+                    onRegenerate={handleRegenerate}
+                    onContinue={handleContinueInterrupted}
+                    onChooseModelAndRetry={handleChooseModelAndRetry}
+                    onOpenChange={onOpenFile}
+                    conversationId={String(conversation.id)}
+                    onOpenHtmlInBrowser={onOpenHtmlInBrowser}
+                    onOpenWebUrl={onOpenWebUrl}
+                    onOpenReview={onOpenReview}
+                    projectFolder={projectFolder}
+                    onOpenImage={openImageLightbox}
+                    kernelId={
+                      msg.kernelId ?? (msg.runId ? runKernelById.get(String(msg.runId)) : undefined)
+                    }
+                    skillNameByVersionId={skillNameByVersionId}
+                    agentPreferences={agentPreferences}
+                  />
+                </div>
               ))}
+              {durableMessageWindow.bottomSpacer > 0 ? (
+                <div
+                  aria-hidden="true"
+                  data-message-window-spacer="bottom"
+                  style={{ height: durableMessageWindow.bottomSpacer }}
+                />
+              ) : null}
               {standaloneRuntimeConnectionNotice ? (
                 <div className="pb-4">
                   <div
@@ -7296,6 +6410,7 @@ export function ChatView({
                   data-message-id={msg.id}
                   data-process-run-id={msg.role === 'assistant' ? msg.runId : undefined}
                   className="shell-message-window-item pb-6"
+                  data-message-role={msg.role}
                 >
                   <MessageBubble
                     message={msg}
@@ -7321,7 +6436,7 @@ export function ChatView({
                     onOpenWebUrl={onOpenWebUrl}
                     onOpenReview={onOpenReview}
                     projectFolder={projectFolder}
-                    onOpenImage={setLightbox}
+                    onOpenImage={openImageLightbox}
                     kernelId={
                       msg.kernelId ?? (msg.runId ? runKernelById.get(String(msg.runId)) : undefined)
                     }
@@ -7562,19 +6677,7 @@ export function ChatView({
                   <button
                     type="button"
                     onClick={() => {
-                      const drafts = takeFailedComposeDrafts(failedComposeDraftScope);
-                      setInput((current) =>
-                        [current, ...drafts.map((draft) => draft.text)]
-                          .filter(Boolean)
-                          .join('\n\n'),
-                      );
-                      setAttachments((current) => [
-                        ...new Map(
-                          [...drafts.flatMap((draft) => draft.attachments), ...current].map(
-                            (attachment) => [attachment.path, attachment],
-                          ),
-                        ).values(),
-                      ]);
+                      restoreFailedDrafts();
                       window.requestAnimationFrame(() => inputRef.current?.focus());
                     }}
                   >
@@ -7627,7 +6730,7 @@ export function ChatView({
                     onPaste={handlePaste}
                     onOpenAttachment={(attachment) => {
                       if (attachment.kind === 'image' && attachment.previewUrl) {
-                        setLightbox({
+                        openImageLightbox({
                           id: attachment.path,
                           name: attachment.name,
                           url: attachment.previewUrl,
@@ -8053,36 +7156,17 @@ export function ChatView({
         onContinue={() => void confirmRiskGoal()}
       />
 
-      {lightbox && typeof document !== 'undefined'
-        ? createPortal(
-            <div
-              className="shell-lightbox"
-              role="dialog"
-              aria-modal="true"
-              aria-label={lightbox.name || '图片预览'}
-              onClick={() => setLightbox(null)}
-            >
-              <button
-                type="button"
-                className="shell-lightbox__close"
-                title="关闭"
-                onClick={() => setLightbox(null)}
-              >
-                <X size={18} />
-              </button>
-              <img
-                className="shell-lightbox__img"
-                src={lightbox.url}
-                alt={lightbox.name || '预览'}
-                onClick={(e) => e.stopPropagation()}
-              />
-              {lightbox.name ? (
-                <div className="shell-lightbox__caption">{lightbox.name}</div>
-              ) : null}
-            </div>,
-            document.body,
-          )
-        : null}
+      {lightbox ? (
+        <ImageLightbox
+          open
+          images={lightbox.images.map((image) => ({ src: image.url, alt: image.name || '图片' }))}
+          activeIndex={lightbox.activeIndex}
+          onChangeIndex={(activeIndex) =>
+            setLightbox((current) => (current ? { ...current, activeIndex } : current))
+          }
+          onClose={() => setLightbox(null)}
+        />
+      ) : null}
     </div>
   );
 }
@@ -8290,9 +7374,12 @@ function ProviderAccountUsageSection({ identity }: { identity: ProviderUsageIden
     const api = bridge();
     if (!api?.getUsageSummary) return;
     let alive = true;
-    void fetchProviderUsageSummary(() => api.getUsageSummary({ sinceDays: 30 }))
-      .then((summary) => {
-        if (alive) setWindows(summarizeProviderUsageWindows(summary, identity));
+    void fetchProviderUsageWindows(
+      (sinceDays) => api.getUsageSummary({ sinceDays, includeRequests: false }),
+      identity,
+    )
+      .then((nextWindows) => {
+        if (alive) setWindows(nextWindows);
       })
       .catch(() => {
         if (alive) setWindows(null);
@@ -8357,19 +7444,6 @@ function ProviderAccountUsageSection({ identity }: { identity: ProviderUsageIden
   );
 }
 
-export interface DelegatedAgentToolEventView {
-  toolName: string;
-  arguments?: string;
-  status?: string;
-  output?: string;
-  startedAt?: string;
-  completedAt?: string;
-  /** `arguments`/`output` were clipped to keep the delegation payload bounded. */
-  truncated?: boolean;
-  /** Untrimmed output length, so the card can say how much was left out. */
-  outputCharacters?: number;
-}
-
 interface DelegatedAgentTaskView {
   childRunId: string;
   parallelGroup?: string;
@@ -8379,6 +7453,7 @@ interface DelegatedAgentTaskView {
   /** Agent Library id reused for this child run. */
   agentId: string;
   status: string;
+  statusObservation?: DelegatedAgentProjection['statusObservation'];
   result?: string;
   toolEvents: DelegatedAgentToolEventView[];
   /** Tokens this child billed, summed over its own provider requests. */
@@ -8418,6 +7493,12 @@ function parseDelegatedAgentUsage(value: unknown): DelegatedAgentUsage | undefin
  */
 const DELEGATION_TOOL_NAMES: ReadonlySet<string> = new Set(['agent_delegate', 'agent_run']);
 
+function isDelegationToolName(name: string): boolean {
+  const normalized = name.trim().toLowerCase();
+  if (DELEGATION_TOOL_NAMES.has(normalized)) return true;
+  return [...DELEGATION_TOOL_NAMES].some((toolName) => normalized.endsWith(`__${toolName}`));
+}
+
 /**
  * Read a delegation payload out of a tool result.
  *
@@ -8434,8 +7515,16 @@ function readDelegationPayload(result: string): Record<string, unknown> | undefi
   } catch {
     return undefined;
   }
-  if (Array.isArray(value)) {
-    const text = value
+  for (let depth = 0; depth < 2; depth += 1) {
+    const blocks = Array.isArray(value)
+      ? value
+      : value &&
+          typeof value === 'object' &&
+          Array.isArray((value as { content?: unknown }).content)
+        ? (value as { content: unknown[] }).content
+        : undefined;
+    if (!blocks) break;
+    const text = blocks
       .flatMap((block) =>
         block && typeof block === 'object' && typeof (block as { text?: unknown }).text === 'string'
           ? [(block as { text: string }).text]
@@ -8455,7 +7544,7 @@ function readDelegationPayload(result: string): Record<string, unknown> | undefi
 }
 
 function parseDelegatedAgentTask(item: InlineProcessItem): DelegatedAgentTaskView | undefined {
-  if (item.kind !== 'tool' || !DELEGATION_TOOL_NAMES.has(item.name) || !item.result) {
+  if (item.kind !== 'tool' || !isDelegationToolName(item.name) || !item.result) {
     return undefined;
   }
   try {
@@ -8476,8 +7565,15 @@ function parseDelegatedAgentTask(item: InlineProcessItem): DelegatedAgentTaskVie
               ...(typeof record.status === 'string' ? { status: record.status } : {}),
               ...(typeof record.output === 'string' ? { output: record.output } : {}),
               ...(typeof record.startedAt === 'string' ? { startedAt: record.startedAt } : {}),
-              ...(typeof record.completedAt === 'string' ? { completedAt: record.completedAt } : {}),
+              ...(typeof record.completedAt === 'string'
+                ? { completedAt: record.completedAt }
+                : {}),
               ...(record.truncated === true ? { truncated: true } : {}),
+              ...(record.argumentsTruncated === true ? { argumentsTruncated: true } : {}),
+              ...(typeof record.argumentsCharacters === 'number'
+                ? { argumentsCharacters: record.argumentsCharacters }
+                : {}),
+              ...(record.outputTruncated === true ? { outputTruncated: true } : {}),
               ...(typeof record.outputCharacters === 'number'
                 ? { outputCharacters: record.outputCharacters }
                 : {}),
@@ -8534,6 +7630,19 @@ function delegatedAgentStatusLabel(status: string): string {
             : status;
 }
 
+function delegatedAgentObservationLabel(task: DelegatedAgentTaskView): string | undefined {
+  const observation = task.statusObservation;
+  switch (observation?.diagnostic) {
+    case 'completed_unnotified': return '已完成，通知延迟';
+    case 'communication_failed': return '状态查询失败';
+    case 'stalled': return '状态待确认';
+    case 'timed_out': return '已超时';
+    case 'abnormal_exit': return '异常退出';
+    case 'running': return '运行中';
+    default: return undefined;
+  }
+}
+
 /**
  * 智能体头像值的解析。
  *
@@ -8562,6 +7671,7 @@ function delegatedTaskViewFromProjection(
     kind: 'existing',
     agentId: projection.agentId,
     status: projection.status,
+    ...(projection.statusObservation ? { statusObservation: projection.statusObservation } : {}),
     ...(projection.result ? { result: projection.result } : {}),
     ...(projection.usage ? { usage: projection.usage } : {}),
     ...(projection.durationMs !== undefined ? { durationMs: projection.durationMs } : {}),
@@ -8570,6 +7680,13 @@ function delegatedTaskViewFromProjection(
       ...(event.arguments ? { arguments: event.arguments } : {}),
       ...(event.status ? { status: event.status } : {}),
       ...(event.output ? { output: event.output } : {}),
+      ...(event.truncated ? { truncated: true } : {}),
+      ...(event.argumentsTruncated ? { argumentsTruncated: true } : {}),
+      ...(event.argumentsCharacters !== undefined
+        ? { argumentsCharacters: event.argumentsCharacters }
+        : {}),
+      ...(event.outputTruncated ? { outputTruncated: true } : {}),
+      ...(event.outputCharacters !== undefined ? { outputCharacters: event.outputCharacters } : {}),
     })),
   };
 }
@@ -8603,11 +7720,7 @@ const DelegatedAgentToolList = memo(function DelegatedAgentToolList({
   );
 });
 
-/**
- * Child-run status as an icon, matching `ExecutionProcessBlock`'s status glyphs
- * so the panel shows one visual language. The Chinese label survives in
- * `aria-label`/`title` for screen readers and hover instead of taking a column.
- */
+/** Child-run status uses the shared glyphs plus a visible label. */
 function DelegatedAgentStatusIcon({ status }: { status: string }) {
   const label = delegatedAgentStatusLabel(status);
   const icon =
@@ -8625,6 +7738,7 @@ function DelegatedAgentStatusIcon({ status }: { status: string }) {
   return (
     <span className="shell-delegated-agent__status" role="img" aria-label={label} title={label}>
       {icon}
+      <span>{label}</span>
     </span>
   );
 }
@@ -8665,20 +7779,24 @@ const DelegatedAgentTaskCard = memo(function DelegatedAgentTaskCard({
   onStopChild?: (childRunId: string) => void;
 }) {
   const usageLabel = delegatedAgentUsageLabel(task);
+  const [expanded, setExpanded] = useState(
+    task.status !== 'running' && Boolean(task.result?.trim()),
+  );
+  useEffect(() => {
+    if (task.status !== 'running' && task.result?.trim()) setExpanded(true);
+  }, [task.result, task.status]);
   return (
-    <details className="shell-delegated-agent">
+    <details
+      className="shell-delegated-agent"
+      open={expanded}
+      onToggle={(event) => setExpanded(event.currentTarget.open)}
+    >
       <summary className="shell-delegated-agent__summary">
         <span className="shell-delegated-agent__avatar">
           <AgentAvatarView name={task.name} avatar={delegatedAgentAvatarValue(task)} size={22} />
         </span>
         <span className="shell-delegated-agent__identity">
           <strong>{task.name}</strong>
-          <code
-            className="shell-delegated-agent__agent-id"
-            title={`Agent Library id：${task.agentId}`}
-          >
-            {task.agentId}
-          </code>
         </span>
         {usageLabel ? (
           <span className="shell-delegated-agent__usage" data-testid="delegated-agent-usage">
@@ -8686,6 +7804,11 @@ const DelegatedAgentTaskCard = memo(function DelegatedAgentTaskCard({
           </span>
         ) : null}
         <DelegatedAgentStatusIcon status={task.status} />
+        {delegatedAgentObservationLabel(task) ? (
+          <span className="shell-delegated-agent__observation" role="status">
+            {delegatedAgentObservationLabel(task)}
+          </span>
+        ) : null}
       </summary>
       <div className="shell-delegated-agent__details">
         {task.toolEvents.length > 0 ? (
@@ -8694,6 +7817,11 @@ const DelegatedAgentTaskCard = memo(function DelegatedAgentTaskCard({
           <span className="shell-delegated-agent__empty">本次任务没有调用工具</span>
         )}
         {task.result ? <div className="shell-delegated-agent__result">{task.result}</div> : null}
+        {task.status === 'cancelled' && !task.result ? (
+          <div className="shell-delegated-agent__termination">
+            任务已由用户停止，执行记录已保留。
+          </div>
+        ) : null}
         {task.status === 'running' && onStopChild ? (
           <button
             type="button"
@@ -8731,7 +7859,10 @@ export const InlineDelegatedAgentTask = memo(function InlineDelegatedAgentTask({
   // yet, so anchor the live projection by the tool row that spawned it — that is
   // what keeps the card under its own `agent_run` row instead of leaving it in
   // the panel's fallback list until the child finishes.
-  if (parsed?.result) return <DelegatedAgentTaskCard task={parsed} onStopChild={onStopChild} />;
+  if (parsed?.result) {
+    const completedProjection = delegatedAgents?.find((candidate) => String(candidate.childRunId) === parsed.childRunId);
+    return <DelegatedAgentTaskCard task={completedProjection ? { ...parsed, statusObservation: completedProjection.statusObservation } : parsed} onStopChild={onStopChild} />;
+  }
   const live = delegatedAgents?.find((candidate) =>
     parsed
       ? String(candidate.childRunId) === parsed.childRunId
@@ -8806,51 +7937,7 @@ export const DelegatedAgentTasks = memo(function DelegatedAgentTasks({
               </span>
             </div>
           ) : null}
-          <details className="shell-delegated-agent" key={task.childRunId}>
-            <summary className="shell-delegated-agent__summary">
-              <span className="shell-delegated-agent__avatar">
-                <AgentAvatarView
-                  name={task.name}
-                  avatar={delegatedAgentAvatarValue(task)}
-                  size={22}
-                />
-              </span>
-              <span className="shell-delegated-agent__identity">
-                <strong>{task.name}</strong>
-                <code
-                  className="shell-delegated-agent__agent-id"
-                  title={`Agent Library id：${task.agentId}`}
-                >
-                  {task.agentId}
-                </code>
-              </span>
-              {delegatedAgentUsageLabel(task) ? (
-                <span className="shell-delegated-agent__usage" data-testid="delegated-agent-usage">
-                  {delegatedAgentUsageLabel(task)}
-                </span>
-              ) : null}
-              <DelegatedAgentStatusIcon status={task.status} />
-            </summary>
-            <div className="shell-delegated-agent__details">
-              {task.toolEvents.length > 0 ? (
-                <DelegatedAgentToolList events={task.toolEvents} />
-              ) : (
-                <span className="shell-delegated-agent__empty">本次任务没有调用工具</span>
-              )}
-              {task.result ? (
-                <div className="shell-delegated-agent__result">{task.result}</div>
-              ) : null}
-              {task.status === 'running' && onStopChild ? (
-                <button
-                  type="button"
-                  className="shell-delegated-agent__stop"
-                  onClick={() => onStopChild(task.childRunId)}
-                >
-                  停止当前子任务
-                </button>
-              ) : null}
-            </div>
-          </details>
+          <DelegatedAgentTaskCard task={task} onStopChild={onStopChild} />
         </Fragment>
       ))}
     </div>
@@ -8901,7 +7988,7 @@ const MessageBubble = memo(function MessageBubble({
   onOpenWebUrl?: (url: string) => void;
   onOpenReview?: (view: RunProcessView) => void;
   projectFolder?: string;
-  onOpenImage?: (image: MessageImage) => void;
+  onOpenImage?: (image: MessageImage, group?: readonly MessageImage[]) => void;
   /** Kernel that produced this turn (native/empty → no badge). */
   kernelId?: string;
   skillNameByVersionId?: ReadonlyMap<string, string>;
@@ -9074,18 +8161,29 @@ const MessageBubble = memo(function MessageBubble({
         ids.add(task.childRunId);
         continue;
       }
-      if (item.kind !== 'tool' || !item.toolCallId || !DELEGATION_TOOL_NAMES.has(item.name)) continue;
+      if (item.kind !== 'tool' || !item.toolCallId || !isDelegationToolName(item.name)) continue;
       const childRunId = byParentToolCallId.get(String(item.toolCallId));
       if (childRunId) ids.add(childRunId);
     }
     return ids;
   }, [displayedProcessItems, message.delegatedAgents]);
   const stopDelegatedChild = useCallback((childRunId: string) => {
-    void bridge()?.cancelRun?.({ runId: childRunId as RunId });
+    const api = bridge();
+    if (!api?.cancelRun) {
+      toastApi.toast({ type: 'error', title: '停止子任务失败', description: 'Runtime 未连接' });
+      return;
+    }
+    void api.cancelRun({ runId: childRunId as RunId }).catch((error) => {
+      toastApi.toast({
+        type: 'error',
+        title: '停止子任务失败',
+        description: error instanceof Error ? error.message : String(error),
+      });
+    });
   }, []);
   const renderInlineAgentTask = useCallback(
     (item: InlineProcessItem) =>
-      item.kind === 'tool' && DELEGATION_TOOL_NAMES.has(item.name) ? (
+      item.kind === 'tool' && isDelegationToolName(item.name) ? (
         <InlineDelegatedAgentTask
           item={item}
           delegatedAgents={message.delegatedAgents}
@@ -9237,30 +8335,55 @@ const MessageBubble = memo(function MessageBubble({
 
   if (isUser) {
     const images = message.images ?? [];
+    const fileReferences = splitMessageFileReferences(message.text ?? '');
+    const visibleText = fileReferences.body;
     return (
       <div className="shell-msg shell-msg--user group relative flex justify-end">
         <div className="shell-user-bubble-wrap">
-          <div className="shell-user-bubble max-w-full rounded-2xl bg-[color-mix(in_srgb,var(--color-elevated)_88%,var(--color-text)_12%)] px-4 py-2.5 text-[13.5px] leading-relaxed text-text shadow-sm">
-            {images.length > 0 ? (
-              <div className="shell-msg-images shell-msg-images--user">
-                {images.map((img) => (
+          {fileReferences.files.length > 0 ? (
+            <div
+              className="shell-msg-files shell-msg-files--user"
+              data-testid="message-file-references"
+            >
+              {fileReferences.files.map((file) => {
+                const Icon = file.kind === 'dir' ? Folder : FileText;
+                return (
                   <button
-                    key={img.id}
+                    key={file.path}
                     type="button"
-                    className="shell-msg-image-btn"
-                    title={img.name || '点击查看'}
-                    onClick={() => onOpenImage?.(img)}
+                    className="shell-msg-file"
+                    title={file.path}
+                    onClick={() => onOpenChange?.(file.path)}
                   >
-                    <img src={img.url} alt={img.name || '图片'} />
+                    <Icon size={15} aria-hidden="true" />
+                    <span className="shell-msg-file__name">{file.name}</span>
                   </button>
-                ))}
-              </div>
-            ) : null}
-            {message.text ? (
+                );
+              })}
+            </div>
+          ) : null}
+          {images.length > 0 ? (
+            <div className="shell-msg-images shell-msg-images--user">
+              {images.map((img) => (
+                <button
+                  key={img.id}
+                  type="button"
+                  className="shell-msg-image-btn"
+                  title={img.name || '点击查看'}
+                  onClick={() => onOpenImage?.(img, images)}
+                >
+                  <img src={img.url} alt={img.name || '图片'} />
+                </button>
+              ))}
+            </div>
+          ) : null}
+          {visibleText ? (
+            <div className="shell-user-bubble max-w-full rounded-2xl bg-[color-mix(in_srgb,var(--color-elevated)_88%,var(--color-text)_12%)] px-4 py-2.5 text-[13.5px] leading-relaxed text-text shadow-sm">
               <MessageTextContent
-                text={message.text}
-                parts={message.textParts}
+                text={visibleText}
+                parts={visibleText === message.text ? message.textParts : undefined}
                 conversationId={conversationId}
+                readingStateKey={`${conversationId ?? 'conversation'}:${message.id}:user`}
                 renderPreview={(text) => (
                   <CollapsibleUserText
                     text={text}
@@ -9286,8 +8409,8 @@ const MessageBubble = memo(function MessageBubble({
                   />
                 )}
               />
-            ) : null}
-          </div>
+            </div>
+          ) : null}
           {clockLabel ? (
             <div className="shell-msg-meta shell-msg-meta--user">
               <MetaHover
@@ -9346,6 +8469,7 @@ const MessageBubble = memo(function MessageBubble({
             text={message.text}
             parts={message.textParts}
             conversationId={conversationId}
+            readingStateKey={`${conversationId ?? 'conversation'}:${message.id}:system`}
             renderPreview={(text) => <span className="whitespace-pre-wrap">{text}</span>}
           />
           {dismissible ? (
@@ -9503,6 +8627,7 @@ const MessageBubble = memo(function MessageBubble({
             parts={message.answerText !== undefined ? message.answerParts : message.textParts}
             text={message.answerText ?? message.text}
             streaming={Boolean(message.streaming)}
+            readingStateKey={`${conversationId ?? 'conversation'}:${message.id}:answer`}
             projectFolder={projectFolder}
             conversationId={conversationId}
             imageModelBySrc={generatedImageModels}

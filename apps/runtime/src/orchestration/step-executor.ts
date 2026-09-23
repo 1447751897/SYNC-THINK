@@ -8,7 +8,7 @@
   ContextEpochId,
   ProviderRequestUsage,
 } from '@sync-think/shared';
-import type { StepArtifactVersionOutput, StoredStep } from '@sync-think/storage';
+import type { StepArtifactVersionOutput, StoredStep } from '@sync-think/shared';
 import type { ArtifactVersion } from '@sync-think/shared';
 
 export interface StepExecutionContext {

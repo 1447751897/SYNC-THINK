@@ -9,6 +9,22 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./node-paths": {
+      "types": "./dist/node-paths.d.ts",
+      "default": "./dist/node-paths.js"
+    },
+    "./node-image-validation": {
+      "types": "./dist/node-image-validation.d.ts",
+      "default": "./dist/node-image-validation.js"
+    },
+    "./value-validation": {
+      "types": "./dist/value-validation.d.ts",
+      "default": "./dist/value-validation.js"
+    },
+    "./task-schedule": {
+      "types": "./dist/task-schedule.d.ts",
+      "default": "./dist/task-schedule.js"
     }
   },
   "scripts": {
@@ -18,7 +34,11 @@
     "lint": "eslint src --ext .ts"
   },
   "devDependencies": {
+    "@types/node": "^20.17.0",
     "typescript": "^5.5.4",
     "vitest": "^2.1.8"
+  },
+  "dependencies": {
+    "croner": "^10.0.1"
   }
 }

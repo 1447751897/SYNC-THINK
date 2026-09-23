@@ -6,7 +6,7 @@
  * 也集中在这里，保证面板头部的活动摘要和工具行的文字永远一致。
  */
 import { isToolResultFailure, normalizeToolName } from '@sync-think/shared';
-import type { InlineProcessItem } from './ChatView.js';
+import type { InlineProcessItem } from './conversation-types.js';
 import { buildGeneratedImageModelBySrc } from './markdown-image-gallery.js';
 
 type ToolItem = Extract<InlineProcessItem, { kind: 'tool' }>;

@@ -1,242 +1,142 @@
 import type {
   ApproveExecuteBrowserWorkflowPayload,
-  BrowserAutomationTaskStatus,
   CreateBrowserWorkflowDraftPayload,
   CreateBrowserWorkflowRevisionDraftPayload,
   ExecuteBrowserWorkflowPayload,
+  ExecuteBrowserWorkflowDraftPayload,
   GetBrowserWorkflowPayload,
   ListBrowserWorkflowsPayload,
   ReviewBrowserWorkflowDraftPayload,
+  SaveBrowserWorkflowDraftPayload,
+  PublishBrowserWorkflowDraftPayload,
+  ImportChatBrowserWorkflowPayload,
   SubmitBrowserWorkflowDraftPayload,
+  UpdateBrowserWorkflowSchedulePayload,
 } from '@sync-think/protocol';
-import { BROWSER_RECORDING_MAX_URL_CHARS } from '@sync-think/shared';
+import {
+  tryParseApproveExecuteBrowserWorkflowPayload,
+  tryParseCreateBrowserWorkflowDraftPayload,
+  tryParseCreateBrowserWorkflowRevisionDraftPayload,
+  tryParseExecuteBrowserWorkflowPayload,
+  tryParseExecuteBrowserWorkflowDraftPayload,
+  tryParseGetBrowserWorkflowPayload,
+  tryParseAssignBrowserWorkflowWorkspacePayload,
+  tryParseListBrowserWorkflowsPayload,
+  tryParseReviewBrowserWorkflowDraftPayload,
+  tryParseSaveBrowserWorkflowDraftPayload,
+  tryParsePublishBrowserWorkflowDraftPayload,
+  tryParseImportChatBrowserWorkflowPayload,
+  tryParseSubmitBrowserWorkflowDraftPayload,
+  tryParseUpdateBrowserWorkflowSchedulePayload,
+} from '@sync-think/protocol/browser-payloads';
 
-const TASK_STATUSES: readonly BrowserAutomationTaskStatus[] = [
-  'draft',
-  'pending_review',
-  'enabled',
-  'disabled',
-  'failed',
-];
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
+function requirePayload<T>(command: string, payload: T | undefined): T {
+  if (payload === undefined) throw new Error(`Invalid ${command} payload`);
+  return payload;
 }
 
-function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
-  return Object.keys(value).every((key) => allowed.includes(key));
-}
-
-function validId(value: unknown): value is string {
-  return (
-    typeof value === 'string' &&
-    value.trim().length > 0 &&
-    value.length <= 256 &&
-    !/\s/u.test(value)
-  );
-}
-
-function validPositiveInteger(value: unknown, max: number): value is number {
-  return Number.isSafeInteger(value) && Number(value) >= 1 && Number(value) <= max;
-}
-
-function invalidPayload(command: string): never {
-  throw new Error(`Invalid ${command} payload`);
+export function parseAssignBrowserWorkflowWorkspacePayload(value: unknown): import('@sync-think/protocol').AssignBrowserWorkflowWorkspacePayload {
+  return requirePayload('assign-browser-workflow-workspace', tryParseAssignBrowserWorkflowWorkspacePayload(value));
 }
 
 export function parseListBrowserWorkflowsPayload(value: unknown): ListBrowserWorkflowsPayload {
-  if (
-    !isRecord(value) ||
-    !hasOnlyKeys(value, ['profileId', 'status', 'query', 'limit']) ||
-    (value.profileId !== undefined && !validId(value.profileId)) ||
-    (value.status !== undefined &&
-      (typeof value.status !== 'string' ||
-        !TASK_STATUSES.includes(value.status as BrowserAutomationTaskStatus))) ||
-    (value.query !== undefined && !validText(value.query, 200)) ||
-    (value.limit !== undefined && !validPositiveInteger(value.limit, 100))
-  ) {
-    invalidPayload('list-browser-workflows');
-  }
-  return {
-    ...(typeof value.profileId === 'string' ? { profileId: value.profileId.trim() } : {}),
-    ...(typeof value.status === 'string'
-      ? { status: value.status as BrowserAutomationTaskStatus }
-      : {}),
-    ...(typeof value.query === 'string' ? { query: value.query.trim() } : {}),
-    ...(typeof value.limit === 'number' ? { limit: value.limit } : {}),
-  };
+  return requirePayload('list-browser-workflows', tryParseListBrowserWorkflowsPayload(value));
 }
 
 export function parseGetBrowserWorkflowPayload(value: unknown): GetBrowserWorkflowPayload {
-  if (!isRecord(value) || !hasOnlyKeys(value, ['taskId']) || !validId(value.taskId)) {
-    invalidPayload('get-browser-workflow');
-  }
-  return { taskId: value.taskId.trim() };
+  return requirePayload('get-browser-workflow', tryParseGetBrowserWorkflowPayload(value));
 }
 
 export function parseCreateBrowserWorkflowDraftPayload(
   value: unknown,
 ): CreateBrowserWorkflowDraftPayload {
-  if (
-    !isRecord(value) ||
-    !hasOnlyKeys(value, ['profileId', 'name', 'instruction', 'startUrl', 'source']) ||
-    !validId(value.profileId) ||
-    !validText(value.name, 120) ||
-    !validText(value.instruction, 4_000) ||
-    !validHttpUrl(value.startUrl) ||
-    (value.source !== 'manual' && value.source !== 'ai')
-  ) {
-    invalidPayload('create-browser-workflow-draft');
-  }
-  return {
-    profileId: value.profileId.trim(),
-    name: value.name.trim(),
-    instruction: value.instruction.trim(),
-    startUrl: value.startUrl.trim(),
-    source: value.source,
-  };
+  return requirePayload(
+    'create-browser-workflow-draft',
+    tryParseCreateBrowserWorkflowDraftPayload(value),
+  );
 }
 
 export function parseCreateBrowserWorkflowRevisionDraftPayload(
   value: unknown,
 ): CreateBrowserWorkflowRevisionDraftPayload {
-  if (
-    !isRecord(value) ||
-    !hasOnlyKeys(value, ['taskId', 'expectedTaskRevision']) ||
-    !validId(value.taskId) ||
-    !validPositiveInteger(value.expectedTaskRevision, Number.MAX_SAFE_INTEGER)
-  ) {
-    invalidPayload('create-browser-workflow-revision-draft');
-  }
-  return {
-    taskId: value.taskId.trim(),
-    expectedTaskRevision: value.expectedTaskRevision,
-  };
+  return requirePayload(
+    'create-browser-workflow-revision-draft',
+    tryParseCreateBrowserWorkflowRevisionDraftPayload(value),
+  );
 }
 
 export function parseSubmitBrowserWorkflowDraftPayload(
   value: unknown,
 ): SubmitBrowserWorkflowDraftPayload {
-  if (
-    !isRecord(value) ||
-    !hasOnlyKeys(value, ['draftId', 'recordingId']) ||
-    !validId(value.draftId) ||
-    !validId(value.recordingId)
-  ) {
-    invalidPayload('submit-browser-workflow-draft');
-  }
-  return {
-    draftId: value.draftId.trim(),
-    recordingId: value.recordingId.trim(),
-  };
+  return requirePayload(
+    'submit-browser-workflow-draft',
+    tryParseSubmitBrowserWorkflowDraftPayload(value),
+  );
 }
 
 export function parseReviewBrowserWorkflowDraftPayload(
   value: unknown,
 ): ReviewBrowserWorkflowDraftPayload {
-  if (
-    !isRecord(value) ||
-    !hasOnlyKeys(value, ['draftId', 'decision', 'note']) ||
-    !validId(value.draftId) ||
-    (value.decision !== 'approve' && value.decision !== 'reject') ||
-    (value.note !== undefined && !validText(value.note, 2_000))
-  ) {
-    invalidPayload('review-browser-workflow-draft');
-  }
-  return {
-    draftId: value.draftId.trim(),
-    decision: value.decision,
-    ...(typeof value.note === 'string' ? { note: value.note.trim() } : {}),
-  };
+  return requirePayload(
+    'review-browser-workflow-draft',
+    tryParseReviewBrowserWorkflowDraftPayload(value),
+  );
+}
+
+export function parseSaveBrowserWorkflowDraftPayload(
+  value: unknown,
+): SaveBrowserWorkflowDraftPayload {
+  return requirePayload(
+    'save-browser-workflow-draft',
+    tryParseSaveBrowserWorkflowDraftPayload(value),
+  );
+}
+
+export function parsePublishBrowserWorkflowDraftPayload(
+  value: unknown,
+): PublishBrowserWorkflowDraftPayload {
+  return requirePayload(
+    'publish-browser-workflow-draft',
+    tryParsePublishBrowserWorkflowDraftPayload(value),
+  );
+}
+
+export function parseImportChatBrowserWorkflowPayload(
+  value: unknown,
+): ImportChatBrowserWorkflowPayload {
+  return requirePayload(
+    'import-chat-browser-workflow',
+    tryParseImportChatBrowserWorkflowPayload(value),
+  );
 }
 
 export function parseExecuteBrowserWorkflowPayload(value: unknown): ExecuteBrowserWorkflowPayload {
-  if (
-    !isRecord(value) ||
-    !hasOnlyKeys(value, ['taskId', 'variables']) ||
-    !validId(value.taskId) ||
-    (value.variables !== undefined &&
-      (!isRecord(value.variables) ||
-        Object.entries(value.variables).some(
-          ([name, v]) => !name.trim() || typeof v !== 'string',
-        )))
-  ) {
-    invalidPayload('execute-browser-workflow');
-  }
-  const variables: Record<string, string> = {};
-  if (value.variables !== undefined) {
-    for (const [name, v] of Object.entries(value.variables)) {
-      variables[name] = String(v);
-    }
-  }
-  return {
-    taskId: value.taskId.trim(),
-    ...(Object.keys(variables).length > 0 ? { variables } : {}),
-  };
+  return requirePayload('execute-browser-workflow', tryParseExecuteBrowserWorkflowPayload(value));
+}
+
+export function parseExecuteBrowserWorkflowDraftPayload(
+  value: unknown,
+): ExecuteBrowserWorkflowDraftPayload {
+  return requirePayload(
+    'execute-browser-workflow-draft',
+    tryParseExecuteBrowserWorkflowDraftPayload(value),
+  );
 }
 
 export function parseApproveExecuteBrowserWorkflowPayload(
   value: unknown,
 ): ApproveExecuteBrowserWorkflowPayload {
-  if (
-    !isRecord(value) ||
-    !hasOnlyKeys(value, ['taskId', 'origins', 'variables']) ||
-    !validId(value.taskId) ||
-    !Array.isArray(value.origins) ||
-    value.origins.length === 0 ||
-    value.origins.some((origin) => !validHttpUrl(origin)) ||
-    value.origins.length > 50 ||
-    (value.variables !== undefined &&
-      (!isRecord(value.variables) ||
-        Object.entries(value.variables).some(
-          ([name, v]) => !name.trim() || typeof v !== 'string',
-        )))
-  ) {
-    invalidPayload('approve-execute-browser-workflow');
-  }
-  const origins = [...new Set(value.origins.map((origin) => (origin as string).trim()))];
-  const variables: Record<string, string> = {};
-  if (value.variables !== undefined) {
-    for (const [name, v] of Object.entries(value.variables)) {
-      variables[name] = String(v);
-    }
-  }
-  return {
-    taskId: value.taskId.trim(),
-    origins,
-    ...(Object.keys(variables).length > 0 ? { variables } : {}),
-  };
-}
-
-function validText(value: unknown, max: number): value is string {
-  return (
-    typeof value === 'string' &&
-    value.trim().length > 0 &&
-    value.length <= max &&
-    !hasAsciiControlCharacter(value)
+  return requirePayload(
+    'approve-execute-browser-workflow',
+    tryParseApproveExecuteBrowserWorkflowPayload(value),
   );
 }
 
-function validHttpUrl(value: unknown): value is string {
-  if (
-    typeof value !== 'string' ||
-    value.trim().length === 0 ||
-    value.length > BROWSER_RECORDING_MAX_URL_CHARS ||
-    hasAsciiControlCharacter(value)
-  ) {
-    return false;
-  }
-  try {
-    const parsed = new URL(value.trim());
-    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
-  } catch {
-    return false;
-  }
-}
-
-function hasAsciiControlCharacter(value: string): boolean {
-  return [...value].some((character) => {
-    const codePoint = character.charCodeAt(0);
-    return codePoint <= 0x1f || codePoint === 0x7f;
-  });
+export function parseUpdateBrowserWorkflowSchedulePayload(
+  value: unknown,
+): UpdateBrowserWorkflowSchedulePayload {
+  return requirePayload(
+    'update-browser-workflow-schedule',
+    tryParseUpdateBrowserWorkflowSchedulePayload(value),
+  );
 }

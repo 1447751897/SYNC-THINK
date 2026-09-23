@@ -143,7 +143,7 @@ Windows Desktop --> 本机 Runtime --> 本机 workspace / SQLite / DPAPI vault
 
 `/demo` 单独设置 frame-ancestors；其他页面继续禁止嵌入。官网提供复制嵌入代码；部署到其他网站前先设置 `CLOUD_EMBED_ORIGINS`。演示适配无 `allow-forms` 的 iframe 沙箱；保留 `connect-src 'none'`、`script-src 'self'` 和 `form-action 'none'`。仅在 `/demo` 允许内联样式，以支持原始 CodeMirror 编辑器与动态几何样式；没有放宽内联脚本或网络访问。账号页 CSP 不变。
 
-`pnpm --filter @sync-think/website build` 同时打包真实组件和桌面样式，通过 workspace source exports 直接构建源码，不依赖预先存在的 desktop/shared dist。构建需要仓库开发依赖，发布目录仍只是 `apps/website/dist`；无需启动 Electron 或打包安装程序。构建拒绝引入 `ChatView` / `ShellApp` / QA runtime，所有 JS 合计限制 3 MiB，并输出非公开的 `demo-build-manifest.json` 记录实际组件及字节数。官网 iframe 保持惰性加载，字体子集按需下载。
+`pnpm --filter @sync-think/website build` 由 Website 自己的 `scripts/build-demo.mjs` 打包演示入口、状态和样式；真实桌面组件只通过 `website-demo-surface.ts` 的显式展示接口接入，并继续通过 workspace source exports 构建共享源码，不依赖预先存在的 desktop/shared dist。构建依赖由 Website 清单声明，发布目录仍只是 `apps/website/dist`；无需启动 Electron 或打包安装程序。构建拒绝引入 `ChatView` / `ShellApp` / QA runtime，所有 JS 合计限制 3 MiB，并输出非公开的 `demo-build-manifest.json` 记录实际组件及字节数。官网 iframe 保持惰性加载，字体子集按需下载。
 
 首屏使用手绘雪山 `hero-alpine-painted.webp`。下载按钮下展示目前支持的 Claude Code / Codex 内核条。工作台预览叠在首屏绘画上。演示墙纸分别为花田、云海、花野、草地，页脚与收尾使用独立的 `footer-meadow-painted.webp`，不再复用雪山。采用本地 Instrument Serif 字体，OFL 许可证随产物分发，页面没有字体 CDN 请求。参考 Multica 的绘画全幅与内核条布局，保留 SYNC-THINK 文案与左对齐标题。官网嵌入 `/demo.html`，云端同时接受 `/demo`。
 

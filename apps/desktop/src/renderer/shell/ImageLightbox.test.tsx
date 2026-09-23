@@ -87,4 +87,36 @@ describe('ImageLightbox', () => {
     await waitFor(() => expect(write).toHaveBeenCalled());
     fetchMock.mockRestore();
   });
+
+  it('offers copy directly in the zoom toolbar', async () => {
+    const write = vi.fn().mockResolvedValue(undefined);
+    class TestClipboardItem {
+      constructor(public readonly items: Record<string, Blob>) {}
+    }
+    Object.defineProperty(globalThis, 'ClipboardItem', {
+      configurable: true,
+      value: TestClipboardItem,
+    });
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { write },
+    });
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      blob: async () => new Blob([new Uint8Array([1, 2, 3])], { type: 'image/png' }),
+    } as Response);
+
+    render(
+      <ImageLightbox
+        open
+        images={[{ src: 'sync-think-image://generated/a.png', alt: '角色卡' }]}
+        activeIndex={0}
+        onClose={() => undefined}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: '复制图片' }));
+    await waitFor(() => expect(write).toHaveBeenCalled());
+    expect(screen.getByRole('button', { name: '已复制' })).toBeTruthy();
+    fetchMock.mockRestore();
+  });
 });

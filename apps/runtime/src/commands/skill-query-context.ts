@@ -1,13 +1,7 @@
 import type { Socket } from 'node:net';
-import type { Frame, McpServerSummary, SkillVersionSummary } from '@sync-think/protocol';
-import type {
-  McpServerRecord,
-  SkillVersionMetadataRecord,
-  SkillVersionRecord,
-  SqliteCapabilityStore,
-  SqliteMcpStore,
-  SqliteSkillStore,
-} from '@sync-think/storage';
+import type { Frame } from '@sync-think/protocol';
+import type { SqliteCapabilityStore, SqliteMcpStore, SqliteSkillStore } from '@sync-think/storage';
+import type { McpServerAuthSummaryInput } from '../mcp-server-summary.js';
 
 /**
  * Narrow dependency surface for the read-only skill/mcp query handlers
@@ -29,10 +23,6 @@ export interface SkillQueryContext {
   writeMcpStoreUnavailable(socket: Socket, frame: Frame): void;
   /** Map a caught error onto the provider-command error frame. */
   writeProviderCommandError(socket: Socket, frame: Frame, error: unknown): void;
-  /** Project a SkillVersionRecord onto the protocol summary shape. */
-  toSkillVersionSummary(
-    record: SkillVersionRecord | SkillVersionMetadataRecord,
-  ): SkillVersionSummary;
-  /** Project an McpServerRecord onto the protocol summary shape. */
-  toMcpServerSummary(record: McpServerRecord): McpServerSummary;
+  /** Read the optional auth fact needed by the public MCP summary. */
+  readMcpAuthConfig(mcpServerId: string): McpServerAuthSummaryInput | undefined;
 }

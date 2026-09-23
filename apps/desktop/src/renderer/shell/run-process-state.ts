@@ -1,5 +1,6 @@
-import type { ExecutionProcessStep, ProcessStepStatus, RunProcessView } from '@sync-think/protocol';
+import type { ExecutionProcessStep, RunProcessView } from '@sync-think/protocol';
 import type { Event } from '@sync-think/shared';
+import { unresolvedToolTerminalError } from '@sync-think/protocol/events';
 
 const RUN_TERMINAL_EVENT_TYPES = new Set([
   'run.completed',
@@ -65,13 +66,19 @@ export function reconcileRunProcessTerminal(
 ): RunProcessView {
   if (!terminal || String(terminal.runId ?? '') !== String(process.runId)) return process;
 
-  const failed = terminal.type === 'run.failed' || terminal.type === 'run.cancelled';
-  const terminalStepStatus: ProcessStepStatus = failed ? 'error' : 'done';
+  const error = unresolvedToolTerminalError(terminal, process.providerModelId);
+  if (!error) return process;
+  const terminalTime = Date.parse(terminal.occurredAt);
+  if (
+    (process.startedAt && Date.parse(process.startedAt) > terminalTime) ||
+    (process.completedAt && Date.parse(process.completedAt) > terminalTime)
+  ) return process;
   const settleStep = (step: ExecutionProcessStep): ExecutionProcessStep =>
     step.status === 'running'
       ? {
           ...step,
-          status: terminalStepStatus,
+          status: 'error',
+          error,
           completedAt: step.completedAt ?? terminal.occurredAt,
           occurredAt: terminal.occurredAt,
         }
@@ -81,10 +88,10 @@ export function reconcileRunProcessTerminal(
     ? Math.max(0, process.pages.steps.total - process.doneCount - process.errorCount)
     : 0;
   const doneCount = process.pages
-    ? process.doneCount + (failed ? 0 : remaining)
+    ? process.doneCount
     : steps.filter((step) => step.status === 'done').length;
   const errorCount = process.pages
-    ? process.errorCount + (failed ? remaining : 0)
+    ? process.errorCount + remaining
     : steps.filter((step) => step.status === 'error').length;
   const startedAt = process.startedAt ? Date.parse(process.startedAt) : Number.NaN;
   const completedAt = Date.parse(terminal.occurredAt);

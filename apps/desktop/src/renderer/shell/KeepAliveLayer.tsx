@@ -1,4 +1,10 @@
-import { memo, useRef, type ReactNode } from 'react';
+import { createContext, memo, useContext, useRef, type ReactNode } from 'react';
+
+const KeepAliveActiveContext = createContext(true);
+
+export function useKeepAliveActive(): boolean {
+  return useContext(KeepAliveActiveContext);
+}
 
 /**
  * Keeps a stage surface mounted so its DOM (scroll offsets, canvas/video state,
@@ -29,15 +35,17 @@ export const KeepAliveLayer = memo(
     if (props.active) frozenChildren.current = props.children;
     if (!visited.current) return null;
     return (
-      <div
-        className={props.className}
-        hidden={props.preserveLayout ? undefined : !props.active}
-        aria-hidden={!props.active}
-        data-active={props.active ? 'true' : 'false'}
-        data-testid={props.testId}
-      >
-        {frozenChildren.current}
-      </div>
+      <KeepAliveActiveContext.Provider value={props.active}>
+        <div
+          className={props.className}
+          hidden={props.preserveLayout ? undefined : !props.active}
+          aria-hidden={!props.active}
+          data-active={props.active ? 'true' : 'false'}
+          data-testid={props.testId}
+        >
+          {frozenChildren.current}
+        </div>
+      </KeepAliveActiveContext.Provider>
     );
   },
   (prev, next) =>

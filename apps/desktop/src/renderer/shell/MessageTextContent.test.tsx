@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { afterEach, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { DeferredContent, RunId } from '@sync-think/shared';
 import { MessageTextContent } from './MessageTextContent.js';
 import { ConversationContentScope } from './DeferredToolContent.js';
@@ -88,4 +88,98 @@ it('preserves ordinary text and custom user previews without adding a source rea
   );
   expect(screen.getByTestId('user-preview').textContent).toBe('普通消息');
   expect(screen.queryByTestId('deferred-message-text')).toBeNull();
+});
+
+function fullText(text: string) {
+  return {
+    content: {
+      text,
+      offset: 0,
+      utf16Length: text.length,
+      utf8Bytes: text.length * 3,
+      version: 'a'.repeat(64),
+      format: 'text' as const,
+    },
+  };
+}
+
+it.each(['conversation', 'reference', 'preview', 'streaming'] as const)(
+  'hides the previous full text immediately when %s changes',
+  async (change) => {
+    let resolve!: (value: ReturnType<typeof fullText>) => void;
+    const pending = new Promise<ReturnType<typeof fullText>>((done) => {
+      resolve = done;
+    });
+    vi.mocked(deferredContentReader.read)
+      .mockResolvedValueOnce(fullText('旧来源全文'))
+      .mockReturnValueOnce(pending);
+    const initial = {
+      conversationId: 'conversation-prose',
+      text: '当前预览',
+      parts: [{ text: '当前预览', contentRef }],
+    };
+    const rendered = render(<MessageTextContent {...initial} />);
+    await screen.findByText('旧来源全文');
+    const next = {
+      ...initial,
+      ...(change === 'conversation' ? { conversationId: 'conversation-next' } : {}),
+      ...(change === 'reference'
+        ? {
+            parts: [
+              {
+                text: initial.text,
+                contentRef: {
+                  ...contentRef,
+                  reference: { ...contentRef.reference, id: 'next-answer' },
+                },
+              },
+            ],
+          }
+        : {}),
+      ...(change === 'preview' ? { text: '新预览', parts: [{ text: '新预览', contentRef }] } : {}),
+      ...(change === 'streaming' ? { sourceStreaming: true } : {}),
+    };
+    rendered.rerender(<MessageTextContent {...next} />);
+    expect(screen.queryByText('旧来源全文')).toBeNull();
+    expect(screen.getByText(next.text)).toBeTruthy();
+    await act(async () => resolve(fullText('新来源全文')));
+    if (change === 'streaming') {
+      expect(deferredContentReader.read).toHaveBeenCalledTimes(1);
+      expect(screen.queryByText('新来源全文')).toBeNull();
+    } else {
+      await screen.findByText('新来源全文');
+    }
+  },
+);
+
+it('cancels the old source and ignores its late result after a scope change', async () => {
+  let resolve!: (value: ReturnType<typeof fullText>) => void;
+  const pending = new Promise<ReturnType<typeof fullText>>((done) => {
+    resolve = done;
+  });
+  vi.mocked(deferredContentReader.read)
+    .mockReturnValueOnce(pending)
+    .mockResolvedValueOnce(fullText('当前会话全文'));
+  const parts = [{ text: '预览', contentRef }];
+  const rendered = render(<MessageTextContent conversationId="old" text="预览" parts={parts} />);
+  const oldSignal = vi.mocked(deferredContentReader.read).mock.calls[0][1];
+  rendered.rerender(<MessageTextContent conversationId="new" text="预览" parts={parts} />);
+  expect(oldSignal?.aborted).toBe(true);
+  await screen.findByText('当前会话全文');
+  await act(async () => resolve(fullText('旧会话私密全文')));
+  expect(screen.queryByText('旧会话私密全文')).toBeNull();
+  expect(screen.getByText('当前会话全文')).toBeTruthy();
+});
+
+it('shows only the new preview if reading the replacement source fails', async () => {
+  vi.mocked(deferredContentReader.read)
+    .mockResolvedValueOnce(fullText('旧来源全文'))
+    .mockRejectedValueOnce(new Error('content.read-failed'));
+  const parts = [{ text: '预览', contentRef }];
+  const rendered = render(<MessageTextContent conversationId="old" text="预览" parts={parts} />);
+  await screen.findByText('旧来源全文');
+  rendered.rerender(<MessageTextContent conversationId="new" text="新预览" parts={parts} />);
+  await screen.findByRole('alert');
+  expect(screen.queryByText('旧来源全文')).toBeNull();
+  expect(screen.getByText('新预览')).toBeTruthy();
 });

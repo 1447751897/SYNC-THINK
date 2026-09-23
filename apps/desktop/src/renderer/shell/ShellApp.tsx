@@ -1,19 +1,16 @@
+import { createBrowserCommandDispatcher } from './browser-command-dispatcher.js';
 // New shell root — NewMax visual constitution (S3 / D3 first cut).
 // Sidebar top actions + three tracks with groups · workspace tabs (no 全部) ·
 // welcome empty state · settings modal.
 import { reviewViewKey, conversationReviewFromKey, type ReviewView } from './review-view.js';
-import {
-  memo,
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { Bot, MessageSquare, Users, Zap, X } from 'lucide-react';
-import { isKernelExecutionSupported, kernelExecutionUnavailableReason } from '@sync-think/shared';
+import {
+  isKernelExecutionSupported,
+  kernelExecutionUnavailableReason,
+  RefreshCoordinator,
+} from '@sync-think/shared';
 import type {
   Conversation,
   ConversationTrack,
@@ -23,6 +20,7 @@ import type {
   Team,
   WorkspaceId,
 } from '@sync-think/shared';
+import type { BrowserRecordingStepInput } from '@sync-think/shared';
 import type { WorkspaceSummary, SkillVersionSummary } from '@sync-think/protocol';
 import type { ProjectTextLocation } from '../../workspace-tools-contract.js';
 import { mergeEventHistory } from '../../event-history.js';
@@ -43,18 +41,15 @@ import { WallpaperReadingLayers } from './WallpaperReadingLayers.js';
 import type { WorkbenchNewResource } from './WorkspaceWorkbench.js';
 import { emptyExcalidrawContent } from './ExcalidrawPreview.js';
 import { ChatView, type RuntimeConnectionNotice } from './ChatView.js';
-import {
-  clearFilePaneSession,
-  isFilePaneSessionDirty,
-  type FileRevealTarget,
-} from './FilePane.js';
+import { CollaborationChatView } from './CollaborationChatView.js';
+import { clearFilePaneSession, isFilePaneSessionDirty, type FileRevealTarget } from './FilePane.js';
 import { collectOpenFilePaths, createUntitledProjectFile } from './untitled-project-file.js';
 import { WorkspaceFileView } from './WorkspaceFileView.js';
 import { TerminalPane } from './TerminalPane.js';
 import { disposeTerminalSession } from './terminal-session-store.js';
 import { BrowserPanel } from './BrowserPanel.js';
 import { ReviewPanel, WorkspaceFilesPanel } from './RightDock.js';
-import type { AbilityCenterInitialView } from './AbilitiesPage.js';
+import type { AbilityCenterInitialView } from './abilities/AbilityCenterPage.js';
 import { KeepAliveLayer } from './KeepAliveLayer.js';
 import { lazyPanel } from './lazy-panel.js';
 import {
@@ -127,6 +122,8 @@ import { BrandLogoMark } from './BrandLogoMark.js';
 import { AgentAvatarView } from './AgentAvatarView.js';
 import { resolveKernelBrandLogo, resolveKernelDisplayName } from './brand-icons.js';
 import { TurnSkillControl } from './TurnSkillControl.js';
+import { loadSkillCatalog } from './skill-catalog-loader.js';
+import { loadConversationCatalog } from './conversation-catalog-loader.js';
 import { ComposerEditor } from './ComposerEditor.js';
 import {
   PromptEnhancementAction,
@@ -135,7 +132,7 @@ import {
   usePromptEnhancementShortcutEnabled,
 } from './prompt-enhancement.js';
 import { ComposerMcpMenu } from './ComposerMcpMenu.js';
-import { ComposerModeBanner } from './ComposerModeBanner.js';
+import { ComposerModeBanner, NewMaxComposerFrame } from '@sync-think/ui-kit';
 import { ComposerActiveModePill, ComposerModeKeywordHint } from './ComposerModeControls.js';
 import {
   ComposerSlashMenu,
@@ -149,7 +146,6 @@ import {
   goalRequiresRiskConfirmation,
   type GoalSettingsValues,
 } from './GoalSettingsDialog.js';
-import { NewMaxComposerFrame } from './NewMaxComposerFrame.js';
 import { ComposerAddControl } from './ComposerAddMenu.js';
 import { TipsCarousel } from './TipsCarousel.js';
 import { HomeScenarios } from './HomeScenarios.js';
@@ -167,9 +163,9 @@ import { classifyAppendMessageFailure } from '../append-message-error.js';
 import { formatRuntimeIpcError } from '../provider-error-copy.js';
 import { startRuntimeConnection } from '../runtime-connection.js';
 import {
+  createShellBootSnapshotWriter,
   hasShellBootSnapshot,
   readShellBootSnapshot,
-  writeShellBootSnapshot,
 } from './shell-boot-snapshot.js';
 import type { HtmlBrowserOpenOptions } from './html-browser.js';
 import {
@@ -318,13 +314,15 @@ const TeamLibrary = lazyPanel(
   '团队',
   'TeamLibrary',
 );
-const BrowserStage = lazyPanel<{ onStartAiTask?(request: BrowserWorkflowAiTaskRequest): void }>(
+const BrowserStage = lazyPanel<{ onStartAiTask?(request: BrowserWorkflowAiTaskRequest): void; workspaces?: Array<{ workspaceId: string; name: string }>; activeWorkspaceId?: string; active?: boolean }>(
   async () => ({ default: (await import('./BrowserStage.js')).BrowserStage }),
   '浏览器',
   'BrowserStage',
 );
 const AbilitiesPage = lazyPanel(
-  async () => ({ default: (await import('./AbilitiesPage.js')).AbilitiesPage }),
+  async () => ({
+    default: (await import('./abilities/AbilityCenterPage.lazy.js')).AbilitiesPage,
+  }),
   '能力中心',
   'AbilitiesPage',
 );
@@ -361,6 +359,10 @@ interface ShellData {
   workspaces: WorkspaceSummary[];
   skills: SkillVersionSummary[];
 }
+
+type ShellRefreshResult =
+  | { ok: true; conversations: Conversation[] }
+  | { ok: false; error: string };
 
 type WorkspaceChromeFocus = 'primary' | 'right' | 'bottom';
 
@@ -433,6 +435,79 @@ function resolvePaneDropZone(rect: DOMRect, clientX: number, clientY: number): P
 
 function bridge() {
   return window.syncThink?.runtime;
+}
+
+const CHAT_BROWSER_AUTOMATION_SAVE_KEY = 'browser.chat-automation-save';
+
+function browserToolCompletedSuccessfully(event: Event): string | undefined {
+  if (event.type !== 'tool.completed' && event.type !== 'execution.tool.completed')
+    return undefined;
+  const toolCallId = event.payload.toolCallId;
+  if (typeof toolCallId !== 'string' || !toolCallId) return undefined;
+  const result = event.payload.result;
+  if (result && typeof result === 'object') {
+    return (result as { ok?: unknown }).ok === false ? undefined : toolCallId;
+  }
+  try {
+    const parsed = JSON.parse(String(result ?? '{}')) as { ok?: unknown };
+    return parsed.ok === false ? undefined : toolCallId;
+  } catch {
+    return toolCallId;
+  }
+}
+
+function chatBrowserSteps(
+  events: readonly Event[],
+  runId: string,
+): {
+  profileId?: string;
+  startUrl?: string;
+  steps: BrowserRecordingStepInput[];
+} {
+  const successfulToolCalls = new Set(
+    events
+      .filter((event) => String(event.runId ?? '') === runId)
+      .map(browserToolCompletedSuccessfully)
+      .filter((value): value is string => Boolean(value)),
+  );
+  let profileId: string | undefined;
+  let startUrl: string | undefined;
+  let inputIndex = 0;
+  const steps: BrowserRecordingStepInput[] = [];
+  for (const event of events) {
+    if (String(event.runId ?? '') !== runId || event.type !== 'browser.command.started') continue;
+    const toolCallId = event.payload.toolCallId;
+    if (typeof toolCallId !== 'string' || !successfulToolCalls.has(toolCallId)) continue;
+    if (!profileId && typeof event.payload.profileId === 'string')
+      profileId = event.payload.profileId;
+    const toolName = String(event.payload.toolName ?? '');
+    const args =
+      event.payload.args && typeof event.payload.args === 'object'
+        ? (event.payload.args as Record<string, unknown>)
+        : {};
+    if (toolName === 'browser_open' && typeof args.url === 'string') {
+      const url = args.url;
+      startUrl ??= url;
+      steps.push({ kind: 'navigate', url });
+    } else if (toolName === 'browser_click') {
+      if (typeof args.selector === 'string' && args.selector) {
+        steps.push({ kind: 'click', locator: { strategy: 'css', value: args.selector } });
+      } else if (typeof args.text === 'string' && args.text) {
+        steps.push({
+          kind: 'click',
+          locator: { strategy: 'role', role: 'button', name: args.text },
+        });
+      }
+    } else if (toolName === 'browser_type' && typeof args.selector === 'string' && args.selector) {
+      inputIndex += 1;
+      steps.push({
+        kind: 'fill',
+        locator: { strategy: 'css', value: args.selector },
+        value: { kind: 'variable', name: `输入值${inputIndex}` },
+      });
+    }
+  }
+  return { profileId, startUrl, steps };
 }
 
 function persistPaneLayouts(layouts: WorkspacePaneLayouts): void {
@@ -534,8 +609,22 @@ function ShellAppInner() {
   lastTrackRef.current = nav.lastTrack;
   const ensureDefaultDraftRef = useRef<(workspaceId: string) => void>(() => {});
   const [data, setData] = useState<ShellData>(() => readShellBootSnapshot() ?? EMPTY);
+  const bootSnapshotWriterRef = useRef<ReturnType<typeof createShellBootSnapshotWriter> | null>(
+    null,
+  );
+  if (bootSnapshotWriterRef.current === null) {
+    bootSnapshotWriterRef.current = createShellBootSnapshotWriter();
+  }
   const [skillCatalogRevision, setSkillCatalogRevision] = useState(0);
   const [eventHistory, setEventHistory] = useState<readonly Event[]>([]);
+  const [pendingChatBrowserWorkflow, setPendingChatBrowserWorkflow] = useState<{
+    runId: string;
+    profileId: string;
+    startUrl: string;
+    steps: BrowserRecordingStepInput[];
+    partial: boolean;
+  }>();
+  const [savingChatBrowserWorkflow, setSavingChatBrowserWorkflow] = useState(false);
   const [runActivityAuthority, setRunActivityAuthority] = useState<
     RunActivityAuthority | undefined
   >();
@@ -1112,38 +1201,8 @@ function ShellAppInner() {
   // afterwards each fresh browser_open result opens a new tab when the URL is new.
   const seenBrowserOpenIdsRef = useRef<Set<string>>(new Set());
   const browserNavPrimedRef = useRef(false);
-  const seenBrowserRequestIdsRef = useRef<Set<string>>(new Set());
-  useEffect(() => {
-    // The embedded bridge must mount before ChatView tries to execute the
-    // request. Open/focus the browser tab as soon as Runtime asks for a
-    // navigation; the renderer command executor waits briefly for its guest
-    // to attach before running the action.
-    for (const event of eventHistory) {
-      if (event.type !== 'browser.command_requested') continue;
-      const payload = event.payload as {
-        requestId?: unknown;
-        toolName?: unknown;
-        args?: unknown;
-        toolCallId?: unknown;
-      };
-      const requestId = typeof payload.requestId === 'string' ? payload.requestId : '';
-      if (!requestId || seenBrowserRequestIdsRef.current.has(requestId)) continue;
-      seenBrowserRequestIdsRef.current.add(requestId);
-      if (
-        payload.toolName !== 'browser_open' ||
-        !payload.args ||
-        typeof payload.args !== 'object'
-      ) {
-        continue;
-      }
-      const url = (payload.args as Record<string, unknown>).url;
-      if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) continue;
-      if (typeof payload.toolCallId === 'string' && payload.toolCallId) {
-        seenBrowserOpenIdsRef.current.add(payload.toolCallId);
-      }
-      handleAiBrowserOpen(url);
-    }
-  }, [eventHistory, handleAiBrowserOpen]);
+  const browserCommandContextRef = useRef({ data, handleAiBrowserOpen, activeWorkspaceId });
+  browserCommandContextRef.current = { data, handleAiBrowserOpen, activeWorkspaceId };
 
   useEffect(() => {
     const priming = !browserNavPrimedRef.current;
@@ -1190,6 +1249,93 @@ function ShellAppInner() {
       handleAiBrowserOpen(item.url);
     }
   }, [eventHistory, handleAiBrowserOpen]);
+
+  const chatBrowserSettingSnapshotsRef = useRef<Map<string, Promise<boolean>>>(new Map());
+  const handledChatBrowserRunsRef = useRef<Set<string>>(new Set());
+  const chatBrowserCapturePrimedRef = useRef(false);
+  useEffect(() => {
+    for (const event of eventHistory) {
+      const runId = String(event.runId ?? '');
+      if (
+        !runId ||
+        event.type !== 'run.started' ||
+        chatBrowserSettingSnapshotsRef.current.has(runId)
+      ) {
+        continue;
+      }
+      const snapshot =
+        bridge()
+          ?.getSettings({ keys: [CHAT_BROWSER_AUTOMATION_SAVE_KEY] })
+          .then((response) => {
+            const value = response.settings[CHAT_BROWSER_AUTOMATION_SAVE_KEY];
+            return value === true || (value as { enabled?: unknown })?.enabled === true;
+          })
+          .catch(() => false) ?? Promise.resolve(false);
+      chatBrowserSettingSnapshotsRef.current.set(runId, snapshot);
+    }
+
+    const terminalEvents = eventHistory.filter(
+      (event) => event.type === 'run.completed' || event.type === 'run.failed',
+    );
+    if (!chatBrowserCapturePrimedRef.current) {
+      chatBrowserCapturePrimedRef.current = true;
+      for (const event of terminalEvents) {
+        const runId = String(event.runId ?? '');
+        if (runId) handledChatBrowserRunsRef.current.add(runId);
+      }
+      return;
+    }
+
+    for (const terminal of terminalEvents) {
+      const runId = String(terminal.runId ?? '');
+      if (!runId || handledChatBrowserRunsRef.current.has(runId)) continue;
+      handledChatBrowserRunsRef.current.add(runId);
+      const settingSnapshot =
+        chatBrowserSettingSnapshotsRef.current.get(runId) ?? Promise.resolve(false);
+      void settingSnapshot.then((enabled) => {
+        if (!enabled) return;
+        const capture = chatBrowserSteps(eventHistory, runId);
+        if (!capture.profileId || !capture.startUrl || capture.steps.length === 0) return;
+        setPendingChatBrowserWorkflow({
+          runId,
+          profileId: capture.profileId,
+          startUrl: capture.startUrl,
+          steps: capture.steps,
+          partial: terminal.type === 'run.failed',
+        });
+      });
+    }
+  }, [eventHistory]);
+
+  const importChatBrowserWorkflow = useCallback(
+    async (publish: boolean) => {
+      if (!pendingChatBrowserWorkflow || savingChatBrowserWorkflow) return;
+      setSavingChatBrowserWorkflow(true);
+      try {
+        await bridge()?.browserWorkflow.importChat({
+          profileId: pendingChatBrowserWorkflow.profileId,
+          name: `对话浏览器任务 ${new Date().toLocaleString('zh-CN', { hour12: false })}`,
+          instruction: `复用对话运行 ${pendingChatBrowserWorkflow.runId} 中的浏览器操作。`,
+          startUrl: pendingChatBrowserWorkflow.startUrl,
+          steps: pendingChatBrowserWorkflow.steps,
+          publish,
+        });
+        setPendingChatBrowserWorkflow(undefined);
+        toastApi.toast({
+          type: 'success',
+          title: publish ? '浏览器自动化任务已发布' : '浏览器自动化草稿已保存',
+        });
+      } catch (error) {
+        toastApi.toast({
+          type: 'error',
+          title: error instanceof Error ? error.message : '浏览器自动化任务保存失败',
+        });
+      } finally {
+        setSavingChatBrowserWorkflow(false);
+      }
+    },
+    [pendingChatBrowserWorkflow, savingChatBrowserWorkflow],
+  );
 
   const handleCloseBrowserTab = useCallback(
     (paneId: string, browserId: string) => {
@@ -1606,105 +1752,135 @@ function ShellAppInner() {
     setGroups(readConversationGroups(activeWorkspaceId));
   }, [activeWorkspaceId]);
 
-  const refresh = useCallback(async () => {
+  const performRefresh = useCallback(async (): Promise<ShellRefreshResult> => {
     const api = bridge();
-    if (!api) return;
-    const conversationsPromise = api.listConversations({ includeArchived: true });
-    const extrasPromise = Promise.all([
-      api.listGlobalAgents({}),
-      api.listTeams(),
-      api.listProviders({}),
-      api.listWorkspaces({}),
-      api.listSkills({}),
-    ]);
-    const conversations = await conversationsPromise;
-    setData((current) => ({
-      ...current,
-      conversations: conversations.conversations,
-    }));
-    const [agents, teams, providers, workspaces, skills] = await extrasPromise;
-    const modelNames = new Map<string, string>();
-    const models: ModelOption[] = [];
-    for (const provider of providers.providers) {
-      if (provider.enabled === false) continue;
-      if (provider.protocol === 'openai-images') continue;
-      for (const model of provider.models) {
-        if (
-          model.capabilities.includes('image-generation') &&
-          !model.capabilities.includes('text')
-        ) {
-          continue;
+    if (!api) {
+      const error = '渲染进程未注入 runtime bridge';
+      toastApi.toast({
+        id: 'shell-refresh-error',
+        type: 'error',
+        title: '刷新工作区数据失败',
+        description: error,
+      });
+      return { ok: false, error };
+    }
+
+    try {
+      const [conversations, agents, teams, providers, workspaces, skills] = await Promise.all([
+        loadConversationCatalog(api, { includeArchived: true }),
+        api.listGlobalAgents({}),
+        api.listTeams(),
+        api.listProviders({}),
+        api.listWorkspaces({}),
+        loadSkillCatalog(api, { refresh: true }),
+      ]);
+      const modelNames = new Map<string, string>();
+      const models: ModelOption[] = [];
+      for (const provider of providers.providers) {
+        if (provider.enabled === false) continue;
+        if (provider.protocol === 'openai-images') continue;
+        for (const model of provider.models) {
+          const capabilities = model.capabilities ?? [];
+          if (capabilities.includes('image-generation') && !capabilities.includes('text')) {
+            continue;
+          }
+          modelNames.set(model.modelId, model.displayName);
+          models.push({
+            modelId: model.modelId,
+            displayName: model.displayName,
+            providerName: provider.name,
+            providerId: String(provider.providerId),
+            contextWindow: model.contextWindow,
+          });
         }
-        modelNames.set(model.modelId, model.displayName);
-        models.push({
-          modelId: model.modelId,
-          displayName: model.displayName,
-          providerName: provider.name,
-          providerId: String(provider.providerId),
-          contextWindow: model.contextWindow,
-        });
       }
-    }
-    const nextData = {
-      conversations: conversations.conversations,
-      agents: agents.agents,
-      teams: teams.teams,
-      modelNames,
-      models,
-      workspaces: workspaces.workspaces,
-      skills: skills.skills,
-    };
-    setData(nextData);
-    writeShellBootSnapshot(nextData);
+      const nextData = {
+        conversations: conversations.conversations,
+        agents: agents.agents,
+        teams: teams.teams,
+        modelNames,
+        models,
+        workspaces: workspaces.workspaces,
+        skills: skills.skills,
+      };
+      setData(nextData);
+      bootSnapshotWriterRef.current?.schedule(nextData);
 
-    // Drop stale tabs per workspace and collapse empty branches without ever
-    // using another workspace's conversation as a valid reference.
-    const prunedLayouts: WorkspacePaneLayouts = {};
-    for (const [workspaceId, layout] of Object.entries(paneLayoutsRef.current)) {
-      const validIds = new Set(
-        conversations.conversations
-          .filter((conversation) => conversation.workspaceId === workspaceId)
-          .map((conversation) => String(conversation.id)),
+      // Drop stale tabs per workspace and collapse empty branches without ever
+      // using another workspace's conversation as a valid reference.
+      const prunedLayouts: WorkspacePaneLayouts = {};
+      for (const [workspaceId, layout] of Object.entries(paneLayoutsRef.current)) {
+        const validIds = new Set(
+          conversations.conversations
+            .filter((conversation) => conversation.workspaceId === workspaceId)
+            .map((conversation) => String(conversation.id)),
+        );
+        const draft = draftSessionRef.current;
+        if (draft?.workspaceId === workspaceId) validIds.add(draft.id);
+        prunedLayouts[workspaceId] = pruneWorkspacePaneLayout(layout, validIds);
+      }
+      paneLayoutsRef.current = prunedLayouts;
+      setPaneLayouts(prunedLayouts);
+      persistPaneLayouts(prunedLayouts);
+      const validWorkspaceIds = new Set<string>(
+        workspaces.workspaces.map((workspace) => String(workspace.workspaceId)),
       );
-      const draft = draftSessionRef.current;
-      if (draft?.workspaceId === workspaceId) validIds.add(draft.id);
-      prunedLayouts[workspaceId] = pruneWorkspacePaneLayout(layout, validIds);
-    }
-    paneLayoutsRef.current = prunedLayouts;
-    setPaneLayouts(prunedLayouts);
-    persistPaneLayouts(prunedLayouts);
-    const validWorkspaceIds = new Set<string>(
-      workspaces.workspaces.map((workspace) => String(workspace.workspaceId)),
-    );
-    const prunedWorkbench: WorkspaceWorkbenchLayouts = Object.fromEntries(
-      Object.entries(workbenchLayoutsRef.current).filter(([workspaceId]) =>
-        validWorkspaceIds.has(workspaceId),
-      ),
-    );
-    workbenchLayoutsRef.current = prunedWorkbench;
-    setWorkbenchLayouts(prunedWorkbench);
-    persistWorkbenchLayouts(prunedWorkbench);
+      const prunedWorkbench: WorkspaceWorkbenchLayouts = Object.fromEntries(
+        Object.entries(workbenchLayoutsRef.current).filter(([workspaceId]) =>
+          validWorkspaceIds.has(workspaceId),
+        ),
+      );
+      workbenchLayoutsRef.current = prunedWorkbench;
+      setWorkbenchLayouts(prunedWorkbench);
+      persistWorkbenchLayouts(prunedWorkbench);
 
-    // No「全部」: always land on a concrete workspace when possible.
-    setActiveWorkspaceId((current) => {
-      const list = workspaces.workspaces;
-      if (list.length === 0) {
-        activeWorkspaceIdRef.current = undefined;
-        writeActiveWorkspaceId(undefined);
-        return undefined;
-      }
-      if (current && list.some((w) => w.workspaceId === current)) {
-        activeWorkspaceIdRef.current = current;
-        return current;
-      }
-      const next = list[0]!.workspaceId;
-      activeWorkspaceIdRef.current = next;
-      writeActiveWorkspaceId(next);
-      return next;
-    });
-    const landingId = activeWorkspaceIdRef.current;
-    if (landingId) ensureDefaultDraftRef.current(landingId);
+      // No「全部」: always land on a concrete workspace when possible.
+      setActiveWorkspaceId((current) => {
+        const list = workspaces.workspaces;
+        if (list.length === 0) {
+          activeWorkspaceIdRef.current = undefined;
+          writeActiveWorkspaceId(undefined);
+          return undefined;
+        }
+        if (current && list.some((w) => w.workspaceId === current)) {
+          activeWorkspaceIdRef.current = current;
+          return current;
+        }
+        const next = list[0]!.workspaceId;
+        activeWorkspaceIdRef.current = next;
+        writeActiveWorkspaceId(next);
+        return next;
+      });
+      const landingId = activeWorkspaceIdRef.current;
+      if (landingId) ensureDefaultDraftRef.current(landingId);
+      return { ok: true, conversations: nextData.conversations };
+    } catch (cause) {
+      const error = cause instanceof Error ? cause.message : '加载工作区数据失败';
+      toastApi.toast({
+        id: 'shell-refresh-error',
+        type: 'error',
+        title: '刷新工作区数据失败',
+        description: error,
+      });
+      return { ok: false, error };
+    }
   }, []);
+
+  const refreshCoordinatorRef = useRef<RefreshCoordinator<ShellRefreshResult> | null>(null);
+  if (refreshCoordinatorRef.current === null) {
+    refreshCoordinatorRef.current = new RefreshCoordinator(performRefresh);
+  }
+  const refresh = useCallback(
+    (): Promise<ShellRefreshResult> => refreshCoordinatorRef.current!.request(),
+    [],
+  );
+
+  useEffect(
+    () => () => {
+      bootSnapshotWriterRef.current?.flush();
+    },
+    [],
+  );
 
   // After boot data is ready, restore the last focused conversation for the
   // active workspace so open tabs and the main stage stay in sync.
@@ -1762,9 +1938,33 @@ function ShellAppInner() {
         void refresh();
       }
     };
+    const dispatchBrowserCommand = createBrowserCommandDispatcher({
+      open: (url, workspaceId) => {
+        const context = browserCommandContextRef.current;
+        if (workspaceId !== context.activeWorkspaceId) {
+          throw new Error('请切回此任务的工作区后重新打开浏览器页面。');
+        }
+        context.handleAiBrowserOpen(url);
+      },
+      projectFolder: (workspaceId) => browserCommandContextRef.current.data.workspaces
+        .find((workspace) => String(workspace.workspaceId) === workspaceId)?.folderPath?.trim(),
+      submit: (result) => api.submitBrowserResult(result),
+      saveScreenshot: api.saveBrowserScreenshot ? (input) => api.saveBrowserScreenshot(input) : undefined,
+      sendTrustedClick: api.sendBrowserTrustedClick ? (input) => api.sendBrowserTrustedClick(input) : undefined,
+    });
     const handleRuntimeEvents = (events: Event[]) => {
       if (events.length === 0) return;
-      pendingEvents.push(...events);
+      // Execute live commands before animation-frame batching, which can pause
+      // when the window is hidden. Never execute commands from connect snapshots.
+      for (const event of events) {
+        if (event.type === 'browser.command_requested') {
+          void dispatchBrowserCommand(event).catch(() => {
+            console.warn('[desktop] browser result delivery failed');
+          });
+        } else {
+          pendingEvents.push(event);
+        }
+      }
       if (eventsFrame !== null) return;
       eventsFrame = window.requestAnimationFrame(commitRuntimeEvents);
     };
@@ -1789,18 +1989,17 @@ function ShellAppInner() {
             : undefined,
         );
         setRuntimeConnectionRevision((revision) => revision + 1);
-        void refresh()
-          .then(() => {
-            if (!cancelled) {
+        void refresh().then((result) => {
+          if (!cancelled) {
+            if (result.ok) {
               setBootState('ready');
               setBootError(undefined);
+            } else {
+              setBootState('error');
+              setBootError(result.error);
             }
-          })
-          .catch((error) => {
-            if (cancelled) return;
-            setBootState('error');
-            setBootError(error instanceof Error ? error.message : '加载对话列表失败');
-          });
+          }
+        });
       },
       onRetrying: ({ attempt, maxAttempts }) => {
         if (cancelled) return;
@@ -1816,13 +2015,15 @@ function ShellAppInner() {
           text: `连接运行时失败：${error.code}`,
         });
         setBootError(error.code);
-        void refresh()
-          .then(() => {
-            if (!cancelled) setBootState('ready');
-          })
-          .catch(() => {
-            if (!cancelled) setBootState('error');
-          });
+        void refresh().then((result) => {
+          if (cancelled) return;
+          if (result.ok) {
+            setBootState('ready');
+          } else {
+            setBootState('error');
+            setBootError(result.error);
+          }
+        });
       },
     });
 
@@ -1841,13 +2042,24 @@ function ShellAppInner() {
   const pendingOpenRef = useRef<string | null>(null);
 
   const openConversationById = useCallback(
-    (conversationId: string) => {
-      const target = data.conversations.find((c) => c.id === conversationId);
+    async (conversationId: string) => {
+      pendingOpenRef.current = conversationId;
+      let target = data.conversations.find((c) => c.id === conversationId);
       if (!target) {
-        // Conversations not loaded yet — hold the id; refresh() or a later
-        // data update flushes it once it appears.
-        pendingOpenRef.current = conversationId;
-        return;
+        // Background tasks create conversations after the shell catalog loads.
+        // Fetch them now instead of waiting for an unrelated catalog refresh.
+        const result = await refresh();
+        if (pendingOpenRef.current !== conversationId) return;
+        if (!result.ok) {
+          pendingOpenRef.current = null;
+          return;
+        }
+        target = result.conversations.find((c) => c.id === conversationId);
+        if (!target) {
+          pendingOpenRef.current = null;
+          toastApi.toast({ type: 'error', title: '对话未找到，可能已被删除' });
+          return;
+        }
       }
       pendingOpenRef.current = null;
       // Deep links can target a conversation in another workspace. Switch there
@@ -1857,7 +2069,7 @@ function ShellAppInner() {
       }
       focusConversation(conversationId, target.workspaceId);
     },
-    [data.conversations, focusConversation, selectWorkspace],
+    [data.conversations, focusConversation, selectWorkspace, refresh],
   );
 
   // Inbox for syncthink://conversation/{id} dispatched by the main process.
@@ -1873,8 +2085,11 @@ function ShellAppInner() {
 
   // Flush a pending deep link once conversations arrive.
   useEffect(() => {
-    if (pendingOpenRef.current && data.conversations.length > 0) {
-      openConversationById(pendingOpenRef.current);
+    if (
+      pendingOpenRef.current &&
+      data.conversations.some((conversation) => conversation.id === pendingOpenRef.current)
+    ) {
+      void openConversationById(pendingOpenRef.current);
     }
   }, [data.conversations, openConversationById]);
 
@@ -2959,7 +3174,6 @@ function ShellAppInner() {
       targetName(conversation, data.agents, data.teams, data.modelNames, modelOverrides),
     [data.agents, data.modelNames, data.teams, modelOverrides],
   );
-
   const handleConversationUpdated = useCallback(() => {
     // Re-read local model/kernel overrides so sidebar identity updates immediately
     // after a compose model or kernel switch (without waiting for a full runtime refresh).
@@ -3291,39 +3505,47 @@ function ShellAppInner() {
           className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
           data-testid="workbench-surface-conversation"
         >
-          <ChatView
-            key={conversation.id}
-            conversation={conversation}
-            modelName={resolveTargetName(conversation)}
-            models={data.models}
-            agents={data.agents}
-            teams={data.teams}
-            workspaces={data.workspaces}
-            eventHistory={eventHistory}
-            runActivityAuthority={runActivityAuthority}
-            runtimeConnectionRevision={runtimeConnectionRevision}
-            runtimeConnectionNotice={runtimeConnectionNotice}
-            initialSkillVersionIds={initialConversationSkillSelectionsRef.current.get(
-              String(conversation.id),
-            )}
-            onInitialSkillSelectionConsumed={(conversationId) => {
-              initialConversationSkillSelectionsRef.current.delete(conversationId);
-            }}
-            seedComposerText={readSeedComposerText(String(conversation.id))}
-            onSeedComposerTextConsumed={(conversationId) => {
-              seedComposerTextRef.current.delete(conversationId);
-            }}
-            onTitleUpdated={() => void refresh()}
-            onConversationUpdated={handleConversationUpdated}
-            onLatestReviewChange={handleLatestReviewChange}
-            onOpenFile={(path, location) => handleOpenFileInWorkbench(placement, path, location)}
-            onOpenHtmlInBrowser={handleOpenHtmlInBrowser}
-            onOpenWebUrl={(url) => handleOpenBrowserInWorkbench(placement, url)}
-            onOpenReview={(view) => handleOpenReviewInWorkbench(placement, view)}
-            onOpenPlanSettings={handleOpenPlanSettings}
-            onOpenMcpSettings={handleOpenMcpSettings}
-            onCreateSkill={handleCreateSkill}
-          />
+          {conversation.collaborationKind ? (
+            <CollaborationChatView
+              conversation={conversation}
+              agents={data.agents}
+              onOpenConversation={(id) => void openConversationById(id)}
+            />
+          ) : (
+            <ChatView
+              key={conversation.id}
+              conversation={conversation}
+              modelName={resolveTargetName(conversation)}
+              models={data.models}
+              agents={data.agents}
+              teams={data.teams}
+              workspaces={data.workspaces}
+              eventHistory={eventHistory}
+              runActivityAuthority={runActivityAuthority}
+              runtimeConnectionRevision={runtimeConnectionRevision}
+              runtimeConnectionNotice={runtimeConnectionNotice}
+              initialSkillVersionIds={initialConversationSkillSelectionsRef.current.get(
+                String(conversation.id),
+              )}
+              onInitialSkillSelectionConsumed={(conversationId) => {
+                initialConversationSkillSelectionsRef.current.delete(conversationId);
+              }}
+              seedComposerText={readSeedComposerText(String(conversation.id))}
+              onSeedComposerTextConsumed={(conversationId) => {
+                seedComposerTextRef.current.delete(conversationId);
+              }}
+              onTitleUpdated={() => void refresh()}
+              onConversationUpdated={handleConversationUpdated}
+              onLatestReviewChange={handleLatestReviewChange}
+              onOpenFile={(path, location) => handleOpenFileInWorkbench(placement, path, location)}
+              onOpenHtmlInBrowser={handleOpenHtmlInBrowser}
+              onOpenWebUrl={(url) => handleOpenBrowserInWorkbench(placement, url)}
+              onOpenReview={(view) => handleOpenReviewInWorkbench(placement, view)}
+              onOpenPlanSettings={handleOpenPlanSettings}
+              onOpenMcpSettings={handleOpenMcpSettings}
+              onCreateSkill={handleCreateSkill}
+            />
+          )}
         </div>
       );
     }
@@ -3525,6 +3747,52 @@ function ShellAppInner() {
             teams={data.teams}
             draft={newConversationDraft}
             onPick={(targetRef) => void handlePickTarget(pickerTrack, targetRef)}
+            onPickCollaboration={
+              pickerTrack === 'agent' || pickerTrack === 'team'
+                ? (kind, _targetRef, selectedMemberIds) => {
+                    const workspaceId = activeWorkspaceId;
+                    if (!workspaceId) {
+                      setNewConversationError('请先创建或打开一个工作区');
+                      return;
+                    }
+                    const targetIds = selectedMemberIds ?? [];
+                    if (pickerTrack === 'agent' && targetIds.length < (kind === 'direct' ? 1 : 2)) {
+                      setNewConversationError(
+                        kind === 'direct' ? '还没有可用智能体' : '至少需要两个智能体才能创建群聊',
+                      );
+                      return;
+                    }
+                    const team = pickerTrack === 'team' ? data.teams[0] : undefined;
+                    const teamTargetIds =
+                      pickerTrack === 'team'
+                        ? targetIds.length
+                          ? targetIds
+                          : (team?.members.map((member) => member.agentId) ?? [])
+                        : targetIds;
+                    void bridge()
+                      ?.collaboration({
+                        action: 'create',
+                        clientRequestId: crypto.randomUUID(),
+                        kind,
+                        title: kind === 'direct' ? '智能体单聊' : '智能体群聊',
+                        workspaceId: String(workspaceId),
+                        agentIds: teamTargetIds,
+                        teamId: team?.id,
+                        coordinatorAgentId: teamTargetIds[0] ?? team?.coordinatorAgentId,
+                      })
+                      .then(async (result) => {
+                        if (result.snapshot) {
+                          await refresh();
+                          setPickerTrack(null);
+                          focusConversation(
+                            String(result.snapshot.conversation.id),
+                            String(workspaceId),
+                          );
+                        } else setNewConversationError('创建协作会话失败');
+                      });
+                  }
+                : undefined
+            }
             onGoToLibrary={(stage) => {
               pendingFirstMessageRef.current = null;
               setPickerTrack(null);
@@ -3568,699 +3836,783 @@ function ShellAppInner() {
             workspaceActivity={workspaceActivity}
           />
           <div className="shell-stage-stack">
-          <KeepAliveLayer
-            active={nav.stage === 'talk'}
-            className="shell-stage-layer"
-            testId="stage-talk"
-            preserveLayout
-          >
-            <div className="shell-workspace-content-frame" data-workspace-content-frame="true">
-              <div className="shell-workspace-content-row" data-workspace-content-row="true">
-                <div
-                  className="shell-workspace-primary-content"
-                  data-workspace-primary-content="true"
-                  data-workspace-chrome-focus={
-                    workspaceChromeFocus === 'primary' ? 'true' : 'false'
-                  }
-                  onPointerDownCapture={() => setWorkspaceChromeFocus('primary')}
-                >
-                  {shouldRenderWallpaperReadingLayers ? <WallpaperReadingLayers /> : null}
-                  {activePaneLayout && hasOpenPaneTabs ? (
-                    <WorkspacePaneHost
-                      layout={activePaneLayout}
-                      onFocusPane={handleFocusPane}
-                      onSplitRatioChange={handleSplitRatioChange}
-                      renderPane={(pane, focused) => {
-                        const localConversationIds = pane.tabs
-                          .filter((tab) => tab.type === 'conversation')
-                          .map((tab) => tab.conversationId);
-                        const localFileTabs = pane.tabs
-                          .filter((tab) => tab.type === 'file')
-                          .map((tab) => ({
-                            ...tab,
-                            dirty: activeWorkspaceId
-                              ? dirtyFileTabs.has(fileTabDirtyKey(activeWorkspaceId, tab.path))
-                              : false,
-                          }));
-                        const localTerminalTabs = pane.tabs.filter(
-                          (tab) => tab.type === 'terminal',
-                        );
-                        const localBrowserTabs = pane.tabs
-                          .filter((tab) => tab.type === 'browser')
-                          .map((tab) => {
-                            const meta = browserPageMeta[tab.browserId];
-                            return meta
-                              ? { ...tab, title: meta.title, favicon: meta.favicon }
-                              : tab;
-                          });
-                        const localReviewTabs = pane.tabs.filter((tab) => tab.type === 'review');
-                        const activeTab = pane.tabs.find((tab) => tab.id === pane.activeTabId);
-                        const activeFilePath =
-                          activeTab?.type === 'file' ? activeTab.path : undefined;
-                        const activeTerminalId =
-                          activeTab?.type === 'terminal' ? activeTab.terminalId : undefined;
-                        const activeBrowserId =
-                          activeTab?.type === 'browser' ? activeTab.browserId : undefined;
-                        const activeReviewRunId =
-                          activeTab?.type === 'review' ? activeTab.runId : undefined;
-                        if (activeTab?.type === 'conversation') {
-                          lastConversationIdByPaneRef.current.set(
-                            pane.id,
-                            activeTab.conversationId,
+            <KeepAliveLayer
+              active={nav.stage === 'talk'}
+              className="shell-stage-layer"
+              testId="stage-talk"
+              preserveLayout
+            >
+              <div className="shell-workspace-content-frame" data-workspace-content-frame="true">
+                <div className="shell-workspace-content-row" data-workspace-content-row="true">
+                  <div
+                    className="shell-workspace-primary-content"
+                    data-workspace-primary-content="true"
+                    data-workspace-chrome-focus={
+                      workspaceChromeFocus === 'primary' ? 'true' : 'false'
+                    }
+                    onPointerDownCapture={() => setWorkspaceChromeFocus('primary')}
+                  >
+                    {shouldRenderWallpaperReadingLayers ? <WallpaperReadingLayers /> : null}
+                    {activePaneLayout && hasOpenPaneTabs ? (
+                      <WorkspacePaneHost
+                        layout={activePaneLayout}
+                        onFocusPane={handleFocusPane}
+                        onSplitRatioChange={handleSplitRatioChange}
+                        renderPane={(pane, focused) => {
+                          const localConversationIds = pane.tabs
+                            .filter((tab) => tab.type === 'conversation')
+                            .map((tab) => tab.conversationId);
+                          const localFileTabs = pane.tabs
+                            .filter((tab) => tab.type === 'file')
+                            .map((tab) => ({
+                              ...tab,
+                              dirty: activeWorkspaceId
+                                ? dirtyFileTabs.has(fileTabDirtyKey(activeWorkspaceId, tab.path))
+                                : false,
+                            }));
+                          const localTerminalTabs = pane.tabs.filter(
+                            (tab) => tab.type === 'terminal',
                           );
-                        }
-                        if (activeTab?.type === 'browser') {
-                          lastBrowserIdByPaneRef.current.set(pane.id, activeTab.browserId);
-                        }
-                        const retainedSurfaces =
-                          retainedSurfacesByPaneRef.current.get(pane.id) ??
-                          emptyPaneRetainedSurfaces();
-                        if (activeTab?.type === 'conversation') {
-                          // DSH 路线：会话面不保活（RETAINED_CONVERSATION_LIMIT = 0），
-                          // rememberRetainedKey 返回空数组，只有当前激活会话挂载。
-                          retainedSurfaces.conversations = rememberRetainedKey(
-                            retainedSurfaces.conversations,
-                            activeTab.conversationId,
-                            RETAINED_CONVERSATION_LIMIT,
+                          const localBrowserTabs = pane.tabs
+                            .filter((tab) => tab.type === 'browser')
+                            .map((tab) => {
+                              const meta = browserPageMeta[tab.browserId];
+                              return meta
+                                ? { ...tab, title: meta.title, favicon: meta.favicon }
+                                : tab;
+                            });
+                          const localReviewTabs = pane.tabs.filter((tab) => tab.type === 'review');
+                          const activeTab = pane.tabs.find((tab) => tab.id === pane.activeTabId);
+                          const activeFilePath =
+                            activeTab?.type === 'file' ? activeTab.path : undefined;
+                          const activeTerminalId =
+                            activeTab?.type === 'terminal' ? activeTab.terminalId : undefined;
+                          const activeBrowserId =
+                            activeTab?.type === 'browser' ? activeTab.browserId : undefined;
+                          const activeReviewRunId =
+                            activeTab?.type === 'review' ? activeTab.runId : undefined;
+                          if (activeTab?.type === 'conversation') {
+                            lastConversationIdByPaneRef.current.set(
+                              pane.id,
+                              activeTab.conversationId,
+                            );
+                          }
+                          if (activeTab?.type === 'browser') {
+                            lastBrowserIdByPaneRef.current.set(pane.id, activeTab.browserId);
+                          }
+                          const retainedSurfaces =
+                            retainedSurfacesByPaneRef.current.get(pane.id) ??
+                            emptyPaneRetainedSurfaces();
+                          if (activeTab?.type === 'conversation') {
+                            // DSH 路线：会话面不保活（RETAINED_CONVERSATION_LIMIT = 0），
+                            // rememberRetainedKey 返回空数组，只有当前激活会话挂载。
+                            retainedSurfaces.conversations = rememberRetainedKey(
+                              retainedSurfaces.conversations,
+                              activeTab.conversationId,
+                              RETAINED_CONVERSATION_LIMIT,
+                            );
+                          } else if (activeTab?.type === 'file') {
+                            retainedSurfaces.files = rememberRetainedKey(
+                              retainedSurfaces.files,
+                              activeTab.path,
+                              RETAINED_FILE_LIMIT,
+                            );
+                          } else if (activeTab?.type === 'terminal') {
+                            retainedSurfaces.terminals = rememberRetainedKey(
+                              retainedSurfaces.terminals,
+                              activeTab.terminalId,
+                              RETAINED_TERMINAL_LIMIT,
+                            );
+                          } else if (activeTab?.type === 'review') {
+                            retainedSurfaces.reviews = rememberRetainedKey(
+                              retainedSurfaces.reviews,
+                              activeTab.runId,
+                              RETAINED_REVIEW_LIMIT,
+                            );
+                          }
+                          // DSH 路线：会话面不保活，retained 集合恒为空，这里只保留对
+                          // 已关闭会话 tab 的清理（防御性，保持存储集合与打开的 tab 一致）。
+                          retainedSurfaces.conversations = retainedSurfaces.conversations.filter(
+                            (id) => localConversationIds.includes(id) && id !== draftSession?.id,
                           );
-                        } else if (activeTab?.type === 'file') {
-                          retainedSurfaces.files = rememberRetainedKey(
-                            retainedSurfaces.files,
-                            activeTab.path,
-                            RETAINED_FILE_LIMIT,
+                          retainedSurfacesByPaneRef.current.set(pane.id, retainedSurfaces);
+                          // DSH 路线：只有当前激活的会话面挂载，其余靠
+                          // `conversationScrollPositions`（无上限锚点 Map）在重挂载时恢复。
+                          const retainedConversationIds = retainedSurfaces.conversations.filter(
+                            (id) => localConversationIds.includes(id) && id !== draftSession?.id,
                           );
-                        } else if (activeTab?.type === 'terminal') {
-                          retainedSurfaces.terminals = rememberRetainedKey(
-                            retainedSurfaces.terminals,
-                            activeTab.terminalId,
-                            RETAINED_TERMINAL_LIMIT,
+                          const keepAliveConversationId = paneKeepAliveConversationId(
+                            pane,
+                            lastConversationIdByPaneRef.current.get(pane.id),
                           );
-                        } else if (activeTab?.type === 'review') {
-                          retainedSurfaces.reviews = rememberRetainedKey(
-                            retainedSurfaces.reviews,
-                            activeTab.runId,
-                            RETAINED_REVIEW_LIMIT,
+                          const keepAliveBrowserId = paneKeepAliveBrowserId(
+                            pane,
+                            lastBrowserIdByPaneRef.current.get(pane.id),
                           );
-                        }
-                        // DSH 路线：会话面不保活，retained 集合恒为空，这里只保留对
-                        // 已关闭会话 tab 的清理（防御性，保持存储集合与打开的 tab 一致）。
-                        retainedSurfaces.conversations = retainedSurfaces.conversations.filter(
-                          (id) => localConversationIds.includes(id) && id !== draftSession?.id,
-                        );
-                        retainedSurfacesByPaneRef.current.set(pane.id, retainedSurfaces);
-                        // DSH 路线：只有当前激活的会话面挂载，其余靠
-                        // `conversationScrollPositions`（无上限锚点 Map）在重挂载时恢复。
-                        const retainedConversationIds = retainedSurfaces.conversations.filter(
-                          (id) => localConversationIds.includes(id) && id !== draftSession?.id,
-                        );
-                        const keepAliveConversationId = paneKeepAliveConversationId(
-                          pane,
-                          lastConversationIdByPaneRef.current.get(pane.id),
-                        );
-                        const keepAliveBrowserId = paneKeepAliveBrowserId(
-                          pane,
-                          lastBrowserIdByPaneRef.current.get(pane.id),
-                        );
-                        const conversationSurfaceActive = activeTab?.type === 'conversation';
-                        const isDraftConversation =
-                          conversationSurfaceActive && keepAliveConversationId === draftSession?.id;
-                        const conversation = keepAliveConversationId
-                          ? visibleConversations.find((item) => item.id === keepAliveConversationId)
-                          : undefined;
-                        const conversationsForPane = visibleConversations.filter(
-                          (item) =>
-                            localConversationIds.includes(String(item.id)) ||
-                            !openIdsForWorkspace.includes(String(item.id)),
-                        );
-                        // Every pane that has a conversation tab keeps a conversation
-                        // surface mounted (the active one); splitting is always offered.
-                        const shouldMountConversation = mountedConversationPaneIds.has(pane.id);
-                        const draggingFromThisPane = Boolean(
-                          tabDragResource &&
-                          pane.tabs.some((tab) => paneTabMatchesResource(tab, tabDragResource)),
-                        );
-                        return (
-                          <div
-                            className="shell-pane-frame relative flex min-h-0 flex-1 flex-col overflow-hidden"
-                            data-pane-shell="true"
-                            onDragOver={(event) => {
-                              if (!tabDragResource) return;
-                              const zone = resolvePaneDropZone(
-                                event.currentTarget.getBoundingClientRect(),
-                                event.clientX,
-                                event.clientY,
-                              );
-                              if (
-                                draggingFromThisPane &&
-                                (pane.tabs.length <= 1 || zone === 'center')
-                              ) {
+                          const conversationSurfaceActive = activeTab?.type === 'conversation';
+                          const isDraftConversation =
+                            conversationSurfaceActive &&
+                            keepAliveConversationId === draftSession?.id;
+                          const conversation = keepAliveConversationId
+                            ? visibleConversations.find(
+                                (item) => item.id === keepAliveConversationId,
+                              )
+                            : undefined;
+                          const conversationsForPane = visibleConversations.filter(
+                            (item) =>
+                              localConversationIds.includes(String(item.id)) ||
+                              !openIdsForWorkspace.includes(String(item.id)),
+                          );
+                          // Every pane that has a conversation tab keeps a conversation
+                          // surface mounted (the active one); splitting is always offered.
+                          const shouldMountConversation = mountedConversationPaneIds.has(pane.id);
+                          const draggingFromThisPane = Boolean(
+                            tabDragResource &&
+                            pane.tabs.some((tab) => paneTabMatchesResource(tab, tabDragResource)),
+                          );
+                          return (
+                            <div
+                              className="shell-pane-frame relative flex min-h-0 flex-1 flex-col overflow-hidden"
+                              data-pane-shell="true"
+                              onDragOver={(event) => {
+                                if (!tabDragResource) return;
+                                const zone = resolvePaneDropZone(
+                                  event.currentTarget.getBoundingClientRect(),
+                                  event.clientX,
+                                  event.clientY,
+                                );
+                                if (
+                                  draggingFromThisPane &&
+                                  (pane.tabs.length <= 1 || zone === 'center')
+                                ) {
+                                  setPaneDropTarget((current) =>
+                                    current?.paneId === pane.id ? null : current,
+                                  );
+                                  return;
+                                }
+                                event.preventDefault();
+                                event.dataTransfer.dropEffect = 'move';
+                                setPaneDropTarget({ paneId: pane.id, zone });
+                              }}
+                              onDragLeave={(event) => {
+                                if (
+                                  event.relatedTarget instanceof Node &&
+                                  event.currentTarget.contains(event.relatedTarget)
+                                ) {
+                                  return;
+                                }
                                 setPaneDropTarget((current) =>
                                   current?.paneId === pane.id ? null : current,
                                 );
-                                return;
-                              }
-                              event.preventDefault();
-                              event.dataTransfer.dropEffect = 'move';
-                              setPaneDropTarget({ paneId: pane.id, zone });
-                            }}
-                            onDragLeave={(event) => {
-                              if (
-                                event.relatedTarget instanceof Node &&
-                                event.currentTarget.contains(event.relatedTarget)
-                              ) {
-                                return;
-                              }
-                              setPaneDropTarget((current) =>
-                                current?.paneId === pane.id ? null : current,
-                              );
-                            }}
-                            onDrop={(event) => {
-                              if (!tabDragResource) return;
-                              event.preventDefault();
-                              const zone = resolvePaneDropZone(
-                                event.currentTarget.getBoundingClientRect(),
-                                event.clientX,
-                                event.clientY,
-                              );
-                              if (
-                                draggingFromThisPane &&
-                                (pane.tabs.length <= 1 || zone === 'center')
-                              ) {
+                              }}
+                              onDrop={(event) => {
+                                if (!tabDragResource) return;
+                                event.preventDefault();
+                                const zone = resolvePaneDropZone(
+                                  event.currentTarget.getBoundingClientRect(),
+                                  event.clientX,
+                                  event.clientY,
+                                );
+                                if (
+                                  draggingFromThisPane &&
+                                  (pane.tabs.length <= 1 || zone === 'center')
+                                ) {
+                                  setPaneDropTarget(null);
+                                  setTabDragResource(null);
+                                  return;
+                                }
+                                const resource =
+                                  parsePaneResourceDrag(
+                                    event.dataTransfer.getData(
+                                      'application/x-sync-think-pane-resource',
+                                    ),
+                                  ) ??
+                                  parsePaneResourceDrag(event.dataTransfer.getData('text/plain')) ??
+                                  tabDragResource;
                                 setPaneDropTarget(null);
                                 setTabDragResource(null);
-                                return;
-                              }
-                              const resource =
-                                parsePaneResourceDrag(
-                                  event.dataTransfer.getData(
-                                    'application/x-sync-think-pane-resource',
-                                  ),
-                                ) ??
-                                parsePaneResourceDrag(event.dataTransfer.getData('text/plain')) ??
-                                tabDragResource;
-                              setPaneDropTarget(null);
-                              setTabDragResource(null);
-                              handleDropPaneResource(resource, pane.id, zone);
-                            }}
-                          >
-                            <ConversationTabs
-                              paneId={pane.id}
-                              focused={focused}
-                              showAddButton={workspaceChromeFocus === 'primary' && focused}
-                              conversations={conversationsForPane}
-                              openIds={localConversationIds}
-                              activeId={conversationSurfaceActive ? conversation?.id : undefined}
-                              fileTabs={localFileTabs}
-                              activeFilePath={activeFilePath}
-                              terminalTabs={localTerminalTabs}
-                              activeTerminalId={activeTerminalId}
-                              browserTabs={localBrowserTabs}
-                              activeBrowserId={activeBrowserId}
-                              reviewTabs={localReviewTabs}
-                              activeReviewRunId={activeReviewRunId}
-                              canSplit
-                              onSelect={(id) => handleActivatePaneTab(pane.id, id)}
-                              onClose={(id) => handleCloseConversationTab(pane.id, id)}
-                              onSelectFile={(path) => handleActivateFileTab(pane.id, path)}
-                              onCloseFile={(path) => void handleCloseFileTab(pane.id, path)}
-                              onSelectTerminal={(terminalId) =>
-                                handleActivateTerminalTab(pane.id, terminalId)
-                              }
-                              onCloseTerminal={(terminalId) =>
-                                void handleCloseTerminalTab(pane.id, terminalId)
-                              }
-                              onNewTerminal={() => handleOpenTerminalInPane(pane.id)}
-                              onSelectBrowser={(browserId) =>
-                                handleActivateBrowserTab(pane.id, browserId)
-                              }
-                              onCloseBrowser={(browserId) =>
-                                handleCloseBrowserTab(pane.id, browserId)
-                              }
-                              onNewBrowser={() => handleOpenBrowserInPane(pane.id)}
-                              onNewCanvas={() => void handleNewCanvasInPane(pane.id)}
-                              onNewDocument={() => void handleNewDocumentInPane(pane.id)}
-                              onSelectReview={(runId) => handleActivateReviewTab(pane.id, runId)}
-                              onCloseReview={(runId) => handleCloseReviewTab(pane.id, runId)}
-                              canOpenTerminal={Boolean(activeProjectFolder)}
-                              onNew={() => {
-                                handleFocusPane(pane.id);
-                                handleNewConversation(undefined, conversation ?? null, pane.id);
+                                handleDropPaneResource(resource, pane.id, zone);
                               }}
-                              onReorder={(fromId, toId) =>
-                                handleReorderConversationTab(pane.id, fromId, toId)
-                              }
-                              onRename={(id, currentTitle) => void handleRename(id, currentTitle)}
-                              onOpenInSplit={(id, direction) =>
-                                handleSplitConversation(pane.id, id, direction)
-                              }
-                              onClosePane={
-                                Object.keys(activePaneLayout.panes).length > 1
-                                  ? () => void handleClosePane(pane.id)
-                                  : undefined
-                              }
-                              onTabDragStateChange={(id) => {
-                                setTabDragResource(id);
-                                if (!id) setPaneDropTarget(null);
-                              }}
-                              conversationActivity={conversationActivityView}
-                            />
-                            <div
-                              className="shell-pane-canvas relative flex min-h-0 flex-1 flex-col overflow-hidden"
-                              data-surface={activeTab?.type ?? 'empty'}
                             >
-                              {isDraftConversation ? (
-                                <div
-                                  className="shell-pane-surface"
-                                  data-surface="conversation"
-                                  data-active={conversationSurfaceActive ? 'true' : 'false'}
-                                  data-testid="pane-surface-conversation"
-                                >
-                                  {emptyTalk}
-                                </div>
-                              ) : null}
-                              {shouldMountConversation
-                                ? visibleConversations
-                                    .filter((item) => {
-                                      const id = String(item.id);
-                                      return (
-                                        id !== draftSession?.id &&
-                                        localConversationIds.includes(id) &&
-                                        shouldMountRetainedSurface(
-                                          id,
-                                          conversationSurfaceActive &&
-                                            keepAliveConversationId === id,
-                                          retainedConversationIds,
-                                        )
-                                      );
-                                    })
-                                    .sort((left, right) => {
-                                      const leftActive =
-                                        conversationSurfaceActive &&
-                                        keepAliveConversationId === left.id;
-                                      const rightActive =
-                                        conversationSurfaceActive &&
-                                        keepAliveConversationId === right.id;
-                                      if (leftActive === rightActive) return 0;
-                                      return leftActive ? 1 : -1;
-                                    })
-                                    .map((item) => {
-                                      const conversationActive =
-                                        conversationSurfaceActive &&
-                                        keepAliveConversationId === item.id;
-                                      return (
-                                        <div
-                                          key={item.id}
-                                          className="shell-pane-surface"
-                                          data-surface="conversation"
-                                          data-active={conversationActive ? 'true' : 'false'}
-                                          data-testid={
-                                            conversationActive
-                                              ? 'pane-surface-conversation'
-                                              : `pane-surface-conversation-${item.id}`
-                                          }
-                                        >
-                                          <ChatView
-                                            conversation={item}
-                                            modelName={resolveTargetName(item)}
-                                            models={data.models}
-                                            agents={data.agents}
-                                            teams={data.teams}
-                                            workspaces={data.workspaces}
-                                            eventHistory={eventHistory}
-                                            runActivityAuthority={runActivityAuthority}
-                                            runtimeConnectionRevision={runtimeConnectionRevision}
-                                            runtimeConnectionNotice={runtimeConnectionNotice}
-                                            active={conversationActive}
-                                            initialSkillVersionIds={initialConversationSkillSelectionsRef.current.get(
-                                              String(item.id),
-                                            )}
-                                            onInitialSkillSelectionConsumed={(conversationId) => {
-                                              initialConversationSkillSelectionsRef.current.delete(
-                                                conversationId,
-                                              );
-                                            }}
-                                            seedComposerText={readSeedComposerText(
-                                              String(item.id),
-                                            )}
-                                            onSeedComposerTextConsumed={(conversationId) => {
-                                              seedComposerTextRef.current.delete(conversationId);
-                                            }}
-                                            onTitleUpdated={() => void refresh()}
-                                            onConversationUpdated={handleConversationUpdated}
-                                            onLatestReviewChange={handleLatestReviewChange}
-                                            onOpenFile={(path, location) =>
-                                              handleOpenFileInSplit(pane.id, path, location)
-                                            }
-                                            onOpenHtmlInBrowser={handleOpenHtmlInBrowser}
-                                            onOpenWebUrl={(url) =>
-                                              handleOpenBrowserInPane(pane.id, url)
-                                            }
-                                            onOpenReview={(view) =>
-                                              handleOpenReviewInSplit(pane.id, view)
-                                            }
-                                            onOpenPlanSettings={handleOpenPlanSettings}
-                                            onOpenMcpSettings={handleOpenMcpSettings}
-                                            onCreateSkill={handleCreateSkill}
-                                          />
-                                        </div>
-                                      );
-                                    })
-                                : null}
-                              {localBrowserTabs.map((tab) => {
-                                const browserActive =
-                                  activeTab?.type === 'browser' &&
-                                  activeTab.browserId === tab.browserId;
-                                return (
+                              <ConversationTabs
+                                paneId={pane.id}
+                                focused={focused}
+                                showAddButton={workspaceChromeFocus === 'primary' && focused}
+                                conversations={conversationsForPane}
+                                openIds={localConversationIds}
+                                activeId={conversationSurfaceActive ? conversation?.id : undefined}
+                                fileTabs={localFileTabs}
+                                activeFilePath={activeFilePath}
+                                terminalTabs={localTerminalTabs}
+                                activeTerminalId={activeTerminalId}
+                                browserTabs={localBrowserTabs}
+                                activeBrowserId={activeBrowserId}
+                                reviewTabs={localReviewTabs}
+                                activeReviewRunId={activeReviewRunId}
+                                canSplit
+                                onSelect={(id) => handleActivatePaneTab(pane.id, id)}
+                                onClose={(id) => handleCloseConversationTab(pane.id, id)}
+                                onSelectFile={(path) => handleActivateFileTab(pane.id, path)}
+                                onCloseFile={(path) => void handleCloseFileTab(pane.id, path)}
+                                onSelectTerminal={(terminalId) =>
+                                  handleActivateTerminalTab(pane.id, terminalId)
+                                }
+                                onCloseTerminal={(terminalId) =>
+                                  void handleCloseTerminalTab(pane.id, terminalId)
+                                }
+                                onNewTerminal={() => handleOpenTerminalInPane(pane.id)}
+                                onSelectBrowser={(browserId) =>
+                                  handleActivateBrowserTab(pane.id, browserId)
+                                }
+                                onCloseBrowser={(browserId) =>
+                                  handleCloseBrowserTab(pane.id, browserId)
+                                }
+                                onNewBrowser={() => handleOpenBrowserInPane(pane.id)}
+                                onNewCanvas={() => void handleNewCanvasInPane(pane.id)}
+                                onNewDocument={() => void handleNewDocumentInPane(pane.id)}
+                                onSelectReview={(runId) => handleActivateReviewTab(pane.id, runId)}
+                                onCloseReview={(runId) => handleCloseReviewTab(pane.id, runId)}
+                                canOpenTerminal={Boolean(activeProjectFolder)}
+                                onNew={() => {
+                                  handleFocusPane(pane.id);
+                                  handleNewConversation(undefined, conversation ?? null, pane.id);
+                                }}
+                                onReorder={(fromId, toId) =>
+                                  handleReorderConversationTab(pane.id, fromId, toId)
+                                }
+                                onRename={(id, currentTitle) => void handleRename(id, currentTitle)}
+                                onOpenInSplit={(id, direction) =>
+                                  handleSplitConversation(pane.id, id, direction)
+                                }
+                                onClosePane={
+                                  Object.keys(activePaneLayout.panes).length > 1
+                                    ? () => void handleClosePane(pane.id)
+                                    : undefined
+                                }
+                                onTabDragStateChange={(id) => {
+                                  setTabDragResource(id);
+                                  if (!id) setPaneDropTarget(null);
+                                }}
+                                conversationActivity={conversationActivityView}
+                              />
+                              <div
+                                className="shell-pane-canvas relative flex min-h-0 flex-1 flex-col overflow-hidden"
+                                data-surface={activeTab?.type ?? 'empty'}
+                              >
+                                {isDraftConversation ? (
                                   <div
-                                    key={tab.browserId}
                                     className="shell-pane-surface"
-                                    data-surface="browser"
-                                    data-active={browserActive ? 'true' : 'false'}
-                                    data-testid={`pane-surface-browser-${tab.browserId}`}
+                                    data-surface="conversation"
+                                    data-active={conversationSurfaceActive ? 'true' : 'false'}
+                                    data-testid="pane-surface-conversation"
                                   >
-                                    <BrowserPanel
-                                      initialUrl={tab.url}
-                                      navigateUrl={
-                                        aiBrowserNav?.browserId === tab.browserId
-                                          ? aiBrowserNav.url
-                                          : undefined
-                                      }
-                                      navigateSeq={
-                                        aiBrowserNav?.browserId === tab.browserId
-                                          ? aiBrowserNav.seq
-                                          : undefined
-                                      }
-                                      onClose={() => handleCloseBrowserTab(pane.id, tab.browserId)}
-                                      onNewTab={(url) => handleOpenBrowserInPane(pane.id, url)}
-                                      onPageMeta={(meta) =>
-                                        handleBrowserPageMeta(tab.browserId, meta)
-                                      }
-                                      projectFolder={activeProjectFolder}
-                                      partition={`pane-browser-${tab.browserId}`}
-                                      registerForAutomation
-                                      automationActive={
-                                        focused && keepAliveBrowserId === tab.browserId
-                                      }
-                                    />
+                                    {emptyTalk}
                                   </div>
-                                );
-                              })}
-                              {localReviewTabs
-                                .filter((tab) =>
-                                  shouldMountRetainedSurface(
-                                    tab.runId,
-                                    activeTab?.type === 'review' &&
-                                      activeTab.runId === tab.runId,
-                                    retainedSurfaces.reviews,
-                                  ),
-                                )
-                                .map((tab) => {
-                                  const reviewActive =
-                                    activeTab?.type === 'review' &&
-                                    activeTab.runId === tab.runId;
+                                ) : null}
+                                {shouldMountConversation
+                                  ? visibleConversations
+                                      .filter((item) => {
+                                        const id = String(item.id);
+                                        return (
+                                          id !== draftSession?.id &&
+                                          localConversationIds.includes(id) &&
+                                          shouldMountRetainedSurface(
+                                            id,
+                                            conversationSurfaceActive &&
+                                              keepAliveConversationId === id,
+                                            retainedConversationIds,
+                                          )
+                                        );
+                                      })
+                                      .sort((left, right) => {
+                                        const leftActive =
+                                          conversationSurfaceActive &&
+                                          keepAliveConversationId === left.id;
+                                        const rightActive =
+                                          conversationSurfaceActive &&
+                                          keepAliveConversationId === right.id;
+                                        if (leftActive === rightActive) return 0;
+                                        return leftActive ? 1 : -1;
+                                      })
+                                      .map((item) => {
+                                        const conversationActive =
+                                          conversationSurfaceActive &&
+                                          keepAliveConversationId === item.id;
+                                        return (
+                                          <div
+                                            key={item.id}
+                                            className="shell-pane-surface"
+                                            data-surface="conversation"
+                                            data-active={conversationActive ? 'true' : 'false'}
+                                            data-testid={
+                                              conversationActive
+                                                ? 'pane-surface-conversation'
+                                                : `pane-surface-conversation-${item.id}`
+                                            }
+                                          >
+                                            {item.collaborationKind ? (
+                                              <CollaborationChatView
+                                                conversation={item}
+                                                agents={data.agents}
+                                                active={conversationActive}
+                                                onOpenConversation={(id) =>
+                                                  void openConversationById(id)
+                                                }
+                                              />
+                                            ) : (
+                                              <ChatView
+                                                conversation={item}
+                                                modelName={resolveTargetName(item)}
+                                                models={data.models}
+                                                agents={data.agents}
+                                                teams={data.teams}
+                                                workspaces={data.workspaces}
+                                                eventHistory={eventHistory}
+                                                runActivityAuthority={runActivityAuthority}
+                                                runtimeConnectionRevision={
+                                                  runtimeConnectionRevision
+                                                }
+                                                runtimeConnectionNotice={runtimeConnectionNotice}
+                                                active={conversationActive}
+                                                initialSkillVersionIds={initialConversationSkillSelectionsRef.current.get(
+                                                  String(item.id),
+                                                )}
+                                                onInitialSkillSelectionConsumed={(
+                                                  conversationId,
+                                                ) => {
+                                                  initialConversationSkillSelectionsRef.current.delete(
+                                                    conversationId,
+                                                  );
+                                                }}
+                                                seedComposerText={readSeedComposerText(
+                                                  String(item.id),
+                                                )}
+                                                onSeedComposerTextConsumed={(conversationId) => {
+                                                  seedComposerTextRef.current.delete(
+                                                    conversationId,
+                                                  );
+                                                }}
+                                                onTitleUpdated={() => void refresh()}
+                                                onConversationUpdated={handleConversationUpdated}
+                                                onLatestReviewChange={handleLatestReviewChange}
+                                                onOpenFile={(path, location) =>
+                                                  handleOpenFileInSplit(pane.id, path, location)
+                                                }
+                                                onOpenHtmlInBrowser={handleOpenHtmlInBrowser}
+                                                onOpenWebUrl={(url) =>
+                                                  handleOpenBrowserInPane(pane.id, url)
+                                                }
+                                                onOpenReview={(view) =>
+                                                  handleOpenReviewInSplit(pane.id, view)
+                                                }
+                                                onOpenPlanSettings={handleOpenPlanSettings}
+                                                onOpenMcpSettings={handleOpenMcpSettings}
+                                                onCreateSkill={handleCreateSkill}
+                                              />
+                                            )}
+                                          </div>
+                                        );
+                                      })
+                                  : null}
+                                {localBrowserTabs.map((tab) => {
+                                  const browserActive =
+                                    activeTab?.type === 'browser' &&
+                                    activeTab.browserId === tab.browserId;
                                   return (
                                     <div
-                                      key={tab.runId}
+                                      key={tab.browserId}
                                       className="shell-pane-surface"
-                                      data-surface="review"
-                                      data-active={reviewActive ? 'true' : 'false'}
+                                      data-surface="browser"
+                                      data-active={browserActive ? 'true' : 'false'}
+                                      data-testid={`pane-surface-browser-${tab.browserId}`}
                                     >
-                                      <ReviewPanel
-                                        view={
-                                          reviewViewsByRunId.get(tab.runId) ??
-                                          conversationReviewFromKey(tab.runId)
-                                        }
-                                        projectFolder={activeProjectFolder}
-                                        standalone
-                                        onOpenFile={(path, location) =>
-                                          handleOpenFileInPane(pane.id, path, location)
-                                        }
-                                        onOpenFileInNewTab={(path, location) =>
-                                          handleOpenFileInPane(pane.id, path, location)
-                                        }
-                                      />
-                                    </div>
-                                  );
-                                })}
-                              {localFileTabs
-                                .filter((tab) =>
-                                  shouldMountRetainedSurface(
-                                    tab.path,
-                                    activeTab?.type === 'file' && activeTab.path === tab.path,
-                                    retainedSurfaces.files,
-                                  ),
-                                )
-                                .map((tab) => {
-                                  const fileActive =
-                                    activeTab?.type === 'file' && activeTab.path === tab.path;
-                                  return (
-                                    <div
-                                      key={tab.path}
-                                      className="shell-pane-surface"
-                                      data-surface="file"
-                                      data-active={fileActive ? 'true' : 'false'}
-                                    >
-                                      <WorkspaceFileView
-                                        projectFolder={activeProjectFolder}
-                                        path={tab.path}
-                                        revealTarget={
-                                          fileActive && activeWorkspaceId
-                                            ? fileRevealTargets.get(
-                                                fileTabDirtyKey(activeWorkspaceId, tab.path),
-                                              )
+                                      <BrowserPanel
+                                        initialUrl={tab.url}
+                                        navigateUrl={
+                                          aiBrowserNav?.browserId === tab.browserId
+                                            ? aiBrowserNav.url
                                             : undefined
                                         }
-                                        onDirtyChange={(dirty) => {
-                                          if (activeWorkspaceId) {
-                                            handleFileDirtyChange(
-                                              activeWorkspaceId,
-                                              tab.path,
-                                              dirty,
-                                            );
-                                          }
-                                        }}
-                                      />
-                                    </div>
-                                  );
-                                })}
-                              {localTerminalTabs
-                                .filter((tab) =>
-                                  shouldMountRetainedSurface(
-                                    tab.terminalId,
-                                    activeTab?.type === 'terminal' &&
-                                      activeTab.terminalId === tab.terminalId,
-                                    retainedSurfaces.terminals,
-                                  ),
-                                )
-                                .map((tab) => {
-                                  const terminalActive =
-                                    activeTab?.type === 'terminal' &&
-                                    activeTab.terminalId === tab.terminalId;
-                                  return (
-                                    <div
-                                      key={tab.terminalId}
-                                      className="shell-pane-surface"
-                                      data-surface="terminal"
-                                      data-active={terminalActive ? 'true' : 'false'}
-                                    >
-                                      <TerminalPane
-                                        terminalId={tab.terminalId}
+                                        navigateSeq={
+                                          aiBrowserNav?.browserId === tab.browserId
+                                            ? aiBrowserNav.seq
+                                            : undefined
+                                        }
+                                        onClose={() =>
+                                          handleCloseBrowserTab(pane.id, tab.browserId)
+                                        }
+                                        onNewTab={(url) => handleOpenBrowserInPane(pane.id, url)}
+                                        onPageMeta={(meta) =>
+                                          handleBrowserPageMeta(tab.browserId, meta)
+                                        }
                                         projectFolder={activeProjectFolder}
-                                        cwd={tab.cwd}
-                                        workspaceId={activeWorkspaceId}
-                                        title="Terminal"
-                                        active={terminalActive}
-                                        onCwdChange={(cwd) =>
-                                          handleTerminalCwdChange(pane.id, tab.terminalId, cwd)
+                                        partition={`pane-browser-${tab.browserId}`}
+                                        registerForAutomation
+                                        automationActive={
+                                          focused && keepAliveBrowserId === tab.browserId
                                         }
                                       />
                                     </div>
                                   );
                                 })}
-                              {paneDropTarget?.paneId === pane.id ? (
-                                <div
-                                  className="shell-pane-drop-overlay pointer-events-none absolute z-30"
-                                  data-zone={paneDropTarget.zone}
-                                />
-                              ) : null}
+                                {localReviewTabs
+                                  .filter((tab) =>
+                                    shouldMountRetainedSurface(
+                                      tab.runId,
+                                      activeTab?.type === 'review' && activeTab.runId === tab.runId,
+                                      retainedSurfaces.reviews,
+                                    ),
+                                  )
+                                  .map((tab) => {
+                                    const reviewActive =
+                                      activeTab?.type === 'review' && activeTab.runId === tab.runId;
+                                    return (
+                                      <div
+                                        key={tab.runId}
+                                        className="shell-pane-surface"
+                                        data-surface="review"
+                                        data-active={reviewActive ? 'true' : 'false'}
+                                      >
+                                        <ReviewPanel
+                                          view={
+                                            reviewViewsByRunId.get(tab.runId) ??
+                                            conversationReviewFromKey(tab.runId)
+                                          }
+                                          projectFolder={activeProjectFolder}
+                                          standalone
+                                          onOpenFile={(path, location) =>
+                                            handleOpenFileInPane(pane.id, path, location)
+                                          }
+                                          onOpenFileInNewTab={(path, location) =>
+                                            handleOpenFileInPane(pane.id, path, location)
+                                          }
+                                        />
+                                      </div>
+                                    );
+                                  })}
+                                {localFileTabs
+                                  .filter((tab) =>
+                                    shouldMountRetainedSurface(
+                                      tab.path,
+                                      activeTab?.type === 'file' && activeTab.path === tab.path,
+                                      retainedSurfaces.files,
+                                    ),
+                                  )
+                                  .map((tab) => {
+                                    const fileActive =
+                                      activeTab?.type === 'file' && activeTab.path === tab.path;
+                                    return (
+                                      <div
+                                        key={tab.path}
+                                        className="shell-pane-surface"
+                                        data-surface="file"
+                                        data-active={fileActive ? 'true' : 'false'}
+                                      >
+                                        <WorkspaceFileView
+                                          projectFolder={activeProjectFolder}
+                                          path={tab.path}
+                                          revealTarget={
+                                            fileActive && activeWorkspaceId
+                                              ? fileRevealTargets.get(
+                                                  fileTabDirtyKey(activeWorkspaceId, tab.path),
+                                                )
+                                              : undefined
+                                          }
+                                          onDirtyChange={(dirty) => {
+                                            if (activeWorkspaceId) {
+                                              handleFileDirtyChange(
+                                                activeWorkspaceId,
+                                                tab.path,
+                                                dirty,
+                                              );
+                                            }
+                                          }}
+                                        />
+                                      </div>
+                                    );
+                                  })}
+                                {localTerminalTabs
+                                  .filter((tab) =>
+                                    shouldMountRetainedSurface(
+                                      tab.terminalId,
+                                      activeTab?.type === 'terminal' &&
+                                        activeTab.terminalId === tab.terminalId,
+                                      retainedSurfaces.terminals,
+                                    ),
+                                  )
+                                  .map((tab) => {
+                                    const terminalActive =
+                                      activeTab?.type === 'terminal' &&
+                                      activeTab.terminalId === tab.terminalId;
+                                    return (
+                                      <div
+                                        key={tab.terminalId}
+                                        className="shell-pane-surface"
+                                        data-surface="terminal"
+                                        data-active={terminalActive ? 'true' : 'false'}
+                                      >
+                                        <TerminalPane
+                                          terminalId={tab.terminalId}
+                                          projectFolder={activeProjectFolder}
+                                          cwd={tab.cwd}
+                                          workspaceId={activeWorkspaceId}
+                                          title="Terminal"
+                                          active={terminalActive}
+                                          onCwdChange={(cwd) =>
+                                            handleTerminalCwdChange(pane.id, tab.terminalId, cwd)
+                                          }
+                                        />
+                                      </div>
+                                    );
+                                  })}
+                                {paneDropTarget?.paneId === pane.id ? (
+                                  <div
+                                    className="shell-pane-drop-overlay pointer-events-none absolute z-30"
+                                    data-zone={paneDropTarget.zone}
+                                  />
+                                ) : null}
+                              </div>
                             </div>
-                          </div>
-                        );
-                      }}
+                          );
+                        }}
+                      />
+                    ) : (
+                      <div className="shell-pane-canvas shell-pane-canvas--empty relative flex min-h-0 flex-1 flex-col overflow-hidden">
+                        {emptyTalk}
+                      </div>
+                    )}
+                  </div>
+                  {activeWorkbenchLayout &&
+                  (activeWorkbenchLayout.right.open ||
+                    activeWorkbenchLayout.right.tabs.length > 0) ? (
+                    <WorkspaceWorkbench
+                      placement="right"
+                      open={activeWorkbenchLayout.right.open}
+                      focused={workspaceChromeFocus === 'right'}
+                      scope={activeWorkbenchLayout.right}
+                      canOpenTerminal={Boolean(activeProjectFolder)}
+                      renderContent={(tab) => renderWorkbenchContent('right', tab)}
+                      browserPageMeta={browserPageMeta}
+                      conversationTabMeta={workbenchConversationMeta}
+                      renderFileBrowser={
+                        activeProjectFolder
+                          ? () => (
+                              <WorkspaceFilesPanel
+                                projectFolder={activeProjectFolder}
+                                activeFilePath={undefined}
+                                reviewView={latestReviewView}
+                                onOpenReview={(view) => handleOpenReviewInWorkbench('right', view)}
+                                onOpenFile={(path, location) =>
+                                  handleOpenFileInWorkbench('right', path, location)
+                                }
+                                onOpenFileInNewTab={(path, location) =>
+                                  handleOpenFileInWorkbench('right', path, location)
+                                }
+                              />
+                            )
+                          : undefined
+                      }
+                      onActivateTab={(tabId) => handleActivateWorkbenchTab('right', tabId)}
+                      onCloseTab={(tab) => void handleCloseWorkbenchTab('right', tab)}
+                      onNewResource={(resource) => handleWorkbenchNewResource('right', resource)}
+                      onChromeFocus={() => setWorkspaceChromeFocus('right')}
+                      onToggleFileBrowser={
+                        activeProjectFolder ? handleToggleWorkspaceFilesWorkbench : undefined
+                      }
+                      onClose={() => handleCloseWorkbench('right')}
+                      onSizeChange={(size, commit) =>
+                        handleWorkbenchSizeChange('right', size, commit)
+                      }
+                      onFileBrowserWidthChange={handleWorkbenchFileBrowserWidthChange}
                     />
-                  ) : (
-                    <div className="shell-pane-canvas shell-pane-canvas--empty relative flex min-h-0 flex-1 flex-col overflow-hidden">
-                      {emptyTalk}
-                    </div>
-                  )}
+                  ) : null}
                 </div>
                 {activeWorkbenchLayout &&
-                (activeWorkbenchLayout.right.open ||
-                  activeWorkbenchLayout.right.tabs.length > 0) ? (
+                (activeWorkbenchLayout.bottom.open ||
+                  activeWorkbenchLayout.bottom.tabs.length > 0) ? (
                   <WorkspaceWorkbench
-                    placement="right"
-                    open={activeWorkbenchLayout.right.open}
-                    focused={workspaceChromeFocus === 'right'}
-                    scope={activeWorkbenchLayout.right}
+                    placement="bottom"
+                    open={activeWorkbenchLayout.bottom.open}
+                    focused={workspaceChromeFocus === 'bottom'}
+                    scope={activeWorkbenchLayout.bottom}
                     canOpenTerminal={Boolean(activeProjectFolder)}
-                    renderContent={(tab) => renderWorkbenchContent('right', tab)}
+                    renderContent={(tab) => renderWorkbenchContent('bottom', tab)}
                     browserPageMeta={browserPageMeta}
                     conversationTabMeta={workbenchConversationMeta}
-                    renderFileBrowser={
-                      activeProjectFolder
-                        ? () => (
-                            <WorkspaceFilesPanel
-                              projectFolder={activeProjectFolder}
-                              activeFilePath={undefined}
-                              reviewView={latestReviewView}
-                              onOpenReview={(view) => handleOpenReviewInWorkbench('right', view)}
-                              onOpenFile={(path, location) =>
-                                handleOpenFileInWorkbench('right', path, location)
-                              }
-                              onOpenFileInNewTab={(path, location) =>
-                                handleOpenFileInWorkbench('right', path, location)
-                              }
-                            />
-                          )
-                        : undefined
-                    }
-                    onActivateTab={(tabId) => handleActivateWorkbenchTab('right', tabId)}
-                    onCloseTab={(tab) => void handleCloseWorkbenchTab('right', tab)}
-                    onNewResource={(resource) => handleWorkbenchNewResource('right', resource)}
-                    onChromeFocus={() => setWorkspaceChromeFocus('right')}
-                    onToggleFileBrowser={
-                      activeProjectFolder ? handleToggleWorkspaceFilesWorkbench : undefined
-                    }
-                    onClose={() => handleCloseWorkbench('right')}
+                    onActivateTab={(tabId) => handleActivateWorkbenchTab('bottom', tabId)}
+                    onCloseTab={(tab) => void handleCloseWorkbenchTab('bottom', tab)}
+                    onNewResource={(resource) => handleWorkbenchNewResource('bottom', resource)}
+                    onChromeFocus={() => setWorkspaceChromeFocus('bottom')}
+                    onClose={() => handleCloseWorkbench('bottom')}
                     onSizeChange={(size, commit) =>
-                      handleWorkbenchSizeChange('right', size, commit)
+                      handleWorkbenchSizeChange('bottom', size, commit)
                     }
-                    onFileBrowserWidthChange={handleWorkbenchFileBrowserWidthChange}
                   />
                 ) : null}
               </div>
-              {activeWorkbenchLayout &&
-              (activeWorkbenchLayout.bottom.open ||
-                activeWorkbenchLayout.bottom.tabs.length > 0) ? (
-                <WorkspaceWorkbench
-                  placement="bottom"
-                  open={activeWorkbenchLayout.bottom.open}
-                  focused={workspaceChromeFocus === 'bottom'}
-                  scope={activeWorkbenchLayout.bottom}
-                  canOpenTerminal={Boolean(activeProjectFolder)}
-                  renderContent={(tab) => renderWorkbenchContent('bottom', tab)}
-                  browserPageMeta={browserPageMeta}
-                  conversationTabMeta={workbenchConversationMeta}
-                  onActivateTab={(tabId) => handleActivateWorkbenchTab('bottom', tabId)}
-                  onCloseTab={(tab) => void handleCloseWorkbenchTab('bottom', tab)}
-                  onNewResource={(resource) => handleWorkbenchNewResource('bottom', resource)}
-                  onChromeFocus={() => setWorkspaceChromeFocus('bottom')}
-                  onClose={() => handleCloseWorkbench('bottom')}
-                  onSizeChange={(size, commit) => handleWorkbenchSizeChange('bottom', size, commit)}
-                />
-              ) : null}
-            </div>
-          </KeepAliveLayer>
-          <KeepAliveLayer
-            active={nav.stage === 'agents'}
-            className="shell-stage-layer"
-            testId="stage-agents"
-          >
-            <AgentLibrary
-              agents={data.agents}
-              models={data.models}
-              teams={data.teams}
-              workspaces={data.workspaces}
-              onRefresh={() => void refresh()}
-              onManageSkills={() => setNav((n) => selectStage(n, 'abilities'))}
-              onGoToAbilities={() => setNav((n) => selectStage(n, 'abilities'))}
-              onBack={() => setNav((n) => ({ ...n, stage: 'talk' }))}
-              skillCatalogRevision={skillCatalogRevision}
-              onStartConversation={(agentId) => {
-                void handlePickTarget('agent', agentId);
-                setNav((n) => ({ ...n, stage: 'talk' }));
-              }}
-            />
-          </KeepAliveLayer>
-          <KeepAliveLayer
-            active={nav.stage === 'teams'}
-            className="shell-stage-layer"
-            testId="stage-teams"
-          >
-            <TeamLibrary
-              teams={data.teams}
-              agents={data.agents}
-              onRefresh={() => void refresh()}
-              onStartConversation={(teamId) => {
-                void handlePickTarget('team', teamId);
-                setNav((n) => ({ ...n, stage: 'talk' }));
-              }}
-            />
-          </KeepAliveLayer>
-          <KeepAliveLayer
-            active={nav.stage === 'browser'}
-            className="shell-stage-layer"
-            testId="stage-browser"
-          >
-            <BrowserStage onStartAiTask={handleStartBrowserAiTask} />
-          </KeepAliveLayer>
-          <KeepAliveLayer
-            active={nav.stage === 'abilities'}
-            className="shell-stage-layer"
-            testId="stage-abilities"
-          >
-            <AbilitiesPage
-              activeWorkspaceId={activeWorkspaceId}
-              workspaces={data.workspaces}
-              initialView={abilityNavigation?.initialView}
-              navigationKey={abilityNavigation?.navigationKey}
-              onCatalogChanged={() => {
-                setSkillCatalogRevision((revision) => revision + 1);
-                void refresh();
-              }}
-              onGoToAgents={() => setNav((n) => selectStage(n, 'agents'))}
-            />
-          </KeepAliveLayer>
-          <KeepAliveLayer
-            active={nav.stage === 'tasks'}
-            className="shell-stage-layer"
-            testId="stage-tasks"
-          >
-            <TaskPanel
-              agents={data.agents}
-              models={data.models}
-              teams={data.teams}
-              workspaces={data.workspaces}
-              skills={data.skills}
-              onNotify={(tone, text) => {
-                toastApi.toast({ type: toastTypeFromTone(tone), title: text });
-              }}
-              onOpenConversation={(conversationId) => {
-                void openConversationById(conversationId);
-                setNav((n) => selectStage(n, 'talk'));
-              }}
-            />
-          </KeepAliveLayer>
-          <KeepAliveLayer
-            active={nav.stage === 'activity'}
-            className="shell-stage-layer"
-            testId="stage-activity"
-          >
-            <ActivityCenterPage
-              eventHistory={eventHistory}
-              onRetryRun={({ conversationId, text }) => {
-                // Only stages the prompt; ChatView still owns the send.
-                queueSeedComposerText(conversationId, text);
-              }}
-              onOpenConversation={(conversationId) => {
-                void openConversationById(conversationId);
-                setNav((n) => selectStage(n, 'talk'));
-              }}
-            />
-          </KeepAliveLayer>
+            </KeepAliveLayer>
+            <KeepAliveLayer
+              active={nav.stage === 'agents'}
+              className="shell-stage-layer"
+              testId="stage-agents"
+            >
+              <AgentLibrary
+                agents={data.agents}
+                models={data.models}
+                teams={data.teams}
+                workspaces={data.workspaces}
+                onRefresh={() => void refresh()}
+                onManageSkills={() => setNav((n) => selectStage(n, 'abilities'))}
+                onGoToAbilities={() => setNav((n) => selectStage(n, 'abilities'))}
+                onBack={() => setNav((n) => ({ ...n, stage: 'talk' }))}
+                skillCatalogRevision={skillCatalogRevision}
+                onStartConversation={(agentId) => {
+                  void handlePickTarget('agent', agentId);
+                  setNav((n) => ({ ...n, stage: 'talk' }));
+                }}
+              />
+            </KeepAliveLayer>
+            <KeepAliveLayer
+              active={nav.stage === 'teams'}
+              className="shell-stage-layer"
+              testId="stage-teams"
+            >
+              <TeamLibrary
+                teams={data.teams}
+                agents={data.agents}
+                onRefresh={() => void refresh()}
+                onStartConversation={(teamId) => {
+                  void handlePickTarget('team', teamId);
+                  setNav((n) => ({ ...n, stage: 'talk' }));
+                }}
+              />
+            </KeepAliveLayer>
+            <KeepAliveLayer
+              active={nav.stage === 'browser'}
+              className="shell-stage-layer"
+              testId="stage-browser"
+            >
+              <BrowserStage onStartAiTask={handleStartBrowserAiTask} workspaces={data.workspaces} activeWorkspaceId={activeWorkspaceId} active={nav.stage === 'browser'} />
+            </KeepAliveLayer>
+            <KeepAliveLayer
+              active={nav.stage === 'abilities'}
+              className="shell-stage-layer"
+              testId="stage-abilities"
+            >
+              <AbilitiesPage
+                activeWorkspaceId={activeWorkspaceId}
+                workspaces={data.workspaces}
+                initialView={abilityNavigation?.initialView}
+                navigationKey={abilityNavigation?.navigationKey}
+                onCatalogChanged={() => {
+                  setSkillCatalogRevision((revision) => revision + 1);
+                  void refresh();
+                }}
+                onGoToAgents={() => setNav((n) => selectStage(n, 'agents'))}
+              />
+            </KeepAliveLayer>
+            <KeepAliveLayer
+              active={nav.stage === 'tasks'}
+              className="shell-stage-layer"
+              testId="stage-tasks"
+            >
+              <TaskPanel
+                agents={data.agents}
+                models={data.models}
+                teams={data.teams}
+                workspaces={data.workspaces}
+                skills={data.skills}
+                onNotify={(tone, text) => {
+                  toastApi.toast({ type: toastTypeFromTone(tone), title: text });
+                }}
+                onOpenConversation={(conversationId) => {
+                  void openConversationById(conversationId);
+                  setNav((n) => selectStage(n, 'talk'));
+                }}
+              />
+            </KeepAliveLayer>
+            <KeepAliveLayer
+              active={nav.stage === 'activity'}
+              className="shell-stage-layer"
+              testId="stage-activity"
+            >
+              <ActivityCenterPage
+                eventHistory={eventHistory}
+                onRetryRun={({ conversationId, text }) => {
+                  // Only stages the prompt; ChatView still owns the send.
+                  queueSeedComposerText(conversationId, text);
+                }}
+                onOpenConversation={(conversationId) => {
+                  void openConversationById(conversationId);
+                  setNav((n) => selectStage(n, 'talk'));
+                }}
+              />
+            </KeepAliveLayer>
           </div>
         </main>
       </div>
+
+      <Dialog.Root
+        open={Boolean(pendingChatBrowserWorkflow)}
+        onOpenChange={(open) => {
+          if (!open && !savingChatBrowserWorkflow) setPendingChatBrowserWorkflow(undefined);
+        }}
+      >
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 z-[80] bg-black/35" />
+          <Dialog.Content
+            data-testid="chat-browser-workflow-save-dialog"
+            className="fixed left-1/2 top-1/2 z-[81] w-[min(440px,calc(100vw-32px))] -translate-x-1/2 -translate-y-1/2 rounded-lg border border-border bg-surface p-5 shadow-2xl"
+          >
+            <Dialog.Title className="text-[14px] font-semibold text-text">
+              保存本次浏览器操作
+            </Dialog.Title>
+            <Dialog.Description className="mt-1.5 text-[11.5px] leading-5 text-text-faint">
+              {pendingChatBrowserWorkflow?.partial
+                ? '本次任务部分完成，已产生可复用浏览器步骤。保存为草稿后可让 AI 继续改进。'
+                : '本次任务已完成并产生可复用浏览器步骤。可以保存草稿或直接发布。'}
+            </Dialog.Description>
+            <div className="mt-3 rounded-md border border-border bg-elevated px-3 py-2 text-[10.5px] text-text-secondary">
+              <span className="tabular-nums">
+                {pendingChatBrowserWorkflow?.steps.length ?? 0} 个有效步骤
+              </span>
+              <span className="mx-2 text-text-faint">·</span>
+              <span className="break-all">{pendingChatBrowserWorkflow?.startUrl}</span>
+            </div>
+            <div className="mt-5 flex items-center justify-end gap-2">
+              <Dialog.Close asChild>
+                <button
+                  type="button"
+                  className="h-8 rounded-md px-3 text-[11.5px] text-text-secondary hover:bg-hover"
+                  disabled={savingChatBrowserWorkflow}
+                >
+                  关闭
+                </button>
+              </Dialog.Close>
+              <button
+                type="button"
+                data-testid="chat-browser-workflow-save-draft"
+                className="h-8 rounded-md border border-border px-3 text-[11.5px] font-medium text-text hover:bg-hover disabled:opacity-50"
+                disabled={savingChatBrowserWorkflow}
+                onClick={() => void importChatBrowserWorkflow(false)}
+              >
+                保存为草稿
+              </button>
+              {!pendingChatBrowserWorkflow?.partial ? (
+                <button
+                  type="button"
+                  data-testid="chat-browser-workflow-publish"
+                  className="h-8 rounded-md bg-accent px-3 text-[11.5px] font-medium text-accent-fg hover:opacity-90 disabled:opacity-50"
+                  disabled={savingChatBrowserWorkflow}
+                  onClick={() => void importChatBrowserWorkflow(true)}
+                >
+                  发布正式任务
+                </button>
+              ) : null}
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
 
       <Dialog.Root
         open={settingsOpen}
@@ -4411,11 +4763,12 @@ export function EmptyTalk(props: {
   const [composeNotice, setComposeNotice] = useState<string | undefined>();
   useEffect(() => {
     if (!props.error) return;
-    const title = /Error invoking|Runtime(?:Transient|Response)Error|Runtime request timed out/i.test(
-      props.error,
-    )
-      ? classifyAppendMessageFailure(props.error).message
-      : formatRuntimeIpcError(props.error, props.error);
+    const title =
+      /Error invoking|Runtime(?:Transient|Response)Error|Runtime request timed out/i.test(
+        props.error,
+      )
+        ? classifyAppendMessageFailure(props.error).message
+        : formatRuntimeIpcError(props.error, props.error);
     toast({
       type: 'error',
       title,
@@ -4836,8 +5189,7 @@ export function EmptyTalk(props: {
     }
     let cancelled = false;
     setSlashSkillsLoading(true);
-    void api
-      .listSkills(props.workspaceId ? { workspaceId: props.workspaceId as WorkspaceId } : undefined)
+    void loadSkillCatalog(api, { workspaceId: props.workspaceId as WorkspaceId | undefined })
       .then((result) => {
         if (!cancelled) setSlashSkills(result.skills ?? []);
       })
@@ -5298,471 +5650,458 @@ export function EmptyTalk(props: {
         data-testid="empty-compose-wrap"
       >
         <div className="shell-chat-content shell-chat-content--composer mx-auto">
-            <NewMaxComposerFrame
-              variant="empty"
-              modeBanner={emptyModeBanner}
-              innerRef={composeRef}
-              className={`relative ${dragOver ? 'is-dragover' : ''}`}
-              data-testid="empty-compose"
-              data-layout="tall"
-              onDragEnter={handleDragEnter}
-              onDragOver={handleDragOver}
-              onDragLeave={handleDragLeave}
-              onDrop={handleDrop}
-            >
-              {modeKeywordHint ? (
-                <ComposerModeKeywordHint
-                  kind={modeKeywordHint.kind}
-                  onAccept={acceptModeKeywordHint}
-                  onDismiss={() => setDismissedModeHintText(props.draft)}
-                />
-              ) : null}
-              <ComposerSlashMenu
-                open={slashMenuOpen}
-                skills={slashSkills}
-                loading={slashSkillsLoading}
-                query={slash?.query ?? ''}
-                selectedSkillVersionIds={selectedSkillVersionIds}
-                activeIndex={slashIndex}
-                onActiveIndexChange={setSlashIndex}
-                category={slashCategory}
-                onCategoryChange={setSlashCategory}
-                onAvailableCategoriesChange={setAvailableSlashCategories}
-                onResolvedItemsChange={updateResolvedSlashItems}
-                onCommand={selectSlashCommand}
-                onSkill={selectSlashSkill}
-                onCreateSkill={() => {
-                  setSlash(null);
-                  setSlashIndex(-1);
-                  props.onCreateSkill?.();
-                }}
-                placement="above"
-                testId="empty-compose-slash-pop"
-                className="shell-empty-slash-pop"
-                listRef={slashListRef}
+          <NewMaxComposerFrame
+            variant="empty"
+            modeBanner={emptyModeBanner}
+            innerRef={composeRef}
+            className={`relative ${dragOver ? 'is-dragover' : ''}`}
+            data-testid="empty-compose"
+            data-layout="tall"
+            onDragEnter={handleDragEnter}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+          >
+            {modeKeywordHint ? (
+              <ComposerModeKeywordHint
+                kind={modeKeywordHint.kind}
+                onAccept={acceptModeKeywordHint}
+                onDismiss={() => setDismissedModeHintText(props.draft)}
               />
-              <ComposerMcpMenu
-                open={mcpMenuOpen}
-                onDismiss={() => {
-                  setMcpMenuOpen(false);
-                  window.requestAnimationFrame(() => inputRef.current?.focus());
-                }}
-                onOpenSettings={() => props.onOpenMcpSettings?.()}
-                className="shell-empty-mcp-menu"
-              />
+            ) : null}
+            <ComposerSlashMenu
+              open={slashMenuOpen}
+              skills={slashSkills}
+              loading={slashSkillsLoading}
+              query={slash?.query ?? ''}
+              selectedSkillVersionIds={selectedSkillVersionIds}
+              activeIndex={slashIndex}
+              onActiveIndexChange={setSlashIndex}
+              category={slashCategory}
+              onCategoryChange={setSlashCategory}
+              onAvailableCategoriesChange={setAvailableSlashCategories}
+              onResolvedItemsChange={updateResolvedSlashItems}
+              onCommand={selectSlashCommand}
+              onSkill={selectSlashSkill}
+              onCreateSkill={() => {
+                setSlash(null);
+                setSlashIndex(-1);
+                props.onCreateSkill?.();
+              }}
+              placement="above"
+              testId="empty-compose-slash-pop"
+              className="shell-empty-slash-pop"
+              listRef={slashListRef}
+            />
+            <ComposerMcpMenu
+              open={mcpMenuOpen}
+              onDismiss={() => {
+                setMcpMenuOpen(false);
+                window.requestAnimationFrame(() => inputRef.current?.focus());
+              }}
+              onOpenSettings={() => props.onOpenMcpSettings?.()}
+              className="shell-empty-mcp-menu"
+            />
 
-              <div className="shell-compose__editor-area">
-                <ComposerEditor
-                  placeholder={
-                    props.hasWorkspace
-                      ? '输入消息…（输入 / 打开快捷面板）'
-                      : '打开工作区后即可输入'
+            <div className="shell-compose__editor-area">
+              <ComposerEditor
+                placeholder={
+                  props.hasWorkspace ? '输入消息…（输入 / 打开快捷面板）' : '打开工作区后即可输入'
+                }
+                value={props.draft}
+                inputElementRef={inputRef}
+                inputTestId="empty-compose-input"
+                testId="empty-composer-editor"
+                attachments={attachments}
+                selectedSkills={selectedSlashSkills}
+                disabled={!props.hasWorkspace || props.sending}
+                minHeight={72}
+                maxHeight={200}
+                chatFontSize={appearance.chatFontSize}
+                serifFontFamily={appearance.useSerifFont ? 'var(--font-serif)' : 'var(--font-sans)'}
+                onRemoveAttachment={(path) =>
+                  setAttachments((current) => removeAttachment(current, path))
+                }
+                onRemoveSkill={(skillVersionId) =>
+                  updateSelectedSkillVersionIds(
+                    selectedSkillVersionIds.filter((selected) => selected !== skillVersionId),
+                  )
+                }
+                onChange={(value) => {
+                  props.onDraftChange(value);
+                  setComposeNotice(undefined);
+                  if (composerAddOpen) {
+                    setSlash(null);
+                    setSlashIndex(-1);
+                    return;
                   }
+                  const caret = inputRef.current?.selectionStart ?? value.length;
+                  updatePickersFromCaret(value, caret);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === 'Tab' && event.shiftKey && modeKeywordHint) {
+                    event.preventDefault();
+                    acceptModeKeywordHint();
+                    return;
+                  }
+                  if (tryHandlePromptEnhancementShortcut(event, promptEnhancement)) return;
+                  if (event.key === 'Escape' && slashMenuOpen) {
+                    event.preventDefault();
+                    dismissedSlashTextRef.current = props.draft;
+                    setSlash(null);
+                    setSlashIndex(-1);
+                    return;
+                  }
+                  if (slashMenuOpen) {
+                    const action = resolveComposerSlashMenuKeyboardAction({
+                      key: event.key,
+                      shiftKey: event.shiftKey,
+                      isComposing:
+                        event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229,
+                      category: slashCategory,
+                      activeIndex: slashIndex,
+                      itemCount: slashItemCount,
+                      availableCategories: availableSlashCategories,
+                    });
+                    if (action) {
+                      event.preventDefault();
+                      if (action.kind === 'change-category') {
+                        setSlashCategory(action.category);
+                        // Category changes select the first visible item so
+                        // Enter remains useful immediately, including when
+                        // the dynamic category list only contains `all`.
+                        setSlashIndex(0);
+                      } else if (action.kind === 'change-active-index') {
+                        setSlashIndex(action.index);
+                      } else {
+                        const selected = resolvedSlashItems[action.index];
+                        if (selected?.kind === 'command') selectSlashCommand(selected.command);
+                        else if (selected?.kind === 'skill') selectSlashSkill(selected.skill);
+                      }
+                      return;
+                    }
+                  }
+                }}
+                onSubmit={() => void submit()}
+                onPaste={handlePaste}
+                onSelectionChange={({ start }) => {
+                  if (composerAddOpen) return;
+                  updatePickersFromCaret(inputRef.current?.value ?? props.draft, start);
+                }}
+                enhancing={promptEnhancement.busy}
+                trailingAction={
+                  promptEnhancement.visible ? (
+                    <PromptEnhancementAction
+                      enhancement={promptEnhancement}
+                      testId="empty-compose-prompt-enhance"
+                    />
+                  ) : undefined
+                }
+              />
+            </div>
+            <input
+              ref={imageInputRef}
+              type="file"
+              accept="image/*"
+              multiple
+              className="shell-compose__file-input"
+              data-testid="empty-compose-image-input"
+              onChange={handleImageInputChange}
+              tabIndex={-1}
+            />
+            <div ref={composerToolbar.outerRef} className="shell-compose__bar">
+              <div ref={composerToolbar.leftRef} className="shell-compose__bar-left">
+                <ComposerAddControl
+                  variant="empty"
+                  open={composerAddOpen}
+                  inputRef={inputRef}
+                  composerRef={composeRef}
                   value={props.draft}
-                  inputElementRef={inputRef}
-                  inputTestId="empty-compose-input"
-                  testId="empty-composer-editor"
-                  attachments={attachments}
-                  selectedSkills={selectedSlashSkills}
-                  disabled={!props.hasWorkspace || props.sending}
-                  minHeight={72}
-                  maxHeight={200}
-                  chatFontSize={appearance.chatFontSize}
-                  serifFontFamily={
-                    appearance.useSerifFont ? 'var(--font-serif)' : 'var(--font-sans)'
+                  onValueChange={props.onDraftChange}
+                  onOpenChange={setComposerAddOpen}
+                  onBeforeOpen={() => {
+                    setSlash(null);
+                    setSlashIndex(-1);
+                    setMcpMenuOpen(false);
+                    setPermissionMenuOpen(false);
+                    setSkillMenuOpen(false);
+                    setIdentityMenuOpen(false);
+                    setModelMenuOpen(false);
+                  }}
+                  workspaceFolder={props.workspaceFolder}
+                  selectedFilePaths={attachments
+                    .filter((attachment) => attachment.kind !== 'image')
+                    .map((attachment) => attachment.path)}
+                  networkEnabled={networkEnabled}
+                  permissionMode={permissionMode}
+                  showPermissionItems={
+                    composerToolbar.collapseLevel >= PERMISSION_MODE_COLLAPSED_TOOLBAR_LEVEL
                   }
-                  onRemoveAttachment={(path) =>
-                    setAttachments((current) => removeAttachment(current, path))
+                  disabled={props.sending}
+                  attachDisabled={
+                    attachments.filter((attachment) => attachment.kind === 'image').length >= 8
                   }
-                  onRemoveSkill={(skillVersionId) =>
-                    updateSelectedSkillVersionIds(
-                      selectedSkillVersionIds.filter((selected) => selected !== skillVersionId),
+                  onAttach={() => imageInputRef.current?.click()}
+                  onPlan={() => toggleDraftMode('plan')}
+                  onGoal={() => toggleDraftMode('goal')}
+                  onNetworkChange={setNetworkEnabled}
+                  onPermissionChange={setPermissionMode}
+                  onFile={(file) =>
+                    setAttachments((current) =>
+                      current.some((attachment) => attachment.path === file.path)
+                        ? removeAttachment(current, file.path)
+                        : addAttachment(current, {
+                            path: file.path,
+                            name: file.name || fileNameFromPath(file.path),
+                            kind: file.kind,
+                          }),
                     )
                   }
-                  onChange={(value) => {
-                    props.onDraftChange(value);
-                    setComposeNotice(undefined);
-                    if (composerAddOpen) {
-                      setSlash(null);
-                      setSlashIndex(-1);
-                      return;
-                    }
-                    const caret = inputRef.current?.selectionStart ?? value.length;
-                    updatePickersFromCaret(value, caret);
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Tab' && event.shiftKey && modeKeywordHint) {
-                      event.preventDefault();
-                      acceptModeKeywordHint();
-                      return;
-                    }
-                    if (tryHandlePromptEnhancementShortcut(event, promptEnhancement)) return;
-                    if (event.key === 'Escape' && slashMenuOpen) {
-                      event.preventDefault();
-                      dismissedSlashTextRef.current = props.draft;
-                      setSlash(null);
-                      setSlashIndex(-1);
-                      return;
-                    }
-                    if (slashMenuOpen) {
-                      const action = resolveComposerSlashMenuKeyboardAction({
-                        key: event.key,
-                        shiftKey: event.shiftKey,
-                        isComposing:
-                          event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229,
-                        category: slashCategory,
-                        activeIndex: slashIndex,
-                        itemCount: slashItemCount,
-                        availableCategories: availableSlashCategories,
-                      });
-                      if (action) {
-                        event.preventDefault();
-                        if (action.kind === 'change-category') {
-                          setSlashCategory(action.category);
-                          // Category changes select the first visible item so
-                          // Enter remains useful immediately, including when
-                          // the dynamic category list only contains `all`.
-                          setSlashIndex(0);
-                        } else if (action.kind === 'change-active-index') {
-                          setSlashIndex(action.index);
-                        } else {
-                          const selected = resolvedSlashItems[action.index];
-                          if (selected?.kind === 'command') selectSlashCommand(selected.command);
-                          else if (selected?.kind === 'skill') selectSlashSkill(selected.skill);
-                        }
-                        return;
-                      }
-                    }
-                  }}
-                  onSubmit={() => void submit()}
-                  onPaste={handlePaste}
-                  onSelectionChange={({ start }) => {
-                    if (composerAddOpen) return;
-                    updatePickersFromCaret(inputRef.current?.value ?? props.draft, start);
-                  }}
-                  enhancing={promptEnhancement.busy}
-                  trailingAction={
-                    promptEnhancement.visible ? (
-                      <PromptEnhancementAction
-                        enhancement={promptEnhancement}
-                        testId="empty-compose-prompt-enhance"
-                      />
-                    ) : undefined
-                  }
+                  triggerTestId="empty-compose-add-trigger"
+                  menuTestId="empty-compose-add-menu"
                 />
-              </div>
-              <input
-                ref={imageInputRef}
-                type="file"
-                accept="image/*"
-                multiple
-                className="shell-compose__file-input"
-                data-testid="empty-compose-image-input"
-                onChange={handleImageInputChange}
-                tabIndex={-1}
-              />
-              <div ref={composerToolbar.outerRef} className="shell-compose__bar">
-                <div ref={composerToolbar.leftRef} className="shell-compose__bar-left">
-                  <ComposerAddControl
-                    variant="empty"
-                    open={composerAddOpen}
-                    inputRef={inputRef}
-                    composerRef={composeRef}
-                    value={props.draft}
-                    onValueChange={props.onDraftChange}
-                    onOpenChange={setComposerAddOpen}
-                    onBeforeOpen={() => {
-                      setSlash(null);
-                      setSlashIndex(-1);
-                      setMcpMenuOpen(false);
-                      setPermissionMenuOpen(false);
-                      setSkillMenuOpen(false);
+                {helpCommandPreview ? (
+                  <ComposerActiveModePill
+                    mode="help"
+                    onClick={() => {
+                      const next = props.draft.replace(/^\s*\/help(?:\s+|$)/i, '');
+                      props.onDraftChange(next);
+                      window.requestAnimationFrame(() => {
+                        inputRef.current?.focus();
+                        inputRef.current?.setSelectionRange(next.length, next.length);
+                      });
+                    }}
+                  />
+                ) : null}
+                {planCommandPreview || interactionMode === 'plan' ? (
+                  <ComposerActiveModePill mode="plan" onClick={() => toggleDraftMode('plan')} />
+                ) : null}
+                {goalCommandPreview ? (
+                  <ComposerActiveModePill mode="goal" onClick={() => toggleDraftMode('goal')} />
+                ) : null}
+                <div
+                  ref={composerToolbar.permissionRef}
+                  className="shell-compose__tool-wrap"
+                  data-testid="empty-compose-permission-control"
+                  hidden={composerToolbar.collapseLevel >= PERMISSION_MODE_COLLAPSED_TOOLBAR_LEVEL}
+                >
+                  <button
+                    ref={permissionButtonRef}
+                    type="button"
+                    className="shell-compose__tool"
+                    data-active={permissionMenuOpen || permissionMode === 'full-access' ? '1' : '0'}
+                    title={`权限：${PERMISSION_OPTIONS.find((option) => option.value === permissionMode)?.title ?? '完全访问'}`}
+                    onClick={() => {
                       setIdentityMenuOpen(false);
                       setModelMenuOpen(false);
+                      setPermissionMenuOpen((value) => !value);
                     }}
-                    workspaceFolder={props.workspaceFolder}
-                    selectedFilePaths={attachments
-                      .filter((attachment) => attachment.kind !== 'image')
-                      .map((attachment) => attachment.path)}
-                    networkEnabled={networkEnabled}
-                    permissionMode={permissionMode}
-                    showPermissionItems={
-                      composerToolbar.collapseLevel >= PERMISSION_MODE_COLLAPSED_TOOLBAR_LEVEL
-                    }
-                    disabled={props.sending}
-                    attachDisabled={
-                      attachments.filter((attachment) => attachment.kind === 'image').length >= 8
-                    }
-                    onAttach={() => imageInputRef.current?.click()}
-                    onPlan={() => toggleDraftMode('plan')}
-                    onGoal={() => toggleDraftMode('goal')}
-                    onNetworkChange={setNetworkEnabled}
-                    onPermissionChange={setPermissionMode}
-                    onFile={(file) =>
-                      setAttachments((current) =>
-                        current.some((attachment) => attachment.path === file.path)
-                          ? removeAttachment(current, file.path)
-                          : addAttachment(current, {
-                              path: file.path,
-                              name: file.name || fileNameFromPath(file.path),
-                              kind: file.kind,
-                            }),
-                      )
-                    }
-                    triggerTestId="empty-compose-add-trigger"
-                    menuTestId="empty-compose-add-menu"
-                  />
-                  {helpCommandPreview ? (
-                    <ComposerActiveModePill
-                      mode="help"
-                      onClick={() => {
-                        const next = props.draft.replace(/^\s*\/help(?:\s+|$)/i, '');
-                        props.onDraftChange(next);
-                        window.requestAnimationFrame(() => {
-                          inputRef.current?.focus();
-                          inputRef.current?.setSelectionRange(next.length, next.length);
-                        });
-                      }}
-                    />
-                  ) : null}
-                  {planCommandPreview || interactionMode === 'plan' ? (
-                    <ComposerActiveModePill mode="plan" onClick={() => toggleDraftMode('plan')} />
-                  ) : null}
-                  {goalCommandPreview ? (
-                    <ComposerActiveModePill mode="goal" onClick={() => toggleDraftMode('goal')} />
-                  ) : null}
-                  <div
-                    ref={composerToolbar.permissionRef}
-                    className="shell-compose__tool-wrap"
-                    data-testid="empty-compose-permission-control"
-                    hidden={
-                      composerToolbar.collapseLevel >= PERMISSION_MODE_COLLAPSED_TOOLBAR_LEVEL
-                    }
                   >
-                    <button
-                      ref={permissionButtonRef}
-                      type="button"
-                      className="shell-compose__tool"
-                      data-active={
-                        permissionMenuOpen || permissionMode === 'full-access' ? '1' : '0'
-                      }
-                      title={`权限：${PERMISSION_OPTIONS.find((option) => option.value === permissionMode)?.title ?? '完全访问'}`}
-                      onClick={() => {
+                    <Zap size={15} />
+                    <span className="shell-compose__tool-label">
+                      {PERMISSION_OPTIONS.find((option) => option.value === permissionMode)
+                        ?.title ?? '完全访问'}
+                    </span>
+                  </button>
+                  <PermissionMenu
+                    open={permissionMenuOpen}
+                    value={permissionMode}
+                    anchorEl={permissionButtonRef.current}
+                    onClose={() => setPermissionMenuOpen(false)}
+                    onChange={setPermissionMode}
+                  />
+                </div>
+                <div
+                  className="shell-compose__tool-wrap"
+                  data-testid="empty-compose-skill-control"
+                  hidden={composerToolbar.collapseLevel >= SKILL_COLLAPSED_TOOLBAR_LEVEL}
+                >
+                  <TurnSkillControl
+                    owner={skillOwner}
+                    workspaceId={props.workspaceId}
+                    open={skillMenuOpen}
+                    selectedSkillVersionIds={selectedSkillVersionIds}
+                    onOpenChange={(open) => {
+                      if (open) {
+                        setPermissionMenuOpen(false);
                         setIdentityMenuOpen(false);
                         setModelMenuOpen(false);
-                        setPermissionMenuOpen((value) => !value);
-                      }}
-                    >
-                      <Zap size={15} />
-                      <span className="shell-compose__tool-label">
-                        {PERMISSION_OPTIONS.find((option) => option.value === permissionMode)
-                          ?.title ?? '完全访问'}
-                      </span>
-                    </button>
-                    <PermissionMenu
-                      open={permissionMenuOpen}
-                      value={permissionMode}
-                      anchorEl={permissionButtonRef.current}
-                      onClose={() => setPermissionMenuOpen(false)}
-                      onChange={setPermissionMode}
-                    />
-                  </div>
-                  <div
-                    className="shell-compose__tool-wrap"
-                    data-testid="empty-compose-skill-control"
-                    hidden={composerToolbar.collapseLevel >= SKILL_COLLAPSED_TOOLBAR_LEVEL}
-                  >
-                    <TurnSkillControl
-                      owner={skillOwner}
-                      workspaceId={props.workspaceId}
-                      open={skillMenuOpen}
-                      selectedSkillVersionIds={selectedSkillVersionIds}
-                      onOpenChange={(open) => {
-                        if (open) {
-                          setPermissionMenuOpen(false);
-                          setIdentityMenuOpen(false);
-                          setModelMenuOpen(false);
-                        }
-                        setSkillMenuOpen(open);
-                      }}
-                      onChange={updateSelectedSkillVersionIds}
-                    />
-                  </div>
-                </div>
-                <div ref={composerToolbar.rightRef} className="shell-compose__bar-right">
-                  <div className="shell-compose__tool-wrap">
-                    <button
-                      ref={identityButtonRef}
-                      type="button"
-                      className="shell-compose__tool"
-                      data-active={draftTrack !== 'model' ? '1' : '0'}
-                      data-open={identityMenuOpen ? '1' : '0'}
-                      aria-haspopup="menu"
-                      aria-expanded={identityMenuOpen}
-                      data-testid="empty-compose-identity"
-                      title={`对话对象：${identityLabel}`}
-                      onClick={() => {
-                        setPermissionMenuOpen(false);
-                        setSkillMenuOpen(false);
-                        setModelMenuOpen(false);
-                        setIdentityMenuOpen((open) => !open);
-                      }}
-                    >
-                      {identityAvatar?.avatar?.trim() ? (
-                        <AgentAvatarView
-                          name={identityAvatar.name}
-                          avatar={identityAvatar.avatar}
-                          size={18}
-                        />
-                      ) : (
-                        <IdentityIcon size={15} />
-                      )}
-                      <span className="shell-compose__tool-label">{identityLabel}</span>
-                    </button>
-                    <IdentityPickerMenu
-                      open={identityMenuOpen}
-                      agents={props.agents.map((agent) => ({
-                        id: String(agent.id),
-                        name: agent.name,
-                        description: agent.description,
-                        avatar: agent.avatar,
-                      }))}
-                      teams={props.teams.map((team) => ({
-                        id: String(team.id),
-                        name: team.name,
-                        description: team.mission,
-                        avatar: team.avatar,
-                      }))}
-                      currentTrack={draftTrack}
-                      currentTargetRef={String(props.draftTargetRef ?? '')}
-                      anchorEl={identityButtonRef.current}
-                      onClose={() => setIdentityMenuOpen(false)}
-                      onPick={(option: IdentityOption) => {
-                        const targetRef =
-                          option.track === 'model'
-                            ? (selectedModel?.modelId ?? '')
-                            : option.targetRef;
-                        if (props.onPickIdentity) {
-                          props.onPickIdentity(option.track, targetRef);
-                        } else {
-                          props.onPickTrack(option.track);
-                        }
-                      }}
-                    />
-                  </div>
-                  <ContextRing
-                    used={Math.round(props.draft.length / 4)}
-                    limit={composerContextWindow}
-                    modelContextWindow={composerConfiguredContextWindow}
-                    contextWindowSource={composerContextWindowSource}
-                    kernelId={kernelOverride === 'native' ? undefined : kernelOverride}
-                    kernelLabel={
-                      kernelOverride === 'native'
-                        ? undefined
-                        : resolveKernelDisplayName(kernelOverride, activeKernel?.name)
-                    }
-                  />
-                  <div className="shell-compose__tool-wrap">
-                    <ModelPickerMenu
-                      open={modelMenuOpen}
-                      models={props.models}
-                      selectedModelId={composerModelSelection.modelId}
-                      defaultLabel="选择模型"
-                      reasoningEffort={composerModelSelection.reasoningEffort}
-                      kernels={kernelRegistry ?? undefined}
-                      selectedKernelId={kernelOverride}
-                      kernelInstallStates={kernelInstallStates}
-                      anchorEl={modelButtonRef.current}
-                      trigger={
-                        <ModelTrigger
-                          label={selectedModel?.displayName ?? selectedModel?.modelId ?? '选择模型'}
-                          reasoningLabel={REASONING_LABELS[reasoningEffort]}
-                          mode={composerMode ?? 'execute'}
-                          planLabel={
-                            composerModel?.displayName ??
-                            composerModelSelection.modelId ??
-                            '选择模型'
-                          }
-                          planReasoningLabel={
-                            REASONING_LABELS[composerModelSelection.reasoningEffort]
-                          }
-                          open={modelMenuOpen}
-                          buttonRef={modelButtonRef}
-                          onClick={() => {
-                            setPermissionMenuOpen(false);
-                            setSkillMenuOpen(false);
-                            setIdentityMenuOpen(false);
-                            setModelMenuOpen((value) => !value);
-                          }}
-                        />
                       }
-                      onClose={() => setModelMenuOpen(false)}
-                      onInstallKernel={(kernelId) => void installKernel(kernelId)}
-                      onPickKernel={(kernelId) => {
-                        setKernelOverride(kernelId);
-                        writeNewConversationKernel(kernelId);
-                      }}
-                      onPick={(modelId) => {
-                        if (composerModelSelection.routed && planActSetting) {
-                          updatePlanActSetting({ ...planActSetting, planModelId: modelId });
-                          return;
-                        }
-                        props.onModelChange(modelId);
-                      }}
-                      onReasoningChange={(value) => {
-                        if (composerModelSelection.routed && planActSetting) {
-                          updatePlanActSetting({ ...planActSetting, planReasoningEffort: value });
-                          return;
-                        }
-                        setReasoningEffort(value);
-                      }}
-                    />
-                    {kernelOverride !== 'native'
-                      ? (() => {
-                          const label = resolveKernelDisplayName(
-                            kernelOverride,
-                            activeKernel?.name,
-                          );
-                          const logo = resolveKernelBrandLogo(
-                            activeKernel ? activeKernel.icon : kernelOverride,
-                          );
-                          return (
-                            <span
-                              className={`shell-kernel-chip${logo ? ' shell-kernel-chip--logo' : ''}`}
-                              data-testid="empty-compose-kernel-chip"
-                              title={`内核：${label}`}
-                            >
-                              {logo ? <BrandLogoMark logo={logo} size={18} /> : label}
-                            </span>
-                          );
-                        })()
-                      : null}
-                  </div>
-                  <ComposerActionSlot
-                    testIdPrefix="empty-compose"
-                    hasContent={Boolean(props.draft.trim() || attachments.length > 0)}
-                    running={false}
-                    voiceActive={voiceInputActive}
-                    disabled={props.sending}
-                    onVoice={toggleVoiceInput}
-                    onSend={() => void submit()}
-                    onStop={() => undefined}
+                      setSkillMenuOpen(open);
+                    }}
+                    onChange={updateSelectedSkillVersionIds}
                   />
                 </div>
               </div>
-              {!props.hasWorkspace ? (
-                <button
-                  type="button"
-                  className="shell-empty-workspace-gate"
-                  data-testid="empty-workspace-gate"
-                  onClick={props.onOpenWorkspaceMenu}
-                >
-                  打开工作区
-                </button>
-              ) : null}
-            </NewMaxComposerFrame>
-          </div>
+              <div ref={composerToolbar.rightRef} className="shell-compose__bar-right">
+                <div className="shell-compose__tool-wrap">
+                  <button
+                    ref={identityButtonRef}
+                    type="button"
+                    className="shell-compose__tool"
+                    data-active={draftTrack !== 'model' ? '1' : '0'}
+                    data-open={identityMenuOpen ? '1' : '0'}
+                    aria-haspopup="menu"
+                    aria-expanded={identityMenuOpen}
+                    data-testid="empty-compose-identity"
+                    title={`对话对象：${identityLabel}`}
+                    onClick={() => {
+                      setPermissionMenuOpen(false);
+                      setSkillMenuOpen(false);
+                      setModelMenuOpen(false);
+                      setIdentityMenuOpen((open) => !open);
+                    }}
+                  >
+                    {identityAvatar?.avatar?.trim() ? (
+                      <AgentAvatarView
+                        name={identityAvatar.name}
+                        avatar={identityAvatar.avatar}
+                        size={18}
+                      />
+                    ) : (
+                      <IdentityIcon size={15} />
+                    )}
+                    <span className="shell-compose__tool-label">{identityLabel}</span>
+                  </button>
+                  <IdentityPickerMenu
+                    open={identityMenuOpen}
+                    agents={props.agents.map((agent) => ({
+                      id: String(agent.id),
+                      name: agent.name,
+                      description: agent.description,
+                      avatar: agent.avatar,
+                    }))}
+                    teams={props.teams.map((team) => ({
+                      id: String(team.id),
+                      name: team.name,
+                      description: team.mission,
+                      avatar: team.avatar,
+                    }))}
+                    currentTrack={draftTrack}
+                    currentTargetRef={String(props.draftTargetRef ?? '')}
+                    anchorEl={identityButtonRef.current}
+                    onClose={() => setIdentityMenuOpen(false)}
+                    onPick={(option: IdentityOption) => {
+                      const targetRef =
+                        option.track === 'model'
+                          ? (selectedModel?.modelId ?? '')
+                          : option.targetRef;
+                      if (props.onPickIdentity) {
+                        props.onPickIdentity(option.track, targetRef);
+                      } else {
+                        props.onPickTrack(option.track);
+                      }
+                    }}
+                  />
+                </div>
+                <ContextRing
+                  used={Math.round(props.draft.length / 4)}
+                  limit={composerContextWindow}
+                  modelContextWindow={composerConfiguredContextWindow}
+                  contextWindowSource={composerContextWindowSource}
+                  kernelId={kernelOverride === 'native' ? undefined : kernelOverride}
+                  kernelLabel={
+                    kernelOverride === 'native'
+                      ? undefined
+                      : resolveKernelDisplayName(kernelOverride, activeKernel?.name)
+                  }
+                />
+                <div className="shell-compose__tool-wrap">
+                  <ModelPickerMenu
+                    open={modelMenuOpen}
+                    models={props.models}
+                    selectedModelId={composerModelSelection.modelId}
+                    defaultLabel="选择模型"
+                    reasoningEffort={composerModelSelection.reasoningEffort}
+                    kernels={kernelRegistry ?? undefined}
+                    selectedKernelId={kernelOverride}
+                    kernelInstallStates={kernelInstallStates}
+                    anchorEl={modelButtonRef.current}
+                    trigger={
+                      <ModelTrigger
+                        label={selectedModel?.displayName ?? selectedModel?.modelId ?? '选择模型'}
+                        reasoningLabel={REASONING_LABELS[reasoningEffort]}
+                        mode={composerMode ?? 'execute'}
+                        planLabel={
+                          composerModel?.displayName ?? composerModelSelection.modelId ?? '选择模型'
+                        }
+                        planReasoningLabel={
+                          REASONING_LABELS[composerModelSelection.reasoningEffort]
+                        }
+                        open={modelMenuOpen}
+                        buttonRef={modelButtonRef}
+                        onClick={() => {
+                          setPermissionMenuOpen(false);
+                          setSkillMenuOpen(false);
+                          setIdentityMenuOpen(false);
+                          setModelMenuOpen((value) => !value);
+                        }}
+                      />
+                    }
+                    onClose={() => setModelMenuOpen(false)}
+                    onInstallKernel={(kernelId) => void installKernel(kernelId)}
+                    onPickKernel={(kernelId) => {
+                      setKernelOverride(kernelId);
+                      writeNewConversationKernel(kernelId);
+                    }}
+                    onPick={(modelId) => {
+                      if (composerModelSelection.routed && planActSetting) {
+                        updatePlanActSetting({ ...planActSetting, planModelId: modelId });
+                        return;
+                      }
+                      props.onModelChange(modelId);
+                    }}
+                    onReasoningChange={(value) => {
+                      if (composerModelSelection.routed && planActSetting) {
+                        updatePlanActSetting({ ...planActSetting, planReasoningEffort: value });
+                        return;
+                      }
+                      setReasoningEffort(value);
+                    }}
+                  />
+                  {kernelOverride !== 'native'
+                    ? (() => {
+                        const label = resolveKernelDisplayName(kernelOverride, activeKernel?.name);
+                        const logo = resolveKernelBrandLogo(
+                          activeKernel ? activeKernel.icon : kernelOverride,
+                        );
+                        return (
+                          <span
+                            className={`shell-kernel-chip${logo ? ' shell-kernel-chip--logo' : ''}`}
+                            data-testid="empty-compose-kernel-chip"
+                            title={`内核：${label}`}
+                          >
+                            {logo ? <BrandLogoMark logo={logo} size={18} /> : label}
+                          </span>
+                        );
+                      })()
+                    : null}
+                </div>
+                <ComposerActionSlot
+                  testIdPrefix="empty-compose"
+                  hasContent={Boolean(props.draft.trim() || attachments.length > 0)}
+                  running={false}
+                  voiceActive={voiceInputActive}
+                  disabled={props.sending}
+                  onVoice={toggleVoiceInput}
+                  onSend={() => void submit()}
+                  onStop={() => undefined}
+                />
+              </div>
+            </div>
+            {!props.hasWorkspace ? (
+              <button
+                type="button"
+                className="shell-empty-workspace-gate"
+                data-testid="empty-workspace-gate"
+                onClick={props.onOpenWorkspaceMenu}
+              >
+                打开工作区
+              </button>
+            ) : null}
+          </NewMaxComposerFrame>
         </div>
+      </div>
       {props.hasWorkspace ? (
         <HomeScenarios
           onSelectTemplate={(prompt) => {

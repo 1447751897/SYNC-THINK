@@ -75,6 +75,7 @@ export function ImageLightbox({
     setScale(1);
     setFitMode('screen');
     setNatural(null);
+    setCopied(false);
     setContextMenu(null);
   }, [open, activeIndex]);
 
@@ -260,6 +261,14 @@ export function ImageLightbox({
         </>
       ) : null}
       <div className="shell-image-lightbox__controls">
+        <button
+          type="button"
+          title={copied ? '已复制' : '复制图片'}
+          aria-label={copied ? '已复制' : '复制图片'}
+          onClick={() => void handleCopy()}
+        >
+          {copied ? <Check size={16} /> : <Copy size={16} />}
+        </button>
         <button
           type="button"
           title="缩小"

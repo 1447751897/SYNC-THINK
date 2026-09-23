@@ -1340,12 +1340,28 @@ describe('agent tool schemas', () => {
     const directoryNames = (await import('./chat-tools.js')).CHAT_AGENT_DIRECTORY_TOOL_SCHEMAS.map(
       (tool) => tool.name,
     );
-    expect(directoryNames).toEqual(['list_available_agents', 'get_agent', 'agent_run']);
+    expect(directoryNames).toEqual(['agent_run_status', 'list_available_agents', 'get_agent', 'agent_run']);
     expect(CHAT_AGENT_TOOL_NAMES.has('update_agent')).toBe(true);
     expect(CHAT_AGENT_TOOL_NAMES.has('archive_agent')).toBe(true);
     expect(CHAT_AGENT_MUTATING_TOOL_NAMES.has('update_agent')).toBe(true);
     expect(CHAT_AGENT_MUTATING_TOOL_NAMES.has('archive_agent')).toBe(true);
     expect(CHAT_AGENT_MUTATING_TOOL_NAMES.has('list_agent_resources')).toBe(false);
+  });
+
+  it('describes agent_run as an asynchronous two-hour background task', async () => {
+    const { CHAT_AGENT_DIRECTORY_TOOL_SCHEMAS } = await import('./chat-tools.js');
+    const schema = CHAT_AGENT_DIRECTORY_TOOL_SCHEMAS.find((tool) => tool.name === 'agent_run');
+    const properties = schema?.inputSchema.properties as
+      | Record<string, Record<string, unknown>>
+      | undefined;
+    expect(schema?.description).toContain('Returns immediately with childRunId');
+    expect(properties?.timeoutSeconds).toMatchObject({
+      minimum: 60,
+      maximum: 7_200,
+    });
+    expect(properties?.timeoutSeconds?.description).toContain(
+      '1800-second no-progress watchdog',
+    );
   });
 });
 
@@ -1480,6 +1496,48 @@ describe('skill tools (capability center)', () => {
     expect(chatToolDeniedMessage('workspace', 'create_skill', 'blocked')).toContain(
       '需要用户先批准',
     );
+  });
+});
+
+describe('collaboration agent tools', () => {
+  it('exposes structured message and task dispatch tools for agent-track runs', async () => {
+    const { CHAT_COLLABORATION_TOOL_SCHEMAS } = await import('./chat-tools.js');
+    const names = toolsForExecutionMode('workspace', {
+      includeProjectTools: false,
+      includeAgentTools: true,
+      conversationTrack: 'agent',
+      collaborationEnabled: true,
+    }).map((tool) => tool.name);
+    expect(names).toContain('collaboration_send_message');
+    expect(names).toContain('collaboration_dispatch_tasks');
+    expect(CHAT_COLLABORATION_TOOL_SCHEMAS.map((tool) => tool.name)).toEqual([
+      'collaboration_send_message',
+      'collaboration_dispatch_tasks',
+    ]);
+    const modelNames = toolsForExecutionMode('workspace', {
+      includeProjectTools: false,
+      includeAgentTools: true,
+      conversationTrack: 'model',
+      collaborationEnabled: true,
+    }).map((tool) => tool.name);
+    expect(modelNames).toContain('collaboration_send_message');
+    expect(modelNames).toContain('collaboration_dispatch_tasks');
+
+    const ordinaryAgentNames = toolsForExecutionMode('workspace', {
+      includeProjectTools: false,
+      includeAgentTools: true,
+      conversationTrack: 'agent',
+    }).map((tool) => tool.name);
+    const ordinaryModelNames = toolsForExecutionMode('workspace', {
+      includeProjectTools: false,
+      includeAgentTools: true,
+      conversationTrack: 'model',
+      collaborationEnabled: false,
+    }).map((tool) => tool.name);
+    expect(ordinaryAgentNames).not.toContain('collaboration_send_message');
+    expect(ordinaryAgentNames).not.toContain('collaboration_dispatch_tasks');
+    expect(ordinaryModelNames).not.toContain('collaboration_send_message');
+    expect(ordinaryModelNames).not.toContain('collaboration_dispatch_tasks');
   });
 });
 

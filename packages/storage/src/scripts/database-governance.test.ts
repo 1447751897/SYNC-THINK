@@ -4,7 +4,11 @@ import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { openDatabaseAsync } from '../connection.js';
 import { runMigrations } from './migrate.js';
-import { parseDatabaseGovernanceCliOptions, runDatabaseGovernanceCli } from './database-governance.js';
+import {
+  formatDatabaseBytes,
+  parseDatabaseGovernanceCliOptions,
+  runDatabaseGovernanceCli,
+} from './database-governance.js';
 
 const tempDirs: string[] = [];
 afterEach(() => {
@@ -14,6 +18,12 @@ afterEach(() => {
 });
 
 describe('database governance CLI options', () => {
+  it('keeps the diagnostic byte presentation policy', () => {
+    expect(formatDatabaseBytes(999)).toBe('999 B');
+    expect(formatDatabaseBytes(2 * 1024)).toBe('2.00 KiB');
+    expect(formatDatabaseBytes(3 * 1024 ** 3)).toBe('3.00 GiB');
+  });
+
   it('keeps the default command read-only and quick', () => {
     expect(parseDatabaseGovernanceCliOptions([])).toMatchObject({
       command: 'inspect',

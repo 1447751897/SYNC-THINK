@@ -11,6 +11,138 @@ import {
   pipePathPortable,
   verifyHmac,
   type CommandType,
+  type BrowserProfileCommand,
+  type BrowserProfileCommandRequest,
+  type BrowserProfileCommandResponse,
+  type BrowserRecordingCommand,
+  type BrowserRecordingCommandRequest,
+  type BrowserRecordingCommandResponse,
+  type BrowserWorkflowCommand,
+  type BrowserWorkflowCommandRequest,
+  type BrowserWorkflowCommandResponse,
+  type BrowserHandoffCommand,
+  type BrowserHandoffCommandRequest,
+  type BrowserHandoffCommandResponse,
+  type DesktopCommand,
+  type DesktopCommandRequest,
+  type DesktopCommandResponse,
+  type BrowserExtensionCommand,
+  type BrowserExtensionCommandRequest,
+  type BrowserExtensionCommandResponse,
+  type ApprovalCommand,
+  type ApprovalCommandRequest,
+  type ApprovalCommandResponse,
+  type MemoryCommand,
+  type MemoryCommandRequest,
+  type MemoryCommandResponse,
+  type ContextPacketCommand,
+  type ContextPacketCommandRequest,
+  type ContextPacketCommandResponse,
+  type DiagnosticsCommand,
+  type DiagnosticsCommandRequest,
+  type DiagnosticsCommandResponse,
+  type GatewayCommand,
+  type GatewayCommandRequest,
+  type GatewayCommandResponse,
+  type KernelCommand,
+  type KernelCommandRequest,
+  type KernelCommandResponse,
+  type SettingsCommand,
+  type SettingsCommandRequest,
+  type SettingsCommandResponse,
+  type PolicyCommand,
+  type PolicyCommandRequest,
+  type PolicyCommandResponse,
+  type UsageCommand,
+  type UsageCommandRequest,
+  type UsageCommandResponse,
+  type AgentCommand,
+  type AgentCommandRequest,
+  type AgentCommandResponse,
+  type GlobalAgentCommand,
+  type GlobalAgentCommandRequest,
+  type GlobalAgentCommandResponse,
+  type TeamCommand,
+  type TeamCommandRequest,
+  type TeamCommandResponse,
+  type ScheduledTaskCommand,
+  type ScheduledTaskCommandRequest,
+  type ScheduledTaskCommandResponse,
+  type ActivityCommand,
+  type ActivityCommandRequest,
+  type ActivityCommandResponse,
+  type GoalCommand,
+  type GoalCommandRequest,
+  type GoalCommandResponse,
+  type SkillLocalCommand,
+  type SkillLocalCommandRequest,
+  type SkillLocalCommandResponse,
+  type SkillMarketCommand,
+  type SkillMarketCommandRequest,
+  type SkillMarketCommandResponse,
+  type SkillCommand,
+  type SkillCommandRequest,
+  type SkillCommandResponse,
+  type McpRegistryCommand,
+  type McpRegistryCommandRequest,
+  type McpRegistryCommandResponse,
+  type McpToolCommand,
+  type McpToolCommandRequest,
+  type McpToolCommandResponse,
+  type BotChannelCommand,
+  type BotChannelCommandRequest,
+  type BotChannelCommandResponse,
+  type CapabilityGovernanceCommand,
+  type CapabilityGovernanceCommandRequest,
+  type CapabilityGovernanceCommandResponse,
+  type PromptDesignCommand,
+  type PromptDesignCommandRequest,
+  type PromptDesignCommandResponse,
+  type WorkspaceCommand,
+  type WorkspaceCommandRequest,
+  type WorkspaceCommandResponse,
+  type TaskCommand,
+  type TaskCommandRequest,
+  type TaskCommandResponse,
+  type ParticipationModeCommand,
+  type ParticipationModeCommandRequest,
+  type ParticipationModeCommandResponse,
+  type PlanCommand,
+  type PlanCommandRequest,
+  type PlanCommandResponse,
+  type RunControlCommand,
+  type RunControlCommandRequest,
+  type RunControlCommandResponse,
+  type ArtifactCommand,
+  type ArtifactCommandRequest,
+  type ArtifactCommandResponse,
+  type ProviderCatalogCommand,
+  type ProviderCatalogCommandRequest,
+  type ProviderCatalogCommandResponse,
+  type ProviderCredentialCommand,
+  type ProviderCredentialCommandRequest,
+  type ProviderCredentialCommandResponse,
+  type ProviderModelCommand,
+  type ProviderModelCommandRequest,
+  type ProviderModelCommandResponse,
+  type ProviderDiscoveryCommand,
+  type ProviderDiscoveryCommandRequest,
+  type ProviderDiscoveryCommandResponse,
+  type ProviderBalanceCommand,
+  type ProviderBalanceCommandRequest,
+  type ProviderBalanceCommandResponse,
+  type ProviderCcSwitchCommand,
+  type ProviderCcSwitchCommandRequest,
+  type ProviderCcSwitchCommandResponse,
+  type WebSearchProviderCommand,
+  type WebSearchProviderCommandRequest,
+  type WebSearchProviderCommandResponse,
+  type DataManagementCommand,
+  type DataManagementCommandRequest,
+  type DataManagementCommandResponse,
+  type ConversationCommand,
+  type ConversationCommandRequest,
+  type ConversationCommandResponse,
   type ConversationTransientFrame,
   type ConversationTransientSnapshot,
   type ConversationTransientStreamEvent,
@@ -24,6 +156,7 @@ import {
   type HelloProofPayload,
   type SubscribeConversationTransientStreamResponse,
 } from '@sync-think/protocol';
+import type { CollaborationCommand, CollaborationResponse } from '@sync-think/shared';
 import { ErrorCode, ulid, type Event, type EventCategory } from '@sync-think/shared';
 import type { RuntimeConnectFailure } from '../runtime-bridge-contract.js';
 
@@ -315,6 +448,359 @@ export class RuntimePipeClient {
     return this.connecting;
   }
 
+  requestConversation<K extends ConversationCommand>(
+    type: K,
+    payload: ConversationCommandRequest<NoInfer<K>>,
+    options?: { timeoutMs?: number },
+  ): Promise<ConversationCommandResponse<K>> {
+    return this.request<ConversationCommandResponse<K>>(type, payload, options);
+  }
+
+  requestBrowserProfile<K extends BrowserProfileCommand>(
+    type: K,
+    payload: BrowserProfileCommandRequest<NoInfer<K>>,
+    options?: { timeoutMs?: number },
+  ): Promise<BrowserProfileCommandResponse<K>> {
+    return this.request<BrowserProfileCommandResponse<K>>(type, payload, options);
+  }
+
+  requestBrowserRecording<K extends BrowserRecordingCommand>(
+    type: K,
+    payload: BrowserRecordingCommandRequest<NoInfer<K>>,
+    options?: { timeoutMs?: number },
+  ): Promise<BrowserRecordingCommandResponse<K>> {
+    return this.request<BrowserRecordingCommandResponse<K>>(type, payload, options);
+  }
+
+  requestBrowserWorkflow<K extends BrowserWorkflowCommand>(
+    type: K,
+    payload: BrowserWorkflowCommandRequest<NoInfer<K>>,
+    options?: { timeoutMs?: number },
+  ): Promise<BrowserWorkflowCommandResponse<K>> {
+    return this.request<BrowserWorkflowCommandResponse<K>>(type, payload, options);
+  }
+
+  requestBrowserHandoff<K extends BrowserHandoffCommand>(
+    type: K,
+    payload: BrowserHandoffCommandRequest<NoInfer<K>>,
+    options?: { timeoutMs?: number },
+  ): Promise<BrowserHandoffCommandResponse<K>> {
+    return this.request<BrowserHandoffCommandResponse<K>>(type, payload, options);
+  }
+
+  requestDesktopCommand<K extends DesktopCommand>(
+    type: K,
+    payload: DesktopCommandRequest<NoInfer<K>>,
+    options?: { timeoutMs?: number },
+  ): Promise<DesktopCommandResponse<K>> {
+    return this.request<DesktopCommandResponse<K>>(type, payload, options);
+  }
+
+  requestBrowserExtension<K extends BrowserExtensionCommand>(
+    type: K,
+    payload: BrowserExtensionCommandRequest<NoInfer<K>>,
+    options?: { timeoutMs?: number },
+  ): Promise<BrowserExtensionCommandResponse<K>> {
+    return this.request<BrowserExtensionCommandResponse<K>>(type, payload, options);
+  }
+
+  requestApproval<K extends ApprovalCommand>(
+    type: K,
+    payload: ApprovalCommandRequest<NoInfer<K>>,
+    options?: { timeoutMs?: number },
+  ): Promise<ApprovalCommandResponse<K>> {
+    return this.request<ApprovalCommandResponse<K>>(type, payload, options);
+  }
+
+  requestMemory<K extends MemoryCommand>(
+    type: K,
+    payload: MemoryCommandRequest<NoInfer<K>>,
+    options?: { timeoutMs?: number },
+  ): Promise<MemoryCommandResponse<K>> {
+    return this.request<MemoryCommandResponse<K>>(type, payload, options);
+  }
+
+  requestContextPacket<K extends ContextPacketCommand>(
+    type: K,
+    payload: ContextPacketCommandRequest<NoInfer<K>>,
+    options?: { timeoutMs?: number },
+  ): Promise<ContextPacketCommandResponse<K>> {
+    return this.request<ContextPacketCommandResponse<K>>(type, payload, options);
+  }
+
+  requestDiagnostics<K extends DiagnosticsCommand>(
+    type: K,
+    payload: DiagnosticsCommandRequest<NoInfer<K>>,
+    options?: { timeoutMs?: number },
+  ): Promise<DiagnosticsCommandResponse<K>> {
+    return this.request<DiagnosticsCommandResponse<K>>(type, payload, options);
+  }
+
+  requestGateway<K extends GatewayCommand>(
+    type: K,
+    payload: GatewayCommandRequest<NoInfer<K>>,
+    options?: { timeoutMs?: number },
+  ): Promise<GatewayCommandResponse<K>> {
+    return this.request<GatewayCommandResponse<K>>(type, payload, options);
+  }
+
+  requestKernel<K extends KernelCommand>(
+    type: K,
+    payload: KernelCommandRequest<NoInfer<K>>,
+    options?: { timeoutMs?: number },
+  ): Promise<KernelCommandResponse<K>> {
+    return this.request<KernelCommandResponse<K>>(type, payload, options);
+  }
+
+  requestSettings<K extends SettingsCommand>(
+    type: K,
+    payload: SettingsCommandRequest<NoInfer<K>>,
+    options?: { timeoutMs?: number },
+  ): Promise<SettingsCommandResponse<K>> {
+    return this.request<SettingsCommandResponse<K>>(type, payload, options);
+  }
+
+  requestPolicy<K extends PolicyCommand>(
+    type: K,
+    payload: PolicyCommandRequest<NoInfer<K>>,
+    options?: { timeoutMs?: number },
+  ): Promise<PolicyCommandResponse<K>> {
+    return this.request<PolicyCommandResponse<K>>(type, payload, options);
+  }
+
+  requestUsage<K extends UsageCommand>(
+    type: K,
+    payload: UsageCommandRequest<NoInfer<K>>,
+    options?: { timeoutMs?: number },
+  ): Promise<UsageCommandResponse<K>> {
+    return this.request<UsageCommandResponse<K>>(type, payload, options);
+  }
+
+  requestAgent<K extends AgentCommand>(
+    type: K,
+    payload: AgentCommandRequest<NoInfer<K>>,
+    options?: { timeoutMs?: number },
+  ): Promise<AgentCommandResponse<K>> {
+    return this.request<AgentCommandResponse<K>>(type, payload, options);
+  }
+
+  requestGlobalAgent<K extends GlobalAgentCommand>(
+    type: K,
+    payload: GlobalAgentCommandRequest<NoInfer<K>>,
+    options?: { timeoutMs?: number },
+  ): Promise<GlobalAgentCommandResponse<K>> {
+    return this.request<GlobalAgentCommandResponse<K>>(type, payload, options);
+  }
+
+  requestTeam<K extends TeamCommand>(
+    type: K,
+    payload: TeamCommandRequest<NoInfer<K>>,
+    options?: { timeoutMs?: number },
+  ): Promise<TeamCommandResponse<K>> {
+    return this.request<TeamCommandResponse<K>>(type, payload, options);
+  }
+
+  requestScheduledTask<K extends ScheduledTaskCommand>(
+    type: K,
+    payload: ScheduledTaskCommandRequest<NoInfer<K>>,
+    options?: { timeoutMs?: number },
+  ): Promise<ScheduledTaskCommandResponse<K>> {
+    return this.request<ScheduledTaskCommandResponse<K>>(type, payload, options);
+  }
+
+  requestActivity<K extends ActivityCommand>(
+    type: K,
+    payload: ActivityCommandRequest<NoInfer<K>>,
+    options?: { timeoutMs?: number },
+  ): Promise<ActivityCommandResponse<K>> {
+    return this.request<ActivityCommandResponse<K>>(type, payload, options);
+  }
+
+  requestGoal<K extends GoalCommand>(
+    type: K,
+    payload: GoalCommandRequest<NoInfer<K>>,
+    options?: { timeoutMs?: number },
+  ): Promise<GoalCommandResponse<K>> {
+    return this.request<GoalCommandResponse<K>>(type, payload, options);
+  }
+
+  requestSkillLocal<K extends SkillLocalCommand>(
+    type: K,
+    payload: SkillLocalCommandRequest<NoInfer<K>>,
+    options?: { timeoutMs?: number },
+  ): Promise<SkillLocalCommandResponse<K>> {
+    return this.request<SkillLocalCommandResponse<K>>(type, payload, options);
+  }
+
+  requestSkillMarket<K extends SkillMarketCommand>(
+    type: K,
+    payload: SkillMarketCommandRequest<NoInfer<K>>,
+    options?: { timeoutMs?: number },
+  ): Promise<SkillMarketCommandResponse<K>> {
+    return this.request<SkillMarketCommandResponse<K>>(type, payload, options);
+  }
+
+  requestSkill<K extends SkillCommand>(
+    type: K,
+    payload: SkillCommandRequest<NoInfer<K>>,
+    options?: { timeoutMs?: number },
+  ): Promise<SkillCommandResponse<K>> {
+    return this.request<SkillCommandResponse<K>>(type, payload, options);
+  }
+
+  requestMcpRegistry<K extends McpRegistryCommand>(
+    type: K,
+    payload: McpRegistryCommandRequest<NoInfer<K>>,
+    options?: { timeoutMs?: number },
+  ): Promise<McpRegistryCommandResponse<K>> {
+    return this.request<McpRegistryCommandResponse<K>>(type, payload, options);
+  }
+
+  requestMcpTool<K extends McpToolCommand>(
+    type: K,
+    payload: McpToolCommandRequest<NoInfer<K>>,
+    options?: { timeoutMs?: number },
+  ): Promise<McpToolCommandResponse<K>> {
+    return this.request<McpToolCommandResponse<K>>(type, payload, options);
+  }
+
+  requestBotChannel<K extends BotChannelCommand>(
+    type: K,
+    payload: BotChannelCommandRequest<NoInfer<K>>,
+    options?: { timeoutMs?: number },
+  ): Promise<BotChannelCommandResponse<K>> {
+    return this.request<BotChannelCommandResponse<K>>(type, payload, options);
+  }
+
+  requestCapabilityGovernance<K extends CapabilityGovernanceCommand>(
+    type: K,
+    payload: CapabilityGovernanceCommandRequest<NoInfer<K>>,
+    options?: { timeoutMs?: number },
+  ): Promise<CapabilityGovernanceCommandResponse<K>> {
+    return this.request<CapabilityGovernanceCommandResponse<K>>(type, payload, options);
+  }
+
+  requestPromptDesign<K extends PromptDesignCommand>(
+    type: K,
+    payload: PromptDesignCommandRequest<NoInfer<K>>,
+    options?: { timeoutMs?: number },
+  ): Promise<PromptDesignCommandResponse<K>> {
+    return this.request<PromptDesignCommandResponse<K>>(type, payload, options);
+  }
+
+  requestWorkspace<K extends WorkspaceCommand>(
+    type: K,
+    payload: WorkspaceCommandRequest<NoInfer<K>>,
+    options?: { timeoutMs?: number },
+  ): Promise<WorkspaceCommandResponse<K>> {
+    return this.request<WorkspaceCommandResponse<K>>(type, payload, options);
+  }
+
+  requestTask<K extends TaskCommand>(
+    type: K,
+    payload: TaskCommandRequest<NoInfer<K>>,
+    options?: { timeoutMs?: number },
+  ): Promise<TaskCommandResponse<K>> {
+    return this.request<TaskCommandResponse<K>>(type, payload, options);
+  }
+
+  requestParticipationMode<K extends ParticipationModeCommand>(
+    type: K,
+    payload: ParticipationModeCommandRequest<NoInfer<K>>,
+    options?: { timeoutMs?: number },
+  ): Promise<ParticipationModeCommandResponse<K>> {
+    return this.request<ParticipationModeCommandResponse<K>>(type, payload, options);
+  }
+
+  requestPlan<K extends PlanCommand>(
+    type: K,
+    payload: PlanCommandRequest<NoInfer<K>>,
+    options?: { timeoutMs?: number },
+  ): Promise<PlanCommandResponse<K>> {
+    return this.request<PlanCommandResponse<K>>(type, payload, options);
+  }
+
+  requestRunControl<K extends RunControlCommand>(
+    type: K,
+    payload: RunControlCommandRequest<NoInfer<K>>,
+    options?: { timeoutMs?: number },
+  ): Promise<RunControlCommandResponse<K>> {
+    return this.request<RunControlCommandResponse<K>>(type, payload, options);
+  }
+
+  requestArtifact<K extends ArtifactCommand>(
+    type: K,
+    payload: ArtifactCommandRequest<NoInfer<K>>,
+    options?: { timeoutMs?: number },
+  ): Promise<ArtifactCommandResponse<K>> {
+    return this.request<ArtifactCommandResponse<K>>(type, payload, options);
+  }
+
+  requestProviderCatalog<K extends ProviderCatalogCommand>(
+    type: K,
+    payload: ProviderCatalogCommandRequest<NoInfer<K>>,
+    options?: { timeoutMs?: number },
+  ): Promise<ProviderCatalogCommandResponse<K>> {
+    return this.request<ProviderCatalogCommandResponse<K>>(type, payload, options);
+  }
+
+  requestProviderCredential<K extends ProviderCredentialCommand>(
+    type: K,
+    payload: ProviderCredentialCommandRequest<NoInfer<K>>,
+    options?: { timeoutMs?: number },
+  ): Promise<ProviderCredentialCommandResponse<K>> {
+    return this.request<ProviderCredentialCommandResponse<K>>(type, payload, options);
+  }
+
+  requestProviderModel<K extends ProviderModelCommand>(
+    type: K,
+    payload: ProviderModelCommandRequest<NoInfer<K>>,
+    options?: { timeoutMs?: number },
+  ): Promise<ProviderModelCommandResponse<K>> {
+    return this.request<ProviderModelCommandResponse<K>>(type, payload, options);
+  }
+
+  requestProviderDiscovery<K extends ProviderDiscoveryCommand>(
+    type: K,
+    payload: ProviderDiscoveryCommandRequest<NoInfer<K>>,
+    options?: { timeoutMs?: number },
+  ): Promise<ProviderDiscoveryCommandResponse<K>> {
+    return this.request<ProviderDiscoveryCommandResponse<K>>(type, payload, options);
+  }
+
+  requestProviderBalance<K extends ProviderBalanceCommand>(
+    type: K,
+    payload: ProviderBalanceCommandRequest<NoInfer<K>>,
+    options?: { timeoutMs?: number },
+  ): Promise<ProviderBalanceCommandResponse<K>> {
+    return this.request<ProviderBalanceCommandResponse<K>>(type, payload, options);
+  }
+
+  requestProviderCcSwitch<K extends ProviderCcSwitchCommand>(
+    type: K,
+    payload: ProviderCcSwitchCommandRequest<NoInfer<K>>,
+    options?: { timeoutMs?: number },
+  ): Promise<ProviderCcSwitchCommandResponse<K>> {
+    return this.request<ProviderCcSwitchCommandResponse<K>>(type, payload, options);
+  }
+
+  requestWebSearchProvider<K extends WebSearchProviderCommand>(
+    type: K,
+    payload: WebSearchProviderCommandRequest<NoInfer<K>>,
+    options?: { timeoutMs?: number },
+  ): Promise<WebSearchProviderCommandResponse<K>> {
+    return this.request<WebSearchProviderCommandResponse<K>>(type, payload, options);
+  }
+
+  requestDataManagement<K extends DataManagementCommand>(
+    type: K,
+    payload: DataManagementCommandRequest<NoInfer<K>>,
+    options?: { timeoutMs?: number },
+  ): Promise<DataManagementCommandResponse<K>> {
+    return this.request<DataManagementCommandResponse<K>>(type, payload, options);
+  }
+
+  /** Legacy transport entry. Migrate domain calls to a typed command contract. */
   async request<T = unknown>(
     type: CommandType,
     payload: unknown,
@@ -322,6 +808,10 @@ export class RuntimePipeClient {
   ): Promise<T> {
     await this.connect();
     return this.sendRequest(type, payload, options?.timeoutMs) as Promise<T>;
+  }
+
+  requestCollaboration(command: CollaborationCommand): Promise<CollaborationResponse> {
+    return this.request<CollaborationResponse>('collaboration.command', command);
   }
 
   async subscribeEvents(
@@ -993,6 +1483,10 @@ export class RuntimePipeClient {
   }
 
   private deliverEvent(subscription: EventSubscription, event: Event): void {
+    if (event.type === 'browser.command_requested') {
+      subscription.listener(event);
+      return;
+    }
     const eventCursor = cursorForEvent(event);
     if (compareEventReplayCursors(eventCursor, subscription.cursor) <= 0) return;
     subscription.listener(event);

@@ -9,6 +9,22 @@ afterEach(() => {
 });
 
 describe('deferred shell panels', () => {
+  it('offers an app reload for a stale module without discarding drafts automatically', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const Panel = lazyPanel(async () => {
+      throw new TypeError('Failed to fetch dynamically imported module: file:///old-chunk.js');
+    }, '浏览器');
+    render(
+      <>
+        <input aria-label="主窗口草稿" defaultValue="保留" />
+        <Panel />
+      </>,
+    );
+    expect(await screen.findByRole('button', { name: '重新加载应用' })).toBeTruthy();
+    expect((screen.getByRole('textbox') as HTMLInputElement).value).toBe('保留');
+    expect(screen.queryByText(/old-chunk/)).toBeNull();
+  });
+
   it('loads only on mount, forwards props, and preserves the mounted page on rerender', async () => {
     let finish!: (value: { default: (props: { name: string }) => JSX.Element }) => void;
     const load = vi.fn(

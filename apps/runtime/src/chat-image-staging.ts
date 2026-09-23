@@ -1,7 +1,8 @@
 // Read Desktop-staged chat images for multimodal provider calls.
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { isAbsolute, join, normalize, relative, resolve } from 'node:path';
+import { isAbsolute, join, relative, resolve } from 'node:path';
+import { isPathWithinRoot } from '@sync-think/shared/node-paths';
 
 export function resolveChatImageStagingDir(
   env: NodeJS.ProcessEnv = process.env,
@@ -22,18 +23,6 @@ export function resolveChatImageStagingDir(
 export interface AppendMessageImageTrustContext {
   workspaceRoot?: string;
   conversationId?: string;
-}
-
-function isPathInside(parent: string, child: string): boolean {
-  const root = normalize(resolve(parent))
-    .replace(/[\\/]+$/, '')
-    .toLowerCase();
-  const target = normalize(resolve(child)).toLowerCase();
-  if (target === root) return true;
-  const prefix = root + (root.includes('\\') ? '\\' : '/');
-  // Also accept the opposite separator after normalize on Windows.
-  const altPrefix = root + (root.includes('\\') ? '/' : '\\');
-  return target.startsWith(prefix) || target.startsWith(altPrefix);
 }
 
 function workspaceConversationImageDir(
@@ -64,7 +53,7 @@ export function resolveStagedImagePath(
   const workspaceImageRoot = workspaceConversationImageDir(trust);
   const trustedRoots = [stagingRoot, ...(workspaceImageRoot ? [workspaceImageRoot] : [])];
   const absolute = resolve(stagingPath);
-  const trustedRoot = trustedRoots.find((root) => isPathInside(root, absolute));
+  const trustedRoot = trustedRoots.find((root) => isPathWithinRoot(root, absolute));
   if (!trustedRoot) {
     console.warn('[runtime] rejected image path outside app-managed image directories', absolute);
     return undefined;
@@ -76,7 +65,7 @@ export function resolveStagedImagePath(
   try {
     const realRoot = existsSync(trustedRoot) ? realpathSync(trustedRoot) : resolve(trustedRoot);
     const realTarget = realpathSync(absolute);
-    if (!isPathInside(realRoot, realTarget)) {
+    if (!isPathWithinRoot(realRoot, realTarget)) {
       console.warn('[runtime] rejected image link outside app-managed image directory', absolute);
       return undefined;
     }

@@ -6,7 +6,7 @@ import type {
   WorkerToken,
 } from '../types.js';
 import { isAbsolute, resolve, win32 } from 'node:path';
-import { isPathInside } from '../types.js';
+import { isPathWithinRoot } from '@sync-think/shared/node-paths';
 import { isRealPathInside, runBoundedProcess, startRefusal } from '../process-runner.js';
 
 export interface GitAction {
@@ -46,7 +46,7 @@ export class GitProcessWorker implements GitWorker {
     const workingDir = resolve(input.workingDir);
     const allowedRoot = resolve(token.allowedRoot);
     if (
-      !isPathInside(workingDir, allowedRoot) ||
+      !isPathWithinRoot(allowedRoot, workingDir) ||
       !(await isRealPathInside(workingDir, allowedRoot))
     ) {
       yield permissionFailure('Git workingDir escapes allowedRoot');
@@ -57,7 +57,7 @@ export class GitProcessWorker implements GitWorker {
       relative &&
       (isAbsolute(relative) ||
         win32.isAbsolute(relative) ||
-        !isPathInside(resolve(workingDir, relative), allowedRoot) ||
+        !isPathWithinRoot(allowedRoot, resolve(workingDir, relative)) ||
         !(await isRealPathInside(resolve(workingDir, relative), allowedRoot, true)))
     ) {
       yield permissionFailure('Git path escapes allowedRoot');

@@ -1,16 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Check,
-  Keyboard,
   Monitor,
   Moon,
-  Palette,
   PenLine,
   RefreshCw,
   Sun,
   Trash2,
   Upload,
-  UserRound,
   X,
 } from 'lucide-react';
 import clsx from 'clsx';
@@ -22,7 +19,8 @@ import {
 } from '@sync-think/protocol/preferences';
 import { writeUserName } from '../ui-preferences.js';
 import { analyzeImageThemePixels } from './theme/newmax-theme-engine.js';
-import { SlidingTabs } from './SlidingTabs.js';
+import { SettingsSectionTabs } from './SettingsSectionTabs.js';
+import { ToggleControl } from './ToggleControl.js';
 import {
   COLOR_THEME_OPTIONS,
   CUSTOM_IMAGE_THEME_ID,
@@ -52,14 +50,10 @@ import {
 
 type PreferencesTab = 'theme' | 'shortcuts' | 'personalization';
 
-const PREFERENCE_TABS: Array<{
-  id: PreferencesTab;
-  label: string;
-  icon: typeof Palette;
-}> = [
-  { id: 'theme', label: '主题', icon: Palette },
-  { id: 'shortcuts', label: '快捷键', icon: Keyboard },
-  { id: 'personalization', label: '个性化', icon: UserRound },
+const PREFERENCE_TABS: Array<{ value: PreferencesTab; label: string }> = [
+  { value: 'theme', label: '主题' },
+  { value: 'shortcuts', label: '快捷键' },
+  { value: 'personalization', label: '个性化' },
 ];
 
 export function PreferencesSettings() {
@@ -75,20 +69,13 @@ export function PreferencesSettings() {
 
   return (
     <div className="settings-preferences">
-      <SlidingTabs className="settings-preferences__tabs" aria-label="偏好设置分类">
-        {PREFERENCE_TABS.map(({ id, label }) => (
-          <button
-            key={id}
-            type="button"
-            role="tab"
-            aria-selected={tab === id}
-            className={tab === id ? 'is-active' : undefined}
-            onClick={() => selectTab(id)}
-          >
-            {label}
-          </button>
-        ))}
-      </SlidingTabs>
+      <SettingsSectionTabs<PreferencesTab>
+        className="settings-preferences__tabs"
+        aria-label="偏好设置分类"
+        items={PREFERENCE_TABS}
+        value={tab}
+        onChange={selectTab}
+      />
 
       <div ref={scrollRef} className="settings-preferences__scroll settings-content-scroll">
         <div key={tab} className="settings-preferences__panel">
@@ -1204,17 +1191,13 @@ function PreferenceToggle({
   return (
     <label className={clsx('settings-preference-toggle', disabled && 'is-disabled')}>
       {text ? <span>{text}</span> : null}
-      <button
-        type="button"
-        role="switch"
-        aria-label={label}
-        aria-checked={checked}
+      <ToggleControl
+        checked={checked}
         disabled={disabled}
-        className={checked ? 'is-checked' : undefined}
-        onClick={() => onChange(!checked)}
-      >
-        <i />
-      </button>
+        label={label}
+        onChange={onChange}
+        className="settings-preference-toggle__control"
+      />
     </label>
   );
 }

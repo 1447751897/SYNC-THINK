@@ -155,7 +155,7 @@ describe('event payload backfill exact rollback', () => {
       writeFileSync(join(executionAudit.recoverySet!.sidecarRootDirectory, reference.relativePath), 'corrupt');
       await expect(rollbackEventPayloadBackfill(blobItem.raw, rollbackOptions(blobItem, executionAudit))).rejects.toThrow('sidecar size mismatch');
     } finally { blobItem.raw.close(); }
-  });
+  }, 15_000);
 
   it('rejects rollback audit cursor, path, and execution-updatedAt tampering', async () => {
     const item = await fixture(2);

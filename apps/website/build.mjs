@@ -1,7 +1,7 @@
 import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { buildWebsiteDemo } from '../desktop/scripts/build-website-demo.mjs';
+import { buildWebsiteDemo } from './scripts/build-demo.mjs';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const output = path.join(root, 'dist');

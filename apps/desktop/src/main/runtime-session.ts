@@ -271,6 +271,12 @@ export class RuntimeSession {
   }
 
   private recordEvent(event: Event): void {
+    // Commands are live deliveries, never reconnect snapshots or replay data.
+    if (event.type === 'browser.command_requested') {
+      this.pendingForwardEvents.push(sanitizeRuntimeEventForRenderer(event));
+      this.scheduleForwardFlush();
+      return;
+    }
     const eventId = String(event.id);
     if (this.seenEventIds.has(eventId)) return;
     this.seenEventIds.add(eventId);

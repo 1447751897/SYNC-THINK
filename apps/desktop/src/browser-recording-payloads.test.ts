@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 import {
   parseGetBrowserRecordingPayload,
   parseListBrowserRecordingsPayload,
+  parsePauseBrowserRecordingPayload,
+  parseResumeBrowserRecordingPayload,
   parseStartBrowserRecordingPayload,
   parseStopBrowserRecordingPayload,
 } from './browser-recording-payloads.js';
@@ -41,6 +43,12 @@ describe('Desktop Browser Recording IPC payloads', () => {
       parseStartBrowserRecordingPayload({ profileId: 'profile-1', expectedProfileRevision: 1 }),
     ).toEqual({ profileId: 'profile-1', expectedProfileRevision: 1 });
     expect(parseStopBrowserRecordingPayload({ recordingId: 'recording-1' })).toEqual({
+      recordingId: 'recording-1',
+    });
+    expect(parsePauseBrowserRecordingPayload({ recordingId: 'recording-1' })).toEqual({
+      recordingId: 'recording-1',
+    });
+    expect(parseResumeBrowserRecordingPayload({ recordingId: 'recording-1' })).toEqual({
       recordingId: 'recording-1',
     });
   });
@@ -103,6 +111,8 @@ describe('Desktop Browser Recording IPC payloads', () => {
       }),
     ).toThrow();
     expect(() => parseStopBrowserRecordingPayload({ recordingId: 'recording\t1' })).toThrow();
+    expect(() => parsePauseBrowserRecordingPayload({ recordingId: '' })).toThrow();
+    expect(() => parseResumeBrowserRecordingPayload({ recordingId: 'recording 1' })).toThrow();
   });
 
   it('rejects unsafe pagination and revisions', () => {

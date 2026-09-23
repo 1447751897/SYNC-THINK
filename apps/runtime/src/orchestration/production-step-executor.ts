@@ -30,21 +30,12 @@ import {
   type JsonValue,
   type ModelId,
   type ProtocolFamily,
+  type ProductionExecutionResult,
   type ProviderRequestUsage,
   type ReviewOutcome,
 } from '@sync-think/shared';
 import type { SecureStore } from '@sync-think/secure-store';
-import type {
-  SqliteAgentStore,
-  SqliteAgentContextStore,
-  SqliteOrchestrationStore,
-  ProductionExecutionResult,
-  SqliteProductionExecutionStore,
-  SqliteProviderStore,
-  SqliteSkillStore,
-  StepArtifactVersionOutput,
-  SqliteWorkspaceStore,
-} from '@sync-think/storage';
+import type { StepArtifactVersionOutput } from '@sync-think/shared';
 import {
   FileSystemWorker,
   GitProcessWorker,
@@ -70,21 +61,31 @@ import {
 } from '../chat-tools.js';
 import type { RuntimeBrowserController } from '../browser/runtime-browser-controller.js';
 import type { GeneratedImageStore } from './generated-image-store.js';
+import type {
+  ProductionStepExecutionAgent,
+  ProductionStepExecutionAgentContexts,
+  ProductionStepExecutionAgents,
+  ProductionStepExecutionProviders,
+  ProductionStepExecutionReservations,
+  ProductionStepExecutionRuns,
+  ProductionStepExecutionSkills,
+  ProductionStepExecutionWorkspaces,
+} from './production-step-executor-ports.js';
 
 export interface ProductionStepExecutorOptions {
-  agentStore: SqliteAgentStore;
-  providerStore: SqliteProviderStore;
-  workspaceStore: SqliteWorkspaceStore;
-  orchestrationStore: SqliteOrchestrationStore;
-  executionStore: SqliteProductionExecutionStore;
-  skillStore: SqliteSkillStore;
+  agentStore: ProductionStepExecutionAgents;
+  providerStore: ProductionStepExecutionProviders;
+  workspaceStore: ProductionStepExecutionWorkspaces;
+  orchestrationStore: ProductionStepExecutionRuns;
+  executionStore: ProductionStepExecutionReservations;
+  skillStore: ProductionStepExecutionSkills;
   secureStore: SecureStore;
   adaptersByProtocol?: Partial<Record<ProtocolFamily, ProviderAdapter>>;
   fallbackAdapter?: ProviderAdapter;
   browserController?: Pick<RuntimeBrowserController, 'execute' | 'requestHandoff'>;
   generatedImageStore?: Pick<GeneratedImageStore, 'store'> &
     Partial<Pick<GeneratedImageStore, 'readForVision'>>;
-  agentContextStore?: SqliteAgentContextStore;
+  agentContextStore?: ProductionStepExecutionAgentContexts;
 }
 
 const ABORTED = Symbol('step-execution-aborted');
@@ -823,7 +824,7 @@ function buildImagePrompt(context: StepExecutionContext): string {
 }
 
 function toAgentModelBinding(
-  agent: NonNullable<ReturnType<SqliteAgentStore['getVersion']>>,
+  agent: ProductionStepExecutionAgent,
 ): AgentModelBinding {
   return {
     agentVersionId: agent.id,
@@ -868,8 +869,8 @@ function providerSecretEchoError(): ProviderSecretEchoError {
 }
 
 function resolveProductionStepSkills(
-  skillStore: SqliteSkillStore,
-  agent: NonNullable<ReturnType<SqliteAgentStore['getVersion']>>,
+  skillStore: ProductionStepExecutionSkills,
+  agent: ProductionStepExecutionAgent,
 ) {
   const selection = resolveRunSkillSelection({
     allowlistedSkillVersionIds: agent.skillVersionIds,
@@ -916,7 +917,7 @@ function resolveProductionStepSkills(
 }
 
 function buildSystemPrompt(
-  agent: ReturnType<SqliteAgentStore['getRequiredAgentVersion']>,
+  agent: ProductionStepExecutionAgent,
   skills: readonly { name: string; version: string; body: string }[],
 ): string {
   const skillPrompt = skills
@@ -1335,7 +1336,7 @@ function providerTurnIdempotencyKey(base: string, turn: number): string {
 }
 
 function parseToolLoopCheckpoint(value: JsonValue): ToolLoopCheckpoint {
-  if (!isRecord(value) || value.version !== 1) {
+  if (!isJsonRecord(value) || value.version !== 1) {
     throw new StepExecutionError('Provider tool checkpoint is invalid', 'acceptance');
   }
   const providerTurns = value.providerTurns;
@@ -1375,7 +1376,7 @@ function parseToolLoopCheckpoint(value: JsonValue): ToolLoopCheckpoint {
 }
 
 function isProviderTurnUsage(value: unknown): boolean {
-  if (!isRecord(value) || typeof value.requestId !== 'string' || !isRecord(value.usage)) {
+  if (!isJsonRecord(value) || typeof value.requestId !== 'string' || !isJsonRecord(value.usage)) {
     return false;
   }
   const usage = value.usage;
@@ -1398,7 +1399,7 @@ function optionalNonNegativeFiniteNumber(value: unknown): boolean {
 }
 
 function isProviderMessage(value: unknown): boolean {
-  if (!isRecord(value) || !['user', 'assistant', 'tool', 'system'].includes(String(value.role))) {
+  if (!isJsonRecord(value) || !['user', 'assistant', 'tool', 'system'].includes(String(value.role))) {
     return false;
   }
   if (value.toolCallId !== undefined && typeof value.toolCallId !== 'string') return false;
@@ -1406,30 +1407,30 @@ function isProviderMessage(value: unknown): boolean {
   if (!Array.isArray(value.content)) return false;
   return value.content.every(
     (part) =>
-      isRecord(part) && ['text', 'image', 'tool-call', 'tool-result'].includes(String(part.type)),
+      isJsonRecord(part) && ['text', 'image', 'tool-call', 'tool-result'].includes(String(part.type)),
   );
 }
 
 function isToolTraceEntry(value: unknown): boolean {
   return (
-    isRecord(value) &&
+    isJsonRecord(value) &&
     typeof value.id === 'string' &&
     typeof value.name === 'string' &&
-    isRecord(value.arguments) &&
+    isJsonRecord(value.arguments) &&
     typeof value.result === 'string' &&
-    (value.metadata === undefined || isRecord(value.metadata))
+    (value.metadata === undefined || isJsonRecord(value.metadata))
   );
 }
 
 function isPendingToolExecution(value: unknown): boolean {
   return (
-    isRecord(value) &&
-    isRecord(value.toolCall) &&
+    isJsonRecord(value) &&
+    isJsonRecord(value.toolCall) &&
     typeof value.toolCall.id === 'string' &&
     typeof value.toolCall.name === 'string' &&
     typeof value.toolCall.argumentsJson === 'string' &&
-    isRecord(value.arguments) &&
-    isRecord(value.request) &&
+    isJsonRecord(value.arguments) &&
+    isJsonRecord(value.request) &&
     typeof value.request.action === 'string' &&
     (value.state === 'awaiting-approval' ||
       value.state === 'waiting-user' ||
@@ -1454,7 +1455,7 @@ function parseToolArguments(toolCall: ProviderToolCall): Record<string, JsonValu
   } catch {
     throw new StepExecutionError('Provider tool arguments are not valid JSON', 'protocol');
   }
-  if (!isRecord(parsed) || !isJsonValue(parsed)) {
+  if (!isJsonRecord(parsed) || !isJsonValue(parsed)) {
     throw new StepExecutionError('Provider tool arguments must be a JSON object', 'protocol');
   }
   validateToolArguments(toolCall.name, parsed);
@@ -1682,7 +1683,7 @@ function browserTraceMetadata(
   } catch {
     return undefined;
   }
-  if (!isRecord(parsed) || parsed.ok !== true) return undefined;
+  if (!isJsonRecord(parsed) || parsed.ok !== true) return undefined;
 
   const metadata: Record<string, JsonValue> = {
     kind: 'browser-command',
@@ -2140,7 +2141,7 @@ function isRecordWithAllowedKeys(
   return required.every((key) => keys.includes(key)) && keys.every((key) => allowed.has(key));
 }
 
-function isRecord(value: unknown): value is Record<string, JsonValue> {
+function isJsonRecord(value: unknown): value is Record<string, JsonValue> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
@@ -2424,7 +2425,7 @@ function executionFence(context: StepExecutionContext) {
 }
 
 function releaseProviderExecutionReservation(
-  store: SqliteProductionExecutionStore,
+  store: ProductionStepExecutionReservations,
   context: StepExecutionContext,
 ): void {
   try {
@@ -2438,7 +2439,7 @@ function releaseProviderExecutionReservation(
 }
 
 function releaseApprovalReservation(
-  store: SqliteProductionExecutionStore,
+  store: ProductionStepExecutionReservations,
   context: StepExecutionContext,
 ): void {
   if (

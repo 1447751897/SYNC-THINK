@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { Message } from '@sync-think/shared';
 import {
-  filterPendingUserMessagesForDisplay,
   messageToChat,
   shouldDisplayChatMessage,
 } from './ChatView.js';
+import { filterPendingUserMessagesForDisplay } from './conversation-message-merge.js';
 
 describe('durable chat message mapping', () => {
   it('surfaces a persisted partial terminal marker without mixing it into markdown', () => {

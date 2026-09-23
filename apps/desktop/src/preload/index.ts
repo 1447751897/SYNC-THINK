@@ -233,6 +233,10 @@ import type {
   StartBrowserRecordingResponse,
   StopBrowserRecordingPayload,
   StopBrowserRecordingResponse,
+  PauseBrowserRecordingPayload,
+  PauseBrowserRecordingResponse,
+  ResumeBrowserRecordingPayload,
+  ResumeBrowserRecordingResponse,
   ListBrowserWorkflowsPayload,
   ListBrowserWorkflowsResponse,
   GetBrowserWorkflowPayload,
@@ -243,11 +247,20 @@ import type {
   CreateBrowserWorkflowRevisionDraftResponse,
   SubmitBrowserWorkflowDraftPayload,
   SubmitBrowserWorkflowDraftResponse,
+  SaveBrowserWorkflowDraftPayload,
+  SaveBrowserWorkflowDraftResponse,
+  PublishBrowserWorkflowDraftPayload,
+  PublishBrowserWorkflowDraftResponse,
+  ImportChatBrowserWorkflowPayload,
+  ImportChatBrowserWorkflowResponse,
   ReviewBrowserWorkflowDraftPayload,
   ReviewBrowserWorkflowDraftResponse,
   ApproveExecuteBrowserWorkflowPayload,
   ExecuteBrowserWorkflowPayload,
+  ExecuteBrowserWorkflowDraftPayload,
   ExecuteBrowserWorkflowResponse,
+  UpdateBrowserWorkflowSchedulePayload,
+  UpdateBrowserWorkflowScheduleResponse,
   PeekContextPacketPayload,
   PeekContextPacketResponse,
   AmendContextPacketPayload,
@@ -296,6 +309,7 @@ import type {
   CreateGlobalAgentPayload,
   UpdateGlobalAgentPayload,
   DeleteGlobalAgentPayload,
+  DeleteGlobalAgentResponse,
   GlobalAgentResponse,
   ListGlobalAgentWorkspaceActivationsPayload,
   ListGlobalAgentWorkspaceActivationsResponse,
@@ -345,6 +359,7 @@ import type {
   ConversationAskPendingPayload,
   ConversationAskPendingResponse,
   CreateScheduledTaskPayload,
+  CreateScheduledTaskResponse,
   ListScheduledTasksPayload,
   ListScheduledTasksResponse,
   ListScheduledTaskHistoryPayload,
@@ -356,13 +371,15 @@ import type {
   ActivityRetryAnchorPayload,
   ActivityRetryAnchorResponse,
   UpdateScheduledTaskPayload,
+  UpdateScheduledTaskResponse,
   DeleteScheduledTaskPayload,
+  DeleteScheduledTaskResponse,
   TriggerScheduledTaskPayload,
   TriggerScheduledTaskResponse,
   GoalPausePayload,
+  GoalPauseResponse,
   GoalResumePayload,
   GoalResumeResponse,
-  GoalStatus,
   SkillLocalInspectPayload,
   SkillLocalInspectResponse,
   SkillLocalScanPayload,
@@ -381,12 +398,15 @@ import type {
   GatewayLogsResponse,
 } from '@sync-think/protocol';
 import type { ArtifactImagePreviewResponse } from '../artifact-image-preview-contract.js';
+import type { RendererProbeModelsPayload } from '../provider-discovery-payloads.js';
+import type {
+  RendererAddProviderCredentialPayload,
+  RendererUpdateProviderCredentialPayload,
+} from '../provider-credential-payloads.js';
 import type {
   RendererCreateProviderPayload,
-  RendererProbeModelsPayload,
   RendererUpdateProviderPayload,
-  RendererUpdateProviderCredentialPayload,
-} from '../provider-payloads.js';
+} from '../provider-catalog-payloads.js';
 import type { Event } from '@sync-think/shared';
 import type {
   CancelProjectTerminalPayload,
@@ -398,7 +418,22 @@ import type {
   StartProjectTerminalResult,
 } from '../workspace-tools-contract.js';
 import {
+  ARTIFACT_RUNTIME_IPC_CHANNELS,
   CAPABILITY_RUNTIME_IPC_CHANNELS,
+  PARTICIPATION_MODE_RUNTIME_IPC_CHANNELS,
+  PLAN_RUNTIME_IPC_CHANNELS,
+  PROMPT_DESIGN_RUNTIME_IPC_CHANNELS,
+  PROVIDER_CATALOG_RUNTIME_IPC_CHANNELS,
+  PROVIDER_CREDENTIAL_RUNTIME_IPC_CHANNELS,
+  PROVIDER_MODEL_RUNTIME_IPC_CHANNELS,
+  PROVIDER_DISCOVERY_RUNTIME_IPC_CHANNELS,
+  PROVIDER_BALANCE_RUNTIME_IPC_CHANNELS,
+  PROVIDER_CC_SWITCH_RUNTIME_IPC_CHANNELS,
+  WEB_SEARCH_PROVIDER_RUNTIME_IPC_CHANNELS,
+  DATA_MANAGEMENT_IPC_CHANNELS,
+  RUN_CONTROL_RUNTIME_IPC_CHANNELS,
+  TASK_RUNTIME_IPC_CHANNELS,
+  WORKSPACE_RUNTIME_IPC_CHANNELS,
   type RuntimeConnectOutcome,
 } from '../runtime-bridge-contract.js';
 import type {
@@ -416,6 +451,7 @@ import type {
   PtySessionInfo,
 } from '../terminal-pty-contract.js';
 import { createPlatformContext } from '@sync-think/shared';
+import type { CollaborationCommand, CollaborationResponse } from '@sync-think/shared';
 import type {
   ManagedKernelUpdateActionResult,
   ManagedKernelUpdateBridge,
@@ -436,13 +472,24 @@ const api = {
     },
     appendMessage: (payload: AppendMessagePayload) =>
       ipcRenderer.invoke('runtime:append-message', payload) as Promise<AppendMessageResponse>,
+    collaboration: (command: CollaborationCommand) =>
+      ipcRenderer.invoke(
+        'runtime:collaboration-command',
+        command,
+      ) as Promise<CollaborationResponse>,
     enhancePrompt: (payload: PromptEnhancePayload) =>
-      ipcRenderer.invoke('runtime:prompt-enhance', payload) as Promise<PromptEnhanceResponse>,
+      ipcRenderer.invoke(
+        PROMPT_DESIGN_RUNTIME_IPC_CHANNELS.enhancePrompt,
+        payload,
+      ) as Promise<PromptEnhanceResponse>,
     generateDesign: (payload: DesignGeneratePayload) =>
-      ipcRenderer.invoke('runtime:design-generate', payload) as Promise<DesignGenerateResponse>,
+      ipcRenderer.invoke(
+        PROMPT_DESIGN_RUNTIME_IPC_CHANNELS.generateDesign,
+        payload,
+      ) as Promise<DesignGenerateResponse>,
     cancelPromptEnhancement: (payload: PromptEnhanceCancelPayload) =>
       ipcRenderer.invoke(
-        'runtime:prompt-enhance-cancel',
+        PROMPT_DESIGN_RUNTIME_IPC_CHANNELS.cancelPromptEnhancement,
         payload,
       ) as Promise<PromptEnhanceCancelResponse>,
     openExternalUrl: (url: string) =>
@@ -459,61 +506,88 @@ const api = {
         { ok: true } | { ok: false; error: string }
       >,
     cancelRun: (payload: CancelRunPayload) =>
-      ipcRenderer.invoke('runtime:run-cancel', payload) as Promise<PauseResumeCancelResponse>,
+      ipcRenderer.invoke(
+        RUN_CONTROL_RUNTIME_IPC_CHANNELS.cancelConversation,
+        payload,
+      ) as Promise<PauseResumeCancelResponse>,
     createWorkspace: (payload: CreateWorkspacePayload) =>
-      ipcRenderer.invoke('runtime:workspace-create', payload) as Promise<CreateWorkspaceResponse>,
+      ipcRenderer.invoke(
+        WORKSPACE_RUNTIME_IPC_CHANNELS.create,
+        payload,
+      ) as Promise<CreateWorkspaceResponse>,
     bindWorkspaceFolder: (payload: BindWorkspaceFolderPayload) =>
       ipcRenderer.invoke(
-        'runtime:workspace-bind-folder',
+        WORKSPACE_RUNTIME_IPC_CHANNELS.bindFolder,
         payload,
       ) as Promise<BindWorkspaceFolderResponse>,
     listWorkspaces: (payload: ListWorkspacesPayload = {}) =>
-      ipcRenderer.invoke('runtime:workspace-list', payload) as Promise<ListWorkspacesResponse>,
+      ipcRenderer.invoke(
+        WORKSPACE_RUNTIME_IPC_CHANNELS.list,
+        payload,
+      ) as Promise<ListWorkspacesResponse>,
     updateWorkspace: (payload: UpdateWorkspacePayload) =>
-      ipcRenderer.invoke('runtime:workspace-update', payload) as Promise<UpdateWorkspaceResponse>,
+      ipcRenderer.invoke(
+        WORKSPACE_RUNTIME_IPC_CHANNELS.update,
+        payload,
+      ) as Promise<UpdateWorkspaceResponse>,
     deleteWorkspace: (payload: DeleteWorkspacePayload) =>
-      ipcRenderer.invoke('runtime:workspace-delete', payload) as Promise<DeleteWorkspaceResponse>,
+      ipcRenderer.invoke(
+        WORKSPACE_RUNTIME_IPC_CHANNELS.delete,
+        payload,
+      ) as Promise<DeleteWorkspaceResponse>,
     createTask: (payload: CreateTaskPayload) =>
-      ipcRenderer.invoke('runtime:task-create', payload) as Promise<CreateTaskResponse>,
+      ipcRenderer.invoke(TASK_RUNTIME_IPC_CHANNELS.create, payload) as Promise<CreateTaskResponse>,
     listTasks: (payload: ListTasksPayload) =>
-      ipcRenderer.invoke('runtime:task-list', payload) as Promise<ListTasksResponse>,
+      ipcRenderer.invoke(TASK_RUNTIME_IPC_CHANNELS.list, payload) as Promise<ListTasksResponse>,
     openTask: (payload: OpenTaskPayload) =>
-      ipcRenderer.invoke('runtime:task-open', payload) as Promise<OpenTaskResponse>,
+      ipcRenderer.invoke(TASK_RUNTIME_IPC_CHANNELS.open, payload) as Promise<OpenTaskResponse>,
     searchTasks: (payload: SearchTasksPayload) =>
-      ipcRenderer.invoke('runtime:task-search', payload) as Promise<SearchTasksResponse>,
+      ipcRenderer.invoke(TASK_RUNTIME_IPC_CHANNELS.search, payload) as Promise<SearchTasksResponse>,
     setParticipationMode: (payload: SetParticipationModePayload) =>
-      ipcRenderer.invoke('runtime:mode-set', payload) as Promise<SetParticipationModeResponse>,
+      ipcRenderer.invoke(
+        PARTICIPATION_MODE_RUNTIME_IPC_CHANNELS.set,
+        payload,
+      ) as Promise<SetParticipationModeResponse>,
     archiveTask: (payload: import('@sync-think/protocol').ArchiveTaskPayload) =>
-      ipcRenderer.invoke('runtime:task-archive', payload) as Promise<
+      ipcRenderer.invoke(TASK_RUNTIME_IPC_CHANNELS.archive, payload) as Promise<
         import('@sync-think/protocol').ArchiveTaskResponse
       >,
     unarchiveTask: (payload: import('@sync-think/protocol').UnarchiveTaskPayload) =>
-      ipcRenderer.invoke('runtime:task-unarchive', payload) as Promise<
+      ipcRenderer.invoke(TASK_RUNTIME_IPC_CHANNELS.unarchive, payload) as Promise<
         import('@sync-think/protocol').UnarchiveTaskResponse
       >,
     createPlan: (payload: PlanDraftPayload) =>
-      ipcRenderer.invoke('runtime:plan-create', payload) as Promise<PlanDraftResponse>,
+      ipcRenderer.invoke(PLAN_RUNTIME_IPC_CHANNELS.create, payload) as Promise<PlanDraftResponse>,
     revisePlan: (payload: PlanRevisePayload) =>
-      ipcRenderer.invoke('runtime:plan-revise', payload) as Promise<PlanReviseResponse>,
+      ipcRenderer.invoke(PLAN_RUNTIME_IPC_CHANNELS.revise, payload) as Promise<PlanReviseResponse>,
     listPlanRevisions: (payload: PlanListRevisionsPayload) =>
-      ipcRenderer.invoke('runtime:plan-list', payload) as Promise<PlanListRevisionsResponse>,
+      ipcRenderer.invoke(
+        PLAN_RUNTIME_IPC_CHANNELS.listRevisions,
+        payload,
+      ) as Promise<PlanListRevisionsResponse>,
     approvePlan: (payload: PlanApprovePayload) =>
-      ipcRenderer.invoke('runtime:plan-approve', payload) as Promise<PlanApproveResponse>,
+      ipcRenderer.invoke(
+        PLAN_RUNTIME_IPC_CHANNELS.approve,
+        payload,
+      ) as Promise<PlanApproveResponse>,
     getRunGraph: (payload: RunGetGraphPayload) =>
-      ipcRenderer.invoke('runtime:run-graph', payload) as Promise<RunGetGraphResponse>,
+      ipcRenderer.invoke(
+        RUN_CONTROL_RUNTIME_IPC_CHANNELS.getGraph,
+        payload,
+      ) as Promise<RunGetGraphResponse>,
     pauseOrchestrationRun: (payload: OrchestrationRunMutationPayload) =>
       ipcRenderer.invoke(
-        'runtime:orchestration-run-pause',
+        RUN_CONTROL_RUNTIME_IPC_CHANNELS.pause,
         payload,
       ) as Promise<OrchestrationRunMutationResponse>,
     resumeOrchestrationRun: (payload: OrchestrationRunMutationPayload) =>
       ipcRenderer.invoke(
-        'runtime:orchestration-run-resume',
+        RUN_CONTROL_RUNTIME_IPC_CHANNELS.resume,
         payload,
       ) as Promise<OrchestrationRunMutationResponse>,
     cancelOrchestrationRun: (payload: OrchestrationRunMutationPayload) =>
       ipcRenderer.invoke(
-        'runtime:orchestration-run-cancel',
+        RUN_CONTROL_RUNTIME_IPC_CHANNELS.cancelOrchestration,
         payload,
       ) as Promise<OrchestrationRunMutationResponse>,
     savePolicy: (payload: SavePolicyPayload) =>
@@ -522,158 +596,206 @@ const api = {
       ipcRenderer.invoke('runtime:policy-list', payload) as Promise<ListPoliciesResponse>,
     getArtifactImagePreview: (payload: GetArtifactVersionPayload) =>
       ipcRenderer.invoke(
-        'runtime:artifact-image-preview',
+        ARTIFACT_RUNTIME_IPC_CHANNELS.imagePreview,
         payload,
       ) as Promise<ArtifactImagePreviewResponse>,
     listArtifacts: (payload: ListArtifactsPayload) =>
-      ipcRenderer.invoke('runtime:artifact-list', payload) as Promise<ListArtifactsResponse>,
+      ipcRenderer.invoke(
+        ARTIFACT_RUNTIME_IPC_CHANNELS.list,
+        payload,
+      ) as Promise<ListArtifactsResponse>,
     compareArtifactVersions: (payload: CompareArtifactVersionsPayload) =>
       ipcRenderer.invoke(
-        'runtime:artifact-compare',
+        ARTIFACT_RUNTIME_IPC_CHANNELS.compare,
         payload,
       ) as Promise<CompareArtifactVersionsResponse>,
     selectArtifactVersion: (payload: SelectArtifactVersionPayload) =>
       ipcRenderer.invoke(
-        'runtime:artifact-select',
+        ARTIFACT_RUNTIME_IPC_CHANNELS.selectVersion,
         payload,
       ) as Promise<SelectArtifactVersionResponse>,
     mergeArtifactVersions: (payload: MergeArtifactVersionsPayload) =>
       ipcRenderer.invoke(
-        'runtime:artifact-merge',
+        ARTIFACT_RUNTIME_IPC_CHANNELS.merge,
         payload,
       ) as Promise<MergeArtifactVersionsResponse>,
     listArtifactMergeConflicts: (payload: ListArtifactMergeConflictsPayload) =>
       ipcRenderer.invoke(
-        'runtime:artifact-conflict-list',
+        ARTIFACT_RUNTIME_IPC_CHANNELS.listConflicts,
         payload,
       ) as Promise<ListArtifactMergeConflictsResponse>,
     resolveArtifactMergeConflict: (payload: ResolveArtifactMergeConflictPayload) =>
       ipcRenderer.invoke(
-        'runtime:artifact-conflict-resolve',
+        ARTIFACT_RUNTIME_IPC_CHANNELS.resolveConflict,
         payload,
       ) as Promise<ResolveArtifactMergeConflictResponse>,
     createProvider: (payload: RendererCreateProviderPayload) =>
-      ipcRenderer.invoke('runtime:provider-create', payload) as Promise<CreateProviderResponse>,
+      ipcRenderer.invoke(
+        PROVIDER_CATALOG_RUNTIME_IPC_CHANNELS.create,
+        payload,
+      ) as Promise<CreateProviderResponse>,
     updateProvider: (payload: RendererUpdateProviderPayload) =>
-      ipcRenderer.invoke('runtime:provider-update', payload) as Promise<UpdateProviderResponse>,
+      ipcRenderer.invoke(
+        PROVIDER_CATALOG_RUNTIME_IPC_CHANNELS.update,
+        payload,
+      ) as Promise<UpdateProviderResponse>,
     previewCcSwitchImport: (payload: PreviewCcSwitchImportPayload = {}) =>
       ipcRenderer.invoke(
-        'runtime:provider-preview-cc-switch',
+        PROVIDER_CC_SWITCH_RUNTIME_IPC_CHANNELS.preview,
         payload,
       ) as Promise<PreviewCcSwitchImportResponse>,
     importCcSwitch: (payload: ImportCcSwitchPayload) =>
       ipcRenderer.invoke(
-        'runtime:provider-import-cc-switch',
+        PROVIDER_CC_SWITCH_RUNTIME_IPC_CHANNELS.import,
         payload,
       ) as Promise<ImportCcSwitchResponse>,
     listProviders: (payload: ListProvidersPayload = {}) =>
-      ipcRenderer.invoke('runtime:provider-list', payload) as Promise<ListProvidersResponse>,
+      ipcRenderer.invoke(
+        PROVIDER_CATALOG_RUNTIME_IPC_CHANNELS.list,
+        payload,
+      ) as Promise<ListProvidersResponse>,
     discoverModels: (payload: DiscoverModelsPayload) =>
-      ipcRenderer.invoke('runtime:provider-discover', payload) as Promise<DiscoverModelsResponse>,
+      ipcRenderer.invoke(
+        PROVIDER_DISCOVERY_RUNTIME_IPC_CHANNELS.discoverModels,
+        payload,
+      ) as Promise<DiscoverModelsResponse>,
     probeModels: (payload: RendererProbeModelsPayload) =>
       ipcRenderer.invoke(
-        'runtime:provider-probe-models',
+        PROVIDER_DISCOVERY_RUNTIME_IPC_CHANNELS.probeModels,
         payload,
       ) as Promise<ProbeModelsResponse>,
     addModels: (payload: AddModelsPayload) =>
-      ipcRenderer.invoke('runtime:provider-add-models', payload) as Promise<AddModelsResponse>,
+      ipcRenderer.invoke(
+        PROVIDER_MODEL_RUNTIME_IPC_CHANNELS.add,
+        payload,
+      ) as Promise<AddModelsResponse>,
     probeCapabilities: (payload: ProbeCapabilitiesPayload) =>
       ipcRenderer.invoke(
-        'runtime:provider-probe-capabilities',
+        PROVIDER_DISCOVERY_RUNTIME_IPC_CHANNELS.probeCapabilities,
         payload,
       ) as Promise<ProbeCapabilitiesResponse>,
     confirmCapabilities: (payload: ConfirmCapabilitiesPayload) =>
       ipcRenderer.invoke(
-        'runtime:provider-confirm-capabilities',
+        PROVIDER_DISCOVERY_RUNTIME_IPC_CHANNELS.confirmCapabilities,
         payload,
       ) as Promise<ConfirmCapabilitiesResponse>,
     reorderProviders: (payload: ReorderProvidersPayload) =>
-      ipcRenderer.invoke('runtime:provider-reorder', payload) as Promise<ReorderProvidersResponse>,
-    addProviderCredential: (payload: { providerId: string; label?: string }) =>
       ipcRenderer.invoke(
-        'runtime:provider-add-credential',
+        PROVIDER_CATALOG_RUNTIME_IPC_CHANNELS.reorder,
+        payload,
+      ) as Promise<ReorderProvidersResponse>,
+    addProviderCredential: (payload: RendererAddProviderCredentialPayload) =>
+      ipcRenderer.invoke(
+        PROVIDER_CREDENTIAL_RUNTIME_IPC_CHANNELS.add,
         payload,
       ) as Promise<AddProviderCredentialResponse>,
     removeProviderCredential: (payload: RemoveProviderCredentialPayload) =>
       ipcRenderer.invoke(
-        'runtime:provider-remove-credential',
+        PROVIDER_CREDENTIAL_RUNTIME_IPC_CHANNELS.remove,
         payload,
       ) as Promise<RemoveProviderCredentialResponse>,
     clearProviderCredentials: (payload: ClearProviderCredentialsPayload) =>
       ipcRenderer.invoke(
-        'runtime:provider-clear-credentials',
+        PROVIDER_CREDENTIAL_RUNTIME_IPC_CHANNELS.clear,
         payload,
       ) as Promise<ClearProviderCredentialsResponse>,
     deleteProvider: (payload: DeleteProviderPayload) =>
-      ipcRenderer.invoke('runtime:provider-delete', payload) as Promise<DeleteProviderResponse>,
+      ipcRenderer.invoke(
+        PROVIDER_CATALOG_RUNTIME_IPC_CHANNELS.delete,
+        payload,
+      ) as Promise<DeleteProviderResponse>,
     revealProviderCredential: (payload: RevealProviderCredentialPayload) =>
       ipcRenderer.invoke(
-        'runtime:provider-reveal-credential',
+        PROVIDER_CREDENTIAL_RUNTIME_IPC_CHANNELS.reveal,
         payload,
       ) as Promise<RevealProviderCredentialResponse>,
     updateProviderCredential: (payload: RendererUpdateProviderCredentialPayload) =>
       ipcRenderer.invoke(
-        'runtime:provider-update-credential',
+        PROVIDER_CREDENTIAL_RUNTIME_IPC_CHANNELS.update,
         payload,
       ) as Promise<UpdateProviderCredentialResponse>,
     setModelPriorities: (payload: SetModelPrioritiesPayload) =>
       ipcRenderer.invoke(
-        'runtime:provider-set-model-priorities',
+        PROVIDER_MODEL_RUNTIME_IPC_CHANNELS.setPriorities,
         payload,
       ) as Promise<SetModelPrioritiesResponse>,
     updateModel: (payload: UpdateModelPayload) =>
-      ipcRenderer.invoke('runtime:provider-update-model', payload) as Promise<UpdateModelResponse>,
+      ipcRenderer.invoke(
+        PROVIDER_MODEL_RUNTIME_IPC_CHANNELS.update,
+        payload,
+      ) as Promise<UpdateModelResponse>,
     removeProviderModel: (payload: RemoveModelPayload) =>
-      ipcRenderer.invoke('runtime:provider-remove-model', payload) as Promise<RemoveModelResponse>,
+      ipcRenderer.invoke(
+        PROVIDER_MODEL_RUNTIME_IPC_CHANNELS.remove,
+        payload,
+      ) as Promise<RemoveModelResponse>,
     queryProviderBalance: (payload: ProviderBalancePayload) =>
-      ipcRenderer.invoke('runtime:provider-balance', payload) as Promise<ProviderBalanceResponse>,
+      ipcRenderer.invoke(
+        PROVIDER_BALANCE_RUNTIME_IPC_CHANNELS.query,
+        payload,
+      ) as Promise<ProviderBalanceResponse>,
     getSettings: (payload: GetSettingsPayload = {}) =>
       ipcRenderer.invoke('runtime:settings-get', payload) as Promise<GetSettingsResponse>,
     setSetting: (payload: SetSettingPayload) =>
       ipcRenderer.invoke('runtime:settings-set', payload) as Promise<SetSettingResponse>,
     listWebSearchProviders: (payload: ListWebSearchProvidersPayload = {}) =>
       ipcRenderer.invoke(
-        'runtime:web-search-providers-list',
+        WEB_SEARCH_PROVIDER_RUNTIME_IPC_CHANNELS.list,
         payload,
       ) as Promise<ListWebSearchProvidersResponse>,
     saveWebSearchProvider: (payload: SaveWebSearchProviderPayload) =>
       ipcRenderer.invoke(
-        'runtime:web-search-provider-save',
+        WEB_SEARCH_PROVIDER_RUNTIME_IPC_CHANNELS.save,
         payload,
       ) as Promise<SaveWebSearchProviderResponse>,
     reorderWebSearchProviders: (payload: ReorderWebSearchProvidersPayload) =>
       ipcRenderer.invoke(
-        'runtime:web-search-providers-reorder',
+        WEB_SEARCH_PROVIDER_RUNTIME_IPC_CHANNELS.reorder,
         payload,
       ) as Promise<ReorderWebSearchProvidersResponse>,
     testWebSearchProvider: (payload: TestWebSearchProviderPayload) =>
       ipcRenderer.invoke(
-        'runtime:web-search-provider-test',
+        WEB_SEARCH_PROVIDER_RUNTIME_IPC_CHANNELS.test,
         payload,
       ) as Promise<TestWebSearchProviderResponse>,
     getDataStorageStats: () =>
-      ipcRenderer.invoke('runtime:data-storage-stats', {}) as Promise<DataStorageStatsResponse>,
+      ipcRenderer.invoke(
+        DATA_MANAGEMENT_IPC_CHANNELS.storageStats,
+        {},
+      ) as Promise<DataStorageStatsResponse>,
     exportData: (payload: ExportDesktopDataPayload = {}) =>
-      ipcRenderer.invoke('desktop:data-export', payload) as Promise<ExportDesktopDataResponse>,
+      ipcRenderer.invoke(
+        DATA_MANAGEMENT_IPC_CHANNELS.export,
+        payload,
+      ) as Promise<ExportDesktopDataResponse>,
     importData: (payload: ImportDesktopDataPayload) =>
-      ipcRenderer.invoke('desktop:data-import', payload) as Promise<ImportDesktopDataResponse>,
+      ipcRenderer.invoke(
+        DATA_MANAGEMENT_IPC_CHANNELS.import,
+        payload,
+      ) as Promise<ImportDesktopDataResponse>,
     backupData: (payload: DataBackupPayload) =>
-      ipcRenderer.invoke('runtime:data-backup', payload) as Promise<DataBackupResponse>,
+      ipcRenderer.invoke(
+        DATA_MANAGEMENT_IPC_CHANNELS.backup,
+        payload,
+      ) as Promise<DataBackupResponse>,
     compactDataStorage: () =>
-      ipcRenderer.invoke('runtime:data-compact-storage', {}) as Promise<DataCompactStorageResponse>,
+      ipcRenderer.invoke(
+        DATA_MANAGEMENT_IPC_CHANNELS.compactStorage,
+        {},
+      ) as Promise<DataCompactStorageResponse>,
     cleanConversations: (payload: DataCleanConversationsPayload = {}) =>
       ipcRenderer.invoke(
-        'runtime:data-clean-conversations',
+        DATA_MANAGEMENT_IPC_CHANNELS.cleanConversations,
         payload,
       ) as Promise<DataCleanConversationsResponse>,
     cleanEmptyAttachmentDirectories: () =>
       ipcRenderer.invoke(
-        'runtime:data-clean-empty-attachment-directories',
+        DATA_MANAGEMENT_IPC_CHANNELS.cleanEmptyAttachmentDirectories,
         {},
       ) as Promise<DataCleanEmptyAttachmentDirectoriesResponse>,
     openDataDirectory: () =>
       ipcRenderer.invoke(
-        'desktop:data-open-directory',
+        DATA_MANAGEMENT_IPC_CHANNELS.openDirectory,
       ) as Promise<OpenDesktopDataDirectoryResponse>,
     getUsageSummary: (payload: UsageSummaryPayload = {}) =>
       ipcRenderer.invoke('runtime:usage-summary', payload) as Promise<UsageSummaryResponse>,
@@ -706,11 +828,20 @@ const api = {
     updateGlobalAgent: (payload: UpdateGlobalAgentPayload) =>
       ipcRenderer.invoke('runtime:global-agent-update', payload) as Promise<GlobalAgentResponse>,
     deleteGlobalAgent: (payload: DeleteGlobalAgentPayload) =>
-      ipcRenderer.invoke('runtime:global-agent-delete', payload) as Promise<Record<string, never>>,
+      ipcRenderer.invoke(
+        'runtime:global-agent-delete',
+        payload,
+      ) as Promise<DeleteGlobalAgentResponse>,
     listGlobalAgentWorkspaceActivations: (payload: ListGlobalAgentWorkspaceActivationsPayload) =>
-      ipcRenderer.invoke('runtime:global-agent-list-workspace-activations', payload) as Promise<ListGlobalAgentWorkspaceActivationsResponse>,
+      ipcRenderer.invoke(
+        'runtime:global-agent-list-workspace-activations',
+        payload,
+      ) as Promise<ListGlobalAgentWorkspaceActivationsResponse>,
     setGlobalAgentWorkspaceActivation: (payload: SetGlobalAgentWorkspaceActivationPayload) =>
-      ipcRenderer.invoke('runtime:global-agent-set-workspace-activation', payload) as Promise<SetGlobalAgentWorkspaceActivationResponse>,
+      ipcRenderer.invoke(
+        'runtime:global-agent-set-workspace-activation',
+        payload,
+      ) as Promise<SetGlobalAgentWorkspaceActivationResponse>,
     listTeams: () => ipcRenderer.invoke('runtime:team-list') as Promise<ListTeamsResponse>,
     createTeam: (payload: CreateTeamPayload) =>
       ipcRenderer.invoke('runtime:team-create', payload) as Promise<TeamResponse>,
@@ -887,20 +1018,25 @@ const api = {
         payload,
       ) as Promise<ConversationAskPendingResponse>,
     createScheduledTask: (payload: CreateScheduledTaskPayload) =>
-      ipcRenderer.invoke('runtime:scheduled-task-create', payload) as Promise<{
-        task: import('@sync-think/shared').ScheduledTask;
-      }>,
+      ipcRenderer.invoke(
+        'runtime:scheduled-task-create',
+        payload,
+      ) as Promise<CreateScheduledTaskResponse>,
     listScheduledTasks: (payload?: ListScheduledTasksPayload) =>
       ipcRenderer.invoke(
         'runtime:scheduled-task-list',
         payload ?? {},
       ) as Promise<ListScheduledTasksResponse>,
     updateScheduledTask: (payload: UpdateScheduledTaskPayload) =>
-      ipcRenderer.invoke('runtime:scheduled-task-update', payload) as Promise<{
-        task: import('@sync-think/shared').ScheduledTask;
-      }>,
+      ipcRenderer.invoke(
+        'runtime:scheduled-task-update',
+        payload,
+      ) as Promise<UpdateScheduledTaskResponse>,
     deleteScheduledTask: (payload: DeleteScheduledTaskPayload) =>
-      ipcRenderer.invoke('runtime:scheduled-task-delete', payload) as Promise<{ deleted: boolean }>,
+      ipcRenderer.invoke(
+        'runtime:scheduled-task-delete',
+        payload,
+      ) as Promise<DeleteScheduledTaskResponse>,
     triggerScheduledTask: (payload: TriggerScheduledTaskPayload) =>
       ipcRenderer.invoke(
         'runtime:scheduled-task-trigger',
@@ -927,7 +1063,7 @@ const api = {
         payload,
       ) as Promise<ActivityRetryAnchorResponse>,
     goalPause: (payload: GoalPausePayload) =>
-      ipcRenderer.invoke('runtime:goal-pause', payload) as Promise<{ goal?: GoalStatus }>,
+      ipcRenderer.invoke('runtime:goal-pause', payload) as Promise<GoalPauseResponse>,
     goalResume: (payload: GoalResumePayload) =>
       ipcRenderer.invoke('runtime:goal-resume', payload) as Promise<GoalResumeResponse>,
     requestDaemonStatus: () =>
@@ -990,6 +1126,7 @@ const api = {
         accepted: boolean;
       }>,
     /** AI browser_screenshot：主进程 capturePage + PNG 写入项目 .sync-think/screenshots/。 */
+    captureBrowserPreview: (payload: { webContentsId: number }) => ipcRenderer.invoke('desktop:browser-preview', payload) as Promise<{ imageDataUrl: string; url: string; capturedAt: string }>,
     saveBrowserScreenshot: (payload: { root: string; webContentsId: number }) =>
       ipcRenderer.invoke('desktop:save-browser-screenshot', payload) as Promise<{
         ok: boolean;
@@ -1233,8 +1370,19 @@ const api = {
           'runtime:browser-recording-stop',
           payload,
         ) as Promise<StopBrowserRecordingResponse>,
+      pause: (payload: PauseBrowserRecordingPayload) =>
+        ipcRenderer.invoke(
+          'runtime:browser-recording-pause',
+          payload,
+        ) as Promise<PauseBrowserRecordingResponse>,
+      resume: (payload: ResumeBrowserRecordingPayload) =>
+        ipcRenderer.invoke(
+          'runtime:browser-recording-resume',
+          payload,
+        ) as Promise<ResumeBrowserRecordingResponse>,
     },
     browserWorkflow: {
+      assignWorkspace: (payload: import('@sync-think/protocol').AssignBrowserWorkflowWorkspacePayload) => ipcRenderer.invoke('runtime:browser-workflow-assign-workspace', payload) as Promise<{ task: import('@sync-think/protocol').BrowserAutomationTaskSummary }>,
       list: (payload: ListBrowserWorkflowsPayload = {}) =>
         ipcRenderer.invoke(
           'runtime:browser-workflow-list',
@@ -1260,6 +1408,21 @@ const api = {
           'runtime:browser-workflow-submit',
           payload,
         ) as Promise<SubmitBrowserWorkflowDraftResponse>,
+      save: (payload: SaveBrowserWorkflowDraftPayload) =>
+        ipcRenderer.invoke(
+          'runtime:browser-workflow-save',
+          payload,
+        ) as Promise<SaveBrowserWorkflowDraftResponse>,
+      publish: (payload: PublishBrowserWorkflowDraftPayload) =>
+        ipcRenderer.invoke(
+          'runtime:browser-workflow-publish',
+          payload,
+        ) as Promise<PublishBrowserWorkflowDraftResponse>,
+      importChat: (payload: ImportChatBrowserWorkflowPayload) =>
+        ipcRenderer.invoke(
+          'runtime:browser-workflow-import-chat',
+          payload,
+        ) as Promise<ImportChatBrowserWorkflowResponse>,
       review: (payload: ReviewBrowserWorkflowDraftPayload) =>
         ipcRenderer.invoke(
           'runtime:browser-workflow-review',
@@ -1270,11 +1433,21 @@ const api = {
           'runtime:browser-workflow-execute',
           payload,
         ) as Promise<ExecuteBrowserWorkflowResponse>,
+      executeDraft: (payload: ExecuteBrowserWorkflowDraftPayload) =>
+        ipcRenderer.invoke(
+          'runtime:browser-workflow-execute-draft',
+          payload,
+        ) as Promise<ExecuteBrowserWorkflowResponse>,
       approveAndExecute: (payload: ApproveExecuteBrowserWorkflowPayload) =>
         ipcRenderer.invoke(
           'runtime:browser-workflow-approve-execute',
           payload,
         ) as Promise<ExecuteBrowserWorkflowResponse>,
+      updateSchedule: (payload: UpdateBrowserWorkflowSchedulePayload) =>
+        ipcRenderer.invoke(
+          'runtime:browser-workflow-update-schedule',
+          payload,
+        ) as Promise<UpdateBrowserWorkflowScheduleResponse>,
     },
     browserExtension: {
       status: () =>
@@ -1650,11 +1823,7 @@ const api = {
     getBuffer: (sessionId: string) =>
       ipcRenderer.invoke('terminal:getBuffer', sessionId) as Promise<string>,
     onData: (listener: (sessionId: string, data: string) => void) => {
-      const handler = (
-        _event: Electron.IpcRendererEvent,
-        sessionId: unknown,
-        data: unknown,
-      ) => {
+      const handler = (_event: Electron.IpcRendererEvent, sessionId: unknown, data: unknown) => {
         if (typeof sessionId !== 'string' || typeof data !== 'string') return;
         listener(sessionId, data);
       };

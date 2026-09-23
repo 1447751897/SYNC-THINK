@@ -22,15 +22,20 @@ import { teamLibraryServer } from './team-library-server.js';
 import { skillCenterServer } from './skill-center-server.js';
 import { mcpDirectoryServer } from './mcp-directory-server.js';
 import { taskBoardServer } from './task-board-server.js';
+import { collaborationServer } from './collaboration-server.js';
 import { webFetchServer, webSearchServer } from './web-server.js';
 import { browserServer } from './browser-server.js';
+import { browserWorkflowServer } from './browser-workflow-server.js';
 import { visionFallbackServer } from './vision-fallback-server.js';
 import { imageGenerationServer } from './image-generation-server.js';
 import { capabilityBrokerServer } from './capability-broker-server.js';
 import { windowsOcrServer } from './windows-ocr-server.js';
 import { jsonSchemaToZodShape, type ZodFactory } from './schema-bridge.js';
 import type { ConversationTrack } from '@sync-think/shared';
-import { isCollaborationToolAllowed, normalizeCollaborationSettings } from '../../collaboration-policy.js';
+import {
+  isCollaborationToolAllowed,
+  normalizeCollaborationSettings,
+} from '../../collaboration-policy.js';
 
 export type { KernelMcpServerDefinition, KernelMcpToolDefinition } from './define-server.js';
 
@@ -64,6 +69,8 @@ export interface KernelMcpServerConditions {
   imageGenerationEnabled?: boolean;
   /** True only when this conversation has an active Goal-mode objective. */
   hasActiveGoal?: boolean;
+  /** True only when this thread is bound to a collaboration conversation. */
+  collaborationEnabled?: boolean;
 }
 
 let currentConditions: KernelMcpServerConditions = {};
@@ -85,6 +92,7 @@ const storeCondition = (key: keyof KernelMcpServerConditions) => (): boolean =>
 /** Registered servers, in load order (alwaysLoad first, then capability-gated). */
 export const KERNEL_MCP_SERVERS: readonly KernelMcpServerDefinition[] = [
   platformServer,
+  browserWorkflowServer,
   capabilityBrokerServer,
   {
     ...windowsOcrServer,
@@ -110,6 +118,10 @@ export const KERNEL_MCP_SERVERS: readonly KernelMcpServerDefinition[] = [
   {
     ...taskBoardServer,
     condition: storeCondition('hasTaskStore'),
+  },
+  {
+    ...collaborationServer,
+    condition: storeCondition('collaborationEnabled'),
   },
   {
     ...visionFallbackServer,
@@ -170,7 +182,11 @@ export function selectKernelMcpRun(options: {
   const externalTools: KernelMcpToolDefinition[] = [];
   const nativeTools: KernelMcpToolDefinition[] = [];
   for (const server of KERNEL_MCP_SERVERS) {
-    if (server.name === 'task-board' && (options.kernelId === 'claude-code' || options.kernelId === 'codex')) continue;
+    if (
+      server.name === 'task-board' &&
+      (options.kernelId === 'claude-code' || options.kernelId === 'codex')
+    )
+      continue;
     if (!server.alwaysLoad) {
       const condition = server.condition;
       if (condition) {
@@ -185,16 +201,16 @@ export function selectKernelMcpRun(options: {
     // them and the host executes the underlying short name.
     if (server.deferred) continue;
     const visibleTools = (
-      options.planningMode
-        ? server.tools.filter((tool) => !tool.planningDenied)
-        : server.tools
-    ).filter((tool) =>
-      (tool.name !== 'goal_manage' || currentConditions.hasActiveGoal === true) &&
-      (!options.conversationTrack || isCollaborationToolAllowed({
-        track: options.conversationTrack,
-        toolName: tool.name,
-        settings: normalizeCollaborationSettings(options.collaborationSettings),
-      })),
+      options.planningMode ? server.tools.filter((tool) => !tool.planningDenied) : server.tools
+    ).filter(
+      (tool) =>
+        (tool.name !== 'goal_manage' || currentConditions.hasActiveGoal === true) &&
+        (!options.conversationTrack ||
+          isCollaborationToolAllowed({
+            track: options.conversationTrack,
+            toolName: tool.name,
+            settings: normalizeCollaborationSettings(options.collaborationSettings),
+          })),
     );
     if (visibleTools.length === 0) continue;
     servers.push({ ...server, tools: visibleTools });

@@ -15,7 +15,7 @@ import type {
   WindowsUiaBackend,
   WindowsUiaElementLease,
   WindowsUiaInspection,
-} from './koffi-uia-driver.js';
+} from './windows-uia-contract.js';
 
 const COINIT_MULTITHREADED = 0;
 const CLSCTX_INPROC_SERVER = 1;

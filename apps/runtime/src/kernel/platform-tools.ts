@@ -10,7 +10,8 @@
  * process / browser service and are documented as v2.
  */
 import { readFile, readdir, writeFile, stat } from 'node:fs/promises';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
+import { isPathWithinRoot } from '@sync-think/shared/node-paths';
 import type { PlatformMcpToolDefinition } from './mcp-broker.js';
 import { DESCRIBE_IMAGE_INPUT_SCHEMA, DESCRIBE_IMAGE_TOOL_NAME } from '../describe-image-tool.js';
 import { GENERATE_IMAGE_TOOL_NAME } from '../generate-image-tool.js';
@@ -28,10 +29,14 @@ import {
   WINDOWS_OCR_TOOL_NAME,
 } from '../windows-ocr.js';
 import { createPlatformContext, type ConversationTrack } from '@sync-think/shared';
-import { isCollaborationToolAllowed, normalizeCollaborationSettings } from '../collaboration-policy.js';
+import {
+  isCollaborationToolAllowed,
+  normalizeCollaborationSettings,
+} from '../collaboration-policy.js';
 import {
   CHAT_AGENT_DIRECTORY_TOOL_SCHEMAS,
   CHAT_BROWSER_TOOL_SCHEMAS,
+  CHAT_COLLABORATION_TOOL_SCHEMAS,
   CHAT_DESKTOP_TOOL_SCHEMAS,
   CHAT_DYNAMIC_AGENT_TOOL_SCHEMAS,
   CHAT_MCP_CATALOG_TOOL_SCHEMAS,
@@ -133,7 +138,8 @@ export const PLATFORM_MCP_TOOL_DEFINITIONS: readonly PlatformMcpToolDefinition[]
   },
   {
     name: 'agent_list',
-    description: 'List the workspace agents and their current versions.',
+    description:
+      'List the live SYNC-THINK Agent Library entries currently active and usable in this workspace. This is runtime activation state; never infer it from AGENTS.md or project files.',
     approval: 'never',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   },
@@ -278,7 +284,7 @@ export const PLATFORM_MCP_TOOL_DEFINITIONS: readonly PlatformMcpToolDefinition[]
   {
     name: 'task_schedule',
     description:
-      'Manage scheduled tasks (定时任务). Actions: "create" (name, instruction, target {kind:"agent",agentId} or {kind:"model",modelId}, rule {kind:"at",runAt} | {kind:"every",intervalMinutes≥5,firstRunAt?} | {kind:"random",windowStart,windowEnd,minTimes,maxTimes} | {kind:"cron",expression}, timeZone?) creates a task that fires by injecting the instruction into its own conversation; "list" returns all tasks; "cancel" (taskId) disables a task. Creating or cancelling requires approval outside full-access mode.',
+      'Manage scheduled tasks (定时任务). Actions: "create" (name, instruction, target {kind:"agent",agentId} or {kind:"model",modelId}, rule {kind:"at",runAt} | {kind:"every",intervalMinutes≥5,firstRunAt?} | {kind:"random",windowStart,windowEnd,minTimes,maxTimes} | {kind:"weekly",selection:{mode:"days",days:[1,3]} or {mode:"range",start:1,end:5},time:"09:00",startDate:"YYYY-MM-DD"} (Monday=1, Sunday=7; inclusive ranges may wrap) | {kind:"cron",expression}, timeZone?) creates a task that fires by injecting the instruction into its own conversation; "list" returns all tasks; "cancel" (taskId) disables a task. Creating or cancelling requires approval outside full-access mode.',
     approval: 'never',
     inputSchema: {
       type: 'object',
@@ -304,7 +310,7 @@ export const PLATFORM_MCP_TOOL_DEFINITIONS: readonly PlatformMcpToolDefinition[]
           type: 'object',
           additionalProperties: false,
           properties: {
-            kind: { type: 'string', enum: ['at', 'every', 'random', 'cron'] },
+            kind: { type: 'string', enum: ['at', 'every', 'weekly', 'random', 'cron'] },
             runAt: { type: 'string' },
             intervalMinutes: { type: 'number' },
             firstRunAt: { type: 'string' },
@@ -313,6 +319,17 @@ export const PLATFORM_MCP_TOOL_DEFINITIONS: readonly PlatformMcpToolDefinition[]
             minTimes: { type: 'number' },
             maxTimes: { type: 'number' },
             expression: { type: 'string' },
+            time: { type: 'string', description: 'Weekly start time, HH:mm in task timeZone.' },
+            startDate: { type: 'string', description: 'Weekly effective date, YYYY-MM-DD in task timeZone.' },
+            selection: {
+              type: 'object', additionalProperties: false,
+              properties: {
+                mode: { type: 'string', enum: ['days', 'range'] },
+                days: { type: 'array', items: { type: 'integer', minimum: 1, maximum: 7 }, minItems: 1, maxItems: 7 },
+                start: { type: 'integer', minimum: 1, maximum: 7 },
+                end: { type: 'integer', minimum: 1, maximum: 7 },
+              },
+            },
           },
         },
         timeZone: { type: 'string', description: 'IANA time zone, default UTC.' },
@@ -460,11 +477,13 @@ export function nativePlatformToolSchemas(
   });
   const extra = [
     ...(platform.capabilities.ocr && options.imageOcrFallbackEnabled
-      ? [{
-          name: WINDOWS_OCR_TOOL_NAME,
-          description: WINDOWS_OCR_TOOL_DESCRIPTION,
-          inputSchema: WINDOWS_OCR_INPUT_SCHEMA,
-        }]
+      ? [
+          {
+            name: WINDOWS_OCR_TOOL_NAME,
+            description: WINDOWS_OCR_TOOL_DESCRIPTION,
+            inputSchema: WINDOWS_OCR_INPUT_SCHEMA,
+          },
+        ]
       : []),
     ...(options.visionFallbackEnabled
       ? [
@@ -522,6 +541,12 @@ export interface PlatformToolCatalogOptions {
   conversationTrack?: ConversationTrack;
   /** Parsed or persisted value for the collaboration setting. */
   collaborationSettings?: unknown;
+  /**
+   * True only for a bound collaboration conversation. Structured collaboration
+   * tools stay invisible everywhere else (native parity: the native catalog
+   * gates them on the same flag).
+   */
+  collaborationEnabled?: boolean;
   /** False hides Goal-mode bookkeeping. Default keeps the tool for back-compat catalogs. */
   includeGoalManage?: boolean;
 }
@@ -574,6 +599,12 @@ export function buildPlatformMcpToolDefinitions(
   // present the normal approval flow.
   if (options.includeAgentTools) add(CHAT_AGENT_DIRECTORY_TOOL_SCHEMAS);
   if (options.includeDynamicAgentTools) add(CHAT_DYNAMIC_AGENT_TOOL_SCHEMAS);
+  // Structured collaboration tools ride the same gates as the native catalog:
+  // a bound collaboration conversation + a conversation track whose authority
+  // rules allow the tool (applied by the scopedCatalog filter below).
+  if (options.collaborationEnabled && options.conversationTrack) {
+    add(CHAT_COLLABORATION_TOOL_SCHEMAS);
+  }
   if (options.includeSkillTools) add(CHAT_SKILL_TOOL_SCHEMAS);
   if (options.includeTeamTools) add(CHAT_TEAM_TOOL_SCHEMAS);
   if (options.includeMcpTools) {
@@ -588,7 +619,8 @@ export function buildPlatformMcpToolDefinitions(
     );
   }
   if (options.networkEnabled && options.includeBrowserTools) add(CHAT_BROWSER_TOOL_SCHEMAS);
-  if (options.includeDesktopTools && platform.capabilities.desktopAutomation) add(CHAT_DESKTOP_TOOL_SCHEMAS);
+  if (options.includeDesktopTools && platform.capabilities.desktopAutomation)
+    add(CHAT_DESKTOP_TOOL_SCHEMAS);
   const catalog = options.planningMode
     ? definitions.filter((definition) => !isPlanningDeniedTool(definition.name))
     : definitions;
@@ -627,7 +659,17 @@ export interface PlatformToolContext {
     }>;
   };
   agentStore?: {
-    listLatestVersions(): Array<{ agentId: string; name: string; version: string }>;
+    listEffective(workspaceId: string): Array<{
+      id: string;
+      name: string;
+      avatar: string;
+      description: string;
+      source: string;
+      availabilityScope: string;
+      defaultModelId: string;
+      skillIds: string[];
+      mcpServerIds: string[];
+    }>;
   };
   resolveWorkspaceId?: () => string;
   catalog?: readonly PlatformMcpToolDefinition[];
@@ -637,8 +679,7 @@ export interface PlatformToolContext {
 export function resolveWithinWorkspace(workspaceDir: string, inputPath: string): string {
   const target = resolve(workspaceDir, inputPath);
   const root = resolve(workspaceDir);
-  const relativePath = relative(root, target);
-  if (relativePath === '..' || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath)) {
+  if (!isPathWithinRoot(root, target)) {
     throw new Error(`path escapes the workspace: ${inputPath}`);
   }
   return target;
@@ -660,7 +701,9 @@ export async function executePlatformTool(
           runId: ctx.runId ?? null,
           threadId: ctx.threadId ?? null,
           workspaceDir: ctx.workspaceDir,
-          tools: buildPlatformMcpToolDefinitions().map((definition) => definition.name),
+          tools: (ctx.catalog ?? buildPlatformMcpToolDefinitions()).map(
+            (definition) => definition.name,
+          ),
         },
         null,
         0,
@@ -737,8 +780,20 @@ export async function executePlatformTool(
     }
     case 'agent_list': {
       if (!ctx.agentStore) throw new Error('agent store unavailable');
-      const agents = ctx.agentStore.listLatestVersions();
-      return JSON.stringify({ ok: true, agents });
+      const workspaceId = ctx.resolveWorkspaceId ? ctx.resolveWorkspaceId() : '';
+      const agents = ctx.agentStore.listEffective(workspaceId).map((agent) => ({
+        agentId: agent.id,
+        name: agent.name,
+        avatar: agent.avatar,
+        description: agent.description,
+        source: agent.source,
+        availabilityScope: agent.availabilityScope,
+        defaultModelId: agent.defaultModelId,
+        skillIds: [...agent.skillIds],
+        mcpServerIds: [...agent.mcpServerIds],
+        active: true,
+      }));
+      return JSON.stringify({ ok: true, workspaceId, agents });
     }
     default:
       throw new Error(`unknown platform tool: ${tool}`);

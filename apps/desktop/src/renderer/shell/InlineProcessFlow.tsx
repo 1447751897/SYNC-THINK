@@ -23,7 +23,7 @@ import {
   Wrench,
 } from 'lucide-react';
 import type { CommentaryTimelineSegment, ExecutionProcessStep } from '@sync-think/protocol';
-import type { InlineProcessItem, DelegatedAgentToolEventView } from './ChatView.js';
+import type { InlineProcessItem, DelegatedAgentToolEventView } from './conversation-types.js';
 import { useAutoDisclosure } from './auto-disclosure.js';
 import { MessageTextContent } from './MessageTextContent.js';
 import { CodeBlock } from './CodeBlock.js';
@@ -421,10 +421,14 @@ function delegatedToolEventToProcessItem(
   // A bounded log must not look complete: say how much output was left out.
   const result =
     event.output === undefined
-      ? undefined
-      : event.truncated
+      ? event.argumentsTruncated
+        ? `…输入已截断，原文 ${event.argumentsCharacters ?? '更多'} 字符（其余调用仍保留）`
+        : undefined
+      : event.outputTruncated ?? (event.truncated && !event.argumentsTruncated)
         ? `${event.output}\n\n…输出已截断，原文 ${event.outputCharacters ?? '更多'} 字符（为保持委派结果可解析）`
-        : event.output;
+        : event.argumentsTruncated
+          ? `${event.output}\n\n…输入已截断，原文 ${event.argumentsCharacters ?? '更多'} 字符（其余调用仍保留）`
+          : event.output;
   return {
     kind: 'tool',
     name: event.toolName,

@@ -291,7 +291,10 @@ describe('ChatView reply usage details', () => {
     );
 
     await waitFor(() =>
-      expect(runtime.getUsageSummary).toHaveBeenCalledWith({ taskId: 'task-usage' }),
+      expect(runtime.getUsageSummary).toHaveBeenCalledWith({
+        taskId: 'task-usage',
+        includeRequests: false,
+      }),
     );
     fireEvent.mouseEnter(screen.getByTestId('context-ring'));
     expect((await screen.findByTestId('context-session-tokens')).textContent).toBe('12.3k');
@@ -399,7 +402,10 @@ describe('ChatView reply usage details', () => {
     );
 
     await waitFor(() =>
-      expect(runtime.getUsageSummary).toHaveBeenCalledWith({ taskId: 'task-usage-b' }),
+      expect(runtime.getUsageSummary).toHaveBeenCalledWith({
+        taskId: 'task-usage-b',
+        includeRequests: false,
+      }),
     );
     resolveOld({
       rows: [],
@@ -698,65 +704,39 @@ describe('ChatView reply usage details', () => {
   });
 
   it('shows provider-scoped today and 30-day usage below the reply detail', async () => {
-    const now = Date.now();
     runtime.getUsageSummary.mockImplementation(
-      async (request: { taskId?: string; sinceDays?: number }) => {
-        if (request.sinceDays !== 30) {
-          return {
-            rows: [],
-            requests: [],
-            tools: [],
-            toolModels: [],
-            toolFailures: [],
-            pricing: [],
-            totalRequests: 0,
-            totalTokensIn: 0,
-            totalTokensOut: 0,
-            totalCostByCurrency: {},
-            totalReasoningTokens: 0,
-            totalTokens: 0,
-          };
-        }
+      async (request: { taskId?: string; sinceDays?: number; includeRequests?: boolean }) => {
+        const isThirtyDays = request.sinceDays === 30;
         return {
-          rows: [],
-          requests: [
+          rows: [
             {
-              requestId: 'today-request',
-              occurredAt: new Date(now).toISOString(),
               providerId: 'provider-usage',
               modelId: 'model-usage',
-              tokensIn: 9_000,
-              tokensOut: 1_000,
-              totalTokens: 10_000,
-              status: 'success',
+              requests: isThirtyDays ? 2 : 1,
+              succeededRequests: isThirtyDays ? 2 : 1,
+              failedRequests: 0,
+              tokensIn: isThirtyDays ? 189_000 : 9_000,
+              tokensOut: isThirtyDays ? 21_000 : 1_000,
+              reasoningTokens: 0,
+              totalTokens: isThirtyDays ? 210_000 : 10_000,
               currency: 'USD',
-              estimatedCost: 0.12,
+              totalCost: isThirtyDays ? 0.42 : 0.12,
             },
             {
-              requestId: 'older-request',
-              occurredAt: new Date(now - 10 * 24 * 60 * 60_000).toISOString(),
-              providerId: 'provider-usage',
-              modelId: 'model-usage',
-              tokensIn: 180_000,
-              tokensOut: 20_000,
-              totalTokens: 200_000,
-              status: 'success',
-              currency: 'USD',
-              estimatedCost: 0.3,
-            },
-            {
-              requestId: 'other-provider',
-              occurredAt: new Date(now).toISOString(),
               providerId: 'provider-other',
               modelId: 'model-other',
+              requests: 1,
+              succeededRequests: 1,
+              failedRequests: 0,
               tokensIn: 999_000,
               tokensOut: 1_000,
+              reasoningTokens: 0,
               totalTokens: 1_000_000,
-              status: 'success',
               currency: 'USD',
-              estimatedCost: 9,
+              totalCost: 9,
             },
           ],
+          requests: [],
           tools: [],
           toolModels: [],
           toolFailures: [],
@@ -795,6 +775,11 @@ describe('ChatView reply usage details', () => {
     expect(within(usage).getByText('近30天')).toBeTruthy();
     expect(within(usage).getByText('$0.42 · 210.0k')).toBeTruthy();
     expect(usage.textContent).not.toContain('$9.00');
+    expect(
+      runtime.getUsageSummary.mock.calls
+        .filter(([request]) => request.sinceDays !== undefined)
+        .every(([request]) => request.includeRequests === false),
+    ).toBe(true);
   });
 
   it('keeps per-reply usage visible for a completed commentary-only assistant turn', async () => {

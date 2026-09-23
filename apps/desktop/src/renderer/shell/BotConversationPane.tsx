@@ -3,8 +3,6 @@ import {
   AlertCircle,
   ArrowRight,
   Check,
-  Eye,
-  EyeOff,
   LoaderCircle,
   MessageCircle,
   QrCode,
@@ -18,6 +16,9 @@ import discordIcon from './assets/bot-channels/discord.png';
 import dingtalkIcon from './assets/bot-channels/dingtalk.png';
 import qqIcon from './assets/bot-channels/qq.png';
 import { SlidingTabs } from './SlidingTabs.js';
+import { SecretInputControl } from './SecretInputControl.js';
+import { ToggleControl } from './ToggleControl.js';
+import { useVisiblePolling } from './use-visible-polling.js';
 import type {
   BotChannelConfigSummary,
   BotChannelPlatform,
@@ -122,12 +123,16 @@ export function BotConversationPane() {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string>();
   const [error, setError] = useState<string>();
+  const [refreshError, setRefreshError] = useState<string>();
   const [shownSecrets, setShownSecrets] = useState<Set<string>>(() => new Set());
   const [qr, setQr] = useState<{ value: string; image: string }>();
   const qrPollRef = useRef<ReturnType<typeof setInterval>>();
   const qrTimeoutRef = useRef<ReturnType<typeof setTimeout>>();
   const qrSessionRef = useRef(0);
   const configPanelRef = useRef<HTMLDivElement>(null);
+  const selectedRef = useRef(selected);
+  const initialRefreshRef = useRef(true);
+  selectedRef.current = selected;
 
   const clearWechatQrTimers = useCallback(() => {
     if (qrPollRef.current) clearInterval(qrPollRef.current);
@@ -151,29 +156,27 @@ export function BotConversationPane() {
         async ({ id }) => [id, await runtime.getBotChannelConfig({ platform: id })] as const,
       ),
     );
-    setConfigs(Object.fromEntries(entries));
-    return Object.fromEntries(entries) as Record<BotChannelPlatform, BotChannelConfigSummary>;
+    const next = Object.fromEntries(entries) as Record<
+      BotChannelPlatform,
+      BotChannelConfigSummary
+    >;
+    setConfigs(next);
+    if (initialRefreshRef.current) {
+      initialRefreshRef.current = false;
+      setDraft(draftFromConfig(next[selectedRef.current]));
+    }
+    setLoading(false);
+    setRefreshError(undefined);
   }, []);
 
-  useEffect(() => {
-    let active = true;
-    const load = async () => {
-      try {
-        const next = await refresh();
-        if (active) setDraft(draftFromConfig(next[selected]));
-      } catch (reason) {
-        if (active) setError(errorText(reason, '读取机器人设置失败。'));
-      } finally {
-        if (active) setLoading(false);
-      }
-    };
-    void load();
-    const timer = setInterval(() => void refresh().catch(() => undefined), 5_000);
-    return () => {
-      active = false;
-      clearInterval(timer);
-    };
-  }, [refresh, selected]);
+  const handleRefreshError = useCallback((reason: unknown) => {
+    setLoading(false);
+    setRefreshError(errorText(reason, '读取机器人设置失败。'));
+  }, []);
+  useVisiblePolling(refresh, {
+    intervalMs: 5_000,
+    onError: handleRefreshError,
+  });
 
   useEffect(
     () => () => {
@@ -330,17 +333,13 @@ export function BotConversationPane() {
               </p>
             </div>
           </div>
-          <button
-            type="button"
-            role="switch"
-            aria-checked={config.enabled}
-            aria-label={`启用 ${channel.label} 机器人`}
-            className="settings-bot-switch"
+          <ToggleControl
+            checked={config.enabled}
             disabled={loading || busy}
-            onClick={() => void save(!config.enabled, false)}
-          >
-            <span />
-          </button>
+            label={`启用 ${channel.label} 机器人`}
+            onChange={(enabled) => void save(enabled, false)}
+            className="settings-bot-switch"
+          />
         </div>
 
         <p className="settings-bot-description">{channel.description}</p>
@@ -401,10 +400,10 @@ export function BotConversationPane() {
             {notice}
           </p>
         ) : null}
-        {error || config.lastError ? (
+        {error || refreshError || config.lastError ? (
           <p className="settings-connectors-notice is-error" role="alert">
             <AlertCircle size={13} aria-hidden="true" />
-            {error ?? config.lastError}
+            {error ?? refreshError ?? config.lastError}
           </p>
         ) : null}
 
@@ -645,23 +644,18 @@ function SecretField({
   return (
     <label>
       <span>{label}</span>
-      <div className="settings-bot-secret">
-        <input
-          type={shown ? 'text' : 'password'}
-          aria-label={label}
-          value={value}
-          placeholder={configured ? '已安全保存，留空保持不变' : placeholder}
-          autoComplete="off"
-          onChange={(event) => onChange(event.target.value)}
-        />
-        <button
-          type="button"
-          aria-label={shown ? `隐藏${label}` : `显示${label}`}
-          onClick={onToggle}
-        >
-          {shown ? <EyeOff size={14} /> : <Eye size={14} />}
-        </button>
-      </div>
+      <SecretInputControl
+        containerClassName="settings-bot-secret"
+        visible={shown}
+        revealLabel={`显示${label}`}
+        concealLabel={`隐藏${label}`}
+        aria-label={label}
+        value={value}
+        placeholder={configured ? '已安全保存，留空保持不变' : placeholder}
+        autoComplete="off"
+        onChange={(event) => onChange(event.target.value)}
+        onToggle={onToggle}
+      />
     </label>
   );
 }

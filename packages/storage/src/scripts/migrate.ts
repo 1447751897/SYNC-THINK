@@ -6,6 +6,7 @@ import { openDatabaseAsync, type Database } from '../connection.js';
 import * as schema from '../schema/index.js';
 import { backupDatabase } from '../backup.js';
 import { FTS_MESSAGES_SQL, FTS_MESSAGES_TRIGGER_SQL } from '../fts.js';
+import { COLLABORATION_CHAT_DDL } from './collaboration-chat-ddl.js';
 
 // Phase 0 baseline migrations. Ordered; each migration name is unique and
 // recorded in `migration_record` so re-running is idempotent.
@@ -446,6 +447,94 @@ export const MIGRATIONS: { name: string; sql: string }[] = [
     // 对话级三档模式无法区分「这个智能体本来就该只读」和「它只是在 ask 会话里」。
     // 这里只加「这个智能体是否继承对话权限」，默认 read-only 保持现有安全默认。
     sql: `ALTER TABLE agent ADD COLUMN write_policy TEXT NOT NULL DEFAULT 'read-only';`,
+  },
+  {
+    name: '0058_delegated_run_read_model',
+    sql: `CREATE TABLE delegated_run (
+      child_run_id TEXT PRIMARY KEY,
+      parent_run_id TEXT NOT NULL,
+      thread_id TEXT NOT NULL REFERENCES thread(id) ON DELETE CASCADE,
+      agent_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('running','completed','failed','cancelled','timed_out')),
+      tool_count INTEGER NOT NULL CHECK (tool_count >= 0),
+      result TEXT,
+      updated_at TEXT NOT NULL,
+      sequence INTEGER NOT NULL CHECK (sequence >= 0)
+    );
+    CREATE INDEX delegated_run_thread_idx ON delegated_run(thread_id, updated_at);
+    CREATE INDEX delegated_run_parent_idx ON delegated_run(parent_run_id);`,
+  },
+  {
+    name: '0059_collaboration_chat',
+    sql: COLLABORATION_CHAT_DDL,
+  },
+  {
+    name: '0060_conversation_collaboration_kind',
+    sql: `ALTER TABLE conversation ADD COLUMN collaboration_kind TEXT;`,
+  },
+  {
+    name: '0061_task_plan_projection_run_scope',
+    sql: `ALTER TABLE native_task_plan_projection ADD COLUMN run_id TEXT;
+      CREATE INDEX native_task_plan_projection_run_idx ON native_task_plan_projection(task_id, run_id);`,
+  },
+  {
+    name: '0062_browser_workflow_runs_and_schedules',
+    sql: `CREATE TABLE browser_workflow_run (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL REFERENCES browser_automation_task(id) ON DELETE RESTRICT,
+      version_id TEXT NOT NULL REFERENCES browser_workflow_version(id) ON DELETE RESTRICT,
+      trigger TEXT NOT NULL CHECK (trigger IN ('manual','schedule','chat')),
+      status TEXT NOT NULL CHECK (status IN ('running','succeeded','failed','cancelled')),
+      step_count INTEGER NOT NULL CHECK (step_count BETWEEN 1 AND 200),
+      executed_step_count INTEGER NOT NULL DEFAULT 0 CHECK (executed_step_count BETWEEN 0 AND 200),
+      failed_step_sequence INTEGER,
+      error_code TEXT,
+      error TEXT,
+      started_at TEXT NOT NULL,
+      completed_at TEXT,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX browser_workflow_run_task_started_idx
+      ON browser_workflow_run(task_id, started_at DESC);
+    CREATE INDEX browser_workflow_run_status_idx
+      ON browser_workflow_run(status, updated_at);
+
+    CREATE TABLE browser_workflow_run_step (
+      run_id TEXT NOT NULL REFERENCES browser_workflow_run(id) ON DELETE RESTRICT,
+      sequence INTEGER NOT NULL CHECK (sequence BETWEEN 1 AND 200),
+      action_kind TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('succeeded','failed')),
+      output_url TEXT,
+      output_title TEXT,
+      screenshot_relative_path TEXT,
+      screenshot_embed_url TEXT,
+      screenshot_error_code TEXT,
+      error_code TEXT,
+      error TEXT,
+      started_at TEXT NOT NULL,
+      completed_at TEXT NOT NULL,
+      PRIMARY KEY (run_id, sequence)
+    );
+
+    CREATE TABLE browser_workflow_schedule (
+      task_id TEXT PRIMARY KEY REFERENCES browser_automation_task(id) ON DELETE RESTRICT,
+      enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0,1)),
+      interval_minutes INTEGER NOT NULL CHECK (interval_minutes BETWEEN 5 AND 10080),
+      next_run_at TEXT,
+      last_run_at TEXT,
+      revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      CHECK ((enabled = 0) OR (next_run_at IS NOT NULL))
+    );
+    CREATE INDEX browser_workflow_schedule_due_idx
+      ON browser_workflow_schedule(enabled, next_run_at);`,
+  },
+  {
+    name: '0063_browser_workflow_workspace',
+    sql: `ALTER TABLE browser_automation_task ADD COLUMN workspace_id TEXT;
+      CREATE INDEX browser_automation_task_workspace_idx ON browser_automation_task(workspace_id, updated_at);`,
   },
 ];
 

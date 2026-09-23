@@ -158,3 +158,24 @@ describe('SqliteScheduledTaskStore 历史记录', () => {
     }
   });
 });
+
+describe('weekly task persistence', () => {
+  it('round-trips the complete range and allows switching to specific weekdays', async () => {
+    const { store, task, close } = await openStore();
+    try {
+      const rule: ScheduledTask['rule'] = {
+        kind: 'weekly',
+        selection: { mode: 'range', start: 5, end: 1 },
+        time: '18:30',
+        startDate: '2027-01-04',
+      };
+      store.update(task.id, { rule, timeZone: 'Asia/Shanghai' });
+      expect(store.get(task.id)?.rule).toEqual(rule);
+      const edited: ScheduledTask['rule'] = { ...rule, selection: { mode: 'days', days: [1, 3] } };
+      store.update(task.id, { rule: edited });
+      expect(store.list().find((item) => item.id === task.id)?.rule).toEqual(edited);
+    } finally {
+      close();
+    }
+  });
+});

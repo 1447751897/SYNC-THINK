@@ -37,6 +37,14 @@ const { _electron, chromium } = workersRequire('playwright-core');
 
 const storageEntry = join(repo, 'packages', 'storage', 'dist', 'index.js');
 const secureStoreEntry = join(repo, 'packages', 'secure-store', 'dist', 'index.js');
+const runtimeSupervisorEntry = join(
+  repo,
+  'apps',
+  'desktop',
+  'dist',
+  'main',
+  'runtime-supervisor.js',
+);
 const electronPath = join(
   repo,
   'apps',
@@ -47,7 +55,7 @@ const electronPath = join(
   process.platform === 'win32' ? 'electron.exe' : 'electron',
 );
 
-for (const requiredPath of [storageEntry, secureStoreEntry, electronPath]) {
+for (const requiredPath of [storageEntry, secureStoreEntry, runtimeSupervisorEntry, electronPath]) {
   if (!existsSync(requiredPath)) {
     throw new Error(`Missing E2E prerequisite: ${requiredPath}. Build the workspace first.`);
   }
@@ -55,6 +63,7 @@ for (const requiredPath of [storageEntry, secureStoreEntry, electronPath]) {
 
 const storage = await import(pathToFileURL(storageEntry).href);
 const secure = await import(pathToFileURL(secureStoreEntry).href);
+const { stopManagedDaemon } = await import(pathToFileURL(runtimeSupervisorEntry).href);
 const {
   runMigrations,
   openDatabaseAsync,
@@ -256,6 +265,19 @@ async function stopFixtureBrowserProcesses(temp) {
   const powershell = [
     "$ErrorActionPreference='SilentlyContinue'",
     `Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine -like '*${escapedTemp}*' -and $_.Name -match 'msedge|chrome' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }`,
+  ].join('; ');
+  await execFileAsync('powershell.exe', ['-NoProfile', '-Command', powershell], {
+    windowsHide: true,
+  }).catch(() => undefined);
+}
+
+async function stopFixtureManagedProcesses(installId) {
+  if (process.platform !== 'win32') return;
+  const escapedInstallId = installId.replaceAll("'", "''");
+  const powershell = [
+    "$ErrorActionPreference='SilentlyContinue'",
+    `$markers = @('sync-think-managed-daemon=${escapedInstallId}', 'sync-think-managed-runtime=${escapedInstallId}')`,
+    "Get-CimInstance Win32_Process | Where-Object { if ($_.Name -ne 'node.exe' -or -not $_.CommandLine) { return $false }; $tokens = (($_.CommandLine -split '\\s+') -replace '^[\"'']|[\"'']$',''); return @($markers | Where-Object { $tokens -contains $_ }).Count -gt 0 } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }",
   ].join('; ');
   await execFileAsync('powershell.exe', ['-NoProfile', '-Command', powershell], {
     windowsHide: true,
@@ -643,6 +665,11 @@ async function runScenario(mode, node20, browserExecutable) {
 
     await closeDesktop(second.app, `${mode}:second`);
     second = undefined;
+    // A normal Desktop exit deliberately leaves the background owner running.
+    // End that owner explicitly so this isolated scenario can verify browser
+    // shutdown and session metadata cleanup.
+    await stopManagedDaemon(12_000, { installId, allowNoToken: true });
+    await stopFixtureManagedProcesses(installId);
     await waitForCondition(
       'browser shutdown after resolved handoff',
       async () => !(await isCdpAvailable(metadata)),
@@ -678,6 +705,7 @@ async function runScenario(mode, node20, browserExecutable) {
     }
     await closeBrowserViaCdp(metadata);
     await stopFixtureBrowserProcesses(temp);
+    await stopFixtureManagedProcesses(installId);
     await closeServer(server);
     console.log('preserved temp', temp);
   }
@@ -693,3 +721,7 @@ for (const mode of modes) {
   await runScenario(mode, node20, browserExecutable);
 }
 console.log(`\nBrowser handoff E2E complete: ${modes.join(', ')}`);
+// Playwright can retain a Windows child-process handle briefly after every
+// Electron application and managed daemon has exited. All scenario cleanup is
+// complete at this point, so do not let that stale handle stall CI.
+process.exit(0);

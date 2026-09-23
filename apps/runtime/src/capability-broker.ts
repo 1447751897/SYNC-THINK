@@ -206,15 +206,6 @@ export function parseUseCapabilityArgs(
   return { ref, arguments: args as Record<string, unknown> };
 }
 
-export function isCapabilityBrokerToolName(name: string): boolean {
-  const trimmed = name.trim();
-  if (trimmed === SEARCH_CAPABILITY_TOOL_NAME || trimmed === USE_CAPABILITY_TOOL_NAME) return true;
-  return (
-    /^mcp__[a-z0-9-]+__search_capability$/i.test(trimmed) ||
-    /^mcp__[a-z0-9-]+__use_capability$/i.test(trimmed)
-  );
-}
-
 export function isUseCapabilityToolName(name: string): boolean {
   const trimmed = name.trim();
   if (trimmed === USE_CAPABILITY_TOOL_NAME) return true;

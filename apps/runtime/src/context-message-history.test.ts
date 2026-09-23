@@ -1,6 +1,6 @@
 import type { Message, MessageId, ThreadId } from '@sync-think/shared';
 import { describe, expect, it } from 'vitest';
-import { buildProviderMessagesFromDurableMessages } from './context-message-history.js';
+import { buildProviderMessagesFromDurableMessages, formatDelegatedAgentRuntimeContext } from './context-message-history.js';
 
 function message(
   sequence: number,
@@ -20,6 +20,17 @@ function message(
 }
 
 describe('buildProviderMessagesFromDurableMessages', () => {
+  it('counts omitted legacy tools as calls rather than one display row', () => {
+    const context = formatDelegatedAgentRuntimeContext([message(1, 'assistant', '', '2026-09-19T00:00:00Z', [{
+      type: 'commentary', payload: { delegatedAgents: [{
+        childRunId: 'child', parentRunId: 'parent', name: 'Reviewer', status: 'cancelled',
+        toolEvents: [...Array.from({ length: 5 }, () => ({ toolName: 'read_file' })),
+          { toolName: '…另有 11 项工具调用未返回', omitted: true }],
+      }] },
+    }])]);
+    expect(context).toContain('16 项工具调用');
+    expect(context).toContain('childRunId: child');
+  });
   it('keeps only messages after the latest compact boundary and injects the summary separately', () => {
     const result = buildProviderMessagesFromDurableMessages({
       messages: [
@@ -112,6 +123,53 @@ describe('buildProviderMessagesFromDurableMessages', () => {
     expect(result.messages).toEqual([
       { role: 'assistant', phase: 'final_answer', content: '旧版回答' },
     ]);
+  });
+
+  it('restores the Runtime-confirmed cancellation of a background Agent', () => {
+    const result = buildProviderMessagesFromDurableMessages({
+      messages: [
+        message(1, 'assistant', '', '2026-09-19T01:03:22.238Z', [
+          {
+            type: 'commentary',
+            text: '代码审查员仍在后台运行。',
+            payload: {
+              delegatedAgents: [
+                {
+                  childRunId: 'child-cancelled',
+                  parentRunId: 'parent-1',
+                  name: '代码审查员',
+                  avatar: '代码',
+                  kind: 'existing',
+                  agentId: 'builtin-code-reviewer',
+                  status: 'cancelled',
+                  toolEvents: Array.from({ length: 6 }, (_, index) => ({
+                    toolName: `tool-${index}`,
+                    status: 'completed',
+                  })),
+                },
+              ],
+            },
+          },
+        ]),
+        message(2, 'user', '上一轮智能体被我停止了，你看不到？', '2026-09-19T01:06:00.000Z'),
+      ],
+      currentUserText: '',
+    });
+
+    expect(result.messages).toEqual([
+      { role: 'assistant', phase: 'commentary', content: '代码审查员仍在后台运行。' },
+      {
+        role: 'system',
+        content:
+          '[后台智能体状态（Runtime 已确认）]\n' +
+          '- 代码审查员：已由用户停止；6 项工具调用；未返回最终报告；childRunId: child-cancelled\n' +
+          '调用 agent_run_status 查询任务状态或读取最终报告；不要重复启动正在运行的任务。\n' +
+          '回答后续问题时以此状态为准；已停止、失败或超时的任务不得描述为仍在运行。',
+      },
+      { role: 'user', content: '上一轮智能体被我停止了，你看不到？' },
+    ]);
+    expect(JSON.stringify(result.messages)).toContain('child-cancelled');
+    expect(JSON.stringify(result.messages)).not.toContain('builtin-code-reviewer');
   });
 
   it('marks cancelled assistant output as an interrupted partial turn before restoring it', () => {

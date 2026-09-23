@@ -447,6 +447,14 @@ describe('0040 capability governance migration', () => {
       '0053_native_task_plan_projection',
       '0054_conversation_file_directory_indexes',
       '0055_provider_unverified',
+      '0056_agent_workspace_activation',
+      '0057_agent_write_policy',
+      '0058_delegated_run_read_model',
+      '0059_collaboration_chat',
+      '0060_conversation_collaboration_kind',
+      '0061_task_plan_projection_run_scope',
+      '0062_browser_workflow_runs_and_schedules',
+      '0063_browser_workflow_workspace',
     ]);
     const after = await openDatabaseAsync({ path: dbPath });
     try {

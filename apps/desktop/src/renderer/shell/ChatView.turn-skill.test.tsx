@@ -12,6 +12,8 @@ import type {
   Team,
 } from '@sync-think/shared';
 import { ChatView, resetRecentConversationPageCacheForTests } from './ChatView.js';
+import { invalidateMcpCatalog } from './mcp-catalog-loader.js';
+import { invalidateSkillCatalog } from './skill-catalog-loader.js';
 import { ToastProvider, resetToastStoreForTests } from './Toast.js';
 
 const runtime = {
@@ -182,6 +184,8 @@ async function waitForInitialMessages() {
 }
 
 beforeEach(() => {
+  invalidateMcpCatalog();
+  invalidateSkillCatalog();
   resetRecentConversationPageCacheForTests();
   runtime.appendMessage.mockReset().mockResolvedValue({ messageId: 'message-a', taskVersion: 1 });
   runtime.compactConversation.mockReset().mockResolvedValue({

@@ -1,4 +1,4 @@
-import type { ChatMessage } from './ChatView.js';
+import type { ChatMessage } from './conversation-types.js';
 import type { ComposeAttachment } from './compose-mention.js';
 import type {
   ReadApprovalRequestImagePayload,

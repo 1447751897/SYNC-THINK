@@ -14,7 +14,7 @@ import {
   readPinnedComposerSkills,
   writePinnedComposerSkills,
 } from './ComposerSlashMenu.js';
-import { NEWMAX_POPOVER_TRANSITION_MS } from './NewMaxComposerFrame.js';
+import { NEWMAX_POPOVER_TRANSITION_MS } from '@sync-think/ui-kit';
 
 function skill(
   index: number,

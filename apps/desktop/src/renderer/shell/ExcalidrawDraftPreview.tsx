@@ -9,6 +9,7 @@ import {
   Shapes,
   Sparkles,
 } from 'lucide-react';
+import { isRecord } from '@sync-think/shared/value-validation';
 import { ExcalidrawPreview } from './ExcalidrawPreview.js';
 import {
   parseExcalidrawDocument,
@@ -27,10 +28,6 @@ interface ExcalidrawDraftPreviewProps {
 
 function designDraftBridge(): NonNullable<Window['syncThink']>['runtime'] | undefined {
   return window.syncThink?.runtime;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
 
 interface DesignGenerationSelection {

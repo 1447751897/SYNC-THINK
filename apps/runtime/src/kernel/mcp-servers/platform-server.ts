@@ -156,7 +156,7 @@ export const platformServer: KernelMcpServerDefinition = {
     {
       name: 'task_schedule',
       description:
-        'Manage scheduled tasks (定时任务). Actions: "create" (name, instruction, target {kind:"agent",agentId} or {kind:"model",modelId}, rule {kind:"at",runAt} | {kind:"every",intervalMinutes≥5,firstRunAt?} | {kind:"random",windowStart,windowEnd,minTimes,maxTimes} | {kind:"cron",expression}, timeZone?) creates a task that fires by injecting the instruction into its own conversation; "list" returns all tasks; "cancel" (taskId) disables a task. Creating or cancelling requires approval outside full-access mode.',
+        'Manage scheduled tasks (定时任务). Actions: "create" (name, instruction, target {kind:"agent",agentId} or {kind:"model",modelId}, rule {kind:"at",runAt} | {kind:"every",intervalMinutes≥5,firstRunAt?} | {kind:"random",windowStart,windowEnd,minTimes,maxTimes} | {kind:"weekly",selection:{mode:"days",days:[1,3]} or {mode:"range",start:1,end:5},time:"09:00",startDate:"YYYY-MM-DD"} (Monday=1, Sunday=7; inclusive ranges may wrap) | {kind:"cron",expression}, timeZone?) creates a task that fires by injecting the instruction into its own conversation; "list" returns all tasks; "cancel" (taskId) disables a task. Creating or cancelling requires approval outside full-access mode.',
       approval: 'never',
       planningDenied: true,
       inputSchema: {
@@ -183,7 +183,7 @@ export const platformServer: KernelMcpServerDefinition = {
             type: 'object',
             additionalProperties: false,
             properties: {
-              kind: { type: 'string', enum: ['at', 'every', 'random', 'cron'] },
+              kind: { type: 'string', enum: ['at', 'every', 'weekly', 'random', 'cron'] },
               runAt: { type: 'string' },
               intervalMinutes: { type: 'number' },
               firstRunAt: { type: 'string' },
@@ -192,6 +192,17 @@ export const platformServer: KernelMcpServerDefinition = {
               minTimes: { type: 'number' },
               maxTimes: { type: 'number' },
               expression: { type: 'string' },
+            time: { type: 'string', description: 'Weekly start time, HH:mm in task timeZone.' },
+            startDate: { type: 'string', description: 'Weekly effective date, YYYY-MM-DD in task timeZone.' },
+            selection: {
+              type: 'object', additionalProperties: false,
+              properties: {
+                mode: { type: 'string', enum: ['days', 'range'] },
+                days: { type: 'array', items: { type: 'integer', minimum: 1, maximum: 7 }, minItems: 1, maxItems: 7 },
+                start: { type: 'integer', minimum: 1, maximum: 7 },
+                end: { type: 'integer', minimum: 1, maximum: 7 },
+              },
+            },
             },
           },
           timeZone: { type: 'string', description: 'IANA time zone, default UTC.' },

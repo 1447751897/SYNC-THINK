@@ -33,12 +33,39 @@ import { MarkdownImageGallery } from './MarkdownImageGallery.js';
 
 const CodeReadingContext = createContext<Map<number, CodeBlockReadingState> | undefined>(undefined);
 
+interface MarkdownReadingState {
+  source: string;
+  states: Map<number, CodeBlockReadingState>;
+}
+
+const MARKDOWN_READING_STATE_LIMIT = 240;
+const markdownReadingStates = new Map<string, MarkdownReadingState>();
+
+function readMarkdownReadingState(key: string, source: string): MarkdownReadingState {
+  const existing = markdownReadingStates.get(key);
+  if (existing) {
+    markdownReadingStates.delete(key);
+    markdownReadingStates.set(key, existing);
+    return existing;
+  }
+  const created = { source, states: new Map<number, CodeBlockReadingState>() };
+  markdownReadingStates.set(key, created);
+  while (markdownReadingStates.size > MARKDOWN_READING_STATE_LIMIT) {
+    const oldest = markdownReadingStates.keys().next().value;
+    if (oldest === undefined) break;
+    markdownReadingStates.delete(oldest);
+  }
+  return created;
+}
+
 function MarkdownPre({ children }: { children?: ReactNode }) {
   return <>{children}</>;
 }
 
 interface MarkdownContentProps {
   text: string;
+  /** Stable owner for code-block reading state across virtualized row remounts. */
+  readingStateKey?: string;
   /** When true, show a trailing caret for streaming replies. */
   streaming?: boolean;
   /** File previews disable executable HTML embeds while keeping passive Markdown rendering. */
@@ -659,6 +686,7 @@ function CollapsibleSection({
  */
 export function MarkdownContent({
   text,
+  readingStateKey,
   streaming = false,
   interactiveEmbeds = true,
   className,
@@ -670,14 +698,18 @@ export function MarkdownContent({
   onOpenUrl,
   imageModelBySrc,
 }: MarkdownContentProps) {
-  const readingRef = useRef({
+  const localReadingRef = useRef({
     source: text,
     states: new Map<number, CodeBlockReadingState>(),
   });
-  if (!text.startsWith(readingRef.current.source)) {
-    readingRef.current = { source: text, states: new Map() };
+  const readingState = readingStateKey
+    ? readMarkdownReadingState(readingStateKey, text)
+    : localReadingRef.current;
+  if (!text.startsWith(readingState.source)) {
+    readingState.source = text;
+    readingState.states.clear();
   }
-  readingRef.current.source = text;
+  readingState.source = text;
   const hadStreamingRef = useRef(false);
   if (streaming) hadStreamingRef.current = true;
   const useIncrementalRenderer = streaming || hadStreamingRef.current;
@@ -694,56 +726,56 @@ export function MarkdownContent({
     [displayText, streaming],
   );
   return (
-    <CodeReadingContext.Provider value={readingRef.current.states}>
+    <CodeReadingContext.Provider value={readingState.states}>
       <GeneratedImageModelsContext.Provider value={generatedImageModels}>
-      <div className={`shell-md ${className ?? ''}`} data-streaming={streaming ? '1' : '0'}>
-        {useIncrementalRenderer ? (
-          <IncrementalStreamingMarkdown
-            text={displayText}
-            streaming={streaming}
-            projectFolder={projectFolder}
-            conversationId={conversationId}
-            modelId={modelId}
-            onOpenFile={onOpenFile}
-            onOpenHtmlInBrowser={onOpenHtmlInBrowser}
-            onOpenUrl={onOpenUrl}
-          />
-        ) : (
-          sections.map((section, index) =>
-            section.title ? (
-              <CollapsibleSection
-                key={`${index}:${section.title}`}
-                title={section.title}
-                body={section.body}
-                sourceOffset={section.start}
-                streaming={false}
-                interactiveEmbeds={interactiveEmbeds}
-                projectFolder={projectFolder}
-                conversationId={conversationId}
-                modelId={modelId}
-                onOpenFile={onOpenFile}
-                onOpenHtmlInBrowser={onOpenHtmlInBrowser}
-                onOpenUrl={onOpenUrl}
-              />
-            ) : (
-              <MarkdownRenderer
-                key={`intro:${index}`}
-                text={section.body}
-                sourceOffset={section.start}
-                streaming={false}
-                interactiveEmbeds={interactiveEmbeds}
-                projectFolder={projectFolder}
-                conversationId={conversationId}
-                modelId={modelId}
-                onOpenFile={onOpenFile}
-                onOpenHtmlInBrowser={onOpenHtmlInBrowser}
-                onOpenUrl={onOpenUrl}
-              />
-            ),
-          )
-        )}
-        {streaming ? <span className="shell-md-cursor" aria-hidden="true" /> : null}
-      </div>
+        <div className={`shell-md ${className ?? ''}`} data-streaming={streaming ? '1' : '0'}>
+          {useIncrementalRenderer ? (
+            <IncrementalStreamingMarkdown
+              text={displayText}
+              streaming={streaming}
+              projectFolder={projectFolder}
+              conversationId={conversationId}
+              modelId={modelId}
+              onOpenFile={onOpenFile}
+              onOpenHtmlInBrowser={onOpenHtmlInBrowser}
+              onOpenUrl={onOpenUrl}
+            />
+          ) : (
+            sections.map((section, index) =>
+              section.title ? (
+                <CollapsibleSection
+                  key={`${index}:${section.title}`}
+                  title={section.title}
+                  body={section.body}
+                  sourceOffset={section.start}
+                  streaming={false}
+                  interactiveEmbeds={interactiveEmbeds}
+                  projectFolder={projectFolder}
+                  conversationId={conversationId}
+                  modelId={modelId}
+                  onOpenFile={onOpenFile}
+                  onOpenHtmlInBrowser={onOpenHtmlInBrowser}
+                  onOpenUrl={onOpenUrl}
+                />
+              ) : (
+                <MarkdownRenderer
+                  key={`intro:${index}`}
+                  text={section.body}
+                  sourceOffset={section.start}
+                  streaming={false}
+                  interactiveEmbeds={interactiveEmbeds}
+                  projectFolder={projectFolder}
+                  conversationId={conversationId}
+                  modelId={modelId}
+                  onOpenFile={onOpenFile}
+                  onOpenHtmlInBrowser={onOpenHtmlInBrowser}
+                  onOpenUrl={onOpenUrl}
+                />
+              ),
+            )
+          )}
+          {streaming ? <span className="shell-md-cursor" aria-hidden="true" /> : null}
+        </div>
       </GeneratedImageModelsContext.Provider>
     </CodeReadingContext.Provider>
   );

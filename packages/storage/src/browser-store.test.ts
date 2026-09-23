@@ -8,6 +8,23 @@ import { runMigrations } from './scripts/migrate.js';
 
 const tempDirs: string[] = [];
 
+it('persists task workspace ownership and moves legacy tasks with revision protection', async () => {
+  const f = await openStore();
+  try {
+    const input = { profileId: 'default', name: 'Check in', instruction: 'Check in daily', startUrl: 'https://example.test', source: 'manual' as const };
+    const assigned = f.store.createAutomationTaskDraft({ ...input, workspaceId: 'workspace-a' });
+    const legacy = f.store.createAutomationTaskDraft(input);
+    expect(f.store.listAutomationTasks({ workspaceId: 'workspace-a' }).map(task => task.id)).toEqual([assigned.task.id]);
+    const moved = f.store.assignAutomationTaskWorkspace({ taskId: legacy.task.id, workspaceId: 'workspace-b', expectedRevision: 1 });
+    expect(moved.workspaceId).toBe('workspace-b');
+    expect(f.store.getAutomationTask(legacy.task.id)?.workspaceId).toBe('workspace-b');
+    expect(() => f.store.assignAutomationTaskWorkspace({ taskId: legacy.task.id, workspaceId: null, expectedRevision: 1 })).toThrow(/revision_conflict/);
+    expect(f.store.assignAutomationTaskWorkspace({ taskId: legacy.task.id, workspaceId: null, expectedRevision: moved.revision }).workspaceId).toBeUndefined();
+    const imported = f.store.importChatAutomationTask({ ...input, workspaceId: 'workspace-b', steps: [{ kind: 'navigate', url: input.startUrl }], publish: false });
+    expect(imported.task.workspaceId).toBe('workspace-b');
+  } finally { f.close(); }
+});
+
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
@@ -980,6 +997,180 @@ describe('SqliteBrowserStore Browser automation workflow lifecycle', () => {
           { decision: 'approve', draftId: created.draft.id },
           { decision: 'approve', draftId: revision.draft.id, note: 'Approved V2.' },
         ],
+      });
+    } finally {
+      fixture.close();
+    }
+  });
+
+  it('saves a stopped recording as a draft and publishes directly after user confirmation', async () => {
+    const fixture = await openStore();
+    try {
+      const created = fixture.store.createAutomationTaskDraft({
+        id: 'browser-task-direct-publish',
+        draftId: 'browser-draft-direct-publish',
+        profileId: 'default',
+        name: 'Direct publish task',
+        instruction: 'Record valid steps and publish them.',
+        startUrl: 'https://example.test/direct',
+        source: 'manual',
+        now: '2026-08-05T04:00:00.000Z',
+      });
+      const firstRecording = createStoppedRecording(fixture.store, {
+        id: 'recording-direct-save',
+        startUrl: created.task.startUrl,
+        now: '2026-08-05T04:01:00.000Z',
+      });
+      fixture.store.attachWorkflowDraftRecording({
+        draftId: created.draft.id,
+        recordingId: firstRecording.id,
+      });
+      const saved = fixture.store.saveWorkflowDraft({
+        draftId: created.draft.id,
+        recordingId: firstRecording.id,
+      });
+      expect(saved).toMatchObject({
+        task: { status: 'draft' },
+        draft: { status: 'editing', stepCount: 2, recordingId: firstRecording.id },
+      });
+
+      const secondRecording = createStoppedRecording(fixture.store, {
+        id: 'recording-direct-publish',
+        startUrl: created.task.startUrl,
+        now: '2026-08-05T04:02:00.000Z',
+      });
+      fixture.store.attachWorkflowDraftRecording({
+        draftId: created.draft.id,
+        recordingId: secondRecording.id,
+      });
+      const published = fixture.store.publishWorkflowDraft({
+        draftId: created.draft.id,
+        recordingId: secondRecording.id,
+      });
+      expect(published).toMatchObject({
+        task: { status: 'enabled', publishedVersionId: published.version.id },
+        draft: { status: 'approved', stepCount: 2 },
+        version: { versionNumber: 1, stepCount: 2 },
+      });
+      expect(fixture.store.listWorkflowReviewsForTask(created.task.id).reviews).toEqual([]);
+    } finally {
+      fixture.close();
+    }
+  });
+
+  it('imports standalone recording steps with their manual source', async () => {
+    const fixture = await openStore();
+    try {
+      const imported = fixture.store.importChatAutomationTask({
+        id: 'browser-task-standalone-recording',
+        draftId: 'browser-draft-standalone-recording',
+        profileId: 'default',
+        name: 'Standalone recording',
+        instruction: 'Replay the manually recorded browser operations.',
+        startUrl: 'https://example.test/standalone',
+        steps: [{ kind: 'navigate', url: 'https://example.test/standalone' }],
+        publish: true,
+        source: 'manual',
+        now: '2026-08-05T04:20:00.000Z',
+      });
+
+      expect(imported).toMatchObject({
+        task: { source: 'manual', status: 'enabled' },
+        draft: { status: 'approved', stepCount: 1 },
+        version: { versionNumber: 1, stepCount: 1 },
+      });
+    } finally {
+      fixture.close();
+    }
+  });
+
+  it('persists workflow runs, step evidence, counters, and interval schedules', async () => {
+    const fixture = await openStore();
+    try {
+      const created = fixture.store.createAutomationTaskDraft({
+        id: 'browser-task-run-history',
+        draftId: 'browser-draft-run-history',
+        profileId: 'default',
+        name: 'Run history',
+        instruction: 'Open the report and keep durable execution evidence.',
+        startUrl: 'https://example.test/report',
+        source: 'manual',
+      });
+      const recording = createStoppedRecording(fixture.store, {
+        id: 'recording-run-history',
+        startUrl: created.task.startUrl,
+        now: '2026-08-05T07:00:00.000Z',
+      });
+      fixture.store.attachWorkflowDraftRecording({
+        draftId: created.draft.id,
+        recordingId: recording.id,
+      });
+      fixture.store.submitWorkflowDraft({
+        draftId: created.draft.id,
+        recordingId: recording.id,
+      });
+      const approved = fixture.store.reviewWorkflowDraft({
+        draftId: created.draft.id,
+        decision: 'approve',
+      });
+
+      const run = fixture.store.startWorkflowRun({
+        id: 'browser-workflow-run-test',
+        taskId: created.task.id,
+        versionId: approved.version!.id,
+        trigger: 'manual',
+        stepCount: 2,
+        now: '2026-08-05T07:01:00.000Z',
+      });
+      fixture.store.appendWorkflowRunStep({
+        runId: run.id,
+        sequence: 1,
+        actionKind: 'navigate',
+        status: 'succeeded',
+        outputUrl: created.task.startUrl,
+        screenshotRelativePath: '.sync-think/screenshots/run-step-001.png',
+        screenshotEmbedUrl: 'sync-think-image://screenshot/run-step-001.png',
+        startedAt: '2026-08-05T07:01:01.000Z',
+        completedAt: '2026-08-05T07:01:02.000Z',
+      });
+      const completed = fixture.store.completeWorkflowRun({
+        runId: run.id,
+        status: 'failed',
+        executedStepCount: 1,
+        failedStepSequence: 2,
+        errorCode: 'browser.test-failure',
+        error: 'Step failed.',
+        now: '2026-08-05T07:01:03.000Z',
+      });
+      expect(completed).toMatchObject({
+        status: 'failed',
+        failedStepSequence: 2,
+        steps: [
+          { sequence: 1, screenshotRelativePath: '.sync-think/screenshots/run-step-001.png' },
+        ],
+      });
+      expect(fixture.store.getAutomationTask(created.task.id)).toMatchObject({
+        successCount: 0,
+        failureCount: 1,
+        lastRunAt: '2026-08-05T07:01:03.000Z',
+      });
+
+      const schedule = fixture.store.upsertWorkflowSchedule({
+        taskId: created.task.id,
+        enabled: true,
+        intervalMinutes: 15,
+        now: '2026-08-05T07:02:00.000Z',
+      });
+      expect(schedule).toMatchObject({ enabled: true, intervalMinutes: 15, revision: 1 });
+      expect(fixture.store.listDueWorkflowSchedules('2026-08-05T07:17:00.000Z')).toHaveLength(1);
+      const advanced = fixture.store.advanceWorkflowSchedule(
+        created.task.id,
+        '2026-08-05T07:17:00.000Z',
+      );
+      expect(advanced).toMatchObject({
+        revision: 2,
+        lastRunAt: '2026-08-05T07:17:00.000Z',
+        nextRunAt: '2026-08-05T07:32:00.000Z',
       });
     } finally {
       fixture.close();

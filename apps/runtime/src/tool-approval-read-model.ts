@@ -1,4 +1,59 @@
 import type { Event, RunId, ThreadId } from '@sync-think/shared';
+import type { PendingToolApprovalSummary, ToolApprovalScope } from '@sync-think/protocol';
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+export function parseToolApprovalScope(value: unknown): ToolApprovalScope {
+  return value === 'session' || value === 'always-app' ? value : 'once';
+}
+
+export function pendingToolApprovalSummaryFromEvent(
+  event: Event,
+): PendingToolApprovalSummary | undefined {
+  const payload = event.payload ?? {};
+  const approvalId = typeof payload.approvalId === 'string' ? payload.approvalId : undefined;
+  const threadId = typeof payload.threadId === 'string' ? payload.threadId : undefined;
+  const runId = (typeof payload.runId === 'string' ? payload.runId : event.runId) ?? undefined;
+  const toolName = typeof payload.toolName === 'string' ? payload.toolName : undefined;
+  if (!approvalId || !threadId || !runId || !toolName) return undefined;
+
+  const argumentsValue = payload.arguments;
+  const argumentsObject = isPlainRecord(argumentsValue) ? argumentsValue : undefined;
+  const riskValue = payload.risk;
+  const risk = isPlainRecord(riskValue)
+    ? {
+        level: typeof riskValue.level === 'string' ? riskValue.level : 'unknown',
+        reasonCodes: Array.isArray(riskValue.reasonCodes)
+          ? riskValue.reasonCodes.filter((item): item is string => typeof item === 'string')
+          : [],
+        ...(typeof riskValue.humanOnlyAction === 'string'
+          ? { humanOnlyAction: riskValue.humanOnlyAction }
+          : {}),
+      }
+    : undefined;
+  const allowedScopes: ToolApprovalScope[] = Array.isArray(payload.allowedScopes)
+    ? [...new Set(payload.allowedScopes.map(parseToolApprovalScope))]
+    : ['once'];
+
+  return {
+    approvalId,
+    threadId: threadId as PendingToolApprovalSummary['threadId'],
+    runId: runId as RunId,
+    ...(typeof payload.toolCallId === 'string' ? { toolCallId: payload.toolCallId } : {}),
+    toolName,
+    ...(argumentsObject ? { arguments: argumentsObject } : {}),
+    title: typeof payload.title === 'string' && payload.title ? payload.title : toolName,
+    detail: typeof payload.detail === 'string' && payload.detail ? payload.detail : '需要你的批准',
+    ...(typeof payload.path === 'string' ? { path: payload.path } : {}),
+    ...(typeof payload.command === 'string' ? { command: payload.command } : {}),
+    ...(risk ? { risk } : {}),
+    allowedScopes,
+    status: 'pending',
+    createdAt: event.occurredAt,
+  };
+}
 
 export interface DurableToolApprovalState {
   requested: Event;

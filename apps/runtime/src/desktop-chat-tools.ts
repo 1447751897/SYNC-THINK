@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { ProviderToolCall, ProviderToolSchema } from '@sync-think/adapters';
 import { ErrorCode, type HumanOnlyAction } from '@sync-think/shared';
+import { isRecord } from '@sync-think/shared/value-validation';
 import {
   IsolatedDesktopWorker,
   createDesktopHostRequest,
@@ -406,10 +407,6 @@ function omitBlankOptionalStrings(
     if (typeof field === 'string' && field.trim().length === 0) delete normalized[key];
   }
   return normalized;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 export async function executeChatDesktopTool(input: {

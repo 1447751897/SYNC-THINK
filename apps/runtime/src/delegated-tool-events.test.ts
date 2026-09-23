@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { AssistantTurnSegment } from '@sync-think/protocol/assistant-turn';
-import { delegatedToolEventsFromTimeline } from './runtime.js';
+import { delegatedToolEventsFromTimeline } from './delegation-tool-events.js';
 
 function toolSegment(
   index: number,
@@ -51,9 +51,11 @@ describe('delegatedToolEventsFromTimeline', () => {
     expect(() => JSON.parse(serialized)).not.toThrow();
     expect(events[0]?.truncated).toBe(true);
     expect(events[0]?.outputCharacters).toBe(20_000);
-    // Rows past the budget are reported rather than silently dropped.
-    expect(events.at(-1)?.omitted).toBe(true);
-    expect(events.at(-1)?.toolName).toContain('未返回');
+    // A large early output does not erase later commands/inputs.
+    expect(events).toHaveLength(40);
+    expect(events.every((event) => event.arguments === '{"path":"p"}')).toBe(true);
+    expect(events.every((event) => event.outputTruncated === true)).toBe(true);
+    expect(events.some((event) => event.omitted)).toBe(false);
   });
 
   it('caps the row count even when outputs are small', () => {
@@ -64,5 +66,6 @@ describe('delegatedToolEventsFromTimeline', () => {
     expect(events.filter((event) => !event.omitted)).toHaveLength(80);
     expect(events.at(-1)).toMatchObject({ omitted: true });
     expect(events.at(-1)?.toolName).toContain('40');
+    expect(events.at(-1)?.toolName).toContain('超出显示上限');
   });
 });

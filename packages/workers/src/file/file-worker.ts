@@ -11,6 +11,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { dirname, isAbsolute, join, resolve, win32 } from 'node:path';
+import { isPathWithinRoot } from '@sync-think/shared/node-paths';
 import type {
   Worker,
   WorkerEvent,
@@ -18,7 +19,6 @@ import type {
   WorkerJobOutput,
   WorkerToken,
 } from '../types.js';
-import { isPathInside } from '../types.js';
 import { DEFAULT_MAX_OUTPUT_BYTES, startRefusal } from '../process-runner.js';
 
 export interface FileAction {
@@ -59,7 +59,7 @@ export class FakeFileWorker implements FileWorker {
   async *exec(input: FileWorkerInput, token: WorkerToken): AsyncIterable<WorkerEvent> {
     if (
       input.action.relative &&
-      !isPathInside(`${input.workingDir}/${input.action.relative}`, token.allowedRoot)
+      !isPathWithinRoot(token.allowedRoot, `${input.workingDir}/${input.action.relative}`)
     ) {
       yield {
         type: 'failed',
@@ -486,11 +486,11 @@ async function resolveFileTarget(
   }
   const workingDir = resolve(input.workingDir);
   const allowedRoot = resolve(token.allowedRoot);
-  if (!isPathInside(workingDir, allowedRoot)) {
+  if (!isPathWithinRoot(allowedRoot, workingDir)) {
     throw new Error('security.path_traversal: workingDir escapes allowedRoot');
   }
   const target = resolve(workingDir, relative);
-  if (!isPathInside(target, allowedRoot)) {
+  if (!isPathWithinRoot(allowedRoot, target)) {
     throw new Error('security.path_traversal: relative path escapes allowedRoot');
   }
 
@@ -510,7 +510,7 @@ async function resolveFileTarget(
     }
   }
   const realExisting = await realpath(existing);
-  if (!isPathInside(realExisting, realRoot)) {
+  if (!isPathWithinRoot(realRoot, realExisting)) {
     throw new Error('security.path_traversal: symlink escapes allowedRoot');
   }
   if (!allowMissing && existing !== target) throw new Error('worker.file-not-found');

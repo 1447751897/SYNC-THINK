@@ -13,6 +13,7 @@ import {
 } from 'node:fs';
 import { dirname, resolve, sep } from 'node:path';
 import { gzipSync, gunzipSync } from 'node:zlib';
+import { isRecord } from '@sync-think/shared/value-validation';
 
 export const EVENT_PAYLOAD_ENVELOPE_KEY = '$syncThinkPayload';
 export const EVENT_PAYLOAD_ENVELOPE_VERSION = 1;
@@ -56,10 +57,6 @@ export interface EventPayloadSidecarWritePlan {
 }
 
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
 
 function parseJsonObject(json: string, field: string): Record<string, unknown> {
   let parsed: unknown;

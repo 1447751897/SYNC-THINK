@@ -27,6 +27,12 @@ export interface MessageImage {
   mimeType?: string;
 }
 
+export interface MessageFileReference {
+  path: string;
+  name: string;
+  kind: 'file' | 'dir';
+}
+
 /**
  * Detect an active @-mention query just before the caret.
  * Triggers only when '@' starts a token (start / whitespace / newline).
@@ -52,18 +58,6 @@ export function stripMentionToken(
 ): { text: string; caret: number } {
   const next = text.slice(0, mention.atIndex) + text.slice(mention.caret);
   return { text: next, caret: mention.atIndex };
-}
-
-/** @deprecated kept for tests — prefer stripMentionToken + attachment chips. */
-export function applyMention(
-  text: string,
-  mention: MentionQuery,
-  filePath: string,
-): { text: string; caret: number } {
-  const insert = `@${filePath} `;
-  const next = text.slice(0, mention.atIndex) + insert + text.slice(mention.caret);
-  const caret = mention.atIndex + insert.length;
-  return { text: next, caret };
 }
 
 /** File basename for chip label. */
@@ -122,6 +116,22 @@ export function buildMessageWithAttachments(
   return `${body}\n\n${block}`;
 }
 
+/** Split the generated footer for the renderer while preserving outbound text. */
+export function splitMessageFileReferences(text: string): {
+  body: string;
+  files: MessageFileReference[];
+} {
+  const match = /(?:^|\n\n)引用文件：\s*\n((?:-\s*[^\n]+\n?)+)\s*$/u.exec(text);
+  if (!match) return { body: text, files: [] };
+  const files = (match[1] ?? '')
+    .split(/\r?\n/u)
+    .map((line) => line.replace(/^\s*-\s*/u, '').trim())
+    .filter(Boolean)
+    .map((path) => ({ path, name: fileNameFromPath(path), kind: 'file' as const }));
+  if (files.length === 0) return { body: text, files: [] };
+  return { body: text.slice(0, match.index).trimEnd(), files };
+}
+
 /** Map image attachments into message-local previews for the bubble. */
 export function messageImagesFromAttachments(
   attachments: readonly ComposeAttachment[],
@@ -132,18 +142,6 @@ export function messageImagesFromAttachments(
     url: a.previewUrl!,
     mimeType: a.mimeType,
   }));
-}
-
-/** Extract unique @path tokens from a message (legacy inline form). */
-export function extractMentionPaths(text: string): string[] {
-  const found: string[] = [];
-  const re = /@([A-Za-z0-9_./\\-]+(?:\.[A-Za-z0-9_]+)?)/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(text)) !== null) {
-    const p = m[1];
-    if (p && !found.includes(p)) found.push(p);
-  }
-  return found;
 }
 
 /** Read a browser File as a data URL (for image chips / local preview). */

@@ -1,4 +1,1260 @@
-## 当前状态：仅处理当前任务清单与导航位置
+## 当前状态：多智能体协作第二阶段通信与管理闭环已完成（2026-09-21）
+
+### 本轮续接结果
+
+- 原线程第 4 阶段的外部 Kernel 协作工具通道、构建、迁移和第一阶段自动化验收已确认完成；本轮继续 `PLAN.md` 第二阶段。
+- 已完成群内智能体关联单聊开关、父群消息引用、策略关闭撤销排队投递、成员与父群权限复核、消息级失败重试、真实 SQLite 任务重试修复、规划批准自动生成任务以及活动中心跨会话协作任务投影。
+- 关联单聊已有消息和执行历史在关闭开关后保留；运行中的任务继续，后续发送/分派/重试被拒绝。Runtime 启动时会清理策略关闭期间遗留的排队子会话工作。
+- 批准正式规划时，Runtime 使用稳定请求 ID 将指定 revision 的步骤幂等转换为顺序依赖的协作任务。任务保存 `planId / revision / stepId`，当前计划步骤没有执行者字段，因此统一交给会话协调成员；批准响应返回任务 ID，Desktop 据此跳过普通执行轮，避免重复执行。
+- 模型协作会话的协调任务保持会话 `modelId` 与 model track；智能体单聊/群聊继续绑定实际执行成员的 Agent 配置。
+- 长历史和 Runtime 重启恢复继续复用现有持久协作快照、`contextSequence`、attempt 状态和 `recover()`，没有新增第二套存储。
+- 定向验证：Runtime 60 项、Desktop 28 项、Protocol 3 项、Protocol/Runtime/Desktop 类型检查和 Shared/Protocol 构建通过；966 文件架构门禁及 13/13 包整仓构建通过。Desktop initial/total JS 为 2,135,889 / 3,008,252 字节。Electron PID `58868` 与 managed Runtime PID `3340` 已于 21:33 使用最新产物干净启动，二者均正常响应，启动错误日志为空。
+
+## 历史状态：高内聚、低耦合架构重构阶段已完成（第一百八十二批）
+
+### 阶段收口审计（2026-09-20）
+
+- 最初审查中的 P0/P1 性能与竞态、R-1～R-6 重复边界、D-1～D-19 已确认死代码/兼容入口以及 B-1～B-4 可复现缺陷均已关闭或明确保留；生产依赖图无循环，956 个源码文件受架构门禁约束。P2/P3 巨型文件继续存在，但已具备独立用例、投影、注册表、Repository、窄端口和 Main 注册边界，不再以继续拆空或任意行数作为本阶段完成条件。
+- 累计 340 个 Runtime/Desktop 调用点复用专属边界，移除 49 个门面转换/适配方法、43 个原始状态容器（含 1 个纯写入死状态），合并 1 份重复协调模块；`runtime.ts` 当前 32,439 行。后续只在真实变更热点、缺陷或性能证据出现时渐进拆分。
+- 最终门禁：第 182 批 54 项定向回归、Runtime 类型检查、210/210 架构测试、956 文件扫描、13/13 包构建、全仓 typecheck 22/22 task 和 `git diff --check` 通过；Electron PID `67332` 保持响应，未为纯架构改动重启。
+- 非本阶段阻塞的独立债务：全仓 lint 11/13 task 通过，未修改的基线文件仍有 7 个 error（Core 1、Desktop 6）和 22 个 warning；全仓 test 19/22 task 后由 Storage rollback 临时库 `EBUSY` 停止，失败文件串行加长超时复跑为 8/9 通过、1 项仍在 Windows 删除临时备份库时被占用。这两项应作为独立质量任务处理，避免与架构拆分混改。
+
+### 续接记录（2026-09-20，第一百八十二批 Kernel Conversation Session Repository 解耦）
+
+- 新增 `KernelConversationSessionRepository`，集中外部 Kernel 会话记录的持久格式解析、字段归一化、设置仓读穿缓存、保存替换和带期望 session ID 的条件删除；返回前一记录，让 Runtime 继续拥有 Gateway continuation 的释放编排。
+- Runtime 的会话加载、保存和清除 3 个调用点改用 Repository，删除原始 `kernelConversationSessions` Map 与门面内解析函数；持久 key、tombstone、fingerprint 和续接语义保持不变。文件由 32,512 行降至 32,439 行。
+- Repository 9 项、Kernel session gap 12 项、external kernel run 33 项，共 54 项定向回归通过；Runtime 类型检查、lint/format、210 项架构测试、956 文件扫描和 13 包整仓构建通过。Desktop initial/total JS 保持 2,108,851 / 2,978,620 字节，Electron PID `67332` 未重启并保持响应。
+- 本批完成后停止新增拆分批次；最终完成度审计已确认最初高内聚/低耦合强制项关闭，剩余巨型门面瘦身只按后续真实变更或性能证据渐进处理。
+
+### 续接记录（2026-09-20，第一百八十一批 Goal Execution State Registry 解耦）
+
+- 新增 `GoalExecutionStateRegistry`，集中 Goal 内存缓存、Run→目标修订绑定与待续轮标记；`takeRunRevision` 将原分步 get/delete 收敛为一次性领取，缓存替换与不同会话待续状态保持隔离。
+- Runtime 的 Goal 加载/保存、usage 归属、暂停/清除、续轮调度和终态判断等 17 个调用点改用注册表，删除 `activeGoals`、`goalRunRevisions`、`pendingGoalTurns` 三份裸状态；设置仓持久化、Token/轮次限制和模型执行仍由既有边界负责。文件由 32,510 行增至 32,512 行。
+- Registry 与内核准入共 9 项、Runtime 类型检查、lint/format、209 项架构测试、955 文件扫描和 13 包整仓构建通过；Desktop initial/total JS 保持 2,108,851 / 2,978,620 字节，Electron PID `67332` 未重启。
+
+### 续接记录（2026-09-20，第一百八十批 Thread Version Projection 解耦）
+
+- 新增 `ThreadVersionProjection`，集中持久 thread/task 版本的当前值、事件重放单调推进、checkpoint 全量替换、只读视图与事务投影副本；`snapshotWith` 返回隔离副本，避免预提交版本污染活动投影。
+- Runtime 的 checkpoint 创建/恢复、OCC 校验、任务版本推进和事件事务等 36 个调用点改用投影边界，删除原始 `threadVersions` Map；checkpoint 字段名、错误文案和持久格式保持不变。追加消息并发边界测试同步改用注册表，文件由 32,486 行增至 32,510 行。
+- Projection 与追加消息边界共 27 项、Runtime 类型检查、lint/format、208 项架构测试、954 文件扫描和 13 包整仓构建通过；Desktop initial/total JS 保持 2,108,851 / 2,978,620 字节，Electron PID `67332` 未重启。
+
+### 续接记录（2026-09-20，第一百七十九批 Conversation Transient State Registry 解耦）
+
+- 新增 `ConversationTransientStateRegistry`，以单一 thread 条目共同拥有单调 stream sequence 与可选活动快照；快照删除保留序列，快照写入和序列推进互不覆盖，保持终态后重订阅 cursor 与活动 Run 快照语义。
+- Runtime 的订阅恢复、帧发布、文本/工具/委派投影和终态清理等 19 个调用点改用注册表，删除 snapshot/sequence 两份并行 Map；replay 队列、投影构造和广播协议仍由 Runtime 负责。同步修正瞬态集成测试中残留的旧订阅私有字段接线。显式注册表字段使文件由 32,485 行微增至 32,486 行。
+- Registry 与瞬态投影共 9 项、Runtime 类型检查、lint/format、207 项架构测试、953 文件扫描和 13 包整仓构建通过；Desktop initial/total JS 保持 2,108,851 / 2,978,620 字节，Electron PID `67332` 保持运行。
+
+### 续接记录（2026-09-20，第一百七十八批 Owned Subscription Registry 解耦）
+
+- 新增泛型 `OwnedSubscriptionRegistry`，集中 stream ID 登记、查找、删除、按连接所有者批量清理、可变遍历与关闭清空；订阅对象保持原引用，继续支持 Runtime 原有 cursor/phase 原位推进语义。
+- Runtime 的持久事件订阅与会话瞬态订阅共 13 个调用点改用两个注册表实例，客户端断线由两段重复循环收敛为连接所有者清理；事件 replay、过滤、帧发送和瞬态阶段规则仍留在 Runtime。删除两份原始 Map 后，显式泛型字段使文件由 32,482 行微增至 32,485 行。
+- Registry 4 项、Runtime 类型检查、lint/format、206 项架构测试、952 文件扫描、`git diff --check` 和 13 包整仓构建通过；Desktop initial/total JS 保持 2,108,851 / 2,978,620 字节，Electron PID `67332` 保持运行。
+
+### 续接记录（2026-09-20，第一百七十七批共享 Refresh Coordinator 解耦）
+
+- 将 Desktop 既有 `RefreshCoordinator` 提升到 Shared，统一 generation、等待者、运行状态和尾随刷新算法；通过 `deferStart` / `rejectPendingOnFailure` 显式保留 Desktop 同任务合并与 Runtime eager/失败全体返回两种既有时序。
+- ShellApp 改为直接引用 Shared 并删除 Desktop 重复模块；Runtime 本地 Skill 刷新改用共享协调器，删除 requested/applied generation 与 in-flight Promise 三份状态，文件从 32,496 行降至 32,482 行。
+- 共享协调器 5 项、Shared/Runtime/Desktop 类型检查、改动文件 lint/format、205 项架构测试、951 文件扫描和 13 包整仓构建通过；Desktop initial/total JS 为 2,108,851 / 2,978,620 字节，Electron PID `67332` 保持响应。
+
+### 续接记录（2026-09-20，第一百七十六批 MCP Auth Config Repository 解耦）
+
+- 新增 `McpAuthConfigRepository`，集中 MCP 授权配置的 ID/字段归一化、设置仓读穿缓存、明文 Key 保存、旧 SecureStore handle 兼容迁移和删除占位语义；返回副本避免调用方修改缓存。
+- MCP 注册、列表、能力治理、工具刷新、聊天登记与删除等 16 个调用点改用 Repository；删除 Runtime 的原始 Map 和 3 个配置辅助方法，SecureStore 密钥读取与 MCP 注册回滚仍由 Runtime 编排，文件从 32,565 行降至 32,496 行。
+- Repository/摘要共 11 项、Runtime 类型检查、改动文件 lint/format、204 项架构测试、951 文件扫描和 13 包整仓构建通过；Desktop initial/total JS 为 2,108,693 / 2,978,462 字节，Electron PID `67332` 保持响应。
+
+### 续接记录（2026-09-20，第一百七十五批 Local Skill Watch Registry 解耦）
+
+- 新增 `LocalSkillWatchRegistry`，集中本地 Skill 文件 watcher 的目录归一化、去重登记、活动查询与批量清理；即使单个 cleanup 抛错，也会继续释放其余 watcher 并在完成后抛回首个错误。
+- Runtime 只负责选择 Skill 来源并创建 watcher，扫描响应、重启和关闭等 7 个调用点改用注册表；删除 `localSkillWatchCleanup` 与 `localSkillWatchedDirectories` 两份裸状态，文件从 32,580 行降至 32,565 行。
+- Registry 5 项、Runtime 类型检查、改动文件 lint/format、203 项架构测试、950 文件扫描和 13 包整仓构建通过；Desktop initial/total JS 为 2,108,693 / 2,978,462 字节，Electron PID `67332` 保持响应。
+
+### 续接记录（2026-09-20，第一百七十四批 Completed Delegated Run Registry 解耦）
+
+- 新增泛型 `CompletedDelegatedRunRegistry`，将委派子 Run 的终态快照与终态枚举合并为一个记录，支持状态先到、快照/状态共同保存、一次性领取和后台遗弃清理。
+- 完成、失败、取消、超时、后台释放、前台 `agent_delegate` 领取及瞬态投影统一调用注册表；删除 Runtime 两个并行 Map，领取由分步 get/delete 改为原子 `take`，文件从 32,586 行降至 32,580 行。
+- Registry/委派成功失败取消/执行控制器/终态事件投影共 48 项、Runtime 类型检查、改动文件 lint/format、202 项架构测试、949 文件扫描和 13 包整仓构建通过；Desktop initial/total JS 为 2,108,693 / 2,978,462 字节，Electron PID `67332` 保持响应。
+
+### 续接记录（2026-09-20，第一百七十三批 Active Run Registry 解耦）
+
+- 新增 `ActiveRunRegistry`，集中活动 Run 的去重登记、完成、包含判断、数量/ID 快照与测试清理；ID 快照隔离内部 Set 引用。
+- 健康检查、追加消息抢占、外部事件/定时任务清理、Goal 续轮和两类 Run 执行改用注册表；删除 Runtime 的 `inFlight` Set 与 `recordInFlight` / `forgetInFlight` 中转方法，文件从 32,594 行降至 32,586 行。
+- Registry/健康检查/原生 Run/追加消息/外部 Kernel/关闭/守护进程完成共 73 项、Runtime 类型检查、改动文件 lint/format、201 项架构测试、948 文件扫描和 13 包整仓构建通过；Desktop initial/total JS 为 2,108,693 / 2,978,462 字节，Electron PID `67332` 保持响应。
+
+### 续接记录（2026-09-20，第一百七十二批 Keyed Turn Queue 解耦）
+
+- 新增 `KeyedTurnQueue`，集中同 key 串行、不同 key 并行、幂等释放、尾节点条件清理和关闭等待；模块不依赖 Runtime、Kernel 或持久化实现。
+- 外部 Kernel 会话继续由 Runtime 决定持久会话 key，但排队和释放交给队列；删除 `externalKernelSessionTails` Map 与 `enqueueExternalKernelSession` 私有方法，文件从 32,627 行降至 32,594 行。
+- 队列/外部 Kernel/关闭回归共 41 项、Runtime 类型检查、改动文件 lint/format、200 项架构测试、947 文件扫描和 13 包整仓构建通过；Desktop initial/total JS 为 2,108,693 / 2,978,462 字节，Electron PID `67332` 保持响应。
+
+### 续接记录（2026-09-20，第一百七十一批 Kernel Tool Progress Registry 解耦）
+
+- 新增 `KernelToolProgressRegistry`，集中按 Run/Tool 累计 UTF-8 输出字节、保留最新非空行、清理完成工具/Run，并以不可变方式把实时进度投影到运行中的工具段。
+- Runtime 继续负责 Kernel 事件分派和瞬态帧发布，删除 `kernelToolProgressByRun` 嵌套 Map 与纯转发 `withKernelToolProgress`；9 个调用点直接使用窄 API，文件从 32,653 行降至 32,627 行。
+- Registry/Kernel 适配器/外部 Kernel 主链共 71 项、Runtime 类型检查、改动文件 lint/format、199 项架构测试、946 文件扫描和 13 包整仓构建通过；Desktop initial/total JS 为 2,108,693 / 2,978,462 字节，Electron PID `67332` 保持响应。
+
+### 续接记录（2026-09-20，第一百七十批 AbortController Registry 解耦）
+
+- 新增 `AbortControllerRegistry`，集中按 key 创建、替换、中止、条件删除和关闭时批量中止；`deleteIf` 保证旧请求的 `finally` 不会误删同 key 的新控制器。
+- 普通 Run 与提示词优化分别持有独立注册表实例，Runtime 删除 `demoRunAborts`、`promptEnhancementAborts` 两个 Map，15 个创建/取消/清理调用点迁到窄 API；文件从 32,661 行降至 32,653 行。
+- Registry/提示词优化/追加消息/Kernel 关闭与外部 Kernel 取消回归 36 项、Runtime 类型检查、改动文件 lint/format、198 项架构测试、945 文件扫描和 13 包整仓构建通过；Desktop initial/total JS 为 2,108,693 / 2,978,462 字节，Electron PID `67332` 保持响应。
+
+### 续接记录（2026-09-20，第一百六十九批 External Event Execution Registry 解耦）
+
+- 新增 `ExternalEventExecutionRegistry`，统一事件租约、Run 反向索引和清理监听去重；重复接管投递只刷新租约且不重复挂载清理，Run 完成时三个索引由一个操作共同释放。
+- Runtime 继续负责持久执行记录、心跳计时器、终态判断和守护进程完成帧，只通过注册表读取/推进内存生命周期；删除 `externalEventExecutions`、`externalEventIdByRun`、`externalEventCleanupRuns` 三个容器，文件从 32,662 行降至 32,661 行。
+- Registry 单元 4 项、真实外部事件启动/去重投递集成 1 项、Runtime 类型检查、改动文件 lint/format、197 项架构测试、944 文件扫描和 13 包整仓构建通过；Desktop initial/total JS 为 2,108,693 / 2,978,462 字节，Electron PID `67332` 保持响应。
+
+### 续接记录（2026-09-20，第一百六十八批 In-flight Promise 生命周期解耦）
+
+- 新增 `InFlightPromiseRegistry`，统一 Promise 登记、成功/失败自动释放、当前数量观测和关闭时 `allSettled` 等待；模块不知道 Runtime 或具体任务类型。
+- Runtime 为后台任务、Kernel 执行和守护进程完成回执分别持有注册表实例，删除 `backgroundTasks`、`activeKernelRuns`、`daemonCompletionPromises` 三个 Set 及重复清理样板；保留 `trackBackgroundTask` 作为分发层语义入口，文件从 32,676 行降至 32,662 行。
+- Registry 与 Kernel 关闭回归 8 项、Runtime 类型检查、改动文件 lint/format、196 项架构测试、943 文件扫描和 13 包整仓构建通过；Desktop initial/total JS 为 2,108,693 / 2,978,462 字节，Electron PID `67332` 保持响应。
+
+### 续接记录（2026-09-20，第一百六十七批 Scheduled Task Run Registry 解耦）
+
+- 新增泛型 `ScheduledTaskRunRegistry`，统一定时任务 Run 的活动并发计数和终态回填元数据；执行结束与元数据消费保持两个独立阶段，既保留守护进程等待语义，也避免历史回填提前丢失。
+- Runtime 只在任务准备、并发判断、执行结束和终态回填时调用注册表；删除 `taskRuns` Set 与 `scheduledTaskRuns` Map，6 个调用点迁到窄 API，文件从 32,679 行降至 32,676 行。
+- Registry/分发/历史摘要单元 12 项、Runtime 类型检查、改动文件 lint/format、195 项架构测试、942 文件扫描和 13 包整仓构建通过；Desktop initial/total JS 为 2,108,693 / 2,978,462 字节，Electron PID `67332` 保持响应。
+
+### 续接记录（2026-09-20，第一百六十六批 Platform MCP Run Registry 解耦）
+
+- 新增泛型 `PlatformMcpRunRegistry`，统一外部内核 Run 的冻结工具目录、调用结果重放和 Capability Broker 生命周期；同一 replay key 的并发调用共享 Promise，成功结果保留，失败结果释放供重试，Run 终态一次清理三类状态。
+- Runtime 只组合工具目录、重放 key、真实执行函数和 Broker factory；删除 `platformMcpCatalogByRun`、`platformMcpResultsByRun`、`capabilityBrokerByRun` 三个 Map，并把 Ask/外部内核工具测试迁到 `setCatalog` API。文件从 32,702 行降至 32,679 行。
+- Registry 单元 4 项、Ask/外部内核工具回归 14 项、Runtime 类型检查、改动文件 lint/format、194 项架构测试、941 文件扫描和 13 包整仓构建通过；Desktop initial/total JS 为 2,108,693 / 2,978,462 字节，Electron PID `67332` 保持响应。
+
+### 续接记录（2026-09-20，第一百六十五批 Assistant Timeline 变更跟踪解耦）
+
+- 新增 `AssistantTimelineChangeTracker`，集中按 Run/Segment 保存已提交指纹、筛选新增/变更段、强制写入旁路和终态释放；`selectChanged` 不修改状态，只有 Store 成功后才 `commit`，因此普通写入失败后同内容仍可重试。
+- Runtime 继续负责时间线内容清洗、SQLite 写入、严格模式与错误日志，但不再持有嵌套指纹 Map；架构门禁禁止 `assistantTimelineFingerprintsByRun` 回流。`runtime.ts` 保持 32,702 行，本批收口状态所有权而不扩张到时间线投影或 Store。
+- 同步修复前序 Run/Kernel 注册表抽取遗留的白盒测试：注册表新增只读 `count()`，失败事务测试不再读取已删除 Map。Tracker 单元 4 项、时间线/追加消息/注册表回归 34 项、Runtime 类型检查、改动文件 lint/format、193 项架构测试、940 文件扫描和 13 包整仓构建通过；Desktop initial/total JS 为 2,108,693 / 2,978,462 字节，Electron PID `67332` 保持响应。
+
+### 续接记录（2026-09-20，第一百六十四批 Capability Usage Recorder 解耦）
+
+- 新增 `CapabilityUsageRecorder` 与最小事件写入端口，集中 Skill/MCP 用量 key 的进程内幂等判定；写入成功后才登记 key，Store 异常时保留后续重试能力，模块不依赖 Runtime、Demo Run 或 SQLite 类型。
+- MCP 调用和 Provider Context 中的 Skill/MCP 用量继续由 Runtime 组合 workspace/run 字段，但原始 Set 与 Store 写入判重已移出门面；架构门禁禁止 `recordedCapabilityUsageKeys` 和旧 `appendCapabilityUsageOnce` 回流。`runtime.ts` 保持 32,702 行，本批目标是状态所有权收口而非行数压缩。
+- Recorder 单元 3 项、Capability Governance 集成 1 项、Runtime 类型检查、改动文件 lint/format、192 项架构测试、939 文件扫描和 13 包整仓构建通过；Capability Store 8 项中 7 项通过，唯一既有失败是迁移期望仍截止 `0055`、当前仓库实际含 `0056`–`0058`，不在本批调用链内。Desktop initial/total JS 为 2,108,693 / 2,978,462 字节，Electron PID `67332` 保持响应。
+
+### 续接记录（2026-09-20，第一百六十三批 Durable Tool Approval Ledger 解耦）
+
+- 新增 `DurableToolApprovalLedger`，统一选择 Event Store 权威投影或无 Store 时的内存回退，并集中 approval/thread/run 作用域筛选；模块只依赖 Shared Event 和既有纯读模型。
+- 审批事件记录、失活审批读取和待审批列表改为调用 ledger；删除 Runtime 的回退 Map 与两个中转私有方法，分页恢复测试也迁移到 ledger API，文件从 32,723 行降至 32,702 行。
+- Ledger 单元 3 项、审批恢复/事件分页集成 13 项、Runtime 类型检查、改动文件 lint/format、191 项架构测试、938 文件扫描和 13 包整仓构建通过；Desktop initial/total JS 为 2,108,693 / 2,978,462 字节。
+
+### 续接记录（2026-09-20，第一百六十二批会话上下文纯写入状态清理）
+
+- 审计确认 `contextRunByThread` 在前序上下文快照缓存解耦后只剩 `set/delete/clear`，无任何读取消费者；继续保留会造成重复状态和错误的生命周期暗示。
+- 删除 Runtime 的 Map 定义及模型窗口更新、消息失效、Provider 请求三处维护写入；增加架构规则禁止该纯写入状态回流，文件从 32,742 行降至 32,723 行。
+- Context Status/Compact 与外部 Kernel 回归 47 项、Runtime 类型检查、改动文件 lint/format、190 项架构测试、937 文件扫描和 13 包整仓构建通过；Desktop initial/total JS 为 2,108,693 / 2,978,462 字节。
+
+### 续接记录（2026-09-20，第一百六十一批 Compact 边界缓存解耦）
+
+- 新增 `ConversationCompactBoundaryCache`，通过最小事件加载端口集中 Compact 边界缓存、按事件序列恢复、线程过滤、摘要有效性判断和引用隔离；模块不依赖 Runtime 或 Store。
+- Compact 成功写入只记录边界，Provider 消息构建只读取边界；Runtime 保留 Task/Workspace 事件来源组合，删除 `latestCompactByThread` Map 与恢复私有方法，文件从 32,760 行降至 32,742 行。
+- 缓存单元 4 项、Context Status/Compact 与外部 Kernel 回归 47 项、Runtime 类型检查、改动文件 lint/format、189 项架构测试、937 文件扫描和 13 包整仓构建通过；Desktop initial/total JS 为 2,108,693 / 2,978,462 字节。
+
+### 续接记录（2026-09-20，第一百六十批会话上下文修订注册表解耦）
+
+- 新增 `ConversationContextAmendmentRegistry`，集中线程级排除来源的替换、读取和清理，并通过输入/输出拷贝隔离数组引用；模块不依赖 Runtime 或 Context 选择实现。
+- Context Packet Amend、Context Status/Peek 和真实 Provider 请求改为调用注册表；删除 Runtime 的 `threadContextAmendments` Map，文件从 32,761 行降至 32,760 行。
+- 注册表单元 3 项、Context Amend 1 项、Context Status 14 项、Runtime 类型检查、改动文件 lint/format、188 项架构测试、936 文件扫描和 13 包整仓构建通过；Desktop initial/total JS 为 2,108,693 / 2,978,462 字节。
+
+### 续接记录（2026-09-20，第一百五十九批定时任务投递注册表解耦）
+
+- 新增 `ScheduledTaskDispatchRegistry`，集中守护进程投递任务的预注册、未启动回滚、Run 绑定、终态领取和关闭快照；模块不依赖 Runtime、网络或持久化实现。
+- `task.dispatch`、Scheduled Run 创建/清理和 Runtime 关闭中止改为调用注册表；删除 Runtime 的 `dispatchedTasks` Set 与 `taskIdByRun` Map，文件从 32,769 行降至 32,761 行。
+- 注册表单元 4 项、守护进程完成/中止/协议回归 23 项、Runtime 类型检查、改动文件 lint/format、187 项架构测试、935 文件扫描和 13 包整仓构建通过；Desktop initial/total JS 为 2,108,693 / 2,978,462 字节。
+
+### 续接记录（2026-09-20，第一百五十八批正式方案修订注册表解耦）
+
+- 新增 `FormalPlanRevisionRegistry`，通过只读 Event 端口集中正式方案修订号的内存缓存、事件日志倒序恢复、有效值过滤、提交记录和 Run 清理；模块不依赖 Runtime 或 Store 实现。
+- 平台 `plan_submit`、Claude 原生方案提交、规划终态校验和两条 Run 清理路径统一调用注册表；删除 Runtime 原始修订 Map 和事件回放私有方法，文件从 32,779 行降至 32,769 行。
+- 注册表单元 4 项、外部 Kernel 计划回归 33 项、未提交终态回归 1 项、Runtime 类型检查、改动文件 lint/format、186 项架构测试、934 文件扫描和 13 包整仓构建通过；Desktop initial/total JS 为 2,108,693 / 2,978,462 字节。
+- 同时运行完整 `conversation-transient-stream` 套件时，26 项中 3 个既有委派用例因只读工具断言、MCP Store 错误路径和 5 秒预算超时失败；本批关联的规划终态用例已单独复跑通过，失败不在正式方案注册表调用链上。
+
+### 续接记录（2026-09-20，第一百五十七批挂起问询注册表解耦）
+
+- 新增 `PendingAskRegistry`，独占 askId 注册、一次性领取、按会话查询最新问询、删除和按 Run 批量取消；模块只依赖 Protocol/Shared 类型，不依赖 Runtime、Store 或事件实现。
+- Conversation Ask 回答/取消、平台工具问询、Claude 原生 Ask 桥接与 Run 终态收尾改为调用注册表；Runtime 删除原始 `pendingAsks` Map 和内联遍历，文件从 32,796 行降至 32,779 行。
+- 注册表单元 4 项、平台问询/Claude Ask 回归 54 项、Runtime 类型检查、改动文件 lint/format、185 项架构测试、933 文件扫描和 13 包整仓构建通过；Desktop initial/total JS 为 2,108,693 / 2,978,462 字节。
+
+### 续接记录（2026-09-20，第一百五十六批 Policy Scope 服务解耦）
+
+- 新增 `PolicyScopeService`，通过 Workspace/Task/Agent/Policy 最小查询端口集中保存作用域验证、适用作用域组合、Task 策略存在性和 Approval 基础作用域校验；模块不依赖 Runtime 或 Storage 实现。
+- Policy Save/List、Participation Mode 和服务端 Approval 解析改为调用该服务，Runtime 继续拥有命令事务、事件与审批执行；删除保存/列表/存在性及三类 require 共六个私有方法，文件从 32,892 行降至 32,796 行。
+- 服务单元 5 项、Policy/Approval 集成 21 项、Runtime 类型检查、改动文件 lint/format、184 项架构测试、932 文件扫描和 13 包整仓构建通过；Desktop initial/total JS 为 2,108,693 / 2,978,462 字节。
+
+### 续接记录（2026-09-20，第一百五十五批 Run/Kernel 持久注册表解耦）
+
+- 新增 `RunKernelRegistry`，通过最小 Settings 端口独占 runId→kernelId 的懒加载、损坏值过滤、内存合并、幂等记录和最佳努力持久化；事件日志回填不会产生多余设置写入。
+- 会话消息查询只提供 Event Store 回填并读取 Kernel 标签，Run 创建入口只记录映射；Runtime 删除两个 Map/load 字段和两个私有生命周期方法，文件从 32,927 行降至 32,892 行。
+- 注册表 3 项、消息分页/最终消息 2 项和重启持久化 10 项、Runtime 类型检查、改动文件 lint/format、183 项架构测试、931 文件扫描和 13 包整仓构建通过；Desktop initial/total JS 保持 2,108,693 / 2,978,462 字节。
+
+### 续接记录（2026-09-20，第一百五十四批会话上下文快照缓存解耦）
+
+- 新增 `ConversationContextSnapshotCache`，独占 thread→model/kernel 嵌套索引、复合键规范化、读取、写入、单线程失效和全量清理；Runtime 不再暴露缓存 Map 结构或自行拼接键。
+- Context Status 预览与真实 Provider 请求共享同一缓存对象；持久消息写入继续同时失效快照和 Run 上下文，模型窗口更新继续全量清理。删除 Runtime 私有 setter/key 方法，测试改为通过窄观测接口验证缓存状态。
+- 缓存单元 2 项与 Context Status 集成 14 项、Runtime 类型检查、改动文件 lint/format、182 项架构测试、930 文件扫描和 13 包整仓构建通过；`runtime.ts` 从 32,946 行降至 32,927 行，Desktop initial/total JS 保持 2,108,693 / 2,978,462 字节。
+
+### 续接记录（2026-09-20，第一百五十三批 CC Switch 导入路径策略解耦）
+
+- 新增纯 `cc-switch-import-path`，集中显式数据库路径裁剪、Storage 默认路径回退和缺少用户目录错误；Storage 继续独占默认路径的环境/平台计算，Runtime 只组合两者。
+- Preview 与 Import 两个入口复用同一策略，Runtime 删除私有 `resolveCcSwitchDbPath`；3 项路径策略和 6 项 Provider 密钥补偿集成测试覆盖显式/默认/缺失路径与导入提交后的失败补偿边界。
+- Runtime 类型检查、改动文件 lint/format、181 项架构测试、929 文件扫描和 13 包整仓构建通过；`runtime.ts` 从 32,953 行降至 32,946 行，Desktop initial/total JS 保持 2,108,693 / 2,978,462 字节。
+
+### 续接记录（2026-09-20，第一百五十二批 Artifact 文本内容策略解耦）
+
+- 新增纯 `artifact-content-policy`，统一 Artifact 快照比较与三方合并可接受的文本 MIME；Runtime 的比较/合并用例直接消费领域判断，删除私有 `isTextArtifactMime`。
+- 策略覆盖 `text/*`、JSON/XML/JavaScript 及二进制、PDF、复合 `+json`、SVG 和空值边界；既有 Artifact 命令集成测试继续覆盖作用域、稳定比较、不可合并状态、干净合并、冲突回滚和恢复。
+- 策略 11 项与 Artifact 集成 10 项、Runtime 类型检查、改动文件 lint/format、180 项架构测试、928 文件扫描和 13 包整仓构建通过；`runtime.ts` 从 32,961 行降至 32,953 行，Desktop initial/total JS 保持 2,108,693 / 2,978,462 字节。
+
+### 续接记录（2026-09-20，第一百五十一批提示词优化协议与模型选择解耦）
+
+- 新增 Protocol `prompt-enhancement-payloads`，统一 enhance/cancel 的裁剪、长度和类型校验；Desktop 只把共享解析失败适配为 IPC 错误，Runtime 直接消费安全解析结果，不再维护第二套规则。
+- 新增纯 `prompt-enhancement-model-selection`，集中启用 Provider 过滤、catalog/upstream ID 匹配、首个可用模型和 demo fallback 规则；Runtime 保留流式调用、取消控制和响应写入，删除两个私有解析/选择方法，文件从 32,989 行降至 32,961 行。
+- Protocol/Runtime/Desktop 定向 13 项、三包类型检查、改动文件 lint/format、179 项架构测试、927 文件扫描和 13 包整仓构建通过；Desktop initial/total JS 保持 2,108,693 / 2,978,462 字节。上一批误置于循环内的重复门禁已移出，第一百五十批真实架构测试数修正为 178 项。
+
+### 续接记录（2026-09-20，第一百五十批 Provider Discovery 路由解耦）
+
+- 新增 `provider-discovery-routing` 纯路由模块，集中“协议专用适配器优先、默认适配器兜底”的选择规则；Runtime 的 Provider、模型探测、图像生成、Run 调用和视觉描述入口通过显式目录与 fallback 组合，不再保留私有 `resolveDiscoveryAdapter`。
+- 新增协议命中、默认回退和无适配器三项行为覆盖，AST 门禁禁止 Discovery 路由回流到 Runtime。当前 `runtime.ts` 实测 32,989 行；Discovery/Provider 定向 8 项、Runtime 类型检查、改动文件 lint、178 项架构测试和 925 文件架构扫描通过。
+- 13 包整仓构建通过（Desktop initial/total JS 为 2,108,693 / 2,978,462 字节）；无依赖、迁移或业务数据操作，Electron PID `67332` 保持运行。
+
+### 续接记录（2026-09-20，第一百四十九批 Provider 按 ID 查询投影解耦）
+
+- `provider-catalog-projection` 新增 `projectProviderSummaryById`，统一完成按 Provider ID 的目录查找和公开摘要投影；Runtime 只组合 `providerStore.listProviders()` 与纯投影，不再保留私有 `providerSummaryById` 方法。
+- 新增投影回归覆盖命中与缺失 ID，AST 门禁禁止 Provider 按 ID 查询回流到 Runtime 门面。当前 `runtime.ts` 实测 32,958 行；Provider 投影定向 6 项、Runtime 类型检查、改动文件 lint、177 项架构测试和 924 文件架构扫描通过。
+- 13 包整仓构建通过，Desktop initial/total JS 保持 2,108,693 / 2,978,462 字节；本批无依赖、迁移、业务数据操作或应用重启，Electron PID `67332` 保持响应。
+
+### 续接记录（2026-09-20，第一百四十八批定时任务历史摘要选择解耦）
+
+- 新增纯 `scheduled-task-history-summary`，只负责从按新到旧排列的消息中选择首条非空助手文本，并组合/清理文本块；它不读取 Message Store、不写 Scheduled Task Store，也不拥有摘要长度上限。
+- `runtime.ts` 保留最近 50 条读取和 Store 回填组合，原私有 `fillTaskHistorySummary` 已删除，文件从 32,965 行降至 32,952 行。200 字截断继续唯一由 `SqliteScheduledTaskStore.updateHistorySummary` 执行并有独立回归覆盖。
+- Runtime/Storage 定向 8 项、Runtime 类型检查、改动文件 lint、176 项架构测试、924 文件架构扫描和 13 包整仓构建通过。Desktop initial/total JS 保持 2,108,693 / 2,978,462 字节；本批无依赖、迁移、业务数据操作或应用重启，Electron PID `67332` 保持响应。
+
+### 续接记录（2026-09-20，第一百四十七批平台 Agent Store 适配解耦）
+
+- 新增 `kernel/platform-agent-store`，将有效 Agent 记录裁剪为 `PlatformToolContext.agentStore` 的最小只读合同，并复制 Skill/MCP 数组，防止平台工具通过返回值反向修改 Store 记录。
+- `runtime.ts` 只负责把 `SqliteGlobalAgentStore` 注入适配器，原私有 `toPlatformAgentStore` 已删除，文件从 32,983 行降至 32,965 行。Agent 激活范围、归档、持久化和 `agent_list` 输出语义保持原边界。
+- 新适配器与平台工具定向 17 项、Runtime 类型检查、改动文件 lint、175 项架构测试、923 文件架构扫描和 13 包整仓构建通过。Desktop initial/total JS 保持 2,108,693 / 2,978,462 字节；本批无依赖、迁移、业务数据操作或应用重启，Electron PID `67332` 保持响应。
+
+### 续接记录（2026-09-20，第一百四十六批桌面等待命令投影收口）
+
+- `desktop-waiting-projection` 现统一拥有等待命令的任务归属、公开目标、错误原因和 Protocol DTO 投影；只通过三个窄查询端口读取 owner thread task、run 和 run task，不依赖 Runtime、Store 或宿主实现。
+- `runtime.ts` 的列表响应和 continue/cancel 生命周期事件直接复用同一投影，原私有 `toDesktopWaitingCommandSummary` 已删除，文件从 33,013 行降至 32,983 行。Desktop Controller、Store 查询、命令 Mutation、事件持久化和发布仍留在 Runtime 用例边界。
+- Runtime 定向 23 项、Runtime 类型检查、改动文件 lint、174 项架构测试、922 文件架构扫描和 13 包整仓构建通过。Desktop initial/total JS 保持 2,108,693 / 2,978,462 字节；本批无依赖、迁移、业务数据操作或应用重启，Electron PID `67332` 保持响应。
+
+### 续接记录（2026-09-20，第一百四十五批长对话消息 DOM 窗口化）
+
+- 新增独立 `use-message-virtual-window`，超过 80 条已展示历史后按滚动视口、900px overscan 和动态实测行高计算挂载范围；`ChatView` 只渲染窗口内消息并用上下 spacer 保持完整滚动几何，既有 50 条分页与 12 条首屏尾窗语义保持不变。
+- 对话导航目标会临时强制挂载，滑动定位、用户打断或历史锚点恢复后立即释放；代码块展开与内部滚动状态按会话/消息进入 240 项有界缓存，离屏卸载再挂载不会丢失阅读状态。中间缺口、过期请求丢弃、失败重试和旧页游标继续通过原入口工作。
+- 消息窗口、长线程预算、历史导航、Minimap、Markdown 与代码块定向 82 项、Desktop 类型检查、改动文件 lint（0 error，16 条既有 Hook warning）、173 项架构测试、922 文件架构扫描和 13 包整仓构建通过。Desktop initial/total JS 为 2,108,693 / 2,978,462 字节；整包 Desktop lint 仍被既有 `MarkdownImageGallery`/主题引擎 6 个错误阻断。本批无依赖、迁移、业务数据操作或应用重启，Electron PID `67332` 保持响应。
+
+### 续接记录（2026-09-20，第一百四十四批 MCP Server 摘要与认证读取解耦）
+
+- 新增 `mcp-server-summary`，集中 MCP Server 公开字段、工具数组复制和认证展示规则；投影接收一次性认证快照，不再隐式读取 Runtime 设置。
+- MCP 注册、启停、工具刷新、能力治理、聊天工具及只读查询入口改为直接组合纯投影，`SkillQueryContext` 只暴露认证事实读取端口；`runtime.ts` 删除私有转换方法，从 33,046 行降至 33,013 行。认证持久化、SecureStore 迁移、Store Mutation 和事件仍在原用例边界。
+- 新投影、MCP 命令、远端能力和治理定向 21 项、Runtime 类型检查与 lint、172 项架构测试、921 文件架构扫描和 13 包整仓构建通过。Desktop initial/total JS 保持 2,104,581 / 2,974,350 字节；无依赖变更、迁移、业务数据操作或应用重启，Electron PID `67332` 保持响应。
+
+### 续接记录（2026-09-20，第一百四十三批 Skill 版本摘要与 Runtime 解耦）
+
+- 新增 `skill-version-summary`，集中 Skill 公开字段裁剪、可变数组复制和旧 YAML 块标记描述修复；仅在遇到旧标记时通过窄 `sourceMd` resolver 读取完整记录。
+- Skill 导入、启停、能力治理及查询入口改为直接组合纯投影，`SkillQueryContext` 删除 Runtime 投影回调；`runtime.ts` 删除私有转换方法和专属类型导入，从 33,080 行降至 33,046 行。Store 查询、Mutation、事件与错误协议仍在原用例边界。
+- 新投影、Skill 命令和能力治理定向 7 项、Runtime 类型检查与 lint、172 项架构测试、920 文件架构扫描和 13 包整仓构建通过。Desktop initial/total JS 保持 2,104,581 / 2,974,350 字节；无依赖变更、迁移、业务数据操作或应用重启，Electron PID `67332` 保持响应。
+
+### 续接记录（2026-09-20，第一百四十二批 Workspace 摘要投影归入 Summaries）
+
+- Runtime 既有 `summaries.ts` 新增 Workspace 记录到协议摘要的纯投影，集中解析 icon、排序和隐藏偏好；列表与更新两个入口改为直接复用。
+- 只读查询处理器直接依赖纯投影，`QueryContext` 删除映射回调；`runtime.ts` 删除私有转换方法和三个偏好解析值导入，从 33,103 行降至 33,080 行。Workspace Store、Mutation、错误协议和帧写入仍在原用例边界。
+- 纯摘要、工作区命令与上下文定向 17 项、Runtime 类型检查与 lint、172 项架构测试、919 文件架构扫描和 13 包整仓构建通过。Desktop initial/total JS 保持 2,104,581 / 2,974,350 字节；无依赖变更、迁移、业务数据操作或应用重启，Electron PID `67332` 保持响应。
+
+### 续接记录（2026-09-20，第一百四十一批 Approval 请求摘要投影归入 Summaries）
+
+- Runtime 既有 `summaries.ts` 新增 Approval 请求纯投影；审批列表、入队/决策、Memory 镜像、Skill/MCP 重审批与编排 gate 共 8 个调用点改为直接复用。
+- 投影继续只从 metadata 暴露非空 `delegateAgentVersionId`，其它内部 metadata 不进入协议摘要；`runtime.ts` 删除私有转换方法，从 33,131 行降至 33,103 行。审批评估、状态机、持久化、镜像和事件发布仍在原用例层。
+- 纯摘要、审批命令与恢复定向 26 项、Runtime 类型检查与 lint、172 项架构测试、919 文件架构扫描和 13 包整仓构建通过。Desktop initial/total JS 保持 2,104,581 / 2,974,350 字节；无依赖变更、迁移、业务数据操作或应用重启。
+
+### 续接记录（2026-09-20，第一百四十批 Memory/Diagnostics 摘要投影归入 Summaries）
+
+- Runtime 既有 `summaries.ts` 新增 Memory 变更、持久 Memory 条目与诊断记录三类纯投影；7 个 Memory/Diagnostics 命令及审批镜像调用点改为直接复用。
+- Memory additions/modifications/deprecations/evidence 与诊断 detail 现在复制隔离，避免响应对象反向修改 Store 记录；`runtime.ts` 删除三个私有转换方法及专属类型导入，从 33,182 行降至 33,131 行。存储 Mutation、审批镜像、事件发布和错误协议仍在用例层。
+- 纯摘要、Memory 命令与项目上下文定向 16 项、Runtime 类型检查与 lint、172 项架构测试、919 文件架构扫描和 13 包整仓构建通过。Desktop initial/total JS 保持 2,104,581 / 2,974,350 字节；无依赖变更、迁移、业务数据操作或应用重启。
+
+### 续接记录（2026-09-20，第一百三十九批能力治理摘要投影归入 Summaries）
+
+- Runtime 既有 `summaries.ts` 新增工作区激活、能力用量、Skill 发布草稿和能力整理报告四类纯投影；10 个能力治理命令调用点改为直接复用。
+- 发布附件只暴露 `name/size`，整理报告的分类数组和计数对象复制隔离；`runtime.ts` 删除四个私有转换方法，从 33,252 行降至 33,182 行。查询、排序、Mutation、错误协议和 Socket 响应仍在用例层，架构门禁禁止旧私有方法恢复。
+- 纯摘要与能力治理定向 10 项、Runtime 类型检查与 lint、172 项架构测试、919 文件架构扫描和 13 包整仓构建通过。Desktop initial/total JS 保持 2,104,581 / 2,974,350 字节；无依赖变更、迁移、业务数据操作或应用重启。
+
+### 续接记录（2026-09-20，第一百三十八批 Agent 版本摘要投影归入 Summaries）
+
+- Runtime 既有 `summaries.ts` 新增 `AgentVersionRecord` 到绑定摘要与完整定义摘要的纯投影；7 个 Agent 查询、更新、版本与 Skill 审批绑定调用点改为直接复用。
+- fallback、Skill/MCP allowlist、工具白名单、权限、视觉身份、审查行为和产物规则均复制隔离；`Runtime` 删除两个私有转换方法，Store Mutation、事件发布和 Socket 响应继续留在用例层。架构门禁禁止旧私有方法恢复。
+- 纯摘要 5 项、Agent/Workspace 集成 6 项、Runtime 类型检查与 lint、172 项架构测试、919 文件架构扫描和 13 包整仓构建通过。Desktop initial/total JS 保持 2,104,581 / 2,974,350 字节；无依赖变更、迁移、业务数据操作或应用重启，Electron PID `67332` 保持响应。
+
+### 续接记录（2026-09-20，第一百三十七批目录摘要投影归入 Summaries）
+
+- Runtime 既有 `summaries.ts` 新增 Global Agent、Team、Team Run 与 Conversation 四类记录到共享 DTO 的纯投影；28 个 UI 命令和聊天工具调用点改为直接复用，成员依赖、fallback、Skill/MCP 数组均复制隔离。
+- `runtime.ts` 删除四个私有摘要方法及仅为其存在的记录/DTO类型导入，从 32,222 行降至 32,142 行；Store 查询、Mutation、错误协议和 Socket/工具响应仍在各用例层。架构门禁禁止旧私有摘要恢复。
+- 纯摘要 3 项、Agent/Team/Conversation/Workspace 集成 15 项、Runtime 类型检查与改动文件 lint、172 项架构测试、919 文件架构扫描和 13 包整仓构建通过。Desktop initial/total JS 保持 2,104,581 / 2,973,350 字节；无依赖变更、迁移、业务数据操作或应用重启。
+
+### 续接记录（2026-09-20，第一百三十六批 Provider Catalog 响应投影抽离）
+
+- Runtime 新增纯 `provider-catalog-projection`，集中 `ModelRecord` 的 contextWindow/视觉字段投影和 `ProviderCatalogEntry` 的凭据扁平化、surface 推断、嵌套模型转换；12 个 Provider 命令调用点直接复用。
+- `runtime.ts` 删除 `toProviderSummary` / `toModelSummary` 两个私有方法，从 32,283 行降至 32,222 行；Store 读取、凭据写入、命令错误和 Socket 响应仍由 Runtime 用例层拥有。架构门禁禁止旧私有投影恢复。
+- 纯投影 5 项、Provider 集成 13 项、Runtime 类型检查与改动文件 lint、171 项架构测试、919 文件架构扫描和 13 包整仓构建通过。Desktop initial/total JS 保持 2,104,581 / 2,973,350 字节；无依赖变更、迁移、业务数据操作或应用重启。
+
+### 续接记录（2026-09-20，第一百三十五批能力全局开关语义收口）
+
+- Ability Center 的 Skill 与 MCP 全局启停改为复用 `ToggleControl`，删除两份重复的 switch role、aria、状态属性、禁用与目标值计算；异步 Mutation、busy、缓存失效和错误展示仍由能力页拥有。
+- 工作区激活菜单的两个整行复合开关保留原 DOM、`aria-busy/title` 和内嵌轨道。架构门禁只对白名单静态类 `skill-workspace-menu__row` 放行，并有正向测试；其它能力页直接 switch 会被拦截。
+- 定向 45 项、Desktop 类型检查与改动文件 lint、170 项架构测试、918 文件架构扫描和 13 包整仓构建通过。Website 约 1,493 KiB，Desktop initial/total JS 为 2,104,581 / 2,973,350 字节；无依赖变更、迁移、业务数据操作或应用重启。
+
+### 续接记录（2026-09-20，第一百三十四批 Preferences 开关语义收口）
+
+- Preferences 的字体、托盘和快捷键开关改为复用 `ToggleControl`，删除局部 button/role/aria/disabled/取反逻辑；外层文字、禁用外观、持久化与快捷键注册状态仍由 Preferences 拥有。
+- 原 `<i>` thumb 等价替换为共享 `<span>` 并同步收窄宿主 CSS 选择器，没有为单个标签差异增加共享组件参数。Preferences 加入直接 switch 防回流门禁；Think 与原生 checkbox 的不同事件/控件语义继续独立。
+- 定向 10 项、Desktop 类型检查与改动文件 lint、170 项架构测试、918 文件架构扫描和 13 包整仓构建通过。Website 约 1,493 KiB，Desktop initial/total JS 为 2,104,581 / 2,974,401 字节；无依赖变更、迁移、业务数据操作或应用重启。
+
+### 续接记录（2026-09-20，第一百三十三批设置开关共享边界扩展）
+
+- Web Search Provider、Desktop 自动更新和 Bot 通道启停删除各自直接 switch button，改为复用 `ToggleControl`；共享边界现覆盖 Model、Settings、Connector、Web Search、Update 与 Bot 六类设置表面。
+- Web Search 保存路径显式接收组件请求的目标布尔值，不再从闭包中的旧 Provider 状态反推；未配置时仅拦截启用请求。Preferences 的 `<i>` thumb/label 组合与执行过程的阻止冒泡开关保留原实现，不为本批扩大共享接口。
+- 定向 75 项、Desktop 类型检查与改动文件 lint、170 项架构测试、918 文件架构扫描和 13 包整仓构建通过。Website 约 1,493 KiB，Desktop initial/total JS 为 2,104,581 / 2,974,467 字节；无依赖变更、迁移、业务数据操作或应用重启。
+
+### 续接记录（2026-09-20，第一百三十二批开关交互语义单源化）
+
+- Renderer 新增受控、无状态的 `ToggleControl`，统一 `role="switch"`、可访问名称、选中/禁用状态和反向切换回调；Model 设置、通用设置及连接器设置改为组合该原语。
+- 各宿主继续拥有原 CSS 类和业务状态；共享组件同时投影 `data-state` / `data-enabled`，因此模型、设置和能力连接器的既有视觉选择器保持不变。架构门禁禁止两个设置宿主恢复直接 switch button。
+- 定向 112 项、Desktop 类型检查与改动文件 lint（0 error，1 条既有 Hook warning）、170 项架构测试、918 文件架构扫描和 13 包整仓构建通过。Website 约 1,493 KiB，Desktop initial/total JS 为 2,104,581 / 2,974,886 字节；无依赖变更、迁移、业务数据操作或应用重启。
+
+### 续接记录（2026-09-20，第一百三十一批测试专用 Composer API 退役）
+
+- 删除仅被测试引用的 `applyMention`、`extractMentionPaths` 与 `coerceReasoningEffort` 三个生产导出，并移除对应旧 inline mention/coercion 测试；当前附件 chip 的 `stripMentionToken`、文件引用输出和固定思考档位保持不变。
+- 架构门禁只在 `compose-mention` / `compose-toolbar` 两个已确认所有者中禁止三项旧 helper 恢复，避免测试再次反向扩大生产 API；审计新增 D-19 并关闭。
+- Composer 定向 36 项、Desktop 类型检查与改动文件 lint、169 项架构测试、917 文件架构扫描和 13 包整仓构建通过。Website 约 1,493 KiB，Desktop initial/total JS 保持 2,104,581 / 2,974,874 字节，说明旧 helper 先前已被 tree-shake；无依赖变更、迁移、业务数据操作或应用重启。
+
+### 续接记录（2026-09-20，第一百三十批 Telegram 双实现退役）
+
+- 删除零生产调用的 `TelegramBotClient`、旧 Telegram-only 配置/handler、长轮询、typing/reply 和专属会话执行链；Bot 通道只保留 `BotChannelGatewayManager`、`TelegramGateway` 与通用 `executeBotConversationTurn`，生产实现减少 601 行，另删除 85 行封闭旧测试。
+- 生产帧路由、启动恢复和关闭继续走统一 Gateway；`BotChannelConfigStore` 保留旧 `tokenHandle`、`proxyUrl`、身份字段迁移并已有回归。架构门禁禁止旧 client 文件及 Runtime 旧生命周期成员恢复，审计 R-3 已关闭。
+- Bot 通道定向 24 项、Runtime 类型检查与改动文件 lint、168 项架构测试、917 文件架构扫描和 13 包整仓构建通过。Website 约 1,493 KiB，Desktop initial/total JS 保持 2,104,581 / 2,974,874 字节；无依赖变更、迁移、业务数据操作或应用重启。
+
+### 续接记录（2026-09-20，第一百二十九批 Renderer MCP 目录共享读取边界）
+
+- Renderer 新增 `mcp-catalog-loader`，统一 100 条目录请求，并按 Runtime bridge 实例复用成功快照、合并并发请求；失败不缓存，代次失效会让旧在途响应重新读取，避免失效前数据回写。
+- Ability Center、Agent Library、Composer MCP 菜单和设置连接页改走该边界。MCP 注册、删除、启停、工具刷新和能力页手动刷新明确失效缓存；各页面继续独立拥有 loading/error、筛选与乐观状态。架构门禁禁止生产 Shell 绕过加载器直接调用 `listMcpServers`，审计 P0-2 的 Skill/MCP 两类目录重复读取均已关闭。
+- 定向 251 项、Desktop 类型检查与改动文件 lint、167 项架构测试、918 文件架构扫描和 13 包整仓构建通过。Website 约 1,493 KiB，Desktop initial/total JS 为 2,104,581 / 2,974,874 字节；无依赖变更、迁移、业务数据操作或应用重启。
+
+### 续接记录（2026-09-20，第一百二十八批密钥输入表现与宿主策略解耦）
+
+- Renderer 新增无状态 `SecretInputControl`，统一 password/text 类型切换、Eye/EyeOff 图标、title/aria-label 和按钮禁用传递；Model、Image Generation 与 Bot 设置直接复用同一表现层。
+- 三种生命周期继续留在宿主：Model 仅按当前输入复位显隐，Image 继续负责已存凭据掩码与异步 reveal，Bot 继续由通道草稿统一管理显隐集合。两个 Provider 包装器改名为 `ModelSecretInput` / `ImageSecretInput`，架构门禁禁止三宿主恢复模糊的局部 `SecretInput`。
+- 定向 123 项、Desktop 类型检查与改动文件 lint（0 error，1 条既有 Hook warning）、166 项架构测试、917 文件架构扫描和 13 包整仓构建通过。Website 约 1,492 KiB，Desktop initial/total JS 为 2,104,098 / 2,974,283 字节；无依赖变更、迁移、业务数据操作或应用重启。
+
+### 续接记录（2026-09-20，第一百二十七批能力页 legacy Skill 表面退役）
+
+- 删除零生产消费者的 `SkillSurface`，并同步删除其独占的旧分类栏、统计面板、治理筛选、治理说明、开关/统计卡组件及本地/市场/治理列表 CSS；当前 NewMax Skill Hub、详情抽屉和工作区激活控件保持原实现。
+- 能力页测试移除只查询旧危险按钮 CSS 类的空断言，继续以真实“编辑/删除”入口验证市场 Skill 只读行为。架构门禁禁止 `SkillSurface` 导出恢复；窄 lazy entry 仍只暴露 `AbilitiesPage`。
+- 能力页 43 项、Desktop 类型检查与改动文件 lint、165 项架构测试、916 文件架构扫描和 13 包整仓构建通过。Website 约 1,492 KiB，Desktop initial/total JS 保持 2,104,098 / 2,974,434 字节，证明旧导出此前已被 tree-shake；无依赖变更、迁移、业务数据操作或应用重启。
+
+### 续接记录（2026-09-20，第一百二十六批二进制字节缩放单一真源）
+
+- Shared 新增纯 `scaleBinaryBytes` 与 `BINARY_BYTE_UNITS`，统一 1024 进位和最大单位截断；BrowserStage、ArtifactVersionsPanel、数据库治理 CLI 删除各自的缩放循环。
+- 三个宿主继续拥有原展示策略：BrowserStage 使用 B/KB/MB 与动态小数，Artifact UI 使用 B/KiB/MiB 与一位小数，数据库 CLI 使用 B/KiB/MiB/GiB/TiB 与两位小数。共享事实不接管界面文案或精度。
+- 定向 64 项、Shared/Desktop/UI Kit/Storage 类型检查与改动文件 lint、164 项架构测试、916 文件架构扫描和 13 包整仓构建通过。Website 约 1,492 KiB，Desktop initial/total JS 为 2,104,098 / 2,974,434 字节；无依赖变更、迁移、业务数据操作或应用重启。
+
+### 续接记录（2026-09-20，第一百二十五批能力页兼容入口退役）
+
+- 删除 Renderer Shell 根目录的 `AbilitiesPage.tsx` 兼容转发；Shell 类型和能力页测试直接依赖 `abilities/AbilityCenterPage`，领域实现不再经无语义的上层别名。运行时加载改走同目录 `AbilityCenterPage.lazy` 窄入口，只暴露实际页面组件。
+- 直接动态导入实现模块会把零消费者 legacy `SkillSurface` 一并打入 chunk，实测 total JS 增加约 12.7 KiB；窄入口保留 tree-shaking 后恢复到上一批附近。架构门禁禁止旧根路径恢复，也禁止 Shell 绕过窄入口动态加载完整实现；`SkillSurface` 源码清理作为独立后续项，不扩张本批。
+- 能力页/Shell 定向 123 项、Desktop 类型检查与改动文件 lint（0 error，2 条既有 Hook warning）、163 项架构测试、915 文件架构扫描和 13 包整仓构建通过。Website 约 1,492 KiB，Desktop initial/total JS 为 2,103,809 / 2,973,984 字节；无依赖变更、迁移、业务数据操作或应用重启。
+
+### 续接记录（2026-09-20，第一百二十四批紧凑数字展示策略显式化）
+
+- Renderer 新增纯 `compact-number` 展示模块，以共享缩放/舍入机制承载两个明确策略：能力详情继续在千位后按原阈值取 1 位或整数且不切换 M，Provider 用量继续按 K/M 各保留 1 位；原有所有边界文本保持不变。
+- 能力页不再从混合业务辅助模块导入模糊的 `formatTokens`，Provider 汇总也删除私有同名实现；字节上限现在显式使用“能力指标”格式策略，不再被错误命名为 token。架构门禁禁止 Renderer Shell 恢复局部 `formatTokens`。
+- 定向 49 项、Desktop 类型检查与改动文件 lint、162 项架构测试、915 文件架构扫描和 13 包整仓构建通过。Website 约 1,492 KiB，Desktop initial/total JS 为 2,103,779 / 2,973,954 字节；无依赖变更、迁移、业务数据操作或应用重启。
+
+### 续接记录（2026-09-20，第一百二十三批技能市场摘要单一真源）
+
+- Protocol 新增浏览器安全的 `@sync-think/protocol/skill-market-catalog` 子路径，成为六个作者技能包 id、slug、名称、分类、描述、作者、版本和图标的唯一传输摘要真源；Runtime 技能市场包直接展开对应摘要，仅继续拥有完整可安装文件和物化逻辑。
+- Renderer 的旧桥兼容回退改为从 Protocol 摘要派生，删除六份简化内联 `SKILL.md` 和重复元数据；正常运行时仍以 Runtime `listSkillMarket()` RPC 返回为权威。架构门禁禁止 Runtime 重新内联摘要字段及 Renderer 恢复静态市场数组或 `makeSkillSource`。
+- 定向 46 项、Protocol/Runtime/Desktop 类型检查与改动文件 lint、161 项架构测试、914 文件架构扫描和 13 包整仓构建通过。Website 约 1,492 KiB，Desktop initial/total JS 为 2,103,646 / 2,973,901 字节；无依赖变更、迁移、业务数据操作或应用重启。
+
+### 续接记录（2026-09-20，第一百二十二批 Renderer vendor 脚本生命周期单源化）
+
+- Renderer 新增 `vendor-script-loader`，统一 Mermaid、Xterm、Excalidraw 延迟脚本的全局导出快路、并发 Promise、既有节点复用、load/error 监听清理、失败节点移除与重试；通用 stylesheet 辅助统一 Xterm/Excalidraw 的幂等 CSS 注入。
+- 三个 vendor 文件只保留类型、资源路径、全局读取器与各自错误文案。Xterm 仍在每次入口先确保样式，Excalidraw 仍仅在首次真实加载前准备样式；构建产物路径和错误文本不变。架构门禁禁止三个适配器重新持有 `vendorPromise` 或直接创建脚本，审计 R-6 的 vendor loader 子项已关闭。
+- 定向 14 项、Desktop 类型检查与改动文件 lint、160 项架构测试、913 文件架构扫描和 13 包整仓构建通过。Website 约 1,492 KiB，Desktop initial/total JS 为 2,103,646 / 2,975,138 字节；无依赖变更、迁移、业务数据操作或应用重启。
+
+### 续接记录（2026-09-20，第一百二十一批生成图像 MIME 校验单源化）
+
+- Shared 新增 Node 专用 `@sync-think/shared/node-image-validation`，集中 PNG/JPEG/WebP MIME 解析、文件扩展名匹配、文件头识别和声明 MIME 一致性判断；Runtime 生成图像读取、Desktop artifact 预览与 OpenAI Images Adapter 三条生产链删除重复实现。
+- 共享层只返回类型、布尔值或 `undefined`；Runtime/Desktop 继续拥有原 `generated_image.*` / `artifact_image_preview.*` 错误码，文件系统所有者继续负责 `realpath`、大小、哈希和替换竞态校验。架构门禁禁止四个旧局部函数恢复，审计 R-6 的图像 MIME 子项已关闭。
+- 定向 43 项、Shared/Adapters/Runtime/Desktop 类型检查、改动文件 lint、159 项架构测试、912 文件架构扫描和 13 包整仓构建通过。Website 约 1,493 KiB，Desktop initial/total JS 保持 2,104,273 / 2,975,765 字节；无依赖变更、迁移、业务数据操作或应用重启。
+
+### 续接记录（2026-09-20，第一百二十批通用对象结构守卫单源化）
+
+- Shared 新增浏览器安全的 `@sync-think/shared/value-validation` 子路径，以唯一 `isRecord(value)` 判定非空、非数组的普通对象；Protocol、Desktop、Runtime、Storage、Workers 共 28 处局部副本已迁移，现有宿主解析、错误和字段规则保持不变。
+- Runtime 生产步骤执行器中更强的 `Record<string, JsonValue>` 守卫改名为 `isJsonRecord` 并继续就地保留，避免把 JSON 递归值语义错误收窄为通用对象判断。架构门禁禁止 Shared 之外重新声明通用 `isRecord`；审计 R-6 的该子项已关闭。
+- 定向 209 项、五个消费层与 Shared 类型检查、改动文件 lint、158 项架构测试、911 文件架构扫描和 13 包整仓构建通过。Website 约 1,493 KiB，Desktop initial/total JS 为 2,104,273 / 2,975,765 字节；无依赖变更、迁移、业务数据操作或应用重启。
+
+### 续接记录（2026-09-20，第一百一十九批 ASCII 控制字符规则单源化）
+
+- Shared 新增浏览器安全的 `hasAsciiControlCharacter`，统一 C0 控制字符与 DEL 判定；Protocol Browser payload 与 Storage Browser 持久化边界删除逐字副本并直接复用。规则位于 Shared 根入口，不依赖 Node 或宿主错误协议。
+- 架构规则将 Shared 标记为唯一所有者，Protocol/Storage 及后续源码若重新声明同名函数会直接失败。首次测试因 Shared `dist` 尚未重建而暴露工作区包消费顺序，构建 Shared 后原样复跑全部通过，确认真实包入口可用；R-6 的该子项已关闭，`isRecord` 等其它重复项仍待后续批次。
+- Shared/Protocol/Storage 定向 20 项、三包类型检查与 lint、157 项架构测试、910 文件架构扫描和 13 包整仓构建通过。Website 约 1,493 KiB，Desktop initial/total JS 保持 2,104,315 / 2,975,807 字节；无依赖变更、迁移、业务数据操作或应用重启。
+
+### 续接记录（2026-09-20，第一百一十八批 Node 路径包含规则单源化）
+
+- 新增 Node 专用 `@sync-think/shared/node-paths` 子路径，以 `isPathWithinRoot(root, candidate)` 统一 Windows 盘符/UNC 与 POSIX 绝对路径的纯词法包含判断；Windows 路径要求完整盘符或 UNC 根，避免 `/path` 借用当前盘符造成跨风格误判。该子路径不从 Shared 浏览器入口导出，Renderer bundle 不会引入 `node:path`。
+- Desktop Main、Runtime、Storage 与 Workers 已删除各自的 `isPathInside` / `isWithin` 算法并接入共享边界；文件、终端、浏览器和图片模块仍在各自基础设施层执行 `realpath`、符号链接或 junction 校验，共享函数不访问文件系统。架构规则禁止四层 Node 源码重新声明本地路径包含函数；审计 R-5 已关闭。
+- 定向 136 项、五包类型检查、改动文件 ESLint、156 项架构测试、909 文件架构扫描及 13 包整仓构建通过。Website 约 1,493 KiB，Desktop initial/total JS 保持 2,104,315 / 2,975,807 字节；Desktop 全包 lint 的独立既有阻断仍为 `MarkdownImageGallery` 2 条 Hook 顺序错误和 `newmax-theme-engine` 4 条检查错误（另有 22 条 warning），本批未触碰。无迁移、业务数据操作或应用重启。
+
+### 续接记录（2026-09-20，第一百一十七批 Browser payload 共享校验边界）
+
+- 新增浏览器安全的 `@sync-think/protocol/browser-payloads` 子路径，集中 Browser Profile、Recording、Workflow 共 18 个 payload 的字段白名单、规范化、ID/文本/URL/分页/变量边界。Runtime 三个 validation 文件改为纯别名导出，Desktop 三个文件只保留原 `Invalid … payload` 抛错适配与 Profile 空载荷兼容。
+- 六个宿主实现由 864 行重复规则收敛为 364 行共享真源和 178 行适配器，净减少 322 行生产解析代码；Workflow execute/approve 现在统一执行 Runtime 既有的变量名 512、值 4000 字符上限。架构规则禁止六个适配器重新声明校验函数，独立 Protocol 子路径避免 Browser bundle 引入根入口的 Node-only 实现。
+- Protocol/Desktop/Runtime 定向 115 项、三层类型检查、定向 ESLint、155 项架构测试、908 文件架构扫描和 13 包整仓构建通过。Website 约 1,493 KiB，Desktop initial/total JS 保持 2,104,315 / 2,975,807 字节；审计 R-2 已关闭，无迁移、业务数据操作或应用重启。下一批继续处理范围较窄的共享校验，路径越界算法统一另作一批。
+
+### 续接记录（2026-09-20，第一百一十六批 Renderer 重复执行投影清理）
+
+- 删除 Renderer 零生产调用的 `projectExecutionProcess` 事件投影及两份封闭测试，共移除 1,932 行；过程事件到 `RunProcessView` 的投影现在只由 Runtime `run-process-view` 负责，Renderer 继续消费 Protocol 的已投影对象。
+- 生产仍使用的计数、耗时、消息时间和模型名称格式化迁入 79 行 `run-display-format`，并以 5 项纯函数测试覆盖；`process-item-outcome` 改用 Protocol `RunProcessView`，不再借用本地重复类型。接线测试显式禁止旧投影模块恢复。
+- Desktop/Runtime 定向 116 项、Desktop 类型检查、定向 ESLint（0 error，16 条既有 Hook warning）、154 项架构测试、907 文件架构扫描和 13 包整仓构建通过。Website 约 1,493 KiB，Desktop initial/total JS 为 2,104,315 / 2,975,807 字节；审计 R-1 已关闭，无新增依赖、迁移、业务数据操作或应用重启。下一批继续处理可独立验证的共享校验边界，不进入长消息虚拟化专项。
+
+### 续接记录（2026-09-20，第一百一十五批用量汇总有界响应）
+
+- `usage.summary` 新增 `includeRequests` / `requestLimit` 查询合同，服务端默认最多返回最近 500 条明细并拒绝超过 1000 条的请求；聚合总数、Token、费用与模型行始终覆盖完整查询范围。只需要累计值的任务用量和聊天 Provider 今日/30 天浮窗改为纯聚合读取，设置页明确提示“已加载最近 N 条，共 M 条”。
+- Runtime 在一次请求遍历中同时完成明细装饰、总量累计和 provider/model 费用索引，模型行不再逐行 `requests.filter`，响应投影从 O(rows × requests) 收敛为 O(rows + requests)。Worker/sidecar 的大事件扫描边界保持不变，今日窗口按本地零点计算并复用 5 分钟范围缓存。
+- 定向 89 项、Protocol/Runtime/Desktop 类型检查、定向 ESLint（0 error，17 条既有 Hook warning）、154 项架构测试、907 文件架构扫描和 13 包整仓构建通过。Website 约 1,493 KiB，Desktop initial/total JS 为 2,104,340 / 2,975,832 字节；审计 P1-4 已关闭，无新增依赖、迁移、业务数据操作或应用重启，Electron PID `67332` 保持运行。下一批继续选择边界明确的重复实现或路径校验项；P1-2 长消息虚拟化仍保留为专项交互任务。
+
+### 续接记录（2026-09-20，第一百一十四批 Renderer 可见性轮询边界）
+
+- 新增共享 `useVisiblePolling`：用单一文档可见性订阅结合 `KeepAliveLayer` 激活状态，隐藏窗口或保活后台页不再发起周期请求；递归定时器保证同一读取不重叠，失败按倍数退避，恢复可见或资源 ID 变化时立即读取。
+- ChatView Goal、设置页守护进程和机器人通道三处固定 interval 已迁移。Goal 保留 active 2 秒/非 active 30 秒刷新语义；机器人切换通道不再重启七通道全量请求，也不会用后台结果覆盖正在输入的凭据，周期读取失败改为可见错误；微信扫码的用户触发短时轮询保持独立。
+- 定向 107 项、Desktop 类型检查、改动文件 lint、154 项架构测试、907 文件架构扫描和 13 包整仓构建通过。Website 约 1,493 KiB，Desktop initial/total JS 为 2,104,316 / 2,975,682 字节；审计 P1-3 已关闭，无新增依赖、迁移或业务数据操作，Electron PID `67332` 保持运行且未重启。下一批优先处理边界更明确的 P1-4 用量汇总复杂度；P1-2 长消息虚拟化保留为专项交互任务。
+
+### 续接记录（2026-09-20，第一百一十三批会话目录稳定游标分页）
+
+- Protocol、Main 和 Runtime 的 `conversation.list` 支持可选 `cursor` / `limit` 与 `nextCursor`；Storage 通过完整侧栏排序键执行 keyset 分页，页大小限制 1–200。旧无分页调用继续返回完整数组，不影响内部数据管理等既有消费者。
+- `conversation-catalog-loader` 以 100 条为一页汇总 Shell 完整目录，负责游标推进、跨页去重和重复游标保护；Shell 只消费最终快照。因此侧栏、归档、跨工作区活动、深链与布局裁剪行为保持，单个 Runtime Frame / IPC 载荷获得硬上限。全目录总工作量仍随会话数线性增长，后续只有在实际指标需要时才引入按需 UI 加载，避免本批改变产品行为。
+- Protocol/Storage/Runtime/Main/Desktop 定向 192 项、四层类型检查、定向 ESLint（0 error，2 条既有 Hook warning）、154 项架构测试、906 文件架构扫描和 13 包整仓构建通过。Website 约 1,493 KiB，Desktop initial/total JS 为 2,103,381 / 2,974,374 字节；P1-1 的三项整改已完成，无新增依赖、迁移或业务数据操作，Electron PID `67332` 保持运行且未重启。
+
+### 续接记录（2026-09-20，第一百一十二批 Shell 刷新合并与快照降频）
+
+- `RefreshCoordinator` 现在拥有 Shell 目录刷新调度：同一任务内请求共享一轮读取；当前轮运行时到达的新请求只追加一轮尾随刷新，且等待尾随结果，避免既重复拉取六类目录又把修改后的调用者交给旧快照。
+- `shell-boot-snapshot` 新增 250ms 尾随写入器，只保留最后一份成功目录数据并在 Shell 卸载时冲刷；`ShellApp` 不再在每次刷新成功后立即同步序列化整份快照。原子提交、失败保留旧目录和 Toast 语义不变。审计 P1-1 的 in-flight 合并与写盘降频已完成，分页在第一百一十三批完成。
+- 协调器/快照/Shell 86 项、Desktop 类型检查、定向 ESLint（0 error，2 条既有 Hook warning）、154 项架构测试、905 文件架构扫描和 13 包整仓构建通过。Website 约 1,493 KiB，Desktop initial/total JS 为 2,103,028 / 2,974,021 字节；无新增依赖、迁移或业务数据操作，Electron PID `67332` 保持运行且未重启。
+
+### 续接记录（2026-09-20，第一百一十一批本地 Skill 扫描异步化）
+
+- `local-skill-discovery` 的启用插件来源发现、目录递归、`SKILL.md` 读取、stat 和 realpath 去重均改用异步文件 API；`skill.local.scan` 通过 Runtime 后台任务响应，单次扫描不再独占 socket 事件循环。
+- Runtime 扫描缓存新增代次/in-flight 协调，扫描期间的新刷新不会被旧结果覆盖；文件 watcher 的刷新进入统一后台任务集合，来源列表随扫描缓存并由响应摘要、watcher 共用。安装复制和落库事务保持原同步原子边界，本批未扩大到 Skill 写路径。
+- 定向 14 项、Runtime 类型检查、定向 ESLint、154 项架构测试、904 文件无环扫描和 13 包整仓构建通过；事件循环回归确认 timer 可在 40 文件扫描完成前运行。Runtime 全量为 1810/1815，5 条独立既有失败单线程仍可复现（进程分页 1、委派规则 3、宿主工具目录 1），不在本批修改范围。Website 约 1,493 KiB，Desktop initial/total JS 为 2,101,896 / 2,972,889 字节；审计 P0-1 已关闭，Electron PID `67332` 保持运行且未重启。
+
+### 续接记录（2026-09-20，第一百一十批设置页用量统计重挂载缓存）
+
+- `provider-usage-summary` 现在按时间范围维护 5 分钟成功快照与 in-flight 请求，且可同步读取新鲜缓存；`UsageSettings` 重挂载时直接用该快照初始化，关闭再打开设置不再重复加载相同统计。24 小时、7 天、30 天和全部范围相互隔离。
+- 手动刷新和价格保存继续强制绕过 TTL，错误不写入成功缓存；聊天页既有 30 天 Provider 汇总复用同一基础设施。选择窄数据缓存而非 `forceMount` 整个设置弹窗，避免隐藏 Radix 模态继续保留焦点、事件和其它页面状态。审计 P0-3 已关闭。
+- 用量缓存 4 项、ModelSettings 50 项、ChatView 用量 21 项、Desktop 类型检查、定向 ESLint（0 error，1 条既有 Hook warning）、154 项架构测试、904 文件无环扫描和 13 包整仓构建通过。Website 约 1,493 KiB，Desktop initial/total JS 为 2,101,896 / 2,972,889 字节；无新增依赖、迁移或业务数据操作，Electron PID `67332` 保持运行且未重启。
+
+### 续接记录（2026-09-20，第一百零九批 Renderer Skill 目录共享加载边界）
+
+- 新增 `skill-catalog-loader`，以 Runtime bridge 实例和全局/工作区作用域隔离缓存，统一 500 条请求、并发合并、成功快照和失效代次；失败不缓存，Mutation 期间完成的旧请求会自动转入新代次重读。
+- Shell 快照、空态 Composer、ChatView 斜杠菜单、`TurnSkillControl`、`AbilityCenterPage` 与 `AgentLibrary` 六个生产消费者均通过该边界读取；Shell 刷新、能力页重新进入和手动刷新仍可强制请求，能力写操作统一失效。AST 门禁保证生产 Shell 只有该加载器能直接调用 `listSkills`；本批完成 P0-2 的 Skill 子项，MCP 子项已在第一百二十九批完成。
+- 共享加载器 6 项、相关 UI 189 项、Desktop 类型检查、定向 ESLint（0 error，18 条既有 Hook warning）、154 项架构测试、904 文件无环扫描和 13 包整仓构建通过。Website 约 1,493 KiB，Desktop initial/total JS 为 2,101,496 / 2,972,339 字节；无新增依赖、迁移或业务数据操作，Electron PID `67332` 保持运行且未重启。
+
+### 续接记录（2026-09-20，第一百零八批能力页后台固定轮询移除）
+
+- `KeepAliveLayer` 通过可见性上下文向被冻结的保活子树发布激活状态；`AbilityCenterPage` 只在首次进入或重新进入能力页时扫描本地 Skill，不再注册 30 秒固定轮询。隐藏页不再持续发起一次磁盘扫描和四类目录 IPC，页面 DOM 与滚动位置保持。
+- 手动重新扫描、能力 Mutation 后目录刷新及错误提示保持；审计 P0-1 的持续后台轮询部分已关闭。`skillLocalScan({ refresh: true })` 的单次 Runtime 扫描仍是同步文件遍历，异步化留作独立后续项。
+- KeepAlive 4 项、Abilities 43 项、Shell 定向集成 1 项、Desktop 类型检查、定向 ESLint、153 项架构测试、903 文件无环扫描和 13 包整仓构建通过。Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,856 / 2,971,573 字节；无新增依赖、迁移或业务数据操作，Electron PID `67332` 保持运行且未重启。
+
+### 续接记录（2026-09-20，第一百零七批 Task Status Git 轮询移除）
+
+- 生产调用图确认 `TaskStatusPanel` 当前只挂载于 `Phase3VisualFixture`/QA 入口；Main/Preload 中的 Git 能力由该面板按需消费，正式 `ChatView` 不挂载它。
+- 移除面板的 5 秒 `setInterval`，保留挂载、window focus 与 Git Mutation 成功后的刷新；即使后续接入生产，也不再持续派生 Git 子进程。审计 B-4 已关闭。
+- Task Status 14 项、Desktop 类型检查、定向 ESLint、153 项架构测试、903 文件无环扫描和 13 包整仓构建通过。Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,643 / 2,971,344 字节；无新增依赖、迁移或业务数据操作，Electron PID `67332` 保持运行且未重启。
+
+### 续接记录（2026-09-20，第一百零六批 Shell 刷新错误隔离）
+
+- `ShellApp.refresh()` 改为六个目录读取全部成功后才提交 `ShellData`、启动快照与布局裁剪；任一 RPC 失败保留当前目录，避免半更新状态。
+- 刷新边界内部捕获 bridge/RPC/投影错误，返回显式 `ShellRefreshResult`；启动流据此切换 ready/error，其他后台入口以去重 Toast 告知而不再产生 unhandled rejection。审计 B-3 已关闭；P1-1 的合并/写盘已在第一百一十二批完成，目录分页仍待后续。
+- `ShellApp` 79 项、Desktop 类型检查、定向 ESLint（0 error，保留既有 2 条 Hook warning）、153 项架构测试、903 文件无环扫描和 13 包整仓构建通过。Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,643 / 2,971,344 字节；无新增依赖、迁移或业务数据操作，Electron PID `67332` 保持运行且未重启。
+
+### 续接记录（2026-09-20，第一百零五批 Activity 刷新竞态与本地 Skill 扫描错误）
+
+- `ActivityCenterPage` 为全量刷新增加请求代次守卫，只有最新过滤条件对应的响应可以更新列表、计数、游标、错误和 loading；刷新代次变化时丢弃在途旧分页结果，卸载时使所有响应失效。审计 B-1 已关闭。
+- `AbilityCenterPage` 为本地 Skill 扫描建立独立错误状态，失败时保留现有候选并在“我的 Skill”展示原因与“重新扫描”；成功扫描清除提示，不再静默展示陈旧列表，也不污染目录加载/编辑弹窗错误。审计 B-2 已关闭。
+- Activity 11 项、Abilities 43 项、Desktop 类型检查、定向 ESLint、153 项架构测试、903 文件无环扫描和 13 包整仓构建通过。Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,382 / 2,971,083 字节；无新增依赖、迁移或业务数据操作，Electron PID `67332` 保持运行且未重启。
+
+### 续接记录（2026-09-20，第一百零四批 Renderer 根目录旧投影清理）
+
+- 删除 `beginner-workspace`、`browser-profiles`、`child-tasks`、`collaboration-intent`、`compose-models`、`continuum-evidence`、`left-instrument-switch`、`recent-conversations`、`runtime-view-state` 九个生产零引用模块及八个同名封闭测试，共删除 17 个文件；连同混合测试清理共移除 1,856 行、补入 7 行。
+- 事件历史冷启动测试改为直接覆盖现有 `mergeEventHistory` 与 `projectM0EventHistory`，保留多轮消息、Manifest 和 taskVersion 恢复断言；Runtime 连接控制器与生产 Shell 构建资产测试继续覆盖当前实现。审计 D-17 已关闭。
+- Runtime 连接/事件历史 29 项、生产构建资产 1 项、Desktop 类型检查、153 项架构测试、903 文件无环扫描和 13 包整仓构建通过。Website 约 1,492 KiB，Desktop initial/total JS 保持 2,100,382 / 2,970,315 字节；无新增依赖、迁移或业务数据操作，Electron PID `67332` 保持运行且未重启。
+
+### 续接记录（2026-09-20，第一百零三批 M1/M2 Renderer 验收脚手架退役）
+
+- 删除 19 个只由历史验收测试互相引用的 M1/M2 Renderer 模块、18 个专属测试和旧 `selftest-m1-soft` 脚本，共删除 38 个文件、移除 9,854 行；Desktop 的生产 TypeScript 输入不再编译这套里程碑展示模型。
+- `m1-open-doc`、handtest 文档解析、dogfood 证据加载/评分及其 Main/IPC 测试继续保留；M2 自检只移除零生产消费者的 `m2-workspace` 阶段，真实 orchestration payload、Shared/Core/Storage/Runtime/UI Kit 六阶段门禁保持。
+- 保留链路 38 项、Desktop 类型检查、M2 六阶段 274 项、153 项架构测试、912 文件无环扫描和 13 包整仓构建通过。Website 约 1,492 KiB，Desktop initial/total JS 保持 2,100,382 / 2,970,315 字节；无新增依赖、迁移或业务数据操作，Electron PID `67332` 保持运行且未重启。D-14 的 M1/M2 部分已完成，9 个非里程碑旧 Renderer 根模块留给下一批逐项确认。
+
+### 续接记录（2026-09-20，第一百零二批 Settings 旧机器人对话实现清理）
+
+- 删除 `SettingsPage` 未挂载的 `LegacyBotConversationPane`、旧通道目录、空 Telegram 配置和专属导入，共减少 224 行；审计 D-2 已关闭。
+- 当前设置页继续只挂载独立 `BotConversationPane`，机器人凭据、连接和 Bot Channel wiring 不变；Desktop initial/total JS 分别减少 7 / 4,845 字节。
+- Desktop 类型检查、Settings/Bot 61 项、定向 ESLint、153 项架构测试、931 文件无环扫描和 13 包整仓构建通过。Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,382 / 2,970,315 字节；无新增依赖、迁移或业务数据操作，Electron PID `67332` 保持运行且未重启。
+
+### 续接记录（2026-09-20，第一百零一批 RightDock 旧 WorkspacePanel 清理）
+
+- 删除 `RightDock` 内零引用的旧 `WorkspacePanel`，连同仅服务于它的 Git 分支/变更/提交展示状态和递交文件树辅助闭环，共减少 538 行；审计 D-3 已关闭。
+- 当前文件与 Review 工作台继续由 `WorkspaceFilesPanel`、`ReviewPanel`、`WorkspaceWorkbench` 承担；底层 Git IPC 和 Task Status 消费保持，未改变现有工作区能力。
+- Desktop 类型检查、RightDock/Workbench/文件树/延迟 Diff 39 项、定向 ESLint、153 项架构测试、931 文件无环扫描和 13 包整仓构建通过。Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,389 / 2,975,160 字节；无新增依赖、迁移或业务数据操作，Electron PID `67332` 保持运行且未重启。
+
+### 续接记录（2026-09-20，第一百批旧 RightRail 与任务历史面板清理）
+
+- 删除无生产入口的旧 `RightRail`；当前右侧文件/Review 工作台继续由 `RightDock` 与 `WorkspaceWorkbench` 提供，进程展示仍只在消息内消费统一 `RunProcessView`。
+- 删除只被自身测试引用的 `TaskPlanHistoryPanel` 及测试；`ComposerTaskPanel`、`TaskPanel`、`TaskStatusPanel` 保持当前任务 UI 唯一路径。审计 D-1、D-4 已关闭，共删除 716 行旧实现/测试连接代码；D-3 的 `WorkspacePanel` 连带提交树辅助函数留到独立下一批。
+- Desktop 类型检查、Desktop 32 项、UI Kit 6 项、定向 ESLint、153 项架构测试、931 文件无环扫描和 13 包整仓构建通过。Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,389 / 2,975,160 字节；无新增依赖、迁移或业务数据操作，Electron PID `67332` 保持运行且未重启。
+
+### 续接记录（2026-09-20，第九十九批 Main 与 Runtime 零引用辅助面清理）
+
+- Main 删除未调用的 `connectToRuntime` / `probeFrameRoundtrip`，保留内部连接生命周期与类型化 Runtime 客户端；消息图片删除旧 `file://` URL 辅助，只保留 `sync-think-image://` 暴露。
+- Runtime 删除 Capability Broker 宽泛工具名判断、Chat Tools 未消费的只读白名单和旧 ENOENT 提示生成器；实际执行仍使用更窄的 `isUseCapabilityToolName`、变更工具集合与当前真实失败提示。审计 D-5 至 D-8 已关闭。
+- Desktop/Runtime 类型检查、消息图片/Main 12 项、Capability/Chat Tools 75 项、定向 ESLint、153 项架构测试、933 文件无环扫描和 13 包整仓构建通过。Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,389 / 2,975,160 字节；无新增依赖、迁移或业务数据操作，Electron PID `67332` 保持运行且未重启。
+
+### 续接记录（2026-09-20，第九十八批零引用执行入口与 Renderer 状态清理）
+
+- Runtime 删除未调用的 `registerAutostart` / `unregisterAutostart`，Desktop supervisor 继续独占实际注册/移除；在用的状态查询与命令构造器保留。
+- Desktop 删除 Terminal Session 死全局单例和旧 Composer 菜单路径，显式 Store 工厂、宿主 kill、现有模式/溢出/添加菜单行为不变；Workers 临时超时调试脚本已删除。审计 D-9、D-10、D-11、D-15 已关闭，净删除 214 行受版本控制的死代码。
+- Runtime/Desktop/Workers 类型检查、Daemon 3 项、Terminal/Composer 43 项、定向 ESLint、153 项架构测试、933 文件无环扫描和 13 包整仓构建通过。Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,389 / 2,975,160 字节；无新增依赖、迁移或业务数据操作，Electron PID `67332` 保持运行且未重启。
+
+### 续接记录（2026-09-20，第九十七批 Core 审核策略兼容层清理）
+
+- 删除 Core `rework-policy` 纯转发模块、重复测试及公开入口导出，Shared `review-policy` 现为审核/返工规则唯一权威边界；旧 `dist` 残留生成物也已清除。
+- M2 自检把 Shared review 测试设为独立首阶段并更新六阶段顺序断言，架构门禁禁止旧 Core 路径恢复。Artifact legacy conflict 测试仅同步现有 `0056`—`0058` 迁移名称，迁移和运行逻辑不变。
+- Shared/Core 类型检查、Shared 13 项、Core 205 项、Artifact 17 项、M2 六阶段 284 项、定向 ESLint、153 项架构测试、933 文件无环扫描和 13 包整仓构建通过。Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,445 / 2,975,216 字节；无新增依赖、迁移或业务数据操作，Electron PID `67332` 保持响应且未重启。
+
+### 续接记录（2026-09-20，第九十六批 Desktop Waiting 安全投影边界）
+
+- Runtime 新增纯 `desktop-waiting-projection`，识别等待用户/等待检查两类工具结果，并从脱敏命令参数生成只含 `processId/title/appId` 的公开目标摘要。
+- `runtime.ts` 净减少 44 行，仍负责 Desktop 命令持久化、任务归属、事件顺序和查询/继续/取消生命周期；架构门禁禁止新投影反向依赖 Runtime 状态或基础设施，Browser 子域保持独立。
+- Runtime 类型检查、纯投影 16 项、真实 Computer Use 集成 13 项、定向 ESLint、152 项架构测试、934 文件无环扫描和 13 包整仓构建通过。Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,445 / 2,975,216 字节；本批无依赖、迁移或业务数据操作，当前 Electron PID `67332` 保持运行且未重启。
+
+### 续接记录（2026-09-20，第九十五批 ChatView 会话滚动位置边界）
+
+- Desktop Shell 新增 `conversation-scroll-position`，拥有会话位置内存/本地持久化、存储异常容错、可见消息锚点捕获和滚动恢复几何；缓存继续无上限，以保持跨会话重挂载阅读位置。
+- ChatView 只在既有保存/恢复时机调用模块，净减少 116 行；导航、消息窗口、历史页和流式跟随状态仍由原边界负责。架构规则禁止新模块依赖 ChatView、宿主通信或基础设施。
+- Desktop 类型检查、滚动模块 4 项及滚动/历史/跳转集成 19 项、定向 ESLint（0 error，保留既有 16 条 Hook warning）、151 项架构测试、933 文件无环扫描和 13 包整仓构建通过。Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,445 / 2,975,216 字节；本批无依赖、迁移或业务数据操作，当前 Electron PID `67332` 保持运行且未重启。
+
+### 续接记录（2026-09-20，第九十四批计划步骤图验证边界）
+
+- Shared 新增纯 `orchestration-plan-graph`，返回重复步骤、Merge 依赖不足、自依赖、重复/缺失依赖和依赖环的确定性结构化问题，不感知数据库或异常传输。
+- `orchestration-store` 只负责把该问题映射为原有调用输入错误或持久数据错误；解码、错误路径/文案/优先级、SQLite 与事务均保持。架构夹具验证 Shared 对 Runtime/Storage 的反向依赖会被既有门禁拒绝。
+- Shared/Storage 类型检查、纯图验证 7 项、编排存储 27 项、定向 ESLint、150 项架构测试、932 文件无环扫描和 13 包整仓实际重建通过。Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,447 / 2,975,218 字节；本批无依赖、迁移或业务数据操作，当前 Electron PID `67332` 保持运行且未重启。
+
+### 续接记录（2026-09-20，第九十三批计划修订差异算法边界）
+
+- Shared 新增纯 `orchestration-plan-diff`，统一计划步骤快照克隆、无序依赖比较、稳定字段变化顺序，以及新增/移除/修改差异生成。
+- `orchestration-store` 仅组合该规则完成计划修订和持久 diff 完整性校验；SQLite 输入校验、反序列化、事务、版本冲突和事件写入保持在 Storage，数据库结构及行为不变。
+- Shared/Storage 类型检查、纯差异 3 项、编排存储 27 项、定向 ESLint、149 项架构测试、931 文件无环扫描和 13 包整仓构建通过。Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,447 / 2,975,218 字节；本批无依赖、迁移或业务数据操作，当前 Electron PID `67332` 保持运行且未重启。
+
+### 续接记录（2026-09-20，第九十二批 ChatView 运行身份与 Kernel 投影边界）
+
+- Desktop 新增纯 `run-identity-projection`，一次扫描 `run.started` 事件，同时恢复运行绑定的全局 Agent 身份与 Kernel；顶层字段和嵌套 durable run 快照均保持兼容。
+- ChatView 通过单个 `useMemo` 消费组合结果，并兼容重导出原函数，净减少 42 行；架构门禁禁止新叶子反向依赖 ChatView、Main/Preload 或基础设施。
+- Desktop 类型检查、身份/Kernel/委派 UI 相关 54 项、149 项架构测试、930 文件无环扫描、定向 ESLint（0 error，保留既有 Hook warning）和 13 包整仓构建通过。Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,447 / 2,975,218 字节；本批无依赖、迁移或业务数据操作，当前 Electron PID `67332` 保持运行且未重启。
+
+### 续接记录（2026-09-20，第九十一批跨 Kernel 会话 Transcript 投影边界）
+
+- Runtime 新增纯 `kernel-session-transcript`，拥有内容文本化、恢复/gap transcript、持久消息可移植投影、字节边界和当前用户消息识别；仅依赖 Shared `Message` 与本地最小消息结构。
+- `runtime.ts` 净减少 160 行并兼容重导出既有公开函数；原生 Kernel 会话恢复、路由、凭据和会话失效状态机仍由 Runtime 负责。架构门禁禁止新叶子反向依赖 Runtime、DemoRun、Adapter 或基础设施。
+- Runtime 类型检查、transcript/恢复/准入相关 22 项、148 项架构测试、929 文件无环扫描、定向 ESLint和 13 包整仓构建通过。Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,591 / 2,975,362 字节；本批无依赖、迁移或业务数据操作，当前 Electron PID `67332` 保持运行且未重启。
+
+### 续接记录（2026-09-20，第九十批 Goal 轮次协议与任务清单投影边界）
+
+- Runtime 新增纯 `goal-turn` 与 `task-plan-context`：前者负责 Goal 状态标记、轮次提示和默认上限，后者负责清单事件投影与模型文本；原公开函数由 `runtime.ts` 兼容重导出。
+- `runtime.ts` 净减少 116 行，仅继续协调目标生命周期、持久化、自动续跑和 Token 结算；架构规则禁止两个叶子模块反向依赖 Runtime 状态、DemoRun 或基础设施。
+- Runtime 类型检查、目标/清单/执行准入相关 23 项、147 项架构测试、928 文件无环扫描、定向 ESLint和 13 包整仓构建通过。Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,591 / 2,975,362 字节；本批无依赖、迁移或业务数据操作，当前 Electron PID `67332` 保持运行且未重启。
+
+### 续接记录（2026-09-20，第八十九批委派旧消息兼容读取与实时卡片持久化分离）
+
+- 委派消息块解析迁入纯 `delegation-message-projection`；旧消息兼容读取由 `DelegationLegacyMessageHistory` 单独负责，实时 `DelegationMessageHistory` 只保留卡片读取与写入。
+- `DelegationService` 在组合层分别注入两个边界，旧会话仍按现有消息格式和精确 child run 查询恢复，实时卡片合并、延迟持久化与终态行为不变；架构规则阻止三个叶子模块反向依赖门面、执行用例或基础设施。
+- Runtime 类型检查、委派历史相关 32 项、145 项架构测试、926 文件无环扫描、定向 ESLint和 13 包整仓构建通过。Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,591 / 2,975,362 字节；本批无依赖、迁移或业务数据操作，当前 Electron PID `67332` 保持运行且未重启。
+
+### 续接记录（2026-09-20，第八十八批生产执行预留共享契约与生命周期端口）
+
+- 生产执行结果、fence、reservation 与 MCP intent DTO 迁入 Shared，Storage 继续兼容重导出；预留事务实现和持久格式不变。
+- Runtime 新增五方法执行预留生命周期端口，生产步骤执行器移除最后一个具体 Storage 类型及全部 Storage 包导入；架构门禁禁止任何 Storage 依赖回流。
+- Shared/Storage/Runtime 编译、执行预留事务 9 项、生产执行器 33 项、143 项架构测试、924 文件无环扫描、定向 ESLint和 13 包整仓实际重建通过。Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,591 / 2,975,362 字节；本批无依赖、迁移或业务数据操作，未重启当前应用。
+
+### 续接记录（2026-09-20，第八十七批生产步骤执行器 Agent Context 生命周期端口）
+
+- 生产步骤执行端口新增单方法 Agent Context epoch 生命周期能力，复用共享输入/输出契约；执行器移除 `SqliteAgentContextStore` 具体类型。
+- 组合根继续注入现有 Context Store，epoch 复用/轮换和 prompt cache key 行为不变；架构门禁禁止具体 Agent Context 存储类型回流。
+- Runtime 类型检查、生产执行器 33 项、142 项架构测试、923 文件无环扫描、定向 ESLint和 13 包整仓构建通过。Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,591 / 2,975,362 字节；本批无依赖、迁移或业务数据操作，未重启当前应用。
+
+### 续接记录（2026-09-20，第八十六批生产步骤执行器 Skill 授权与正文端口）
+
+- 生产步骤执行端口新增 Skill 准入元数据、提示词正文和权限批准查询，执行器移除 `SqliteSkillStore` 具体类型；存储实现仍由组合根结构化适配。
+- Skill allowlist、启用/归档状态、批准校验和正文投影行为不变；架构门禁禁止具体 Skill 存储类型回流。
+- Runtime 类型检查、生产执行器 33 项、141 项架构测试、923 文件无环扫描、定向 ESLint和 13 包整仓构建通过。Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,591 / 2,975,362 字节；本批无依赖、迁移或业务数据操作，未重启当前应用。
+
+### 续接记录（2026-09-20，第八十五批生产步骤执行器 Provider 最小投影端口）
+
+- 生产步骤执行端口新增模型、Provider 与凭据路由最小投影，执行器移除 `SqliteProviderStore` 具体类型；现有 Provider 存储继续由组合根结构化适配。
+- `describe-image` 改用中立 `CatalogModelSource`，不再依赖 Storage `ModelRecord`，并纳入运行时基础设施隔离门禁；视觉能力和手动覆盖行为保持。
+- Runtime 类型检查、相关 84 项、140 项架构测试、923 文件无环扫描、定向 ESLint和 13 包整仓构建通过。Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,591 / 2,975,362 字节；本批无依赖、迁移或业务数据操作，未重启当前应用。
+
+### 续接记录（2026-09-20，第八十四批生产步骤执行器 Agent 最小投影端口）
+
+- 生产步骤执行端口新增 AgentVersion 最小投影，仅承载模型绑定、浏览器权限、Skill 白名单和系统提示词字段；执行器移除 `SqliteAgentStore` 具体类型及其返回类型推导。
+- 组合根继续注入现有 Agent 存储，精确版本查询与运行行为不变；架构门禁禁止具体 Agent 存储类型回流。
+- Runtime 类型检查、生产执行器 33 项、138 项架构测试、923 文件无环扫描、定向 ESLint和 13 包整仓构建通过。Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,591 / 2,975,362 字节；本批无依赖、迁移或业务数据操作，未重启当前应用。
+
+### 续接记录（2026-09-20，第八十三批生产步骤执行器 Workspace 最小投影端口）
+
+- 生产步骤执行端口新增 Task/Workspace 最小投影，只暴露 `workspaceId` 与 `folderPath`；执行器不再以 `SqliteWorkspaceStore` 或完整存储记录作为依赖。
+- 持久化组合根继续注入现有实现，工具工作目录、浏览器 handoff 与 fence 行为不变；架构门禁禁止具体 Workspace 存储类型回流。
+- Runtime 类型检查、生产执行器 33 项、137 项架构测试、923 文件无环扫描、定向 ESLint和 13 包整仓构建通过。Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,591 / 2,975,362 字节；本批无依赖、迁移或业务数据操作，未重启当前应用。
+
+### 续接记录（2026-09-20，第八十二批生产步骤执行器 Run 状态端口）
+
+- 新增 `ProductionStepExecutionRuns`，把生产步骤执行期间的 `getRun` / `getGraph` 读取从 `SqliteOrchestrationStore` 具体类型中抽离；持久化组合根继续注入同一实例，运行行为不变。
+- 端口纳入调度核心架构边界，并增加防回流规则，禁止端口依赖存储实现或执行器重新引用具体编排存储类型。其余生产执行器存储参数仍按后续独立用例逐步收窄。
+- Runtime 类型检查、生产执行器 33 项、136 项架构测试、923 文件无环扫描、定向 ESLint和 13 包整仓构建通过。Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,591 / 2,975,362 字节；本批无依赖、迁移或业务数据操作，未重启当前应用。
+
+### 续接记录（2026-09-20，第八十一批 ChatView 消息合并边界）
+
+- 新增纯 `conversation-message-merge`，接管持久消息排序、旧终态回填排序、乐观气泡去重和持久/乐观/流式消息的稳定虚拟序号合并；ChatView 只提供当前作用域状态。
+- 新模块只依赖 `conversation-types`，不依赖 React、ChatView、IPC、Main/Preload 或基础设施；历史分页覆盖与消息页合并继续由 `conversation-history-pages` 独立拥有。
+- Desktop 类型检查、消息/历史导航相关 15 项测试、定向 ESLint（0 error）、135 项架构测试、922 文件无环扫描和 13 包整仓构建通过。Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,591 / 2,975,362 字节；本批无依赖、迁移或业务数据操作，未重启当前应用。
+
+### 续接记录（2026-09-20，第八十批生产源码依赖环门禁）
+
+- 新增 `architecture-dependency-graph`，以 TypeScript AST 构建 921 个生产源文件的依赖图，覆盖静态/类型/动态导入、相对路径与工作区包入口，并用强连通分量检测依赖环；已接入 `lint:architecture` 和根构建 prebuild。
+- 首次扫描仅发现 `protocol/commands.ts ↔ run-process-page.ts` 一个既有环。`ConversationGetRunProcessPayload` 已迁入拥有解析职责的 `run-process-page`，`commands` 保留兼容类型重导出，公共 Protocol API 不变。
+- 新增 4 项依赖图测试；Protocol 构建和 Run Process 4 项回归、134 项架构测试、921 文件无环扫描、定向 ESLint 与 13 包整仓构建通过。Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,451 / 2,975,222 字节；本批无依赖、迁移或业务数据操作，未重启当前应用。
+
+### 续接记录（2026-09-20，第七十九批 Desktop/UI Kit 兼容层清理）
+
+- Desktop 的 ChatView、ShellApp、Composer 菜单和对应测试已直接消费 `@sync-think/ui-kit`；删除 `ComposerModeBanner`、`ComposerTaskPanel` 与 `NewMaxComposerFrame` 三个仅重导出的本地兼容壳。
+- 架构规则禁止 Desktop 重新导入旧本地模块，Website 与 Desktop 共享同一 UI Kit 公开入口；组件实现、交互、动效时长和 CSS 契约不变。
+- Desktop 类型检查、相关 40 项测试、UI Kit 12 项测试、定向 ESLint（0 error）、130 项架构测试、921 文件架构扫描和 13 包整仓构建通过。Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,451 / 2,975,222 字节；本批无依赖、迁移或业务数据操作，未重启当前应用。
+
+### 续接记录（2026-09-20，第七十八批消息图片附件边界）
+
+- `message.attachImages` 已纳入既有 Protocol `conversation-command-contract`，Conversation Write handler 在宿主完成图片落盘后通过 `requestConversation` 发布附件持久引用；已迁移的类型化命令共 212 项。
+- 图片暂存、消息写入、文件持久化、附件事件和本地 URL 返回顺序不变。Main 组合根已删除最后一个业务命令的通用 transport 端口；全 Main 审计仅余两处 `runtime.healthcheck` 基础设施探测，以及 RuntimeClient 内部类型化适配实现。
+- Protocol 构建、Desktop 类型检查、Conversation Write/合同相关 11 项、Runtime 图片持久化集成 1 项、定向 ESLint、130 项架构测试与 924 文件架构扫描通过。
+- 本批无依赖、迁移或业务数据操作，未重启当前应用。整仓构建、差异检查和 transport 范围审计均已完成。
+
+### 续接记录（2026-09-20，第七十七批 Kernel Recycle 生命周期入口）
+
+- `kernel.recycle` 已纳入既有 Protocol `kernel-command-contract`，新增 `KernelRecyclePayload` 并由 RuntimeClient `requestKernel` 类型化调用；已迁移的类型化命令共 211 项。
+- 本批只收口私有内核安装/更新后的 Main → Runtime 内部调用，不新增 Renderer IPC，不改变安装、探测、重启或有租约会话的延迟回收策略。Main 通用 Runtime 传输仅余 `message.attachImages`。
+- Protocol 构建、Desktop 类型检查、Desktop 相关 6 项测试、Runtime 回收状态机 10 项、定向 ESLint、130 项架构测试与 924 文件架构扫描通过。
+- 13 包整仓构建通过，Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,451 / 2,975,222 字节。本批无依赖、迁移或业务数据操作；未重启当前应用。下一批迁移消息图片附件并审计 Main 的通用传输余量。
+
+### 续接记录（2026-09-20，第七十六批数据管理边界）
+
+- 新增 Protocol `data-management-command-contract`，关联空间统计、导出、导入、备份、压缩和两类清理共 7 项请求/响应；已迁移的类型化命令共 210 项。
+- Desktop 新增纯 `data-management-payloads` 与 Main `data-management-handlers`，Main 组合根删除八组直接注册并通过窄端口保留保存/打开对话框、系统路径打开和默认文件名生成。托盘打开数据目录的旁路也改用 `requestDataManagement`；Runtime 继续拥有 SQLite/文件内容、备份一致性、冲突处理和清理事务。
+- Protocol 构建、Desktop 类型检查、相关 23 项测试、Protocol 数据解析 2 项、Runtime 数据服务 5 项、定向 ESLint、130 项架构测试与 924 文件架构扫描通过。
+- 13 包整仓构建通过，Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,451 / 2,975,222 字节。本批无依赖、迁移或业务数据操作；未重启当前应用。Main 通用 Runtime 传输仅余 `kernel.recycle` 与 `message.attachImages`，下一批先迁移 Kernel Recycle。
+
+### 续接记录（2026-09-20，第七十五批 Web Search Provider 管理边界）
+
+- 新增 Protocol `web-search-provider-command-contract`，关联 Provider 列表、保存、排序和连接测试 4 项请求/响应；已迁移的类型化命令共 203 项。
+- Desktop 新增 Main `web-search-provider-handlers`，Main 组合根删除四组直接注册；Preload 复用共享通道常量。既有 Protocol 解析器继续作为唯一载荷校验源，配置持久化、密钥存储、路由、网络测试和错误脱敏仍由 Runtime 拥有。
+- Protocol 构建、Desktop 类型检查、相关 11 项测试、Runtime Web Search 回归 21 项、定向 ESLint、128 项架构测试与 921 文件架构扫描通过。
+- 13 包整仓构建通过，Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,451 / 2,975,222 字节。本批无依赖、迁移或业务数据操作；未重启当前应用。下一批独立迁移数据管理命令，并保留 Main 文件选择/落盘的宿主适配职责。
+
+### 续接记录（2026-09-20，第七十四批 Provider CC Switch 预览与导入边界）
+
+- 新增 Protocol `provider-cc-switch-command-contract`，关联数据库预览和选定来源导入 2 项请求/响应；已迁移的类型化命令共 199 项。
+- Desktop 新增纯 `provider-cc-switch-payloads` 与 Main `provider-cc-switch-handlers`，Main 组合根删除两组直接注册；Preload 复用共享通道常量。数据库读取、Provider 映射、安全存储、失败补偿和事件持久化仍由 Runtime 拥有，原有数据库路径与来源 ID 校验语义保持。
+- Protocol 构建、Desktop 类型检查、相关 11 项测试、Runtime CC Switch 补偿回归 2 项、定向 ESLint、126 项架构测试与 919 文件架构扫描通过。
+- 13 包整仓构建通过，Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,451 / 2,975,222 字节。本批无依赖、迁移或业务数据操作；未重启当前应用。下一批迁移 Web Search Provider 管理 4 项命令，数据管理随后独立处理。
+
+### 续接记录（2026-09-20，第七十三批 Provider Balance 边界）
+
+- 新增 Protocol `provider-balance-command-contract`，关联只读余额查询请求/响应；已迁移的类型化命令共 197 项。
+- Desktop 新增纯 `provider-balance-payloads` 与 Main `provider-balance-handlers`，Main 组合根删除直接注册；Preload 复用共享通道常量。端点支持判断、凭据读取、网络访问、诊断和响应归一化仍由 Runtime 拥有，CC Switch 保持独立职责。
+- Protocol 构建、Desktop 类型检查、相关 17 项测试、Runtime Provider 回归 7 项、定向 ESLint、124 项架构测试与 916 文件架构扫描通过。Runtime 测试中的 17374 端口占用来自当前运行中的浏览器扩展宿主，不影响断言；既有全 Desktop lint 阻塞保持不变。
+- 13 包整仓构建通过，Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,451 / 2,975,222 字节。本批无依赖、迁移或业务数据操作；未重启当前应用。下一批独立迁移 CC Switch 预览与导入边界。
+
+### 续接记录（2026-09-20，第七十二批 Provider Discovery 与 Capability Probing 边界）
+
+- 新增 Protocol `provider-discovery-command-contract`，关联目录发现、创建前临时探测、能力探测和能力确认 4 项请求/响应；已迁移的类型化命令共 196 项。
+- Desktop 新增纯 `provider-discovery-payloads` 与 Main `provider-discovery-handlers`，Main 组合根删除四组直接注册；临时探测密钥继续经注入的剪贴板端口和统一 8 KiB 校验交接，Renderer payload 不携带明文。发现/能力执行和状态写入仍由 Runtime 拥有，模型管理、余额和 CC Switch 保持独立职责。
+- Protocol 构建、Desktop 类型检查、相关 34 项测试、Runtime Provider 回归 7 项、定向 ESLint、122 项架构测试与 913 文件架构扫描通过。Runtime 测试中的 17374 端口占用来自当前运行中的浏览器扩展宿主，不影响断言；既有全 Desktop lint 阻塞保持不变。
+- 13 包整仓构建通过，Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,451 / 2,975,222 字节。本批无依赖、迁移或业务数据操作；未重启当前应用。下一批独立迁移 Provider Balance，CC Switch 继续留后。
+
+### 续接记录（2026-09-20，第七十一批 Provider Model Management 边界）
+
+- 新增 Protocol `provider-model-command-contract`，关联模型新增、优先级排序、元数据更新和删除 4 项请求/响应；已迁移的类型化命令共 192 项。
+- Desktop 新增纯 `provider-model-payloads` 与 Main `provider-model-handlers`，Main 组合根删除四组直接注册；Preload 复用共享通道常量。模型持久化和上下文缓存失效仍由 Runtime 拥有，发现、能力探测、余额和 CC Switch 保持独立职责。
+- Protocol 构建、Desktop 类型检查、相关 22 项测试、Runtime Provider 生命周期回归 7 项、定向 ESLint、120 项架构测试与 910 文件架构扫描通过。Runtime 测试中的 17374 端口占用来自当前运行中的浏览器扩展宿主，不影响断言。全 Desktop lint 仍受既有 `MarkdownImageGallery.tsx` 条件 Hook 与主题引擎 `@ts-nocheck`/未使用符号共 6 个错误阻塞。
+- 13 包整仓构建通过，Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,451 / 2,975,222 字节。本批无依赖、迁移或业务数据操作；未重启当前应用。下一批独立迁移 Provider Discovery & Capability Probing，余额与 CC Switch 继续留后。
+
+### 续接记录（2026-09-20，第七十批 Provider Credentials 生命周期边界）
+
+- 新增 Protocol `provider-credential-command-contract`，关联凭据新增、移除、清空、查看和更新 5 项请求/响应；已迁移的类型化命令共 188 项。
+- Desktop 新增纯 `provider-credential-payloads` 与 Main `provider-credential-handlers`，Main 组合根删除五组直接注册；新增/轮换密钥继续经注入的剪贴板端口和统一 8 KiB 校验交接，查看是唯一显式返回明文的短生命周期 hop。Provider Catalog、模型和发现/探测保持独立职责。
+- Protocol 构建、Desktop 类型检查、相关 29 项测试、Runtime Provider/安全存储补偿回归 13 项、定向 ESLint、118 项架构测试与 907 文件架构扫描通过。Runtime 测试中的 17374 端口占用来自当前运行中的浏览器扩展宿主，不影响断言。
+- 13 包整仓构建通过，Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,451 / 2,975,222 字节。本批无依赖、迁移、Runtime 行为或业务数据操作；未重启当前应用。下一批独立迁移 Provider Model Management，发现/探测、余额与 CC Switch 继续留后。
+
+### 续接记录（2026-09-20，第六十九批 Provider Catalog 生命周期边界）
+
+- 新增 Protocol `provider-catalog-command-contract`，关联 Provider 创建、更新、列表、排序和删除 5 项请求/响应；已迁移的类型化命令共 183 项。
+- Desktop 新增纯 `provider-catalog-payloads`、共享 `provider-payload-validation` 与 Main `provider-catalog-handlers`，Main 组合根删除五组直接注册；创建/轮换凭据继续通过注入的剪贴板端口交接，凭据、模型和发现/探测保持独立职责。
+- Protocol 构建、Desktop 类型检查、相关 27 项测试、Runtime Provider/安全存储补偿回归 12 项、定向 ESLint、116 项架构测试与 904 文件架构扫描通过。Runtime 测试中的 17374 端口占用来自当前运行中的浏览器扩展宿主，不影响断言。
+- 13 包整仓构建通过，Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,451 / 2,975,222 字节。本批无依赖、迁移、Runtime 行为或业务数据操作；未重启当前应用。下一批独立迁移 Provider Credentials 生命周期，模型与发现/探测继续留后。
+
+### 续接记录（2026-09-20，第六十八批执行参与模式边界）
+
+- 新增 Protocol `participation-mode-command-contract`，关联 `task.setParticipationMode` 请求/响应；已迁移的类型化命令共 178 项。
+- Desktop 新增纯 `participation-mode-payloads` 与 Main `participation-mode-handlers`，Main 组合根删除直接注册；Preload 复用共享通道常量。Task 目录和执行策略继续保持独立职责。
+- Desktop 类型检查、相关 28 项测试、Runtime 参与模式/OCC/事务回归 17 项、定向 ESLint、114 项架构测试与 900 文件架构扫描通过。Runtime 测试中的 17374 端口占用来自当前运行中的浏览器扩展宿主，不影响断言。
+- 13 包整仓构建通过，Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,451 / 2,975,222 字节。本批无依赖、迁移或业务数据操作；未重启当前应用。下一批从 Provider 生命周期中选择一个有限子域继续迁移。
+
+### 续接记录（2026-09-20，第六十七批 Artifact 生命周期边界）
+
+- 新增 Protocol `artifact-command-contract`，关联列表、版本读取、比较、选择、合并、冲突列表和冲突解决 7 项命令；已迁移的类型化命令共 177 项。
+- Desktop 新增纯 `artifact-payloads` 与 Main `artifact-handlers`，Main 组合根删除七组直接注册。图片预览通过注入的 `registerImagePreview` 宿主端口完成本地签名，不把 Electron 或具体 registry 带入 Artifact 应用边界。
+- Desktop 类型检查、相关 38 项测试、Runtime Artifact 10 项、定向 ESLint、112 项架构测试与 897 文件架构扫描通过。
+- 13 包整仓构建通过，Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,451 / 2,975,222 字节。本批无依赖、迁移、Runtime 行为或业务数据操作；未重启当前应用。下一批可独立处理 `task.setParticipationMode` 执行参与策略，再转向 Provider 生命周期。
+
+### 续接记录（2026-09-20，第六十六批 Run Graph 与执行控制边界）
+
+- 新增 Protocol `run-control-command-contract`，关联 Graph 查询、pause、resume 和 cancel 4 项命令；已迁移的类型化命令共 170 项。
+- 新增纯 `run-control-payloads` 和 Main `run-control-handlers`，接管普通会话 cancel、Graph、编排 pause/resume/cancel 共 5 个 IPC channel；两个 cancel 入口共享 `run.cancel` 线协议，但联合请求/响应显式建模，Runtime 继续按载荷形状区分会话流取消与带 scope/OCC 的编排取消。
+- 新增 13 项注册测试、4 项载荷测试、2 项 wiring 测试及编译期正反例；Desktop 相关 33 项、Runtime Run 回归 3 项、Protocol 构建、Desktop 类型检查、定向 lint、110 项架构测试和 894 文件扫描通过。
+- 13 包整仓构建通过，Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,451 / 2,975,222 字节。本批无依赖、迁移、Runtime 行为或业务数据操作；未重启当前应用。下一批可处理 Artifact 查询、选择、合并与冲突解决 7 项命令。
+
+### 续接记录（2026-09-20，第六十五批 Plan 生命周期边界）
+
+- 新增 Protocol `plan-command-contract`，关联 Plan 草稿、修订、revision 列表和批准 4 项请求/响应；已迁移的类型化命令共 166 项。
+- 新增纯 `plan-payloads` 和 Main `plan-handlers`，接管 4 个 IPC channel；Plan 解析从 Mode/Plan/Run/Artifact/Policy/Agent 聚合文件移出，通用复杂度与敏感字段检查抽入 `orchestration-payload-validation`。来源校验 → 连接 → 解析 → 请求顺序和错误文本保持；Run 控制及参与模式未并入。
+- 新增 11 项注册测试、4 项载荷测试、2 项 wiring 测试及编译期正反例；Desktop 相关 31 项、Runtime Plan 回归 14 项、Protocol 构建、Desktop 类型检查、定向 lint、108 项架构测试和 891 文件扫描通过。
+- 13 包整仓构建通过，Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,451 / 2,975,222 字节。本批无依赖、迁移、Runtime 行为或业务数据操作；未重启当前应用。下一批可独立处理 Run Graph 与 pause/resume/cancel 4 项命令。
+
+### 续接记录（2026-09-20，第六十四批 Task 目录生命周期边界）
+
+- 新增 Protocol `task-command-contract`，关联 Task 创建、列表、打开、搜索、归档和取消归档 6 项请求/响应；已迁移的类型化命令共 162 项。
+- 新增纯 `task-payloads` 和 Main `task-handlers`，接管 6 个 IPC channel；原 Workspace/Task 混合文件完成拆分，共享通道表供 Preload/Main 复用。来源校验 → 连接 → 解析 → 请求顺序、验收条件边界、树级归档参数和版本围栏保持；`task.setParticipationMode` 未并入目录生命周期。
+- 新增 15 项注册测试、4 项载荷测试、2 项 wiring 测试及编译期正反例；Desktop 相关 22 项、Runtime 目录回归 3 项、Protocol 构建、Desktop 类型检查、定向 lint、106 项架构测试和 887 文件扫描通过。
+- 13 包整仓构建通过，Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,451 / 2,975,222 字节。本批无依赖、迁移、Runtime 行为或业务数据操作；未重启当前应用。下一批可独立处理 Plan 生命周期 4 项命令，执行参与模式继续保持独立。
+
+### 续接记录（2026-09-20，第六十三批 Workspace 生命周期边界）
+
+- 新增 Protocol `workspace-command-contract`，关联 Workspace 创建、文件夹绑定、列表、更新和删除 5 项请求/响应；已迁移的类型化命令共 156 项。
+- 新增纯 `workspace-lifecycle-payloads` 和 Main `workspace-handlers`，接管 5 个 IPC channel；Workspace 解析从原 Workspace/Task 混合文件移出，共享通道表供 Preload/Main 复用，更新安装探针也改走 `requestWorkspace`。Task 解析和命令未改。
+- 新增 13 项注册测试、5 项载荷测试、2 项 wiring 测试及编译期正反例；Desktop 相关 23 项、Runtime Workspace 回归 3 项、Protocol 构建、Desktop 类型检查、定向 lint、104 项架构测试和 885 文件扫描通过。
+- 13 包整仓构建通过，Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,451 / 2,975,222 字节。本批无依赖、迁移、Runtime 行为或业务数据操作；未重启当前应用。下一批可独立处理 Task 目录生命周期 6 项命令，执行参与模式保持独立。
+
+### 续接记录（2026-09-20，第六十二批 Prompt Enhancement / Design Generation 边界）
+
+- 新增 Protocol `prompt-design-command-contract`，关联提示词优化、优化取消和设计生成 3 项请求/响应；已迁移的类型化命令共 151 项。
+- 新增纯 `prompt-design-payloads` 和 Main `prompt-design-handlers`，接管 3 个 IPC channel；共享通道表供 Preload/Main 复用，Prompt 解析从 Main 移出，Design 继续复用 Protocol 严格解析器。来源校验 → 连接 → 解析 → 请求顺序及按命令超时保持。
+- 新增 9 项注册测试、5 项载荷测试、2 项 wiring 测试及编译期正反例；Desktop 相关 17 项、Protocol 回归 5 项、Runtime 管道回归 3 项、Desktop 类型检查、定向 lint、102 项架构测试和 882 文件扫描通过。
+- 13 包整仓构建通过，Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,451 / 2,975,222 字节。本批无依赖、迁移、Runtime 行为或业务数据操作；未重启当前应用。下一批可独立处理 Workspace 生命周期 5 项命令。
+
+### 续接记录（2026-09-20，第六十一批 Capability Governance 生命周期边界）
+
+- 新增 Protocol `capability-governance-command-contract`，关联工作区能力激活列表/写入、治理列表、发布草稿保存/列表/详情/提交和整理预览/最近报告 9 项请求/响应；已迁移的类型化命令共 148 项。
+- 新增 Main `capability-governance-handlers`，接管 9 个 IPC channel，并复用既有纯 `capability-payloads`、共享通道表和来源校验 → 连接 → 解析 → 请求顺序。激活状态、治理规则、草稿持久化和整理报告生成仍由 Runtime 拥有。
+- 新增 21 项注册测试、2 项 wiring 测试及编译期正反例；Desktop 相关 28 项、Runtime 治理集成 1 项、Protocol 构建、Desktop 类型检查、定向 lint、100 项架构测试和 879 文件扫描通过。
+- 13 包整仓构建通过，Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,451 / 2,975,222 字节。本批无依赖、迁移、Runtime 行为或业务数据操作；未重启当前应用。下一批可独立处理 Prompt Enhancement / Design Generation 注册边界。
+
+### 续接记录（2026-09-20，第六十批 Bot Channel 生命周期边界）
+
+- 新增 Protocol `bot-channel-command-contract`，关联配置读取、保存、连接测试和微信二维码请求/检查 5 项请求/响应；已迁移的类型化命令共 139 项。
+- 新增 Desktop `bot-channel-payloads` 和 Main `bot-channel-handlers`，接管 5 个 IPC channel；平台分支、凭据字段修剪、域/渲染模式、字段长度、二维码校验和来源校验 → 连接 → 解析 → 请求顺序保持。对应解析器从 `agent-payloads` 移出，既有载荷测试导入同步指向 Agent、Skill 和 Bot 各自边界。
+- 新增 13 项注册测试、2 项 wiring 测试及编译期正反例；Desktop 相关 22 项、Runtime Bot 回归 21 项、Protocol 构建、Desktop 类型检查、定向 lint、98 项架构测试和 877 文件扫描通过。
+- 13 包整仓构建通过，Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,451 / 2,975,222 字节。本批无依赖、迁移、Runtime 行为或业务数据操作；未重启当前应用。下一批可独立处理 Capability Governance 生命周期边界。
+
+### 续接记录（2026-09-20，第五十九批 MCP 工具策略与执行边界）
+
+- 新增 Protocol `mcp-tool-command-contract`，关联策略预检、工具软请求、进程探测、实际调用和目录刷新 5 项请求/响应；已迁移的类型化命令共 134 项。
+- 新增 Desktop `mcp-tool-payloads` 和 Main `mcp-tool-handlers`，接管 5 个 IPC channel；对应解析器从 `agent-payloads` 移出，作用域、审批参数、输出预算、目录上限和来源校验 → 连接 → 解析 → 请求顺序保持。实际调用和目录刷新继续使用 RuntimeClient 的 130 秒命令超时策略；Runtime 授权、审批、进程/HTTP 执行和目录持久化不变。
+- 新增 13 项注册测试、3 项 wiring 测试及编译期正反例；Desktop 相关 17 项、Runtime MCP 回归 11 项、Protocol 构建、Desktop 类型检查、定向 lint、96 项架构测试和 874 文件扫描通过。
+- 13 包整仓构建通过，Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,451 / 2,975,222 字节。本批无依赖、迁移、Runtime 行为或业务数据操作；未重启当前应用。下一批可独立处理 Bot Channel 生命周期边界。
+
+### 续接记录（2026-09-20，第五十八批 MCP 注册表生命周期边界）
+
+- 新增 Protocol `mcp-registry-command-contract`，关联本地注册、远程注册、列表、启停和删除 5 项请求/响应；已迁移的类型化命令共 129 项。
+- 新增 Desktop `mcp-registry-payloads` 和 Main `mcp-registry-handlers`，接管 5 个 IPC channel；对应解析器从 `agent-payloads` 移出，URL、凭据别名、工具摘要、字段校验和来源校验 → 连接 → 解析 → 请求顺序保持。远程注册继续使用 RuntimeClient 的 130 秒命令超时策略；策略探测、工具请求/调用和刷新未并入本批。
+- 新增 13 项注册测试、2 项 wiring 测试及编译期正反例；Desktop 相关 16 项、Runtime MCP 回归 15 项、Protocol 构建、Desktop 类型检查、定向 lint、94 项架构测试和 871 文件扫描通过。
+- 13 包整仓构建通过，Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,451 / 2,975,222 字节。本批无依赖、迁移、Runtime 行为或业务数据操作；未重启当前应用。下一批可独立处理 MCP 工具执行与策略边界。
+
+### 续接记录（2026-09-20，第五十七批已安装 Skill 生命周期注册边界）
+
+- 新增 Protocol `skill-command-contract`，关联文本导入、远程导入、列表、详情、删除和启用状态 6 项请求/响应；已迁移的类型化命令共 124 项。
+- 新增 Desktop `skill-payloads` 和 Main `skill-handlers`，接管 6 个 IPC channel；对应解析器从 `agent-payloads` 移出，远程导入 30 秒超时、URL/来源字段校验、列表去重和来源校验 → 连接 → 解析 → 请求顺序保持。不可变版本、内容寻址、权限重审批、引用阻止删除和工作区激活仍由 Runtime 拥有，MCP 未并入该边界。
+- 新增 15 项注册测试、2 项 wiring 测试及编译期正反例；Desktop 相关 18 项、Runtime Skill 回归 5 项、Protocol 构建、Desktop 类型检查、定向 lint、92 项架构测试和 868 文件扫描通过。
+- 13 包整仓构建通过，Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,451 / 2,975,222 字节。本批无依赖、迁移、Runtime 行为或业务数据操作；未重启当前应用。下一批可独立处理 MCP 注册表生命周期边界。
+
+### 续接记录（2026-09-20，第五十六批 Skill Market 注册边界）
+
+- 新增 Protocol `skill-market-command-contract`，关联 Skill 市场列表和安装 2 项请求/响应；已迁移的类型化命令共 118 项。
+- 新增 Desktop `skill-market-payloads` 和 Main `skill-market-handlers`，接管 2 个 IPC channel；安装解析器从 `team-payloads` 移出，ID 修剪、空列表载荷和来源校验 → 连接 → 解析 → 请求顺序保持。内置市场目录、完整包物化、冲突处理、导入和事件发布仍由 Runtime 拥有，已安装 Skill 管理未并入该边界。
+- 新增 6 项注册测试、2 项 wiring 测试及编译期正反例；Desktop 相关 9 项、Runtime 市场回归 2 项、Protocol 构建、Desktop 类型检查、定向 lint、90 项架构测试和 865 文件扫描通过。
+- 13 包整仓构建通过，Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,451 / 2,975,222 字节。本批无依赖、迁移、Runtime 行为或业务数据操作；未重启当前应用。下一批可独立处理已安装 Skill 生命周期注册边界。
+
+### 续接记录（2026-09-20，第五十五批 Skill Local 注册边界）
+
+- 新增 Protocol `skill-local-command-contract`，关联本地 Skill 扫描、检查和导入 3 项请求/响应；已迁移的类型化命令共 116 项。
+- 新增 Desktop `skill-local-payloads` 和 Main `skill-local-handlers`，接管 3 个 IPC channel；对应解析器从 `team-payloads` 移出，空扫描载荷、路径修剪、全局/工作区 scope、覆盖参数和来源校验 → 连接 → 解析 → 请求顺序保持。目录发现、ZIP 解包、安装、缓存/watch 和事件发布仍由 Runtime 拥有，Skill Market 未并入该边界。
+- 新增 9 项注册测试、2 项 wiring 测试及编译期正反例；Desktop 相关 12 项、Runtime 本地 Skill 回归 11 项、Protocol 构建、Desktop 类型检查、定向 lint、88 项架构测试和 862 文件扫描通过。
+- 13 包整仓构建通过，Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,451 / 2,975,222 字节。本批无依赖、迁移、Runtime 行为或业务数据操作；未重启当前应用。下一批可独立处理 Skill Market 注册边界。
+
+### 续接记录（2026-09-20，第五十四批 Goal 生命周期注册边界）
+
+- 新增 Protocol `goal-command-contract`，关联目标设置、读取、清除、暂停和恢复 5 项请求/响应，并补齐 `GoalPauseResponse`；已迁移的类型化命令共 113 项。
+- 新增 Desktop `goal-payloads` 和 Main `goal-handlers`，接管 5 个 IPC channel；有效载荷归一化和来源校验 → 连接 → 解析 → 请求顺序保持，无效载荷在 Desktop 边界终止。目标轮次、Token 预算、连续阻塞判定和自动续跑仍由 Runtime 拥有，Skill Local 未并入该边界。
+- 新增 10 项注册测试、2 项 wiring 测试及编译期正反例；Desktop 相关 13 项、Runtime Goal 回归 9 项、Protocol 构建、Desktop 类型检查、定向 lint、86 项架构测试和 859 文件扫描通过。
+- 13 包整仓构建通过，Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,451 / 2,975,222 字节。本批无依赖、迁移、Runtime 行为或业务数据操作；未重启当前应用。下一批可独立处理 Skill Local 注册边界。
+
+### 续接记录（2026-09-20，第五十三批 Activity Center 注册边界）
+
+- 新增 Protocol `activity-command-contract`，关联运行列表、外部事件列表和重试锚点解析 3 项请求/响应；已迁移的类型化命令共 108 项。
+- 新增 Desktop Main `activity-handlers`，接管 3 个 IPC channel，并复用既有过滤 parser 与来源校验 → 连接 → 解析 → 请求顺序；Main 入口删除直接注册。活动投影、分页、敏感 lease 隔离和重试资格判定仍由 Runtime 拥有，Goal 生命周期未并入该边界。
+- 新增 7 项注册测试、2 项 wiring 测试及编译期正反例；Desktop 相关 10 项、Runtime Activity 集成 15 项、Protocol 构建、Desktop 类型检查、定向 lint、84 项架构测试和 856 文件扫描通过。
+- 13 包整仓构建通过，Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,451 / 2,975,222 字节。本批无依赖、迁移、Runtime 行为或业务数据操作；未重启当前应用。下一批可独立处理 Goal 注册边界。
+
+### 续接记录（2026-09-20，第五十二批 Scheduled Task 注册边界）
+
+- 新增 Protocol `scheduled-task-command-contract`，关联任务创建、列表、更新、删除、立即触发和历史查询 6 项请求/响应；补齐创建、更新、删除的命名响应类型，已迁移的类型化命令共 105 项。
+- 新增 Desktop Main `scheduled-task-handlers`，接管 6 个 IPC channel，并复用既有严格 payload parser 与来源校验 → 连接 → 解析 → 请求顺序；Main 入口删除直接注册。规则计算、持久化、触发执行和历史记录仍由 Runtime 拥有，Activity Center 未并入该边界。
+- 新增 11 项注册测试、2 项 wiring 测试及编译期正反例；Desktop 相关 14 项、Runtime 调度回归 52 项、Protocol 构建、Desktop 类型检查、定向 lint、82 项架构测试和 854 文件扫描通过。
+- 13 包整仓构建通过，Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,451 / 2,975,222 字节。本批无依赖、迁移、Runtime 行为或业务数据操作；未重启当前应用。下一批可独立处理 Activity Center 注册边界。
+
+### 续接记录（2026-09-20，第五十一批 Conversation Ask 注册边界）
+
+- 扩展 Protocol `conversation-command-contract`，补齐问询回答、取消和待处理查询 3 项请求/响应关联；已迁移的类型化命令共 99 项。
+- 新增 Desktop Main `conversation-ask-handlers`，接管 Ask 生命周期 3 个 IPC channel，并复用既有严格 payload parser 与来源校验 → 连接 → 解析 → 请求顺序；Main 入口删除直接注册。待处理问询状态、回答结算和持久事件仍由 Runtime 拥有，Scheduled Task 未并入该边界。
+- 新增 8 项注册测试、2 项 wiring 测试及编译期正反例；Desktop 相关 54 项、Protocol 构建、Desktop 类型检查、定向 lint、80 项架构测试和 852 文件扫描通过。
+- 13 包整仓构建通过，Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,451 / 2,975,222 字节。本批无依赖、迁移、Runtime 行为或业务数据操作；未重启当前应用。下一批可独立处理 Scheduled Task 注册边界。
+
+### 续接记录（2026-09-20，第五十批 Conversation Plan 注册边界）
+
+- 扩展 Protocol `conversation-command-contract`，补齐计划提交、读取、批准、修订和取消 5 项请求/响应关联；已迁移的类型化命令共 96 项。
+- 新增 Desktop Main `conversation-plan-handlers`，接管 Plan 生命周期 5 个 IPC channel，并复用既有严格 payload parser 与来源校验 → 连接 → 解析 → 请求顺序；Main 入口删除直接注册。不可变 revision、批准前置条件、Run/Graph 创建与原子持久化仍由 Runtime 拥有，Ask 未并入该边界。
+- 新增 10 项注册测试、2 项 wiring 测试及编译期正反例；Desktop 相关 65 项、Runtime Plan 集成 14 项、Protocol 构建、Desktop 类型检查、定向 lint、80 项架构测试和 851 文件扫描通过。
+- 13 包整仓构建通过，Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,451 / 2,975,222 字节。本批无依赖、迁移、Runtime 行为或业务数据操作；未重启当前应用。下一批可独立处理 Conversation Ask 注册边界。
+
+### 续接记录（2026-09-20，第四十九批 Conversation 路由注册边界）
+
+- 扩展 Protocol `conversation-command-contract`，补齐执行模式、交互模式、上下文窗口覆盖、轨道升级和目标重绑 5 项请求/响应关联；已迁移的类型化命令共 91 项。
+- 新增 Desktop Main `conversation-routing-handlers`，接管 5 个 IPC channel，并复用既有严格 payload parser 与来源校验 → 连接 → 解析 → 请求顺序；Main 入口删除直接注册。路由兼容性、轨道切换、模型/Agent/Team 目标验证和状态持久化仍由 Runtime 拥有，Plan 与 Ask 未并入该边界。
+- 新增 10 项注册测试、2 项 wiring 测试及编译期正反例；Desktop 相关 56 项、Runtime 路由/上下文/Goal 回归 29 项、Protocol 构建、Desktop 类型检查、定向 lint、80 项架构测试和 850 文件扫描通过。
+- 13 包整仓构建通过，Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,451 / 2,975,222 字节。本批无依赖、迁移、Runtime 行为或业务数据操作；未重启当前应用。下一批可独立处理 Conversation Plan 注册边界。
+
+### 续接记录（2026-09-19，第四十八批 Conversation 目录注册边界）
+
+- 扩展 Protocol `conversation-command-contract`，补齐 `conversation.list/create/rename/setPinned/setArchived/delete` 6 项请求/响应关联；已迁移的类型化命令共 86 项。
+- 新增 Desktop Main `conversation-management-handlers`，接管对话目录生命周期 6 个 IPC channel，并复用既有严格 payload parser 与来源校验 → 连接 → 解析 → 请求顺序；Main 入口删除直接注册。托盘最近会话查询同步改用 `requestConversation`，目录持久化、引用约束和事件语义仍由 Runtime 拥有。
+- 新增 11 项注册测试、2 项 wiring 测试及编译期正反例；Desktop 相关 57 项、Runtime Team/Conversation 集成 10 项、Protocol 构建、Desktop 类型检查、定向 lint、80 项架构测试和 849 文件扫描通过。
+- 13 包整仓构建通过，Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,451 / 2,975,222 字节。本批无依赖、迁移、Runtime 行为或业务数据操作；未重启当前应用。下一批可独立处理 Conversation 路由与模式设置。
+
+### 续接记录（2026-09-19，第四十七批 Team 注册边界）
+
+- 新增 Protocol `team-command-contract`，关联团队列表、创建、更新、删除、启动运行和设置运行状态 6 项请求/响应；`RuntimePipeClient.requestTeam` 成为 Team 目录与运行控制域的类型化入口，已迁移的类型化命令共 80 项。
+- 新增 Desktop Main `team-handlers`，接管 6 个 IPC channel，并复用既有严格 payload parser 与来源校验 → 连接 → 解析 → 请求顺序；Main 入口删除直接注册。成员依赖、协调者、Team Run 创建与状态机仍由 Runtime 拥有，Conversation 未并入该边界。
+- 新增 11 项注册测试、2 项 wiring 测试及编译期正反例；Desktop 相关 57 项、Runtime Team/Conversation 集成 10 项、Protocol 构建、Desktop 类型检查、定向 lint、80 项架构测试和 848 文件扫描通过。
+- 13 包整仓构建通过，Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,451 / 2,975,222 字节。本批无依赖、迁移、Runtime 行为或业务数据操作；未重启当前应用。下一批可继续拆分剩余 Conversation 管理注册。
+
+### 续接记录（2026-09-19，第四十六批 Global Agent 注册边界）
+
+- 新增 Protocol `global-agent-command-contract`，关联列表、创建、更新、删除、工作区激活列表和激活写入 6 项请求/响应；`RuntimePipeClient.requestGlobalAgent` 成为可变全局智能体域的类型化入口，已迁移的类型化命令共 74 项。
+- 新增 Desktop Main `global-agent-handlers`，接管 6 个 IPC channel，并复用既有严格 payload parser 与来源校验 → 连接 → 解析 → 请求顺序；Main 入口删除直接注册。Agent 定义、引用约束、工作区激活持久化和事件语义仍由 Runtime 拥有，Team 未并入该边界。
+- 补齐 `DeleteGlobalAgentResponse`，将 Runtime 已存在的“有对话引用时软归档”结果贯穿 Preload 与 Renderer，页面不再维护临时类型断言。Desktop 相关 73 项、Runtime Global Agent/Team 集成 11 项、Protocol 构建、Desktop 类型检查、定向 lint、78 项架构测试和 846 文件扫描通过。
+- 13 包整仓构建通过，Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,451 / 2,975,222 字节。本批无依赖、迁移、Runtime 行为或业务数据操作；未重启当前应用。下一批可独立处理 Team 注册边界。
+
+### 续接记录（2026-09-19，第四十五批 Agent 创建与版本注册边界）
+
+- 扩展 Protocol `agent-command-contract`，补齐 `agent.create`、`agent.listVersions` 和 `agent.createVersion` 的请求/响应关联；`RuntimePipeClient.requestAgent` 现覆盖 Agent 读取、绑定、创建与版本管理共 6 项命令，已迁移的类型化命令共 68 项。
+- Desktop Main `agent-handlers` 接管剩余 3 个 Agent IPC channel，统一复用严格 payload parser 和来源校验 → 连接 → 解析 → 请求顺序；Main 入口删除对应直接注册。Agent 定义验证、不可变版本持久化、乐观并发和事件语义仍由 Runtime 拥有，Global Agent 与 Team 未并入该边界。
+- Agent 注册、wiring、payload 与编译期合同相关 Desktop 33 项、Runtime Agent 命令 2 项通过；Protocol 构建、Desktop 类型检查、定向 lint、76 项架构测试和 844 文件扫描通过。
+- 13 包整仓构建通过，Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,451 / 2,975,222 字节。本批无依赖、迁移、Runtime 行为或业务数据操作；未重启当前应用。下一批可独立处理 Global Agent 或 Team 注册边界。
+
+### 续接记录（2026-09-19，第四十四批 Agent Catalog 注册边界）
+
+- 新增 Protocol `agent-command-contract`，关联 Agent 获取、绑定更新和列表 3 项请求/响应类型；`RuntimePipeClient.requestAgent` 成为 Agent 目录域的类型化入口，已迁移的类型化命令共 65 项。
+- 新增 Desktop Main `agent-handlers`，接管 3 个 IPC channel。模块复用既有 Agent/Orchestration payload parser，并通过宿主端口获得注册、来源校验、连接和传输；Main 入口删除直接注册并只负责装配。默认 Agent、模型/凭据/Skill/MCP 绑定验证和版本存储保持 Runtime 所有权。
+- 新增 7 项注册测试、2 项 wiring 测试及编译期正反例；Desktop payload/注册相关 29 项、Runtime Agent 命令 2 项通过。Protocol/Desktop 类型检查、定向 lint、76 项架构测试和 844 文件扫描通过。
+- 13 包整仓构建通过，Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,451 / 2,975,222 字节。本批无依赖、迁移、Runtime 行为或业务数据操作；未重启当前应用。下一批再处理 Agent 创建/版本管理等剩余 Main 传输边界。
+
+### 续接记录（2026-09-19，第四十三批 Usage 注册边界）
+
+- 新增 Protocol `usage-command-contract`，关联 `usage.summary` 的过滤请求与聚合响应；`RuntimePipeClient.requestUsage` 成为使用统计域的类型化入口，已迁移的类型化命令共 62 项。
+- 新增 Desktop Main `usage-handlers`，接管统计查询 IPC。模块复用既有严格 payload parser，并通过宿主端口获得注册、来源校验、连接和传输；Main 入口删除直接注册并只负责装配。300 秒首建缓存超时继续由 RuntimeClient 命令策略提供，统计缓存与聚合保持 Runtime 所有权。
+- 新增 4 项注册测试、2 项 wiring 测试及编译期正反例；Desktop payload/超时/注册相关 21 项、Runtime Usage 回归 3 项通过。Protocol/Desktop 类型检查、定向 lint、74 项架构测试和 842 文件扫描通过。
+- 13 包整仓构建通过，Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,451 / 2,975,222 字节。本批无依赖、迁移、Runtime 行为或业务数据操作；未重启当前应用。下一批继续横向迁移剩余 Main 传输边界。
+
+### 续接记录（2026-09-19，第四十二批 Policy 注册边界）
+
+- 新增 Protocol `policy-command-contract`，关联策略保存和列表 2 项请求/响应类型；`RuntimePipeClient.requestPolicy` 成为作用域策略域的类型化入口，已迁移的类型化命令共 61 项。
+- 新增 Desktop Main `policy-handlers`，接管 2 个 IPC channel。模块复用既有严格 payload parser，并通过宿主端口获得注册、来源校验、连接和传输；Main 入口删除直接注册并只负责装配。策略作用域验证、版本持久化、事件事务和最终策略解析保持 Runtime 所有权。
+- 新增 6 项注册测试、2 项 wiring 测试及编译期正反例；Desktop payload/注册相关 22 项、Runtime Policy 命令 13 项通过。Protocol/Desktop 类型检查、定向 lint、72 项架构测试和 840 文件扫描通过。
+- 13 包整仓构建通过，Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,451 / 2,975,222 字节。本批无依赖、迁移、Runtime 行为或业务数据操作；未重启当前应用。下一批继续横向迁移剩余 Main 传输边界。
+
+### 续接记录（2026-09-19，第四十一批 Settings 注册边界）
+
+- 新增 Protocol `settings-command-contract`，关联配置读取和写入 2 项请求/响应类型；`RuntimePipeClient.requestSettings` 成为应用配置域的类型化入口，已迁移的类型化命令共 59 项。
+- 新增 Desktop Main `settings-handlers`，接管 2 个 IPC channel。模块复用既有严格 payload parser，并通过宿主端口获得注册、来源校验、连接和传输；Main 入口删除直接注册并只负责装配。配置存储、时间戳和开放网关配置后的后台重绑定保持 Runtime 所有权。
+- 新增 6 项注册测试、2 项 wiring 测试及编译期正反例；Desktop 定向 9 项通过。Protocol/Desktop 类型检查、定向 lint、70 项架构测试和 838 文件扫描通过。
+- 13 包整仓构建通过，Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,451 / 2,975,222 字节。本批无依赖、迁移、Runtime 行为或业务数据操作；未重启当前应用。下一批继续横向迁移 Policy 等剩余 Main 传输边界。
+
+### 续接记录（2026-09-19，第四十批 Kernel Discovery 注册边界）
+
+- 新增 Protocol `kernel-command-contract`，关联 `kernel.detect` 的空请求与检测响应；`RuntimePipeClient.requestKernel` 成为内核发现域的类型化入口，已迁移的类型化命令共 57 项。
+- 新增 Desktop Main `kernel-handlers`，接管只读检测 IPC。模块通过宿主端口获得注册、来源校验、连接和传输；Main 入口删除直接注册并只负责装配。内核注册表扫描保持 Runtime 所有权，桌面安装、更新和运行生命周期中的 `kernel.recycle` 均保持原边界。
+- 新增 3 项注册测试、2 项 wiring 测试及编译期正反例；Desktop 定向 6 项通过。Protocol/Desktop 类型检查、定向 lint、68 项架构测试和 836 文件扫描通过。
+- 13 包整仓构建通过，Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,451 / 2,975,222 字节。本批无依赖、迁移、Runtime 行为或业务数据操作；未重启当前应用。下一批继续横向迁移剩余 Main 传输边界。
+
+### 续接记录（2026-09-19，第三十九批 Open Gateway 注册边界）
+
+- 新增 Protocol `gateway-command-contract`，关联 Gateway 状态、日志查询和清空日志 3 项请求/响应类型；`RuntimePipeClient.requestGateway` 成为开放网关域的类型化入口，已迁移的类型化命令共 56 项。
+- 新增 Desktop Main `gateway-handlers`，接管 3 个 IPC channel。模块通过宿主端口获得注册、来源校验、连接和传输；Main 入口删除三段直接注册并只负责装配。日志查询继续将宽松输入交给 Runtime 归一化，OpenGatewayManager、状态聚合与日志环形缓冲保持 Runtime 所有权。
+- 新增 7 项注册测试、6 项 wiring 测试及编译期正反例；Desktop 定向 14 项、Runtime Gateway 32 项通过。Protocol/Desktop 类型检查、定向 lint、66 项架构测试和 834 文件扫描通过。
+- 13 包整仓构建通过，Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,451 / 2,975,222 字节。本批无依赖、迁移或业务数据操作；未重启当前应用。下一批继续横向迁移剩余 Main 传输边界。
+
+### 续接记录（2026-09-19，第三十八批 Diagnostics 注册边界）
+
+- 新增 Protocol `diagnostics-command-contract`，关联 `diagnostics.list` 的请求/响应类型；`RuntimePipeClient.requestDiagnostics` 成为诊断域的类型化入口，已迁移的类型化命令共 53 项。
+- 新增 Desktop Main `diagnostics-handlers`，接管诊断列表 IPC。页面查询通过独立注册模块装配，桌面诊断导出中的 Runtime 查询也改用同一类型化入口；导出文件组装、脱敏、崩溃记录和保存流程保持原位。
+- 新增 4 项注册测试、2 项 wiring 测试及编译期正反例；Desktop 诊断页面/导出相关 18 项、Runtime Memory/Diagnostics 回归 10 项通过。Protocol/Desktop 类型检查、定向 lint、64 项架构测试和 832 文件扫描通过。
+- 13 包整仓构建通过，Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,451 / 2,975,222 字节。本批无依赖、迁移或业务数据操作；未重启当前应用。下一批继续迁移剩余 Main 传输边界。
+
+### 续接记录（2026-09-19，第三十七批 Context Packet 注册边界）
+
+- 新增 Protocol `context-packet-command-contract`，把 Context Packet 的 peek 和 amend 2 项命令分别关联到请求/响应类型；`RuntimePipeClient.requestContextPacket` 成为上下文包域的类型化入口，已迁移的类型化命令共 52 项。
+- 新增 Desktop Main `context-packet-handlers`，接管 2 个 IPC channel。模块只依赖既有严格 payload parser 与类型契约，通过宿主端口获得注册、来源校验、连接和传输；Main 入口删除两段直接注册并只负责装配。上下文包生成、线程范围覆盖和受保护来源策略保持 Runtime 所有权。
+- 新增 6 项注册测试、3 项 wiring/合同测试及编译期正反例；Context Packet 注册相关 Desktop 10 项通过。Protocol/Desktop 类型检查、定向 lint、62 项架构测试和 830 文件扫描通过。
+- 13 包整仓构建通过，Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,451 / 2,975,222 字节。本批无依赖、迁移或业务数据操作；未重启当前应用。下一批横向迁移 Diagnostics 或其他剩余 Main 传输边界。
+
+### 续接记录（2026-09-19，第三十六批 Memory 注册边界）
+
+- 新增 Protocol `memory-command-contract`，把 Memory 的列表、决定和回滚 3 项命令分别关联到请求/响应类型；`RuntimePipeClient.requestMemory` 成为 Memory 域的类型化入口，已迁移的类型化命令共 50 项。
+- 新增 Desktop Main `memory-handlers`，接管 3 个 IPC channel。模块只依赖既有严格 payload parser 与类型契约，通过宿主端口获得注册、来源校验、连接和传输；Main 入口删除三段直接注册并只负责装配。Memory 策略、持久化和回滚语义保持 Runtime 所有权。
+- 新增 7 项注册测试、4 项 wiring/合同测试及编译期正反例；Memory payload/注册相关 Desktop 13 项通过。Protocol/Desktop 类型检查、定向 lint、60 项架构测试和 828 文件扫描通过。
+- 13 包整仓构建通过，Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,451 / 2,975,222 字节。本批无依赖、迁移或业务数据操作；未重启当前应用。下一批横向迁移 Context Packet 等剩余 Main 传输边界。
+
+### 续接记录（2026-09-19，第三十五批 Approval Center 注册边界）
+
+- 新增 Protocol `approval-command-contract`，把 Approval Center 的列表、评估、入队和决定 4 项命令分别关联到请求/响应类型；`RuntimePipeClient.requestApproval` 成为审批域的类型化入口，已迁移的类型化命令共 47 项。
+- 新增 Desktop Main `approval-handlers`，接管 4 个 IPC channel。模块只依赖既有严格 payload parser 与类型契约，通过宿主端口获得注册、来源校验、连接和传输；Main 入口删除四段直接注册并只负责装配。审批策略、持久化事务和状态机保持 Runtime 所有权。
+- 新增 8 项注册测试、5 项 wiring/合同测试及编译期正反例；Approval payload/注册相关 Desktop 27 项、Runtime Approval Center/恢复回归 19 项通过。Protocol/Desktop 类型检查、定向 lint、58 项架构测试和 826 文件扫描通过。
+- 13 包整仓构建通过，Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,451 / 2,975,222 字节。本批无依赖、迁移或业务数据操作；未重启当前应用。下一批横向迁移 Memory 或 Context Packet 等剩余 Main 传输边界。
+
+### 续接记录（2026-09-19，第三十四批 Browser Extension 注册边界）
+
+- 新增 Protocol `browser-extension-command-contract`，把状态、重启、重置配对和打开扩展目录 4 项命令分别关联到空请求与响应类型；扩展连接状态线协议由 Protocol 提供，Desktop 展示合同改为复用该类型。`RuntimePipeClient.requestBrowserExtension` 成为扩展域的类型化入口，已迁移的类型化命令共 43 项。
+- 新增 Desktop Main `browser-extension-handlers`，接管 4 个 IPC channel。模块通过宿主端口获得注册、来源校验、连接和传输；Main 入口删除四段直接注册并只负责装配。保留来源校验 → 连接 → 请求顺序，Runtime 扩展宿主、配对文件、WebSocket 与 Renderer 归一化逻辑保持原边界。
+- 新增 7 项注册测试、5 项 wiring/合同测试及编译期正反例；Desktop 扩展相关 58 项、Runtime 扩展集成 5 项通过。Protocol/Desktop 类型检查、定向 lint、56 项架构测试和 824 文件扫描通过。
+- 13 包整仓构建通过，Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,451 / 2,975,222 字节。本批无依赖、迁移或业务数据操作；未重启当前应用。下一批横向迁移 Approval Queue 等剩余 Main 传输边界。
+
+### 续接记录（2026-09-19，第三十三批 Desktop Waiting Commands 注册边界）
+
+- 新增 Protocol `desktop-command-contract`，把等待命令列表、继续和取消 3 项命令分别关联到请求/响应类型；`RuntimePipeClient.requestDesktopCommand` 成为 Desktop Command 域的类型化入口。至此已迁移的类型化命令共 39 项。
+- 新增 Desktop Main `desktop-command-handlers`，接管 3 个 IPC channel。模块只依赖严格 payload parser 与类型契约，通过宿主端口获得注册、来源校验、连接和传输；Main 入口删除三段直接注册并只负责装配。保留来源校验 → 连接 → 解析 → 请求顺序，以及 `expectedUpdatedAt` 的乐观并发保护。
+- 新增 7 项注册测试和 Desktop Command 编译期正反例；Desktop 相关 26 项、Runtime 等待命令集成 13 项通过。Protocol/Desktop 类型检查、定向 lint、54 项架构测试和 822 文件扫描通过。
+- 13 包整仓构建通过，Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,451 / 2,975,222 字节。本批无依赖、迁移或业务数据操作；未重启当前应用。下一批横向迁移 Browser Extension 等剩余 Main 传输边界。
+
+### 续接记录（2026-09-19，第三十二批 Browser Handoff 注册边界）
+
+- 新增 Protocol browser-handoff-command-contract，把等待列表、继续和取消 3 项命令分别关联到请求/响应类型；RuntimePipeClient.requestBrowserHandoff 成为 Handoff 域的类型化入口，保留 revision 与 lease disposition 契约。
+- 新增 Desktop Main browser-handoff-handlers，接管 3 个 IPC channel。模块只依赖 Handoff payload parser 与类型契约，通过宿主端口获得注册、来源校验、连接和传输；Main 入口删除三段直接注册并只负责装配。保留来源校验 → 连接 → 解析 → 请求顺序。
+- 新增 7 项注册测试、3 项 payload 测试和 Handoff 编译期正反例；旧 wiring 测试同步到新注册边界。Desktop Handoff/BrowserStage 联合回归 80 项、Runtime Handoff 集成 4 项通过。Protocol/Desktop 类型检查、定向 lint、52 项架构测试和 820 文件扫描通过。
+- 13 包整仓构建通过，Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,451 / 2,975,222 字节。本批无依赖、迁移或业务数据操作；未重启当前应用。下一批横向迁移 Desktop Waiting Commands 等剩余 Main 传输边界。
+
+### 续接记录（2026-09-19，第三十一批 Browser Workflow 注册边界）
+
+- 新增 Protocol `browser-workflow-command-contract`，把列表、详情、创建草稿、创建修订草稿、提交、审查、执行和批准执行 8 项命令分别关联到请求/响应类型；`RuntimePipeClient.requestBrowserWorkflow` 成为 Workflow 域的类型化入口，Profile、Recording 与 Workflow 保持独立合同。
+- 新增 Desktop Main `browser-workflow-handlers`，接管 8 个 IPC channel。模块只依赖 Workflow payload parser 与类型契约，通过宿主端口获得注册、来源校验、连接和传输；Main 入口删除八段直接注册并只负责装配。保留来源校验 → 连接 → 解析 → 请求顺序，以及 execute/approveAndExecute 的既有长超时策略。
+- 新增 12 项注册测试和 Workflow 编译期正反例；wiring 测试补齐此前遗漏的 execute/approveAndExecute。BrowserStage、注册、payload、wiring、timeout 与 RuntimeClient 合同共 84 项相关回归通过。Protocol/Desktop 类型检查、定向 lint、50 项架构测试和 818 文件扫描通过。
+- 13 包整仓构建通过，Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,451 / 2,975,222 字节。本批无依赖、迁移或业务数据操作；未重启当前应用。下一批横向迁移 Browser Handoff 等剩余 Main 传输边界。
+
+### 续接记录（2026-09-19，第三十批 Browser Recording 注册边界）
+
+- 新增 Protocol `browser-recording-command-contract`，把录制列表、详情、开始和停止 4 项命令分别关联到请求/响应类型；`RuntimePipeClient.requestBrowserRecording` 成为录制域的类型化入口，Profile 与 Recording 不共用宽泛的 Browser 合同。
+- 新增 Desktop Main `browser-recording-handlers`，接管 4 个 IPC channel。模块只依赖 Recording payload parser 与类型契约，通过宿主端口获得注册、来源校验、连接和传输；Main 入口删除四段直接注册并只负责装配。保留来源校验 → 连接 → 解析 → 请求顺序，以及 start/stop 的既有 30 秒超时策略。
+- 新增 8 项注册测试和 Recording 编译期正反例；BrowserStage、注册、payload、wiring、timeout 与 RuntimeClient 合同共 73 项相关回归通过。Protocol/Desktop 类型检查、定向 lint、48 项架构测试和 816 文件扫描通过；门禁阻止新模块依赖 Electron/RuntimeClient/Storage，也阻止 4 项命令回退到无类型传输。
+- 13 包整仓构建通过，Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,451 / 2,975,222 字节。本批无依赖、迁移或业务数据操作；未重启当前应用。下一批按独立边界迁移 Browser Workflow，避免把 Profile、Recording 和 Workflow 合并为通用 Browser 注册层。
+
+### 续接记录（2026-09-19，第二十九批 Browser Profile 注册边界）
+
+- 新增 Protocol `browser-profile-command-contract`，把 Profile 列表、创建、重命名、删除、站点会话列表和清理 6 项命令分别关联到请求/响应类型；`RuntimePipeClient.requestBrowserProfile` 成为该域的类型化入口，原通用 `request` 继续服务尚未迁移的命令。
+- 新增 Desktop Main `browser-profile-handlers`，接管 6 个 IPC channel。模块只依赖 Profile payload parser 与类型契约，通过宿主端口获得注册、来源校验、连接和传输；Main 入口删除解析器直连并只负责装配。保留来源校验 → 连接 → 解析 → 请求顺序，以及 listSiteSessions、clearSiteSession、delete 的现有 30 秒超时策略。
+- 新增 10 项注册测试和 Profile 编译期正反例；Profile 注册、payload、timeout、RuntimeClient 合同及 BrowserStage 共 63 项相关回归通过。Protocol/Desktop 类型检查、定向 lint、46 项架构测试和 814 文件扫描通过；门禁阻止新模块依赖 Electron/RuntimeClient/Storage，也阻止 6 项命令回退到无类型传输。
+- 13 包整仓构建通过，Website 约 1,492 KiB，Desktop initial/total JS 为 2,100,451 / 2,975,222 字节。本批无依赖、迁移或业务数据操作；未重启当前应用。下一批按相同边界迁移 Browser Recording 的 4 项注册与类型合同。
+
+### 续接记录（2026-09-19，第二十八批 Composer 共享展示组件）
+
+- `ComposerModeBanner` 与 `ComposerTaskPanel` 从 Desktop Shell 迁入 `@sync-think/ui-kit`，与上批 `NewMaxComposerFrame` 形成 Composer 展示簇。共享实现只拥有 Plan/Goal 展示、局部按钮回调、任务展开/收起和按 scope 的 dismiss 状态，不接触发送、Run、持久化或宿主 API。
+- 两个组件使用 `ComposerGoalStatus` / `ComposerTaskProjection` 窄展示 DTO；现有 Protocol `GoalStatus` 和 Desktop `TodoProjection` 通过结构类型直接兼容，没有把 Protocol 或 Desktop 投影模块反向带入 UI 包。Desktop 同名路径保留兼容重导出，Website 直接从 `ui-kit` 导入，过渡 `website-demo-surface` 再减少两项。
+- 新增共享包 8 项行为测试，架构门禁由单组件扩展为三组件统一约束。`ui-kit` 24 文件 245 项、Desktop 定向 4 文件 40 项、Website 19 项回归通过；三包类型检查、定向 lint、44 项架构测试和 812 文件扫描通过。
+- Website 构建约 1,492 KiB；13 包整仓构建通过，Desktop initial/total JS 为 2,100,451 / 2,975,222 字节，预算未调整。本批无新依赖、迁移或业务数据操作；未重启当前应用，因此运行窗口仍使用上一批启动产物。
+
+### 续接记录（2026-09-19，第二十七批首个共享 UI 组件簇）
+
+- `NewMaxComposerFrame` 及 Popover/Banner 动效状态从 Desktop Shell 迁入 `@sync-think/ui-kit`。组件继续只拥有布局、插槽与挂载保留，不接管发送、队列、Run 或官网演示状态；CSS 类名、DOM、150/220/240ms 时长和 reduced-motion 行为保持。
+- Desktop 原路径缩为 `ui-kit` 兼容重导出，现有 ChatView、ShellApp 与菜单无需同步改路径；`website-demo-surface` 不再转发该组件，Website 两个演示入口直接声明并消费共享包。Website 新增显式 workspace 依赖，锁文件未改变第三方版本。
+- 新增共享包 4 项动效测试和 1 项架构规则测试；`ui-kit` 22 文件 237 项、Desktop 4 文件 29 项、Website 19 项自动化回归通过（浏览器套件按既有环境变量跳过），三包类型检查及定向 lint 通过。42 项架构测试与 810 文件扫描通过。
+- Website 构建约 1,492 KiB；13 包整仓构建通过，Desktop initial/total JS 为 2,100,455 / 2,975,226 字节，预算未调整。本批无数据库迁移、未操作业务库、未重启应用。下一批可选择第二个无宿主副作用的展示组件簇；Desktop 展示接口及源码构建输入仍需渐进收缩。
+
+### 续接记录（2026-09-19，第二十六批内置浏览器回执传输边界）
+
+- 新增 Runtime `renderer-browser-command-bridge`，拥有内置 WebView 命令等待者登记、一次结算、未知/重复回执拒绝和停机批量取消。Runtime 继续构造/发布瞬时 `browser.command_requested` 事件及协议响应帧；桥不持久化浏览器参数，也移除了等待 Map 中从未读取的 Run/Thread/Tool 元数据。
+- 新增 Desktop Main `conversation-browser-handlers`，接管 `conversation.submitBrowserResult` 的来源校验、连接、96,000 字符结果/2,000 字符错误上限解析和类型化请求。`ConversationCommandContract` 从 14 项扩展到 15 项。
+- 保留“先登记等待者再发布事件”、Worker 原有 1–120 秒超时、成功/失败字段透传、首次回执消费、未知或重复回执 `accepted: false`，以及停机时中文取消错误。Browser Controller、Worker 动作、Profile/Recording/Workflow RPC 未迁移。
+- 新增 8 项桥与 Main 注册测试；Runtime 浏览器链路 21 项、Desktop Main 注册 59 项，共 80 项回归通过。两侧类型检查、定向 ESLint、41 项架构测试、809 文件扫描和整仓 13 包构建通过；Desktop initial/total JS 保持 2,098,962 / 2,973,733 字节。
+- 本批未新增依赖或迁移、未操作业务库、未重启应用。下一批横向推进 Website 共享 UI 边界；其余 Browser RPC、其他 Main 注册与兼容重导出继续分批。
+
+### 续接记录（2026-09-19，第二十五批 Runtime 首发模型与凭据装配）
+
+- 新增 `initial-run-model-binding`，统一首发 Run 的显式/Agent 默认模型解析、Provider 模型 ID 映射、Plan/Act 覆盖、Provider 元数据、凭据引用优先级和上下文窗口元数据。`prepareRunBinding` 只提供 Agent 与目录事实并消费结果，继续拥有 Skill、上下文包和 Run 创建。
+- 模块只依赖 Core/Shared 契约和窄目录端口，不读取 secret、Storage 或 Runtime。真实密钥仍在 Provider 调用前通过 SecureStore 句柄读取；凭据选择 helper 同时供 fallback 重绑定复用，但回退候选、事件与持久化边界未迁移。
+- 保留 run override → Agent pin → Agent group → Provider primary 的凭据顺序、Provider 亲和性、显式模型优先、Plan/Act 最终覆盖、`fake-mini`/无 SecureStore 回退，以及非法模型窗口元数据使用 128k 估算值。
+- 新增 8 项纯用例测试；真实凭据调用、Plan/Act、消息启动和回退链共 61 项回归通过。Runtime 类型检查、定向 ESLint、40 项架构测试、807 文件扫描和整仓 13 包构建通过；Desktop initial/total JS 保持 2,098,962 / 2,973,733 字节。
+- 本批未新增依赖或迁移、未操作业务库、未重启应用。下一批横向推进浏览器/传输注册边界；Website 共享 UI、其余 RPC 与兼容重导出继续分批。
+
+### 续接记录（2026-09-19，第二十四批 Desktop Main 工具审批注册）
+
+- 新增 `conversation-approval-handlers`，集中注册工具审批决定和 pending 查询两项 IPC。模块拥有运行时参数解析与调用顺序，只依赖来源校验、连接和类型化请求端口；Main 入口只负责 Electron 与 RuntimePipeClient 装配。
+- 保留既有“来源校验 → 连接 → 参数解析/请求”顺序、默认 `once` scope、拒绝只允许 `once`、可选 Run 过滤和错误身份传播。审批业务状态、持久化与授权策略仍归 Runtime。
+- `ConversationCommandContract` 从 12 项扩展到 14 项；架构规则同时阻止审批 handler 反向依赖 Electron/基础设施，以及两项审批命令退回无类型 `request`。
+- 新增 7 项审批注册回归；4 个 Main 注册文件共 55 项测试、Desktop 类型检查、定向 ESLint、39 项架构测试、806 文件扫描和整仓 13 包构建通过。Desktop initial/total JS 为 2,098,962 / 2,973,733 字节，预算未调整。
+- 本批未新增依赖或迁移、未操作业务库、未重启应用。下一批横向推进 Runtime 首发模型/凭据装配边界；浏览器/传输注册、Website 共享 UI 和其余 RPC 继续分批。
+
+### 续接记录（2026-09-19，第二十三批 Renderer 运行订阅生命周期）
+
+- 新增 `use-conversation-transient-subscription`，拥有会话 transient 订阅建立、scope generation、防迟到事件、ready 失败和清理/退订。ChatView 只注入当前游标、开始/失败/事件/清理回调，继续拥有帧队列、展示合并、终态刷新和委派卡片合并。
+- Hook 的物理订阅只依赖 `enabled/scopeKey/threadId/subscribe`；高频游标和最新事件回调用 ref 读取，展示回调变化、模型或内核选择不会重订阅。会话切换先清理展示队列并退订旧流，旧 listener 和迟到 ready rejection 由 generation 丢弃。
+- reset snapshot、durable fallback、process/terminal 即时 flush、断线后游标续接和已有终态刷新逻辑保持。新 Hook 纳入 Shell 控制器架构门禁，不得导入 ChatView、Main/Preload 或基础设施。
+- 新增 5 项 Hook 生命周期测试；流式队列、内核选择、委派、终态、进程历史和用量共 142 项回归通过。Desktop 类型检查、定向 ESLint（0 error，保留 ChatView 既有 16 warning）、39 项架构规则、805 文件扫描和整仓 13 包构建通过。
+- Desktop initial/total JS 为 2,098,962 / 2,973,733 字节，既有预算未调整。本批未新增依赖或迁移、未操作业务库、未重启应用。下一批横向推进 Main 审批查询/决策注册边界；首发模型/凭据、浏览器/传输注册和 Website 共享 UI 继续分批。
+
+### 续接记录（2026-09-19，第二十二批 Runtime 活跃工具审批生命周期）
+
+- 新增 `active-tool-approval`，统一拥有活跃审批的精简等待记录、按 Run 查询、列表投影和一次性结算；Runtime 只注入审批决策持久化、提交后记录和广播端口。等待记录不再保存未被读取的 workspaceRoot、聊天消息、整轮工具列表、已完成结果和工具轮次。
+- 用户决策继续保持“授权准备/决定原子提交 → 记录已提交事件 → 移除等待项并唤醒 → 广播”的顺序；提交失败不消费等待项。Run 取消与 Abort 保持“先移除 → 记录取消决定 → 唤醒”以防重复结算，新消息替换旧 Run 仍在外层事务提交后才拒绝旧等待者。
+- 三类来源（聊天工具、平台工具、内核权限桥）统一登记同一审批记录；pending 列表的会话/Run 过滤与时间排序迁入控制器。非活动审批恢复、授权范围策略、持久授权事务和协议错误映射保持独立边界。
+- 新增 6 项生命周期测试；审批/追加边界、工具/内核及真实 RPC 共 167 项回归通过。Runtime 类型检查、定向 ESLint、38 项架构规则、804 文件扫描和整仓 13 包构建通过；Desktop JS 保持 2,098,355 / 2,973,126 字节。
+- 本批未新增依赖或迁移、未操作业务库、未重启应用。下一批横向推进 Renderer 运行订阅生命周期；首发模型/凭据、浏览器/传输注册和其余 RPC 继续分批。
+
+### 续接记录（2026-09-19，第二十一批 Renderer 会话导航控制器）
+
+- 新增 `use-conversation-navigation-controller`，统一管理 minimap 目标页加载、最新目标令牌、导航意图版本和可重新瞄准的滑动动画。ChatView 只注入当前消息查询、around-message 加载、render window 目标、置底释放和 programmatic-scroll 写入。
+- 保留已加载目标不发请求、未加载目标只取锚点页、较新请求独占 loading 清理、滚轮/键盘/触摸取消滑动、reduced-motion 即时定位和布局修正时不重启动画。scope-keyed loading 在会话切换的同一渲染即隐藏，旧意图失效；分页合并、缓存、滚动锚点和 minimap 几何保持原实现。
+- 目录 Loader、目录 Hook 和交互控制器共同纳入 Shell 控制器架构门禁，不得反向导入 ChatView、Main/Preload 或基础设施。新增 5 项 Hook 测试；7 文件 52 项导航/历史回归、Desktop 类型检查、定向 ESLint（0 error，保留 ChatView 既有 16 warning）、37 项架构规则、803 文件扫描、git diff 检查和整仓 13 包构建通过。
+- Desktop initial/total JS 为 2,098,355 / 2,973,126 字节，既有预算未调整。本批未新增依赖或迁移、未操作业务库、未重启应用。下一批横向转向 Runtime 活跃审批生命周期；运行订阅、首发模型/凭据、浏览器和其余 RPC 继续分批。
+
+### 续接记录（2026-09-19，第二十批会话 transient 订阅生命周期）
+
+- `runtime:conversation-subscribe-transient` 与 `runtime:conversation-unsubscribe-transient` 已迁入 `conversation-transient-handlers`。模块拥有参数解析、订阅/取消顺序、frame/reset 路由和每 sender 一次性的销毁清理；Main 只注入 sender ID、可信 URL 发送、销毁监听、连接与 RuntimeSession 端口。
+- 保留订阅前来源校验、解析和连接顺序；取消订阅不额外建立连接。同一 sender 多订阅只注册一次 `destroyed` 监听，销毁时清理全部 transient 订阅并释放登记，后续相同 ID 可重新注册。缺失 snapshot 仍保持字段缺省。
+- 新增 9 项 transient 注册回归；与 query/write 注册合计 48 项通过。Desktop 类型检查、定向 ESLint、34 项架构规则、802 文件架构扫描、git diff 检查和整仓 13 包构建通过；Desktop JS 保持 2,097,748 / 2,972,519 字节。
+- 本批未新增依赖或迁移、未操作业务库、未重启应用。下一批横向转向 Renderer 会话导航控制器，继续保留 keyed remount、历史锚点与跨会话隔离；审批、浏览器和其他 RPC 留作独立批次。
+
+### 续接记录（2026-09-19，第十九批会话写操作注册）
+
+- Desktop Main 的 `runtime:append-message`、`runtime:conversation-send-message` 和 `runtime:conversation-compact` 已迁入 `conversation-write-handlers`。新模块拥有参数解析和写请求顺序，只依赖来源校验、连接、图片暂存/持久化、附件补写及类型化传输端口，不直接依赖 Electron、RuntimePipeClient、入口或 Storage。
+- append 保留先连接、再暂存大图、提交消息、持久化图片并补写 `message.attachImages` 的原顺序；没有存活图片时不补写事件。sendMessage 保留空正文/原始空白，compact 保留显式 120 秒等待；连接、传输和附件失败继续原样传播。
+- 新增 10 项写注册回归，并与 29 项查询注册、1 项编译期传输契约共同验证，共 40 项通过。Desktop 类型检查、定向 ESLint、34 项架构规则、801 文件架构扫描、git diff 检查和整仓 13 包构建通过；Desktop JS 保持 2,097,748 / 2,972,519 字节。
+- 本批未新增依赖或迁移、未操作业务库、未重启应用。下一批抽离会话 transient 订阅注册和 sender 生命周期适配；审批、浏览器和其他业务域 RPC 继续分开推进。
+
+### 续接记录（2026-09-19，第十八批旧委派报告精确查询）
+
+- 委派历史查询现区分任务列表和单报告：带 `childRunId` 的报告请求先通过持久仓库主键精确读取并校验 `threadId`，命中后不再加载该会话的旧消息或其他持久报告；只有持久状态缺失时才进入旧消息兼容路径。
+- MessageStore 新增 `findDelegatedMessage(threadId, childRunId)`，在 SQLite 中按线程和嵌套 `delegatedAgents.childRunId` 定位最新消息，只反序列化一个候选。MessageHistory 负责旧卡片解析；HistoryQuery 只消费 `getStored/getLegacy` 窄端口，Service 负责装配，模块职责未反向耦合。
+- 保留持久状态优先、跨会话不泄露、running 记录校正/持久修复、报告每段 8,000 字符、列表 50 项及原排序。列表路径本批保持完整合并，未引入新索引、迁移或缓存。
+- Runtime 4 文件 26 项、Storage 2 文件 25 项，共 51 项回归通过；Storage/Runtime 类型检查、定向 ESLint、34 项架构测试、800 文件扫描、git diff 检查和整仓 13 包构建通过。Desktop JS 保持 2,097,748 / 2,972,519 字节。
+- 本批未操作业务库、未重启应用。下一批横向推进 R7：把剩余会话写操作的 Main 注册从入口文件分组，保留来源校验、运行时解析、连接顺序和等待策略。
+
+### 续接记录（2026-09-19，第十七批 Storage 事务协调）
+
+- 委派事件投影现分为两个入口：`projectEvents` 供独立历史修复使用并自行保证批量原子性；`projectEventsInTransaction` 供事件/checkpoint 协调器调用，不再在外层事务中创建嵌套事务。事件、委派读模型和 checkpoint 的原子提交语义保持。
+- `SqliteEventCheckpointStore` 通过 `DelegatedRunEventProjection` 窄接口调用投影；生产持久化装配只创建一个 `SqliteDelegatedRunStore`，同时用于事件投影和 Runtime 委派查询/修复，移除每次提交时临时构造 Store 的隐式依赖。无第三方依赖和数据库迁移。
+- 新增 2 项故障注入测试：投影参与者可看到未提交事件但失败后事件整体回滚；独立批量重放第二条失败时第一条也不落库。相关 Storage 10 项、Runtime 持久化/历史集成 13 项、Storage/Runtime 类型检查、定向 ESLint、34 项架构测试与整仓 13 包构建通过；Desktop JS 保持 2,097,748 / 2,972,519 字节。
+- Storage 全量共 522 项，495 项通过、27 项既有基线失败：26 项迁移冻结断言尚未加入工作树已有的 `0056–0058`，另 1 项为 Windows 备份文件 `EBUSY`。本批未修改这些测试或迁移，避免扩大任务；对应事务/持久化路径均已独立通过。
+- 本批未操作业务库、未重启应用。下一批优化旧委派历史查询的读取范围，保持旧消息兼容、持久状态优先、运行态修复、列表 50 项和报告 8,000 字符分页契约。
+
+### 续接记录（2026-09-19，第十六批 Website 演示所有权）
+
+- Website 现拥有演示入口、能力入口、状态会话、工具栏/工作台包装、样式、单元测试和构建脚本；相关文件从 Desktop 迁入 `apps/website/src/demo` 与 `apps/website/scripts`。Desktop 只保留 `website-demo-surface.ts`，显式导出官网实际使用的真实桌面组件与类型。
+- Website 源码不再通过相对路径遍历 Desktop 组件，构建器把 `@sync-think/desktop-demo-surface` 映射到展示接口；架构门禁阻止重新直连 Desktop 内部或让该接口反向依赖 Website。构建仍从源码打包真实组件，因此 Turbo 暂时保留 Desktop 源码输入，尚未形成完全独立的共享 UI 包。
+- Website package 现在明确声明 React、lucide、esbuild、Tailwind CLI、Protocol/Shared 等原先从 Desktop 隐式借用的依赖，并新增自身 TypeScript 门禁。锁文件已同步，未新增第三方版本。
+- Website 8 项 Node 测试通过、2 文件 11 项状态测试通过；类型检查、脚本 lint、33 项架构测试和单包构建通过。最终整仓 13 包构建全部通过；Website 演示 JS 仍为约 1,490 KiB，Desktop initial/total JS 为 2,097,748 / 2,972,519 字节，既有预算均未调整。
+- 本地 Edge/Playwright 验证官网加载、首屏、iframe、场景切换和控制台。主路径通过；静态服务未运行账号后端，`/api/auth/get-session` 返回预期 404。完整旧交互套件首次取消 skip 后发现 5 个现有断言与当前 UI 不一致（文件 diff/队列控件及能力页跨标签），迁移前源码已具有相同行为，本批未扩大范围修复。截图位于系统临时目录 `sync-think-website-phase16.png`。
+- 下一批转向 Storage 事务协调与旧历史查询，继续横向推进。仍待：Website 真正共享 UI 包、首发模型/凭据、活跃审批、浏览器/传输注册、ChatView 订阅/导航、其他 RPC、全仓依赖环和兼容重导出清理。
+
+### 续接记录（2026-09-19，第十四、十五批模型选择与审批恢复）
+
+- 模型回退选择迁入 model-fallback-selection，只消费候选模型、运行快照和目录/Agent 只读端口。保留同供应商前向优先链、失败计数与熔断、Agent 快照回退、已尝试模型排除及耗尽暂停；Runtime 保留能力投影、watchdog 特例、重新绑定、上下文 Manifest 和原子事件提交。
+- 上下文预览/压缩使用的默认模型选择迁入 conversation-model-routing，保留 model/agent/team 路径、协调者优先与首成员回退，每次读取当前目录。首次运行的模型装配、凭据绑定和模型探测尚未整体迁移。
+- 重复审批与过期孤立请求迁入 inactive-tool-approval，通过 read/expire 两端口完成。已有决定直接回放，孤立请求须持久化拒绝后才返回 expired；写入失败继续报错并允许重试。历史审批摘要解析归入 tool-approval-read-model；活跃审批、权限范围、等待回调和授权事务保持原归属。
+- 新增 23 项 Runtime 测试。8 文件 57 项模型/审批回归及 1 文件 14 项上下文集成回归通过，包含真实 Runtime 的回退链、带图回退、供应商熔断、审批重启恢复与持久化失败场景。报告 .data/phase14-runtime-tests.json、.data/phase14-context-tests.json。
+- Runtime 类型检查、独立模块/测试定向 ESLint、32 项架构测试与 git diff --check 通过；架构门禁检查 799 个源文件。13 包构建成功（Runtime 重建、其余 12 包缓存命中），Desktop JS 保持 initial 2,097,748 / total 2,972,519 字节。
+- 本轮未新增依赖或数据库迁移，未操作业务库、未重启应用。验证使用测试适配器和临时数据库，未请求付费模型；当前运行进程仍待重启加载。
+- 下一批优先转向 Website 演示/共享 UI 的依赖边界，避免持续深入单一 Runtime 领域。其余待办：首发模型/凭据装配、活跃审批生命周期、浏览器/传输注册、ChatView 订阅/导航、Storage 事务协调/旧历史查询、其他业务域 RPC、全仓依赖环和兼容重导出清理。
+
+### 续接记录（2026-09-19，第十二、十三批草稿、提交与会话 IPC）
+
+- 本轮按用户要求推进多个有限边界：抽出 useComposeDraftRecovery（失败草稿/附件恢复和清理）、submitConversationMessage（准备/提交及图片回执），再从 Main 抽出 9 项只读会话查询注册。ChatView 保留乐观消息、标题、焦点和错误展示；由 9,540 行减少到 9,413 行。
+- 草稿沿用现有工作区/会话隔离存储，保留新编辑和 keyed remount 恢复；提交使用准备结果的准确 thread/version。Main 查询保留来源检查、参数解析、连接顺序和错误传播，通过宿主端口独立测试。
+- RPC 命令/参数/返回值关联从 3 项扩展到 12 项，含 9 项查询、prepare、append、compact；编译期负例覆盖错误范围和必需参数。sendMessage 补 IPC 形状解析，空文本和原始空白保持；非法 modelId 类型提前拒绝。compact 原 120 秒传输等待设置保持。
+- Renderer 5 文件 93 项、Main/解析器 3 文件 73 项回归全部通过，共新增 47 项运行测试；报告 .data/phase12-tests.json、.data/phase13-tests.json。新增夹具的附件 ID 和时间线范围已按既有协议纠正。
+- Desktop 类型检查、新模块/解析器定向 ESLint、28 项架构规则测试通过；门禁扫描 796 个源文件。13 包构建全部成功（全部重新执行），Desktop initial JS 2,097,748、total JS 2,972,519 字节，未放宽预算。
+- 本轮没有新增迁移或操作业务库，没有重启当前应用进程；构建产物已更新，当前运行窗口尚未重新加载。验证范围为自动化测试、类型/架构检查和构建，不含付费模型请求及重启后的人工验收。
+- 下一批优先转向 Runtime 模型路由/审批边界，避免继续深入单一 ChatView 任务。剩余还包括：运行订阅/导航、Storage 事务协调与旧历史查询优化、其他业务域 RPC/Main 注册、Website 共享 UI 包、全仓依赖环和兼容重导出清理。详见 docs/engineering/cohesion-refactor-2026-09-19.md 的后续迁移边界表。
+
+### 续接记录（2026-09-19，第十一批上下文压缩生命周期）
+
+- useConversationCompaction 统一自动/手动请求与宿主进度，拥有会话级请求锁、宿主 operationId、进度和消失期限；只通过 compact、刷新状态及错误通知回调接入宿主。ChatView 保留消息准备、append、附件回显及草稿恢复。
+- 修复跨会话结果/锁串扰和旧 RPC 覆盖较新宿主进度；已观察到的活动压缩超过 15 秒后仍接受匹配终态。原生内核和阈值规则保持，自动判断使用本次发送选定内核。刷新异常不阻断发送，也不留下锁。
+- 新增 Hook 18 项、ChatView 发送集成 3 项及架构规则 1 项。最终 16 个文件 186 项回归全部通过，覆盖冻结内核、失败恢复、会话切换、正文、历史/滚动、用量、队列和 Skill。报告 .data/phase11-final-tests.json。
+- 联合回归首轮暴露历史导航测试的等待时序：请求调用数增加时，失败 finally 尚未恢复按钮；单独运行通过。现改为等待原“加载中间消息”按钮恢复可用，保留原错误/旧响应断言，联合复测全绿。
+- Desktop 类型检查、定向 ESLint、24 项架构测试、git diff --check 通过；门禁检查 793 个源文件。13 包构建成功（Desktop/Website 重建、11 包缓存命中），initial JS 2,097,227、total JS 2,971,998 字节，原预算保持。
+- 未新增依赖/迁移、未操作用户业务库、未重启应用。下一批拆分发送后的草稿恢复及附件合并/清理职责，保留更新输入、跨会话与 keyed remount 的恢复语义；运行订阅和导航仍另行分批。
+
+### 续接记录（2026-09-19，第十批正文读取与会话隔离）
+
+- 上批 5 项完整正文操作基线失败已处理。测试夹具改为按消息引用和分段位置响应，适配已有自动读取行为；保留分段完整性、失败重试、重复点击去重、会话切换后禁止复制/重发的断言。
+- 额外修复两个实际缺陷：MessageTextContent 的读取结果按来源身份绑定，避免替换源等待/失败期间显示旧全文；ChatView 在派生列表前按历史范围筛选页面，避免旧消息以新会话 ID 发起读取。原有布局副作用清理保留，但不再作为读取隔离的唯一保护。
+- 新增 7 项回归。14 个测试文件共 144 项全部通过，涵盖正文、复制/重新生成、历史分页、缓存恢复、过程历史、滚动锚点、队列、Skill 和终态。报告在 .data/phase10-tests.json；23 项架构测试、Desktop 类型检查、定向 ESLint 和 git diff --check 通过。
+- 13 包构建成功（Desktop/Website 重建、11 包缓存命中）；架构门禁检查 792 个源文件。Desktop initial JS 2,096,139、total JS 2,970,910 字节，预算保持原值。
+- 未新增依赖或迁移、未操作用户业务库、未重启应用；未执行原生桌面人工验收。下一批继续 R3 的发送生命周期拆分，优先隔离上下文压缩与发送恢复，保留这批会话/来源归属约束。
+
+### 续接记录（2026-09-19，第九批聊天发送与队列边界）
+
+- useComposeRequestQueue 拥有排队草稿、每会话发送锁、失败状态和自动续发；通过注入的 sendUserText 调用发送，不依赖 ChatView 或宿主通信实现。compose-send-request 只组装协议请求，附件落盘、上下文压缩、乐观消息和错误恢复仍由 ChatView 编排。
+- 保留 FIFO、线程就绪门禁、失败后手动重试和会话切换隔离；队列使用发送时选中的模型，附件/Skill/推理/网络/内核选项继续沿用草稿快照。
+- 新增 11 项回归通过。完整定向回归 113 项：108 通过、5 失败；失败均为 ChatView.kernel 的完整正文复制/重新生成用例。用本批修改前的 ChatView 同目录临时副本复测，得到相同 5 项失败；临时源码已删除，报告在 .data/phase9-baseline-tests.json 和 .data/phase9-current-tests.json。未将该回归集记为全绿。
+- 架构测试 23 项、Desktop 类型检查、新文件 ESLint 和 13 包构建通过；门禁检查 792 个源文件。Desktop initial JS 2,096,009、total JS 2,970,780 字节，预算保持原值。
+- 未新增迁移、未重启应用。本批完成 R3 的队列与请求组装边界；下一批先定位上述 5 项正文操作基线失败，再推进发送生命周期、运行订阅和导航拆分。
+
+### 续接记录（2026-09-19，第八批卡片投影与广播边界）
+
+- delegation-projection 接收窄数据契约，负责父工具行匹配、头像/状态/工具日志、用量字段和重连快照计算，不依赖 Runtime、DemoRunState、状态服务或执行器。
+- Runtime 保留原编排：读取事实 → 构造卡片 → 采用权威状态 → 合并卡片 → 更新计时/保存终态卡片 → 广播 → 按父任务归属更新快照。工具名集合移到协作策略，派发和卡片匹配共享定义。
+- 本批 150 项验证通过（Runtime 129、架构规则 21），新增 20 项纯投影测试、2 项真实 Runtime 广播测试和 1 项架构测试。覆盖晚到卡片继续广播、新轮快照不被覆盖、终态不回退、头像优先级、工具归属与日志预算。
+- 13 包构建通过（Runtime 重建、其余 12 包缓存命中）；门禁检查 790 个源文件，独立投影模块/新增测试 ESLint、git diff --check 通过，Desktop JS 仍为 2,969,826 字节。
+- 未新增迁移、未重启应用。本批属于行为保持的职责拆分，未声称完成视觉人工验收。下一批建议推进 R3：拆分 ChatView 的消息发送与队列职责，保留草稿、附件、队列续发和会话切换行为。
+
+### 续接记录（2026-09-19，第七批消息历史与查询）
+
+- DelegationMessageHistory 管理卡片缓存、父消息元数据和旧消息解析；DelegationHistoryQuery 通过记录端口合并事实、校正运行状态并分页。DelegationService 保留状态写入和兼容入口，Runtime 调用顺序保持不变。
+- 修复父消息延迟落库时 releaseParent 提前丢弃卡片：配置消息存储的宿主保留待写入数据，下次写入成功后释放；写入异常继续保留缓存。未添加后台重试队列。
+- 128 项验证通过（Runtime 108、架构规则 20），新增 19 项 Runtime 测试和 4 项架构测试。SQLite 故障注入覆盖失败回滚、晚到兄弟任务、重复重试、关闭重开及父正文保留。
+- 13 包构建通过（Runtime 重建，其余 12 包缓存命中）；架构门禁检查 789 个源文件。相关独立模块/测试 ESLint、git diff --check 通过，Desktop JS 仍为 2,969,826 字节。
+- 未新增迁移、未重启应用；旧历史查询仍沿用现有读取方式，本批没有增加查询索引或批量回填。下一批建议分离 Runtime 的委派卡片投影构造与广播编排，保持父工具行归属、头像、用量和晚到子任务的会话快照隔离。
+
+### 续接记录（2026-09-19，第六批准入与智能体选择）
+
+- DelegationAdmissionService 负责委派参数解析、预算校验和 Agent 选择，仅依赖中立契约、既有策略和两个只读宿主端口。Runtime 提供当前设置和 listEffective 工作区目录，继续管理写权限、父子身份、启动事务与执行。
+- 保留错误优先级：JSON/任务校验 → 设置与额度 → Agent ID → 工作区有效目录 → 能力匹配。agent_run 仅沿用原动态开关豁免，层级/数量/轮次限制继续生效。
+- 本批 155 项验证通过（Runtime 139、架构规则 16），包含新增 25 项准入测试。真实 SQLite 断言覆盖拒绝后零启动、零委派记录、父计数不变，以及落盘失败回滚后重试。
+- 根构建 13 包通过（Runtime 重新构建，其余 12 包缓存命中），门禁检查 787 个源文件；Desktop JS 总量保持 2,969,826 字节。新模块/测试 ESLint、git diff --check 通过。
+- 未新增迁移，未重启应用；当前进程需重启后加载这些改动。下一批优先拆分父消息卡片的兼容写入与历史读取，保留晚到子任务合并、分页与旧数据恢复语义。
+
+### 续接记录（2026-09-19，第五批委派执行生命周期）
+
+- Runtime 中的后台/同步委派计时、取消监听和清理已移到 DelegationExecutionController；控制器通过六个窄端口操作宿主，启动和终态事务仍留在 Runtime。
+- 时限策略集中，原默认/上限保持不变。修复预先取消信号的注册时序；终态后迟到进度不续期；Runtime 关闭等待子执行器清理。
+- 本批 151 项验证通过（Runtime 136、架构规则 15），包含 23 项新增生命周期/时限测试和 4 项架构测试；13 个包构建通过，Desktop JS 总量仍为 2,969,826 字节。
+- 新模块/测试 ESLint 和 git diff --check 通过。未新增迁移、未重启应用；测试中的浏览器扩展端口占用提示不影响执行/关闭断言。
+- 下一批建议拆分 executeDynamicAgentDelegation 的准入、参数解析和 Agent 选择，保持权限、启动事务和事件顺序。
+
+### 续接记录（2026-09-19，第四批委派事件原子投影）
+
+- 委派状态在事件提交阶段更新，与事件、checkpoint 共用 SQLite 事务。临时广播不再写持久状态；状态快照保留真实工具数和完整终态报告。
+- agent_run / agent_delegate 在执行前保存 run.started；新增启动故障注入确认：无孤儿执行器、无额外委派计数、重试只执行一次。
+- 新事件可重放修复丢失的读模型；旧 running 记录读取到终态事件后持久校正，不再每次查询重复修复。
+- 138 项定向验证通过：Runtime 99、Storage 19、Shared 9、架构规则 11；门禁检查 784 个源文件。未新增迁移、未重启应用。
+- 13 个包全量构建通过，Desktop JS 总量仍为 2,969,826 字节。独立委派模块和新增测试的 ESLint、git diff --check 通过。
+- 父消息卡片的兼容写入仍是独立步骤；旧数据缺失全部身份线索时保留明确边界。详见重构记录。下一批建议抽离 Runtime 的委派启动/停止/超时编排。
+
+### 续接记录（2026-09-19，第三批审查/返工策略迁移）
+
+- 结论校验、产物血缘、返工上限和审查通过后的状态决策迁到 Shared 的三个纯策略模块；Storage 保留事务、租约 fencing、幂等重放与 SQL。
+- 本批 286 项验证通过，包含 32 项新增纯策略测试和 4 项新增 SQLite 测试；转交事件失败时证据、备用审查员标记和派生步骤一起回滚。
+- 13 个包全量构建通过；Desktop 包体仍为 2,969,826 字节。架构门禁检查 782 个源文件，新增策略与测试的 ESLint 通过。
+- 旧迁移列表测试补齐已有 0056–0058，没有新增迁移。当前应用未重启、用户业务库未修改；浏览器扩展端口占用的测试日志与验证边界见重构记录。
+- 下一批优先推进 R1/R4/R5：将委派读模型更新并入事件事务，验证事件提交/投影失败后的恢复；Runtime、ChatView 和其余 RPC 的职责拆分继续按清单分批进行。
+
+### 续接记录（2026-09-19，第二批调度契约迁移）
+
+- 调度参数、审批记录、上下文记录和领域错误已迁到 Shared；Storage 保留兼容导出，Scheduler/端口/StepExecutor 消除直接和内联 Storage 类型依赖。
+- 架构规则拆成独立可测试模块，覆盖动态导入、require、相对路径；`pnpm test:architecture` 11 项通过。
+- 本批 238 项验证通过，13 个包全量构建通过，Desktop 包体仍为 2,969,826 字节。原事务、租约、幂等与审批流程的测试通过。
+- 后续 R6 推进 review/rework 决策抽离，R2/R3/R7/R8 的其他模块迁移继续按既定清单进行。本批未重启应用。
+
+### 续接记录（2026-09-19，高内聚、低耦合修复）
+
+- 委派任务已使用独立服务/持久读模型；完成兄弟卡片、取消状态、长历史查询、真实工具数和报告分段读取均已覆盖回归。
+- 抽离聊天类型/缓存、Windows UIA 契约；调度器依赖四个窄接口；三类聊天 RPC 使用关联参数/结果的类型契约；共享终态规则消除两端投影分歧。
+- Website 构建输入已包含跨包源码和设计 token；新增架构 AST 门禁接入根构建。Desktop UTF-8 构建保持预算不变，生产总 JS 2,969,826 字节。
+- 定向回归 571 项通过。当前应用未重启，真实业务库未执行本批迁移；旧进程仍运行前一版代码。
+- 具体实现、验证和后续迁移范围见 [重构落地记录](../engineering/cohesion-refactor-2026-09-19.md)。Runtime/ChatView 的剩余职责、完整 RPC 表及 review/rework 事务拆分仍需分批推进。
+
+### 续接记录（2026-09-19，后台智能体停止状态闭环）
+
+- 真实业务库已经保存代码审查子任务 `cancelled`、6 项工具调用、无最终报告；此前问题不是取消失败，而是卡片只显示状态图标，且下一轮模型上下文忽略父消息中的 `delegatedAgents` 元数据，导致模型沿用旧 `running` 文本并猜测了错误的子任务 ID。
+- 卡片摘要现在直接显示中文状态；取消且无最终报告时，详情明确显示任务由用户停止、执行记录已保留。停止 IPC 失败会显示错误提示。
+- 普通模型上下文会注入 Runtime 已确认的后台智能体状态；Codex / Claude 原生续接会话把同一状态纳入宿主上下文哈希，即使父消息仅原地更新、序号不变，也会在下一轮收到上下文更新。
+- 定向回归 Runtime 41/41、Desktop 23/23，Runtime/Desktop 类型检查通过。Playwright 真实历史页验证显示“已取消”和停止说明，工具记录仍在，页面与控制台错误 0。
+- 已重建并启动最新 development 版本：Runtime PID `23220`，桌面端保持运行。
+
+### 续接记录（2026-09-19，后台智能体未返回工具命令可见）
+
+- 子智能体工具日志不再让参数和输出争抢同一份顺序预算。现在按 8KB 输入、4KB 输出分别控制，并根据剩余调用数逐行预留；因此前序长输出不会再把后续 `command_execution` 的命令和工作目录折叠成“另有 N 项工具调用未返回”。
+- 在既有 80 项安全上限内，每个工具调用都会保留真实工具名和输入，即使输出尚未返回；输入/输出截断分别展示说明。超过 80 项时才使用“超出显示上限”占位，语义与实际原因一致。
+- 定向回归通过：Runtime 3/3、Desktop 92/92；Protocol 重建后 Runtime/Desktop TypeScript 检查均通过，`git diff --check` 通过。
+- 重建并切换到最新运行版本：Runtime PID `60008`、Electron PID `12820`；Runtime 健康检查 `inFlightRuns=0`，Desktop 新连接握手成功。此前已持久化为单个占位行的旧消息没有原始明细可供前端重建；新执行及后续持久化记录按新规则显示。
+
+### 续接记录（2026-09-19，图片图库与命令执行面板）
+
+- 消息图片现在使用图一式的紧凑方形附件缩略图（80×80），独立排列在文本气泡上方；点击后进入统一 `ImageLightbox`，多图可左右切换，支持键盘方向键、缩放、适应窗口/宽度、直接复制图片和下载原图。Composer 中的图片附件预览也复用该图库。
+- 自动生成的「引用文件」尾部现在从用户正文中拆出为紧凑的可点击文件附件行；卡片只显示文件名，路径继续保留在发送给模型的文本、悬停提示和打开行为中。图片附件行按实际数量收缩，两张图片不再预留第三列；消息行底部留白也已收紧。
+- 工作区智能体列表现在统一从 Runtime 实时激活状态读取：`agent_list` 与 `list_available_agents` 都按当前 `workspaceId` 返回启用、未归档且全局可用或已在该工作区激活的智能体。外部 Codex/Claude 收到明确路由规则，不再扫描 `AGENTS.md`、项目文件或日志。只读核对当前数据库，Cuitaliao 工作区应返回 15 个可用智能体；Runtime 已重启为 PID `65320` 并与现有桌面窗口重新握手。
+- 所有工具执行详情现在统一为“输入 → 原始工具 → 输出”面板；命令工具保留命令、工作目录、进程号和来源元数据，其它文件、搜索、写入和 MCP 工具也使用同一套输入/输出卡片。
+- 定向回归：`ImageLightbox.test.tsx` 4/4、`InlineProcessFlow.test.tsx` 70/70、`ChatView.terminal-error.test.tsx` 8/8；Desktop TypeScript 检查通过；开发 Renderer 构建成功。
+- 独立 Electron Playwright 烟雾检查通过：标题 `SYNC-THINK`、页面非空、控制台错误 0；截图保存在 `C:\Users\zhuzhenyu\AppData\Local\Temp\sync-think-ui-smoke.png`。当前业务 Electron 已重启，Runtime 继续保持运行。
+- Desktop 全量测试发现 12 个既有文件共 40 项失败，集中在模型设置、ChatView kernel、ShellApp、WorkspaceFileVisualFixture、响应式布局和无障碍契约；本次新增与改动相关用例均为绿色，未把这些基线失败归因到图片/命令 UI。
+- 生产 Shell 构建被体积门禁拦截：`3,068,733 / 3,060,000`，超出 `8,733` 字节；未调整门禁，当前通过 `dev:renderer` 启动并加载 `.data/renderer-builds/development` 最新产物。
+
+### 续接记录（2026-09-18，图片执行过程可见性）
+
+- 对齐本机 NewMax 1.1.14：图片始终先落盘；视觉模型继续使用原生图片输入，明确文本模型才进入备用视觉模型转写或 `describe_image` / `ocr_image` 路径，不用普通文件读取伪装识图。
+- 新增持久化 `context.image.prepared`：过程卡展示图片路径、MIME、目标模型和 `Codex localImage` / Claude image block / 转写 / 待调用识图工具等真实路由；实时流与历史回放一致，「继续上一条未完成的回答」复用图片时也走相同发送链路。
+- 定向验证 Runtime 53 项、Desktop 25 项通过；Runtime/Desktop 类型检查和 Runtime 构建通过。Playwright 独立 Electron 烟雾检查页面非空、切换可用、控制台错误为 0。
+- 当前业务 Electron PID `31448` 保持运行；Runtime 已由守护进程重启为 PID `50888` 并自动重连。
+
+### 续接记录（2026-09-18，读图续答修复）
+
+- 定位到「继续上一条未完成的回答」路径只发送 `继续上一条未完成的回答。`，没有把上一条用户消息的图片带回 Runtime；历史图片因此不再进入视觉模型上下文，容易表现为继续了错误的旧任务。
+- `ChatView` 现在从中断助手消息之前的最近用户消息取得图片；持久化 `sync-think-image://` 引用通过现有受限图片恢复 IPC 转为 data URL，再随续答请求发送。恢复失败时阻止空上下文续答并显示错误。
+- 回归：`ChatView.terminal-error.test.tsx` 8/8 通过，覆盖图片恢复、`appendMessage.images` 转发和既有失败/重试行为；Desktop TypeScript 检查通过。
+- 当前桌面窗口和 Runtime 继续保持运行；本次只重启 Renderer/Desktop 以加载前端修复，不改变 Runtime 数据。
+
+### 续接记录（2026-09-18）
+
+- 修复底部 Compose 模型菜单被面板覆盖：模型/供应商/思考强度 portal 层级提升到 `10000`；智能体库「可用范围」拆为独立行，并按真实工作区名称展示筛选项。
+- 定向回归共 46/46 通过，Desktop 类型检查和 lint 通过；开发 Renderer 已重建并启动，Electron PID `39552`、Runtime PID `8812`，最新 `hello accepted` 为 `2026-09-18T14:47:06.122Z`。
+- 智能体库筛选条已接入现有 `SlidingTabs`：可用范围、写入策略、状态切换会让选中指示器平滑滑动，同时保留原筛选和 `aria-pressed` 语义；定向测试 18/18、Desktop TypeScript 检查通过。重启桌面窗口后再做一次真实页面手测。
+- 已从 `origin/codex/integrate-local-newmax` 快进到 `e5a67d1`，保留工作区未跟踪的设计/临时文件；没有覆盖或清理这些文件。
+- `pnpm install --frozen-lockfile` 已完成（锁文件无需更新；注册表元数据探测因当前网络解析失败但不影响已安装依赖）。
+- `pnpm build` 的 12 个包构建成功，Desktop Shell 在体积门禁停止：`totalJsBytes=3,064,541`，上限 `3,060,000`，超出 `4,541` 字节；没有修改门禁配置。
+- 启动“卡住”的根因已定位：React 与 Runtime 实际已就绪，旧浏览器工作区的 Electron `webview` guest surface 因仅隐藏祖先而继续覆盖当前舞台。失活工作区现在直接隐藏 `webview`，不卸载组件、不丢失浏览状态。
+- 回归测试 `BrowserPanel.test.tsx` 15/15 通过，Desktop TypeScript 检查通过；Windows 实窗已验证默认对话页、右侧浏览器工作台和“智能体”页切换，旧网页不再遮挡，Runtime 有新的 `hello accepted` 记录。
+- 生产产物因既有体积门禁未替换旧 Renderer，已改用不调整预算的 `build:shell:dev` 生成开发 Renderer，并通过 `dev:renderer` 重新启动 Desktop；当前 launcher PID `42008`、Electron PID `15432`、Runtime PID `8812` 均在运行，最新 `hello accepted` 为 `2026-09-18T14:15:01.479Z`。后续独立处理 Shell 体积门禁，不把 4,541 字节超额与本次显示修复混合。
 
 ### 最新指定范围（2026-09-06）
 
@@ -20,7 +1276,6 @@
 - 已有三内核12个真实案例的原数据库只读回放通过，完整与过滤事件投影一致；生产Electron对隔离副本的12项历史显示检查通过，页面/控制台error为0，不新增user请求或run.started。不是本批重新调用模型；旧Native失效canonical没有工具行，保留这一事实，验证失效提示/非流式及无伪文件卡，不声称补齐缺行。
 - 09:54:34Z正常成套重启到Desktop90660 / Runtime91248 / launcher95776；标题/响应、hello/health正常，inFlight0。业务960消息/34任务/31会话、5个既有迁移对象及原5项任务历史保持；无新迁移、清理或installer发布。
 - 证据见审查18.21及仓库外process-outcome-*报告；所有初始回放与夹具断言失败保留。未开展图片、其它性能预算、导航压力、能力扩展或正式更新等后续工作。
-
 
 ## 前批记录：三内核真实窗口审批与原请求恢复已验证
 
@@ -47,7 +1302,6 @@
 - 仍按原六方向继续：真实Electron审批与原请求/图片、执行中取消/工具失败；其它响应预算、冷峰值、去重/导出；万条左导航/阅读锚点；完整能力入口；整窗多窗及正式更新回退；资源/职责拆分。详见审查18.19、TD079、本地开发27节和kernel-approval-acceptance-summary.json。
 
 ## 前批记录：三内核真实原生计划已验证
-
 
 ### 最新进展（2026-09-06，05:29Z / 北京时间13:29）
 
@@ -1645,3 +2899,31 @@
 ### 待完成
 
 - AI 浏览器五步链路的历史会话曾在渲染服务超时处停止；本轮不把未重新执行的网络模型交互记为成功，相关 `tool` 事件订阅修复已由 Runtime/Desktop 全量回归覆盖。
+
+## 当前状态：2026-09-19 · Agent Library 后台子任务
+
+### 本轮完成
+
+- 对照 NewMax 的异步 Agent 生命周期，将 `agent_run` 从同步等待改成“立即返回 childRunId + 后台执行”。原先截图中的 90 秒 host 等待超时不再覆盖实际子任务执行时间。
+- 后台子任务默认绝对上限 7200 秒，并在连续 1800 秒没有运行事件时终止；进度事件会重置无进展计时器，绝对计时器不移动。
+- 父回答结束后，子任务的实时投影继续合并进原消息；终态持久化在父助手消息中，重新打开对话可恢复结果、工具调用、用量和耗时。
+- 子任务卡片现有停止操作继续调用独立 child run 的 cancel，不影响父回答。
+- 历史恢复已兼容完整 MCP 工具名与 `{ content: [...] }` 宿主结果包装；完成卡片会留在原执行过程位置并自动展开最终报告。
+- 卡片显示 Agent 图形头像，不再显示名字缩写占位；标题下的内部 `agentId` 已移除。内联和兜底卡片共用同一组件。
+- 命令及其它工具的新版“输入 → 原始工具 → 输出”界面代码未回退；此前看到旧 UI 是生产 Shell 体积门禁失败后窗口仍加载 9 月 14 日旧 Renderer 所致。当前改用最新 development Renderer。
+
+### 本轮验证
+
+- Runtime `agent_run` 异步返回与父信号解耦测试通过；`chat-tools` schema 回归通过。
+- Desktop 委派卡片 21/21 通过；Runtime/Desktop typecheck 通过。
+- Desktop 执行过程组合回归共 91/91 通过，`git diff --check` 通过，development Shell 构建成功。
+- Playwright 真实 Electron 验收用户截图对应的历史消息：完成卡片 1 张且保持展开，1790 字最终报告可见，12 条工具记录保留，头像为 SVG 图像，内部 ID 为 0；命令工具使用新版输入/输出面板，控制台错误为 0。
+- 生产 Shell 仍被 `3,071,044 / 3,060,000` 体积门禁拦截，未调整预算；这不影响当前 development Renderer 手测。
+- `external-kernel-platform-tools.test.ts` 全文件中现有 `create_agent` 相关 6 条用例仍受工作树既有 Agent Store 改动影响；本轮新增的 `agent_run` 用例单独通过。
+
+## 当前状态：Browser Automation Studio 执行闭环已完成（2026-09-22）
+
+- WorkflowVersion 已接入确定性回放、运行变量、站点授权预检、持久 Run/逐步日志、每步全页截图、失败定位和成功/失败计数。
+- 已发布且无需运行输入的任务可手动启停固定间隔调度；调度由实际持有 Browser Host 的受管 Runtime 执行，桌面窗口关闭不影响后台所有者。
+- Storage、Protocol、Runtime、Desktop 类型检查和生产构建通过；Storage 89 项、Runtime Browser 68 项、Desktop 工作流与 BrowserStage 64 项、Protocol payload 2 项回归通过。
+- 真实 Edge 三路径冷重启 E2E 全部通过，截图人工检查确认接管卡可见、完成后退场且布局正常。后续范围为步骤编辑、秘密值运行时注入和 Workflow 中途登录 handoff。

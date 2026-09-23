@@ -64,6 +64,41 @@ function explainMessagePage(raw: BetterSQLite3Raw, threadId: ThreadId, beforeSeq
 }
 
 describe('SqliteMessageStore', () => {
+  it('finds only the latest legacy delegated message for an exact thread and child', async () => {
+    const { store, close } = await openStore();
+    try {
+      const delegated = (childRunId: string, result: string) => ({
+        type: 'commentary' as const,
+        payload: {
+          delegatedAgents: [{
+            childRunId,
+            parentRunId: 'parent',
+            agentId: 'reviewer',
+            name: 'Reviewer',
+            status: 'completed',
+            result,
+            toolEvents: [],
+          }],
+        },
+      });
+      store.append({ ...message(2), blocks: [delegated('child', 'old')] });
+      store.append({ ...message(4), blocks: [delegated('sibling', 'sibling')] });
+      store.append({ ...message(6), blocks: [delegated('child', 'latest')] });
+      store.append({ ...message(2, threadB), blocks: [delegated('child', 'other thread')] });
+
+      expect(store.findDelegatedMessage(threadA, 'child')).toMatchObject({
+        sequence: 6,
+        blocks: [{ payload: { delegatedAgents: [{ result: 'latest' }] } }],
+      });
+      expect(store.findDelegatedMessage(threadA, 'sibling')).toMatchObject({ sequence: 4 });
+      expect(store.findDelegatedMessage(threadA, 'missing')).toBeUndefined();
+      expect(store.findDelegatedMessage(threadA, '  ')).toBeUndefined();
+      expect(store.findDelegatedMessage(threadB, 'child')).toMatchObject({ sequence: 2 });
+    } finally {
+      close();
+    }
+  });
+
   it('locates only a unique original user request in the exact thread and run', async () => {
     const { store, raw, close } = await openStore();
     try {

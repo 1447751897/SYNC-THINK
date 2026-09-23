@@ -11,12 +11,19 @@ import { loadShellPanel } from './shell-chunk-retry.js';
 
 class PanelLoadBoundary extends Component<
   { label: string; onRetry: () => void; children: ReactNode },
-  { failed: boolean }
+  { failed: boolean; moduleLoadFailed: boolean }
 > {
-  state = { failed: false };
+  state = { failed: false, moduleLoadFailed: false };
 
-  static getDerivedStateFromError() {
-    return { failed: true };
+  static getDerivedStateFromError(error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      failed: true,
+      moduleLoadFailed:
+        /dynamically imported module|importing a module script|failed to load module|ERR_FILE_NOT_FOUND/i.test(
+          message,
+        ),
+    };
   }
 
   render() {
@@ -27,6 +34,14 @@ class PanelLoadBoundary extends Component<
         <button type="button" onClick={this.props.onRetry}>
           重试加载
         </button>
+        {this.state.moduleLoadFailed && (
+          <>
+            <span>页面资源加载失败；更新后请重新加载应用。</span>
+            <button type="button" onClick={() => window.location.reload()}>
+              重新加载应用
+            </button>
+          </>
+        )}
       </div>
     );
   }

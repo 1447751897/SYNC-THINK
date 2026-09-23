@@ -1,49 +1,28 @@
-import { ulid, type AgentContextThreadId, type AgentVersionId, type ContextEpochId, type TaskId } from '@sync-think/shared';
+import {
+  ulid,
+  type AgentContextThreadId,
+  type AgentVersionId,
+  type ContextEpochId,
+  type TaskId,
+} from '@sync-think/shared';
 import type { BetterSQLite3Raw } from './connection.js';
 
-export type AgentContextThreadStatus = 'active' | 'closed';
-export type ContextEpochStatus = 'active' | 'closed';
-
-export interface AgentContextThreadRecord {
-  id: AgentContextThreadId;
-  taskId: TaskId;
-  agentVersionId: AgentVersionId;
-  workstreamKey: string;
-  role: string;
-  status: AgentContextThreadStatus;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface ContextEpochRecord {
-  id: ContextEpochId;
-  agentContextThreadId: AgentContextThreadId;
-  providerId: string;
-  modelId: string;
-  reasoningEffort?: string;
-  contextWindow?: number;
-  parentEpochId?: ContextEpochId;
-  status: ContextEpochStatus;
-  startedAt: string;
-  closedAt?: string;
-}
-
-export interface GetOrCreateAgentContextThreadInput {
-  taskId: TaskId;
-  agentVersionId: AgentVersionId;
-  workstreamKey: string;
-  role: string;
-  now?: string;
-}
-
-export interface GetOrCreateContextEpochInput {
-  agentContextThreadId: AgentContextThreadId;
-  providerId: string;
-  modelId: string;
-  reasoningEffort?: string;
-  contextWindow?: number;
-  now?: string;
-}
+import type {
+  AgentContextThreadStatus,
+  ContextEpochStatus,
+  AgentContextThreadRecord,
+  ContextEpochRecord,
+  GetOrCreateAgentContextThreadInput,
+  GetOrCreateContextEpochInput,
+} from '@sync-think/shared';
+export type {
+  AgentContextThreadStatus,
+  ContextEpochStatus,
+  AgentContextThreadRecord,
+  ContextEpochRecord,
+  GetOrCreateAgentContextThreadInput,
+  GetOrCreateContextEpochInput,
+} from '@sync-think/shared';
 
 interface ThreadRow {
   id: string; task_id: string; agent_version_id: string; workstream_key: string; role: string;

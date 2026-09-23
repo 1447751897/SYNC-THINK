@@ -3,6 +3,9 @@
 @import './assets/fonts/noto-sans-sc.css';
 @import './assets/fonts/noto-serif-sc.css';
 @import './tokens.css';
+@import './task-calendar.css';
+@import './task-surfaces.css';
+@import './browser-dashboard.css';
 
 /*
  * NewMax-style design tokens (2026-07-22 renderer rewrite).
@@ -2402,7 +2405,10 @@ body {
 .shell-composer-editor__surface .cm-scroller {
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
-  scrollbar-width: thin;
+  /* Keep Chromium on the WebKit scrollbar path below instead of its native
+     Windows scrollbar, which ignores the rounded thumb styling. */
+  scrollbar-width: auto;
+  scrollbar-color: auto;
 }
 
 .shell-composer-editor__surface .cm-scroller::-webkit-scrollbar {
@@ -2416,8 +2422,20 @@ body {
 
 .shell-composer-editor__surface .cm-scroller::-webkit-scrollbar-thumb {
   min-height: 32px;
-  border-radius: 4px;
-  background: color-mix(in srgb, var(--composer-text) 18%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--composer-text) 22%, transparent);
+}
+
+.shell-composer-editor__surface .cm-scroller::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--composer-text) 36%, transparent);
+}
+
+.shell-composer-editor__surface .cm-scroller::-webkit-scrollbar-thumb:active {
+  background: color-mix(in srgb, var(--composer-text) 48%, transparent);
+}
+
+.shell-composer-editor__surface .cm-scroller::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 .shell-composer-editor__surface .cm-content {
@@ -2564,9 +2582,9 @@ body {
   text-align: left;
 }
 
-.shell-composer-task-panel__toggle:hover,
+.shell-composer-task-panel__item:hover,
 .shell-composer-task-panel__dismiss:hover {
-  background: var(--composer-hover);
+  background: transparent;
 }
 
 .shell-composer-task-panel__toggle > svg:not(.shell-composer-task-panel__complete),
@@ -2652,7 +2670,8 @@ body {
   overflow-y: auto;
   padding-bottom: 4px;
   overscroll-behavior: contain;
-  scrollbar-width: thin;
+  scrollbar-width: auto;
+  scrollbar-color: auto;
 }
 
 .shell-composer-task-panel__item {
@@ -3364,7 +3383,12 @@ body {
   border: 0;
   border-radius: var(--radius-compose);
   background: var(--composer-surface);
-  box-shadow: var(--composer-card-shadow);
+  /* Avoid the light-theme white inset highlight leaving a visible rim over image themes. */
+  box-shadow:
+    0 0 0 0.5px color-mix(in srgb, var(--composer-border) 72%, transparent),
+    0 0 4px -1px rgba(0, 0, 0, 0.05),
+    0 0 14px -5px rgba(0, 0, 0, 0.07),
+    0 0 28px -10px rgba(0, 0, 0, 0.07);
   color: var(--composer-text);
   transition: box-shadow var(--composer-banner-duration) var(--composer-banner-ease);
 }
@@ -3375,7 +3399,11 @@ body {
 
 .shell-newmax-composer.shell-compose:focus-within {
   border-color: transparent;
-  box-shadow: var(--composer-card-shadow-focus);
+  box-shadow:
+    0 0 0 0.5px color-mix(in srgb, var(--composer-border-strong) 72%, transparent),
+    0 0 6px -2px rgba(0, 0, 0, 0.07),
+    0 0 18px -6px rgba(0, 0, 0, 0.09),
+    0 0 34px -12px rgba(0, 0, 0, 0.1);
 }
 
 /* NewMax prompt enhancement affordance stays in the editor chrome so toggling
@@ -3477,7 +3505,8 @@ body {
   font-weight: 400;
   line-height: var(--composer-text-line-height);
   letter-spacing: 0;
-  scrollbar-width: thin;
+  scrollbar-width: auto;
+  scrollbar-color: auto;
   scrollbar-gutter: stable;
 }
 
@@ -3500,8 +3529,30 @@ body {
 
 .shell-newmax-composer .shell-compose__input::-webkit-scrollbar-thumb {
   min-height: 32px;
-  border-radius: 4px;
-  background: color-mix(in srgb, var(--composer-text) 18%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--composer-text) 22%, transparent);
+}
+
+.shell-newmax-composer .shell-compose__input::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--composer-text) 36%, transparent);
+}
+
+.shell-newmax-composer .shell-compose__input::-webkit-scrollbar-thumb:active {
+  background: color-mix(in srgb, var(--composer-text) 48%, transparent);
+}
+
+.shell-newmax-composer .shell-compose__input::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Firefox has no WebKit pseudo-elements; use its native thin track only when
+   that rendering path is active. Chromium/Electron keeps the rounded rules. */
+@supports not selector(::-webkit-scrollbar) {
+  .shell-composer-editor__surface .cm-scroller,
+  .shell-newmax-composer .shell-compose__input {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in srgb, var(--composer-text) 28%, transparent) transparent;
+  }
 }
 
 .shell-newmax-composer .shell-compose__chips,
@@ -5010,7 +5061,8 @@ body {
   pointer-events: none;
 }
 
-.shell-sliding-tabs > [role='tab'] {
+.shell-sliding-tabs > [role='tab'],
+.shell-sliding-tabs > button {
   position: relative;
   z-index: 1;
   transition-property: color, transform;
@@ -5019,7 +5071,9 @@ body {
 }
 
 .shell-sliding-tabs > [role='tab'][aria-selected='true'],
-.shell-sliding-tabs > [role='tab'][aria-selected='true']:hover {
+.shell-sliding-tabs > [role='tab'][aria-selected='true']:hover,
+.shell-sliding-tabs > button[aria-pressed='true'],
+.shell-sliding-tabs > button[aria-pressed='true']:hover {
   border-color: transparent;
   background: transparent;
   box-shadow: none;
@@ -5778,17 +5832,11 @@ body {
 }
 
 .capability-button:active:not(:disabled),
-.capability-link-button:active:not(:disabled),
-.capability-install-button:active:not(:disabled),
-.capability-organize-button:active:not(:disabled),
-.capability-icon-button:active:not(:disabled),
-.capability-row-actions button:active:not(:disabled) {
+.capability-icon-button:active:not(:disabled) {
   transform: translateY(0) scale(0.98);
 }
 
-.capability-button:disabled,
-.capability-install-button:disabled,
-.capability-row-actions button:disabled {
+.capability-button:disabled {
   cursor: not-allowed;
   opacity: 0.48;
 }
@@ -6009,116 +6057,6 @@ body {
   background: var(--color-cap-hover);
 }
 
-.capability-center__content {
-  display: flex;
-  min-height: 0;
-  flex: 1 1 auto;
-  flex-direction: column;
-  gap: 12px;
-  min-width: 0;
-  overflow-x: hidden;
-  overflow-y: auto;
-  padding: 16px 22px 24px;
-  background: var(--cap-bg);
-  animation: capability-content-in 180ms ease-out both;
-}
-
-.capability-category-rail {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 7px;
-}
-
-.capability-category-rail button,
-.capability-filter-group button {
-  border: 1px solid transparent;
-  border-radius: 999px;
-  padding: 6px 10px;
-  color: var(--cap-muted);
-  background: transparent;
-  cursor: pointer;
-  font-size: 11px;
-  white-space: nowrap;
-  transition:
-    color 140ms ease,
-    background 140ms ease,
-    border-color 140ms ease;
-}
-
-.capability-category-rail button:hover,
-.capability-filter-group button:hover {
-  color: var(--cap-text);
-  background: var(--color-cap-hover);
-}
-
-.capability-category-rail button.is-active,
-.capability-filter-group button.is-active {
-  border-color: color-mix(in srgb, var(--cap-green) 28%, transparent);
-  color: var(--cap-green);
-  background: color-mix(in srgb, var(--cap-green) 10%, transparent);
-}
-
-.capability-market-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-  animation: capability-content-in 180ms ease-out both;
-}
-
-.capability-market-card {
-  display: flex;
-  min-height: 154px;
-  flex-direction: column;
-  border: 1px solid var(--cap-border);
-  border-radius: 8px;
-  background: var(--cap-surface-raised);
-  overflow: hidden;
-  transition:
-    border-color 150ms ease,
-    background 150ms ease,
-    transform 150ms ease;
-  animation: capability-row-enter 220ms ease-out backwards;
-}
-
-.capability-market-card:hover {
-  border-color: color-mix(in srgb, var(--cap-green) 28%, var(--cap-border));
-  background: var(--color-cap-surface-raised);
-  transform: translateY(-1px);
-}
-
-.capability-market-card:nth-child(2) {
-  animation-delay: 35ms;
-}
-
-.capability-market-card:nth-child(3) {
-  animation-delay: 70ms;
-}
-
-.capability-market-card:nth-child(4) {
-  animation-delay: 105ms;
-}
-
-.capability-market-card:nth-child(5) {
-  animation-delay: 140ms;
-}
-
-.capability-market-card:nth-child(6) {
-  animation-delay: 175ms;
-}
-
-.capability-market-card__body {
-  display: flex;
-  flex: 1 1 auto;
-  gap: 12px;
-  border: 0;
-  padding: 16px;
-  color: inherit;
-  background: transparent;
-  text-align: left;
-  cursor: pointer;
-}
-
-.capability-market-card__icon,
 .capability-drawer__icon {
   display: grid;
   flex: 0 0 auto;
@@ -6131,7 +6069,6 @@ body {
   background: color-mix(in srgb, var(--cap-green) 10%, transparent);
 }
 
-.capability-market-card__icon.is-mcp,
 .capability-drawer__icon.is-mcp,
 .capability-row-icon.is-mcp {
   border-color: color-mix(in srgb, var(--color-cap-mcp) 27%, transparent);
@@ -6155,395 +6092,6 @@ body {
   border-radius: 4px;
 }
 
-.capability-market-card__copy {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.capability-market-card__copy > span {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-}
-
-.capability-market-card__copy strong {
-  color: var(--cap-text);
-  font-size: 13px;
-}
-
-.capability-market-card__copy em {
-  border-radius: 999px;
-  padding: 2px 6px;
-  color: var(--cap-green);
-  background: color-mix(in srgb, var(--cap-green) 12%, transparent);
-  font-size: 11px;
-  font-style: normal;
-}
-
-.capability-market-card__copy small {
-  display: -webkit-box;
-  overflow: hidden;
-  color: var(--cap-muted);
-  font-size: 11px;
-  line-height: 1.6;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
-}
-
-.capability-market-card footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  min-height: 39px;
-  padding: 0 13px 0 16px;
-  border-top: 1px solid var(--cap-border);
-  color: var(--cap-faint);
-  font-size: 11px;
-}
-
-.capability-link-button,
-:is(.capability-center, .capability-dialog, .capability-drawer) .capability-install-button {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  border: 1px solid transparent;
-  border-radius: 7px;
-  padding: 5px 8px;
-  color: var(--cap-green);
-  background: transparent;
-  cursor: pointer;
-  font-size: 11px;
-  font-weight: 650;
-}
-
-.capability-link-button:hover,
-:is(.capability-center, .capability-dialog, .capability-drawer)
-  .capability-install-button:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--cap-green) 11%, transparent);
-}
-
-:is(.capability-center, .capability-dialog, .capability-drawer) .capability-install-button {
-  border-color: color-mix(in srgb, var(--cap-green) 32%, var(--cap-border));
-  background: color-mix(in srgb, var(--cap-green) 8%, transparent);
-}
-
-.capability-stats {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr)) minmax(230px, 1.25fr);
-  gap: 9px;
-  animation: capability-content-in 180ms ease-out both;
-}
-
-.capability-stat {
-  min-width: 0;
-  min-height: 80px;
-  border: 1px solid var(--cap-border);
-  border-radius: 12px;
-  padding: 13px 14px 11px;
-  background: var(--cap-surface);
-}
-
-.capability-stat.is-warning,
-.capability-stat--context.is-warning {
-  border-color: color-mix(in srgb, var(--cap-red) 30%, transparent);
-}
-
-.capability-stat > div:first-child {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-}
-
-.capability-stat strong {
-  color: var(--cap-text);
-  font-size: 24px;
-  font-weight: 750;
-  letter-spacing: -0.06em;
-}
-
-.capability-stat > div span {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  color: var(--color-cap-stat-label);
-  font-size: 11px;
-  font-weight: 650;
-}
-
-.capability-stat > div span svg {
-  color: var(--cap-green);
-}
-
-.capability-stat.is-warning > div span svg,
-.capability-stat--context.is-warning strong {
-  color: var(--cap-red);
-}
-
-.capability-stat p {
-  margin: 7px 0 0;
-  overflow: hidden;
-  color: var(--cap-muted);
-  font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.capability-stat--context > div:first-child {
-  align-items: center;
-  justify-content: space-between;
-}
-
-.capability-stat--context > div:first-child span {
-  color: var(--cap-muted);
-}
-
-.capability-stat--context > div:first-child strong {
-  color: var(--cap-green);
-  font-size: 13px;
-  letter-spacing: 0;
-}
-
-.capability-context-meter {
-  height: 7px;
-  margin-top: 12px;
-  overflow: hidden;
-  border-radius: 99px;
-  background: var(--color-cap-meter-track);
-}
-
-.capability-context-meter span {
-  display: block;
-  height: 100%;
-  min-width: 2px;
-  border-radius: inherit;
-  background: linear-gradient(
-    90deg,
-    var(--color-cap-meter-green),
-    var(--color-cap-meter-yellow),
-    var(--color-cap-meter-red)
-  );
-}
-
-.capability-governance-toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 9px;
-}
-
-.capability-workspace-filter,
-.capability-source-select {
-  display: inline-flex;
-  min-height: 30px;
-  align-items: center;
-  gap: 7px;
-  border: 1px solid var(--cap-border);
-  border-radius: 8px;
-  padding: 0 9px;
-  color: var(--cap-muted);
-  background: var(--cap-surface);
-  font-size: 11px;
-}
-
-.capability-workspace-filter svg {
-  color: var(--cap-green);
-}
-
-.capability-workspace-filter select,
-.capability-source-select select {
-  min-width: 92px;
-  border: 0;
-  outline: 0;
-  color: var(--cap-text);
-  background: transparent;
-  cursor: pointer;
-  font-size: 11px;
-}
-
-.capability-workspace-filter option,
-.capability-source-select option,
-.capability-publish-form option,
-.capability-register-form option {
-  color: var(--color-cap-option-text);
-  background: var(--color-cap-option-bg);
-}
-
-.capability-source-select span {
-  color: var(--cap-faint);
-}
-
-.capability-filter-group {
-  display: flex;
-  gap: 2px;
-  padding: 2px;
-  border: 1px solid var(--cap-border);
-  border-radius: 8px;
-  background: var(--color-cap-rail);
-}
-
-.capability-filter-group button {
-  border-radius: 6px;
-  padding: 6px 8px;
-}
-
-.capability-organize-button {
-  display: inline-flex;
-  margin-left: auto;
-  align-items: center;
-  gap: 6px;
-  border: 0;
-  border-radius: 7px;
-  padding: 7px 9px;
-  color: var(--cap-green);
-  background: transparent;
-  cursor: pointer;
-  font-size: 11px;
-  font-weight: 650;
-}
-
-.capability-organize-button:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--cap-green) 10%, transparent);
-}
-
-.capability-organize-button:disabled {
-  cursor: wait;
-  opacity: 0.55;
-}
-
-.capability-governance-rule {
-  display: flex;
-  align-items: flex-start;
-  gap: 7px;
-  min-height: 40px;
-  padding: 2px 3px;
-  color: var(--cap-muted);
-  font-size: 11px;
-  animation: capability-content-in 180ms ease-out both;
-}
-
-.capability-governance-rule svg {
-  flex: 0 0 auto;
-  margin-top: 3px;
-  color: var(--cap-green);
-}
-
-.capability-governance-rule__copy {
-  display: grid;
-  min-width: 0;
-  gap: 4px;
-}
-
-.capability-governance-rule__copy > strong {
-  color: var(--color-cap-rule-strong);
-  font-size: 11px;
-  font-weight: 700;
-}
-
-.capability-governance-rule__copy > span {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px;
-  color: var(--cap-faint);
-  line-height: 1.45;
-}
-
-.capability-governance-rule__copy b {
-  min-width: 74px;
-  color: var(--cap-text-secondary);
-  font-size: 11px;
-  font-weight: 700;
-}
-
-.capability-governance-rule__copy i {
-  color: var(--cap-muted);
-  font-style: normal;
-}
-
-.capability-governance-rule__copy svg {
-  margin: 0;
-  color: var(--cap-faint);
-}
-
-.capability-governance-rule__copy em {
-  margin-left: 4px;
-  color: var(--cap-faint);
-  font-style: normal;
-}
-
-.capability-list-shell {
-  min-height: 180px;
-  min-width: 0;
-  overflow-x: auto;
-  overflow-y: hidden;
-  border: 1px solid var(--cap-border);
-  border-radius: 10px;
-  background: var(--cap-surface);
-  scrollbar-width: thin;
-}
-
-.capability-governance-list {
-  min-width: 850px;
-  border-top: 0;
-  animation: capability-content-in 180ms ease-out both;
-}
-
-.capability-governance-list__header,
-.capability-governance-row {
-  display: grid;
-  grid-template-columns:
-    minmax(260px, 2.25fr) minmax(102px, 0.85fr) minmax(112px, 0.95fr)
-    80px 88px 66px 64px;
-  align-items: center;
-  column-gap: 12px;
-}
-
-/* MCP governance list dropped the workspace-activation column (global MCP). */
-.capability-governance-list--mcp .capability-governance-list__header,
-.capability-governance-list--mcp .capability-governance-row {
-  grid-template-columns: minmax(280px, 2.25fr) minmax(110px, 0.9fr) 80px 88px 66px 64px;
-}
-
-.capability-governance-list__header {
-  min-height: 37px;
-  padding: 0 10px;
-  border-bottom: 1px solid var(--cap-border);
-  color: var(--cap-faint);
-  background: var(--cap-surface-soft);
-  font-size: 11px;
-  font-weight: 650;
-  letter-spacing: 0.02em;
-}
-
-.capability-governance-row {
-  min-height: 68px;
-  padding: 6px 10px;
-  border-top: 1px solid var(--color-cap-divider);
-  color: var(--cap-muted);
-  background: var(--cap-surface);
-  font-size: 11px;
-  transition: background 140ms ease;
-  animation: capability-row-enter 220ms ease-out backwards;
-}
-
-.capability-governance-row:hover {
-  background: var(--color-cap-hover);
-}
-
-.capability-governance-row__identity {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 10px;
-  border: 0;
-  color: inherit;
-  background: transparent;
-  text-align: left;
-  cursor: pointer;
-}
-
 .capability-row-icon {
   display: grid;
   flex: 0 0 auto;
@@ -6554,69 +6102,6 @@ body {
   border-radius: 8px;
   color: var(--cap-green);
   background: color-mix(in srgb, var(--cap-green) 8%, transparent);
-}
-
-.capability-governance-row__identity .ability-installed-row__copy {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.capability-governance-row__identity .ability-installed-row__copy > span {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 7px;
-}
-
-.capability-governance-row__identity strong {
-  overflow: hidden;
-  color: var(--cap-text);
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.capability-governance-row__identity em {
-  flex: 0 0 auto;
-  border-radius: 999px;
-  padding: 2px 5px;
-  color: var(--cap-green);
-  background: color-mix(in srgb, var(--cap-green) 10%, transparent);
-  font-size: 10.5px;
-  font-style: normal;
-}
-
-.capability-governance-row__identity em.is-warning {
-  color: var(--cap-red);
-  background: color-mix(in srgb, var(--cap-red) 10%, transparent);
-}
-
-.capability-governance-row__identity small {
-  display: block;
-  overflow: hidden;
-  color: var(--cap-muted);
-  font-size: 11px;
-  line-height: 1.35;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.capability-origin {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 4px;
-  color: var(--color-cap-origin);
-  font-size: 11px;
-}
-
-.capability-origin small {
-  overflow: hidden;
-  color: var(--cap-faint);
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .capability-workspace-activation {
@@ -6671,75 +6156,6 @@ body {
 .capability-workspace-activation.is-busy {
   animation: capability-activation-pulse 900ms ease-in-out infinite;
   cursor: wait;
-}
-
-.capability-governance-row__metric {
-  color: var(--cap-text);
-  font-size: 16px;
-  font-weight: 700;
-}
-
-.capability-row-actions {
-  display: flex;
-  gap: 4px;
-}
-
-.capability-row-actions button {
-  display: grid;
-  width: 25px;
-  height: 25px;
-  place-items: center;
-  border: 0;
-  border-radius: 6px;
-  color: var(--cap-faint);
-  background: transparent;
-  cursor: pointer;
-}
-
-.capability-row-actions button.capability-row-actions__danger:hover:not(:disabled) {
-  color: var(--cap-red);
-  background: color-mix(in srgb, var(--cap-red) 12%, transparent);
-}
-
-.capability-row-actions button:hover:not(:disabled) {
-  color: var(--cap-green);
-  background: color-mix(in srgb, var(--cap-green) 10%, transparent);
-}
-
-.capability-toggle {
-  position: relative;
-  display: inline-flex;
-  width: 31px;
-  height: 18px;
-  align-items: center;
-  border: 0;
-  border-radius: 999px;
-  padding: 2px;
-  background: var(--color-cap-toggle-track);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cap-text) 10%, transparent);
-  cursor: pointer;
-  transition: background 140ms ease;
-}
-
-.capability-toggle span {
-  display: block;
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: var(--color-cap-toggle-thumb);
-  transition:
-    transform 140ms ease,
-    background 140ms ease;
-}
-
-.capability-toggle[data-enabled='1'] {
-  background: var(--cap-green-deep);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cap-green) 24%, transparent);
-}
-
-.capability-toggle[data-enabled='1'] span {
-  transform: translateX(13px);
-  background: var(--color-cap-toggle-active-thumb);
 }
 
 .capability-status-banner {
@@ -8232,28 +7648,8 @@ body {
     margin-left: 0;
   }
 
-  .capability-center__content {
-    padding: 14px 16px 20px;
-  }
-
-  .capability-market-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .capability-stats {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .capability-stat--context {
-    grid-column: 1 / -1;
-  }
-
   .capability-organize-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .capability-organize-button {
-    margin-left: 0;
   }
 }
 
@@ -8289,8 +7685,7 @@ body {
     overflow-x: auto;
   }
 
-  .capability-center__toolbar,
-  .capability-center__content {
+  .capability-center__toolbar {
     padding-right: 12px;
     padding-left: 12px;
   }
@@ -8299,8 +7694,6 @@ body {
     min-width: 104px;
   }
 
-  .capability-market-grid,
-  .capability-stats,
   .capability-publish-grid,
   .capability-publish-grid.is-three,
   .capability-remote-auth-grid,
@@ -8320,38 +7713,6 @@ body {
 
   .capability-skill-editor__field:last-child {
     grid-column: 2;
-  }
-
-  .capability-stat--context {
-    grid-column: auto;
-  }
-
-  .capability-governance-toolbar {
-    align-items: stretch;
-  }
-
-  .capability-workspace-filter,
-  .capability-source-select,
-  .capability-filter-group,
-  .capability-organize-button {
-    width: 100%;
-  }
-
-  .capability-workspace-filter select,
-  .capability-source-select select {
-    flex: 1 1 auto;
-  }
-
-  .capability-filter-group {
-    overflow-x: auto;
-  }
-
-  .capability-filter-group button {
-    flex: 0 0 auto;
-  }
-
-  .capability-organize-button {
-    justify-content: center;
   }
 
   .capability-drawer {
@@ -8408,7 +7769,6 @@ body {
   }
 
   .capability-button:hover:not(:disabled),
-  .capability-market-card:hover,
   .capability-workspace-activation:hover:not(:disabled) {
     transform: none;
   }
@@ -9071,6 +8431,11 @@ body {
   display: inline-flex;
   flex: 0 0 auto;
   align-items: center;
+  gap: 4px;
+  padding: 2px 5px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--color-surface-raised) 72%, transparent);
+  white-space: nowrap;
 }
 
 /* A delegation row points at its card instead of dumping the raw payload. */
@@ -9089,18 +8454,6 @@ body {
   color: var(--color-text-faint);
   font-size: 10.5px;
   font-variant-numeric: tabular-nums;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.shell-delegated-agent__agent-id {
-  max-width: 160px;
-  overflow: hidden;
-  padding: 0 4px;
-  border-radius: 4px;
-  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
-  color: var(--color-text-faint);
-  font: 9.5px/1.5 var(--font-mono, ui-monospace, monospace);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -9196,6 +8549,14 @@ body {
   font-size: 11.5px;
   line-height: 1.55;
   white-space: pre-wrap;
+}
+
+.shell-delegated-agent__termination {
+  border-top: 1px solid color-mix(in srgb, var(--color-border) 32%, transparent);
+  padding-top: 6px;
+  color: var(--color-text-secondary);
+  font-size: 11.5px;
+  line-height: 1.55;
 }
 
 .shell-process-panel__supplemental {
@@ -9575,6 +8936,7 @@ body {
   border-color: color-mix(in srgb, var(--color-error) 32%, var(--color-border));
   color: var(--color-error);
 }
+
 
 .shell-inline-process__structured {
   min-width: 0;
@@ -9973,6 +9335,10 @@ body {
 /* 「原始工具」行同样按分区处理，与参数/输出共用面板内的对齐线。 */
 .shell-harness-trace .shell-inline-process__tool-body > .shell-inline-process__detail-row {
   padding: 8px 10px;
+}
+
+.shell-harness-trace .shell-inline-process__tool-body > .shell-inline-process__detail-row code {
+  color: var(--color-text-faint);
 }
 
 /* 分区里的卡不再自成一框：去掉描边、底色、圆角，内容直接落在面板上。 */
@@ -14105,119 +13471,6 @@ body {
   color: var(--color-accent-text);
   background: var(--color-accent-soft);
 }
-/* ─── 能力中心「本地」tab（本地 skill 发现） ─────────────────────────────── */
-
-.capability-local__banner {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  border-radius: 10px;
-  font-size: 12px;
-  color: var(--color-text-secondary);
-  background: color-mix(in srgb, var(--color-border) 14%, transparent);
-  margin-bottom: 12px;
-  flex-wrap: wrap;
-}
-
-.capability-local__banner code {
-  font-size: 12px;
-  color: var(--color-text);
-}
-
-.capability-local__banner-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--color-success);
-}
-
-.capability-center__empty {
-  padding: 32px 0;
-  text-align: center;
-  font-size: 13px;
-  color: var(--color-text-secondary);
-}
-
-.capability-local__list {
-  display: grid;
-  gap: 8px;
-}
-
-.capability-local__card {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px 14px;
-  border: 1px solid var(--color-border);
-  border-radius: 12px;
-  background: var(--color-elevated);
-}
-
-.capability-local__card[data-imported='1'] {
-  opacity: 0.62;
-}
-
-.capability-local__card-main {
-  min-width: 0;
-  flex: 1;
-}
-
-.capability-local__card-title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.capability-local__badge {
-  padding: 1px 8px;
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--color-accent);
-  background: color-mix(in srgb, var(--color-accent-soft) 20%, transparent);
-}
-
-.capability-local__desc {
-  margin-top: 3px;
-  font-size: 12px;
-  color: var(--color-text-secondary);
-}
-
-.capability-local__summary {
-  margin-top: 3px;
-  font-size: 12px;
-  color: var(--color-text-secondary);
-  opacity: 0.85;
-}
-
-.capability-local__meta {
-  display: flex;
-  gap: 8px;
-  margin-top: 4px;
-  font-size: 11px;
-  color: var(--color-text-secondary);
-}
-
-.capability-local__meta code {
-  font-size: 11px;
-}
-
-.capability-local__import {
-  flex: none;
-  padding: 5px 14px;
-  border-radius: 999px;
-  border: none;
-  font-size: 12px;
-  font-weight: 600;
-  color: #fff;
-  background: var(--color-accent);
-  cursor: pointer;
-}
-
 .shell-compose__bar-left,
 .shell-compose__bar-right {
   display: contents;
@@ -14829,6 +14082,7 @@ body {
   box-shadow: var(--composer-menu-shadow);
   color: var(--composer-text);
   font-family: var(--font-sans);
+  z-index: 10030;
 }
 
 .shell-menu--model-providers {
@@ -15385,8 +14639,11 @@ body {
 /* Message image thumbs + lightbox */
 .shell-msg-images {
   display: flex;
+  width: fit-content;
   flex-wrap: wrap;
-  gap: 8px;
+  justify-content: end;
+  gap: 5px;
+  max-width: 250px;
   margin-bottom: 8px;
 }
 
@@ -15394,75 +14651,67 @@ body {
   margin-bottom: 6px;
 }
 
+.shell-msg-files {
+  display: flex;
+  max-width: min(360px, 72vw);
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  margin-bottom: 2px;
+}
+
+.shell-msg-file {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  gap: 7px;
+  min-height: 32px;
+  padding: 6px 10px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--color-elevated) 92%, var(--color-text) 8%);
+  color: var(--color-text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.shell-msg-file:hover {
+  border-color: color-mix(in srgb, var(--color-accent) 48%, var(--color-border));
+  background: color-mix(in srgb, var(--color-hover) 86%, var(--color-elevated));
+}
+
+.shell-msg-file__name {
+  max-width: 180px;
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .shell-msg-image-btn {
   display: block;
+  width: 80px;
+  height: 80px;
   padding: 0;
-  border: 0;
-  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 72%, transparent);
+  border-radius: 8px;
   overflow: hidden;
   background: color-mix(in srgb, #000 12%, transparent);
   cursor: zoom-in;
-  max-width: 220px;
 }
 
 .shell-msg-image-btn img {
   display: block;
-  max-width: 220px;
-  max-height: 180px;
-  width: auto;
-  height: auto;
+  width: 100%;
+  height: 100%;
   object-fit: cover;
 }
 
-.shell-lightbox {
-  position: fixed;
-  inset: 0;
-  z-index: 12000;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
-  padding: 28px;
-  background: color-mix(in srgb, #000 72%, transparent);
-  backdrop-filter: blur(4px);
-}
-
-.shell-lightbox__close {
-  position: absolute;
-  top: 18px;
-  right: 18px;
-  display: inline-flex;
-  width: 36px;
-  height: 36px;
-  align-items: center;
-  justify-content: center;
-  border: 0;
-  border-radius: 999px;
-  background: color-mix(in srgb, #fff 14%, transparent);
-  color: #fff;
-  cursor: pointer;
-}
-
-.shell-lightbox__close:hover {
-  background: color-mix(in srgb, #fff 24%, transparent);
-}
-
-.shell-lightbox__img {
-  max-width: min(92vw, 1100px);
-  max-height: min(82vh, 900px);
-  border-radius: 12px;
-  box-shadow: 0 20px 60px color-mix(in srgb, #000 45%, transparent);
-  object-fit: contain;
-  background: var(--color-page);
-}
-
-.shell-lightbox__caption {
-  max-width: min(92vw, 720px);
-  color: color-mix(in srgb, #fff 88%, transparent);
-  font-size: 13px;
-  text-align: center;
-  word-break: break-all;
+@media (max-width: 560px) {
+  .shell-msg-images {
+    max-width: min(250px, calc(100vw - 64px));
+  }
 }
 
 .shell-md-image-frame {
@@ -19811,6 +19060,10 @@ body {
   gap: 4px;
 }
 
+.shell-message-window-item[data-message-role='user'] {
+  padding-bottom: 12px;
+}
+
 .shell-user-bubble {
   width: fit-content;
   overflow-wrap: break-word;
@@ -20047,7 +19300,6 @@ body {
   border: 0;
   border-radius: 9px;
   box-shadow:
-    inset 0.5px 0.5px 0.5px color-mix(in srgb, #fff 90%, transparent),
     0 0 0 0.5px color-mix(in srgb, var(--color-text) 5%, transparent),
     0.5px 0.5px 1px color-mix(in srgb, var(--color-text) 9%, transparent);
   font-size: 12.5px;
@@ -20827,6 +20079,14 @@ body {
   visibility: inherit;
 }
 
+/* Electron webview guests are composited outside the ordinary DOM paint tree.
+   Hiding only an ancestor can leave the guest surface above the newly active
+   stage after a cold restore, so hide the webview element itself as well. */
+.shell-stage-layer[data-active='false'] webview,
+.shell-pane-surface[data-active='false'] webview {
+  display: none !important;
+}
+
 .shell-toast-host {
   position: fixed;
   top: 16px;
@@ -21354,54 +20614,11 @@ body {
   height: 100%;
   min-width: 0;
   min-height: 0;
-  grid-template-rows: 58px minmax(0, 1fr);
+  grid-template-rows: 62px minmax(0, 1fr);
 }
 
 .settings-preferences__tabs {
-  display: inline-flex;
-  width: fit-content;
-  height: 32px;
-  align-items: center;
-  gap: 0;
-  margin: 16px 24px 10px;
-  padding: 3px;
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--color-text) 6%, transparent);
-}
-
-.settings-preferences__tabs button {
-  height: 26px;
-  padding: 0 12px;
-  border: 0;
-  border-radius: 9px;
-  background: transparent;
-  color: var(--color-text-secondary);
-  font-family: var(--font-sans);
-  font-size: 12px;
-  cursor: pointer;
-  transition:
-    color 120ms ease,
-    background 120ms ease,
-    box-shadow 120ms ease,
-    transform 80ms ease;
-}
-
-.settings-preferences__tabs button:hover,
-.settings-preferences__tabs button:focus-visible {
-  color: var(--color-text);
-  outline: none;
-}
-
-.settings-preferences__tabs button.is-active {
-  background: var(--color-overlay);
-  color: var(--color-text);
-  box-shadow:
-    0 0 0 0.5px var(--shell-tab-outline),
-    0 1px 2px var(--shell-tab-outline);
-}
-
-.settings-preferences__tabs button:active {
-  transform: scale(0.97);
+  margin: 14px 24px 12px;
 }
 
 .settings-preferences__scroll {
@@ -22233,7 +21450,7 @@ body {
   transition: background 120ms ease;
 }
 
-.settings-preference-toggle > button i {
+.settings-preference-toggle > button > span {
   position: absolute;
   top: 2px;
   left: 2px;
@@ -22248,7 +21465,7 @@ body {
   background: var(--color-accent);
 }
 
-.settings-preference-toggle > button.is-checked i {
+.settings-preference-toggle > button.is-checked > span {
   transform: translateX(16px);
 }
 
@@ -22590,41 +21807,7 @@ body {
 }
 
 .settings-connection-tabs {
-  display: inline-flex;
-  width: fit-content;
-  height: 30px;
-  flex: 0 0 30px;
-  align-items: center;
-  gap: 1px;
-  padding: 3px;
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--color-text) 6%, transparent);
-}
-
-.settings-connection-tabs button {
-  height: 24px;
-  padding: 0 11px;
-  border: 0;
-  border-radius: 9px;
-  background: transparent;
-  color: var(--color-text-secondary);
-  font-family: inherit;
-  font-size: 12px;
-  letter-spacing: 0;
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.settings-connection-tabs button:hover,
-.settings-connection-tabs button:focus-visible {
-  color: var(--color-text);
-  outline: none;
-}
-
-.settings-connection-tabs button.is-active {
-  background: transparent;
-  color: var(--color-text);
-  box-shadow: none;
+  flex: 0 0 36px;
 }
 
 .settings-connection-body {
@@ -26516,8 +25699,9 @@ body {
 }
 
 .model-settings-tabs__rail {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
   min-width: 0;
+  max-width: 100%;
 }
 
 .model-settings-guide {
@@ -29092,6 +28276,11 @@ body {
   border: 0;
   border-radius: 18px;
   background: var(--shell-tab-hover);
+  transition:
+    background var(--model-motion-fast) var(--model-ease-standard),
+    box-shadow var(--model-motion-fast) var(--model-ease-standard),
+    opacity var(--model-motion-fast) var(--model-ease-standard),
+    transform var(--model-motion-layout) var(--model-ease-emphasized);
 }
 
 .image-model-id-row.is-default {
@@ -29099,7 +28288,7 @@ body {
 }
 
 .image-model-id-row.is-dragging {
-  opacity: 0.3;
+  opacity: 0.28;
 }
 
 .image-model-id-row__badge {
@@ -32635,6 +31824,79 @@ html[data-app-hidden='true'] .animate-spin {
   font-size: 12px;
   font-weight: 500;
   line-height: 1;
+}
+
+/* General, Preferences, Models, and Connections share this category rail.
+   Their page-specific classes only control placement and surrounding layout. */
+.settings-section-tabs-viewport {
+  width: fit-content;
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-inline: contain;
+  scrollbar-width: none;
+}
+
+.settings-section-tabs-viewport::-webkit-scrollbar {
+  display: none;
+}
+
+.settings-section-tabs.shell-ds-tab-bar {
+  min-width: max-content;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-text) 6%, transparent);
+}
+
+.settings-section-tabs .shell-ds-tab-bar__indicator {
+  border-radius: 999px;
+  background: var(--color-overlay);
+}
+
+.settings-section-tabs .shell-ds-tab-bar__tab {
+  min-width: 44px;
+  border-radius: 999px;
+  color: var(--color-text-secondary);
+  font-family: var(--font-sans);
+  letter-spacing: 0;
+  white-space: nowrap;
+  transition:
+    color 180ms cubic-bezier(0.33, 1, 0.68, 1),
+    background-color 120ms ease;
+}
+
+.settings-section-tabs .shell-ds-tab-bar__tab:has(.shell-ds-tab-bar__label) {
+  padding: 0 14px;
+}
+
+.settings-section-tabs .shell-ds-tab-bar__label {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.settings-section-tabs .shell-ds-tab-bar__tab:not(.is-active):not(:disabled):hover {
+  color: var(--color-text);
+  background: color-mix(in srgb, var(--color-text) 4%, transparent);
+}
+
+.settings-section-tabs .shell-ds-tab-bar__tab.is-active {
+  color: var(--color-text);
+}
+
+.settings-section-tabs .shell-ds-tab-bar__tab:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-accent) 72%, transparent);
+  outline-offset: -2px;
+}
+
+.settings-section-tabs .shell-ds-tab-bar__tab:active:not(:disabled) {
+  color: var(--color-text);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root:not([data-motion='full']) .shell-ds-tab-bar__indicator,
+  :root:not([data-motion='full']) .settings-section-tabs .shell-ds-tab-bar__tab {
+    transition: none !important;
+  }
 }
 
 .shell-file-pane-save-wrap {
@@ -38882,7 +38144,25 @@ html[data-app-hidden='true'] .animate-spin {
   flex: 0 0 auto;
   gap: 9px;
   padding: 4px 20px 9px;
+}
+
+.ability-hub__filter-stack {
+  flex: 0 0 auto;
   border-bottom: 1px solid color-mix(in srgb, var(--color-border) 58%, transparent);
+}
+
+.ability-hub__scope-row {
+  display: flex;
+  min-width: 0;
+  min-height: 43px;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 20px 7px;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 42%, transparent);
+}
+
+.ability-hub__scope-filter {
+  flex: 1 1 auto;
 }
 
 .ability-hub__scope-pill {
@@ -41588,6 +40868,26 @@ html[data-app-hidden='true'] .animate-spin {
     flex: 1 1 100%;
   }
 
+  .ability-hub__scope-row > .ability-hub__security-filter {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  /* The search cluster rides the scope row: let it wrap onto its own line. */
+  .agent-hub .ability-hub__scope-row {
+    flex-wrap: wrap;
+  }
+
+  .agent-hub .ability-hub__scope-row > .ability-hub__controls-right {
+    flex: 1 1 100%;
+  }
+
+  .agent-hub .ability-hub__scope-row .ability-hub__search {
+    order: 0;
+    width: auto;
+    flex: 1 1 auto;
+  }
+
   .mcp-installed-grid {
     grid-template-columns: 1fr;
   }
@@ -41614,6 +40914,7 @@ html[data-app-hidden='true'] .animate-spin {
 
   .ability-hub__controls,
   .ability-hub__category-row,
+  .ability-hub__scope-row,
   .ability-hub__filter-row,
   .ability-hub__stats,
   .ability-hub__scroll {
@@ -43360,8 +42661,7 @@ html[data-app-hidden='true'] .animate-spin {
   border: 0;
   background: var(--shell-chat-composer-surface);
   box-shadow:
-    inset 0 0 0.5px 0.5px rgb(255 255 255 / 84%),
-    0 0 0 0.5px rgb(0 0 0 / 10%),
+    0 0 0 0.5px color-mix(in srgb, var(--composer-border) 72%, transparent),
     0 0 4px -1px rgb(0 0 0 / 5%),
     0 0 14px -5px rgb(0 0 0 / 7%),
     0 0 28px -10px rgb(0 0 0 / 7%);
@@ -43371,8 +42671,7 @@ html[data-app-hidden='true'] .animate-spin {
 
 :root[data-image-theme='active'] .shell-compose:focus-within {
   box-shadow:
-    inset 0 0 0.5px 0.5px rgb(255 255 255 / 84%),
-    0 0 0 0.5px color-mix(in srgb, var(--color-accent) 28%, transparent),
+    0 0 0 0.5px color-mix(in srgb, var(--composer-border-strong) 72%, transparent),
     0 0 0 3px color-mix(in srgb, var(--color-accent) 10%, transparent),
     0 0 14px -5px rgb(0 0 0 / 7%);
 }
@@ -46509,10 +45808,54 @@ html[data-app-hidden='true'] .animate-spin {
 }
 
 
-/* Agent scope is a filter, not a catalog tab; keep the top row search-only. */
-.agent-hub__controls--search-only {
-  justify-content: flex-end;
+/* Agent scope is a filter, not a catalog tab. The search box and the view
+   switch no longer own a control bar above the stats — they ride at the right
+   edge of the scope row, so the scope chips keep their intrinsic width and the
+   row's spare space becomes the gap before that cluster. */
+.agent-hub .ability-hub__scope-row > .ability-hub__controls-right {
+  flex: 0 0 auto;
 }
-.agent-hub__controls--search-only .ability-hub__controls-right {
-  margin-left: 0;
+
+
+/* ── Filter bars: legibility ──────────────────────────────────────────────
+   The filter bars ran at 9.5px captions and 12px chips — well under the 13px
+   the rest of the shell (catalog tabs, search box) is built on, which reads
+   as mush at a glance. Everything in the row now sits on that same 13px
+   baseline; the count badge stays one step down so the chip's own label keeps
+   the emphasis. Chips and the sort control grow to hold the larger type. */
+.ability-hub__filter-label {
+  font-size: 13px;
+  letter-spacing: 0.01em;
+}
+
+.ability-hub__security-filter button {
+  min-height: 30px;
+  padding: 0 10px;
+  font-size: 13px;
+  line-height: 19px;
+}
+
+.ability-hub__security-filter button small {
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.ability-hub__organize,
+.ability-hub__sort {
+  min-height: 30px;
+  font-size: 13px;
+  line-height: 19px;
+}
+
+.ability-hub__filter-note {
+  font-size: 12.5px;
+}
+
+/* The ability page's scope pills are the same kind of control as the chips
+   above, but sat a step smaller and lower than everything beside them. Put
+   them on the same baseline and give them the same height. */
+.ability-hub__scope-pill {
+  min-height: 30px;
+  padding: 0 11px;
+  font-size: 13px;
 }

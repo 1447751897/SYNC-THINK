@@ -11,6 +11,7 @@ import { OPEN_GATEWAY_SETTING_KEY } from '@sync-think/protocol/gateway';
 import { COMPUTER_USE_APPROVAL_POLICY_SETTING_KEY } from '@sync-think/protocol/tool-approval';
 import { COLLABORATION_SETTINGS_KEY } from '@sync-think/protocol/collaboration';
 import { SettingsPage } from './SettingsPage.js';
+import { invalidateMcpCatalog } from './mcp-catalog-loader.js';
 
 const shellCss = readFileSync(resolve(process.cwd(), 'src/renderer/shell/shell.css'), 'utf8');
 
@@ -53,6 +54,7 @@ const runtime = {
 };
 
 beforeEach(() => {
+  invalidateMcpCatalog();
   window.localStorage.clear();
   runtime.exportData.mockResolvedValue({
     status: 'saved',
@@ -427,6 +429,37 @@ describe('SettingsPage NewMax general tabs', () => {
     ).toBe('false');
   });
 
+  it('loads and persists the global chat browser automation save setting', async () => {
+    runtime.getSettings.mockImplementation(async ({ keys }) => ({
+      settings: keys.includes('browser.chat-automation-save')
+        ? { 'browser.chat-automation-save': { enabled: true } }
+        : {},
+    }));
+    runtime.setSetting.mockResolvedValueOnce({
+      key: 'browser.chat-automation-save',
+      value: { enabled: false },
+      updatedAt: '2026-09-22T00:00:00.000Z',
+    });
+
+    render(<SettingsPage initialSection="general" />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Agent' }));
+
+    const toggle = await screen.findByRole('switch', {
+      name: '对话中的浏览器操作保存',
+    });
+    await waitFor(() => expect(toggle.getAttribute('aria-checked')).toBe('true'));
+
+    fireEvent.click(toggle);
+
+    await waitFor(() =>
+      expect(runtime.setSetting).toHaveBeenCalledWith({
+        key: 'browser.chat-automation-save',
+        value: { enabled: false },
+      }),
+    );
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
+  });
+
   it('persists Agent defaults and restores them when settings is reopened', () => {
     const first = render(<SettingsPage initialSection="general" />);
     fireEvent.click(screen.getByRole('tab', { name: 'Agent' }));
@@ -512,9 +545,7 @@ describe('SettingsPage agent collaboration', () => {
   it('writes the whole normalized settings object through the collaboration key', async () => {
     await openAgentCollaboration();
 
-    fireEvent.click(
-      screen.getByRole('switch', { name: '允许模型对话并发委派给已有智能体' }),
-    );
+    fireEvent.click(screen.getByRole('switch', { name: '允许模型对话并发委派给已有智能体' }));
     await waitFor(() =>
       expect(runtime.setSetting).toHaveBeenCalledWith({
         key: COLLABORATION_SETTINGS_KEY,
@@ -850,15 +881,7 @@ describe('SettingsPage SYNC-THINK connection catalog', () => {
     const navigation = screen.getByRole('navigation', { name: '设置分类' });
     expect(
       Array.from(navigation.querySelectorAll('button span'), (node) => node.textContent),
-    ).toEqual([
-      '通用',
-      '偏好',
-      '模型',
-      '连接',
-      '电脑操作',
-      '数据',
-      '关于',
-    ]);
+    ).toEqual(['通用', '偏好', '模型', '连接', '电脑操作', '数据', '关于']);
     fireEvent.click(screen.getByRole('button', { name: '连接' }));
 
     expect(await screen.findByRole('tab', { name: '连接器' })).toBeTruthy();
@@ -877,9 +900,12 @@ describe('SettingsPage SYNC-THINK connection catalog', () => {
     expect(screen.getByRole('button', { name: '连接 TikTok' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '连接 企查查' })).toBeTruthy();
     expect(document.querySelectorAll('.settings-connector-row')).toHaveLength(27);
-    expect(shellCss).toMatch(
-      /\.settings-connection-tabs button\.is-active\s*\{[^}]*background:\s*transparent;[^}]*box-shadow:\s*none;/s,
-    );
+    expect(
+      screen
+        .getByRole('tablist', { name: '连接设置分类' })
+        .classList.contains('settings-section-tabs'),
+    ).toBe(true);
+    expect(shellCss).toContain('.settings-section-tabs .shell-ds-tab-bar__tab.is-active');
   });
 
   it('centers the system proxy status in the network pane', async () => {
@@ -1006,9 +1032,11 @@ describe('SettingsPage bot conversations', () => {
     fireEvent.click(screen.getByRole('button', { name: '连接' }));
     fireEvent.click(await screen.findByRole('tab', { name: '机器人对话' }));
     await screen.findByRole('heading', { name: 'Telegram' });
+    const callsAfterInitialLoad = runtime.getBotChannelConfig.mock.calls.length;
     fireEvent.click(screen.getByRole('button', { name: '飞书' }));
 
     expect(await screen.findByRole('heading', { name: '飞书' })).toBeTruthy();
+    expect(runtime.getBotChannelConfig).toHaveBeenCalledTimes(callsAfterInitialLoad);
     expect(screen.getByLabelText('App ID')).toBeTruthy();
     expect(screen.getByLabelText('App Secret')).toBeTruthy();
     expect(screen.getByRole('switch', { name: '启用 飞书 机器人' })).toBeTruthy();

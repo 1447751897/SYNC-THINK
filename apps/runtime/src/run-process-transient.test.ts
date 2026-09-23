@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { decodeFrames, type ConversationTransientFrame, type Frame } from '@sync-think/protocol';
-import type { Event, EventId, RunId, WorkspaceId } from '@sync-think/shared';
+import {
+  decodeFrames,
+  type ConversationTransientFrame,
+  type ConversationTransientSnapshot,
+  type Frame,
+} from '@sync-think/protocol';
+import type { AgentId, Event, EventId, RunId, ThreadId, WorkspaceId } from '@sync-think/shared';
 import { Runtime, type RuntimeStateStore } from './runtime.js';
+import { createDemoRun, type DemoRunState } from './demo-run.js';
+import type { DelegationService } from './delegation-service.js';
 
 function createStore(events: Event[]): RuntimeStateStore {
   return {
@@ -21,6 +28,118 @@ function createStore(events: Event[]): RuntimeStateStore {
 }
 
 describe('run process transient projection', () => {
+  it.each([false, true])(
+    'broadcasts a late child card while preserving a newer snapshot: %s',
+    (newer) => {
+      const parentRunId = 'parent' as RunId;
+      const childRunId = 'child' as RunId;
+      const threadId = 'thread-child' as ThreadId;
+      const runtime = new Runtime({
+        installId: `delegated-projection-${newer}`,
+        allowNoToken: true,
+      });
+      const internal = runtime as unknown as {
+        demoRuns: Map<string, DemoRunState>;
+        delegationService: DelegationService;
+        conversationTransientSubscriptions: {
+          register(streamId: string, subscription: unknown): void;
+        };
+        conversationTransientState: {
+          getSnapshot(threadId: string): ConversationTransientSnapshot | undefined;
+          setSnapshot(threadId: string, snapshot: ConversationTransientSnapshot): void;
+        };
+        publishTransientProjection(event: Event): void;
+      };
+      const parent = createDemoRun(parentRunId, threadId, 'Review');
+      parent.assistantTimeline = [
+        {
+          id: 'delegate',
+          sequence: 1,
+          kind: 'tool',
+          name: 'agent_run',
+          toolCallId: 'delegate',
+          status: 'running',
+          argumentsJson: '{"task":"Review"}',
+        },
+      ];
+      const child = createDemoRun(childRunId, threadId, 'Review');
+      child.delegationParentRunId = parentRunId;
+      child.globalAgentId = 'reviewer' as AgentId;
+      child.globalAgentName = '代码审查员';
+      child.assistantText = 'Final report';
+      internal.demoRuns.set(parentRunId, parent);
+      internal.demoRuns.set(childRunId, child);
+      const snapshot: ConversationTransientSnapshot = {
+        threadId,
+        runId: newer ? ('newer' as RunId) : parentRunId,
+        streamSequence: 0,
+        text: 'Existing answer',
+        updatedAt: 'before',
+      };
+      internal.conversationTransientState.setSnapshot(threadId, snapshot);
+      const writes: Buffer[] = [];
+      internal.conversationTransientSubscriptions.register('stream-child', {
+        socket: {
+          destroyed: false,
+          write(data: Buffer) {
+            writes.push(Buffer.from(data));
+            return true;
+          },
+        },
+        threadId,
+        liveCursor: 0,
+      });
+      const event: Event = {
+        id: 'child-final' as EventId,
+        runId: childRunId,
+        workspaceId: 'workspace' as WorkspaceId,
+        category: 'run',
+        type: 'run.completed',
+        sequence: 10,
+        occurredAt: '2026-09-19T00:00:00Z',
+        payload: { threadId },
+      };
+      internal.publishTransientProjection(event);
+      const frames = decodeFrames(Buffer.concat(writes)).frames;
+      expect(frames).toHaveLength(1);
+      const frame = (frames[0]!.payload as { frame: ConversationTransientFrame }).frame;
+      expect(frame).toMatchObject({
+        runId: parentRunId,
+        kind: 'process',
+        delegatedAgent: {
+          childRunId,
+          parentToolCallId: 'delegate',
+          avatar: '代码',
+          status: 'completed',
+          result: 'Final report',
+        },
+      });
+      expect(internal.delegationService.getState(childRunId)).toMatchObject({
+        status: 'completed',
+      });
+      if (newer) {
+        expect(internal.conversationTransientState.getSnapshot(threadId)).toBe(snapshot);
+      } else {
+        expect(internal.conversationTransientState.getSnapshot(threadId)).toMatchObject({
+          runId: parentRunId,
+          text: 'Existing answer',
+          streamSequence: frame.streamSequence,
+          delegatedAgents: [{ childRunId, status: 'completed' }],
+        });
+      }
+      // Late progress uses canonical terminal state instead of resurrecting the card.
+      writes.length = 0;
+      internal.publishTransientProjection({ ...event, type: 'message.delta', sequence: 11 });
+      const late = (
+        decodeFrames(Buffer.concat(writes)).frames[0]!.payload as {
+          frame: ConversationTransientFrame;
+        }
+      ).frame;
+      expect(late.delegatedAgent).toMatchObject({ status: 'completed', result: 'Final report' });
+      if (newer) expect(internal.conversationTransientState.getSnapshot(threadId)).toBe(snapshot);
+    },
+  );
+
   it('publishes the failed tool projection immediately when its approval expires', () => {
     const runId = 'run-expired-live' as RunId;
     const base = {
@@ -74,10 +193,12 @@ describe('run process transient projection', () => {
     });
     const writes: Buffer[] = [];
     const internal = runtime as unknown as {
-      transientSubscriptions: Map<string, unknown>;
+      conversationTransientSubscriptions: {
+        register(streamId: string, subscription: unknown): void;
+      };
       publishTransientProjection(event: Event): void;
     };
-    internal.transientSubscriptions.set('stream', {
+    internal.conversationTransientSubscriptions.register('stream', {
       socket: {
         destroyed: false,
         write(data: Buffer) {
@@ -126,15 +247,19 @@ describe('run process transient projection', () => {
     });
     const writes: Buffer[] = [];
     const internal = runtime as unknown as {
-      transientSubscriptions: Map<
-        string,
-        {
-          socket: { destroyed: boolean; write(data: Buffer): boolean };
-          threadId: string;
-          liveCursor: number;
-        }
-      >;
-      transientSnapshotByThread: Map<string, { text?: string; process?: unknown }>;
+      conversationTransientSubscriptions: {
+        register(
+          streamId: string,
+          subscription: {
+            socket: { destroyed: boolean; write(data: Buffer): boolean };
+            threadId: string;
+            liveCursor: number;
+          },
+        ): void;
+      };
+      conversationTransientState: {
+        getSnapshot(threadId: string): { text?: string; process?: unknown } | undefined;
+      };
       updateTransientTextSnapshot(input: {
         threadId: string;
         runId: RunId;
@@ -144,7 +269,7 @@ describe('run process transient projection', () => {
       }): void;
       publishTransientProjection(event: Event): void;
     };
-    internal.transientSubscriptions.set('stream-live', {
+    internal.conversationTransientSubscriptions.register('stream-live', {
       socket: {
         destroyed: false,
         write(data: Buffer) {
@@ -170,7 +295,7 @@ describe('run process transient projection', () => {
       reference: { source: 'event', id: event.id, path: ['arguments', 'content'] },
     });
     expect((event.payload.arguments as { content: string }).content).toBe('x'.repeat(20_000));
-    expect(internal.transientSnapshotByThread.get('thread-live')?.process).toEqual(
+    expect(internal.conversationTransientState.getSnapshot('thread-live')?.process).toEqual(
       transient.process,
     );
 
@@ -181,7 +306,7 @@ describe('run process transient projection', () => {
       text: 'answer',
       updatedAt: '2026-07-27T00:00:01.000Z',
     });
-    expect(internal.transientSnapshotByThread.get('thread-live')).toMatchObject({
+    expect(internal.conversationTransientState.getSnapshot('thread-live')).toMatchObject({
       text: 'answer',
       process: transient.process,
     });

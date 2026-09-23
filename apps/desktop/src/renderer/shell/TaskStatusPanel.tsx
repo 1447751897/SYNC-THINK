@@ -789,11 +789,9 @@ export function TaskStatusPanel({
 
   useEffect(() => {
     void refreshGit();
-    const interval = window.setInterval(() => void refreshGit(), 5_000);
     const onFocus = () => void refreshGit();
     window.addEventListener('focus', onFocus);
     return () => {
-      window.clearInterval(interval);
       window.removeEventListener('focus', onFocus);
     };
   }, [refreshGit]);

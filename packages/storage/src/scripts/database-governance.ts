@@ -1,5 +1,6 @@
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { BINARY_BYTE_UNITS, scaleBinaryBytes } from '@sync-think/shared';
 import { openDatabaseAsync } from '../connection.js';
 import {
   DEFAULT_EVENT_PAYLOAD_BACKFILL_MINIMUM_BYTES,
@@ -600,17 +601,10 @@ export function parseDatabaseGovernanceCliOptions(
   };
 }
 
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  const units = ['KiB', 'MiB', 'GiB', 'TiB'];
-  let value = bytes;
-  let unit = 'B';
-  for (const candidate of units) {
-    value /= 1024;
-    unit = candidate;
-    if (value < 1024) break;
-  }
-  return `${value.toFixed(2)} ${unit}`;
+export function formatDatabaseBytes(bytes: number): string {
+  const scaled = scaleBinaryBytes(bytes);
+  if (scaled.unitIndex === 0) return `${scaled.value} B`;
+  return `${scaled.value.toFixed(2)} ${BINARY_BYTE_UNITS[scaled.unitIndex]}`;
 }
 
 function printHumanReadable(result: ReturnType<typeof inspectDatabaseGovernance>): void {
@@ -618,13 +612,13 @@ function printHumanReadable(result: ReturnType<typeof inspectDatabaseGovernance>
   console.log(`Database governance report v${report.version} (${report.mode}, read-only)`);
   console.log(`Database: ${report.database.path}`);
   console.log(
-    `Size: ${formatBytes(report.database.fileBytes)}; WAL: ${formatBytes(report.database.walBytes)}; pages: ${report.database.pageCount}; freelist: ${report.database.freelistCount}`,
+    `Size: ${formatDatabaseBytes(report.database.fileBytes)}; WAL: ${formatDatabaseBytes(report.database.walBytes)}; pages: ${report.database.pageCount}; freelist: ${report.database.freelistCount}`,
   );
   console.log(
     `Event: ${report.events.total}; task-scoped: ${report.events.taskScopedCount}; taskless: ${report.events.tasklessCount}; Checkpoint: ${report.checkpoints.count}`,
   );
   console.log(
-    `Backups: ${report.backups.count}; total: ${formatBytes(report.backups.totalBytes)}; directory: ${report.backups.directory}`,
+    `Backups: ${report.backups.count}; total: ${formatDatabaseBytes(report.backups.totalBytes)}; directory: ${report.backups.directory}`,
   );
   console.log('Bounded Event type sample:');
   for (const row of report.events.sample.byType.slice(0, 8)) {
@@ -639,7 +633,7 @@ function printHumanReadable(result: ReturnType<typeof inspectDatabaseGovernance>
   console.log('Dry-run maintenance plan:');
   for (const action of maintenancePlan.actions) {
     const bytes =
-      action.estimatedBytes === null ? 'unknown bytes' : formatBytes(action.estimatedBytes);
+      action.estimatedBytes === null ? 'unknown bytes' : formatDatabaseBytes(action.estimatedBytes);
     console.log(
       `- [${action.disposition}] ${action.id}: ${action.estimatedRows} rows/items, ${bytes}`,
     );
@@ -648,7 +642,7 @@ function printHumanReadable(result: ReturnType<typeof inspectDatabaseGovernance>
     console.log('Largest Event payload groups:');
     for (const row of report.events.topPayloadBytes.slice(0, 10)) {
       console.log(
-        `- ${row.category}/${row.type}: ${row.count} events, ${formatBytes(row.payloadBytes)}`,
+        `- ${row.category}/${row.type}: ${row.count} events, ${formatDatabaseBytes(row.payloadBytes)}`,
       );
     }
   }
@@ -728,7 +722,7 @@ async function prepareEventArchive(options: PrepareEventArchiveCliOptions): Prom
   console.log(`Event retention archive manifest prepared (read-only): ${options.manifestPath}`);
   console.log(`Archive: ${manifest.archiveId}`);
   console.log(`Candidates: ${manifest.totals.rowCount}`);
-  console.log(`Payload/full-row bytes: ${formatBytes(manifest.totals.payloadBytes)}/${formatBytes(manifest.totals.fullRowBytes)}`);
+  console.log(`Payload/full-row bytes: ${formatDatabaseBytes(manifest.totals.payloadBytes)}/${formatDatabaseBytes(manifest.totals.fullRowBytes)}`);
   console.log(`Protected Events: ${manifest.protectedEventCount}`);
   console.log(`Manifest SHA-256: ${manifest.manifestHash}`);
   console.log(`Confirmation token: ${manifest.confirmationToken}`);
@@ -842,10 +836,10 @@ async function prepareBackfillPlan(options: PrepareBackfillPlanCliOptions): Prom
       `Matched/candidates/already externalized/below threshold: ${plan.scan.matchedEventCount}/${plan.scan.inlineCandidateCount}/${plan.scan.alreadyExternalizedCount}/${plan.scan.belowThresholdCount}`,
     );
     console.log(
-      `Estimated logical SQLite payload reduction: ${formatBytes(plan.estimates.logicalSqlitePayloadBytesReduced)}`,
+      `Estimated logical SQLite payload reduction: ${formatDatabaseBytes(plan.estimates.logicalSqlitePayloadBytesReduced)}`,
     );
     console.log(
-      `Estimated new sidecar bytes: ${formatBytes(plan.estimates.sidecarNewStoredBytes)} (${formatBytes(plan.estimates.sidecarUniqueStoredBytes)} unique referenced bytes)`,
+      `Estimated new sidecar bytes: ${formatDatabaseBytes(plan.estimates.sidecarNewStoredBytes)} (${formatDatabaseBytes(plan.estimates.sidecarUniqueStoredBytes)} unique referenced bytes)`,
     );
     console.log(`Source selection SHA-256: ${plan.sourceSelectionHash}`);
     console.log(`Destination reference SHA-256: ${plan.scan.destinationReferenceHash}`);

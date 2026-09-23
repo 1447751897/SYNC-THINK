@@ -7,6 +7,8 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { runInNewContext } from 'node:vm';
+import { transform } from 'esbuild';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   SHELL_BUDGET,
@@ -33,6 +35,19 @@ afterEach(() => {
 });
 
 describe('renderer build isolation and budget', () => {
+  it('keeps Chinese and emoji text intact without ASCII escape overhead', async () => {
+    const options = shellBuildOptions([], desktopRoot);
+    const text = '智能体已停止，执行记录已保留。🔎';
+    const source = `globalThis.message = ${JSON.stringify(text)}`;
+    const compiled = await transform(source, { minify: true, charset: options.charset });
+    const ascii = await transform(source, { minify: true, charset: 'ascii' });
+    const context: { message?: string } = {};
+    runInNewContext(compiled.code, context);
+    expect(context.message).toBe(text);
+    expect(Buffer.byteLength(compiled.code)).toBeLessThan(Buffer.byteLength(ascii.code));
+    expect(readFileSync(join(desktopRoot, 'src/renderer/shell/index.html'), 'utf8')).toContain('charset="UTF-8"');
+  });
+
   it('uses production by default and isolates development and QA output', () => {
     const production = shellBuildOptions([], desktopRoot);
     expect(production.mode).toBe('production');

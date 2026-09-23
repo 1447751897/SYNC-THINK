@@ -16,6 +16,7 @@ export interface BrowserWebviewElement extends HTMLElement {
   executeJavaScript(code: string, userGesture?: boolean): Promise<unknown>;
   /** Electron webview guest id — main 进程用它 capturePage（沙箱渲染层拿不到 NativeImage）。 */
   getWebContentsId(): number;
+  isLoading?(): boolean;
 }
 
 // Multiple browser panes may stay mounted at once. Keep every live instance and
@@ -23,6 +24,12 @@ export interface BrowserWebviewElement extends HTMLElement {
 const registeredWebviews: BrowserWebviewElement[] = [];
 const intendedUrls = new WeakMap<BrowserWebviewElement, string>();
 let activeWebview: BrowserWebviewElement | null = null;
+const ownerWebviews = new Map<string, WeakRef<BrowserWebviewElement> | null>();
+
+function bindOwner(ownerId: string, view: BrowserWebviewElement | null): void {
+  ownerWebviews.set(ownerId, view ? new WeakRef(view) : null);
+  if (ownerWebviews.size > 256) ownerWebviews.delete(ownerWebviews.keys().next().value!);
+}
 
 function normalizeGuestUrl(value: string): string {
   return value.trim().replace(/\/+$/, '').toLowerCase();
@@ -49,6 +56,7 @@ export function registerBrowserWebview(
   if (!view) {
     registeredWebviews.splice(0, registeredWebviews.length);
     activeWebview = null;
+    ownerWebviews.clear();
     return;
   }
   if (!registeredWebviews.includes(view)) registeredWebviews.push(view);
@@ -78,8 +86,22 @@ export function unregisterBrowserWebview(view: BrowserWebviewElement | null): vo
   if (activeWebview === view) activeWebview = registeredWebviews.at(-1) ?? null;
 }
 
+export function getOwnedBrowserWebview(ownerId: string): BrowserWebviewElement | undefined {
+  const view = ownerWebviews.get(ownerId)?.deref();
+  return view && registeredWebviews.includes(view) ? view : undefined;
+}
+
 export function getActiveBrowserWebview(): BrowserWebviewElement | null {
   return activeWebview;
+}
+
+/** Navigate the task's existing guest so cookies survive same-task navigation. */
+export function navigateOwnedBrowserWebview(ownerId: string, url: string): boolean {
+  const view = ownerWebviews.get(ownerId)?.deref();
+  if (!view || !registeredWebviews.includes(view) || !/^https?:\/\//i.test(url)) return false;
+  intendedUrls.set(view, url);
+  view.src = url;
+  return true;
 }
 
 export interface BrowserCommandOutcome {
@@ -270,6 +292,7 @@ function buildReadScript(args: Record<string, unknown>): string {
 export interface ExecuteBrowserCommandInput {
   action: string;
   args: Record<string, unknown>;
+  ownerId?: string;
   /** 截图保存目标（绑定项目文件夹的绝对路径）。 */
   projectFolder?: string;
   /** 主进程截图落盘桥（preload saveBrowserScreenshot：capturePage + 写文件都在 main）。 */
@@ -300,17 +323,29 @@ export async function executeBrowserCommand(
     if (!/^https?:\/\//i.test(url)) {
       return { ok: false, error: 'browser_open: 需要有效的 http(s) URL。' };
     }
-    const matching = findRegisteredBrowserWebview(url);
-    if (matching) activateBrowserWebview(matching);
-    else if (activeWebview) activeWebview = null;
+    const owned = input.ownerId ? ownerWebviews.get(input.ownerId)?.deref() : undefined;
+    if (input.ownerId) bindOwner(input.ownerId, null);
+    const matching = await waitForBrowserPage(
+      url,
+      owned && registeredWebviews.includes(owned) ? owned : undefined,
+    );
+    if (!matching)
+      return { ok: false, error: 'browser_open: 目标页面尚未就绪，请检查浏览器标签页后重试。' };
+    activateBrowserWebview(matching);
+    if (input.ownerId) bindOwner(input.ownerId, matching);
     return {
       ok: true,
-      resultJson: clampResult({ ok: true, opened: true, url }),
+      resultJson: clampResult({ ok: true, opened: true, url: currentGuestUrl(matching) }),
     };
   }
 
-  const view = await waitForActiveWebview();
-  if (!view) return { ok: false, error: PANEL_NOT_READY_ERROR };
+  const view =
+    input.ownerId && ownerWebviews.has(input.ownerId)
+      ? ownerWebviews.get(input.ownerId)?.deref()
+      : await waitForActiveWebview();
+  if (!view || !registeredWebviews.includes(view))
+    return { ok: false, error: PANEL_NOT_READY_ERROR };
+  if (input.ownerId) bindOwner(input.ownerId, view);
 
   try {
     if (input.action === 'navigate') {
@@ -422,13 +457,43 @@ export async function executeBrowserCommand(
   }
 }
 
+/** Do not report navigation success until the requested guest has actually loaded. */
+async function waitForBrowserPage(
+  url: string,
+  owned?: BrowserWebviewElement,
+  timeoutMs = 10_000,
+): Promise<BrowserWebviewElement | null> {
+  const deadline = Date.now() + timeoutMs;
+  const loading = new WeakSet<BrowserWebviewElement>();
+  while (Date.now() < deadline) {
+    const view = owned ?? findRegisteredBrowserWebview(url);
+    if (view) {
+      try {
+        const isLoading = view.isLoading?.() ?? false;
+        if (isLoading) loading.add(view);
+        const actual = currentGuestUrl(view);
+        if (
+          !isLoading &&
+          /^https?:\/\//i.test(actual) &&
+          (guestUrlsMatch(actual, url) || loading.has(view))
+        )
+          return view;
+      } catch {
+        /* guest is attaching */
+      }
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+  }
+  return null;
+}
+
 /** The BrowserPanel may be mounted in response to the request event itself. */
 async function waitForActiveWebview(timeoutMs = 5_000): Promise<BrowserWebviewElement | null> {
   const deadline = Date.now() + timeoutMs;
   const setTimer =
     typeof globalThis.setTimeout === 'function'
       ? globalThis.setTimeout.bind(globalThis)
-      : ((resolve: () => void, delay: number) => setTimeout(resolve, delay));
+      : (resolve: () => void, delay: number) => setTimeout(resolve, delay);
   while (!activeWebview && Date.now() < deadline) {
     await new Promise<void>((resolve) => setTimer(resolve, 50));
   }

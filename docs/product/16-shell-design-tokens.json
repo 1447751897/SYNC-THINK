@@ -88,14 +88,14 @@
       "id": "surfaces",
       "prefix": "--color-",
       "utilities": true,
-      "_note": "NewMax 1.1.14 surface stack. Light uses its warm four-step ramp. Dark follows the current DS variables exactly: surface-100 #191a1a, app background surface-200 #1e1f1f, panels surface-300 #252726, and selected/hovered surface-400 #2a2d2b. The window gutter stays on the app background instead of becoming a bright gray band.",
+      "_note": "Be UI neutral surface ramp for the default light and dark shell; custom and named skins may override it.",
       "tokens": {
-        "page": ["#f2eee6", "#1e1f1f"],
-        "page-gutter": ["#f2eee6", "#1e1f1f"],
-        "sidebar": ["#f6f4ef", "#252726"],
-        "surface": ["#faf9f5", "#252726"],
-        "elevated": ["#f6f4ef", "#191a1a"],
-        "overlay": ["#ffffff", "#2a2d2b"]
+        "page": ["#fcfcfc", "#151515"],
+        "page-gutter": ["#fcfcfc", "#151515"],
+        "sidebar": ["#fcfcfc", "#151515"],
+        "surface": ["#fcfcfc", "#151515"],
+        "elevated": ["#f5f5f5", "#1c1c1c"],
+        "overlay": ["#ffffff", "#242424"]
       }
     },
 
@@ -105,15 +105,15 @@
       "utilities": true,
       "_note": "Stage sub-surfaces. NewMax keeps the stage and tab strip on surface-200, raises active tabs to surface-300, and reserves surface-400 for selected rows and inset sections. Workbench chrome follows NewMax --ds-workbench-surface / --ds-workbench-content-surface / --ds-tab-strip-surface: default themes fall back to surface-200; image and color skins write a distinct ramp.",
       "tokens": {
-        "panel": ["#faf9f5", "#1e1f1f"],
-        "chat": ["#faf9f5", "#1e1f1f"],
-        "recent": ["#f2eee6", "#2a2d2b"],
-        "stage-tabs": ["#f6f4ef", "#1e1f1f"],
-        "workbench": ["#faf9f5", "#1e1f1f"],
-        "workbench-content": ["#faf9f5", "#1e1f1f"],
-        "tab-strip": ["#faf9f5", "#1e1f1f"],
-        "tab-active-border": ["#e7e4db", "rgba(255, 255, 255, 0.08)"],
-        "tab-active-fill": ["#d5d1c6", "#252726"]
+        "panel": ["#fcfcfc", "#151515"],
+        "chat": ["#fcfcfc", "#151515"],
+        "recent": ["#f5f5f5", "#1c1c1c"],
+        "stage-tabs": ["#fcfcfc", "#151515"],
+        "workbench": ["#fcfcfc", "#151515"],
+        "workbench-content": ["#fcfcfc", "#151515"],
+        "tab-strip": ["#fcfcfc", "#151515"],
+        "tab-active-border": ["#0b0b0b1f", "#ffffff1a"],
+        "tab-active-fill": ["#f5f5f5", "#1c1c1c"]
       }
     },
 
@@ -240,10 +240,10 @@
         "random-light-accent": "#4a7c6b",
         "random-dark-background": "#141716",
         "random-dark-accent": "#7ab89e",
-        "default-light-background": "#faf8f3",
-        "default-light-accent": "#2d4739",
-        "default-dark-background": "#1e1f1f",
-        "default-dark-accent": "#36d385",
+        "default-light-background": "#fcfcfc",
+        "default-light-accent": "#0285f7",
+        "default-dark-background": "#151515",
+        "default-dark-accent": "#0285f7",
         "azure-light-background": "#fbfbfb",
         "azure-light-accent": "#0a64d6",
         "azure-dark-background": "#232427",
@@ -268,8 +268,8 @@
       "prefix": "--color-",
       "utilities": true,
       "tokens": {
-        "border": ["#e7e4db", "rgba(255, 255, 255, 0.08)"],
-        "border-strong": ["#d5d1c6", "rgba(255, 255, 255, 0.14)"]
+        "border": ["#0b0b0b0f", "#ffffff0d"],
+        "border-strong": ["#0b0b0b1f", "#ffffff1a"]
       }
     },
 
@@ -278,9 +278,9 @@
       "prefix": "--color-",
       "utilities": true,
       "tokens": {
-        "text": ["#181b19", "rgba(255, 255, 255, 0.9)"],
-        "text-secondary": ["#666763", "rgba(255, 255, 255, 0.5)"],
-        "text-faint": ["#8c8c87", "rgba(255, 255, 255, 0.38)"],
+        "text": ["#0b0b0b", "#f2f2f2"],
+        "text-secondary": ["#636363", "#868686"],
+        "text-faint": ["#868686", "#777777"],
         "text-inverse": ["#ffffff", "#ffffff"]
       }
     },
@@ -290,15 +290,15 @@
       "prefix": "--color-",
       "utilities": true,
       "_notes": {
-        "accent-fg": "Foreground for text/icons sitting on --color-accent. Dark flips this to a near-black because the dark accent is a bright mint and white text on it fails contrast."
+        "accent-fg": "White text and icons on the default Be UI blue accent in both themes."
       },
       "tokens": {
-        "accent": ["#2f9b5b", "#36d385"],
-        "accent-soft": ["#e6f5ec", "rgba(54, 211, 133, 0.08)"],
-        "accent-text": ["#1f6b3f", "#36d385"],
-        "accent-fg": ["#ffffff", "rgba(0, 0, 0, 0.9)"],
-        "settings-action": ["#2d4739", "#36d385"],
-        "settings-action-fg": ["#ffffff", "rgba(0, 0, 0, 0.9)"]
+        "accent": ["#0285f7", "#0285f7"],
+        "accent-soft": ["rgba(2, 133, 247, 0.10)", "rgba(2, 133, 247, 0.18)"],
+        "accent-text": ["#0065bd", "#72bdff"],
+        "accent-fg": ["#ffffff", "#ffffff"],
+        "settings-action": ["#0285f7", "#0285f7"],
+        "settings-action-fg": ["#ffffff", "#ffffff"]
       }
     },
 
@@ -308,13 +308,13 @@
       "utilities": true,
       "_note": "NewMax interaction overlays with stable semantic control, selection and focus roles for future data-skin themes.",
       "tokens": {
-        "hover": ["#efece3", "rgba(168, 184, 176, 0.08)"],
-        "active": ["#f2eee6", "rgba(168, 184, 176, 0.16)"],
-        "control": ["#ffffff", "#252726"],
-        "control-hover": ["#efece3", "#2a2d2b"],
-        "selection": ["#f2eee6", "#2a2d2b"],
-        "selection-border": ["#2f9b5b", "#36d385"],
-        "focus-ring": ["#247648", "#36d385"]
+        "hover": ["rgba(11, 11, 11, 0.05)", "rgba(242, 242, 242, 0.05)"],
+        "active": ["rgba(11, 11, 11, 0.08)", "rgba(242, 242, 242, 0.08)"],
+        "control": ["#ffffff", "#1c1c1c"],
+        "control-hover": ["#f5f5f5", "#242424"],
+        "selection": ["#e8f4ff", "#203040"],
+        "selection-border": ["#0285f7", "#0285f7"],
+        "focus-ring": ["#0285f7", "#72bdff"]
       }
     },
 
@@ -322,12 +322,12 @@
       "id": "status",
       "prefix": "--color-",
       "utilities": true,
-      "_note": "Status colors follow the theme: dark uses higher-luminance variants to\nhold contrast on the dark surfaces. `success` references accent directly\nso the two greens cannot drift apart across a theme switch.",
+      "_note": "Be UI semantic status colors remain distinct from the blue primary action.",
       "tokens": {
-        "success": ["#2f9b5b", "#4ade80"],
-        "error": ["#c4453d", "#e56555"],
-        "warning": ["#b07d2a", "#e0a830"],
-        "info": ["#3568a8", "#5b93d6"]
+        "success": ["#00a85f", "#00bd6c"],
+        "error": ["#db3038", "#ee343b"],
+        "warning": ["#a96f00", "#f5a500"],
+        "info": ["#008f91", "#00dadb"]
       }
     },
 
@@ -382,34 +382,34 @@
       "utilities": true,
       "_note": "Capability center: a light, neutral governance workbench by default.\nTODO(batch-c): collapse this 50-token sub-palette into var(--color-*)\naliases, keeping only the handful of genuinely distinct values.",
       "tokens": {
-        "bg": ["#f1f5f2", "#1e1f1f"],
-        "surface": ["#ffffff", "#252726"],
-        "surface-raised": ["#f8faf8", "#2a2d2b"],
-        "surface-soft": ["#eef2ef", "#191a1a"],
-        "border": ["#d2ddd5", "rgba(255, 255, 255, 0.08)"],
-        "border-strong": ["#b8c8bd", "rgba(255, 255, 255, 0.14)"],
-        "text": ["#18231e", "rgba(255, 255, 255, 0.9)"],
-        "muted": ["#4e5f55", "rgba(255, 255, 255, 0.5)"],
-        "faint": ["#687a6e", "rgba(255, 255, 255, 0.38)"],
+        "bg": ["#fcfcfc", "#151515"],
+        "surface": ["#ffffff", "#1c1c1c"],
+        "surface-raised": ["#f5f5f5", "#242424"],
+        "surface-soft": ["#f5f5f5", "#1c1c1c"],
+        "border": ["#0b0b0b0f", "#ffffff0d"],
+        "border-strong": ["#0b0b0b1f", "#ffffff1a"],
+        "text": ["#0b0b0b", "#f2f2f2"],
+        "muted": ["#636363", "#868686"],
+        "faint": ["#868686", "#777777"],
         "green": ["#218a55", "#36d385"],
         "green-deep": ["#176c43", "#1da86c"],
         "yellow": ["#9b681a", "#e8b54a"],
         "red": ["#bd4f45", "#ee6b5d"],
-        "surface-deep": ["#e9eeeb", "#191a1a"],
-        "surface-selected": ["#e3ece7", "#2a2d2b"],
+        "surface-deep": ["#f5f5f5", "#151515"],
+        "surface-selected": ["#e8f4ff", "#203040"],
         "accent-fg": ["#ffffff", "rgba(0, 0, 0, 0.9)"],
         "green-bright": ["#18784a", "#4ade80"],
-        "text-secondary": ["#405048", "rgba(255, 255, 255, 0.7)"],
-        "popover": ["#ffffff", "#252726"],
-        "toolbar": ["#e9efeb", "#1e1f1f"],
-        "rail": ["#e2eae5", "#191a1a"],
-        "search": ["#e0e9e3", "#252726"],
-        "search-hover": ["#d9e4dc", "#2a2d2b"],
-        "search-focus": ["#ffffff", "#2a2d2b"],
-        "placeholder": ["#60736a", "rgba(255, 255, 255, 0.38)"],
+        "text-secondary": ["#636363", "#868686"],
+        "popover": ["#ffffff", "#242424"],
+        "toolbar": ["#f5f5f5", "#1c1c1c"],
+        "rail": ["#f5f5f5", "#151515"],
+        "search": ["#f5f5f5", "#1c1c1c"],
+        "search-hover": ["#eeeeee", "#242424"],
+        "search-focus": ["#ffffff", "#242424"],
+        "placeholder": ["#868686", "#777777"],
         "mcp": ["#356cad", "#83b5ff"],
         "stat-label": ["#34463b", "#d7dcda"],
-        "meter-track": ["#d3dfd7", "#2a2d2b"],
+        "meter-track": ["#eeeeee", "#242424"],
         "meter-green": ["#218a55", "#27c77d"],
         "meter-yellow": ["#c18a2f", "#f0b04d"],
         "meter-red": ["#c95a4f", "#ed6d5d"],
@@ -420,19 +420,19 @@
         "toggle-track": ["#aabbb0", "#2a2d2b"],
         "toggle-thumb": ["#ffffff", "#a2aaa7"],
         "toggle-active-thumb": ["#ffffff", "#dfffee"],
-        "form-bg": ["#ffffff", "#191a1a"],
-        "form-focus": ["#fbfdfc", "#252726"],
-        "form-readonly": ["#f0f4f1", "#191a1a"],
-        "code-text": ["#26372e", "rgba(255, 255, 255, 0.9)"],
-        "trust-bg": ["#e4ebe7", "#2a2d2b"],
-        "hover": ["#edf2ef", "rgba(168, 184, 176, 0.08)"],
-        "active": ["#e3ece7", "rgba(168, 184, 176, 0.16)"],
-        "control": ["#ffffff", "rgba(168, 184, 176, 0.08)"],
-        "row": ["#ffffff", "#252726"],
-        "form": ["#ffffff", "#191a1a"],
+        "form-bg": ["#ffffff", "#1c1c1c"],
+        "form-focus": ["#fcfcfc", "#242424"],
+        "form-readonly": ["#f5f5f5", "#151515"],
+        "code-text": ["#0b0b0b", "#f2f2f2"],
+        "trust-bg": ["#f5f5f5", "#242424"],
+        "hover": ["rgba(11, 11, 11, 0.05)", "rgba(242, 242, 242, 0.05)"],
+        "active": ["rgba(11, 11, 11, 0.08)", "rgba(242, 242, 242, 0.08)"],
+        "control": ["#ffffff", "#242424"],
+        "row": ["#ffffff", "#1c1c1c"],
+        "form": ["#ffffff", "#1c1c1c"],
         "overlay-border": ["rgba(24, 35, 30, 0.12)", "rgba(255, 255, 255, 0.08)"],
         "shadow": ["rgba(24, 35, 30, 0.16)", "rgba(0, 0, 0, 0.46)"],
-        "divider": ["#dce6df", "rgba(255, 255, 255, 0.045)"],
+        "divider": ["#0b0b0b0f", "#ffffff0d"],
         "dialog-overlay": ["rgba(24, 35, 30, 0.28)", "rgba(5, 7, 7, 0.68)"],
         "inset-highlight": ["rgba(255, 255, 255, 0.82)", "rgba(255, 255, 255, 0.04)"]
       }

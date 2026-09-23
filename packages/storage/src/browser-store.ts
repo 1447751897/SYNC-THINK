@@ -5,6 +5,7 @@ import {
   BROWSER_RECORDING_MAX_STEPS,
   BROWSER_RECORDING_MAX_TEXT_CHARS,
   BROWSER_RECORDING_MAX_URL_CHARS,
+  hasAsciiControlCharacter,
   type BrowserRecordingLocator,
   type BrowserRecordingStatus,
   type BrowserRecordingStepInput,
@@ -123,6 +124,7 @@ export type BrowserAutomationTaskStatus =
 export type BrowserWorkflowDraftStatus = 'editing' | 'pending_review' | 'approved' | 'rejected';
 
 export interface BrowserAutomationTaskRecord {
+  workspaceId?: string;
   id: string;
   profileId: string;
   name: string;
@@ -176,6 +178,53 @@ export interface BrowserWorkflowReviewRecord {
 export interface BrowserWorkflowReviewPage {
   reviews: BrowserWorkflowReviewRecord[];
   truncated: boolean;
+}
+
+export type BrowserWorkflowRunTrigger = 'manual' | 'schedule' | 'chat';
+export type BrowserWorkflowRunStatus = 'running' | 'succeeded' | 'failed' | 'cancelled';
+
+export interface BrowserWorkflowRunStepRecord {
+  runId: string;
+  sequence: number;
+  actionKind: string;
+  status: 'succeeded' | 'failed';
+  outputUrl?: string;
+  outputTitle?: string;
+  screenshotRelativePath?: string;
+  screenshotEmbedUrl?: string;
+  screenshotErrorCode?: string;
+  errorCode?: string;
+  error?: string;
+  startedAt: string;
+  completedAt: string;
+}
+
+export interface BrowserWorkflowRunRecord {
+  id: string;
+  taskId: string;
+  versionId: string;
+  trigger: BrowserWorkflowRunTrigger;
+  status: BrowserWorkflowRunStatus;
+  stepCount: number;
+  executedStepCount: number;
+  failedStepSequence?: number;
+  errorCode?: string;
+  error?: string;
+  startedAt: string;
+  completedAt?: string;
+  updatedAt: string;
+  steps: BrowserWorkflowRunStepRecord[];
+}
+
+export interface BrowserWorkflowScheduleRecord {
+  taskId: string;
+  enabled: boolean;
+  intervalMinutes: number;
+  nextRunAt?: string;
+  lastRunAt?: string;
+  revision: number;
+  createdAt: string;
+  updatedAt: string;
 }
 
 interface BrowserCommandRow {
@@ -272,6 +321,7 @@ interface BrowserRecordingStepRow {
 }
 
 interface BrowserAutomationTaskRow {
+  workspace_id: string | null;
   id: string;
   profile_id: string;
   name: string;
@@ -320,6 +370,49 @@ interface BrowserWorkflowReviewRow {
   decision: string;
   note: string | null;
   created_at: string;
+}
+
+interface BrowserWorkflowRunRow {
+  id: string;
+  task_id: string;
+  version_id: string;
+  trigger: string;
+  status: string;
+  step_count: number;
+  executed_step_count: number;
+  failed_step_sequence: number | null;
+  error_code: string | null;
+  error: string | null;
+  started_at: string;
+  completed_at: string | null;
+  updated_at: string;
+}
+
+interface BrowserWorkflowRunStepRow {
+  run_id: string;
+  sequence: number;
+  action_kind: string;
+  status: string;
+  output_url: string | null;
+  output_title: string | null;
+  screenshot_relative_path: string | null;
+  screenshot_embed_url: string | null;
+  screenshot_error_code: string | null;
+  error_code: string | null;
+  error: string | null;
+  started_at: string;
+  completed_at: string;
+}
+
+interface BrowserWorkflowScheduleRow {
+  task_id: string;
+  enabled: number;
+  interval_minutes: number;
+  next_run_at: string | null;
+  last_run_at: string | null;
+  revision: number;
+  created_at: string;
+  updated_at: string;
 }
 
 export class SqliteBrowserStore {
@@ -872,6 +965,7 @@ export class SqliteBrowserStore {
   }
 
   createAutomationTaskDraft(input: {
+    workspaceId?: string;
     id?: string;
     draftId?: string;
     profileId: string;
@@ -912,9 +1006,108 @@ export class SqliteBrowserStore {
              ) VALUES (?, ?, NULL, 'editing', 1, '[]', 0, ?, ?, NULL, NULL)`,
           )
           .run(draftId, id, now, now);
+        if (input.workspaceId) this.raw.prepare('UPDATE browser_automation_task SET workspace_id = ? WHERE id = ?')
+          .run(normalizeId(input.workspaceId, 'browser.workspace_id_invalid'), id);
         return {
           task: this.getRequiredAutomationTask(id),
           draft: this.getRequiredWorkflowDraft(draftId),
+        };
+      })
+      .immediate();
+  }
+
+  importChatAutomationTask(input: {
+    workspaceId?: string;
+    id?: string;
+    draftId?: string;
+    profileId: string;
+    name: string;
+    instruction: string;
+    startUrl: string;
+    steps: BrowserRecordingStepInput[];
+    publish: boolean;
+    source?: BrowserAutomationSource;
+    now?: string;
+  }): {
+    task: BrowserAutomationTaskRecord;
+    draft: BrowserWorkflowDraftRecord;
+    version?: BrowserWorkflowVersionRecord;
+  } {
+    const id = normalizeId(input.id ?? `browser-task-${randomUUID()}`, 'browser.task_id_invalid');
+    const draftId = normalizeId(
+      input.draftId ?? `browser-draft-${randomUUID()}`,
+      'browser.workflow_draft_id_invalid',
+    );
+    const profileId = normalizeId(input.profileId, 'browser.profile_id_invalid');
+    const name = normalizeAutomationName(input.name);
+    const instruction = normalizeAutomationInstruction(input.instruction);
+    const startUrl = normalizeRecordingUrl(input.startUrl);
+    const steps = input.steps.map(normalizeRecordingStep);
+    if (steps.length < 1) throw new Error('browser.workflow_steps_empty');
+    if (steps.length > BROWSER_RECORDING_MAX_STEPS) {
+      throw new Error('browser.recording_step_limit_reached');
+    }
+    const stepsJson = boundedJson(steps, 'browser.workflow_steps_too_large');
+    const source = normalizeAutomationSource(input.source ?? 'ai');
+    const now = normalizeNow(input.now);
+    return this.raw
+      .transaction(() => {
+        this.getRequiredProfile(profileId);
+        const versionId = input.publish ? `browser-version-${randomUUID()}` : undefined;
+        this.raw
+          .prepare(
+            `INSERT INTO browser_automation_task (
+               id, profile_id, name, instruction, start_url, source, status, revision,
+               current_draft_id, published_version_id, last_run_at, success_count,
+               failure_count, created_at, updated_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, NULL, 0, 0, ?, ?)`,
+          )
+          .run(
+            id,
+            profileId,
+            name,
+            instruction,
+            startUrl,
+            source,
+            input.publish ? 'enabled' : 'draft',
+            draftId,
+            versionId ?? null,
+            now,
+            now,
+          );
+        this.raw
+          .prepare(
+            `INSERT INTO browser_workflow_draft (
+               id, task_id, recording_id, status, revision, steps_json, step_count,
+               created_at, updated_at, submitted_at, reviewed_at
+             ) VALUES (?, ?, NULL, ?, 1, ?, ?, ?, ?, NULL, ?)`,
+          )
+          .run(
+            draftId,
+            id,
+            input.publish ? 'approved' : 'editing',
+            stepsJson,
+            steps.length,
+            now,
+            now,
+            input.publish ? now : null,
+          );
+        if (versionId) {
+          this.raw
+            .prepare(
+              `INSERT INTO browser_workflow_version (
+                 id, task_id, draft_id, version_number, steps_json, step_count,
+                 created_at, published_at
+               ) VALUES (?, ?, ?, 1, ?, ?, ?, ?)`,
+            )
+            .run(versionId, id, draftId, stepsJson, steps.length, now, now);
+        }
+        if (input.workspaceId) this.raw.prepare('UPDATE browser_automation_task SET workspace_id = ? WHERE id = ?')
+          .run(normalizeId(input.workspaceId, 'browser.workspace_id_invalid'), id);
+        return {
+          task: this.getRequiredAutomationTask(id),
+          draft: this.getRequiredWorkflowDraft(draftId),
+          ...(versionId ? { version: this.getRequiredWorkflowVersion(versionId) } : {}),
         };
       })
       .immediate();
@@ -983,8 +1176,21 @@ export class SqliteBrowserStore {
     );
   }
 
+  assignAutomationTaskWorkspace(input: { taskId: string; workspaceId: string | null; expectedRevision: number }): BrowserAutomationTaskRecord {
+    const id = normalizeId(input.taskId, 'browser.task_id_invalid');
+    const workspaceId = input.workspaceId === null ? null : normalizeId(input.workspaceId, 'browser.workspace_id_invalid');
+    return this.raw.transaction(() => {
+      const task = this.getRequiredAutomationTask(id);
+      if (task.revision !== normalizeRevision(input.expectedRevision)) throw new Error('browser.task_revision_conflict');
+      this.raw.prepare('UPDATE browser_automation_task SET workspace_id = ?, revision = revision + 1, updated_at = ? WHERE id = ?')
+        .run(workspaceId, new Date().toISOString(), id);
+      return this.getRequiredAutomationTask(id);
+    }).immediate();
+  }
+
   listAutomationTasks(
     input: {
+      workspaceId?: string;
       profileId?: string;
       status?: BrowserAutomationTaskStatus;
       query?: string;
@@ -996,6 +1202,10 @@ export class SqliteBrowserStore {
     if (input.profileId) {
       clauses.push('profile_id = ?');
       params.push(normalizeId(input.profileId, 'browser.profile_id_invalid'));
+    }
+    if (input.workspaceId) {
+      clauses.push('workspace_id = ?');
+      params.push(normalizeId(input.workspaceId, 'browser.workspace_id_invalid'));
     }
     if (input.status) {
       clauses.push('status = ?');
@@ -1153,6 +1363,124 @@ export class SqliteBrowserStore {
       .immediate();
   }
 
+  saveWorkflowDraft(input: { draftId: string; recordingId: string; now?: string }): {
+    task: BrowserAutomationTaskRecord;
+    draft: BrowserWorkflowDraftRecord;
+  } {
+    const draftId = normalizeId(input.draftId, 'browser.workflow_draft_id_invalid');
+    const recordingId = normalizeId(input.recordingId, 'browser.recording_id_invalid');
+    const now = normalizeNow(input.now);
+    return this.raw
+      .transaction(() => {
+        const draft = this.getRequiredWorkflowDraft(draftId);
+        if (draft.status !== 'editing' && draft.status !== 'rejected') {
+          throw new Error('browser.workflow_draft_state_conflict');
+        }
+        if (draft.recordingId !== recordingId) {
+          throw new Error('browser.workflow_recording_mismatch');
+        }
+        const task = this.getRequiredAutomationTask(draft.taskId);
+        const recording = this.getRequiredRecording(recordingId);
+        if (recording.profileId !== task.profileId) {
+          throw new Error('browser.workflow_recording_profile_mismatch');
+        }
+        if (recording.status !== 'stopped') {
+          throw new Error('browser.workflow_recording_not_stopped');
+        }
+        const steps = this.listRecordingSteps(recordingId).map((record) => record.step);
+        if (steps.length < 1) throw new Error('browser.workflow_steps_empty');
+        this.raw
+          .prepare(
+            `UPDATE browser_workflow_draft
+             SET status = 'editing', revision = revision + 1, steps_json = ?, step_count = ?,
+                 submitted_at = NULL, reviewed_at = NULL, updated_at = ?
+             WHERE id = ? AND status IN ('editing', 'rejected')`,
+          )
+          .run(boundedJson(steps, 'browser.workflow_steps_too_large'), steps.length, now, draftId);
+        this.raw
+          .prepare(
+            `UPDATE browser_automation_task
+             SET status = 'draft', revision = revision + 1, current_draft_id = ?, updated_at = ?
+             WHERE id = ?`,
+          )
+          .run(draftId, now, task.id);
+        return {
+          task: this.getRequiredAutomationTask(task.id),
+          draft: this.getRequiredWorkflowDraft(draftId),
+        };
+      })
+      .immediate();
+  }
+
+  publishWorkflowDraft(input: { draftId: string; recordingId: string; now?: string }): {
+    task: BrowserAutomationTaskRecord;
+    draft: BrowserWorkflowDraftRecord;
+    version: BrowserWorkflowVersionRecord;
+  } {
+    const draftId = normalizeId(input.draftId, 'browser.workflow_draft_id_invalid');
+    const recordingId = normalizeId(input.recordingId, 'browser.recording_id_invalid');
+    const now = normalizeNow(input.now);
+    return this.raw
+      .transaction(() => {
+        const draft = this.getRequiredWorkflowDraft(draftId);
+        if (draft.status !== 'editing' && draft.status !== 'rejected') {
+          throw new Error('browser.workflow_draft_state_conflict');
+        }
+        if (draft.recordingId !== recordingId) {
+          throw new Error('browser.workflow_recording_mismatch');
+        }
+        const task = this.getRequiredAutomationTask(draft.taskId);
+        const recording = this.getRequiredRecording(recordingId);
+        if (recording.profileId !== task.profileId) {
+          throw new Error('browser.workflow_recording_profile_mismatch');
+        }
+        if (recording.status !== 'stopped') {
+          throw new Error('browser.workflow_recording_not_stopped');
+        }
+        const steps = this.listRecordingSteps(recordingId).map((record) => record.step);
+        if (steps.length < 1) throw new Error('browser.workflow_steps_empty');
+        const stepsJson = boundedJson(steps, 'browser.workflow_steps_too_large');
+        this.raw
+          .prepare(
+            `UPDATE browser_workflow_draft
+             SET status = 'approved', revision = revision + 1, steps_json = ?, step_count = ?,
+                 submitted_at = NULL, reviewed_at = ?, updated_at = ?
+             WHERE id = ? AND status IN ('editing', 'rejected')`,
+          )
+          .run(stepsJson, steps.length, now, now, draftId);
+        const versionNumber = (
+          this.raw
+            .prepare(
+              `SELECT COALESCE(MAX(version_number), 0) + 1 AS next
+               FROM browser_workflow_version WHERE task_id = ?`,
+            )
+            .get(task.id) as { next: number }
+        ).next;
+        const versionId = `browser-version-${randomUUID()}`;
+        this.raw
+          .prepare(
+            `INSERT INTO browser_workflow_version (
+               id, task_id, draft_id, version_number, steps_json, step_count,
+               created_at, published_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          )
+          .run(versionId, task.id, draft.id, versionNumber, stepsJson, steps.length, now, now);
+        this.raw
+          .prepare(
+            `UPDATE browser_automation_task
+             SET status = 'enabled', revision = revision + 1,
+                 published_version_id = ?, current_draft_id = ?, updated_at = ? WHERE id = ?`,
+          )
+          .run(versionId, draftId, now, task.id);
+        return {
+          task: this.getRequiredAutomationTask(task.id),
+          draft: this.getRequiredWorkflowDraft(draftId),
+          version: this.getRequiredWorkflowVersion(versionId),
+        };
+      })
+      .immediate();
+  }
+
   reviewWorkflowDraft(input: {
     draftId: string;
     decision: 'approve' | 'reject';
@@ -1256,6 +1584,267 @@ export class SqliteBrowserStore {
         };
       })
       .immediate();
+  }
+
+  startWorkflowRun(input: {
+    id?: string;
+    taskId: string;
+    versionId: string;
+    trigger: BrowserWorkflowRunTrigger;
+    stepCount: number;
+    now?: string;
+  }): BrowserWorkflowRunRecord {
+    const id = normalizeId(
+      input.id ?? `browser-workflow-run-${randomUUID()}`,
+      'browser.workflow_run_id_invalid',
+    );
+    const taskId = normalizeId(input.taskId, 'browser.task_id_invalid');
+    const versionId = normalizeId(input.versionId, 'browser.workflow_version_id_invalid');
+    if (!['manual', 'schedule', 'chat'].includes(input.trigger)) {
+      throw new Error('browser.workflow_run_trigger_invalid');
+    }
+    if (!Number.isSafeInteger(input.stepCount) || input.stepCount < 1 || input.stepCount > 200) {
+      throw new Error('browser.workflow_run_step_count_invalid');
+    }
+    const now = normalizeNow(input.now);
+    const version = this.getRequiredWorkflowVersion(versionId);
+    if (version.taskId !== taskId) throw new Error('browser.workflow_run_version_mismatch');
+    this.raw
+      .prepare(
+        `INSERT INTO browser_workflow_run (
+         id, task_id, version_id, trigger, status, step_count, executed_step_count,
+         failed_step_sequence, error_code, error, started_at, completed_at, updated_at
+       ) VALUES (?, ?, ?, ?, 'running', ?, 0, NULL, NULL, NULL, ?, NULL, ?)`,
+      )
+      .run(id, taskId, versionId, input.trigger, input.stepCount, now, now);
+    return this.getRequiredWorkflowRun(id);
+  }
+
+  appendWorkflowRunStep(input: {
+    runId: string;
+    sequence: number;
+    actionKind: string;
+    status: 'succeeded' | 'failed';
+    outputUrl?: string;
+    outputTitle?: string;
+    screenshotRelativePath?: string;
+    screenshotEmbedUrl?: string;
+    screenshotErrorCode?: string;
+    errorCode?: string;
+    error?: string;
+    startedAt?: string;
+    completedAt?: string;
+  }): BrowserWorkflowRunStepRecord {
+    const runId = normalizeId(input.runId, 'browser.workflow_run_id_invalid');
+    if (!Number.isSafeInteger(input.sequence) || input.sequence < 1 || input.sequence > 200) {
+      throw new Error('browser.workflow_run_step_sequence_invalid');
+    }
+    if (input.status !== 'succeeded' && input.status !== 'failed') {
+      throw new Error('browser.workflow_run_step_status_invalid');
+    }
+    const actionKind = normalizeBoundedText(
+      input.actionKind,
+      80,
+      'browser.workflow_run_action_invalid',
+    );
+    const startedAt = normalizeNow(input.startedAt);
+    const completedAt = normalizeNow(input.completedAt);
+    this.getRequiredWorkflowRun(runId);
+    this.raw
+      .prepare(
+        `INSERT INTO browser_workflow_run_step (
+         run_id, sequence, action_kind, status, output_url, output_title,
+         screenshot_relative_path, screenshot_embed_url, screenshot_error_code,
+         error_code, error, started_at, completed_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        runId,
+        input.sequence,
+        actionKind,
+        input.status,
+        input.outputUrl ?? null,
+        input.outputTitle ?? null,
+        input.screenshotRelativePath ?? null,
+        input.screenshotEmbedUrl ?? null,
+        input.screenshotErrorCode ?? null,
+        input.errorCode ?? null,
+        input.error ? input.error.slice(0, 4_000) : null,
+        startedAt,
+        completedAt,
+      );
+    const row = this.raw
+      .prepare(`${workflowRunStepSelect()} WHERE run_id = ? AND sequence = ?`)
+      .get(runId, input.sequence) as BrowserWorkflowRunStepRow;
+    return mapWorkflowRunStep(row);
+  }
+
+  completeWorkflowRun(input: {
+    runId: string;
+    status: Exclude<BrowserWorkflowRunStatus, 'running'>;
+    executedStepCount: number;
+    failedStepSequence?: number;
+    errorCode?: string;
+    error?: string;
+    now?: string;
+  }): BrowserWorkflowRunRecord {
+    const runId = normalizeId(input.runId, 'browser.workflow_run_id_invalid');
+    if (!['succeeded', 'failed', 'cancelled'].includes(input.status)) {
+      throw new Error('browser.workflow_run_status_invalid');
+    }
+    if (
+      !Number.isSafeInteger(input.executedStepCount) ||
+      input.executedStepCount < 0 ||
+      input.executedStepCount > 200
+    ) {
+      throw new Error('browser.workflow_run_executed_count_invalid');
+    }
+    const now = normalizeNow(input.now);
+    return this.raw
+      .transaction(() => {
+        const existing = this.getRequiredWorkflowRun(runId);
+        if (existing.status !== 'running') return existing;
+        this.raw
+          .prepare(
+            `UPDATE browser_workflow_run
+         SET status = ?, executed_step_count = ?, failed_step_sequence = ?,
+             error_code = ?, error = ?, completed_at = ?, updated_at = ?
+         WHERE id = ? AND status = 'running'`,
+          )
+          .run(
+            input.status,
+            input.executedStepCount,
+            input.failedStepSequence ?? null,
+            input.errorCode ?? null,
+            input.error ? input.error.slice(0, 4_000) : null,
+            now,
+            now,
+            runId,
+          );
+        this.raw
+          .prepare(
+            `UPDATE browser_automation_task
+         SET last_run_at = ?,
+             success_count = success_count + ?,
+             failure_count = failure_count + ?,
+             updated_at = ?
+         WHERE id = ?`,
+          )
+          .run(
+            now,
+            input.status === 'succeeded' ? 1 : 0,
+            input.status === 'failed' ? 1 : 0,
+            now,
+            existing.taskId,
+          );
+        return this.getRequiredWorkflowRun(runId);
+      })
+      .immediate();
+  }
+
+  listWorkflowRuns(taskId: string, limit = 10): BrowserWorkflowRunRecord[] {
+    const id = normalizeId(taskId, 'browser.task_id_invalid');
+    const boundedLimit = normalizePageLimit(limit, 10);
+    this.getRequiredAutomationTask(id);
+    const rows = this.raw
+      .prepare(`${workflowRunSelect()} WHERE task_id = ? ORDER BY started_at DESC, id DESC LIMIT ?`)
+      .all(id, boundedLimit) as BrowserWorkflowRunRow[];
+    return rows.map((row) => this.mapWorkflowRunWithSteps(row));
+  }
+
+  getWorkflowSchedule(taskId: string): BrowserWorkflowScheduleRecord | undefined {
+    const id = normalizeId(taskId, 'browser.task_id_invalid');
+    const row = this.raw.prepare(`${workflowScheduleSelect()} WHERE task_id = ?`).get(id) as
+      BrowserWorkflowScheduleRow | undefined;
+    return row ? mapWorkflowSchedule(row) : undefined;
+  }
+
+  upsertWorkflowSchedule(input: {
+    taskId: string;
+    enabled: boolean;
+    intervalMinutes: number;
+    expectedRevision?: number;
+    now?: string;
+  }): BrowserWorkflowScheduleRecord {
+    const taskId = normalizeId(input.taskId, 'browser.task_id_invalid');
+    if (
+      !Number.isSafeInteger(input.intervalMinutes) ||
+      input.intervalMinutes < 5 ||
+      input.intervalMinutes > 10_080
+    ) {
+      throw new Error('browser.workflow_schedule_interval_invalid');
+    }
+    const now = normalizeNow(input.now);
+    const task = this.getRequiredAutomationTask(taskId);
+    if (!task.publishedVersionId || task.status !== 'enabled') {
+      throw new Error('browser.workflow_schedule_task_not_ready');
+    }
+    const current = this.getWorkflowSchedule(taskId);
+    if (current) {
+      if (input.expectedRevision !== undefined && current.revision !== input.expectedRevision) {
+        throw new Error('browser.workflow_schedule_revision_conflict');
+      }
+      const nextRunAt = input.enabled
+        ? new Date(Date.parse(now) + input.intervalMinutes * 60_000).toISOString()
+        : undefined;
+      this.raw
+        .prepare(
+          `UPDATE browser_workflow_schedule
+         SET enabled = ?, interval_minutes = ?, next_run_at = ?, revision = revision + 1, updated_at = ?
+         WHERE task_id = ? AND revision = ?`,
+        )
+        .run(
+          input.enabled ? 1 : 0,
+          input.intervalMinutes,
+          nextRunAt ?? null,
+          now,
+          taskId,
+          current.revision,
+        );
+    } else {
+      if (input.expectedRevision !== undefined)
+        throw new Error('browser.workflow_schedule_revision_conflict');
+      const nextRunAt = input.enabled
+        ? new Date(Date.parse(now) + input.intervalMinutes * 60_000).toISOString()
+        : undefined;
+      this.raw
+        .prepare(
+          `INSERT INTO browser_workflow_schedule (
+           task_id, enabled, interval_minutes, next_run_at, last_run_at,
+           revision, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, NULL, 1, ?, ?)`,
+        )
+        .run(taskId, input.enabled ? 1 : 0, input.intervalMinutes, nextRunAt ?? null, now, now);
+    }
+    return this.getWorkflowSchedule(taskId)!;
+  }
+
+  listDueWorkflowSchedules(now?: string): BrowserWorkflowScheduleRecord[] {
+    const at = normalizeNow(now);
+    const rows = this.raw
+      .prepare(
+        `${workflowScheduleSelect()}
+       WHERE enabled = 1 AND next_run_at IS NOT NULL AND next_run_at <= ?
+       ORDER BY next_run_at ASC LIMIT 20`,
+      )
+      .all(at) as BrowserWorkflowScheduleRow[];
+    return rows.map(mapWorkflowSchedule);
+  }
+
+  advanceWorkflowSchedule(taskId: string, now?: string): BrowserWorkflowScheduleRecord {
+    const id = normalizeId(taskId, 'browser.task_id_invalid');
+    const at = normalizeNow(now);
+    const current = this.getWorkflowSchedule(id);
+    if (!current) throw new Error('browser.workflow_schedule_not_found');
+    const nextRunAt = new Date(Date.parse(at) + current.intervalMinutes * 60_000).toISOString();
+    this.raw
+      .prepare(
+        `UPDATE browser_workflow_schedule
+       SET last_run_at = ?, next_run_at = ?, revision = revision + 1, updated_at = ?
+       WHERE task_id = ? AND revision = ?`,
+      )
+      .run(at, nextRunAt, at, id, current.revision);
+    return this.getWorkflowSchedule(id)!;
   }
 
   failActiveCommandsForRun(
@@ -1739,6 +2328,21 @@ export class SqliteBrowserStore {
     return version;
   }
 
+  private getRequiredWorkflowRun(id: string): BrowserWorkflowRunRecord {
+    const normalized = normalizeId(id, 'browser.workflow_run_id_invalid');
+    const row = this.raw.prepare(`${workflowRunSelect()} WHERE id = ?`).get(normalized) as
+      BrowserWorkflowRunRow | undefined;
+    if (!row) throw new Error('browser.workflow_run_not_found');
+    return this.mapWorkflowRunWithSteps(row);
+  }
+
+  private mapWorkflowRunWithSteps(row: BrowserWorkflowRunRow): BrowserWorkflowRunRecord {
+    const steps = this.raw
+      .prepare(`${workflowRunStepSelect()} WHERE run_id = ? ORDER BY sequence ASC`)
+      .all(row.id) as BrowserWorkflowRunStepRow[];
+    return mapWorkflowRun(row, steps.map(mapWorkflowRunStep));
+  }
+
   private getRequiredProfile(id: string, includeDeleted = false): BrowserProfileRecord {
     const row = this.raw
       .prepare(
@@ -1861,6 +2465,14 @@ function normalizeCommandInput(input: {
 function normalizeId(value: string, code: string): string {
   const normalized = String(value ?? '').trim();
   if (!ID_RE.test(normalized)) throw new Error(code);
+  return normalized;
+}
+
+function normalizeBoundedText(value: string, maxLength: number, code: string): string {
+  const normalized = String(value ?? '').trim();
+  if (!normalized || normalized.length > maxLength || hasAsciiControlCharacter(normalized)) {
+    throw new Error(code);
+  }
   return normalized;
 }
 
@@ -2033,7 +2645,11 @@ function normalizeRecordingInputValue(value: unknown) {
   if (input.kind === 'variable') {
     assertExactObjectKeys(input, ['kind', 'name']);
     const name = requireString(input.name).trim();
-    if (!name || name.length > BROWSER_RECORDING_MAX_LOCATOR_CHARS || hasAsciiControlCharacter(name)) {
+    if (
+      !name ||
+      name.length > BROWSER_RECORDING_MAX_LOCATOR_CHARS ||
+      hasAsciiControlCharacter(name)
+    ) {
       throw new Error('browser.recording_value_invalid');
     }
     return { kind: 'variable' as const, name };
@@ -2148,13 +2764,6 @@ function normalizePageLimit(value: number | undefined, fallback: number): number
     throw new Error('browser.recording_limit_invalid');
   }
   return limit;
-}
-
-function hasAsciiControlCharacter(value: string): boolean {
-  return [...value].some((character) => {
-    const codePoint = character.charCodeAt(0);
-    return codePoint <= 0x1f || codePoint === 0x7f;
-  });
 }
 
 function normalizeRevision(value: number): number {
@@ -2335,7 +2944,7 @@ function recordingStepSelect(): string {
 }
 
 function automationTaskSelect(): string {
-  return `SELECT id, profile_id, name, instruction, start_url, source, status, revision,
+  return `SELECT id, workspace_id, profile_id, name, instruction, start_url, source, status, revision,
     current_draft_id, published_version_id, last_run_at, success_count, failure_count,
     created_at, updated_at FROM browser_automation_task`;
 }
@@ -2348,6 +2957,23 @@ function workflowDraftSelect(): string {
 function workflowVersionSelect(): string {
   return `SELECT id, task_id, draft_id, version_number, steps_json, step_count,
     created_at, published_at FROM browser_workflow_version`;
+}
+
+function workflowRunSelect(): string {
+  return `SELECT id, task_id, version_id, trigger, status, step_count,
+    executed_step_count, failed_step_sequence, error_code, error, started_at,
+    completed_at, updated_at FROM browser_workflow_run`;
+}
+
+function workflowRunStepSelect(): string {
+  return `SELECT run_id, sequence, action_kind, status, output_url, output_title,
+    screenshot_relative_path, screenshot_embed_url, screenshot_error_code,
+    error_code, error, started_at, completed_at FROM browser_workflow_run_step`;
+}
+
+function workflowScheduleSelect(): string {
+  return `SELECT task_id, enabled, interval_minutes, next_run_at, last_run_at,
+    revision, created_at, updated_at FROM browser_workflow_schedule`;
 }
 
 function grantSelect(): string {
@@ -2451,6 +3077,7 @@ function mapRecordingStep(row: BrowserRecordingStepRow): BrowserRecordingStepRec
 
 function mapAutomationTask(row: BrowserAutomationTaskRow): BrowserAutomationTaskRecord {
   return {
+    ...(row.workspace_id ? { workspaceId: row.workspace_id } : {}),
     id: row.id,
     profileId: row.profile_id,
     name: row.name,
@@ -2508,6 +3135,61 @@ function mapWorkflowReview(row: BrowserWorkflowReviewRow): BrowserWorkflowReview
     decision: row.decision,
     ...(row.note ? { note: row.note } : {}),
     createdAt: row.created_at,
+  };
+}
+
+function mapWorkflowRun(
+  row: BrowserWorkflowRunRow,
+  steps: BrowserWorkflowRunStepRecord[],
+): BrowserWorkflowRunRecord {
+  return {
+    id: row.id,
+    taskId: row.task_id,
+    versionId: row.version_id,
+    trigger: row.trigger as BrowserWorkflowRunTrigger,
+    status: row.status as BrowserWorkflowRunStatus,
+    stepCount: row.step_count,
+    executedStepCount: row.executed_step_count,
+    ...(row.failed_step_sequence ? { failedStepSequence: row.failed_step_sequence } : {}),
+    ...(row.error_code ? { errorCode: row.error_code } : {}),
+    ...(row.error ? { error: row.error } : {}),
+    startedAt: row.started_at,
+    ...(row.completed_at ? { completedAt: row.completed_at } : {}),
+    updatedAt: row.updated_at,
+    steps,
+  };
+}
+
+function mapWorkflowRunStep(row: BrowserWorkflowRunStepRow): BrowserWorkflowRunStepRecord {
+  return {
+    runId: row.run_id,
+    sequence: row.sequence,
+    actionKind: row.action_kind,
+    status: row.status as 'succeeded' | 'failed',
+    ...(row.output_url ? { outputUrl: row.output_url } : {}),
+    ...(row.output_title ? { outputTitle: row.output_title } : {}),
+    ...(row.screenshot_relative_path
+      ? { screenshotRelativePath: row.screenshot_relative_path }
+      : {}),
+    ...(row.screenshot_embed_url ? { screenshotEmbedUrl: row.screenshot_embed_url } : {}),
+    ...(row.screenshot_error_code ? { screenshotErrorCode: row.screenshot_error_code } : {}),
+    ...(row.error_code ? { errorCode: row.error_code } : {}),
+    ...(row.error ? { error: row.error } : {}),
+    startedAt: row.started_at,
+    completedAt: row.completed_at,
+  };
+}
+
+function mapWorkflowSchedule(row: BrowserWorkflowScheduleRow): BrowserWorkflowScheduleRecord {
+  return {
+    taskId: row.task_id,
+    enabled: row.enabled === 1,
+    intervalMinutes: row.interval_minutes,
+    ...(row.next_run_at ? { nextRunAt: row.next_run_at } : {}),
+    ...(row.last_run_at ? { lastRunAt: row.last_run_at } : {}),
+    revision: row.revision,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
   };
 }
 

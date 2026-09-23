@@ -308,29 +308,6 @@ export function createTerminalSessionStore(bridge: ProjectTerminalBridge): Termi
   return new TerminalSessionStore(bridge);
 }
 
-let sharedStore: TerminalSessionStore | undefined;
-
-export function getTerminalSessionStore(): TerminalSessionStore {
-  if (sharedStore) return sharedStore;
-  const bridge = window.syncThink?.runtime;
-  if (
-    !bridge?.startProjectTerminal ||
-    !bridge.cancelProjectTerminal ||
-    !bridge.subscribeProjectTerminal
-  ) {
-    throw new Error('Terminal bridge is unavailable');
-  }
-  sharedStore = createTerminalSessionStore(bridge);
-  return sharedStore;
-}
-
 export async function disposeTerminalSession(terminalId: string): Promise<void> {
   await window.syncThink?.terminal?.kill(terminalId);
-  if (!sharedStore) return;
-  await sharedStore.disposeSession(terminalId);
-}
-
-export function resetTerminalSessionStoreForTests(): void {
-  sharedStore?.destroy();
-  sharedStore = undefined;
 }

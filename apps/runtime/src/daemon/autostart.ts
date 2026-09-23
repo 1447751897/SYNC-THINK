@@ -1,9 +1,8 @@
 /**
  * 计划任务自启（spec T3 + Q6/Q8）：守护进程随登录自动拉起。
  *
- * Windows 方案：优先查询 schtasks「登录时启动」计划任务，并兼容
- * Desktop 在计划任务创建被系统拒绝时写入的 HKCU Run 登录启动项。
- * 默认注册，设置页可关（unregister）；不引入 Windows 服务。
+ * Windows 方案：查询 schtasks「登录时启动」计划任务，并兼容
+ * Desktop supervisor 在计划任务创建被系统拒绝时写入的 HKCU Run 登录启动项。
  *
  * 命令构造为纯函数（可测）；执行走 spawnSync（schtasks 是系统命令）。
  */
@@ -35,39 +34,6 @@ export function buildUnregisterCommand(): string {
 /** 构造状态查询命令（纯函数）。 */
 export function buildStatusQueryCommand(): string {
   return ['schtasks', '/Query', `/TN "${TASK_NAME}"`].join(' ');
-}
-
-/** 注册登录自启（schtasks 执行）。返回是否成功。 */
-export function registerAutostart(nodeBin: string, daemonEntry: string): boolean {
-  try {
-    const result = spawnSync(buildRegisterCommand(nodeBin, daemonEntry), {
-      shell: true,
-      windowsHide: true,
-      encoding: 'utf8',
-    });
-    return result.status === 0;
-  } catch {
-    return false;
-  }
-}
-
-/** 移除两种登录自启注册。两者均不存在也算成功。 */
-export function unregisterAutostart(): boolean {
-  try {
-    const scheduled = spawnSync(buildUnregisterCommand(), {
-      shell: true,
-      windowsHide: true,
-      encoding: 'utf8',
-    });
-    const registry = spawnSync('reg.exe', ['DELETE', WINDOWS_RUN_KEY, '/v', TASK_NAME, '/f'], {
-      shell: false,
-      windowsHide: true,
-      encoding: 'utf8',
-    });
-    return scheduled.status === 0 || registry.status === 0 || !isAutostartRegistered();
-  } catch {
-    return false;
-  }
 }
 
 /** 查询计划任务或当前用户 Run 登录启动项是否已注册。 */

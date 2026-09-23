@@ -1,3 +1,5 @@
+import { isRecord } from '@sync-think/shared/value-validation';
+
 export const DESKTOP_HOST_PROTOCOL_VERSION = 1 as const;
 export const DEFAULT_DESKTOP_TREE_LIMITS: DesktopTreeLimits = {
   maxDepth: 12,
@@ -413,10 +415,6 @@ function boundedInteger(value: unknown, fallback: number, min: number, max: numb
   if (value === undefined) return fallback;
   if (!Number.isSafeInteger(value) || Number(value) < min || Number(value) > max) invalidRequest();
   return Number(value);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function isNonEmptyString(value: unknown, maxLength: number): value is string {

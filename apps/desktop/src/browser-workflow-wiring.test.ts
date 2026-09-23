@@ -2,6 +2,10 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 const mainSource = readFileSync(new URL('./main/index.ts', import.meta.url), 'utf8');
+const handlerSource = readFileSync(
+  new URL('./main/browser-workflow-handlers.ts', import.meta.url),
+  'utf8',
+);
 const preloadSource = readFileSync(new URL('./preload/index.ts', import.meta.url), 'utf8');
 
 const workflowCommands = [
@@ -41,15 +45,27 @@ const workflowCommands = [
     command: 'browser.workflow.review',
     parser: 'parseReviewBrowserWorkflowDraftPayload',
   },
+  {
+    method: 'execute',
+    channel: 'runtime:browser-workflow-execute',
+    command: 'browser.workflow.execute',
+    parser: 'parseExecuteBrowserWorkflowPayload',
+  },
+  {
+    method: 'approveAndExecute',
+    channel: 'runtime:browser-workflow-approve-execute',
+    command: 'browser.workflow.approveAndExecute',
+    parser: 'parseApproveExecuteBrowserWorkflowPayload',
+  },
 ] as const;
 
 describe('Desktop Browser workflow wiring', () => {
   it.each(workflowCommands)(
     'routes $channel through its strict parser to $command',
     ({ channel, command, parser }) => {
-      expect(mainSource).toMatch(
+      expect(handlerSource).toMatch(
         new RegExp(
-          `ipcMain\\.handle\\(\\s*'${escapeRegExp(channel)}'[\\s\\S]+?getRuntimeClient\\(\\)\\.request\\([\\s\\S]+?'${escapeRegExp(command)}'[\\s\\S]+?${parser}\\(value\\)`,
+          `host\\.handle\\(\\s*'${escapeRegExp(channel)}'[\\s\\S]+?host\\.requestBrowserWorkflow\\([\\s\\S]+?'${escapeRegExp(command)}'[\\s\\S]+?${parser}\\(value\\)`,
         ),
       );
     },
@@ -65,6 +81,11 @@ describe('Desktop Browser workflow wiring', () => {
       );
     },
   );
+
+  it('registers the Workflow boundary from the Main composition root', () => {
+    expect(mainSource).toMatch(/registerBrowserWorkflowHandlers\(\{/);
+    expect(mainSource).toMatch(/getRuntimeClient\(\)\.requestBrowserWorkflow/);
+  });
 });
 
 function escapeRegExp(value: string): string {

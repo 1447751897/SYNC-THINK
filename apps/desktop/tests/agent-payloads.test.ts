@@ -1,13 +1,11 @@
 import { describe, expect, it } from 'vitest';
+import { parseGetAgentPayload, parseUpdateAgentBindingPayload } from '../src/agent-payloads.js';
+import { parseImportSkillPayload, parseListSkillsPayload } from '../src/skill-payloads.js';
 import {
-  parseGetAgentPayload,
-  parseGetBotChannelConfigPayload,
   parseCheckWechatBotQrPayload,
-  parseImportSkillPayload,
-  parseListSkillsPayload,
+  parseGetBotChannelConfigPayload,
   parseSaveBotChannelConfigPayload,
-  parseUpdateAgentBindingPayload,
-} from '../src/agent-payloads.js';
+} from '../src/bot-channel-payloads.js';
 
 describe('agent payloads', () => {
   it('parses empty get payload and rejects bad update', () => {

@@ -3,50 +3,18 @@ import type {
   DesktopAccessibilitySnapshot,
   DesktopAction,
   DesktopActionResult,
-  DesktopAppLaunchResult,
   DesktopElementSnapshot,
   DesktopElementTarget,
-  DesktopProbeResult,
   DesktopSelector,
   DesktopSnapshotTarget,
-  DesktopTreeLimits,
   DesktopWindowIdentity,
-  DesktopWindowListResult,
 } from './desktop-contract.js';
 import { normalizeDesktopTreeLimits } from './desktop-contract.js';
 import { DesktopDriverError, type DesktopAutomationDriver } from './desktop-host-runtime.js';
 import { KoffiWindowsUiaBackend } from './windows-uia-backend.js';
 
-export interface WindowsUiaInspection {
-  window: DesktopWindowIdentity;
-  elements: DesktopElementSnapshot[];
-  truncated: boolean;
-}
-
-export interface WindowsUiaElementLease {
-  inspection: WindowsUiaInspection;
-  element: DesktopElementSnapshot;
-  readValue(): string;
-  focus(): void;
-  invoke(): void;
-  setValue(value: string): void;
-  dispose(): void;
-}
-
-export interface WindowsUiaBackend {
-  probe(): DesktopProbeResult | Promise<DesktopProbeResult>;
-  listWindows(): DesktopWindowListResult | Promise<DesktopWindowListResult>;
-  launchApp(application: string): DesktopAppLaunchResult | Promise<DesktopAppLaunchResult>;
-  inspectWindow(
-    window: DesktopWindowIdentity,
-    limits: DesktopTreeLimits,
-  ): WindowsUiaInspection | Promise<WindowsUiaInspection>;
-  acquireElement(
-    window: DesktopWindowIdentity,
-    limits: DesktopTreeLimits,
-    elementIndex: number,
-  ): WindowsUiaElementLease | Promise<WindowsUiaElementLease>;
-}
+import type { WindowsUiaBackend, WindowsUiaInspection, WindowsUiaElementLease } from './windows-uia-contract.js';
+export type { WindowsUiaBackend, WindowsUiaInspection, WindowsUiaElementLease } from './windows-uia-contract.js';
 
 type FencedElementAction = Extract<
   DesktopAction,

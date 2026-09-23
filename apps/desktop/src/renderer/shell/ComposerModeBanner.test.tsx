@@ -4,7 +4,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { GoalStatus } from '@sync-think/protocol';
-import { ComposerModeBanner } from './ComposerModeBanner.js';
+import { ComposerModeBanner } from '@sync-think/ui-kit';
 
 afterEach(cleanup);
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseConfirmCapabilitiesPayload } from './provider-payloads.js';
+import { parseConfirmCapabilitiesPayload } from './provider-discovery-payloads.js';
 
 /**
  * 回归锚点：`CAPABILITY_TAGS` 白名单曾漏掉 document / video / thinking，
@@ -59,9 +59,9 @@ describe('Desktop Provider IPC payloads: confirmCapabilities', () => {
     expect(() =>
       parseConfirmCapabilitiesPayload({ modelId: 'model-1', capabilities: ['image'] }),
     ).toThrow(/Invalid confirm-capabilities payload/);
-    expect(() =>
-      parseConfirmCapabilitiesPayload({ modelId: 'model-1', capabilities: [] }),
-    ).toThrow(/Invalid confirm-capabilities payload/);
+    expect(() => parseConfirmCapabilitiesPayload({ modelId: 'model-1', capabilities: [] })).toThrow(
+      /Invalid confirm-capabilities payload/,
+    );
     expect(() =>
       parseConfirmCapabilitiesPayload({
         modelId: 'model-1',

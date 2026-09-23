@@ -120,6 +120,18 @@ describe('TaskStatusPanel', () => {
     expect(panel.textContent).not.toContain('Progress');
   });
 
+  it('refreshes Git on mount and window focus without installing a polling interval', async () => {
+    const intervalSpy = vi.spyOn(window, 'setInterval');
+    render(<TaskStatusPanel projectFolder="D:/project" />);
+
+    await waitFor(() => expect(runtime.getGitInfo).toHaveBeenCalledTimes(1));
+    expect(intervalSpy.mock.calls.some(([, delay]) => delay === 5_000)).toBe(false);
+
+    window.dispatchEvent(new window.Event('focus'));
+    await waitFor(() => expect(runtime.getGitInfo).toHaveBeenCalledTimes(2));
+    expect(intervalSpy.mock.calls.some(([, delay]) => delay === 5_000)).toBe(false);
+  });
+
   it('collapses each section independently', async () => {
     render(<TaskStatusPanel projectFolder="D:/project" goal={goal} todo={todo} />);
     const panel = await screen.findByTestId('task-status-panel');

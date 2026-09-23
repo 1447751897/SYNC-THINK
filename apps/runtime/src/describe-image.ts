@@ -21,7 +21,6 @@ import {
   type CapabilityProviderLike,
   type VisionState,
 } from '@sync-think/core';
-import type { ModelRecord } from '@sync-think/storage';
 
 export type { VisionState };
 
@@ -177,11 +176,23 @@ export interface CatalogModelEntry {
   enabled?: boolean;
 }
 
+export interface CatalogModelSource {
+  id: string;
+  providerModelId: string;
+  protocol: string;
+  providerId?: string;
+  capabilities?: string[];
+  capabilitiesConfirmed?: boolean;
+  visionCapability?: boolean;
+  visionProbeReason?: string;
+  visionManualOverride?: boolean;
+}
+
 /**
  * Project a persisted model onto the catalog entry the vision helpers read.
  *
  * This is the **only** place that builds a {@link CatalogModelEntry} from a
- * `ModelRecord`. Hand-built partial entries are how the user's manual image
+ * persisted model projection. Hand-built partial entries are how the user's manual image
  * answer silently disappeared: `visionManualOverride` is the easiest field to
  * forget, and dropping it makes {@link catalogEntryVisionCapable} answer from
  * the probe alone. That is not a cosmetic loss — it filtered a hand-marked
@@ -189,7 +200,7 @@ export interface CatalogModelEntry {
  * and it let an image reach a model the user had explicitly marked text-only.
  */
 export function toCatalogModelEntry(
-  model: ModelRecord,
+  model: CatalogModelSource,
   options: { enabled?: boolean } = {},
 ): CatalogModelEntry {
   return {

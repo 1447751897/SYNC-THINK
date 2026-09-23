@@ -1,3 +1,5 @@
+import { isRecord } from '@sync-think/shared/value-validation';
+
 /** The stable on-disk shape shared with NewMax's Excalidraw file tabs. */
 export interface ExcalidrawDocument {
   type: 'excalidraw';
@@ -36,10 +38,6 @@ export function createEmptyExcalidrawDocument(): ExcalidrawDocument {
     appState: { viewBackgroundColor: '#ffffff' },
     files: {},
   };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
 
 export function parseExcalidrawDocument(input: string): ExcalidrawParseResult {

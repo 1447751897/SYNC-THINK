@@ -8,9 +8,15 @@
  * @vitest-environment jsdom
  */
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import type { Message } from '@sync-think/shared';
 import type { DelegatedAgentProjection } from '@sync-think/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { DelegatedAgentTasks, InlineDelegatedAgentTask, type InlineProcessItem } from './ChatView.js';
+import {
+  DelegatedAgentTasks,
+  InlineDelegatedAgentTask,
+  messageToChat,
+  type InlineProcessItem,
+} from './ChatView.js';
 
 afterEach(cleanup);
 
@@ -50,31 +56,68 @@ function renderTasks(options: {
 }
 
 describe('DelegatedAgentTasks card', () => {
+  it('restores a settled background child from parent message metadata', () => {
+    const message = messageToChat({
+      id: 'asst-parent',
+      threadId: 'thread-1',
+      role: 'assistant',
+      runId: 'run-parent',
+      sequence: 1,
+      createdAt: '2026-09-19T00:00:00.000Z',
+      blocks: [
+        {
+          type: 'text',
+          text: '子任务已在后台运行。',
+          payload: {
+            delegatedAgents: [
+              delegatedTask({
+                childRunId: childId('child-restored'),
+                status: 'completed',
+                result: '审查完成。',
+                toolEvents: [{ toolName: 'Read', status: 'completed', output: 'runtime.ts' }],
+              }),
+            ],
+          },
+        },
+      ],
+    } as Message);
+
+    expect(message.delegatedAgents).toHaveLength(1);
+    expect(message.delegatedAgents?.[0]).toMatchObject({
+      childRunId: 'child-restored',
+      status: 'completed',
+      result: '审查完成。',
+    });
+    expect(message.delegatedAgents?.[0]?.toolEvents).toEqual([
+      { toolName: 'Read', status: 'completed', output: 'runtime.ts' },
+    ]);
+  });
+
   it('renders nothing when the parent turn delegated no work', () => {
     const { container } = renderTasks({});
     expect(container.querySelector('.shell-delegated-agent-list')).toBeNull();
     expect(container.textContent).toBe('');
   });
 
-  it('labels an existing Agent and shows its Agent Library id', () => {
+  it('shows the Agent avatar and name without exposing its internal id', () => {
     renderTasks({
       delegatedAgents: [
         delegatedTask({
           kind: 'existing',
           agentId: 'agent-code-reviewer',
           name: '代码审查 Agent',
+          avatar: '代码',
           status: 'completed',
         }),
       ],
     });
 
     expect(screen.getByText('代码审查 Agent')).toBeTruthy();
-    // The origin line is gone; the id chip now sits next to the name, and status
-    // is an icon carrying its Chinese label as the accessible name.
     expect(screen.queryByText('已有 Agent')).toBeNull();
+    expect(screen.queryByText('agent-code-reviewer')).toBeNull();
     expect(screen.getByLabelText('已完成')).toBeTruthy();
-    const agentId = screen.getByText('agent-code-reviewer');
-    expect(agentId.getAttribute('title')).toBe('Agent Library id：agent-code-reviewer');
+    const avatar = screen.getByRole('img', { name: '代码审查 Agent' });
+    expect(avatar.getAttribute('src')).toMatch(/^data:image\/svg\+xml/);
   });
 
   it('ignores a legacy temporary assignment without an existing Agent id', () => {
@@ -125,6 +168,15 @@ describe('DelegatedAgentTasks card', () => {
     }
     // One status glyph per card, each labelled for screen readers.
     expect(container.querySelectorAll('.shell-delegated-agent__status').length).toBe(5);
+  });
+
+  it('shows authoritative status observation diagnostics on a delegated card', () => {
+    renderTasks({
+      delegatedAgents: [
+        delegatedTask({ status: 'completed', statusObservation: { source: 'query', diagnostic: 'completed_unnotified', observedAt: '2026-01-01T00:00:00Z', probeCount: 1 } }),
+      ],
+    });
+    expect(screen.getByText('已完成，通知延迟')).toBeTruthy();
   });
 
   it('folds the child tool log after 20 rows and toggles it open again', () => {
@@ -201,6 +253,26 @@ describe('DelegatedAgentTasks card', () => {
 
     expect(screen.queryByRole('button', { name: '停止当前子任务' })).toBeNull();
     expect(screen.queryByRole('button', { name: '停止全部子任务' })).toBeNull();
+  });
+
+  it('shows a visible cancellation state and explains that execution records remain', () => {
+    const { container } = renderTasks({
+      delegatedAgents: [
+        delegatedTask({
+          childRunId: childId('child-cancelled'),
+          name: '代码审查员',
+          status: 'cancelled',
+          toolEvents: [{ toolName: 'read_file', status: 'completed' }],
+        }),
+      ],
+    });
+
+    expect(screen.getByText('已取消')).toBeTruthy();
+    const card = container.querySelector('details.shell-delegated-agent');
+    expect(card).toBeTruthy();
+    fireEvent.click(card!.querySelector('summary')!);
+    expect(screen.getByText('任务已由用户停止，执行记录已保留。')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '停止当前子任务' })).toBeNull();
   });
 
   it('stops every running sibling at once when more than one is live', () => {
@@ -282,7 +354,44 @@ describe('DelegatedAgentTasks card', () => {
     expect(within(row).getByTestId('inline-process-tool-arguments')).toBeTruthy();
     expect(within(row).getByTestId('inline-process-tool-result')).toBeTruthy();
     expect(within(row).getByText('rg')).toBeTruthy();
-    expect(screen.getByText('agent-explorer')).toBeTruthy();
+    expect(screen.queryByText('agent-explorer')).toBeNull();
+  });
+
+  it('keeps a command row when the delegated tool returned no output', () => {
+    renderTasks({
+      items: [
+        {
+          kind: 'tool',
+          name: 'agent_run',
+          argumentsJson: '{}',
+          result: JSON.stringify({
+            childRunId: 'child-command-without-output',
+            status: 'running',
+            assignment: {
+              name: '代码审查员',
+              kind: 'existing',
+              agentId: 'builtin-code-reviewer',
+            },
+            toolEvents: [
+              {
+                toolName: 'command_execution',
+                status: 'completed',
+                arguments: JSON.stringify({
+                  command: 'pnpm test --filter runtime',
+                  cwd: 'D:\\projects\\SYNC-THINK',
+                }),
+              },
+            ],
+          }),
+        },
+      ],
+    });
+
+    const row = screen.getByTestId('delegated-agent-tool');
+    expect(within(row).getByText('命令执行')).toBeTruthy();
+    expect(within(row).getByText('pnpm test --filter runtime')).toBeTruthy();
+    fireEvent.click(within(row).getByRole('button'));
+    expect(within(row).queryByText(/工具调用未返回/)).toBeNull();
   });
 
   it('lets the durable assignment win over an older live projection of the same child', () => {
@@ -313,7 +422,7 @@ describe('DelegatedAgentTasks card', () => {
 
     expect(screen.getByText('持久名称')).toBeTruthy();
     expect(screen.queryByText('实时名称')).toBeNull();
-    expect(screen.getByText('agent-persistent')).toBeTruthy();
+    expect(screen.queryByText('agent-persistent')).toBeNull();
   });
 
   it('rebuilds a card from the durable agent_run tool result', () => {
@@ -348,7 +457,10 @@ describe('DelegatedAgentTasks card', () => {
     expect(screen.getByText('代码审查员')).toBeTruthy();
     expect(screen.getByLabelText('已完成')).toBeTruthy();
     expect(screen.getByText('审查完成，未发现阻塞项。')).toBeTruthy();
-    expect(screen.getByText('builtin-code-reviewer')).toBeTruthy();
+    expect(screen.queryByText('builtin-code-reviewer')).toBeNull();
+    expect(container.querySelector('details.shell-delegated-agent')?.hasAttribute('open')).toBe(
+      true,
+    );
     // The child's own tool calls stay visible after the run ended, rendered with
     // the shared tool-row surface (friendly names + 参数/输出 detail blocks).
     expect(container.querySelectorAll('.shell-delegated-agent__tool').length).toBe(2);
@@ -360,9 +472,9 @@ describe('DelegatedAgentTasks card', () => {
     expect(within(rows[0]!).getByTestId('inline-process-tool-result')).toBeTruthy();
   });
 
-  it('unwraps an MCP content-block result', () => {
-    // The kernel returns platform MCP results as `[{type:'text',text:'<json>'}]`,
-    // where the payload sits inside `text` as an escaped string.
+  it('unwraps the host MCP envelope and recognizes the fully qualified tool name', () => {
+    // Persisted platform MCP results use the real host envelope, not a bare
+    // content-block array. The timeline also retains the fully qualified name.
     const payload = JSON.stringify({
       ok: true,
       childRunId: 'child-block-wrapped',
@@ -375,9 +487,13 @@ describe('DelegatedAgentTasks card', () => {
       items: [
         {
           kind: 'tool',
-          name: 'agent_run',
+          name: 'mcp__sync-think-platform__agent_run',
           argumentsJson: '{}',
-          result: JSON.stringify([{ type: 'text', text: payload }]),
+          result: JSON.stringify({
+            content: [{ type: 'text', text: payload }],
+            structuredContent: null,
+            _meta: null,
+          }),
         },
       ],
     });
@@ -487,7 +603,7 @@ describe('DelegatedAgentTasks card', () => {
 
     expect(screen.getByText('代码审查员')).toBeTruthy();
     expect(screen.getByLabelText('运行中')).toBeTruthy();
-    expect(screen.getByText('builtin-code-reviewer')).toBeTruthy();
+    expect(screen.queryByText('builtin-code-reviewer')).toBeNull();
   });
 
   it('does not anchor a running delegation to another tool row', () => {

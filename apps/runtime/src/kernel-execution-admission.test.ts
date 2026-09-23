@@ -13,7 +13,11 @@ function fixture() {
     },
   };
   const internal = runtime as unknown as {
-    activeGoals: Map<string, GoalStatus>;
+    goalExecutionState: {
+      cacheGoal(conversationId: string, goal: GoalStatus): void;
+      cachedGoal(conversationId: string): GoalStatus | undefined;
+      goalCount(): number;
+    };
     handleGoalSet(socket: object, frame: Frame): void;
     handleGoalResume(socket: object, frame: Frame): void;
     prepareRunBinding(input: object): unknown;
@@ -42,7 +46,7 @@ describe('kernel execution admission', () => {
       payload: { conversationId: 'conversation', condition: 'finish', kernelId: 'pi' },
     });
     expect(frames[0]?.error).toMatchObject({ code: 'protocol.unexpected_request' });
-    expect(internal.activeGoals.size).toBe(0);
+    expect(internal.goalExecutionState.goalCount()).toBe(0);
   });
   it.each(['paused', 'blocked'] as const)(
     'preserves a %s goal when its saved Pi selection is resumed',
@@ -59,7 +63,7 @@ describe('kernel execution admission', () => {
         tokensOut: 10,
         blockedStreak: 0,
       };
-      internal.activeGoals.set(goal.conversationId, goal);
+      internal.goalExecutionState.cacheGoal(goal.conversationId, goal);
       internal.handleGoalResume(socket, {
         id: 'resume',
         kind: 'request',
@@ -67,7 +71,7 @@ describe('kernel execution admission', () => {
         payload: { conversationId: goal.conversationId },
       });
       expect(frames[0]?.error).toMatchObject({ code: 'protocol.unexpected_request' });
-      expect(internal.activeGoals.get(goal.conversationId)).toBe(goal);
+      expect(internal.goalExecutionState.cachedGoal(goal.conversationId)).toBe(goal);
     },
   );
 });

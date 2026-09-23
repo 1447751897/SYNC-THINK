@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { lstat, readdir, readFile, realpath, stat } from 'node:fs/promises';
 import * as path from 'node:path';
+import { isPathWithinRoot } from '@sync-think/shared/node-paths';
 import type {
   ProjectContentMatch,
   SearchProjectContentResult,
@@ -237,11 +238,6 @@ function runRipgrep(input: {
   });
 }
 
-function isPathInside(candidate: string, root: string): boolean {
-  const relative = path.relative(root, candidate);
-  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
-}
-
 async function fallbackSearch(input: {
   root: string;
   query: string;
@@ -312,7 +308,7 @@ async function fallbackSearch(input: {
         throwIfSearchAborted(input.signal);
         continue;
       }
-      if (!isPathInside(realFile, input.root)) continue;
+      if (!isPathWithinRoot(input.root, realFile)) continue;
       let buffer: Buffer;
       try {
         buffer = await readFile(realFile, { signal: input.signal });

@@ -120,6 +120,15 @@ describe('BrowserPanel layout contract', () => {
     });
   });
 
+  it('hides Electron guest surfaces directly when their retained host is inactive', () => {
+    expect(shellCss).toMatch(
+      /\.shell-stage-layer\[data-active='false'\]\s+webview[\s\S]*?display:\s*none\s*!important;/,
+    );
+    expect(shellCss).toMatch(
+      /\.shell-pane-surface\[data-active='false'\]\s+webview[\s\S]*?display:\s*none\s*!important;/,
+    );
+  });
+
   it('does not reset Electron zoom to 1 while measuring a page that already fits', async () => {
     render(
       <BrowserPanel

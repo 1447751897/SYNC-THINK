@@ -348,13 +348,22 @@ export function parseListConversationsPayload(
   value: unknown,
 ): ListConversationsPayload | undefined {
   if (value === undefined || value === null) return {};
-  if (!isRecord(value) || !hasOnlyKeys(value, ['track', 'workspaceId', 'includeArchived'])) {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['track', 'workspaceId', 'includeArchived', 'cursor', 'limit'])
+  ) {
     return undefined;
   }
   if (value.track !== undefined && !CONVERSATION_TRACKS.has(String(value.track))) return undefined;
   if (value.workspaceId !== undefined && !boundedAgentText(value.workspaceId, 128))
     return undefined;
   if (value.includeArchived !== undefined && typeof value.includeArchived !== 'boolean')
+    return undefined;
+  if (value.cursor !== undefined && !boundedAgentText(value.cursor, 2_048)) return undefined;
+  if (
+    value.limit !== undefined &&
+    (!Number.isSafeInteger(value.limit) || Number(value.limit) < 1 || Number(value.limit) > 200)
+  )
     return undefined;
   return value as unknown as ListConversationsPayload;
 }

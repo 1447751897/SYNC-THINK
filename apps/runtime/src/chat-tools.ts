@@ -129,33 +129,59 @@ export const CHAT_BUILT_IN_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
         command: { type: 'string' },
         args: { type: 'array', items: { type: 'string' }, maxItems: 128 },
         cwd: { type: 'string' },
-        waitMs: { type: 'integer', minimum: 0, maximum: 30_000, description: 'Time to wait for this response, independent of process lifetime.' },
-        timeoutMs: { type: 'integer', minimum: 1, maximum: 2_147_483_647, description: 'Optional total execution deadline; omit for no deadline.' },
-        background: { type: 'boolean', description: 'Return a session immediately for a long-lived command. Check its output/readiness before using it.' },
+        waitMs: {
+          type: 'integer',
+          minimum: 0,
+          maximum: 30_000,
+          description: 'Time to wait for this response, independent of process lifetime.',
+        },
+        timeoutMs: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 2_147_483_647,
+          description: 'Optional total execution deadline; omit for no deadline.',
+        },
+        background: {
+          type: 'boolean',
+          description:
+            'Return a session immediately for a long-lived command. Check its output/readiness before using it.',
+        },
       },
     },
   },
   {
     name: 'read_command',
-    description: 'Wait for an existing command and collect new stdout/stderr. A running status is normal for silent work or sleep. Reuse the same sessionId; do not relaunch the command. Sessions belong to this conversation and survive turns until process exit, cancellation, or Runtime shutdown.',
+    description:
+      'Wait for an existing command and collect new stdout/stderr. A running status is normal for silent work or sleep. Reuse the same sessionId; do not relaunch the command. Sessions belong to this conversation and survive turns until process exit, cancellation, or Runtime shutdown.',
     inputSchema: {
-      type: 'object', additionalProperties: false, required: ['sessionId'],
+      type: 'object',
+      additionalProperties: false,
+      required: ['sessionId'],
       properties: {
         sessionId: { type: 'string' },
-        waitMs: { type: 'integer', minimum: 0, maximum: 30_000, description: 'Defaults to 30000. Zero reads current output without waiting.' },
+        waitMs: {
+          type: 'integer',
+          minimum: 0,
+          maximum: 30_000,
+          description: 'Defaults to 30000. Zero reads current output without waiting.',
+        },
       },
     },
   },
   {
     name: 'list_commands',
-    description: 'List running and recently finished commands in this conversation, including their sessionId and status. Use after a turn boundary to find an existing server or long task.',
+    description:
+      'List running and recently finished commands in this conversation, including their sessionId and status. Use after a turn boundary to find an existing server or long task.',
     inputSchema: { type: 'object', additionalProperties: false, properties: {} },
   },
   {
     name: 'stop_command',
-    description: 'Stop one command session owned by this conversation, including its child processes. Use when the command is no longer needed or the user requests cancellation.',
+    description:
+      'Stop one command session owned by this conversation, including its child processes. Use when the command is no longer needed or the user requests cancellation.',
     inputSchema: {
-      type: 'object', additionalProperties: false, required: ['sessionId'],
+      type: 'object',
+      additionalProperties: false,
+      required: ['sessionId'],
       properties: { sessionId: { type: 'string' } },
     },
   },
@@ -301,7 +327,10 @@ export const CHAT_AGENT_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
       required: ['agentId', 'task'],
       properties: {
         task: { type: 'string', minLength: 1, maxLength: 20_000 },
-        agentId: { type: 'string', description: 'Exact existing Agent id from list_available_agents.' },
+        agentId: {
+          type: 'string',
+          description: 'Exact existing Agent id from list_available_agents.',
+        },
         requiredSkillIds: { type: 'array', items: { type: 'string' }, maxItems: 16 },
         requiredToolIds: { type: 'array', items: { type: 'string' }, maxItems: 16 },
         tokenBudget: { type: 'integer', minimum: 1, description: 'Optional per-child token cap.' },
@@ -310,6 +339,13 @@ export const CHAT_AGENT_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
           minimum: 1,
           maximum: 3600,
           description: 'Optional wall-clock limit for this child task; defaults to 300 seconds.',
+        },
+        statusTimeoutSeconds: {
+          type: 'integer',
+          minimum: 15,
+          maximum: 900,
+          description:
+            'Optional timeout for a missing Agent status notification before the runtime probes status; defaults to 120 seconds.',
         },
         parallelGroup: {
           type: 'string',
@@ -321,16 +357,115 @@ export const CHAT_AGENT_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
       },
     },
   },
+  {
+    name: 'collaboration_send_message',
+    description:
+      'Send a structured message to members of the current collaboration conversation. Use this for agent-to-agent communication; it does not create a long-running task unless a recipient chooses to dispatch one.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['text'],
+      properties: {
+        text: { type: 'string', minLength: 1, maxLength: 100_000 },
+        recipientMemberIds: { type: 'array', items: { type: 'string' }, maxItems: 32 },
+        replyToMessageId: { type: 'string' },
+        expectsResponse: { type: 'boolean' },
+      },
+    },
+  },
+  {
+    name: 'collaboration_send_direct_message',
+    description:
+      'Send a message to one other agent in an associated direct chat. This is available only when the current group allows peer direct messages. The parent group message is retained as a visible context reference.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['recipientMemberId', 'originMessageId', 'text'],
+      properties: {
+        recipientMemberId: { type: 'string', minLength: 1, maxLength: 256 },
+        originMessageId: { type: 'string', minLength: 1, maxLength: 256 },
+        text: { type: 'string', minLength: 1, maxLength: 100_000 },
+        expectsResponse: { type: 'boolean' },
+      },
+    },
+  },
+  {
+    name: 'collaboration_dispatch_tasks',
+    description:
+      'Create structured tasks for active members of the current collaboration conversation. Each task runs independently when its dependencies and resources are ready.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['tasks'],
+      properties: {
+        tasks: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 32,
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['assigneeMemberId', 'title', 'instructions'],
+            properties: {
+              key: { type: 'string' },
+              assigneeMemberId: { type: 'string' },
+              title: { type: 'string' },
+              instructions: { type: 'string' },
+              expectedOutput: { type: 'string' },
+              dependsOnTaskIds: { type: 'array', items: { type: 'string' } },
+              contextRefs: { type: 'array', items: { type: 'string' } },
+              planRef: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['planId', 'revision'],
+                properties: {
+                  planId: { type: 'string', minLength: 1, maxLength: 256 },
+                  revision: { type: 'integer', minimum: 1 },
+                  stepId: { type: 'string', minLength: 1, maxLength: 256 },
+                },
+              },
+              timeoutSeconds: { type: 'integer', minimum: 60, maximum: 7200 },
+            },
+          },
+        },
+        originMessageId: { type: 'string' },
+        parentTaskId: { type: 'string' },
+      },
+    },
+  },
 ];
 
 export const CHAT_DYNAMIC_AGENT_TOOL_SCHEMAS: readonly ProviderToolSchema[] =
   CHAT_AGENT_TOOL_SCHEMAS.filter((tool) => tool.name === 'agent_delegate');
 
+export const CHAT_COLLABORATION_TOOL_SCHEMAS: readonly ProviderToolSchema[] =
+  CHAT_AGENT_TOOL_SCHEMAS.filter(
+    (tool) =>
+      tool.name === 'collaboration_send_message' ||
+      tool.name === 'collaboration_send_direct_message' ||
+      tool.name === 'collaboration_dispatch_tasks',
+  );
+
+/** Collaboration tool names — host dispatch routes these to the collaboration executor. */
+export const CHAT_COLLABORATION_TOOL_NAMES: ReadonlySet<string> = new Set(
+  CHAT_COLLABORATION_TOOL_SCHEMAS.map((tool) => tool.name),
+);
+
 export const CHAT_AGENT_DIRECTORY_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
+  {
+    name: 'agent_run_status',
+    description:
+      'Read authoritative background Agent task status in this conversation. Omit childRunId to list tasks; provide it to read the final report. offset pages tasks or report text; use nextOffset to continue. Results may include statusObservation when a push notification was delayed and the runtime performed a timeout probe. Never starts a task.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: { childRunId: { type: 'string' }, offset: { type: 'integer', minimum: 0 } },
+    },
+  },
   {
     name: 'list_available_agents',
     description:
-      'List existing, enabled Agents active in the current workspace. Use the returned exact agentId with agent_run.',
+      'Authoritatively list existing, enabled Agents active and usable in the current workspace from live SYNC-THINK runtime state. Never inspect AGENTS.md or project files for this. Use the returned exact agentId with agent_run.',
     inputSchema: { type: 'object', additionalProperties: false, properties: {} },
   },
   {
@@ -347,7 +482,43 @@ export const CHAT_AGENT_DIRECTORY_TOOL_SCHEMAS: readonly ProviderToolSchema[] = 
     ...CHAT_AGENT_TOOL_SCHEMAS.find((tool) => tool.name === 'agent_delegate')!,
     name: 'agent_run',
     description:
-      'Run one existing Agent active in the current workspace. Never creates or modifies Agents.',
+      'Start one existing Agent active in the current workspace as a background child task. Returns immediately with childRunId; progress and the final result are proactively written back to the parent conversation, and the runtime probes status after statusTimeoutSeconds if notifications go quiet. The child can be cancelled independently. Never creates or modifies Agents.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['agentId', 'task'],
+      properties: {
+        task: { type: 'string', minLength: 1, maxLength: 20_000 },
+        agentId: {
+          type: 'string',
+          description: 'Exact existing Agent id from list_available_agents.',
+        },
+        requiredSkillIds: { type: 'array', items: { type: 'string' }, maxItems: 16 },
+        requiredToolIds: { type: 'array', items: { type: 'string' }, maxItems: 16 },
+        tokenBudget: { type: 'integer', minimum: 1, description: 'Optional per-child token cap.' },
+        timeoutSeconds: {
+          type: 'integer',
+          minimum: 60,
+          maximum: 7_200,
+          description:
+            'Optional absolute wall-clock cap for the background child task; defaults to 7200 seconds. A separate 1800-second no-progress watchdog also applies.',
+        },
+        statusTimeoutSeconds: {
+          type: 'integer',
+          minimum: 15,
+          maximum: 900,
+          description:
+            'Optional timeout for a missing Agent status notification before the runtime probes status; defaults to 120 seconds.',
+        },
+        parallelGroup: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 80,
+          description:
+            'Optional display and scheduling group for sibling delegated tasks from the same model turn.',
+        },
+      },
+    },
   },
 ];
 
@@ -980,12 +1151,13 @@ export const CHAT_BROWSER_WORKFLOW_TOOL_SCHEMAS: readonly ProviderToolSchema[] =
   {
     name: 'browser_workflow_create_draft',
     description:
-      'Create an AI-source Browser Automation Draft. This does NOT record browser actions or publish a workflow; the user must record it in Browser Automation, submit it for review, and approve it before publishing.',
+      'Create an AI-source Browser Automation Draft. This does NOT record browser actions or publish a workflow; complete the browser operation recording, then let the user save the draft or publish it.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
       required: ['name', 'instruction', 'startUrl'],
       properties: {
+        workspaceId: { type: 'string', description: 'Workspace that owns this task. Defaults to the conversation workspace.' },
         profileId: {
           type: 'string',
           description: 'Optional Browser Profile id. Defaults to the default Profile.',
@@ -1038,6 +1210,7 @@ export interface ChatBrowserWorkflowService {
 }
 
 export function executeChatBrowserWorkflowTool(input: {
+  workspaceId?: string;
   toolName: string;
   argumentsJson: string;
   service: ChatBrowserWorkflowService;
@@ -1105,6 +1278,7 @@ export function executeChatBrowserWorkflowTool(input: {
       }
       const payload = parseCreateBrowserWorkflowDraftPayload({
         ...rawRecord,
+        ...(input.workspaceId && rawRecord.workspaceId === undefined ? { workspaceId: input.workspaceId } : {}),
         profileId,
         source: 'ai',
       });
@@ -1120,7 +1294,7 @@ export function executeChatBrowserWorkflowTool(input: {
         ok: true,
         ...created,
         nextStep:
-          'Open Browser Automation, record the workflow, then submit it for review before publishing.',
+          'Open Browser Automation, record the workflow, then save it as a draft or publish it.',
       });
     }
 
@@ -1551,35 +1725,6 @@ export const CHAT_NETWORK_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
 
 export const CHAT_NETWORK_TOOL_NAMES = new Set(CHAT_NETWORK_TOOL_SCHEMAS.map((tool) => tool.name));
 
-/** Tools that only observe the workspace (safe under「询问批准」). */
-export const CHAT_READ_ONLY_TOOL_NAMES = new Set([
-  'read_file',
-  'list_files',
-  'search_files',
-  'git_status',
-  'git_diff',
-  'web_search',
-  'web_fetch',
-  'list_agent_resources',
-  'list_available_agents',
-  'get_agent',
-  'agent_run',
-  'list_skills',
-  'read_skill',
-  'list_mcp_tools',
-  'list_teams',
-  'update_task_plan',
-  'browser_workflow_list',
-  'browser_workflow_get',
-  // Browser panel tools: the page is operated in front of the user (visible,
-  // stoppable), so click/type/read/screenshot are display-class, not gated.
-  'browser_open',
-  'browser_click',
-  'browser_type',
-  'browser_read',
-  'browser_screenshot',
-]);
-
 /** Tools that mutate the workspace or execute commands. */
 export const CHAT_MUTATING_TOOL_NAMES = new Set(['write_file', 'run_command']);
 
@@ -1622,6 +1767,8 @@ export function toolsForExecutionMode(
     includeProjectTools?: boolean;
     /** Agent-management tools (create_agent / list_agent_resources). */
     includeAgentTools?: boolean;
+    /** Expose structured collaboration tools only for collaboration sessions. */
+    collaborationEnabled?: boolean;
     /** Built-in Computer Use tools backed by Windows UI Automation. */
     includeDesktopTools?: boolean;
     /** Local Browser Automation task/Draft tools. */
@@ -1654,19 +1801,26 @@ export function toolsForExecutionMode(
   const canManageAgentLibrary =
     options.conversationTrack === undefined || options.conversationTrack === 'model';
   if (options.includeAgentTools && canManageAgentLibrary) {
-    tools.push(...CHAT_AGENT_TOOL_SCHEMAS.filter((tool) => tool.name !== 'agent_delegate'));
+    tools.push(
+      ...CHAT_AGENT_TOOL_SCHEMAS.filter(
+        (tool) => tool.name !== 'agent_delegate' && !CHAT_COLLABORATION_TOOL_SCHEMAS.includes(tool),
+      ),
+    );
     tools.push(
       ...CHAT_AGENT_DIRECTORY_TOOL_SCHEMAS.filter((tool) =>
-        ['list_available_agents', 'get_agent', 'agent_run'].includes(tool.name),
+        ['list_available_agents', 'get_agent', 'agent_run', 'agent_run_status'].includes(tool.name),
       ),
     );
     tools.push(...CHAT_SKILL_TOOL_SCHEMAS);
     tools.push(...CHAT_TEAM_TOOL_SCHEMAS);
   }
-  if (
-    options.conversationTrack === 'model' &&
-    options.allowDynamicSubagents === true
-  ) {
+  // Collaboration messaging is available to the main model assistant as well
+  // as agent/team runs. The Runtime command path still requires a bound
+  // collaboration conversation and injects the sender identity.
+  if (options.includeAgentTools && options.collaborationEnabled && options.conversationTrack) {
+    tools.push(...CHAT_COLLABORATION_TOOL_SCHEMAS);
+  }
+  if (options.conversationTrack === 'model' && options.allowDynamicSubagents === true) {
     tools.push(...CHAT_DYNAMIC_AGENT_TOOL_SCHEMAS);
   }
   if (options.includeMcpCatalogTools) {
@@ -1981,7 +2135,7 @@ export function summarizeToolCallForApproval(
       title: name ? `创建浏览器自动化草稿「${name}」` : '创建浏览器自动化草稿',
       detail: [
         site ? `站点：${site.slice(0, 120)}` : '',
-        '仅创建草稿，仍需录制、提交审核并批准后才会发布',
+        '仅创建草稿，仍需录制，并由用户选择保存草稿或直接发布',
       ]
         .filter(Boolean)
         .join(' · '),
@@ -2902,21 +3056,29 @@ export async function executeChatBuiltInTool(input: {
     if (input.commandSessions && input.threadId) {
       const scope = { threadId: input.threadId, workspaceRoot };
       if (input.toolCall.name === 'run_command') {
-        return JSON.stringify(await input.commandSessions.start(scope, parseCommandStart(args), {
-          runId: input.runId ?? input.threadId, callId: input.toolCall.id, signal: input.signal,
-        }));
+        return JSON.stringify(
+          await input.commandSessions.start(scope, parseCommandStart(args), {
+            runId: input.runId ?? input.threadId,
+            callId: input.toolCall.id,
+            signal: input.signal,
+          }),
+        );
       }
       if (input.toolCall.name === 'list_commands') {
         return JSON.stringify({ ok: true, sessions: input.commandSessions.list(scope) });
       }
       if (input.toolCall.name === 'read_command' || input.toolCall.name === 'stop_command') {
-        if (typeof args.sessionId !== 'string' || !args.sessionId) throw new Error('sessionId is required');
+        if (typeof args.sessionId !== 'string' || !args.sessionId)
+          throw new Error('sessionId is required');
         if (input.toolCall.name === 'stop_command') {
           const session = await input.commandSessions.stop(scope, args.sessionId);
           return JSON.stringify({ ok: true, session });
         }
-        if (args.waitMs !== undefined && typeof args.waitMs !== 'number') throw new Error('waitMs must be a number');
-        return JSON.stringify(await input.commandSessions.read(scope, args.sessionId, args.waitMs, input.signal));
+        if (args.waitMs !== undefined && typeof args.waitMs !== 'number')
+          throw new Error('waitMs must be a number');
+        return JSON.stringify(
+          await input.commandSessions.read(scope, args.sessionId, args.waitMs, input.signal),
+        );
       }
     }
     let events: AsyncIterable<WorkerEvent>;
@@ -2985,7 +3147,9 @@ export async function executeChatBuiltInTool(input: {
       case 'run_command': {
         const action = parseCommandStart(args);
         if (action.background || action.waitMs !== undefined) {
-          throw new Error('Command session host is required for background execution or bounded waits');
+          throw new Error(
+            'Command session host is required for background execution or bounded waits',
+          );
         }
         const command = action.command;
         // Do NOT pre-block by basename (rg/fd/…). Try real execution first so
@@ -3036,16 +3200,27 @@ export async function executeChatBuiltInTool(input: {
 }
 
 function parseCommandStart(args: Record<string, unknown>): CommandSessionStart {
-  if (typeof args.command !== 'string' || !args.command.trim()) throw new Error('command is required');
-  if (args.args !== undefined && (!Array.isArray(args.args) || !args.args.every((arg) => typeof arg === 'string'))) {
+  if (typeof args.command !== 'string' || !args.command.trim())
+    throw new Error('command is required');
+  if (
+    args.args !== undefined &&
+    (!Array.isArray(args.args) || !args.args.every((arg) => typeof arg === 'string'))
+  ) {
     throw new Error('args must be an array of strings');
   }
-  if (args.cwd !== undefined && typeof args.cwd !== 'string') throw new Error('cwd must be a string');
-  if (args.background !== undefined && typeof args.background !== 'boolean') throw new Error('background must be a boolean');
+  if (args.cwd !== undefined && typeof args.cwd !== 'string')
+    throw new Error('cwd must be a string');
+  if (args.background !== undefined && typeof args.background !== 'boolean')
+    throw new Error('background must be a boolean');
   for (const field of ['waitMs', 'timeoutMs'] as const) {
     const value = args[field];
-    if (value !== undefined && (typeof value !== 'number' || !Number.isSafeInteger(value) ||
-      value < (field === 'waitMs' ? 0 : 1) || value > (field === 'waitMs' ? 30_000 : 2_147_483_647))) {
+    if (
+      value !== undefined &&
+      (typeof value !== 'number' ||
+        !Number.isSafeInteger(value) ||
+        value < (field === 'waitMs' ? 0 : 1) ||
+        value > (field === 'waitMs' ? 30_000 : 2_147_483_647))
+    ) {
       throw new Error(`Invalid ${field}`);
     }
   }
@@ -3417,30 +3592,6 @@ async function collectWorkerResult(events: AsyncIterable<WorkerEvent>): Promise<
   return JSON.stringify(output);
 }
 
-/**
- * Recovery hint after a real ENOENT / missing-binary failure.
- * Prefer built-in tools; do not invent absolute-path bans.
- */
-export function unavailableExternalCommandHint(command: string): string | undefined {
-  const base = command
-    .trim()
-    .replace(/^["']|["']$/g, '')
-    .split(/[\\/]/)
-    .pop()
-    ?.toLowerCase()
-    .replace(/\.exe$/i, '');
-  if (!base) return undefined;
-  if (base === 'rg' || base === 'ripgrep') {
-    return (
-      'rg/ripgrep is not available (ENOENT). ' +
-      'Use built-in list_files + read_file to explore the project, ' +
-      'or run_command with Windows findstr only for narrow text search. ' +
-      'Do not call rg again unless you know it is installed on PATH.'
-    );
-  }
-  return undefined;
-}
-
 export type ToolLoopOutcomeKind = 'continue' | 'force_final';
 
 export interface ToolLoopGuardInput {
@@ -3557,7 +3708,13 @@ export function evaluateToolLoopGuard(input: ToolLoopGuardInput): ToolLoopGuardR
   const stagnantRounds = batchStagnant ? prevStagnant + 1 : 0;
 
   if (batchSize === 0 && input.completedResults.some((item) => item.pendingCommand)) {
-    return { kind: 'continue', seenFingerprints: seen, stagnantRounds: 0, failedCount, unavailableCount };
+    return {
+      kind: 'continue',
+      seenFingerprints: seen,
+      stagnantRounds: 0,
+      failedCount,
+      unavailableCount,
+    };
   }
 
   if (input.toolLoopRound >= maxToolRounds) {

@@ -8,7 +8,8 @@
  * description call.
  */
 import { existsSync, readFileSync, statSync } from 'node:fs';
-import { isAbsolute, join, normalize, resolve } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
+import { isPathWithinRoot } from '@sync-think/shared/node-paths';
 
 export const DESCRIBE_IMAGE_TOOL_NAME = 'describe_image';
 export const VISION_FALLBACK_SERVER_NAME = 'vision-fallback';
@@ -23,16 +24,6 @@ const IMAGE_MIME_BY_EXT: Record<string, string> = {
   '.gif': 'image/gif',
   '.webp': 'image/webp',
 };
-
-function isPathInside(parent: string, child: string): boolean {
-  const root = normalize(resolve(parent))
-    .replace(/[\\/]+$/, '')
-    .toLowerCase();
-  const target = normalize(resolve(child)).toLowerCase();
-  if (target === root) return true;
-  const prefix = root + (root.includes('\\') ? '\\' : '/');
-  return target.startsWith(prefix);
-}
 
 export type DescribeImagePathResolution =
   { ok: true; absolutePath: string; mimeType: string } | { ok: false; error: string };
@@ -50,7 +41,7 @@ export function resolveDescribeImagePath(
   }
   const root = resolve(workspaceRoot);
   const absolute = isAbsolute(rawPath) ? resolve(rawPath) : resolve(root, rawPath);
-  if (!isPathInside(root, absolute)) {
+  if (!isPathWithinRoot(root, absolute)) {
     return { ok: false, error: `图片路径超出工作区范围（仅允许 ${root} 内的文件）` };
   }
   if (!existsSync(absolute)) {
