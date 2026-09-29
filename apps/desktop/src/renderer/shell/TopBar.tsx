@@ -1,9 +1,10 @@
+import { PROJECTLESS_SCOPE } from './projectless-scope.js';
 // NewMax-style top bar: workspace tabs + full menu from "+"
 // Menu portals to body so overflow:hidden stage boards cannot clip it.
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  Activity,
+  Inbox,
   Bot,
   CalendarClock,
   Check,
@@ -19,6 +20,7 @@ import {
   Trash2,
   Users,
   Wrench,
+  Palette,
   X,
 } from 'lucide-react';
 import clsx from 'clsx';
@@ -51,7 +53,6 @@ interface WorkspaceTabLayout {
 export function calculateWorkspaceTabLayout(
   containerWidth: number,
   orderedIds: readonly string[],
-  activeId?: string,
 ): WorkspaceTabLayout {
   const count = orderedIds.length;
   if (count === 0) return { visibleIds: [], tabWidth: WORKSPACE_TAB_MAX_WIDTH, overflowCount: 0 };
@@ -88,9 +89,6 @@ export function calculateWorkspaceTabLayout(
     ),
   );
   const visibleIds = orderedIds.slice(0, visibleCount);
-  if (activeId && orderedIds.includes(activeId) && !visibleIds.includes(activeId)) {
-    visibleIds[visibleIds.length - 1] = activeId;
-  }
 
   const tabGaps = (visibleCount - 1) * WORKSPACE_TAB_GAP;
   const reservedWidth =
@@ -283,10 +281,12 @@ export interface TopBarProps {
 
 function ContextStageIcon({ stage }: { stage: NonNullable<TopBarProps['contextStage']> }) {
   const Icon =
-    stage === 'tasks'
+    stage === 'design-system'
+      ? Palette
+      : stage === 'tasks'
       ? CalendarClock
       : stage === 'activity'
-        ? Activity
+        ? Inbox
         : stage === 'browser'
           ? Globe
           : stage === 'agents'
@@ -320,10 +320,11 @@ export function TopBar(props: TopBarProps) {
     setOrderIds(props.workspaces.filter((w) => !w.hidden).map((w) => w.workspaceId));
   }, [props.workspaces]);
   const workspaceTrackWidth = useElementWidth(workspaceTrackRef);
-  const workspaceLayout = calculateWorkspaceTabLayout(
-    workspaceTrackWidth,
-    orderIds,
-    props.activeWorkspaceId,
+  const workspaceLayout = calculateWorkspaceTabLayout(workspaceTrackWidth, orderIds);
+  const overflowSelection = visibleWorkspaces.find(
+    (workspace) =>
+      workspace.workspaceId === props.activeWorkspaceId &&
+      !workspaceLayout.visibleIds.includes(workspace.workspaceId),
   );
   const onReorderWorkspaces = props.onReorderWorkspaces;
   const commitWorkspaceOrder = useCallback(
@@ -453,7 +454,8 @@ export function TopBar(props: TopBarProps) {
           aria-label="工作区"
           style={{ width: morph.railWidth }}
         >
-          {props.activeWorkspaceId && workspaceLayout.visibleIds.includes(props.activeWorkspaceId) ? (
+          {props.activeWorkspaceId &&
+          workspaceLayout.visibleIds.includes(props.activeWorkspaceId) ? (
             <div
               data-testid="workspace-tab-surface"
               data-workspace-id={props.activeWorkspaceId}
@@ -487,7 +489,7 @@ export function TopBar(props: TopBarProps) {
                 left={morph.leftFor(workspace.workspaceId)}
                 dragging={morph.draggingId === workspace.workspaceId}
                 onHide={
-                  props.onSetWorkspaceHidden
+                  props.onSetWorkspaceHidden && workspace.workspaceId !== PROJECTLESS_SCOPE
                     ? () => props.onSetWorkspaceHidden?.(workspace.workspaceId, true)
                     : undefined
                 }
@@ -514,9 +516,18 @@ export function TopBar(props: TopBarProps) {
             <button
               type="button"
               data-testid="topbar-workspace-overflow"
-              className="st-icon-motion flex h-7 w-11 items-center justify-center rounded-[10px] text-[12px] font-medium text-text-secondary hover:bg-hover hover:text-text"
-              title={`还有 ${workspaceLayout.overflowCount} 个工作区`}
-              aria-label={`显示其余 ${workspaceLayout.overflowCount} 个工作区`}
+              className={clsx(
+                'st-icon-motion flex h-7 w-11 items-center justify-center rounded-[10px] text-[12px] font-medium',
+                overflowSelection
+                  ? 'bg-accent-soft text-accent-text'
+                  : 'text-text-secondary hover:bg-hover hover:text-text',
+              )}
+              title={
+                overflowSelection
+                  ? `当前选择：${overflowSelection.name}`
+                  : `还有 ${workspaceLayout.overflowCount} 个工作区`
+              }
+              aria-label={`显示其余 ${workspaceLayout.overflowCount} 个工作区${overflowSelection ? `，当前选择：${overflowSelection.name}` : ''}`}
               aria-expanded={menuOpen && menuAnchor?.dataset.testid === 'topbar-workspace-overflow'}
               onClick={toggleWorkspaceMenu}
             >
@@ -584,7 +595,7 @@ export function TopBar(props: TopBarProps) {
                                   </span>
                                 ) : (
                                   <span className="block text-[10.5px] text-text-faint">
-                                    未绑定路径
+                                    {workspace.workspaceId === PROJECTLESS_SCOPE ? '独立对话与全局任务' : '未绑定路径'}
                                   </span>
                                 )}
                               </span>
@@ -594,7 +605,7 @@ export function TopBar(props: TopBarProps) {
                                 <span className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                               )}
                             </button>
-                            <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+                            <div style={workspace.workspaceId === PROJECTLESS_SCOPE ? { display: 'none' } : undefined} className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
                               <button
                                 type="button"
                                 data-testid={`workspace-edit-${workspace.workspaceId}`}

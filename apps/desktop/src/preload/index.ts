@@ -21,14 +21,30 @@ import type {
   ImportDesktopDataResponse,
   OpenDesktopDataDirectoryResponse,
 } from '../data-management-contract.js';
-import type {
-  ProjectGitActionResult,
-  ProjectGitCheckoutResult,
-  ProjectGitCommitResult,
-  ProjectGitInfo,
-  ProjectGitPushResult,
-  ProjectGitReview,
-} from '../project-git-contract.js';
+import {
+  GIT_IPC_CHANNELS,
+  type GitActionResult,
+  type GitBranches,
+  type GitChangedSummary,
+  type GitCheckoutResult,
+  type GitCommitFileDiff,
+  type GitCommitResult,
+  type GitFetchResult,
+  type GitFileDiff,
+  type GitIdentityResult,
+  type GitIdentityScope,
+  type GitLogResult,
+  type GitMergeResult,
+  type GitPullResult,
+  type GitPushResult,
+  type GitRepository,
+  type GitStatus,
+  type GitWatchedEvent,
+  type GitWatchResult,
+  type GitWorktreeAddResult,
+  type GitWorktreeList,
+  type GitWorktreeRemoveResult,
+} from '../git-contract.js';
 import type {
   DataBackupPayload,
   DataBackupResponse,
@@ -459,6 +475,11 @@ import type {
 } from '../kernel-update-contract.js';
 
 const api = {
+  editing: {
+    execute: (command: import('../context-menu-contract.js').EditCommand) => ipcRenderer.invoke('desktop:editing-command', command) as Promise<void>,
+    readText: () => ipcRenderer.invoke('desktop:clipboard-read-text') as Promise<string>,
+    writeText: (text: string) => ipcRenderer.invoke('desktop:clipboard-write-text', text) as Promise<void>,
+  },
   runtime: {
     connect: async (): Promise<RuntimeConnectOutcome> => {
       try {
@@ -1635,28 +1656,108 @@ const api = {
         dir: string;
         entries: Array<{ name: string; path: string; kind: 'file' | 'dir' }>;
       }>,
-    /** ZCode Git tools / 工作区面板共享的仓库事实快照。 */
-    getGitInfo: (payload: { root: string }) =>
-      ipcRenderer.invoke('desktop:git-info', payload) as Promise<ProjectGitInfo>,
-    /** 打开 ZCode 式工作区更改审阅所需的前后文本快照。 */
-    getGitReview: (payload: { root: string }) =>
-      ipcRenderer.invoke('desktop:git-review', payload) as Promise<ProjectGitReview>,
-    /** 切换分支（脏工作区需显式 stash/force 策略）。 */
+    /**
+     * Git 工具桥。命名与分组对齐 NewMax 的 `git:*` 通道族，
+     * 通道常量集中在 `git-contract.ts`，避免两侧字符串漂移。
+     */
+    gitRepository: (payload: { root: string }) =>
+      ipcRenderer.invoke(GIT_IPC_CHANNELS.repository, payload) as Promise<GitRepository>,
+    gitStatus: (payload: { root: string }) =>
+      ipcRenderer.invoke(GIT_IPC_CHANNELS.status, payload) as Promise<GitStatus>,
+    gitChanged: (payload: { root: string }) =>
+      ipcRenderer.invoke(GIT_IPC_CHANNELS.changed, payload) as Promise<GitChangedSummary>,
+    gitBranches: (payload: { root: string }) =>
+      ipcRenderer.invoke(GIT_IPC_CHANNELS.branches, payload) as Promise<GitBranches>,
     gitCheckout: (payload: {
       root: string;
       branch: string;
       strategy?: 'check' | 'stash' | 'force';
-    }) => ipcRenderer.invoke('desktop:git-checkout', payload) as Promise<ProjectGitCheckoutResult>,
+    }) => ipcRenderer.invoke(GIT_IPC_CHANNELS.checkout, payload) as Promise<GitCheckoutResult>,
     gitCreateBranch: (payload: { root: string; branch: string }) =>
-      ipcRenderer.invoke('desktop:git-create-branch', payload) as Promise<ProjectGitActionResult>,
+      ipcRenderer.invoke(GIT_IPC_CHANNELS.createBranch, payload) as Promise<GitActionResult>,
+    gitStage: (payload: { root: string; paths: string[] }) =>
+      ipcRenderer.invoke(GIT_IPC_CHANNELS.stage, payload) as Promise<GitActionResult>,
+    gitUnstage: (payload: { root: string; paths: string[] }) =>
+      ipcRenderer.invoke(GIT_IPC_CHANNELS.unstage, payload) as Promise<GitActionResult>,
+    gitDiscard: (payload: { root: string; paths: string[] }) =>
+      ipcRenderer.invoke(GIT_IPC_CHANNELS.discard, payload) as Promise<GitActionResult>,
     gitCommit: (payload: {
       root: string;
       message: string;
-      includeUnstaged: boolean;
-      push: boolean;
-    }) => ipcRenderer.invoke('desktop:git-commit', payload) as Promise<ProjectGitCommitResult>,
-    gitPush: (payload: { root: string }) =>
-      ipcRenderer.invoke('desktop:git-push', payload) as Promise<ProjectGitPushResult>,
+      description?: string;
+      stageAll?: boolean;
+      push?: boolean;
+    }) => ipcRenderer.invoke(GIT_IPC_CHANNELS.commit, payload) as Promise<GitCommitResult>,
+    gitUndoCommit: (payload: { root: string }) =>
+      ipcRenderer.invoke(GIT_IPC_CHANNELS.undoCommit, payload) as Promise<GitActionResult>,
+    gitLog: (payload: { root: string; limit?: number; skip?: number }) =>
+      ipcRenderer.invoke(GIT_IPC_CHANNELS.log, payload) as Promise<GitLogResult>,
+    gitCommitFileDiff: (payload: { root: string; hash: string; path: string }) =>
+      ipcRenderer.invoke(GIT_IPC_CHANNELS.commitFileDiff, payload) as Promise<GitCommitFileDiff | null>,
+    gitFileDiff: (payload: { root: string; path: string; staged?: boolean }) =>
+      ipcRenderer.invoke(GIT_IPC_CHANNELS.fileDiff, payload) as Promise<GitFileDiff | null>,
+    gitFileLines: (payload: {
+      root: string;
+      path: string;
+      offset?: number;
+      limit?: number;
+      revision?: string;
+    }) =>
+      ipcRenderer.invoke(GIT_IPC_CHANNELS.fileLines, payload) as Promise<{
+        lines: string[];
+        offset: number;
+        totalLines: number;
+        nextOffset?: number;
+      } | null>,
+    gitPush: (payload: { root: string; force?: boolean }) =>
+      ipcRenderer.invoke(GIT_IPC_CHANNELS.push, payload) as Promise<GitPushResult>,
+    gitPull: (payload: { root: string; strategy?: 'check' | 'stash' }) =>
+      ipcRenderer.invoke(GIT_IPC_CHANNELS.pull, payload) as Promise<GitPullResult>,
+    gitFetch: (payload: { root: string }) =>
+      ipcRenderer.invoke(GIT_IPC_CHANNELS.fetch, payload) as Promise<GitFetchResult>,
+    gitReadIdentity: (payload: { root: string; scope?: GitIdentityScope }) =>
+      ipcRenderer.invoke(GIT_IPC_CHANNELS.readIdentity, payload) as Promise<GitIdentityResult>,
+    gitWriteIdentity: (payload: {
+      root: string;
+      scope: GitIdentityScope;
+      identity: { name: string; email: string };
+    }) => ipcRenderer.invoke(GIT_IPC_CHANNELS.writeIdentity, payload) as Promise<GitIdentityResult>,
+    gitWorktrees: (payload: { root: string }) =>
+      ipcRenderer.invoke(GIT_IPC_CHANNELS.worktrees, payload) as Promise<GitWorktreeList>,
+    gitAddWorktree: (payload: {
+      root: string;
+      path: string;
+      branch?: string;
+      newBranch?: string;
+    }) => ipcRenderer.invoke(GIT_IPC_CHANNELS.addWorktree, payload) as Promise<GitWorktreeAddResult>,
+    gitRemoveWorktree: (payload: {
+      root: string;
+      path: string;
+      force?: boolean;
+      deleteBranch?: boolean;
+    }) =>
+      ipcRenderer.invoke(GIT_IPC_CHANNELS.removeWorktree, payload) as Promise<GitWorktreeRemoveResult>,
+    gitMerge: (payload: { root: string; branch: string }) =>
+      ipcRenderer.invoke(GIT_IPC_CHANNELS.merge, payload) as Promise<GitMergeResult>,
+    gitMergePreview: (payload: { root: string; branch: string }) =>
+      ipcRenderer.invoke(GIT_IPC_CHANNELS.mergePreview, payload) as Promise<GitMergeResult>,
+    gitAbortMerge: (payload: { root: string }) =>
+      ipcRenderer.invoke(GIT_IPC_CHANNELS.abortMerge, payload) as Promise<GitActionResult>,
+    gitCommitMerge: (payload: { root: string; message?: string }) =>
+      ipcRenderer.invoke(GIT_IPC_CHANNELS.commitMerge, payload) as Promise<GitCommitResult>,
+    gitWatch: (payload: { root: string }) =>
+      ipcRenderer.invoke(GIT_IPC_CHANNELS.watch, payload) as Promise<GitWatchResult>,
+    gitUnwatch: (payload: { root: string }) =>
+      ipcRenderer.invoke(GIT_IPC_CHANNELS.unwatch, payload) as Promise<GitWatchResult>,
+    /** 仓库变更推送（对应 `gitWatch` 订阅）。返回取消订阅函数。 */
+    onGitWatched: (listener: (event: GitWatchedEvent) => void): (() => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, payload: GitWatchedEvent) => {
+        if (!payload || typeof payload.root !== 'string') return;
+        listener(payload);
+      };
+      ipcRenderer.on(GIT_IPC_CHANNELS.watched, handler);
+      return () => ipcRenderer.removeListener(GIT_IPC_CHANNELS.watched, handler);
+    },
     /** 能力中心：主进程代理下载公网 SKILL.md 文本（renderer CSP 不放外网）。 */
     fetchSkillMd: (payload: { url: string }) =>
       ipcRenderer.invoke('desktop:fetch-skill-md', payload) as Promise<{

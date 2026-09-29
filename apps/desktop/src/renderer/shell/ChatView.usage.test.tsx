@@ -243,6 +243,33 @@ describe('ChatView reply usage details', () => {
     expect(runtime.listConversationRunTimeline).toHaveBeenCalledTimes(2);
   });
 
+  it.each(['Runtime connection closed', 'run not found'])(
+    'retains earlier pages and resumes the failed cursor: %s', async (failure) => {
+      const first = { id: 'first', sequence: 1, kind: 'thinking', text: '第一页的完整步骤', status: 'completed' };
+      const second = { id: 'second', sequence: 2, kind: 'thinking', text: '第二页的完整步骤', status: 'completed' };
+      runtime.listConversationMessages.mockResolvedValue({ messages: [{ ...assistantMessage,
+        blocks: [{ type: 'commentary', payload: { assistantTimeline: [first] } },
+          { type: 'text', text: '任务完成' }],
+      }], hasMore: false });
+      runtime.listConversationRunTimeline
+        .mockResolvedValueOnce({ segments: [first], totalSegments: 2, nextCursor: 'page-2' })
+        .mockRejectedValueOnce(new Error(failure))
+        .mockResolvedValueOnce({ segments: [second], totalSegments: 2 });
+      render(<ChatView conversation={conversation} modelName="GPT-5" models={[]}
+        eventHistory={[]} onTitleUpdated={vi.fn()} />);
+      fireEvent.click(await screen.findByTestId('process-panel-toggle'));
+      expect(await screen.findByText('第一页的完整步骤')).toBeTruthy();
+      if (failure === 'run not found') {
+        fireEvent.click(await screen.findByRole('button', { name: '重新加载完整执行过程' }));
+      }
+      expect(await screen.findByText('第二页的完整步骤')).toBeTruthy();
+      expect(screen.getAllByText('第一页的完整步骤')).toHaveLength(1);
+      expect(screen.queryByRole('button', { name: '重新加载完整执行过程' })).toBeNull();
+      expect(runtime.listConversationRunTimeline.mock.calls.map(([request]) => request.cursor))
+        .toEqual([undefined, 'page-2', 'page-2']);
+    },
+  );
+
   it('uses the durable task-scoped usage summary for cumulative conversation tokens', async () => {
     runtime.getUsageSummary.mockResolvedValueOnce({
       rows: [],
@@ -827,7 +854,7 @@ describe('ChatView reply usage details', () => {
       />,
     );
 
-    expect((await screen.findByRole('status')).textContent).toContain('正在重新连接运行时 2/6');
+    expect((await screen.findByRole('status', { name: '运行时连接状态' })).textContent).toContain('正在重新连接运行时 2/6');
 
     view.rerender(
       <ChatView
@@ -843,7 +870,7 @@ describe('ChatView reply usage details', () => {
       />,
     );
 
-    expect((await screen.findByRole('status')).textContent).toContain(
+    expect((await screen.findByRole('status', { name: '运行时连接状态' })).textContent).toContain(
       '连接运行时失败：runtime.unavailable',
     );
   });

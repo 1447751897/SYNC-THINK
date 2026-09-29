@@ -1,3 +1,4 @@
+import { HtmlFilePreview, isHtmlPath } from './HtmlFilePreview.js';
 import { CodePreview } from './ExecutionProcessBlock.js';
 import { MarkdownContent } from './MarkdownContent.js';
 import { MarkdownDocumentEditor } from './MarkdownDocumentEditor.js';
@@ -15,12 +16,28 @@ export function FileContentPreview({
   path,
   highlightLine,
   onChange,
+  projectFolder,
+  persisted,
+  renderHtml = false,
 }: {
   text: string;
   path: string;
+  projectFolder?: string;
+  persisted?: boolean;
+  renderHtml?: boolean;
   highlightLine?: number;
   onChange?: (content: string) => void;
 }) {
+  if (renderHtml && isHtmlPath(path))
+    return (
+      <HtmlFilePreview
+        text={text}
+        path={path}
+        projectFolder={projectFolder}
+        persisted={persisted}
+      />
+    );
+
   if (isRenderedMarkdownPath(path)) {
     if (onChange) {
       return <MarkdownDocumentEditor text={text} onChange={onChange} />;

@@ -9,6 +9,8 @@ import {
 } from '@sync-think/shared';
 import { deferredContentReader } from './deferred-content-reader.js';
 import { fileDiffReader } from './file-diff-reader.js';
+import { FileDiffToolbar, FileDiffViewport } from './FileDiffSurface.js';
+import { highlightCodeLines, languageFromPath } from './code-highlight.js';
 import { WordSegments, wordHighlightMap } from './word-diff.js';
 
 interface Props {
@@ -196,8 +198,7 @@ function Session({
         controller.signal,
       )
       .then((response) => {
-        if (!controller.signal.aborted)
-          setExpandedRow({ key, text: response.content.text });
+        if (!controller.signal.aborted) setExpandedRow({ key, text: response.content.text });
       })
       .catch(() => {
         if (!controller.signal.aborted) setRowError('这一行的完整内容读取失败。');
@@ -209,6 +210,23 @@ function Session({
     [wordLevel, loaded],
   );
 
+  const highlightedRows = useMemo(() => {
+    if (!loaded || showWhitespace || wordLevel) return undefined;
+    const language = languageFromPath(item.path);
+    const beforeRows = loaded.rows.filter((row) => row.kind !== 'add');
+    const afterRows = loaded.rows.filter((row) => row.kind !== 'del');
+    const beforeTokens = highlightCodeLines(beforeRows.map((row) => row.text).join('\n'), language);
+    const afterTokens = highlightCodeLines(afterRows.map((row) => row.text).join('\n'), language);
+    let oldIndex = 0,
+      newIndex = 0;
+    return loaded.rows.map((row) => {
+      const token = row.kind === 'del' ? beforeTokens?.[oldIndex] : afterTokens?.[newIndex];
+      if (row.kind !== 'add') oldIndex++;
+      if (row.kind !== 'del') newIndex++;
+      return token;
+    });
+  }, [loaded, item.path, showWhitespace, wordLevel]);
+
   const notice = item.contentKind
     ? '只记录了替换片段，未取得完整修改后快照；这里不将片段冒充完整文件差异。'
     : item.previousTruncated
@@ -216,7 +234,14 @@ function Session({
       : '缺少对应历史快照；已记录的前后内容仍可分别读取。';
 
   return (
-    <div className="shell-deferred-file-diff" data-testid="deferred-file-diff">
+    <div className="shell-deferred-file-diff shell-beui-diff" data-testid="deferred-file-diff">
+      {loaded ? (
+        <FileDiffToolbar additions={loaded.added} deletions={loaded.removed}>
+          <span className="shell-beui-diff__page-count">
+            {loaded.rows.length} / {loaded.totalRows} 行
+          </span>
+        </FileDiffToolbar>
+      ) : null}
       {!comparable ? (
         <>
           <p className="shell-deferred-content__notice">{notice}</p>
@@ -242,7 +267,11 @@ function Session({
                 onClick={() =>
                   error === 'changed'
                     ? load(undefined, undefined, false)
-                    : load(lastRequest.current?.offset, lastRequest.current?.version, Boolean(loaded))
+                    : load(
+                        lastRequest.current?.offset,
+                        lastRequest.current?.version,
+                        Boolean(loaded),
+                      )
                 }
               >
                 {error === 'changed' ? '重新读取差异' : '重试差异'}
@@ -268,16 +297,13 @@ function Session({
             </p>
           ) : null}
           {loaded ? (
-            <div
-              ref={rowsRef}
-              className={
-                'shell-changes-card__diff-lines shell-deferred-file-diff__rows' +
-                (wrapLines ? ' is-wrap' : '') +
-                (showLineNumbers ? '' : ' is-no-line-numbers')
-              }
-              aria-label="文件差异内容"
-              tabIndex={0}
+            <FileDiffViewport
+              viewportRef={rowsRef}
+              wrap={wrapLines}
+              showLineNumbers={showLineNumbers}
+              className="shell-deferred-file-diff__rows"
               onScroll={continueReading}
+              path={item.path}
             >
               {loaded.rows.map((row, index) => {
                 const key = String(index);
@@ -314,6 +340,11 @@ function Session({
                         <WordSegments segments={segments} />
                       ) : showWhitespace ? (
                         decorateWhitespace(row.text || ' ')
+                      ) : highlightedRows?.[index] ? (
+                        <span
+                          className="hljs"
+                          dangerouslySetInnerHTML={{ __html: highlightedRows[index]! }}
+                        />
                       ) : (
                         row.text || ' '
                       )}
@@ -335,7 +366,7 @@ function Session({
                   </div>
                 );
               })}
-            </div>
+            </FileDiffViewport>
           ) : null}
           {busy ? (
             <span role="status" className="shell-deferred-file-diff__status">

@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { FakeProvider } from '@sync-think/adapters';
 import {
   openDatabaseAsync,
@@ -29,17 +29,17 @@ function input(agentId: string, taskId: string, signal: AbortSignal, onProgress:
   };
 }
 
-async function fixture() {
+async function fixture(provider: FakeProvider = new FakeProvider()) {
   const directory = mkdtempSync(join(tmpdir(), 'sync-think-collaboration-runtime-'));
   const path = join(directory, 'test.db');
   await runMigrations(path);
   const connection = await openDatabaseAsync({ path });
   const workspaceStore = new SqliteWorkspaceStore(connection.raw);
-  workspaceStore.createWorkspace({ id: 'workspace-1' as WorkspaceId, name: '运行测试' });
+  workspaceStore.createWorkspace({ id: 'workspace-1' as WorkspaceId, name: '运行测试', folderPath: directory });
   const agents = new SqliteGlobalAgentStore(connection.raw);
   const agent = agents.create({ id: 'agent-1' as AgentId, name: '执行者', defaultModelId: 'fake-mini' as ModelId });
-  const runtime = new Runtime({ installId: 'collaboration-runtime', allowNoToken: true, workspaceStore, globalAgentStore: agents, stateStore: new SqliteEventCheckpointStore(connection.raw), demoProvider: new FakeProvider() });
-  return { runtime, agent, close: async () => { await runtime.stop(); connection.raw.close(); rmSync(directory, { recursive: true, force: true }); } };
+  const runtime = new Runtime({ installId: 'collaboration-runtime', allowNoToken: true, workspaceStore, globalAgentStore: agents, stateStore: new SqliteEventCheckpointStore(connection.raw), demoProvider: provider });
+  return { runtime, agent, agents, close: async () => { await runtime.stop(); connection.raw.close(); rmSync(directory, { recursive: true, force: true }); } };
 }
 
 async function collaborationToolFixture(options: {
@@ -89,6 +89,7 @@ describe('collaboration Runtime execution adapter', () => {
       const result = await f.runtime.executeCollaborationTaskForHost(input(String(f.agent.id), 'task-1', new AbortController().signal, (value) => progress.push(value.status)));
       expect(result.error).toBeUndefined();
       expect(result.runId).toBeTruthy();
+      expect(result.output.trim().length).toBeGreaterThan(0);
       expect(progress).toContain('running');
     } finally { await f.close(); }
   });
@@ -449,4 +450,119 @@ describe('collaboration Runtime agent tools', () => {
       await f.close();
     }
   });
+});
+
+it('reports native provider failure instead of returning a successful empty answer', async () => {
+  class FailingProvider extends FakeProvider {
+    override async *call() { yield { type: 'error' as const, failureClass: 'permission' as const, message: 'fixture provider denied request' }; }
+  }
+  const f = await fixture(new FailingProvider());
+  try {
+    const result = await f.runtime.executeCollaborationTaskForHost(input(String(f.agent.id), 'task-failure', new AbortController().signal, () => {}));
+    expect(result.error).toMatchObject({ category: 'execution', retryable: true });
+    expect(result.error?.message.length).toBeGreaterThan(0);
+  } finally { await f.close(); }
+});
+it('reports missing agent bindings and keeps the executor available', async () => {
+  const f = await fixture();
+  try {
+    const result = await f.runtime.executeCollaborationTaskForHost(input('missing', 'task-missing', new AbortController().signal, () => {}));
+    expect(result.error?.message).toContain('AGENT_NOT_FOUND');
+    const next = await f.runtime.executeCollaborationTaskForHost(input(String(f.agent.id), 'task-valid', new AbortController().signal, () => {}));
+    expect(next.output.trim()).not.toBe('');
+  } finally { await f.close(); }
+});
+
+it('reports a deleted agent model as failure without calling the demo provider', async () => {
+  const provider = new FakeProvider(); const call = vi.spyOn(provider, 'call');
+  const f = await fixture(provider);
+  try {
+    f.agents.update({ agentId: f.agent.id, defaultModelId: 'deleted-live-model' as ModelId });
+    const result = await f.runtime.executeCollaborationTaskForHost(input(f.agent.id, 'invalid-binding', new AbortController().signal, () => {}));
+    expect(result.error?.message).toContain('MODEL_BINDING_UNAVAILABLE');
+    expect(result.output).toBe(''); expect(call).not.toHaveBeenCalled();
+  } finally { await f.close(); }
+});
+it('does not replace a live run with FakeProvider when credentials are missing', async () => {
+  const provider = new FakeProvider(); const call = vi.spyOn(provider, 'call');
+  const f = await fixture(provider);
+  try {
+    const internal = f.runtime as unknown as { prepareRunBinding(input: object): { run: import('./demo-run.js').DemoRunState }; openProviderStream(run: import('./demo-run.js').DemoRunState, options: object, signal: AbortSignal): Promise<unknown> };
+    const { run } = internal.prepareRunBinding({ runId: 'missing-credential', threadId: 'credential-thread', userText: 'hello', globalAgentId: f.agent.id });
+    run.useFakeProvider = false;
+    await expect(internal.openProviderStream(run, { toolsEnabled: false }, new AbortController().signal)).rejects.toThrow('MODEL_CREDENTIAL_UNAVAILABLE');
+    expect(call).not.toHaveBeenCalled();
+  } finally { await f.close(); }
+});
+
+it('advertises only allowed tools and keeps group member identity in read-only replies', async () => {
+  const provider = new FakeProvider(); const call = vi.spyOn(provider, 'call');
+  const f = await fixture(provider);
+  try {
+    const request = input(f.agent.id, 'readonly-reply', new AbortController().signal, () => {});
+    request.task.kind = 'reply'; request.snapshot.conversation.kind = 'group';
+    const result = await f.runtime.executeCollaborationTaskForHost(request);
+    expect(result.error).toBeUndefined(); expect(call).toHaveBeenCalled();
+    const providerRequest = call.mock.calls[0][0];
+    const toolNames = providerRequest.tools?.map(tool => tool.name) ?? [];
+    expect(toolNames).toContain('read_file');
+    expect(toolNames).not.toContain('write_file');
+    expect(toolNames).not.toContain('update_task_plan');
+    expect(toolNames).not.toContain('run_command');
+    expect(providerRequest.systemPrompt).toContain('直接参与这场对话');
+    expect(providerRequest.systemPrompt).toContain('用户说先讨论时');
+    expect(providerRequest.systemPrompt).not.toContain('you MAY call write_file');
+    expect(providerRequest.systemPrompt).not.toContain('call update_task_plan FIRST');
+  } finally { await f.close(); }
+});
+
+it('never leaks a native tool preamble into collaboration answer progress', async () => {
+  class PreambleProvider extends FakeProvider {
+    rounds = 0;
+    override async *call() {
+      if (this.rounds++ === 0) {
+        yield { type: 'text-delta' as const, text: '我先检查' };
+        yield { type: 'tool-call' as const, toolCall: { id: 'read-1', name: 'list_files', argumentsJson: '{"path":"."}' } };
+        yield { type: 'finished' as const, reason: 'tool-requests' as const };
+      } else {
+        yield { type: 'assistant-message-delta' as const, phase: 'final_answer' as const, text: '我们先讨论你的想法。' };
+        yield { type: 'finished' as const, reason: 'stop' as const };
+      }
+    }
+  }
+  const f = await fixture(new PreambleProvider());
+  try {
+    const updates: import('./collaboration-chat-service.js').CollaborationProgress[] = [];
+    const request = input(f.agent.id, 'stream-phases', new AbortController().signal, progress => updates.push(progress));
+    request.task.kind = 'reply';
+    const result = await f.runtime.executeCollaborationTaskForHost(request);
+    expect(result.error).toBeUndefined(); expect(result.output).toBe('我们先讨论你的想法。');
+    expect(updates.some(progress => progress.output?.includes('我先'))).toBe(false);
+    expect(updates.some(progress => progress.commentary === '我先检查')).toBe(true);
+    expect(updates.some(progress => progress.output === result.output)).toBe(true);
+  } finally { await f.close(); }
+});
+
+it('keeps the read-only guard even if a group member asks for an unadvertised write tool', async () => {
+  class InvalidWriteProvider extends FakeProvider {
+    rounds = 0;
+    rejection = '';
+    override async *call(request: Parameters<FakeProvider['call']>[0]) {
+      if (this.rounds++ === 0) {
+        yield { type: 'tool-call' as const, toolCall: { id: 'write-1', name: 'write_file', argumentsJson: '{"path":"blocked.txt","content":"blocked"}' } };
+        yield { type: 'finished' as const, reason: 'tool-requests' as const };
+      } else {
+        this.rejection = JSON.stringify(request.messages?.filter(message => message.role === 'tool'));
+        yield { type: 'text-delta' as const, text: '我们在聊天中讨论。' };
+        yield { type: 'finished' as const, reason: 'stop' as const };
+      }
+    }
+  }
+  const provider = new InvalidWriteProvider(); const f = await fixture(provider);
+  try {
+    const request = input(f.agent.id, 'guarded-group-reply', new AbortController().signal, () => {}); request.task.kind = 'reply';
+    const result = await f.runtime.executeCollaborationTaskForHost(request);
+    expect(result.error).toBeUndefined(); expect(provider.rejection).toContain('当前群聊轮次仅允许读取和讨论');
+    expect(provider.rejection).not.toContain('Delegated child Agents');
+  } finally { await f.close(); }
 });

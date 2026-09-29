@@ -809,13 +809,13 @@ export function ReviewPanel({
                 />
               ) : (
                 <LineDiffView
-                  oldText={selected.previousContent}
-                  newText={selected.content}
+                  oldText={selected.previousContent ?? (selected.action === 'created' ? '' : undefined)}
+                  newText={selected.content ?? (selected.action === 'deleted' ? '' : undefined)}
                   path={selected.path}
                   truncated={selected.previousTruncated}
                   wrapLines={wrapLines}
                   onWrapLinesChange={setWrapLines}
-                  showToolbar={false}
+                  showToolbar
                   showWhitespace={showWhitespace}
                   wordLevel={wordLevel}
                   showLineNumbers={showLineNumbers}

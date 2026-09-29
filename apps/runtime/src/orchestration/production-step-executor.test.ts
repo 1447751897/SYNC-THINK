@@ -1272,6 +1272,7 @@ describe('production Step execution reservations', () => {
         arguments: {
           command: process.execPath,
           args: ['-e', "process.stdout.write('command-ok')"],
+          description: '验证工作区命令执行链路',
         },
       },
       { name: 'git_status', arguments: {} },
@@ -1381,7 +1382,7 @@ describe('production Step execution reservations', () => {
         status: 'candidate',
       });
       const trace = JSON.parse(result.outputVersions?.[1]!.content ?? '{}') as {
-        calls?: Array<{ name: string; result: string }>;
+        calls?: Array<{ name: string; arguments?: Record<string, unknown>; result: string }>;
       };
       expect(trace.calls?.map((entry) => entry.name)).toEqual(calls.map((call) => call.name));
       expect(trace.calls?.find((entry) => entry.name === 'read_file')?.result).toContain(
@@ -1390,6 +1391,9 @@ describe('production Step execution reservations', () => {
       expect(trace.calls?.find((entry) => entry.name === 'run_command')?.result).toContain(
         'command-ok',
       );
+      expect(trace.calls?.find((entry) => entry.name === 'run_command')?.arguments).toMatchObject({
+        description: '验证工作区命令执行链路',
+      });
       expect(trace.calls?.find((entry) => entry.name === 'git_diff')?.result).toContain('+after');
       expect(
         new SqliteProductionExecutionStore(f.connection.raw).getProviderExecution(

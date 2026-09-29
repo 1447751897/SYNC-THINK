@@ -95,6 +95,7 @@ function renderSidebar(overrides: Partial<SidebarProps> = {}) {
 
 afterEach(() => {
   cleanup();
+  localStorage.clear();
   vi.clearAllMocks();
   // 只有更新徽标的用例会注入 preload bridge，用例之间不能互相看到。
   Object.defineProperty(window, 'syncThink', { configurable: true, value: undefined });
@@ -118,7 +119,7 @@ describe('Sidebar NewMax conversation loading', () => {
 });
 
 describe('Sidebar conversation identity marks', () => {
-  it('shows the kernel logo, agent avatar, and team avatar before each title', () => {
+  it('keeps the kernel logo and omits histories managed in the agent area', () => {
     renderSidebar({
       conversations: [
         conv({ id: 'c-model', track: 'model', title: 'hi', targetRef: 'gpt-4o' }),
@@ -143,42 +144,60 @@ describe('Sidebar conversation identity marks', () => {
     expect(modelMark.getAttribute('data-kernel')).toBe('codex');
     expect(modelMark.querySelector('[aria-label="GPT"]')).toBeTruthy();
 
-    const agentMark = screen.getByTestId('conversation-identity-c-agent');
-    expect(agentMark.getAttribute('data-kind')).toBe('agent');
-    expect(agentMark.textContent).toContain('🧪');
+    expect(screen.queryByTestId('track-header-agent')).toBeNull();
+    expect(screen.queryByTestId('track-header-team')).toBeNull();
+    expect(screen.queryByTestId('conversation-c-agent')).toBeNull();
+    expect(screen.queryByTestId('conversation-c-team')).toBeNull();
+  });
+});
 
-    const teamMark = screen.getByTestId('conversation-identity-c-team');
-    expect(teamMark.getAttribute('data-kind')).toBe('team');
-    expect(teamMark.textContent).toContain('🚀');
+describe('Sidebar conversation space isolation', () => {
+  it('keeps direct, team and group history out of model recent chats and archives', () => {
+    const group = conv({ id: 'c-group', track: 'agent', title: '研究群聊', collaborationKind: 'group' });
+    renderSidebar({ conversations: [group, conv({ ...group, id: 'c-archived', archivedAt: '2026-09-29' }), conv({ id: 'c-model', track: 'model' })] });
+    expect(screen.queryByTestId('conversation-c-group')).toBeNull();
+    expect(screen.queryByTestId('conversation-c-archived')).toBeNull();
+    expect(screen.getByTestId('conversation-c-model')).toBeTruthy();
   });
 });
 
 describe('Sidebar conversation row layout', () => {
-  it('stacks the agent name over the title, and keeps model rows single-line', () => {
+  it('shows regular conversations directly, even with a previously collapsed model track', () => {
+    const onOpenConversation = vi.fn();
     renderSidebar({
+      nav: { ...INITIAL_NAV, expandedTracks: { ...INITIAL_NAV.expandedTracks, model: false } },
+      onOpenConversation,
       conversations: [
         conv({ id: 'c-model', track: 'model', title: '模型侧标题', targetRef: 'gpt-4o' }),
         conv({ id: 'c-agent', track: 'agent', title: '智能体侧标题', targetRef: String(agent.id) }),
       ],
     });
 
-    // Agent track: identity name on top, conversation title standing in for the
-    // (not yet carried) message summary underneath.
-    expect(screen.getByTestId('conversation-c-agent').textContent).toContain(agent.name);
-    expect(screen.getByTestId('conversation-sub-c-agent').textContent).toBe('智能体侧标题');
-
-    // Model track stays single-line — its title already is the identity.
-    expect(screen.getByTestId('conversation-c-model').textContent).toContain('模型侧标题');
+    expect(screen.queryByTestId('track-header-model')).toBeNull();
+    expect(screen.queryByText('模型对话')).toBeNull();
+    const row = screen.getByTestId('conversation-c-model');
+    expect(row.textContent).toContain('模型侧标题');
+    expect(row.closest('.shell-tree-branch')).toBeNull();
+    expect(row.closest('.shell-collapse')?.classList.contains('shell-collapse--open')).toBe(true);
     expect(screen.queryByTestId('conversation-sub-c-model')).toBeNull();
+    fireEvent.click(row);
+    expect(onOpenConversation).toHaveBeenCalledWith('c-model');
   });
 
-  it('drops the second line when the title repeats the identity name', () => {
+  it('omits archived agent histories from the regular conversation archive', () => {
     renderSidebar({
       conversations: [
-        conv({ id: 'c-agent', track: 'agent', title: agent.name, targetRef: String(agent.id) }),
+        conv({
+          id: 'c-agent',
+          track: 'agent',
+          title: agent.name,
+          targetRef: String(agent.id),
+          archivedAt: '2026-09-23T00:00:00.000Z',
+        }),
       ],
     });
-    expect(screen.queryByTestId('conversation-sub-c-agent')).toBeNull();
+    expect(screen.queryByTestId('archive-section-toggle')).toBeNull();
+    expect(screen.queryByTestId('conversation-c-agent')).toBeNull();
   });
 });
 
@@ -268,4 +287,25 @@ it('keeps primary navigation readable and search presented as an available actio
   expect(search.title).toBe('搜索');
   fireEvent.click(search);
   expect(screen.getByPlaceholderText('搜索对话…')).toBeTruthy();
+});
+
+
+it('switches to contacts and back without navigating away from the current chat', async () => {
+  const onSelectStage = vi.fn();
+  Object.defineProperty(window, 'syncThink', {
+    configurable: true,
+    value: {
+      runtime: {
+        listGlobalAgentWorkspaceActivations: vi.fn().mockResolvedValue({ activations: [] }),
+      },
+    },
+  });
+  renderSidebar({ onSelectStage });
+  fireEvent.click(screen.getAllByRole('button', { name: '智能体' })[0]!);
+  await screen.findByRole('region', { name: '智能体聊天列表' });
+  expect(screen.queryByTestId('nav-new-chat')).toBeNull();
+  expect(localStorage.getItem('sync-think.sidebar-mode.v1')).toBe('agents');
+  expect(onSelectStage).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: '会话' }));
+  expect(screen.getByTestId('nav-new-chat')).toBeTruthy();
 });

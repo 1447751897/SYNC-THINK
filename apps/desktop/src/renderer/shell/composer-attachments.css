@@ -1,0 +1,237 @@
+/* Reference: compact 56px tiles; independent presence, layout and height motion. */
+.shell-attachment-region {
+  height: 0;
+  min-width: 0;
+  margin-bottom: 0;
+  overflow: hidden;
+  opacity: 0;
+  transition:
+    height 280ms cubic-bezier(0.16, 1, 0.3, 1),
+    margin-bottom 280ms cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 240ms ease-out;
+}
+.shell-attachment-region[data-open='true'] {
+  opacity: 1;
+  margin-bottom: -6px;
+}
+.shell-attachment-strip {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 10px 0;
+}
+.shell-attachment-tile-position {
+  flex: 0 0 56px;
+  width: 56px;
+  height: 56px;
+}
+.shell-attachment-tile {
+  position: relative;
+  width: 56px;
+  height: 56px;
+  box-sizing: border-box;
+  border: 1px solid color-mix(in srgb, var(--color-text) 7%, transparent);
+  border-radius: 12px;
+  background: var(--color-overlay);
+  color: var(--color-text-secondary);
+  animation: shell-attachment-enter 300ms cubic-bezier(0.16, 1, 0.3, 1) var(--attachment-delay, 0ms)
+    both;
+}
+.shell-attachment-tile[data-exiting] {
+  pointer-events: none;
+  animation: shell-attachment-exit 220ms ease-out both;
+}
+.shell-attachment-region[data-open='false'] .shell-attachment-tile[data-exiting] {
+  animation: none;
+}
+.shell-attachment-tile__body {
+  position: absolute;
+  inset: 0;
+  display: block;
+  padding: 0;
+  border: 0;
+  border-radius: 11px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  overflow: hidden;
+}
+button.shell-attachment-tile__body {
+  cursor: pointer;
+}
+.shell-attachment-tile[data-image] .shell-attachment-tile__body {
+  cursor: zoom-in;
+}
+.shell-attachment-tile__body img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.shell-attachment-tile__file-icon {
+  position: absolute;
+  top: 4px;
+  left: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  background: var(--attachment-icon-color, var(--color-text-faint));
+  color: var(--color-avatar-fg);
+  clip-path: polygon(0 0, 69% 0, 100% 30%, 100% 100%, 0 100%);
+}
+.shell-attachment-tile[data-kind='spreadsheet'] {
+  --attachment-icon-color: var(--color-syntax-title);
+}
+.shell-attachment-tile[data-kind='presentation'],
+.shell-attachment-tile[data-kind='video'] {
+  --attachment-icon-color: var(--color-avatar-3);
+}
+.shell-attachment-tile[data-kind='code'] {
+  --attachment-icon-color: var(--color-syntax-builtin);
+}
+.shell-attachment-tile[data-kind='dir'] {
+  --attachment-icon-color: var(--color-warning);
+}
+.shell-attachment-tile__name {
+  position: absolute;
+  top: 35px;
+  left: 5px;
+  max-width: 44px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 9px;
+  line-height: 15px;
+  font-weight: 500;
+  letter-spacing: 0.2px;
+}
+.shell-attachment-tile__ring {
+  position: absolute;
+  inset: -1px;
+  width: 56px;
+  height: 56px;
+  pointer-events: none;
+  color: var(--color-accent);
+  opacity: 0;
+  transition: opacity 300ms ease-out;
+}
+.shell-attachment-tile__ring path {
+  transition: stroke-dasharray 200ms linear;
+}
+.shell-attachment-tile__progress {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  pointer-events: none;
+  color: var(--color-accent-text);
+  font-size: 9px;
+  line-height: 16px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  opacity: 0;
+  filter: blur(3px);
+  transition:
+    opacity 300ms ease-out,
+    filter 300ms ease-out;
+}
+.shell-attachment-tile__remove {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  cursor: pointer;
+  color: var(--color-text-secondary);
+  background: color-mix(in srgb, var(--color-text) 6%, transparent);
+  opacity: 1;
+  filter: blur(0);
+  transition:
+    opacity 300ms ease-out,
+    filter 300ms ease-out,
+    background 150ms ease-out;
+}
+.shell-attachment-tile[data-image] .shell-attachment-tile__remove {
+  color: #fff;
+  background: rgb(255 255 255 / 50%);
+  backdrop-filter: blur(2px);
+}
+.shell-attachment-tile[data-image] .shell-attachment-tile__progress {
+  color: #fff;
+  text-shadow: 0 1px 3px rgb(0 0 0 / 55%);
+}
+.shell-attachment-tile[data-pending] .shell-attachment-tile__ring,
+.shell-attachment-tile[data-pending] .shell-attachment-tile__progress {
+  opacity: 1;
+  filter: blur(0);
+}
+/* Keep cancellation accessible without competing with the percentage at rest. */
+.shell-attachment-tile[data-pending] .shell-attachment-tile__remove {
+  opacity: 0;
+  filter: blur(3px);
+}
+.shell-attachment-tile[data-pending]:hover .shell-attachment-tile__remove,
+.shell-attachment-tile[data-pending]:focus-within .shell-attachment-tile__remove {
+  opacity: 1;
+  filter: blur(0);
+}
+.shell-attachment-tile[data-pending]:hover .shell-attachment-tile__progress,
+.shell-attachment-tile[data-pending]:focus-within .shell-attachment-tile__progress {
+  opacity: 0;
+  filter: blur(3px);
+}
+.shell-attachment-tile__remove:hover {
+  background: color-mix(in srgb, var(--color-text) 14%, var(--color-overlay));
+  color: var(--color-text);
+}
+.shell-attachment-tile__body:focus-visible,
+.shell-attachment-tile__remove:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: -2px;
+}
+.shell-attachment-tile button:disabled {
+  cursor: default;
+}
+@keyframes shell-attachment-enter {
+  from {
+    opacity: 0;
+    filter: blur(4px);
+    transform: scale(0.8);
+  }
+  to {
+    opacity: 1;
+    filter: blur(0);
+    transform: scale(1);
+  }
+}
+@keyframes shell-attachment-exit {
+  to {
+    opacity: 0;
+    filter: blur(4px);
+    transform: scale(0.8);
+  }
+}
+[data-reduced-motion] .shell-attachment-region,
+[data-reduced-motion] .shell-attachment-tile,
+[data-reduced-motion] .shell-attachment-tile * {
+  animation: none !important;
+  transition: none !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  .shell-attachment-region,
+  .shell-attachment-tile,
+  .shell-attachment-tile * {
+    animation: none !important;
+    transition: none !important;
+  }
+}

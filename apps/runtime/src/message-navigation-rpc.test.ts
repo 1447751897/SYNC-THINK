@@ -305,3 +305,19 @@ it('keeps every large prose message in an anchor page with source references and
     await test.close();
   }
 });
+
+
+it('includes a bounded real-message preview in the paged conversation catalog', async () => {
+  const test = await fixture();
+  try {
+    test.append(0, 'old message');
+    test.append(1, 'agent reply');
+    const response = await test.response(test.dispatch('conversation.list', { workspaceId: test.workspace.id, limit: 100 }));
+    expect(response).toMatchObject({ kind: 'response', type: 'conversation.list', payload: { conversations: expect.arrayContaining([
+      expect.objectContaining({ id: test.conversation.id, lastMessagePreview: 'agent reply' }),
+      expect.objectContaining({ id: test.empty.id }),
+    ]) } });
+    const catalog = (response.payload as { conversations: Array<{ id: string; lastMessagePreview?: string }> }).conversations;
+    expect(catalog.find((c) => c.id === test.empty.id)?.lastMessagePreview).toBeUndefined();
+  } finally { await test.close(); }
+});

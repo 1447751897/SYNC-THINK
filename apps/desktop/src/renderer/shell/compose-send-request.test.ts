@@ -19,6 +19,12 @@ describe('compose append request', () => {
     expect(buildComposeAppendRequest({ ...input, track, targetRef: 'agent-or-team-id' }).modelId)
       .toBeUndefined();
   });
+  it.each(['agent', 'team'])('ignores stale queued overrides in a %s conversation', (track) => {
+    const request = buildComposeAppendRequest({ ...input, track, modelOverride: 'model-a' });
+    expect(request.modelId).toBeUndefined();
+    expect(request.kernelId).toBeUndefined();
+    expect(request.reasoningEffort).toBeUndefined();
+  });
   it('keeps image-only text fallback and workspace attachment context', () => {
     const images = [{ id: 'image', name: 'picture.png', url: 'data:image/png;base64,AA==' }];
     const request = buildComposeAppendRequest({ ...input, text: ' ', images, workspacePath: ' D:/workspace ' });

@@ -89,7 +89,7 @@ describe('CodeBlock', () => {
       'true',
     );
     expect(container.querySelector('.hljs-keyword')).toBeTruthy();
-    expect(screen.getByText('已完成')).toBeTruthy();
+    expect(screen.getByText('就绪')).toBeTruthy();
   });
 
   it('copies exact source without displayed line numbers', async () => {
@@ -130,6 +130,26 @@ describe('CodeBlock', () => {
     Object.defineProperty(viewport, 'scrollHeight', { configurable: true, value: 600 });
     rerender(<CodeBlock code={'first\nsecond\nlast'} />);
     await waitFor(() => expect(viewport.scrollTop).toBe(600));
+  });
+
+  it('explicitly resumes following after the user pauses a streaming block', async () => {
+    const { container, rerender } = render(<CodeBlock code="first" streaming />);
+    const viewport = container.querySelector<HTMLElement>('[data-code-viewport]')!;
+    Object.defineProperties(viewport, {
+      clientHeight: { configurable: true, value: 100 },
+      scrollHeight: { configurable: true, value: 500 },
+      scrollTop: { configurable: true, writable: true, value: 120 },
+    });
+    fireEvent.scroll(viewport);
+    fireEvent.click(screen.getByRole('button', { name: '跟随最新内容' }));
+    expect(viewport.scrollTop).toBe(500);
+    expect(screen.queryByRole('button', { name: '跟随最新内容' })).toBeNull();
+    Object.defineProperty(viewport, 'scrollHeight', { configurable: true, value: 600 });
+    rerender(<CodeBlock code={'first\nsecond'} streaming />);
+    await waitFor(() => expect(viewport.scrollTop).toBe(600));
+    expect(screen.getByText('生成中')).toBeTruthy();
+    rerender(<CodeBlock code={'first\nsecond'} />);
+    expect(screen.getByText('就绪')).toBeTruthy();
   });
 
   it('bounds large previews while keeping all source available to copy', () => {
@@ -182,9 +202,10 @@ describe('CodeBlock wrap control', () => {
     expect(blocks[1]!.getAttribute('data-wrap')).toBe('false');
   });
 
-  it('keeps markdown code blocks unwrapped unless the control is requested', () => {
+  it('offers the shared wrap control in Markdown code replies', () => {
     const { container } = render(<MarkdownContent text={'```ts\nconst a = 1;\n```'} />);
+    expect(container.querySelector('.shell-md-code')?.getAttribute('data-wrap')).toBe('true');
+    fireEvent.click(screen.getByRole('button', { name: '切换为不换行' }));
     expect(container.querySelector('.shell-md-code')?.getAttribute('data-wrap')).toBe('false');
-    expect(screen.queryByRole('button', { name: /换行/ })).toBeNull();
   });
 });

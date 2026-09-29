@@ -107,7 +107,9 @@ function mapRow(row: ConversationDbRow): ConversationRecord {
   return {
     id: row.id as ConversationId,
     track: row.track as ConversationTrack,
-    collaborationKind: row.collaboration_kind ? (row.collaboration_kind as CollaborationKind) : undefined,
+    collaborationKind: row.collaboration_kind
+      ? (row.collaboration_kind as CollaborationKind)
+      : undefined,
     targetRef: row.target_ref,
     workspaceId: row.workspace_id ? (row.workspace_id as WorkspaceId) : undefined,
     title: row.title,
@@ -270,7 +272,9 @@ export class SqliteConversationStore {
   listPage(options: ListConversationsPageOptions = {}): ConversationRecordPage {
     const limit = options.limit ?? DEFAULT_CONVERSATION_PAGE_SIZE;
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_CONVERSATION_PAGE_SIZE) {
-      throw new Error(`conversation page limit must be between 1 and ${MAX_CONVERSATION_PAGE_SIZE}`);
+      throw new Error(
+        `conversation page limit must be between 1 and ${MAX_CONVERSATION_PAGE_SIZE}`,
+      );
     }
     const { clauses, params } = conversationListClauses(options);
     if (options.cursor) {
@@ -312,6 +316,43 @@ export class SqliteConversationStore {
     };
   }
 
+  /** Bounded, batched sidebar previews. No message hydration or tool payload transfer. */
+  listMessagePreviews(conversationIds: readonly string[]): Map<string, string> {
+    const previews = new Map<string, string>();
+    for (let offset = 0; offset < conversationIds.length; offset += 100) {
+      const ids = conversationIds.slice(offset, offset + 100);
+      const rows = this.raw
+        .prepare(
+          `
+        SELECT c.id, (
+          SELECT substr(group_concat(fragment, ' '), 1, 160) FROM (
+            SELECT CASE json_extract(block.value, '$.type')
+              WHEN 'image' THEN '[图片]'
+              WHEN 'code' THEN '[代码]'
+              WHEN 'error' THEN '[消息出错]'
+              ELSE substr(json_extract(block.value, '$.text'), 1, 160) END AS fragment
+            FROM json_each(COALESCE((
+              SELECT CASE WHEN json_valid(m.blocks_json) THEN m.blocks_json ELSE '[]' END
+              FROM message m
+              WHERE m.thread_id = (SELECT id FROM thread WHERE task_id = c.task_id LIMIT 1)
+                AND m.role IN ('user', 'assistant')
+              ORDER BY m.sequence DESC LIMIT 1
+            ), '[]')) AS block
+            WHERE json_extract(block.value, '$.type') IN ('text', 'code', 'image', 'error')
+            ORDER BY CAST(block.key AS INTEGER) LIMIT 4
+          )
+        ) AS preview FROM conversation c WHERE c.id IN (${ids.map(() => '?').join(',')})
+      `,
+        )
+        .all(...ids) as Array<{ id: string; preview: string | null }>;
+      for (const row of rows) {
+        const text = row.preview?.replace(/\s+/g, ' ').trim();
+        if (text) previews.set(row.id, text);
+      }
+    }
+    return previews;
+  }
+
   rename(conversationId: ConversationId, title: string, now?: string): ConversationRecord {
     return this.patch(conversationId, 'title = ?', [title], now);
   }
@@ -349,6 +390,21 @@ export class SqliteConversationStore {
       [normalizeContextWindowOverride(contextWindowOverride)],
       now,
     );
+  }
+
+  /** Called inside a legacy team migration transaction; identity and task history stay intact. */
+  promoteTeam(conversationId: ConversationId): ConversationRecord {
+    const current = this.get(conversationId);
+    if (!current || current.track !== 'team') throw new Error('conversation.not_team');
+    return this.patch(conversationId, 'collaboration_kind = ?', ['group']);
+  }
+
+  /** Called inside the transcript-import transaction; identity and permissions stay intact. */
+  promoteDirect(conversationId: ConversationId): ConversationRecord {
+    const current = this.get(conversationId);
+    if (!current || (current.collaborationKind && current.collaborationKind !== 'direct'))
+      throw new Error('conversation.not_direct');
+    return this.patch(conversationId, 'collaboration_kind = NULL', []);
   }
 
   touchLastMessage(conversationId: ConversationId, now?: string): ConversationRecord {

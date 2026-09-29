@@ -63,6 +63,11 @@ export function projectFileChangeContent(
           fragment: field === 'new_string' || field === 'newString',
         };
     }
+    if (typeof payload.writtenContent === 'string')
+      previous.after = {
+        text: payload.writtenContent,
+        reference: { source: 'event', id: event.id, path: ['writtenContent'] },
+      };
     if (typeof payload.previousContent === 'string')
       previous.before = {
         text: payload.previousContent,

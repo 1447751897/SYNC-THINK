@@ -224,7 +224,7 @@ describe('NewMax composer mode prefixes', () => {
 });
 
 describe('resolveSendModelId', () => {
-  it('uses override first', () => {
+  it('ignores a saved model override in an agent conversation', () => {
     expect(
       resolveSendModelId({
         modelOverride: 'gpt-5.6-sol',
@@ -232,7 +232,7 @@ describe('resolveSendModelId', () => {
         targetRef: 'agent-1',
         catalogModelIds: ['gpt-5.6-sol'],
       }),
-    ).toBe('gpt-5.6-sol');
+    ).toBeUndefined();
   });
 
   it('replaces a stale override with the first currently available model', () => {

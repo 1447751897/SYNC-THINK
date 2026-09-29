@@ -1,5 +1,6 @@
 import {
   mkdtempSync,
+  mkdirSync,
   readFileSync,
   readdirSync,
   rmSync,
@@ -38,6 +39,43 @@ async function waitFor(predicate: () => boolean, timeoutMs = 1_000): Promise<voi
 }
 
 describe('project file editor service', () => {
+  it('opens directory resources as a sorted listing without treating them as text', async () => {
+    const root = fixture();
+    mkdirSync(join(root, 'games'));
+    mkdirSync(join(root, 'games', 'assets'));
+    writeFileSync(join(root, 'games', 'index.html'), '<h1>Game</h1>');
+    const result = await readProjectFile({ root, path: 'games' });
+    expect(result).toMatchObject({
+      content: null,
+      error: null,
+      errorCode: null,
+      directoryTruncated: false,
+      directoryEntries: [
+        { name: 'assets', path: 'games/assets', kind: 'dir' },
+        { name: 'index.html', path: 'games/index.html', kind: 'file' },
+      ],
+    });
+    expect((await readProjectFile({ root, path: '.' })).directoryEntries?.[0]?.path).toBe('games');
+  });
+
+  it('supports HTML above the old 512KB limit and the same 2MB read/write ceiling', async () => {
+    const root = fixture();
+    const content = '<!doctype html><h1>Preview</h1><!--' + 'x'.repeat(600 * 1024) + '-->';
+    writeFileSync(join(root, 'page.html'), content);
+    const loaded = await readProjectFile({ root, path: 'page.html' });
+    expect(loaded.error).toBeNull();
+    expect(loaded.content).toBe(content);
+    const saved = await writeProjectFile({
+      root,
+      path: 'page.html',
+      content: content + ' ',
+      expectedMtimeMs: loaded.mtimeMs,
+    });
+    expect(saved.ok).toBe(true);
+    writeFileSync(join(root, 'large.html'), 'x'.repeat(2 * 1024 * 1024 + 1));
+    expect((await readProjectFile({ root, path: 'large.html' })).errorCode).toBe('file_too_large');
+  });
+
   it('reads UTF-8 text with the metadata required for optimistic saves', async () => {
     const root = fixture();
     writeFileSync(join(root, 'notes.txt'), 'before', 'utf8');

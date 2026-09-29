@@ -50,18 +50,58 @@ const workspaceTwo = {
 } as unknown as WorkspaceSummary;
 
 describe('TopBar NewMax tab track', () => {
-  it('uses the measured width rules and keeps the active workspace visible on overflow', () => {
+  it('uses the measured width rules without replacing workspaces on overflow', () => {
     const ids = Array.from({ length: 10 }, (_, index) => `workspace-${index + 1}`);
 
-    const full = calculateWorkspaceTabLayout(1567, ids, ids[0]);
+    const full = calculateWorkspaceTabLayout(1567, ids);
     expect(full.visibleIds).toEqual(ids);
     expect(full.tabWidth).toBeCloseTo(147.6, 1);
     expect(full.overflowCount).toBe(0);
 
-    const overflow = calculateWorkspaceTabLayout(300, ids, ids[9]);
-    expect(overflow.visibleIds).toEqual([ids[0], ids[1], ids[9]]);
+    const overflow = calculateWorkspaceTabLayout(300, ids);
+    expect(overflow.visibleIds).toEqual([ids[0], ids[1], ids[2]]);
     expect(overflow.tabWidth).toBe(61);
     expect(overflow.overflowCount).toBe(7);
+  });
+
+  it('keeps overflowing tabs stationary when selecting a workspace from the menu', () => {
+    const clientWidth = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(300);
+    try {
+      const workspaces = Array.from({ length: 10 }, (_, index) => ({
+        ...workspaceTwo,
+        workspaceId: 'workspace-' + (index + 1),
+        name: '工作区 ' + (index + 1),
+      })) as WorkspaceSummary[];
+      const props = {
+        workspaces,
+        sidebarCollapsed: false,
+        onSelectWorkspace: vi.fn(),
+        onReorderWorkspaces: vi.fn(),
+        onOpenFolder: vi.fn(),
+        onCreateWorkspace: vi.fn().mockResolvedValue(true),
+        onUpdateWorkspace: vi.fn().mockResolvedValue(true),
+        onDeleteWorkspace: vi.fn().mockResolvedValue(true),
+        onToggleSidebar: vi.fn(),
+        onPickFolder: vi.fn().mockResolvedValue({ canceled: true }),
+      };
+      const view = render(<TopBar {...props} activeWorkspaceId="workspace-1" />);
+      const before = screen.getAllByRole('tab').map((tab) => tab.getAttribute('data-testid'));
+      fireEvent.click(screen.getByTestId('topbar-workspace-overflow'));
+      fireEvent.click(
+        screen.getByTestId('workspace-menu-item-workspace-10').querySelector('button')!,
+      );
+      expect(props.onSelectWorkspace).toHaveBeenCalledWith('workspace-10');
+      view.rerender(<TopBar {...props} activeWorkspaceId="workspace-10" />);
+      expect(screen.getAllByRole('tab').map((tab) => tab.getAttribute('data-testid'))).toEqual(
+        before,
+      );
+      expect(screen.getByTestId('topbar-workspace-overflow').getAttribute('aria-label')).toContain(
+        '当前选择：工作区 10',
+      );
+      expect(props.onReorderWorkspaces).not.toHaveBeenCalled();
+    } finally {
+      clientWidth.mockRestore();
+    }
   });
 
   it('draws the connected SVG surface only behind the active workspace', () => {

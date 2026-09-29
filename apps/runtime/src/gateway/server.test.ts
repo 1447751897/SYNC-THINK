@@ -118,6 +118,25 @@ describe('matchGatewayRoute', () => {
   });
 });
 
+describe('gateway connection failures', () => {
+  it('returns the transport cause to the kernel, diagnostic log and audit entry', async () => {
+    const logs: string[] = [];
+    const audit: Array<{errorMessage?: string}> = [];
+    const {server} = await startServer({
+      resolveTicket: () => ({runId:'run-network-failure', route:responsesRoute, kernelId:'codex'}),
+      fetchImpl: async () => {throw new TypeError('fetch failed', {cause:Object.assign(new Error('secret transport details'), {code:'ENOTFOUND'})});},
+      onLog: message => logs.push(message), onRequest: entry => audit.push(entry),
+    });
+    const response = await fetch(urlFor(server,'/openai/v1/responses'),{method:'POST',headers:{authorization:'Bearer ticket'},body:JSON.stringify({model:'model',input:'hello',stream:false})});
+    expect(response.status).toBe(502);
+    expect(((await response.json()) as {error:{message:string}}).error.message).toContain('ENOTFOUND');
+    expect(logs.join(' ')).toContain('run-network-failure');
+    expect(logs.join(' ')).toContain('ENOTFOUND');
+    expect(logs.join(' ')).not.toContain('secret transport details');
+    expect(audit[0].errorMessage).toContain('ENOTFOUND');
+  });
+});
+
 describe('upstreamUrlFor', () => {
   it('appends the endpoint only when it is missing', () => {
     expect(upstreamUrlFor('https://a/v1', 'openai-chat')).toBe('https://a/v1/chat/completions');

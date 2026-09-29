@@ -6,9 +6,10 @@
  * status events keep their original positions.
  */
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { InlineProcessItem } from './ChatView.js';
 import { InlineProcessFlow } from './InlineProcessFlow.js';
+import { deferredContentReader } from './deferred-content-reader.js';
 
 beforeAll(() => {
   Object.defineProperty(HTMLCanvasElement.prototype, 'getContext', {
@@ -93,21 +94,16 @@ describe('InlineProcessFlow', () => {
     expect(screen.getByTestId('inline-process-tool-details')).toBeTruthy();
   });
 
-  it('folds failed results after the run finishes, and keeps them readable when opened', () => {
+  it('keeps failed details readable after completion, while allowing a manual fold', () => {
     render(<InlineProcessFlow items={[toolItem, failedToolItem]} answerStarted />);
-    expect(screen.getByTestId('process-panel-toggle').getAttribute('aria-expanded')).toBe('false');
-    expect(screen.queryByTestId('inline-process-tool-result')).toBeNull();
-
-    fireEvent.click(screen.getByTestId('process-panel-toggle'));
-    fireEvent.click(screen.getByTestId('process-action-summary-toggle'));
-    const failedToggle = screen
-      .getAllByTestId('inline-process-tool')
-      .at(-1)
-      ?.querySelector('.shell-inline-process__tool-toggle');
-    expect(failedToggle?.getAttribute('aria-expanded')).toBe('false');
-    fireEvent.click(failedToggle!);
+    expect(screen.getByTestId('process-panel-toggle').getAttribute('aria-expanded')).toBe('true');
     expect(screen.getByTestId('inline-process-tool-result').textContent).toContain('boom');
     expect(screen.getByRole('button', { name: '复制错误' })).toBeTruthy();
+    const failedToggle = screen.getAllByTestId('inline-process-tool').at(-1)!.querySelector('.shell-inline-process__tool-toggle')!;
+    fireEvent.click(failedToggle);
+    expect(screen.queryByTestId('inline-process-tool-result')).toBeNull();
+    fireEvent.click(failedToggle);
+    expect(screen.getByTestId('inline-process-tool-result').textContent).toContain('boom');
   });
 
   it('renders nothing when there are no items', () => {
@@ -173,6 +169,22 @@ describe('InlineProcessFlow', () => {
     expect(onPanelOpen).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByTestId('process-panel-toggle'));
     expect(onPanelOpen).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads durable history after streaming completes and retries on reopening', () => {
+    const onPanelOpen = vi.fn();
+    const { rerender } = render(<InlineProcessFlow items={[reasoningItem]}
+      runId="run-live" streaming defaultOpen onPanelOpen={onPanelOpen} />);
+    expect(onPanelOpen).not.toHaveBeenCalled();
+    rerender(<InlineProcessFlow items={[reasoningItem]} runId="run-live"
+      streaming={false} defaultOpen onPanelOpen={onPanelOpen} timelineLoadState="error"
+      timelineLoadError="Runtime connection closed" />);
+    expect(onPanelOpen).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('status').textContent).toContain('连接中断');
+    expect(screen.getByRole('status').getAttribute('title')).toBe('Runtime connection closed');
+    fireEvent.click(screen.getByTestId('process-panel-toggle'));
+    fireEvent.click(screen.getByTestId('process-panel-toggle'));
+    expect(onPanelOpen).toHaveBeenCalledTimes(2);
   });
 
   it('requests remaining timeline pages automatically without a next-page control', () => {
@@ -330,6 +342,126 @@ describe('InlineProcessFlow', () => {
     expect(screen.getByTestId('inline-process-tool-result').textContent).toContain('a.txt: 1 line');
   });
 
+  it('shows real command source in a code block only after expanding its row', () => {
+    const command = 'Get-Date -Format "yyyy-MM-dd"';
+    const { container } = render(
+      <InlineProcessFlow
+        items={[
+          {
+            ...toolItem,
+            name: 'run_command',
+            argumentsJson: JSON.stringify({ command, shell: 'pwsh', cwd: 'D:/project' }),
+            result: '2026-09-24',
+          },
+        ]}
+        defaultOpen
+      />,
+    );
+    expect(container.querySelector('.shell-beui-code')).toBeNull();
+    fireEvent.click(screen.getByTestId('inline-process-tool').querySelector('button')!);
+    const args = screen.getByTestId('inline-process-tool-arguments');
+    expect(args.querySelector('[data-language="powershell"]')).toBeTruthy();
+    expect(args.querySelector('.shell-agent-code__text')?.textContent).toBe(command);
+    expect(within(args).getByRole('button', { name: '复制命令' })).toBeTruthy();
+    expect(args.textContent).not.toContain('D:/project');
+    expect(args.textContent).not.toContain('JSON 对象');
+    expect(args.textContent).not.toContain('cwd');
+    expect(screen.getByTestId('inline-process-tool-result').textContent).toContain('2026-09-24');
+  });
+
+  it.each([false, true])(
+    'shows and copies the full script without the shell wrapper or metadata (deferred=%s)',
+    async (deferred) => {
+      const script =
+        "Get-Content -LiteralPath 'file-diff-check111.ts' -Raw; git diff --stat 2>$null\nWrite-Output 'done'";
+      const command =
+        '"C:\\Users\\fixture\\powershell\\pwsh.exe" -Command ' +
+        "'" +
+        script.replace(/'/g, "''") +
+        "'";
+      const args = JSON.stringify({
+        command,
+        cwd: 'D:/private-workspace',
+        processId: 31898,
+        source: 'unifiedExecStartup',
+      });
+      const read = vi.spyOn(deferredContentReader, 'read').mockResolvedValue({
+        content: {
+          text: args,
+          offset: 0,
+          utf16Length: args.length,
+          utf8Bytes: args.length,
+          version: 'a'.repeat(64),
+          format: 'json',
+        },
+      });
+      const oldClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+      const writeText = vi.fn().mockResolvedValue(undefined);
+      Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+      try {
+        render(
+          <InlineProcessFlow
+            conversationId="command-conversation"
+            defaultOpen
+            items={[
+              {
+                ...toolItem,
+                name: 'command_execution',
+                argumentsJson: deferred ? '{"command":' : args,
+                ...(deferred
+                  ? {
+                      argumentsRef: {
+                        reference: {
+                          source: 'event' as const,
+                          id: 'command-event',
+                          path: ['argumentsJson'],
+                        },
+                        utf8Bytes: args.length,
+                        utf16Length: args.length,
+                        format: 'json' as const,
+                      },
+                    }
+                  : {}),
+                result: 'export const count = 5',
+              },
+            ]}
+          />,
+        );
+        fireEvent.click(screen.getByTestId('inline-process-tool').querySelector('button')!);
+        const input = screen.getByTestId('inline-process-tool-arguments');
+        await waitFor(() =>
+          expect(
+            [...input.querySelectorAll('.shell-agent-code__text')]
+              .map((line) => line.textContent)
+              .join('\n'),
+          ).toBe(script),
+        );
+        expect(input.querySelector('[data-language="powershell"]')).toBeTruthy();
+        for (const hidden of [
+          'pwsh.exe',
+          '-Command',
+          'cwd',
+          'processId',
+          'source',
+          'D:/private-workspace',
+          'JSON 对象',
+        ])
+          expect(input.textContent).not.toContain(hidden);
+        expect(screen.queryByText('原始工具')).toBeNull();
+        expect(screen.getByTestId('inline-process-tool-result').textContent).toContain(
+          'export const count = 5',
+        );
+        fireEvent.click(within(input).getByRole('button', { name: '复制命令' }));
+        await waitFor(() => expect(writeText).toHaveBeenCalledWith(script));
+        if (deferred) expect(read).toHaveBeenCalled();
+      } finally {
+        read.mockRestore();
+        if (oldClipboard) Object.defineProperty(navigator, 'clipboard', oldClipboard);
+        else Reflect.deleteProperty(navigator, 'clipboard');
+      }
+    },
+  );
+
   it('puts command descriptions beside the command and removes them from detail arguments', () => {
     render(
       <InlineProcessFlow
@@ -376,6 +508,20 @@ describe('InlineProcessFlow', () => {
     expect(link.getAttribute('title')).toBe('D:\\projects\\src\\renderer\\view.tsx');
     fireEvent.click(link);
     expect(onOpenChange).toHaveBeenCalledWith('D:\\projects\\src\\renderer\\view.tsx');
+  });
+
+  it('opens the original directory path even when its display summary was shortened', () => {
+    const onOpenChange = vi.fn();
+    const path = 'src/' + 'nested/'.repeat(20) + 'games';
+    render(
+      <InlineProcessFlow
+        items={[{ ...toolItem, name: 'list_files', argumentsJson: JSON.stringify({ path }) }]}
+        onOpenChange={onOpenChange}
+        defaultOpen
+      />,
+    );
+    fireEvent.click(screen.getByRole('link'));
+    expect(onOpenChange).toHaveBeenCalledWith(path);
   });
 
   it('can hide tool calls while preserving reasoning and commentary', () => {
@@ -504,13 +650,12 @@ describe('InlineProcessFlow', () => {
     expect(screen.getByTestId('inline-process-commentary')).toBeTruthy();
     expect(screen.getByTestId('inline-process-reasoning')).toBeTruthy();
     expect(within(folds[0]).queryByTestId('inline-process-tool')).toBeNull();
-    expect(within(folds[1]).queryByTestId('inline-process-tool')).toBeNull();
+    expect(within(folds[1]).getAllByTestId('inline-process-tool')).toHaveLength(2);
     expect(
       within(folds[1]).getByTestId('process-action-summary-toggle').getAttribute('aria-expanded'),
-    ).toBe('false');
+    ).toBe('true');
 
     fireEvent.click(within(folds[0]).getByTestId('process-action-summary-toggle'));
-    fireEvent.click(within(folds[1]).getByTestId('process-action-summary-toggle'));
     expect(screen.getAllByTestId('inline-process-tool')).toHaveLength(4);
     expect(screen.getByTestId('inline-process-reasoning')).toBeTruthy();
     expect(
@@ -644,7 +789,7 @@ describe('InlineProcessFlow', () => {
     expect(screen.getByTestId('inline-process-tool')).toBeTruthy();
   });
 
-  it('renders JSON arguments and results as structured key-value details', () => {
+  it('keeps arguments structured and highlights JSON results in the result surface', () => {
     render(
       <InlineProcessFlow
         items={[
@@ -668,9 +813,10 @@ describe('InlineProcessFlow', () => {
     expect(argumentsView.textContent).toContain('encoding');
 
     const resultView = screen.getByTestId('inline-process-tool-result');
-    expect(within(resultView).getByText('ok')).toBeTruthy();
-    expect(within(resultView).getByText('true')).toBeTruthy();
-    expect(within(resultView).getByText('lines')).toBeTruthy();
+    expect(resultView.querySelector('[data-language="json"]')).toBeTruthy();
+    expect(resultView.textContent).toContain('"ok"');
+    expect(resultView.textContent).toContain('true');
+    expect(resultView.textContent).toContain('"lines"');
     const details = screen.getByTestId('inline-process-tool-details');
     expect(details.getAttribute('tabindex')).toBe('0');
     expect(details.getAttribute('aria-label')).toBe('读取文件详情');
@@ -764,8 +910,7 @@ describe('InlineProcessFlow', () => {
 
     expect(
       tools[2].querySelector('.shell-inline-process__tool-toggle')?.getAttribute('aria-expanded'),
-    ).toBe('false');
-    fireEvent.click(tools[2].querySelector('.shell-inline-process__tool-toggle')!);
+    ).toBe('true');
     expect(screen.getByTestId('inline-process-tool-result').textContent).toContain('boom');
   });
 
@@ -1020,7 +1165,8 @@ describe('InlineProcessFlow', () => {
     expect(status.getAttribute('title')).toBe('失败');
     expect(status.getAttribute('aria-label')).toBe('失败');
     expect(status.textContent).toBe('');
-    expect(screen.getByTestId('inline-process-tool').textContent).not.toContain('失败');
+    expect(screen.getByTestId('inline-process-tool').querySelector('.shell-inline-process__tool-toggle')?.textContent).not.toContain('失败');
+    expect(screen.getByTestId('inline-process-tool-result').textContent).toContain('执行失败');
     expect(summary.textContent).toBe('Error: command failed');
     expect(summary.classList.contains('is-failed')).toBe(true);
     expect(document.querySelector('.shell-inline-process__state-dot')).toBeTruthy();
@@ -1029,11 +1175,6 @@ describe('InlineProcessFlow', () => {
   it('explains a failed tool whose provider returned no error body', () => {
     render(<InlineProcessFlow items={[{ ...failedToolItem, result: '' }]} defaultOpen />);
 
-    fireEvent.click(
-      screen
-        .getByTestId('inline-process-tool')
-        .querySelector('.shell-inline-process__tool-toggle')!,
-    );
     expect(screen.getByTestId('inline-process-tool-result').textContent).toContain(
       '工具未返回错误详情',
     );
@@ -1430,7 +1571,7 @@ describe('paged process reading state', () => {
     const fixture = render(
       <InlineProcessFlow items={[failedToolItem]} answerStarted totalFailedTools={10} />,
     );
-    expect(screen.getByTestId('process-panel-toggle').getAttribute('aria-expanded')).toBe('false');
+    expect(screen.getByTestId('process-panel-toggle').getAttribute('aria-expanded')).toBe('true');
     fixture.rerender(<InlineProcessFlow items={[toolItem]} answerStarted totalFailedTools={10} />);
     expect(screen.getByTestId('process-panel-toggle').getAttribute('aria-expanded')).toBe('false');
   });
@@ -1544,5 +1685,39 @@ describe('approval wait presentation', () => {
       />,
     );
     expect(screen.getByTestId('grid-reveal-caption').textContent).toBe('生图模型 · gpt-image-2');
+  });
+});
+
+
+describe('Be UI tool result integration', () => {
+  afterEach(cleanup);
+  it('shows actual log chunks, preserves manual reading through completion and resets for a new run', () => {
+    cleanup();
+    const live = { ...runningTool, progressOutput: 'first\nsecond\n', progressBytes: 13 };
+    const fixture = render(<InlineProcessFlow items={[live]} streaming runId="logs-a" />);
+    const result = screen.getByTestId('inline-process-tool-result');
+    expect(result.textContent).toContain('first');
+    expect(result.textContent).toContain('second');
+    fireEvent.wheel(result, { deltaY: -100 });
+    fixture.rerender(<InlineProcessFlow items={[{ ...live, status: 'completed', result: 'final output' }]} answerStarted runId="logs-a" />);
+    expect(screen.getByTestId('process-panel-toggle').getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByTestId('inline-process-tool-result').textContent).toContain('final output');
+    expect(screen.getByTestId('inline-process-tool-result').textContent).not.toContain('first');
+    fixture.rerender(<InlineProcessFlow items={[toolItem]} answerStarted runId="logs-b" />);
+    expect(screen.queryByTestId('inline-process-tool-result')).toBeNull();
+  });
+
+  it('keeps a user-folded live result folded and labels a bounded tail when reopened', () => {
+    const live = { ...runningTool, progressOutput: 'old tail', progressTruncated: true };
+    const fixture = render(<InlineProcessFlow items={[live]} defaultOpen streaming />);
+    const toggle = () => screen.getByTestId('inline-process-tool').querySelector('.shell-inline-process__tool-toggle')!;
+    fireEvent.click(toggle());
+    fixture.rerender(<InlineProcessFlow items={[{ ...live, progressOutput: 'new tail' }]} defaultOpen streaming />);
+    expect(screen.queryByTestId('inline-process-tool-result')).toBeNull();
+    fireEvent.click(toggle());
+    expect(screen.getByTestId('inline-process-tool-result').textContent).toContain('new tail');
+    expect(screen.getByText('仅显示最近的日志；执行结束后查看最终输出。')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '复制当前日志片段' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '重新执行' })).toBeNull();
   });
 });

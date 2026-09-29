@@ -16,6 +16,30 @@ const planBanner = () => <div mode="plan">规划模式</div>;
 const goalBanner = () => <div mode="goal">目标模式</div>;
 
 describe('NewMaxComposerFrame', () => {
+  it.each(['empty', 'conversation'] as const)('keeps %s repository context outside the input and above mode banners', (variant) => {
+    const { rerender } = render(
+      <NewMaxComposerFrame
+        variant={variant}
+        contextBar={<div data-testid="repository-context">仓库</div>}
+        modeBanner={planBanner()}
+      >
+        <textarea aria-label="消息" />
+      </NewMaxComposerFrame>,
+    );
+    const frame = screen.getByTestId('newmax-composer-frame');
+    const context = screen.getByTestId('repository-context');
+    const surface = screen.getByRole('textbox').closest('.shell-compose');
+    expect(context.parentElement).toBe(frame);
+    expect(context.closest('.shell-compose')).toBeNull();
+    expect(context.nextElementSibling).toBe(screen.getByTestId('newmax-composer-mode'));
+    expect(surface?.parentElement).toBe(frame);
+
+    rerender(<NewMaxComposerFrame variant={variant} input={<textarea aria-label="消息" />} />);
+    expect(screen.queryByTestId('repository-context')).toBeNull();
+    // No context wrapper or reserved gap when the context component returns null.
+    expect(frame.querySelector('.shell-compose')).toBeTruthy();
+  });
+
   it('preserves empty and conversation editor geometry', () => {
     const { rerender } = render(
       <NewMaxComposerFrame

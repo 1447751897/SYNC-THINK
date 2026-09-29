@@ -1,3 +1,4 @@
+import { ModelPickerPanel } from './ModelPickerPanel.js';
 // NewMax-style Compose toolbar menus: permission / reasoning / model picker.
 // Menus render via portal + fixed position so parent overflow cannot clip them.
 import {
@@ -5,51 +6,35 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
-  useMemo,
   useRef,
   useState,
   type MutableRefObject,
 } from 'react';
 import { createPortal } from 'react-dom';
 import { listenForFrameCoalescedViewportChange } from './viewport-frame.js';
-import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import {
   ArrowUp,
   Bot,
-  Brain,
   Check,
   ChevronDown,
-  ChevronRight,
   Lock,
-  LoaderCircle,
   MessageSquare,
   Mic,
   MicOff,
   Puzzle,
   Shield,
-  Sparkles,
   Square,
   Users,
   Zap,
   X,
 } from 'lucide-react';
-import type { ContextStatusSection, ContextStatusSectionType } from '@sync-think/protocol';
+import type { ContextStatusSection } from '@sync-think/protocol';
 import {
-  isKernelExecutable,
-  isKernelExecutionSupported,
-  kernelExecutionUnavailableReason,
   type KernelDetectionResult,
 } from '@sync-think/shared';
 import { AgentAvatarView } from './AgentAvatarView.js';
-import { BrandLogoMark } from './BrandLogoMark.js';
-import {
-  resolveKernelBrandLogo,
-  resolveKernelDisplayName,
-  resolveProviderBrandLogo,
-  resolveProviderBrandLogoByName,
-} from './brand-icons.js';
+import { AgentLimitsCard } from './agent-limits-card.js';
 import type { ModelOption } from './NewConversationDialog.js';
-import { OverlayScrollArea } from './OverlayScrollArea.js';
 
 export type PermissionMode = 'ask' | 'workspace' | 'full-access';
 /** Fixed NewMax-style effort ladder (full set always shown). */
@@ -439,6 +424,33 @@ function MenuShell(props: {
   );
 }
 
+/** The current permission is always legible, in both new and existing conversations. */
+export const PermissionTrigger = forwardRef<HTMLButtonElement, {
+  value: PermissionMode;
+  open: boolean;
+  onClick(): void;
+}>(function PermissionTrigger({ value, open, onClick }, ref) {
+  const option = PERMISSION_OPTIONS.find((candidate) => candidate.value === value) ?? PERMISSION_OPTIONS[0]!;
+  const Icon = option.Icon;
+  return (
+    <button
+      ref={ref}
+      type="button"
+      className="shell-compose__tool shell-compose__permission"
+      data-mode={value}
+      data-open={open ? '1' : '0'}
+      aria-haspopup="menu"
+      aria-expanded={open}
+      aria-label={'权限：' + option.title}
+      title={'权限：' + option.title}
+      onClick={onClick}
+    >
+      <Icon size={15} aria-hidden="true" />
+      <span className="shell-compose__tool-label">{option.title}</span>
+    </button>
+  );
+});
+
 export function PermissionMenu(props: {
   open: boolean;
   value: PermissionMode;
@@ -482,6 +494,26 @@ export function PermissionMenu(props: {
 }
 
 /** 输入框「对话对象」选择菜单里的一个可选身份（模型/智能体/小队）。 */
+/** Display only. Conversation selection belongs to the sidebar and new-chat flow. */
+export function ComposerIdentity(props: {
+  track: 'model' | 'agent' | 'team';
+  label: string;
+  avatar?: { name: string; avatar?: string };
+  testId?: string;
+}) {
+  const Icon = props.track === 'agent' ? Bot : props.track === 'team' ? Users : MessageSquare;
+  return (
+    <span className="shell-compose__identity" data-testid={props.testId} title={`对话对象：${props.label}`}>
+      {props.avatar?.avatar?.trim() ? (
+        <AgentAvatarView name={props.avatar.name} avatar={props.avatar.avatar} size={18} />
+      ) : (
+        <Icon size={15} />
+      )}
+      <span className="shell-compose__identity-label">{props.label}</span>
+    </span>
+  );
+}
+
 export interface IdentityOption {
   track: 'model' | 'agent' | 'team';
   targetRef: string;
@@ -708,21 +740,6 @@ export type KernelInstallState =
  * Compact transparent kernel mark used by the picker and the compose chip.
  * The fixed box normalises optical size without adding a tile or border.
  */
-function KernelBadge({ iconKey, name }: { iconKey: string; name: string }) {
-  const brandLogo = resolveKernelBrandLogo(iconKey);
-  return (
-    <span
-      className={`shell-kernel-badge shell-kernel-badge--${iconKey}`}
-      data-testid={`kernel-badge-${iconKey}`}
-      title={name}
-      aria-label={brandLogo ? undefined : name}
-      role={brandLogo ? undefined : 'img'}
-    >
-      {brandLogo ? <BrandLogoMark logo={brandLogo} size={18} /> : <Sparkles size={16} />}
-    </span>
-  );
-}
-
 export function ModelPickerMenu(props: {
   open: boolean;
   models: readonly ModelOption[];
@@ -730,7 +747,7 @@ export function ModelPickerMenu(props: {
   defaultLabel: string;
   reasoningEffort?: ReasoningEffort;
   anchorEl: HTMLElement | null;
-  /** Use the real compose button as the Radix trigger when mounted in ChatView. */
+  /** Render the real compose button beside the portalled menu when mounted in ChatView. */
   trigger?: React.ReactElement;
   /** Kernel selector data (Slice 6); empty hides the kernel group. */
   kernels?: readonly KernelDetectionResult[];
@@ -742,395 +759,13 @@ export function ModelPickerMenu(props: {
   onPick(modelId: string): void;
   onReasoningChange?(value: ReasoningEffort): void;
 }) {
-  const providers = useMemo(() => {
-    const map = new Map<string, ModelOption[]>();
-    for (const model of props.models) {
-      const list = map.get(model.providerName) ?? [];
-      list.push(model);
-      map.set(model.providerName, list);
-    }
-    return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-  }, [props.models]);
-
-  const [triggerRect, setTriggerRect] = useState<FloatingAnchorRect | null>(null);
-  useLayoutEffect(() => {
-    if (!props.open || !props.anchorEl) {
-      setTriggerRect(null);
-      return;
-    }
-    const update = () => setTriggerRect(rectFromEl(props.anchorEl));
-    update();
-    return listenForFrameCoalescedViewportChange(update);
-  }, [props.open, props.anchorEl]);
-
-  const selectedProviderOfModel = props.models.find(
-    (model) => model.modelId === props.selectedModelId,
-  )?.providerName;
-  const [openSubmenu, setOpenSubmenu] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!props.open) setOpenSubmenu(null);
-  }, [props.open]);
-
-  const setSubmenuState = (key: string, open: boolean) => {
-    setOpenSubmenu((current) => (open ? key : current === key ? null : current));
-  };
-
-  return (
-    <DropdownMenu.Root
-      dir="ltr"
-      open={props.open}
-      onOpenChange={(open) => {
-        if (!open) {
-          setOpenSubmenu(null);
-          props.onClose();
-        }
-      }}
-      modal={false}
-    >
-      {props.trigger ? (
-        <DropdownMenu.Trigger asChild>{props.trigger}</DropdownMenu.Trigger>
-      ) : typeof document !== 'undefined' ? (
-        createPortal(
-          <DropdownMenu.Trigger asChild>
-            <span
-              aria-hidden="true"
-              data-testid="model-picker-anchor"
-              style={{
-                // The chat column owns a container query. A fixed element
-                // inside it is still measured in that container's coordinate
-                // space in Chromium, which moves Radix menus off-screen.
-                // Keep the virtual anchor under body so its fixed rect is
-                // genuinely viewport-relative.
-                position: 'fixed',
-                left: triggerRect?.left ?? 0,
-                top: triggerRect?.top ?? 0,
-                width: triggerRect?.width ?? 0,
-                height: triggerRect?.height ?? 0,
-                pointerEvents: 'none',
-              }}
-            />
-          </DropdownMenu.Trigger>,
-          document.body,
-        )
-      ) : null}
-      <DropdownMenu.Portal>
-        <DropdownMenu.Content
-          className="shell-menu shell-menu--portal shell-menu--model-providers"
-          side="top"
-          align="end"
-          sideOffset={8}
-          collisionPadding={8}
-          avoidCollisions
-          onCloseAutoFocus={(event) => event.preventDefault()}
-          // Radix renders Provider items in a second portal; keep the root
-          // menu mounted while focus crosses into that flyout.
-          onFocusOutside={(event) => event.preventDefault()}
-          onEscapeKeyDown={props.onClose}
-        >
-          <OverlayScrollArea
-            className="shell-menu__scroll-frame"
-            innerClassName="shell-menu__scroll"
-            fadeColor="var(--composer-surface)"
-          >
-            {props.kernels && props.kernels.length > 0 ? (
-              <>
-                <div className="shell-menu__group-label">内核</div>
-                {props.kernels.map((kernel) => {
-                  const displayName = resolveKernelDisplayName(kernel.kernelId, kernel.name);
-                  const active = kernel.kernelId === props.selectedKernelId;
-                  const installState = props.kernelInstallStates?.[kernel.kernelId];
-                  const installPending =
-                    installState?.status === 'installing' ||
-                    installState?.status === 'verifying' ||
-                    (installState?.status === 'checking' && !kernel.installed);
-                  const canInstall = false;
-                  const executionSupported = isKernelExecutionSupported(kernel);
-                  const executable = isKernelExecutable(kernel);
-                  const disabled = installPending || (!executable && !canInstall);
-                  // Installed kernels show a version badge on the right; install /
-                  // missing / error copy also stays on that same trailing slot so
-                  // every kernel row keeps NewMax's single-line height.
-                  const healthyInstalled = kernel.installed && !installPending;
-                  const showVersionBadge = Boolean(healthyInstalled && kernel.version);
-                  const showStatus = !healthyInstalled || !executionSupported;
-                  let hint: string;
-                  if (installState?.status === 'checking') {
-                    hint = '正在检查更新';
-                  } else if (installState?.status === 'installing') {
-                    hint = '安装中 · 应用私有目录';
-                  } else if (installState?.status === 'verifying') {
-                    hint = '安装成功 · 正在检测';
-                  } else if (installState?.status === 'error' && !kernel.installed) {
-                    hint = `安装失败 · ${installState.error}`;
-                  } else if (kernel.installed && !executionSupported) {
-                    hint =
-                      kernel.executionUnavailableReason ??
-                      kernelExecutionUnavailableReason(displayName);
-                  } else if (installState?.status === 'success' && kernel.installed) {
-                    hint = kernel.version ? `安装成功 v${kernel.version}` : '安装成功';
-                  } else if (kernel.installed) {
-                    hint = kernel.version
-                      ? `已安装 v${kernel.version}${kernel.knownGood ? '' : '（版本未验证）'}`
-                      : '已安装';
-                  } else {
-                    hint = kernel.installCommand ? `未安装 · ${kernel.installCommand}` : '未安装';
-                  }
-                  return (
-                    <DropdownMenu.Item
-                      key={kernel.kernelId}
-                      role="menuitemradio"
-                      aria-checked={active}
-                      disabled={disabled}
-                      data-testid={`kernel-option-${kernel.kernelId}`}
-                      aria-label={`${displayName}${kernel.version ? ` v${kernel.version}` : ''} · ${hint}`}
-                      className={`shell-menu__item shell-menu__item--kernel ${
-                        active && executable ? 'is-active' : ''
-                      } ${disabled ? 'is-disabled' : ''} ${!executionSupported ? 'is-execution-unavailable' : ''}`}
-                      onSelect={(event) => {
-                        if (executable && props.onPickKernel) {
-                          props.onPickKernel(kernel.kernelId);
-                          props.onClose();
-                          return;
-                        }
-                        if (canInstall && !installPending && props.onInstallKernel) {
-                          event.preventDefault();
-                          props.onInstallKernel(kernel.kernelId);
-                        }
-                      }}
-                    >
-                      <span className="shell-menu__selection-slot" aria-hidden="true">
-                        {installPending ? (
-                          <LoaderCircle size={14} className="shell-menu__kernel-spinner" />
-                        ) : active && executable ? (
-                          <Check size={14} />
-                        ) : null}
-                      </span>
-                      <KernelBadge iconKey={kernel.icon} name={displayName} />
-                      <span className="shell-menu__kernel-name">{displayName}</span>
-                      {showVersionBadge ? (
-                        <span
-                          className="shell-menu__kernel-version"
-                          data-testid={`kernel-version-${kernel.kernelId}`}
-                          title={`版本 ${kernel.version}`}
-                        >
-                          v{kernel.version}
-                        </span>
-                      ) : null}
-                      {showStatus ? (
-                        <span
-                          className={`shell-menu__kernel-status ${
-                            installState?.status === 'error' && !kernel.installed ? 'is-error' : ''
-                          }`}
-                          data-testid={`kernel-status-${kernel.kernelId}`}
-                          title={hint}
-                        >
-                          {healthyInstalled && !executionSupported ? '执行尚未接通' : hint}
-                        </span>
-                      ) : null}
-                    </DropdownMenu.Item>
-                  );
-                })}
-                <div className="shell-menu__separator" />
-              </>
-            ) : null}
-            {providers.length === 0 ? (
-              <div className="shell-menu__empty">没有可用模型</div>
-            ) : (
-              providers.map(([providerName, models]) => {
-                const ownsSelected = selectedProviderOfModel === providerName;
-                const submenuKey = `provider:${providerName}`;
-                const providerModel = models[0];
-                const providerLogo =
-                  (providerModel?.providerId
-                    ? resolveProviderBrandLogo(providerModel.providerId)
-                    : undefined) ?? resolveProviderBrandLogoByName(providerName);
-                return (
-                  <DropdownMenu.Sub
-                    key={providerName}
-                    open={openSubmenu === submenuKey}
-                    onOpenChange={(open) => setSubmenuState(submenuKey, open)}
-                  >
-                    <DropdownMenu.SubTrigger
-                      data-testid={`model-provider-${providerName}`}
-                      className={`shell-menu__item shell-menu__item--provider ${
-                        ownsSelected ? 'is-active' : ''
-                      }`}
-                      onClick={() => setOpenSubmenu(submenuKey)}
-                      onKeyDown={(event) => {
-                        if (event.key === 'ArrowRight') {
-                          event.preventDefault();
-                          setOpenSubmenu(submenuKey);
-                        }
-                      }}
-                    >
-                      <span className="shell-menu__selection-slot" aria-hidden="true">
-                        {ownsSelected ? <Check size={14} /> : null}
-                      </span>
-                      <span className="shell-menu__provider-logo" title={providerName}>
-                        {providerLogo ? (
-                          <BrandLogoMark logo={providerLogo} size={16} />
-                        ) : (
-                          providerName.trim().slice(0, 1).toLocaleUpperCase()
-                        )}
-                      </span>
-                      <div className="shell-menu__item-text">
-                        <div className="shell-menu__item-title">{providerName}</div>
-                      </div>
-                      <ChevronRight size={14} className="shell-menu__chevron" />
-                    </DropdownMenu.SubTrigger>
-                    <DropdownMenu.Portal>
-                      <DropdownMenu.SubContent
-                        data-testid="model-flyout"
-                        className="shell-menu shell-menu--portal shell-menu--model-flyout"
-                        sideOffset={6}
-                        alignOffset={-6}
-                        collisionPadding={8}
-                        avoidCollisions
-                      >
-                        <OverlayScrollArea
-                          className="shell-menu__scroll-frame"
-                          innerClassName="shell-menu__scroll"
-                          fadeColor="var(--composer-surface)"
-                        >
-                          {models.length === 0 ? (
-                            <div className="shell-menu__empty">该供应商暂无模型</div>
-                          ) : (
-                            models.map((model) => {
-                              const active = model.modelId === props.selectedModelId;
-                              return (
-                                <DropdownMenu.Item
-                                  key={model.modelId}
-                                  role="menuitemradio"
-                                  aria-checked={active}
-                                  className={`shell-menu__item shell-menu__item--model ${
-                                    active ? 'is-active' : ''
-                                  }`}
-                                  onSelect={() => {
-                                    props.onPick(model.modelId);
-                                    props.onClose();
-                                  }}
-                                >
-                                  <Sparkles size={13} className="shell-menu__item-icon" />
-                                  <div className="shell-menu__item-text">
-                                    <div className="shell-menu__item-title">
-                                      {model.displayName}
-                                    </div>
-                                  </div>
-                                  {active ? (
-                                    <Check size={14} className="shell-menu__check" />
-                                  ) : null}
-                                </DropdownMenu.Item>
-                              );
-                            })
-                          )}
-                        </OverlayScrollArea>
-                      </DropdownMenu.SubContent>
-                    </DropdownMenu.Portal>
-                  </DropdownMenu.Sub>
-                );
-              })
-            )}
-          </OverlayScrollArea>
-          {props.reasoningEffort && props.onReasoningChange ? (
-            <div className="shell-menu__model-footer">
-              <DropdownMenu.Sub
-                open={openSubmenu === 'reasoning'}
-                onOpenChange={(open) => setSubmenuState('reasoning', open)}
-              >
-                <DropdownMenu.SubTrigger
-                  data-testid="model-reasoning-trigger"
-                  className="shell-menu__item shell-menu__item--reasoning"
-                  onClick={() => setOpenSubmenu('reasoning')}
-                >
-                  <Brain size={14} className="shell-menu__item-icon" />
-                  <div className="shell-menu__item-text">
-                    <div className="shell-menu__item-title">思考强度</div>
-                  </div>
-                  <span className="shell-menu__reasoning-value">
-                    {REASONING_LABELS[props.reasoningEffort]}
-                  </span>
-                  <ChevronRight size={14} className="shell-menu__chevron" />
-                </DropdownMenu.SubTrigger>
-                <DropdownMenu.Portal>
-                  <DropdownMenu.SubContent
-                    data-testid="model-reasoning-flyout"
-                    className="shell-menu shell-menu--portal shell-menu--reasoning-flyout"
-                    sideOffset={6}
-                    alignOffset={-6}
-                    collisionPadding={8}
-                    avoidCollisions
-                  >
-                    <OverlayScrollArea
-                      className="shell-menu__scroll-frame"
-                      innerClassName="shell-menu__scroll"
-                      fadeColor="var(--composer-surface)"
-                    >
-                      {REASONING_OPTIONS.filter((option) =>
-                        reasoningLevelsForModel(props.selectedModelId).includes(option.value),
-                      ).map((option) => {
-                        const active = option.value === props.reasoningEffort;
-                        return (
-                          <DropdownMenu.Item
-                            key={option.value}
-                            data-testid={`model-reasoning-option-${option.value}`}
-                            role="menuitemradio"
-                            aria-checked={active}
-                            className={`shell-menu__item shell-menu__item--compact ${
-                              active ? 'is-active' : ''
-                            }`}
-                            onSelect={() => {
-                              props.onReasoningChange?.(option.value);
-                              props.onClose();
-                            }}
-                          >
-                            <span className="shell-menu__selection-slot" aria-hidden="true">
-                              {active ? <Check size={14} /> : null}
-                            </span>
-                            <div className="shell-menu__item-text">
-                              <div className="shell-menu__item-title">{option.title}</div>
-                            </div>
-                          </DropdownMenu.Item>
-                        );
-                      })}
-                    </OverlayScrollArea>
-                  </DropdownMenu.SubContent>
-                </DropdownMenu.Portal>
-              </DropdownMenu.Sub>
-            </div>
-          ) : null}
-        </DropdownMenu.Content>
-      </DropdownMenu.Portal>
-    </DropdownMenu.Root>
-  );
-}
-
-const CONTEXT_SECTION_LABELS: Record<ContextStatusSectionType, string> = {
-  system: '系统指令',
-  agent: '智能体 / 小队',
-  project: '项目上下文',
-  summary: '已保存摘要',
-  messages: '消息历史',
-  tools: '工具定义',
-};
-
-function formatContextTimestamp(value: string | undefined): string | null {
-  if (!value) return null;
-  const date = new Date(value);
-  if (!Number.isFinite(date.getTime())) return null;
-  const now = new Date();
-  return new Intl.DateTimeFormat('zh-CN', {
-    ...(date.getFullYear() === now.getFullYear() ? {} : { year: 'numeric' as const }),
-    month: 'numeric',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  }).format(date);
+  return <ModelPickerPanel {...props}
+    reasoningLabels={REASONING_LABELS} positionMenu={resolveFloatingMenuStyle} />;
 }
 
 /**
- * Context occupancy ring. Hover shows a NewMax-style "上下文窗口" card.
+ * Context occupancy ring. Hover shows a NewMax-style "上下文窗口" card
+ * (see AgentLimitsCard: window bar + collapsible token breakdown + quotas).
  * Session cost/duration hover lives on the message footer metrics instead.
  */
 export function ContextRing(props: {
@@ -1179,7 +814,6 @@ export function ContextRing(props: {
   const [anchor, setAnchor] = useState<FloatingAnchorRect | null>(null);
   const btnRef = useRef<HTMLButtonElement>(null);
   const closeTimer = useRef<number | null>(null);
-  const kernelLogo = props.kernelId ? resolveKernelBrandLogo(props.kernelId) : undefined;
 
   const rawRatio =
     typeof props.usageRatio === 'number' && Number.isFinite(props.usageRatio)
@@ -1192,41 +826,14 @@ export function ContextRing(props: {
   const c = 2 * Math.PI * r;
   const dash = `${(visualRatio * c).toFixed(2)} ${c.toFixed(2)}`;
   const pct = Math.round(rawRatio * 100);
-  const sections = props.sections ?? [];
-  const occupancySections = (props.occupancySections ?? []).filter((section) => section.tokens > 0);
   const compactThreshold =
     typeof props.compactThreshold === 'number' &&
     Number.isFinite(props.compactThreshold) &&
     props.compactThreshold > 0
       ? Math.min(1, props.compactThreshold)
       : 0.7;
-  const compactPct = Math.round(compactThreshold * 100);
-  const compactAtTokens =
-    props.limit > 0 ? Math.max(0, Math.round(props.limit * compactThreshold)) : 0;
-  const tokensUntilCompact = Math.max(0, compactAtTokens - props.used);
-  const compactThresholdReached = compactAtTokens > 0 && props.used >= compactAtTokens;
-  const compactedAtLabel = formatContextTimestamp(props.compactedAt);
   const usedLabel = formatTokenCount(props.used);
   const limitLabel = formatTokenCount(props.limit);
-  const remaining = Math.max(0, props.limit - props.used);
-  const remainingLabel = formatTokenCount(remaining);
-  const compactAtLabel = formatTokenCount(compactAtTokens);
-  const tokensUntilCompactLabel = formatTokenCount(tokensUntilCompact);
-  const exactTokenTitle = (tokens: number) =>
-    `${Math.max(0, Math.round(tokens)).toLocaleString('en-US')} Token`;
-  // 会话累计（跨全部轮次的总消耗），与「当前上下文窗口」是两个口径：
-  // 窗口 = Runtime 当前准备提供给模型的完整上下文；累计 = 本会话所有
-  // Provider 请求的 in+out 之和。没有 usage 事件时必须保留“未上报”语义。
-  const sessionTokensLabel =
-    props.sessionTokens === undefined ? undefined : formatTokenCount(props.sessionTokens);
-  const sessionDurationLabel = (() => {
-    const ms = props.sessionDurationMs ?? 0;
-    if (ms <= 0) return null;
-    const totalMin = Math.round(ms / 60000);
-    if (totalMin < 1) return '<1 分钟';
-    if (totalMin < 60) return `${totalMin} 分钟`;
-    return `${Math.floor(totalMin / 60)} 小时 ${totalMin % 60} 分钟`;
-  })();
 
   const cancelClose = () => {
     if (closeTimer.current !== null) {
@@ -1313,237 +920,23 @@ export function ContextRing(props: {
               onMouseEnter={cancelClose}
               onMouseLeave={hide}
             >
-              <div className="shell-ctx-tooltip__header">
-                <div>
-                  <div className="shell-ctx-tooltip__title-row">
-                    <div className="shell-ctx-tooltip__title">当前上下文窗口</div>
-                    {props.kernelLabel ? (
-                      <span
-                        className={`shell-ctx-tooltip__kernel${
-                          kernelLogo ? ' shell-ctx-tooltip__kernel--logo' : ''
-                        }`}
-                        data-testid="context-kernel-label"
-                        title={`当前内核：${props.kernelLabel}`}
-                      >
-                        {kernelLogo ? (
-                          <BrandLogoMark logo={kernelLogo} size={14} />
-                        ) : (
-                          props.kernelLabel
-                        )}
-                      </span>
-                    ) : null}
-                  </div>
-                  <div className="shell-ctx-tooltip__subtitle">
-                    当前模型实际可见的完整上下文窗口
-                  </div>
-                </div>
-                <strong className="shell-ctx-tooltip__headline">
-                  {usedLabel}
-                  <span> / {limitLabel}</span>
-                </strong>
-              </div>
-              <div
-                className="shell-ctx-tooltip__bar"
-                role="progressbar"
-                aria-label="当前对话上下文容量"
-                aria-valuemin={0}
-                aria-valuemax={Math.max(0, props.limit)}
-                aria-valuenow={Math.max(0, Math.min(props.used, props.limit || props.used))}
-              >
-                <div
-                  className="shell-ctx-tooltip__bar-fill"
-                  style={{
-                    width: `${visualRatio * 100}%`,
-                    background: occupancyColor,
-                  }}
-                />
-                {!props.kernelSelfManaged ? (
-                  <span
-                    className="shell-ctx-tooltip__bar-threshold"
-                    style={{ left: `${compactThreshold * 100}%` }}
-                    title={`自动压缩阈值：${compactPct}%`}
-                    aria-hidden="true"
-                  />
-                ) : null}
-              </div>
-              {props.kernelSelfManaged ? (
-                <div
-                  className="shell-ctx-tooltip__status"
-                  data-testid="context-kernel-self-managed"
-                >
-                  <span aria-hidden="true" />
-                  {`上下文压缩由 ${props.kernelLabel || '当前'} 内核自行管理`}
-                </div>
-              ) : (
-                <div
-                  className="shell-ctx-tooltip__status"
-                  data-state={compactThresholdReached ? 'threshold' : 'healthy'}
-                >
-                  <span aria-hidden="true" />
-                  {compactThresholdReached
-                    ? '已达到阈值，发送下一条消息前会自动压缩'
-                    : `达到 ${compactPct}% 时，在发送下一条消息前自动压缩`}
-                </div>
-              )}
-              <div className="shell-ctx-tooltip__row">
-                <span>当前占用</span>
-                <strong data-testid="context-used-value" title={exactTokenTitle(props.used)}>
-                  {usedLabel}
-                  <span className="shell-ctx-tooltip__pct"> · {pct}%</span>
-                </strong>
-              </div>
-              <div className="shell-ctx-tooltip__row">
-                <span>容量上限</span>
-                <strong title={exactTokenTitle(props.limit)}>
-                  {limitLabel}
-                  {props.contextWindowEstimated ? (
-                    <span className="shell-ctx-tooltip__pct" data-testid="context-limit-estimated">
-                      {' '}
-                      · 估算
-                    </span>
-                  ) : props.contextWindowSource === 'kernel-reported' ? (
-                    <span
-                      className="shell-ctx-tooltip__pct"
-                      data-testid="context-limit-kernel-reported"
-                    >
-                      {' '}
-                      · 内核窗口
-                    </span>
-                  ) : props.contextWindowSource === 'kernel-capped' ? (
-                    <span
-                      className="shell-ctx-tooltip__pct"
-                      data-testid="context-limit-kernel-capped"
-                    >
-                      {' '}
-                      · 受内核限制
-                    </span>
-                  ) : null}
-                </strong>
-              </div>
-              {props.modelContextWindow !== undefined ? (
-                <div className="shell-ctx-tooltip__row">
-                  <span>模型配置</span>
-                  <strong
-                    data-testid="context-model-default"
-                    title={exactTokenTitle(props.modelContextWindow)}
-                  >
-                    {formatTokenCount(props.modelContextWindow)}
-                  </strong>
-                </div>
-              ) : null}
-              <div className="shell-ctx-tooltip__row">
-                <span>窗口剩余</span>
-                <strong title={exactTokenTitle(remaining)}>{remainingLabel}</strong>
-              </div>
-              {!props.kernelSelfManaged ? (
-                <>
-                  <div className="shell-ctx-tooltip__row">
-                    <span>自动压缩</span>
-                    <strong title={exactTokenTitle(compactAtTokens)}>
-                      {compactAtLabel}
-                      <span className="shell-ctx-tooltip__pct"> · {compactPct}%</span>
-                    </strong>
-                  </div>
-                  <div className="shell-ctx-tooltip__row">
-                    <span>距离压缩</span>
-                    <strong
-                      data-testid="context-compact-distance"
-                      title={
-                        compactThresholdReached
-                          ? '已达到自动压缩阈值'
-                          : exactTokenTitle(tokensUntilCompact)
-                      }
-                    >
-                      {compactThresholdReached ? '已达阈值' : tokensUntilCompactLabel}
-                    </strong>
-                  </div>
-                  <div className="shell-ctx-tooltip__row">
-                    <span>最近压缩</span>
-                    <strong data-testid="context-compacted-at">
-                      {compactedAtLabel ?? '尚未发生'}
-                    </strong>
-                  </div>
-                </>
-              ) : null}
-              {occupancySections.length > 0 ? (
-                <>
-                  <div className="shell-ctx-tooltip__divider" aria-hidden="true" />
-                  <div
-                    className="shell-ctx-tooltip__title shell-ctx-tooltip__title--section"
-                    data-testid="context-occupancy-categories"
-                  >
-                    内核上下文构成
-                  </div>
-                  {occupancySections.map((section) => (
-                    <div
-                      key={section.name}
-                      className="shell-ctx-tooltip__row"
-                      data-testid={`context-occupancy-${section.name}`}
-                    >
-                      <span>{section.name}</span>
-                      <strong title={exactTokenTitle(section.tokens)}>
-                        {formatTokenCount(section.tokens)}
-                      </strong>
-                    </div>
-                  ))}
-                  <div
-                    className="shell-ctx-tooltip__row shell-ctx-tooltip__row--muted"
-                    data-testid="context-occupancy-total"
-                  >
-                    <span>构成合计</span>
-                    <strong title={exactTokenTitle(props.used)}>{usedLabel}</strong>
-                  </div>
-                </>
-              ) : props.kernelSelfManaged ? null : sections.length > 0 ? (
-                <>
-                  <div className="shell-ctx-tooltip__divider" aria-hidden="true" />
-                  <div className="shell-ctx-tooltip__title shell-ctx-tooltip__title--section">
-                    当前对话上下文构成
-                  </div>
-                  {sections.map((section) => (
-                    <div
-                      key={section.type}
-                      className="shell-ctx-tooltip__row"
-                      data-testid={`context-section-${section.type}`}
-                    >
-                      <span>{CONTEXT_SECTION_LABELS[section.type]}</span>
-                      <strong title={exactTokenTitle(section.tokens)}>
-                        {formatTokenCount(section.tokens)}
-                      </strong>
-                    </div>
-                  ))}
-                  <div
-                    className="shell-ctx-tooltip__row shell-ctx-tooltip__row--muted"
-                    data-testid="context-section-total"
-                  >
-                    <span>构成合计</span>
-                    <strong title={exactTokenTitle(props.used)}>{usedLabel}</strong>
-                  </div>
-                </>
-              ) : null}
-              <div className="shell-ctx-tooltip__divider" aria-hidden="true" />
-              <div className="shell-ctx-tooltip__title shell-ctx-tooltip__title--section">
-                会话累计
-              </div>
-              <div className="shell-ctx-tooltip__row">
-                <span>累计 Token 消耗</span>
-                <strong
-                  data-testid="context-session-tokens"
-                  title={
-                    props.sessionTokens === undefined
-                      ? undefined
-                      : exactTokenTitle(props.sessionTokens)
-                  }
-                >
-                  {sessionTokensLabel ?? '尚未上报'}
-                </strong>
-              </div>
-              {sessionDurationLabel ? (
-                <div className="shell-ctx-tooltip__row">
-                  <span>会话时长</span>
-                  <strong>{sessionDurationLabel}</strong>
-                </div>
-              ) : null}
+              <AgentLimitsCard
+                used={props.used}
+                limit={props.limit}
+                modelContextWindow={props.modelContextWindow}
+                contextWindowEstimated={props.contextWindowEstimated}
+                contextWindowSource={props.contextWindowSource}
+                usageRatio={props.usageRatio}
+                compactThreshold={props.compactThreshold}
+                compactedAt={props.compactedAt}
+                kernelSelfManaged={props.kernelSelfManaged}
+                kernelLabel={props.kernelLabel}
+                kernelId={props.kernelId}
+                sections={props.sections}
+                occupancySections={props.occupancySections}
+                sessionDurationMs={props.sessionDurationMs}
+                sessionTokens={props.sessionTokens}
+              />
             </div>,
             document.body,
           )
@@ -1668,7 +1061,7 @@ export const ModelTrigger = forwardRef<HTMLButtonElement, ModelTriggerProps>(
         className="shell-compose__model-btn"
         data-open={props.open ? '1' : '0'}
         data-model-mode={planMode ? 'plan' : 'execute'}
-        aria-haspopup="menu"
+        aria-haspopup="dialog"
         aria-expanded={props.open}
         onClick={props.onClick}
         title={

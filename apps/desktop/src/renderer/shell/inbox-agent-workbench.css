@@ -1,0 +1,233 @@
+/* Detail editor only: the agent library retains its original hub layout. */
+.agent-detail-editor .agent-dialog__header {
+  padding: 22px 24px 18px;
+  min-height: 90px;
+  border: 0;
+}
+.agent-detail-editor .agent-dialog__avatar::before {
+  display: none;
+}
+.agent-detail-editor .agent-dialog__title {
+  font-size: 18px;
+  font-weight: 650;
+}
+.agent-detail-editor .agent-dialog__subtitle {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--color-text-secondary);
+  flex-wrap: wrap;
+}
+.agent-detail-editor .agent-detail-tabs {
+  margin: 0 24px;
+  padding: 0 0 12px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--color-border);
+  border-radius: 0;
+}
+.agent-detail-editor .agent-detail-tabs button {
+  min-height: 34px;
+  padding: 6px 16px;
+}
+.agent-detail-editor .agent-dialog__body {
+  padding: 0;
+  min-height: 0;
+  flex: 1;
+}
+.agent-detail-editor .agent-dialog__body-inner {
+  padding: 22px 24px 26px;
+}
+.agent-detail-editor .agent-pane {
+  gap: 22px;
+}
+.agent-detail-editor .agent-input {
+  background: var(--color-chat);
+  border: 1px solid var(--color-border);
+  border-radius: 9px;
+  padding: 10px 12px;
+  color: var(--color-text);
+  font-size: 13px;
+}
+.agent-detail-editor .agent-meta-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 18px;
+  border: 0;
+  border-radius: 0;
+  overflow: visible;
+}
+.agent-detail-editor .agent-meta {
+  border: 0;
+  background: none;
+  padding: 0;
+  gap: 8px;
+  min-width: 0;
+}
+.agent-detail-editor .agent-meta:last-child {
+  grid-column: 1/-1;
+}
+.agent-detail-editor .agent-meta__label {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+}
+.agent-detail-editor .agent-meta__model {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.agent-detail-editor .agent-meta__empty {
+  font-size: 13px;
+}
+.agent-detail-editor__field-hint {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  line-height: 1.7;
+  margin: 0 0 10px;
+}
+.agent-detail-editor .agent-detail-editor__persona {
+  min-height: 240px;
+  width: 100%;
+  resize: vertical;
+  line-height: 1.85;
+  box-sizing: border-box;
+}
+.agent-detail-editor__character-count {
+  text-align: right;
+  font-size: 11px;
+  color: var(--color-text-faint);
+  margin-top: 6px;
+}
+.agent-detail-editor__advanced {
+  border-top: 1px solid var(--color-border);
+  padding-top: 14px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+.agent-detail-editor__advanced summary {
+  cursor: pointer;
+  padding: 2px 0 10px;
+}
+.agent-detail-editor__advanced > span {
+  display: block;
+  margin: 8px 0;
+}
+.agent-detail-editor .agent-dialog__footer {
+  flex-shrink: 0;
+  padding: 14px 24px;
+  border-top: 1px solid var(--color-border);
+  background: var(--color-elevated);
+}
+.agent-detail-editor .agent-dialog__footer .agent-btn {
+  min-height: 34px;
+  padding: 7px 18px;
+  border-radius: 9px;
+}
+.agent-detail-editor .agent-settings-group {
+  padding: 0;
+  border: 0;
+  background: none;
+}
+.agent-detail-editor .agent-settings-group + .agent-settings-group {
+  border-top: 1px solid var(--color-border);
+  padding-top: 22px;
+}
+
+.agent-detail-editor .agent-meta-grid {
+  background: none;
+}
+.agent-detail-editor .agent-meta > .agent-text-link {
+  align-self: flex-start;
+}
+@media (max-width: 760px) {
+  .agent-detail-editor .agent-dialog__header,
+  .agent-detail-editor .agent-dialog__body-inner,
+  .agent-detail-editor .agent-dialog__footer {
+    padding-left: 18px;
+    padding-right: 18px;
+  }
+  .agent-detail-editor .agent-detail-tabs {
+    margin-inline: 18px;
+  }
+  .activity-panel .task-panel__head {
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+}
+
+.inbox-header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.activity-panel .inbox-source {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 20px;
+  padding: 1px 7px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-hover);
+  color: var(--color-text-secondary);
+}
+.activity-panel .inbox-source[data-source='scheduled'] {
+  color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 9%, transparent);
+  border-color: color-mix(in srgb, var(--color-accent) 22%, transparent);
+}
+.activity-panel .inbox-workspace {
+  color: var(--color-text-secondary);
+}
+.projectless-data-path {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+.projectless-data-path input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 9px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  color: var(--color-text);
+  background: var(--color-chat);
+  user-select: text;
+}
+.projectless-data-actions {
+  display: flex;
+  gap: 8px;
+}
+.projectless-data-hint {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 1.7;
+}
+.projectless-data-success {
+  color: var(--color-accent);
+  font-size: 12px;
+}
+.projectless-data-error {
+  color: var(--color-error);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.activity-panel.task-panel {
+  width: 100%;
+  flex: 1;
+  min-width: 0;
+  padding: 22px 26px;
+  box-sizing: border-box;
+}
+.activity-panel .task-panel__frame {
+  width: 100%;
+}
+@media (max-width: 760px) {
+  .activity-panel.task-panel {
+    padding: 16px;
+  }
+}

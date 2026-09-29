@@ -211,6 +211,7 @@ export function parseRegisterMcpServerPayload(
   value: unknown,
 ): RegisterMcpServerPayload | undefined {
   if (!isRecord(value)) return undefined;
+  if (value.mcpServerId !== undefined && !boundedRequiredText(value.mcpServerId, 128)) return undefined;
   if (typeof value.name !== 'string' || value.name.trim().length === 0 || value.name.length > 128) {
     return undefined;
   }
@@ -274,6 +275,7 @@ export function parseRegisterMcpServerPayload(
     tools = cleaned;
   }
   return {
+    ...(typeof value.mcpServerId === 'string' ? { mcpServerId: value.mcpServerId.trim() } : {}),
     name: value.name.trim(),
     transport: typeof value.transport === 'string' ? value.transport : undefined,
     endpoint: typeof value.endpoint === 'string' ? value.endpoint : undefined,
@@ -298,6 +300,7 @@ export function parseRegisterRemoteMcpPayload(
   value: unknown,
 ): RegisterRemoteMcpPayload | undefined {
   if (!isRecord(value) || !hasOnlyKeys(value, [
+    'mcpServerId',
     'name',
     'endpoint',
     'key',
@@ -312,6 +315,7 @@ export function parseRegisterRemoteMcpPayload(
   ])) {
     return undefined;
   }
+  if (value.mcpServerId !== undefined && !boundedRequiredText(value.mcpServerId, 128)) return undefined;
   if (!boundedRequiredText(value.name, 128) || !boundedRequiredText(value.endpoint, 2048)) {
     return undefined;
   }
@@ -377,6 +381,7 @@ export function parseRegisterRemoteMcpPayload(
         ? value.apiKey.trim()
         : undefined;
   return {
+    ...(typeof value.mcpServerId === 'string' ? { mcpServerId: value.mcpServerId.trim() } : {}),
     name: value.name.trim(),
     endpoint: endpoint.toString(),
     ...(key ? { key } : {}),

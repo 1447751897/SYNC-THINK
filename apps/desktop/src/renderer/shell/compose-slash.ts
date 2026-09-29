@@ -289,7 +289,7 @@ export function resolveSystemMessageTone(
 
 /**
  * Model id to send with appendMessage.
- * - Explicit composer override always wins when present.
+ * - Agent/team tracks always use their agent settings; only model tracks accept overrides.
  * - Model-track targetRef is only used when it looks like a catalog model id.
  * - Agent/team tracks store agent/team ids in targetRef — never send those as modelId.
  */
@@ -299,15 +299,15 @@ export function resolveSendModelId(input: {
   targetRef?: string | null;
   catalogModelIds?: readonly string[];
 }): ModelId | undefined {
+  const track = input.track ?? 'model';
+  if (track === 'agent' || track === 'team') return undefined;
+
   const override = typeof input.modelOverride === 'string' ? input.modelOverride.trim() : '';
   if (override) {
     if (input.catalogModelIds === undefined) return override as ModelId;
     const available = input.catalogModelIds.map((modelId) => modelId.trim()).filter(Boolean);
     return (available.includes(override) ? override : available[0]) as ModelId | undefined;
   }
-
-  const track = input.track ?? 'model';
-  if (track === 'agent' || track === 'team') return undefined;
 
   const target = typeof input.targetRef === 'string' ? input.targetRef.trim() : '';
   if (!target) return undefined;

@@ -1,13 +1,12 @@
 /**
  * Minimal MCP-compatible stdio server for tests.
- * Content-Length framed JSON-RPC 2.0. Tools: echo, ping, write_file.
+ * Newline-delimited JSON-RPC 2.0. Tools: echo, ping, write_file.
  */
 const PROTOCOL_VERSION = "2024-11-05";
 
 function writeMessage(msg) {
   const body = Buffer.from(JSON.stringify(msg), "utf8");
-  process.stdout.write("Content-Length: " + body.length + "\r\n\r\n");
-  process.stdout.write(body);
+  process.stdout.write(Buffer.concat([body, Buffer.from("\n")]));
 }
 
 function handleRequest(msg) {
@@ -120,19 +119,10 @@ let buffer = Buffer.alloc(0);
 process.stdin.on("data", (chunk) => {
   buffer = Buffer.concat([buffer, chunk]);
   while (true) {
-    const headerEnd = buffer.indexOf("\r\n\r\n");
-    if (headerEnd < 0) break;
-    const header = buffer.subarray(0, headerEnd).toString("utf8");
-    const match = /Content-Length:\s*(\d+)/i.exec(header);
-    if (!match) {
-      buffer = buffer.subarray(headerEnd + 4);
-      continue;
-    }
-    const len = Number(match[1]);
-    const bodyStart = headerEnd + 4;
-    if (buffer.length < bodyStart + len) break;
-    const body = buffer.subarray(bodyStart, bodyStart + len).toString("utf8");
-    buffer = buffer.subarray(bodyStart + len);
+    const newline = buffer.indexOf("\n");
+    if (newline < 0) break;
+    const body = buffer.subarray(0, newline).toString("utf8");
+    buffer = buffer.subarray(newline + 1);
     try {
       handleRequest(JSON.parse(body));
     } catch (err) {

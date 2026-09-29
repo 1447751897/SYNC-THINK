@@ -339,6 +339,10 @@ export interface VisualizationDocumentOptions {
 }
 
 function injectHead(source: string, extras: string): string {
+  // The kit is a baseline, not an authored-page theme override. Prepend it so
+  // complete documents retain their own body background, type and spacing.
+  // CSP also takes effect before authored scripts rather than after them.
+  if (/<head\b[^>]*>/i.test(source)) return source.replace(/<head\b[^>]*>/i, (head) => head + extras);
   if (/<\/head>/i.test(source)) return source.replace(/<\/head>/i, `${extras}</head>`);
   if (/<body(?:\s|>)/i.test(source)) {
     return source.replace(/<body(?:\s|>)/i, (match) => `${extras}${match}`);
@@ -399,7 +403,9 @@ export function buildVisualizationDocumentHtml(
         .replace(/(<body(?:\s[^>]*)?>)/i, `$1<main class="viz-root">`)
         .replace(/<\/body>/i, '</main></body>');
     }
-    const enforcement = `<style>${VISUALIZATION_UI_KIT_ENFORCEMENT_STYLES}</style>`;
+    // A full standalone page did not opt into kit buttons merely because we
+    // added a measurement root. Keep its authored button colors and contrast.
+    const enforcement = rootWrapped ? `<style>${VISUALIZATION_UI_KIT_ENFORCEMENT_STYLES}</style>` : '';
     return /<\/body>/i.test(documentSource)
       ? documentSource.replace(/<\/body>/i, `${enforcement}</body>`)
       : `${documentSource}\n${enforcement}`;

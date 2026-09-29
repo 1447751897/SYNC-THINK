@@ -64,7 +64,10 @@
     "selftest:live-image-provider": "pnpm --filter @sync-think/adapters build && pnpm --filter @sync-think/runtime build && node scripts/live-image-provider-acceptance.mjs",
     "test:phase3": "node --test scripts/phase3-visual-capture.test.mjs scripts/selftest-phase3-exit.test.mjs",
     "capture:phase3": "pnpm --filter @sync-think/desktop build:shell:qa && node scripts/phase3-visual-capture.mjs",
-    "selftest:phase3": "node scripts/selftest-phase3-exit.mjs"
+    "selftest:phase3": "node scripts/selftest-phase3-exit.mjs",
+    "design:catalog": "node scripts/generate-design-catalog.mjs",
+    "design:build": "node apps/desktop/scripts/build-design-system.mjs",
+    "design:dev": "node apps/desktop/scripts/build-design-system.mjs --serve"
   },
   "engines": {
     "node": "20.x"

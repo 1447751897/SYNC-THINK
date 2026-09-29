@@ -418,3 +418,29 @@ describe('CollaborationChatService', () => {
     await new Promise((resolve) => setTimeout(resolve, 10));
   });
 });
+
+it('persists progress channels without promoting commentary into message output', async () => {
+  const repo = repository(fixture());
+  let onProgress!: import('./collaboration-chat-service.js').CollaborationExecutionInput['onProgress'];
+  let finish!: (result: { output: string }) => void;
+  const service = new CollaborationChatService(repo, { ownerId: 'runtime', onChanged: () => {}, resourceClaims: () => [{ key: 'w', mode: 'read' }], execute: input => { onProgress = input.onProgress; return new Promise(resolve => { finish = resolve; }); } });
+  service.send({ action: 'send', conversationId: 'c', clientRequestId: 'progress', text: '先讨论一下' });
+  await service.pump('w'); await Promise.resolve();
+  onProgress({ phase: 'working', commentary: '我先检查', output: '', tools: [{ id: 'read', name: 'read_file', arguments: '', status: 'running' }] });
+  expect(repo.read('c')!.attempts[0]).toMatchObject({ phase: 'working', commentary: '我先检查', output: '' });
+  onProgress({ phase: 'answering', output: '可以，先聊人物。' });
+  expect(repo.read('c')!.attempts[0]).toMatchObject({ phase: 'answering', output: '可以，先聊人物。' });
+  finish({ output: '可以，先聊人物。' }); await new Promise(resolve => setTimeout(resolve, 20));
+  const messages = repo.read('c')!.messages;
+  expect(messages.at(-1)?.blocks).toEqual([{ type: 'text', text: '可以，先聊人物。' }]);
+  expect(JSON.stringify(messages)).not.toContain('我先检查'); await service.stop();
+});
+
+it('clears a stale streamed prefix when the authoritative successful result is empty', async () => {
+  const repo = repository(fixture()); let finish!: (result: { output: string }) => void;
+  const service = new CollaborationChatService(repo, { ownerId: 'runtime', onChanged: () => {}, resourceClaims: () => [], execute: input => { input.onProgress({ phase: 'answering', output: 'stale prefix' }); return new Promise(resolve => { finish = resolve; }); } });
+  service.send({ action: 'send', conversationId: 'c', clientRequestId: 'empty-final', text: '讨论' }); await service.pump('w'); await Promise.resolve();
+  finish({ output: '' }); await new Promise(resolve => setTimeout(resolve, 20));
+  expect(repo.read('c')!.attempts[0].output).toBe('');
+  expect(JSON.stringify(repo.read('c')!.messages)).not.toContain('stale prefix'); await service.stop();
+});

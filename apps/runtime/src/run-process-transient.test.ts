@@ -28,6 +28,29 @@ function createStore(events: Event[]): RuntimeStateStore {
 }
 
 describe('run process transient projection', () => {
+  it.each([
+    ['approve', undefined, '工具审批：已批准'],
+    ['deny', undefined, '工具审批：已拒绝'],
+    ['deny', 'stale-approval', '工具审批：已失效'],
+  ] as const)('retains one real approval receipt for %s / %s', (decision, reason, label) => {
+    const runId = 'approval-run' as RunId;
+    const threadId = 'approval-thread' as ThreadId;
+    const runtime = new Runtime({ installId: 'approval-receipt', allowNoToken: true });
+    const internal = runtime as unknown as {
+      demoRuns: Map<string, DemoRunState>;
+      publishTransientProjection(event: Event): void;
+      transientReplay: ConversationTransientFrame[];
+    };
+    internal.demoRuns.set(runId, createDemoRun(runId, threadId, 'test'));
+    const event = { id: 'receipt' as EventId, workspaceId: 'workspace' as WorkspaceId, runId, category: 'approval', sequence: 1, occurredAt: '2026-09-25T00:00:00Z', type: 'tool.approval_decided', payload: { threadId, approvalId: 'approval-a', toolName: 'run_command', decision, reason, scope: 'session' } } as Event;
+    internal.publishTransientProjection(event);
+    internal.publishTransientProjection(event);
+    const receipts = internal.demoRuns.get(runId)!.assistantTimeline!.filter((segment) => segment.id === 'approval-approval-a');
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]).toMatchObject({ kind: 'status', label });
+    expect(internal.transientReplay.at(-1)!.assistantTimeline).toEqual(expect.arrayContaining([expect.objectContaining({ label })]));
+  });
+
   it.each([false, true])(
     'broadcasts a late child card while preserving a newer snapshot: %s',
     (newer) => {

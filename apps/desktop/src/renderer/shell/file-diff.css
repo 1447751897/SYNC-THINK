@@ -1,0 +1,388 @@
+/*!
+MIT License
+
+Copyright (c) 2026 Saurabh Chauhan
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+*/
+/* Be UI File Diff local adaptation. MIT attribution: third-party/beui-file-diff.md. */
+.shell-beui-diff,
+.shell-beui-changes,
+.shell-tool-file-diffs {
+  --diff-surface: oklch(97% 0 0 / 80%);
+  --diff-foreground: oklch(15% 0 0);
+  --diff-muted: oklch(50% 0 0);
+  --diff-border: oklch(15% 0 0 / 6%);
+  --diff-hover: oklch(15% 0 0 / 4%);
+  --diff-add: #15803d;
+  --diff-remove: #be123c;
+  --diff-add-bg: rgb(16 185 129 / 7%);
+  --diff-remove-bg: rgb(244 63 94 / 7%);
+  --diff-focus: #0285f7;
+}
+.dark .shell-beui-diff,
+.dark .shell-beui-changes,
+.dark .shell-tool-file-diffs {
+  --diff-surface: rgb(28 28 28 / 80%);
+  --diff-foreground: oklch(96% 0 0);
+  --diff-muted: oklch(68% 0 0);
+  --diff-border: rgb(255 255 255 / 6%);
+  --diff-hover: rgb(255 255 255 / 4%);
+  --diff-add: #34d399;
+  --diff-remove: #fb7185;
+  --diff-add-bg: rgb(16 185 129 / 10%);
+  --diff-remove-bg: rgb(244 63 94 / 10%);
+  --diff-focus: #60a5fa;
+}
+.shell-changes-card.shell-beui-changes {
+  border: 0;
+  border-radius: 12px;
+  overflow: hidden;
+  background: transparent;
+  box-shadow: none;
+}
+.shell-beui-changes .shell-changes-card__item {
+  border: 0;
+  background: transparent;
+  margin: 0;
+}
+.shell-beui-changes .shell-changes-card__item + .shell-changes-card__item {
+  border: 0;
+  margin-top: 4px;
+}
+.shell-beui-changes .shell-changes-card__row {
+  min-height: 36px;
+  border-radius: 8px;
+}
+.shell-beui-changes .shell-changes-card__row:hover {
+  background: var(--diff-hover);
+}
+.shell-beui-changes .shell-changes-card__file,
+.shell-beui-changes .shell-changes-card__item.is-open .shell-changes-card__file {
+  background: transparent;
+  font-size: 12px;
+}
+.shell-beui-changes .shell-changes-card__name {
+  font-family: var(--font-mono);
+  font-weight: 400;
+}
+.shell-beui-changes .shell-changes-card__expand {
+  min-width: 28px;
+  min-height: 28px;
+}
+.shell-beui-changes .shell-changes-card__file-lines {
+  font-family: var(--font-mono);
+}
+.shell-beui-changes .is-add {
+  color: var(--diff-add);
+}
+.shell-beui-changes .is-del {
+  color: var(--diff-remove);
+}
+.shell-beui-diff-disclosure {
+  padding: 4px 0 8px;
+}
+.shell-beui-diff-disclosure:not([hidden]) {
+  animation: beui-diff-open 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.shell-beui-diff-disclosure[hidden] {
+  display: none;
+}
+.shell-beui-diff.shell-changes-card__diff-body,
+.shell-beui-diff.shell-deferred-file-diff,
+.shell-beui-diff.shell-beui-diff__fallback {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  max-height: none;
+  overflow: hidden;
+  border: 1px solid var(--diff-border);
+  border-radius: 12px;
+  background: var(--diff-surface);
+  color: var(--diff-foreground);
+}
+.shell-beui-diff .shell-beui-diff__toolbar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  min-height: 36px;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--diff-border);
+  background: transparent;
+}
+.shell-beui-diff__caption {
+  color: var(--diff-muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+.shell-beui-diff__spacer {
+  flex: 1;
+}
+.shell-beui-diff .shell-changes-card__diff-counts {
+  margin-right: auto;
+  font-size: 11px;
+}
+.shell-beui-diff .shell-changes-card__diff-counts .is-add {
+  color: var(--diff-add);
+}
+.shell-beui-diff .shell-changes-card__diff-counts .is-del {
+  color: var(--diff-remove);
+}
+.shell-beui-diff__page-count {
+  color: var(--diff-muted);
+  font: 10px var(--font-mono);
+}
+.shell-beui-diff .shell-beui-diff__toolbar :is(.shell-source-copy, .shell-beui-diff__action) {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--diff-muted);
+  box-shadow: none;
+  cursor: pointer;
+  transition:
+    background-color 150ms ease,
+    color 150ms ease;
+}
+.shell-beui-diff .shell-beui-diff__toolbar :is(.shell-source-copy, .shell-beui-diff__action):hover {
+  background: var(--diff-hover);
+  color: var(--diff-foreground);
+}
+.shell-beui-diff .shell-beui-diff__toolbar .shell-beui-diff__action[aria-pressed='true'] {
+  background: color-mix(in srgb, var(--diff-focus) 9%, transparent);
+  color: var(--diff-focus);
+}
+.shell-beui-diff .shell-source-copy[data-copy-state='copied'] {
+  color: var(--diff-add);
+}
+.shell-beui-diff .shell-source-copy.is-icon-only > span {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.shell-beui-diff .shell-source-copy[data-copy-state='failed'] {
+  width: auto;
+  gap: 4px;
+  padding: 0 5px;
+  color: var(--diff-remove);
+}
+.shell-beui-diff .shell-source-copy[data-copy-state='failed'] > span {
+  position: static;
+  width: auto;
+  height: auto;
+  margin: 0;
+  clip-path: none;
+  font-size: 10px;
+}
+.shell-beui-diff :is(button, [role='region']):focus-visible {
+  outline: 2px solid var(--diff-focus);
+  outline-offset: -2px;
+}
+.shell-beui-diff .shell-beui-diff__viewport-shell {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+}
+.shell-beui-diff .shell-beui-diff__viewport {
+  overflow: auto;
+  min-width: 0;
+  min-height: 0;
+  max-height: 280px;
+  padding: 8px 0;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--diff-border) transparent;
+  font: 12px/20px var(--font-mono);
+}
+.shell-beui-diff .shell-beui-diff__viewport .shell-changes-card__diff-line {
+  display: grid;
+  grid-template-columns: 38px 38px 20px minmax(0, 1fr);
+  align-items: start;
+  min-width: max-content;
+  min-height: 20px;
+  padding: 0 12px 0 0;
+  box-shadow: none;
+  color: var(--diff-foreground);
+}
+.shell-beui-diff .shell-beui-diff__viewport.is-no-line-numbers .shell-changes-card__diff-line {
+  grid-template-columns: 20px minmax(0, 1fr);
+}
+.shell-beui-diff .shell-beui-diff__viewport.is-wrap .shell-changes-card__diff-line {
+  min-width: 0;
+}
+.shell-beui-diff .shell-beui-diff__viewport .shell-changes-card__diff-no {
+  position: static;
+  width: auto;
+  padding: 0 8px 0 0;
+  color: var(--diff-muted);
+  font: inherit;
+  font-size: 11px;
+  text-align: right;
+  background: transparent;
+}
+.shell-beui-diff
+  .shell-beui-diff__viewport
+  :is(.shell-changes-card__diff-gutter, .shell-diff-prefix) {
+  width: auto;
+  text-align: center;
+  line-height: 20px;
+  user-select: none;
+  font-weight: 400;
+}
+.shell-beui-diff .shell-beui-diff__viewport .shell-changes-card__diff-text {
+  display: block;
+  min-width: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  white-space: pre;
+}
+.shell-beui-diff .shell-beui-diff__viewport.is-wrap .shell-changes-card__diff-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.shell-beui-diff .shell-beui-diff__viewport .shell-changes-card__diff-line.is-add {
+  background: var(--diff-add-bg);
+}
+.shell-beui-diff .shell-beui-diff__viewport .shell-changes-card__diff-line.is-del {
+  background: var(--diff-remove-bg);
+}
+.shell-beui-diff .is-add :is(.shell-changes-card__diff-gutter, .shell-diff-prefix) {
+  color: var(--diff-add);
+}
+.shell-beui-diff .is-del :is(.shell-changes-card__diff-gutter, .shell-diff-prefix) {
+  color: var(--diff-remove);
+}
+.shell-beui-diff .shell-diff-word {
+  border-radius: 2px;
+}
+.shell-beui-diff .is-add .shell-diff-word {
+  background: color-mix(in srgb, var(--diff-add) 19%, transparent);
+}
+.shell-beui-diff .is-del .shell-diff-word {
+  background: color-mix(in srgb, var(--diff-remove) 19%, transparent);
+}
+.shell-beui-diff__follow {
+  position: absolute;
+  bottom: 10px;
+  left: 50%;
+  translate: -50% 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 10px;
+  border: 1px solid var(--diff-border);
+  border-radius: 999px;
+  background: var(--color-elevated);
+  color: var(--diff-focus);
+  font-size: 11px;
+  cursor: pointer;
+}
+.shell-tool-file-diffs {
+  min-width: 0;
+  margin: 8px 0 12px;
+}
+.shell-tool-file-diffs__item + .shell-tool-file-diffs__item {
+  margin-top: 12px;
+}
+.shell-tool-file-diffs__header {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 6px 0;
+  color: var(--diff-muted);
+}
+.shell-tool-file-diffs__header > button {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border: 0;
+  background: none;
+  padding: 0;
+  color: var(--diff-foreground);
+  font: 11px var(--font-mono);
+  text-align: left;
+  cursor: pointer;
+}
+.shell-tool-file-diffs__header > button:disabled {
+  opacity: 1;
+  cursor: default;
+}
+.shell-tool-file-diffs__header > span {
+  flex: none;
+  font-size: 10px;
+}
+/* Review keeps its full-height viewport and settings; only the line surface is shared. */
+.shell-review-detail > .shell-changes-card__diff > .shell-beui-diff {
+  height: 100%;
+  max-height: none;
+  border: 0;
+  border-radius: 0;
+}
+.shell-review-detail .shell-beui-diff .shell-beui-diff__viewport {
+  flex: 1;
+  max-height: none;
+}
+.shell-beui-diff .shell-deferred-file-diff__status {
+  flex: none;
+}
+@keyframes beui-diff-open {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .shell-beui-diff-disclosure:not([hidden]) {
+    animation: none;
+  }
+  .shell-beui-diff *,
+  .shell-beui-changes * {
+    transition: none;
+  }
+}
+[data-reduced-motion] .shell-beui-diff-disclosure {
+  animation: none;
+}

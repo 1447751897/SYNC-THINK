@@ -274,6 +274,78 @@ export function formatCommandLine(command: string, args?: unknown): string {
 
 const SUMMARY_MAX = 120;
 
+/** Metadata fields that describe why a command runs, rather than the command itself. */
+const COMMAND_DESCRIPTION_KEYS = [
+  'description',
+  'purpose',
+  'reason',
+  'intent',
+  'label',
+  'title',
+] as const;
+
+type CommandArgumentRecord = Record<string, unknown>;
+
+function parseCommandArgumentRecord(argumentsJson: string): CommandArgumentRecord | undefined {
+  try {
+    const parsed = JSON.parse(argumentsJson) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+    const record = parsed as CommandArgumentRecord;
+    const nested = record.arguments;
+    if (nested && typeof nested === 'object' && !Array.isArray(nested)) {
+      return nested as CommandArgumentRecord;
+    }
+    if (typeof nested === 'string') {
+      try {
+        const parsedNested = JSON.parse(nested) as unknown;
+        if (parsedNested && typeof parsedNested === 'object' && !Array.isArray(parsedNested)) {
+          return parsedNested as CommandArgumentRecord;
+        }
+      } catch {
+        // Keep the outer command arguments when the nested value is not JSON.
+      }
+    }
+    return record;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Read provider-specific command intent without requiring every provider to use one key. */
+export function commandDescriptionFromArguments(argumentsJson: string): string | undefined {
+  const record = parseCommandArgumentRecord(argumentsJson);
+  if (!record) return undefined;
+  for (const key of COMMAND_DESCRIPTION_KEYS) {
+    const value = record[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return undefined;
+}
+
+/** Keep command metadata out of the expanded JSON; the row already presents it beside the command. */
+export function commandArgumentsWithoutDescription(argumentsJson: string): string {
+  const record = parseCommandArgumentRecord(argumentsJson);
+  if (!record) return argumentsJson;
+  const clean = { ...record };
+  for (const key of COMMAND_DESCRIPTION_KEYS) delete clean[key];
+  return JSON.stringify(clean);
+}
+
+/** Full command for the code block and clipboard; transport metadata is not presentation. */
+export function commandDisplayFromArguments(argumentsJson: string): { code: string; language: string } | undefined {
+  const record = parseCommandArgumentRecord(argumentsJson);
+  const command = record
+    ? [record.command, record.cmd, record.script].find((value): value is string => typeof value === 'string' && Boolean(value.trim()))
+    : undefined;
+  if (!command) return undefined;
+  const raw = formatCommandLine(command, record?.args);
+  const shell = String(record?.shell ?? '') + ' ' + raw;
+  const language = /pwsh|powershell|(?:^|\s)(?:Get|Set|Write|Start|Select|ForEach|Invoke)-[A-Za-z]/i.test(shell)
+    ? 'powershell'
+    : /(?:^|[\\/\s])cmd(?:\.exe)?(?=["'\s]|$)/i.test(shell) ? 'text' : 'bash';
+  return { code: unwrapShellCommand(raw), language };
+}
+
 function clampToolSummary(text: string): string {
   return text.length > SUMMARY_MAX ? `${text.slice(0, SUMMARY_MAX - 3)}…` : text;
 }
@@ -393,7 +465,11 @@ export function toolInputSummary(item: ToolItem): string {
             : clampToolSummary(value);
         return summary;
       }
-      const first = Object.entries(record).find(([, value]) => compactValue(value));
+      const first = Object.entries(record).find(
+        ([key, value]) =>
+          !COMMAND_DESCRIPTION_KEYS.includes(key as (typeof COMMAND_DESCRIPTION_KEYS)[number]) &&
+          compactValue(value),
+      );
       if (first) {
         const value = compactValue(first[1]) ?? '';
         return clampToolSummary(`${first[0]}: ${value}`);

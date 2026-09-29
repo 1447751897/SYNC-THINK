@@ -14,6 +14,7 @@ import {
   FileDiff,
   FilePlus2,
   Files,
+  GitBranch,
   Globe,
   MessageSquare,
   MessageSquarePlus,
@@ -46,7 +47,8 @@ export type WorkbenchNewResource =
   | 'browser'
   | 'canvas'
   | 'document'
-  | 'conversation';
+  | 'conversation'
+  | 'git';
 
 export interface WorkspaceWorkbenchProps {
   placement: WorkbenchPlacement;
@@ -97,6 +99,7 @@ function tabLabel(
     }
   }
   if (tab.type === 'review') return '审阅';
+  if (tab.type === 'git') return tab.projectFolder?.replace(/\\/g, '/').split('/').filter(Boolean).at(-1) || '审阅';
   return '工作区文件';
 }
 
@@ -143,6 +146,7 @@ function WorkbenchTabIcon({
   if (tab.type === 'terminal') return <SquareTerminal size={14} aria-hidden="true" />;
   if (tab.type === 'browser') return <WorkbenchBrowserIcon tab={tab} favicon={favicon} />;
   if (tab.type === 'review') return <FileDiff size={14} aria-hidden="true" />;
+  if (tab.type === 'git') return <GitBranch size={14} aria-hidden="true" />;
   return <File size={14} aria-hidden="true" />;
 }
 
@@ -590,6 +594,14 @@ export function WorkspaceWorkbench(props: WorkspaceWorkbenchProps) {
                 </button>
                 <button type="button" role="menuitem" onClick={() => selectNewResource('browser')}>
                   <Globe size={14} /> 网页浏览
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => selectNewResource('git')}
+                  disabled={props.canOpenTerminal === false}
+                >
+                  <GitBranch size={14} /> Git 工具
                 </button>
               </div>
             ) : null}

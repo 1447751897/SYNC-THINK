@@ -145,6 +145,8 @@ export function useNewMaxPopoverPresence(open: boolean): NewMaxPopoverPresence {
 
 export interface NewMaxComposerFrameProps extends Omit<HTMLAttributes<HTMLDivElement>, 'children'> {
   variant: 'empty' | 'conversation';
+  /** Repository/workspace context outside the rounded input surface. */
+  contextBar?: ReactNode;
   modeBanner?: ReactNode;
   menu?: ReactNode;
   beforeInput?: ReactNode;
@@ -159,6 +161,7 @@ export interface NewMaxComposerFrameProps extends Omit<HTMLAttributes<HTMLDivEle
 /** Shared composer geometry. Run and queue behavior remains owned by each entry point. */
 export function NewMaxComposerFrame({
   variant,
+  contextBar,
   modeBanner,
   menu,
   beforeInput,
@@ -262,6 +265,7 @@ export function NewMaxComposerFrame({
       data-variant={variant}
       data-mode-state={modeBannerPhase}
     >
+      {contextBar}
       {displayedModeBanner ? (
         <div
           key={displayedModeBanner.key}

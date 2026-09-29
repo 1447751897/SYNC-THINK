@@ -40,6 +40,7 @@ interface PermissionHarness {
   activeToolApprovals: {
     readonly size: number;
     firstId(): string | undefined;
+    list(filter: {threadId: string}): Array<{arguments?:Record<string,unknown>}>;
     settle(approvalId: string, decision: 'approve' | 'deny'): unknown;
     settleAll(decision: 'approve' | 'deny'): void;
   };
@@ -107,6 +108,7 @@ async function createFixture(kernelId: string) {
     runtime,
     harness,
     respondPermission,
+    threadId: task.threadId,
     request: (permission: KernelPermissionRequest) => permissionHandler!(permission),
   };
 }
@@ -144,7 +146,7 @@ describe('kernel permission durable registration', () => {
             .get(),
         ).toEqual({ count: 0 });
         fixture.connection.raw.exec('DROP TRIGGER reject_approval_insert');
-        fixture.request({ requestId: 'fresh-request', toolName, toolInput });
+        fixture.request({ requestId: 'fresh-request', toolName, toolInput, reason: '需要写入项目外的测试文件' });
         expect(fixture.respondPermission).toHaveBeenCalledTimes(1);
         expect(fixture.harness.activeToolApprovals.size).toBe(1);
         const saved = fixture.connection.raw
@@ -153,8 +155,10 @@ describe('kernel permission durable registration', () => {
         expect(JSON.parse(saved.payload_json)).toMatchObject({
           toolCallId: 'fresh-request',
           toolName,
-          arguments: toolInput,
+          arguments: {...toolInput,reason: '需要写入项目外的测试文件'},
         });
+        expect(fixture.harness.activeToolApprovals.list({threadId:fixture.threadId})[0].arguments?.reason).toBe('需要写入项目外的测试文件');
+        expect(toolInput).not.toHaveProperty('reason');
         const approvalId = fixture.harness.activeToolApprovals.firstId()!;
         fixture.harness.activeToolApprovals.settle(approvalId, 'approve');
         expect(fixture.respondPermission).toHaveBeenLastCalledWith('fresh-request', {

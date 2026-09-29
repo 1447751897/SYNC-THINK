@@ -248,11 +248,12 @@ export async function openPersistentRuntime(
     const appSettingStore = new SqliteAppSettingStore(connection.raw);
     const delegatedRunStore = new SqliteDelegatedRunStore(connection.raw);
     const collaborationStore = new SqliteCollaborationStore(connection.raw);
-    let runtimeForCollaboration: Runtime | undefined;
-    let collaborationRunner: ((input: import('./collaboration-chat-service.js').CollaborationExecutionInput) => Promise<import('./collaboration-chat-service.js').CollaborationExecutionResult>) | undefined;
+    const messageStore = new SqliteMessageStore(connection.raw);
+    const collaborationBridge: { runtime?: Runtime } = {};
     const collaborationChatHost = new CollaborationChatHost(collaborationStore, {
       ownerId: options.installId,
       conversations: conversationStore,
+      messages: messageStore,
       agents: globalAgentStore,
       teams: teamStore,
       workspaces: workspaceStore,
@@ -264,13 +265,13 @@ export async function openPersistentRuntime(
       onChanged: (snapshot) => {
         // Collaboration snapshots are durable state; expose a lightweight event
         // so the desktop view can reconcile without polling the full runtime log.
-        if (runtimeForCollaboration?.publishCollaborationSnapshot) {
-          runtimeForCollaboration.publishCollaborationSnapshot(snapshot);
+        if (collaborationBridge.runtime) {
+          collaborationBridge.runtime.publishCollaborationSnapshot(snapshot);
         }
       },
     }, {
-      start: (input) => collaborationRunner
-        ? collaborationRunner(input)
+      start: (input) => collaborationBridge.runtime
+        ? collaborationBridge.runtime.executeCollaborationTaskForHost(input)
         : Promise.reject(new Error('collaboration.runtime_not_ready')),
     });
     collaborationChatHost.service.recover();
@@ -385,7 +386,6 @@ export async function openPersistentRuntime(
       );
     }
 
-    const messageStore = new SqliteMessageStore(connection.raw);
     conversationHistory = new ConversationHistoryReadService({
       databasePath,
       sidecarRoot,
@@ -426,6 +426,7 @@ export async function openPersistentRuntime(
       secureStore,
       stepExecutor,
       appSettingStore,
+      projectlessDataDirectory: runtimeOptions.projectlessDataDirectory ?? join(runtimeDataRoot, 'projectless'),
       dataManagement: new RuntimeDataManagementService({
         raw: connection.raw,
         databasePath,
@@ -454,8 +455,7 @@ export async function openPersistentRuntime(
       browserProfileGate,
       browserFallbackWorkingDir: runtimeOptions.browserFallbackWorkingDir ?? runtimeDataRoot,
     });
-    runtimeForCollaboration = runtime;
-    collaborationRunner = (input) => runtime.executeCollaborationTaskForHost(input);
+    collaborationBridge.runtime = runtime;
   } catch (error) {
     await conversationHistory?.close();
     if (!runtimeOptions.browserHost) await browserHost?.shutdown();

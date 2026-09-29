@@ -47,7 +47,8 @@ export function useMessageVirtualWindow({
   const resizeObserverRef = useRef<ResizeObserver>();
   const frameRef = useRef<number | null>(null);
   const [, setMeasurementRevision] = useState(0);
-  const [viewport, setViewport] = useState<ViewportSnapshot>({ scrollTop: 0, height: 0 });
+  const viewportRef = useRef<ViewportSnapshot>({ scrollTop: 0, height: 0 });
+  const [viewport, setViewport] = useState<ViewportSnapshot>(viewportRef.current);
 
   const recordRowHeight = useCallback((id: string, node: HTMLDivElement) => {
     const height = node.getBoundingClientRect().height;
@@ -81,12 +82,13 @@ export function useMessageVirtualWindow({
     const scroller = scrollerRef.current;
     if (!scroller) return;
     const next = { scrollTop: scroller.scrollTop, height: scroller.clientHeight };
-    setViewport((previous) =>
+    const previous = viewportRef.current;
+    if (
       Math.abs(previous.scrollTop - next.scrollTop) < 0.5 &&
       Math.abs(previous.height - next.height) < 0.5
-        ? previous
-        : next,
-    );
+    ) return;
+    viewportRef.current = next;
+    setViewport(next);
   }, [scrollerRef]);
 
   const scheduleViewportRead = useCallback(() => {

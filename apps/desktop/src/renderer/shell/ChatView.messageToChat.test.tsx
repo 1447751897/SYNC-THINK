@@ -105,8 +105,8 @@ describe('messageToChat inline process split', () => {
       },
     ];
 
-    // Unclassified tokens stay out of the final-answer bubble, but they must
-    // stream in the process lane so commentary does not pop in as one block.
+    // Pending tokens are visible immediately; only classified commentary goes
+    // into the process lane when a tool boundary arrives.
     expect(projectTransientAnswerText('我先检查资料。正在生成最终回答', timeline)).toEqual({
       answerText: undefined,
       pendingText: '正在生成最终回答',
@@ -131,25 +131,18 @@ describe('messageToChat inline process split', () => {
           text: '我先检查资料。',
           status: 'completed',
         },
-        {
-          kind: 'commentary',
-          id: 'pending-text',
-          text: '正在生成最终回答',
-          status: 'streaming',
-        },
       ],
     });
     expect(projectTransientAnswerText('我先检查资料。', timeline)).toEqual({
       answerText: undefined,
       pendingText: '',
     });
-    // Unclassified text stays buffered until Runtime assigns a phase; it must
-    // never appear in the final answer area while the turn is still running.
+    // No terminal event is needed for the user to see the streamed suffix.
     expect(
       visibleStreamingAnswerText(
         projectTransientAnswerText('我先检查资料。正在生成最终回答', timeline),
       ),
-    ).toBe('');
+    ).toBe('正在生成最终回答');
   });
 
   it('prefers a classified final answer over the provisional streaming tail', () => {
@@ -579,4 +572,17 @@ it('preserves canonical prose references without copying duplicated compatibilit
     kind: 'reasoning',
     contentRef: { reference: { id: 'thinking' } },
   });
+});
+
+
+it('retains the real bounded tool log and truncation metadata in transient chat projection', () => {
+  const timeline: AssistantTurnSegment[] = [{
+    id: 'live-command', sequence: 1, kind: 'tool', toolCallId: 'cmd-live', name: 'command_execution',
+    argumentsJson: '{}', status: 'running', progressLine: 'line 2', progressOutput: 'line 1\nline 2',
+    progressBytes: 20, progressAt: '2026-09-24T12:00:00Z', progressTruncated: true,
+  }];
+  expect(projectTransientAssistantDisplay('', timeline).processItems).toEqual([
+    expect.objectContaining({ toolCallId: 'cmd-live', progressLine: 'line 2', progressOutput: 'line 1\nline 2',
+      progressBytes: 20, progressTruncated: true, progressAt: '2026-09-24T12:00:00Z' }),
+  ]);
 });

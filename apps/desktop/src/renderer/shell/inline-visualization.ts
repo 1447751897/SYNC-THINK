@@ -19,7 +19,9 @@ export type InlineVisualizationParts =
 const DIRECTIVE_RE = /^\s*::(?:newmax|codex)-inline-vis\{file="([^"]+)"\}\s*$/;
 const LEGACY_DIRECTIVE_RE = /^\s*:::(?:newmax|codex)-inline-vis\{file="([^"]+)"\}:::\s*$/;
 const PARTIAL_DIRECTIVE_RE = /^\s*:{2,3}(?:newmax|codex)-inline-vis\{/;
-const FILE_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*\.html$/;
+// Project-relative files only. Match the runtime's visualizations/<slug>.html contract.
+// No traversal, drive letters, URL escapes, query strings, or Windows separators.
+const FILE_RE = /^(?:[\p{L}\p{N}_-]+\/)*[\p{L}\p{N}_-]+(?:[.-][\p{L}\p{N}_-]+)*\.html$/u;
 
 function normalizeVisualizationFile(value: string): string | null {
   const file = value.trim();

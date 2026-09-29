@@ -7,7 +7,7 @@
  *
  * @vitest-environment jsdom
  */
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { Message } from '@sync-think/shared';
 import type { DelegatedAgentProjection } from '@sync-think/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -99,7 +99,7 @@ describe('DelegatedAgentTasks card', () => {
     expect(container.textContent).toBe('');
   });
 
-  it('shows the Agent avatar and name without exposing its internal id', () => {
+  it('shows the Agent avatar and name without exposing its internal id', async () => {
     renderTasks({
       delegatedAgents: [
         delegatedTask({
@@ -116,8 +116,11 @@ describe('DelegatedAgentTasks card', () => {
     expect(screen.queryByText('已有 Agent')).toBeNull();
     expect(screen.queryByText('agent-code-reviewer')).toBeNull();
     expect(screen.getByLabelText('已完成')).toBeTruthy();
-    const avatar = screen.getByRole('img', { name: '代码审查 Agent' });
-    expect(avatar.getAttribute('src')).toMatch(/^data:image\/svg\+xml/);
+    await waitFor(() => {
+      const avatar = screen.getByRole('img', { name: '代码审查 Agent' });
+      expect(avatar.tagName).toBe('CANVAS');
+      expect(avatar.getAttribute('data-bot-avatar')).toBeTruthy();
+    });
   });
 
   it('ignores a legacy temporary assignment without an existing Agent id', () => {

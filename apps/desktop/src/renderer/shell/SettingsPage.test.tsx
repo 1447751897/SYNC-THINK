@@ -896,9 +896,7 @@ describe('SettingsPage SYNC-THINK connection catalog', () => {
     expect(screen.getByRole('tab', { name: '网络' })).toBeTruthy();
     expect(screen.getByRole('tab', { name: 'SYNC-THINK Provider' })).toBeTruthy();
     expect(screen.getByRole('tab', { name: '第三方 Provider' })).toBeTruthy();
-    expect(
-      screen.getByText('SYNC-THINK 连接器目录；动作数量以实际 MCP 工具发现结果为准。'),
-    ).toBeTruthy();
+    expect(screen.getByText('连接外部应用，让智能体读取工作上下文并执行授权动作。')).toBeTruthy();
     expect(screen.getByRole('button', { name: '连接 抖音' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '连接 TikTok' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '连接 企查查' })).toBeTruthy();
@@ -909,6 +907,19 @@ describe('SettingsPage SYNC-THINK connection catalog', () => {
         .classList.contains('settings-section-tabs'),
     ).toBe(true);
     expect(shellCss).toContain('.settings-section-tabs .shell-ds-tab-bar__tab.is-active');
+  });
+
+  it('shows external integrations with category metadata and reuses the MCP detail flow', async () => {
+    render(<SettingsPage />);
+    fireEvent.click(screen.getByRole('button', { name: '连接' }));
+
+    expect(screen.getByRole('button', { name: '授权连接 GitHub' })).toBeTruthy();
+    expect(screen.getByText('浏览仓库、Issue 和 Pull Request')).toBeTruthy();
+    expect(screen.getByRole('tab', { name: '代码与 CI' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '已连接' })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: '授权连接 GitHub' }));
+    expect(await screen.findByRole('heading', { name: 'GitHub' })).toBeTruthy();
   });
 
   it('centers the system proxy status in the network pane', async () => {
@@ -1476,7 +1487,10 @@ describe('Agentation settings feedback regressions', () => {
     expect(tabs).toBeTruthy();
     expect(search).toBeTruthy();
     expect(shellCss).toMatch(
-      /\.settings-provider-switcher__tabs\s*\{[^}]*border-radius: 21px;[^}]*background: var\(--color-overlay\);/s,
+      /\.settings-provider-switcher__tabs\s*\{[^}]*height: 34px;[^}]*border-radius: 13px;[^}]*background: var\(--color-overlay\);/s,
+    );
+    expect(shellCss).toMatch(
+      /\.settings-provider-switcher__tabs\s*>\s*button\s*\{[^}]*height: 26px;[^}]*font-size: 11px;/s,
     );
     expect(shellCss).not.toMatch(/\.settings-provider-switcher\s*\{[^}]*background:/s);
     expect(shellCss).toMatch(/\.settings-provider-search\s*\{[^}]*border-radius: 14px;/s);

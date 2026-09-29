@@ -536,6 +536,10 @@ export const MIGRATIONS: { name: string; sql: string }[] = [
     sql: `ALTER TABLE browser_automation_task ADD COLUMN workspace_id TEXT;
       CREATE INDEX browser_automation_task_workspace_idx ON browser_automation_task(workspace_id, updated_at);`,
   },
+  {
+    name: '0064_agent_default_kernel',
+    sql: `ALTER TABLE agent ADD COLUMN default_kernel_id TEXT NOT NULL DEFAULT 'native';`,
+  },
 ];
 
 function taskPlanDdlSql(): string {

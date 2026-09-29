@@ -26,15 +26,19 @@ export interface CollaborationExecutionResult {
   runId?: string;
   threadId?: string;
   error?: CollaborationError;
+  artifacts?: CollaborationAttempt['artifacts'];
 }
 
 export interface CollaborationProgress {
   runId?: string;
   threadId?: string;
   output?: string;
+  phase?: CollaborationAttempt['phase'];
+  commentary?: string;
   status?: 'running' | 'waiting_input';
   tools?: CollaborationAttempt['tools'];
   checklist?: CollaborationAttempt['checklist'];
+  artifacts?: CollaborationAttempt['artifacts'];
 }
 
 export interface CollaborationExecutionInput {
@@ -254,7 +258,7 @@ export class CollaborationChatService {
         do {
           size = selected.size;
           for (const task of draft.tasks) {
-            if (task.parentTaskId && selected.has(task.parentTaskId)) selected.add(task.id);
+            if ((task.parentTaskId && selected.has(task.parentTaskId)) || task.rootTaskId === command.taskId) selected.add(task.id);
           }
         } while (size !== selected.size);
       }
@@ -306,6 +310,19 @@ export class CollaborationChatService {
         delete delivery.error;
       } else {
         this.addDelivery(draft, origin, task.assigneeMemberId, 'queued', attempt.id);
+      }
+      const restored = new Set([task.id]);
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (const dependent of draft.tasks) {
+          const prior = currentAttempt(draft, dependent);
+          if (prior.error?.code !== 'dependency_failed' || !dependent.dependsOnTaskIds.some(id => restored.has(id)) || restored.has(dependent.id)) continue;
+          const next = this.newAttempt(draft, dependent, prior.number + 1);
+          dependent.currentAttemptId = next.id; draft.attempts.push(next); restored.add(dependent.id); changed = true;
+          const delivery = draft.deliveries.find(d => d.attemptId === prior.id);
+          if (delivery) { delivery.attemptId = next.id; delivery.status = 'queued'; delete delivery.error; }
+        }
       }
       this.receipt(draft, 'retry', command.clientRequestId, command, attempt.id);
       return true;
@@ -429,6 +446,9 @@ export class CollaborationChatService {
       if (progress.runId) attempt.runId = progress.runId;
       if (progress.threadId) attempt.threadId = progress.threadId;
       if (progress.output !== undefined) attempt.output = progress.output;
+      if (progress.phase !== undefined) attempt.phase = progress.phase;
+      if (progress.commentary !== undefined) attempt.commentary = progress.commentary;
+      if (progress.artifacts) attempt.artifacts = copy(progress.artifacts);
       if (progress.tools) attempt.tools = copy(progress.tools);
       if (progress.checklist) attempt.checklist = copy(progress.checklist);
       if (progress.status) attempt.status = progress.status;
@@ -505,6 +525,12 @@ export class CollaborationChatService {
       if (!waitReason && running.some((entry) => collaborationClaimsConflict(claims, entry.attempt.resourceClaims))) {
         waitReason = 'resource_busy';
       }
+      if (waitReason === 'dependency_failed') {
+        attempt.status = 'failed'; attempt.waitReason = waitReason; attempt.updatedAt = this.now(); attempt.finishedAt = this.now();
+        attempt.error = this.error('dependency_failed', 'execution', '前置任务未交付，当前阶段未启动。重试前置任务后将自动恢复。', true);
+        this.completeDeliveries(draft, attempt); this.deliverResult(draft, task, attempt); this.queueSummaries(draft);
+        return true;
+      }
       if (waitReason) {
         if (attempt.waitReason === waitReason) return false;
         attempt.waitReason = waitReason;
@@ -517,7 +543,7 @@ export class CollaborationChatService {
       attempt.startedAt = this.now();
       attempt.heartbeatAt = this.now();
       attempt.updatedAt = this.now();
-      attempt.contextSequence = draft.messages.at(-1)?.sequence ?? 0;
+      attempt.contextSequence = task.kind === 'reply' ? this.message(draft, task.originMessageId).sequence : draft.messages.at(-1)?.sequence ?? 0;
       attempt.resourceClaims = claims;
       attempt.observation = 'normal';
       task.resourceClaims = claims;
@@ -564,7 +590,9 @@ export class CollaborationChatService {
       const attempt = currentAttempt(draft, task);
       if (attempt.id !== execution.attempt.id || TERMINAL.has(attempt.status)) return false;
       if (attempt.ownerId !== this.ports.ownerId) return false;
-      if (result.output) attempt.output = result.output;
+      // A successful final result is authoritative, even when it clears a reclassified prefix.
+      if (result.output || (!result.error && !execution.stopReason && attempt.status !== 'stopping')) attempt.output = result.output;
+      if (result.artifacts) attempt.artifacts = copy(result.artifacts);
       if (result.runId) attempt.runId = result.runId;
       if (result.threadId) attempt.threadId = result.threadId;
       if (execution.stopReason === 'timeout') {
@@ -579,6 +607,9 @@ export class CollaborationChatService {
       } else if (result.error) {
         attempt.status = 'failed';
         attempt.error = result.error;
+      } else if (task.deliverable && !attempt.artifacts?.some(a => a.attemptId === attempt.id && a.taskId === task.id && a.kind === task.deliverable!.kind)) {
+        attempt.status = 'failed';
+        attempt.error = this.error('deliverable_missing', 'execution', '执行已结束，但约定产物尚未提交；请查看轨迹后重试。', true);
       } else {
         attempt.status = 'succeeded';
         delete attempt.error;
@@ -698,6 +729,7 @@ export class CollaborationChatService {
           ...tasks.map((task, index) => JSON.stringify({
             taskId: task.id, title: task.title, assignee: task.assigneeMemberId,
             status: attempts[index]!.status, output: attempts[index]!.output, error: attempts[index]!.error,
+            artifacts: attempts[index]!.artifacts?.map(({ id, title, path, sha256 }) => ({ id, title, path, sha256 })),
           })),
         ].join('\n'),
       }, 'summary', root, undefined, undefined, rootTask.returnTo.replyToMessageId);
@@ -746,6 +778,7 @@ export class CollaborationChatService {
       expectedOutput: input.expectedOutput ?? '', dependsOnTaskIds: [...new Set(input.dependsOnTaskIds ?? [])],
       contextRefs: [...(input.contextRefs ?? [])], resourceClaims: [],
       ...(input.planRef ? { planRef: copy(input.planRef) } : {}),
+      ...(input.deliverable ? { deliverable: copy(input.deliverable) } : {}),
       returnTo: { conversationId: draft.conversation.id, replyToMessageId: returnMessageId },
       timeoutSeconds, currentAttemptId: '', kind, createdAt: this.now(),
     };
@@ -899,7 +932,7 @@ export class CollaborationChatService {
   private schedulePump(workspaceId: string): void {
     if (this.stopped || this.scheduledWorkspaces.has(workspaceId)) return;
     this.scheduledWorkspaces.add(workspaceId);
-    queueMicrotask(() => {
+    setImmediate(() => {
       this.scheduledWorkspaces.delete(workspaceId);
       void this.pump(workspaceId).catch((error) => this.reportError(error));
     });

@@ -128,6 +128,12 @@ export const CHAT_BUILT_IN_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
       properties: {
         command: { type: 'string' },
         args: { type: 'array', items: { type: 'string' }, maxItems: 128 },
+        description: {
+          type: 'string',
+          maxLength: 240,
+          description:
+            'Optional one-line explanation shown beside the command in the execution timeline.',
+        },
         cwd: { type: 'string' },
         waitMs: {
           type: 'integer',
@@ -390,6 +396,20 @@ export const CHAT_AGENT_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
     },
   },
   {
+    name: 'collaboration_start_workflow',
+    description: 'Start the bound team workflow for a user-approved execution goal. The host creates real member tasks and dependency edges from the team configuration. Use when the user asks to start/produce/execute or agrees to a previously discussed plan, not for greetings or discussion. One invocation per user turn. Do not merely write @mentions.',
+    inputSchema: { type: 'object', additionalProperties: false, required: ['goal'], properties: {
+      goal: { type: 'string', minLength: 1, maxLength: 100000, description: 'Self-contained user-approved goal, preserving names, decisions and bounded deliverables from group history.' },
+    } },
+  },
+  {
+    name: 'collaboration_submit_artifact',
+    description: 'Submit the actual deliverable of your current workflow stage. For a document provide the complete content (not a promise or summary). The host persists and versions it. For a file the host checks the contracted workspace path, file existence, size and changed content. Task completion requires a successful submission.',
+    inputSchema: { type: 'object', additionalProperties: false, properties: {
+      content: { type: 'string', maxLength: 500000, description: 'Complete document body. Omit for a contracted file.' },
+    } },
+  },
+  {
     name: 'collaboration_dispatch_tasks',
     description:
       'Create structured tasks for active members of the current collaboration conversation. Each task runs independently when its dependencies and resources are ready.',
@@ -412,6 +432,9 @@ export const CHAT_AGENT_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
               title: { type: 'string' },
               instructions: { type: 'string' },
               expectedOutput: { type: 'string' },
+              deliverable: { type: 'object', additionalProperties: false, required: ['kind', 'title'], properties: {
+                kind: { type: 'string', enum: ['document', 'file'] }, title: { type: 'string' }, path: { type: 'string' },
+              } },
               dependsOnTaskIds: { type: 'array', items: { type: 'string' } },
               contextRefs: { type: 'array', items: { type: 'string' } },
               planRef: {
@@ -443,7 +466,9 @@ export const CHAT_COLLABORATION_TOOL_SCHEMAS: readonly ProviderToolSchema[] =
     (tool) =>
       tool.name === 'collaboration_send_message' ||
       tool.name === 'collaboration_send_direct_message' ||
-      tool.name === 'collaboration_dispatch_tasks',
+      tool.name === 'collaboration_dispatch_tasks' ||
+      tool.name === 'collaboration_start_workflow' ||
+      tool.name === 'collaboration_submit_artifact',
   );
 
 /** Collaboration tool names — host dispatch routes these to the collaboration executor. */
@@ -1817,7 +1842,7 @@ export function toolsForExecutionMode(
   // Collaboration messaging is available to the main model assistant as well
   // as agent/team runs. The Runtime command path still requires a bound
   // collaboration conversation and injects the sender identity.
-  if (options.includeAgentTools && options.collaborationEnabled && options.conversationTrack) {
+  if (options.collaborationEnabled && options.conversationTrack) {
     tools.push(...CHAT_COLLABORATION_TOOL_SCHEMAS);
   }
   if (options.conversationTrack === 'model' && options.allowDynamicSubagents === true) {

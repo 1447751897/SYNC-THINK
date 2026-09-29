@@ -218,6 +218,12 @@ export type CommandType =
   | 'mcp.list'
   | 'mcp.setEnabled'
   | 'mcp.delete'
+  | 'oauth.start'
+  | 'oauth.status'
+  | 'oauth.cancel'
+  | 'oauth.disconnect'
+  | 'oauth.clientConfig.save'
+  | 'oauth.clientConfig.list'
   | 'capability.workspace.list'
   | 'capability.workspace.setActive'
   | 'capability.governance.list'
@@ -757,6 +763,8 @@ export interface ConversationTransientFrame {
   streamSequence: number;
   kind: ConversationTransientFrameKind;
   textDelta?: string;
+  /** This delta is not yet included in assistantTimeline; phase is assigned later. */
+  provisional?: boolean;
   /** Latest durable Runtime event sequence when this transient frame was emitted. */
   afterSequence?: number;
   terminalState?: ConversationTransientTerminalState;
@@ -2497,6 +2505,8 @@ export interface McpServerSummary {
 }
 
 export interface RegisterMcpServerPayload {
+  /** Stable identity when editing an existing service. */
+  mcpServerId?: string;
   name: string;
   transport?: 'local-stdio' | 'remote-http' | string;
   endpoint?: string;
@@ -2520,6 +2530,8 @@ export interface RegisterMcpServerResponse {
 
 /** Register a remote HTTP MCP endpoint and optionally persist its key securely. */
 export interface RegisterRemoteMcpPayload {
+  /** Stable identity when editing an existing service. */
+  mcpServerId?: string;
   name: string;
   endpoint: string;
   /** User-provided key. It is written to SecureStore and never echoed back. */
@@ -2569,6 +2581,135 @@ export interface DeleteMcpServerResponse {
   mcpServerId: string;
   /** True when the row was removed; false when the server did not exist. */
   deleted: boolean;
+}
+
+// --- OAuth broker -------------------------------------------------------------
+
+/**
+ * Where an authorization flow stands.
+ *
+ * `authorized` is the only phase the UI may render as 已连接: it means the
+ * token exchange succeeded and the callable MCP server is registered. `pending`
+ * covers the window between opening the browser and the loopback callback.
+ */
+export type OauthFlowPhase = 'pending' | 'authorized' | 'error' | 'expired' | 'cancelled';
+
+export interface OauthStartPayload {
+  /** Catalog entry being connected, e.g. `github` — also the connector card key. */
+  integrationId: string;
+  /**
+   * Key into the runtime provider registry, e.g. `google` — shared by Docs,
+   * Gmail, Drive and Calendar, which is why client config is stored per
+   * provider rather than per integration.
+   */
+  providerId: string;
+  /** Space-delimited scopes, taken verbatim from the catalog binding. */
+  scopes: string;
+  /**
+   * MCP endpoint to register once a token exists. Absent for providers with no
+   * hosted MCP server; the token is still stored so the integration can be
+   * driven over REST.
+   */
+  mcpEndpoint?: string;
+  /** Google-style offline grant, so the exchange returns a refresh token. */
+  accessTypeOffline?: boolean;
+}
+
+export interface OauthStartResponse {
+  flowId: string;
+  /** Opened in the system browser by the caller; the broker renders no webview. */
+  authorizeUrl: string;
+  /** Loopback redirect the provider calls back on, e.g. http://127.0.0.1:PORT/callback. */
+  redirectUri: string;
+  /** Epoch ms after which the pending flow is discarded. */
+  expiresAt: number;
+}
+
+export interface OauthStatusPayload {
+  /** Identifies one in-flight flow … */
+  flowId?: string;
+  /** … or asks for the persisted state of an already-connected integration. */
+  integrationId?: string;
+}
+
+export interface OauthStatusResponse {
+  phase: OauthFlowPhase;
+  integrationId: string;
+  providerId: string;
+  /** Set once the token exchange registered the MCP server. */
+  mcpServerId?: string;
+  /** Re-issued while pending so the UI can reopen the browser tab. */
+  authorizeUrl?: string;
+  expiresAt?: number;
+  /** Human-readable failure. Provider error payloads are redacted before this. */
+  error?: string;
+}
+
+export interface OauthCancelPayload {
+  flowId: string;
+}
+
+export interface OauthCancelResponse {
+  flowId: string;
+  /** False when the flow had already settled and there was nothing to stop. */
+  cancelled: boolean;
+}
+
+export interface OauthDisconnectPayload {
+  integrationId: string;
+}
+
+export interface OauthDisconnectResponse {
+  integrationId: string;
+  disconnected: boolean;
+  /** MCP server removed alongside the token, when one had been registered. */
+  mcpServerId?: string;
+}
+
+/**
+ * OAuth client credentials for one provider.
+ *
+ * Keyed by `providerId`, never by catalog entry id: a single Google client backs
+ * Docs, Gmail, Drive and Calendar, and per-entry storage would ask the user to
+ * register the same application four times and would overwrite itself.
+ *
+ * The secret is the user's own — this layer only moves it where they typed it.
+ */
+export interface OauthClientConfigSavePayload {
+  providerId: string;
+  clientId: string;
+  /** Omitted on update to keep the stored secret; required on first save. */
+  clientSecret?: string;
+  /** Pins the loopback redirect when the provider requires a pre-registered URI. */
+  redirectUri?: string;
+  /** Microsoft-style directory/tenant id. */
+  tenant?: string;
+}
+
+export interface OauthClientConfigSaveResponse {
+  providerId: string;
+  /** False when only a partial config exists — a client id with no secret. */
+  configured: boolean;
+  redirectUri: string;
+}
+
+export interface OauthClientConfigListPayload {
+  /** Narrows to one provider when the settings dialog opens on a single card. */
+  providerId?: string;
+}
+
+export interface OauthClientConfigSummary {
+  providerId: string;
+  clientId: string;
+  configured: boolean;
+  redirectUri: string;
+  tenant?: string;
+  /** Epoch ms of the last save. */
+  updatedAt: number;
+}
+
+export interface OauthClientConfigListResponse {
+  providers: OauthClientConfigSummary[];
 }
 
 // --- Bot conversation channels ------------------------------------------------
@@ -3562,6 +3703,7 @@ export interface SetGlobalAgentWorkspaceActivationResponse {
 export interface CreateGlobalAgentPayload {
   name: string;
   defaultModelId: ModelId;
+  defaultKernelId?: string;
   avatar?: string;
   persona?: string;
   description?: string;

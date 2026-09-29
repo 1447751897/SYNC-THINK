@@ -1,12 +1,8 @@
 /** @vitest-environment jsdom */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { AnswerSources } from './AnswerSources.js';
 import type { AnswerSource } from './answer-sources.js';
-
-const shellCss = readFileSync(resolve(process.cwd(), 'src/renderer/shell/shell.css'), 'utf8');
 
 afterEach(() => {
   cleanup();
@@ -52,16 +48,28 @@ describe('AnswerSources', () => {
     expect(onOpenFile).toHaveBeenCalledWith('src/app.ts');
   });
 
-  it('expands sources inside the message flow with title and host on one row', () => {
-    expect(shellCss).toMatch(
-      /\.shell-msg-sources__reveal\s*\{[\s\S]*?grid-template-rows:\s*0fr;[\s\S]*?duration:\s*300ms/,
+  it('keeps a closed source list out of keyboard navigation', () => {
+    render(
+      <AnswerSources
+        sources={[
+          {
+            key: 'web',
+            kind: 'external',
+            url: 'https://example.test/docs',
+            host: 'example.test',
+            label: '文档',
+            origin: 'citation',
+          },
+        ]}
+      />,
     );
-    expect(shellCss).toMatch(
-      /\.shell-msg-sources__reveal\.is-open\s*\{[\s\S]*?grid-template-rows:\s*1fr;[\s\S]*?opacity:\s*1/,
-    );
-    expect(shellCss).toMatch(/\.shell-msg-sources__panel\s*\{[\s\S]*?width:\s*min\(380px,/);
-    expect(shellCss).toMatch(
-      /\.shell-msg-sources__item-copy\s*\{[\s\S]*?display:\s*grid;[\s\S]*?grid-template-columns:\s*minmax\(0, 1fr\) auto;/,
-    );
+    const toggle = screen.getByRole('button', { name: '查看 1 个来源' });
+    const panel = document.getElementById(toggle.getAttribute('aria-controls')!)!;
+    expect(panel.hasAttribute('inert')).toBe(true);
+    expect(panel.querySelector('button')?.tabIndex).toBe(-1);
+    fireEvent.click(toggle);
+    expect(panel.hasAttribute('inert')).toBe(false);
+    expect(screen.getByRole('list', { name: '引用来源' })).toBeTruthy();
+    expect(panel.querySelector('button')?.tabIndex).toBe(0);
   });
 });

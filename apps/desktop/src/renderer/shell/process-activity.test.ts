@@ -6,6 +6,9 @@ import { describe, expect, it } from 'vitest';
 import type { InlineProcessItem } from './ChatView.js';
 import {
   activityFingerprint,
+  commandArgumentsWithoutDescription,
+  commandDisplayFromArguments,
+  commandDescriptionFromArguments,
   deriveCurrentActivity,
   deriveStallState,
   formatCommandLine,
@@ -166,6 +169,33 @@ describe('formatCommandLine', () => {
     expect(formatCommandLine('git', ['status', 3, null, '--short'] as never)).toBe(
       'git status --short',
     );
+  });
+});
+
+describe('commandDisplayFromArguments', () => {
+  it.each([
+    [
+      { command: 'pnpm', args: ['--filter', 'desktop', 'test'], cwd: '/workspace' },
+      { code: 'pnpm --filter desktop test', language: 'bash' },
+    ],
+    [
+      { arguments: { cmd: '/bin/bash -lc "git status --short"' } },
+      { code: 'git status --short', language: 'bash' },
+    ],
+    [
+      { script: 'Get-Date', shell: 'pwsh' },
+      { code: 'Get-Date', language: 'powershell' },
+    ],
+    [{ command: 'cmd.exe /c "dir /b"' }, { code: 'dir /b', language: 'text' }],
+    [
+      { command: 'powershell.exe -File task.ps1' },
+      { code: 'powershell.exe -File task.ps1', language: 'powershell' },
+    ],
+  ])('formats a complete command without transport metadata', (args, expected) => {
+    expect(commandDisplayFromArguments(JSON.stringify(args))).toEqual(expected);
+  });
+  it('does not substitute cwd or process identity for a missing script', () => {
+    expect(commandDisplayFromArguments('{"cwd":"D:/project","processId":123}')).toBeUndefined();
   });
 });
 
@@ -361,6 +391,20 @@ describe('shared tool naming', () => {
 
   it('summarizes the key argument', () => {
     expect(toolInputSummary(runningCommand as never)).toBe('pnpm -s test');
+  });
+
+  it('reads command intent from provider-specific metadata fields', () => {
+    const argumentsJson = JSON.stringify({
+      purpose: '检查提交差异',
+      command: 'git diff HEAD --stat',
+    });
+    expect(commandDescriptionFromArguments(argumentsJson)).toBe('检查提交差异');
+    expect(commandArgumentsWithoutDescription(argumentsJson)).toBe(
+      JSON.stringify({ command: 'git diff HEAD --stat' }),
+    );
+    expect(toolInputSummary({ kind: 'tool', name: 'run_command', argumentsJson } as never)).toBe(
+      'git diff HEAD --stat',
+    );
   });
 
   it('shows the real command instead of the shell install path for a carried command', () => {

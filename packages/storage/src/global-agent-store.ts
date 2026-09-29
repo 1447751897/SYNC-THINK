@@ -19,6 +19,7 @@ export interface GlobalAgentRecord {
   persona: string;
   description: string;
   defaultModelId: ModelId;
+  defaultKernelId?: string;
   defaultCredentialGroupId?: CredentialGroupId;
   fallbackModelIds: ModelId[];
   skillIds: string[];
@@ -36,6 +37,7 @@ export interface GlobalAgentRecord {
 export interface CreateGlobalAgentInput {
   name: string;
   defaultModelId: ModelId;
+  defaultKernelId?: string;
   avatar?: string;
   persona?: string;
   description?: string;
@@ -59,6 +61,7 @@ export interface UpdateGlobalAgentInput {
   persona?: string;
   description?: string;
   defaultModelId?: ModelId;
+  defaultKernelId?: string;
   defaultCredentialGroupId?: CredentialGroupId | null;
   fallbackModelIds?: ModelId[];
   skillIds?: string[];
@@ -79,6 +82,7 @@ interface AgentDbRow {
   persona: string;
   description: string;
   default_model_id: string;
+  default_kernel_id: string;
   default_credential_group_id: string | null;
   fallback_model_ids_json: string;
   skill_ids_json: string;
@@ -110,6 +114,7 @@ function mapRow(row: AgentDbRow): GlobalAgentRecord {
     persona: row.persona,
     description: row.description,
     defaultModelId: row.default_model_id as ModelId,
+    defaultKernelId: row.default_kernel_id,
     defaultCredentialGroupId: row.default_credential_group_id
       ? (row.default_credential_group_id as CredentialGroupId)
       : undefined,
@@ -127,7 +132,7 @@ function mapRow(row: AgentDbRow): GlobalAgentRecord {
   };
 }
 
-const SELECT_COLUMNS = `id, name, avatar, persona, description, default_model_id,
+const SELECT_COLUMNS = `id, name, avatar, persona, description, default_model_id, default_kernel_id,
   default_credential_group_id, fallback_model_ids_json, skill_ids_json,
   mcp_server_ids_json, reasoning_effort, enabled, source, availability_scope,
   write_policy, archived, created_at, updated_at`;
@@ -143,11 +148,11 @@ export class SqliteGlobalAgentStore {
     this.raw
       .prepare(
         `INSERT INTO agent (
-           id, name, avatar, persona, description, default_model_id,
+           id, name, avatar, persona, description, default_model_id, default_kernel_id,
            default_credential_group_id, fallback_model_ids_json, skill_ids_json,
            mcp_server_ids_json, reasoning_effort, enabled, source, availability_scope,
            write_policy, archived, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
       )
       .run(
         id,
@@ -156,6 +161,7 @@ export class SqliteGlobalAgentStore {
         input.persona ?? '',
         input.description ?? '',
         input.defaultModelId,
+        input.defaultKernelId ?? 'native',
         input.defaultCredentialGroupId ?? null,
         JSON.stringify(input.fallbackModelIds ?? []),
         JSON.stringify(input.skillIds ?? []),
@@ -201,7 +207,7 @@ export class SqliteGlobalAgentStore {
     this.raw
       .prepare(
         `UPDATE agent SET
-           name = ?, avatar = ?, persona = ?, description = ?, default_model_id = ?,
+           name = ?, avatar = ?, persona = ?, description = ?, default_model_id = ?, default_kernel_id = ?,
            default_credential_group_id = ?, fallback_model_ids_json = ?,
            skill_ids_json = ?, mcp_server_ids_json = ?, reasoning_effort = ?,
            enabled = ?, source = ?, availability_scope = ?, write_policy = ?,
@@ -214,6 +220,7 @@ export class SqliteGlobalAgentStore {
         input.persona ?? current.persona,
         input.description ?? current.description,
         input.defaultModelId ?? current.defaultModelId,
+        input.defaultKernelId ?? current.defaultKernelId ?? 'native',
         credentialGroup,
         JSON.stringify(input.fallbackModelIds ?? current.fallbackModelIds),
         JSON.stringify(input.skillIds ?? current.skillIds),

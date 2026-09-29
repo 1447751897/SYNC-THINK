@@ -10,7 +10,7 @@
  * a jump into the editable settings tab.
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { GlobalAgent } from '@sync-think/shared';
 import { AgentLibrary } from './AgentLibrary.js';
 import { DialogProvider } from './Dialog.js';
@@ -79,6 +79,11 @@ const agent: GlobalAgent = {
 };
 
 const runtime = {
+  detectKernels: vi.fn().mockResolvedValue({ kernels: [
+    { kernelId: 'native', name: '原生内核', icon: 'native', installed: true, capabilities: {} },
+    { kernelId: 'codex', name: 'Codex', icon: 'codex', installed: true, version: '1.0', capabilities: {} },
+  ] }),
+  updateGlobalAgent: vi.fn().mockResolvedValue({ agent }),
   listSkills: vi.fn().mockResolvedValue({ skills: [] }),
   listMcpServers: vi.fn().mockResolvedValue({ servers: [] }),
 };
@@ -148,4 +153,17 @@ describe('AgentLibrary default model picker (real Radix menu)', () => {
     fireEvent.click(screen.getByText('默认模型 *'));
     expect(await screen.findByTestId('model-provider-Provider Alpha')).toBeTruthy();
   });
+});
+
+
+it('saves the selected kernel on the agent, together with its default model', async () => {
+  openDrawer();
+  fireEvent.click(screen.getByTestId('agent-drawer-tab-settings'));
+  await waitFor(() => expect(runtime.detectKernels).toHaveBeenCalled());
+  fireEvent.click(screen.getByTitle('切换模型'));
+  fireEvent.click(await screen.findByTestId('model-kernel-trigger'));
+  fireEvent.click(await screen.findByTestId('kernel-option-codex'));
+  expect(screen.getByTitle('切换模型').textContent).toContain('GPT');
+  fireEvent.click(screen.getByRole('button', { name: '保存' }));
+  await waitFor(() => expect(runtime.updateGlobalAgent).toHaveBeenCalledWith(expect.objectContaining({ agentId: agent.id, defaultModelId: 'model-alpha', defaultKernelId: 'codex' })));
 });

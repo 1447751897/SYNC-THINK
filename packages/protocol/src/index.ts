@@ -291,3 +291,9 @@ export type {
   DataManagementCommandRequest,
   DataManagementCommandResponse,
 } from './data-management-command-contract.js';
+export type {
+  OauthCommand,
+  OauthCommandContract,
+  OauthCommandRequest,
+  OauthCommandResponse,
+} from './oauth-command-contract.js';

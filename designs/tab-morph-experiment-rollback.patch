@@ -1,0 +1,500 @@
+diff --git a/apps/desktop/src/renderer/shell/ConversationTabs.test.tsx b/apps/desktop/src/renderer/shell/ConversationTabs.test.tsx
+index 4294db0..ed57169 100644
+--- a/apps/desktop/src/renderer/shell/ConversationTabs.test.tsx
++++ b/apps/desktop/src/renderer/shell/ConversationTabs.test.tsx
+@@ -58,14 +58,15 @@ describe('ConversationTabs NewMax tab track', () => {
+         container.querySelector('.shell-conversation-tabs__scroller') as HTMLElement
+       ).style.getPropertyValue('--shell-pane-tab-width'),
+     ).toBe('172px');
+-    const surface = screen.getByTestId('pane-tab-surface');
+-    expect(surface.parentElement).toBe(screen.getByTestId('conversation-tabs'));
+-    expect(surface.closest('.shell-pane-tab')).toBeNull();
++    expect(screen.queryByTestId('pane-tab-surface')).toBeNull();
+     expect(screen.queryByTestId('workspace-tab-shape')).toBeNull();
++    expect(screen.getByTestId('conversation-tab-c1').classList.contains('shell-conversation-tab-active')).toBe(
++      true,
++    );
+     expect(within(screen.getByTestId('conversation-tab-c1')).getByRole('button', { name: '对话一' })).toBeTruthy();
+   });
+ 
+-  it('keeps one background surface when switching from a conversation to a file', () => {
++  it('keeps a single rounded active pill when switching from a conversation to a file', () => {
+     const props = {
+       conversations,
+       openIds: ['c1', 'c2'],
+@@ -75,12 +76,16 @@ describe('ConversationTabs NewMax tab track', () => {
+       onNew: vi.fn(),
+     };
+     const { rerender } = render(<ConversationTabs {...props} activeId="c1" />);
+-    const surface = screen.getByTestId('pane-tab-surface');
++    expect(screen.getByTestId('conversation-tab-c1').classList.contains('shell-conversation-tab-active')).toBe(
++      true,
++    );
+     rerender(<ConversationTabs {...props} activeFilePath="README.md" />);
+-    expect(screen.getByTestId('pane-tab-surface')).toBe(surface);
+-    expect(screen.getAllByTestId('pane-tab-surface')).toHaveLength(1);
+     expect(screen.getByTestId('conversation-tab-c1').getAttribute('data-active')).toBe('false');
+     expect(screen.getByTestId('file-tab-README.md').getAttribute('data-active')).toBe('true');
++    expect(screen.getByTestId('file-tab-README.md').classList.contains('shell-conversation-tab-active')).toBe(
++      true,
++    );
++    expect(screen.queryByTestId('pane-tab-surface')).toBeNull();
+     expect(screen.queryByTestId('workspace-tab-shape')).toBeNull();
+   });
+ 
+diff --git a/apps/desktop/src/renderer/shell/ConversationTabs.tsx b/apps/desktop/src/renderer/shell/ConversationTabs.tsx
+index b8bf50a..7055dbb 100644
+--- a/apps/desktop/src/renderer/shell/ConversationTabs.tsx
++++ b/apps/desktop/src/renderer/shell/ConversationTabs.tsx
+@@ -40,7 +40,6 @@ import {
+ } from '@dnd-kit/sortable';
+ import { FileTypeIcon } from './FileTypeIcon.js';
+ import { browserTabFaviconSrc } from './ExternalSourceIcon.js';
+-import { PANE_TAB_GLIDE, usePaneTabSurface } from './pane-tab-surface.js';
+ import { pointerDragLeft, tabTranslate, visualIndexFor } from './workspace-tab-morph.js';
+ 
+ export interface ConversationTabsProps {
+@@ -273,10 +272,8 @@ export function ConversationTabs(props: ConversationTabsProps) {
+   const splitPickerAnchorRef = useRef<HTMLDivElement>(null);
+   const splitPickerRef = useRef<HTMLDivElement>(null);
+   const tabManagerAnchorRef = useRef<HTMLDivElement>(null);
+-  const tabBarRef = useRef<HTMLDivElement>(null);
+   const tabTrackRef = useRef<HTMLDivElement>(null);
+   const tabClusterRef = useRef<HTMLDivElement>(null);
+-  const tabSurfaceRef = usePaneTabSurface(tabBarRef, tabTrackRef);
+   const newResourceMenuStyle = useAnchoredMenuStyle(
+     newResourceMenuOpen,
+     newResourceAnchorRef,
+@@ -466,17 +463,11 @@ export function ConversationTabs(props: ConversationTabsProps) {
+ 
+   return (
+     <div
+-      ref={tabBarRef}
+       data-testid="conversation-tabs"
+       data-pane-tab-bar="true"
+       className="shell-conversation-tabs relative flex h-10 shrink-0 items-center gap-[3px] p-1"
+-      style={{ '--shell-pane-tab-glide': PANE_TAB_GLIDE } as React.CSSProperties}
+     >
+-      <svg className="shell-pane-tab-surface" data-testid="pane-tab-surface" aria-hidden="true">
+-        <path ref={tabSurfaceRef} />
+-      </svg>
+-      {/* Tab cluster keeps the plus beside the last tab; overflow stays in the
+-          scroller so the more-menu can remain pinned to the trailing chrome. */}
++      {/* This row is an inner selection layer of the workspace surface. */}
+       <div ref={tabClusterRef} className="shell-conversation-tabs__cluster">
+       <div
+         ref={tabTrackRef}
+diff --git a/apps/desktop/src/renderer/shell/TopBar.tsx b/apps/desktop/src/renderer/shell/TopBar.tsx
+index 1ceeab2..2e8564a 100644
+--- a/apps/desktop/src/renderer/shell/TopBar.tsx
++++ b/apps/desktop/src/renderer/shell/TopBar.tsx
+@@ -1,6 +1,6 @@
+ // NewMax-style top bar: workspace tabs + full menu from "+"
+ // Menu portals to body so overflow:hidden stage boards cannot clip it.
+-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
++import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+ import { createPortal } from 'react-dom';
+ import {
+   Activity,
+@@ -24,17 +24,18 @@ import {
+ import clsx from 'clsx';
+ import type { WorkspaceSummary } from '@sync-think/protocol';
+ import { STAGE_LABELS, type ShellStage } from './shell-state.js';
+-import { tabTranslate, useMorphingWorkspaceTabs } from './workspace-tab-morph.js';
++import {
++  tabTranslate,
++  useMorphingWorkspaceTabs,
++  workspaceLiquidTabPath,
++  WORKSPACE_LIQUID_APRON,
++  WORKSPACE_LIQUID_HEIGHT,
++  WORKSPACE_LIQUID_JOIN,
++} from './workspace-tab-morph.js';
+ 
+ const WORKSPACE_ICON_PRESETS = ['📁', '💼', '🧠', '🚀', '📦', '🛠', '📚', '🧪', '🏠', '⭐'] as const;
+ 
+-const WORKSPACE_TAB_HEIGHT = 31;
+-const WORKSPACE_TAB_BASELINE = 30.5;
+-const WORKSPACE_TAB_SHOULDER = 13;
+-const WORKSPACE_TAB_EDGE_OVERLAP = 4;
+-const WORKSPACE_TAB_EDGE_FADE = 6;
+-const WORKSPACE_TAB_TOP_RADIUS = 10;
+-const WORKSPACE_TAB_SHOULDER_CONTROL = WORKSPACE_TAB_SHOULDER * 0.45;
++const WORKSPACE_TAB_HEIGHT = WORKSPACE_LIQUID_HEIGHT + WORKSPACE_LIQUID_APRON;
+ const WORKSPACE_TAB_GAP = 3;
+ const WORKSPACE_TAB_MIN_WIDTH = 58;
+ const WORKSPACE_TAB_MAX_WIDTH = 172;
+@@ -130,57 +131,9 @@ function useElementWidth(ref: React.RefObject<HTMLElement>): number {
+   return width;
+ }
+ 
+-function coordinate(value: number): string {
+-  return String(Number(value.toFixed(3)));
+-}
+-
+-function workspaceTabCurves(width: number, baseline: number): string {
+-  const shoulderInner = WORKSPACE_TAB_SHOULDER - WORKSPACE_TAB_SHOULDER_CONTROL;
+-  return [
+-    `C ${coordinate(-shoulderInner)} ${coordinate(baseline)}`,
+-    `0 ${coordinate(baseline - WORKSPACE_TAB_SHOULDER_CONTROL)} 0 18`,
+-    `L 0 ${WORKSPACE_TAB_TOP_RADIUS}`,
+-    `Q 0 0 ${WORKSPACE_TAB_TOP_RADIUS} 0`,
+-    `H ${coordinate(width - WORKSPACE_TAB_TOP_RADIUS)}`,
+-    `Q ${coordinate(width)} 0 ${coordinate(width)} ${WORKSPACE_TAB_TOP_RADIUS}`,
+-    `L ${coordinate(width)} 18`,
+-    `C ${coordinate(width)} ${coordinate(baseline - WORKSPACE_TAB_SHOULDER_CONTROL)}`,
+-    `${coordinate(width + shoulderInner)} ${coordinate(baseline)}`,
+-    `${coordinate(width + WORKSPACE_TAB_SHOULDER)} ${coordinate(baseline)}`,
+-  ].join(' ');
+-}
+-
+ export function WorkspaceTabShape({ width }: { width: number }) {
+-  const id = useId().replace(/:/g, '');
+-  const boundaryStart = -WORKSPACE_TAB_SHOULDER - WORKSPACE_TAB_EDGE_OVERLAP;
+-  const boundaryEnd = width + WORKSPACE_TAB_SHOULDER + WORKSPACE_TAB_EDGE_OVERLAP;
+-  const surfaceBoundary = `M ${-WORKSPACE_TAB_SHOULDER} ${WORKSPACE_TAB_HEIGHT} ${workspaceTabCurves(
+-    width,
+-    WORKSPACE_TAB_HEIGHT,
+-  )}`;
+-  const fillPath = `${surfaceBoundary} L ${-WORKSPACE_TAB_SHOULDER} ${WORKSPACE_TAB_HEIGHT} Z`;
+-  const boundaryPath = `M ${boundaryStart} ${WORKSPACE_TAB_BASELINE} H ${-WORKSPACE_TAB_SHOULDER} ${workspaceTabCurves(
+-    width,
+-    WORKSPACE_TAB_BASELINE,
+-  )} H ${coordinate(boundaryEnd)}`;
+-  const totalWidth = width + (WORKSPACE_TAB_SHOULDER + WORKSPACE_TAB_EDGE_OVERLAP) * 2;
+-  const fadeOffset = (x: number) => `${coordinate(((x - boundaryStart) / totalWidth) * 100)}%`;
+-  const fadeStops = (color: string) => (
+-    <>
+-      <stop offset="0%" stopColor={color} stopOpacity="0" />
+-      <stop offset={fadeOffset(-WORKSPACE_TAB_SHOULDER)} stopColor={color} stopOpacity="0" />
+-      <stop
+-        offset={fadeOffset(-WORKSPACE_TAB_SHOULDER + WORKSPACE_TAB_EDGE_FADE)}
+-        stopColor={color}
+-      />
+-      <stop
+-        offset={fadeOffset(width + WORKSPACE_TAB_SHOULDER - WORKSPACE_TAB_EDGE_FADE)}
+-        stopColor={color}
+-      />
+-      <stop offset={fadeOffset(width + WORKSPACE_TAB_SHOULDER)} stopColor={color} stopOpacity="0" />
+-      <stop offset="100%" stopColor={color} stopOpacity="0" />
+-    </>
+-  );
++  const totalWidth = width + WORKSPACE_LIQUID_JOIN * 2;
++  const fillPath = workspaceLiquidTabPath(width);
+ 
+   return (
+     <svg
+@@ -188,51 +141,10 @@ export function WorkspaceTabShape({ width }: { width: number }) {
+       className="shell-workspace-tab-shape"
+       width={totalWidth}
+       height={WORKSPACE_TAB_HEIGHT}
+-      viewBox={`${boundaryStart} 0 ${coordinate(totalWidth)} ${WORKSPACE_TAB_HEIGHT}`}
++      viewBox={`${-WORKSPACE_LIQUID_JOIN} 0 ${totalWidth} ${WORKSPACE_TAB_HEIGHT}`}
+       aria-hidden="true"
+     >
+-      <defs>
+-        <linearGradient
+-          id={`${id}-outline-fade`}
+-          x1={boundaryStart}
+-          y1="0"
+-          x2={boundaryEnd}
+-          y2="0"
+-          gradientUnits="userSpaceOnUse"
+-        >
+-          {fadeStops('var(--shell-tab-outline)')}
+-        </linearGradient>
+-        <linearGradient
+-          id={`${id}-highlight-fade`}
+-          x1={boundaryStart}
+-          y1="0"
+-          x2={boundaryEnd}
+-          y2="0"
+-          gradientUnits="userSpaceOnUse"
+-        >
+-          {fadeStops('var(--shell-tab-highlight)')}
+-        </linearGradient>
+-        <clipPath id={`${id}-clip`}>
+-          <path d={fillPath} />
+-        </clipPath>
+-      </defs>
+-      <path d={fillPath} fill="var(--color-chat)" />
+-      <path
+-        d={boundaryPath}
+-        fill="none"
+-        stroke={`url(#${id}-outline-fade)`}
+-        className="shell-workspace-tab-shape__outline"
+-        vectorEffect="non-scaling-stroke"
+-      />
+-      <path
+-        d={boundaryPath}
+-        fill="none"
+-        stroke={`url(#${id}-highlight-fade)`}
+-        strokeWidth="1.2"
+-        clipPath={`url(#${id}-clip)`}
+-        className="shell-workspace-tab-shape__highlight"
+-        vectorEffect="non-scaling-stroke"
+-      />
++      <path d={fillPath} fill="var(--color-chat)" className="shell-workspace-tab-shape__fill" />
+     </svg>
+   );
+ }
+@@ -413,7 +325,7 @@ export function TopBar(props: TopBarProps) {
+     <header
+       data-testid="shell-topbar"
+       className={clsx(
+-        'shell-topbar shell-workspace-tabs relative z-[3] mt-0.5 flex h-8 shrink-0 items-start gap-[3px] pr-[3px] pt-px',
++        'shell-topbar shell-workspace-tabs relative z-[3] mt-0.5 flex h-9 shrink-0 items-start gap-[3px] pr-[3px] pt-px',
+         props.sidebarCollapsed ? 'pl-[3px]' : 'pl-[26px]',
+       )}
+     >
+@@ -430,11 +342,11 @@ export function TopBar(props: TopBarProps) {
+ 
+       {props.contextStage ? (
+         <div
+-          className="shell-context-tab shell-workspace-tab shell-workspace-tab-active relative h-[31px] w-[184px] shrink-0 pb-[3px]"
++          className="shell-context-tab shell-workspace-tab shell-workspace-tab-active relative h-[34px] w-[184px] shrink-0"
+           data-testid="topbar-context-tab"
+         >
+           <WorkspaceTabShape width={184} />
+-          <div className="shell-workspace-tab__body relative z-[1] flex h-7 w-full items-center gap-1.5 rounded-t-[10px] px-2.5 text-[13px] font-medium text-text">
++          <div className="shell-workspace-tab__body relative z-[1] flex h-7 w-full items-center gap-1.5 rounded-[12px] px-2.5 text-[13px] font-medium text-text">
+             <ContextStageIcon stage={props.contextStage} />
+             <span className="truncate">{STAGE_LABELS[props.contextStage]}</span>
+           </div>
+@@ -513,7 +425,7 @@ export function TopBar(props: TopBarProps) {
+         </div>
+ 
+         {workspaceLayout.overflowCount > 0 ? (
+-          <div className="flex h-[31px] shrink-0 items-start pb-[3px]">
++          <div className="flex h-[34px] shrink-0 items-start">
+             <button
+               type="button"
+               data-testid="topbar-workspace-overflow"
+@@ -854,7 +766,7 @@ function ProjectTab(props: {
+         props.onActivate();
+       }}
+       className={clsx(
+-        'shell-workspace-tab group h-[31px] pb-[3px]',
++        'shell-workspace-tab group h-[34px]',
+         props.active && 'shell-workspace-tab-active',
+         props.dragging ? 'is-dragging' : 'is-gliding',
+       )}
+@@ -865,7 +777,7 @@ function ProjectTab(props: {
+     >
+       <div
+         className={clsx(
+-          'shell-workspace-tab__body st-row-motion relative z-[1] flex h-7 w-full items-center gap-1.5 rounded-[10px] pl-2.5 pr-1 text-[13px] font-medium',
++          'shell-workspace-tab__body st-row-motion relative z-[1] flex h-7 w-full items-center gap-1.5 rounded-[12px] pl-2.5 pr-1 text-[13px] font-medium',
+           props.active ? 'text-text' : 'text-text-secondary hover:bg-hover hover:text-text',
+         )}
+       >
+diff --git a/apps/desktop/src/renderer/shell/shell.css b/apps/desktop/src/renderer/shell/shell.css
+index 219e710..d8572b2 100644
+--- a/apps/desktop/src/renderer/shell/shell.css
++++ b/apps/desktop/src/renderer/shell/shell.css
+@@ -29943,11 +29943,15 @@ body {
+   container-type: inline-size;
+ }
+ 
++/* Morphing Tabs rail: rounded outer track; selected white surface slides inside. */
+ .shell-workspace-tabs__rail {
+   position: relative;
+   flex: 0 0 auto;
+-  height: 31px;
++  height: 34px;
+   overflow: visible;
++  border-radius: 14px;
++  background: color-mix(in srgb, var(--color-chat) 42%, transparent);
++  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--shell-tab-outline) 80%, transparent);
+ }
+ 
+ .shell-workspace-tabs__surface,
+@@ -30003,23 +30007,19 @@ body {
+   background: var(--shell-tab-hover);
+ }
+ 
++/* Liquid selected surface — join shoulders extend past the pill by 12px. */
+ .shell-workspace-tab-shape {
+   position: absolute;
+   z-index: 0;
+   top: 0;
+-  left: -17px;
++  left: -12px;
+   overflow: visible;
+   pointer-events: none;
+   filter: var(--shell-tab-shadow);
+ }
+ 
+-.shell-workspace-tab-shape__outline {
+-  color: var(--shell-tab-outline);
+-  stroke-width: 1;
+-}
+-
+-.shell-workspace-tab-shape__highlight {
+-  color: var(--shell-tab-highlight);
++.shell-workspace-tab-shape__fill {
++  transition: opacity 180ms cubic-bezier(0.22, 1, 0.36, 1);
+ }
+ 
+ .shell-workspace-tab__close {
+@@ -30042,15 +30042,14 @@ body {
+ }
+ 
+ /*
+- * The conversation tab strip is the top edge of the same visual panel as the
+- * active chat/file/terminal/browser content. The shared SVG surface owns the
+- * liquid shoulders while the actual labels stay above it in the tab cluster.
++ * Conversation strip: rounded selected pills (no folder feet / liquid SVG).
++ * Keep light background/color transitions; morphing liquid stays on the workspace row.
+  */
+ .shell-conversation-tabs {
+   --shell-pane-tab-surface: var(--color-chat);
+   isolation: isolate;
+-  align-items: flex-end;
+-  padding: 12px 4px 0;
++  align-items: center;
++  padding: 4px;
+   overflow: visible;
+   background: var(--color-stage-tabs);
+   border: 0;
+@@ -30105,7 +30104,7 @@ body {
+   gap: 6px;
+   overflow: hidden;
+   border: 0;
+-  border-radius: 12px 12px 0 0;
++  border-radius: 12px;
+   padding: 0 4px 0 10px;
+   font-size: 13px;
+   font-weight: 500;
+@@ -30220,7 +30219,9 @@ body {
+ .shell-conversation-tab-active {
+   z-index: 1;
+   border: 0;
+-  background: transparent;
++  border-radius: 999px;
++  background: var(--color-hover);
++  box-shadow: none;
+ }
+ 
+ .shell-workspace-tab-active + .shell-workspace-tab-active,
+@@ -30704,6 +30705,14 @@ body {
+   background: var(--shell-tab-hover);
+ }
+ 
++/* Workspace row and chat content share one continuous surface. The second
++ * row is an inner selection layer on top of it. */
++.shell-stage--talk .shell-conversation-tabs,
++.shell-stage--talk .shell-pane-frame,
++.shell-stage--talk .shell-pane-canvas {
++  background: var(--color-chat);
++}
++
+ .shell-workspace-pane {
+   position: relative;
+   display: flex;
+@@ -40924,14 +40933,14 @@ body {
+   z-index: 1;
+   overflow: visible;
+   border-color: transparent;
+-  background: var(--color-page);
++  background: var(--color-chat);
+   -webkit-backdrop-filter: none;
+   backdrop-filter: none;
+ }
+ 
+ :root[data-image-theme='active'] .shell-conversation-tab-active,
+ :root[data-image-theme='active'] .shell-pane-tab[data-active='true'] {
+-  background: transparent;
++  background: var(--color-hover);
+ }
+ 
+ :root[data-image-theme='active'] .shell-workspace-primary-content {
+diff --git a/apps/desktop/src/renderer/shell/workspace-tab-morph.test.ts b/apps/desktop/src/renderer/shell/workspace-tab-morph.test.ts
+index 87cd090..868762d 100644
+--- a/apps/desktop/src/renderer/shell/workspace-tab-morph.test.ts
++++ b/apps/desktop/src/renderer/shell/workspace-tab-morph.test.ts
+@@ -8,6 +8,7 @@ import {
+   tabTranslate,
+   targetIndexForDrag,
+   visualIndexFor,
++  workspaceLiquidTabPath,
+ } from './workspace-tab-morph.js';
+ 
+ describe('workspace tab morph geometry', () => {
+@@ -54,3 +55,16 @@ describe('workspace tab morph geometry', () => {
+     expect(moveItem(['a', 'b', 'c'], 0, 2)).toEqual(['b', 'c', 'a']);
+   });
+ });
++
++describe('workspace liquid surface path', () => {
++  it('builds a closed liquid path with rounded top and join shoulders', () => {
++    const path = workspaceLiquidTabPath(120);
++    expect(path.startsWith('M ')).toBe(true);
++    expect(path.trim().endsWith('Z')).toBe(true);
++    expect(path).toContain('Q ');
++    expect(path).toContain('C ');
++    // Local shoulders extend by WORKSPACE_LIQUID_JOIN (=12)
++    expect(path).toContain('-12');
++    expect(path).toContain('132');
++  });
++});
+diff --git a/apps/desktop/src/renderer/shell/workspace-tab-morph.ts b/apps/desktop/src/renderer/shell/workspace-tab-morph.ts
+index c0a74ff..81e84e0 100644
+--- a/apps/desktop/src/renderer/shell/workspace-tab-morph.ts
++++ b/apps/desktop/src/renderer/shell/workspace-tab-morph.ts
+@@ -113,6 +113,56 @@ export function applyVisibleReorder(
+   return fullOrder.map((id) => (visibleSet.has(id) ? (nextQueue.shift() ?? id) : id));
+ }
+ 
++
++/** Compact beUI liquid join for the workspace selected surface (local tab coords). */
++export const WORKSPACE_LIQUID_JOIN = 12;
++export const WORKSPACE_TAB_RADIUS = 12;
++export const WORKSPACE_LIQUID_APRON = 6;
++export const WORKSPACE_LIQUID_HEIGHT = 28;
++
++function coordinate(value: number): string {
++  return String(Number(value.toFixed(3)));
++}
++
++/**
++ * Local liquid tab path: rounded top + beUI C-curve shoulders + short apron.
++ * Designed to slide with transform3d — no per-frame layout measurement.
++ */
++export function workspaceLiquidTabPath(
++  width: number,
++  opts?: {
++    height?: number;
++    join?: number;
++    radius?: number;
++    apron?: number;
++  },
++): string {
++  const height = opts?.height ?? WORKSPACE_LIQUID_HEIGHT;
++  const join = opts?.join ?? WORKSPACE_LIQUID_JOIN;
++  const radius = Math.min(opts?.radius ?? WORKSPACE_TAB_RADIUS, Math.max(0, width / 2));
++  const apron = opts?.apron ?? WORKSPACE_LIQUID_APRON;
++  const bottom = height + apron;
++  const left = 0;
++  const right = width;
++  const leftJoin = -join;
++  const rightJoin = width + join;
++  const leftControl = join * 0.55;
++  const rightControl = join * 0.55;
++  return [
++    `M ${coordinate(leftJoin)} ${coordinate(bottom)}`,
++    `H ${coordinate(rightJoin)}`,
++    `V ${coordinate(height)}`,
++    `C ${coordinate(rightJoin - rightControl)} ${coordinate(height)} ${coordinate(right)} ${coordinate(height - join + rightControl)} ${coordinate(right)} ${coordinate(height - join)}`,
++    `V ${coordinate(radius)}`,
++    `Q ${coordinate(right)} 0 ${coordinate(right - radius)} 0`,
++    `H ${coordinate(left + radius)}`,
++    `Q ${coordinate(left)} 0 ${coordinate(left)} ${coordinate(radius)}`,
++    `V ${coordinate(height - join)}`,
++    `C ${coordinate(left)} ${coordinate(height - join + leftControl)} ${coordinate(leftJoin + leftControl)} ${coordinate(height)} ${coordinate(leftJoin)} ${coordinate(height)}`,
++    "Z",
++  ].join(" ");
++}
++
+ export function tabTranslate(left: number): string {
+   return `translate3d(${left}px, 0, 0)`;
+ }

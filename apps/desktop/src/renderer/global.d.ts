@@ -19,14 +19,6 @@ import type {
   OpenDesktopDataDirectoryResponse,
 } from '../data-management-contract.js';
 import type {
-  ProjectGitActionResult,
-  ProjectGitCheckoutResult,
-  ProjectGitCommitResult,
-  ProjectGitInfo,
-  ProjectGitPushResult,
-  ProjectGitReview,
-} from '../project-git-contract.js';
-import type {
   DataBackupPayload,
   DataBackupResponse,
   DataCleanConversationsPayload,
@@ -325,6 +317,7 @@ declare global {
 
   interface Window {
     syncThink?: {
+      editing?: import('../context-menu-contract.js').DesktopEditingBridge;
       kernelUpdates: import('../kernel-update-contract.js').ManagedKernelUpdateBridge;
       runtime: {
         connect(): Promise<RuntimeConnectOutcome>;
@@ -667,7 +660,9 @@ declare global {
         submitBrowserResult(
           payload: import('@sync-think/protocol').ConversationSubmitBrowserResultPayload,
         ): Promise<import('@sync-think/protocol').ConversationSubmitBrowserResultResponse>;
-        captureBrowserPreview(payload: { webContentsId: number }): Promise<{ imageDataUrl: string; url: string; capturedAt: string }>;
+        captureBrowserPreview(payload: {
+          webContentsId: number;
+        }): Promise<{ imageDataUrl: string; url: string; capturedAt: string }>;
         saveBrowserScreenshot(payload: { root: string; webContentsId: number }): Promise<{
           ok: boolean;
           path?: string;
@@ -807,7 +802,9 @@ declare global {
           resume(payload: ResumeBrowserRecordingPayload): Promise<ResumeBrowserRecordingResponse>;
         };
         browserWorkflow: {
-          assignWorkspace(payload: import('@sync-think/protocol').AssignBrowserWorkflowWorkspacePayload): Promise<{ task: import('@sync-think/protocol').BrowserAutomationTaskSummary }>;
+          assignWorkspace(
+            payload: import('@sync-think/protocol').AssignBrowserWorkflowWorkspacePayload,
+          ): Promise<{ task: import('@sync-think/protocol').BrowserAutomationTaskSummary }>;
           list(payload?: ListBrowserWorkflowsPayload): Promise<ListBrowserWorkflowsResponse>;
           get(payload: GetBrowserWorkflowPayload): Promise<GetBrowserWorkflowResponse>;
           createDraft(
@@ -895,6 +892,8 @@ declare global {
         ): Promise<CancelProjectTerminalResult>;
         subscribeProjectTerminal(listener: (event: ProjectTerminalEvent) => void): () => void;
         readProjectFile(payload: { root: string; path: string }): Promise<{
+          directoryEntries?: Array<{ name: string; path: string; kind: 'file' | 'dir' }>;
+          directoryTruncated?: boolean;
           path: string;
           content: string | null;
           error: string | null;
@@ -934,21 +933,128 @@ declare global {
           dir: string;
           entries: Array<{ name: string; path: string; kind: 'file' | 'dir' }>;
         }>;
-        getGitInfo(payload: { root: string }): Promise<ProjectGitInfo>;
-        getGitReview(payload: { root: string }): Promise<ProjectGitReview>;
+        /** Git 工具（契约见 src/git-contract.ts，分组对齐 NewMax 的 git:* 通道族）。 */
+        gitRepository(payload: { root: string }): Promise<import('../git-contract.js').GitRepository>;
+        gitStatus(payload: { root: string }): Promise<import('../git-contract.js').GitStatus>;
+        gitChanged(payload: {
+          root: string;
+        }): Promise<import('../git-contract.js').GitChangedSummary>;
+        gitBranches(payload: { root: string }): Promise<import('../git-contract.js').GitBranches>;
         gitCheckout(payload: {
           root: string;
           branch: string;
           strategy?: 'check' | 'stash' | 'force';
-        }): Promise<ProjectGitCheckoutResult>;
-        gitCreateBranch(payload: { root: string; branch: string }): Promise<ProjectGitActionResult>;
+        }): Promise<import('../git-contract.js').GitCheckoutResult>;
+        gitCreateBranch(payload: {
+          root: string;
+          branch: string;
+        }): Promise<import('../git-contract.js').GitActionResult>;
+        gitStage(payload: {
+          root: string;
+          paths: string[];
+        }): Promise<import('../git-contract.js').GitActionResult>;
+        gitUnstage(payload: {
+          root: string;
+          paths: string[];
+        }): Promise<import('../git-contract.js').GitActionResult>;
+        gitDiscard(payload: {
+          root: string;
+          paths: string[];
+        }): Promise<import('../git-contract.js').GitActionResult>;
         gitCommit(payload: {
           root: string;
           message: string;
-          includeUnstaged: boolean;
-          push: boolean;
-        }): Promise<ProjectGitCommitResult>;
-        gitPush(payload: { root: string }): Promise<ProjectGitPushResult>;
+          description?: string;
+          stageAll?: boolean;
+          push?: boolean;
+        }): Promise<import('../git-contract.js').GitCommitResult>;
+        gitUndoCommit(payload: {
+          root: string;
+        }): Promise<import('../git-contract.js').GitActionResult>;
+        gitLog(payload: {
+          root: string;
+          limit?: number;
+          skip?: number;
+        }): Promise<import('../git-contract.js').GitLogResult>;
+        gitCommitFileDiff(payload: {
+          root: string;
+          hash: string;
+          path: string;
+        }): Promise<import('../git-contract.js').GitCommitFileDiff | null>;
+        gitFileDiff(payload: {
+          root: string;
+          path: string;
+          staged?: boolean;
+        }): Promise<import('../git-contract.js').GitFileDiff | null>;
+        gitFileLines(payload: {
+          root: string;
+          path: string;
+          offset?: number;
+          limit?: number;
+          revision?: string;
+        }): Promise<{
+          lines: string[];
+          offset: number;
+          totalLines: number;
+          nextOffset?: number;
+        } | null>;
+        gitPush(payload: {
+          root: string;
+          force?: boolean;
+        }): Promise<import('../git-contract.js').GitPushResult>;
+        gitPull(payload: {
+          root: string;
+          strategy?: 'check' | 'stash';
+        }): Promise<import('../git-contract.js').GitPullResult>;
+        gitFetch(payload: { root: string }): Promise<import('../git-contract.js').GitFetchResult>;
+        gitReadIdentity(payload: {
+          root: string;
+          scope?: import('../git-contract.js').GitIdentityScope;
+        }): Promise<import('../git-contract.js').GitIdentityResult>;
+        gitWriteIdentity(payload: {
+          root: string;
+          scope: import('../git-contract.js').GitIdentityScope;
+          identity: { name: string; email: string };
+        }): Promise<import('../git-contract.js').GitIdentityResult>;
+        gitWorktrees(payload: {
+          root: string;
+        }): Promise<import('../git-contract.js').GitWorktreeList>;
+        gitAddWorktree(payload: {
+          root: string;
+          path: string;
+          branch?: string;
+          newBranch?: string;
+        }): Promise<import('../git-contract.js').GitWorktreeAddResult>;
+        gitRemoveWorktree(payload: {
+          root: string;
+          path: string;
+          force?: boolean;
+          deleteBranch?: boolean;
+        }): Promise<import('../git-contract.js').GitWorktreeRemoveResult>;
+        gitMerge(payload: {
+          root: string;
+          branch: string;
+        }): Promise<import('../git-contract.js').GitMergeResult>;
+        gitMergePreview(payload: {
+          root: string;
+          branch: string;
+        }): Promise<import('../git-contract.js').GitMergeResult>;
+        gitAbortMerge(payload: {
+          root: string;
+        }): Promise<import('../git-contract.js').GitActionResult>;
+        gitCommitMerge(payload: {
+          root: string;
+          message?: string;
+        }): Promise<import('../git-contract.js').GitCommitResult>;
+        gitWatch(payload: {
+          root: string;
+        }): Promise<import('../git-contract.js').GitWatchResult>;
+        gitUnwatch(payload: {
+          root: string;
+        }): Promise<import('../git-contract.js').GitWatchResult>;
+        onGitWatched(
+          listener: (event: import('../git-contract.js').GitWatchedEvent) => void,
+        ): () => void;
         getM1ExitEvidence(): Promise<{
           ok: boolean;
           handtestChecked: number;

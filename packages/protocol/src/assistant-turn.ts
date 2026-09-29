@@ -45,6 +45,9 @@ export type AssistantTurnSegment =
        * snapshots; durable tool events keep the final output in `output`.
        */
       progressLine?: string;
+      /** Bounded transient log tail; final results still use the durable output. */
+      progressOutput?: string;
+      progressTruncated?: boolean;
       progressBytes?: number;
       progressAt?: string;
       status: 'running' | 'completed' | 'failed';

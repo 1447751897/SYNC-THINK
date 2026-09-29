@@ -139,6 +139,8 @@ export function resolveInitialRunModelBinding(
   ports: {
     catalog: RunBindingCatalog | undefined;
     secureStoreAvailable: boolean;
+    /** External kernels resolve their own models and credentials. */
+    externalKernel?: boolean;
   },
 ): InitialRunModelBinding {
   const requestedModelId = input.requestedModelId
@@ -180,6 +182,13 @@ export function resolveInitialRunModelBinding(
   }
 
   const provider = model ? ports.catalog?.getProvider(model.providerId) : undefined;
+  const explicitDemo = modelId === 'fake-mini' && !model && !ports.externalKernel;
+  // Missing/stale real model bindings must never masquerade as a successful demo reply.
+  if (!ports.externalKernel && !explicitDemo) {
+    if (!model) throw new Error('MODEL_BINDING_UNAVAILABLE: 当前绑定的模型已失效，请在智能体设置中重新选择可用模型。');
+    if (!provider) throw new Error('MODEL_PROVIDER_UNAVAILABLE: 模型服务商已失效，请检查模型设置。');
+    if (!ports.secureStoreAvailable) throw new Error('MODEL_CREDENTIAL_STORE_UNAVAILABLE: 凭据服务尚未就绪，请重新连接运行时。');
+  }
   const credentialResolution = resolveRunCredentialBinding(
     {
       runCredentialRefId: input.runCredentialRefId,
@@ -195,7 +204,7 @@ export function resolveInitialRunModelBinding(
     provider,
     credential: credentialResolution.credential,
     credentialResolutionSource: credentialResolution.source,
-    useFakeProvider: !model || !ports.catalog || !ports.secureStoreAvailable,
+    useFakeProvider: explicitDemo,
     ...resolveContextWindow(model),
   };
 }

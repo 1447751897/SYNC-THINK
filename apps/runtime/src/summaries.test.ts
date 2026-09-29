@@ -189,6 +189,7 @@ describe('catalog summaries', () => {
       targetRef: agentId,
       workspaceId: 'workspace-fixture' as WorkspaceId,
       title: 'Review',
+      collaborationKind: 'group',
       pinnedAt: '2026-09-20T00:30:00.000Z',
       executionMode: 'read-only',
       interactionMode: 'execute',
@@ -203,6 +204,7 @@ describe('catalog summaries', () => {
       track: 'agent',
       targetRef: agentId,
       title: 'Review',
+      collaborationKind: 'group',
       contextWindowOverride: 64_000,
     });
   });

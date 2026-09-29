@@ -113,6 +113,7 @@ export function toGlobalAgentSummary(record: GlobalAgentRecord): GlobalAgent {
     persona: record.persona,
     description: record.description,
     defaultModelId: record.defaultModelId,
+    defaultKernelId: record.defaultKernelId ?? 'native',
     fallbackModelIds: [...record.fallbackModelIds],
     skillIds: [...record.skillIds],
     mcpServerIds: [...record.mcpServerIds],
@@ -172,6 +173,7 @@ export function toTeamRunSummary(record: TeamRunRecord): TeamRun {
 export function toConversationSummary(record: ConversationRecord): Conversation {
   return {
     id: record.id,
+    collaborationKind: record.collaborationKind,
     track: record.track,
     targetRef: record.targetRef,
     workspaceId: record.workspaceId,

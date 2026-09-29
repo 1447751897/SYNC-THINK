@@ -70,6 +70,9 @@ export type InlineProcessItem =
        * client falls back to the elapsed clock until the next frame arrives.
        */
       progressLine?: string;
+      /** Bounded transient log tail; final results still use the durable output. */
+      progressOutput?: string;
+      progressTruncated?: boolean;
       progressBytes?: number;
       progressAt?: string;
     }

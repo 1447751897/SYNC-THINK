@@ -1,3 +1,4 @@
+import { installDesktopLibraryNavigation } from './design-system/navigation.js';
 import { createRoot } from 'react-dom/client';
 import { ShellApp } from './ShellApp.js';
 import { applyShellMotionPreference } from '../ui-preferences.js';
@@ -8,6 +9,7 @@ import {
   readTrayPreferences,
 } from './preferences-store.js';
 
+installDesktopLibraryNavigation();
 applyAppearancePreferences(readAppearancePreferences());
 
 const quickWindow = readShortcutPreferences().quickWindow;

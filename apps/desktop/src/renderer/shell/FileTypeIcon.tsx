@@ -1,4 +1,5 @@
 import {
+  Atom,
   Braces,
   CodeXml,
   Container,
@@ -6,12 +7,10 @@ import {
   FileArchive,
   FileCog,
   FileImage,
-  FileJson2,
   FileLock2,
   FileSpreadsheet,
   FileText,
   GitBranch,
-  Package,
   SquareTerminal,
   type LucideIcon,
 } from 'lucide-react';
@@ -29,7 +28,8 @@ type FileIconKind =
   | 'json'
   | 'lock'
   | 'markdown'
-  | 'package'
+  | 'react-typescript'
+  | 'react-javascript'
   | 'python'
   | 'shell'
   | 'spreadsheet'
@@ -60,15 +60,10 @@ function fileIconSpec(path: string): FileIconSpec {
   ) {
     return { kind: 'git', icon: GitBranch };
   }
-  if (
-    name === 'package.json' ||
-    name === 'package-lock.json' ||
-    name === 'pnpm-lock.yaml' ||
-    name === 'yarn.lock'
-  ) {
+  if (name === 'package-lock.json' || name === 'pnpm-lock.yaml' || name === 'yarn.lock') {
     return {
-      kind: name === 'package.json' ? 'package' : 'lock',
-      icon: name === 'package.json' ? Package : FileLock2,
+      kind: 'lock',
+      icon: FileLock2,
     };
   }
   if (name === 'makefile' || name === 'cmakelists.txt') {
@@ -77,24 +72,26 @@ function fileIconSpec(path: string): FileIconSpec {
 
   switch (extension) {
     case 'js':
-    case 'jsx':
     case 'mjs':
     case 'cjs':
       return { kind: 'javascript', label: 'JS' };
     case 'ts':
-    case 'tsx':
     case 'mts':
     case 'cts':
       return { kind: 'typescript', label: 'TS' };
+    case 'tsx':
+      return { kind: 'react-typescript', icon: Atom };
+    case 'jsx':
+      return { kind: 'react-javascript', icon: Atom };
     case 'py':
     case 'pyw':
       return { kind: 'python', label: 'PY' };
     case 'json':
     case 'jsonc':
-      return { kind: 'json', icon: FileJson2 };
+      return { kind: 'json', icon: Braces };
     case 'md':
     case 'mdx':
-      return { kind: 'markdown', icon: FileText };
+      return { kind: 'markdown' };
     case 'html':
     case 'htm':
     case 'xml':
@@ -157,7 +154,7 @@ function fileIconSpec(path: string): FileIconSpec {
     case 'log':
       return { kind: 'text', icon: FileText };
     default:
-      return { kind: 'text', icon: extension ? Braces : FileText };
+      return { kind: 'text', icon: FileText };
   }
 }
 
@@ -180,7 +177,21 @@ export function FileTypeIcon({
       aria-hidden="true"
       style={{ width: size, height: size }}
     >
-      {Icon ? <Icon size={size} strokeWidth={1.7} /> : <span>{spec.label}</span>}
+      {spec.kind === 'markdown' ? (
+        <svg width={size} height={size} viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path
+            d="M1.5 11V5l3 3 3-3v6M12 5v6m-2-2 2 2 2-2"
+            stroke="currentColor"
+            strokeWidth="1.65"
+            strokeLinecap="square"
+            strokeLinejoin="miter"
+          />
+        </svg>
+      ) : Icon ? (
+        <Icon size={size} strokeWidth={1.7} />
+      ) : (
+        <span>{spec.label}</span>
+      )}
     </span>
   );
 }

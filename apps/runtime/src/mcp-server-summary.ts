@@ -19,6 +19,7 @@ export function toMcpServerSummary(
       name: tool.name,
       description: tool.description,
       inputSchemaJson: tool.inputSchemaJson,
+      ...(tool.readOnly === true ? { readOnly: true } : {}),
     })),
     trusted: record.trusted,
     enabled: record.enabled,

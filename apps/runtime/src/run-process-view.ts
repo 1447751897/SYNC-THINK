@@ -283,6 +283,11 @@ function recordWriteFileChanges(
   payload: Record<string, unknown>,
 ): void {
   if (!isWriteFileTool(toolName)) return;
+  summary = {
+    ...summary,
+    ...(typeof payload.writtenContent === 'string' ? { content: payload.writtenContent } : {}),
+    ...(payload.fileCreated === true ? { created: true } : {}),
+  };
   const entries = extractWritePathEntries(args, payload.result ?? payload.output);
   const paths =
     entries.length > 0

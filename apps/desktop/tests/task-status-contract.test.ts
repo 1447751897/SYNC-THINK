@@ -25,12 +25,8 @@ describe('NewMax task status contract', () => {
     expect(css).not.toContain('.shell-task-status__changes-list');
   });
 
-  it('keeps the ZCode section order and measured floating geometry', () => {
-    expect(panel.indexOf('title="Git 工具"')).toBeLessThan(panel.indexOf('title="目标"'));
+  it('keeps the Goal and Progress section order and measured floating geometry', () => {
     expect(panel.indexOf('title="目标"')).toBeLessThan(panel.indexOf('title="任务清单"'));
-    expect(panel).not.toContain('title="Git tools"');
-    expect(panel).not.toContain('<ChangesDialog');
-    expect(panel).toContain('onOpenReview');
     expect(css).toMatch(/\.shell-task-status-panel\s*\{[\s\S]*?width:\s*320px/);
     expect(css).toMatch(/max-height:\s*min\(64dvh,\s*32rem\)/);
     expect(css).toMatch(/\.shell-task-status-host\s*\{[\s\S]*?top:\s*16px;[\s\S]*?right:\s*16px/);

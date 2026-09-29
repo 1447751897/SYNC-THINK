@@ -29,6 +29,7 @@ import type {
 import { createDemoRun, type DemoRunState } from '../src/demo-run.js';
 import type { PlatformMcpToolCall } from '../src/kernel/mcp-broker.js';
 import { Runtime } from '../src/runtime.js';
+import { KernelStartupError } from '../src/kernel/kernel-diagnostics.js';
 
 const tempDirs: string[] = [];
 
@@ -305,7 +306,8 @@ class DeferredKernelAdapter implements KernelAdapter {
 interface RuntimeExternalKernelHarness {
   demoRuns: Map<string, DemoRunState>;
   demoRunAbortRegistry: import('../src/abort-controller-registry.js').AbortControllerRegistry;
-  transientReplay: Array<{ kind: string; textDelta?: string }>;
+  transientReplay: import('@sync-think/protocol').ConversationTransientFrame[];
+  conversationTransientState: import('../src/conversation-transient-state-registry.js').ConversationTransientStateRegistry;
   openGateway: {
     tickets: {
       recordContinuationItem(scopeId: string, callId: string, responseId: string): void;
@@ -803,6 +805,47 @@ describe('Runtime external kernel finalization', () => {
     }
   });
 
+  it('surfaces local startup errors without retrying or switching the configured model', async () => {
+    const requests: KernelRequest[] = [];
+    const startupError = new KernelStartupError(
+      'Codex',
+      new Error('invalid local launch configuration'),
+    );
+    class StartupFailureAdapter extends FixtureKernelAdapter {
+      async *start(request: KernelRequest): AsyncIterable<KernelEvent> {
+        requests.push(request);
+        yield* [];
+        throw startupError;
+      }
+    }
+    const fixture = await createFixture([], new StartupFailureAdapter([]));
+    try {
+      const run = fixture.harness.demoRuns.get(fixture.runId)!;
+      fixture.harness.demoRuns.set(fixture.runId, { ...run, fallbackModelIds: ['fallback-model'] });
+      await fixture.harness.executeExternalKernelRun(fixture.runId);
+      expect(requests.map((request) => request.model)).toEqual(['fixture-model']);
+      const events = fixture.stateStore.listEventsByRun(fixture.runId);
+      expect(
+        events.filter(
+          (event) => event.type === 'run.retrying' || event.type === 'run.fallback.selected',
+        ),
+      ).toEqual([]);
+      expect(events.find((event) => event.type === 'run.failed')?.payload).toMatchObject({
+        failureClass: 'protocol',
+        errorMessage: startupError.message,
+        providerModelId: 'fixture-model',
+      });
+      const message = assistantMessage(
+        fixture.messageStore.listMessages(fixture.threadId as never).messages,
+      );
+      expect(JSON.stringify(message?.blocks)).toContain(startupError.message);
+      expect(message?.blocks.some((block) => block.type === 'error')).toBe(true);
+      expect(fixture.harness.demoRuns.has(fixture.runId)).toBe(false);
+    } finally {
+      fixture.connection.raw.close();
+    }
+  });
+
   it('retries a 503 and continues the same run on its configured fallback model', async () => {
     const serviceUnavailable: KernelEvent = {
       type: 'terminal',
@@ -878,7 +921,39 @@ describe('Runtime external kernel finalization', () => {
     }
   });
 
-  it('replays the terminally classified kernel answer through the transient stream', async () => {
+  it.each(['codex', 'claude-code'] as const)('streams %s tokens before terminal and snapshots the in-flight answer', async (kernelId) => {
+    let release!: () => void;
+    let reached!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const streamed = new Promise<void>((resolve) => { reached = resolve; });
+    const adapter = new CapturingKernelAdapter(kernelId, []);
+    adapter.start = async function* () {
+      yield { type: 'delta', text: 'hello ' } as KernelEvent;
+      yield { type: 'delta', text: 'kernel' } as KernelEvent;
+      reached();
+      await gate;
+      yield { type: 'terminal', status: 'completed' } as KernelEvent;
+    };
+    const fixture = await createFixture([], adapter);
+    const running = fixture.harness.executeExternalKernelRun(fixture.runId);
+    try {
+      await waitForPromise(streamed);
+      expect(fixture.harness.transientReplay.filter((frame) => frame.kind === 'text').map((frame) => frame.textDelta)).toEqual(['hello ', 'kernel']);
+      expect(fixture.harness.transientReplay.some((frame) => frame.kind === 'terminal')).toBe(false);
+      expect(fixture.harness.conversationTransientState.getSnapshot(fixture.threadId)).toMatchObject({ text: 'hello kernel' });
+      // Provisional display does not prematurely persist a final answer.
+      expect(fixture.harness.demoRuns.get(fixture.runId)?.assistantText).toBe('');
+      release();
+      await running;
+      expect(fixture.harness.transientReplay.filter((frame) => frame.kind === 'text').map((frame) => frame.textDelta)).toEqual(['hello ', 'kernel']);
+    } finally {
+      release();
+      await running;
+      fixture.connection.raw.close();
+    }
+  });
+
+  it('streams kernel chunks without replaying the final answer at terminal', async () => {
     const fixture = await createFixture([
       { type: 'reasoning', text: 'think first' },
       { type: 'delta', text: 'hello ' },
@@ -889,7 +964,7 @@ describe('Runtime external kernel finalization', () => {
       await fixture.harness.executeExternalKernelRun(fixture.runId);
 
       const textFrames = fixture.harness.transientReplay.filter((frame) => frame.kind === 'text');
-      expect(textFrames.map((frame) => frame.textDelta)).toEqual(['hello kernel']);
+      expect(textFrames.map((frame) => frame.textDelta)).toEqual(['hello ', 'kernel']);
       const terminalIndex = fixture.harness.transientReplay.findIndex(
         (frame) => frame.kind === 'terminal',
       );

@@ -1,3 +1,4 @@
+import { useDiffContextMenu } from './use-diff-context-menu.js';
 import { ConversationContentScope, DeferredToolContent } from './DeferredToolContent.js';
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -16,6 +17,8 @@ import {
   XCircle,
 } from 'lucide-react';
 import { highlightCodeLines, languageFromPath } from './code-highlight.js';
+import { FileDiffToolbar, FileDiffViewport, formatFilePatch } from './FileDiffSurface.js';
+import { CodeBlockSource } from './CodeBlockSource.js';
 import { CopyTextButton } from './CopyTextButton.js';
 import { DeferredFileDiff, needsDeferredFileDiff } from './DeferredFileDiff.js';
 import { WordSegments, wordHighlightMap } from './word-diff.js';
@@ -303,30 +306,27 @@ export function parseUnifiedDiff(text: string): UnifiedDiffRow[] {
   return rows;
 }
 
-export function UnifiedDiffPreview({
-  text,
-  path,
-}: {
-  text: string;
-  path?: string;
-}) {
+export function UnifiedDiffPreview({ text, path }: { text: string; path?: string }) {
+  const diffContextMenu = useDiffContextMenu();
   const rows = useMemo(() => parseUnifiedDiff(text), [text]);
   const language = languageFromPath(path);
   const htmlLines = useMemo(() => {
     const source = rows
-      .map((row) => (row.kind === 'add' || row.kind === 'del' || row.kind === 'ctx' ? row.text : ''))
+      .map((row) =>
+        row.kind === 'add' || row.kind === 'del' || row.kind === 'ctx' ? row.text : '',
+      )
       .join('\n');
     return highlightCodeLines(source, language);
   }, [language, rows]);
 
   return (
-    <div className="shell-changes-card__diff-body">
-      <div
-        className="shell-changes-card__diff-lines is-wrap"
-        data-path={path}
-        role="region"
-        aria-label="文件差异预览"
-      >
+    <div className="shell-changes-card__diff-body shell-beui-diff" onContextMenu={event => diffContextMenu(event, { path, patch: text })}>
+      <FileDiffToolbar
+        copyText={text}
+        additions={rows.filter((row) => row.kind === 'add').length}
+        deletions={rows.filter((row) => row.kind === 'del').length}
+      />
+      <FileDiffViewport path={path} label="文件差异预览">
         {rows.map((row, index) => (
           <div
             key={`${row.kind}:${row.oldLine ?? ''}:${row.newLine ?? ''}:${index}`}
@@ -340,7 +340,13 @@ export function UnifiedDiffPreview({
               {row.newLine ?? ''}
             </span>
             <span className="shell-changes-card__diff-gutter" aria-hidden="true">
-              {row.kind === 'add' ? '+' : row.kind === 'del' ? '−' : row.kind === 'hunk' ? '@' : ' '}
+              {row.kind === 'add'
+                ? '+'
+                : row.kind === 'del'
+                  ? '−'
+                  : row.kind === 'hunk'
+                    ? '@'
+                    : ' '}
             </span>
             {htmlLines && (row.kind === 'add' || row.kind === 'del' || row.kind === 'ctx') ? (
               <code
@@ -354,7 +360,7 @@ export function UnifiedDiffPreview({
             )}
           </div>
         ))}
-      </div>
+      </FileDiffViewport>
     </div>
   );
 }
@@ -374,7 +380,7 @@ export function resolveAbsoluteProjectPath(projectFolder?: string, filePath?: st
 }
 
 /**
- * NewMax-like code preview:
+ * Be UI line surface for file previews:
  * soft gutter (no hard vertical rule), optional syntax highlight, editor density.
  */
 export function CodePreview({
@@ -413,8 +419,17 @@ export function CodePreview({
       const target = previewRef.current?.querySelector<HTMLElement>(
         `[data-line="${Math.floor(highlightLine)}"]`,
       );
-      if (typeof target?.scrollIntoView === 'function') {
-        target.scrollIntoView({ block: 'center' });
+      const viewport = previewRef.current;
+      if (viewport && target) {
+        // Focus the line inside this document without moving the surrounding chat.
+        const lineTop =
+          target.getBoundingClientRect().top -
+          viewport.getBoundingClientRect().top +
+          viewport.scrollTop;
+        viewport.scrollTop = Math.max(
+          0,
+          lineTop - (viewport.clientHeight - target.offsetHeight) / 2,
+        );
       }
     });
     return () => window.cancelAnimationFrame(frame);
@@ -423,39 +438,55 @@ export function CodePreview({
   return (
     <div
       ref={previewRef}
-      className={`shell-code-preview ${compact ? 'is-compact' : ''}`}
+      className={`shell-code-preview shell-agent-code shell-beui-code is-document ${compact ? 'is-compact' : ''}`}
       role="region"
       aria-label="文件内容预览"
+      tabIndex={0}
+      data-wrap="true"
       style={style}
       data-language={language || 'text'}
     >
-      <table className="shell-code-preview__table">
-        <tbody>
-          {display.map((line, i) => (
-            <tr
-              key={i}
-              className={`shell-code-preview__row${highlightLine === i + 1 ? ' is-highlighted' : ''}`}
-              data-line={i + 1}
-            >
-              <td className="shell-code-preview__ln" aria-hidden="true">
-                {i + 1}
-              </td>
-              <td className="shell-code-preview__code">
-                {htmlLines ? (
-                  <code
-                    className={language ? `hljs language-${language}` : 'hljs'}
-                    dangerouslySetInnerHTML={{
-                      __html: htmlLines[i] && htmlLines[i]!.length ? htmlLines[i]! : ' ',
-                    }}
-                  />
-                ) : (
-                  <code className="hljs">{line.length ? line : ' '}</code>
-                )}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <CodeBlockSource
+        lines={display}
+        highlighted={htmlLines}
+        language={language || 'text'}
+        focusedLines={highlightLine ? new Set([highlightLine]) : undefined}
+      />
+    </div>
+  );
+}
+
+export function FileChangeDiff({
+  item,
+  conversationId,
+  streaming = false,
+}: {
+  item: FileChangeItem;
+  conversationId?: string;
+  streaming?: boolean;
+}) {
+  if (needsDeferredFileDiff(item))
+    return <DeferredFileDiff item={item} conversationId={conversationId} />;
+  const before = item.previousContent ?? (item.action === 'created' ? '' : undefined);
+  const after = item.content ?? (item.action === 'deleted' ? '' : undefined);
+  if (before !== undefined && after !== undefined)
+    return (
+      <LineDiffView
+        oldText={before}
+        newText={after}
+        path={item.path}
+        truncated={item.previousTruncated}
+        streaming={streaming}
+      />
+    );
+  if (item.preview && looksLikeUnifiedDiff(item.preview))
+    return <UnifiedDiffPreview text={item.preview} path={item.path} />;
+  return (
+    <div className="shell-beui-diff shell-beui-diff__fallback">
+      <p className="shell-deferred-content__notice">缺少完整前后快照，以下为已记录的内容预览。</p>
+      {item.preview && !isStatusOnlyPreview(item.preview) ? (
+        <CodePreview text={item.preview} path={item.path} compact maxHeight={220} />
+      ) : null}
     </div>
   );
 }
@@ -481,7 +512,9 @@ export function FileChangesCard({
   const { process, controls } = useRunProcessPage(sourceView, 'fileChanges', conversationId);
   const view = process ?? sourceView;
   // File changes stay folded by default; the user expands a file to see its diff.
-  const [expandedPath, setExpandedPath] = useState<string | null>(null);
+  const [expandedPaths, setExpandedPaths] = useState<ReadonlySet<string>>(() => new Set());
+  const [visitedPaths, setVisitedPaths] = useState<ReadonlySet<string>>(() => new Set());
+  const disclosureId = useId();
   const [overflowOpen, setOverflowOpen] = useState(false);
   const [pathTooltip, setPathTooltip] = useState<{
     anchor: HTMLButtonElement;
@@ -521,11 +554,15 @@ export function FileChangesCard({
 
   const renderChangeItems = (items: readonly FileChangeItem[]) =>
     items.map((item) => {
-      const itemKey = `${item.action}:${item.path}`;
+      const itemKey = `${view.runId}:${item.toolCallId ?? ''}:${item.action}:${item.path}`;
       const hasBody = !isStatusOnlyPreview(item.preview);
-      const hasDiff = item.previousContent !== undefined && item.content !== undefined;
+      const hasDiff =
+        (item.previousContent !== undefined || item.action === 'created') &&
+        (item.content !== undefined || item.action === 'deleted');
       const deferred = needsDeferredFileDiff(item);
-      const open = expandedPath === item.path;
+      const open = expandedPaths.has(itemKey);
+      const mounted = visitedPaths.has(itemKey);
+      const contentId = `${disclosureId}-${encodeURIComponent(itemKey)}`;
       const counts = countLineChanges(item);
       const absolutePath = resolveAbsoluteProjectPath(projectFolder, item.path);
       return (
@@ -534,9 +571,17 @@ export function FileChangesCard({
             <button
               type="button"
               className="shell-changes-card__expand"
+              aria-expanded={open}
+              aria-controls={contentId}
               disabled={!hasBody && !hasDiff && !deferred}
               onClick={() => {
-                setExpandedPath((prev) => (prev === item.path ? null : item.path));
+                setVisitedPaths((previous) => new Set(previous).add(itemKey));
+                setExpandedPaths((previous) => {
+                  const next = new Set(previous);
+                  if (next.has(itemKey)) next.delete(itemKey);
+                  else next.add(itemKey);
+                  return next;
+                });
               }}
               title={
                 hasBody || hasDiff || deferred
@@ -607,34 +652,15 @@ export function FileChangesCard({
               </span>
             </button>
           </div>
-          {open && deferred ? (
-            <DeferredFileDiff item={item} conversationId={conversationId} />
-          ) : open && hasDiff ? (
-            <div className="shell-changes-card__diff">
-              <LineDiffView
-                oldText={item.previousContent}
-                newText={item.content}
-                path={item.path}
-                truncated={item.previousTruncated}
-              />
-            </div>
-          ) : open && hasBody && item.preview ? (
-            <div className="shell-changes-card__diff">
-              {looksLikeUnifiedDiff(item.preview) ? (
-                <UnifiedDiffPreview text={item.preview} path={item.path} />
-              ) : (
-                <div className="shell-changes-card__preview">
-                  <CodePreview text={item.preview} path={item.path} compact maxHeight={220} />
-                </div>
-              )}
-            </div>
-          ) : null}
+          <div id={contentId} className="shell-beui-diff-disclosure" hidden={!open}>
+            {mounted ? <FileChangeDiff item={item} conversationId={conversationId} /> : null}
+          </div>
         </li>
       );
     });
 
   return (
-    <div className={`shell-changes-card ${nested ? 'is-nested' : ''}`}>
+    <div className={`shell-changes-card shell-beui-changes ${nested ? 'is-nested' : ''}`}>
       {/* NewMax has no standing button: the whole header becomes 查看变动 on hover. */}
       <div className="shell-changes-card__header">
         <button
@@ -655,7 +681,9 @@ export function FileChangesCard({
                 <span className="is-del">−{totals.removed}</span>
               </span>
             ) : null}
-            {totals.unknown ? <span className="shell-changes-card__lines">行数按需计算</span> : null}
+            {totals.unknown ? (
+              <span className="shell-changes-card__lines">行数按需计算</span>
+            ) : null}
           </span>
           <span className="shell-changes-card__header-hint" aria-hidden="true">
             <FileDiff size={12} />
@@ -858,10 +886,16 @@ export function computeLineDiff(
 export function countLineChanges(
   item: Pick<
     FileChangeItem,
-    'action' | 'previousContent' | 'content' | 'contentRef' | 'previousContentRef' | 'contentKind'
+    | 'action'
+    | 'previousContent'
+    | 'content'
+    | 'contentRef'
+    | 'previousContentRef'
+    | 'contentKind'
+    | 'previousTruncated'
   >,
 ): { added: number; removed: number } | undefined {
-  if (needsDeferredFileDiff(item)) return undefined;
+  if (item.previousTruncated || needsDeferredFileDiff(item)) return undefined;
   if (item.action === 'created') {
     if (item.content === undefined) return undefined;
     const lines = item.content.replace(/\r\n/g, '\n').split('\n');
@@ -902,6 +936,7 @@ export function LineDiffView({
   showWhitespace = false,
   wordLevel = false,
   showLineNumbers = true,
+  streaming = false,
 }: {
   oldText: string | undefined;
   newText: string | undefined;
@@ -913,7 +948,9 @@ export function LineDiffView({
   showWhitespace?: boolean;
   wordLevel?: boolean;
   showLineNumbers?: boolean;
+  streaming?: boolean;
 }) {
+  const diffContextMenu = useDiffContextMenu();
   const lines = useMemo(
     () => (truncated ? undefined : computeLineDiff(oldText, newText)),
     [oldText, newText, truncated],
@@ -944,33 +981,40 @@ export function LineDiffView({
       </div>
     );
   }
+  const formatChanged = oldText !== newText && lines.every((line) => line.kind === 'ctx');
+  const patch =
+    !formatChanged && oldText !== undefined && newText !== undefined
+      ? formatFilePatch(path ?? 'file', oldText, newText, lines)
+      : undefined;
   return (
-    <div className="shell-changes-card__diff-body">
+    <div
+      className="shell-changes-card__diff-body shell-beui-diff"
+      onContextMenu={event => diffContextMenu(event, { path, patch, newText })}
+      data-state={streaming ? 'streaming' : 'complete'}
+    >
       {showToolbar ? (
-        <div className="shell-changes-card__diff-toolbar">
-          <span className="shell-changes-card__diff-counts" aria-label="变更统计">
-            <span className="is-add">+{lines.filter((line) => line.kind === 'add').length}</span>
-            <span className="is-del">−{lines.filter((line) => line.kind === 'del').length}</span>
-          </span>
-          <label className="shell-changes-card__diff-wrap">
-            <input
-              type="checkbox"
-              checked={wrap}
-              onChange={(event) => {
-                setInternalWrap(event.target.checked);
-                onWrapLinesChange?.(event.target.checked);
-              }}
-            />
-            自动换行
-          </label>
-          <CopyTextButton text={newText ?? ''} label="复制修改后内容" />
-        </div>
+        <FileDiffToolbar
+          additions={lines.filter((line) => line.kind === 'add').length}
+          deletions={lines.filter((line) => line.kind === 'del').length}
+          wrap={wrap}
+          onWrapChange={(value) => {
+            setInternalWrap(value);
+            onWrapLinesChange?.(value);
+          }}
+          copyText={patch}
+        >
+          <CopyTextButton text={newText ?? ''} label="复制修改后内容" compact />
+        </FileDiffToolbar>
       ) : null}
-      <div
-        className={`shell-changes-card__diff-lines ${wrap ? 'is-wrap' : ''}${
-          showLineNumbers ? '' : ' is-no-line-numbers'
-        }`}
-        data-path={path}
+      {formatChanged ? (
+        <p className="shell-deferred-content__notice">文本行相同，但换行符或末尾换行发生变化。</p>
+      ) : null}
+      <FileDiffViewport
+        path={path}
+        wrap={wrap}
+        showLineNumbers={showLineNumbers}
+        streaming={streaming}
+        revision={lines}
       >
         {lines.map((line, index) => {
           const segments = wordHighlights?.get(index);
@@ -1017,7 +1061,7 @@ export function LineDiffView({
             </div>
           );
         })}
-      </div>
+      </FileDiffViewport>
     </div>
   );
 }

@@ -23,7 +23,8 @@ import {
   type DecorationSet,
 } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
-import { File, FileText, Folder, Puzzle, X } from 'lucide-react';
+import { FileText, Puzzle, X } from 'lucide-react';
+import { ComposerAttachments } from './ComposerAttachments.js';
 
 import type { ComposeAttachment } from './compose-mention.js';
 import {
@@ -838,64 +839,8 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
         onDragOver={handleDragOver}
         style={{ position: 'relative', width: '100%', minWidth: 0, ...style }}
       >
-        {visibleAttachments.length > 0 ? (
-          <div className="shell-compose__chips" data-testid="composer-editor-attachments">
-            {visibleAttachments.map((attachment) => {
-              const previewable = attachment.kind === 'image' && Boolean(attachment.previewUrl);
-              return (
-                <div className="shell-attach-chip" key={attachment.path}>
-                  {previewable && onOpenAttachment ? (
-                    <button
-                      type="button"
-                      className="shell-attach-chip__thumb"
-                      aria-label={`打开附件 ${attachment.name}`}
-                      disabled={effectiveDisabled}
-                      onClick={() => onOpenAttachment(attachment)}
-                    >
-                      <img src={attachment.previewUrl} alt={attachment.name} />
-                    </button>
-                  ) : previewable ? (
-                    <span className="shell-attach-chip__thumb">
-                      <img src={attachment.previewUrl} alt={attachment.name} />
-                    </span>
-                  ) : onOpenAttachment ? (
-                    <button
-                      type="button"
-                      className="shell-attach-chip__icon"
-                      aria-label={`打开附件 ${attachment.name}`}
-                      disabled={effectiveDisabled}
-                      onClick={() => onOpenAttachment(attachment)}
-                    >
-                      {attachment.kind === 'dir' ? (
-                        <Folder size={15} aria-hidden="true" />
-                      ) : (
-                        <File size={15} aria-hidden="true" />
-                      )}
-                    </button>
-                  ) : (
-                    <span className="shell-attach-chip__icon" aria-hidden="true">
-                      {attachment.kind === 'dir' ? <Folder size={15} /> : <File size={15} />}
-                    </span>
-                  )}
-                  <span className="shell-attach-chip__name" title={attachment.path}>
-                    {attachment.name}
-                  </span>
-                  {onRemoveAttachment ? (
-                    <button
-                      type="button"
-                      className="shell-attach-chip__remove"
-                      aria-label={`移除附件 ${attachment.name}`}
-                      disabled={effectiveDisabled}
-                      onClick={() => onRemoveAttachment(attachment.path)}
-                    >
-                      <X size={13} aria-hidden="true" />
-                    </button>
-                  ) : null}
-                </div>
-              );
-            })}
-          </div>
-        ) : null}
+        <ComposerAttachments attachments={visibleAttachments} disabled={effectiveDisabled}
+          onOpen={onOpenAttachment} onRemove={onRemoveAttachment} />
 
         {hasInlineTokens ? (
           <div

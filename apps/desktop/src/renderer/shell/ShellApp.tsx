@@ -1,11 +1,16 @@
+import { readSidebarMode, writeSidebarMode } from './agent-contacts.js';
+import { PROJECTLESS_SCOPE, runtimeConversation, runtimeWorkspaceId, projectConversationScopes, projectWorkspaceScopes } from './projectless-scope.js';
+import { repositoryKey } from './git-repository-events.js';
+import { ComposerGitBar, type GitPanelSection, type ComposerGitNavigation } from './ComposerGitBar.js';
+import { ContextMenuProvider } from './ContextMenu.js';
 import { createBrowserCommandDispatcher } from './browser-command-dispatcher.js';
 // New shell root — NewMax visual constitution (S3 / D3 first cut).
 // Sidebar top actions + three tracks with groups · workspace tabs (no 全部) ·
 // welcome empty state · settings modal.
 import { reviewViewKey, conversationReviewFromKey, type ReviewView } from './review-view.js';
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
-import { Bot, MessageSquare, Users, Zap, X } from 'lucide-react';
+import { X } from 'lucide-react';
 import {
   isKernelExecutionSupported,
   kernelExecutionUnavailableReason,
@@ -41,7 +46,6 @@ import { WallpaperReadingLayers } from './WallpaperReadingLayers.js';
 import type { WorkbenchNewResource } from './WorkspaceWorkbench.js';
 import { emptyExcalidrawContent } from './ExcalidrawPreview.js';
 import { ChatView, type RuntimeConnectionNotice } from './ChatView.js';
-import { CollaborationChatView } from './CollaborationChatView.js';
 import { clearFilePaneSession, isFilePaneSessionDirty, type FileRevealTarget } from './FilePane.js';
 import { collectOpenFilePaths, createUntitledProjectFile } from './untitled-project-file.js';
 import { WorkspaceFileView } from './WorkspaceFileView.js';
@@ -70,17 +74,16 @@ import {
   ComposerActionSlot,
   ContextRing,
   estimateContextWindow,
-  IdentityPickerMenu,
+  ComposerIdentity,
   ModelPickerMenu,
   ModelTrigger,
   PermissionMenu,
   PERMISSION_MODE_COLLAPSED_TOOLBAR_LEVEL,
-  PERMISSION_OPTIONS,
+  PermissionTrigger,
   REASONING_LABELS,
   SKILL_COLLAPSED_TOOLBAR_LEVEL,
   useComposerToolbarCollapse,
   type KernelInstallState,
-  type IdentityOption,
   type PermissionMode,
   type ReasoningEffort,
 } from './compose-toolbar.js';
@@ -93,9 +96,7 @@ import {
   buildMessageWithAttachments,
   detectMentionQuery,
   fileNameFromPath,
-  isImageFile,
   messageImagesFromAttachments,
-  readFileAsDataUrl,
   removeAttachment,
   type ComposeAttachment,
   type MessageImage,
@@ -117,13 +118,14 @@ import {
   resolveAppendSkillVersionIds,
   resolveConversationSkillOwner,
 } from './compose-skill-selection.js';
-import { compressImageDataUrl } from './image-compress.js';
+import { useComposerImageUploads } from './use-composer-image-uploads.js';
 import { BrandLogoMark } from './BrandLogoMark.js';
-import { AgentAvatarView } from './AgentAvatarView.js';
 import { resolveKernelBrandLogo, resolveKernelDisplayName } from './brand-icons.js';
 import { TurnSkillControl } from './TurnSkillControl.js';
 import { loadSkillCatalog } from './skill-catalog-loader.js';
 import { loadConversationCatalog } from './conversation-catalog-loader.js';
+import { agentChatHistory } from './agent-contacts.js';
+import { isAgentConversation, type AgentWorkspaceNavigation } from './conversation-surface.js';
 import { ComposerEditor } from './ComposerEditor.js';
 import {
   PromptEnhancementAction,
@@ -199,7 +201,6 @@ import {
   readAgentPreferences,
   readConversationGroups,
   readDefaultPermission,
-  readLastConversationTrack,
   readNewConversationDraft,
   readNewConversationKernel,
   readNewConversationModel,
@@ -290,6 +291,7 @@ import {
   setWorkbenchOpen,
   setWorkbenchSize,
   terminalWorkbenchTab,
+  gitWorkbenchTab,
   toggleWorkspaceFilesWorkbench,
   updateWorkbenchBrowserUrl,
   workspaceFilesWorkbenchTab,
@@ -303,6 +305,19 @@ const WorkspaceWorkbench = lazyPanel(
   async () => ({ default: (await import('./WorkspaceWorkbench.js')).WorkspaceWorkbench }),
   '工作台',
   'WorkspaceWorkbench',
+);
+// 与工作台同样按需加载：Git 面板只在「Git」页签激活时才拉取，
+// 不进入初始 bundle（初始 JS 有硬预算）。
+const GitPanel = lazyPanel(
+  async () => ({ default: (await import('./GitPanel.js')).GitPanel }),
+  'Git 工具',
+  'GitPanel',
+);
+// 协作会话（群聊/单聊）只在打开协作会话时加载，不占初始 bundle。
+const CollaborationChatView = lazyPanel<ComponentProps<typeof import('./CollaborationChatView.js').CollaborationChatView>>(
+  async () => ({ default: (await import('./CollaborationChatView.js')).CollaborationChatView }),
+  '协作会话',
+  'CollaborationChatView',
 );
 const AgentLibrary = lazyPanel(
   async () => ({ default: (await import('./AgentLibrary.js')).AgentLibrary }),
@@ -333,8 +348,13 @@ const TaskPanel = lazyPanel(
 );
 const ActivityCenterPage = lazyPanel(
   async () => ({ default: (await import('./ActivityCenterPage.js')).ActivityCenterPage }),
-  '活动中心',
+  '收件箱',
   'ActivityCenterPage',
+);
+const DesignSystemPage = lazyPanel(
+  async () => ({ default: (await import('./DesignSystemPage.js')).DesignSystemPage }),
+  '组件库',
+  'DesignSystemPage',
 );
 const SettingsPage = lazyPanel(
   async () => ({ default: (await import('./SettingsPage.js')).SettingsPage }),
@@ -349,6 +369,7 @@ const SettingsPage = lazyPanel(
  * memoised; see `sidebarCallbacks` below.
  */
 const SidebarSurface = memo(Sidebar);
+const AgentWorkspace = lazyPanel(() => import('./AgentWorkspace.js'), '智能体工作区', 'AgentWorkspace');
 
 interface ShellData {
   conversations: Conversation[];
@@ -593,7 +614,7 @@ export function ShellApp() {
   return (
     <DialogProvider>
       <ToastProvider>
-        <ShellAppInner />
+        <ContextMenuProvider><ShellAppInner /></ContextMenuProvider>
       </ToastProvider>
     </DialogProvider>
   );
@@ -601,14 +622,23 @@ export function ShellApp() {
 
 function ShellAppInner() {
   const dialog = useDialog();
+  const [agentWorkspaceOpen, setAgentWorkspaceOpen] = useState(() => readSidebarMode() === 'agents');
+  const enterAgentWorkspace = useCallback(() => { setAgentWorkspaceOpen(true); writeSidebarMode('agents'); }, []);
+  const exitAgentWorkspace = useCallback(() => { setAgentWorkspaceOpen(false); writeSidebarMode('conversations'); }, []);
+  const [agentNavigation, setAgentNavigation] = useState<AgentWorkspaceNavigation>();
+  const agentNavigationNonce = useRef(0);
+  const restoredConversationSurface = useRef(false);
+  const navigateAgentWorkspace = useCallback((target: Omit<AgentWorkspaceNavigation, 'nonce'>) => {
+    setAgentNavigation({ ...target, nonce: ++agentNavigationNonce.current });
+    enterAgentWorkspace();
+  }, [enterAgentWorkspace]);
   const [nav, setNav] = useState<ShellNavState>(() => ({
     ...INITIAL_NAV,
-    lastTrack: readLastConversationTrack(),
+    lastTrack: 'model',
   }));
-  const lastTrackRef = useRef(nav.lastTrack);
-  lastTrackRef.current = nav.lastTrack;
   const ensureDefaultDraftRef = useRef<(workspaceId: string) => void>(() => {});
   const [data, setData] = useState<ShellData>(() => readShellBootSnapshot() ?? EMPTY);
+  const [projectlessExecutionScopes, setProjectlessExecutionScopes] = useState<readonly string[]>([]);
   const bootSnapshotWriterRef = useRef<ReturnType<typeof createShellBootSnapshotWriter> | null>(
     null,
   );
@@ -648,6 +678,35 @@ function ShellAppInner() {
     readActiveWorkspaceId(),
   );
   const activeWorkspaceIdRef = useRef(activeWorkspaceId);
+  const [projectlessFolders, setProjectlessFolders] = useState<Record<string, string>>({});
+  const projectlessIdsKey = data.conversations.filter(conversation => conversation.workspaceId === PROJECTLESS_SCOPE).map(conversation => String(conversation.id)).sort().join('|');
+  useEffect(() => {
+    const api = bridge();
+    const ids = projectlessIdsKey ? projectlessIdsKey.split('|') : [];
+    if (!api || ids.length === 0) return;
+    let cancelled = false;
+    void api.getSettings({ keys: ids.map(id => 'data.projectless.conversation.' + id) }).then(result => {
+      if (cancelled) return;
+      const folders: Record<string, string> = {};
+      for (const id of ids) {
+        const directory = result.settings['data.projectless.conversation.' + id];
+        if (typeof directory === 'string') folders[id] = resolveProjectRelativePath(directory, 'files');
+      }
+      setProjectlessFolders(folders);
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [projectlessIdsKey]);
+
+  const currentDataFolder = useCallback((path?: string) => {
+    if (activeWorkspaceId !== PROJECTLESS_SCOPE) return data.workspaces.find(workspace => workspace.workspaceId === activeWorkspaceId)?.folderPath?.trim();
+    if (path) {
+      const normalized = path.replace(/\\/g, '/').toLowerCase();
+      const owner = Object.values(projectlessFolders).find(folder => normalized.startsWith(folder.replace(/\\/g, '/').toLowerCase().replace(/\/$/, '') + '/'));
+      if (owner) return owner;
+    }
+    return nav.selectedConversationId ? projectlessFolders[nav.selectedConversationId] : undefined;
+  }, [activeWorkspaceId, data.workspaces, nav.selectedConversationId, projectlessFolders]);
+
   const [bootState, setBootState] = useState<'loading' | 'ready' | 'error'>(() =>
     hasShellBootSnapshot(readShellBootSnapshot()) ? 'ready' : 'loading',
   );
@@ -758,6 +817,10 @@ function ShellAppInner() {
   const [draftSession, setDraftSessionState] = useState<DraftConversationSession | null>(null);
   const draftSessionRef = useRef<DraftConversationSession | null>(null);
   const draftNonceRef = useRef(0);
+  const draftAttachmentCountRef = useRef(0);
+  const handleDraftAttachmentCount = useCallback((count: number) => {
+    draftAttachmentCountRef.current = count;
+  }, []);
   const setDraftSession = useCallback(
     (
       value:
@@ -850,11 +913,14 @@ function ShellAppInner() {
   );
 
   const focusConversation = useCallback(
-    (conversationId: string, workspaceId?: string) => {
-      const ws =
-        workspaceId ??
-        data.conversations.find((c) => c.id === conversationId)?.workspaceId ??
-        activeWorkspaceIdRef.current;
+    (conversationId: string, workspaceId?: string, resolved?: Conversation) => {
+      const conversation = resolved ?? data.conversations.find((c) => c.id === conversationId);
+      const ws = workspaceId ?? conversation?.workspaceId ?? activeWorkspaceIdRef.current;
+      if (conversation && isAgentConversation(conversation)) {
+        navigateAgentWorkspace({ workspaceId: ws ?? PROJECTLESS_SCOPE, conversationId });
+        return;
+      }
+      exitAgentWorkspace();
       if (ws) {
         const found = findWorkbenchConversation(
           workbenchLayoutsRef.current[ws] ?? createWorkspaceWorkbenchLayout(),
@@ -872,7 +938,7 @@ function ShellAppInner() {
         setNav((n) => openConversation(n, conversationId));
       }
     },
-    [commitPaneLayout, commitWorkbenchLayout, data.conversations],
+    [commitPaneLayout, commitWorkbenchLayout, data.conversations, exitAgentWorkspace, navigateAgentWorkspace],
   );
 
   const handleSplitConversation = useCallback(
@@ -906,6 +972,8 @@ function ShellAppInner() {
   const handleOpenFileInPane = useCallback(
     (paneId: string, path: string, location?: ProjectTextLocation) => {
       if (!activeWorkspaceId) return;
+      const folder = currentDataFolder();
+      if (activeWorkspaceId === PROJECTLESS_SCOPE && folder && !/^(?:[A-Za-z]:[\\/]|[\\/])/.test(path)) path = resolveProjectRelativePath(folder, path);
       if (location) {
         fileRevealNonceRef.current += 1;
         const key = fileTabDirtyKey(activeWorkspaceId, path);
@@ -918,12 +986,14 @@ function ShellAppInner() {
       }
       commitPaneLayout(activeWorkspaceId, (current) => openFileInPane(current, path, paneId));
     },
-    [activeWorkspaceId, commitPaneLayout],
+    [currentDataFolder, activeWorkspaceId, commitPaneLayout],
   );
 
   const handleOpenFileInWorkbench = useCallback(
     (placement: WorkbenchPlacement, path: string, location?: ProjectTextLocation) => {
       if (!activeWorkspaceId) return;
+      const folder = currentDataFolder();
+      if (activeWorkspaceId === PROJECTLESS_SCOPE && folder && !/^(?:[A-Za-z]:[\\/]|[\\/])/.test(path)) path = resolveProjectRelativePath(folder, path);
       if (location) {
         fileRevealNonceRef.current += 1;
         const key = fileTabDirtyKey(activeWorkspaceId, path);
@@ -939,7 +1009,7 @@ function ShellAppInner() {
         return placement === 'right' ? setWorkbenchFileBrowserOpen(opened, 'right', true) : opened;
       });
     },
-    [activeWorkspaceId, commitWorkbenchLayout],
+    [currentDataFolder, activeWorkspaceId, commitWorkbenchLayout],
   );
 
   const handleOpenFileInSplit = useCallback(
@@ -948,6 +1018,16 @@ function ShellAppInner() {
     },
     [handleOpenFileInWorkbench],
   );
+
+  const [gitRequest, setGitRequest] = useState<{ root: string; section: GitPanelSection; revision: number }>();
+  const handleOpenGit = useCallback((root: string, section: GitPanelSection) => {
+    if (!activeWorkspaceId) return;
+    setGitRequest(current => ({ root, section, revision: (current?.revision ?? 0) + 1 }));
+    commitWorkbenchLayout(activeWorkspaceId, current => {
+      const next = openWorkbenchTab(current, 'right', gitWorkbenchTab(root));
+      return { ...next, right: { ...next.right, size: current.right.open ? Math.max(current.right.size, 400) : 520 } };
+    });
+  }, [activeWorkspaceId, commitWorkbenchLayout]);
 
   const handleOpenReviewInWorkbench = useCallback(
     (placement: WorkbenchPlacement, view: ReviewView) => {
@@ -1017,9 +1097,7 @@ function ShellAppInner() {
         { type: 'pane'; paneId?: string } | { type: 'workbench'; placement: WorkbenchPlacement },
     ) => {
       if (!activeWorkspaceId) return;
-      const projectFolder = data.workspaces
-        .find((workspace) => workspace.workspaceId === activeWorkspaceId)
-        ?.folderPath?.trim();
+      const projectFolder = currentDataFolder();
       if (!projectFolder) {
         setNewConversationError(
           kind === 'canvas' ? '新建绘图前请先绑定项目文件夹' : '新建文档前请先绑定项目文件夹',
@@ -1069,7 +1147,7 @@ function ShellAppInner() {
         handleOpenFileInPane(openIn.paneId ?? '', created.path);
       });
     },
-    [
+    [currentDataFolder,
       activeWorkspaceId,
       commitWorkbenchLayout,
       data.workspaces,
@@ -1108,9 +1186,7 @@ function ShellAppInner() {
       if (!activeWorkspaceId || !html.trim()) return;
 
       const api = bridge();
-      const projectFolder = data.workspaces
-        .find((workspace) => workspace.workspaceId === activeWorkspaceId)
-        ?.folderPath?.trim();
+      const projectFolder = currentDataFolder();
 
       // A conversation can be created before a local project is selected. Keep
       // that existing path usable while project-backed previews use the same
@@ -1163,7 +1239,7 @@ function ShellAppInner() {
         openBrowserInPane(current, browserId, localPage.url!, current.focusedPaneId),
       );
     },
-    [activeWorkspaceId, commitPaneLayout, data.workspaces],
+    [currentDataFolder, activeWorkspaceId, commitPaneLayout, data.workspaces],
   );
 
   const handleActivateBrowserTab = useCallback(
@@ -1201,8 +1277,8 @@ function ShellAppInner() {
   // afterwards each fresh browser_open result opens a new tab when the URL is new.
   const seenBrowserOpenIdsRef = useRef<Set<string>>(new Set());
   const browserNavPrimedRef = useRef(false);
-  const browserCommandContextRef = useRef({ data, handleAiBrowserOpen, activeWorkspaceId });
-  browserCommandContextRef.current = { data, handleAiBrowserOpen, activeWorkspaceId };
+  const browserCommandContextRef = useRef({ data, handleAiBrowserOpen, activeWorkspaceId, projectlessExecutionScopes, currentDataFolder });
+  browserCommandContextRef.current = { data, handleAiBrowserOpen, activeWorkspaceId, projectlessExecutionScopes, currentDataFolder };
 
   useEffect(() => {
     const priming = !browserNavPrimedRef.current;
@@ -1416,11 +1492,17 @@ function ShellAppInner() {
         openUntitledProjectFile(resource, { type: 'workbench', placement });
         return;
       }
+      if (resource === 'git') {
+        commitWorkbenchLayout(activeWorkspaceId, (current) =>
+          openWorkbenchTab(current, placement, gitWorkbenchTab(data.workspaces.find(workspace => workspace.workspaceId === activeWorkspaceId)?.folderPath || undefined)),
+        );
+        return;
+      }
       commitWorkbenchLayout(activeWorkspaceId, (current) =>
         openWorkbenchTab(current, placement, browserWorkbenchTab(createBrowserId(), 'about:blank')),
       );
     },
-    [activeWorkspaceId, commitWorkbenchLayout, countOpenTerminals, openUntitledProjectFile],
+    [activeWorkspaceId, data.workspaces, commitWorkbenchLayout, countOpenTerminals, openUntitledProjectFile],
   );
 
   const handleActivateWorkbenchTab = useCallback(
@@ -1458,9 +1540,7 @@ function ShellAppInner() {
   const handleCloseWorkbenchTab = useCallback(
     async (placement: WorkbenchPlacement, tab: WorkbenchTab) => {
       if (!activeWorkspaceId) return;
-      const projectFolder = data.workspaces
-        .find((workspace) => workspace.workspaceId === activeWorkspaceId)
-        ?.folderPath?.trim();
+      const projectFolder = currentDataFolder(tab.type === 'file' ? tab.path : undefined);
       if (tab.type === 'file' && projectFolder && isFilePaneSessionDirty(projectFolder, tab.path)) {
         const confirmed = await dialog.confirm({
           title: '关闭未保存的文件',
@@ -1502,7 +1582,7 @@ function ShellAppInner() {
         closeWorkbenchTab(current, placement, tab.id),
       );
     },
-    [activeWorkspaceId, commitWorkbenchLayout, data.workspaces, dialog, setDraftSession],
+    [currentDataFolder, activeWorkspaceId, commitWorkbenchLayout, data.workspaces, dialog, setDraftSession],
   );
 
   const handleFileDirtyChange = useCallback((workspaceId: string, path: string, dirty: boolean) => {
@@ -1519,9 +1599,7 @@ function ShellAppInner() {
   const handleCloseFileTab = useCallback(
     async (paneId: string, path: string) => {
       if (!activeWorkspaceId) return;
-      const projectFolder = data.workspaces
-        .find((workspace) => workspace.workspaceId === activeWorkspaceId)
-        ?.folderPath?.trim();
+      const projectFolder = currentDataFolder(path);
       if (projectFolder && isFilePaneSessionDirty(projectFolder, path)) {
         const confirmed = await dialog.confirm({
           title: '关闭未保存的文件',
@@ -1542,24 +1620,20 @@ function ShellAppInner() {
       });
       commitPaneLayout(activeWorkspaceId, (current) => closeFilePaneTab(current, paneId, path));
     },
-    [activeWorkspaceId, commitPaneLayout, data.workspaces, dialog, handleFileDirtyChange],
+    [currentDataFolder, activeWorkspaceId, commitPaneLayout, data.workspaces, dialog, handleFileDirtyChange],
   );
 
   const handleClosePane = useCallback(
     async (paneId: string) => {
       if (!activeWorkspaceId) return;
-      const projectFolder = data.workspaces
-        .find((workspace) => workspace.workspaceId === activeWorkspaceId)
-        ?.folderPath?.trim();
+      const projectFolder = currentDataFolder();
       const filePaths = (paneLayouts[activeWorkspaceId]?.panes[paneId]?.tabs ?? [])
         .filter((tab) => tab.type === 'file')
         .map((tab) => tab.path);
       const terminalIds = (paneLayouts[activeWorkspaceId]?.panes[paneId]?.tabs ?? [])
         .filter((tab) => tab.type === 'terminal')
         .map((tab) => tab.terminalId);
-      const dirtyPaths = projectFolder
-        ? filePaths.filter((path) => isFilePaneSessionDirty(projectFolder, path))
-        : [];
+      const dirtyPaths = filePaths.filter(path => { const folder = currentDataFolder(path); return folder && isFilePaneSessionDirty(folder, path); });
       if (dirtyPaths.length > 0) {
         const confirmed = await dialog.confirm({
           title: '关闭含未保存文件的窗格',
@@ -1591,7 +1665,7 @@ function ShellAppInner() {
       });
       commitPaneLayout(activeWorkspaceId, (current) => closePane(current, paneId));
     },
-    [activeWorkspaceId, commitPaneLayout, data.workspaces, dialog, paneLayouts],
+    [currentDataFolder, activeWorkspaceId, commitPaneLayout, data.workspaces, dialog, paneLayouts],
   );
 
   const handleActivatePaneTab = useCallback(
@@ -1794,41 +1868,69 @@ function ShellAppInner() {
           });
         }
       }
+      setProjectlessExecutionScopes(current => {
+        const ids = workspaces.workspaces.filter(workspace => workspace.name === '__inbox__').map(workspace => String(workspace.workspaceId));
+        return current.join('|') === ids.join('|') ? current : ids;
+      });
+      const scopedConversations = projectConversationScopes(conversations.conversations, workspaces.workspaces);
+      const scopedWorkspaces = projectWorkspaceScopes(workspaces.workspaces);
       const nextData = {
-        conversations: conversations.conversations,
+        conversations: scopedConversations,
         agents: agents.agents,
         teams: teams.teams,
         modelNames,
         models,
-        workspaces: workspaces.workspaces,
+        workspaces: scopedWorkspaces,
         skills: skills.skills,
       };
       setData(nextData);
       bootSnapshotWriterRef.current?.schedule(nextData);
 
+      // Recover an old agent tab in its own surface, never as a workbench tab.
+      if (!restoredConversationSurface.current) {
+        restoredConversationSurface.current = true;
+        const ws = activeWorkspaceIdRef.current;
+        const layout = ws ? paneLayoutsRef.current[ws] : undefined;
+        const selectedId = layout ? focusedConversationId(layout) : undefined;
+        const selected = scopedConversations.find(c => c.id === selectedId);
+        if (selected && isAgentConversation(selected)) {
+          navigateAgentWorkspace({ workspaceId: selected.workspaceId ?? PROJECTLESS_SCOPE, conversationId: selected.id });
+        }
+      }
       // Drop stale tabs per workspace and collapse empty branches without ever
       // using another workspace's conversation as a valid reference.
       const prunedLayouts: WorkspacePaneLayouts = {};
       for (const [workspaceId, layout] of Object.entries(paneLayoutsRef.current)) {
         const validIds = new Set(
-          conversations.conversations
-            .filter((conversation) => conversation.workspaceId === workspaceId)
+          scopedConversations
+            .filter((conversation) => conversation.workspaceId === workspaceId && !isAgentConversation(conversation))
             .map((conversation) => String(conversation.id)),
         );
         const draft = draftSessionRef.current;
-        if (draft?.workspaceId === workspaceId) validIds.add(draft.id);
+        if (draft?.workspaceId === workspaceId && draft.track === 'model') validIds.add(draft.id);
         prunedLayouts[workspaceId] = pruneWorkspacePaneLayout(layout, validIds);
       }
       paneLayoutsRef.current = prunedLayouts;
       setPaneLayouts(prunedLayouts);
       persistPaneLayouts(prunedLayouts);
       const validWorkspaceIds = new Set<string>(
-        workspaces.workspaces.map((workspace) => String(workspace.workspaceId)),
+        scopedWorkspaces.map((workspace) => String(workspace.workspaceId)),
       );
       const prunedWorkbench: WorkspaceWorkbenchLayouts = Object.fromEntries(
         Object.entries(workbenchLayoutsRef.current).filter(([workspaceId]) =>
           validWorkspaceIds.has(workspaceId),
-        ),
+        ).map(([workspaceId, layout]) => {
+          const validIds = new Set(scopedConversations.filter(c => c.workspaceId === workspaceId && !isAgentConversation(c)).map(c => String(c.id)));
+          const draft = draftSessionRef.current;
+          if (draft?.workspaceId === workspaceId && draft.track === 'model') validIds.add(draft.id);
+          let next = layout;
+          for (const scope of [layout.right, layout.bottom]) {
+            for (const tab of scope.tabs) {
+              if (tab.type === 'conversation' && !tab.conversationId.startsWith('draft:') && !validIds.has(tab.conversationId)) next = closeWorkbenchConversation(next, tab.conversationId);
+            }
+          }
+          return [workspaceId, next];
+        }),
       );
       workbenchLayoutsRef.current = prunedWorkbench;
       setWorkbenchLayouts(prunedWorkbench);
@@ -1836,7 +1938,7 @@ function ShellAppInner() {
 
       // No「全部」: always land on a concrete workspace when possible.
       setActiveWorkspaceId((current) => {
-        const list = workspaces.workspaces;
+        const list = scopedWorkspaces;
         if (list.length === 0) {
           activeWorkspaceIdRef.current = undefined;
           writeActiveWorkspaceId(undefined);
@@ -1864,7 +1966,7 @@ function ShellAppInner() {
       });
       return { ok: false, error };
     }
-  }, []);
+  }, [navigateAgentWorkspace]);
 
   const refreshCoordinatorRef = useRef<RefreshCoordinator<ShellRefreshResult> | null>(null);
   if (refreshCoordinatorRef.current === null) {
@@ -1932,7 +2034,8 @@ function ShellAppInner() {
           (event) =>
             event.type === 'globalAgent.created' ||
             event.type === 'globalAgent.updated' ||
-            event.type === 'globalAgent.deleted',
+            event.type === 'globalAgent.deleted' ||
+            event.type === 'globalAgent.activationChanged',
         )
       ) {
         void refresh();
@@ -1941,13 +2044,17 @@ function ShellAppInner() {
     const dispatchBrowserCommand = createBrowserCommandDispatcher({
       open: (url, workspaceId) => {
         const context = browserCommandContextRef.current;
-        if (workspaceId !== context.activeWorkspaceId) {
+        if (workspaceId !== context.activeWorkspaceId && !(context.activeWorkspaceId === PROJECTLESS_SCOPE && context.projectlessExecutionScopes.includes(workspaceId))) {
           throw new Error('请切回此任务的工作区后重新打开浏览器页面。');
         }
         context.handleAiBrowserOpen(url);
       },
-      projectFolder: (workspaceId) => browserCommandContextRef.current.data.workspaces
-        .find((workspace) => String(workspace.workspaceId) === workspaceId)?.folderPath?.trim(),
+      projectFolder: (workspaceId) => {
+        const context = browserCommandContextRef.current;
+        return context.projectlessExecutionScopes.includes(workspaceId)
+          ? context.currentDataFolder()
+          : context.data.workspaces.find(workspace => String(workspace.workspaceId) === workspaceId)?.folderPath?.trim();
+      },
       submit: (result) => api.submitBrowserResult(result),
       saveScreenshot: api.saveBrowserScreenshot ? (input) => api.saveBrowserScreenshot(input) : undefined,
       sendTrustedClick: api.sendBrowserTrustedClick ? (input) => api.sendBrowserTrustedClick(input) : undefined,
@@ -2064,10 +2171,9 @@ function ShellAppInner() {
       pendingOpenRef.current = null;
       // Deep links can target a conversation in another workspace. Switch there
       // first so the workspace-scoped main stage can resolve the selection.
-      if (target.workspaceId && target.workspaceId !== activeWorkspaceIdRef.current) {
-        selectWorkspace(target.workspaceId);
-      }
-      focusConversation(conversationId, target.workspaceId);
+      const workspaceId = target.workspaceId ?? PROJECTLESS_SCOPE;
+      if (workspaceId !== activeWorkspaceIdRef.current) selectWorkspace(workspaceId);
+      focusConversation(conversationId, workspaceId, target);
     },
     [data.conversations, focusConversation, selectWorkspace, refresh],
   );
@@ -2202,7 +2308,7 @@ function ShellAppInner() {
 
   ensureDefaultDraftRef.current = (workspaceId: string) => {
     if (layoutHasOpenTabs(paneLayoutsRef.current[workspaceId])) return;
-    beginDraftConversation(lastTrackRef.current, undefined, undefined, workspaceId);
+    beginDraftConversation('model', undefined, undefined, workspaceId);
   };
 
   const createConversationWithTarget = useCallback(
@@ -2219,7 +2325,7 @@ function ShellAppInner() {
       const created = await api.createConversation({
         track,
         targetRef,
-        workspaceId: workspaceId as WorkspaceId,
+        workspaceId: runtimeWorkspaceId(workspaceId),
         executionMode: firstMessage?.permissionMode ?? readDefaultPermission(),
       });
       const createdConversationId = String(created.conversation.id);
@@ -2298,9 +2404,15 @@ function ShellAppInner() {
         // only fail — it reads the absolute path, decides the file is out of
         // bounds, and burns a turn on `ocr_image` (which then rejects it too).
         // The ChatView send path passes the same context; this one must match.
-        const workspaceFolderPath = data.workspaces
+        let workspaceFolderPath = data.workspaces
           .find((workspace) => workspace.workspaceId === workspaceId)
           ?.folderPath?.trim();
+        if (!workspaceFolderPath && workspaceId === PROJECTLESS_SCOPE && firstMessage.images.length > 0) {
+          const key = 'data.projectless.conversation.' + created.conversation.id;
+          const result = await api.getSettings({ keys: [key] });
+          const directory = result.settings[key];
+          if (typeof directory === 'string') workspaceFolderPath = resolveProjectRelativePath(directory, 'files');
+        }
         await api.appendMessage({
           threadId: prep.threadId,
           expectedTaskVersion: prep.taskVersion,
@@ -2344,7 +2456,7 @@ function ShellAppInner() {
       }
 
       await refresh();
-      focusConversation(createdConversationId, workspaceId);
+      focusConversation(createdConversationId, workspaceId, created.conversation);
       if (activeWorkspaceIdRef.current === workspaceId) {
         if (hasFirstTurn) {
           setNewConversationDraft('');
@@ -2368,6 +2480,11 @@ function ShellAppInner() {
 
   const handlePickTarget = useCallback(
     async (track: ConversationTrack, targetRef: string) => {
+      if (track !== 'model') {
+        setPickerTrack(null);
+        navigateAgentWorkspace({ workspaceId: activeWorkspaceId ?? PROJECTLESS_SCOPE, ...(track === 'team' ? { teamId: targetRef } : { agentId: targetRef }), fresh: true });
+        return;
+      }
       const pending = pendingFirstMessageRef.current;
       // Picking a target prepares the local draft; Runtime persistence still
       // waits until the user submits the first turn.
@@ -2393,7 +2510,16 @@ function ShellAppInner() {
         setNewConversationSending(false);
       }
     },
-    [beginDraftConversation, createConversationWithTarget, rememberTrack, setDraftSession],
+    [activeWorkspaceId, beginDraftConversation, createConversationWithTarget, navigateAgentWorkspace, rememberTrack, setDraftSession],
+  );
+
+  const handleAgentChat = useCallback(
+    async (agentId: string, workspaceId: string, fresh = false) => {
+      if (activeWorkspaceIdRef.current !== workspaceId) return;
+      const latest = agentChatHistory(data.conversations, workspaceId, agentId)[0];
+      navigateAgentWorkspace({ workspaceId, ...(latest && !fresh ? { conversationId: latest.id } : { agentId, fresh: true }) });
+    },
+    [data.conversations, navigateAgentWorkspace],
   );
 
   const handleNewConversation = useCallback(
@@ -2407,7 +2533,12 @@ function ShellAppInner() {
         sourceConversation === undefined
           ? data.conversations.find((c) => c.id === nav.selectedConversationId)
           : (sourceConversation ?? undefined);
-      const t = track ?? current?.track ?? nav.lastTrack;
+      const t = track ?? current?.track ?? 'model';
+      if (t !== 'model') {
+        navigateAgentWorkspace({ workspaceId: activeWorkspaceId ?? PROJECTLESS_SCOPE, ...(t === 'team' ? { teamId: current?.targetRef ?? '' } : {}), fresh: true });
+        return;
+      }
+      exitAgentWorkspace();
       rememberTrack(t);
       setPickerTrack(null);
       const carriedTarget =
@@ -2431,17 +2562,21 @@ function ShellAppInner() {
         }
         return;
       }
-      // Explicit track from a header still needs a target for agent/team.
-      if (t !== 'model' && !draft.targetRef) setPickerTrack(t);
+      // An explicit sidebar choice may reuse the unsent draft, but its target
+      // must belong to the newly selected track.
+      if (track) setDraftSession({ ...draft, track, targetRef: carriedTarget });
     },
     [
       beginDraftConversation,
       data.conversations,
       data.models,
-      nav.lastTrack,
+      activeWorkspaceId,
+      exitAgentWorkspace,
+      navigateAgentWorkspace,
       nav.selectedConversationId,
       newConversationModel,
       rememberTrack,
+      setDraftSession,
     ],
   );
 
@@ -2502,6 +2637,18 @@ function ShellAppInner() {
     [refresh, selectWorkspace],
   );
 
+  const composerGitNavigation = useMemo<ComposerGitNavigation>(() => ({
+    workspaces: data.workspaces,
+    workspaceId: activeWorkspaceId,
+    onSelectWorkspace: selectWorkspace,
+    onCreateWorkspace: handleOpenFolder,
+    onOpenWorktree: async (folderPath, name) => {
+      const existing = data.workspaces.find(workspace => workspace.folderPath && repositoryKey(workspace.folderPath) === repositoryKey(folderPath));
+      if (existing) selectWorkspace(existing.workspaceId);
+      else await handleCreateWorkspace({ name, folderPath });
+    },
+  }), [activeWorkspaceId, data.workspaces, handleCreateWorkspace, handleOpenFolder, selectWorkspace]);
+
   const handleUpdateWorkspace = useCallback(
     async (input: {
       workspaceId: string;
@@ -2510,7 +2657,7 @@ function ShellAppInner() {
       icon?: string | null;
     }): Promise<boolean> => {
       const api = bridge();
-      if (!api?.updateWorkspace) return false;
+      if (input.workspaceId === PROJECTLESS_SCOPE || !api?.updateWorkspace) return false;
       try {
         await api.updateWorkspace({
           workspaceId: input.workspaceId as WorkspaceId,
@@ -2530,6 +2677,7 @@ function ShellAppInner() {
   /** Hide/unhide a workspace in the folder tab row (data untouched). */
   const handleSetWorkspaceHidden = useCallback(
     async (workspaceId: string, hidden: boolean): Promise<boolean> => {
+      if (workspaceId === PROJECTLESS_SCOPE) return false;
       const api = bridge();
       if (!api?.updateWorkspace) return false;
       try {
@@ -2554,6 +2702,7 @@ function ShellAppInner() {
       const indexById = new Map(orderedIds.map((id, index) => [id, index]));
       const writes: Promise<unknown>[] = [];
       for (const workspace of data.workspaces) {
+        if (workspace.workspaceId === PROJECTLESS_SCOPE) continue;
         const desired = indexById.get(workspace.workspaceId);
         if (desired === undefined || workspace.sortOrder === desired) continue;
         writes.push(
@@ -2574,7 +2723,7 @@ function ShellAppInner() {
   const handleDeleteWorkspace = useCallback(
     async (workspaceId: string): Promise<boolean> => {
       const api = bridge();
-      if (!api?.deleteWorkspace) return false;
+      if (workspaceId === PROJECTLESS_SCOPE || !api?.deleteWorkspace) return false;
       const target = data.workspaces.find((w) => w.workspaceId === workspaceId);
       const label = target?.name ?? workspaceId;
       if (
@@ -2746,7 +2895,7 @@ function ShellAppInner() {
       if (!api) return;
       const source = data.conversations.find((c) => c.id === id);
       if (!source) return;
-      const workspaceId = (source.workspaceId ?? activeWorkspaceId) as WorkspaceId | undefined;
+      const workspaceId = source.workspaceId ?? activeWorkspaceId;
       // Copy conversation config (track, target, workspace, execution permission,
       // bound model) and the title in a single create. Message history is NOT
       // copied: there is no Runtime command to list a conversation's messages,
@@ -2754,7 +2903,7 @@ function ShellAppInner() {
       const created = await api.createConversation({
         track: source.track,
         targetRef: source.targetRef,
-        workspaceId,
+        workspaceId: runtimeWorkspaceId(workspaceId),
         title: source.title ? `${source.title}（副本）` : undefined,
         executionMode: source.executionMode,
       });
@@ -2767,7 +2916,7 @@ function ShellAppInner() {
         );
       }
       await refresh();
-      focusConversation(created.conversation.id, workspaceId);
+      focusConversation(created.conversation.id, workspaceId, created.conversation);
     },
     [activeWorkspaceId, data.conversations, focusConversation, groups, persistGroups, refresh],
   );
@@ -2892,7 +3041,7 @@ function ShellAppInner() {
   );
 
   const visibleConversations = useMemo(() => {
-    const conversations = filterByWorkspace(data.conversations, activeWorkspaceId);
+    const conversations = filterByWorkspace(data.conversations, activeWorkspaceId).filter(c => !isAgentConversation(c));
     if (!draftSession || draftSession.workspaceId !== activeWorkspaceId) return conversations;
     const draftConversation: Conversation = {
       id: draftSession.id as Conversation['id'],
@@ -2990,7 +3139,8 @@ function ShellAppInner() {
 
       if (shortcuts.newChat.enabled && matchesShortcut(event, shortcuts.newChat.accelerator)) {
         event.preventDefault();
-        handleNewConversation();
+        if (agentWorkspaceOpen) window.dispatchEvent(new CustomEvent('shell-new-agent-chat'));
+        else handleNewConversation();
         return;
       }
       if (
@@ -3107,6 +3257,7 @@ function ShellAppInner() {
       window.removeEventListener('keyup', handleShortcutRelease);
     };
   }, [
+    agentWorkspaceOpen,
     activePaneLayout,
     data.workspaces,
     handleCloseBrowserTab,
@@ -3119,12 +3270,17 @@ function ShellAppInner() {
     selectWorkspace,
     settingsOpen,
   ]);
+  const projectlessActiveId = nav.selectedConversationId ?? (activePaneLayout ? paneConversationIds(activePaneLayout)[0] : undefined);
+  const conversationFilePath = (conversation: Conversation, path: string) => {
+    const root = projectlessFolders[String(conversation.id)];
+    return root && !/^(?:[A-Za-z]:[\\/]|[\\/])/.test(path) ? resolveProjectRelativePath(root, path) : path;
+  };
   const activeProjectFolder = useMemo(
     () =>
-      data.workspaces
-        .find((workspace) => workspace.workspaceId === activeWorkspaceId)
-        ?.folderPath?.trim(),
-    [activeWorkspaceId, data.workspaces],
+      activeWorkspaceId === PROJECTLESS_SCOPE
+        ? (projectlessActiveId ? projectlessFolders[projectlessActiveId] : undefined)
+        : data.workspaces.find((workspace) => workspace.workspaceId === activeWorkspaceId)?.folderPath?.trim(),
+    [activeWorkspaceId, data.workspaces, projectlessActiveId, projectlessFolders],
   );
   const openIdsForWorkspace = activePaneLayout ? paneConversationIds(activePaneLayout) : [];
   const hasOpenPaneTabs = Boolean(
@@ -3209,7 +3365,7 @@ function ShellAppInner() {
   // Only mounted talk-stage Runtime conversations count as viewed. Draft tabs
   // are ignored, while other visible panes can still clear their unread state.
   useEffect(() => {
-    if (nav.stage !== 'talk' || settingsOpen) return;
+    if (agentWorkspaceOpen || nav.stage !== 'talk' || settingsOpen) return;
     const watched = activePaneLayout
       ? Object.values(activePaneLayout.panes)
           .filter((pane) => mountedConversationPaneIds.has(pane.id))
@@ -3231,6 +3387,7 @@ function ShellAppInner() {
     });
   }, [
     activePaneLayout,
+    agentWorkspaceOpen,
     conversationActivity,
     draftSession,
     mountedConversationPaneIds,
@@ -3408,6 +3565,10 @@ function ShellAppInner() {
 
   const handleDraftTrackPick = useCallback(
     (track: ConversationTrack) => {
+      if (track !== 'model') {
+        handleNewConversation(track);
+        return;
+      }
       rememberTrack(track);
       if (track === 'model') {
         const draft = beginDraftConversation(
@@ -3424,38 +3585,18 @@ function ShellAppInner() {
         setPickerTrack(null);
         return;
       }
-      const draft = beginDraftConversation(track);
-      if (draft) setDraftSession({ ...draft, track, targetRef: undefined });
-      setPickerTrack(track);
     },
-    [beginDraftConversation, data.models, newConversationModel, rememberTrack, setDraftSession],
-  );
-
-  const handleDraftIdentityPick = useCallback(
-    (track: ConversationTrack, targetRef: string) => {
-      rememberTrack(track);
-      const resolvedTarget =
-        track === 'model'
-          ? targetRef || newConversationModel || data.models[0]?.modelId || ''
-          : targetRef;
-      const draft = beginDraftConversation(track, resolvedTarget);
-      if (draft) {
-        setDraftSession({
-          ...draft,
-          track,
-          targetRef: resolvedTarget || undefined,
-        });
-      }
-      setPickerTrack(null);
-    },
-    [beginDraftConversation, data.models, newConversationModel, rememberTrack, setDraftSession],
+    [beginDraftConversation, data.models, handleNewConversation, newConversationModel, rememberTrack, setDraftSession],
   );
 
   const emptyTalk = (
     <EmptyTalk
+      onAttachmentCountChange={handleDraftAttachmentCount}
       hasWorkspace={Boolean(activeWorkspaceId)}
-      workspaceId={activeWorkspaceId}
-      workspaceFolder={activeProjectFolder}
+      workspaceId={runtimeWorkspaceId(activeWorkspaceId)}
+      workspaceFolder={activeWorkspaceId === PROJECTLESS_SCOPE ? undefined : activeProjectFolder}
+      onOpenGit={handleOpenGit}
+      gitNavigation={composerGitNavigation}
       models={data.models}
       agents={data.agents}
       teams={data.teams}
@@ -3476,7 +3617,6 @@ function ShellAppInner() {
         void handleOpenFolder();
       }}
       onPickTrack={handleDraftTrackPick}
-      onPickIdentity={handleDraftIdentityPick}
       onOpenPlanSettings={handleOpenPlanSettings}
       onOpenModelSettings={handleOpenModelSettings}
       onOpenMcpSettings={handleOpenMcpSettings}
@@ -3510,11 +3650,12 @@ function ShellAppInner() {
               conversation={conversation}
               agents={data.agents}
               onOpenConversation={(id) => void openConversationById(id)}
+              onAgentsChanged={() => void refresh()}
             />
           ) : (
             <ChatView
               key={conversation.id}
-              conversation={conversation}
+              conversation={runtimeConversation(conversation)}
               modelName={resolveTargetName(conversation)}
               models={data.models}
               agents={data.agents}
@@ -3537,9 +3678,11 @@ function ShellAppInner() {
               onTitleUpdated={() => void refresh()}
               onConversationUpdated={handleConversationUpdated}
               onLatestReviewChange={handleLatestReviewChange}
-              onOpenFile={(path, location) => handleOpenFileInWorkbench(placement, path, location)}
+              onOpenFile={(path, location) => handleOpenFileInWorkbench(placement, conversationFilePath(conversation, path), location)}
               onOpenHtmlInBrowser={handleOpenHtmlInBrowser}
               onOpenWebUrl={(url) => handleOpenBrowserInWorkbench(placement, url)}
+              onOpenGit={handleOpenGit}
+      gitNavigation={composerGitNavigation}
               onOpenReview={(view) => handleOpenReviewInWorkbench(placement, view)}
               onOpenPlanSettings={handleOpenPlanSettings}
               onOpenMcpSettings={handleOpenMcpSettings}
@@ -3567,8 +3710,9 @@ function ShellAppInner() {
       return (
         <WorkspaceFileView
           key={tab.path}
-          projectFolder={activeProjectFolder}
+          projectFolder={currentDataFolder(tab.path)}
           path={tab.path}
+          onOpenPath={(path) => handleOpenFileInWorkbench(placement, path)}
           revealTarget={
             activeWorkspaceId
               ? fileRevealTargets.get(fileTabDirtyKey(activeWorkspaceId, tab.path))
@@ -3610,6 +3754,20 @@ function ShellAppInner() {
           }}
         />
       );
+    }
+    if (tab.type === 'git') {
+      const gitRoot = tab.projectFolder || activeProjectFolder;
+      if (!gitRoot) {
+        return (
+          <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
+            <p className="text-[12px] text-text-faint">未绑定项目文件夹</p>
+            <p className="text-[11px] text-text-faint opacity-70">
+              绑定后可在此查看分支、改动与提交
+            </p>
+          </div>
+        );
+      }
+      return <GitPanel key={gitRoot} projectFolder={gitRoot} request={gitRequest?.root === gitRoot ? gitRequest : undefined} />;
     }
     return (
       <BrowserPanel
@@ -3716,6 +3874,7 @@ function ShellAppInner() {
 
   return (
     <div className="shell-app-root flex h-full flex-col bg-page">
+      <KeepAliveLayer active={!agentWorkspaceOpen} className="shell-normal-workspace">
       <div className="shell-boards flex min-h-0 flex-1 bg-page">
         {/* Keep sidebar mounted so width can animate on collapse/expand. */}
         <SidebarSurface
@@ -3733,6 +3892,10 @@ function ShellAppInner() {
           bootState={bootState}
           bootError={bootError}
           activeWorkspaceId={activeWorkspaceId}
+          workspaces={data.workspaces}
+          onEnterAgentWorkspace={enterAgentWorkspace}
+          onAgentChat={handleAgentChat}
+          onAgentsRefresh={refresh}
           multiSelect={multiSelect}
           selectedIds={selectedIds}
           conversationActivity={conversationActivityView}
@@ -3747,52 +3910,6 @@ function ShellAppInner() {
             teams={data.teams}
             draft={newConversationDraft}
             onPick={(targetRef) => void handlePickTarget(pickerTrack, targetRef)}
-            onPickCollaboration={
-              pickerTrack === 'agent' || pickerTrack === 'team'
-                ? (kind, _targetRef, selectedMemberIds) => {
-                    const workspaceId = activeWorkspaceId;
-                    if (!workspaceId) {
-                      setNewConversationError('请先创建或打开一个工作区');
-                      return;
-                    }
-                    const targetIds = selectedMemberIds ?? [];
-                    if (pickerTrack === 'agent' && targetIds.length < (kind === 'direct' ? 1 : 2)) {
-                      setNewConversationError(
-                        kind === 'direct' ? '还没有可用智能体' : '至少需要两个智能体才能创建群聊',
-                      );
-                      return;
-                    }
-                    const team = pickerTrack === 'team' ? data.teams[0] : undefined;
-                    const teamTargetIds =
-                      pickerTrack === 'team'
-                        ? targetIds.length
-                          ? targetIds
-                          : (team?.members.map((member) => member.agentId) ?? [])
-                        : targetIds;
-                    void bridge()
-                      ?.collaboration({
-                        action: 'create',
-                        clientRequestId: crypto.randomUUID(),
-                        kind,
-                        title: kind === 'direct' ? '智能体单聊' : '智能体群聊',
-                        workspaceId: String(workspaceId),
-                        agentIds: teamTargetIds,
-                        teamId: team?.id,
-                        coordinatorAgentId: teamTargetIds[0] ?? team?.coordinatorAgentId,
-                      })
-                      .then(async (result) => {
-                        if (result.snapshot) {
-                          await refresh();
-                          setPickerTrack(null);
-                          focusConversation(
-                            String(result.snapshot.conversation.id),
-                            String(workspaceId),
-                          );
-                        } else setNewConversationError('创建协作会话失败');
-                      });
-                  }
-                : undefined
-            }
             onGoToLibrary={(stage) => {
               pendingFirstMessageRef.current = null;
               setPickerTrack(null);
@@ -4158,10 +4275,11 @@ function ShellAppInner() {
                                                 onOpenConversation={(id) =>
                                                   void openConversationById(id)
                                                 }
+                                                onAgentsChanged={() => void refresh()}
                                               />
                                             ) : (
                                               <ChatView
-                                                conversation={item}
+                                                conversation={runtimeConversation(item)}
                                                 modelName={resolveTargetName(item)}
                                                 models={data.models}
                                                 agents={data.agents}
@@ -4196,12 +4314,14 @@ function ShellAppInner() {
                                                 onConversationUpdated={handleConversationUpdated}
                                                 onLatestReviewChange={handleLatestReviewChange}
                                                 onOpenFile={(path, location) =>
-                                                  handleOpenFileInSplit(pane.id, path, location)
+                                                  handleOpenFileInSplit(pane.id, conversationFilePath(item, path), location)
                                                 }
                                                 onOpenHtmlInBrowser={handleOpenHtmlInBrowser}
                                                 onOpenWebUrl={(url) =>
                                                   handleOpenBrowserInPane(pane.id, url)
                                                 }
+                                                onOpenGit={handleOpenGit}
+      gitNavigation={composerGitNavigation}
                                                 onOpenReview={(view) =>
                                                   handleOpenReviewInSplit(pane.id, view)
                                                 }
@@ -4309,8 +4429,9 @@ function ShellAppInner() {
                                         data-active={fileActive ? 'true' : 'false'}
                                       >
                                         <WorkspaceFileView
-                                          projectFolder={activeProjectFolder}
+                                          projectFolder={currentDataFolder(tab.path)}
                                           path={tab.path}
+                                          onOpenPath={(path) => handleOpenFileInPane(pane.id, path)}
                                           revealTarget={
                                             fileActive && activeWorkspaceId
                                               ? fileRevealTargets.get(
@@ -4460,7 +4581,7 @@ function ShellAppInner() {
                 agents={data.agents}
                 models={data.models}
                 teams={data.teams}
-                workspaces={data.workspaces}
+                workspaces={data.workspaces.filter(workspace => workspace.workspaceId !== PROJECTLESS_SCOPE)}
                 onRefresh={() => void refresh()}
                 onManageSkills={() => setNav((n) => selectStage(n, 'abilities'))}
                 onGoToAbilities={() => setNav((n) => selectStage(n, 'abilities'))}
@@ -4492,7 +4613,7 @@ function ShellAppInner() {
               className="shell-stage-layer"
               testId="stage-browser"
             >
-              <BrowserStage onStartAiTask={handleStartBrowserAiTask} workspaces={data.workspaces} activeWorkspaceId={activeWorkspaceId} active={nav.stage === 'browser'} />
+              <BrowserStage onStartAiTask={handleStartBrowserAiTask} workspaces={data.workspaces.filter(workspace => workspace.workspaceId !== PROJECTLESS_SCOPE)} activeWorkspaceId={runtimeWorkspaceId(activeWorkspaceId)} active={nav.stage === 'browser'} />
             </KeepAliveLayer>
             <KeepAliveLayer
               active={nav.stage === 'abilities'}
@@ -4500,8 +4621,8 @@ function ShellAppInner() {
               testId="stage-abilities"
             >
               <AbilitiesPage
-                activeWorkspaceId={activeWorkspaceId}
-                workspaces={data.workspaces}
+                activeWorkspaceId={runtimeWorkspaceId(activeWorkspaceId)}
+                workspaces={data.workspaces.filter(workspace => workspace.workspaceId !== PROJECTLESS_SCOPE)}
                 initialView={abilityNavigation?.initialView}
                 navigationKey={abilityNavigation?.navigationKey}
                 onCatalogChanged={() => {
@@ -4520,7 +4641,7 @@ function ShellAppInner() {
                 agents={data.agents}
                 models={data.models}
                 teams={data.teams}
-                workspaces={data.workspaces}
+                workspaces={data.workspaces.filter(workspace => workspace.workspaceId !== PROJECTLESS_SCOPE)}
                 skills={data.skills}
                 onNotify={(tone, text) => {
                   toastApi.toast({ type: toastTypeFromTone(tone), title: text });
@@ -4531,12 +4652,22 @@ function ShellAppInner() {
                 }}
               />
             </KeepAliveLayer>
+            <KeepAliveLayer active={nav.stage === 'design-system'} className="shell-stage-layer" testId="stage-design-system">
+              <DesignSystemPage />
+            </KeepAliveLayer>
             <KeepAliveLayer
               active={nav.stage === 'activity'}
               className="shell-stage-layer"
               testId="stage-activity"
             >
               <ActivityCenterPage
+                workspaces={data.workspaces}
+                conversations={data.conversations}
+                onNewConversation={() => {
+                  selectWorkspace(PROJECTLESS_SCOPE);
+                  beginDraftConversation('model', newConversationModel, undefined, PROJECTLESS_SCOPE);
+                  setNav(n => selectStage(n, 'talk'));
+                }}
                 eventHistory={eventHistory}
                 onRetryRun={({ conversationId, text }) => {
                   // Only stages the prompt; ChatView still owns the send.
@@ -4551,6 +4682,64 @@ function ShellAppInner() {
           </div>
         </main>
       </div>
+      </KeepAliveLayer>
+      <KeepAliveLayer active={agentWorkspaceOpen} className="shell-agent-chat-mode">
+        <AgentWorkspace
+          key={activeWorkspaceId ?? PROJECTLESS_SCOPE}
+          workspaceId={activeWorkspaceId ?? PROJECTLESS_SCOPE}
+          workspaces={data.workspaces}
+          conversations={data.conversations}
+          agents={data.agents}
+          teams={data.teams}
+          models={data.models}
+          navigation={agentNavigation?.workspaceId === (activeWorkspaceId ?? PROJECTLESS_SCOPE) ? agentNavigation : undefined}
+          onNavigationHandled={() => setAgentNavigation(undefined)}
+          loading={bootState === 'loading'}
+          conversationActivity={conversationActivityView}
+          onExit={exitAgentWorkspace}
+          onSelectWorkspace={selectWorkspace}
+          onRefresh={refresh}
+          onSettings={() => handleSelectStage('settings')}
+          onManageAgents={() => { exitAgentWorkspace(); handleSelectStage('agents'); }}
+          onTogglePin={(id, pinned) => void handleTogglePin(id, pinned)}
+          onRename={(id, title) => void handleRename(id, title)}
+          onArchive={(id) => void handleArchive(id)}
+          onUnarchive={(id) => void handleUnarchive(id)}
+          renderAgentLibrary={(onBack, onStartConversation, initialAgentId) => <AgentLibrary
+            initialAgentId={initialAgentId}
+            agents={data.agents}
+            models={data.models}
+            teams={data.teams}
+            workspaces={data.workspaces.filter(workspace => workspace.workspaceId !== PROJECTLESS_SCOPE)}
+            onRefresh={() => void refresh()}
+            onBack={onBack}
+            onStartConversation={onStartConversation}
+            onManageSkills={() => { onBack(); exitAgentWorkspace(); handleSelectStage('abilities'); }}
+            onGoToAbilities={() => { onBack(); exitAgentWorkspace(); handleSelectStage('abilities'); }}
+            skillCatalogRevision={skillCatalogRevision}
+          />}
+          renderLegacyConversation={(conversation, onEditAgent, agents) => <ChatView agentWorkspace onEditAgent={onEditAgent}
+            key={conversation.id}
+            conversation={runtimeConversation(conversation)}
+            modelName={resolveTargetName(conversation)}
+            models={data.models}
+            agents={agents}
+            teams={data.teams}
+            workspaces={data.workspaces}
+            eventHistory={eventHistory}
+            runActivityAuthority={runActivityAuthority}
+            runtimeConnectionRevision={runtimeConnectionRevision}
+            runtimeConnectionNotice={runtimeConnectionNotice}
+            onTitleUpdated={() => void refresh()}
+            onConversationUpdated={handleConversationUpdated}
+            onOpenFile={(path, location) => { exitAgentWorkspace(); handleOpenFileInWorkbench('right', conversationFilePath(conversation, path), location); }}
+            onOpenHtmlInBrowser={handleOpenHtmlInBrowser}
+            onOpenPlanSettings={handleOpenPlanSettings}
+            onOpenMcpSettings={handleOpenMcpSettings}
+            onCreateSkill={handleCreateSkill}
+          />}
+        />
+      </KeepAliveLayer>
 
       <Dialog.Root
         open={Boolean(pendingChatBrowserWorkflow)}
@@ -4660,6 +4849,8 @@ export function EmptyTalk(props: {
   hasWorkspace: boolean;
   workspaceId?: string;
   workspaceFolder?: string;
+  onOpenGit?: (root: string, section: GitPanelSection) => void;
+  gitNavigation?: ComposerGitNavigation;
   models: readonly ModelOption[];
   agents: readonly GlobalAgent[];
   teams: readonly Team[];
@@ -4671,6 +4862,7 @@ export function EmptyTalk(props: {
   draftTargetRef?: string;
   sending: boolean;
   error?: string;
+  onAttachmentCountChange?(count: number): void;
   onDraftChange(draft: string): void;
   onModelChange(modelId: string): void;
   onSend(options: {
@@ -4689,7 +4881,6 @@ export function EmptyTalk(props: {
   }): Promise<boolean>;
   onOpenWorkspaceMenu(): void;
   onPickTrack(track: ConversationTrack): void;
-  onPickIdentity?(track: ConversationTrack, targetRef: string): void;
   onOpenPlanSettings?(): void;
   onOpenModelSettings?(): void;
   onOpenMcpSettings?(): void;
@@ -4759,8 +4950,18 @@ export function EmptyTalk(props: {
     Record<string, KernelInstallState | undefined>
   >({});
   const [attachments, setAttachments] = useState<ComposeAttachment[]>([]);
+  const onAttachmentCountChange = props.onAttachmentCountChange;
   const [dragOver, setDragOver] = useState(false);
   const [composeNotice, setComposeNotice] = useState<string | undefined>();
+  const imageUploads = useComposerImageUploads({
+    attachments, setAttachments,
+    scopeKey: JSON.stringify([props.workspaceId, props.draftConversationId]),
+    onError: (file) => setComposeNotice(`图片读取失败：${file.name || '未命名图片'}`),
+  });
+  useEffect(() => {
+    onAttachmentCountChange?.(imageUploads.items.length);
+    return () => onAttachmentCountChange?.(0);
+  }, [imageUploads.items.length, onAttachmentCountChange]);
   useEffect(() => {
     if (!props.error) return;
     const title =
@@ -4797,7 +4998,6 @@ export function EmptyTalk(props: {
   const [slashSkillsResolved, setSlashSkillsResolved] = useState(false);
   const [permissionMenuOpen, setPermissionMenuOpen] = useState(false);
   const [skillMenuOpen, setSkillMenuOpen] = useState(false);
-  const [identityMenuOpen, setIdentityMenuOpen] = useState(false);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [voiceInputActive, setVoiceInputActive] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -4806,7 +5006,6 @@ export function EmptyTalk(props: {
   const dismissedSlashTextRef = useRef<string | null>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const permissionButtonRef = useRef<HTMLButtonElement>(null);
-  const identityButtonRef = useRef<HTMLButtonElement>(null);
   const modelButtonRef = useRef<HTMLButtonElement>(null);
   const kernelInstallPromisesRef = useRef(new Map<string, Promise<void>>());
   const kernelDetectionGenerationRef = useRef(0);
@@ -4908,7 +5107,6 @@ export function EmptyTalk(props: {
         ? (identityTeam?.name ?? '选择小队')
         : '直接跟模型聊';
   const identityAvatar = draftTrack === 'agent' ? identityAgent : identityTeam;
-  const IdentityIcon = draftTrack === 'agent' ? Bot : draftTrack === 'team' ? Users : MessageSquare;
   const activeKernel = kernelRegistry?.find((kernel) => kernel.kernelId === kernelOverride) ?? null;
   const kernelExecutionIssue = isKernelExecutionSupported(
     activeKernel ?? { kernelId: kernelOverride },
@@ -5159,7 +5357,6 @@ export function EmptyTalk(props: {
     !composerAddOpen &&
     !permissionMenuOpen &&
     !skillMenuOpen &&
-    !identityMenuOpen &&
     !modelMenuOpen &&
     !props.sending
       ? detectedModeKeywordHint
@@ -5307,7 +5504,6 @@ export function EmptyTalk(props: {
     setComposerAddOpen(false);
     setPermissionMenuOpen(false);
     setSkillMenuOpen(false);
-    setIdentityMenuOpen(false);
     setModelMenuOpen(false);
     window.requestAnimationFrame(() => {
       inputRef.current?.focus();
@@ -5351,45 +5547,7 @@ export function EmptyTalk(props: {
     [draftTrack, props, slash],
   );
 
-  const addImageFiles = useCallback(
-    async (files: FileList | File[]) => {
-      const remainingSlots = Math.max(
-        0,
-        8 - attachments.filter((item) => item.kind === 'image').length,
-      );
-      const list = Array.from(files).filter(isImageFile).slice(0, remainingSlots);
-      if (list.length === 0) return;
-      const nextItems: ComposeAttachment[] = [];
-      for (const file of list) {
-        try {
-          const rawUrl = await readFileAsDataUrl(file);
-          const compressed = await compressImageDataUrl(rawUrl, {
-            mimeType: file.type || 'image/png',
-          });
-          nextItems.push({
-            path: `image:${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${file.name}`,
-            name: file.name || 'image',
-            kind: 'image',
-            previewUrl: compressed.dataUrl,
-            mimeType: compressed.mimeType,
-            sizeBytes: Math.floor(
-              (compressed.dataUrl.length - compressed.dataUrl.indexOf(',') - 1) * 0.75,
-            ),
-          });
-        } catch {
-          setComposeNotice(`图片读取失败：${file.name || '未命名图片'}`);
-        }
-      }
-      if (nextItems.length === 0) return;
-      setAttachments((current) => {
-        let next = [...current];
-        for (const item of nextItems) next = addAttachment(next, item);
-        return next.slice(0, 8);
-      });
-      setComposeNotice(undefined);
-    },
-    [attachments],
-  );
+  const addImageFiles = imageUploads.addFiles;
 
   const handleImageInputChange = useCallback(
     (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -5438,6 +5596,7 @@ export function EmptyTalk(props: {
   );
 
   const submit = async () => {
+    if (imageUploads.isBusy()) return false;
     const parsed = parseSlashCommand(props.draft);
     if (parsed.kind === 'help') {
       props.onDraftChange('/help ');
@@ -5652,6 +5811,15 @@ export function EmptyTalk(props: {
         <div className="shell-chat-content shell-chat-content--composer mx-auto">
           <NewMaxComposerFrame
             variant="empty"
+            contextBar={
+              props.workspaceFolder && props.onOpenGit ? (
+                <ComposerGitBar
+                  projectFolder={props.workspaceFolder}
+                  navigation={props.gitNavigation}
+                  onOpenGit={props.onOpenGit}
+                />
+              ) : null
+            }
             modeBanner={emptyModeBanner}
             innerRef={composeRef}
             className={`relative ${dragOver ? 'is-dragover' : ''}`}
@@ -5712,16 +5880,14 @@ export function EmptyTalk(props: {
                 inputElementRef={inputRef}
                 inputTestId="empty-compose-input"
                 testId="empty-composer-editor"
-                attachments={attachments}
+                attachments={imageUploads.items}
                 selectedSkills={selectedSlashSkills}
                 disabled={!props.hasWorkspace || props.sending}
                 minHeight={72}
                 maxHeight={200}
                 chatFontSize={appearance.chatFontSize}
                 serifFontFamily={appearance.useSerifFont ? 'var(--font-serif)' : 'var(--font-sans)'}
-                onRemoveAttachment={(path) =>
-                  setAttachments((current) => removeAttachment(current, path))
-                }
+                onRemoveAttachment={imageUploads.remove}
                 onRemoveSkill={(skillVersionId) =>
                   updateSelectedSkillVersionIds(
                     selectedSkillVersionIds.filter((selected) => selected !== skillVersionId),
@@ -5825,7 +5991,6 @@ export function EmptyTalk(props: {
                     setMcpMenuOpen(false);
                     setPermissionMenuOpen(false);
                     setSkillMenuOpen(false);
-                    setIdentityMenuOpen(false);
                     setModelMenuOpen(false);
                   }}
                   workspaceFolder={props.workspaceFolder}
@@ -5839,7 +6004,7 @@ export function EmptyTalk(props: {
                   }
                   disabled={props.sending}
                   attachDisabled={
-                    attachments.filter((attachment) => attachment.kind === 'image').length >= 8
+                    imageUploads.items.filter((attachment) => attachment.kind === 'image').length >= 8
                   }
                   onAttach={() => imageInputRef.current?.click()}
                   onPlan={() => toggleDraftMode('plan')}
@@ -5885,24 +6050,15 @@ export function EmptyTalk(props: {
                   data-testid="empty-compose-permission-control"
                   hidden={composerToolbar.collapseLevel >= PERMISSION_MODE_COLLAPSED_TOOLBAR_LEVEL}
                 >
-                  <button
+                  <PermissionTrigger
                     ref={permissionButtonRef}
-                    type="button"
-                    className="shell-compose__tool"
-                    data-active={permissionMenuOpen || permissionMode === 'full-access' ? '1' : '0'}
-                    title={`权限：${PERMISSION_OPTIONS.find((option) => option.value === permissionMode)?.title ?? '完全访问'}`}
+                    value={permissionMode}
+                    open={permissionMenuOpen}
                     onClick={() => {
-                      setIdentityMenuOpen(false);
                       setModelMenuOpen(false);
                       setPermissionMenuOpen((value) => !value);
                     }}
-                  >
-                    <Zap size={15} />
-                    <span className="shell-compose__tool-label">
-                      {PERMISSION_OPTIONS.find((option) => option.value === permissionMode)
-                        ?.title ?? '完全访问'}
-                    </span>
-                  </button>
+                  />
                   <PermissionMenu
                     open={permissionMenuOpen}
                     value={permissionMode}
@@ -5924,7 +6080,6 @@ export function EmptyTalk(props: {
                     onOpenChange={(open) => {
                       if (open) {
                         setPermissionMenuOpen(false);
-                        setIdentityMenuOpen(false);
                         setModelMenuOpen(false);
                       }
                       setSkillMenuOpen(open);
@@ -5934,66 +6089,12 @@ export function EmptyTalk(props: {
                 </div>
               </div>
               <div ref={composerToolbar.rightRef} className="shell-compose__bar-right">
-                <div className="shell-compose__tool-wrap">
-                  <button
-                    ref={identityButtonRef}
-                    type="button"
-                    className="shell-compose__tool"
-                    data-active={draftTrack !== 'model' ? '1' : '0'}
-                    data-open={identityMenuOpen ? '1' : '0'}
-                    aria-haspopup="menu"
-                    aria-expanded={identityMenuOpen}
-                    data-testid="empty-compose-identity"
-                    title={`对话对象：${identityLabel}`}
-                    onClick={() => {
-                      setPermissionMenuOpen(false);
-                      setSkillMenuOpen(false);
-                      setModelMenuOpen(false);
-                      setIdentityMenuOpen((open) => !open);
-                    }}
-                  >
-                    {identityAvatar?.avatar?.trim() ? (
-                      <AgentAvatarView
-                        name={identityAvatar.name}
-                        avatar={identityAvatar.avatar}
-                        size={18}
-                      />
-                    ) : (
-                      <IdentityIcon size={15} />
-                    )}
-                    <span className="shell-compose__tool-label">{identityLabel}</span>
-                  </button>
-                  <IdentityPickerMenu
-                    open={identityMenuOpen}
-                    agents={props.agents.map((agent) => ({
-                      id: String(agent.id),
-                      name: agent.name,
-                      description: agent.description,
-                      avatar: agent.avatar,
-                    }))}
-                    teams={props.teams.map((team) => ({
-                      id: String(team.id),
-                      name: team.name,
-                      description: team.mission,
-                      avatar: team.avatar,
-                    }))}
-                    currentTrack={draftTrack}
-                    currentTargetRef={String(props.draftTargetRef ?? '')}
-                    anchorEl={identityButtonRef.current}
-                    onClose={() => setIdentityMenuOpen(false)}
-                    onPick={(option: IdentityOption) => {
-                      const targetRef =
-                        option.track === 'model'
-                          ? (selectedModel?.modelId ?? '')
-                          : option.targetRef;
-                      if (props.onPickIdentity) {
-                        props.onPickIdentity(option.track, targetRef);
-                      } else {
-                        props.onPickTrack(option.track);
-                      }
-                    }}
-                  />
-                </div>
+                <ComposerIdentity
+                  track={draftTrack}
+                  label={identityLabel}
+                  avatar={identityAvatar}
+                  testId="empty-compose-identity"
+                />
                 <ContextRing
                   used={Math.round(props.draft.length / 4)}
                   limit={composerContextWindow}
@@ -6033,7 +6134,6 @@ export function EmptyTalk(props: {
                         onClick={() => {
                           setPermissionMenuOpen(false);
                           setSkillMenuOpen(false);
-                          setIdentityMenuOpen(false);
                           setModelMenuOpen((value) => !value);
                         }}
                       />
@@ -6079,10 +6179,11 @@ export function EmptyTalk(props: {
                 </div>
                 <ComposerActionSlot
                   testIdPrefix="empty-compose"
-                  hasContent={Boolean(props.draft.trim() || attachments.length > 0)}
+                  hasContent={Boolean(props.draft.trim() || imageUploads.items.length > 0)}
                   running={false}
                   voiceActive={voiceInputActive}
                   disabled={props.sending}
+                  sendDisabled={imageUploads.pending}
                   onVoice={toggleVoiceInput}
                   onSend={() => void submit()}
                   onStop={() => undefined}

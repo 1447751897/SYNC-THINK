@@ -110,36 +110,18 @@ describe('initial run model binding', () => {
     ).toMatchObject({ modelId: 'plan-catalog', resolutionSource: 'planAct' });
   });
 
-  it('uses the agent default and stable metadata fallbacks without a catalog', () => {
-    expect(
-      resolveInitialRunModelBinding(
-        { agent },
-        { catalog: undefined, secureStoreAvailable: false },
-      ),
-    ).toEqual({
-      modelId: 'default-model',
-      resolutionSource: 'agentDefault',
-      model: undefined,
-      provider: undefined,
-      credential: undefined,
-      credentialResolutionSource: 'none',
-      useFakeProvider: true,
-      modelContextWindow: 128_000,
-      contextWindowEstimated: true,
-    });
+  it('allows the explicit demo model without a catalog', () => {
+    expect(resolveInitialRunModelBinding({ agent: { ...agent, defaultModelId: modelId('fake-mini') } }, { catalog: undefined, secureStoreAvailable: false })).toMatchObject({ modelId: 'fake-mini', useFakeProvider: true });
   });
-
-  it('retains live metadata but selects fake execution when secure storage is absent', () => {
-    expect(
-      resolveInitialRunModelBinding(
-        { agent },
-        { catalog: fixture(), secureStoreAvailable: false },
-      ),
-    ).toMatchObject({
-      modelId: 'default-model',
-      provider: { id: 'provider-a' },
-      useFakeProvider: true,
-    });
+  it('rejects a deleted real model rather than silently producing a fake echo', () => {
+    expect(() => resolveInitialRunModelBinding({ agent: { ...agent, defaultModelId: modelId('deleted-id') } }, { catalog: fixture(), secureStoreAvailable: true })).toThrow('MODEL_BINDING_UNAVAILABLE');
+  });
+  it('rejects a missing real-model catalog and credential store', () => {
+    expect(() => resolveInitialRunModelBinding({ agent }, { catalog: undefined, secureStoreAvailable: false })).toThrow('MODEL_BINDING_UNAVAILABLE');
+    expect(() => resolveInitialRunModelBinding({ agent }, { catalog: fixture(), secureStoreAvailable: false })).toThrow('MODEL_CREDENTIAL_STORE_UNAVAILABLE');
+  });
+  it('leaves external-kernel model resolution to that kernel, never FakeProvider', () => {
+    expect(resolveInitialRunModelBinding({ agent }, { catalog: undefined, secureStoreAvailable: false, externalKernel: true })).toMatchObject({ modelId: 'default-model', useFakeProvider: false });
   });
 
   it.each(['not json', '{"contextWindow":0}', '{"contextWindow":"large"}'])(

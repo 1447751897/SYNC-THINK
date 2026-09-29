@@ -1,11 +1,7 @@
 /** @vitest-environment jsdom */
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import {
-  FilePane,
-  clearFilePaneSession,
-  isFilePaneSessionDirty,
-} from './FilePane.js';
+import { FilePane, clearFilePaneSession, isFilePaneSessionDirty } from './FilePane.js';
 
 interface Change {
   path: string;
@@ -56,6 +52,79 @@ afterEach(() => {
 });
 
 describe('FilePane', () => {
+  it('shows directory contents and opens the selected child without a file error or save status', async () => {
+    const bridge = installBridge();
+    bridge.readProjectFile.mockResolvedValue({
+      path: 'games',
+      content: null,
+      error: null,
+      errorCode: null,
+      directoryEntries: [{ name: 'index.html', path: 'games/index.html', kind: 'file' }],
+    });
+    const open = vi.fn();
+    render(<FilePane projectFolder="C:/workspace" path="C:/workspace/games" onOpenPath={open} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'index.html 文件' }));
+    expect(open).toHaveBeenCalledWith('games/index.html');
+    expect(bridge.readProjectFile).toHaveBeenCalledWith({ root: 'C:/workspace', path: 'games' });
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByTestId('file-pane-status')).toBeNull();
+  });
+
+  it.each(['game.html', 'game.HTM'])('keeps highlighted code as the default and renders %s only through its extra tab', async (path) => {
+    const bridge = installBridge();
+    bridge.readProjectFile.mockResolvedValue({
+      path,
+      content: '<h1>Game</h1>',
+      error: null,
+      errorCode: null,
+      mtimeMs: 1,
+      size: 13,
+    });
+    render(<FilePane projectFolder="C:/workspace" path={path} />);
+    const title = '网页预览 ' + path;
+    const code = await screen.findByTestId('file-pane-preview');
+    expect(code.textContent).toContain('<h1>Game</h1>');
+    expect(code.querySelector('.hljs-tag')).not.toBeNull();
+    expect(screen.getByRole('tab', { name: '高亮预览' }).getAttribute('aria-selected')).toBe('true');
+    expect(screen.getAllByRole('tab')).toHaveLength(3);
+    expect(screen.queryByTitle(title)).toBeNull();
+
+    fireEvent.click(screen.getByRole('tab', { name: '网页渲染' }));
+    const frame = await screen.findByTitle(title);
+    expect(frame.tagName).toBe('IFRAME');
+    expect(frame.getAttribute('sandbox')).toBe('allow-scripts');
+    expect(frame.getAttribute('srcdoc')).toContain('<h1>Game</h1>');
+    fireEvent.click(screen.getByRole('tab', { name: '源码' }));
+    expect(screen.queryByTitle(title)).toBeNull();
+    fireEvent.change(screen.getByTestId('file-pane-editor'), {
+      target: { value: '<h1>Edited</h1>' },
+    });
+    fireEvent.click(screen.getByRole('tab', { name: '高亮预览' }));
+    expect(code.textContent).toContain('<h1>Edited</h1>');
+    expect(code.querySelector('.hljs-tag')).not.toBeNull();
+    expect(screen.queryByTitle(title)).toBeNull();
+    fireEvent.click(screen.getByRole('tab', { name: '网页渲染' }));
+    expect(screen.getByTitle(title).getAttribute('srcdoc')).toContain('<h1>Edited</h1>');
+    expect(bridge.writeProjectFile).not.toHaveBeenCalled();
+    expect(isFilePaneSessionDirty('C:/workspace', 'C:/workspace/' + path)).toBe(true);
+    fireEvent.click(screen.getByRole('tab', { name: '高亮预览' }));
+    expect(screen.queryByTitle(title)).toBeNull();
+    clearFilePaneSession('C:/workspace', path);
+  });
+
+  it('offers retry after a failed read without displaying a saved indicator', async () => {
+    const bridge = installBridge();
+    bridge.readProjectFile
+      .mockResolvedValueOnce({ content: null, error: '文件不存在', errorCode: 'file_not_found' })
+      .mockResolvedValue({ content: 'restored', error: null, mtimeMs: 1, size: 8 });
+    render(<FilePane projectFolder="C:/workspace" path="notes.txt" />);
+    expect(await screen.findByRole('alert')).toBeTruthy();
+    expect(screen.getByTestId('file-pane-status').textContent).toBe('读取失败');
+    fireEvent.click(screen.getByRole('button', { name: '重试读取' }));
+    await screen.findByTestId('file-pane-preview');
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
   it('uses compact view controls without repeating the filename', async () => {
     const bridge = installBridge();
     bridge.readProjectFile.mockResolvedValue({

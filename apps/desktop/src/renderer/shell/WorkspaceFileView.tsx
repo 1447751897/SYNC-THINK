@@ -5,6 +5,7 @@ export interface WorkspaceFileViewProps {
   path: string;
   revealTarget?: FileRevealTarget;
   onDirtyChange?(dirty: boolean): void;
+  onOpenPath?(path: string): void;
 }
 
 /**
@@ -16,6 +17,7 @@ export function WorkspaceFileView({
   path,
   revealTarget,
   onDirtyChange,
+  onOpenPath,
 }: WorkspaceFileViewProps) {
   return (
     <div className="shell-file-workbench" data-testid="workspace-file-view">
@@ -26,6 +28,7 @@ export function WorkspaceFileView({
             path={path}
             revealTarget={revealTarget}
             onDirtyChange={onDirtyChange}
+            onOpenPath={onOpenPath}
           />
         </div>
       </div>

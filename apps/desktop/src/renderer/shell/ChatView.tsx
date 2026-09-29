@@ -1,5 +1,14 @@
+import { AgentExecutionStatus } from './AgentExecutionStatus.js';
+import { AgentWorkspaceAvatar } from './AgentWorkspaceAvatar.js';
+import { useKeepAliveActive } from './KeepAliveLayer.js';
+import { PROJECTLESS_SCOPE } from './projectless-scope.js';
+import { ComposerGitBar, type GitPanelSection, type ComposerGitNavigation } from './ComposerGitBar.js';
+import { Play } from 'lucide-react';
+import { useContextMenu, MessageContextActions, selectionContextActions, selectedContextText, linkContextActions, copyContextText } from './ContextMenu.js';
+import { appendContextQuote } from './context-quote.js';
 import type { ReviewView } from './review-view.js';
 import { useComposeDraftRecovery } from './use-compose-draft-recovery.js';
+import { takePromotedDraft } from './collaboration-draft.js';
 import { submitConversationMessage } from './submit-conversation-message.js';
 import { useRunProcessPage } from './use-run-process-page.js';
 import { useComposeRequestQueue } from './use-compose-request-queue.js';
@@ -42,7 +51,6 @@ import {
 } from './use-conversation-transient-subscription.js';
 import {
   AlertCircle,
-  Bot,
   Brain,
   Check,
   CheckCircle2,
@@ -54,19 +62,12 @@ import {
   FileText,
   Folder,
   Info,
-  Lock,
   LoaderCircle,
   MessageSquare,
   Puzzle,
   RefreshCw,
-  SendHorizonal,
-  Shield,
-  ThumbsDown,
-  ThumbsUp,
-  Users,
   X,
   XCircle,
-  Zap,
 } from 'lucide-react';
 import {
   matchesToolName,
@@ -111,7 +112,7 @@ import { normalizeAssistantTurnPhases } from '@sync-think/protocol/assistant-tur
 import { parseConversationGetContextStatusResponse } from '@sync-think/protocol/conversation-context-status';
 import type { ProjectTextLocation } from '../../workspace-tools-contract.js';
 import { AgentAvatarView } from './AgentAvatarView.js';
-import { avatarSeed, resolveAvatarFace } from './avatar-gen.js';
+import { botAvatarSeed, resolveBotAvatarFace } from './bot-avatar.js';
 import { avatarStateFrom } from './agentAvatarState.js';
 import { BrandLogoMark } from './BrandLogoMark.js';
 import { loadSkillCatalog } from './skill-catalog-loader.js';
@@ -125,8 +126,6 @@ import {
   computeTextareaHeight,
   detectMentionQuery,
   fileNameFromPath,
-  isImageFile,
-  readFileAsDataUrl,
   removeAttachment,
   splitMessageFileReferences,
   type ComposeAttachment,
@@ -191,20 +190,20 @@ import {
   resolveComposerModelSelection,
   type ComposerPlanActSetting,
 } from './composer-plan-model.js';
-import { compressImageDataUrl } from './image-compress.js';
+import { useComposerImageUploads } from './use-composer-image-uploads.js';
 import {
   ComposerActionSlot,
   ContextRing,
-  IdentityPickerMenu,
+  ComposerIdentity,
   ModelPickerMenu,
   ModelTrigger,
   PERMISSION_MODE_COLLAPSED_TOOLBAR_LEVEL,
   PermissionMenu,
+  PermissionTrigger,
   REASONING_LABELS,
   SKILL_COLLAPSED_TOOLBAR_LEVEL,
   resolveDisplayedContextWindow,
   useComposerToolbarCollapse,
-  type IdentityOption,
   type KernelInstallState,
   type PermissionMode,
   type ReasoningEffort,
@@ -237,7 +236,7 @@ import { MessageTextContent, type MessageTextPart } from './MessageTextContent.j
 import { ImageLightbox } from './ImageLightbox.js';
 import { resolveMessageText } from './message-text-source.js';
 import type { OpenHtmlInBrowser } from './html-browser.js';
-import { AnswerSources } from './AnswerSources.js';
+import { StreamingResponse, responseStatus } from './StreamingResponse.js';
 import { collectAnswerSources } from './answer-sources.js';
 import {
   AskQuestionCard,
@@ -694,6 +693,11 @@ function assistantTimelineToChatFields(timeline: readonly AssistantTurnSegment[]
           ...(isDelegationToolName(segment.name) ? { delegationAnchor: true } : {}),
           ...(segment.argumentsRef ? { argumentsRef: segment.argumentsRef } : {}),
           ...(segment.outputRef ? { resultRef: segment.outputRef } : {}),
+          ...(segment.progressLine !== undefined ? { progressLine: segment.progressLine } : {}),
+          ...(segment.progressOutput !== undefined ? { progressOutput: segment.progressOutput } : {}),
+          ...(segment.progressTruncated !== undefined ? { progressTruncated: segment.progressTruncated } : {}),
+          ...(segment.progressBytes !== undefined ? { progressBytes: segment.progressBytes } : {}),
+          ...(segment.progressAt !== undefined ? { progressAt: segment.progressAt } : {}),
           ...(segment.isError || segment.status === 'failed' ? { failed: true } : {}),
           status: segment.status,
           ...(segment.startedAt ? { startedAt: segment.startedAt } : {}),
@@ -754,7 +758,7 @@ export function assistantTimelineProcessTiming(
 }
 
 export interface ProjectedTransientAnswer {
-  /** 明确的 final_answer 段（总结面板只显示这个，§12.17.7/18）。 */
+  /** 已被运行时确认的 final_answer；未分类正文通过 pendingText 实时展示。 */
   answerText: string | undefined;
   /** 尚未被 timeline 分类的流式文本尾部，等待工具/终态边界确认所属阶段。 */
   pendingText: string;
@@ -788,12 +792,12 @@ export function projectTransientAnswerText(
 }
 
 /**
- * Live bubble text: only a phase-confirmed final answer is allowed here.
- * Unclassified kernel prose stays buffered until a tool/terminal boundary
- * assigns it to commentary or final_answer, matching Codex's split panes.
+ * Show unclassified tokens immediately while the answer is being generated.
+ * Runtime phase boundaries later move commentary into process without replaying
+ * or duplicating the answer. Persisted messages still use confirmed phases.
  */
 export function visibleStreamingAnswerText(projected: ProjectedTransientAnswer): string {
-  return projected.answerText || '';
+  return projected.answerText || projected.pendingText;
 }
 
 export interface ProjectedTransientAssistantDisplay extends ProjectedTransientAnswer {
@@ -804,9 +808,8 @@ export interface ProjectedTransientAssistantDisplay extends ProjectedTransientAn
 }
 
 /**
- * Project a live turn. Unclassified tokens stay out of the final-answer
- * bubble and stream as a pending commentary row at the current process
- * position until a tool or terminal boundary classifies them.
+ * Only classified process prose belongs in the execution panel. Pending text
+ * streams in the answer body until a tool or terminal boundary assigns its phase.
  */
 export function projectTransientAssistantDisplay(
   draftText: string,
@@ -815,14 +818,6 @@ export function projectTransientAssistantDisplay(
   const projected = projectTransientAnswerText(draftText, timeline);
   const timelineFields = assistantTimelineToChatFields(timeline);
   const processItems = [...(timelineFields.processItems ?? [])];
-  if (projected.pendingText.trim()) {
-    processItems.push({
-      kind: 'commentary',
-      id: 'pending-text',
-      text: projected.pendingText,
-      status: 'streaming',
-    });
-  }
   return {
     ...projected,
     ...(timelineFields.commentaryText ? { commentaryText: timelineFields.commentaryText } : {}),
@@ -1099,12 +1094,14 @@ function toolApprovalScopes(value: unknown): ToolApprovalScope[] | undefined {
     (scope): scope is ToolApprovalScope =>
       scope === 'once' || scope === 'session' || scope === 'always-app',
   );
-  return scopes.length > 0 ? scopes : undefined;
+  return scopes;
 }
 
 export type { PermissionMode, ReasoningEffort };
 
 interface ChatViewProps {
+  agentWorkspace?: boolean;
+  onEditAgent?(id: string): void;
   conversation: Conversation;
   modelName: string;
   models: readonly ModelOption[];
@@ -1146,6 +1143,8 @@ interface ChatViewProps {
   onOpenHtmlInBrowser?: OpenHtmlInBrowser;
   /** Opens a user-message http(s) URL in the embedded browser tab. */
   onOpenWebUrl?: (url: string) => void;
+  onOpenGit?: (root: string, section: GitPanelSection) => void;
+  gitNavigation?: ComposerGitNavigation;
   onOpenReview?: (view: RunProcessView) => void;
   /** Opens the real model settings destination used by the Plan banner. */
   onOpenPlanSettings?: () => void;
@@ -1159,22 +1158,13 @@ function bridge() {
   return window.syncThink?.runtime;
 }
 
-const PERMISSION_LABELS: Record<PermissionMode, string> = {
-  ask: '询问批准',
-  workspace: '为我批准',
-  'full-access': '完全访问',
-};
-const PERMISSION_ICONS: Record<PermissionMode, typeof Shield> = {
-  ask: Lock,
-  workspace: Shield,
-  'full-access': Zap,
-};
-
 const EMPTY_CHAT_AGENTS: readonly GlobalAgent[] = [];
 const EMPTY_CHAT_TEAMS: readonly Team[] = [];
 const EMPTY_CHAT_WORKSPACES: readonly WorkspaceSummary[] = [];
 
 export function ChatView({
+  agentWorkspace = false,
+  onEditAgent,
   conversation,
   modelName,
   models,
@@ -1185,7 +1175,7 @@ export function ChatView({
   runActivityAuthority,
   runtimeConnectionRevision = 0,
   runtimeConnectionNotice,
-  active = true,
+  active: surfaceActive = true,
   onTitleUpdated,
   onConversationUpdated,
   initialSkillVersionIds,
@@ -1197,10 +1187,34 @@ export function ChatView({
   onOpenHtmlInBrowser,
   onOpenWebUrl,
   onOpenReview,
+  onOpenGit,
+  gitNavigation,
   onOpenPlanSettings,
   onCreateSkill,
   onOpenMcpSettings,
 }: ChatViewProps) {
+  const layerActive = useKeepAliveActive();
+  const active = surfaceActive && layerActive;
+  const boundWorkspace = conversation.workspaceId
+    ? workspaces.find((workspace) => workspace.workspaceId === conversation.workspaceId)
+    : undefined;
+  const [unboundFolder, setUnboundFolder] = useState<{ id: string; folder: string }>();
+  useEffect(() => {
+    let cancelled = false;
+    const api = bridge();
+    if (!api?.getSettings) return;
+    if (conversation.workspaceId && conversation.workspaceId !== PROJECTLESS_SCOPE) return;
+    const key = 'data.projectless.conversation.' + conversation.id;
+    void api.getSettings({ keys: [key] }).then(result => {
+      const directory = result.settings[key];
+      if (!cancelled && typeof directory === 'string') setUnboundFolder({ id: conversation.id, folder: directory.replace(/[\\/]+$/, '') + '/files' });
+    }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [conversation.id, conversation.workspaceId, conversation.taskId]);
+  const projectFolder = boundWorkspace?.folderPath?.trim() || (unboundFolder?.id === conversation.id ? unboundFolder.folder : undefined);
+  const hasProjectFolder = Boolean(projectFolder);
+
+
   const activeConversationIdRef = useRef(String(conversation.id));
   activeConversationIdRef.current = String(conversation.id);
   const skillOwner = useMemo(
@@ -1469,9 +1483,19 @@ export function ChatView({
   const [agentPreferences, setAgentPreferences] = useState<AgentPreferences>(() =>
     readAgentPreferences(),
   );
+  const followsAgentConfig = conversation.track === 'agent' || conversation.track === 'team';
+  const boundTeam = conversation.track === 'team'
+    ? teams.find((team) => team.id === conversation.targetRef)
+    : undefined;
+  const configuredAgentId = conversation.track === 'agent'
+    ? conversation.targetRef
+    : boundTeam?.coordinatorAgentId ?? boundTeam?.members[0]?.agentId;
+  const configuredAgent = followsAgentConfig
+    ? agents.find((agent) => agent.id === configuredAgentId)
+    : undefined;
   // Restore the conversation's own reasoning effort across switches/restarts;
   // each conversation keeps its chosen thinking intensity until changed again.
-  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>(
+  const [conversationReasoningEffort, setReasoningEffort] = useState<ReasoningEffort>(
     () =>
       readConversationReasoningEffort(String(conversation.id)) ??
       readAgentPreferences().thinkingBudget,
@@ -1488,14 +1512,21 @@ export function ChatView({
     return () => window.removeEventListener(AGENT_PREFERENCES_CHANGED_EVENT, syncAgentPreferences);
   }, [conversation.id]);
   // Restore last explicit model pick for this conversation across restarts.
-  const [modelOverride, setModelOverride] = useState<string>(
+  const [conversationModelOverride, setModelOverride] = useState<string>(
     () => readConversationModelOverride(String(conversation.id)) ?? '',
   );
   const [retryAfterModelPickMessageId, setRetryAfterModelPickMessageId] = useState<string>();
   // Multi-kernel selector: per-conversation kernel id (default = native).
-  const [kernelOverride, setKernelOverride] = useState<string>(
+  const [conversationKernelOverride, setKernelOverride] = useState<string>(
     () => readConversationKernelOverride(String(conversation.id)) ?? 'native',
   );
+  const reasoningEffort = followsAgentConfig
+    ? (configuredAgent?.reasoningEffort || 'auto') as ReasoningEffort
+    : conversationReasoningEffort;
+  const modelOverride = followsAgentConfig ? '' : conversationModelOverride;
+  const kernelOverride = followsAgentConfig
+    ? configuredAgent?.defaultKernelId ?? 'native'
+    : conversationKernelOverride;
   // Kernel registry sweep for the selector (cached per conversation view).
   const [kernelRegistry, setKernelRegistry] = useState<KernelDetectionResult[] | null>(null);
   const [kernelInstallStates, setKernelInstallStates] = useState<
@@ -1787,6 +1818,13 @@ export function ChatView({
   const [mcpMenuStyle, setMcpMenuStyle] = useState<React.CSSProperties | null>(null);
   /** Selected @-files / images shown as chips (NewMax style). */
   const [attachments, setAttachments] = useState<ComposeAttachment[]>([]);
+  const imageUploads = useComposerImageUploads({
+    attachments, setAttachments, scopeKey: String(conversation.id),
+    onError: (file) => setLocalErrors((previous) => [...previous, {
+      id: `image-error-${Date.now()}`, role: 'system', tone: 'error',
+      text: `图片读取失败：${file.name || '未命名图片'}`, timestamp: new Date().toISOString(),
+    }]),
+  });
   /** Exact immutable Skill versions used by normal Composer sends in this conversation. */
   const [selectedSkillVersionIds, setSelectedSkillVersionIds] = useState<string[]>(() =>
     resolveAppendSkillVersionIds(
@@ -1795,7 +1833,7 @@ export function ChatView({
     ),
   );
   /** Which compose menu is open (exclusive). */
-  const [menu, setMenu] = useState<'permission' | 'skill' | 'model' | 'identity' | null>(null);
+  const [menu, setMenu] = useState<'permission' | 'skill' | 'model' | null>(null);
   const composerToolbar = useComposerToolbarCollapse({
     permissionMenuOpen: menu === 'permission',
     onPermissionMenuOpenChange: (open) => setMenu(open ? 'permission' : null),
@@ -1871,6 +1909,17 @@ export function ChatView({
   });
   const inputValueRef = useRef(input);
   inputValueRef.current = input;
+  const quoteConversationRef = useRef(String(conversation.id));
+  quoteConversationRef.current = String(conversation.id);
+  const handleQuoteToComposer = useCallback((text: string, label: string) => {
+    if (quoteConversationRef.current !== String(conversation.id)) return;
+    setInput(current => appendContextQuote(current, text, label));
+    window.requestAnimationFrame(() => {
+      const editor = inputRef.current;
+      editor?.focus();
+      if (editor) editor.setSelectionRange(editor.value.length, editor.value.length);
+    });
+  }, [conversation.id]);
   const speechRecognitionRef = useRef<BrowserSpeechRecognition | null>(null);
   const suppressPickerRefreshRef = useRef(false);
   const imageInputRef = useRef<HTMLInputElement>(null);
@@ -1880,7 +1929,6 @@ export function ChatView({
   if (slash) lastSlashQueryRef.current = slash.query;
   const permissionBtnRef = useRef<HTMLButtonElement>(null);
   const modelBtnRef = useRef<HTMLButtonElement>(null);
-  const identityBtnRef = useRef<HTMLButtonElement>(null);
   const [slashPopStyle, setSlashPopStyle] = useState<React.CSSProperties | null>(null);
   useEffect(() => {
     if (initialSkillVersionIds !== undefined) {
@@ -2006,7 +2054,7 @@ export function ChatView({
   // reset effect above so the seed survives: effects run in declaration order,
   // and that one clears `input` when the chat is (re)mounted.
   useEffect(() => {
-    const seed = seedComposerText?.trim();
+    const seed = seedComposerText?.trim() || takePromotedDraft(String(conversation.id));
     if (!seed) return;
     onSeedComposerTextConsumed?.(String(conversation.id));
     setInput((current) =>
@@ -2278,7 +2326,7 @@ export function ChatView({
 
   const catalogContextWindow = models.find((model) => {
     const requestedModelId =
-      modelOverride.trim() ||
+      (followsAgentConfig ? configuredAgent?.defaultModelId : modelOverride.trim()) ||
       (conversation.track === 'model' ? String(conversation.targetRef ?? '').trim() : '');
     return requestedModelId !== '' && model.modelId === requestedModelId;
   })?.contextWindow;
@@ -2313,6 +2361,8 @@ export function ChatView({
     conversation.track,
     kernelOverride,
     modelOverride,
+    configuredAgent?.defaultModelId,
+    followsAgentConfig,
     catalogContextWindow,
   ]);
 
@@ -2780,7 +2830,7 @@ export function ChatView({
       const workspaceId = conversation.workspaceId;
       const taskId = conversation.taskId;
       const runId = projected.activeRunId;
-      if (!api?.listWaitingDesktopCommands || !workspaceId || !taskId || !threadId) {
+      if (!api?.listWaitingDesktopCommands || !taskId || !threadId) {
         desktopWaitingLoadGenerationRef.current += 1;
         setDesktopWaitingCommands([]);
         setDesktopWaitingStatus('idle');
@@ -2799,7 +2849,7 @@ export function ChatView({
         setDesktopWaitingCommands(
           response.commands.filter(
             (command) =>
-              command.workspaceId === workspaceId &&
+              (!workspaceId || command.workspaceId === workspaceId) &&
               command.taskId === taskId &&
               (!runId || command.runId === runId),
           ),
@@ -2854,7 +2904,7 @@ export function ChatView({
       const workspaceId = conversation.workspaceId;
       const taskId = conversation.taskId;
       const runId = projected.activeRunId;
-      if (!api?.listWaitingBrowserHandoffs || !workspaceId || !taskId || !threadId) {
+      if (!api?.listWaitingBrowserHandoffs || !taskId || !threadId) {
         browserHandoffLoadGenerationRef.current += 1;
         setBrowserHandoffs([]);
         setBrowserHandoffStatus('idle');
@@ -2873,7 +2923,7 @@ export function ChatView({
         setBrowserHandoffs(
           response.handoffs.filter(
             (handoff) =>
-              handoff.workspaceId === workspaceId &&
+              (!workspaceId || handoff.workspaceId === workspaceId) &&
               handoff.taskId === taskId &&
               (!runId || handoff.runId === runId),
           ),
@@ -3220,6 +3270,10 @@ export function ChatView({
     [conversation.id, threadId, setLocalErrors],
   );
   const pendingToolApprovalLoadGenerationRef = useRef(0);
+  const [confirmedApprovalIds, setConfirmedApprovalIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [approvalSubmission, setApprovalSubmission] = useState<{ approvalId: string; decision: 'approve' | 'deny'; scope: ToolApprovalScope }>();
+  const [approvalSubmissionError, setApprovalSubmissionError] = useState<{ approvalId: string; message: string }>();
+  const approvalDecisionInFlightRef = useRef<{ approvalId: string; conversationId: string }>();
   const toolApprovalLifecycleRevision = useMemo(() => {
     let revision = 0;
     for (const event of eventHistory) {
@@ -3294,6 +3348,7 @@ export function ChatView({
               ? event.payload.title
               : `需要批准：${String(event.payload.toolName ?? 'tool')}`,
           detail: typeof event.payload.detail === 'string' ? event.payload.detail : '',
+          reason: typeof event.payload.reason === 'string' ? event.payload.reason : undefined,
           path: typeof event.payload.path === 'string' ? event.payload.path : undefined,
           command: typeof event.payload.command === 'string' ? event.payload.command : undefined,
           arguments: toolApprovalArguments(event.payload.arguments),
@@ -3329,6 +3384,7 @@ export function ChatView({
         toolName: approval.toolName,
         title: approval.title,
         detail: approval.detail,
+        reason: byId.get(approval.approvalId)?.reason,
         ...(approval.toolCallId ? { toolCallId: approval.toolCallId } : {}),
         ...(approval.path ? { path: approval.path } : {}),
         ...(approval.command ? { command: approval.command } : {}),
@@ -3339,7 +3395,7 @@ export function ChatView({
     // Drop resolved cards and cards belonging to runs that already ended
     // (cancel/abort paths and runtime restarts can strand requested events).
     const unresolved = [...byId.values()].filter(
-      (item) => !item.decided && !(item.runId && endedRuns.has(item.runId)),
+      (item) => !item.decided && !confirmedApprovalIds.has(item.approvalId) && !(item.runId && endedRuns.has(item.runId)),
     );
     // A runtime restart replays the tool loop and re-requests the same
     // toolCall with a fresh approvalId — keep only the newest per toolCall.
@@ -3350,7 +3406,7 @@ export function ChatView({
       else noToolCall.push(item);
     }
     return [...byToolCall.values(), ...noToolCall];
-  }, [eventHistory, runtimePendingApprovals, threadId]);
+  }, [eventHistory, runtimePendingApprovals, threadId, confirmedApprovalIds]);
 
   const approvalWaitingRunIds = useMemo(
     () => new Set(pendingApprovals.flatMap((approval) => (approval.runId ? [approval.runId] : []))),
@@ -3360,14 +3416,22 @@ export function ChatView({
   const [decidingApprovalId, setDecidingApprovalId] = useState<string | null>(null);
   useEffect(() => {
     setDecidingApprovalId(null);
+    setConfirmedApprovalIds(new Set());
+    setApprovalSubmission(undefined);
+    setApprovalSubmissionError(undefined);
+    approvalDecisionInFlightRef.current = undefined;
   }, [conversation.id]);
 
   const handleToolApproval = useCallback(
     async (approvalId: string, decision: 'approve' | 'deny', scope: ToolApprovalScope = 'once') => {
       const api = bridge();
-      if (!api?.decideToolApproval || decidingApprovalId) return;
+      if (!api?.decideToolApproval || approvalDecisionInFlightRef.current) return;
       const targetConversationId = String(conversation.id);
+      const request = { approvalId, conversationId: targetConversationId };
+      approvalDecisionInFlightRef.current = request;
       setDecidingApprovalId(approvalId);
+      setApprovalSubmission({ approvalId, decision, scope });
+      setApprovalSubmissionError(undefined);
       try {
         const response = await api.decideToolApproval({
           approvalId,
@@ -3375,6 +3439,12 @@ export function ChatView({
           scope: decision === 'deny' ? 'once' : scope,
         });
         if (activeConversationIdRef.current !== targetConversationId) return;
+        if (response.approvalId !== approvalId || !['approve', 'deny'].includes(response.decision)) {
+          throw new Error('审批结果不完整，请重新确认');
+        }
+        // The acknowledgement is authoritative even when an older pending query
+        // completes later or the durable event has not reached this renderer yet.
+        setConfirmedApprovalIds((previous) => new Set([...previous, approvalId]));
         if (response.outcome === 'expired' || response.decision !== decision) {
           const id = 'approval-outcome-' + approvalId;
           const text =
@@ -3388,24 +3458,31 @@ export function ChatView({
             { id, role: 'system', tone: 'warning', text, timestamp: new Date().toISOString() },
           ]);
         }
+        // The decision is acknowledged; the next queued approval can now be
+        // handled independently of the background pending-list refresh.
+        if (approvalDecisionInFlightRef.current === request) {
+          approvalDecisionInFlightRef.current = undefined;
+          setDecidingApprovalId(null);
+          setApprovalSubmission(undefined);
+        }
         await refreshPendingToolApprovals();
       } catch (error) {
         if (activeConversationIdRef.current !== targetConversationId) return;
-        setLocalErrors((prev) => [
-          ...prev,
-          {
-            id: `err-appr-${Date.now()}`,
-            role: 'system',
-            tone: 'error',
-            text: `处理批准失败: ${error instanceof Error ? error.message : String(error)}`,
-            timestamp: new Date().toISOString(),
-          },
-        ]);
+        setApprovalSubmissionError({
+          approvalId,
+          message: '提交审批失败：' + (error instanceof Error ? error.message : String(error)),
+        });
       } finally {
-        if (activeConversationIdRef.current === targetConversationId) setDecidingApprovalId(null);
+        if (approvalDecisionInFlightRef.current === request) {
+          approvalDecisionInFlightRef.current = undefined;
+          if (activeConversationIdRef.current === targetConversationId) {
+            setDecidingApprovalId(null);
+            setApprovalSubmission(undefined);
+          }
+        }
       }
     },
-    [conversation.id, decidingApprovalId, refreshPendingToolApprovals, setLocalErrors],
+    [conversation.id, refreshPendingToolApprovals, setLocalErrors],
   );
 
   // Remove optimistic bubbles only after their durable message id arrives.
@@ -4014,7 +4091,7 @@ export function ChatView({
     async (text: string, images: MessageImage[] = [], options?: ComposeSendOptions) => {
       const api = bridge();
       if (!api || (!text.trim() && images.length === 0)) return;
-      if (!ensureKernelExecution(options?.kernelOverride ?? kernelOverride)) {
+      if (!ensureKernelExecution(followsAgentConfig ? kernelOverride : (options?.kernelOverride ?? kernelOverride))) {
         throw new Error('当前内核执行尚未接通');
       }
       const conversationId = String(conversation.id);
@@ -4024,12 +4101,12 @@ export function ChatView({
         conversation.track,
         options?.skillVersionIds ?? selectedSkillVersionIds,
       );
-      const selectedModelOverride = options?.modelOverride ?? modelOverride;
-      const selectedReasoningEffort = options?.reasoningEffort ?? reasoningEffort;
+      const selectedModelOverride = followsAgentConfig ? '' : options?.modelOverride ?? modelOverride;
+      const selectedReasoningEffort = followsAgentConfig ? reasoningEffort : options?.reasoningEffort ?? reasoningEffort;
       const selectedNetworkEnabled = options?.networkEnabled ?? netEnabled;
 
       // Use the frozen kernel choice, including queued drafts and explicit overrides.
-      await runAutoCompact(options?.kernelOverride ?? kernelOverride, contextStatusRef.current);
+      await runAutoCompact(followsAgentConfig ? kernelOverride : (options?.kernelOverride ?? kernelOverride), contextStatusRef.current);
 
       const tempId = `temp-${Date.now()}`;
       if (isActiveConversation()) {
@@ -4065,16 +4142,13 @@ export function ChatView({
             track: conversation.track,
             targetRef: conversation.targetRef,
             catalogModelIds: models.map((model) => model.modelId),
-            kernelOverride: options?.kernelOverride ?? kernelOverride,
+            kernelOverride: followsAgentConfig ? kernelOverride : (options?.kernelOverride ?? kernelOverride),
             reasoningEffort: selectedReasoningEffort,
             networkEnabled: selectedNetworkEnabled,
             planExecuting: options?.planExecuting,
             helpMode: options?.helpMode,
             skillVersionIds,
-            workspacePath: conversation.workspaceId
-              ? workspaces.find((workspace) => workspace.workspaceId === conversation.workspaceId)
-                  ?.folderPath
-              : undefined,
+            workspacePath: projectFolder,
           },
           {
             prepare: (payload) => api.sendConversationMessage(payload),
@@ -4140,6 +4214,8 @@ export function ChatView({
     },
     [
       ensureKernelExecution,
+      followsAgentConfig,
+      projectFolder,
       conversation.id,
       conversation.workspaceId,
       conversation.targetRef,
@@ -4575,12 +4651,6 @@ export function ChatView({
     setMenu('model');
   }, []);
 
-  const boundWorkspace = conversation.workspaceId
-    ? workspaces.find((workspace) => workspace.workspaceId === conversation.workspaceId)
-    : undefined;
-  const projectFolder = boundWorkspace?.folderPath?.trim();
-  const hasProjectFolder = Boolean(projectFolder);
-
   const closeSlash = useCallback(() => {
     setSlash(null);
     setSlashIndex(-1);
@@ -4979,6 +5049,7 @@ export function ChatView({
   );
 
   const handleSend = useCallback(async () => {
+    if (imageUploads.isBusy()) return;
     const text = input.trim();
     if ((!text && attachments.length === 0) || isCompacting()) return;
 
@@ -5274,6 +5345,7 @@ export function ChatView({
     window.requestAnimationFrame(() => resizeComposeInput());
     await sendDraft(draft, sendUserText);
   }, [
+    imageUploads.isBusy,
     attachments,
     closeComposePickers,
     commitQueuedComposeRequests,
@@ -5327,54 +5399,7 @@ export function ChatView({
     }
   }, [closeComposePickers, pendingRiskGoal, resizeComposeInput, startGoalFromShortcut]);
 
-  const addImageFiles = useCallback(
-    async (files: FileList | File[]) => {
-      const remainingSlots = Math.max(
-        0,
-        8 - attachments.filter((item) => item.kind === 'image').length,
-      );
-      const list = Array.from(files).filter(isImageFile).slice(0, remainingSlots);
-      if (list.length === 0) return;
-      const nextItems: ComposeAttachment[] = [];
-      for (const file of list) {
-        try {
-          const rawUrl = await readFileAsDataUrl(file);
-          // Compress before staging so provider requests stay reasonable.
-          const compressed = await compressImageDataUrl(rawUrl, {
-            mimeType: file.type || 'image/png',
-          });
-          nextItems.push({
-            path: `image:${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${file.name}`,
-            name: file.name || 'image',
-            kind: 'image',
-            previewUrl: compressed.dataUrl,
-            mimeType: compressed.mimeType,
-            sizeBytes: Math.floor(
-              (compressed.dataUrl.length - compressed.dataUrl.indexOf(',') - 1) * 0.75,
-            ),
-          });
-        } catch {
-          setLocalErrors((prev) => [
-            ...prev,
-            {
-              id: `image-error-${Date.now()}`,
-              role: 'system',
-              tone: 'error',
-              text: `无法读取图片：${file.name || '未命名图片'}`,
-              timestamp: new Date().toISOString(),
-            },
-          ]);
-        }
-      }
-      if (nextItems.length === 0) return;
-      setAttachments((prev) => {
-        let next = [...prev];
-        for (const item of nextItems) next = addAttachment(next, item);
-        return next.slice(0, 8);
-      });
-    },
-    [attachments],
-  );
+  const addImageFiles = imageUploads.addFiles;
 
   const handleImageInputChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -5667,8 +5692,8 @@ export function ChatView({
       }
     }
 
-    if (conversation.track === 'agent' && target) {
-      const agent = agents.find((item) => item.id === target);
+    if (followsAgentConfig && configuredAgent) {
+      const agent = configuredAgent;
       const agentModel = findModel(agent?.defaultModelId);
       if (agentModel) {
         return { id: agentModel.modelId, option: agentModel, source: 'agent-default' as const };
@@ -5760,7 +5785,8 @@ export function ChatView({
       source: 'fallback' as const,
     };
   }, [
-    agents,
+    configuredAgent,
+    followsAgentConfig,
     conversation.targetRef,
     conversation.taskId,
     conversation.track,
@@ -5794,16 +5820,16 @@ export function ChatView({
     return models.find((model) => model.modelId === modelId)?.displayName ?? modelId;
   };
   const planBannerModelLabel =
-    planActSetting?.enabled && planActSetting.planModelId
+    !followsAgentConfig && planActSetting?.enabled && planActSetting.planModelId
       ? configuredModelLabel(planActSetting.planModelId)
       : activeModel;
   const actBannerModelLabel =
-    planActSetting?.enabled && planActSetting.actModelId
+    !followsAgentConfig && planActSetting?.enabled && planActSetting.actModelId
       ? configuredModelLabel(planActSetting.actModelId)
       : activeModel;
   const composerModelSelection = resolveComposerModelSelection({
     planMode: composerMode === 'plan',
-    setting: planActSetting,
+    setting: followsAgentConfig ? null : planActSetting,
     currentModelId: activeModelId,
     currentReasoningEffort: reasoningEffort,
   });
@@ -6014,9 +6040,8 @@ export function ChatView({
     });
   }, [conversation.taskId, eventHistory, threadId]);
 
-  const PermIcon = PERMISSION_ICONS[permissionMode];
 
-  // 对话对象（模型 / 智能体 / 小队）标识与换绑。
+  // 对话对象（模型 / 智能体 / 小队）的只读标识。
   const identityLabel = useMemo(() => {
     if (conversation.track === 'agent') {
       return conversationAgent?.name ?? '智能体';
@@ -6026,49 +6051,7 @@ export function ChatView({
     }
     return '模型';
   }, [conversation.track, conversationAgent?.name, conversationTeam?.name]);
-  const IdentityIcon =
-    conversation.track === 'agent' ? Bot : conversation.track === 'team' ? Users : MessageSquare;
   const identityAvatar = conversationAgent ?? conversationTeam;
-  const handlePickIdentity = useCallback(
-    async (option: IdentityOption) => {
-      const api = bridge();
-      if (!api?.rebindConversationTarget) return;
-      // 切回「直接跟模型聊」时 targetRef 用当前生效模型。
-      const targetRef =
-        option.track === 'model'
-          ? option.targetRef || activeModelId || models[0]?.modelId || ''
-          : option.targetRef;
-      if (!targetRef) return;
-      if (option.track === conversation.track && targetRef === String(conversation.targetRef)) {
-        return;
-      }
-      try {
-        await api.rebindConversationTarget({
-          conversationId: conversation.id,
-          track: option.track,
-          targetRef,
-        });
-        setSelectedSkillVersionIds([]);
-        onConversationUpdated?.();
-      } catch (error) {
-        toastApi.toast({
-          type: 'error',
-          title: '换绑对话失败',
-          description: error instanceof Error ? error.message : String(error),
-        });
-      }
-    },
-    [
-      conversation.id,
-      conversation.track,
-      conversation.targetRef,
-      activeModelId,
-      agents,
-      models,
-      onConversationUpdated,
-      teams,
-    ],
-  );
   const showTyping = reconciledSending || projected.streaming;
   const canStop = Boolean(projected.activeRunId) && (reconciledSending || projected.streaming);
   // Active kernel display + pause degradation per capabilities.pause.
@@ -6348,6 +6331,10 @@ export function ChatView({
                     </div>
                   ) : null}
                   <MessageBubble
+                    agentWorkspace={agentWorkspace}
+                    showFileChanges={conversation.track === 'model'}
+                    onEditAgent={onEditAgent}
+                    onQuote={handleQuoteToComposer}
                     message={msg}
                     waitingForApproval={Boolean(msg.runId && approvalWaitingRunIds.has(msg.runId))}
                     processView={msg.runId ? displayRunProcessById.get(msg.runId) : undefined}
@@ -6364,7 +6351,7 @@ export function ChatView({
                     regenerating={sending}
                     onRegenerate={handleRegenerate}
                     onContinue={handleContinueInterrupted}
-                    onChooseModelAndRetry={handleChooseModelAndRetry}
+                    onChooseModelAndRetry={followsAgentConfig ? undefined : handleChooseModelAndRetry}
                     onOpenChange={onOpenFile}
                     conversationId={String(conversation.id)}
                     onOpenHtmlInBrowser={onOpenHtmlInBrowser}
@@ -6391,6 +6378,7 @@ export function ChatView({
                 <div className="pb-4">
                   <div
                     className="shell-run-connection-status shell-run-connection-status--standalone"
+                    aria-label="运行时连接状态"
                     data-state={standaloneRuntimeConnectionNotice.state}
                     role="status"
                     aria-live="polite"
@@ -6413,6 +6401,10 @@ export function ChatView({
                   data-message-role={msg.role}
                 >
                   <MessageBubble
+                    agentWorkspace={agentWorkspace}
+                    showFileChanges={conversation.track === 'model'}
+                    onEditAgent={onEditAgent}
+                    onQuote={handleQuoteToComposer}
                     message={msg}
                     waitingForApproval={Boolean(msg.runId && approvalWaitingRunIds.has(msg.runId))}
                     processView={msg.runId ? displayRunProcessById.get(msg.runId) : undefined}
@@ -6429,7 +6421,7 @@ export function ChatView({
                     regenerating={sending}
                     onRegenerate={handleRegenerate}
                     onContinue={handleContinueInterrupted}
-                    onChooseModelAndRetry={handleChooseModelAndRetry}
+                    onChooseModelAndRetry={followsAgentConfig ? undefined : handleChooseModelAndRetry}
                     onOpenChange={onOpenFile}
                     conversationId={String(conversation.id)}
                     onOpenHtmlInBrowser={onOpenHtmlInBrowser}
@@ -6574,6 +6566,9 @@ export function ChatView({
                       node: (
                         <ToolApprovalCard
                           approval={pendingApprovals[0]}
+                          pendingCount={pendingApprovals.length}
+                          submission={approvalSubmission?.approvalId === pendingApprovals[0].approvalId ? approvalSubmission : undefined}
+                          error={approvalSubmissionError?.approvalId === pendingApprovals[0].approvalId ? approvalSubmissionError.message : undefined}
                           busy={decidingApprovalId === pendingApprovals[0].approvalId}
                           onApprove={(scope) =>
                             void handleToolApproval(
@@ -6611,6 +6606,16 @@ export function ChatView({
             />
             <NewMaxComposerFrame
               variant="conversation"
+              contextBar={
+                projectFolder && boundWorkspace?.folderPath && onOpenGit ? (
+                  <ComposerGitBar
+                    projectFolder={projectFolder}
+                    workspaceName={boundWorkspace?.name}
+                    navigation={gitNavigation ? { ...gitNavigation, workspaceId: boundWorkspace?.workspaceId } : undefined}
+                    onOpenGit={onOpenGit}
+                  />
+                ) : null
+              }
               modeBanner={composerModeBanner}
               className={`relative ${dragOver ? 'is-dragover' : ''}`}
               data-layout="tall"
@@ -6715,9 +6720,10 @@ export function ChatView({
                         ? '输入消息…（输入 @ 引用文件，/ 打开快捷面板）'
                         : '输入消息…（输入 / 打开快捷面板）'
                     }
-                    attachments={attachments}
+                    attachments={imageUploads.items}
                     selectedSkills={selectedSlashSkills}
-                    minHeight={36}
+                    minHeight={agentWorkspace ? 12 : 36}
+                    chatFontSize={agentWorkspace ? 14 : undefined}
                     maxHeight={200}
                     disabled={compactProgress?.status === 'running'}
                     goalRunning={goalIsActive}
@@ -6740,9 +6746,7 @@ export function ChatView({
                       }
                       if (attachment.kind === 'file') onOpenFile?.(attachment.path);
                     }}
-                    onRemoveAttachment={(path) =>
-                      setAttachments((current) => removeAttachment(current, path))
-                    }
+                    onRemoveAttachment={imageUploads.remove}
                     onRemoveSkill={(skillVersionId) =>
                       setSelectedSkillVersionIds((current) =>
                         current.filter((selected) => selected !== skillVersionId),
@@ -6799,7 +6803,7 @@ export function ChatView({
                     }
                     disabled={Boolean(composerPendingAsk) || compactProgress?.status === 'running'}
                     attachDisabled={
-                      attachments.filter((attachment) => attachment.kind === 'image').length >= 8
+                      imageUploads.items.filter((attachment) => attachment.kind === 'image').length >= 8
                     }
                     onAttach={() => imageInputRef.current?.click()}
                     onPlan={() =>
@@ -6880,22 +6884,12 @@ export function ChatView({
                       composerToolbar.collapseLevel >= PERMISSION_MODE_COLLAPSED_TOOLBAR_LEVEL
                     }
                   >
-                    <button
+                    <PermissionTrigger
                       ref={permissionBtnRef}
-                      type="button"
-                      className="shell-compose__tool"
-                      data-active={permissionMode === 'full-access' ? '1' : '0'}
-                      data-open={menu === 'permission' ? '1' : '0'}
-                      aria-haspopup="menu"
-                      aria-expanded={menu === 'permission'}
+                      value={permissionMode}
+                      open={menu === 'permission'}
                       onClick={() => setMenu((m) => (m === 'permission' ? null : 'permission'))}
-                      title={`权限：${PERMISSION_LABELS[permissionMode]}`}
-                    >
-                      <PermIcon size={15} />
-                      <span className="shell-compose__tool-label">
-                        {PERMISSION_LABELS[permissionMode]}
-                      </span>
-                    </button>
+                    />
                     <PermissionMenu
                       open={menu === 'permission'}
                       value={permissionMode}
@@ -6924,52 +6918,12 @@ export function ChatView({
                 </div>
 
                 <div ref={composerToolbar.rightRef} className="shell-compose__bar-right">
-                  {/* 对话对象选择器：模型 / 智能体 / 小队（rebindTarget 换绑） */}
-                  <div className="shell-compose__tool-wrap">
-                    <button
-                      ref={identityBtnRef}
-                      type="button"
-                      className="shell-compose__tool"
-                      data-active={conversation.track !== 'model' ? '1' : '0'}
-                      data-open={menu === 'identity' ? '1' : '0'}
-                      aria-haspopup="menu"
-                      aria-expanded={menu === 'identity'}
-                      data-testid="compose-identity"
-                      onClick={() => setMenu((m) => (m === 'identity' ? null : 'identity'))}
-                      title={`对话对象：${identityLabel}`}
-                    >
-                      {identityAvatar?.avatar?.trim() ? (
-                        <AgentAvatarView
-                          name={identityAvatar.name}
-                          avatar={identityAvatar.avatar}
-                          size={18}
-                        />
-                      ) : (
-                        <IdentityIcon size={15} />
-                      )}
-                      <span className="shell-compose__tool-label">{identityLabel}</span>
-                    </button>
-                    <IdentityPickerMenu
-                      open={menu === 'identity'}
-                      agents={agents.map((a) => ({
-                        id: String(a.id),
-                        name: a.name,
-                        description: a.description,
-                        avatar: a.avatar,
-                      }))}
-                      teams={teams.map((t) => ({
-                        id: String(t.id),
-                        name: t.name,
-                        description: t.mission,
-                        avatar: t.avatar,
-                      }))}
-                      currentTrack={conversation.track}
-                      currentTargetRef={String(conversation.targetRef ?? '')}
-                      anchorEl={identityBtnRef.current}
-                      onClose={() => setMenu(null)}
-                      onPick={(option) => void handlePickIdentity(option)}
-                    />
-                  </div>
+                  <ComposerIdentity
+                    track={conversation.track}
+                    label={identityLabel}
+                    avatar={identityAvatar}
+                    testId="compose-identity"
+                  />
 
                   {/* NewMax ring: context occupancy + hover shows session/cost/context */}
                   <ContextRing
@@ -7008,8 +6962,8 @@ export function ChatView({
                     }
                   />
 
-                  {/* Two-level model picker */}
-                  <div className="shell-compose__tool-wrap">
+                  {/* Model conversations own their picker; agents use their saved settings. */}
+                  {!followsAgentConfig && <div className="shell-compose__tool-wrap">
                     <ModelPickerMenu
                       open={menu === 'model'}
                       models={models}
@@ -7106,14 +7060,14 @@ export function ChatView({
                           );
                         })()
                       : null}
-                  </div>
+                  </div>}
 
                   <ComposerActionSlot
-                    hasContent={!goalIsActive && Boolean(input.trim() || attachments.length > 0)}
+                    hasContent={!goalIsActive && Boolean(input.trim() || imageUploads.items.length > 0)}
                     running={canStop}
                     voiceActive={voiceInputActive}
                     voiceDisabled={goalIsActive || compactProgress?.status === 'running'}
-                    sendDisabled={goalIsActive || compactProgress?.status === 'running'}
+                    sendDisabled={imageUploads.pending || goalIsActive || compactProgress?.status === 'running'}
                     stopDisabled={stopping}
                     stopLabel={stopTitle}
                     onVoice={() => {
@@ -7269,15 +7223,9 @@ function isTransientModelOverload(error?: string): boolean {
 function HarnessTerminalNotice({
   state,
   error,
-  busy,
-  onContinue,
-  onRetry,
 }: {
   state: 'failed' | 'cancelled' | 'paused';
   error?: string;
-  busy?: boolean;
-  onContinue?(): void;
-  onRetry?(): void;
 }) {
   const errorSummary = error
     ?.split('\n')
@@ -7291,14 +7239,6 @@ function HarnessTerminalNotice({
       >
         <span className="shell-harness-terminal__dot" aria-hidden="true" />
         <span className="shell-harness-terminal__title">回答已中断</span>
-        <button type="button" disabled={busy} onClick={onContinue} aria-label="继续回答">
-          <SendHorizonal size={12} aria-hidden="true" />
-          <span>继续</span>
-        </button>
-        <button type="button" disabled={busy} onClick={onRetry} aria-label="重试回答">
-          <RefreshCw size={12} aria-hidden="true" />
-          <span>重试</span>
-        </button>
       </div>
     );
   }
@@ -7323,22 +7263,6 @@ function HarnessTerminalNotice({
           <ChevronDown size={13} className="shell-harness-terminal__chevron" aria-hidden="true" />
         </summary>
         {error ? <pre className="shell-harness-terminal__detail">{error}</pre> : null}
-        {onContinue || onRetry ? (
-          <div className="shell-harness-terminal__actions">
-            {onContinue ? (
-              <button type="button" disabled={busy} onClick={onContinue} aria-label="继续回答">
-                <SendHorizonal size={12} aria-hidden="true" />
-                <span>继续</span>
-              </button>
-            ) : null}
-            {onRetry ? (
-              <button type="button" disabled={busy} onClick={onRetry} aria-label="重试回答">
-                <RefreshCw size={12} aria-hidden="true" />
-                <span>重试</span>
-              </button>
-            ) : null}
-          </div>
-        ) : null}
       </details>
     );
   }
@@ -7649,14 +7573,14 @@ function delegatedAgentObservationLabel(task: DelegatedAgentTaskView): string | 
  * 运行时的兜底是「名字前两个字」（`resolveDelegatedAgentAvatar`），那只是没有头像时
  * 的占位符，不是头像——卡片上直接把它当文字渲染，看起来就是一块「代码」。
  * 凡是占位（空串或恰好等于名字前两字）就按 Agent 身份派生一张程序化脸，
- * 与 Agent Library 建库时的回填（`avatarSeed`）保持同一套外观。
+ * 与 Agent Library 建库时的回填（`botAvatarSeed`）保持同一套外观。
  */
 function delegatedAgentAvatarValue(task: DelegatedAgentTaskView): string {
   const trimmed = (task.avatar ?? '').trim();
   const initials = task.name.trim().slice(0, 2);
   if (trimmed && trimmed !== initials) return trimmed;
-  const face = resolveAvatarFace(trimmed, task.agentId);
-  return avatarSeed(face.shape, face.color);
+  const face = resolveBotAvatarFace(trimmed, task.agentId);
+  return botAvatarSeed(face.shape, face.color);
 }
 
 /** Live projection → card view (used when there is no durable item yet). */
@@ -7945,6 +7869,9 @@ export const DelegatedAgentTasks = memo(function DelegatedAgentTasks({
 });
 
 const MessageBubble = memo(function MessageBubble({
+  showFileChanges = true,
+  agentWorkspace = false,
+  onEditAgent,
   message,
   waitingForApproval = false,
   processView: sourceProcessView,
@@ -7958,6 +7885,7 @@ const MessageBubble = memo(function MessageBubble({
   onRegenerate,
   onContinue,
   onOpenChange,
+  onQuote,
   conversationId,
   onOpenHtmlInBrowser,
   onOpenWebUrl,
@@ -7969,6 +7897,9 @@ const MessageBubble = memo(function MessageBubble({
   agentPreferences,
   dismissLocalError,
 }: {
+  showFileChanges?: boolean;
+  agentWorkspace?: boolean;
+  onEditAgent?(id: string): void;
   message: ChatMessage;
   waitingForApproval?: boolean;
   processView?: RunProcessView;
@@ -7983,6 +7914,7 @@ const MessageBubble = memo(function MessageBubble({
   onContinue?: (messageId: string) => void;
   onChooseModelAndRetry?: (messageId: string) => void;
   onOpenChange?: (path: string, location?: ProjectTextLocation) => void;
+  onQuote?: (text: string, label: string) => void;
   conversationId?: string;
   onOpenHtmlInBrowser?: OpenHtmlInBrowser;
   onOpenWebUrl?: (url: string) => void;
@@ -8002,6 +7934,9 @@ const MessageBubble = memo(function MessageBubble({
     conversationId,
     { accumulate: true },
   );
+  const openContextMenu = useContextMenu();
+  const contextRead = useRef<AbortController>();
+  const contextActions = useMemo(() => ({ quote: onQuote, openFile: onOpenChange }), [onQuote, onOpenChange]);
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
   const systemTone: SystemMessageTone = resolveSystemMessageTone(message.tone, message.text);
@@ -8014,7 +7949,9 @@ const MessageBubble = memo(function MessageBubble({
     setCopied(false);
     setCopying(false);
     setCopyFailed(false);
+    setFeedback(null);
     return () => {
+      contextRead.current?.abort();
       copyRead.current?.abort();
       copyRead.current = undefined;
       clearTimeout(copyTimer.current);
@@ -8025,6 +7962,8 @@ const MessageBubble = memo(function MessageBubble({
   const [timelineLoadState, setTimelineLoadState] = useState<
     'idle' | 'loading' | 'loaded' | 'error'
   >('idle');
+  const [timelineLoadError, setTimelineLoadError] = useState<string>();
+  const timelineLoadAbortRef = useRef<AbortController>();
   const [timelineNextCursor, setTimelineNextCursor] = useState<string>();
   const [timelineTotalSegments, setTimelineTotalSegments] = useState<number>();
   const timelineLoadPromiseRef = useRef<Promise<void> | null>(null);
@@ -8050,6 +7989,7 @@ const MessageBubble = memo(function MessageBubble({
     if (observedTimelineRunRef.current === message.runId) return;
     observedTimelineRunRef.current = message.runId;
     timelineLoadGenerationRef.current += 1;
+    timelineLoadAbortRef.current?.abort();
     timelineLoadPromiseRef.current = null;
     timelineNextCursorRef.current = undefined;
     timelineHasLoadedPageRef.current = false;
@@ -8058,11 +7998,13 @@ const MessageBubble = memo(function MessageBubble({
     setTimelineNextCursor(undefined);
     setTimelineTotalSegments(undefined);
     setTimelineLoadState('idle');
+    setTimelineLoadError(undefined);
   }, [message.runId]);
 
   useEffect(
     () => () => {
       timelineLoadGenerationRef.current += 1;
+      timelineLoadAbortRef.current?.abort();
     },
     [],
   );
@@ -8070,7 +8012,7 @@ const MessageBubble = memo(function MessageBubble({
   const loadAssistantTimelinePage = useCallback(() => {
     const runId = message.runId;
     const api = bridge();
-    if (!runId || !api?.listConversationRunTimeline) return;
+    if (!runId || message.streaming || !api?.listConversationRunTimeline) return;
     if (timelineLoadPromiseRef.current) return;
     const requestCursor = timelineHasLoadedPageRef.current
       ? timelineNextCursorRef.current
@@ -8078,12 +8020,16 @@ const MessageBubble = memo(function MessageBubble({
     if (timelineHasLoadedPageRef.current && !requestCursor) return;
 
     const generation = timelineLoadGenerationRef.current;
+    const controller = new AbortController();
+    timelineLoadAbortRef.current = controller;
     setTimelineLoadState('loading');
+    setTimelineLoadError(undefined);
     const request = loadRunTimelinePage(
       (payload) =>
         api.listConversationRunTimeline(payload) as Promise<ConversationListRunTimelineResponse>,
       runId as RunId,
       requestCursor,
+      controller.signal,
     )
       .then((page) => {
         if (timelineLoadGenerationRef.current !== generation) return;
@@ -8103,14 +8049,16 @@ const MessageBubble = memo(function MessageBubble({
         }
         setTimelineLoadState('loaded');
       })
-      .catch(() => {
-        if (timelineLoadGenerationRef.current === generation) setTimelineLoadState('error');
+      .catch((error: unknown) => {
+        if (timelineLoadGenerationRef.current !== generation || controller.signal.aborted) return;
+        setTimelineLoadError(error instanceof Error ? error.message : String(error));
+        setTimelineLoadState('error');
       })
       .finally(() => {
         if (timelineLoadPromiseRef.current === request) timelineLoadPromiseRef.current = null;
       });
     timelineLoadPromiseRef.current = request;
-  }, [message.runId]);
+  }, [message.runId, message.streaming]);
 
   useEffect(() => {
     if (timelineLoadState !== 'loaded' || !timelineNextCursor) return;
@@ -8292,18 +8240,21 @@ const MessageBubble = memo(function MessageBubble({
   }, [absoluteTime, modelLabel, processView]);
 
   const handleCopy = useCallback(async () => {
-    if (!message.text.trim() || copyRead.current) return;
+    const answerOnly = !isUser && message.answerText !== undefined;
+    const preview = answerOnly ? message.answerText! : message.text;
+    const parts = answerOnly ? message.answerParts : message.textParts;
+    if (!preview.trim() || copyRead.current) return;
     const controller = new AbortController();
     copyRead.current = controller;
     setCopying(true);
     setCopyFailed(false);
     try {
       const text = await resolveMessageText(
-        message.textParts ?? message.answerParts,
-        message.text,
+        parts,
+        preview,
         conversationId ?? '',
         controller.signal,
-        message.textParts ? '\n' : '',
+        answerOnly ? '' : '\n',
       );
       if (controller.signal.aborted) return;
       await navigator.clipboard.writeText(text);
@@ -8319,7 +8270,37 @@ const MessageBubble = memo(function MessageBubble({
         setCopying(false);
       }
     }
-  }, [conversationId, message.answerParts, message.text, message.textParts]);
+  }, [conversationId, isUser, message.answerText, message.answerParts, message.text, message.textParts]);
+
+  const readContextMessage = async () => {
+    contextRead.current?.abort();
+    const controller = new AbortController(); contextRead.current = controller;
+    const answerOnly = !isUser && message.answerText !== undefined;
+    const text = await resolveMessageText(answerOnly ? message.answerParts : message.textParts,
+      answerOnly ? message.answerText! : message.text, conversationId ?? '', controller.signal, answerOnly ? '' : '\n');
+    if (controller.signal.aborted) throw new Error('消息已切换，请重新选择');
+    return text;
+  };
+  const handleMessageContext = (event: React.MouseEvent<HTMLElement>) => {
+    const selection = selectedContextText(event.currentTarget);
+    const links = linkContextActions(event.target);
+    if (selection || links.length) {
+      openContextMenu(event, [...selectionContextActions(selection, onQuote), ...links]);
+      return;
+    }
+    const hasText = !!(message.answerText ?? message.text).trim();
+    openContextMenu(event, [
+      { id: 'copy-message', label: '复制整条消息', icon: <Copy size={14} />, disabled: !hasText,
+        run: async () => { const text = await readContextMessage(); const { markdownPlainText } = await import('./markdown-plain-text.js'); await copyContextText(markdownPlainText(text)); } },
+      { id: 'copy-markdown', label: '复制 Markdown 原文', icon: <FileText size={14} />, disabled: !hasText, run: async () => copyContextText(await readContextMessage()) },
+      ...(onQuote ? [{ id: 'quote-message', label: '引用这条消息', icon: <MessageSquare size={14} />, disabled: !hasText,
+        run: async () => onQuote(await readContextMessage(), isUser ? '引用我的消息' : '引用助手回答') }] : []),
+      ...(!isUser && !isSystem && onRegenerate ? [{ id: 'regenerate', label: '重新生成回答', icon: <RefreshCw size={14} />, separator: true,
+        disabled: !!message.streaming || !!regenerating, run: () => onRegenerate(message.id) }] : []),
+      ...(!isUser && !isSystem && message.terminalState && onContinue ? [{ id: 'continue', label: '继续回答', icon: <Play size={14} />,
+        disabled: !!message.streaming || !!regenerating, run: () => onContinue(message.id) }] : []),
+    ]);
+  };
 
   const answerSources = useMemo(
     () =>
@@ -8338,7 +8319,8 @@ const MessageBubble = memo(function MessageBubble({
     const fileReferences = splitMessageFileReferences(message.text ?? '');
     const visibleText = fileReferences.body;
     return (
-      <div className="shell-msg shell-msg--user group relative flex justify-end">
+      <MessageContextActions.Provider value={contextActions}>
+      <div className="shell-msg shell-msg--user group relative flex justify-end" onContextMenu={handleMessageContext} tabIndex={0}>
         <div className="shell-user-bubble-wrap">
           {fileReferences.files.length > 0 ? (
             <div
@@ -8443,6 +8425,7 @@ const MessageBubble = memo(function MessageBubble({
           ) : null}
         </div>
       </div>
+      </MessageContextActions.Provider>
     );
   }
 
@@ -8460,7 +8443,7 @@ const MessageBubble = memo(function MessageBubble({
     // the caller when `message.id` belongs to the local diagnostics list.
     const dismissible = Boolean(dismissLocalError);
     return (
-      <div className="shell-msg group relative flex justify-start">
+      <div className="shell-msg group relative flex justify-start" onContextMenu={handleMessageContext} tabIndex={0}>
         <div
           className={`${bubbleClass} max-w-[80%] rounded-xl border px-4 py-2.5 text-[12.5px]`}
           data-tone={systemTone}
@@ -8519,29 +8502,7 @@ const MessageBubble = memo(function MessageBubble({
     justCompleted,
   });
   const timelineTiming = assistantTimelineProcessTiming(displayedTimeline, !message.streaming);
-  const showFooter = !message.streaming && (hasAnswerText || Boolean(processView));
-  return (
-    <div className="shell-msg shell-msg--assistant group relative flex items-start gap-2.5">
-      <div className="shrink-0 pt-0.5">
-        <AgentAvatarView
-          name={avatarName}
-          avatar={avatarSource?.avatar}
-          size={26}
-          state={avatarState}
-        />
-      </div>
-      <div className="min-w-0 flex-1 pt-0.5">
-        {visibleAgentLabel ? (
-          <div className="mb-1 text-[11.5px] font-medium text-text-faint">{visibleAgentLabel}</div>
-        ) : null}
-        {message.runId && onRetryProcess ? (
-          <RunProcessLoadNotice
-            runId={message.runId}
-            failure={processLoadFailure}
-            onRetry={onRetryProcess}
-          />
-        ) : null}
-        <InlineProcessFlow
+  const executionTrace = (<InlineProcessFlow
           items={[
             // Streaming snapshots carry reasoning in the message field (not in
             // blocks yet); prepend it so the thinking row streams in time
@@ -8557,13 +8518,16 @@ const MessageBubble = memo(function MessageBubble({
               : (displayedProcessItems ?? [])),
           ]}
           steps={hasLoadedTimeline ? undefined : processView?.steps}
+          fileChanges={processView?.fileChanges}
           totalFailedTools={processView?.pages ? processView.errorCount : undefined}
+          totalTools={agentPreferences.showToolUse ? processView?.pages?.steps.total : undefined}
           pageControls={
             !hasLoadedTimeline && agentPreferences.showToolUse ? processPageControls : null
           }
           commentarySegments={hasLoadedTimeline ? undefined : message.commentarySegments}
           streaming={Boolean(message.streaming)}
           waitingForApproval={waitingForApproval}
+          terminalState={message.terminalState}
           answerStarted={hasAnswerText}
           runId={message.runId ?? message.id}
           conversationId={conversationId}
@@ -8584,6 +8548,7 @@ const MessageBubble = memo(function MessageBubble({
               : undefined
           }
           timelineLoadState={timelineLoadState}
+          timelineLoadError={timelineLoadError}
           timelineLoadedCount={loadedAssistantTimeline?.length}
           timelineTotalSegments={timelineTotalSegments}
           timelineHasMore={Boolean(timelineNextCursor)}
@@ -8592,206 +8557,185 @@ const MessageBubble = memo(function MessageBubble({
           agentTaskContent={hasDelegatedAgentTasks ? delegatedAgentTaskContent : undefined}
           renderInlineAgentTask={renderInlineAgentTask}
           supplementalContent={
-            message.processStatus || message.terminalState ? (
-              <>
-                {message.processStatus ? (
-                  <div
-                    className="shell-run-connection-status"
-                    data-state={message.processStatusState}
-                    role="status"
-                    aria-live="polite"
-                  >
-                    {message.processStatusState === 'failed' ? (
-                      <AlertCircle size={12} aria-hidden="true" />
-                    ) : (
-                      <RefreshCw size={12} aria-hidden="true" />
-                    )}
-                    <span>{message.processStatus}</span>
-                  </div>
-                ) : null}
-                {message.terminalState ? (
-                  <HarnessTerminalNotice
-                    state={message.terminalState}
-                    error={message.terminalError}
-                    busy={Boolean(regenerating)}
-                    onContinue={() => onContinue?.(message.id)}
-                    onRetry={() => onRegenerate?.(message.id)}
-                  />
-                ) : null}
-              </>
+            message.processStatus ? (
+              <div
+                className="shell-run-connection-status"
+                aria-label="运行时连接状态"
+                data-state={message.processStatusState}
+                role="status"
+                aria-live="polite"
+              >
+                {message.processStatusState === 'failed' ? (
+                  <AlertCircle size={12} aria-hidden="true" />
+                ) : (
+                  <RefreshCw size={12} aria-hidden="true" />
+                )}
+                <span>{message.processStatus}</span>
+              </div>
             ) : undefined
           }
+        />);
+  const showFooter = (agentWorkspace || !message.streaming) && (hasAnswerText || Boolean(processView));
+  return (
+    <MessageContextActions.Provider value={contextActions}>
+    <div className="shell-msg shell-msg--assistant group relative flex items-start gap-2.5" data-aw-waiting={agentWorkspace && message.streaming && !hasAnswerText ? 'true' : undefined} onContextMenu={handleMessageContext} tabIndex={0}>
+      <div className="shell-msg-avatar shrink-0 pt-0.5">
+        <AgentAvatarView
+          name={avatarName}
+          avatar={avatarSource?.avatar}
+          size={26}
+          state={avatarState}
         />
-        {message.answerText || (!message.processItems?.length && message.text) ? (
-          <MessageTextContent
-            parts={message.answerText !== undefined ? message.answerParts : message.textParts}
-            text={message.answerText ?? message.text}
-            streaming={Boolean(message.streaming)}
-            readingStateKey={`${conversationId ?? 'conversation'}:${message.id}:answer`}
-            projectFolder={projectFolder}
-            conversationId={conversationId}
-            imageModelBySrc={generatedImageModels}
-            onOpenFile={onOpenChange}
-            onOpenHtmlInBrowser={onOpenHtmlInBrowser}
-            onOpenUrl={onOpenWebUrl}
+      </div>
+      <div className="min-w-0 flex-1 pt-0.5">
+        {visibleAgentLabel && !agentWorkspace ? (
+          <div className="mb-1 text-[11.5px] font-medium text-text-faint">{visibleAgentLabel}</div>
+        ) : null}
+        {message.runId && onRetryProcess ? (
+          <RunProcessLoadNotice
+            runId={message.runId}
+            failure={processLoadFailure}
+            onRetry={onRetryProcess}
           />
         ) : null}
-        {!message.streaming && processView && processView.fileChanges.length > 0 ? (
-          <FileChangesCard
-            view={processView}
-            conversationId={conversationId}
-            onOpenChange={onOpenChange}
-            onOpenReview={onOpenReview}
-            projectFolder={projectFolder}
-          />
-        ) : null}
-        {showFooter ? (
-          <div className="shell-msg-footer">
-            {hasAnswerText ? (
-              <AnswerSources
-                sources={answerSources}
-                onOpenFile={onOpenChange}
-                actions={
-                  <>
-                    {copyFailed ? <span role="alert">读取或复制失败，请重试</span> : null}
-                    <button
-                      type="button"
-                      className="shell-msg-footer__btn"
-                      onClick={() => void handleCopy()}
-                      disabled={copying}
-                      title={
-                        copying
-                          ? '读取原文中'
-                          : copyFailed
-                            ? '读取或复制失败，请重试'
-                            : copied
-                              ? '已复制'
-                              : '复制'
-                      }
-                      aria-label={copied ? '已复制' : '复制'}
-                    >
-                      {copied ? <Check size={14} /> : <Copy size={14} />}
-                    </button>
-                    <button
-                      type="button"
-                      className="shell-msg-footer__btn"
-                      onClick={() => void onRegenerate?.(message.id)}
-                      disabled={regenerating}
-                      title="重新生成"
-                      aria-label="重新生成"
-                    >
-                      <RefreshCw size={14} className={regenerating ? 'shell-process-spin' : ''} />
-                    </button>
-                    <button
-                      type="button"
-                      className="shell-msg-footer__btn"
-                      onClick={() => setFeedback((current) => (current === 'up' ? null : 'up'))}
-                      title="有帮助"
-                      aria-label="有帮助"
-                      aria-pressed={feedback === 'up'}
-                    >
-                      <ThumbsUp size={14} />
-                    </button>
-                    <button
-                      type="button"
-                      className="shell-msg-footer__btn"
-                      onClick={() => setFeedback((current) => (current === 'down' ? null : 'down'))}
-                      title="没有帮助"
-                      aria-label="没有帮助"
-                      aria-pressed={feedback === 'down'}
-                    >
-                      <ThumbsDown size={14} />
-                    </button>
-                  </>
-                }
-              />
-            ) : null}
-            <div className="shell-msg-meta shell-msg-meta--assistant">
-              {metricsLabel && metricsDetail ? (
-                <MetaHover
-                  className="shell-msg-meta__metrics"
-                  label={metricsLabel}
-                  width="auto"
-                  panel={
-                    <div
-                      className="shell-meta-tip shell-usage-tip"
-                      data-testid="reply-usage-tooltip"
-                    >
-                      <div className="shell-usage-tip__summary">
-                        <span>{metricsDetail.duration}</span>
-                        {metricsDetail.tokens ? (
-                          <span className="shell-usage-tip__token-detail">
-                            {[
-                              metricsDetail.tokens.inputTokens > 0
-                                ? `↑ ${formatCompactCount(metricsDetail.tokens.inputTokens)}`
-                                : undefined,
-                              metricsDetail.tokens.outputTokens > 0
-                                ? `↓ ${formatCompactCount(metricsDetail.tokens.outputTokens)}`
-                                : undefined,
-                              metricsDetail.tokens.cacheReadTokens > 0
-                                ? `缓存读 ${formatCompactCount(metricsDetail.tokens.cacheReadTokens)}`
-                                : undefined,
-                              metricsDetail.tokens.cacheWriteTokens > 0
-                                ? `缓存写 ${formatCompactCount(metricsDetail.tokens.cacheWriteTokens)}`
-                                : undefined,
-                            ]
-                              .filter(Boolean)
-                              .join(' · ')}
-                          </span>
+        {agentWorkspace ? <AgentExecutionStatus name={avatarName} avatar={avatarSource?.avatar} running={Boolean(message.streaming)} waiting={waitingForApproval} failed={Boolean(processLoadFailure || message.terminalState === 'failed')} label={message.streaming && hasAnswerText ? '正在回复…' : undefined} hasDetails={Boolean(message.runId || processView || message.reasoningText || displayedProcessItems?.length)}>
+          {executionTrace}
+        </AgentExecutionStatus> : executionTrace}
+        <StreamingResponse
+          variant="bubble"
+          status={responseStatus({
+            streaming: message.streaming,
+            waitingForApproval,
+            terminalState: message.terminalState,
+          })}
+          showActions={hasAnswerText || Boolean(message.terminalState)}
+          copyState={copying ? 'copying' : copyFailed ? 'error' : copied ? 'copied' : 'idle'}
+          onCopy={hasAnswerText ? () => void handleCopy() : undefined}
+          onRetry={onRegenerate ? () => onRegenerate(message.id) : undefined}
+          onContinue={onContinue ? () => onContinue(message.id) : undefined}
+          busy={Boolean(regenerating)}
+          feedback={feedback}
+          onFeedbackChange={hasAnswerText ? setFeedback : undefined}
+          sources={answerSources}
+          onOpenFile={onOpenChange}
+          onOpenUrl={onOpenWebUrl}
+          notice={
+            message.terminalState ? (
+              <HarnessTerminalNotice state={message.terminalState} error={message.terminalError} />
+            ) : undefined
+          }
+          metadata={
+            showFooter ? (
+              <div className="shell-msg-meta shell-msg-meta--assistant">
+                {agentWorkspace && <button className="aw-response-identity" onClick={() => avatarSource?.id && onEditAgent?.(avatarSource.id)} disabled={!avatarSource?.id || !onEditAgent}><AgentWorkspaceAvatar name={avatarName} avatar={avatarSource?.avatar} size={18} animate state={avatarState} /><span>{avatarName}</span></button>}
+                {metricsLabel && metricsDetail ? (
+                  <MetaHover
+                    className="shell-msg-meta__metrics"
+                    label={metricsLabel}
+                    width="auto"
+                    panel={
+                      <div className="shell-meta-tip shell-usage-tip" data-testid="reply-usage-tooltip">
+                        <div className="shell-usage-tip__summary">
+                          <span>{metricsDetail.duration}</span>
+                          {metricsDetail.tokens ? (
+                            <span className="shell-usage-tip__token-detail">
+                              {[
+                                metricsDetail.tokens.inputTokens > 0
+                                  ? `↑ ${formatCompactCount(metricsDetail.tokens.inputTokens)}`
+                                  : undefined,
+                                metricsDetail.tokens.outputTokens > 0
+                                  ? `↓ ${formatCompactCount(metricsDetail.tokens.outputTokens)}`
+                                  : undefined,
+                                metricsDetail.tokens.cacheReadTokens > 0
+                                  ? `缓存读 ${formatCompactCount(metricsDetail.tokens.cacheReadTokens)}`
+                                  : undefined,
+                                metricsDetail.tokens.cacheWriteTokens > 0
+                                  ? `缓存写 ${formatCompactCount(metricsDetail.tokens.cacheWriteTokens)}`
+                                  : undefined,
+                              ]
+                                .filter(Boolean)
+                                .join(' · ')}
+                            </span>
+                          ) : null}
+                        </div>
+                        {providerUsageIdentity ? (
+                          <ProviderAccountUsageSection identity={providerUsageIdentity} />
                         ) : null}
                       </div>
-                      {providerUsageIdentity ? (
-                        <ProviderAccountUsageSection identity={providerUsageIdentity} />
-                      ) : null}
-                    </div>
-                  }
-                />
-              ) : null}
-              {clockLabel ? (
-                <MetaHover
-                  className="shell-msg-meta__time"
-                  label={clockLabel}
-                  panel={
-                    <div className="shell-meta-tip">
-                      <div className="shell-meta-tip__title">完成时间</div>
-                      <div className="shell-meta-tip__row">
-                        <span>时间</span>
-                        <strong>{absoluteTime ?? clockLabel}</strong>
+                    }
+                  />
+                ) : null}
+                {clockLabel ? (
+                  <MetaHover
+                    className="shell-msg-meta__time"
+                    label={clockLabel}
+                    panel={
+                      <div className="shell-meta-tip">
+                        <div className="shell-meta-tip__title">完成时间</div>
+                        <div className="shell-meta-tip__row">
+                          <span>时间</span>
+                          <strong>{absoluteTime ?? clockLabel}</strong>
+                        </div>
                       </div>
-                    </div>
-                  }
-                />
-              ) : null}
-              {kernelLogo ? (
-                <span
-                  className="shell-msg-meta__kernel"
-                  data-testid={`msg-kernel-${kernelId}`}
-                  title={`内核：${kernelLabel}`}
-                  aria-label={`内核：${kernelLabel}`}
-                >
-                  <BrandLogoMark logo={kernelLogo} size={13} />
-                </span>
-              ) : null}
-              {modelLabel ? (
-                <MetaHover
-                  className="shell-msg-meta__model"
-                  label={modelLabel}
-                  panel={
-                    <div className="shell-meta-tip">
-                      <div className="shell-meta-tip__title">本轮模型</div>
-                      <div className="shell-meta-tip__row">
-                        <span>模型</span>
-                        <strong>{modelLabel}</strong>
+                    }
+                  />
+                ) : null}
+                {kernelLogo ? (
+                  <span
+                    className="shell-msg-meta__kernel"
+                    data-testid={`msg-kernel-${kernelId}`}
+                    title={`内核：${kernelLabel}`}
+                    aria-label={`内核：${kernelLabel}`}
+                  >
+                    <BrandLogoMark logo={kernelLogo} size={13} />
+                  </span>
+                ) : null}
+                {modelLabel ? (
+                  <MetaHover
+                    className="shell-msg-meta__model"
+                    label={modelLabel}
+                    panel={
+                      <div className="shell-meta-tip">
+                        <div className="shell-meta-tip__title">本轮模型</div>
+                        <div className="shell-meta-tip__row">
+                          <span>模型</span>
+                          <strong>{modelLabel}</strong>
+                        </div>
                       </div>
-                    </div>
-                  }
-                />
-              ) : null}
-            </div>
-          </div>
-        ) : null}
+                    }
+                  />
+                ) : null}
+              </div>
+            ) : undefined
+          }
+        >
+          {message.answerText || (!message.processItems?.length && message.text) ? (
+            <MessageTextContent
+              parts={message.answerText !== undefined ? message.answerParts : message.textParts}
+              text={message.answerText ?? message.text}
+              streaming={Boolean(message.streaming)}
+              readingStateKey={`${conversationId ?? 'conversation'}:${message.id}:answer`}
+              projectFolder={projectFolder}
+              conversationId={conversationId}
+              imageModelBySrc={generatedImageModels}
+              onOpenFile={onOpenChange}
+              onOpenHtmlInBrowser={onOpenHtmlInBrowser}
+              onOpenUrl={onOpenWebUrl}
+            />
+          ) : null}
+          {showFileChanges && !agentWorkspace && !message.streaming && processView && processView.fileChanges.length > 0 ? (
+            <FileChangesCard
+              view={processView}
+              conversationId={conversationId}
+              onOpenChange={onOpenChange}
+              onOpenReview={onOpenReview}
+              projectFolder={projectFolder}
+            />
+          ) : null}
+        </StreamingResponse>
       </div>
     </div>
+    </MessageContextActions.Provider>
   );
 });
 

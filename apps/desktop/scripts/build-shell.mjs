@@ -1,3 +1,4 @@
+import { buildDesignPreviews } from './build-design-previews.mjs';
 import { execFileSync } from 'node:child_process';
 import {
   mkdirSync,
@@ -26,6 +27,9 @@ import {
   parseChangelog,
   renderChangelogReleaseNotes,
 } from '../../../scripts/changelog.mjs';
+
+import { generateDesignCatalog } from '../../../scripts/generate-design-catalog.mjs';
+generateDesignCatalog();
 
 const require = createRequire(import.meta.url);
 const desktopRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -178,6 +182,11 @@ try {
     { stdio: 'inherit' },
   );
   copyFileSync(join(shellSrc, 'index.html'), join(staging, 'index.html'));
+  // The avatar library is bundled, so ship its MIT notice with the renderer.
+  copyFileSync(
+    join(dirname(require.resolve('bot-avatars/package.json')), 'LICENSE'),
+    join(staging, 'bot-avatars-LICENSE.txt'),
+  );
   cpSync(join(shellSrc, 'assets/fonts/files'), join(staging, 'files'), { recursive: true });
   writeFileSync(
     join(staging, 'build-manifest.json'),
@@ -192,6 +201,8 @@ try {
       2,
     ) + '\n',
   );
+  // Separate offline exhibition entry: never mounts or imports into the live app.
+  await buildDesignPreviews(desktopRoot, staging, false);
   assertGeneratedPath(staging, outputRoot);
   removeGeneratedDirectory(outdir, outputRoot);
   renameSync(staging, outdir);

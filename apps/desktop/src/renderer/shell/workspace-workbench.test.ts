@@ -264,4 +264,5 @@ describe('workspace workbench state', () => {
     });
     expect(restored.workspace?.bottom).toMatchObject({ open: false, tabs: [] });
   });
+
 });

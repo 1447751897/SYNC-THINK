@@ -8,10 +8,10 @@ import {
 } from './jsonrpc-stdio.js';
 
 describe('jsonrpc-stdio', () => {
-  it('encodes Content-Length frame', () => {
+  it('encodes MCP newline-delimited JSON', () => {
     const buf = encodeJsonRpcMessage({ jsonrpc: '2.0', id: 1, method: 'ping' });
     const text = buf.toString('utf8');
-    expect(text).toMatch(/^Content-Length: \d+\r\n\r\n/);
+    expect(text).toBe(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping' }) + '\n');
     expect(text).toContain('"method":"ping"');
   });
 
@@ -22,6 +22,26 @@ describe('jsonrpc-stdio', () => {
     const out = parser.push(frame);
     expect(out).toHaveLength(1);
     expect(out[0]).toEqual(msg);
+  });
+
+  it('accepts legacy Content-Length responses', () => {
+    const message = { jsonrpc: '2.0', id: 2, result: {} };
+    const body = JSON.stringify(message);
+    expect(new JsonRpcStdioParser().push(Buffer.from('Content-Length: ' + Buffer.byteLength(body) + '\r\n\r\n' + body))).toEqual([message]);
+  });
+
+  it('handles fragmented UTF-8, CRLF, blank lines and multiple messages', () => {
+    const message = { jsonrpc: '2.0', id: 1, result: '你好' };
+    const frame = Buffer.from(JSON.stringify(message) + '\r\n\n' + JSON.stringify(message) + '\n');
+    const parser = new JsonRpcStdioParser();
+    const out = [...frame].flatMap(byte => parser.push(Buffer.from([byte])));
+    expect(out).toEqual([message, message]);
+  });
+
+  it('bounds complete and unterminated newline messages', () => {
+    for (const suffix of ['', '\n']) {
+      expect(() => new JsonRpcStdioParser(256).push(Buffer.from('{' + ' '.repeat(256) + suffix))).toThrow(/exceeds/);
+    }
   });
 
   it('extracts MCP tool content text', () => {

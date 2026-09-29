@@ -11,7 +11,13 @@ import type {
   PlatformBrokerInfo,
 } from '@sync-think/shared';
 import { probeKernel } from './detect.js';
-import { sanitizeKernelDiagnostic } from './kernel-diagnostics.js';
+import { createCodexEditingCatalog } from './codex-editing-catalog.js';
+import { CODEX_FALLBACK_PROMPT } from './codex-fallback-prompt.js';
+import {
+  formatKernelExitDiagnostic,
+  KernelStartupError,
+  sanitizeKernelDiagnostic,
+} from './kernel-diagnostics.js';
 import { commandSilenceNotice } from './persistent-terminal-command.js';
 import { startKernelProcess, type KernelProcessHandle } from './process.js';
 import { PLATFORM_MCP_SERVER_NAME } from './platform-mcp-config.js';
@@ -170,7 +176,9 @@ function commandOutputText(value: unknown): string | undefined {
 
 function boundToolProgress(textValue: string): string {
   if (textValue.length <= MAX_TOOL_PROGRESS_CHARS) return textValue;
-  return textValue.slice(-MAX_TOOL_PROGRESS_CHARS);
+  let start = textValue.length - MAX_TOOL_PROGRESS_CHARS;
+  if (textValue.charCodeAt(start) >= 0xdc00 && textValue.charCodeAt(start) <= 0xdfff) start += 1;
+  return textValue.slice(start);
 }
 
 /**
@@ -548,7 +556,10 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
   stop(): Promise<void> {
     if (this.stopPromise) return this.stopPromise;
     const handle = this.handle;
-    if (!handle) return Promise.resolve();
+    if (!handle) {
+      this.disposeEditingCatalogs();
+      return Promise.resolve();
+    }
     this.stopPromise = this.stopHandle(handle, new Error('Codex app-server stopped')).finally(
       () => {
         if (this.handle === handle) {
@@ -558,6 +569,7 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
           this.activeThreadModel = '';
           this.diagnosticSecrets = [];
         }
+        this.disposeEditingCatalogs();
         this.stopPromise = undefined;
       },
     );
@@ -581,19 +593,42 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
   }
 
   private async ensureProcess(request: KernelRequest): Promise<void> {
-    const identity = processIdentity(request);
+    const catalog =
+      !request.credential.reuseLocalLogin && request.credential.apiKey
+        ? this.editingCatalogs.get(this.editingCatalogKey(request))?.path
+        : undefined;
+    const identity = JSON.stringify([processIdentity(request), catalog]);
     if (this.handle && this.processIdentity === identity && this.initialized) return;
-    if (this.handle) await this.stop();
+    if (this.handle) {
+      const previous = this.handle;
+      // An intentional configuration restart is not a kernel crash. Keep the
+      // native catalog lookup and temporary catalog files until adapter.stop().
+      this.handle = undefined;
+      await this.stopHandle(previous, new Error('Codex configuration changed'));
+    }
     const provider = providerConfig(request);
-    const args = ['app-server', '--listen', 'stdio://'];
-    const handle = this.deps.spawn
-      ? this.deps.spawn(args, provider.env, request.workspaceDir)
-      : startKernelProcess({
-          command: 'codex',
-          args,
-          cwd: request.workspaceDir,
-          env: provider.env,
-        });
+    const args = [
+      'app-server',
+      '--listen',
+      'stdio://',
+      // Codex parses an unquoted non-TOML value as a literal string. Do not
+      // embed JSON quotes: Windows .cmd launchers reject them before spawn.
+      ...(catalog ? ['-c', 'model_catalog_json=' + catalog.replace(/\\/g, '/')] : []),
+    ];
+    const secrets = [request.credential.apiKey, request.platformBroker?.token];
+    let handle: KernelProcessHandle;
+    try {
+      handle = this.deps.spawn
+        ? this.deps.spawn(args, provider.env, request.workspaceDir)
+        : startKernelProcess({
+            command: 'codex',
+            args,
+            cwd: request.workspaceDir,
+            env: provider.env,
+          });
+    } catch (error) {
+      throw new KernelStartupError('Codex', error, secrets);
+    }
     this.handle = handle;
     this.processIdentity = identity;
     this.initialized = false;
@@ -623,15 +658,73 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
         this.initialized = false;
         this.diagnosticSecrets = [];
       }
-      throw error;
+      throw new KernelStartupError('Codex', error, secrets);
     }
+  }
+
+  private readonly editingCatalogs = new Map<
+    string,
+    ReturnType<typeof createCodexEditingCatalog>
+  >();
+  private nativeModelIds?: Set<string>;
+
+  private editingCatalogKey(request: KernelRequest): string {
+    return JSON.stringify([
+      requestedModel(request),
+      request.effectiveContextWindow ?? request.contextWindow ?? 128_000,
+    ]);
+  }
+
+  private disposeEditingCatalogs(): void {
+    for (const catalog of this.editingCatalogs.values()) catalog.dispose();
+    this.editingCatalogs.clear();
+    this.nativeModelIds = undefined;
+  }
+
+  private async editingCatalog(request: KernelRequest): Promise<string | undefined> {
+    const model = requestedModel(request);
+    if (!model || request.credential.reuseLocalLogin || !request.credential.apiKey)
+      return undefined;
+    const window = request.effectiveContextWindow ?? request.contextWindow ?? 128_000;
+    const key = this.editingCatalogKey(request);
+    const cached = this.editingCatalogs.get(key);
+    if (cached) return cached.path;
+    // Consult the running binary, rather than guessing vendor models by their names.
+    if (!this.nativeModelIds) {
+      const models = new Set<string>();
+      let cursor: string | undefined;
+      const cursors = new Set<string>();
+      do {
+        const page = asRecord(
+          await this.request('model/list', { includeHidden: true, ...(cursor ? { cursor } : {}) }),
+        );
+        if (!Array.isArray(page?.data))
+          throw new Error('Codex model/list response missing model metadata');
+        for (const entry of page.data) {
+          const value = asRecord(entry);
+          if (text(value?.model)) models.add(value!.model as string);
+          if (text(value?.id)) models.add(value!.id as string);
+        }
+        cursor = text(page.nextCursor);
+        if (cursor && cursors.has(cursor)) throw new Error('Codex model/list repeated cursor');
+        if (cursor) cursors.add(cursor);
+      } while (cursor);
+      this.nativeModelIds = models;
+    }
+    if (this.nativeModelIds.has(model)) return undefined;
+    const catalog = createCodexEditingCatalog(model, window);
+    this.editingCatalogs.set(key, catalog);
+    return catalog.path;
   }
 
   private async ensureThread(request: KernelRequest): Promise<string> {
     const provider = providerConfig(request);
     const policies = codexPolicies(request);
+    const editingCatalog = await this.editingCatalog(request);
+    if (editingCatalog) await this.ensureProcess(request);
     const common = {
       model: requestedModel(request),
+      developerInstructions: request.systemContext,
       ...(provider.modelProvider ? { modelProvider: provider.modelProvider } : {}),
       cwd: request.workspaceDir,
       ...policies,
@@ -639,10 +732,15 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
     };
     const result = asRecord(
       request.session?.mode === 'resume' && request.session.id
-        ? await this.request('thread/resume', { threadId: request.session.id, ...common })
+        ? await this.request('thread/resume', {
+            threadId: request.session.id,
+            ...common,
+            // Older host sessions persisted systemContext as baseInstructions.
+            // Restore the custom model's baseline while retaining its history.
+            ...(editingCatalog ? { baseInstructions: CODEX_FALLBACK_PROMPT } : {}),
+          })
         : await this.request('thread/start', {
             ...common,
-            baseInstructions: request.systemContext,
             ephemeral: false,
           }),
     );
@@ -896,6 +994,8 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
           type: 'tool-progress',
           toolId: itemId,
           output: boundToolProgress(output),
+          ...(output.length > MAX_TOOL_PROGRESS_CHARS
+            ? { truncated: true, outputBytes: Buffer.byteLength(output, 'utf8') } : {}),
         });
       }
       return;
@@ -1007,6 +1107,7 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
         name: 'command_execution',
         argsJson: JSON.stringify({
           command,
+          ...(text(item.description) ? { description: text(item.description) } : {}),
           ...(text(item.cwd) ? { cwd: text(item.cwd) } : {}),
           ...(text(item.processId) ? { processId: text(item.processId) } : {}),
           ...(text(item.source) ? { source: text(item.source) } : {}),
@@ -1091,7 +1192,11 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
       });
     } else if (isFileChangeItemType(type)) {
       const status = text(item.status);
-      const failed = status === 'failed' || status === 'declined';
+      const failed =
+        status === 'failed' ||
+        status === 'declined' ||
+        status === 'cancelled' ||
+        status === 'canceled';
       this.pushTurnEvent({
         type: 'tool-call',
         toolId: id,
@@ -1150,6 +1255,7 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
         type: 'tool-progress',
         toolId: itemId,
         output: commandSilenceNotice(),
+        isNotice: true,
       });
     }, timeoutMs);
     // A reminder does not own the app-server lifetime.
@@ -1232,9 +1338,13 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
     this.processIdentity = undefined;
     this.initialized = false;
     const error = new Error(
-      processError instanceof Error
-        ? processError.message
-        : `Codex app-server exited with code ${code ?? 'unknown'}`,
+      formatKernelExitDiagnostic(
+        'Codex app-server',
+        code,
+        stderrTail,
+        this.diagnosticSecrets,
+        processError,
+      ),
     );
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timer);

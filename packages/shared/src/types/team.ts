@@ -27,6 +27,8 @@ export interface GlobalAgent {
   persona: string;
   description: string;
   defaultModelId: ModelId;
+  /** Execution kernel configured with the agent; absent legacy values use native. */
+  defaultKernelId?: string;
   fallbackModelIds: ModelId[];
   skillIds: string[];
   mcpServerIds: string[];
@@ -100,6 +102,8 @@ export interface Conversation {
   /** Per-conversation context capacity; undefined inherits the selected model. */
   contextWindowOverride?: number;
   lastMessageAt?: string;
+  /** Bounded display text from the latest user/assistant message, never tool/reasoning blocks. */
+  lastMessagePreview?: string;
   /**
    * Task backing this conversation's message thread.
    * Undefined until the first message lazily creates and binds a task.

@@ -47,6 +47,7 @@ describe('Electron renderer security boundary', () => {
     const packaged = trustedFileLocation('D:\app\renderer\index.html');
     expect(isTrustedRendererUrl(packaged.value, packaged)).toBe(true);
     expect(isTrustedRendererUrl(`${packaged.value}?remote=1`, packaged)).toBe(false);
+    expect(isTrustedRendererUrl(`${packaged.value}#ds/tokens`, packaged)).toBe(false);
     expect(isTrustedRendererUrl('https://example.com/', packaged)).toBe(false);
   });
 

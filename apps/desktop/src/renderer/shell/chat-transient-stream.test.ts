@@ -28,6 +28,18 @@ function frame(
 }
 
 describe('chat transient stream reducer', () => {
+  it('paces provisional tokens without truncating earlier classified commentary', () => {
+    const timeline: NonNullable<ConversationTransientFrame['assistantTimeline']> = [{
+      id: 'commentary-before-tool', sequence: 0, kind: 'text', phase: 'commentary',
+      text: '已经检查完资料。', status: 'completed',
+    }];
+    const batch = takeConversationDisplayQueueBatch([{
+      source: 'transient', offset: 0,
+      frame: frame(3, 'text', { provisional: true, textDelta: '这是正在生成中的答案。', assistantTimeline: timeline }),
+    }], { maxFrames: 1, maxTextCharacters: 4 });
+    expect(batch.operations[0]).toMatchObject({ type: 'text.delta', delta: '这是正在', assistantTimeline: timeline });
+    expect(batch.remaining).toHaveLength(1);
+  });
   it('accumulates text and commentary with cursor dedupe', () => {
     const first = applyTransientConversationFrame({
       current: null,

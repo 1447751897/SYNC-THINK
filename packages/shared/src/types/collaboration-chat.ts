@@ -81,6 +81,24 @@ export interface CollaborationError {
   retryable: boolean;
   traceId: string;
 }
+export interface CollaborationDeliverable {
+  kind: 'document' | 'file';
+  title: string;
+  /** Workspace-relative path; required for file deliveries. */
+  path?: string;
+}
+export interface CollaborationArtifact {
+  id: string;
+  taskId: string;
+  attemptId: string;
+  title: string;
+  kind: 'document' | 'file';
+  content?: string;
+  path?: string;
+  sha256: string;
+  bytes: number;
+  createdAt: string;
+}
 export interface CollaborationTask {
   id: string;
   rootTaskId: string;
@@ -90,6 +108,7 @@ export interface CollaborationTask {
   title: string;
   instructions: string;
   expectedOutput: string;
+  deliverable?: CollaborationDeliverable;
   dependsOnTaskIds: string[];
   contextRefs: string[];
   planRef?: CollaborationPlanRef;
@@ -114,13 +133,19 @@ export interface CollaborationAttempt {
   heartbeatAt?: string;
   updatedAt: string;
   contextSequence: number;
+  /** Only classified final-answer text belongs in the chat bubble. */
   output: string;
+  /** Live execution state; reasoning content is deliberately not copied here. */
+  phase?: 'thinking' | 'working' | 'answering';
+  /** User-facing progress commentary, shown inside collapsed execution details. */
+  commentary?: string;
   error?: CollaborationError;
   observation?: 'normal' | 'status_unconfirmed' | 'notification_delayed';
   resourceClaims: CollaborationResourceClaim[];
   tools: { id: string; name: string; arguments: string; status: 'running' | 'succeeded' | 'failed'; result?: string }[];
   checklist: { id: string; text: string; status: 'pending' | 'in_progress' | 'completed' }[];
   agentSnapshot?: Record<string, unknown>;
+  artifacts?: CollaborationArtifact[];
 }
 export interface CollaborationSnapshot {
   conversation: CollaborationConversation;
@@ -157,6 +182,7 @@ export interface CollaborationTaskDraft {
   title: string;
   instructions: string;
   expectedOutput?: string;
+  deliverable?: CollaborationDeliverable;
   dependsOnTaskIds?: string[];
   contextRefs?: string[];
   planRef?: CollaborationPlanRef;
@@ -164,11 +190,14 @@ export interface CollaborationTaskDraft {
   timeoutSeconds?: number;
 }
 export type CollaborationCommand =
-  | { action: 'create'; clientRequestId: string; kind: CollaborationKind; title: string; workspaceId: string; agentIds: string[]; coordinatorAgentId?: string; modelId?: string; teamId?: string }
+  | { action: 'create'; clientRequestId: string; kind: CollaborationKind; title: string; workspaceId?: string; agentIds: string[]; coordinatorAgentId?: string; modelId?: string; teamId?: string }
   | { action: 'get'; conversationId: string }
+  | { action: 'promote-direct'; conversationId: string }
+  | { action: 'promote-team'; conversationId: string }
   | { action: 'list'; workspaceId?: string }
   | { action: 'activity'; workspaceId?: string }
   | { action: 'send'; conversationId: string; clientRequestId: string; text: string; recipientMemberIds?: string[]; replyToMessageId?: string; expectsResponse?: boolean }
+  | { action: 'start-workflow'; conversationId: string; clientRequestId: string; goal: string; originMessageId?: string; parentTaskId?: string }
   | { action: 'dispatch'; conversationId: string; clientRequestId: string; tasks: CollaborationTaskDraft[]; originMessageId?: string; parentTaskId?: string }
   | { action: 'cancel'; conversationId: string; taskId: string; includeChildren?: boolean }
   | { action: 'retry'; conversationId: string; taskId: string; clientRequestId: string }
@@ -176,8 +205,24 @@ export type CollaborationCommand =
   | { action: 'policy'; conversationId: string; policy: Partial<CollaborationPolicy> }
   | { action: 'members'; conversationId: string; addAgentIds?: string[]; removeMemberIds?: string[]; coordinatorMemberId?: string; roles?: Record<string, string> }
   | { action: 'direct'; conversationId: string; clientRequestId: string; memberIds: string[] };
+/** Sidebar-sized view of a collaboration conversation; returned by `list`. */
+export interface CollaborationRosterSummary {
+  conversationId: string;
+  kind: CollaborationKind;
+  members: Pick<CollaborationMember, 'id' | 'name' | 'avatar'>[];
+  /** True while any member is queued or running on this conversation. */
+  busy: boolean;
+  /** Bounded text of the latest chat message, if any. */
+  preview?: string;
+  previewSender?: string;
+}
 export interface CollaborationResponse {
+  /** Host capability handshake; absent identifies an older running daemon. */
+  executionVersion?: number;
+  /** Same conversation and thread, with legacy single-agent messages preserved. */
+  promotedConversation?: import('./team.js').Conversation;
   snapshot?: CollaborationSnapshot;
   conversations?: CollaborationConversation[];
+  rosters?: CollaborationRosterSummary[];
   activities?: CollaborationActivitySummary[];
 }

@@ -1278,67 +1278,9 @@ const TASK_STATUS_GOAL: GoalStatus = {
   lastReason: '核心交互已完成，正在验证 AI 回合与窄屏布局。',
 };
 
-function installTaskStatusFixtureRuntime() {
-  Object.defineProperty(window, 'syncThink', {
-    configurable: true,
-    value: {
-      runtime: {
-        getGitInfo: async () => ({
-          branch: 'feat/gomoku-ai',
-          branches: ['feat/gomoku-ai', 'main', 'release/desktop'],
-          changes: [
-            { status: 'M', path: 'apps/desktop/src/game/GomokuBoard.tsx' },
-            { status: 'A', path: 'apps/desktop/src/game/gomoku-ai.ts' },
-          ],
-          recentCommits: [
-            {
-              hash: '13a7d2f',
-              subject: 'feat: add gomoku board',
-              files: [],
-              truncated: false,
-            },
-            {
-              hash: '991ce40',
-              subject: 'test: cover winning lines',
-              files: [],
-              truncated: false,
-            },
-          ],
-          additions: 734,
-          deletions: 7,
-          ahead: 1,
-          behind: 0,
-          hasRemote: true,
-          isRepo: true,
-        }),
-        getGitReview: async () => ({
-          files: [
-            {
-              path: 'apps/desktop/src/game/GomokuBoard.tsx',
-              action: 'edited',
-              previousContent: 'export function GomokuBoard() { return null; }\n',
-              content: 'export function GomokuBoard() { return <canvas />; }\n',
-            },
-          ],
-        }),
-        gitCheckout: async () => ({ ok: true, dirty: false, changes: [], error: null }),
-        gitCreateBranch: async () => ({ ok: true, error: null }),
-        gitCommit: async () => ({
-          ok: true,
-          committed: true,
-          pushed: false,
-          error: null,
-        }),
-        gitPush: async () => ({ ok: true, pushed: true, error: null }),
-      },
-    },
-  });
-}
-
 function TaskStatusFixture() {
-  useState(() => installTaskStatusFixtureRuntime());
   return (
-    <FixtureFrame label="Git 工具 · 目标 · 任务清单">
+    <FixtureFrame label="目标 · 任务清单">
       <div className="phase3-task-status shell-chat-column">
         <div className="shell-chat-message-stage">
           <div className="phase3-task-status__conversation">
@@ -1351,13 +1293,7 @@ function TaskStatusFixture() {
               <p>棋盘和胜负判断已经完成，正在实现电脑落子策略。</p>
             </article>
           </div>
-          <TaskStatusPanel
-            projectFolder="C:/workspace/gomoku"
-            goal={TASK_STATUS_GOAL}
-            evaluatorConfigured
-            todo={TASK_STATUS_TODO}
-            onOpenReview={() => undefined}
-          />
+          <TaskStatusPanel goal={TASK_STATUS_GOAL} todo={TASK_STATUS_TODO} />
         </div>
       </div>
     </FixtureFrame>

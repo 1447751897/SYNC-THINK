@@ -155,7 +155,7 @@ describe('MarkdownContent', () => {
 
     expect(streamingHtml).toContain('hljs-keyword');
     expect(streamingHtml).toContain('生成中');
-    expect(settledHtml).toContain('已完成');
+    expect(settledHtml).toContain('就绪');
     expect(settledHtml).toContain('hljs-keyword');
   });
 
@@ -279,14 +279,14 @@ describe('MarkdownContent', () => {
   it('renders a file-backed inline visualization between Markdown segments', () => {
     const html = renderToStaticMarkup(
       createElement(MarkdownContent, {
-        text: '可视化结果：\n\n::newmax-inline-vis{file="overview.html"}\n\n以上为实时预览。',
+        text: '可视化结果：\n\n::newmax-inline-vis{file="visualizations/longguo-command-center.html"}\n\n以上为实时预览。',
         projectFolder: 'D:/work/demo',
         conversationId: 'conv-inline-vis',
       }),
     );
 
     expect(html).toContain('shell-inline-vis');
-    expect(html).toContain('data-file="overview.html"');
+    expect(html).toContain('data-file="visualizations/longguo-command-center.html"');
     expect(html).toContain('可视化结果');
     expect(html).toContain('以上为实时预览');
   });

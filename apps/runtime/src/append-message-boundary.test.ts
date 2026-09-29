@@ -20,7 +20,8 @@ import {
   serializeDemoRun,
   type DemoRunState,
 } from './demo-run.js';
-import type { Event, RunId } from '@sync-think/shared';
+import type { Event, KernelEvent, RunId } from '@sync-think/shared';
+import type { KernelToolProgressRegistry } from './kernel-tool-progress-registry.js';
 import type { AbortControllerRegistry } from './abort-controller-registry.js';
 import type { ActiveRunRegistry } from './active-run-registry.js';
 
@@ -72,6 +73,12 @@ async function fixture() {
     publishEvent(event: Event): void;
     requestChatToolApproval(input: object): Promise<{ decision: string; approvalId: string }>;
     demoRuns: Map<string, DemoRunState>;
+    kernelToolProgressRegistry: KernelToolProgressRegistry;
+    publishKernelToolProgress(
+      runId: RunId,
+      threadId: string,
+      event: Extract<KernelEvent, { type: 'tool-progress' }>,
+    ): void;
     demoRunAbortRegistry: AbortControllerRegistry;
     activeRuns: ActiveRunRegistry;
     activeToolApprovals: { has(approvalId: string): boolean };
@@ -588,6 +595,54 @@ it('reports a task removed during preparation without cancelling the old run', a
     expect(active.abort.signal.aborted).toBe(false);
     expect(context.state()).toEqual(before);
     expect(context.execute).not.toHaveBeenCalled();
+  } finally {
+    await context.close();
+  }
+});
+
+
+it('does not persist log tails or rewrite a tool when only transient progress changes', async () => {
+  const context = await fixture();
+  try {
+    const active = context.activate();
+    const base = { id: 'tool-log', sequence: 30, kind: 'tool' as const, toolCallId: 'cmd-log', name: 'command_execution', status: 'running' as const };
+    const write = vi.spyOn(context.assistantTimelineStore, 'upsertSegments');
+    context.internal.persistAssistantTimelineSegments(active.active.runId, [{ ...base, progressLine: 'one', progressOutput: 'one', progressBytes: 3 }]);
+    context.internal.persistAssistantTimelineSegments(active.active.runId, [{ ...base, progressLine: 'two', progressOutput: 'one\ntwo', progressBytes: 7, progressTruncated: true }]);
+    expect(write).toHaveBeenCalledTimes(1);
+    const records = JSON.stringify(context.assistantTimelineStore.listSegments('old-run'));
+    expect(records).not.toContain('progressOutput');
+    expect(records).not.toContain('progressBytes');
+    expect(records).not.toContain('progressLine');
+    context.internal.persistAssistantTimelineSegments(active.active.runId, [{ ...base, status: 'completed', output: 'complete output' }]);
+    expect(write).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(context.assistantTimelineStore.listSegments('old-run'))).toContain('complete output');
+  } finally { await context.close(); }
+});
+
+
+it('retains kernel truncation metadata and keeps notices out of command stdout at the runtime boundary', async () => {
+  const context = await fixture();
+  try {
+    const { active } = context.activate();
+    active.assistantTimeline = [{
+      id: 'tool-log', sequence: 30, kind: 'tool', toolCallId: 'cmd-log',
+      name: 'command_execution', status: 'running',
+    }];
+    context.internal.publishKernelToolProgress(active.runId, active.threadId, {
+      type: 'tool-progress', toolId: 'cmd-log', output: 'retained tail\n',
+      outputBytes: 12000, truncated: true,
+    });
+    context.internal.publishKernelToolProgress(active.runId, active.threadId, {
+      type: 'tool-progress', toolId: 'cmd-log', output: 'Still running', isNotice: true,
+    });
+    const projected = context.internal.kernelToolProgressRegistry.projectTimeline(
+      active.runId, active.assistantTimeline,
+    );
+    expect(projected?.[0]).toMatchObject({
+      progressOutput: 'retained tail\n', progressLine: 'Still running',
+      progressTruncated: true, progressBytes: 12000,
+    });
   } finally {
     await context.close();
   }

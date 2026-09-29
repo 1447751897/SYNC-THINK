@@ -527,7 +527,7 @@ describe('ModelPickerMenu', () => {
     expect(menuRule?.[1]).toMatch(/z-index:\s*10030/);
   });
 
-  it('keeps the virtual Radix anchor in body coordinates', async () => {
+  it('portals the model picker to body so composer overflow cannot clip it', async () => {
     const anchor = document.createElement('button');
     document.body.appendChild(anchor);
 
@@ -543,11 +543,11 @@ describe('ModelPickerMenu', () => {
       />,
     );
 
-    const virtualAnchor = await screen.findByTestId('model-picker-anchor');
-    expect(virtualAnchor.parentElement).toBe(document.body);
+    const picker = await screen.findByRole('dialog', { name: '选择模型' });
+    expect(picker.parentElement).toBe(document.body);
   });
 
-  it('opens a provider flyout after the root menu uses the body anchor', async () => {
+  it('shows a provider’s models alongside the icon rail', async () => {
     const anchor = document.createElement('button');
     document.body.appendChild(anchor);
 
@@ -571,7 +571,7 @@ describe('ModelPickerMenu', () => {
     expect(await screen.findByText('Model B')).toBeTruthy();
   });
 
-  it('keeps thinking effort at the bottom and opens its nested menu on click', async () => {
+  it('keeps thinking effort beside the selected model and opens its slider on click', async () => {
     const anchor = document.createElement('button');
     document.body.appendChild(anchor);
     const onReasoningChange = vi.fn();
@@ -594,8 +594,8 @@ describe('ModelPickerMenu', () => {
     );
 
     const trigger = await screen.findByTestId('model-reasoning-trigger');
-    expect(trigger.closest('.shell-menu__model-footer')).toBeTruthy();
-    expect(trigger.textContent).toContain('思考强度');
+    expect(trigger.closest('.shell-model-picker__row')?.getAttribute('data-selected')).toBe('true');
+    expect(trigger.getAttribute('aria-label')).toContain('思考强度');
     expect(trigger.textContent).toContain('高');
 
     fireEvent.click(trigger);
@@ -747,6 +747,7 @@ describe('ModelPickerMenu', () => {
     );
 
     expect(screen.getByText('内核')).toBeTruthy();
+    fireEvent.click(screen.getByTestId('model-kernel-trigger'));
     const nativeOption = await screen.findByTestId('kernel-option-native');
     expect(nativeOption.textContent).toContain('Sync-Think');
     const ccOption = await screen.findByTestId('kernel-option-claude-code');
@@ -830,6 +831,7 @@ describe('ModelPickerMenu', () => {
       <ModelPickerMenu {...baseProps} kernelInstallStates={{ pi: { status: 'installing' } }} />,
     );
 
+    fireEvent.click(screen.getByTestId('model-kernel-trigger'));
     expect((await screen.findByTestId('kernel-status-pi')).textContent).toContain('安装中');
 
     rerender(
@@ -901,6 +903,7 @@ describe('ModelPickerMenu', () => {
       />,
     );
 
+    fireEvent.click(screen.getByTestId('model-kernel-trigger'));
     expect(screen.getByTestId('kernel-version-pi').textContent).toBe('v0.84.4');
     expect(screen.getByTestId('kernel-status-pi').textContent).toContain('执行尚未接通');
   });
@@ -962,6 +965,7 @@ it('keeps an installed executable kernel selectable while background update chec
       ]}
     />,
   );
+  fireEvent.click(screen.getByTestId('model-kernel-trigger'));
   const option = screen.getByTestId('kernel-option-codex');
   expect(option.getAttribute('aria-disabled')).not.toBe('true');
   expect(option.getAttribute('aria-label')).toContain('正在检查更新');

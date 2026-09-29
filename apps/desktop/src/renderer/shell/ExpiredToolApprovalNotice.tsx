@@ -18,7 +18,7 @@ export function ExpiredToolApprovalNotice({
   if (!approval) return null;
   return (
     <section
-      className="shell-composer-tool-approval shell-composer-expired-approval"
+      className="shell-composer-tool-approval shell-composer-expired-approval shell-beui-approval"
       aria-label="失效审批"
       data-testid="expired-tool-approval"
     >

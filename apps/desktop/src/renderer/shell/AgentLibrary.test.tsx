@@ -288,7 +288,7 @@ describe('AgentLibrary tabbed detail drawer', () => {
     expect(screen.getByTestId('agent-detail-drawer')).toBeTruthy();
   }
 
-  it('shows the overview tab by default with read-only info', () => {
+  it('opens an editable profile dialog while preserving the agent library layout', () => {
     renderLibrary();
     openDrawer();
 
@@ -300,17 +300,22 @@ describe('AgentLibrary tabbed detail drawer', () => {
     expect(within(overview).getByText('Model Alpha')).toBeTruthy();
     expect(within(overview).getByText('Keep the interface consistent.')).toBeTruthy();
     expect(within(overview).getByRole('button', { name: '复制 ID' })).toBeTruthy();
-    expect(within(overview).getByRole('button', { name: '未绑定 · 去能力' })).toBeTruthy();
-    // 概览不出现可编辑控件
-    expect(overview.querySelector('input')).toBeNull();
-    expect(overview.querySelector('textarea')).toBeNull();
+    expect(within(overview).getByRole('button', { name: '添加技能' })).toBeTruthy();
+    expect(within(overview).getByLabelText('智能体名称')).toBeTruthy();
+    expect(within(overview).getByLabelText('系统指令')).toBeTruthy();
+    expect(screen.getByTestId('agent-list')).toBeTruthy();
+    expect(document.querySelector('.agent-dialog-overlay')).not.toBeNull();
+    expect(screen.getByRole('dialog')).toBe(screen.getByTestId('agent-detail-drawer'));
+    expect(screen.getByLabelText('智能体统计')).toBeTruthy();
+    expect(document.querySelector('.agent-grid__header')).not.toBeNull();
+    expect(screen.getByTestId('agent-library-page').classList.contains('agent-workbench')).toBe(false);
   });
 
   it('jumps from the overview empty skill state into the abilities tab', () => {
     renderLibrary();
     openDrawer();
 
-    fireEvent.click(screen.getByRole('button', { name: '未绑定 · 去能力' }));
+    fireEvent.click(screen.getByRole('button', { name: '添加技能' }));
     expect(screen.getByTestId('agent-drawer-abilities')).toBeTruthy();
     expect(screen.getByTestId('agent-ability-subtab-skills').getAttribute('aria-selected')).toBe(
       'true',
@@ -426,6 +431,7 @@ describe('AgentLibrary tabbed detail drawer', () => {
     fireEvent.click(screen.getByRole('button', { name: /新建智能体/ }));
     fireEvent.click(screen.getByRole('menuitem', { name: /新建空白智能体/ }));
 
+    fireEvent.click(screen.getByTestId('agent-drawer-tab-settings'));
     const policy = screen.getByRole('group', { name: '委派写入权限' });
     expect(
       within(policy)
@@ -434,7 +440,7 @@ describe('AgentLibrary tabbed detail drawer', () => {
     ).toBe('true');
   });
 
-  it('edits avatar, name, description, models and reasoning in the settings tab', () => {
+  it('edits profile fields separately from avatar, model and reasoning settings', () => {
     renderLibrary();
     openDrawer();
 
@@ -444,11 +450,13 @@ describe('AgentLibrary tabbed detail drawer', () => {
     expect(settings.querySelector('select')).toBeNull();
     expect(settings.querySelector('textarea')).toBeNull();
 
-    const nameInput = settings.querySelector('input[placeholder="前端小张"]') as HTMLInputElement;
+    fireEvent.click(screen.getByTestId('agent-drawer-tab-overview'));
+    const nameInput = screen.getByLabelText('智能体名称') as HTMLInputElement;
     fireEvent.change(nameInput, { target: { value: '新名称' } });
     expect(nameInput.value).toBe('新名称');
+    fireEvent.click(screen.getByTestId('agent-drawer-tab-settings'));
 
-    const reasoning = within(settings).getByRole('group', { name: '推理强度' });
+    const reasoning = within(screen.getByTestId('agent-drawer-settings')).getByRole('group', { name: '推理强度' });
     expect(
       within(reasoning).getByRole('button', { name: '自动' }).getAttribute('aria-pressed'),
     ).toBe('true');

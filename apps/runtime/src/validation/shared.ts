@@ -325,6 +325,7 @@ export const TEAM_RUN_STATUSES = new Set(['running', 'completed', 'failed', 'can
 export const GLOBAL_AGENT_KEYS = [
   'name',
   'defaultModelId',
+  'defaultKernelId',
   'avatar',
   'persona',
   'description',
@@ -351,6 +352,8 @@ export function validGlobalAgentFields(
       value.defaultModelId !== undefined &&
       !boundedAgentText(value.defaultModelId, 256))
   )
+    return false;
+  if (value.defaultKernelId !== undefined && !boundedAgentText(value.defaultKernelId, 64))
     return false;
   // Avatar accepts an emoji/short label or an imported image as a compact
   // data URL (96×96 webp/jpeg ≈ a few KB); cap far below persona limits.

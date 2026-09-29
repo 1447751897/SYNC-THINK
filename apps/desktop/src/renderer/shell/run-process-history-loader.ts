@@ -23,7 +23,7 @@ interface LoaderOptions {
   onFailure(context: string, runId: string, failure?: RunProcessLoadFailure): void;
 }
 
-function classifyFailure(error: unknown): RunProcessLoadFailure['kind'] {
+export function classifyRunProcessLoadFailure(error: unknown): RunProcessLoadFailure['kind'] {
   const message = typeof error === 'string' ? error : error instanceof Error ? error.message : '';
   const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
   const description = `${code} ${message}`.toLowerCase();
@@ -197,7 +197,7 @@ export class RunProcessHistoryLoader {
       this.options.onLoad(context, process);
     } catch (error) {
       if (!this.isCurrent(entry, generation)) return;
-      const kind = classifyFailure(error);
+      const kind = classifyRunProcessLoadFailure(error);
       const retrying = (kind === 'connection' || kind === 'busy') && entry.attempts < 3;
       entry.state = retrying ? 'waiting' : 'failed';
       this.options.onFailure(context, entry.runId, { kind, attempts: entry.attempts, retrying });

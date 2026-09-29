@@ -21,5 +21,10 @@ export function useAutoDisclosure(input: { autoOpen: boolean; resetKey?: string 
     setOpen((value) => !value);
   }, []);
 
-  return { open, toggle };
+  const keepOpen = useCallback(() => {
+    manualOverrideRef.current = true;
+    setOpen(true);
+  }, []);
+
+  return { open, toggle, keepOpen };
 }

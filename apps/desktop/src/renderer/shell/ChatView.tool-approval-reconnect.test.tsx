@@ -6,6 +6,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import type { PendingToolApprovalSummary } from '@sync-think/protocol';
 import type { Conversation } from '@sync-think/shared';
 import { ChatView, resetRecentConversationPageCacheForTests } from './ChatView.js';
+import { ToastProvider, resetToastStoreForTests } from './Toast.js';
 
 const runtime = {
   decideToolApproval: vi.fn(),
@@ -65,12 +66,13 @@ function renderChat(runtimeConnectionRevision = 0) {
       eventHistory={[]}
       runtimeConnectionRevision={runtimeConnectionRevision}
       onTitleUpdated={vi.fn()}
-    />,
+    />, { wrapper: ToastProvider },
   );
 }
 
 beforeEach(() => {
   resetRecentConversationPageCacheForTests();
+  resetToastStoreForTests();
   runtime.appendMessage.mockReset();
   runtime.decideToolApproval.mockReset().mockResolvedValue({
     approvalId: 'approval-reconnect-a',
@@ -94,6 +96,43 @@ afterEach(() => {
 });
 
 describe('ChatView pending tool approval reconnect', () => {
+  it('keeps submission pending until acknowledgement and suppresses a stale pending snapshot', async () => {
+    let resolve!: (value: unknown) => void;
+    runtime.decideToolApproval.mockImplementation(() => new Promise((done) => { resolve = done; }));
+    renderChat();
+    const button = await screen.findByRole('button', { name: '仅本次允许' });
+    fireEvent.click(button);
+    fireEvent.click(button);
+    expect(runtime.decideToolApproval).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('正在提交批准')).toBeTruthy();
+    expect((screen.getByRole('button', { name: '拒绝' }) as HTMLButtonElement).disabled).toBe(true);
+    resolve({ approvalId: approval().approvalId, decision: 'approve', scope: 'once' });
+    await waitFor(() => expect(screen.queryByText('写入文件 README.md')).toBeNull());
+    // Runtime mock still returns the old pending item; acknowledgement wins.
+    expect(runtime.listPendingToolApprovals).toHaveBeenCalledTimes(2);
+  });
+
+  it('shows a failed decision in the card and retries the same approval', async () => {
+    runtime.decideToolApproval.mockRejectedValueOnce(new Error('连接中断')).mockResolvedValueOnce({ approvalId: approval().approvalId, decision: 'approve', scope: 'once' });
+    renderChat();
+    fireEvent.click(await screen.findByRole('button', { name: '仅本次允许' }));
+    expect(await screen.findByText(/提交审批失败：连接中断/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '仅本次允许' }));
+    await waitFor(() => expect(runtime.decideToolApproval).toHaveBeenCalledTimes(2));
+    expect(runtime.decideToolApproval.mock.calls[0]).toEqual(runtime.decideToolApproval.mock.calls[1]);
+    await waitFor(() => expect(screen.queryByText('写入文件 README.md')).toBeNull());
+  });
+
+  it('advances to the next real request without rendering duplicate actionable cards', async () => {
+    runtime.listPendingToolApprovals.mockResolvedValue({ approvals: [approval(), { ...approval(), approvalId: 'second', toolCallId: 'second-call', title: '第二项操作' }] });
+    runtime.decideToolApproval.mockImplementation(async (payload) => ({ ...payload }));
+    renderChat();
+    expect(await screen.findByText('另有 1 项待处理')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '仅本次允许' }));
+    expect(await screen.findByText('第二项操作')).toBeTruthy();
+    expect(screen.getAllByRole('button', { name: '仅本次允许' })).toHaveLength(1);
+  });
+
   it('restores an in-flight approval from Runtime on a cold Renderer start', async () => {
     renderChat();
 
@@ -167,7 +206,7 @@ describe('ChatView pending tool approval reconnect', () => {
     expect(await screen.findByText('写入文件 README.md')).toBeTruthy();
     expect(screen.queryByText('第二条审批')).toBeNull();
     expect(screen.queryByRole('button', { name: '始终允许此应用' })).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: '本会话允许' }));
+    fireEvent.click(screen.getByRole('button', { name: '本会话允许此工具' }));
 
     await waitFor(() =>
       expect(runtime.decideToolApproval).toHaveBeenCalledWith({
@@ -185,7 +224,7 @@ describe('ChatView pending tool approval reconnect', () => {
     renderChat();
 
     expect(await screen.findByText('点击计算器')).toBeTruthy();
-    expect(screen.queryByRole('button', { name: '本会话允许' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '本会话允许此工具' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '始终允许此应用' }));
 
     await waitFor(() =>
@@ -229,8 +268,8 @@ describe('ChatView expired approval recovery', () => {
     });
     renderChat();
     expect(await screen.findByText('审批已失效')).toBeTruthy();
-    expect(screen.queryByRole('button', { name: '批准' })).toBeNull();
-    expect(screen.queryByRole('button', { name: '本会话允许' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '仅本次允许' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '本会话允许此工具' })).toBeNull();
     expect(runtime.decideToolApproval).not.toHaveBeenCalled();
     expect(runtime.listConversationMessages).not.toHaveBeenCalledWith(
       expect.objectContaining({ aroundMessageId: 'original-request' }),
@@ -278,7 +317,7 @@ describe('ChatView expired approval recovery', () => {
       .mockResolvedValueOnce({ approvals: [approval()] })
       .mockResolvedValue({ approvals: [] });
     renderChat();
-    fireEvent.click(await screen.findByRole('button', { name: '批准' }));
+    fireEvent.click(await screen.findByRole('button', { name: '仅本次允许' }));
     expect(await screen.findByText(/原审批已失效/)).toBeTruthy();
     expect(screen.queryByText('已批准')).toBeNull();
   });

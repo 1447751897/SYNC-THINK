@@ -2,7 +2,7 @@
 // Management console aligned with the Ability Center: the ability page's own
 // hub shell (back · title · sibling link · sliding scope tabs · stat strip ·
 // filter chips), a dense row list as the primary view, and the detail surface
-// in a right-hand drawer (概览 / 工作 / 能力 / 设置).
+// in a dedicated detail dialog (资料 / 能力 / 设置).
 import * as Dialog from '@radix-ui/react-dialog';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import {
@@ -53,31 +53,46 @@ import type {
   AgentWritePolicy,
   Conversation,
   GlobalAgent,
+  KernelDetectionResult,
   ModelId,
   Team,
 } from '@sync-think/shared';
 import type { WorkspaceSummary } from '@sync-think/protocol';
 import type { ModelOption } from './NewConversationDialog.js';
 import { useDialog } from './Dialog.js';
-import { AgentAvatarView, isImageAvatar, readAvatarImage } from './AgentAvatarView.js';
 import {
-  AVATAR_COLORS,
-  AVATAR_SHAPES,
-  avatarDataUrl,
-  avatarSeed,
-  colorHex,
-  resolveAvatarFace,
-} from './avatar-gen.js';
+  agentActivationWorkspaces,
+  setAgentGloballyActive,
+  setAgentWorkspaceActive,
+} from './agent-workspace-activation.js';
+import {
+  AgentAvatarView,
+  isGeneratedAvatar,
+  isImageAvatar,
+  readAvatarImage,
+} from './AgentAvatarView.js';
+import {
+  BOT_AVATAR_COLORS,
+  BOT_AVATAR_SHAPES,
+  BOT_AVATAR_LABELS,
+  botAvatarColor,
+  botAvatarSeed,
+  parseBotAvatarSeed,
+  resolveBotAvatarFace,
+} from './bot-avatar.js';
 import { avatarColor } from './avatar-color.js';
+import { updateAgentPayload } from './agent-payload.js';
 import { ModelPickerMenu } from './compose-toolbar.js';
 import { OverlayScrollArea } from './OverlayScrollArea.js';
 import { McpIdentityMark } from './abilities/McpIdentityMark.js';
 import { BrandLogoMark } from './BrandLogoMark.js';
-import { resolveProviderBrandLogo, resolveProviderBrandLogoByName } from './brand-icons.js';
+import { resolveKernelDisplayName, resolveProviderBrandLogo, resolveProviderBrandLogoByName } from './brand-icons.js';
 import { loadMcpCatalog } from './mcp-catalog-loader.js';
 import { loadSkillCatalog } from './skill-catalog-loader.js';
 
 interface Props {
+  /** Open an existing agent directly when entered from the chat editor. */
+  initialAgentId?: string;
   agents: readonly GlobalAgent[];
   models: readonly ModelOption[];
   onRefresh(): void;
@@ -113,6 +128,7 @@ type DraftAgent = {
   description: string;
   persona: string;
   defaultModelId: string;
+  defaultKernelId: string;
   fallbackModelIds: string[];
   skillIds: string[];
   mcpServerIds: string[];
@@ -139,10 +155,11 @@ type McpOption = {
 
 const EMPTY_DRAFT: DraftAgent = {
   name: '',
-  avatar: '🤖',
+  avatar: botAvatarSeed('clover'),
   description: '',
   persona: '',
   defaultModelId: '',
+  defaultKernelId: 'native',
   fallbackModelIds: [],
   skillIds: [],
   mcpServerIds: [],
@@ -161,7 +178,7 @@ const REASONING_OPTIONS = [
 ] as const;
 
 const AGENT_DRAWER_TABS: Array<{ id: DrawerTab; label: string }> = [
-  { id: 'overview', label: '概览' },
+  { id: 'overview', label: '资料' },
   { id: 'abilities', label: '能力' },
   { id: 'settings', label: '设置' },
 ];
@@ -238,36 +255,19 @@ function ProviderMark({ model, size = 16 }: { model?: ModelOption; size?: number
   );
 }
 
-function updateAgentPayload(agent: GlobalAgent, overrides: Partial<GlobalAgent> = {}) {
-  const next = { ...agent, ...overrides };
-  return {
-    agentId: next.id,
-    name: next.name,
-    avatar: next.avatar,
-    description: next.description,
-    persona: next.persona,
-    defaultModelId: next.defaultModelId,
-    fallbackModelIds: next.fallbackModelIds ?? [],
-    skillIds: next.skillIds ?? [],
-    mcpServerIds: next.mcpServerIds ?? [],
-    reasoningEffort: next.reasoningEffort || 'auto',
-    availabilityScope: next.availabilityScope ?? 'global',
-    writePolicy: next.writePolicy ?? 'inherit',
-  };
-}
-
 /**
  * Soft radial glow behind an avatar. Generated faces use their own color;
  * imported images and legacy text avatars fall back to the name-hash color so
  * every card gets a halo, never a bare edge.
  */
 function avatarGlowStyle(avatar: string | undefined, name: string, id: string): CSSProperties {
-  const face = resolveAvatarFace(avatar, id);
-  const glow = isImageAvatar(avatar) ? avatarColor(name) : colorHex(face.color);
+  const face = resolveBotAvatarFace(avatar, id);
+  const glow = isImageAvatar(avatar) ? avatarColor(name) : botAvatarColor(face);
   return { ['--avatar-glow' as string]: glow } as CSSProperties;
 }
 
 export function AgentLibrary({
+  initialAgentId,
   agents,
   models,
   onRefresh,
@@ -275,11 +275,12 @@ export function AgentLibrary({
   onManageSkills,
   skillCatalogRevision = 0,
   teams = [],
-  workspaces = [],
+  workspaces: workspaceScopes = [],
   onBack,
   onGoToAbilities,
 }: Props) {
   const dialog = useDialog();
+  const workspaces = useMemo(() => agentActivationWorkspaces(workspaceScopes), [workspaceScopes]);
   const [selected, setSelected] = useState<GlobalAgent | null>(null);
   const [isNew, setIsNew] = useState(false);
   const [drawerTab, setDrawerTab] = useState<DrawerTab>('overview');
@@ -304,6 +305,20 @@ export function AgentLibrary({
   const avatarFileRef = useRef<HTMLInputElement>(null);
   // Two-level provider → model picker for the default model field.
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const [kernels, setKernels] = useState<KernelDetectionResult[]>([]);
+  const dialogOpen = isNew || selected !== null;
+  useEffect(() => {
+    if (!dialogOpen) return;
+    let cancelled = false;
+    void bridge()?.detectKernels?.().then((result) => {
+      if (!cancelled && Array.isArray(result?.kernels)) setKernels(result.kernels);
+    }).catch(() => { if (!cancelled) setKernels([]); });
+    return () => { cancelled = true; };
+  }, [dialogOpen]);
+  const selectedKernelLabel = resolveKernelDisplayName(
+    draft.defaultKernelId,
+    kernels.find((kernel) => kernel.kernelId === draft.defaultKernelId)?.name,
+  );
   const [modelAnchorEl, setModelAnchorEl] = useState<HTMLButtonElement | null>(null);
   const [workspaceActivations, setWorkspaceActivations] = useState<Record<string, boolean>>({});
   const [activationMenuAgentId, setActivationMenuAgentId] = useState<string | null>(null);
@@ -371,35 +386,36 @@ export function AgentLibrary({
 
   useEffect(() => {
     void reloadWorkspaceActivations();
-  }, [reloadWorkspaceActivations]);
+  }, [reloadWorkspaceActivations, agents]);
 
   // Current procedural face for the live preview — the stored seed when there is
   // one, otherwise the deterministic derivation the avatar view would fall back to.
   const avatarFace = useMemo(
-    () => resolveAvatarFace(draft.avatar, selected?.id ?? draft.name),
+    () => resolveBotAvatarFace(draft.avatar, selected?.id ?? draft.name),
     [draft.avatar, selected?.id, draft.name],
   );
 
   /**
-   * Bulk-backfill seeds for every agent still on a text avatar. Imported images
-   * are skipped, and agents that already carry a seed keep the face the user
-   * picked — so this is safe to run more than once.
+   * Upgrade legacy generated/text avatars on explicit confirmation. Imported
+   * images and already-upgraded bot:v1 choices are preserved on repeated runs.
    */
   const handleRegenerateAllAvatars = useCallback(async () => {
     const api = bridge();
     if (!api) return;
-    const targets = active.filter((agent) => !isImageAvatar(agent.avatar));
+    const targets = active.filter(
+      (agent) => !isImageAvatar(agent.avatar) && !parseBotAvatarSeed(agent.avatar),
+    );
     if (targets.length === 0) {
       await dialog.alert({
         title: '无需生成',
-        message: '所有智能体都已经有专属头像或已导入图片。',
+        message: '所有智能体都已使用新版头像或已导入图片。',
       });
       return;
     }
     if (
       !(await dialog.confirm({
         title: '生成专属头像',
-        message: `将为 ${targets.length} 个智能体生成专属头像。已导入图片的头像会保留，继续吗？`,
+        message: `将把 ${targets.length} 个智能体的旧生成头像或文字头像换成 3D 头像。已导入图片和已选择的新版头像会保留，继续吗？`,
         confirmText: '生成',
       }))
     ) {
@@ -407,20 +423,13 @@ export function AgentLibrary({
     }
     let failed = 0;
     for (const agent of targets) {
-      const face = resolveAvatarFace(agent.avatar, String(agent.id));
+      const face = resolveBotAvatarFace(agent.avatar, String(agent.id));
       try {
-        await api.updateGlobalAgent({
-          agentId: agent.id,
-          name: agent.name,
-          avatar: avatarSeed(face.shape, face.color),
-          description: agent.description,
-          persona: agent.persona,
-          defaultModelId: agent.defaultModelId,
-          fallbackModelIds: agent.fallbackModelIds ?? [],
-          skillIds: agent.skillIds ?? [],
-          mcpServerIds: agent.mcpServerIds ?? [],
-          reasoningEffort: agent.reasoningEffort || 'auto',
-        });
+        await api.updateGlobalAgent(
+          updateAgentPayload(agent, {
+            avatar: botAvatarSeed(face.shape, face.color),
+          }),
+        );
       } catch {
         failed += 1;
       }
@@ -635,10 +644,15 @@ export function AgentLibrary({
   const openNew = useCallback(() => {
     setIsNew(true);
     setSelected(null);
-    setDrawerTab('settings');
+    setDrawerTab('overview');
     setAbilitySubTab('skills');
     setAbilityQuery('');
-    setDraft({ ...EMPTY_DRAFT, defaultModelId: models[0]?.modelId ?? '' });
+    const face = resolveBotAvatarFace(undefined, crypto.randomUUID());
+    setDraft({
+      ...EMPTY_DRAFT,
+      avatar: botAvatarSeed(face.shape, face.color),
+      defaultModelId: models[0]?.modelId ?? '',
+    });
     setTimeout(() => nameRef.current?.focus(), 50);
   }, [models]);
 
@@ -654,6 +668,7 @@ export function AgentLibrary({
       description: agent.description,
       persona: agent.persona,
       defaultModelId: agent.defaultModelId,
+      defaultKernelId: agent.defaultKernelId ?? 'native',
       fallbackModelIds: [...(agent.fallbackModelIds ?? [])],
       skillIds: [...(agent.skillIds ?? [])],
       mcpServerIds: [...(agent.mcpServerIds ?? [])],
@@ -663,6 +678,15 @@ export function AgentLibrary({
     });
     setTimeout(() => nameRef.current?.focus(), 50);
   }, []);
+
+  const openedInitialAgent = useRef<string>();
+  useEffect(() => {
+    if (!initialAgentId || openedInitialAgent.current === initialAgentId) return;
+    const agent = agents.find(item => item.id === initialAgentId);
+    if (!agent) return;
+    openedInitialAgent.current = initialAgentId;
+    openEdit(agent);
+  }, [initialAgentId, agents, openEdit]);
 
   const closeDialog = useCallback(() => {
     setSelected(null);
@@ -695,6 +719,7 @@ export function AgentLibrary({
       description: draft.description,
       persona: draft.persona,
       defaultModelId: draft.defaultModelId as ModelId,
+      defaultKernelId: draft.defaultKernelId,
       fallbackModelIds: fallbackModelIds.map((id) => id as ModelId),
       skillIds: draft.skillIds,
       mcpServerIds: draft.mcpServerIds,
@@ -752,20 +777,8 @@ export function AgentLibrary({
       });
       setAgentActivationSaving(agentId, true);
       try {
-        for (const workspace of workspaces) {
-          await api.setGlobalAgentWorkspaceActivation({
-            agentId: agent.id,
-            workspaceId: workspace.workspaceId as import('@sync-think/shared').WorkspaceId,
-            active: activeInAllWorkspaces,
-          });
-        }
-        if (api.updateGlobalAgent) {
-          await api.updateGlobalAgent(
-            updateAgentPayload(agent, {
-              availabilityScope: activeInAllWorkspaces ? 'global' : 'workspace',
-            }),
-          );
-        }
+        await setAgentGloballyActive(api, agent, workspaces, activeInAllWorkspaces);
+        await reloadWorkspaceActivations();
         if (selected?.id === agent.id) {
           const nextScope = activeInAllWorkspaces ? 'global' : 'workspace';
           setSelected((current) =>
@@ -783,6 +796,8 @@ export function AgentLibrary({
           }
           return next;
         });
+        await reloadWorkspaceActivations().catch(() => {});
+        onRefresh();
         await dialog.alert({
           title: '更新工作区激活失败',
           message: error instanceof Error ? error.message : '无法更新工作区激活状态',
@@ -791,7 +806,15 @@ export function AgentLibrary({
         setAgentActivationSaving(agentId, false);
       }
     },
-    [dialog, onRefresh, selected?.id, setAgentActivationSaving, workspaceActivations, workspaces],
+    [
+      dialog,
+      onRefresh,
+      selected?.id,
+      setAgentActivationSaving,
+      workspaceActivations,
+      workspaces,
+      reloadWorkspaceActivations,
+    ],
   );
 
   const handleWorkspaceActivation = useCallback(
@@ -804,17 +827,8 @@ export function AgentLibrary({
       setWorkspaceActivations((current) => ({ ...current, [key]: activeInWorkspace }));
       setAgentActivationSaving(agentId, true);
       try {
-        if ((agent.availabilityScope ?? 'global') === 'global') {
-          if (!api.updateGlobalAgent) throw new Error('运行时未连接');
-          await api.updateGlobalAgent(
-            updateAgentPayload(agent, { availabilityScope: 'workspace' }),
-          );
-        }
-        await api.setGlobalAgentWorkspaceActivation({
-          agentId: agent.id,
-          workspaceId: workspaceId as import('@sync-think/shared').WorkspaceId,
-          active: activeInWorkspace,
-        });
+        await setAgentWorkspaceActive(api, agent, workspaces, workspaceId, activeInWorkspace);
+        await reloadWorkspaceActivations();
         if (selected?.id === agent.id) {
           setSelected((current) =>
             current ? { ...current, availabilityScope: 'workspace' } : current,
@@ -824,6 +838,8 @@ export function AgentLibrary({
         onRefresh();
       } catch (error) {
         setWorkspaceActivations((current) => ({ ...current, [key]: previous }));
+        await reloadWorkspaceActivations().catch(() => {});
+        onRefresh();
         await dialog.alert({
           title: '更新激活状态失败',
           message: error instanceof Error ? error.message : '无法更新工作区激活状态',
@@ -832,7 +848,15 @@ export function AgentLibrary({
         setAgentActivationSaving(agentId, false);
       }
     },
-    [dialog, onRefresh, selected?.id, setAgentActivationSaving, workspaceActivations],
+    [
+      dialog,
+      onRefresh,
+      selected?.id,
+      setAgentActivationSaving,
+      workspaceActivations,
+      workspaces,
+      reloadWorkspaceActivations,
+    ],
   );
 
   const handleDelete = useCallback(async () => {
@@ -874,8 +898,6 @@ export function AgentLibrary({
       setDeleting(false);
     }
   }, [closeDialog, dialog, onRefresh, selected]);
-
-  const dialogOpen = isNew || selected !== null;
 
   // Escape dismisses the topmost layer first. When the model picker is open,
   // keep the agent draft intact and only close that picker; a second Escape
@@ -1005,10 +1027,10 @@ export function AgentLibrary({
           <button
             type="button"
             className="ability-hub__ghost-action"
-            title="为未生成头像的智能体批量生成专属头像"
+            title="将旧生成头像或文字头像升级为 3D 头像，保留图片和已选择的新版头像"
             onClick={() => void handleRegenerateAllAvatars()}
           >
-            <WandSparkles size={14} /> 生成专属头像
+            <WandSparkles size={14} /> 升级专属头像
           </button>
           <div className="newmax-skill-create">
             <button
@@ -1319,7 +1341,7 @@ export function AgentLibrary({
          */}
         <Dialog.Overlay className="agent-dialog-overlay" />
         <Dialog.Content
-          className="agent-dialog"
+          className="agent-dialog agent-detail-editor"
           data-testid="agent-detail-drawer"
           aria-label={isNew ? '新建智能体' : `编辑智能体${draft.name ? ` · ${draft.name}` : ''}`}
         >
@@ -1390,7 +1412,7 @@ export function AgentLibrary({
             ))}
           </SlidingTabs>
 
-          {/* ── 概览：只读基本信息 ── */}
+          {/* Primary editable profile */}
           {drawerTab === 'overview' && (
             <OverlayScrollArea
               className="agent-dialog__body"
@@ -1399,16 +1421,28 @@ export function AgentLibrary({
               dataTestId="agent-drawer-overview"
             >
               <div className="agent-pane">
-                {draft.description ? (
-                  <p className="agent-dialog__lede">{draft.description}</p>
-                ) : (
-                  <p className="agent-dialog__lede is-empty">暂无简介</p>
-                )}
+                <Field label="名称 *">
+                  <input
+                    ref={nameRef}
+                    className="agent-input"
+                    aria-label="智能体名称"
+                      placeholder="给智能体起个名字"
+                    value={draft.name}
+                    onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
+                  />
+                </Field>
+
+                <Field label="简介">
+                  <input
+                    className="agent-input"
+                    aria-label="智能体简介"
+                      placeholder="用一句话描述它负责什么"
+                    value={draft.description}
+                    onChange={(e) => setDraft((d) => ({ ...d, description: e.target.value }))}
+                  />
+                </Field>
+
                 <div className="agent-meta-grid">
-                  <div className="agent-meta">
-                    <span className="agent-meta__label">ID</span>
-                    <AgentCopyChip value={selected?.id ? String(selected.id) : '-'} />
-                  </div>
                   <div className="agent-meta">
                     <span className="agent-meta__label">所在小队</span>
                     {memberTeams.length > 0 ? (
@@ -1447,7 +1481,7 @@ export function AgentLibrary({
                     </div>
                   </div>
                   <div className="agent-meta">
-                    <span className="agent-meta__label">Skill</span>
+                    <span className="agent-meta__label">已绑定技能</span>
                     {draft.skillIds.length === 0 ? (
                       <button
                         type="button"
@@ -1457,7 +1491,7 @@ export function AgentLibrary({
                           openAbilitySubTab('skills');
                         }}
                       >
-                        未绑定 · 去能力
+                        添加技能
                       </button>
                     ) : (
                       <div className="agent-pill-row">
@@ -1479,10 +1513,29 @@ export function AgentLibrary({
 
                 <div>
                   <div className="agent-meta__label" style={{ marginBottom: 6 }}>
-                    系统 / 人设指令
+                    系统指令
                   </div>
-                  <div className="agent-persona-card">{draft.persona || '—'}</div>
+                  <p className="agent-detail-editor__field-hint">
+                    定义它的职责、表达方式，以及执行任务时应遵循的规则。
+                  </p>
+                  <textarea
+                    className="agent-input agent-detail-editor__persona"
+                    aria-label="系统指令"
+                    value={draft.persona}
+                    onChange={(event) =>
+                      setDraft((current) => ({ ...current, persona: event.target.value }))
+                    }
+                    placeholder="例如：你是一位研究助手。先给出结论，再附上依据与来源。"
+                  />
+                  <div className="agent-detail-editor__character-count">
+                    {draft.persona.length} 字符
+                  </div>
                 </div>
+                <details className="agent-detail-editor__advanced">
+                  <summary>高级信息</summary>
+                  <span>智能体 ID</span>
+                  <AgentCopyChip value={selected?.id ? String(selected.id) : '保存后生成'} />
+                </details>
               </div>
             </OverlayScrollArea>
           )}
@@ -1715,12 +1768,17 @@ export function AgentLibrary({
                         selected?.id ?? draft.name,
                       )}
                     >
-                      <AgentAvatarView name={draft.name || '?'} avatar={draft.avatar} size={56} />
+                      <AgentAvatarView
+                        name={draft.name || '?'}
+                        avatar={draft.avatar}
+                        size={56}
+                        animate
+                      />
                     </span>
                     <div className="agent-avatar-editor__main">
                       <label className="agent-meta__label">头像</label>
                       <div className="agent-avatar-editor__row">
-                        {!isImageAvatar(draft.avatar) && (
+                        {!isImageAvatar(draft.avatar) && !isGeneratedAvatar(draft.avatar) && (
                           <input
                             className="agent-emoji-input"
                             value={draft.avatar}
@@ -1729,6 +1787,15 @@ export function AgentLibrary({
                             title="输入一个 emoji 或字母"
                             placeholder="🤖"
                           />
+                        )}
+                        {isGeneratedAvatar(draft.avatar) && (
+                          <button
+                            type="button"
+                            className="agent-text-link"
+                            onClick={() => setDraft((d) => ({ ...d, avatar: '🤖' }))}
+                          >
+                            使用文字头像
+                          </button>
                         )}
                         <button
                           type="button"
@@ -1741,9 +1808,14 @@ export function AgentLibrary({
                           <button
                             type="button"
                             className="agent-text-link"
-                            onClick={() => setDraft((d) => ({ ...d, avatar: '🤖' }))}
+                            onClick={() =>
+                              setDraft((d) => ({
+                                ...d,
+                                avatar: botAvatarSeed(avatarFace.shape, avatarFace.color),
+                              }))
+                            }
                           >
-                            恢复 emoji
+                            恢复动态头像
                           </button>
                         )}
                         <input
@@ -1762,89 +1834,79 @@ export function AgentLibrary({
 
                   <div className="agent-avatar-picker-block">
                     <div className="agent-avatar-picker-head">
-                      <label className="agent-meta__label">专属头像</label>
+                      <label className="agent-meta__label">3D 专属头像 · 18 种造型</label>
                       <button
                         type="button"
                         className="agent-text-link"
                         onClick={() => void handleRegenerateAllAvatars()}
                       >
-                        给全部智能体生成
+                        升级旧头像
                       </button>
                     </div>
-                    <div className="avatar-picker">
-                      {AVATAR_SHAPES.map((shape) => {
-                        const isActiveShape = avatarFace.shape === shape;
+                    <div className="avatar-picker" role="group" aria-label="头像造型">
+                      {BOT_AVATAR_SHAPES.map((shape) => {
+                        const isActiveShape =
+                          isGeneratedAvatar(draft.avatar) && avatarFace.shape === shape;
                         return (
                           <button
                             key={shape}
                             type="button"
-                            title={shape}
-                            aria-label={`形状 ${shape}`}
+                            title={BOT_AVATAR_LABELS[shape]}
+                            aria-label={`造型 ${BOT_AVATAR_LABELS[shape]}`}
                             aria-pressed={isActiveShape}
                             className={clsx('avatar-shape', isActiveShape && 'is-active')}
                             onClick={() =>
                               setDraft((d) => ({
                                 ...d,
-                                avatar: avatarSeed(shape, avatarFace.color),
+                                avatar: botAvatarSeed(shape, avatarFace.color),
                               }))
                             }
                           >
-                            <img
-                              src={avatarDataUrl(shape, avatarFace.color, 'idle', 24)}
-                              alt=""
-                              draggable={false}
-                            />
+                            <span aria-hidden="true">
+                              <AgentAvatarView
+                                name={BOT_AVATAR_LABELS[shape]}
+                                avatar={botAvatarSeed(shape, avatarFace.color)}
+                                size={30}
+                              />
+                            </span>
                           </button>
                         );
                       })}
                     </div>
-                    <div className="avatar-picker">
-                      {AVATAR_COLORS.map((color) => {
-                        const isActiveColor = avatarFace.color === color;
+                    <div className="avatar-picker" role="group" aria-label="头像颜色">
+                      {BOT_AVATAR_COLORS.map((color) => {
+                        const isActiveColor =
+                          isGeneratedAvatar(draft.avatar) && avatarFace.color === color;
                         return (
                           <button
                             key={color}
                             type="button"
-                            title={color}
-                            aria-label={`颜色 ${color}`}
+                            title={color === 'preset' ? '默认配色' : color}
+                            aria-label={`颜色 ${color === 'preset' ? '默认配色' : color}`}
                             aria-pressed={isActiveColor}
                             className={clsx('avatar-swatch', isActiveColor && 'is-active')}
-                            style={{ background: colorHex(color) }}
+                            style={{
+                              background: botAvatarColor({ shape: avatarFace.shape, color }),
+                            }}
                             onClick={() =>
                               setDraft((d) => ({
                                 ...d,
-                                avatar: avatarSeed(avatarFace.shape, color),
+                                avatar: botAvatarSeed(avatarFace.shape, color),
                               }))
                             }
-                          />
+                          >
+                            {color === 'preset' ? <span aria-hidden="true">↺</span> : null}
+                          </button>
                         );
                       })}
                     </div>
                   </div>
 
-                  <Field label="名称 *">
-                    <input
-                      ref={nameRef}
-                      className="agent-input"
-                      placeholder="前端小张"
-                      value={draft.name}
-                      onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
-                    />
-                  </Field>
-
-                  <Field label="简介">
-                    <input
-                      className="agent-input"
-                      placeholder="擅长前端开发与调试"
-                      value={draft.description}
-                      onChange={(e) => setDraft((d) => ({ ...d, description: e.target.value }))}
-                    />
-                  </Field>
                 </div>
 
                 <div className="agent-settings-group agent-settings-group--model">
-                  <SectionTitle hint="主模型负责首轮执行；备用链按 1 → 2 → 3 的优先级依次接管。">
-                    模型与推理
+                  <SectionTitle hint="对话统一使用这里的模型、内核和推理强度；备用链按顺序接管。">
+                    模型与内核
                   </SectionTitle>
 
                   <Field label="默认模型 *" onLabelClick={() => setModelMenuOpen((o) => !o)}>
@@ -1859,7 +1921,7 @@ export function AgentLibrary({
                     >
                       <ProviderMark model={defaultModel} size={19} />
                       <span className="agent-model-select__copy">
-                        <small>{defaultModel?.providerName ?? '选择供应商'}</small>
+                        <small>{defaultModel?.providerName ?? '选择供应商'} · {selectedKernelLabel}</small>
                         <strong>{defaultModelLabel}</strong>
                       </span>
                       <ChevronDown size={14} aria-hidden="true" />
@@ -1868,6 +1930,9 @@ export function AgentLibrary({
                       open={modelMenuOpen}
                       models={models}
                       selectedModelId={draft.defaultModelId}
+                      kernels={kernels}
+                      selectedKernelId={draft.defaultKernelId}
+                      onPickKernel={(kernelId) => setDraft((current) => ({ ...current, defaultKernelId: kernelId }))}
                       defaultLabel="请选择模型"
                       anchorEl={modelAnchorEl}
                       onClose={() => setModelMenuOpen(false)}
@@ -2217,7 +2282,7 @@ function AgentCard({
       aria-label={`查看 ${agent.name} 详情`}
       onClick={onClick}
       onKeyDown={(event) => {
-        if (event.key === 'Enter' || event.key === ' ') {
+        if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) {
           event.preventDefault();
           onClick();
         }

@@ -1,11 +1,12 @@
+import { useContextMenu } from './ContextMenu.js';
 // NewMax-style sidebar (shell constitution):
-// top actions · three tracks with real groups · bottom settings + account.
+// top actions · regular conversation groups · bottom settings + account.
 // Collapsed = fully hidden (parent omits this component). Width is resizable.
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import { useDialog } from './Dialog.js';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import {
-  Activity,
+  Inbox,
   Archive,
   ArchiveRestore,
   Bot,
@@ -21,6 +22,7 @@ import {
   MessageSquarePlus,
   MoreHorizontal,
   PanelLeftClose,
+  Palette,
   Pencil,
   Pin,
   Plus,
@@ -33,6 +35,9 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import syncThinkLogo from './assets/sync-think-logo.png';
+import type { WorkspaceSummary } from '@sync-think/protocol';
+import { readSidebarMode, writeSidebarMode } from './agent-contacts.js';
+import { isAgentConversation } from './conversation-surface.js';
 import type { Conversation, ConversationTrack, GlobalAgent, Team } from '@sync-think/shared';
 import type { ConversationGroupPreference, ConversationGroupsByTrack } from '../ui-preferences.js';
 import {
@@ -47,6 +52,7 @@ import {
   type TeamRowMemberMark,
 } from './shell-state.js';
 import { AgentAvatarView } from './AgentAvatarView.js';
+import { useCollaborationRoster } from './collaboration-roster-store.js';
 import { BrandLogoMark } from './BrandLogoMark.js';
 import { resolveKernelBrandLogo } from './brand-icons.js';
 import {
@@ -56,11 +62,10 @@ import {
 } from './sidebar-newmax-loading.js';
 import { resolvePendingUpdateVersion, useDesktopUpdateState } from './use-desktop-update-state.js';
 
-const TRACK_ICONS: Record<ConversationTrack, typeof Sparkles> = {
-  model: Sparkles,
-  agent: Bot,
-  team: Users,
-};
+const AgentContactsSidebar = lazy(() => import('./AgentContactsSidebar.js'));
+const EMPTY_WORKSPACES: readonly WorkspaceSummary[] = [];
+// Agent and team histories live in the agent area, not the recent-chat list.
+const RECENT_CONVERSATION_TRACKS: readonly ConversationTrack[] = ['model'];
 
 export interface SidebarProps {
   nav: ShellNavState;
@@ -79,6 +84,10 @@ export interface SidebarProps {
   bootState?: 'loading' | 'ready' | 'error';
   bootError?: string;
   activeWorkspaceId?: string;
+  workspaces?: readonly WorkspaceSummary[];
+  onEnterAgentWorkspace?(): void;
+  onAgentChat?(agentId: string, workspaceId: string, newConversation?: boolean): void;
+  onAgentsRefresh?(): Promise<unknown> | void;
   settingsOpen?: boolean;
   multiSelect: boolean;
   selectedIds: ReadonlySet<string>;
@@ -110,9 +119,10 @@ export interface SidebarProps {
 }
 
 export function Sidebar(props: SidebarProps) {
+  const [sidebarMode, setSidebarMode] = useState(() => props.onEnterAgentWorkspace ? 'conversations' as const : readSidebarMode());
   const [query, setQuery] = useState('');
   const [archiveOpen, setArchiveOpen] = useState(false);
-  /** 最近对话 wraps the three tracks; collapsing it hides all of them at once. */
+  /** Collapsing 最近对话 hides the regular conversation groups. */
   const [recentOpen, setRecentOpen] = useState(true);
   const [searchFocused, setSearchFocused] = useState(false);
   const dialog = useDialog();
@@ -122,10 +132,15 @@ export function Sidebar(props: SidebarProps) {
   const pendingUpdateVersion = resolvePendingUpdateVersion(updateSnapshot);
 
   useEffect(() => {
-    const openSearch = () => setSearchFocused(true);
+    const openSearch = () => {
+      if (props.onEnterAgentWorkspace && readSidebarMode() === 'agents') return;
+      setSidebarMode('conversations');
+      writeSidebarMode('conversations');
+      setSearchFocused(true);
+    };
     window.addEventListener('shell-open-conversation-search', openSearch);
     return () => window.removeEventListener('shell-open-conversation-search', openSearch);
-  }, []);
+  }, [props.onEnterAgentWorkspace]);
 
   const resolveName = useMemo(
     () => (c: Conversation) =>
@@ -137,6 +152,7 @@ export function Sidebar(props: SidebarProps) {
     const a: Conversation[] = [];
     const ar: Conversation[] = [];
     for (const c of props.conversations) {
+      if (isAgentConversation(c)) continue;
       if (c.archivedAt) ar.push(c);
       else a.push(c);
     }
@@ -160,11 +176,10 @@ export function Sidebar(props: SidebarProps) {
   const filteredActive = useMemo(() => filterQ(active), [active, filterQ]);
   const filteredArchived = useMemo(() => filterQ(archived), [archived, filterQ]);
 
-  const byTrack = useMemo(() => {
-    const groups: Record<ConversationTrack, Conversation[]> = { model: [], agent: [], team: [] };
-    for (const c of filteredActive) groups[c.track].push(c);
-    return groups;
-  }, [filteredActive]);
+  const recentTree = useMemo(
+    () => buildTrackTree(filteredActive, props.groups.model),
+    [filteredActive, props.groups.model],
+  );
 
   const collapsed = props.collapsed === true;
   const targetWidth = collapsed ? 0 : props.width;
@@ -231,399 +246,380 @@ export function Sidebar(props: SidebarProps) {
             </button>
           </div>
 
-          {/* Top actions */}
-          <div className="flex shrink-0 flex-col gap-0.5">
-            <ActionRow
-              icon={<MessageSquarePlus size={15} />}
-              label="新建对话"
-              testId="nav-new-chat"
-              onClick={() => props.onNewConversation()}
-            />
-            <ActionRow
-              icon={<Search size={15} />}
-              label="搜索"
-              testId="nav-search"
-              onClick={() => setSearchFocused(true)}
-            />
-            <ActionRow
-              icon={<CalendarClock size={15} />}
-              label="定时任务"
-              testId="nav-scheduled"
-              active={props.nav.stage === 'tasks'}
-              onClick={() => props.onSelectStage('tasks')}
-            />
-            <ActionRow
-              icon={<Activity size={15} />}
-              label="后台活动"
-              testId="nav-activity"
-              active={props.nav.stage === 'activity'}
-              onClick={() => props.onSelectStage('activity')}
-            />
-            <ActionRow
-              icon={<Globe size={15} />}
-              label="浏览器"
-              testId="nav-browser"
-              active={props.nav.stage === 'browser'}
-              onClick={() => props.onSelectStage('browser')}
-            />
-            <ActionRow
-              icon={<Bot size={15} />}
-              label="智能体"
-              testId="nav-agents"
-              active={props.nav.stage === 'agents'}
-              onClick={() => props.onSelectStage('agents')}
-            />
-            <ActionRow
-              icon={<Users size={15} />}
-              label="小队"
-              testId="nav-teams"
-              active={props.nav.stage === 'teams'}
-              onClick={() => props.onSelectStage('teams')}
-            />
-            <ActionRow
-              icon={<Wrench size={15} />}
-              label="能力"
-              testId="nav-abilities"
-              active={props.nav.stage === 'abilities'}
-              onClick={() => props.onSelectStage('abilities')}
-            />
+          <div className="sidebar-mode-switch" role="group" aria-label="侧栏视图">
+            <button
+              type="button"
+              aria-pressed={sidebarMode === 'conversations'}
+              onClick={() => {
+                setSidebarMode('conversations');
+                writeSidebarMode('conversations');
+              }}
+            >
+              <MessageSquare size={13} />
+              会话
+            </button>
+            <button
+              type="button"
+              aria-pressed={sidebarMode === 'agents'}
+              onClick={() => {
+                if (props.onEnterAgentWorkspace) props.onEnterAgentWorkspace();
+                else { setSidebarMode('agents'); writeSidebarMode('agents'); }
+              }}
+            >
+              <Bot size={13} />
+              智能体
+            </button>
           </div>
-        </div>
-
-        {/* Panel 2 — conversation list (bright inner box on the dark board).
-          Height follows its content: expanding/collapsing a track or archive
-          grows/shrinks the box instead of it always filling the board. */}
-        <div className="shell-sidebar-recent flex min-h-0 flex-col rounded-(--radius-card) border border-border bg-recent px-2 pb-2 pt-1.5">
-          {/* Search field (shown when search action focused or query non-empty) */}
-          {(searchFocused || query) && (
-            <div className="relative shrink-0 py-1.5">
-              <Search
-                size={12}
-                className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-text-faint"
+          {/* Top actions */}
+          {sidebarMode === 'conversations' && (
+            <div className="flex shrink-0 flex-col gap-0.5">
+              <ActionRow
+                icon={<MessageSquarePlus size={15} />}
+                label="新建对话"
+                testId="nav-new-chat"
+                onClick={() => props.onNewConversation()}
               />
-              <input
-                data-testid="sidebar-search"
-                type="search"
-                autoFocus={searchFocused}
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                onBlur={() => {
-                  if (!query) setSearchFocused(false);
-                }}
-                placeholder="搜索对话…"
-                className="h-7 w-full rounded-(--radius-row) border border-border bg-page pl-7 pr-2 text-[12px] text-text placeholder:text-text-faint outline-none focus:border-accent/40"
+              <ActionRow
+                icon={<Search size={15} />}
+                label="搜索"
+                testId="nav-search"
+                onClick={() => setSearchFocused(true)}
+              />
+              <ActionRow
+                icon={<CalendarClock size={15} />}
+                label="定时任务"
+                testId="nav-scheduled"
+                active={props.nav.stage === 'tasks'}
+                onClick={() => props.onSelectStage('tasks')}
+              />
+              <ActionRow
+                icon={<Inbox size={15} />}
+                label="收件箱"
+                testId="nav-activity"
+                active={props.nav.stage === 'activity'}
+                onClick={() => props.onSelectStage('activity')}
+              />
+              <ActionRow
+                icon={<Globe size={15} />}
+                label="浏览器"
+                testId="nav-browser"
+                active={props.nav.stage === 'browser'}
+                onClick={() => props.onSelectStage('browser')}
+              />
+              <ActionRow
+                icon={<Bot size={15} />}
+                label={props.onEnterAgentWorkspace ? "管理智能体" : "智能体"}
+                testId="nav-agents"
+                active={props.nav.stage === 'agents'}
+                onClick={() => props.onSelectStage('agents')}
+              />
+              <ActionRow
+                icon={<Users size={15} />}
+                label="小队"
+                testId="nav-teams"
+                active={props.nav.stage === 'teams'}
+                onClick={() => props.onSelectStage('teams')}
+              />
+              <ActionRow
+                icon={<Wrench size={15} />}
+                label="能力"
+                testId="nav-abilities"
+                active={props.nav.stage === 'abilities'}
+                onClick={() => props.onSelectStage('abilities')}
               />
             </div>
           )}
-
-          {/* Multi-select bulk bar */}
-          {props.multiSelect ? (
-            <div
-              data-testid="sidebar-multiselect-bar"
-              className="mb-1 flex shrink-0 flex-wrap items-center gap-1 rounded-(--radius-row) border border-border bg-surface px-2 py-1.5"
-            >
-              <span className="mr-1 text-[11px] text-text-secondary">
-                已选 {props.selectedIds.size}
-              </span>
-              <button
-                type="button"
-                className="st-row-motion h-6 rounded px-1.5 text-[11px] text-text-secondary hover:bg-hover"
-                onClick={props.onBulkArchive}
-                disabled={props.selectedIds.size === 0}
-              >
-                归档
+          {sidebarMode === 'agents' && (
+            <div className="agent-contacts-shortcuts">
+              <button type="button" onClick={() => props.onSelectStage('tasks')}>
+                <CalendarClock size={13} />
+                定时任务
               </button>
-              <DropdownMenu.Root>
-                <DropdownMenu.Trigger asChild>
-                  <button
-                    type="button"
-                    data-testid="sidebar-bulk-move"
-                    className="st-row-motion h-6 rounded px-1.5 text-[11px] text-text-secondary hover:bg-hover"
-                    disabled={props.selectedIds.size === 0}
-                  >
-                    移动到分组
-                  </button>
-                </DropdownMenu.Trigger>
-                <DropdownMenu.Portal>
-                  <DropdownMenu.Content
-                    className="st-popover-in z-[300] min-w-[160px] rounded-(--radius-row) border border-border bg-overlay p-1 shadow-xl"
-                    sideOffset={4}
-                  >
-                    {(Object.keys(props.groups) as ConversationTrack[]).map((track) => {
-                      const selectedInTrack = props.conversations.some(
-                        (conversation) =>
-                          conversation.track === track && props.selectedIds.has(conversation.id),
-                      );
-                      if (!selectedInTrack) return null;
-                      return (
-                        <div key={track}>
-                          <DropdownMenu.Item
-                            className="st-row-motion cursor-pointer rounded px-2 py-1.5 text-[12px] text-text-secondary outline-none hover:bg-hover focus:bg-hover"
-                            onSelect={() => props.onBulkMoveToGroup(track, null)}
-                          >
-                            {TRACK_LABELS[track]} · 移出分组
-                          </DropdownMenu.Item>
-                          {props.groups[track].map((group) => (
-                            <DropdownMenu.Item
-                              key={`${track}:${group.id}`}
-                              className="st-row-motion cursor-pointer rounded px-2 py-1.5 text-[12px] text-text-secondary outline-none hover:bg-hover focus:bg-hover"
-                              onSelect={() => props.onBulkMoveToGroup(track, group.id)}
-                            >
-                              {TRACK_LABELS[track]} · {group.name}
-                            </DropdownMenu.Item>
-                          ))}
-                        </div>
-                      );
-                    })}
-                  </DropdownMenu.Content>
-                </DropdownMenu.Portal>
-              </DropdownMenu.Root>
-              <button
-                type="button"
-                className="st-row-motion h-6 rounded px-1.5 text-[11px] text-error hover:bg-error/10"
-                onClick={props.onBulkDelete}
-                disabled={props.selectedIds.size === 0}
-              >
-                删除
+              <button type="button" onClick={() => props.onSelectStage('browser')}>
+                <Globe size={13} />
+                浏览器
               </button>
-              <button
-                type="button"
-                className="st-row-motion ml-auto h-6 rounded px-1.5 text-[11px] text-text-faint hover:bg-hover"
-                onClick={props.onToggleMultiSelect}
-              >
-                取消
+              <button type="button" onClick={() => props.onSelectStage('abilities')}>
+                <Wrench size={13} />
+                能力
               </button>
             </div>
-          ) : null}
+          )}
+        </div>
 
-          {/* Tracks */}
-          <div className="shell-scrollbar min-h-0 flex-1 overflow-y-auto">
-            <button
-              type="button"
-              data-testid="recent-section-toggle"
-              className="st-press-motion st-row-motion flex h-8 w-full cursor-pointer items-center gap-1 rounded-(--radius-row) px-1.5 text-left hover:bg-hover"
-              onClick={() => setRecentOpen((v) => !v)}
+        {sidebarMode === 'agents' ? (
+          props.activeWorkspaceId ? (
+            <Suspense
+              fallback={
+                <p className="agent-contacts__empty" role="status">
+                  正在打开智能体…
+                </p>
+              }
             >
-              <ChevronRight
-                size={13}
-                className="st-chevron text-text-faint"
-                data-open={recentOpen}
+              <AgentContactsSidebar
+                key={props.activeWorkspaceId}
+                workspaceId={props.activeWorkspaceId}
+                agents={props.agents}
+                workspaces={props.workspaces ?? EMPTY_WORKSPACES}
+                conversations={props.conversations}
+                selectedConversationId={
+                  props.nav.stage === 'talk' ? props.nav.selectedConversationId : undefined
+                }
+                conversationActivity={props.conversationActivity}
+                loading={props.bootState === 'loading'}
+                onChat={(agentId, ws, fresh) => props.onAgentChat?.(agentId, ws, fresh)}
+                onOpenConversation={props.onOpenConversation}
+                onManage={() => props.onSelectStage('agents')}
+                onRefresh={() => props.onAgentsRefresh?.()}
               />
-              <span className="flex-1 text-[14px] font-semibold tracking-wide text-text-faint">
-                最近对话
-              </span>
-            </button>
-
-            <div className={clsx('shell-collapse', recentOpen && 'shell-collapse--open')}>
-              <div className="shell-collapse__inner">
-                {sidebarWorkspaceListsLoading ? (
-                  <SidebarWorkspaceListSkeleton />
-                ) : (
-                <div>
-                  {(Object.keys(TRACK_LABELS) as ConversationTrack[]).map((track) => {
-                    const TrackIcon = TRACK_ICONS[track];
-                    const expanded = props.nav.expandedTracks[track];
-                    const items = byTrack[track];
-                    const tree = buildTrackTree(items, props.groups[track] ?? []);
-                    return (
-                      <div key={track} className="mb-0.5">
-                        <div
-                          className="st-press-motion st-row-motion group flex h-8 cursor-pointer items-center gap-1 rounded-(--radius-row) px-1.5 hover:bg-hover"
-                          data-testid={`track-header-${track}`}
-                          onClick={() => props.onToggleTrack(track)}
-                        >
-                          <ChevronRight
-                            size={13}
-                            className="st-chevron text-text-faint"
-                            data-open={expanded}
-                          />
-                          <TrackIcon size={13} className="text-text-secondary" />
-                          <span className="flex-1 text-[13px] text-text-secondary">
-                            {TRACK_LABELS[track]}
-                          </span>
-                          <button
-                            data-testid={`track-new-group-${track}`}
-                            className="st-icon-motion invisible flex h-5 w-5 items-center justify-center rounded text-text-faint hover:bg-active hover:text-text group-hover:visible"
-                            title="新建分组"
-                            onClick={async (e) => {
-                              e.stopPropagation();
-                              const name = await dialog.prompt({
-                                title: '新建分组',
-                                message: '为这个轨道新建一个对话分组',
-                                placeholder: '分组名称',
-                                confirmText: '新建',
-                              });
-                              if (!name?.trim()) return;
-                              props.onCreateGroup(track, name.trim());
-                            }}
-                          >
-                            <FolderPlus size={12} />
-                          </button>
-                          <button
-                            data-testid={`track-new-${track}`}
-                            className="st-icon-motion invisible flex h-5 w-5 items-center justify-center rounded text-text-faint hover:bg-active hover:text-text group-hover:visible"
-                            title={`新建${TRACK_LABELS[track]}`}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              props.onNewConversation(track);
-                            }}
-                          >
-                            <Plus size={13} />
-                          </button>
-                        </div>
-
-                        <div className={clsx('shell-collapse', expanded && 'shell-collapse--open')}>
-                          <div className="shell-collapse__inner">
-                            <div className="shell-tree-branch">
-                              {tree.groups.map(({ group, conversations: groupItems }) => (
-                                <GroupBlock
-                                  key={group.id}
-                                  track={track}
-                                  group={group}
-                                  conversations={groupItems}
-                                  allGroups={props.groups[track] ?? []}
-                                  selectedConversationId={props.nav.selectedConversationId}
-                                  multiSelect={props.multiSelect}
-                                  selectedIds={props.selectedIds}
-                                  resolveName={resolveName}
-                                  onToggleCollapsed={() =>
-                                    props.onToggleGroupCollapsed(track, group.id)
-                                  }
-                                  onRenameGroup={async () => {
-                                    const name = await dialog.prompt({
-                                      title: '重命名分组',
-                                      message: '为这个分组设置一个新名称',
-                                      defaultValue: group.name,
-                                      placeholder: '分组名称',
-                                      confirmText: '保存',
-                                    });
-                                    if (!name?.trim() || name.trim() === group.name) return;
-                                    props.onRenameGroup(track, group.id, name.trim());
-                                  }}
-                                  onDeleteGroup={async () => {
-                                    if (
-                                      !(await dialog.confirm({
-                                        title: '删除分组',
-                                        message: `删除分组「${group.name}」？组内对话会回到未分组，不会被删除。`,
-                                        confirmText: '删除',
-                                        danger: true,
-                                      }))
-                                    ) {
-                                      return;
-                                    }
-                                    props.onDeleteGroup(track, group.id);
-                                  }}
-                                  onOpenConversation={props.onOpenConversation}
-                                  onTogglePin={props.onTogglePin}
-                                  onRename={props.onRename}
-                                  onArchive={props.onArchive}
-                                  onDelete={props.onDelete}
-                                  onDuplicate={props.onDuplicate}
-                                  onCopyLink={props.onCopyLink}
-                                  onMoveToGroup={props.onMoveToGroup}
-                                  onToggleSelected={props.onToggleSelected}
-                                  onToggleMultiSelect={props.onToggleMultiSelect}
-                                  conversationActivity={props.conversationActivity}
-                                  agents={props.agents}
-                                  teams={props.teams}
-                                  kernelOverrides={props.kernelOverrides}
-                                />
-                              ))}
-
-                              {tree.ungrouped.length === 0 && tree.groups.length === 0 ? (
-                                <div className="flex flex-col items-center gap-1 px-2 py-2.5 text-center">
-                                  <MessageSquare
-                                    size={14}
-                                    className="text-text-faint opacity-50"
-                                    aria-hidden="true"
-                                  />
-                                  <div className="text-[11px] text-text-faint">
-                                    {props.bootState === 'error'
-                                      ? props.bootError || '连接失败'
-                                      : query.trim()
-                                        ? '无匹配'
-                                        : shouldRenderRecentConversationEmptyState({
-                                              conversationCount: 0,
-                                              isSyncingCCHistory: false,
-                                              isLoadingConversations,
-                                              activeWorkspaceId: workspaceId,
-                                              switchContentWorkspaceId: workspaceId,
-                                              switchProjectsWorkspaceId: workspaceId,
-                                            })
-                                          ? '暂无对话'
-                                          : ''}
-                                  </div>
-                                </div>
-                              ) : (
-                                tree.ungrouped.map((c) => (
-                                  <ConversationRow
-                                    key={c.id}
-                                    conversation={c}
-                                    name={resolveName(c)}
-                                    mark={resolveConversationRowMark(
-                                      c,
-                                      props.agents,
-                                      props.teams,
-                                      props.kernelOverrides,
-                                    )}
-                                    active={props.nav.selectedConversationId === c.id}
-                                    multiSelect={props.multiSelect}
-                                    selected={props.selectedIds.has(c.id)}
-                                    groups={props.groups[track] ?? []}
-                                    track={track}
-                                    onOpen={() => props.onOpenConversation(c.id)}
-                                    onTogglePin={() => props.onTogglePin(c.id, !c.pinnedAt)}
-                                    onRename={() => props.onRename(c.id, c.title || resolveName(c))}
-                                    onArchive={() => props.onArchive(c.id)}
-                                    onDelete={() => props.onDelete(c.id)}
-                                    onDuplicate={() => props.onDuplicate?.(c.id)}
-                                    onCopyLink={() => props.onCopyLink?.(c.id)}
-                                    onMoveToGroup={(groupId) =>
-                                      props.onMoveToGroup(track, c.id, groupId)
-                                    }
-                                    onToggleSelected={() => props.onToggleSelected(c.id)}
-                                    onStartMultiSelect={props.onToggleMultiSelect}
-                                    activity={props.conversationActivity?.get(String(c.id))}
-                                  />
-                                ))
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-                )}
+            </Suspense>
+          ) : (
+            <p className="agent-contacts__empty">请先选择一个工作区，再与智能体聊天</p>
+          )
+        ) : (
+          /* Panel 2 — conversation list (bright inner box on the dark board).
+          Height follows its content: expanding/collapsing recent chats or archive
+          grows/shrinks the box instead of it always filling the board. */
+          <div className="shell-sidebar-recent flex min-h-0 flex-col rounded-(--radius-card) border border-border bg-recent px-2 pb-2 pt-1.5">
+            {/* Search field (shown when search action focused or query non-empty) */}
+            {(searchFocused || query) && (
+              <div className="relative shrink-0 py-1.5">
+                <Search
+                  size={12}
+                  className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-text-faint"
+                />
+                <input
+                  data-testid="sidebar-search"
+                  type="search"
+                  autoFocus={searchFocused}
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  onBlur={() => {
+                    if (!query) setSearchFocused(false);
+                  }}
+                  placeholder="搜索对话…"
+                  className="h-7 w-full rounded-(--radius-row) border border-border bg-page pl-7 pr-2 text-[12px] text-text placeholder:text-text-faint outline-none focus:border-accent/40"
+                />
               </div>
-            </div>
+            )}
 
-            {(filteredArchived.length > 0 || archived.length > 0) && (
-              <div className="mt-2 border-t border-border pt-1.5">
+            {/* Multi-select bulk bar */}
+            {props.multiSelect ? (
+              <div
+                data-testid="sidebar-multiselect-bar"
+                className="mb-1 flex shrink-0 flex-wrap items-center gap-1 rounded-(--radius-row) border border-border bg-surface px-2 py-1.5"
+              >
+                <span className="mr-1 text-[11px] text-text-secondary">
+                  已选 {props.selectedIds.size}
+                </span>
                 <button
                   type="button"
-                  data-testid="archive-section-toggle"
-                  className="st-press-motion st-row-motion group flex h-7 w-full cursor-pointer items-center gap-1 rounded-(--radius-row) px-1.5 text-left hover:bg-hover"
-                  onClick={() => setArchiveOpen((v) => !v)}
+                  className="st-row-motion h-6 rounded px-1.5 text-[11px] text-text-secondary hover:bg-hover"
+                  onClick={props.onBulkArchive}
+                  disabled={props.selectedIds.size === 0}
+                >
+                  归档
+                </button>
+                <DropdownMenu.Root>
+                  <DropdownMenu.Trigger asChild>
+                    <button
+                      type="button"
+                      data-testid="sidebar-bulk-move"
+                      className="st-row-motion h-6 rounded px-1.5 text-[11px] text-text-secondary hover:bg-hover"
+                      disabled={props.selectedIds.size === 0}
+                    >
+                      移动到分组
+                    </button>
+                  </DropdownMenu.Trigger>
+                  <DropdownMenu.Portal>
+                    <DropdownMenu.Content
+                      className="st-popover-in z-[300] min-w-[160px] rounded-(--radius-row) border border-border bg-overlay p-1 shadow-xl"
+                      sideOffset={4}
+                    >
+                      {RECENT_CONVERSATION_TRACKS.map((track) => {
+                        const selectedInTrack = props.conversations.some(
+                          (conversation) =>
+                            conversation.track === track && props.selectedIds.has(conversation.id),
+                        );
+                        if (!selectedInTrack) return null;
+                        return (
+                          <div key={track}>
+                            <DropdownMenu.Item
+                              className="st-row-motion cursor-pointer rounded px-2 py-1.5 text-[12px] text-text-secondary outline-none hover:bg-hover focus:bg-hover"
+                              onSelect={() => props.onBulkMoveToGroup(track, null)}
+                            >
+                              {TRACK_LABELS[track]} · 移出分组
+                            </DropdownMenu.Item>
+                            {props.groups[track].map((group) => (
+                              <DropdownMenu.Item
+                                key={`${track}:${group.id}`}
+                                className="st-row-motion cursor-pointer rounded px-2 py-1.5 text-[12px] text-text-secondary outline-none hover:bg-hover focus:bg-hover"
+                                onSelect={() => props.onBulkMoveToGroup(track, group.id)}
+                              >
+                                {TRACK_LABELS[track]} · {group.name}
+                              </DropdownMenu.Item>
+                            ))}
+                          </div>
+                        );
+                      })}
+                    </DropdownMenu.Content>
+                  </DropdownMenu.Portal>
+                </DropdownMenu.Root>
+                <button
+                  type="button"
+                  className="st-row-motion h-6 rounded px-1.5 text-[11px] text-error hover:bg-error/10"
+                  onClick={props.onBulkDelete}
+                  disabled={props.selectedIds.size === 0}
+                >
+                  删除
+                </button>
+                <button
+                  type="button"
+                  className="st-row-motion ml-auto h-6 rounded px-1.5 text-[11px] text-text-faint hover:bg-hover"
+                  onClick={props.onToggleMultiSelect}
+                >
+                  取消
+                </button>
+              </div>
+            ) : null}
+
+            {/* Recent conversations, without a redundant model-track heading. */}
+            <div className="shell-scrollbar min-h-0 flex-1 overflow-y-auto">
+              <div className="group flex h-8 items-center gap-1 rounded-(--radius-row) px-1.5 hover:bg-hover">
+                <button
+                  type="button"
+                  data-testid="recent-section-toggle"
+                  className="st-press-motion st-row-motion flex min-w-0 flex-1 cursor-pointer items-center gap-1 text-left"
+                  onClick={() => setRecentOpen((v) => !v)}
+                  aria-expanded={recentOpen}
                 >
                   <ChevronRight
                     size={13}
                     className="st-chevron text-text-faint"
-                    data-open={archiveOpen}
+                    data-open={recentOpen}
                   />
-                  <Archive size={13} className="text-text-secondary" />
-                  <span className="flex-1 text-[12px] text-text-secondary">归档</span>
-                  <span className="text-[10.5px] text-text-faint">{filteredArchived.length}</span>
+                  <span className="flex-1 text-[14px] font-semibold tracking-wide text-text-faint">
+                    最近对话
+                  </span>
                 </button>
-                <div className={clsx('shell-collapse', archiveOpen && 'shell-collapse--open')}>
-                  <div className="shell-collapse__inner">
-                    <div className="ml-1">
-                      {filteredArchived.length === 0 ? (
-                        <div className="px-2 py-1 text-[11px] text-text-faint">
-                          {query.trim() ? '无匹配' : '暂无归档'}
+                <button
+                  type="button"
+                  data-testid="recent-new-group"
+                  className="st-icon-motion invisible flex h-5 w-5 items-center justify-center rounded text-text-faint hover:bg-active hover:text-text group-hover:visible focus:visible"
+                  title="新建分组"
+                  onClick={async () => {
+                    const name = await dialog.prompt({
+                      title: '新建分组',
+                      message: '为最近对话新建一个分组',
+                      placeholder: '分组名称',
+                      confirmText: '新建',
+                    });
+                    if (!name?.trim()) return;
+                    props.onCreateGroup('model', name.trim());
+                    setRecentOpen(true);
+                  }}
+                >
+                  <FolderPlus size={12} />
+                </button>
+                <button
+                  type="button"
+                  data-testid="recent-new-conversation"
+                  className="st-icon-motion invisible flex h-5 w-5 items-center justify-center rounded text-text-faint hover:bg-active hover:text-text group-hover:visible focus:visible"
+                  title="新建对话"
+                  onClick={() => {
+                    props.onNewConversation('model');
+                    setRecentOpen(true);
+                  }}
+                >
+                  <Plus size={13} />
+                </button>
+              </div>
+
+              <div className={clsx('shell-collapse', recentOpen && 'shell-collapse--open')}>
+                <div className="shell-collapse__inner">
+                  {sidebarWorkspaceListsLoading ? (
+                    <SidebarWorkspaceListSkeleton />
+                  ) : (
+                    <div>
+                      {recentTree.groups.map(({ group, conversations: groupItems }) => (
+                        <GroupBlock
+                          key={group.id}
+                          track="model"
+                          group={group}
+                          conversations={groupItems}
+                          allGroups={props.groups.model ?? []}
+                          selectedConversationId={props.nav.selectedConversationId}
+                          multiSelect={props.multiSelect}
+                          selectedIds={props.selectedIds}
+                          resolveName={resolveName}
+                          onToggleCollapsed={() => props.onToggleGroupCollapsed('model', group.id)}
+                          onRenameGroup={async () => {
+                            const name = await dialog.prompt({
+                              title: '重命名分组',
+                              message: '为这个分组设置一个新名称',
+                              defaultValue: group.name,
+                              placeholder: '分组名称',
+                              confirmText: '保存',
+                            });
+                            if (!name?.trim() || name.trim() === group.name) return;
+                            props.onRenameGroup('model', group.id, name.trim());
+                          }}
+                          onDeleteGroup={async () => {
+                            if (
+                              !(await dialog.confirm({
+                                title: '删除分组',
+                                message: `删除分组「${group.name}」？组内对话会回到未分组，不会被删除。`,
+                                confirmText: '删除',
+                                danger: true,
+                              }))
+                            ) {
+                              return;
+                            }
+                            props.onDeleteGroup('model', group.id);
+                          }}
+                          onOpenConversation={props.onOpenConversation}
+                          onTogglePin={props.onTogglePin}
+                          onRename={props.onRename}
+                          onArchive={props.onArchive}
+                          onDelete={props.onDelete}
+                          onDuplicate={props.onDuplicate}
+                          onCopyLink={props.onCopyLink}
+                          onMoveToGroup={props.onMoveToGroup}
+                          onToggleSelected={props.onToggleSelected}
+                          onToggleMultiSelect={props.onToggleMultiSelect}
+                          conversationActivity={props.conversationActivity}
+                          agents={props.agents}
+                          teams={props.teams}
+                          kernelOverrides={props.kernelOverrides}
+                        />
+                      ))}
+
+                      {recentTree.ungrouped.length === 0 && recentTree.groups.length === 0 ? (
+                        <div className="flex flex-col items-center gap-1 px-2 py-2.5 text-center">
+                          <MessageSquare
+                            size={14}
+                            className="text-text-faint opacity-50"
+                            aria-hidden="true"
+                          />
+                          <div className="text-[11px] text-text-faint">
+                            {props.bootState === 'error'
+                              ? props.bootError || '连接失败'
+                              : query.trim()
+                                ? '无匹配'
+                                : shouldRenderRecentConversationEmptyState({
+                                      conversationCount: 0,
+                                      isSyncingCCHistory: false,
+                                      isLoadingConversations,
+                                      activeWorkspaceId: workspaceId,
+                                      switchContentWorkspaceId: workspaceId,
+                                      switchProjectsWorkspaceId: workspaceId,
+                                    })
+                                  ? '暂无对话'
+                                  : ''}
+                          </div>
                         </div>
                       ) : (
-                        filteredArchived.map((c) => (
+                        recentTree.ungrouped.map((c) => (
                           <ConversationRow
                             key={c.id}
                             conversation={c}
@@ -635,31 +631,98 @@ export function Sidebar(props: SidebarProps) {
                               props.kernelOverrides,
                             )}
                             active={props.nav.selectedConversationId === c.id}
-                            archived
                             multiSelect={props.multiSelect}
                             selected={props.selectedIds.has(c.id)}
-                            groups={props.groups[c.track] ?? []}
-                            track={c.track}
+                            groups={props.groups.model ?? []}
+                            track="model"
                             onOpen={() => props.onOpenConversation(c.id)}
                             onTogglePin={() => props.onTogglePin(c.id, !c.pinnedAt)}
                             onRename={() => props.onRename(c.id, c.title || resolveName(c))}
-                            onArchive={() => props.onUnarchive?.(c.id)}
+                            onArchive={() => props.onArchive(c.id)}
                             onDelete={() => props.onDelete(c.id)}
                             onDuplicate={() => props.onDuplicate?.(c.id)}
                             onCopyLink={() => props.onCopyLink?.(c.id)}
-                            onMoveToGroup={(groupId) => props.onMoveToGroup(c.track, c.id, groupId)}
+                            onMoveToGroup={(groupId) =>
+                              props.onMoveToGroup('model', c.id, groupId)
+                            }
                             onToggleSelected={() => props.onToggleSelected(c.id)}
                             onStartMultiSelect={props.onToggleMultiSelect}
+                            activity={props.conversationActivity?.get(String(c.id))}
                           />
                         ))
                       )}
                     </div>
-                  </div>
+                  )}
                 </div>
               </div>
-            )}
+
+              {(filteredArchived.length > 0 || archived.length > 0) && (
+                <div className="mt-2 border-t border-border pt-1.5">
+                  <button
+                    type="button"
+                    data-testid="archive-section-toggle"
+                    className="st-press-motion st-row-motion group flex h-7 w-full cursor-pointer items-center gap-1 rounded-(--radius-row) px-1.5 text-left hover:bg-hover"
+                    onClick={() => setArchiveOpen((v) => !v)}
+                  >
+                    <ChevronRight
+                      size={13}
+                      className="st-chevron text-text-faint"
+                      data-open={archiveOpen}
+                    />
+                    <Archive size={13} className="text-text-secondary" />
+                    <span className="flex-1 text-[12px] text-text-secondary">归档</span>
+                    <span className="text-[10.5px] text-text-faint">{filteredArchived.length}</span>
+                  </button>
+                  <div className={clsx('shell-collapse', archiveOpen && 'shell-collapse--open')}>
+                    <div className="shell-collapse__inner">
+                      <div className="ml-1">
+                        {filteredArchived.length === 0 ? (
+                          <div className="px-2 py-1 text-[11px] text-text-faint">
+                            {query.trim() ? '无匹配' : '暂无归档'}
+                          </div>
+                        ) : (
+                          filteredArchived.map((c) => (
+                            <ConversationRow
+                              key={c.id}
+                              conversation={c}
+                              name={resolveName(c)}
+                              mark={resolveConversationRowMark(
+                                c,
+                                props.agents,
+                                props.teams,
+                                props.kernelOverrides,
+                              )}
+                              active={props.nav.selectedConversationId === c.id}
+                              archived
+                              multiSelect={props.multiSelect}
+                              selected={props.selectedIds.has(c.id)}
+                              groups={props.groups[c.track] ?? []}
+                              track={c.track}
+                              onOpen={() => props.onOpenConversation(c.id)}
+                              onTogglePin={() => props.onTogglePin(c.id, !c.pinnedAt)}
+                              onRename={() => props.onRename(c.id, c.title || resolveName(c))}
+                              onArchive={() => props.onUnarchive?.(c.id)}
+                              onDelete={() => props.onDelete(c.id)}
+                              onDuplicate={() => props.onDuplicate?.(c.id)}
+                              onCopyLink={() => props.onCopyLink?.(c.id)}
+                              onMoveToGroup={(groupId) =>
+                                props.onMoveToGroup(c.track, c.id, groupId)
+                              }
+                              onToggleSelected={() => props.onToggleSelected(c.id)}
+                              onStartMultiSelect={props.onToggleMultiSelect}
+                            />
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
-        </div>
+        )}
+
+        <ActionRow icon={<Palette size={15} />} label="组件库" testId="nav-design-system" active={props.nav.stage === 'design-system'} onClick={() => props.onSelectStage('design-system')} />
 
         {/* Panel 3 — account row. Renders directly on the board and only floats
           as a bright box on hover; clicking the box (or the gear) opens settings. */}
@@ -968,7 +1031,8 @@ function ConversationIdentityMark(props: {
   mark: ConversationRowMark;
   activity?: { running: boolean; unread: boolean };
 }) {
-  const logo = props.mark.kind === 'kernel' ? resolveKernelBrandLogo(props.mark.kernelId) : undefined;
+  const logo =
+    props.mark.kind === 'kernel' ? resolveKernelBrandLogo(props.mark.kernelId) : undefined;
   return (
     <span
       className="st-conv-row__identity"
@@ -1020,6 +1084,7 @@ function ConversationRow(props: {
   /** 运行中 / 完成未读状态圆点。 */
   activity?: { running: boolean; unread: boolean };
 }) {
+  const openContextMenu = useContextMenu();
   const { conversation: c } = props;
   const title = c.title || props.name;
   const time = formatConversationRowTime(c.lastMessageAt, Date.now());
@@ -1028,14 +1093,45 @@ function ConversationRow(props: {
    * title underneath (standing in for the message summary we do not carry yet).
    * The model track stays single-line — its title already *is* the identity.
    */
-  const twoLine = props.mark.kind === 'agent' || props.mark.kind === 'team';
-  const heading = twoLine ? props.name : title;
+  const group = c.collaborationKind === 'group';
+  const roster = useCollaborationRoster(String(c.id), group);
+  // A group row is identified by its whole roster, not the coordinator behind targetRef.
+  const mark: ConversationRowMark = group
+    ? { kind: 'team', name: title, members: roster?.members ?? [] }
+    : props.mark;
+  const twoLine = mark.kind === 'agent' || mark.kind === 'team';
+  const heading = group ? title : twoLine ? props.name : title;
   const rawTitle = (c.title ?? '').trim();
-  const summary = twoLine && rawTitle && rawTitle !== props.name ? rawTitle : '';
+  const thinking = group && roster?.busy === true;
+  const summary = group
+    ? roster?.preview
+      ? `${roster.previewSender ? `${roster.previewSender}：` : ''}${roster.preview}`
+      : roster ? `${roster.members.length} 位成员` : ''
+    : twoLine && rawTitle && rawTitle !== props.name ? rawTitle : '';
 
   return (
     <div
       data-testid={`conversation-${c.id}`}
+      tabIndex={0}
+      onKeyDown={event => {
+        if (event.target !== event.currentTarget || !['Enter', ' '].includes(event.key)) return;
+        event.preventDefault();
+        if (props.multiSelect) props.onToggleSelected(); else props.onOpen();
+      }}
+      onContextMenu={event => openContextMenu(event, [
+        { id: 'rename', label: '重命名对话', icon: <Pencil size={14} />, run: props.onRename },
+        { id: 'duplicate', label: '复制对话', icon: <Copy size={14} />, disabled: !props.onDuplicate, run: props.onDuplicate },
+        { id: 'link', label: '复制对话链接', icon: <Link2 size={14} />, disabled: !props.onCopyLink, run: props.onCopyLink },
+        ...(!props.archived ? [{ id: 'pin', label: c.pinnedAt ? '取消置顶' : '置顶对话', icon: <Pin size={14} />, run: props.onTogglePin }] : []),
+        { id: 'group', label: '移动到分组', icon: <FolderInput size={14} />, disabled: !props.groups.length && !props.inGroupId,
+          children: [
+            ...props.groups.map(group => ({ id: group.id, label: group.name, icon: props.inGroupId === group.id ? <Check size={14} /> : undefined, run: () => props.onMoveToGroup(group.id) })),
+            ...(props.inGroupId ? [{ id: 'ungroup', label: '移出分组', separator: true, run: () => props.onMoveToGroup(null) }] : []),
+          ] },
+        { id: 'archive', label: props.archived ? '取消归档' : '归档对话', icon: props.archived ? <ArchiveRestore size={14} /> : <Archive size={14} />, run: props.onArchive },
+        { id: 'select', label: props.multiSelect ? (props.selected ? '取消选择' : '选择对话') : '多选', icon: <Check size={14} />, run: props.multiSelect ? props.onToggleSelected : props.onStartMultiSelect },
+        { id: 'delete', label: '删除对话', icon: <Trash2 size={14} />, separator: true, danger: true, run: props.onDelete },
+      ])}
       data-archived={props.archived ? '1' : '0'}
       className={clsx(
         'st-row-motion st-conv-row group relative flex cursor-pointer items-center gap-2 rounded-(--radius-row) py-2 pl-2 pr-1',
@@ -1065,7 +1161,7 @@ function ConversationRow(props: {
         ) : null}
         <ConversationIdentityMark
           conversationId={String(c.id)}
-          mark={props.mark}
+          mark={mark}
           activity={props.activity}
         />
         <span className="st-conv-row__body">
@@ -1073,128 +1169,138 @@ function ConversationRow(props: {
             {/* NewMax-aligned: its conversation title uses `truncate text-xs font-medium`
                 (12px / 16px line-height), not the 14px / 20px this used to be. */}
             <span className="flex-1 truncate text-[12px] font-medium leading-4">{heading}</span>
-        {title.startsWith('任务 ·') ? (
-          <span className="shell-task-conv-badge" title="定时任务会话">
-            任务
-          </span>
-        ) : null}
-        {c.pinnedAt && !props.archived && (
-          <span
-            className="flex h-4 w-4 shrink-0 items-center justify-center text-accent"
-            title="已置顶"
-          >
-            <Pin size={11} className="fill-current" />
-          </span>
-        )}
-        <span className="st-conv-row__trail">
-          {time ? (
-            <span className="st-conv-row__time" data-testid={`conversation-time-${c.id}`}>
-              {time}
-            </span>
-          ) : null}
-        {!props.multiSelect && (
-          <DropdownMenu.Root>
-            <DropdownMenu.Trigger asChild>
-              <button
-                data-testid={`conversation-menu-trigger-${c.id}`}
-                className="st-conv-row__menu st-icon-motion invisible flex h-4 w-4 shrink-0 items-center justify-center rounded text-text-faint hover:bg-active hover:text-text group-hover:visible data-[state=open]:visible data-[state=open]:bg-active data-[state=open]:text-text"
-                title="更多操作"
-                onClick={(e) => e.stopPropagation()}
+            {title.startsWith('任务 ·') ? (
+              <span className="shell-task-conv-badge" title="定时任务会话">
+                任务
+              </span>
+            ) : null}
+            {c.pinnedAt && !props.archived && (
+              <span
+                className="flex h-4 w-4 shrink-0 items-center justify-center text-accent"
+                title="已置顶"
               >
-                <MoreHorizontal size={13} />
-              </button>
-            </DropdownMenu.Trigger>
-            <DropdownMenu.Portal>
-              <DropdownMenu.Content
-                data-testid={`conversation-menu-${c.id}`}
-                align="end"
-                sideOffset={4}
-                className="st-popover-in z-50 min-w-[160px] rounded-(--radius-card) border border-border bg-overlay p-1 shadow-lg"
-                onClick={(e) => e.stopPropagation()}
-              >
-                <MenuItem
-                  icon={<Pencil size={13} />}
-                  label="重命名对话"
-                  onSelect={props.onRename}
-                />
-                <MenuItem
-                  icon={<Copy size={13} />}
-                  label="复制对话"
-                  onSelect={() => props.onDuplicate?.()}
-                />
-                <MenuItem
-                  icon={<Link2 size={13} />}
-                  label="复制深度链接"
-                  onSelect={() => props.onCopyLink?.()}
-                />
-                {!props.archived && (
-                  <MenuItem
-                    icon={<Pin size={13} />}
-                    label={c.pinnedAt ? '取消置顶' : '置顶对话'}
-                    onSelect={props.onTogglePin}
-                  />
-                )}
-                <DropdownMenu.Sub>
-                  <DropdownMenu.SubTrigger className="flex h-7 cursor-pointer items-center gap-2 rounded-(--radius-row) px-2 text-[12.5px] text-text-secondary outline-none data-[highlighted]:bg-hover data-[highlighted]:text-text">
-                    <FolderInput size={13} />
-                    移动到分组…
-                  </DropdownMenu.SubTrigger>
-                  <DropdownMenu.Portal>
-                    <DropdownMenu.SubContent
-                      className="st-popover-in z-50 min-w-[140px] rounded-(--radius-card) border border-border bg-overlay p-1 shadow-lg"
-                      sideOffset={4}
+                <Pin size={11} className="fill-current" />
+              </span>
+            )}
+            <span className="st-conv-row__trail">
+              {time ? (
+                <span className="st-conv-row__time" data-testid={`conversation-time-${c.id}`}>
+                  {time}
+                </span>
+              ) : null}
+              {!props.multiSelect && (
+                <DropdownMenu.Root>
+                  <DropdownMenu.Trigger asChild>
+                    <button
+                      data-testid={`conversation-menu-trigger-${c.id}`}
+                      className="st-conv-row__menu st-icon-motion invisible flex h-4 w-4 shrink-0 items-center justify-center rounded text-text-faint hover:bg-active hover:text-text group-hover:visible data-[state=open]:visible data-[state=open]:bg-active data-[state=open]:text-text"
+                      title="更多操作"
+                      onClick={(e) => e.stopPropagation()}
                     >
-                      {props.groups.map((g) => (
+                      <MoreHorizontal size={13} />
+                    </button>
+                  </DropdownMenu.Trigger>
+                  <DropdownMenu.Portal>
+                    <DropdownMenu.Content
+                      data-testid={`conversation-menu-${c.id}`}
+                      align="end"
+                      sideOffset={4}
+                      className="st-popover-in z-50 min-w-[160px] rounded-(--radius-card) border border-border bg-overlay p-1 shadow-lg"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <MenuItem
+                        icon={<Pencil size={13} />}
+                        label="重命名对话"
+                        onSelect={props.onRename}
+                      />
+                      <MenuItem
+                        icon={<Copy size={13} />}
+                        label="复制对话"
+                        onSelect={() => props.onDuplicate?.()}
+                      />
+                      <MenuItem
+                        icon={<Link2 size={13} />}
+                        label="复制深度链接"
+                        onSelect={() => props.onCopyLink?.()}
+                      />
+                      {!props.archived && (
                         <MenuItem
-                          key={g.id}
-                          icon={
-                            props.inGroupId === g.id ? (
-                              <Check size={13} />
-                            ) : (
-                              <span className="w-[13px]" />
-                            )
-                          }
-                          label={g.name}
-                          onSelect={() => props.onMoveToGroup(g.id)}
+                          icon={<Pin size={13} />}
+                          label={c.pinnedAt ? '取消置顶' : '置顶对话'}
+                          onSelect={props.onTogglePin}
                         />
-                      ))}
-                      {props.inGroupId ? (
-                        <MenuItem
-                          icon={<FolderInput size={13} />}
-                          label="移出分组"
-                          onSelect={() => props.onMoveToGroup(null)}
-                        />
-                      ) : null}
-                      {props.groups.length === 0 ? (
-                        <div className="px-2 py-1.5 text-[11px] text-text-faint">暂无分组</div>
-                      ) : null}
-                    </DropdownMenu.SubContent>
+                      )}
+                      <DropdownMenu.Sub>
+                        <DropdownMenu.SubTrigger className="flex h-7 cursor-pointer items-center gap-2 rounded-(--radius-row) px-2 text-[12.5px] text-text-secondary outline-none data-[highlighted]:bg-hover data-[highlighted]:text-text">
+                          <FolderInput size={13} />
+                          移动到分组…
+                        </DropdownMenu.SubTrigger>
+                        <DropdownMenu.Portal>
+                          <DropdownMenu.SubContent
+                            className="st-popover-in z-50 min-w-[140px] rounded-(--radius-card) border border-border bg-overlay p-1 shadow-lg"
+                            sideOffset={4}
+                          >
+                            {props.groups.map((g) => (
+                              <MenuItem
+                                key={g.id}
+                                icon={
+                                  props.inGroupId === g.id ? (
+                                    <Check size={13} />
+                                  ) : (
+                                    <span className="w-[13px]" />
+                                  )
+                                }
+                                label={g.name}
+                                onSelect={() => props.onMoveToGroup(g.id)}
+                              />
+                            ))}
+                            {props.inGroupId ? (
+                              <MenuItem
+                                icon={<FolderInput size={13} />}
+                                label="移出分组"
+                                onSelect={() => props.onMoveToGroup(null)}
+                              />
+                            ) : null}
+                            {props.groups.length === 0 ? (
+                              <div className="px-2 py-1.5 text-[11px] text-text-faint">
+                                暂无分组
+                              </div>
+                            ) : null}
+                          </DropdownMenu.SubContent>
+                        </DropdownMenu.Portal>
+                      </DropdownMenu.Sub>
+                      <MenuItem
+                        icon={props.archived ? <ArchiveRestore size={13} /> : <Archive size={13} />}
+                        label={props.archived ? '取消归档' : '归档对话'}
+                        onSelect={props.onArchive}
+                      />
+                      <MenuItem
+                        icon={<Check size={13} />}
+                        label="多选"
+                        onSelect={props.onStartMultiSelect}
+                      />
+                      <DropdownMenu.Separator className="mx-1 my-1 h-px bg-border" />
+                      <MenuItem
+                        icon={<Trash2 size={13} />}
+                        label="删除对话"
+                        danger
+                        onSelect={props.onDelete}
+                      />
+                    </DropdownMenu.Content>
                   </DropdownMenu.Portal>
-                </DropdownMenu.Sub>
-                <MenuItem
-                  icon={props.archived ? <ArchiveRestore size={13} /> : <Archive size={13} />}
-                  label={props.archived ? '取消归档' : '归档对话'}
-                  onSelect={props.onArchive}
-                />
-                <MenuItem
-                  icon={<Check size={13} />}
-                  label="多选"
-                  onSelect={props.onStartMultiSelect}
-                />
-                <DropdownMenu.Separator className="mx-1 my-1 h-px bg-border" />
-                <MenuItem
-                  icon={<Trash2 size={13} />}
-                  label="删除对话"
-                  danger
-                  onSelect={props.onDelete}
-                />
-              </DropdownMenu.Content>
-            </DropdownMenu.Portal>
-          </DropdownMenu.Root>
-        )}
+                </DropdownMenu.Root>
+              )}
             </span>
           </span>
-          {summary ? (
+          {thinking ? (
+            <span
+              className="st-conv-row__sub shell-text-shimmer"
+              data-label="一起思考中…"
+              data-testid={`conversation-sub-${c.id}`}
+            >
+              一起思考中…
+            </span>
+          ) : summary ? (
             <span className="st-conv-row__sub" data-testid={`conversation-sub-${c.id}`}>
               {summary}
             </span>

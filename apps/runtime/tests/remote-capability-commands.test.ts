@@ -509,6 +509,42 @@ describe('remote capability commands', () => {
     client.socket.destroy();
   }, 30_000);
 
+  it('edits a remote MCP by id while retaining credentials and preventing stale catalogs on destination changes', async () => {
+    const secret = 'edit-remote-fixture-key';
+    const fixture = await startFixtureServer(secret);
+    const dir = mkdtempSync(join(tmpdir(), 'sync-think-remote-edit-'));
+    tempDirs.push(dir);
+    const installId = 'remote-edit-' + randomBytes(8).toString('hex');
+    const session = await openPersistentRuntime({ installId, dbPath: join(dir, 'test.db'),
+      secureStoreKeyPath: join(dir, 'key.bin'), allowNoToken: true });
+    sessions.push(session);
+    await session.runtime.start();
+    const client = await connectAndHello(installId);
+    try {
+      const register = (payload: unknown) => request(client.socket, client.reader, {
+        id: randomBytes(8).toString('hex'), kind: 'request', type: 'mcp.registerRemote', payload,
+      });
+      const first = await register({ name: 'Remote MCP', endpoint: fixture.baseUrl + '/mcp', key: secret,
+        authScheme: 'bearer', timeoutMs: 60000, trusted: true });
+      expect(first.error).toBeUndefined();
+      const mcpServerId = (first.payload as { server: { mcpServerId: string } }).server.mcpServerId;
+      const renamed = await register({ mcpServerId, name: 'Remote Renamed', endpoint: fixture.baseUrl + '/mcp', discoverTools: false });
+      expect(renamed.error).toBeUndefined();
+      expect(renamed.payload).toMatchObject({ updated: true, server: { mcpServerId, name: 'Remote Renamed',
+        timeoutMs: 60000, trusted: true, authConfigured: true, tools: [expect.objectContaining({ name: 'remote_lookup' })] } });
+      const guarded = await register({ mcpServerId, name: 'Remote Renamed', endpoint: fixture.baseUrl + '/other', discoverTools: false });
+      expect(guarded.error).toBeDefined();
+      const changed = await register({ mcpServerId, name: 'Remote Renamed', endpoint: fixture.baseUrl + '/other',
+        key: secret, authScheme: 'bearer', discoverTools: false });
+      expect(changed.error).toBeUndefined();
+      expect(changed.payload).toMatchObject({ updated: true, server: { mcpServerId, tools: [], authConfigured: true } });
+      const listed = await request(client.socket, client.reader, { id: 'edited-list', kind: 'request', type: 'mcp.list', payload: {} });
+      expect((listed.payload as { servers: unknown[] }).servers).toHaveLength(1);
+    } finally {
+      client.socket.destroy();
+    }
+  });
+
   it('keeps the chat registration handler metadata-only even with hidden fields', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'sync-think-chat-mcp-metadata-only-'));
     tempDirs.push(dir);

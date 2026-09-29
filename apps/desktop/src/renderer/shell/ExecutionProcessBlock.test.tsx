@@ -143,8 +143,9 @@ describe('ExecutionProcessBlock step collapse', () => {
       ),
     );
 
-    expect(screen.getByText('.sync-think/conversations/conversation-1/images/reference.png'))
-      .toBeTruthy();
+    expect(
+      screen.getByText('.sync-think/conversations/conversation-1/images/reference.png'),
+    ).toBeTruthy();
     expect(screen.getByText(/Codex localImage/)).toBeTruthy();
     expect(screen.getByText(/MIME：image\/png/)).toBeTruthy();
   });
@@ -201,6 +202,25 @@ describe('ExecutionProcessBlock step collapse', () => {
 });
 
 describe('CodePreview language adaptation', () => {
+  it('keeps the full file available beyond the chat code preview limit', () => {
+    render(
+      <CodePreview
+        path="large.ts"
+        text={Array.from({ length: 2101 }, (_, index) => `const line${index} = ${index};`).join(
+          '\n',
+        )}
+        highlightLine={2101}
+      />,
+    );
+    const preview = screen.getByRole('region', { name: '文件内容预览' });
+    expect(preview.querySelectorAll('[data-code-line]')).toHaveLength(2101);
+    expect(preview.querySelector('[data-line="2101"]')?.getAttribute('data-highlighted')).toBe(
+      'true',
+    );
+    expect(preview.textContent).toContain('const line2100 = 2100;');
+    cleanup();
+  });
+
   it.each([
     ['Dockerfile', 'FROM node:20\nRUN corepack enable', 'dockerfile'],
     ['scripts/setup.ps1', '$ErrorActionPreference = "Stop"', 'powershell'],
@@ -249,7 +269,7 @@ describe('FileChangesCard interactions', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '展开 src/app.ts diff' }));
 
-    expect(screen.getByText('自动换行')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '自动换行' })).toBeTruthy();
     expect(onOpenChange).not.toHaveBeenCalled();
   });
 
@@ -371,7 +391,9 @@ describe('FileChangesCard interactions', () => {
 
     expect(screen.getByText('route.test.ts')).toBeTruthy();
     expect(screen.getByText('D:\\projects\\cuitaliao\\src')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: '展开 D:\\projects\\cuitaliao\\src\\route.test.ts diff' }));
+    fireEvent.click(
+      screen.getByRole('button', { name: '展开 D:\\projects\\cuitaliao\\src\\route.test.ts diff' }),
+    );
 
     const added = screen.getByText('publishCustomTurtleSoupStory').closest('[data-kind="add"]');
     expect(added).toBeTruthy();

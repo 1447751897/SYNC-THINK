@@ -4,6 +4,10 @@ import type { KernelEvent, KernelRequest } from '@sync-think/shared';
 import { startKernelProcess } from './process.js';
 import { CodexAppServerKernelAdapter } from './codex-app-server-adapter.js';
 import { commandSilenceNotice } from './persistent-terminal-command.js';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { KernelStartupError } from './kernel-diagnostics.js';
 
 const fixturePath = fileURLToPath(
   new URL('./fixtures/codex-app-server-fixture.mjs', import.meta.url),
@@ -55,6 +59,86 @@ function makeRequest(overrides: Partial<KernelRequest> = {}): KernelRequest {
 }
 
 describe('CodexAppServerKernelAdapter', () => {
+  it.each(['spawn', 'initialize'])(
+    'reports %s failures as local startup errors with redacted details',
+    async (stage) => {
+      const secret = 'fixture-startup-secret';
+      const adapter = new CodexAppServerKernelAdapter({
+        spawn: (_args, env, cwd) => {
+          if (stage === 'spawn') throw new Error('invalid launch arguments ' + secret);
+          return startKernelProcess({
+            command: process.execPath,
+            args: ['-e', 'console.error("invalid local config ' + secret + '");process.exit(23)'],
+            cwd,
+            env,
+          });
+        },
+      });
+      adapters.add(adapter);
+      const run = async () => {
+        for await (const _event of adapter.start(makeRequest({ credential: { apiKey: secret } }))) {
+        }
+      };
+      const error = await run().catch((failure: unknown) => failure);
+      expect(error).toBeInstanceOf(KernelStartupError);
+      expect(error).toMatchObject({ failureClass: 'protocol' });
+      expect((error as Error).message).toContain('Codex 本地内核启动失败：');
+      expect((error as Error).message).toContain('[REDACTED]');
+      expect((error as Error).message).not.toContain(secret);
+    },
+  );
+
+  it.skipIf(process.platform !== 'win32')(
+    'loads the editing catalog through a real .cmd launcher with spaces and Unicode paths',
+    async () => {
+      const directory = mkdtempSync(join(tmpdir(), 'sync-think codex 中文 '));
+      const shim = join(directory, 'codex.cmd');
+      // The wrapper has the same argv forwarding as the managed npm installation.
+      writeFileSync(shim, '@"' + process.execPath + '" "' + fixturePath + '" %*\r\n');
+      const spawns: string[][] = [];
+      const adapter = new CodexAppServerKernelAdapter({
+        spawn: (args, env, cwd) => {
+          spawns.push(args);
+          return startKernelProcess({ command: shim, args, env, cwd });
+        },
+      });
+      adapters.add(adapter);
+      vi.stubEnv('TEMP', directory);
+      vi.stubEnv('TMP', directory);
+      try {
+        const events: KernelEvent[] = [];
+        for await (const event of adapter.start(
+          makeRequest({
+            model: 'host-model',
+            providerModelId: 'deepseek-flash',
+            credential: { apiKey: 'fixture', baseUrl: 'http://127.0.0.1/v1' },
+            userText: 'editing config fixture',
+          }),
+        ))
+          events.push(event);
+        expect(events).toContainEqual({ type: 'terminal', status: 'completed' });
+        const value = JSON.parse(
+          events
+            .filter(
+              (event): event is Extract<KernelEvent, { type: 'delta' }> => event.type === 'delta',
+            )
+            .map((event) => event.text)
+            .join(''),
+        );
+        expect(value.catalogPath).toContain('sync-think codex 中文 ');
+        expect(value.catalog.models[0]).toMatchObject({
+          slug: 'deepseek-flash',
+          apply_patch_tool_type: 'freeform',
+        });
+        expect(spawns).toHaveLength(2);
+      } finally {
+        await adapter.stop();
+        vi.unstubAllEnvs();
+        rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      }
+    },
+  );
+
   it.each(['failed', 'declined', 'completed'])(
     'preserves command item identity and %s outcome without an exit code',
     async (status) => {
@@ -699,16 +783,26 @@ describe('CodexAppServerKernelAdapter', () => {
       const events: KernelEvent[] = [];
       for await (const event of adapter.start(
         makeRequest({ userText: 'command silence fixture:' + command }),
-      )) events.push(event);
+      ))
+        events.push(event);
       expect(events).toContainEqual({ type: 'terminal', status: 'completed' });
-      expect(events).toContainEqual(expect.objectContaining({
-        type: 'tool-result', toolId: 'cmd-silent', isError: false,
-      }));
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: 'tool-result',
+          toolId: 'cmd-silent',
+          isError: false,
+        }),
+      );
       expect(events.some((event) => event.type === 'tool-result' && event.isError)).toBe(false);
       expect(events.filter((event) => event.type === 'tool-progress')).toHaveLength(1);
-      const call = events.find((event) => event.type === 'tool-call' && event.toolId === 'cmd-silent');
+      const call = events.find(
+        (event) => event.type === 'tool-call' && event.toolId === 'cmd-silent',
+      );
       expect(call?.type === 'tool-call' && JSON.parse(call.argsJson)).toMatchObject({
-        command, processId: 'process-silent', source: 'unifiedExecStartup',
+        command,
+        description: '执行静默命令并等待完成',
+        processId: 'process-silent',
+        source: 'unifiedExecStartup',
       });
     },
   );
@@ -719,17 +813,105 @@ describe('CodexAppServerKernelAdapter', () => {
     const consume = (async () => {
       for await (const event of adapter.start(
         makeRequest({ userText: 'command hang fixture:short' }),
-      )) events.push(event);
+      ))
+        events.push(event);
     })();
     try {
-      await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({
-        type: 'tool-progress', toolId: 'cmd-hang',
-      })));
+      await vi.waitFor(() =>
+        expect(events).toContainEqual(
+          expect.objectContaining({
+            type: 'tool-progress',
+            toolId: 'cmd-hang',
+          }),
+        ),
+      );
       expect(events.some((event) => event.type === 'terminal')).toBe(false);
       expect(events.some((event) => event.type === 'tool-result')).toBe(false);
     } finally {
       await adapter.cancel();
       await consume;
     }
+  });
+});
+
+describe('Codex editing capabilities and native instruction preservation', () => {
+  it.each([true, false])(
+    'preserves native base instructions on create and resume (local=%s)',
+    async (local) => {
+      const adapter = createFixtureAdapter([]);
+      for (const session of [
+        { mode: 'create' as const },
+        { mode: 'resume' as const, id: 'thread-app-fixture' },
+      ]) {
+        const events: KernelEvent[] = [];
+        for await (const event of adapter.start(
+          makeRequest({
+            userText: 'editing config fixture',
+            session,
+            credential: local
+              ? { reuseLocalLogin: true }
+              : { apiKey: 'fixture', baseUrl: 'http://127.0.0.1/v1' },
+          }),
+        ))
+          events.push(event);
+        const value = JSON.parse(
+          events
+            .filter((e): e is Extract<KernelEvent, { type: 'delta' }> => e.type === 'delta')
+            .map((e) => e.text)
+            .join(''),
+        );
+        expect(value).toMatchObject({
+          model: 'gpt-5',
+          developerInstructions: 'fixture system context',
+        });
+        expect(value.baseInstructions).toBeUndefined();
+        expect(value.catalog).toBeUndefined();
+      }
+    },
+  );
+  it('enables native apply_patch for unknown provider models and cleans its isolated catalog', async () => {
+    const { existsSync } = await import('node:fs');
+    const spawns: string[][] = [];
+    const adapter = createFixtureAdapter(spawns);
+    const paths: string[] = [];
+    for (const session of [
+      { mode: 'create' as const },
+      { mode: 'resume' as const, id: 'thread-app-fixture' },
+    ]) {
+      const events: KernelEvent[] = [];
+      for await (const event of adapter.start(
+        makeRequest({
+          model: 'host-model-id',
+          providerModelId: 'deepseek-flash',
+          userText: 'editing config fixture',
+          session,
+          credential: { apiKey: 'fixture', baseUrl: 'http://127.0.0.1/v1' },
+        }),
+      ))
+        events.push(event);
+      const value = JSON.parse(
+        events
+          .filter((e): e is Extract<KernelEvent, { type: 'delta' }> => e.type === 'delta')
+          .map((e) => e.text)
+          .join(''),
+      );
+      expect(value.model).toBe('deepseek-flash');
+      expect(value.catalog.models[0]).toMatchObject({
+        slug: 'deepseek-flash',
+        apply_patch_tool_type: 'freeform',
+        context_window: 128000,
+      });
+      expect(value.catalog.models[0].base_instructions).toContain('apply_patch');
+      expect(value.developerInstructions).toBe('fixture system context');
+      if (session.mode === 'resume')
+        expect(value.baseInstructions).toBe(value.catalog.models[0].base_instructions);
+      else expect(value.baseInstructions).toBeUndefined();
+      expect(existsSync(value.catalogPath)).toBe(true);
+      paths.push(value.catalogPath);
+    }
+    expect(spawns).toHaveLength(2); // native metadata discovery, then configured app-server
+    expect(paths[0]).toBe(paths[1]);
+    await adapter.stop();
+    expect(existsSync(paths[0])).toBe(false);
   });
 });

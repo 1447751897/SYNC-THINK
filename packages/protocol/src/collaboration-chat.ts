@@ -23,6 +23,8 @@ export function isCollaborationPolicy(value: unknown): value is Partial<Collabor
 export function isCollaborationTaskDraft(v: unknown): v is CollaborationTaskDraft {
   return object(v) && id(v.assigneeMemberId) && text(v.title) && text(v.instructions)
     && optional(v.key, id) && optional(v.expectedOutput, (x) => typeof x === 'string' && x.length <= 100_000)
+    && optional(v.deliverable, (x) => object(x) && ['document', 'file'].includes(String(x.kind))
+      && text(x.title) && (x.kind === 'file' ? text(x.path) : x.path === undefined))
     && optional(v.dependsOnTaskIds, ids) && optional(v.contextRefs, ids)
     && optional(v.planRef, (x) => object(x) && id(x.planId)
       && integer(x.revision, 1, Number.MAX_SAFE_INTEGER) && optional(x.stepId, id))
@@ -37,7 +39,7 @@ export function parseCollaborationCommand(value: unknown): CollaborationCommand 
     return optional(value.workspaceId, id) ? value as unknown as CollaborationCommand : undefined;
   }
   if (value.action === 'create') {
-    return id(value.clientRequestId) && id(value.workspaceId) && text(value.title)
+    return id(value.clientRequestId) && optional(value.workspaceId, id) && text(value.title)
       && ['model', 'direct', 'group'].includes(String(value.kind)) && ids(value.agentIds)
       && optional(value.coordinatorAgentId, id) && optional(value.modelId, id) && optional(value.teamId, id)
       ? value as unknown as CollaborationCommand : undefined;
@@ -45,10 +47,14 @@ export function parseCollaborationCommand(value: unknown): CollaborationCommand 
   if (!id(value.conversationId)) return undefined;
   let valid = false;
   switch (value.action) {
-    case 'get': valid = true; break;
+    case 'get':
+    case 'promote-direct':
+    case 'promote-team': valid = true; break;
     case 'send': valid = id(value.clientRequestId) && text(value.text)
       && optional(value.recipientMemberIds, ids) && optional(value.replyToMessageId, id)
       && optional(value.expectsResponse, (v) => typeof v === 'boolean'); break;
+    case 'start-workflow': valid = id(value.clientRequestId) && text(value.goal)
+      && optional(value.originMessageId, id) && optional(value.parentTaskId, id); break;
     case 'dispatch': valid = id(value.clientRequestId) && Array.isArray(value.tasks)
       && value.tasks.length > 0 && value.tasks.length <= 32 && value.tasks.every(isCollaborationTaskDraft)
       && optional(value.originMessageId, id) && optional(value.parentTaskId, id); break;

@@ -1,0 +1,248 @@
+/*!
+MIT License
+
+Copyright (c) 2026 Saurabh Chauhan
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+*/
+/* Be UI Code Block adaptation. See third-party/beui-code-block.LICENSE.
+   Scope its neutral surface to code; application theme and compact tool rows stay independent. */
+.shell-agent-code.shell-beui-code {
+  --code-surface: oklch(97% 0 0 / 80%);
+  --code-fg: oklch(15% 0 0);
+  --code-muted: oklch(50% 0 0);
+  --code-border: oklch(15% 0 0 / 6%);
+  --code-hover: oklch(15% 0 0 / 5%);
+  --code-focus: #0285f7;
+  --code-success: #15803d;
+  position: relative;
+  min-width: 0;
+  border: 1px solid var(--code-border);
+  border-radius: 16px;
+  background: var(--code-surface);
+  color: var(--code-fg);
+  box-shadow: none;
+}
+.dark .shell-agent-code.shell-beui-code {
+  --code-surface: rgb(28 28 28 / 80%);
+  --code-fg: oklch(96% 0 0);
+  --code-muted: oklch(68% 0 0);
+  --code-border: rgb(255 255 255 / 6%);
+  --code-hover: rgb(255 255 255 / 6%);
+  --code-focus: #60a5fa;
+  --code-success: #4ade80;
+}
+.shell-beui-code.shell-agent-code .shell-md-code__bar {
+  gap: 10px;
+  min-height: 40px;
+  padding: 5px 12px;
+  background: transparent;
+  border-bottom: 1px solid var(--code-border);
+}
+.shell-beui-code.shell-agent-code .shell-agent-code__identity {
+  gap: 10px;
+  flex: 1;
+  overflow: hidden;
+  color: var(--code-muted);
+}
+.shell-beui-code.shell-agent-code .shell-agent-code__filename {
+  color: var(--code-fg);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.shell-beui-code.shell-agent-code .shell-md-code__lang {
+  flex: none;
+  font-size: 10px;
+  text-transform: uppercase;
+  color: var(--code-muted);
+}
+.shell-beui-code.shell-agent-code .shell-agent-code__status {
+  gap: 4px;
+  margin-right: 4px;
+  font-size: 10px;
+  white-space: nowrap;
+  color: var(--code-success);
+}
+.shell-beui-code.shell-agent-code[data-state='streaming'] .shell-agent-code__status {
+  color: var(--code-focus);
+}
+.shell-beui-code.shell-agent-code :is(.shell-source-copy.is-icon-only, .shell-md-code__action) {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--code-muted);
+  box-shadow: none;
+  cursor: pointer;
+  transition:
+    color 150ms ease,
+    background-color 150ms ease;
+}
+.shell-beui-code.shell-agent-code
+  :is(.shell-source-copy.is-icon-only, .shell-md-code__action):hover {
+  color: var(--code-fg);
+  background: var(--code-hover);
+}
+.shell-beui-code.shell-agent-code .shell-md-code__action[aria-pressed='true'] {
+  color: var(--code-focus);
+  background: color-mix(in srgb, var(--code-focus) 9%, transparent);
+}
+.shell-beui-code.shell-agent-code .shell-source-copy[data-copy-state='copied'] {
+  color: var(--code-success);
+}
+.shell-beui-code.shell-agent-code .shell-source-copy.is-icon-only > span {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.shell-beui-code.shell-agent-code .shell-source-copy[data-copy-state='failed'] {
+  width: auto;
+  gap: 4px;
+  padding: 0 6px;
+  color: var(--color-error);
+}
+.shell-beui-code.shell-agent-code .shell-source-copy[data-copy-state='failed'] > span {
+  position: static;
+  width: auto;
+  height: auto;
+  margin: 0;
+  clip-path: none;
+  font-size: 10px;
+}
+.shell-beui-code.shell-agent-code :is(button, [data-code-viewport]):focus-visible,
+.shell-beui-code.shell-agent-code.is-document:focus-visible {
+  outline: 2px solid var(--code-focus);
+  outline-offset: -2px;
+}
+.shell-beui-code.shell-agent-code .shell-agent-code__source {
+  margin: 0;
+  padding: 8px 0;
+  font-size: 12px;
+  line-height: 20px;
+}
+.shell-beui-code.shell-agent-code .shell-agent-code__source > code {
+  color: var(--code-fg);
+}
+.shell-beui-code.shell-agent-code .shell-agent-code__line {
+  padding-right: 16px;
+}
+.shell-beui-code.shell-agent-code .shell-agent-code__number {
+  flex: 0 0 44px;
+  width: 44px;
+  padding-right: 12px;
+  color: var(--code-muted);
+}
+.shell-beui-code.shell-agent-code .shell-agent-code__line[data-highlighted='true'] {
+  background: color-mix(in srgb, var(--code-focus) 9%, transparent);
+}
+.shell-beui-code.shell-agent-code .shell-md-code__expand {
+  min-height: 30px;
+  border-top: 1px solid var(--code-border);
+  color: var(--code-muted);
+  background: transparent;
+  font-size: 11px;
+}
+.shell-beui-code.shell-agent-code .shell-md-code__expand:hover {
+  background: var(--code-hover);
+}
+.shell-beui-code.shell-agent-code .shell-beui-code__follow {
+  position: absolute;
+  bottom: 36px;
+  left: 50%;
+  translate: -50% 0;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border: 1px solid var(--code-border);
+  border-radius: 999px;
+  background: var(--color-elevated);
+  color: var(--code-focus);
+  box-shadow: 0 2px 6px rgb(0 0 0 / 8%);
+  font-size: 11px;
+  cursor: pointer;
+}
+/* Tool output inherits the expanded details' existing glass surface. */
+.shell-tool-result .shell-agent-code.shell-beui-code {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.shell-tool-result .shell-beui-code.shell-agent-code .shell-md-code__bar {
+  min-height: 32px;
+  padding: 2px 10px;
+}
+.shell-tool-result .shell-beui-code.shell-agent-code .shell-agent-code__source {
+  padding: 8px 10px;
+}
+/* The file tab already supplies its own toolbar. It uses the same line renderer
+   without a second card, and keeps the whole document available. */
+.shell-agent-code.shell-beui-code.is-document {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  background: var(--shell-file-editor-background, var(--color-chat));
+}
+.shell-beui-code.shell-agent-code.is-document .shell-agent-code__source > code {
+  width: auto;
+  min-width: 0;
+}
+.shell-beui-code.shell-agent-code.is-document .shell-agent-code__line {
+  min-width: 0;
+}
+.shell-beui-code.shell-agent-code.is-document .shell-agent-code__text {
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.shell-beui-code.shell-agent-code.is-document .shell-agent-code__line:hover {
+  background: var(--code-hover);
+}
+@media (prefers-reduced-motion: reduce) {
+  .shell-beui-code.shell-agent-code *,
+  .shell-beui-code.shell-agent-code *::before,
+  .shell-beui-code.shell-agent-code *::after {
+    transition: none;
+    animation: none;
+  }
+}
+
+.shell-command-input .shell-agent-code.shell-beui-code {
+  margin: 4px 0;
+  border: 1px solid var(--code-border);
+  border-radius: 10px;
+}
+.shell-command-input .shell-agent-code .shell-agent-code__identity {
+  display: flex;
+}

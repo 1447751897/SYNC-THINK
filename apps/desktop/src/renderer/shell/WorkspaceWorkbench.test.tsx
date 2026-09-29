@@ -86,6 +86,7 @@ describe('WorkspaceWorkbench', () => {
     expect(screen.getByText('file:src/app.ts')).toBeTruthy();
   });
 
+
   it('renders a flat NewMax pane tab bar for the active workbench tab', () => {
     render(
       <WorkspaceWorkbench

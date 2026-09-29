@@ -39,6 +39,17 @@ export interface ReviewPaneTab {
   runId: string;
 }
 
+/**
+ * 工作区工作台的 Git 工具页签（单例）。只在 `WorkspaceWorkbench` 中使用：
+ * 主窗格 pane 系统与 `WorkspacePaneTab` 都不包含它（与 `WorkspaceFilesPaneTab` 同理）。
+ */
+export interface GitPaneTab {
+  id: 'git';
+  type: 'git';
+  projectFolder?: string;
+}
+
+
 export type WorkspacePaneTab =
   ConversationPaneTab | FilePaneTab | TerminalPaneTab | BrowserPaneTab | ReviewPaneTab;
 

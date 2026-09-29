@@ -1511,8 +1511,8 @@ describe('collaboration agent tools', () => {
     expect(names).toContain('collaboration_send_message');
     expect(names).toContain('collaboration_dispatch_tasks');
     expect(CHAT_COLLABORATION_TOOL_SCHEMAS.map((tool) => tool.name)).toEqual([
-      'collaboration_send_message',
-      'collaboration_dispatch_tasks',
+      'collaboration_send_message', 'collaboration_send_direct_message',
+      'collaboration_start_workflow', 'collaboration_submit_artifact', 'collaboration_dispatch_tasks',
     ]);
     const modelNames = toolsForExecutionMode('workspace', {
       includeProjectTools: false,

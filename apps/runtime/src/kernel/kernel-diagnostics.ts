@@ -1,6 +1,19 @@
 const REDACTED = '[REDACTED]';
 const MAX_DIAGNOSTIC_LENGTH = 4_096;
 
+/** Local spawn/handshake errors occur before a provider request. Switching models cannot repair them. */
+export class KernelStartupError extends Error {
+  readonly failureClass = 'protocol' as const;
+
+  constructor(kernelName: string, cause: unknown, secrets: readonly (string | undefined)[] = []) {
+    super(
+      `${kernelName} 本地内核启动失败：${sanitizeKernelDiagnostic(cause, secrets) || '进程未就绪'}`,
+      { cause },
+    );
+    this.name = 'KernelStartupError';
+  }
+}
+
 export function sanitizeKernelDiagnostic(
   value: unknown,
   secrets: readonly (string | undefined)[] = [],

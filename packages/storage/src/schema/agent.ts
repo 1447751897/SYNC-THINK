@@ -25,12 +25,13 @@ export const agent = sqliteTable('agent', {
   persona: text('persona').notNull().default(''),
   description: text('description').notNull().default(''),
   defaultModelId: text('default_model_id').notNull(),
+  defaultKernelId: text('default_kernel_id').notNull().default('native'),
   defaultCredentialGroupId: text('default_credential_group_id'),
   fallbackModelIdsJson: text('fallback_model_ids_json').notNull().default('[]'),
   /** Equipment travels with the agent into any project. */
   skillIdsJson: text('skill_ids_json').notNull().default('[]'),
   mcpServerIdsJson: text('mcp_server_ids_json').notNull().default('[]'),
-  /** Reasoning-effort default offered on Compose ('auto' unless overridden). */
+  /** Reasoning effort used by this agent in direct and team conversations. */
   reasoningEffort: text('reasoning_effort').notNull().default('auto'),
   enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
   source: text('source').notNull().default('user'),

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { fileURLToPath } from 'node:url';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -352,6 +352,21 @@ describe('LocalStdioMcpWorker list-tools (JSON-RPC tools/list)', () => {
       expect(echo?.inputSchemaJson).toMatch(/text/);
     }
   }, 30_000);
+
+  it.skipIf(process.platform !== 'win32')('starts a Windows cmd shim with spaces and discovers tools', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mcp shim '));
+    const shim = join(dir, 'server.cmd');
+    writeFileSync(shim, '@echo off\r\n"' + process.execPath + '" "' + fixturePath + '"\r\n');
+    try {
+      const events = await collect(new LocalStdioMcpWorker().exec({ workingDir: dir,
+        endpoint: '"' + shim + '"', transport: 'local-stdio',
+        policy: { timeoutMs: 12000, maxOutputBytes: 65536 }, action: { kind: 'list-tools' },
+      }, token));
+      expect(events.find(e => e.type === 'completed')).toMatchObject({ output: { ok: true, jsonRpcOk: true } });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 
   it('refuses fake endpoint for list-tools without spawn', async () => {
     const w = new LocalStdioMcpWorker();

@@ -111,7 +111,7 @@ export function ComposerApprovalStack(props: ComposerApprovalStackProps) {
   if (!props.tool && !props.plan) {
     return (
       <div className="shell-composer-approval-stack" aria-hidden="true">
-        <ComposerPeekSurface kind="tool" detached={false} />
+        <ComposerPeekSurface kind="tool" detached />
         <ComposerPeekSurface kind="plan" detached={false} />
       </div>
     );
@@ -125,7 +125,7 @@ export function ComposerApprovalStack(props: ComposerApprovalStackProps) {
       <ComposerPeekSurface
         item={props.tool}
         kind="tool"
-        detached={Boolean(props.plan) || Boolean(props.hasSurfaceBelow)}
+        detached
       />
       <ComposerPeekSurface
         item={props.plan}

@@ -1437,3 +1437,67 @@ describe('stripAnthropicV1Suffix', () => {
     expect(stripAnthropicV1Suffix('https://example.com/v1/')).toBe('https://example.com');
   });
 });
+
+describe('Claude native file result forwarding', () => {
+  it('preserves the SDK structured Edit result instead of only its status text', async () => {
+    const output = {
+      filePath: 'file.ts',
+      originalFile: 'const x = 1;\n',
+      oldString: '1',
+      newString: '2',
+      replaceAll: false,
+      userModified: false,
+    };
+    const adapter = new ClaudeSdkKernelAdapter({
+      query: fakeQuery(async function* () {
+        yield {
+          type: 'user',
+          parent_tool_use_id: null,
+          tool_use_result: output,
+          message: {
+            role: 'user',
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: 'edit-file',
+                content: 'The file has been updated successfully.',
+              },
+            ],
+          },
+        } as unknown as SDKMessage;
+        yield resultSuccess();
+      }),
+    });
+    const { events } = await collect(adapter);
+    expect(events).toContainEqual({
+      type: 'tool-result',
+      toolId: 'edit-file',
+      output: 'The file has been updated successfully.',
+      isError: false,
+      structuredOutput: output,
+    });
+  });
+  it('does not attach one structured result to several unrelated tool calls', async () => {
+    const adapter = new ClaudeSdkKernelAdapter({
+      query: fakeQuery(async function* () {
+        yield {
+          type: 'user',
+          parent_tool_use_id: null,
+          tool_use_result: { filePath: 'file.ts' },
+          message: {
+            role: 'user',
+            content: [
+              { type: 'tool_result', tool_use_id: 'first', content: 'a' },
+              { type: 'tool_result', tool_use_id: 'second', content: 'b' },
+            ],
+          },
+        } as unknown as SDKMessage;
+        yield resultSuccess();
+      }),
+    });
+    const { events } = await collect(adapter);
+    const results = events.filter((e) => e.type === 'tool-result');
+    expect(results).toHaveLength(2);
+    expect(results.every((e) => !('structuredOutput' in e))).toBe(true);
+  });
+});

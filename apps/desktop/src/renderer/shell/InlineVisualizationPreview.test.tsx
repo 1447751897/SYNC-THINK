@@ -66,8 +66,13 @@ describe('InlineVisualizationPreview', () => {
     expect(screen.getByTestId('inline-visualization-skeleton')).toBeTruthy();
     expect(screen.queryByRole('button')).toBeNull();
 
-    dispatchGuestMessage(webview, 'sync-think-visualization:ready');
-    dispatchGuestMessage(webview, 'sync-think-visualization:height', { height: 320 });
+    // The hook sets src only after registering guest listeners. DOM insertion alone
+    // can beat that effect when the suite runs alongside the heavier ChatView tests.
+    await waitFor(() => expect(webview.getAttribute('src')).toMatch(/^data:text\/html/));
+    act(() => {
+      dispatchGuestMessage(webview, 'sync-think-visualization:ready');
+      dispatchGuestMessage(webview, 'sync-think-visualization:height', { height: 320 });
+    });
     await waitFor(() => expect(webview.style.height).toBe('320px'));
     await waitFor(() => expect(webview.style.opacity).toBe('1'));
     expect(screen.queryByTestId('inline-visualization-skeleton')).toBeNull();

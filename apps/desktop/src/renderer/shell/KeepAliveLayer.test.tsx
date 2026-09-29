@@ -89,3 +89,15 @@ describe('KeepAliveLayer', () => {
     expect(screen.getByTestId('layer-two').hasAttribute('hidden')).toBe(false);
   });
 });
+
+it('propagates an inactive workspace through nested active layers without unmounting content', () => {
+  const view = (active: boolean) => <KeepAliveLayer active={active}><KeepAliveLayer active><ActiveProbe /></KeepAliveLayer></KeepAliveLayer>;
+  const { rerender } = render(view(true));
+  const probe = screen.getByTestId('active-probe');
+  expect(probe.textContent).toBe('active');
+  rerender(view(false));
+  expect(screen.getByTestId('active-probe')).toBe(probe);
+  expect(probe.textContent).toBe('inactive');
+  rerender(view(true));
+  expect(probe.textContent).toBe('active');
+});

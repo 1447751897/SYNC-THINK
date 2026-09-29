@@ -1,3 +1,6 @@
+import { timelineLoadFailureMessage } from './run-timeline-loader.js';
+import { useContextMenu, MessageContextActions, selectionContextActions, selectedContextText, copyContextText } from './ContextMenu.js';
+import { readContextToolText } from './context-tool-text.js';
 /**
  * DeepSeek Harness-style ordered assistant execution flow.
  * Think, commentary and status stay on their own rows in document order.
@@ -5,6 +8,8 @@
  */
 import {
   Fragment,
+  createContext,
+  useContext,
   memo,
   useCallback,
   useEffect,
@@ -15,6 +20,8 @@ import {
 } from 'react';
 import {
   Atom,
+  Copy,
+  Quote,
   Check,
   ChevronDown,
   CircleAlert,
@@ -31,15 +38,20 @@ import {
   Users,
   Wrench,
 } from 'lucide-react';
-import type { CommentaryTimelineSegment, ExecutionProcessStep } from '@sync-think/protocol';
+import type { CommentaryTimelineSegment, ExecutionProcessStep, FileChangeItem } from '@sync-think/protocol';
 import type { InlineProcessItem, DelegatedAgentToolEventView } from './conversation-types.js';
+import { AgentActivityStateContext, AgentActivityStatus, AgentActivityViewport, agentActivityState } from './AgentActivity.js';
 import { useAutoDisclosure } from './auto-disclosure.js';
 import { MessageTextContent } from './MessageTextContent.js';
-import { CodeBlock } from './CodeBlock.js';
+import { FileChangeDiff } from './ExecutionProcessBlock.js';
+import { CodeBlock, type CodeBlockReadingState } from './CodeBlock.js';
+import { ToolResult } from './ToolResult.js';
 import { CopyTextButton } from './CopyTextButton.js';
 import { buildExecutionTimeline } from './ExecutionTimeline.js';
 import {
   activityFingerprint,
+  commandDisplayFromArguments,
+  commandDescriptionFromArguments,
   deriveCurrentActivity,
   deriveStallState,
   formatElapsedZh,
@@ -63,6 +75,11 @@ import {
 } from './markdown-image-gallery.js';
 import { ConversationContentScope, DeferredToolContent } from './DeferredToolContent.js';
 import { parseDeferredContent } from '@sync-think/shared';
+
+const EMPTY_TOOL_FILE_CHANGES = { byCall: new Map<string, readonly FileChangeItem[]>() };
+const ToolFileChangesContext = createContext<{
+  byCall: ReadonlyMap<string, readonly FileChangeItem[]>; conversationId?: string;
+}>(EMPTY_TOOL_FILE_CHANGES);
 
 function latestLine(text: string): string {
   return (
@@ -320,6 +337,24 @@ function describePayload(text: string, language: string): string {
   return `${language === 'json' ? 'JSON' : '文本'} · ${lines} 行`;
 }
 
+function renderCommandContent(text: string) {
+  const command = commandDisplayFromArguments(text);
+  if (!command) return <p className="shell-deferred-content__notice">正在读取命令内容…</p>;
+  return (
+    <div className="shell-command-input">
+      <CodeBlock
+        code={command.code}
+        language={command.language}
+        copyLabel="复制命令"
+        showStatus={false}
+        collapsible={false}
+        maxHeight={240}
+        wrapControl
+      />
+    </div>
+  );
+}
+
 function ToolPayload({
   text,
   testId,
@@ -327,12 +362,14 @@ function ToolPayload({
   streaming = false,
   label = '输出',
   deferred,
+  commandInput = false,
 }: {
   text: string;
   testId: string;
   failed?: boolean;
   streaming?: boolean;
   label?: string;
+  commandInput?: boolean;
   deferred?: import('@sync-think/shared').DeferredContent;
 }) {
   const contentReference = parseDeferredContent(deferred);
@@ -346,8 +383,16 @@ function ToolPayload({
         failed={failed}
         testId={testId}
         wrapControl
+        renderContent={commandInput ? renderCommandContent : undefined}
       />
     );
+  if (commandInput && commandDisplayFromArguments(text)) {
+    return (
+      <div className="shell-tool-result" data-testid={testId}>
+        {renderCommandContent(text)}
+      </div>
+    );
+  }
   const fields = structuredFields(text);
   if (!fields) {
     const language = ['{', '['].includes(text.trimStart().charAt(0)) ? 'json' : 'text';
@@ -404,17 +449,19 @@ export function DelegatedAgentToolRow({ event }: { event: DelegatedAgentToolEven
   return (
     // The wrapper keeps the child log's own row divider; every other pixel of the
     // row is the shared ToolRow surface.
-    <div className="shell-delegated-agent__tool" data-testid="delegated-agent-tool">
-      <ToolRow
-        item={item}
-        // Child tool events carry no live progress frames, and a settled history
-        // must never tick against a stale clock.
-        liveClock={false}
-        now={0}
-        open={open}
-        onToggle={() => setOpen((value) => !value)}
-      />
-    </div>
+    <ToolFileChangesContext.Provider value={EMPTY_TOOL_FILE_CHANGES}>
+      <div className="shell-delegated-agent__tool" data-testid="delegated-agent-tool">
+        <ToolRow
+          item={item}
+          // Child tool events carry no live progress frames, and a settled history
+          // must never tick against a stale clock.
+          liveClock={false}
+          now={0}
+          open={open}
+          onToggle={() => setOpen((value) => !value)}
+        />
+      </div>
+    </ToolFileChangesContext.Provider>
   );
 }
 
@@ -454,7 +501,8 @@ function resourceLabel(path: string): string {
 function fullReadPath(argumentsJson: string): string | undefined {
   try {
     const fields = JSON.parse(argumentsJson) as Record<string, unknown>;
-    const path = fields.path ?? fields.file_path;
+    const path =
+      fields.path ?? fields.file_path ?? fields.filePath ?? fields.dir ?? fields.directory;
     return typeof path === 'string' && path.trim() ? path.trim() : undefined;
   } catch {
     return undefined;
@@ -467,6 +515,7 @@ function ToolRow({
   now,
   open,
   onToggle,
+  onRead,
   onOpenChange,
 }: {
   item: Extract<InlineProcessItem, { kind: 'tool' }>;
@@ -476,62 +525,104 @@ function ToolRow({
   now: number;
   open: boolean;
   onToggle: () => void;
+  onRead?: () => void;
   onOpenChange?: (path: string) => void;
 }) {
+  const openContextMenu = useContextMenu();
+  const messageActions = useContext(MessageContextActions);
+  const fileChanges = useContext(ToolFileChangesContext);
+  const changedFiles = item.toolCallId ? fileChanges.byCall.get(item.toolCallId) : undefined;
   const status = toolStatusOf(item);
-  const summary = toolInputSummary(item);
+  const runState = useContext(AgentActivityStateContext);
+  const suspendedStatus = status === 'running' && runState && runState !== 'working' && runState !== 'recorded'
+    ? runState === 'approval' ? 'waiting' : runState === 'paused' ? 'paused'
+      : runState === 'cancelled' ? 'cancelled' : 'interrupted'
+    : undefined;
+  const displayStatus = suspendedStatus ?? status;
+  const resultReadingState = useRef<CodeBlockReadingState>({ expanded: false, following: true, scrollTop: 0, scrollLeft: 0 });
   const visualKind = toolVisualKind(item.name);
-  let commandDescription: string | undefined;
-  let visibleArguments = item.argumentsJson;
-  if (visualKind === 'command') {
-    try {
-      const parsed = JSON.parse(item.argumentsJson) as unknown;
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        const fields = parsed as Record<string, unknown>;
-        if (typeof fields.description === 'string' && fields.description.trim()) {
-          commandDescription = fields.description.trim();
-          const argumentsWithoutDescription = { ...fields };
-          delete argumentsWithoutDescription.description;
-          visibleArguments = JSON.stringify(argumentsWithoutDescription);
-        }
-      }
-    } catch {
-      // Non-JSON tool arguments are rendered unchanged.
-    }
-  }
+  const fileDiffOnly = visualKind === 'write' && Boolean(changedFiles?.length);
+  const summary =
+    fileDiffOnly && changedFiles
+      ? changedFiles.length === 1
+        ? changedFiles[0].path
+        : `${changedFiles[0].path} 等 ${changedFiles.length} 个文件`
+      : toolInputSummary(item);
+  const commandDescription =
+    visualKind === 'command' ? commandDescriptionFromArguments(item.argumentsJson) : undefined;
+
   const elapsed = elapsedLabel(item.startedAt, item.completedAt);
   const liveElapsed =
     status === 'running' && liveClock ? runningElapsedLabel(item.startedAt, now) : undefined;
   const displayName = item.displayName?.trim() || friendlyToolName(item.name);
-  const statusText = TOOL_STATUS_TEXT[status];
+  const statusText = suspendedStatus ? ({ waiting: '等待批准', paused: '已暂停', cancelled: '已停止', interrupted: '未收到完成结果' }[suspendedStatus]) : TOOL_STATUS_TEXT[status];
   const progressLine = status === 'running' ? item.progressLine?.trim() : undefined;
   const errorSummary =
     status === 'failed' ? toolErrorSummary(item.result ?? '') || '工具执行失败' : '';
-  const detailResult =
-    status === 'failed' && !(item.result ?? '').trim() ? '工具未返回错误详情' : item.result;
+  const detailResult = status === 'running'
+    ? (item.progressOutput ?? item.result)
+    : status === 'failed' && !(item.result ?? '').trim() ? '工具未返回错误详情' : item.result;
+  const renderResult = (text?: string) => (
+    <ToolResult
+      output={text}
+      status={suspendedStatus ?? (status === 'failed' ? 'error' : status === 'completed' ? 'success' : 'running')}
+      kind={visualKind === 'command' ? 'terminal' : 'request'}
+      truncated={status === 'running' && item.progressTruncated}
+      readingState={resultReadingState.current}
+      onRead={onRead}
+      testId={item.resultRef ? undefined : 'inline-process-tool-result'}
+    />
+  );
   const visibleSummary = errorSummary || summary;
-  const resourcePath =
-    summary && (visualKind === 'read' || visualKind === 'write' || visualKind === 'list')
-      ? visualKind === 'read'
-        ? (fullReadPath(item.argumentsJson) ?? summary)
-        : summary
+  const resourcePath = fileDiffOnly
+    ? changedFiles?.length === 1
+      ? changedFiles[0].path
+      : undefined
+    : summary && (visualKind === 'read' || visualKind === 'write' || visualKind === 'list')
+      ? (fullReadPath(item.argumentsJson) ?? summary)
       : undefined;
   const imageTool = isImageGenerationActivity(item);
   const generatedSrc = status === 'completed' ? extractGeneratedImageSrc(item.result ?? '') : null;
   const generationModel = item.result
     ? extractGeneratedImageModelLine(normalizeImageGenerationToolResult(item.result))
     : undefined;
-  const showGridReveal = imageTool && status !== 'failed';
+  const showGridReveal = imageTool && status !== 'failed' && !suspendedStatus;
   return (
     <div
-      className={`shell-inline-process__tool is-${status}`}
+      className={`shell-inline-process__tool is-${displayStatus} is-kind-${visualKind}`}
       data-testid="inline-process-tool"
+      onContextMenu={event => {
+        const selected = selectedContextText(event.currentTarget);
+        const output = status === 'running' ? item.progressOutput ?? item.result ?? '' : item.result ?? '';
+        const outputRef = status === 'running' ? undefined : item.resultRef;
+        const readOutput = () => readContextToolText(output, outputRef, fileChanges.conversationId);
+        const command = commandDisplayFromArguments(item.argumentsJson)?.code;
+        openContextMenu(event, [
+          ...selectionContextActions(selected, messageActions.quote),
+          ...(visualKind === 'command' ? [{ id: 'command', label: '复制命令', icon: <Copy size={14} />, disabled: !command && !item.argumentsRef, separator: !!selected,
+            run: async () => {
+              const args = await readContextToolText(item.argumentsJson, item.argumentsRef, fileChanges.conversationId);
+              const code = commandDisplayFromArguments(args)?.code;
+              if (!code) throw new Error('命令内容尚未就绪');
+              await copyContextText(code);
+            } }] : []),
+          { id: 'output', label: status === 'running' ? (item.progressTruncated ? '复制当前日志片段' : '复制当前输出') : '复制输出', icon: <Copy size={14} />,
+            disabled: !output && !outputRef, run: async () => copyContextText(await readOutput()) },
+          ...(status === 'failed' && messageActions.quote ? [{ id: 'quote-error', label: '引用错误并提问', icon: <Quote size={14} />,
+            disabled: !output && !outputRef, run: async () => messageActions.quote?.((command ? '命令：' + command + '\n\n' : '') + await readOutput(), '请分析以下执行错误并给出修复建议') }] : []),
+          ...(resourcePath ? [
+            { id: 'copy-path', label: '复制文件路径', icon: <FileCode2 size={14} />, separator: true, run: () => copyContextText(resourcePath) },
+            ...(onOpenChange ? [{ id: 'open-file', label: '打开对应文件', icon: <FolderOpen size={14} />, run: () => onOpenChange(resourcePath) }] : []),
+          ] : []),
+          { id: 'toggle', label: open ? '收起详情' : '展开详情', icon: <ChevronDown size={14} />, separator: true, run: onToggle },
+        ]);
+      }}
       data-failed={status === 'failed' ? 'true' : 'false'}
     >
       <button
         type="button"
         className="shell-inline-process__tool-toggle"
-        data-highlight-band={status === 'running' ? 'true' : undefined}
+        data-highlight-band={status === 'running' && !suspendedStatus ? 'true' : undefined}
         aria-expanded={open}
         onClick={onToggle}
       >
@@ -604,12 +695,12 @@ function ToolRow({
         <span
           className="shell-inline-process__tool-status"
           data-testid="inline-process-tool-status"
-          data-status={status}
+          data-status={displayStatus}
           title={statusText}
           aria-label={statusText}
         />
       </button>
-      {progressLine ? (
+      {progressLine && (!open || !item.progressOutput) ? (
         <div
           className="shell-inline-process__tool-progress"
           data-testid="inline-process-tool-progress"
@@ -640,22 +731,60 @@ function ToolRow({
           tabIndex={0}
           aria-label={`${displayName}详情`}
         >
-          <div className="shell-inline-process__detail-row">
-            <span>原始工具</span>
-            <code>{item.name}</code>
-          </div>
-          {item.argumentsJson ? (
+          {!fileDiffOnly && visualKind !== 'command' ? (
+            <div className="shell-inline-process__detail-row">
+              <span>原始工具</span>
+              <code>{item.name}</code>
+            </div>
+          ) : null}
+          {changedFiles?.length ? (
+            <section
+              className="shell-tool-file-diffs"
+              aria-label="本次调用的文件变更"
+              data-testid="tool-file-diffs"
+            >
+              {changedFiles.map((change, index) => (
+                <div key={change.path + ':' + index} className="shell-tool-file-diffs__item">
+                  <div className="shell-tool-file-diffs__header">
+                    <FileCode2 size={14} aria-hidden="true" />
+                    <button
+                      type="button"
+                      onClick={() => onOpenChange?.(change.path)}
+                      disabled={!onOpenChange}
+                      title={change.path}
+                    >
+                      {change.path}
+                    </button>
+                    <span>
+                      {suspendedStatus ? statusText : status === 'running'
+                        ? '执行中'
+                        : status === 'failed'
+                          ? '执行失败 · 已记录差异'
+                          : '已记录差异'}
+                    </span>
+                  </div>
+                  <FileChangeDiff
+                    item={change}
+                    conversationId={fileChanges.conversationId}
+                    streaming={status === 'running' && !suspendedStatus}
+                  />
+                </div>
+              ))}
+            </section>
+          ) : null}
+          {!fileDiffOnly && item.argumentsJson ? (
             <div className="shell-inline-process__detail-block">
-              <span>参数</span>
+              <span>{visualKind === 'command' ? '命令' : '参数'}</span>
               <ToolPayload
-                text={visibleArguments}
+                text={item.argumentsJson}
+                commandInput={visualKind === 'command'}
                 testId="inline-process-tool-arguments"
                 label="参数"
                 deferred={item.argumentsRef}
               />
             </div>
           ) : null}
-          {item.detailsRef ? (
+          {!fileDiffOnly && visualKind !== 'command' && item.detailsRef ? (
             <DeferredToolContent
               deferred={item.detailsRef}
               preview="包含较大的附加字段；完整事件展示数据按需读取。"
@@ -663,17 +792,20 @@ function ToolRow({
               testId="inline-process-event-details"
             />
           ) : null}
-          {detailResult !== undefined && (!item.delegationAnchor || status === 'failed') ? (
+          {(detailResult !== undefined || item.resultRef || status === 'running' || status === 'completed') &&
+          (!fileDiffOnly || status === 'failed') &&
+          (!item.delegationAnchor || status === 'failed') ? (
             <div className="shell-inline-process__detail-block">
-              <span>{status === 'failed' ? '错误' : '输出'}</span>
-              <ToolPayload
-                text={detailResult}
-                testId="inline-process-tool-result"
-                failed={status === 'failed'}
-                streaming={status === 'running'}
-                label={status === 'failed' ? '错误' : '输出'}
-                deferred={item.resultRef}
-              />
+              {item.resultRef && status !== 'running' ? (
+                <DeferredToolContent
+                  deferred={item.resultRef}
+                  preview={detailResult ?? ''}
+                  label={status === 'failed' ? '错误' : '输出'}
+                  testId="inline-process-tool-result"
+                  failed={status === 'failed'}
+                  renderContent={renderResult}
+                />
+              ) : renderResult(detailResult)}
             </div>
           ) : null}
           {/*
@@ -721,8 +853,9 @@ function describeStatusDetail(detail: string | undefined): string | undefined {
 
 function StatusRow({ item }: { item: Extract<InlineProcessItem, { kind: 'status' }> }) {
   const failed =
-    item.statusType === 'connection' &&
-    /失败|断开|error|failed/i.test(`${item.label} ${item.detail ?? ''}`);
+    (item.statusType === 'connection' &&
+      /失败|断开|error|failed/i.test(`${item.label} ${item.detail ?? ''}`)) ||
+    /^工具审批：已(拒绝|失效)$/.test(item.label);
   const detail = describeStatusDetail(item.detail);
   return (
     <div
@@ -797,6 +930,7 @@ function ProcessItemView({
   now,
   open,
   onToggle,
+  onRead,
   onOpenChange,
 }: {
   item: InlineProcessItem;
@@ -805,6 +939,7 @@ function ProcessItemView({
   now: number;
   open: boolean;
   onToggle: () => void;
+  onRead?: () => void;
   onOpenChange?: (path: string) => void;
 }) {
   if (item.kind === 'reasoning') {
@@ -818,6 +953,7 @@ function ProcessItemView({
         now={now}
         open={open}
         onToggle={onToggle}
+        onRead={onRead}
         onOpenChange={onOpenChange}
       />
     );
@@ -845,6 +981,7 @@ function ProcessEntry({
   now,
   expandedItemKeys,
   toggleItem,
+  keepItemOpen,
   onOpenChange,
 }: {
   item: InlineProcessItem;
@@ -854,6 +991,7 @@ function ProcessEntry({
   now: number;
   expandedItemKeys: ReadonlySet<string>;
   toggleItem(itemKey: string): void;
+  keepItemOpen(itemKey: string): void;
   onOpenChange?: (path: string) => void;
 }) {
   // Stable key first (toolCallId / id / sequence) so status updates reuse the
@@ -868,7 +1006,11 @@ function ProcessEntry({
           liveClock={liveClock}
           now={now}
           open={expandedItemKeys.has(itemKey)}
-          onToggle={() => toggleItem(itemKey)}
+          onToggle={() => {
+            if (expandedItemKeys.has(itemKey)) toggleItem(itemKey);
+            else keepItemOpen(itemKey);
+          }}
+          onRead={() => keepItemOpen(itemKey)}
           onOpenChange={onOpenChange}
         />
       </div>
@@ -1062,7 +1204,7 @@ function consecutiveToolRunShouldOpen(
 ): boolean {
   if (input.userToggled.has(block.key)) return input.currentlyOpen.has(block.key);
   if (input.defaultOpen === true) return true;
-  return block.entries.some((entry) => toolStatusOf(entry.item) === 'running');
+  return block.entries.some((entry) => toolStatusOf(entry.item) !== 'completed');
 }
 
 function nextOpenToolRuns(
@@ -1163,11 +1305,14 @@ function ThinkVisibilitySwitch({
 export const InlineProcessFlow = memo(function InlineProcessFlow({
   items,
   steps,
+  fileChanges,
   totalFailedTools,
+  totalTools,
   pageControls,
   commentarySegments,
   streaming,
   waitingForApproval = false,
+  terminalState,
   answerStarted = false,
   runId,
   conversationId,
@@ -1186,17 +1331,21 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
   onOpenChange,
   onPanelOpen,
   timelineLoadState = 'idle',
+  timelineLoadError,
   timelineHasMore = false,
   onLoadMoreTimeline,
   onRetryTimelineLoad,
 }: {
   items: readonly InlineProcessItem[];
   steps?: readonly ExecutionProcessStep[];
+  fileChanges?: readonly FileChangeItem[];
   totalFailedTools?: number;
+  totalTools?: number;
   pageControls?: ReactNode;
   commentarySegments?: readonly CommentaryTimelineSegment[];
   streaming?: boolean;
   waitingForApproval?: boolean;
+  terminalState?: 'failed' | 'cancelled' | 'paused';
   answerStarted?: boolean;
   runId?: string;
   conversationId?: string;
@@ -1226,6 +1375,7 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
   /** Lazy detail seam: invoked once when this run's folded panel first opens. */
   onPanelOpen?: () => void;
   timelineLoadState?: 'idle' | 'loading' | 'loaded' | 'error';
+  timelineLoadError?: string;
   /** 保留给调用方与测试；面板不再展示补页进度（补页是静默后台行为）。 */
   timelineLoadedCount?: number;
   timelineTotalSegments?: number;
@@ -1233,6 +1383,15 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
   onLoadMoreTimeline?: () => void;
   onRetryTimelineLoad?: () => void;
 }) {
+  const fileChangesContext = useMemo(() => {
+    const byCall = new Map<string, FileChangeItem[]>();
+    for (const change of fileChanges ?? []) {
+      if (!change.toolCallId) continue;
+      const group = byCall.get(change.toolCallId) ?? [];
+      group.push(change); byCall.set(change.toolCallId, group);
+    }
+    return { byCall, conversationId };
+  }, [fileChanges, conversationId]);
   const orderedItems = useMemo<readonly InlineProcessItem[]>(() => {
     const stepsById = new Map(steps?.map((step) => [step.id, step]));
     const visibleItems = items
@@ -1325,11 +1484,12 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
         if (item.kind !== 'tool') continue;
         const itemKey = processItemKey(item, index);
         if (userToggledItemKeysRef.current.has(itemKey)) continue;
-        if (toolCallExpandedByDefault || (toolStatusOf(item) === 'running' && Boolean(item.result)))
+        if (toolCallExpandedByDefault || toolStatusOf(item) === 'failed' ||
+          (toolStatusOf(item) === 'running' && (Boolean(item.result) || item.progressOutput !== undefined)))
           next.add(itemKey);
         else next.delete(itemKey);
       }
-      return next;
+      return sameStringSet(next, current) ? current : next;
     });
   }, [orderedItems, runId, toolCallExpandedByDefault]);
   const toggleItem = useCallback((itemKey: string) => {
@@ -1344,7 +1504,7 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
   const [clockNow, setClockNow] = useState(() => Date.now());
   // 面板层唯一的秒级时钟，驱动总耗时、每行运行耗时和停滞分级。运行中就必须
   // 走（不能再要求 startedAt）——工具行的耗时只依赖各自的 startedAt。
-  const ticking = Boolean(streaming) && !completedAt;
+  const ticking = Boolean(streaming) && !completedAt && !terminalState;
   // 本次挂载中面板是否活过：活过再 settle 时冻结显示最后的计时；而挂载时
   // 就已 settle 的历史消息里若残留 status=running 的工具行，绝不能拿当前
   // 时间对着几天前的 startedAt 计时（会显示几百小时）。
@@ -1360,8 +1520,11 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
   // A completed turn only folds when it has a real final answer beside the
   // trace. Commentary-only and terminal-only turns stay open so the entire
   // assistant response never collapses into an empty-looking header.
-  const automaticPanelOpen = defaultOpen ?? Boolean(streaming || !answerStarted);
-  const { open: disclosedPanelOpen, toggle: togglePanel } = useAutoDisclosure({
+  const hasFailedResult = orderedItems.some((item) => item.kind === 'tool' && toolStatusOf(item) === 'failed');
+  const [readingActivity, setReadingActivity] = useState(false);
+  const activityState = agentActivityState({ streaming, waitingForApproval, terminalState, answerStarted, completedAt });
+  const automaticPanelOpen = defaultOpen ?? Boolean(streaming || waitingForApproval || terminalState || readingActivity || !answerStarted || hasFailedResult);
+  const { open: disclosedPanelOpen, toggle: togglePanel, keepOpen: keepPanelOpen } = useAutoDisclosure({
     autoOpen: automaticPanelOpen,
     resetKey: runId,
   });
@@ -1398,14 +1561,30 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
       return next;
     });
   }, []);
+  const keepItemOpen = useCallback((itemKey: string) => {
+    userToggledItemKeysRef.current.add(itemKey);
+    setExpandedItemKeys((current) => current.has(itemKey) ? current : new Set([...current, itemKey]));
+    keepPanelOpen();
+    const block = timelineBlocks.find((candidate) => candidate.kind === 'tools' &&
+      candidate.entries.some((entry) => processItemKey(entry.item, entry.index) === itemKey));
+    if (block?.kind === 'tools') {
+      userToggledToolRunsRef.current.add(block.key);
+      setOpenToolRuns((current) => current.has(block.key) ? current : new Set([...current, block.key]));
+    }
+  }, [keepPanelOpen, timelineBlocks]);
   const notifiedOpenRunRef = useRef<string>();
   useEffect(() => {
-    if (!panelOpen || !onPanelOpen) return;
+    if (!panelOpen) {
+      notifiedOpenRunRef.current = undefined;
+      return;
+    }
+    // Live events already provide the running turn; read its durable history after completion.
+    if (streaming || !onPanelOpen) return;
     const key = runId ?? 'anonymous-run';
     if (notifiedOpenRunRef.current === key) return;
     notifiedOpenRunRef.current = key;
     onPanelOpen();
-  }, [onPanelOpen, panelOpen, runId]);
+  }, [onPanelOpen, panelOpen, runId, streaming]);
   useEffect(() => {
     if (!panelOpen || timelineLoadState !== 'loaded' || !timelineHasMore || !onLoadMoreTimeline)
       return;
@@ -1428,8 +1607,8 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
   // Activity still reads hidden Think rows so the bottom status can show the
   // latest reasoning line after the user turns the Think switch off.
   const activity = deriveCurrentActivity(items, {
-    streaming: Boolean(streaming),
-    waitingForApproval,
+    streaming: Boolean(streaming) && !terminalState,
+    waitingForApproval: waitingForApproval && !terminalState,
   });
   const fingerprint = useMemo(() => activityFingerprint(orderedItems), [orderedItems]);
   const [lastProgressAt, setLastProgressAt] = useState(() => Date.now());
@@ -1453,13 +1632,18 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
     !showWaiting &&
     !agentTaskContent &&
     !supplementalContent &&
+    !terminalState &&
     !hasHiddenThinking
   ) {
     return null;
   }
+  const recordedToolCount = totalTools ?? new Set(orderedItems.flatMap((item, index) =>
+    item.kind === 'tool' ? [processItemKey(item, index)] : []
+  )).size;
   const processMeta =
-    failedToolCount > 0 || durationLabel ? (
-      <>
+    failedToolCount > 0 || durationLabel || recordedToolCount > 0 ? (
+      <span className="shell-agent-activity__metrics">
+        {recordedToolCount > 0 ? <span className="shell-agent-activity__count">{recordedToolCount} 次工具调用</span> : null}
         {failedToolCount > 0 ? (
           <>
             <span className="shell-process-panel__separator" aria-hidden="true">
@@ -1476,7 +1660,7 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
             <span className="shell-process-panel__elapsed">{durationLabel}</span>
           </>
         ) : null}
-      </>
+      </span>
     ) : null;
   const renderProcessEntry = (item: InlineProcessItem, index: number) => {
     // A delegated child Agent keeps its card at the exact point of the timeline
@@ -1487,22 +1671,26 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
     }
     return (
       <ProcessEntry
-        key={processItemKey(item, index)}
+        key={`${runId ?? 'current'}:${processItemKey(item, index)}`}
         item={item}
         index={index}
-        streaming={streaming}
+        streaming={streaming && !terminalState && !waitingForApproval}
         liveClock={liveClock}
         now={clockNow}
         expandedItemKeys={expandedItemKeys}
         toggleItem={toggleItem}
+        keepItemOpen={keepItemOpen}
         onOpenChange={onOpenChange}
       />
     );
   };
   return (
     <ConversationContentScope.Provider value={conversationId}>
+      <ToolFileChangesContext.Provider value={fileChangesContext}>
+      <AgentActivityStateContext.Provider value={activityState}>
       <section
-        className="shell-process-panel shell-harness-trace"
+        className="shell-process-panel shell-harness-trace shell-agent-activity-panel"
+        data-activity-state={activityState}
         data-testid="process-panel"
         data-streaming={streaming ? '1' : '0'}
         data-failed={failedToolCount > 0 ? 'true' : 'false'}
@@ -1517,6 +1705,7 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
               onClick={togglePanel}
             >
               <span className="shell-process-panel__title">执行过程</span>
+              <AgentActivityStatus state={activityState} hasFailures={failedToolCount > 0} />
               {processMeta}
               <ChevronDown
                 size={13}
@@ -1527,6 +1716,7 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
           ) : (
             <div className="shell-process-panel__heading">
               <span className="shell-process-panel__title">执行过程</span>
+              <AgentActivityStatus state={activityState} hasFailures={failedToolCount > 0} />
               {processMeta}
             </div>
           )}
@@ -1543,6 +1733,7 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
         ) : null}
         {panelOpen ? (
           <div className="shell-process-panel__body" data-testid="process-panel-body">
+            <AgentActivityViewport state={activityState} runId={runId} onInspect={keepPanelOpen} onReadingChange={setReadingActivity}>
             {pageControls}
             {agentTaskContent ? (
               <section className="shell-process-agent-tasks" data-testid="process-agent-tasks">
@@ -1576,21 +1767,27 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
             {/* 补页是后台行为：过程中不插任何「正在读取 / 继续加载」提示（NewMax 从
                 不暴露这一步，读者只该看到步骤本身）。只有真的读失败才给一次重试。 */}
             {timelineLoadState === 'error' ? (
-              <button
-                type="button"
-                className="shell-process-panel__lazy-retry"
-                onClick={onRetryTimelineLoad}
-              >
-                <RotateCw size={12} aria-hidden="true" />
-                <span>重新加载完整执行过程</span>
-              </button>
+              <div className="shell-process-panel__load-error" role="status" title={timelineLoadError}>
+                <span>{timelineLoadFailureMessage(timelineLoadError)}，已显示的步骤会保留。</span>
+                <button
+                  type="button"
+                  className="shell-process-panel__lazy-retry"
+                  onClick={onRetryTimelineLoad}
+                >
+                  <RotateCw size={12} aria-hidden="true" />
+                  <span>重新加载完整执行过程</span>
+                </button>
+              </div>
             ) : null}
+            </AgentActivityViewport>
           </div>
         ) : null}
         {activity ? (
           <ProcessActivityRow activity={activity} stall={stall} elapsed={durationLabel} />
         ) : null}
       </section>
+      </AgentActivityStateContext.Provider>
+      </ToolFileChangesContext.Provider>
     </ConversationContentScope.Provider>
   );
 });

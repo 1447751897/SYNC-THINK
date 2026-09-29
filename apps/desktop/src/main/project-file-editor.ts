@@ -4,6 +4,7 @@ import {
   access,
   mkdir,
   readFile,
+  readdir,
   realpath,
   rename,
   rm,
@@ -13,19 +14,33 @@ import {
 import { basename, dirname, isAbsolute, resolve, win32 } from 'node:path';
 import { isPathWithinRoot } from '@sync-think/shared/node-paths';
 
-const MAX_READ_BYTES = 512 * 1024;
-const MAX_WRITE_BYTES = 1024 * 1024;
+const MAX_READ_BYTES = 2 * 1024 * 1024;
+const MAX_WRITE_BYTES = MAX_READ_BYTES;
 
 export interface ProjectFileReadRequest {
   root: string;
   path: string;
 }
 
+export interface ProjectDirectoryEntry {
+  name: string;
+  path: string;
+  kind: 'file' | 'dir';
+}
+
 export interface ProjectFileReadResult {
+  directoryEntries?: ProjectDirectoryEntry[];
+  directoryTruncated?: boolean;
   path: string;
   content: string | null;
   error: string | null;
-  errorCode: 'file_not_found' | 'file_not_regular' | 'file_too_large' | 'file_binary' | 'file_read_failed' | null;
+  errorCode:
+    | 'file_not_found'
+    | 'file_not_regular'
+    | 'file_too_large'
+    | 'file_binary'
+    | 'file_read_failed'
+    | null;
   mtimeMs: number | null;
   size: number | null;
 }
@@ -66,6 +81,7 @@ export interface ProjectFileWatchOptions {
 }
 
 interface FileMetadata {
+  kind?: 'file' | 'dir' | 'other';
   exists: boolean;
   mtimeMs: number | null;
   size: number | null;
@@ -130,7 +146,13 @@ async function resolveProjectTarget(
 async function fileMetadata(target: string): Promise<FileMetadata> {
   try {
     const info = await stat(target);
-    if (!info.isFile()) return { exists: false, mtimeMs: null, size: null };
+    if (!info.isFile())
+      return {
+        exists: false,
+        kind: info.isDirectory() ? 'dir' : 'other',
+        mtimeMs: null,
+        size: null,
+      };
     return { exists: true, mtimeMs: info.mtimeMs, size: info.size };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
@@ -164,14 +186,34 @@ export async function readProjectFile(
     const resolved = await resolveProjectTarget(request, false);
     normalizedPath = resolved.normalizedPath;
     const metadata = await fileMetadata(resolved.target);
-    if (!metadata.exists) return readError(normalizedPath, '不是普通文件', 'file_not_regular');
+    if (metadata.kind === 'dir') {
+      const items = await readdir(resolved.target, { withFileTypes: true });
+      const entries = items
+        .filter((item) => item.isDirectory() || item.isFile())
+        .sort(
+          (a, b) =>
+            Number(b.isDirectory()) - Number(a.isDirectory()) || a.name.localeCompare(b.name),
+        );
+      return {
+        path: normalizedPath,
+        content: null,
+        error: null,
+        errorCode: null,
+        mtimeMs: null,
+        size: null,
+        directoryEntries: entries.slice(0, 500).map((item) => ({
+          name: item.name,
+          path:
+            (normalizedPath === '.' ? '' : normalizedPath.replace(/\/+$/, '') + '/') + item.name,
+          kind: item.isDirectory() ? 'dir' : 'file',
+        })),
+        directoryTruncated: entries.length > 500,
+      };
+    }
+    if (!metadata.exists)
+      return readError(normalizedPath, '该路径不是可预览的文本文件', 'file_not_regular');
     if ((metadata.size ?? 0) > MAX_READ_BYTES) {
-      return readError(
-        normalizedPath,
-        '文件超过 512KB，暂不支持编辑',
-        'file_too_large',
-        metadata,
-      );
+      return readError(normalizedPath, '文件超过 2MB，暂不支持编辑', 'file_too_large', metadata);
     }
     const content = await readFile(resolved.target, 'utf8');
     if (content.includes('\0')) {
@@ -187,7 +229,9 @@ export async function readProjectFile(
     };
   } catch (error) {
     if (isSecurityError(error)) throw error;
-    const notFound = error instanceof Error && error.message === 'file_not_found';
+    const notFound =
+      (error instanceof Error && error.message === 'file_not_found') ||
+      (error as NodeJS.ErrnoException).code === 'ENOENT';
     return readError(
       normalizedPath,
       notFound ? '文件不存在' : '读取失败',
@@ -229,7 +273,7 @@ export async function writeProjectFile(
       return writeResult(normalizedPath, {
         ok: false,
         conflict: false,
-        error: '文件超过 1MB，暂不支持保存',
+        error: '文件超过 2MB，暂不支持保存',
         errorCode: 'file_too_large',
       });
     }

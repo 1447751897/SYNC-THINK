@@ -139,6 +139,47 @@ async function hello(
 }
 
 describe('mcp commands (§9.3 authz skeleton)', () => {
+  it('edits MCP configuration by stable id, preserves metadata, and invalidates old tools on endpoint change', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sync-think-mcp-edit-'));
+    tempDirs.push(dir);
+    const installId = 'test-mcp-edit-' + randomBytes(8).toString('hex');
+    const session = await openPersistentRuntime({ installId, dbPath: join(dir, 'test.db'),
+      secureStoreKeyPath: join(dir, 'key.bin'), allowNoToken: true, demoProvider: new FakeProvider() });
+    await session.runtime.start();
+    const sock = await connectRuntime(installId);
+    const reader = createFrameReader(sock);
+    try {
+      await hello(sock, reader, installId);
+      const register = (payload: unknown) => writeAndRead(sock, reader, {
+        id: randomBytes(8).toString('hex'), kind: 'request', type: 'mcp.register', payload,
+      });
+      const original = await register({ name: 'BoardUI', transport: 'local-stdio', endpoint: 'node old.mjs',
+        tools: [{ name: 'inspect', description: 'Read', readOnly: true }], trusted: true,
+        timeoutMs: 60000, maxOutputBytes: 100000, notes: 'Keep this note' });
+      expect(original.error).toBeUndefined();
+      const server = (original.payload as { server: { mcpServerId: string; createdAt: string } }).server;
+      const renamed = await register({ mcpServerId: server.mcpServerId, name: 'Renamed BoardUI',
+        transport: 'local-stdio', endpoint: 'node old.mjs' });
+      expect(renamed.error).toBeUndefined();
+      expect(renamed.payload).toMatchObject({ updated: true, server: {
+        mcpServerId: server.mcpServerId, createdAt: server.createdAt, name: 'Renamed BoardUI',
+        tools: [{ name: 'inspect', readOnly: true }], timeoutMs: 60000, maxOutputBytes: 100000,
+        trusted: true, notes: 'Keep this note',
+      } });
+      const changed = await register({ mcpServerId: server.mcpServerId, name: 'BoardUI New',
+        transport: 'local-stdio', endpoint: 'node new.mjs', timeoutMs: 120000 });
+      expect(changed.error).toBeUndefined();
+      expect(changed.payload).toMatchObject({ updated: true, server: {
+        mcpServerId: server.mcpServerId, endpoint: 'node new.mjs', tools: [], timeoutMs: 120000,
+      } });
+      const missing = await register({ mcpServerId: 'missing-server', name: 'Missing', endpoint: 'node missing.mjs' });
+      expect(missing.error).toBeDefined();
+    } finally {
+      sock.destroy();
+      await session.close();
+    }
+  });
+
   it('requires exact orchestration scope for actual calls while keeping soft requests scope-optional', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'sync-think-mcp-required-scope-'));
     tempDirs.push(dir);

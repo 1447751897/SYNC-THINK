@@ -51,6 +51,7 @@ import {
   type GatewayRequestLogEntry,
 } from '@sync-think/protocol';
 import type { GatewayRoute, GatewayRunUsage, GatewayUpstreamProtocol } from './tickets.js';
+import { formatGatewayUpstreamError } from './upstream-fetch.js';
 
 /** 32 MiB cap: large image payloads are legitimate, unbounded bodies are not. */
 const REQUEST_BODY_CAP = 32 * 1024 * 1024;
@@ -509,8 +510,8 @@ async function handleRequest(
     }
     await translateOpenAIToAnthropic(response, body as unknown as OpenAIChatRequest, context);
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'gateway upstream failure';
-    options.onLog?.(`gateway upstream failure: ${message}`);
+    const message = formatGatewayUpstreamError(error, [route.apiKey]);
+    options.onLog?.(`gateway upstream failure [run=${runId ?? 'external'}, kernel=${ticket?.kernelId ?? 'external'}]: ${message}`);
     context.audit = { upstreamBody: body, error: message };
     if (!response.headersSent) {
       writeJson(response, 502, { error: { type: 'api_error', message } });

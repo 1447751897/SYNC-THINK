@@ -1,3 +1,5 @@
+import { useContext } from 'react';
+import { useContextMenu, MessageContextActions, selectionContextActions, selectedContextText, copyContextText } from './ContextMenu.js';
 import {
   useDeferredValue,
   useEffect,
@@ -7,7 +9,9 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import { Check, ChevronDown, FileCode2, LoaderCircle, WrapText } from 'lucide-react';
+import { CodeBlockButton } from './CodeBlockButton.js';
+import { CodeBlockSource } from './CodeBlockSource.js';
+import { Check, ArrowDown, ChevronDown, FileCode2, LoaderCircle, WrapText } from 'lucide-react';
 import { CopyTextButton } from './CopyTextButton.js';
 import { highlightCodeLines, languageFromPath } from './code-highlight.js';
 import { useToolOutputWrap } from './tool-output-wrap.js';
@@ -58,6 +62,9 @@ export function CodeBlock({
   readingState,
   wrapControl = false,
 }: CodeBlockProps) {
+  const openContextMenu = useContextMenu();
+  const messageActions = useContext(MessageContextActions);
+  const [following, setFollowing] = useState(readingState?.following ?? true);
   const deferredCode = useDeferredValue(code);
   const writing = streaming || deferredCode !== code;
   const resolvedLanguage = language || languageFromPath(filename) || 'text';
@@ -87,6 +94,7 @@ export function CodeBlock({
     if (!readingState) return;
     setExpanded(readingState.expanded);
     followingRef.current = readingState.following;
+    setFollowing(readingState.following);
     if (viewportRef.current) {
       viewportRef.current.scrollTop = readingState.scrollTop;
       viewportRef.current.scrollLeft = readingState.scrollLeft;
@@ -104,7 +112,19 @@ export function CodeBlock({
 
   const pauseFollowing = () => {
     followingRef.current = false;
+    setFollowing(false);
     if (readingState) readingState.following = false;
+  };
+
+  const resumeFollowing = () => {
+    followingRef.current = true;
+    setFollowing(true);
+    const viewport = viewportRef.current;
+    if (viewport) viewport.scrollTop = viewport.scrollHeight;
+    if (readingState) {
+      readingState.following = true;
+      readingState.scrollTop = viewport?.scrollTop ?? 0;
+    }
   };
 
   const toggleExpanded = () => {
@@ -114,8 +134,20 @@ export function CodeBlock({
 
   return (
     <div
-      className={`shell-md-code${canExpand ? ' is-expandable' : ''} ${expanded ? 'is-expanded' : 'is-collapsed'} shell-agent-code`}
+      className={`shell-md-code${canExpand ? ' is-expandable' : ''} ${expanded ? 'is-expanded' : 'is-collapsed'} shell-agent-code shell-beui-code`}
+      data-state={writing ? 'streaming' : 'complete'}
+      aria-busy={writing}
       data-language={resolvedLanguage}
+      onContextMenu={event => {
+        if (event.currentTarget.closest('[data-testid="inline-process-tool"]')) return;
+        pauseFollowing();
+        const selection = selectedContextText(event.currentTarget);
+        openContextMenu(event, [
+          ...selectionContextActions(selection, messageActions.quote),
+          { id: 'copy-code', label: writing ? '复制当前代码' : '复制代码', separator: !!selection, run: () => copyContextText(code) },
+          ...(messageActions.quote ? [{ id: 'quote-code', label: '引用代码到输入框', run: () => messageActions.quote?.(code, '引用代码') }] : []),
+        ]);
+      }}
       data-writing={writing ? 'true' : 'false'}
       data-wrap={wraps ? 'true' : 'false'}
     >
@@ -139,12 +171,12 @@ export function CodeBlock({
               ) : (
                 <Check size={12} aria-hidden="true" />
               )}
-              {writing ? streamingLabel : '已完成'}
+              {writing ? streamingLabel : '就绪'}
             </span>
           ) : null}
-          <CopyTextButton text={code} label={copyLabel} />
+          <CopyTextButton text={code} label={copyLabel} compact />
           {wrapControl ? (
-            <button
+            <CodeBlockButton
               type="button"
               className="shell-md-code__action shell-md-code__wrap"
               aria-pressed={wraps}
@@ -153,10 +185,10 @@ export function CodeBlock({
               onClick={toggleWrap}
             >
               <WrapText size={13} aria-hidden="true" />
-            </button>
+            </CodeBlockButton>
           ) : null}
           {canExpand ? (
-            <button
+            <CodeBlockButton
               type="button"
               className="shell-md-code__action shell-md-code__collapse"
               onClick={toggleExpanded}
@@ -164,7 +196,7 @@ export function CodeBlock({
               aria-label={expanded ? '收起代码' : `${expandLabel}代码`}
             >
               <ChevronDown size={13} aria-hidden="true" />
-            </button>
+            </CodeBlockButton>
           ) : null}
         </div>
       </div>
@@ -182,6 +214,7 @@ export function CodeBlock({
             const nearBottom =
               viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <= 24;
             followingRef.current = nearBottom;
+            setFollowing(nearBottom);
             if (readingState) {
               readingState.following = nearBottom;
               readingState.scrollTop = viewport.scrollTop;
@@ -195,40 +228,31 @@ export function CodeBlock({
             if (['ArrowUp', 'PageUp', 'Home'].includes(event.key)) pauseFollowing();
           }}
         >
-          <pre className="shell-agent-code__source">
-            <code className={`hljs language-${resolvedLanguage}`}>
-              {lines.map((line, index) => (
-                <span
-                  className="shell-agent-code__line"
-                  data-code-line={index + 1}
-                  data-highlighted={focusedLines.has(index + 1) ? 'true' : undefined}
-                  key={index}
-                >
-                  <span className="shell-agent-code__number" aria-hidden="true">
-                    {index + 1}
-                  </span>
-                  {highlighted ? (
-                    <span
-                      className="shell-agent-code__text"
-                      dangerouslySetInnerHTML={{ __html: highlighted[index] || ' ' }}
-                    />
-                  ) : (
-                    <span className="shell-agent-code__text">{line || ' '}</span>
-                  )}
-                  {'\n'}
-                </span>
-              ))}
-            </code>
-          </pre>
+          <CodeBlockSource
+            lines={lines}
+            highlighted={highlighted}
+            language={resolvedLanguage}
+            focusedLines={focusedLines}
+          />
         </div>
       </div>
+      {writing && !following ? (
+        <CodeBlockButton
+          type="button"
+          className="shell-beui-code__follow"
+          onClick={resumeFollowing}
+        >
+          <ArrowDown size={12} aria-hidden="true" />
+          跟随最新内容
+        </CodeBlockButton>
+      ) : null}
       {totalLines > PREVIEW_LINE_LIMIT ? (
         <div className="shell-agent-code__limit">
           仅预览前 {PREVIEW_LINE_LIMIT} 行；复制可获取完整内容。
         </div>
       ) : null}
       {canExpand ? (
-        <button
+        <CodeBlockButton
           type="button"
           className="shell-md-code__expand"
           onClick={toggleExpanded}
@@ -236,7 +260,7 @@ export function CodeBlock({
         >
           <ChevronDown size={13} aria-hidden="true" />
           {expanded ? '收起代码' : expandLabel}
-        </button>
+        </CodeBlockButton>
       ) : null}
     </div>
   );

@@ -174,6 +174,12 @@ const BUILT_IN_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
       properties: {
         command: { type: 'string' },
         args: { type: 'array', items: { type: 'string' }, maxItems: 128 },
+        description: {
+          type: 'string',
+          maxLength: 240,
+          description:
+            'Optional one-line explanation shown beside the command in the execution timeline.',
+        },
         cwd: { type: 'string' },
       },
     },
@@ -1514,7 +1520,7 @@ function validateToolArguments(name: string, args: Record<string, JsonValue>): v
           'wsl.exe',
         ]).has(basename(command).toLowerCase());
       if (
-        !only('command', 'args', 'cwd') ||
+        !only('command', 'args', 'description', 'cwd') ||
         typeof command !== 'string' ||
         !command.trim() ||
         command.length > 4_096 ||
@@ -1526,6 +1532,8 @@ function validateToolArguments(name: string, args: Record<string, JsonValue>): v
             !commandArgs.every(
               (arg) => typeof arg === 'string' && arg.length <= 16_384 && !arg.includes('\0'),
             ))) ||
+        (typeof args.description !== 'undefined' &&
+          (typeof args.description !== 'string' || args.description.length > 240)) ||
         (cwd !== undefined && !validPath(cwd))
       ) {
         invalidToolArguments(name);

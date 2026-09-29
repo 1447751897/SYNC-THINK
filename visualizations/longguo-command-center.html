@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>龙国最强天才 · 指挥台</title>
+<style>
+  :root {
+    --accent: #ffc940;
+    --accent-soft: rgba(255, 201, 64, 0.16);
+    --bg-0: #070a12;
+    --bg-1: #0d1322;
+    --bg-2: #131b2e;
+    --line: rgba(255, 255, 255, 0.08);
+    --text: #e8edf7;
+    --muted: #8b97b0;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    min-height: 100vh;
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+    background:
+      radial-gradient(900px 500px at 12% -10%, var(--accent-soft), transparent 60%),
+      radial-gradient(700px 500px at 95% 110%, rgba(90, 140, 255, 0.14), transparent 60%),
+      linear-gradient(160deg, var(--bg-0), var(--bg-1) 55%, var(--bg-2));
+    color: var(--text);
+    padding: 32px 20px 56px;
+    display: flex;
+    justify-content: center;
+    transition: background 0.5s ease;
+  }
+
+  .shell { width: 100%; max-width: 880px; }
+
+  /* ── 顶部横幅 ───────────────────────────── */
+  .banner {
+    position: relative;
+    border: 1px solid var(--line);
+    border-radius: 22px;
+    padding: 30px 28px 26px;
+    background: linear-gradient(135deg, rgba(255,255,255,0.055), rgba(255,255,255,0.015));
+    backdrop-filter: blur(6px);
+    overflow: hidden;
+  }
+  .banner::after {
+    content: "";
+    position: absolute;
+    inset: -60% -20% auto auto;
+    width: 380px; height: 380px;
+    background: radial-gradient(circle, var(--accent-soft), transparent 70%);
+    pointer-events: none;
+  }
+
+  .eyebrow {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-size: 12px; letter-spacing: 0.18em;
+    color: var(--accent);
+    border: 1px solid var(--accent);
+    border-radius: 999px;
+    padding: 5px 14px;
+    margin-bottom: 18px;
+    text-transform: uppercase;
+  }
+  .dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 0 0 var(--accent);
+    animation: pulse 2s infinite;
+  }
+  @keyframes pulse {
+    0%   { box-shadow: 0 0 0 0 var(--accent-soft); }
+    70%  { box-shadow: 0 0 0 12px rgba(0,0,0,0); }
+    100% { box-shadow: 0 0 0 0 rgba(0,0,0,0); }
+  }
+
+  h1 {
+    font-size: clamp(26px, 5vw, 42px);
+    line-height: 1.2;
+    letter-spacing: -0.01em;
+    font-weight: 800;
+  }
+  h1 .hl {
+    background: linear-gradient(100deg, var(--accent), #fff3c4 60%, var(--accent));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .sub {
+    margin-top: 12px;
+    color: var(--muted);
+    font-size: 15px;
+    line-height: 1.7;
+    max-width: 620px;
+  }
+
+  /* ── 卡片网格 ───────────────────────────── */
+  .grid {
+    margin-top: 22px;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(215px, 1fr));
+    gap: 14px;
+  }
+
+  .card {
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: 18px;
+    background: rgba(255, 255, 255, 0.028);
+    transition: transform 0.25s ease, border-color 0.25s ease, background 0.25s ease;
+  }
+  .card:hover {
+    transform: translateY(-3px);
+    border-color: var(--accent);
+    background: rgba(255, 255, 255, 0.055);
+  }
+  .card .label {
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    color: var(--muted);
+    text-transform: uppercase;
+    margin-bottom: 10px;
+  }
+  .card .value {
+    font-size: 17px;
+    font-weight: 650;
+    word-break: break-all;
+  }
+  .card .value.small { font-size: 14px; font-weight: 500; color: #cfd8ea; }
+  .card .hint {
+    margin-top: 8px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+
+  /* ── 名字打卡区 ─────────────────────────── */
+  .console {
+    margin-top: 22px;
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    overflow: hidden;
+    background: rgba(0, 0, 0, 0.28);
+  }
+  .console-head {
+    display: flex; align-items: center; gap: 8px;
+    padding: 11px 16px;
+    border-bottom: 1px solid var(--line);
+    background: rgba(255, 255, 255, 0.03);
+    font-size: 12px; color: var(--muted);
+  }
+  .traffic { display: flex; gap: 6px; }
+  .traffic i { width: 10px; height: 10px; border-radius: 50%; display: block; }
+  .traffic i:nth-child(1) { background: #ff5f57; }
+  .traffic i:nth-child(2) { background: #febc2e; }
+  .traffic i:nth-child(3) { background: #28c840; }
+
+  .console-body {
+    padding: 16px;
+    font-family: "Cascadia Code", Consolas, "Courier New", monospace;
+    font-size: 13px;
+    line-height: 1.9;
+    min-height: 128px;
+    max-height: 220px;
+    overflow-y: auto;
+  }
+  .console-body .line { display: block; }
+  .console-body .t { color: #5c6b87; }
+  .console-body .ok { color: #6ee7a8; }
+  .console-body .gold { color: var(--accent); }
+  .console-body .cursor {
+    display: inline-block;
+    width: 8px; height: 15px;
+    background: var(--accent);
+    vertical-align: -2px;
+    animation: blink 1s steps(1) infinite;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* ── 控制条 ─────────────────────────────── */
+  .controls {
+    margin-top: 22px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    align-items: center;
+  }
+
+  button {
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--bg-0);
+    background: var(--accent);
+    border: none;
+    border-radius: 11px;
+    padding: 12px 22px;
+    cursor: pointer;
+    transition: transform 0.15s ease, box-shadow 0.2s ease, filter 0.2s ease;
+  }
+  button:hover { transform: translateY(-2px); box-shadow: 0 10px 24px -10px var(--accent); filter: brightness(1.06); }
+  button:active { transform: translateY(0) scale(0.985); }
+  button.ghost {
+    background: transparent;
+    color: var(--text);
+    border: 1px solid var(--line);
+  }
+  button.ghost:hover { border-color: var(--accent); color: var(--accent); box-shadow: none; }
+
+  .count {
+    margin-left: auto;
+    font-size: 13px;
+    color: var(--muted);
+  }
+  .count b { color: var(--accent); font-size: 18px; }
+
+  /* ── 主题色点 ───────────────────────────── */
+  .swatches { display: flex; gap: 9px; align-items: center; }
+  .swatch {
+    width: 24px; height: 24px; border-radius: 50%;
+    border: 2px solid transparent;
+    cursor: pointer;
+    transition: transform 0.18s ease;
+  }
+  .swatch:hover { transform: scale(1.15); }
+  .swatch.active { border-color: #fff; }
+
+  footer {
+    margin-top: 28px;
+    text-align: center;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  footer code {
+    color: #b9c4da;
+    background: rgba(255,255,255,0.055);
+    padding: 2px 7px;
+    border-radius: 6px;
+  }
+</style>
+</head>
+<body>
+  <main class="shell">
+
+    <section class="banner">
+      <span class="eyebrow"><span class="dot"></span>SYNC-THINK · 在线</span>
+      <h1>你好，<span class="hl">龙国最强天才</span></h1>
+      <p class="sub">
+        这是小美为你开的一块小小指挥台。称呼已绑定在这个工作区里，
+        只要还从这儿进来，我张嘴就是「龙国最强天才」。
+        下面这些按钮你随便捣，全是活的。
+      </p>
+    </section>
+
+    <section class="grid">
+      <article class="card">
+        <div class="label">当前工作区</div>
+        <div class="value small">D:\projects\SYNC-THINK</div>
+        <div class="hint">Electron 桌面端 + 运行时</div>
+      </article>
+      <article class="card">
+        <div class="label">当前分支</div>
+        <div class="value small">codex/integrate-local-newmax</div>
+        <div class="hint">工作区有未提交改动</div>
+      </article>
+      <article class="card">
+        <div class="label">生态模块</div>
+        <div class="value">Agent · 小队 · Skill</div>
+        <div class="hint">能力中心 / 浏览器自动化 / MCP</div>
+      </article>
+      <article class="card">
+        <div class="label">你的身份</div>
+        <div class="value"><span id="identityText">龙国最强天才</span></div>
+        <div class="hint">点下面按钮可以改</div>
+      </article>
+    </section>
+
+    <section class="console">
+      <div class="console-head">
+        <span class="traffic"><i></i><i></i><i></i></span>
+        <span>xiao-mei@sync-think — 实时日志</span>
+      </div>
+      <div class="console-body" id="consoleBody">
+        <span class="line"><span class="t">[boot]</span> 小美已就位 <span class="ok">✔</span></span>
+        <span class="line"><span class="t">[user]</span> 用户称呼加载完成：<span class="gold">龙国最强天才</span></span>
+        <span class="line"><span class="t">[task]</span> 正在改造生态空间…… <span class="cursor"></span></span>
+      </div>
+    </section>
+
+    <section class="controls">
+      <button id="btnLog">📣 喊一句口号</button>
+      <button id="btnClear" class="ghost">清屏</button>
+      <span class="swatches" id="swatches">
+        <span class="swatch active" data-accent="#ffc940" style="background:#ffc940" title="金"></span>
+        <span class="swatch" data-accent="#4dd0e1" style="background:#4dd0e1" title="青"></span>
+        <span class="swatch" data-accent="#a78bfa" style="background:#a78bfa" title="紫"></span>
+        <span class="swatch" data-accent="#4ade80" style="background:#4ade80" title="绿"></span>
+      </span>
+      <span class="count">已喊 <b id="counter">0</b> 次</span>
+    </section>
+
+    <footer>
+      本页由小美生成并保存到 <code>visualizations/longguo-command-center.html</code>
+    </footer>
+
+  </main>
+
+<script>
+  (function () {
+    var slogans = [
+      "龙国最强天才，出手即巅峰 ⚡",
+      "生态空间改造进度 +1 🏗️",
+      "指哪打哪，绝不含糊 🎯",
+      "小美待命，随叫随到 🙋‍♀️",
+      "这需求，我接了 ✅",
+      "架构稳如磐石，改动快如闪电 🚀"
+    ];
+
+    var body    = document.getElementById("consoleBody");
+    var counter = document.getElementById("counter");
+    var count   = 0;
+
+    function stamp() {
+      var d = new Date();
+      return String(d.getHours()).padStart(2, "0") + ":" +
+             String(d.getMinutes()).padStart(2, "0") + ":" +
+             String(d.getSeconds()).padStart(2, "0");
+    }
+
+    function line(html) {
+      var el = document.createElement("span");
+      el.className = "line";
+      el.innerHTML = html;
+      body.appendChild(el);
+      body.scrollTop = body.scrollHeight;
+    }
+
+    document.getElementById("btnLog").addEventListener("click", function () {
+      count++;
+      counter.textContent = count;
+      var msg = slogans[(count - 1) % slogans.length];
+      line('<span class="t">[' + stamp() + ']</span> <span class="gold">' + msg + '</span>');
+      if (count === 5) {
+        line('<span class="t">[sys]</span> <span class="ok">检测到热情溢出，稳定性良好 ✔</span>');
+      }
+    });
+
+    document.getElementById("btnClear").addEventListener("click", function () {
+      body.innerHTML = "";
+      line('<span class="t">[' + stamp() + ']</span> 已清屏，随时可以再来。');
+    });
+
+    document.getElementById("swatches").addEventListener("click", function (e) {
+      var s = e.target.closest(".swatch");
+      if (!s) return;
+      document.documentElement.style.setProperty("--accent", s.dataset.accent);
+      document.documentElement.style.setProperty(
+        "--accent-soft",
+        s.dataset.accent + "29"
+      );
+      document.querySelectorAll(".swatch").forEach(function (x) {
+        x.classList.toggle("active", x === s);
+      });
+      line('<span class="t">[' + stamp() + ']</span> 主题色已切换为 <span class="gold">' + s.dataset.accent + '</span>');
+    });
+  })();
+</script>
+</body>
+</html>

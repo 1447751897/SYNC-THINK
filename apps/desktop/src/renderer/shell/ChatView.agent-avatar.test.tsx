@@ -2,11 +2,12 @@
  * @vitest-environment jsdom
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { Conversation, Event, GlobalAgent, Message } from '@sync-think/shared';
 import { ChatView } from './ChatView.js';
 
 const runtime = {
+  rebindConversationTarget: vi.fn(),
   listConversationMessages: vi.fn(),
   openTask: vi.fn(),
 };
@@ -91,6 +92,51 @@ afterEach(() => {
 });
 
 describe('ChatView assistant identity projection', () => {
+  it('keeps empty agent chats stable when the sidebar opens another conversation at a real viewport height', async () => {
+    const height = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(600);
+    runtime.listConversationMessages.mockResolvedValue({ messages: [], hasMore: false });
+    const records = [
+      agent('data:image/png;base64,first'),
+      agent('data:image/png;base64,second', { id: 'agent-second' as GlobalAgent['id'], name: '代码探索员' }),
+    ];
+    try {
+      const view = render(<div key="first">{chat(records)}</div>);
+      await waitFor(() => expect(runtime.listConversationMessages).toHaveBeenCalled());
+      expect(screen.getByTestId('compose-identity').textContent).toBe('前端工程师');
+      view.rerender(<div key="second">{chat(records, {
+        ...conversation,
+        id: 'conversation-second' as Conversation['id'],
+        targetRef: 'agent-second',
+      })}</div>);
+      await waitFor(() => expect(screen.getByTestId('compose-identity').textContent).toBe('代码探索员'));
+      expect(screen.getByTestId('compose-input')).toBeTruthy();
+    } finally {
+      cleanup();
+      height.mockRestore();
+    }
+  });
+
+  it.each([
+    ['bot:v1:clover:preset', 'clover'],
+    ['gen:v1:hex:green', 'hexagon'],
+  ])('renders %s consistently in the reply and composer', async (avatar, shape) => {
+    render(chat([agent(avatar)]));
+    const answer = await screen.findByText('头像应该与智能体保持一致');
+    const messageRow = answer.closest('[data-message-id]');
+    await waitFor(() => {
+      expect(messageRow?.querySelector('canvas')?.getAttribute('data-bot-avatar')).toBe(shape);
+      expect(
+        screen
+          .getByTestId('compose-identity')
+          .querySelector('canvas')
+          ?.getAttribute('data-bot-avatar'),
+      ).toBe(shape);
+    });
+    expect(messageRow?.querySelector('[data-animated]')?.getAttribute('data-animated')).toBe(
+      'false',
+    );
+  });
+
   it('renders the agent avatar beside each assistant reply while compose shows the live avatar', async () => {
     const avatar = 'data:image/png;base64,frontend-avatar-v1';
     render(chat([agent(avatar)]));
@@ -98,9 +144,7 @@ describe('ChatView assistant identity projection', () => {
     const answer = await screen.findByText('头像应该与智能体保持一致');
     const messageRow = answer.closest('[data-message-id]');
     expect(messageRow).toBeTruthy();
-    expect(
-      within(messageRow as HTMLElement).getByRole('img', { name: '前端工程师' }),
-    ).toBeTruthy();
+    expect(within(messageRow as HTMLElement).getByRole('img', { name: '前端工程师' })).toBeTruthy();
     expect(messageRow?.querySelector('.shell-ai-avatar')).toBeNull();
     expect(within(messageRow as HTMLElement).getByText('前端工程师')).toBeTruthy();
 
@@ -126,9 +170,7 @@ describe('ChatView assistant identity projection', () => {
       ).toBe(nextAvatar);
     });
     const messageRow = screen.getByText('头像应该与智能体保持一致').closest('[data-message-id]');
-    expect(
-      within(messageRow as HTMLElement).getByRole('img', { name: '前端工程师' }),
-    ).toBeTruthy();
+    expect(within(messageRow as HTMLElement).getByRole('img', { name: '前端工程师' })).toBeTruthy();
     expect(messageRow?.querySelector('.shell-ai-avatar')).toBeNull();
   });
 
@@ -179,4 +221,21 @@ describe('ChatView assistant identity projection', () => {
     expect(within(messageRow as HTMLElement).queryByRole('img')).toBeNull();
     expect(messageRow?.querySelector('.shell-ai-avatar')).toBeNull();
   });
+});
+
+
+it.each(['model', 'agent', 'team'] as const)('shows a passive identity label in a %s conversation', async (track) => {
+  runtime.rebindConversationTarget.mockClear();
+  render(chat([agent('bot:v1:clover:preset')], { ...conversation, track }));
+  const label = screen.getByTestId('compose-identity');
+  expect(label.tagName).toBe('SPAN');
+  expect(label.getAttribute('tabindex')).toBeNull();
+  expect(label.getAttribute('aria-haspopup')).toBeNull();
+  expect(label.getAttribute('aria-expanded')).toBeNull();
+  fireEvent.click(label);
+  fireEvent.keyDown(label, { key: 'Enter' });
+  fireEvent.keyDown(label, { key: ' ' });
+  expect(screen.queryByRole('menu')).toBeNull();
+  expect(runtime.rebindConversationTarget).not.toHaveBeenCalled();
+  await screen.findByText('头像应该与智能体保持一致');
 });

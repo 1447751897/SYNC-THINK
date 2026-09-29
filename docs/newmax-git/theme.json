@@ -1,0 +1,64 @@
+{
+  "_source": "D:/tools/newmax/resources/app.asar → out/renderer/assets/globals-*.css",
+  "_note": "从 NewMax 的 CSS 中提取的 --ds-* 设计系统变量。值按 [light, dark] 归一。",
+  "brand": {
+    "--ds-brand-primary": { "light": "#2d4739", "dark": "#36d385" },
+    "--ds-brand-primary-text": { "light": "rgba(255,255,255,0.9)", "dark": "rgba(0,0,0,0.9)" },
+    "--ds-accent": { "light": "#8c7851", "dark": "#36d385" },
+    "--ds-accent-text": { "light": "rgba(255,255,255,0.9)", "dark": "rgba(0,0,0,0.9)" },
+    "--ds-action-primary": { "light": "var(--ds-brand-primary)", "dark": "var(--ds-brand-primary)" },
+    "--ds-action-primary-text": { "light": "var(--ds-brand-primary-text)", "dark": "var(--ds-brand-primary-text)" },
+    "--ds-selection-bg": { "light": "#2d4739d9", "dark": "#36d385d9" }
+  },
+  "surfaces": {
+    "--ds-surface-100": { "light": "#ffffff", "dark": "#191a1a" },
+    "--ds-surface-200": { "light": "#faf9f5", "dark": "#1e1f1f" },
+    "--ds-surface-300": { "light": "#f6f4ef", "dark": "#252726" },
+    "--ds-surface-400": { "light": "#f2eee6", "dark": "#2a2d2b" },
+    "--ds-surface-input": { "light": "var(--ds-surface-100)", "dark": "var(--ds-surface-300)" },
+    "--ds-popover": { "light": "var(--ds-surface-100)", "dark": "var(--ds-surface-300)" },
+    "--ds-on-surface": { "light": "rgba(55,61,58,0.06)", "dark": "rgba(168,184,176,0.08)" },
+    "--ds-on-surface-active": { "light": "rgba(55,61,58,0.08)", "dark": "rgba(168,184,176,0.16)" },
+    "--ds-pill-bg": { "light": "color-mix(in srgb, var(--ds-brand-primary) 12%, transparent)", "dark": "color-mix(in srgb, var(--ds-brand-primary) 8%, transparent)" }
+  },
+  "workbench": {
+    "_note": "Git 面板所在的工作台容器配色，直接可用",
+    "--ds-workbench-surface": { "light": "#c9c0ba", "dark": "#2c2627" },
+    "--ds-workbench-content-surface": { "light": "#d8d2cc", "dark": "#352e2f" },
+    "--ds-sidebar-surface": { "light": "#d8d2cc", "dark": "#352e2f" },
+    "--ds-tab-strip-surface": { "light": "#e8e4dd", "dark": "#3e3536" },
+    "--ds-workspace-tab-active-surface": { "light": "#e8e4dd", "dark": "#3e3536" },
+    "--ds-workspace-tab-active-text": { "light": "#292628", "dark": "rgba(255,255,255,0.92)" },
+    "--ds-workspace-tab-inactive-text": { "light": "rgba(41,38,40,0.72)", "dark": "rgba(255,255,255,0.68)" },
+    "--ds-app-shell-surface": { "light": "#bcb3ae", "dark": "#241f20" },
+    "--ds-browser-canvas": { "light": "#ffffff", "dark": "#1c1c1c" }
+  },
+  "text": {
+    "--ds-text-primary": { "light": "#181b19", "dark": "rgba(255,255,255,0.9)" },
+    "--ds-text-secondary": { "light": "rgba(24,27,25,0.64)", "dark": "rgba(255,255,255,0.5)" },
+    "--ds-text-tertiary": { "light": "rgba(24,27,25,0.48)", "dark": "rgba(255,255,255,0.38)" },
+    "--ds-icon": { "light": "#7e7f7e", "dark": "#7e7f7e" },
+    "--ds-divider": { "light": "color-mix(in srgb, var(--ds-text-primary) 6%, transparent)", "dark": "color-mix(in srgb, var(--ds-text-primary) 12%, transparent)" },
+    "--ds-overlay": { "light": "rgba(0,0,0,0.3)", "dark": "rgba(0,0,0,0.6)" }
+  },
+  "semantic": {
+    "--ds-success": { "light": "#287d46", "dark": "#4ade80" },
+    "--ds-danger": { "light": "#b64a34", "dark": "#e56555" },
+    "--ds-warning": { "light": "#916300", "dark": "#e0a830" }
+  },
+  "elevation": {
+    "--ds-elevation-100": {
+      "light": "inset 0.5px 0.5px 0.5px #FFFFFF, 0px 0px 0.5px 0.5px rgba(0,0,0,0.04), 0.5px 0.5px 1px rgba(0,0,0,0.08)",
+      "dark": "0 0 0 0.5px rgba(255, 255, 255, 0.08)"
+    },
+    "--ds-elevation-300": {
+      "light": "inset 0 0 0.5px 0.5px rgba(255,255,255,0.8), 0 0 0 0.5px rgba(0,0,0,0.04), 0px 3px 6px 0px rgba(0,0,0,0.04), 0px 11px 11px 0px rgba(0,0,0,0.03), 0px 24px 15px 0px rgba(0,0,0,0.02)",
+      "dark": "inset 0 0 0 0.5px rgba(255,255,255,0.12), 0 2px 12px -6px rgba(0,0,0,0.44), 0 5px 36px -12px rgba(0,0,0,0.20)"
+    },
+    "--ds-menu-shadow": {
+      "light": "0 0 0 0.5px rgba(0,0,0,0.12), 2px 1px 5px 0 rgba(50,48,48,0.06), 8px 6px 10px 0 rgba(50,48,48,0.05), 18px 13px 13px 0 rgba(50,48,48,0.03)",
+      "dark": "inset 0 0 0 0.5px rgba(255,255,255,0.12), 0 0 9px -4px rgba(0,0,0,0.50), 0 0 32px -8px rgba(0,0,0,0.20)"
+    },
+    "--ds-chat-composer-surface": { "light": "rgba(249,248,239,0.58)", "dark": "rgba(37,31,32,0.72)" }
+  }
+}

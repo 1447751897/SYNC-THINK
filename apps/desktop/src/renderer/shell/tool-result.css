@@ -1,0 +1,96 @@
+/*!
+MIT License
+
+Copyright (c) 2026 Saurabh Chauhan
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+*/
+/* Result controls share the expanded tool's frosted surface, without another card. */
+.shell-harness-trace .shell-inline-process__tool-body .shell-beui-result .shell-beui-code {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.shell-beui-result__identity {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex-wrap: wrap;
+  font-family: var(--font-sans);
+  font-size: 11px;
+}
+.shell-beui-result__status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--process-glass-muted, var(--color-text-secondary));
+}
+.shell-beui-result[data-status='success'] .shell-beui-result__status {
+  color: var(--color-success);
+}
+.shell-beui-result[data-status='error'] .shell-beui-result__status {
+  color: var(--color-error);
+}
+.shell-beui-result__meta,
+.shell-beui-result__notice {
+  color: var(--process-glass-muted, var(--color-text-faint));
+  font-size: 11px;
+}
+.shell-beui-result__notice {
+  margin: 8px 0 0;
+}
+.shell-beui-result__empty {
+  padding: 4px 0;
+}
+.shell-beui-result__empty p {
+  margin: 10px 0 0;
+  color: var(--process-glass-muted, var(--color-text-secondary));
+  font-size: 12px;
+}
+.shell-beui-result__retry {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 4px 8px;
+  font-size: 11px;
+  color: var(--color-text);
+}
+.shell-beui-result__retry:hover {
+  background: var(--color-hover);
+}
+.shell-beui-result__spinner {
+  animation: tool-result-spin 1s linear infinite;
+}
+@keyframes tool-result-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .shell-beui-result__spinner {
+    animation: none;
+  }
+}

@@ -217,7 +217,7 @@ function partialAssistantTimeline(
 ): AssistantTurnSegment[] | undefined {
   const timeline = frame.assistantTimeline;
   const delta = frame.textDelta ?? '';
-  if (!timeline?.length || !delta || consumedCharacters >= delta.length) {
+  if (frame.provisional || !timeline?.length || !delta || consumedCharacters >= delta.length) {
     return timeline?.map((segment) => ({ ...segment }));
   }
   const matchesFrame = (segment: AssistantTurnSegment): boolean =>

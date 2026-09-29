@@ -1,0 +1,82 @@
+/* Be UI Agent Activity adaptation. MIT; see third-party/beui-code-block.LICENSE. */
+.shell-agent-activity-panel.shell-process-panel.shell-harness-trace .shell-process-panel__toggle,
+.shell-agent-activity-panel.shell-process-panel.shell-harness-trace .shell-process-panel__heading {
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  column-gap: 8px;
+  row-gap: 0;
+  max-width: calc(100% - 76px);
+}
+.shell-agent-activity-panel .shell-process-panel__think-switch { margin-left: auto; }
+.shell-agent-activity__status {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 5px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 24px;
+}
+.shell-agent-activity__status[data-state='working'] > svg { animation: shell-activity-spin 1.5s linear infinite; }
+.shell-agent-activity__status[data-state='complete']:not([data-warning]) > svg { color: var(--color-success); }
+.shell-agent-activity__status[data-state='failed'],
+.shell-agent-activity__status[data-warning] > svg { color: var(--color-error); }
+.shell-agent-activity__status[data-state='approval'] { color: var(--color-warning); }
+.shell-agent-activity__count { color: var(--color-text-faint); font-size: 12px; white-space: nowrap; }
+.shell-agent-activity { min-width: 0; width: 100%; }
+.shell-agent-activity__window { position: relative; min-width: 0; }
+.shell-agent-activity__viewport {
+  max-height: min(360px, 48vh);
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--color-text-faint) 28%, transparent) transparent;
+  overscroll-behavior-y: contain;
+  overflow-anchor: none;
+  scroll-padding: 8px;
+  border-radius: 4px;
+}
+.shell-agent-activity[data-state='working'] .shell-agent-activity__viewport { max-height: min(280px, 42vh); }
+.shell-agent-activity__viewport:focus-visible { outline: 1px solid var(--color-accent); outline-offset: 2px; }
+.shell-agent-activity__content { display: flow-root; min-width: 0; padding: 4px 8px 4px 0; }
+.shell-agent-activity__content > .shell-inline-process { margin: 0; }
+/* Inset edge hints show that the real scroll region contains earlier/later rows.
+   No overlays over code, no glass on the summary or collapsed activity rows. */
+.shell-agent-activity__window[data-above] { box-shadow: inset 0 1px color-mix(in srgb, var(--color-text-faint) 13%, transparent); }
+.shell-agent-activity__window[data-below] { border-bottom: 1px solid color-mix(in srgb, var(--color-text-faint) 13%, transparent); }
+.shell-agent-activity__resume-row {
+  display: flex; align-items: center; justify-content: flex-end; gap: 10px;
+  padding: 6px 0 2px; font-size: 11px; color: var(--color-text-faint);
+}
+.shell-agent-activity__resume {
+  display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0;
+  padding: 4px 8px; border: 1px solid var(--color-border); border-radius: 999px;
+  font: inherit; color: var(--color-text-secondary); background: var(--color-elevated);
+  cursor: pointer; transition: background 120ms ease, color 120ms ease;
+}
+.shell-agent-activity__resume:hover { color: var(--color-text); background: var(--color-hover); }
+.shell-agent-activity__resume:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.shell-agent-activity-panel .shell-inline-process__entry { animation: shell-activity-enter 160ms ease-out both; }
+.shell-agent-activity-panel[data-activity-state='approval'] .shell-process-panel__activity-label::after { animation: none; opacity: 0; }
+@keyframes shell-activity-spin { to { transform: rotate(360deg); } }
+@keyframes shell-activity-enter { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: translateY(0); } }
+@media (prefers-reduced-motion: reduce) {
+  .shell-agent-activity__status > svg, .shell-agent-activity-panel .shell-inline-process__entry { animation: none !important; }
+  .shell-agent-activity__resume { transition: none; }
+}
+[data-reduced-motion] .shell-agent-activity__status > svg,
+[data-reduced-motion] .shell-agent-activity-panel .shell-inline-process__entry { animation: none !important; }
+[data-reduced-motion] .shell-agent-activity__resume { transition: none; }
+@media (max-width: 520px) { .shell-agent-activity__resume-row > span { display: none; } }
+
+.shell-agent-activity__metrics { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.shell-agent-activity__window[data-above] .shell-agent-activity__viewport {
+  mask-image: linear-gradient(to bottom, transparent, black 12px);
+}
+.shell-agent-activity__window[data-below] .shell-agent-activity__viewport {
+  mask-image: linear-gradient(to bottom, black calc(100% - 12px), transparent);
+}
+.shell-agent-activity__window[data-above][data-below] .shell-agent-activity__viewport {
+  mask-image: linear-gradient(to bottom, transparent, black 12px, black calc(100% - 12px), transparent);
+}

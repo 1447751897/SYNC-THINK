@@ -395,8 +395,11 @@ function spawnFailure(message: string): BoundedProcessResult {
   };
 }
 
-function resolveWindowsExecutable(command: string): string {
-  if (existsSync(command) || extname(command)) return command;
+export function resolveWindowsExecutable(command: string): string {
+  if (extname(command)) return command;
+  if (existsSync(command + '.exe')) return command + '.exe';
+  if (existsSync(command + '.cmd')) return command + '.cmd';
+  if (existsSync(command)) return command;
   const extensions = (process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean);
   for (const directory of (process.env.PATH || '').split(delimiter).filter(Boolean)) {
     for (const extension of extensions) {

@@ -1,5 +1,9 @@
 import { existsSync } from 'node:fs';
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import {
+  spawn,
+  type SpawnOptionsWithoutStdio,
+  type ChildProcessWithoutNullStreams,
+} from 'node:child_process';
 import type {
   Worker,
   WorkerEvent,
@@ -23,7 +27,11 @@ import {
   JsonRpcStdioParser,
   type McpDiscoveredTool,
 } from './jsonrpc-stdio.js';
-import { terminateProcessTree } from '../process-runner.js';
+import {
+  terminateProcessTree,
+  resolveWindowsExecutable,
+  buildSafeCmdShimCommand,
+} from '../process-runner.js';
 
 /**
  * Real local-stdio MCP process host (§9.3 / §14).
@@ -82,6 +90,24 @@ export interface LocalStdioMcpWorkerOutput extends WorkerJobOutput {
   /** Present when action.kind === 'list-tools'. */
   tools?: McpDiscoveredTool[];
   toolCount?: number;
+}
+
+function spawnMcp(
+  command: string,
+  args: string[],
+  options: SpawnOptionsWithoutStdio,
+): ChildProcessWithoutNullStreams {
+  if (process.platform === 'win32') {
+    command = resolveWindowsExecutable(command);
+    if (/\.(?:cmd|bat)$/i.test(command)) {
+      const line = buildSafeCmdShimCommand(command, args);
+      if (!line) throw new Error('Batch command arguments contain unsafe shell metacharacters');
+      return spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', line], {
+        ...options, windowsVerbatimArguments: true,
+      });
+    }
+  }
+  return spawn(command, args, options);
 }
 
 const DEFAULT_TOKEN_TIMEOUT = 30_000;
@@ -322,7 +348,7 @@ export class LocalStdioMcpWorker implements Worker<LocalStdioMcpWorkerInput> {
 
     let child: ChildProcessWithoutNullStreams;
     try {
-      child = spawn(parsed.command, parsed.args, {
+      child = spawnMcp(parsed.command, parsed.args, {
         cwd: input.workingDir,
         env: {
           ...process.env,
@@ -581,7 +607,7 @@ export class LocalStdioMcpWorker implements Worker<LocalStdioMcpWorkerInput> {
 
     let child: ChildProcessWithoutNullStreams;
     try {
-      child = spawn(parsed.command, parsed.args, {
+      child = spawnMcp(parsed.command, parsed.args, {
         cwd: input.workingDir,
         env: {
           ...process.env,
@@ -633,6 +659,10 @@ export class LocalStdioMcpWorker implements Worker<LocalStdioMcpWorkerInput> {
       }
     };
 
+    child.stdin.on('error', (err) => {
+      for (const [, waiter] of pending) waiter.reject(err);
+      pending.clear();
+    });
     child.stdout.on('data', (chunk: Buffer) => {
       rawStdoutBytes += chunk.length;
       if (rawStdoutBytes > policy.maxOutputBytes * 4) {
@@ -958,7 +988,7 @@ export class LocalStdioMcpWorker implements Worker<LocalStdioMcpWorkerInput> {
 
     let child: ChildProcessWithoutNullStreams;
     try {
-      child = spawn(parsed.command, parsed.args, {
+      child = spawnMcp(parsed.command, parsed.args, {
         cwd: input.workingDir,
         env: {
           ...process.env,
@@ -1010,6 +1040,10 @@ export class LocalStdioMcpWorker implements Worker<LocalStdioMcpWorkerInput> {
       }
     };
 
+    child.stdin.on('error', (err) => {
+      for (const [, waiter] of pending) waiter.reject(err);
+      pending.clear();
+    });
     child.stdout.on('data', (chunk: Buffer) => {
       rawStdoutBytes += chunk.length;
       if (rawStdoutBytes > policy.maxOutputBytes * 4) {

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { AgentId, ConversationId, ModelId, TaskId, TeamId } from '@sync-think/shared';
 import { openDatabaseAsync } from './connection.js';
-import { runMigrations } from './scripts/migrate.js';
+import { MIGRATIONS, runMigrations } from './scripts/migrate.js';
 import { SqliteGlobalAgentStore } from './global-agent-store.js';
 import { SqliteTeamStore } from './team-store.js';
 import { SqliteConversationStore } from './conversation-store.js';
@@ -76,6 +76,38 @@ describe('SqliteGlobalAgentStore (mutable model)', () => {
     } finally {
       close();
     }
+  });
+
+  it('upgrades existing agents to native without changing their saved model or persona', async () => {
+    const path = makeDbPath();
+    const before = await openDatabaseAsync({ path });
+    try {
+      before.raw.exec('CREATE TABLE migration_record (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, applied_at TEXT NOT NULL)');
+      for (const migration of MIGRATIONS.filter((item) => item.name !== '0064_agent_default_kernel')) {
+        before.raw.exec(migration.sql);
+        before.raw.prepare('INSERT INTO migration_record(name, applied_at) VALUES (?, ?)').run(migration.name, new Date().toISOString());
+      }
+      before.raw.prepare('INSERT INTO agent (id, name, default_model_id, persona, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)').run('legacy-agent', 'Existing agent', MODEL, 'Keep my instructions', '2026-09-01', '2026-09-01');
+    } finally { before.raw.close(); }
+    const migration = await runMigrations(path);
+    expect(migration.applied).toEqual(['0064_agent_default_kernel']);
+    expect(migration.backupPath).toBeTruthy();
+    const after = await openDatabaseAsync({ path });
+    try {
+      expect(new SqliteGlobalAgentStore(after.raw).get('legacy-agent')).toMatchObject({ defaultKernelId: 'native', defaultModelId: MODEL, persona: 'Keep my instructions' });
+    } finally { after.raw.close(); }
+  });
+
+  it('persists the agent kernel and preserves it when editing other settings', async () => {
+    const { agents, close } = await openStores();
+    try {
+      const agent = agents.create({ name: 'Kernel agent', defaultModelId: MODEL });
+      expect(agent.defaultKernelId).toBe('native');
+      agents.update({ agentId: agent.id, defaultKernelId: 'codex' });
+      agents.update({ agentId: agent.id, name: 'Renamed' });
+      expect(agents.get(agent.id)?.defaultKernelId).toBe('codex');
+      expect(agents.create({ name: 'Claude', defaultModelId: MODEL, defaultKernelId: 'claude-code' }).defaultKernelId).toBe('claude-code');
+    } finally { close(); }
   });
 
   it('hides archived agents from the default list', async () => {
@@ -375,4 +407,23 @@ describe('migration 0024 seeding', () => {
       connection.raw.close();
     }
   });
+});
+
+
+it('persists the versioned avatar expression through a database close/reopen', async () => {
+  const dbPath = makeDbPath();
+  await runMigrations(dbPath);
+  const connection = await openDatabaseAsync({ path: dbPath });
+  let id: AgentId;
+  const avatar = 'aw:v1:diamond:#9a76e8:wink';
+  try {
+    const store = new SqliteGlobalAgentStore(connection.raw);
+    const agent = store.create({ name: '头像持久化验收', defaultModelId: MODEL, avatar: 'bot:v1:triangle:violet', skillIds: ['skill-a'], mcpServerIds: ['mcp-a'], persona: '保留人设' });
+    id = agent.id;
+    store.update({ agentId: id, avatar });
+  } finally { connection.raw.close(); }
+  const reopened = await openDatabaseAsync({ path: dbPath });
+  try {
+    expect(new SqliteGlobalAgentStore(reopened.raw).get(id!)).toMatchObject({ avatar, persona: '保留人设', skillIds: ['skill-a'], mcpServerIds: ['mcp-a'], defaultModelId: MODEL });
+  } finally { reopened.raw.close(); }
 });

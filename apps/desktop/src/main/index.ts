@@ -1,3 +1,4 @@
+import { registerContextMenuHandlers } from './context-menu-handlers.js';
 // Electron main entry. UI lifecycle is decoupled from the Runtime by design — the Runtime runs as a separate process and survives UI restarts (ADR-006).
 // The main process owns the safe-storage-based credential broker (TD-005).
 //
@@ -110,14 +111,7 @@ import {
   type M1OpenDocId,
 } from './m1-open-doc.js';
 import { listProjectFiles } from './project-files.js';
-import {
-  checkoutProjectBranch,
-  commitProjectChanges,
-  createProjectBranch,
-  getProjectGitInfo,
-  getProjectGitReview,
-  pushProjectBranch,
-} from './project-git.js';
+import { registerGitIpc } from './git-ipc.js';
 import { ProjectContentSearchRegistry, searchProjectContent } from './project-content-search.js';
 import { parseProjectTerminalCommand, resolveProjectTerminalCwd } from './project-terminal.js';
 import { killAllPtys, killWindowPtys, registerPtyTerminalHandlers } from './pty-service.js';
@@ -292,6 +286,8 @@ let runtimeShutdownComplete = false;
 let runtimeSession: RuntimeSession | null = null;
 let daemonAutostartFailureLogged = false;
 let desktopUpdateController: DesktopUpdateController | null = null;
+/** Git 仓库文件监听的释放句柄（由 registerGitIpc 返回，退出时调用）。 */
+let disposeGitWatchers: (() => void) | null = null;
 let kernelUpdateService: KernelUpdateService | null = null;
 let desktopUpdateRollbackCoordinator: DesktopUpdateRollbackCoordinator | null = null;
 let desktopUpdateRollbackHealthPromise: Promise<void> | null = null;
@@ -1342,6 +1338,7 @@ function installPiKernel(): Promise<KernelInstallResult> {
 }
 
 function setupRuntimeBridge(): void {
+  registerContextMenuHandlers({ ipcMain, assertSource: assertRuntimeIpcSource, clipboard });
   ipcMain.handle('desktop:update-get-state', (event) => {
     assertRuntimeIpcSource(event);
     return getDesktopUpdateController().getSnapshot();
@@ -2858,97 +2855,10 @@ function setupRuntimeBridge(): void {
     }
   });
 
-  // Git stays in Main: Renderer sends typed intent and never constructs shell commands.
-  ipcMain.handle('desktop:git-checkout', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-      throw new Error('Invalid git-checkout payload');
-    }
-    const payload = value as { root?: unknown; branch?: unknown; strategy?: unknown };
-    if (typeof payload.root !== 'string' || !payload.root.trim()) {
-      throw new Error('Invalid git-checkout payload: root required');
-    }
-    if (typeof payload.branch !== 'string' || !payload.branch.trim()) {
-      throw new Error('Invalid git-checkout payload: branch required');
-    }
-    const strategy =
-      payload.strategy === 'stash' || payload.strategy === 'force' ? payload.strategy : 'check';
-    return checkoutProjectBranch(payload.root, payload.branch, strategy);
-  });
-
-  ipcMain.handle('desktop:git-info', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-      throw new Error('Invalid git-info payload');
-    }
-    const payload = value as { root?: unknown };
-    if (typeof payload.root !== 'string' || !payload.root.trim()) {
-      throw new Error('Invalid git-info payload: root required');
-    }
-    return getProjectGitInfo(payload.root);
-  });
-
-  ipcMain.handle('desktop:git-review', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-      throw new Error('Invalid git-review payload');
-    }
-    const payload = value as { root?: unknown };
-    if (typeof payload.root !== 'string' || !payload.root.trim()) {
-      throw new Error('Invalid git-review payload: root required');
-    }
-    return getProjectGitReview(payload.root);
-  });
-
-  ipcMain.handle('desktop:git-create-branch', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-      throw new Error('Invalid git-create-branch payload');
-    }
-    const payload = value as { root?: unknown; branch?: unknown };
-    if (typeof payload.root !== 'string' || !payload.root.trim()) {
-      throw new Error('Invalid git-create-branch payload: root required');
-    }
-    if (typeof payload.branch !== 'string' || !payload.branch.trim()) {
-      throw new Error('Invalid git-create-branch payload: branch required');
-    }
-    return createProjectBranch(payload.root, payload.branch);
-  });
-
-  ipcMain.handle('desktop:git-commit', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-      throw new Error('Invalid git-commit payload');
-    }
-    const payload = value as {
-      root?: unknown;
-      message?: unknown;
-      includeUnstaged?: unknown;
-      push?: unknown;
-    };
-    if (typeof payload.root !== 'string' || !payload.root.trim()) {
-      throw new Error('Invalid git-commit payload: root required');
-    }
-    if (typeof payload.message !== 'string' || !payload.message.trim()) {
-      throw new Error('Invalid git-commit payload: message required');
-    }
-    return commitProjectChanges(payload.root, {
-      message: payload.message,
-      includeUnstaged: payload.includeUnstaged !== false,
-      push: payload.push === true,
-    });
-  });
-
-  ipcMain.handle('desktop:git-push', async (event, value: unknown) => {
-    assertRuntimeIpcSource(event);
-    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-      throw new Error('Invalid git-push payload');
-    }
-    const payload = value as { root?: unknown };
-    if (typeof payload.root !== 'string' || !payload.root.trim()) {
-      throw new Error('Invalid git-push payload: root required');
-    }
-    return pushProjectBranch(payload.root);
+  // Git 全部通道独立成模块注册（数量多，内联会让本文件继续膨胀）。
+  disposeGitWatchers = registerGitIpc({
+    assertSource: assertRuntimeIpcSource,
+    mainWindow: () => mainWindow?.webContents ?? null,
   });
 }
 
@@ -3113,6 +3023,8 @@ function shutdownDesktopServices(reason: DesktopShutdownReason = 'desktop-exit')
   projectContentSearchRegistry.abortAll();
   abortAllProjectTerminals();
   killAllPtys();
+  disposeGitWatchers?.();
+  disposeGitWatchers = null;
   for (const subscription of projectFileWatchSubscriptions.values()) subscription.dispose();
   projectFileWatchSubscriptions.clear();
   runtimeClient?.disconnect();

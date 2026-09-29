@@ -688,6 +688,8 @@ describe('AbilitiesPage', () => {
 
     await waitFor(() =>
       expect(runtime.registerMcpServer).toHaveBeenCalledWith({
+        timeoutMs: 60000,
+        maxOutputBytes: 65536,
         name: server.name,
         transport: 'local-stdio',
         endpoint: server.endpoint,
@@ -875,7 +877,7 @@ describe('AbilitiesPage', () => {
     });
 
     const submit = screen.getByTestId('mcp-register-submit') as HTMLButtonElement;
-    expect(submit.disabled).toBe(true);
+    expect(submit.disabled).toBe(false);
     const keyInput = screen.getByTestId('mcp-api-key-input') as HTMLInputElement;
     expect(keyInput.type).toBe('password');
     fireEvent.click(screen.getByRole('button', { name: '显示服务 Key' }));
@@ -888,6 +890,8 @@ describe('AbilitiesPage', () => {
 
     await waitFor(() =>
       expect(runtime.registerRemoteMcpServer).toHaveBeenCalledWith({
+        timeoutMs: 60000,
+        maxOutputBytes: 65536,
         name: server.name,
         transport: 'remote-http',
         endpoint: server.endpoint,
@@ -949,8 +953,8 @@ describe('AbilitiesPage', () => {
     fireEvent.click(screen.getByTestId('mcp-register-submit'));
 
     const error = await screen.findByRole('alert');
-    expect(error.textContent).toContain('MCP 配置已更新，但工具发现失败');
-    expect(error.textContent).toContain('HTTP 401');
+    expect(error.textContent).toContain('MCP 配置已更新，服务暂未连接');
+    expect(screen.queryByText(/HTTP 401/)).toBeNull();
     expect(await screen.findByText('preserved_tool')).toBeTruthy();
     expect(screen.queryByText('已更新 MCP：Unreachable MCP')).toBeNull();
   });
@@ -1094,10 +1098,10 @@ describe('AbilitiesPage', () => {
     const name = screen.getByTestId('mcp-name-input') as HTMLInputElement;
     const transport = screen.getByTestId('mcp-transport-select') as HTMLSelectElement;
     const endpoint = screen.getByTestId('mcp-endpoint-input') as HTMLInputElement;
-    expect(name.readOnly).toBe(true);
+    expect(name.readOnly).toBe(false);
     expect(name.value).toBe(server.name);
     expect(transport.disabled).toBe(true);
-    expect(endpoint.readOnly).toBe(true);
+    expect(endpoint.readOnly).toBe(false);
     expect(endpoint.value).toBe(server.endpoint);
 
     fireEvent.change(screen.getByTestId('mcp-api-key-input'), {
@@ -1107,6 +1111,9 @@ describe('AbilitiesPage', () => {
 
     await waitFor(() =>
       expect(runtime.registerRemoteMcpServer).toHaveBeenCalledWith({
+        mcpServerId: server.mcpServerId,
+        timeoutMs: server.timeoutMs,
+        maxOutputBytes: server.maxOutputBytes,
         name: server.name,
         transport: 'remote-http',
         endpoint: server.endpoint,
@@ -1957,11 +1964,55 @@ describe('AbilitiesPage', () => {
     expect(await screen.findByText('preserved_tool')).toBeTruthy();
     fireEvent.click(screen.getByTestId('mcp-detail-refresh'));
 
-    const error = await screen.findByRole('alert');
-    expect(error.textContent).toContain('刷新 MCP 工具失败');
-    expect(error.textContent).toContain('HTTP 401');
+    expect(await screen.findByText('MCP 连接失败，请检查服务配置后重试。')).toBeTruthy();
+    expect(document.querySelector('.capability-drawer .capability-inline-error')).toBeNull();
+    expect(screen.queryByText(/HTTP 401/)).toBeNull();
     expect(screen.getByText('preserved_tool')).toBeTruthy();
     expect(screen.queryByText('已发现 1 个 MCP 工具')).toBeNull();
+  });
+
+  it('edits a local MCP in place with validated limits', async () => {
+    const server = { mcpServerId: 'mcp-boardui', name: 'BoardUI', transport: 'local-stdio' as const,
+      endpoint: 'npx -y boardui@latest mcp', tools: [], trusted: true, enabled: true,
+      timeoutMs: 15000, maxOutputBytes: 65536, notes: '', createdAt: '', updatedAt: '' };
+    runtime.listMcpServers.mockResolvedValue({ servers: [server] });
+    runtime.registerMcpServer.mockResolvedValue({ server, updated: true });
+    render(<ToastProvider><AbilitiesPage onGoToAgents={vi.fn()} /></ToastProvider>);
+    fireEvent.click(screen.getByTestId('abilities-section-mcp'));
+    fireEvent.click(screen.getByTestId('mcp-tab-mine'));
+    fireEvent.click(await screen.findByRole('button', { name: /BoardUI/ }));
+    fireEvent.click(screen.getByTestId('mcp-edit-config'));
+    expect(screen.getByText('编辑 MCP 配置')).toBeTruthy();
+    fireEvent.change(screen.getByTestId('mcp-name-input'), { target: { value: 'BoardUI Local' } });
+    fireEvent.change(screen.getByTestId('mcp-endpoint-input'), { target: { value: 'npx -y boardui@0.5.6 mcp' } });
+    fireEvent.change(screen.getByTestId('mcp-timeout-input'), { target: { value: '0' } });
+    expect((screen.getByTestId('mcp-register-submit') as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(screen.getByTestId('mcp-timeout-input'), { target: { value: '120000' } });
+    fireEvent.click(screen.getByTestId('mcp-register-submit'));
+    await waitFor(() => expect(runtime.registerMcpServer).toHaveBeenCalledWith({
+      mcpServerId: server.mcpServerId, name: 'BoardUI Local', endpoint: 'npx -y boardui@0.5.6 mcp',
+      transport: 'local-stdio', timeoutMs: 120000, maxOutputBytes: 65536, notes: '', trusted: true,
+    }));
+  });
+
+  it('never exposes internal MCP audit output in the drawer or toast', async () => {
+    const server = { mcpServerId: 'mcp-audit', name: 'BoardUI', transport: 'local-stdio' as const,
+      endpoint: 'npx -y boardui@latest mcp', tools: [], trusted: true, enabled: true,
+      timeoutMs: 15000, maxOutputBytes: 65536, notes: '', createdAt: '', updatedAt: '' };
+    runtime.listMcpServers.mockResolvedValue({ servers: [server] });
+    runtime.refreshMcpTools.mockResolvedValue({ ok: false, auditNote: 'content marked trusted · real-jsonrpc · jsonRpcOk=false', toolCount: 0 });
+    render(<ToastProvider><AbilitiesPage onGoToAgents={vi.fn()} /></ToastProvider>);
+    fireEvent.click(screen.getByTestId('abilities-section-mcp'));
+    fireEvent.click(screen.getByTestId('mcp-tab-mine'));
+    fireEvent.click(await screen.findByRole('button', { name: /BoardUI/ }));
+    fireEvent.click(screen.getByTestId('mcp-detail-refresh'));
+    await screen.findByText('MCP 连接失败，请检查服务配置后重试。');
+    expect(screen.queryByText(/jsonRpcOk|content marked trusted/)).toBeNull();
+    expect(document.querySelector('.capability-drawer .capability-inline-error')).toBeNull();
+    runtime.refreshMcpTools.mockResolvedValue({ ok: true, toolCount: 0 });
+    fireEvent.click(screen.getByTestId('mcp-detail-refresh'));
+    await screen.findByText('已发现 0 个 MCP 工具');
+    expect(screen.queryByText('MCP 连接失败，请检查服务配置后重试。')).toBeNull();
   });
 
   it('opens a read-only organize report with the configured context budget', async () => {

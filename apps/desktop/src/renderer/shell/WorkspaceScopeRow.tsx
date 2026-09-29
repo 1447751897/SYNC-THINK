@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { Check, Folder } from 'lucide-react';
 import { OverlayScrollArea } from './OverlayScrollArea.js';
@@ -26,15 +26,7 @@ export function WorkspaceScopeRow({
 }) {
   const rowRef = useRef<HTMLDivElement>(null);
   const [visibleCount, setVisibleCount] = useState(fixedCount + 4);
-  // Keep the active workspace in view even if it was selected from the +N menu.
-  const ordered = useMemo(() => {
-    const fixed = options.slice(0, fixedCount);
-    const workspaces = options.slice(fixedCount);
-    const chosen = workspaces.find((option) => option.id === value);
-    return chosen
-      ? [...fixed, chosen, ...workspaces.filter((option) => option.id !== value)]
-      : [...fixed, ...workspaces];
-  }, [options, fixedCount, value]);
+  // Selection changes the active state, never the supplied workspace order.
 
   useEffect(() => {
     const row = rowRef.current;
@@ -65,12 +57,13 @@ export function WorkspaceScopeRow({
     observer.observe(row);
     measure();
     return () => observer.disconnect();
-  }, [ordered, fixedCount]);
+  }, [options, fixedCount]);
 
-  const remaining = ordered.slice(visibleCount);
+  const remaining = options.slice(visibleCount);
+  const overflowSelection = remaining.find((option) => option.id === value);
   return (
     <div ref={rowRef} className="ability-hub__workspace-row" role="group" aria-label={label}>
-      {ordered.map((option, index) => (
+      {options.map((option, index) => (
         <button
           key={option.id}
           type="button"
@@ -91,8 +84,9 @@ export function WorkspaceScopeRow({
           <DropdownMenu.Trigger asChild>
             <button
               type="button"
-              className="ability-hub__scope-more"
-              aria-label={`还有 ${remaining.length} 个工作区`}
+              className={`ability-hub__scope-more${overflowSelection ? ' is-active' : ''}`}
+              aria-label={`还有 ${remaining.length} 个工作区${overflowSelection ? `，当前选择：${overflowSelection.label}` : ''}`}
+              title={overflowSelection ? `当前选择：${overflowSelection.label}` : '更多工作区'}
             >
               +{remaining.length}
             </button>

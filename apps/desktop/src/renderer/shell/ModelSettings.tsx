@@ -1,3 +1,5 @@
+import { ProviderIconEditor } from './ProviderIconEditor.js';
+import { ProviderIdentityMark } from './ProviderIdentityMark.js';
 // NewMax-style model source settings: dual-pane provider manager + global model prefs.
 // Left: ordered provider list with enable toggles.
 // Right: selected provider detail (endpoint / keys / models / priority) + global vision/plan-act.
@@ -3377,21 +3379,9 @@ function providerPrimaryModel(provider: ProviderSummary): ProviderModelSummary |
  * user-added providers whose id is a random ULID), otherwise the letter glyph.
  */
 function ProviderRowAvatar({ provider }: { provider: ProviderSummary }) {
-  const brandLogo =
-    resolveProviderBrandLogo(provider.providerId) ?? resolveProviderBrandLogoByName(provider.name);
-  if (brandLogo) {
-    return (
-      <span
-        className="model-enabled-row__avatar model-enabled-row__avatar--logo"
-        aria-hidden="true"
-      >
-        <BrandLogoMark logo={brandLogo} size={16} />
-      </span>
-    );
-  }
-  return (
-    <span className="model-enabled-row__avatar">{provider.name[0]?.toUpperCase() ?? '?'}</span>
-  );
+  return <span className="model-enabled-row__avatar model-enabled-row__avatar--logo">
+    <ProviderIdentityMark providerId={provider.providerId} name={provider.name} size={16}/>
+  </span>;
 }
 
 /**
@@ -3410,25 +3400,9 @@ function ProviderDetailAvatar({
   fallbackLetter?: string;
   testId?: string;
 }) {
-  const brandLogo =
-    (providerId ? resolveProviderBrandLogo(providerId) : undefined) ??
-    resolveProviderBrandLogoByName(name);
-  if (brandLogo) {
-    return (
-      <span
-        className="model-provider-detail__avatar model-provider-detail__avatar--logo"
-        aria-hidden="true"
-        {...(testId ? { 'data-testid': testId } : {})}
-      >
-        <BrandLogoMark logo={brandLogo} size={16} />
-      </span>
-    );
-  }
-  return (
-    <span className="model-provider-detail__avatar" {...(testId ? { 'data-testid': testId } : {})}>
-      {fallbackLetter ?? name.trim()[0]?.toUpperCase() ?? '?'}
-    </span>
-  );
+  return <span className="model-provider-detail__avatar model-provider-detail__avatar--logo" data-testid={testId}>
+    <ProviderIdentityMark providerId={providerId} name={name} size={18} fallbackLetter={fallbackLetter}/>
+  </span>;
 }
 
 function SortableProviderRow({
@@ -3861,6 +3835,9 @@ function ProviderDetail({
             {savingField === 'name' ? <Loader2 size={13} className="model-settings-spin" /> : null}
           </div>
           {nameError ? <span className="model-field-error">{nameError}</span> : null}
+        </Field>
+        <Field label="供应商图标">
+          <ProviderIconEditor key={provider.providerId} providerId={provider.providerId} name={provider.name}/>
         </Field>
         <Field label="API 地址（自定义服务）">
           <div className="model-autosave-field">

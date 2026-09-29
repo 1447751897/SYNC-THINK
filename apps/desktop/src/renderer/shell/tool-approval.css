@@ -1,0 +1,385 @@
+/*!
+MIT License
+
+Copyright (c) 2026 Saurabh Chauhan
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+*/
+
+/* Be UI Tool Approval: a quiet outer surface; only expanded operation details are frosted. */
+.shell-composer-tool-approval.shell-beui-approval {
+  display: block;
+  min-width: 0;
+  padding: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 16px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  overflow: hidden;
+}
+.shell-composer-peek-surface[data-detached='true']
+  .shell-composer-tool-approval.shell-beui-approval {
+  padding-bottom: 0;
+}
+.shell-beui-approval__body {
+  max-height: min(48dvh, 420px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--color-text) 22%, transparent) transparent;
+}
+.shell-beui-approval__header {
+  display: flex;
+  gap: 10px;
+  padding: 12px 14px;
+  min-width: 0;
+}
+.shell-beui-approval__icon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 30px;
+  height: 30px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  color: var(--color-text-secondary);
+}
+.shell-beui-approval__copy {
+  flex: 1;
+  min-width: 0;
+}
+.shell-beui-approval__heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  justify-content: space-between;
+}
+.shell-beui-approval__heading h3 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.shell-beui-approval__status {
+  flex-shrink: 0;
+  font-size: 10px;
+  line-height: 18px;
+  padding: 0 7px;
+  border-radius: 999px;
+  color: var(--color-warning);
+  background: color-mix(in srgb, var(--color-warning) 9%, transparent);
+}
+.shell-beui-approval[data-state='submitting'] .shell-beui-approval__status {
+  color: var(--color-accent-text);
+  background: color-mix(in srgb, var(--color-accent) 9%, transparent);
+}
+.shell-beui-approval[data-state='approved'] .shell-beui-approval__status {
+  color: var(--color-success);
+  background: color-mix(in srgb, var(--color-success) 9%, transparent);
+}
+.shell-beui-approval[data-state='denied'] .shell-beui-approval__status,
+.shell-beui-approval[data-state='error'] .shell-beui-approval__status {
+  color: var(--color-error);
+  background: color-mix(in srgb, var(--color-error) 9%, transparent);
+}
+.shell-beui-approval__tool {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+  font-size: 10px;
+  color: var(--color-text-faint);
+}
+.shell-beui-approval__tool code {
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+}
+.shell-beui-approval__description {
+  margin: 5px 0 0;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--color-text-secondary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 90px;
+  overflow-y: auto;
+}
+.shell-beui-approval__summary {
+  display: grid;
+  gap: 7px;
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.65;
+}
+.shell-beui-approval__summary > div {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  gap: 10px;
+}
+.shell-beui-approval__summary dt {
+  color: var(--color-text-secondary);
+}
+.shell-beui-approval__summary dd {
+  margin: 0;
+  min-width: 0;
+  color: var(--color-text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.shell-beui-approval__disclosure {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  min-height: 30px;
+  padding: 4px 0;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  border-radius: 4px;
+}
+.shell-beui-approval__disclosure:hover {
+  color: var(--color-text);
+}
+.shell-beui-approval__disclosure svg {
+  transition: transform 180ms ease;
+}
+.shell-beui-approval__disclosure[aria-expanded='true'] svg {
+  transform: rotate(180deg);
+}
+.shell-beui-approval__disclosure-body {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows 200ms ease,
+    opacity 160ms ease;
+}
+.shell-beui-approval__disclosure-body[data-open='true'] {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+.shell-beui-approval__disclosure-body > div {
+  min-height: 0;
+  overflow: hidden;
+}
+.shell-beui-approval__details {
+  display: grid;
+  gap: 10px;
+  margin: 0 14px 12px;
+  padding: 10px;
+  min-width: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--color-surface) 75%, transparent);
+  backdrop-filter: blur(12px);
+}
+.shell-beui-approval__path {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--color-text-secondary);
+}
+.shell-beui-approval__path code {
+  color: var(--color-text);
+  overflow-wrap: anywhere;
+}
+.shell-beui-approval__parameters {
+  margin: 0;
+  display: grid;
+  gap: 9px;
+}
+.shell-beui-approval__parameters > div {
+  display: grid;
+  grid-template-columns: minmax(60px, 0.22fr) minmax(0, 1fr);
+  gap: 10px;
+  font-size: 11px;
+}
+.shell-beui-approval__parameters dt {
+  color: var(--color-text-secondary);
+  overflow-wrap: anywhere;
+}
+.shell-beui-approval__parameters dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.shell-beui-approval__details .shell-beui-code {
+  margin: 0;
+  background: transparent;
+}
+.shell-beui-approval__diff,
+.shell-beui-approval__replacement {
+  min-width: 0;
+}
+.shell-beui-approval__caption {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 10px;
+  color: var(--color-text-secondary);
+}
+.shell-beui-approval__empty {
+  font-size: 11px;
+  color: var(--color-text-faint);
+  margin: 0;
+}
+.shell-beui-approval__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  padding: 9px 14px;
+  border-top: 1px solid var(--color-border);
+}
+.shell-beui-approval__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  margin-inline-start: auto;
+  gap: 6px;
+}
+.shell-beui-approval__button {
+  min-height: 30px;
+  padding: 5px 11px;
+  border: 1px solid var(--color-border);
+  border-radius: 9px;
+  background: transparent;
+  color: var(--color-text);
+  font-size: 11px;
+  line-height: 18px;
+  cursor: pointer;
+  transition:
+    background 140ms ease,
+    transform 120ms ease;
+}
+.shell-beui-approval__button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-text) 5%, transparent);
+}
+.shell-beui-approval__button:active:not(:disabled) {
+  transform: scale(0.97);
+}
+.shell-beui-approval__button.is-primary {
+  background: var(--color-text);
+  border-color: var(--color-text);
+  color: var(--color-surface);
+}
+.shell-beui-approval__button.is-primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-text) 86%, var(--color-surface));
+}
+.shell-beui-approval__button.is-deny {
+  border-color: transparent;
+  color: var(--color-text-secondary);
+}
+.shell-beui-approval__button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+.shell-beui-approval__button:focus-visible,
+.shell-beui-approval__disclosure:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+.shell-beui-approval__error {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0;
+  padding: 0 14px 10px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--color-error);
+  overflow-wrap: anywhere;
+}
+.shell-beui-approval__error svg {
+  margin-top: 2px;
+  flex-shrink: 0;
+}
+.shell-beui-approval__spinner {
+  animation: tool-approval-spin 1s linear infinite;
+}
+@keyframes tool-approval-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+:root[data-image-theme='active'] .shell-composer-tool-approval.shell-beui-approval {
+  background: var(--color-surface);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+@media (max-width: 520px) {
+  .shell-beui-approval__heading {
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  .shell-beui-approval__header {
+    padding: 12px;
+  }
+  .shell-beui-approval__footer {
+    padding: 8px 12px;
+  }
+  .shell-beui-approval__details {
+    margin-inline: 12px;
+  }
+}
+@container composer-approval (max-width: 480px) {
+  .shell-beui-approval__footer {
+    gap: 4px;
+  }
+  .shell-beui-approval__actions {
+    flex-basis: 100%;
+  }
+  .shell-beui-approval__summary > div {
+    grid-template-columns: 56px minmax(0, 1fr);
+    gap: 8px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .shell-beui-approval *,
+  .shell-beui-approval__disclosure-body {
+    animation: none !important;
+    transition: none !important;
+  }
+  .shell-beui-approval__button:active {
+    transform: none;
+  }
+}
+
+.shell-beui-approval.shell-composer-expired-approval .shell-composer-tool-approval__main {
+  padding: 14px;
+  align-items: flex-start;
+}
+.shell-beui-approval.shell-composer-expired-approval .shell-composer-tool-approval__title {
+  white-space: normal;
+}
+.shell-beui-approval.shell-composer-expired-approval .shell-composer-tool-approval__icon {
+  background: color-mix(in srgb, var(--color-warning) 8%, transparent);
+  color: var(--color-warning);
+}
+.shell-beui-approval.shell-composer-expired-approval .shell-composer-tool-approval__actions {
+  padding: 9px 14px;
+  border-top: 1px solid var(--color-border);
+}

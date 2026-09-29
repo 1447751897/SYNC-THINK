@@ -1,3 +1,4 @@
+import { ProjectlessDataSetting } from './ProjectlessDataSetting.js';
 // P7/P8 · Settings Page
 // Follows the SYNC-THINK settings information architecture shown in the
 // product reference screenshots: searchable left navigation, compact rows,
@@ -54,7 +55,11 @@ import {
   type CollaborationSettings,
 } from '@sync-think/protocol/collaboration';
 import {
+  INTEGRATION_CATEGORY_LABELS,
   SYNC_THINK_CONNECTOR_CATALOG,
+  SYNC_THINK_INTEGRATION_CATALOG,
+  type IntegrationCatalogItem,
+  type IntegrationCategory,
   type ManagedConnectorCatalogItem,
 } from './connector-catalog.js';
 import { McpIdentityMark } from './abilities/McpIdentityMark.js';
@@ -1399,6 +1404,80 @@ function ConnectorSwitch({
   );
 }
 
+function ConnectorLogo({
+  item,
+  size = 'small',
+}: {
+  item: Pick<ManagedConnectorCatalogItem, 'name' | 'icon' | 'initials' | 'accent'>;
+  size?: 'small' | 'large';
+}) {
+  const initials = item.initials || item.name.slice(0, 2).toUpperCase();
+  return (
+    <span
+      className={clsx('settings-connector-logo', size === 'large' && 'is-large')}
+      aria-hidden="true"
+    >
+      {item.icon ? (
+        <img className="settings-connector-logo__image" src={item.icon} alt="" draggable={false} />
+      ) : (
+        <span
+          className="settings-connector-logo__monogram"
+          style={{ background: item.accent || 'var(--color-settings-action)' }}
+        >
+          {initials}
+        </span>
+      )}
+    </span>
+  );
+}
+
+const INTEGRATION_FILTERS: Array<{ value: IntegrationCategory | 'all'; label: string }> = [
+  { value: 'all', label: '全部' },
+  { value: 'recommended', label: '推荐' },
+  { value: 'code-ci', label: '代码与 CI' },
+  { value: 'issues', label: '问题与规划' },
+  { value: 'docs', label: '文档与知识' },
+  { value: 'communication', label: '通信' },
+  { value: 'design', label: '设计' },
+  { value: 'monitoring', label: '监控' },
+];
+
+function IntegrationCard({
+  item,
+  connected,
+  onOpen,
+}: {
+  item: IntegrationCatalogItem;
+  connected: boolean;
+  onOpen(): void;
+}) {
+  return (
+    <article className="settings-integration-card" data-connected={connected ? '1' : '0'}>
+      <button
+        type="button"
+        className="settings-integration-card__main"
+        aria-label={`${connected ? '打开' : item.connectionMode === 'oauth' ? '授权连接' : '连接'} ${item.name}`}
+        onClick={onOpen}
+      >
+        <ConnectorLogo item={item} />
+        <span className="settings-integration-card__copy">
+          <strong>{item.name}</strong>
+          <small>{item.description}</small>
+        </span>
+        <span className={clsx('settings-integration-card__status', connected && 'is-connected')}>
+          {connected ? '已连接' : item.connectionMode === 'oauth' ? '授权连接' : '连接'}
+        </span>
+      </button>
+      <span className="settings-integration-card__category">
+        <span>{INTEGRATION_CATEGORY_LABELS[item.category]}</span>
+        <span className="settings-integration-card__mode">
+          {item.connectionMode === 'oauth' ? 'OAuth 授权' : 'MCP 高级连接'}
+        </span>
+      </span>
+    </article>
+  );
+}
+
 function ConnectorCatalog({
   providerTab,
   query,
@@ -1428,10 +1507,27 @@ function ConnectorCatalog({
   onAddServer(): void;
   onToggleServer(server: McpServerSummary, enabled: boolean): void;
 }) {
+  const [categoryFilter, setCategoryFilter] = useState<IntegrationCategory | 'all'>('all');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'connected'>('all');
   const needle = query.trim().toLocaleLowerCase();
   const visibleServers = servers.filter(
     (server) => !needle || `${server.name} ${server.endpoint}`.toLocaleLowerCase().includes(needle),
   );
+  const visibleManagedConnectors = SYNC_THINK_CONNECTOR_CATALOG.filter(
+    (item) => !needle || item.name.toLocaleLowerCase().includes(needle),
+  );
+  const visibleIntegrations = SYNC_THINK_INTEGRATION_CATALOG.filter((item) => {
+    const connected = connectedNames.has(item.name.toLocaleLowerCase());
+    const recommended = ['github', 'notion', 'slack', 'linear'].includes(item.id);
+    const matchesCategory =
+      categoryFilter === 'all' ||
+      item.category === categoryFilter ||
+      (categoryFilter === 'recommended' && recommended);
+    const matchesStatus = statusFilter === 'all' || connected;
+    const matchesQuery =
+      !needle || `${item.name} ${item.description}`.toLocaleLowerCase().includes(needle);
+    return matchesCategory && matchesStatus && matchesQuery;
+  });
 
   return (
     <div className="settings-connector-catalog">
@@ -1456,23 +1552,21 @@ function ConnectorCatalog({
             第三方 Provider
           </button>
         </SlidingTabs>
-        {providerTab === 'third-party' ? (
-          <label className="settings-provider-search">
-            <Search size={13} aria-hidden="true" />
-            <input
-              value={query}
-              aria-label="搜索第三方 Provider"
-              placeholder="搜索 Provider"
-              onChange={(event) => onQueryChange(event.target.value)}
-            />
-          </label>
-        ) : null}
+        <label className="settings-provider-search">
+          <Search size={13} aria-hidden="true" />
+          <input
+            value={query}
+            aria-label={providerTab === 'sync-think' ? '搜索集成' : '搜索第三方 Provider'}
+            placeholder={providerTab === 'sync-think' ? '搜索应用或能力' : '搜索 Provider'}
+            onChange={(event) => onQueryChange(event.target.value)}
+          />
+        </label>
       </div>
 
       <div className="settings-connectors-summary">
         <span>
           {providerTab === 'sync-think'
-            ? 'SYNC-THINK 连接器目录；动作数量以实际 MCP 工具发现结果为准。'
+            ? '连接外部应用，让智能体读取工作上下文并执行授权动作。'
             : '通过远程 MCP 接入第三方 Provider，并在 Runtime 中发现可用工具。'}
         </span>
         {providerTab === 'third-party' ? (
@@ -1495,48 +1589,118 @@ function ConnectorCatalog({
       ) : null}
 
       {providerTab === 'sync-think' ? (
-        <div className="settings-connectors-scroll">
-          <div className="settings-connectors-grid">
-            {SYNC_THINK_CONNECTOR_CATALOG.map((item) => {
-              const connected = connectedNames.has(item.name.toLocaleLowerCase());
-              const managed = managedConnectorServer(servers, item);
-              return (
-                <div
-                  key={item.id}
-                  className="settings-connector-row"
-                  data-connected={connected ? '1' : '0'}
+        <>
+          <div className="settings-integration-toolbar" role="tablist" aria-label="集成筛选">
+            <div className="settings-integration-toolbar__categories">
+              {INTEGRATION_FILTERS.map((filter) => (
+                <button
+                  key={filter.value}
+                  type="button"
+                  role="tab"
+                  aria-selected={categoryFilter === filter.value}
+                  className={categoryFilter === filter.value ? 'is-active' : undefined}
+                  onClick={() => setCategoryFilter(filter.value)}
                 >
-                  <button
-                    type="button"
-                    className="settings-connector-row__main"
-                    aria-label={`${connected ? '打开' : '连接'} ${item.name}`}
-                    onClick={() => onOpenManaged(item)}
-                  >
-                    <img src={item.icon} alt="" draggable={false} />
-                    <span>{item.name}</span>
-                  </button>
-                  {managed ? (
-                    <ConnectorSwitch
-                      checked={managed.enabled !== false}
-                      label={`${item.name} 连接`}
-                      onChange={(enabled) => onToggleServer(managed, enabled)}
-                    />
-                  ) : connected ? (
-                    <small className="is-connected">✓ 已连接</small>
-                  ) : (
-                    <button
-                      type="button"
-                      className="settings-connector-row__connect"
-                      onClick={() => onOpenManaged(item)}
-                    >
-                      连接 ›
-                    </button>
-                  )}
-                </div>
-              );
-            })}
+                  {filter.label}
+                </button>
+              ))}
+            </div>
+            <button
+              type="button"
+              className={clsx(
+                'settings-integration-toolbar__status',
+                statusFilter === 'connected' && 'is-active',
+              )}
+              aria-pressed={statusFilter === 'connected'}
+              onClick={() => setStatusFilter((value) => (value === 'all' ? 'connected' : 'all'))}
+            >
+              {statusFilter === 'connected' ? '只看已连接' : '已连接'}
+            </button>
           </div>
-        </div>
+          <div className="settings-connectors-scroll">
+            <section
+              className="settings-integration-section"
+              aria-labelledby="sync-connectors-title"
+            >
+              <div className="settings-integration-section__heading">
+                <div>
+                  <h3 id="sync-connectors-title">浏览器与平台连接器</h3>
+                  <span>{visibleManagedConnectors.length} 个连接器</span>
+                </div>
+                <span>浏览器 Profile / MCP</span>
+              </div>
+              <div className="settings-connectors-grid">
+                {visibleManagedConnectors.map((item) => {
+                  const connected = connectedNames.has(item.name.toLocaleLowerCase());
+                  const managed = managedConnectorServer(servers, item);
+                  return (
+                    <div
+                      key={item.id}
+                      className="settings-connector-row"
+                      data-connected={connected ? '1' : '0'}
+                    >
+                      <button
+                        type="button"
+                        className="settings-connector-row__main"
+                        aria-label={`${connected ? '打开' : item.connectionMode === 'oauth' ? '授权连接' : '连接'} ${item.name}`}
+                        onClick={() => onOpenManaged(item)}
+                      >
+                        <ConnectorLogo item={item} />
+                        <span>{item.name}</span>
+                      </button>
+                      {managed ? (
+                        <ConnectorSwitch
+                          checked={managed.enabled !== false}
+                          label={`${item.name} 连接`}
+                          onChange={(enabled) => onToggleServer(managed, enabled)}
+                        />
+                      ) : connected ? (
+                        <small className="is-connected">✓ 已连接</small>
+                      ) : (
+                        <button
+                          type="button"
+                          className="settings-connector-row__connect"
+                          onClick={() => onOpenManaged(item)}
+                        >
+                          连接 ›
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+            <section
+              className="settings-integration-section"
+              aria-labelledby="external-integrations-title"
+            >
+              <div className="settings-integration-section__heading">
+                <div>
+                  <h3 id="external-integrations-title">外部应用</h3>
+                  <span>{visibleIntegrations.length} 个应用</span>
+                </div>
+                <span>连接后可绑定到工作区和智能体</span>
+              </div>
+              {visibleIntegrations.length > 0 ? (
+                <div className="settings-integration-grid">
+                  {visibleIntegrations.map((item) => (
+                    <IntegrationCard
+                      key={item.id}
+                      item={item}
+                      connected={connectedNames.has(item.name.toLocaleLowerCase())}
+                      onOpen={() => onOpenManaged(item)}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <div className="settings-connectors-empty settings-connectors-empty--pane">
+                  <Search size={20} aria-hidden="true" />
+                  <span>没有匹配的应用，试试其他关键词或分类。</span>
+                </div>
+              )}
+            </section>
+          </div>
+        </>
       ) : (
         <div className="settings-connectors-scroll">
           {loading ? (
@@ -1603,6 +1767,14 @@ function ManagedConnectorDetail({
     (tool) => !needle || `${tool.name} ${tool.description}`.toLocaleLowerCase().includes(needle),
   );
   const enabled = server?.enabled === true;
+  const isOAuth = item.connectionMode === 'oauth';
+  const actionLabel = enabled
+    ? '停用连接器'
+    : server
+      ? '启用连接器'
+      : isOAuth
+        ? '授权连接'
+        : '启用连接器';
 
   return (
     <section className="settings-managed-connector" aria-label={`${item.name} 连接器详情`}>
@@ -1613,11 +1785,11 @@ function ManagedConnectorDetail({
 
       <div className="settings-managed-connector__hero">
         <div className="settings-managed-connector__identity">
-          <img src={item.icon} alt="" draggable={false} />
+          <ConnectorLogo item={item} size="large" />
           <div>
             <h2>{item.name}</h2>
             <div>
-              <span>MCP 连接器</span>
+              <span>{isOAuth ? 'OAuth 集成' : 'MCP 连接器'}</span>
               <span className={clsx('settings-managed-connector__status', enabled && 'is-enabled')}>
                 {enabled ? '已启用' : server ? '已停用' : '未配置'}
               </span>
@@ -1634,7 +1806,7 @@ function ManagedConnectorDetail({
           }}
         >
           {busy ? <LoaderCircle size={14} className="is-spinning" aria-hidden="true" /> : null}
-          {enabled ? '停用连接器' : '启用连接器'}
+          {actionLabel}
         </button>
       </div>
 
@@ -1682,10 +1854,11 @@ function ManagedConnectorDetail({
           {!server ? (
             <div className="settings-managed-actions__empty">
               <Plug size={18} aria-hidden="true" />
-              <strong>连接 Provider 后自动发现动作</strong>
+              <strong>{isOAuth ? '完成授权后自动发现动作' : '连接 Provider 后自动发现动作'}</strong>
               <span>
-                不需要手工提供动作名称。点击“启用连接器”，填写该服务的 MCP 地址与凭证； Runtime
-                会通过 <code>tools/list</code> 读取真实动作并显示在这里。
+                {isOAuth
+                  ? '成熟集成通常通过 OAuth 授权。当前桌面版还没有该服务的 OAuth Broker，可先使用下方的高级 MCP 连接方式。'
+                  : '不需要手工提供动作名称。点击“配置连接”，填写该服务的 MCP 地址与凭证； Runtime 会通过 tools/list 读取真实动作并显示在这里。'}
               </span>
             </div>
           ) : tools.length === 0 ? (
@@ -1743,10 +1916,14 @@ function ManagedConnectorSetupDialog({
         onMouseDown={(event) => event.stopPropagation()}
       >
         <div className="settings-connector-dialog__head">
-          <img src={item.icon} alt="" draggable={false} />
+          <ConnectorLogo item={item} size="large" />
           <div>
             <h3>配置 {item.name}</h3>
-            <p>连接后由 Runtime 读取服务真实提供的 MCP 工具。</p>
+            <p>
+              {item.connectionMode === 'oauth'
+                ? '推荐使用 OAuth 直接授权；当前可先使用高级 MCP 连接。'
+                : '连接后由 Runtime 读取服务真实提供的 MCP 工具。'}
+            </p>
           </div>
           <button type="button" aria-label="关闭连接器配置" onClick={onClose}>
             ×
@@ -3056,6 +3233,8 @@ export function DataDiagnosticsSection() {
         </div>
       </section>
 
+      <ProjectlessDataSetting />
+
       <section className="settings-data-card" aria-labelledby="data-storage-title">
         <h2 className="settings-data-card__title" id="data-storage-title">
           存储管理
@@ -3082,7 +3261,7 @@ export function DataDiagnosticsSection() {
           <div className="settings-data-row">
             <div className="settings-data-copy">
               <strong>数据目录</strong>
-              <p>数据库、对话记录、配置等所有数据所在位置</p>
+              <p>应用数据库、对话索引和配置所在位置</p>
             </div>
             <button
               type="button"

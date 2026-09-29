@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { ModelId } from '@sync-think/shared';
+import type { ModelId, TaskId } from '@sync-think/shared';
 import { openDatabaseAsync } from './connection.js';
 import { SqliteConversationStore } from './conversation-store.js';
 import { runMigrations } from './scripts/migrate.js';
@@ -20,6 +20,7 @@ async function openStore() {
   await runMigrations(path);
   const connection = await openDatabaseAsync({ path });
   return {
+    raw: connection.raw,
     store: new SqliteConversationStore(connection.raw),
     close: () => connection.raw.close(),
   };
@@ -95,6 +96,71 @@ describe('SqliteConversationStore catalog pagination', () => {
       );
       expect(() => store.listPage({ limit: 0 })).toThrow('conversation page limit');
       expect(() => store.listPage({ limit: 201 })).toThrow('conversation page limit');
+    } finally {
+      close();
+    }
+  });
+});
+
+describe('conversation sidebar previews', () => {
+  it('returns bounded latest human-visible content, isolated by conversation, without tools or reasoning', async () => {
+    const { store, raw, close } = await openStore();
+    try {
+      const a = store.create({ target: { track: 'model', modelId: 'm' as ModelId } });
+      const b = store.create({ target: { track: 'model', modelId: 'm' as ModelId } });
+      store.bindTask(a.id, 'task-preview' as TaskId);
+      raw
+        .prepare('INSERT INTO thread (id, task_id, created_at) VALUES (?, ?, ?)')
+        .run('thread-preview', 'task-preview', '2026-09-24');
+      const insert = raw.prepare(
+        'INSERT INTO message (id, thread_id, role, sequence, blocks_json, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+      );
+      insert.run(
+        'm1',
+        'thread-preview',
+        'user',
+        1,
+        JSON.stringify([{ type: 'text', text: '旧消息' }]),
+        '2026-09-24',
+      );
+      insert.run(
+        'm2',
+        'thread-preview',
+        'assistant',
+        2,
+        JSON.stringify([
+          { type: 'reasoning', text: 'hidden reasoning' },
+          { type: 'text', text: '新的\n  消息 ' + '好'.repeat(250) },
+          { type: 'tool-call', text: 'hidden tool' },
+        ]),
+        '2026-09-24',
+      );
+      insert.run(
+        'm3',
+        'thread-preview',
+        'tool',
+        3,
+        JSON.stringify([{ type: 'text', text: 'tool payload' }]),
+        '2026-09-24',
+      );
+      const previews = store.listMessagePreviews([a.id, b.id]);
+      expect(previews.get(a.id)).toMatch(/^新的 消息 /);
+      expect(previews.get(a.id)!.length).toBeLessThanOrEqual(160);
+      expect(previews.get(a.id)).not.toMatch(/hidden|tool|旧消息/);
+      expect(previews.has(b.id)).toBe(false);
+      expect(store.listMessagePreviews([]).size).toBe(0);
+      insert.run(
+        'm4',
+        'thread-preview',
+        'user',
+        4,
+        JSON.stringify([{ type: 'image', storageRef: 'image-secret' }]),
+        '2026-09-24',
+      );
+      expect(store.listMessagePreviews([a.id]).get(a.id)).toBe('[图片]');
+      insert.run('m5', 'thread-preview', 'assistant', 5, JSON.stringify([{ type: 'reasoning', text: 'private' }]), '2026-09-24');
+      expect(store.listMessagePreviews([a.id]).has(a.id)).toBe(false);
+      expect(store.listMessagePreviews(Array(105).fill(a.id)).size).toBe(0);
     } finally {
       close();
     }

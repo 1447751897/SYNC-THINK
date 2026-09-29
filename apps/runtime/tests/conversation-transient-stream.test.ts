@@ -953,6 +953,42 @@ describe('conversation transient shadow stream', () => {
     }
   });
 
+  it('keeps live stream cursors monotonic across consecutive runs and a fresh subscription', async () => {
+    const fixture = await createFixture(() => [
+      { type: 'text-delta', text: 'live answer' },
+      { type: 'finished', reason: 'stop' },
+    ]);
+    const socket = await connectRuntime(fixture.installId);
+    const inbox = createInbox(socket);
+    const reopened = await connectRuntime(fixture.installId);
+    const reopenedInbox = createInbox(reopened);
+    const threadId = 'thread-consecutive';
+    try {
+      await hello(inbox, fixture.installId, 'hello-consecutive');
+      await hello(reopenedInbox, fixture.installId, 'hello-reopened');
+      await inbox.send({ id: 'subscribe-consecutive', kind: 'request', type: 'conversation.subscribeTransientStream', payload: { threadId } });
+      for (let turn = 0; turn < 2; turn++) {
+        await inbox.send({ id: 'append-consecutive-' + turn, kind: 'request', type: 'task.appendMessage', payload: { threadId, expectedTaskVersion: turn, role: 'user', text: 'turn ' + turn } });
+        expect(await waitFor(() => transientFrames(inbox).filter((frame) => frame.kind === 'terminal').length === turn + 1)).toBe(true);
+        if (turn === 0) {
+          const subscribed = await reopenedInbox.send({ id: 'subscribe-reopened', kind: 'request', type: 'conversation.subscribeTransientStream', payload: { threadId } });
+          expect(subscribed.payload).toMatchObject({ resetRequired: true, latestStreamSequence: transientFrames(inbox).at(-1)!.streamSequence });
+        }
+      }
+      const frames = transientFrames(inbox);
+      expect(frames.map((frame) => frame.streamSequence)).toEqual(frames.map((_, index) => index + 1));
+      expect(new Set(frames.map((frame) => frame.runId)).size).toBe(2);
+      expect(frames.filter((frame) => frame.kind === 'text').map((frame) => frame.textDelta)).toEqual(['live answer', 'live answer']);
+      const secondRun = frames.at(-1)!.runId;
+      expect(transientFrames(reopenedInbox)).toEqual(frames.filter((frame) => frame.runId === secondRun));
+    } finally {
+      socket.destroy();
+      reopened.destroy();
+      await fixture.runtime.stop();
+      fixture.connection.raw.close();
+    }
+  });
+
   it('replays frames after a thread-local cursor and stops delivery after unsubscribe', async () => {
     const fixture = await createFixture(() => [
       { type: 'reasoning-delta', text: 'r' },
@@ -1331,7 +1367,9 @@ describe('conversation transient shadow stream', () => {
       // A finished Run is restored from the durable message store, so a fresh
       // subscription must not re-stream its prose frame by frame.
       expect(payload.replayedFrames.map((frame) => frame.kind)).toEqual(['terminal']);
-      expect(payload.resetRequired).toBe(false);
+      // Skipping already persisted frames leaves a cursor gap: reset to durable
+      // history instead of sending sparse replay to the strict desktop client.
+      expect(payload.resetRequired).toBe(true);
     } finally {
       producer.destroy();
       subscriber.destroy();

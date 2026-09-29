@@ -334,7 +334,10 @@ export function AbilitiesPage(props: AbilitiesPageProps): JSX.Element {
     toastApi.toast({ type: 'success', title: message, id: 'ability-message' });
   }, [message]);
   useEffect(() => {
-    if (!error || skillEditor || localSkillImportOpen) return;
+    if (!error || skillEditor || localSkillImportOpen) {
+      toastApi.dismiss('ability-error');
+      return;
+    }
     toastApi.toast({ type: 'error', title: error, id: 'ability-error' });
   }, [error, skillEditor, localSkillImportOpen]);
 
@@ -865,6 +868,9 @@ export function AbilitiesPage(props: AbilitiesPageProps): JSX.Element {
 
   const registerMcp = useCallback(
     async (payload: {
+      mcpServerId?: string;
+      timeoutMs?: number;
+      maxOutputBytes?: number;
       name: string;
       transport: 'local-stdio' | 'remote-http';
       endpoint: string;
@@ -891,7 +897,7 @@ export function AbilitiesPage(props: AbilitiesPageProps): JSX.Element {
         if (discoveryError) {
           setMessage(undefined);
           setError(
-            `${result.updated ? 'MCP 配置已更新' : 'MCP 已注册'}，但工具发现失败：${discoveryError}`,
+            `${result.updated ? 'MCP 配置已更新' : 'MCP 已注册'}，服务暂未连接，请检查配置后刷新工具。`,
           );
         } else {
           setMessage(
@@ -923,7 +929,9 @@ export function AbilitiesPage(props: AbilitiesPageProps): JSX.Element {
         if (result.ok === false) {
           setMessage(undefined);
           setError(
-            `刷新 MCP 工具失败：${result.refuseReason || result.auditNote || '远端服务未返回有效工具目录'}`,
+            result.timedOut
+              ? '连接 MCP 超时，请检查启动命令或调大超时时间后重试。'
+              : 'MCP 连接失败，请检查服务配置后重试。',
           );
           await refreshAfterMutation('mcp');
           return;
@@ -931,7 +939,7 @@ export function AbilitiesPage(props: AbilitiesPageProps): JSX.Element {
         setMessage(`已发现 ${result.toolCount} 个 MCP 工具`);
         await refreshAfterMutation('mcp');
       } catch (cause) {
-        setError(capabilityErrorMessage(cause, '刷新 MCP 工具失败'));
+        setError('MCP 连接失败，请检查服务配置后重试。');
       } finally {
         setBusyId(undefined);
       }
@@ -1169,7 +1177,8 @@ export function AbilitiesPage(props: AbilitiesPageProps): JSX.Element {
           }
         }}
         onRegister={setRegisterMcpItem}
-        onConfigureAuth={(server) => {
+        onEditConfig={(server) => {
+          setError(undefined);
           setDetailMcpServerId(undefined);
           setRegisterMcpItem(server);
         }}
@@ -3025,7 +3034,7 @@ function McpDetailDrawer(props: {
   busy: boolean;
   onOpenChange(open: boolean): void;
   onRegister(item: McpMarketItem | null): void;
-  onConfigureAuth(server: McpServerSummary): void;
+  onEditConfig(server: McpServerSummary): void;
   onRefresh(server: McpServerSummary): void;
   onDeleteMcp(server: McpServerSummary): void;
 }): JSX.Element {
@@ -3078,12 +3087,6 @@ function McpDetailDrawer(props: {
 
           <div className="capability-drawer__scroll">
             <p className="capability-drawer__description">{description}</p>
-            {props.error ? (
-              <div className="capability-inline-error" role="alert">
-                <AlertTriangle size={14} />
-                {props.error}
-              </div>
-            ) : null}
             {server ? (
               <>
                 <div className="capability-detail-status-grid">
@@ -3206,18 +3209,16 @@ function McpDetailDrawer(props: {
           <footer className="capability-drawer__footer">
             {server ? (
               <>
-                {server.transport === 'remote-http' ? (
-                  <button
-                    type="button"
-                    data-testid="mcp-configure-key"
-                    className="capability-button is-secondary"
-                    disabled={props.busy}
-                    onClick={() => props.onConfigureAuth(server)}
-                  >
-                    <KeyRound size={13} />
-                    {server.authConfigured ? '更新 Key' : '配置 Key'}
-                  </button>
-                ) : null}
+                <button
+                  type="button"
+                  data-testid={server.transport === 'remote-http' ? 'mcp-configure-key' : 'mcp-edit-config'}
+                  className="capability-button is-secondary"
+                  disabled={props.busy}
+                  onClick={() => props.onEditConfig(server)}
+                >
+                  <Edit3 size={13} />
+                  编辑配置
+                </button>
                 <button
                   type="button"
                   data-testid="mcp-detail-refresh"
@@ -4406,6 +4407,9 @@ function McpRegisterDialog(props: {
   error?: string;
   onOpenChange(open: boolean): void;
   onSubmit(payload: {
+    mcpServerId?: string;
+    timeoutMs?: number;
+    maxOutputBytes?: number;
     name: string;
     transport: 'local-stdio' | 'remote-http';
     endpoint: string;
@@ -4421,7 +4425,8 @@ function McpRegisterDialog(props: {
   const [endpoint, setEndpoint] = useState('');
   const [notes, setNotes] = useState('');
   const [trusted, setTrusted] = useState(false);
-  const [hasApiKey, setHasApiKey] = useState(false);
+  const [timeoutMs, setTimeoutMs] = useState(60000);
+  const [maxOutputBytes, setMaxOutputBytes] = useState(65536);
   const [authScheme, setAuthScheme] = useState<'api-key' | 'bearer'>('api-key');
   const [discoverTools, setDiscoverTools] = useState(true);
   const [showApiKey, setShowApiKey] = useState(false);
@@ -4437,7 +4442,8 @@ function McpRegisterDialog(props: {
     // Echo the latest stored key back into the dialog (plaintext storage).
     const storedKey = existingServer?.authKey?.trim() ?? '';
     if (apiKeyRef.current) apiKeyRef.current.value = storedKey;
-    setHasApiKey(Boolean(storedKey));
+    setTimeoutMs(existingServer?.timeoutMs ?? 60000);
+    setMaxOutputBytes(existingServer?.maxOutputBytes ?? 65536);
     setAuthScheme(existingServer?.authScheme === 'bearer' ? 'bearer' : 'api-key');
     setDiscoverTools(true);
     setShowApiKey(false);
@@ -4456,10 +4462,10 @@ function McpRegisterDialog(props: {
         <Dialog.Content className="capability-dialog capability-dialog--register">
           <header className="capability-dialog__header">
             <div>
-              <Dialog.Title>{existingServer ? '配置远端 MCP' : '注册 MCP'}</Dialog.Title>
+              <Dialog.Title>{existingServer ? '编辑 MCP 配置' : '注册 MCP'}</Dialog.Title>
               <Dialog.Description>
                 {existingServer
-                  ? '服务信息已由 AI 或现有配置登记，只需输入一次服务 Key。'
+                  ? '修改服务名称、连接地址或启动命令及运行参数。'
                   : transport === 'remote-http'
                     ? '登记远端地址并安全保存服务 Key，可自动发现远端工具。'
                     : '保存本地服务配置并同步到 MCP 发现目录。'}
@@ -4484,7 +4490,6 @@ function McpRegisterDialog(props: {
                 <input
                   data-testid="mcp-name-input"
                   value={name}
-                  readOnly={Boolean(existingServer)}
                   placeholder="例如 Workspace Files"
                   onChange={(event) => setName(event.target.value)}
                 />
@@ -4500,7 +4505,6 @@ function McpRegisterDialog(props: {
                       onChange={(event) => {
                         const nextTransport = event.target.value as 'local-stdio' | 'remote-http';
                         setTransport(nextTransport);
-                        setHasApiKey(false);
                       }}
                     >
                       <option value="local-stdio">本地进程（stdio）</option>
@@ -4517,7 +4521,6 @@ function McpRegisterDialog(props: {
                   <input
                     data-testid="mcp-endpoint-input"
                     value={endpoint}
-                    readOnly={Boolean(existingServer)}
                     spellCheck={false}
                     placeholder={
                       transport === 'local-stdio' ? '填写 MCP 启动命令' : 'https://mcp.example.com'
@@ -4560,7 +4563,6 @@ function McpRegisterDialog(props: {
                         type={showApiKey ? 'text' : 'password'}
                         autoComplete="new-password"
                         placeholder={existingServer?.authKey ? '' : '输入服务 Key'}
-                        onChange={(event) => setHasApiKey(Boolean(event.target.value.trim()))}
                       />
                       <button
                         type="button"
@@ -4588,6 +4590,30 @@ function McpRegisterDialog(props: {
             ) : null}
             <section className="capability-register-section">
               <h4 className="capability-register-section__title">其他设置</h4>
+              <div className="capability-publish-grid">
+                <label className="capability-form-field">
+                  <span>超时时间（毫秒）</span>
+                  <input
+                    data-testid="mcp-timeout-input"
+                    type="number"
+                    min={100}
+                    max={120000}
+                    value={timeoutMs}
+                    onChange={(event) => setTimeoutMs(Number(event.target.value))}
+                  />
+                </label>
+                <label className="capability-form-field">
+                  <span>输出上限（字节）</span>
+                  <input
+                    data-testid="mcp-output-limit-input"
+                    type="number"
+                    min={256}
+                    max={1048576}
+                    value={maxOutputBytes}
+                    onChange={(event) => setMaxOutputBytes(Number(event.target.value))}
+                  />
+                </label>
+              </div>
               <label className="capability-form-field">
                 <span>备注</span>
                 <textarea
@@ -4632,18 +4658,26 @@ function McpRegisterDialog(props: {
                 props.saving ||
                 !name.trim() ||
                 !endpoint.trim() ||
-                (transport === 'remote-http' && !hasApiKey)
+                !Number.isInteger(timeoutMs) ||
+                timeoutMs < 100 ||
+                timeoutMs > 120000 ||
+                !Number.isInteger(maxOutputBytes) ||
+                maxOutputBytes < 256 ||
+                maxOutputBytes > 1048576
               }
               onClick={() => {
                 const apiKey = apiKeyRef.current?.value.trim();
                 props.onSubmit({
+                  ...(existingServer ? { mcpServerId: existingServer.mcpServerId } : {}),
+                  timeoutMs,
+                  maxOutputBytes,
                   name: name.trim(),
                   transport,
                   endpoint: endpoint.trim(),
                   notes: notes.trim(),
                   trusted,
-                  ...(transport === 'remote-http' && apiKey
-                    ? { apiKey, authScheme, discoverTools }
+                  ...(transport === 'remote-http'
+                    ? { discoverTools, ...(apiKey ? { apiKey, authScheme } : {}) }
                     : {}),
                 });
               }}
@@ -4652,7 +4686,7 @@ function McpRegisterDialog(props: {
               {props.saving
                 ? '保存中'
                 : existingServer
-                  ? '保存 Key 并发现工具'
+                  ? '保存配置'
                   : transport === 'remote-http'
                     ? '注册远端 MCP'
                     : '注册 MCP'}

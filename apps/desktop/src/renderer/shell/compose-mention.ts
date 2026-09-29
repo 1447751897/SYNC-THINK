@@ -18,6 +18,9 @@ export interface ComposeAttachment {
   previewUrl?: string;
   mimeType?: string;
   sizeBytes?: number;
+  /** Transient local preparation progress; omitted once ready to send. */
+  progress?: number;
+  processingLabel?: string;
 }
 
 export interface MessageImage {
@@ -145,14 +148,26 @@ export function messageImagesFromAttachments(
 }
 
 /** Read a browser File as a data URL (for image chips / local preview). */
-export function readFileAsDataUrl(file: File): Promise<string> {
+export function readFileAsDataUrl(file: File, options: {
+  onProgress?: (fraction: number) => void;
+  signal?: AbortSignal;
+} = {}): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onerror = () => reject(reader.error ?? new Error('read failed'));
+    const abort = () => reader.abort();
+    const cleanup = () => options.signal?.removeEventListener('abort', abort);
+    if (options.signal?.aborted) { reject(new DOMException('Read cancelled', 'AbortError')); return; }
+    reader.onprogress = (event) => {
+      if (event.lengthComputable && event.total > 0) options.onProgress?.(event.loaded / event.total);
+    };
+    reader.onerror = () => { cleanup(); reject(reader.error ?? new Error('read failed')); };
+    reader.onabort = () => { cleanup(); reject(new DOMException('Read cancelled', 'AbortError')); };
     reader.onload = () => {
+      cleanup();
       if (typeof reader.result === 'string') resolve(reader.result);
       else reject(new Error('expected data URL'));
     };
+    options.signal?.addEventListener('abort', abort, { once: true });
     reader.readAsDataURL(file);
   });
 }

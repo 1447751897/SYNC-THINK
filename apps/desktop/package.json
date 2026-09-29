@@ -27,6 +27,7 @@
     "@sync-think/secure-store": "workspace:*",
     "@sync-think/shared": "workspace:*",
     "@sync-think/workers": "workspace:*",
+    "bot-avatars": "0.1.1",
     "dompurify": "3.4.13",
     "electron-updater": "6.8.9",
     "node-pty": "1.1.0"

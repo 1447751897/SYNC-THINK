@@ -353,7 +353,7 @@ export function projectEventContent(event: Event): Event {
       : payload.output !== undefined && payload.output !== null
         ? 'output'
         : 'error';
-  for (const field of ['result', 'output', 'error', 'previousContent'] as const) {
+  for (const field of ['result', 'output', 'error', 'previousContent', 'writtenContent', 'structuredResult'] as const) {
     if (payload[field] === undefined) continue;
     const result = defer(payload[field], { source: 'event', id: event.id, path: [field] });
     if (!result.deferred) continue;

@@ -7,15 +7,6 @@ import type { GoalStatus } from '@sync-think/protocol';
 import type { TodoProjection } from './todo-projection.js';
 import { TaskStatusPanel } from './TaskStatusPanel.js';
 
-const runtime = {
-  getGitInfo: vi.fn(),
-  getGitReview: vi.fn(),
-  gitCheckout: vi.fn(),
-  gitCreateBranch: vi.fn(),
-  gitCommit: vi.fn(),
-  gitPush: vi.fn(),
-};
-
 const todo: TodoProjection = {
   items: [
     { title: '初始化棋盘', status: 'completed' },
@@ -42,98 +33,34 @@ const goal: GoalStatus = {
 
 beforeEach(() => {
   vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-08-27T08:02:00.000Z'));
-  runtime.getGitInfo.mockReset().mockResolvedValue({
-    branch: 'feat/status-card',
-    branches: ['feat/status-card', 'main'],
-    changes: [
-      { status: 'M', path: 'src/App.tsx' },
-      { status: '??', path: 'src/new.ts' },
-    ],
-    recentCommits: [{ hash: 'abc1234', subject: 'initial', files: [], truncated: false }],
-    additions: 34,
-    deletions: 7,
-    ahead: 1,
-    behind: 0,
-    hasRemote: true,
-    isRepo: true,
-  });
-  runtime.gitCheckout.mockReset().mockResolvedValue({
-    ok: true,
-    dirty: false,
-    changes: [],
-    error: null,
-  });
-  runtime.gitCreateBranch.mockReset().mockResolvedValue({ ok: true, error: null });
-  runtime.gitCommit.mockReset().mockResolvedValue({
-    ok: true,
-    committed: true,
-    pushed: false,
-    error: null,
-  });
-  runtime.gitPush.mockReset().mockResolvedValue({ ok: true, pushed: true, error: null });
-  runtime.getGitReview.mockReset().mockResolvedValue({
-    files: [
-      {
-        path: 'src/App.tsx',
-        action: 'edited',
-        previousContent: 'old\n',
-        content: 'new\n',
-      },
-    ],
-  });
-  Object.defineProperty(window, 'syncThink', {
-    configurable: true,
-    value: { runtime },
-  });
 });
 
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
-  Reflect.deleteProperty(window, 'syncThink');
 });
 
 describe('TaskStatusPanel', () => {
-  it('renders the complete local-ZCode section order from real data', async () => {
-    render(
-      <TaskStatusPanel projectFolder="D:/project" goal={goal} evaluatorConfigured todo={todo} />,
-    );
+  it('renders the Goal and Progress sections from real data', async () => {
+    render(<TaskStatusPanel goal={goal} todo={todo} />);
 
     const panel = await screen.findByTestId('task-status-panel');
     const sections = within(panel).getAllByTestId('task-status-section');
     expect(sections.map((section) => section.getAttribute('data-section'))).toEqual([
-      'git',
       'goal',
       'progress',
     ]);
-    expect(panel.textContent).toContain('+34');
-    expect(panel.textContent).toContain('-7');
-    expect(panel.textContent).toContain('feat/status-card');
     expect(panel.textContent).toContain('完成五子棋并通过全部验证');
     expect(panel.textContent).toContain('第 2/5 轮');
     expect(panel.textContent).toContain('1/3');
     expect(screen.getByText('初始化棋盘').className).toContain('is-completed');
-    expect(panel.textContent).toContain('Git 工具');
     expect(panel.textContent).toContain('目标');
     expect(panel.textContent).toContain('任务清单');
-    expect(panel.textContent).not.toContain('Git tools');
     expect(panel.textContent).not.toContain('Progress');
   });
 
-  it('refreshes Git on mount and window focus without installing a polling interval', async () => {
-    const intervalSpy = vi.spyOn(window, 'setInterval');
-    render(<TaskStatusPanel projectFolder="D:/project" />);
-
-    await waitFor(() => expect(runtime.getGitInfo).toHaveBeenCalledTimes(1));
-    expect(intervalSpy.mock.calls.some(([, delay]) => delay === 5_000)).toBe(false);
-
-    window.dispatchEvent(new window.Event('focus'));
-    await waitFor(() => expect(runtime.getGitInfo).toHaveBeenCalledTimes(2));
-    expect(intervalSpy.mock.calls.some(([, delay]) => delay === 5_000)).toBe(false);
-  });
-
   it('collapses each section independently', async () => {
-    render(<TaskStatusPanel projectFolder="D:/project" goal={goal} todo={todo} />);
+    render(<TaskStatusPanel goal={goal} todo={todo} />);
     const panel = await screen.findByTestId('task-status-panel');
     const goalToggle = within(panel).getByRole('button', { name: /目标/ });
 
@@ -141,56 +68,6 @@ describe('TaskStatusPanel', () => {
 
     expect(screen.queryByText('完成五子棋并通过全部验证')).toBeNull();
     expect(within(panel).getByText('实现落子逻辑')).toBeTruthy();
-  });
-
-  it('does not expose legacy evaluator configuration as Goal status', async () => {
-    render(<TaskStatusPanel goal={goal} evaluatorConfigured={false} />);
-
-    const panel = await screen.findByTestId('task-status-panel');
-    expect(panel.textContent).toContain('完成五子棋并通过全部验证');
-    expect(panel.textContent).not.toContain('评估模型未配置');
-  });
-
-  it('opens worktree review directly and keeps branch and commit tools functional', async () => {
-    const onOpenReview = vi.fn();
-    render(
-      <TaskStatusPanel
-        projectFolder="D:/project"
-        goal={goal}
-        todo={todo}
-        onOpenReview={onOpenReview}
-      />,
-    );
-    await screen.findByTestId('task-status-panel');
-
-    fireEvent.click(screen.getByRole('button', { name: /更改/ }));
-    await waitFor(() => expect(runtime.getGitReview).toHaveBeenCalledWith({ root: 'D:/project' }));
-    expect(onOpenReview).toHaveBeenCalledWith(
-      expect.objectContaining({
-        fileChanges: [expect.objectContaining({ path: 'src/App.tsx', action: 'edited' })],
-      }),
-    );
-    expect(screen.queryByRole('dialog', { name: /更改/ })).toBeNull();
-
-    fireEvent.click(screen.getByRole('button', { name: /feat\/status-card/ }));
-    expect(screen.getByRole('menu', { name: 'Git 分支' })).toBeTruthy();
-    fireEvent.click(screen.getByRole('menuitem', { name: 'main' }));
-    await waitFor(() => expect(runtime.gitCheckout).toHaveBeenCalled());
-
-    fireEvent.click(screen.getByRole('button', { name: /^提交 \/ 推送/ }));
-    const dialog = screen.getByRole('dialog', { name: '提交更改' });
-    fireEvent.change(within(dialog).getByLabelText('提交信息'), {
-      target: { value: 'feat: add status panel' },
-    });
-    fireEvent.click(within(dialog).getByRole('button', { name: '提交' }));
-    await waitFor(() =>
-      expect(runtime.gitCommit).toHaveBeenCalledWith({
-        root: 'D:/project',
-        message: 'feat: add status panel',
-        includeUnstaged: true,
-        push: false,
-      }),
-    );
   });
 
   it('focuses a long Progress list and exposes folded rows on hover', () => {
@@ -286,21 +163,8 @@ describe('TaskStatusPanel', () => {
     });
   });
 
-  it('renders nothing when Git, Goal and Progress have no real data', async () => {
-    runtime.getGitInfo.mockResolvedValue({
-      branch: null,
-      branches: [],
-      changes: [],
-      recentCommits: [],
-      additions: 0,
-      deletions: 0,
-      ahead: 0,
-      behind: 0,
-      hasRemote: false,
-      isRepo: false,
-    });
-    const { container } = render(<TaskStatusPanel projectFolder="D:/not-a-repo" />);
-    await waitFor(() => expect(runtime.getGitInfo).toHaveBeenCalled());
+  it('renders nothing when Goal and Progress have no real data', () => {
+    const { container } = render(<TaskStatusPanel />);
     expect(container.firstChild).toBeNull();
   });
 });

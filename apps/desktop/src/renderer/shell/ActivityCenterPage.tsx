@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { LoaderCircle, RefreshCw, RotateCcw, Webhook } from 'lucide-react';
+import { LoaderCircle, RefreshCw, RotateCcw, Webhook, Plus, Timer, MessageSquare, Workflow, Users } from 'lucide-react';
 import {
   looksLikeOpaqueId,
   type CollaborationActivitySummary,
@@ -12,6 +12,7 @@ import {
 import type { ActivityExternalEventSummary } from '@sync-think/protocol';
 import { resolveKernelDisplayName } from './brand-icons.js';
 import { toastApi } from './Toast.js';
+import { PROJECTLESS_SCOPE } from './projectless-scope.js';
 
 const PAGE_LIMIT = 25;
 
@@ -39,10 +40,10 @@ const STATE_LABELS: Record<RunIndexState, string> = {
 };
 
 const SOURCE_LABELS: Record<RunIndexSource, string> = {
-  chat: '对话',
+  chat: '普通对话',
   scheduled: '定时任务',
-  external: '系统触发',
-  orchestration: '编排',
+  external: '外部触发',
+  orchestration: '小队编排',
 };
 
 const EXTERNAL_STATE_LABELS: Record<string, string> = {
@@ -110,7 +111,16 @@ function formatDuration(entry: RunIndexEntry): string {
   return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
+const SOURCE_ICONS = { chat: MessageSquare, scheduled: Timer, external: Webhook, orchestration: Workflow };
+function SourceBadge({source}: {source: RunIndexSource}) {
+  const Icon = SOURCE_ICONS[source];
+  return <span className="inbox-source" data-source={source}><Icon size={12} />{SOURCE_LABELS[source]}</span>;
+}
+
 export interface ActivityCenterPageProps {
+  onNewConversation?(): void;
+  workspaces?: readonly { workspaceId: string; name: string }[];
+  conversations?: readonly { id: string; workspaceId?: string }[];
   onOpenConversation?(conversationId: string): void;
   /**
    * Hands the resolved prompt back to the host, which seeds it into the target
@@ -128,6 +138,13 @@ export interface ActivityCenterPageProps {
 
 export function ActivityCenterPage(props: ActivityCenterPageProps): JSX.Element {
   const { onOpenConversation, onRetryRun } = props;
+  const workspaceLabel = (entry: RunIndexEntry) => {
+    const conversation = props.conversations?.find(item => item.id === entry.conversationId);
+    const id = conversation ? conversation.workspaceId : entry.workspaceId;
+    const workspace = props.workspaces?.find(item => item.workspaceId === id);
+    return !id || id === PROJECTLESS_SCOPE || workspace?.name === '__inbox__'
+      ? '不绑定工作区' : workspace?.name ?? '工作区对话';
+  };
   const [entries, setEntries] = useState<RunIndexEntry[] | null>(null);
   const [counts, setCounts] = useState<Record<RunIndexState, number> | null>(null);
   const [nextCursor, setNextCursor] = useState<string | undefined>(undefined);
@@ -287,11 +304,13 @@ export function ActivityCenterPage(props: ActivityCenterPageProps): JSX.Element 
     <div className="task-panel activity-panel" data-testid="activity-panel">
       <header className="task-panel__head">
         <div>
-          <h1 className="task-panel__title">后台活动</h1>
+          <h1 className="task-panel__title">收件箱</h1>
           <p className="task-panel__subtitle">
-            查看后台 Run，以及 Webhook、Git 推送和文件监听等系统触发记录
+            统一查看对话、定时任务和外部触发的执行结果
           </p>
         </div>
+        <div className="inbox-header-actions">
+        {props.onNewConversation ? <button type="button" className="task-panel__new" onClick={props.onNewConversation} data-testid="inbox-new-conversation"><Plus size={14} />不绑定工作区的对话</button> : null}
         <button
           type="button"
           className="task-panel__new"
@@ -301,6 +320,7 @@ export function ActivityCenterPage(props: ActivityCenterPageProps): JSX.Element 
         >
           <RefreshCw size={14} /> 刷新
         </button>
+        </div>
       </header>
 
       <div className="task-panel__frame">
@@ -315,7 +335,7 @@ export function ActivityCenterPage(props: ActivityCenterPageProps): JSX.Element 
               setSourceFilter(null);
             }}
           >
-            <span className="task-panel__sb-label">全部 Run</span>
+            <span className="task-panel__sb-label">全部记录</span>
             <span className="task-panel__sb-count">{totalCount}</span>
           </button>
 
@@ -363,9 +383,10 @@ export function ActivityCenterPage(props: ActivityCenterPageProps): JSX.Element 
                   <div className="activity-row__body">
                     <div className="activity-row__title">
                       {activity.taskTitle}
-                      <span className="activity-row__source">{activity.conversationTitle}</span>
+                      <span className="inbox-source" data-source="orchestration"><Users size={12} />协作任务</span>
                     </div>
                     <div className="activity-row__meta">
+                      <span>{activity.conversationTitle}</span>
                       <span>{activity.assigneeName}</span>
                       <span>{formatLocal(activity.updatedAt)}</span>
                       {activity.planRef ? <span>计划 v{activity.planRef.revision}</span> : null}
@@ -393,7 +414,7 @@ export function ActivityCenterPage(props: ActivityCenterPageProps): JSX.Element 
               加载中…
             </div>
           ) : entries.length === 0 ? (
-            <div className="task-panel__empty">没有符合条件的 Run</div>
+            <div className="task-panel__empty">没有符合条件的记录</div>
           ) : (
             <>
               <div className="activity-panel__list" data-testid="activity-run-list">
@@ -412,9 +433,10 @@ export function ActivityCenterPage(props: ActivityCenterPageProps): JSX.Element 
                     <div className="activity-row__body">
                       <div className="activity-row__title">
                         {activityRunTitle(entry)}
-                        <span className="activity-row__source">{SOURCE_LABELS[entry.source]}</span>
+                        <SourceBadge source={entry.source} />
                       </div>
                       <div className="activity-row__meta">
+                        <span className="inbox-workspace">{workspaceLabel(entry)}</span>
                         <span>{formatLocal(entry.startedAt)}</span>
                         <span>耗时 {formatDuration(entry)}</span>
                         {entry.kernelId ? (
@@ -483,9 +505,8 @@ export function ActivityCenterPage(props: ActivityCenterPageProps): JSX.Element 
                   <div className="activity-row__body">
                     <div className="activity-row__title">
                       {event.title ?? event.dedupeKey}
-                      <span className="activity-row__source">
-                        {event.sourceName ?? event.sourceKind}
-                      </span>
+                      <SourceBadge source="external" />
+                      <span className="activity-row__source">{event.sourceName ?? event.sourceKind}</span>
                     </div>
                     <div className="activity-row__meta">
                       <span>{formatLocal(event.createdAt)}</span>

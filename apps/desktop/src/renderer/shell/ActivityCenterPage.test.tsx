@@ -247,7 +247,7 @@ describe('ActivityCenterPage', () => {
     const onOpenConversation = vi.fn();
 
     render(<ActivityCenterPage onRetryRun={onRetryRun} onOpenConversation={onOpenConversation} />);
-    expect(screen.getByText(/Webhook、Git 推送和文件监听等系统触发记录/)).toBeTruthy();
+    expect(screen.getByText(/统一查看对话、定时任务和外部触发的执行结果/)).toBeTruthy();
     const restore = await screen.findByRole('button', { name: '重新编辑' });
     expect(restore.getAttribute('title')).toContain('不会自动发送或更换模型');
     expect(screen.queryByRole('button', { name: '重发' })).toBeNull();

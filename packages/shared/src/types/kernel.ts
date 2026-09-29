@@ -255,7 +255,13 @@ export type KernelEvent =
       partial: boolean;
     }
   /** Ephemeral output emitted while a still-running tool is producing data. */
-  | { type: 'tool-progress'; toolId: string; output: string }
+  | {
+      type: 'tool-progress'; toolId: string; output: string;
+      /** Original chunk size when an adapter bounded its text. */
+      outputBytes?: number; truncated?: boolean;
+      /** Execution reminders are progress labels, not command stdout. */
+      isNotice?: boolean;
+    }
   | {
       type: 'tool-result';
       toolId: string;

@@ -48,8 +48,8 @@ export function buildComposeAppendRequest(input: {
         ? input.images.map((image) => `[图片] ${image.name}`).join('\n')
         : input.text,
     modelId: resolveSendModelId(input),
-    kernelId: input.kernelOverride,
-    reasoningEffort: input.reasoningEffort,
+    kernelId: input.track === 'model' ? input.kernelOverride : undefined,
+    reasoningEffort: input.track === 'model' ? input.reasoningEffort : undefined,
     networkEnabled: input.networkEnabled || undefined,
     planExecuting: input.planExecuting === true ? true : undefined,
     helpMode: input.helpMode === true ? true : undefined,

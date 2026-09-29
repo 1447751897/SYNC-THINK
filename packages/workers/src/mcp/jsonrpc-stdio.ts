@@ -1,5 +1,5 @@
 /**
- * MCP JSON-RPC over stdio (Content-Length framing, MCP-compatible subset).
+ * MCP JSON-RPC over stdio (newline-delimited JSON, with legacy Content-Length input support).
  * Used by LocalStdioMcpWorker for real tools/call and tools/list after authz gates.
  *
  * Security: treat all server content as untrusted; size-limit and timeout enforced by caller.
@@ -41,13 +41,11 @@ export interface McpDiscoveredTool {
 }
 
 export function encodeJsonRpcMessage(msg: unknown): Buffer {
-  const body = Buffer.from(JSON.stringify(msg), 'utf8');
-  const header = Buffer.from(`Content-Length: ${body.length}\r\n\r\n`, 'utf8');
-  return Buffer.concat([header, body]);
+  return Buffer.from(JSON.stringify(msg) + '\n', 'utf8');
 }
 
 /**
- * Incremental Content-Length frame parser.
+ * Incremental MCP newline parser; also accepts legacy Content-Length responses.
  * Returns complete JSON message objects as they arrive.
  */
 export class JsonRpcStdioParser {
@@ -62,6 +60,25 @@ export class JsonRpcStdioParser {
     this.buffer = Buffer.concat([this.buffer, chunk]);
     const out: unknown[] = [];
     while (true) {
+      if (!this.buffer.length) break;
+      // Official MCP stdio is one JSON object per line. Preserve byte boundaries
+      // until a complete frame arrives (including split UTF-8 code points).
+      if (this.buffer[0] !== 67 && this.buffer[0] !== 99) {
+        const newline = this.buffer.indexOf(10);
+        if (newline < 0) {
+          if (this.buffer.length > this.maxMessageBytes) {
+            throw new Error('JSON-RPC message exceeds max bytes');
+          }
+          break;
+        }
+        if (newline > this.maxMessageBytes) {
+          throw new Error('JSON-RPC message exceeds max bytes');
+        }
+        const line = this.buffer.subarray(0, newline).toString('utf8').trim();
+        this.buffer = this.buffer.subarray(newline + 1);
+        if (line) out.push(JSON.parse(line));
+        continue;
+      }
       const headerEnd = indexOfCrLfCrLf(this.buffer);
       if (headerEnd < 0) {
         // Guard unbounded header growth

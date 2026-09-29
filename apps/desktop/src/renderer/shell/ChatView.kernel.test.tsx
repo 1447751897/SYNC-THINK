@@ -3,7 +3,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import type { Conversation } from '@sync-think/shared';
+import type { Conversation, GlobalAgent, Team } from '@sync-think/shared';
 import { ChatView, resetRecentConversationPageCacheForTests } from './ChatView.js';
 import { ToastProvider, resetToastStoreForTests } from './Toast.js';
 import { takeFailedComposeDrafts } from './failed-compose-drafts.js';
@@ -216,6 +216,42 @@ async function sendMessage(text: string) {
 }
 
 describe('ChatView kernel selection', () => {
+  it('renders repository context outside the real conversation composer surface', async () => {
+    const originalBridge = window.syncThink;
+    Object.defineProperty(window, 'syncThink', {
+      configurable: true,
+      value: { ...originalBridge, runtime: { ...runtime, gitChanged: vi.fn(async () => ({
+        isRepo: true, branch: 'main', changeCount: 2, detached: false,
+        ahead: 0, behind: 0, operation: null,
+      })) } },
+    });
+    const current = conversation();
+    const view = render(
+      <ToastProvider>
+        <ChatView
+          conversation={current}
+          modelName="Model A"
+          models={[{ modelId: 'model-a', displayName: 'Model A', providerName: 'Provider' }]}
+          workspaces={[{ workspaceId: current.workspaceId!, name: 'Repository', folderPath: 'D:/repo', createdAt: current.createdAt, updatedAt: current.updatedAt }]}
+          eventHistory={[]}
+          onOpenGit={vi.fn()}
+          onTitleUpdated={vi.fn()}
+        />
+      </ToastProvider>,
+    );
+    try {
+      const bar = await screen.findByTestId('composer-git-bar');
+      const surface = screen.getByTestId('compose-input').closest('.shell-compose');
+      expect(bar.closest('.shell-compose')).toBeNull();
+      expect(bar.parentElement).toBe(surface?.parentElement);
+      expect(bar.nextElementSibling).toBe(surface);
+      expect(await screen.findByText('2 个未提交')).toBeTruthy();
+    } finally {
+      view.unmount();
+      Object.defineProperty(window, 'syncThink', { configurable: true, value: originalBridge });
+    }
+  });
+
   it('repairs a persisted model override that is no longer in the available catalog', async () => {
     window.localStorage.setItem(
       'sync-think.conversationModelOverrides',
@@ -264,6 +300,7 @@ describe('ChatView kernel selection', () => {
   it('persists a kernel picked in the model menu and re-sends it', async () => {
     renderChat();
     fireEvent.click(screen.getByTitle(/切换模型/));
+    fireEvent.click(await screen.findByTestId('model-kernel-trigger'));
     const ccOption = await screen.findByTestId('kernel-option-claude-code');
     fireEvent.click(ccOption);
 
@@ -290,6 +327,7 @@ describe('ChatView kernel selection', () => {
     await waitFor(() => expect(runtime.detectKernels).toHaveBeenCalledTimes(1));
 
     fireEvent.click(screen.getByTitle(/切换模型/));
+    fireEvent.click(await screen.findByTestId('model-kernel-trigger'));
     expect((await screen.findByTestId('kernel-version-codex')).textContent).toBe('v0.145.0');
 
     await act(async () => {
@@ -338,6 +376,7 @@ describe('ChatView kernel selection', () => {
     await waitFor(() => expect(runtime.getConversationContextStatus).toHaveBeenCalled());
 
     fireEvent.click(screen.getByTitle(/切换模型/));
+    fireEvent.click(await screen.findByTestId('model-kernel-trigger'));
     fireEvent.click(await screen.findByTestId('kernel-option-claude-code'));
 
     await waitFor(() =>
@@ -387,6 +426,7 @@ describe('ChatView kernel selection', () => {
     runtime.listConversationMessages.mockClear();
 
     fireEvent.click(screen.getByTitle(/切换模型/));
+    fireEvent.click(await screen.findByTestId('model-kernel-trigger'));
     fireEvent.click(await screen.findByTestId('kernel-option-claude-code'));
 
     await waitFor(() =>
@@ -417,6 +457,7 @@ describe('ChatView kernel selection', () => {
     runtime.subscribeConversationTransientStream.mockClear();
 
     fireEvent.click(screen.getByTitle(/切换模型/));
+    fireEvent.click(await screen.findByTestId('model-kernel-trigger'));
     fireEvent.click(await screen.findByTestId('kernel-option-claude-code'));
 
     await waitFor(() =>
@@ -451,6 +492,7 @@ describe('ChatView kernel selection', () => {
     await waitFor(() => expect(runtime.getConversationContextStatus).toHaveBeenCalled());
 
     fireEvent.click(screen.getByTitle(/切换模型/));
+    fireEvent.click(await screen.findByTestId('model-kernel-trigger'));
     fireEvent.click(await screen.findByTestId('kernel-option-claude-code'));
     await waitFor(() =>
       expect(runtime.getConversationContextStatus).toHaveBeenLastCalledWith(
@@ -502,6 +544,7 @@ describe('ChatView kernel selection', () => {
     renderChat();
 
     fireEvent.click(screen.getByTitle(/切换模型/));
+    fireEvent.click(await screen.findByTestId('model-kernel-trigger'));
     const piOption = await screen.findByTestId('kernel-option-pi');
     expect(piOption.getAttribute('aria-disabled')).toBe('true');
     expect(piOption.getAttribute('aria-label')).toContain('未安装');
@@ -679,7 +722,7 @@ describe('ChatView complete prose actions', () => {
     fireEvent.click(await screen.findByRole('button', { name: '复制' }));
     await screen.findByText('读取或复制失败，请重试');
     expect(writeText).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: '复制' }));
+    fireEvent.click(screen.getByRole('button', { name: '重试复制' }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith('完整回答🙂结尾'));
   });
   it('does not resend the preview when original prompt reading fails', async () => {
@@ -787,6 +830,7 @@ describe('compaction before sending', () => {
     await waitFor(() => expect(runtime.compactConversation).toHaveBeenCalledTimes(1));
     expect(runtime.sendConversationMessage).not.toHaveBeenCalled();
     fireEvent.click(screen.getByTitle(/切换模型/));
+    fireEvent.click(await screen.findByTestId('model-kernel-trigger'));
     fireEvent.click(await screen.findByTestId('kernel-option-codex'));
     await act(async () =>
       compact.resolve({
@@ -980,3 +1024,22 @@ it.each([false, true])(
     returned?.unmount();
   },
 );
+
+
+describe('bound agent/team composer', () => {
+  it.each(['agent', 'team'] as const)('hides model/kernel controls and ignores stale %s overrides', async (track) => {
+    const current = { ...conversation(), track, targetRef: track === 'agent' ? 'agent-bound' : 'team-bound' };
+    for (const [key, value] of [['conversationModelOverrides', 'model-a'], ['conversationKernelOverrides', 'pi'], ['conversationReasoningEfforts', 'off']]) {
+      window.localStorage.setItem('sync-think.' + key, JSON.stringify({ [current.id]: value }));
+    }
+    const agent = { id: 'agent-bound', name: 'Bound agent', defaultModelId: 'model-a', defaultKernelId: 'codex', reasoningEffort: 'high', avatar: '', skillIds: [], mcpServerIds: [], fallbackModelIds: [] } as unknown as GlobalAgent;
+    const team = { id: 'team-bound', name: 'Bound team', coordinatorAgentId: agent.id, members: [{ agentId: agent.id }] } as unknown as Team;
+    render(<ToastProvider><ChatView conversation={current} agents={[agent]} teams={[team]} modelName="Model A" models={[{ modelId: 'model-a', displayName: 'Model A', providerName: 'Provider' }]} eventHistory={[]} onTitleUpdated={vi.fn()} /></ToastProvider>);
+    expect(document.querySelector('.shell-compose__model-btn')).toBeNull();
+    expect(screen.queryByTestId('compose-kernel-chip')).toBeNull();
+    await waitFor(() => expect(runtime.detectKernels).toHaveBeenCalled());
+    await sendMessage('Use saved agent settings');
+    expect(runtime.appendMessage).toHaveBeenCalledWith(expect.objectContaining({ modelId: undefined, kernelId: undefined, reasoningEffort: undefined }));
+    expect(runtime.getConversationContextStatus).toHaveBeenCalledWith(expect.objectContaining({ kernelId: 'codex' }));
+  });
+});

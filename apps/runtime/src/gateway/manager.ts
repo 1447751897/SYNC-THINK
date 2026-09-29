@@ -29,6 +29,7 @@ import {
   type GatewayUpstreamProtocol,
 } from './tickets.js';
 import { resolveGatewayModelName, type GatewayCatalogEntry } from './model-resolver.js';
+import { createGatewayUpstreamFetch } from './upstream-fetch.js';
 
 export interface OpenGatewayManagerDeps {
   /** Catalog snapshot for external-client model resolution. */
@@ -45,7 +46,7 @@ export interface OpenGatewayManagerDeps {
   ): void;
   removeResponseContinuations?(scopeId: string): void;
   onLog?(message: string): void;
-  /** Injected for tests. */
+  /** Optional override; defaults to the same proxy-aware transport as provider tests. */
   fetchImpl?: typeof fetch;
 }
 
@@ -107,7 +108,7 @@ export class OpenGatewayManager {
         resolveModelName: (model) => this.resolveExternalModel(model),
         listModels: () => this.listCatalogModels(),
         onRequest: (entry) => this.recordAuditLog(entry),
-        ...(this.deps.fetchImpl ? { fetchImpl: this.deps.fetchImpl } : {}),
+        fetchImpl: this.deps.fetchImpl ?? createGatewayUpstreamFetch(),
         ...(this.deps.onLog ? { onLog: this.deps.onLog } : {}),
       });
       this.failure = undefined;

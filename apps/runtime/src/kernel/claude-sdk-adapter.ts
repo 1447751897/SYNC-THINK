@@ -277,7 +277,6 @@ export class ClaudeSdkKernelAdapter implements KernelAdapter {
   private streamedText = false;
   /** Claude may replay a complete assistant message while resuming a tool loop. */
   private readonly seenAssistantToolUses = new Set<string>();
-  private readonly nativeTaskToolIds = new Set<string>();
   /** Tool blocks currently receiving streamed input_json_delta fragments. */
   private readonly streamedToolUses = new Map<
     number,
@@ -463,7 +462,6 @@ export class ClaudeSdkKernelAdapter implements KernelAdapter {
     this.cancelled = false;
     this.streamedText = false;
     this.seenAssistantToolUses.clear();
-    this.nativeTaskToolIds.clear();
     this.streamedToolUses.clear();
     this.activeStreamUsage = undefined;
     this.pendingAssistantUsages.clear();
@@ -664,19 +662,21 @@ export class ClaudeSdkKernelAdapter implements KernelAdapter {
       case 'user': {
         // Tool results arrive as tool_result blocks on echoed user messages;
         // without this the timeline only ever shows tool.requested.
-        for (const result of extractSdkToolResults(
+        const results = extractSdkToolResults(
           (message as { message?: { content?: unknown } }).message ?? {},
-        )) {
+        );
+        for (const result of results) {
           push({
             type: 'tool-result',
             toolId: result.toolId,
             output: result.output,
             isError: result.isError,
-            ...(this.nativeTaskToolIds.has(result.toolId) && 'tool_use_result' in message
+            // The SDK associates this object with the message's single tool result.
+            // Do not fan it out over multiple tool IDs in a batched message.
+            ...(results.length === 1 && 'tool_use_result' in message
               ? { structuredOutput: message.tool_use_result }
               : {}),
           });
-          this.nativeTaskToolIds.delete(result.toolId);
         }
         return;
       }
@@ -801,8 +801,6 @@ export class ClaudeSdkKernelAdapter implements KernelAdapter {
       if (!Number.isInteger(index)) return;
       const toolId = inner.content_block.id?.trim() || `tool-${randomUUID()}`;
       const name = inner.content_block.name?.trim() || 'unknown';
-      if (['TodoWrite', 'TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet'].includes(name))
-        this.nativeTaskToolIds.add(toolId);
       const initialJson = JSON.stringify(inner.content_block.input ?? {});
       this.streamedToolUses.set(index!, { toolId, name, partialJson: '' });
       push({ type: 'tool-call', toolId, name, argsJson: initialJson, partial: true });
@@ -865,12 +863,6 @@ export class ClaudeSdkKernelAdapter implements KernelAdapter {
         if (!this.streamedText) push({ type: 'delta', text: block.text });
       } else if (block.type === 'tool_use') {
         const toolId = block.id ?? `tool-${randomUUID()}`;
-        if (
-          ['TodoWrite', 'TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet'].includes(
-            block.name ?? '',
-          )
-        )
-          this.nativeTaskToolIds.add(toolId);
         const replayKey = `${inner.id ?? 'unknown-message'}\u0000${toolId}`;
         if (this.seenAssistantToolUses.has(toolId) || this.seenAssistantToolUses.has(replayKey)) {
           continue;

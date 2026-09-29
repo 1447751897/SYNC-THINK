@@ -287,7 +287,7 @@ describe('ChatView turn Skill draft', () => {
       return 0;
     });
 
-    renderChat(conversation('conversation-toolbar-collapse'));
+    renderChat({ ...conversation('conversation-toolbar-collapse'), track: 'model', targetRef: 'model-a' });
     const toolbar = screen.getByTestId('compose-toolbar');
     const permission = screen.getByTestId('compose-permission-control');
     const skill = screen.getByTestId('compose-skill-control');
@@ -336,6 +336,8 @@ describe('ChatView turn Skill draft', () => {
     renderChat(
       {
         ...conversation('conversation-plan-model'),
+        track: 'model',
+        targetRef: 'model-a',
         interactionMode: 'plan',
       } as Conversation,
       [
@@ -1198,19 +1200,15 @@ describe('ChatView turn Skill draft', () => {
     expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe('');
   });
 
-  it('resets the Compose draft when the conversation or identity changes', async () => {
+  it('resets the Compose draft when another conversation is selected from the sidebar', async () => {
     const view = renderChat(conversation('conversation-a'));
-    expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe('');
-
-    fireEvent.click(screen.getByTestId('compose-identity'));
-    fireEvent.click(await screen.findByTestId('identity-option-agent-agent-b'));
-    await waitFor(() => expect(runtime.rebindConversationTarget).toHaveBeenCalledTimes(1));
-    expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe('');
+    await toggleSkill('skill-b', 1);
+    expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe('1');
 
     view.rerender(
       <ToastProvider>
         <ChatView
-          conversation={conversation('conversation-b')}
+          conversation={conversation('conversation-b', 'agent-b')}
           modelName="Model A"
           models={[{ modelId: 'model-a', displayName: 'Model A', providerName: 'Provider' }]}
           agents={agents}
@@ -1277,7 +1275,7 @@ describe('ChatView turn Skill draft', () => {
   });
 
   it('keeps the Compose selection when only the model override changes', async () => {
-    renderChat(conversation('conversation-a'), [
+    renderChat({ ...conversation('conversation-a'), track: 'model', targetRef: 'model-a' }, [
       { modelId: 'model-a', displayName: 'Model A', providerName: 'Provider' },
       { modelId: 'model-b', displayName: 'Model B', providerName: 'Provider' },
     ]);

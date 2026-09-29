@@ -2,6 +2,7 @@ import type {
   BrowserPaneTab,
   ConversationPaneTab,
   FilePaneTab,
+  GitPaneTab,
   ReviewPaneTab,
   TerminalPaneTab,
   WorkspaceFilesPaneTab,
@@ -15,7 +16,8 @@ export type WorkbenchTab =
   | TerminalPaneTab
   | BrowserPaneTab
   | ReviewPaneTab
-  | WorkspaceFilesPaneTab;
+  | WorkspaceFilesPaneTab
+  | GitPaneTab;
 
 export interface WorkbenchScope {
   open: boolean;
@@ -147,6 +149,8 @@ function normalizeWorkbenchTab(value: unknown): WorkbenchTab | null {
     const runId = record.runId.trim().slice(0, MAX_ID_LENGTH);
     return runId ? { id: `review:${runId}`, type: 'review', runId } : null;
   }
+  // 单例 Git 工具页签：无额外字段需要校验，与 `workspace-files` 同样直接归一。
+  if (record.type === 'git') return { id: 'git', type: 'git', ...(typeof record.projectFolder === 'string' && record.projectFolder.trim() ? { projectFolder: record.projectFolder.trim().slice(0, MAX_ID_LENGTH) } : {}) };
   return null;
 }
 
@@ -404,6 +408,11 @@ export function setWorkbenchFileBrowserWidth(
 
 export function workspaceFilesWorkbenchTab(): WorkspaceFilesPaneTab {
   return { id: 'workspace-files', type: 'workspace-files' };
+}
+
+/** 单例 Git 工具页签（改动 / 历史 / 分支 / 同步）。 */
+export function gitWorkbenchTab(projectFolder?: string): GitPaneTab {
+  return { id: 'git', type: 'git', ...(projectFolder ? { projectFolder } : {}) };
 }
 
 export function conversationWorkbenchTab(conversationId: string): ConversationPaneTab {

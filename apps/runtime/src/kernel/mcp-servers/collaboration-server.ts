@@ -17,11 +17,10 @@ function toTool(
     name: schema.name,
     description: schema.description ?? schema.name,
     inputSchema: schema.inputSchema,
-    // Native parity: `chatToolRequiresApproval` classifies both tools as
-    // approval-gated outside full-access (they mutate the collaboration
-    // conversation), and neither is part of PLANNING_MODE_DENIED_TOOLS today.
-    approval: 'outside-full-access',
-    planningDenied: false,
+    // Execution is scoped by Runtime to the originating reply/task. Document
+    // delivery and team scheduling do not grant workspace write permission.
+    approval: ['collaboration_start_workflow', 'collaboration_submit_artifact'].includes(schema.name) ? 'never' : 'outside-full-access',
+    planningDenied: ['collaboration_start_workflow', 'collaboration_submit_artifact', 'collaboration_dispatch_tasks'].includes(schema.name),
   };
 }
 

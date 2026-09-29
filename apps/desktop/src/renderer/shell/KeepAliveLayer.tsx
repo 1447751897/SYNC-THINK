@@ -29,13 +29,14 @@ export const KeepAliveLayer = memo(
     preserveLayout?: boolean;
     children: ReactNode;
   }) {
+    const parentActive = useKeepAliveActive();
     const visited = useRef(props.active);
     if (props.active) visited.current = true;
     const frozenChildren = useRef(props.children);
     if (props.active) frozenChildren.current = props.children;
     if (!visited.current) return null;
     return (
-      <KeepAliveActiveContext.Provider value={props.active}>
+      <KeepAliveActiveContext.Provider value={props.active && parentActive}>
         <div
           className={props.className}
           hidden={props.preserveLayout ? undefined : !props.active}

@@ -19,6 +19,8 @@ interface DeferredToolContentProps {
   deferred: DeferredContent;
   preview: string;
   previewContent?: ReactNode;
+  /** Structured input renderers own formatting and copying, including after full assembly. */
+  renderContent?: (text: string) => ReactNode;
   presentation?: 'code' | 'prose';
   /** When false, keep paged “读取完整内容”. Message bodies and file snapshots assemble. */
   assemble?: boolean;
@@ -42,6 +44,7 @@ function ContentSession({
   deferred,
   preview,
   previewContent,
+  renderContent,
   presentation = 'code',
   assemble,
   streaming,
@@ -211,41 +214,45 @@ function ContentSession({
       data-mode={reading ? 'content' : 'preview'}
       data-presentation={presentation}
     >
-      <div className="shell-tool-result__bar">
-        <span>
+      {!renderContent ? (
+        <div className="shell-tool-result__bar">
           <span>
-            {autoAssemble
-              ? reading
-                ? displayed?.truncated
-                  ? '输出（已按长度截断展示）'
-                  : '输出'
-                : '预览'
-              : reading
-                ? `${presentation === 'prose' ? '原文分段' : '分段阅读'} · 第 ${history.length + 1} 段`
-                : '预览'}
-          </span>{' '}
-          · {byteLabel(paged?.utf8Bytes ?? deferred.utf8Bytes)}
-        </span>
-        <div className="shell-md-code__actions">
-          {wrapControl && presentation !== 'prose' ? (
-            <button
-              type="button"
-              className="shell-md-code__action shell-md-code__wrap"
-              aria-pressed={wraps}
-              aria-label={wraps ? '切换为不换行' : '切换为自动换行'}
-              title={wraps ? '切换为不换行' : '切换为自动换行'}
-              onClick={toggleWrap}
-            >
-              <WrapText size={13} aria-hidden="true" />
-            </button>
-          ) : null}
-          <CopyTextButton
-            text={assembled ?? paged?.text ?? preview}
-            label={reading ? (autoAssemble ? '复制全文' : '复制本段') : '复制预览'}
-          />
+            <span>
+              {autoAssemble
+                ? reading
+                  ? displayed?.truncated
+                    ? '输出（已按长度截断展示）'
+                    : '输出'
+                  : '预览'
+                : reading
+                  ? `${presentation === 'prose' ? '原文分段' : '分段阅读'} · 第 ${history.length + 1} 段`
+                  : '预览'}
+            </span>{' '}
+            · {byteLabel(paged?.utf8Bytes ?? deferred.utf8Bytes)}
+          </span>
+          <div className="shell-md-code__actions">
+            {wrapControl && presentation !== 'prose' ? (
+              <button
+                type="button"
+                className="shell-md-code__action shell-md-code__wrap"
+                aria-pressed={wraps}
+                aria-label={wraps ? '切换为不换行' : '切换为自动换行'}
+                title={wraps ? '切换为不换行' : '切换为自动换行'}
+                onClick={toggleWrap}
+              >
+                <WrapText size={13} aria-hidden="true" />
+              </button>
+            ) : null}
+            <CopyTextButton
+              text={assembled ?? paged?.text ?? preview}
+              label={reading ? (autoAssemble ? '复制全文' : '复制本段') : '复制预览'}
+            />
+          </div>
         </div>
-      </div>
-      {!reading && previewContent ? (
+      ) : null}
+      {renderContent ? (
+        renderContent(visibleRaw)
+      ) : !reading && previewContent ? (
         <div className="shell-deferred-content__preview">{previewContent}</div>
       ) : (
         <pre
@@ -258,7 +265,7 @@ function ContentSession({
           <code>{visibleText}</code>
         </pre>
       )}
-      {displayed?.notice ? (
+      {!renderContent && displayed?.notice ? (
         <p className="shell-deferred-content__notice" data-testid="deferred-content-truncated">
           {displayed.notice}
         </p>
@@ -276,9 +283,7 @@ function ContentSession({
             <button
               type="button"
               disabled={busy || paged.nextOffset === undefined || error === 'changed'}
-              onClick={() =>
-                loadPage(paged.nextOffset!, paged.version, [...history, paged.offset])
-              }
+              onClick={() => loadPage(paged.nextOffset!, paged.version, [...history, paged.offset])}
             >
               下一段
             </button>

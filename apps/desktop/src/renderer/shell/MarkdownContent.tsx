@@ -22,6 +22,8 @@ import type { OpenHtmlInBrowser } from './html-browser.js';
 import type { ProjectTextLocation } from '../../workspace-tools-contract.js';
 import { FileTypeIcon } from './FileTypeIcon.js';
 import { WebTextLink } from './WebTextLink.js';
+import { normalizeMarkdownPath as normalizePath, workspaceResourceFromHref } from './markdown-resource.js';
+import { useCitationLink } from './CitationContext.js';
 import { GeneratedImageModelsContext } from './generated-image-models-context.js';
 import {
   imagesFromHastParagraph,
@@ -176,6 +178,7 @@ function CodeBlock({
       language={language}
       streaming={streaming}
       readingState={readingState}
+      wrapControl
     />
   );
 }
@@ -244,71 +247,6 @@ function markdownUrlTransform(url: string): string {
   return defaultUrlTransform(url);
 }
 
-interface WorkspaceResource {
-  path: string;
-  label: string;
-  location?: ProjectTextLocation;
-  kind: 'code' | 'image' | 'directory';
-}
-
-function decodeHref(value: string): string {
-  try {
-    return decodeURIComponent(value);
-  } catch {
-    return value;
-  }
-}
-
-function normalizePath(value: string): string {
-  return value.replaceAll('\\', '/').replace(/\/+/g, '/').replace(/\/$/, '');
-}
-
-function hasParentTraversal(value: string): boolean {
-  return value.split('/').some((segment) => segment === '..');
-}
-
-function workspaceResourceFromHref(href: string, projectFolder?: string): WorkspaceResource | null {
-  if (!projectFolder || /^(?:https?|data|sync-think-image):/i.test(href)) return null;
-  const decoded = decodeHref(href.trim());
-  const lineMatch = /:(\d+)(?::(\d+))?$/.exec(decoded);
-  const rawPath = lineMatch ? decoded.slice(0, lineMatch.index) : decoded;
-  const normalizedRoot = normalizePath(projectFolder);
-  let normalizedPath = normalizePath(rawPath);
-  const rootLower = normalizedRoot.toLowerCase();
-  const pathLower = normalizedPath.toLowerCase();
-  if (pathLower === rootLower) return null;
-  if (pathLower.startsWith(`${rootLower}/`)) {
-    normalizedPath = normalizedPath.slice(normalizedRoot.length + 1);
-  } else if (!normalizedPath.startsWith('/') && !/^[A-Za-z]:\//.test(normalizedPath)) {
-    normalizedPath = normalizedPath.replace(/^\.\//, '');
-    if (hasParentTraversal(normalizedPath)) return null;
-  } else {
-    return null;
-  }
-  if (!normalizedPath || hasParentTraversal(normalizedPath)) return null;
-  const basename = normalizedPath.split('/').at(-1) || normalizedPath;
-  const extension = basename.includes('.') ? basename.split('.').at(-1)?.toLowerCase() : '';
-  const kind =
-    extension && ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp'].includes(extension)
-      ? 'image'
-      : extension
-        ? 'code'
-        : 'directory';
-  return {
-    path: normalizedPath,
-    label: basename,
-    kind,
-    ...(lineMatch
-      ? {
-          location: {
-            line: Number(lineMatch[1]),
-            column: lineMatch[2] ? Number(lineMatch[2]) : 1,
-          },
-        }
-      : {}),
-  };
-}
-
 function ResourceLink({
   href,
   children,
@@ -323,6 +261,21 @@ function ResourceLink({
   onOpenUrl?: (url: string) => void;
 }) {
   const value = href ?? '';
+  const citation = useCitationLink(value, extractText(children), projectFolder);
+  if (citation) {
+    return (
+      <button
+        type="button"
+        className="shell-citation"
+        aria-label={'查看引用 ' + citation.index + '：' + citation.source.label}
+        title={citation.source.label}
+        aria-controls={citation.targetId}
+        onClick={citation.onSelect}
+      >
+        {citation.index}
+      </button>
+    );
+  }
   const workspace = workspaceResourceFromHref(value, projectFolder);
   if (workspace && onOpenFile) {
     const label = extractText(children) || workspace.label;

@@ -1,41 +1,39 @@
-// Shared agent avatar renderer — single source of truth for the library grid,
-// team roster, and chat messages so the face you designed is the face you talk to.
-//
-// `avatar` accepts three shapes, checked in this order:
-//   1. `gen:v1:<shape>:<color>` — a procedural seed rendered as inline SVG
-//   2. a `data:image/…` URL     — an imported image
-//   3. anything else            — legacy emoji / short text on a hashed color
-//
-// Branches 2 and 3 are untouched by the procedural work: existing agents keep
-// rendering exactly as before until their seed is written.
+// One renderer for the library, roster, tasks and chat. Old gen:v1 seeds are
+// projected into bot-avatars without rewriting records; uploaded images and
+// explicit emoji/text continue to render as before.
+import { lazy, memo, Suspense } from 'react';
 import { avatarColor } from './avatar-color.js';
-import { avatarDataUrl, parseAvatarSeed, type AvatarState } from './avatar-gen.js';
+import type { AvatarState } from './avatar-gen.js';
+import { botAvatarColor, parseBotAvatar } from './bot-avatar.js';
+
+import { parseWorkspaceAvatar } from './workspace-avatar-profile.js';
+const WorkspaceAvatar = lazy(() => import('./AgentWorkspaceAvatar.js').then(module => ({ default: module.AgentWorkspaceAvatar })));
+
+const BotAvatarCanvas = lazy(() => import('./BotAvatarCanvas.js'));
 
 export function isImageAvatar(avatar: string | undefined): boolean {
-  return Boolean(avatar && avatar.startsWith('data:image/'));
+  return Boolean(avatar?.trim().startsWith('data:image/'));
 }
 
-/** True when `avatar` carries a procedural seed rather than an image or text. */
 export function isGeneratedAvatar(avatar: string | undefined): boolean {
-  return parseAvatarSeed(avatar) !== null;
+  return parseBotAvatar(avatar) !== null || parseWorkspaceAvatar(avatar) !== null;
 }
 
-export function AgentAvatarView({
+export const AgentAvatarView = memo(function AgentAvatarView({
   name,
   avatar,
   size = 40,
   title,
   state = 'idle',
+  animate,
 }: {
   name: string;
   avatar?: string;
   size?: number;
   title?: string;
-  /**
-   * Expression layer for procedural avatars. Ignored by the image and text
-   * branches — only a generated face has states to change.
-   */
   state?: AvatarState;
+  /** Opt into idle motion for an editor preview; dense lists stay still. */
+  animate?: boolean;
 }) {
   const trimmed = avatar?.trim() ?? '';
   if (isImageAvatar(trimmed)) {
@@ -50,23 +48,38 @@ export function AgentAvatarView({
       />
     );
   }
-
-  const seed = parseAvatarSeed(trimmed);
-  if (seed) {
-    // No circular clip here: the shape itself is the silhouette. Clipping to a
-    // circle (as the imported-image branch does) would cut the outline away.
+  const workspaceFace = parseWorkspaceAvatar(trimmed);
+  if (workspaceFace) return <Suspense fallback={<span role="img" aria-label={name} style={{ display: 'inline-block', width: size, height: size, background: workspaceFace.color, borderRadius: '35%' }} />}><WorkspaceAvatar name={name} avatar={avatar} size={size} title={title} state={state} animate={animate} /></Suspense>;
+  const face = parseBotAvatar(trimmed);
+  if (face) {
     return (
-      <img
-        src={avatarDataUrl(seed.shape, seed.color, state, size)}
-        alt={name}
-        title={title ?? name}
-        style={{ width: size, height: size }}
-        className="shrink-0 select-none"
-        draggable={false}
-      />
+      <Suspense
+        fallback={
+          <span
+            role="img"
+            aria-label={name}
+            title={title ?? name}
+            className="agent-bot-avatar shrink-0 select-none"
+            style={{ width: size, height: size }}
+          >
+            <span
+              className="agent-bot-avatar__placeholder"
+              style={{ width: size * 0.8, height: size * 0.8, background: botAvatarColor(face) }}
+            />
+          </span>
+        }
+      >
+        <BotAvatarCanvas
+          name={name}
+          face={face}
+          size={size}
+          title={title}
+          state={state}
+          animate={animate}
+        />
+      </Suspense>
     );
   }
-
   const label = trimmed ? trimmed.slice(0, 2) : (name[0] ?? '?').toUpperCase();
   return (
     <div
@@ -83,14 +96,14 @@ export function AgentAvatarView({
       {label}
     </div>
   );
-}
+});
 
 /**
  * Read a user-picked image file and downscale it to a compact square data URL
  * (96×96 webp ≈ a few KB) so avatars stay cheap to store and stream.
  *
  * The file is read through FileReader into a `data:` URL first: the shell CSP
-   * (`img-src 'self' data: https: http: sync-think-image:`) blocks `blob:` URLs, so loading
+ * (`img-src 'self' data: https: http: sync-think-image:`) blocks `blob:` URLs, so loading
  * a createObjectURL blob into an Image would fire onerror and fail the import.
  */
 export function readAvatarImage(file: File): Promise<string> {

@@ -1,7 +1,16 @@
 import { useEffect, useRef, useState } from 'react';
+import { CodeBlockButton } from './CodeBlockButton.js';
 import { Check, Copy } from 'lucide-react';
 
-export function CopyTextButton({ text, label = '复制代码' }: { text: string; label?: string }) {
+export function CopyTextButton({
+  text,
+  label = '复制代码',
+  compact = false,
+}: {
+  text: string;
+  label?: string;
+  compact?: boolean;
+}) {
   const [feedback, setFeedback] = useState<'idle' | 'copied' | 'failed'>('idle');
   const timerRef = useRef<ReturnType<typeof setTimeout>>();
   const mountedRef = useRef(true);
@@ -27,12 +36,14 @@ export function CopyTextButton({ text, label = '复制代码' }: { text: string;
     timerRef.current = setTimeout(() => setFeedback('idle'), 1600);
   };
 
+  const Button = compact ? CodeBlockButton : 'button';
   return (
-    <button
+    <Button
       type="button"
-      className="shell-source-copy"
+      className={`shell-source-copy${compact ? ' is-icon-only' : ''}`}
+      data-copy-state={feedback}
       aria-label={label}
-      title={label}
+      title={feedback === 'copied' ? '已复制' : feedback === 'failed' ? '复制失败，请重试' : label}
       onClick={() => void copy()}
     >
       {feedback === 'copied' ? (
@@ -40,9 +51,9 @@ export function CopyTextButton({ text, label = '复制代码' }: { text: string;
       ) : (
         <Copy size={13} aria-hidden="true" />
       )}
-      <span role="status">
+      <span role="status" aria-live="polite">
         {feedback === 'copied' ? '已复制' : feedback === 'failed' ? '复制失败' : '复制'}
       </span>
-    </button>
+    </Button>
   );
 }

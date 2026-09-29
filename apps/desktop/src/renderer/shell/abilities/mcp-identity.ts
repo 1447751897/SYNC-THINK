@@ -7,8 +7,7 @@ import { siteFaviconUrl } from '../ExternalSourceIcon.js';
 export type McpMark = 'github' | 'folder' | 'globe' | 'database' | 'server';
 
 export type McpVisual =
-  | { id: string; kind: 'mark'; mark: McpMark }
-  | { id: string; kind: 'favicon'; src: string };
+  { id: string; kind: 'mark'; mark: McpMark } | { id: string; kind: 'favicon'; src: string };
 
 export type McpLaunchKind = 'ready' | 'unresolved-env' | 'invalid';
 
@@ -101,14 +100,16 @@ export interface McpLogoSources {
  * 内置身份图标直接使用本地资源；未知站点依次尝试 favicon → 公共服务 → 语义图标。
  * 调用方按索引逐档尝试，加载失败即降到下一档，因此不会出现空白/裂图。
  */
-export function resolveMcpLogoSources(input: {
-  name?: string;
-  endpoint?: string;
-}): McpLogoSources {
+export function resolveMcpLogoSources(input: { name?: string; endpoint?: string }): McpLogoSources {
   const managed = SYNC_THINK_CONNECTOR_CATALOG.find(
-    (item) => item.name.toLocaleLowerCase() === String(input.name ?? '').trim().toLocaleLowerCase(),
+    (item) =>
+      item.name.toLocaleLowerCase() ===
+      String(input.name ?? '')
+        .trim()
+        .toLocaleLowerCase(),
   );
-  if (managed) return { id: managed.id, mark: 'server', sources: [managed.icon] };
+  if (managed)
+    return { id: managed.id, mark: 'server', sources: managed.icon ? [managed.icon] : [] };
   const visual = resolveMcpVisual(input);
   if (visual.id === 'context7') {
     return { id: 'context7', mark: 'server', sources: [context7Icon] };

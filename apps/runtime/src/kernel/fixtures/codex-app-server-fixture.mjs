@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import readline from 'node:readline';
 
 let turnCount = 0;
@@ -38,6 +39,14 @@ input.on('line', (line) => {
     write({ jsonrpc: '2.0', id: request.id, result: {} });
     return;
   }
+  if (request.method === 'model/list') {
+    write({
+      jsonrpc: '2.0',
+      id: request.id,
+      result: { data: [{ id: 'gpt-5', model: 'gpt-5' }], nextCursor: null },
+    });
+    return;
+  }
   if (request.method === 'thread/start') {
     threadPolicy = request.params;
     write({
@@ -58,6 +67,33 @@ input.on('line', (line) => {
     return;
   }
   if (request.method === 'turn/start') {
+    if (request.params?.input?.some?.((item) => item?.text === 'editing config fixture')) {
+      const catalogArg = process.argv.find((x) => x.startsWith('model_catalog_json='));
+      const catalogPath = catalogArg
+        ? catalogArg.slice('model_catalog_json='.length)
+        : undefined;
+      const catalog = catalogPath ? JSON.parse(readFileSync(catalogPath, 'utf8')) : undefined;
+      write({ jsonrpc: '2.0', id: request.id, result: { turn: { id: 'turn-editing-config' } } });
+      write({
+        method: 'item/agentMessage/delta',
+        params: {
+          threadId,
+          itemId: 'editing-config',
+          delta: JSON.stringify({
+            model: threadPolicy?.model,
+            baseInstructions: threadPolicy?.baseInstructions,
+            developerInstructions: threadPolicy?.developerInstructions,
+            catalog,
+            catalogPath,
+          }),
+        },
+      });
+      write({
+        method: 'turn/completed',
+        params: { threadId, turn: { id: 'turn-editing-config', status: 'completed' } },
+      });
+      return;
+    }
     turnCount += 1;
     const turnId = `turn-${turnCount}`;
     lastTurnId = turnId;
@@ -92,6 +128,7 @@ input.on('line', (line) => {
         command: silentCommand,
         processId: 'process-silent',
         source: 'unifiedExecStartup',
+        description: '执行静默命令并等待完成',
         cwd: process.cwd(),
       };
       write({ method: 'item/started', params: { threadId, turnId, item } });

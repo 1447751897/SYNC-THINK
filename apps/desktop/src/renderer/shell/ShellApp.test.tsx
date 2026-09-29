@@ -89,6 +89,7 @@ const runtime = {
   })),
 };
 
+const agentWorkspaceProps: { current?: Record<string, unknown> } = {};
 const topBarProps: { current?: Record<string, unknown> } = {};
 const chatViewProps: { current?: Record<string, unknown> } = {};
 const terminalPaneProps: { current?: Record<string, unknown> } = {};
@@ -142,16 +143,20 @@ function clickNewConversationResource(button?: HTMLElement): void {
   fireEvent.click(screen.getByTestId('new-resource-conversation'));
 }
 
-async function pickEmptyComposerIdentity(
+async function selectDraftFromSidebar(
   track: 'model' | 'agent' | 'team',
   targetRef?: string,
 ): Promise<void> {
-  fireEvent.click(screen.getByTestId('empty-compose-identity'));
-  const option =
-    track === 'model'
-      ? await screen.findByRole('menuitemradio', { name: /直接跟模型聊/ })
-      : await screen.findByTestId(`identity-option-${track}-${targetRef}`);
-  fireEvent.click(option);
+  act(() => {
+    (sidebarProps.current?.onNewConversation as (track: string) => void)(track);
+  });
+  if (track !== 'model') {
+    await screen.findByTestId('mock-new-conversation-dialog');
+    await act(async () => {
+      await (newConversationDialogProps.current?.onPick as (id: string) => Promise<void>)(targetRef!);
+    });
+  }
+  await screen.findByTestId('empty-compose');
 }
 
 async function pickCollapsedEmptyComposerPermission(name: RegExp): Promise<void> {
@@ -353,6 +358,7 @@ import { clearFilePaneSession } from './FilePane.js';
 beforeEach(() => {
   invalidateMcpCatalog();
   invalidateSkillCatalog();
+  agentWorkspaceProps.current = undefined;
   topBarProps.current = undefined;
   chatViewProps.current = undefined;
   terminalPaneProps.current = undefined;
@@ -862,6 +868,34 @@ describe('ShellApp settings modal', () => {
 });
 
 describe('ShellApp workspace context', () => {
+  it('renders repository context outside the real empty composer surface', async () => {
+    installRuntime();
+    const originalBridge = window.syncThink;
+    Object.defineProperty(window, 'syncThink', {
+      configurable: true,
+      value: { runtime: { ...runtime, gitChanged: vi.fn(async () => ({
+        isRepo: true, branch: 'main', changeCount: 2, detached: false,
+        ahead: 0, behind: 0, operation: null,
+      })) } },
+    });
+    runtime.listWorkspaces.mockResolvedValue({
+      workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }],
+    });
+    window.localStorage.setItem('sync-think.activeWorkspaceId', 'ws-a');
+    const view = render(<ShellApp />);
+    try {
+      const bar = await screen.findByTestId('composer-git-bar');
+      const surface = screen.getByTestId('empty-compose');
+      expect(bar.closest('.shell-compose')).toBeNull();
+      expect(bar.parentElement).toBe(surface.parentElement);
+      expect(bar.nextElementSibling).toBe(surface);
+      expect(await screen.findByText('2 个未提交')).toBeTruthy();
+    } finally {
+      view.unmount();
+      Object.defineProperty(window, 'syncThink', { configurable: true, value: originalBridge });
+    }
+  });
+
   it('opens and navigates a visible browser tab after a successful AI browser_open event', async () => {
     installRuntime();
     let onEvent: ((event: Event) => void) | undefined;
@@ -1460,8 +1494,8 @@ describe('ShellApp workspace context', () => {
         {
           id: 'a2',
           workspaceId: 'ws-a',
-          track: 'agent',
-          targetRef: 'agent-a',
+          track: 'model',
+          targetRef: 'model-b',
           title: 'A2',
           executionMode: 'full-access',
         },
@@ -1864,9 +1898,9 @@ describe('ShellApp workspace context', () => {
         {
           id: 'agent-chat',
           workspaceId: 'ws-a',
-          track: 'agent',
-          targetRef: 'agent-b',
-          title: '智能体对话',
+          track: 'model',
+          targetRef: 'model-b',
+          title: '另一个模型对话',
           executionMode: 'full-access',
         },
       ],
@@ -1891,15 +1925,15 @@ describe('ShellApp workspace context', () => {
     expect(composer.getAttribute('data-layout')).toBe('tall');
     expect(composer.classList.contains('shell-compose--tall')).toBe(false);
     fireEvent.change(screen.getByTestId('empty-compose-input'), {
-      target: { value: '沿用右侧智能体' },
+      target: { value: '沿用右侧模型' },
     });
     fireEvent.click(screen.getByTestId('empty-compose-send'));
 
     await waitFor(() => expect(runtime.createConversation).toHaveBeenCalledTimes(1));
     expect(runtime.createConversation).toHaveBeenCalledWith(
       expect.objectContaining({
-        track: 'agent',
-        targetRef: 'agent-b',
+        track: 'model',
+        targetRef: 'model-b',
         workspaceId: 'ws-a',
       }),
     );
@@ -2296,6 +2330,25 @@ describe('ShellApp pane visibility activity', () => {
 });
 
 describe('ShellApp empty conversation compose', () => {
+  it('starts a usable conversation with no workspace and never sends the virtual scope to Runtime', async () => {
+    installRuntime();
+    runtime.listWorkspaces.mockResolvedValue({ workspaces: [] });
+    runtime.listProviders.mockResolvedValue({ providers: [{ providerId: 'provider-a', name: 'Provider A', enabled: true, models: [{ modelId: 'model-a', displayName: 'Model A' }] }] });
+    const conversation = { id: 'unbound-conversation', track: 'model', targetRef: 'model-a', title: '独立对话', executionMode: 'full-access', createdAt: '', updatedAt: '' };
+    runtime.createConversation.mockResolvedValue({ conversation });
+    runtime.listConversations.mockImplementation(async () => ({ conversations: runtime.createConversation.mock.calls.length ? [conversation] : [] }));
+    render(<ShellApp />);
+    const input = await screen.findByTestId('empty-compose-input');
+    await waitFor(() => expect(topBarProps.current?.activeWorkspaceId).toBe('__projectless__'));
+    fireEvent.change(input, { target: { value: '帮我整理今天的想法' } });
+    fireEvent.click(screen.getByTestId('empty-compose-send'));
+    await waitFor(() => expect(runtime.createConversation).toHaveBeenCalledTimes(1));
+    expect(runtime.createConversation.mock.calls[0][0]).toMatchObject({ track: 'model', targetRef: 'model-a' });
+    expect(runtime.createConversation.mock.calls[0][0].workspaceId).toBeUndefined();
+    await waitFor(() => expect(screen.getByTestId('mock-chat-view')).toBeTruthy());
+    expect((chatViewProps.current?.conversation as { workspaceId?: string }).workspaceId).toBeUndefined();
+    expect(runtime.sendConversationMessage).toHaveBeenCalledWith(expect.objectContaining({ conversationId: 'unbound-conversation' }));
+  });
   it('uses the NewMax action slot without the legacy track launchers', async () => {
     installRuntime();
     runtime.listWorkspaces.mockResolvedValue({
@@ -2350,32 +2403,21 @@ describe('ShellApp empty conversation compose', () => {
     expect(runtime.sendConversationMessage).not.toHaveBeenCalled();
   });
 
-  it('selects Agent and Team drafts directly from the empty identity picker', async () => {
+  it('routes agent and team creation to the dedicated space without replacing the model draft', async () => {
     installRuntime();
-    runtime.listWorkspaces.mockResolvedValue({
-      workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }],
-    });
-    runtime.listGlobalAgents.mockResolvedValue({ agents: [agentAFixture] });
-    runtime.listTeams.mockResolvedValue({ teams: [teamAFixture] });
-
+    runtime.listWorkspaces.mockResolvedValue({ workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }] });
     render(<ShellApp />);
     await screen.findByTestId('empty-compose');
-
-    await pickEmptyComposerIdentity('agent', 'agent-a');
-    await waitFor(() =>
-      expect(screen.getByTestId('empty-compose-identity').getAttribute('title')).toBe(
-        '对话对象：Agent A',
-      ),
-    );
-    expect(screen.queryByTestId('mock-new-conversation-dialog')).toBeNull();
-
-    await pickEmptyComposerIdentity('team', 'team-a');
-    await waitFor(() =>
-      expect(screen.getByTestId('empty-compose-identity').getAttribute('title')).toBe(
-        '对话对象：Team A',
-      ),
-    );
-    expect(screen.queryByTestId('mock-new-conversation-dialog')).toBeNull();
+    fireEvent.change(screen.getByTestId('empty-compose-input'), { target: { value: '保留我的模型草稿' } });
+    for (const track of ['agent', 'team']) {
+      act(() => (sidebarProps.current?.onNewConversation as (track: string) => void)(track));
+      await screen.findByTestId('mock-agent-workspace');
+      expect(agentWorkspaceProps.current?.navigation).toEqual(expect.objectContaining({ workspaceId: 'ws-a', fresh: true }));
+      expect(screen.queryByTestId('mock-new-conversation-dialog')).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: '返回工作台' }));
+      expect((screen.getByTestId('empty-compose-input') as HTMLTextAreaElement).value).toBe('保留我的模型草稿');
+    }
+    expect(runtime.createConversation).not.toHaveBeenCalled();
   });
 
   it('applies the saved chat typography and NewMax auto-grow limit to the empty editor', async () => {
@@ -2624,6 +2666,7 @@ describe('ShellApp empty conversation compose', () => {
     render(<ShellApp />);
     await waitFor(() => expect(runtime.detectKernels).toHaveBeenCalled());
     fireEvent.click(screen.getByTitle('切换模型，思考强度：自动'));
+    fireEvent.click(await screen.findByTestId('model-kernel-trigger'));
     fireEvent.click(await screen.findByTestId('kernel-option-codex'));
     fireEvent.change(screen.getByTestId('empty-compose-input'), {
       target: { value: '使用 GPT 内核开始' },
@@ -2669,7 +2712,9 @@ describe('ShellApp empty conversation compose', () => {
       target: { files: [image] },
     });
     await screen.findByTestId('composer-editor-attachments');
-    expect(screen.getAllByText('diagram.png')).toHaveLength(1);
+    // The tile appears before FileReader/compression completes; sending waits for readiness.
+    await waitFor(() => expect((screen.getByTestId('empty-compose-send') as HTMLButtonElement).disabled).toBe(false));
+    expect(screen.getByRole('img', { name: 'diagram.png' })).toBeTruthy();
     fireEvent.click(screen.getByTestId('empty-compose-send'));
 
     await waitFor(() => expect(runtime.appendMessage).toHaveBeenCalledTimes(1));
@@ -3125,8 +3170,10 @@ describe('ShellApp empty conversation compose', () => {
     const input = await screen.findByTestId('empty-compose-input');
     await pickCollapsedEmptyComposerPermission(/询问批准/);
     fireEvent.click(screen.getByTitle('切换模型，思考强度：自动'));
+    fireEvent.click(await screen.findByTestId('model-kernel-trigger'));
     fireEvent.click(await screen.findByTestId('kernel-option-codex'));
-    fireEvent.click(screen.getByTitle('切换模型，思考强度：自动'));
+    expect(screen.getByTestId('model-kernel-trigger').getAttribute('aria-expanded')).toBe('false');
+    expect(screen.getByTestId('model-kernel-current').getAttribute('data-kernel-id')).toBe('codex');
     fireEvent.click(await screen.findByTestId('model-reasoning-trigger'));
     const reasoningOption = await screen.findByTestId('model-reasoning-option-high');
     fireEvent.click(reasoningOption);
@@ -3364,7 +3411,7 @@ describe('ShellApp empty conversation compose', () => {
     await waitFor(() => expect(screen.queryByTestId('empty-compose-slash-pop')).toBeNull());
   });
 
-  it('keeps Agent/Team owners across model changes and carries explicit workspace picks into ChatView', async () => {
+  it('keeps model changes and explicit workspace Skill picks when creating a model chat', async () => {
     installRuntime();
     runtime.listWorkspaces.mockResolvedValue({
       workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }],
@@ -3377,8 +3424,8 @@ describe('ShellApp empty conversation compose', () => {
               {
                 id: 'created-conversation',
                 workspaceId: 'ws-a',
-                track: 'agent',
-                targetRef: 'agent-a',
+                track: 'model',
+                targetRef: 'model-b',
                 title: '带 Skill 开始',
                 executionMode: 'full-access',
               },
@@ -3459,7 +3506,7 @@ describe('ShellApp empty conversation compose', () => {
 
     render(<ShellApp />);
     await waitFor(() => expect(screen.getByTestId('empty-compose')).toBeTruthy());
-    await pickEmptyComposerIdentity('agent', 'agent-a');
+    await selectDraftFromSidebar('model');
 
     await waitFor(() =>
       expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe(''),
@@ -3472,13 +3519,13 @@ describe('ShellApp empty conversation compose', () => {
     await waitFor(() =>
       expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe(''),
     );
-    await pickEmptyComposerIdentity('model');
+    await selectDraftFromSidebar('model');
     await waitFor(() => {
       expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe('');
       expect((screen.getByTestId('turn-skill-trigger') as HTMLButtonElement).disabled).toBe(false);
     });
 
-    await pickEmptyComposerIdentity('agent', 'agent-a');
+    await selectDraftFromSidebar('model');
     await waitFor(() =>
       expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe(''),
     );
@@ -3506,7 +3553,7 @@ describe('ShellApp empty conversation compose', () => {
       }),
     );
     expect(runtime.createConversation).toHaveBeenCalledWith(
-      expect.objectContaining({ track: 'agent', targetRef: 'agent-a' }),
+      expect.objectContaining({ track: 'model', targetRef: 'model-b' }),
     );
     expect(
       JSON.parse(window.localStorage.getItem('sync-think.conversationModelOverrides') ?? '{}')[
@@ -3522,7 +3569,7 @@ describe('ShellApp empty conversation compose', () => {
       expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe(''),
     );
 
-    await pickEmptyComposerIdentity('team', 'team-a');
+    await selectDraftFromSidebar('model');
     await waitFor(() =>
       expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe(''),
     );
@@ -3763,7 +3810,7 @@ describe('ShellApp empty conversation compose', () => {
 
     render(<ShellApp />);
     await waitFor(() => expect(screen.getByTestId('empty-compose')).toBeTruthy());
-    await pickEmptyComposerIdentity('agent', 'agent-a');
+    await selectDraftFromSidebar('model');
     await waitFor(() =>
       expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe(''),
     );
@@ -3837,7 +3884,7 @@ describe('ShellApp empty conversation compose', () => {
 
     render(<ShellApp />);
     await waitFor(() => expect(screen.getByTestId('empty-compose')).toBeTruthy());
-    await pickEmptyComposerIdentity('agent', 'agent-a');
+    await selectDraftFromSidebar('model');
     await waitFor(() =>
       expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe(''),
     );
@@ -3855,7 +3902,7 @@ describe('ShellApp empty conversation compose', () => {
       expect(window.localStorage.getItem('sync-think.activeWorkspaceId')).toBe('ws-b');
       expect((screen.getByTestId('turn-skill-trigger') as HTMLButtonElement).disabled).toBe(false);
     });
-    await pickEmptyComposerIdentity('agent', 'agent-a');
+    await selectDraftFromSidebar('model');
     expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe('');
     fireEvent.click(screen.getByTestId('turn-skill-trigger'));
     fireEvent.click(await screen.findByTestId('turn-skill-option-skill-a'));
@@ -3954,49 +4001,19 @@ describe('ShellApp empty conversation compose', () => {
     ).toEqual(expect.objectContaining({ 'created-conversation': false }));
   });
 
-  it('clears a pending agent submission when the target picker is cancelled', async () => {
+  it('leaves model submission in the workbench when a saved last track was agent', async () => {
     installRuntime();
-    window.localStorage.setItem('sync-think.lastConversationTrack', 'agent');
-    runtime.listWorkspaces.mockResolvedValue({
-      workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }],
-    });
-    runtime.listGlobalAgents.mockResolvedValue({ agents: [agentAFixture] });
-
+    runtime.listWorkspaces.mockResolvedValue({ workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }] });
+    runtime.listProviders.mockResolvedValue({ providers: [{ providerId: 'p', name: 'P', enabled: true, models: [{ modelId: 'model-a', displayName: 'A' }] }] });
+    localStorage.setItem('sync-think.lastConversationTrack', 'agent');
     render(<ShellApp />);
-    await waitFor(() => expect(screen.getByTestId('empty-compose')).toBeTruthy());
-    fireEvent.change(screen.getByTestId('empty-compose-input'), {
-      target: { value: '不要延迟发送' },
-    });
+    await screen.findByTestId('empty-compose');
+    fireEvent.change(screen.getByTestId('empty-compose-input'), { target: { value: '普通模型消息' } });
     fireEvent.click(screen.getByTestId('empty-compose-send'));
-    await waitFor(() => expect(screen.getByTestId('mock-new-conversation-dialog')).toBeTruthy());
-
-    const close = newConversationDialogProps.current?.onClose as (() => void) | undefined;
-    close?.();
-    await waitFor(() => expect(screen.queryByTestId('mock-new-conversation-dialog')).toBeNull());
-
-    // Pick a target through the compact NewMax identity control. The selection
-    // only prepares the draft; Runtime creation still waits for Send.
-    await pickEmptyComposerIdentity('agent', 'agent-a');
-
-    await waitFor(() => expect(screen.queryByTestId('mock-new-conversation-dialog')).toBeNull());
-    expect(runtime.createConversation).not.toHaveBeenCalled();
-    expect(runtime.sendConversationMessage).not.toHaveBeenCalled();
-    expect(screen.getByTestId('empty-compose-input')).toHaveProperty('value', '不要延迟发送');
-
-    // First send is what materializes the conversation in Runtime / sidebar.
-    fireEvent.click(screen.getByTestId('empty-compose-send'));
-    await waitFor(() => expect(runtime.createConversation).toHaveBeenCalledTimes(1));
-    expect(runtime.createConversation).toHaveBeenCalledWith(
-      expect.objectContaining({
-        track: 'agent',
-        targetRef: 'agent-a',
-        workspaceId: 'ws-a',
-      }),
-    );
+    await waitFor(() => expect(runtime.createConversation).toHaveBeenCalledWith(expect.objectContaining({ track: 'model' })));
+    expect(screen.queryByTestId('mock-agent-workspace')).toBeNull();
   });
-});
 
-describe('ShellApp duplicate conversation', () => {
   it('copies config, title and group membership but not messages', async () => {
     installRuntime();
     runtime.listWorkspaces.mockResolvedValue({
@@ -4327,4 +4344,136 @@ it('preserves the first-turn draft instead of creating a conversation for a save
   );
   expect(runtime.createConversation).not.toHaveBeenCalled();
   expect(runtime.appendMessage).not.toHaveBeenCalled();
+});
+
+
+describe('ShellApp agent contact navigation', () => {
+  it('resumes agent history in its own space and fresh chat does not discard a model draft', async () => {
+    installRuntime();
+    runtime.listGlobalAgents.mockResolvedValue({ agents: [agentAFixture] });
+    runtime.listTeams.mockResolvedValue({ teams: [teamAFixture] });
+    runtime.listWorkspaces.mockResolvedValue({ workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }] });
+    runtime.listConversations.mockResolvedValue({ conversations: [{ id: 'a-latest', workspaceId: 'ws-a', track: 'agent', targetRef: 'agent-a', updatedAt: '2026-09-29', title: '私聊' }] });
+    render(<ShellApp />);
+    await screen.findByTestId('empty-compose');
+    fireEvent.change(screen.getByTestId('empty-compose-input'), { target: { value: '模型草稿' } });
+    const contact = (fresh = false) => (sidebarProps.current?.onAgentChat as (id: string, ws: string, fresh: boolean) => Promise<void>)('agent-a', 'ws-a', fresh);
+    await act(() => contact());
+    await screen.findByTestId('mock-agent-workspace');
+    expect(agentWorkspaceProps.current?.navigation).toEqual(expect.objectContaining({ conversationId: 'a-latest' }));
+    expect(screen.queryByTestId('conversation-tab-a-latest')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '返回工作台' }));
+    await act(() => contact(true));
+    expect(agentWorkspaceProps.current?.navigation).toEqual(expect.objectContaining({ agentId: 'agent-a', fresh: true }));
+    fireEvent.click(screen.getByRole('button', { name: '返回工作台' }));
+    expect((screen.getByTestId('empty-compose-input') as HTMLTextAreaElement).value).toBe('模型草稿');
+    expect(runtime.createConversation).not.toHaveBeenCalled();
+  });
+});
+
+
+vi.mock('./AgentWorkspace.js', () => ({
+  default: (props: { onExit(): void; workspaceId: string }) => { agentWorkspaceProps.current = props; return createElement('section', { 'data-testid': 'mock-agent-workspace', 'data-workspace': props.workspaceId }, createElement('button', { onClick: props.onExit }, '返回工作台')); },
+}));
+
+describe('ShellApp agent workspace routing', () => {
+  it('switches the whole surface and restores the same workbench DOM on exit', async () => {
+    installRuntime();
+    const { container } = render(<ShellApp />);
+    await waitFor(() => expect(sidebarProps.current?.onEnterAgentWorkspace).toBeTypeOf('function'));
+    const workbench = container.querySelector('.shell-normal-workspace');
+    expect(workbench?.hasAttribute('hidden')).toBe(false);
+    act(() => (sidebarProps.current!.onEnterAgentWorkspace as () => void)());
+    await screen.findByTestId('mock-agent-workspace');
+    expect(workbench?.hasAttribute('hidden')).toBe(true);
+    expect(localStorage.getItem('sync-think.sidebar-mode.v1')).toBe('agents');
+    fireEvent.click(screen.getByRole('button', { name: '返回工作台' }));
+    expect(container.querySelector('.shell-normal-workspace')).toBe(workbench);
+    expect(workbench?.hasAttribute('hidden')).toBe(false);
+    expect(localStorage.getItem('sync-think.sidebar-mode.v1')).toBe('conversations');
+  });
+  it('restores the dedicated surface from the saved agent-mode preference', async () => {
+    installRuntime(); localStorage.setItem('sync-think.sidebar-mode.v1', 'agents');
+    render(<ShellApp />);
+    await screen.findByTestId('mock-agent-workspace');
+    expect(screen.queryByTestId('mock-topbar')).toBeNull();
+  });
+});
+
+
+describe('ShellApp isolated conversation destinations', () => {
+  const catalog = [
+    { id: 'model', workspaceId: 'ws-a', track: 'model', title: '模型对话', targetRef: 'model-a' },
+    { id: 'delegating-model', workspaceId: 'ws-a', track: 'model', collaborationKind: 'model', title: '调用智能体的模型对话', targetRef: 'model-a' },
+    { id: 'direct', workspaceId: 'ws-a', track: 'agent', title: '智能体私聊', targetRef: 'agent-a' },
+    { id: 'group', workspaceId: 'ws-a', track: 'team', collaborationKind: 'group', title: '团队群聊', targetRef: 'team-a' },
+    { id: 'other-group', workspaceId: 'ws-b', track: 'agent', collaborationKind: 'group', title: '其他工作区群聊', targetRef: 'agent-a', archivedAt: '2026-09-29' },
+    { id: 'projectless-group', track: 'agent', collaborationKind: 'group', title: '未绑定工作区群聊', targetRef: 'agent-a' },
+  ];
+  function setup() {
+    installRuntime();
+    runtime.listConversations.mockResolvedValue({ conversations: catalog });
+    runtime.listWorkspaces.mockResolvedValue({ workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }, { workspaceId: 'ws-b', name: 'B', folderPath: 'D:\\b' }] });
+    localStorage.setItem('sync-think.activeWorkspaceId', 'ws-a');
+    localStorage.setItem('sync-think.openConversationTabs', JSON.stringify({ 'ws-a': ['model'] }));
+  }
+  function deepLink(id: string) {
+    const handler = runtime.onOpenConversation.mock.calls.at(-1)?.[0];
+    expect(handler).toBeTypeOf('function');
+    act(() => handler!(id));
+  }
+  it('lists only model conversations including those that can delegate', async () => {
+    setup(); render(<ShellApp />);
+    await waitFor(() => expect((sidebarProps.current?.conversations as Array<{ id: string }>).map(c => c.id)).toEqual(['model', 'delegating-model']));
+    expect(runtime.deleteConversation).not.toHaveBeenCalled();
+  });
+  it('moves a restored group to the agent space and prunes main, right and bottom tabs without deleting history or files', async () => {
+    setup();
+    localStorage.setItem('sync-think.openConversationTabs', JSON.stringify({ 'ws-a': ['model', 'group', 'direct'] }));
+    localStorage.setItem('sync-think.selectedConversationByWorkspace', JSON.stringify({ 'ws-a': 'group' }));
+    const side = (id: string) => ({ open: true, size: 330, fileBrowserOpen: false, fileBrowserWidth: 288, activeTabId: 'conversation:' + id, tabs: [{ id: 'conversation:' + id, type: 'conversation', conversationId: id }, { id: 'file:notes.md', type: 'file', path: 'notes.md' }] });
+    localStorage.setItem('sync-think.workspaceWorkbenchLayouts', JSON.stringify({ version: 1, workspaces: { 'ws-a': { version: 1, right: side('group'), bottom: side('direct') } } }));
+    render(<ShellApp />);
+    await screen.findByTestId('mock-agent-workspace');
+    expect(agentWorkspaceProps.current?.navigation).toEqual(expect.objectContaining({ conversationId: 'group', workspaceId: 'ws-a' }));
+    expect((agentWorkspaceProps.current?.conversations as Array<{ id: string }>).map(c => c.id)).toContain('group');
+    const paneState = JSON.parse(localStorage.getItem('sync-think.workspacePaneLayouts')!);
+    expect(JSON.stringify(paneState)).not.toContain('"conversationId":"group"');
+    expect(JSON.stringify(paneState)).not.toContain('"conversationId":"direct"');
+    const sideState = JSON.parse(localStorage.getItem('sync-think.workspaceWorkbenchLayouts')!).workspaces['ws-a'];
+    for (const scope of [sideState.right, sideState.bottom]) {
+      expect(scope.tabs.map((tab: { type: string }) => tab.type)).toEqual(['file']);
+    }
+    fireEvent.click(screen.getByRole('button', { name: '返回工作台' }));
+    expect(screen.getByTestId('mock-chat-view').getAttribute('data-conversation-id')).toBe('model');
+    expect(screen.queryByTestId('conversation-tab-group')).toBeNull();
+    expect(runtime.deleteConversation).not.toHaveBeenCalled();
+    expect(runtime.createConversation).not.toHaveBeenCalled();
+  });
+  it('routes notification links across workspaces and returns model links to their workbench', async () => {
+    setup(); render(<ShellApp />);
+    await screen.findByTestId('mock-chat-view');
+    deepLink('other-group');
+    await waitFor(() => expect(agentWorkspaceProps.current?.navigation).toEqual(expect.objectContaining({ conversationId: 'other-group', workspaceId: 'ws-b' })));
+    expect(screen.getByTestId('mock-agent-workspace').getAttribute('data-workspace')).toBe('ws-b');
+    deepLink('model');
+    await waitFor(() => expect(localStorage.getItem('sync-think.sidebar-mode.v1')).toBe('conversations'));
+    expect(screen.getByTestId('mock-chat-view').getAttribute('data-conversation-id')).toBe('model');
+    expect(document.querySelector('.shell-normal-workspace')?.hasAttribute('hidden')).toBe(false);
+  });
+  it('opens projectless agent links in projectless scope instead of the previously selected project', async () => {
+    setup(); render(<ShellApp />);
+    await screen.findByTestId('mock-chat-view');
+    deepLink('projectless-group');
+    await waitFor(() => expect(agentWorkspaceProps.current?.navigation).toEqual(expect.objectContaining({ conversationId: 'projectless-group', workspaceId: '__projectless__' })));
+  });
+  it('routes a freshly fetched agent link using the refreshed record, not a stale model fallback', async () => {
+    setup(); render(<ShellApp />);
+    await screen.findByTestId('mock-chat-view');
+    runtime.listConversations.mockResolvedValue({ conversations: [...catalog, { id: 'new-agent', workspaceId: 'ws-a', track: 'agent', title: '新私聊', targetRef: 'agent-a' }] });
+    deepLink('new-agent');
+    await waitFor(() => expect(agentWorkspaceProps.current?.navigation).toEqual(expect.objectContaining({ conversationId: 'new-agent' })));
+    expect(screen.queryByTestId('conversation-tab-new-agent')).toBeNull();
+    expect(runtime.createConversation).not.toHaveBeenCalled();
+  });
 });
